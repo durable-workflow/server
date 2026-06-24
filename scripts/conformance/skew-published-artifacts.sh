@@ -277,8 +277,11 @@ cleanup() {
   fi
 
   if [[ "$keep_run_root" != "1" && "$code" -eq 0 && "$result_dir" != "$run_root" ]]; then
-    rm -rf "$run_root"
+    rm -rf "$run_root" >/dev/null 2>&1 \
+      || printf 'warning: unable to remove skew conformance run root %s\n' "$run_root" >&2
   fi
+
+  exit "$code"
 }
 trap cleanup EXIT
 
@@ -290,6 +293,49 @@ write_blocked_result() {
   DW_SKEW_RUN_ROOT="$run_root" \
   DW_SKEW_REPO_ROOT="$repo_root" \
   node "$script_dir/skew-published-artifacts.mjs"
+}
+
+exit_with_skew_record_status() {
+  local runner_status="${1:-1}"
+  local record_path="$result_dir/skew-record.json"
+
+  node - "$record_path" "$runner_status" <<'NODE'
+const fs = require('node:fs');
+
+const recordPath = process.argv[2];
+const parsedFallbackStatus = Number.parseInt(process.argv[3] ?? '', 10);
+const fallbackStatus = Number.isInteger(parsedFallbackStatus) ? parsedFallbackStatus : 1;
+const fallbackExit = fallbackStatus === 0 ? 1 : fallbackStatus;
+
+function token(value) {
+  return String(value ?? '').trim().toLowerCase();
+}
+
+function truthy(value) {
+  return value === true || ['1', 'true', 'yes'].includes(token(value));
+}
+
+let record;
+try {
+  record = JSON.parse(fs.readFileSync(recordPath, 'utf8'));
+} catch (error) {
+  console.error(`skew runner did not write a readable skew-record.json: ${error.message}`);
+  process.exit(fallbackExit);
+}
+
+const nestedRecord = record?.record && typeof record.record === 'object' ? record.record : {};
+const outcome = token(record.outcome || record.status || record.verdict || nestedRecord.outcome || nestedRecord.status || nestedRecord.verdict);
+const runnerBlocked = truthy(record.runnerBlocked)
+  || truthy(record.runner_blocked)
+  || truthy(nestedRecord.runnerBlocked)
+  || truthy(nestedRecord.runner_blocked);
+
+if (outcome === 'pass' && !runnerBlocked) {
+  process.exit(0);
+}
+
+process.exit(fallbackStatus);
+NODE
 }
 
 if ! require_command node; then
@@ -797,6 +843,7 @@ const manifest = {
 process.stdout.write(`${JSON.stringify(manifest, null, 2)}\n`);
 NODE
 
+set +e
 DW_SKEW_RESULT_DIR="$result_dir" \
 DW_SKEW_RUN_ROOT="$run_root" \
 DW_SKEW_REPO_ROOT="$repo_root" \
@@ -805,3 +852,6 @@ DW_SKEW_ARTIFACTS_JSON="$artifact_manifest" \
 DW_SKEW_WATERLINE_FIXTURE_RUN_ID="$waterline_fixture_run_id" \
 DW_SKEW_STARTED_AT="${DW_SKEW_STARTED_AT:-$(timestamp)}" \
 node "$script_dir/skew-published-artifacts.mjs"
+runner_status=$?
+set -e
+exit_with_skew_record_status "$runner_status"

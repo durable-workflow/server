@@ -1173,6 +1173,153 @@ PHP,
             $runner,
             'artifact sources must come from actual installation handoff records, not version environment variables alone',
         );
+        $this->assertStringContainsString(
+            'exit_with_skew_record_status',
+            $shell,
+            'the shell wrapper must reconcile the final process status with skew-record.json before returning',
+        );
+        $this->assertStringContainsString(
+            "outcome === 'pass' && !runnerBlocked",
+            $shell,
+            'a pass record without runner-blocked evidence must force a successful process exit',
+        );
+        $this->assertStringContainsString(
+            'process.exit(fallbackStatus)',
+            $shell,
+            'non-pass records must keep the runner status chosen by their existing evidence path',
+        );
+        $this->assertStringContainsString(
+            'exit "$code"',
+            $shell,
+            'cleanup must preserve the status selected from skew-record.json',
+        );
+    }
+
+    public function test_shell_wrapper_accepts_pass_record_despite_nonzero_runner_and_cleanup_status(): void
+    {
+        $repoRoot = dirname(__DIR__, 2);
+        $nodeBinary = trim((string) shell_exec('command -v node 2>/dev/null'));
+        if ($nodeBinary === '') {
+            $this->markTestSkipped('node is required to exercise the skew shell wrapper exit reconciliation.');
+        }
+        $rmBinary = trim((string) shell_exec('command -v rm 2>/dev/null'));
+        if ($rmBinary === '') {
+            $this->markTestSkipped('rm is required to exercise skew shell wrapper cleanup reconciliation.');
+        }
+
+        $baseDir = sys_get_temp_dir().'/dw-skew-exit-'.bin2hex(random_bytes(6));
+        $runRoot = $baseDir.'/run';
+        $resultDir = $baseDir.'/result';
+        $fakeBin = $baseDir.'/bin';
+        mkdir($runRoot, 0777, true);
+        mkdir($resultDir, 0777, true);
+        mkdir($fakeBin, 0777, true);
+
+        $fakeNode = $fakeBin.'/node';
+        file_put_contents($fakeNode, str_replace(
+            '__REAL_NODE__',
+            str_replace("'", "'\"'\"'", $nodeBinary),
+            <<<'SH'
+#!/usr/bin/env bash
+set -euo pipefail
+
+if [[ "${1:-}" == "-" && "$#" -eq 1 ]]; then
+  cat <<'JSON'
+{
+  "schema": "durable-workflow.v2.skew-refusal-matrix.published-artifacts",
+  "artifact_versions": {},
+  "artifact_sources": {},
+  "surfaces": {},
+  "local_product_source_checkouts_used": false
+}
+JSON
+  exit 0
+fi
+
+if [[ "${1:-}" == *"/skew-published-artifacts.mjs" ]]; then
+  mkdir -p "$DW_SKEW_RUN_ROOT"
+  printf '%s\n' 'temporary runner marker' > "$DW_SKEW_RUN_ROOT/marker"
+  cat > "$DW_SKEW_RESULT_DIR/skew-record.json" <<'JSON'
+{
+  "schema": "durable-workflow.v2.skew-refusal-matrix.record",
+  "outcome": "pass",
+  "runnerBlocked": false,
+  "record": {
+    "outcome": "pass",
+    "runner_blocked": false
+  }
+}
+JSON
+  exit "${DW_FAKE_SKEW_NODE_STATUS:-1}"
+fi
+
+exec '__REAL_NODE__' "$@"
+SH
+        ));
+        chmod($fakeNode, 0777);
+
+        $fakeRm = $fakeBin.'/rm';
+        file_put_contents($fakeRm, str_replace(
+            '__REAL_RM__',
+            str_replace("'", "'\"'\"'", $rmBinary),
+            <<<'SH'
+#!/usr/bin/env bash
+set -euo pipefail
+
+target="${@: -1}"
+if [[ "$target" == "${DW_SKEW_RUN_ROOT:-}" ]]; then
+  exit 1
+fi
+
+exec '__REAL_RM__' "$@"
+SH
+        ));
+        chmod($fakeRm, 0777);
+
+        try {
+            $process = proc_open(
+                [
+                    $repoRoot.'/scripts/conformance/skew-published-artifacts.sh',
+                    '--result-dir',
+                    $resultDir,
+                ],
+                [
+                    1 => ['pipe', 'w'],
+                    2 => ['pipe', 'w'],
+                ],
+                $pipes,
+                $repoRoot,
+                [
+                    'PATH' => $fakeBin.':'.(getenv('PATH') ?: '/usr/bin:/bin'),
+                    'DW_SKEW_RUN_ROOT' => $runRoot,
+                    'DW_SKEW_SERVER_URL' => 'http://127.0.0.1:1',
+                    'DW_FAKE_SKEW_NODE_STATUS' => '1',
+                ],
+            );
+
+            $this->assertIsResource($process);
+            $stdout = stream_get_contents($pipes[1]);
+            $stderr = stream_get_contents($pipes[2]);
+            fclose($pipes[1]);
+            fclose($pipes[2]);
+            $exitCode = proc_close($process);
+
+            $this->assertSame(0, $exitCode, $stdout.$stderr);
+
+            $record = json_decode(
+                (string) file_get_contents($resultDir.'/skew-record.json'),
+                true,
+                512,
+                JSON_THROW_ON_ERROR,
+            );
+
+            $this->assertSame('pass', $record['outcome']);
+            $this->assertFalse($record['runnerBlocked']);
+            $this->assertDirectoryExists($runRoot);
+            $this->assertStringContainsString('unable to remove skew conformance run root', $stderr);
+        } finally {
+            $this->removeDirectory($baseDir);
+        }
     }
 
     public function test_skew_runner_does_not_attribute_waterline_render_to_proxy_response(): void
@@ -2465,6 +2612,31 @@ PHP,
         $this->assertNotFalse($source, "{$path} must be readable");
 
         return $source;
+    }
+
+    private function removeDirectory(string $path): void
+    {
+        if (! is_dir($path)) {
+            return;
+        }
+
+        $items = new \RecursiveIteratorIterator(
+            new \RecursiveDirectoryIterator($path, \FilesystemIterator::SKIP_DOTS),
+            \RecursiveIteratorIterator::CHILD_FIRST,
+        );
+
+        foreach ($items as $item) {
+            if ($item->isDir()) {
+                @chmod($item->getPathname(), 0777);
+                @rmdir($item->getPathname());
+            } else {
+                @chmod($item->getPathname(), 0666);
+                @unlink($item->getPathname());
+            }
+        }
+
+        @chmod($path, 0777);
+        @rmdir($path);
     }
 
     /**
