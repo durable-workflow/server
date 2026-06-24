@@ -101,8 +101,8 @@ can discover that handoff from `GET /api/cluster/info` under
 published server image with the current CLI, Python SDK, PHP workflow runtime,
 and Waterline artifact versions. When the handoff runs from the published
 server image root, it executes the focused normal sleep completion, worker
-restart while sleeping, server restart while sleeping, and replay after timer
-fire shards. The normal
+restart while sleeping, server restart while sleeping, replay after timer fire,
+and concurrent timers with distinct deadlines shards. The normal
 sleep shard records `sleep_requested_at`, `wake_up_at`, `completed_at`, the
 workflow result, and an early-resume observation. The worker restart shard
 records the restart window, completion after `wake_up_at`, exactly one timer
@@ -113,9 +113,11 @@ no duplicate resume. The replay-after-fire shard starts a fresh worker after
 the recorded `TimerFired` event, replays the history, and records
 `replayed_event_types` containing `TimerFired` plus
 `duplicate_timer_commands=0` so a replay cannot count as passing if it skips the
-timer-fire history or schedules a second timer. Concurrent timers with distinct
-deadlines, cancellation while waiting, and operator-visible waiting/timer state
-can remain non-passing coverage gaps until those focused shards exist. The
+timer-fire history or schedules a second timer. The concurrent timers shard
+records timer IDs, distinct `wake_up_times`, `observed_resume_order`,
+`fired_at_times`, and `fire_counts` to prove deadline order with no early or
+duplicate fires. Cancellation while waiting and operator-visible waiting/timer
+state can remain non-passing coverage gaps until those focused shards exist. The
 record names the exact public artifact sources and states that a local product
 source checkout is not pass evidence.
 

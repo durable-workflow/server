@@ -283,7 +283,7 @@ final class TimerRuntimeContract
                 'coverage_gap_outcome' => 'non_passing',
             ],
             'host_runner_contract' => [
-                'status' => 'published_handoff_proves_normal_sleep_worker_restart_server_restart_and_replay_after_timer_fire_then_marks_remaining_timer_cells_coverage_gap',
+                'status' => 'published_handoff_proves_normal_sleep_worker_restart_server_restart_replay_after_timer_fire_and_concurrent_distinct_deadlines_then_marks_remaining_timer_cells_coverage_gap',
                 'result_schema' => self::RESULT_SCHEMA,
                 'runner_repository' => 'server',
                 'runner_path' => 'scripts/conformance/timers-published-artifacts.sh',

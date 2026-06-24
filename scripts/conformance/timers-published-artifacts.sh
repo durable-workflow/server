@@ -9,9 +9,10 @@ Writes the published-artifact timer conformance handoff result.
 
 When this handoff runs from the pinned published server image root, it executes
 the focused normal sleep completion, worker-restart-while-sleeping,
-server-restart-while-sleeping, and replay-after-timer-fire shards and records
-concrete timer runtime evidence. Remaining timer cells that do not yet have
-first-class shards stay explicit non-passing coverage gaps.
+server-restart-while-sleeping, replay-after-timer-fire, and
+concurrent-timers-with-distinct-deadlines shards and records concrete timer
+runtime evidence. Remaining timer cells that do not yet have first-class shards
+stay explicit non-passing coverage gaps.
 
 The runner writes these files to the result directory:
   pins.json
@@ -281,6 +282,7 @@ function scenario_expected_behavior(string $scenarioId): string
         'worker_restart_while_sleeping' => 'worker_restart_does_not_drop_or_duplicate_a_sleeping_timer',
         'server_restart_while_sleeping' => 'server_restart_recovers_waiting_timer_state_and_completes_after_wake_up',
         'replay_after_timer_fire' => 'replay_after_timer_fire_is_deterministic_and_does_not_schedule_duplicate_timers',
+        'concurrent_timers_distinct_deadlines' => 'timers_resume_in_recorded_wake_up_order_without_early_or_duplicate_fires',
         default => 'workflow_sleep_completes_after_recorded_wake_up_without_early_resume',
     };
 }
@@ -291,6 +293,7 @@ function scenario_next_acceptance(string $scenarioId): string
         'worker_restart_while_sleeping' => 'rerun the focused timer host probe from the pinned published server image and record completion after wake_up_at with timer_fire_count exactly one and duplicate_resume_count zero after worker restart',
         'server_restart_while_sleeping' => 'rerun the focused timer host probe from the pinned published server image and record timer_state_recovered true, completion after wake_up_at, timer_fire_count exactly one, and duplicate_resume_count zero after server restart',
         'replay_after_timer_fire' => 'rerun the focused timer host probe from the pinned published server image and record replay_started_at after fired_at, replayed_event_types including TimerFired, and duplicate_timer_commands exactly zero',
+        'concurrent_timers_distinct_deadlines' => 'rerun the focused timer host probe from the pinned published server image and record timer ids, distinct wake_up_times, observed_resume_order matching deadline order, fired_at_times at or after wake_up_times, and fire_counts exactly one for every timer id',
         default => 'rerun the focused timer host probe from the pinned published server image and record completed_at greater than or equal to wake_up_at with no early terminal observation',
     };
 }
@@ -577,6 +580,34 @@ function history_event_type_list(array $events): array
     }
 
     return $types;
+}
+
+function resume_timer_id_from_task(array $task): ?string
+{
+    foreach (['timer_id', 'resume_source_id', 'open_wait_id'] as $field) {
+        $value = $task[$field] ?? null;
+        if (is_string($value) && $value !== '') {
+            return str_starts_with($value, 'timer:') ? substr($value, 6) : $value;
+        }
+    }
+
+    $events = array_reverse(history_events($task));
+    foreach ($events as $event) {
+        if (! is_array($event)) {
+            continue;
+        }
+        $type = $event['event_type'] ?? ($event['type'] ?? null);
+        if ($type !== HistoryEventType::TimerFired->value) {
+            continue;
+        }
+        $payload = is_array($event['payload'] ?? null) ? $event['payload'] : [];
+        $timerId = $payload['timer_id'] ?? null;
+        if (is_string($timerId) && $timerId !== '') {
+            return $timerId;
+        }
+    }
+
+    return null;
 }
 
 function register_worker(string $workerId): void
@@ -1100,6 +1131,279 @@ function run_replay_after_timer_fire_probe(): array
     ];
 }
 
+function run_concurrent_timers_probe(): array
+{
+    $suffix = bin2hex(random_bytes(4));
+    $workflowId = 'timers-concurrent-distinct-'.$suffix;
+    $workerId = 'timers-concurrent-distinct-worker-'.$suffix;
+    $declaredDelays = [1, 3, 5];
+
+    register_worker($workerId);
+
+    $start = request_json('POST', '/workflows', [
+        'workflow_id' => $workflowId,
+        'workflow_type' => NORMAL_SLEEP_WORKFLOW_TYPE,
+        'task_queue' => TIMERS_TASK_QUEUE,
+        'input' => [[
+            'sleep_seconds' => 30,
+            'probe' => 'concurrent_timers_distinct_deadlines',
+        ]],
+        'business_key' => 'timers-conformance-concurrent-distinct',
+    ]);
+    if (($start['command_status'] ?? null) !== 'accepted') {
+        throw new RuntimeException('workflow start was not accepted: '.json_encode($start));
+    }
+
+    $runId = is_string($start['run_id'] ?? null) ? $start['run_id'] : '';
+    if ($runId === '') {
+        throw new RuntimeException('workflow start did not return a run_id');
+    }
+
+    $firstTask = poll_workflow_task($workerId);
+    $commands = array_map(
+        static fn (int $delaySeconds): array => [
+            'type' => 'start_timer',
+            'delay_seconds' => $delaySeconds,
+        ],
+        $declaredDelays,
+    );
+    $complete = complete_workflow_task_with_commands($firstTask, $commands);
+    if (($complete['outcome'] ?? null) !== 'completed' || ($complete['run_status'] ?? null) !== RunStatus::Waiting->value) {
+        throw new RuntimeException('concurrent_timers_distinct_deadlines initial timer scheduling did not leave run waiting: '.json_encode($complete));
+    }
+
+    $createdTaskIds = array_values(array_filter(
+        $complete['created_task_ids'] ?? [],
+        static fn (mixed $value): bool => is_string($value) && $value !== '',
+    ));
+    if (count($createdTaskIds) !== count($declaredDelays)) {
+        throw new RuntimeException(sprintf(
+            'concurrent_timers_distinct_deadlines expected %d timer tasks, got %d',
+            count($declaredDelays),
+            count($createdTaskIds),
+        ));
+    }
+
+    $timerRecords = [];
+    foreach ($createdTaskIds as $taskId) {
+        /** @var WorkflowTask|null $timerTask */
+        $timerTask = WorkflowTask::query()->find($taskId);
+        if (! $timerTask instanceof WorkflowTask) {
+            throw new RuntimeException('concurrent_timers_distinct_deadlines missing timer task '.$taskId);
+        }
+
+        $timerId = is_array($timerTask->payload) ? ($timerTask->payload['timer_id'] ?? null) : null;
+        if (! is_string($timerId) || $timerId === '') {
+            throw new RuntimeException('concurrent_timers_distinct_deadlines timer task did not include timer_id '.$taskId);
+        }
+
+        /** @var WorkflowTimer|null $timer */
+        $timer = WorkflowTimer::query()->find($timerId);
+        if (! $timer instanceof WorkflowTimer || ! $timer->fire_at instanceof DateTimeInterface) {
+            throw new RuntimeException('concurrent_timers_distinct_deadlines timer row did not include fire_at '.$timerId);
+        }
+
+        $timerRecords[] = [
+            'timer_id' => (string) $timer->id,
+            'timer_task_id' => (string) $timerTask->id,
+            'delay_seconds' => (int) $timer->delay_seconds,
+            'wake_up_at' => timestamp_iso($timer->fire_at),
+            'timer' => $timer,
+            'timer_task' => $timerTask,
+        ];
+    }
+
+    usort(
+        $timerRecords,
+        static fn (array $left, array $right): int => strtotime((string) $left['wake_up_at'])
+            <=> strtotime((string) $right['wake_up_at']),
+    );
+
+    $wakeUpTimes = [];
+    $timerTaskIds = [];
+    $declaredDelaySeconds = [];
+    foreach ($timerRecords as $record) {
+        $wakeUpTimes[(string) $record['timer_id']] = (string) $record['wake_up_at'];
+        $timerTaskIds[(string) $record['timer_id']] = (string) $record['timer_task_id'];
+        $declaredDelaySeconds[(string) $record['timer_id']] = (int) $record['delay_seconds'];
+    }
+    $expectedResumeOrder = array_keys($wakeUpTimes);
+
+    $preWakeObservedAt = now_iso();
+    $preWakeWorkflowTaskCount = WorkflowTask::query()
+        ->where('workflow_run_id', $runId)
+        ->where('task_type', TaskType::Workflow->value)
+        ->whereIn('status', [TaskStatus::Ready->value, TaskStatus::Leased->value])
+        ->count();
+    $preWakeTimerFireCount = WorkflowHistoryEvent::query()
+        ->where('workflow_run_id', $runId)
+        ->where('event_type', HistoryEventType::TimerFired->value)
+        ->count();
+
+    $observedResumeOrder = [];
+    $firedAtTimes = [];
+    $fireCounts = [];
+    $resumeTaskIds = [];
+    $resumeTaskTimerIds = [];
+
+    foreach ($timerRecords as $index => $record) {
+        /** @var WorkflowTimer $timer */
+        $timer = $record['timer'];
+        /** @var WorkflowTask $timerTask */
+        $timerTask = $record['timer_task'];
+        $timerId = (string) $record['timer_id'];
+
+        wait_until_timestamp($timer->fire_at);
+        (new RunTimerTask($timerTask->id))->handle();
+
+        $timerFireEvents = timer_fire_events($runId, $timerId);
+        $fireCounts[$timerId] = count($timerFireEvents);
+        $lastTimerFireEvent = $timerFireEvents === [] ? null : $timerFireEvents[array_key_last($timerFireEvents)];
+        $firedAtTimes[$timerId] = $lastTimerFireEvent instanceof WorkflowHistoryEvent
+            ? (timestamp_iso($lastTimerFireEvent->payload['fired_at'] ?? null) ?? timestamp_iso($lastTimerFireEvent->recorded_at))
+            : null;
+
+        $resumeTask = poll_workflow_task($workerId);
+        $resumeTimerId = resume_timer_id_from_task($resumeTask) ?? $timerId;
+        $observedResumeOrder[] = $resumeTimerId;
+        $resumeTaskTimerIds[(string) ($resumeTask['task_id'] ?? $index)] = $resumeTimerId;
+        if (is_string($resumeTask['task_id'] ?? null)) {
+            $resumeTaskIds[] = $resumeTask['task_id'];
+        }
+
+        $isLastTimer = $index === count($timerRecords) - 1;
+        $resumeCommands = $isLastTimer
+            ? [[
+                'type' => 'complete_workflow',
+                'result' => Serializer::serializeWithCodec(CodecRegistry::defaultCodec(), [
+                    'probe' => 'concurrent_timers_distinct_deadlines',
+                    'observed_resume_order' => $observedResumeOrder,
+                ]),
+            ]]
+            : [[
+                'type' => 'record_side_effect',
+                'result' => Serializer::serializeWithCodec(CodecRegistry::defaultCodec(), [
+                    'probe' => 'concurrent_timers_distinct_deadlines',
+                    'timer_id' => $resumeTimerId,
+                    'resume_index' => $index,
+                ]),
+            ]];
+        $resumeComplete = complete_workflow_task_with_commands($resumeTask, $resumeCommands);
+        if (($resumeComplete['outcome'] ?? null) !== 'completed') {
+            throw new RuntimeException('concurrent_timers_distinct_deadlines resume completion was not accepted: '.json_encode($resumeComplete));
+        }
+    }
+
+    /** @var WorkflowRun $run */
+    $run = WorkflowRun::query()->findOrFail($runId);
+    $runStatus = run_status_value($run->status);
+    $completedAt = timestamp_iso($run->closed_at)
+        ?? history_event_time($runId, HistoryEventType::WorkflowCompleted)
+        ?? null;
+    $workflowResult = $run->workflowOutput();
+    $distinctWakeUpTimes = count(array_unique(array_values($wakeUpTimes))) === count($wakeUpTimes);
+    $resumeOrderMatchesDeadlines = $observedResumeOrder === $expectedResumeOrder;
+    $duplicateResumeCount = count($observedResumeOrder) - count(array_unique($observedResumeOrder));
+    $duplicateFireObserved = false;
+    $allFireCountsExactlyOne = true;
+    $noEarlyFires = true;
+
+    foreach ($wakeUpTimes as $timerId => $wakeUpAt) {
+        if (($fireCounts[$timerId] ?? null) !== 1) {
+            $allFireCountsExactlyOne = false;
+        }
+        if (($fireCounts[$timerId] ?? 0) > 1) {
+            $duplicateFireObserved = true;
+        }
+
+        $wakeEpoch = strtotime($wakeUpAt);
+        $firedEpoch = strtotime((string) ($firedAtTimes[$timerId] ?? ''));
+        if ($wakeEpoch === false || $firedEpoch === false || $firedEpoch < $wakeEpoch) {
+            $noEarlyFires = false;
+        }
+    }
+
+    $earlyResumeObserved = $preWakeWorkflowTaskCount > 0 || $preWakeTimerFireCount > 0;
+    $passes = count($timerRecords) >= 2
+        && $distinctWakeUpTimes
+        && ! $earlyResumeObserved
+        && $resumeOrderMatchesDeadlines
+        && $duplicateResumeCount === 0
+        && ! $duplicateFireObserved
+        && $allFireCountsExactlyOne
+        && $noEarlyFires
+        && $runStatus === RunStatus::Completed->value;
+
+    $observedOutputs = [
+        'workflow_id' => $workflowId,
+        'run_id' => $runId,
+        'timer_ids' => array_keys($wakeUpTimes),
+        'timer_task_ids' => $timerTaskIds,
+        'declared_delay_seconds' => $declaredDelaySeconds,
+        'wake_up_times' => $wakeUpTimes,
+        'expected_resume_order' => $expectedResumeOrder,
+        'observed_resume_order' => $observedResumeOrder,
+        'resume_task_ids' => $resumeTaskIds,
+        'resume_task_timer_ids' => $resumeTaskTimerIds,
+        'fired_at_times' => $firedAtTimes,
+        'fire_counts' => $fireCounts,
+        'pre_wake_observation_at' => $preWakeObservedAt,
+        'pre_wake_workflow_task_count' => $preWakeWorkflowTaskCount,
+        'pre_wake_timer_fire_count' => $preWakeTimerFireCount,
+        'early_resume_observed' => $earlyResumeObserved,
+        'distinct_wake_up_times' => $distinctWakeUpTimes,
+        'resume_order_matches_deadlines' => $resumeOrderMatchesDeadlines,
+        'duplicate_resume_count' => $duplicateResumeCount,
+        'duplicate_fire_observed' => $duplicateFireObserved,
+        'no_early_fires' => $noEarlyFires,
+        'all_fire_counts_exactly_one' => $allFireCountsExactlyOne,
+        'workflow_status' => $runStatus,
+        'completed_at' => $completedAt,
+        'workflow_result' => $workflowResult,
+        'execution_source' => HOST_EVIDENCE_SOURCE,
+        'no_local_product_source_checkout_pass_evidence' => true,
+    ];
+
+    if ($passes) {
+        return [
+            'scenario_id' => 'concurrent_timers_distinct_deadlines',
+            'status' => 'pass',
+            'classification' => null,
+            'observed_outputs' => $observedOutputs,
+            'linked_findings' => [],
+        ];
+    }
+
+    $message = sprintf(
+        'concurrent_timers_distinct_deadlines completed with status=%s, distinct_wake_up_times=%s, early_resume_observed=%s, resume_order_matches_deadlines=%s, duplicate_resume_count=%d, duplicate_fire_observed=%s, all_fire_counts_exactly_one=%s, no_early_fires=%s',
+        $runStatus,
+        $distinctWakeUpTimes ? 'true' : 'false',
+        $earlyResumeObserved ? 'true' : 'false',
+        $resumeOrderMatchesDeadlines ? 'true' : 'false',
+        $duplicateResumeCount,
+        $duplicateFireObserved ? 'true' : 'false',
+        $allFireCountsExactlyOne ? 'true' : 'false',
+        $noEarlyFires ? 'true' : 'false',
+    );
+    $finding = finding_for_failure('concurrent_timers_distinct_deadlines', $message);
+
+    return [
+        'scenario_id' => 'concurrent_timers_distinct_deadlines',
+        'status' => 'fail',
+        'classification' => 'product-gap',
+        'observed_behavior' => $message,
+        'observed_outputs' => array_merge($observedOutputs, [
+            'failure' => $message,
+        ]),
+        'linked_findings' => [[
+            'finding_id' => $finding['id'],
+            'finding_type' => $finding['finding_type'],
+            'classification' => $finding['classification'],
+        ]],
+        'finding' => $finding,
+    ];
+}
+
 try {
     bootstrap_application(getenv('RUNNER_REPO_ROOT') ?: '/app');
 
@@ -1110,11 +1414,14 @@ try {
         ['worker_restart_while_sleeping', 'timers-worker-restart', 'timers-conformance-worker-restart', true, false],
         ['server_restart_while_sleeping', 'timers-server-restart', 'timers-conformance-server-restart', false, true],
         ['replay_after_timer_fire', 'timers-replay-after-fire', 'timers-conformance-replay-after-fire', false, false],
+        ['concurrent_timers_distinct_deadlines', 'timers-concurrent-distinct', 'timers-conformance-concurrent-distinct', false, false],
     ] as [$scenarioId, $workflowPrefix, $businessKey, $restartWorker, $restartServer]) {
         try {
-            $scenario = $scenarioId === 'replay_after_timer_fire'
-                ? run_replay_after_timer_fire_probe()
-                : run_sleep_probe($scenarioId, $workflowPrefix, $businessKey, $restartWorker, $restartServer);
+            $scenario = match ($scenarioId) {
+                'replay_after_timer_fire' => run_replay_after_timer_fire_probe(),
+                'concurrent_timers_distinct_deadlines' => run_concurrent_timers_probe(),
+                default => run_sleep_probe($scenarioId, $workflowPrefix, $businessKey, $restartWorker, $restartServer),
+            };
         } catch (Throwable $throwable) {
             $scenario = failure_scenario($scenarioId, $throwable);
         }

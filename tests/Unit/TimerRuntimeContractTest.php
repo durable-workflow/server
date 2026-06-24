@@ -35,7 +35,7 @@ final class TimerRuntimeContractTest extends TestCase
             $manifest['required_scenarios'],
         );
         $this->assertSame(
-            'published_handoff_proves_normal_sleep_worker_restart_server_restart_and_replay_after_timer_fire_then_marks_remaining_timer_cells_coverage_gap',
+            'published_handoff_proves_normal_sleep_worker_restart_server_restart_replay_after_timer_fire_and_concurrent_distinct_deadlines_then_marks_remaining_timer_cells_coverage_gap',
             $manifest['host_runner_contract']['status'],
         );
         $this->assertTrue($manifest['host_runner_contract']['host_runner_implemented']);
@@ -487,6 +487,96 @@ final class TimerRuntimeContractTest extends TestCase
         }
     }
 
+    public function test_published_artifact_handoff_ingests_concurrent_timer_runtime_evidence(): void
+    {
+        $repoRoot = dirname(__DIR__, 2);
+        $resultDir = sys_get_temp_dir().'/dw-timers-conformance-'.bin2hex(random_bytes(6));
+        mkdir($resultDir, 0777, true);
+
+        try {
+            $evidencePath = $resultDir.'/timer-evidence.json';
+            file_put_contents($evidencePath, json_encode([
+                'schema' => 'durable-workflow.v2.timer-runtime.published-artifact-host-evidence',
+                'generated_at' => '2026-06-24T10:00:12Z',
+                'evidence_source' => 'focused_published_server_timer_host_probe',
+                'execution_source' => 'published_server_container',
+                'local_product_source_checkouts_used' => false,
+                'scenario_results' => [
+                    [
+                        'scenario_id' => 'concurrent_timers_distinct_deadlines',
+                        'status' => 'pass',
+                        'classification' => null,
+                        'observed_outputs' => [
+                            'workflow_id' => 'timer-concurrent-distinct',
+                            'run_id' => 'run-concurrent-distinct',
+                            'timer_ids' => ['timer-a', 'timer-b', 'timer-c'],
+                            'wake_up_times' => [
+                                'timer-a' => '2026-06-24T10:00:01Z',
+                                'timer-b' => '2026-06-24T10:00:03Z',
+                                'timer-c' => '2026-06-24T10:00:05Z',
+                            ],
+                            'observed_resume_order' => ['timer-a', 'timer-b', 'timer-c'],
+                            'fired_at_times' => [
+                                'timer-a' => '2026-06-24T10:00:01Z',
+                                'timer-b' => '2026-06-24T10:00:03Z',
+                                'timer-c' => '2026-06-24T10:00:05Z',
+                            ],
+                            'fire_counts' => [
+                                'timer-a' => 1,
+                                'timer-b' => 1,
+                                'timer-c' => 1,
+                            ],
+                        ],
+                    ],
+                ],
+            ], JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES)."\n");
+
+            $command = sprintf(
+                'DW_SERVER_IMAGE=%s DW_SERVER_VERSION=%s DW_CLI_VERSION=%s DW_PYTHON_SDK_VERSION=%s DW_WORKFLOW_PHP_VERSION=%s DW_WATERLINE_VERSION=%s DW_TIMERS_EVIDENCE_PATH=%s bash %s --result-dir %s 2>&1',
+                escapeshellarg('durableworkflow/server:0.2.495'),
+                escapeshellarg('0.2.495'),
+                escapeshellarg('0.1.82'),
+                escapeshellarg('0.4.90'),
+                escapeshellarg('2.0.0-alpha.223'),
+                escapeshellarg('2.0.0-alpha.111'),
+                escapeshellarg($evidencePath),
+                escapeshellarg($repoRoot.'/scripts/conformance/timers-published-artifacts.sh'),
+                escapeshellarg($resultDir),
+            );
+
+            exec($command, $output, $exitCode);
+
+            $this->assertSame(0, $exitCode, implode("\n", $output));
+
+            $result = json_decode(
+                file_get_contents($resultDir.'/timer-runtime-result.json') ?: '',
+                true,
+                512,
+                JSON_THROW_ON_ERROR,
+            );
+            $concurrentTimers = $result['scenario_results']['concurrent_timers_distinct_deadlines'];
+
+            $this->assertSame('non_passing', $result['outcome']);
+            $this->assertContains('concurrent_timers_distinct_deadlines', $result['proven_timer_cells']);
+            $this->assertNotContains('concurrent_timers_distinct_deadlines', $result['unproven_timer_cells']);
+            $this->assertSame('pass', $concurrentTimers['status']);
+            $this->assertSame(
+                ['timer-a', 'timer-b', 'timer-c'],
+                $concurrentTimers['observed_outputs']['observed_resume_order'],
+            );
+            $this->assertSame(1, $concurrentTimers['observed_outputs']['fire_counts']['timer-a']);
+            $this->assertSame(1, $concurrentTimers['observed_outputs']['fire_counts']['timer-b']);
+            $this->assertSame(1, $concurrentTimers['observed_outputs']['fire_counts']['timer-c']);
+            $this->assertArrayNotHasKey('concurrent_timers_distinct_deadlines', $result['finding_links']);
+
+            $evaluation = TimerRuntimeResultGate::evaluate($result);
+            $this->assertSame('non_passing', $evaluation['status']);
+            $this->assertSame([], $evaluation['gate_failures']);
+        } finally {
+            $this->removeDirectory($resultDir);
+        }
+    }
+
     public function test_published_artifact_handoff_routes_normal_sleep_failure_as_product_finding(): void
     {
         $repoRoot = dirname(__DIR__, 2);
@@ -619,6 +709,96 @@ final class TimerRuntimeContractTest extends TestCase
             $this->assertSame('timer_runtime_product_gap', $result['findings'][0]['finding_type']);
             $this->assertSame('product-gap', $result['findings'][0]['classification']);
             $this->assertSame('timer_runtime', $result['findings'][0]['owning_surface']);
+        } finally {
+            $this->removeDirectory($resultDir);
+        }
+    }
+
+    public function test_published_artifact_handoff_routes_concurrent_timer_failure_as_product_finding(): void
+    {
+        $repoRoot = dirname(__DIR__, 2);
+        $resultDir = sys_get_temp_dir().'/dw-timers-conformance-'.bin2hex(random_bytes(6));
+        mkdir($resultDir, 0777, true);
+
+        try {
+            $evidencePath = $resultDir.'/timer-evidence.json';
+            file_put_contents($evidencePath, json_encode([
+                'schema' => 'durable-workflow.v2.timer-runtime.published-artifact-host-evidence',
+                'generated_at' => '2026-06-24T10:00:12Z',
+                'scenario_results' => [
+                    [
+                        'scenario_id' => 'concurrent_timers_distinct_deadlines',
+                        'status' => 'fail',
+                        'classification' => 'product-gap',
+                        'observed_behavior' => 'timer-b fired before its recorded wake_up_at',
+                        'observed_outputs' => [
+                            'wake_up_times' => [
+                                'timer-a' => '2026-06-24T10:00:01Z',
+                                'timer-b' => '2026-06-24T10:00:03Z',
+                                'timer-c' => '2026-06-24T10:00:05Z',
+                            ],
+                            'observed_resume_order' => ['timer-a', 'timer-b', 'timer-c'],
+                            'fired_at_times' => [
+                                'timer-a' => '2026-06-24T10:00:01Z',
+                                'timer-b' => '2026-06-24T10:00:02Z',
+                                'timer-c' => '2026-06-24T10:00:05Z',
+                            ],
+                            'fire_counts' => [
+                                'timer-a' => 1,
+                                'timer-b' => 1,
+                                'timer-c' => 1,
+                            ],
+                        ],
+                    ],
+                ],
+            ], JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES)."\n");
+
+            $command = sprintf(
+                'DW_SERVER_IMAGE=%s DW_SERVER_VERSION=%s DW_CLI_VERSION=%s DW_PYTHON_SDK_VERSION=%s DW_WORKFLOW_PHP_VERSION=%s DW_WATERLINE_VERSION=%s DW_TIMERS_EVIDENCE_PATH=%s bash %s --result-dir %s 2>&1',
+                escapeshellarg('durableworkflow/server:0.2.495'),
+                escapeshellarg('0.2.495'),
+                escapeshellarg('0.1.82'),
+                escapeshellarg('0.4.90'),
+                escapeshellarg('2.0.0-alpha.223'),
+                escapeshellarg('2.0.0-alpha.111'),
+                escapeshellarg($evidencePath),
+                escapeshellarg($repoRoot.'/scripts/conformance/timers-published-artifacts.sh'),
+                escapeshellarg($resultDir),
+            );
+
+            exec($command, $output, $exitCode);
+
+            $this->assertSame(0, $exitCode, implode("\n", $output));
+
+            $result = json_decode(
+                file_get_contents($resultDir.'/timer-runtime-result.json') ?: '',
+                true,
+                512,
+                JSON_THROW_ON_ERROR,
+            );
+
+            $this->assertSame('fail', $result['scenario_results']['concurrent_timers_distinct_deadlines']['status']);
+            $this->assertSame(
+                'product-gap',
+                $result['scenario_results']['concurrent_timers_distinct_deadlines']['classification'],
+            );
+            $this->assertSame('product-gap', $result['result_summary']['classification']);
+            $this->assertSame(
+                ['timer-concurrent-timers-distinct-deadlines-product-gap'],
+                $result['finding_links']['concurrent_timers_distinct_deadlines'],
+            );
+            $concurrentFinding = null;
+            foreach ($result['findings'] as $finding) {
+                if (($finding['id'] ?? null) === 'timer-concurrent-timers-distinct-deadlines-product-gap') {
+                    $concurrentFinding = $finding;
+                    break;
+                }
+            }
+
+            $this->assertIsArray($concurrentFinding);
+            $this->assertSame('timer_runtime_product_gap', $concurrentFinding['finding_type']);
+            $this->assertSame('product-gap', $concurrentFinding['classification']);
+            $this->assertSame('timer_runtime', $concurrentFinding['owning_surface']);
         } finally {
             $this->removeDirectory($resultDir);
         }
