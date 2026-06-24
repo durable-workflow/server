@@ -2000,6 +2000,172 @@ final class SchedulesConformanceRunnerContractTest extends TestCase
         }
     }
 
+    public function test_runner_marks_row_runner_blocked_when_cross_language_cells_are_runner_blocked(): void
+    {
+        $nodeBinary = trim((string) shell_exec('command -v node 2>/dev/null'));
+        if ($nodeBinary === '') {
+            $this->markTestSkipped('node is required to exercise the schedules runner result builder.');
+        }
+
+        $repoRoot = dirname(__DIR__, 2);
+        $resultDir = sys_get_temp_dir().'/dw-schedules-runner-'.bin2hex(random_bytes(4));
+        mkdir($resultDir);
+
+        $blockedReason = 'published Python schedules worker action poll_complete failed; see schedules-cross-language-python-worker-poll_complete.log; scheduler evaluation reported eligible_count=0 and fired_count=0';
+        $pythonFinding = [
+            'finding_id' => 'schedules-python-created-php-workflow-runner-blocked',
+            'scenario_id' => 'python_created_php_workflow',
+            'finding_type' => 'conformance_runner_blocked',
+            'owning_surface' => 'conformance_harness',
+            'execution_scope' => 'cross-language-schedule-worker-shard',
+            'observed_behavior' => $blockedReason,
+            'expected_behavior' => 'The schedules conformance host can execute Python-created/PHP-worker schedule dispatch.',
+            'next_acceptance_criterion' => 'restore the missing host capability and rerun schedules conformance',
+        ];
+        $phpFinding = [
+            'finding_id' => 'schedules-php-created-python-workflow-runner-blocked',
+            'scenario_id' => 'php_created_python_workflow',
+            'finding_type' => 'conformance_runner_blocked',
+            'owning_surface' => 'conformance_harness',
+            'execution_scope' => 'cross-language-schedule-worker-shard',
+            'observed_behavior' => $blockedReason,
+            'expected_behavior' => 'The schedules conformance host can execute PHP-created/Python-worker schedule dispatch.',
+            'next_acceptance_criterion' => 'restore the missing host capability and rerun schedules conformance',
+        ];
+
+        file_put_contents($resultDir.'/cross-language-evidence.json', json_encode([
+            'schema' => 'durable-workflow.v2.schedules-runtime.cross-language-evidence',
+            'scenario_results' => [
+                'python_created_php_workflow' => [
+                    'scenario_id' => 'python_created_php_workflow',
+                    'status' => 'runner_blocked',
+                    'observed_outputs' => [
+                        'scenario' => 'python_created_php_workflow',
+                        'blocked_reason' => $blockedReason,
+                        'schedule_creator' => 'sdk-python',
+                        'workflow_runtime' => 'workflow-php',
+                        'schedule_visible_in_cli' => false,
+                        'workflow_completed' => false,
+                    ],
+                    'linked_findings' => [$pythonFinding],
+                ],
+                'php_created_python_workflow' => [
+                    'scenario_id' => 'php_created_python_workflow',
+                    'status' => 'runner_blocked',
+                    'observed_outputs' => [
+                        'scenario' => 'php_created_python_workflow',
+                        'blocked_reason' => $blockedReason,
+                        'schedule_creator' => 'workflow-php-sdk',
+                        'workflow_runtime' => 'sdk-python',
+                        'schedule_visible_in_cli' => false,
+                        'workflow_completed' => false,
+                    ],
+                    'linked_findings' => [$phpFinding],
+                ],
+            ],
+            'findings' => [$pythonFinding, $phpFinding],
+            'runtime_matrix' => [
+                'runtimes' => ['workflow-php', 'sdk-python'],
+                'client_paths' => ['cli', 'sdk-python', 'workflow-php-sdk'],
+                'schedule_types' => ['fixed_rate_interval'],
+                'cross_language_cells' => [
+                    [
+                        'scenario' => 'python_created_php_workflow',
+                        'schedule_creator' => 'sdk-python',
+                        'workflow_runtime' => 'workflow-php',
+                    ],
+                    [
+                        'scenario' => 'php_created_python_workflow',
+                        'schedule_creator' => 'workflow-php-sdk',
+                        'workflow_runtime' => 'sdk-python',
+                    ],
+                ],
+            ],
+            'cross_language_matrix' => [
+                'cross_language_cells' => [
+                    [
+                        'scenario' => 'python_created_php_workflow',
+                        'schedule_creator' => 'sdk-python',
+                        'workflow_runtime' => 'workflow-php',
+                        'schedule_visible_in_cli' => false,
+                        'workflow_completed' => false,
+                        'blocked_reason' => $blockedReason,
+                    ],
+                    [
+                        'scenario' => 'php_created_python_workflow',
+                        'schedule_creator' => 'workflow-php-sdk',
+                        'workflow_runtime' => 'sdk-python',
+                        'schedule_visible_in_cli' => false,
+                        'workflow_completed' => false,
+                        'blocked_reason' => $blockedReason,
+                    ],
+                ],
+            ],
+        ], JSON_THROW_ON_ERROR));
+
+        try {
+            $process = proc_open(
+                [$nodeBinary, $repoRoot.'/scripts/conformance/schedules-published-artifacts.mjs'],
+                [
+                    1 => ['pipe', 'w'],
+                    2 => ['pipe', 'w'],
+                ],
+                $pipes,
+                $repoRoot,
+                [
+                    'PATH' => getenv('PATH') ?: '/usr/bin:/bin',
+                    'DW_SCHEDULES_RESULT_DIR' => $resultDir,
+                    'DW_SCHEDULES_REPO_ROOT' => $repoRoot,
+                    'DW_SCHEDULES_CROSS_LANGUAGE_EVIDENCE' => $resultDir.'/cross-language-evidence.json',
+                    'DW_SERVER_VERSION' => '0.2.491',
+                    'DW_CLI_VERSION' => '0.1.82',
+                    'DW_PYTHON_SDK_VERSION' => '0.4.90',
+                    'DW_WORKFLOW_PHP_VERSION' => '2.0.0-alpha.223',
+                    'DW_WATERLINE_VERSION' => '2.0.0-alpha.111',
+                ],
+            );
+
+            $this->assertIsResource($process);
+            $stdout = stream_get_contents($pipes[1]);
+            $stderr = stream_get_contents($pipes[2]);
+            fclose($pipes[1]);
+            fclose($pipes[2]);
+            $exitCode = proc_close($process);
+
+            $this->assertSame(0, $exitCode, $stderr."\n".$stdout);
+
+            $result = json_decode(
+                (string) file_get_contents($resultDir.'/schedules-runtime-result.json'),
+                true,
+                512,
+                JSON_THROW_ON_ERROR,
+            );
+            $record = json_decode(
+                (string) file_get_contents($resultDir.'/schedules-runtime-record.json'),
+                true,
+                512,
+                JSON_THROW_ON_ERROR,
+            );
+
+            $this->assertSame('non_passing_runner_blocked', $result['outcome']);
+            $this->assertTrue($result['runner_blocked']);
+            $this->assertSame('non_passing_runner_blocked', $record['outcome']);
+            $this->assertTrue($record['runnerBlocked']);
+            $this->assertSame('runner_blocked', $result['scenario_results']['python_created_php_workflow']['status']);
+            $this->assertSame('runner_blocked', $result['scenario_results']['php_created_python_workflow']['status']);
+            $this->assertSame(
+                'conformance_runner_blocked',
+                $result['scenario_results']['python_created_php_workflow']['linked_findings'][0]['finding_type'],
+            );
+            $this->assertStringContainsString(
+                'eligible_count=0 and fired_count=0',
+                $result['scenario_results']['php_created_python_workflow']['observed_outputs']['blocked_reason'],
+            );
+        } finally {
+            $this->removeDirectory($resultDir);
+        }
+    }
+
     public function test_runner_promotes_supplied_adversarial_nonexistent_workflow_type_cell(): void
     {
         $nodeBinary = trim((string) shell_exec('command -v node 2>/dev/null'));

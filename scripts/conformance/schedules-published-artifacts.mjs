@@ -291,16 +291,20 @@ async function main() {
     ),
   };
 
+  const allScenariosPass = Object.values(scenarioResults).every((scenario) => scenario.status === 'pass');
+  const runnerBlocked = resultHasRunnerBlockedEvidence(smokeEvidence, scenarioResults);
+  const outcome = runnerBlocked
+    ? 'non_passing_runner_blocked'
+    : (allScenariosPass ? 'pass' : 'non_passing');
+
   const result = {
     schema: RESULT_SCHEMA,
     version: 1,
     started_at: startedAt,
     finished_at: finishedAt,
     generated_at: finishedAt,
-    outcome: Object.values(scenarioResults).every((scenario) => scenario.status === 'pass')
-      ? 'pass'
-      : 'non_passing',
-    runner_blocked: false,
+    outcome,
+    runner_blocked: runnerBlocked,
     artifact_versions: artifactVersions,
     artifact_sources: artifactSources,
     local_product_source_checkouts_used: localProductSourceCheckoutsResultValue(smokeEvidence, artifactInstallEvidence),
@@ -371,6 +375,18 @@ function normalizeScenarioResult(scenarioId, supplied) {
 
 function allowedScenarioStatus(status) {
   return ['pass', 'fail', 'unsupported', 'not_covered', 'runner_blocked'].includes(stringValue(status));
+}
+
+function resultHasRunnerBlockedEvidence(evidence, scenarioResults) {
+  if (truthyEvidenceFlag(evidence?.runner_blocked) || truthyEvidenceFlag(evidence?.runnerBlocked)) {
+    return true;
+  }
+
+  return Object.values(scenarioResults).some((scenario) => (
+    stringValue(scenario?.status) === 'runner_blocked'
+    || truthyEvidenceFlag(scenario?.runner_blocked)
+    || truthyEvidenceFlag(scenario?.runnerBlocked)
+  ));
 }
 
 function pythonSmokePassesScenario(scenarioId, evidence) {
@@ -7333,6 +7349,8 @@ function crossLanguageBlockedEvidence(reason, startedAt, artifactVersions, artif
     started_at: startedAt,
     finished_at: finishedAt,
     generated_at: finishedAt,
+    outcome: 'non_passing_runner_blocked',
+    runner_blocked: true,
     artifact_versions: artifactVersions,
     artifact_sources: artifactSources,
     local_product_source_checkouts_used: false,
@@ -7341,6 +7359,7 @@ function crossLanguageBlockedEvidence(reason, startedAt, artifactVersions, artif
         scenario_id: 'python_created_php_workflow',
         status: 'runner_blocked',
         observed_outputs: {
+          scenario: 'python_created_php_workflow',
           blocked_reason: reason,
           schedule_creator: 'sdk-python',
           workflow_runtime: 'workflow-php',
@@ -7353,6 +7372,7 @@ function crossLanguageBlockedEvidence(reason, startedAt, artifactVersions, artif
         scenario_id: 'php_created_python_workflow',
         status: 'runner_blocked',
         observed_outputs: {
+          scenario: 'php_created_python_workflow',
           blocked_reason: reason,
           schedule_creator: 'workflow-php-sdk',
           workflow_runtime: 'sdk-python',
@@ -7363,9 +7383,27 @@ function crossLanguageBlockedEvidence(reason, startedAt, artifactVersions, artif
       },
     },
     findings,
+    runtime_matrix: {
+      runtimes: ['workflow-php', 'sdk-python'],
+      client_paths: ['cli', 'sdk-python', 'workflow-php-sdk'],
+      schedule_types: ['fixed_rate_interval'],
+      cross_language_cells: [
+        {
+          scenario: 'python_created_php_workflow',
+          schedule_creator: 'sdk-python',
+          workflow_runtime: 'workflow-php',
+        },
+        {
+          scenario: 'php_created_python_workflow',
+          schedule_creator: 'workflow-php-sdk',
+          workflow_runtime: 'sdk-python',
+        },
+      ],
+    },
     cross_language_matrix: {
       cross_language_cells: [
         {
+          scenario: 'python_created_php_workflow',
           schedule_creator: 'sdk-python',
           workflow_runtime: 'workflow-php',
           schedule_visible_in_cli: false,
@@ -7373,6 +7411,7 @@ function crossLanguageBlockedEvidence(reason, startedAt, artifactVersions, artif
           blocked_reason: reason,
         },
         {
+          scenario: 'php_created_python_workflow',
           schedule_creator: 'workflow-php-sdk',
           workflow_runtime: 'sdk-python',
           schedule_visible_in_cli: false,
