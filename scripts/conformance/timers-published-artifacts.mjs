@@ -42,7 +42,7 @@ const FALLBACK_SCENARIOS = [
   {
     id: 'worker_restart_while_sleeping',
     description: 'A sleeping workflow survives worker restart without dropped or duplicate timer resume.',
-    required_evidence: ['workflow_id', 'sleep_started_at', 'worker_restart_window', 'wake_up_at', 'completed_at', 'duplicate_resume_count'],
+    required_evidence: ['workflow_id', 'sleep_started_at', 'worker_restart_window', 'wake_up_at', 'completed_at', 'timer_fire_count', 'duplicate_resume_count'],
     required_behavior: 'worker_restart_does_not_drop_or_duplicate_a_sleeping_timer',
   },
   {
@@ -310,7 +310,7 @@ function productFindingFor(scenario, scenarioResult, artifactVersions, artifactS
   const observedBehavior = stringValue(scenarioResult.observed_behavior)
     || stringValue(scenarioResult.observedBehavior)
     || stringValue(observedOutputs.failure)
-    || 'the published-artifact normal sleep shard executed but did not prove completion after the recorded wake-up time';
+    || `the published-artifact ${scenarioId} shard executed but did not prove the required timer behavior`;
 
   return {
     id: `timer-${slug(scenarioId)}-product-gap`,
@@ -332,9 +332,9 @@ function productFindingFor(scenario, scenarioResult, artifactVersions, artifactS
     user_visible_reproduction_steps: [
       'Run scripts/conformance/timers-published-artifacts.sh --result-dir <result-dir> from the pinned published server image.',
       'Set exact DW_SERVER_IMAGE, DW_SERVER_VERSION, DW_CLI_VERSION, DW_PYTHON_SDK_VERSION, DW_WORKFLOW_PHP_VERSION, and DW_WATERLINE_VERSION values.',
-      'Inspect timer-runtime-result.json for normal_sleep_completion observed_outputs.',
+      `Inspect timer-runtime-result.json for ${scenarioId} observed_outputs.`,
     ],
-    next_acceptance_criterion: 'fix the timer runtime behavior, then rerun the normal sleep shard and require completed_at to be greater than or equal to wake_up_at with no early terminal observation',
+    next_acceptance_criterion: `fix the timer runtime behavior, then rerun the ${scenarioId} shard against published artifacts and require the scenario status to pass`,
     priority: 'P0',
   };
 }
@@ -511,7 +511,7 @@ function main() {
       continue;
     }
 
-    const supplied = scenarioId === 'normal_sleep_completion' ? evidenceResults.get(scenarioId) : null;
+    const supplied = evidenceResults.get(scenarioId) ?? null;
     if (supplied && !runnerBlocked) {
       const status = normalizeStatus(supplied.status);
       if (status === 'pass') {

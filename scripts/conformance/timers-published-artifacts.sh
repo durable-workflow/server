@@ -8,9 +8,9 @@ Usage: timers-published-artifacts.sh [--result-dir DIR|--result-dir=DIR] [--keep
 Writes the published-artifact timer conformance handoff result.
 
 When this handoff runs from the pinned published server image root, it executes
-the focused normal sleep completion shard and records concrete timer runtime
-evidence. Remaining timer cells that do not yet have first-class shards stay
-explicit non-passing coverage gaps.
+the focused normal sleep completion and worker-restart-while-sleeping shards and
+records concrete timer runtime evidence. Remaining timer cells that do not yet
+have first-class shards stay explicit non-passing coverage gaps.
 
 The runner writes these files to the result directory:
   pins.json
@@ -29,7 +29,7 @@ Environment overrides:
   DW_TIMERS_EVIDENCE                Optional JSON timer evidence from a real host shard.
   DW_TIMERS_EVIDENCE_PATH           Optional path to JSON timer evidence from a real host shard.
   DW_TIMERS_SKIP_FOCUSED_HOST_PROBE=1
-                                     Skip the published server image's normal sleep shard.
+                                     Skip the published server image's focused timer shards.
   DW_TIMERS_RUNNER_SOURCE           Exact source for the runner process. Defaults to DW_SERVER_IMAGE.
   DW_SERVER_IMAGE                   Exact server image tag or digest to test.
   DW_SERVER_VERSION                 Exact patch server Docker tag; required for digest-only DW_SERVER_IMAGE.
@@ -263,29 +263,52 @@ function output_path(): string
     return rtrim($dir, '/').'/timer-evidence.json';
 }
 
-function finding_for_failure(string $message): array
+function scenario_slug(string $scenarioId): string
+{
+    $slug = preg_replace('/[^a-z0-9]+/', '-', strtolower($scenarioId)) ?: 'scenario';
+
+    return trim($slug, '-');
+}
+
+function scenario_expected_behavior(string $scenarioId): string
+{
+    return match ($scenarioId) {
+        'worker_restart_while_sleeping' => 'worker_restart_does_not_drop_or_duplicate_a_sleeping_timer',
+        default => 'workflow_sleep_completes_after_recorded_wake_up_without_early_resume',
+    };
+}
+
+function scenario_next_acceptance(string $scenarioId): string
+{
+    return match ($scenarioId) {
+        'worker_restart_while_sleeping' => 'rerun the focused timer host probe from the pinned published server image and record completion after wake_up_at with timer_fire_count exactly one and duplicate_resume_count zero after worker restart',
+        default => 'rerun the focused timer host probe from the pinned published server image and record completed_at greater than or equal to wake_up_at with no early terminal observation',
+    };
+}
+
+function finding_for_failure(string $scenarioId, string $message): array
 {
     return [
-        'id' => 'timer-normal-sleep-completion-product-gap',
-        'scenario_id' => 'normal_sleep_completion',
+        'id' => 'timer-'.scenario_slug($scenarioId).'-product-gap',
+        'scenario_id' => $scenarioId,
         'finding_type' => 'timer_runtime_product_gap',
         'classification' => 'product-gap',
         'root_cause_classification' => 'product-gap',
         'owning_surface' => 'timer_runtime',
         'observed_behavior' => $message,
-        'expected_behavior' => 'workflow_sleep_completes_after_recorded_wake_up_without_early_resume',
-        'next_acceptance_criterion' => 'rerun the focused timer host probe from the pinned published server image and record completed_at greater than or equal to wake_up_at with no early terminal observation',
+        'expected_behavior' => scenario_expected_behavior($scenarioId),
+        'next_acceptance_criterion' => scenario_next_acceptance($scenarioId),
         'priority' => 'P0',
     ];
 }
 
-function failure_scenario(Throwable $throwable): array
+function failure_scenario(string $scenarioId, Throwable $throwable): array
 {
     $message = $throwable::class.': '.$throwable->getMessage();
-    $finding = finding_for_failure($message);
+    $finding = finding_for_failure($scenarioId, $message);
 
     return [
-        'scenario_id' => 'normal_sleep_completion',
+        'scenario_id' => $scenarioId,
         'status' => 'fail',
         'classification' => 'product-gap',
         'observed_behavior' => $message,
@@ -303,16 +326,16 @@ function failure_scenario(Throwable $throwable): array
     ];
 }
 
-function evidence_document(array $scenario, array $findings = []): array
+function evidence_document(array $scenarios, array $findings = []): array
 {
     return [
         'schema' => HOST_EVIDENCE_SCHEMA,
         'generated_at' => now_iso(),
         'evidence_source' => 'focused_published_server_timer_host_probe',
         'execution_source' => HOST_EVIDENCE_SOURCE,
-        'runner' => 'published-server-timers-normal-sleep-host-probe',
+        'runner' => 'published-server-timers-focused-host-probe',
         'local_product_source_checkouts_used' => false,
-        'scenario_results' => [$scenario],
+        'scenario_results' => $scenarios,
         'findings' => $findings,
     ];
 }
@@ -510,15 +533,27 @@ function history_event_time(string $runId, HistoryEventType $type): ?string
     return $event instanceof WorkflowHistoryEvent ? timestamp_iso($event->recorded_at) : null;
 }
 
-function run_normal_sleep_probe(): array
+function timer_fire_events(string $runId, string $timerId): array
 {
-    bootstrap_application(getenv('RUNNER_REPO_ROOT') ?: '/app');
+    return WorkflowHistoryEvent::query()
+        ->where('workflow_run_id', $runId)
+        ->where('event_type', HistoryEventType::TimerFired->value)
+        ->orderBy('sequence')
+        ->get()
+        ->filter(static fn (WorkflowHistoryEvent $event): bool => (string) ($event->payload['timer_id'] ?? '') === $timerId)
+        ->values()
+        ->all();
+}
 
-    $workflowId = 'timers-normal-sleep-'.bin2hex(random_bytes(4));
-    $workerId = 'timers-normal-sleep-worker';
+function run_sleep_probe(string $scenarioId, string $workflowPrefix, string $businessKey, bool $restartWorker): array
+{
+    $suffix = bin2hex(random_bytes(4));
+    $workflowId = $workflowPrefix.'-'.$suffix;
+    $initialWorkerId = $workflowPrefix.'-worker-a-'.$suffix;
+    $resumeWorkerId = $restartWorker ? $workflowPrefix.'-worker-b-'.$suffix : $initialWorkerId;
     $sleepSeconds = 2;
 
-    register_worker($workerId);
+    register_worker($initialWorkerId);
 
     $start = request_json('POST', '/workflows', [
         'workflow_id' => $workflowId,
@@ -527,7 +562,7 @@ function run_normal_sleep_probe(): array
         'input' => [[
             'sleep_seconds' => $sleepSeconds,
         ]],
-        'business_key' => 'timers-conformance-normal-sleep',
+        'business_key' => $businessKey,
     ]);
     if (($start['command_status'] ?? null) !== 'accepted') {
         throw new RuntimeException('workflow start was not accepted: '.json_encode($start));
@@ -538,7 +573,7 @@ function run_normal_sleep_probe(): array
         throw new RuntimeException('workflow start did not return a run_id');
     }
 
-    $firstTask = poll_workflow_task($workerId);
+    $firstTask = poll_workflow_task($initialWorkerId);
     complete_workflow_task_from_runtime($firstTask);
 
     /** @var WorkflowTimer|null $timer */
@@ -547,7 +582,7 @@ function run_normal_sleep_probe(): array
         ->orderBy('sequence')
         ->first();
     if (! $timer instanceof WorkflowTimer || ! $timer->fire_at instanceof DateTimeInterface) {
-        throw new RuntimeException('normal sleep workflow did not persist a pending timer with fire_at');
+        throw new RuntimeException($scenarioId.' workflow did not persist a pending timer with fire_at');
     }
 
     /** @var WorkflowTask|null $timerTask */
@@ -557,7 +592,7 @@ function run_normal_sleep_probe(): array
         ->orderBy('available_at')
         ->first();
     if (! $timerTask instanceof WorkflowTask) {
-        throw new RuntimeException('normal sleep workflow did not persist a timer task');
+        throw new RuntimeException($scenarioId.' workflow did not persist a timer task');
     }
 
     $preWakeObservedAt = now_iso();
@@ -565,11 +600,24 @@ function run_normal_sleep_probe(): array
     $preWakeRun = WorkflowRun::query()->findOrFail($runId);
     $preWakeStatus = run_status_value($preWakeRun->status);
     $earlyResumeObserved = in_array($preWakeStatus, [RunStatus::Completed->value, RunStatus::Failed->value], true);
+    $restartWindow = null;
+
+    if ($restartWorker) {
+        $restartStartedAt = now_iso();
+        register_worker($resumeWorkerId);
+        $restartFinishedAt = now_iso();
+        $restartWindow = [
+            'started_at' => $restartStartedAt,
+            'finished_at' => $restartFinishedAt,
+            'initial_worker_id' => $initialWorkerId,
+            'restarted_worker_id' => $resumeWorkerId,
+        ];
+    }
 
     wait_until_timestamp($timer->fire_at);
     (new RunTimerTask($timerTask->id))->handle();
 
-    $resumeTask = poll_workflow_task($workerId);
+    $resumeTask = poll_workflow_task($resumeWorkerId);
     complete_workflow_task_from_runtime($resumeTask);
 
     /** @var WorkflowRun $run */
@@ -585,11 +633,26 @@ function run_normal_sleep_probe(): array
     $completedEpoch = strtotime((string) $completedAt);
     $wakeEpoch = strtotime((string) $wakeUpAt);
     $runStatus = run_status_value($run->status);
-    $passes = ! $earlyResumeObserved
+    $completionAfterWakeUp = $completedEpoch !== false && $wakeEpoch !== false && $completedEpoch >= $wakeEpoch;
+    $timerFireEvents = timer_fire_events($runId, (string) $timer->id);
+    $timerFireCount = count($timerFireEvents);
+    $lastTimerFireEvent = $timerFireEvents === [] ? null : $timerFireEvents[array_key_last($timerFireEvents)];
+    $timerFiredAt = $lastTimerFireEvent instanceof WorkflowHistoryEvent
+        ? (timestamp_iso($lastTimerFireEvent->payload['fired_at'] ?? null) ?? timestamp_iso($lastTimerFireEvent->recorded_at))
+        : null;
+    $resumeWorkerObserved = is_string($resumeTask['lease_owner'] ?? null)
+        ? $resumeTask['lease_owner']
+        : $resumeWorkerId;
+    $resumedByExpectedWorker = $resumeWorkerObserved === $resumeWorkerId;
+    $duplicateResumeCount = max(0, $timerFireCount - 1);
+    $basePasses = ! $earlyResumeObserved
         && $wakeEpoch !== false
         && $completedEpoch !== false
-        && $completedEpoch >= $wakeEpoch
+        && $completionAfterWakeUp
         && $runStatus === RunStatus::Completed->value;
+    $passes = $restartWorker
+        ? $basePasses && $timerFireCount === 1 && $duplicateResumeCount === 0 && $resumedByExpectedWorker
+        : $basePasses;
 
     $observedOutputs = [
         'workflow_id' => $workflowId,
@@ -598,20 +661,35 @@ function run_normal_sleep_probe(): array
         'timer_task_id' => $timerTask->id,
         'requested_sleep_seconds' => $sleepSeconds,
         'sleep_requested_at' => $sleepRequestedAt,
+        'sleep_started_at' => $sleepRequestedAt,
         'wake_up_at' => $wakeUpAt,
         'completed_at' => $completedAt,
         'workflow_result' => $workflowResult,
         'pre_wake_observation_at' => $preWakeObservedAt,
         'pre_wake_status' => $preWakeStatus,
         'early_resume_observed' => $earlyResumeObserved,
-        'completion_after_wake_up' => $completedEpoch !== false && $wakeEpoch !== false && $completedEpoch >= $wakeEpoch,
+        'completion_after_wake_up' => $completionAfterWakeUp,
+        'timer_fired_at' => $timerFiredAt,
+        'timer_fire_count' => $timerFireCount,
         'execution_source' => HOST_EVIDENCE_SOURCE,
         'no_local_product_source_checkout_pass_evidence' => true,
     ];
 
+    if ($restartWorker) {
+        $observedOutputs = array_merge($observedOutputs, [
+            'worker_restart_window' => $restartWindow,
+            'initial_worker_id' => $initialWorkerId,
+            'resume_worker_id' => $resumeWorkerId,
+            'observed_resume_worker_id' => $resumeWorkerObserved,
+            'resumed_by_restarted_worker' => $resumedByExpectedWorker,
+            'duplicate_resume_count' => $duplicateResumeCount,
+            'timer_dropped_observed' => $timerFireCount < 1,
+        ]);
+    }
+
     if ($passes) {
         return [
-            'scenario_id' => 'normal_sleep_completion',
+            'scenario_id' => $scenarioId,
             'status' => 'pass',
             'classification' => null,
             'observed_outputs' => $observedOutputs,
@@ -620,16 +698,19 @@ function run_normal_sleep_probe(): array
     }
 
     $message = sprintf(
-        'normal sleep completed with status=%s, early_resume_observed=%s, wake_up_at=%s, completed_at=%s',
+        '%s completed with status=%s, early_resume_observed=%s, wake_up_at=%s, completed_at=%s, timer_fire_count=%d, duplicate_resume_count=%d',
+        $scenarioId,
         $runStatus,
         $earlyResumeObserved ? 'true' : 'false',
         (string) $wakeUpAt,
         (string) $completedAt,
+        $timerFireCount,
+        $duplicateResumeCount,
     );
-    $finding = finding_for_failure($message);
+    $finding = finding_for_failure($scenarioId, $message);
 
     return [
-        'scenario_id' => 'normal_sleep_completion',
+        'scenario_id' => $scenarioId,
         'status' => 'fail',
         'classification' => 'product-gap',
         'observed_behavior' => $message,
@@ -646,15 +727,33 @@ function run_normal_sleep_probe(): array
 }
 
 try {
-    $scenario = run_normal_sleep_probe();
-    $findings = isset($scenario['finding']) && is_array($scenario['finding']) ? [$scenario['finding']] : [];
-    unset($scenario['finding']);
-    write_json_file(output_path(), evidence_document($scenario, $findings));
+    bootstrap_application(getenv('RUNNER_REPO_ROOT') ?: '/app');
+
+    $scenarios = [];
+    $findings = [];
+    foreach ([
+        ['normal_sleep_completion', 'timers-normal-sleep', 'timers-conformance-normal-sleep', false],
+        ['worker_restart_while_sleeping', 'timers-worker-restart', 'timers-conformance-worker-restart', true],
+    ] as [$scenarioId, $workflowPrefix, $businessKey, $restartWorker]) {
+        try {
+            $scenario = run_sleep_probe($scenarioId, $workflowPrefix, $businessKey, $restartWorker);
+        } catch (Throwable $throwable) {
+            $scenario = failure_scenario($scenarioId, $throwable);
+        }
+
+        if (isset($scenario['finding']) && is_array($scenario['finding'])) {
+            $findings[] = $scenario['finding'];
+        }
+        unset($scenario['finding']);
+        $scenarios[] = $scenario;
+    }
+
+    write_json_file(output_path(), evidence_document($scenarios, $findings));
 } catch (Throwable $throwable) {
-    $scenario = failure_scenario($throwable);
+    $scenario = failure_scenario('normal_sleep_completion', $throwable);
     $finding = $scenario['finding'];
     unset($scenario['finding']);
-    write_json_file(output_path(), evidence_document($scenario, [$finding]));
+    write_json_file(output_path(), evidence_document([$scenario], [$finding]));
 }
 PHP
 }
