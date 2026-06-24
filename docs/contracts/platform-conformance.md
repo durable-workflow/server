@@ -32,7 +32,7 @@ categories and runtime contracts:
 | `signal_query_runtime_contract` (server side) | `GET /api/cluster/info`'s `signal_query_runtime_contract` manifest, the public scenario manifest at `static/platform-conformance/signal-query-runtime-scenarios.json`, `scripts/conformance/signals-queries-published-artifacts.sh`, plus the signal/query control-plane routes documented in the protocol catalog | stable |
 | `search_attribute_runtime_contract` (server side) | `GET /api/cluster/info`'s `search_attribute_runtime_contract` manifest, the search-attribute control-plane routes, workflow start metadata, workflow-task upsert command, workflow list query parser, and operator visibility surfaces | stable |
 | `schedules_runtime_contract` (server side) | `GET /api/cluster/info`'s `schedules_runtime_contract` manifest, the schedule control-plane routes, scheduler tick entrypoint, schedule history, CLI/SDK/PHP client surfaces, and cross-language dispatch behavior | stable |
-| `timer_runtime_contract` (server side handoff) | `GET /api/cluster/info`'s `timer_runtime_contract` manifest, the public scenario manifest at `static/platform-conformance/timer-runtime-scenarios.json`, and `scripts/conformance/timers-published-artifacts.sh`, which proves normal sleep completion, worker restart while sleeping, server restart while sleeping, and replay after timer fire from the published server image and emits non-passing published-artifact evidence for remaining timer cells that still need first-class host shards | runner-gap |
+| `timer_runtime_contract` (server side handoff) | `GET /api/cluster/info`'s `timer_runtime_contract` manifest, the public scenario manifest at `static/platform-conformance/timer-runtime-scenarios.json`, and `scripts/conformance/timers-published-artifacts.sh`, which proves normal sleep completion, worker restart while sleeping, server restart while sleeping, replay after timer fire, concurrent timers with distinct deadlines, and cancellation while waiting from the published server image and emits non-passing published-artifact evidence for the operator-visible waiting-state cell that still needs a first-class host shard | runner-gap |
 | `child_workflow_runtime_contract` (server side) | `GET /api/cluster/info`'s `child_workflow_runtime_contract` manifest, the public scenario manifest at `static/platform-conformance/child-workflow-runtime-scenarios.json`, plus the child scheduling, completion, failure, cancellation, replay, fan-out, and namespace behavior recorded by the worker protocol and history surfaces | stable |
 | `saga_runtime_contract` (server side) | `GET /api/cluster/info`'s `saga_runtime_contract` manifest, the public scenario manifest at `static/platform-conformance/saga-runtime-scenarios.json`, and `scripts/conformance/sagas-published-artifacts.sh`, which is the host-runner handoff for published-artifact saga compensation evidence | stable |
 | `heartbeat_runtime_contract` (server side handoff) | `GET /api/cluster/info`'s `heartbeat_runtime_contract` manifest and the public scenario manifest at `static/platform-conformance/heartbeat-runtime-scenarios.json`, which define the host-runner handoff for SDK heartbeat loops, stale-worker transitions, stale routing exclusion, API/CLI/Waterline operator visibility, adversarial heartbeat refusal, and cross-namespace isolation | stable |
@@ -102,7 +102,8 @@ published server image with the current CLI, Python SDK, PHP workflow runtime,
 and Waterline artifact versions. When the handoff runs from the published
 server image root, it executes the focused normal sleep completion, worker
 restart while sleeping, server restart while sleeping, replay after timer fire,
-and concurrent timers with distinct deadlines shards. The normal
+concurrent timers with distinct deadlines, and cancellation while waiting
+shards. The normal
 sleep shard records `sleep_requested_at`, `wake_up_at`, `completed_at`, the
 workflow result, and an early-resume observation. The worker restart shard
 records the restart window, completion after `wake_up_at`, exactly one timer
@@ -116,10 +117,13 @@ the recorded `TimerFired` event, replays the history, and records
 timer-fire history or schedules a second timer. The concurrent timers shard
 records timer IDs, distinct `wake_up_times`, `observed_resume_order`,
 `fired_at_times`, and `fire_counts` to prove deadline order with no early or
-duplicate fires. Cancellation while waiting and operator-visible waiting/timer
-state can remain non-passing coverage gaps until those focused shards exist. The
-record names the exact public artifact sources and states that a local product
-source checkout is not pass evidence.
+duplicate fires. The cancellation shard records `cancellation_requested_at`
+before `wake_up_at`, `fired_after_cancel=false`, the terminal workflow status,
+and the cancelled timer/task states after the original timer task is invoked
+post-cancel. Operator-visible waiting/timer state can remain a non-passing
+coverage gap until that focused shard exists. The record names the exact public
+artifact sources and states that a local product source checkout is not pass
+evidence.
 
 The server repo also ships a source-free saga runner at
 `scripts/conformance/sagas-published-artifacts.sh`. Host conformance

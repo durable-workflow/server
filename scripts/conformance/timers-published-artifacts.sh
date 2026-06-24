@@ -9,10 +9,11 @@ Writes the published-artifact timer conformance handoff result.
 
 When this handoff runs from the pinned published server image root, it executes
 the focused normal sleep completion, worker-restart-while-sleeping,
-server-restart-while-sleeping, replay-after-timer-fire, and
-concurrent-timers-with-distinct-deadlines shards and records concrete timer
-runtime evidence. Remaining timer cells that do not yet have first-class shards
-stay explicit non-passing coverage gaps.
+server-restart-while-sleeping, replay-after-timer-fire,
+concurrent-timers-with-distinct-deadlines, and cancellation-while-waiting
+shards and records concrete timer runtime evidence. The operator-visible
+waiting-state cell stays an explicit non-passing coverage gap until that
+first-class shard exists.
 
 The runner writes these files to the result directory:
   pins.json
@@ -184,6 +185,7 @@ use Workflow\V2\Enums\HistoryEventType;
 use Workflow\V2\Enums\RunStatus;
 use Workflow\V2\Enums\TaskStatus;
 use Workflow\V2\Enums\TaskType;
+use Workflow\V2\Enums\TimerStatus;
 use Workflow\V2\Jobs\RunTimerTask;
 use Workflow\V2\Models\WorkflowHistoryEvent;
 use Workflow\V2\Models\WorkflowRun;
@@ -283,6 +285,7 @@ function scenario_expected_behavior(string $scenarioId): string
         'server_restart_while_sleeping' => 'server_restart_recovers_waiting_timer_state_and_completes_after_wake_up',
         'replay_after_timer_fire' => 'replay_after_timer_fire_is_deterministic_and_does_not_schedule_duplicate_timers',
         'concurrent_timers_distinct_deadlines' => 'timers_resume_in_recorded_wake_up_order_without_early_or_duplicate_fires',
+        'cancellation_while_waiting' => 'cancellation_requested_before_recorded_wake_up_and_timer_never_fires_after_cancel',
         default => 'workflow_sleep_completes_after_recorded_wake_up_without_early_resume',
     };
 }
@@ -294,6 +297,7 @@ function scenario_next_acceptance(string $scenarioId): string
         'server_restart_while_sleeping' => 'rerun the focused timer host probe from the pinned published server image and record timer_state_recovered true, completion after wake_up_at, timer_fire_count exactly one, and duplicate_resume_count zero after server restart',
         'replay_after_timer_fire' => 'rerun the focused timer host probe from the pinned published server image and record replay_started_at after fired_at, replayed_event_types including TimerFired, and duplicate_timer_commands exactly zero',
         'concurrent_timers_distinct_deadlines' => 'rerun the focused timer host probe from the pinned published server image and record timer ids, distinct wake_up_times, observed_resume_order matching deadline order, fired_at_times at or after wake_up_times, and fire_counts exactly one for every timer id',
+        'cancellation_while_waiting' => 'rerun the focused timer host probe from the pinned published server image and record cancellation_requested_at before wake_up_at, fired_after_cancel false, and a documented terminal workflow_status',
         default => 'rerun the focused timer host probe from the pinned published server image and record completed_at greater than or equal to wake_up_at with no early terminal observation',
     };
 }
@@ -1404,6 +1408,202 @@ function run_concurrent_timers_probe(): array
     ];
 }
 
+function run_cancellation_while_waiting_probe(): array
+{
+    $suffix = bin2hex(random_bytes(4));
+    $workflowId = 'timers-cancel-while-waiting-'.$suffix;
+    $workerId = 'timers-cancel-while-waiting-worker-'.$suffix;
+    $sleepSeconds = 30;
+
+    register_worker($workerId);
+
+    $start = request_json('POST', '/workflows', [
+        'workflow_id' => $workflowId,
+        'workflow_type' => NORMAL_SLEEP_WORKFLOW_TYPE,
+        'task_queue' => TIMERS_TASK_QUEUE,
+        'input' => [[
+            'sleep_seconds' => $sleepSeconds,
+        ]],
+        'business_key' => 'timers-conformance-cancellation-while-waiting',
+    ]);
+    if (($start['command_status'] ?? null) !== 'accepted') {
+        throw new RuntimeException('workflow start was not accepted: '.json_encode($start));
+    }
+
+    $runId = is_string($start['run_id'] ?? null) ? $start['run_id'] : '';
+    if ($runId === '') {
+        throw new RuntimeException('workflow start did not return a run_id');
+    }
+
+    $firstTask = poll_workflow_task($workerId);
+    complete_workflow_task_from_runtime($firstTask);
+
+    /** @var WorkflowTimer|null $timer */
+    $timer = WorkflowTimer::query()
+        ->where('workflow_run_id', $runId)
+        ->orderBy('sequence')
+        ->first();
+    if (! $timer instanceof WorkflowTimer || ! $timer->fire_at instanceof DateTimeInterface) {
+        throw new RuntimeException('cancellation_while_waiting workflow did not persist a pending timer with fire_at');
+    }
+
+    /** @var WorkflowTask|null $timerTask */
+    $timerTask = WorkflowTask::query()
+        ->where('workflow_run_id', $runId)
+        ->where('task_type', TaskType::Timer->value)
+        ->orderBy('available_at')
+        ->first();
+    if (! $timerTask instanceof WorkflowTask) {
+        throw new RuntimeException('cancellation_while_waiting workflow did not persist a timer task');
+    }
+
+    /** @var WorkflowRun $preCancelRun */
+    $preCancelRun = WorkflowRun::query()->findOrFail($runId);
+    $preCancelStatus = run_status_value($preCancelRun->status);
+    $wakeUpAt = timestamp_iso($timer->fire_at);
+    $sleepRequestedAt = history_event_time($runId, HistoryEventType::TimerScheduled)
+        ?? timestamp_iso($timer->created_at)
+        ?? now_iso();
+    $cancelRequestedAt = now_iso();
+    $cancel = request_json('POST', '/workflows/'.rawurlencode($workflowId).'/cancel', [
+        'reason' => 'timer conformance cancellation while waiting',
+        'request_id' => 'timer-cancel-while-waiting-'.$suffix,
+    ]);
+
+    $cancelRequested = WorkflowHistoryEvent::query()
+        ->where('workflow_run_id', $runId)
+        ->where('event_type', HistoryEventType::CancelRequested->value)
+        ->orderBy('sequence')
+        ->first();
+    $timerCancelled = WorkflowHistoryEvent::query()
+        ->where('workflow_run_id', $runId)
+        ->where('event_type', HistoryEventType::TimerCancelled->value)
+        ->orderBy('sequence')
+        ->first();
+    $workflowCancelled = WorkflowHistoryEvent::query()
+        ->where('workflow_run_id', $runId)
+        ->where('event_type', HistoryEventType::WorkflowCancelled->value)
+        ->orderBy('sequence')
+        ->first();
+
+    $cancellationRequestedAt = $cancelRequested instanceof WorkflowHistoryEvent
+        ? timestamp_iso($cancelRequested->recorded_at)
+        : $cancelRequestedAt;
+    $timerCancelledAt = $timerCancelled instanceof WorkflowHistoryEvent
+        ? (timestamp_iso($timerCancelled->payload['cancelled_at'] ?? null) ?? timestamp_iso($timerCancelled->recorded_at))
+        : null;
+    $workflowCancelledAt = $workflowCancelled instanceof WorkflowHistoryEvent
+        ? timestamp_iso($workflowCancelled->recorded_at)
+        : null;
+
+    (new RunTimerTask($timerTask->id))->handle();
+
+    /** @var WorkflowRun $run */
+    $run = WorkflowRun::query()->findOrFail($runId);
+    /** @var WorkflowTimer $timer */
+    $timer = WorkflowTimer::query()->findOrFail($timer->id);
+    /** @var WorkflowTask $timerTask */
+    $timerTask = WorkflowTask::query()->findOrFail($timerTask->id);
+
+    $runStatus = run_status_value($run->status);
+    $cancelEpoch = strtotime((string) $cancellationRequestedAt);
+    $wakeEpoch = strtotime((string) $wakeUpAt);
+    $cancelledBeforeWakeUp = $cancelEpoch !== false && $wakeEpoch !== false && $cancelEpoch < $wakeEpoch;
+    $timerFireEvents = timer_fire_events($runId, (string) $timer->id);
+    $timerFireCount = count($timerFireEvents);
+    $firedAfterCancel = false;
+    foreach ($timerFireEvents as $event) {
+        if (! $event instanceof WorkflowHistoryEvent) {
+            continue;
+        }
+
+        $firedAt = timestamp_iso($event->payload['fired_at'] ?? null) ?? timestamp_iso($event->recorded_at);
+        $firedEpoch = strtotime((string) $firedAt);
+        if ($cancelEpoch !== false && $firedEpoch !== false && $firedEpoch >= $cancelEpoch) {
+            $firedAfterCancel = true;
+            break;
+        }
+    }
+
+    $timerStatus = $timer->status instanceof BackedEnum ? $timer->status->value : (string) $timer->status;
+    $timerTaskStatus = $timerTask->status instanceof BackedEnum ? $timerTask->status->value : (string) $timerTask->status;
+    $cancelAccepted = ($cancel['command_status'] ?? null) === 'accepted'
+        && ($cancel['outcome'] ?? null) === RunStatus::Cancelled->value;
+    $passes = $cancelAccepted
+        && $preCancelStatus === RunStatus::Waiting->value
+        && $cancelledBeforeWakeUp
+        && ! $firedAfterCancel
+        && $runStatus === RunStatus::Cancelled->value
+        && $timerStatus === TimerStatus::Cancelled->value
+        && $timerTaskStatus === TaskStatus::Cancelled->value
+        && $timerCancelled instanceof WorkflowHistoryEvent
+        && $workflowCancelled instanceof WorkflowHistoryEvent;
+
+    $observedOutputs = [
+        'workflow_id' => $workflowId,
+        'run_id' => $runId,
+        'timer_id' => (string) $timer->id,
+        'timer_task_id' => (string) $timerTask->id,
+        'sleep_requested_at' => $sleepRequestedAt,
+        'wake_up_at' => $wakeUpAt,
+        'cancellation_requested_at' => $cancellationRequestedAt,
+        'timer_cancelled_at' => $timerCancelledAt,
+        'workflow_cancelled_at' => $workflowCancelledAt,
+        'cancelled_before_wake_up' => $cancelledBeforeWakeUp,
+        'fired_after_cancel' => $firedAfterCancel,
+        'timer_fire_count_after_cancel' => $timerFireCount,
+        'workflow_status' => $runStatus,
+        'timer_status' => $timerStatus,
+        'timer_task_status' => $timerTaskStatus,
+        'pre_cancel_status' => $preCancelStatus,
+        'cancel_command_status' => $cancel['command_status'] ?? null,
+        'cancel_outcome' => $cancel['outcome'] ?? null,
+        'cancelled_timer_task_attempted_at' => now_iso(),
+        'timer_cancelled_event_recorded' => $timerCancelled instanceof WorkflowHistoryEvent,
+        'workflow_cancelled_event_recorded' => $workflowCancelled instanceof WorkflowHistoryEvent,
+        'execution_source' => HOST_EVIDENCE_SOURCE,
+        'no_local_product_source_checkout_pass_evidence' => true,
+    ];
+
+    if ($passes) {
+        return [
+            'scenario_id' => 'cancellation_while_waiting',
+            'status' => 'pass',
+            'classification' => null,
+            'observed_outputs' => $observedOutputs,
+            'linked_findings' => [],
+        ];
+    }
+
+    $message = sprintf(
+        'cancellation_while_waiting completed with status=%s, pre_cancel_status=%s, cancelled_before_wake_up=%s, fired_after_cancel=%s, timer_fire_count_after_cancel=%d, timer_status=%s, timer_task_status=%s',
+        $runStatus,
+        $preCancelStatus,
+        $cancelledBeforeWakeUp ? 'true' : 'false',
+        $firedAfterCancel ? 'true' : 'false',
+        $timerFireCount,
+        $timerStatus,
+        $timerTaskStatus,
+    );
+    $finding = finding_for_failure('cancellation_while_waiting', $message);
+
+    return [
+        'scenario_id' => 'cancellation_while_waiting',
+        'status' => 'fail',
+        'classification' => 'product-gap',
+        'observed_behavior' => $message,
+        'observed_outputs' => array_merge($observedOutputs, [
+            'failure' => $message,
+        ]),
+        'linked_findings' => [[
+            'finding_id' => $finding['id'],
+            'finding_type' => $finding['finding_type'],
+            'classification' => $finding['classification'],
+        ]],
+        'finding' => $finding,
+    ];
+}
+
 try {
     bootstrap_application(getenv('RUNNER_REPO_ROOT') ?: '/app');
 
@@ -1415,11 +1615,13 @@ try {
         ['server_restart_while_sleeping', 'timers-server-restart', 'timers-conformance-server-restart', false, true],
         ['replay_after_timer_fire', 'timers-replay-after-fire', 'timers-conformance-replay-after-fire', false, false],
         ['concurrent_timers_distinct_deadlines', 'timers-concurrent-distinct', 'timers-conformance-concurrent-distinct', false, false],
+        ['cancellation_while_waiting', 'timers-cancel-while-waiting', 'timers-conformance-cancellation-while-waiting', false, false],
     ] as [$scenarioId, $workflowPrefix, $businessKey, $restartWorker, $restartServer]) {
         try {
             $scenario = match ($scenarioId) {
                 'replay_after_timer_fire' => run_replay_after_timer_fire_probe(),
                 'concurrent_timers_distinct_deadlines' => run_concurrent_timers_probe(),
+                'cancellation_while_waiting' => run_cancellation_while_waiting_probe(),
                 default => run_sleep_probe($scenarioId, $workflowPrefix, $businessKey, $restartWorker, $restartServer),
             };
         } catch (Throwable $throwable) {

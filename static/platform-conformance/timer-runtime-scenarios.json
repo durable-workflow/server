@@ -4,7 +4,7 @@
   "category": "timer_runtime_contract",
   "suite_schema": "durable-workflow.v2.platform-conformance.suite",
   "suite_version": 15,
-  "description": "Public scenario manifest for timer and sleep conformance. The current handoff is executable from the published server image, proves normal sleep completion, worker restart while sleeping, server restart while sleeping, and replay after timer fire when the focused shards run, and keeps remaining unimplemented timer cells as explicit non-passing coverage gaps.",
+  "description": "Public scenario manifest for timer and sleep conformance. The current handoff is executable from the published server image, proves normal sleep completion, worker restart while sleeping, server restart while sleeping, replay after timer fire, concurrent timers with distinct deadlines, and cancellation while waiting when the focused shards run, and keeps the operator-visible waiting-state cell as an explicit non-passing coverage gap.",
   "fixture_type": "published_artifact_runtime_scenario_manifest",
   "result_schema": "durable-workflow.v2.timer-runtime.result",
   "result_version": 1,
@@ -359,7 +359,7 @@
     "coverage_gap_outcome": "non_passing"
   },
   "host_runner_contract": {
-    "status": "published_handoff_proves_normal_sleep_worker_restart_server_restart_replay_after_timer_fire_and_concurrent_distinct_deadlines_then_marks_remaining_timer_cells_coverage_gap",
+    "status": "published_handoff_proves_normal_sleep_worker_restart_server_restart_replay_after_timer_fire_concurrent_distinct_deadlines_and_cancellation_while_waiting_then_marks_operator_visibility_coverage_gap",
     "result_schema": "durable-workflow.v2.timer-runtime.result",
     "runner_repository": "server",
     "runner_path": "scripts/conformance/timers-published-artifacts.sh",
