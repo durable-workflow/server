@@ -55,6 +55,7 @@ final class TimerRuntimeResultGate
                 'overall_outcome_matches_gate_status',
                 'published_artifact_versions_are_recorded_and_pinned',
                 'no_local_product_source_artifacts_are_reported',
+                'normal_sleep_completion_completes_at_or_after_wake_up',
                 'concurrent_timer_resume_order_matches_wake_up_times',
                 'concurrent_timer_fires_are_not_early',
                 'concurrent_timer_fires_are_not_duplicated',
@@ -67,6 +68,13 @@ final class TimerRuntimeResultGate
                 'operator_waiting_state_uses_recognized_public_surface',
             ],
             'semantic_evidence_policy' => [
+                'normal_sleep_completion' => [
+                    'sleep_requested_at',
+                    'wake_up_at',
+                    'completed_at',
+                    'completed_at_must_be_greater_than_or_equal_to_wake_up_at',
+                    'early_resume_observed_false_when_reported',
+                ],
                 'concurrent_timers_distinct_deadlines' => [
                     'wake_up_times',
                     'observed_resume_order',
@@ -377,11 +385,110 @@ final class TimerRuntimeResultGate
         array $contract,
     ): array {
         return match ($scenarioId) {
+            'normal_sleep_completion' => self::normalSleepCompletionFailures($scenarioResult),
             'concurrent_timers_distinct_deadlines' => self::concurrentTimerFailures($scenarioResult),
             'cancellation_while_waiting' => self::cancellationWhileWaitingFailures($scenarioResult, $contract),
             'operator_visible_timer_waiting_state' => self::operatorVisibleWaitingFailures($scenarioResult, $contract),
             default => [],
         };
+    }
+
+    /**
+     * @param array<string, mixed> $scenarioResult
+     *
+     * @return list<array<string, mixed>>
+     */
+    private static function normalSleepCompletionFailures(array $scenarioResult): array
+    {
+        $evidence = self::scenarioEvidence($scenarioResult);
+        $scenarioId = 'normal_sleep_completion';
+        $sleepRequestedAt = self::stringField($evidence, [
+            'sleep_requested_at',
+            'sleepRequestedAt',
+            'timer_scheduled_at',
+            'timerScheduledAt',
+        ]);
+        $wakeUpAt = self::stringField($evidence, [
+            'wake_up_at',
+            'wakeUpAt',
+            'wake_up_time',
+            'wakeUpTime',
+            'recorded_wake_up_at',
+            'recordedWakeUpAt',
+            'timer_wake_up_at',
+            'timerWakeUpAt',
+        ]);
+        $completedAt = self::stringField($evidence, [
+            'completed_at',
+            'completedAt',
+            'workflow_completed_at',
+            'workflowCompletedAt',
+            'run_closed_at',
+            'runClosedAt',
+        ]);
+        $earlyResumeObserved = self::fieldValue($evidence, [
+            'early_resume_observed',
+            'earlyResumeObserved',
+            'resumed_before_wake_up',
+            'resumedBeforeWakeUp',
+        ]);
+
+        $failures = [];
+        $sleepRequestedEpoch = self::timestampEpoch($sleepRequestedAt);
+        $wakeEpoch = self::timestampEpoch($wakeUpAt);
+        $completedEpoch = self::timestampEpoch($completedAt);
+
+        if ($sleepRequestedEpoch === null) {
+            $failures[] = [
+                'code' => 'missing_or_invalid_sleep_requested_time',
+                'scenario_id' => $scenarioId,
+                'sleep_requested_at' => $sleepRequestedAt,
+            ];
+        }
+
+        if ($wakeEpoch === null) {
+            $failures[] = [
+                'code' => 'missing_or_invalid_wake_up_time',
+                'scenario_id' => $scenarioId,
+                'wake_up_at' => $wakeUpAt,
+            ];
+        }
+
+        if ($completedEpoch === null) {
+            $failures[] = [
+                'code' => 'missing_or_invalid_completed_time',
+                'scenario_id' => $scenarioId,
+                'completed_at' => $completedAt,
+            ];
+        }
+
+        if ($sleepRequestedEpoch !== null && $wakeEpoch !== null && $wakeEpoch < $sleepRequestedEpoch) {
+            $failures[] = [
+                'code' => 'wake_up_before_sleep_requested',
+                'scenario_id' => $scenarioId,
+                'sleep_requested_at' => $sleepRequestedAt,
+                'wake_up_at' => $wakeUpAt,
+            ];
+        }
+
+        if ($wakeEpoch !== null && $completedEpoch !== null && $completedEpoch < $wakeEpoch) {
+            $failures[] = [
+                'code' => 'normal_sleep_completed_before_wake_up',
+                'scenario_id' => $scenarioId,
+                'wake_up_at' => $wakeUpAt,
+                'completed_at' => $completedAt,
+            ];
+        }
+
+        if ($earlyResumeObserved === true) {
+            $failures[] = [
+                'code' => 'normal_sleep_early_resume_observed',
+                'scenario_id' => $scenarioId,
+                'early_resume_observed' => true,
+            ];
+        }
+
+        return $failures;
     }
 
     /**

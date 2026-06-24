@@ -353,7 +353,7 @@ class ClusterInfoTest extends TestCase
             ->assertJsonPath('timer_runtime_contract.fixture_category', 'timer_runtime_contract')
             ->assertJsonPath(
                 'timer_runtime_contract.host_runner_contract.status',
-                'published_handoff_non_passing_until_timer_scenarios_are_implemented',
+                'published_handoff_proves_normal_sleep_completion_and_marks_remaining_timer_cells_coverage_gap',
             )
             ->assertJsonPath('timer_runtime_contract.host_runner_contract.host_runner_implemented', true)
             ->assertJsonPath(
@@ -389,6 +389,10 @@ class ClusterInfoTest extends TestCase
         $this->assertSame(TimerRuntimeResultGate::SCHEMA, $contract['result_gate']['schema']);
         $this->assertContains(
             'concurrent_timer_resume_order_matches_wake_up_times',
+            $contract['result_gate']['pass_requires'],
+        );
+        $this->assertContains(
+            'normal_sleep_completion_completes_at_or_after_wake_up',
             $contract['result_gate']['pass_requires'],
         );
         $this->assertContains(

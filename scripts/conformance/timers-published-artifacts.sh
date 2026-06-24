@@ -7,10 +7,10 @@ Usage: timers-published-artifacts.sh [--result-dir DIR|--result-dir=DIR] [--keep
 
 Writes the published-artifact timer conformance handoff result.
 
-The handoff is intentionally non-passing until first-class timer scenario
-shards exist. It runs from the published server image, records the exact
-artifact tuple under test, and emits coverage-gap evidence rather than using a
-local product source checkout as pass evidence.
+When this handoff runs from the pinned published server image root, it executes
+the focused normal sleep completion shard and records concrete timer runtime
+evidence. Remaining timer cells that do not yet have first-class shards stay
+explicit non-passing coverage gaps.
 
 The runner writes these files to the result directory:
   pins.json
@@ -26,6 +26,10 @@ Environment overrides:
   DW_TIMERS_RUN_ROOT                Scratch directory. Defaults to mktemp.
   DW_TIMERS_KEEP_RUN_ROOT=1         Keep scratch directory after success.
   DW_TIMERS_SCENARIO_MANIFEST       Scenario manifest path. Defaults to the server static mirror.
+  DW_TIMERS_EVIDENCE                Optional JSON timer evidence from a real host shard.
+  DW_TIMERS_EVIDENCE_PATH           Optional path to JSON timer evidence from a real host shard.
+  DW_TIMERS_SKIP_FOCUSED_HOST_PROBE=1
+                                     Skip the published server image's normal sleep shard.
   DW_TIMERS_RUNNER_SOURCE           Exact source for the runner process. Defaults to DW_SERVER_IMAGE.
   DW_SERVER_IMAGE                   Exact server image tag or digest to test.
   DW_SERVER_VERSION                 Exact patch server Docker tag; required for digest-only DW_SERVER_IMAGE.
@@ -118,6 +122,545 @@ trap cleanup EXIT
 if ! require_command node; then
   printf '%s\n' 'required command not found: node' >&2
   exit 1
+fi
+
+should_run_focused_timer_host_probe() {
+  if [[ "${DW_TIMERS_SKIP_FOCUSED_HOST_PROBE:-0}" == "1" || "${DW_TIMERS_SKIP_FOCUSED_HOST_PROBE:-}" == "true" ]]; then
+    return 1
+  fi
+  if [[ -n "${DW_TIMERS_EVIDENCE:-}" || -n "${DW_TIMERS_EVIDENCE_PATH:-}" ]]; then
+    return 1
+  fi
+  if [[ -s "$result_dir/timer-evidence.json" ]]; then
+    return 1
+  fi
+  if [[ "$repo_root" != "/app" || -d "$repo_root/.git" ]]; then
+    return 1
+  fi
+  if [[ ! -f "$repo_root/artisan" || ! -f "$repo_root/vendor/autoload.php" ]]; then
+    return 1
+  fi
+
+  require_command php
+}
+
+run_focused_timer_host_probe() {
+  local probe_db="$run_root/timers-focused-host-probe.sqlite"
+
+  : > "$probe_db"
+
+  APP_ENV=production \
+  APP_DEBUG=false \
+  APP_KEY="${APP_KEY:-base64:VElNRVJTLUNPTkZPUk1BTkNFLUZPQ1VTRUQtSE9TVC1QUk9CRQ==}" \
+  DB_CONNECTION=sqlite \
+  DB_DATABASE="$probe_db" \
+  QUEUE_CONNECTION=database \
+  CACHE_STORE=array \
+  SESSION_DRIVER=array \
+  DW_AUTH_DRIVER=none \
+  DW_TASK_DISPATCH_MODE=poll \
+  DW_V2_TASK_DISPATCH_MODE=poll \
+  RUNNER_REPO_ROOT="$repo_root" \
+  RESULT_DIR="$result_dir" \
+  php <<'PHP' || true
+<?php
+declare(strict_types=1);
+
+use App\Models\WorkflowNamespace;
+use App\Support\ControlPlaneProtocol;
+use App\Support\WorkerProtocol;
+use Illuminate\Contracts\Console\Kernel as ConsoleKernel;
+use Illuminate\Contracts\Http\Kernel as HttpKernel;
+use Illuminate\Http\Request;
+use Illuminate\Support\Facades\Artisan;
+use Workflow\Serializers\CodecRegistry;
+use Workflow\Serializers\Serializer;
+use Workflow\V2\Attributes\Type;
+use Workflow\V2\Enums\HistoryEventType;
+use Workflow\V2\Enums\RunStatus;
+use Workflow\V2\Enums\TaskStatus;
+use Workflow\V2\Enums\TaskType;
+use Workflow\V2\Jobs\RunTimerTask;
+use Workflow\V2\Models\WorkflowHistoryEvent;
+use Workflow\V2\Models\WorkflowRun;
+use Workflow\V2\Models\WorkflowTask;
+use Workflow\V2\Models\WorkflowTimer;
+use Workflow\V2\Worker\WorkflowFiberRunner;
+use Workflow\V2\Workflow;
+use function Workflow\V2\timer;
+
+const TIMERS_NAMESPACE = 'timers-conformance';
+const TIMERS_TASK_QUEUE = 'timers-normal-sleep';
+const NORMAL_SLEEP_WORKFLOW_TYPE = 'timers.conformance.normal-sleep';
+const HOST_EVIDENCE_SCHEMA = 'durable-workflow.v2.timer-runtime.published-artifact-host-evidence';
+const HOST_EVIDENCE_SOURCE = 'published_server_container';
+
+$repoRoot = getenv('RUNNER_REPO_ROOT') ?: '/app';
+if (! is_dir($repoRoot)) {
+    throw new RuntimeException('published server root is not available');
+}
+chdir($repoRoot);
+
+require $repoRoot.'/vendor/autoload.php';
+
+#[Type(NORMAL_SLEEP_WORKFLOW_TYPE)]
+final class PublishedTimerNormalSleepWorkflow extends Workflow
+{
+    public function handle(array $payload = []): array
+    {
+        $seconds = isset($payload['sleep_seconds']) && is_numeric($payload['sleep_seconds'])
+            ? max(1, min(10, (int) $payload['sleep_seconds']))
+            : 2;
+
+        timer($seconds);
+
+        return [
+            'slept' => true,
+            'requested_sleep_seconds' => $seconds,
+            'workflow_id' => $this->workflowId(),
+            'run_id' => $this->runId(),
+        ];
+    }
+}
+
+function now_iso(): string
+{
+    return gmdate('Y-m-d\TH:i:s\Z');
+}
+
+function timestamp_iso(mixed $value): ?string
+{
+    if ($value instanceof DateTimeInterface) {
+        return gmdate('Y-m-d\TH:i:s\Z', $value->getTimestamp());
+    }
+    if (is_string($value) && trim($value) !== '') {
+        $timestamp = strtotime($value);
+
+        return $timestamp === false ? null : gmdate('Y-m-d\TH:i:s\Z', $timestamp);
+    }
+
+    return null;
+}
+
+function run_status_value(mixed $status): string
+{
+    if ($status instanceof RunStatus) {
+        return $status->value;
+    }
+
+    return is_scalar($status) ? (string) $status : get_debug_type($status);
+}
+
+function write_json_file(string $path, array $value): void
+{
+    file_put_contents($path, json_encode($value, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES)."\n");
+}
+
+function output_path(): string
+{
+    $dir = getenv('RESULT_DIR') ?: sys_get_temp_dir();
+
+    return rtrim($dir, '/').'/timer-evidence.json';
+}
+
+function finding_for_failure(string $message): array
+{
+    return [
+        'id' => 'timer-normal-sleep-completion-product-gap',
+        'scenario_id' => 'normal_sleep_completion',
+        'finding_type' => 'timer_runtime_product_gap',
+        'classification' => 'product-gap',
+        'root_cause_classification' => 'product-gap',
+        'owning_surface' => 'timer_runtime',
+        'observed_behavior' => $message,
+        'expected_behavior' => 'workflow_sleep_completes_after_recorded_wake_up_without_early_resume',
+        'next_acceptance_criterion' => 'rerun the focused timer host probe from the pinned published server image and record completed_at greater than or equal to wake_up_at with no early terminal observation',
+        'priority' => 'P0',
+    ];
+}
+
+function failure_scenario(Throwable $throwable): array
+{
+    $message = $throwable::class.': '.$throwable->getMessage();
+    $finding = finding_for_failure($message);
+
+    return [
+        'scenario_id' => 'normal_sleep_completion',
+        'status' => 'fail',
+        'classification' => 'product-gap',
+        'observed_behavior' => $message,
+        'observed_outputs' => [
+            'execution_source' => HOST_EVIDENCE_SOURCE,
+            'failure' => $message,
+            'no_local_product_source_checkout_pass_evidence' => true,
+        ],
+        'linked_findings' => [[
+            'finding_id' => $finding['id'],
+            'finding_type' => $finding['finding_type'],
+            'classification' => $finding['classification'],
+        ]],
+        'finding' => $finding,
+    ];
+}
+
+function evidence_document(array $scenario, array $findings = []): array
+{
+    return [
+        'schema' => HOST_EVIDENCE_SCHEMA,
+        'generated_at' => now_iso(),
+        'evidence_source' => 'focused_published_server_timer_host_probe',
+        'execution_source' => HOST_EVIDENCE_SOURCE,
+        'runner' => 'published-server-timers-normal-sleep-host-probe',
+        'local_product_source_checkouts_used' => false,
+        'scenario_results' => [$scenario],
+        'findings' => $findings,
+    ];
+}
+
+function bootstrap_application(string $repoRoot): void
+{
+    $app = require $repoRoot.'/bootstrap/app.php';
+    $app->make(ConsoleKernel::class)->bootstrap();
+
+    config([
+        'app.key' => getenv('APP_KEY') ?: 'base64:VElNRVJTLUNPTkZPUk1BTkNFLUZPQ1VTRUQtSE9TVC1QUk9CRQ==',
+        'database.default' => 'sqlite',
+        'database.connections.sqlite.database' => getenv('DB_DATABASE') ?: ':memory:',
+        'queue.default' => 'database',
+        'cache.default' => 'array',
+        'session.driver' => 'array',
+        'server.auth.driver' => 'none',
+        'server.mode' => 'service',
+        'workflows.v2.task_dispatch_mode' => 'poll',
+    ]);
+
+    Artisan::call('migrate', ['--force' => true]);
+
+    WorkflowNamespace::query()->updateOrCreate(
+        ['name' => TIMERS_NAMESPACE],
+        [
+            'description' => 'Timers conformance namespace',
+            'retention_days' => 30,
+            'status' => 'active',
+        ]
+    );
+}
+
+function header_key(string $name): string
+{
+    return 'HTTP_'.str_replace('-', '_', strtoupper($name));
+}
+
+function request_json(string $method, string $path, ?array $body = null, array $allowed = []): array
+{
+    static $kernel = null;
+    $kernel ??= app(HttpKernel::class);
+
+    $server = [
+        'HTTP_ACCEPT' => 'application/json',
+        'CONTENT_TYPE' => 'application/json',
+        'HTTP_X_NAMESPACE' => TIMERS_NAMESPACE,
+        header_key(ControlPlaneProtocol::HEADER) => ControlPlaneProtocol::VERSION,
+        header_key(WorkerProtocol::HEADER) => WorkerProtocol::VERSION,
+    ];
+    $content = $body === null ? null : json_encode($body, JSON_THROW_ON_ERROR);
+    $request = Request::create('/api'.$path, $method, [], [], [], $server, $content);
+    $response = $kernel->handle($request);
+    $kernel->terminate($request, $response);
+    $status = $response->getStatusCode();
+    $payload = (string) $response->getContent();
+
+    if (($status >= 400 || $status === 0) && ! in_array($status, $allowed, true)) {
+        throw new RuntimeException(sprintf('%s %s failed with HTTP %d: %s', $method, $path, $status, $payload));
+    }
+
+    if ($payload === '') {
+        return [];
+    }
+
+    $decoded = json_decode($payload, true, flags: JSON_THROW_ON_ERROR);
+
+    return is_array($decoded) ? $decoded : [];
+}
+
+function decode_payload(mixed $value, ?string $codec = null): mixed
+{
+    if ($value === null) {
+        return null;
+    }
+    if (is_array($value) && isset($value['codec'], $value['blob'])) {
+        return Serializer::unserializeWithCodec((string) $value['codec'], (string) $value['blob']);
+    }
+    if (is_string($value)) {
+        return Serializer::unserializeWithCodec($codec ?: CodecRegistry::defaultCodec(), $value);
+    }
+
+    return $value;
+}
+
+function task_codec(array $task): string
+{
+    $codec = $task['payload_codec'] ?? null;
+    if (! is_string($codec) || $codec === '') {
+        $codec = is_array($task['arguments'] ?? null) ? ($task['arguments']['codec'] ?? null) : null;
+    }
+
+    return is_string($codec) && $codec !== '' ? $codec : CodecRegistry::defaultCodec();
+}
+
+function history_events(array $task): array
+{
+    $events = $task['history_events'] ?? ($task['history']['events'] ?? []);
+
+    return is_array($events) ? $events : [];
+}
+
+function workflow_arguments(array $task, string $codec): array
+{
+    $arguments = decode_payload($task['arguments'] ?? null, $codec);
+    if (is_array($arguments) && array_is_list($arguments)) {
+        return $arguments;
+    }
+
+    return is_array($arguments) ? [$arguments] : [];
+}
+
+function complete_workflow_task_from_runtime(array $task): array
+{
+    $codec = task_codec($task);
+    $runner = WorkflowFiberRunner::forClass(
+        PublishedTimerNormalSleepWorkflow::class,
+        (string) ($task['workflow_id'] ?? $task['workflow_instance_id'] ?? ''),
+        (string) ($task['run_id'] ?? $task['workflow_run_id'] ?? ''),
+        workflow_arguments($task, $codec),
+        $codec,
+        history_events($task),
+        TIMERS_NAMESPACE,
+    );
+    $step = $runner->step();
+    if ($step->commands === []) {
+        throw new RuntimeException('workflow runtime produced no commands for the leased timer task');
+    }
+
+    return request_json('POST', '/worker/workflow-tasks/'.rawurlencode((string) $task['task_id']).'/complete', [
+        'lease_owner' => $task['lease_owner'],
+        'workflow_task_attempt' => $task['workflow_task_attempt'] ?? 1,
+        'commands' => $step->commands,
+    ]);
+}
+
+function register_worker(string $workerId): void
+{
+    request_json('POST', '/worker/register', [
+        'worker_id' => $workerId,
+        'task_queue' => TIMERS_TASK_QUEUE,
+        'runtime' => 'php',
+        'sdk_version' => 'durable-workflow/server:published-artifact',
+        'supported_workflow_types' => [NORMAL_SLEEP_WORKFLOW_TYPE],
+        'supported_activity_types' => [],
+        'max_concurrent_workflow_tasks' => 1,
+        'max_concurrent_activity_tasks' => 0,
+        'task_slots' => [
+            'workflow_available' => 1,
+            'activity_available' => 0,
+            'session_available' => 0,
+        ],
+        'process_metrics' => [
+            'memory_bytes' => memory_get_usage(true),
+            'process_uptime_seconds' => 0,
+            'process_id' => getmypid() ?: 0,
+            'host' => gethostname() ?: 'published-server-container',
+            'process_started_at' => now_iso(),
+        ],
+    ]);
+}
+
+function poll_workflow_task(string $workerId): array
+{
+    $response = request_json('POST', '/worker/workflow-tasks/poll', [
+        'worker_id' => $workerId,
+        'task_queue' => TIMERS_TASK_QUEUE,
+    ]);
+    $task = $response['task'] ?? null;
+    if (! is_array($task)) {
+        throw new RuntimeException('expected workflow task but poll returned '.json_encode($response));
+    }
+
+    return $task;
+}
+
+function wait_until_timestamp(DateTimeInterface $timestamp): void
+{
+    $deadlineMs = ((int) $timestamp->format('U')) * 1000 + (int) floor(((int) $timestamp->format('u')) / 1000);
+    $nowMs = (int) floor(microtime(true) * 1000);
+    $sleepMs = max(0, $deadlineMs - $nowMs + 250);
+    if ($sleepMs > 0) {
+        usleep($sleepMs * 1000);
+    }
+}
+
+function history_event_time(string $runId, HistoryEventType $type): ?string
+{
+    $event = WorkflowHistoryEvent::query()
+        ->where('workflow_run_id', $runId)
+        ->where('event_type', $type->value)
+        ->orderBy('sequence')
+        ->first();
+
+    return $event instanceof WorkflowHistoryEvent ? timestamp_iso($event->recorded_at) : null;
+}
+
+function run_normal_sleep_probe(): array
+{
+    bootstrap_application(getenv('RUNNER_REPO_ROOT') ?: '/app');
+
+    $workflowId = 'timers-normal-sleep-'.bin2hex(random_bytes(4));
+    $workerId = 'timers-normal-sleep-worker';
+    $sleepSeconds = 2;
+
+    register_worker($workerId);
+
+    $start = request_json('POST', '/workflows', [
+        'workflow_id' => $workflowId,
+        'workflow_type' => NORMAL_SLEEP_WORKFLOW_TYPE,
+        'task_queue' => TIMERS_TASK_QUEUE,
+        'input' => [[
+            'sleep_seconds' => $sleepSeconds,
+        ]],
+        'business_key' => 'timers-conformance-normal-sleep',
+    ]);
+    if (($start['command_status'] ?? null) !== 'accepted') {
+        throw new RuntimeException('workflow start was not accepted: '.json_encode($start));
+    }
+
+    $runId = is_string($start['run_id'] ?? null) ? $start['run_id'] : '';
+    if ($runId === '') {
+        throw new RuntimeException('workflow start did not return a run_id');
+    }
+
+    $firstTask = poll_workflow_task($workerId);
+    complete_workflow_task_from_runtime($firstTask);
+
+    /** @var WorkflowTimer|null $timer */
+    $timer = WorkflowTimer::query()
+        ->where('workflow_run_id', $runId)
+        ->orderBy('sequence')
+        ->first();
+    if (! $timer instanceof WorkflowTimer || ! $timer->fire_at instanceof DateTimeInterface) {
+        throw new RuntimeException('normal sleep workflow did not persist a pending timer with fire_at');
+    }
+
+    /** @var WorkflowTask|null $timerTask */
+    $timerTask = WorkflowTask::query()
+        ->where('workflow_run_id', $runId)
+        ->where('task_type', TaskType::Timer->value)
+        ->orderBy('available_at')
+        ->first();
+    if (! $timerTask instanceof WorkflowTask) {
+        throw new RuntimeException('normal sleep workflow did not persist a timer task');
+    }
+
+    $preWakeObservedAt = now_iso();
+    /** @var WorkflowRun $preWakeRun */
+    $preWakeRun = WorkflowRun::query()->findOrFail($runId);
+    $preWakeStatus = run_status_value($preWakeRun->status);
+    $earlyResumeObserved = in_array($preWakeStatus, [RunStatus::Completed->value, RunStatus::Failed->value], true);
+
+    wait_until_timestamp($timer->fire_at);
+    (new RunTimerTask($timerTask->id))->handle();
+
+    $resumeTask = poll_workflow_task($workerId);
+    complete_workflow_task_from_runtime($resumeTask);
+
+    /** @var WorkflowRun $run */
+    $run = WorkflowRun::query()->findOrFail($runId);
+    $completedAt = timestamp_iso($run->closed_at)
+        ?? history_event_time($runId, HistoryEventType::WorkflowCompleted)
+        ?? now_iso();
+    $wakeUpAt = timestamp_iso($timer->fire_at);
+    $sleepRequestedAt = history_event_time($runId, HistoryEventType::TimerScheduled)
+        ?? timestamp_iso($timer->created_at)
+        ?? $preWakeObservedAt;
+    $workflowResult = $run->workflowOutput();
+    $completedEpoch = strtotime((string) $completedAt);
+    $wakeEpoch = strtotime((string) $wakeUpAt);
+    $runStatus = run_status_value($run->status);
+    $passes = ! $earlyResumeObserved
+        && $wakeEpoch !== false
+        && $completedEpoch !== false
+        && $completedEpoch >= $wakeEpoch
+        && $runStatus === RunStatus::Completed->value;
+
+    $observedOutputs = [
+        'workflow_id' => $workflowId,
+        'run_id' => $runId,
+        'timer_id' => $timer->id,
+        'timer_task_id' => $timerTask->id,
+        'requested_sleep_seconds' => $sleepSeconds,
+        'sleep_requested_at' => $sleepRequestedAt,
+        'wake_up_at' => $wakeUpAt,
+        'completed_at' => $completedAt,
+        'workflow_result' => $workflowResult,
+        'pre_wake_observation_at' => $preWakeObservedAt,
+        'pre_wake_status' => $preWakeStatus,
+        'early_resume_observed' => $earlyResumeObserved,
+        'completion_after_wake_up' => $completedEpoch !== false && $wakeEpoch !== false && $completedEpoch >= $wakeEpoch,
+        'execution_source' => HOST_EVIDENCE_SOURCE,
+        'no_local_product_source_checkout_pass_evidence' => true,
+    ];
+
+    if ($passes) {
+        return [
+            'scenario_id' => 'normal_sleep_completion',
+            'status' => 'pass',
+            'classification' => null,
+            'observed_outputs' => $observedOutputs,
+            'linked_findings' => [],
+        ];
+    }
+
+    $message = sprintf(
+        'normal sleep completed with status=%s, early_resume_observed=%s, wake_up_at=%s, completed_at=%s',
+        $runStatus,
+        $earlyResumeObserved ? 'true' : 'false',
+        (string) $wakeUpAt,
+        (string) $completedAt,
+    );
+    $finding = finding_for_failure($message);
+
+    return [
+        'scenario_id' => 'normal_sleep_completion',
+        'status' => 'fail',
+        'classification' => 'product-gap',
+        'observed_behavior' => $message,
+        'observed_outputs' => array_merge($observedOutputs, [
+            'failure' => $message,
+        ]),
+        'linked_findings' => [[
+            'finding_id' => $finding['id'],
+            'finding_type' => $finding['finding_type'],
+            'classification' => $finding['classification'],
+        ]],
+        'finding' => $finding,
+    ];
+}
+
+try {
+    $scenario = run_normal_sleep_probe();
+    $findings = isset($scenario['finding']) && is_array($scenario['finding']) ? [$scenario['finding']] : [];
+    unset($scenario['finding']);
+    write_json_file(output_path(), evidence_document($scenario, $findings));
+} catch (Throwable $throwable) {
+    $scenario = failure_scenario($throwable);
+    $finding = $scenario['finding'];
+    unset($scenario['finding']);
+    write_json_file(output_path(), evidence_document($scenario, [$finding]));
+}
+PHP
+}
+
+if should_run_focused_timer_host_probe; then
+  run_focused_timer_host_probe
 fi
 
 node "$script_dir/timers-published-artifacts.mjs" "$result_dir" "$(timestamp)" "$scenario_manifest" "$repo_root"

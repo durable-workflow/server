@@ -98,6 +98,26 @@ function loadManifest() {
   return decoded && typeof decoded === 'object' && !Array.isArray(decoded) ? decoded : {};
 }
 
+function loadJsonPath(file) {
+  if (!file || !fs.existsSync(file)) {
+    return null;
+  }
+
+  const decoded = JSON.parse(fs.readFileSync(file, 'utf8'));
+  return decoded && typeof decoded === 'object' && !Array.isArray(decoded) ? decoded : null;
+}
+
+function loadEvidence() {
+  const inline = env('DW_TIMERS_EVIDENCE');
+  if (inline) {
+    const decoded = JSON.parse(inline);
+    return decoded && typeof decoded === 'object' && !Array.isArray(decoded) ? decoded : null;
+  }
+
+  return loadJsonPath(env('DW_TIMERS_EVIDENCE_PATH'))
+    ?? loadJsonPath(path.join(RESULT_DIR, 'timer-evidence.json'));
+}
+
 function normalizeCliVersion(value) {
   return value.startsWith('v') && SEMVER_RE.test(value.slice(1)) ? value.slice(1) : value;
 }
@@ -282,6 +302,43 @@ function findingFor(scenario, artifactVersions, artifactSources, runnerBlocked, 
   };
 }
 
+function productFindingFor(scenario, scenarioResult, artifactVersions, artifactSources) {
+  const scenarioId = String(scenario.id ?? '');
+  const observedOutputs = objectValue(scenarioResult.observed_outputs)
+    ?? objectValue(scenarioResult.observedOutputs)
+    ?? {};
+  const observedBehavior = stringValue(scenarioResult.observed_behavior)
+    || stringValue(scenarioResult.observedBehavior)
+    || stringValue(observedOutputs.failure)
+    || 'the published-artifact normal sleep shard executed but did not prove completion after the recorded wake-up time';
+
+  return {
+    id: `timer-${slug(scenarioId)}-product-gap`,
+    scenario_id: scenarioId,
+    finding_type: 'timer_runtime_product_gap',
+    classification: 'product-gap',
+    root_cause_classification: 'product-gap',
+    owning_surface: stringValue(scenarioResult.owning_surface)
+      || stringValue(scenarioResult.owningSurface)
+      || 'timer_runtime',
+    artifact_versions: artifactVersions,
+    artifact_sources: artifactSources,
+    expected_behavior: String(
+      scenario.required_behavior
+        ?? scenario.description
+        ?? 'timer behavior is proven against published artifacts',
+    ),
+    observed_behavior: observedBehavior,
+    user_visible_reproduction_steps: [
+      'Run scripts/conformance/timers-published-artifacts.sh --result-dir <result-dir> from the pinned published server image.',
+      'Set exact DW_SERVER_IMAGE, DW_SERVER_VERSION, DW_CLI_VERSION, DW_PYTHON_SDK_VERSION, DW_WORKFLOW_PHP_VERSION, and DW_WATERLINE_VERSION values.',
+      'Inspect timer-runtime-result.json for normal_sleep_completion observed_outputs.',
+    ],
+    next_acceptance_criterion: 'fix the timer runtime behavior, then rerun the normal sleep shard and require completed_at to be greater than or equal to wake_up_at with no early terminal observation',
+    priority: 'P0',
+  };
+}
+
 function scenarioResult(scenario, finding, artifactSources, runnerBlocked, reason) {
   const status = runnerBlocked ? 'runner_blocked' : 'not_covered';
   const classification = runnerBlocked ? 'runner-gap' : 'coverage-gap';
@@ -312,10 +369,91 @@ function scenarioResult(scenario, finding, artifactSources, runnerBlocked, reaso
   };
 }
 
+function scenarioResultsFromEvidence(evidence) {
+  const raw = arrayValue(evidence?.scenario_results)
+    ?? arrayValue(evidence?.scenarioResults)
+    ?? arrayValue(evidence?.scenarios)
+    ?? [];
+  const results = new Map();
+
+  for (const entry of raw) {
+    if (!entry || typeof entry !== 'object' || Array.isArray(entry)) {
+      continue;
+    }
+
+    const scenarioId = stringValue(entry.scenario_id) || stringValue(entry.scenarioId) || stringValue(entry.id);
+    if (scenarioId) {
+      results.set(scenarioId, entry);
+    }
+  }
+
+  return results;
+}
+
+function focusedScenarioResult(scenario, supplied, artifactSources, productFinding) {
+  const scenarioId = String(scenario.id ?? '');
+  const status = normalizeStatus(supplied.status);
+  const observedOutputs = objectValue(supplied.observed_outputs)
+    ?? objectValue(supplied.observedOutputs)
+    ?? {};
+  const base = {
+    scenario_id: scenarioId,
+    status,
+    classification: status === 'pass' ? null : 'product-gap',
+    expected_behavior: String(scenario.required_behavior ?? scenario.description ?? ''),
+    required_evidence: Array.isArray(scenario.required_evidence) ? scenario.required_evidence : [],
+    observed_outputs: {
+      ...observedOutputs,
+      published_artifact_sources: artifactSources,
+      evidence_source: stringValue(supplied.evidence_source)
+        || stringValue(supplied.evidenceSource)
+        || stringValue(observedOutputs.evidence_source)
+        || 'focused_published_server_timer_host_probe',
+      no_local_product_source_checkout_pass_evidence: true,
+    },
+  };
+
+  if (status === 'pass') {
+    return base;
+  }
+
+  return {
+    ...base,
+    linked_findings: [
+      {
+        finding_id: productFinding.id,
+        finding_type: productFinding.finding_type,
+        classification: productFinding.classification,
+      },
+    ],
+  };
+}
+
+function objectValue(value) {
+  return value && typeof value === 'object' && !Array.isArray(value) ? value : null;
+}
+
+function arrayValue(value) {
+  return Array.isArray(value) ? value : null;
+}
+
+function stringValue(value) {
+  return typeof value === 'string' ? value.trim() : '';
+}
+
+function normalizeStatus(value) {
+  const status = stringValue(value);
+  return ['pass', 'fail', 'unsupported', 'not_covered', 'runner_blocked'].includes(status)
+    ? status
+    : 'fail';
+}
+
 function main() {
   fs.mkdirSync(RESULT_DIR, { recursive: true });
 
   const manifest = loadManifest();
+  const evidence = loadEvidence();
+  const evidenceResults = scenarioResultsFromEvidence(evidence);
   const scenarios = scenarioDefs(manifest);
   const suiteSchema = String(manifest.suite_schema ?? 'durable-workflow.v2.platform-conformance.suite');
   const suiteVersion = manifest.suite_version ?? null;
@@ -359,7 +497,7 @@ function main() {
   const runnerBlocked = pinFailures.length > 0;
   const reason = runnerBlocked
     ? pinFailures.join('; ')
-    : 'first-class timer scenario shards are not yet implemented for the published-artifact handoff';
+    : 'first-class timer scenario shards without focused runtime evidence are not yet implemented for the published-artifact handoff';
   const outcome = runnerBlocked ? 'runner_blocked' : 'non_passing';
   const finishedAt = now();
   const generatedAt = now();
@@ -373,17 +511,46 @@ function main() {
       continue;
     }
 
+    const supplied = scenarioId === 'normal_sleep_completion' ? evidenceResults.get(scenarioId) : null;
+    if (supplied && !runnerBlocked) {
+      const status = normalizeStatus(supplied.status);
+      if (status === 'pass') {
+        scenarioResults[scenarioId] = focusedScenarioResult(scenario, supplied, artifactSources, null);
+        continue;
+      }
+
+      const productFinding = productFindingFor(scenario, supplied, publishedArtifactVersions, artifactSources);
+      findings.push(productFinding);
+      scenarioResults[scenarioId] = focusedScenarioResult(scenario, supplied, artifactSources, productFinding);
+      continue;
+    }
+
     const finding = findingFor(scenario, publishedArtifactVersions, artifactSources, runnerBlocked, reason);
     findings.push(finding);
     scenarioResults[scenarioId] = scenarioResult(scenario, finding, artifactSources, runnerBlocked, reason);
   }
 
   const findingLinks = Object.fromEntries(findings.map((finding) => [finding.scenario_id, [finding.id]]));
-  const unprovenCells = scenarios.map((scenario) => String(scenario.id ?? '')).filter(Boolean);
+  const unprovenCells = Object.values(scenarioResults)
+    .filter((result) => ['not_covered', 'runner_blocked'].includes(result.status))
+    .map((result) => result.scenario_id)
+    .filter(Boolean);
+  const provenCells = Object.values(scenarioResults)
+    .filter((result) => ['pass', 'fail'].includes(result.status))
+    .map((result) => result.scenario_id)
+    .filter(Boolean);
   const sourcePolicy = {
     published_artifacts_only: true,
     local_product_source_checkout_used_as_pass_evidence: false,
     no_local_product_source_checkout_pass_evidence: true,
+  };
+  const resultSummary = {
+    status: 'non_passing',
+    classification: runnerBlocked
+      ? 'runner-gap'
+      : (findings.some((finding) => finding.classification === 'product-gap') ? 'product-gap' : 'coverage-gap'),
+    scenario_count: Object.keys(scenarioResults).length,
+    finding_count: findings.length,
   };
   const metadata = {
     schema: 'durable-workflow.v2.timer-runtime.run-metadata',
@@ -426,6 +593,8 @@ function main() {
     source_policy: sourcePolicy,
     no_local_product_source_checkout_pass_evidence: true,
     unproven_timer_cells: unprovenCells,
+    proven_timer_cells: provenCells,
+    result_summary: resultSummary,
     scenario_results: scenarioResults,
     findings,
     finding_links: findingLinks,
@@ -449,12 +618,8 @@ function main() {
     source_policy: sourcePolicy,
     no_local_product_source_checkout_pass_evidence: true,
     unproven_timer_cells: unprovenCells,
-    result_summary: {
-      status: 'non_passing',
-      classification: runnerBlocked ? 'runner-gap' : 'coverage-gap',
-      scenario_count: Object.keys(scenarioResults).length,
-      finding_count: findings.length,
-    },
+    proven_timer_cells: provenCells,
+    result_summary: resultSummary,
     result,
   };
 

@@ -32,7 +32,7 @@ categories and runtime contracts:
 | `signal_query_runtime_contract` (server side) | `GET /api/cluster/info`'s `signal_query_runtime_contract` manifest, the public scenario manifest at `static/platform-conformance/signal-query-runtime-scenarios.json`, `scripts/conformance/signals-queries-published-artifacts.sh`, plus the signal/query control-plane routes documented in the protocol catalog | stable |
 | `search_attribute_runtime_contract` (server side) | `GET /api/cluster/info`'s `search_attribute_runtime_contract` manifest, the search-attribute control-plane routes, workflow start metadata, workflow-task upsert command, workflow list query parser, and operator visibility surfaces | stable |
 | `schedules_runtime_contract` (server side) | `GET /api/cluster/info`'s `schedules_runtime_contract` manifest, the schedule control-plane routes, scheduler tick entrypoint, schedule history, CLI/SDK/PHP client surfaces, and cross-language dispatch behavior | stable |
-| `timer_runtime_contract` (server side handoff) | `GET /api/cluster/info`'s `timer_runtime_contract` manifest, the public scenario manifest at `static/platform-conformance/timer-runtime-scenarios.json`, and `scripts/conformance/timers-published-artifacts.sh`, which emits non-passing published-artifact evidence for the timer cells that still need first-class host shards | runner-gap |
+| `timer_runtime_contract` (server side handoff) | `GET /api/cluster/info`'s `timer_runtime_contract` manifest, the public scenario manifest at `static/platform-conformance/timer-runtime-scenarios.json`, and `scripts/conformance/timers-published-artifacts.sh`, which proves normal sleep completion from the published server image and emits non-passing published-artifact evidence for remaining timer cells that still need first-class host shards | runner-gap |
 | `child_workflow_runtime_contract` (server side) | `GET /api/cluster/info`'s `child_workflow_runtime_contract` manifest, the public scenario manifest at `static/platform-conformance/child-workflow-runtime-scenarios.json`, plus the child scheduling, completion, failure, cancellation, replay, fan-out, and namespace behavior recorded by the worker protocol and history surfaces | stable |
 | `saga_runtime_contract` (server side) | `GET /api/cluster/info`'s `saga_runtime_contract` manifest, the public scenario manifest at `static/platform-conformance/saga-runtime-scenarios.json`, and `scripts/conformance/sagas-published-artifacts.sh`, which is the host-runner handoff for published-artifact saga compensation evidence | stable |
 | `heartbeat_runtime_contract` (server side handoff) | `GET /api/cluster/info`'s `heartbeat_runtime_contract` manifest and the public scenario manifest at `static/platform-conformance/heartbeat-runtime-scenarios.json`, which define the host-runner handoff for SDK heartbeat loops, stale-worker transitions, stale routing exclusion, API/CLI/Waterline operator visibility, adversarial heartbeat refusal, and cross-namespace isolation | stable |
@@ -99,14 +99,15 @@ The server repo ships a source-free timer handoff at
 can discover that handoff from `GET /api/cluster/info` under
 `timer_runtime_contract.host_runner_contract` and invoke it from the pinned
 published server image with the current CLI, Python SDK, PHP workflow runtime,
-and Waterline artifact versions. Until first-class timer shards exist, the
-handoff records non-passing coverage-gap evidence with
-`runner_blocked=false`: normal sleep completion, worker restart while sleeping,
-server restart while sleeping, replay after timer fire, concurrent timers with
-distinct deadlines, cancellation while waiting, and operator-visible
-waiting/timer state all remain unproven. The record names the exact public
-artifact sources and states that a local product source checkout is not pass
-evidence.
+and Waterline artifact versions. When the handoff runs from the published
+server image root, it executes the focused normal sleep completion shard and
+records `sleep_requested_at`, `wake_up_at`, `completed_at`, the workflow result,
+and an early-resume observation. Worker restart while sleeping, server restart
+while sleeping, replay after timer fire, concurrent timers with distinct
+deadlines, cancellation while waiting, and operator-visible waiting/timer state
+can remain non-passing coverage gaps until those focused shards exist. The
+record names the exact public artifact sources and states that a local product
+source checkout is not pass evidence.
 
 The server repo also ships a source-free saga runner at
 `scripts/conformance/sagas-published-artifacts.sh`. Host conformance

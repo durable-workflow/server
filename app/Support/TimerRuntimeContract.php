@@ -7,9 +7,9 @@ use Workflow\V2\Support\PlatformConformanceSuite;
 /**
  * Machine-readable contract for timer and sleep runtime conformance.
  *
- * The current handoff is intentionally non-passing: it emits source-free
- * published-artifact evidence for the timer cells that still need first-class
- * host-runner implementation before they can be counted as product evidence.
+ * The current handoff emits source-free published-artifact evidence for normal
+ * sleep completion and focused coverage-gap findings for timer cells that still
+ * need first-class host-runner implementation.
  */
 final class TimerRuntimeContract
 {
@@ -233,6 +233,7 @@ final class TimerRuntimeContract
                     'each_pass_scenario_reports_required_evidence',
                     'findings_linked_for_non_pass_scenarios',
                     'coverage_gap_scenario_findings_are_top_level_and_linked',
+                    'normal_sleep_completion_completes_at_or_after_wake_up',
                     'concurrent_timer_resume_order_matches_wake_up_times',
                     'concurrent_timer_fires_are_not_early',
                     'concurrent_timer_fires_are_not_duplicated',
@@ -250,7 +251,7 @@ final class TimerRuntimeContract
                 'coverage_gap_outcome' => 'non_passing',
             ],
             'host_runner_contract' => [
-                'status' => 'published_handoff_non_passing_until_timer_scenarios_are_implemented',
+                'status' => 'published_handoff_proves_normal_sleep_completion_and_marks_remaining_timer_cells_coverage_gap',
                 'result_schema' => self::RESULT_SCHEMA,
                 'runner_repository' => 'server',
                 'runner_path' => 'scripts/conformance/timers-published-artifacts.sh',
