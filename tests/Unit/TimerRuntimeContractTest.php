@@ -276,6 +276,8 @@ final class TimerRuntimeContractTest extends TestCase
         );
         $this->assertContains('concurrent_timer_fires_are_not_early', $resultGate['pass_requires']);
         $this->assertContains('concurrent_timer_fires_are_not_duplicated', $resultGate['pass_requires']);
+        $this->assertContains('concurrent_timer_fire_counts_cover_declared_timer_ids', $resultGate['pass_requires']);
+        $this->assertContains('concurrent_timer_fire_counts_are_exactly_one', $resultGate['pass_requires']);
         $this->assertContains('cancellation_occurs_before_recorded_wake_up', $resultGate['pass_requires']);
         $this->assertContains('cancelled_timer_does_not_fire_after_cancel', $resultGate['pass_requires']);
         $this->assertContains('operator_waiting_state_uses_recognized_public_surface', $resultGate['pass_requires']);
@@ -297,6 +299,7 @@ final class TimerRuntimeContractTest extends TestCase
             'worker_restart_while_sleeping' => 'worker_restart_window',
             'server_restart_while_sleeping' => 'timer_state_recovered',
             'replay_after_timer_fire' => 'duplicate_timer_commands',
+            'concurrent_timers_distinct_deadlines' => 'fire_counts',
         ] as $scenarioId => $field) {
             $result = $this->completePassingTimerResult();
             unset($result['scenario_results'][$scenarioId]['observed_outputs'][$field]);
@@ -355,6 +358,44 @@ final class TimerRuntimeContractTest extends TestCase
 
         $this->assertSame('non_passing', $evaluation['status']);
         $this->assertContains('duplicate_timer_fire', array_column($evaluation['gate_failures'], 'code'));
+    }
+
+    public function test_result_gate_rejects_concurrent_timer_missing_fire_count_for_declared_timer(): void
+    {
+        $result = $this->completePassingTimerResult();
+        unset($result['scenario_results']['concurrent_timers_distinct_deadlines']['observed_outputs']['fire_counts']['timer-b']);
+
+        $evaluation = TimerRuntimeResultGate::evaluate($result);
+
+        $matchingFailures = array_filter(
+            $evaluation['gate_failures'],
+            static fn (array $failure): bool => ($failure['code'] ?? null) === 'missing_timer_fire_count'
+                && ($failure['scenario_id'] ?? null) === 'concurrent_timers_distinct_deadlines'
+                && ($failure['timer_id'] ?? null) === 'timer-b',
+        );
+
+        $this->assertSame('non_passing', $evaluation['status']);
+        $this->assertNotEmpty($matchingFailures);
+    }
+
+    public function test_result_gate_rejects_concurrent_timer_fire_count_that_is_not_exactly_one(): void
+    {
+        $result = $this->completePassingTimerResult();
+        $result['scenario_results']['concurrent_timers_distinct_deadlines']['observed_outputs']['fire_counts']['timer-b'] = 2;
+
+        $evaluation = TimerRuntimeResultGate::evaluate($result);
+
+        $matchingFailures = array_filter(
+            $evaluation['gate_failures'],
+            static fn (array $failure): bool => ($failure['code'] ?? null) === 'timer_fire_count_mismatch'
+                && ($failure['scenario_id'] ?? null) === 'concurrent_timers_distinct_deadlines'
+                && ($failure['timer_id'] ?? null) === 'timer-b'
+                && ($failure['expected_count'] ?? null) === 1
+                && ($failure['actual_count'] ?? null) === 2,
+        );
+
+        $this->assertSame('non_passing', $evaluation['status']);
+        $this->assertNotEmpty($matchingFailures);
     }
 
     public function test_result_gate_rejects_cancellation_after_recorded_wake_up(): void
@@ -549,6 +590,11 @@ final class TimerRuntimeContractTest extends TestCase
                             'timer-a' => '2026-06-24T10:00:01Z',
                             'timer-b' => '2026-06-24T10:00:05Z',
                             'timer-c' => '2026-06-24T10:00:09Z',
+                        ],
+                        'fire_counts' => [
+                            'timer-a' => 1,
+                            'timer-b' => 1,
+                            'timer-c' => 1,
                         ],
                     ],
                 ],

@@ -60,7 +60,7 @@ const FALLBACK_SCENARIOS = [
   {
     id: 'concurrent_timers_distinct_deadlines',
     description: 'Concurrent timers with distinct wake-up deadlines resume in deadline order.',
-    required_evidence: ['wake_up_times', 'observed_resume_order', 'fired_at_times'],
+    required_evidence: ['wake_up_times', 'observed_resume_order', 'fired_at_times', 'fire_counts'],
     required_behavior: 'resume_order_matches_wake_up_times_no_early_fires_no_duplicate_fires',
   },
   {

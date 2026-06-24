@@ -58,6 +58,8 @@ final class TimerRuntimeResultGate
                 'concurrent_timer_resume_order_matches_wake_up_times',
                 'concurrent_timer_fires_are_not_early',
                 'concurrent_timer_fires_are_not_duplicated',
+                'concurrent_timer_fire_counts_cover_declared_timer_ids',
+                'concurrent_timer_fire_counts_are_exactly_one',
                 'cancellation_occurs_before_recorded_wake_up',
                 'cancelled_timer_does_not_fire_after_cancel',
                 'cancellation_terminal_status_is_documented',
@@ -69,6 +71,7 @@ final class TimerRuntimeResultGate
                     'wake_up_times',
                     'observed_resume_order',
                     'fired_at_times',
+                    'fire_counts',
                 ],
                 'cancellation_while_waiting' => [
                     'cancellation_requested_at_before_wake_up_at',
@@ -408,6 +411,16 @@ final class TimerRuntimeResultGate
             'timer_fires',
             'timerFires',
         ]);
+        $fireCounts = self::timerCountMap($evidence, [
+            'fire_counts',
+            'fireCounts',
+            'timer_fire_counts',
+            'timerFireCounts',
+            'per_timer_fire_counts',
+            'perTimerFireCounts',
+            'per_timer_fire_count_map',
+            'perTimerFireCountMap',
+        ]);
         $resumeOrder = self::timerIdList($evidence, [
             'observed_resume_order',
             'observedResumeOrder',
@@ -435,6 +448,13 @@ final class TimerRuntimeResultGate
         if ($fires['times'] === []) {
             $failures[] = [
                 'code' => 'missing_timer_fire_times',
+                'scenario_id' => 'concurrent_timers_distinct_deadlines',
+            ];
+        }
+
+        if ($fireCounts === []) {
+            $failures[] = [
+                'code' => 'missing_timer_fire_counts',
                 'scenario_id' => 'concurrent_timers_distinct_deadlines',
             ];
         }
@@ -508,6 +528,37 @@ final class TimerRuntimeResultGate
                     'timer_id' => $timerId,
                 ];
             }
+
+            if (! array_key_exists($timerId, $fireCounts)) {
+                $failures[] = [
+                    'code' => 'missing_timer_fire_count',
+                    'scenario_id' => 'concurrent_timers_distinct_deadlines',
+                    'timer_id' => $timerId,
+                ];
+                continue;
+            }
+
+            if ($fireCounts[$timerId] !== 1) {
+                $failures[] = [
+                    'code' => 'timer_fire_count_mismatch',
+                    'scenario_id' => 'concurrent_timers_distinct_deadlines',
+                    'timer_id' => $timerId,
+                    'expected_count' => 1,
+                    'actual_count' => $fireCounts[$timerId],
+                ];
+            }
+        }
+
+        foreach (array_keys($fireCounts) as $timerId) {
+            if (array_key_exists($timerId, $wakeUpTimes)) {
+                continue;
+            }
+
+            $failures[] = [
+                'code' => 'unknown_timer_fire_count',
+                'scenario_id' => 'concurrent_timers_distinct_deadlines',
+                'timer_id' => $timerId,
+            ];
         }
 
         foreach ($fires['times'] as $timerId => $firedAt) {
@@ -1051,6 +1102,46 @@ final class TimerRuntimeResultGate
     }
 
     /**
+     * @param array<string, mixed> $evidence
+     * @param list<string> $fields
+     *
+     * @return array<string, int>
+     */
+    private static function timerCountMap(array $evidence, array $fields): array
+    {
+        $raw = self::arrayField($evidence, $fields) ?? [];
+        $counts = [];
+
+        foreach ($raw as $key => $value) {
+            if (is_array($value)) {
+                $timerId = self::timerId($value);
+                if ($timerId === '' && is_string($key)) {
+                    $timerId = $key;
+                }
+                $count = self::integerField($value, [
+                    'fire_count',
+                    'fireCount',
+                    'count',
+                    'fires',
+                    'observed_fire_count',
+                    'observedFireCount',
+                ]);
+            } else {
+                $timerId = is_string($key) ? $key : '';
+                $count = self::integerValue($value);
+            }
+
+            if ($timerId === '' || $count === null) {
+                continue;
+            }
+
+            $counts[$timerId] = ($counts[$timerId] ?? 0) + $count;
+        }
+
+        return $counts;
+    }
+
+    /**
      * @param array<string, mixed> $value
      */
     private static function timerId(array $value): string
@@ -1079,6 +1170,43 @@ final class TimerRuntimeResultGate
             'scheduled_for',
             'scheduledFor',
         ]);
+    }
+
+    /**
+     * @param array<string, mixed> $value
+     * @param list<string> $fields
+     */
+    private static function integerField(array $value, array $fields): ?int
+    {
+        foreach ($fields as $field) {
+            if (! array_key_exists($field, $value)) {
+                continue;
+            }
+
+            $integerValue = self::integerValue($value[$field]);
+            if ($integerValue !== null) {
+                return $integerValue;
+            }
+        }
+
+        return null;
+    }
+
+    private static function integerValue(mixed $value): ?int
+    {
+        if (is_int($value)) {
+            return $value;
+        }
+
+        if (is_float($value) && floor($value) === $value) {
+            return (int) $value;
+        }
+
+        if (is_string($value) && preg_match('/^-?\d+$/', trim($value)) === 1) {
+            return (int) trim($value);
+        }
+
+        return null;
     }
 
     /**

@@ -126,7 +126,8 @@
       "required_evidence": [
         "wake_up_times",
         "observed_resume_order",
-        "fired_at_times"
+        "fired_at_times",
+        "fire_counts"
       ],
       "required_behavior": "resume_order_matches_wake_up_times_no_early_fires_no_duplicate_fires"
     },
@@ -214,7 +215,8 @@
       "evidence": [
         "wake_up_times",
         "observed_resume_order",
-        "fired_at_times"
+        "fired_at_times",
+        "fire_counts"
       ],
       "required_behavior": "resume_order_matches_wake_up_times_no_early_fires_no_duplicate_fires"
     },
@@ -256,11 +258,13 @@
       "required_evidence": [
         "wake_up_times",
         "observed_resume_order",
-        "fired_at_times"
+        "fired_at_times",
+        "fire_counts"
       ],
       "order_policy": "observed_resume_order_must_equal_wake_up_times_sorted_by_deadline",
       "no_early_fire_policy": "each fired_at timestamp must be greater than or equal to its timer wake_up_at",
-      "no_duplicate_fire_policy": "each timer id may appear once in observed_resume_order and once in fired_at_times"
+      "no_duplicate_fire_policy": "each timer id may appear once in observed_resume_order and once in fired_at_times",
+      "fire_count_policy": "fire_counts must include every timer id from wake_up_times with value exactly one"
     },
     "cancellation_while_waiting": {
       "required_behavior": "cancellation_requested_before_recorded_wake_up_and_timer_never_fires_after_cancel",
@@ -305,6 +309,8 @@
       "concurrent_timer_resume_order_matches_wake_up_times",
       "concurrent_timer_fires_are_not_early",
       "concurrent_timer_fires_are_not_duplicated",
+      "concurrent_timer_fire_counts_cover_declared_timer_ids",
+      "concurrent_timer_fire_counts_are_exactly_one",
       "cancellation_occurs_before_recorded_wake_up",
       "cancelled_timer_does_not_fire_after_cancel",
       "cancellation_terminal_status_is_documented",
