@@ -4,7 +4,7 @@
   "category": "timer_runtime_contract",
   "suite_schema": "durable-workflow.v2.platform-conformance.suite",
   "suite_version": 15,
-  "description": "Public scenario manifest for timer and sleep conformance. The current handoff is executable from the published server image, proves normal sleep completion and worker restart while sleeping when the focused shards run, and keeps remaining unimplemented timer cells as explicit non-passing coverage gaps.",
+  "description": "Public scenario manifest for timer and sleep conformance. The current handoff is executable from the published server image, proves normal sleep completion, worker restart while sleeping, and server restart while sleeping when the focused shards run, and keeps remaining unimplemented timer cells as explicit non-passing coverage gaps.",
   "fixture_type": "published_artifact_runtime_scenario_manifest",
   "result_schema": "durable-workflow.v2.timer-runtime.result",
   "result_version": 1,
@@ -104,7 +104,9 @@
         "server_restart_window",
         "wake_up_at",
         "completed_at",
-        "timer_state_recovered"
+        "timer_state_recovered",
+        "timer_fire_count",
+        "duplicate_resume_count"
       ],
       "required_behavior": "server_restart_recovers_waiting_timer_state_and_completes_after_wake_up"
     },
@@ -198,7 +200,9 @@
         "server_restart_window",
         "wake_up_at",
         "completed_at",
-        "timer_state_recovered"
+        "timer_state_recovered",
+        "timer_fire_count",
+        "duplicate_resume_count"
       ],
       "required_behavior": "server_restart_recovers_waiting_timer_state_and_completes_after_wake_up"
     },
@@ -322,7 +326,12 @@
       "worker_restart_occurs_before_recorded_wake_up",
       "worker_restart_completion_occurs_at_or_after_wake_up",
       "worker_restart_timer_fires_exactly_once",
-      "worker_restart_duplicate_resume_count_is_zero"
+      "worker_restart_duplicate_resume_count_is_zero",
+      "server_restart_occurs_before_recorded_wake_up",
+      "server_restart_completion_occurs_at_or_after_wake_up",
+      "server_restart_timer_state_recovered",
+      "server_restart_timer_fires_exactly_once",
+      "server_restart_duplicate_resume_count_is_zero"
     ],
     "uncovered_required_scenario_outcome": "non_passing",
     "smoke_subset_outcome": "non_passing",
@@ -330,7 +339,7 @@
     "coverage_gap_outcome": "non_passing"
   },
   "host_runner_contract": {
-    "status": "published_handoff_proves_normal_sleep_and_worker_restart_while_sleeping_then_marks_remaining_timer_cells_coverage_gap",
+    "status": "published_handoff_proves_normal_sleep_worker_restart_and_server_restart_while_sleeping_then_marks_remaining_timer_cells_coverage_gap",
     "result_schema": "durable-workflow.v2.timer-runtime.result",
     "runner_repository": "server",
     "runner_path": "scripts/conformance/timers-published-artifacts.sh",

@@ -35,7 +35,7 @@ final class TimerRuntimeContractTest extends TestCase
             $manifest['required_scenarios'],
         );
         $this->assertSame(
-            'published_handoff_proves_normal_sleep_and_worker_restart_while_sleeping_then_marks_remaining_timer_cells_coverage_gap',
+            'published_handoff_proves_normal_sleep_worker_restart_and_server_restart_while_sleeping_then_marks_remaining_timer_cells_coverage_gap',
             $manifest['host_runner_contract']['status'],
         );
         $this->assertTrue($manifest['host_runner_contract']['host_runner_implemented']);
@@ -237,6 +237,89 @@ final class TimerRuntimeContractTest extends TestCase
             $this->assertArrayNotHasKey('normal_sleep_completion', $result['finding_links']);
             $this->assertArrayHasKey('worker_restart_while_sleeping', $result['finding_links']);
             $this->assertSame('not_covered', $result['scenario_results']['worker_restart_while_sleeping']['status']);
+            $this->assertArrayHasKey('server_restart_while_sleeping', $result['finding_links']);
+            $this->assertSame('not_covered', $result['scenario_results']['server_restart_while_sleeping']['status']);
+
+            $evaluation = TimerRuntimeResultGate::evaluate($result);
+            $this->assertSame('non_passing', $evaluation['status']);
+            $this->assertSame([], $evaluation['gate_failures']);
+        } finally {
+            $this->removeDirectory($resultDir);
+        }
+    }
+
+    public function test_published_artifact_handoff_ingests_server_restart_runtime_evidence(): void
+    {
+        $repoRoot = dirname(__DIR__, 2);
+        $resultDir = sys_get_temp_dir().'/dw-timers-conformance-'.bin2hex(random_bytes(6));
+        mkdir($resultDir, 0777, true);
+
+        try {
+            $evidencePath = $resultDir.'/timer-evidence.json';
+            file_put_contents($evidencePath, json_encode([
+                'schema' => 'durable-workflow.v2.timer-runtime.published-artifact-host-evidence',
+                'generated_at' => '2026-06-24T10:00:12Z',
+                'evidence_source' => 'focused_published_server_timer_host_probe',
+                'execution_source' => 'published_server_container',
+                'local_product_source_checkouts_used' => false,
+                'scenario_results' => [
+                    [
+                        'scenario_id' => 'server_restart_while_sleeping',
+                        'status' => 'pass',
+                        'classification' => null,
+                        'observed_outputs' => [
+                            'workflow_id' => 'timer-server-restart',
+                            'run_id' => 'run-server-restart',
+                            'timer_id' => 'timer-server-restart-1',
+                            'sleep_started_at' => '2026-06-24T10:00:00Z',
+                            'server_restart_window' => [
+                                'started_at' => '2026-06-24T10:00:02Z',
+                                'finished_at' => '2026-06-24T10:00:03Z',
+                                'restart_type' => 'fresh_laravel_application_boot',
+                            ],
+                            'wake_up_at' => '2026-06-24T10:00:10Z',
+                            'completed_at' => '2026-06-24T10:00:11Z',
+                            'timer_state_recovered' => true,
+                            'timer_fire_count' => 1,
+                            'duplicate_resume_count' => 0,
+                        ],
+                    ],
+                ],
+            ], JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES)."\n");
+
+            $command = sprintf(
+                'DW_SERVER_IMAGE=%s DW_SERVER_VERSION=%s DW_CLI_VERSION=%s DW_PYTHON_SDK_VERSION=%s DW_WORKFLOW_PHP_VERSION=%s DW_WATERLINE_VERSION=%s DW_TIMERS_EVIDENCE_PATH=%s bash %s --result-dir %s 2>&1',
+                escapeshellarg('durableworkflow/server:0.2.495'),
+                escapeshellarg('0.2.495'),
+                escapeshellarg('0.1.82'),
+                escapeshellarg('0.4.90'),
+                escapeshellarg('2.0.0-alpha.223'),
+                escapeshellarg('2.0.0-alpha.111'),
+                escapeshellarg($evidencePath),
+                escapeshellarg($repoRoot.'/scripts/conformance/timers-published-artifacts.sh'),
+                escapeshellarg($resultDir),
+            );
+
+            exec($command, $output, $exitCode);
+
+            $this->assertSame(0, $exitCode, implode("\n", $output));
+
+            $result = json_decode(
+                file_get_contents($resultDir.'/timer-runtime-result.json') ?: '',
+                true,
+                512,
+                JSON_THROW_ON_ERROR,
+            );
+            $serverRestart = $result['scenario_results']['server_restart_while_sleeping'];
+
+            $this->assertSame('non_passing', $result['outcome']);
+            $this->assertContains('server_restart_while_sleeping', $result['proven_timer_cells']);
+            $this->assertNotContains('server_restart_while_sleeping', $result['unproven_timer_cells']);
+            $this->assertSame('pass', $serverRestart['status']);
+            $this->assertTrue($serverRestart['observed_outputs']['timer_state_recovered']);
+            $this->assertSame(1, $serverRestart['observed_outputs']['timer_fire_count']);
+            $this->assertSame(0, $serverRestart['observed_outputs']['duplicate_resume_count']);
+            $this->assertArrayNotHasKey('server_restart_while_sleeping', $result['finding_links']);
 
             $evaluation = TimerRuntimeResultGate::evaluate($result);
             $this->assertSame('non_passing', $evaluation['status']);
@@ -579,6 +662,9 @@ final class TimerRuntimeContractTest extends TestCase
         $this->assertContains('operator_waiting_state_uses_recognized_public_surface', $resultGate['pass_requires']);
         $this->assertContains('worker_restart_timer_fires_exactly_once', $resultGate['pass_requires']);
         $this->assertContains('worker_restart_duplicate_resume_count_is_zero', $resultGate['pass_requires']);
+        $this->assertContains('server_restart_timer_state_recovered', $resultGate['pass_requires']);
+        $this->assertContains('server_restart_timer_fires_exactly_once', $resultGate['pass_requires']);
+        $this->assertContains('server_restart_duplicate_resume_count_is_zero', $resultGate['pass_requires']);
         $this->assertContains('each_pass_scenario_reports_required_evidence', $resultGate['pass_requires']);
     }
 
@@ -672,6 +758,85 @@ final class TimerRuntimeContractTest extends TestCase
             $evaluation['gate_failures'],
             static fn (array $failure): bool => ($failure['code'] ?? null) === 'worker_restart_duplicate_resume_count_mismatch'
                 && ($failure['scenario_id'] ?? null) === 'worker_restart_while_sleeping'
+                && ($failure['expected_count'] ?? null) === 0
+                && ($failure['actual_count'] ?? null) === 1,
+        );
+
+        $this->assertSame('non_passing', $evaluation['status']);
+        $this->assertNotEmpty($matchingFailures);
+    }
+
+    public function test_result_gate_rejects_server_restart_after_recorded_wake_up(): void
+    {
+        $result = $this->completePassingTimerResult();
+        $result['scenario_results']['server_restart_while_sleeping']['observed_outputs']['server_restart_window']['finished_at'] =
+            '2026-06-24T10:00:12Z';
+
+        $evaluation = TimerRuntimeResultGate::evaluate($result);
+
+        $this->assertSame('non_passing', $evaluation['status']);
+        $this->assertContains('server_restart_not_before_wake_up', array_column($evaluation['gate_failures'], 'code'));
+    }
+
+    public function test_result_gate_rejects_server_restart_completion_before_recorded_wake_up(): void
+    {
+        $result = $this->completePassingTimerResult();
+        $result['scenario_results']['server_restart_while_sleeping']['observed_outputs']['completed_at'] =
+            '2026-06-24T10:00:09Z';
+
+        $evaluation = TimerRuntimeResultGate::evaluate($result);
+
+        $this->assertSame('non_passing', $evaluation['status']);
+        $this->assertContains(
+            'server_restart_completed_before_wake_up',
+            array_column($evaluation['gate_failures'], 'code'),
+        );
+    }
+
+    public function test_result_gate_rejects_server_restart_without_recovered_timer_state(): void
+    {
+        $result = $this->completePassingTimerResult();
+        $result['scenario_results']['server_restart_while_sleeping']['observed_outputs']['timer_state_recovered'] = false;
+
+        $evaluation = TimerRuntimeResultGate::evaluate($result);
+
+        $this->assertSame('non_passing', $evaluation['status']);
+        $this->assertContains(
+            'server_restart_timer_state_not_recovered',
+            array_column($evaluation['gate_failures'], 'code'),
+        );
+    }
+
+    public function test_result_gate_rejects_server_restart_timer_fire_count_that_is_not_exactly_one(): void
+    {
+        $result = $this->completePassingTimerResult();
+        $result['scenario_results']['server_restart_while_sleeping']['observed_outputs']['timer_fire_count'] = 2;
+
+        $evaluation = TimerRuntimeResultGate::evaluate($result);
+
+        $matchingFailures = array_filter(
+            $evaluation['gate_failures'],
+            static fn (array $failure): bool => ($failure['code'] ?? null) === 'server_restart_timer_fire_count_mismatch'
+                && ($failure['scenario_id'] ?? null) === 'server_restart_while_sleeping'
+                && ($failure['expected_count'] ?? null) === 1
+                && ($failure['actual_count'] ?? null) === 2,
+        );
+
+        $this->assertSame('non_passing', $evaluation['status']);
+        $this->assertNotEmpty($matchingFailures);
+    }
+
+    public function test_result_gate_rejects_server_restart_duplicate_resume_count(): void
+    {
+        $result = $this->completePassingTimerResult();
+        $result['scenario_results']['server_restart_while_sleeping']['observed_outputs']['duplicate_resume_count'] = 1;
+
+        $evaluation = TimerRuntimeResultGate::evaluate($result);
+
+        $matchingFailures = array_filter(
+            $evaluation['gate_failures'],
+            static fn (array $failure): bool => ($failure['code'] ?? null) === 'server_restart_duplicate_resume_count_mismatch'
+                && ($failure['scenario_id'] ?? null) === 'server_restart_while_sleeping'
                 && ($failure['expected_count'] ?? null) === 0
                 && ($failure['actual_count'] ?? null) === 1,
         );
@@ -922,6 +1087,8 @@ final class TimerRuntimeContractTest extends TestCase
                         'wake_up_at' => '2026-06-24T10:00:10Z',
                         'completed_at' => '2026-06-24T10:00:11Z',
                         'timer_state_recovered' => true,
+                        'timer_fire_count' => 1,
+                        'duplicate_resume_count' => 0,
                     ],
                 ],
                 'replay_after_timer_fire' => [

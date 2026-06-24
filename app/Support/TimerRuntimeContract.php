@@ -8,9 +8,9 @@ use Workflow\V2\Support\PlatformConformanceSuite;
  * Machine-readable contract for timer and sleep runtime conformance.
  *
  * The current handoff emits source-free published-artifact evidence for normal
- * sleep completion plus worker restart while sleeping, and focused coverage-gap
- * findings for timer cells that still need first-class host-runner
- * implementation.
+ * sleep completion plus worker and server restart while sleeping, and focused
+ * coverage-gap findings for timer cells that still need first-class
+ * host-runner implementation.
  */
 final class TimerRuntimeContract
 {
@@ -170,6 +170,8 @@ final class TimerRuntimeContract
                         'wake_up_at',
                         'completed_at',
                         'timer_state_recovered',
+                        'timer_fire_count',
+                        'duplicate_resume_count',
                     ],
                     'required_behavior' => 'server_restart_recovers_waiting_timer_state_and_completes_after_wake_up',
                 ],
@@ -250,6 +252,11 @@ final class TimerRuntimeContract
                     'worker_restart_completion_occurs_at_or_after_wake_up',
                     'worker_restart_timer_fires_exactly_once',
                     'worker_restart_duplicate_resume_count_is_zero',
+                    'server_restart_occurs_before_recorded_wake_up',
+                    'server_restart_completion_occurs_at_or_after_wake_up',
+                    'server_restart_timer_state_recovered',
+                    'server_restart_timer_fires_exactly_once',
+                    'server_restart_duplicate_resume_count_is_zero',
                 ],
                 'uncovered_required_scenario_outcome' => 'non_passing',
                 'smoke_subset_outcome' => 'non_passing',
@@ -257,7 +264,7 @@ final class TimerRuntimeContract
                 'coverage_gap_outcome' => 'non_passing',
             ],
             'host_runner_contract' => [
-                'status' => 'published_handoff_proves_normal_sleep_and_worker_restart_while_sleeping_then_marks_remaining_timer_cells_coverage_gap',
+                'status' => 'published_handoff_proves_normal_sleep_worker_restart_and_server_restart_while_sleeping_then_marks_remaining_timer_cells_coverage_gap',
                 'result_schema' => self::RESULT_SCHEMA,
                 'runner_repository' => 'server',
                 'runner_path' => 'scripts/conformance/timers-published-artifacts.sh',

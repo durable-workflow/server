@@ -70,6 +70,11 @@ final class TimerRuntimeResultGate
                 'worker_restart_completion_occurs_at_or_after_wake_up',
                 'worker_restart_timer_fires_exactly_once',
                 'worker_restart_duplicate_resume_count_is_zero',
+                'server_restart_occurs_before_recorded_wake_up',
+                'server_restart_completion_occurs_at_or_after_wake_up',
+                'server_restart_timer_state_recovered',
+                'server_restart_timer_fires_exactly_once',
+                'server_restart_duplicate_resume_count_is_zero',
             ],
             'semantic_evidence_policy' => [
                 'normal_sleep_completion' => [
@@ -84,6 +89,15 @@ final class TimerRuntimeResultGate
                     'worker_restart_window',
                     'wake_up_at',
                     'completed_at_must_be_greater_than_or_equal_to_wake_up_at',
+                    'timer_fire_count_exactly_one',
+                    'duplicate_resume_count_zero',
+                ],
+                'server_restart_while_sleeping' => [
+                    'sleep_started_at',
+                    'server_restart_window',
+                    'wake_up_at',
+                    'completed_at_must_be_greater_than_or_equal_to_wake_up_at',
+                    'timer_state_recovered_true',
                     'timer_fire_count_exactly_one',
                     'duplicate_resume_count_zero',
                 ],
@@ -399,6 +413,7 @@ final class TimerRuntimeResultGate
         return match ($scenarioId) {
             'normal_sleep_completion' => self::normalSleepCompletionFailures($scenarioResult),
             'worker_restart_while_sleeping' => self::workerRestartWhileSleepingFailures($scenarioResult),
+            'server_restart_while_sleeping' => self::serverRestartWhileSleepingFailures($scenarioResult),
             'concurrent_timers_distinct_deadlines' => self::concurrentTimerFailures($scenarioResult),
             'cancellation_while_waiting' => self::cancellationWhileWaitingFailures($scenarioResult, $contract),
             'operator_visible_timer_waiting_state' => self::operatorVisibleWaitingFailures($scenarioResult, $contract),
@@ -682,6 +697,206 @@ final class TimerRuntimeResultGate
         if ($earlyResumeObserved === true) {
             $failures[] = [
                 'code' => 'worker_restart_early_resume_observed',
+                'scenario_id' => $scenarioId,
+                'early_resume_observed' => true,
+            ];
+        }
+
+        return $failures;
+    }
+
+    /**
+     * @param array<string, mixed> $scenarioResult
+     *
+     * @return list<array<string, mixed>>
+     */
+    private static function serverRestartWhileSleepingFailures(array $scenarioResult): array
+    {
+        $evidence = self::scenarioEvidence($scenarioResult);
+        $scenarioId = 'server_restart_while_sleeping';
+        $sleepStartedAt = self::stringField($evidence, [
+            'sleep_started_at',
+            'sleepStartedAt',
+            'sleep_requested_at',
+            'sleepRequestedAt',
+            'timer_scheduled_at',
+            'timerScheduledAt',
+        ]);
+        $wakeUpAt = self::stringField($evidence, [
+            'wake_up_at',
+            'wakeUpAt',
+            'wake_up_time',
+            'wakeUpTime',
+            'recorded_wake_up_at',
+            'recordedWakeUpAt',
+            'timer_wake_up_at',
+            'timerWakeUpAt',
+        ]);
+        $completedAt = self::stringField($evidence, [
+            'completed_at',
+            'completedAt',
+            'workflow_completed_at',
+            'workflowCompletedAt',
+            'run_closed_at',
+            'runClosedAt',
+        ]);
+        $serverRestartWindow = self::arrayField($evidence, [
+            'server_restart_window',
+            'serverRestartWindow',
+            'restart_window',
+            'restartWindow',
+        ]) ?? [];
+        $restartStartedAt = self::stringField($serverRestartWindow, [
+            'started_at',
+            'startedAt',
+            'restart_started_at',
+            'restartStartedAt',
+        ]);
+        $restartFinishedAt = self::stringField($serverRestartWindow, [
+            'finished_at',
+            'finishedAt',
+            'restart_finished_at',
+            'restartFinishedAt',
+        ]);
+        $timerStateRecovered = self::fieldValue($evidence, [
+            'timer_state_recovered',
+            'timerStateRecovered',
+            'waiting_timer_state_recovered',
+            'waitingTimerStateRecovered',
+        ]);
+        $duplicateResumeCount = self::integerField($evidence, [
+            'duplicate_resume_count',
+            'duplicateResumeCount',
+            'duplicate_resumes',
+            'duplicateResumes',
+        ]);
+        $timerFireCount = self::integerField($evidence, [
+            'timer_fire_count',
+            'timerFireCount',
+            'fire_count',
+            'fireCount',
+            'timer_fired_count',
+            'timerFiredCount',
+        ]);
+        $earlyResumeObserved = self::fieldValue($evidence, [
+            'early_resume_observed',
+            'earlyResumeObserved',
+            'resumed_before_wake_up',
+            'resumedBeforeWakeUp',
+        ]);
+
+        $failures = [];
+        $sleepStartedEpoch = self::timestampEpoch($sleepStartedAt);
+        $wakeEpoch = self::timestampEpoch($wakeUpAt);
+        $completedEpoch = self::timestampEpoch($completedAt);
+        $restartStartedEpoch = self::timestampEpoch($restartStartedAt);
+        $restartFinishedEpoch = self::timestampEpoch($restartFinishedAt);
+
+        if ($sleepStartedEpoch === null) {
+            $failures[] = [
+                'code' => 'missing_or_invalid_sleep_started_time',
+                'scenario_id' => $scenarioId,
+                'sleep_started_at' => $sleepStartedAt,
+            ];
+        }
+
+        if ($wakeEpoch === null) {
+            $failures[] = [
+                'code' => 'missing_or_invalid_wake_up_time',
+                'scenario_id' => $scenarioId,
+                'wake_up_at' => $wakeUpAt,
+            ];
+        }
+
+        if ($completedEpoch === null) {
+            $failures[] = [
+                'code' => 'missing_or_invalid_completed_time',
+                'scenario_id' => $scenarioId,
+                'completed_at' => $completedAt,
+            ];
+        }
+
+        if ($restartStartedEpoch === null || $restartFinishedEpoch === null) {
+            $failures[] = [
+                'code' => 'missing_or_invalid_server_restart_window',
+                'scenario_id' => $scenarioId,
+                'server_restart_window' => $serverRestartWindow,
+            ];
+        }
+
+        if (
+            $sleepStartedEpoch !== null
+            && $restartStartedEpoch !== null
+            && $restartStartedEpoch < $sleepStartedEpoch
+        ) {
+            $failures[] = [
+                'code' => 'server_restart_before_sleep_started',
+                'scenario_id' => $scenarioId,
+                'sleep_started_at' => $sleepStartedAt,
+                'restart_started_at' => $restartStartedAt,
+            ];
+        }
+
+        if (
+            $restartStartedEpoch !== null
+            && $restartFinishedEpoch !== null
+            && $restartFinishedEpoch < $restartStartedEpoch
+        ) {
+            $failures[] = [
+                'code' => 'server_restart_window_reversed',
+                'scenario_id' => $scenarioId,
+                'restart_started_at' => $restartStartedAt,
+                'restart_finished_at' => $restartFinishedAt,
+            ];
+        }
+
+        if ($restartFinishedEpoch !== null && $wakeEpoch !== null && $restartFinishedEpoch >= $wakeEpoch) {
+            $failures[] = [
+                'code' => 'server_restart_not_before_wake_up',
+                'scenario_id' => $scenarioId,
+                'restart_finished_at' => $restartFinishedAt,
+                'wake_up_at' => $wakeUpAt,
+            ];
+        }
+
+        if ($wakeEpoch !== null && $completedEpoch !== null && $completedEpoch < $wakeEpoch) {
+            $failures[] = [
+                'code' => 'server_restart_completed_before_wake_up',
+                'scenario_id' => $scenarioId,
+                'wake_up_at' => $wakeUpAt,
+                'completed_at' => $completedAt,
+            ];
+        }
+
+        if (! self::booleanTrue($timerStateRecovered)) {
+            $failures[] = [
+                'code' => 'server_restart_timer_state_not_recovered',
+                'scenario_id' => $scenarioId,
+                'timer_state_recovered' => $timerStateRecovered,
+            ];
+        }
+
+        if ($timerFireCount !== 1) {
+            $failures[] = [
+                'code' => 'server_restart_timer_fire_count_mismatch',
+                'scenario_id' => $scenarioId,
+                'expected_count' => 1,
+                'actual_count' => $timerFireCount,
+            ];
+        }
+
+        if ($duplicateResumeCount !== 0) {
+            $failures[] = [
+                'code' => 'server_restart_duplicate_resume_count_mismatch',
+                'scenario_id' => $scenarioId,
+                'expected_count' => 0,
+                'actual_count' => $duplicateResumeCount,
+            ];
+        }
+
+        if ($earlyResumeObserved === true) {
+            $failures[] = [
+                'code' => 'server_restart_early_resume_observed',
                 'scenario_id' => $scenarioId,
                 'early_resume_observed' => true,
             ];
@@ -1513,6 +1728,23 @@ final class TimerRuntimeResultGate
         }
 
         return null;
+    }
+
+    private static function booleanTrue(mixed $value): bool
+    {
+        if (is_bool($value)) {
+            return $value;
+        }
+
+        if (is_int($value) || is_float($value)) {
+            return (int) $value === 1;
+        }
+
+        if (is_string($value)) {
+            return in_array(strtolower(trim($value)), ['1', 'true', 'yes'], true);
+        }
+
+        return false;
     }
 
     /**

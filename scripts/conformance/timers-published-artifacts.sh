@@ -8,9 +8,10 @@ Usage: timers-published-artifacts.sh [--result-dir DIR|--result-dir=DIR] [--keep
 Writes the published-artifact timer conformance handoff result.
 
 When this handoff runs from the pinned published server image root, it executes
-the focused normal sleep completion and worker-restart-while-sleeping shards and
-records concrete timer runtime evidence. Remaining timer cells that do not yet
-have first-class shards stay explicit non-passing coverage gaps.
+the focused normal sleep completion, worker-restart-while-sleeping, and
+server-restart-while-sleeping shards and records concrete timer runtime
+evidence. Remaining timer cells that do not yet have first-class shards stay
+explicit non-passing coverage gaps.
 
 The runner writes these files to the result directory:
   pins.json
@@ -173,6 +174,8 @@ use Illuminate\Contracts\Console\Kernel as ConsoleKernel;
 use Illuminate\Contracts\Http\Kernel as HttpKernel;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Artisan;
+use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Facade;
 use Workflow\Serializers\CodecRegistry;
 use Workflow\Serializers\Serializer;
 use Workflow\V2\Attributes\Type;
@@ -194,6 +197,8 @@ const TIMERS_TASK_QUEUE = 'timers-normal-sleep';
 const NORMAL_SLEEP_WORKFLOW_TYPE = 'timers.conformance.normal-sleep';
 const HOST_EVIDENCE_SCHEMA = 'durable-workflow.v2.timer-runtime.published-artifact-host-evidence';
 const HOST_EVIDENCE_SOURCE = 'published_server_container';
+
+$timersHttpKernel = null;
 
 $repoRoot = getenv('RUNNER_REPO_ROOT') ?: '/app';
 if (! is_dir($repoRoot)) {
@@ -274,6 +279,7 @@ function scenario_expected_behavior(string $scenarioId): string
 {
     return match ($scenarioId) {
         'worker_restart_while_sleeping' => 'worker_restart_does_not_drop_or_duplicate_a_sleeping_timer',
+        'server_restart_while_sleeping' => 'server_restart_recovers_waiting_timer_state_and_completes_after_wake_up',
         default => 'workflow_sleep_completes_after_recorded_wake_up_without_early_resume',
     };
 }
@@ -282,6 +288,7 @@ function scenario_next_acceptance(string $scenarioId): string
 {
     return match ($scenarioId) {
         'worker_restart_while_sleeping' => 'rerun the focused timer host probe from the pinned published server image and record completion after wake_up_at with timer_fire_count exactly one and duplicate_resume_count zero after worker restart',
+        'server_restart_while_sleeping' => 'rerun the focused timer host probe from the pinned published server image and record timer_state_recovered true, completion after wake_up_at, timer_fire_count exactly one, and duplicate_resume_count zero after server restart',
         default => 'rerun the focused timer host probe from the pinned published server image and record completed_at greater than or equal to wake_up_at with no early terminal observation',
     };
 }
@@ -340,7 +347,7 @@ function evidence_document(array $scenarios, array $findings = []): array
     ];
 }
 
-function bootstrap_application(string $repoRoot): void
+function bootstrap_application(string $repoRoot, bool $runMigrations = true): void
 {
     $app = require $repoRoot.'/bootstrap/app.php';
     $app->make(ConsoleKernel::class)->bootstrap();
@@ -357,7 +364,9 @@ function bootstrap_application(string $repoRoot): void
         'workflows.v2.task_dispatch_mode' => 'poll',
     ]);
 
-    Artisan::call('migrate', ['--force' => true]);
+    if ($runMigrations) {
+        Artisan::call('migrate', ['--force' => true]);
+    }
 
     WorkflowNamespace::query()->updateOrCreate(
         ['name' => TIMERS_NAMESPACE],
@@ -369,6 +378,11 @@ function bootstrap_application(string $repoRoot): void
     );
 }
 
+function reset_http_kernel(): void
+{
+    $GLOBALS['timersHttpKernel'] = null;
+}
+
 function header_key(string $name): string
 {
     return 'HTTP_'.str_replace('-', '_', strtoupper($name));
@@ -376,8 +390,13 @@ function header_key(string $name): string
 
 function request_json(string $method, string $path, ?array $body = null, array $allowed = []): array
 {
-    static $kernel = null;
-    $kernel ??= app(HttpKernel::class);
+    global $timersHttpKernel;
+
+    if (! $timersHttpKernel instanceof HttpKernel) {
+        $timersHttpKernel = app(HttpKernel::class);
+    }
+
+    $kernel = $timersHttpKernel;
 
     $server = [
         'HTTP_ACCEPT' => 'application/json',
@@ -533,6 +552,58 @@ function history_event_time(string $runId, HistoryEventType $type): ?string
     return $event instanceof WorkflowHistoryEvent ? timestamp_iso($event->recorded_at) : null;
 }
 
+/**
+ * @return array{
+ *   server_restart_window: array<string, mixed>,
+ *   timer_state_recovered: bool,
+ *   timer: WorkflowTimer,
+ *   timer_task: WorkflowTask
+ * }
+ */
+function restart_server_application(string $repoRoot, WorkflowTimer $timer, WorkflowTask $timerTask): array
+{
+    $startedAt = now_iso();
+    DB::disconnect();
+    reset_http_kernel();
+    Facade::clearResolvedInstances();
+
+    bootstrap_application($repoRoot, false);
+
+    /** @var WorkflowTimer|null $recoveredTimer */
+    $recoveredTimer = WorkflowTimer::query()->find($timer->id);
+    /** @var WorkflowTask|null $recoveredTimerTask */
+    $recoveredTimerTask = WorkflowTask::query()->find($timerTask->id);
+    $finishedAt = now_iso();
+
+    if (! $recoveredTimer instanceof WorkflowTimer || ! $recoveredTimer->fire_at instanceof DateTimeInterface) {
+        throw new RuntimeException('server restart did not recover the pending timer row');
+    }
+
+    if (! $recoveredTimerTask instanceof WorkflowTask) {
+        throw new RuntimeException('server restart did not recover the pending timer task row');
+    }
+
+    $sameTimerDeadline = timestamp_iso($recoveredTimer->fire_at) === timestamp_iso($timer->fire_at);
+    $timerStateRecovered = $sameTimerDeadline
+        && (string) $recoveredTimer->workflow_run_id === (string) $timer->workflow_run_id
+        && (string) $recoveredTimerTask->workflow_run_id === (string) $timerTask->workflow_run_id;
+
+    return [
+        'server_restart_window' => [
+            'started_at' => $startedAt,
+            'finished_at' => $finishedAt,
+            'restart_type' => 'fresh_laravel_application_boot',
+            'timer_id_before_restart' => (string) $timer->id,
+            'timer_id_after_restart' => (string) $recoveredTimer->id,
+            'timer_task_id_before_restart' => (string) $timerTask->id,
+            'timer_task_id_after_restart' => (string) $recoveredTimerTask->id,
+        ],
+        'timer_state_recovered' => $timerStateRecovered,
+        'timer' => $recoveredTimer,
+        'timer_task' => $recoveredTimerTask,
+    ];
+}
+
 function timer_fire_events(string $runId, string $timerId): array
 {
     return WorkflowHistoryEvent::query()
@@ -545,13 +616,19 @@ function timer_fire_events(string $runId, string $timerId): array
         ->all();
 }
 
-function run_sleep_probe(string $scenarioId, string $workflowPrefix, string $businessKey, bool $restartWorker): array
+function run_sleep_probe(
+    string $scenarioId,
+    string $workflowPrefix,
+    string $businessKey,
+    bool $restartWorker,
+    bool $restartServer = false,
+): array
 {
     $suffix = bin2hex(random_bytes(4));
     $workflowId = $workflowPrefix.'-'.$suffix;
     $initialWorkerId = $workflowPrefix.'-worker-a-'.$suffix;
     $resumeWorkerId = $restartWorker ? $workflowPrefix.'-worker-b-'.$suffix : $initialWorkerId;
-    $sleepSeconds = 2;
+    $sleepSeconds = $restartServer ? 4 : 2;
 
     register_worker($initialWorkerId);
 
@@ -601,6 +678,17 @@ function run_sleep_probe(string $scenarioId, string $workflowPrefix, string $bus
     $preWakeStatus = run_status_value($preWakeRun->status);
     $earlyResumeObserved = in_array($preWakeStatus, [RunStatus::Completed->value, RunStatus::Failed->value], true);
     $restartWindow = null;
+    $serverRestartWindow = null;
+    $timerStateRecovered = null;
+
+    if ($restartServer) {
+        $restart = restart_server_application(getenv('RUNNER_REPO_ROOT') ?: '/app', $timer, $timerTask);
+        $serverRestartWindow = $restart['server_restart_window'];
+        $timerStateRecovered = $restart['timer_state_recovered'];
+        $timer = $restart['timer'];
+        $timerTask = $restart['timer_task'];
+        register_worker($resumeWorkerId);
+    }
 
     if ($restartWorker) {
         $restartStartedAt = now_iso();
@@ -650,9 +738,21 @@ function run_sleep_probe(string $scenarioId, string $workflowPrefix, string $bus
         && $completedEpoch !== false
         && $completionAfterWakeUp
         && $runStatus === RunStatus::Completed->value;
-    $passes = $restartWorker
-        ? $basePasses && $timerFireCount === 1 && $duplicateResumeCount === 0 && $resumedByExpectedWorker
-        : $basePasses;
+    if ($restartServer) {
+        $serverRestartFinishedAt = is_array($serverRestartWindow) ? (string) ($serverRestartWindow['finished_at'] ?? '') : '';
+        $serverRestartFinishedEpoch = strtotime($serverRestartFinishedAt);
+        $passes = $basePasses
+            && $timerStateRecovered === true
+            && $timerFireCount === 1
+            && $duplicateResumeCount === 0
+            && $serverRestartFinishedEpoch !== false
+            && $wakeEpoch !== false
+            && $serverRestartFinishedEpoch < $wakeEpoch;
+    } elseif ($restartWorker) {
+        $passes = $basePasses && $timerFireCount === 1 && $duplicateResumeCount === 0 && $resumedByExpectedWorker;
+    } else {
+        $passes = $basePasses;
+    }
 
     $observedOutputs = [
         'workflow_id' => $workflowId,
@@ -687,6 +787,19 @@ function run_sleep_probe(string $scenarioId, string $workflowPrefix, string $bus
         ]);
     }
 
+    if ($restartServer) {
+        $observedOutputs = array_merge($observedOutputs, [
+            'server_restart_window' => $serverRestartWindow,
+            'timer_state_recovered' => $timerStateRecovered,
+            'duplicate_resume_count' => $duplicateResumeCount,
+            'timer_dropped_observed' => $timerFireCount < 1,
+            'server_restart_finished_before_wake_up' => is_array($serverRestartWindow)
+                && strtotime((string) ($serverRestartWindow['finished_at'] ?? '')) !== false
+                && $wakeEpoch !== false
+                && strtotime((string) ($serverRestartWindow['finished_at'] ?? '')) < $wakeEpoch,
+        ]);
+    }
+
     if ($passes) {
         return [
             'scenario_id' => $scenarioId,
@@ -698,7 +811,7 @@ function run_sleep_probe(string $scenarioId, string $workflowPrefix, string $bus
     }
 
     $message = sprintf(
-        '%s completed with status=%s, early_resume_observed=%s, wake_up_at=%s, completed_at=%s, timer_fire_count=%d, duplicate_resume_count=%d',
+        '%s completed with status=%s, early_resume_observed=%s, wake_up_at=%s, completed_at=%s, timer_fire_count=%d, duplicate_resume_count=%d, timer_state_recovered=%s',
         $scenarioId,
         $runStatus,
         $earlyResumeObserved ? 'true' : 'false',
@@ -706,6 +819,7 @@ function run_sleep_probe(string $scenarioId, string $workflowPrefix, string $bus
         (string) $completedAt,
         $timerFireCount,
         $duplicateResumeCount,
+        $timerStateRecovered === null ? 'n/a' : ($timerStateRecovered ? 'true' : 'false'),
     );
     $finding = finding_for_failure($scenarioId, $message);
 
@@ -732,11 +846,12 @@ try {
     $scenarios = [];
     $findings = [];
     foreach ([
-        ['normal_sleep_completion', 'timers-normal-sleep', 'timers-conformance-normal-sleep', false],
-        ['worker_restart_while_sleeping', 'timers-worker-restart', 'timers-conformance-worker-restart', true],
-    ] as [$scenarioId, $workflowPrefix, $businessKey, $restartWorker]) {
+        ['normal_sleep_completion', 'timers-normal-sleep', 'timers-conformance-normal-sleep', false, false],
+        ['worker_restart_while_sleeping', 'timers-worker-restart', 'timers-conformance-worker-restart', true, false],
+        ['server_restart_while_sleeping', 'timers-server-restart', 'timers-conformance-server-restart', false, true],
+    ] as [$scenarioId, $workflowPrefix, $businessKey, $restartWorker, $restartServer]) {
         try {
-            $scenario = run_sleep_probe($scenarioId, $workflowPrefix, $businessKey, $restartWorker);
+            $scenario = run_sleep_probe($scenarioId, $workflowPrefix, $businessKey, $restartWorker, $restartServer);
         } catch (Throwable $throwable) {
             $scenario = failure_scenario($scenarioId, $throwable);
         }

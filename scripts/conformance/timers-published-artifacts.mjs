@@ -48,7 +48,7 @@ const FALLBACK_SCENARIOS = [
   {
     id: 'server_restart_while_sleeping',
     description: 'A sleeping workflow survives server restart and recovers waiting timer state.',
-    required_evidence: ['workflow_id', 'sleep_started_at', 'server_restart_window', 'wake_up_at', 'completed_at', 'timer_state_recovered'],
+    required_evidence: ['workflow_id', 'sleep_started_at', 'server_restart_window', 'wake_up_at', 'completed_at', 'timer_state_recovered', 'timer_fire_count', 'duplicate_resume_count'],
     required_behavior: 'server_restart_recovers_waiting_timer_state_and_completes_after_wake_up',
   },
   {
