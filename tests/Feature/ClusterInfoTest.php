@@ -353,9 +353,13 @@ class ClusterInfoTest extends TestCase
             ->assertJsonPath('timer_runtime_contract.fixture_category', 'timer_runtime_contract')
             ->assertJsonPath(
                 'timer_runtime_contract.host_runner_contract.status',
-                'runner_gap_until_timer_host_runner_exists',
+                'published_handoff_non_passing_until_timer_scenarios_are_implemented',
             )
-            ->assertJsonPath('timer_runtime_contract.host_runner_contract.host_runner_implemented', false);
+            ->assertJsonPath('timer_runtime_contract.host_runner_contract.host_runner_implemented', true)
+            ->assertJsonPath(
+                'timer_runtime_contract.host_runner_contract.runner_path',
+                'scripts/conformance/timers-published-artifacts.sh',
+            );
 
         $contract = $response->json('timer_runtime_contract');
         $this->assertIsArray($contract);
@@ -363,9 +367,21 @@ class ClusterInfoTest extends TestCase
             'static/platform-conformance/timer-runtime-scenarios.json',
             $contract['scenario_manifest']['source_path'],
         );
+        $this->assertContains('normal_sleep_completion', $contract['required_scenarios']);
+        $this->assertContains('worker_restart_while_sleeping', $contract['required_scenarios']);
+        $this->assertContains('server_restart_while_sleeping', $contract['required_scenarios']);
+        $this->assertContains('replay_after_timer_fire', $contract['required_scenarios']);
         $this->assertContains('concurrent_timers_distinct_deadlines', $contract['required_scenarios']);
         $this->assertContains('cancellation_while_waiting', $contract['required_scenarios']);
         $this->assertContains('operator_visible_timer_waiting_state', $contract['required_scenarios']);
+        $this->assertSame(
+            'scripts/conformance/timers-published-artifacts.sh --result-dir <result-dir>',
+            $contract['host_runner_contract']['runner_command'],
+        );
+        $this->assertContains('timer-runtime-result.json', $contract['host_runner_contract']['result_files']);
+        $this->assertContains('timer-runtime-record.json', $contract['host_runner_contract']['result_files']);
+        $this->assertTrue($contract['host_runner_contract']['must_execute_inside_pinned_published_server_image']);
+        $this->assertTrue($contract['host_runner_contract']['no_local_product_source_checkout_pass_evidence']);
         $this->assertSame(
             ['cancelled', 'terminated', 'failed', 'completed'],
             $contract['scenario_requirements']['cancellation_while_waiting']['allowed_terminal_workflow_statuses'],

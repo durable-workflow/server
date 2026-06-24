@@ -48,6 +48,7 @@ final class TimerRuntimeResultGate
                 'every_required_scenario_has_one_result',
                 'every_result_uses_a_published_status',
                 'each_pass_scenario_has_observed_outputs',
+                'each_pass_scenario_reports_required_evidence',
                 'each_non_pass_scenario_has_linked_findings',
                 'coverage_gap_scenario_findings_are_top_level_and_linked',
                 'run_timestamps_outcome_runner_blocked_and_finding_links_are_recorded',
@@ -142,6 +143,10 @@ final class TimerRuntimeResultGate
                     ];
                 }
 
+                array_push(
+                    $failures,
+                    ...self::requiredEvidenceFailures($scenarioId, $scenarioResult, $contract),
+                );
                 array_push(
                     $failures,
                     ...self::scenarioSemanticFailures($scenarioId, $scenarioResult, $contract),
@@ -247,6 +252,56 @@ final class TimerRuntimeResultGate
         }
 
         return false;
+    }
+
+    /**
+     * @param array<string, mixed> $scenarioResult
+     * @param array<string, mixed> $contract
+     *
+     * @return list<array<string, mixed>>
+     */
+    private static function requiredEvidenceFailures(
+        string $scenarioId,
+        array $scenarioResult,
+        array $contract,
+    ): array {
+        $requiredEvidence = self::stringList($contract['scenario_requirements'][$scenarioId]['evidence'] ?? []);
+        if ($requiredEvidence === []) {
+            return [];
+        }
+
+        $evidence = self::scenarioEvidence($scenarioResult);
+        $failures = [];
+        foreach ($requiredEvidence as $field) {
+            if (array_key_exists($field, $evidence) && self::hasEvidenceValue($evidence[$field])) {
+                continue;
+            }
+
+            $failures[] = [
+                'code' => 'missing_pass_required_evidence',
+                'scenario_id' => $scenarioId,
+                'field' => $field,
+            ];
+        }
+
+        return $failures;
+    }
+
+    private static function hasEvidenceValue(mixed $value): bool
+    {
+        if ($value === null) {
+            return false;
+        }
+
+        if (is_array($value)) {
+            return $value !== [];
+        }
+
+        if (is_string($value)) {
+            return trim($value) !== '';
+        }
+
+        return true;
     }
 
     /**
@@ -915,7 +970,12 @@ final class TimerRuntimeResultGate
      */
     private static function scenarioEvidence(array $scenarioResult): array
     {
-        $observedOutputs = self::arrayField($scenarioResult, ['observed_outputs', 'observedOutputs']) ?? [];
+        $observedOutputs = self::arrayField($scenarioResult, [
+            'observed_outputs',
+            'observedOutputs',
+            'timer_observations',
+            'timerObservations',
+        ]) ?? [];
 
         return array_merge($scenarioResult, $observedOutputs);
     }

@@ -7,9 +7,9 @@ use Workflow\V2\Support\PlatformConformanceSuite;
 /**
  * Machine-readable contract for timer and sleep runtime conformance.
  *
- * The current handoff is intentionally a runner-gap contract: it describes the
- * evidence a future published-artifact host runner must emit before timer
- * behavior can be classified as product evidence.
+ * The current handoff is intentionally non-passing: it emits source-free
+ * published-artifact evidence for the timer cells that still need first-class
+ * host-runner implementation before they can be counted as product evidence.
  */
 final class TimerRuntimeContract
 {
@@ -128,11 +128,58 @@ final class TimerRuntimeContract
                 ],
             ],
             'required_scenarios' => [
+                'normal_sleep_completion',
+                'worker_restart_while_sleeping',
+                'server_restart_while_sleeping',
+                'replay_after_timer_fire',
                 'concurrent_timers_distinct_deadlines',
                 'cancellation_while_waiting',
                 'operator_visible_timer_waiting_state',
             ],
             'scenario_requirements' => [
+                'normal_sleep_completion' => [
+                    'evidence' => [
+                        'workflow_id',
+                        'sleep_requested_at',
+                        'wake_up_at',
+                        'completed_at',
+                        'workflow_result',
+                    ],
+                    'required_behavior' => 'workflow_sleep_completes_after_recorded_wake_up_without_early_resume',
+                ],
+                'worker_restart_while_sleeping' => [
+                    'evidence' => [
+                        'workflow_id',
+                        'sleep_started_at',
+                        'worker_restart_window',
+                        'wake_up_at',
+                        'completed_at',
+                        'duplicate_resume_count',
+                    ],
+                    'required_behavior' => 'worker_restart_does_not_drop_or_duplicate_a_sleeping_timer',
+                ],
+                'server_restart_while_sleeping' => [
+                    'evidence' => [
+                        'workflow_id',
+                        'sleep_started_at',
+                        'server_restart_window',
+                        'wake_up_at',
+                        'completed_at',
+                        'timer_state_recovered',
+                    ],
+                    'required_behavior' => 'server_restart_recovers_waiting_timer_state_and_completes_after_wake_up',
+                ],
+                'replay_after_timer_fire' => [
+                    'evidence' => [
+                        'workflow_id',
+                        'timer_id',
+                        'fired_at',
+                        'replay_started_at',
+                        'replayed_event_ids',
+                        'duplicate_timer_commands',
+                    ],
+                    'required_behavior' => 'replay_after_timer_fire_is_deterministic_and_does_not_schedule_duplicate_timers',
+                ],
                 'concurrent_timers_distinct_deadlines' => [
                     'evidence' => [
                         'wake_up_times',
@@ -180,6 +227,7 @@ final class TimerRuntimeContract
                     'declared_outcome_matches_evaluated_status',
                     'published_artifact_versions_are_recorded_and_pinned',
                     'no_local_product_source_artifacts',
+                    'each_pass_scenario_reports_required_evidence',
                     'findings_linked_for_non_pass_scenarios',
                     'coverage_gap_scenario_findings_are_top_level_and_linked',
                     'concurrent_timer_resume_order_matches_wake_up_times',
@@ -197,22 +245,47 @@ final class TimerRuntimeContract
                 'coverage_gap_outcome' => 'non_passing',
             ],
             'host_runner_contract' => [
-                'status' => 'runner_gap_until_timer_host_runner_exists',
+                'status' => 'published_handoff_non_passing_until_timer_scenarios_are_implemented',
                 'result_schema' => self::RESULT_SCHEMA,
-                'host_runner_implemented' => false,
+                'runner_repository' => 'server',
+                'runner_path' => 'scripts/conformance/timers-published-artifacts.sh',
+                'runner_command' => 'scripts/conformance/timers-published-artifacts.sh --result-dir <result-dir>',
+                'result_files' => [
+                    'pins.json',
+                    'run-metadata.json',
+                    'timer-runtime-result.json',
+                    'timer-runtime-record.json',
+                    'timer-runtime-findings.json',
+                    'timers-result.json',
+                    'timers-record.json',
+                ],
+                'host_runner_implemented' => true,
+                'must_execute_inside_pinned_published_server_image' => true,
                 'must_probe_runtime_published_surfaces' => true,
+                'must_name_public_artifact_sources' => true,
+                'no_local_product_source_checkout_pass_evidence' => true,
                 'must_emit_result_for_every_required_scenario' => true,
                 'smoke_summary_only_outcome' => 'non_passing',
-                'unexecuted_required_scenario_status' => 'runner_blocked',
+                'unexecuted_required_scenario_status' => 'not_covered',
                 'coverage_gap_finding_type' => 'conformance_runner_coverage_gap',
                 'coverage_gap_owner' => 'conformance_harness',
                 'required_execution_scopes' => [
                     'published-artifact-timer-runtime',
+                    'normal-sleep-completion-shard',
+                    'worker-restart-while-sleeping-shard',
+                    'server-restart-while-sleeping-shard',
+                    'replay-after-timer-fire-shard',
                     'concurrent-timers-distinct-deadlines-shard',
                     'cancellation-while-waiting-shard',
                     'operator-visible-timer-waiting-state-shard',
                 ],
                 'routing_policy' => [
+                    'missing_executable_handoff' => [
+                        'scenario_status' => 'runner_blocked',
+                        'classification' => 'runner-gap',
+                        'finding_type' => 'conformance_runner_coverage_gap',
+                        'owner' => 'conformance_harness',
+                    ],
                     'missing_host_runner' => [
                         'scenario_status' => 'runner_blocked',
                         'classification' => 'runner-gap',

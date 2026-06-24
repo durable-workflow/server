@@ -4,7 +4,7 @@
   "category": "timer_runtime_contract",
   "suite_schema": "durable-workflow.v2.platform-conformance.suite",
   "suite_version": 15,
-  "description": "Public scenario manifest for timer and sleep conformance. The current handoff is non-passing until a published-artifact host runner exists and emits the required timer observations.",
+  "description": "Public scenario manifest for timer and sleep conformance. The current handoff is executable from the published server image but remains non-passing until first-class timer scenario shards emit the required timer observations.",
   "fixture_type": "published_artifact_runtime_scenario_manifest",
   "result_schema": "durable-workflow.v2.timer-runtime.result",
   "result_version": 1,
@@ -60,11 +60,66 @@
     "linked_findings"
   ],
   "required_scenarios": [
+    "normal_sleep_completion",
+    "worker_restart_while_sleeping",
+    "server_restart_while_sleeping",
+    "replay_after_timer_fire",
     "concurrent_timers_distinct_deadlines",
     "cancellation_while_waiting",
     "operator_visible_timer_waiting_state"
   ],
   "scenarios": [
+    {
+      "id": "normal_sleep_completion",
+      "description": "A workflow sleep/timer completes only after the recorded wake-up deadline and returns the expected result.",
+      "required_evidence": [
+        "workflow_id",
+        "sleep_requested_at",
+        "wake_up_at",
+        "completed_at",
+        "workflow_result"
+      ],
+      "required_behavior": "workflow_sleep_completes_after_recorded_wake_up_without_early_resume"
+    },
+    {
+      "id": "worker_restart_while_sleeping",
+      "description": "A sleeping workflow survives worker restart, resumes after the timer fires, and does not produce duplicate resumes.",
+      "required_evidence": [
+        "workflow_id",
+        "sleep_started_at",
+        "worker_restart_window",
+        "wake_up_at",
+        "completed_at",
+        "duplicate_resume_count"
+      ],
+      "required_behavior": "worker_restart_does_not_drop_or_duplicate_a_sleeping_timer"
+    },
+    {
+      "id": "server_restart_while_sleeping",
+      "description": "A sleeping workflow survives server restart, recovers waiting timer state, and completes after the timer deadline.",
+      "required_evidence": [
+        "workflow_id",
+        "sleep_started_at",
+        "server_restart_window",
+        "wake_up_at",
+        "completed_at",
+        "timer_state_recovered"
+      ],
+      "required_behavior": "server_restart_recovers_waiting_timer_state_and_completes_after_wake_up"
+    },
+    {
+      "id": "replay_after_timer_fire",
+      "description": "Replay after a timer has fired is deterministic and does not schedule duplicate timer commands.",
+      "required_evidence": [
+        "workflow_id",
+        "timer_id",
+        "fired_at",
+        "replay_started_at",
+        "replayed_event_ids",
+        "duplicate_timer_commands"
+      ],
+      "required_behavior": "replay_after_timer_fire_is_deterministic_and_does_not_schedule_duplicate_timers"
+    },
     {
       "id": "concurrent_timers_distinct_deadlines",
       "description": "Concurrent timers with distinct wake-up deadlines resume in deadline order, never fire before wake_up_times, and never fire more than once.",
@@ -112,6 +167,49 @@
     }
   ],
   "scenario_requirements": {
+    "normal_sleep_completion": {
+      "evidence": [
+        "workflow_id",
+        "sleep_requested_at",
+        "wake_up_at",
+        "completed_at",
+        "workflow_result"
+      ],
+      "required_behavior": "workflow_sleep_completes_after_recorded_wake_up_without_early_resume"
+    },
+    "worker_restart_while_sleeping": {
+      "evidence": [
+        "workflow_id",
+        "sleep_started_at",
+        "worker_restart_window",
+        "wake_up_at",
+        "completed_at",
+        "duplicate_resume_count"
+      ],
+      "required_behavior": "worker_restart_does_not_drop_or_duplicate_a_sleeping_timer"
+    },
+    "server_restart_while_sleeping": {
+      "evidence": [
+        "workflow_id",
+        "sleep_started_at",
+        "server_restart_window",
+        "wake_up_at",
+        "completed_at",
+        "timer_state_recovered"
+      ],
+      "required_behavior": "server_restart_recovers_waiting_timer_state_and_completes_after_wake_up"
+    },
+    "replay_after_timer_fire": {
+      "evidence": [
+        "workflow_id",
+        "timer_id",
+        "fired_at",
+        "replay_started_at",
+        "replayed_event_ids",
+        "duplicate_timer_commands"
+      ],
+      "required_behavior": "replay_after_timer_fire_is_deterministic_and_does_not_schedule_duplicate_timers"
+    },
     "concurrent_timers_distinct_deadlines": {
       "evidence": [
         "wake_up_times",
@@ -201,6 +299,7 @@
       "declared_outcome_matches_evaluated_status",
       "published_artifact_versions_are_recorded_and_pinned",
       "no_local_product_source_artifacts",
+      "each_pass_scenario_reports_required_evidence",
       "findings_linked_for_non_pass_scenarios",
       "coverage_gap_scenario_findings_are_top_level_and_linked",
       "concurrent_timer_resume_order_matches_wake_up_times",
@@ -218,22 +317,47 @@
     "coverage_gap_outcome": "non_passing"
   },
   "host_runner_contract": {
-    "status": "runner_gap_until_timer_host_runner_exists",
+    "status": "published_handoff_non_passing_until_timer_scenarios_are_implemented",
     "result_schema": "durable-workflow.v2.timer-runtime.result",
-    "host_runner_implemented": false,
+    "runner_repository": "server",
+    "runner_path": "scripts/conformance/timers-published-artifacts.sh",
+    "runner_command": "scripts/conformance/timers-published-artifacts.sh --result-dir <result-dir>",
+    "result_files": [
+      "pins.json",
+      "run-metadata.json",
+      "timer-runtime-result.json",
+      "timer-runtime-record.json",
+      "timer-runtime-findings.json",
+      "timers-result.json",
+      "timers-record.json"
+    ],
+    "host_runner_implemented": true,
+    "must_execute_inside_pinned_published_server_image": true,
     "must_probe_runtime_published_surfaces": true,
+    "must_name_public_artifact_sources": true,
+    "no_local_product_source_checkout_pass_evidence": true,
     "must_emit_result_for_every_required_scenario": true,
     "smoke_summary_only_outcome": "non_passing",
-    "unexecuted_required_scenario_status": "runner_blocked",
+    "unexecuted_required_scenario_status": "not_covered",
     "coverage_gap_finding_type": "conformance_runner_coverage_gap",
     "coverage_gap_owner": "conformance_harness",
     "required_execution_scopes": [
       "published-artifact-timer-runtime",
+      "normal-sleep-completion-shard",
+      "worker-restart-while-sleeping-shard",
+      "server-restart-while-sleeping-shard",
+      "replay-after-timer-fire-shard",
       "concurrent-timers-distinct-deadlines-shard",
       "cancellation-while-waiting-shard",
       "operator-visible-timer-waiting-state-shard"
     ],
     "routing_policy": {
+      "missing_executable_handoff": {
+        "scenario_status": "runner_blocked",
+        "classification": "runner-gap",
+        "finding_type": "conformance_runner_coverage_gap",
+        "owner": "conformance_harness"
+      },
       "missing_host_runner": {
         "scenario_status": "runner_blocked",
         "classification": "runner-gap",
