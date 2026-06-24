@@ -503,6 +503,7 @@ async function probeOperation({
     state,
   ));
   if (fixtureGap) {
+    const optionalGap = compatibleOptionalCoverageGap(surfaceName, pairingClass, operationGroup, requestTemplate);
     return notCoveredProbe({
       surfaceName,
       surface,
@@ -514,8 +515,8 @@ async function probeOperation({
       context,
       status: fixtureGap.status,
       reason: fixtureGap.reason,
-      optionalCoverageGap: fixtureGap.optional_coverage_gap === true,
-      coverageGapScope: fixtureGap.coverage_gap_scope,
+      optionalCoverageGap: fixtureGap.optional_coverage_gap === true || optionalGap !== null,
+      coverageGapScope: fixtureGap.coverage_gap_scope ?? optionalGap?.coverage_gap_scope,
     });
   }
 
@@ -526,6 +527,7 @@ async function probeOperation({
     state,
   });
   if (workerTaskGap) {
+    const optionalGap = compatibleOptionalCoverageGap(surfaceName, pairingClass, operationGroup, requestTemplate);
     return notCoveredProbe({
       surfaceName,
       surface,
@@ -537,6 +539,8 @@ async function probeOperation({
       context,
       status: workerTaskGap.status,
       reason: workerTaskGap.reason,
+      optionalCoverageGap: optionalGap !== null,
+      coverageGapScope: optionalGap?.coverage_gap_scope,
     });
   }
 
@@ -553,6 +557,7 @@ async function probeOperation({
   });
 
   if (invocation.wire_evidence_gap) {
+    const optionalGap = compatibleOptionalCoverageGap(surfaceName, pairingClass, operationGroup, requestTemplate);
     return notCoveredProbe({
       surfaceName,
       surface,
@@ -566,6 +571,8 @@ async function probeOperation({
       reason: invocation.wire_evidence_gap.reason,
       artifactInvocation: invocation.artifact_invocation,
       proxyCaptures: invocation.proxy_captures,
+      optionalCoverageGap: optionalGap !== null,
+      coverageGapScope: optionalGap?.coverage_gap_scope,
     });
   }
 
@@ -575,6 +582,9 @@ async function probeOperation({
   const evidenceRequest = invocation.evidence_request ?? wireRequest;
   const response = invocation.response;
   const protocolGap = protocolEvidenceGap(operationGroup, pairing, wireRequest);
+  const optionalProtocolGap = protocolGap
+    ? compatibleOptionalCoverageGap(surfaceName, pairingClass, operationGroup, requestTemplate)
+    : null;
 
   const status = protocolGap
     ? 'not_covered'
@@ -723,6 +733,15 @@ async function probeOperation({
     evidence.observed_protocol_version = protocolGap.observed;
   }
 
+  if (optionalProtocolGap) {
+    evidence.optional_coverage_gap = true;
+    evidence.coverage_requirement = 'optional';
+    evidence.coverage_gap_scope = optionalProtocolGap.coverage_gap_scope;
+    capture.optional_coverage_gap = true;
+    capture.coverage_requirement = 'optional';
+    capture.coverage_gap_scope = optionalProtocolGap.coverage_gap_scope;
+  }
+
   const coverageGapReason = waterlineCoverageGapReason(operationGroup, status, response);
   if (coverageGapReason && !evidence.coverage_gap_reason) {
     evidence.coverage_gap_reason = coverageGapReason;
@@ -780,7 +799,7 @@ function notCoveredProbe({
   };
   if (optionalCoverageGap) {
     response.body.optional_coverage_gap = true;
-    response.body.coverage_gap_scope = coverageGapScope || 'compatible_cli_inside_window_interop';
+    response.body.coverage_gap_scope = coverageGapScope || defaultCompatibleCoverageGapScope(surfaceName);
   }
   const capture = {
     id: captureId,
@@ -812,7 +831,7 @@ function notCoveredProbe({
   if (optionalCoverageGap) {
     capture.optional_coverage_gap = true;
     capture.coverage_requirement = 'optional';
-    capture.coverage_gap_scope = coverageGapScope || 'compatible_cli_inside_window_interop';
+    capture.coverage_gap_scope = coverageGapScope || defaultCompatibleCoverageGapScope(surfaceName);
   }
   if (surfaceName === 'workflow-worker') {
     capture.worker_version = surfaceVersion;
@@ -894,10 +913,45 @@ function notCoveredProbe({
   if (optionalCoverageGap) {
     evidence.optional_coverage_gap = true;
     evidence.coverage_requirement = 'optional';
-    evidence.coverage_gap_scope = coverageGapScope || 'compatible_cli_inside_window_interop';
+    evidence.coverage_gap_scope = coverageGapScope || defaultCompatibleCoverageGapScope(surfaceName);
   }
 
   return { evidence, capture };
+}
+
+function compatibleOptionalCoverageGap(surfaceName, pairingClass, operationGroup, requestTemplate) {
+  if (pairingClass !== 'compatible') {
+    return null;
+  }
+
+  if (
+    surfaceName === 'cli'
+    && operationGroup === 'workflow_control_plane'
+    && requestTemplate === 'GET /api/workflows/{workflowId}/runs/{runId}/history'
+  ) {
+    return {
+      optional_coverage_gap: true,
+      coverage_gap_scope: 'compatible_cli_inside_window_interop',
+    };
+  }
+
+  if (
+    surfaceName === 'sdk-python'
+    && ['workflow_control_plane', 'schedule_control_plane', 'worker_lifecycle'].includes(operationGroup)
+  ) {
+    return {
+      optional_coverage_gap: true,
+      coverage_gap_scope: 'compatible_sdk_python_inside_window_interop',
+    };
+  }
+
+  return null;
+}
+
+function defaultCompatibleCoverageGapScope(surfaceName) {
+  return surfaceName === 'sdk-python'
+    ? 'compatible_sdk_python_inside_window_interop'
+    : 'compatible_cli_inside_window_interop';
 }
 
 function artifactRecordForSurface(surfaceName) {
@@ -1439,9 +1493,10 @@ async function prepareWorkflowFixture({
       status: 'not_covered',
       reason: `${requestTemplate} requires a workflow fixture run id, but the compatible fixture start response did not report one.`,
     };
-    if (compatibleCliOptionalWorkflowFixtureGap(surfaceName, pairingClass, requestTemplate)) {
+    const optionalGap = compatibleOptionalCoverageGap(surfaceName, pairingClass, 'workflow_control_plane', requestTemplate);
+    if (optionalGap) {
       gap.optional_coverage_gap = true;
-      gap.coverage_gap_scope = 'compatible_cli_inside_window_interop';
+      gap.coverage_gap_scope = optionalGap.coverage_gap_scope;
     }
 
     return gap;
@@ -1451,12 +1506,6 @@ async function prepareWorkflowFixture({
   Object.assign(state, fixture);
 
   return null;
-}
-
-function compatibleCliOptionalWorkflowFixtureGap(surfaceName, pairingClass, requestTemplate) {
-  return surfaceName === 'cli'
-    && pairingClass === 'compatible'
-    && requestTemplate === 'GET /api/workflows/{workflowId}/runs/{runId}/history';
 }
 
 async function prepareScheduleFixture({
@@ -3422,7 +3471,7 @@ export function summarizePairing(surfaceName, pairingClass, rows, context) {
 }
 
 function compatibleInteropEvidenceForCell(surfaceName, pairingClass, rows, context) {
-  if (surfaceName !== 'cli' || pairingClass !== 'compatible') {
+  if (!['cli', 'sdk-python'].includes(surfaceName) || pairingClass !== 'compatible') {
     return null;
   }
 
@@ -3432,16 +3481,28 @@ function compatibleInteropEvidenceForCell(surfaceName, pairingClass, rows, conte
   const serverVersion = stringValue(context.observedServerVersion);
   const compatibilityWindow = pairing.compatibilityWindow;
   const nextStep = compatibilityNextStep(surfaceName, pairingClass);
+  const interopOperationGroups = surfaceName === 'sdk-python'
+    ? ['workflow_control_plane', 'schedule_control_plane', 'worker_lifecycle']
+    : ['workflow_control_plane', 'schedule_control_plane'];
   const row = rows.find((candidate) => {
     const operationGroup = stringValue(candidate.operation_group);
+    const candidateClientVersion = firstStringValue(
+      candidate.client_or_worker_version,
+      candidate.client_or_observer_version,
+      candidate.sdk_python_version,
+      candidate.sdk_version,
+    );
+    const typedSdkEvidence = candidate.typed_sdk_evidence === true
+      || candidate.artifact_invocation?.typed_sdk_evidence === true;
 
     return candidate.status === 'pass'
-      && ['workflow_control_plane', 'schedule_control_plane'].includes(operationGroup)
-      && firstStringValue(candidate.client_or_worker_version, candidate.client_or_observer_version) === clientVersion
+      && interopOperationGroups.includes(operationGroup)
+      && candidateClientVersion === clientVersion
       && stringValue(candidate.server_version) === serverVersion
       && stringValue(candidate.compatibility_window) === compatibilityWindow
       && stringValue(candidate.next_step) === nextStep
-      && stringValue(candidate.request_response_capture_id) !== '';
+      && stringValue(candidate.request_response_capture_id) !== ''
+      && (surfaceName !== 'sdk-python' || typedSdkEvidence);
   });
 
   if (!row) {
@@ -3466,6 +3527,15 @@ function compatibleInteropEvidenceForCell(surfaceName, pairingClass, rows, conte
   const interopClassification = stringValue(row.interop_classification);
   if (interopClassification) {
     evidence.interop_classification = interopClassification;
+  }
+  if (surfaceName === 'sdk-python') {
+    evidence.sdk_python_version = clientVersion;
+    evidence.sdk_version = clientVersion;
+    evidence.typed_sdk_evidence = true;
+    const sdkOperation = firstStringValue(row.sdk_operation, row.artifact_invocation?.sdk_operation);
+    if (sdkOperation) {
+      evidence.sdk_operation = sdkOperation;
+    }
   }
 
   return evidence;

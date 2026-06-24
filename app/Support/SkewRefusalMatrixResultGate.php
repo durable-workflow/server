@@ -74,9 +74,61 @@ final class SkewRefusalMatrixResultGate
                 'each_non_pass_cell_has_a_focused_finding_link',
                 'request_response_evidence_is_present_for_each_skewed_operation',
                 'operation_capture_ids_resolve_to_attached_request_response_captures',
-                'compatible_cli_optional_gaps_are_allowed_only_with_passing_inside_window_interop_evidence',
+                'compatible_client_optional_gaps_are_allowed_only_with_passing_inside_window_interop_evidence',
                 'smoke_only_results_remain_non_passing',
                 'overall_outcome_matches_gate_status',
+            ],
+            'compatible_client_optional_gap_policies' => [
+                'cli' => [
+                    'surface' => 'cli',
+                    'pairing_class' => 'compatible',
+                    'status' => 'not_covered',
+                    'coverage_gap_scope' => 'compatible_cli_inside_window_interop',
+                    'requires_row_fields' => [
+                        'optional_coverage_gap',
+                        'coverage_gap_scope',
+                        'coverage_gap_reason',
+                        'request_response_capture_id',
+                    ],
+                    'interop_operation_groups' => [
+                        'workflow_control_plane',
+                        'schedule_control_plane',
+                    ],
+                    'operation_group_requests' => [
+                        'workflow_control_plane' => [
+                            'GET /api/workflows/{workflowId}/runs/{runId}/history',
+                        ],
+                    ],
+                ],
+                'sdk-python' => [
+                    'surface' => 'sdk-python',
+                    'pairing_class' => 'compatible',
+                    'status' => 'not_covered',
+                    'coverage_gap_scope' => 'compatible_sdk_python_inside_window_interop',
+                    'requires_typed_sdk_evidence' => true,
+                    'requires_row_fields' => [
+                        'optional_coverage_gap',
+                        'coverage_gap_scope',
+                        'coverage_gap_reason',
+                        'request_response_capture_id',
+                    ],
+                    'requires_interop_evidence_fields' => [
+                        'sdk_python_version',
+                        'sdk_version',
+                        'typed_sdk_evidence',
+                    ],
+                    'interop_operation_groups' => [
+                        'workflow_control_plane',
+                        'schedule_control_plane',
+                        'worker_lifecycle',
+                    ],
+                    'operation_request_policy' => 'all_advertised_requests',
+                    'operation_groups' => [
+                        'workflow_control_plane',
+                        'schedule_control_plane',
+                        'worker_lifecycle',
+                    ],
+                ],
             ],
             'compatible_cli_optional_gap_policy' => [
                 'surface' => 'cli',
@@ -687,7 +739,7 @@ final class SkewRefusalMatrixResultGate
         $failures = [];
         $status = self::resultStatus($evidence);
         $cell = $surface.'.'.$pairingClass.'.'.$operationGroup;
-        $compatibleCliInteropGapExempt = self::isCompatibleCliInteropCoverageGapExempt(
+        $compatibleClientInteropGapExempt = self::isCompatibleClientInteropCoverageGapExempt(
             $surface,
             $pairingClass,
             $operationGroup,
@@ -731,7 +783,7 @@ final class SkewRefusalMatrixResultGate
             $nonPassCells[] = $cell;
         }
 
-        if (in_array($status, self::blockingStatuses(), true) && ! $compatibleCliInteropGapExempt) {
+        if (in_array($status, self::blockingStatuses(), true) && ! $compatibleClientInteropGapExempt) {
             $failures[] = [
                 'code' => 'blocking_operation_status',
                 'surface' => $surface,
@@ -804,7 +856,7 @@ final class SkewRefusalMatrixResultGate
      * @param array<string, mixed> $pairing
      * @param array<string, true> $requestResponseCaptureIds
      */
-    private static function isCompatibleCliInteropCoverageGapExempt(
+    private static function isCompatibleClientInteropCoverageGapExempt(
         string $surface,
         string $pairingClass,
         string $operationGroup,
@@ -814,11 +866,24 @@ final class SkewRefusalMatrixResultGate
         array $contract,
         array $requestResponseCaptureIds,
     ): bool {
-        if ($surface !== 'cli' || $pairingClass !== 'compatible' || $status !== 'not_covered') {
+        if ($pairingClass !== 'compatible' || $status !== 'not_covered') {
             return false;
         }
 
-        if (! self::isCompatibleCliOptionalCoverageGapRow($operationGroup, $evidenceRow, $contract)) {
+        $policy = self::compatibleClientOptionalGapPolicy($surface, $contract);
+        if ($policy === []) {
+            return false;
+        }
+
+        if (self::stringValue($policy['pairing_class'] ?? $policy['pairingClass'] ?? 'compatible') !== $pairingClass) {
+            return false;
+        }
+
+        if (self::stringValue($policy['status'] ?? 'not_covered') !== $status) {
+            return false;
+        }
+
+        if (! self::isCompatibleClientOptionalCoverageGapRow($operationGroup, $evidenceRow, $policy, $contract)) {
             return false;
         }
 
@@ -840,7 +905,7 @@ final class SkewRefusalMatrixResultGate
             return false;
         }
 
-        if (self::stringValue($evidence['surface'] ?? null) !== 'cli') {
+        if (self::stringValue($evidence['surface'] ?? null) !== $surface) {
             return false;
         }
 
@@ -848,11 +913,12 @@ final class SkewRefusalMatrixResultGate
             return false;
         }
 
-        if (! in_array(
-            self::stringValue($evidence['operation_group'] ?? $evidence['operationGroup'] ?? null),
-            ['workflow_control_plane', 'schedule_control_plane'],
-            true,
-        )) {
+        $interopOperationGroups = self::stringList(
+            $policy['interop_operation_groups']
+                ?? $policy['interopOperationGroups']
+                ?? ['workflow_control_plane', 'schedule_control_plane'],
+        );
+        if (! in_array(self::stringValue($evidence['operation_group'] ?? $evidence['operationGroup'] ?? null), $interopOperationGroups, true)) {
             return false;
         }
 
@@ -867,29 +933,68 @@ final class SkewRefusalMatrixResultGate
             }
         }
 
+        if (self::boolField($policy, ['requires_typed_sdk_evidence', 'requiresTypedSdkEvidence'])) {
+            if (! self::boolField($evidence, ['typed_sdk_evidence', 'typedSdkEvidence'])) {
+                return false;
+            }
+
+            foreach ([
+                ['sdk_python_version', 'sdkPythonVersion'],
+                ['sdk_version', 'sdkVersion'],
+            ] as $fields) {
+                if (self::firstStringField($evidence, $fields) === '') {
+                    return false;
+                }
+            }
+        }
+
         $captureId = self::requestResponseCaptureId($evidence);
 
         return $captureId !== '' && isset($requestResponseCaptureIds[$captureId]);
     }
 
     /**
+     * @param array<string, mixed> $contract
+     * @return array<string, mixed>
+     */
+    private static function compatibleClientOptionalGapPolicy(string $surface, array $contract): array
+    {
+        $resultGate = self::arrayField($contract, ['result_gate', 'resultGate']) ?? [];
+        $policies = self::arrayField(
+            $resultGate,
+            ['compatible_client_optional_gap_policies', 'compatibleClientOptionalGapPolicies'],
+        ) ?? [];
+
+        $policy = $policies[$surface] ?? null;
+        if (is_array($policy)) {
+            return $policy;
+        }
+
+        if ($surface === 'cli') {
+            return self::arrayField(
+                $resultGate,
+                ['compatible_cli_optional_gap_policy', 'compatibleCliOptionalGapPolicy'],
+            ) ?? [];
+        }
+
+        return [];
+    }
+
+    /**
      * @param array<string, mixed> $evidenceRow
+     * @param array<string, mixed> $policy
      * @param array<string, mixed> $contract
      */
-    private static function isCompatibleCliOptionalCoverageGapRow(
+    private static function isCompatibleClientOptionalCoverageGapRow(
         string $operationGroup,
         array $evidenceRow,
+        array $policy,
         array $contract,
     ): bool {
         if (! self::boolField($evidenceRow, ['optional_coverage_gap', 'optionalCoverageGap'])) {
             return false;
         }
 
-        $resultGate = self::arrayField($contract, ['result_gate', 'resultGate']) ?? [];
-        $policy = self::arrayField(
-            $resultGate,
-            ['compatible_cli_optional_gap_policy', 'compatibleCliOptionalGapPolicy'],
-        ) ?? [];
         $coverageGapScope = self::stringValue(
             $policy['coverage_gap_scope']
                 ?? $policy['coverageGapScope']
@@ -903,11 +1008,7 @@ final class SkewRefusalMatrixResultGate
             return false;
         }
 
-        $optionalRequestsByGroup = self::arrayField(
-            $policy,
-            ['operation_group_requests', 'operationGroupRequests'],
-        ) ?? [];
-        $optionalRequests = self::stringList($optionalRequestsByGroup[$operationGroup] ?? []);
+        $optionalRequests = self::optionalGapRequestsForOperationGroup($operationGroup, $policy, $contract);
         if ($optionalRequests === []) {
             return false;
         }
@@ -932,6 +1033,33 @@ final class SkewRefusalMatrixResultGate
         }
 
         return false;
+    }
+
+    /**
+     * @param array<string, mixed> $policy
+     * @param array<string, mixed> $contract
+     * @return list<string>
+     */
+    private static function optionalGapRequestsForOperationGroup(string $operationGroup, array $policy, array $contract): array
+    {
+        $optionalRequestsByGroup = self::arrayField(
+            $policy,
+            ['operation_group_requests', 'operationGroupRequests'],
+        ) ?? [];
+        $optionalRequests = self::stringList($optionalRequestsByGroup[$operationGroup] ?? []);
+        if ($optionalRequests !== []) {
+            return $optionalRequests;
+        }
+
+        if (self::stringValue($policy['operation_request_policy'] ?? $policy['operationRequestPolicy'] ?? null) !== 'all_advertised_requests') {
+            return [];
+        }
+
+        if (! in_array($operationGroup, self::stringList($policy['operation_groups'] ?? $policy['operationGroups'] ?? []), true)) {
+            return [];
+        }
+
+        return self::stringList($contract['operation_groups'][$operationGroup]['requests'] ?? []);
     }
 
     /**

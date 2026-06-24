@@ -302,8 +302,15 @@ final class SkewRefusalMatrixContractTest extends TestCase
             $manifest['result_gate']['pass_requires'],
         );
         $this->assertContains(
-            'compatible_cli_optional_gaps_are_allowed_only_with_passing_inside_window_interop_evidence',
+            'compatible_client_optional_gaps_are_allowed_only_with_passing_inside_window_interop_evidence',
             $manifest['result_gate']['pass_requires'],
+        );
+        $this->assertSame(
+            'compatible_sdk_python_inside_window_interop',
+            $manifest['result_gate']['compatible_client_optional_gap_policies']['sdk-python']['coverage_gap_scope'],
+        );
+        $this->assertTrue(
+            $manifest['result_gate']['compatible_client_optional_gap_policies']['sdk-python']['requires_typed_sdk_evidence'],
         );
         $this->assertContains(
             'next_step',
@@ -1069,7 +1076,7 @@ PHP,
         $this->assertMatchesRegularExpression(
             "/const coverageGapStatusPriority = \\[\\s*'not_covered',\\s*'runner_blocked',\\s*\\];/s",
             $runner,
-            'coverage gaps should remain blocking unless the compatible CLI cell has concrete inside-window interop evidence',
+            'coverage gaps should remain blocking unless a compatible client cell has concrete inside-window interop evidence',
         );
         $this->assertStringContainsString(
             'const productBlockingStatus = productBlockingStatusPriority.find((value) => statuses.includes(value));',
@@ -1079,7 +1086,7 @@ PHP,
         $this->assertStringContainsString(
             'compatibleInteropEvidenceForCell(surfaceName, pairingClass, rows, context)',
             $runner,
-            'compatible CLI pairings should use concrete published-artifact interop rows before reporting the cell as uncovered',
+            'compatible client pairings should use concrete published-artifact interop rows before reporting the cell as uncovered',
         );
         $this->assertStringNotContainsString(
             "statuses.find((value) => ['corrupt', 'silent_success', 'silent_failure', 'not_covered', 'runner_blocked'].includes(value))",
@@ -1342,6 +1349,78 @@ PHP,
         ]);
 
         $this->assertSame('runner_blocked', $runnerBlockedSummary['status']);
+    }
+
+    public function test_skew_runner_summarizes_compatible_python_sdk_cell_from_typed_inside_window_artifact_evidence(): void
+    {
+        $compatibilityWindow = 'control-plane version 2; worker protocol same-major <= 1.11';
+        $nextStep = 'No compatibility remediation is required for this inside-window pair. If the sdk-python command returns a domain error, use the captured response reason as the next operational step.';
+        $summary = $this->evaluateSkewPairingSummary(
+            [
+                [
+                    'surface' => 'sdk-python',
+                    'pairing_class' => 'compatible',
+                    'operation_group' => 'workflow_control_plane',
+                    'request_method' => 'POST',
+                    'request_path' => '/api/workflows',
+                    'status' => 'pass',
+                    'response_status' => 200,
+                    'client_or_worker_version' => '0.4.90',
+                    'sdk_python_version' => '0.4.90',
+                    'sdk_version' => '0.4.90',
+                    'server_version' => '0.2.505',
+                    'compatibility_window' => $compatibilityWindow,
+                    'next_step' => $nextStep,
+                    'request_response_capture_id' => 'sdk-python-compatible-workflow-start',
+                    'interop_classification' => 'typed_sdk_structured_control_plane_domain_response',
+                    'typed_sdk_evidence' => true,
+                    'sdk_operation' => 'POST /api/workflows',
+                ],
+                [
+                    'surface' => 'sdk-python',
+                    'pairing_class' => 'compatible',
+                    'operation_group' => 'worker_lifecycle',
+                    'request_method' => 'POST',
+                    'request_path' => '/api/worker/workflow-tasks/{task}/complete',
+                    'status' => 'not_covered',
+                    'client_or_worker_version' => '0.4.90',
+                    'sdk_python_version' => '0.4.90',
+                    'server_version' => '0.2.505',
+                    'compatibility_window' => $compatibilityWindow,
+                    'next_step' => $nextStep,
+                    'request_response_capture_id' => 'sdk-python-compatible-worker-complete-gap',
+                    'coverage_gap_reason' => 'worker completion fixture did not lease a task in this run',
+                ],
+            ],
+            [
+                'artifactVersions' => [
+                    'sdk-python' => '0.4.90',
+                    'server' => '0.2.505',
+                ],
+                'observedServerVersion' => '0.2.505',
+            ],
+            'sdk-python',
+        );
+
+        $this->assertSame('pass', $summary['status']);
+        $this->assertSame('pass', $summary['observed_result']);
+        $this->assertSame('0.4.90', $summary['client_or_worker_version']);
+        $this->assertSame('0.2.505', $summary['server_version']);
+        $this->assertSame($compatibilityWindow, $summary['compatibility_window']);
+        $this->assertSame($nextStep, $summary['next_step']);
+        $this->assertContains('not_covered', $summary['observed_operation_statuses']);
+        $this->assertSame(
+            'sdk-python-compatible-workflow-start',
+            $summary['compatible_interop_evidence']['request_response_capture_id'],
+        );
+        $this->assertSame('POST /api/workflows', $summary['compatible_interop_evidence']['request']);
+        $this->assertSame('0.4.90', $summary['compatible_interop_evidence']['sdk_python_version']);
+        $this->assertSame('0.4.90', $summary['compatible_interop_evidence']['sdk_version']);
+        $this->assertTrue($summary['compatible_interop_evidence']['typed_sdk_evidence']);
+        $this->assertSame(
+            'typed_sdk_structured_control_plane_domain_response',
+            $summary['compatible_interop_evidence']['interop_classification'],
+        );
     }
 
     public function test_skew_runner_uses_published_php_clients_for_worker_protocol_rows(): void
@@ -2029,6 +2108,82 @@ PHP,
         );
     }
 
+    public function test_result_gate_accepts_compatible_python_sdk_summary_with_typed_inside_window_interop_and_optional_gap_rows(): void
+    {
+        $result = $this->completeSkewResult();
+        $interopRow = &$result['operation_evidence']['sdk-python']['compatible']['workflow_control_plane'][0];
+        $interopRow['sdk_python_version'] = '0.4.78';
+        $interopRow['sdk_version'] = '0.4.78';
+        $interopRow['typed_sdk_evidence'] = true;
+        $interopRow['sdk_operation'] = 'POST /api/workflows';
+        $interopRow['interop_classification'] = 'typed_sdk_structured_control_plane_domain_response';
+        $interopEvidenceRow = $interopRow;
+        unset($interopRow);
+
+        $gapRowIndex = null;
+        foreach ($result['operation_evidence']['sdk-python']['compatible']['worker_lifecycle'] as $index => $candidate) {
+            if (($candidate['request_path'] ?? null) === '/api/worker/workflow-tasks/{task}/complete') {
+                $gapRowIndex = $index;
+                break;
+            }
+        }
+        $this->assertNotNull($gapRowIndex);
+
+        $gapRow = &$result['operation_evidence']['sdk-python']['compatible']['worker_lifecycle'][$gapRowIndex];
+        $gapRow['status'] = 'not_covered';
+        $gapRow['response_status'] = 0;
+        $gapRow['response_body'] = [
+            'coverage_gap' => true,
+            'optional_coverage_gap' => true,
+            'coverage_gap_scope' => 'compatible_sdk_python_inside_window_interop',
+            'reason' => 'The compatible Python SDK worker completion fixture did not lease a task in this run.',
+        ];
+        $gapRow['optional_coverage_gap'] = true;
+        $gapRow['coverage_requirement'] = 'optional';
+        $gapRow['coverage_gap_scope'] = 'compatible_sdk_python_inside_window_interop';
+        $gapRow['coverage_gap_reason'] =
+            'The compatible Python SDK worker completion fixture did not lease a task in this run.';
+        unset($gapRow);
+
+        $result['pairing_results']['sdk-python']['compatible']['status'] = 'pass';
+        $result['pairing_results']['sdk-python']['compatible']['observed_result'] = 'pass';
+        $result['pairing_results']['sdk-python']['compatible']['client_or_worker_version'] = '0.4.78';
+        $result['pairing_results']['sdk-python']['compatible']['server_version'] = '0.2.191';
+        $result['pairing_results']['sdk-python']['compatible']['compatibility_window'] = $interopEvidenceRow['compatibility_window'];
+        $result['pairing_results']['sdk-python']['compatible']['next_step'] = $interopEvidenceRow['next_step'];
+        $result['pairing_results']['sdk-python']['compatible']['observed_operation_statuses'] = ['pass', 'not_covered'];
+        $result['pairing_results']['sdk-python']['compatible']['compatible_interop_evidence'] = [
+            'surface' => 'sdk-python',
+            'pairing_class' => 'compatible',
+            'operation_group' => 'workflow_control_plane',
+            'observed_result' => 'pass',
+            'client_or_worker_version' => $interopEvidenceRow['client_or_worker_version'],
+            'sdk_python_version' => '0.4.78',
+            'sdk_version' => '0.4.78',
+            'typed_sdk_evidence' => true,
+            'server_version' => $interopEvidenceRow['server_version'],
+            'compatibility_window' => $interopEvidenceRow['compatibility_window'],
+            'next_step' => $interopEvidenceRow['next_step'],
+            'request_response_capture_id' => $interopEvidenceRow['request_response_capture_id'],
+            'request' => $interopEvidenceRow['request_method'].' '.$interopEvidenceRow['request_path'],
+        ];
+
+        $evaluation = SkewRefusalMatrixResultGate::evaluate($result);
+
+        $this->assertSame('pass', $evaluation['status']);
+        $this->assertSame([], $evaluation['non_pass_cells']);
+        $this->assertSame([], $evaluation['gate_failures']);
+
+        unset($result['pairing_results']['sdk-python']['compatible']['compatible_interop_evidence']['typed_sdk_evidence']);
+        $rejected = SkewRefusalMatrixResultGate::evaluate($result);
+
+        $this->assertSame('non_passing', $rejected['status']);
+        $this->assertContains(
+            'blocking_operation_status',
+            array_column($rejected['gate_failures'], 'code'),
+        );
+    }
+
     public function test_result_gate_does_not_exempt_required_compatible_cli_not_covered_rows(): void
     {
         $result = $this->completeSkewResult();
@@ -2376,8 +2531,12 @@ JS;
      * @param array<string, mixed>|null $context
      * @return array<string, mixed>
      */
-    private function evaluateSkewPairingSummary(array $rows, ?array $context = null): array
-    {
+    private function evaluateSkewPairingSummary(
+        array $rows,
+        ?array $context = null,
+        string $surface = 'cli',
+        string $pairingClass = 'compatible',
+    ): array {
         $repoRoot = dirname(__DIR__, 2);
         $nodeBinary = trim((string) shell_exec('command -v node 2>/dev/null'));
         if ($nodeBinary === '') {
@@ -2399,8 +2558,10 @@ const moduleUrl = pathToFileURL(process.argv[2]).href;
 const { summarizePairing } = await import(moduleUrl);
 const rows = JSON.parse(process.argv[3]);
 const context = JSON.parse(process.argv[4]);
+const surface = process.argv[5];
+const pairingClass = process.argv[6];
 
-console.log(JSON.stringify(summarizePairing('cli', 'compatible', rows, context)));
+console.log(JSON.stringify(summarizePairing(surface, pairingClass, rows, context)));
 JS;
 
         $process = proc_open(
@@ -2413,6 +2574,8 @@ JS;
                 $repoRoot.'/scripts/conformance/skew-published-artifacts.mjs',
                 json_encode($rows, JSON_THROW_ON_ERROR),
                 json_encode($context, JSON_THROW_ON_ERROR),
+                $surface,
+                $pairingClass,
             ],
             [
                 1 => ['pipe', 'w'],
