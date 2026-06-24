@@ -122,6 +122,96 @@ class WorkerControllerTest extends TestCase
         self::assertSame('2026-05-18T21:00:00Z', $worker->process_metrics['process_started_at']);
     }
 
+    public function test_register_allows_workflow_only_worker_with_zero_activity_capacity(): void
+    {
+        $response = $this->withHeaders($this->workerHeaders())
+            ->postJson('/api/worker/register', [
+                'worker_id' => 'timer-workflow-only-worker',
+                'task_queue' => 'timers-normal-sleep',
+                'runtime' => 'php',
+                'supported_workflow_types' => ['timers.normal-sleep'],
+                'supported_activity_types' => [],
+                'max_concurrent_workflow_tasks' => 3,
+                'max_concurrent_activity_tasks' => 0,
+                'task_slots' => [
+                    'workflow_available' => 3,
+                    'activity_available' => 0,
+                ],
+            ]);
+
+        $response->assertStatus(201)
+            ->assertJsonPath('worker_id', 'timer-workflow-only-worker')
+            ->assertJsonPath('registered', true)
+            ->assertJsonPath('task_queue', 'timers-normal-sleep')
+            ->assertJsonPath('runtime', 'php');
+
+        $worker = WorkerRegistration::query()
+            ->where('worker_id', 'timer-workflow-only-worker')
+            ->where('namespace', 'default')
+            ->firstOrFail();
+
+        self::assertSame(['timers.normal-sleep'], $worker->supported_workflow_types);
+        self::assertSame([], $worker->supported_activity_types);
+        self::assertSame(3, $worker->max_concurrent_workflow_tasks);
+        self::assertSame(0, $worker->max_concurrent_activity_tasks);
+        self::assertSame(3, $worker->available_workflow_slots);
+        self::assertSame(0, $worker->available_activity_slots);
+    }
+
+    public function test_register_rejects_worker_with_no_task_capacity(): void
+    {
+        $response = $this->withHeaders($this->workerHeaders())
+            ->postJson('/api/worker/register', [
+                'worker_id' => 'no-task-capacity-worker',
+                'task_queue' => 'default',
+                'runtime' => 'python',
+                'supported_workflow_types' => [],
+                'supported_activity_types' => [],
+                'max_concurrent_workflow_tasks' => 0,
+                'max_concurrent_activity_tasks' => 0,
+            ]);
+
+        $response->assertStatus(422)
+            ->assertJsonPath('reason', 'validation_failed')
+            ->assertJsonValidationErrors([
+                'max_concurrent_workflow_tasks',
+                'max_concurrent_activity_tasks',
+            ]);
+
+        self::assertSame(0, WorkerRegistration::query()
+            ->where('worker_id', 'no-task-capacity-worker')
+            ->count());
+    }
+
+    public function test_register_rejects_negative_and_non_numeric_task_capacity(): void
+    {
+        $cases = [
+            ['negative-workflow-capacity-worker', ['max_concurrent_workflow_tasks' => -1], 'max_concurrent_workflow_tasks'],
+            ['negative-activity-capacity-worker', ['max_concurrent_activity_tasks' => -1], 'max_concurrent_activity_tasks'],
+            ['non-numeric-workflow-capacity-worker', ['max_concurrent_workflow_tasks' => 'many'], 'max_concurrent_workflow_tasks'],
+            ['non-numeric-activity-capacity-worker', ['max_concurrent_activity_tasks' => 'many'], 'max_concurrent_activity_tasks'],
+        ];
+
+        foreach ($cases as [$workerId, $capacity, $field]) {
+            $response = $this->withHeaders($this->workerHeaders())
+                ->postJson('/api/worker/register', [
+                    'worker_id' => $workerId,
+                    'task_queue' => 'default',
+                    'runtime' => 'python',
+                    'supported_workflow_types' => ['orders.process'],
+                    'supported_activity_types' => ['orders.charge'],
+                ] + $capacity);
+
+            $response->assertStatus(422)
+                ->assertJsonPath('reason', 'validation_failed')
+                ->assertJsonValidationErrors([$field]);
+
+            self::assertSame(0, WorkerRegistration::query()
+                ->where('worker_id', $workerId)
+                ->count());
+        }
+    }
+
     public function test_register_auto_generates_worker_id_when_omitted(): void
     {
         $response = $this->withHeaders($this->workerHeaders())

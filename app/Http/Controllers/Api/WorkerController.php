@@ -81,8 +81,8 @@ class WorkerController
             'supported_activity_types.*' => ['string'],
             'capabilities' => ['nullable', 'array'],
             'capabilities.*' => ['string', 'max:255'],
-            'max_concurrent_workflow_tasks' => ['nullable', 'integer', 'min:1'],
-            'max_concurrent_activity_tasks' => ['nullable', 'integer', 'min:1'],
+            'max_concurrent_workflow_tasks' => ['nullable', 'integer', 'min:0'],
+            'max_concurrent_activity_tasks' => ['nullable', 'integer', 'min:0'],
             'max_concurrent_worker_sessions' => ['nullable', 'integer', 'min:1'],
             'task_slots' => ['nullable', 'array'],
             'task_slots.workflow_available' => ['nullable', 'integer', 'min:0'],
@@ -155,6 +155,7 @@ class WorkerController
 
         $maxWorkflowTasks = $validated['max_concurrent_workflow_tasks'] ?? 100;
         $maxActivityTasks = $validated['max_concurrent_activity_tasks'] ?? 100;
+        $this->validateWorkerTaskCapacity($maxWorkflowTasks, $maxActivityTasks);
         $maxWorkerSessions = $validated['max_concurrent_worker_sessions'] ?? 10;
         $taskSlots = is_array($validated['task_slots'] ?? null) ? $validated['task_slots'] : [];
         $processMetrics = $this->normalizeProcessMetrics($validated['process_metrics'] ?? null);
@@ -624,6 +625,25 @@ class WorkerController
         }
 
         return $count;
+    }
+
+    /**
+     * @throws ValidationException
+     */
+    private function validateWorkerTaskCapacity(int $maxWorkflowTasks, int $maxActivityTasks): void
+    {
+        if ($maxWorkflowTasks > 0 || $maxActivityTasks > 0) {
+            return;
+        }
+
+        throw ValidationException::withMessages([
+            'max_concurrent_workflow_tasks' => [
+                'At least one of max_concurrent_workflow_tasks or max_concurrent_activity_tasks must be greater than 0.',
+            ],
+            'max_concurrent_activity_tasks' => [
+                'At least one of max_concurrent_workflow_tasks or max_concurrent_activity_tasks must be greater than 0.',
+            ],
+        ]);
     }
 
     /**
