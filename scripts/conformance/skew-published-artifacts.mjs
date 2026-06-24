@@ -514,6 +514,8 @@ async function probeOperation({
       context,
       status: fixtureGap.status,
       reason: fixtureGap.reason,
+      optionalCoverageGap: fixtureGap.optional_coverage_gap === true,
+      coverageGapScope: fixtureGap.coverage_gap_scope,
     });
   }
 
@@ -753,6 +755,8 @@ function notCoveredProbe({
   reason,
   artifactInvocation = null,
   proxyCaptures = [],
+  optionalCoverageGap = false,
+  coverageGapScope = '',
 }) {
   const surfaceVersion = context.artifactVersions[surface.artifact];
   const pairing = pairingClasses[pairingClass];
@@ -774,6 +778,10 @@ function notCoveredProbe({
       artifact: surface.artifact,
     },
   };
+  if (optionalCoverageGap) {
+    response.body.optional_coverage_gap = true;
+    response.body.coverage_gap_scope = coverageGapScope || 'compatible_cli_inside_window_interop';
+  }
   const capture = {
     id: captureId,
     surface: surfaceName,
@@ -801,6 +809,11 @@ function notCoveredProbe({
     },
     proxy_captures: proxyCaptures,
   };
+  if (optionalCoverageGap) {
+    capture.optional_coverage_gap = true;
+    capture.coverage_requirement = 'optional';
+    capture.coverage_gap_scope = coverageGapScope || 'compatible_cli_inside_window_interop';
+  }
   if (surfaceName === 'workflow-worker') {
     capture.worker_version = surfaceVersion;
     capture.workflow_package_version = surfaceVersion;
@@ -876,6 +889,12 @@ function notCoveredProbe({
     evidence.worker_version = surfaceVersion;
     evidence.workflow_package_version = surfaceVersion;
     evidence.worker_protocol_version = pairing.workerProtocolVersion;
+  }
+
+  if (optionalCoverageGap) {
+    evidence.optional_coverage_gap = true;
+    evidence.coverage_requirement = 'optional';
+    evidence.coverage_gap_scope = coverageGapScope || 'compatible_cli_inside_window_interop';
   }
 
   return { evidence, capture };
@@ -1416,16 +1435,28 @@ async function prepareWorkflowFixture({
     runId: workflowRunIdFromBody(response.body),
   };
   if (requestTemplate.includes('{runId}') && !fixture.runId) {
-    return {
+    const gap = {
       status: 'not_covered',
       reason: `${requestTemplate} requires a workflow fixture run id, but the compatible fixture start response did not report one.`,
     };
+    if (compatibleCliOptionalWorkflowFixtureGap(surfaceName, pairingClass, requestTemplate)) {
+      gap.optional_coverage_gap = true;
+      gap.coverage_gap_scope = 'compatible_cli_inside_window_interop';
+    }
+
+    return gap;
   }
 
   context.operationFixtures[fixtureKey] = fixture;
   Object.assign(state, fixture);
 
   return null;
+}
+
+function compatibleCliOptionalWorkflowFixtureGap(surfaceName, pairingClass, requestTemplate) {
+  return surfaceName === 'cli'
+    && pairingClass === 'compatible'
+    && requestTemplate === 'GET /api/workflows/{workflowId}/runs/{runId}/history';
 }
 
 async function prepareScheduleFixture({
@@ -3313,18 +3344,26 @@ function compatibleControlPlaneInteropClassification({
     : 'structured_control_plane_domain_response';
 }
 
-function summarizePairing(surfaceName, pairingClass, rows, context) {
+export function summarizePairing(surfaceName, pairingClass, rows, context) {
   const statuses = Array.from(new Set(rows.map((row) => row.status).filter(Boolean)));
-  const pairingStatusPriority = [
+  const productBlockingStatusPriority = [
     'corrupt',
     'silent_success',
     'silent_failure',
+  ];
+  const coverageGapStatusPriority = [
     'not_covered',
     'runner_blocked',
   ];
-  const prioritizedStatus = pairingStatusPriority.find((value) => statuses.includes(value));
-  let status = prioritizedStatus ?? 'pass';
-  if (!prioritizedStatus && statuses.includes('loud_refuse')) {
+  const productBlockingStatus = productBlockingStatusPriority.find((value) => statuses.includes(value));
+  const coverageGapStatus = coverageGapStatusPriority.find((value) => statuses.includes(value));
+  const runnerBlockedStatus = statuses.includes('runner_blocked') ? 'runner_blocked' : null;
+  const compatibleInteropEvidence = compatibleInteropEvidenceForCell(surfaceName, pairingClass, rows, context);
+  let status = productBlockingStatus
+    ?? runnerBlockedStatus
+    ?? (compatibleInteropEvidence ? null : coverageGapStatus)
+    ?? 'pass';
+  if (!productBlockingStatus && !coverageGapStatus && statuses.includes('loud_refuse')) {
     status = 'loud_refuse';
   }
 
@@ -3334,11 +3373,16 @@ function summarizePairing(surfaceName, pairingClass, rows, context) {
     surface: surfaceName,
     pairing_class: pairingClass,
     status,
+    observed_result: status,
     client_or_worker_version: context.artifactVersions[surface.artifact],
     server_version: context.observedServerVersion,
     compatibility_window: pairing.compatibilityWindow,
+    next_step: compatibilityNextStep(surfaceName, pairingClass),
     observed_operation_statuses: statuses,
   };
+  if (compatibleInteropEvidence) {
+    result.compatible_interop_evidence = compatibleInteropEvidence;
+  }
   if (surfaceName === 'workflow-worker') {
     result.worker_version = context.artifactVersions[surface.artifact];
     result.workflow_package_version = context.artifactVersions[surface.artifact];
@@ -3375,6 +3419,67 @@ function summarizePairing(surfaceName, pairingClass, rows, context) {
   }
 
   return result;
+}
+
+function compatibleInteropEvidenceForCell(surfaceName, pairingClass, rows, context) {
+  if (surfaceName !== 'cli' || pairingClass !== 'compatible') {
+    return null;
+  }
+
+  const surface = surfaces[surfaceName];
+  const pairing = pairingClasses[pairingClass];
+  const clientVersion = stringValue(context.artifactVersions?.[surface.artifact]);
+  const serverVersion = stringValue(context.observedServerVersion);
+  const compatibilityWindow = pairing.compatibilityWindow;
+  const nextStep = compatibilityNextStep(surfaceName, pairingClass);
+  const row = rows.find((candidate) => {
+    const operationGroup = stringValue(candidate.operation_group);
+
+    return candidate.status === 'pass'
+      && ['workflow_control_plane', 'schedule_control_plane'].includes(operationGroup)
+      && firstStringValue(candidate.client_or_worker_version, candidate.client_or_observer_version) === clientVersion
+      && stringValue(candidate.server_version) === serverVersion
+      && stringValue(candidate.compatibility_window) === compatibilityWindow
+      && stringValue(candidate.next_step) === nextStep
+      && stringValue(candidate.request_response_capture_id) !== '';
+  });
+
+  if (!row) {
+    return null;
+  }
+
+  const evidence = {
+    surface: surfaceName,
+    pairing_class: pairingClass,
+    operation_group: stringValue(row.operation_group),
+    observed_result: 'pass',
+    client_or_worker_version: clientVersion,
+    server_version: serverVersion,
+    compatibility_window: compatibilityWindow,
+    next_step: nextStep,
+    request_response_capture_id: stringValue(row.request_response_capture_id),
+  };
+  const request = evidenceRequestLabel(row);
+  if (request) {
+    evidence.request = request;
+  }
+  const interopClassification = stringValue(row.interop_classification);
+  if (interopClassification) {
+    evidence.interop_classification = interopClassification;
+  }
+
+  return evidence;
+}
+
+function evidenceRequestLabel(row) {
+  const request = stringValue(row.request);
+  if (request) {
+    return request;
+  }
+
+  const method = stringValue(row.request_method);
+  const requestPath = stringValue(row.request_path);
+  return method && requestPath ? `${method} ${requestPath}` : '';
 }
 
 function findingForPairing(surfaceName, pairingClass, pairing, rows, context) {

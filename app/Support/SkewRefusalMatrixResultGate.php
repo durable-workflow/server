@@ -74,8 +74,26 @@ final class SkewRefusalMatrixResultGate
                 'each_non_pass_cell_has_a_focused_finding_link',
                 'request_response_evidence_is_present_for_each_skewed_operation',
                 'operation_capture_ids_resolve_to_attached_request_response_captures',
+                'compatible_cli_optional_gaps_are_allowed_only_with_passing_inside_window_interop_evidence',
                 'smoke_only_results_remain_non_passing',
                 'overall_outcome_matches_gate_status',
+            ],
+            'compatible_cli_optional_gap_policy' => [
+                'surface' => 'cli',
+                'pairing_class' => 'compatible',
+                'status' => 'not_covered',
+                'coverage_gap_scope' => 'compatible_cli_inside_window_interop',
+                'requires_row_fields' => [
+                    'optional_coverage_gap',
+                    'coverage_gap_scope',
+                    'coverage_gap_reason',
+                    'request_response_capture_id',
+                ],
+                'operation_group_requests' => [
+                    'workflow_control_plane' => [
+                        'GET /api/workflows/{workflowId}/runs/{runId}/history',
+                    ],
+                ],
             ],
             'non_pass_statuses' => [
                 'fail',
@@ -198,6 +216,7 @@ final class SkewRefusalMatrixResultGate
                                 $surfaceContract,
                                 $pairingClass,
                                 $operationGroup,
+                                is_array($pairing) ? $pairing : [],
                                 $evidence,
                                 $index,
                                 $contract,
@@ -657,6 +676,7 @@ final class SkewRefusalMatrixResultGate
         array $surfaceContract,
         string $pairingClass,
         string $operationGroup,
+        array $pairing,
         array $evidence,
         int $index,
         array $contract,
@@ -667,6 +687,16 @@ final class SkewRefusalMatrixResultGate
         $failures = [];
         $status = self::resultStatus($evidence);
         $cell = $surface.'.'.$pairingClass.'.'.$operationGroup;
+        $compatibleCliInteropGapExempt = self::isCompatibleCliInteropCoverageGapExempt(
+            $surface,
+            $pairingClass,
+            $operationGroup,
+            $status,
+            $pairing,
+            $evidence,
+            $contract,
+            $requestResponseCaptureIds,
+        );
 
         if ($status === '') {
             $failures[] = [
@@ -701,7 +731,7 @@ final class SkewRefusalMatrixResultGate
             $nonPassCells[] = $cell;
         }
 
-        if (in_array($status, self::blockingStatuses(), true)) {
+        if (in_array($status, self::blockingStatuses(), true) && ! $compatibleCliInteropGapExempt) {
             $failures[] = [
                 'code' => 'blocking_operation_status',
                 'surface' => $surface,
@@ -768,6 +798,156 @@ final class SkewRefusalMatrixResultGate
         }
 
         return $failures;
+    }
+
+    /**
+     * @param array<string, mixed> $pairing
+     * @param array<string, true> $requestResponseCaptureIds
+     */
+    private static function isCompatibleCliInteropCoverageGapExempt(
+        string $surface,
+        string $pairingClass,
+        string $operationGroup,
+        string $status,
+        array $pairing,
+        array $evidenceRow,
+        array $contract,
+        array $requestResponseCaptureIds,
+    ): bool {
+        if ($surface !== 'cli' || $pairingClass !== 'compatible' || $status !== 'not_covered') {
+            return false;
+        }
+
+        if (! self::isCompatibleCliOptionalCoverageGapRow($operationGroup, $evidenceRow, $contract)) {
+            return false;
+        }
+
+        if (self::resultStatus($pairing) !== 'pass') {
+            return false;
+        }
+
+        $evidence = $pairing['compatible_interop_evidence']
+            ?? $pairing['compatibleInteropEvidence']
+            ?? null;
+        if (! is_array($evidence)) {
+            return false;
+        }
+
+        $observedResult = self::stringValue(
+            $evidence['observed_result'] ?? $evidence['observedResult'] ?? $evidence['status'] ?? null,
+        );
+        if ($observedResult !== 'pass') {
+            return false;
+        }
+
+        if (self::stringValue($evidence['surface'] ?? null) !== 'cli') {
+            return false;
+        }
+
+        if (self::stringValue($evidence['pairing_class'] ?? $evidence['pairingClass'] ?? null) !== 'compatible') {
+            return false;
+        }
+
+        if (! in_array(
+            self::stringValue($evidence['operation_group'] ?? $evidence['operationGroup'] ?? null),
+            ['workflow_control_plane', 'schedule_control_plane'],
+            true,
+        )) {
+            return false;
+        }
+
+        foreach ([
+            ['client_or_worker_version', 'clientOrWorkerVersion', 'client_or_observer_version', 'clientOrObserverVersion'],
+            ['server_version', 'serverVersion'],
+            ['compatibility_window', 'compatibilityWindow'],
+            ['next_step', 'nextStep'],
+        ] as $fields) {
+            if (self::firstStringField($evidence, $fields) === '') {
+                return false;
+            }
+        }
+
+        $captureId = self::requestResponseCaptureId($evidence);
+
+        return $captureId !== '' && isset($requestResponseCaptureIds[$captureId]);
+    }
+
+    /**
+     * @param array<string, mixed> $evidenceRow
+     * @param array<string, mixed> $contract
+     */
+    private static function isCompatibleCliOptionalCoverageGapRow(
+        string $operationGroup,
+        array $evidenceRow,
+        array $contract,
+    ): bool {
+        if (! self::boolField($evidenceRow, ['optional_coverage_gap', 'optionalCoverageGap'])) {
+            return false;
+        }
+
+        $resultGate = self::arrayField($contract, ['result_gate', 'resultGate']) ?? [];
+        $policy = self::arrayField(
+            $resultGate,
+            ['compatible_cli_optional_gap_policy', 'compatibleCliOptionalGapPolicy'],
+        ) ?? [];
+        $coverageGapScope = self::stringValue(
+            $policy['coverage_gap_scope']
+                ?? $policy['coverageGapScope']
+                ?? 'compatible_cli_inside_window_interop',
+        );
+        if (self::firstStringField($evidenceRow, ['coverage_gap_scope', 'coverageGapScope']) !== $coverageGapScope) {
+            return false;
+        }
+
+        if (self::firstStringField($evidenceRow, ['coverage_gap_reason', 'coverageGapReason']) === '') {
+            return false;
+        }
+
+        $optionalRequestsByGroup = self::arrayField(
+            $policy,
+            ['operation_group_requests', 'operationGroupRequests'],
+        ) ?? [];
+        $optionalRequests = self::stringList($optionalRequestsByGroup[$operationGroup] ?? []);
+        if ($optionalRequests === []) {
+            return false;
+        }
+
+        $observedRequests = self::operationEvidenceRequests($evidenceRow);
+        if ($observedRequests === []) {
+            return false;
+        }
+
+        $optionalRequestMap = [];
+        foreach ($optionalRequests as $request) {
+            $normalizedRequest = self::normalizeOperationRequest($request);
+            if ($normalizedRequest !== '') {
+                $optionalRequestMap[$normalizedRequest] = $request;
+            }
+        }
+
+        foreach ($observedRequests as $observedRequest) {
+            if (self::matchingAdvertisedRequest($observedRequest, $optionalRequestMap) !== null) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /**
+     * @param array<string, mixed> $row
+     * @param list<string> $fields
+     */
+    private static function firstStringField(array $row, array $fields): string
+    {
+        foreach ($fields as $field) {
+            $value = self::stringValue($row[$field] ?? null);
+            if ($value !== '') {
+                return $value;
+            }
+        }
+
+        return '';
     }
 
     /**

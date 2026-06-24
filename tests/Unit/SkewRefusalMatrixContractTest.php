@@ -302,6 +302,10 @@ final class SkewRefusalMatrixContractTest extends TestCase
             $manifest['result_gate']['pass_requires'],
         );
         $this->assertContains(
+            'compatible_cli_optional_gaps_are_allowed_only_with_passing_inside_window_interop_evidence',
+            $manifest['result_gate']['pass_requires'],
+        );
+        $this->assertContains(
             'next_step',
             $manifest['operation_groups']['workflow_control_plane']['evidence'],
             'wire evidence must carry the skew-contract next step alongside version and compatibility-window context',
@@ -1058,14 +1062,24 @@ PHP,
             'Waterline stale render must classify as a blocking product finding',
         );
         $this->assertMatchesRegularExpression(
-            "/const pairingStatusPriority = \\[\\s*'corrupt',\\s*'silent_success',\\s*'silent_failure',\\s*'not_covered',\\s*'runner_blocked',\\s*\\];/s",
+            "/const productBlockingStatusPriority = \\[\\s*'corrupt',\\s*'silent_success',\\s*'silent_failure',\\s*\\];/s",
             $runner,
             'product blocker statuses must outrank not_covered and runner_blocked when a pairing mixes product and coverage gaps',
         );
+        $this->assertMatchesRegularExpression(
+            "/const coverageGapStatusPriority = \\[\\s*'not_covered',\\s*'runner_blocked',\\s*\\];/s",
+            $runner,
+            'coverage gaps should remain blocking unless the compatible CLI cell has concrete inside-window interop evidence',
+        );
         $this->assertStringContainsString(
-            'const prioritizedStatus = pairingStatusPriority.find((value) => statuses.includes(value));',
+            'const productBlockingStatus = productBlockingStatusPriority.find((value) => statuses.includes(value));',
             $runner,
             'pairing summaries must use the explicit status priority instead of observed row order',
+        );
+        $this->assertStringContainsString(
+            'compatibleInteropEvidenceForCell(surfaceName, pairingClass, rows, context)',
+            $runner,
+            'compatible CLI pairings should use concrete published-artifact interop rows before reporting the cell as uncovered',
         );
         $this->assertStringNotContainsString(
             "statuses.find((value) => ['corrupt', 'silent_success', 'silent_failure', 'not_covered', 'runner_blocked'].includes(value))",
@@ -1231,6 +1245,103 @@ PHP,
             $materialized['schedule_trigger'],
             'Schedule trigger rows must continue to use schedule ids for the shared {id} placeholder.',
         );
+    }
+
+    public function test_skew_runner_summarizes_compatible_cli_cell_from_inside_window_artifact_evidence(): void
+    {
+        $compatibilityWindow = 'control-plane version 2; worker protocol same-major <= 1.11';
+        $nextStep = 'No compatibility remediation is required for this inside-window pair. If the cli command returns a domain error, use the captured response reason as the next operational step.';
+        $summary = $this->evaluateSkewPairingSummary([
+            [
+                'surface' => 'cli',
+                'pairing_class' => 'compatible',
+                'operation_group' => 'cluster_info_probe',
+                'request' => 'GET /api/cluster/info',
+                'status' => 'pass',
+                'status_code' => 200,
+                'client_or_observer_version' => '0.1.82',
+                'server_version' => '0.2.504',
+                'compatibility_window' => $compatibilityWindow,
+                'next_step' => $nextStep,
+                'request_response_capture_id' => 'cli-compatible-cluster-info',
+            ],
+            [
+                'surface' => 'cli',
+                'pairing_class' => 'compatible',
+                'operation_group' => 'workflow_control_plane',
+                'request_method' => 'POST',
+                'request_path' => '/api/workflows',
+                'status' => 'pass',
+                'response_status' => 200,
+                'client_or_worker_version' => '0.1.82',
+                'server_version' => '0.2.504',
+                'compatibility_window' => $compatibilityWindow,
+                'next_step' => $nextStep,
+                'request_response_capture_id' => 'cli-compatible-workflow-start',
+                'interop_classification' => 'structured_control_plane_domain_response',
+            ],
+            [
+                'surface' => 'cli',
+                'pairing_class' => 'compatible',
+                'operation_group' => 'workflow_control_plane',
+                'request_method' => 'GET',
+                'request_path' => '/api/workflows/skew/runs/missing/history',
+                'status' => 'not_covered',
+                'client_or_worker_version' => '0.1.82',
+                'server_version' => '0.2.504',
+                'compatibility_window' => $compatibilityWindow,
+                'next_step' => $nextStep,
+                'request_response_capture_id' => 'cli-compatible-history-gap',
+                'coverage_gap_reason' => 'fixture did not report a run id for this optional compatible history probe',
+            ],
+        ]);
+
+        $this->assertSame('pass', $summary['status']);
+        $this->assertSame('pass', $summary['observed_result']);
+        $this->assertSame('0.1.82', $summary['client_or_worker_version']);
+        $this->assertSame('0.2.504', $summary['server_version']);
+        $this->assertSame($compatibilityWindow, $summary['compatibility_window']);
+        $this->assertSame($nextStep, $summary['next_step']);
+        $this->assertContains('not_covered', $summary['observed_operation_statuses']);
+        $this->assertSame('cli-compatible-workflow-start', $summary['compatible_interop_evidence']['request_response_capture_id']);
+        $this->assertSame('POST /api/workflows', $summary['compatible_interop_evidence']['request']);
+        $this->assertSame(
+            'structured_control_plane_domain_response',
+            $summary['compatible_interop_evidence']['interop_classification'],
+        );
+
+        $runnerBlockedSummary = $this->evaluateSkewPairingSummary([
+            [
+                'surface' => 'cli',
+                'pairing_class' => 'compatible',
+                'operation_group' => 'workflow_control_plane',
+                'request_method' => 'POST',
+                'request_path' => '/api/workflows',
+                'status' => 'pass',
+                'response_status' => 200,
+                'client_or_worker_version' => '0.1.82',
+                'server_version' => '0.2.504',
+                'compatibility_window' => $compatibilityWindow,
+                'next_step' => $nextStep,
+                'request_response_capture_id' => 'cli-compatible-workflow-start',
+            ],
+            [
+                'surface' => 'cli',
+                'pairing_class' => 'compatible',
+                'operation_group' => 'schedule_control_plane',
+                'request_method' => 'POST',
+                'request_path' => '/api/schedules',
+                'status' => 'runner_blocked',
+                'client_or_worker_version' => '0.1.82',
+                'server_version' => '0.2.504',
+                'compatibility_window' => $compatibilityWindow,
+                'next_step' => $nextStep,
+                'request_response_capture_id' => 'cli-compatible-schedule-runner-blocked',
+                'coverage_gap_reason' => 'the published CLI process could not be invoked by the host runner',
+            ],
+        ]);
+
+        $this->assertSame('runner_blocked', $runnerBlockedSummary['status']);
     }
 
     public function test_skew_runner_uses_published_php_clients_for_worker_protocol_rows(): void
@@ -1853,6 +1964,126 @@ PHP,
         $this->assertContains('blocking_waterline_skew_classification', $codes);
     }
 
+    public function test_result_gate_accepts_compatible_cli_summary_with_inside_window_interop_and_optional_gap_rows(): void
+    {
+        $result = $this->completeSkewResult();
+        $interopRow = $result['operation_evidence']['cli']['compatible']['schedule_control_plane'][0];
+        $historyRowIndex = null;
+        foreach ($result['operation_evidence']['cli']['compatible']['workflow_control_plane'] as $index => $candidate) {
+            if (($candidate['request_path'] ?? null) === '/api/workflows/{workflowId}/runs/{runId}/history') {
+                $historyRowIndex = $index;
+                break;
+            }
+        }
+        $this->assertNotNull($historyRowIndex);
+
+        $gapRow = &$result['operation_evidence']['cli']['compatible']['workflow_control_plane'][$historyRowIndex];
+        $gapRow['status'] = 'not_covered';
+        $gapRow['response_status'] = 0;
+        $gapRow['response_body'] = [
+            'coverage_gap' => true,
+            'optional_coverage_gap' => true,
+            'coverage_gap_scope' => 'compatible_cli_inside_window_interop',
+            'reason' => 'The published CLI did not expose an optional compatible history probe in this run.',
+        ];
+        $gapRow['optional_coverage_gap'] = true;
+        $gapRow['coverage_requirement'] = 'optional';
+        $gapRow['coverage_gap_scope'] = 'compatible_cli_inside_window_interop';
+        $gapRow['coverage_gap_reason'] =
+            'The published CLI did not expose an optional compatible history probe in this run.';
+        unset($gapRow);
+
+        $result['pairing_results']['cli']['compatible']['status'] = 'pass';
+        $result['pairing_results']['cli']['compatible']['observed_result'] = 'pass';
+        $result['pairing_results']['cli']['compatible']['client_or_worker_version'] = '0.1.67';
+        $result['pairing_results']['cli']['compatible']['server_version'] = '0.2.191';
+        $result['pairing_results']['cli']['compatible']['compatibility_window'] = $interopRow['compatibility_window'];
+        $result['pairing_results']['cli']['compatible']['next_step'] = $interopRow['next_step'];
+        $result['pairing_results']['cli']['compatible']['observed_operation_statuses'] = ['pass', 'not_covered'];
+        $result['pairing_results']['cli']['compatible']['compatible_interop_evidence'] = [
+            'surface' => 'cli',
+            'pairing_class' => 'compatible',
+            'operation_group' => 'schedule_control_plane',
+            'observed_result' => 'pass',
+            'client_or_worker_version' => $interopRow['client_or_worker_version'],
+            'server_version' => $interopRow['server_version'],
+            'compatibility_window' => $interopRow['compatibility_window'],
+            'next_step' => $interopRow['next_step'],
+            'request_response_capture_id' => $interopRow['request_response_capture_id'],
+            'request' => $interopRow['request_method'].' '.$interopRow['request_path'],
+        ];
+
+        $evaluation = SkewRefusalMatrixResultGate::evaluate($result);
+
+        $this->assertSame('pass', $evaluation['status']);
+        $this->assertSame([], $evaluation['non_pass_cells']);
+        $this->assertSame([], $evaluation['gate_failures']);
+
+        unset($result['pairing_results']['cli']['compatible']['compatible_interop_evidence']);
+        $rejected = SkewRefusalMatrixResultGate::evaluate($result);
+
+        $this->assertSame('non_passing', $rejected['status']);
+        $this->assertContains(
+            'blocking_operation_status',
+            array_column($rejected['gate_failures'], 'code'),
+        );
+    }
+
+    public function test_result_gate_does_not_exempt_required_compatible_cli_not_covered_rows(): void
+    {
+        $result = $this->completeSkewResult();
+        $interopRow = $result['operation_evidence']['cli']['compatible']['schedule_control_plane'][0];
+        $requiredRow = &$result['operation_evidence']['cli']['compatible']['workflow_control_plane'][0];
+        $this->assertSame('POST', $requiredRow['request_method']);
+        $this->assertSame('/api/workflows', $requiredRow['request_path']);
+
+        $requiredRow['status'] = 'not_covered';
+        $requiredRow['response_status'] = 0;
+        $requiredRow['response_body'] = [
+            'coverage_gap' => true,
+            'optional_coverage_gap' => true,
+            'coverage_gap_scope' => 'compatible_cli_inside_window_interop',
+            'reason' => 'The published CLI did not expose this required compatible workflow start request.',
+        ];
+        $requiredRow['optional_coverage_gap'] = true;
+        $requiredRow['coverage_requirement'] = 'optional';
+        $requiredRow['coverage_gap_scope'] = 'compatible_cli_inside_window_interop';
+        $requiredRow['coverage_gap_reason'] =
+            'The published CLI did not expose this required compatible workflow start request.';
+        unset($requiredRow);
+
+        $result['outcome'] = 'fail';
+        $result['finding_links'] = [
+            'cli.compatible.workflow_control_plane' => 'https://durable-workflow.github.io/conformance/findings/cli-compatible-workflow-start',
+        ];
+        $result['pairing_results']['cli']['compatible']['status'] = 'pass';
+        $result['pairing_results']['cli']['compatible']['observed_result'] = 'pass';
+        $result['pairing_results']['cli']['compatible']['observed_operation_statuses'] = ['pass', 'not_covered'];
+        $result['pairing_results']['cli']['compatible']['compatible_interop_evidence'] = [
+            'surface' => 'cli',
+            'pairing_class' => 'compatible',
+            'operation_group' => 'schedule_control_plane',
+            'observed_result' => 'pass',
+            'client_or_worker_version' => $interopRow['client_or_worker_version'],
+            'server_version' => $interopRow['server_version'],
+            'compatibility_window' => $interopRow['compatibility_window'],
+            'next_step' => $interopRow['next_step'],
+            'request_response_capture_id' => $interopRow['request_response_capture_id'],
+            'request' => $interopRow['request_method'].' '.$interopRow['request_path'],
+        ];
+
+        $evaluation = SkewRefusalMatrixResultGate::evaluate($result);
+        $blockingFailures = array_values(array_filter(
+            $evaluation['gate_failures'],
+            static fn (array $failure): bool => ($failure['code'] ?? null) === 'blocking_operation_status',
+        ));
+
+        $this->assertSame('non_passing', $evaluation['status']);
+        $this->assertSame('workflow_control_plane', $blockingFailures[0]['operation_group']);
+        $this->assertSame(0, $blockingFailures[0]['index']);
+        $this->assertSame('not_covered', $blockingFailures[0]['status']);
+    }
+
     public function test_result_gate_accepts_complete_passing_matrix(): void
     {
         $evaluation = SkewRefusalMatrixResultGate::evaluate($this->completeSkewResult());
@@ -2116,6 +2347,72 @@ JS;
                 'import-skew-runner-helper',
                 $repoRoot.'/scripts/conformance/skew-published-artifacts.mjs',
                 json_encode($state, JSON_THROW_ON_ERROR),
+            ],
+            [
+                1 => ['pipe', 'w'],
+                2 => ['pipe', 'w'],
+            ],
+            $pipes,
+            $repoRoot,
+            [
+                'PATH' => getenv('PATH') ?: '/usr/bin:/bin',
+            ],
+        );
+
+        $this->assertIsResource($process);
+        $stdout = stream_get_contents($pipes[1]);
+        $stderr = stream_get_contents($pipes[2]);
+        fclose($pipes[1]);
+        fclose($pipes[2]);
+        $exitCode = proc_close($process);
+
+        $this->assertSame(0, $exitCode, $stderr);
+
+        return json_decode((string) $stdout, true, 512, JSON_THROW_ON_ERROR);
+    }
+
+    /**
+     * @param list<array<string, mixed>> $rows
+     * @param array<string, mixed>|null $context
+     * @return array<string, mixed>
+     */
+    private function evaluateSkewPairingSummary(array $rows, ?array $context = null): array
+    {
+        $repoRoot = dirname(__DIR__, 2);
+        $nodeBinary = trim((string) shell_exec('command -v node 2>/dev/null'));
+        if ($nodeBinary === '') {
+            $this->markTestSkipped('node is required to exercise skew runner pairing summaries.');
+        }
+
+        $context ??= [
+            'artifactVersions' => [
+                'cli' => '0.1.82',
+                'server' => '0.2.504',
+            ],
+            'observedServerVersion' => '0.2.504',
+        ];
+
+        $script = <<<'JS'
+import { pathToFileURL } from 'node:url';
+
+const moduleUrl = pathToFileURL(process.argv[2]).href;
+const { summarizePairing } = await import(moduleUrl);
+const rows = JSON.parse(process.argv[3]);
+const context = JSON.parse(process.argv[4]);
+
+console.log(JSON.stringify(summarizePairing('cli', 'compatible', rows, context)));
+JS;
+
+        $process = proc_open(
+            [
+                $nodeBinary,
+                '--input-type=module',
+                '-e',
+                $script,
+                'import-skew-runner-helper',
+                $repoRoot.'/scripts/conformance/skew-published-artifacts.mjs',
+                json_encode($rows, JSON_THROW_ON_ERROR),
+                json_encode($context, JSON_THROW_ON_ERROR),
             ],
             [
                 1 => ['pipe', 'w'],
