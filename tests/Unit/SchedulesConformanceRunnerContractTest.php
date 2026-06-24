@@ -2000,6 +2000,170 @@ final class SchedulesConformanceRunnerContractTest extends TestCase
         }
     }
 
+    public function test_runner_keeps_cross_language_dispatch_failures_as_product_evidence(): void
+    {
+        $nodeBinary = trim((string) shell_exec('command -v node 2>/dev/null'));
+        if ($nodeBinary === '') {
+            $this->markTestSkipped('node is required to exercise the schedules runner result builder.');
+        }
+
+        $repoRoot = dirname(__DIR__, 2);
+        $resultDir = sys_get_temp_dir().'/dw-schedules-runner-'.bin2hex(random_bytes(4));
+        mkdir($resultDir);
+
+        $pythonCreatedPhp = [
+            'scenario' => 'python_created_php_workflow',
+            'schedule_creator' => 'sdk-python',
+            'workflow_runtime' => 'workflow-php',
+            'schedule_id' => 'python-created-php-schedule',
+            'schedule_visible_in_cli' => true,
+            'workflow_completed' => false,
+            'scheduled_fire_observed' => false,
+            'failure_class' => 'server_schedule_fire_not_observed',
+            'schedule_diagnostics' => [
+                'triggered_event_count' => 0,
+            ],
+        ];
+        $phpCreatedPython = [
+            'scenario' => 'php_created_python_workflow',
+            'schedule_creator' => 'workflow-php-sdk',
+            'workflow_runtime' => 'sdk-python',
+            'schedule_id' => 'php-created-python-schedule',
+            'schedule_visible_in_cli' => true,
+            'workflow_completed' => false,
+            'scheduled_fire_observed' => false,
+            'failure_class' => 'public_client_worker_poll_error',
+            'worker_poll_error' => [
+                'runtime' => 'sdk-python',
+                'action' => 'poll_complete',
+                'message' => 'ServerError: POST /worker/workflow-tasks/poll returned 500',
+                'runner_blocked' => false,
+            ],
+        ];
+
+        $pythonFinding = [
+            'finding_id' => 'schedules-python-created-php-workflow-cross-language-dispatch',
+            'scenario_id' => 'python_created_php_workflow',
+            'finding_type' => 'schedule_cross_language_dispatch_gap',
+            'owning_surface' => 'server',
+            'execution_scope' => 'cross-language-schedule-worker-shard',
+            'observed_behavior' => 'schedule remained visible but no ScheduleTriggered history event or worker task was observed before the deadline',
+            'expected_behavior' => 'Schedules created by Python dispatch scheduled fires to the PHP worker.',
+            'next_acceptance_criterion' => 'record schedule_visible_in_cli=true plus workflow_completed=true',
+        ];
+        $phpFinding = [
+            'finding_id' => 'schedules-php-created-python-workflow-cross-language-dispatch',
+            'scenario_id' => 'php_created_python_workflow',
+            'finding_type' => 'schedule_cross_language_dispatch_gap',
+            'owning_surface' => 'server',
+            'execution_scope' => 'cross-language-schedule-worker-shard',
+            'observed_behavior' => 'published Python client worker poll failed',
+            'expected_behavior' => 'Schedules created by PHP dispatch scheduled fires to the Python worker.',
+            'next_acceptance_criterion' => 'record schedule_visible_in_cli=true plus workflow_completed=true',
+        ];
+
+        file_put_contents($resultDir.'/cross-language-evidence.json', json_encode([
+            'schema' => 'durable-workflow.v2.schedules-runtime.cross-language-evidence',
+            'scenario_results' => [
+                'python_created_php_workflow' => [
+                    'scenario_id' => 'python_created_php_workflow',
+                    'status' => 'fail',
+                    'observed_outputs' => $pythonCreatedPhp,
+                    'linked_findings' => [$pythonFinding],
+                ],
+                'php_created_python_workflow' => [
+                    'scenario_id' => 'php_created_python_workflow',
+                    'status' => 'fail',
+                    'observed_outputs' => $phpCreatedPython,
+                    'linked_findings' => [$phpFinding],
+                ],
+            ],
+            'findings' => [$pythonFinding, $phpFinding],
+            'runtime_matrix' => [
+                'runtimes' => ['workflow-php', 'sdk-python'],
+                'client_paths' => ['cli', 'sdk-python', 'workflow-php-sdk'],
+                'schedule_types' => ['fixed_rate_interval'],
+                'cross_language_cells' => [
+                    [
+                        'scenario' => 'python_created_php_workflow',
+                        'schedule_creator' => 'sdk-python',
+                        'workflow_runtime' => 'workflow-php',
+                    ],
+                    [
+                        'scenario' => 'php_created_python_workflow',
+                        'schedule_creator' => 'workflow-php-sdk',
+                        'workflow_runtime' => 'sdk-python',
+                    ],
+                ],
+            ],
+            'cross_language_matrix' => [
+                'cross_language_cells' => [$pythonCreatedPhp, $phpCreatedPython],
+            ],
+        ], JSON_THROW_ON_ERROR));
+
+        try {
+            $process = proc_open(
+                [$nodeBinary, $repoRoot.'/scripts/conformance/schedules-published-artifacts.mjs'],
+                [
+                    1 => ['pipe', 'w'],
+                    2 => ['pipe', 'w'],
+                ],
+                $pipes,
+                $repoRoot,
+                [
+                    'PATH' => getenv('PATH') ?: '/usr/bin:/bin',
+                    'DW_SCHEDULES_RESULT_DIR' => $resultDir,
+                    'DW_SCHEDULES_REPO_ROOT' => $repoRoot,
+                    'DW_SCHEDULES_CROSS_LANGUAGE_EVIDENCE' => $resultDir.'/cross-language-evidence.json',
+                    'DW_SERVER_VERSION' => '0.2.500',
+                    'DW_CLI_VERSION' => '0.1.82',
+                    'DW_PYTHON_SDK_VERSION' => '0.4.90',
+                    'DW_WORKFLOW_PHP_VERSION' => '2.0.0-alpha.223',
+                    'DW_WATERLINE_VERSION' => '2.0.0-alpha.111',
+                ],
+            );
+
+            $this->assertIsResource($process);
+            $stdout = stream_get_contents($pipes[1]);
+            $stderr = stream_get_contents($pipes[2]);
+            fclose($pipes[1]);
+            fclose($pipes[2]);
+            $exitCode = proc_close($process);
+
+            $this->assertSame(0, $exitCode, $stderr."\n".$stdout);
+
+            $result = json_decode(
+                (string) file_get_contents($resultDir.'/schedules-runtime-result.json'),
+                true,
+                512,
+                JSON_THROW_ON_ERROR,
+            );
+            $record = json_decode(
+                (string) file_get_contents($resultDir.'/schedules-runtime-record.json'),
+                true,
+                512,
+                JSON_THROW_ON_ERROR,
+            );
+
+            $this->assertSame('non_passing', $result['outcome']);
+            $this->assertFalse($result['runner_blocked']);
+            $this->assertSame('non_passing', $record['outcome']);
+            $this->assertFalse($record['runnerBlocked']);
+            $this->assertSame('fail', $result['scenario_results']['python_created_php_workflow']['status']);
+            $this->assertSame('fail', $result['scenario_results']['php_created_python_workflow']['status']);
+            $this->assertSame(
+                'schedule_cross_language_dispatch_gap',
+                $result['scenario_results']['php_created_python_workflow']['linked_findings'][0]['finding_type'],
+            );
+            $this->assertSame(
+                'public_client_worker_poll_error',
+                $result['scenario_results']['php_created_python_workflow']['observed_outputs']['failure_class'],
+            );
+        } finally {
+            $this->removeDirectory($resultDir);
+        }
+    }
+
     public function test_runner_marks_row_runner_blocked_when_cross_language_cells_are_runner_blocked(): void
     {
         $nodeBinary = trim((string) shell_exec('command -v node 2>/dev/null'));
