@@ -9,7 +9,7 @@ use Workflow\V2\Support\PlatformConformanceSuite;
 
 final class TimerRuntimeContractTest extends TestCase
 {
-    public function test_manifest_publishes_timer_runtime_contract_and_runner_gap_status(): void
+    public function test_manifest_publishes_timer_runtime_contract_and_host_runner_status(): void
     {
         $manifest = TimerRuntimeContract::manifest();
 
@@ -35,7 +35,7 @@ final class TimerRuntimeContractTest extends TestCase
             $manifest['required_scenarios'],
         );
         $this->assertSame(
-            'published_handoff_proves_normal_sleep_worker_restart_server_restart_replay_after_timer_fire_concurrent_distinct_deadlines_and_cancellation_while_waiting_then_marks_operator_visibility_coverage_gap',
+            'published_handoff_proves_all_timer_runtime_cells_including_operator_visible_waiting_state',
             $manifest['host_runner_contract']['status'],
         );
         $this->assertTrue($manifest['host_runner_contract']['host_runner_implemented']);
@@ -653,6 +653,150 @@ final class TimerRuntimeContractTest extends TestCase
 
             $evaluation = TimerRuntimeResultGate::evaluate($result);
             $this->assertSame('non_passing', $evaluation['status']);
+            $this->assertSame([], $evaluation['gate_failures']);
+        } finally {
+            $this->removeDirectory($resultDir);
+        }
+    }
+
+    public function test_published_artifact_handoff_ingests_operator_visible_timer_waiting_state_runtime_evidence(): void
+    {
+        $repoRoot = dirname(__DIR__, 2);
+        $resultDir = sys_get_temp_dir().'/dw-timers-conformance-'.bin2hex(random_bytes(6));
+        mkdir($resultDir, 0777, true);
+
+        try {
+            $evidencePath = $resultDir.'/timer-evidence.json';
+            file_put_contents($evidencePath, json_encode([
+                'schema' => 'durable-workflow.v2.timer-runtime.published-artifact-host-evidence',
+                'generated_at' => '2026-06-24T10:00:12Z',
+                'evidence_source' => 'focused_published_server_timer_host_probe',
+                'execution_source' => 'published_server_container',
+                'local_product_source_checkouts_used' => false,
+                'scenario_results' => [
+                    [
+                        'scenario_id' => 'operator_visible_timer_waiting_state',
+                        'status' => 'pass',
+                        'classification' => null,
+                        'observed_outputs' => [
+                            'workflow_id' => 'timer-operator-visible-waiting',
+                            'run_id' => 'run-operator-visible-waiting',
+                            'timer_id' => 'timer-operator-visible-waiting-1',
+                            'timer_task_id' => 'timer-task-operator-visible-waiting-1',
+                            'sleep_requested_at' => '2026-06-24T10:00:00Z',
+                            'wake_up_at' => '2026-06-24T10:00:30Z',
+                            'observed_at' => '2026-06-24T10:00:10Z',
+                            'observed_before_wake_up' => true,
+                            'status' => 'waiting',
+                            'surface' => 'public_api',
+                            'public_api_endpoint' => '/api/workflows/{workflowId}',
+                            'public_api_response' => [
+                                'workflow_id' => 'timer-operator-visible-waiting',
+                                'run_id' => 'run-operator-visible-waiting',
+                                'status' => 'waiting',
+                                'wait_kind' => 'timer',
+                                'wait_reason' => 'waiting_for_timer',
+                                'is_terminal' => false,
+                            ],
+                        ],
+                    ],
+                ],
+            ], JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES)."\n");
+
+            $command = sprintf(
+                'DW_SERVER_IMAGE=%s DW_SERVER_VERSION=%s DW_CLI_VERSION=%s DW_PYTHON_SDK_VERSION=%s DW_WORKFLOW_PHP_VERSION=%s DW_WATERLINE_VERSION=%s DW_TIMERS_EVIDENCE_PATH=%s bash %s --result-dir %s 2>&1',
+                escapeshellarg('durableworkflow/server:0.2.495'),
+                escapeshellarg('0.2.495'),
+                escapeshellarg('0.1.82'),
+                escapeshellarg('0.4.90'),
+                escapeshellarg('2.0.0-alpha.223'),
+                escapeshellarg('2.0.0-alpha.111'),
+                escapeshellarg($evidencePath),
+                escapeshellarg($repoRoot.'/scripts/conformance/timers-published-artifacts.sh'),
+                escapeshellarg($resultDir),
+            );
+
+            exec($command, $output, $exitCode);
+
+            $this->assertSame(0, $exitCode, implode("\n", $output));
+
+            $result = json_decode(
+                file_get_contents($resultDir.'/timer-runtime-result.json') ?: '',
+                true,
+                512,
+                JSON_THROW_ON_ERROR,
+            );
+            $operatorVisibility = $result['scenario_results']['operator_visible_timer_waiting_state'];
+
+            $this->assertSame('non_passing', $result['outcome']);
+            $this->assertContains('operator_visible_timer_waiting_state', $result['proven_timer_cells']);
+            $this->assertNotContains('operator_visible_timer_waiting_state', $result['unproven_timer_cells']);
+            $this->assertSame('pass', $operatorVisibility['status']);
+            $this->assertSame('waiting', $operatorVisibility['observed_outputs']['status']);
+            $this->assertSame('public_api', $operatorVisibility['observed_outputs']['surface']);
+            $this->assertSame('waiting', $operatorVisibility['observed_outputs']['public_api_response']['status']);
+            $this->assertArrayNotHasKey('operator_visible_timer_waiting_state', $result['finding_links']);
+
+            $evaluation = TimerRuntimeResultGate::evaluate($result);
+            $this->assertSame('non_passing', $evaluation['status']);
+            $this->assertSame([], $evaluation['gate_failures']);
+        } finally {
+            $this->removeDirectory($resultDir);
+        }
+    }
+
+    public function test_published_artifact_handoff_records_pass_when_all_timer_cells_have_runtime_evidence(): void
+    {
+        $repoRoot = dirname(__DIR__, 2);
+        $resultDir = sys_get_temp_dir().'/dw-timers-conformance-'.bin2hex(random_bytes(6));
+        mkdir($resultDir, 0777, true);
+
+        try {
+            $completeResult = $this->completePassingTimerResult();
+            $evidencePath = $resultDir.'/timer-evidence.json';
+            file_put_contents($evidencePath, json_encode([
+                'schema' => 'durable-workflow.v2.timer-runtime.published-artifact-host-evidence',
+                'generated_at' => '2026-06-24T10:02:01Z',
+                'evidence_source' => 'focused_published_server_timer_host_probe',
+                'execution_source' => 'published_server_container',
+                'local_product_source_checkouts_used' => false,
+                'scenario_results' => array_values($completeResult['scenario_results']),
+            ], JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES)."\n");
+
+            $command = sprintf(
+                'DW_SERVER_IMAGE=%s DW_SERVER_VERSION=%s DW_CLI_VERSION=%s DW_PYTHON_SDK_VERSION=%s DW_WORKFLOW_PHP_VERSION=%s DW_WATERLINE_VERSION=%s DW_TIMERS_EVIDENCE_PATH=%s bash %s --result-dir %s 2>&1',
+                escapeshellarg('durableworkflow/server:0.2.503'),
+                escapeshellarg('0.2.503'),
+                escapeshellarg('0.1.82'),
+                escapeshellarg('0.4.90'),
+                escapeshellarg('2.0.0-alpha.223'),
+                escapeshellarg('2.0.0-alpha.111'),
+                escapeshellarg($evidencePath),
+                escapeshellarg($repoRoot.'/scripts/conformance/timers-published-artifacts.sh'),
+                escapeshellarg($resultDir),
+            );
+
+            exec($command, $output, $exitCode);
+
+            $this->assertSame(0, $exitCode, implode("\n", $output));
+
+            $result = json_decode(
+                file_get_contents($resultDir.'/timer-runtime-result.json') ?: '',
+                true,
+                512,
+                JSON_THROW_ON_ERROR,
+            );
+
+            $this->assertSame('pass', $result['outcome']);
+            $this->assertSame('pass', $result['result_summary']['status']);
+            $this->assertNull($result['result_summary']['classification']);
+            $this->assertSame([], $result['findings']);
+            $this->assertSame([], $result['finding_links']);
+            $this->assertSame([], $result['unproven_timer_cells']);
+            $this->assertSame(TimerRuntimeContract::manifest()['required_scenarios'], $result['proven_timer_cells']);
+
+            $evaluation = TimerRuntimeResultGate::evaluate($result);
+            $this->assertSame('pass', $evaluation['status']);
             $this->assertSame([], $evaluation['gate_failures']);
         } finally {
             $this->removeDirectory($resultDir);

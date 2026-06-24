@@ -9,9 +9,8 @@ use Workflow\V2\Support\PlatformConformanceSuite;
  *
  * The current handoff emits source-free published-artifact evidence for normal
  * sleep completion, worker and server restart while sleeping, replay after
- * timer fire, concurrent timers, cancellation while waiting, and focused
- * coverage-gap findings for timer cells that still need first-class
- * host-runner implementation.
+ * timer fire, concurrent timers, cancellation while waiting, and operator
+ * visibility through a public workflow API response.
  */
 final class TimerRuntimeContract
 {
@@ -284,7 +283,7 @@ final class TimerRuntimeContract
                 'coverage_gap_outcome' => 'non_passing',
             ],
             'host_runner_contract' => [
-                'status' => 'published_handoff_proves_normal_sleep_worker_restart_server_restart_replay_after_timer_fire_concurrent_distinct_deadlines_and_cancellation_while_waiting_then_marks_operator_visibility_coverage_gap',
+                'status' => 'published_handoff_proves_all_timer_runtime_cells_including_operator_visible_waiting_state',
                 'result_schema' => self::RESULT_SCHEMA,
                 'runner_repository' => 'server',
                 'runner_path' => 'scripts/conformance/timers-published-artifacts.sh',

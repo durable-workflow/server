@@ -498,7 +498,6 @@ function main() {
   const reason = runnerBlocked
     ? pinFailures.join('; ')
     : 'first-class timer scenario shards without focused runtime evidence are not yet implemented for the published-artifact handoff';
-  const outcome = runnerBlocked ? 'runner_blocked' : 'non_passing';
   const finishedAt = now();
   const generatedAt = now();
   const runnerSource = env('DW_TIMERS_RUNNER_SOURCE') || serverImage;
@@ -539,16 +538,23 @@ function main() {
     .filter((result) => ['pass', 'fail'].includes(result.status))
     .map((result) => result.scenario_id)
     .filter(Boolean);
+  const allRequiredScenariosPass = Object.values(scenarioResults).length === scenarios.length
+    && Object.values(scenarioResults).every((result) => result.status === 'pass');
+  const outcome = runnerBlocked
+    ? 'runner_blocked'
+    : (allRequiredScenariosPass && findings.length === 0 && unprovenCells.length === 0 ? 'pass' : 'non_passing');
   const sourcePolicy = {
     published_artifacts_only: true,
     local_product_source_checkout_used_as_pass_evidence: false,
     no_local_product_source_checkout_pass_evidence: true,
   };
   const resultSummary = {
-    status: 'non_passing',
-    classification: runnerBlocked
-      ? 'runner-gap'
-      : (findings.some((finding) => finding.classification === 'product-gap') ? 'product-gap' : 'coverage-gap'),
+    status: outcome === 'pass' ? 'pass' : 'non_passing',
+    classification: outcome === 'pass'
+      ? null
+      : (runnerBlocked
+        ? 'runner-gap'
+        : (findings.some((finding) => finding.classification === 'product-gap') ? 'product-gap' : 'coverage-gap')),
     scenario_count: Object.keys(scenarioResults).length,
     finding_count: findings.length,
   };

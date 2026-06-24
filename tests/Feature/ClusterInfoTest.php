@@ -353,7 +353,7 @@ class ClusterInfoTest extends TestCase
             ->assertJsonPath('timer_runtime_contract.fixture_category', 'timer_runtime_contract')
             ->assertJsonPath(
                 'timer_runtime_contract.host_runner_contract.status',
-                'published_handoff_proves_normal_sleep_worker_restart_server_restart_replay_after_timer_fire_concurrent_distinct_deadlines_and_cancellation_while_waiting_then_marks_operator_visibility_coverage_gap',
+                'published_handoff_proves_all_timer_runtime_cells_including_operator_visible_waiting_state',
             )
             ->assertJsonPath('timer_runtime_contract.host_runner_contract.host_runner_implemented', true)
             ->assertJsonPath(

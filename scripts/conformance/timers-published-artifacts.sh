@@ -10,10 +10,9 @@ Writes the published-artifact timer conformance handoff result.
 When this handoff runs from the pinned published server image root, it executes
 the focused normal sleep completion, worker-restart-while-sleeping,
 server-restart-while-sleeping, replay-after-timer-fire,
-concurrent-timers-with-distinct-deadlines, and cancellation-while-waiting
-shards and records concrete timer runtime evidence. The operator-visible
-waiting-state cell stays an explicit non-passing coverage gap until that
-first-class shard exists.
+concurrent-timers-with-distinct-deadlines, cancellation-while-waiting, and
+operator-visible-waiting-state shards and records concrete timer runtime
+evidence.
 
 The runner writes these files to the result directory:
   pins.json
@@ -286,6 +285,7 @@ function scenario_expected_behavior(string $scenarioId): string
         'replay_after_timer_fire' => 'replay_after_timer_fire_is_deterministic_and_does_not_schedule_duplicate_timers',
         'concurrent_timers_distinct_deadlines' => 'timers_resume_in_recorded_wake_up_order_without_early_or_duplicate_fires',
         'cancellation_while_waiting' => 'cancellation_requested_before_recorded_wake_up_and_timer_never_fires_after_cancel',
+        'operator_visible_timer_waiting_state' => 'operators_can_observe_an_explicit_waiting_or_timer_waiting_state_on_a_public_surface',
         default => 'workflow_sleep_completes_after_recorded_wake_up_without_early_resume',
     };
 }
@@ -298,6 +298,7 @@ function scenario_next_acceptance(string $scenarioId): string
         'replay_after_timer_fire' => 'rerun the focused timer host probe from the pinned published server image and record replay_started_at after fired_at, replayed_event_types including TimerFired, and duplicate_timer_commands exactly zero',
         'concurrent_timers_distinct_deadlines' => 'rerun the focused timer host probe from the pinned published server image and record timer ids, distinct wake_up_times, observed_resume_order matching deadline order, fired_at_times at or after wake_up_times, and fire_counts exactly one for every timer id',
         'cancellation_while_waiting' => 'rerun the focused timer host probe from the pinned published server image and record cancellation_requested_at before wake_up_at, fired_after_cancel false, and a documented terminal workflow_status',
+        'operator_visible_timer_waiting_state' => 'rerun the focused timer host probe from the pinned published server image and record an explicit waiting status from CLI, Waterline, or a public API response before the timer wake-up',
         default => 'rerun the focused timer host probe from the pinned published server image and record completed_at greater than or equal to wake_up_at with no early terminal observation',
     };
 }
@@ -1604,6 +1605,132 @@ function run_cancellation_while_waiting_probe(): array
     ];
 }
 
+function run_operator_visible_timer_waiting_state_probe(): array
+{
+    $suffix = bin2hex(random_bytes(4));
+    $workflowId = 'timers-operator-visible-waiting-'.$suffix;
+    $workerId = 'timers-operator-visible-waiting-worker-'.$suffix;
+    $sleepSeconds = 30;
+
+    register_worker($workerId);
+
+    $start = request_json('POST', '/workflows', [
+        'workflow_id' => $workflowId,
+        'workflow_type' => NORMAL_SLEEP_WORKFLOW_TYPE,
+        'task_queue' => TIMERS_TASK_QUEUE,
+        'input' => [[
+            'sleep_seconds' => $sleepSeconds,
+        ]],
+        'business_key' => 'timers-conformance-operator-visible-waiting-state',
+    ]);
+    if (($start['command_status'] ?? null) !== 'accepted') {
+        throw new RuntimeException('workflow start was not accepted: '.json_encode($start));
+    }
+
+    $runId = is_string($start['run_id'] ?? null) ? $start['run_id'] : '';
+    if ($runId === '') {
+        throw new RuntimeException('workflow start did not return a run_id');
+    }
+
+    $firstTask = poll_workflow_task($workerId);
+    complete_workflow_task_from_runtime($firstTask);
+
+    /** @var WorkflowTimer|null $timer */
+    $timer = WorkflowTimer::query()
+        ->where('workflow_run_id', $runId)
+        ->orderBy('sequence')
+        ->first();
+    if (! $timer instanceof WorkflowTimer || ! $timer->fire_at instanceof DateTimeInterface) {
+        throw new RuntimeException('operator_visible_timer_waiting_state workflow did not persist a pending timer with fire_at');
+    }
+
+    /** @var WorkflowTask|null $timerTask */
+    $timerTask = WorkflowTask::query()
+        ->where('workflow_run_id', $runId)
+        ->where('task_type', TaskType::Timer->value)
+        ->orderBy('available_at')
+        ->first();
+    if (! $timerTask instanceof WorkflowTask) {
+        throw new RuntimeException('operator_visible_timer_waiting_state workflow did not persist a timer task');
+    }
+
+    $observedAt = now_iso();
+    $publicResponse = request_json('GET', '/workflows/'.rawurlencode($workflowId));
+    $visibleStatus = is_string($publicResponse['status'] ?? null) ? $publicResponse['status'] : '';
+    $surface = 'public_api';
+    $wakeUpAt = timestamp_iso($timer->fire_at);
+    $sleepRequestedAt = history_event_time($runId, HistoryEventType::TimerScheduled)
+        ?? timestamp_iso($timer->created_at)
+        ?? $observedAt;
+    $observedEpoch = strtotime($observedAt);
+    $wakeEpoch = strtotime((string) $wakeUpAt);
+    $observedBeforeWakeUp = $observedEpoch !== false && $wakeEpoch !== false && $observedEpoch < $wakeEpoch;
+    $passes = $visibleStatus === RunStatus::Waiting->value
+        && $observedBeforeWakeUp
+        && ($publicResponse['workflow_id'] ?? null) === $workflowId
+        && ($publicResponse['run_id'] ?? null) === $runId;
+
+    $observedOutputs = [
+        'workflow_id' => $workflowId,
+        'run_id' => $runId,
+        'timer_id' => (string) $timer->id,
+        'timer_task_id' => (string) $timerTask->id,
+        'sleep_requested_at' => $sleepRequestedAt,
+        'wake_up_at' => $wakeUpAt,
+        'observed_at' => $observedAt,
+        'observed_before_wake_up' => $observedBeforeWakeUp,
+        'status' => $visibleStatus,
+        'surface' => $surface,
+        'public_api_endpoint' => '/api/workflows/{workflowId}',
+        'public_api_response' => [
+            'workflow_id' => $publicResponse['workflow_id'] ?? null,
+            'run_id' => $publicResponse['run_id'] ?? null,
+            'status' => $publicResponse['status'] ?? null,
+            'status_bucket' => $publicResponse['status_bucket'] ?? null,
+            'wait_kind' => $publicResponse['wait_kind'] ?? null,
+            'wait_reason' => $publicResponse['wait_reason'] ?? null,
+            'is_terminal' => $publicResponse['is_terminal'] ?? null,
+        ],
+        'execution_source' => HOST_EVIDENCE_SOURCE,
+        'no_local_product_source_checkout_pass_evidence' => true,
+    ];
+
+    if ($passes) {
+        return [
+            'scenario_id' => 'operator_visible_timer_waiting_state',
+            'status' => 'pass',
+            'classification' => null,
+            'observed_outputs' => $observedOutputs,
+            'linked_findings' => [],
+        ];
+    }
+
+    $message = sprintf(
+        'operator_visible_timer_waiting_state observed public_api status=%s, observed_before_wake_up=%s, workflow_id_matches=%s, run_id_matches=%s',
+        $visibleStatus === '' ? 'missing' : $visibleStatus,
+        $observedBeforeWakeUp ? 'true' : 'false',
+        ($publicResponse['workflow_id'] ?? null) === $workflowId ? 'true' : 'false',
+        ($publicResponse['run_id'] ?? null) === $runId ? 'true' : 'false',
+    );
+    $finding = finding_for_failure('operator_visible_timer_waiting_state', $message);
+
+    return [
+        'scenario_id' => 'operator_visible_timer_waiting_state',
+        'status' => 'fail',
+        'classification' => 'product-gap',
+        'observed_behavior' => $message,
+        'observed_outputs' => array_merge($observedOutputs, [
+            'failure' => $message,
+        ]),
+        'linked_findings' => [[
+            'finding_id' => $finding['id'],
+            'finding_type' => $finding['finding_type'],
+            'classification' => $finding['classification'],
+        ]],
+        'finding' => $finding,
+    ];
+}
+
 try {
     bootstrap_application(getenv('RUNNER_REPO_ROOT') ?: '/app');
 
@@ -1616,12 +1743,14 @@ try {
         ['replay_after_timer_fire', 'timers-replay-after-fire', 'timers-conformance-replay-after-fire', false, false],
         ['concurrent_timers_distinct_deadlines', 'timers-concurrent-distinct', 'timers-conformance-concurrent-distinct', false, false],
         ['cancellation_while_waiting', 'timers-cancel-while-waiting', 'timers-conformance-cancellation-while-waiting', false, false],
+        ['operator_visible_timer_waiting_state', 'timers-operator-visible-waiting', 'timers-conformance-operator-visible-waiting-state', false, false],
     ] as [$scenarioId, $workflowPrefix, $businessKey, $restartWorker, $restartServer]) {
         try {
             $scenario = match ($scenarioId) {
                 'replay_after_timer_fire' => run_replay_after_timer_fire_probe(),
                 'concurrent_timers_distinct_deadlines' => run_concurrent_timers_probe(),
                 'cancellation_while_waiting' => run_cancellation_while_waiting_probe(),
+                'operator_visible_timer_waiting_state' => run_operator_visible_timer_waiting_state_probe(),
                 default => run_sleep_probe($scenarioId, $workflowPrefix, $businessKey, $restartWorker, $restartServer),
             };
         } catch (Throwable $throwable) {
