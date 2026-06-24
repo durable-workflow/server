@@ -29,6 +29,7 @@ use App\Support\SchedulesRuntimeContract;
 use App\Support\SignalQueryRuntimeContract;
 use App\Support\SkewRefusalMatrixContract;
 use App\Support\TaskQueueBuildIdRolloutSnapshot;
+use App\Support\TimerRuntimeContract;
 use App\Support\WorkerVersioningRuntimeContract;
 use App\Support\WorkerProtocol;
 use App\Support\WorkflowStreamsContract;
@@ -140,6 +141,7 @@ class HealthController
             'replay_verification_contract' => true,
             'search_attribute_runtime_contract' => true,
             'schedules_runtime_contract' => true,
+            'timer_runtime_contract' => true,
             'child_workflow_runtime_contract' => true,
             'saga_runtime_contract' => true,
             'heartbeat_runtime_contract' => true,
@@ -195,6 +197,7 @@ class HealthController
             'signal_query_runtime_contract' => SignalQueryRuntimeContract::manifest(),
             'search_attribute_runtime_contract' => SearchAttributeRuntimeContract::manifest(),
             'schedules_runtime_contract' => SchedulesRuntimeContract::manifest(),
+            'timer_runtime_contract' => TimerRuntimeContract::manifest(),
             'child_workflow_runtime_contract' => ChildWorkflowRuntimeContract::manifest(),
             'saga_runtime_contract' => SagaRuntimeContract::manifest(),
             'heartbeat_runtime_contract' => HeartbeatRuntimeContract::manifest(),

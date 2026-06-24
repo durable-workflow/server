@@ -1,0 +1,255 @@
+{
+  "schema": "durable-workflow.v2.platform-conformance.runtime-scenarios",
+  "version": 1,
+  "category": "timer_runtime_contract",
+  "suite_schema": "durable-workflow.v2.platform-conformance.suite",
+  "suite_version": 15,
+  "description": "Public scenario manifest for timer and sleep conformance. The current handoff is non-passing until a published-artifact host runner exists and emits the required timer observations.",
+  "fixture_type": "published_artifact_runtime_scenario_manifest",
+  "result_schema": "durable-workflow.v2.timer-runtime.result",
+  "result_version": 1,
+  "result_statuses": [
+    "pass",
+    "fail",
+    "unsupported",
+    "not_covered",
+    "runner_blocked"
+  ],
+  "artifact_policy": {
+    "published_artifacts_only": true,
+    "requires_published_artifact_versions": true,
+    "rejects_placeholder_versions": true,
+    "implementation_tests_are_not_sources": true,
+    "required_artifacts": [
+      "server",
+      "cli",
+      "workflow-php",
+      "sdk-python",
+      "waterline"
+    ],
+    "release_artifact_aliases": {
+      "workflow-php": [
+        "workflow"
+      ]
+    },
+    "forbidden_sources": [
+      "local_product_source_checkout",
+      "workspace_repo_as_artifact_under_test"
+    ],
+    "placeholder_version_examples": [
+      "latest",
+      "current",
+      "head",
+      "unresolved",
+      "placeholder",
+      "<latest>",
+      "${VERSION}",
+      "{{ version }}"
+    ]
+  },
+  "common_result_evidence": [
+    "scenario_id",
+    "status",
+    "started_at",
+    "finished_at",
+    "generated_at",
+    "outcome",
+    "runner_blocked",
+    "artifact_versions",
+    "observed_outputs",
+    "linked_findings"
+  ],
+  "required_scenarios": [
+    "concurrent_timers_distinct_deadlines",
+    "cancellation_while_waiting",
+    "operator_visible_timer_waiting_state"
+  ],
+  "scenarios": [
+    {
+      "id": "concurrent_timers_distinct_deadlines",
+      "description": "Concurrent timers with distinct wake-up deadlines resume in deadline order, never fire before wake_up_times, and never fire more than once.",
+      "required_evidence": [
+        "wake_up_times",
+        "observed_resume_order",
+        "fired_at_times"
+      ],
+      "required_behavior": "resume_order_matches_wake_up_times_no_early_fires_no_duplicate_fires"
+    },
+    {
+      "id": "cancellation_while_waiting",
+      "description": "Cancelling a workflow while it is waiting on a timer records cancellation before the timer wake-up, prevents post-cancel firing, and ends in a documented terminal workflow status.",
+      "required_evidence": [
+        "cancellation_requested_at",
+        "wake_up_at",
+        "fired_after_cancel",
+        "workflow_status"
+      ],
+      "allowed_terminal_workflow_statuses": [
+        "cancelled",
+        "terminated",
+        "failed",
+        "completed"
+      ]
+    },
+    {
+      "id": "operator_visible_timer_waiting_state",
+      "description": "Operators can observe an explicit waiting or timer-waiting workflow state through CLI, Waterline, or a public API response.",
+      "required_evidence": [
+        "status",
+        "surface"
+      ],
+      "explicit_waiting_statuses": [
+        "waiting",
+        "timer_waiting",
+        "waiting_on_timer",
+        "waiting_for_timer"
+      ],
+      "recognized_public_surfaces": [
+        "cli",
+        "waterline",
+        "public_api"
+      ]
+    }
+  ],
+  "scenario_requirements": {
+    "concurrent_timers_distinct_deadlines": {
+      "evidence": [
+        "wake_up_times",
+        "observed_resume_order",
+        "fired_at_times"
+      ],
+      "required_behavior": "resume_order_matches_wake_up_times_no_early_fires_no_duplicate_fires"
+    },
+    "cancellation_while_waiting": {
+      "evidence": [
+        "cancellation_requested_at",
+        "wake_up_at",
+        "fired_after_cancel",
+        "workflow_status"
+      ],
+      "allowed_terminal_workflow_statuses": [
+        "cancelled",
+        "terminated",
+        "failed",
+        "completed"
+      ]
+    },
+    "operator_visible_timer_waiting_state": {
+      "evidence": [
+        "status",
+        "surface"
+      ],
+      "explicit_waiting_statuses": [
+        "waiting",
+        "timer_waiting",
+        "waiting_on_timer",
+        "waiting_for_timer"
+      ],
+      "recognized_public_surfaces": [
+        "cli",
+        "waterline",
+        "public_api"
+      ]
+    }
+  },
+  "timer_semantics": {
+    "concurrent_timers_distinct_deadlines": {
+      "required_behavior": "timers_resume_in_recorded_wake_up_order_without_early_or_duplicate_fires",
+      "required_evidence": [
+        "wake_up_times",
+        "observed_resume_order",
+        "fired_at_times"
+      ],
+      "order_policy": "observed_resume_order_must_equal_wake_up_times_sorted_by_deadline",
+      "no_early_fire_policy": "each fired_at timestamp must be greater than or equal to its timer wake_up_at",
+      "no_duplicate_fire_policy": "each timer id may appear once in observed_resume_order and once in fired_at_times"
+    },
+    "cancellation_while_waiting": {
+      "required_behavior": "cancellation_requested_before_recorded_wake_up_and_timer_never_fires_after_cancel",
+      "required_evidence": [
+        "cancellation_requested_at",
+        "wake_up_at",
+        "fired_after_cancel",
+        "workflow_status"
+      ],
+      "allowed_terminal_workflow_statuses": [
+        "cancelled",
+        "terminated",
+        "failed",
+        "completed"
+      ]
+    },
+    "operator_visible_timer_waiting_state": {
+      "required_behavior": "operators_can_observe_an_explicit_waiting_or_timer_waiting_state_on_a_public_surface",
+      "recognized_public_surfaces": [
+        "cli",
+        "waterline",
+        "public_api"
+      ],
+      "explicit_waiting_statuses": [
+        "waiting",
+        "timer_waiting",
+        "waiting_on_timer",
+        "waiting_for_timer"
+      ]
+    }
+  },
+  "coverage_gate": {
+    "passing_outcome_requires": [
+      "all_required_scenarios_reported",
+      "run_timestamps_outcome_runner_blocked_and_findings_are_recorded",
+      "declared_outcome_matches_evaluated_status",
+      "published_artifact_versions_are_recorded_and_pinned",
+      "no_local_product_source_artifacts",
+      "findings_linked_for_non_pass_scenarios",
+      "coverage_gap_scenario_findings_are_top_level_and_linked",
+      "concurrent_timer_resume_order_matches_wake_up_times",
+      "concurrent_timer_fires_are_not_early",
+      "concurrent_timer_fires_are_not_duplicated",
+      "cancellation_occurs_before_recorded_wake_up",
+      "cancelled_timer_does_not_fire_after_cancel",
+      "cancellation_terminal_status_is_documented",
+      "operator_waiting_state_uses_explicit_waiting_status",
+      "operator_waiting_state_uses_recognized_public_surface"
+    ],
+    "uncovered_required_scenario_outcome": "non_passing",
+    "smoke_subset_outcome": "non_passing",
+    "runner_blocked_outcome": "runner_blocked",
+    "coverage_gap_outcome": "non_passing"
+  },
+  "host_runner_contract": {
+    "status": "runner_gap_until_timer_host_runner_exists",
+    "result_schema": "durable-workflow.v2.timer-runtime.result",
+    "host_runner_implemented": false,
+    "must_probe_runtime_published_surfaces": true,
+    "must_emit_result_for_every_required_scenario": true,
+    "smoke_summary_only_outcome": "non_passing",
+    "unexecuted_required_scenario_status": "runner_blocked",
+    "coverage_gap_finding_type": "conformance_runner_coverage_gap",
+    "coverage_gap_owner": "conformance_harness",
+    "required_execution_scopes": [
+      "published-artifact-timer-runtime",
+      "concurrent-timers-distinct-deadlines-shard",
+      "cancellation-while-waiting-shard",
+      "operator-visible-timer-waiting-state-shard"
+    ],
+    "routing_policy": {
+      "missing_host_runner": {
+        "scenario_status": "runner_blocked",
+        "classification": "runner-gap",
+        "finding_type": "conformance_runner_coverage_gap",
+        "owner": "conformance_harness"
+      },
+      "missing_required_scenario": {
+        "scenario_status": "not_covered",
+        "classification": "coverage-gap",
+        "finding_type": "conformance_runner_coverage_gap",
+        "owner": "conformance_harness"
+      },
+      "scenario_product_failure": {
+        "scenario_status": "fail",
+        "finding_source": "timer_runtime_contract.finding_policy"
+      }
+    }
+  }
+}

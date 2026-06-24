@@ -33,6 +33,8 @@ use App\Support\SignalQueryRuntimeContract;
 use App\Support\SignalQueryRuntimeResultGate;
 use App\Support\SkewRefusalMatrixContract;
 use App\Support\SkewRefusalMatrixResultGate;
+use App\Support\TimerRuntimeContract;
+use App\Support\TimerRuntimeResultGate;
 use App\Support\WorkerVersioningRuntimeContract;
 use App\Support\WorkerVersioningRuntimeResultGate;
 use Illuminate\Foundation\Testing\RefreshDatabase;
@@ -337,6 +339,44 @@ class ClusterInfoTest extends TestCase
         );
         $this->assertContains(
             'runner_blocked_false_for_product_evidence',
+            $contract['result_gate']['pass_requires'],
+        );
+    }
+
+    public function test_it_publishes_the_timer_runtime_conformance_contract(): void
+    {
+        $response = $this->getJson('/api/cluster/info')
+            ->assertOk()
+            ->assertJsonPath('capabilities.timer_runtime_contract', true)
+            ->assertJsonPath('timer_runtime_contract.schema', TimerRuntimeContract::SCHEMA)
+            ->assertJsonPath('timer_runtime_contract.version', TimerRuntimeContract::VERSION)
+            ->assertJsonPath('timer_runtime_contract.fixture_category', 'timer_runtime_contract')
+            ->assertJsonPath(
+                'timer_runtime_contract.host_runner_contract.status',
+                'runner_gap_until_timer_host_runner_exists',
+            )
+            ->assertJsonPath('timer_runtime_contract.host_runner_contract.host_runner_implemented', false);
+
+        $contract = $response->json('timer_runtime_contract');
+        $this->assertIsArray($contract);
+        $this->assertSame(
+            'static/platform-conformance/timer-runtime-scenarios.json',
+            $contract['scenario_manifest']['source_path'],
+        );
+        $this->assertContains('concurrent_timers_distinct_deadlines', $contract['required_scenarios']);
+        $this->assertContains('cancellation_while_waiting', $contract['required_scenarios']);
+        $this->assertContains('operator_visible_timer_waiting_state', $contract['required_scenarios']);
+        $this->assertSame(
+            ['cancelled', 'terminated', 'failed', 'completed'],
+            $contract['scenario_requirements']['cancellation_while_waiting']['allowed_terminal_workflow_statuses'],
+        );
+        $this->assertSame(TimerRuntimeResultGate::SCHEMA, $contract['result_gate']['schema']);
+        $this->assertContains(
+            'concurrent_timer_resume_order_matches_wake_up_times',
+            $contract['result_gate']['pass_requires'],
+        );
+        $this->assertContains(
+            'operator_waiting_state_uses_recognized_public_surface',
             $contract['result_gate']['pass_requires'],
         );
     }
