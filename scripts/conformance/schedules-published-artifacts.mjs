@@ -5242,8 +5242,18 @@ function normalizeScheduleEvent(event) {
     event_type: stringValue(event.event_type ?? event.eventType),
     recorded_at: stringValue(event.recorded_at ?? event.recordedAt),
     occurrence_time: stringValue(event.payload?.occurrence_time ?? event.payload?.occurrenceTime),
-    workflow_instance_id: stringValue(event.workflow_instance_id ?? event.workflowInstanceId),
-    workflow_run_id: stringValue(event.workflow_run_id ?? event.workflowRunId),
+    workflow_instance_id: stringValue(
+      event.workflow_instance_id
+        ?? event.workflowInstanceId
+        ?? event.payload?.workflow_instance_id
+        ?? event.payload?.workflowInstanceId,
+    ),
+    workflow_run_id: stringValue(
+      event.workflow_run_id
+        ?? event.workflowRunId
+        ?? event.payload?.workflow_run_id
+        ?? event.payload?.workflowRunId,
+    ),
     payload: event.payload ?? {},
   };
 }
@@ -5946,6 +5956,9 @@ async function runCrossLanguageShard({ startedAt, artifactVersions, artifactSour
   const phpCreatedPythonScheduleId = `${runId}-php-created-python`;
   const phpWorkerId = `${runId}-php-worker`;
   const pythonWorkerId = `${runId}-python-worker`;
+  const focusedScenarios = crossLanguageFocusedScenarios();
+  const runPythonCreatedPhp = focusedScenarios.has('python_created_php_workflow');
+  const runPhpCreatedPython = focusedScenarios.has('php_created_python_workflow');
   let composeStarted = false;
   let cliPath = '';
 
@@ -5989,59 +6002,67 @@ async function runCrossLanguageShard({ startedAt, artifactVersions, artifactSour
     const python = await installSchedulesPythonArtifact(shardRoot, artifactVersions, artifactSources);
     const php = await installSchedulesPhpArtifact(shardRoot, artifactVersions, artifactSources);
 
-    const phpRegistration = await runSchedulesPhpWorker(php, {
-      action: 'register',
-      server_url: serverUrl,
-      token,
-      namespace,
-      task_queue: taskQueue,
-      worker_id: phpWorkerId,
-      workflow_type: phpWorkflowType,
-      runtime: 'workflow-php',
-      sdk_version: artifactValue(artifactVersions, 'workflow-php'),
-    });
-    const pythonRegistration = await runSchedulesPythonWorker(python, {
-      action: 'register',
-      server_url: serverUrl,
-      token,
-      namespace,
-      task_queue: taskQueue,
-      worker_id: pythonWorkerId,
-      workflow_type: pythonWorkflowType,
-      runtime: 'sdk-python',
-      sdk_version: artifactValue(artifactVersions, 'sdk-python'),
-    });
+    const phpRegistration = runPythonCreatedPhp
+      ? await runSchedulesPhpWorker(php, {
+          action: 'register',
+          server_url: serverUrl,
+          token,
+          namespace,
+          task_queue: taskQueue,
+          worker_id: phpWorkerId,
+          workflow_type: phpWorkflowType,
+          runtime: 'workflow-php',
+          sdk_version: artifactValue(artifactVersions, 'workflow-php'),
+        })
+      : null;
+    const pythonRegistration = runPhpCreatedPython
+      ? await runSchedulesPythonWorker(python, {
+          action: 'register',
+          server_url: serverUrl,
+          token,
+          namespace,
+          task_queue: taskQueue,
+          worker_id: pythonWorkerId,
+          workflow_type: pythonWorkflowType,
+          runtime: 'sdk-python',
+          sdk_version: artifactValue(artifactVersions, 'sdk-python'),
+        })
+      : null;
 
-    const pythonCreate = await runSchedulesPythonWorker(python, {
-      action: 'create_schedule',
-      server_url: serverUrl,
-      token,
-      namespace,
-      task_queue: taskQueue,
-      schedule_id: pythonCreatedPhpScheduleId,
-      workflow_type: phpWorkflowType,
-      interval,
-      input: {
-        scenario: 'python_created_php_workflow',
-        schedule_creator: 'sdk-python',
-        workflow_runtime: 'workflow-php',
-      },
-    });
-    const phpCreate = await runSchedulesPhpWorker(php, {
-      action: 'create_schedule',
-      server_url: serverUrl,
-      token,
-      namespace,
-      task_queue: taskQueue,
-      schedule_id: phpCreatedPythonScheduleId,
-      workflow_type: pythonWorkflowType,
-      interval,
-      input: {
-        scenario: 'php_created_python_workflow',
-        schedule_creator: 'workflow-php-sdk',
-        workflow_runtime: 'sdk-python',
-      },
-    });
+    const pythonCreate = runPythonCreatedPhp
+      ? await runSchedulesPythonWorker(python, {
+          action: 'create_schedule',
+          server_url: serverUrl,
+          token,
+          namespace,
+          task_queue: taskQueue,
+          schedule_id: pythonCreatedPhpScheduleId,
+          workflow_type: phpWorkflowType,
+          interval,
+          input: {
+            scenario: 'python_created_php_workflow',
+            schedule_creator: 'sdk-python',
+            workflow_runtime: 'workflow-php',
+          },
+        })
+      : null;
+    const phpCreate = runPhpCreatedPython
+      ? await runSchedulesPhpWorker(php, {
+          action: 'create_schedule',
+          server_url: serverUrl,
+          token,
+          namespace,
+          task_queue: taskQueue,
+          schedule_id: phpCreatedPythonScheduleId,
+          workflow_type: pythonWorkflowType,
+          interval,
+          input: {
+            scenario: 'php_created_python_workflow',
+            schedule_creator: 'workflow-php-sdk',
+            workflow_runtime: 'sdk-python',
+          },
+        })
+      : null;
 
     const context = { serverUrl, namespace, token };
     const cliList = await runDwJson(cliPath, ['schedules', 'list', '--json'], context);
@@ -6059,10 +6080,15 @@ async function runCrossLanguageShard({ startedAt, artifactVersions, artifactSour
       pythonWorkflowType,
       pythonCreatedPhpScheduleId,
       phpCreatedPythonScheduleId,
+      focusedScenarios,
     });
 
-    await bestEffortDeleteSchedule(serverUrl, token, namespace, pythonCreatedPhpScheduleId);
-    await bestEffortDeleteSchedule(serverUrl, token, namespace, phpCreatedPythonScheduleId);
+    if (runPythonCreatedPhp) {
+      await bestEffortDeleteSchedule(serverUrl, token, namespace, pythonCreatedPhpScheduleId);
+    }
+    if (runPhpCreatedPython) {
+      await bestEffortDeleteSchedule(serverUrl, token, namespace, phpCreatedPythonScheduleId);
+    }
 
     const evidence = crossLanguageEvidenceFromObservations({
       startedAt: crossStartedAt,
@@ -6088,6 +6114,7 @@ async function runCrossLanguageShard({ startedAt, artifactVersions, artifactSour
         php: phpWorkerId,
         python: pythonWorkerId,
       },
+      focusedScenarios,
     });
     writeJson(crossLanguageEvidencePath, evidence);
 
@@ -6107,6 +6134,7 @@ async function runCrossLanguageShard({ startedAt, artifactVersions, artifactSour
       published_artifact_versions: artifactVersions,
       artifact_sources: artifactSources,
       local_product_source_checkouts_used: false,
+      focused_scenarios: Array.from(focusedScenarios),
     });
 
     if (composeStarted) {
@@ -6117,6 +6145,24 @@ async function runCrossLanguageShard({ startedAt, artifactVersions, artifactSour
       }).catch(() => {});
     }
   }
+}
+
+function crossLanguageFocusedScenarios() {
+  const raw = stringValue(process.env.DW_SCHEDULES_CROSS_LANGUAGE_FOCUS)
+    .toLowerCase()
+    .replace(/-/g, '_')
+    .trim();
+  if (raw === '' || raw === 'all' || raw === 'both') {
+    return new Set(['python_created_php_workflow', 'php_created_python_workflow']);
+  }
+  if (raw === 'python_created_php' || raw === 'python_created_php_workflow') {
+    return new Set(['python_created_php_workflow']);
+  }
+  if (raw === 'php_created_python' || raw === 'php_created_python_workflow') {
+    return new Set(['php_created_python_workflow']);
+  }
+
+  throw new Error(`Unsupported DW_SCHEDULES_CROSS_LANGUAGE_FOCUS value: ${process.env.DW_SCHEDULES_CROSS_LANGUAGE_FOCUS}`);
 }
 
 async function installSchedulesPythonArtifact(shardRoot, artifactVersions, artifactSources) {
@@ -6208,7 +6254,7 @@ async function runSchedulesPythonWorkerCapture(python, input) {
       logPath,
       result,
       output,
-      runnerBlocked: true,
+      runnerBlocked: input.action === 'poll_complete' && workerActionReachedProductBoundary(output) ? false : true,
     });
   }
 
@@ -6380,6 +6426,14 @@ function workerActionDiagnosticSummary(diagnostics) {
     parts.push(`worker_output=${compactLogText(outputError, 260)}`);
   }
 
+  const workerStage = stringValue(diagnostics.output?.diagnostic_stage ?? diagnostics.output?.diagnosticStage);
+  if (workerStage !== '') {
+    parts.push(`worker_stage=${workerStage}`);
+  }
+  if (workerActionReachedProductBoundary(diagnostics.output)) {
+    parts.push('product_boundary_reached=true');
+  }
+
   const exitCode = diagnostics.exit_code;
   if (exitCode !== null && exitCode !== undefined && String(exitCode) !== '') {
     parts.push(`exit_code=${String(exitCode)}`);
@@ -6404,6 +6458,19 @@ function workerActionDiagnosticSummary(diagnostics) {
   }
 
   return parts.join('; ');
+}
+
+function workerActionReachedProductBoundary(output) {
+  if (!output || typeof output !== 'object') {
+    return false;
+  }
+
+  if (output.product_boundary_reached === true || output.worker_protocol_boundary_reached === true) {
+    return true;
+  }
+
+  const stage = stringValue(output.diagnostic_stage ?? output.diagnosticStage);
+  return stage.startsWith('worker_protocol_');
 }
 
 function workerActionTranscriptLog(result) {
@@ -6490,8 +6557,11 @@ async function waitForCrossLanguageCompletions({
   pythonWorkflowType,
   pythonCreatedPhpScheduleId,
   phpCreatedPythonScheduleId,
+  focusedScenarios,
 }) {
   const deadline = Date.now() + timeoutSeconds * 1000;
+  const pollPhpCell = focusedScenarios.has('python_created_php_workflow');
+  const pollPythonCell = focusedScenarios.has('php_created_python_workflow');
   let phpCompletion = null;
   let pythonCompletion = null;
   let phpAttempts = 0;
@@ -6504,11 +6574,11 @@ async function waitForCrossLanguageCompletions({
   while (
     Date.now() < deadline
     && (
-      (!phpCompletion?.workflow_completed && !phpTerminalFailure)
-      || (!pythonCompletion?.workflow_completed && !pythonTerminalFailure)
+      (pollPhpCell && !phpCompletion?.workflow_completed && !phpTerminalFailure)
+      || (pollPythonCell && !pythonCompletion?.workflow_completed && !pythonTerminalFailure)
     )
   ) {
-    if (!phpCompletion?.workflow_completed && !phpTerminalFailure) {
+    if (pollPhpCell && !phpCompletion?.workflow_completed && !phpTerminalFailure) {
       phpAttempts += 1;
       const phpPollAction = await runSchedulesPhpWorkerCapture(php, {
         action: 'poll_complete',
@@ -6553,7 +6623,7 @@ async function waitForCrossLanguageCompletions({
       phpTerminalFailure = !phpPollAction.ok;
     }
 
-    if (!pythonCompletion?.workflow_completed && !pythonTerminalFailure) {
+    if (pollPythonCell && !pythonCompletion?.workflow_completed && !pythonTerminalFailure) {
       pythonAttempts += 1;
       const pythonPollAction = await runSchedulesPythonWorkerCapture(python, {
         action: 'poll_complete',
@@ -6598,34 +6668,54 @@ async function waitForCrossLanguageCompletions({
       pythonTerminalFailure = !pythonPollAction.ok;
     }
 
-    if (phpCompletion?.workflow_completed && pythonCompletion?.workflow_completed) {
+    if ((!pollPhpCell || phpCompletion?.workflow_completed) && (!pollPythonCell || pythonCompletion?.workflow_completed)) {
       break;
     }
 
     await sleep(1500);
   }
 
-  const phpResult = phpCompletion ?? missingCrossLanguageCompletion({
-    scenario: 'python_created_php_workflow',
-    scheduleId: pythonCreatedPhpScheduleId,
-    scheduleCreator: 'sdk-python',
-    workflowRuntime: 'workflow-php',
-    workerId: phpWorkerId,
-    attempts: phpAttempts,
-    lastPoll: lastPhpPoll,
-  });
-  const pythonResult = pythonCompletion ?? missingCrossLanguageCompletion({
-    scenario: 'php_created_python_workflow',
-    scheduleId: phpCreatedPythonScheduleId,
-    scheduleCreator: 'workflow-php-sdk',
-    workflowRuntime: 'sdk-python',
-    workerId: pythonWorkerId,
-    attempts: pythonAttempts,
-    lastPoll: lastPythonPoll,
-  });
+  const phpResult = pollPhpCell
+    ? (phpCompletion ?? missingCrossLanguageCompletion({
+        scenario: 'python_created_php_workflow',
+        scheduleId: pythonCreatedPhpScheduleId,
+        scheduleCreator: 'sdk-python',
+        workflowRuntime: 'workflow-php',
+        workerId: phpWorkerId,
+        attempts: phpAttempts,
+        lastPoll: lastPhpPoll,
+      }))
+    : null;
+  const pythonResult = pollPythonCell
+    ? (pythonCompletion ?? missingCrossLanguageCompletion({
+        scenario: 'php_created_python_workflow',
+        scheduleId: phpCreatedPythonScheduleId,
+        scheduleCreator: 'workflow-php-sdk',
+        workflowRuntime: 'sdk-python',
+        workerId: pythonWorkerId,
+        attempts: pythonAttempts,
+        lastPoll: lastPythonPoll,
+      }))
+    : null;
 
-  await attachCrossLanguageDiagnostics(phpResult, { serverUrl, token, namespace, scheduleId: pythonCreatedPhpScheduleId });
-  await attachCrossLanguageDiagnostics(pythonResult, { serverUrl, token, namespace, scheduleId: phpCreatedPythonScheduleId });
+  if (phpResult !== null) {
+    await attachCrossLanguageDiagnostics(phpResult, {
+      serverUrl,
+      token,
+      namespace,
+      scheduleId: pythonCreatedPhpScheduleId,
+      taskQueue,
+    });
+  }
+  if (pythonResult !== null) {
+    await attachCrossLanguageDiagnostics(pythonResult, {
+      serverUrl,
+      token,
+      namespace,
+      scheduleId: phpCreatedPythonScheduleId,
+      taskQueue,
+    });
+  }
 
   return {
     php: phpResult,
@@ -6762,12 +6852,14 @@ function missingCrossLanguageCompletion({
   };
 }
 
-async function attachCrossLanguageDiagnostics(completion, { serverUrl, token, namespace, scheduleId }) {
+async function attachCrossLanguageDiagnostics(completion, { serverUrl, token, namespace, scheduleId, taskQueue }) {
   if (completion.workflow_completed === true) {
     return completion;
   }
 
-  const [description, history] = await Promise.all([
+  const workerId = stringValue(completion.worker_id);
+  const encodedTaskQueue = encodeURIComponent(taskQueue);
+  const [description, history, taskQueueDetail, workers, worker] = await Promise.all([
     describeScheduleResult(serverUrl, token, namespace, scheduleId).catch((error) => ({
       ok: false,
       error: error instanceof Error ? error.message : String(error),
@@ -6776,15 +6868,55 @@ async function attachCrossLanguageDiagnostics(completion, { serverUrl, token, na
       ok: false,
       error: error instanceof Error ? error.message : String(error),
     })),
+    safeApiRequestResult(serverUrl, token, namespace, 'GET', `/task-queues/${encodedTaskQueue}`),
+    safeApiRequestResult(serverUrl, token, namespace, 'GET', `/workers?task_queue=${encodedTaskQueue}`),
+    workerId === ''
+      ? Promise.resolve({ ok: false, status: 0, parsed: { reason: 'worker_id_missing' }, text: '' })
+      : safeApiRequestResult(serverUrl, token, namespace, 'GET', `/workers/${encodeURIComponent(workerId)}`),
   ]);
   const events = arrayValue(history?.parsed?.events ?? history?.events);
   const triggeredEvents = scheduleTriggeredEvents(events).map(normalizeScheduleEvent);
+  const latestTrigger = triggeredEvents[triggeredEvents.length - 1] ?? null;
+  if (stringValue(completion.workflow_id) === '' && latestTrigger !== null) {
+    completion.workflow_id = stringValue(latestTrigger.workflow_instance_id);
+  }
+  if (stringValue(completion.run_id) === '' && latestTrigger !== null) {
+    completion.run_id = stringValue(latestTrigger.workflow_run_id);
+  }
+  const workflowId = stringValue(completion.workflow_id);
+  const runId = stringValue(completion.run_id);
+  const workflowRun = workflowId !== '' && runId !== ''
+    ? await safeApiRequestResult(
+        serverUrl,
+        token,
+        namespace,
+        'GET',
+        `/workflows/${encodeURIComponent(workflowId)}/runs/${encodeURIComponent(runId)}`,
+      )
+    : { ok: false, status: 0, parsed: { reason: 'workflow_run_identity_missing' }, text: '' };
+  if (!completion.workflow_run || Object.keys(objectValue(completion.workflow_run)).length === 0) {
+    completion.workflow_run = workflowRun.parsed ?? {};
+  }
 
   completion.schedule_diagnostics = {
     describe: description,
     history,
     triggered_event_count: triggeredEvents.length,
     triggered_events: triggeredEvents,
+  };
+  completion.worker_diagnostics = {
+    worker_id: workerId,
+    list: publicResponseSnapshot(workers),
+    detail: publicResponseSnapshot(worker),
+  };
+  completion.task_queue_diagnostics = {
+    task_queue: taskQueue,
+    detail: publicResponseSnapshot(taskQueueDetail),
+  };
+  completion.workflow_diagnostics = {
+    workflow_id: workflowId,
+    run_id: runId,
+    run: publicResponseSnapshot(workflowRun),
   };
 
   return completion;
@@ -6813,35 +6945,43 @@ function crossLanguageEvidenceFromObservations({
   pythonCompletion,
   schedules,
   workers,
+  focusedScenarios,
 }) {
   const cliSchedules = cliList?.parsed_json?.schedules ?? [];
   const pythonCreatedVisible = scheduleListContains(cliList?.parsed_json, schedules.pythonCreatedPhp);
   const phpCreatedVisible = scheduleListContains(cliList?.parsed_json, schedules.phpCreatedPython);
-  const pythonCreatedPhp = {
-    ...phpCompletion,
-    schedule_visible_in_cli: pythonCreatedVisible,
-    cli_list_command: cliList,
-    schedule_create_response: pythonCreate,
-    worker_registration: phpRegistration,
-    artifact_versions: artifactVersions,
-    artifact_sources: artifactSources,
-  };
-  pythonCreatedPhp.failure_class = crossLanguageFailureClass(pythonCreatedPhp);
-  pythonCreatedPhp.failure_reason = crossLanguageFailureReason(pythonCreatedPhp);
-  const phpCreatedPython = {
-    ...pythonCompletion,
-    schedule_visible_in_cli: phpCreatedVisible,
-    cli_list_command: cliList,
-    schedule_create_response: phpCreate,
-    worker_registration: pythonRegistration,
-    artifact_versions: artifactVersions,
-    artifact_sources: artifactSources,
-  };
-  phpCreatedPython.failure_class = crossLanguageFailureClass(phpCreatedPython);
-  phpCreatedPython.failure_reason = crossLanguageFailureReason(phpCreatedPython);
-  const cells = [pythonCreatedPhp, phpCreatedPython];
+  const cells = [];
+  if (focusedScenarios.has('python_created_php_workflow') && phpCompletion !== null) {
+    const pythonCreatedPhp = {
+      ...phpCompletion,
+      schedule_visible_in_cli: pythonCreatedVisible,
+      cli_list_command: cliList,
+      schedule_create_response: pythonCreate,
+      worker_registration: phpRegistration,
+      artifact_versions: artifactVersions,
+      artifact_sources: artifactSources,
+    };
+    pythonCreatedPhp.failure_class = crossLanguageFailureClass(pythonCreatedPhp);
+    pythonCreatedPhp.failure_reason = crossLanguageFailureReason(pythonCreatedPhp);
+    cells.push(pythonCreatedPhp);
+  }
+  if (focusedScenarios.has('php_created_python_workflow') && pythonCompletion !== null) {
+    const phpCreatedPython = {
+      ...pythonCompletion,
+      schedule_visible_in_cli: phpCreatedVisible,
+      cli_list_command: cliList,
+      schedule_create_response: phpCreate,
+      worker_registration: pythonRegistration,
+      artifact_versions: artifactVersions,
+      artifact_sources: artifactSources,
+    };
+    phpCreatedPython.failure_class = crossLanguageFailureClass(phpCreatedPython);
+    phpCreatedPython.failure_reason = crossLanguageFailureReason(phpCreatedPython);
+    cells.push(phpCreatedPython);
+  }
   const scenarioResults = {};
   const findings = new Map();
+  const focusedCellList = crossLanguageCellDescriptors(Array.from(focusedScenarios));
 
   for (const cell of cells) {
     const status = cell.runner_blocked === true
@@ -6879,34 +7019,27 @@ function crossLanguageEvidenceFromObservations({
       namespace,
       task_queue: taskQueue,
       run_id: runId,
+      focused_scenarios: Array.from(focusedScenarios),
       worker_execution_mode: 'published_php_python_worker_protocol_clients',
       worker_ids: workers,
-      schedules_created: [schedules.pythonCreatedPhp, schedules.phpCreatedPython],
+      schedules_created: [
+        focusedScenarios.has('python_created_php_workflow') ? schedules.pythonCreatedPhp : null,
+        focusedScenarios.has('php_created_python_workflow') ? schedules.phpCreatedPython : null,
+      ].filter(Boolean),
       cli_executable: cliPath,
     },
     runtime_matrix: {
       runtimes: ['workflow-php', 'sdk-python'],
       client_paths: ['cli', 'sdk-python', 'workflow-php-sdk'],
       schedule_types: ['fixed_rate_interval'],
-      cross_language_cells: [
-        {
-          scenario: 'python_created_php_workflow',
-          schedule_creator: 'sdk-python',
-          workflow_runtime: 'workflow-php',
-        },
-        {
-          scenario: 'php_created_python_workflow',
-          schedule_creator: 'workflow-php-sdk',
-          workflow_runtime: 'sdk-python',
-        },
-      ],
+      cross_language_cells: focusedCellList,
     },
     cross_language_matrix: {
       cross_language_cells: cells,
     },
     client_surfaces: {
       cli: {
-        list_observed: pythonCreatedVisible && phpCreatedVisible,
+        list_observed: cells.every((cell) => cell.schedule_visible_in_cli === true),
         command_outputs: {
           list: cliList,
         },
@@ -6914,18 +7047,39 @@ function crossLanguageEvidenceFromObservations({
           ? cliSchedules.map((schedule) => scheduleIdField(schedule)).filter(Boolean)
           : [],
       },
-      'sdk-python': {
-        create_or_observe: stringValue(pythonCreate?.schedule_id) === schedules.pythonCreatedPhp,
-        list_observed: pythonCreatedVisible,
-        control_observed: true,
-      },
-      'workflow-php-sdk': {
-        create_or_observe: stringValue(phpCreate?.schedule_id) === schedules.phpCreatedPython,
-        list_observed: phpCreatedVisible,
-        control_observed: true,
-      },
+      ...(focusedScenarios.has('python_created_php_workflow') ? {
+        'sdk-python': {
+          create_or_observe: stringValue(pythonCreate?.schedule_id) === schedules.pythonCreatedPhp,
+          list_observed: pythonCreatedVisible,
+          control_observed: true,
+        },
+      } : {}),
+      ...(focusedScenarios.has('php_created_python_workflow') ? {
+        'workflow-php-sdk': {
+          create_or_observe: stringValue(phpCreate?.schedule_id) === schedules.phpCreatedPython,
+          list_observed: phpCreatedVisible,
+          control_observed: true,
+        },
+      } : {}),
     },
   };
+}
+
+function crossLanguageCellDescriptors(scenarios) {
+  const descriptors = {
+    python_created_php_workflow: {
+      scenario: 'python_created_php_workflow',
+      schedule_creator: 'sdk-python',
+      workflow_runtime: 'workflow-php',
+    },
+    php_created_python_workflow: {
+      scenario: 'php_created_python_workflow',
+      schedule_creator: 'workflow-php-sdk',
+      workflow_runtime: 'sdk-python',
+    },
+  };
+
+  return scenarios.map((scenario) => descriptors[scenario]).filter(Boolean);
 }
 
 async function maybeRunPhpSurfaceShard(startedAt, artifactVersions, artifactSources) {
@@ -7679,6 +7833,9 @@ function crossLanguageFinding(cell, artifactVersions) {
     run_id: cell.run_id,
     failure_class: cell.failure_class,
     schedule_diagnostics: cell.schedule_diagnostics,
+    worker_diagnostics: cell.worker_diagnostics,
+    task_queue_diagnostics: cell.task_queue_diagnostics,
+    workflow_diagnostics: cell.workflow_diagnostics,
     worker_poll_error: cell.worker_poll_error,
   };
 }
@@ -7710,6 +7867,9 @@ function crossLanguageRunnerBlockedFinding(cell, artifactVersions) {
     schedule_id: cell.schedule_id,
     schedule_visible_in_cli: cell.schedule_visible_in_cli,
     schedule_diagnostics: cell.schedule_diagnostics,
+    worker_diagnostics: cell.worker_diagnostics,
+    task_queue_diagnostics: cell.task_queue_diagnostics,
+    workflow_diagnostics: cell.workflow_diagnostics,
     worker_poll_error: cell.worker_poll_error,
     worker_poll_diagnostics: cell.worker_poll_diagnostics ?? cell.worker_poll_error?.diagnostics ?? null,
   };
@@ -8257,7 +8417,27 @@ def process_metrics():
     }
 
 
-async def run_action(client, payload):
+def write_progress(output_path, payload, stage, extra=None):
+    record = {
+        "ok": False,
+        "action": payload.get("action"),
+        "diagnostic_stage": stage,
+        "product_boundary_reached": stage.startswith("worker_protocol_"),
+        "worker_id": payload.get("worker_id"),
+        "task_queue": payload.get("task_queue"),
+        "workflow_type": payload.get("workflow_type"),
+        "schedule_id": payload.get("schedule_id"),
+        "generated_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+    }
+    if isinstance(extra, dict):
+        record.update(extra)
+    with open(output_path, "w", encoding="utf-8") as handle:
+        json.dump(record, handle, indent=2, default=str)
+        handle.write("\n")
+        handle.flush()
+
+
+async def run_action(client, payload, output_path):
     if payload["action"] == "register":
         response = await client.register_worker(
             worker_id=payload["worker_id"],
@@ -8290,13 +8470,25 @@ async def run_action(client, payload):
         )
         return {"action": "create_schedule", "schedule_id": handle.schedule_id}
     if payload["action"] == "poll_complete":
+        write_progress(output_path, payload, "worker_protocol_poll_started", {
+            "poll_timeout_seconds": 3.0,
+        })
         task = await client.poll_workflow_task(
             worker_id=payload["worker_id"],
             task_queue=payload["task_queue"],
             timeout=3.0,
         )
+        write_progress(output_path, payload, "worker_protocol_poll_returned", {
+            "task": task,
+            "task_received": bool(task),
+        })
         complete_response = None
         if task:
+            write_progress(output_path, payload, "worker_protocol_complete_started", {
+                "task": task,
+                "workflow_id": task.get("workflow_id"),
+                "run_id": task.get("run_id"),
+            })
             complete_response = await client.complete_workflow_task(
                 task_id=task["task_id"],
                 lease_owner=task["lease_owner"],
@@ -8313,6 +8505,12 @@ async def run_action(client, payload):
                     }
                 ],
             )
+            write_progress(output_path, payload, "worker_protocol_complete_returned", {
+                "task": task,
+                "complete_response": complete_response,
+                "workflow_id": task.get("workflow_id"),
+                "run_id": task.get("run_id"),
+            })
         return {"action": "poll_complete", "task": task, "complete_response": complete_response}
     raise RuntimeError(f"unknown action: {payload['action']}")
 
@@ -8323,6 +8521,7 @@ async def main():
     try:
         with open(sys.argv[1], "r", encoding="utf-8") as handle:
             payload = json.load(handle)
+        write_progress(output_path, payload, "input_loaded")
 
         async with Client(
             payload["server_url"],
@@ -8330,7 +8529,7 @@ async def main():
             namespace=payload["namespace"],
             timeout=8.0,
         ) as client:
-            result = await run_action(client, payload)
+            result = await run_action(client, payload, output_path)
         result["ok"] = True
     except Exception as exc:
         result = {
@@ -8341,7 +8540,7 @@ async def main():
         }
 
     with open(output_path, "w", encoding="utf-8") as handle:
-        json.dump(result, handle, indent=2)
+        json.dump(result, handle, indent=2, default=str)
         handle.write("\n")
 
 

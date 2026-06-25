@@ -82,6 +82,14 @@ final class SchedulesConformanceRunnerContractTest extends TestCase
             'worker_poll_diagnostics: cell.worker_poll_diagnostics ?? cell.worker_poll_error?.diagnostics ?? null',
             $runner,
         );
+        $this->assertStringContainsString('function workerActionReachedProductBoundary(output)', $runner);
+        $this->assertStringContainsString('"diagnostic_stage": stage', $runner);
+        $this->assertStringContainsString('"product_boundary_reached": stage.startswith("worker_protocol_")', $runner);
+        $this->assertStringContainsString('"worker_protocol_poll_started"', $runner);
+        $this->assertStringContainsString('product_boundary_reached=true', $runner);
+        $this->assertStringContainsString('task_queue_diagnostics: cell.task_queue_diagnostics', $runner);
+        $this->assertStringContainsString('worker_diagnostics: cell.worker_diagnostics', $runner);
+        $this->assertStringContainsString('DW_SCHEDULES_CROSS_LANGUAGE_FOCUS', $runner);
     }
 
     public function test_published_artifact_runner_requires_supplied_install_evidence_for_install_cell_pass(): void
@@ -2215,6 +2223,239 @@ final class SchedulesConformanceRunnerContractTest extends TestCase
                 'public_client_worker_poll_error',
                 $result['scenario_results']['php_created_python_workflow']['observed_outputs']['failure_class'],
             );
+        } finally {
+            $this->removeDirectory($resultDir);
+        }
+    }
+
+    public function test_runner_keeps_focused_php_created_python_worker_poll_timeout_as_product_evidence(): void
+    {
+        $nodeBinary = trim((string) shell_exec('command -v node 2>/dev/null'));
+        if ($nodeBinary === '') {
+            $this->markTestSkipped('node is required to exercise the schedules runner result builder.');
+        }
+
+        $repoRoot = dirname(__DIR__, 2);
+        $resultDir = sys_get_temp_dir().'/dw-schedules-runner-'.bin2hex(random_bytes(4));
+        mkdir($resultDir);
+
+        $scheduleId = 'php-created-python-schedule';
+        $taskQueue = 'schedules-cross-language-focused';
+        $workerId = 'python-worker-focused';
+        $workflowId = 'wf-from-schedule-history';
+        $runId = 'run-from-schedule-history';
+        $pollMessage = 'published sdk-python schedules worker action poll_complete failed; diagnostics: worker_stage=worker_protocol_poll_started; product_boundary_reached=true; exit_code=1; timed_out=true';
+        $pollDiagnostics = [
+            'schema' => 'durable-workflow.v2.schedules-runtime.worker-action-diagnostics',
+            'log_path' => 'schedules-cross-language-python-python-worker-focused-poll_complete.log',
+            'exit_code' => 1,
+            'signal' => 'SIGTERM',
+            'timed_out' => true,
+            'output' => [
+                'ok' => false,
+                'action' => 'poll_complete',
+                'diagnostic_stage' => 'worker_protocol_poll_started',
+                'product_boundary_reached' => true,
+                'worker_id' => $workerId,
+                'task_queue' => $taskQueue,
+                'workflow_type' => 'SchedulesConformancePythonWorkflow',
+                'schedule_id' => $scheduleId,
+            ],
+            'transcript' => [
+                'stdout_tail' => '<empty response body>',
+                'stderr_tail' => '<empty response body>',
+            ],
+        ];
+        $phpCreatedPython = [
+            'scenario' => 'php_created_python_workflow',
+            'schedule_creator' => 'workflow-php-sdk',
+            'workflow_runtime' => 'sdk-python',
+            'schedule_id' => $scheduleId,
+            'schedule_visible_in_cli' => true,
+            'workflow_completed' => false,
+            'scheduled_fire_observed' => false,
+            'workflow_id' => $workflowId,
+            'run_id' => $runId,
+            'failure_class' => 'public_client_worker_poll_error',
+            'failure_reason' => 'published Python client worker poll failed',
+            'worker_poll_error' => [
+                'runtime' => 'sdk-python',
+                'action' => 'poll_complete',
+                'message' => $pollMessage,
+                'runner_blocked' => false,
+                'diagnostics' => $pollDiagnostics,
+            ],
+            'worker_poll_diagnostics' => $pollDiagnostics,
+            'schedule_diagnostics' => [
+                'describe' => [
+                    'ok' => true,
+                    'status' => 200,
+                    'parsed' => ['schedule_id' => $scheduleId, 'status' => 'active'],
+                ],
+                'triggered_event_count' => 1,
+                'triggered_events' => [[
+                    'event_type' => 'ScheduleTriggered',
+                    'workflow_instance_id' => $workflowId,
+                    'workflow_run_id' => $runId,
+                ]],
+            ],
+            'worker_diagnostics' => [
+                'worker_id' => $workerId,
+                'detail' => [
+                    'ok' => true,
+                    'status' => 200,
+                    'body' => [
+                        'worker_id' => $workerId,
+                        'task_queue' => $taskQueue,
+                        'runtime' => 'python',
+                        'supported_workflow_types' => ['SchedulesConformancePythonWorkflow'],
+                    ],
+                ],
+            ],
+            'task_queue_diagnostics' => [
+                'task_queue' => $taskQueue,
+                'detail' => [
+                    'ok' => true,
+                    'status' => 200,
+                    'body' => [
+                        'name' => $taskQueue,
+                        'stats' => [
+                            'workflow_tasks' => [
+                                'ready_count' => 1,
+                                'leased_count' => 0,
+                            ],
+                        ],
+                    ],
+                ],
+            ],
+            'workflow_diagnostics' => [
+                'workflow_id' => $workflowId,
+                'run_id' => $runId,
+                'run' => [
+                    'ok' => true,
+                    'status' => 200,
+                    'body' => [
+                        'workflow_id' => $workflowId,
+                        'run_id' => $runId,
+                        'status' => 'running',
+                    ],
+                ],
+            ],
+        ];
+        $finding = [
+            'finding_id' => 'schedules-php-created-python-workflow-cross-language-dispatch',
+            'scenario_id' => 'php_created_python_workflow',
+            'finding_type' => 'schedule_cross_language_dispatch_gap',
+            'owning_surface' => 'sdk-python',
+            'execution_scope' => 'cross-language-schedule-worker-shard',
+            'observed_behavior' => 'worker poll failed after the published Python worker entered the worker protocol poll boundary',
+            'expected_behavior' => 'Schedules created by PHP dispatch scheduled fires to the Python worker.',
+            'next_acceptance_criterion' => 'record schedule_visible_in_cli=true plus workflow_completed=true',
+            'schedule_id' => $scheduleId,
+            'workflow_id' => $workflowId,
+            'run_id' => $runId,
+            'schedule_diagnostics' => $phpCreatedPython['schedule_diagnostics'],
+            'worker_poll_error' => $phpCreatedPython['worker_poll_error'],
+            'worker_diagnostics' => $phpCreatedPython['worker_diagnostics'],
+            'task_queue_diagnostics' => $phpCreatedPython['task_queue_diagnostics'],
+            'workflow_diagnostics' => $phpCreatedPython['workflow_diagnostics'],
+        ];
+
+        file_put_contents($resultDir.'/cross-language-evidence.json', json_encode([
+            'schema' => 'durable-workflow.v2.schedules-runtime.cross-language-evidence',
+            'scenario_results' => [
+                'php_created_python_workflow' => [
+                    'scenario_id' => 'php_created_python_workflow',
+                    'status' => 'fail',
+                    'observed_outputs' => $phpCreatedPython,
+                    'linked_findings' => [$finding],
+                ],
+            ],
+            'findings' => [$finding],
+            'runtime_matrix' => [
+                'runtimes' => ['workflow-php', 'sdk-python'],
+                'client_paths' => ['cli', 'workflow-php-sdk'],
+                'schedule_types' => ['fixed_rate_interval'],
+                'cross_language_cells' => [[
+                    'scenario' => 'php_created_python_workflow',
+                    'schedule_creator' => 'workflow-php-sdk',
+                    'workflow_runtime' => 'sdk-python',
+                ]],
+            ],
+            'topology' => [
+                'namespace' => 'schedules-conformance-focused',
+                'task_queue' => $taskQueue,
+                'focused_scenarios' => ['php_created_python_workflow'],
+            ],
+            'cross_language_matrix' => [
+                'cross_language_cells' => [$phpCreatedPython],
+            ],
+        ], JSON_THROW_ON_ERROR));
+
+        try {
+            $process = proc_open(
+                [$nodeBinary, $repoRoot.'/scripts/conformance/schedules-published-artifacts.mjs'],
+                [
+                    1 => ['pipe', 'w'],
+                    2 => ['pipe', 'w'],
+                ],
+                $pipes,
+                $repoRoot,
+                [
+                    'PATH' => getenv('PATH') ?: '/usr/bin:/bin',
+                    'DW_SCHEDULES_RESULT_DIR' => $resultDir,
+                    'DW_SCHEDULES_REPO_ROOT' => $repoRoot,
+                    'DW_SCHEDULES_CROSS_LANGUAGE_EVIDENCE' => $resultDir.'/cross-language-evidence.json',
+                    'DW_SERVER_VERSION' => '0.2.510',
+                    'DW_CLI_VERSION' => '0.1.82',
+                    'DW_PYTHON_SDK_VERSION' => '0.4.90',
+                    'DW_WORKFLOW_PHP_VERSION' => '2.0.0-alpha.224',
+                    'DW_WATERLINE_VERSION' => '2.0.0-alpha.111',
+                ],
+            );
+
+            $this->assertIsResource($process);
+            $stdout = stream_get_contents($pipes[1]);
+            $stderr = stream_get_contents($pipes[2]);
+            fclose($pipes[1]);
+            fclose($pipes[2]);
+            $exitCode = proc_close($process);
+
+            $this->assertSame(0, $exitCode, $stderr."\n".$stdout);
+
+            $result = json_decode(
+                (string) file_get_contents($resultDir.'/schedules-runtime-result.json'),
+                true,
+                512,
+                JSON_THROW_ON_ERROR,
+            );
+            $record = json_decode(
+                (string) file_get_contents($resultDir.'/schedules-runtime-record.json'),
+                true,
+                512,
+                JSON_THROW_ON_ERROR,
+            );
+
+            $target = $result['scenario_results']['php_created_python_workflow'];
+            $other = $result['scenario_results']['python_created_php_workflow'];
+
+            $this->assertSame('non_passing', $result['outcome']);
+            $this->assertFalse($result['runner_blocked']);
+            $this->assertFalse($record['runnerBlocked']);
+            $this->assertSame('fail', $target['status']);
+            $this->assertSame('not_covered', $other['status']);
+            $this->assertSame('public_client_worker_poll_error', $target['observed_outputs']['failure_class']);
+            $this->assertFalse($target['observed_outputs']['worker_poll_error']['runner_blocked']);
+            $this->assertTrue($target['observed_outputs']['worker_poll_diagnostics']['output']['product_boundary_reached']);
+            $this->assertSame($taskQueue, $target['observed_outputs']['task_queue_diagnostics']['task_queue']);
+            $this->assertSame($workerId, $target['observed_outputs']['worker_diagnostics']['worker_id']);
+            $this->assertSame($workflowId, $target['observed_outputs']['workflow_diagnostics']['workflow_id']);
+            $this->assertSame($runId, $target['observed_outputs']['workflow_diagnostics']['run_id']);
+            $this->assertSame(
+                'schedule_cross_language_dispatch_gap',
+                $target['linked_findings'][0]['finding_type'],
+            );
+            $this->assertSame('sdk-python', $target['linked_findings'][0]['owning_surface']);
         } finally {
             $this->removeDirectory($resultDir);
         }

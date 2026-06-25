@@ -134,6 +134,10 @@ Environment overrides:
                                     Overall wait for Python-created/PHP-worker
                                     and PHP-created/Python-worker scheduled fires.
                                     Defaults to 150.
+  DW_SCHEDULES_CROSS_LANGUAGE_FOCUS Target cross-language cell for focused
+                                    reruns. Accepts all, both,
+                                    python_created_php_workflow, or
+                                    php_created_python_workflow. Defaults to all.
 USAGE
 }
 
