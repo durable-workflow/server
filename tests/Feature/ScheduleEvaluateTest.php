@@ -895,6 +895,114 @@ class ScheduleEvaluateTest extends TestCase
             ->assertJsonPath('task.compatibility', null);
     }
 
+    public function test_scheduled_polyglot_start_pins_to_target_worker_cohort_on_shared_queue(): void
+    {
+        config()->set('workflows.v2.compatibility.current', 'server-image-build');
+        config()->set('workflows.v2.compatibility.supported', ['server-image-build']);
+
+        $phpWorkflowType = 'SchedulesConformancePhpWorkflow';
+        $pythonWorkflowType = 'SchedulesConformancePythonWorkflow';
+        $taskQueue = 'schedules-shared-builds';
+
+        $this->withHeaders($this->workerHeaders())
+            ->postJson('/api/worker/register', [
+                'worker_id' => 'schedules-php-worker-build',
+                'task_queue' => $taskQueue,
+                'runtime' => 'php',
+                'sdk_version' => '2.0.0-alpha.test',
+                'build_id' => 'workflow-php-build',
+                'supported_workflow_types' => [$phpWorkflowType],
+                'workflow_definition_fingerprints' => [
+                    $phpWorkflowType => 'schedules-conformance:SchedulesConformancePhpWorkflow:php',
+                ],
+                'supported_activity_types' => [],
+                'max_concurrent_workflow_tasks' => 10,
+                'max_concurrent_activity_tasks' => 10,
+                'task_slots' => [
+                    'workflow_available' => 10,
+                    'activity_available' => 10,
+                ],
+            ])
+            ->assertCreated()
+            ->assertJsonPath('build_id', 'workflow-php-build');
+
+        $this->withHeaders($this->workerHeaders())
+            ->postJson('/api/worker/register', [
+                'worker_id' => 'schedules-python-worker-build',
+                'task_queue' => $taskQueue,
+                'runtime' => 'python',
+                'sdk_version' => '0.4.test',
+                'build_id' => 'sdk-python-build',
+                'supported_workflow_types' => [$pythonWorkflowType],
+                'workflow_definition_fingerprints' => [
+                    $pythonWorkflowType => 'schedules-conformance:SchedulesConformancePythonWorkflow:python',
+                ],
+                'supported_activity_types' => [],
+                'max_concurrent_workflow_tasks' => 10,
+                'max_concurrent_activity_tasks' => 10,
+                'task_slots' => [
+                    'workflow_available' => 10,
+                    'activity_available' => 10,
+                ],
+            ])
+            ->assertCreated()
+            ->assertJsonPath('build_id', 'sdk-python-build');
+
+        $this->withHeaders($this->apiHeaders())
+            ->postJson('/api/schedules', [
+                'schedule_id' => 'python-created-php-worker-build',
+                'spec' => [
+                    'intervals' => [['every' => 'PT30S']],
+                    'timezone' => 'UTC',
+                ],
+                'action' => [
+                    'workflow_type' => $phpWorkflowType,
+                    'task_queue' => $taskQueue,
+                    'input' => [[
+                        'scenario' => 'python_created_php_workflow',
+                        'schedule_creator' => 'sdk-python',
+                        'workflow_runtime' => 'workflow-php',
+                    ]],
+                ],
+                'overlap_policy' => 'allow_all',
+                'jitter_seconds' => 0,
+                'max_runs' => 1,
+            ])
+            ->assertCreated()
+            ->assertJsonPath('schedule_id', 'python-created-php-worker-build');
+
+        WorkflowSchedule::query()
+            ->where('schedule_id', 'python-created-php-worker-build')
+            ->update(['next_fire_at' => now()->subSecond()]);
+
+        $exitCode = Artisan::call('schedule:evaluate', ['--json' => true]);
+        $report = json_decode(trim(Artisan::output()), true, 512, JSON_THROW_ON_ERROR);
+
+        $this->assertSame(0, $exitCode);
+        $this->assertSame(1, $report['fired_count']);
+
+        $run = WorkflowRun::query()
+            ->where('workflow_type', $phpWorkflowType)
+            ->firstOrFail();
+        $this->assertSame('workflow-php-build', $run->compatibility);
+
+        $task = WorkflowTask::query()
+            ->where('workflow_run_id', $run->id)
+            ->firstOrFail();
+        $this->assertSame('workflow-php-build', $task->compatibility);
+
+        $this->withHeaders($this->workerHeaders())
+            ->postJson('/api/worker/workflow-tasks/poll', [
+                'worker_id' => 'schedules-php-worker-build',
+                'task_queue' => $taskQueue,
+            ])
+            ->assertOk()
+            ->assertJsonPath('poll_status', 'leased')
+            ->assertJsonPath('task.workflow_id', $run->workflow_instance_id)
+            ->assertJsonPath('task.workflow_type', $phpWorkflowType)
+            ->assertJsonPath('task.compatibility', 'workflow-php-build');
+    }
+
     // ── Helpers ──────────────────────────────────────────────────────
 
     private function createNamespace(string $name): void

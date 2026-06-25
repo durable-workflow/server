@@ -44,7 +44,8 @@ final class SchedulesConformanceRunnerContractTest extends TestCase
             $workerShard,
         );
         $this->assertStringContainsString('"result": serializer.envelope({', $workerShard);
-        $this->assertStringContainsString('}, codec="json"),', $workerShard);
+        $this->assertStringContainsString('}),', $workerShard);
+        $this->assertStringNotContainsString('codec="json"', $workerShard);
         $this->assertStringNotContainsString('"result": json.dumps({', $workerShard);
     }
 

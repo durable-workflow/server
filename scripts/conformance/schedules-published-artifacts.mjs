@@ -8261,7 +8261,7 @@ async def run_action(client, payload):
                             "worker_id": payload["worker_id"],
                             "workflow_type": payload["workflow_type"],
                             "runtime": "sdk-python",
-                        }, codec="json"),
+                        }),
                     }
                 ],
             )

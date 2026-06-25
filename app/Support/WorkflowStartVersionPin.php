@@ -25,12 +25,17 @@ use Workflow\V2\Support\StandaloneWorkerVisibility;
  *      `(namespace, task_queue)` that has not been rolled back and is
  *      not draining. This is the explicit operator command for "new
  *      starts go here."
- *   2. Single-cohort fleet fallback: if no rollout has been promoted
+ *   2. Target workflow fallback: if the live fleet has exactly one
+ *      active cohort that advertises the requested workflow type, pin
+ *      new starts for that type to the matching cohort. This keeps
+ *      polyglot shared queues from routing scheduled starts to an
+ *      unrelated runtime's build cohort.
+ *   3. Single-cohort fleet fallback: if no rollout has been promoted
  *      yet, but the live fleet for the queue has exactly one active
  *      build-id cohort, pin to it. If the live fleet is unversioned
  *      only, keep the run unpinned while still exposing the
  *      unversioned contract scope for command-contract enrichment.
- *   3. Otherwise: null with no contract scope. The run stays
+ *   4. Otherwise: null with no contract scope. The run stays
  *      unversioned and any worker may claim it (legacy behavior).
  */
 final class WorkflowStartVersionPin
@@ -45,9 +50,9 @@ final class WorkflowStartVersionPin
         private readonly WorkerBuildIdNewStartSelector $newStartSelector,
     ) {}
 
-    public function resolve(string $namespace, string $taskQueue): ?string
+    public function resolve(string $namespace, string $taskQueue, ?string $workflowType = null): ?string
     {
-        return $this->resolveForStart($namespace, $taskQueue)['build_id'];
+        return $this->resolveForStart($namespace, $taskQueue, $workflowType)['build_id'];
     }
 
     /**
@@ -57,7 +62,7 @@ final class WorkflowStartVersionPin
      *     contract_scope: string,
      * }
      */
-    public function resolveForStart(string $namespace, string $taskQueue): array
+    public function resolveForStart(string $namespace, string $taskQueue, ?string $workflowType = null): array
     {
         $promoted = $this->promotedBuildId($namespace, $taskQueue);
 
@@ -68,6 +73,16 @@ final class WorkflowStartVersionPin
                 'contract_scope' => $promoted['build_id'] === null
                     ? self::CONTRACT_SCOPE_UNVERSIONED
                     : self::CONTRACT_SCOPE_BUILD_ID,
+            ];
+        }
+
+        $targetCohort = $this->singleActiveCohortForWorkflowType($namespace, $taskQueue, $workflowType);
+
+        if ($targetCohort !== null) {
+            return [
+                'build_id' => $targetCohort['build_id'],
+                'contract_build_id' => $targetCohort['contract_build_id'],
+                'contract_scope' => $targetCohort['contract_scope'],
             ];
         }
 
@@ -115,6 +130,37 @@ final class WorkflowStartVersionPin
             return null;
         }
 
+        return $this->cohortFromWorkers($this->activeWorkers($namespace, $taskQueue, ['build_id']));
+    }
+
+    /**
+     * @return array{
+     *     build_id: string|null,
+     *     contract_build_id: string|null,
+     *     contract_scope: string,
+     * }|null
+     */
+    private function singleActiveCohortForWorkflowType(string $namespace, string $taskQueue, ?string $workflowType): ?array
+    {
+        $workflowType = is_string($workflowType) ? trim($workflowType) : '';
+
+        if ($workflowType === '' || ! Schema::hasTable('workflow_worker_registrations')) {
+            return null;
+        }
+
+        $workers = $this->activeWorkers($namespace, $taskQueue, ['build_id', 'supported_workflow_types'])
+            ->filter(fn (WorkerRegistration $worker): bool => $this->workerSupportsWorkflowType($worker, $workflowType))
+            ->values();
+
+        return $this->cohortFromWorkers($workers);
+    }
+
+    /**
+     * @param  list<string>  $columns
+     * @return \Illuminate\Support\Collection<int, WorkerRegistration>
+     */
+    private function activeWorkers(string $namespace, string $taskQueue, array $columns): \Illuminate\Support\Collection
+    {
         $staleAfter = StandaloneWorkerVisibility::staleAfterSeconds(
             is_numeric(config('server.workers.stale_after_seconds'))
                 ? (int) config('server.workers.stale_after_seconds')
@@ -126,7 +172,7 @@ final class WorkflowStartVersionPin
 
         $cutoff = now()->subSeconds($staleAfter);
 
-        $workers = WorkerRegistration::query()
+        return WorkerRegistration::query()
             ->where('namespace', $namespace)
             ->where('task_queue', $taskQueue)
             ->where(function ($builder) use ($cutoff): void {
@@ -137,8 +183,19 @@ final class WorkflowStartVersionPin
                 $builder->whereNull('status')
                     ->orWhere('status', WorkerBuildIdRollout::DRAIN_INTENT_ACTIVE);
             })
-            ->get(['build_id']);
+            ->get($columns);
+    }
 
+    /**
+     * @param  iterable<WorkerRegistration>  $workers
+     * @return array{
+     *     build_id: string|null,
+     *     contract_build_id: string|null,
+     *     contract_scope: string,
+     * }|null
+     */
+    private function cohortFromWorkers(iterable $workers): ?array
+    {
         $buildIds = [];
         $hasUnversionedWorker = false;
 
@@ -173,5 +230,22 @@ final class WorkflowStartVersionPin
         }
 
         return null;
+    }
+
+    private function workerSupportsWorkflowType(WorkerRegistration $worker, string $workflowType): bool
+    {
+        $supported = $worker->supported_workflow_types;
+
+        if (! is_array($supported)) {
+            return false;
+        }
+
+        foreach ($supported as $type) {
+            if (is_string($type) && trim($type) === $workflowType) {
+                return true;
+            }
+        }
+
+        return false;
     }
 }

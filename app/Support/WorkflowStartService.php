@@ -117,7 +117,7 @@ class WorkflowStartService
         $payloadCodec = $envelope['codec'] ?? $defaultCodec;
 
         $startCohort = $namespace !== null
-            ? $this->versionPin->resolveForStart($namespace, $taskQueue)
+            ? $this->versionPin->resolveForStart($namespace, $taskQueue, $workflowType)
             : [
                 'build_id' => null,
                 'contract_build_id' => null,
