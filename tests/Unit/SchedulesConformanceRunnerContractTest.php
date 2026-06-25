@@ -72,6 +72,9 @@ final class SchedulesConformanceRunnerContractTest extends TestCase
 
         $this->assertStringContainsString('appendWorkerActionJsonLog(logPath, \'worker_output\', output);', $runner);
         $this->assertStringContainsString('function workerActionDiagnostics({ logPath, result, output = null })', $runner);
+        $this->assertStringContainsString('function workerActionDiagnosticSummary(diagnostics)', $runner);
+        $this->assertStringContainsString('diagnostics: ${diagnosticSummary}', $runner);
+        $this->assertStringContainsString('diagnostic_summary: diagnosticSummary', $runner);
         $this->assertStringContainsString('schema: \'durable-workflow.v2.schedules-runtime.worker-action-diagnostics\'', $runner);
         $this->assertStringContainsString('log_tail: tailLogSnippet(logPath, 2000)', $runner);
         $this->assertStringContainsString('worker_poll_diagnostics: pollAction.diagnostics', $runner);

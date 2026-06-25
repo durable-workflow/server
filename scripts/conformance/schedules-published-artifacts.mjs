@@ -6339,14 +6339,18 @@ function workerActionFailure({
   const reason = message
     || outputError
     || `published ${runtime} schedules worker action ${action} failed`;
-  const error = `${reason}; see ${path.basename(logPath)}`;
   const diagnostics = workerActionDiagnostics({ logPath, result, output });
+  const diagnosticSummary = workerActionDiagnosticSummary(diagnostics);
+  const error = diagnosticSummary === ''
+    ? `${reason}; see ${path.basename(logPath)}`
+    : `${reason}; see ${path.basename(logPath)}; diagnostics: ${diagnosticSummary}`;
 
   return {
     ok: false,
     runtime,
     action,
     error,
+    diagnostic_summary: diagnosticSummary,
     runner_blocked: runnerBlocked === true,
     log_path: path.basename(logPath),
     output,
@@ -6358,6 +6362,48 @@ function workerActionFailure({
       stderr_tail: transcriptError,
     },
   };
+}
+
+function workerActionDiagnosticSummary(diagnostics) {
+  if (!diagnostics || typeof diagnostics !== 'object') {
+    return '';
+  }
+
+  const parts = [];
+  const logPath = stringValue(diagnostics.log_path);
+  if (logPath !== '') {
+    parts.push(`log=${logPath}`);
+  }
+
+  const outputError = workerOutputErrorMessage(diagnostics.output);
+  if (outputError !== '') {
+    parts.push(`worker_output=${compactLogText(outputError, 260)}`);
+  }
+
+  const exitCode = diagnostics.exit_code;
+  if (exitCode !== null && exitCode !== undefined && String(exitCode) !== '') {
+    parts.push(`exit_code=${String(exitCode)}`);
+  }
+
+  if (diagnostics.timed_out === true) {
+    parts.push('timed_out=true');
+  }
+
+  const stderrTail = stringValue(diagnostics.transcript?.stderr_tail);
+  const stdoutTail = stringValue(diagnostics.transcript?.stdout_tail);
+  const transcriptTail = stderrTail !== '' && stderrTail !== '<empty response body>'
+    ? stderrTail
+    : (stdoutTail !== '' && stdoutTail !== '<empty response body>' ? stdoutTail : '');
+  if (transcriptTail !== '') {
+    parts.push(`transcript_tail=${compactLogText(transcriptTail, 320)}`);
+  }
+
+  const logTail = stringValue(diagnostics.log_tail);
+  if (logTail !== '' && logTail !== '<empty response body>' && logTail !== transcriptTail) {
+    parts.push(`log_tail=${compactLogText(logTail, 500)}`);
+  }
+
+  return parts.join('; ');
 }
 
 function workerActionTranscriptLog(result) {
@@ -6595,6 +6641,7 @@ function workerPollFailureOutput(pollAction) {
     error_message: pollAction.error,
     runner_blocked: pollAction.runner_blocked === true,
     log_path: pollAction.log_path,
+    diagnostic_summary: pollAction.diagnostic_summary,
     diagnostics: pollAction.diagnostics,
     transcript: pollAction.transcript,
     output: pollAction.output,
@@ -6631,6 +6678,7 @@ function workerPollFailureCompletion({
       message: pollAction.error,
       runner_blocked: pollAction.runner_blocked === true,
       log_path: pollAction.log_path,
+      diagnostic_summary: pollAction.diagnostic_summary,
       diagnostics: pollAction.diagnostics,
       transcript: pollAction.transcript,
       output: pollAction.output,
