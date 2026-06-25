@@ -2641,6 +2641,96 @@ class WorkflowWorkerProtocolTest extends TestCase
             ->assertJsonPath('run_status', 'completed');
     }
 
+    public function test_stale_workflow_long_poll_does_not_claim_after_worker_process_replacement(): void
+    {
+        Queue::fake();
+
+        $this->configureWorkflowTypes();
+        $this->createNamespace('default', 'Default namespace');
+
+        $start = $this->withHeaders($this->apiHeaders())
+            ->postJson('/api/workflows', [
+                'workflow_id' => 'wf-stale-workflow-long-poll',
+                'workflow_type' => 'tests.external-greeting-workflow',
+                'task_queue' => 'external-workflows',
+                'input' => ['Ada'],
+            ]);
+
+        $start->assertCreated();
+
+        $registration = [
+            'worker_id' => 'php-worker-stale-workflow-long-poll',
+            'task_queue' => 'external-workflows',
+            'runtime' => 'php',
+            'supported_workflow_types' => ['tests.external-greeting-workflow'],
+            'supported_activity_types' => ['tests.external-greeting-activity'],
+            'process_metrics' => [
+                'host' => 'worker-host',
+                'process_id' => 1101,
+                'process_started_at' => '2026-05-18T23:00:00Z',
+            ],
+        ];
+
+        $this->withHeaders($this->workerHeaders())
+            ->postJson('/api/worker/register', $registration)
+            ->assertCreated();
+
+        $this->mock(LongPoller::class, function (MockInterface $mock): void {
+            $mock->shouldReceive('until')
+                ->once()
+                ->andReturnUsing(function (
+                    callable $probe,
+                    callable $ready,
+                    ?int $timeoutSeconds = null,
+                    ?int $intervalMilliseconds = null,
+                    array $wakeChannels = [],
+                    ?callable $nextProbeAt = null,
+                    bool $reserveWorkerWaitSlot = false,
+                    string $waitSlotPool = 'worker',
+                ) {
+                    WorkerRegistration::query()
+                        ->where('worker_id', 'php-worker-stale-workflow-long-poll')
+                        ->where('namespace', 'default')
+                        ->firstOrFail()
+                        ->forceFill([
+                            'process_metrics' => [
+                                'host' => 'worker-host',
+                                'process_id' => 1102,
+                                'process_started_at' => '2026-05-18T23:01:00Z',
+                            ],
+                            'last_heartbeat_at' => now(),
+                        ])->save();
+
+                    $result = $probe();
+
+                    $this->assertIsArray($result);
+                    $this->assertSame('stale_worker_registration', $result['poll_status'] ?? null);
+                    $this->assertTrue($ready($result));
+
+                    return $result;
+                });
+        });
+
+        $this->withHeaders($this->workerHeaders())
+            ->postJson('/api/worker/workflow-tasks/poll', [
+                'worker_id' => 'php-worker-stale-workflow-long-poll',
+                'task_queue' => 'external-workflows',
+                'timeout_seconds' => 35,
+            ])
+            ->assertOk()
+            ->assertJsonPath('task', null)
+            ->assertJsonPath('poll_status', 'stale_worker_registration');
+
+        $task = WorkflowTask::query()
+            ->where('workflow_run_id', (string) $start->json('run_id'))
+            ->where('task_type', TaskType::Workflow->value)
+            ->firstOrFail();
+
+        $this->assertSame(TaskStatus::Ready, $task->status);
+        $this->assertNull($task->lease_owner);
+        $this->assertNull($task->lease_expires_at);
+    }
+
     public function test_worker_reregistration_without_process_identity_releases_leased_workflow_tasks(): void
     {
         Queue::fake();
@@ -2844,6 +2934,128 @@ class WorkflowWorkerProtocolTest extends TestCase
             ->assertJsonPath('task.lease_owner', 'php-worker-process-replaced-activity');
 
         $this->assertNotSame($staleActivityAttemptId, $reclaimed->json('task.activity_attempt_id'));
+    }
+
+    public function test_stale_activity_long_poll_does_not_claim_after_worker_process_replacement(): void
+    {
+        Queue::fake();
+
+        $this->configureWorkflowTypes();
+        $this->createNamespace('default', 'Default namespace');
+
+        $start = $this->withHeaders($this->apiHeaders())
+            ->postJson('/api/workflows', [
+                'workflow_id' => 'wf-stale-activity-long-poll',
+                'workflow_type' => 'tests.external-greeting-workflow',
+                'task_queue' => 'external-workflows',
+                'input' => ['Ada'],
+            ]);
+
+        $start->assertCreated();
+
+        $registration = [
+            'worker_id' => 'php-worker-stale-activity-long-poll',
+            'task_queue' => 'external-workflows',
+            'runtime' => 'php',
+            'supported_workflow_types' => ['tests.external-greeting-workflow'],
+            'supported_activity_types' => ['tests.external-greeting-activity'],
+            'process_metrics' => [
+                'host' => 'worker-host',
+                'process_id' => 1201,
+                'process_started_at' => '2026-05-18T23:10:00Z',
+            ],
+        ];
+
+        $this->withHeaders($this->workerHeaders())
+            ->postJson('/api/worker/register', $registration)
+            ->assertCreated();
+
+        $workflowPoll = $this->withHeaders($this->workerHeaders())
+            ->postJson('/api/worker/workflow-tasks/poll', [
+                'worker_id' => 'php-worker-stale-activity-long-poll',
+                'task_queue' => 'external-workflows',
+            ]);
+
+        $workflowPoll->assertOk()
+            ->assertJsonPath('task.workflow_id', 'wf-stale-activity-long-poll')
+            ->assertJsonPath('task.workflow_task_attempt', 1);
+
+        $workflowTaskId = (string) $workflowPoll->json('task.task_id');
+        $workflowAttempt = (int) $workflowPoll->json('task.workflow_task_attempt');
+
+        $this->withHeaders($this->workerHeaders())
+            ->postJson("/api/worker/workflow-tasks/{$workflowTaskId}/complete", [
+                'lease_owner' => 'php-worker-stale-activity-long-poll',
+                'workflow_task_attempt' => $workflowAttempt,
+                'commands' => [
+                    [
+                        'type' => 'schedule_activity',
+                        'activity_type' => 'tests.external-greeting-activity',
+                        'arguments' => Serializer::serializeWithCodec((string) config('workflows.serializer'), ['Ada']),
+                        'queue' => 'external-workflows',
+                    ],
+                ],
+            ])
+            ->assertOk()
+            ->assertJsonPath('run_status', 'waiting');
+
+        $this->mock(LongPoller::class, function (MockInterface $mock): void {
+            $mock->shouldReceive('until')
+                ->once()
+                ->andReturnUsing(function (
+                    callable $probe,
+                    callable $ready,
+                    ?int $timeoutSeconds = null,
+                    ?int $intervalMilliseconds = null,
+                    array $wakeChannels = [],
+                    ?callable $nextProbeAt = null,
+                    bool $reserveWorkerWaitSlot = false,
+                    string $waitSlotPool = 'worker',
+                ) {
+                    WorkerRegistration::query()
+                        ->where('worker_id', 'php-worker-stale-activity-long-poll')
+                        ->where('namespace', 'default')
+                        ->firstOrFail()
+                        ->forceFill([
+                            'process_metrics' => [
+                                'host' => 'worker-host',
+                                'process_id' => 1202,
+                                'process_started_at' => '2026-05-18T23:11:00Z',
+                            ],
+                            'last_heartbeat_at' => now(),
+                        ])->save();
+
+                    $result = $probe();
+
+                    $this->assertIsArray($result);
+                    $this->assertSame('stale_worker_registration', $result['poll_status'] ?? null);
+                    $this->assertTrue($ready($result));
+
+                    return $result;
+                });
+        });
+
+        $this->withHeaders($this->workerHeaders())
+            ->postJson('/api/worker/activity-tasks/poll', [
+                'worker_id' => 'php-worker-stale-activity-long-poll',
+                'task_queue' => 'external-workflows',
+                'timeout_seconds' => 35,
+            ])
+            ->assertOk()
+            ->assertJsonPath('task', null)
+            ->assertJsonPath('poll_status', 'stale_worker_registration');
+
+        $activityTask = WorkflowTask::query()
+            ->where('workflow_run_id', (string) $start->json('run_id'))
+            ->where('task_type', TaskType::Activity->value)
+            ->firstOrFail();
+
+        $this->assertSame(TaskStatus::Ready, $activityTask->status);
+        $this->assertNull($activityTask->lease_owner);
+        $this->assertNull($activityTask->lease_expires_at);
+        $this->assertSame(0, ActivityAttempt::query()
+            ->where('workflow_task_id', $activityTask->id)
+            ->count());
     }
 
     public function test_worker_reregistration_without_process_identity_releases_leased_activity_tasks(): void

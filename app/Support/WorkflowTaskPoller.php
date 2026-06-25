@@ -5,6 +5,7 @@ namespace App\Support;
 use App\Models\WorkerRegistration;
 use Illuminate\Http\Request;
 use Illuminate\Support\Carbon;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Schema;
 use InvalidArgumentException;
 use Throwable;
@@ -52,6 +53,7 @@ final class WorkflowTaskPoller
         string $taskQueue,
         string $leaseOwner,
         ?string $buildId,
+        WorkerRegistration $worker,
         ?string $pollRequestId,
         ?int $historyPageSize = null,
         ?string $acceptHistoryEncoding = null,
@@ -69,6 +71,7 @@ final class WorkflowTaskPoller
                 taskQueue: $taskQueue,
                 leaseOwner: $leaseOwner,
                 buildId: $buildId,
+                worker: $worker,
                 pollRequestId: null,
                 historyPageSize: $historyPageSize,
                 acceptHistoryEncoding: $acceptHistoryEncoding,
@@ -85,6 +88,7 @@ final class WorkflowTaskPoller
             taskQueue: $taskQueue,
             leaseOwner: $leaseOwner,
             buildId: $buildId,
+            worker: $worker,
             pollRequestId: $pollRequestId,
             historyPageSize: $historyPageSize,
             acceptHistoryEncoding: $acceptHistoryEncoding,
@@ -106,6 +110,7 @@ final class WorkflowTaskPoller
         string $taskQueue,
         string $leaseOwner,
         ?string $buildId,
+        WorkerRegistration $worker,
         string $pollRequestId,
         ?int $historyPageSize = null,
         ?string $acceptHistoryEncoding = null,
@@ -143,6 +148,7 @@ final class WorkflowTaskPoller
                     taskQueue: $taskQueue,
                     leaseOwner: $leaseOwner,
                     buildId: $buildId,
+                    worker: $worker,
                     pollRequestId: $pollRequestId,
                     historyPageSize: $historyPageSize,
                     acceptHistoryEncoding: $acceptHistoryEncoding,
@@ -262,6 +268,7 @@ final class WorkflowTaskPoller
         string $taskQueue,
         string $leaseOwner,
         ?string $buildId,
+        WorkerRegistration $worker,
         string $pollRequestId,
         ?int $historyPageSize = null,
         ?string $acceptHistoryEncoding = null,
@@ -277,6 +284,7 @@ final class WorkflowTaskPoller
                 taskQueue: $taskQueue,
                 leaseOwner: $leaseOwner,
                 buildId: $buildId,
+                worker: $worker,
                 pollRequestId: $pollRequestId,
                 historyPageSize: $historyPageSize,
                 acceptHistoryEncoding: $acceptHistoryEncoding,
@@ -321,6 +329,7 @@ final class WorkflowTaskPoller
         string $taskQueue,
         string $leaseOwner,
         ?string $buildId,
+        WorkerRegistration $worker,
         ?string $pollRequestId,
         ?int $historyPageSize = null,
         ?string $acceptHistoryEncoding = null,
@@ -336,6 +345,7 @@ final class WorkflowTaskPoller
             'poll_status' => 'empty',
             'next_probe_at' => null,
         ];
+        $workerPollFence = WorkerPollFence::snapshot($worker);
 
         $pollResult = $this->longPoller->until(
             function () use (
@@ -350,9 +360,20 @@ final class WorkflowTaskPoller
                 $workflowDefinitionFingerprints,
                 $acceptsQueryTasks,
                 $limit,
+                $workerPollFence,
                 &$nextProbeAt,
                 &$resolvedResult,
             ): ?array {
+                if (! WorkerPollFence::isCurrent($workerPollFence)) {
+                    $resolvedResult = [
+                        'task' => null,
+                        'poll_status' => 'stale_worker_registration',
+                        'next_probe_at' => null,
+                    ];
+
+                    return $resolvedResult;
+                }
+
                 $resolvedResult = $this->nextTask(
                     $request,
                     $namespace,
@@ -365,12 +386,13 @@ final class WorkflowTaskPoller
                     $supportedWorkflowTypes,
                     $workflowDefinitionFingerprints,
                     $acceptsQueryTasks,
+                    $workerPollFence,
                 );
                 $nextProbeAt = $resolvedResult['next_probe_at'] ?? null;
 
                 if (in_array(
                     $resolvedResult['poll_status'] ?? null,
-                    ['query_task_pending', 'compatibility_blocked', 'no_compatible_worker'],
+                    ['query_task_pending', 'compatibility_blocked', 'no_compatible_worker', 'stale_worker_registration'],
                     true,
                 )) {
                     return $resolvedResult;
@@ -392,7 +414,7 @@ final class WorkflowTaskPoller
 
         if (in_array(
             $pollResult['poll_status'] ?? null,
-            ['query_task_pending', 'compatibility_blocked', 'no_compatible_worker'],
+            ['query_task_pending', 'compatibility_blocked', 'no_compatible_worker', 'stale_worker_registration'],
             true,
         )) {
             return [
@@ -424,6 +446,7 @@ final class WorkflowTaskPoller
         array $supportedWorkflowTypes = [],
         array $workflowDefinitionFingerprints = [],
         bool $acceptsQueryTasks = false,
+        array $workerPollFence = [],
     ): array {
         return $this->withWorkerCompatibility(
             $namespace,
@@ -440,6 +463,7 @@ final class WorkflowTaskPoller
                 $supportedWorkflowTypes,
                 $workflowDefinitionFingerprints,
                 $acceptsQueryTasks,
+                $workerPollFence,
             ): array {
                 $this->runDueServiceModeTimers($namespace, $taskQueue, $buildId);
 
@@ -475,6 +499,7 @@ final class WorkflowTaskPoller
                             historyPageSize: $historyPageSize,
                             acceptHistoryEncoding: $acceptHistoryEncoding,
                             supportedWorkflowTypes: $supportedWorkflowTypes,
+                            workerPollFence: $workerPollFence,
                         ),
                     ),
                 );
@@ -505,6 +530,7 @@ final class WorkflowTaskPoller
                                 historyPageSize: $historyPageSize,
                                 acceptHistoryEncoding: $acceptHistoryEncoding,
                                 supportedWorkflowTypes: $supportedWorkflowTypes,
+                                workerPollFence: $workerPollFence,
                             ),
                         ),
                     );
@@ -610,6 +636,7 @@ final class WorkflowTaskPoller
         ?int $historyPageSize = null,
         ?string $acceptHistoryEncoding = null,
         array $supportedWorkflowTypes = [],
+        array $workerPollFence = [],
     ): ?array {
         $readyTasks = $this->pollReadyTasks(
             namespace: $namespace,
@@ -718,7 +745,13 @@ final class WorkflowTaskPoller
                 'leaseOwner' => $leaseOwner,
             ]);
 
-            $claim = $this->bridge->claimStatus($taskId, $leaseOwner);
+            $claim = DB::transaction(function () use ($taskId, $leaseOwner, $workerPollFence): array {
+                if ($workerPollFence !== [] && ! WorkerPollFence::isCurrentForUpdate($workerPollFence)) {
+                    return ['claimed' => false, 'reason' => 'stale_worker_registration'];
+                }
+
+                return $this->bridge->claimStatus($taskId, $leaseOwner);
+            });
 
             if (($claim['claimed'] ?? false) !== true) {
                 \Log::debug('[WorkflowTaskPoller] Skipping task: claim failed', [

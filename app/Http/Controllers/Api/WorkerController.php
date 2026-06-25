@@ -966,6 +966,7 @@ class WorkerController
                 taskQueue: $validated['task_queue'],
                 leaseOwner: $validated['worker_id'],
                 buildId: $registeredBuildId,
+                worker: $worker,
                 pollRequestId: $validated['poll_request_id'] ?? null,
                 historyPageSize: $pageSize,
                 acceptHistoryEncoding: $acceptHistoryEncoding,

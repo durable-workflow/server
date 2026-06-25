@@ -386,6 +386,7 @@ final class ActivityTaskPoller
             'poll_status' => 'empty',
             'next_probe_at' => null,
         ];
+        $workerPollFence = WorkerPollFence::snapshot($worker);
 
         $pollResult = $this->longPoller->until(
             function () use (
@@ -397,9 +398,20 @@ final class ActivityTaskPoller
                 $supportedActivityTypes,
                 $workerSessionsAvailable,
                 $limit,
+                $workerPollFence,
                 &$nextProbeAt,
                 &$resolvedResult,
             ): ?array {
+                if (! WorkerPollFence::isCurrent($workerPollFence)) {
+                    $resolvedResult = [
+                        'task' => null,
+                        'poll_status' => 'stale_worker_registration',
+                        'next_probe_at' => null,
+                    ];
+
+                    return $resolvedResult;
+                }
+
                 $resolvedResult = $this->nextTask(
                     $namespace,
                     $taskQueue,
@@ -409,10 +421,15 @@ final class ActivityTaskPoller
                     $limit,
                     $supportedActivityTypes,
                     $workerSessionsAvailable,
+                    $workerPollFence,
                 );
                 $nextProbeAt = $resolvedResult['next_probe_at'] ?? null;
 
-                if (($resolvedResult['poll_status'] ?? null) === 'query_task_pending') {
+                if (in_array(
+                    $resolvedResult['poll_status'] ?? null,
+                    ['query_task_pending', 'stale_worker_registration'],
+                    true,
+                )) {
                     return $resolvedResult;
                 }
 
@@ -430,10 +447,14 @@ final class ActivityTaskPoller
             reserveWorkerWaitSlot: true,
         );
 
-        if (($pollResult['poll_status'] ?? null) === 'query_task_pending') {
+        if (in_array(
+            $pollResult['poll_status'] ?? null,
+            ['query_task_pending', 'stale_worker_registration'],
+            true,
+        )) {
             return [
                 'task' => null,
-                'poll_status' => 'query_task_pending',
+                'poll_status' => (string) $pollResult['poll_status'],
             ];
         }
 
@@ -596,6 +617,7 @@ final class ActivityTaskPoller
         int $limit,
         array $supportedActivityTypes = [],
         bool $workerSessionsAvailable = true,
+        array $workerPollFence = [],
     ): array {
         return $this->withWorkerCompatibility(
             $namespace,
@@ -609,6 +631,7 @@ final class ActivityTaskPoller
                 $limit,
                 $supportedActivityTypes,
                 $workerSessionsAvailable,
+                $workerPollFence,
             ): array {
                 $task = $this->admission->withLeaseAdmission(
                     $namespace,
@@ -627,6 +650,7 @@ final class ActivityTaskPoller
                             $limit,
                             $supportedActivityTypes,
                             $workerSessionsAvailable,
+                            $workerPollFence,
                         ),
                     ),
                 );
@@ -677,6 +701,7 @@ final class ActivityTaskPoller
         int $limit,
         array $supportedActivityTypes = [],
         bool $workerSessionsAvailable = true,
+        array $workerPollFence = [],
     ): ?array {
         $readyTasks = $this->bridge->poll(
             connection: null,
@@ -744,7 +769,12 @@ final class ActivityTaskPoller
                     $taskId,
                     $leaseOwner,
                     $workerSessionsAvailable,
+                    $workerPollFence,
                 ): ?array {
+                    if ($workerPollFence !== [] && ! WorkerPollFence::isCurrentForUpdate($workerPollFence)) {
+                        throw new ActivityTaskClaimRolledBack;
+                    }
+
                     $claim = $this->claimStatus($taskId, $leaseOwner);
 
                     if (($claim['claimed'] ?? false) !== true) {

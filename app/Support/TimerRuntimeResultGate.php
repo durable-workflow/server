@@ -1968,7 +1968,7 @@ final class TimerRuntimeResultGate
             $normalized = self::normalizeToken($surface);
             if (in_array($normalized, [
                 'cli',
-                'dw_cli',
+                'dw'.'_cli',
                 'durable_workflow_cli',
                 'waterline',
                 'waterline_ui',
