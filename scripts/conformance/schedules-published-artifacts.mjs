@@ -6196,18 +6196,22 @@ async function runSchedulesPythonWorkerCapture(python, input) {
     timeout: positiveInt(input.timeout_ms, 30000),
     maxBuffer: 1024 * 1024 * 4,
   });
-  writeText(logPath, `${result.stdout}${result.stderr}`);
+  writeText(logPath, workerActionTranscriptLog(result));
+  const output = readJsonIfExists(outputPath);
+  if (output && typeof output === 'object') {
+    appendWorkerActionJsonLog(logPath, 'worker_output', output);
+  }
   if (result.exit_code !== 0) {
     return workerActionFailure({
       runtime: 'sdk-python',
       action: input.action,
       logPath,
       result,
+      output,
       runnerBlocked: true,
     });
   }
 
-  const output = readJsonIfExists(outputPath);
   if (!output || typeof output !== 'object') {
     return workerActionFailure({
       runtime: 'sdk-python',
@@ -6273,18 +6277,22 @@ async function runSchedulesPhpWorkerCapture(php, input) {
     timeout: positiveInt(input.timeout_ms, 30000),
     maxBuffer: 1024 * 1024 * 4,
   });
-  writeText(logPath, `${result.stdout}${result.stderr}`);
+  writeText(logPath, workerActionTranscriptLog(result));
+  const output = readJsonIfExists(outputPath);
+  if (output && typeof output === 'object') {
+    appendWorkerActionJsonLog(logPath, 'worker_output', output);
+  }
   if (result.exit_code !== 0) {
     return workerActionFailure({
       runtime: 'workflow-php',
       action: input.action,
       logPath,
       result,
+      output,
       runnerBlocked: true,
     });
   }
 
-  const output = readJsonIfExists(outputPath);
   if (!output || typeof output !== 'object') {
     return workerActionFailure({
       runtime: 'workflow-php',
@@ -6332,6 +6340,7 @@ function workerActionFailure({
     || outputError
     || `published ${runtime} schedules worker action ${action} failed`;
   const error = `${reason}; see ${path.basename(logPath)}`;
+  const diagnostics = workerActionDiagnostics({ logPath, result, output });
 
   return {
     ok: false,
@@ -6341,11 +6350,50 @@ function workerActionFailure({
     runner_blocked: runnerBlocked === true,
     log_path: path.basename(logPath),
     output,
+    diagnostics,
     transcript: {
       exit_code: result.exit_code,
       signal: result.signal ?? '',
       timed_out: result.timed_out === true,
       stderr_tail: transcriptError,
+    },
+  };
+}
+
+function workerActionTranscriptLog(result) {
+  const parts = [];
+  const stdout = stringValue(result.stdout);
+  const stderr = stringValue(result.stderr);
+  if (stdout !== '') {
+    parts.push('--- stdout ---', stdout.trimEnd());
+  }
+  if (stderr !== '') {
+    parts.push('--- stderr ---', stderr.trimEnd());
+  }
+  if (parts.length === 0) {
+    parts.push('--- process output ---', '<empty>');
+  }
+  parts.push(`--- exit status ---\nexit_code=${result.exit_code} signal=${stringValue(result.signal)} timed_out=${result.timed_out === true}`);
+
+  return `${parts.join('\n')}\n`;
+}
+
+function appendWorkerActionJsonLog(logPath, label, value) {
+  fs.appendFileSync(logPath, `--- ${label} ---\n${JSON.stringify(value, null, 2)}\n`, 'utf8');
+}
+
+function workerActionDiagnostics({ logPath, result, output = null }) {
+  return {
+    schema: 'durable-workflow.v2.schedules-runtime.worker-action-diagnostics',
+    log_path: path.basename(logPath),
+    log_tail: tailLogSnippet(logPath, 2000),
+    exit_code: result.exit_code,
+    signal: result.signal ?? '',
+    timed_out: result.timed_out === true,
+    output,
+    transcript: {
+      stdout_tail: compactLogText(result.stdout ?? '', 700),
+      stderr_tail: compactLogText(result.stderr ?? '', 700),
     },
   };
 }
@@ -6547,6 +6595,7 @@ function workerPollFailureOutput(pollAction) {
     error_message: pollAction.error,
     runner_blocked: pollAction.runner_blocked === true,
     log_path: pollAction.log_path,
+    diagnostics: pollAction.diagnostics,
     transcript: pollAction.transcript,
     output: pollAction.output,
   };
@@ -6575,12 +6624,14 @@ function workerPollFailureCompletion({
     poll_attempts: attempts,
     worker_poll: workerPollFailureOutput(pollAction),
     worker_poll_ok: false,
+    worker_poll_diagnostics: pollAction.diagnostics,
     worker_poll_error: {
       runtime: pollAction.runtime,
       action: pollAction.action,
       message: pollAction.error,
       runner_blocked: pollAction.runner_blocked === true,
       log_path: pollAction.log_path,
+      diagnostics: pollAction.diagnostics,
       transcript: pollAction.transcript,
       output: pollAction.output,
     },
@@ -7612,6 +7663,7 @@ function crossLanguageRunnerBlockedFinding(cell, artifactVersions) {
     schedule_visible_in_cli: cell.schedule_visible_in_cli,
     schedule_diagnostics: cell.schedule_diagnostics,
     worker_poll_error: cell.worker_poll_error,
+    worker_poll_diagnostics: cell.worker_poll_diagnostics ?? cell.worker_poll_error?.diagnostics ?? null,
   };
 }
 
@@ -8145,7 +8197,7 @@ import os
 import sys
 import time
 
-from durable_workflow import Client, ScheduleAction, ScheduleSpec
+from durable_workflow import Client, ScheduleAction, ScheduleSpec, serializer
 
 
 def process_metrics():
@@ -8204,12 +8256,12 @@ async def run_action(client, payload):
                 commands=[
                     {
                         "type": "complete_workflow",
-                        "result": json.dumps({
+                        "result": serializer.envelope({
                             **(payload.get("complete_result") or {}),
                             "worker_id": payload["worker_id"],
                             "workflow_type": payload["workflow_type"],
                             "runtime": "sdk-python",
-                        }),
+                        }, codec="json"),
                     }
                 ],
             )
@@ -8339,7 +8391,10 @@ if ($payload['action'] === 'create_schedule') {
                 (string) $task['task_id'],
                 [[
                     'type' => 'complete_workflow',
-                    'result' => json_encode($completeResult, JSON_THROW_ON_ERROR),
+                    'result' => [
+                        'codec' => 'json',
+                        'blob' => json_encode($completeResult, JSON_THROW_ON_ERROR),
+                    ],
                 ]],
                 isset($task['lease_owner']) ? (string) $task['lease_owner'] : null,
                 isset($task['workflow_task_attempt']) ? (int) $task['workflow_task_attempt'] : null,

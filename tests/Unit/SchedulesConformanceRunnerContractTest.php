@@ -28,6 +28,58 @@ final class SchedulesConformanceRunnerContractTest extends TestCase
         $this->assertStringNotContainsString('"result": json.dumps({', $lifecycleShard);
     }
 
+    public function test_cross_language_python_worker_uses_payload_envelope_for_manual_completion(): void
+    {
+        $repoRoot = dirname(__DIR__, 2);
+        $runner = (string) file_get_contents($repoRoot.'/scripts/conformance/schedules-published-artifacts.mjs');
+        $workerStart = strpos($runner, 'function schedulesPythonWorkerScript()');
+        $workerEnd = strpos($runner, 'function schedulesPhpWorkerScript()', $workerStart ?: 0);
+
+        $this->assertIsInt($workerStart);
+        $this->assertIsInt($workerEnd);
+        $workerShard = substr($runner, $workerStart, $workerEnd - $workerStart);
+
+        $this->assertStringContainsString(
+            'from durable_workflow import Client, ScheduleAction, ScheduleSpec, serializer',
+            $workerShard,
+        );
+        $this->assertStringContainsString('"result": serializer.envelope({', $workerShard);
+        $this->assertStringContainsString('}, codec="json"),', $workerShard);
+        $this->assertStringNotContainsString('"result": json.dumps({', $workerShard);
+    }
+
+    public function test_cross_language_php_worker_uses_payload_envelope_for_manual_completion(): void
+    {
+        $repoRoot = dirname(__DIR__, 2);
+        $runner = (string) file_get_contents($repoRoot.'/scripts/conformance/schedules-published-artifacts.mjs');
+        $workerStart = strpos($runner, 'function schedulesPhpWorkerScript()');
+        $workerEnd = strpos($runner, 'function apiRequest(', $workerStart ?: 0);
+
+        $this->assertIsInt($workerStart);
+        $this->assertIsInt($workerEnd);
+        $workerShard = substr($runner, $workerStart, $workerEnd - $workerStart);
+
+        $this->assertStringContainsString("'codec' => 'json'", $workerShard);
+        $this->assertStringContainsString("'blob' => json_encode(\$completeResult, JSON_THROW_ON_ERROR)", $workerShard);
+        $this->assertStringNotContainsString("'result' => json_encode(\$completeResult, JSON_THROW_ON_ERROR)", $workerShard);
+    }
+
+    public function test_cross_language_worker_poll_failures_retain_action_diagnostics(): void
+    {
+        $repoRoot = dirname(__DIR__, 2);
+        $runner = (string) file_get_contents($repoRoot.'/scripts/conformance/schedules-published-artifacts.mjs');
+
+        $this->assertStringContainsString('appendWorkerActionJsonLog(logPath, \'worker_output\', output);', $runner);
+        $this->assertStringContainsString('function workerActionDiagnostics({ logPath, result, output = null })', $runner);
+        $this->assertStringContainsString('schema: \'durable-workflow.v2.schedules-runtime.worker-action-diagnostics\'', $runner);
+        $this->assertStringContainsString('log_tail: tailLogSnippet(logPath, 2000)', $runner);
+        $this->assertStringContainsString('worker_poll_diagnostics: pollAction.diagnostics', $runner);
+        $this->assertStringContainsString(
+            'worker_poll_diagnostics: cell.worker_poll_diagnostics ?? cell.worker_poll_error?.diagnostics ?? null',
+            $runner,
+        );
+    }
+
     public function test_published_artifact_runner_requires_supplied_install_evidence_for_install_cell_pass(): void
     {
         $nodeBinary = trim((string) shell_exec('command -v node 2>/dev/null'));
