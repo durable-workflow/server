@@ -83,6 +83,26 @@ class WorkflowLifecycleContractTest extends TestCase
         }
     }
 
+    public function test_published_artifact_runner_has_guarded_continue_as_new_host_probe(): void
+    {
+        $source = file_get_contents(dirname(__DIR__, 2).'/scripts/conformance/workflow-lifecycle-published-artifacts.sh') ?: '';
+
+        foreach ([
+            'DW_WORKFLOW_LIFECYCLE_SKIP_FOCUSED_HOST_PROBE',
+            'should_run_focused_continue_as_new_host_probe',
+            'focused_published_server_continue_as_new_host_probe',
+            'published-server-workflow-lifecycle-continue-as-new-focused-host-probe',
+            'workflow-lifecycle-evidence.json',
+            'duplicate_worker_completion_after_continue_as_new',
+            'successor_run_ids_after_duplicate',
+            'if [[ "$repo_root" != "/app" || -d "$repo_root/.git" ]]; then',
+            'local_product_source_checkout_used_as_pass_evidence',
+            'published_artifact_cell_executed',
+        ] as $token) {
+            $this->assertStringContainsString($token, $source);
+        }
+    }
+
     public function test_result_gate_rejects_pass_when_required_provenance_is_missing(): void
     {
         $result = $this->completeLifecycleResult();
