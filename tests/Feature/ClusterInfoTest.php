@@ -37,6 +37,8 @@ use App\Support\TimerRuntimeContract;
 use App\Support\TimerRuntimeResultGate;
 use App\Support\WorkerVersioningRuntimeContract;
 use App\Support\WorkerVersioningRuntimeResultGate;
+use App\Support\WorkflowLifecycleContract;
+use App\Support\WorkflowLifecycleResultGate;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\DB;
 use Tests\TestCase;
@@ -1203,6 +1205,25 @@ class ClusterInfoTest extends TestCase
         );
         $this->assertContains(
             'each_pass_scenario_has_scenario_specific_evidence',
+            $contract['result_gate']['pass_requires'],
+        );
+    }
+
+    public function test_it_publishes_workflow_lifecycle_contract_manifest(): void
+    {
+        $response = $this->getJson('/api/cluster/info')->assertOk();
+        $contract = $response->json('workflow_lifecycle_contract');
+
+        $this->assertSame(WorkflowLifecycleContract::SCHEMA, $contract['schema']);
+        $this->assertSame('workflow_lifecycle_contract', $contract['fixture_category']);
+        $this->assertContains('artifact_sources', $contract['artifact_policy']['required_run_record_fields']);
+        $this->assertContains('lifecycle_cell_outcomes', $contract['artifact_policy']['required_run_record_fields']);
+        $this->assertContains('findings', $contract['artifact_policy']['required_run_record_fields']);
+        $this->assertContains('local_product_source_checkouts_used', $contract['artifact_policy']['required_run_record_fields']);
+        $this->assertContains('source_policy', $contract['artifact_policy']['required_run_record_fields']);
+        $this->assertSame(WorkflowLifecycleResultGate::SCHEMA, $contract['result_gate']['schema']);
+        $this->assertContains(
+            'local_product_source_truthy_values_are_refused_consistently',
             $contract['result_gate']['pass_requires'],
         );
     }

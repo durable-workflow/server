@@ -32,6 +32,7 @@ use App\Support\TaskQueueBuildIdRolloutSnapshot;
 use App\Support\TimerRuntimeContract;
 use App\Support\WorkerVersioningRuntimeContract;
 use App\Support\WorkerProtocol;
+use App\Support\WorkflowLifecycleContract;
 use App\Support\WorkflowStreamsContract;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
@@ -151,6 +152,7 @@ class HealthController
             'skew_refusal_matrix_contract' => true,
             'worker_versioning_runtime_contract' => true,
             'migration_runtime_contract' => true,
+            'workflow_lifecycle_contract' => true,
             'embedded_v2_import' => $embeddedV2ImportAvailable,
             'payload_codecs' => CodecRegistry::universal(),
             'response_compression' => (bool) config('server.compression.enabled', true)
@@ -207,6 +209,7 @@ class HealthController
             'skew_refusal_matrix_contract' => SkewRefusalMatrixContract::manifest(),
             'worker_versioning_runtime_contract' => WorkerVersioningRuntimeContract::manifest(),
             'migration_runtime_contract' => MigrationRuntimeContract::manifest(),
+            'workflow_lifecycle_contract' => WorkflowLifecycleContract::manifest(),
             'namespace_runtime_contract' => NamespaceRuntimeContract::manifest(),
             'auth_composition_contract' => AuthCompositionContract::manifest(),
             'control_plane' => ControlPlaneProtocol::info(),

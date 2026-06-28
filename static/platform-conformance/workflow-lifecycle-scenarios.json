@@ -1,0 +1,40 @@
+{
+  "schema": "durable-workflow.v2.platform-conformance.runtime-scenarios",
+  "category": "workflow_lifecycle_contract",
+  "suite_schema": "durable-workflow.v2.platform-conformance.suite",
+  "suite_version": 18,
+  "result_schema": "durable-workflow.v2.workflow-lifecycle.result",
+  "required_run_record_fields": [
+    "artifact_versions",
+    "published_artifact_versions",
+    "artifact_sources",
+    "started_at",
+    "finished_at",
+    "generated_at",
+    "outcome",
+    "runner_blocked",
+    "scenario_results",
+    "lifecycle_cell_outcomes",
+    "findings",
+    "local_product_source_checkouts_used",
+    "source_policy"
+  ],
+  "required_scenarios": [
+    "continue_as_new_run_chain_visibility",
+    "continue_as_new_identity_and_history_continuity",
+    "continue_as_new_duplicate_side_effect_prevention",
+    "cancellation_public_surface_terminal_state",
+    "termination_public_surface_terminal_state",
+    "workflow_id_reuse_duplicate_start_policy",
+    "workflow_timeout_terminal_state",
+    "workflow_retry_backoff_or_refusal",
+    "php_sdk_lifecycle_surface",
+    "python_sdk_lifecycle_surface",
+    "operator_diagnostics_surfaces"
+  ],
+  "source_policy": {
+    "pass_requires_published_artifacts_only": true,
+    "local_product_source_checkouts_used_must_be_false": true,
+    "truthy_values_rejected": ["1", "true", "yes", "on"]
+  }
+}
