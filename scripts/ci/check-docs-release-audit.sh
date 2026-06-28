@@ -85,7 +85,9 @@ const refreshCommand = 'npm run refresh:public-artifact-versions';
 const refreshFiles = [
   'scripts/public-artifact-versions.json',
   'docs/compatibility.md',
+  'static/quickstart-execution-contract.json',
 ];
+const refreshFileList = refreshFiles.join(', ');
 const releaseAuditAssertions = [
   'LEAK=0',
   'MIXED=0',
@@ -152,7 +154,7 @@ function docsRefreshHandoff(message, actualVersion, observedVersions) {
         message,
         '',
         `Expected ${artifact} ${expected}; live docs release audit reports ${actualVersion || '<missing>'}.`,
-        `Run ${refreshCommand} and commit only scripts/public-artifact-versions.json plus docs/compatibility.md through the normal docs merge path.`,
+        `Run ${refreshCommand} and commit only ${refreshFileList} through the normal docs merge path.`,
       ].join('\n'),
       labels: [
         'pipeline:ready-item',
@@ -255,7 +257,7 @@ const actual = versions[artifact];
 if (actual !== expected) {
   const actualVersion = Object.prototype.hasOwnProperty.call(versions, artifact) ? actual : null;
   const message = `${auditUrl} reports artifact_versions.${artifact}=${actual || '<missing>'}, expected ${expected}. ` +
-    'Run npm run refresh:public-artifact-versions in durable-workflow.github.io and land scripts/public-artifact-versions.json plus docs/compatibility.md through the normal docs merge path before treating this release as fully surfaced.';
+    `Run ${refreshCommand} in durable-workflow.github.io and land ${refreshFileList} through the normal docs merge path before treating this release as fully surfaced.`;
   const handoff = docsRefreshHandoff(message, actualVersion, versions);
 
   writeHandoff(handoff);

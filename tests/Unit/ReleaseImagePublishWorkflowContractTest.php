@@ -320,6 +320,9 @@ class ReleaseImagePublishWorkflowContractTest extends TestCase
         $this->assertStringContainsString("repository: 'durable-workflow.github.io'", $auditor);
         $this->assertStringContainsString("refresh_command: 'npm run refresh:public-artifact-versions'", $auditor);
         $this->assertStringContainsString('refresh_files: refreshFiles', $auditor);
+        $this->assertStringContainsString("'static/quickstart-execution-contract.json'", $auditor);
+        $this->assertStringContainsString('const refreshFileList = refreshFiles.join(\', \');', $auditor);
+        $this->assertStringNotContainsString('scripts/public-artifact-versions.json plus docs/compatibility.md', $auditor);
         $this->assertStringContainsString('docs_artifact_tuple_handoff: handoff', $auditor);
         $this->assertStringContainsString('observed_artifact_versions: versions', $auditor);
 
