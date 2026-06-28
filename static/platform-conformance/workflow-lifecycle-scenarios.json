@@ -32,6 +32,76 @@
     "python_sdk_lifecycle_surface",
     "operator_diagnostics_surfaces"
   ],
+  "scenarios": [
+    {
+      "id": "continue_as_new_run_chain_visibility",
+      "description": "Continue-as-new creates a visible run chain under one logical workflow id, with distinct run ids and monotonic run numbers.",
+      "required_evidence": ["workflow_id", "initial_run_id", "continued_run_id", "run_count", "current_run_id", "run_numbers"],
+      "required_behavior": "continue_as_new_creates_a_visible_run_chain_under_one_logical_workflow_id"
+    },
+    {
+      "id": "continue_as_new_identity_and_history_continuity",
+      "description": "History and run-list surfaces link the predecessor and successor runs without losing logical workflow identity.",
+      "required_evidence": ["workflow_id", "history_events", "predecessor_closed_event", "successor_started_event", "history_api_links"],
+      "required_behavior": "history_surfaces_link_predecessor_and_successor_runs_without_losing_logical_identity"
+    },
+    {
+      "id": "continue_as_new_duplicate_side_effect_prevention",
+      "description": "Replay, restart, and continue-as-new boundaries do not duplicate externally visible side effects.",
+      "required_evidence": ["workflow_id", "side_effect_key", "expected_count", "observed_count", "replay_or_restart_window"],
+      "required_behavior": "continue_as_new_replay_or_restart_does_not_duplicate_side_effects"
+    },
+    {
+      "id": "cancellation_public_surface_terminal_state",
+      "description": "Cancellation requested through public surfaces reaches a documented terminal state and produces typed observable errors for workers and callers.",
+      "required_evidence": ["workflow_id", "request_surface", "cancel_requested_at", "terminal_status", "worker_error_type", "caller_error_type"],
+      "terminal_states": ["cancelled"],
+      "required_behavior": "public_cancellation_reaches_cancelled_and_surfaces_typed_worker_and_caller_errors"
+    },
+    {
+      "id": "termination_public_surface_terminal_state",
+      "description": "Termination requested through public surfaces reaches a documented terminal state and produces typed observable errors for workers and callers.",
+      "required_evidence": ["workflow_id", "request_surface", "terminate_requested_at", "terminal_status", "worker_error_type", "caller_error_type"],
+      "terminal_states": ["terminated"],
+      "required_behavior": "public_termination_reaches_terminated_and_surfaces_typed_worker_and_caller_errors"
+    },
+    {
+      "id": "workflow_id_reuse_duplicate_start_policy",
+      "description": "Workflow id reuse and duplicate start policy are enforced or unsupported shapes are refused with a documented typed reason.",
+      "required_evidence": ["workflow_id", "duplicate_policy", "first_start_outcome", "duplicate_start_outcome", "http_status_or_error_type"],
+      "required_behavior": "duplicate_workflow_id_start_is_enforced_or_refused_with_a_documented_typed_reason"
+    },
+    {
+      "id": "workflow_timeout_terminal_state",
+      "description": "Workflow execution or run timeout records operator-visible deadline timing and terminal state.",
+      "required_evidence": ["workflow_id", "timeout_field", "deadline_at", "observed_terminal_at", "terminal_status", "operator_visible_timing"],
+      "required_behavior": "workflow_execution_or_run_timeout_records_deadline_timing_and_terminal_state"
+    },
+    {
+      "id": "workflow_retry_backoff_or_refusal",
+      "description": "Workflow-level retry/backoff is proven where supported; unsupported retry cells refuse clearly and match public documentation.",
+      "required_evidence": ["workflow_id", "retry_policy_shape", "attempt_count_or_refusal_reason", "backoff_observation_or_error_type", "docs_match"],
+      "required_behavior": "workflow_retry_backoff_is_executed_where_supported_or_retry_policy_is_refused_clearly"
+    },
+    {
+      "id": "php_sdk_lifecycle_surface",
+      "description": "The published PHP workflow package can exercise supported lifecycle cells, or unsupported cells produce documented typed errors.",
+      "required_evidence": ["sdk", "covered_cells", "unsupported_cells", "typed_errors", "artifact_version"],
+      "required_behavior": "php_sdk_exercises_supported_lifecycle_cells_or_refuses_unsupported_cells_with_typed_errors"
+    },
+    {
+      "id": "python_sdk_lifecycle_surface",
+      "description": "The published Python SDK can exercise supported lifecycle cells, or unsupported cells produce documented typed errors.",
+      "required_evidence": ["sdk", "covered_cells", "unsupported_cells", "typed_errors", "artifact_version"],
+      "required_behavior": "python_sdk_exercises_supported_lifecycle_cells_or_refuses_unsupported_cells_with_typed_errors"
+    },
+    {
+      "id": "operator_diagnostics_surfaces",
+      "description": "CLI, API, history, and Waterline-visible state expose enough information for operators and agents to diagnose every lifecycle transition.",
+      "required_evidence": ["workflow_id", "cli_fields", "api_fields", "history_fields", "waterline_fields", "diagnostic_transition_matrix"],
+      "required_behavior": "cli_api_history_and_waterline_expose_enough_state_to_diagnose_every_lifecycle_transition"
+    }
+  ],
   "source_policy": {
     "pass_requires_published_artifacts_only": true,
     "local_product_source_checkouts_used_must_be_false": true,

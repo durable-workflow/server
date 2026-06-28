@@ -1216,15 +1216,45 @@ class ClusterInfoTest extends TestCase
 
         $this->assertSame(WorkflowLifecycleContract::SCHEMA, $contract['schema']);
         $this->assertSame('workflow_lifecycle_contract', $contract['fixture_category']);
+        $this->assertSame(
+            'static/platform-conformance/workflow-lifecycle-scenarios.json',
+            $contract['scenario_manifest']['source_path'],
+        );
         $this->assertContains('artifact_sources', $contract['artifact_policy']['required_run_record_fields']);
         $this->assertContains('lifecycle_cell_outcomes', $contract['artifact_policy']['required_run_record_fields']);
         $this->assertContains('findings', $contract['artifact_policy']['required_run_record_fields']);
         $this->assertContains('local_product_source_checkouts_used', $contract['artifact_policy']['required_run_record_fields']);
         $this->assertContains('source_policy', $contract['artifact_policy']['required_run_record_fields']);
+        $this->assertSame(
+            'scripts/conformance/workflow-lifecycle-published-artifacts.sh',
+            $contract['host_runner_contract']['runner_path'],
+        );
+        $this->assertContains(
+            'DW_WORKFLOW_LIFECYCLE_EVIDENCE_PATH',
+            $contract['host_runner_contract']['evidence_inputs'],
+        );
+        $this->assertContains('workflow-lifecycle-result.json', $contract['host_runner_contract']['result_files']);
+        $this->assertTrue($contract['host_runner_contract']['must_execute_against_published_artifacts']);
+        $this->assertTrue($contract['host_runner_contract']['must_emit_per_cell_outcomes']);
+        $this->assertTrue($contract['host_runner_contract']['unsupported_cells_require_documented_typed_refusal']);
+        $this->assertSame(['cancelled'], $contract['scenario_requirements']['cancellation_public_surface_terminal_state']['terminal_states']);
+        $this->assertSame(['terminated'], $contract['scenario_requirements']['termination_public_surface_terminal_state']['terminal_states']);
         $this->assertSame(WorkflowLifecycleResultGate::SCHEMA, $contract['result_gate']['schema']);
         $this->assertContains(
             'local_product_source_truthy_values_are_refused_consistently',
             $contract['result_gate']['pass_requires'],
+        );
+        $this->assertContains(
+            'each_pass_scenario_proves_published_artifact_cell_execution',
+            $contract['result_gate']['pass_requires'],
+        );
+        $this->assertContains(
+            'continue_as_new_chain_reports_distinct_run_ids_and_one_workflow_id',
+            $contract['coverage_gate']['passing_outcome_requires'],
+        );
+        $this->assertContains(
+            'cli_api_history_and_waterline_surfaces_are_operator_diagnostic_enough',
+            $contract['coverage_gate']['passing_outcome_requires'],
         );
     }
 

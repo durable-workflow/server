@@ -126,6 +126,29 @@ post-cancel. The operator-visible shard records `status=waiting`,
 deadline observed before wake-up. The record names the exact public artifact
 sources and states that a local product source checkout is not pass evidence.
 
+The server repo also ships a source-free standalone workflow lifecycle runner
+at `scripts/conformance/workflow-lifecycle-published-artifacts.sh`. Host
+conformance runners can discover that runner from `GET /api/cluster/info`
+under `workflow_lifecycle_contract.host_runner_contract` and invoke it
+against the current published server image, CLI release, Python SDK, PHP
+workflow runtime, and Waterline artifact versions. The runner accepts host
+runtime evidence through `DW_WORKFLOW_LIFECYCLE_EVIDENCE`,
+`DW_WORKFLOW_LIFECYCLE_EVIDENCE_PATH`, or
+`<result-dir>/workflow-lifecycle-evidence.json`, then records artifact
+versions, public artifact sources, source policy, local source checkout usage,
+and per-cell outcomes. A cell can pass only when host runtime evidence marks
+`published_artifact_cell_executed=true`; a status string alone is not execution
+evidence. Required cells cover continue-as-new run-chain
+visibility, logical workflow identity, history continuity, duplicate side-effect
+prevention, public cancellation, public termination, workflow id reuse /
+duplicate start policy, workflow timeout terminal state, workflow-level
+retry/backoff or typed refusal, PHP SDK coverage, Python SDK coverage, and
+CLI/API/history/Waterline diagnostics. Missing cells remain `not_covered` with
+focused coverage findings; unsupported cells remain non-passing and must carry
+documented typed refusal evidence. A pass is recorded only when every required
+published-artifact cell passes and no local product source checkout is used as
+pass evidence.
+
 The server repo also ships a source-free saga runner at
 `scripts/conformance/sagas-published-artifacts.sh`. Host conformance
 runners can discover that handoff from `GET /api/cluster/info` under

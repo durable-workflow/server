@@ -37,6 +37,52 @@ class WorkflowLifecycleContractTest extends TestCase
         $this->assertSame([], $evaluation['gate_failures']);
     }
 
+    public function test_published_artifact_runner_handoff_emits_non_passing_matrix_without_evidence(): void
+    {
+        $resultDir = sys_get_temp_dir().'/dw-workflow-lifecycle-'.bin2hex(random_bytes(6));
+        mkdir($resultDir, 0777, true);
+
+        try {
+            exec($this->runnerCommand($resultDir), $output, $exitCode);
+
+            $this->assertSame(0, $exitCode, implode("\n", $output));
+            $result = $this->readJson($resultDir.'/workflow-lifecycle-result.json');
+
+            $this->assertSame('non_passing', $result['outcome']);
+            $this->assertFalse($result['runner_blocked']);
+            $this->assertSame(WorkflowLifecycleContract::requiredScenarios(), array_keys($result['scenario_results']));
+            $this->assertSame(WorkflowLifecycleContract::requiredScenarios(), $result['unproven_lifecycle_cells']);
+            $this->assertSame([], WorkflowLifecycleResultGate::evaluate($result)['gate_failures']);
+        } finally {
+            $this->removeDirectory($resultDir);
+        }
+    }
+
+    public function test_published_artifact_runner_accepts_host_evidence_with_execution_markers(): void
+    {
+        $resultDir = sys_get_temp_dir().'/dw-workflow-lifecycle-'.bin2hex(random_bytes(6));
+        mkdir($resultDir, 0777, true);
+        $evidencePath = $resultDir.'/workflow-lifecycle-evidence.json';
+        file_put_contents($evidencePath, json_encode($this->hostEvidence(), JSON_THROW_ON_ERROR));
+
+        try {
+            exec($this->runnerCommand($resultDir, [
+                'DW_WORKFLOW_LIFECYCLE_EVIDENCE_PATH' => $evidencePath,
+            ]), $output, $exitCode);
+
+            $this->assertSame(0, $exitCode, implode("\n", $output));
+            $result = $this->readJson($resultDir.'/workflow-lifecycle-result.json');
+
+            $this->assertSame('pass', $result['outcome']);
+            $this->assertFalse($result['local_product_source_checkouts_used']);
+            $this->assertSame(WorkflowLifecycleContract::requiredScenarios(), $result['proven_lifecycle_cells']);
+            $this->assertSame([], $result['findings']);
+            $this->assertSame('pass', WorkflowLifecycleResultGate::evaluate($result)['status']);
+        } finally {
+            $this->removeDirectory($resultDir);
+        }
+    }
+
     public function test_result_gate_rejects_pass_when_required_provenance_is_missing(): void
     {
         $result = $this->completeLifecycleResult();
@@ -147,6 +193,93 @@ class WorkflowLifecycleContractTest extends TestCase
         );
     }
 
+    public function test_result_gate_rejects_pass_claim_without_published_artifact_execution_marker(): void
+    {
+        $result = $this->completeLifecycleResult();
+
+        foreach (array_keys($result['scenario_results']) as $scenarioId) {
+            unset($result['scenario_results'][$scenarioId]['observed_outputs']['published_artifact_cell_executed']);
+        }
+
+        $evaluation = WorkflowLifecycleResultGate::evaluate($result);
+        $failureCodes = array_column($evaluation['gate_failures'], 'code');
+
+        $this->assertSame('non_passing', $evaluation['status']);
+        $this->assertContains('missing_published_artifact_cell_execution', $failureCodes);
+        $this->assertContains('declared_outcome_mismatch', $failureCodes);
+    }
+
+    public function test_result_gate_rejects_contradictory_pass_lifecycle_evidence(): void
+    {
+        $result = $this->completeLifecycleResult();
+        $result['scenario_results']['continue_as_new_run_chain_visibility']['observed_outputs']['continued_run_id'] = 'run-initial';
+        $result['scenario_results']['continue_as_new_duplicate_side_effect_prevention']['observed_outputs']['observed_count'] = 2;
+        $result['scenario_results']['cancellation_public_surface_terminal_state']['observed_outputs']['terminal_status'] = 'completed';
+        $result['scenario_results']['termination_public_surface_terminal_state']['observed_outputs']['terminal_status'] = 'completed';
+        $result['scenario_results']['workflow_id_reuse_duplicate_start_policy']['observed_outputs']['duplicate_start_outcome'] = 'accepted';
+        $result['scenario_results']['workflow_timeout_terminal_state']['observed_outputs']['terminal_status'] = 'completed';
+        $result['scenario_results']['workflow_timeout_terminal_state']['observed_outputs']['observed_terminal_at'] = '2026-06-28T00:00:10Z';
+        $result['scenario_results']['workflow_retry_backoff_or_refusal']['observed_outputs']['docs_match'] = false;
+
+        $evaluation = WorkflowLifecycleResultGate::evaluate($result);
+        $failureCodes = array_column($evaluation['gate_failures'], 'code');
+
+        $this->assertSame('non_passing', $evaluation['status']);
+        $this->assertContains('continue_as_new_run_ids_not_distinct', $failureCodes);
+        $this->assertContains('duplicate_side_effect_count_mismatch', $failureCodes);
+        $this->assertContains('cancellation_terminal_status_invalid', $failureCodes);
+        $this->assertContains('termination_terminal_status_invalid', $failureCodes);
+        $this->assertContains('duplicate_start_accepted', $failureCodes);
+        $this->assertContains('workflow_timeout_terminal_status_invalid', $failureCodes);
+        $this->assertContains('workflow_timeout_terminal_before_deadline', $failureCodes);
+        $this->assertContains('workflow_retry_docs_mismatch', $failureCodes);
+        $this->assertContains('declared_outcome_mismatch', $failureCodes);
+    }
+
+    public function test_result_gate_accepts_unsupported_cell_only_with_documented_typed_refusal_and_finding(): void
+    {
+        $result = $this->completeLifecycleResult();
+        $scenarioId = 'workflow_retry_backoff_or_refusal';
+        $result['outcome'] = 'non_passing';
+        $result['scenario_results'][$scenarioId]['status'] = 'unsupported';
+        $result['scenario_results'][$scenarioId]['lifecycle_cell_outcome'] = 'unsupported';
+        $result['scenario_results'][$scenarioId]['observed_outputs'] = [
+            'published_artifact_cell_executed' => true,
+            'workflow_id' => 'wf-lifecycle-retry-refusal',
+            'retry_policy_shape' => ['maximum_attempts' => 3],
+            'attempt_count_or_refusal_reason' => 'workflow_retry_policy_not_supported',
+            'backoff_observation_or_error_type' => 'WorkflowRetryPolicyUnsupported',
+            'docs_match' => true,
+            'typed_refusal' => [
+                'typed_error' => 'WorkflowRetryPolicyUnsupported',
+                'refusal_reason' => 'workflow retry policy is not part of the published lifecycle surface',
+                'documented' => true,
+            ],
+        ];
+        $result['scenario_results'][$scenarioId]['linked_findings'] = [[
+            'finding_id' => 'workflow-lifecycle-retry-refusal',
+            'finding_type' => 'unsupported_public_surface',
+            'classification' => 'product-gap',
+            'scenario_id' => $scenarioId,
+        ]];
+        $result['lifecycle_cell_outcomes'][$scenarioId]['status'] = 'unsupported';
+        $result['findings'] = $result['scenario_results'][$scenarioId]['linked_findings'];
+
+        $evaluation = WorkflowLifecycleResultGate::evaluate($result);
+
+        $this->assertSame('non_passing', $evaluation['status']);
+        $this->assertSame([], $evaluation['gate_failures']);
+
+        unset($result['scenario_results'][$scenarioId]['observed_outputs']['typed_refusal']);
+        $evaluation = WorkflowLifecycleResultGate::evaluate($result);
+
+        $this->assertSame('non_passing', $evaluation['status']);
+        $this->assertContains(
+            'missing_unsupported_typed_refusal',
+            array_column($evaluation['gate_failures'], 'code'),
+        );
+    }
+
     /**
      * @return iterable<string, array{0: mixed}>
      */
@@ -169,6 +302,7 @@ class WorkflowLifecycleContractTest extends TestCase
             'server' => '0.2.512',
             'cli' => '0.1.82',
             'workflow-php' => '2.0.0-alpha.224',
+            'workflow' => '2.0.0-alpha.224',
             'sdk-python' => '0.4.91',
             'waterline' => '2.0.0-alpha.111',
         ];
@@ -176,11 +310,13 @@ class WorkflowLifecycleContractTest extends TestCase
             'server' => 'docker://durableworkflow/server:0.2.512',
             'cli' => 'github-release://durable-workflow/cli/v0.1.82/install.sh',
             'workflow-php' => 'packagist://durable-workflow/workflow:2.0.0-alpha.224',
+            'workflow' => 'packagist://durable-workflow/workflow:2.0.0-alpha.224',
             'sdk-python' => 'pypi://durable-workflow/0.4.91',
             'waterline' => 'npm://durable-workflow-waterline/2.0.0-alpha.111',
         ];
         $sourcePolicy = [
             'published_artifacts_only' => true,
+            'published_artifact_evidence_only' => true,
             'local_product_source_checkouts_used' => false,
             'local_product_source_checkout_used_as_pass_evidence' => false,
             'statement' => 'Workflow lifecycle conformance ran against pinned published artifacts.',
@@ -195,13 +331,7 @@ class WorkflowLifecycleContractTest extends TestCase
                 'lifecycle_cell_outcome' => 'pass',
                 'artifact_sources' => $artifactSources,
                 'local_product_source_checkouts_used' => false,
-                'observed_outputs' => [
-                    'status' => 'pass',
-                    'workflow_id' => $scenarioId . '-workflow',
-                    'run_id' => $scenarioId . '-run',
-                    'public_surface' => 'api_cli_history_waterline',
-                    'local_product_source_checkouts_used' => false,
-                ],
+                'observed_outputs' => $this->outputsForScenario($scenarioId),
             ];
             $cellOutcomes[$scenarioId] = [
                 'status' => 'pass',
@@ -227,6 +357,195 @@ class WorkflowLifecycleContractTest extends TestCase
             'local_product_source_checkouts_used' => false,
             'source_policy' => $sourcePolicy,
         ];
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    private function hostEvidence(): array
+    {
+        $result = $this->completeLifecycleResult();
+
+        return [
+            'schema' => 'durable-workflow.v2.workflow-lifecycle.host-evidence',
+            'artifact_versions' => $result['artifact_versions'],
+            'artifact_sources' => $result['artifact_sources'],
+            'source_policy' => $result['source_policy'],
+            'local_product_source_checkouts_used' => false,
+            'scenario_results' => array_map(
+                static fn (array $scenario): array => [
+                    'status' => 'pass',
+                    'published_artifact_cell_executed' => true,
+                    'observed_outputs' => $scenario['observed_outputs'],
+                ],
+                $result['scenario_results'],
+            ),
+        ];
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    private function outputsForScenario(string $scenarioId): array
+    {
+        $common = [
+            'published_artifact_cell_executed' => true,
+            'local_product_source_checkouts_used' => false,
+        ];
+
+        return $common + match ($scenarioId) {
+            'continue_as_new_run_chain_visibility' => [
+                'workflow_id' => 'wf-continue-as-new',
+                'initial_run_id' => 'run-initial',
+                'continued_run_id' => 'run-continued',
+                'run_count' => 2,
+                'current_run_id' => 'run-continued',
+                'run_numbers' => [1, 2],
+            ],
+            'continue_as_new_identity_and_history_continuity' => [
+                'workflow_id' => 'wf-continue-as-new',
+                'history_events' => ['WorkflowStarted', 'WorkflowContinuedAsNew', 'WorkflowStarted'],
+                'predecessor_closed_event' => 'WorkflowContinuedAsNew',
+                'successor_started_event' => 'WorkflowStarted',
+                'history_api_links' => ['/api/workflows/wf-continue-as-new/runs/run-initial/history'],
+            ],
+            'continue_as_new_duplicate_side_effect_prevention' => [
+                'workflow_id' => 'wf-continue-as-new',
+                'side_effect_key' => 'workflow-lifecycle-side-effect',
+                'expected_count' => 1,
+                'observed_count' => 1,
+                'replay_or_restart_window' => 'continue_as_new_replay',
+            ],
+            'cancellation_public_surface_terminal_state' => [
+                'workflow_id' => 'wf-cancel',
+                'request_surface' => 'api',
+                'cancel_requested_at' => '2026-06-28T00:00:10Z',
+                'terminal_status' => 'cancelled',
+                'worker_error_type' => 'WorkflowCancelledError',
+                'caller_error_type' => 'WorkflowCancelledError',
+            ],
+            'termination_public_surface_terminal_state' => [
+                'workflow_id' => 'wf-terminate',
+                'request_surface' => 'api',
+                'terminate_requested_at' => '2026-06-28T00:00:10Z',
+                'terminal_status' => 'terminated',
+                'worker_error_type' => 'WorkflowTerminatedError',
+                'caller_error_type' => 'WorkflowTerminatedError',
+            ],
+            'workflow_id_reuse_duplicate_start_policy' => [
+                'workflow_id' => 'wf-duplicate-start',
+                'duplicate_policy' => 'fail',
+                'first_start_outcome' => 'started',
+                'duplicate_start_outcome' => 'refused',
+                'http_status_or_error_type' => '409 duplicate_workflow_id',
+            ],
+            'workflow_timeout_terminal_state' => [
+                'workflow_id' => 'wf-timeout',
+                'timeout_field' => 'run_timeout_seconds',
+                'deadline_at' => '2026-06-28T00:00:30Z',
+                'observed_terminal_at' => '2026-06-28T00:00:31Z',
+                'terminal_status' => 'timed_out',
+                'operator_visible_timing' => ['api' => true, 'history' => true],
+            ],
+            'workflow_retry_backoff_or_refusal' => [
+                'workflow_id' => 'wf-retry',
+                'retry_policy_shape' => ['maximum_attempts' => 2, 'initial_interval_seconds' => 1],
+                'attempt_count_or_refusal_reason' => 2,
+                'backoff_observation_or_error_type' => 'backoff_elapsed',
+                'docs_match' => true,
+            ],
+            'php_sdk_lifecycle_surface' => [
+                'sdk' => 'workflow-php',
+                'covered_cells' => ['start', 'cancel', 'result'],
+                'unsupported_cells' => [],
+                'typed_errors' => [],
+                'artifact_version' => '2.0.0-alpha.224',
+            ],
+            'python_sdk_lifecycle_surface' => [
+                'sdk' => 'sdk-python',
+                'covered_cells' => ['start', 'cancel', 'result'],
+                'unsupported_cells' => [],
+                'typed_errors' => [],
+                'artifact_version' => '0.4.91',
+            ],
+            'operator_diagnostics_surfaces' => [
+                'workflow_id' => 'wf-diagnostics',
+                'cli_fields' => ['workflow_id', 'run_id', 'status'],
+                'api_fields' => ['workflow_id', 'run_id', 'status'],
+                'history_fields' => ['event_type', 'event_id'],
+                'waterline_fields' => ['status', 'history'],
+                'diagnostic_transition_matrix' => ['started' => 'completed'],
+            ],
+            default => [
+                'workflow_id' => 'wf-' . $scenarioId,
+            ],
+        };
+    }
+
+    /**
+     * @param array<string, string> $extraEnv
+     */
+    private function runnerCommand(string $resultDir, array $extraEnv = []): string
+    {
+        $repoRoot = dirname(__DIR__, 2);
+        $env = array_merge([
+            'DW_SERVER_IMAGE' => 'durableworkflow/server:0.2.512',
+            'DW_SERVER_VERSION' => '0.2.512',
+            'DW_CLI_VERSION' => '0.1.82',
+            'DW_PYTHON_SDK_VERSION' => '0.4.91',
+            'DW_WORKFLOW_PHP_VERSION' => '2.0.0-alpha.224',
+            'DW_WATERLINE_VERSION' => '2.0.0-alpha.111',
+        ], $extraEnv);
+
+        $envPrefix = implode(' ', array_map(
+            static fn (string $name, string $value): string => $name.'='.escapeshellarg($value),
+            array_keys($env),
+            array_values($env),
+        ));
+
+        return sprintf(
+            '%s bash %s --result-dir %s 2>&1',
+            $envPrefix,
+            escapeshellarg($repoRoot.'/scripts/conformance/workflow-lifecycle-published-artifacts.sh'),
+            escapeshellarg($resultDir),
+        );
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    private function readJson(string $path): array
+    {
+        $decoded = json_decode(file_get_contents($path) ?: '', true, 512, JSON_THROW_ON_ERROR);
+
+        return is_array($decoded) ? $decoded : [];
+    }
+
+    private function removeDirectory(string $path): void
+    {
+        if (! is_dir($path)) {
+            return;
+        }
+
+        $entries = scandir($path);
+        if ($entries === false) {
+            return;
+        }
+
+        foreach ($entries as $entry) {
+            if ($entry === '.' || $entry === '..') {
+                continue;
+            }
+
+            $child = $path.'/'.$entry;
+            if (is_dir($child)) {
+                $this->removeDirectory($child);
+            } else {
+                @unlink($child);
+            }
+        }
+
+        @rmdir($path);
     }
 
     /**

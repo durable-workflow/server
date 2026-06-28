@@ -21,6 +21,7 @@ use App\Support\ServerTopology;
 use App\Support\SignalQueryRuntimeContract;
 use App\Support\SkewRefusalMatrixContract;
 use App\Support\TimerRuntimeContract;
+use App\Support\WorkflowLifecycleContract;
 use App\Support\WorkerVersioningRuntimeContract;
 use App\Support\WorkerProtocol;
 use Illuminate\Foundation\Testing\RefreshDatabase;
@@ -546,6 +547,12 @@ class ClusterInfoCompatibilityTest extends TestCase
             ->assertJsonPath('migration_runtime_contract.version', MigrationRuntimeContract::VERSION)
             ->assertJsonPath(
                 'migration_runtime_contract.platform_conformance_suite_authority',
+                PlatformConformanceSuite::SCHEMA,
+            )
+            ->assertJsonPath('workflow_lifecycle_contract.schema', WorkflowLifecycleContract::SCHEMA)
+            ->assertJsonPath('workflow_lifecycle_contract.version', WorkflowLifecycleContract::VERSION)
+            ->assertJsonPath(
+                'workflow_lifecycle_contract.platform_conformance_suite_authority',
                 PlatformConformanceSuite::SCHEMA,
             )
             ->assertJsonPath('prerelease_readiness_contract.schema', PrereleaseReadinessContract::SCHEMA)

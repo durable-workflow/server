@@ -71,6 +71,19 @@ final class WorkflowLifecycleResultGate
                 'local_product_source_checkouts_used_is_explicitly_false',
                 'local_product_source_truthy_values_are_refused_consistently',
                 'no_local_product_source_artifacts_are_reported',
+                'each_pass_scenario_proves_published_artifact_cell_execution',
+                'each_pass_scenario_reports_required_evidence',
+                'continue_as_new_chain_reports_distinct_run_ids_and_one_workflow_id',
+                'continue_as_new_history_links_predecessor_and_successor_runs',
+                'continue_as_new_does_not_duplicate_side_effects',
+                'cancellation_reaches_documented_terminal_state_and_typed_errors',
+                'termination_reaches_documented_terminal_state_and_typed_errors',
+                'duplicate_start_policy_is_enforced_or_refused_clearly',
+                'workflow_timeout_records_operator_visible_timing_and_terminal_state',
+                'workflow_retry_backoff_is_proven_or_unsupported_retry_refuses_clearly',
+                'php_and_python_sdk_cells_pass_or_emit_documented_typed_errors',
+                'cli_api_history_and_waterline_surfaces_are_operator_diagnostic_enough',
+                'each_unsupported_scenario_reports_documented_typed_refusal',
                 'each_non_pass_cell_has_focused_findings',
                 'overall_outcome_matches_gate_status',
             ],
@@ -152,6 +165,13 @@ final class WorkflowLifecycleResultGate
                     ];
                 }
 
+                if (! self::hasPublishedArtifactCellExecution($scenarioResult)) {
+                    $failures[] = [
+                        'code' => 'missing_published_artifact_cell_execution',
+                        'scenario_id' => $scenarioId,
+                    ];
+                }
+
                 foreach (self::requiredScenarioFields($contract, $scenarioId) as $field) {
                     if (! self::hasScenarioEvidenceField($result, $scenarioResult, $field, $scenarioId)) {
                         $failures[] = [
@@ -160,6 +180,38 @@ final class WorkflowLifecycleResultGate
                             'field' => $field,
                         ];
                     }
+                }
+
+                foreach (self::missingScenarioEvidence($contract, $scenarioId, $scenarioResult) as $field) {
+                    $failures[] = [
+                        'code' => 'missing_scenario_required_field',
+                        'scenario_id' => $scenarioId,
+                        'field' => $field,
+                    ];
+                }
+
+                foreach (self::semanticScenarioFailures($scenarioId, $scenarioResult) as $failure) {
+                    $failures[] = [
+                        'code' => $failure['code'],
+                        'scenario_id' => $scenarioId,
+                        'reason' => $failure['reason'],
+                    ];
+                }
+            } elseif ($status === 'unsupported') {
+                $nonPassScenarios[] = $scenarioId;
+                if (! self::hasDocumentedTypedRefusal($scenarioResult)) {
+                    $failures[] = [
+                        'code' => 'missing_unsupported_typed_refusal',
+                        'scenario_id' => $scenarioId,
+                    ];
+                }
+
+                if (! self::hasFocusedFinding($result, $scenarioResult, $scenarioId)) {
+                    $failures[] = [
+                        'code' => 'missing_focused_finding_for_non_pass_cell',
+                        'scenario_id' => $scenarioId,
+                        'status' => $status,
+                    ];
                 }
             } else {
                 $nonPassScenarios[] = $scenarioId;
@@ -831,6 +883,553 @@ final class WorkflowLifecycleResultGate
     }
 
     /**
+     * @param array<string, mixed> $scenarioResult
+     */
+    private static function hasPublishedArtifactCellExecution(array $scenarioResult): bool
+    {
+        $outputs = self::observedOutputs($scenarioResult);
+
+        return self::truthy($scenarioResult['published_artifact_cell_executed'] ?? null)
+            || self::truthy($scenarioResult['publishedArtifactCellExecuted'] ?? null)
+            || self::truthy($outputs['published_artifact_cell_executed'] ?? null)
+            || self::truthy($outputs['publishedArtifactCellExecuted'] ?? null);
+    }
+
+    /**
+     * @param array<string, mixed> $scenarioResult
+     */
+    private static function hasDocumentedTypedRefusal(array $scenarioResult): bool
+    {
+        $outputs = self::observedOutputs($scenarioResult);
+        $typedRefusal = self::arrayField($outputs, ['typed_refusal', 'typedRefusal']) ?? [];
+
+        $typedError = self::stringValue($typedRefusal['typed_error'] ?? null)
+            ?: self::stringValue($typedRefusal['typedError'] ?? null)
+            ?: self::stringValue($typedRefusal['error_type'] ?? null)
+            ?: self::stringValue($typedRefusal['errorType'] ?? null)
+            ?: self::stringValue($typedRefusal['refusal_code'] ?? null)
+            ?: self::stringValue($typedRefusal['refusalCode'] ?? null)
+            ?: self::stringValue($outputs['typed_error'] ?? null)
+            ?: self::stringValue($outputs['error_type'] ?? null)
+            ?: self::stringValue($outputs['refusal_code'] ?? null)
+            ?: self::stringValue($outputs['backoff_observation_or_error_type'] ?? null)
+            ?: self::stringValue($scenarioResult['typed_error'] ?? null)
+            ?: self::stringValue($scenarioResult['error_type'] ?? null);
+
+        $reason = self::stringValue($typedRefusal['refusal_reason'] ?? null)
+            ?: self::stringValue($typedRefusal['refusalReason'] ?? null)
+            ?: self::stringValue($typedRefusal['reason'] ?? null)
+            ?: self::stringValue($outputs['refusal_reason'] ?? null)
+            ?: self::stringValue($outputs['reason'] ?? null)
+            ?: self::stringValue($scenarioResult['refusal_reason'] ?? null)
+            ?: self::stringValue($scenarioResult['reason'] ?? null);
+
+        $documented = self::truthy($typedRefusal['documented'] ?? null)
+            || self::truthy($typedRefusal['docs_match'] ?? null)
+            || self::truthy($typedRefusal['docsMatch'] ?? null)
+            || self::truthy($outputs['documented'] ?? null)
+            || self::truthy($outputs['documented_refusal'] ?? null)
+            || self::truthy($outputs['docs_match'] ?? null)
+            || self::truthy($outputs['docsMatch'] ?? null)
+            || self::truthy($scenarioResult['documented'] ?? null)
+            || self::truthy($scenarioResult['docs_match'] ?? null)
+            || self::truthy($scenarioResult['docsMatch'] ?? null);
+
+        return $typedError !== '' && $reason !== '' && $documented;
+    }
+
+    /**
+     * @param array<string, mixed> $contract
+     * @param array<string, mixed> $scenarioResult
+     *
+     * @return list<string>
+     */
+    private static function missingScenarioEvidence(array $contract, string $scenarioId, array $scenarioResult): array
+    {
+        $outputs = self::observedOutputs($scenarioResult);
+        $missing = [];
+
+        foreach (self::scenarioEvidenceFields($contract, $scenarioId) as $field) {
+            if (! array_key_exists($field, $outputs)
+                || self::requiredEvidenceValueMissing($scenarioId, $field, $outputs[$field])
+            ) {
+                $missing[] = $field;
+            }
+        }
+
+        return $missing;
+    }
+
+    /**
+     * @param array<string, mixed> $contract
+     *
+     * @return list<string>
+     */
+    private static function scenarioEvidenceFields(array $contract, string $scenarioId): array
+    {
+        $requirements = $contract['scenario_requirements'][$scenarioId] ?? [];
+        if (! is_array($requirements)) {
+            return [];
+        }
+
+        return self::stringList($requirements['evidence'] ?? $requirements['required_evidence'] ?? []);
+    }
+
+    /**
+     * @param array<string, mixed> $scenarioResult
+     *
+     * @return list<array{code: string, reason: string}>
+     */
+    private static function semanticScenarioFailures(string $scenarioId, array $scenarioResult): array
+    {
+        $outputs = self::observedOutputs($scenarioResult);
+
+        return match ($scenarioId) {
+            'continue_as_new_run_chain_visibility' => self::validateContinueAsNewRunChain($outputs),
+            'continue_as_new_identity_and_history_continuity' => self::validateContinueAsNewHistory($outputs),
+            'continue_as_new_duplicate_side_effect_prevention' => self::validateContinueAsNewSideEffects($outputs),
+            'cancellation_public_surface_terminal_state' => self::validateTerminalLifecycleSurface(
+                $outputs,
+                'cancelled',
+                ['cancel'],
+                'cancellation_terminal_status_invalid',
+                'cancellation_typed_errors_missing',
+            ),
+            'termination_public_surface_terminal_state' => self::validateTerminalLifecycleSurface(
+                $outputs,
+                'terminated',
+                ['terminat'],
+                'termination_terminal_status_invalid',
+                'termination_typed_errors_missing',
+            ),
+            'workflow_id_reuse_duplicate_start_policy' => self::validateDuplicateStartPolicy($outputs),
+            'workflow_timeout_terminal_state' => self::validateWorkflowTimeout($outputs),
+            'workflow_retry_backoff_or_refusal' => self::validateWorkflowRetry($outputs),
+            'php_sdk_lifecycle_surface' => self::validateSdkLifecycleSurface($outputs, ['php', 'workflow']),
+            'python_sdk_lifecycle_surface' => self::validateSdkLifecycleSurface($outputs, ['python']),
+            'operator_diagnostics_surfaces' => self::validateOperatorDiagnostics($outputs),
+            default => [],
+        };
+    }
+
+    /**
+     * @param array<string, mixed> $scenarioResult
+     *
+     * @return array<string, mixed>
+     */
+    private static function observedOutputs(array $scenarioResult): array
+    {
+        return self::arrayField($scenarioResult, ['observed_outputs', 'observedOutputs']) ?? [];
+    }
+
+    /**
+     * @param list<array{code: string, reason: string}> $failures
+     *
+     * @return list<array{code: string, reason: string}>
+     */
+    private static function addSemanticFailure(array $failures, string $code, string $reason): array
+    {
+        $failures[] = [
+            'code' => $code,
+            'reason' => $reason,
+        ];
+
+        return $failures;
+    }
+
+    /**
+     * @param array<string, mixed> $outputs
+     *
+     * @return list<array{code: string, reason: string}>
+     */
+    private static function validateContinueAsNewRunChain(array $outputs): array
+    {
+        $failures = [];
+        $workflowId = self::stringValue($outputs['workflow_id'] ?? null);
+        $initialRunId = self::stringValue($outputs['initial_run_id'] ?? null);
+        $continuedRunId = self::stringValue($outputs['continued_run_id'] ?? null);
+        $currentRunId = self::stringValue($outputs['current_run_id'] ?? null);
+        $runCount = self::numberValue($outputs['run_count'] ?? null);
+        $runNumbers = is_array($outputs['run_numbers'] ?? null)
+            ? array_map(fn (mixed $value): ?float => self::numberValue($value), $outputs['run_numbers'])
+            : [];
+
+        if ($workflowId === '') {
+            $failures = self::addSemanticFailure(
+                $failures,
+                'continue_as_new_workflow_id_missing',
+                'continue-as-new chain must report one logical workflow_id',
+            );
+        }
+        if ($initialRunId === '' || $continuedRunId === '' || $initialRunId === $continuedRunId) {
+            $failures = self::addSemanticFailure(
+                $failures,
+                'continue_as_new_run_ids_not_distinct',
+                'continue-as-new chain must report distinct initial and continued run IDs',
+            );
+        }
+        if ($currentRunId !== $continuedRunId) {
+            $failures = self::addSemanticFailure(
+                $failures,
+                'continue_as_new_current_run_not_successor',
+                'continue-as-new current_run_id must point at the continued successor run',
+            );
+        }
+        if ($runCount === null || $runCount < 2) {
+            $failures = self::addSemanticFailure(
+                $failures,
+                'continue_as_new_run_count_invalid',
+                'continue-as-new run_count must be at least 2',
+            );
+        }
+        if (count($runNumbers) < 2 || in_array(null, $runNumbers, true)) {
+            $failures = self::addSemanticFailure(
+                $failures,
+                'continue_as_new_run_numbers_invalid',
+                'continue-as-new run_numbers must list at least two numeric runs',
+            );
+        } else {
+            for ($index = 1; $index < count($runNumbers); $index++) {
+                if ($runNumbers[$index] <= $runNumbers[$index - 1]) {
+                    $failures = self::addSemanticFailure(
+                        $failures,
+                        'continue_as_new_run_numbers_not_monotonic',
+                        'continue-as-new run_numbers must be strictly increasing',
+                    );
+                    break;
+                }
+            }
+        }
+
+        return $failures;
+    }
+
+    /**
+     * @param array<string, mixed> $outputs
+     *
+     * @return list<array{code: string, reason: string}>
+     */
+    private static function validateContinueAsNewHistory(array $outputs): array
+    {
+        $failures = [];
+        $events = $outputs['history_events'] ?? null;
+        $predecessor = self::stringValue($outputs['predecessor_closed_event'] ?? null);
+        $successor = self::stringValue($outputs['successor_started_event'] ?? null);
+
+        if (! self::isNonEmptyList($events)) {
+            $failures = self::addSemanticFailure(
+                $failures,
+                'continue_as_new_history_events_missing',
+                'continue-as-new history must include public history events',
+            );
+        } else {
+            if ($predecessor === '' || ! self::listContainsValue($events, $predecessor)) {
+                $failures = self::addSemanticFailure(
+                    $failures,
+                    'continue_as_new_predecessor_history_missing',
+                    'continue-as-new history must include the predecessor closed event',
+                );
+            }
+            if ($successor === '' || ! self::listContainsValue($events, $successor)) {
+                $failures = self::addSemanticFailure(
+                    $failures,
+                    'continue_as_new_successor_history_missing',
+                    'continue-as-new history must include the successor started event',
+                );
+            }
+        }
+        if (! self::isNonEmptyList($outputs['history_api_links'] ?? null)) {
+            $failures = self::addSemanticFailure(
+                $failures,
+                'continue_as_new_history_links_missing',
+                'continue-as-new history must include operator-visible API links',
+            );
+        }
+
+        return $failures;
+    }
+
+    /**
+     * @param array<string, mixed> $outputs
+     *
+     * @return list<array{code: string, reason: string}>
+     */
+    private static function validateContinueAsNewSideEffects(array $outputs): array
+    {
+        $failures = [];
+        $expected = self::numberValue($outputs['expected_count'] ?? null);
+        $observed = self::numberValue($outputs['observed_count'] ?? null);
+
+        if ($expected === null || $expected < 1) {
+            $failures = self::addSemanticFailure(
+                $failures,
+                'side_effect_expected_count_invalid',
+                'side-effect evidence must report a positive expected_count',
+            );
+        }
+        if ($observed === null || $observed < 0) {
+            $failures = self::addSemanticFailure(
+                $failures,
+                'side_effect_observed_count_invalid',
+                'side-effect evidence must report a non-negative observed_count',
+            );
+        }
+        if ($expected !== null && $observed !== null && $observed !== $expected) {
+            $failures = self::addSemanticFailure(
+                $failures,
+                'duplicate_side_effect_count_mismatch',
+                'continue-as-new side-effect observed_count must equal expected_count',
+            );
+        }
+        if (self::stringValue($outputs['side_effect_key'] ?? null) === '') {
+            $failures = self::addSemanticFailure(
+                $failures,
+                'side_effect_key_missing',
+                'side-effect evidence must name the protected side_effect_key',
+            );
+        }
+        if (self::stringValue($outputs['replay_or_restart_window'] ?? null) === '') {
+            $failures = self::addSemanticFailure(
+                $failures,
+                'side_effect_window_missing',
+                'side-effect evidence must name the replay or restart window exercised',
+            );
+        }
+
+        return $failures;
+    }
+
+    /**
+     * @param array<string, mixed> $outputs
+     * @param list<string> $errorFragments
+     *
+     * @return list<array{code: string, reason: string}>
+     */
+    private static function validateTerminalLifecycleSurface(
+        array $outputs,
+        string $terminalStatus,
+        array $errorFragments,
+        string $terminalFailureCode,
+        string $errorFailureCode,
+    ): array {
+        $failures = [];
+        if (self::normalizedText($outputs['terminal_status'] ?? null) !== $terminalStatus) {
+            $failures = self::addSemanticFailure(
+                $failures,
+                $terminalFailureCode,
+                'terminal_status must be ' . $terminalStatus,
+            );
+        }
+        if (! self::textIncludesAny($outputs['worker_error_type'] ?? null, $errorFragments)) {
+            $failures = self::addSemanticFailure(
+                $failures,
+                $errorFailureCode,
+                'worker_error_type must be a typed ' . $terminalStatus . ' error',
+            );
+        }
+        if (! self::textIncludesAny($outputs['caller_error_type'] ?? null, $errorFragments)) {
+            $failures = self::addSemanticFailure(
+                $failures,
+                $errorFailureCode,
+                'caller_error_type must be a typed ' . $terminalStatus . ' error',
+            );
+        }
+
+        return $failures;
+    }
+
+    /**
+     * @param array<string, mixed> $outputs
+     *
+     * @return list<array{code: string, reason: string}>
+     */
+    private static function validateDuplicateStartPolicy(array $outputs): array
+    {
+        $failures = [];
+        $duplicateOutcome = self::normalizedText($outputs['duplicate_start_outcome'] ?? null);
+
+        if (in_array($duplicateOutcome, ['accepted', 'started', 'created', 'completed', 'succeeded', 'success', 'ok'], true)) {
+            $failures = self::addSemanticFailure(
+                $failures,
+                'duplicate_start_accepted',
+                'duplicate workflow-id start must not be accepted as a new run',
+            );
+        }
+        if (! self::textIncludesAny($duplicateOutcome, ['refus', 'reject', 'fail', 'conflict', 'error', 'existing', 'duplicate'])) {
+            $failures = self::addSemanticFailure(
+                $failures,
+                'duplicate_start_policy_not_proven',
+                'duplicate workflow-id start must prove enforcement or a typed refusal',
+            );
+        }
+        if (self::stringValue($outputs['http_status_or_error_type'] ?? null) === '') {
+            $failures = self::addSemanticFailure(
+                $failures,
+                'duplicate_start_error_type_missing',
+                'duplicate workflow-id start must report an HTTP status or typed error',
+            );
+        }
+
+        return $failures;
+    }
+
+    /**
+     * @param array<string, mixed> $outputs
+     *
+     * @return list<array{code: string, reason: string}>
+     */
+    private static function validateWorkflowTimeout(array $outputs): array
+    {
+        $failures = [];
+        if (self::normalizedText($outputs['terminal_status'] ?? null) !== 'timed_out') {
+            $failures = self::addSemanticFailure(
+                $failures,
+                'workflow_timeout_terminal_status_invalid',
+                'workflow timeout terminal_status must be timed_out',
+            );
+        }
+
+        $deadlineAt = self::timestampMs($outputs['deadline_at'] ?? null);
+        $observedTerminalAt = self::timestampMs($outputs['observed_terminal_at'] ?? null);
+        if ($deadlineAt === null || $observedTerminalAt === null) {
+            $failures = self::addSemanticFailure(
+                $failures,
+                'workflow_timeout_timestamp_invalid',
+                'workflow timeout evidence must report parseable deadline and terminal timestamps',
+            );
+        } elseif ($observedTerminalAt < $deadlineAt) {
+            $failures = self::addSemanticFailure(
+                $failures,
+                'workflow_timeout_terminal_before_deadline',
+                'workflow timeout terminal observation must not be earlier than the deadline',
+            );
+        }
+        if (! self::isNonEmptyCollection($outputs['operator_visible_timing'] ?? null)) {
+            $failures = self::addSemanticFailure(
+                $failures,
+                'workflow_timeout_operator_timing_missing',
+                'workflow timeout must include operator-visible timing evidence',
+            );
+        }
+
+        return $failures;
+    }
+
+    /**
+     * @param array<string, mixed> $outputs
+     *
+     * @return list<array{code: string, reason: string}>
+     */
+    private static function validateWorkflowRetry(array $outputs): array
+    {
+        $failures = [];
+        if (! self::truthy($outputs['docs_match'] ?? null)) {
+            $failures = self::addSemanticFailure(
+                $failures,
+                'workflow_retry_docs_mismatch',
+                'workflow retry/backoff evidence must match public docs',
+            );
+        }
+
+        $attemptCount = self::numberValue($outputs['attempt_count_or_refusal_reason'] ?? null);
+        if ($attemptCount !== null) {
+            if ($attemptCount < 2) {
+                $failures = self::addSemanticFailure(
+                    $failures,
+                    'workflow_retry_attempt_count_invalid',
+                    'workflow retry evidence must show at least two attempts',
+                );
+            }
+            if (self::stringValue($outputs['backoff_observation_or_error_type'] ?? null) === '') {
+                $failures = self::addSemanticFailure(
+                    $failures,
+                    'workflow_retry_backoff_not_proven',
+                    'workflow retry evidence must report backoff observation',
+                );
+            }
+
+            return $failures;
+        }
+
+        $failures = self::addSemanticFailure(
+            $failures,
+            'workflow_retry_backoff_not_proven',
+            'workflow retry pass evidence must prove retry attempts; documented refusal must use unsupported status',
+        );
+
+        return $failures;
+    }
+
+    /**
+     * @param array<string, mixed> $outputs
+     * @param list<string> $expectedSdkFragments
+     *
+     * @return list<array{code: string, reason: string}>
+     */
+    private static function validateSdkLifecycleSurface(array $outputs, array $expectedSdkFragments): array
+    {
+        $failures = [];
+        if (! self::textIncludesAny($outputs['sdk'] ?? null, $expectedSdkFragments)) {
+            $failures = self::addSemanticFailure(
+                $failures,
+                'sdk_lifecycle_surface_mismatch',
+                'SDK lifecycle surface evidence must identify the expected SDK',
+            );
+        }
+        if (! self::isNonEmptyList($outputs['covered_cells'] ?? null) && ! self::isNonEmptyList($outputs['unsupported_cells'] ?? null)) {
+            $failures = self::addSemanticFailure(
+                $failures,
+                'sdk_lifecycle_surface_empty',
+                'SDK lifecycle surface must cover cells or report unsupported cells',
+            );
+        }
+        if (self::isNonEmptyList($outputs['unsupported_cells'] ?? null) && ! self::isNonEmptyList($outputs['typed_errors'] ?? null)) {
+            $failures = self::addSemanticFailure(
+                $failures,
+                'sdk_lifecycle_typed_errors_missing',
+                'SDK unsupported lifecycle cells must include typed errors',
+            );
+        }
+        if (self::stringValue($outputs['artifact_version'] ?? null) === '') {
+            $failures = self::addSemanticFailure(
+                $failures,
+                'sdk_lifecycle_artifact_version_missing',
+                'SDK lifecycle surface must report the published artifact version',
+            );
+        }
+
+        return $failures;
+    }
+
+    /**
+     * @param array<string, mixed> $outputs
+     *
+     * @return list<array{code: string, reason: string}>
+     */
+    private static function validateOperatorDiagnostics(array $outputs): array
+    {
+        $failures = [];
+        foreach (['cli_fields', 'api_fields', 'history_fields', 'waterline_fields'] as $field) {
+            if (! self::isNonEmptyList($outputs[$field] ?? null)) {
+                $failures = self::addSemanticFailure(
+                    $failures,
+                    'operator_diagnostic_surface_missing',
+                    'operator diagnostics must include ' . $field,
+                );
+            }
+        }
+        if (! self::isNonEmptyCollection($outputs['diagnostic_transition_matrix'] ?? null)) {
+            $failures = self::addSemanticFailure(
+                $failures,
+                'operator_diagnostic_transition_matrix_missing',
+                'operator diagnostics must include a transition matrix',
+            );
+        }
+
+        return $failures;
+    }
+
+    /**
      * @param array<string, mixed> $result
      * @param array<string, mixed> $scenarioResult
      */
@@ -1133,6 +1732,107 @@ final class WorkflowLifecycleResultGate
         }
 
         return false;
+    }
+
+    private static function requiredEvidenceValueMissing(string $scenarioId, string $field, mixed $value): bool
+    {
+        if ($value === null) {
+            return true;
+        }
+
+        if (is_string($value)) {
+            return trim($value) === '';
+        }
+
+        if (is_array($value)) {
+            return $value === [] && ! self::requiredFieldAllowsEmptyList($scenarioId, $field);
+        }
+
+        return false;
+    }
+
+    private static function requiredFieldAllowsEmptyList(string $scenarioId, string $field): bool
+    {
+        return in_array($scenarioId, ['php_sdk_lifecycle_surface', 'python_sdk_lifecycle_surface'], true)
+            && in_array($field, ['unsupported_cells', 'typed_errors'], true);
+    }
+
+    private static function normalizedText(mixed $value): string
+    {
+        return str_replace(['-', ' '], '_', strtolower(self::stringValue($value)));
+    }
+
+    /**
+     * @param list<string> $fragments
+     */
+    private static function textIncludesAny(mixed $value, array $fragments): bool
+    {
+        $text = self::normalizedText($value);
+        if ($text === '') {
+            return false;
+        }
+
+        foreach ($fragments as $fragment) {
+            if (str_contains($text, $fragment)) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    private static function numberValue(mixed $value): ?float
+    {
+        if (is_int($value) || is_float($value)) {
+            return is_finite((float) $value) ? (float) $value : null;
+        }
+
+        if (is_string($value) && trim($value) !== '' && is_numeric(trim($value))) {
+            return (float) trim($value);
+        }
+
+        return null;
+    }
+
+    private static function timestampMs(mixed $value): ?int
+    {
+        $timestamp = self::stringValue($value);
+        if ($timestamp === '') {
+            return null;
+        }
+
+        $parsed = strtotime($timestamp);
+
+        return $parsed === false ? null : $parsed * 1000;
+    }
+
+    /**
+     * @param list<mixed> $values
+     */
+    private static function listContainsValue(array $values, string $expected): bool
+    {
+        $normalizedExpected = self::normalizedText($expected);
+        foreach ($values as $value) {
+            if (self::normalizedText($value) === $normalizedExpected) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    private static function isNonEmptyCollection(mixed $value): bool
+    {
+        return is_array($value) && $value !== [];
+    }
+
+    private static function isNonEmptyList(mixed $value): bool
+    {
+        if (! is_array($value) || $value === []) {
+            return false;
+        }
+
+        return array_keys($value) === range(0, count($value) - 1);
     }
 
     private static function sourceValueRecorded(mixed $value): bool

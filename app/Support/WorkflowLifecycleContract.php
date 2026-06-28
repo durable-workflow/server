@@ -128,16 +128,79 @@ final class WorkflowLifecycleContract
                 'focused_findings_required_for_non_pass_cells' => true,
                 'run_record_provenance_required_for_pass' => true,
                 'local_product_source_truthy_values_refuse_pass' => true,
+                'published_artifact_cell_execution_required_for_pass' => true,
+                'unsupported_cells_require_documented_typed_refusal' => true,
+                'passing_outcome_requires' => [
+                    'all_required_scenarios_reported',
+                    'run_timestamps_outcome_runner_blocked_and_findings_are_recorded',
+                    'declared_outcome_matches_evaluated_status',
+                    'published_artifact_versions_are_recorded_and_pinned',
+                    'no_local_product_source_artifacts',
+                    'each_pass_scenario_proves_published_artifact_cell_execution',
+                    'each_pass_scenario_reports_required_evidence',
+                    'findings_linked_for_non_pass_scenarios',
+                    'continue_as_new_chain_reports_distinct_run_ids_and_one_workflow_id',
+                    'continue_as_new_history_links_predecessor_and_successor_runs',
+                    'continue_as_new_does_not_duplicate_side_effects',
+                    'cancellation_reaches_documented_terminal_state_and_typed_errors',
+                    'termination_reaches_documented_terminal_state_and_typed_errors',
+                    'duplicate_start_policy_is_enforced_or_refused_clearly',
+                    'workflow_timeout_records_operator_visible_timing_and_terminal_state',
+                    'workflow_retry_backoff_is_proven_or_unsupported_retry_refuses_clearly',
+                    'unsupported_cells_report_documented_typed_refusal_evidence',
+                    'php_and_python_sdk_cells_pass_or_emit_documented_typed_errors',
+                    'cli_api_history_and_waterline_surfaces_are_operator_diagnostic_enough',
+                ],
             ],
             'host_runner_contract' => [
-                'runner_repository' => 'platform_conformance_host',
-                'runner_command' => 'workflow-lifecycle published-artifact runner',
+                'status' => 'host_executable_published_artifact_runner',
+                'runner_id' => 'workflow-lifecycle',
+                'result_schema' => self::RESULT_SCHEMA,
+                'runner_repository' => 'server',
+                'runner_path' => 'scripts/conformance/workflow-lifecycle-published-artifacts.sh',
+                'runner_command' => 'scripts/conformance/workflow-lifecycle-published-artifacts.sh --result-dir <result-dir>',
+                'evidence_inputs' => [
+                    'DW_WORKFLOW_LIFECYCLE_EVIDENCE',
+                    'DW_WORKFLOW_LIFECYCLE_EVIDENCE_PATH',
+                    '<result-dir>/workflow-lifecycle-evidence.json',
+                ],
+                'result_files' => [
+                    'pins.json',
+                    'run-metadata.json',
+                    'workflow-lifecycle-result.json',
+                    'workflow-lifecycle-record.json',
+                    'workflow-lifecycle-findings.json',
+                    'lifecycle-result.json',
+                    'lifecycle-record.json',
+                ],
+                'host_runner_implemented' => true,
                 'must_exercise_published_artifacts' => true,
+                'must_execute_against_published_artifacts' => true,
+                'must_probe_runtime_published_surfaces' => true,
                 'must_name_public_artifact_sources' => true,
                 'must_record_lifecycle_cell_outcomes' => true,
+                'must_emit_per_cell_outcomes' => true,
                 'must_record_source_policy' => true,
                 'must_record_findings_even_for_clean_pass' => true,
                 'no_local_product_source_checkout_pass_evidence' => true,
+                'pass_requires_explicit_published_artifact_cell_execution' => true,
+                'unsupported_cells_require_documented_typed_refusal' => true,
+                'unexecuted_required_scenario_status' => 'not_covered',
+                'smoke_summary_only_outcome' => 'non_passing',
+                'required_execution_scopes' => [
+                    'published-artifact-workflow-lifecycle',
+                    'continue-as-new-run-chain',
+                    'continue-as-new-history-continuity',
+                    'continue-as-new-side-effect-idempotence',
+                    'public-cancellation',
+                    'public-termination',
+                    'workflow-id-reuse-duplicate-start-policy',
+                    'workflow-timeout-terminal-state',
+                    'workflow-retry-backoff-or-refusal',
+                    'php-sdk-lifecycle-surface',
+                    'python-sdk-lifecycle-surface',
+                    'cli-api-history-waterline-operator-diagnostics',
+                ],
             ],
             'result_gate' => WorkflowLifecycleResultGate::spec(),
             'finding_policy' => [
@@ -152,6 +215,14 @@ final class WorkflowLifecycleContract
                 'operator_visibility_gap' => 'link_root_cause_finding_against_waterline_or_server',
             ],
         ];
+    }
+
+    /**
+     * @return list<string>
+     */
+    public static function requiredScenarios(): array
+    {
+        return array_keys(self::scenarioRequirements());
     }
 
     /**
@@ -171,46 +242,70 @@ final class WorkflowLifecycleContract
             'continue_as_new_run_chain_visibility' => [
                 'title' => 'Continue-as-new run-chain visibility',
                 'required_fields' => $sharedFields,
+                'evidence' => ['workflow_id', 'initial_run_id', 'continued_run_id', 'run_count', 'current_run_id', 'run_numbers'],
+                'required_behavior' => 'continue_as_new_creates_a_visible_run_chain_under_one_logical_workflow_id',
             ],
             'continue_as_new_identity_and_history_continuity' => [
                 'title' => 'Continue-as-new identity and history continuity',
                 'required_fields' => $sharedFields,
+                'evidence' => ['workflow_id', 'history_events', 'predecessor_closed_event', 'successor_started_event', 'history_api_links'],
+                'required_behavior' => 'history_surfaces_link_predecessor_and_successor_runs_without_losing_logical_identity',
             ],
             'continue_as_new_duplicate_side_effect_prevention' => [
                 'title' => 'Continue-as-new duplicate side-effect prevention',
                 'required_fields' => $sharedFields,
+                'evidence' => ['workflow_id', 'side_effect_key', 'expected_count', 'observed_count', 'replay_or_restart_window'],
+                'required_behavior' => 'continue_as_new_replay_or_restart_does_not_duplicate_side_effects',
             ],
             'cancellation_public_surface_terminal_state' => [
                 'title' => 'Cancellation public terminal state',
                 'required_fields' => $sharedFields,
+                'evidence' => ['workflow_id', 'request_surface', 'cancel_requested_at', 'terminal_status', 'worker_error_type', 'caller_error_type'],
+                'required_behavior' => 'public_cancellation_reaches_cancelled_and_surfaces_typed_worker_and_caller_errors',
+                'terminal_states' => ['cancelled'],
             ],
             'termination_public_surface_terminal_state' => [
                 'title' => 'Termination public terminal state',
                 'required_fields' => $sharedFields,
+                'evidence' => ['workflow_id', 'request_surface', 'terminate_requested_at', 'terminal_status', 'worker_error_type', 'caller_error_type'],
+                'required_behavior' => 'public_termination_reaches_terminated_and_surfaces_typed_worker_and_caller_errors',
+                'terminal_states' => ['terminated'],
             ],
             'workflow_id_reuse_duplicate_start_policy' => [
                 'title' => 'Workflow id reuse and duplicate-start policy',
                 'required_fields' => $sharedFields,
+                'evidence' => ['workflow_id', 'duplicate_policy', 'first_start_outcome', 'duplicate_start_outcome', 'http_status_or_error_type'],
+                'required_behavior' => 'duplicate_workflow_id_start_is_enforced_or_refused_with_a_documented_typed_reason',
             ],
             'workflow_timeout_terminal_state' => [
                 'title' => 'Workflow timeout terminal state',
                 'required_fields' => $sharedFields,
+                'evidence' => ['workflow_id', 'timeout_field', 'deadline_at', 'observed_terminal_at', 'terminal_status', 'operator_visible_timing'],
+                'required_behavior' => 'workflow_execution_or_run_timeout_records_deadline_timing_and_terminal_state',
             ],
             'workflow_retry_backoff_or_refusal' => [
                 'title' => 'Workflow retry backoff or typed unsupported refusal',
                 'required_fields' => $sharedFields,
+                'evidence' => ['workflow_id', 'retry_policy_shape', 'attempt_count_or_refusal_reason', 'backoff_observation_or_error_type', 'docs_match'],
+                'required_behavior' => 'workflow_retry_backoff_is_executed_where_supported_or_retry_policy_is_refused_clearly',
             ],
             'php_sdk_lifecycle_surface' => [
                 'title' => 'PHP SDK lifecycle surface',
                 'required_fields' => $sharedFields,
+                'evidence' => ['sdk', 'covered_cells', 'unsupported_cells', 'typed_errors', 'artifact_version'],
+                'required_behavior' => 'php_sdk_exercises_supported_lifecycle_cells_or_refuses_unsupported_cells_with_typed_errors',
             ],
             'python_sdk_lifecycle_surface' => [
                 'title' => 'Python SDK lifecycle surface',
                 'required_fields' => $sharedFields,
+                'evidence' => ['sdk', 'covered_cells', 'unsupported_cells', 'typed_errors', 'artifact_version'],
+                'required_behavior' => 'python_sdk_exercises_supported_lifecycle_cells_or_refuses_unsupported_cells_with_typed_errors',
             ],
             'operator_diagnostics_surfaces' => [
                 'title' => 'CLI, API, history, and Waterline lifecycle diagnostics',
                 'required_fields' => $sharedFields,
+                'evidence' => ['workflow_id', 'cli_fields', 'api_fields', 'history_fields', 'waterline_fields', 'diagnostic_transition_matrix'],
+                'required_behavior' => 'cli_api_history_and_waterline_expose_enough_state_to_diagnose_every_lifecycle_transition',
             ],
         ];
     }
