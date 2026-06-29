@@ -1459,6 +1459,14 @@ while (time() < $deadline) {
     }
 
     try {
+        foreach ($client->pollQueryTasks(queue: $taskQueue, timeoutSeconds: 1, workerId: $workerId) as $task) {
+            sq_complete_query_task($client, $executor, $task, $workerId, $taskQueue, $evidencePath);
+        }
+    } catch (Throwable $throwable) {
+        sq_json_log(['event' => 'query_poll_failed', 'message' => $throwable->getMessage()]);
+    }
+
+    try {
         foreach ($client->pollWorkflowTasks(queue: $taskQueue, timeoutSeconds: 1, workerId: $workerId, historyPageSize: 1000) as $task) {
             try {
                 sq_complete_workflow_task($client, $task, $namespace);
@@ -1472,14 +1480,6 @@ while (time() < $deadline) {
         }
     } catch (Throwable $throwable) {
         sq_json_log(['event' => 'workflow_poll_failed', 'message' => $throwable->getMessage()]);
-    }
-
-    try {
-        foreach ($client->pollQueryTasks(queue: $taskQueue, timeoutSeconds: 1, workerId: $workerId) as $task) {
-            sq_complete_query_task($client, $executor, $task, $workerId, $taskQueue, $evidencePath);
-        }
-    } catch (Throwable $throwable) {
-        sq_json_log(['event' => 'query_poll_failed', 'message' => $throwable->getMessage()]);
     }
 }
 ''',
