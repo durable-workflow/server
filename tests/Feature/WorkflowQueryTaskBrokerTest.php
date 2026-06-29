@@ -981,7 +981,7 @@ class WorkflowQueryTaskBrokerTest extends TestCase
         $this->assertSame('python-query-old-duplicate-worker', $newPoll['lease_owner'] ?? null);
     }
 
-    public function test_query_workers_must_advertise_the_workflow_type(): void
+    public function test_query_workers_must_advertise_the_workflow_type_and_query_capability(): void
     {
         Queue::fake();
 
@@ -994,10 +994,6 @@ class WorkflowQueryTaskBrokerTest extends TestCase
         $this->assertFalse($broker->hasWorkerFor('default', $run));
 
         $this->registerPythonWorker('python-query-explicit-worker', 'python-queries', ['python.queryable']);
-
-        $this->assertFalse($broker->hasWorkerFor('default', $run));
-
-        $this->primeQueryTaskPoller('python-query-explicit-worker');
 
         $this->assertTrue($broker->hasWorkerFor('default', $run));
     }
@@ -1087,15 +1083,6 @@ class WorkflowQueryTaskBrokerTest extends TestCase
 
         $poller->afterUnreadyProbes[] = function (): void {
             $this->registerPythonWorker('python-query-registration-race-worker', 'python-queries', ['python.queryable']);
-        };
-        $poller->afterUnreadyProbes[] = function () use ($broker): void {
-            /** @var WorkerRegistration $worker */
-            $worker = WorkerRegistration::query()
-                ->where('namespace', 'default')
-                ->where('worker_id', 'python-query-registration-race-worker')
-                ->firstOrFail();
-
-            $this->assertNull($broker->poll('default', $worker));
         };
         $poller->afterUnreadyProbes[] = function () use ($broker): void {
             /** @var WorkerRegistration $worker */
@@ -1422,16 +1409,6 @@ class WorkflowQueryTaskBrokerTest extends TestCase
 
         /** @var WorkflowQueryTaskBroker $broker */
         $broker = app(WorkflowQueryTaskBroker::class);
-        $route = $broker->queryRoute('default', $run);
-
-        $this->assertFalse($route['servable']);
-        $this->assertSame('query_worker_unavailable', $route['reason']);
-        $this->assertSame(2, $route['query_capable_worker_count']);
-        $this->assertSame(2, $route['workflow_type_worker_count']);
-        $this->assertSame(0, $route['compatible_worker_count']);
-
-        $this->primeQueryTaskPoller('python-query-contract-unversioned-worker', 'contract-query-unversioned');
-
         $route = $broker->queryRoute('default', $run);
 
         $this->assertTrue($route['servable']);
@@ -2185,6 +2162,29 @@ class WorkflowQueryTaskBrokerTest extends TestCase
 
         $poll = $this->postJson('/api/worker/workflow-tasks/poll', [
             'worker_id' => 'python-query-workflow-interrupt-worker',
+            'task_queue' => 'python-queries',
+        ], $this->workerHeaders());
+
+        $poll->assertOk()
+            ->assertJsonPath('task', null)
+            ->assertJsonPath('poll_status', 'query_task_pending');
+    }
+
+    public function test_advertised_query_capability_interrupts_workflow_poll_before_first_query_poll(): void
+    {
+        Queue::fake();
+        config(['server.polling.timeout' => 10]);
+
+        $run = $this->startRemoteWorkflow('wf-query-task-interrupt-before-query-poll');
+        WorkflowTask::query()->where('workflow_run_id', $run->id)->delete();
+        $this->registerPythonWorker('python-query-advertised-worker', 'python-queries', ['python.queryable']);
+
+        /** @var WorkflowQueryTaskBroker $broker */
+        $broker = app(WorkflowQueryTaskBroker::class);
+        $broker->enqueue('default', $run, 'status', $this->queryArguments());
+
+        $poll = $this->postJson('/api/worker/workflow-tasks/poll', [
+            'worker_id' => 'python-query-advertised-worker',
             'task_queue' => 'python-queries',
         ], $this->workerHeaders());
 

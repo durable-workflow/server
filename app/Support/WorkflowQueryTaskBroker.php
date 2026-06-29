@@ -1845,7 +1845,7 @@ final class WorkflowQueryTaskBroker
 
     public function workerAcceptsQueryTasks(string $namespace, WorkerRegistration $worker): bool
     {
-        return $this->queryPollingWorkerIsCurrent($namespace, $worker);
+        return $this->workerSupportsQueryTasks($namespace, $worker);
     }
 
     private function workerSupportsQueryTasks(string $namespace, WorkerRegistration $worker): bool
