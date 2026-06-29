@@ -2487,7 +2487,7 @@ def answer_next_query_task(
                 token=token,
                 namespace=namespace,
                 worker=True,
-                timeout=min(5.0, remaining),
+                timeout=remaining + 5.0,
             )
             holder["poll"] = poll
             task_candidate = poll.get("body", {}).get("task") if isinstance(poll.get("body"), dict) else None

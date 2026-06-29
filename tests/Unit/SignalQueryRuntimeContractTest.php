@@ -688,6 +688,7 @@ class SignalQueryRuntimeContractTest extends TestCase
             'unknown-handler baseline probe failed',
             'ordered delivery baseline probe failed',
             'body={"input": [amount], "request_id": f"{ordered_workflow_id}-{amount}"}',
+            'timeout=remaining + 5.0',
             '"command_contract_source"',
             '"signal_admission"',
             'dedup baseline probe failed',
@@ -1080,6 +1081,58 @@ PY);
         $this->assertNull($result['error']);
         $this->assertTrue($result['completed_at_present']);
         $this->assertSame('leased-worker', $result['complete_bodies'][0]['lease_owner']);
+        $this->assertSame(55, $result['complete_bodies'][0]['result']);
+    }
+
+    public function test_host_runner_query_responder_does_not_cut_off_server_long_poll(): void
+    {
+        $result = $this->runSignalQueryRunnerPythonSnippet(<<<'PY'
+poll_timeouts = []
+complete_bodies = []
+
+def fake_http_json(base_url, path, **kwargs):
+    if path.endswith("/worker/query-tasks/poll"):
+        poll_timeouts.append(kwargs.get("timeout"))
+        return {
+            "status_code": 200,
+            "body": {
+                "task": {
+                    "query_task_id": "query-task-1",
+                    "query_task_attempt": 1,
+                    "lease_owner": "leased-worker",
+                },
+            },
+        }
+
+    if path.endswith("/worker/query-tasks/query-task-1/complete"):
+        complete_bodies.append(kwargs.get("body"))
+        return {"status_code": 200, "body": {"outcome": "completed"}}
+
+    raise AssertionError(f"unexpected path {path}")
+
+globals()["http_json"] = fake_http_json
+holder = {}
+answer_next_query_task(
+    "http://unused",
+    "token",
+    "default",
+    "polling-worker",
+    "queue-1",
+    55,
+    Path("/tmp/signals-queries-query-timeout-test.log"),
+    holder,
+    poll_timeout=12,
+)
+
+print(json.dumps({
+    "poll_timeouts": poll_timeouts,
+    "complete_bodies": complete_bodies,
+    "error": holder.get("error"),
+}, sort_keys=True))
+PY);
+
+        $this->assertNull($result['error']);
+        $this->assertGreaterThan(12.0, $result['poll_timeouts'][0]);
         $this->assertSame(55, $result['complete_bodies'][0]['result']);
     }
 
