@@ -43,7 +43,7 @@ final class WorkflowQueryTaskBroker
 
     public function hasWorkerFor(string $namespace, WorkflowRun $run): bool
     {
-        return $this->queryRoute($namespace, $run)['servable'];
+        return $this->registeredQueryRoute($namespace, $run)['servable'];
     }
 
     /**
@@ -485,7 +485,7 @@ final class WorkflowQueryTaskBroker
         $supportedWorkflowTypes = $this->stringArray($worker->supported_workflow_types);
         $workflowDefinitionFingerprints = $this->fingerprintMap($worker->workflow_definition_fingerprints);
 
-        $this->rememberQueryTaskPollingWorker($namespace, $taskQueue, $worker->worker_id);
+        $this->rememberQueryTaskPollingWorker($namespace, $taskQueue, $worker->worker_id, $timeoutSeconds);
 
         if ($pollRequestId !== null) {
             $this->pollRequests->markCurrentIfFresh($namespace, $taskQueue, $buildId, $worker->worker_id, $pollRequestId);
@@ -886,6 +886,40 @@ final class WorkflowQueryTaskBroker
      */
     public function queryRoute(string $namespace, WorkflowRun $run): array
     {
+        return $this->resolveQueryRoute($namespace, $run, requirePollingWorker: true);
+    }
+
+    /**
+     * @return array{
+     *     servable: bool,
+     *     reason: string|null,
+     *     message: string|null,
+     *     task_queue: string,
+     *     active_worker_count: int,
+     *     query_capable_worker_count: int,
+     *     workflow_type_worker_count: int,
+     *     compatible_worker_count: int
+     * }
+     */
+    private function registeredQueryRoute(string $namespace, WorkflowRun $run): array
+    {
+        return $this->resolveQueryRoute($namespace, $run, requirePollingWorker: false);
+    }
+
+    /**
+     * @return array{
+     *     servable: bool,
+     *     reason: string|null,
+     *     message: string|null,
+     *     task_queue: string,
+     *     active_worker_count: int,
+     *     query_capable_worker_count: int,
+     *     workflow_type_worker_count: int,
+     *     compatible_worker_count: int
+     * }
+     */
+    private function resolveQueryRoute(string $namespace, WorkflowRun $run, bool $requirePollingWorker): array
+    {
         $taskQueue = $this->taskQueue($run);
         $workflowType = $this->stringValue($run->workflow_type);
         $recordedFingerprint = $this->recordedWorkflowDefinitionFingerprint($run);
@@ -1008,6 +1042,19 @@ final class WorkflowQueryTaskBroker
             );
         }
 
+        if (! $requirePollingWorker) {
+            return $this->queryRouteResult(
+                true,
+                null,
+                null,
+                $taskQueue,
+                $activeWorkers->count(),
+                $queryWorkers->count(),
+                $typeWorkers->count(),
+                $compatibleWorkers->count(),
+            );
+        }
+
         $pollingWorkers = $compatibleWorkers
             ->filter(fn (WorkerRegistration $worker): bool => $this->workerAcceptsQueryTasks($namespace, $worker))
             ->values();
@@ -1024,7 +1071,7 @@ final class WorkflowQueryTaskBroker
                 $activeWorkers->count(),
                 $queryWorkers->count(),
                 $typeWorkers->count(),
-                0,
+                $compatibleWorkers->count(),
             );
         }
 
@@ -1845,7 +1892,8 @@ final class WorkflowQueryTaskBroker
 
     public function workerAcceptsQueryTasks(string $namespace, WorkerRegistration $worker): bool
     {
-        return $this->workerSupportsQueryTasks($namespace, $worker);
+        return $this->workerSupportsQueryTasks($namespace, $worker)
+            && $this->queryPollingWorkerIsCurrent($namespace, $worker);
     }
 
     private function workerSupportsQueryTasks(string $namespace, WorkerRegistration $worker): bool
@@ -1866,12 +1914,17 @@ final class WorkflowQueryTaskBroker
         )) === true;
     }
 
-    private function rememberQueryTaskPollingWorker(string $namespace, string $taskQueue, string $workerId): void
+    private function rememberQueryTaskPollingWorker(
+        string $namespace,
+        string $taskQueue,
+        string $workerId,
+        ?int $timeoutSeconds,
+    ): void
     {
         $this->store()->put(
             $this->queryPollingWorkerKey($namespace, $taskQueue, $workerId),
             true,
-            now()->addSeconds($this->queryPollingWorkerTtlSeconds()),
+            now()->addSeconds($this->queryPollingWorkerTtlSeconds($timeoutSeconds)),
         );
 
         $this->signals->signalQueryTaskQueue($namespace, $taskQueue);
@@ -2229,8 +2282,12 @@ final class WorkflowQueryTaskBroker
         return 5;
     }
 
-    private function queryPollingWorkerTtlSeconds(): int
+    private function queryPollingWorkerTtlSeconds(?int $timeoutSeconds = null): int
     {
+        if ($timeoutSeconds !== null) {
+            return max(1, $timeoutSeconds) + $this->leaseGraceSeconds();
+        }
+
         return max($this->staleAfterSeconds(), $this->queryTimeoutSeconds() + $this->leaseGraceSeconds());
     }
 

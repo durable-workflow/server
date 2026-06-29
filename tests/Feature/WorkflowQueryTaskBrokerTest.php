@@ -1018,6 +1018,39 @@ class WorkflowQueryTaskBrokerTest extends TestCase
             ->assertJsonPath('control_plane.operation_name', 'status');
     }
 
+    public function test_worker_routed_query_requires_active_query_task_poll_before_enqueuing(): void
+    {
+        Queue::fake();
+
+        $this->startRemoteWorkflow(
+            'wf-query-task-capable-but-not-polling',
+            workflowType: 'polyglot.php.signal.wait',
+            taskQueue: 'polyglot-php',
+        );
+        $this->registerQueryWorker(
+            'php-query-capable-but-not-polling-worker',
+            'polyglot-php',
+            ['polyglot.php.signal.wait'],
+            'php',
+        );
+
+        $query = $this->postJson('/api/workflows/wf-query-task-capable-but-not-polling/query/status', [
+            'input' => ['summary'],
+        ], $this->apiHeaders());
+
+        $query->assertStatus(409)
+            ->assertHeader(ControlPlaneProtocol::HEADER, ControlPlaneProtocol::VERSION)
+            ->assertJsonPath('workflow_id', 'wf-query-task-capable-but-not-polling')
+            ->assertJsonPath('query_name', 'status')
+            ->assertJsonPath('reason', 'query_worker_unavailable')
+            ->assertJsonPath(
+                'message',
+                'Compatible query-capable workers on task queue [polyglot-php] are not currently polling workflow query tasks.',
+            )
+            ->assertJsonPath('control_plane.operation', 'query')
+            ->assertJsonPath('control_plane.operation_name', 'status');
+    }
+
     public function test_worker_routed_query_waits_for_worker_registration_before_reporting_unavailable(): void
     {
         Queue::fake();
@@ -1083,6 +1116,9 @@ class WorkflowQueryTaskBrokerTest extends TestCase
 
         $poller->afterUnreadyProbes[] = function (): void {
             $this->registerPythonWorker('python-query-registration-race-worker', 'python-queries', ['python.queryable']);
+        };
+        $poller->afterUnreadyProbes[] = function (): void {
+            $this->primeQueryTaskPoller('python-query-registration-race-worker');
         };
         $poller->afterUnreadyProbes[] = function () use ($broker): void {
             /** @var WorkerRegistration $worker */
@@ -1406,6 +1442,8 @@ class WorkflowQueryTaskBrokerTest extends TestCase
 
         $this->assertSame(['legacy-count', 'state'], $started->payload['declared_queries'] ?? null);
         $this->assertNotContains('count-at-least', $started->payload['declared_queries'] ?? []);
+
+        $this->primeQueryTaskPoller('python-query-contract-unversioned-worker', 'contract-query-unversioned');
 
         /** @var WorkflowQueryTaskBroker $broker */
         $broker = app(WorkflowQueryTaskBroker::class);

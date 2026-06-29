@@ -99,7 +99,7 @@ class EnvContractTest extends TestCase
             'The query-task timeout default must retain dispatch grace beyond one worker poll.',
         );
         $this->assertStringContainsString(
-            "'DW_WORKFLOW_TASK_TIMEOUT'",
+            "EnvAuditor::env('DW_WORKFLOW_TASK_TIMEOUT', 'WORKFLOW_TASK_TIMEOUT', 60) + 5",
             $source,
             'The query-task timeout default must cover the workflow-task lease barrier.',
         );

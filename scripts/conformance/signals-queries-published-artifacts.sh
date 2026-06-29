@@ -1209,6 +1209,7 @@ use Workflow\V2\Attributes\Signal;
 use Workflow\V2\Attributes\Type;
 use Workflow\V2\Support\TypeRegistry;
 use Workflow\V2\Support\WorkflowDefinition;
+use Workflow\V2\Worker\StandaloneWorkflowWorker;
 use Workflow\V2\Worker\WorkerProtocolClient;
 use Workflow\V2\Worker\WorkflowFiberRunner;
 use Workflow\V2\Worker\WorkflowQueryTaskExecutor;
@@ -1429,6 +1430,42 @@ function sq_complete_query_task(
     sq_json_log(['event' => 'query_task_completed', 'record' => $record]);
 }
 
+function sq_record_standalone_query_task(
+    array $result,
+    string $workerId,
+    string $taskQueue,
+    string $evidencePath
+): void {
+    if (($result['kind'] ?? null) !== 'query_task' || ($result['processed'] ?? false) !== true) {
+        return;
+    }
+
+    $task = is_array($result['query_task'] ?? null) ? $result['query_task'] : [];
+    $status = $result['outcome'] ?? null;
+    $record = [
+        'schema' => 'durable-workflow.v2.signal-query-runtime.php-routed-query-task',
+        'status' => $status === 'completed' ? 'pass' : 'fail',
+        'worker_runtime' => 'workflow-php',
+        'worker_id' => $workerId,
+        'task_queue' => is_string($task['task_queue'] ?? null) ? $task['task_queue'] : $taskQueue,
+        'query_task_id' => is_string($result['query_task_id'] ?? null)
+            ? $result['query_task_id']
+            : ($task['query_task_id'] ?? null),
+        'query_task_attempt' => $task['query_task_attempt'] ?? null,
+        'workflow_id' => $task['workflow_id'] ?? null,
+        'run_id' => $task['run_id'] ?? null,
+        'workflow_type' => $task['workflow_type'] ?? null,
+        'query_name' => $task['query_name'] ?? null,
+        'lease_owner' => $task['lease_owner'] ?? null,
+        'server_route' => 'worker_query_task_poll',
+        'completion_route' => $status === 'completed' ? 'worker_query_task_complete' : 'worker_query_task_fail',
+        'observed_via' => 'workflow-php standalone worker query task driver',
+        'observed_at' => gmdate('Y-m-d\TH:i:s\Z'),
+    ];
+    file_put_contents($evidencePath, json_encode($record, JSON_UNESCAPED_SLASHES).PHP_EOL, FILE_APPEND);
+    sq_json_log(['event' => 'query_task_completed', 'record' => $record]);
+}
+
 if ($argc < 7) {
     fwrite(STDERR, "usage: php-counter-worker.php <base-url> <token> <namespace> <task-queue> <worker-id> <evidence-path> [seconds]\n");
     exit(2);
@@ -1450,6 +1487,9 @@ sq_json_log([
 $executor = new WorkflowQueryTaskExecutor([
     sq_workflow_type() => ConformanceCounterWorkflow::class,
 ]);
+$standaloneWorker = new StandaloneWorkflowWorker($client, [
+    sq_workflow_type() => ConformanceCounterWorkflow::class,
+], $executor);
 
 while (time() < $deadline) {
     try {
@@ -1459,24 +1499,19 @@ while (time() < $deadline) {
     }
 
     try {
-        foreach ($client->pollQueryTasks(queue: $taskQueue, timeoutSeconds: 1, workerId: $workerId) as $task) {
-            sq_complete_query_task($client, $executor, $task, $workerId, $taskQueue, $evidencePath);
+        $queryResult = $standaloneWorker->processOneQueryTask($taskQueue, $workerId, 1);
+        if (($queryResult['processed'] ?? false) === true) {
+            sq_record_standalone_query_task($queryResult, $workerId, $taskQueue, $evidencePath);
+            continue;
         }
     } catch (Throwable $throwable) {
         sq_json_log(['event' => 'query_poll_failed', 'message' => $throwable->getMessage()]);
     }
 
     try {
-        foreach ($client->pollWorkflowTasks(queue: $taskQueue, timeoutSeconds: 1, workerId: $workerId, historyPageSize: 1000) as $task) {
-            try {
-                sq_complete_workflow_task($client, $task, $namespace);
-            } catch (Throwable $throwable) {
-                $taskId = sq_task_string($task, ['task_id', 'workflow_task_id']);
-                if ($taskId !== '') {
-                    $client->failWorkflowTask($taskId, $throwable->getMessage(), $throwable::class, $throwable->getTraceAsString());
-                }
-                sq_json_log(['event' => 'workflow_task_failed', 'task_id' => $taskId, 'message' => $throwable->getMessage()]);
-            }
+        $workflowResult = $standaloneWorker->processOneWorkflowTask($taskQueue, $workerId, 1);
+        if (($workflowResult['processed'] ?? false) === true) {
+            sq_json_log(['event' => 'workflow_task_processed', 'result' => $workflowResult]);
         }
     } catch (Throwable $throwable) {
         sq_json_log(['event' => 'workflow_poll_failed', 'message' => $throwable->getMessage()]);
