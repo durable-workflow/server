@@ -54,8 +54,8 @@ const SCENARIO_REQUIREMENTS = {
   },
   workflow_id_reuse_duplicate_start_policy: {
     description: 'Workflow id reuse and duplicate start policy are enforced or unsupported shapes are refused with a documented typed reason.',
-    required_evidence: ['workflow_id', 'duplicate_policy', 'first_start_outcome', 'duplicate_start_outcome', 'http_status_or_error_type'],
-    required_behavior: 'duplicate_workflow_id_start_is_enforced_or_refused_with_a_documented_typed_reason',
+    required_evidence: ['workflow_id', 'duplicate_policy', 'first_start_outcome', 'first_run_id', 'duplicate_start_outcome', 'http_status_or_error_type', 'run_count_after_duplicate', 'run_ids_after_duplicate'],
+    required_behavior: 'duplicate_workflow_id_start_fail_policy_refuses_the_duplicate_and_preserves_only_the_first_run',
   },
   workflow_timeout_terminal_state: {
     description: 'Workflow execution or run timeout records operator-visible deadline timing and terminal state.',
@@ -705,6 +705,9 @@ function validateTerminalLifecycleSurface(outputs, terminalStatus, errorFragment
 function validateDuplicateStartPolicy(outputs) {
   const failures = [];
   const duplicateOutcome = normalizedText(outputs.duplicate_start_outcome);
+  const firstRunId = stringValue(outputs.first_run_id);
+  const runCountAfterDuplicate = numberValue(outputs.run_count_after_duplicate);
+  const runIdsAfterDuplicate = scalarList(outputs.run_ids_after_duplicate);
 
   if (['accepted', 'started', 'created', 'completed', 'succeeded', 'success', 'ok'].includes(duplicateOutcome)) {
     failures.push('duplicate workflow-id start must not be accepted as a new run');
@@ -714,6 +717,15 @@ function validateDuplicateStartPolicy(outputs) {
   }
   if (!stringValue(outputs.http_status_or_error_type)) {
     failures.push('duplicate workflow-id start must report an HTTP status or typed error');
+  }
+  if (!firstRunId) {
+    failures.push('duplicate workflow-id start must report the first run id');
+  }
+  if (runCountAfterDuplicate !== 1) {
+    failures.push('duplicate workflow-id fail policy must leave exactly one run after the duplicate request');
+  }
+  if (runIdsAfterDuplicate.length !== 1 || (firstRunId && runIdsAfterDuplicate[0] !== firstRunId)) {
+    failures.push('duplicate workflow-id fail policy must preserve only the first run id');
   }
 
   return failures;

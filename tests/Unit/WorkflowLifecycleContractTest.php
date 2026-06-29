@@ -98,6 +98,14 @@ class WorkflowLifecycleContractTest extends TestCase
             'successor_run_ids_after_duplicate',
             'cancellation_public_surface_terminal_state',
             'termination_public_surface_terminal_state',
+            'workflow_id_reuse_duplicate_start_policy',
+            'run_duplicate_start_policy_probe',
+            "'duplicate_policy' => 'fail'",
+            'duplicate_start_http_status',
+            'duplicate_start_rejection_reason',
+            'run_count_after_duplicate',
+            'run_ids_after_duplicate',
+            'refused_without_creating_or_replacing_run',
             'server_api_run_targeted',
             'run_not_active_',
             'run_cancelled',
@@ -263,6 +271,37 @@ class WorkflowLifecycleContractTest extends TestCase
         $this->assertContains('workflow_timeout_terminal_before_deadline', $failureCodes);
         $this->assertContains('workflow_retry_docs_mismatch', $failureCodes);
         $this->assertContains('declared_outcome_mismatch', $failureCodes);
+    }
+
+    public function test_result_gate_rejects_duplicate_start_refusal_that_creates_or_replaces_run(): void
+    {
+        $extraRunResult = $this->completeLifecycleResult();
+        $extraRunResult['scenario_results']['workflow_id_reuse_duplicate_start_policy']['observed_outputs']['run_count_after_duplicate'] = 2;
+        $extraRunResult['scenario_results']['workflow_id_reuse_duplicate_start_policy']['observed_outputs']['run_ids_after_duplicate'] = [
+            'run-first',
+            'run-extra',
+        ];
+
+        $extraRunEvaluation = WorkflowLifecycleResultGate::evaluate($extraRunResult);
+
+        $this->assertSame('non_passing', $extraRunEvaluation['status']);
+        $this->assertContains(
+            'duplicate_start_run_count_changed',
+            array_column($extraRunEvaluation['gate_failures'], 'code'),
+        );
+
+        $replacedRunResult = $this->completeLifecycleResult();
+        $replacedRunResult['scenario_results']['workflow_id_reuse_duplicate_start_policy']['observed_outputs']['run_ids_after_duplicate'] = [
+            'run-replacement',
+        ];
+
+        $replacedRunEvaluation = WorkflowLifecycleResultGate::evaluate($replacedRunResult);
+
+        $this->assertSame('non_passing', $replacedRunEvaluation['status']);
+        $this->assertContains(
+            'duplicate_start_first_run_not_preserved',
+            array_column($replacedRunEvaluation['gate_failures'], 'code'),
+        );
     }
 
     public function test_result_gate_accepts_unsupported_cell_only_with_documented_typed_refusal_and_finding(): void
@@ -465,8 +504,11 @@ class WorkflowLifecycleContractTest extends TestCase
                 'workflow_id' => 'wf-duplicate-start',
                 'duplicate_policy' => 'fail',
                 'first_start_outcome' => 'started',
+                'first_run_id' => 'run-first',
                 'duplicate_start_outcome' => 'refused',
                 'http_status_or_error_type' => '409 duplicate_workflow_id',
+                'run_count_after_duplicate' => 1,
+                'run_ids_after_duplicate' => ['run-first'],
             ],
             'workflow_timeout_terminal_state' => [
                 'workflow_id' => 'wf-timeout',

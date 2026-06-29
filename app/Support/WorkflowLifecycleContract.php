@@ -274,8 +274,8 @@ final class WorkflowLifecycleContract
             'workflow_id_reuse_duplicate_start_policy' => [
                 'title' => 'Workflow id reuse and duplicate-start policy',
                 'required_fields' => $sharedFields,
-                'evidence' => ['workflow_id', 'duplicate_policy', 'first_start_outcome', 'duplicate_start_outcome', 'http_status_or_error_type'],
-                'required_behavior' => 'duplicate_workflow_id_start_is_enforced_or_refused_with_a_documented_typed_reason',
+                'evidence' => ['workflow_id', 'duplicate_policy', 'first_start_outcome', 'first_run_id', 'duplicate_start_outcome', 'http_status_or_error_type', 'run_count_after_duplicate', 'run_ids_after_duplicate'],
+                'required_behavior' => 'duplicate_workflow_id_start_fail_policy_refuses_the_duplicate_and_preserves_only_the_first_run',
             ],
             'workflow_timeout_terminal_state' => [
                 'title' => 'Workflow timeout terminal state',

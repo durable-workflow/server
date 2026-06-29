@@ -1247,6 +1247,9 @@ final class WorkflowLifecycleResultGate
     {
         $failures = [];
         $duplicateOutcome = self::normalizedText($outputs['duplicate_start_outcome'] ?? null);
+        $firstRunId = self::stringValue($outputs['first_run_id'] ?? null);
+        $runCountAfterDuplicate = self::numberValue($outputs['run_count_after_duplicate'] ?? null);
+        $runIdsAfterDuplicate = self::stringList($outputs['run_ids_after_duplicate'] ?? null);
 
         if (in_array($duplicateOutcome, ['accepted', 'started', 'created', 'completed', 'succeeded', 'success', 'ok'], true)) {
             $failures = self::addSemanticFailure(
@@ -1267,6 +1270,27 @@ final class WorkflowLifecycleResultGate
                 $failures,
                 'duplicate_start_error_type_missing',
                 'duplicate workflow-id start must report an HTTP status or typed error',
+            );
+        }
+        if ($firstRunId === '') {
+            $failures = self::addSemanticFailure(
+                $failures,
+                'duplicate_start_first_run_id_missing',
+                'duplicate workflow-id start must report the first run id',
+            );
+        }
+        if ($runCountAfterDuplicate !== 1.0) {
+            $failures = self::addSemanticFailure(
+                $failures,
+                'duplicate_start_run_count_changed',
+                'duplicate workflow-id fail policy must leave exactly one run after the duplicate request',
+            );
+        }
+        if (count($runIdsAfterDuplicate) !== 1 || ($firstRunId !== '' && $runIdsAfterDuplicate[0] !== $firstRunId)) {
+            $failures = self::addSemanticFailure(
+                $failures,
+                'duplicate_start_first_run_not_preserved',
+                'duplicate workflow-id fail policy must preserve only the first run id',
             );
         }
 

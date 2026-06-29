@@ -148,6 +148,7 @@ const FOCUSED_SCENARIOS = [
     'continue_as_new_duplicate_side_effect_prevention',
     'cancellation_public_surface_terminal_state',
     'termination_public_surface_terminal_state',
+    'workflow_id_reuse_duplicate_start_policy',
 ];
 
 $repoRoot = getenv('RUNNER_REPO_ROOT') ?: '/app';
@@ -221,9 +222,11 @@ function source_policy(array $artifactSources): array
 
 function focused_finding(string $scenarioId, string $message): array
 {
-    $owningSurface = str_starts_with($scenarioId, 'cancellation') || str_starts_with($scenarioId, 'termination')
-        ? 'server-cli-and-sdks'
-        : 'workflow-runtime-and-server';
+    $owningSurface = match (true) {
+        str_starts_with($scenarioId, 'cancellation'), str_starts_with($scenarioId, 'termination') => 'server-cli-and-sdks',
+        str_contains($scenarioId, 'duplicate_start') => 'server',
+        default => 'workflow-runtime-and-server',
+    };
 
     return [
         'finding_id' => 'workflow-lifecycle-'.$scenarioId.'-focused-product-gap',
@@ -513,6 +516,89 @@ function run_terminal_surface_probe(
     ]);
 }
 
+function run_duplicate_start_policy_probe(): array
+{
+    $workflowId = 'workflow-lifecycle-duplicate-start-'.strtolower(bin2hex(random_bytes(4)));
+    $workflowType = 'workflow.lifecycle.duplicate-start';
+    $workerId = 'workflow-lifecycle-duplicate-start-worker-'.strtolower(bin2hex(random_bytes(4)));
+    $startBody = [
+        'workflow_id' => $workflowId,
+        'workflow_type' => $workflowType,
+        'task_queue' => LIFECYCLE_TERMINAL_TASK_QUEUE,
+        'duplicate_policy' => 'fail',
+        'input' => [
+            'policy' => 'fail',
+            'cell' => 'workflow_id_reuse_duplicate_start_policy',
+        ],
+    ];
+
+    request_json('POST', '/worker/register', [
+        'worker_id' => $workerId,
+        'task_queue' => LIFECYCLE_TERMINAL_TASK_QUEUE,
+        'runtime' => 'php',
+        'supported_workflow_types' => [$workflowType],
+    ]);
+
+    $firstStart = request_json('POST', '/workflows', $startBody);
+    $firstRunId = require_string($firstStart, 'run_id', 'duplicate-start first response did not include run_id');
+
+    $duplicateStart = request_json('POST', '/workflows', $startBody, [409]);
+    $duplicateStatus = is_numeric($duplicateStart['_http_status'] ?? null) ? (int) $duplicateStart['_http_status'] : 0;
+    $typedError = trim(implode(' ', array_filter([
+        is_string($duplicateStart['outcome'] ?? null) ? $duplicateStart['outcome'] : null,
+        is_string($duplicateStart['reason'] ?? null) ? $duplicateStart['reason'] : null,
+        is_string($duplicateStart['rejection_reason'] ?? null) ? $duplicateStart['rejection_reason'] : null,
+    ], static fn (mixed $value): bool => is_string($value) && trim($value) !== '')));
+    if ($typedError === '') {
+        $typedError = $duplicateStatus > 0 ? 'http_'.$duplicateStatus : 'unknown_duplicate_start_result';
+    }
+
+    $runsAfterDuplicate = request_json('GET', '/workflows/'.$workflowId.'/runs');
+    $runRowsAfterDuplicate = is_array($runsAfterDuplicate['runs'] ?? null) ? array_values($runsAfterDuplicate['runs']) : [];
+    $runIdsAfterDuplicate = array_values(array_filter(array_map(
+        static fn (mixed $run): string => is_array($run) && is_string($run['run_id'] ?? null) ? $run['run_id'] : '',
+        $runRowsAfterDuplicate,
+    )));
+    $runCountAfterDuplicate = (int) ($runsAfterDuplicate['run_count'] ?? count($runRowsAfterDuplicate));
+
+    if ($duplicateStatus < 400) {
+        throw new RuntimeException('duplicate-start fail policy accepted duplicate request with HTTP '.($duplicateStatus > 0 ? (string) $duplicateStatus : 'unknown_status'));
+    }
+    if ($runCountAfterDuplicate !== 1) {
+        throw new RuntimeException('duplicate-start fail policy left '.$runCountAfterDuplicate.' runs after duplicate request; expected exactly one run preserving '.$firstRunId.'; observed run ids: '.json_encode($runIdsAfterDuplicate, JSON_THROW_ON_ERROR));
+    }
+    if (count($runIdsAfterDuplicate) !== 1 || $runIdsAfterDuplicate[0] !== $firstRunId) {
+        throw new RuntimeException('duplicate-start fail policy did not preserve only the first run id '.$firstRunId.'; observed run ids: '.json_encode($runIdsAfterDuplicate, JSON_THROW_ON_ERROR));
+    }
+
+    return pass_scenario('workflow_id_reuse_duplicate_start_policy', [
+        'workflow_id' => $workflowId,
+        'duplicate_policy' => 'fail',
+        'first_start_outcome' => (string) ($firstStart['outcome'] ?? 'started'),
+        'duplicate_start_outcome' => $duplicateStatus >= 400 ? 'refused_'.$typedError : 'accepted',
+        'http_status_or_error_type' => trim(($duplicateStatus > 0 ? (string) $duplicateStatus : 'unknown_status').' '.$typedError),
+        'first_start_http_status' => $firstStart['_http_status'] ?? null,
+        'first_run_id' => $firstRunId,
+        'duplicate_start_http_status' => $duplicateStatus > 0 ? $duplicateStatus : null,
+        'duplicate_start_raw_outcome' => $duplicateStart['outcome'] ?? null,
+        'duplicate_start_reason' => $duplicateStart['reason'] ?? null,
+        'duplicate_start_rejection_reason' => $duplicateStart['rejection_reason'] ?? null,
+        'duplicate_start_command_status' => $duplicateStart['command_status'] ?? null,
+        'duplicate_start_message' => $duplicateStart['message'] ?? null,
+        'run_count_after_duplicate' => $runCountAfterDuplicate,
+        'run_ids_after_duplicate' => $runIdsAfterDuplicate,
+        'duplicate_start_policy_enforcement' => 'refused_without_creating_or_replacing_run',
+        'public_surface_matrix' => [
+            'server_api' => [
+                'start_path' => '/api/workflows',
+                'runs_path' => '/api/workflows/{workflowId}/runs',
+                'duplicate_policy_field' => 'duplicate_policy',
+                'requested_duplicate_policy' => 'fail',
+            ],
+        ],
+    ]);
+}
+
 function run_continue_as_new_probe(): array
 {
     $workflowId = 'workflow-lifecycle-continue-as-new-'.strtolower(bin2hex(random_bytes(4)));
@@ -687,6 +773,15 @@ try {
         } catch (Throwable $throwable) {
             $scenarioResults[$terminalProbe['scenario_id']] = failure_scenario($terminalProbe['scenario_id'], $throwable);
         }
+    }
+
+    try {
+        $scenarioResults['workflow_id_reuse_duplicate_start_policy'] = run_duplicate_start_policy_probe();
+    } catch (Throwable $throwable) {
+        $scenarioResults['workflow_id_reuse_duplicate_start_policy'] = failure_scenario(
+            'workflow_id_reuse_duplicate_start_policy',
+            $throwable,
+        );
     }
 
     $artifactSources = artifact_sources_from_env();
