@@ -16,6 +16,7 @@ use Illuminate\Testing\TestResponse;
 use Tests\Fixtures\ExternalGreetingWorkflow;
 use Tests\Fixtures\InteractiveCommandWorkflow;
 use Tests\TestCase;
+use Workflow\Serializers\CodecRegistry;
 use Workflow\Serializers\Serializer;
 use Workflow\V2\Enums\HistoryEventType;
 use Workflow\V2\Jobs\RunWorkflowTask;
@@ -750,7 +751,7 @@ class PayloadEnvelopeIntegrationTest extends TestCase
         $info = $this->getJson('/api/cluster/info');
 
         $info->assertOk()
-            ->assertJsonPath('capabilities.payload_codecs', ['avro'])
+            ->assertJsonPath('capabilities.payload_codecs', CodecRegistry::universal())
             ->assertJsonPath('capabilities.payload_codecs_engine_specific.php', [
                 'workflow-serializer-y',
                 'workflow-serializer-base64',

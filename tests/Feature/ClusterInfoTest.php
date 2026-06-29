@@ -42,6 +42,7 @@ use App\Support\WorkflowLifecycleResultGate;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\DB;
 use Tests\TestCase;
+use Workflow\Serializers\CodecRegistry;
 use Workflow\V2\Support\PlatformConformanceSuite;
 use Workflow\V2\Support\WorkerCompatibilityFleet;
 
@@ -2517,7 +2518,7 @@ class ClusterInfoTest extends TestCase
     {
         $response = $this->getJson('/api/cluster/info')->assertOk();
 
-        $this->assertSame(['avro'], $response->json('capabilities.payload_codecs'));
+        $this->assertSame(CodecRegistry::universal(), $response->json('capabilities.payload_codecs'));
         $this->assertSame(
             ['workflow-serializer-y', 'workflow-serializer-base64'],
             $response->json('capabilities.payload_codecs_engine_specific.php'),
