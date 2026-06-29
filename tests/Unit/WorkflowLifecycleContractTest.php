@@ -83,18 +83,27 @@ class WorkflowLifecycleContractTest extends TestCase
         }
     }
 
-    public function test_published_artifact_runner_has_guarded_continue_as_new_host_probe(): void
+    public function test_published_artifact_runner_has_guarded_focused_host_probes(): void
     {
         $source = file_get_contents(dirname(__DIR__, 2).'/scripts/conformance/workflow-lifecycle-published-artifacts.sh') ?: '';
 
         foreach ([
             'DW_WORKFLOW_LIFECYCLE_SKIP_FOCUSED_HOST_PROBE',
-            'should_run_focused_continue_as_new_host_probe',
-            'focused_published_server_continue_as_new_host_probe',
-            'published-server-workflow-lifecycle-continue-as-new-focused-host-probe',
+            'should_run_focused_host_probes',
+            'run_focused_host_probes',
+            'focused_published_server_workflow_lifecycle_host_probes',
+            'published-server-workflow-lifecycle-focused-host-probes',
             'workflow-lifecycle-evidence.json',
             'duplicate_worker_completion_after_continue_as_new',
             'successor_run_ids_after_duplicate',
+            'cancellation_public_surface_terminal_state',
+            'termination_public_surface_terminal_state',
+            'server_api_run_targeted',
+            'run_not_active_',
+            'run_cancelled',
+            'run_terminated',
+            'WorkflowCancelled',
+            'WorkflowTerminated',
             'if [[ "$repo_root" != "/app" || -d "$repo_root/.git" ]]; then',
             'local_product_source_checkout_used_as_pass_evidence',
             'published_artifact_cell_executed',

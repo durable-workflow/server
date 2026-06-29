@@ -24,7 +24,7 @@ Environment overrides:
                                     workflow-lifecycle-evidence.json in the result directory.
   DW_WORKFLOW_LIFECYCLE_SKIP_FOCUSED_HOST_PROBE=1
                                     Skip the published server container's
-                                    focused continue-as-new host probe.
+                                    focused workflow lifecycle host probes.
   DW_SERVER_IMAGE                   Exact server image tag or digest under test.
   DW_SERVER_VERSION                 Exact server version under test.
   DW_CLI_VERSION                    Exact CLI release version.
@@ -83,7 +83,7 @@ if ! command -v node >/dev/null 2>&1; then
   exit 1
 fi
 
-should_run_focused_continue_as_new_host_probe() {
+should_run_focused_host_probes() {
   if [[ "${DW_WORKFLOW_LIFECYCLE_SKIP_FOCUSED_HOST_PROBE:-0}" == "1" || "${DW_WORKFLOW_LIFECYCLE_SKIP_FOCUSED_HOST_PROBE:-}" == "true" ]]; then
     return 1
   fi
@@ -103,7 +103,7 @@ should_run_focused_continue_as_new_host_probe() {
   command -v php >/dev/null 2>&1
 }
 
-run_focused_continue_as_new_host_probe() {
+run_focused_host_probes() {
   local probe_db="$result_dir/workflow-lifecycle-continue-as-new.sqlite"
   local probe_app_key="${APP_KEY:-base64:V09SS0ZMT1ctTElGRUNZQ0xFLUNPTlRJTlVFLUFTLU5FVw==}"
 
@@ -139,8 +139,16 @@ const LIFECYCLE_NAMESPACE = 'workflow-lifecycle-conformance';
 const LIFECYCLE_TASK_QUEUE = 'workflow-lifecycle-shared';
 const LIFECYCLE_WORKFLOW_TYPE = 'workflow.lifecycle.continue-as-new';
 const LIFECYCLE_WORKER_ID = 'workflow-lifecycle-continue-as-new-worker';
+const LIFECYCLE_TERMINAL_TASK_QUEUE = 'workflow-lifecycle-terminal';
 const HOST_EVIDENCE_SCHEMA = 'durable-workflow.v2.workflow-lifecycle.host-evidence';
 const HOST_EVIDENCE_SOURCE = 'published_server_container';
+const FOCUSED_SCENARIOS = [
+    'continue_as_new_run_chain_visibility',
+    'continue_as_new_identity_and_history_continuity',
+    'continue_as_new_duplicate_side_effect_prevention',
+    'cancellation_public_surface_terminal_state',
+    'termination_public_surface_terminal_state',
+];
 
 $repoRoot = getenv('RUNNER_REPO_ROOT') ?: '/app';
 $resultDir = rtrim(getenv('RESULT_DIR') ?: sys_get_temp_dir(), '/');
@@ -213,14 +221,18 @@ function source_policy(array $artifactSources): array
 
 function focused_finding(string $scenarioId, string $message): array
 {
+    $owningSurface = str_starts_with($scenarioId, 'cancellation') || str_starts_with($scenarioId, 'termination')
+        ? 'server-cli-and-sdks'
+        : 'workflow-runtime-and-server';
+
     return [
         'finding_id' => 'workflow-lifecycle-'.$scenarioId.'-focused-product-gap',
         'finding_type' => 'product_behavior_gap',
         'classification' => 'product-gap',
         'scenario_id' => $scenarioId,
-        'owning_surface' => 'workflow-runtime-and-server',
+        'owning_surface' => $owningSurface,
         'summary' => $message,
-        'next_acceptance_criterion' => 'Rerun workflow-lifecycle conformance from the pinned published server image and record passing continue-as-new runtime evidence for this focused cell.',
+        'next_acceptance_criterion' => 'Rerun workflow-lifecycle conformance from the pinned published server image and record passing runtime evidence for this focused cell.',
     ];
 }
 
@@ -242,13 +254,9 @@ function failure_scenario(string $scenarioId, Throwable $throwable): array
     ];
 }
 
-function failure_evidence(Throwable $throwable): array
+function failure_evidence(Throwable $throwable, ?array $scenarios = null): array
 {
-    $scenarios = [
-        'continue_as_new_run_chain_visibility',
-        'continue_as_new_identity_and_history_continuity',
-        'continue_as_new_duplicate_side_effect_prevention',
-    ];
+    $scenarios ??= FOCUSED_SCENARIOS;
     $scenarioResults = [];
     foreach ($scenarios as $scenarioId) {
         $scenarioResults[$scenarioId] = failure_scenario($scenarioId, $throwable);
@@ -259,9 +267,9 @@ function failure_evidence(Throwable $throwable): array
     return [
         'schema' => HOST_EVIDENCE_SCHEMA,
         'generated_at' => now_iso(),
-        'evidence_source' => 'focused_published_server_continue_as_new_host_probe',
+        'evidence_source' => 'focused_published_server_workflow_lifecycle_host_probes',
         'execution_source' => HOST_EVIDENCE_SOURCE,
-        'runner' => 'published-server-workflow-lifecycle-continue-as-new-focused-host-probe',
+        'runner' => 'published-server-workflow-lifecycle-focused-host-probes',
         'artifact_versions' => artifact_versions_from_env(),
         'artifact_sources' => $artifactSources,
         'source_policy' => source_policy($artifactSources),
@@ -362,6 +370,28 @@ function first_matching_event(array $events, array $needles): string
     return '';
 }
 
+function require_string(array $source, string $key, string $message): string
+{
+    $value = $source[$key] ?? null;
+
+    if (! is_string($value) || trim($value) === '') {
+        throw new RuntimeException($message);
+    }
+
+    return trim($value);
+}
+
+function require_terminal_response(array $source, string $key, string $expected, string $message): string
+{
+    $value = require_string($source, $key, $message);
+
+    if ($value !== $expected) {
+        throw new RuntimeException($message.'; expected '.$expected.', got '.$value);
+    }
+
+    return $value;
+}
+
 function pass_scenario(string $scenarioId, array $outputs): array
 {
     return [
@@ -375,6 +405,112 @@ function pass_scenario(string $scenarioId, array $outputs): array
             'local_product_source_checkouts_used' => false,
         ],
     ];
+}
+
+function run_terminal_surface_probe(
+    string $command,
+    string $scenarioId,
+    string $workflowType,
+    string $timestampField,
+    string $terminalStatus,
+    string $expectedWorkerStopReason,
+    string $expectedTerminalEvent,
+): array {
+    $workflowId = 'workflow-lifecycle-'.$command.'-'.strtolower(bin2hex(random_bytes(4)));
+    $workerId = 'workflow-lifecycle-'.$command.'-worker';
+    $reason = 'workflow lifecycle conformance '.$command;
+
+    request_json('POST', '/worker/register', [
+        'worker_id' => $workerId,
+        'task_queue' => LIFECYCLE_TERMINAL_TASK_QUEUE,
+        'runtime' => 'php',
+        'supported_workflow_types' => [$workflowType],
+    ]);
+
+    $start = request_json('POST', '/workflows', [
+        'workflow_id' => $workflowId,
+        'workflow_type' => $workflowType,
+        'task_queue' => LIFECYCLE_TERMINAL_TASK_QUEUE,
+        'input' => ['reason' => $reason],
+    ]);
+    $runId = require_string($start, 'run_id', $command.' workflow start response did not include run_id');
+
+    $poll = request_json('POST', '/worker/workflow-tasks/poll', [
+        'worker_id' => $workerId,
+        'task_queue' => LIFECYCLE_TERMINAL_TASK_QUEUE,
+    ]);
+    $task = is_array($poll['task'] ?? null) ? $poll['task'] : [];
+    $taskId = require_string($task, 'task_id', $command.' worker poll did not return task_id');
+    $leaseOwner = is_string($task['lease_owner'] ?? null) && trim($task['lease_owner']) !== ''
+        ? trim($task['lease_owner'])
+        : $workerId;
+    $attempt = is_numeric($task['workflow_task_attempt'] ?? null) ? (int) $task['workflow_task_attempt'] : 0;
+    if ($attempt < 1) {
+        throw new RuntimeException($command.' worker poll did not return workflow_task_attempt');
+    }
+
+    $requestedAt = now_iso();
+    $control = request_json('POST', '/workflows/'.$workflowId.'/runs/'.$runId.'/'.$command, [
+        'reason' => $reason,
+        'request_id' => $workflowId.'-'.$command,
+    ]);
+    require_terminal_response($control, 'outcome', $terminalStatus, $command.' control-plane response did not expose terminal outcome');
+
+    $showRun = request_json('GET', '/workflows/'.$workflowId.'/runs/'.$runId);
+    require_terminal_response($showRun, 'status', $terminalStatus, $command.' describe-run response did not expose terminal status');
+
+    $workerError = request_json('POST', '/worker/workflow-tasks/'.$taskId.'/history', [
+        'lease_owner' => $leaseOwner,
+        'workflow_task_attempt' => $attempt,
+        'next_history_page_token' => base64_encode('0'),
+    ], [409]);
+    require_terminal_response($workerError, 'run_status', $terminalStatus, $command.' worker response did not expose terminal run_status');
+    require_terminal_response($workerError, 'stop_reason', $expectedWorkerStopReason, $command.' worker response did not expose typed stop_reason');
+
+    $callerError = request_json('POST', '/workflows/'.$workflowId.'/runs/'.$runId.'/query/currentState', [], [409]);
+    require_terminal_response($callerError, 'reason', 'run_not_active', $command.' caller query did not expose run_not_active refusal');
+    require_terminal_response($callerError, 'run_status', $terminalStatus, $command.' caller query did not expose terminal run_status');
+
+    $history = request_json('GET', '/workflows/'.$workflowId.'/runs/'.$runId.'/history');
+    $historyEvents = event_types($history);
+    $terminalEvent = first_matching_event($historyEvents, [$expectedTerminalEvent]);
+    if ($terminalEvent === '') {
+        throw new RuntimeException($command.' history did not expose '.$expectedTerminalEvent);
+    }
+
+    return pass_scenario($scenarioId, [
+        'workflow_id' => $workflowId,
+        'run_id' => $runId,
+        'request_surface' => 'server_api_run_targeted',
+        $timestampField => $requestedAt,
+        'terminal_status' => $terminalStatus,
+        'worker_error_type' => (string) ($workerError['stop_reason'] ?? $expectedWorkerStopReason),
+        'caller_error_type' => 'run_not_active_'.$terminalStatus,
+        'control_plane_http_status' => $control['_http_status'] ?? null,
+        'control_plane_outcome' => $control['outcome'] ?? null,
+        'worker_protocol_reason' => $workerError['reason'] ?? null,
+        'worker_protocol_stop_reason' => $workerError['stop_reason'] ?? null,
+        'worker_protocol_run_status' => $workerError['run_status'] ?? null,
+        'caller_reason' => $callerError['reason'] ?? null,
+        'caller_run_status' => $callerError['run_status'] ?? null,
+        'caller_message' => $callerError['message'] ?? null,
+        'history_events' => $historyEvents,
+        'terminal_history_event' => $terminalEvent,
+        'run_closed_at' => $showRun['closed_at'] ?? ($workerError['run_closed_at'] ?? null),
+        'public_surface_matrix' => [
+            'server_api' => [
+                'command_path' => '/api/workflows/{workflowId}/runs/{runId}/'.$command,
+                'describe_path' => '/api/workflows/{workflowId}/runs/{runId}',
+                'query_after_terminal_path' => '/api/workflows/{workflowId}/runs/{runId}/query/currentState',
+                'terminal_status' => $terminalStatus,
+            ],
+            'worker_protocol' => [
+                'history_after_terminal_path' => '/api/worker/workflow-tasks/{taskId}/history',
+                'reason' => $workerError['reason'] ?? null,
+                'stop_reason' => $workerError['stop_reason'] ?? null,
+            ],
+        ],
+    ]);
 }
 
 function run_continue_as_new_probe(): array
@@ -504,14 +640,62 @@ function run_continue_as_new_probe(): array
 
 try {
     bootstrap_application($repoRoot);
-    $scenarioResults = run_continue_as_new_probe();
+    $scenarioResults = [];
+
+    try {
+        $scenarioResults += run_continue_as_new_probe();
+    } catch (Throwable $throwable) {
+        foreach ([
+            'continue_as_new_run_chain_visibility',
+            'continue_as_new_identity_and_history_continuity',
+            'continue_as_new_duplicate_side_effect_prevention',
+        ] as $scenarioId) {
+            $scenarioResults[$scenarioId] = failure_scenario($scenarioId, $throwable);
+        }
+    }
+
+    foreach ([
+        [
+            'command' => 'cancel',
+            'scenario_id' => 'cancellation_public_surface_terminal_state',
+            'workflow_type' => 'workflow.lifecycle.cancel',
+            'timestamp_field' => 'cancel_requested_at',
+            'terminal_status' => 'cancelled',
+            'worker_stop_reason' => 'run_cancelled',
+            'terminal_event' => 'WorkflowCancelled',
+        ],
+        [
+            'command' => 'terminate',
+            'scenario_id' => 'termination_public_surface_terminal_state',
+            'workflow_type' => 'workflow.lifecycle.terminate',
+            'timestamp_field' => 'terminate_requested_at',
+            'terminal_status' => 'terminated',
+            'worker_stop_reason' => 'run_terminated',
+            'terminal_event' => 'WorkflowTerminated',
+        ],
+    ] as $terminalProbe) {
+        try {
+            $scenarioResults[$terminalProbe['scenario_id']] = run_terminal_surface_probe(
+                $terminalProbe['command'],
+                $terminalProbe['scenario_id'],
+                $terminalProbe['workflow_type'],
+                $terminalProbe['timestamp_field'],
+                $terminalProbe['terminal_status'],
+                $terminalProbe['worker_stop_reason'],
+                $terminalProbe['terminal_event'],
+            );
+        } catch (Throwable $throwable) {
+            $scenarioResults[$terminalProbe['scenario_id']] = failure_scenario($terminalProbe['scenario_id'], $throwable);
+        }
+    }
+
     $artifactSources = artifact_sources_from_env();
     write_json_file(evidence_path(), [
         'schema' => HOST_EVIDENCE_SCHEMA,
         'generated_at' => now_iso(),
-        'evidence_source' => 'focused_published_server_continue_as_new_host_probe',
+        'evidence_source' => 'focused_published_server_workflow_lifecycle_host_probes',
         'execution_source' => HOST_EVIDENCE_SOURCE,
-        'runner' => 'published-server-workflow-lifecycle-continue-as-new-focused-host-probe',
+        'runner' => 'published-server-workflow-lifecycle-focused-host-probes',
         'artifact_versions' => artifact_versions_from_env(),
         'artifact_sources' => $artifactSources,
         'source_policy' => source_policy($artifactSources),
@@ -525,8 +709,8 @@ try {
 PHP
 }
 
-if should_run_focused_continue_as_new_host_probe; then
-  run_focused_continue_as_new_host_probe
+if should_run_focused_host_probes; then
+  run_focused_host_probes
 fi
 
 RESULT_DIR="$result_dir" \
