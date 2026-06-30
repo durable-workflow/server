@@ -101,8 +101,8 @@ class ReleaseImagePublishWorkflowContractTest extends TestCase
         $metadataScript = $this->read('scripts/ci/prepare-release-workflow-composer-metadata.php');
 
         foreach ([
-            'ARG WORKFLOW_PACKAGE_REF=2.0.0-alpha.226',
-            'ARG WORKFLOW_PACKAGE_COMMIT=aca98956fe6e2af21dc6976a14c92b345c28e3fc',
+            'ARG WORKFLOW_PACKAGE_REF=2.0.0-alpha.236',
+            'ARG WORKFLOW_PACKAGE_COMMIT=35b8ea0dc5e189b392240b5fef96f2ee0295ebde',
             'prepare-release-workflow-composer-metadata.php',
             'composer update durable-workflow/workflow',
             'cp composer.json /tmp/release-composer.json',
@@ -207,8 +207,8 @@ class ReleaseImagePublishWorkflowContractTest extends TestCase
 
     public function test_docker_build_docs_compose_and_ci_defaults_match_workflow_package_fallback(): void
     {
-        $fallback = '2.0.0-alpha.226';
-        $commit = 'aca98956fe6e2af21dc6976a14c92b345c28e3fc';
+        $fallback = '2.0.0-alpha.236';
+        $commit = '35b8ea0dc5e189b392240b5fef96f2ee0295ebde';
 
         foreach ([
             'Dockerfile',
@@ -237,8 +237,8 @@ class ReleaseImagePublishWorkflowContractTest extends TestCase
 
         $readme = $this->read('README.md');
 
-        $this->assertStringContainsString('WORKFLOW_PACKAGE_REF=2.0.0-alpha.226', $readme);
-        $this->assertStringContainsString('The Dockerfile clones the `durable-workflow/workflow` `2.0.0-alpha.226` tag', $readme);
+        $this->assertStringContainsString('WORKFLOW_PACKAGE_REF=2.0.0-alpha.236', $readme);
+        $this->assertStringContainsString('The Dockerfile clones the `durable-workflow/workflow` `2.0.0-alpha.236` tag', $readme);
         $this->assertStringContainsString('Composer package metadata', $readme);
         $this->assertStringNotContainsString('The Dockerfile clones the `durable-workflow/workflow` `2.0.0-alpha.200` tag', $readme);
         $this->assertStringNotContainsString('The image build fetches the `durable-workflow/workflow` `2.0.0-alpha.200`', $readme);
@@ -604,8 +604,8 @@ SH;
         $releaseCommit = str_repeat('b', 40);
         $runId = '27420890537';
         $runAttempt = '2';
-        $workflowRef = '2.0.0-alpha.226';
-        $workflowCommit = 'aca98956fe6e2af21dc6976a14c92b345c28e3fc';
+        $workflowRef = '2.0.0-alpha.236';
+        $workflowCommit = '35b8ea0dc5e189b392240b5fef96f2ee0295ebde';
         $imageConfig = json_encode([
             'config' => [
                 'Labels' => [
@@ -949,7 +949,7 @@ SH;
     {
         $evidenceFile = tempnam(sys_get_temp_dir(), 'release-image-evidence-');
         $this->assertIsString($evidenceFile);
-        $workflowCommit = 'aca98956fe6e2af21dc6976a14c92b345c28e3fc';
+        $workflowCommit = '35b8ea0dc5e189b392240b5fef96f2ee0295ebde';
 
         try {
             $result = $this->runScript('scripts/ci/write-release-image-publish-evidence.sh', [
@@ -964,19 +964,19 @@ SH;
                 'RELEASE_COMMIT' => str_repeat('b', 40),
                 'RELEASE_RUN_ID' => '12345',
                 'RELEASE_RUN_ATTEMPT' => '2',
-                'WORKFLOW_PACKAGE_REF' => '2.0.0-alpha.226',
+                'WORKFLOW_PACKAGE_REF' => '2.0.0-alpha.236',
                 'WORKFLOW_PACKAGE_COMMIT' => $workflowCommit,
             ]);
 
             $this->assertSame(0, $result['exitCode']);
             $decoded = json_decode((string) file_get_contents($evidenceFile), true, flags: JSON_THROW_ON_ERROR);
             $this->assertSame(
-                'durable-workflow/workflow:2.0.0-alpha.226',
+                'durable-workflow/workflow:2.0.0-alpha.236',
                 $decoded['artifact_versions']['workflow-php'],
             );
             $this->assertSame('durable-workflow/workflow', $decoded['workflow_package']['name']);
             $this->assertSame('https://github.com/durable-workflow/workflow.git', $decoded['workflow_package']['source']);
-            $this->assertSame('2.0.0-alpha.226', $decoded['workflow_package']['version']);
+            $this->assertSame('2.0.0-alpha.236', $decoded['workflow_package']['version']);
             $this->assertSame($workflowCommit, $decoded['workflow_package']['commit']);
         } finally {
             @unlink($evidenceFile);
@@ -987,7 +987,7 @@ SH;
     {
         $outputFile = tempnam(sys_get_temp_dir(), 'workflow-package-output-');
         $this->assertIsString($outputFile);
-        $selectedCommit = 'aca98956fe6e2af21dc6976a14c92b345c28e3fc';
+        $selectedCommit = '35b8ea0dc5e189b392240b5fef96f2ee0295ebde';
 
         try {
             $result = $this->runScript('scripts/ci/select-compatible-workflow-package-ref.sh', [
@@ -998,7 +998,7 @@ SH;
                     'refs/tags/2.0.0-alpha.200',
                     'refs/tags/2.0.0-alpha.217',
                     'refs/tags/2.0.0-alpha.218',
-                    'refs/tags/2.0.0-alpha.226',
+                    'refs/tags/2.0.0-alpha.236',
                     'refs/tags/2.0.0-alpha.be7ddbc37b41',
                     'refs/tags/1.0.0-alpha.1',
                 ]),
@@ -1009,10 +1009,10 @@ SH;
                     '2.0.0-alpha.200=1.10',
                     '2.0.0-alpha.217=1.10',
                     '2.0.0-alpha.218=1.10',
-                    '2.0.0-alpha.226=1.11',
+                    '2.0.0-alpha.236=1.12',
                 ]),
                 'WORKFLOW_PACKAGE_TAG_COMMITS' => implode("\n", [
-                    '2.0.0-alpha.226='.$selectedCommit,
+                    '2.0.0-alpha.236='.$selectedCommit,
                 ]),
                 'GITHUB_OUTPUT' => $outputFile,
             ]);
@@ -1020,12 +1020,12 @@ SH;
             $this->assertSame(0, $result['exitCode']);
             $outputs = file_get_contents($outputFile);
             $this->assertNotFalse($outputs);
-            $this->assertStringContainsString("tag=2.0.0-alpha.226\n", $outputs);
-            $this->assertStringContainsString("protocol=1.11\n", $outputs);
-            $this->assertStringContainsString("server_protocol=1.11\n", $outputs);
+            $this->assertStringContainsString("tag=2.0.0-alpha.236\n", $outputs);
+            $this->assertStringContainsString("protocol=1.12\n", $outputs);
+            $this->assertStringContainsString("server_protocol=1.12\n", $outputs);
             $this->assertStringContainsString("commit={$selectedCommit}\n", $outputs);
             $this->assertStringContainsString(
-                'Using workflow package version: 2.0.0-alpha.226 (worker protocol 1.11, server requires 1.11)',
+                'Using workflow package version: 2.0.0-alpha.236 (worker protocol 1.12, server requires 1.12)',
                 $result['stdout'],
             );
             $this->assertStringContainsString($selectedCommit, $result['stdout']);
@@ -1038,26 +1038,26 @@ SH;
     {
         $outputFile = tempnam(sys_get_temp_dir(), 'workflow-package-output-');
         $this->assertIsString($outputFile);
-        $selectedCommit = 'aca98956fe6e2af21dc6976a14c92b345c28e3fc';
+        $selectedCommit = '35b8ea0dc5e189b392240b5fef96f2ee0295ebde';
 
         try {
             $result = $this->runScript('scripts/ci/select-compatible-workflow-package-ref.sh', [
-                'WORKFLOW_PACKAGE_REF' => '2.0.0-alpha.226',
+                'WORKFLOW_PACKAGE_REF' => '2.0.0-alpha.236',
                 'WORKFLOW_PACKAGE_COMMIT' => $selectedCommit,
-                'WORKFLOW_PACKAGE_PROTOCOL_VERSIONS' => '2.0.0-alpha.226=1.11',
-                'WORKFLOW_PACKAGE_TAG_COMMITS' => '2.0.0-alpha.226='.$selectedCommit,
+                'WORKFLOW_PACKAGE_PROTOCOL_VERSIONS' => '2.0.0-alpha.236=1.12',
+                'WORKFLOW_PACKAGE_TAG_COMMITS' => '2.0.0-alpha.236='.$selectedCommit,
                 'GITHUB_OUTPUT' => $outputFile,
             ]);
 
             $this->assertSame(0, $result['exitCode']);
             $outputs = file_get_contents($outputFile);
             $this->assertNotFalse($outputs);
-            $this->assertStringContainsString("tag=2.0.0-alpha.226\n", $outputs);
-            $this->assertStringContainsString("protocol=1.11\n", $outputs);
-            $this->assertStringContainsString("server_protocol=1.11\n", $outputs);
+            $this->assertStringContainsString("tag=2.0.0-alpha.236\n", $outputs);
+            $this->assertStringContainsString("protocol=1.12\n", $outputs);
+            $this->assertStringContainsString("server_protocol=1.12\n", $outputs);
             $this->assertStringContainsString("commit={$selectedCommit}\n", $outputs);
             $this->assertStringContainsString(
-                'Using workflow package version: 2.0.0-alpha.226 (worker protocol 1.11, server requires 1.11)',
+                'Using workflow package version: 2.0.0-alpha.236 (worker protocol 1.12, server requires 1.12)',
                 $result['stdout'],
             );
         } finally {
@@ -1078,7 +1078,7 @@ SH;
 
         $this->assertSame(1, $result['exitCode']);
         $this->assertStringContainsString(
-            'No compatible durable-workflow/workflow prerelease tag found for server worker protocol 1.11',
+            'No compatible durable-workflow/workflow prerelease tag found for server worker protocol 1.12',
             $result['stderr'],
         );
         $this->assertStringContainsString('2.0.0-alpha.198 advertises worker protocol 1.9', $result['stderr']);

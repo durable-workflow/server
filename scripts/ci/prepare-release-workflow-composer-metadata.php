@@ -4,8 +4,8 @@
 declare(strict_types=1);
 
 $packageName = 'durable-workflow/workflow';
-$workflowRef = getenv('WORKFLOW_PACKAGE_REF') ?: '2.0.0-alpha.226';
-$workflowCommit = getenv('WORKFLOW_PACKAGE_COMMIT') ?: 'aca98956fe6e2af21dc6976a14c92b345c28e3fc';
+$workflowRef = getenv('WORKFLOW_PACKAGE_REF') ?: '2.0.0-alpha.236';
+$workflowCommit = getenv('WORKFLOW_PACKAGE_COMMIT') ?: '35b8ea0dc5e189b392240b5fef96f2ee0295ebde';
 $workflowPath = getenv('WORKFLOW_PACKAGE_PATH') ?: '/workflow';
 $composerPath = getenv('COMPOSER_JSON_PATH') ?: getcwd().'/composer.json';
 $provenancePath = $workflowPath.'/.package-provenance';
