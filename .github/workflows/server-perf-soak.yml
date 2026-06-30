@@ -28,15 +28,13 @@ concurrency:
 
 jobs:
   soak:
-    name: Self-hosted polling cache soak
-    runs-on: [self-hosted, linux, x64, perf-soak, server-perf]
-    # Only spawn when a self-hosted perf-soak runner fleet is registered.
-    # Set repository variable DW_PERF_SOAK_ENABLED=true to re-engage the
-    # nightly schedule once runners are online; without it the job would
-    # queue forever waiting on a label that nothing answers.
+    name: GitHub-hosted polling cache soak
+    runs-on: ubuntu-latest
+    # Keep the scheduled long soak opt-in because it is intentionally
+    # resource-heavy. Manual dispatch remains available to maintainers.
     if: |
-      vars.DW_PERF_SOAK_ENABLED == 'true'
-      && (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch')
+      github.event_name == 'workflow_dispatch'
+      || (github.event_name == 'schedule' && vars.DW_PERF_SOAK_ENABLED == 'true')
     timeout-minutes: 390
 
     steps:
@@ -55,12 +53,11 @@ jobs:
           DW_PERF_MAX_SERVER_CACHE_KEYS_BY_POLICY: '{"workflow_task_poll_requests":2048,"activity_task_poll_requests":2048,"sqlite_worker_poll_claim_gate":1,"long_poll_signals":2048,"long_poll_wait_slots":64,"workflow_query_tasks":128,"task_queue_admission_locks":256,"task_queue_dispatch_counters":256,"workflow_task_expired_lease_recovery":256,"history_retention_inline":128,"readiness_probe":32}'
           DW_PERF_MAX_FINAL_SERVER_CACHE_KEYS_BY_POLICY: '{"workflow_task_poll_requests":0,"activity_task_poll_requests":0,"sqlite_worker_poll_claim_gate":0,"long_poll_signals":0,"long_poll_wait_slots":0,"workflow_query_tasks":0,"task_queue_admission_locks":0,"task_queue_dispatch_counters":0,"workflow_task_expired_lease_recovery":0,"history_retention_inline":0,"readiness_probe":0}'
           DW_PERF_MAX_SERVER_MEMORY_SLOPE_MB_HOUR: "128"
-          DW_PERF_REQUIRE_TRUSTED_EVIDENCE: "true"
           DW_PERF_REMOTE_WRITE_ENABLED: ${{ github.event_name != 'workflow_dispatch' || inputs.remote_write }}
           DW_PERF_REMOTE_WRITE_URL: ${{ vars.DW_PERF_REMOTE_WRITE_URL }}
           DW_PERF_REMOTE_WRITE_USERNAME: ${{ vars.DW_PERF_REMOTE_WRITE_USERNAME }}
           DW_PERF_REMOTE_WRITE_PASSWORD: ${{ secrets.DW_PERF_REMOTE_WRITE_PASSWORD }}
-          RUNNER_ENVIRONMENT: "self-hosted"
+          RUNNER_ENVIRONMENT: "github-hosted"
         run: scripts/perf/run-server-soak.sh
 
       - name: Upload perf artifacts

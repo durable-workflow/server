@@ -338,9 +338,9 @@ class ServerPerfHarnessContractTest extends TestCase
         );
 
         $this->assertMatchesRegularExpression(
-            '/name:\s+Self-hosted polling cache soak.*?RUNNER_ENVIRONMENT:\s+"self-hosted"/s',
+            '/name:\s+GitHub-hosted polling cache soak.*?RUNNER_ENVIRONMENT:\s+"github-hosted"/s',
             $soakWorkflow,
-            'Trusted long soaks must explicitly record self-hosted runner provenance.',
+            'Public long soaks must record github-hosted runner provenance.',
         );
     }
 
@@ -375,35 +375,51 @@ class ServerPerfHarnessContractTest extends TestCase
         );
 
         $this->assertStringNotContainsString(
-            'Self-hosted polling cache soak',
+            'GitHub-hosted polling cache soak',
             $workflow,
-            'Pull-request perf workflow must not create the self-hosted soak status.',
+            'Pull-request perf workflow must not create the long-soak status.',
+        );
+        $this->assertStringNotContainsString(
+            'self-hosted',
+            $soakWorkflow,
+            'Public GitHub Actions workflows must not request self-hosted runners.',
         );
 
-        // The soak job is gated behind a repository variable so it does not
-        // queue forever waiting on a self-hosted runner fleet that may not be
-        // registered. The schedule/workflow_dispatch event guard is preserved
-        // inside the same `if:` so the gate is still a strict superset of the
-        // historical event filter — when DW_PERF_SOAK_ENABLED is set, only
-        // schedule and workflow_dispatch can spawn the job.
-        $this->assertMatchesRegularExpression(
-            "/soak:\\s+name:\\s+Self-hosted polling cache soak\\s+runs-on:\\s+\\[self-hosted, linux, x64, perf-soak, server-perf\\][^\\n]*\\n.*?if:\\s*\\|\\s*\\n\\s*vars\\.DW_PERF_SOAK_ENABLED == 'true'\\s*\\n?\\s*&&\\s*\\(github\\.event_name == 'schedule' \\|\\| github\\.event_name == 'workflow_dispatch'\\)/s",
+        // The scheduled soak is gated behind a repository variable because it
+        // is intentionally resource-heavy. Manual dispatch remains available
+        // to maintainers, while no pull-request event can spawn the job.
+        $this->assertStringContainsString(
+            <<<'YAML'
+  soak:
+    name: GitHub-hosted polling cache soak
+    runs-on: ubuntu-latest
+    # Keep the scheduled long soak opt-in because it is intentionally
+    # resource-heavy. Manual dispatch remains available to maintainers.
+    if: |
+      github.event_name == 'workflow_dispatch'
+      || (github.event_name == 'schedule' && vars.DW_PERF_SOAK_ENABLED == 'true')
+YAML,
             $soakWorkflow,
-            'Trusted long soaks should only run for schedule/workflow_dispatch events AND only when the runner-fleet variable DW_PERF_SOAK_ENABLED is set.',
+            'Long soaks should only run for workflow_dispatch, or for scheduled events when DW_PERF_SOAK_ENABLED is set.',
         );
     }
 
-    public function test_self_hosted_perf_soak_requires_trusted_evidence_eligibility(): void
+    public function test_public_perf_soak_remains_untrusted_evidence(): void
     {
         $workflow = file_get_contents(dirname(__DIR__, 2).'/.github/workflows/server-perf.yml');
         $this->assertNotFalse($workflow, '.github/workflows/server-perf.yml must be readable');
         $soakWorkflow = file_get_contents(dirname(__DIR__, 2).'/.github/workflows/server-perf-soak.yml');
         $this->assertNotFalse($soakWorkflow, '.github/workflows/server-perf-soak.yml must be readable');
 
-        $this->assertMatchesRegularExpression(
-            '/name:\s+Self-hosted polling cache soak.*?DW_PERF_REQUIRE_TRUSTED_EVIDENCE:\s+"true"/s',
+        $this->assertStringNotContainsString(
+            'DW_PERF_REQUIRE_TRUSTED_EVIDENCE: "true"',
             $soakWorkflow,
-            'Self-hosted long soaks must fail instead of producing green ineligible trusted evidence.',
+            'Public GitHub-hosted long soaks should remain useful but ineligible artifacts.',
+        );
+        $this->assertStringNotContainsString(
+            'self-hosted',
+            $soakWorkflow,
+            'Public GitHub-hosted long soaks must not request self-hosted runner labels.',
         );
 
         $this->assertMatchesRegularExpression(
@@ -500,7 +516,7 @@ class ServerPerfHarnessContractTest extends TestCase
         $this->assertStringContainsString('METRICS_PORT="${DW_PERF_METRICS_PORT:-$(choose_free_port)}"', $source);
     }
 
-    public function test_server_perf_workflow_can_produce_trusted_long_soak_evidence(): void
+    public function test_server_perf_workflow_can_run_public_long_soak_without_self_hosted_runner(): void
     {
         $workflow = file_get_contents(dirname(__DIR__, 2).'/.github/workflows/server-perf-soak.yml');
         $this->assertNotFalse($workflow, '.github/workflows/server-perf-soak.yml must be readable');
@@ -515,17 +531,20 @@ class ServerPerfHarnessContractTest extends TestCase
             'default: "24"',
             'remote_write:',
             'type: boolean',
-            "github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'",
-            'runs-on: [self-hosted, linux, x64, perf-soak, server-perf]',
-            'DW_PERF_REQUIRE_TRUSTED_EVIDENCE: "true"',
-            'RUNNER_ENVIRONMENT: "self-hosted"',
+            "github.event_name == 'workflow_dispatch'",
+            "github.event_name == 'schedule' && vars.DW_PERF_SOAK_ENABLED == 'true'",
+            'runs-on: ubuntu-latest',
+            'RUNNER_ENVIRONMENT: "github-hosted"',
         ] as $needle) {
             $this->assertStringContainsString(
                 $needle,
                 $workflow,
-                "Server Perf soak workflow must retain trusted long-soak trigger support for {$needle}.",
+                "Server Perf soak workflow must retain public long-soak support for {$needle}.",
             );
         }
+
+        $this->assertStringNotContainsString('self-hosted', $workflow);
+        $this->assertStringNotContainsString('DW_PERF_REQUIRE_TRUSTED_EVIDENCE: "true"', $workflow);
     }
 
     public function test_ci_perf_trigger_paths_cover_bounded_growth_runtime_surfaces(): void
