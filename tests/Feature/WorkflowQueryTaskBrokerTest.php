@@ -1051,6 +1051,118 @@ class WorkflowQueryTaskBrokerTest extends TestCase
             ->assertJsonPath('control_plane.operation_name', 'status');
     }
 
+    public function test_worker_routed_query_treats_active_query_task_poll_as_fresh_worker(): void
+    {
+        Queue::fake();
+        config(['server.query_tasks.timeout' => 5]);
+
+        $run = $this->startRemoteWorkflow('wf-query-task-stale-worker-active-poll');
+        $this->registerPythonWorker('python-query-stale-active-poller', 'python-queries', ['python.queryable']);
+        WorkerRegistration::query()
+            ->where('namespace', 'default')
+            ->where('worker_id', 'python-query-stale-active-poller')
+            ->update([
+                'last_heartbeat_at' => now()->subSeconds(
+                    ((int) config('server.workers.stale_after_seconds', 60)) + 5,
+                ),
+            ]);
+
+        /** @var LongPollSignalStore $signals */
+        $signals = app(LongPollSignalStore::class);
+        /** @var LongPollWaitSlotStore $waitSlots */
+        $waitSlots = app(LongPollWaitSlotStore::class);
+        $poller = new class($signals, $waitSlots) extends LongPoller
+        {
+            /** @var list<callable(): void> */
+            public array $afterUnreadyProbes = [];
+
+            private bool $runningAfterProbe = false;
+
+            public function until(
+                callable $probe,
+                callable $ready,
+                ?int $timeoutSeconds = null,
+                ?int $intervalMilliseconds = null,
+                array $wakeChannels = [],
+                ?callable $nextProbeAt = null,
+                bool $reserveWorkerWaitSlot = false,
+                string $waitSlotPool = 'worker',
+            ): mixed {
+                while (true) {
+                    $value = $probe();
+
+                    if ($ready($value)) {
+                        return $value;
+                    }
+
+                    if ($this->runningAfterProbe) {
+                        return $value;
+                    }
+
+                    $afterProbe = array_shift($this->afterUnreadyProbes);
+
+                    if (! is_callable($afterProbe)) {
+                        return $value;
+                    }
+
+                    $this->runningAfterProbe = true;
+
+                    try {
+                        $afterProbe();
+                    } finally {
+                        $this->runningAfterProbe = false;
+                    }
+                }
+            }
+        };
+        $broker = new WorkflowQueryTaskBroker(
+            app(ServerPollingCache::class),
+            $poller,
+            $signals,
+            app(ExternalPayloadEnvelopeService::class),
+            app(QueryTaskPollRequestStore::class),
+        );
+        /** @var WorkerRegistration $worker */
+        $worker = WorkerRegistration::query()
+            ->where('namespace', 'default')
+            ->where('worker_id', 'python-query-stale-active-poller')
+            ->firstOrFail();
+        $polledTask = null;
+
+        $poller->afterUnreadyProbes[] = function () use ($broker, $worker): void {
+            $this->assertNull($broker->poll('default', $worker));
+        };
+        $poller->afterUnreadyProbes[] = function () use ($broker, $worker, &$polledTask): void {
+            $task = $broker->poll('default', $worker);
+
+            $this->assertIsArray($task);
+            $this->assertSame('wf-query-task-stale-worker-active-poll', $task['workflow_id'] ?? null);
+
+            $polledTask = $task;
+
+            $broker->complete(
+                'default',
+                (string) $task['query_task_id'],
+                'python-query-stale-active-poller',
+                (int) $task['query_task_attempt'],
+                55,
+                null,
+            );
+        };
+
+        $result = $broker->query('default', $run, 'status', $this->queryArguments());
+
+        $this->assertTrue($result['success']);
+        $this->assertSame('wf-query-task-stale-worker-active-poll', $result['workflow_id']);
+        $this->assertSame($run->id, $result['run_id']);
+        $this->assertSame('status', $result['query_name']);
+        $this->assertSame(55, $result['result']);
+        $this->assertNull($result['reason']);
+        $this->assertSame(200, $result['status']);
+        $this->assertIsArray($polledTask);
+        $this->assertSame($run->id, $polledTask['run_id'] ?? null);
+    }
+
     public function test_worker_routed_query_waits_for_worker_registration_before_reporting_unavailable(): void
     {
         Queue::fake();

@@ -931,7 +931,7 @@ final class WorkflowQueryTaskBroker
             ->where('task_queue', $taskQueue)
             ->where('status', 'active')
             ->get()
-            ->filter(fn (WorkerRegistration $worker): bool => $this->workerIsFresh($worker))
+            ->filter(fn (WorkerRegistration $worker): bool => $this->workerCanRouteQuery($namespace, $worker))
             ->values();
 
         if ($activeWorkers->isEmpty()) {
@@ -1804,6 +1804,11 @@ final class WorkflowQueryTaskBroker
         }
 
         return Carbon::instance($heartbeat)->gt(now()->subSeconds($this->staleAfterSeconds()));
+    }
+
+    private function workerCanRouteQuery(string $namespace, WorkerRegistration $worker): bool
+    {
+        return $this->workerIsFresh($worker) || $this->queryPollingWorkerIsCurrent($namespace, $worker);
     }
 
     /**
