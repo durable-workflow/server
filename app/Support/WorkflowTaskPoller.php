@@ -472,12 +472,16 @@ final class WorkflowTaskPoller
             ): array {
                 $this->runDueServiceModeTimers($namespace, $taskQueue, $buildId);
 
+                // A registered query-capable worker must let pending queries
+                // preempt ready workflow tasks even before its first query-poll
+                // marker is current; otherwise an initial query can sit behind
+                // the just-started workflow task.
                 if ($this->queryTasks->hasClaimablePendingTaskForPoller(
                     $namespace,
                     $taskQueue,
                     $supportedWorkflowTypes,
                     $buildId,
-                    $acceptsQueryTasks,
+                    $acceptsQueryTasks || $supportsQueryTasks,
                     $workflowDefinitionFingerprints,
                     $leaseOwner,
                 )) {
