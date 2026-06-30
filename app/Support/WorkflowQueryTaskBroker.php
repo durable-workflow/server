@@ -94,7 +94,7 @@ final class WorkflowQueryTaskBroker
             $queryArguments = $validatedQuery['query_arguments'];
         }
 
-        $route = $this->awaitQueryRoute($namespace, $run);
+        $route = $this->awaitRegisteredQueryRoute($namespace, $run);
 
         if (! $route['servable']) {
             return $this->queryFailed(
@@ -1099,16 +1099,16 @@ final class WorkflowQueryTaskBroker
      *     compatible_worker_count: int
      * }
      */
-    private function awaitQueryRoute(string $namespace, WorkflowRun $run): array
+    private function awaitRegisteredQueryRoute(string $namespace, WorkflowRun $run): array
     {
-        $route = $this->queryRoute($namespace, $run);
+        $route = $this->registeredQueryRoute($namespace, $run);
 
         if (! $this->shouldAwaitQueryRoute($route)) {
             return $route;
         }
 
         return $this->longPoller->until(
-            fn (): array => $this->queryRoute($namespace, $run),
+            fn (): array => $this->registeredQueryRoute($namespace, $run),
             fn (array $candidate): bool => $candidate['servable'] || ! $this->shouldAwaitQueryRoute($candidate),
             $this->queryTimeoutSeconds(),
             wakeChannels: $this->signals->queryTaskPollChannels($namespace, $route['task_queue']),
@@ -2115,7 +2115,7 @@ final class WorkflowQueryTaskBroker
         $status = $this->stringValue($task['status'] ?? null) ?? 'unknown';
 
         if ($status === 'pending') {
-            $route = $this->queryRoute($namespace, $run);
+            $route = $this->registeredQueryRoute($namespace, $run);
 
             if (! $route['servable']) {
                 return [
