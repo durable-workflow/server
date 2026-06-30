@@ -1230,6 +1230,7 @@ final class WorkflowQueryTaskBroker
         ?string $buildId = null,
         bool $acceptsQueryTasks = true,
         array $workflowDefinitionFingerprints = [],
+        ?string $leaseOwner = null,
     ): bool {
         if (! $acceptsQueryTasks) {
             return false;
@@ -1248,7 +1249,50 @@ final class WorkflowQueryTaskBroker
                 $workflowDefinitionFingerprints,
                 $buildId,
                 $acceptsQueryTasks,
+                $leaseOwner,
             )) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /**
+     * @param  list<string>  $supportedWorkflowTypes
+     * @param  array<string, string>  $workflowDefinitionFingerprints
+     */
+    public function hasPendingTaskForActiveWorkflowLeaseOwner(
+        string $namespace,
+        string $taskQueue,
+        array $supportedWorkflowTypes,
+        ?string $buildId = null,
+        array $workflowDefinitionFingerprints = [],
+        ?string $leaseOwner = null,
+    ): bool {
+        if ($leaseOwner === null || $leaseOwner === '') {
+            return false;
+        }
+
+        foreach ($this->pendingTaskIds($namespace, $taskQueue) as $queryTaskId) {
+            $task = $this->task($queryTaskId);
+
+            if (! is_array($task) || ($task['status'] ?? null) !== 'pending') {
+                continue;
+            }
+
+            if (! $this->canClaimPendingTaskForPoller(
+                $task,
+                $supportedWorkflowTypes,
+                $workflowDefinitionFingerprints,
+                $buildId,
+                acceptsQueryTasks: true,
+                leaseOwner: $leaseOwner,
+            )) {
+                continue;
+            }
+
+            if ($this->hasActiveWorkflowTaskLeaseOwnedBy($task, $leaseOwner)) {
                 return true;
             }
         }
@@ -1424,6 +1468,30 @@ final class WorkflowQueryTaskBroker
         }
 
         return $query->exists();
+    }
+
+    /**
+     * @param  array<string, mixed>  $queryTask
+     */
+    private function hasActiveWorkflowTaskLeaseOwnedBy(array $queryTask, string $leaseOwner): bool
+    {
+        $runId = $this->stringValue($queryTask['run_id'] ?? null);
+
+        if ($runId === null) {
+            return false;
+        }
+
+        return WorkflowTask::query()
+            ->where('workflow_run_id', $runId)
+            ->where('task_type', TaskType::Workflow->value)
+            ->where('status', TaskStatus::Leased->value)
+            ->where('lease_owner', $leaseOwner)
+            ->where(static function ($query): void {
+                $query
+                    ->whereNull('lease_expires_at')
+                    ->orWhere('lease_expires_at', '>', now());
+            })
+            ->exists();
     }
 
     /**
@@ -1901,7 +1969,7 @@ final class WorkflowQueryTaskBroker
             && $this->queryPollingWorkerIsCurrent($namespace, $worker);
     }
 
-    private function workerSupportsQueryTasks(string $namespace, WorkerRegistration $worker): bool
+    public function workerSupportsQueryTasks(string $namespace, WorkerRegistration $worker): bool
     {
         if (in_array(self::QUERY_TASKS_CAPABILITY, $this->stringArray($worker->capabilities), true)) {
             return true;

@@ -346,6 +346,7 @@ final class WorkflowTaskPoller
             'next_probe_at' => null,
         ];
         $workerPollFence = WorkerPollFence::snapshot($worker);
+        $supportsQueryTasks = $this->queryTasks->workerSupportsQueryTasks($namespace, $worker);
 
         $pollResult = $this->longPoller->until(
             function () use (
@@ -359,6 +360,7 @@ final class WorkflowTaskPoller
                 $supportedWorkflowTypes,
                 $workflowDefinitionFingerprints,
                 $acceptsQueryTasks,
+                $supportsQueryTasks,
                 $limit,
                 $workerPollFence,
                 &$nextProbeAt,
@@ -386,6 +388,7 @@ final class WorkflowTaskPoller
                     $supportedWorkflowTypes,
                     $workflowDefinitionFingerprints,
                     $acceptsQueryTasks,
+                    $supportsQueryTasks,
                     $workerPollFence,
                 );
                 $nextProbeAt = $resolvedResult['next_probe_at'] ?? null;
@@ -446,6 +449,7 @@ final class WorkflowTaskPoller
         array $supportedWorkflowTypes = [],
         array $workflowDefinitionFingerprints = [],
         bool $acceptsQueryTasks = false,
+        bool $supportsQueryTasks = false,
         array $workerPollFence = [],
     ): array {
         return $this->withWorkerCompatibility(
@@ -463,6 +467,7 @@ final class WorkflowTaskPoller
                 $supportedWorkflowTypes,
                 $workflowDefinitionFingerprints,
                 $acceptsQueryTasks,
+                $supportsQueryTasks,
                 $workerPollFence,
             ): array {
                 $this->runDueServiceModeTimers($namespace, $taskQueue, $buildId);
@@ -474,7 +479,26 @@ final class WorkflowTaskPoller
                     $buildId,
                     $acceptsQueryTasks,
                     $workflowDefinitionFingerprints,
+                    $leaseOwner,
                 )) {
+                    return [
+                        'task' => null,
+                        'poll_status' => 'query_task_pending',
+                        'next_probe_at' => null,
+                    ];
+                }
+
+                if (
+                    $supportsQueryTasks
+                    && $this->queryTasks->hasPendingTaskForActiveWorkflowLeaseOwner(
+                        $namespace,
+                        $taskQueue,
+                        $supportedWorkflowTypes,
+                        $buildId,
+                        $workflowDefinitionFingerprints,
+                        $leaseOwner,
+                    )
+                ) {
                     return [
                         'task' => null,
                         'poll_status' => 'query_task_pending',

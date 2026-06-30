@@ -2379,6 +2379,61 @@ class WorkflowQueryTaskBrokerTest extends TestCase
         );
     }
 
+    public function test_same_worker_query_task_preempts_next_workflow_poll_while_run_lease_is_active(): void
+    {
+        Queue::fake();
+        config(['server.polling.timeout' => 10]);
+
+        $this->registerPythonWorker('python-query-same-lease-preempt-worker', 'python-queries', ['python.queryable']);
+        $leasedRun = $this->startRemoteWorkflow('wf-query-task-preempts-same-worker-lease');
+
+        $leased = $this->postJson('/api/worker/workflow-tasks/poll', [
+            'worker_id' => 'python-query-same-lease-preempt-worker',
+            'task_queue' => 'python-queries',
+        ], $this->workerHeaders());
+
+        $leased->assertOk()
+            ->assertJsonPath('poll_status', 'leased')
+            ->assertJsonPath('task.run_id', $leasedRun->id)
+            ->assertJsonPath('task.lease_owner', 'python-query-same-lease-preempt-worker');
+
+        $readyRun = $this->startRemoteWorkflow('wf-query-task-preempts-competing-ready');
+
+        /** @var WorkflowQueryTaskBroker $broker */
+        $broker = app(WorkflowQueryTaskBroker::class);
+        $queryTask = $broker->enqueue('default', $leasedRun, 'status', $this->queryArguments());
+
+        $poll = $this->postJson('/api/worker/workflow-tasks/poll', [
+            'worker_id' => 'python-query-same-lease-preempt-worker',
+            'task_queue' => 'python-queries',
+        ], $this->workerHeaders());
+
+        $poll->assertOk()
+            ->assertJsonPath('task', null)
+            ->assertJsonPath('poll_status', 'query_task_pending');
+
+        $this->assertSame(
+            'pending',
+            $broker->task((string) $queryTask['query_task_id'])['status'] ?? null,
+        );
+        $this->assertSame(
+            TaskStatus::Ready,
+            WorkflowTask::query()
+                ->where('workflow_run_id', $readyRun->id)
+                ->where('task_type', 'workflow')
+                ->value('status'),
+        );
+
+        $queryPoll = $this->postJson('/api/worker/query-tasks/poll', [
+            'worker_id' => 'python-query-same-lease-preempt-worker',
+            'task_queue' => 'python-queries',
+        ], $this->workerHeaders());
+
+        $queryPoll->assertOk()
+            ->assertJsonPath('task.query_task_id', $queryTask['query_task_id'])
+            ->assertJsonPath('task.lease_owner', 'python-query-same-lease-preempt-worker');
+    }
+
     public function test_query_task_preemption_requires_polling_worker_query_capability(): void
     {
         Queue::fake();
