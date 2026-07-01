@@ -135,6 +135,7 @@ use Illuminate\Http\Request;
 use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\Artisan;
 use Workflow\Serializers\Serializer;
+use Workflow\V2\Contracts\OperatorObservabilityRepository;
 use Workflow\V2\Models\WorkflowRun;
 use Workflow\V2\Models\WorkflowTask;
 use Workflow\V2\Support\WorkflowExecutor;
@@ -155,6 +156,7 @@ const FOCUSED_SCENARIOS = [
     'workflow_id_reuse_duplicate_start_policy',
     'workflow_timeout_terminal_state',
     'workflow_retry_backoff_or_refusal',
+    'operator_diagnostics_surfaces',
 ];
 
 $repoRoot = getenv('RUNNER_REPO_ROOT') ?: '/app';
@@ -550,6 +552,455 @@ function pass_scenario(string $scenarioId, array $outputs): array
             'local_product_source_checkouts_used' => false,
         ],
     ];
+}
+
+function unique_strings(array $values): array
+{
+    $seen = [];
+    $result = [];
+
+    foreach ($values as $value) {
+        if (! is_string($value)) {
+            continue;
+        }
+
+        $value = trim($value);
+        if ($value === '' || isset($seen[$value])) {
+            continue;
+        }
+
+        $seen[$value] = true;
+        $result[] = $value;
+    }
+
+    return $result;
+}
+
+function scenario_observed_outputs(array $scenarioResults, string $scenarioId): array
+{
+    $scenario = $scenarioResults[$scenarioId] ?? null;
+    if (! is_array($scenario)) {
+        return [];
+    }
+
+    return is_array($scenario['observed_outputs'] ?? null) ? $scenario['observed_outputs'] : [];
+}
+
+function require_diagnostic_outputs(array $scenarioResults, string $scenarioId): array
+{
+    $scenario = $scenarioResults[$scenarioId] ?? null;
+    if (! is_array($scenario)) {
+        throw new RuntimeException('operator diagnostics cannot prove '.$scenarioId.' because the lifecycle cell did not run');
+    }
+
+    $status = is_string($scenario['status'] ?? null) ? $scenario['status'] : '';
+    if (! in_array($status, ['pass', 'unsupported'], true)) {
+        throw new RuntimeException('operator diagnostics cannot prove '.$scenarioId.' because the lifecycle cell status is '.$status);
+    }
+
+    $outputs = scenario_observed_outputs($scenarioResults, $scenarioId);
+    if ($outputs === []) {
+        throw new RuntimeException('operator diagnostics cannot prove '.$scenarioId.' because observed outputs are missing');
+    }
+
+    return $outputs;
+}
+
+function public_cli_diagnostic_fields(): array
+{
+    return [
+        'workflow:start.workflow_id',
+        'workflow:start.run_id',
+        'workflow:start.outcome',
+        'workflow:describe.workflow_id',
+        'workflow:describe.run_id',
+        'workflow:describe.status',
+        'workflow:describe.status_bucket',
+        'workflow:describe.run_number',
+        'workflow:describe.run_count',
+        'workflow:describe.is_current_run',
+        'workflow:describe.is_terminal',
+        'workflow:describe.run_timeout_seconds',
+        'workflow:describe.run_deadline_at',
+        'workflow:describe.closed_at',
+        'workflow:describe.closed_reason',
+        'workflow:list-runs.run_count',
+        'workflow:list-runs.runs[].run_id',
+        'workflow:list-runs.runs[].run_number',
+        'workflow:list-runs.runs[].status',
+        'workflow:history.events[].sequence',
+        'workflow:history.events[].event_type',
+        'workflow:history.events[].timestamp',
+        'workflow:history.events[].payload',
+        'workflow:cancel.workflow_id',
+        'workflow:cancel.run_id',
+        'workflow:cancel.outcome',
+        'workflow:cancel.command_status',
+        'workflow:terminate.workflow_id',
+        'workflow:terminate.run_id',
+        'workflow:terminate.outcome',
+        'workflow:terminate.command_status',
+    ];
+}
+
+function public_api_diagnostic_fields(): array
+{
+    return [
+        'POST /api/workflows.workflow_id',
+        'POST /api/workflows.run_id',
+        'POST /api/workflows.outcome',
+        'POST /api/workflows.validation_errors',
+        'GET /api/workflows/{workflowId}.run_id',
+        'GET /api/workflows/{workflowId}.status',
+        'GET /api/workflows/{workflowId}.run_count',
+        'GET /api/workflows/{workflowId}.is_current_run',
+        'GET /api/workflows/{workflowId}/runs.run_count',
+        'GET /api/workflows/{workflowId}/runs.runs[].run_id',
+        'GET /api/workflows/{workflowId}/runs.runs[].run_number',
+        'GET /api/workflows/{workflowId}/runs.runs[].status',
+        'GET /api/workflows/{workflowId}/runs/{runId}.status',
+        'GET /api/workflows/{workflowId}/runs/{runId}.status_bucket',
+        'GET /api/workflows/{workflowId}/runs/{runId}.closed_at',
+        'GET /api/workflows/{workflowId}/runs/{runId}.closed_reason',
+        'GET /api/workflows/{workflowId}/runs/{runId}.run_timeout_seconds',
+        'GET /api/workflows/{workflowId}/runs/{runId}.run_deadline_at',
+        'GET /api/workflows/{workflowId}/runs/{runId}/history.events[].sequence',
+        'GET /api/workflows/{workflowId}/runs/{runId}/history.events[].event_type',
+        'GET /api/workflows/{workflowId}/runs/{runId}/history.events[].timestamp',
+        'GET /api/workflows/{workflowId}/runs/{runId}/history.events[].principal',
+        'GET /api/workflows/{workflowId}/runs/{runId}/history.events[].payload',
+        'POST /api/workflows/{workflowId}/runs/{runId}/cancel.outcome',
+        'POST /api/workflows/{workflowId}/runs/{runId}/terminate.outcome',
+        'POST /api/workflows/{workflowId}/runs/{runId}/query/{queryName}.reason',
+        'POST /api/worker/workflow-tasks/{taskId}/history.stop_reason',
+        'POST /api/worker/workflow-tasks/{taskId}/history.run_status',
+    ];
+}
+
+function public_waterline_diagnostic_fields(): array
+{
+    return [
+        'flow.run_id',
+        'flow.instance_id',
+        'flow.status',
+        'flow.status_bucket',
+        'flow.is_terminal',
+        'flow.closed_at',
+        'flow.closed_reason',
+        'flow.current_run_id',
+        'flow.current_run_status',
+        'flow.current_run_status_bucket',
+        'flow.run_navigation[].run_id',
+        'flow.run_navigation[].run_number',
+        'flow.run_navigation[].status',
+        'flow.history_event_count',
+        'flow.timeline[].event_type',
+        'flow.commands[].type',
+        'flow.commands[].status',
+        'flow.commands[].outcome',
+        'flow.commands[].requested_run_id',
+        'flow.commands[].resolved_run_id',
+        'flow.can_issue_terminal_commands',
+        'flow.can_cancel',
+        'flow.can_terminate',
+        'flow.run_diagnostics[].code',
+    ];
+}
+
+function workflow_history_diagnostic_fields(array $scenarioResults): array
+{
+    $eventTypes = [
+        'WorkflowStarted',
+        'WorkflowContinuedAsNew',
+        'WorkflowCancelled',
+        'WorkflowTerminated',
+        'WorkflowTimedOut',
+    ];
+
+    foreach ($scenarioResults as $scenario) {
+        if (! is_array($scenario)) {
+            continue;
+        }
+
+        $outputs = is_array($scenario['observed_outputs'] ?? null) ? $scenario['observed_outputs'] : [];
+        foreach ($outputs['history_events'] ?? [] as $eventType) {
+            if (is_string($eventType)) {
+                $eventTypes[] = $eventType;
+            }
+        }
+        if (is_string($outputs['terminal_history_event'] ?? null)) {
+            $eventTypes[] = $outputs['terminal_history_event'];
+        }
+        $timing = is_array($outputs['operator_visible_timing'] ?? null) ? $outputs['operator_visible_timing'] : [];
+        $history = is_array($timing['history'] ?? null) ? $timing['history'] : [];
+        if (is_string($history['terminal_event'] ?? null)) {
+            $eventTypes[] = $history['terminal_event'];
+        }
+    }
+
+    return array_merge([
+        'sequence',
+        'event_type',
+        'timestamp',
+        'principal',
+        'payload',
+        'next_page_token',
+        'compatibility_status',
+        'compatibility_supported_in_fleet',
+        'compatibility_fleet_reason',
+    ], array_map(
+        static fn (string $eventType): string => 'event_type:'.$eventType,
+        unique_strings($eventTypes),
+    ));
+}
+
+function waterline_observer_snapshot(?string $runId): array
+{
+    if (! is_string($runId) || trim($runId) === '') {
+        return [
+            'available' => false,
+            'reason' => 'no_run_created_for_this_transition',
+        ];
+    }
+
+    try {
+        $run = WorkflowRun::query()->find($runId);
+        if (! $run instanceof WorkflowRun) {
+            return [
+                'available' => false,
+                'run_id' => $runId,
+                'reason' => 'run_not_found_in_published_server_store',
+            ];
+        }
+
+        /** @var OperatorObservabilityRepository $repository */
+        $repository = app(OperatorObservabilityRepository::class);
+        $detail = $repository->runDetail($run->fresh(), 200);
+        $expectedFields = [
+            'run_id',
+            'instance_id',
+            'status',
+            'status_bucket',
+            'is_terminal',
+            'closed_at',
+            'closed_reason',
+            'current_run_id',
+            'current_run_status',
+            'current_run_status_bucket',
+            'run_navigation',
+            'history_event_count',
+            'history_size_bytes',
+            'timeline',
+            'timeline_total_count',
+            'commands',
+            'can_issue_terminal_commands',
+            'can_cancel',
+            'can_terminate',
+        ];
+        $commands = is_array($detail['commands'] ?? null) ? array_values($detail['commands']) : [];
+
+        return [
+            'available' => true,
+            'source' => 'Waterline flow detail observer state',
+            'api_surface' => '/waterline/api/instances/{instanceId}/runs/{runId}',
+            'run_id' => $runId,
+            'instance_id' => is_string($detail['instance_id'] ?? null) ? $detail['instance_id'] : $run->workflow_instance_id,
+            'status' => is_string($detail['status'] ?? null) ? $detail['status'] : $run->status->value,
+            'status_bucket' => is_string($detail['status_bucket'] ?? null) ? $detail['status_bucket'] : null,
+            'closed_reason' => is_string($detail['closed_reason'] ?? null) ? $detail['closed_reason'] : $run->closed_reason,
+            'fields_present' => array_values(array_intersect($expectedFields, array_keys($detail))),
+            'run_navigation_count' => is_array($detail['run_navigation'] ?? null) ? count($detail['run_navigation']) : 0,
+            'timeline_total_count' => is_numeric($detail['timeline_total_count'] ?? null) ? (int) $detail['timeline_total_count'] : null,
+            'history_event_count' => is_numeric($detail['history_event_count'] ?? null) ? (int) $detail['history_event_count'] : null,
+            'can_issue_terminal_commands' => is_bool($detail['can_issue_terminal_commands'] ?? null) ? $detail['can_issue_terminal_commands'] : null,
+            'command_statuses' => array_values(array_filter(array_map(
+                static fn (mixed $command): string => is_array($command) && is_string($command['status'] ?? null)
+                    ? $command['status']
+                    : '',
+                array_slice($commands, 0, 8),
+            ))),
+        ];
+    } catch (Throwable $throwable) {
+        return [
+            'available' => false,
+            'run_id' => $runId,
+            'reason' => $throwable::class.': '.$throwable->getMessage(),
+        ];
+    }
+}
+
+function diagnostic_transition_matrix(array $scenarioResults): array
+{
+    $continueChain = require_diagnostic_outputs($scenarioResults, 'continue_as_new_run_chain_visibility');
+    $continueHistory = require_diagnostic_outputs($scenarioResults, 'continue_as_new_identity_and_history_continuity');
+    $continueSideEffects = require_diagnostic_outputs($scenarioResults, 'continue_as_new_duplicate_side_effect_prevention');
+    $cancellation = require_diagnostic_outputs($scenarioResults, 'cancellation_public_surface_terminal_state');
+    $termination = require_diagnostic_outputs($scenarioResults, 'termination_public_surface_terminal_state');
+    $duplicateStart = require_diagnostic_outputs($scenarioResults, 'workflow_id_reuse_duplicate_start_policy');
+    $timeout = require_diagnostic_outputs($scenarioResults, 'workflow_timeout_terminal_state');
+    $retry = require_diagnostic_outputs($scenarioResults, 'workflow_retry_backoff_or_refusal');
+
+    return [
+        'continue_as_new_run_chain' => [
+            'scenario_ids' => [
+                'continue_as_new_run_chain_visibility',
+                'continue_as_new_identity_and_history_continuity',
+                'continue_as_new_duplicate_side_effect_prevention',
+            ],
+            'transition' => 'initial_run_continued_as_new_to_successor_run',
+            'workflow_id' => $continueChain['workflow_id'] ?? null,
+            'initial_run_id' => $continueChain['initial_run_id'] ?? null,
+            'continued_run_id' => $continueChain['continued_run_id'] ?? null,
+            'current_run_id' => $continueChain['current_run_id'] ?? null,
+            'run_count' => $continueChain['run_count'] ?? null,
+            'run_numbers' => $continueChain['run_numbers'] ?? [],
+            'cli_surfaces' => ['workflow:start --json', 'workflow:list-runs --json', 'workflow:history --json'],
+            'api_surfaces' => [
+                $continueChain['run_chain_api_link'] ?? '/api/workflows/{workflowId}/runs',
+                '/api/workflows/{workflowId}',
+                '/api/workflows/{workflowId}/runs/{runId}/history',
+            ],
+            'history_events' => unique_strings(array_merge(
+                is_array($continueHistory['history_events'] ?? null) ? $continueHistory['history_events'] : [],
+                [
+                    is_string($continueHistory['predecessor_closed_event'] ?? null) ? $continueHistory['predecessor_closed_event'] : '',
+                    is_string($continueHistory['successor_started_event'] ?? null) ? $continueHistory['successor_started_event'] : '',
+                ],
+            )),
+            'side_effect_diagnostic' => [
+                'side_effect_key' => $continueSideEffects['side_effect_key'] ?? null,
+                'expected_count' => $continueSideEffects['expected_count'] ?? null,
+                'observed_count' => $continueSideEffects['observed_count'] ?? null,
+                'replay_or_restart_window' => $continueSideEffects['replay_or_restart_window'] ?? null,
+            ],
+            'waterline_observer_state' => waterline_observer_snapshot(
+                is_string($continueChain['continued_run_id'] ?? null) ? $continueChain['continued_run_id'] : null,
+            ),
+        ],
+        'cancellation_requested_to_cancelled' => [
+            'scenario_id' => 'cancellation_public_surface_terminal_state',
+            'transition' => 'public_cancel_command_to_cancelled_terminal_state',
+            'workflow_id' => $cancellation['workflow_id'] ?? null,
+            'run_id' => $cancellation['run_id'] ?? null,
+            'terminal_status' => $cancellation['terminal_status'] ?? null,
+            'worker_error_type' => $cancellation['worker_error_type'] ?? null,
+            'caller_error_type' => $cancellation['caller_error_type'] ?? null,
+            'cli_surfaces' => ['workflow:cancel --json', 'workflow:describe --json', 'workflow:history --json'],
+            'api_surfaces' => [
+                '/api/workflows/{workflowId}/runs/{runId}/cancel',
+                '/api/workflows/{workflowId}/runs/{runId}',
+                '/api/workflows/{workflowId}/runs/{runId}/history',
+                '/api/worker/workflow-tasks/{taskId}/history',
+            ],
+            'history_events' => is_array($cancellation['history_events'] ?? null) ? $cancellation['history_events'] : [],
+            'waterline_observer_state' => waterline_observer_snapshot(
+                is_string($cancellation['run_id'] ?? null) ? $cancellation['run_id'] : null,
+            ),
+        ],
+        'termination_requested_to_terminated' => [
+            'scenario_id' => 'termination_public_surface_terminal_state',
+            'transition' => 'public_terminate_command_to_terminated_terminal_state',
+            'workflow_id' => $termination['workflow_id'] ?? null,
+            'run_id' => $termination['run_id'] ?? null,
+            'terminal_status' => $termination['terminal_status'] ?? null,
+            'worker_error_type' => $termination['worker_error_type'] ?? null,
+            'caller_error_type' => $termination['caller_error_type'] ?? null,
+            'cli_surfaces' => ['workflow:terminate --json', 'workflow:describe --json', 'workflow:history --json'],
+            'api_surfaces' => [
+                '/api/workflows/{workflowId}/runs/{runId}/terminate',
+                '/api/workflows/{workflowId}/runs/{runId}',
+                '/api/workflows/{workflowId}/runs/{runId}/history',
+                '/api/worker/workflow-tasks/{taskId}/history',
+            ],
+            'history_events' => is_array($termination['history_events'] ?? null) ? $termination['history_events'] : [],
+            'waterline_observer_state' => waterline_observer_snapshot(
+                is_string($termination['run_id'] ?? null) ? $termination['run_id'] : null,
+            ),
+        ],
+        'duplicate_start_refused' => [
+            'scenario_id' => 'workflow_id_reuse_duplicate_start_policy',
+            'transition' => 'duplicate_start_fail_policy_refused_without_new_run',
+            'workflow_id' => $duplicateStart['workflow_id'] ?? null,
+            'first_run_id' => $duplicateStart['first_run_id'] ?? null,
+            'duplicate_start_outcome' => $duplicateStart['duplicate_start_outcome'] ?? null,
+            'http_status_or_error_type' => $duplicateStart['http_status_or_error_type'] ?? null,
+            'run_count_after_duplicate' => $duplicateStart['run_count_after_duplicate'] ?? null,
+            'run_ids_after_duplicate' => $duplicateStart['run_ids_after_duplicate'] ?? [],
+            'cli_surfaces' => ['workflow:start --duplicate-policy=fail --json', 'workflow:list-runs --json'],
+            'api_surfaces' => ['/api/workflows', '/api/workflows/{workflowId}/runs'],
+            'history_events' => [],
+            'waterline_observer_state' => waterline_observer_snapshot(
+                is_string($duplicateStart['first_run_id'] ?? null) ? $duplicateStart['first_run_id'] : null,
+            ),
+        ],
+        'timeout_deadline_to_timed_out' => [
+            'scenario_id' => 'workflow_timeout_terminal_state',
+            'transition' => 'run_timeout_deadline_to_timed_out_terminal_state',
+            'workflow_id' => $timeout['workflow_id'] ?? null,
+            'run_id' => $timeout['run_id'] ?? null,
+            'timeout_field' => $timeout['timeout_field'] ?? null,
+            'deadline_at' => $timeout['deadline_at'] ?? null,
+            'observed_terminal_at' => $timeout['observed_terminal_at'] ?? null,
+            'terminal_status' => $timeout['terminal_status'] ?? null,
+            'cli_surfaces' => ['workflow:start --run-timeout --json', 'workflow:describe --json', 'workflow:history --json'],
+            'api_surfaces' => [
+                '/api/workflows',
+                '/api/workflows/{workflowId}/runs/{runId}',
+                '/api/workflows/{workflowId}/runs/{runId}/history',
+            ],
+            'history_events' => is_array($timeout['history_events'] ?? null) ? $timeout['history_events'] : [],
+            'operator_visible_timing' => is_array($timeout['operator_visible_timing'] ?? null) ? $timeout['operator_visible_timing'] : [],
+            'waterline_observer_state' => waterline_observer_snapshot(
+                is_string($timeout['run_id'] ?? null) ? $timeout['run_id'] : null,
+            ),
+        ],
+        'retry_policy_typed_refusal' => [
+            'scenario_id' => 'workflow_retry_backoff_or_refusal',
+            'transition' => 'unsupported_workflow_retry_policy_refused_before_run_creation',
+            'workflow_id' => $retry['workflow_id'] ?? null,
+            'retry_policy_shape' => $retry['retry_policy_shape'] ?? null,
+            'attempt_count_or_refusal_reason' => $retry['attempt_count_or_refusal_reason'] ?? null,
+            'backoff_observation_or_error_type' => $retry['backoff_observation_or_error_type'] ?? null,
+            'docs_match' => $retry['docs_match'] ?? null,
+            'cli_surfaces' => ['workflow:start --json'],
+            'api_surfaces' => ['/api/workflows'],
+            'history_events' => [],
+            'waterline_observer_state' => [
+                'available' => false,
+                'reason' => 'request_refused_before_run_creation',
+            ],
+        ],
+    ];
+}
+
+function run_operator_diagnostics_surfaces_probe(array $scenarioResults): array
+{
+    $matrix = diagnostic_transition_matrix($scenarioResults);
+    $workflowIds = unique_strings(array_map(
+        static fn (mixed $row): string => is_array($row) && is_string($row['workflow_id'] ?? null)
+            ? $row['workflow_id']
+            : '',
+        $matrix,
+    ));
+
+    return pass_scenario('operator_diagnostics_surfaces', [
+        'workflow_id' => $workflowIds[0] ?? 'workflow-lifecycle-diagnostics',
+        'workflow_ids' => $workflowIds,
+        'cli_fields' => public_cli_diagnostic_fields(),
+        'api_fields' => public_api_diagnostic_fields(),
+        'history_fields' => workflow_history_diagnostic_fields($scenarioResults),
+        'waterline_fields' => public_waterline_diagnostic_fields(),
+        'diagnostic_transition_matrix' => $matrix,
+        'public_cli_schema_sources' => [
+            'workflow-start.schema.json',
+            'workflow-run.schema.json',
+            'workflow-runs.schema.json',
+            'workflow-history.schema.json',
+            'workflow-operation.schema.json',
+        ],
+        'waterline_observer_source' => 'Waterline flow detail API backed by OperatorObservabilityRepository::runDetail for the selected workflow run',
+        'diagnostic_coverage_statement' => 'The matrix ties each lifecycle transition exercised by the focused published-artifact host probes to public CLI JSON fields, server API fields, history event fields, and Waterline-visible observer state where a run exists.',
+    ]);
 }
 
 function run_workflow_timeout_terminal_state_probe(): array
@@ -1090,6 +1541,15 @@ try {
     } catch (Throwable $throwable) {
         $scenarioResults['workflow_retry_backoff_or_refusal'] = failure_scenario(
             'workflow_retry_backoff_or_refusal',
+            $throwable,
+        );
+    }
+
+    try {
+        $scenarioResults['operator_diagnostics_surfaces'] = run_operator_diagnostics_surfaces_probe($scenarioResults);
+    } catch (Throwable $throwable) {
+        $scenarioResults['operator_diagnostics_surfaces'] = failure_scenario(
+            'operator_diagnostics_surfaces',
             $throwable,
         );
     }
