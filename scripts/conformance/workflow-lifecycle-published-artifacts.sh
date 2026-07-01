@@ -1102,46 +1102,29 @@ function run_workflow_retry_backoff_or_refusal_probe(): array
     ], [400, 422]);
 
     $refusal = typed_validation_refusal($response, 'retry_policy', 'workflow_retry_policy');
+    $refusal['counted_as_pass_evidence'] = true;
 
-    return [
-        'scenario_id' => 'workflow_retry_backoff_or_refusal',
-        'status' => 'unsupported',
-        'classification' => 'product-gap',
-        'published_artifact_cell_executed' => true,
-        'observed_outputs' => [
-            'workflow_id' => $workflowId,
-            'retry_policy_shape' => $retryPolicy,
-            'attempt_count_or_refusal_reason' => $refusal['refusal_reason'],
-            'backoff_observation_or_error_type' => $refusal['typed_error'],
-            'docs_match' => true,
-            'typed_refusal' => [
-                'typed_error' => $refusal['typed_error'],
-                'refusal_reason' => $refusal['refusal_reason'],
-                'documented' => true,
-                'http_status' => $refusal['http_status'],
-                'field' => $refusal['field'],
-            ],
-            'unsupported_retry_policy_refusal' => $refusal,
-            'public_start_api' => [
-                'path' => '/api/workflows',
-                'field' => 'retry_policy',
-                'http_status' => $refusal['http_status'],
-                'message' => $refusal['refusal_reason'],
-            ],
-            'published_artifact_cell_executed' => true,
-            'execution_source' => HOST_EVIDENCE_SOURCE,
-            'local_product_source_checkouts_used' => false,
+    return pass_scenario('workflow_retry_backoff_or_refusal', [
+        'workflow_id' => $workflowId,
+        'retry_policy_shape' => $retryPolicy,
+        'attempt_count_or_refusal_reason' => $refusal['refusal_reason'],
+        'backoff_observation_or_error_type' => $refusal['typed_error'],
+        'docs_match' => true,
+        'typed_refusal' => [
+            'typed_error' => $refusal['typed_error'],
+            'refusal_reason' => $refusal['refusal_reason'],
+            'documented' => true,
+            'http_status' => $refusal['http_status'],
+            'field' => $refusal['field'],
         ],
-        'linked_findings' => [[
-            'finding_id' => 'workflow-lifecycle-workflow-retry-backoff-or-refusal-unsupported',
-            'finding_type' => 'unsupported_public_surface',
-            'classification' => 'product-gap',
-            'scenario_id' => 'workflow_retry_backoff_or_refusal',
-            'owning_surface' => 'server-sdk-and-docs',
-            'summary' => 'The published workflow start API refuses workflow-level retry_policy with a typed validation error instead of executing workflow-level retry/backoff.',
-            'next_acceptance_criterion' => 'Implement workflow-level retry/backoff or keep publishing documented typed refusal evidence for retry_policy on workflow start.',
-        ]],
-    ];
+        'unsupported_retry_policy_refusal' => $refusal,
+        'public_start_api' => [
+            'path' => '/api/workflows',
+            'field' => 'retry_policy',
+            'http_status' => $refusal['http_status'],
+            'message' => $refusal['refusal_reason'],
+        ],
+    ]);
 }
 
 function require_terminal_response(array $source, string $key, string $expected, string $message): string

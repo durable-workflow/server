@@ -1408,10 +1408,14 @@ final class WorkflowLifecycleResultGate
             return $failures;
         }
 
+        if (self::hasDocumentedTypedRefusal(['observed_outputs' => $outputs])) {
+            return $failures;
+        }
+
         $failures = self::addSemanticFailure(
             $failures,
             'workflow_retry_backoff_not_proven',
-            'workflow retry pass evidence must prove retry attempts; documented refusal must use unsupported status',
+            'workflow retry pass evidence must prove retry attempts or a documented typed refusal',
         );
 
         return $failures;

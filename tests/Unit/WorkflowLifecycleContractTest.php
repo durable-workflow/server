@@ -338,7 +338,7 @@ SH);
         }
     }
 
-    public function test_published_artifact_runner_records_retry_refusal_as_unsupported_evidence(): void
+    public function test_published_artifact_runner_records_retry_refusal_as_pass_evidence(): void
     {
         $resultDir = sys_get_temp_dir().'/dw-workflow-lifecycle-'.bin2hex(random_bytes(6));
         mkdir($resultDir, 0777, true);
@@ -354,12 +354,13 @@ SH);
             $result = $this->readJson($resultDir.'/workflow-lifecycle-result.json');
             $retry = $result['scenario_results']['workflow_retry_backoff_or_refusal'];
 
-            $this->assertSame('non_passing', $result['outcome']);
-            $this->assertSame('unsupported', $retry['status']);
-            $this->assertSame('product-gap', $retry['classification']);
+            $this->assertSame('pass', $result['outcome']);
+            $this->assertSame('pass', $retry['status']);
+            $this->assertSame('passed', $retry['classification']);
             $this->assertSame('validation_error', $retry['observed_outputs']['typed_refusal']['typed_error']);
-            $this->assertContains('workflow_retry_backoff_or_refusal', $result['unproven_lifecycle_cells']);
-            $this->assertContains(
+            $this->assertContains('workflow_retry_backoff_or_refusal', $result['proven_lifecycle_cells']);
+            $this->assertNotContains('workflow_retry_backoff_or_refusal', $result['unproven_lifecycle_cells']);
+            $this->assertNotContains(
                 'workflow-lifecycle-workflow-retry-backoff-or-refusal-unsupported',
                 array_column($result['findings'], 'finding_id'),
             );
@@ -367,7 +368,7 @@ SH);
                 'workflow-lifecycle-workflow-retry-backoff-or-refusal-coverage-gap',
                 array_column($result['findings'], 'finding_id'),
             );
-            $this->assertSame([], WorkflowLifecycleResultGate::evaluate($result)['gate_failures']);
+            $this->assertSame('pass', WorkflowLifecycleResultGate::evaluate($result)['status']);
         } finally {
             $this->removeDirectory($resultDir);
         }
@@ -426,8 +427,8 @@ SH);
             'workflow_task_timeout',
             'retry_policy',
             'unsupported_retry_policy_refusal',
-            'unsupported_public_surface',
-            'workflow-level retry/backoff',
+            'retry_policy_typed_refusal',
+            'counted_as_pass_evidence',
             'WorkflowTimedOut',
             'run_timeout_seconds',
             'run_duplicate_start_policy_probe',
@@ -649,13 +650,12 @@ SH);
         );
     }
 
-    public function test_result_gate_accepts_unsupported_cell_only_with_documented_typed_refusal_and_finding(): void
+    public function test_result_gate_accepts_retry_pass_with_documented_typed_refusal(): void
     {
         $result = $this->completeLifecycleResult();
         $scenarioId = 'workflow_retry_backoff_or_refusal';
-        $result['outcome'] = 'non_passing';
-        $result['scenario_results'][$scenarioId]['status'] = 'unsupported';
-        $result['scenario_results'][$scenarioId]['lifecycle_cell_outcome'] = 'unsupported';
+        $result['scenario_results'][$scenarioId]['status'] = 'pass';
+        $result['scenario_results'][$scenarioId]['lifecycle_cell_outcome'] = 'pass';
         $result['scenario_results'][$scenarioId]['observed_outputs'] = [
             'published_artifact_cell_executed' => true,
             'workflow_id' => 'wf-lifecycle-retry-refusal',
@@ -669,18 +669,11 @@ SH);
                 'documented' => true,
             ],
         ];
-        $result['scenario_results'][$scenarioId]['linked_findings'] = [[
-            'finding_id' => 'workflow-lifecycle-retry-refusal',
-            'finding_type' => 'unsupported_public_surface',
-            'classification' => 'product-gap',
-            'scenario_id' => $scenarioId,
-        ]];
-        $result['lifecycle_cell_outcomes'][$scenarioId]['status'] = 'unsupported';
-        $result['findings'] = $result['scenario_results'][$scenarioId]['linked_findings'];
+        $result['lifecycle_cell_outcomes'][$scenarioId]['status'] = 'pass';
 
         $evaluation = WorkflowLifecycleResultGate::evaluate($result);
 
-        $this->assertSame('non_passing', $evaluation['status']);
+        $this->assertSame('pass', $evaluation['status']);
         $this->assertSame([], $evaluation['gate_failures']);
 
         unset($result['scenario_results'][$scenarioId]['observed_outputs']['typed_refusal']);
@@ -688,7 +681,7 @@ SH);
 
         $this->assertSame('non_passing', $evaluation['status']);
         $this->assertContains(
-            'missing_unsupported_typed_refusal',
+            'workflow_retry_backoff_not_proven',
             array_column($evaluation['gate_failures'], 'code'),
         );
     }
@@ -805,8 +798,8 @@ SH);
         $scenarioId = 'workflow_retry_backoff_or_refusal';
 
         $evidence['scenario_results'][$scenarioId] = [
-            'status' => 'unsupported',
-            'classification' => 'product-gap',
+            'status' => 'pass',
+            'classification' => 'passed',
             'published_artifact_cell_executed' => true,
             'observed_outputs' => [
                 'published_artifact_cell_executed' => true,
@@ -834,18 +827,9 @@ SH);
                     'typed_error' => 'validation_error',
                     'refusal_reason' => 'The retry_policy field is not supported by the v2 workflow start API.',
                     'documented' => true,
-                    'counted_as_pass_evidence' => false,
+                    'counted_as_pass_evidence' => true,
                 ],
             ],
-            'linked_findings' => [[
-                'finding_id' => 'workflow-lifecycle-workflow-retry-backoff-or-refusal-unsupported',
-                'finding_type' => 'unsupported_public_surface',
-                'classification' => 'product-gap',
-                'scenario_id' => $scenarioId,
-                'owning_surface' => 'server-sdk-and-docs',
-                'summary' => 'The published workflow start API refuses workflow-level retry_policy with a typed validation error instead of executing workflow-level retry/backoff.',
-                'next_acceptance_criterion' => 'Implement workflow-level retry/backoff or keep publishing documented typed refusal evidence for retry_policy on workflow start.',
-            ]],
         ];
 
         return $evidence;

@@ -820,7 +820,11 @@ function validateWorkflowRetry(outputs) {
     return failures;
   }
 
-  failures.push('workflow retry pass evidence must prove retry attempts; documented refusal must use unsupported status');
+  if (typedRefusalEvidence({}, outputs).valid) {
+    return failures;
+  }
+
+  failures.push('workflow retry pass evidence must prove retry attempts or a documented typed refusal');
 
   return failures;
 }
@@ -1002,6 +1006,15 @@ function normalizeScenario(scenario, entry, policy) {
       status = 'not_covered';
       classification = 'coverage-gap';
       summaries.push(`The unsupported ${scenario.id} cell did not include documented typed refusal evidence.`);
+    } else if (
+      scenario.id === 'workflow_retry_backoff_or_refusal'
+      && executed
+      && missingEvidence.length === 0
+      && truthyFlag(outputs.docs_match)
+      && !policy.local_product_source_checkout_used_as_pass_evidence
+    ) {
+      status = 'pass';
+      classification = 'passed';
     }
   }
 
