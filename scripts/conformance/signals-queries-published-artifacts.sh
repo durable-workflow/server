@@ -1682,6 +1682,17 @@ def php_workflow_client_sample(
     sample.setdefault("operation_name", name)
     sample.setdefault("exit_code", completed.returncode)
     sample.setdefault("ok", completed.returncode == 0)
+    sample.setdefault("api_sample", {
+        "client": "workflow-php",
+        "operation": operation,
+        "workflow_type": workflow_type,
+        "workflow_id": workflow_id,
+        "task_queue": task_queue,
+        "operation_name": name,
+        "arguments": args or [],
+        "wire_input_shape": "durable-workflow.v2.payload-envelope",
+        "result_shape": "decoded-result-or-exact-error-body",
+    })
     return sample
 
 
@@ -1909,6 +1920,106 @@ raise SystemExit(asyncio.run(main()))
     sample.setdefault("client", "sdk-python")
     sample.setdefault("operation", operation)
     sample.setdefault("operation_name", name)
+    sample.setdefault("exit_code", completed.returncode)
+    sample.setdefault("ok", completed.returncode == 0)
+    return sample
+
+
+def sdk_start_workflow_sample(
+    python_bin: str,
+    base_url: str,
+    token: str,
+    namespace: str,
+    workflow_id: str,
+    workflow_type: str,
+    task_queue: str,
+    log_file: Path,
+) -> dict[str, Any]:
+    code = r'''
+import asyncio
+import json
+import sys
+
+from durable_workflow import Client, DurableWorkflowError
+
+base_url, token, namespace, workflow_id, workflow_type, task_queue = sys.argv[1:7]
+
+def exception_reason(exc):
+    reason = getattr(exc, "reason", None)
+    if callable(reason):
+        reason = reason()
+    body = getattr(exc, "body", None)
+    if not isinstance(reason, str) and isinstance(body, dict):
+        candidate = body.get("reason")
+        if isinstance(candidate, str):
+            reason = candidate
+    return reason if isinstance(reason, str) else None
+
+async def main():
+    async with Client(base_url, token=token, namespace=namespace, timeout=30.0) as client:
+        try:
+            handle = await client.start_workflow(
+                workflow_type=workflow_type,
+                workflow_id=workflow_id,
+                task_queue=task_queue,
+                input=[],
+            )
+        except DurableWorkflowError as exc:
+            print(json.dumps({
+                "client": "sdk-python",
+                "operation": "start",
+                "operation_name": "start",
+                "workflow_id": workflow_id,
+                "workflow_type": workflow_type,
+                "task_queue": task_queue,
+                "ok": False,
+                "exception": type(exc).__name__,
+                "status_code": getattr(exc, "status", None),
+                "reason": exception_reason(exc),
+                "validation_errors": getattr(exc, "validation_errors", None),
+                "body": getattr(exc, "body", None),
+            }, sort_keys=True))
+            return 1
+
+    print(json.dumps({
+        "client": "sdk-python",
+        "operation": "start",
+        "operation_name": "start",
+        "workflow_id": handle.workflow_id,
+        "run_id": handle.run_id,
+        "workflow_type": handle.workflow_type,
+        "task_queue": task_queue,
+        "ok": True,
+        "api_sample": {
+            "client": "sdk-python",
+            "operation": "start",
+            "workflow_type": workflow_type,
+            "workflow_id": workflow_id,
+            "task_queue": task_queue,
+            "wire_input_shape": "durable-workflow.v2.payload-envelope",
+            "result_shape": "workflow-handle",
+        },
+    }, sort_keys=True))
+    return 0
+
+raise SystemExit(asyncio.run(main()))
+'''
+    completed = run_command(
+        [python_bin, "-c", code, base_url, token, namespace, workflow_id, workflow_type, task_queue],
+        log_file=log_file,
+        timeout=90,
+    )
+    output = completed.stdout.strip()
+    try:
+        sample = json.loads(output) if output else {}
+    except json.JSONDecodeError:
+        sample = {"raw_stdout": output}
+    sample.setdefault("client", "sdk-python")
+    sample.setdefault("operation", "start")
+    sample.setdefault("operation_name", "start")
+    sample.setdefault("workflow_id", workflow_id)
+    sample.setdefault("workflow_type", workflow_type)
+    sample.setdefault("task_queue", task_queue)
     sample.setdefault("exit_code", completed.returncode)
     sample.setdefault("ok", completed.returncode == 0)
     return sample
@@ -3545,6 +3656,420 @@ def install_evidence_for_artifacts(
     }
 
 
+def query_result_is(sample: dict[str, Any], expected: Any) -> bool:
+    return public_sample_ok(sample) and sample_result_value(sample) == expected
+
+
+def run_python_worker_php_facing_and_cli_clients(
+    *,
+    base_url: str,
+    token: str,
+    namespace: str,
+    cli_bin: str,
+    workflow_php_project: Path,
+    task_queue: str,
+    worker_id: str,
+    workflow_type: str,
+    versions: dict[str, str],
+    sources: dict[str, str],
+    log_file: Path,
+) -> dict[str, Any]:
+    suffix = hashlib.sha1(f"{time.time()}-python-worker-php-clients".encode("utf-8")).hexdigest()[:10]
+    workflow_id = f"wf-sq-python-php-clients-{suffix}"
+    outputs: dict[str, Any] = {
+        "worker_runtime": "sdk-python",
+        "worker_id": worker_id,
+        "task_queue": task_queue,
+        "workflow_id": workflow_id,
+        "workflow_type": workflow_type,
+        "public_clients": ["workflow-php-sdk", "cli"],
+        "published_artifact_versions": versions,
+        "artifact_sources": sources,
+    }
+
+    try:
+        start_sample = php_workflow_client_sample(
+            workflow_php_project,
+            base_url,
+            token,
+            namespace,
+            "start",
+            workflow_type,
+            workflow_id,
+            task_queue,
+            "start",
+            log_file,
+        )
+        outputs["workflow_php_start_sample"] = start_sample
+        if not public_sample_ok(start_sample):
+            raise RuntimeError(f"PHP client start against Python worker failed: {start_sample}")
+
+        run_id = workflow_start_run_id(start_sample)
+        if not run_id:
+            raise RuntimeError(f"PHP client start against Python worker did not return a run_id: {start_sample}")
+        outputs["run_id"] = run_id
+
+        initial_php_query = wait_for_query_result(
+            label="Python worker PHP client initial query",
+            expected=0,
+            log_file=log_file,
+            sample_factory=lambda: php_workflow_client_sample(
+                workflow_php_project,
+                base_url,
+                token,
+                namespace,
+                "query",
+                workflow_type,
+                workflow_id,
+                task_queue,
+                "current",
+                log_file,
+            ),
+        )
+        outputs["workflow_php_initial_query_sample"] = initial_php_query
+
+        php_signal = php_workflow_client_sample(
+            workflow_php_project,
+            base_url,
+            token,
+            namespace,
+            "signal",
+            workflow_type,
+            workflow_id,
+            task_queue,
+            "increment",
+            log_file,
+            args=[4],
+        )
+        outputs["workflow_php_signal_sample"] = php_signal
+        if not public_sample_ok(php_signal):
+            raise RuntimeError(f"PHP client signal against Python worker failed: {php_signal}")
+
+        php_query = wait_for_query_result(
+            label="Python worker PHP client query after PHP signal",
+            expected=4,
+            log_file=log_file,
+            sample_factory=lambda: php_workflow_client_sample(
+                workflow_php_project,
+                base_url,
+                token,
+                namespace,
+                "query",
+                workflow_type,
+                workflow_id,
+                task_queue,
+                "current",
+                log_file,
+            ),
+        )
+        outputs["workflow_php_query_sample"] = php_query
+
+        cli_signal = cli_json_sample(
+            cli_bin,
+            base_url,
+            token,
+            namespace,
+            [
+                "workflow:signal",
+                workflow_id,
+                "increment",
+                "--input",
+                "[6]",
+                "--output=json",
+            ],
+            log_file,
+        )
+        outputs["cli_signal_sample"] = cli_signal
+        if not public_sample_ok(cli_signal):
+            raise RuntimeError(f"CLI signal against Python worker failed: {cli_signal}")
+
+        cli_query = wait_for_query_result(
+            label="Python worker CLI query after PHP and CLI signals",
+            expected=10,
+            log_file=log_file,
+            sample_factory=lambda: cli_json_sample(
+                cli_bin,
+                base_url,
+                token,
+                namespace,
+                [
+                    "workflow:query",
+                    workflow_id,
+                    "current",
+                    "--output=json",
+                ],
+                log_file,
+            ),
+        )
+        outputs["cli_query_sample"] = cli_query
+
+        repeat_php_query = wait_for_query_result(
+            label="Python worker PHP client repeat query after CLI signal",
+            expected=10,
+            log_file=log_file,
+            sample_factory=lambda: php_workflow_client_sample(
+                workflow_php_project,
+                base_url,
+                token,
+                namespace,
+                "query",
+                workflow_type,
+                workflow_id,
+                task_queue,
+                "current",
+                log_file,
+            ),
+        )
+        outputs["workflow_php_repeat_query_sample"] = repeat_php_query
+
+        outputs["php_client_signal_and_query"] = (
+            query_result_is(initial_php_query, 0)
+            and public_sample_ok(php_signal)
+            and query_result_is(php_query, 4)
+        )
+        outputs["cli_signal_and_query"] = public_sample_ok(cli_signal) and query_result_is(cli_query, 10)
+        outputs["cross_language_query_consistency"] = (
+            sample_result_value(cli_query) == sample_result_value(repeat_php_query) == 10
+        )
+        outputs["wire_envelope_compatibility"] = (
+            public_sample_ok(start_sample)
+            and public_sample_ok(php_signal)
+            and public_sample_ok(php_query)
+            and public_sample_ok(cli_signal)
+            and public_sample_ok(cli_query)
+        )
+        outputs["observed_values"] = {
+            "initial_php_query": sample_result_value(initial_php_query),
+            "after_php_signal_php_query": sample_result_value(php_query),
+            "after_cli_signal_cli_query": sample_result_value(cli_query),
+            "after_cli_signal_php_repeat_query": sample_result_value(repeat_php_query),
+        }
+        outputs["commands_and_api_samples"] = {
+            "workflow_php_start": start_sample.get("api_sample"),
+            "workflow_php_signal": php_signal.get("api_sample"),
+            "workflow_php_query": php_query.get("api_sample"),
+            "cli_signal": cli_signal.get("command"),
+            "cli_query": cli_query.get("command"),
+        }
+    except Exception as exc:  # noqa: BLE001 - partial public samples are the failure evidence.
+        outputs["probe_error"] = probe_error_payload(exc)
+        log_line(
+            log_file,
+            "Python worker PHP-facing/CLI client matrix probe failed: "
+            f"{type(exc).__name__}: {exc}",
+        )
+
+    return outputs
+
+
+def run_php_worker_python_and_cli_clients(
+    *,
+    base_url: str,
+    token: str,
+    namespace: str,
+    cli_bin: str,
+    python_bin: str,
+    task_queue: str,
+    worker_id: str,
+    workflow_type: str,
+    versions: dict[str, str],
+    sources: dict[str, str],
+    log_file: Path,
+) -> dict[str, Any]:
+    suffix = hashlib.sha1(f"{time.time()}-php-worker-python-clients".encode("utf-8")).hexdigest()[:10]
+    workflow_id = f"wf-sq-php-python-clients-{suffix}"
+    outputs: dict[str, Any] = {
+        "worker_runtime": "workflow-php",
+        "worker_id": worker_id,
+        "task_queue": task_queue,
+        "workflow_id": workflow_id,
+        "workflow_type": workflow_type,
+        "public_clients": ["sdk-python", "cli"],
+        "published_artifact_versions": versions,
+        "artifact_sources": sources,
+    }
+
+    try:
+        start_sample = sdk_start_workflow_sample(
+            python_bin,
+            base_url,
+            token,
+            namespace,
+            workflow_id,
+            workflow_type,
+            task_queue,
+            log_file,
+        )
+        outputs["sdk_python_start_sample"] = start_sample
+        if not public_sample_ok(start_sample):
+            raise RuntimeError(f"Python SDK start against PHP worker failed: {start_sample}")
+
+        run_id = workflow_start_run_id(start_sample)
+        if not run_id:
+            raise RuntimeError(f"Python SDK start against PHP worker did not return a run_id: {start_sample}")
+        outputs["run_id"] = run_id
+
+        initial_cli_query = wait_for_query_result(
+            label="PHP worker CLI initial query after Python SDK start",
+            expected=0,
+            log_file=log_file,
+            sample_factory=lambda: cli_json_sample(
+                cli_bin,
+                base_url,
+                token,
+                namespace,
+                [
+                    "workflow:query",
+                    workflow_id,
+                    "current",
+                    "--output=json",
+                ],
+                log_file,
+            ),
+        )
+        outputs["cli_initial_query_sample"] = initial_cli_query
+
+        sdk_signal = sdk_success_sample(
+            python_bin,
+            base_url,
+            token,
+            namespace,
+            workflow_id,
+            "signal",
+            "increment",
+            log_file,
+            args=[4],
+        )
+        outputs["sdk_python_signal_sample"] = sdk_signal
+        if not public_sample_ok(sdk_signal):
+            raise RuntimeError(f"Python SDK signal against PHP worker failed: {sdk_signal}")
+
+        sdk_query = wait_for_query_result(
+            label="PHP worker Python SDK query after Python SDK signal",
+            expected=4,
+            log_file=log_file,
+            sample_factory=lambda: sdk_success_sample(
+                python_bin,
+                base_url,
+                token,
+                namespace,
+                workflow_id,
+                "query",
+                "current",
+                log_file,
+            ),
+        )
+        outputs["sdk_python_query_sample"] = sdk_query
+
+        cli_signal = cli_json_sample(
+            cli_bin,
+            base_url,
+            token,
+            namespace,
+            [
+                "workflow:signal",
+                workflow_id,
+                "increment",
+                "--input",
+                "[6]",
+                "--output=json",
+            ],
+            log_file,
+        )
+        outputs["cli_signal_sample"] = cli_signal
+        if not public_sample_ok(cli_signal):
+            raise RuntimeError(f"CLI signal against PHP worker failed: {cli_signal}")
+
+        cli_query = wait_for_query_result(
+            label="PHP worker CLI query after Python SDK and CLI signals",
+            expected=10,
+            log_file=log_file,
+            sample_factory=lambda: cli_json_sample(
+                cli_bin,
+                base_url,
+                token,
+                namespace,
+                [
+                    "workflow:query",
+                    workflow_id,
+                    "current",
+                    "--output=json",
+                ],
+                log_file,
+            ),
+        )
+        outputs["cli_query_sample"] = cli_query
+
+        repeat_sdk_query = wait_for_query_result(
+            label="PHP worker Python SDK repeat query after CLI signal",
+            expected=10,
+            log_file=log_file,
+            sample_factory=lambda: sdk_success_sample(
+                python_bin,
+                base_url,
+                token,
+                namespace,
+                workflow_id,
+                "query",
+                "current",
+                log_file,
+            ),
+        )
+        outputs["sdk_python_repeat_query_sample"] = repeat_sdk_query
+
+        outputs["sdk_python_signal_and_query"] = (
+            query_result_is(initial_cli_query, 0)
+            and public_sample_ok(sdk_signal)
+            and query_result_is(sdk_query, 4)
+        )
+        outputs["cli_signal_and_query"] = public_sample_ok(cli_signal) and query_result_is(cli_query, 10)
+        outputs["cross_language_query_consistency"] = (
+            sample_result_value(cli_query) == sample_result_value(repeat_sdk_query) == 10
+        )
+        outputs["wire_envelope_compatibility"] = (
+            public_sample_ok(start_sample)
+            and public_sample_ok(sdk_signal)
+            and public_sample_ok(sdk_query)
+            and public_sample_ok(cli_signal)
+            and public_sample_ok(cli_query)
+        )
+        outputs["observed_values"] = {
+            "initial_cli_query": sample_result_value(initial_cli_query),
+            "after_python_signal_python_query": sample_result_value(sdk_query),
+            "after_cli_signal_cli_query": sample_result_value(cli_query),
+            "after_cli_signal_python_repeat_query": sample_result_value(repeat_sdk_query),
+        }
+        outputs["commands_and_api_samples"] = {
+            "sdk_python_start": start_sample.get("api_sample"),
+            "sdk_python_signal": {
+                "client": "sdk-python",
+                "operation": "signal",
+                "workflow_id": workflow_id,
+                "operation_name": "increment",
+                "arguments": [4],
+                "wire_input_shape": "durable-workflow.v2.payload-envelope",
+            },
+            "sdk_python_query": {
+                "client": "sdk-python",
+                "operation": "query",
+                "workflow_id": workflow_id,
+                "operation_name": "current",
+                "wire_input_shape": "durable-workflow.v2.payload-envelope",
+            },
+            "cli_signal": cli_signal.get("command"),
+            "cli_query": cli_query.get("command"),
+        }
+    except Exception as exc:  # noqa: BLE001 - partial public samples are the failure evidence.
+        outputs["probe_error"] = probe_error_payload(exc)
+        log_line(
+            log_file,
+            "PHP worker Python/CLI client matrix probe failed: "
+            f"{type(exc).__name__}: {exc}",
+        )
+
+    return outputs
+
+
 def run_python_sdk_baseline(
     *,
     base_url: str,
@@ -3556,6 +4081,7 @@ def run_python_sdk_baseline(
     sources: dict[str, str],
     run_root: Path,
     log_file: Path,
+    workflow_php_project: Path | None = None,
 ) -> tuple[dict[str, Any], dict[str, Any]]:
     suffix = hashlib.sha1(f"{time.time()}-python-sdk-baseline".encode("utf-8")).hexdigest()[:10]
     task_queue = f"signals-queries-python-sdk-{suffix}"
@@ -3802,6 +4328,37 @@ def run_python_sdk_baseline(
             sample_result_value(repeat_query) == sample_result_value(sdk_query)
         )
 
+        if workflow_php_project is not None:
+            cross_language_outputs = run_python_worker_php_facing_and_cli_clients(
+                base_url=base_url,
+                token=token,
+                namespace=namespace,
+                cli_bin=cli_bin,
+                workflow_php_project=workflow_php_project,
+                task_queue=task_queue,
+                worker_id=worker_id,
+                workflow_type=workflow_type,
+                versions=versions,
+                sources=sources,
+                log_file=log_file,
+            )
+            descriptor["python_worker_php_facing_and_cli_clients"] = {
+                "workflow_id": cross_language_outputs.get("workflow_id"),
+                "run_id": cross_language_outputs.get("run_id"),
+                "worker_id": worker_id,
+                "task_queue": task_queue,
+                "status": baseline_scenario_result(
+                    "python_worker_php_facing_and_cli_clients",
+                    cross_language_outputs,
+                )["status"],
+            }
+            descriptor.setdefault("cross_language_scenario_results", {})[
+                "python_worker_php_facing_and_cli_clients"
+            ] = baseline_scenario_result(
+                "python_worker_php_facing_and_cli_clients",
+                cross_language_outputs,
+            )
+
         return outputs, descriptor
     except Exception as exc:  # noqa: BLE001 - retain any public evidence collected before the probe stopped.
         error = probe_error_payload(exc)
@@ -3833,6 +4390,7 @@ def run_workflow_php_baseline(
     token: str,
     namespace: str,
     cli_bin: str,
+    python_bin: str | None = None,
     workflow_php_project: Path,
     versions: dict[str, str],
     sources: dict[str, str],
@@ -4067,6 +4625,37 @@ def run_workflow_php_baseline(
         outputs["php_routed_current_query_task"] = routed_query
         outputs["php_worker_query_task_routing"] = True
 
+        if python_bin is not None:
+            cross_language_outputs = run_php_worker_python_and_cli_clients(
+                base_url=base_url,
+                token=token,
+                namespace=namespace,
+                cli_bin=cli_bin,
+                python_bin=python_bin,
+                task_queue=task_queue,
+                worker_id=worker_id,
+                workflow_type=workflow_type,
+                versions=versions,
+                sources=sources,
+                log_file=log_file,
+            )
+            descriptor["php_worker_python_and_cli_clients"] = {
+                "workflow_id": cross_language_outputs.get("workflow_id"),
+                "run_id": cross_language_outputs.get("run_id"),
+                "worker_id": worker_id,
+                "task_queue": task_queue,
+                "status": baseline_scenario_result(
+                    "php_worker_python_and_cli_clients",
+                    cross_language_outputs,
+                )["status"],
+            }
+            descriptor.setdefault("cross_language_scenario_results", {})[
+                "php_worker_python_and_cli_clients"
+            ] = baseline_scenario_result(
+                "php_worker_python_and_cli_clients",
+                cross_language_outputs,
+            )
+
         return outputs, descriptor
     except Exception as exc:  # noqa: BLE001 - retain partial PHP evidence for a focused mirror finding.
         error = probe_error_payload(exc)
@@ -4201,6 +4790,7 @@ def run_baseline_probe(result_dir: Path) -> tuple[dict[str, Any] | None, dict[st
         install_status = "pass" if install_outputs_cover_required_artifacts(install_outputs) else "not_covered"
         python_sdk_outputs: dict[str, Any] | None = None
         python_sdk_descriptor: dict[str, Any] | None = None
+        python_worker_php_cross_result: dict[str, Any] | None = None
         python_sdk_status = "not_covered"
         if cli_bin is not None and python_bin is not None:
             try:
@@ -4214,7 +4804,14 @@ def run_baseline_probe(result_dir: Path) -> tuple[dict[str, Any] | None, dict[st
                     sources=sources,
                     run_root=run_root,
                     log_file=log_file,
+                    workflow_php_project=workflow_php_project,
                 )
+                if isinstance(python_sdk_descriptor, dict):
+                    cross_results = python_sdk_descriptor.get("cross_language_scenario_results")
+                    if isinstance(cross_results, dict):
+                        candidate = cross_results.get("python_worker_php_facing_and_cli_clients")
+                        if isinstance(candidate, dict):
+                            python_worker_php_cross_result = candidate
                 if (
                     install_status == "pass"
                     and has_required_evidence("python_worker_cli_and_sdk_baseline", python_sdk_outputs)
@@ -4235,6 +4832,7 @@ def run_baseline_probe(result_dir: Path) -> tuple[dict[str, Any] | None, dict[st
 
         workflow_php_outputs: dict[str, Any] | None = None
         workflow_php_descriptor: dict[str, Any] | None = None
+        php_worker_python_cross_result: dict[str, Any] | None = None
         workflow_php_status = "not_covered"
         if not env_flag("DW_SIGNALS_QUERIES_RUN_PHP_BASELINE_PROBE", True):
             workflow_php_descriptor = {
@@ -4248,6 +4846,7 @@ def run_baseline_probe(result_dir: Path) -> tuple[dict[str, Any] | None, dict[st
                     token=token,
                     namespace=namespace,
                     cli_bin=cli_bin,
+                    python_bin=python_bin,
                     workflow_php_project=workflow_php_project,
                     versions=versions,
                     sources=sources,
@@ -4255,6 +4854,12 @@ def run_baseline_probe(result_dir: Path) -> tuple[dict[str, Any] | None, dict[st
                     run_root=run_root,
                     log_file=log_file,
                 )
+                if isinstance(workflow_php_descriptor, dict):
+                    cross_results = workflow_php_descriptor.get("cross_language_scenario_results")
+                    if isinstance(cross_results, dict):
+                        candidate = cross_results.get("php_worker_python_and_cli_clients")
+                        if isinstance(candidate, dict):
+                            php_worker_python_cross_result = candidate
                 if (
                     install_status == "pass"
                     and has_required_evidence("php_worker_cli_and_sdk_baseline", workflow_php_outputs)
@@ -4876,16 +5481,38 @@ def run_baseline_probe(result_dir: Path) -> tuple[dict[str, Any] | None, dict[st
                 "observed_outputs": python_sdk_outputs,
             }
             generated_scenarios.append("python_worker_cli_and_sdk_baseline")
+        if python_worker_php_cross_result is not None:
+            evidence["scenario_results"]["python_worker_php_facing_and_cli_clients"] = python_worker_php_cross_result
+            generated_scenarios.append("python_worker_php_facing_and_cli_clients")
         if workflow_php_outputs is not None:
             evidence["scenario_results"]["php_worker_cli_and_sdk_baseline"] = {
                 "status": workflow_php_status,
                 "observed_outputs": workflow_php_outputs,
             }
             generated_scenarios.append("php_worker_cli_and_sdk_baseline")
+        if php_worker_python_cross_result is not None:
+            evidence["scenario_results"]["php_worker_python_and_cli_clients"] = php_worker_python_cross_result
+            generated_scenarios.append("php_worker_python_and_cli_clients")
         not_claimed_as_pass = (
             ([] if install_status == "pass" else ["published_artifact_install_only"])
             + ([] if python_sdk_status == "pass" else ["python_worker_cli_and_sdk_baseline"])
             + ([] if workflow_php_status == "pass" else ["php_worker_cli_and_sdk_baseline"])
+            + (
+                []
+                if (
+                    isinstance(python_worker_php_cross_result, dict)
+                    and python_worker_php_cross_result.get("status") == "pass"
+                )
+                else ["python_worker_php_facing_and_cli_clients"]
+            )
+            + (
+                []
+                if (
+                    isinstance(php_worker_python_cross_result, dict)
+                    and php_worker_python_cross_result.get("status") == "pass"
+                )
+                else ["php_worker_python_and_cli_clients"]
+            )
             + [
                 scenario
                 for scenario in (
@@ -4910,7 +5537,17 @@ def run_baseline_probe(result_dir: Path) -> tuple[dict[str, Any] | None, dict[st
                 "external_worker_server_control_plane_observation": server_baseline_outputs,
                 "optional_public_client_error_samples": sorted(optional_unknown_outputs),
                 "python_worker_cli_and_sdk_baseline": python_sdk_descriptor,
+                "python_worker_php_facing_and_cli_clients": (
+                    python_worker_php_cross_result
+                    if python_worker_php_cross_result is not None
+                    else {"skipped": "python_worker_or_php_client_unavailable"}
+                ),
                 "php_worker_cli_and_sdk_baseline": workflow_php_descriptor,
+                "php_worker_python_and_cli_clients": (
+                    php_worker_python_cross_result
+                    if php_worker_python_cross_result is not None
+                    else {"skipped": "php_worker_or_python_client_unavailable"}
+                ),
                 "install_probes": install_descriptors,
                 "server_readiness": readiness_probe,
                 "published_artifact_sources_observed": sorted(sources),
@@ -6657,6 +7294,8 @@ SERVER_BASELINE_SCENARIOS = {
 BASELINE_CURRENT_EVIDENCE_SCENARIOS = SERVER_BASELINE_SCENARIOS | {
     "python_worker_cli_and_sdk_baseline",
     "php_worker_cli_and_sdk_baseline",
+    "python_worker_php_facing_and_cli_clients",
+    "php_worker_python_and_cli_clients",
 }
 
 BASELINE_CURRENT_EVIDENCE_FIELDS = {
@@ -6678,6 +7317,18 @@ BASELINE_CURRENT_EVIDENCE_FIELDS = {
         "cli_signal_and_query",
         "workflow_php_signal_and_query",
         "immediate_repeat_query_consistency",
+    ],
+    "python_worker_php_facing_and_cli_clients": [
+        "php_client_signal_and_query",
+        "cli_signal_and_query",
+        "cross_language_query_consistency",
+        "wire_envelope_compatibility",
+    ],
+    "php_worker_python_and_cli_clients": [
+        "sdk_python_signal_and_query",
+        "cli_signal_and_query",
+        "cross_language_query_consistency",
+        "wire_envelope_compatibility",
     ],
     "ordered_signal_delivery": [
         "rapid_increment_inputs",
@@ -6710,6 +7361,14 @@ BASELINE_PRODUCT_FAILURE_ROUTES = {
     "php_worker_cli_and_sdk_baseline": {
         "type": "signal_query_php_worker_mirror_failed",
         "title": "Signals/queries PHP worker mirror behavior failed",
+    },
+    "python_worker_php_facing_and_cli_clients": {
+        "type": "signal_query_python_worker_php_facing_clients_failed",
+        "title": "Signals/queries Python worker PHP-facing client behavior failed",
+    },
+    "php_worker_python_and_cli_clients": {
+        "type": "signal_query_php_worker_python_clients_failed",
+        "title": "Signals/queries PHP worker Python and CLI client behavior failed",
     },
     "ordered_signal_delivery": {
         "type": "signal_query_ordered_delivery_failed",
@@ -7162,6 +7821,111 @@ def php_baseline_behavior_failures(observed: dict[str, Any]) -> list[dict[str, A
     return failures
 
 
+def cross_language_client_behavior_failures(scenario: str, observed: dict[str, Any]) -> list[dict[str, Any]]:
+    failures: list[dict[str, Any]] = []
+    if scenario == "python_worker_php_facing_and_cli_clients":
+        client_field = "php_client_signal_and_query"
+        client_expected = (
+            "PHP-facing client starts a Python-authored Counter workflow, sends increment(4), "
+            "and queries current=4"
+        )
+        client_actual = {
+            "start": sample_readout(observed.get("workflow_php_start_sample")),
+            "initial_query": sample_readout(observed.get("workflow_php_initial_query_sample")),
+            "signal": sample_readout(observed.get("workflow_php_signal_sample")),
+            "query": sample_readout(observed.get("workflow_php_query_sample")),
+            "repeat_query": sample_readout(observed.get("workflow_php_repeat_query_sample")),
+            "observed_values": observed.get("observed_values"),
+            "error": observed.get("probe_error"),
+        }
+        cli_expected = "CLI signal increment(6) succeeds and CLI query current returns 10 against the Python worker"
+        cli_actual = {
+            "cli_signal": sample_readout(observed.get("cli_signal_sample")),
+            "cli_query": sample_readout(observed.get("cli_query_sample")),
+            "observed_values": observed.get("observed_values"),
+            "error": observed.get("probe_error"),
+        }
+    else:
+        client_field = "sdk_python_signal_and_query"
+        client_expected = (
+            "Python SDK starts a PHP-authored Counter workflow, sends increment(4), "
+            "and queries current=4"
+        )
+        client_actual = {
+            "start": sample_readout(observed.get("sdk_python_start_sample")),
+            "initial_query": sample_readout(observed.get("cli_initial_query_sample")),
+            "signal": sample_readout(observed.get("sdk_python_signal_sample")),
+            "query": sample_readout(observed.get("sdk_python_query_sample")),
+            "repeat_query": sample_readout(observed.get("sdk_python_repeat_query_sample")),
+            "observed_values": observed.get("observed_values"),
+            "error": observed.get("probe_error"),
+        }
+        cli_expected = "CLI signal increment(6) succeeds and CLI query current returns 10 against the PHP worker"
+        cli_actual = {
+            "cli_signal": sample_readout(observed.get("cli_signal_sample")),
+            "cli_query": sample_readout(observed.get("cli_query_sample")),
+            "observed_values": observed.get("observed_values"),
+            "error": observed.get("probe_error"),
+        }
+
+    client_signal_and_query = evidence_lookup(observed, client_field)
+    if client_signal_and_query is not MISSING and not evidence_true(client_signal_and_query):
+        failures.append(behavior_failure(
+            "cross_language_public_client_signal_query_mismatch",
+            client_field,
+            client_expected,
+            client_actual,
+        ))
+
+    cli_signal_and_query = evidence_lookup(observed, "cli_signal_and_query")
+    if cli_signal_and_query is not MISSING and not evidence_true(cli_signal_and_query):
+        failures.append(behavior_failure(
+            "cross_language_cli_signal_query_mismatch",
+            "cli_signal_and_query",
+            cli_expected,
+            cli_actual,
+        ))
+
+    query_consistency = evidence_lookup(observed, "cross_language_query_consistency")
+    if query_consistency is not MISSING and not evidence_true(query_consistency):
+        failures.append(behavior_failure(
+            "cross_language_query_consistency_mismatch",
+            "cross_language_query_consistency",
+            "public clients return the same final current query value after all signals",
+            {
+                "observed_values": observed.get("observed_values"),
+                "error": observed.get("probe_error"),
+            },
+        ))
+
+    wire_compatibility = evidence_lookup(observed, "wire_envelope_compatibility")
+    if wire_compatibility is not MISSING and not evidence_true(wire_compatibility):
+        failures.append(behavior_failure(
+            "cross_language_wire_envelope_incompatible",
+            "wire_envelope_compatibility",
+            "public clients exchange language-neutral payload envelopes with the worker runtime",
+            {
+                "commands_and_api_samples": observed.get("commands_and_api_samples"),
+                "error": observed.get("probe_error"),
+            },
+        ))
+
+    probe_error = observed.get("probe_error")
+    if isinstance(probe_error, dict) and probe_error:
+        failures.append(behavior_failure(
+            "cross_language_client_matrix_probe_failed",
+            "probe_error",
+            "focused cross-language public client matrix completes against published artifacts",
+            {
+                "probe_error": probe_error,
+                "commands_and_api_samples": observed.get("commands_and_api_samples"),
+                "observed_values": observed.get("observed_values"),
+            },
+        ))
+
+    return failures
+
+
 def ordered_delivery_behavior_failures(observed: dict[str, Any]) -> list[dict[str, Any]]:
     failures: list[dict[str, Any]] = []
     expected_inputs = expected_rapid_signal_inputs()
@@ -7302,6 +8066,12 @@ def current_behavior_failures_for(scenario: str, observed: dict[str, Any]) -> li
 
     if scenario == "php_worker_cli_and_sdk_baseline":
         return php_baseline_behavior_failures(observed)
+
+    if scenario in {
+        "python_worker_php_facing_and_cli_clients",
+        "php_worker_python_and_cli_clients",
+    }:
+        return cross_language_client_behavior_failures(scenario, observed)
 
     if scenario == "ordered_signal_delivery":
         return ordered_delivery_behavior_failures(observed)
