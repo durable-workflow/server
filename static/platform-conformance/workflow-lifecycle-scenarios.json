@@ -74,7 +74,7 @@
     {
       "id": "workflow_timeout_terminal_state",
       "description": "Workflow execution or run timeout records operator-visible deadline timing and terminal state.",
-      "required_evidence": ["workflow_id", "timeout_field", "deadline_at", "observed_terminal_at", "terminal_status", "operator_visible_timing"],
+      "required_evidence": ["workflow_id", "timeout_field", "deadline_at", "observed_terminal_at", "terminal_status", "operator_visible_timing", "unsupported_timeout_shape_refusals"],
       "required_behavior": "workflow_execution_or_run_timeout_records_deadline_timing_and_terminal_state"
     },
     {

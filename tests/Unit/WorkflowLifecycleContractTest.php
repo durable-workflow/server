@@ -99,6 +99,13 @@ class WorkflowLifecycleContractTest extends TestCase
             'cancellation_public_surface_terminal_state',
             'termination_public_surface_terminal_state',
             'workflow_id_reuse_duplicate_start_policy',
+            'workflow_timeout_terminal_state',
+            'run_workflow_timeout_terminal_state_probe',
+            'unsupported_timeout_shape_refusals',
+            'workflow_run_timeout',
+            'workflow_task_timeout',
+            'WorkflowTimedOut',
+            'run_timeout_seconds',
             'run_duplicate_start_policy_probe',
             "'duplicate_policy' => 'fail'",
             'duplicate_start_http_status',
@@ -270,6 +277,20 @@ class WorkflowLifecycleContractTest extends TestCase
         $this->assertContains('workflow_timeout_terminal_status_invalid', $failureCodes);
         $this->assertContains('workflow_timeout_terminal_before_deadline', $failureCodes);
         $this->assertContains('workflow_retry_docs_mismatch', $failureCodes);
+        $this->assertContains('declared_outcome_mismatch', $failureCodes);
+    }
+
+    public function test_result_gate_rejects_timeout_pass_without_typed_unsupported_shape_refusals(): void
+    {
+        $result = $this->completeLifecycleResult();
+        unset($result['scenario_results']['workflow_timeout_terminal_state']['observed_outputs']['unsupported_timeout_shape_refusals']);
+
+        $evaluation = WorkflowLifecycleResultGate::evaluate($result);
+        $failureCodes = array_column($evaluation['gate_failures'], 'code');
+
+        $this->assertSame('non_passing', $evaluation['status']);
+        $this->assertContains('missing_required_evidence', $failureCodes);
+        $this->assertContains('workflow_timeout_refusals_missing', $failureCodes);
         $this->assertContains('declared_outcome_mismatch', $failureCodes);
     }
 
@@ -517,6 +538,26 @@ class WorkflowLifecycleContractTest extends TestCase
                 'observed_terminal_at' => '2026-06-28T00:00:31Z',
                 'terminal_status' => 'timed_out',
                 'operator_visible_timing' => ['api' => true, 'history' => true],
+                'unsupported_timeout_shape_refusals' => [
+                    [
+                        'shape' => 'workflow_run_timeout',
+                        'field' => 'workflow_run_timeout',
+                        'http_status' => 422,
+                        'typed_error' => 'validation_error',
+                        'refusal_reason' => 'Use run_timeout_seconds instead of workflow_run_timeout.',
+                        'documented' => true,
+                        'counted_as_pass_evidence' => false,
+                    ],
+                    [
+                        'shape' => 'workflow_task_timeout',
+                        'field' => 'workflow_task_timeout',
+                        'http_status' => 422,
+                        'typed_error' => 'validation_error',
+                        'refusal_reason' => 'The workflow_task_timeout field is not supported by the v2 workflow start API.',
+                        'documented' => true,
+                        'counted_as_pass_evidence' => false,
+                    ],
+                ],
             ],
             'workflow_retry_backoff_or_refusal' => [
                 'workflow_id' => 'wf-retry',

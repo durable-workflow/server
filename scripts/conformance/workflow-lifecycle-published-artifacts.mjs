@@ -59,7 +59,7 @@ const SCENARIO_REQUIREMENTS = {
   },
   workflow_timeout_terminal_state: {
     description: 'Workflow execution or run timeout records operator-visible deadline timing and terminal state.',
-    required_evidence: ['workflow_id', 'timeout_field', 'deadline_at', 'observed_terminal_at', 'terminal_status', 'operator_visible_timing'],
+    required_evidence: ['workflow_id', 'timeout_field', 'deadline_at', 'observed_terminal_at', 'terminal_status', 'operator_visible_timing', 'unsupported_timeout_shape_refusals'],
     required_behavior: 'workflow_execution_or_run_timeout_records_deadline_timing_and_terminal_state',
   },
   workflow_retry_backoff_or_refusal: {
@@ -746,6 +746,22 @@ function validateWorkflowTimeout(outputs) {
   }
   if (!nonEmptyCollection(outputs.operator_visible_timing)) {
     failures.push('workflow timeout must include operator-visible timing evidence');
+  }
+  const refusals = Array.isArray(outputs.unsupported_timeout_shape_refusals)
+    ? outputs.unsupported_timeout_shape_refusals
+    : [];
+  if (refusals.length === 0) {
+    failures.push('workflow timeout evidence must include typed refusals for unsupported timeout shapes');
+  } else {
+    for (const refusal of refusals) {
+      const status = numberValue(refusal?.http_status);
+      const typedError = stringValue(refusal?.typed_error ?? refusal?.error_type ?? refusal?.refusal_code);
+      const reason = stringValue(refusal?.refusal_reason ?? refusal?.reason ?? refusal?.message);
+      if (status === null || status < 400 || !typedError || !reason || !truthyFlag(refusal?.documented)) {
+        failures.push('workflow timeout unsupported shapes must be documented typed refusals');
+        break;
+      }
+    }
   }
 
   return failures;

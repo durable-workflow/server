@@ -280,7 +280,7 @@ final class WorkflowLifecycleContract
             'workflow_timeout_terminal_state' => [
                 'title' => 'Workflow timeout terminal state',
                 'required_fields' => $sharedFields,
-                'evidence' => ['workflow_id', 'timeout_field', 'deadline_at', 'observed_terminal_at', 'terminal_status', 'operator_visible_timing'],
+                'evidence' => ['workflow_id', 'timeout_field', 'deadline_at', 'observed_terminal_at', 'terminal_status', 'operator_visible_timing', 'unsupported_timeout_shape_refusals'],
                 'required_behavior' => 'workflow_execution_or_run_timeout_records_deadline_timing_and_terminal_state',
             ],
             'workflow_retry_backoff_or_refusal' => [

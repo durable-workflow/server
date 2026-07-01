@@ -132,8 +132,12 @@ use App\Support\WorkerProtocol;
 use Illuminate\Contracts\Console\Kernel as ConsoleKernel;
 use Illuminate\Contracts\Http\Kernel as HttpKernel;
 use Illuminate\Http\Request;
+use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\Artisan;
 use Workflow\Serializers\Serializer;
+use Workflow\V2\Models\WorkflowRun;
+use Workflow\V2\Models\WorkflowTask;
+use Workflow\V2\Support\WorkflowExecutor;
 
 const LIFECYCLE_NAMESPACE = 'workflow-lifecycle-conformance';
 const LIFECYCLE_TASK_QUEUE = 'workflow-lifecycle-shared';
@@ -149,6 +153,7 @@ const FOCUSED_SCENARIOS = [
     'cancellation_public_surface_terminal_state',
     'termination_public_surface_terminal_state',
     'workflow_id_reuse_duplicate_start_policy',
+    'workflow_timeout_terminal_state',
 ];
 
 $repoRoot = getenv('RUNNER_REPO_ROOT') ?: '/app';
@@ -225,6 +230,7 @@ function focused_finding(string $scenarioId, string $message): array
     $owningSurface = match (true) {
         str_starts_with($scenarioId, 'cancellation'), str_starts_with($scenarioId, 'termination') => 'server-cli-and-sdks',
         str_contains($scenarioId, 'duplicate_start') => 'server',
+        str_contains($scenarioId, 'timeout') => 'server',
         default => 'workflow-runtime-and-server',
     };
 
@@ -360,6 +366,11 @@ function event_types(array $history): array
     )));
 }
 
+function history_events(array $history): array
+{
+    return is_array($history['events'] ?? null) ? array_values($history['events']) : [];
+}
+
 function first_matching_event(array $events, array $needles): string
 {
     foreach ($events as $event) {
@@ -373,6 +384,24 @@ function first_matching_event(array $events, array $needles): string
     return '';
 }
 
+function first_matching_history_event(array $history, array $needles): array
+{
+    foreach (history_events($history) as $event) {
+        if (! is_array($event)) {
+            continue;
+        }
+
+        $eventType = is_string($event['event_type'] ?? null) ? $event['event_type'] : '';
+        foreach ($needles as $needle) {
+            if (stripos($eventType, $needle) !== false) {
+                return $event;
+            }
+        }
+    }
+
+    return [];
+}
+
 function require_string(array $source, string $key, string $message): string
 {
     $value = $source[$key] ?? null;
@@ -382,6 +411,58 @@ function require_string(array $source, string $key, string $message): string
     }
 
     return trim($value);
+}
+
+function typed_validation_refusal(array $response, string $field, string $shape): array
+{
+    $status = is_numeric($response['_http_status'] ?? null) ? (int) $response['_http_status'] : 0;
+    $errors = is_array($response['errors'] ?? null) ? $response['errors'] : [];
+    $fieldErrors = is_array($errors[$field] ?? null) ? array_values($errors[$field]) : [];
+    $fieldMessage = is_string($fieldErrors[0] ?? null) ? trim($fieldErrors[0]) : '';
+    $message = $fieldMessage !== ''
+        ? $fieldMessage
+        : (is_string($response['message'] ?? null) ? trim($response['message']) : 'validation_error');
+
+    if ($status < 400) {
+        throw new RuntimeException($shape.' was accepted instead of refused with a typed validation error');
+    }
+    if ($message === '') {
+        throw new RuntimeException($shape.' refusal did not expose a user-visible validation message');
+    }
+
+    return [
+        'shape' => $shape,
+        'field' => $field,
+        'http_status' => $status,
+        'typed_error' => 'validation_error',
+        'refusal_reason' => $message,
+        'documented' => true,
+        'counted_as_pass_evidence' => false,
+    ];
+}
+
+function unsupported_timeout_shape_refusals(string $workflowId): array
+{
+    $legacyRunTimeout = request_json('POST', '/workflows', [
+        'workflow_id' => $workflowId.'-legacy-run-timeout',
+        'workflow_type' => 'workflow.lifecycle.timeout.unsupported',
+        'task_queue' => LIFECYCLE_TERMINAL_TASK_QUEUE,
+        'workflow_run_timeout' => 1,
+        'input' => ['cell' => 'workflow_timeout_terminal_state'],
+    ], [400, 422]);
+
+    $workflowTaskTimeout = request_json('POST', '/workflows', [
+        'workflow_id' => $workflowId.'-workflow-task-timeout',
+        'workflow_type' => 'workflow.lifecycle.timeout.unsupported',
+        'task_queue' => LIFECYCLE_TERMINAL_TASK_QUEUE,
+        'workflow_task_timeout' => 1,
+        'input' => ['cell' => 'workflow_timeout_terminal_state'],
+    ], [400, 422]);
+
+    return [
+        typed_validation_refusal($legacyRunTimeout, 'workflow_run_timeout', 'workflow_run_timeout'),
+        typed_validation_refusal($workflowTaskTimeout, 'workflow_task_timeout', 'workflow_task_timeout'),
+    ];
 }
 
 function require_terminal_response(array $source, string $key, string $expected, string $message): string
@@ -408,6 +489,156 @@ function pass_scenario(string $scenarioId, array $outputs): array
             'local_product_source_checkouts_used' => false,
         ],
     ];
+}
+
+function run_workflow_timeout_terminal_state_probe(): array
+{
+    $workflowId = 'workflow-lifecycle-timeout-'.strtolower(bin2hex(random_bytes(4)));
+    $workerId = 'workflow-lifecycle-timeout-worker-'.strtolower(bin2hex(random_bytes(4)));
+    $workflowType = 'workflow.lifecycle.timeout';
+    $runTimeoutSeconds = 1;
+
+    request_json('POST', '/worker/register', [
+        'worker_id' => $workerId,
+        'task_queue' => LIFECYCLE_TERMINAL_TASK_QUEUE,
+        'runtime' => 'php',
+        'supported_workflow_types' => [$workflowType],
+    ]);
+
+    $start = request_json('POST', '/workflows', [
+        'workflow_id' => $workflowId,
+        'workflow_type' => $workflowType,
+        'task_queue' => LIFECYCLE_TERMINAL_TASK_QUEUE,
+        'run_timeout_seconds' => $runTimeoutSeconds,
+        'input' => [
+            'cell' => 'workflow_timeout_terminal_state',
+            'timeout_shape' => 'run_timeout_seconds',
+        ],
+    ]);
+    $runId = require_string($start, 'run_id', 'timeout workflow start response did not include run_id');
+
+    $beforeTimeout = request_json('GET', '/workflows/'.$workflowId.'/runs/'.$runId);
+    $deadlineAt = require_string($beforeTimeout, 'run_deadline_at', 'timeout workflow describe response did not include run_deadline_at');
+
+    $poll = request_json('POST', '/worker/workflow-tasks/poll', [
+        'worker_id' => $workerId,
+        'task_queue' => LIFECYCLE_TERMINAL_TASK_QUEUE,
+    ]);
+    $task = is_array($poll['task'] ?? null) ? $poll['task'] : [];
+    $taskId = require_string($task, 'task_id', 'timeout worker poll did not return task_id');
+    $attempt = is_numeric($task['workflow_task_attempt'] ?? null) ? (int) $task['workflow_task_attempt'] : 0;
+    if ($attempt < 1) {
+        throw new RuntimeException('timeout worker poll did not return workflow_task_attempt');
+    }
+
+    $deadline = Carbon::parse($deadlineAt);
+    $enforcedAt = $deadline->copy()->addSecond();
+    Carbon::setTestNow($enforcedAt);
+    try {
+        $run = WorkflowRun::query()->findOrFail($runId);
+        $taskModel = WorkflowTask::query()->findOrFail($taskId);
+        app(WorkflowExecutor::class)->run($run->fresh(), $taskModel->fresh());
+    } finally {
+        Carbon::setTestNow();
+    }
+
+    $afterTimeout = request_json('GET', '/workflows/'.$workflowId.'/runs/'.$runId);
+    $terminalStatus = require_terminal_response(
+        $afterTimeout,
+        'closed_reason',
+        'timed_out',
+        'timeout describe-run response did not expose timed_out closed_reason',
+    );
+    $observedTerminalAt = require_string(
+        $afterTimeout,
+        'closed_at',
+        'timeout describe-run response did not expose closed_at',
+    );
+
+    $history = request_json('GET', '/workflows/'.$workflowId.'/runs/'.$runId.'/history');
+    $historyEvents = event_types($history);
+    $terminalEvent = first_matching_event($historyEvents, ['WorkflowTimedOut']);
+    if ($terminalEvent === '') {
+        throw new RuntimeException('timeout history did not expose WorkflowTimedOut');
+    }
+    $terminalHistoryEvent = first_matching_history_event($history, ['WorkflowTimedOut']);
+
+    $callerError = request_json('POST', '/workflows/'.$workflowId.'/runs/'.$runId.'/query/currentState', [], [409]);
+    $unsupportedTimeoutShapeRefusals = unsupported_timeout_shape_refusals($workflowId);
+
+    return pass_scenario('workflow_timeout_terminal_state', [
+        'workflow_id' => $workflowId,
+        'run_id' => $runId,
+        'timeout_field' => 'run_timeout_seconds',
+        'timeout_value_seconds' => $runTimeoutSeconds,
+        'deadline_at' => $deadlineAt,
+        'observed_terminal_at' => $observedTerminalAt,
+        'terminal_status' => $terminalStatus,
+        'public_run_status' => $afterTimeout['status'] ?? null,
+        'start_http_status' => $start['_http_status'] ?? null,
+        'describe_before_timeout' => [
+            'status' => $beforeTimeout['status'] ?? null,
+            'closed_reason' => $beforeTimeout['closed_reason'] ?? null,
+            'run_timeout_seconds' => $beforeTimeout['run_timeout_seconds'] ?? null,
+            'run_deadline_at' => $beforeTimeout['run_deadline_at'] ?? null,
+            'started_at' => $beforeTimeout['started_at'] ?? null,
+        ],
+        'describe_after_timeout' => [
+            'status' => $afterTimeout['status'] ?? null,
+            'closed_reason' => $afterTimeout['closed_reason'] ?? null,
+            'closed_at' => $afterTimeout['closed_at'] ?? null,
+            'run_deadline_at' => $afterTimeout['run_deadline_at'] ?? null,
+            'error' => $afterTimeout['error'] ?? null,
+        ],
+        'operator_visible_timing' => [
+            'server_api' => [
+                'start_path' => '/api/workflows',
+                'describe_path' => '/api/workflows/{workflowId}/runs/{runId}',
+                'run_timeout_seconds' => $runTimeoutSeconds,
+                'deadline_at' => $deadlineAt,
+                'observed_terminal_at' => $observedTerminalAt,
+                'closed_reason' => $terminalStatus,
+            ],
+            'history' => [
+                'history_path' => '/api/workflows/{workflowId}/runs/{runId}/history',
+                'terminal_event' => $terminalEvent,
+                'terminal_event_payload' => is_array($terminalHistoryEvent['payload'] ?? null)
+                    ? $terminalHistoryEvent['payload']
+                    : [],
+                'event_count' => count($historyEvents),
+            ],
+            'worker_protocol' => [
+                'poll_path' => '/api/worker/workflow-tasks/poll',
+                'worker_id' => $workerId,
+                'task_id' => $taskId,
+                'workflow_task_attempt' => $attempt,
+                'enforced_by_executor_at' => $enforcedAt->toJSON(),
+            ],
+            'caller_query_after_terminal' => [
+                'query_path' => '/api/workflows/{workflowId}/runs/{runId}/query/currentState',
+                'http_status' => $callerError['_http_status'] ?? null,
+                'reason' => $callerError['reason'] ?? null,
+                'run_status' => $callerError['run_status'] ?? null,
+                'message' => $callerError['message'] ?? null,
+            ],
+            'cli' => [
+                'artifact_version' => string_env('DW_CLI_VERSION'),
+                'status' => 'not_exercised_in_published_server_host_probe',
+                'typed_refusal' => [
+                    'typed_error' => 'cli_surface_outside_focused_timeout_cell',
+                    'refusal_reason' => 'The focused timeout host probe records server API, history, and worker-protocol timing from the published server image; broad CLI diagnostics remain in the operator diagnostics lifecycle cell.',
+                    'documented' => true,
+                ],
+            ],
+        ],
+        'history_events' => $historyEvents,
+        'terminal_history_event' => $terminalEvent,
+        'terminal_history_event_payload' => is_array($terminalHistoryEvent['payload'] ?? null)
+            ? $terminalHistoryEvent['payload']
+            : [],
+        'unsupported_timeout_shape_refusals' => $unsupportedTimeoutShapeRefusals,
+        'source_policy' => 'published_artifacts_only',
+    ]);
 }
 
 function run_terminal_surface_probe(
@@ -780,6 +1011,15 @@ try {
     } catch (Throwable $throwable) {
         $scenarioResults['workflow_id_reuse_duplicate_start_policy'] = failure_scenario(
             'workflow_id_reuse_duplicate_start_policy',
+            $throwable,
+        );
+    }
+
+    try {
+        $scenarioResults['workflow_timeout_terminal_state'] = run_workflow_timeout_terminal_state_probe();
+    } catch (Throwable $throwable) {
+        $scenarioResults['workflow_timeout_terminal_state'] = failure_scenario(
+            'workflow_timeout_terminal_state',
             $throwable,
         );
     }

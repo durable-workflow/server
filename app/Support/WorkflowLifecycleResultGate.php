@@ -1335,6 +1335,39 @@ final class WorkflowLifecycleResultGate
                 'workflow timeout must include operator-visible timing evidence',
             );
         }
+        $refusals = is_array($outputs['unsupported_timeout_shape_refusals'] ?? null)
+            ? array_values($outputs['unsupported_timeout_shape_refusals'])
+            : [];
+        if ($refusals === []) {
+            $failures = self::addSemanticFailure(
+                $failures,
+                'workflow_timeout_refusals_missing',
+                'workflow timeout evidence must include typed refusals for unsupported timeout shapes',
+            );
+        } else {
+            foreach ($refusals as $refusal) {
+                if (! is_array($refusal)) {
+                    $failures = self::addSemanticFailure(
+                        $failures,
+                        'workflow_timeout_refusal_invalid',
+                        'workflow timeout unsupported shapes must be documented typed refusals',
+                    );
+                    break;
+                }
+
+                $status = self::numberValue($refusal['http_status'] ?? null);
+                $typedError = self::stringValue($refusal['typed_error'] ?? $refusal['error_type'] ?? $refusal['refusal_code'] ?? null);
+                $reason = self::stringValue($refusal['refusal_reason'] ?? $refusal['reason'] ?? $refusal['message'] ?? null);
+                if ($status === null || $status < 400 || $typedError === '' || $reason === '' || ! self::truthy($refusal['documented'] ?? null)) {
+                    $failures = self::addSemanticFailure(
+                        $failures,
+                        'workflow_timeout_refusal_invalid',
+                        'workflow timeout unsupported shapes must be documented typed refusals',
+                    );
+                    break;
+                }
+            }
+        }
 
         return $failures;
     }
