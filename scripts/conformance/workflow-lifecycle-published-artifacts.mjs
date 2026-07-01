@@ -144,6 +144,41 @@ function loadEvidence() {
   };
 }
 
+function mergeEvidenceSidecars(record) {
+  const merged = record.value && typeof record.value === 'object' && !Array.isArray(record.value)
+    ? { ...record.value }
+    : {};
+  const sources = [record.source];
+
+  for (const fileName of ['php-sdk-lifecycle-evidence.json']) {
+    const sidecarPath = path.join(RESULT_DIR, fileName);
+    if (!fs.existsSync(sidecarPath)) {
+      continue;
+    }
+
+    const sidecar = readJson(sidecarPath) ?? {};
+    sources.push(sidecarPath);
+
+    const mergedScenarios = {
+      ...(merged.scenario_results ?? merged.scenarioResults ?? {}),
+      ...(sidecar.scenario_results ?? sidecar.scenarioResults ?? {}),
+    };
+    if (Object.keys(mergedScenarios).length > 0) {
+      merged.scenario_results = mergedScenarios;
+    }
+
+    merged.runner_blocked = truthyFlag(merged.runner_blocked)
+      || truthyFlag(merged.runnerBlocked)
+      || truthyFlag(sidecar.runner_blocked)
+      || truthyFlag(sidecar.runnerBlocked);
+  }
+
+  return {
+    source: sources.join(','),
+    value: merged,
+  };
+}
+
 function stringValue(value) {
   if (typeof value === 'string') {
     return value.trim();
@@ -1028,7 +1063,7 @@ function cellOutcomes(results) {
 }
 
 const manifest = loadManifest();
-const evidenceRecord = loadEvidence();
+const evidenceRecord = mergeEvidenceSidecars(loadEvidence());
 const evidence = evidenceRecord.value;
 const scenarios = scenarioDefinitions(manifest);
 const versions = artifactVersions(evidence);

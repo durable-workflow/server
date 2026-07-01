@@ -134,7 +134,9 @@ against the current published server image, CLI release, Python SDK, PHP
 workflow runtime, and Waterline artifact versions. The runner accepts host
 runtime evidence through `DW_WORKFLOW_LIFECYCLE_EVIDENCE`,
 `DW_WORKFLOW_LIFECYCLE_EVIDENCE_PATH`, or
-`<result-dir>/workflow-lifecycle-evidence.json`, then records artifact
+`<result-dir>/workflow-lifecycle-evidence.json`. The runner can also merge
+the generated `<result-dir>/php-sdk-lifecycle-evidence.json` sidecar for
+the PHP SDK lifecycle surface, then records artifact
 versions, public artifact sources, source policy, local source checkout usage,
 and per-cell outcomes. A cell can pass only when host runtime evidence marks
 `published_artifact_cell_executed=true`; a status string alone is not execution

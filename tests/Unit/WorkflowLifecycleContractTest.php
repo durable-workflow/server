@@ -83,6 +83,52 @@ class WorkflowLifecycleContractTest extends TestCase
         }
     }
 
+    public function test_published_artifact_runner_merges_php_sdk_lifecycle_sidecar(): void
+    {
+        $resultDir = sys_get_temp_dir().'/dw-workflow-lifecycle-'.bin2hex(random_bytes(6));
+        mkdir($resultDir, 0777, true);
+        $evidencePath = $resultDir.'/workflow-lifecycle-evidence.json';
+        $sidecarPath = $resultDir.'/php-sdk-lifecycle-evidence.json';
+
+        $hostEvidence = $this->hostEvidence();
+        unset($hostEvidence['scenario_results']['php_sdk_lifecycle_surface']);
+        file_put_contents($evidencePath, json_encode($hostEvidence, JSON_THROW_ON_ERROR));
+        file_put_contents($sidecarPath, json_encode([
+            'schema' => 'durable-workflow.v2.workflow-lifecycle.php-sdk-sidecar',
+            'runner_blocked' => false,
+            'scenario_results' => [
+                'php_sdk_lifecycle_surface' => [
+                    'status' => 'pass',
+                    'published_artifact_cell_executed' => true,
+                    'observed_outputs' => $this->outputsForScenario('php_sdk_lifecycle_surface') + [
+                        'artifact_source' => 'packagist://durable-workflow/workflow@2.0.0-alpha.224',
+                        'packagist_artifact_verified' => true,
+                    ],
+                ],
+            ],
+        ], JSON_THROW_ON_ERROR));
+
+        try {
+            exec($this->runnerCommand($resultDir, [
+                'DW_WORKFLOW_LIFECYCLE_EVIDENCE_PATH' => $evidencePath,
+                'DW_WORKFLOW_LIFECYCLE_SKIP_PHP_SDK_PROBE' => '1',
+            ]), $output, $exitCode);
+
+            $this->assertSame(0, $exitCode, implode("\n", $output));
+            $result = $this->readJson($resultDir.'/workflow-lifecycle-result.json');
+
+            $this->assertSame('pass', $result['outcome']);
+            $this->assertSame(
+                'pass',
+                $result['scenario_results']['php_sdk_lifecycle_surface']['status'],
+            );
+            $this->assertStringContainsString('php-sdk-lifecycle-evidence.json', $result['evidence_source']);
+            $this->assertSame('pass', WorkflowLifecycleResultGate::evaluate($result)['status']);
+        } finally {
+            $this->removeDirectory($resultDir);
+        }
+    }
+
     public function test_published_artifact_runner_records_retry_refusal_as_unsupported_evidence(): void
     {
         $resultDir = sys_get_temp_dir().'/dw-workflow-lifecycle-'.bin2hex(random_bytes(6));
@@ -124,7 +170,14 @@ class WorkflowLifecycleContractTest extends TestCase
 
         foreach ([
             'DW_WORKFLOW_LIFECYCLE_SKIP_FOCUSED_HOST_PROBE',
+            'DW_WORKFLOW_LIFECYCLE_SKIP_PHP_SDK_PROBE',
             'should_run_focused_host_probes',
+            'run_php_sdk_lifecycle_probe',
+            'php-sdk-lifecycle-evidence.json',
+            'published-php-sdk-lifecycle-surface-probe',
+            'WorkflowClientException',
+            'packagist_artifact_verified',
+            'workflow_client_start_with_duplicate_policy_and_timeout_budgets',
             'run_focused_host_probes',
             'focused_published_server_workflow_lifecycle_host_probes',
             'published-server-workflow-lifecycle-focused-host-probes',
@@ -712,6 +765,7 @@ class WorkflowLifecycleContractTest extends TestCase
             'DW_PYTHON_SDK_VERSION' => '0.4.91',
             'DW_WORKFLOW_PHP_VERSION' => '2.0.0-alpha.224',
             'DW_WATERLINE_VERSION' => '2.0.0-alpha.111',
+            'DW_WORKFLOW_LIFECYCLE_SKIP_PHP_SDK_PROBE' => '1',
         ], $extraEnv);
 
         $envPrefix = implode(' ', array_map(

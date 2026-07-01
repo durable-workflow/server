@@ -163,10 +163,12 @@ final class WorkflowLifecycleContract
                     'DW_WORKFLOW_LIFECYCLE_EVIDENCE',
                     'DW_WORKFLOW_LIFECYCLE_EVIDENCE_PATH',
                     '<result-dir>/workflow-lifecycle-evidence.json',
+                    '<result-dir>/php-sdk-lifecycle-evidence.json',
                 ],
                 'result_files' => [
                     'pins.json',
                     'run-metadata.json',
+                    'php-sdk-lifecycle-evidence.json',
                     'workflow-lifecycle-result.json',
                     'workflow-lifecycle-record.json',
                     'workflow-lifecycle-findings.json',
