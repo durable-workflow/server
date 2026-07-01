@@ -150,7 +150,7 @@ function mergeEvidenceSidecars(record) {
     : {};
   const sources = [record.source];
 
-  for (const fileName of ['php-sdk-lifecycle-evidence.json']) {
+  for (const fileName of ['php-sdk-lifecycle-evidence.json', 'python-sdk-lifecycle-evidence.json']) {
     const sidecarPath = path.join(RESULT_DIR, fileName);
     if (!fs.existsSync(sidecarPath)) {
       continue;

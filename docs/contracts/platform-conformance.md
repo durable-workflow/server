@@ -135,14 +135,18 @@ workflow runtime, and Waterline artifact versions. The runner accepts host
 runtime evidence through `DW_WORKFLOW_LIFECYCLE_EVIDENCE`,
 `DW_WORKFLOW_LIFECYCLE_EVIDENCE_PATH`, or
 `<result-dir>/workflow-lifecycle-evidence.json`. The runner can also merge
-the generated `<result-dir>/php-sdk-lifecycle-evidence.json` sidecar for
-the PHP SDK lifecycle surface. That sidecar can be produced with PHP and
-Composer from the published server image, with explicit
-`DW_WORKFLOW_LIFECYCLE_PHP_BIN` / `DW_WORKFLOW_LIFECYCLE_COMPOSER_BIN`
-binary paths supplied by the host, or with Docker's `composer:2` image when the
-host has Docker but no local PHP toolchain. The runner then records artifact
-versions, public artifact sources, source policy, local source checkout usage,
-and per-cell outcomes. A cell can pass only when host runtime evidence marks
+generated `<result-dir>/php-sdk-lifecycle-evidence.json` and
+`<result-dir>/python-sdk-lifecycle-evidence.json` sidecars for SDK lifecycle
+surfaces. The PHP sidecar can be produced with PHP and Composer from the
+published server image, with explicit `DW_WORKFLOW_LIFECYCLE_PHP_BIN` /
+`DW_WORKFLOW_LIFECYCLE_COMPOSER_BIN` binary paths supplied by the host, or with
+Docker's `composer:2` image when the host has Docker but no local PHP toolchain.
+The Python sidecar can be produced from a temporary venv that installs the
+pinned PyPI `durable-workflow` artifact, or with an explicit
+`DW_WORKFLOW_LIFECYCLE_PYTHON_BIN` binary whose environment already contains
+that published package. The runner then records artifact versions, public
+artifact sources, source policy, local source checkout usage, and per-cell
+outcomes. A cell can pass only when host runtime evidence marks
 `published_artifact_cell_executed=true`; a status string alone is not execution
 evidence. Required cells cover continue-as-new run-chain
 visibility, logical workflow identity, history continuity, duplicate side-effect

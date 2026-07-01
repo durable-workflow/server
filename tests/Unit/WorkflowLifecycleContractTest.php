@@ -34,6 +34,12 @@ class WorkflowLifecycleContractTest extends TestCase
         $this->assertContains('DW_WORKFLOW_LIFECYCLE_PHP_BIN', $hostRunner['php_sdk_probe_binary_overrides']);
         $this->assertContains('DW_WORKFLOW_LIFECYCLE_COMPOSER_BIN', $hostRunner['php_sdk_probe_binary_overrides']);
         $this->assertTrue($hostRunner['php_sdk_probe_does_not_require_docker_inside_server_container']);
+        $this->assertContains('python_venv_pypi_install', $hostRunner['python_sdk_probe_executors']);
+        $this->assertContains('configured_python_binary', $hostRunner['python_sdk_probe_executors']);
+        $this->assertContains('DW_WORKFLOW_LIFECYCLE_PYTHON_BIN', $hostRunner['python_sdk_probe_binary_overrides']);
+        $this->assertContains('<result-dir>/python-sdk-lifecycle-evidence.json', $hostRunner['evidence_inputs']);
+        $this->assertContains('python-sdk-lifecycle-evidence.json', $hostRunner['result_files']);
+        $this->assertTrue($hostRunner['python_sdk_probe_does_not_require_docker_inside_server_container']);
     }
 
     public function test_result_gate_accepts_complete_published_artifact_lifecycle_pass(): void
@@ -130,6 +136,52 @@ class WorkflowLifecycleContractTest extends TestCase
                 $result['scenario_results']['php_sdk_lifecycle_surface']['status'],
             );
             $this->assertStringContainsString('php-sdk-lifecycle-evidence.json', $result['evidence_source']);
+            $this->assertSame('pass', WorkflowLifecycleResultGate::evaluate($result)['status']);
+        } finally {
+            $this->removeDirectory($resultDir);
+        }
+    }
+
+    public function test_published_artifact_runner_merges_python_sdk_lifecycle_sidecar(): void
+    {
+        $resultDir = sys_get_temp_dir().'/dw-workflow-lifecycle-'.bin2hex(random_bytes(6));
+        mkdir($resultDir, 0777, true);
+        $evidencePath = $resultDir.'/workflow-lifecycle-evidence.json';
+        $sidecarPath = $resultDir.'/python-sdk-lifecycle-evidence.json';
+
+        $hostEvidence = $this->hostEvidence();
+        unset($hostEvidence['scenario_results']['python_sdk_lifecycle_surface']);
+        file_put_contents($evidencePath, json_encode($hostEvidence, JSON_THROW_ON_ERROR));
+        file_put_contents($sidecarPath, json_encode([
+            'schema' => 'durable-workflow.v2.workflow-lifecycle.python-sdk-sidecar',
+            'runner_blocked' => false,
+            'scenario_results' => [
+                'python_sdk_lifecycle_surface' => [
+                    'status' => 'pass',
+                    'published_artifact_cell_executed' => true,
+                    'observed_outputs' => $this->outputsForScenario('python_sdk_lifecycle_surface') + [
+                        'artifact_source' => 'pypi://durable-workflow==0.4.91',
+                        'pypi_artifact_verified' => true,
+                    ],
+                ],
+            ],
+        ], JSON_THROW_ON_ERROR));
+
+        try {
+            exec($this->runnerCommand($resultDir, [
+                'DW_WORKFLOW_LIFECYCLE_EVIDENCE_PATH' => $evidencePath,
+                'DW_WORKFLOW_LIFECYCLE_SKIP_PYTHON_SDK_PROBE' => '1',
+            ]), $output, $exitCode);
+
+            $this->assertSame(0, $exitCode, implode("\n", $output));
+            $result = $this->readJson($resultDir.'/workflow-lifecycle-result.json');
+
+            $this->assertSame('pass', $result['outcome']);
+            $this->assertSame(
+                'pass',
+                $result['scenario_results']['python_sdk_lifecycle_surface']['status'],
+            );
+            $this->assertStringContainsString('python-sdk-lifecycle-evidence.json', $result['evidence_source']);
             $this->assertSame('pass', WorkflowLifecycleResultGate::evaluate($result)['status']);
         } finally {
             $this->removeDirectory($resultDir);
@@ -338,6 +390,78 @@ SH);
         }
     }
 
+    public function test_python_sdk_probe_uses_explicit_python_binary_without_docker(): void
+    {
+        $resultDir = sys_get_temp_dir().'/dw-workflow-lifecycle-'.bin2hex(random_bytes(6));
+        $fakeBin = sys_get_temp_dir().'/dw-workflow-lifecycle-bin-'.bin2hex(random_bytes(6));
+        mkdir($resultDir, 0777, true);
+        mkdir($fakeBin, 0777, true);
+
+        file_put_contents($fakeBin.'/python-explicit', <<<'SH'
+#!/usr/bin/env bash
+cat > "$RESULT_DIR/python-sdk-lifecycle-evidence.json" <<JSON
+{
+  "schema": "durable-workflow.v2.workflow-lifecycle.python-sdk-sidecar",
+  "runner_blocked": false,
+  "scenario_results": {
+    "python_sdk_lifecycle_surface": {
+      "status": "pass",
+      "published_artifact_cell_executed": true,
+      "observed_outputs": {
+        "sdk": "sdk-python",
+        "covered_cells": ["pypi_artifact_imported", "workflow_client_start_with_duplicate_policy_and_timeout_budgets"],
+        "unsupported_cells": ["workflow_level_retry_policy"],
+        "typed_errors": [
+          {
+            "cell": "workflow_level_retry_policy",
+            "typed_error": "InvalidArgument",
+            "refusal_reason": "The retry_policy field is not supported by the v2 workflow start API.",
+            "documented": true
+          }
+        ],
+        "artifact_version": "$DW_PYTHON_SDK_VERSION",
+        "artifact_source": "pypi://durable-workflow==$DW_PYTHON_SDK_VERSION",
+        "pypi_artifact_verified": true,
+        "published_artifact_cell_executed": true,
+        "local_product_source_checkouts_used": false,
+        "probe_executor": "$PYTHON_SDK_PROBE_EXECUTOR"
+      }
+    }
+  }
+}
+JSON
+exit 0
+SH);
+        chmod($fakeBin.'/python-explicit', 0755);
+
+        try {
+            exec($this->runnerCommand($resultDir, [
+                'PATH' => '/usr/local/bin:/usr/bin:/bin',
+                'DW_WORKFLOW_LIFECYCLE_SKIP_PYTHON_SDK_PROBE' => '0',
+                'DW_WORKFLOW_LIFECYCLE_PYTHON_BIN' => $fakeBin.'/python-explicit',
+            ]), $output, $exitCode);
+
+            $this->assertSame(0, $exitCode, implode("\n", $output));
+
+            $result = $this->readJson($resultDir.'/workflow-lifecycle-result.json');
+            $pythonScenario = $result['scenario_results']['python_sdk_lifecycle_surface'];
+
+            $this->assertFalse($result['runner_blocked']);
+            $this->assertSame('pass', $pythonScenario['status']);
+            $this->assertSame('configured_python_binary', $pythonScenario['observed_outputs']['probe_executor']);
+            $this->assertSame('0.4.91', $pythonScenario['observed_outputs']['artifact_version']);
+            $this->assertStringContainsString('python-sdk-lifecycle-evidence.json', $result['evidence_source']);
+            $this->assertNotContains(
+                'workflow-lifecycle-python-sdk-lifecycle-surface-runner-gap',
+                array_column($result['findings'], 'finding_id'),
+            );
+            $this->assertSame([], WorkflowLifecycleResultGate::evaluate($result)['gate_failures']);
+        } finally {
+            $this->removeDirectory($resultDir);
+            $this->removeDirectory($fakeBin);
+        }
+    }
+
     public function test_published_artifact_runner_records_retry_refusal_as_pass_evidence(): void
     {
         $resultDir = sys_get_temp_dir().'/dw-workflow-lifecycle-'.bin2hex(random_bytes(6));
@@ -381,25 +505,38 @@ SH);
         foreach ([
             'DW_WORKFLOW_LIFECYCLE_SKIP_FOCUSED_HOST_PROBE',
             'DW_WORKFLOW_LIFECYCLE_SKIP_PHP_SDK_PROBE',
+            'DW_WORKFLOW_LIFECYCLE_SKIP_PYTHON_SDK_PROBE',
             'DW_WORKFLOW_LIFECYCLE_PHP_SDK_EXECUTOR',
             'should_run_focused_host_probes',
             'run_php_sdk_lifecycle_probe',
+            'run_python_sdk_lifecycle_probe',
             'php_sdk_probe_executor',
             'write_php_sdk_product_gap',
+            'write_python_sdk_product_gap',
             'php-sdk-lifecycle-evidence.json',
+            'python-sdk-lifecycle-evidence.json',
             'published-php-sdk-lifecycle-surface-probe',
+            'published-python-sdk-lifecycle-surface-probe',
             'WorkflowClientException',
             'packagist_artifact_verified',
+            'pypi_artifact_verified',
             'DW_WORKFLOW_LIFECYCLE_PHP_BIN',
             'DW_WORKFLOW_LIFECYCLE_COMPOSER_BIN',
+            'DW_WORKFLOW_LIFECYCLE_PYTHON_BIN',
             'php_sdk_resolve_command',
+            'python_sdk_resolve_command',
             'php-sdk-lifecycle-composer-home',
+            'python-sdk-lifecycle-venv',
             'COMPOSER_ALLOW_SUPERUSER=1',
             '"$composer_bin" require',
+            'pip install --disable-pip-version-check --no-input "durable-workflow==${sdk_version}"',
             'RESULT_DIR="$result_dir"',
             '-e RESULT_DIR=/result',
             'PHP_SDK_PROBE_EXECUTOR',
+            'PYTHON_SDK_PROBE_EXECUTOR',
             'workflow_client_start_with_duplicate_policy_and_timeout_budgets',
+            'workflow_handle_signal_query_cancel_terminate_methods',
+            'workflow_retry_policy_typed_refusal',
             'run_focused_host_probes',
             'focused_published_server_workflow_lifecycle_host_probes',
             'published-server-workflow-lifecycle-focused-host-probes',
@@ -971,6 +1108,7 @@ SH);
             'DW_WORKFLOW_PHP_VERSION' => '2.0.0-alpha.224',
             'DW_WATERLINE_VERSION' => '2.0.0-alpha.111',
             'DW_WORKFLOW_LIFECYCLE_SKIP_PHP_SDK_PROBE' => '1',
+            'DW_WORKFLOW_LIFECYCLE_SKIP_PYTHON_SDK_PROBE' => '1',
         ], $extraEnv);
 
         $envPrefix = implode(' ', array_map(

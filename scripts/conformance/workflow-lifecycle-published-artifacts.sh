@@ -28,6 +28,9 @@ Environment overrides:
   DW_WORKFLOW_LIFECYCLE_SKIP_PHP_SDK_PROBE=1
                                     Skip the published PHP SDK lifecycle
                                     surface probe.
+  DW_WORKFLOW_LIFECYCLE_SKIP_PYTHON_SDK_PROBE=1
+                                    Skip the published Python SDK lifecycle
+                                    surface probe.
   DW_WORKFLOW_LIFECYCLE_PHP_SDK_EXECUTOR
                                     Optional executor override: local or docker.
                                     By default the probe uses local PHP and
@@ -40,6 +43,9 @@ Environment overrides:
                                     Optional Composer binary for the local PHP
                                     SDK probe. Defaults to COMPOSER_BIN,
                                     composer, or common absolute Composer paths.
+  DW_WORKFLOW_LIFECYCLE_PYTHON_BIN  Optional Python binary with the published
+                                    durable-workflow package already installed
+                                    for the Python SDK probe.
   DW_SERVER_IMAGE                   Exact server image tag or digest under test.
   DW_SERVER_VERSION                 Exact server version under test.
   DW_CLI_VERSION                    Exact CLI release version.
@@ -716,6 +722,604 @@ PHP
 
   if [[ ! -s "$result_dir/php-sdk-lifecycle-evidence.json" ]]; then
     write_php_sdk_product_gap 'Published PHP SDK lifecycle probe completed without writing evidence; see php-sdk-lifecycle-probe.log.' 'probe_evidence_missing' "$executor"
+  fi
+}
+
+write_python_sdk_runner_blocked() {
+  local reason="${1:-Python SDK lifecycle probe could not run.}"
+
+  RESULT_DIR="$result_dir" \
+  DW_PYTHON_SDK_VERSION="${DW_PYTHON_SDK_VERSION:-}" \
+  PYTHON_SDK_RUNNER_BLOCKED_REASON="$reason" \
+  node <<'NODE'
+const fs = require('node:fs');
+const path = require('node:path');
+
+const resultDir = process.env.RESULT_DIR;
+const version = (process.env.DW_PYTHON_SDK_VERSION || '').trim();
+const reason = (process.env.PYTHON_SDK_RUNNER_BLOCKED_REASON || 'Python SDK lifecycle probe could not run.').trim();
+const artifactSource = version ? `pypi://durable-workflow==${version}` : 'pypi://durable-workflow==unresolved';
+
+const payload = {
+  schema: 'durable-workflow.v2.workflow-lifecycle.python-sdk-sidecar',
+  generated_at: new Date().toISOString().replace(/\.\d{3}Z$/, 'Z'),
+  runner: 'published-python-sdk-lifecycle-surface-probe',
+  runner_blocked: true,
+  scenario_results: {
+    python_sdk_lifecycle_surface: {
+      scenario_id: 'python_sdk_lifecycle_surface',
+      status: 'runner_blocked',
+      classification: 'runner-gap',
+      published_artifact_cell_executed: false,
+      observed_outputs: {
+        sdk: 'sdk-python',
+        artifact_version: version,
+        artifact_source: artifactSource,
+        published_artifact_cell_executed: false,
+        local_product_source_checkouts_used: false,
+        runner_blocked_reason: reason,
+      },
+      linked_findings: [
+        {
+          finding_id: 'workflow-lifecycle-python-sdk-lifecycle-surface-runner-gap',
+          finding_type: 'conformance_runner_blocked',
+          classification: 'runner-gap',
+          scenario_id: 'python_sdk_lifecycle_surface',
+          owning_surface: 'conformance_harness',
+          summary: reason,
+          next_acceptance_criterion: 'Run the Python SDK lifecycle surface probe against the pinned PyPI artifact and record covered lifecycle cells plus typed refusals.',
+        },
+      ],
+    },
+  },
+};
+
+fs.writeFileSync(path.join(resultDir, 'python-sdk-lifecycle-evidence.json'), `${JSON.stringify(payload, null, 2)}\n`);
+NODE
+}
+
+write_python_sdk_product_gap() {
+  local summary="${1:-Published Python SDK lifecycle probe failed.}"
+  local stage="${2:-python_sdk_lifecycle_probe}"
+  local executor="${3:-unknown}"
+
+  RESULT_DIR="$result_dir" \
+  DW_PYTHON_SDK_VERSION="${DW_PYTHON_SDK_VERSION:-}" \
+  PYTHON_SDK_PRODUCT_GAP_SUMMARY="$summary" \
+  PYTHON_SDK_PRODUCT_GAP_STAGE="$stage" \
+  PYTHON_SDK_PRODUCT_GAP_EXECUTOR="$executor" \
+  node <<'NODE'
+const fs = require('node:fs');
+const path = require('node:path');
+
+const resultDir = process.env.RESULT_DIR;
+const version = (process.env.DW_PYTHON_SDK_VERSION || '').trim();
+const summary = (process.env.PYTHON_SDK_PRODUCT_GAP_SUMMARY || 'Published Python SDK lifecycle probe failed.').trim();
+const stage = (process.env.PYTHON_SDK_PRODUCT_GAP_STAGE || 'python_sdk_lifecycle_probe').trim();
+const executor = (process.env.PYTHON_SDK_PRODUCT_GAP_EXECUTOR || 'unknown').trim();
+const artifactSource = version ? `pypi://durable-workflow==${version}` : 'pypi://durable-workflow==unresolved';
+
+const payload = {
+  schema: 'durable-workflow.v2.workflow-lifecycle.python-sdk-sidecar',
+  generated_at: new Date().toISOString().replace(/\.\d{3}Z$/, 'Z'),
+  runner: 'published-python-sdk-lifecycle-surface-probe',
+  runner_blocked: false,
+  scenario_results: {
+    python_sdk_lifecycle_surface: {
+      scenario_id: 'python_sdk_lifecycle_surface',
+      status: 'fail',
+      classification: 'product-gap',
+      published_artifact_cell_executed: true,
+      observed_outputs: {
+        sdk: 'sdk-python',
+        artifact_version: version,
+        artifact_source: artifactSource,
+        pypi_package: 'durable-workflow',
+        pypi_artifact_verified: false,
+        published_artifact_install_attempted: true,
+        published_artifact_cell_executed: true,
+        local_product_source_checkouts_used: false,
+        failure_stage: stage,
+        probe_executor: executor,
+        failure_summary: summary,
+      },
+      linked_findings: [
+        {
+          finding_id: 'workflow-lifecycle-python-sdk-lifecycle-surface-product-gap',
+          finding_type: 'product_behavior_gap',
+          classification: 'product-gap',
+          scenario_id: 'python_sdk_lifecycle_surface',
+          owning_surface: 'sdk-python',
+          summary,
+          next_acceptance_criterion: 'Publish a Python SDK artifact whose lifecycle surface covers supported cells and typed refusals, then rerun workflow-lifecycle conformance.',
+        },
+      ],
+    },
+  },
+};
+
+fs.writeFileSync(path.join(resultDir, 'python-sdk-lifecycle-evidence.json'), `${JSON.stringify(payload, null, 2)}\n`);
+NODE
+}
+
+python_sdk_resolve_command() {
+  local candidate resolved
+
+  for candidate in "$@"; do
+    if [[ -z "$candidate" ]]; then
+      continue
+    fi
+
+    if [[ "$candidate" == */* ]]; then
+      if [[ -x "$candidate" ]]; then
+        printf '%s\n' "$candidate"
+        return 0
+      fi
+      continue
+    fi
+
+    if resolved="$(command -v "$candidate" 2>/dev/null)" && [[ -n "$resolved" ]]; then
+      printf '%s\n' "$resolved"
+      return 0
+    fi
+  done
+
+  return 1
+}
+
+python_sdk_explicit_python_bin() {
+  python_sdk_resolve_command \
+    "${DW_WORKFLOW_LIFECYCLE_PYTHON_BIN:-}" \
+    "${PYTHON_BIN:-}"
+}
+
+python_sdk_python3_bin() {
+  python_sdk_resolve_command \
+    python3 \
+    /usr/local/bin/python3 \
+    /usr/bin/python3
+}
+
+run_python_sdk_lifecycle_probe() {
+  if [[ "${DW_WORKFLOW_LIFECYCLE_SKIP_PYTHON_SDK_PROBE:-0}" == "1" || "${DW_WORKFLOW_LIFECYCLE_SKIP_PYTHON_SDK_PROBE:-}" == "true" ]]; then
+    return 0
+  fi
+  if [[ -n "${DW_WORKFLOW_LIFECYCLE_EVIDENCE:-}" || -n "${DW_WORKFLOW_LIFECYCLE_EVIDENCE_PATH:-}" ]]; then
+    return 0
+  fi
+  if [[ -s "$result_dir/python-sdk-lifecycle-evidence.json" ]]; then
+    return 0
+  fi
+
+  local sdk_version="${DW_PYTHON_SDK_VERSION:-}"
+  if [[ -z "$sdk_version" ]]; then
+    write_python_sdk_runner_blocked 'DW_PYTHON_SDK_VERSION is required for the Python SDK lifecycle probe.'
+    return 0
+  fi
+
+  local probe_dir="$result_dir/python-sdk-lifecycle-probe"
+  mkdir -p "$probe_dir"
+
+  cat > "$probe_dir/python-sdk-lifecycle-probe.py" <<'PY'
+from __future__ import annotations
+
+import asyncio
+import json
+import os
+import sys
+from importlib import metadata
+from pathlib import Path
+from typing import Any
+
+import httpx
+
+import durable_workflow
+from durable_workflow import (
+    ChildWorkflowRetryPolicy,
+    Client,
+    ContinueAsNew,
+    InvalidArgument,
+    StartChildWorkflow,
+    WorkflowAlreadyStarted,
+    WorkflowCancelled,
+    WorkflowTerminated,
+)
+import durable_workflow.serializer as serializer
+
+EXPECTED_VERSION = os.environ.get("DW_PYTHON_SDK_VERSION", "").strip()
+RESULT_DIR = Path(os.environ.get("RESULT_DIR", ".")).resolve()
+PROBE_EXECUTOR = os.environ.get("PYTHON_SDK_PROBE_EXECUTOR", "unknown").strip() or "unknown"
+
+failures: list[str] = []
+covered_cells: list[str] = []
+unsupported_cells: list[str] = []
+typed_errors: list[dict[str, Any]] = []
+captured_requests: list[dict[str, Any]] = []
+
+
+def check(condition: bool, message: str) -> None:
+    if not condition:
+        failures.append(message)
+
+
+def mark(cell: str) -> None:
+    covered_cells.append(cell)
+
+
+def typed_error(cell: str, error_type: str, reason: str, *, unsupported: bool = False) -> None:
+    if unsupported:
+        unsupported_cells.append(cell)
+    typed_errors.append(
+        {
+            "cell": cell,
+            "typed_error": error_type,
+            "refusal_reason": reason,
+            "documented": True,
+        }
+    )
+
+
+def response(status: int, payload: dict[str, Any] | None = None) -> httpx.Response:
+    return httpx.Response(status, json=payload or {})
+
+
+def request_body(request: httpx.Request) -> dict[str, Any]:
+    if not request.content:
+        return {}
+    decoded = json.loads(request.content.decode("utf-8"))
+    return decoded if isinstance(decoded, dict) else {}
+
+
+def handler(request: httpx.Request) -> httpx.Response:
+    body = request_body(request)
+    captured_requests.append(
+        {
+            "method": request.method,
+            "path": request.url.path,
+            "body": body,
+            "namespace_header": request.headers.get("X-Namespace") == "workflow-lifecycle-conformance",
+            "control_plane_header": request.headers.get("X-Durable-Workflow-Control-Plane-Version") == "2",
+        }
+    )
+
+    if request.method == "POST" and request.url.path == "/api/workflows":
+        if body.get("workflow_id") == "wf-python-duplicate":
+            return response(
+                409,
+                {
+                    "reason": "duplicate_not_allowed",
+                    "message": "workflow already started",
+                    "control_plane": {"operation": "start_workflow"},
+                },
+            )
+        if "retry_policy" in body:
+            return response(
+                422,
+                {
+                    "reason": "validation_error",
+                    "message": "The retry_policy field is not supported by the v2 workflow start API.",
+                    "errors": {"retry_policy": ["unsupported field"]},
+                    "control_plane": {"operation": "start_workflow"},
+                },
+            )
+        return response(
+            201,
+            {
+                "workflow_id": body.get("workflow_id"),
+                "run_id": "run-python-started",
+                "workflow_type": body.get("workflow_type"),
+            },
+        )
+
+    if request.method == "POST" and request.url.path == "/api/workflows/wf-python-lifecycle/signal/approve":
+        return response(202, {"accepted": True, "workflow_id": "wf-python-lifecycle"})
+
+    if request.method == "POST" and request.url.path == "/api/workflows/wf-python-lifecycle/query/current":
+        return response(200, {"result": {"state": "ready"}})
+
+    if request.method == "POST" and request.url.path == "/api/workflows/wf-python-lifecycle/cancel":
+        return response(202, {"outcome": "accepted", "command_status": "accepted"})
+
+    if request.method == "POST" and request.url.path == "/api/workflows/wf-python-lifecycle/terminate":
+        return response(202, {"outcome": "accepted", "command_status": "accepted"})
+
+    return response(404, {"reason": "workflow_not_found", "message": request.url.path})
+
+
+async def run_client_surface() -> None:
+    client = Client(
+        "http://server:8080",
+        token="test-token",
+        namespace="workflow-lifecycle-conformance",
+    )
+    original_http = client._http
+    client._http = httpx.AsyncClient(
+        base_url=client.base_url,
+        transport=httpx.MockTransport(handler),
+        timeout=client.timeout,
+    )
+    await original_http.aclose()
+
+    try:
+        handle = await client.start_workflow(
+            workflow_type="workflow.lifecycle.python",
+            task_queue="workflow-lifecycle-python",
+            workflow_id="wf-python-lifecycle",
+            input=["payload"],
+            duplicate_policy="fail",
+            execution_timeout_seconds=300,
+            run_timeout_seconds=120,
+        )
+        start_request = captured_requests[-1]
+        start_body = start_request["body"]
+
+        check(handle.workflow_id == "wf-python-lifecycle", "Client.start_workflow must return a handle for the started workflow id.")
+        check(handle.run_id == "run-python-started", "Client.start_workflow must preserve the started run id.")
+        check(start_request["method"] == "POST", "Client.start_workflow must use POST.")
+        check(start_request["path"] == "/api/workflows", "Client.start_workflow must target the workflow start API.")
+        check(start_body.get("workflow_id") == "wf-python-lifecycle", "Client.start_workflow must preserve workflow_id.")
+        check(start_body.get("duplicate_policy") == "fail", "Client.start_workflow must forward duplicate_policy.")
+        check(start_body.get("execution_timeout_seconds") == 300, "Client.start_workflow must forward execution_timeout_seconds.")
+        check(start_body.get("run_timeout_seconds") == 120, "Client.start_workflow must forward run_timeout_seconds.")
+        check(start_body.get("task_queue") == "workflow-lifecycle-python", "Client.start_workflow must forward task_queue.")
+        check(start_request["namespace_header"], "Client must include the selected namespace header.")
+        check(start_request["control_plane_header"], "Client must include the control-plane version header.")
+        envelope = start_body.get("input") if isinstance(start_body.get("input"), dict) else {}
+        check(
+            serializer.decode(str(envelope.get("blob", "")), codec=str(envelope.get("codec", "avro"))) == ["payload"],
+            "Client.start_workflow must encode input arguments as a payload envelope.",
+        )
+        mark("workflow_client_start_with_duplicate_policy_and_timeout_budgets")
+
+        await handle.signal("approve", ["ok"])
+        signal_request = captured_requests[-1]
+        signal_body = signal_request["body"]
+        check(signal_request["path"] == "/api/workflows/wf-python-lifecycle/signal/approve", "WorkflowHandle.signal must target the signal API.")
+        check("input" in signal_body, "WorkflowHandle.signal must encode signal arguments.")
+
+        query = await handle.query("current")
+        query_request = captured_requests[-1]
+        check(query_request["path"] == "/api/workflows/wf-python-lifecycle/query/current", "WorkflowHandle.query must target the query API.")
+        check(query == {"result": {"state": "ready"}}, "WorkflowHandle.query must expose the server query result.")
+
+        await handle.cancel(reason="operator requested cancellation")
+        cancel_request = captured_requests[-1]
+        check(cancel_request["path"] == "/api/workflows/wf-python-lifecycle/cancel", "WorkflowHandle.cancel must target the cancel API.")
+        check(cancel_request["body"].get("reason") == "operator requested cancellation", "WorkflowHandle.cancel must forward the cancellation reason.")
+
+        await handle.terminate(reason="operator requested termination")
+        terminate_request = captured_requests[-1]
+        check(terminate_request["path"] == "/api/workflows/wf-python-lifecycle/terminate", "WorkflowHandle.terminate must target the terminate API.")
+        check(terminate_request["body"].get("reason") == "operator requested termination", "WorkflowHandle.terminate must forward the termination reason.")
+        mark("workflow_handle_signal_query_cancel_terminate_methods")
+
+        try:
+            await client.start_workflow(
+                workflow_type="workflow.lifecycle.python",
+                task_queue="workflow-lifecycle-python",
+                workflow_id="wf-python-duplicate",
+                duplicate_policy="fail",
+            )
+            check(False, "duplicate workflow id start must raise WorkflowAlreadyStarted.")
+        except WorkflowAlreadyStarted as exc:
+            typed_error("workflow_id_reuse_duplicate_start_policy", exc.__class__.__name__, str(exc))
+            mark("workflow_duplicate_start_typed_error")
+
+        try:
+            await client._request(
+                "POST",
+                "/workflows",
+                json={
+                    "workflow_id": "wf-python-retry",
+                    "workflow_type": "workflow.lifecycle.python",
+                    "task_queue": "workflow-lifecycle-python",
+                    "input": [],
+                    "retry_policy": {"maximum_attempts": 2},
+                },
+                context="wf-python-retry",
+            )
+            check(False, "unsupported workflow-level retry policy must be refused by the server API.")
+        except InvalidArgument as exc:
+            typed_error("workflow_level_retry_policy", exc.__class__.__name__, str(exc), unsupported=True)
+            mark("workflow_retry_policy_typed_refusal")
+    finally:
+        await client.aclose()
+
+
+def run_workflow_command_surface() -> None:
+    continue_as_new = ContinueAsNew(
+        workflow_type="workflow.lifecycle.python.next",
+        arguments=["next", 2],
+        task_queue="workflow-lifecycle-python-next",
+    )
+    continue_command = continue_as_new.to_server_command("workflow-lifecycle-python")
+    check(continue_command.get("type") == "continue_as_new", "ContinueAsNew must emit a continue_as_new command.")
+    check(continue_command.get("workflow_type") == "workflow.lifecycle.python.next", "ContinueAsNew must preserve workflow_type.")
+    check(continue_command.get("queue") == "workflow-lifecycle-python-next", "ContinueAsNew must preserve task_queue routing.")
+    arguments = continue_command.get("arguments") if isinstance(continue_command.get("arguments"), dict) else {}
+    check(
+        serializer.decode(str(arguments.get("blob", "")), codec=str(arguments.get("codec", "avro"))) == ["next", 2],
+        "ContinueAsNew must encode replacement run arguments.",
+    )
+    mark("continue_as_new_command_surface")
+
+    retry = ChildWorkflowRetryPolicy(
+        max_attempts=3,
+        backoff_seconds=[1, 2],
+        non_retryable_error_types=["DomainException"],
+    )
+    child = StartChildWorkflow(
+        workflow_type="workflow.lifecycle.python.child",
+        arguments=["child"],
+        task_queue="workflow-lifecycle-python-child",
+        parent_close_policy="terminate",
+        retry_policy=retry,
+        execution_timeout_seconds=600,
+        run_timeout_seconds=120,
+    )
+    child_command = child.to_server_command("workflow-lifecycle-python")
+    check(child_command.get("type") == "start_child_workflow", "StartChildWorkflow must emit a start_child_workflow command.")
+    check(child_command.get("queue") == "workflow-lifecycle-python-child", "StartChildWorkflow must preserve child task queue routing.")
+    check(child_command.get("parent_close_policy") == "terminate", "StartChildWorkflow must preserve parent close policy.")
+    check(child_command.get("execution_timeout_seconds") == 600, "StartChildWorkflow must preserve execution timeout.")
+    check(child_command.get("run_timeout_seconds") == 120, "StartChildWorkflow must preserve run timeout.")
+    check(child_command.get("retry_policy", {}).get("max_attempts") == 3, "ChildWorkflowRetryPolicy must preserve max attempts.")
+    check(child_command.get("retry_policy", {}).get("backoff_seconds") == [1, 2], "ChildWorkflowRetryPolicy must preserve backoff seconds.")
+    check(
+        child_command.get("retry_policy", {}).get("non_retryable_error_types") == ["DomainException"],
+        "ChildWorkflowRetryPolicy must preserve non-retryable error types.",
+    )
+    mark("child_workflow_retry_timeout_and_parent_close_policy")
+
+    try:
+        StartChildWorkflow(
+            workflow_type="workflow.lifecycle.python.child",
+            execution_timeout_seconds=120,
+            run_timeout_seconds=121,
+        ).to_server_command("workflow-lifecycle-python")
+        check(False, "StartChildWorkflow must reject run_timeout_seconds greater than execution_timeout_seconds.")
+    except ValueError as exc:
+        typed_error("invalid_child_workflow_timeout_budget", exc.__class__.__name__, str(exc), unsupported=True)
+
+    try:
+        StartChildWorkflow(
+            workflow_type="workflow.lifecycle.python.child",
+            execution_timeout_seconds=0,
+        ).to_server_command("workflow-lifecycle-python")
+        check(False, "StartChildWorkflow must reject zero execution_timeout_seconds.")
+    except ValueError as exc:
+        typed_error("invalid_child_workflow_execution_timeout", exc.__class__.__name__, str(exc), unsupported=True)
+
+    cancelled = WorkflowCancelled("operator requested cancellation")
+    terminated = WorkflowTerminated("operator requested termination")
+    check(isinstance(cancelled, BaseException) and not isinstance(cancelled, Exception), "WorkflowCancelled must be a typed non-Exception throwable.")
+    check(isinstance(terminated, Exception), "WorkflowTerminated must be catchable as an Exception.")
+    mark("workflow_terminal_exception_contract")
+
+
+def artifact_version() -> str:
+    try:
+        return metadata.version("durable-workflow")
+    except metadata.PackageNotFoundError:
+        return ""
+
+
+version = artifact_version()
+check(version != "", "durable-workflow must be installed from PyPI with package metadata.")
+check(
+    EXPECTED_VERSION == "" or version.lstrip("v") == EXPECTED_VERSION.lstrip("v"),
+    f"installed durable-workflow version {version} did not match {EXPECTED_VERSION}.",
+)
+check(getattr(durable_workflow, "__version__", "") == version, "durable_workflow.__version__ must match package metadata.")
+mark("pypi_artifact_imported")
+
+for symbol in [
+    Client,
+    ContinueAsNew,
+    StartChildWorkflow,
+    ChildWorkflowRetryPolicy,
+    WorkflowAlreadyStarted,
+    WorkflowCancelled,
+    WorkflowTerminated,
+    InvalidArgument,
+]:
+    check(symbol is not None, f"{symbol!r} must be exported by the PyPI package.")
+mark("public_lifecycle_symbols_exported")
+
+asyncio.run(run_client_surface())
+run_workflow_command_surface()
+
+covered_cells = sorted(set(covered_cells))
+unsupported_cells = sorted(set(unsupported_cells))
+status = "pass" if not failures else "fail"
+artifact_source = f"pypi://durable-workflow=={version or EXPECTED_VERSION}"
+finding = {
+    "finding_id": "workflow-lifecycle-python-sdk-lifecycle-surface-product-gap",
+    "finding_type": "product_behavior_gap",
+    "classification": "product-gap",
+    "scenario_id": "python_sdk_lifecycle_surface",
+    "owning_surface": "sdk-python",
+    "summary": "; ".join(failures),
+    "next_acceptance_criterion": "Publish a Python SDK artifact whose lifecycle surface covers supported cells and typed refusals, then rerun workflow-lifecycle conformance.",
+}
+payload = {
+    "schema": "durable-workflow.v2.workflow-lifecycle.python-sdk-sidecar",
+    "generated_at": __import__("datetime").datetime.now(__import__("datetime").timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+    "runner": "published-python-sdk-lifecycle-surface-probe",
+    "runner_blocked": False,
+    "scenario_results": {
+        "python_sdk_lifecycle_surface": {
+            "scenario_id": "python_sdk_lifecycle_surface",
+            "status": status,
+            "classification": "passed" if status == "pass" else "product-gap",
+            "published_artifact_cell_executed": True,
+            "observed_outputs": {
+                "sdk": "sdk-python",
+                "covered_cells": covered_cells,
+                "unsupported_cells": unsupported_cells,
+                "typed_errors": typed_errors,
+                "artifact_version": version or EXPECTED_VERSION,
+                "artifact_source": artifact_source,
+                "pypi_package": "durable-workflow",
+                "pypi_artifact_verified": status == "pass" and version != "",
+                "python_runtime": sys.version.split()[0],
+                "probe_executor": PROBE_EXECUTOR,
+                "evidence_method": "pypi_installed_artifact_runtime_import_client_transport_and_workflow_command_execution",
+                "captured_request_count": len(captured_requests),
+                "captured_request_paths": [request["path"] for request in captured_requests],
+                "published_artifact_cell_executed": True,
+                "local_product_source_checkouts_used": False,
+                "failures": failures,
+            },
+            "linked_findings": [] if status == "pass" else [finding],
+        },
+    },
+}
+RESULT_DIR.mkdir(parents=True, exist_ok=True)
+(RESULT_DIR / "python-sdk-lifecycle-evidence.json").write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
+PY
+
+  local python_bin executor
+  if python_bin="$(python_sdk_explicit_python_bin)"; then
+    executor="configured_python_binary"
+  else
+    local python3_bin venv
+    if ! python3_bin="$(python_sdk_python3_bin)"; then
+      write_python_sdk_runner_blocked 'Python SDK lifecycle probe requires python3, or DW_WORKFLOW_LIFECYCLE_PYTHON_BIN pointing to a Python environment with the published durable-workflow package installed.'
+      return 0
+    fi
+
+    venv="$result_dir/python-sdk-lifecycle-venv"
+    if ! "$python3_bin" -m venv "$venv" >"$result_dir/python-sdk-lifecycle-venv.log" 2>&1; then
+      write_python_sdk_runner_blocked 'Python SDK lifecycle probe could not create a virtual environment; see python-sdk-lifecycle-venv.log.'
+      return 0
+    fi
+
+    python_bin="$venv/bin/python"
+    executor="venv_pypi_install"
+
+    if ! "$python_bin" -m pip install --disable-pip-version-check --no-input "durable-workflow==${sdk_version}" >"$result_dir/python-sdk-lifecycle-pip-install.log" 2>&1; then
+      write_python_sdk_product_gap "pip install failed for durable-workflow==${sdk_version}; see python-sdk-lifecycle-pip-install.log." 'pypi_install' "$executor"
+      return 0
+    fi
+  fi
+
+  if ! (
+    cd "$probe_dir"
+    RESULT_DIR="$result_dir" \
+    DW_PYTHON_SDK_VERSION="$sdk_version" \
+    PYTHON_SDK_PROBE_EXECUTOR="$executor" \
+    "$python_bin" "$probe_dir/python-sdk-lifecycle-probe.py"
+  ) >"$result_dir/python-sdk-lifecycle-probe.log" 2>&1; then
+    if [[ -s "$result_dir/python-sdk-lifecycle-evidence.json" ]]; then
+      return 0
+    fi
+    write_python_sdk_product_gap 'Published Python SDK lifecycle probe failed before writing evidence; see python-sdk-lifecycle-probe.log.' 'probe_execution' "$executor"
+    return 0
+  fi
+
+  if [[ ! -s "$result_dir/python-sdk-lifecycle-evidence.json" ]]; then
+    write_python_sdk_product_gap 'Published Python SDK lifecycle probe completed without writing evidence; see python-sdk-lifecycle-probe.log.' 'probe_evidence_missing' "$executor"
   fi
 }
 
@@ -2178,6 +2782,7 @@ if should_run_focused_host_probes; then
 fi
 
 run_php_sdk_lifecycle_probe
+run_python_sdk_lifecycle_probe
 
 RESULT_DIR="$result_dir" \
 STARTED_AT="$started_at" \

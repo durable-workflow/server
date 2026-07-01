@@ -164,6 +164,7 @@ final class WorkflowLifecycleContract
                     'DW_WORKFLOW_LIFECYCLE_EVIDENCE_PATH',
                     '<result-dir>/workflow-lifecycle-evidence.json',
                     '<result-dir>/php-sdk-lifecycle-evidence.json',
+                    '<result-dir>/python-sdk-lifecycle-evidence.json',
                 ],
                 'php_sdk_probe_executors' => [
                     'published_server_php_and_composer',
@@ -177,10 +178,20 @@ final class WorkflowLifecycleContract
                     'COMPOSER_BIN',
                 ],
                 'php_sdk_probe_does_not_require_docker_inside_server_container' => true,
+                'python_sdk_probe_executors' => [
+                    'python_venv_pypi_install',
+                    'configured_python_binary',
+                ],
+                'python_sdk_probe_binary_overrides' => [
+                    'DW_WORKFLOW_LIFECYCLE_PYTHON_BIN',
+                    'PYTHON_BIN',
+                ],
+                'python_sdk_probe_does_not_require_docker_inside_server_container' => true,
                 'result_files' => [
                     'pins.json',
                     'run-metadata.json',
                     'php-sdk-lifecycle-evidence.json',
+                    'python-sdk-lifecycle-evidence.json',
                     'workflow-lifecycle-result.json',
                     'workflow-lifecycle-record.json',
                     'workflow-lifecycle-findings.json',
