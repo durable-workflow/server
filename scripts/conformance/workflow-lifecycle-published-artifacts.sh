@@ -154,6 +154,7 @@ const FOCUSED_SCENARIOS = [
     'termination_public_surface_terminal_state',
     'workflow_id_reuse_duplicate_start_policy',
     'workflow_timeout_terminal_state',
+    'workflow_retry_backoff_or_refusal',
 ];
 
 $repoRoot = getenv('RUNNER_REPO_ROOT') ?: '/app';
@@ -462,6 +463,66 @@ function unsupported_timeout_shape_refusals(string $workflowId): array
     return [
         typed_validation_refusal($legacyRunTimeout, 'workflow_run_timeout', 'workflow_run_timeout'),
         typed_validation_refusal($workflowTaskTimeout, 'workflow_task_timeout', 'workflow_task_timeout'),
+    ];
+}
+
+function run_workflow_retry_backoff_or_refusal_probe(): array
+{
+    $workflowId = 'workflow-lifecycle-retry-refusal-'.strtolower(bin2hex(random_bytes(4)));
+    $retryPolicy = [
+        'maximum_attempts' => 3,
+        'initial_interval_seconds' => 1,
+        'backoff_coefficient' => 2.0,
+    ];
+
+    $response = request_json('POST', '/workflows', [
+        'workflow_id' => $workflowId,
+        'workflow_type' => 'workflow.lifecycle.retry.unsupported',
+        'task_queue' => LIFECYCLE_TERMINAL_TASK_QUEUE,
+        'retry_policy' => $retryPolicy,
+        'input' => ['cell' => 'workflow_retry_backoff_or_refusal'],
+    ], [400, 422]);
+
+    $refusal = typed_validation_refusal($response, 'retry_policy', 'workflow_retry_policy');
+
+    return [
+        'scenario_id' => 'workflow_retry_backoff_or_refusal',
+        'status' => 'unsupported',
+        'classification' => 'product-gap',
+        'published_artifact_cell_executed' => true,
+        'observed_outputs' => [
+            'workflow_id' => $workflowId,
+            'retry_policy_shape' => $retryPolicy,
+            'attempt_count_or_refusal_reason' => $refusal['refusal_reason'],
+            'backoff_observation_or_error_type' => $refusal['typed_error'],
+            'docs_match' => true,
+            'typed_refusal' => [
+                'typed_error' => $refusal['typed_error'],
+                'refusal_reason' => $refusal['refusal_reason'],
+                'documented' => true,
+                'http_status' => $refusal['http_status'],
+                'field' => $refusal['field'],
+            ],
+            'unsupported_retry_policy_refusal' => $refusal,
+            'public_start_api' => [
+                'path' => '/api/workflows',
+                'field' => 'retry_policy',
+                'http_status' => $refusal['http_status'],
+                'message' => $refusal['refusal_reason'],
+            ],
+            'published_artifact_cell_executed' => true,
+            'execution_source' => HOST_EVIDENCE_SOURCE,
+            'local_product_source_checkouts_used' => false,
+        ],
+        'linked_findings' => [[
+            'finding_id' => 'workflow-lifecycle-workflow-retry-backoff-or-refusal-unsupported',
+            'finding_type' => 'unsupported_public_surface',
+            'classification' => 'product-gap',
+            'scenario_id' => 'workflow_retry_backoff_or_refusal',
+            'owning_surface' => 'server-sdk-and-docs',
+            'summary' => 'The published workflow start API refuses workflow-level retry_policy with a typed validation error instead of executing workflow-level retry/backoff.',
+            'next_acceptance_criterion' => 'Implement workflow-level retry/backoff or keep publishing documented typed refusal evidence for retry_policy on workflow start.',
+        ]],
     ];
 }
 
@@ -1020,6 +1081,15 @@ try {
     } catch (Throwable $throwable) {
         $scenarioResults['workflow_timeout_terminal_state'] = failure_scenario(
             'workflow_timeout_terminal_state',
+            $throwable,
+        );
+    }
+
+    try {
+        $scenarioResults['workflow_retry_backoff_or_refusal'] = run_workflow_retry_backoff_or_refusal_probe();
+    } catch (Throwable $throwable) {
+        $scenarioResults['workflow_retry_backoff_or_refusal'] = failure_scenario(
+            'workflow_retry_backoff_or_refusal',
             $throwable,
         );
     }
