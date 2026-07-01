@@ -165,6 +165,18 @@ final class WorkflowLifecycleContract
                     '<result-dir>/workflow-lifecycle-evidence.json',
                     '<result-dir>/php-sdk-lifecycle-evidence.json',
                 ],
+                'php_sdk_probe_executors' => [
+                    'published_server_php_and_composer',
+                    'local_php_and_composer',
+                    'docker_composer_2',
+                ],
+                'php_sdk_probe_binary_overrides' => [
+                    'DW_WORKFLOW_LIFECYCLE_PHP_BIN',
+                    'DW_WORKFLOW_LIFECYCLE_COMPOSER_BIN',
+                    'PHP_BIN',
+                    'COMPOSER_BIN',
+                ],
+                'php_sdk_probe_does_not_require_docker_inside_server_container' => true,
                 'result_files' => [
                     'pins.json',
                     'run-metadata.json',

@@ -28,6 +28,18 @@ Environment overrides:
   DW_WORKFLOW_LIFECYCLE_SKIP_PHP_SDK_PROBE=1
                                     Skip the published PHP SDK lifecycle
                                     surface probe.
+  DW_WORKFLOW_LIFECYCLE_PHP_SDK_EXECUTOR
+                                    Optional executor override: local or docker.
+                                    By default the probe uses local PHP and
+                                    Composer when present, otherwise Docker's
+                                    composer:2 image.
+  DW_WORKFLOW_LIFECYCLE_PHP_BIN     Optional PHP binary for the local PHP SDK
+                                    probe. Defaults to PHP_BIN, php, or common
+                                    absolute PHP paths.
+  DW_WORKFLOW_LIFECYCLE_COMPOSER_BIN
+                                    Optional Composer binary for the local PHP
+                                    SDK probe. Defaults to COMPOSER_BIN,
+                                    composer, or common absolute Composer paths.
   DW_SERVER_IMAGE                   Exact server image tag or digest under test.
   DW_SERVER_VERSION                 Exact server version under test.
   DW_CLI_VERSION                    Exact CLI release version.
@@ -159,6 +171,151 @@ fs.writeFileSync(path.join(resultDir, 'php-sdk-lifecycle-evidence.json'), `${JSO
 NODE
 }
 
+write_php_sdk_product_gap() {
+  local summary="${1:-Published PHP SDK lifecycle probe failed.}"
+  local stage="${2:-php_sdk_lifecycle_probe}"
+  local executor="${3:-unknown}"
+
+  RESULT_DIR="$result_dir" \
+  DW_WORKFLOW_PHP_VERSION="${DW_WORKFLOW_PHP_VERSION:-}" \
+  PHP_SDK_PRODUCT_GAP_SUMMARY="$summary" \
+  PHP_SDK_PRODUCT_GAP_STAGE="$stage" \
+  PHP_SDK_PRODUCT_GAP_EXECUTOR="$executor" \
+  node <<'NODE'
+const fs = require('node:fs');
+const path = require('node:path');
+
+const resultDir = process.env.RESULT_DIR;
+const version = (process.env.DW_WORKFLOW_PHP_VERSION || '').trim();
+const summary = (process.env.PHP_SDK_PRODUCT_GAP_SUMMARY || 'Published PHP SDK lifecycle probe failed.').trim();
+const stage = (process.env.PHP_SDK_PRODUCT_GAP_STAGE || 'php_sdk_lifecycle_probe').trim();
+const executor = (process.env.PHP_SDK_PRODUCT_GAP_EXECUTOR || 'unknown').trim();
+const artifactSource = version ? `packagist://durable-workflow/workflow@${version}` : 'packagist://durable-workflow/workflow@unresolved';
+
+const payload = {
+  schema: 'durable-workflow.v2.workflow-lifecycle.php-sdk-sidecar',
+  generated_at: new Date().toISOString().replace(/\.\d{3}Z$/, 'Z'),
+  runner: 'published-php-sdk-lifecycle-surface-probe',
+  runner_blocked: false,
+  scenario_results: {
+    php_sdk_lifecycle_surface: {
+      scenario_id: 'php_sdk_lifecycle_surface',
+      status: 'fail',
+      classification: 'product-gap',
+      published_artifact_cell_executed: true,
+      observed_outputs: {
+        sdk: 'workflow-php',
+        artifact_version: version,
+        artifact_source: artifactSource,
+        composer_package: 'durable-workflow/workflow',
+        packagist_artifact_verified: false,
+        published_artifact_install_attempted: true,
+        published_artifact_cell_executed: true,
+        local_product_source_checkouts_used: false,
+        failure_stage: stage,
+        probe_executor: executor,
+        failure_summary: summary,
+      },
+      linked_findings: [
+        {
+          finding_id: 'workflow-lifecycle-php-sdk-lifecycle-surface-product-gap',
+          finding_type: 'product_behavior_gap',
+          classification: 'product-gap',
+          scenario_id: 'php_sdk_lifecycle_surface',
+          owning_surface: 'workflow-php',
+          summary,
+          next_acceptance_criterion: 'Publish a PHP workflow package artifact whose lifecycle surface covers supported cells and typed refusals, then rerun workflow-lifecycle conformance.',
+        },
+      ],
+    },
+  },
+};
+
+fs.writeFileSync(path.join(resultDir, 'php-sdk-lifecycle-evidence.json'), `${JSON.stringify(payload, null, 2)}\n`);
+NODE
+}
+
+php_sdk_probe_executor() {
+  local requested="${DW_WORKFLOW_LIFECYCLE_PHP_SDK_EXECUTOR:-}"
+
+  case "$requested" in
+    local)
+      if php_sdk_php_bin >/dev/null 2>&1 && php_sdk_composer_bin >/dev/null 2>&1; then
+        printf '%s\n' 'local'
+        return 0
+      fi
+      return 1
+      ;;
+    docker)
+      if command -v docker >/dev/null 2>&1; then
+        printf '%s\n' 'docker'
+        return 0
+      fi
+      return 1
+      ;;
+    '')
+      ;;
+    *)
+      return 1
+      ;;
+  esac
+
+  if php_sdk_php_bin >/dev/null 2>&1 && php_sdk_composer_bin >/dev/null 2>&1; then
+    printf '%s\n' 'local'
+    return 0
+  fi
+
+  if command -v docker >/dev/null 2>&1; then
+    printf '%s\n' 'docker'
+    return 0
+  fi
+
+  return 1
+}
+
+php_sdk_resolve_command() {
+  local candidate resolved
+
+  for candidate in "$@"; do
+    if [[ -z "$candidate" ]]; then
+      continue
+    fi
+
+    if [[ "$candidate" == */* ]]; then
+      if [[ -x "$candidate" ]]; then
+        printf '%s\n' "$candidate"
+        return 0
+      fi
+      continue
+    fi
+
+    if resolved="$(command -v "$candidate" 2>/dev/null)" && [[ -n "$resolved" ]]; then
+      printf '%s\n' "$resolved"
+      return 0
+    fi
+  done
+
+  return 1
+}
+
+php_sdk_php_bin() {
+  php_sdk_resolve_command \
+    "${DW_WORKFLOW_LIFECYCLE_PHP_BIN:-}" \
+    "${PHP_BIN:-}" \
+    php \
+    /usr/local/bin/php \
+    /usr/bin/php
+}
+
+php_sdk_composer_bin() {
+  php_sdk_resolve_command \
+    "${DW_WORKFLOW_LIFECYCLE_COMPOSER_BIN:-}" \
+    "${COMPOSER_BIN:-}" \
+    composer \
+    /usr/local/bin/composer \
+    /usr/bin/composer
+}
+
 run_php_sdk_lifecycle_probe() {
   if [[ "${DW_WORKFLOW_LIFECYCLE_SKIP_PHP_SDK_PROBE:-0}" == "1" || "${DW_WORKFLOW_LIFECYCLE_SKIP_PHP_SDK_PROBE:-}" == "true" ]]; then
     return 0
@@ -175,8 +332,10 @@ run_php_sdk_lifecycle_probe() {
     write_php_sdk_runner_blocked 'DW_WORKFLOW_PHP_VERSION is required for the PHP SDK lifecycle probe.'
     return 0
   fi
-  if ! command -v docker >/dev/null 2>&1; then
-    write_php_sdk_runner_blocked 'docker is required to install and execute the pinned PHP workflow package through composer:2.'
+
+  local executor
+  if ! executor="$(php_sdk_probe_executor)"; then
+    write_php_sdk_runner_blocked 'PHP SDK lifecycle probe requires local php+composer, explicit PHP/Composer binary paths, or host docker access to composer:2.'
     return 0
   fi
 
@@ -207,6 +366,7 @@ use Workflow\V2\Support\ContinueAsNewCall;
 
 $expectedVersion = trim((string) getenv('DW_WORKFLOW_PHP_VERSION'));
 $resultDir = rtrim((string) getenv('RESULT_DIR'), '/') ?: __DIR__;
+$probeExecutor = trim((string) getenv('PHP_SDK_PROBE_EXECUTOR')) ?: 'unknown';
 $failures = [];
 $coveredCells = [];
 $unsupportedCells = [];
@@ -472,6 +632,7 @@ $payload = [
                 'composer_package' => 'durable-workflow/workflow',
                 'packagist_artifact_verified' => true,
                 'php_runtime' => PHP_VERSION,
+                'probe_executor' => $probeExecutor,
                 'evidence_method' => 'composer_installed_packagist_artifact_runtime_import_and_sdk_method_execution',
                 'captured_request_count' => count($capturedRequests),
                 'captured_request_paths' => array_map(
@@ -490,17 +651,71 @@ $payload = [
 file_put_contents($resultDir.'/php-sdk-lifecycle-evidence.json', json_encode($payload, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES)."\n");
 PHP
 
-  if ! docker run --rm -v "$probe_dir:/app" -w /app composer:2 \
-    composer require --no-interaction --no-progress --prefer-dist --no-scripts \
-      "durable-workflow/workflow:$sdk_version" >"$result_dir/php-sdk-lifecycle-composer-install.log" 2>&1; then
-    write_php_sdk_runner_blocked "Composer install failed for durable-workflow/workflow:$sdk_version; see php-sdk-lifecycle-composer-install.log."
-    return 0
+  if [[ "$executor" == "local" ]]; then
+    local php_bin composer_bin composer_home composer_cache
+
+    if ! php_bin="$(php_sdk_php_bin)" || ! composer_bin="$(php_sdk_composer_bin)"; then
+      write_php_sdk_runner_blocked 'PHP SDK lifecycle probe local executor could not resolve php and composer binaries.'
+      return 0
+    fi
+
+    composer_home="$result_dir/php-sdk-lifecycle-composer-home"
+    composer_cache="$result_dir/php-sdk-lifecycle-composer-cache"
+    mkdir -p "$composer_home" "$composer_cache"
+
+    if ! (
+      cd "$probe_dir"
+      COMPOSER_ALLOW_SUPERUSER=1 \
+      COMPOSER_HOME="$composer_home" \
+      COMPOSER_CACHE_DIR="$composer_cache" \
+      "$composer_bin" require --no-interaction --no-progress --prefer-dist --no-scripts \
+        "durable-workflow/workflow:$sdk_version"
+    ) >"$result_dir/php-sdk-lifecycle-composer-install.log" 2>&1; then
+      write_php_sdk_product_gap "Composer install failed for durable-workflow/workflow:$sdk_version; see php-sdk-lifecycle-composer-install.log." 'composer_install' "$executor"
+      return 0
+    fi
+
+    if ! (
+      cd "$probe_dir"
+      RESULT_DIR="$result_dir" \
+      DW_WORKFLOW_PHP_VERSION="$sdk_version" \
+      PHP_SDK_PROBE_EXECUTOR="$executor" \
+      "$php_bin" "$probe_dir/php-sdk-lifecycle-probe.php"
+    ) >"$result_dir/php-sdk-lifecycle-probe.log" 2>&1; then
+      if [[ -s "$result_dir/php-sdk-lifecycle-evidence.json" ]]; then
+        return 0
+      fi
+      write_php_sdk_product_gap 'Published PHP SDK lifecycle probe failed before writing evidence; see php-sdk-lifecycle-probe.log.' 'probe_execution' "$executor"
+      return 0
+    fi
+  else
+    if ! docker run --rm -e COMPOSER_ALLOW_SUPERUSER=1 -v "$probe_dir:/app" -w /app composer:2 \
+      composer require --no-interaction --no-progress --prefer-dist --no-scripts \
+        "durable-workflow/workflow:$sdk_version" >"$result_dir/php-sdk-lifecycle-composer-install.log" 2>&1; then
+      write_php_sdk_product_gap "Composer install failed for durable-workflow/workflow:$sdk_version; see php-sdk-lifecycle-composer-install.log." 'composer_install' "$executor"
+      return 0
+    fi
+
+    if ! docker run --rm \
+      -e DW_WORKFLOW_PHP_VERSION="$sdk_version" \
+      -e PHP_SDK_PROBE_EXECUTOR="$executor" \
+      -e RESULT_DIR=/result \
+      -v "$probe_dir:/app" \
+      -v "$result_dir:/result" \
+      -w /app \
+      --entrypoint php \
+      composer:2 \
+      /app/php-sdk-lifecycle-probe.php >"$result_dir/php-sdk-lifecycle-probe.log" 2>&1; then
+      if [[ -s "$result_dir/php-sdk-lifecycle-evidence.json" ]]; then
+        return 0
+      fi
+      write_php_sdk_product_gap 'Published PHP SDK lifecycle probe failed before writing evidence; see php-sdk-lifecycle-probe.log.' 'probe_execution' "$executor"
+      return 0
+    fi
   fi
 
-  if ! docker run --rm -v "$probe_dir:/app" -w /app --entrypoint php composer:2 \
-    /app/php-sdk-lifecycle-probe.php >"$result_dir/php-sdk-lifecycle-probe.log" 2>&1; then
-    write_php_sdk_runner_blocked 'Published PHP SDK lifecycle probe failed before writing evidence; see php-sdk-lifecycle-probe.log.'
-    return 0
+  if [[ ! -s "$result_dir/php-sdk-lifecycle-evidence.json" ]]; then
+    write_php_sdk_product_gap 'Published PHP SDK lifecycle probe completed without writing evidence; see php-sdk-lifecycle-probe.log.' 'probe_evidence_missing' "$executor"
   fi
 }
 

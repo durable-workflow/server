@@ -12,6 +12,7 @@ class WorkflowLifecycleContractTest extends TestCase
     {
         $manifest = WorkflowLifecycleContract::manifest();
         $resultGate = $manifest['result_gate'];
+        $hostRunner = $manifest['host_runner_contract'];
 
         $this->assertSame(WorkflowLifecycleContract::SCHEMA, $manifest['schema']);
         $this->assertSame(WorkflowLifecycleContract::RESULT_SCHEMA, $manifest['result_schema']);
@@ -27,6 +28,12 @@ class WorkflowLifecycleContractTest extends TestCase
         $this->assertContains('local_product_source_checkouts_used', $manifest['artifact_policy']['required_run_record_fields']);
         $this->assertContains('source_policy', $manifest['artifact_policy']['required_run_record_fields']);
         $this->assertContains('local_product_source_truthy_values_are_refused_consistently', $resultGate['pass_requires']);
+        $this->assertContains('published_server_php_and_composer', $hostRunner['php_sdk_probe_executors']);
+        $this->assertContains('local_php_and_composer', $hostRunner['php_sdk_probe_executors']);
+        $this->assertContains('docker_composer_2', $hostRunner['php_sdk_probe_executors']);
+        $this->assertContains('DW_WORKFLOW_LIFECYCLE_PHP_BIN', $hostRunner['php_sdk_probe_binary_overrides']);
+        $this->assertContains('DW_WORKFLOW_LIFECYCLE_COMPOSER_BIN', $hostRunner['php_sdk_probe_binary_overrides']);
+        $this->assertTrue($hostRunner['php_sdk_probe_does_not_require_docker_inside_server_container']);
     }
 
     public function test_result_gate_accepts_complete_published_artifact_lifecycle_pass(): void
@@ -129,6 +136,208 @@ class WorkflowLifecycleContractTest extends TestCase
         }
     }
 
+    public function test_published_artifact_runner_uses_local_php_composer_for_php_sdk_probe_without_docker(): void
+    {
+        $resultDir = sys_get_temp_dir().'/dw-workflow-lifecycle-'.bin2hex(random_bytes(6));
+        $fakeBin = sys_get_temp_dir().'/dw-workflow-lifecycle-bin-'.bin2hex(random_bytes(6));
+        mkdir($resultDir, 0777, true);
+        mkdir($fakeBin, 0777, true);
+
+        file_put_contents($fakeBin.'/composer', <<<'SH'
+#!/usr/bin/env bash
+printf '%s\n' "$@" > composer-called.txt
+exit 0
+SH);
+        file_put_contents($fakeBin.'/php', <<<'SH'
+#!/usr/bin/env bash
+cat > "$RESULT_DIR/php-sdk-lifecycle-evidence.json" <<JSON
+{
+  "schema": "durable-workflow.v2.workflow-lifecycle.php-sdk-sidecar",
+  "runner_blocked": false,
+  "scenario_results": {
+    "php_sdk_lifecycle_surface": {
+      "status": "pass",
+      "published_artifact_cell_executed": true,
+      "observed_outputs": {
+        "sdk": "workflow-php",
+        "covered_cells": ["composer_packagist_artifact_imported"],
+        "unsupported_cells": [],
+        "typed_errors": [],
+        "artifact_version": "$DW_WORKFLOW_PHP_VERSION",
+        "artifact_source": "packagist://durable-workflow/workflow@$DW_WORKFLOW_PHP_VERSION",
+        "packagist_artifact_verified": true,
+        "published_artifact_cell_executed": true,
+        "local_product_source_checkouts_used": false,
+        "probe_executor": "local"
+      }
+    }
+  }
+}
+JSON
+exit 0
+SH);
+        chmod($fakeBin.'/composer', 0755);
+        chmod($fakeBin.'/php', 0755);
+
+        try {
+            exec($this->runnerCommand($resultDir, [
+                'PATH' => $fakeBin.':/usr/local/bin:/usr/bin:/bin',
+                'DW_WORKFLOW_LIFECYCLE_SKIP_PHP_SDK_PROBE' => '0',
+                'DW_WORKFLOW_LIFECYCLE_PHP_SDK_EXECUTOR' => 'local',
+            ]), $output, $exitCode);
+
+            $this->assertSame(0, $exitCode, implode("\n", $output));
+            $this->assertFileExists($resultDir.'/php-sdk-lifecycle-probe/composer-called.txt');
+
+            $result = $this->readJson($resultDir.'/workflow-lifecycle-result.json');
+            $phpScenario = $result['scenario_results']['php_sdk_lifecycle_surface'];
+
+            $this->assertFalse($result['runner_blocked']);
+            $this->assertSame('pass', $phpScenario['status']);
+            $this->assertSame('local', $phpScenario['observed_outputs']['probe_executor']);
+            $this->assertSame('2.0.0-alpha.224', $phpScenario['observed_outputs']['artifact_version']);
+            $this->assertStringContainsString('php-sdk-lifecycle-evidence.json', $result['evidence_source']);
+            $this->assertSame([], WorkflowLifecycleResultGate::evaluate($result)['gate_failures']);
+        } finally {
+            $this->removeDirectory($resultDir);
+            $this->removeDirectory($fakeBin);
+        }
+    }
+
+    public function test_php_sdk_probe_composer_failure_is_product_evidence_not_runner_blocked(): void
+    {
+        $resultDir = sys_get_temp_dir().'/dw-workflow-lifecycle-'.bin2hex(random_bytes(6));
+        $fakeBin = sys_get_temp_dir().'/dw-workflow-lifecycle-bin-'.bin2hex(random_bytes(6));
+        mkdir($resultDir, 0777, true);
+        mkdir($fakeBin, 0777, true);
+
+        file_put_contents($fakeBin.'/composer', <<<'SH'
+#!/usr/bin/env bash
+printf '%s\n' "simulated composer install failure" >&2
+exit 42
+SH);
+        file_put_contents($fakeBin.'/php', <<<'SH'
+#!/usr/bin/env bash
+exit 99
+SH);
+        chmod($fakeBin.'/composer', 0755);
+        chmod($fakeBin.'/php', 0755);
+
+        try {
+            exec($this->runnerCommand($resultDir, [
+                'PATH' => $fakeBin.':/usr/local/bin:/usr/bin:/bin',
+                'DW_WORKFLOW_LIFECYCLE_SKIP_PHP_SDK_PROBE' => '0',
+                'DW_WORKFLOW_LIFECYCLE_PHP_SDK_EXECUTOR' => 'local',
+            ]), $output, $exitCode);
+
+            $this->assertSame(0, $exitCode, implode("\n", $output));
+
+            $result = $this->readJson($resultDir.'/workflow-lifecycle-result.json');
+            $phpScenario = $result['scenario_results']['php_sdk_lifecycle_surface'];
+
+            $this->assertFalse($result['runner_blocked']);
+            $this->assertSame('fail', $phpScenario['status']);
+            $this->assertSame('product-gap', $phpScenario['classification']);
+            $this->assertSame('composer_install', $phpScenario['observed_outputs']['failure_stage']);
+            $this->assertSame('local', $phpScenario['observed_outputs']['probe_executor']);
+            $this->assertContains(
+                'workflow-lifecycle-php-sdk-lifecycle-surface-product-gap',
+                array_column($result['findings'], 'finding_id'),
+            );
+            $this->assertNotContains(
+                'workflow-lifecycle-php-sdk-lifecycle-surface-runner-gap',
+                array_column($result['findings'], 'finding_id'),
+            );
+            $this->assertSame([], WorkflowLifecycleResultGate::evaluate($result)['gate_failures']);
+        } finally {
+            $this->removeDirectory($resultDir);
+            $this->removeDirectory($fakeBin);
+        }
+    }
+
+    public function test_php_sdk_probe_uses_explicit_php_and_composer_binaries_without_docker(): void
+    {
+        $resultDir = sys_get_temp_dir().'/dw-workflow-lifecycle-'.bin2hex(random_bytes(6));
+        $fakeBin = sys_get_temp_dir().'/dw-workflow-lifecycle-bin-'.bin2hex(random_bytes(6));
+        mkdir($resultDir, 0777, true);
+        mkdir($fakeBin, 0777, true);
+
+        file_put_contents($fakeBin.'/composer-explicit', <<<'SH'
+#!/usr/bin/env bash
+printf '%s\n' "$COMPOSER_HOME" > composer-home.txt
+printf '%s\n' "$COMPOSER_CACHE_DIR" > composer-cache.txt
+printf '%s\n' "$@" > composer-called.txt
+exit 0
+SH);
+        file_put_contents($fakeBin.'/php-explicit', <<<'SH'
+#!/usr/bin/env bash
+cat > "$RESULT_DIR/php-sdk-lifecycle-evidence.json" <<JSON
+{
+  "schema": "durable-workflow.v2.workflow-lifecycle.php-sdk-sidecar",
+  "runner_blocked": false,
+  "scenario_results": {
+    "php_sdk_lifecycle_surface": {
+      "status": "pass",
+      "published_artifact_cell_executed": true,
+      "observed_outputs": {
+        "sdk": "workflow-php",
+        "covered_cells": ["composer_packagist_artifact_imported"],
+        "unsupported_cells": [],
+        "typed_errors": [],
+        "artifact_version": "$DW_WORKFLOW_PHP_VERSION",
+        "artifact_source": "packagist://durable-workflow/workflow@$DW_WORKFLOW_PHP_VERSION",
+        "packagist_artifact_verified": true,
+        "published_artifact_cell_executed": true,
+        "local_product_source_checkouts_used": false,
+        "probe_executor": "$PHP_SDK_PROBE_EXECUTOR"
+      }
+    }
+  }
+}
+JSON
+exit 0
+SH);
+        chmod($fakeBin.'/composer-explicit', 0755);
+        chmod($fakeBin.'/php-explicit', 0755);
+
+        try {
+            exec($this->runnerCommand($resultDir, [
+                'PATH' => '/usr/local/bin:/usr/bin:/bin',
+                'DW_WORKFLOW_LIFECYCLE_SKIP_PHP_SDK_PROBE' => '0',
+                'DW_WORKFLOW_LIFECYCLE_PHP_SDK_EXECUTOR' => 'local',
+                'DW_WORKFLOW_LIFECYCLE_COMPOSER_BIN' => $fakeBin.'/composer-explicit',
+                'DW_WORKFLOW_LIFECYCLE_PHP_BIN' => $fakeBin.'/php-explicit',
+            ]), $output, $exitCode);
+
+            $this->assertSame(0, $exitCode, implode("\n", $output));
+            $this->assertFileExists($resultDir.'/php-sdk-lifecycle-probe/composer-called.txt');
+            $this->assertStringContainsString(
+                'php-sdk-lifecycle-composer-home',
+                trim(file_get_contents($resultDir.'/php-sdk-lifecycle-probe/composer-home.txt') ?: ''),
+            );
+            $this->assertStringContainsString(
+                'php-sdk-lifecycle-composer-cache',
+                trim(file_get_contents($resultDir.'/php-sdk-lifecycle-probe/composer-cache.txt') ?: ''),
+            );
+
+            $result = $this->readJson($resultDir.'/workflow-lifecycle-result.json');
+            $phpScenario = $result['scenario_results']['php_sdk_lifecycle_surface'];
+
+            $this->assertFalse($result['runner_blocked']);
+            $this->assertSame('pass', $phpScenario['status']);
+            $this->assertSame('local', $phpScenario['observed_outputs']['probe_executor']);
+            $this->assertSame('2.0.0-alpha.224', $phpScenario['observed_outputs']['artifact_version']);
+            $this->assertNotContains(
+                'workflow-lifecycle-php-sdk-lifecycle-surface-runner-gap',
+                array_column($result['findings'], 'finding_id'),
+            );
+            $this->assertSame([], WorkflowLifecycleResultGate::evaluate($result)['gate_failures']);
+        } finally {
+            $this->removeDirectory($resultDir);
+            $this->removeDirectory($fakeBin);
+        }
+    }
+
     public function test_published_artifact_runner_records_retry_refusal_as_unsupported_evidence(): void
     {
         $resultDir = sys_get_temp_dir().'/dw-workflow-lifecycle-'.bin2hex(random_bytes(6));
@@ -171,12 +380,24 @@ class WorkflowLifecycleContractTest extends TestCase
         foreach ([
             'DW_WORKFLOW_LIFECYCLE_SKIP_FOCUSED_HOST_PROBE',
             'DW_WORKFLOW_LIFECYCLE_SKIP_PHP_SDK_PROBE',
+            'DW_WORKFLOW_LIFECYCLE_PHP_SDK_EXECUTOR',
             'should_run_focused_host_probes',
             'run_php_sdk_lifecycle_probe',
+            'php_sdk_probe_executor',
+            'write_php_sdk_product_gap',
             'php-sdk-lifecycle-evidence.json',
             'published-php-sdk-lifecycle-surface-probe',
             'WorkflowClientException',
             'packagist_artifact_verified',
+            'DW_WORKFLOW_LIFECYCLE_PHP_BIN',
+            'DW_WORKFLOW_LIFECYCLE_COMPOSER_BIN',
+            'php_sdk_resolve_command',
+            'php-sdk-lifecycle-composer-home',
+            'COMPOSER_ALLOW_SUPERUSER=1',
+            '"$composer_bin" require',
+            'RESULT_DIR="$result_dir"',
+            '-e RESULT_DIR=/result',
+            'PHP_SDK_PROBE_EXECUTOR',
             'workflow_client_start_with_duplicate_policy_and_timeout_budgets',
             'run_focused_host_probes',
             'focused_published_server_workflow_lifecycle_host_probes',
