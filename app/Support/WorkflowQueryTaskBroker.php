@@ -30,7 +30,9 @@ use Workflow\V2\Support\WorkflowQueryContract;
 final class WorkflowQueryTaskBroker
 {
     private const CACHE_PREFIX = 'server:workflow-query-task:';
+
     private const QUERY_TASKS_CAPABILITY = 'query_tasks';
+
     private const COMPATIBILITY_SCOPE_UNVERSIONED = 'unversioned';
 
     public function __construct(
@@ -725,6 +727,17 @@ final class WorkflowQueryTaskBroker
                     return ['poll_status' => 'superseded'];
                 }
 
+                if ($this->hasPendingTaskBlockedByReadyWorkflowResumeTask(
+                    $namespace,
+                    $taskQueue,
+                    $leaseOwner,
+                    $supportedWorkflowTypes,
+                    $workflowDefinitionFingerprints,
+                    $buildId,
+                )) {
+                    return ['poll_status' => 'workflow_task_pending'];
+                }
+
                 return $this->claimNext(
                     $namespace,
                     $taskQueue,
@@ -742,7 +755,7 @@ final class WorkflowQueryTaskBroker
             waitSlotPool: 'query-task',
         );
 
-        return ($result['poll_status'] ?? null) === 'superseded' ? null : $result;
+        return in_array($result['poll_status'] ?? null, ['superseded', 'workflow_task_pending'], true) ? null : $result;
     }
 
     /**
@@ -1440,6 +1453,63 @@ final class WorkflowQueryTaskBroker
     }
 
     /**
+     * @param  list<string>  $supportedWorkflowTypes
+     * @param  array<string, string>  $workflowDefinitionFingerprints
+     */
+    private function hasPendingTaskBlockedByReadyWorkflowResumeTask(
+        string $namespace,
+        string $taskQueue,
+        string $leaseOwner,
+        array $supportedWorkflowTypes,
+        array $workflowDefinitionFingerprints,
+        ?string $buildId,
+    ): bool {
+        $blocked = false;
+
+        foreach ($this->pendingTaskIds($namespace, $taskQueue) as $queryTaskId) {
+            $task = $this->task($queryTaskId);
+
+            if (! is_array($task) || ($task['status'] ?? null) !== 'pending') {
+                continue;
+            }
+
+            if (! $this->matchesCompatibility(
+                $buildId,
+                $task['compatibility'] ?? null,
+                $task['compatibility_scope'] ?? null,
+            )) {
+                continue;
+            }
+
+            if (! $this->matchesWorkflowType($supportedWorkflowTypes, $task['workflow_type'] ?? null)) {
+                continue;
+            }
+
+            if (! $this->matchesWorkflowDefinitionFingerprint(
+                $workflowDefinitionFingerprints,
+                $task['workflow_type'] ?? null,
+                $task['workflow_definition_fingerprint'] ?? null,
+            )) {
+                continue;
+            }
+
+            if ($this->hasActiveWorkflowTaskLease($task, $leaseOwner)) {
+                continue;
+            }
+
+            if ($this->hasReadyWorkflowResumeTask($task, $buildId)) {
+                $blocked = true;
+
+                continue;
+            }
+
+            return false;
+        }
+
+        return $blocked;
+    }
+
+    /**
      * @param  array<string, mixed>  $queryTask
      */
     private function hasReadyWorkflowResumeTask(array $queryTask, ?string $buildId): bool
@@ -2078,8 +2148,7 @@ final class WorkflowQueryTaskBroker
         string $taskQueue,
         string $workerId,
         ?int $timeoutSeconds,
-    ): void
-    {
+    ): void {
         $this->store()->put(
             $this->queryPollingWorkerKey($namespace, $taskQueue, $workerId),
             true,

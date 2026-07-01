@@ -2418,12 +2418,8 @@ def increment_signal_observations_from_task(
     task: dict[str, Any],
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
     events = workflow_task_history_events(base_url, token, namespace, task)
-    observations = signal_observations_from_events(events, "increment")
-    if observations:
-        return observations, events
-
-    amount = signal_amount_from_task(task)
-    if signal_name_from_task(task) == "increment" and amount is not None:
+    amount = amount_from_arguments(decode_signal_arguments(task.get("signal_arguments")))
+    if task.get("signal_name") == "increment" and amount is not None:
         return [
             {
                 "signal_name": "increment",
@@ -2433,6 +2429,10 @@ def increment_signal_observations_from_task(
                 "history_event_index": f"task:{task.get('task_id')}:signal_arguments",
             }
         ], events
+
+    observations = signal_observations_from_events(events, "increment")
+    if observations:
+        return observations, events
 
     return [], events
 
