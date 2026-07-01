@@ -2379,6 +2379,61 @@ class WorkflowQueryTaskBrokerTest extends TestCase
         );
     }
 
+    public function test_ready_resume_workflow_task_blocks_query_preemption(): void
+    {
+        Queue::fake();
+        config(['server.polling.timeout' => 0]);
+
+        $run = $this->startRemoteWorkflow('wf-query-task-signal-resume-barrier');
+        $this->registerPythonWorker('python-query-signal-resume-barrier-worker', 'python-queries', ['python.queryable']);
+        $this->primeQueryTaskPoller('python-query-signal-resume-barrier-worker');
+
+        /** @var WorkflowTask $readyTask */
+        $readyTask = WorkflowTask::query()
+            ->where('workflow_run_id', $run->id)
+            ->where('task_type', 'workflow')
+            ->where('status', 'ready')
+            ->firstOrFail();
+        $readyTask->forceFill([
+            'available_at' => now(),
+            'payload' => [
+                'workflow_wait_kind' => 'signal',
+                'resume_source_kind' => 'workflow_signal',
+                'workflow_signal_id' => 'sig-query-barrier',
+                'signal_name' => 'increment',
+            ],
+        ])->save();
+
+        /** @var WorkflowQueryTaskBroker $broker */
+        $broker = app(WorkflowQueryTaskBroker::class);
+        $queryTask = $broker->enqueue('default', $run, 'current', $this->queryArguments());
+
+        $queryPoll = $this->postJson('/api/worker/query-tasks/poll', [
+            'worker_id' => 'python-query-signal-resume-barrier-worker',
+            'task_queue' => 'python-queries',
+        ], $this->workerHeaders());
+
+        $queryPoll->assertOk()
+            ->assertJsonPath('task', null)
+            ->assertJsonPath('poll_status', 'empty');
+
+        $this->assertSame(
+            'pending',
+            $broker->task((string) $queryTask['query_task_id'])['status'] ?? null,
+        );
+
+        $workflowPoll = $this->postJson('/api/worker/workflow-tasks/poll', [
+            'worker_id' => 'python-query-signal-resume-barrier-worker',
+            'task_queue' => 'python-queries',
+        ], $this->workerHeaders());
+
+        $workflowPoll->assertOk()
+            ->assertJsonPath('poll_status', 'leased')
+            ->assertJsonPath('task.task_id', $readyTask->id)
+            ->assertJsonPath('task.workflow_wait_kind', 'signal')
+            ->assertJsonPath('task.resume_source_kind', 'workflow_signal');
+    }
+
     public function test_advertised_query_capability_preempts_ready_workflow_task_without_query_poll_marker(): void
     {
         Queue::fake();

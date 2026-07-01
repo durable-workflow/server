@@ -1435,7 +1435,93 @@ final class WorkflowQueryTaskBroker
                 $task['workflow_type'] ?? null,
                 $task['workflow_definition_fingerprint'] ?? null,
             )
-            && ! $this->hasActiveWorkflowTaskLease($task, $leaseOwner);
+            && ! $this->hasActiveWorkflowTaskLease($task, $leaseOwner)
+            && ! $this->hasReadyWorkflowResumeTask($task, $buildId);
+    }
+
+    /**
+     * @param  array<string, mixed>  $queryTask
+     */
+    private function hasReadyWorkflowResumeTask(array $queryTask, ?string $buildId): bool
+    {
+        $runId = $this->stringValue($queryTask['run_id'] ?? null);
+        $taskQueue = $this->stringValue($queryTask['task_queue'] ?? null);
+
+        if ($runId === null || $taskQueue === null) {
+            return false;
+        }
+
+        $tasks = WorkflowTask::query()
+            ->where('workflow_run_id', $runId)
+            ->where('queue', $taskQueue)
+            ->where('task_type', TaskType::Workflow->value)
+            ->where('status', TaskStatus::Ready->value)
+            ->get(['id', 'payload', 'compatibility', 'available_at']);
+
+        foreach ($tasks as $task) {
+            if ($this->workflowTaskAvailableAtIsFuture($task->available_at)) {
+                continue;
+            }
+
+            $payload = $this->workflowTaskPayload($task);
+
+            if (! $this->isWorkflowResumePayload($payload)) {
+                continue;
+            }
+
+            $compatibility = $this->stringValue($task->compatibility)
+                ?? $this->stringValue($queryTask['compatibility'] ?? null);
+
+            if ($this->matchesCompatibility($buildId, $compatibility, $queryTask['compatibility_scope'] ?? null)) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    private function workflowTaskAvailableAtIsFuture(mixed $availableAt): bool
+    {
+        if ($availableAt instanceof \DateTimeInterface) {
+            return $availableAt > now();
+        }
+
+        if (! is_string($availableAt) || trim($availableAt) === '') {
+            return false;
+        }
+
+        try {
+            return Carbon::parse($availableAt) > now();
+        } catch (\Throwable) {
+            return false;
+        }
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    private function workflowTaskPayload(WorkflowTask $task): array
+    {
+        if (is_array($task->payload)) {
+            return $task->payload;
+        }
+
+        if (! is_string($task->payload) || trim($task->payload) === '') {
+            return [];
+        }
+
+        $decoded = json_decode($task->payload, true);
+
+        return is_array($decoded) ? $decoded : [];
+    }
+
+    /**
+     * @param  array<string, mixed>  $payload
+     */
+    private function isWorkflowResumePayload(array $payload): bool
+    {
+        return $this->stringValue($payload['workflow_wait_kind'] ?? null) !== null
+            || $this->stringValue($payload['resume_source_kind'] ?? null) !== null;
     }
 
     /**
