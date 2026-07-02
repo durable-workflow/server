@@ -211,19 +211,30 @@ final class WorkflowCommandContextFactory
             JSON_PARTIAL_OUTPUT_ON_ERROR | JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE,
         );
 
+        $requestId = $headers['x_request_id'] ?? $this->bodyRequestId($request);
+
         return array_filter([
             'method' => $request->method(),
             'path' => $path,
             'route_name' => $request->route()?->getName(),
             'ip' => $request->ip(),
             'user_agent' => $request->userAgent(),
-            'request_id' => $headers['x_request_id'] ?? null,
+            'request_id' => $requestId,
             'correlation_id' => $headers['x_correlation_id'] ?? null,
             'fingerprint' => $encodedFingerprintPayload === false
                 ? null
                 : 'sha256:'.hash('sha256', $encodedFingerprintPayload),
             'headers' => $headers === [] ? null : $headers,
         ], static fn (mixed $value): bool => $value !== null && $value !== '' && $value !== []);
+    }
+
+    private function bodyRequestId(Request $request): ?string
+    {
+        $value = $request->input('request_id');
+
+        return is_string($value) && trim($value) !== ''
+            ? trim($value)
+            : null;
     }
 
     private function headerValue(Request $request, string $name): ?string

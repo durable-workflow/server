@@ -29,9 +29,11 @@ use Workflow\Serializers\CodecRegistry;
 use Workflow\V2\Contracts\WorkflowControlPlane;
 use Workflow\V2\Enums\HistoryEventType;
 use Workflow\V2\Enums\RunStatus;
+use Workflow\V2\Models\WorkflowCommand;
 use Workflow\V2\Models\WorkflowInstance;
 use Workflow\V2\Models\WorkflowHistoryEvent;
 use Workflow\V2\Models\WorkflowRun;
+use Workflow\V2\Models\WorkflowUpdate;
 use Workflow\V2\Support\FailureSnapshots;
 use Workflow\V2\Support\PayloadEnvelopeResolver;
 use Workflow\V2\Support\RunCommandContract;
@@ -1126,6 +1128,10 @@ class WorkflowController
             'memo' => $run->typedMemos(),
             'search_attributes' => $run->typedSearchAttributes(),
             'actions' => $actions,
+            'commands_scope' => 'selected_run',
+            'commands' => $this->runCommandDiagnostics($run),
+            'updates_scope' => 'selected_run',
+            'updates' => $this->runUpdateDiagnostics($run),
         ];
 
         if ($terminalFailure !== null) {
@@ -1136,6 +1142,217 @@ class WorkflowController
         }
 
         return $payload;
+    }
+
+    /**
+     * @return list<array<string, mixed>>
+     */
+    private function runCommandDiagnostics(WorkflowRun $run): array
+    {
+        /** @var \Illuminate\Support\Collection<string, WorkflowUpdate> $updatesByCommandId */
+        $updatesByCommandId = WorkflowUpdate::query()
+            ->where('workflow_run_id', $run->id)
+            ->get()
+            ->keyBy('workflow_command_id');
+
+        return WorkflowCommand::query()
+            ->where('workflow_run_id', $run->id)
+            ->orderBy('command_sequence')
+            ->orderBy('created_at')
+            ->orderBy('id')
+            ->get()
+            ->map(function (WorkflowCommand $command) use ($updatesByCommandId): array {
+                $update = $updatesByCommandId->get($command->id);
+                $context = $command->commandContext();
+
+                return $this->withoutNullOrEmptyArrays([
+                    'id' => $command->id,
+                    'sequence' => $command->command_sequence,
+                    'type' => $this->enumOrString($command->command_type),
+                    'target_scope' => $command->target_scope,
+                    'requested_run_id' => $command->requestedRunId(),
+                    'resolved_run_id' => $command->resolvedRunId(),
+                    'target_name' => $command->targetName(),
+                    'source' => $command->source,
+                    'context' => $this->commandPublicContext($context),
+                    'caller_label' => $this->contextString($context, ['caller', 'label']),
+                    'principal_type' => $command->principalType(),
+                    'principal_id' => $command->principalId(),
+                    'principal_label' => $command->principalLabel(),
+                    'principal' => $this->commandPrincipal($command),
+                    'auth_status' => $this->contextString($context, ['auth', 'status']),
+                    'auth_method' => $this->contextString($context, ['auth', 'method']),
+                    'request_method' => $this->contextString($context, ['request', 'method']),
+                    'request_path' => $this->contextString($context, ['request', 'path']),
+                    'request_route_name' => $this->contextString($context, ['request', 'route_name']),
+                    'request_fingerprint' => $this->contextString($context, ['request', 'fingerprint']),
+                    'request_id' => $this->commandContextRequestId($context),
+                    'correlation_id' => $this->contextString($context, ['request', 'correlation_id']),
+                    'status' => $this->enumOrString($command->status),
+                    'outcome' => $this->enumOrString($command->outcome),
+                    'reason' => $command->commandReason(),
+                    'rejection_reason' => $command->rejection_reason,
+                    'validation_errors' => $command->validationErrors(),
+                    'workflow_type' => $command->workflow_type,
+                    'workflow_class' => $command->workflow_class,
+                    'accepted_at' => $command->accepted_at?->toJSON(),
+                    'applied_at' => $command->applied_at?->toJSON(),
+                    'rejected_at' => $command->rejected_at?->toJSON(),
+                    'update_id' => $update instanceof WorkflowUpdate ? $update->id : null,
+                    'update_status' => $update instanceof WorkflowUpdate ? $this->enumOrString($update->status) : null,
+                    'failure_id' => $update instanceof WorkflowUpdate ? $update->failure_id : null,
+                    'failure_message' => $update instanceof WorkflowUpdate ? $update->failure_message : null,
+                    'completed_at' => $update instanceof WorkflowUpdate ? $update->closed_at?->toJSON() : null,
+                ]);
+            })
+            ->values()
+            ->all();
+    }
+
+    /**
+     * @return list<array<string, mixed>>
+     */
+    private function runUpdateDiagnostics(WorkflowRun $run): array
+    {
+        /** @var \Illuminate\Support\Collection<string, WorkflowCommand> $commandsById */
+        $commandsById = WorkflowCommand::query()
+            ->where('workflow_run_id', $run->id)
+            ->get()
+            ->keyBy('id');
+
+        return WorkflowUpdate::query()
+            ->where('workflow_run_id', $run->id)
+            ->orderBy('command_sequence')
+            ->orderBy('created_at')
+            ->orderBy('id')
+            ->get()
+            ->map(function (WorkflowUpdate $update) use ($commandsById): array {
+                $command = $commandsById->get($update->workflow_command_id);
+
+                return $this->withoutNullOrEmptyArrays([
+                    'id' => $update->id,
+                    'command_id' => $update->workflow_command_id,
+                    'workflow_id' => $update->workflow_instance_id,
+                    'run_id' => $update->workflow_run_id,
+                    'target_scope' => $update->target_scope,
+                    'requested_run_id' => $update->requested_workflow_run_id,
+                    'resolved_run_id' => $update->resolved_workflow_run_id,
+                    'update_name' => $update->update_name,
+                    'status' => $this->enumOrString($update->status),
+                    'outcome' => $this->enumOrString($update->outcome),
+                    'command_sequence' => $update->command_sequence,
+                    'workflow_sequence' => $update->workflow_sequence,
+                    'rejection_reason' => $update->rejection_reason,
+                    'validation_errors' => $update->validation_errors,
+                    'failure_id' => $update->failure_id,
+                    'failure_message' => $update->failure_message,
+                    'principal' => $command instanceof WorkflowCommand ? $this->commandPrincipal($command) : null,
+                    'request_id' => $command instanceof WorkflowCommand
+                        ? $this->commandContextRequestId($command->commandContext())
+                        : null,
+                    'accepted_at' => $update->accepted_at?->toJSON(),
+                    'applied_at' => $update->applied_at?->toJSON(),
+                    'rejected_at' => $update->rejected_at?->toJSON(),
+                    'closed_at' => $update->closed_at?->toJSON(),
+                ]);
+            })
+            ->values()
+            ->all();
+    }
+
+    /**
+     * @return array{type?: string, id?: string, label?: string}|null
+     */
+    private function commandPrincipal(WorkflowCommand $command): ?array
+    {
+        $principal = array_filter([
+            'type' => $command->principalType(),
+            'id' => $command->principalId(),
+            'label' => $command->principalLabel(),
+        ], static fn (mixed $value): bool => is_string($value) && $value !== '');
+
+        return $principal === [] ? null : $principal;
+    }
+
+    /**
+     * @param  array<string, mixed>  $context
+     */
+    private function commandContextRequestId(array $context): ?string
+    {
+        $request = is_array($context['request'] ?? null) ? $context['request'] : [];
+        $server = is_array($context['server'] ?? null) ? $context['server'] : [];
+        $metadata = is_array($server['metadata'] ?? null) ? $server['metadata'] : [];
+        $headers = is_array($request['headers'] ?? null) ? $request['headers'] : [];
+
+        foreach ([
+            $request['request_id'] ?? null,
+            $metadata['request_id'] ?? null,
+            $headers['x_request_id'] ?? null,
+        ] as $candidate) {
+            if (is_string($candidate) && trim($candidate) !== '') {
+                return trim($candidate);
+            }
+        }
+
+        return null;
+    }
+
+    /**
+     * @param  array<string, mixed>  $context
+     * @return array<string, mixed>|null
+     */
+    private function commandPublicContext(array $context): ?array
+    {
+        $payload = $this->withoutNullOrEmptyArrays([
+            'caller' => $this->withoutNullOrEmptyArrays([
+                'type' => $this->contextString($context, ['caller', 'type']),
+                'label' => $this->contextString($context, ['caller', 'label']),
+            ]),
+            'auth' => $this->withoutNullOrEmptyArrays([
+                'status' => $this->contextString($context, ['auth', 'status']),
+                'method' => $this->contextString($context, ['auth', 'method']),
+                'role' => $this->contextString($context, ['auth', 'role']),
+            ]),
+            'principal' => $this->withoutNullOrEmptyArrays([
+                'type' => $this->contextString($context, ['principal', 'type']),
+                'id' => $this->contextString($context, ['principal', 'id']),
+                'label' => $this->contextString($context, ['principal', 'label']),
+            ]),
+        ]);
+
+        return $payload === [] ? null : $payload;
+    }
+
+    /**
+     * @param  array<string, mixed>  $context
+     * @param  list<string>  $path
+     */
+    private function contextString(array $context, array $path): ?string
+    {
+        $value = $context;
+
+        foreach ($path as $segment) {
+            if (! is_array($value) || ! array_key_exists($segment, $value)) {
+                return null;
+            }
+
+            $value = $value[$segment];
+        }
+
+        return is_string($value) && trim($value) !== ''
+            ? trim($value)
+            : null;
+    }
+
+    private function enumOrString(mixed $value): ?string
+    {
+        if ($value instanceof \BackedEnum) {
+            return (string) $value->value;
+        }
+
+        return is_string($value) && $value !== ''
+            ? $value
+            : null;
     }
 
     /**

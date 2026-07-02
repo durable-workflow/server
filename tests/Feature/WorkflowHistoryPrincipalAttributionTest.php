@@ -349,6 +349,112 @@ class WorkflowHistoryPrincipalAttributionTest extends TestCase
         $this->assertNotSame('mallory', $response->json('principal.id'));
     }
 
+    public function test_run_detail_commands_surface_body_request_id_and_principal_for_update_paths(): void
+    {
+        Queue::fake();
+
+        $start = $this->withHeaders($this->principalHeaders('user-run-detail-start', 'operator'))
+            ->postJson('/api/workflows', [
+                'workflow_id' => 'wf-principal-run-detail',
+                'workflow_type' => 'tests.interactive-command-workflow',
+            ]);
+
+        $start->assertCreated();
+        $runId = (string) $start->json('run_id');
+        $this->runReadyWorkflowTask($runId);
+
+        $accepted = $this->withHeaders($this->principalHeaders('user-run-detail-accepted', 'admin'))
+            ->postJson('/api/workflows/wf-principal-run-detail/update/approve', [
+                'input' => [true, 'run-detail'],
+                'request_id' => 'run-detail-accepted',
+                'wait_for' => 'accepted',
+            ]);
+
+        $accepted->assertAccepted();
+
+        $unknown = $this->withHeaders($this->principalHeaders('user-run-detail-unknown', 'admin'))
+            ->postJson('/api/workflows/wf-principal-run-detail/update/missing_update', [
+                'input' => [],
+                'request_id' => 'run-detail-unknown',
+            ]);
+
+        $unknown->assertNotFound()
+            ->assertJsonPath('principal.id', 'user-run-detail-unknown');
+
+        $invalid = $this->withHeaders($this->principalHeaders('user-run-detail-invalid', 'admin'))
+            ->postJson('/api/workflows/wf-principal-run-detail/update/approve', [
+                'input' => ['not-a-bool'],
+                'request_id' => 'run-detail-invalid',
+            ]);
+
+        $invalid->assertUnprocessable()
+            ->assertJsonPath('principal.id', 'user-run-detail-invalid');
+
+        $detail = $this->withHeaders($this->principalHeaders('user-run-detail-viewer', 'operator'))
+            ->getJson("/api/workflows/wf-principal-run-detail/runs/{$runId}");
+
+        $detail->assertOk();
+        $commands = collect($detail->json('commands'));
+
+        $this->assertUpdateCommandPrincipal($commands->firstWhere('request_id', 'run-detail-accepted'), [
+            'principal_id' => 'user-run-detail-accepted',
+            'status' => 'accepted',
+            'update_status' => 'accepted',
+        ]);
+        $this->assertUpdateCommandPrincipal($commands->firstWhere('request_id', 'run-detail-unknown'), [
+            'principal_id' => 'user-run-detail-unknown',
+            'status' => 'rejected',
+            'rejection_reason' => 'unknown_update',
+        ]);
+        $this->assertUpdateCommandPrincipal($commands->firstWhere('request_id', 'run-detail-invalid'), [
+            'principal_id' => 'user-run-detail-invalid',
+            'status' => 'rejected',
+            'rejection_reason' => 'invalid_update_arguments',
+        ]);
+
+        $terminalStart = $this->withHeaders($this->principalHeaders('user-run-detail-terminal-start', 'operator'))
+            ->postJson('/api/workflows', [
+                'workflow_id' => 'wf-principal-run-detail-terminal',
+                'workflow_type' => 'tests.interactive-command-workflow',
+            ]);
+
+        $terminalStart->assertCreated();
+        $terminalRunId = (string) $terminalStart->json('run_id');
+        $this->runReadyWorkflowTask($terminalRunId);
+
+        $this->withHeaders($this->principalHeaders('user-run-detail-terminal-signal', 'operator'))
+            ->postJson('/api/workflows/wf-principal-run-detail-terminal/signal/advance', [
+                'input' => ['Ada'],
+            ])->assertAccepted();
+        $this->runReadyWorkflowTask($terminalRunId);
+
+        $this->withHeaders($this->principalHeaders('user-run-detail-terminal-finish', 'operator'))
+            ->postJson('/api/workflows/wf-principal-run-detail-terminal/signal/finish')
+            ->assertAccepted();
+        $this->runReadyWorkflowTask($terminalRunId);
+
+        $terminal = $this->withHeaders($this->principalHeaders('user-run-detail-terminal', 'admin'))
+            ->postJson('/api/workflows/wf-principal-run-detail-terminal/update/approve', [
+                'input' => [true, 'terminal'],
+                'request_id' => 'run-detail-terminal',
+            ]);
+
+        $terminal->assertStatus(409)
+            ->assertJsonPath('principal.id', 'user-run-detail-terminal');
+
+        $terminalDetail = $this->withHeaders($this->principalHeaders('user-run-detail-viewer', 'operator'))
+            ->getJson("/api/workflows/wf-principal-run-detail-terminal/runs/{$terminalRunId}");
+
+        $terminalDetail->assertOk();
+        $terminalCommands = collect($terminalDetail->json('commands'));
+
+        $this->assertUpdateCommandPrincipal($terminalCommands->firstWhere('request_id', 'run-detail-terminal'), [
+            'principal_id' => 'user-run-detail-terminal',
+            'status' => 'rejected',
+            'rejection_reason' => 'run_not_active',
+        ]);
+    }
+
     public function test_history_api_response_surfaces_the_principal_at_event_top_level(): void
     {
         Queue::fake();
@@ -411,5 +517,30 @@ class WorkflowHistoryPrincipalAttributionTest extends TestCase
             'X-Namespace' => 'default',
             'X-Durable-Workflow-Control-Plane-Version' => '2',
         ], $extra);
+    }
+
+    /**
+     * @param  array<string, string>  $expected
+     */
+    private function assertUpdateCommandPrincipal(mixed $command, array $expected): void
+    {
+        $this->assertIsArray($command);
+        $this->assertSame('update', $command['type'] ?? null);
+        $this->assertSame($expected['principal_id'], $command['principal_id'] ?? null);
+        $this->assertSame('auth:test-header', $command['principal_type'] ?? null);
+        $this->assertSame($expected['principal_id'], $command['principal']['id'] ?? null);
+        $this->assertSame('auth:test-header', $command['principal']['type'] ?? null);
+
+        if (isset($expected['status'])) {
+            $this->assertSame($expected['status'], $command['status'] ?? null);
+        }
+
+        if (isset($expected['update_status'])) {
+            $this->assertSame($expected['update_status'], $command['update_status'] ?? null);
+        }
+
+        if (isset($expected['rejection_reason'])) {
+            $this->assertSame($expected['rejection_reason'], $command['rejection_reason'] ?? null);
+        }
     }
 }
