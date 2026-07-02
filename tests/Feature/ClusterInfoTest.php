@@ -1305,6 +1305,10 @@ class ClusterInfoTest extends TestCase
             $contract['host_runner_contract']['result_files'],
         );
         $this->assertContains(
+            'python-sdk-workflow-updates-evidence.json',
+            $contract['host_runner_contract']['result_files'],
+        );
+        $this->assertContains(
             'accepted_update_control_plane_and_history',
             $contract['host_runner_contract']['focused_probe']['covers_required_scenarios'],
         );
@@ -1315,6 +1319,14 @@ class ClusterInfoTest extends TestCase
         $this->assertContains(
             'php_client_worker_update_surface',
             $contract['host_runner_contract']['php_sidecar']['covers_required_scenarios'],
+        );
+        $this->assertContains(
+            'python_client_worker_update_surface',
+            $contract['host_runner_contract']['python_sidecar']['covers_required_scenarios'],
+        );
+        $this->assertArrayNotHasKey(
+            'python_client_worker_update_surface',
+            $contract['host_runner_contract']['typed_coverage_gaps'],
         );
         $this->assertSame(
             'waterline',

@@ -77,6 +77,10 @@ class WorkflowUpdateRuntimeContractTest extends TestCase
             $manifest['host_runner_contract']['evidence_inputs'],
         );
         $this->assertContains(
+            'DW_WORKFLOW_UPDATES_SKIP_PYTHON_SDK_SHARD',
+            $manifest['host_runner_contract']['evidence_inputs'],
+        );
+        $this->assertContains(
             'workflow-updates-focused-evidence.json',
             $manifest['host_runner_contract']['result_files'],
         );
@@ -108,13 +112,17 @@ class WorkflowUpdateRuntimeContractTest extends TestCase
             'php_client_worker_update_surface',
             $manifest['host_runner_contract']['php_sidecar']['covers_required_scenarios'],
         );
+        $this->assertContains(
+            'python_client_worker_update_surface',
+            $manifest['host_runner_contract']['python_sidecar']['covers_required_scenarios'],
+        );
         $this->assertArrayNotHasKey(
             'php_client_worker_update_surface',
             $manifest['host_runner_contract']['typed_coverage_gaps'],
         );
-        $this->assertSame(
-            'coverage-gap',
-            $manifest['host_runner_contract']['typed_coverage_gaps']['python_client_worker_update_surface']['classification'],
+        $this->assertArrayNotHasKey(
+            'python_client_worker_update_surface',
+            $manifest['host_runner_contract']['typed_coverage_gaps'],
         );
         $this->assertSame(WorkflowUpdateRuntimeResultGate::SCHEMA, $manifest['result_gate']['schema']);
         $this->assertContains(
@@ -443,6 +451,7 @@ class WorkflowUpdateRuntimeContractTest extends TestCase
                     'linked_findings' => [],
                 ];
             }
+            $scenarioResults['python_client_worker_update_surface']['observed_outputs']['package_import_path'] = '/tmp/durable-workflow-python-sdk-venv/lib/python3.11/site-packages/durable_workflow/workflow_updates_conformance.py';
 
             file_put_contents($resultDir . '/python-sdk-workflow-updates-evidence.json', json_encode([
                 'schema' => 'durable-workflow.v2.workflow-updates.python-sdk-sidecar',
@@ -482,6 +491,9 @@ class WorkflowUpdateRuntimeContractTest extends TestCase
             $this->assertSame('python-sdk-workflow-updates-evidence.json', $metadata['python_sidecar_evidence_file']);
             $this->assertSame('python-sdk-workflow-updates-evidence.json', $record['python_sidecar_evidence_file']);
             $this->assertSame('pass', $result['scenario_results']['python_client_worker_update_surface']['status']);
+            $this->assertFalse($result['source_policy']['local_product_source_checkouts_used']);
+            $this->assertFalse($result['python_sidecar']['local_product_source_checkouts_used']);
+            $this->assertFalse($result['scenario_results']['python_client_worker_update_surface']['local_product_source_checkouts_used']);
             $this->assertSame('not_covered', $result['scenario_results']['principal_attribution_with_auth']['status']);
             $this->assertSame('not_covered', $result['scenario_results']['php_client_worker_update_surface']['status']);
             $this->assertSame('not_covered', $result['scenario_results']['operator_diagnostics_surfaces']['status']);
@@ -582,7 +594,7 @@ class WorkflowUpdateRuntimeContractTest extends TestCase
         }
     }
 
-    public function test_handoff_rejects_python_sidecar_pass_with_local_source_run_policy(): void
+    public function test_handoff_rejects_python_sidecar_pass_with_local_source_import_path(): void
     {
         if (trim((string) shell_exec('command -v node')) === '') {
             $this->markTestSkipped('node is required to execute the workflow updates handoff');
@@ -598,7 +610,7 @@ class WorkflowUpdateRuntimeContractTest extends TestCase
                 'runner_blocked' => false,
                 'source_policy' => [
                     'pass_requires_published_artifacts_only' => true,
-                    'local_product_source_checkouts_used' => true,
+                    'local_product_source_checkouts_used' => false,
                     'local_checkout_execution_counts_as_pass' => false,
                 ],
                 'scenario_results' => [
@@ -608,7 +620,9 @@ class WorkflowUpdateRuntimeContractTest extends TestCase
                         'classification' => 'product-evidence',
                         'published_artifact_cell_executed' => true,
                         'local_product_source_checkouts_used' => false,
-                        'observed_outputs' => self::completeWorkflowUpdateObservedOutputs('python_client_worker_update_surface'),
+                        'observed_outputs' => self::completeWorkflowUpdateObservedOutputs('python_client_worker_update_surface') + [
+                            'package_import_path' => '/workspace/repos/sdk-python/src/durable_workflow/workflow_updates_conformance.py',
+                        ],
                         'linked_findings' => [],
                     ],
                 ],
@@ -1232,6 +1246,66 @@ class WorkflowUpdateRuntimeContractTest extends TestCase
             'composer require --no-interaction --no-progress "durable-workflow/workflow:${workflow_php_version:-',
             $source,
             'the PHP package shard must not fall back to floating Composer constraints',
+        );
+    }
+
+    public function test_python_sdk_shard_installs_pinned_pypi_artifact_and_runs_package_command(): void
+    {
+        $source = (string) file_get_contents(
+            dirname(__DIR__, 2) . '/scripts/conformance/workflow-updates-published-artifacts.sh',
+        );
+
+        $this->assertStringContainsString(
+            'DW_WORKFLOW_UPDATES_SKIP_PYTHON_SDK_SHARD',
+            $source,
+        );
+        $this->assertStringContainsString(
+            'python-sdk-workflow-updates-evidence.json',
+            $source,
+        );
+        $this->assertStringContainsString(
+            'PIP_CONFIG_FILE=/dev/null "$venv_python" -m pip --isolated install',
+            $source,
+        );
+        $this->assertStringContainsString(
+            '--index-url https://pypi.org/simple',
+            $source,
+        );
+        $this->assertStringContainsString(
+            '"durable-workflow==${python_version}"',
+            $source,
+        );
+        $this->assertStringContainsString(
+            'python-sdk-package-source-policy.log',
+            $source,
+        );
+        $this->assertStringContainsString(
+            'durable-workflow-workflow-updates-conformance',
+            $source,
+        );
+        $this->assertStringContainsString(
+            '--expected-version "$python_version"',
+            $source,
+        );
+        $this->assertStringContainsString(
+            'sdk_python_artifact_source',
+            $source,
+        );
+        $this->assertStringContainsString(
+            'python_worker_update_handler',
+            $source,
+        );
+        $this->assertStringContainsString(
+            'python_client_update_request',
+            $source,
+        );
+        $this->assertStringContainsString(
+            'localSourceFieldValues(value).some((source) => sourceUsesForbiddenToken(source))',
+            $source,
+        );
+        $this->assertStringContainsString(
+            'packageImportPathValues(value).some((source) => packageImportPathUsesForbiddenToken(source))',
+            $source,
         );
     }
 

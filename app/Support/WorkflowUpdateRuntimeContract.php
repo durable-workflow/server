@@ -170,7 +170,7 @@ final class WorkflowUpdateRuntimeContract
                 ],
             ],
             'host_runner_contract' => [
-                'status' => 'focused_server_runtime_probe_and_php_package_shard_implemented_with_typed_coverage_gaps',
+                'status' => 'focused_server_runtime_probe_php_package_shard_and_python_sdk_shard_implemented_with_operator_diagnostics_gap',
                 'runner_id' => 'workflow-updates',
                 'result_schema' => self::RESULT_SCHEMA,
                 'runner_repository' => 'server',
@@ -185,6 +185,7 @@ final class WorkflowUpdateRuntimeContract
                     'DW_WORKFLOW_UPDATES_PYTHON_EVIDENCE_PATH',
                     'DW_WORKFLOW_UPDATES_SKIP_FOCUSED_HOST_PROBE',
                     'DW_WORKFLOW_UPDATES_SKIP_PHP_PACKAGE_SHARD',
+                    'DW_WORKFLOW_UPDATES_SKIP_PYTHON_SDK_SHARD',
                 ],
                 'result_files' => [
                     'pins.json',
@@ -253,13 +254,10 @@ final class WorkflowUpdateRuntimeContract
                     'records_runner_blocked_false_for_executed_product_evidence' => true,
                     'out_of_scope_scenario_results_are_ignored' => true,
                     'uses_pypi_artifact_client_and_worker_update_surface' => true,
+                    'must_record_package_version_artifact_source_handler_request_and_cells' => true,
+                    'must_reject_local_product_source_checkout_and_local_artifact_sources' => true,
                 ],
                 'typed_coverage_gaps' => [
-                    'python_client_worker_update_surface' => [
-                        'classification' => 'coverage-gap',
-                        'owner' => 'sdk-python',
-                        'acceptance' => 'Install the pinned PyPI durable-workflow artifact and record Python worker update handler, Python client update request, covered cells, and typed unsupported cells.',
-                    ],
                     'operator_diagnostics_surfaces' => [
                         'classification' => 'coverage-gap',
                         'owner' => 'waterline',

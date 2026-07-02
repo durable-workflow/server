@@ -214,7 +214,7 @@
   },
   "host_runner_contract": {
     "runner_id": "workflow-updates",
-    "status": "focused_server_runtime_probe_and_php_package_shard_implemented_with_typed_coverage_gaps",
+    "status": "focused_server_runtime_probe_php_package_shard_and_python_sdk_shard_implemented_with_operator_diagnostics_gap",
     "host_runner_implemented": true,
     "must_exercise_published_artifacts": true,
     "must_execute_against_published_artifacts": true,
@@ -243,7 +243,9 @@
         "python_client_worker_update_surface"
       ],
       "out_of_scope_scenario_results_are_ignored": true,
-      "must_record_runner_blocked_false_for_product_evidence": true
+      "must_record_runner_blocked_false_for_product_evidence": true,
+      "must_record_package_version_artifact_source_handler_request_and_cells": true,
+      "must_reject_local_product_source_checkout_and_local_artifact_sources": true
     },
     "php_sidecar": {
       "status": "implemented",
@@ -257,11 +259,6 @@
       "must_reject_local_product_source_checkout_and_local_artifact_sources": true
     },
     "typed_coverage_gaps": {
-      "python_client_worker_update_surface": {
-        "classification": "coverage-gap",
-        "owner": "sdk-python",
-        "acceptance": "Install the pinned PyPI durable-workflow artifact and record Python worker update handler, Python client update request, covered cells, and typed unsupported cells."
-      },
       "operator_diagnostics_surfaces": {
         "classification": "coverage-gap",
         "owner": "waterline",

@@ -36,10 +36,14 @@ Environment overrides:
                                      workflow update runtime probe.
   DW_WORKFLOW_UPDATES_SKIP_PHP_PACKAGE_SHARD=1
                                      Skip the PHP package client/worker shard.
+  DW_WORKFLOW_UPDATES_SKIP_PYTHON_SDK_SHARD=1
+                                     Skip the Python SDK client/worker shard.
   DW_SERVER_IMAGE                    Exact server image tag or digest under test.
   DW_SERVER_VERSION                  Exact server version under test.
   DW_CLI_VERSION                     Exact CLI release version.
   DW_PYTHON_SDK_VERSION              Exact PyPI durable-workflow version.
+  DW_WORKFLOW_UPDATES_PYTHON_BIN     Python executable used to create the
+                                     disposable PyPI install environment.
   DW_WORKFLOW_PHP_VERSION            Exact Composer durable-workflow/workflow version.
   DW_WATERLINE_VERSION               Exact Waterline artifact version.
 USAGE
@@ -2060,6 +2064,467 @@ if should_run_php_package_shard; then
   run_php_package_shard
 fi
 
+should_run_python_sdk_shard() {
+  if [[ "${DW_WORKFLOW_UPDATES_SKIP_PYTHON_SDK_SHARD:-0}" == "1" || "${DW_WORKFLOW_UPDATES_SKIP_PYTHON_SDK_SHARD:-}" == "true" ]]; then
+    return 1
+  fi
+  if [[ -n "${DW_WORKFLOW_UPDATES_PYTHON_EVIDENCE:-}" ]]; then
+    return 1
+  fi
+  if [[ -n "${DW_WORKFLOW_UPDATES_PYTHON_EVIDENCE_PATH:-}" && -s "${DW_WORKFLOW_UPDATES_PYTHON_EVIDENCE_PATH:-}" ]]; then
+    return 1
+  fi
+  if [[ -s "$result_dir/python-sdk-workflow-updates-evidence.json" ]]; then
+    return 1
+  fi
+  if [[ "$repo_root" != "/app" || -d "$repo_root/.git" ]]; then
+    return 1
+  fi
+  if [[ ! -f "$repo_root/artisan" || ! -f "$repo_root/vendor/autoload.php" ]]; then
+    return 1
+  fi
+
+  return 0
+}
+
+select_python_bin() {
+  if [[ -n "${DW_WORKFLOW_UPDATES_PYTHON_BIN:-}" ]]; then
+    if [[ -x "${DW_WORKFLOW_UPDATES_PYTHON_BIN:-}" ]]; then
+      printf '%s\n' "${DW_WORKFLOW_UPDATES_PYTHON_BIN:-}"
+      return 0
+    fi
+    if command -v "${DW_WORKFLOW_UPDATES_PYTHON_BIN:-}" >/dev/null 2>&1; then
+      command -v "${DW_WORKFLOW_UPDATES_PYTHON_BIN:-}"
+      return 0
+    fi
+
+    return 1
+  fi
+
+  if command -v python3 >/dev/null 2>&1; then
+    command -v python3
+    return 0
+  fi
+  if command -v python >/dev/null 2>&1; then
+    command -v python
+    return 0
+  fi
+
+  return 1
+}
+
+write_python_sdk_shard_status() {
+  PYTHON_SDK_SHARD_STATUS="${1:?status required}" \
+  PYTHON_SDK_SHARD_SUMMARY="${2:?summary required}" \
+  PYTHON_SDK_SHARD_STEP="${3:?step required}" \
+  PYTHON_SDK_SHARD_RUNNER_BLOCKED="${4:-false}" \
+  RESULT_DIR="$result_dir" \
+  DW_SERVER_IMAGE="${DW_SERVER_IMAGE:-}" \
+  DW_SERVER_VERSION="${DW_SERVER_VERSION:-}" \
+  DW_CLI_VERSION="${DW_CLI_VERSION:-}" \
+  DW_PYTHON_SDK_VERSION="${DW_PYTHON_SDK_VERSION:-}" \
+  DW_WORKFLOW_PHP_VERSION="${DW_WORKFLOW_PHP_VERSION:-}" \
+  DW_WORKFLOW_VERSION="${DW_WORKFLOW_VERSION:-}" \
+  DW_WATERLINE_VERSION="${DW_WATERLINE_VERSION:-}" \
+  node <<'NODE'
+const fs = require('node:fs');
+const path = require('node:path');
+
+const resultDir = process.env.RESULT_DIR;
+const workflowVersion = (process.env.DW_WORKFLOW_PHP_VERSION || '').trim()
+  || (process.env.DW_WORKFLOW_VERSION || '').trim()
+  || 'unresolved';
+const serverImage = (process.env.DW_SERVER_IMAGE || '').trim();
+const serverVersion = (process.env.DW_SERVER_VERSION || '').trim() || (serverImage.match(/:([^/:]+)$/)?.[1] ?? 'unresolved');
+const cliVersion = (process.env.DW_CLI_VERSION || '').trim() || 'unresolved';
+const pythonVersion = (process.env.DW_PYTHON_SDK_VERSION || '').trim() || 'unresolved';
+const waterlineVersion = (process.env.DW_WATERLINE_VERSION || '').trim() || 'unresolved';
+const artifactVersions = {
+  server: serverVersion,
+  cli: cliVersion,
+  'sdk-python': pythonVersion,
+  workflow: workflowVersion,
+  'workflow-php': workflowVersion,
+  waterline: waterlineVersion,
+};
+const artifactSources = {
+  server: serverImage || `docker://durableworkflow/server:${serverVersion}`,
+  cli: `github-release://durable-workflow/cli/v${cliVersion}/install.sh`,
+  'sdk-python': `pypi://durable-workflow==${pythonVersion}`,
+  workflow: `packagist://durable-workflow/workflow@${workflowVersion}`,
+  'workflow-php': `packagist://durable-workflow/workflow@${workflowVersion}`,
+  waterline: `packagist://durable-workflow/waterline@${waterlineVersion}`,
+};
+const runnerBlocked = ['1', 'true', 'yes'].includes((process.env.PYTHON_SDK_SHARD_RUNNER_BLOCKED || '').toLowerCase());
+const status = process.env.PYTHON_SDK_SHARD_STATUS || (runnerBlocked ? 'runner_blocked' : 'fail');
+const classification = runnerBlocked ? 'runner-blocked' : (['not_covered', 'unsupported'].includes(status) ? 'coverage-gap' : 'product-gap');
+const summary = process.env.PYTHON_SDK_SHARD_SUMMARY || 'The Python SDK workflow update shard did not complete.';
+const step = process.env.PYTHON_SDK_SHARD_STEP || 'python_sdk_shard';
+const generatedAt = new Date().toISOString().replace(/\.\d{3}Z$/, 'Z');
+const finding = {
+  finding_id: `workflow-updates-python-client-worker-update-surface-${runnerBlocked ? 'runner-blocked' : (classification === 'coverage-gap' ? 'coverage-gap' : 'product-gap')}`,
+  finding_type: runnerBlocked ? 'conformance_runner_blocked' : (classification === 'coverage-gap' ? 'conformance_runner_coverage_gap' : 'product_behavior_failure'),
+  classification,
+  scenario_id: 'python_client_worker_update_surface',
+  owning_surface: runnerBlocked ? 'conformance_harness' : 'sdk-python',
+  summary,
+  next_acceptance_criterion: 'Install the pinned PyPI durable-workflow artifact and run its workflow update client/worker conformance command from the installed package.',
+  diagnostic: { step },
+};
+const payload = {
+  schema: 'durable-workflow.v2.workflow-updates.python-sdk-sidecar',
+  generated_at: generatedAt,
+  runner: 'published-pypi-python-sdk-workflow-updates-shard',
+  runner_blocked: runnerBlocked,
+  source_policy: {
+    pass_requires_published_artifacts_only: true,
+    local_product_source_checkouts_used: false,
+    local_checkout_execution_counts_as_pass: false,
+    artifact_sources: artifactSources,
+  },
+  artifact_versions: artifactVersions,
+  published_artifact_versions: artifactVersions,
+  artifact_sources: artifactSources,
+  scenario_results: {
+    python_client_worker_update_surface: {
+      scenario_id: 'python_client_worker_update_surface',
+      status,
+      classification,
+      published_artifact_cell_executed: false,
+      local_product_source_checkouts_used: false,
+      observed_outputs: {
+        sdk_python_artifact_version: pythonVersion,
+        sdk_python_artifact_source: artifactSources['sdk-python'],
+        artifact_source: artifactSources['sdk-python'],
+        pypi_package: 'durable-workflow',
+        package_install_step: step,
+        python_worker_update_handler: {},
+        python_client_update_request: {},
+        covered_cells: [],
+        unsupported_cells: [],
+        typed_errors: [{
+          cell: 'python_client_worker_update_surface',
+          reason: step,
+          message: summary,
+        }],
+        published_artifact_cell_executed: false,
+        local_product_source_checkouts_used: false,
+        artifact_versions: artifactVersions,
+        published_artifact_versions: artifactVersions,
+        artifact_sources: artifactSources,
+        source_policy: {
+          pass_requires_published_artifacts_only: true,
+          local_product_source_checkouts_used: false,
+          local_checkout_execution_counts_as_pass: false,
+        },
+      },
+      linked_findings: [finding],
+    },
+  },
+  findings: [finding],
+};
+
+fs.writeFileSync(path.join(resultDir, 'python-sdk-workflow-updates-evidence.json'), `${JSON.stringify(payload, null, 2)}\n`);
+NODE
+}
+
+materialize_python_sdk_shard_report() {
+  PYTHON_SDK_REPORT_PATH="${1:?report path required}" \
+  RESULT_DIR="$result_dir" \
+  DW_SERVER_IMAGE="${DW_SERVER_IMAGE:-}" \
+  DW_SERVER_VERSION="${DW_SERVER_VERSION:-}" \
+  DW_CLI_VERSION="${DW_CLI_VERSION:-}" \
+  DW_PYTHON_SDK_VERSION="${DW_PYTHON_SDK_VERSION:-}" \
+  DW_WORKFLOW_PHP_VERSION="${DW_WORKFLOW_PHP_VERSION:-}" \
+  DW_WORKFLOW_VERSION="${DW_WORKFLOW_VERSION:-}" \
+  DW_WATERLINE_VERSION="${DW_WATERLINE_VERSION:-}" \
+  node <<'NODE'
+const fs = require('node:fs');
+const path = require('node:path');
+
+const resultDir = process.env.RESULT_DIR;
+const report = JSON.parse(fs.readFileSync(process.env.PYTHON_SDK_REPORT_PATH, 'utf8'));
+const workflowVersion = (process.env.DW_WORKFLOW_PHP_VERSION || '').trim()
+  || (process.env.DW_WORKFLOW_VERSION || '').trim()
+  || report?.artifact_versions?.['workflow-php']
+  || 'unresolved';
+const serverImage = (process.env.DW_SERVER_IMAGE || '').trim();
+const serverVersion = (process.env.DW_SERVER_VERSION || '').trim() || (serverImage.match(/:([^/:]+)$/)?.[1] ?? report?.artifact_versions?.server ?? 'unresolved');
+const cliVersion = (process.env.DW_CLI_VERSION || '').trim() || report?.artifact_versions?.cli || 'unresolved';
+const pythonVersion = (process.env.DW_PYTHON_SDK_VERSION || '').trim() || report?.artifact_versions?.['sdk-python'] || report?.artifact_versions?.python || 'unresolved';
+const waterlineVersion = (process.env.DW_WATERLINE_VERSION || '').trim() || report?.artifact_versions?.waterline || 'unresolved';
+const artifactVersions = {
+  server: serverVersion,
+  cli: cliVersion,
+  'sdk-python': pythonVersion,
+  workflow: workflowVersion,
+  'workflow-php': workflowVersion,
+  waterline: waterlineVersion,
+};
+const artifactSources = {
+  server: serverImage || `docker://durableworkflow/server:${serverVersion}`,
+  cli: `github-release://durable-workflow/cli/v${cliVersion}/install.sh`,
+  'sdk-python': `pypi://durable-workflow==${pythonVersion}`,
+  workflow: `packagist://durable-workflow/workflow@${workflowVersion}`,
+  'workflow-php': `packagist://durable-workflow/workflow@${workflowVersion}`,
+  waterline: `packagist://durable-workflow/waterline@${waterlineVersion}`,
+};
+
+function scenarioRows(value) {
+  if (Array.isArray(value?.scenario_results)) {
+    return value.scenario_results;
+  }
+  if (value?.scenario_results && typeof value.scenario_results === 'object') {
+    return Object.values(value.scenario_results);
+  }
+
+  return [];
+}
+
+function packageFindingToPublicFinding(finding, index) {
+  if (!finding || typeof finding !== 'object') {
+    return null;
+  }
+
+  return {
+    finding_id: `workflow-updates-python-client-worker-update-surface-${index + 1}`,
+    finding_type: 'product_behavior_failure',
+    classification: 'product-gap',
+    scenario_id: 'python_client_worker_update_surface',
+    owning_surface: 'sdk-python',
+    summary: finding.message || finding.summary || 'The published Python SDK workflow update shard reported a product failure.',
+    next_acceptance_criterion: 'Make the published Python SDK client/worker update shard satisfy the workflow update conformance cells.',
+    evidence: finding.evidence || finding,
+  };
+}
+
+const packageRow = scenarioRows(report).find((row) => row?.scenario_id === 'python_client_worker_update_surface') ?? {
+  scenario_id: 'python_client_worker_update_surface',
+  status: 'fail',
+  observed_outputs: {},
+  linked_findings: [],
+};
+const status = typeof packageRow.status === 'string' ? packageRow.status : 'fail';
+const scenarioClassification = status === 'pass'
+  ? 'product-evidence'
+  : (status === 'runner_blocked' ? 'runner-blocked' : (['not_covered', 'unsupported'].includes(status) ? 'coverage-gap' : 'product-gap'));
+const rawFindings = Array.isArray(packageRow.linked_findings) && packageRow.linked_findings.length > 0
+  ? packageRow.linked_findings
+  : (Array.isArray(report.findings) ? report.findings : []);
+const packageFindings = rawFindings.map(packageFindingToPublicFinding).filter(Boolean);
+const observedOutputs = packageRow.observed_outputs && typeof packageRow.observed_outputs === 'object'
+  ? packageRow.observed_outputs
+  : {};
+const reportLocalSource = packageRow.local_product_source_checkouts_used === true
+  || observedOutputs.local_product_source_checkouts_used === true
+  || report?.source_policy?.local_product_source_checkouts_used === true;
+const generatedAt = new Date().toISOString().replace(/\.\d{3}Z$/, 'Z');
+const scenario = {
+  scenario_id: 'python_client_worker_update_surface',
+  status,
+  classification: scenarioClassification,
+  published_artifact_cell_executed: !reportLocalSource,
+  local_product_source_checkouts_used: reportLocalSource,
+  observed_outputs: {
+    ...observedOutputs,
+    package_report_sdk_python_artifact_version: observedOutputs.sdk_python_artifact_version || null,
+    package_report_sdk_python_artifact_source: observedOutputs.sdk_python_artifact_source || observedOutputs.artifact_source || null,
+    sdk_python_artifact_version: pythonVersion,
+    sdk_python_artifact_source: artifactSources['sdk-python'],
+    artifact_source: artifactSources['sdk-python'],
+    pypi_package: 'durable-workflow',
+    pypi_constraint: `durable-workflow==${pythonVersion}`,
+    package_artifact_source: artifactSources['sdk-python'],
+    package_report_schema: report.schema || null,
+    python_sdk_conformance_command: 'durable-workflow-workflow-updates-conformance',
+    artifact_versions: artifactVersions,
+    published_artifact_versions: artifactVersions,
+    artifact_sources: artifactSources,
+    source_policy: {
+      pass_requires_published_artifacts_only: true,
+      local_product_source_checkouts_used: reportLocalSource,
+      local_checkout_execution_counts_as_pass: false,
+    },
+    published_artifact_cell_executed: !reportLocalSource,
+    local_product_source_checkouts_used: reportLocalSource,
+  },
+  linked_findings: status === 'pass' ? [] : packageFindings,
+};
+const payload = {
+  schema: 'durable-workflow.v2.workflow-updates.python-sdk-sidecar',
+  generated_at: generatedAt,
+  runner: 'published-pypi-python-sdk-workflow-updates-shard',
+  runner_blocked: report.runner_blocked === true || report.runnerBlocked === true,
+  source_policy: {
+    pass_requires_published_artifacts_only: true,
+    local_product_source_checkouts_used: reportLocalSource,
+    local_checkout_execution_counts_as_pass: false,
+    artifact_sources: artifactSources,
+  },
+  artifact_versions: artifactVersions,
+  published_artifact_versions: artifactVersions,
+  artifact_sources: artifactSources,
+  package_report: {
+    schema: report.schema || null,
+    outcome: report.outcome || null,
+    runner: report.runner || null,
+  },
+  scenario_results: {
+    python_client_worker_update_surface: scenario,
+  },
+  findings: packageFindings,
+};
+
+fs.writeFileSync(path.join(resultDir, 'python-sdk-workflow-updates-evidence.json'), `${JSON.stringify(payload, null, 2)}\n`);
+NODE
+}
+
+run_python_sdk_shard() {
+  local python_version="${DW_PYTHON_SDK_VERSION:-}"
+  local python_venv="$result_dir/python-sdk-package-venv"
+  local python_report="$result_dir/python-sdk-package-report.json"
+  local python_bin
+  local venv_python
+  local workflow_updates_script
+
+  if [[ -z "$python_version" ]] || ! is_exact_package_version "$python_version"; then
+    write_python_sdk_shard_status not_covered "DW_PYTHON_SDK_VERSION must be an exact durable-workflow PyPI version before the Python SDK shard can install from PyPI." version_resolution false
+    return 0
+  fi
+  if ! python_bin="$(select_python_bin)"; then
+    write_python_sdk_shard_status runner_blocked "python3, python, or DW_WORKFLOW_UPDATES_PYTHON_BIN is required to create the disposable PyPI install environment for the Python SDK update shard." python_unavailable true
+    return 0
+  fi
+
+  rm -rf "$python_venv"
+  if ! "$python_bin" -m venv "$python_venv" > "$result_dir/python-sdk-venv-create.log" 2>&1; then
+    write_python_sdk_shard_status runner_blocked "The Python SDK shard could not create a disposable virtual environment; see python-sdk-venv-create.log." python_venv true
+    return 0
+  fi
+
+  venv_python="$python_venv/bin/python"
+  if [[ ! -x "$venv_python" ]]; then
+    venv_python="$python_venv/Scripts/python.exe"
+  fi
+  if [[ ! -x "$venv_python" ]]; then
+    write_python_sdk_shard_status runner_blocked "The Python SDK shard virtual environment did not expose a Python executable." python_venv_python true
+    return 0
+  fi
+  if ! "$venv_python" -m pip --version > "$result_dir/python-sdk-pip-version.log" 2>&1; then
+    write_python_sdk_shard_status runner_blocked "pip is required inside the disposable Python SDK shard environment; see python-sdk-pip-version.log." pip_unavailable true
+    return 0
+  fi
+
+  if ! PIP_CONFIG_FILE=/dev/null "$venv_python" -m pip --isolated install \
+    --disable-pip-version-check \
+    --no-input \
+    --index-url https://pypi.org/simple \
+    "durable-workflow==${python_version}" \
+    > "$result_dir/python-sdk-pip-install.log" 2>&1; then
+    write_python_sdk_shard_status fail "pip could not install pinned PyPI package durable-workflow==${python_version}; see python-sdk-pip-install.log." pypi_install false
+    return 0
+  fi
+
+  if ! PYTHON_EXPECTED_VERSION="$python_version" "$venv_python" <<'PY' > "$result_dir/python-sdk-package-source-policy.log" 2>&1; then
+import importlib
+import importlib.metadata as metadata
+import json
+import os
+from pathlib import Path
+import sys
+from urllib.parse import urlparse
+
+expected = os.environ["PYTHON_EXPECTED_VERSION"]
+
+def fail(message: str) -> None:
+    print(message, file=sys.stderr)
+    raise SystemExit(1)
+
+try:
+    dist = metadata.distribution("durable-workflow")
+except metadata.PackageNotFoundError:
+    fail("durable-workflow was not installed by pip.")
+
+version = dist.version
+if version.lstrip("v") != expected.lstrip("v"):
+    fail(f"durable-workflow installed version {version!r} did not match {expected!r}.")
+
+package = importlib.import_module("durable_workflow")
+package_file = Path(str(getattr(package, "__file__", ""))).resolve()
+venv_root = Path(sys.prefix).resolve()
+if not package_file.is_file():
+    fail("durable_workflow package import did not resolve to a file.")
+try:
+    package_file.relative_to(venv_root)
+except ValueError:
+    fail(f"durable_workflow imported outside the disposable virtual environment: {package_file}")
+
+for parent in package_file.parents:
+    if (parent / "pyproject.toml").is_file() and (parent / "src" / "durable_workflow").is_dir():
+        fail(f"durable_workflow imported from a source checkout: {package_file}")
+
+for candidate in [package_file, *package_file.parents]:
+    normalized = str(candidate).lower()
+    if "/workspace/repos" in normalized or "local_product_source_checkout" in normalized or "workspace_repo_as_artifact_under_test" in normalized:
+        fail(f"durable_workflow resolved from a forbidden local source path: {candidate}")
+
+direct_url = dist.read_text("direct_url.json")
+if direct_url:
+    try:
+        data = json.loads(direct_url)
+    except json.JSONDecodeError as exc:
+        fail(f"durable-workflow direct_url.json was invalid: {exc}")
+    url = str(data.get("url") or "")
+    parsed = urlparse(url)
+    if parsed.scheme == "file" or url.startswith(("/", "./", "../")):
+        fail(f"durable-workflow resolved from a local artifact source: {url}")
+    normalized_url = url.lower()
+    if "/workspace/repos" in normalized_url or "local_product_source_checkout" in normalized_url or "workspace_repo" in normalized_url:
+        fail(f"durable-workflow resolved from a forbidden artifact source: {url}")
+
+print(json.dumps({
+    "version": version,
+    "package_file": str(package_file),
+    "sys_prefix": str(venv_root),
+}))
+PY
+    write_python_sdk_shard_status fail "The Python SDK shard resolved durable-workflow from a non-published artifact source; see python-sdk-package-source-policy.log." package_source_policy false
+    return 0
+  fi
+
+  workflow_updates_script="$python_venv/bin/durable-workflow-workflow-updates-conformance"
+  if [[ ! -x "$workflow_updates_script" ]]; then
+    workflow_updates_script="$python_venv/Scripts/durable-workflow-workflow-updates-conformance.exe"
+  fi
+  if [[ ! -x "$workflow_updates_script" ]]; then
+    write_python_sdk_shard_status fail "The PyPI-installed durable-workflow package does not expose durable-workflow-workflow-updates-conformance." python_conformance_command_missing false
+    return 0
+  fi
+
+  set +e
+  PYTHONPATH="" "$workflow_updates_script" \
+    --expected-version "$python_version" \
+    --output "$python_report" \
+    --pretty \
+    > "$result_dir/python-sdk-conformance-command.log" 2>&1
+  local command_status=$?
+  set -e
+
+  if [[ ! -s "$python_report" ]]; then
+    write_python_sdk_shard_status fail "The PyPI-installed Python SDK workflow update command did not emit a report; see python-sdk-conformance-command.log." python_sdk_command false
+    return 0
+  fi
+
+  materialize_python_sdk_shard_report "$python_report"
+  if [[ "$command_status" -ne 0 ]]; then
+    printf 'Python SDK workflow update shard exited with status %s; imported its emitted report.\n' "$command_status" >> "$result_dir/python-sdk-conformance-command.log"
+  fi
+}
+
+if should_run_python_sdk_shard; then
+  run_python_sdk_shard
+fi
+
 RESULT_DIR="$result_dir" \
 STARTED_AT="$started_at" \
 REPO_ROOT="$repo_root" \
@@ -2352,6 +2817,22 @@ function localSourceFieldValues(value) {
   return fields.filter((candidate) => typeof candidate === 'string' && candidate.trim() !== '');
 }
 
+function packageImportPathValues(value) {
+  const observedOutputs = observedOutputsFor(value);
+  const fields = [
+    value?.package_import_path,
+    value?.packageImportPath,
+    value?.python_package_import_path,
+    value?.pythonPackageImportPath,
+    observedOutputs.package_import_path,
+    observedOutputs.packageImportPath,
+    observedOutputs.python_package_import_path,
+    observedOutputs.pythonPackageImportPath,
+  ];
+
+  return fields.filter((candidate) => typeof candidate === 'string' && candidate.trim() !== '');
+}
+
 function localProductSourceCheckoutsUsed(value) {
   const observedOutputs = observedOutputsFor(value);
   const sourcePolicy = sourcePolicyFor(value);
@@ -2472,11 +2953,18 @@ function placeholderArtifactValue(value) {
 }
 
 function sourceUsesForbiddenToken(source) {
-  const normalized = stringValue(source).toLowerCase();
+  const normalized = stringValue(source).replace(/\\/g, '/').toLowerCase();
   if (normalized === '') {
     return false;
   }
 
+  return sourceContainsForbiddenToken(normalized)
+    || normalized.startsWith('/')
+    || normalized.startsWith('./')
+    || normalized.startsWith('../');
+}
+
+function sourceContainsForbiddenToken(normalized) {
   const builtInForbiddenTokens = [
     'local_product_source_checkout',
     'workspace_repo_as_artifact_under_test',
@@ -2494,9 +2982,6 @@ function sourceUsesForbiddenToken(source) {
 
   return builtInForbiddenTokens.some((token) => normalized.includes(token))
     || forbiddenArtifactSourceTokens.some((token) => normalized.includes(token.toLowerCase()))
-    || normalized.startsWith('/')
-    || normalized.startsWith('./')
-    || normalized.startsWith('../')
     || /workspace[._-]*hq/.test(normalized)
     || /(^|[/:_\s-])(local|workspace)[\s_-]*(repo|worktree|checkout|source)([/:_\s-]|$)/.test(normalized)
     || /(^|[/:_\s-])(repo|worktree)[\s_-]*(checkout|source)([/:_\s-]|$)/.test(normalized)
@@ -2505,6 +2990,30 @@ function sourceUsesForbiddenToken(source) {
     || normalized.includes('/repos/workflow')
     || normalized.includes('/repos/waterline')
     || normalized.includes('/repos/sdk-python');
+}
+
+function sourceLooksLikeInstalledPythonPackageImportPath(normalized) {
+  return normalized.startsWith('/')
+    && /\/(site|dist)-packages\/durable_workflow(\/|$)/.test(normalized);
+}
+
+function packageImportPathUsesForbiddenToken(source) {
+  const normalized = stringValue(source).replace(/\\/g, '/').toLowerCase();
+  if (normalized === '') {
+    return false;
+  }
+
+  if (sourceContainsForbiddenToken(normalized)) {
+    return true;
+  }
+
+  if (sourceLooksLikeInstalledPythonPackageImportPath(normalized)) {
+    return false;
+  }
+
+  return normalized.startsWith('/')
+    || normalized.startsWith('./')
+    || normalized.startsWith('../');
 }
 
 function placeholderArtifactSource(value) {
@@ -2519,6 +3028,7 @@ function localArtifactSourceReported(value) {
 
   return Object.values(artifactSourcesFor(value)).some((source) => sourceUsesForbiddenToken(source))
     || localSourceFieldValues(value).some((source) => sourceUsesForbiddenToken(source))
+    || packageImportPathValues(value).some((source) => packageImportPathUsesForbiddenToken(source))
     || sourceUsesForbiddenToken(value?.artifact_source)
     || sourceUsesForbiddenToken(value?.artifactSource)
     || sourceUsesForbiddenToken(observedOutputs.artifact_source)
@@ -2803,13 +3313,6 @@ const artifactAliases = {
 };
 
 const coverageGaps = {
-  python_client_worker_update_surface: coverageFinding(
-    'workflow-updates-python-sdk-coverage-gap',
-    'python_client_worker_update_surface',
-    'The focused probe does not yet install and drive the published Python SDK update worker/client shard.',
-    'Install the pinned PyPI durable-workflow artifact and record Python worker update handler, Python client update request, covered cells, and typed unsupported cells.',
-    'sdk-python',
-  ),
   operator_diagnostics_surfaces: coverageFinding(
     'workflow-updates-cli-waterline-diagnostics-coverage-gap',
     'operator_diagnostics_surfaces',
@@ -2832,6 +3335,14 @@ const phpSidecarMissingFinding = coverageFinding(
   'The PHP workflow package update shard did not run against the pinned Packagist artifact in this environment.',
   'Run the workflow update conformance handoff where Composer can install durable-workflow/workflow from Packagist and the package client/worker command can reach the published server API.',
   'workflow-php',
+);
+
+const pythonSidecarMissingFinding = coverageFinding(
+  'workflow-updates-python-sdk-shard-coverage-gap',
+  pythonSidecarScenarioId,
+  'The Python SDK workflow update shard did not run against the pinned PyPI artifact in this environment.',
+  'Run the workflow update conformance handoff where pip can install durable-workflow from PyPI and the installed package client/worker command can emit Python update shard evidence.',
+  'sdk-python',
 );
 
 let sourcePolicy = {
@@ -2871,6 +3382,20 @@ for (const scenarioId of requiredScenarios) {
       'not_covered',
       'coverage-gap',
       phpSidecarMissingFinding,
+      {
+        artifact_versions: artifactVersions,
+        artifact_sources: artifactSources,
+      },
+    );
+    continue;
+  }
+
+  if (scenarioId === pythonSidecarScenarioId) {
+    scenarioResults[scenarioId] = scenarioResult(
+      scenarioId,
+      'not_covered',
+      'coverage-gap',
+      pythonSidecarMissingFinding,
       {
         artifact_versions: artifactVersions,
         artifact_sources: artifactSources,
@@ -3020,7 +3545,11 @@ if (evidenceLocalProductSourceCheckoutsUsed) {
 
 for (const [scenarioId, row] of Object.entries(scenarioResults)) {
   if (row.status !== 'pass' && (!Array.isArray(row.linked_findings) || row.linked_findings.length === 0)) {
-    const fallback = coverageGaps[scenarioId] || focusedProbeMissingFinding;
+    const fallback = scenarioId === phpSidecarScenarioId
+      ? phpSidecarMissingFinding
+      : (scenarioId === pythonSidecarScenarioId
+        ? pythonSidecarMissingFinding
+        : (coverageGaps[scenarioId] || focusedProbeMissingFinding));
     row.linked_findings = [fallback];
     findings.push(fallback);
   }
@@ -3104,6 +3633,8 @@ const result = {
     evidence_loaded: pythonSidecarEvidence !== null,
     evidence_file: pythonSidecarEvidence ? pythonSidecarEvidenceFile : null,
     evidence_schema: pythonSidecarEvidence?.schema || null,
+    package_version: pythonVersion,
+    artifact_source: artifactSources['sdk-python'],
     local_product_source_checkouts_used: sidecarLocalProductSourceCheckoutsUsed(pythonSidecarEvidence, pythonSidecarScenarioId),
   },
   findings: normalizedFindings,
@@ -3160,7 +3691,8 @@ const record = {
   notes: [
     'Focused published-server workflow update runtime cells execute when the handoff runs inside the pinned server image.',
     'The PHP package shard installs the pinned Packagist durable-workflow/workflow package before importing PHP client/worker update evidence.',
-    'CLI, Python SDK, and Waterline cells remain typed non-pass coverage gaps until their published-artifact shards run.',
+    'The Python SDK shard installs the pinned PyPI durable-workflow package before importing Python client/worker update evidence.',
+    'CLI and Waterline cells remain typed non-pass coverage gaps until their published-artifact shards run.',
     sourcePolicyNote,
   ],
   local_product_source_checkouts_used: sourcePolicy.local_product_source_checkouts_used,
