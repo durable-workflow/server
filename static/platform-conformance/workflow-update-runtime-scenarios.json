@@ -214,10 +214,47 @@
   },
   "host_runner_contract": {
     "runner_id": "workflow-updates",
-    "status": "host_runner_gap",
+    "status": "focused_server_runtime_probe_implemented_with_typed_coverage_gaps",
+    "host_runner_implemented": true,
     "must_exercise_published_artifacts": true,
-    "must_record_runner_blocked_until_registered": true,
-    "runner_gap_acceptance": "Register and run a host workflow-updates conformance runner that installs pinned published server, CLI, Python SDK, PHP workflow package, and Waterline artifacts; starts PHP and Python update-capable workflows; drives accepted, running or waiting, completed, failed, refused, duplicate or idempotent, terminal, payload round-trip, and authenticated-principal update cells; captures control-plane, history, and Waterline evidence; and records typed unsupported SDK cells instead of using local source checkouts."
+    "must_execute_against_published_artifacts": true,
+    "must_record_runner_blocked_false_for_product_evidence": true,
+    "focused_evidence_file": "workflow-updates-focused-evidence.json",
+    "focused_probe_covers": [
+      "published_artifact_install_only",
+      "declared_update_contract_visibility",
+      "accepted_update_control_plane_and_history",
+      "running_or_waiting_update_operator_visibility",
+      "completed_update_result_round_trip",
+      "failed_update_outcome",
+      "duplicate_request_idempotency",
+      "unknown_update_refusal",
+      "invalid_input_refusal",
+      "payload_envelope_round_trip",
+      "terminal_workflow_update_behavior"
+    ],
+    "typed_coverage_gaps": {
+      "principal_attribution_with_auth": {
+        "classification": "typed-unsupported",
+        "owner": "server",
+        "acceptance": "Run the workflow update matrix with token or signature authentication enabled and capture principal fields in control-plane, history, and operator surfaces."
+      },
+      "php_client_worker_update_surface": {
+        "classification": "coverage-gap",
+        "owner": "workflow-php",
+        "acceptance": "Install the pinned Packagist durable-workflow/workflow artifact and record PHP worker update handler, PHP client update request, covered cells, and typed unsupported cells."
+      },
+      "python_client_worker_update_surface": {
+        "classification": "coverage-gap",
+        "owner": "sdk-python",
+        "acceptance": "Install the pinned PyPI durable-workflow artifact and record Python worker update handler, Python client update request, covered cells, and typed unsupported cells."
+      },
+      "operator_diagnostics_surfaces": {
+        "classification": "coverage-gap",
+        "owner": "waterline",
+        "acceptance": "Capture workflow update fields from the official CLI JSON output and Waterline selected-run update/history surfaces for accepted, completed, failed, and refused updates."
+      }
+    }
   },
   "scenarios": [
     {

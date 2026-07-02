@@ -9,7 +9,7 @@ use Workflow\V2\Support\PlatformConformanceSuite;
 
 class WorkflowUpdateRuntimeContractTest extends TestCase
 {
-    public function test_manifest_names_update_lifecycle_scenarios_and_runner_gap(): void
+    public function test_manifest_names_update_lifecycle_scenarios_and_focused_probe(): void
     {
         $manifest = WorkflowUpdateRuntimeContract::manifest();
 
@@ -62,11 +62,23 @@ class WorkflowUpdateRuntimeContractTest extends TestCase
             $this->assertContains($scenario, $manifest['required_scenarios']);
         }
 
-        $this->assertFalse($manifest['host_runner_contract']['host_runner_implemented']);
-        $this->assertSame('runner_blocked', $manifest['host_runner_contract']['unexecuted_required_scenario_status']);
-        $this->assertStringContainsString(
-            'captures control-plane, history, and Waterline evidence',
-            $manifest['host_runner_contract']['current_runner_gap']['acceptance'],
+        $this->assertTrue($manifest['host_runner_contract']['host_runner_implemented']);
+        $this->assertSame('not_covered', $manifest['host_runner_contract']['unexecuted_required_scenario_status']);
+        $this->assertContains(
+            'DW_WORKFLOW_UPDATES_EVIDENCE_PATH',
+            $manifest['host_runner_contract']['evidence_inputs'],
+        );
+        $this->assertContains(
+            'workflow-updates-focused-evidence.json',
+            $manifest['host_runner_contract']['result_files'],
+        );
+        $this->assertContains(
+            'accepted_update_control_plane_and_history',
+            $manifest['host_runner_contract']['focused_probe']['covers_required_scenarios'],
+        );
+        $this->assertSame(
+            'coverage-gap',
+            $manifest['host_runner_contract']['typed_coverage_gaps']['python_client_worker_update_surface']['classification'],
         );
         $this->assertSame(WorkflowUpdateRuntimeResultGate::SCHEMA, $manifest['result_gate']['schema']);
         $this->assertContains(
@@ -75,7 +87,7 @@ class WorkflowUpdateRuntimeContractTest extends TestCase
         );
     }
 
-    public function test_runner_gap_handoff_writes_non_passing_record_with_current_artifact_tuple(): void
+    public function test_handoff_writes_non_runner_blocked_coverage_record_with_current_artifact_tuple(): void
     {
         if (trim((string) shell_exec('command -v node')) === '') {
             $this->markTestSkipped('node is required to execute the workflow updates handoff');
@@ -107,8 +119,10 @@ class WorkflowUpdateRuntimeContractTest extends TestCase
 
             $this->assertSame('workflow-updates', $result['experiment']);
             $this->assertSame('fail', $result['outcome']);
-            $this->assertTrue($result['runner_blocked']);
+            $this->assertFalse($result['runner_blocked']);
             $this->assertFalse($result['local_product_source_checkouts_used']);
+            $this->assertTrue($result['focused_probe']['implemented']);
+            $this->assertFalse($result['focused_probe']['evidence_loaded']);
             $this->assertSame('0.2.536', $result['artifact_versions']['server']);
             $this->assertSame('0.1.82', $result['artifact_versions']['cli']);
             $this->assertSame('0.4.92', $result['artifact_versions']['sdk-python']);
@@ -136,13 +150,18 @@ class WorkflowUpdateRuntimeContractTest extends TestCase
 
             foreach ($result['scenario_results'] as $scenarioId => $scenario) {
                 $this->assertSame($scenarioId, $scenario['scenario_id']);
-                $this->assertSame('runner_blocked', $scenario['status']);
+                if ($scenarioId === 'principal_attribution_with_auth') {
+                    $this->assertSame('unsupported', $scenario['status']);
+                } else {
+                    $this->assertSame('not_covered', $scenario['status']);
+                }
                 $this->assertFalse($scenario['published_artifact_cell_executed']);
+                $this->assertNotEmpty($scenario['linked_findings']);
             }
 
             $this->assertSame('workflow-updates', $record['experiment']);
             $this->assertSame('fail', $record['outcome']);
-            $this->assertTrue($record['runnerBlocked']);
+            $this->assertFalse($record['runnerBlocked']);
             $this->assertSame('0.2.536', $record['artifactVersions']['server']);
             $this->assertSame(
                 'github-release://durable-workflow/cli/v0.1.82/install.sh',
@@ -150,11 +169,114 @@ class WorkflowUpdateRuntimeContractTest extends TestCase
             );
             $this->assertTrue($record['sourcePolicy']['pass_requires_published_artifacts_only']);
             $this->assertStringContainsString(
-                'Register and run a host workflow-updates conformance runner',
+                'Focused published-server workflow update runtime cells execute',
                 $record['notes'][0],
             );
         } finally {
             exec('rm -rf ' . escapeshellarg($resultDir));
         }
+    }
+
+    public function test_handoff_refuses_external_pass_evidence_from_local_source_checkout(): void
+    {
+        if (trim((string) shell_exec('command -v node')) === '') {
+            $this->markTestSkipped('node is required to execute the workflow updates handoff');
+        }
+
+        $root = dirname(__DIR__, 2);
+        $resultDir = sys_get_temp_dir() . '/dw-workflow-updates-local-source-test-' . bin2hex(random_bytes(6));
+        mkdir($resultDir, 0777, true);
+
+        try {
+            $scenarioResults = [];
+            foreach (self::workflowUpdateRuntimeScenarioIds() as $scenarioId) {
+                $scenarioResults[$scenarioId] = [
+                    'scenario_id' => $scenarioId,
+                    'status' => 'pass',
+                    'classification' => 'product-evidence',
+                    'published_artifact_cell_executed' => true,
+                    'local_product_source_checkouts_used' => true,
+                    'observed_outputs' => [
+                        'published_artifact_cell_executed' => true,
+                        'local_product_source_checkouts_used' => true,
+                    ],
+                    'linked_findings' => [],
+                ];
+            }
+
+            $evidencePath = $resultDir . '/external-workflow-updates-evidence.json';
+            file_put_contents($evidencePath, json_encode([
+                'schema' => 'durable-workflow.v2.workflow-update-runtime.external-evidence',
+                'runner_blocked' => false,
+                'source_policy' => [
+                    'pass_requires_published_artifacts_only' => true,
+                    'local_product_source_checkouts_used' => true,
+                    'local_checkout_execution_counts_as_pass' => false,
+                ],
+                'scenario_results' => $scenarioResults,
+                'findings' => [],
+            ], JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES));
+
+            $command = sprintf(
+                '%s %s %s %s %s %s %s %s --result-dir %s 2>&1',
+                'DW_SERVER_IMAGE=' . escapeshellarg('durableworkflow/server:0.2.536'),
+                'DW_SERVER_VERSION=' . escapeshellarg('0.2.536'),
+                'DW_CLI_VERSION=' . escapeshellarg('0.1.82'),
+                'DW_PYTHON_SDK_VERSION=' . escapeshellarg('0.4.92'),
+                'DW_WORKFLOW_PHP_VERSION=' . escapeshellarg('2.0.0-alpha.241'),
+                'DW_WATERLINE_VERSION=' . escapeshellarg('2.0.0-alpha.111'),
+                'DW_WORKFLOW_UPDATES_EVIDENCE_PATH=' . escapeshellarg($evidencePath),
+                escapeshellarg($root . '/scripts/conformance/workflow-updates-published-artifacts.sh'),
+                escapeshellarg($resultDir),
+            );
+
+            exec($command, $output, $status);
+
+            $this->assertSame(0, $status, implode("\n", $output));
+
+            $result = json_decode((string) file_get_contents($resultDir . '/workflow-updates-result.json'), true);
+            $record = json_decode((string) file_get_contents($resultDir . '/workflow-updates-record.json'), true);
+
+            $this->assertSame('fail', $result['outcome']);
+            $this->assertTrue($result['local_product_source_checkouts_used']);
+            $this->assertTrue($result['source_policy']['local_product_source_checkouts_used']);
+            $this->assertSame('fail', $record['outcome']);
+            $this->assertTrue($record['local_product_source_checkouts_used']);
+            $this->assertContains('published_artifact_install_only', $result['non_passing_scenarios']);
+
+            foreach (self::workflowUpdateRuntimeScenarioIds() as $scenarioId) {
+                $scenario = $result['scenario_results'][$scenarioId];
+                $this->assertSame('not_covered', $scenario['status'], $scenarioId);
+                $this->assertFalse($scenario['published_artifact_cell_executed'], $scenarioId);
+                $this->assertTrue($scenario['local_product_source_checkouts_used'], $scenarioId);
+                $this->assertNotEmpty($scenario['linked_findings'], $scenarioId);
+            }
+        } finally {
+            exec('rm -rf ' . escapeshellarg($resultDir));
+        }
+    }
+
+    /**
+     * @return list<string>
+     */
+    private static function workflowUpdateRuntimeScenarioIds(): array
+    {
+        return [
+            'published_artifact_install_only',
+            'declared_update_contract_visibility',
+            'accepted_update_control_plane_and_history',
+            'running_or_waiting_update_operator_visibility',
+            'completed_update_result_round_trip',
+            'failed_update_outcome',
+            'duplicate_request_idempotency',
+            'unknown_update_refusal',
+            'invalid_input_refusal',
+            'payload_envelope_round_trip',
+            'terminal_workflow_update_behavior',
+            'principal_attribution_with_auth',
+            'php_client_worker_update_surface',
+            'python_client_worker_update_surface',
+            'operator_diagnostics_surfaces',
+        ];
     }
 }

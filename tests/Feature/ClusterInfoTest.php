@@ -1294,11 +1294,19 @@ class ClusterInfoTest extends TestCase
             'scripts/conformance/workflow-updates-published-artifacts.sh',
             $contract['host_runner_contract']['runner_path'],
         );
-        $this->assertFalse($contract['host_runner_contract']['host_runner_implemented']);
-        $this->assertSame('runner_blocked', $contract['host_runner_contract']['unexecuted_required_scenario_status']);
-        $this->assertStringContainsString(
-            'published server, CLI, Python SDK, PHP workflow package, and Waterline artifacts',
-            $contract['host_runner_contract']['current_runner_gap']['acceptance'],
+        $this->assertTrue($contract['host_runner_contract']['host_runner_implemented']);
+        $this->assertSame('not_covered', $contract['host_runner_contract']['unexecuted_required_scenario_status']);
+        $this->assertContains(
+            'workflow-updates-focused-evidence.json',
+            $contract['host_runner_contract']['result_files'],
+        );
+        $this->assertContains(
+            'accepted_update_control_plane_and_history',
+            $contract['host_runner_contract']['focused_probe']['covers_required_scenarios'],
+        );
+        $this->assertSame(
+            'waterline',
+            $contract['host_runner_contract']['typed_coverage_gaps']['operator_diagnostics_surfaces']['owner'],
         );
         $this->assertSame(WorkflowUpdateRuntimeResultGate::SCHEMA, $contract['result_gate']['schema']);
         $this->assertContains(
