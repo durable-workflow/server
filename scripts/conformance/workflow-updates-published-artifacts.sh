@@ -159,6 +159,8 @@ function write_json_file(string $name, array $payload): void
 function bootstrap_application(): void
 {
     $repoRoot = (string) getenv('RUNNER_REPO_ROOT');
+    require_once $repoRoot.'/vendor/autoload.php';
+
     $app = require $repoRoot.'/bootstrap/app.php';
     $app->make(ConsoleKernel::class)->bootstrap();
 

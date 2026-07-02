@@ -794,6 +794,24 @@ class WorkflowUpdateRuntimeContractTest extends TestCase
         }
     }
 
+    public function test_focused_probe_loads_composer_autoload_before_laravel_bootstrap(): void
+    {
+        $source = (string) file_get_contents(
+            dirname(__DIR__, 2) . '/scripts/conformance/workflow-updates-published-artifacts.sh',
+        );
+
+        $autoload = "\$repoRoot = (string) getenv('RUNNER_REPO_ROOT');\n    require_once \$repoRoot.'/vendor/autoload.php';";
+        $bootstrap = "\$app = require \$repoRoot.'/bootstrap/app.php';";
+
+        $this->assertStringContainsString($autoload, $source);
+        $this->assertStringContainsString($bootstrap, $source);
+        $this->assertLessThan(
+            strpos($source, $bootstrap),
+            strpos($source, $autoload),
+            'The published-image focused probe must load Composer autoload before bootstrap/app.php.',
+        );
+    }
+
     /**
      * @return list<string>
      */
