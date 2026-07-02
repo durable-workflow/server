@@ -220,6 +220,7 @@
     "must_execute_against_published_artifacts": true,
     "must_record_runner_blocked_false_for_product_evidence": true,
     "focused_evidence_file": "workflow-updates-focused-evidence.json",
+    "python_sidecar_evidence_file": "python-sdk-workflow-updates-evidence.json",
     "focused_probe_covers": [
       "published_artifact_install_only",
       "declared_update_contract_visibility",
@@ -234,6 +235,15 @@
       "terminal_workflow_update_behavior",
       "principal_attribution_with_auth"
     ],
+    "python_sidecar": {
+      "status": "implemented",
+      "runner_scope": "published_python_sdk_artifact",
+      "covers_required_scenarios": [
+        "python_client_worker_update_surface"
+      ],
+      "out_of_scope_scenario_results_are_ignored": true,
+      "must_record_runner_blocked_false_for_product_evidence": true
+    },
     "typed_coverage_gaps": {
       "php_client_worker_update_surface": {
         "classification": "coverage-gap",

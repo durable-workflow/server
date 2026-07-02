@@ -69,7 +69,15 @@ class WorkflowUpdateRuntimeContractTest extends TestCase
             $manifest['host_runner_contract']['evidence_inputs'],
         );
         $this->assertContains(
+            'DW_WORKFLOW_UPDATES_PYTHON_EVIDENCE_PATH',
+            $manifest['host_runner_contract']['evidence_inputs'],
+        );
+        $this->assertContains(
             'workflow-updates-focused-evidence.json',
+            $manifest['host_runner_contract']['result_files'],
+        );
+        $this->assertContains(
+            'python-sdk-workflow-updates-evidence.json',
             $manifest['host_runner_contract']['result_files'],
         );
         $this->assertContains(
@@ -343,6 +351,146 @@ class WorkflowUpdateRuntimeContractTest extends TestCase
             $this->assertStringNotContainsString(
                 'focused published-server workflow update runtime probe did not run',
                 json_encode($result['findings'], JSON_THROW_ON_ERROR),
+            );
+        } finally {
+            exec('rm -rf ' . escapeshellarg($resultDir));
+        }
+    }
+
+    public function test_handoff_imports_python_sidecar_for_python_surface_only(): void
+    {
+        if (trim((string) shell_exec('command -v node')) === '') {
+            $this->markTestSkipped('node is required to execute the workflow updates handoff');
+        }
+
+        $root = dirname(__DIR__, 2);
+        $resultDir = sys_get_temp_dir() . '/dw-workflow-updates-python-sidecar-test-' . bin2hex(random_bytes(6));
+        mkdir($resultDir, 0777, true);
+
+        try {
+            $scenarioResults = [];
+            foreach (self::workflowUpdateRuntimeScenarioIds() as $scenarioId) {
+                $scenarioResults[$scenarioId] = [
+                    'scenario_id' => $scenarioId,
+                    'status' => 'pass',
+                    'classification' => 'product-evidence',
+                    'published_artifact_cell_executed' => true,
+                    'local_product_source_checkouts_used' => false,
+                    'observed_outputs' => self::completeWorkflowUpdateObservedOutputs($scenarioId),
+                    'linked_findings' => [],
+                ];
+            }
+
+            file_put_contents($resultDir . '/python-sdk-workflow-updates-evidence.json', json_encode([
+                'schema' => 'durable-workflow.v2.workflow-updates.python-sdk-sidecar',
+                'runner_blocked' => false,
+                'source_policy' => [
+                    'pass_requires_published_artifacts_only' => true,
+                    'local_product_source_checkouts_used' => false,
+                    'local_checkout_execution_counts_as_pass' => false,
+                ],
+                'scenario_results' => $scenarioResults,
+                'findings' => [],
+            ], JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES));
+
+            $command = sprintf(
+                '%s %s %s %s %s %s %s --result-dir %s 2>&1',
+                'DW_SERVER_IMAGE=' . escapeshellarg('durableworkflow/server:0.2.536'),
+                'DW_SERVER_VERSION=' . escapeshellarg('0.2.536'),
+                'DW_CLI_VERSION=' . escapeshellarg('0.1.82'),
+                'DW_PYTHON_SDK_VERSION=' . escapeshellarg('0.4.92'),
+                'DW_WORKFLOW_PHP_VERSION=' . escapeshellarg('2.0.0-alpha.241'),
+                'DW_WATERLINE_VERSION=' . escapeshellarg('2.0.0-alpha.111'),
+                escapeshellarg($root . '/scripts/conformance/workflow-updates-published-artifacts.sh'),
+                escapeshellarg($resultDir),
+            );
+
+            exec($command, $output, $status);
+
+            $this->assertSame(0, $status, implode("\n", $output));
+
+            $result = json_decode((string) file_get_contents($resultDir . '/workflow-updates-result.json'), true);
+            $metadata = json_decode((string) file_get_contents($resultDir . '/run-metadata.json'), true);
+            $record = json_decode((string) file_get_contents($resultDir . '/workflow-updates-record.json'), true);
+
+            $this->assertSame('fail', $result['outcome']);
+            $this->assertFalse($result['focused_probe']['evidence_loaded']);
+            $this->assertTrue($result['python_sidecar']['evidence_loaded']);
+            $this->assertSame('python-sdk-workflow-updates-evidence.json', $metadata['python_sidecar_evidence_file']);
+            $this->assertSame('python-sdk-workflow-updates-evidence.json', $record['python_sidecar_evidence_file']);
+            $this->assertSame('pass', $result['scenario_results']['python_client_worker_update_surface']['status']);
+            $this->assertSame('not_covered', $result['scenario_results']['principal_attribution_with_auth']['status']);
+            $this->assertSame('not_covered', $result['scenario_results']['php_client_worker_update_surface']['status']);
+            $this->assertSame('not_covered', $result['scenario_results']['operator_diagnostics_surfaces']['status']);
+            $this->assertContains('principal_attribution_with_auth', $result['non_passing_scenarios']);
+            $this->assertContains('php_client_worker_update_surface', $result['non_passing_scenarios']);
+            $this->assertContains('operator_diagnostics_surfaces', $result['non_passing_scenarios']);
+        } finally {
+            exec('rm -rf ' . escapeshellarg($resultDir));
+        }
+    }
+
+    public function test_handoff_rejects_python_sidecar_pass_with_local_source_run_policy(): void
+    {
+        if (trim((string) shell_exec('command -v node')) === '') {
+            $this->markTestSkipped('node is required to execute the workflow updates handoff');
+        }
+
+        $root = dirname(__DIR__, 2);
+        $resultDir = sys_get_temp_dir() . '/dw-workflow-updates-python-sidecar-policy-test-' . bin2hex(random_bytes(6));
+        mkdir($resultDir, 0777, true);
+
+        try {
+            file_put_contents($resultDir . '/python-sdk-workflow-updates-evidence.json', json_encode([
+                'schema' => 'durable-workflow.v2.workflow-updates.python-sdk-sidecar',
+                'runner_blocked' => false,
+                'source_policy' => [
+                    'pass_requires_published_artifacts_only' => true,
+                    'local_product_source_checkouts_used' => true,
+                    'local_checkout_execution_counts_as_pass' => false,
+                ],
+                'scenario_results' => [
+                    'python_client_worker_update_surface' => [
+                        'scenario_id' => 'python_client_worker_update_surface',
+                        'status' => 'pass',
+                        'classification' => 'product-evidence',
+                        'published_artifact_cell_executed' => true,
+                        'local_product_source_checkouts_used' => false,
+                        'observed_outputs' => self::completeWorkflowUpdateObservedOutputs('python_client_worker_update_surface'),
+                        'linked_findings' => [],
+                    ],
+                ],
+                'findings' => [],
+            ], JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES));
+
+            $command = sprintf(
+                '%s %s %s %s %s %s %s --result-dir %s 2>&1',
+                'DW_SERVER_IMAGE=' . escapeshellarg('durableworkflow/server:0.2.536'),
+                'DW_SERVER_VERSION=' . escapeshellarg('0.2.536'),
+                'DW_CLI_VERSION=' . escapeshellarg('0.1.82'),
+                'DW_PYTHON_SDK_VERSION=' . escapeshellarg('0.4.92'),
+                'DW_WORKFLOW_PHP_VERSION=' . escapeshellarg('2.0.0-alpha.241'),
+                'DW_WATERLINE_VERSION=' . escapeshellarg('2.0.0-alpha.111'),
+                escapeshellarg($root . '/scripts/conformance/workflow-updates-published-artifacts.sh'),
+                escapeshellarg($resultDir),
+            );
+
+            exec($command, $output, $status);
+
+            $this->assertSame(0, $status, implode("\n", $output));
+
+            $result = json_decode((string) file_get_contents($resultDir . '/workflow-updates-result.json'), true);
+            $scenario = $result['scenario_results']['python_client_worker_update_surface'];
+
+            $this->assertSame('fail', $result['outcome']);
+            $this->assertTrue($result['source_policy']['local_product_source_checkouts_used']);
+            $this->assertTrue($result['local_product_source_checkouts_used']);
+            $this->assertTrue($result['python_sidecar']['local_product_source_checkouts_used']);
+            $this->assertSame('not_covered', $scenario['status']);
+            $this->assertTrue($scenario['local_product_source_checkouts_used']);
+            $this->assertSame(
+                'workflow-updates-python-client-worker-update-surface-source-policy-gap',
+                $scenario['linked_findings'][0]['finding_id'],
             );
         } finally {
             exec('rm -rf ' . escapeshellarg($resultDir));
