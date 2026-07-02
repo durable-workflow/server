@@ -421,6 +421,27 @@ function event_by_type(array $events, string $type): ?array
     return null;
 }
 
+function event_request_id(array $event): ?string
+{
+    $payload = $event['payload'] ?? null;
+
+    if (! is_array($payload)) {
+        return null;
+    }
+
+    foreach ([
+        $payload['request_id'] ?? null,
+        $payload['command']['request_id'] ?? null,
+        $payload['command']['context']['server']['metadata']['request_id'] ?? null,
+    ] as $candidate) {
+        if (is_string($candidate) && $candidate !== '') {
+            return $candidate;
+        }
+    }
+
+    return null;
+}
+
 function update_row(string $updateId): ?WorkflowUpdate
 {
     $update = WorkflowUpdate::query()->find($updateId);
@@ -858,7 +879,7 @@ function run_focused_probe(): array
         $duplicateHistoryCount = count(array_filter(
             $duplicateHistory,
             static fn (array $event): bool => ($event['event_type'] ?? null) === WORKFLOW_UPDATE_ACCEPTED_EVENT
-                && ($event['payload']['request_id'] ?? null) === 'duplicate-'.$suffix,
+                && event_request_id($event) === 'duplicate-'.$suffix,
         ));
         $duplicateCleanupResult = $duplicateUpdateId !== ''
             ? complete_update_task('workflow-updates-worker', $duplicateUpdateId, [

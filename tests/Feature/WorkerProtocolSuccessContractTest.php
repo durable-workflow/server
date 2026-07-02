@@ -733,6 +733,183 @@ class WorkerProtocolSuccessContractTest extends TestCase
         $this->assertContains('UpdateAccepted', $eventTypes);
     }
 
+    public function test_external_worker_declared_update_contract_accepts_update_tasks_without_local_definition(): void
+    {
+        Queue::fake();
+
+        $workflowType = 'tests.external-update-contract-workflow';
+        $taskQueue = 'external-update-contract-queue';
+        $workerId = 'worker-external-update-contract';
+
+        $this->postJson('/api/worker/register', [
+            'worker_id' => $workerId,
+            'task_queue' => $taskQueue,
+            'runtime' => 'php',
+            'supported_workflow_types' => [$workflowType],
+            'capabilities' => ['workflow_tasks'],
+            'workflow_command_contracts' => [
+                $workflowType => [
+                    'queries' => [],
+                    'query_contracts' => [],
+                    'signals' => ['advance'],
+                    'signal_contracts' => [
+                        [
+                            'name' => 'advance',
+                            'parameters' => [],
+                        ],
+                    ],
+                    'updates' => ['approve'],
+                    'update_contracts' => [
+                        [
+                            'name' => 'approve',
+                            'parameters' => [
+                                [
+                                    'name' => 'approved',
+                                    'position' => 0,
+                                    'required' => true,
+                                    'variadic' => false,
+                                    'default_available' => false,
+                                    'type' => 'bool',
+                                    'allows_null' => false,
+                                ],
+                                [
+                                    'name' => 'source',
+                                    'position' => 1,
+                                    'required' => false,
+                                    'variadic' => false,
+                                    'default_available' => true,
+                                    'default' => 'manual',
+                                    'type' => 'string',
+                                    'allows_null' => false,
+                                ],
+                            ],
+                        ],
+                    ],
+                ],
+            ],
+        ], $this->workerProtocolHeaders())->assertCreated();
+
+        $start = $this->postJson('/api/workflows', [
+            'workflow_id' => 'wf-external-update-contract',
+            'workflow_type' => $workflowType,
+            'task_queue' => $taskQueue,
+        ], $this->apiHeaders());
+
+        $start->assertCreated();
+        $runId = (string) $start->json('run_id');
+
+        $startPoll = $this->postJson('/api/worker/workflow-tasks/poll', [
+            'worker_id' => $workerId,
+            'task_queue' => $taskQueue,
+        ], $this->workerProtocolHeaders());
+
+        $this->assertWorkerProtocolSuccess($startPoll)
+            ->assertJsonPath('task.workflow_id', 'wf-external-update-contract')
+            ->assertJsonPath('task.workflow_type', $workflowType);
+
+        $startTaskId = (string) $startPoll->json('task.task_id');
+        $startAttempt = (int) $startPoll->json('task.workflow_task_attempt');
+
+        $this->assertWorkerProtocolSuccess($this->postJson("/api/worker/workflow-tasks/{$startTaskId}/complete", [
+            'lease_owner' => $workerId,
+            'workflow_task_attempt' => $startAttempt,
+            'commands' => [
+                [
+                    'type' => 'open_signal_wait',
+                    'signal_name' => 'advance',
+                    'timeout_seconds' => 300,
+                ],
+            ],
+        ], $this->workerProtocolHeaders()));
+
+        $update = $this->postJson('/api/workflows/wf-external-update-contract/update/approve', [
+            'input' => [true, 'external-worker'],
+            'request_id' => 'external-update-request-1',
+            'wait_for' => 'accepted',
+        ], $this->apiHeaders());
+
+        $update->assertAccepted()
+            ->assertJsonPath('workflow_id', 'wf-external-update-contract')
+            ->assertJsonPath('run_id', $runId)
+            ->assertJsonPath('update_name', 'approve')
+            ->assertJsonPath('update_status', 'accepted')
+            ->assertJsonPath('command_status', 'accepted')
+            ->assertJsonPath('reason', null);
+
+        $updateId = (string) $update->json('update_id');
+
+        $accepted = WorkflowHistoryEvent::query()
+            ->where('workflow_run_id', $runId)
+            ->where('event_type', 'UpdateAccepted')
+            ->firstOrFail();
+
+        $this->assertSame('external-update-request-1', $accepted->payload['request_id'] ?? null);
+
+        $updatePoll = $this->postJson('/api/worker/workflow-tasks/poll', [
+            'worker_id' => $workerId,
+            'task_queue' => $taskQueue,
+        ], $this->workerProtocolHeaders());
+
+        $this->assertWorkerProtocolSuccess($updatePoll)
+            ->assertJsonPath('task.workflow_id', 'wf-external-update-contract')
+            ->assertJsonPath('task.run_id', $runId)
+            ->assertJsonPath('task.workflow_wait_kind', 'update')
+            ->assertJsonPath('task.workflow_update_id', $updateId);
+
+        $updateTaskId = (string) $updatePoll->json('task.task_id');
+        $updateAttempt = (int) $updatePoll->json('task.workflow_task_attempt');
+        $resultBlob = Serializer::serializeWithCodec('avro', [
+            'approved' => true,
+            'source' => 'external-worker',
+        ]);
+
+        $this->assertWorkerProtocolSuccess($this->postJson("/api/worker/workflow-tasks/{$updateTaskId}/complete", [
+            'lease_owner' => $workerId,
+            'workflow_task_attempt' => $updateAttempt,
+            'commands' => [
+                [
+                    'type' => 'complete_update',
+                    'update_id' => $updateId,
+                    'result' => [
+                        'codec' => 'avro',
+                        'blob' => $resultBlob,
+                    ],
+                ],
+            ],
+        ], $this->workerProtocolHeaders()));
+
+        /** @var WorkflowUpdate $closedUpdate */
+        $closedUpdate = WorkflowUpdate::query()->findOrFail($updateId);
+        $this->assertSame('completed', $closedUpdate->status->value);
+        $this->assertSame($resultBlob, $closedUpdate->result);
+
+        $duplicateFirst = $this->postJson('/api/workflows/wf-external-update-contract/update/approve', [
+            'input' => [true, 'duplicate-first'],
+            'request_id' => 'external-update-duplicate-1',
+            'wait_for' => 'accepted',
+        ], $this->apiHeaders());
+
+        $duplicateFirst->assertAccepted();
+
+        $duplicateSecond = $this->postJson('/api/workflows/wf-external-update-contract/update/approve', [
+            'input' => [true, 'duplicate-second'],
+            'request_id' => 'external-update-duplicate-1',
+            'wait_for' => 'accepted',
+        ], $this->apiHeaders());
+
+        $duplicateSecond->assertAccepted()
+            ->assertJsonPath('update_id', $duplicateFirst->json('update_id'));
+
+        $duplicateAcceptedCount = WorkflowHistoryEvent::query()
+            ->where('workflow_run_id', $runId)
+            ->where('event_type', 'UpdateAccepted')
+            ->get()
+            ->filter(static fn (WorkflowHistoryEvent $event): bool => ($event->payload['request_id'] ?? null) === 'external-update-duplicate-1')
+            ->count();
+
+        $this->assertSame(1, $duplicateAcceptedCount);
+    }
+
     public function test_signal_backed_workflow_task_poll_exposes_resume_context(): void
     {
         Queue::fake();

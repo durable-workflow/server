@@ -7,6 +7,7 @@ use App\Support\ControlPlaneResponseContract;
 use App\Support\ControlPlaneResultMapper;
 use App\Support\ExternalPayloadEnvelopeService;
 use App\Support\ExternalPayloadStorageUnavailable;
+use App\Support\ExternalWorkflowUpdateAdmission;
 use App\Support\NamespaceExternalPayloadStorage;
 use App\Support\NamespaceWorkflowScope;
 use App\Support\SearchAttributeValueValidator;
@@ -51,6 +52,7 @@ class WorkflowController
         private readonly ExternalPayloadEnvelopeService $payloadEnvelopes,
         private readonly SearchAttributeValueValidator $searchAttributeValues,
         private readonly WorkflowVisibilityQuery $visibilityQuery,
+        private readonly ExternalWorkflowUpdateAdmission $externalUpdates,
     ) {}
 
     public function index(Request $request): JsonResponse
@@ -712,24 +714,47 @@ class WorkflowController
 
         $this->rejectLegacyUpdateFields($request);
         $externalStorage = $this->externalPayloadStorage->driverFor($namespace);
+        $arguments = PayloadEnvelopeResolver::resolveToArray($validated['input'] ?? null, 'input', $externalStorage);
+        $waitFor = $validated['wait_for'] ?? 'accepted';
+        $commandContext = $this->commandContexts->make(
+            $request,
+            workflowId: $workflowId,
+            commandName: 'update',
+            metadata: array_filter([
+                'request_id' => $validated['request_id'] ?? null,
+                'update_name' => $updateName,
+                'wait_for' => $waitFor,
+            ], static fn (mixed $value): bool => $value !== null),
+        );
+
+        $externalResult = $this->externalUpdates->admit(
+            namespace: (string) $namespace,
+            workflowId: $workflowId,
+            updateName: $updateName,
+            arguments: $arguments,
+            commandContext: $commandContext,
+            waitFor: $waitFor,
+            waitTimeoutSeconds: $validated['wait_timeout_seconds'] ?? null,
+        );
+
+        if ($externalResult !== null) {
+            return $this->resultMapper->update(
+                workflowId: $workflowId,
+                updateName: $updateName,
+                waitFor: $waitFor,
+                result: $externalResult,
+                runId: $this->controlPlaneRunId($request),
+            );
+        }
 
         $result = $this->workflowControlPlane->update(
             $workflowId,
             $updateName,
             [
                 'namespace' => $namespace,
-                'arguments' => PayloadEnvelopeResolver::resolveToArray($validated['input'] ?? null, 'input', $externalStorage),
-                'command_context' => $this->commandContexts->make(
-                    $request,
-                    workflowId: $workflowId,
-                    commandName: 'update',
-                    metadata: array_filter([
-                        'request_id' => $validated['request_id'] ?? null,
-                        'update_name' => $updateName,
-                        'wait_for' => $validated['wait_for'] ?? 'accepted',
-                    ], static fn (mixed $value): bool => $value !== null),
-                ),
-                'wait_for' => $validated['wait_for'] ?? 'accepted',
+                'arguments' => $arguments,
+                'command_context' => $commandContext,
+                'wait_for' => $waitFor,
                 'wait_timeout_seconds' => $validated['wait_timeout_seconds'] ?? null,
                 'strict_configured_type_validation' => true,
             ],
@@ -738,7 +763,7 @@ class WorkflowController
         return $this->resultMapper->update(
             workflowId: $workflowId,
             updateName: $updateName,
-            waitFor: $validated['wait_for'] ?? 'accepted',
+            waitFor: $waitFor,
             result: $result,
             runId: $this->controlPlaneRunId($request),
         );
