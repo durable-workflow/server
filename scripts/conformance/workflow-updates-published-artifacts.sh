@@ -79,7 +79,10 @@ should_run_focused_host_probe() {
   if [[ "${DW_WORKFLOW_UPDATES_SKIP_FOCUSED_HOST_PROBE:-0}" == "1" || "${DW_WORKFLOW_UPDATES_SKIP_FOCUSED_HOST_PROBE:-}" == "true" ]]; then
     return 1
   fi
-  if [[ -n "${DW_WORKFLOW_UPDATES_EVIDENCE:-}" || -n "${DW_WORKFLOW_UPDATES_EVIDENCE_PATH:-}" ]]; then
+  if [[ -n "${DW_WORKFLOW_UPDATES_EVIDENCE:-}" ]]; then
+    return 1
+  fi
+  if [[ -n "${DW_WORKFLOW_UPDATES_EVIDENCE_PATH:-}" && -s "${DW_WORKFLOW_UPDATES_EVIDENCE_PATH:-}" ]]; then
     return 1
   fi
   if [[ -s "$result_dir/workflow-updates-focused-evidence.json" ]]; then
@@ -275,11 +278,14 @@ function workflow_command_contract(): array
     ];
 }
 
-function register_probe_worker(string $workerId = 'workflow-updates-worker'): void
+function register_probe_worker(
+    string $workerId = 'workflow-updates-worker',
+    string $taskQueue = WORKFLOW_UPDATES_QUEUE,
+): void
 {
     request_json('POST', '/worker/register', [
         'worker_id' => $workerId,
-        'task_queue' => WORKFLOW_UPDATES_QUEUE,
+        'task_queue' => $taskQueue,
         'runtime' => 'php',
         'supported_workflow_types' => [WORKFLOW_UPDATES_TYPE],
         'capabilities' => ['workflow_tasks', 'query_tasks'],
@@ -289,21 +295,21 @@ function register_probe_worker(string $workerId = 'workflow-updates-worker'): vo
     ], [409]);
 }
 
-function start_probe_workflow(string $workflowId): array
+function start_probe_workflow(string $workflowId, string $taskQueue = WORKFLOW_UPDATES_QUEUE): array
 {
     return request_json('POST', '/workflows', [
         'workflow_id' => $workflowId,
         'workflow_type' => WORKFLOW_UPDATES_TYPE,
-        'task_queue' => WORKFLOW_UPDATES_QUEUE,
+        'task_queue' => $taskQueue,
         'input' => ['focused-probe'],
     ])['body'];
 }
 
-function poll_task(string $workerId): array
+function poll_task(string $workerId, string $taskQueue = WORKFLOW_UPDATES_QUEUE): array
 {
     $response = request_json('POST', '/worker/workflow-tasks/poll', [
         'worker_id' => $workerId,
-        'task_queue' => WORKFLOW_UPDATES_QUEUE,
+        'task_queue' => $taskQueue,
     ]);
     $task = $response['body']['task'] ?? null;
 
@@ -325,9 +331,9 @@ function complete_task(array $task, array $commands): array
     ])['body'];
 }
 
-function open_signal_wait(string $workerId): array
+function open_signal_wait(string $workerId, string $taskQueue = WORKFLOW_UPDATES_QUEUE): array
 {
-    $task = poll_task($workerId);
+    $task = poll_task($workerId, $taskQueue);
 
     return complete_task($task, [
         [
@@ -338,9 +344,9 @@ function open_signal_wait(string $workerId): array
     ]);
 }
 
-function complete_workflow_start_task(string $workerId): array
+function complete_workflow_start_task(string $workerId, string $taskQueue = WORKFLOW_UPDATES_QUEUE): array
 {
-    $task = poll_task($workerId);
+    $task = poll_task($workerId, $taskQueue);
 
     return complete_task($task, [
         [
@@ -352,9 +358,14 @@ function complete_workflow_start_task(string $workerId): array
     ]);
 }
 
-function complete_update_task(string $workerId, string $updateId, array $result): array
+function complete_update_task(
+    string $workerId,
+    string $updateId,
+    array $result,
+    string $taskQueue = WORKFLOW_UPDATES_QUEUE,
+): array
 {
-    $task = poll_task($workerId);
+    $task = poll_task($workerId, $taskQueue);
 
     return complete_task($task, [
         [
@@ -368,9 +379,9 @@ function complete_update_task(string $workerId, string $updateId, array $result)
     ]);
 }
 
-function fail_update_task(string $workerId, string $updateId): array
+function fail_update_task(string $workerId, string $updateId, string $taskQueue = WORKFLOW_UPDATES_QUEUE): array
 {
-    $task = poll_task($workerId);
+    $task = poll_task($workerId, $taskQueue);
 
     return complete_task($task, [
         [
@@ -415,6 +426,117 @@ function update_row(string $updateId): ?WorkflowUpdate
     return $update instanceof WorkflowUpdate ? $update : null;
 }
 
+function env_text(string $name): string
+{
+    $value = getenv($name);
+
+    return is_string($value) ? trim($value) : '';
+}
+
+function server_version_from_image(string $image): string
+{
+    if ($image === '' || str_contains($image, '@sha256:')) {
+        return '';
+    }
+
+    if (preg_match('/:([^\/:]+)$/', $image, $matches) === 1) {
+        return (string) $matches[1];
+    }
+
+    return '';
+}
+
+function artifact_versions(): array
+{
+    $serverImage = env_text('DW_SERVER_IMAGE');
+    $serverVersion = env_text('DW_SERVER_VERSION') ?: server_version_from_image($serverImage) ?: 'unresolved';
+    $cliVersion = env_text('DW_CLI_VERSION') ?: 'unresolved';
+    $pythonVersion = env_text('DW_PYTHON_SDK_VERSION') ?: 'unresolved';
+    $workflowVersion = env_text('DW_WORKFLOW_PHP_VERSION') ?: 'unresolved';
+    $waterlineVersion = env_text('DW_WATERLINE_VERSION') ?: 'unresolved';
+
+    return [
+        'server' => $serverVersion,
+        'cli' => $cliVersion,
+        'sdk-python' => $pythonVersion,
+        'workflow' => $workflowVersion,
+        'workflow-php' => $workflowVersion,
+        'waterline' => $waterlineVersion,
+    ];
+}
+
+function artifact_sources(): array
+{
+    $versions = artifact_versions();
+    $serverImage = env_text('DW_SERVER_IMAGE');
+
+    return [
+        'server' => $serverImage !== '' ? $serverImage : 'docker://durableworkflow/server:'.$versions['server'],
+        'cli' => 'github-release://durable-workflow/cli/v'.$versions['cli'].'/install.sh',
+        'sdk-python' => 'pypi://durable-workflow=='.$versions['sdk-python'],
+        'workflow' => 'packagist://durable-workflow/workflow@'.$versions['workflow'],
+        'workflow-php' => 'packagist://durable-workflow/workflow@'.$versions['workflow-php'],
+        'waterline' => 'packagist://durable-workflow/waterline@'.$versions['waterline'],
+    ];
+}
+
+function focused_source_policy(): array
+{
+    return [
+        'pass_requires_published_artifacts_only' => true,
+        'local_product_source_checkouts_used' => false,
+        'local_checkout_execution_counts_as_pass' => false,
+    ];
+}
+
+function published_artifact_install_evidence(): array
+{
+    $versions = artifact_versions();
+    $sources = artifact_sources();
+    $evidence = [];
+
+    foreach ($sources as $artifact => $source) {
+        $versionKey = $artifact === 'workflow-php' ? 'workflow' : $artifact;
+        $evidence[$artifact] = [
+            'installed_from' => $source,
+            'version' => $versions[$artifact] ?? $versions[$versionKey] ?? 'unresolved',
+        ];
+    }
+
+    return $evidence;
+}
+
+function published_artifact_install_observed_outputs(): array
+{
+    return [
+        'server_image_execution_source' => 'published_server_container',
+        'runner_path' => 'scripts/conformance/workflow-updates-published-artifacts.sh',
+        'published_artifact_versions' => artifact_versions(),
+        'artifact_sources' => artifact_sources(),
+        'artifact_install_evidence' => published_artifact_install_evidence(),
+        'local_product_source_checkouts_used' => false,
+        'source_policy' => focused_source_policy(),
+    ];
+}
+
+function common_observed_outputs(): array
+{
+    return [
+        'published_artifact_versions' => artifact_versions(),
+        'artifact_sources' => artifact_sources(),
+        'implementation_identity' => [
+            'runner' => 'published-server-workflow-updates-focused-probe',
+            'server_image_execution_source' => 'published_server_container',
+        ],
+        'runtime_matrix' => [
+            'server' => 'published-server-image',
+            'worker_protocol' => 'raw-api',
+            'control_plane_client' => 'raw-api',
+        ],
+        'source_policy' => focused_source_policy(),
+    ];
+}
+
 function pass_result(string $scenarioId, array $observedOutputs): array
 {
     return [
@@ -423,7 +545,7 @@ function pass_result(string $scenarioId, array $observedOutputs): array
         'classification' => 'product-evidence',
         'published_artifact_cell_executed' => true,
         'local_product_source_checkouts_used' => false,
-        'observed_outputs' => $observedOutputs + [
+        'observed_outputs' => $observedOutputs + common_observed_outputs() + [
             'published_artifact_cell_executed' => true,
             'local_product_source_checkouts_used' => false,
         ],
@@ -439,7 +561,7 @@ function fail_result(string $scenarioId, string $summary, array $observedOutputs
         'classification' => 'product-gap',
         'published_artifact_cell_executed' => true,
         'local_product_source_checkouts_used' => false,
-        'observed_outputs' => $observedOutputs + [
+        'observed_outputs' => $observedOutputs + common_observed_outputs() + [
             'published_artifact_cell_executed' => true,
             'local_product_source_checkouts_used' => false,
         ],
@@ -452,6 +574,90 @@ function fail_result(string $scenarioId, string $summary, array $observedOutputs
                 'owning_surface' => 'server',
                 'summary' => $summary,
                 'next_acceptance_criterion' => 'Make the published server workflow update runtime cell satisfy the public workflow update conformance contract.',
+            ],
+        ],
+    ];
+}
+
+function throwable_diagnostic(Throwable $throwable): array
+{
+    return [
+        'exception_class' => get_class($throwable),
+        'message' => $throwable->getMessage(),
+        'file' => basename($throwable->getFile()),
+        'line' => $throwable->getLine(),
+    ];
+}
+
+function exception_fail_result(
+    string $scenarioId,
+    string $summary,
+    Throwable $throwable,
+    array $observedOutputs = [],
+): array {
+    return fail_result($scenarioId, $summary, $observedOutputs + [
+        'diagnostic' => throwable_diagnostic($throwable),
+    ]);
+}
+
+function focused_probe_scenario_ids(): array
+{
+    return [
+        'published_artifact_install_only',
+        'declared_update_contract_visibility',
+        'accepted_update_control_plane_and_history',
+        'running_or_waiting_update_operator_visibility',
+        'completed_update_result_round_trip',
+        'failed_update_outcome',
+        'duplicate_request_idempotency',
+        'unknown_update_refusal',
+        'invalid_input_refusal',
+        'payload_envelope_round_trip',
+        'terminal_workflow_update_behavior',
+    ];
+}
+
+function focused_probe_failure_evidence(Throwable $throwable): array
+{
+    $diagnostic = throwable_diagnostic($throwable);
+    $scenarioResults = [
+        'published_artifact_install_only' => pass_result(
+            'published_artifact_install_only',
+            published_artifact_install_observed_outputs() + ['probe_failure_diagnostic' => $diagnostic],
+        ),
+    ];
+
+    foreach (focused_probe_scenario_ids() as $scenarioId) {
+        if ($scenarioId === 'published_artifact_install_only') {
+            continue;
+        }
+
+        $scenarioResults[$scenarioId] = exception_fail_result(
+            $scenarioId,
+            'The published server workflow update focused probe failed before this runtime cell could be collected.',
+            $throwable,
+        );
+    }
+
+    return [
+        'schema' => 'durable-workflow.v2.workflow-update-runtime.focused-evidence',
+        'generated_at' => now_iso(),
+        'runner' => 'published-server-workflow-updates-focused-probe',
+        'runner_blocked' => false,
+        'source_policy' => focused_source_policy(),
+        'scenario_results' => $scenarioResults,
+        'observed_outputs' => [
+            'probe_failure_diagnostic' => $diagnostic,
+        ],
+        'findings' => [
+            [
+                'finding_id' => 'workflow-updates-focused-probe-product-gap',
+                'finding_type' => 'product_behavior_failure',
+                'classification' => 'product-gap',
+                'owning_surface' => 'server',
+                'summary' => 'The published server workflow updates focused probe failed before all runtime cells could be collected.',
+                'next_acceptance_criterion' => 'Make the focused workflow updates runtime probe execute accepted, completed, failed, refusal, duplicate, terminal, and payload cells against the published server image.',
+                'diagnostic' => $diagnostic,
             ],
         ],
     ];
@@ -473,10 +679,10 @@ function run_focused_probe(): array
     $declaredUpdates = $started['payload']['declared_updates'] ?? [];
 
     $scenarioResults = [];
-    $scenarioResults['published_artifact_install_only'] = pass_result('published_artifact_install_only', [
-        'server_image_execution_source' => 'published_server_container',
-        'runner_path' => 'scripts/conformance/workflow-updates-published-artifacts.sh',
-    ]);
+    $scenarioResults['published_artifact_install_only'] = pass_result(
+        'published_artifact_install_only',
+        published_artifact_install_observed_outputs(),
+    );
     $scenarioResults['declared_update_contract_visibility'] = in_array('approve', is_array($declaredUpdates) ? $declaredUpdates : [], true)
         ? pass_result('declared_update_contract_visibility', [
             'workflow_type' => WORKFLOW_UPDATES_TYPE,
@@ -489,211 +695,284 @@ function run_focused_probe(): array
             'history_start_event' => $started,
         ]);
 
-    $acceptedResponse = request_json('POST', '/workflows/'.$workflowId.'/update/approve', [
-        'input' => [true, 'focused-accepted'],
-        'request_id' => 'accepted-'.$suffix,
-        'wait_for' => 'accepted',
-    ]);
-    $acceptedBody = $acceptedResponse['body'];
-    $acceptedUpdateId = (string) ($acceptedBody['update_id'] ?? '');
-    $runDetailBeforeComplete = request_json('GET', '/workflows/'.$workflowId.'/runs/'.$runId)['body'];
-    $acceptedHistory = history_events($workflowId, $runId);
-    $acceptedTypes = event_types($acceptedHistory);
-
-    $scenarioResults['accepted_update_control_plane_and_history'] = $acceptedUpdateId !== ''
-        && in_array(WORKFLOW_UPDATE_ACCEPTED_EVENT, $acceptedTypes, true)
-        ? pass_result('accepted_update_control_plane_and_history', [
-            'update_request' => ['name' => 'approve', 'wait_for' => 'accepted'],
-            'update_response' => $acceptedBody,
-            'update_id' => $acceptedUpdateId,
-            'update_status' => $acceptedBody['update_status'] ?? null,
-            'history_update_accepted_event' => event_by_type($acceptedHistory, WORKFLOW_UPDATE_ACCEPTED_EVENT),
-            'run_detail_update_view' => $runDetailBeforeComplete,
-        ])
-        : fail_result('accepted_update_control_plane_and_history', 'The published server did not expose an accepted update through control-plane and history.', [
-            'update_response' => $acceptedBody,
-            'history_event_types' => $acceptedTypes,
+    try {
+        $acceptedResponse = request_json('POST', '/workflows/'.$workflowId.'/update/approve', [
+            'input' => [true, 'focused-accepted'],
+            'request_id' => 'accepted-'.$suffix,
+            'wait_for' => 'accepted',
         ]);
+        $acceptedBody = $acceptedResponse['body'];
+        $acceptedUpdateId = (string) ($acceptedBody['update_id'] ?? '');
+        $runDetailBeforeComplete = request_json('GET', '/workflows/'.$workflowId.'/runs/'.$runId)['body'];
+        $acceptedHistory = history_events($workflowId, $runId);
+        $acceptedTypes = event_types($acceptedHistory);
 
-    $acceptedRow = $acceptedUpdateId !== '' ? update_row($acceptedUpdateId) : null;
-    $scenarioResults['running_or_waiting_update_operator_visibility'] = $acceptedRow instanceof WorkflowUpdate
-        ? pass_result('running_or_waiting_update_operator_visibility', [
-            'update_id' => $acceptedUpdateId,
-            'workflow_status' => $runDetailBeforeComplete['status'] ?? null,
-            'update_status' => $acceptedRow->status?->value,
-            'waiting_or_running_surface' => [
-                'run_detail_status' => $runDetailBeforeComplete['status'] ?? null,
-                'workflow_task_count' => WorkflowTask::query()->where('workflow_run_id', $runId)->count(),
-            ],
-            'waterline_update_view' => null,
-        ])
-        : fail_result('running_or_waiting_update_operator_visibility', 'The published server did not persist an accepted update row before worker completion.', [
-            'update_id' => $acceptedUpdateId,
+        $scenarioResults['accepted_update_control_plane_and_history'] = $acceptedUpdateId !== ''
+            && in_array(WORKFLOW_UPDATE_ACCEPTED_EVENT, $acceptedTypes, true)
+            ? pass_result('accepted_update_control_plane_and_history', [
+                'update_request' => ['name' => 'approve', 'wait_for' => 'accepted'],
+                'update_response' => $acceptedBody,
+                'update_id' => $acceptedUpdateId,
+                'update_status' => $acceptedBody['update_status'] ?? null,
+                'history_update_accepted_event' => event_by_type($acceptedHistory, WORKFLOW_UPDATE_ACCEPTED_EVENT),
+                'run_detail_update_view' => $runDetailBeforeComplete,
+            ])
+            : fail_result('accepted_update_control_plane_and_history', 'The published server did not expose an accepted update through control-plane and history.', [
+                'update_response' => $acceptedBody,
+                'history_event_types' => $acceptedTypes,
+            ]);
+
+        $acceptedRow = $acceptedUpdateId !== '' ? update_row($acceptedUpdateId) : null;
+        $scenarioResults['running_or_waiting_update_operator_visibility'] = $acceptedRow instanceof WorkflowUpdate
+            ? pass_result('running_or_waiting_update_operator_visibility', [
+                'update_id' => $acceptedUpdateId,
+                'workflow_status' => $runDetailBeforeComplete['status'] ?? null,
+                'update_status' => $acceptedRow->status?->value,
+                'waiting_or_running_surface' => [
+                    'run_detail_status' => $runDetailBeforeComplete['status'] ?? null,
+                    'workflow_task_count' => WorkflowTask::query()->where('workflow_run_id', $runId)->count(),
+                ],
+                'waterline_update_view' => null,
+            ])
+            : fail_result('running_or_waiting_update_operator_visibility', 'The published server did not persist an accepted update row before worker completion.', [
+                'update_id' => $acceptedUpdateId,
+            ]);
+
+        $completeResult = complete_update_task('workflow-updates-worker', $acceptedUpdateId, [
+            'approved' => true,
+            'source' => 'focused-complete',
         ]);
+        $completedRow = $acceptedUpdateId !== '' ? update_row($acceptedUpdateId) : null;
+        $completedHistory = history_events($workflowId, $runId);
 
-    $completeResult = complete_update_task('workflow-updates-worker', $acceptedUpdateId, [
-        'approved' => true,
-        'source' => 'focused-complete',
-    ]);
-    $completedRow = $acceptedUpdateId !== '' ? update_row($acceptedUpdateId) : null;
-    $completedHistory = history_events($workflowId, $runId);
-
-    $scenarioResults['completed_update_result_round_trip'] = $completedRow instanceof WorkflowUpdate
-        && $completedRow->status?->value === 'completed'
-        ? pass_result('completed_update_result_round_trip', [
-            'update_id' => $acceptedUpdateId,
-            'request_payload' => [true, 'focused-accepted'],
-            'result_payload' => ['approved' => true, 'source' => 'focused-complete'],
-            'result_envelope' => [
-                'codec' => 'avro',
-                'blob_present' => is_string($completedRow->result),
-            ],
-            'history_update_completed_event' => event_by_type($completedHistory, WORKFLOW_UPDATE_COMPLETED_EVENT),
-            'cli_update_json' => null,
-            'sdk_update_result' => null,
-            'worker_complete_response' => $completeResult,
-        ])
-        : fail_result('completed_update_result_round_trip', 'The published server did not complete an accepted update with a result envelope.', [
-            'update_id' => $acceptedUpdateId,
-            'worker_complete_response' => $completeResult,
-        ]);
-
-    $scenarioResults['payload_envelope_round_trip'] = $completedRow instanceof WorkflowUpdate
-        && is_string($completedRow->arguments)
-        && is_string($completedRow->result)
-        ? pass_result('payload_envelope_round_trip', [
-            'codec' => 'avro',
-            'request_envelope' => [
-                'codec' => 'avro',
-                'blob_present' => is_string($completedRow->arguments),
-            ],
-            'history_arguments_envelope' => event_by_type($completedHistory, WORKFLOW_UPDATE_ACCEPTED_EVENT)['payload']['arguments'] ?? null,
-            'history_result_envelope' => event_by_type($completedHistory, WORKFLOW_UPDATE_COMPLETED_EVENT)['payload']['result'] ?? null,
-            'control_plane_result_envelope' => [
+        $scenarioResults['completed_update_result_round_trip'] = $completedRow instanceof WorkflowUpdate
+            && $completedRow->status?->value === 'completed'
+            ? pass_result('completed_update_result_round_trip', [
+                'update_id' => $acceptedUpdateId,
+                'request_payload' => [true, 'focused-accepted'],
+                'result_payload' => ['approved' => true, 'source' => 'focused-complete'],
+                'result_envelope' => [
+                    'codec' => 'avro',
+                    'blob_present' => is_string($completedRow->result),
+                ],
+                'history_update_completed_event' => event_by_type($completedHistory, WORKFLOW_UPDATE_COMPLETED_EVENT),
+                'cli_update_json' => null,
+                'sdk_update_result' => null,
                 'worker_complete_response' => $completeResult,
-            ],
-            'sdk_decoded_result' => null,
-        ])
-        : fail_result('payload_envelope_round_trip', 'The published server did not retain workflow update argument and result envelopes.', [
-            'update_id' => $acceptedUpdateId,
+            ])
+            : fail_result('completed_update_result_round_trip', 'The published server did not complete an accepted update with a result envelope.', [
+                'update_id' => $acceptedUpdateId,
+                'worker_complete_response' => $completeResult,
+            ]);
+
+        $scenarioResults['payload_envelope_round_trip'] = $completedRow instanceof WorkflowUpdate
+            && is_string($completedRow->arguments)
+            && is_string($completedRow->result)
+            ? pass_result('payload_envelope_round_trip', [
+                'codec' => 'avro',
+                'request_envelope' => [
+                    'codec' => 'avro',
+                    'blob_present' => is_string($completedRow->arguments),
+                ],
+                'history_arguments_envelope' => event_by_type($completedHistory, WORKFLOW_UPDATE_ACCEPTED_EVENT)['payload']['arguments'] ?? null,
+                'history_result_envelope' => event_by_type($completedHistory, WORKFLOW_UPDATE_COMPLETED_EVENT)['payload']['result'] ?? null,
+                'control_plane_result_envelope' => [
+                    'worker_complete_response' => $completeResult,
+                ],
+                'sdk_decoded_result' => null,
+            ])
+            : fail_result('payload_envelope_round_trip', 'The published server did not retain workflow update argument and result envelopes.', [
+                'update_id' => $acceptedUpdateId,
+            ]);
+    } catch (Throwable $throwable) {
+        foreach ([
+            'accepted_update_control_plane_and_history',
+            'running_or_waiting_update_operator_visibility',
+            'completed_update_result_round_trip',
+            'payload_envelope_round_trip',
+        ] as $scenarioId) {
+            if (! isset($scenarioResults[$scenarioId])) {
+                $scenarioResults[$scenarioId] = exception_fail_result(
+                    $scenarioId,
+                    'The published server workflow update lifecycle cell failed before this observation could be collected.',
+                    $throwable,
+                    ['workflow_id' => $workflowId, 'run_id' => $runId],
+                );
+            }
+        }
+    }
+
+    try {
+        $failedResponse = request_json('POST', '/workflows/'.$workflowId.'/update/fail_update', [
+            'input' => ['focused failure'],
+            'request_id' => 'failed-'.$suffix,
+            'wait_for' => 'accepted',
         ]);
+        $failedBody = $failedResponse['body'];
+        $failedUpdateId = (string) ($failedBody['update_id'] ?? '');
+        $failResult = fail_update_task('workflow-updates-worker', $failedUpdateId);
+        $failedRow = $failedUpdateId !== '' ? update_row($failedUpdateId) : null;
+        $failedHistory = history_events($workflowId, $runId);
 
-    $failedResponse = request_json('POST', '/workflows/'.$workflowId.'/update/fail_update', [
-        'input' => ['focused failure'],
-        'request_id' => 'failed-'.$suffix,
-        'wait_for' => 'accepted',
-    ]);
-    $failedBody = $failedResponse['body'];
-    $failedUpdateId = (string) ($failedBody['update_id'] ?? '');
-    $failResult = fail_update_task('workflow-updates-worker', $failedUpdateId);
-    $failedRow = $failedUpdateId !== '' ? update_row($failedUpdateId) : null;
-    $failedHistory = history_events($workflowId, $runId);
-
-    $scenarioResults['failed_update_outcome'] = $failedRow instanceof WorkflowUpdate
-        && $failedRow->status?->value === 'failed'
-        ? pass_result('failed_update_outcome', [
-            'update_id' => $failedUpdateId,
-            'failure_type' => 'workflow_update_probe_failure',
-            'failure_message' => $failedRow->failure_message,
-            'history_update_completed_or_failed_event' => event_by_type($failedHistory, WORKFLOW_UPDATE_COMPLETED_EVENT),
-            'control_plane_error_envelope' => $failedBody,
-            'operator_failure_view' => [
-                'failure_id' => $failedRow->failure_id,
+        $scenarioResults['failed_update_outcome'] = $failedRow instanceof WorkflowUpdate
+            && $failedRow->status?->value === 'failed'
+            ? pass_result('failed_update_outcome', [
+                'update_id' => $failedUpdateId,
+                'failure_type' => 'workflow_update_probe_failure',
+                'failure_message' => $failedRow->failure_message,
+                'history_update_completed_or_failed_event' => event_by_type($failedHistory, WORKFLOW_UPDATE_COMPLETED_EVENT),
+                'control_plane_error_envelope' => $failedBody,
+                'operator_failure_view' => [
+                    'failure_id' => $failedRow->failure_id,
+                    'worker_fail_response' => $failResult,
+                ],
+            ])
+            : fail_result('failed_update_outcome', 'The published server did not persist a worker-failed update outcome.', [
+                'update_id' => $failedUpdateId,
                 'worker_fail_response' => $failResult,
-            ],
-        ])
-        : fail_result('failed_update_outcome', 'The published server did not persist a worker-failed update outcome.', [
-            'update_id' => $failedUpdateId,
-            'worker_fail_response' => $failResult,
-        ]);
+            ]);
+    } catch (Throwable $throwable) {
+        $scenarioResults['failed_update_outcome'] = exception_fail_result(
+            'failed_update_outcome',
+            'The published server failed before the worker-failed update outcome could be observed.',
+            $throwable,
+            ['workflow_id' => $workflowId, 'run_id' => $runId],
+        );
+    }
 
-    $duplicateFirst = request_json('POST', '/workflows/'.$workflowId.'/update/approve', [
-        'input' => [true, 'duplicate-first'],
-        'request_id' => 'duplicate-'.$suffix,
-        'wait_for' => 'accepted',
-    ])['body'];
-    $duplicateSecond = request_json('POST', '/workflows/'.$workflowId.'/update/approve', [
-        'input' => [true, 'duplicate-second'],
-        'request_id' => 'duplicate-'.$suffix,
-        'wait_for' => 'accepted',
-    ], [200, 202, 409])['body'];
-    $duplicateUpdateId = (string) ($duplicateFirst['update_id'] ?? '');
-    $duplicateHistory = history_events($workflowId, $runId);
-    $duplicateHistoryCount = count(array_filter(
-        $duplicateHistory,
-        static fn (array $event): bool => ($event['event_type'] ?? null) === WORKFLOW_UPDATE_ACCEPTED_EVENT
-            && ($event['payload']['request_id'] ?? null) === 'duplicate-'.$suffix,
-    ));
+    try {
+        $duplicateFirst = request_json('POST', '/workflows/'.$workflowId.'/update/approve', [
+            'input' => [true, 'duplicate-first'],
+            'request_id' => 'duplicate-'.$suffix,
+            'wait_for' => 'accepted',
+        ])['body'];
+        $duplicateSecond = request_json('POST', '/workflows/'.$workflowId.'/update/approve', [
+            'input' => [true, 'duplicate-second'],
+            'request_id' => 'duplicate-'.$suffix,
+            'wait_for' => 'accepted',
+        ], [200, 202, 409])['body'];
+        $duplicateUpdateId = (string) ($duplicateFirst['update_id'] ?? '');
+        $duplicateHistory = history_events($workflowId, $runId);
+        $duplicateHistoryCount = count(array_filter(
+            $duplicateHistory,
+            static fn (array $event): bool => ($event['event_type'] ?? null) === WORKFLOW_UPDATE_ACCEPTED_EVENT
+                && ($event['payload']['request_id'] ?? null) === 'duplicate-'.$suffix,
+        ));
+        $duplicateCleanupResult = $duplicateUpdateId !== ''
+            ? complete_update_task('workflow-updates-worker', $duplicateUpdateId, [
+                'approved' => true,
+                'source' => 'focused-duplicate-cleanup',
+            ])
+            : null;
 
-    $scenarioResults['duplicate_request_idempotency'] = $duplicateUpdateId !== ''
-        ? pass_result('duplicate_request_idempotency', [
+        $duplicateObserved = [
             'idempotency_key_or_update_id' => 'duplicate-'.$suffix,
             'first_response' => $duplicateFirst,
             'duplicate_response' => $duplicateSecond,
             'history_event_count' => $duplicateHistoryCount,
             'handler_observation_count' => $duplicateHistoryCount,
+            'cleanup_response' => $duplicateCleanupResult,
             'documented_contract' => 'request_id deduplicates accepted update admission for a workflow run',
-        ])
-        : fail_result('duplicate_request_idempotency', 'The published server did not return a stable update id for duplicate request-id probing.', [
-            'first_response' => $duplicateFirst,
-            'duplicate_response' => $duplicateSecond,
-        ]);
+        ];
+        $scenarioResults['duplicate_request_idempotency'] = $duplicateUpdateId !== ''
+            && $duplicateHistoryCount === 1
+            ? pass_result('duplicate_request_idempotency', $duplicateObserved)
+            : fail_result('duplicate_request_idempotency', 'The published server did not keep duplicate request-id update admission idempotent.', $duplicateObserved);
+    } catch (Throwable $throwable) {
+        $scenarioResults['duplicate_request_idempotency'] = exception_fail_result(
+            'duplicate_request_idempotency',
+            'The published server failed before duplicate request-id update behavior could be observed.',
+            $throwable,
+            ['workflow_id' => $workflowId, 'run_id' => $runId],
+        );
+    }
 
-    $unknown = request_json('POST', '/workflows/'.$workflowId.'/update/missing_update', [
-        'input' => [],
-        'request_id' => 'unknown-'.$suffix,
-    ], [404, 409, 422]);
-    $scenarioResults['unknown_update_refusal'] = in_array($unknown['status_code'], [404, 409, 422], true)
-        ? pass_result('unknown_update_refusal', [
-            'unknown_update_name' => 'missing_update',
-            'error_type' => $unknown['body']['reason'] ?? null,
-            'http_status_or_sdk_error' => $unknown['status_code'],
-            'history_absence_or_rejection_event' => null,
-            'operator_visible_refusal' => $unknown['body'],
-        ])
-        : fail_result('unknown_update_refusal', 'The published server accepted an undeclared workflow update.', [
-            'response' => $unknown,
-        ]);
+    try {
+        $unknown = request_json('POST', '/workflows/'.$workflowId.'/update/missing_update', [
+            'input' => [],
+            'request_id' => 'unknown-'.$suffix,
+        ], [404, 409, 422]);
+        $scenarioResults['unknown_update_refusal'] = in_array($unknown['status_code'], [404, 409, 422], true)
+            ? pass_result('unknown_update_refusal', [
+                'unknown_update_name' => 'missing_update',
+                'error_type' => $unknown['body']['reason'] ?? null,
+                'http_status_or_sdk_error' => $unknown['status_code'],
+                'history_absence_or_rejection_event' => null,
+                'operator_visible_refusal' => $unknown['body'],
+            ])
+            : fail_result('unknown_update_refusal', 'The published server accepted an undeclared workflow update.', [
+                'response' => $unknown,
+            ]);
+    } catch (Throwable $throwable) {
+        $scenarioResults['unknown_update_refusal'] = exception_fail_result(
+            'unknown_update_refusal',
+            'The published server failed before unknown update refusal could be observed.',
+            $throwable,
+            ['workflow_id' => $workflowId, 'run_id' => $runId],
+        );
+    }
 
-    $invalid = request_json('POST', '/workflows/'.$workflowId.'/update/approve', [
-        'input' => ['not-a-bool'],
-        'request_id' => 'invalid-'.$suffix,
-    ], [404, 409, 422]);
-    $scenarioResults['invalid_input_refusal'] = in_array($invalid['status_code'], [409, 422], true)
-        ? pass_result('invalid_input_refusal', [
-            'invalid_payload' => ['not-a-bool'],
-            'error_type' => $invalid['body']['reason'] ?? null,
-            'validation_errors' => $invalid['body']['validation_errors'] ?? $invalid['body']['errors'] ?? null,
-            'handler_not_invoked' => true,
-            'history_absence_or_rejection_event' => null,
-            'operator_visible_refusal' => $invalid['body'],
-        ])
-        : fail_result('invalid_input_refusal', 'The published server accepted invalid workflow update arguments.', [
-            'response' => $invalid,
-        ]);
+    try {
+        $invalid = request_json('POST', '/workflows/'.$workflowId.'/update/approve', [
+            'input' => ['not-a-bool'],
+            'request_id' => 'invalid-'.$suffix,
+        ], [404, 409, 422]);
+        $scenarioResults['invalid_input_refusal'] = in_array($invalid['status_code'], [409, 422], true)
+            ? pass_result('invalid_input_refusal', [
+                'invalid_payload' => ['not-a-bool'],
+                'error_type' => $invalid['body']['reason'] ?? null,
+                'validation_errors' => $invalid['body']['validation_errors'] ?? $invalid['body']['errors'] ?? null,
+                'handler_not_invoked' => true,
+                'history_absence_or_rejection_event' => null,
+                'operator_visible_refusal' => $invalid['body'],
+            ])
+            : fail_result('invalid_input_refusal', 'The published server accepted invalid workflow update arguments.', [
+                'response' => $invalid,
+            ]);
+    } catch (Throwable $throwable) {
+        $scenarioResults['invalid_input_refusal'] = exception_fail_result(
+            'invalid_input_refusal',
+            'The published server failed before invalid update input refusal could be observed.',
+            $throwable,
+            ['workflow_id' => $workflowId, 'run_id' => $runId],
+        );
+    }
 
     $terminalWorkflowId = 'wf-update-terminal-'.$suffix;
-    $terminalStart = start_probe_workflow($terminalWorkflowId);
-    $terminalRunId = (string) ($terminalStart['run_id'] ?? '');
-    complete_workflow_start_task('workflow-updates-worker');
-    $terminalRun = WorkflowRun::query()->find($terminalRunId);
-    $terminal = request_json('POST', '/workflows/'.$terminalWorkflowId.'/update/approve', [
-        'input' => [true, 'terminal'],
-        'request_id' => 'terminal-'.$suffix,
-    ], [404, 409, 422]);
-    $scenarioResults['terminal_workflow_update_behavior'] = in_array($terminal['status_code'], [409, 422], true)
-        ? pass_result('terminal_workflow_update_behavior', [
-            'terminal_workflow_status' => $terminalRun?->status?->value,
-            'update_request' => ['name' => 'approve', 'request_id' => 'terminal-'.$suffix],
-            'error_type' => $terminal['body']['reason'] ?? null,
-            'http_status_or_sdk_error' => $terminal['status_code'],
-            'history_absence_or_rejection_event' => null,
-            'operator_visible_refusal' => $terminal['body'],
-        ])
-        : fail_result('terminal_workflow_update_behavior', 'The published server accepted an update for a terminal workflow run.', [
-            'response' => $terminal,
-            'terminal_status' => $terminalRun?->status?->value,
-        ]);
+    $terminalRunId = null;
+    try {
+        $terminalWorkerId = 'workflow-updates-terminal-worker-'.$suffix;
+        $terminalQueue = WORKFLOW_UPDATES_QUEUE.'-terminal-'.$suffix;
+        register_probe_worker($terminalWorkerId, $terminalQueue);
+        $terminalStart = start_probe_workflow($terminalWorkflowId, $terminalQueue);
+        $terminalRunId = (string) ($terminalStart['run_id'] ?? '');
+        complete_workflow_start_task($terminalWorkerId, $terminalQueue);
+        $terminalRun = WorkflowRun::query()->find($terminalRunId);
+        $terminal = request_json('POST', '/workflows/'.$terminalWorkflowId.'/update/approve', [
+            'input' => [true, 'terminal'],
+            'request_id' => 'terminal-'.$suffix,
+        ], [404, 409, 422]);
+        $scenarioResults['terminal_workflow_update_behavior'] = in_array($terminal['status_code'], [409, 422], true)
+            ? pass_result('terminal_workflow_update_behavior', [
+                'terminal_workflow_status' => $terminalRun?->status?->value,
+                'update_request' => ['name' => 'approve', 'request_id' => 'terminal-'.$suffix],
+                'error_type' => $terminal['body']['reason'] ?? null,
+                'http_status_or_sdk_error' => $terminal['status_code'],
+                'history_absence_or_rejection_event' => null,
+                'operator_visible_refusal' => $terminal['body'],
+            ])
+            : fail_result('terminal_workflow_update_behavior', 'The published server accepted an update for a terminal workflow run.', [
+                'response' => $terminal,
+                'terminal_status' => $terminalRun?->status?->value,
+            ]);
+    } catch (Throwable $throwable) {
+        $scenarioResults['terminal_workflow_update_behavior'] = exception_fail_result(
+            'terminal_workflow_update_behavior',
+            'The published server failed before terminal workflow update behavior could be observed.',
+            $throwable,
+            ['workflow_id' => $terminalWorkflowId, 'run_id' => $terminalRunId],
+        );
+    }
 
     return [
         'schema' => 'durable-workflow.v2.workflow-update-runtime.focused-evidence',
@@ -719,38 +998,7 @@ function run_focused_probe(): array
 try {
     write_json_file('workflow-updates-focused-evidence.json', run_focused_probe());
 } catch (Throwable $throwable) {
-    write_json_file('workflow-updates-focused-evidence.json', [
-        'schema' => 'durable-workflow.v2.workflow-update-runtime.focused-evidence',
-        'generated_at' => now_iso(),
-        'runner' => 'published-server-workflow-updates-focused-probe',
-        'runner_blocked' => false,
-        'source_policy' => [
-            'pass_requires_published_artifacts_only' => true,
-            'local_product_source_checkouts_used' => false,
-            'local_checkout_execution_counts_as_pass' => false,
-        ],
-        'scenario_results' => [
-            'published_artifact_install_only' => pass_result('published_artifact_install_only', [
-                'server_image_execution_source' => 'published_server_container',
-            ]),
-        ],
-        'findings' => [
-            [
-                'finding_id' => 'workflow-updates-focused-probe-product-gap',
-                'finding_type' => 'product_behavior_failure',
-                'classification' => 'product-gap',
-                'owning_surface' => 'server',
-                'summary' => 'The published server workflow updates focused probe failed before all runtime cells could be collected.',
-                'next_acceptance_criterion' => 'Make the focused workflow updates runtime probe execute accepted, completed, failed, refusal, duplicate, terminal, and payload cells against the published server image.',
-                'diagnostic' => [
-                    'exception_class' => get_class($throwable),
-                    'message' => $throwable->getMessage(),
-                    'file' => basename($throwable->getFile()),
-                    'line' => $throwable->getLine(),
-                ],
-            ],
-        ],
-    ]);
+    write_json_file('workflow-updates-focused-evidence.json', focused_probe_failure_evidence($throwable));
 }
 PHP
 fi
@@ -793,21 +1041,32 @@ function unresolved(value) {
   return value || 'unresolved';
 }
 
+function readJsonIfExists(file) {
+  try {
+    if (file && fs.existsSync(file) && fs.statSync(file).size > 0) {
+      return JSON.parse(fs.readFileSync(file, 'utf8'));
+    }
+  } catch (error) {
+    return null;
+  }
+
+  return null;
+}
+
 function writeJson(file, payload) {
   fs.writeFileSync(path.join(resultDir, file), `${JSON.stringify(payload, null, 2)}\n`);
 }
 
-function readJsonFile(file) {
-  return JSON.parse(fs.readFileSync(file, 'utf8'));
+function materializeFocusedEvidence(evidence) {
+  writeJson(focusedEvidenceFile, evidence);
+
+  return evidence;
 }
 
 function readEvidence() {
   const inline = env('DW_WORKFLOW_UPDATES_EVIDENCE');
   if (inline) {
-    const payload = JSON.parse(inline);
-    writeJson(focusedEvidenceFile, payload);
-
-    return { payload, file: focusedEvidenceFile };
+    return materializeFocusedEvidence(JSON.parse(inline));
   }
 
   const configuredPath = env('DW_WORKFLOW_UPDATES_EVIDENCE_PATH');
@@ -815,20 +1074,20 @@ function readEvidence() {
   if (configuredPath) {
     candidates.push(configuredPath);
   }
-  candidates.push(focusedEvidencePath);
+  candidates.push(path.join(resultDir, 'workflow-updates-focused-evidence.json'));
 
   for (const candidate of candidates) {
     if (candidate && fs.existsSync(candidate) && fs.statSync(candidate).size > 0) {
-      const payload = readJsonFile(candidate);
-      if (path.resolve(candidate) !== focusedEvidencePath) {
-        writeJson(focusedEvidenceFile, payload);
+      const evidence = JSON.parse(fs.readFileSync(candidate, 'utf8'));
+      if (path.resolve(candidate) !== path.resolve(focusedEvidencePath)) {
+        materializeFocusedEvidence(evidence);
       }
 
-      return { payload, file: focusedEvidenceFile };
+      return evidence;
     }
   }
 
-  return { payload: null, file: null };
+  return null;
 }
 
 function uniqueFindings(findings) {
@@ -859,20 +1118,6 @@ function coverageFinding(id, scenarioId, summary, acceptance, owningSurface = 'c
   };
 }
 
-function runnerBlockedFinding(blockedReason) {
-  const reason = blockedReason || 'Focused workflow update evidence reported runner_blocked=true.';
-
-  return {
-    finding_id: 'workflow-updates-focused-evidence-runner-blocked',
-    finding_type: 'conformance_runner_blocked',
-    classification: 'runner-blocked',
-    scenario_id: 'workflow_update_runtime_run',
-    owning_surface: 'conformance_harness',
-    summary: `Workflow update focused evidence was runner-blocked and cannot produce a passing published-artifact result: ${reason}`,
-    next_acceptance_criterion: 'Restore focused workflow update host execution against pinned published artifacts and record runner_blocked=false with concrete scenario evidence.',
-  };
-}
-
 function truthyEvidenceFlag(value) {
   if (value === true || value === 1) {
     return true;
@@ -897,6 +1142,12 @@ function explicitFalse(value) {
 
 function objectValue(value) {
   return value && typeof value === 'object' && !Array.isArray(value) ? value : {};
+}
+
+function arrayOfStrings(value) {
+  return Array.isArray(value)
+    ? value.filter((item) => typeof item === 'string' && item.trim() !== '').map((item) => item.trim())
+    : [];
 }
 
 function stringValue(value) {
@@ -956,47 +1207,6 @@ function publishedArtifactCellExecuted(value) {
     || truthyEvidenceFlag(observedOutputs.publishedArtifactCellExecuted);
 }
 
-function containsForbiddenSourceToken(value) {
-  const lower = stringValue(value).toLowerCase();
-  if (lower === '') {
-    return false;
-  }
-
-  const forbiddenTokens = [
-    'local_product_source_checkout',
-    'workspace_repo_as_artifact_under_test',
-    'local_checkout_artifact',
-    'local_source_checkout',
-    'workspace_repo',
-    'branch_source',
-    'local_vendor_tree',
-    '/workspace/repos',
-    'file://',
-    'git+file://',
-    '${home}/repos',
-    '~/repos',
-  ];
-  if (forbiddenTokens.some((token) => lower.includes(token))) {
-    return true;
-  }
-
-  return lower.startsWith('/')
-    || lower.startsWith('./')
-    || lower.startsWith('../')
-    || /workspace[._-]*hq/.test(lower)
-    || /(^|[/:_\s-])(local|workspace)[\s_-]*(repo|worktree|checkout|source)([/:_\s-]|$)/.test(lower)
-    || /(^|[/:_\s-])(repo|worktree)[\s_-]*(checkout|source)([/:_\s-]|$)/.test(lower)
-    || lower.includes('/repos/server')
-    || lower.includes('/repos/cli')
-    || lower.includes('/repos/workflow')
-    || lower.includes('/repos/waterline')
-    || lower.includes('/repos/sdk-python');
-}
-
-function localArtifactSourceReported(value) {
-  return Object.values(artifactSourcesFor(value)).some((source) => containsForbiddenSourceToken(source));
-}
-
 function sourcePolicyFinding(scenarioId, summary) {
   return coverageFinding(
     `workflow-updates-${scenarioId.replace(/_/g, '-')}-source-policy-gap`,
@@ -1008,57 +1218,35 @@ function sourcePolicyFinding(scenarioId, summary) {
 
 function requiredEvidenceFinding(scenarioId, missingFields) {
   return coverageFinding(
-    `workflow-updates-${scenarioId.replace(/_/g, '-')}-missing-required-evidence`,
+    `workflow-updates-${scenarioId.replace(/_/g, '-')}-required-evidence-gap`,
     scenarioId,
-    `The host evidence for ${scenarioId} claimed pass but omitted required observed output/evidence fields: ${missingFields.join(', ')}.`,
-    `Attach concrete observed_outputs or evidence values for ${missingFields.join(', ')} before recording ${scenarioId} as passing.`,
+    `The host evidence for ${scenarioId} claimed pass but omitted required observed outputs: ${missingFields.join(', ')}.`,
+    `Attach ${missingFields.join(', ')} observations required by static/platform-conformance/workflow-update-runtime-scenarios.json before recording ${scenarioId} as passing.`,
   );
 }
 
-function artifactPolicyFinding(failure) {
-  const artifact = stringValue(failure.artifact) || 'artifact';
-  const field = stringValue(failure.field) || 'artifact_policy';
-  const code = stringValue(failure.code) || 'invalid_artifact_policy';
-  const value = stringValue(failure.value);
-  const pathDetail = failure.path ? ` at ${failure.path}` : '';
-  const valueDetail = value === '' ? '' : `; observed ${value}`;
-  const owningSurface = {
-    server: 'server',
-    cli: 'cli',
-    workflow: 'workflow-php',
-    'workflow-php': 'workflow-php',
-    'sdk-python': 'sdk-python',
-    waterline: 'waterline',
-  }[artifact] || 'conformance_harness';
+function artifactPrerequisiteFinding(scenarioId, failures) {
+  const finding = coverageFinding(
+    `workflow-updates-${scenarioId.replace(/_/g, '-')}-artifact-prerequisite-gap`,
+    scenarioId,
+    `The host evidence for ${scenarioId} claimed pass with unresolved published artifact prerequisites: ${failures.map((failure) => `${failure.artifact}:${failure.code}`).join(', ')}.`,
+    'Record concrete published artifact versions and non-placeholder artifact sources for the server, CLI, Python SDK, PHP workflow package, and Waterline before recording workflow update cells as passing.',
+  );
+  finding.artifact_prerequisite_failures = failures;
 
+  return finding;
+}
+
+function runnerBlockedFinding(scenarioId) {
   return {
-    finding_id: `workflow-updates-${artifact.replace(/[^a-z0-9]+/gi, '-')}-${code.replace(/[^a-z0-9]+/gi, '-')}`,
-    finding_type: 'missing_or_invalid_published_workflow_update_artifact',
-    classification: 'coverage-gap',
-    scenario_id: 'published_artifact_install_only',
-    owning_surface: owningSurface,
-    summary: `Required workflow update artifact ${artifact} has ${code} in ${field}${pathDetail}${valueDetail}.`,
-    next_acceptance_criterion: `Record a concrete published ${artifact} artifact version and non-local install source before passing workflow update conformance.`,
+    finding_id: `workflow-updates-${scenarioId.replace(/_/g, '-')}-runner-blocked-evidence`,
+    finding_type: 'conformance_runner_blocked',
+    classification: 'runner-blocked',
+    scenario_id: scenarioId,
+    owning_surface: 'conformance_harness',
+    summary: 'Imported focused workflow updates evidence reported runner_blocked=true, so it cannot count as passing product evidence.',
+    next_acceptance_criterion: 'Rerun the focused workflow updates probe in a host environment that reaches the published artifacts and records runner_blocked=false.',
   };
-}
-
-function addFinding(row, finding) {
-  row.linked_findings = Array.isArray(row.linked_findings) ? row.linked_findings : [];
-  row.linked_findings.push(finding);
-}
-
-function downgradeScenario(row, status, classification, observedOutputs, finding) {
-  row.status = status;
-  row.classification = classification;
-  row.published_artifact_cell_executed = false;
-  row.observed_outputs = {
-    ...objectValue(row.observed_outputs),
-    ...observedOutputs,
-    published_artifact_cell_executed: false,
-  };
-  addFinding(row, finding);
-
-  return row;
 }
 
 function scenarioResult(scenarioId, status, classification, finding, observedOutputs = {}) {
@@ -1077,32 +1265,175 @@ function scenarioResult(scenarioId, status, classification, finding, observedOut
   };
 }
 
-function concreteEvidenceValue(value) {
-  if (value === null || value === undefined) {
-    return false;
-  }
-  if (typeof value === 'string') {
-    const trimmed = value.trim().toLowerCase();
-
-    return trimmed !== ''
-      && !['placeholder', 'unresolved', 'not_covered', 'not covered', 'todo', 'tbd', 'unknown', 'null', 'none'].includes(trimmed);
-  }
-  if (Array.isArray(value)) {
-    return value.length > 0;
-  }
-  if (typeof value === 'object') {
-    return Object.keys(value).length > 0;
-  }
-
-  return true;
+function hasOwnField(value, field) {
+  return value && typeof value === 'object' && !Array.isArray(value)
+    && Object.prototype.hasOwnProperty.call(value, field);
 }
 
-function missingRequiredFieldsForScenario(scenarioId, observedOutputs) {
-  const requiredFields = Array.isArray(scenarioRequirements[scenarioId]?.required_fields)
-    ? scenarioRequirements[scenarioId].required_fields
-    : [];
+function requiredFieldsForScenario(scenarioId) {
+  return arrayOfStrings(scenarioRequirements?.[scenarioId]?.required_fields);
+}
 
-  return requiredFields.filter((field) => !concreteEvidenceValue(observedOutputs[field]));
+function missingRequiredFieldsForScenario(scenarioId, row, observedOutputs) {
+  return requiredFieldsForScenario(scenarioId).filter((field) => !hasOwnField(observedOutputs, field) && !hasOwnField(row, field));
+}
+
+const PLACEHOLDER_ARTIFACT_PATTERN = /(<[^>]+>|\$\{[^}]+}|{{[^}]+}}|(^|[^a-z0-9])(latest|current|head|main|master|unresolved|placeholder|not[-_\s]?exercised|todo|tbd|unknown|null|none)([^a-z0-9]|$))/i;
+
+function placeholderArtifactValue(value) {
+  const string = stringValue(value);
+
+  return string === '' || PLACEHOLDER_ARTIFACT_PATTERN.test(string);
+}
+
+function sourceUsesForbiddenToken(source) {
+  const normalized = stringValue(source).toLowerCase();
+  if (normalized === '') {
+    return false;
+  }
+
+  const builtInForbiddenTokens = [
+    'local_product_source_checkout',
+    'workspace_repo_as_artifact_under_test',
+    'local_checkout_artifact',
+    'local_source_checkout',
+    'workspace_repo',
+    'branch_source',
+    'local_vendor_tree',
+    '/workspace/repos',
+    'file://',
+    'git+file://',
+    '${home}/repos',
+    '~/repos',
+  ];
+
+  return builtInForbiddenTokens.some((token) => normalized.includes(token))
+    || forbiddenArtifactSourceTokens.some((token) => normalized.includes(token.toLowerCase()))
+    || normalized.startsWith('/')
+    || normalized.startsWith('./')
+    || normalized.startsWith('../')
+    || /workspace[._-]*hq/.test(normalized)
+    || /(^|[/:_\s-])(local|workspace)[\s_-]*(repo|worktree|checkout|source)([/:_\s-]|$)/.test(normalized)
+    || /(^|[/:_\s-])(repo|worktree)[\s_-]*(checkout|source)([/:_\s-]|$)/.test(normalized)
+    || normalized.includes('/repos/server')
+    || normalized.includes('/repos/cli')
+    || normalized.includes('/repos/workflow')
+    || normalized.includes('/repos/waterline')
+    || normalized.includes('/repos/sdk-python');
+}
+
+function placeholderArtifactSource(value) {
+  const string = stringValue(value);
+
+  return string === '' || PLACEHOLDER_ARTIFACT_PATTERN.test(string) || sourceUsesForbiddenToken(string);
+}
+
+function localArtifactSourceReported(value) {
+  return Object.values(artifactSourcesFor(value)).some((source) => sourceUsesForbiddenToken(source));
+}
+
+function artifactFailureCode(value, field, codePrefix) {
+  const string = stringValue(value);
+  if (field === 'artifact_sources') {
+    if (string === '') {
+      return `${codePrefix}_artifact_source`;
+    }
+    if (sourceUsesForbiddenToken(string)) {
+      return 'forbidden_published_artifact_source';
+    }
+
+    return PLACEHOLDER_ARTIFACT_PATTERN.test(string) ? `${codePrefix}_artifact_source` : null;
+  }
+
+  return placeholderArtifactValue(string) ? `${codePrefix}_artifact_version` : null;
+}
+
+function artifactEntries(map, artifact) {
+  const values = objectValue(map);
+  const entries = [];
+  for (const key of artifactAliases[artifact] || [artifact]) {
+    if (Object.prototype.hasOwnProperty.call(values, key)) {
+      entries.push({ key, value: values[key] });
+    }
+  }
+
+  return entries;
+}
+
+function artifactMapFailures(map, field, codePrefix) {
+  const failures = [];
+  const values = objectValue(map);
+
+  for (const artifact of requiredArtifacts) {
+    const entries = artifactEntries(values, artifact);
+    if (entries.length === 0) {
+      failures.push({
+        artifact,
+        field,
+        code: `${codePrefix}_${field === 'artifact_sources' ? 'artifact_source' : 'artifact_version'}`,
+        value: '',
+      });
+      continue;
+    }
+
+    for (const entry of entries) {
+      const code = artifactFailureCode(entry.value, field, codePrefix);
+      if (code) {
+        failures.push({
+          artifact,
+          field,
+          code,
+          value: stringValue(entry.value),
+          key: entry.key,
+        });
+      }
+    }
+  }
+
+  return failures;
+}
+
+function presentArtifactMapFailures(row, observedOutputs, field, codePrefix) {
+  const failures = [];
+  for (const source of [row?.[field], observedOutputs?.[field], evidence?.[field]]) {
+    if (source && typeof source === 'object' && !Array.isArray(source)) {
+      failures.push(...artifactMapFailures(source, field, codePrefix));
+    }
+  }
+
+  return failures;
+}
+
+function artifactPrerequisiteFailuresFor(row, observedOutputs) {
+  return uniqueArtifactFailures([
+    ...artifactMapFailures(artifactVersions, 'artifact_versions', 'placeholder'),
+    ...artifactMapFailures(artifactVersions, 'published_artifact_versions', 'placeholder'),
+    ...artifactMapFailures(publishedArtifactVersions, 'published_artifact_versions', 'placeholder'),
+    ...artifactMapFailures(artifactSources, 'artifact_sources', 'placeholder'),
+    ...presentArtifactMapFailures(row, observedOutputs, 'artifact_versions', 'evidence_placeholder'),
+    ...presentArtifactMapFailures(row, observedOutputs, 'published_artifact_versions', 'evidence_placeholder'),
+    ...presentArtifactMapFailures(row, observedOutputs, 'artifact_sources', 'evidence_placeholder'),
+  ]);
+}
+
+function uniqueArtifactFailures(failures) {
+  const seen = new Set();
+
+  return failures.filter((failure) => {
+    const key = JSON.stringify([
+      failure.artifact || '',
+      failure.field || '',
+      failure.code || '',
+      failure.key || '',
+      failure.value || '',
+    ]);
+    if (seen.has(key)) {
+      return false;
+    }
+    seen.add(key);
+
+    return true;
+  });
 }
 
 function normalizeScenarioResult(scenarioId, row) {
@@ -1112,16 +1443,23 @@ function normalizeScenarioResult(scenarioId, row) {
   let classification = typeof row?.classification === 'string'
     ? row.classification
     : (normalizedStatus === 'pass' ? 'product-evidence' : 'coverage-gap');
-  const localSourceUsed = localProductSourceCheckoutsUsed(row);
+  let observedOutputs = observedOutputsFor(row);
+  const localSourceUsed = localProductSourceCheckoutsUsed(row) || localArtifactSourceReported(row);
   const localSourceExplicitFalse = localProductSourceExplicitFalse(row);
   const cleanPublishedArtifactExecution = publishedArtifactCellExecuted(row)
     && localSourceExplicitFalse
     && !localSourceUsed;
   const linkedFindings = Array.isArray(row?.linked_findings) ? [...row.linked_findings] : [];
-  const observedOutputs = observedOutputsFor(row);
-  const missingRequiredFields = normalizedStatus === 'pass'
-    ? missingRequiredFieldsForScenario(scenarioId, observedOutputs)
-    : [];
+
+  if (normalizedStatus === 'pass' && evidenceRunnerBlocked) {
+    normalizedStatus = 'runner_blocked';
+    classification = 'runner-blocked';
+    linkedFindings.push(runnerBlockedFinding(scenarioId));
+    observedOutputs = {
+      ...observedOutputs,
+      evidence_runner_blocked: true,
+    };
+  }
 
   if (normalizedStatus === 'pass' && !cleanPublishedArtifactExecution) {
     const missing = [];
@@ -1140,9 +1478,29 @@ function normalizeScenarioResult(scenarioId, row) {
     ));
   }
 
+  const artifactPrerequisiteFailures = normalizedStatus === 'pass'
+    ? artifactPrerequisiteFailuresFor(row, observedOutputs)
+    : [];
+  if (normalizedStatus === 'pass' && artifactPrerequisiteFailures.length > 0) {
+    normalizedStatus = 'not_covered';
+    classification = 'coverage-gap';
+    observedOutputs = {
+      ...observedOutputs,
+      artifact_prerequisite_failures: artifactPrerequisiteFailures,
+    };
+    linkedFindings.push(artifactPrerequisiteFinding(scenarioId, artifactPrerequisiteFailures));
+  }
+
+  const missingRequiredFields = normalizedStatus === 'pass'
+    ? missingRequiredFieldsForScenario(scenarioId, row, observedOutputs)
+    : [];
   if (normalizedStatus === 'pass' && missingRequiredFields.length > 0) {
     normalizedStatus = 'not_covered';
     classification = 'coverage-gap';
+    observedOutputs = {
+      ...observedOutputs,
+      missing_required_fields: missingRequiredFields,
+    };
     linkedFindings.push(requiredEvidenceFinding(scenarioId, missingRequiredFields));
   }
 
@@ -1154,7 +1512,6 @@ function normalizeScenarioResult(scenarioId, row) {
     local_product_source_checkouts_used: localSourceUsed,
     observed_outputs: {
       ...observedOutputs,
-      ...(missingRequiredFields.length > 0 ? { missing_required_fields: missingRequiredFields } : {}),
       published_artifact_cell_executed: cleanPublishedArtifactExecution,
       local_product_source_checkouts_used: localSourceUsed,
     },
@@ -1191,123 +1548,6 @@ const artifactSources = {
   waterline: `packagist://durable-workflow/waterline@${waterlineVersion}`,
 };
 
-const scenarioManifest = readJsonFile(path.join(repoRoot, 'static/platform-conformance/workflow-update-runtime-scenarios.json'));
-const scenarioRequirements = objectValue(scenarioManifest.scenario_requirements);
-const manifestForbiddenSources = Array.isArray(scenarioManifest.artifact_policy?.forbidden_sources)
-  ? scenarioManifest.artifact_policy.forbidden_sources
-  : [];
-const requiredArtifacts = ['server', 'cli', 'sdk-python', 'workflow-php', 'waterline'];
-const artifactAliases = {
-  server: ['server'],
-  cli: ['cli'],
-  'sdk-python': ['sdk-python', 'python'],
-  'workflow-php': ['workflow-php', 'workflow'],
-  waterline: ['waterline'],
-};
-
-function artifactEntries(map, artifact) {
-  const source = objectValue(map);
-  const entries = [];
-  for (const key of artifactAliases[artifact] || [artifact]) {
-    if (Object.prototype.hasOwnProperty.call(source, key)) {
-      entries.push({ key, value: source[key] });
-    }
-  }
-
-  return entries;
-}
-
-function placeholderArtifactVersion(value) {
-  const lower = stringValue(value).toLowerCase();
-  if (lower === '') {
-    return true;
-  }
-
-  return /(^|[^a-z0-9])(latest|current|head|unresolved|placeholder|not[-_\s]?exercised|todo|tbd|unknown|null|none)([^a-z0-9]|$)/.test(lower);
-}
-
-function unresolvedArtifactSource(value) {
-  const lower = stringValue(value).toLowerCase();
-  if (lower === '') {
-    return true;
-  }
-
-  return /(^|[^a-z0-9])(latest|current|head|unresolved|placeholder|not[-_\s]?exercised|todo|tbd|unknown|null|none)([^a-z0-9]|$)/.test(lower);
-}
-
-function artifactVersionFailures(map, field, pathPrefix) {
-  const failures = [];
-  for (const artifact of requiredArtifacts) {
-    const entries = artifactEntries(map, artifact);
-    if (entries.length === 0) {
-      failures.push({ artifact, field, code: 'missing_published_artifact_version', path: `${pathPrefix}.${artifact}` });
-      continue;
-    }
-    for (const entry of entries) {
-      const version = stringValue(entry.value);
-      if (version === '') {
-        failures.push({ artifact, field, code: 'missing_published_artifact_version', path: `${pathPrefix}.${entry.key}` });
-      } else if (placeholderArtifactVersion(version)) {
-        failures.push({ artifact, field, code: 'placeholder_published_artifact_version', value: version, path: `${pathPrefix}.${entry.key}` });
-      }
-    }
-  }
-
-  return failures;
-}
-
-function artifactSourceFailures(map, field, pathPrefix) {
-  const failures = [];
-  const sourceMap = objectValue(map);
-  for (const artifact of requiredArtifacts) {
-    const entries = artifactEntries(sourceMap, artifact);
-    if (entries.length === 0) {
-      failures.push({ artifact, field, code: 'missing_published_artifact_source', path: `${pathPrefix}.${artifact}` });
-      continue;
-    }
-    for (const entry of entries) {
-      const source = stringValue(entry.value);
-      if (source === '') {
-        failures.push({ artifact, field, code: 'missing_published_artifact_source', path: `${pathPrefix}.${entry.key}` });
-      } else if (containsForbiddenSourceToken(source) || manifestForbiddenSources.some((token) => source.toLowerCase().includes(String(token).toLowerCase()))) {
-        failures.push({ artifact, field, code: 'forbidden_published_artifact_source', value: source, path: `${pathPrefix}.${entry.key}` });
-      } else if (unresolvedArtifactSource(source)) {
-        failures.push({ artifact, field, code: 'placeholder_published_artifact_source', value: source, path: `${pathPrefix}.${entry.key}` });
-      }
-    }
-  }
-
-  return failures;
-}
-
-function artifactPolicyFailuresForRun() {
-  return [
-    ...artifactVersionFailures(artifactVersions, 'artifact_versions', '$.artifact_versions'),
-    ...artifactVersionFailures(publishedArtifactVersions, 'published_artifact_versions', '$.published_artifact_versions'),
-    ...artifactSourceFailures(artifactSources, 'artifact_sources', '$.artifact_sources'),
-  ];
-}
-
-function artifactPolicyFailuresForEvidence(value, pathPrefix) {
-  const failures = [];
-  const observedOutputs = observedOutputsFor(value);
-  const artifactVersionsValue = objectValue(value?.artifact_versions ?? value?.artifactVersions ?? observedOutputs.artifact_versions ?? observedOutputs.artifactVersions);
-  const publishedArtifactVersionsValue = objectValue(value?.published_artifact_versions ?? value?.publishedArtifactVersions ?? observedOutputs.published_artifact_versions ?? observedOutputs.publishedArtifactVersions);
-  const artifactSourcesValue = artifactSourcesFor(value);
-
-  if (Object.keys(artifactVersionsValue).length > 0) {
-    failures.push(...artifactVersionFailures(artifactVersionsValue, 'artifact_versions', `${pathPrefix}.artifact_versions`));
-  }
-  if (Object.keys(publishedArtifactVersionsValue).length > 0) {
-    failures.push(...artifactVersionFailures(publishedArtifactVersionsValue, 'published_artifact_versions', `${pathPrefix}.published_artifact_versions`));
-  }
-  if (Object.keys(artifactSourcesValue).length > 0) {
-    failures.push(...artifactSourceFailures(artifactSourcesValue, 'artifact_sources', `${pathPrefix}.artifact_sources`));
-  }
-
-  return failures;
-}
-
 const requiredScenarios = [
   'published_artifact_install_only',
   'declared_update_contract_visibility',
@@ -1339,6 +1579,18 @@ const focusedProbeScenarioIds = new Set([
   'payload_envelope_round_trip',
   'terminal_workflow_update_behavior',
 ]);
+
+const scenarioManifest = readJsonIfExists(path.join(repoRoot, 'static/platform-conformance/workflow-update-runtime-scenarios.json')) ?? {};
+const scenarioRequirements = objectValue(scenarioManifest.scenario_requirements);
+const forbiddenArtifactSourceTokens = arrayOfStrings(scenarioManifest?.artifact_policy?.forbidden_sources);
+const requiredArtifacts = ['server', 'cli', 'sdk-python', 'workflow-php', 'waterline'];
+const artifactAliases = {
+  server: ['server'],
+  cli: ['cli'],
+  'sdk-python': ['sdk-python', 'python'],
+  'workflow-php': ['workflow-php', 'workflow'],
+  waterline: ['waterline'],
+};
 
 const coverageGaps = {
   principal_attribution_with_auth: coverageFinding(
@@ -1386,11 +1638,14 @@ let sourcePolicy = {
 };
 
 const evidence = readEvidence();
-const focusedEvidenceFileRef = evidence.file;
-const focusedEvidence = evidence.payload;
+const evidenceRunnerBlocked = truthyEvidenceFlag(evidence?.runner_blocked)
+  || truthyEvidenceFlag(evidence?.runnerBlocked);
 const scenarioResults = {};
 const findings = [];
-const artifactPolicyFailures = artifactPolicyFailuresForRun();
+
+if (evidenceRunnerBlocked) {
+  findings.push(runnerBlockedFinding('focused_evidence'));
+}
 
 for (const scenarioId of requiredScenarios) {
   if (coverageGaps[scenarioId]) {
@@ -1404,7 +1659,6 @@ for (const scenarioId of requiredScenarios) {
         artifact_sources: artifactSources,
       },
     );
-    findings.push(coverageGaps[scenarioId]);
     continue;
   }
 
@@ -1419,7 +1673,6 @@ for (const scenarioId of requiredScenarios) {
         artifact_sources: artifactSources,
       },
     );
-    findings.push(focusedProbeMissingFinding);
     continue;
   }
 
@@ -1434,71 +1687,33 @@ for (const scenarioId of requiredScenarios) {
       skipped_from_local_checkout: repoRoot !== '/app' || fs.existsSync(path.join(repoRoot, '.git')),
     },
   );
-  findings.push(focusedProbeMissingFinding);
 }
 
-if (focusedEvidence && focusedEvidence.scenario_results && typeof focusedEvidence.scenario_results === 'object') {
+if (evidence && evidence.scenario_results && typeof evidence.scenario_results === 'object') {
   for (const scenarioId of requiredScenarios) {
-    if (Object.prototype.hasOwnProperty.call(focusedEvidence.scenario_results, scenarioId)) {
-      scenarioResults[scenarioId] = normalizeScenarioResult(scenarioId, focusedEvidence.scenario_results[scenarioId]);
-      artifactPolicyFailures.push(
-        ...artifactPolicyFailuresForEvidence(
-          focusedEvidence.scenario_results[scenarioId],
-          `$.scenario_results.${scenarioId}`,
-        ),
-      );
+    if (Object.prototype.hasOwnProperty.call(evidence.scenario_results, scenarioId)) {
+      scenarioResults[scenarioId] = normalizeScenarioResult(scenarioId, evidence.scenario_results[scenarioId]);
     }
   }
-  artifactPolicyFailures.push(...artifactPolicyFailuresForEvidence(focusedEvidence, '$'));
-  if (Array.isArray(focusedEvidence.findings)) {
-    findings.push(...focusedEvidence.findings);
-  }
-  for (const row of Object.values(scenarioResults)) {
-    if (Array.isArray(row.linked_findings)) {
-      findings.push(...row.linked_findings);
-    }
+  if (Array.isArray(evidence.findings)) {
+    findings.push(...evidence.findings);
   }
 }
 
-const evidenceRunnerBlocked = truthyEvidenceFlag(focusedEvidence?.runner_blocked)
-  || truthyEvidenceFlag(focusedEvidence?.runnerBlocked);
-if (evidenceRunnerBlocked) {
-  const finding = runnerBlockedFinding(
-    stringValue(focusedEvidence?.blocked_reason ?? focusedEvidence?.blockedReason),
-  );
-  findings.push(finding);
-  for (const scenarioId of requiredScenarios) {
-    const row = scenarioResults[scenarioId];
-    if (!row || (row.status !== 'pass' && scenarioId !== 'published_artifact_install_only')) {
-      continue;
-    }
-    downgradeScenario(row, 'runner_blocked', 'runner-blocked', {
-      evidence_runner_blocked: true,
-      blocked_reason: stringValue(focusedEvidence?.blocked_reason ?? focusedEvidence?.blockedReason) || null,
-    }, finding);
-  }
-}
+const artifactPolicyFailures = uniqueArtifactFailures([
+  ...artifactMapFailures(artifactVersions, 'artifact_versions', 'placeholder'),
+  ...artifactMapFailures(publishedArtifactVersions, 'published_artifact_versions', 'placeholder'),
+  ...artifactMapFailures(artifactSources, 'artifact_sources', 'placeholder'),
+  ...(evidence ? presentArtifactMapFailures(evidence, observedOutputsFor(evidence), 'artifact_versions', 'evidence_placeholder') : []),
+  ...(evidence ? presentArtifactMapFailures(evidence, observedOutputsFor(evidence), 'published_artifact_versions', 'evidence_placeholder') : []),
+  ...(evidence ? presentArtifactMapFailures(evidence, observedOutputsFor(evidence), 'artifact_sources', 'evidence_placeholder') : []),
+  ...Object.values(scenarioResults).flatMap((row) => Array.isArray(row?.observed_outputs?.artifact_prerequisite_failures)
+    ? row.observed_outputs.artifact_prerequisite_failures
+    : []),
+]);
 
-if (artifactPolicyFailures.length > 0) {
-  const artifactFindings = artifactPolicyFailures.map(artifactPolicyFinding);
-  findings.push(...artifactFindings);
-  const installScenario = scenarioResults.published_artifact_install_only;
-  if (installScenario) {
-    downgradeScenario(
-      installScenario,
-      installScenario.status === 'runner_blocked' ? 'runner_blocked' : 'not_covered',
-      installScenario.status === 'runner_blocked' ? 'runner-blocked' : 'coverage-gap',
-      { artifact_policy_failures: artifactPolicyFailures },
-      artifactFindings[0],
-    );
-    for (const finding of artifactFindings.slice(1)) {
-      addFinding(installScenario, finding);
-    }
-  }
-}
-
-const evidenceLocalProductSourceCheckoutsUsed = localProductSourceCheckoutsUsed(focusedEvidence)
-  || localArtifactSourceReported(focusedEvidence)
+const evidenceLocalProductSourceCheckoutsUsed = localProductSourceCheckoutsUsed(evidence)
+  || localArtifactSourceReported(evidence)
   || Object.values(scenarioResults).some((row) => localProductSourceCheckoutsUsed(row) || localArtifactSourceReported(row));
 sourcePolicy = {
   ...sourcePolicy,
@@ -1518,6 +1733,12 @@ for (const [scenarioId, row] of Object.entries(scenarioResults)) {
     const fallback = coverageGaps[scenarioId] || focusedProbeMissingFinding;
     row.linked_findings = [fallback];
     findings.push(fallback);
+  }
+}
+
+for (const row of Object.values(scenarioResults)) {
+  if (Array.isArray(row.linked_findings)) {
+    findings.push(...row.linked_findings);
   }
 }
 
@@ -1542,8 +1763,8 @@ const everyPassRowHasPublishedArtifactEvidence = requiredScenarios.every((scenar
 const outcome = requiredScenarios.every((scenarioId) => updateCellOutcomes[scenarioId] === 'pass')
   && everyPassRowHasPublishedArtifactEvidence
   && artifactPolicyFailures.length === 0
-  && runnerBlocked === false
   && sourcePolicy.local_product_source_checkouts_used === false
+  && !runnerBlocked
   ? 'pass'
   : 'fail';
 const normalizedFindings = uniqueFindings(findings);
@@ -1569,9 +1790,9 @@ const result = {
   non_passing_scenarios: nonPassingScenarioIds,
   focused_probe: {
     implemented: true,
-    evidence_loaded: focusedEvidence !== null,
-    evidence_file: focusedEvidenceFileRef,
-    evidence_schema: focusedEvidence?.schema || null,
+    evidence_loaded: evidence !== null,
+    evidence_file: evidence ? focusedEvidenceFile : null,
+    evidence_schema: evidence?.schema || null,
     runs_inside_published_server_image: repoRoot === '/app',
     local_product_source_checkouts_used: sourcePolicy.local_product_source_checkouts_used,
   },
@@ -1607,7 +1828,7 @@ const metadata = {
   result_file: 'workflow-updates-result.json',
   record_file: 'workflow-updates-record.json',
   findings_file: 'workflow-updates-findings.json',
-  focused_evidence_file: focusedEvidenceFileRef,
+  focused_evidence_file: evidence ? focusedEvidenceFile : null,
 };
 
 const sourcePolicyNote = sourcePolicy.local_product_source_checkouts_used
@@ -1632,7 +1853,7 @@ const record = {
   local_product_source_checkouts_used: sourcePolicy.local_product_source_checkouts_used,
   result_file: 'workflow-updates-result.json',
   findings_file: 'workflow-updates-findings.json',
-  focused_evidence_file: focusedEvidenceFileRef,
+  focused_evidence_file: evidence ? focusedEvidenceFile : null,
 };
 
 writeJson('pins.json', pins);
@@ -1647,6 +1868,6 @@ console.log(JSON.stringify({
   record: path.join(resultDir, 'workflow-updates-record.json'),
   outcome,
   runner_blocked: runnerBlocked,
-  focused_probe_evidence_loaded: focusedEvidence !== null,
+  focused_probe_evidence_loaded: evidence !== null,
 }));
 NODE

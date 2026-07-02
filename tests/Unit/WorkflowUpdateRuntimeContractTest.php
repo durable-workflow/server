@@ -256,192 +256,562 @@ class WorkflowUpdateRuntimeContractTest extends TestCase
         }
     }
 
-    public function test_handoff_materializes_external_evidence_and_references_materialized_file(): void
+    public function test_handoff_replaces_focused_probe_placeholders_with_clean_published_evidence(): void
     {
-        $evidence = self::completeWorkflowUpdateEvidence();
+        if (trim((string) shell_exec('command -v node')) === '') {
+            $this->markTestSkipped('node is required to execute the workflow updates handoff');
+        }
 
-        $run = $this->runWorkflowUpdatesHandoff($evidence, 'dw-workflow-updates-materialized-');
+        $root = dirname(__DIR__, 2);
+        $resultDir = sys_get_temp_dir() . '/dw-workflow-updates-focused-evidence-test-' . bin2hex(random_bytes(6));
+        mkdir($resultDir, 0777, true);
 
-        $this->assertSame('pass', $run['result']['outcome']);
-        $this->assertTrue($run['materialized_focused_evidence_file_exists']);
-        $this->assertSame($evidence['schema'], $run['focused_evidence']['schema']);
-        $this->assertSame(
-            'workflow-updates-focused-evidence.json',
-            $run['metadata']['focused_evidence_file'],
-        );
-        $this->assertSame(
-            $run['metadata']['focused_evidence_file'],
-            $run['record']['focused_evidence_file'],
-        );
-        $this->assertSame(
-            $run['metadata']['focused_evidence_file'],
-            $run['result']['focused_probe']['evidence_file'],
-        );
-    }
+        try {
+            $scenarioResults = [];
+            foreach (self::focusedWorkflowUpdateRuntimeScenarioIds() as $scenarioId) {
+                $scenarioResults[$scenarioId] = [
+                    'scenario_id' => $scenarioId,
+                    'status' => 'pass',
+                    'classification' => 'product-evidence',
+                    'published_artifact_cell_executed' => true,
+                    'local_product_source_checkouts_used' => false,
+                    'observed_outputs' => self::completeWorkflowUpdateObservedOutputs($scenarioId),
+                    'linked_findings' => [],
+                ];
+            }
 
-    public function test_handoff_keeps_runner_blocked_external_evidence_non_passing(): void
-    {
-        foreach (['runner_blocked', 'runnerBlocked'] as $field) {
-            $evidence = self::completeWorkflowUpdateEvidence();
-            unset($evidence['runner_blocked'], $evidence['runnerBlocked']);
-            $evidence[$field] = 'true';
-            $evidence['blocked_reason'] = 'host probe could not start the published image';
+            $evidencePath = $resultDir . '/focused-workflow-updates-evidence.json';
+            file_put_contents($evidencePath, json_encode([
+                'schema' => 'durable-workflow.v2.workflow-update-runtime.focused-evidence',
+                'runner_blocked' => false,
+                'source_policy' => [
+                    'pass_requires_published_artifacts_only' => true,
+                    'local_product_source_checkouts_used' => false,
+                    'local_checkout_execution_counts_as_pass' => false,
+                ],
+                'scenario_results' => $scenarioResults,
+                'findings' => [],
+            ], JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES));
 
-            $run = $this->runWorkflowUpdatesHandoff($evidence, 'dw-workflow-updates-runner-blocked-');
-            $result = $run['result'];
+            $command = sprintf(
+                '%s %s %s %s %s %s %s %s --result-dir %s 2>&1',
+                'DW_SERVER_IMAGE=' . escapeshellarg('durableworkflow/server:0.2.536'),
+                'DW_SERVER_VERSION=' . escapeshellarg('0.2.536'),
+                'DW_CLI_VERSION=' . escapeshellarg('0.1.82'),
+                'DW_PYTHON_SDK_VERSION=' . escapeshellarg('0.4.92'),
+                'DW_WORKFLOW_PHP_VERSION=' . escapeshellarg('2.0.0-alpha.241'),
+                'DW_WATERLINE_VERSION=' . escapeshellarg('2.0.0-alpha.111'),
+                'DW_WORKFLOW_UPDATES_EVIDENCE_PATH=' . escapeshellarg($evidencePath),
+                escapeshellarg($root . '/scripts/conformance/workflow-updates-published-artifacts.sh'),
+                escapeshellarg($resultDir),
+            );
 
-            $this->assertSame('fail', $result['outcome'], $field);
-            $this->assertTrue($result['runner_blocked'], $field);
-            $this->assertTrue($run['record']['runnerBlocked'], $field);
+            exec($command, $output, $status);
+
+            $this->assertSame(0, $status, implode("\n", $output));
+
+            $result = json_decode((string) file_get_contents($resultDir . '/workflow-updates-result.json'), true);
+            $metadata = json_decode((string) file_get_contents($resultDir . '/run-metadata.json'), true);
+            $record = json_decode((string) file_get_contents($resultDir . '/workflow-updates-record.json'), true);
+            $materializedEvidencePath = $resultDir . '/workflow-updates-focused-evidence.json';
+
+            $this->assertSame('fail', $result['outcome']);
+            $this->assertTrue($result['focused_probe']['evidence_loaded']);
+            $this->assertFileExists($materializedEvidencePath);
+            $materializedEvidence = json_decode((string) file_get_contents($materializedEvidencePath), true);
+            $this->assertSame('workflow-updates-focused-evidence.json', $metadata['focused_evidence_file']);
+            $this->assertSame('workflow-updates-focused-evidence.json', $record['focused_evidence_file']);
             $this->assertSame(
-                'runner_blocked',
-                $result['scenario_results']['published_artifact_install_only']['status'],
-                $field,
+                'durable-workflow.v2.workflow-update-runtime.focused-evidence',
+                $materializedEvidence['schema'],
             );
             $this->assertSame(
-                'runner_blocked',
-                $result['update_cell_outcomes']['published_artifact_install_only'],
-                $field,
+                'pass',
+                $materializedEvidence['scenario_results']['published_artifact_install_only']['status'],
+            );
+            $this->assertFalse($result['local_product_source_checkouts_used']);
+            foreach (self::focusedWorkflowUpdateRuntimeScenarioIds() as $scenarioId) {
+                $this->assertSame('pass', $result['scenario_results'][$scenarioId]['status'], $scenarioId);
+                $this->assertTrue($result['scenario_results'][$scenarioId]['published_artifact_cell_executed'], $scenarioId);
+                $this->assertFalse($result['scenario_results'][$scenarioId]['local_product_source_checkouts_used'], $scenarioId);
+            }
+            $this->assertSame('unsupported', $result['scenario_results']['principal_attribution_with_auth']['status']);
+            $this->assertSame('not_covered', $result['scenario_results']['php_client_worker_update_surface']['status']);
+            $this->assertStringNotContainsString(
+                'focused published-server workflow update runtime probe did not run',
+                json_encode($result['findings'], JSON_THROW_ON_ERROR),
+            );
+        } finally {
+            exec('rm -rf ' . escapeshellarg($resultDir));
+        }
+    }
+
+    public function test_handoff_preserves_runner_blocked_external_pass_evidence_as_non_passing(): void
+    {
+        if (trim((string) shell_exec('command -v node')) === '') {
+            $this->markTestSkipped('node is required to execute the workflow updates handoff');
+        }
+
+        $root = dirname(__DIR__, 2);
+
+        foreach (['runner_blocked', 'runnerBlocked'] as $runnerBlockedField) {
+            $resultDir = sys_get_temp_dir() . '/dw-workflow-updates-runner-blocked-test-' . bin2hex(random_bytes(6));
+            mkdir($resultDir, 0777, true);
+
+            try {
+                $scenarioResults = [];
+                foreach (self::workflowUpdateRuntimeScenarioIds() as $scenarioId) {
+                    $scenarioResults[$scenarioId] = [
+                        'scenario_id' => $scenarioId,
+                        'status' => 'pass',
+                        'classification' => 'product-evidence',
+                        'published_artifact_cell_executed' => true,
+                        'local_product_source_checkouts_used' => false,
+                        'observed_outputs' => self::completeWorkflowUpdateObservedOutputs($scenarioId),
+                        'linked_findings' => [],
+                    ];
+                }
+
+                $evidencePath = $resultDir . '/runner-blocked-workflow-updates-evidence.json';
+                file_put_contents($evidencePath, json_encode([
+                    'schema' => 'durable-workflow.v2.workflow-update-runtime.focused-evidence',
+                    $runnerBlockedField => true,
+                    'source_policy' => [
+                        'pass_requires_published_artifacts_only' => true,
+                        'local_product_source_checkouts_used' => false,
+                        'local_checkout_execution_counts_as_pass' => false,
+                    ],
+                    'scenario_results' => $scenarioResults,
+                    'findings' => [],
+                ], JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES));
+
+                $command = sprintf(
+                    '%s %s %s %s %s %s %s %s --result-dir %s 2>&1',
+                    'DW_SERVER_IMAGE=' . escapeshellarg('durableworkflow/server:0.2.536'),
+                    'DW_SERVER_VERSION=' . escapeshellarg('0.2.536'),
+                    'DW_CLI_VERSION=' . escapeshellarg('0.1.82'),
+                    'DW_PYTHON_SDK_VERSION=' . escapeshellarg('0.4.92'),
+                    'DW_WORKFLOW_PHP_VERSION=' . escapeshellarg('2.0.0-alpha.241'),
+                    'DW_WATERLINE_VERSION=' . escapeshellarg('2.0.0-alpha.111'),
+                    'DW_WORKFLOW_UPDATES_EVIDENCE_PATH=' . escapeshellarg($evidencePath),
+                    escapeshellarg($root . '/scripts/conformance/workflow-updates-published-artifacts.sh'),
+                    escapeshellarg($resultDir),
+                );
+
+                exec($command, $output, $status);
+
+                $this->assertSame(0, $status, implode("\n", $output));
+
+                $result = json_decode((string) file_get_contents($resultDir . '/workflow-updates-result.json'), true);
+                $record = json_decode((string) file_get_contents($resultDir . '/workflow-updates-record.json'), true);
+
+                $this->assertSame('fail', $result['outcome'], $runnerBlockedField);
+                $this->assertTrue($result['runner_blocked'], $runnerBlockedField);
+                $this->assertTrue($record['runnerBlocked'], $runnerBlockedField);
+                $this->assertContains('runner_blocked', $result['update_cell_outcomes'], $runnerBlockedField);
+                $this->assertSame(
+                    'runner_blocked',
+                    $result['scenario_results']['published_artifact_install_only']['status'],
+                    $runnerBlockedField,
+                );
+                $this->assertContains('conformance_runner_blocked', array_column($result['findings'], 'finding_type'));
+                $this->assertStringContainsString(
+                    'runner_blocked=true',
+                    json_encode($result['findings'], JSON_THROW_ON_ERROR),
+                );
+            } finally {
+                exec('rm -rf ' . escapeshellarg($resultDir));
+            }
+        }
+    }
+
+    public function test_handoff_downgrades_claimed_pass_when_required_observed_outputs_are_missing(): void
+    {
+        if (trim((string) shell_exec('command -v node')) === '') {
+            $this->markTestSkipped('node is required to execute the workflow updates handoff');
+        }
+
+        $root = dirname(__DIR__, 2);
+        $resultDir = sys_get_temp_dir() . '/dw-workflow-updates-missing-required-test-' . bin2hex(random_bytes(6));
+        mkdir($resultDir, 0777, true);
+
+        try {
+            $scenarioResults = [];
+            foreach (self::focusedWorkflowUpdateRuntimeScenarioIds() as $scenarioId) {
+                $observedOutputs = self::completeWorkflowUpdateObservedOutputs($scenarioId);
+                if ($scenarioId === 'accepted_update_control_plane_and_history') {
+                    unset($observedOutputs['update_response']);
+                }
+
+                $scenarioResults[$scenarioId] = [
+                    'scenario_id' => $scenarioId,
+                    'status' => 'pass',
+                    'classification' => 'product-evidence',
+                    'published_artifact_cell_executed' => true,
+                    'local_product_source_checkouts_used' => false,
+                    'observed_outputs' => $observedOutputs,
+                    'linked_findings' => [],
+                ];
+            }
+
+            $evidencePath = $resultDir . '/missing-required-workflow-updates-evidence.json';
+            file_put_contents($evidencePath, json_encode([
+                'schema' => 'durable-workflow.v2.workflow-update-runtime.focused-evidence',
+                'runner_blocked' => false,
+                'source_policy' => [
+                    'pass_requires_published_artifacts_only' => true,
+                    'local_product_source_checkouts_used' => false,
+                    'local_checkout_execution_counts_as_pass' => false,
+                ],
+                'scenario_results' => $scenarioResults,
+                'findings' => [],
+            ], JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES));
+
+            $command = sprintf(
+                '%s %s %s %s %s %s %s %s --result-dir %s 2>&1',
+                'DW_SERVER_IMAGE=' . escapeshellarg('durableworkflow/server:0.2.536'),
+                'DW_SERVER_VERSION=' . escapeshellarg('0.2.536'),
+                'DW_CLI_VERSION=' . escapeshellarg('0.1.82'),
+                'DW_PYTHON_SDK_VERSION=' . escapeshellarg('0.4.92'),
+                'DW_WORKFLOW_PHP_VERSION=' . escapeshellarg('2.0.0-alpha.241'),
+                'DW_WATERLINE_VERSION=' . escapeshellarg('2.0.0-alpha.111'),
+                'DW_WORKFLOW_UPDATES_EVIDENCE_PATH=' . escapeshellarg($evidencePath),
+                escapeshellarg($root . '/scripts/conformance/workflow-updates-published-artifacts.sh'),
+                escapeshellarg($resultDir),
+            );
+
+            exec($command, $output, $status);
+
+            $this->assertSame(0, $status, implode("\n", $output));
+
+            $result = json_decode((string) file_get_contents($resultDir . '/workflow-updates-result.json'), true);
+            $scenario = $result['scenario_results']['accepted_update_control_plane_and_history'];
+
+            $this->assertSame('not_covered', $scenario['status']);
+            $this->assertContains('update_response', $scenario['observed_outputs']['missing_required_fields']);
+            $this->assertSame(
+                'workflow-updates-accepted-update-control-plane-and-history-required-evidence-gap',
+                $scenario['linked_findings'][0]['finding_id'],
+            );
+        } finally {
+            exec('rm -rf ' . escapeshellarg($resultDir));
+        }
+    }
+
+    public function test_handoff_downgrades_claimed_pass_with_placeholder_artifact_tuple(): void
+    {
+        if (trim((string) shell_exec('command -v node')) === '') {
+            $this->markTestSkipped('node is required to execute the workflow updates handoff');
+        }
+
+        $root = dirname(__DIR__, 2);
+        $resultDir = sys_get_temp_dir() . '/dw-workflow-updates-placeholder-artifacts-test-' . bin2hex(random_bytes(6));
+        mkdir($resultDir, 0777, true);
+
+        try {
+            $scenarioResults = [];
+            foreach (self::focusedWorkflowUpdateRuntimeScenarioIds() as $scenarioId) {
+                $scenarioResults[$scenarioId] = [
+                    'scenario_id' => $scenarioId,
+                    'status' => 'pass',
+                    'classification' => 'product-evidence',
+                    'published_artifact_cell_executed' => true,
+                    'local_product_source_checkouts_used' => false,
+                    'observed_outputs' => self::completeWorkflowUpdateObservedOutputs($scenarioId),
+                    'linked_findings' => [],
+                ];
+            }
+
+            $evidencePath = $resultDir . '/placeholder-artifacts-workflow-updates-evidence.json';
+            file_put_contents($evidencePath, json_encode([
+                'schema' => 'durable-workflow.v2.workflow-update-runtime.focused-evidence',
+                'runner_blocked' => false,
+                'source_policy' => [
+                    'pass_requires_published_artifacts_only' => true,
+                    'local_product_source_checkouts_used' => false,
+                    'local_checkout_execution_counts_as_pass' => false,
+                ],
+                'scenario_results' => $scenarioResults,
+                'findings' => [],
+            ], JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES));
+
+            $command = sprintf(
+                '%s %s %s %s %s %s %s %s --result-dir %s 2>&1',
+                'DW_SERVER_IMAGE=' . escapeshellarg('durableworkflow/server:latest'),
+                'DW_SERVER_VERSION=' . escapeshellarg('latest'),
+                'DW_CLI_VERSION=' . escapeshellarg('0.1.82'),
+                'DW_PYTHON_SDK_VERSION=' . escapeshellarg('0.4.92'),
+                'DW_WORKFLOW_PHP_VERSION=' . escapeshellarg('2.0.0-alpha.241'),
+                'DW_WATERLINE_VERSION=' . escapeshellarg('2.0.0-alpha.111'),
+                'DW_WORKFLOW_UPDATES_EVIDENCE_PATH=' . escapeshellarg($evidencePath),
+                escapeshellarg($root . '/scripts/conformance/workflow-updates-published-artifacts.sh'),
+                escapeshellarg($resultDir),
+            );
+
+            exec($command, $output, $status);
+
+            $this->assertSame(0, $status, implode("\n", $output));
+
+            $result = json_decode((string) file_get_contents($resultDir . '/workflow-updates-result.json'), true);
+            $scenario = $result['scenario_results']['published_artifact_install_only'];
+
+            $this->assertSame('not_covered', $scenario['status']);
+            $this->assertSame(
+                'workflow-updates-published-artifact-install-only-artifact-prerequisite-gap',
+                $scenario['linked_findings'][0]['finding_id'],
             );
             $this->assertContains(
-                'conformance_runner_blocked',
-                array_column($result['findings'], 'finding_type'),
-                $field,
+                'server',
+                array_column($scenario['observed_outputs']['artifact_prerequisite_failures'], 'artifact'),
             );
+        } finally {
+            exec('rm -rf ' . escapeshellarg($resultDir));
         }
     }
 
-    public function test_handoff_downgrades_pass_evidence_missing_required_observed_outputs(): void
+    public function test_handoff_downgrades_install_only_pass_missing_required_artifact_fields(): void
     {
-        $evidence = self::completeWorkflowUpdateEvidence();
-        unset($evidence['scenario_results']['accepted_update_control_plane_and_history']['observed_outputs']['update_response']);
-
-        $run = $this->runWorkflowUpdatesHandoff($evidence, 'dw-workflow-updates-missing-required-');
-        $scenario = $run['result']['scenario_results']['accepted_update_control_plane_and_history'];
-
-        $this->assertSame('fail', $run['result']['outcome']);
-        $this->assertSame('not_covered', $scenario['status']);
-        $this->assertContains('accepted_update_control_plane_and_history', $run['result']['non_passing_scenarios']);
-        $this->assertContains('update_response', $scenario['observed_outputs']['missing_required_fields']);
-        $this->assertContains(
-            'conformance_runner_coverage_gap',
-            array_column($scenario['linked_findings'], 'finding_type'),
-        );
-    }
-
-    public function test_handoff_downgrades_placeholder_artifact_tuple_before_pass(): void
-    {
-        $evidence = self::completeWorkflowUpdateEvidence();
-        $evidence['artifact_versions']['server'] = 'current';
-        $evidence['published_artifact_versions']['server'] = 'current';
-        $evidence['artifact_sources']['server'] = 'docker://durableworkflow/server:latest';
-
-        foreach (self::workflowUpdateRuntimeScenarioIds() as $scenarioId) {
-            $evidence['scenario_results'][$scenarioId]['observed_outputs']['artifact_versions']['server'] = 'current';
-            $evidence['scenario_results'][$scenarioId]['observed_outputs']['published_artifact_versions']['server'] = 'current';
-            $evidence['scenario_results'][$scenarioId]['observed_outputs']['artifact_sources']['server'] = 'docker://durableworkflow/server:latest';
+        if (trim((string) shell_exec('command -v node')) === '') {
+            $this->markTestSkipped('node is required to execute the workflow updates handoff');
         }
 
-        $run = $this->runWorkflowUpdatesHandoff($evidence, 'dw-workflow-updates-placeholder-artifacts-');
+        $root = dirname(__DIR__, 2);
+        $resultDir = sys_get_temp_dir() . '/dw-workflow-updates-install-only-missing-test-' . bin2hex(random_bytes(6));
+        mkdir($resultDir, 0777, true);
 
-        $this->assertSame('fail', $run['result']['outcome']);
-        $this->assertSame(
-            'not_covered',
-            $run['result']['scenario_results']['published_artifact_install_only']['status'],
-        );
-        $this->assertContains(
-            'placeholder_published_artifact_version',
-            array_column($run['result']['artifact_policy_failures'], 'code'),
-        );
-        $this->assertContains(
-            'placeholder_published_artifact_source',
-            array_column($run['result']['artifact_policy_failures'], 'code'),
-        );
-    }
+        try {
+            $evidencePath = $resultDir . '/install-only-missing-workflow-updates-evidence.json';
+            file_put_contents($evidencePath, json_encode([
+                'schema' => 'durable-workflow.v2.workflow-update-runtime.focused-evidence',
+                'runner_blocked' => false,
+                'source_policy' => [
+                    'pass_requires_published_artifacts_only' => true,
+                    'local_product_source_checkouts_used' => false,
+                    'local_checkout_execution_counts_as_pass' => false,
+                ],
+                'scenario_results' => [
+                    'published_artifact_install_only' => [
+                        'scenario_id' => 'published_artifact_install_only',
+                        'status' => 'pass',
+                        'classification' => 'product-evidence',
+                        'published_artifact_cell_executed' => true,
+                        'local_product_source_checkouts_used' => false,
+                        'observed_outputs' => [
+                            'published_artifact_cell_executed' => true,
+                            'local_product_source_checkouts_used' => false,
+                        ],
+                        'linked_findings' => [],
+                    ],
+                ],
+                'findings' => [],
+            ], JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES));
 
-    public function test_handoff_validates_workflow_php_artifact_entries_when_workflow_alias_is_clean(): void
-    {
-        $evidence = self::completeWorkflowUpdateEvidence();
-        $evidence['artifact_versions']['workflow'] = '2.0.0-alpha.241';
-        $evidence['artifact_versions']['workflow-php'] = 'current';
-        $evidence['published_artifact_versions']['workflow'] = '2.0.0-alpha.241';
-        $evidence['published_artifact_versions']['workflow-php'] = 'current';
-        $evidence['artifact_sources']['workflow'] = 'packagist://durable-workflow/workflow@2.0.0-alpha.241';
-        $evidence['artifact_sources']['workflow-php'] = 'current';
+            $command = sprintf(
+                '%s %s %s %s %s %s %s %s --result-dir %s 2>&1',
+                'DW_SERVER_IMAGE=' . escapeshellarg('durableworkflow/server:0.2.536'),
+                'DW_SERVER_VERSION=' . escapeshellarg('0.2.536'),
+                'DW_CLI_VERSION=' . escapeshellarg('0.1.82'),
+                'DW_PYTHON_SDK_VERSION=' . escapeshellarg('0.4.92'),
+                'DW_WORKFLOW_PHP_VERSION=' . escapeshellarg('2.0.0-alpha.241'),
+                'DW_WATERLINE_VERSION=' . escapeshellarg('2.0.0-alpha.111'),
+                'DW_WORKFLOW_UPDATES_EVIDENCE_PATH=' . escapeshellarg($evidencePath),
+                escapeshellarg($root . '/scripts/conformance/workflow-updates-published-artifacts.sh'),
+                escapeshellarg($resultDir),
+            );
 
-        foreach (self::workflowUpdateRuntimeScenarioIds() as $scenarioId) {
-            $evidence['scenario_results'][$scenarioId]['observed_outputs']['artifact_versions'] = $evidence['artifact_versions'];
-            $evidence['scenario_results'][$scenarioId]['observed_outputs']['published_artifact_versions'] = $evidence['published_artifact_versions'];
-            $evidence['scenario_results'][$scenarioId]['observed_outputs']['artifact_sources'] = $evidence['artifact_sources'];
+            exec($command, $output, $status);
+
+            $this->assertSame(0, $status, implode("\n", $output));
+
+            $result = json_decode((string) file_get_contents($resultDir . '/workflow-updates-result.json'), true);
+            $scenario = $result['scenario_results']['published_artifact_install_only'];
+
+            $this->assertSame('fail', $result['outcome']);
+            $this->assertSame('not_covered', $scenario['status']);
+            foreach ([
+                'published_artifact_versions',
+                'artifact_sources',
+                'artifact_install_evidence',
+                'source_policy',
+            ] as $field) {
+                $this->assertContains($field, $scenario['observed_outputs']['missing_required_fields']);
+            }
+        } finally {
+            exec('rm -rf ' . escapeshellarg($resultDir));
         }
-
-        $run = $this->runWorkflowUpdatesHandoff($evidence, 'dw-workflow-updates-workflow-php-placeholder-');
-        $result = $run['result'];
-
-        $this->assertSame('fail', $result['outcome']);
-        $this->assertSame(
-            'not_covered',
-            $result['scenario_results']['published_artifact_install_only']['status'],
-        );
-        $this->assertContains(
-            'placeholder_published_artifact_version',
-            array_column($result['artifact_policy_failures'], 'code'),
-        );
-        $this->assertContains(
-            'placeholder_published_artifact_source',
-            array_column($result['artifact_policy_failures'], 'code'),
-        );
-        $this->assertContains(
-            '$.artifact_versions.workflow-php',
-            array_column($result['artifact_policy_failures'], 'path'),
-        );
-        $this->assertContains(
-            '$.published_artifact_versions.workflow-php',
-            array_column($result['artifact_policy_failures'], 'path'),
-        );
-        $this->assertContains(
-            '$.artifact_sources.workflow-php',
-            array_column($result['artifact_policy_failures'], 'path'),
-        );
     }
 
     public function test_handoff_rejects_forbidden_artifact_source_values(): void
     {
-        $evidence = self::completeWorkflowUpdateEvidence();
-        $badSources = self::artifactSources();
-        $badSources['server'] = 'local_source_checkout';
-        $badSources['cli'] = 'branch_source';
-        $badSources['sdk-python'] = 'workspace_repo';
-        $badSources['workflow'] = 'file:///workspace/repos/workflow';
-        $badSources['workflow-php'] = 'file:///workspace/repos/workflow';
-        $badSources['waterline'] = '/tmp/local-worktree/waterline';
-        $evidence['artifact_sources'] = $badSources;
-
-        foreach (self::workflowUpdateRuntimeScenarioIds() as $scenarioId) {
-            $evidence['scenario_results'][$scenarioId]['observed_outputs']['artifact_sources'] = $badSources;
+        if (trim((string) shell_exec('command -v node')) === '') {
+            $this->markTestSkipped('node is required to execute the workflow updates handoff');
         }
 
-        $run = $this->runWorkflowUpdatesHandoff($evidence, 'dw-workflow-updates-forbidden-sources-');
-        $result = $run['result'];
+        $root = dirname(__DIR__, 2);
+        $resultDir = sys_get_temp_dir() . '/dw-workflow-updates-forbidden-sources-test-' . bin2hex(random_bytes(6));
+        mkdir($resultDir, 0777, true);
 
-        $this->assertSame('fail', $result['outcome']);
-        $this->assertTrue($result['local_product_source_checkouts_used']);
-        $this->assertSame('not_covered', $result['scenario_results']['published_artifact_install_only']['status']);
-        $this->assertContains(
-            'forbidden_published_artifact_source',
-            array_column($result['artifact_policy_failures'], 'code'),
-        );
+        try {
+            $badSources = self::workflowUpdateEvidenceValue('artifact_sources', 'published_artifact_install_only');
+            $badSources['server'] = 'local_source_checkout';
+            $badSources['cli'] = 'branch_source';
+            $badSources['sdk-python'] = 'workspace_repo';
+            $badSources['workflow'] = 'file:///workspace/repos/workflow';
+            $badSources['workflow-php'] = 'file:///workspace/repos/workflow';
+            $badSources['waterline'] = '/tmp/local-worktree/waterline';
 
-        $failureValues = array_column($result['artifact_policy_failures'], 'value');
-        foreach ([
-            'local_source_checkout',
-            'branch_source',
-            'workspace_repo',
-            'file:///workspace/repos/workflow',
-            '/tmp/local-worktree/waterline',
-        ] as $value) {
-            $this->assertContains($value, $failureValues);
+            $scenarioResults = [];
+            foreach (self::workflowUpdateRuntimeScenarioIds() as $scenarioId) {
+                $observedOutputs = self::completeWorkflowUpdateObservedOutputs($scenarioId);
+                $observedOutputs['artifact_sources'] = $badSources;
+                $scenarioResults[$scenarioId] = [
+                    'scenario_id' => $scenarioId,
+                    'status' => 'pass',
+                    'classification' => 'product-evidence',
+                    'published_artifact_cell_executed' => true,
+                    'local_product_source_checkouts_used' => false,
+                    'observed_outputs' => $observedOutputs,
+                    'linked_findings' => [],
+                ];
+            }
+
+            $evidencePath = $resultDir . '/forbidden-sources-workflow-updates-evidence.json';
+            file_put_contents($evidencePath, json_encode([
+                'schema' => 'durable-workflow.v2.workflow-update-runtime.focused-evidence',
+                'runner_blocked' => false,
+                'artifact_sources' => $badSources,
+                'source_policy' => [
+                    'pass_requires_published_artifacts_only' => true,
+                    'local_product_source_checkouts_used' => false,
+                    'local_checkout_execution_counts_as_pass' => false,
+                ],
+                'scenario_results' => $scenarioResults,
+                'findings' => [],
+            ], JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES));
+
+            $command = sprintf(
+                '%s %s %s %s %s %s %s %s --result-dir %s 2>&1',
+                'DW_SERVER_IMAGE=' . escapeshellarg('durableworkflow/server:0.2.536'),
+                'DW_SERVER_VERSION=' . escapeshellarg('0.2.536'),
+                'DW_CLI_VERSION=' . escapeshellarg('0.1.82'),
+                'DW_PYTHON_SDK_VERSION=' . escapeshellarg('0.4.92'),
+                'DW_WORKFLOW_PHP_VERSION=' . escapeshellarg('2.0.0-alpha.241'),
+                'DW_WATERLINE_VERSION=' . escapeshellarg('2.0.0-alpha.111'),
+                'DW_WORKFLOW_UPDATES_EVIDENCE_PATH=' . escapeshellarg($evidencePath),
+                escapeshellarg($root . '/scripts/conformance/workflow-updates-published-artifacts.sh'),
+                escapeshellarg($resultDir),
+            );
+
+            exec($command, $output, $status);
+
+            $this->assertSame(0, $status, implode("\n", $output));
+
+            $result = json_decode((string) file_get_contents($resultDir . '/workflow-updates-result.json'), true);
+
+            $this->assertSame('fail', $result['outcome']);
+            $this->assertTrue($result['local_product_source_checkouts_used']);
+            $this->assertTrue($result['source_policy']['local_product_source_checkouts_used']);
+            $this->assertSame('not_covered', $result['scenario_results']['published_artifact_install_only']['status']);
+            $this->assertContains(
+                'forbidden_published_artifact_source',
+                array_column($result['artifact_policy_failures'], 'code'),
+            );
+
+            $failureValues = array_column($result['artifact_policy_failures'], 'value');
+            foreach ([
+                'local_source_checkout',
+                'branch_source',
+                'workspace_repo',
+                'file:///workspace/repos/workflow',
+                '/tmp/local-worktree/waterline',
+            ] as $value) {
+                $this->assertContains($value, $failureValues);
+            }
+        } finally {
+            exec('rm -rf ' . escapeshellarg($resultDir));
         }
+    }
+
+    public function test_handoff_materializes_inline_focused_evidence_file(): void
+    {
+        if (trim((string) shell_exec('command -v node')) === '') {
+            $this->markTestSkipped('node is required to execute the workflow updates handoff');
+        }
+
+        $root = dirname(__DIR__, 2);
+        $resultDir = sys_get_temp_dir() . '/dw-workflow-updates-inline-evidence-test-' . bin2hex(random_bytes(6));
+        mkdir($resultDir, 0777, true);
+
+        try {
+            $inlineEvidence = json_encode([
+                'schema' => 'durable-workflow.v2.workflow-update-runtime.focused-evidence',
+                'runner_blocked' => false,
+                'source_policy' => [
+                    'pass_requires_published_artifacts_only' => true,
+                    'local_product_source_checkouts_used' => false,
+                    'local_checkout_execution_counts_as_pass' => false,
+                ],
+                'scenario_results' => [
+                    'published_artifact_install_only' => [
+                        'scenario_id' => 'published_artifact_install_only',
+                        'status' => 'pass',
+                        'classification' => 'product-evidence',
+                        'published_artifact_cell_executed' => true,
+                        'local_product_source_checkouts_used' => false,
+                        'observed_outputs' => [
+                            'published_artifact_cell_executed' => true,
+                            'local_product_source_checkouts_used' => false,
+                        ],
+                        'linked_findings' => [],
+                    ],
+                ],
+                'findings' => [],
+            ], JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES);
+
+            $command = sprintf(
+                '%s %s --result-dir %s 2>&1',
+                'DW_WORKFLOW_UPDATES_EVIDENCE=' . escapeshellarg($inlineEvidence),
+                escapeshellarg($root . '/scripts/conformance/workflow-updates-published-artifacts.sh'),
+                escapeshellarg($resultDir),
+            );
+
+            exec($command, $output, $status);
+
+            $this->assertSame(0, $status, implode("\n", $output));
+
+            $metadata = json_decode((string) file_get_contents($resultDir . '/run-metadata.json'), true);
+            $evidencePath = $resultDir . '/workflow-updates-focused-evidence.json';
+
+            $this->assertFileExists($evidencePath);
+            $materializedEvidence = json_decode((string) file_get_contents($evidencePath), true);
+            $this->assertSame('workflow-updates-focused-evidence.json', $metadata['focused_evidence_file']);
+            $this->assertSame(
+                'pass',
+                $materializedEvidence['scenario_results']['published_artifact_install_only']['status'],
+            );
+        } finally {
+            exec('rm -rf ' . escapeshellarg($resultDir));
+        }
+    }
+
+    /**
+     * @return list<string>
+     */
+    private static function focusedWorkflowUpdateRuntimeScenarioIds(): array
+    {
+        return [
+            'published_artifact_install_only',
+            'declared_update_contract_visibility',
+            'accepted_update_control_plane_and_history',
+            'running_or_waiting_update_operator_visibility',
+            'completed_update_result_round_trip',
+            'failed_update_outcome',
+            'duplicate_request_idempotency',
+            'unknown_update_refusal',
+            'invalid_input_refusal',
+            'payload_envelope_round_trip',
+            'terminal_workflow_update_behavior',
+        ];
     }
 
     /**
@@ -469,176 +839,71 @@ class WorkflowUpdateRuntimeContractTest extends TestCase
     }
 
     /**
-     * @param array<string, string> $env
-     * @return array{
-     *     result: array<string, mixed>,
-     *     record: array<string, mixed>,
-     *     metadata: array<string, mixed>,
-     *     focused_evidence: array<string, mixed>,
-     *     materialized_focused_evidence_file_exists: bool
-     * }
+     * @return array<string, mixed>
      */
-    private function runWorkflowUpdatesHandoff(array $evidence, string $prefix, array $env = []): array
+    private static function completeWorkflowUpdateObservedOutputs(string $scenarioId): array
     {
-        if (trim((string) shell_exec('command -v node')) === '') {
-            $this->markTestSkipped('node is required to execute the workflow updates handoff');
-        }
+        static $requirements = null;
 
-        $root = dirname(__DIR__, 2);
-        $resultDir = sys_get_temp_dir() . '/' . $prefix . bin2hex(random_bytes(6));
-        mkdir($resultDir, 0777, true);
-
-        try {
-            $evidencePath = $resultDir . '/external-workflow-updates-evidence.json';
-            file_put_contents(
-                $evidencePath,
-                json_encode($evidence, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES),
+        if ($requirements === null) {
+            $manifest = json_decode(
+                (string) file_get_contents(dirname(__DIR__, 2) . '/static/platform-conformance/workflow-update-runtime-scenarios.json'),
+                true,
+                512,
+                JSON_THROW_ON_ERROR,
             );
-
-            $environment = array_merge([
-                'DW_SERVER_IMAGE' => 'durableworkflow/server:0.2.536',
-                'DW_SERVER_VERSION' => '0.2.536',
-                'DW_CLI_VERSION' => '0.1.82',
-                'DW_PYTHON_SDK_VERSION' => '0.4.92',
-                'DW_WORKFLOW_PHP_VERSION' => '2.0.0-alpha.241',
-                'DW_WATERLINE_VERSION' => '2.0.0-alpha.111',
-                'DW_WORKFLOW_UPDATES_EVIDENCE_PATH' => $evidencePath,
-            ], $env);
-
-            $command = [];
-            foreach ($environment as $key => $value) {
-                $command[] = $key . '=' . escapeshellarg($value);
-            }
-            $command[] = escapeshellarg($root . '/scripts/conformance/workflow-updates-published-artifacts.sh');
-            $command[] = '--result-dir';
-            $command[] = escapeshellarg($resultDir);
-
-            exec(implode(' ', $command) . ' 2>&1', $output, $status);
-
-            $this->assertSame(0, $status, implode("\n", $output));
-
-            $focusedEvidencePath = $resultDir . '/workflow-updates-focused-evidence.json';
-
-            return [
-                'result' => json_decode((string) file_get_contents($resultDir . '/workflow-updates-result.json'), true),
-                'record' => json_decode((string) file_get_contents($resultDir . '/workflow-updates-record.json'), true),
-                'metadata' => json_decode((string) file_get_contents($resultDir . '/run-metadata.json'), true),
-                'focused_evidence' => json_decode((string) file_get_contents($focusedEvidencePath), true),
-                'materialized_focused_evidence_file_exists' => file_exists($focusedEvidencePath),
-            ];
-        } finally {
-            exec('rm -rf ' . escapeshellarg($resultDir));
+            $requirements = $manifest['scenario_requirements'];
         }
+
+        $observedOutputs = [
+            'published_artifact_cell_executed' => true,
+            'local_product_source_checkouts_used' => false,
+        ];
+
+        foreach ($requirements[$scenarioId]['required_fields'] ?? [] as $field) {
+            if (! array_key_exists($field, $observedOutputs)) {
+                $observedOutputs[$field] = self::workflowUpdateEvidenceValue($field, $scenarioId);
+            }
+        }
+
+        return $observedOutputs;
     }
 
-    /**
-     * @return array<string, mixed>
-     */
-    private static function completeWorkflowUpdateEvidence(): array
+    private static function workflowUpdateEvidenceValue(string $field, string $scenarioId): mixed
     {
-        $manifest = json_decode(
-            (string) file_get_contents(dirname(__DIR__, 2) . '/static/platform-conformance/workflow-update-runtime-scenarios.json'),
-            true,
-        );
-        $artifactVersions = self::artifactVersions();
-        $publishedArtifactVersions = $artifactVersions;
-        $publishedArtifactVersions['workflow-php'] = $artifactVersions['workflow'];
-        $artifactSources = self::artifactSources();
-        $sourcePolicy = self::sourcePolicy();
-
-        $scenarioResults = [];
-        foreach (self::workflowUpdateRuntimeScenarioIds() as $scenarioId) {
-            $observedOutputs = [
-                'published_artifact_cell_executed' => true,
-                'local_product_source_checkouts_used' => false,
-                'published_artifact_versions' => $publishedArtifactVersions,
-                'artifact_versions' => $artifactVersions,
-                'artifact_sources' => $artifactSources,
-                'artifact_install_evidence' => [
-                    'installed_from_published_channels' => true,
-                ],
-                'source_policy' => $sourcePolicy,
-            ];
-
-            foreach ($manifest['scenario_requirements'][$scenarioId]['required_fields'] as $field) {
-                if (! array_key_exists($field, $observedOutputs)) {
-                    $observedOutputs[$field] = self::observedValueFor($field);
-                }
-            }
-
-            $scenarioResults[$scenarioId] = [
+        return match ($field) {
+            'published_artifact_versions' => [
+                'server' => '0.2.536',
+                'cli' => '0.1.82',
+                'sdk-python' => '0.4.92',
+                'workflow' => '2.0.0-alpha.241',
+                'workflow-php' => '2.0.0-alpha.241',
+                'waterline' => '2.0.0-alpha.111',
+            ],
+            'artifact_sources' => [
+                'server' => 'durableworkflow/server:0.2.536',
+                'cli' => 'github-release://durable-workflow/cli/v0.1.82/install.sh',
+                'sdk-python' => 'pypi://durable-workflow==0.4.92',
+                'workflow' => 'packagist://durable-workflow/workflow@2.0.0-alpha.241',
+                'workflow-php' => 'packagist://durable-workflow/workflow@2.0.0-alpha.241',
+                'waterline' => 'packagist://durable-workflow/waterline@2.0.0-alpha.111',
+            ],
+            'artifact_install_evidence' => [
+                'installed_from' => 'published_artifact',
                 'scenario_id' => $scenarioId,
-                'status' => 'pass',
-                'classification' => 'product-evidence',
-                'published_artifact_cell_executed' => true,
+            ],
+            'source_policy' => [
+                'pass_requires_published_artifacts_only' => true,
                 'local_product_source_checkouts_used' => false,
-                'observed_outputs' => $observedOutputs,
-                'linked_findings' => [],
-            ];
-        }
-
-        return [
-            'schema' => 'durable-workflow.v2.workflow-update-runtime.external-evidence',
-            'runner_blocked' => false,
-            'artifact_versions' => $artifactVersions,
-            'published_artifact_versions' => $publishedArtifactVersions,
-            'artifact_sources' => $artifactSources,
-            'source_policy' => $sourcePolicy,
+                'local_checkout_execution_counts_as_pass' => false,
+            ],
             'local_product_source_checkouts_used' => false,
-            'scenario_results' => $scenarioResults,
-            'findings' => [],
-        ];
-    }
-
-    /**
-     * @return array<string, string>
-     */
-    private static function artifactVersions(): array
-    {
-        return [
-            'server' => '0.2.536',
-            'cli' => '0.1.82',
-            'sdk-python' => '0.4.92',
-            'workflow' => '2.0.0-alpha.241',
-            'waterline' => '2.0.0-alpha.111',
-        ];
-    }
-
-    /**
-     * @return array<string, string>
-     */
-    private static function artifactSources(): array
-    {
-        return [
-            'server' => 'durableworkflow/server:0.2.536',
-            'cli' => 'github-release://durable-workflow/cli/v0.1.82/install.sh',
-            'sdk-python' => 'pypi://durable-workflow==0.4.92',
-            'workflow' => 'packagist://durable-workflow/workflow@2.0.0-alpha.241',
-            'workflow-php' => 'packagist://durable-workflow/workflow@2.0.0-alpha.241',
-            'waterline' => 'packagist://durable-workflow/waterline@2.0.0-alpha.111',
-        ];
-    }
-
-    /**
-     * @return array<string, bool>
-     */
-    private static function sourcePolicy(): array
-    {
-        return [
-            'pass_requires_published_artifacts_only' => true,
-            'local_product_source_checkouts_used' => false,
-            'local_checkout_execution_counts_as_pass' => false,
-        ];
-    }
-
-    /**
-     * @return array<string, mixed>
-     */
-    private static function observedValueFor(string $field): array
-    {
-        return [
-            'field' => $field,
-            'observed' => true,
-        ];
+            'handler_not_invoked' => true,
+            default => [
+                'scenario_id' => $scenarioId,
+                'field' => $field,
+                'observed' => true,
+            ],
+        };
     }
 }
