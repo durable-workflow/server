@@ -210,6 +210,7 @@ final class ControlPlaneResponseContract
         'result_envelope',
         'update_id',
         'update_status',
+        'principal',
         'wait_for',
         'wait_timed_out',
         'wait_timeout_seconds',

@@ -2,6 +2,8 @@
 
 namespace App\Http\Controllers\Api;
 
+use App\Auth\Principal;
+use App\Http\Middleware\Authenticate;
 use App\Support\ControlPlaneProtocol;
 use App\Support\ControlPlaneResponseContract;
 use App\Support\ControlPlaneResultMapper;
@@ -742,7 +744,7 @@ class WorkflowController
                 workflowId: $workflowId,
                 updateName: $updateName,
                 waitFor: $waitFor,
-                result: $externalResult,
+                result: $this->withAuthenticatedPrincipal($request, $externalResult),
                 runId: $this->controlPlaneRunId($request),
             );
         }
@@ -764,7 +766,7 @@ class WorkflowController
             workflowId: $workflowId,
             updateName: $updateName,
             waitFor: $waitFor,
-            result: $result,
+            result: $this->withAuthenticatedPrincipal($request, $result),
             runId: $this->controlPlaneRunId($request),
         );
     }
@@ -2227,6 +2229,55 @@ class WorkflowController
 
         return is_string($runId) && trim($runId) !== ''
             ? $runId
+            : null;
+    }
+
+    /**
+     * @param  array<string, mixed>  $payload
+     * @return array<string, mixed>
+     */
+    private function withAuthenticatedPrincipal(Request $request, array $payload): array
+    {
+        if (isset($payload['principal']) && is_array($payload['principal'])) {
+            return $payload;
+        }
+
+        $principal = Authenticate::principal($request);
+
+        if (! $principal instanceof Principal || trim($principal->subject()) === '') {
+            return $payload;
+        }
+
+        $method = trim($principal->method());
+        $type = $method === '' || $method === 'none'
+            ? 'server'
+            : 'auth:'.$method;
+
+        $payload['principal'] = array_filter([
+            'type' => $type,
+            'id' => trim($principal->subject()),
+            'label' => $this->principalLabel($principal),
+        ], static fn (mixed $value): bool => is_string($value) && $value !== '');
+
+        return $payload;
+    }
+
+    private function principalLabel(Principal $principal): ?string
+    {
+        $claims = $principal->claims();
+
+        foreach (['display_name', 'name', 'email'] as $claim) {
+            $value = $claims[$claim] ?? null;
+
+            if (is_string($value) && trim($value) !== '') {
+                return trim($value);
+            }
+        }
+
+        $role = $principal->primaryRole();
+
+        return is_string($role) && trim($role) !== ''
+            ? ucfirst(trim($role))
             : null;
     }
 

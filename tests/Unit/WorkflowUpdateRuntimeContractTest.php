@@ -76,6 +76,14 @@ class WorkflowUpdateRuntimeContractTest extends TestCase
             'accepted_update_control_plane_and_history',
             $manifest['host_runner_contract']['focused_probe']['covers_required_scenarios'],
         );
+        $this->assertContains(
+            'principal_attribution_with_auth',
+            $manifest['host_runner_contract']['focused_probe']['covers_required_scenarios'],
+        );
+        $this->assertArrayNotHasKey(
+            'principal_attribution_with_auth',
+            $manifest['host_runner_contract']['typed_coverage_gaps'],
+        );
         $this->assertSame(
             'coverage-gap',
             $manifest['host_runner_contract']['typed_coverage_gaps']['python_client_worker_update_surface']['classification'],
@@ -150,11 +158,7 @@ class WorkflowUpdateRuntimeContractTest extends TestCase
 
             foreach ($result['scenario_results'] as $scenarioId => $scenario) {
                 $this->assertSame($scenarioId, $scenario['scenario_id']);
-                if ($scenarioId === 'principal_attribution_with_auth') {
-                    $this->assertSame('unsupported', $scenario['status']);
-                } else {
-                    $this->assertSame('not_covered', $scenario['status']);
-                }
+                $this->assertSame('not_covered', $scenario['status']);
                 $this->assertFalse($scenario['published_artifact_cell_executed']);
                 $this->assertNotEmpty($scenario['linked_findings']);
             }
@@ -335,7 +339,6 @@ class WorkflowUpdateRuntimeContractTest extends TestCase
                 $this->assertTrue($result['scenario_results'][$scenarioId]['published_artifact_cell_executed'], $scenarioId);
                 $this->assertFalse($result['scenario_results'][$scenarioId]['local_product_source_checkouts_used'], $scenarioId);
             }
-            $this->assertSame('unsupported', $result['scenario_results']['principal_attribution_with_auth']['status']);
             $this->assertSame('not_covered', $result['scenario_results']['php_client_worker_update_surface']['status']);
             $this->assertStringNotContainsString(
                 'focused published-server workflow update runtime probe did not run',
@@ -829,6 +832,7 @@ class WorkflowUpdateRuntimeContractTest extends TestCase
             'invalid_input_refusal',
             'payload_envelope_round_trip',
             'terminal_workflow_update_behavior',
+            'principal_attribution_with_auth',
         ];
     }
 

@@ -217,17 +217,13 @@ final class WorkflowUpdateRuntimeContract
                         'invalid_input_refusal',
                         'payload_envelope_round_trip',
                         'terminal_workflow_update_behavior',
+                        'principal_attribution_with_auth',
                     ],
                     'records_runner_blocked_false_for_executed_product_evidence' => true,
                     'uses_external_worker_update_contracts' => true,
                     'uses_public_control_plane_and_worker_protocol_routes' => true,
                 ],
                 'typed_coverage_gaps' => [
-                    'principal_attribution_with_auth' => [
-                        'classification' => 'typed-unsupported',
-                        'owner' => 'server',
-                        'acceptance' => 'Run the workflow update matrix with token or signature authentication enabled and capture principal fields in control-plane, history, and operator surfaces.',
-                    ],
                     'php_client_worker_update_surface' => [
                         'classification' => 'coverage-gap',
                         'owner' => 'workflow-php',

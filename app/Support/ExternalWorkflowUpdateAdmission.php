@@ -423,6 +423,7 @@ final class ExternalWorkflowUpdateAdmission
             'result_envelope' => $resultEnvelope,
             'failure_id' => $update->failure_id,
             'failure_message' => $update->failure_message,
+            'principal' => $this->principalPayload($command),
             'accepted_at' => $update->accepted_at?->toJSON(),
             'applied_at' => $update->applied_at?->toJSON(),
             'rejected_at' => $update->rejected_at?->toJSON(),
@@ -449,6 +450,20 @@ final class ExternalWorkflowUpdateAdmission
             $updateStatus === UpdateStatus::Accepted->value => 202,
             default => 200,
         };
+    }
+
+    /**
+     * @return array{type?: string, id?: string, label?: string}|null
+     */
+    private function principalPayload(WorkflowCommand $command): ?array
+    {
+        $principal = array_filter([
+            'type' => $command->principalType(),
+            'id' => $command->principalId(),
+            'label' => $command->principalLabel(),
+        ], static fn (mixed $value): bool => is_string($value) && $value !== '');
+
+        return $principal === [] ? null : $principal;
     }
 
     /**

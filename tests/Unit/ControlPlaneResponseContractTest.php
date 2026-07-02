@@ -36,6 +36,7 @@ class ControlPlaneResponseContractTest extends TestCase
         $this->assertContains('outcome', ControlPlaneResponseContract::manifest()['projected_fields']);
         $this->assertContains('reason', ControlPlaneResponseContract::manifest()['projected_fields']);
         $this->assertContains('message', ControlPlaneResponseContract::manifest()['projected_fields']);
+        $this->assertContains('principal', ControlPlaneResponseContract::manifest()['projected_fields']);
     }
 
     public function test_manifest_publishes_signal_rejection_contract_diagnostics(): void
@@ -149,6 +150,23 @@ class ControlPlaneResponseContractTest extends TestCase
         $this->assertSame('currentState', $payload['control_plane']['operation_name']);
         $this->assertSame('query_name', $payload['control_plane']['operation_name_field']);
         $this->assertSame('currentState', $payload['control_plane']['query_name']);
+    }
+
+    public function test_attach_projects_principal_into_the_control_plane_block(): void
+    {
+        $payload = ControlPlaneResponseContract::attach('update', 'approve', [
+            'workflow_id' => 'wf-principal-update',
+            'update_name' => 'approve',
+            'principal' => [
+                'type' => 'auth:token',
+                'id' => 'workflow-updates-operator',
+                'label' => 'Workflow Updates Operator',
+            ],
+        ]);
+
+        $this->assertSame('approve', $payload['control_plane']['operation_name']);
+        $this->assertSame('auth:token', $payload['control_plane']['principal']['type']);
+        $this->assertSame('workflow-updates-operator', $payload['control_plane']['principal']['id']);
     }
 
     public function test_attach_omits_rejection_metadata_for_operations_without_a_rejection_contract(): void

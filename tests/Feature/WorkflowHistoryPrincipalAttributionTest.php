@@ -304,6 +304,51 @@ class WorkflowHistoryPrincipalAttributionTest extends TestCase
         }
     }
 
+    public function test_update_control_plane_response_projects_the_authenticated_principal(): void
+    {
+        Queue::fake();
+
+        config([
+            'server.auth.provider' => null,
+            'server.auth.driver' => 'token',
+            'server.auth.token' => null,
+            'server.auth.backward_compatible' => false,
+            'server.auth.principal_tokens' => json_encode([
+                [
+                    'token' => 'alice-token',
+                    'subject' => 'alice',
+                    'roles' => ['operator'],
+                    'label' => 'Alice',
+                ],
+            ]),
+        ]);
+
+        $start = $this->withHeaders($this->bearerHeaders('alice-token'))
+            ->postJson('/api/workflows', [
+                'workflow_id' => 'wf-principal-update-response',
+                'workflow_type' => 'tests.interactive-command-workflow',
+            ]);
+
+        $start->assertCreated();
+        $this->runReadyWorkflowTask((string) $start->json('run_id'));
+
+        $response = $this->withHeaders($this->bearerHeaders('alice-token'))
+            ->postJson('/api/workflows/wf-principal-update-response/update/approve', [
+                'input' => [true, 'response-principal'],
+                'request_id' => 'update-principal-response',
+                'wait_for' => 'accepted',
+                'principal_id' => 'mallory',
+            ]);
+
+        $response->assertAccepted()
+            ->assertJsonPath('principal.type', 'auth:token')
+            ->assertJsonPath('principal.id', 'alice')
+            ->assertJsonPath('principal.label', 'Alice')
+            ->assertJsonPath('control_plane.principal.type', 'auth:token')
+            ->assertJsonPath('control_plane.principal.id', 'alice');
+        $this->assertNotSame('mallory', $response->json('principal.id'));
+    }
+
     public function test_history_api_response_surfaces_the_principal_at_event_top_level(): void
     {
         Queue::fake();

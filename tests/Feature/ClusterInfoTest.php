@@ -1304,6 +1304,10 @@ class ClusterInfoTest extends TestCase
             'accepted_update_control_plane_and_history',
             $contract['host_runner_contract']['focused_probe']['covers_required_scenarios'],
         );
+        $this->assertContains(
+            'principal_attribution_with_auth',
+            $contract['host_runner_contract']['focused_probe']['covers_required_scenarios'],
+        );
         $this->assertSame(
             'waterline',
             $contract['host_runner_contract']['typed_coverage_gaps']['operator_diagnostics_surfaces']['owner'],

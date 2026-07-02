@@ -231,14 +231,10 @@
       "unknown_update_refusal",
       "invalid_input_refusal",
       "payload_envelope_round_trip",
-      "terminal_workflow_update_behavior"
+      "terminal_workflow_update_behavior",
+      "principal_attribution_with_auth"
     ],
     "typed_coverage_gaps": {
-      "principal_attribution_with_auth": {
-        "classification": "typed-unsupported",
-        "owner": "server",
-        "acceptance": "Run the workflow update matrix with token or signature authentication enabled and capture principal fields in control-plane, history, and operator surfaces."
-      },
       "php_client_worker_update_surface": {
         "classification": "coverage-gap",
         "owner": "workflow-php",

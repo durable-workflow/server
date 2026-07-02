@@ -137,6 +137,9 @@ const WORKFLOW_UPDATES_QUEUE = 'workflow-updates-shared';
 const WORKFLOW_UPDATES_TYPE = 'workflow-updates.probe';
 const WORKFLOW_UPDATE_ACCEPTED_EVENT = 'UpdateAccepted';
 const WORKFLOW_UPDATE_COMPLETED_EVENT = 'UpdateCompleted';
+const WORKFLOW_UPDATES_AUTH_TOKEN = 'workflow-updates-auth-token';
+const WORKFLOW_UPDATES_AUTH_PRINCIPAL_ID = 'workflow-updates-operator';
+const WORKFLOW_UPDATES_AUTH_PRINCIPAL_LABEL = 'Workflow Updates Operator';
 
 function now_iso(): string
 {
@@ -193,7 +196,13 @@ function header_key(string $name): string
     return 'HTTP_'.str_replace('-', '_', strtoupper($name));
 }
 
-function request_json(string $method, string $path, ?array $body = null, array $allowed = []): array
+function request_json(
+    string $method,
+    string $path,
+    ?array $body = null,
+    array $allowed = [],
+    array $headers = [],
+): array
 {
     static $kernel = null;
     $kernel ??= app(HttpKernel::class);
@@ -205,6 +214,15 @@ function request_json(string $method, string $path, ?array $body = null, array $
         header_key(ControlPlaneProtocol::HEADER) => ControlPlaneProtocol::VERSION,
         header_key(WorkerProtocol::HEADER) => WorkerProtocol::VERSION,
     ];
+
+    foreach ($headers as $name => $value) {
+        if (! is_string($name) || ! is_string($value) || trim($value) === '') {
+            continue;
+        }
+
+        $server[header_key($name)] = $value;
+    }
+
     $content = $body === null ? null : json_encode($body, JSON_THROW_ON_ERROR);
     $request = Request::create('/api'.$path, $method, [], [], [], $server, $content);
     $response = $kernel->handle($request);
@@ -283,6 +301,7 @@ function workflow_command_contract(): array
 function register_probe_worker(
     string $workerId = 'workflow-updates-worker',
     string $taskQueue = WORKFLOW_UPDATES_QUEUE,
+    array $headers = [],
 ): void
 {
     request_json('POST', '/worker/register', [
@@ -294,25 +313,33 @@ function register_probe_worker(
         'workflow_command_contracts' => [
             WORKFLOW_UPDATES_TYPE => workflow_command_contract(),
         ],
-    ], [409]);
+    ], [409], $headers);
 }
 
-function start_probe_workflow(string $workflowId, string $taskQueue = WORKFLOW_UPDATES_QUEUE): array
+function start_probe_workflow(
+    string $workflowId,
+    string $taskQueue = WORKFLOW_UPDATES_QUEUE,
+    array $headers = [],
+): array
 {
     return request_json('POST', '/workflows', [
         'workflow_id' => $workflowId,
         'workflow_type' => WORKFLOW_UPDATES_TYPE,
         'task_queue' => $taskQueue,
         'input' => ['focused-probe'],
-    ])['body'];
+    ], [], $headers)['body'];
 }
 
-function poll_task(string $workerId, string $taskQueue = WORKFLOW_UPDATES_QUEUE): array
+function poll_task(
+    string $workerId,
+    string $taskQueue = WORKFLOW_UPDATES_QUEUE,
+    array $headers = [],
+): array
 {
     $response = request_json('POST', '/worker/workflow-tasks/poll', [
         'worker_id' => $workerId,
         'task_queue' => $taskQueue,
-    ]);
+    ], [], $headers);
     $task = $response['body']['task'] ?? null;
 
     if (! is_array($task) || ! is_string($task['task_id'] ?? null)) {
@@ -322,7 +349,7 @@ function poll_task(string $workerId, string $taskQueue = WORKFLOW_UPDATES_QUEUE)
     return $task;
 }
 
-function complete_task(array $task, array $commands): array
+function complete_task(array $task, array $commands, array $headers = []): array
 {
     $taskId = (string) $task['task_id'];
 
@@ -330,12 +357,16 @@ function complete_task(array $task, array $commands): array
         'lease_owner' => (string) $task['lease_owner'],
         'workflow_task_attempt' => (int) $task['workflow_task_attempt'],
         'commands' => $commands,
-    ])['body'];
+    ], [], $headers)['body'];
 }
 
-function open_signal_wait(string $workerId, string $taskQueue = WORKFLOW_UPDATES_QUEUE): array
+function open_signal_wait(
+    string $workerId,
+    string $taskQueue = WORKFLOW_UPDATES_QUEUE,
+    array $headers = [],
+): array
 {
-    $task = poll_task($workerId, $taskQueue);
+    $task = poll_task($workerId, $taskQueue, $headers);
 
     return complete_task($task, [
         [
@@ -343,12 +374,16 @@ function open_signal_wait(string $workerId, string $taskQueue = WORKFLOW_UPDATES
             'signal_name' => 'advance',
             'timeout_seconds' => 300,
         ],
-    ]);
+    ], $headers);
 }
 
-function complete_workflow_start_task(string $workerId, string $taskQueue = WORKFLOW_UPDATES_QUEUE): array
+function complete_workflow_start_task(
+    string $workerId,
+    string $taskQueue = WORKFLOW_UPDATES_QUEUE,
+    array $headers = [],
+): array
 {
-    $task = poll_task($workerId, $taskQueue);
+    $task = poll_task($workerId, $taskQueue, $headers);
 
     return complete_task($task, [
         [
@@ -357,7 +392,7 @@ function complete_workflow_start_task(string $workerId, string $taskQueue = WORK
                 'probe' => 'terminal-workflow-update-behavior',
             ]),
         ],
-    ]);
+    ], $headers);
 }
 
 function complete_update_task(
@@ -365,9 +400,10 @@ function complete_update_task(
     string $updateId,
     array $result,
     string $taskQueue = WORKFLOW_UPDATES_QUEUE,
+    array $headers = [],
 ): array
 {
-    $task = poll_task($workerId, $taskQueue);
+    $task = poll_task($workerId, $taskQueue, $headers);
 
     return complete_task($task, [
         [
@@ -378,12 +414,17 @@ function complete_update_task(
                 'blob' => Serializer::serializeWithCodec('avro', $result),
             ],
         ],
-    ]);
+    ], $headers);
 }
 
-function fail_update_task(string $workerId, string $updateId, string $taskQueue = WORKFLOW_UPDATES_QUEUE): array
+function fail_update_task(
+    string $workerId,
+    string $updateId,
+    string $taskQueue = WORKFLOW_UPDATES_QUEUE,
+    array $headers = [],
+): array
 {
-    $task = poll_task($workerId, $taskQueue);
+    $task = poll_task($workerId, $taskQueue, $headers);
 
     return complete_task($task, [
         [
@@ -394,12 +435,12 @@ function fail_update_task(string $workerId, string $updateId, string $taskQueue 
             'exception_type' => 'workflow_update_probe_failure',
             'non_retryable' => true,
         ],
-    ]);
+    ], $headers);
 }
 
-function history_events(string $workflowId, string $runId): array
+function history_events(string $workflowId, string $runId, array $headers = []): array
 {
-    return request_json('GET', '/workflows/'.$workflowId.'/runs/'.$runId.'/history')['body']['events'] ?? [];
+    return request_json('GET', '/workflows/'.$workflowId.'/runs/'.$runId.'/history', null, [], $headers)['body']['events'] ?? [];
 }
 
 function event_types(array $events): array
@@ -429,10 +470,15 @@ function event_request_id(array $event): ?string
         return null;
     }
 
+    $command = $payload['command'] ?? null;
+    $context = is_array($command) ? ($command['context'] ?? null) : null;
+    $server = is_array($context) ? ($context['server'] ?? null) : null;
+    $metadata = is_array($server) ? ($server['metadata'] ?? null) : null;
+
     foreach ([
         $payload['request_id'] ?? null,
-        $payload['command']['request_id'] ?? null,
-        $payload['command']['context']['server']['metadata']['request_id'] ?? null,
+        is_array($command) ? ($command['request_id'] ?? null) : null,
+        is_array($metadata) ? ($metadata['request_id'] ?? null) : null,
     ] as $candidate) {
         if (is_string($candidate) && $candidate !== '') {
             return $candidate;
@@ -447,6 +493,181 @@ function update_row(string $updateId): ?WorkflowUpdate
     $update = WorkflowUpdate::query()->find($updateId);
 
     return $update instanceof WorkflowUpdate ? $update : null;
+}
+
+function configure_principal_token_auth(): void
+{
+    config([
+        'server.auth.driver' => 'token',
+        'server.auth.token' => null,
+        'server.auth.role_tokens' => [
+            'worker' => null,
+            'operator' => null,
+            'admin' => null,
+        ],
+        'server.auth.principal_tokens' => json_encode([
+            [
+                'token' => WORKFLOW_UPDATES_AUTH_TOKEN,
+                'subject' => WORKFLOW_UPDATES_AUTH_PRINCIPAL_ID,
+                'roles' => ['operator', 'worker'],
+                'label' => WORKFLOW_UPDATES_AUTH_PRINCIPAL_LABEL,
+            ],
+        ], JSON_THROW_ON_ERROR),
+        'server.auth.backward_compatible' => false,
+    ]);
+}
+
+function auth_headers(): array
+{
+    return [
+        'Authorization' => 'Bearer '.WORKFLOW_UPDATES_AUTH_TOKEN,
+    ];
+}
+
+function expected_auth_principal(): array
+{
+    return [
+        'type' => 'auth:token',
+        'id' => WORKFLOW_UPDATES_AUTH_PRINCIPAL_ID,
+        'label' => WORKFLOW_UPDATES_AUTH_PRINCIPAL_LABEL,
+    ];
+}
+
+function principal_from_response(array $body): ?array
+{
+    $controlPlane = $body['control_plane'] ?? null;
+    foreach ([
+        $body['principal'] ?? null,
+        is_array($controlPlane) ? ($controlPlane['principal'] ?? null) : null,
+    ] as $candidate) {
+        if (is_array($candidate)) {
+            return array_filter([
+                'type' => is_string($candidate['type'] ?? null) ? $candidate['type'] : null,
+                'id' => is_string($candidate['id'] ?? null) ? $candidate['id'] : null,
+                'label' => is_string($candidate['label'] ?? null) ? $candidate['label'] : null,
+            ], static fn (mixed $value): bool => $value !== null && $value !== '');
+        }
+    }
+
+    return null;
+}
+
+function response_principal_fields(array $body): array
+{
+    $controlPlane = $body['control_plane'] ?? null;
+    $controlPlanePrincipal = is_array($controlPlane) && is_array($controlPlane['principal'] ?? null)
+        ? $controlPlane['principal']
+        : null;
+
+    return [
+        'principal' => is_array($body['principal'] ?? null) ? $body['principal'] : null,
+        'control_plane_principal' => $controlPlanePrincipal,
+        'workflow_id' => $body['workflow_id'] ?? null,
+        'run_id' => $body['run_id'] ?? null,
+        'command_id' => $body['command_id'] ?? null,
+        'update_id' => $body['update_id'] ?? null,
+        'update_status' => $body['update_status'] ?? null,
+        'reason' => $body['reason'] ?? null,
+        'http_status' => $body['status'] ?? null,
+    ];
+}
+
+function principal_from_event(?array $event): ?array
+{
+    if (! is_array($event)) {
+        return null;
+    }
+
+    $principal = $event['principal'] ?? null;
+    if (is_array($principal)) {
+        return array_filter([
+            'type' => is_string($principal['type'] ?? null) ? $principal['type'] : null,
+            'id' => is_string($principal['id'] ?? null) ? $principal['id'] : null,
+            'label' => is_string($principal['label'] ?? null) ? $principal['label'] : null,
+        ], static fn (mixed $value): bool => $value !== null && $value !== '');
+    }
+
+    $payload = $event['payload'] ?? null;
+    if (! is_array($payload)) {
+        return null;
+    }
+
+    $command = $payload['command'] ?? null;
+    if (! is_array($command)) {
+        return null;
+    }
+
+    return array_filter([
+        'type' => is_string($command['principal_type'] ?? null) ? $command['principal_type'] : null,
+        'id' => is_string($command['principal_id'] ?? null) ? $command['principal_id'] : null,
+        'label' => is_string($command['principal_label'] ?? null) ? $command['principal_label'] : null,
+    ], static fn (mixed $value): bool => $value !== null && $value !== '');
+}
+
+function event_by_type_and_request_id(array $events, string $type, string $requestId): ?array
+{
+    foreach ($events as $event) {
+        if (($event['event_type'] ?? null) === $type && event_request_id($event) === $requestId) {
+            return $event;
+        }
+    }
+
+    return null;
+}
+
+function run_detail(string $workflowId, string $runId, array $headers = []): array
+{
+    return request_json('GET', '/workflows/'.$workflowId.'/runs/'.$runId, null, [], $headers)['body'];
+}
+
+function command_principal_fields(?array $command): ?array
+{
+    if (! is_array($command)) {
+        return null;
+    }
+
+    return [
+        'command_id' => $command['id'] ?? null,
+        'type' => $command['type'] ?? null,
+        'target_name' => $command['target_name'] ?? null,
+        'request_id' => $command['request_id'] ?? null,
+        'status' => $command['status'] ?? null,
+        'outcome' => $command['outcome'] ?? null,
+        'rejection_reason' => $command['rejection_reason'] ?? null,
+        'principal' => array_filter([
+            'type' => is_string($command['principal_type'] ?? null) ? $command['principal_type'] : null,
+            'id' => is_string($command['principal_id'] ?? null) ? $command['principal_id'] : null,
+            'label' => is_string($command['principal_label'] ?? null) ? $command['principal_label'] : null,
+        ], static fn (mixed $value): bool => $value !== null && $value !== ''),
+        'auth_status' => $command['auth_status'] ?? null,
+        'auth_method' => $command['auth_method'] ?? null,
+        'update_id' => $command['update_id'] ?? null,
+        'update_status' => $command['update_status'] ?? null,
+    ];
+}
+
+function command_by_request_id(array $runDetail, string $requestId): ?array
+{
+    $commands = $runDetail['commands'] ?? [];
+    if (! is_array($commands)) {
+        return null;
+    }
+
+    foreach ($commands as $command) {
+        if (is_array($command) && ($command['request_id'] ?? null) === $requestId) {
+            return $command;
+        }
+    }
+
+    return null;
+}
+
+function principal_matches(?array $principal, array $expected): bool
+{
+    return is_array($principal)
+        && ($principal['type'] ?? null) === $expected['type']
+        && ($principal['id'] ?? null) === $expected['id']
+        && ($principal['label'] ?? null) === $expected['label'];
 }
 
 function env_text(string $name): string
@@ -637,6 +858,7 @@ function focused_probe_scenario_ids(): array
         'invalid_input_refusal',
         'payload_envelope_round_trip',
         'terminal_workflow_update_behavior',
+        'principal_attribution_with_auth',
     ];
 }
 
@@ -684,6 +906,259 @@ function focused_probe_failure_evidence(Throwable $throwable): array
             ],
         ],
     ];
+}
+
+function run_principal_attribution_probe(string $suffix): array
+{
+    configure_principal_token_auth();
+
+    $headers = auth_headers();
+    $expected = expected_auth_principal();
+    $workerId = 'workflow-updates-auth-worker-'.$suffix;
+    $taskQueue = WORKFLOW_UPDATES_QUEUE.'-auth-'.$suffix;
+    $workflowId = 'wf-update-auth-'.$suffix;
+    $requestIds = [
+        'accepted' => 'auth-accepted-'.$suffix,
+        'failed' => 'auth-failed-'.$suffix,
+        'unknown' => 'auth-unknown-'.$suffix,
+        'invalid' => 'auth-invalid-'.$suffix,
+        'terminal' => 'auth-terminal-'.$suffix,
+    ];
+    $controlPlanePrincipalFields = [];
+    $historyPrincipalFields = [];
+    $operatorPrincipalFields = [];
+
+    try {
+        register_probe_worker($workerId, $taskQueue, $headers);
+        $start = start_probe_workflow($workflowId, $taskQueue, $headers);
+        $runId = (string) ($start['run_id'] ?? '');
+        open_signal_wait($workerId, $taskQueue, $headers);
+
+        $acceptedResponse = request_json('POST', '/workflows/'.$workflowId.'/update/approve', [
+            'input' => [true, 'auth-accepted'],
+            'request_id' => $requestIds['accepted'],
+            'wait_for' => 'accepted',
+            'principal' => 'mallory',
+            'principal_id' => 'mallory',
+            'actor' => 'mallory',
+        ], [], $headers);
+        $acceptedBody = $acceptedResponse['body'];
+        $acceptedUpdateId = (string) ($acceptedBody['update_id'] ?? '');
+        $acceptedHistory = history_events($workflowId, $runId, $headers);
+        $acceptedEvent = event_by_type_and_request_id(
+            $acceptedHistory,
+            WORKFLOW_UPDATE_ACCEPTED_EVENT,
+            $requestIds['accepted'],
+        );
+
+        $completeResult = complete_update_task($workerId, $acceptedUpdateId, [
+            'approved' => true,
+            'source' => 'auth-principal-complete',
+        ], $taskQueue, $headers);
+
+        $completedResponse = request_json('POST', '/workflows/'.$workflowId.'/update/approve', [
+            'input' => [true, 'auth-accepted-duplicate'],
+            'request_id' => $requestIds['accepted'],
+            'wait_for' => 'completed',
+        ], [200, 202, 409, 422], $headers);
+        $completedBody = $completedResponse['body'];
+        $completedHistory = history_events($workflowId, $runId, $headers);
+        $completedEvent = event_by_type_and_request_id(
+            $completedHistory,
+            WORKFLOW_UPDATE_COMPLETED_EVENT,
+            $requestIds['accepted'],
+        );
+
+        $failedResponse = request_json('POST', '/workflows/'.$workflowId.'/update/fail_update', [
+            'input' => ['auth failure'],
+            'request_id' => $requestIds['failed'],
+            'wait_for' => 'accepted',
+            'principal' => 'mallory',
+        ], [], $headers);
+        $failedBody = $failedResponse['body'];
+        $failedUpdateId = (string) ($failedBody['update_id'] ?? '');
+        $failResult = fail_update_task($workerId, $failedUpdateId, $taskQueue, $headers);
+        $failedCompletedResponse = request_json('POST', '/workflows/'.$workflowId.'/update/fail_update', [
+            'input' => ['auth failure duplicate'],
+            'request_id' => $requestIds['failed'],
+            'wait_for' => 'completed',
+        ], [200, 202, 409, 422], $headers);
+        $failedCompletedBody = $failedCompletedResponse['body'];
+        $failedHistory = history_events($workflowId, $runId, $headers);
+        $failedAcceptedEvent = event_by_type_and_request_id(
+            $failedHistory,
+            WORKFLOW_UPDATE_ACCEPTED_EVENT,
+            $requestIds['failed'],
+        );
+        $failedCompletedEvent = event_by_type_and_request_id(
+            $failedHistory,
+            WORKFLOW_UPDATE_COMPLETED_EVENT,
+            $requestIds['failed'],
+        );
+
+        $unknown = request_json('POST', '/workflows/'.$workflowId.'/update/missing_update', [
+            'input' => [],
+            'request_id' => $requestIds['unknown'],
+            'principal_id' => 'mallory',
+        ], [404, 409, 422], $headers);
+        $invalid = request_json('POST', '/workflows/'.$workflowId.'/update/approve', [
+            'input' => ['not-a-bool'],
+            'request_id' => $requestIds['invalid'],
+            'principal_id' => 'mallory',
+        ], [404, 409, 422], $headers);
+
+        $terminalWorkflowId = 'wf-update-auth-terminal-'.$suffix;
+        $terminalWorkerId = 'workflow-updates-auth-terminal-worker-'.$suffix;
+        $terminalQueue = $taskQueue.'-terminal';
+        register_probe_worker($terminalWorkerId, $terminalQueue, $headers);
+        $terminalStart = start_probe_workflow($terminalWorkflowId, $terminalQueue, $headers);
+        $terminalRunId = (string) ($terminalStart['run_id'] ?? '');
+        complete_workflow_start_task($terminalWorkerId, $terminalQueue, $headers);
+        $terminal = request_json('POST', '/workflows/'.$terminalWorkflowId.'/update/approve', [
+            'input' => [true, 'terminal'],
+            'request_id' => $requestIds['terminal'],
+            'principal_id' => 'mallory',
+        ], [404, 409, 422], $headers);
+
+        $runDetail = run_detail($workflowId, $runId, $headers);
+        $terminalRunDetail = run_detail($terminalWorkflowId, $terminalRunId, $headers);
+
+        $controlPlanePrincipalFields = [
+            'accepted' => response_principal_fields($acceptedBody),
+            'completed' => response_principal_fields($completedBody),
+            'failed_accepted' => response_principal_fields($failedBody),
+            'failed_completed' => response_principal_fields($failedCompletedBody),
+            'refused' => [
+                'unknown' => response_principal_fields($unknown['body']),
+                'invalid' => response_principal_fields($invalid['body']),
+                'terminal' => response_principal_fields($terminal['body']),
+            ],
+        ];
+
+        $historyPrincipalFields = [
+            'accepted' => [
+                'UpdateAccepted' => [
+                    'request_id' => $requestIds['accepted'],
+                    'principal' => principal_from_event($acceptedEvent),
+                    'event' => $acceptedEvent,
+                ],
+                'UpdateCompleted' => [
+                    'request_id' => $requestIds['accepted'],
+                    'principal' => principal_from_event($completedEvent),
+                    'event' => $completedEvent,
+                ],
+            ],
+            'failed' => [
+                'UpdateAccepted' => [
+                    'request_id' => $requestIds['failed'],
+                    'principal' => principal_from_event($failedAcceptedEvent),
+                    'event' => $failedAcceptedEvent,
+                ],
+                'UpdateCompleted' => [
+                    'request_id' => $requestIds['failed'],
+                    'principal' => principal_from_event($failedCompletedEvent),
+                    'event' => $failedCompletedEvent,
+                ],
+            ],
+        ];
+
+        foreach ($requestIds as $name => $requestId) {
+            $detail = $name === 'terminal' ? $terminalRunDetail : $runDetail;
+            $operatorPrincipalFields[$name] = command_principal_fields(command_by_request_id($detail, $requestId));
+        }
+
+        $principalSamples = [
+            'control_plane.accepted' => principal_from_response($acceptedBody),
+            'control_plane.completed' => principal_from_response($completedBody),
+            'control_plane.failed_accepted' => principal_from_response($failedBody),
+            'control_plane.failed_completed' => principal_from_response($failedCompletedBody),
+            'control_plane.refused.unknown' => principal_from_response($unknown['body']),
+            'control_plane.refused.invalid' => principal_from_response($invalid['body']),
+            'control_plane.refused.terminal' => principal_from_response($terminal['body']),
+            'history.accepted.UpdateAccepted' => principal_from_event($acceptedEvent),
+            'history.accepted.UpdateCompleted' => principal_from_event($completedEvent),
+            'history.failed.UpdateAccepted' => principal_from_event($failedAcceptedEvent),
+            'history.failed.UpdateCompleted' => principal_from_event($failedCompletedEvent),
+            'operator.accepted' => $operatorPrincipalFields['accepted']['principal'] ?? null,
+            'operator.failed' => $operatorPrincipalFields['failed']['principal'] ?? null,
+            'operator.refused.unknown' => $operatorPrincipalFields['unknown']['principal'] ?? null,
+            'operator.refused.invalid' => $operatorPrincipalFields['invalid']['principal'] ?? null,
+            'operator.refused.terminal' => $operatorPrincipalFields['terminal']['principal'] ?? null,
+        ];
+        $mismatches = [];
+
+        foreach ($principalSamples as $sample => $principal) {
+            if (! principal_matches($principal, $expected)) {
+                $mismatches[$sample] = $principal;
+            }
+        }
+
+        $observedOutputs = [
+            'auth_mode' => 'token',
+            'principal' => $expected,
+            'update_request_surface' => [
+                'client' => 'raw-http-token',
+                'worker_protocol' => 'raw-http-token',
+                'workflow_id' => $workflowId,
+                'run_id' => $runId,
+                'terminal_workflow_id' => $terminalWorkflowId,
+                'terminal_run_id' => $terminalRunId,
+                'request_ids' => $requestIds,
+                'spoofed_request_fields' => ['principal', 'principal_id', 'actor'],
+            ],
+            'control_plane_principal_fields' => $controlPlanePrincipalFields,
+            'history_principal_fields' => $historyPrincipalFields,
+            'waterline_principal_fields' => [
+                'operator_surface' => 'run-detail-api',
+                'server_run_detail_command_principals' => $operatorPrincipalFields,
+                'waterline_selected_run_detail' => null,
+                'waterline_update_history' => null,
+                'waterline_ui_coverage_remains_in_operator_diagnostics_scenario' => true,
+            ],
+            'operator_visible_diagnostics' => [
+                'run_detail_api' => [
+                    'workflow_id' => $workflowId,
+                    'run_id' => $runId,
+                    'command_principal_fields' => $operatorPrincipalFields,
+                ],
+                'worker_complete_response' => $completeResult,
+                'worker_fail_response' => $failResult,
+            ],
+            'principal_samples' => $principalSamples,
+            'principal_mismatches' => $mismatches,
+        ];
+
+        return $mismatches === []
+            ? pass_result('principal_attribution_with_auth', $observedOutputs)
+            : fail_result(
+                'principal_attribution_with_auth',
+                'The published server workflow update auth probe did not expose the authenticated principal on every accepted, completed, failed, and refused update path.',
+                $observedOutputs,
+            );
+    } catch (Throwable $throwable) {
+        return exception_fail_result(
+            'principal_attribution_with_auth',
+            'The published server workflow update auth-principal probe failed before all principal observations could be collected.',
+            $throwable,
+            [
+                'auth_mode' => 'token',
+                'principal' => $expected,
+                'update_request_surface' => [
+                    'client' => 'raw-http-token',
+                    'worker_protocol' => 'raw-http-token',
+                    'workflow_id' => $workflowId,
+                    'request_ids' => $requestIds,
+                ],
+                'control_plane_principal_fields' => $controlPlanePrincipalFields,
+                'history_principal_fields' => $historyPrincipalFields,
+                'waterline_principal_fields' => [
+                    'operator_surface' => 'run-detail-api',
+                    'server_run_detail_command_principals' => $operatorPrincipalFields,
+                    'waterline_ui_coverage_remains_in_operator_diagnostics_scenario' => true,
+                ],
+            ],
+        );
+    }
 }
 
 function run_focused_probe(): array
@@ -996,6 +1471,8 @@ function run_focused_probe(): array
             ['workflow_id' => $terminalWorkflowId, 'run_id' => $terminalRunId],
         );
     }
+
+    $scenarioResults['principal_attribution_with_auth'] = run_principal_attribution_probe($suffix);
 
     return [
         'schema' => 'durable-workflow.v2.workflow-update-runtime.focused-evidence',
@@ -1601,6 +2078,7 @@ const focusedProbeScenarioIds = new Set([
   'invalid_input_refusal',
   'payload_envelope_round_trip',
   'terminal_workflow_update_behavior',
+  'principal_attribution_with_auth',
 ]);
 
 const scenarioManifest = readJsonIfExists(path.join(repoRoot, 'static/platform-conformance/workflow-update-runtime-scenarios.json')) ?? {};
@@ -1616,13 +2094,6 @@ const artifactAliases = {
 };
 
 const coverageGaps = {
-  principal_attribution_with_auth: coverageFinding(
-    'workflow-updates-auth-principal-coverage-gap',
-    'principal_attribution_with_auth',
-    'The focused workflow updates probe runs with authentication disabled and does not yet prove update principal attribution.',
-    'Run the workflow update matrix with token or signature authentication enabled and capture principal fields in control-plane, history, and operator surfaces.',
-    'server',
-  ),
   php_client_worker_update_surface: coverageFinding(
     'workflow-updates-php-sdk-coverage-gap',
     'php_client_worker_update_surface',
@@ -1674,8 +2145,8 @@ for (const scenarioId of requiredScenarios) {
   if (coverageGaps[scenarioId]) {
     scenarioResults[scenarioId] = scenarioResult(
       scenarioId,
-      scenarioId === 'principal_attribution_with_auth' ? 'unsupported' : 'not_covered',
-      scenarioId === 'principal_attribution_with_auth' ? 'typed-unsupported' : 'coverage-gap',
+      'not_covered',
+      'coverage-gap',
       coverageGaps[scenarioId],
       {
         artifact_versions: artifactVersions,
@@ -1870,7 +2341,7 @@ const record = {
   findingLinks: result.finding_links,
   notes: [
     'Focused published-server workflow update runtime cells execute when the handoff runs inside the pinned server image.',
-    'CLI, SDK, auth-principal, and Waterline cells remain typed non-pass coverage gaps until their published-artifact shards run.',
+    'CLI, SDK, and Waterline cells remain typed non-pass coverage gaps until their published-artifact shards run.',
     sourcePolicyNote,
   ],
   local_product_source_checkouts_used: sourcePolicy.local_product_source_checkouts_used,
