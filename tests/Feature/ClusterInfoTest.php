@@ -39,6 +39,8 @@ use App\Support\WorkerVersioningRuntimeContract;
 use App\Support\WorkerVersioningRuntimeResultGate;
 use App\Support\WorkflowLifecycleContract;
 use App\Support\WorkflowLifecycleResultGate;
+use App\Support\WorkflowUpdateRuntimeContract;
+use App\Support\WorkflowUpdateRuntimeResultGate;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\DB;
 use Tests\TestCase;
@@ -1256,6 +1258,52 @@ class ClusterInfoTest extends TestCase
         $this->assertContains(
             'cli_api_history_and_waterline_surfaces_are_operator_diagnostic_enough',
             $contract['coverage_gate']['passing_outcome_requires'],
+        );
+    }
+
+    public function test_it_publishes_workflow_update_runtime_contract_manifest(): void
+    {
+        $response = $this->getJson('/api/cluster/info')->assertOk();
+        $contract = $response->json('workflow_update_runtime_contract');
+
+        $this->assertSame(WorkflowUpdateRuntimeContract::SCHEMA, $contract['schema']);
+        $this->assertSame('workflow_update_runtime_contract', $contract['fixture_category']);
+        $this->assertSame(
+            'static/platform-conformance/workflow-update-runtime-scenarios.json',
+            $contract['scenario_manifest']['source_path'],
+        );
+        $this->assertContains('artifact_sources', $contract['artifact_policy']['required_run_record_fields']);
+        $this->assertContains('update_cell_outcomes', $contract['artifact_policy']['required_run_record_fields']);
+        $this->assertContains('local_product_source_checkouts_used', $contract['artifact_policy']['required_run_record_fields']);
+        $this->assertContains('source_policy', $contract['artifact_policy']['required_run_record_fields']);
+        $this->assertContains('workflow-php', $contract['required_matrix']['runtimes']);
+        $this->assertContains('sdk-python', $contract['required_matrix']['runtimes']);
+        $this->assertContains('accepted_update_control_plane_and_history', $contract['required_scenarios']);
+        $this->assertContains('running_or_waiting_update_operator_visibility', $contract['required_scenarios']);
+        $this->assertContains('completed_update_result_round_trip', $contract['required_scenarios']);
+        $this->assertContains('failed_update_outcome', $contract['required_scenarios']);
+        $this->assertContains('duplicate_request_idempotency', $contract['required_scenarios']);
+        $this->assertContains('unknown_update_refusal', $contract['required_scenarios']);
+        $this->assertContains('invalid_input_refusal', $contract['required_scenarios']);
+        $this->assertContains('payload_envelope_round_trip', $contract['required_scenarios']);
+        $this->assertContains('terminal_workflow_update_behavior', $contract['required_scenarios']);
+        $this->assertContains('principal_attribution_with_auth', $contract['required_scenarios']);
+        $this->assertContains('php_client_worker_update_surface', $contract['required_scenarios']);
+        $this->assertContains('python_client_worker_update_surface', $contract['required_scenarios']);
+        $this->assertSame(
+            'scripts/conformance/workflow-updates-published-artifacts.sh',
+            $contract['host_runner_contract']['runner_path'],
+        );
+        $this->assertFalse($contract['host_runner_contract']['host_runner_implemented']);
+        $this->assertSame('runner_blocked', $contract['host_runner_contract']['unexecuted_required_scenario_status']);
+        $this->assertStringContainsString(
+            'published server, CLI, Python SDK, PHP workflow package, and Waterline artifacts',
+            $contract['host_runner_contract']['current_runner_gap']['acceptance'],
+        );
+        $this->assertSame(WorkflowUpdateRuntimeResultGate::SCHEMA, $contract['result_gate']['schema']);
+        $this->assertContains(
+            'principal_attribution_is_proven_when_authentication_is_enabled',
+            $contract['result_gate']['pass_requires'],
         );
     }
 

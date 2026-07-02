@@ -22,6 +22,7 @@ use App\Support\SignalQueryRuntimeContract;
 use App\Support\SkewRefusalMatrixContract;
 use App\Support\TimerRuntimeContract;
 use App\Support\WorkflowLifecycleContract;
+use App\Support\WorkflowUpdateRuntimeContract;
 use App\Support\WorkerVersioningRuntimeContract;
 use App\Support\WorkerProtocol;
 use Illuminate\Foundation\Testing\RefreshDatabase;
@@ -553,6 +554,12 @@ class ClusterInfoCompatibilityTest extends TestCase
             ->assertJsonPath('workflow_lifecycle_contract.version', WorkflowLifecycleContract::VERSION)
             ->assertJsonPath(
                 'workflow_lifecycle_contract.platform_conformance_suite_authority',
+                PlatformConformanceSuite::SCHEMA,
+            )
+            ->assertJsonPath('workflow_update_runtime_contract.schema', WorkflowUpdateRuntimeContract::SCHEMA)
+            ->assertJsonPath('workflow_update_runtime_contract.version', WorkflowUpdateRuntimeContract::VERSION)
+            ->assertJsonPath(
+                'workflow_update_runtime_contract.platform_conformance_suite_authority',
                 PlatformConformanceSuite::SCHEMA,
             )
             ->assertJsonPath('prerelease_readiness_contract.schema', PrereleaseReadinessContract::SCHEMA)

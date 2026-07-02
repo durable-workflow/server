@@ -41,6 +41,7 @@ categories and runtime contracts:
 | `skew_refusal_matrix_contract` (server side) | `GET /api/cluster/info`'s `skew_refusal_matrix_contract` manifest, the public scenario manifest at `static/platform-conformance/skew-refusal-matrix-scenarios.json`, and `scripts/conformance/skew-published-artifacts.sh`, which is the host-runner handoff for the CLI/Python/PHP worker/Waterline skew matrix, worker registration skew classifications, Waterline render classifications, and request/response evidence requirements | stable |
 | `worker_versioning_runtime_contract` (server side) | `GET /api/cluster/info`'s `worker_versioning_runtime_contract` manifest, the public scenario manifest at `static/platform-conformance/worker-versioning-runtime-scenarios.json`, `scripts/conformance/worker-versioning-published-artifacts.sh`, worker registration/build-id rollout APIs, workflow start pinning, compatible polling, history/visibility pin surfaces, and CLI/Waterline operator visibility | stable |
 | `workflow_lifecycle_contract` (server side handoff) | `GET /api/cluster/info`'s `workflow_lifecycle_contract` manifest and the public scenario manifest at `static/platform-conformance/workflow-lifecycle-scenarios.json`, which require published-artifact provenance, lifecycle cell outcomes, findings, explicit source policy, and explicit refusal of local product source checkout pass evidence | stable |
+| `workflow_update_runtime_contract` (server side handoff) | `GET /api/cluster/info`'s `workflow_update_runtime_contract` manifest, the public scenario manifest at `static/platform-conformance/workflow-update-runtime-scenarios.json`, and `scripts/conformance/workflow-updates-published-artifacts.sh`, which records the current host-runner gap until published-artifact workflow update cells can be exercised without local source checkouts | stable |
 | `migration_runtime_contract` (server side) | `GET /api/cluster/info`'s `migration_runtime_contract` manifest, the public scenario manifest at `static/platform-conformance/migration-runtime-scenarios.json`, and the host-runner handoff requirements for full published-artifact v1-to-v2 upgrade evidence | stable |
 | `prerelease_readiness_contract` (server side handoff) | `GET /api/cluster/info`'s `prerelease_readiness_contract` manifest and the public scenario manifest at `static/platform-conformance/prerelease-readiness-scenarios.json`, which define the full published-artifact 2.0 readiness matrix for installability, Workflow and Waterline feature completeness, migration, API stability, configuration, documentation, quickstart completion, and cross-component coupling | stable |
 | `namespace_runtime_contract` (server side) | the public scenario manifest at `static/platform-conformance/namespace-runtime-scenarios.json`, `GET /api/cluster/info`'s `namespace_runtime_contract` manifest, `scripts/conformance/namespaces-published-artifacts.sh`, plus namespace, workflow, worker, schedule, search-attribute, Nexus, and operator routes documented in the protocol catalog | stable |
@@ -158,6 +159,22 @@ focused coverage findings; unsupported cells remain non-passing and must carry
 documented typed refusal evidence. A pass is recorded only when every required
 published-artifact cell passes and no local product source checkout is used as
 pass evidence.
+
+The server repo also ships the workflow updates handoff at
+`scripts/conformance/workflow-updates-published-artifacts.sh`. Host conformance
+runners can discover the contract from `GET /api/cluster/info` under
+`workflow_update_runtime_contract`. The current handoff intentionally records a
+non-passing `runner_blocked` result because workflow updates do not yet have a
+registered host executor in the conformance gate. The runner-gap acceptance is
+narrow: install the pinned published server, CLI, Python SDK, PHP workflow
+package, and Waterline artifacts; start PHP and Python update-capable workflows;
+drive declared-update visibility, accepted, running or waiting, completed,
+failed or refused, duplicate/idempotent, unknown update, invalid input,
+payload-envelope, terminal-workflow, authenticated-principal, PHP SDK, Python
+SDK, and operator-diagnostics cells; and record typed unsupported SDK behavior
+where a language lacks first-class update support. Local product source
+checkouts, branch source, and local vendor trees cannot count as passing
+workflow-update evidence.
 
 The server repo also ships a source-free saga runner at
 `scripts/conformance/sagas-published-artifacts.sh`. Host conformance

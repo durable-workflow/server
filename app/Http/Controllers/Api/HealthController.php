@@ -33,6 +33,7 @@ use App\Support\TimerRuntimeContract;
 use App\Support\WorkerVersioningRuntimeContract;
 use App\Support\WorkerProtocol;
 use App\Support\WorkflowLifecycleContract;
+use App\Support\WorkflowUpdateRuntimeContract;
 use App\Support\WorkflowStreamsContract;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
@@ -153,6 +154,7 @@ class HealthController
             'worker_versioning_runtime_contract' => true,
             'migration_runtime_contract' => true,
             'workflow_lifecycle_contract' => true,
+            'workflow_update_runtime_contract' => true,
             'embedded_v2_import' => $embeddedV2ImportAvailable,
             'payload_codecs' => CodecRegistry::universal(),
             'response_compression' => (bool) config('server.compression.enabled', true)
@@ -210,6 +212,7 @@ class HealthController
             'worker_versioning_runtime_contract' => WorkerVersioningRuntimeContract::manifest(),
             'migration_runtime_contract' => MigrationRuntimeContract::manifest(),
             'workflow_lifecycle_contract' => WorkflowLifecycleContract::manifest(),
+            'workflow_update_runtime_contract' => WorkflowUpdateRuntimeContract::manifest(),
             'namespace_runtime_contract' => NamespaceRuntimeContract::manifest(),
             'auth_composition_contract' => AuthCompositionContract::manifest(),
             'control_plane' => ControlPlaneProtocol::info(),
