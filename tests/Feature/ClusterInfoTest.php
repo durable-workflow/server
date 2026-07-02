@@ -1309,6 +1309,10 @@ class ClusterInfoTest extends TestCase
             $contract['host_runner_contract']['result_files'],
         );
         $this->assertContains(
+            'workflow-updates-operator-diagnostics-evidence.json',
+            $contract['host_runner_contract']['result_files'],
+        );
+        $this->assertContains(
             'accepted_update_control_plane_and_history',
             $contract['host_runner_contract']['focused_probe']['covers_required_scenarios'],
         );
@@ -1324,13 +1328,26 @@ class ClusterInfoTest extends TestCase
             'python_client_worker_update_surface',
             $contract['host_runner_contract']['python_sidecar']['covers_required_scenarios'],
         );
+        $this->assertContains(
+            'operator_diagnostics_surfaces',
+            $contract['host_runner_contract']['operator_diagnostics_sidecar']['covers_required_scenarios'],
+        );
+        $rawPayload = json_decode($response->getContent(), false, 512, JSON_THROW_ON_ERROR);
+        $this->assertInstanceOf(
+            \stdClass::class,
+            $rawPayload->workflow_update_runtime_contract->host_runner_contract->typed_coverage_gaps,
+        );
+        $this->assertSame(
+            [],
+            get_object_vars($rawPayload->workflow_update_runtime_contract->host_runner_contract->typed_coverage_gaps),
+        );
         $this->assertArrayNotHasKey(
             'python_client_worker_update_surface',
             $contract['host_runner_contract']['typed_coverage_gaps'],
         );
-        $this->assertSame(
-            'waterline',
-            $contract['host_runner_contract']['typed_coverage_gaps']['operator_diagnostics_surfaces']['owner'],
+        $this->assertArrayNotHasKey(
+            'operator_diagnostics_surfaces',
+            $contract['host_runner_contract']['typed_coverage_gaps'],
         );
         $this->assertSame(WorkflowUpdateRuntimeResultGate::SCHEMA, $contract['result_gate']['schema']);
         $this->assertContains(

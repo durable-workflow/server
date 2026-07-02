@@ -13,6 +13,7 @@ The runner writes these files to the result directory:
   workflow-updates-focused-evidence.json (when the published-image probe runs)
   workflow-php-workflow-updates-evidence.json (when the PHP package shard runs)
   python-sdk-workflow-updates-evidence.json (when the Python SDK shard runs)
+  workflow-updates-operator-diagnostics-evidence.json (when CLI and Waterline diagnostics run)
   workflow-updates-result.json
   workflow-updates-record.json
   workflow-updates-findings.json
@@ -31,6 +32,12 @@ Environment overrides:
   DW_WORKFLOW_UPDATES_PYTHON_EVIDENCE_PATH
                                      Optional Python SDK shard evidence path. Defaults to
                                      python-sdk-workflow-updates-evidence.json in the result dir.
+  DW_WORKFLOW_UPDATES_OPERATOR_DIAGNOSTICS_EVIDENCE
+                                     Optional inline JSON evidence from the CLI/Waterline
+                                     operator diagnostics shard.
+  DW_WORKFLOW_UPDATES_OPERATOR_DIAGNOSTICS_EVIDENCE_PATH
+                                     Optional CLI/Waterline operator diagnostics evidence
+                                     path. Defaults to workflow-updates-operator-diagnostics-evidence.json.
   DW_WORKFLOW_UPDATES_SKIP_FOCUSED_HOST_PROBE=1
                                      Skip the published server image's focused
                                      workflow update runtime probe.
@@ -38,6 +45,9 @@ Environment overrides:
                                      Skip the PHP package client/worker shard.
   DW_WORKFLOW_UPDATES_SKIP_PYTHON_SDK_SHARD=1
                                      Skip the Python SDK client/worker shard.
+  DW_WORKFLOW_UPDATES_SKIP_OPERATOR_DIAGNOSTICS_SHARD=1
+                                     Skip the official CLI JSON plus Waterline
+                                     selected-run diagnostics shard.
   DW_SERVER_IMAGE                    Exact server image tag or digest under test.
   DW_SERVER_VERSION                  Exact server version under test.
   DW_CLI_VERSION                     Exact CLI release version.
@@ -2525,6 +2535,1320 @@ if should_run_python_sdk_shard; then
   run_python_sdk_shard
 fi
 
+should_run_operator_diagnostics_shard() {
+  if [[ "${DW_WORKFLOW_UPDATES_SKIP_OPERATOR_DIAGNOSTICS_SHARD:-0}" == "1" || "${DW_WORKFLOW_UPDATES_SKIP_OPERATOR_DIAGNOSTICS_SHARD:-}" == "true" ]]; then
+    return 1
+  fi
+  if [[ -n "${DW_WORKFLOW_UPDATES_OPERATOR_DIAGNOSTICS_EVIDENCE:-}" ]]; then
+    return 1
+  fi
+  if [[ -n "${DW_WORKFLOW_UPDATES_OPERATOR_DIAGNOSTICS_EVIDENCE_PATH:-}" && -s "${DW_WORKFLOW_UPDATES_OPERATOR_DIAGNOSTICS_EVIDENCE_PATH:-}" ]]; then
+    return 1
+  fi
+  if [[ -s "$result_dir/workflow-updates-operator-diagnostics-evidence.json" ]]; then
+    return 1
+  fi
+  if [[ "$repo_root" != "/app" || -d "$repo_root/.git" ]]; then
+    return 1
+  fi
+  if [[ ! -f "$repo_root/artisan" || ! -f "$repo_root/vendor/autoload.php" ]]; then
+    return 1
+  fi
+
+  command -v php >/dev/null 2>&1
+}
+
+write_operator_diagnostics_shard_status() {
+  OPERATOR_DIAGNOSTICS_SHARD_STATUS="${1:?status required}" \
+  OPERATOR_DIAGNOSTICS_SHARD_SUMMARY="${2:?summary required}" \
+  OPERATOR_DIAGNOSTICS_SHARD_STEP="${3:?step required}" \
+  OPERATOR_DIAGNOSTICS_SHARD_RUNNER_BLOCKED="${4:-false}" \
+  RESULT_DIR="$result_dir" \
+  DW_SERVER_IMAGE="${DW_SERVER_IMAGE:-}" \
+  DW_SERVER_VERSION="${DW_SERVER_VERSION:-}" \
+  DW_CLI_VERSION="${DW_CLI_VERSION:-}" \
+  DW_PYTHON_SDK_VERSION="${DW_PYTHON_SDK_VERSION:-}" \
+  DW_WORKFLOW_PHP_VERSION="${DW_WORKFLOW_PHP_VERSION:-}" \
+  DW_WORKFLOW_VERSION="${DW_WORKFLOW_VERSION:-}" \
+  DW_WATERLINE_VERSION="${DW_WATERLINE_VERSION:-}" \
+  node <<'NODE'
+const fs = require('node:fs');
+const path = require('node:path');
+
+const resultDir = process.env.RESULT_DIR;
+const workflowVersion = (process.env.DW_WORKFLOW_PHP_VERSION || '').trim()
+  || (process.env.DW_WORKFLOW_VERSION || '').trim()
+  || 'unresolved';
+const serverImage = (process.env.DW_SERVER_IMAGE || '').trim();
+const serverVersion = (process.env.DW_SERVER_VERSION || '').trim() || (serverImage.match(/:([^/:]+)$/)?.[1] ?? 'unresolved');
+const cliVersion = (process.env.DW_CLI_VERSION || '').trim() || 'unresolved';
+const pythonVersion = (process.env.DW_PYTHON_SDK_VERSION || '').trim() || 'unresolved';
+const waterlineVersion = (process.env.DW_WATERLINE_VERSION || '').trim() || 'unresolved';
+const artifactVersions = {
+  server: serverVersion,
+  cli: cliVersion,
+  'sdk-python': pythonVersion,
+  workflow: workflowVersion,
+  'workflow-php': workflowVersion,
+  waterline: waterlineVersion,
+};
+const artifactSources = {
+  server: serverImage || `docker://durableworkflow/server:${serverVersion}`,
+  cli: `github-release://durable-workflow/cli/v${cliVersion}/install.sh`,
+  'sdk-python': `pypi://durable-workflow==${pythonVersion}`,
+  workflow: `packagist://durable-workflow/workflow@${workflowVersion}`,
+  'workflow-php': `packagist://durable-workflow/workflow@${workflowVersion}`,
+  waterline: `packagist://durable-workflow/waterline@${waterlineVersion}`,
+};
+const runnerBlocked = ['1', 'true', 'yes'].includes((process.env.OPERATOR_DIAGNOSTICS_SHARD_RUNNER_BLOCKED || '').toLowerCase());
+const status = process.env.OPERATOR_DIAGNOSTICS_SHARD_STATUS || (runnerBlocked ? 'runner_blocked' : 'fail');
+const classification = runnerBlocked ? 'runner-blocked' : (['not_covered', 'unsupported'].includes(status) ? 'coverage-gap' : 'product-gap');
+const summary = process.env.OPERATOR_DIAGNOSTICS_SHARD_SUMMARY || 'The CLI and Waterline operator diagnostics shard did not complete.';
+const step = process.env.OPERATOR_DIAGNOSTICS_SHARD_STEP || 'operator_diagnostics_shard';
+const generatedAt = new Date().toISOString().replace(/\.\d{3}Z$/, 'Z');
+const finding = {
+  finding_id: `workflow-updates-operator-diagnostics-surfaces-${runnerBlocked ? 'runner-blocked' : (classification === 'coverage-gap' ? 'coverage-gap' : 'product-gap')}`,
+  finding_type: runnerBlocked ? 'conformance_runner_blocked' : (classification === 'coverage-gap' ? 'conformance_runner_coverage_gap' : 'product_behavior_failure'),
+  classification,
+  scenario_id: 'operator_diagnostics_surfaces',
+  owning_surface: runnerBlocked ? 'conformance_harness' : 'waterline',
+  summary,
+  next_acceptance_criterion: 'Install the pinned CLI and Waterline published artifacts, run workflow:update --json for accepted, completed, failed, and refused update paths, and capture Waterline selected-run detail plus history-export diagnostics for the same run.',
+  diagnostic: { step },
+};
+const emptyMatrix = {
+  required_states: ['accepted', 'completed', 'failed', 'refused'],
+  states: {},
+  failures: [{ surface: 'operator_diagnostics_shard', state: '*', missing_fields: [step], message: summary }],
+};
+const scenario = {
+  scenario_id: 'operator_diagnostics_surfaces',
+  status,
+  classification,
+  published_artifact_cell_executed: false,
+  local_product_source_checkouts_used: false,
+  observed_outputs: {
+    workflow_id: null,
+    run_id: null,
+    cli_fields: {
+      cli_artifact_version: cliVersion,
+      cli_artifact_source: artifactSources.cli,
+      operator_surface_matrix: emptyMatrix,
+    },
+    api_fields: {},
+    history_fields: {},
+    waterline_fields: {
+      waterline_artifact_version: waterlineVersion,
+      waterline_artifact_source: artifactSources.waterline,
+      operator_surface_matrix: emptyMatrix,
+    },
+    diagnostic_transition_matrix: emptyMatrix,
+    artifact_versions: artifactVersions,
+    published_artifact_versions: artifactVersions,
+    artifact_sources: artifactSources,
+    source_policy: {
+      pass_requires_published_artifacts_only: true,
+      local_product_source_checkouts_used: false,
+      local_checkout_execution_counts_as_pass: false,
+    },
+    published_artifact_cell_executed: false,
+    local_product_source_checkouts_used: false,
+  },
+  linked_findings: [finding],
+};
+const payload = {
+  schema: 'durable-workflow.v2.workflow-updates.operator-diagnostics-sidecar',
+  generated_at: generatedAt,
+  runner: 'published-cli-waterline-workflow-updates-operator-diagnostics-shard',
+  runner_blocked: runnerBlocked,
+  source_policy: {
+    pass_requires_published_artifacts_only: true,
+    local_product_source_checkouts_used: false,
+    local_checkout_execution_counts_as_pass: false,
+    artifact_sources: artifactSources,
+  },
+  artifact_versions: artifactVersions,
+  published_artifact_versions: artifactVersions,
+  artifact_sources: artifactSources,
+  scenario_results: {
+    operator_diagnostics_surfaces: scenario,
+  },
+  findings: [finding],
+};
+
+fs.writeFileSync(path.join(resultDir, 'workflow-updates-operator-diagnostics-evidence.json'), `${JSON.stringify(payload, null, 2)}\n`);
+NODE
+}
+
+run_operator_diagnostics_worker_step() {
+  local step="${1:?step required}"
+  local update_id="${2:-}"
+  local output_path="${3:-}"
+
+  OPERATOR_STEP="$step" \
+  OPERATOR_UPDATE_ID="$update_id" \
+  OPERATOR_OUTPUT_PATH="$output_path" \
+  RESULT_DIR="$result_dir" \
+  RUNNER_REPO_ROOT="$repo_root" \
+  OPERATOR_RUNTIME_PATH="$result_dir/operator-diagnostics-runtime.json" \
+  OPERATOR_NAMESPACE="${OPERATOR_NAMESPACE:-workflow-updates-operator}" \
+  OPERATOR_TASK_QUEUE="${OPERATOR_TASK_QUEUE:-workflow-updates-operator-queue}" \
+  OPERATOR_WORKER_ID="${OPERATOR_WORKER_ID:-workflow-updates-operator-worker}" \
+  APP_ENV=production \
+  APP_DEBUG=false \
+  APP_KEY="${APP_KEY:-base64:V09SS0ZMT1ctVVBEQVRFUy1PUEVSQVRPUi1ESUFHTk9TVElDUw==}" \
+  DB_CONNECTION=sqlite \
+  DB_DATABASE="${OPERATOR_SERVER_DB:?operator server database required}" \
+  QUEUE_CONNECTION=database \
+  CACHE_STORE=array \
+  SESSION_DRIVER=array \
+  DW_AUTH_DRIVER=none \
+  DW_TASK_DISPATCH_MODE=poll \
+  DW_V2_TASK_DISPATCH_MODE=poll \
+  php <<'PHP'
+<?php
+declare(strict_types=1);
+
+use App\Models\WorkflowNamespace;
+use App\Support\ControlPlaneProtocol;
+use App\Support\WorkerProtocol;
+use Illuminate\Contracts\Console\Kernel as ConsoleKernel;
+use Illuminate\Contracts\Http\Kernel as HttpKernel;
+use Illuminate\Http\Request;
+use Illuminate\Support\Facades\Artisan;
+use Workflow\Serializers\Serializer;
+
+const OPERATOR_WORKFLOW_TYPE = 'workflow-updates.probe';
+
+function env_text_operator(string $name, string $default = ''): string
+{
+    $value = getenv($name);
+
+    return is_string($value) && trim($value) !== '' ? trim($value) : $default;
+}
+
+function write_operator_json(string $path, array $payload): void
+{
+    file_put_contents($path, json_encode($payload, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES | JSON_THROW_ON_ERROR)."\n");
+}
+
+function bootstrap_operator_application(): void
+{
+    $repoRoot = env_text_operator('RUNNER_REPO_ROOT');
+    require_once $repoRoot.'/vendor/autoload.php';
+
+    $app = require $repoRoot.'/bootstrap/app.php';
+    $app->make(ConsoleKernel::class)->bootstrap();
+
+    config([
+        'app.key' => getenv('APP_KEY') ?: 'base64:V09SS0ZMT1ctVVBEQVRFUy1PUEVSQVRPUi1ESUFHTk9TVElDUw==',
+        'database.default' => 'sqlite',
+        'database.connections.sqlite.database' => getenv('DB_DATABASE') ?: ':memory:',
+        'queue.default' => 'database',
+        'cache.default' => 'array',
+        'session.driver' => 'array',
+        'server.auth.driver' => 'none',
+        'server.mode' => 'service',
+        'workflows.v2.task_dispatch_mode' => 'poll',
+    ]);
+
+    Artisan::call('migrate', ['--force' => true]);
+}
+
+function header_key_operator(string $name): string
+{
+    return 'HTTP_'.str_replace('-', '_', strtoupper($name));
+}
+
+function operator_request_json(string $method, string $path, ?array $body = null, array $allowed = []): array
+{
+    static $kernel = null;
+    $kernel ??= app(HttpKernel::class);
+    $namespace = env_text_operator('OPERATOR_NAMESPACE', 'workflow-updates-operator');
+
+    $server = [
+        'HTTP_ACCEPT' => 'application/json',
+        'CONTENT_TYPE' => 'application/json',
+        'HTTP_X_NAMESPACE' => $namespace,
+        header_key_operator(ControlPlaneProtocol::HEADER) => ControlPlaneProtocol::VERSION,
+        header_key_operator(WorkerProtocol::HEADER) => WorkerProtocol::VERSION,
+    ];
+    $content = $body === null ? null : json_encode($body, JSON_THROW_ON_ERROR);
+    $request = Request::create('/api'.$path, $method, [], [], [], $server, $content);
+    $response = $kernel->handle($request);
+    $kernel->terminate($request, $response);
+    $status = $response->getStatusCode();
+    $raw = (string) $response->getContent();
+
+    if (($status >= 400 || $status === 0) && ! in_array($status, $allowed, true)) {
+        throw new RuntimeException(sprintf('%s %s failed with HTTP %d: %s', $method, $path, $status, $raw));
+    }
+
+    $decoded = $raw === '' ? [] : json_decode($raw, true, flags: JSON_THROW_ON_ERROR);
+
+    return [
+        'status_code' => $status,
+        'body' => is_array($decoded) ? $decoded : [],
+    ];
+}
+
+function operator_parameter(string $name, int $position, string $type, bool $required = true, mixed $default = null): array
+{
+    return [
+        'name' => $name,
+        'position' => $position,
+        'required' => $required,
+        'variadic' => false,
+        'default_available' => ! $required,
+        'default' => $default,
+        'type' => $type,
+        'allows_null' => false,
+    ];
+}
+
+function operator_workflow_command_contract(): array
+{
+    return [
+        'queries' => ['state'],
+        'query_contracts' => [
+            ['name' => 'state', 'parameters' => []],
+        ],
+        'signals' => ['advance', 'finish'],
+        'signal_contracts' => [
+            ['name' => 'advance', 'parameters' => [operator_parameter('name', 0, 'string')]],
+            ['name' => 'finish', 'parameters' => []],
+        ],
+        'updates' => ['adjust_payload', 'approve', 'fail_update'],
+        'update_contracts' => [
+            [
+                'name' => 'approve',
+                'parameters' => [
+                    operator_parameter('approved', 0, 'bool'),
+                    operator_parameter('source', 1, 'string', false, 'manual'),
+                ],
+            ],
+            [
+                'name' => 'adjust_payload',
+                'parameters' => [operator_parameter('payload', 0, 'array')],
+            ],
+            [
+                'name' => 'fail_update',
+                'parameters' => [operator_parameter('reason', 0, 'string')],
+            ],
+        ],
+    ];
+}
+
+function operator_register_worker(string $workerId, string $taskQueue): void
+{
+    operator_request_json('POST', '/worker/register', [
+        'worker_id' => $workerId,
+        'task_queue' => $taskQueue,
+        'runtime' => 'php',
+        'supported_workflow_types' => [OPERATOR_WORKFLOW_TYPE],
+        'capabilities' => ['workflow_tasks', 'query_tasks'],
+        'workflow_command_contracts' => [
+            OPERATOR_WORKFLOW_TYPE => operator_workflow_command_contract(),
+        ],
+    ], [409]);
+}
+
+function operator_poll_task(string $workerId, string $taskQueue): array
+{
+    $response = operator_request_json('POST', '/worker/workflow-tasks/poll', [
+        'worker_id' => $workerId,
+        'task_queue' => $taskQueue,
+    ]);
+    $task = $response['body']['task'] ?? null;
+
+    if (! is_array($task) || ! is_string($task['task_id'] ?? null)) {
+        throw new RuntimeException('No workflow task was available for '.$workerId.'.');
+    }
+
+    return $task;
+}
+
+function operator_complete_task(array $task, array $commands): array
+{
+    return operator_request_json('POST', '/worker/workflow-tasks/'.((string) $task['task_id']).'/complete', [
+        'lease_owner' => (string) $task['lease_owner'],
+        'workflow_task_attempt' => (int) $task['workflow_task_attempt'],
+        'commands' => $commands,
+    ])['body'];
+}
+
+function operator_open_signal_wait(string $workerId, string $taskQueue): array
+{
+    return operator_complete_task(operator_poll_task($workerId, $taskQueue), [
+        [
+            'type' => 'open_signal_wait',
+            'signal_name' => 'advance',
+            'timeout_seconds' => 300,
+        ],
+    ]);
+}
+
+$step = env_text_operator('OPERATOR_STEP');
+$runtimePath = env_text_operator('OPERATOR_RUNTIME_PATH');
+$outputPath = env_text_operator('OPERATOR_OUTPUT_PATH');
+$namespace = env_text_operator('OPERATOR_NAMESPACE', 'workflow-updates-operator');
+$taskQueue = env_text_operator('OPERATOR_TASK_QUEUE', 'workflow-updates-operator-queue');
+$workerId = env_text_operator('OPERATOR_WORKER_ID', 'workflow-updates-operator-worker');
+
+bootstrap_operator_application();
+
+WorkflowNamespace::query()->updateOrCreate(
+    ['name' => $namespace],
+    [
+        'description' => 'Workflow updates operator diagnostics conformance namespace',
+        'retention_days' => 30,
+        'status' => 'active',
+    ],
+);
+
+if ($step === 'setup') {
+    $suffix = strtolower(bin2hex(random_bytes(4)));
+    $workflowId = 'wf-update-operator-'.$suffix;
+    operator_register_worker($workerId, $taskQueue);
+    $start = operator_request_json('POST', '/workflows', [
+        'workflow_id' => $workflowId,
+        'workflow_type' => OPERATOR_WORKFLOW_TYPE,
+        'task_queue' => $taskQueue,
+        'input' => ['operator-diagnostics'],
+    ])['body'];
+    $runId = (string) ($start['run_id'] ?? '');
+    $open = operator_open_signal_wait($workerId, $taskQueue);
+    $runtime = [
+        'namespace' => $namespace,
+        'workflow_id' => $workflowId,
+        'run_id' => $runId,
+        'worker_id' => $workerId,
+        'task_queue' => $taskQueue,
+        'start_response' => $start,
+        'open_signal_wait_response' => $open,
+    ];
+    write_operator_json($runtimePath, $runtime);
+    if ($outputPath !== '') {
+        write_operator_json($outputPath, $runtime);
+    }
+
+    return;
+}
+
+$runtime = json_decode((string) file_get_contents($runtimePath), true, flags: JSON_THROW_ON_ERROR);
+if (! is_array($runtime)) {
+    throw new RuntimeException('Operator diagnostics runtime metadata was not readable.');
+}
+
+$workerId = (string) ($runtime['worker_id'] ?? $workerId);
+$taskQueue = (string) ($runtime['task_queue'] ?? $taskQueue);
+$updateId = env_text_operator('OPERATOR_UPDATE_ID');
+if ($updateId === '') {
+    throw new RuntimeException('OPERATOR_UPDATE_ID is required for '.$step.'.');
+}
+
+if ($step === 'complete') {
+    $result = operator_complete_task(operator_poll_task($workerId, $taskQueue), [
+        [
+            'type' => 'complete_update',
+            'update_id' => $updateId,
+            'result' => [
+                'codec' => 'avro',
+                'blob' => Serializer::serializeWithCodec('avro', [
+                    'approved' => true,
+                    'source' => 'operator-diagnostics-cli-waterline',
+                ]),
+            ],
+        ],
+    ]);
+} elseif ($step === 'fail') {
+    $result = operator_complete_task(operator_poll_task($workerId, $taskQueue), [
+        [
+            'type' => 'fail_update',
+            'update_id' => $updateId,
+            'message' => 'workflow update operator diagnostics failure',
+            'exception_class' => 'DurableWorkflow\\Conformance\\WorkflowUpdateOperatorDiagnosticsFailure',
+            'exception_type' => 'workflow_update_operator_diagnostics_failure',
+            'non_retryable' => true,
+        ],
+    ]);
+} else {
+    throw new RuntimeException('Unknown operator diagnostics worker step: '.$step.'.');
+}
+
+if ($outputPath !== '') {
+    write_operator_json($outputPath, $result);
+}
+PHP
+}
+
+install_published_operator_cli() {
+  local cli_version="${1:?cli version required}"
+  local cli_root="${2:?cli root required}"
+  local cli_installer_url=""
+  mkdir -p "$cli_root/bin"
+
+  for candidate_url in \
+    "https://github.com/durable-workflow/cli/releases/download/${cli_version}/install.sh" \
+    "https://github.com/durable-workflow/cli/releases/download/v${cli_version}/install.sh"
+  do
+    if curl -fsSL --retry 3 -o "$cli_root/install.sh" "$candidate_url" >"$result_dir/operator-cli-installer-download.log" 2>&1; then
+      cli_installer_url="$candidate_url"
+      break
+    fi
+  done
+
+  if [[ -z "$cli_installer_url" ]]; then
+    return 1
+  fi
+
+  VERSION="$cli_version" \
+    DURABLE_WORKFLOW_INSTALL_DIR="$cli_root/bin" \
+    DURABLE_WORKFLOW_BIN_NAME=dw \
+    sh "$cli_root/install.sh" >"$result_dir/operator-cli-install.log" 2>&1
+}
+
+run_operator_cli_capture() {
+  local name="${1:?capture name required}"
+  shift
+  local stdout_path="$result_dir/operator-cli-${name}.stdout.json"
+  local stderr_path="$result_dir/operator-cli-${name}.stderr.log"
+  local capture_path="$result_dir/operator-cli-${name}.json"
+  local status
+
+  set +e
+  "$@" >"$stdout_path" 2>"$stderr_path"
+  status=$?
+  set -e
+
+  OPERATOR_CAPTURE_NAME="$name" \
+  OPERATOR_CAPTURE_STATUS="$status" \
+  OPERATOR_CAPTURE_STDOUT="$stdout_path" \
+  OPERATOR_CAPTURE_STDERR="$stderr_path" \
+  OPERATOR_CAPTURE_PATH="$capture_path" \
+  node <<'NODE'
+const fs = require('node:fs');
+
+const name = process.env.OPERATOR_CAPTURE_NAME;
+const stdoutPath = process.env.OPERATOR_CAPTURE_STDOUT;
+const stderrPath = process.env.OPERATOR_CAPTURE_STDERR;
+const capturePath = process.env.OPERATOR_CAPTURE_PATH;
+const status = Number.parseInt(process.env.OPERATOR_CAPTURE_STATUS || '1', 10);
+const raw = fs.existsSync(stdoutPath) ? fs.readFileSync(stdoutPath, 'utf8').trim() : '';
+const stderr = fs.existsSync(stderrPath) ? fs.readFileSync(stderrPath, 'utf8') : '';
+let json = null;
+let parse_error = null;
+if (raw !== '') {
+  try {
+    json = JSON.parse(raw);
+  } catch (error) {
+    parse_error = error.message;
+  }
+}
+fs.writeFileSync(capturePath, `${JSON.stringify({
+  surface: 'workflow:update --json',
+  capture: name,
+  exit_status: Number.isFinite(status) ? status : 1,
+  stdout_path: stdoutPath,
+  stderr_path: stderrPath,
+  json,
+  raw_stdout: raw.slice(0, 4000),
+  stderr: stderr.slice(0, 4000),
+  parse_error,
+}, null, 2)}\n`);
+NODE
+}
+
+operator_cli_update_id() {
+  node -e 'const fs = require("node:fs"); const value = JSON.parse(fs.readFileSync(process.argv[1], "utf8")); process.stdout.write(String(value?.json?.update_id || ""));' "$1"
+}
+
+capture_operator_server_api() {
+  local method="${1:?method required}"
+  local api_path="${2:?path required}"
+  local output_path="${3:?output path required}"
+  local namespace="${4:?namespace required}"
+  local server_url="${5:?server URL required}"
+  local body_path="${output_path}.body"
+  local stderr_path="${output_path}.stderr"
+  local status
+  local curl_status
+
+  set +e
+  status="$(curl -sS -o "$body_path" -w "%{http_code}" \
+    -X "$method" \
+    -H 'Accept: application/json' \
+    -H 'Content-Type: application/json' \
+    -H "X-Namespace: ${namespace}" \
+    -H 'X-Durable-Workflow-Control-Plane-Version: 2' \
+    "${server_url}/api${api_path}" 2>"$stderr_path")"
+  curl_status=$?
+  set -e
+
+  OPERATOR_API_METHOD="$method" \
+  OPERATOR_API_PATH="$api_path" \
+  OPERATOR_API_STATUS="$status" \
+  OPERATOR_API_CURL_STATUS="$curl_status" \
+  OPERATOR_API_BODY="$body_path" \
+  OPERATOR_API_STDERR="$stderr_path" \
+  OPERATOR_API_CAPTURE="$output_path" \
+  node <<'NODE'
+const fs = require('node:fs');
+
+const bodyPath = process.env.OPERATOR_API_BODY;
+const stderrPath = process.env.OPERATOR_API_STDERR;
+const raw = fs.existsSync(bodyPath) ? fs.readFileSync(bodyPath, 'utf8').trim() : '';
+const stderr = fs.existsSync(stderrPath) ? fs.readFileSync(stderrPath, 'utf8') : '';
+let json = null;
+let parse_error = null;
+if (raw !== '') {
+  try {
+    json = JSON.parse(raw);
+  } catch (error) {
+    parse_error = error.message;
+  }
+}
+fs.writeFileSync(process.env.OPERATOR_API_CAPTURE, `${JSON.stringify({
+  method: process.env.OPERATOR_API_METHOD,
+  path: process.env.OPERATOR_API_PATH,
+  status: Number.parseInt(process.env.OPERATOR_API_STATUS || '0', 10),
+  curl_status: Number.parseInt(process.env.OPERATOR_API_CURL_STATUS || '1', 10),
+  json,
+  raw: raw.slice(0, 4000),
+  stderr: stderr.slice(0, 4000),
+  parse_error,
+}, null, 2)}\n`);
+NODE
+}
+
+materialize_operator_diagnostics_report() {
+  OPERATOR_RUNTIME_PATH="${1:?runtime path required}" \
+  OPERATOR_WATERLINE_REPORT_PATH="${2:?waterline report path required}" \
+  OPERATOR_RUN_DETAIL_CAPTURE_PATH="$result_dir/operator-run-detail-api.json" \
+  OPERATOR_HISTORY_CAPTURE_PATH="$result_dir/operator-history-api.json" \
+  RESULT_DIR="$result_dir" \
+  DW_SERVER_IMAGE="${DW_SERVER_IMAGE:-}" \
+  DW_SERVER_VERSION="${DW_SERVER_VERSION:-}" \
+  DW_CLI_VERSION="${DW_CLI_VERSION:-}" \
+  DW_PYTHON_SDK_VERSION="${DW_PYTHON_SDK_VERSION:-}" \
+  DW_WORKFLOW_PHP_VERSION="${DW_WORKFLOW_PHP_VERSION:-}" \
+  DW_WORKFLOW_VERSION="${DW_WORKFLOW_VERSION:-}" \
+  DW_WATERLINE_VERSION="${DW_WATERLINE_VERSION:-}" \
+  node <<'NODE'
+const fs = require('node:fs');
+const path = require('node:path');
+
+const resultDir = process.env.RESULT_DIR;
+const workflowVersion = (process.env.DW_WORKFLOW_PHP_VERSION || '').trim()
+  || (process.env.DW_WORKFLOW_VERSION || '').trim()
+  || 'unresolved';
+const serverImage = (process.env.DW_SERVER_IMAGE || '').trim();
+const serverVersion = (process.env.DW_SERVER_VERSION || '').trim() || (serverImage.match(/:([^/:]+)$/)?.[1] ?? 'unresolved');
+const cliVersion = (process.env.DW_CLI_VERSION || '').trim() || 'unresolved';
+const pythonVersion = (process.env.DW_PYTHON_SDK_VERSION || '').trim() || 'unresolved';
+const waterlineVersion = (process.env.DW_WATERLINE_VERSION || '').trim() || 'unresolved';
+const artifactVersions = {
+  server: serverVersion,
+  cli: cliVersion,
+  'sdk-python': pythonVersion,
+  workflow: workflowVersion,
+  'workflow-php': workflowVersion,
+  waterline: waterlineVersion,
+};
+const artifactSources = {
+  server: serverImage || `docker://durableworkflow/server:${serverVersion}`,
+  cli: `github-release://durable-workflow/cli/v${cliVersion}/install.sh`,
+  'sdk-python': `pypi://durable-workflow==${pythonVersion}`,
+  workflow: `packagist://durable-workflow/workflow@${workflowVersion}`,
+  'workflow-php': `packagist://durable-workflow/workflow@${workflowVersion}`,
+  waterline: `packagist://durable-workflow/waterline@${waterlineVersion}`,
+};
+const states = ['accepted', 'completed', 'failed', 'refused'];
+
+function readJson(file) {
+  try {
+    if (file && fs.existsSync(file) && fs.statSync(file).size > 0) {
+      return JSON.parse(fs.readFileSync(file, 'utf8'));
+    }
+  } catch (error) {
+    return { read_error: error.message };
+  }
+
+  return null;
+}
+
+function objectValue(value) {
+  return value && typeof value === 'object' && !Array.isArray(value) ? value : {};
+}
+
+function hasOwn(value, field) {
+  return value && typeof value === 'object' && Object.prototype.hasOwnProperty.call(value, field);
+}
+
+function stringValue(value) {
+  return typeof value === 'string' && value.trim() !== '' ? value.trim() : null;
+}
+
+function nonEmptyObject(value) {
+  return value && typeof value === 'object' && !Array.isArray(value) && Object.keys(value).length > 0;
+}
+
+function arrayRows(value) {
+  if (Array.isArray(value)) {
+    return value.filter((row) => row && typeof row === 'object');
+  }
+  if (value && typeof value === 'object') {
+    return Object.values(value).filter((row) => row && typeof row === 'object');
+  }
+
+  return [];
+}
+
+function scenarioRows(value) {
+  return arrayRows(value?.scenario_results ?? value?.scenarioResults);
+}
+
+function workflowUpdateJson(capture) {
+  return objectValue(capture?.json);
+}
+
+function historyReferences(value) {
+  const diagnostics = objectValue(value.update_diagnostics);
+  return value.history_references ?? diagnostics.history_references ?? objectValue(value.cli_fields).history_references ?? null;
+}
+
+function payloadVisible(value) {
+  const diagnostics = objectValue(value.update_diagnostics);
+  const request = objectValue(value.request);
+
+  return hasOwn(value, 'payload')
+    || hasOwn(diagnostics, 'payload')
+    || hasOwn(request, 'input');
+}
+
+function resultVisible(value) {
+  const diagnostics = objectValue(value.update_diagnostics);
+
+  return hasOwn(value, 'result')
+    || hasOwn(value, 'result_envelope')
+    || hasOwn(diagnostics, 'result')
+    || hasOwn(diagnostics, 'result_envelope');
+}
+
+function errorVisible(value) {
+  const diagnostics = objectValue(value.update_diagnostics);
+
+  return hasOwn(value, 'error_details')
+    || hasOwn(diagnostics, 'error')
+    || stringValue(value.failure_id) !== null
+    || stringValue(value.failure_message) !== null
+    || stringValue(value.reason) !== null
+    || stringValue(value.rejection_reason) !== null
+    || stringValue(value.message) !== null;
+}
+
+function cliStateEvidence(capture, state) {
+  const json = workflowUpdateJson(capture);
+  const refs = historyReferences(json);
+  const request = objectValue(json.request);
+  const cliFields = objectValue(json.cli_fields);
+  const stateValue = stringValue(json.state)
+    || stringValue(json.update_state)
+    || stringValue(cliFields.state)
+    || stringValue(json.update_status);
+  const outcome = stringValue(json.outcome);
+  const reason = stringValue(json.reason) || stringValue(json.rejection_reason);
+  const requestId = stringValue(json.request_id)
+    || stringValue(request.request_id)
+    || stringValue(cliFields.request_id);
+  const updateId = stringValue(json.update_id) || stringValue(cliFields.update_id);
+
+  return {
+    present: nonEmptyObject(json),
+    exit_status: Number.isInteger(capture?.exit_status) ? capture.exit_status : null,
+    request_id: requestId,
+    update_id: updateId,
+    state: stateValue,
+    outcome,
+    reason,
+    request_identifiers_visible: requestId !== null,
+    state_visible: stateValue === state || (state === 'completed' && stateValue === 'completed') || (state === 'failed' && stateValue === 'failed') || (state === 'refused' && stateValue === 'refused'),
+    outcome_or_reason_visible: outcome !== null || reason !== null,
+    payload_visible: payloadVisible(json),
+    result_visible: state === 'completed' ? resultVisible(json) : null,
+    error_visible: ['failed', 'refused'].includes(state) ? errorVisible(json) : null,
+    history_references_visible: nonEmptyObject(refs),
+    history_references: refs,
+    fields_present: Array.isArray(cliFields.fields_present) ? cliFields.fields_present : [],
+    parse_error: capture?.parse_error || null,
+  };
+}
+
+function surfaceStates(surface) {
+  return objectValue(
+    surface?.operator_surface_matrix?.states
+      ?? surface?.diagnostic_transition_matrix?.states
+      ?? surface?.states,
+  );
+}
+
+function surfaceMatrixFailures(surfaceName, matrix) {
+  const matrixStates = surfaceStates(matrix);
+  const failures = [];
+  for (const state of states) {
+    const evidence = objectValue(matrixStates[state]);
+    const missing = [];
+    for (const field of [
+      'present',
+      'request_identifiers_visible',
+      'payload_visible',
+      'outcome_or_reason_visible',
+      'history_references_visible',
+    ]) {
+      if (evidence[field] !== true) {
+        missing.push(field);
+      }
+    }
+    if (surfaceName === 'waterline' && evidence.history_export_references_visible !== true) {
+      missing.push('history_export_references_visible');
+    }
+    if (state === 'completed' && evidence.result_visible !== true) {
+      missing.push('result_visible');
+    }
+    if (['failed', 'refused'].includes(state) && evidence.error_visible !== true) {
+      missing.push('error_visible');
+    }
+    if (surfaceName === 'cli' && evidence.state_visible !== true) {
+      missing.push('state_visible');
+    }
+    if (missing.length > 0) {
+      failures.push({ surface: surfaceName, state, missing_fields: missing, evidence });
+    }
+  }
+
+  return failures;
+}
+
+const runtime = readJson(process.env.OPERATOR_RUNTIME_PATH) ?? {};
+const captures = {
+  accepted: readJson(path.join(resultDir, 'operator-cli-accepted.json')),
+  completed: readJson(path.join(resultDir, 'operator-cli-completed.json')),
+  failed: readJson(path.join(resultDir, 'operator-cli-failed.json')),
+  refused: readJson(path.join(resultDir, 'operator-cli-refused.json')),
+};
+const runDetailCapture = readJson(process.env.OPERATOR_RUN_DETAIL_CAPTURE_PATH);
+const historyCapture = readJson(process.env.OPERATOR_HISTORY_CAPTURE_PATH);
+const waterlineReport = readJson(process.env.OPERATOR_WATERLINE_REPORT_PATH) ?? {};
+const waterlineOperatorScenario = scenarioRows(waterlineReport)
+  .find((row) => row?.scenario_id === 'operator_diagnostics_surfaces') ?? null;
+const waterlineObserved = objectValue(waterlineOperatorScenario?.observed_outputs);
+const waterlineMatrix = objectValue(waterlineObserved.operator_surface_matrix);
+const cliMatrix = {
+  surface: 'workflow:update --json',
+  required_states: states,
+  state_counts: Object.fromEntries(states.map((state) => [state, captures[state] ? 1 : 0])),
+  states: Object.fromEntries(states.map((state) => [state, cliStateEvidence(captures[state], state)])),
+  command_captures: {
+    accepted: captures.accepted,
+    completed: captures.completed,
+    failed: captures.failed,
+    refused: captures.refused,
+  },
+};
+const cliFailures = surfaceMatrixFailures('cli', cliMatrix);
+const waterlineFailures = surfaceMatrixFailures('waterline', waterlineMatrix);
+if (waterlineOperatorScenario?.status !== 'pass') {
+  waterlineFailures.push({
+    surface: 'waterline',
+    state: '*',
+    missing_fields: ['operator_diagnostics_surfaces.pass'],
+    evidence: {
+      status: waterlineOperatorScenario?.status ?? null,
+      findings: waterlineOperatorScenario?.linked_findings ?? waterlineReport.findings ?? [],
+    },
+  });
+}
+const diagnosticTransitionMatrix = {
+  required_states: states,
+  surfaces: {
+    cli: cliMatrix,
+    waterline: waterlineMatrix,
+  },
+  states: Object.fromEntries(states.map((state) => [
+    state,
+    {
+      cli: cliMatrix.states[state],
+      waterline: surfaceStates(waterlineMatrix)[state] ?? null,
+    },
+  ])),
+  failures: [...cliFailures, ...waterlineFailures],
+};
+const status = diagnosticTransitionMatrix.failures.length === 0 ? 'pass' : 'fail';
+const linkedFindings = status === 'pass'
+  ? []
+  : [{
+    finding_id: 'workflow-updates-operator-diagnostics-surfaces-product-gap',
+    finding_type: 'product_behavior_failure',
+    classification: 'product-gap',
+    scenario_id: 'operator_diagnostics_surfaces',
+    owning_surface: 'waterline',
+    summary: 'The published CLI JSON and Waterline selected-run diagnostics did not both prove accepted, completed, failed, and refused workflow update paths.',
+    next_acceptance_criterion: 'Both workflow:update --json and Waterline selected-run detail/history export expose request ids, state/outcome/reason, payload/result/error details, and history references for accepted, completed, failed, and refused update paths.',
+    evidence: diagnosticTransitionMatrix.failures,
+  }];
+
+for (const finding of arrayRows(waterlineOperatorScenario?.linked_findings ?? waterlineReport.findings)) {
+  linkedFindings.push(finding);
+}
+
+const observedOutputs = {
+  workflow_id: runtime.workflow_id ?? workflowUpdateJson(captures.accepted).workflow_id ?? null,
+  run_id: runtime.run_id ?? workflowUpdateJson(captures.accepted).run_id ?? null,
+  cli_fields: {
+    surface: 'workflow:update --json',
+    cli_artifact_version: cliVersion,
+    cli_artifact_source: artifactSources.cli,
+    operator_surface_matrix: cliMatrix,
+  },
+  api_fields: {
+    run_detail_capture: runDetailCapture,
+    run_detail: runDetailCapture?.json ?? null,
+  },
+  history_fields: {
+    history_capture: historyCapture,
+    history: historyCapture?.json ?? null,
+  },
+  waterline_fields: {
+    waterline_artifact_version: waterlineVersion,
+    waterline_artifact_source: artifactSources.waterline,
+    command_schema: waterlineReport.schema ?? null,
+    command_outcome: waterlineReport.outcome ?? null,
+    operator_surface_matrix: waterlineMatrix,
+    api_captures: waterlineObserved.api_captures ?? waterlineReport.api_captures ?? null,
+    selected_run_updates: waterlineObserved.selected_run_updates ?? null,
+    history_update_events: waterlineObserved.history_update_events ?? null,
+  },
+  diagnostic_transition_matrix: diagnosticTransitionMatrix,
+  artifact_install_evidence: {
+    cli: {
+      installed_from: artifactSources.cli,
+      version: cliVersion,
+      installer: 'official GitHub release install.sh asset',
+    },
+    waterline: {
+      installed_from: artifactSources.waterline,
+      version: waterlineVersion,
+      package: 'durable-workflow/waterline',
+    },
+  },
+  artifact_versions: artifactVersions,
+  published_artifact_versions: artifactVersions,
+  artifact_sources: artifactSources,
+  source_policy: {
+    pass_requires_published_artifacts_only: true,
+    local_product_source_checkouts_used: false,
+    local_checkout_execution_counts_as_pass: false,
+  },
+  published_artifact_cell_executed: true,
+  local_product_source_checkouts_used: false,
+};
+const scenario = {
+  scenario_id: 'operator_diagnostics_surfaces',
+  status,
+  classification: status === 'pass' ? 'product-evidence' : 'product-gap',
+  published_artifact_cell_executed: true,
+  local_product_source_checkouts_used: false,
+  observed_outputs: observedOutputs,
+  linked_findings: linkedFindings,
+};
+const payload = {
+  schema: 'durable-workflow.v2.workflow-updates.operator-diagnostics-sidecar',
+  generated_at: new Date().toISOString().replace(/\.\d{3}Z$/, 'Z'),
+  runner: 'published-cli-waterline-workflow-updates-operator-diagnostics-shard',
+  runner_blocked: false,
+  source_policy: {
+    pass_requires_published_artifacts_only: true,
+    local_product_source_checkouts_used: false,
+    local_checkout_execution_counts_as_pass: false,
+    artifact_sources: artifactSources,
+  },
+  artifact_versions: artifactVersions,
+  published_artifact_versions: artifactVersions,
+  artifact_sources: artifactSources,
+  scenario_results: {
+    operator_diagnostics_surfaces: scenario,
+  },
+  findings: linkedFindings,
+  cli_update_captures: captures,
+  waterline_report: {
+    schema: waterlineReport.schema ?? null,
+    outcome: waterlineReport.outcome ?? null,
+    runtime_matrix: waterlineReport.runtime_matrix ?? null,
+  },
+};
+
+fs.writeFileSync(path.join(resultDir, 'workflow-updates-operator-diagnostics-evidence.json'), `${JSON.stringify(payload, null, 2)}\n`);
+NODE
+}
+
+run_operator_diagnostics_shard() {
+  local cli_version="${DW_CLI_VERSION:-}"
+  local waterline_version="${DW_WATERLINE_VERSION:-}"
+  local workflow_php_version="${DW_WORKFLOW_PHP_VERSION:-${DW_WORKFLOW_VERSION:-}}"
+  local operator_db="$result_dir/operator-diagnostics-server.sqlite"
+  local operator_port="${DW_WORKFLOW_UPDATES_OPERATOR_SERVER_PORT:-}"
+  local operator_url
+  local operator_cli_root="$result_dir/operator-cli"
+  local operator_cli_bin
+  local operator_waterline_app="$result_dir/operator-waterline-app"
+  local composer_home="$result_dir/operator-waterline-composer-home"
+  local composer_cache="$result_dir/operator-waterline-composer-cache"
+  local runtime_path="$result_dir/operator-diagnostics-runtime.json"
+  local waterline_report="$result_dir/operator-waterline-workflow-updates-report.json"
+  local namespace="${OPERATOR_NAMESPACE:-workflow-updates-operator}"
+  local workflow_id
+  local run_id
+  local completed_request_id
+  local completed_update_id
+  local failed_request_id
+  local failed_update_id
+  local accepted_request_id
+  local refused_request_id
+
+  if [[ -z "$cli_version" ]] || ! is_exact_package_version "$cli_version"; then
+    write_operator_diagnostics_shard_status not_covered "DW_CLI_VERSION must be an exact CLI release version before operator diagnostics can install the official CLI artifact." cli_version_resolution false
+    return 0
+  fi
+  if [[ -z "$waterline_version" ]] || ! is_exact_package_version "$waterline_version"; then
+    write_operator_diagnostics_shard_status not_covered "DW_WATERLINE_VERSION must be an exact Waterline release version before operator diagnostics can install the Packagist artifact." waterline_version_resolution false
+    return 0
+  fi
+  if [[ -z "$workflow_php_version" ]] || ! is_exact_package_version "$workflow_php_version"; then
+    write_operator_diagnostics_shard_status not_covered "DW_WORKFLOW_PHP_VERSION must be an exact durable-workflow/workflow version before the Waterline diagnostics app can install from Packagist." workflow_php_version_resolution false
+    return 0
+  fi
+  if ! command -v curl >/dev/null 2>&1; then
+    write_operator_diagnostics_shard_status runner_blocked "curl is required to install the CLI release artifact and capture server diagnostics." curl_unavailable true
+    return 0
+  fi
+  if ! command -v composer >/dev/null 2>&1; then
+    write_operator_diagnostics_shard_status runner_blocked "Composer is required to install the pinned Packagist durable-workflow/waterline package." composer_unavailable true
+    return 0
+  fi
+
+  if [[ -z "$operator_port" ]]; then
+    operator_port="$(choose_tcp_port)"
+  fi
+  operator_url="http://127.0.0.1:${operator_port}"
+
+  : > "$operator_db"
+  if ! APP_ENV=production \
+    APP_DEBUG=false \
+    APP_KEY="${APP_KEY:-base64:V09SS0ZMT1ctVVBEQVRFUy1PUEVSQVRPUi1TRVJWRVI=}" \
+    DB_CONNECTION=sqlite \
+    DB_DATABASE="$operator_db" \
+    QUEUE_CONNECTION=database \
+    CACHE_STORE=array \
+    SESSION_DRIVER=array \
+    DW_AUTH_DRIVER=none \
+    DW_TASK_DISPATCH_MODE=poll \
+    DW_V2_TASK_DISPATCH_MODE=poll \
+    php "$repo_root/artisan" server:bootstrap --force \
+      > "$result_dir/operator-server-bootstrap.log" 2>&1; then
+    write_operator_diagnostics_shard_status fail "The published server API could not bootstrap the temporary operator diagnostics database; see operator-server-bootstrap.log." server_bootstrap false
+    return 0
+  fi
+
+  OPERATOR_SERVER_DB="$operator_db" \
+    run_operator_diagnostics_worker_step setup "" "$result_dir/operator-worker-setup.json" \
+    > "$result_dir/operator-worker-setup.log" 2>&1 || {
+      write_operator_diagnostics_shard_status fail "The operator diagnostics shard could not create the temporary workflow run; see operator-worker-setup.log." operator_worker_setup false
+      return 0
+    }
+
+  workflow_id="$(node -e 'const fs = require("node:fs"); const value = JSON.parse(fs.readFileSync(process.argv[1], "utf8")); process.stdout.write(String(value.workflow_id || ""));' "$runtime_path")"
+  run_id="$(node -e 'const fs = require("node:fs"); const value = JSON.parse(fs.readFileSync(process.argv[1], "utf8")); process.stdout.write(String(value.run_id || ""));' "$runtime_path")"
+  if [[ -z "$workflow_id" || -z "$run_id" ]]; then
+    write_operator_diagnostics_shard_status fail "The operator diagnostics setup did not identify a workflow instance and run." operator_runtime_identity false
+    return 0
+  fi
+
+  APP_ENV=production \
+  APP_DEBUG=false \
+  APP_KEY="${APP_KEY:-base64:V09SS0ZMT1ctVVBEQVRFUy1PUEVSQVRPUi1TRVJWRVI=}" \
+  DB_CONNECTION=sqlite \
+  DB_DATABASE="$operator_db" \
+  QUEUE_CONNECTION=database \
+  CACHE_STORE=array \
+  SESSION_DRIVER=array \
+  DW_AUTH_DRIVER=none \
+  DW_TASK_DISPATCH_MODE=poll \
+  DW_V2_TASK_DISPATCH_MODE=poll \
+  PHP_CLI_SERVER_WORKERS="${PHP_CLI_SERVER_WORKERS:-8}" \
+  php "$repo_root/artisan" serve --host=127.0.0.1 --port="$operator_port" --no-reload \
+    > "$result_dir/operator-server.log" 2>&1 &
+  cleanup_pids+=("$!")
+
+  if ! wait_for_http "$operator_url/api/health"; then
+    write_operator_diagnostics_shard_status runner_blocked "The temporary published server HTTP surface did not become ready for the operator diagnostics shard; see operator-server.log." server_http_unavailable true
+    return 0
+  fi
+
+  if ! install_published_operator_cli "$cli_version" "$operator_cli_root"; then
+    write_operator_diagnostics_shard_status runner_blocked "The official CLI installer could not install release ${cli_version}; see operator-cli-installer-download.log or operator-cli-install.log." cli_install true
+    return 0
+  fi
+  operator_cli_bin="$operator_cli_root/bin/dw"
+  if [[ ! -x "$operator_cli_bin" ]]; then
+    write_operator_diagnostics_shard_status runner_blocked "The official CLI installer did not produce an executable dw binary." cli_executable_missing true
+    return 0
+  fi
+
+  "$operator_cli_bin" --version > "$result_dir/operator-cli-version.log" 2>&1 || {
+    write_operator_diagnostics_shard_status fail "The installed CLI release could not report its version; see operator-cli-version.log." cli_version_check false
+    return 0
+  }
+
+  completed_request_id="cli-completed-${run_id}"
+  run_operator_cli_capture completed-accepted "$operator_cli_bin" workflow:update "$workflow_id" approve \
+    --server="$operator_url" \
+    --namespace="$namespace" \
+    --run-id="$run_id" \
+    --request-id="$completed_request_id" \
+    --wait=accepted \
+    --input='[true,"cli-completed"]' \
+    --json
+  completed_update_id="$(operator_cli_update_id "$result_dir/operator-cli-completed-accepted.json")"
+  if [[ -z "$completed_update_id" ]]; then
+    write_operator_diagnostics_shard_status fail "workflow:update --json did not return an update id for the completed path; see operator-cli-completed-accepted.json." cli_completed_accept false
+    return 0
+  fi
+  OPERATOR_SERVER_DB="$operator_db" \
+    run_operator_diagnostics_worker_step complete "$completed_update_id" "$result_dir/operator-worker-complete.json" \
+    > "$result_dir/operator-worker-complete.log" 2>&1 || {
+      write_operator_diagnostics_shard_status fail "The operator diagnostics worker could not complete the CLI accepted update; see operator-worker-complete.log." worker_complete false
+      return 0
+    }
+  run_operator_cli_capture completed "$operator_cli_bin" workflow:update "$workflow_id" approve \
+    --server="$operator_url" \
+    --namespace="$namespace" \
+    --run-id="$run_id" \
+    --request-id="$completed_request_id" \
+    --wait=completed \
+    --input='[true,"cli-completed-duplicate"]' \
+    --json
+
+  failed_request_id="cli-failed-${run_id}"
+  run_operator_cli_capture failed-accepted "$operator_cli_bin" workflow:update "$workflow_id" fail_update \
+    --server="$operator_url" \
+    --namespace="$namespace" \
+    --run-id="$run_id" \
+    --request-id="$failed_request_id" \
+    --wait=accepted \
+    --input='["cli failure"]' \
+    --json
+  failed_update_id="$(operator_cli_update_id "$result_dir/operator-cli-failed-accepted.json")"
+  if [[ -z "$failed_update_id" ]]; then
+    write_operator_diagnostics_shard_status fail "workflow:update --json did not return an update id for the failed path; see operator-cli-failed-accepted.json." cli_failed_accept false
+    return 0
+  fi
+  OPERATOR_SERVER_DB="$operator_db" \
+    run_operator_diagnostics_worker_step fail "$failed_update_id" "$result_dir/operator-worker-fail.json" \
+    > "$result_dir/operator-worker-fail.log" 2>&1 || {
+      write_operator_diagnostics_shard_status fail "The operator diagnostics worker could not fail the CLI accepted update; see operator-worker-fail.log." worker_fail false
+      return 0
+    }
+  run_operator_cli_capture failed "$operator_cli_bin" workflow:update "$workflow_id" fail_update \
+    --server="$operator_url" \
+    --namespace="$namespace" \
+    --run-id="$run_id" \
+    --request-id="$failed_request_id" \
+    --wait=completed \
+    --input='["cli failure duplicate"]' \
+    --json
+
+  accepted_request_id="cli-accepted-${run_id}"
+  run_operator_cli_capture accepted "$operator_cli_bin" workflow:update "$workflow_id" approve \
+    --server="$operator_url" \
+    --namespace="$namespace" \
+    --run-id="$run_id" \
+    --request-id="$accepted_request_id" \
+    --wait=accepted \
+    --input='[true,"cli-accepted"]' \
+    --json
+
+  refused_request_id="cli-refused-${run_id}"
+  run_operator_cli_capture refused "$operator_cli_bin" workflow:update "$workflow_id" missing_update \
+    --server="$operator_url" \
+    --namespace="$namespace" \
+    --run-id="$run_id" \
+    --request-id="$refused_request_id" \
+    --wait=accepted \
+    --input='[]' \
+    --json
+
+  capture_operator_server_api GET "/workflows/${workflow_id}/runs/${run_id}" "$result_dir/operator-run-detail-api.json" "$namespace" "$operator_url"
+  capture_operator_server_api GET "/workflows/${workflow_id}/runs/${run_id}/history" "$result_dir/operator-history-api.json" "$namespace" "$operator_url"
+
+  mkdir -p "$operator_waterline_app" "$composer_home" "$composer_cache"
+  if ! (
+    cd "$operator_waterline_app" &&
+    COMPOSER_HOME="$composer_home" COMPOSER_CACHE_DIR="$composer_cache" \
+      composer create-project laravel/laravel . --no-interaction --no-progress --prefer-dist
+  ) > "$result_dir/operator-waterline-create-project.log" 2>&1; then
+    write_operator_diagnostics_shard_status runner_blocked "The operator diagnostics shard could not create a disposable Laravel app for Waterline; see operator-waterline-create-project.log." waterline_create_project true
+    return 0
+  fi
+
+  if ! (
+    cd "$operator_waterline_app" &&
+    COMPOSER_HOME="$composer_home" COMPOSER_CACHE_DIR="$composer_cache" \
+      composer require --no-interaction --no-progress --prefer-dist \
+        "durable-workflow/workflow:${workflow_php_version}" \
+        "durable-workflow/waterline:${waterline_version}"
+  ) > "$result_dir/operator-waterline-composer-require.log" 2>&1; then
+    write_operator_diagnostics_shard_status fail "Composer could not install pinned Packagist packages durable-workflow/workflow:${workflow_php_version} and durable-workflow/waterline:${waterline_version}; see operator-waterline-composer-require.log." waterline_composer_require false
+    return 0
+  fi
+
+  if ! WATERLINE_APP="$operator_waterline_app" WATERLINE_VERSION="$waterline_version" WORKFLOW_PHP_VERSION="$workflow_php_version" node <<'NODE' > "$result_dir/operator-waterline-source-policy.log" 2>&1; then
+const fs = require('node:fs');
+const path = require('node:path');
+
+const appDir = process.env.WATERLINE_APP;
+const expectedWaterline = process.env.WATERLINE_VERSION;
+const expectedWorkflow = process.env.WORKFLOW_PHP_VERSION;
+const installedPath = path.join(appDir, 'vendor/composer/installed.json');
+const lockPath = path.join(appDir, 'composer.lock');
+const localSourcePattern = /(^file:\/\/|^\/|^\.\.?\/|\/workspace\/repos|local[_ -]?(product[_ -]?)?(source|checkout|artifact)|workspace[_ -]?repo|local[_ -]?vendor[_ -]?tree)/i;
+
+function fail(message) {
+  console.error(message);
+  process.exit(1);
+}
+
+function readJson(file) {
+  try {
+    return JSON.parse(fs.readFileSync(file, 'utf8'));
+  } catch (error) {
+    fail(`Unable to read ${path.basename(file)}: ${error.message}`);
+  }
+}
+
+function packagesFromInstalledJson(value) {
+  if (Array.isArray(value)) {
+    return value;
+  }
+  if (Array.isArray(value?.packages)) {
+    return value.packages;
+  }
+
+  return [];
+}
+
+function packagesFromLockJson(value) {
+  return [
+    ...(Array.isArray(value?.packages) ? value.packages : []),
+    ...(Array.isArray(value?.['packages-dev']) ? value['packages-dev'] : []),
+  ];
+}
+
+const installedPackages = packagesFromInstalledJson(readJson(installedPath));
+const lockedPackages = packagesFromLockJson(readJson(lockPath));
+for (const [name, expected] of [
+  ['durable-workflow/waterline', expectedWaterline],
+  ['durable-workflow/workflow', expectedWorkflow],
+]) {
+  const installedPackage = installedPackages.find((entry) => entry?.name === name);
+  const lockedPackage = lockedPackages.find((entry) => entry?.name === name);
+  if (!installedPackage || !lockedPackage) {
+    fail(`${name} was not installed by Composer.`);
+  }
+  if (String(installedPackage.version || '') !== expected && String(lockedPackage.version || '') !== expected) {
+    fail(`${name} installed version did not match ${expected}.`);
+  }
+  const installSource = String(installedPackage['installation-source'] || '').toLowerCase();
+  if (installSource && installSource !== 'dist') {
+    fail(`${name} was installed from ${installSource}, not a Packagist dist artifact.`);
+  }
+  const distUrl = String(lockedPackage.dist?.url || '');
+  if (distUrl === '') {
+    fail(`${name} composer.lock metadata did not include a dist URL.`);
+  }
+  for (const candidate of [
+    lockedPackage.dist?.url,
+    lockedPackage.source?.url,
+  ]) {
+    const value = String(candidate || '');
+    if (localSourcePattern.test(value)) {
+      fail(`${name} resolved from a local artifact source: ${value}`);
+    }
+  }
+}
+NODE
+    write_operator_diagnostics_shard_status fail "The operator diagnostics shard resolved Waterline or workflow from a non-published artifact source; see operator-waterline-source-policy.log." waterline_source_policy false
+    return 0
+  fi
+
+  if ! (
+    cd "$operator_waterline_app" &&
+    php artisan key:generate --force &&
+    php artisan list --raw
+  ) > "$result_dir/operator-waterline-artisan-list.log" 2>&1; then
+    write_operator_diagnostics_shard_status fail "The Composer-installed Waterline package could not boot its Laravel command surface; see operator-waterline-artisan-list.log." waterline_artisan_list false
+    return 0
+  fi
+
+  if ! grep -q '^waterline:workflow-updates-conformance' "$result_dir/operator-waterline-artisan-list.log"; then
+    write_operator_diagnostics_shard_status fail "The Composer-installed Waterline package does not expose waterline:workflow-updates-conformance." waterline_command_missing false
+    return 0
+  fi
+
+  set +e
+  (
+    cd "$operator_waterline_app" &&
+    APP_ENV=production \
+    APP_DEBUG=false \
+    APP_KEY="${APP_KEY:-base64:V09SS0ZMT1ctVVBEQVRFUy1XQVRFUkxJTkUtT1BFUkFUT1I=}" \
+    DB_CONNECTION=sqlite \
+    DB_DATABASE="$operator_db" \
+    QUEUE_CONNECTION=database \
+    CACHE_STORE=array \
+    SESSION_DRIVER=array \
+    php artisan waterline:workflow-updates-conformance \
+      --output="$waterline_report" \
+      --run-id="operator-diagnostics-${run_id}" \
+      --instance-id="$workflow_id" \
+      --workflow-run-id="$run_id" \
+      --artifact-version="server=${DW_SERVER_VERSION:-}" \
+      --artifact-version="cli=${cli_version}" \
+      --artifact-version="workflow-php=${workflow_php_version}" \
+      --artifact-version="sdk-python=${DW_PYTHON_SDK_VERSION:-}" \
+      --artifact-version="waterline=${waterline_version}" \
+      --artifact-source=server=docker_image \
+      --artifact-source=cli=official_install_script \
+      --artifact-source=workflow-php=packagist_package \
+      --artifact-source=sdk-python=pypi_package \
+      --artifact-source=waterline=packagist_package
+  ) > "$result_dir/operator-waterline-conformance-command.log" 2>&1
+  local waterline_command_status=$?
+  set -e
+
+  if [[ ! -s "$waterline_report" ]]; then
+    write_operator_diagnostics_shard_status fail "The Composer-installed Waterline workflow update command did not emit a report; see operator-waterline-conformance-command.log." waterline_conformance_command false
+    return 0
+  fi
+
+  materialize_operator_diagnostics_report "$runtime_path" "$waterline_report"
+  if [[ "$waterline_command_status" -ne 0 ]]; then
+    printf 'Waterline workflow update diagnostics shard exited with status %s; imported its emitted report.\n' "$waterline_command_status" >> "$result_dir/operator-waterline-conformance-command.log"
+  fi
+}
+
+if should_run_operator_diagnostics_shard; then
+  run_operator_diagnostics_shard
+fi
+
 RESULT_DIR="$result_dir" \
 STARTED_AT="$started_at" \
 REPO_ROOT="$repo_root" \
@@ -2534,6 +3858,8 @@ DW_WORKFLOW_UPDATES_PHP_EVIDENCE="${DW_WORKFLOW_UPDATES_PHP_EVIDENCE:-}" \
 DW_WORKFLOW_UPDATES_PHP_EVIDENCE_PATH="${DW_WORKFLOW_UPDATES_PHP_EVIDENCE_PATH:-}" \
 DW_WORKFLOW_UPDATES_PYTHON_EVIDENCE="${DW_WORKFLOW_UPDATES_PYTHON_EVIDENCE:-}" \
 DW_WORKFLOW_UPDATES_PYTHON_EVIDENCE_PATH="${DW_WORKFLOW_UPDATES_PYTHON_EVIDENCE_PATH:-}" \
+DW_WORKFLOW_UPDATES_OPERATOR_DIAGNOSTICS_EVIDENCE="${DW_WORKFLOW_UPDATES_OPERATOR_DIAGNOSTICS_EVIDENCE:-}" \
+DW_WORKFLOW_UPDATES_OPERATOR_DIAGNOSTICS_EVIDENCE_PATH="${DW_WORKFLOW_UPDATES_OPERATOR_DIAGNOSTICS_EVIDENCE_PATH:-}" \
 node <<'NODE'
 const fs = require('node:fs');
 const path = require('node:path');
@@ -2546,13 +3872,17 @@ const finishedAt = generatedAt;
 const focusedEvidenceFile = 'workflow-updates-focused-evidence.json';
 const phpSidecarEvidenceFile = 'workflow-php-workflow-updates-evidence.json';
 const pythonSidecarEvidenceFile = 'python-sdk-workflow-updates-evidence.json';
+const operatorDiagnosticsEvidenceFile = 'workflow-updates-operator-diagnostics-evidence.json';
 const focusedEvidencePath = path.join(resultDir, focusedEvidenceFile);
 const phpSidecarEvidencePath = path.join(resultDir, phpSidecarEvidenceFile);
 const pythonSidecarEvidencePath = path.join(resultDir, pythonSidecarEvidenceFile);
+const operatorDiagnosticsEvidencePath = path.join(resultDir, operatorDiagnosticsEvidenceFile);
 const phpSidecarSchema = 'durable-workflow.v2.workflow-updates.php-package-sidecar';
 const phpSidecarScenarioId = 'php_client_worker_update_surface';
 const pythonSidecarSchema = 'durable-workflow.v2.workflow-updates.python-sdk-sidecar';
 const pythonSidecarScenarioId = 'python_client_worker_update_surface';
+const operatorDiagnosticsSchema = 'durable-workflow.v2.workflow-updates.operator-diagnostics-sidecar';
+const operatorDiagnosticsScenarioId = 'operator_diagnostics_surfaces';
 
 function env(name) {
   return (process.env[name] || '').trim();
@@ -2600,6 +3930,12 @@ function materializePythonSidecarEvidence(evidence) {
 
 function materializePhpSidecarEvidence(evidence) {
   writeJson(phpSidecarEvidenceFile, evidence);
+
+  return evidence;
+}
+
+function materializeOperatorDiagnosticsEvidence(evidence) {
+  writeJson(operatorDiagnosticsEvidenceFile, evidence);
 
   return evidence;
 }
@@ -2685,12 +4021,43 @@ function readPythonSidecarEvidence() {
   return null;
 }
 
+function readOperatorDiagnosticsEvidence() {
+  const inline = env('DW_WORKFLOW_UPDATES_OPERATOR_DIAGNOSTICS_EVIDENCE');
+  if (inline) {
+    return materializeOperatorDiagnosticsEvidence(JSON.parse(inline));
+  }
+
+  const configuredPath = env('DW_WORKFLOW_UPDATES_OPERATOR_DIAGNOSTICS_EVIDENCE_PATH');
+  const candidates = [];
+  if (configuredPath) {
+    candidates.push(configuredPath);
+  }
+  candidates.push(path.join(resultDir, operatorDiagnosticsEvidenceFile));
+
+  for (const candidate of candidates) {
+    if (candidate && fs.existsSync(candidate) && fs.statSync(candidate).size > 0) {
+      const evidence = JSON.parse(fs.readFileSync(candidate, 'utf8'));
+      if (path.resolve(candidate) !== path.resolve(operatorDiagnosticsEvidencePath)) {
+        materializeOperatorDiagnosticsEvidence(evidence);
+      }
+
+      return evidence;
+    }
+  }
+
+  return null;
+}
+
 function isPhpSidecarEvidence(value) {
   return value?.schema === phpSidecarSchema;
 }
 
 function isPythonSidecarEvidence(value) {
   return value?.schema === pythonSidecarSchema;
+}
+
+function isOperatorDiagnosticsEvidence(value) {
+  return value?.schema === operatorDiagnosticsSchema;
 }
 
 function uniqueFindings(findings) {
@@ -2796,6 +4163,10 @@ function localSourceFieldValues(value) {
     value?.packageArtifactSource,
     value?.sdk_python_artifact_source,
     value?.sdkPythonArtifactSource,
+    value?.cli_artifact_source,
+    value?.cliArtifactSource,
+    value?.waterline_artifact_source,
+    value?.waterlineArtifactSource,
     observedOutputs.artifact_source,
     observedOutputs.artifactSource,
     observedOutputs.workflow_php_artifact_source,
@@ -2804,6 +4175,14 @@ function localSourceFieldValues(value) {
     observedOutputs.packageArtifactSource,
     observedOutputs.sdk_python_artifact_source,
     observedOutputs.sdkPythonArtifactSource,
+    observedOutputs.cli_artifact_source,
+    observedOutputs.cliArtifactSource,
+    observedOutputs.waterline_artifact_source,
+    observedOutputs.waterlineArtifactSource,
+    observedOutputs.cli_fields?.cli_artifact_source,
+    observedOutputs.cli_fields?.cliArtifactSource,
+    observedOutputs.waterline_fields?.waterline_artifact_source,
+    observedOutputs.waterline_fields?.waterlineArtifactSource,
     sourcePolicy.artifact_source,
     sourcePolicy.artifactSource,
     sourcePolicy.workflow_php_artifact_source,
@@ -2812,6 +4191,10 @@ function localSourceFieldValues(value) {
     sourcePolicy.packageArtifactSource,
     sourcePolicy.sdk_python_artifact_source,
     sourcePolicy.sdkPythonArtifactSource,
+    sourcePolicy.cli_artifact_source,
+    sourcePolicy.cliArtifactSource,
+    sourcePolicy.waterline_artifact_source,
+    sourcePolicy.waterlineArtifactSource,
   ];
 
   return fields.filter((candidate) => typeof candidate === 'string' && candidate.trim() !== '');
@@ -2901,6 +4284,122 @@ function artifactPrerequisiteFinding(scenarioId, failures) {
   finding.artifact_prerequisite_failures = failures;
 
   return finding;
+}
+
+function operatorDiagnosticsEvidenceFinding(failures) {
+  const finding = coverageFinding(
+    'workflow-updates-operator-diagnostics-surfaces-required-evidence-gap',
+    operatorDiagnosticsScenarioId,
+    `The operator diagnostics evidence claimed pass without proving CLI and Waterline diagnostics for every required update path: ${failures.map((failure) => `${failure.surface}.${failure.state}:${failure.missing_fields.join('|')}`).join(', ')}.`,
+    'Record workflow:update --json and Waterline selected-run detail/history-export diagnostics with request ids, state/outcome/reason, payload/result/error details, and history references for accepted, completed, failed, and refused update paths.',
+    'waterline',
+  );
+  finding.operator_diagnostics_failures = failures;
+
+  return finding;
+}
+
+function operatorSurfaceStates(value) {
+  return objectValue(
+    value?.operator_surface_matrix?.states
+      ?? value?.diagnostic_transition_matrix?.states
+      ?? value?.states,
+  );
+}
+
+function operatorStateHasState(value) {
+  return value?.state_visible === true
+    || stringValue(value?.state) !== ''
+    || stringValue(value?.status) !== ''
+    || stringValue(value?.state_label) !== ''
+    || stringValue(value?.stateLabel) !== '';
+}
+
+function operatorStateHasOutcomeOrReason(value) {
+  return value?.outcome_or_reason_visible === true
+    || value?.outcomeOrReasonVisible === true
+    || stringValue(value?.outcome) !== ''
+    || stringValue(value?.reason) !== ''
+    || stringValue(value?.rejection_reason) !== ''
+    || stringValue(value?.rejectionReason) !== '';
+}
+
+function operatorSurfaceFailures(surface, fields) {
+  const states = operatorSurfaceStates(fields);
+  const failures = [];
+  for (const state of ['accepted', 'completed', 'failed', 'refused']) {
+    const evidence = objectValue(states[state]);
+    const missing = [];
+    if (evidence.present !== true) {
+      missing.push('present');
+    }
+    if (evidence.request_identifiers_visible !== true && evidence.requestIdentifiersVisible !== true) {
+      missing.push('request_identifiers_visible');
+    }
+    if (!operatorStateHasState(evidence)) {
+      missing.push('state_visible');
+    }
+    if (!operatorStateHasOutcomeOrReason(evidence)) {
+      missing.push('outcome_or_reason_visible');
+    }
+    if (evidence.payload_visible !== true && evidence.payloadVisible !== true) {
+      missing.push('payload_visible');
+    }
+    if (state === 'completed' && evidence.result_visible !== true && evidence.resultVisible !== true) {
+      missing.push('result_visible');
+    }
+    if (['failed', 'refused'].includes(state) && evidence.error_visible !== true && evidence.errorVisible !== true) {
+      missing.push('error_visible');
+    }
+    if (evidence.history_references_visible !== true && evidence.historyReferencesVisible !== true) {
+      missing.push('history_references_visible');
+    }
+    if (surface === 'waterline' && evidence.history_export_references_visible !== true && evidence.historyExportReferencesVisible !== true) {
+      missing.push('history_export_references_visible');
+    }
+    if (missing.length > 0) {
+      failures.push({ surface, state, missing_fields: missing });
+    }
+  }
+
+  return failures;
+}
+
+function operatorDiagnosticsFailures(observedOutputs) {
+  const failures = [];
+  const cliFields = objectValue(observedOutputs.cli_fields ?? observedOutputs.cliFields);
+  const waterlineFields = objectValue(observedOutputs.waterline_fields ?? observedOutputs.waterlineFields);
+  const apiFields = objectValue(observedOutputs.api_fields ?? observedOutputs.apiFields);
+  const historyFields = objectValue(observedOutputs.history_fields ?? observedOutputs.historyFields);
+  const matrix = objectValue(observedOutputs.diagnostic_transition_matrix ?? observedOutputs.diagnosticTransitionMatrix);
+
+  if (stringValue(observedOutputs.workflow_id ?? observedOutputs.workflowId) === '') {
+    failures.push({ surface: 'operator', state: '*', missing_fields: ['workflow_id'] });
+  }
+  if (stringValue(observedOutputs.run_id ?? observedOutputs.runId) === '') {
+    failures.push({ surface: 'operator', state: '*', missing_fields: ['run_id'] });
+  }
+  if (Object.keys(apiFields).length === 0) {
+    failures.push({ surface: 'api', state: '*', missing_fields: ['api_fields'] });
+  }
+  if (Object.keys(historyFields).length === 0) {
+    failures.push({ surface: 'history', state: '*', missing_fields: ['history_fields'] });
+  }
+  if (Object.keys(matrix).length === 0) {
+    failures.push({ surface: 'operator', state: '*', missing_fields: ['diagnostic_transition_matrix'] });
+  }
+  if (Object.keys(cliFields).length === 0) {
+    failures.push({ surface: 'cli', state: '*', missing_fields: ['cli_fields'] });
+  } else {
+    failures.push(...operatorSurfaceFailures('cli', cliFields));
+  }
+  if (Object.keys(waterlineFields).length === 0) {
+    failures.push({ surface: 'waterline', state: '*', missing_fields: ['waterline_fields'] });
+  } else {
+    failures.push(...operatorSurfaceFailures('waterline', waterlineFields));
+  }
+
+  return failures;
 }
 
 function runnerBlockedFinding(scenarioId) {
@@ -3223,6 +4722,19 @@ function normalizeScenarioResult(scenarioId, row, sourceEvidence = null) {
     linkedFindings.push(requiredEvidenceFinding(scenarioId, missingRequiredFields));
   }
 
+  const operatorDiagnosticsMissing = normalizedStatus === 'pass' && scenarioId === operatorDiagnosticsScenarioId
+    ? operatorDiagnosticsFailures(observedOutputs)
+    : [];
+  if (normalizedStatus === 'pass' && operatorDiagnosticsMissing.length > 0) {
+    normalizedStatus = 'not_covered';
+    classification = 'coverage-gap';
+    observedOutputs = {
+      ...observedOutputs,
+      operator_diagnostics_failures: operatorDiagnosticsMissing,
+    };
+    linkedFindings.push(operatorDiagnosticsEvidenceFinding(operatorDiagnosticsMissing));
+  }
+
   return {
     scenario_id: typeof row?.scenario_id === 'string' ? row.scenario_id : scenarioId,
     status: normalizedStatus,
@@ -3312,16 +4824,6 @@ const artifactAliases = {
   waterline: ['waterline'],
 };
 
-const coverageGaps = {
-  operator_diagnostics_surfaces: coverageFinding(
-    'workflow-updates-cli-waterline-diagnostics-coverage-gap',
-    'operator_diagnostics_surfaces',
-    'The focused probe records API and history diagnostics but does not yet prove CLI JSON or Waterline update views.',
-    'Capture workflow update fields from the official CLI JSON output and Waterline selected-run update/history surfaces for accepted, completed, failed, and refused updates.',
-    'waterline',
-  ),
-};
-
 const focusedProbeMissingFinding = coverageFinding(
   'workflow-updates-focused-probe-coverage-gap',
   'focused_server_runtime_probe',
@@ -3345,6 +4847,14 @@ const pythonSidecarMissingFinding = coverageFinding(
   'sdk-python',
 );
 
+const operatorDiagnosticsMissingFinding = coverageFinding(
+  'workflow-updates-operator-diagnostics-shard-coverage-gap',
+  operatorDiagnosticsScenarioId,
+  'The CLI and Waterline operator diagnostics shard did not run against the pinned published artifacts in this environment.',
+  'Run the workflow update conformance handoff where the official dw CLI release can emit workflow:update --json captures and the pinned Packagist Waterline package can inspect selected-run detail/history export for the same workflow run.',
+  'waterline',
+);
+
 let sourcePolicy = {
   pass_requires_published_artifacts_only: true,
   local_product_source_checkouts_used_must_be_false: true,
@@ -3355,13 +4865,16 @@ let sourcePolicy = {
 const focusedEvidence = readFocusedEvidence();
 const phpSidecarEvidence = readPhpSidecarEvidence();
 const pythonSidecarEvidence = readPythonSidecarEvidence();
-const evidenceSources = [focusedEvidence, phpSidecarEvidence, pythonSidecarEvidence].filter((source) => source !== null);
+const operatorDiagnosticsEvidence = readOperatorDiagnosticsEvidence();
+const evidenceSources = [focusedEvidence, phpSidecarEvidence, pythonSidecarEvidence, operatorDiagnosticsEvidence].filter((source) => source !== null);
 const focusedEvidenceRunnerBlocked = truthyEvidenceFlag(focusedEvidence?.runner_blocked)
   || truthyEvidenceFlag(focusedEvidence?.runnerBlocked);
 const phpSidecarEvidenceRunnerBlocked = truthyEvidenceFlag(phpSidecarEvidence?.runner_blocked)
   || truthyEvidenceFlag(phpSidecarEvidence?.runnerBlocked);
 const pythonSidecarEvidenceRunnerBlocked = truthyEvidenceFlag(pythonSidecarEvidence?.runner_blocked)
   || truthyEvidenceFlag(pythonSidecarEvidence?.runnerBlocked);
+const operatorDiagnosticsEvidenceRunnerBlocked = truthyEvidenceFlag(operatorDiagnosticsEvidence?.runner_blocked)
+  || truthyEvidenceFlag(operatorDiagnosticsEvidence?.runnerBlocked);
 const scenarioResults = {};
 const findings = [];
 
@@ -3373,6 +4886,9 @@ if (phpSidecarEvidenceRunnerBlocked) {
 }
 if (pythonSidecarEvidenceRunnerBlocked) {
   findings.push(runnerBlockedFinding(pythonSidecarScenarioId));
+}
+if (operatorDiagnosticsEvidenceRunnerBlocked) {
+  findings.push(runnerBlockedFinding(operatorDiagnosticsScenarioId));
 }
 
 for (const scenarioId of requiredScenarios) {
@@ -3404,12 +4920,12 @@ for (const scenarioId of requiredScenarios) {
     continue;
   }
 
-  if (coverageGaps[scenarioId]) {
+  if (scenarioId === operatorDiagnosticsScenarioId) {
     scenarioResults[scenarioId] = scenarioResult(
       scenarioId,
       'not_covered',
       'coverage-gap',
-      coverageGaps[scenarioId],
+      operatorDiagnosticsMissingFinding,
       {
         artifact_versions: artifactVersions,
         artifact_sources: artifactSources,
@@ -3506,7 +5022,11 @@ if (focusedEvidence) {
     focusedEvidence,
     isPhpSidecarEvidence(focusedEvidence)
       ? new Set([phpSidecarScenarioId])
-      : (isPythonSidecarEvidence(focusedEvidence) ? new Set([pythonSidecarScenarioId]) : new Set(requiredScenarios)),
+      : (isPythonSidecarEvidence(focusedEvidence)
+        ? new Set([pythonSidecarScenarioId])
+        : (isOperatorDiagnosticsEvidence(focusedEvidence)
+          ? new Set([operatorDiagnosticsScenarioId])
+          : focusedProbeScenarioIds)),
   );
 }
 if (phpSidecarEvidence) {
@@ -3514,6 +5034,9 @@ if (phpSidecarEvidence) {
 }
 if (pythonSidecarEvidence) {
   importScenarioEvidence(pythonSidecarEvidence, new Set([pythonSidecarScenarioId]));
+}
+if (operatorDiagnosticsEvidence) {
+  importScenarioEvidence(operatorDiagnosticsEvidence, new Set([operatorDiagnosticsScenarioId]));
 }
 
 const artifactPolicyFailures = uniqueArtifactFailures([
@@ -3549,7 +5072,9 @@ for (const [scenarioId, row] of Object.entries(scenarioResults)) {
       ? phpSidecarMissingFinding
       : (scenarioId === pythonSidecarScenarioId
         ? pythonSidecarMissingFinding
-        : (coverageGaps[scenarioId] || focusedProbeMissingFinding));
+        : (scenarioId === operatorDiagnosticsScenarioId
+          ? operatorDiagnosticsMissingFinding
+          : focusedProbeMissingFinding));
     row.linked_findings = [fallback];
     findings.push(fallback);
   }
@@ -3570,7 +5095,8 @@ const nonPassingScenarioIds = requiredScenarios.filter((scenarioId) => nonPassSt
 const runnerBlocked = requiredScenarios.some((scenarioId) => updateCellOutcomes[scenarioId] === 'runner_blocked')
   || focusedEvidenceRunnerBlocked
   || phpSidecarEvidenceRunnerBlocked
-  || pythonSidecarEvidenceRunnerBlocked;
+  || pythonSidecarEvidenceRunnerBlocked
+  || operatorDiagnosticsEvidenceRunnerBlocked;
 const everyPassRowHasPublishedArtifactEvidence = requiredScenarios.every((scenarioId) => {
   const row = scenarioResults[scenarioId] || {};
   if (row.status !== 'pass') {
@@ -3637,6 +5163,18 @@ const result = {
     artifact_source: artifactSources['sdk-python'],
     local_product_source_checkouts_used: sidecarLocalProductSourceCheckoutsUsed(pythonSidecarEvidence, pythonSidecarScenarioId),
   },
+  operator_diagnostics_sidecar: {
+    implemented: true,
+    scenario_id: operatorDiagnosticsScenarioId,
+    evidence_loaded: operatorDiagnosticsEvidence !== null,
+    evidence_file: operatorDiagnosticsEvidence ? operatorDiagnosticsEvidenceFile : null,
+    evidence_schema: operatorDiagnosticsEvidence?.schema || null,
+    cli_package_version: cliVersion,
+    cli_artifact_source: artifactSources.cli,
+    waterline_package_version: waterlineVersion,
+    waterline_artifact_source: artifactSources.waterline,
+    local_product_source_checkouts_used: sidecarLocalProductSourceCheckoutsUsed(operatorDiagnosticsEvidence, operatorDiagnosticsScenarioId),
+  },
   findings: normalizedFindings,
   finding_links: Object.fromEntries(
     normalizedFindings
@@ -3672,6 +5210,7 @@ const metadata = {
   focused_evidence_file: focusedEvidence ? focusedEvidenceFile : null,
   php_sidecar_evidence_file: phpSidecarEvidence ? phpSidecarEvidenceFile : null,
   python_sidecar_evidence_file: pythonSidecarEvidence ? pythonSidecarEvidenceFile : null,
+  operator_diagnostics_evidence_file: operatorDiagnosticsEvidence ? operatorDiagnosticsEvidenceFile : null,
 };
 
 const sourcePolicyNote = sourcePolicy.local_product_source_checkouts_used
@@ -3692,7 +5231,7 @@ const record = {
     'Focused published-server workflow update runtime cells execute when the handoff runs inside the pinned server image.',
     'The PHP package shard installs the pinned Packagist durable-workflow/workflow package before importing PHP client/worker update evidence.',
     'The Python SDK shard installs the pinned PyPI durable-workflow package before importing Python client/worker update evidence.',
-    'CLI and Waterline cells remain typed non-pass coverage gaps until their published-artifact shards run.',
+    'The operator diagnostics shard installs the pinned CLI release and Packagist Waterline package before importing workflow:update JSON plus selected-run update/history evidence.',
     sourcePolicyNote,
   ],
   local_product_source_checkouts_used: sourcePolicy.local_product_source_checkouts_used,
@@ -3701,6 +5240,7 @@ const record = {
   focused_evidence_file: focusedEvidence ? focusedEvidenceFile : null,
   php_sidecar_evidence_file: phpSidecarEvidence ? phpSidecarEvidenceFile : null,
   python_sidecar_evidence_file: pythonSidecarEvidence ? pythonSidecarEvidenceFile : null,
+  operator_diagnostics_evidence_file: operatorDiagnosticsEvidence ? operatorDiagnosticsEvidenceFile : null,
 };
 
 writeJson('pins.json', pins);
@@ -3718,5 +5258,6 @@ console.log(JSON.stringify({
   focused_probe_evidence_loaded: focusedEvidence !== null,
   php_sidecar_evidence_loaded: phpSidecarEvidence !== null,
   python_sidecar_evidence_loaded: pythonSidecarEvidence !== null,
+  operator_diagnostics_evidence_loaded: operatorDiagnosticsEvidence !== null,
 }));
 NODE

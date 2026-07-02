@@ -214,7 +214,7 @@
   },
   "host_runner_contract": {
     "runner_id": "workflow-updates",
-    "status": "focused_server_runtime_probe_php_package_shard_and_python_sdk_shard_implemented_with_operator_diagnostics_gap",
+    "status": "focused_server_runtime_probe_php_python_and_operator_diagnostics_shards_implemented",
     "host_runner_implemented": true,
     "must_exercise_published_artifacts": true,
     "must_execute_against_published_artifacts": true,
@@ -222,6 +222,7 @@
     "focused_evidence_file": "workflow-updates-focused-evidence.json",
     "php_sidecar_evidence_file": "workflow-php-workflow-updates-evidence.json",
     "python_sidecar_evidence_file": "python-sdk-workflow-updates-evidence.json",
+    "operator_diagnostics_evidence_file": "workflow-updates-operator-diagnostics-evidence.json",
     "focused_probe_covers": [
       "published_artifact_install_only",
       "declared_update_contract_visibility",
@@ -258,13 +259,20 @@
       "must_record_package_version_artifact_source_handler_request_and_cells": true,
       "must_reject_local_product_source_checkout_and_local_artifact_sources": true
     },
-    "typed_coverage_gaps": {
-      "operator_diagnostics_surfaces": {
-        "classification": "coverage-gap",
-        "owner": "waterline",
-        "acceptance": "Capture workflow update fields from the official CLI JSON output and Waterline selected-run update/history surfaces for accepted, completed, failed, and refused updates."
-      }
-    }
+    "operator_diagnostics_sidecar": {
+      "status": "implemented",
+      "runner_scope": "published_cli_release_and_packagist_waterline_artifact",
+      "covers_required_scenarios": [
+        "operator_diagnostics_surfaces"
+      ],
+      "out_of_scope_scenario_results_are_ignored": true,
+      "must_record_runner_blocked_false_for_product_evidence": true,
+      "uses_official_cli_workflow_update_json_surface": true,
+      "uses_packagist_waterline_selected_run_update_history_surface": true,
+      "must_record_request_ids_state_outcome_reason_payload_result_error_and_history_references": true,
+      "must_reject_local_product_source_checkout_and_local_artifact_sources": true
+    },
+    "typed_coverage_gaps": {}
   },
   "scenarios": [
     {
