@@ -755,7 +755,7 @@ function artifact_sources(): array
 
     return [
         'server' => $serverImage !== '' ? $serverImage : 'docker://durableworkflow/server:'.$versions['server'],
-        'cli' => 'github-release://durable-workflow/cli/v'.$versions['cli'].'/install.sh',
+        'cli' => 'https://github.com/durable-workflow/cli/releases/download/'.$versions['cli'].'/install.sh',
         'sdk-python' => 'pypi://durable-workflow=='.$versions['sdk-python'],
         'workflow' => 'packagist://durable-workflow/workflow@'.$versions['workflow'],
         'workflow-php' => 'packagist://durable-workflow/workflow@'.$versions['workflow-php'],
@@ -1623,7 +1623,7 @@ const artifactVersions = {
 };
 const artifactSources = {
   server: serverImage || `docker://durableworkflow/server:${serverVersion}`,
-  cli: `github-release://durable-workflow/cli/v${cliVersion}/install.sh`,
+  cli: `https://github.com/durable-workflow/cli/releases/download/${cliVersion}/install.sh`,
   'sdk-python': `pypi://durable-workflow==${pythonVersion}`,
   workflow: `packagist://durable-workflow/workflow@${workflowVersion}`,
   'workflow-php': `packagist://durable-workflow/workflow@${workflowVersion}`,
@@ -1736,7 +1736,7 @@ const artifactVersions = {
 };
 const artifactSources = {
   server: serverImage || `docker://durableworkflow/server:${serverVersion}`,
-  cli: `github-release://durable-workflow/cli/v${cliVersion}/install.sh`,
+  cli: `https://github.com/durable-workflow/cli/releases/download/${cliVersion}/install.sh`,
   'sdk-python': `pypi://durable-workflow==${pythonVersion}`,
   workflow: `packagist://durable-workflow/workflow@${workflowVersion}`,
   'workflow-php': `packagist://durable-workflow/workflow@${workflowVersion}`,
@@ -2159,7 +2159,7 @@ const artifactVersions = {
 };
 const artifactSources = {
   server: serverImage || `docker://durableworkflow/server:${serverVersion}`,
-  cli: `github-release://durable-workflow/cli/v${cliVersion}/install.sh`,
+  cli: `https://github.com/durable-workflow/cli/releases/download/${cliVersion}/install.sh`,
   'sdk-python': `pypi://durable-workflow==${pythonVersion}`,
   workflow: `packagist://durable-workflow/workflow@${workflowVersion}`,
   'workflow-php': `packagist://durable-workflow/workflow@${workflowVersion}`,
@@ -2273,7 +2273,7 @@ const artifactVersions = {
 };
 const artifactSources = {
   server: serverImage || `docker://durableworkflow/server:${serverVersion}`,
-  cli: `github-release://durable-workflow/cli/v${cliVersion}/install.sh`,
+  cli: `https://github.com/durable-workflow/cli/releases/download/${cliVersion}/install.sh`,
   'sdk-python': `pypi://durable-workflow==${pythonVersion}`,
   workflow: `packagist://durable-workflow/workflow@${workflowVersion}`,
   'workflow-php': `packagist://durable-workflow/workflow@${workflowVersion}`,
@@ -2594,7 +2594,7 @@ const artifactVersions = {
 };
 const artifactSources = {
   server: serverImage || `docker://durableworkflow/server:${serverVersion}`,
-  cli: `github-release://durable-workflow/cli/v${cliVersion}/install.sh`,
+  cli: `https://github.com/durable-workflow/cli/releases/download/${cliVersion}/install.sh`,
   'sdk-python': `pypi://durable-workflow==${pythonVersion}`,
   workflow: `packagist://durable-workflow/workflow@${workflowVersion}`,
   'workflow-php': `packagist://durable-workflow/workflow@${workflowVersion}`,
@@ -3002,6 +3002,8 @@ install_published_operator_cli() {
     return 1
   fi
 
+  printf '%s\n' "$cli_installer_url" > "$cli_root/installer-source.txt"
+
   VERSION="$cli_version" \
     DURABLE_WORKFLOW_INSTALL_DIR="$cli_root/bin" \
     DURABLE_WORKFLOW_BIN_NAME=dw \
@@ -3124,6 +3126,7 @@ NODE
 materialize_operator_diagnostics_report() {
   OPERATOR_RUNTIME_PATH="${1:?runtime path required}" \
   OPERATOR_WATERLINE_REPORT_PATH="${2:?waterline report path required}" \
+  OPERATOR_CLI_INSTALLER_SOURCE_PATH="$result_dir/operator-cli/installer-source.txt" \
   OPERATOR_RUN_DETAIL_CAPTURE_PATH="$result_dir/operator-run-detail-api.json" \
   OPERATOR_HISTORY_CAPTURE_PATH="$result_dir/operator-history-api.json" \
   RESULT_DIR="$result_dir" \
@@ -3147,6 +3150,15 @@ const serverVersion = (process.env.DW_SERVER_VERSION || '').trim() || (serverIma
 const cliVersion = (process.env.DW_CLI_VERSION || '').trim() || 'unresolved';
 const pythonVersion = (process.env.DW_PYTHON_SDK_VERSION || '').trim() || 'unresolved';
 const waterlineVersion = (process.env.DW_WATERLINE_VERSION || '').trim() || 'unresolved';
+function readText(file) {
+  try {
+    return file && fs.existsSync(file) ? fs.readFileSync(file, 'utf8').trim() : '';
+  } catch (error) {
+    return '';
+  }
+}
+const cliInstallerSource = readText(process.env.OPERATOR_CLI_INSTALLER_SOURCE_PATH)
+  || `https://github.com/durable-workflow/cli/releases/download/${cliVersion}/install.sh`;
 const artifactVersions = {
   server: serverVersion,
   cli: cliVersion,
@@ -3157,7 +3169,7 @@ const artifactVersions = {
 };
 const artifactSources = {
   server: serverImage || `docker://durableworkflow/server:${serverVersion}`,
-  cli: `github-release://durable-workflow/cli/v${cliVersion}/install.sh`,
+  cli: cliInstallerSource,
   'sdk-python': `pypi://durable-workflow==${pythonVersion}`,
   workflow: `packagist://durable-workflow/workflow@${workflowVersion}`,
   'workflow-php': `packagist://durable-workflow/workflow@${workflowVersion}`,
@@ -3187,6 +3199,22 @@ function hasOwn(value, field) {
 
 function stringValue(value) {
   return typeof value === 'string' && value.trim() !== '' ? value.trim() : null;
+}
+
+function normalizedStateValue(value) {
+  return stringValue(value)
+    ?.replace(/([a-z])([A-Z])/g, '$1_$2')
+    .replace(/[\s-]+/g, '_')
+    .toLowerCase() ?? null;
+}
+
+function stateMatchesExpected(value, state) {
+  return [
+    value?.state,
+    value?.status,
+    value?.state_label,
+    value?.stateLabel,
+  ].map(normalizedStateValue).includes(state);
 }
 
 function nonEmptyObject(value) {
@@ -3312,14 +3340,14 @@ function surfaceMatrixFailures(surfaceName, matrix) {
     if (surfaceName === 'waterline' && evidence.history_export_references_visible !== true) {
       missing.push('history_export_references_visible');
     }
+    if (!stateMatchesExpected(evidence, state)) {
+      missing.push('expected_state');
+    }
     if (state === 'completed' && evidence.result_visible !== true) {
       missing.push('result_visible');
     }
     if (['failed', 'refused'].includes(state) && evidence.error_visible !== true) {
       missing.push('error_visible');
-    }
-    if (surfaceName === 'cli' && evidence.state_visible !== true) {
-      missing.push('state_visible');
     }
     if (missing.length > 0) {
       failures.push({ surface: surfaceName, state, missing_fields: missing, evidence });
@@ -3500,6 +3528,7 @@ run_operator_diagnostics_shard() {
   local operator_url
   local operator_cli_root="$result_dir/operator-cli"
   local operator_cli_bin
+  local operator_cli_installer_source
   local operator_waterline_app="$result_dir/operator-waterline-app"
   local composer_home="$result_dir/operator-waterline-composer-home"
   local composer_cache="$result_dir/operator-waterline-composer-cache"
@@ -3601,6 +3630,11 @@ run_operator_diagnostics_shard() {
   operator_cli_bin="$operator_cli_root/bin/dw"
   if [[ ! -x "$operator_cli_bin" ]]; then
     write_operator_diagnostics_shard_status runner_blocked "The official CLI installer did not produce an executable dw binary." cli_executable_missing true
+    return 0
+  fi
+  operator_cli_installer_source="$(tr -d '\r\n' < "$operator_cli_root/installer-source.txt" 2>/dev/null || true)"
+  if [[ -z "$operator_cli_installer_source" ]]; then
+    write_operator_diagnostics_shard_status runner_blocked "The official CLI installer source was not recorded after installation." cli_installer_source_missing true
     return 0
   fi
 
@@ -3809,7 +3843,7 @@ NODE
     cd "$operator_waterline_app" &&
     APP_ENV=production \
     APP_DEBUG=false \
-    APP_KEY="${APP_KEY:-base64:V09SS0ZMT1ctVVBEQVRFUy1XQVRFUkxJTkUtT1BFUkFUT1I=}" \
+    APP_KEY="${APP_KEY:-base64:V09SS0ZMT1ctVVBEQVRFUy1XQVRFUkxJTkUtS0VZMzI=}" \
     DB_CONNECTION=sqlite \
     DB_DATABASE="$operator_db" \
     QUEUE_CONNECTION=database \
@@ -3826,7 +3860,7 @@ NODE
       --artifact-version="sdk-python=${DW_PYTHON_SDK_VERSION:-}" \
       --artifact-version="waterline=${waterline_version}" \
       --artifact-source=server=docker_image \
-      --artifact-source=cli=official_install_script \
+      --artifact-source="cli=${operator_cli_installer_source}" \
       --artifact-source=workflow-php=packagist_package \
       --artifact-source=sdk-python=pypi_package \
       --artifact-source=waterline=packagist_package
@@ -4307,12 +4341,20 @@ function operatorSurfaceStates(value) {
   );
 }
 
-function operatorStateHasState(value) {
-  return value?.state_visible === true
-    || stringValue(value?.state) !== ''
-    || stringValue(value?.status) !== ''
-    || stringValue(value?.state_label) !== ''
-    || stringValue(value?.stateLabel) !== '';
+function normalizedOperatorState(value) {
+  return stringValue(value)
+    .replace(/([a-z])([A-Z])/g, '$1_$2')
+    .replace(/[\s-]+/g, '_')
+    .toLowerCase();
+}
+
+function operatorStateMatchesExpected(value, expectedState) {
+  return [
+    value?.state,
+    value?.status,
+    value?.state_label,
+    value?.stateLabel,
+  ].map(normalizedOperatorState).includes(expectedState);
 }
 
 function operatorStateHasOutcomeOrReason(value) {
@@ -4336,8 +4378,8 @@ function operatorSurfaceFailures(surface, fields) {
     if (evidence.request_identifiers_visible !== true && evidence.requestIdentifiersVisible !== true) {
       missing.push('request_identifiers_visible');
     }
-    if (!operatorStateHasState(evidence)) {
-      missing.push('state_visible');
+    if (!operatorStateMatchesExpected(evidence, state)) {
+      missing.push('expected_state');
     }
     if (!operatorStateHasOutcomeOrReason(evidence)) {
       missing.push('outcome_or_reason_visible');
@@ -4772,7 +4814,7 @@ const publishedArtifactVersions = {
 
 const artifactSources = {
   server: serverImage || `docker://durableworkflow/server:${serverVersion}`,
-  cli: `github-release://durable-workflow/cli/v${cliVersion}/install.sh`,
+  cli: `https://github.com/durable-workflow/cli/releases/download/${cliVersion}/install.sh`,
   'sdk-python': `pypi://durable-workflow==${pythonVersion}`,
   workflow: `packagist://durable-workflow/workflow@${workflowPhpVersion}`,
   'workflow-php': `packagist://durable-workflow/workflow@${workflowPhpVersion}`,

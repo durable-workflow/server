@@ -230,7 +230,7 @@ class WorkflowUpdateRuntimeContractTest extends TestCase
             $this->assertSame('2.0.0-alpha.111', $result['artifact_versions']['waterline']);
             $this->assertSame('durableworkflow/server:0.2.536', $result['artifact_sources']['server']);
             $this->assertSame(
-                'github-release://durable-workflow/cli/v0.1.82/install.sh',
+                'https://github.com/durable-workflow/cli/releases/download/0.1.82/install.sh',
                 $result['artifact_sources']['cli'],
             );
             $this->assertSame(
@@ -260,7 +260,7 @@ class WorkflowUpdateRuntimeContractTest extends TestCase
             $this->assertFalse($record['runnerBlocked']);
             $this->assertSame('0.2.536', $record['artifactVersions']['server']);
             $this->assertSame(
-                'github-release://durable-workflow/cli/v0.1.82/install.sh',
+                'https://github.com/durable-workflow/cli/releases/download/0.1.82/install.sh',
                 $record['artifactSources']['cli'],
             );
             $this->assertTrue($record['sourcePolicy']['pass_requires_published_artifacts_only']);
@@ -867,6 +867,93 @@ class WorkflowUpdateRuntimeContractTest extends TestCase
             } finally {
                 exec('rm -rf ' . escapeshellarg($resultDir));
             }
+        }
+    }
+
+    public function test_handoff_downgrades_operator_sidecar_pass_when_operator_states_do_not_match(): void
+    {
+        if (trim((string) shell_exec('command -v node')) === '') {
+            $this->markTestSkipped('node is required to execute the workflow updates handoff');
+        }
+
+        $root = dirname(__DIR__, 2);
+        $resultDir = sys_get_temp_dir() . '/dw-workflow-updates-operator-state-mismatch-test-' . bin2hex(random_bytes(6));
+        mkdir($resultDir, 0777, true);
+
+        try {
+            $observedOutputs = self::completeOperatorDiagnosticsObservedOutputs();
+            foreach (['cli_fields', 'waterline_fields'] as $surfaceField) {
+                foreach (['accepted', 'completed', 'failed', 'refused'] as $state) {
+                    $observedOutputs[$surfaceField]['operator_surface_matrix']['states'][$state]['state'] = 'wrong-state';
+                    $observedOutputs[$surfaceField]['operator_surface_matrix']['states'][$state]['state_visible'] = true;
+                }
+            }
+            $observedOutputs['diagnostic_transition_matrix']['surfaces']['cli'] = $observedOutputs['cli_fields']['operator_surface_matrix'];
+            $observedOutputs['diagnostic_transition_matrix']['surfaces']['waterline'] = $observedOutputs['waterline_fields']['operator_surface_matrix'];
+            foreach (['accepted', 'completed', 'failed', 'refused'] as $state) {
+                $observedOutputs['diagnostic_transition_matrix']['states'][$state]['cli'] = $observedOutputs['cli_fields']['operator_surface_matrix']['states'][$state];
+                $observedOutputs['diagnostic_transition_matrix']['states'][$state]['waterline'] = $observedOutputs['waterline_fields']['operator_surface_matrix']['states'][$state];
+            }
+
+            file_put_contents($resultDir . '/workflow-updates-operator-diagnostics-evidence.json', json_encode([
+                'schema' => 'durable-workflow.v2.workflow-updates.operator-diagnostics-sidecar',
+                'runner_blocked' => false,
+                'source_policy' => [
+                    'pass_requires_published_artifacts_only' => true,
+                    'local_product_source_checkouts_used' => false,
+                    'local_checkout_execution_counts_as_pass' => false,
+                ],
+                'scenario_results' => [
+                    'operator_diagnostics_surfaces' => [
+                        'scenario_id' => 'operator_diagnostics_surfaces',
+                        'status' => 'pass',
+                        'classification' => 'product-evidence',
+                        'published_artifact_cell_executed' => true,
+                        'local_product_source_checkouts_used' => false,
+                        'observed_outputs' => $observedOutputs,
+                        'linked_findings' => [],
+                    ],
+                ],
+                'findings' => [],
+            ], JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES));
+
+            $command = sprintf(
+                '%s %s %s %s %s %s %s --result-dir %s 2>&1',
+                'DW_SERVER_IMAGE=' . escapeshellarg('durableworkflow/server:0.2.536'),
+                'DW_SERVER_VERSION=' . escapeshellarg('0.2.536'),
+                'DW_CLI_VERSION=' . escapeshellarg('0.1.82'),
+                'DW_PYTHON_SDK_VERSION=' . escapeshellarg('0.4.92'),
+                'DW_WORKFLOW_PHP_VERSION=' . escapeshellarg('2.0.0-alpha.242'),
+                'DW_WATERLINE_VERSION=' . escapeshellarg('2.0.0-alpha.111'),
+                escapeshellarg($root . '/scripts/conformance/workflow-updates-published-artifacts.sh'),
+                escapeshellarg($resultDir),
+            );
+
+            exec($command, $output, $status);
+
+            $this->assertSame(0, $status, implode("\n", $output));
+
+            $result = json_decode((string) file_get_contents($resultDir . '/workflow-updates-result.json'), true);
+            $scenario = $result['scenario_results']['operator_diagnostics_surfaces'];
+
+            $this->assertSame('not_covered', $scenario['status']);
+            $this->assertContains('operator_diagnostics_surfaces', $result['non_passing_scenarios']);
+            $this->assertSame(
+                'workflow-updates-operator-diagnostics-surfaces-required-evidence-gap',
+                $scenario['linked_findings'][0]['finding_id'],
+            );
+
+            $failureKeys = array_map(
+                static fn (array $failure): string => $failure['surface'] . '.' . $failure['state'] . ':' . implode(',', $failure['missing_fields']),
+                $scenario['observed_outputs']['operator_diagnostics_failures'],
+            );
+            foreach (['cli', 'waterline'] as $surface) {
+                foreach (['accepted', 'completed', 'failed', 'refused'] as $state) {
+                    $this->assertContains($surface . '.' . $state . ':expected_state', $failureKeys);
+                }
+            }
+        } finally {
+            exec('rm -rf ' . escapeshellarg($resultDir));
         }
     }
 
@@ -1675,7 +1762,7 @@ class WorkflowUpdateRuntimeContractTest extends TestCase
             'cli_fields' => [
                 'surface' => 'workflow:update --json',
                 'cli_artifact_version' => '0.1.82',
-                'cli_artifact_source' => 'github-release://durable-workflow/cli/v0.1.82/install.sh',
+                'cli_artifact_source' => 'https://github.com/durable-workflow/cli/releases/download/0.1.82/install.sh',
                 'operator_surface_matrix' => $cliMatrix,
             ],
             'api_fields' => [
@@ -1735,7 +1822,7 @@ class WorkflowUpdateRuntimeContractTest extends TestCase
             ],
             'artifact_install_evidence' => [
                 'cli' => [
-                    'installed_from' => 'github-release://durable-workflow/cli/v0.1.82/install.sh',
+                    'installed_from' => 'https://github.com/durable-workflow/cli/releases/download/0.1.82/install.sh',
                     'version' => '0.1.82',
                 ],
                 'waterline' => [
@@ -1818,7 +1905,7 @@ class WorkflowUpdateRuntimeContractTest extends TestCase
             ],
             'artifact_sources' => [
                 'server' => 'durableworkflow/server:0.2.536',
-                'cli' => 'github-release://durable-workflow/cli/v0.1.82/install.sh',
+                'cli' => 'https://github.com/durable-workflow/cli/releases/download/0.1.82/install.sh',
                 'sdk-python' => 'pypi://durable-workflow==0.4.92',
                 'workflow' => 'packagist://durable-workflow/workflow@2.0.0-alpha.242',
                 'workflow-php' => 'packagist://durable-workflow/workflow@2.0.0-alpha.242',
