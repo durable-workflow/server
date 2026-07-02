@@ -214,12 +214,13 @@
   },
   "host_runner_contract": {
     "runner_id": "workflow-updates",
-    "status": "focused_server_runtime_probe_implemented_with_typed_coverage_gaps",
+    "status": "focused_server_runtime_probe_and_php_package_shard_implemented_with_typed_coverage_gaps",
     "host_runner_implemented": true,
     "must_exercise_published_artifacts": true,
     "must_execute_against_published_artifacts": true,
     "must_record_runner_blocked_false_for_product_evidence": true,
     "focused_evidence_file": "workflow-updates-focused-evidence.json",
+    "php_sidecar_evidence_file": "workflow-php-workflow-updates-evidence.json",
     "python_sidecar_evidence_file": "python-sdk-workflow-updates-evidence.json",
     "focused_probe_covers": [
       "published_artifact_install_only",
@@ -244,12 +245,18 @@
       "out_of_scope_scenario_results_are_ignored": true,
       "must_record_runner_blocked_false_for_product_evidence": true
     },
+    "php_sidecar": {
+      "status": "implemented",
+      "runner_scope": "published_packagist_workflow_php_artifact",
+      "covers_required_scenarios": [
+        "php_client_worker_update_surface"
+      ],
+      "out_of_scope_scenario_results_are_ignored": true,
+      "must_record_runner_blocked_false_for_product_evidence": true,
+      "must_record_package_version_artifact_source_handler_request_and_cells": true,
+      "must_reject_local_product_source_checkout_and_local_artifact_sources": true
+    },
     "typed_coverage_gaps": {
-      "php_client_worker_update_surface": {
-        "classification": "coverage-gap",
-        "owner": "workflow-php",
-        "acceptance": "Install the pinned Packagist durable-workflow/workflow artifact and record PHP worker update handler, PHP client update request, covered cells, and typed unsupported cells."
-      },
       "python_client_worker_update_surface": {
         "classification": "coverage-gap",
         "owner": "sdk-python",

@@ -1301,12 +1301,20 @@ class ClusterInfoTest extends TestCase
             $contract['host_runner_contract']['result_files'],
         );
         $this->assertContains(
+            'workflow-php-workflow-updates-evidence.json',
+            $contract['host_runner_contract']['result_files'],
+        );
+        $this->assertContains(
             'accepted_update_control_plane_and_history',
             $contract['host_runner_contract']['focused_probe']['covers_required_scenarios'],
         );
         $this->assertContains(
             'principal_attribution_with_auth',
             $contract['host_runner_contract']['focused_probe']['covers_required_scenarios'],
+        );
+        $this->assertContains(
+            'php_client_worker_update_surface',
+            $contract['host_runner_contract']['php_sidecar']['covers_required_scenarios'],
         );
         $this->assertSame(
             'waterline',

@@ -170,7 +170,7 @@ final class WorkflowUpdateRuntimeContract
                 ],
             ],
             'host_runner_contract' => [
-                'status' => 'focused_server_runtime_probe_implemented_with_typed_coverage_gaps',
+                'status' => 'focused_server_runtime_probe_and_php_package_shard_implemented_with_typed_coverage_gaps',
                 'runner_id' => 'workflow-updates',
                 'result_schema' => self::RESULT_SCHEMA,
                 'runner_repository' => 'server',
@@ -179,14 +179,18 @@ final class WorkflowUpdateRuntimeContract
                 'evidence_inputs' => [
                     'DW_WORKFLOW_UPDATES_EVIDENCE',
                     'DW_WORKFLOW_UPDATES_EVIDENCE_PATH',
+                    'DW_WORKFLOW_UPDATES_PHP_EVIDENCE',
+                    'DW_WORKFLOW_UPDATES_PHP_EVIDENCE_PATH',
                     'DW_WORKFLOW_UPDATES_PYTHON_EVIDENCE',
                     'DW_WORKFLOW_UPDATES_PYTHON_EVIDENCE_PATH',
                     'DW_WORKFLOW_UPDATES_SKIP_FOCUSED_HOST_PROBE',
+                    'DW_WORKFLOW_UPDATES_SKIP_PHP_PACKAGE_SHARD',
                 ],
                 'result_files' => [
                     'pins.json',
                     'run-metadata.json',
                     'workflow-updates-focused-evidence.json',
+                    'workflow-php-workflow-updates-evidence.json',
                     'python-sdk-workflow-updates-evidence.json',
                     'workflow-updates-result.json',
                     'workflow-updates-record.json',
@@ -226,6 +230,19 @@ final class WorkflowUpdateRuntimeContract
                     'uses_external_worker_update_contracts' => true,
                     'uses_public_control_plane_and_worker_protocol_routes' => true,
                 ],
+                'php_sidecar' => [
+                    'status' => 'implemented',
+                    'runner_scope' => 'published_packagist_workflow_php_artifact',
+                    'evidence_file' => 'workflow-php-workflow-updates-evidence.json',
+                    'covers_required_scenarios' => [
+                        'php_client_worker_update_surface',
+                    ],
+                    'records_runner_blocked_false_for_executed_product_evidence' => true,
+                    'out_of_scope_scenario_results_are_ignored' => true,
+                    'uses_packagist_artifact_client_and_worker_update_surface' => true,
+                    'must_record_package_version_artifact_source_handler_request_and_cells' => true,
+                    'must_reject_local_product_source_checkout_and_local_artifact_sources' => true,
+                ],
                 'python_sidecar' => [
                     'status' => 'implemented',
                     'runner_scope' => 'published_python_sdk_artifact',
@@ -238,11 +255,6 @@ final class WorkflowUpdateRuntimeContract
                     'uses_pypi_artifact_client_and_worker_update_surface' => true,
                 ],
                 'typed_coverage_gaps' => [
-                    'php_client_worker_update_surface' => [
-                        'classification' => 'coverage-gap',
-                        'owner' => 'workflow-php',
-                        'acceptance' => 'Install the pinned Packagist durable-workflow/workflow artifact and record PHP worker update handler, PHP client update request, covered cells, and typed unsupported cells.',
-                    ],
                     'python_client_worker_update_surface' => [
                         'classification' => 'coverage-gap',
                         'owner' => 'sdk-python',

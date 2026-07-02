@@ -69,11 +69,19 @@ class WorkflowUpdateRuntimeContractTest extends TestCase
             $manifest['host_runner_contract']['evidence_inputs'],
         );
         $this->assertContains(
+            'DW_WORKFLOW_UPDATES_PHP_EVIDENCE_PATH',
+            $manifest['host_runner_contract']['evidence_inputs'],
+        );
+        $this->assertContains(
             'DW_WORKFLOW_UPDATES_PYTHON_EVIDENCE_PATH',
             $manifest['host_runner_contract']['evidence_inputs'],
         );
         $this->assertContains(
             'workflow-updates-focused-evidence.json',
+            $manifest['host_runner_contract']['result_files'],
+        );
+        $this->assertContains(
+            'workflow-php-workflow-updates-evidence.json',
             $manifest['host_runner_contract']['result_files'],
         );
         $this->assertContains(
@@ -90,6 +98,18 @@ class WorkflowUpdateRuntimeContractTest extends TestCase
         );
         $this->assertArrayNotHasKey(
             'principal_attribution_with_auth',
+            $manifest['host_runner_contract']['typed_coverage_gaps'],
+        );
+        $this->assertSame(
+            'implemented',
+            $manifest['host_runner_contract']['php_sidecar']['status'],
+        );
+        $this->assertContains(
+            'php_client_worker_update_surface',
+            $manifest['host_runner_contract']['php_sidecar']['covers_required_scenarios'],
+        );
+        $this->assertArrayNotHasKey(
+            'php_client_worker_update_surface',
             $manifest['host_runner_contract']['typed_coverage_gaps'],
         );
         $this->assertSame(
@@ -120,7 +140,7 @@ class WorkflowUpdateRuntimeContractTest extends TestCase
                 'DW_SERVER_VERSION=' . escapeshellarg('0.2.536'),
                 'DW_CLI_VERSION=' . escapeshellarg('0.1.82'),
                 'DW_PYTHON_SDK_VERSION=' . escapeshellarg('0.4.92'),
-                'DW_WORKFLOW_PHP_VERSION=' . escapeshellarg('2.0.0-alpha.241'),
+                'DW_WORKFLOW_PHP_VERSION=' . escapeshellarg('2.0.0-alpha.242'),
                 'DW_WATERLINE_VERSION=' . escapeshellarg('2.0.0-alpha.111'),
                 escapeshellarg($root . '/scripts/conformance/workflow-updates-published-artifacts.sh'),
                 escapeshellarg($resultDir),
@@ -142,7 +162,7 @@ class WorkflowUpdateRuntimeContractTest extends TestCase
             $this->assertSame('0.2.536', $result['artifact_versions']['server']);
             $this->assertSame('0.1.82', $result['artifact_versions']['cli']);
             $this->assertSame('0.4.92', $result['artifact_versions']['sdk-python']);
-            $this->assertSame('2.0.0-alpha.241', $result['artifact_versions']['workflow']);
+            $this->assertSame('2.0.0-alpha.242', $result['artifact_versions']['workflow']);
             $this->assertSame('2.0.0-alpha.111', $result['artifact_versions']['waterline']);
             $this->assertSame('durableworkflow/server:0.2.536', $result['artifact_sources']['server']);
             $this->assertSame(
@@ -154,7 +174,7 @@ class WorkflowUpdateRuntimeContractTest extends TestCase
                 $result['artifact_sources']['sdk-python'],
             );
             $this->assertSame(
-                'packagist://durable-workflow/workflow@2.0.0-alpha.241',
+                'packagist://durable-workflow/workflow@2.0.0-alpha.242',
                 $result['artifact_sources']['workflow'],
             );
             $this->assertSame(
@@ -183,6 +203,49 @@ class WorkflowUpdateRuntimeContractTest extends TestCase
             $this->assertStringContainsString(
                 'Focused published-server workflow update runtime cells execute',
                 $record['notes'][0],
+            );
+        } finally {
+            exec('rm -rf ' . escapeshellarg($resultDir));
+        }
+    }
+
+    public function test_handoff_uses_workflow_version_alias_for_php_package_tuple(): void
+    {
+        if (trim((string) shell_exec('command -v node')) === '') {
+            $this->markTestSkipped('node is required to execute the workflow updates handoff');
+        }
+
+        $root = dirname(__DIR__, 2);
+        $resultDir = sys_get_temp_dir() . '/dw-workflow-updates-workflow-version-alias-test-' . bin2hex(random_bytes(6));
+        mkdir($resultDir, 0777, true);
+
+        try {
+            $command = sprintf(
+                '%s %s %s %s %s %s %s --result-dir %s 2>&1',
+                'DW_SERVER_IMAGE=' . escapeshellarg('durableworkflow/server:0.2.536'),
+                'DW_SERVER_VERSION=' . escapeshellarg('0.2.536'),
+                'DW_CLI_VERSION=' . escapeshellarg('0.1.82'),
+                'DW_PYTHON_SDK_VERSION=' . escapeshellarg('0.4.92'),
+                'DW_WORKFLOW_VERSION=' . escapeshellarg('2.0.0-alpha.242'),
+                'DW_WATERLINE_VERSION=' . escapeshellarg('2.0.0-alpha.111'),
+                escapeshellarg($root . '/scripts/conformance/workflow-updates-published-artifacts.sh'),
+                escapeshellarg($resultDir),
+            );
+
+            exec($command, $output, $status);
+
+            $this->assertSame(0, $status, implode("\n", $output));
+
+            $result = json_decode((string) file_get_contents($resultDir . '/workflow-updates-result.json'), true);
+
+            $this->assertSame('2.0.0-alpha.242', $result['artifact_versions']['workflow']);
+            $this->assertSame(
+                'packagist://durable-workflow/workflow@2.0.0-alpha.242',
+                $result['artifact_sources']['workflow-php'],
+            );
+            $this->assertSame(
+                'packagist://durable-workflow/workflow@2.0.0-alpha.242',
+                $result['scenario_results']['php_client_worker_update_surface']['observed_outputs']['artifact_sources']['workflow-php'],
             );
         } finally {
             exec('rm -rf ' . escapeshellarg($resultDir));
@@ -235,7 +298,7 @@ class WorkflowUpdateRuntimeContractTest extends TestCase
                 'DW_SERVER_VERSION=' . escapeshellarg('0.2.536'),
                 'DW_CLI_VERSION=' . escapeshellarg('0.1.82'),
                 'DW_PYTHON_SDK_VERSION=' . escapeshellarg('0.4.92'),
-                'DW_WORKFLOW_PHP_VERSION=' . escapeshellarg('2.0.0-alpha.241'),
+                'DW_WORKFLOW_PHP_VERSION=' . escapeshellarg('2.0.0-alpha.242'),
                 'DW_WATERLINE_VERSION=' . escapeshellarg('2.0.0-alpha.111'),
                 'DW_WORKFLOW_UPDATES_EVIDENCE_PATH=' . escapeshellarg($evidencePath),
                 escapeshellarg($root . '/scripts/conformance/workflow-updates-published-artifacts.sh'),
@@ -311,7 +374,7 @@ class WorkflowUpdateRuntimeContractTest extends TestCase
                 'DW_SERVER_VERSION=' . escapeshellarg('0.2.536'),
                 'DW_CLI_VERSION=' . escapeshellarg('0.1.82'),
                 'DW_PYTHON_SDK_VERSION=' . escapeshellarg('0.4.92'),
-                'DW_WORKFLOW_PHP_VERSION=' . escapeshellarg('2.0.0-alpha.241'),
+                'DW_WORKFLOW_PHP_VERSION=' . escapeshellarg('2.0.0-alpha.242'),
                 'DW_WATERLINE_VERSION=' . escapeshellarg('2.0.0-alpha.111'),
                 'DW_WORKFLOW_UPDATES_EVIDENCE_PATH=' . escapeshellarg($evidencePath),
                 escapeshellarg($root . '/scripts/conformance/workflow-updates-published-artifacts.sh'),
@@ -399,7 +462,7 @@ class WorkflowUpdateRuntimeContractTest extends TestCase
                 'DW_SERVER_VERSION=' . escapeshellarg('0.2.536'),
                 'DW_CLI_VERSION=' . escapeshellarg('0.1.82'),
                 'DW_PYTHON_SDK_VERSION=' . escapeshellarg('0.4.92'),
-                'DW_WORKFLOW_PHP_VERSION=' . escapeshellarg('2.0.0-alpha.241'),
+                'DW_WORKFLOW_PHP_VERSION=' . escapeshellarg('2.0.0-alpha.242'),
                 'DW_WATERLINE_VERSION=' . escapeshellarg('2.0.0-alpha.111'),
                 escapeshellarg($root . '/scripts/conformance/workflow-updates-published-artifacts.sh'),
                 escapeshellarg($resultDir),
@@ -424,6 +487,95 @@ class WorkflowUpdateRuntimeContractTest extends TestCase
             $this->assertSame('not_covered', $result['scenario_results']['operator_diagnostics_surfaces']['status']);
             $this->assertContains('principal_attribution_with_auth', $result['non_passing_scenarios']);
             $this->assertContains('php_client_worker_update_surface', $result['non_passing_scenarios']);
+            $this->assertContains('operator_diagnostics_surfaces', $result['non_passing_scenarios']);
+        } finally {
+            exec('rm -rf ' . escapeshellarg($resultDir));
+        }
+    }
+
+    public function test_handoff_imports_php_package_sidecar_for_php_surface_only(): void
+    {
+        if (trim((string) shell_exec('command -v node')) === '') {
+            $this->markTestSkipped('node is required to execute the workflow updates handoff');
+        }
+
+        $root = dirname(__DIR__, 2);
+        $resultDir = sys_get_temp_dir() . '/dw-workflow-updates-php-sidecar-test-' . bin2hex(random_bytes(6));
+        mkdir($resultDir, 0777, true);
+
+        try {
+            $scenarioResults = [];
+            foreach (self::workflowUpdateRuntimeScenarioIds() as $scenarioId) {
+                $scenarioResults[$scenarioId] = [
+                    'scenario_id' => $scenarioId,
+                    'status' => 'pass',
+                    'classification' => 'product-evidence',
+                    'published_artifact_cell_executed' => true,
+                    'local_product_source_checkouts_used' => false,
+                    'observed_outputs' => self::completeWorkflowUpdateObservedOutputs($scenarioId),
+                    'linked_findings' => [],
+                ];
+            }
+            $scenarioResults['php_client_worker_update_surface']['observed_outputs']['workflow_php_artifact_source'] = 'packagist://durable-workflow/workflow@2.0.0-alpha.242';
+            $scenarioResults['php_client_worker_update_surface']['observed_outputs']['composer_package'] = 'durable-workflow/workflow';
+            $scenarioResults['php_client_worker_update_surface']['observed_outputs']['cell_outcomes'] = [
+                'accepted' => ['status' => 'pass'],
+                'completed' => ['status' => 'pass'],
+                'failed' => ['status' => 'pass'],
+                'refused_unknown_update' => ['status' => 'pass'],
+                'duplicate_idempotent' => ['status' => 'pass'],
+                'terminal_refusal' => ['status' => 'pass'],
+                'payload_round_trip' => ['status' => 'pass'],
+            ];
+
+            file_put_contents($resultDir . '/workflow-php-workflow-updates-evidence.json', json_encode([
+                'schema' => 'durable-workflow.v2.workflow-updates.php-package-sidecar',
+                'runner_blocked' => false,
+                'artifact_sources' => self::workflowUpdateEvidenceValue('artifact_sources', 'php_client_worker_update_surface'),
+                'source_policy' => [
+                    'pass_requires_published_artifacts_only' => true,
+                    'local_product_source_checkouts_used' => false,
+                    'local_checkout_execution_counts_as_pass' => false,
+                ],
+                'scenario_results' => array_values($scenarioResults),
+                'findings' => [],
+            ], JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES));
+
+            $command = sprintf(
+                '%s %s %s %s %s %s %s --result-dir %s 2>&1',
+                'DW_SERVER_IMAGE=' . escapeshellarg('durableworkflow/server:0.2.536'),
+                'DW_SERVER_VERSION=' . escapeshellarg('0.2.536'),
+                'DW_CLI_VERSION=' . escapeshellarg('0.1.82'),
+                'DW_PYTHON_SDK_VERSION=' . escapeshellarg('0.4.92'),
+                'DW_WORKFLOW_PHP_VERSION=' . escapeshellarg('2.0.0-alpha.242'),
+                'DW_WATERLINE_VERSION=' . escapeshellarg('2.0.0-alpha.111'),
+                escapeshellarg($root . '/scripts/conformance/workflow-updates-published-artifacts.sh'),
+                escapeshellarg($resultDir),
+            );
+
+            exec($command, $output, $status);
+
+            $this->assertSame(0, $status, implode("\n", $output));
+
+            $result = json_decode((string) file_get_contents($resultDir . '/workflow-updates-result.json'), true);
+            $metadata = json_decode((string) file_get_contents($resultDir . '/run-metadata.json'), true);
+            $record = json_decode((string) file_get_contents($resultDir . '/workflow-updates-record.json'), true);
+
+            $this->assertSame('fail', $result['outcome']);
+            $this->assertTrue($result['php_sidecar']['evidence_loaded']);
+            $this->assertSame('2.0.0-alpha.242', $result['php_sidecar']['package_version']);
+            $this->assertSame(
+                'packagist://durable-workflow/workflow@2.0.0-alpha.242',
+                $result['php_sidecar']['artifact_source'],
+            );
+            $this->assertSame('workflow-php-workflow-updates-evidence.json', $metadata['php_sidecar_evidence_file']);
+            $this->assertSame('workflow-php-workflow-updates-evidence.json', $record['php_sidecar_evidence_file']);
+            $this->assertSame('pass', $result['scenario_results']['php_client_worker_update_surface']['status']);
+            $this->assertSame('not_covered', $result['scenario_results']['principal_attribution_with_auth']['status']);
+            $this->assertSame('not_covered', $result['scenario_results']['python_client_worker_update_surface']['status']);
+            $this->assertSame('not_covered', $result['scenario_results']['operator_diagnostics_surfaces']['status']);
+            $this->assertContains('principal_attribution_with_auth', $result['non_passing_scenarios']);
+            $this->assertContains('python_client_worker_update_surface', $result['non_passing_scenarios']);
             $this->assertContains('operator_diagnostics_surfaces', $result['non_passing_scenarios']);
         } finally {
             exec('rm -rf ' . escapeshellarg($resultDir));
@@ -469,7 +621,7 @@ class WorkflowUpdateRuntimeContractTest extends TestCase
                 'DW_SERVER_VERSION=' . escapeshellarg('0.2.536'),
                 'DW_CLI_VERSION=' . escapeshellarg('0.1.82'),
                 'DW_PYTHON_SDK_VERSION=' . escapeshellarg('0.4.92'),
-                'DW_WORKFLOW_PHP_VERSION=' . escapeshellarg('2.0.0-alpha.241'),
+                'DW_WORKFLOW_PHP_VERSION=' . escapeshellarg('2.0.0-alpha.242'),
                 'DW_WATERLINE_VERSION=' . escapeshellarg('2.0.0-alpha.111'),
                 escapeshellarg($root . '/scripts/conformance/workflow-updates-published-artifacts.sh'),
                 escapeshellarg($resultDir),
@@ -490,6 +642,77 @@ class WorkflowUpdateRuntimeContractTest extends TestCase
             $this->assertTrue($scenario['local_product_source_checkouts_used']);
             $this->assertSame(
                 'workflow-updates-python-client-worker-update-surface-source-policy-gap',
+                $scenario['linked_findings'][0]['finding_id'],
+            );
+        } finally {
+            exec('rm -rf ' . escapeshellarg($resultDir));
+        }
+    }
+
+    public function test_handoff_rejects_php_package_sidecar_local_artifact_source(): void
+    {
+        if (trim((string) shell_exec('command -v node')) === '') {
+            $this->markTestSkipped('node is required to execute the workflow updates handoff');
+        }
+
+        $root = dirname(__DIR__, 2);
+        $resultDir = sys_get_temp_dir() . '/dw-workflow-updates-php-sidecar-policy-test-' . bin2hex(random_bytes(6));
+        mkdir($resultDir, 0777, true);
+
+        try {
+            $observedOutputs = self::completeWorkflowUpdateObservedOutputs('php_client_worker_update_surface');
+            $observedOutputs['workflow_php_artifact_source'] = 'file:///workspace/repos/workflow';
+            $observedOutputs['package_artifact_source'] = 'local_product_source_checkout';
+
+            file_put_contents($resultDir . '/workflow-php-workflow-updates-evidence.json', json_encode([
+                'schema' => 'durable-workflow.v2.workflow-updates.php-package-sidecar',
+                'runner_blocked' => false,
+                'source_policy' => [
+                    'pass_requires_published_artifacts_only' => true,
+                    'local_product_source_checkouts_used' => false,
+                    'local_checkout_execution_counts_as_pass' => false,
+                ],
+                'scenario_results' => [
+                    'php_client_worker_update_surface' => [
+                        'scenario_id' => 'php_client_worker_update_surface',
+                        'status' => 'pass',
+                        'classification' => 'product-evidence',
+                        'published_artifact_cell_executed' => true,
+                        'local_product_source_checkouts_used' => false,
+                        'observed_outputs' => $observedOutputs,
+                        'linked_findings' => [],
+                    ],
+                ],
+                'findings' => [],
+            ], JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES));
+
+            $command = sprintf(
+                '%s %s %s %s %s %s %s --result-dir %s 2>&1',
+                'DW_SERVER_IMAGE=' . escapeshellarg('durableworkflow/server:0.2.536'),
+                'DW_SERVER_VERSION=' . escapeshellarg('0.2.536'),
+                'DW_CLI_VERSION=' . escapeshellarg('0.1.82'),
+                'DW_PYTHON_SDK_VERSION=' . escapeshellarg('0.4.92'),
+                'DW_WORKFLOW_PHP_VERSION=' . escapeshellarg('2.0.0-alpha.242'),
+                'DW_WATERLINE_VERSION=' . escapeshellarg('2.0.0-alpha.111'),
+                escapeshellarg($root . '/scripts/conformance/workflow-updates-published-artifacts.sh'),
+                escapeshellarg($resultDir),
+            );
+
+            exec($command, $output, $status);
+
+            $this->assertSame(0, $status, implode("\n", $output));
+
+            $result = json_decode((string) file_get_contents($resultDir . '/workflow-updates-result.json'), true);
+            $scenario = $result['scenario_results']['php_client_worker_update_surface'];
+
+            $this->assertSame('fail', $result['outcome']);
+            $this->assertTrue($result['source_policy']['local_product_source_checkouts_used']);
+            $this->assertTrue($result['local_product_source_checkouts_used']);
+            $this->assertTrue($result['php_sidecar']['local_product_source_checkouts_used']);
+            $this->assertSame('not_covered', $scenario['status']);
+            $this->assertTrue($scenario['local_product_source_checkouts_used']);
+            $this->assertSame(
+                'workflow-updates-php-client-worker-update-surface-source-policy-gap',
                 $scenario['linked_findings'][0]['finding_id'],
             );
         } finally {
@@ -542,7 +765,7 @@ class WorkflowUpdateRuntimeContractTest extends TestCase
                     'DW_SERVER_VERSION=' . escapeshellarg('0.2.536'),
                     'DW_CLI_VERSION=' . escapeshellarg('0.1.82'),
                     'DW_PYTHON_SDK_VERSION=' . escapeshellarg('0.4.92'),
-                    'DW_WORKFLOW_PHP_VERSION=' . escapeshellarg('2.0.0-alpha.241'),
+                    'DW_WORKFLOW_PHP_VERSION=' . escapeshellarg('2.0.0-alpha.242'),
                     'DW_WATERLINE_VERSION=' . escapeshellarg('2.0.0-alpha.111'),
                     'DW_WORKFLOW_UPDATES_EVIDENCE_PATH=' . escapeshellarg($evidencePath),
                     escapeshellarg($root . '/scripts/conformance/workflow-updates-published-artifacts.sh'),
@@ -624,7 +847,7 @@ class WorkflowUpdateRuntimeContractTest extends TestCase
                 'DW_SERVER_VERSION=' . escapeshellarg('0.2.536'),
                 'DW_CLI_VERSION=' . escapeshellarg('0.1.82'),
                 'DW_PYTHON_SDK_VERSION=' . escapeshellarg('0.4.92'),
-                'DW_WORKFLOW_PHP_VERSION=' . escapeshellarg('2.0.0-alpha.241'),
+                'DW_WORKFLOW_PHP_VERSION=' . escapeshellarg('2.0.0-alpha.242'),
                 'DW_WATERLINE_VERSION=' . escapeshellarg('2.0.0-alpha.111'),
                 'DW_WORKFLOW_UPDATES_EVIDENCE_PATH=' . escapeshellarg($evidencePath),
                 escapeshellarg($root . '/scripts/conformance/workflow-updates-published-artifacts.sh'),
@@ -692,7 +915,7 @@ class WorkflowUpdateRuntimeContractTest extends TestCase
                 'DW_SERVER_VERSION=' . escapeshellarg('latest'),
                 'DW_CLI_VERSION=' . escapeshellarg('0.1.82'),
                 'DW_PYTHON_SDK_VERSION=' . escapeshellarg('0.4.92'),
-                'DW_WORKFLOW_PHP_VERSION=' . escapeshellarg('2.0.0-alpha.241'),
+                'DW_WORKFLOW_PHP_VERSION=' . escapeshellarg('2.0.0-alpha.242'),
                 'DW_WATERLINE_VERSION=' . escapeshellarg('2.0.0-alpha.111'),
                 'DW_WORKFLOW_UPDATES_EVIDENCE_PATH=' . escapeshellarg($evidencePath),
                 escapeshellarg($root . '/scripts/conformance/workflow-updates-published-artifacts.sh'),
@@ -763,7 +986,7 @@ class WorkflowUpdateRuntimeContractTest extends TestCase
                 'DW_SERVER_VERSION=' . escapeshellarg('0.2.536'),
                 'DW_CLI_VERSION=' . escapeshellarg('0.1.82'),
                 'DW_PYTHON_SDK_VERSION=' . escapeshellarg('0.4.92'),
-                'DW_WORKFLOW_PHP_VERSION=' . escapeshellarg('2.0.0-alpha.241'),
+                'DW_WORKFLOW_PHP_VERSION=' . escapeshellarg('2.0.0-alpha.242'),
                 'DW_WATERLINE_VERSION=' . escapeshellarg('2.0.0-alpha.111'),
                 'DW_WORKFLOW_UPDATES_EVIDENCE_PATH=' . escapeshellarg($evidencePath),
                 escapeshellarg($root . '/scripts/conformance/workflow-updates-published-artifacts.sh'),
@@ -846,7 +1069,7 @@ class WorkflowUpdateRuntimeContractTest extends TestCase
                 'DW_SERVER_VERSION=' . escapeshellarg('0.2.536'),
                 'DW_CLI_VERSION=' . escapeshellarg('0.1.82'),
                 'DW_PYTHON_SDK_VERSION=' . escapeshellarg('0.4.92'),
-                'DW_WORKFLOW_PHP_VERSION=' . escapeshellarg('2.0.0-alpha.241'),
+                'DW_WORKFLOW_PHP_VERSION=' . escapeshellarg('2.0.0-alpha.242'),
                 'DW_WATERLINE_VERSION=' . escapeshellarg('2.0.0-alpha.111'),
                 'DW_WORKFLOW_UPDATES_EVIDENCE_PATH=' . escapeshellarg($evidencePath),
                 escapeshellarg($root . '/scripts/conformance/workflow-updates-published-artifacts.sh'),
@@ -963,6 +1186,55 @@ class WorkflowUpdateRuntimeContractTest extends TestCase
         );
     }
 
+    public function test_php_package_shard_installs_pinned_packagist_artifact_and_runs_package_command(): void
+    {
+        $source = (string) file_get_contents(
+            dirname(__DIR__, 2) . '/scripts/conformance/workflow-updates-published-artifacts.sh',
+        );
+
+        $this->assertStringContainsString(
+            'workflow-php-workflow-updates-evidence.json',
+            $source,
+        );
+        $this->assertStringContainsString(
+            'COMPOSER_HOME="$composer_home" COMPOSER_CACHE_DIR="$composer_cache"',
+            $source,
+        );
+        $this->assertStringContainsString(
+            'composer create-project laravel/laravel . --no-interaction --no-progress --prefer-dist',
+            $source,
+        );
+        $this->assertStringContainsString(
+            'composer require --no-interaction --no-progress --prefer-dist "durable-workflow/workflow:${workflow_php_version}"',
+            $source,
+        );
+        $this->assertStringContainsString(
+            'php artisan workflow:v2:workflow-updates-conformance --json',
+            $source,
+        );
+        $this->assertStringContainsString(
+            'workflow-php-package-source-policy.log',
+            $source,
+        );
+        $this->assertStringContainsString(
+            'installation-source',
+            $source,
+        );
+        $this->assertStringContainsString(
+            'workflow_php_artifact_source',
+            $source,
+        );
+        $this->assertStringContainsString(
+            'localSourceFieldValues(value).some((source) => sourceUsesForbiddenToken(source))',
+            $source,
+        );
+        $this->assertStringNotContainsString(
+            'composer require --no-interaction --no-progress "durable-workflow/workflow:${workflow_php_version:-',
+            $source,
+            'the PHP package shard must not fall back to floating Composer constraints',
+        );
+    }
+
     /**
      * @return list<string>
      */
@@ -1046,16 +1318,16 @@ class WorkflowUpdateRuntimeContractTest extends TestCase
                 'server' => '0.2.536',
                 'cli' => '0.1.82',
                 'sdk-python' => '0.4.92',
-                'workflow' => '2.0.0-alpha.241',
-                'workflow-php' => '2.0.0-alpha.241',
+                'workflow' => '2.0.0-alpha.242',
+                'workflow-php' => '2.0.0-alpha.242',
                 'waterline' => '2.0.0-alpha.111',
             ],
             'artifact_sources' => [
                 'server' => 'durableworkflow/server:0.2.536',
                 'cli' => 'github-release://durable-workflow/cli/v0.1.82/install.sh',
                 'sdk-python' => 'pypi://durable-workflow==0.4.92',
-                'workflow' => 'packagist://durable-workflow/workflow@2.0.0-alpha.241',
-                'workflow-php' => 'packagist://durable-workflow/workflow@2.0.0-alpha.241',
+                'workflow' => 'packagist://durable-workflow/workflow@2.0.0-alpha.242',
+                'workflow-php' => 'packagist://durable-workflow/workflow@2.0.0-alpha.242',
                 'waterline' => 'packagist://durable-workflow/waterline@2.0.0-alpha.111',
             ],
             'artifact_install_evidence' => [
@@ -1068,6 +1340,22 @@ class WorkflowUpdateRuntimeContractTest extends TestCase
                 'local_checkout_execution_counts_as_pass' => false,
             ],
             'local_product_source_checkouts_used' => false,
+            'covered_cells' => [
+                'accepted',
+                'completed',
+                'failed',
+                'refused_unknown_update',
+                'duplicate_idempotent',
+                'terminal_refusal',
+                'payload_round_trip',
+            ],
+            'unsupported_cells' => [
+                [
+                    'cell' => 'invalid_input_refusal',
+                    'classification' => 'typed_unsupported',
+                ],
+            ],
+            'typed_errors' => [],
             'handler_not_invoked' => true,
             default => [
                 'scenario_id' => $scenarioId,

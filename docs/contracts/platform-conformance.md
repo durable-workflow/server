@@ -169,10 +169,12 @@ starts update-capable workflows through the public control-plane API, drives
 accepted, waiting, completed, failed, duplicate/idempotent, unknown update,
 invalid input, payload-envelope, terminal-workflow, and authenticated-principal
 attribution cells, then records API and history evidence with
-`runner_blocked=false`. That focused probe is still a non-passing result until
-the full matrix is covered: PHP SDK client/worker, Python SDK client/worker,
-official CLI JSON, and Waterline selected-run update/history views are recorded
-as typed coverage gaps with focused acceptance criteria. Local product source
+`runner_blocked=false`. The handoff also installs the pinned Packagist
+`durable-workflow/workflow` package in a disposable Laravel app and imports its
+PHP client/worker update shard evidence. The result remains non-passing until
+the full matrix is covered: Python SDK client/worker, official CLI JSON, and
+Waterline selected-run update/history views are recorded as typed coverage gaps
+with focused acceptance criteria. Local product source
 checkouts, branch source, and local vendor trees cannot count as passing
 workflow-update evidence.
 
