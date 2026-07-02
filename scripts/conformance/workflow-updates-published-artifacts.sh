@@ -774,6 +774,8 @@ const startedAt = process.env.STARTED_AT;
 const repoRoot = process.env.REPO_ROOT || '';
 const generatedAt = new Date().toISOString().replace(/\.\d{3}Z$/, 'Z');
 const finishedAt = generatedAt;
+const focusedEvidenceFile = 'workflow-updates-focused-evidence.json';
+const focusedEvidencePath = path.join(resultDir, focusedEvidenceFile);
 
 function env(name) {
   return (process.env[name] || '').trim();
@@ -795,10 +797,17 @@ function writeJson(file, payload) {
   fs.writeFileSync(path.join(resultDir, file), `${JSON.stringify(payload, null, 2)}\n`);
 }
 
+function readJsonFile(file) {
+  return JSON.parse(fs.readFileSync(file, 'utf8'));
+}
+
 function readEvidence() {
   const inline = env('DW_WORKFLOW_UPDATES_EVIDENCE');
   if (inline) {
-    return JSON.parse(inline);
+    const payload = JSON.parse(inline);
+    writeJson(focusedEvidenceFile, payload);
+
+    return { payload, file: focusedEvidenceFile };
   }
 
   const configuredPath = env('DW_WORKFLOW_UPDATES_EVIDENCE_PATH');
@@ -806,15 +815,20 @@ function readEvidence() {
   if (configuredPath) {
     candidates.push(configuredPath);
   }
-  candidates.push(path.join(resultDir, 'workflow-updates-focused-evidence.json'));
+  candidates.push(focusedEvidencePath);
 
   for (const candidate of candidates) {
     if (candidate && fs.existsSync(candidate) && fs.statSync(candidate).size > 0) {
-      return JSON.parse(fs.readFileSync(candidate, 'utf8'));
+      const payload = readJsonFile(candidate);
+      if (path.resolve(candidate) !== focusedEvidencePath) {
+        writeJson(focusedEvidenceFile, payload);
+      }
+
+      return { payload, file: focusedEvidenceFile };
     }
   }
 
-  return null;
+  return { payload: null, file: null };
 }
 
 function uniqueFindings(findings) {
@@ -845,6 +859,20 @@ function coverageFinding(id, scenarioId, summary, acceptance, owningSurface = 'c
   };
 }
 
+function runnerBlockedFinding(blockedReason) {
+  const reason = blockedReason || 'Focused workflow update evidence reported runner_blocked=true.';
+
+  return {
+    finding_id: 'workflow-updates-focused-evidence-runner-blocked',
+    finding_type: 'conformance_runner_blocked',
+    classification: 'runner-blocked',
+    scenario_id: 'workflow_update_runtime_run',
+    owning_surface: 'conformance_harness',
+    summary: `Workflow update focused evidence was runner-blocked and cannot produce a passing published-artifact result: ${reason}`,
+    next_acceptance_criterion: 'Restore focused workflow update host execution against pinned published artifacts and record runner_blocked=false with concrete scenario evidence.',
+  };
+}
+
 function truthyEvidenceFlag(value) {
   if (value === true || value === 1) {
     return true;
@@ -871,12 +899,27 @@ function objectValue(value) {
   return value && typeof value === 'object' && !Array.isArray(value) ? value : {};
 }
 
+function stringValue(value) {
+  return typeof value === 'string' ? value.trim() : '';
+}
+
 function sourcePolicyFor(value) {
   return objectValue(value?.source_policy ?? value?.sourcePolicy);
 }
 
 function observedOutputsFor(value) {
-  return objectValue(value?.observed_outputs ?? value?.observedOutputs);
+  const observedOutputs = objectValue(value?.observed_outputs ?? value?.observedOutputs);
+  if (Object.keys(observedOutputs).length > 0) {
+    return observedOutputs;
+  }
+
+  return objectValue(value?.evidence);
+}
+
+function artifactSourcesFor(value) {
+  const observedOutputs = observedOutputsFor(value);
+
+  return objectValue(value?.artifact_sources ?? value?.artifactSources ?? observedOutputs.artifact_sources ?? observedOutputs.artifactSources);
 }
 
 function localProductSourceCheckoutsUsed(value) {
@@ -913,6 +956,47 @@ function publishedArtifactCellExecuted(value) {
     || truthyEvidenceFlag(observedOutputs.publishedArtifactCellExecuted);
 }
 
+function containsForbiddenSourceToken(value) {
+  const lower = stringValue(value).toLowerCase();
+  if (lower === '') {
+    return false;
+  }
+
+  const forbiddenTokens = [
+    'local_product_source_checkout',
+    'workspace_repo_as_artifact_under_test',
+    'local_checkout_artifact',
+    'local_source_checkout',
+    'workspace_repo',
+    'branch_source',
+    'local_vendor_tree',
+    '/workspace/repos',
+    'file://',
+    'git+file://',
+    '${home}/repos',
+    '~/repos',
+  ];
+  if (forbiddenTokens.some((token) => lower.includes(token))) {
+    return true;
+  }
+
+  return lower.startsWith('/')
+    || lower.startsWith('./')
+    || lower.startsWith('../')
+    || /workspace[._-]*hq/.test(lower)
+    || /(^|[/:_\s-])(local|workspace)[\s_-]*(repo|worktree|checkout|source)([/:_\s-]|$)/.test(lower)
+    || /(^|[/:_\s-])(repo|worktree)[\s_-]*(checkout|source)([/:_\s-]|$)/.test(lower)
+    || lower.includes('/repos/server')
+    || lower.includes('/repos/cli')
+    || lower.includes('/repos/workflow')
+    || lower.includes('/repos/waterline')
+    || lower.includes('/repos/sdk-python');
+}
+
+function localArtifactSourceReported(value) {
+  return Object.values(artifactSourcesFor(value)).some((source) => containsForbiddenSourceToken(source));
+}
+
 function sourcePolicyFinding(scenarioId, summary) {
   return coverageFinding(
     `workflow-updates-${scenarioId.replace(/_/g, '-')}-source-policy-gap`,
@@ -920,6 +1004,61 @@ function sourcePolicyFinding(scenarioId, summary) {
     summary,
     'Rerun the workflow update cell against pinned published artifacts and record published_artifact_cell_executed=true with local_product_source_checkouts_used=false.',
   );
+}
+
+function requiredEvidenceFinding(scenarioId, missingFields) {
+  return coverageFinding(
+    `workflow-updates-${scenarioId.replace(/_/g, '-')}-missing-required-evidence`,
+    scenarioId,
+    `The host evidence for ${scenarioId} claimed pass but omitted required observed output/evidence fields: ${missingFields.join(', ')}.`,
+    `Attach concrete observed_outputs or evidence values for ${missingFields.join(', ')} before recording ${scenarioId} as passing.`,
+  );
+}
+
+function artifactPolicyFinding(failure) {
+  const artifact = stringValue(failure.artifact) || 'artifact';
+  const field = stringValue(failure.field) || 'artifact_policy';
+  const code = stringValue(failure.code) || 'invalid_artifact_policy';
+  const value = stringValue(failure.value);
+  const pathDetail = failure.path ? ` at ${failure.path}` : '';
+  const valueDetail = value === '' ? '' : `; observed ${value}`;
+  const owningSurface = {
+    server: 'server',
+    cli: 'cli',
+    workflow: 'workflow-php',
+    'workflow-php': 'workflow-php',
+    'sdk-python': 'sdk-python',
+    waterline: 'waterline',
+  }[artifact] || 'conformance_harness';
+
+  return {
+    finding_id: `workflow-updates-${artifact.replace(/[^a-z0-9]+/gi, '-')}-${code.replace(/[^a-z0-9]+/gi, '-')}`,
+    finding_type: 'missing_or_invalid_published_workflow_update_artifact',
+    classification: 'coverage-gap',
+    scenario_id: 'published_artifact_install_only',
+    owning_surface: owningSurface,
+    summary: `Required workflow update artifact ${artifact} has ${code} in ${field}${pathDetail}${valueDetail}.`,
+    next_acceptance_criterion: `Record a concrete published ${artifact} artifact version and non-local install source before passing workflow update conformance.`,
+  };
+}
+
+function addFinding(row, finding) {
+  row.linked_findings = Array.isArray(row.linked_findings) ? row.linked_findings : [];
+  row.linked_findings.push(finding);
+}
+
+function downgradeScenario(row, status, classification, observedOutputs, finding) {
+  row.status = status;
+  row.classification = classification;
+  row.published_artifact_cell_executed = false;
+  row.observed_outputs = {
+    ...objectValue(row.observed_outputs),
+    ...observedOutputs,
+    published_artifact_cell_executed: false,
+  };
+  addFinding(row, finding);
+
+  return row;
 }
 
 function scenarioResult(scenarioId, status, classification, finding, observedOutputs = {}) {
@@ -938,6 +1077,34 @@ function scenarioResult(scenarioId, status, classification, finding, observedOut
   };
 }
 
+function concreteEvidenceValue(value) {
+  if (value === null || value === undefined) {
+    return false;
+  }
+  if (typeof value === 'string') {
+    const trimmed = value.trim().toLowerCase();
+
+    return trimmed !== ''
+      && !['placeholder', 'unresolved', 'not_covered', 'not covered', 'todo', 'tbd', 'unknown', 'null', 'none'].includes(trimmed);
+  }
+  if (Array.isArray(value)) {
+    return value.length > 0;
+  }
+  if (typeof value === 'object') {
+    return Object.keys(value).length > 0;
+  }
+
+  return true;
+}
+
+function missingRequiredFieldsForScenario(scenarioId, observedOutputs) {
+  const requiredFields = Array.isArray(scenarioRequirements[scenarioId]?.required_fields)
+    ? scenarioRequirements[scenarioId].required_fields
+    : [];
+
+  return requiredFields.filter((field) => !concreteEvidenceValue(observedOutputs[field]));
+}
+
 function normalizeScenarioResult(scenarioId, row) {
   const status = typeof row?.status === 'string' ? row.status : 'not_covered';
   const allowed = new Set(['pass', 'fail', 'unsupported', 'not_covered', 'runner_blocked']);
@@ -951,6 +1118,10 @@ function normalizeScenarioResult(scenarioId, row) {
     && localSourceExplicitFalse
     && !localSourceUsed;
   const linkedFindings = Array.isArray(row?.linked_findings) ? [...row.linked_findings] : [];
+  const observedOutputs = observedOutputsFor(row);
+  const missingRequiredFields = normalizedStatus === 'pass'
+    ? missingRequiredFieldsForScenario(scenarioId, observedOutputs)
+    : [];
 
   if (normalizedStatus === 'pass' && !cleanPublishedArtifactExecution) {
     const missing = [];
@@ -969,6 +1140,12 @@ function normalizeScenarioResult(scenarioId, row) {
     ));
   }
 
+  if (normalizedStatus === 'pass' && missingRequiredFields.length > 0) {
+    normalizedStatus = 'not_covered';
+    classification = 'coverage-gap';
+    linkedFindings.push(requiredEvidenceFinding(scenarioId, missingRequiredFields));
+  }
+
   return {
     scenario_id: typeof row?.scenario_id === 'string' ? row.scenario_id : scenarioId,
     status: normalizedStatus,
@@ -976,7 +1153,8 @@ function normalizeScenarioResult(scenarioId, row) {
     published_artifact_cell_executed: cleanPublishedArtifactExecution,
     local_product_source_checkouts_used: localSourceUsed,
     observed_outputs: {
-      ...(row?.observed_outputs && typeof row.observed_outputs === 'object' ? row.observed_outputs : {}),
+      ...observedOutputs,
+      ...(missingRequiredFields.length > 0 ? { missing_required_fields: missingRequiredFields } : {}),
       published_artifact_cell_executed: cleanPublishedArtifactExecution,
       local_product_source_checkouts_used: localSourceUsed,
     },
@@ -1012,6 +1190,123 @@ const artifactSources = {
   'workflow-php': `packagist://durable-workflow/workflow@${workflowPhpVersion}`,
   waterline: `packagist://durable-workflow/waterline@${waterlineVersion}`,
 };
+
+const scenarioManifest = readJsonFile(path.join(repoRoot, 'static/platform-conformance/workflow-update-runtime-scenarios.json'));
+const scenarioRequirements = objectValue(scenarioManifest.scenario_requirements);
+const manifestForbiddenSources = Array.isArray(scenarioManifest.artifact_policy?.forbidden_sources)
+  ? scenarioManifest.artifact_policy.forbidden_sources
+  : [];
+const requiredArtifacts = ['server', 'cli', 'sdk-python', 'workflow-php', 'waterline'];
+const artifactAliases = {
+  server: ['server'],
+  cli: ['cli'],
+  'sdk-python': ['sdk-python', 'python'],
+  'workflow-php': ['workflow-php', 'workflow'],
+  waterline: ['waterline'],
+};
+
+function artifactEntries(map, artifact) {
+  const source = objectValue(map);
+  const entries = [];
+  for (const key of artifactAliases[artifact] || [artifact]) {
+    if (Object.prototype.hasOwnProperty.call(source, key)) {
+      entries.push({ key, value: source[key] });
+    }
+  }
+
+  return entries;
+}
+
+function placeholderArtifactVersion(value) {
+  const lower = stringValue(value).toLowerCase();
+  if (lower === '') {
+    return true;
+  }
+
+  return /(^|[^a-z0-9])(latest|current|head|unresolved|placeholder|not[-_\s]?exercised|todo|tbd|unknown|null|none)([^a-z0-9]|$)/.test(lower);
+}
+
+function unresolvedArtifactSource(value) {
+  const lower = stringValue(value).toLowerCase();
+  if (lower === '') {
+    return true;
+  }
+
+  return /(^|[^a-z0-9])(latest|current|head|unresolved|placeholder|not[-_\s]?exercised|todo|tbd|unknown|null|none)([^a-z0-9]|$)/.test(lower);
+}
+
+function artifactVersionFailures(map, field, pathPrefix) {
+  const failures = [];
+  for (const artifact of requiredArtifacts) {
+    const entries = artifactEntries(map, artifact);
+    if (entries.length === 0) {
+      failures.push({ artifact, field, code: 'missing_published_artifact_version', path: `${pathPrefix}.${artifact}` });
+      continue;
+    }
+    for (const entry of entries) {
+      const version = stringValue(entry.value);
+      if (version === '') {
+        failures.push({ artifact, field, code: 'missing_published_artifact_version', path: `${pathPrefix}.${entry.key}` });
+      } else if (placeholderArtifactVersion(version)) {
+        failures.push({ artifact, field, code: 'placeholder_published_artifact_version', value: version, path: `${pathPrefix}.${entry.key}` });
+      }
+    }
+  }
+
+  return failures;
+}
+
+function artifactSourceFailures(map, field, pathPrefix) {
+  const failures = [];
+  const sourceMap = objectValue(map);
+  for (const artifact of requiredArtifacts) {
+    const entries = artifactEntries(sourceMap, artifact);
+    if (entries.length === 0) {
+      failures.push({ artifact, field, code: 'missing_published_artifact_source', path: `${pathPrefix}.${artifact}` });
+      continue;
+    }
+    for (const entry of entries) {
+      const source = stringValue(entry.value);
+      if (source === '') {
+        failures.push({ artifact, field, code: 'missing_published_artifact_source', path: `${pathPrefix}.${entry.key}` });
+      } else if (containsForbiddenSourceToken(source) || manifestForbiddenSources.some((token) => source.toLowerCase().includes(String(token).toLowerCase()))) {
+        failures.push({ artifact, field, code: 'forbidden_published_artifact_source', value: source, path: `${pathPrefix}.${entry.key}` });
+      } else if (unresolvedArtifactSource(source)) {
+        failures.push({ artifact, field, code: 'placeholder_published_artifact_source', value: source, path: `${pathPrefix}.${entry.key}` });
+      }
+    }
+  }
+
+  return failures;
+}
+
+function artifactPolicyFailuresForRun() {
+  return [
+    ...artifactVersionFailures(artifactVersions, 'artifact_versions', '$.artifact_versions'),
+    ...artifactVersionFailures(publishedArtifactVersions, 'published_artifact_versions', '$.published_artifact_versions'),
+    ...artifactSourceFailures(artifactSources, 'artifact_sources', '$.artifact_sources'),
+  ];
+}
+
+function artifactPolicyFailuresForEvidence(value, pathPrefix) {
+  const failures = [];
+  const observedOutputs = observedOutputsFor(value);
+  const artifactVersionsValue = objectValue(value?.artifact_versions ?? value?.artifactVersions ?? observedOutputs.artifact_versions ?? observedOutputs.artifactVersions);
+  const publishedArtifactVersionsValue = objectValue(value?.published_artifact_versions ?? value?.publishedArtifactVersions ?? observedOutputs.published_artifact_versions ?? observedOutputs.publishedArtifactVersions);
+  const artifactSourcesValue = artifactSourcesFor(value);
+
+  if (Object.keys(artifactVersionsValue).length > 0) {
+    failures.push(...artifactVersionFailures(artifactVersionsValue, 'artifact_versions', `${pathPrefix}.artifact_versions`));
+  }
+  if (Object.keys(publishedArtifactVersionsValue).length > 0) {
+    failures.push(...artifactVersionFailures(publishedArtifactVersionsValue, 'published_artifact_versions', `${pathPrefix}.published_artifact_versions`));
+  }
+  if (Object.keys(artifactSourcesValue).length > 0) {
+    failures.push(...artifactSourceFailures(artifactSourcesValue, 'artifact_sources', `${pathPrefix}.artifact_sources`));
+  }
+
+  return failures;
+}
 
 const requiredScenarios = [
   'published_artifact_install_only',
@@ -1091,8 +1386,11 @@ let sourcePolicy = {
 };
 
 const evidence = readEvidence();
+const focusedEvidenceFileRef = evidence.file;
+const focusedEvidence = evidence.payload;
 const scenarioResults = {};
 const findings = [];
+const artifactPolicyFailures = artifactPolicyFailuresForRun();
 
 for (const scenarioId of requiredScenarios) {
   if (coverageGaps[scenarioId]) {
@@ -1139,14 +1437,21 @@ for (const scenarioId of requiredScenarios) {
   findings.push(focusedProbeMissingFinding);
 }
 
-if (evidence && evidence.scenario_results && typeof evidence.scenario_results === 'object') {
+if (focusedEvidence && focusedEvidence.scenario_results && typeof focusedEvidence.scenario_results === 'object') {
   for (const scenarioId of requiredScenarios) {
-    if (Object.prototype.hasOwnProperty.call(evidence.scenario_results, scenarioId)) {
-      scenarioResults[scenarioId] = normalizeScenarioResult(scenarioId, evidence.scenario_results[scenarioId]);
+    if (Object.prototype.hasOwnProperty.call(focusedEvidence.scenario_results, scenarioId)) {
+      scenarioResults[scenarioId] = normalizeScenarioResult(scenarioId, focusedEvidence.scenario_results[scenarioId]);
+      artifactPolicyFailures.push(
+        ...artifactPolicyFailuresForEvidence(
+          focusedEvidence.scenario_results[scenarioId],
+          `$.scenario_results.${scenarioId}`,
+        ),
+      );
     }
   }
-  if (Array.isArray(evidence.findings)) {
-    findings.push(...evidence.findings);
+  artifactPolicyFailures.push(...artifactPolicyFailuresForEvidence(focusedEvidence, '$'));
+  if (Array.isArray(focusedEvidence.findings)) {
+    findings.push(...focusedEvidence.findings);
   }
   for (const row of Object.values(scenarioResults)) {
     if (Array.isArray(row.linked_findings)) {
@@ -1155,8 +1460,46 @@ if (evidence && evidence.scenario_results && typeof evidence.scenario_results ==
   }
 }
 
-const evidenceLocalProductSourceCheckoutsUsed = localProductSourceCheckoutsUsed(evidence)
-  || Object.values(scenarioResults).some((row) => localProductSourceCheckoutsUsed(row));
+const evidenceRunnerBlocked = truthyEvidenceFlag(focusedEvidence?.runner_blocked)
+  || truthyEvidenceFlag(focusedEvidence?.runnerBlocked);
+if (evidenceRunnerBlocked) {
+  const finding = runnerBlockedFinding(
+    stringValue(focusedEvidence?.blocked_reason ?? focusedEvidence?.blockedReason),
+  );
+  findings.push(finding);
+  for (const scenarioId of requiredScenarios) {
+    const row = scenarioResults[scenarioId];
+    if (!row || (row.status !== 'pass' && scenarioId !== 'published_artifact_install_only')) {
+      continue;
+    }
+    downgradeScenario(row, 'runner_blocked', 'runner-blocked', {
+      evidence_runner_blocked: true,
+      blocked_reason: stringValue(focusedEvidence?.blocked_reason ?? focusedEvidence?.blockedReason) || null,
+    }, finding);
+  }
+}
+
+if (artifactPolicyFailures.length > 0) {
+  const artifactFindings = artifactPolicyFailures.map(artifactPolicyFinding);
+  findings.push(...artifactFindings);
+  const installScenario = scenarioResults.published_artifact_install_only;
+  if (installScenario) {
+    downgradeScenario(
+      installScenario,
+      installScenario.status === 'runner_blocked' ? 'runner_blocked' : 'not_covered',
+      installScenario.status === 'runner_blocked' ? 'runner-blocked' : 'coverage-gap',
+      { artifact_policy_failures: artifactPolicyFailures },
+      artifactFindings[0],
+    );
+    for (const finding of artifactFindings.slice(1)) {
+      addFinding(installScenario, finding);
+    }
+  }
+}
+
+const evidenceLocalProductSourceCheckoutsUsed = localProductSourceCheckoutsUsed(focusedEvidence)
+  || localArtifactSourceReported(focusedEvidence)
+  || Object.values(scenarioResults).some((row) => localProductSourceCheckoutsUsed(row) || localArtifactSourceReported(row));
 sourcePolicy = {
   ...sourcePolicy,
   local_product_source_checkouts_used: evidenceLocalProductSourceCheckoutsUsed,
@@ -1185,7 +1528,7 @@ const updateCellOutcomes = Object.fromEntries(
 const nonPassStatuses = new Set(['fail', 'unsupported', 'not_covered', 'runner_blocked']);
 const nonPassingScenarioIds = requiredScenarios.filter((scenarioId) => nonPassStatuses.has(updateCellOutcomes[scenarioId]));
 const runnerBlocked = requiredScenarios.some((scenarioId) => updateCellOutcomes[scenarioId] === 'runner_blocked')
-  || evidence?.runner_blocked === true;
+  || evidenceRunnerBlocked;
 const everyPassRowHasPublishedArtifactEvidence = requiredScenarios.every((scenarioId) => {
   const row = scenarioResults[scenarioId] || {};
   if (row.status !== 'pass') {
@@ -1198,6 +1541,8 @@ const everyPassRowHasPublishedArtifactEvidence = requiredScenarios.every((scenar
 });
 const outcome = requiredScenarios.every((scenarioId) => updateCellOutcomes[scenarioId] === 'pass')
   && everyPassRowHasPublishedArtifactEvidence
+  && artifactPolicyFailures.length === 0
+  && runnerBlocked === false
   && sourcePolicy.local_product_source_checkouts_used === false
   ? 'pass'
   : 'fail';
@@ -1216,6 +1561,7 @@ const result = {
   artifact_versions: artifactVersions,
   published_artifact_versions: publishedArtifactVersions,
   artifact_sources: artifactSources,
+  artifact_policy_failures: artifactPolicyFailures,
   source_policy: sourcePolicy,
   local_product_source_checkouts_used: sourcePolicy.local_product_source_checkouts_used,
   scenario_results: scenarioResults,
@@ -1223,8 +1569,9 @@ const result = {
   non_passing_scenarios: nonPassingScenarioIds,
   focused_probe: {
     implemented: true,
-    evidence_loaded: evidence !== null,
-    evidence_schema: evidence?.schema || null,
+    evidence_loaded: focusedEvidence !== null,
+    evidence_file: focusedEvidenceFileRef,
+    evidence_schema: focusedEvidence?.schema || null,
     runs_inside_published_server_image: repoRoot === '/app',
     local_product_source_checkouts_used: sourcePolicy.local_product_source_checkouts_used,
   },
@@ -1260,7 +1607,7 @@ const metadata = {
   result_file: 'workflow-updates-result.json',
   record_file: 'workflow-updates-record.json',
   findings_file: 'workflow-updates-findings.json',
-  focused_evidence_file: evidence ? 'workflow-updates-focused-evidence.json' : null,
+  focused_evidence_file: focusedEvidenceFileRef,
 };
 
 const sourcePolicyNote = sourcePolicy.local_product_source_checkouts_used
@@ -1273,6 +1620,7 @@ const record = {
   runnerBlocked: runnerBlocked,
   artifactVersions,
   artifactSources,
+  artifactPolicyFailures,
   sourcePolicy,
   findings: normalizedFindings.map((finding) => typeof finding === 'string' ? finding : finding.summary).filter(Boolean),
   findingLinks: result.finding_links,
@@ -1284,7 +1632,7 @@ const record = {
   local_product_source_checkouts_used: sourcePolicy.local_product_source_checkouts_used,
   result_file: 'workflow-updates-result.json',
   findings_file: 'workflow-updates-findings.json',
-  focused_evidence_file: evidence ? 'workflow-updates-focused-evidence.json' : null,
+  focused_evidence_file: focusedEvidenceFileRef,
 };
 
 writeJson('pins.json', pins);
@@ -1299,6 +1647,6 @@ console.log(JSON.stringify({
   record: path.join(resultDir, 'workflow-updates-record.json'),
   outcome,
   runner_blocked: runnerBlocked,
-  focused_probe_evidence_loaded: evidence !== null,
+  focused_probe_evidence_loaded: focusedEvidence !== null,
 }));
 NODE
