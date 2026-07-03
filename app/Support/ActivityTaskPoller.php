@@ -655,6 +655,18 @@ final class ActivityTaskPoller
                     ),
                 );
 
+                if ($task === null) {
+                    $task = $this->activeLeasedTaskForWorker(
+                        namespace: $namespace,
+                        taskQueue: $taskQueue,
+                        leaseOwner: $leaseOwner,
+                        buildId: $buildId,
+                        worker: $worker,
+                        supportedActivityTypes: $supportedActivityTypes,
+                        workerSessionsAvailable: $workerSessionsAvailable,
+                    );
+                }
+
                 if ($task === null && $this->queryTasks->hasPendingTaskForPoller(
                     $namespace,
                     $taskQueue,
@@ -852,7 +864,14 @@ final class ActivityTaskPoller
         /** @var WorkflowTask|null $task */
         $task = WorkflowTask::query()->find($taskId);
 
-        if ($task === null || $task->task_type !== TaskType::Activity || $task->lease_owner !== $leaseOwner) {
+        if (
+            $task === null
+            || $task->task_type !== TaskType::Activity
+            || $task->status !== TaskStatus::Leased
+            || $task->lease_owner !== $leaseOwner
+            || $task->lease_expires_at === null
+            || $task->lease_expires_at->lte(now())
+        ) {
             return null;
         }
 
@@ -869,6 +888,92 @@ final class ActivityTaskPoller
             return null;
         }
 
+        $payload = $this->activeActivityClaimPayload($task, $execution, $leaseOwner);
+
+        return is_array($payload) ? $payload : null;
+    }
+
+    /**
+     * Return the worker's existing live activity lease when a fresh claim is
+     * unavailable. This lets a worker recover a lost poll response without
+     * creating another activity attempt or spending dispatch budget.
+     *
+     * @param  list<string>  $supportedActivityTypes
+     * @return array<string, mixed>|null
+     */
+    private function activeLeasedTaskForWorker(
+        string $namespace,
+        string $taskQueue,
+        string $leaseOwner,
+        ?string $buildId,
+        WorkerRegistration $worker,
+        array $supportedActivityTypes = [],
+        bool $workerSessionsAvailable = true,
+    ): ?array {
+        $tasks = NamespaceWorkflowScope::taskQuery($namespace)
+            ->where('workflow_tasks.task_type', TaskType::Activity->value)
+            ->where('workflow_tasks.status', TaskStatus::Leased->value)
+            ->where('workflow_tasks.queue', $taskQueue)
+            ->where('workflow_tasks.lease_owner', $leaseOwner)
+            ->whereNotNull('workflow_tasks.lease_expires_at')
+            ->where('workflow_tasks.lease_expires_at', '>', now())
+            ->orderBy('workflow_tasks.leased_at')
+            ->orderBy('workflow_tasks.id')
+            ->limit(10)
+            ->get();
+
+        foreach ($tasks as $task) {
+            if (! $task instanceof WorkflowTask || ! $this->matchesCompatibility($buildId, $task->compatibility)) {
+                continue;
+            }
+
+            $executionId = is_array($task->payload ?? null)
+                ? ($task->payload['activity_execution_id'] ?? null)
+                : null;
+
+            /** @var ActivityExecution|null $execution */
+            $execution = is_string($executionId) && $executionId !== ''
+                ? ActivityExecution::query()->find($executionId)
+                : null;
+
+            if (! $execution instanceof ActivityExecution) {
+                continue;
+            }
+
+            if (! $this->matchesActivityType($supportedActivityTypes, $execution->activity_type)) {
+                continue;
+            }
+
+            $workerSession = $this->workerSessions->optionsForExecution($execution->id);
+
+            if (
+                $workerSession !== null
+                && (
+                    ! $workerSessionsAvailable
+                    || ! $this->workerCanSatisfySession($worker, $workerSession)
+                )
+            ) {
+                continue;
+            }
+
+            $payload = $this->activeActivityClaimPayload($task, $execution, $leaseOwner);
+
+            if (is_array($payload)) {
+                return $payload;
+            }
+        }
+
+        return null;
+    }
+
+    /**
+     * @return array<string, mixed>|null
+     */
+    private function activeActivityClaimPayload(
+        WorkflowTask $task,
+        ActivityExecution $execution,
+        string $leaseOwner,
+    ): ?array {
         /** @var WorkflowRun|null $run */
         $run = WorkflowRun::query()->find($execution->workflow_run_id);
 
@@ -880,8 +985,25 @@ final class ActivityTaskPoller
         $attempt = ActivityAttempt::query()
             ->where('workflow_task_id', $task->id)
             ->where('activity_execution_id', $execution->id)
+            ->where('lease_owner', $leaseOwner)
+            ->where('status', ActivityAttemptStatus::Running->value)
+            ->whereNull('closed_at')
+            ->whereNotNull('lease_expires_at')
+            ->where('lease_expires_at', '>', now())
             ->latest('attempt_number')
             ->first();
+
+        if (! $attempt instanceof ActivityAttempt) {
+            return null;
+        }
+
+        if (
+            is_int($task->attempt_count)
+            && (int) $task->attempt_count > 0
+            && (int) $task->attempt_count !== (int) $attempt->attempt_number
+        ) {
+            return null;
+        }
 
         return [
             'claimed' => true,
@@ -889,8 +1011,8 @@ final class ActivityTaskPoller
             'workflow_instance_id' => $run->workflow_instance_id,
             'workflow_run_id' => $run->id,
             'activity_execution_id' => $execution->id,
-            'activity_attempt_id' => $attempt?->id,
-            'attempt_number' => $attempt instanceof ActivityAttempt ? max(1, (int) $attempt->attempt_number) : max(1, (int) $task->attempt_count),
+            'activity_attempt_id' => $attempt->id,
+            'attempt_number' => max(1, (int) $attempt->attempt_number),
             'activity_type' => $this->nonEmptyString($execution->activity_type),
             'activity_class' => $this->nonEmptyString($execution->activity_class),
             'idempotency_key' => $execution->id,

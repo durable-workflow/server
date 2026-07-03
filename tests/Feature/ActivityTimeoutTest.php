@@ -14,6 +14,7 @@ use Tests\Fixtures\ExternalGreetingWorkflow;
 use Tests\TestCase;
 use Workflow\V2\Enums\ActivityStatus;
 use Workflow\V2\Jobs\RunWorkflowTask;
+use Workflow\V2\Models\ActivityAttempt;
 use Workflow\V2\Models\ActivityExecution;
 use Workflow\V2\Models\WorkflowTask;
 use Workflow\V2\Support\WorkflowExecutor;
@@ -210,6 +211,102 @@ class ActivityTimeoutTest extends TestCase
         $this->assertArrayHasKey('start_to_close', $deadlines);
         $this->assertArrayNotHasKey('schedule_to_start', $deadlines);
         $this->assertArrayNotHasKey('heartbeat', $deadlines);
+    }
+
+    public function test_activity_redelivery_preserves_deadlines_without_new_attempt_or_dispatch(): void
+    {
+        Queue::fake();
+
+        config([
+            'server.admission.queue_overrides' => [
+                'default:external-activities' => [
+                    'activity_tasks' => [
+                        'max_dispatches_per_minute' => 1,
+                    ],
+                ],
+            ],
+        ]);
+
+        $this->createNamespace('default');
+
+        $workflow = WorkflowStub::make(ExternalGreetingWorkflow::class, 'wf-deadline-redelivery');
+        $start = $workflow->start('Ada');
+        NamespaceWorkflowScope::bind('default', $workflow->id(), ExternalGreetingWorkflow::class);
+        $this->runReadyWorkflowTask($start->runId());
+
+        $execution = ActivityExecution::query()
+            ->where('workflow_run_id', $start->runId())
+            ->firstOrFail();
+
+        $execution->forceFill([
+            'schedule_deadline_at' => now()->addMinutes(10),
+            'schedule_to_close_deadline_at' => now()->addHour(),
+            'retry_policy' => array_merge(
+                is_array($execution->retry_policy) ? $execution->retry_policy : [],
+                [
+                    'start_to_close_timeout' => 1800,
+                    'heartbeat_timeout' => 30,
+                ],
+            ),
+        ])->save();
+
+        $this->registerWorker('deadline-redelivery-worker', 'external-activities');
+
+        $firstPoll = $this->withHeaders($this->workerHeaders())
+            ->postJson('/api/worker/activity-tasks/poll', [
+                'worker_id' => 'deadline-redelivery-worker',
+                'task_queue' => 'external-activities',
+            ]);
+
+        $firstPoll->assertOk()
+            ->assertJsonPath('poll_status', 'leased')
+            ->assertJsonPath('task.workflow_id', $workflow->id())
+            ->assertJsonPath('task.activity_type', 'tests.external-greeting-activity')
+            ->assertJsonPath('task.attempt_number', 1);
+
+        $firstTask = $firstPoll->json('task');
+        $this->assertIsArray($firstTask);
+        $this->assertIsArray($firstTask['deadlines'] ?? null);
+        $this->assertArrayHasKey('schedule_to_start', $firstTask['deadlines']);
+        $this->assertArrayHasKey('start_to_close', $firstTask['deadlines']);
+        $this->assertArrayHasKey('schedule_to_close', $firstTask['deadlines']);
+        $this->assertArrayHasKey('heartbeat', $firstTask['deadlines']);
+
+        $taskId = (string) $firstTask['task_id'];
+        $attemptId = (string) $firstTask['activity_attempt_id'];
+        $attemptCount = ActivityAttempt::query()
+            ->where('workflow_task_id', $taskId)
+            ->count();
+
+        $this->assertSame(1, $attemptCount);
+
+        $redelivery = $this->withHeaders($this->workerHeaders())
+            ->postJson('/api/worker/activity-tasks/poll', [
+                'worker_id' => 'deadline-redelivery-worker',
+                'task_queue' => 'external-activities',
+            ]);
+
+        $redelivery->assertOk()
+            ->assertJsonPath('poll_status', 'leased')
+            ->assertJsonPath('task.task_id', $taskId)
+            ->assertJsonPath('task.activity_attempt_id', $attemptId)
+            ->assertJsonPath('task.attempt_number', 1);
+
+        $redeliveredTask = $redelivery->json('task');
+        $this->assertSame($firstTask, $redeliveredTask);
+        $this->assertSame(1, ActivityAttempt::query()
+            ->where('workflow_task_id', $taskId)
+            ->count());
+
+        $leasedTask = WorkflowTask::query()->findOrFail($taskId);
+        $this->assertSame(1, (int) $leasedTask->attempt_count);
+
+        $this->withHeaders($this->apiHeaders())
+            ->getJson('/api/task-queues/external-activities')
+            ->assertOk()
+            ->assertJsonPath('admission.activity_tasks.server_max_dispatches_per_minute', 1)
+            ->assertJsonPath('admission.activity_tasks.server_dispatch_count_this_minute', 1)
+            ->assertJsonPath('admission.activity_tasks.server_remaining_dispatch_capacity', 0);
     }
 
     public function test_activity_poll_response_omits_deadlines_when_none_set(): void

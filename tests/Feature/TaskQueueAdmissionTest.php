@@ -357,6 +357,7 @@ class TaskQueueAdmissionTest extends TestCase
 
         $this->createNamespace('default');
         $this->registerWorker('php-activity-admission', 'external-activities');
+        $this->registerWorker('php-activity-admission-other', 'external-activities');
 
         $firstWorkflow = WorkflowStub::make(ExternalGreetingWorkflow::class, 'wf-activity-admission-1');
         $firstStart = $firstWorkflow->start('Ada');
@@ -368,17 +369,29 @@ class TaskQueueAdmissionTest extends TestCase
         NamespaceWorkflowScope::bind('default', $secondWorkflow->id(), ExternalGreetingWorkflow::class);
         $this->runReadyWorkflowTask($secondStart->runId());
 
+        $firstPoll = $this->withHeaders($this->workerHeaders())
+            ->postJson('/api/worker/activity-tasks/poll', [
+                'worker_id' => 'php-activity-admission',
+                'task_queue' => 'external-activities',
+            ]);
+
+        $firstPoll->assertOk()
+            ->assertJsonPath('task.workflow_id', 'wf-activity-admission-1');
+
+        $activityTaskId = (string) $firstPoll->json('task.task_id');
+
         $this->withHeaders($this->workerHeaders())
             ->postJson('/api/worker/activity-tasks/poll', [
                 'worker_id' => 'php-activity-admission',
                 'task_queue' => 'external-activities',
             ])
             ->assertOk()
-            ->assertJsonPath('task.workflow_id', 'wf-activity-admission-1');
+            ->assertJsonPath('task.task_id', $activityTaskId)
+            ->assertJsonPath('task.lease_owner', 'php-activity-admission');
 
         $this->withHeaders($this->workerHeaders())
             ->postJson('/api/worker/activity-tasks/poll', [
-                'worker_id' => 'php-activity-admission',
+                'worker_id' => 'php-activity-admission-other',
                 'task_queue' => 'external-activities',
             ])
             ->assertOk()
@@ -414,6 +427,7 @@ class TaskQueueAdmissionTest extends TestCase
 
         $this->createNamespace('default');
         $this->registerWorker('php-activity-dispatch-budget', 'external-activities');
+        $this->registerWorker('php-activity-dispatch-budget-other', 'external-activities');
 
         $firstWorkflow = WorkflowStub::make(ExternalGreetingWorkflow::class, 'wf-activity-dispatch-budget-1');
         $firstStart = $firstWorkflow->start('Ada');
@@ -435,7 +449,7 @@ class TaskQueueAdmissionTest extends TestCase
 
         $this->withHeaders($this->workerHeaders())
             ->postJson('/api/worker/activity-tasks/poll', [
-                'worker_id' => 'php-activity-dispatch-budget',
+                'worker_id' => 'php-activity-dispatch-budget-other',
                 'task_queue' => 'external-activities',
             ])
             ->assertOk()
