@@ -180,9 +180,13 @@ class SignalQueryRuntimeContractTest extends TestCase
             'query_waits_for_replay_consistency',
             $requirements['query_during_replay']['required_behavior'],
         );
-        foreach (['query_api_sample', 'query_status_code', 'query_handler_invoked_at'] as $field) {
+        foreach (['query_api_sample', 'query_status_code', 'query_poll_started_at', 'query_handler_invoked_at'] as $field) {
             $this->assertContains($field, $requirements['query_during_replay']['evidence']);
         }
+        $this->assertContains(
+            'query_poll_started_at < replay_completed_at',
+            $requirements['query_during_replay']['timestamp_order'],
+        );
         $this->assertContains(
             'replay_completed_at <= query_handler_invoked_at',
             $requirements['query_during_replay']['timestamp_order'],
@@ -567,6 +571,7 @@ class SignalQueryRuntimeContractTest extends TestCase
                 'query_api_sample',
                 'query_status_code',
                 'query_sent_at',
+                'query_poll_started_at',
                 'query_handler_invoked_at',
                 'query_completed_at',
                 'query_answer',
@@ -2694,6 +2699,186 @@ PY);
         $this->assertSame([], $evaluation['gate_failures']);
     }
 
+    public function test_host_runner_timestamp_helper_preserves_subsecond_precision(): void
+    {
+        $result = $this->runSignalQueryRunnerPythonSnippet(<<<'PY'
+value = now()
+print(json.dumps({
+    "timestamp": value,
+    "has_fractional_seconds": bool(re.search(r"\.\d{6}Z$", value)),
+}, sort_keys=True))
+PY);
+
+        $this->assertTrue($result['has_fractional_seconds']);
+        $this->assertMatchesRegularExpression('/\.\d{6}Z$/', $result['timestamp']);
+    }
+
+    public function test_replay_terminal_probe_polls_query_before_and_answers_after_replay_barrier(): void
+    {
+        $result = $this->runSignalQueryRunnerPythonSnippet(<<<'PY'
+events = []
+replay_query_started_before_barrier = []
+replay_query_poll_started_before_barrier = []
+replay_query_ready = threading.Event()
+replay_completed = threading.Event()
+terminal_query_ready = threading.Event()
+timestamp_index = 0
+
+def now() -> str:
+    global timestamp_index
+    timestamp_index += 1
+    return f"2026-05-20T00:00:00.{timestamp_index:06d}Z"
+
+def http_json(base_url, path, *, method="GET", body=None, token, namespace, worker=False, timeout=30.0):
+    if path == api_path("worker", "register"):
+        return {"status_code": 200, "body": {}}
+    if method == "POST" and path == api_path("workflows"):
+        workflow_id = body["workflow_id"]
+        return {"status_code": 200, "body": {"run_id": f"run-{workflow_id}"}}
+    if "/query/state" in path:
+        if "wf-sq-terminal" in path:
+            terminal_query_ready.wait(5)
+            return {"status_code": 200, "body": {"result": {"counter": 0, "status": "completed"}}}
+        replay_query_started_before_barrier.append("replay_complete" not in events)
+        replay_query_ready.wait(5)
+        return {"status_code": 200, "body": {"result": 0}}
+    if "/signal/increment" in path:
+        if "wf-sq-terminal" in path:
+            return {
+                "status_code": 409,
+                "body": {
+                    "reason": "run_not_active",
+                    "rejection_reason": "run_not_active",
+                    "message": "Workflow run is completed.",
+                },
+            }
+        return {"status_code": 202, "body": {"outcome": "signal_received"}}
+    raise RuntimeError(f"unexpected HTTP call {method} {path}")
+
+poll_tasks = [
+    {"task_id": "replay-task", "lease_owner": "worker", "workflow_task_attempt": 1},
+    {
+        "task_id": "signal-task",
+        "lease_owner": "worker",
+        "workflow_task_attempt": 1,
+        "signal_name": "increment",
+        "history_events": [
+            {
+                "event_type": "SignalReceived",
+                "payload": {"signal_name": "increment", "arguments": {"decoded": {"amount": 5}}},
+            }
+        ],
+    },
+    {"task_id": "terminal-task", "lease_owner": "worker", "workflow_task_attempt": 1},
+]
+
+def poll_workflow_task(base_url, token, namespace, worker_id, task_queue, timeout=45.0):
+    return {"status_code": 200, "body": {"task": poll_tasks.pop(0)}}
+
+def complete_workflow_task(base_url, token, namespace, task, commands, timeout=30.0):
+    if task["task_id"] == "replay-task":
+        events.append("replay_complete")
+        replay_completed.set()
+    if task["task_id"] == "signal-task":
+        events.append("signal_applied")
+    if task["task_id"] == "terminal-task":
+        events.append("terminal_complete")
+    return {"status_code": 200, "body": {}}
+
+def answer_next_query_task(base_url, token, namespace, worker_id, task_queue, result, log_file, holder, poll_timeout=45.0):
+    holder["query_poll_started_at"] = now()
+    if isinstance(result, dict):
+        events.append("terminal_query_answer_started")
+        event = terminal_query_ready
+        query_task_id = "terminal-query-task"
+    else:
+        replay_query_poll_started_before_barrier.append("replay_complete" not in events)
+        events.append("replay_query_poll_started")
+        replay_completed.wait(5)
+        events.append("replay_query_answer_started")
+        event = replay_query_ready
+        query_task_id = "replay-query-task"
+    holder["poll"] = {"status_code": 200}
+    holder["query_handler_invoked_at"] = now()
+    holder["query_task"] = {"query_task_id": query_task_id, "query_task_attempt": 1}
+    holder["result"] = result
+    holder["complete"] = {"status_code": 200}
+    holder["query_completed_at"] = now()
+    event.set()
+
+def run_status(base_url, token, namespace, workflow_id):
+    return "completed"
+
+evidence, descriptor = run_replay_terminal_probe(
+    "http://server.test",
+    "token",
+    "default",
+    "worker",
+    "queue",
+    "conformance.counter",
+    {
+        "server": "0.2.549",
+        "cli": "0.1.86",
+        "sdk-python": "0.4.93",
+        "workflow-php": "2.0.0-alpha.244",
+        "waterline": "2.0.0-alpha.116",
+    },
+    {
+        "server": "published_docker_image",
+        "cli": "published_cli_release",
+        "sdk-python": "published_pypi_package",
+        "workflow-php": "published_composer_package",
+        "waterline": "published_waterline_artifact",
+    },
+    Path("/tmp/replay-terminal-probe.log"),
+)
+
+print(json.dumps({
+    "descriptor": descriptor,
+    "events": events,
+    "evidence": evidence,
+    "replay_query_poll_started_before_barrier": replay_query_poll_started_before_barrier,
+    "replay_query_started_before_barrier": replay_query_started_before_barrier,
+}, sort_keys=True))
+PY);
+
+        $this->assertTrue($result['replay_query_started_before_barrier'][0]);
+        $this->assertTrue($result['replay_query_poll_started_before_barrier'][0]);
+        $this->assertLessThan(
+            array_search('replay_complete', $result['events'], true),
+            array_search('replay_query_poll_started', $result['events'], true),
+        );
+        $this->assertLessThan(
+            array_search('replay_query_answer_started', $result['events'], true),
+            array_search('replay_complete', $result['events'], true),
+        );
+
+        foreach ([
+            'signal_during_replay',
+            'query_during_replay',
+            'completed_run_signal_and_query',
+        ] as $scenarioId) {
+            $this->assertSame('pass', $result['evidence']['scenario_results'][$scenarioId]['status']);
+        }
+
+        $queryOutputs = $result['evidence']['scenario_results']['query_during_replay']['observed_outputs'];
+        $this->assertSame(0, $queryOutputs['query_answer']);
+        $this->assertSame($queryOutputs['expected_answer'], $queryOutputs['query_answer']);
+        $this->assertLessThan(
+            $queryOutputs['replay_completed_at'],
+            $queryOutputs['query_poll_started_at'],
+        );
+        $this->assertGreaterThanOrEqual(
+            $queryOutputs['replay_completed_at'],
+            $queryOutputs['query_handler_invoked_at'],
+        );
+
+        $terminalOutputs = $result['evidence']['scenario_results']['completed_run_signal_and_query']['observed_outputs'];
+        $this->assertSame('run_not_active', $terminalOutputs['signal_error']['reason']);
+        $this->assertSame(200, $terminalOutputs['query_result_or_error']['status_code']);
+        $this->assertSame('completed', $terminalOutputs['run_status_after_operations']);
+    }
+
     public function test_host_runner_rejects_imported_matrix_evidence_with_mismatched_artifact_versions(): void
     {
         $result = $this->runSignalQueryHostRunner($this->completeSignalQueryResult());
@@ -3817,6 +4002,23 @@ PY);
         );
     }
 
+    public function test_result_gate_rejects_query_poll_started_after_replay_completed(): void
+    {
+        $result = $this->completeSignalQueryResult();
+        $result['scenario_results']['query_during_replay']['observed_outputs']['query_poll_started_at'] =
+            '2026-05-20T00:00:05Z';
+        $result['replay_timing']['query_during_replay']['query_poll_started_at'] =
+            '2026-05-20T00:00:05Z';
+
+        $evaluation = SignalQueryRuntimeResultGate::evaluate($result);
+
+        $this->assertSame('non_passing', $evaluation['status']);
+        $this->assertContains(
+            'invalid_query_replay_timing_order',
+            array_column($evaluation['gate_failures'], 'code'),
+        );
+    }
+
     public function test_result_gate_accepts_fractional_second_replay_timing_order(): void
     {
         $evaluation = SignalQueryRuntimeResultGate::evaluate(
@@ -4658,6 +4860,7 @@ PY);
             'query_during_replay' => [
                 'worker_restart_at' => '2026-05-20T00:00:01.100000Z',
                 'query_sent_at' => '2026-05-20T00:00:01.250000Z',
+                'query_poll_started_at' => '2026-05-20T00:00:01.300000Z',
                 'replay_completed_at' => '2026-05-20T00:00:01.700000Z',
                 'query_handler_invoked_at' => '2026-05-20T00:00:01.750000Z',
                 'query_completed_at' => '2026-05-20T00:00:01.900000Z',
@@ -4813,6 +5016,7 @@ PY);
             'query_status_code' => 200,
             'worker_restart_at' => '2026-05-20T00:00:00Z',
             'query_sent_at' => '2026-05-20T00:00:01Z',
+            'query_poll_started_at' => '2026-05-20T00:00:01.500000Z',
             'replay_completed_at' => '2026-05-20T00:00:02Z',
             'query_handler_invoked_at' => '2026-05-20T00:00:03Z',
             'query_completed_at' => '2026-05-20T00:00:04Z',

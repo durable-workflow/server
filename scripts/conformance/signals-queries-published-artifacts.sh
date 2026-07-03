@@ -123,7 +123,7 @@ from typing import Any
 
 
 def now() -> str:
-    return datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+    return datetime.now(timezone.utc).isoformat(timespec="microseconds").replace("+00:00", "Z")
 
 
 def write_json(path: Path, value: Any) -> None:
@@ -2586,6 +2586,8 @@ def answer_next_query_task(
         while time.time() < deadline:
             poll_attempt += 1
             remaining = max(0.2, deadline - time.time())
+            if "query_poll_started_at" not in holder:
+                holder["query_poll_started_at"] = now()
             poll = http_json(
                 base_url,
                 api_path("worker", "query-tasks", "poll"),
@@ -3101,6 +3103,11 @@ def run_replay_terminal_probe(
             daemon=True,
         )
         query_responder.start()
+        query_poll_deadline = time.time() + 2
+        while "query_poll_started_at" not in query_task_holder and time.time() < query_poll_deadline:
+            time.sleep(0.01)
+        if "query_poll_started_at" not in query_task_holder:
+            raise RuntimeError("query during replay responder did not start polling before replay completion")
 
         signal_sent_at = now()
         signal_response = http_json(
@@ -3290,6 +3297,7 @@ def run_replay_terminal_probe(
             "query_status_code": query_response.get("status_code"),
             "worker_restart_at": worker_restart_at,
             "query_sent_at": query_holder.get("query_sent_at"),
+            "query_poll_started_at": query_task_holder.get("query_poll_started_at"),
             "replay_completed_at": replay_completed_at,
             "query_handler_invoked_at": query_task_holder.get("query_handler_invoked_at"),
             "query_completed_at": query_holder.get("query_completed_at") or query_task_holder.get("query_completed_at"),
@@ -6570,6 +6578,7 @@ SCENARIO_REQUIRED_EVIDENCE: dict[str, list[str]] = {
         "query_status_code",
         "worker_restart_at",
         "query_sent_at",
+        "query_poll_started_at",
         "replay_completed_at",
         "query_handler_invoked_at",
         "query_completed_at",
@@ -6983,7 +6992,8 @@ def has_required_evidence(scenario: str, observed: dict[str, Any]) -> bool:
                 observed,
                 [
                     ("worker_restart_at", "<=", "query_sent_at"),
-                    ("query_sent_at", "<", "replay_completed_at"),
+                    ("query_sent_at", "<=", "query_poll_started_at"),
+                    ("query_poll_started_at", "<", "replay_completed_at"),
                     ("replay_completed_at", "<=", "query_handler_invoked_at"),
                     ("query_handler_invoked_at", "<=", "query_completed_at"),
                 ],

@@ -1612,7 +1612,8 @@ final class SignalQueryRuntimeResultGate
                     $failures,
                     ...self::timestampOrderFailures($result, $scenarioResult, $scenarioId, [
                         ['worker_restart_at', '<=', 'query_sent_at'],
-                        ['query_sent_at', '<', 'replay_completed_at'],
+                        ['query_sent_at', '<=', 'query_poll_started_at'],
+                        ['query_poll_started_at', '<', 'replay_completed_at'],
                         ['replay_completed_at', '<=', 'query_handler_invoked_at'],
                         ['query_handler_invoked_at', '<=', 'query_completed_at'],
                     ], 'invalid_query_replay_timing_order'),
