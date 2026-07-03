@@ -5421,7 +5421,7 @@ def run_baseline_probe(result_dir: Path) -> tuple[dict[str, Any] | None, dict[st
                     base_url,
                     api_path("workflows", dedup_workflow_id, "signal", "increment"),
                     method="POST",
-                    body={"input": {"amount": 7}, "request_id": duplicate_request_id},
+                    body={"input": [7], "request_id": duplicate_request_id},
                     token=token,
                     namespace=namespace,
                     timeout=30,
@@ -5453,20 +5453,29 @@ def run_baseline_probe(result_dir: Path) -> tuple[dict[str, Any] | None, dict[st
             handler_observation_count = len([amount for amount in duplicate_observations if amount == 7])
             client_side_key_support = handler_observation_count == 1
             documented_contract = (
-                "the public control-plane signal request_id behaved as an idempotency key for duplicate signal calls"
+                "SignalQueryRuntimeContract dedup_contract_observation: the public control-plane signal "
+                "request_id behaved as an idempotency key for duplicate signal calls"
                 if client_side_key_support
                 else (
-                    "no signal deduplication key is documented on the public control-plane signal API; "
-                    "duplicate accepted signal calls are delivered independently"
+                    "SignalQueryRuntimeContract dedup_contract_observation: no public signal "
+                    "idempotency key is documented; repeated accepted control-plane signal calls "
+                    "are delivered independently"
                     if handler_observation_count > 1
-                    else "duplicate accepted signal calls were not observed by the external handler"
+                    else "SignalQueryRuntimeContract dedup_contract_observation: duplicate accepted "
+                    "signal calls were not observed by the external handler"
                 )
             )
             dedup_outputs.update(
                 {
                     "client_side_key_support": client_side_key_support,
                     "documented_contract": documented_contract,
+                    "documented_contract_source": (
+                        "SignalQueryRuntimeContract manifest scenario "
+                        "dedup_contract_observation"
+                    ),
                     "handler_observation_count": handler_observation_count,
+                    "duplicate_signal_contract": "public control-plane repeated signal behavior",
+                    "duplicate_signal_payload_shape": "positional input array",
                     "duplicate_request_id_used": duplicate_request_id,
                     "duplicate_signal_api_samples": duplicate_signal_responses,
                     "handler_observed_amounts": duplicate_observations,

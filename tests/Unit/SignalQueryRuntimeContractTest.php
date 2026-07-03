@@ -702,9 +702,12 @@ class SignalQueryRuntimeContractTest extends TestCase
             'unknown-handler baseline probe failed',
             'ordered delivery baseline probe failed',
             'body={"input": [amount], "request_id": f"{ordered_workflow_id}-{amount}"}',
+            'body={"input": [7], "request_id": duplicate_request_id}',
             'timeout=remaining + 5.0',
             '"command_contract_source"',
             '"signal_admission"',
+            '"documented_contract_source"',
+            '"duplicate_signal_payload_shape": "positional input array"',
             'dedup baseline probe failed',
             'known_query_after_unknown_result',
             '"signal_amounts"',
@@ -5045,8 +5048,13 @@ PY);
         ];
         $scenarioResults['dedup_contract_observation']['observed_outputs'] = [
             'client_side_key_support' => false,
-            'documented_contract' => 'no signal deduplication key is documented',
+            'documented_contract' => 'SignalQueryRuntimeContract dedup_contract_observation: '
+                .'no public signal idempotency key is documented; repeated accepted control-plane '
+                .'signal calls are delivered independently',
+            'documented_contract_source' => 'SignalQueryRuntimeContract manifest scenario dedup_contract_observation',
             'handler_observation_count' => 2,
+            'duplicate_signal_contract' => 'public control-plane repeated signal behavior',
+            'duplicate_signal_payload_shape' => 'positional input array',
         ];
         $scenarioResults['signal_during_replay']['observed_outputs'] = [
             'signal_api_sample' => [
