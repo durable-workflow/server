@@ -5637,12 +5637,6 @@ def run_adversarial_probe(result_dir: Path, current_evidence: Any) -> tuple[dict
         or "dev-token"
     )
     base_url = env_text("DW_SIGNALS_QUERIES_SERVER_URL") or env_text("DURABLE_WORKFLOW_SERVER_URL")
-    if (base_url is None or base_url.strip() == "") and current_evidence is not None:
-        for evidence_key in ("server_base_url", "server_url", "base_url"):
-            candidate = evidence_lookup(current_evidence, evidence_key)
-            if isinstance(candidate, str) and candidate.strip() != "":
-                base_url = candidate.strip()
-                break
     readiness_probe: dict[str, Any] | None = None
 
     try:

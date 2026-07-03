@@ -715,6 +715,15 @@ class SignalQueryRuntimeContractTest extends TestCase
             $this->assertStringContainsString($needle, $source);
         }
 
+        $this->assertStringContainsString(
+            'base_url = env_text("DW_SIGNALS_QUERIES_SERVER_URL") or env_text("DURABLE_WORKFLOW_SERVER_URL")',
+            $source,
+        );
+        $this->assertStringNotContainsString(
+            'for evidence_key in ("server_base_url", "server_url", "base_url")',
+            $source,
+        );
+
         foreach ([
             'build_waterline_observer_' . 'captures(',
             'waterline-selected-run-' . 'detail.json',
@@ -724,6 +733,29 @@ class SignalQueryRuntimeContractTest extends TestCase
         ] as $forbiddenNeedle) {
             $this->assertStringNotContainsString($forbiddenNeedle, $source);
         }
+    }
+
+    public function test_adversarial_probe_does_not_reuse_prior_probe_server_urls(): void
+    {
+        $source = (string) file_get_contents(
+            dirname(__DIR__, 2) . '/scripts/conformance/signals-queries-published-artifacts.sh',
+        );
+        $start = strpos($source, "\ndef run_adversarial_probe(");
+        $end = $start === false ? false : strpos($source, "\n\ndef merge_probe_evidence(", $start);
+
+        if ($start === false || $end === false) {
+            $this->fail('Unable to extract adversarial probe from host runner.');
+        }
+
+        $body = substr($source, $start + 1, $end - $start - 1);
+
+        $this->assertStringContainsString(
+            'base_url = env_text("DW_SIGNALS_QUERIES_SERVER_URL") or env_text("DURABLE_WORKFLOW_SERVER_URL")',
+            $body,
+        );
+        $this->assertStringContainsString('start_published_server(run_root, log_file)', $body);
+        $this->assertStringNotContainsString('evidence_lookup(current_evidence', $body);
+        $this->assertStringNotContainsString('"server_base_url", "server_url", "base_url"', $body);
     }
 
     public function test_host_runner_records_configured_baseline_overrides_as_non_published_sources(): void
