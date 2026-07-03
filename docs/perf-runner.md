@@ -111,7 +111,7 @@ omitted or incomplete. The workflow file contains the canonical smoke and
 long-soak threshold maps, for example:
 
 ```bash
-DW_PERF_MAX_FINAL_SERVER_CACHE_KEYS_BY_POLICY='{"workflow_task_poll_requests":0,"activity_task_poll_requests":0,"sqlite_worker_poll_claim_gate":0,"long_poll_signals":0,"long_poll_wait_slots":0,"workflow_query_tasks":0,"task_queue_admission_locks":0,"task_queue_dispatch_counters":0,"workflow_task_expired_lease_recovery":0,"history_retention_inline":0,"readiness_probe":0}'
+DW_PERF_MAX_FINAL_SERVER_CACHE_KEYS_BY_POLICY='{"workflow_task_poll_requests":0,"activity_task_poll_requests":0,"query_task_poll_requests":0,"sqlite_worker_poll_claim_gate":0,"long_poll_signals":0,"long_poll_wait_slots":0,"workflow_query_tasks":0,"task_queue_admission_locks":0,"task_queue_dispatch_counters":0,"workflow_task_expired_lease_recovery":0,"history_retention_inline":0,"readiness_probe":0}'
 ```
 
 ## Safety Rules

@@ -49,27 +49,31 @@ added without a TTL, admission, scan, or cardinality contract.
 | `query_task_poll_requests` | `server:query-task-poll-request:` | `App\Support\QueryTaskPollRequestStore` | One pending key and one short replay-result key per idempotent query worker poll request, plus one expiring current-marker key per worker/queue scope. |
 | `long_poll_wait_slots` | `server:long-poll-wait-slot:` | `App\Support\LongPollWaitSlotStore` | One held-wait slot per admitted empty workflow/activity or query-task worker long-poll, capped per server node and pool so health, control-plane, and query completion request workers stay available. Pending query tasks are claimed before a query-task poll needs an idle wait slot. |
 | `sqlite_worker_poll_claim_gate` | `server:sqlite-worker-poll-claim:` | `App\Support\WorkerPollClaimGate` | One short-lived singleton lock key guards SQLite worker poll claim probes when the polling cache store supports locks. |
-| `workflow_query_tasks` | `server:workflow-query-task:` | `App\Support\WorkflowQueryTaskBroker` | Pending query tasks are capped per `(namespace, task_queue)` by `server.query_tasks.max_pending_per_queue`, default 1024 and hard-clamped to 10000. Query-poller markers add at most one expiring key per `(namespace, task_queue, worker_id)` that has polled the query-task endpoint during the marker TTL window. |
+| `workflow_query_tasks` | `server:workflow-query-task:` | `App\Support\WorkflowQueryTaskBroker` | Pending query tasks are capped per `(namespace, task_queue)` by `server.query_tasks.max_pending_per_queue`, default 1024 and hard-clamped to 10000. Query-poller markers add at most one expiring key per `(namespace, task_queue, worker_id)` that has polled the query-task endpoint during the marker TTL window. Same-worker leased-task indexes add at most one expiring list key per `(namespace, task_queue, lease_owner)` and redeliver an active lease before that owner can accept another query-task lease. |
 | `task_queue_admission_locks` | `server:task-queue-admission:` | `App\Support\TaskQueueAdmission` | One short-lived lock key per capped `(namespace, task_queue, task_kind)` under concurrent workflow/activity poll admission. |
 | `task_queue_dispatch_counters` | `server:task-queue-dispatch:` | `App\Support\TaskQueueAdmission` | One expiring counter per capped `(namespace, task_queue, task_kind, minute)` bucket that actually dispatches work. |
 | `workflow_task_expired_lease_recovery` | `server:workflow-task-expired-lease-recovery:` | `App\Support\WorkflowTaskPoller` | Expired-task recovery scans are capped by `server.polling.expired_workflow_task_recovery_scan_limit`, default 5, and duplicate recovery attempts are TTL-suppressed per task. |
 | `history_retention_inline` | `server:history-retention-inline:` | `App\Support\HistoryRetentionEnforcer` | One short-lived throttle key per namespace receiving worker heartbeats; the elected heartbeat prunes at most one expired run. |
 | `readiness_probe` | `server:readiness:` | `App\Support\ServerReadiness` | One temporary probe key per readiness check; deleted immediately and also protected by a 10-second TTL. |
 
-`workflow_query_tasks` covers the query task, queue, lease, queue-lock, and
-query-poller marker keys under `server:workflow-query-task:`. Task and queue
-keys live for the configured query-task TTL window, lease keys live for the
-effective query-task lease timeout, and queue locks live for 10 seconds. The
-query-poller marker key is scoped to `(namespace, task_queue, worker_id)` and
-lives for the worker's requested query poll timeout plus 5 seconds when
-`timeout_seconds` is supplied, otherwise for
+`workflow_query_tasks` covers the query task, queue, lease, queue-lock,
+query-poller marker, and same-worker leased-task index keys under
+`server:workflow-query-task:`. Task and queue keys live for the configured
+query-task TTL window, lease keys live for the effective query-task lease
+timeout, leased-task index keys live for the query-task TTL window, and queue
+locks live for 10 seconds. The query-poller marker key is scoped to
+`(namespace, task_queue, worker_id)` and lives for the worker's requested query
+poll timeout plus 5 seconds when `timeout_seconds` is supplied, otherwise for
 `max(server.workers.stale_after_seconds, server.query_tasks.timeout + 5)`
 seconds. The query timeout defaults to
-`max(server.polling.timeout + 15, server.lease.workflow_task_timeout + 5, 40)` and is runtime-clamped to 0 or greater. Markers are
-written only when a registered worker polls the query-task endpoint, are
-refreshed by the same worker's repeat polls, and are not retained in an index.
-Queue reads and writes prune stale pending task IDs by checking the referenced
-task records; query-poller markers have TTL-only eviction.
+`max(server.polling.timeout + 15, server.lease.workflow_task_timeout + 5, 40)`
+and is runtime-clamped to 0 or greater. Markers are written only when a
+registered worker polls the query-task endpoint, are refreshed by the same
+worker's repeat polls, and are not retained in an index. Queue reads and writes
+prune stale pending task IDs by checking the referenced task records. Query
+completion, failure, and timeout paths remove IDs from the same-worker
+leased-task index, repeat same-worker polls prune expired or non-leased IDs,
+and the index key also has TTL eviction.
 
 ## Polling Scan Limits
 

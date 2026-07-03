@@ -396,6 +396,7 @@ final class WorkflowQueryTaskBroker
         $task['status'] = 'timed_out';
         $task['timed_out_at'] = now()->toJSON();
 
+        $this->forgetLeasedTask($task);
         $this->putTask($task);
         $this->store()->forget($this->leaseKey($queryTaskId));
         $this->signals->signalQueryTaskResult($queryTaskId);
@@ -727,6 +728,21 @@ final class WorkflowQueryTaskBroker
                     return ['poll_status' => 'superseded'];
                 }
 
+                if ($pollRequestId !== null) {
+                    $activeLease = $this->activeLeasedTaskForPoller(
+                        $namespace,
+                        $taskQueue,
+                        $leaseOwner,
+                        $supportedWorkflowTypes,
+                        $workflowDefinitionFingerprints,
+                        $buildId,
+                    );
+
+                    if (is_array($activeLease)) {
+                        return $this->queryTaskPayload($activeLease);
+                    }
+                }
+
                 if ($this->hasPendingTaskBlockedByReadyWorkflowResumeTask(
                     $namespace,
                     $taskQueue,
@@ -782,6 +798,7 @@ final class WorkflowQueryTaskBroker
         $task['result_envelope'] = $resultEnvelope;
         $task['completed_at'] = now()->toJSON();
 
+        $this->forgetLeasedTask($task);
         $this->putTask($task);
         $this->signals->signalQueryTaskResult($queryTaskId);
 
@@ -844,6 +861,7 @@ final class WorkflowQueryTaskBroker
         };
         $task['failed_at'] = now()->toJSON();
 
+        $this->forgetLeasedTask($task);
         $this->putTask($task);
         $this->signals->signalQueryTaskResult($queryTaskId);
 
@@ -1350,6 +1368,61 @@ final class WorkflowQueryTaskBroker
      * @param  array<string, string>  $workflowDefinitionFingerprints
      * @return array<string, mixed>|null
      */
+    private function activeLeasedTaskForPoller(
+        string $namespace,
+        string $taskQueue,
+        string $leaseOwner,
+        array $supportedWorkflowTypes,
+        array $workflowDefinitionFingerprints,
+        ?string $buildId = null,
+    ): ?array {
+        $ids = $this->leasedTaskIds($namespace, $taskQueue, $leaseOwner);
+        $activeIds = [];
+
+        foreach ($ids as $queryTaskId) {
+            $task = $this->task($queryTaskId);
+
+            if (
+                ! is_array($task)
+                || ($task['status'] ?? null) !== 'leased'
+                || ($task['namespace'] ?? null) !== $namespace
+                || ($task['task_queue'] ?? null) !== $taskQueue
+                || ($task['lease_owner'] ?? null) !== $leaseOwner
+            ) {
+                continue;
+            }
+
+            $leaseExpiresAt = $this->timestamp($task['lease_expires_at'] ?? null);
+
+            if (! $leaseExpiresAt instanceof Carbon || $leaseExpiresAt->lte(now())) {
+                continue;
+            }
+
+            $activeIds[] = $queryTaskId;
+
+            if ($this->queryTaskMatchesPoller(
+                $task,
+                $supportedWorkflowTypes,
+                $workflowDefinitionFingerprints,
+                $buildId,
+                acceptsQueryTasks: true,
+            )) {
+                return $task;
+            }
+        }
+
+        if ($activeIds !== $ids) {
+            $this->storeLeasedTaskIds($namespace, $taskQueue, $leaseOwner, $activeIds);
+        }
+
+        return null;
+    }
+
+    /**
+     * @param  list<string>  $supportedWorkflowTypes
+     * @param  array<string, string>  $workflowDefinitionFingerprints
+     * @return array<string, mixed>|null
+     */
     private function claimNextPendingTask(
         string $namespace,
         string $taskQueue,
@@ -1402,6 +1475,7 @@ final class WorkflowQueryTaskBroker
             $task['leased_at'] = now()->toJSON();
 
             $this->putTask($task);
+            $this->appendLeasedTask($namespace, $taskQueue, $leaseOwner, $queryTaskId);
             $this->storePendingTaskIds(
                 $namespace,
                 $taskQueue,
@@ -2279,6 +2353,67 @@ final class WorkflowQueryTaskBroker
         $this->store()->put($this->queueKey($namespace, $taskQueue), array_values($ids), now()->addSeconds($this->taskTtlSeconds()));
     }
 
+    private function appendLeasedTask(string $namespace, string $taskQueue, string $leaseOwner, string $queryTaskId): void
+    {
+        $ids = $this->leasedTaskIds($namespace, $taskQueue, $leaseOwner);
+        $ids[] = $queryTaskId;
+
+        $this->storeLeasedTaskIds($namespace, $taskQueue, $leaseOwner, array_values(array_unique($ids)));
+    }
+
+    /**
+     * @param  array<string, mixed>  $task
+     */
+    private function forgetLeasedTask(array $task): void
+    {
+        $namespace = $this->stringValue($task['namespace'] ?? null);
+        $taskQueue = $this->stringValue($task['task_queue'] ?? null);
+        $leaseOwner = $this->stringValue($task['lease_owner'] ?? null);
+        $queryTaskId = $this->stringValue($task['query_task_id'] ?? null);
+
+        if ($namespace === null || $taskQueue === null || $leaseOwner === null || $queryTaskId === null) {
+            return;
+        }
+
+        $this->storeLeasedTaskIds(
+            $namespace,
+            $taskQueue,
+            $leaseOwner,
+            array_values(array_filter(
+                $this->leasedTaskIds($namespace, $taskQueue, $leaseOwner),
+                static fn (string $id): bool => $id !== $queryTaskId,
+            )),
+        );
+    }
+
+    /**
+     * @return list<string>
+     */
+    private function leasedTaskIds(string $namespace, string $taskQueue, string $leaseOwner): array
+    {
+        return $this->stringArray($this->store()->get($this->leasedKey($namespace, $taskQueue, $leaseOwner)));
+    }
+
+    /**
+     * @param  list<string>  $ids
+     */
+    private function storeLeasedTaskIds(string $namespace, string $taskQueue, string $leaseOwner, array $ids): void
+    {
+        $ids = array_values($ids);
+
+        if ($ids === []) {
+            $this->store()->forget($this->leasedKey($namespace, $taskQueue, $leaseOwner));
+
+            return;
+        }
+
+        $this->store()->put(
+            $this->leasedKey($namespace, $taskQueue, $leaseOwner),
+            $ids,
+            now()->addSeconds($this->taskTtlSeconds()),
+        );
+    }
+
     /**
      * @template TReturn
      *
@@ -2529,6 +2664,11 @@ final class WorkflowQueryTaskBroker
     private function leaseKey(string $queryTaskId): string
     {
         return self::CACHE_PREFIX.'lease:'.$queryTaskId;
+    }
+
+    private function leasedKey(string $namespace, string $taskQueue, string $leaseOwner): string
+    {
+        return self::CACHE_PREFIX.'leased:'.sha1($namespace.'|'.$taskQueue.'|'.$leaseOwner);
     }
 
     private function queueKey(string $namespace, string $taskQueue): string
