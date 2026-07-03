@@ -32,6 +32,8 @@ Environment overrides:
   DW_SIGNALS_QUERIES_RUN_ADVERSARIAL_PROBE  Set to 0 to skip the live malformed/unknown error shard.
   DW_SIGNALS_QUERIES_RUN_REPLAY_TERMINAL_PROBE
                                              Set to 0 to skip the live replay/terminal shard.
+  DW_SIGNALS_QUERIES_RUN_WATERLINE_OBSERVER_PROBE
+                                             Set to 0 to skip the published Waterline observer shard.
   DW_SIGNALS_QUERIES_SERVER_URL             Reuse an already-running published server for the adversarial shard.
   DW_SIGNALS_QUERIES_SERVER_CONNECT_HOST    Preferred host/address to probe for a self-started published server.
   DW_SIGNALS_QUERIES_SERVER_READY_TIMEOUT_SECONDS
@@ -5209,6 +5211,10 @@ def run_baseline_probe(result_dir: Path) -> tuple[dict[str, Any] | None, dict[st
 
         ordered_outputs: dict[str, Any] = {
             "workflow_id": ordered_workflow_id,
+            "server_base_url": base_url,
+            "namespace": namespace,
+            "worker_id": worker_id,
+            "task_queue": task_queue,
             "published_artifact_versions": versions,
             "artifact_sources": sources,
         }
@@ -5563,6 +5569,26 @@ def run_baseline_probe(result_dir: Path) -> tuple[dict[str, Any] | None, dict[st
             },
             "generated_scenarios": generated_scenarios,
         }
+        try:
+            waterline_evidence, waterline_descriptor = run_waterline_observer_probe(
+                result_dir,
+                evidence,
+                server_topology=readiness_probe,
+            )
+        except Exception as exc:  # noqa: BLE001 - keep baseline evidence if the Waterline shard crashes.
+            waterline_evidence = waterline_observer_setup_result(
+                status="fail",
+                reason=f"Waterline observer shard failed before producing evidence: {type(exc).__name__}: {exc}",
+                blocker_kind="waterline_observer_probe_exception",
+            )
+            waterline_descriptor = {
+                "error": f"{type(exc).__name__}: {exc}",
+                "generated_scenarios": ["waterline_operator_visibility"],
+            }
+        if waterline_evidence is not None:
+            evidence = merge_probe_evidence(evidence, waterline_evidence)
+        if waterline_descriptor is not None:
+            descriptor["waterline_observer_probe"] = waterline_descriptor
         return evidence, descriptor
     except ServerReadinessTopologyError as exc:
         details = dict(exc.details)
@@ -6097,6 +6123,601 @@ def merge_probe_evidence(base: Any, probe: dict[str, Any]) -> dict[str, Any]:
         merged["scenario_results"] = probe_results
 
     return merged
+
+
+def string_from_evidence(value: Any, keys: tuple[str, ...]) -> str | None:
+    for key in keys:
+        found = evidence_value(value, key)
+        if isinstance(found, str) and found.strip():
+            return found.strip()
+    return None
+
+
+def integer_from_evidence(value: Any, keys: tuple[str, ...]) -> int | None:
+    for key in keys:
+        found = evidence_value(value, key)
+        if isinstance(found, bool):
+            continue
+        if isinstance(found, int):
+            return found
+        if isinstance(found, str) and found.strip().lstrip("-").isdigit():
+            return int(found.strip())
+    return None
+
+
+def list_of_ints(value: Any) -> list[int]:
+    if not isinstance(value, list):
+        return []
+
+    values: list[int] = []
+    for item in value:
+        if isinstance(item, bool) or not isinstance(item, int):
+            return []
+        values.append(item)
+    return values
+
+
+def waterline_status_bucket(status: str | None) -> str:
+    normalized = (status or "").strip().lower()
+    if normalized in {"completed", "failed", "cancelled", "canceled", "terminated", "timed_out"}:
+        return "terminal"
+    return "running"
+
+
+def waterline_observer_public_evidence(current_evidence: Any) -> dict[str, Any] | None:
+    if not isinstance(current_evidence, dict):
+        return None
+
+    ordered_candidate = scenario_evidence_candidate_from(current_evidence, "ordered_signal_delivery")
+    if ordered_candidate is None:
+        return None
+
+    ordered = scenario_observed_outputs(ordered_candidate)
+    if not has_required_evidence("ordered_signal_delivery", ordered):
+        return None
+
+    workflow_id = string_from_evidence(ordered, ("workflow_id", "workflow_instance_id", "instance_id"))
+    run_id = string_from_evidence(ordered, ("run_id", "workflow_run_id", "selected_run_id"))
+    if workflow_id is None or run_id is None:
+        return None
+
+    counter = integer_from_evidence(ordered, ("queried_total", "ten_signal_ordered_delivery_total", "delivered_signal_total"))
+    signal_inputs = list_of_ints(ordered.get("history_signal_order")) or list_of_ints(ordered.get("accepted_signal_inputs"))
+    if counter is None and signal_inputs:
+        counter = sum(signal_inputs)
+    if counter is None:
+        return None
+
+    public_evidence = dict(current_evidence)
+    public_evidence["workflow_instance_id"] = workflow_id
+    public_evidence["workflow_run_id"] = run_id
+    public_evidence["run_status"] = string_from_evidence(ordered, ("final_run_status", "run_status")) or "waiting"
+    public_evidence["query_name"] = "state"
+    public_evidence["current_counter"] = counter
+
+    return public_evidence
+
+
+def waterline_observer_setup_result(
+    *,
+    status: str,
+    reason: str,
+    blocker_kind: str,
+) -> dict[str, Any]:
+    finding = {
+        "id": "signal_query_waterline_observer_probe_unavailable",
+        "type": "signal_query_waterline_observer_probe_unavailable",
+        "scenario_id": "waterline_operator_visibility",
+        "owner": "conformance_harness" if status == "runner_blocked" else "waterline",
+        "title": "Signals/queries Waterline observer probe could not produce comparison evidence",
+        "current_evidence": {
+            "published_artifact_evidence_present": True,
+            "blocker_kind": blocker_kind,
+            "reason": reason,
+        },
+        "acceptance": [
+            "install the pinned published Waterline artifact",
+            "run waterline:signals-queries-conformance against the selected signal/query run",
+            "import a passing waterline_operator_visibility scenario result",
+        ],
+    }
+    if status == "runner_blocked":
+        finding["blocker_kind"] = blocker_kind
+
+    return {
+        "artifact_versions": dict(artifact_versions),
+        "scenario_results": {
+            "waterline_operator_visibility": {
+                "scenario_id": "waterline_operator_visibility",
+                "status": status,
+                "observed_outputs": {
+                    "artifact_versions": dict(artifact_versions),
+                    "artifact_sources": dict(EXPECTED_ARTIFACT_SOURCES),
+                    "setup_failure": {
+                        "blocker_kind": blocker_kind,
+                        "reason": reason,
+                    },
+                },
+                "linked_findings": [finding],
+            },
+        },
+    }
+
+
+WATERLINE_WORKFLOW_STORAGE_ENV_KEYS = (
+    "WATERLINE_WORKFLOW_STORAGE_CONNECTION",
+    "WORKFLOW_STORAGE_CONNECTION",
+    "DW_STORAGE_CONNECTION",
+    "WATERLINE_WORKFLOW_DB_CONNECTION",
+    "WATERLINE_WORKFLOW_DB_DRIVER",
+    "WATERLINE_WORKFLOW_DB_HOST",
+    "WATERLINE_WORKFLOW_DB_PORT",
+    "WATERLINE_WORKFLOW_DB_DATABASE",
+    "WATERLINE_WORKFLOW_DB_USERNAME",
+    "WATERLINE_WORKFLOW_DB_PASSWORD",
+    "WATERLINE_WORKFLOW_DB_SOCKET",
+    "WORKFLOW_DB_CONNECTION",
+    "WORKFLOW_DB_DRIVER",
+    "WORKFLOW_DB_HOST",
+    "WORKFLOW_DB_PORT",
+    "WORKFLOW_DB_DATABASE",
+    "WORKFLOW_DB_USERNAME",
+    "WORKFLOW_DB_PASSWORD",
+    "WORKFLOW_DB_SOCKET",
+    "DW_WV_WATERLINE_DB_CONNECTION",
+    "DW_WV_WATERLINE_DB_DRIVER",
+    "DW_WV_WATERLINE_DB_HOST",
+    "DW_WV_WATERLINE_DB_PORT",
+    "DW_WV_WATERLINE_DB_DATABASE",
+    "DW_WV_WATERLINE_DB_USERNAME",
+    "DW_WV_WATERLINE_DB_PASSWORD",
+    "DW_WV_WATERLINE_DB_SOCKET",
+    "DW_WATERLINE_DB_CONNECTION",
+    "DW_WATERLINE_DB_DRIVER",
+    "DW_WATERLINE_DB_HOST",
+    "DW_WATERLINE_DB_PORT",
+    "DW_WATERLINE_DB_DATABASE",
+    "DW_WATERLINE_DB_USERNAME",
+    "DW_WATERLINE_DB_PASSWORD",
+    "DW_WATERLINE_DB_SOCKET",
+    "WORKFLOW_V2_TASK_DISPATCH_MODE",
+    "DW_V2_TASK_DISPATCH_MODE",
+)
+
+
+def redacted_environment(env: dict[str, str]) -> dict[str, str]:
+    redacted: dict[str, str] = {}
+    for key, value in env.items():
+        if "PASSWORD" in key or "TOKEN" in key or "SECRET" in key:
+            redacted[key] = "<redacted>"
+        else:
+            redacted[key] = value
+    return redacted
+
+
+def waterline_storage_from_topology(server_topology: dict[str, Any] | None) -> dict[str, Any]:
+    compose_project = None
+    if isinstance(server_topology, dict):
+        candidate = server_topology.get("compose_project")
+        if isinstance(candidate, str) and candidate.strip():
+            compose_project = candidate.strip()
+
+    if compose_project:
+        env = {
+            "WATERLINE_WORKFLOW_STORAGE_CONNECTION": "waterline_workflow",
+            "WATERLINE_WORKFLOW_DB_CONNECTION": "mysql",
+            "WATERLINE_WORKFLOW_DB_DRIVER": "mysql",
+            "WATERLINE_WORKFLOW_DB_HOST": "mysql",
+            "WATERLINE_WORKFLOW_DB_PORT": "3306",
+            "WATERLINE_WORKFLOW_DB_DATABASE": env_text("DB_DATABASE") or "durable_workflow",
+            "WATERLINE_WORKFLOW_DB_USERNAME": env_text("DB_USERNAME") or "workflow",
+            "WATERLINE_WORKFLOW_DB_PASSWORD": env_text("DB_PASSWORD") or "workflow",
+            "WORKFLOW_V2_TASK_DISPATCH_MODE": env_text("WORKFLOW_V2_TASK_DISPATCH_MODE") or "database",
+            "DW_V2_TASK_DISPATCH_MODE": env_text("DW_V2_TASK_DISPATCH_MODE") or "database",
+        }
+        return {
+            "env": env,
+            "docker_network": f"{compose_project}_default",
+            "source": "published_server_compose_workflow_storage",
+            "redacted_env": redacted_environment(env),
+        }
+
+    env = {
+        key: value
+        for key in WATERLINE_WORKFLOW_STORAGE_ENV_KEYS
+        if (value := os.environ.get(key)) is not None and (value != "" or key.endswith("_PASSWORD"))
+    }
+    if env:
+        return {
+            "env": env,
+            "docker_network": env_text("DW_SIGNALS_QUERIES_WATERLINE_DOCKER_NETWORK"),
+            "source": "worker_environment_workflow_storage",
+            "redacted_env": redacted_environment(env),
+        }
+
+    return {
+        "env": {},
+        "docker_network": None,
+        "source": "unavailable",
+        "redacted_env": {},
+    }
+
+
+def docker_run_for_project(
+    project_dir: Path,
+    command: list[str],
+    *,
+    extra_env: dict[str, str] | None = None,
+    network: str | None = None,
+) -> list[str]:
+    docker_command = [
+        "docker",
+        "run",
+        "--rm",
+    ]
+    if network:
+        docker_command.extend(["--network", network])
+    else:
+        docker_command.extend(["--add-host", "host.docker.internal:host-gateway"])
+
+    docker_command.extend([
+        "-v",
+        docker_volume_spec(project_dir),
+        "-w",
+        "/app",
+        "-e",
+        "APP_ENV=production",
+        "-e",
+        "APP_DEBUG=false",
+        "-e",
+        "DB_CONNECTION=sqlite",
+        "-e",
+        "DB_DATABASE=/app/database/database.sqlite",
+        "-e",
+        "QUEUE_CONNECTION=database",
+        "-e",
+        "CACHE_STORE=array",
+        "-e",
+        "SESSION_DRIVER=array",
+        "-e",
+        "WATERLINE_ENGINE_SOURCE=v2",
+        "-e",
+        "WATERLINE_ALLOW_UNAUTHENTICATED=true",
+    ])
+    for key, value in sorted((extra_env or {}).items()):
+        docker_command.extend(["-e", f"{key}={value}"])
+
+    docker_command.extend([
+        workflow_php_docker_image(),
+        *command,
+    ])
+    return docker_command
+
+
+def waterline_observer_already_reported(current_evidence: Any) -> bool:
+    candidate = scenario_evidence_candidate_from(current_evidence, "waterline_operator_visibility")
+    if candidate is None:
+        return False
+
+    return isinstance(candidate.get("status"), str) and candidate["status"].strip() != ""
+
+
+def waterline_query_responder_inputs(public_evidence: dict[str, Any]) -> dict[str, str] | None:
+    ordered_candidate = scenario_evidence_candidate_from(public_evidence, "ordered_signal_delivery")
+    if ordered_candidate is None:
+        return None
+
+    ordered = scenario_observed_outputs(ordered_candidate)
+    base_url = (
+        env_text("DW_SIGNALS_QUERIES_SERVER_URL")
+        or env_text("DURABLE_WORKFLOW_SERVER_URL")
+        or string_from_evidence(ordered, ("server_base_url", "server_url", "base_url"))
+    )
+    token = (
+        env_text("DW_SIGNALS_QUERIES_AUTH_TOKEN")
+        or env_text("DURABLE_WORKFLOW_AUTH_TOKEN")
+        or env_text("DW_AUTH_TOKEN")
+        or "dev-token"
+    )
+    namespace = (
+        env_text("DW_SIGNALS_QUERIES_NAMESPACE")
+        or env_text("DURABLE_WORKFLOW_NAMESPACE")
+        or string_from_evidence(ordered, ("namespace",))
+        or "default"
+    )
+    worker_id = string_from_evidence(ordered, ("worker_id",))
+    task_queue = string_from_evidence(ordered, ("task_queue",))
+    if base_url is None or worker_id is None or task_queue is None:
+        return None
+
+    return {
+        "base_url": base_url.rstrip("/"),
+        "token": token,
+        "namespace": namespace,
+        "worker_id": worker_id,
+        "task_queue": task_queue,
+    }
+
+
+def run_waterline_observer_probe(
+    result_dir: Path,
+    current_evidence: Any,
+    server_topology: dict[str, Any] | None = None,
+) -> tuple[dict[str, Any] | None, dict[str, Any] | None]:
+    if not env_flag("DW_SIGNALS_QUERIES_RUN_WATERLINE_OBSERVER_PROBE", True):
+        return None, {"skipped": "disabled_by_env"}
+
+    if waterline_observer_already_reported(current_evidence):
+        return None, {"skipped": "waterline_operator_visibility_already_reported"}
+
+    public_evidence = waterline_observer_public_evidence(current_evidence)
+    if public_evidence is None:
+        return waterline_observer_setup_result(
+            status="fail",
+            reason=(
+                "Waterline observer comparison requires ordered_signal_delivery evidence "
+                "identifying the workflow run and public counter state."
+            ),
+            blocker_kind="ordered_signal_delivery_evidence_unavailable",
+        ), {"error": "ordered_signal_delivery_evidence_unavailable"}
+
+    if not command_available("docker"):
+        return waterline_observer_setup_result(
+            status="runner_blocked",
+            reason="Docker is required to install and run the published Waterline artifact.",
+            blocker_kind="docker_unavailable",
+        ), {"error": "docker_unavailable"}
+
+    workflow_version = artifact_version_value(artifact_versions, "workflow-php")
+    waterline_version = artifact_version_value(artifact_versions, "waterline")
+    if is_placeholder_version(workflow_version) or is_placeholder_version(waterline_version):
+        return waterline_observer_setup_result(
+            status="runner_blocked",
+            reason=(
+                "Exact workflow-php and waterline versions are required before installing "
+                "the published Waterline observer shard."
+            ),
+            blocker_kind="missing_exact_artifact_version",
+        ), {"error": "missing_exact_artifact_version"}
+
+    storage = waterline_storage_from_topology(server_topology)
+    waterline_env = storage["env"] if isinstance(storage.get("env"), dict) else {}
+    waterline_network = storage.get("docker_network") if isinstance(storage.get("docker_network"), str) else None
+    if not waterline_env:
+        return waterline_observer_setup_result(
+            status="fail",
+            reason=(
+                "The runner did not expose workflow storage credentials for the published "
+                "Waterline artifact, so the selected-run detail and query routes cannot be "
+                "exercised against the observed signal/query workflow."
+            ),
+            blocker_kind="waterline_workflow_storage_unavailable",
+        ), {"error": "waterline_workflow_storage_unavailable"}
+
+    waterline_root = result_dir / "waterline-signals-queries-observer"
+    waterline_root.mkdir(parents=True, exist_ok=True)
+    log_file = result_dir / "waterline-signals-queries-observer.log"
+    create = run_command(
+        docker_run_for_project(
+            waterline_root,
+            ["composer", "create-project", "laravel/laravel", ".", "--no-interaction", "--no-progress", "--prefer-dist"],
+            extra_env=waterline_env,
+            network=waterline_network,
+        ),
+        log_file=log_file,
+        timeout=300,
+    )
+    if create.returncode != 0:
+        return waterline_observer_setup_result(
+            status="runner_blocked",
+            reason="Laravel app creation failed before Waterline observer shard execution.",
+            blocker_kind="waterline_create_project",
+        ), {"error": "waterline_create_project", "log_file": log_file.name}
+
+    (waterline_root / "database").mkdir(parents=True, exist_ok=True)
+    (waterline_root / "database" / "database.sqlite").touch()
+    conformance_dir = waterline_root / "conformance"
+    conformance_dir.mkdir(parents=True, exist_ok=True)
+
+    public_evidence_path = conformance_dir / "public-evidence.json"
+    waterline_report_path = conformance_dir / "waterline-signals-queries-result.json"
+    write_json(public_evidence_path, public_evidence)
+
+    require = run_command(
+        docker_run_for_project(
+            waterline_root,
+            [
+                "composer",
+                "require",
+                "--no-interaction",
+                "--no-progress",
+                "--prefer-dist",
+                f"durable-workflow/workflow:{workflow_version}",
+                f"durable-workflow/waterline:{waterline_version}",
+            ],
+            extra_env=waterline_env,
+            network=waterline_network,
+        ),
+        log_file=log_file,
+        timeout=420,
+    )
+    if require.returncode != 0:
+        return waterline_observer_setup_result(
+            status="fail",
+            reason=(
+                "Composer could not install pinned Packagist packages "
+                f"durable-workflow/workflow:{workflow_version} and durable-workflow/waterline:{waterline_version}."
+            ),
+            blocker_kind="waterline_composer_require",
+        ), {"error": "waterline_composer_require", "log_file": log_file.name}
+
+    key = run_command(
+        docker_run_for_project(
+            waterline_root,
+            ["php", "artisan", "key:generate", "--force"],
+            extra_env=waterline_env,
+            network=waterline_network,
+        ),
+        log_file=log_file,
+        timeout=120,
+    )
+    artisan_list = run_command(
+        docker_run_for_project(
+            waterline_root,
+            ["php", "artisan", "list", "--raw"],
+            extra_env=waterline_env,
+            network=waterline_network,
+        ),
+        log_file=log_file,
+        timeout=120,
+    )
+    if key.returncode != 0 or artisan_list.returncode != 0:
+        return waterline_observer_setup_result(
+            status="fail",
+            reason="The Composer-installed Waterline package could not boot its Laravel command surface.",
+            blocker_kind="waterline_artisan_list",
+        ), {"error": "waterline_artisan_list", "log_file": log_file.name}
+
+    if "waterline:signals-queries-conformance" not in artisan_list.stdout:
+        return waterline_observer_setup_result(
+            status="fail",
+            reason="The Composer-installed Waterline package does not expose waterline:signals-queries-conformance.",
+            blocker_kind="waterline_command_missing",
+        ), {"error": "waterline_command_missing", "log_file": log_file.name}
+
+    workflow_id = str(public_evidence["workflow_instance_id"])
+    run_id = str(public_evidence["workflow_run_id"])
+    run_status_value = str(public_evidence["run_status"])
+    query_name = str(public_evidence["query_name"])
+    counter = integer_from_evidence(public_evidence, ("current_counter", "counter", "queried_total"))
+    responder_inputs = waterline_query_responder_inputs(public_evidence)
+    responder_holder: dict[str, Any] = {}
+    responder: threading.Thread | None = None
+    if responder_inputs is not None and counter is not None:
+        responder = threading.Thread(
+            target=answer_next_query_task,
+            args=(
+                responder_inputs["base_url"],
+                responder_inputs["token"],
+                responder_inputs["namespace"],
+                responder_inputs["worker_id"],
+                responder_inputs["task_queue"],
+                counter,
+                log_file,
+                responder_holder,
+                210.0,
+            ),
+            daemon=True,
+        )
+        responder.start()
+
+    command = run_command(
+        docker_run_for_project(
+            waterline_root,
+            [
+                "php",
+                "artisan",
+                "waterline:signals-queries-conformance",
+                "--input=/app/conformance/public-evidence.json",
+                "--output=/app/conformance/waterline-signals-queries-result.json",
+                f"--run-id=signals-queries-{run_id}",
+                f"--instance-id={workflow_id}",
+                f"--workflow-run-id={run_id}",
+                f"--run-status={run_status_value}",
+                f"--query={query_name}",
+                f"--artifact-version=server={artifact_version_value(artifact_versions, 'server')}",
+                f"--artifact-version=cli={artifact_version_value(artifact_versions, 'cli')}",
+                f"--artifact-version=sdk-python={artifact_version_value(artifact_versions, 'sdk-python')}",
+                f"--artifact-version=workflow-php={workflow_version}",
+                f"--artifact-version=waterline={waterline_version}",
+                "--artifact-source=server=docker_image",
+                "--artifact-source=cli=official_install_script",
+                "--artifact-source=sdk-python=pypi_package",
+                "--artifact-source=workflow-php=packagist_package",
+                "--artifact-source=waterline=packagist_package",
+            ],
+            extra_env=waterline_env,
+            network=waterline_network,
+        ),
+        log_file=log_file,
+        timeout=240,
+    )
+    if responder is not None:
+        responder.join(timeout=5)
+    if not waterline_report_path.is_file():
+        return waterline_observer_setup_result(
+            status="fail",
+            reason=(
+                "waterline:signals-queries-conformance exited without writing a report "
+                f"(status {command.returncode})."
+            ),
+            blocker_kind="waterline_conformance_command",
+        ), {"error": "waterline_conformance_command", "log_file": log_file.name}
+
+    try:
+        waterline_report = json.loads(waterline_report_path.read_text(encoding="utf-8"))
+    except Exception as exc:  # noqa: BLE001 - malformed shard report becomes a focused finding.
+        return waterline_observer_setup_result(
+            status="fail",
+            reason=f"Waterline observer shard report was not valid JSON: {type(exc).__name__}: {exc}",
+            blocker_kind="waterline_report_decode",
+        ), {"error": "waterline_report_decode", "log_file": log_file.name}
+
+    if isinstance(waterline_report, dict):
+        raw_scenarios = waterline_report.get("scenario_results")
+        if isinstance(raw_scenarios, list):
+            waterline_scenarios = {
+                str(item["scenario_id"]): item
+                for item in raw_scenarios
+                if isinstance(item, dict) and isinstance(item.get("scenario_id"), str)
+            }
+        elif isinstance(raw_scenarios, dict):
+            waterline_scenarios = raw_scenarios
+        else:
+            waterline_scenarios = {}
+
+        waterline_visibility = waterline_scenarios.get("waterline_operator_visibility")
+        if not isinstance(waterline_visibility, dict):
+            return waterline_observer_setup_result(
+                status="fail",
+                reason="Waterline observer shard report did not include waterline_operator_visibility.",
+                blocker_kind="waterline_visibility_scenario_missing",
+            ), {"error": "waterline_visibility_scenario_missing", "log_file": log_file.name}
+
+        waterline_report = {
+            "artifact_versions": dict(artifact_versions),
+            "scenario_results": {
+                "waterline_operator_visibility": waterline_visibility,
+            },
+        }
+
+    descriptor = {
+        "file": waterline_report_path.name,
+        "log_file": log_file.name,
+        "workflow_id": workflow_id,
+        "run_id": run_id,
+        "query_name": query_name,
+        "command_status": command.returncode,
+        "generated_scenarios": ["waterline_operator_visibility"],
+        "shard_command": "waterline:signals-queries-conformance",
+        "real_capture_source": "published_waterline_artifact_http_kernel",
+        "waterline_workflow_storage": {
+            "source": storage.get("source"),
+            "docker_network": waterline_network,
+            "env": storage.get("redacted_env"),
+        },
+        "query_responder": {
+            "started": responder is not None,
+            "poll_status_code": responder_holder.get("poll", {}).get("status_code")
+            if isinstance(responder_holder.get("poll"), dict)
+            else None,
+            "complete_status_code": responder_holder.get("complete", {}).get("status_code")
+            if isinstance(responder_holder.get("complete"), dict)
+            else None,
+            "error": responder_holder.get("error"),
+        },
+    }
+    return waterline_report if isinstance(waterline_report, dict) else None, descriptor
 
 
 MISSING = object()
@@ -8174,6 +8795,28 @@ elif probe_descriptor is not None:
     if smoke_descriptor is None:
         smoke_descriptor = {}
     smoke_descriptor["adversarial_probe"] = probe_descriptor
+
+try:
+    waterline_evidence, waterline_descriptor = run_waterline_observer_probe(result_dir, smoke_evidence)
+except Exception as exc:  # noqa: BLE001 - the Waterline shard must not erase sibling evidence.
+    waterline_evidence = waterline_observer_setup_result(
+        status="fail",
+        reason=f"Waterline observer shard failed before producing evidence: {type(exc).__name__}: {exc}",
+        blocker_kind="waterline_observer_probe_exception",
+    )
+    waterline_descriptor = {
+        "error": f"{type(exc).__name__}: {exc}",
+        "generated_scenarios": ["waterline_operator_visibility"],
+    }
+if waterline_evidence is not None:
+    smoke_evidence = merge_probe_evidence(smoke_evidence, waterline_evidence)
+    if smoke_descriptor is None:
+        smoke_descriptor = {}
+    smoke_descriptor["waterline_observer_probe"] = waterline_descriptor
+elif waterline_descriptor is not None:
+    if smoke_descriptor is None:
+        smoke_descriptor = {}
+    smoke_descriptor["waterline_observer_probe"] = waterline_descriptor
 
 baseline_readiness_blocker = runner_blocker_from_descriptor(baseline_descriptor)
 

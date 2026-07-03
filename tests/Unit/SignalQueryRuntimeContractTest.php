@@ -683,7 +683,16 @@ class SignalQueryRuntimeContractTest extends TestCase
             'runner_blocker',
             'DW_SIGNALS_QUERIES_SERVER_READY_TIMEOUT_SECONDS',
             'DW_SIGNALS_QUERIES_RUN_BASELINE_PROBE',
+            'DW_SIGNALS_QUERIES_RUN_WATERLINE_OBSERVER_PROBE',
             'run_baseline_probe(result_dir)',
+            'run_waterline_observer_probe(result_dir, smoke_evidence)',
+            'waterline:signals-queries-conformance',
+            'published_waterline_artifact_http_kernel',
+            'WATERLINE_WORKFLOW_DB_HOST',
+            'published_server_compose_workflow_storage',
+            'waterline_workflow_storage_unavailable',
+            'waterline_query_responder_inputs(',
+            'durable-workflow/waterline:{waterline_version}',
             'baseline_scenario_result(',
             'run_python_sdk_baseline(',
             'Worker(',
@@ -704,6 +713,16 @@ class SignalQueryRuntimeContractTest extends TestCase
             'signals-queries-findings.json',
         ] as $needle) {
             $this->assertStringContainsString($needle, $source);
+        }
+
+        foreach ([
+            'build_waterline_observer_' . 'captures(',
+            'waterline-selected-run-' . 'detail.json',
+            'waterline-selected-run-' . 'query.json',
+            '--selected-run-detail-capture=' . '/app/conformance',
+            '--selected-run-query-capture=' . '/app/conformance',
+        ] as $forbiddenNeedle) {
+            $this->assertStringNotContainsString($forbiddenNeedle, $source);
         }
     }
 
@@ -4496,6 +4515,7 @@ PY);
                 'DW_WATERLINE_VERSION=2.0.0-alpha.69',
                 'DW_SIGNALS_QUERIES_RUN_BASELINE_PROBE=0',
                 'DW_SIGNALS_QUERIES_RUN_ADVERSARIAL_PROBE=0',
+                'DW_SIGNALS_QUERIES_RUN_WATERLINE_OBSERVER_PROBE=0',
                 'DW_SIGNALS_QUERIES_SMOKE_EVIDENCE=' . escapeshellarg($smokePath),
                 escapeshellarg($root . '/scripts/conformance/signals-queries-published-artifacts.sh'),
                 '--result-dir',
@@ -4556,6 +4576,7 @@ PY);
                 'DW_PYTHON_SDK_VERSION' => '0.4.84',
                 'DW_WORKFLOW_PHP_VERSION' => '2.0.0-alpha.187',
                 'DW_WATERLINE_VERSION' => '2.0.0-alpha.69',
+                'DW_SIGNALS_QUERIES_RUN_WATERLINE_OBSERVER_PROBE' => '0',
             ];
             foreach ($environment as $key => $value) {
                 $assignments[$key] = $value;
