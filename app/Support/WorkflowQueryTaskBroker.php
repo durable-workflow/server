@@ -1595,8 +1595,13 @@ final class WorkflowQueryTaskBroker
      */
     private function isWorkflowResumePayload(array $payload): bool
     {
-        return $this->stringValue($payload['workflow_wait_kind'] ?? null) !== null
-            || $this->stringValue($payload['resume_source_kind'] ?? null) !== null;
+        return in_array($this->stringValue($payload['resume_source_kind'] ?? null), [
+            'workflow_signal',
+            'workflow_update',
+            'activity_execution',
+            'child_workflow_run',
+            'timer',
+        ], true);
     }
 
     /**
