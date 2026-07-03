@@ -264,7 +264,7 @@ class WorkflowQueryTaskBrokerTest extends TestCase
         );
     }
 
-    public function test_query_task_poll_can_claim_when_same_worker_holds_active_workflow_task_lease(): void
+    public function test_query_task_poll_waits_for_same_worker_active_workflow_task_lease_before_claiming(): void
     {
         Queue::fake();
 
@@ -288,9 +288,39 @@ class WorkflowQueryTaskBrokerTest extends TestCase
         $queryPoll = $this->postJson('/api/worker/query-tasks/poll', [
             'worker_id' => 'python-query-same-worker-replay',
             'task_queue' => 'python-queries',
+            'timeout_seconds' => 0,
         ], $this->workerHeaders());
 
         $queryPoll->assertOk()
+            ->assertJsonPath('poll_status', 'empty')
+            ->assertJsonPath('task', null);
+
+        $this->assertSame('pending', $broker->task((string) $task['query_task_id'])['status'] ?? null);
+
+        $workflowTaskId = (string) $workflowPoll->json('task.task_id');
+        $workflowTaskAttempt = (int) $workflowPoll->json('task.workflow_task_attempt');
+        $workflowLeaseOwner = (string) $workflowPoll->json('task.lease_owner');
+
+        $this->postJson("/api/worker/workflow-tasks/{$workflowTaskId}/complete", [
+            'lease_owner' => $workflowLeaseOwner,
+            'workflow_task_attempt' => $workflowTaskAttempt,
+            'commands' => [
+                [
+                    'type' => 'open_condition_wait',
+                    'condition_key' => 'query-same-worker-replay-barrier',
+                    'timeout_seconds' => 60,
+                ],
+            ],
+        ], $this->workerHeaders())
+            ->assertOk()
+            ->assertJsonPath('run_status', 'waiting');
+
+        $afterReplay = $this->postJson('/api/worker/query-tasks/poll', [
+            'worker_id' => 'python-query-same-worker-replay',
+            'task_queue' => 'python-queries',
+        ], $this->workerHeaders());
+
+        $afterReplay->assertOk()
             ->assertJsonPath('poll_status', 'leased')
             ->assertJsonPath('task.query_task_id', $task['query_task_id'])
             ->assertJsonPath('task.run_id', $run->id)
@@ -321,6 +351,7 @@ class WorkflowQueryTaskBrokerTest extends TestCase
         $duringReplay = $this->postJson('/api/worker/query-tasks/poll', [
             'worker_id' => 'python-query-replay-barrier-query-worker',
             'task_queue' => 'python-queries',
+            'timeout_seconds' => 0,
         ], $this->workerHeaders());
 
         $duringReplay->assertOk()
@@ -2585,11 +2616,17 @@ class WorkflowQueryTaskBrokerTest extends TestCase
         $queryPoll = $this->postJson('/api/worker/query-tasks/poll', [
             'worker_id' => 'python-query-same-lease-preempt-worker',
             'task_queue' => 'python-queries',
+            'timeout_seconds' => 0,
         ], $this->workerHeaders());
 
         $queryPoll->assertOk()
-            ->assertJsonPath('task.query_task_id', $queryTask['query_task_id'])
-            ->assertJsonPath('task.lease_owner', 'python-query-same-lease-preempt-worker');
+            ->assertJsonPath('task', null)
+            ->assertJsonPath('poll_status', 'empty');
+
+        $this->assertSame(
+            'pending',
+            $broker->task((string) $queryTask['query_task_id'])['status'] ?? null,
+        );
     }
 
     public function test_query_task_preemption_requires_polling_worker_query_capability(): void

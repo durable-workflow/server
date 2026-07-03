@@ -483,7 +483,6 @@ final class WorkflowTaskPoller
                     $buildId,
                     $acceptsQueryTasks || $supportsQueryTasks,
                     $workflowDefinitionFingerprints,
-                    $leaseOwner,
                 )) {
                     return [
                         'task' => null,
