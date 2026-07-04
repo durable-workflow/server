@@ -111,6 +111,7 @@ from __future__ import annotations
 import base64
 import hashlib
 import json
+import math
 import os
 import re
 import shutil
@@ -2614,6 +2615,7 @@ def answer_next_query_task(
                     "worker_id": worker_id,
                     "task_queue": task_queue,
                     "poll_request_id": f"query-{int(time.time() * 1000)}-{poll_attempt}",
+                    "timeout_seconds": max(1, int(math.ceil(remaining))),
                 },
                 token=token,
                 namespace=namespace,
@@ -4108,16 +4110,30 @@ def run_replay_terminal_probe(
         return evidence, descriptor
     except ReplayTimingProbeFailure as exc:
         log_line(log_file, f"replay timing probe produced focused finding: {type(exc).__name__}: {exc}")
-        terminal_result = completed_run_scenario_result(
-            completed_run_context_outputs(probe_context, versions, sources),
-            status="runner_blocked",
-            reason=(
+        terminal_status = "runner_blocked" if exc.status == "runner_blocked" else "fail"
+        terminal_owner = "conformance_harness" if terminal_status == "runner_blocked" else exc.owner
+        terminal_blocker_kind = (
+            f"completed_run_probe_blocked_by_{exc.phase}"
+            if terminal_status == "runner_blocked"
+            else None
+        )
+        if terminal_status == "runner_blocked":
+            terminal_reason = (
                 "Completed-run signal/query handling was not exercised because the shared "
                 f"replay/terminal probe stopped during {exc.phase}: {exc}"
-            ),
+            )
+        else:
+            terminal_reason = (
+                "Completed-run signal/query handling was not exercised because the shared "
+                f"replay/terminal probe first exposed product replay/query behavior during {exc.phase}: {exc}"
+            )
+        terminal_result = completed_run_scenario_result(
+            completed_run_context_outputs(probe_context, versions, sources),
+            status=terminal_status,
+            reason=terminal_reason,
             phase=exc.phase,
-            owner="conformance_harness",
-            blocker_kind=f"completed_run_probe_blocked_by_{exc.phase}",
+            owner=terminal_owner,
+            blocker_kind=terminal_blocker_kind,
         )
         if probe_context.get("replay_timing_observed"):
             scenario_results = replay_timing_results_from_context(probe_context, versions, sources)

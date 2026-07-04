@@ -1335,11 +1335,13 @@ PY);
     public function test_host_runner_query_responder_does_not_cut_off_server_long_poll(): void
     {
         $result = $this->runSignalQueryRunnerPythonSnippet(<<<'PY'
+poll_bodies = []
 poll_timeouts = []
 complete_bodies = []
 
 def fake_http_json(base_url, path, **kwargs):
     if path.endswith("/worker/query-tasks/poll"):
+        poll_bodies.append(kwargs.get("body"))
         poll_timeouts.append(kwargs.get("timeout"))
         return {
             "status_code": 200,
@@ -1373,6 +1375,7 @@ answer_next_query_task(
 )
 
 print(json.dumps({
+    "poll_bodies": poll_bodies,
     "poll_timeouts": poll_timeouts,
     "complete_bodies": complete_bodies,
     "error": holder.get("error"),
@@ -1380,6 +1383,7 @@ print(json.dumps({
 PY);
 
         $this->assertNull($result['error']);
+        $this->assertSame(12, $result['poll_bodies'][0]['timeout_seconds']);
         $this->assertGreaterThan(12.0, $result['poll_timeouts'][0]);
         $this->assertSame(55, $result['complete_bodies'][0]['result']);
     }
@@ -3266,6 +3270,122 @@ PY);
         $this->assertContains(
             'completed_run_signal_and_query',
             $result['descriptor']['generated_scenarios'],
+        );
+    }
+
+    public function test_replay_terminal_probe_keeps_product_replay_query_failure_out_of_runner_blocked(): void
+    {
+        $result = $this->runSignalQueryRunnerPythonSnippet(<<<'PY'
+events = []
+replay_completed = threading.Event()
+timestamp_index = 0
+
+def now() -> str:
+    global timestamp_index
+    timestamp_index += 1
+    return f"2026-05-20T00:00:00.{timestamp_index:06d}Z"
+
+def http_json(base_url, path, *, method="GET", body=None, token, namespace, worker=False, timeout=30.0):
+    if path == api_path("worker", "register"):
+        return {"status_code": 200, "body": {}}
+    if method == "POST" and path == api_path("workflows"):
+        workflow_id = body["workflow_id"]
+        return {"status_code": 200, "body": {"run_id": f"run-{workflow_id}"}}
+    if "/query/state" in path:
+        replay_completed.wait(5)
+        return {
+            "status_code": 504,
+            "body": {
+                "reason": "query_task_timeout",
+                "message": "Query did not receive a worker response.",
+            },
+        }
+    if "/signal/increment" in path:
+        return {"status_code": 202, "body": {"outcome": "signal_received"}}
+    raise RuntimeError(f"unexpected HTTP call {method} {path}")
+
+def poll_workflow_task(base_url, token, namespace, worker_id, task_queue, timeout=45.0):
+    return {
+        "status_code": 200,
+        "body": {
+            "task": {
+                "task_id": "replay-task",
+                "lease_owner": "worker",
+                "workflow_task_attempt": 1,
+            },
+        },
+    }
+
+def complete_workflow_task(base_url, token, namespace, task, commands, timeout=30.0):
+    events.append("replay_complete")
+    replay_completed.set()
+    return {"status_code": 200, "body": {}}
+
+def answer_next_query_task(base_url, token, namespace, worker_id, task_queue, result, log_file, holder, poll_timeout=45.0):
+    holder["query_poll_started_at"] = now()
+    events.append("replay_query_poll_started")
+    replay_completed.wait(5)
+    holder["poll"] = {"status_code": 200, "body": {"task": None, "poll_status": "empty"}}
+    holder["empty_polls"] = [holder["poll"]]
+    holder["error"] = "query task poll returned no task before timeout"
+
+evidence, descriptor = run_replay_terminal_probe(
+    "http://server.test",
+    "token",
+    "default",
+    "worker",
+    "queue",
+    "conformance.counter",
+    {
+        "server": "0.2.562",
+        "cli": "0.1.86",
+        "sdk-python": "0.4.93",
+        "workflow-php": "2.0.0-alpha.245",
+        "waterline": "2.0.0-alpha.119",
+    },
+    {
+        "server": "published_docker_image",
+        "cli": "published_cli_release",
+        "sdk-python": "published_pypi_package",
+        "workflow-php": "published_composer_package",
+        "waterline": "published_waterline_artifact",
+    },
+    Path("/tmp/replay-terminal-probe-query-failure.log"),
+)
+
+print(json.dumps({
+    "descriptor": descriptor,
+    "events": events,
+    "evidence": evidence,
+}, sort_keys=True))
+PY);
+
+        $scenarioResults = $result['evidence']['scenario_results'];
+
+        foreach ($scenarioResults as $scenarioResult) {
+            $this->assertNotSame('runner_blocked', $scenarioResult['status']);
+        }
+
+        $this->assertSame('fail', $scenarioResults['query_during_replay']['status']);
+        $this->assertSame(
+            'signal_query_query_during_replay_timing_failed',
+            $scenarioResults['query_during_replay']['linked_findings'][0]['type'],
+        );
+
+        $completed = $scenarioResults['completed_run_signal_and_query'];
+        $this->assertSame('fail', $completed['status']);
+        $this->assertSame(
+            'signal_query_completed_run_handling_failed',
+            $completed['linked_findings'][0]['type'],
+        );
+        $this->assertArrayNotHasKey('blocker_kind', $completed['linked_findings'][0]);
+        $this->assertSame(
+            'query_during_replay_worker_response',
+            $completed['linked_findings'][0]['current_evidence']['probe_phase'],
+        );
+        $this->assertSame(
+            'query_during_replay_worker_response',
+            $result['descriptor']['completed_run_probe']['probe_phase'],
         );
     }
 
