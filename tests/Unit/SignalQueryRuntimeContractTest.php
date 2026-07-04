@@ -781,7 +781,31 @@ class SignalQueryRuntimeContractTest extends TestCase
         $this->assertStringContainsString('include_app_env: bool = True', $source);
         $this->assertStringContainsString('["composer", "create-project", "laravel/laravel"', $body);
         $this->assertStringContainsString('include_app_env=False', $body);
+        $this->assertStringContainsString('image=waterline_php_docker_image()', $body);
         $this->assertStringNotContainsString('extra_env=waterline_env', $body);
+    }
+
+    public function test_waterline_observer_uses_mysql_capable_published_server_image(): void
+    {
+        $source = (string) file_get_contents(
+            dirname(__DIR__, 2) . '/scripts/conformance/signals-queries-published-artifacts.sh',
+        );
+        $anchor = 'def waterline_php_docker_image() -> str:';
+        $anchorPosition = strpos($source, $anchor);
+        $end = $anchorPosition === false ? false : strpos($source, "\n\ndef docker_volume_spec", $anchorPosition);
+
+        if ($anchorPosition === false || $end === false) {
+            $this->fail('Unable to extract Waterline observer Docker image helper from host runner.');
+        }
+
+        $body = substr($source, $anchorPosition, $end - $anchorPosition);
+
+        $this->assertStringContainsString('DW_SIGNALS_QUERIES_WATERLINE_PHP_DOCKER_IMAGE', $body);
+        $this->assertStringContainsString('durableworkflow/server:{server_version}', $body);
+        $this->assertStringContainsString('return workflow_php_docker_image()', $body);
+        $this->assertStringContainsString('"runtime_image": waterline_php_docker_image()', $source);
+        $this->assertGreaterThanOrEqual(5, substr_count($source, 'image=waterline_php_docker_image()'));
+        $this->assertGreaterThanOrEqual(5, substr_count($source, 'entrypoint=""'));
     }
 
     public function test_adversarial_probe_does_not_reuse_prior_probe_server_urls(): void

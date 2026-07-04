@@ -44,6 +44,10 @@ Environment overrides:
   DW_SIGNALS_QUERIES_PYTHON                 Optional configured Python executable; does not prove published install.
   DW_SIGNALS_QUERIES_PHP_DOCKER_IMAGE       Docker image used to install and run the published PHP package.
                                              Defaults to composer:2.
+  DW_SIGNALS_QUERIES_WATERLINE_PHP_DOCKER_IMAGE
+                                             Docker image used to install and run the published Waterline observer.
+                                             Defaults to durableworkflow/server:<DW_SERVER_VERSION> so pdo_mysql
+                                             is available when observing a MySQL-backed server.
   DW_SIGNALS_QUERIES_KEEP_RUN_ROOT          Set to 1 to keep the adversarial shard scratch directory.
 USAGE
 }
@@ -1110,6 +1114,18 @@ except PackageNotFoundError:
 
 def workflow_php_docker_image() -> str:
     return env_text("DW_SIGNALS_QUERIES_PHP_DOCKER_IMAGE") or "composer:2"
+
+
+def waterline_php_docker_image() -> str:
+    configured = env_text("DW_SIGNALS_QUERIES_WATERLINE_PHP_DOCKER_IMAGE")
+    if configured:
+        return configured
+
+    server_version = artifact_version_value(artifact_versions, "server")
+    if server_version and not is_placeholder_version(server_version):
+        return f"durableworkflow/server:{server_version}"
+
+    return workflow_php_docker_image()
 
 
 def docker_volume_spec(path: Path, container_path: str = "/app") -> str:
@@ -7160,12 +7176,16 @@ def docker_run_for_project(
     extra_env: dict[str, str] | None = None,
     network: str | None = None,
     include_app_env: bool = True,
+    image: str | None = None,
+    entrypoint: str | None = None,
 ) -> list[str]:
     docker_command = [
         "docker",
         "run",
         "--rm",
     ]
+    if entrypoint is not None:
+        docker_command.extend(["--entrypoint", entrypoint])
     if network:
         docker_command.extend(["--network", network])
     else:
@@ -7202,7 +7222,7 @@ def docker_run_for_project(
         docker_command.extend(["-e", f"{key}={value}"])
 
     docker_command.extend([
-        workflow_php_docker_image(),
+        image or workflow_php_docker_image(),
         *command,
     ])
     return docker_command
@@ -7317,6 +7337,8 @@ def run_waterline_observer_probe(
             ["composer", "create-project", "laravel/laravel", ".", "--no-interaction", "--no-progress", "--prefer-dist"],
             network=waterline_network,
             include_app_env=False,
+            image=waterline_php_docker_image(),
+            entrypoint="",
         ),
         log_file=log_file,
         timeout=300,
@@ -7351,6 +7373,8 @@ def run_waterline_observer_probe(
             ],
             extra_env=waterline_env,
             network=waterline_network,
+            image=waterline_php_docker_image(),
+            entrypoint="",
         ),
         log_file=log_file,
         timeout=420,
@@ -7371,6 +7395,8 @@ def run_waterline_observer_probe(
             ["php", "artisan", "key:generate", "--force"],
             extra_env=waterline_env,
             network=waterline_network,
+            image=waterline_php_docker_image(),
+            entrypoint="",
         ),
         log_file=log_file,
         timeout=120,
@@ -7381,6 +7407,8 @@ def run_waterline_observer_probe(
             ["php", "artisan", "list", "--raw"],
             extra_env=waterline_env,
             network=waterline_network,
+            image=waterline_php_docker_image(),
+            entrypoint="",
         ),
         log_file=log_file,
         timeout=120,
@@ -7452,6 +7480,8 @@ def run_waterline_observer_probe(
             ],
             extra_env=waterline_env,
             network=waterline_network,
+            image=waterline_php_docker_image(),
+            entrypoint="",
         ),
         log_file=log_file,
         timeout=240,
@@ -7518,6 +7548,7 @@ def run_waterline_observer_probe(
         "waterline_workflow_storage": {
             "source": storage.get("source"),
             "docker_network": waterline_network,
+            "runtime_image": waterline_php_docker_image(),
             "env": storage.get("redacted_env"),
         },
         "query_responder": {
