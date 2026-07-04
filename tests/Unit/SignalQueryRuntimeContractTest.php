@@ -762,6 +762,28 @@ class SignalQueryRuntimeContractTest extends TestCase
         }
     }
 
+    public function test_waterline_observer_scaffolds_laravel_app_before_runtime_environment_is_applied(): void
+    {
+        $source = (string) file_get_contents(
+            dirname(__DIR__, 2) . '/scripts/conformance/signals-queries-published-artifacts.sh',
+        );
+        $anchor = 'log_file = result_dir / "waterline-signals-queries-observer.log"';
+        $anchorPosition = strpos($source, $anchor);
+        $start = $anchorPosition === false ? false : strpos($source, "\n    create = run_command(", $anchorPosition);
+        $end = $start === false ? false : strpos($source, "\n    if create.returncode != 0:", $start);
+
+        if ($start === false || $end === false) {
+            $this->fail('Unable to extract Waterline observer create-project command from host runner.');
+        }
+
+        $body = substr($source, $start + 1, $end - $start - 1);
+
+        $this->assertStringContainsString('include_app_env: bool = True', $source);
+        $this->assertStringContainsString('["composer", "create-project", "laravel/laravel"', $body);
+        $this->assertStringContainsString('include_app_env=False', $body);
+        $this->assertStringNotContainsString('extra_env=waterline_env', $body);
+    }
+
     public function test_adversarial_probe_does_not_reuse_prior_probe_server_urls(): void
     {
         $source = (string) file_get_contents(

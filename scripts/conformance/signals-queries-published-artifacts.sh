@@ -7159,6 +7159,7 @@ def docker_run_for_project(
     *,
     extra_env: dict[str, str] | None = None,
     network: str | None = None,
+    include_app_env: bool = True,
 ) -> list[str]:
     docker_command = [
         "docker",
@@ -7175,25 +7176,28 @@ def docker_run_for_project(
         docker_volume_spec(project_dir),
         "-w",
         "/app",
-        "-e",
-        "APP_ENV=production",
-        "-e",
-        "APP_DEBUG=false",
-        "-e",
-        "DB_CONNECTION=sqlite",
-        "-e",
-        "DB_DATABASE=/app/database/database.sqlite",
-        "-e",
-        "QUEUE_CONNECTION=database",
-        "-e",
-        "CACHE_STORE=array",
-        "-e",
-        "SESSION_DRIVER=array",
-        "-e",
-        "WATERLINE_ENGINE_SOURCE=v2",
-        "-e",
-        "WATERLINE_ALLOW_UNAUTHENTICATED=true",
     ])
+    if include_app_env:
+        docker_command.extend([
+            "-e",
+            "APP_ENV=production",
+            "-e",
+            "APP_DEBUG=false",
+            "-e",
+            "DB_CONNECTION=sqlite",
+            "-e",
+            "DB_DATABASE=/app/database/database.sqlite",
+            "-e",
+            "QUEUE_CONNECTION=database",
+            "-e",
+            "CACHE_STORE=array",
+            "-e",
+            "SESSION_DRIVER=array",
+            "-e",
+            "WATERLINE_ENGINE_SOURCE=v2",
+            "-e",
+            "WATERLINE_ALLOW_UNAUTHENTICATED=true",
+        ])
     for key, value in sorted((extra_env or {}).items()):
         docker_command.extend(["-e", f"{key}={value}"])
 
@@ -7311,8 +7315,8 @@ def run_waterline_observer_probe(
         docker_run_for_project(
             waterline_root,
             ["composer", "create-project", "laravel/laravel", ".", "--no-interaction", "--no-progress", "--prefer-dist"],
-            extra_env=waterline_env,
             network=waterline_network,
+            include_app_env=False,
         ),
         log_file=log_file,
         timeout=300,
