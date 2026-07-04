@@ -2485,6 +2485,138 @@ class WorkflowQueryTaskBrokerTest extends TestCase
             ->assertJsonPath('task.resume_source_kind', 'workflow_signal');
     }
 
+    public function test_query_task_enqueued_during_replay_can_claim_before_later_signal_resume(): void
+    {
+        Queue::fake();
+        config(['server.polling.timeout' => 0]);
+        Carbon::setTestNow(Carbon::parse('2026-05-20 00:00:00.000000'));
+
+        try {
+            $workflowId = 'wf-query-task-replay-before-later-signal';
+            $workerId = 'python-query-replay-before-later-signal-worker';
+            $this->registerPythonWorker(
+                $workerId,
+                'python-queries',
+                ['python.queryable'],
+                workflowCommandContracts: [
+                    'python.queryable' => [
+                        'queries' => ['current'],
+                        'query_contracts' => [
+                            [
+                                'name' => 'current',
+                                'parameters' => [],
+                            ],
+                        ],
+                        'signals' => ['increment'],
+                        'signal_contracts' => [
+                            [
+                                'name' => 'increment',
+                                'parameters' => [
+                                    $this->typedCommandParameter('amount', 0, 'int'),
+                                ],
+                            ],
+                        ],
+                        'updates' => [],
+                        'update_contracts' => [],
+                    ],
+                ],
+            );
+            $run = $this->startRemoteWorkflow($workflowId);
+
+            $replayPoll = $this->postJson('/api/worker/workflow-tasks/poll', [
+                'worker_id' => $workerId,
+                'task_queue' => 'python-queries',
+            ], $this->workerHeaders());
+
+            $replayPoll->assertOk()
+                ->assertJsonPath('poll_status', 'leased')
+                ->assertJsonPath('task.run_id', $run->id);
+
+            /** @var WorkflowQueryTaskBroker $broker */
+            $broker = app(WorkflowQueryTaskBroker::class);
+            $queryTask = $broker->enqueue('default', $run->refresh(), 'current', $this->queryArguments());
+            $historyCutoff = (int) $queryTask['history_cutoff_sequence'];
+
+            Carbon::setTestNow(Carbon::parse('2026-05-20 00:00:01.000000'));
+            $this->postJson("/api/workflows/{$workflowId}/signal/increment", [
+                'input' => ['amount' => 5],
+                'request_id' => 'replay-before-later-signal-1',
+            ], $this->apiHeaders())
+                ->assertAccepted()
+                ->assertJsonPath('command_status', 'accepted');
+
+            $duringReplay = $this->postJson('/api/worker/query-tasks/poll', [
+                'worker_id' => $workerId,
+                'task_queue' => 'python-queries',
+                'timeout_seconds' => 0,
+            ], $this->workerHeaders());
+
+            $duringReplay->assertOk()
+                ->assertJsonPath('task', null)
+                ->assertJsonPath('poll_status', 'empty');
+
+            Carbon::setTestNow(Carbon::parse('2026-05-20 00:00:02.000000'));
+            $this->postJson("/api/worker/workflow-tasks/{$replayPoll->json('task.task_id')}/complete", [
+                'lease_owner' => $replayPoll->json('task.lease_owner'),
+                'workflow_task_attempt' => $replayPoll->json('task.workflow_task_attempt'),
+                'commands' => [
+                    [
+                        'type' => 'open_condition_wait',
+                        'condition_key' => 'replay-before-later-signal',
+                        'timeout_seconds' => 60,
+                    ],
+                ],
+            ], $this->workerHeaders())
+                ->assertOk();
+
+            $readyResumeTask = WorkflowTask::query()
+                ->where('workflow_run_id', $run->id)
+                ->where('task_type', 'workflow')
+                ->where('status', 'ready')
+                ->where('payload->resume_source_kind', 'workflow_signal')
+                ->firstOrFail();
+
+            Carbon::setTestNow(Carbon::parse('2026-05-20 00:00:03.000000'));
+            $queryPoll = $this->postJson('/api/worker/query-tasks/poll', [
+                'worker_id' => $workerId,
+                'task_queue' => 'python-queries',
+                'timeout_seconds' => 0,
+            ], $this->workerHeaders());
+
+            $queryPoll->assertOk()
+                ->assertJsonPath('poll_status', 'leased')
+                ->assertJsonPath('task.query_task_id', $queryTask['query_task_id'])
+                ->assertJsonPath('task.history_cutoff_sequence', $historyCutoff)
+                ->assertJsonPath('task.last_history_sequence', $historyCutoff)
+                ->assertJsonPath('task.history_export', null);
+
+            $historyEventTypes = array_column((array) $queryPoll->json('task.history_events'), 'event_type');
+            $this->assertNotContains('SignalReceived', $historyEventTypes);
+
+            $workflowPoll = $this->postJson('/api/worker/workflow-tasks/poll', [
+                'worker_id' => $workerId,
+                'task_queue' => 'python-queries',
+            ], $this->workerHeaders());
+
+            $workflowPoll->assertOk()
+                ->assertJsonPath('poll_status', 'leased')
+                ->assertJsonPath('task.task_id', $readyResumeTask->id)
+                ->assertJsonPath('task.resume_source_kind', 'workflow_signal');
+        } finally {
+            Carbon::setTestNow();
+        }
+    }
+
+    public function test_query_task_without_cutoff_waits_for_later_signal_resume(): void
+    {
+        $this->assertQueryTaskWithoutCutoffWaitsForLaterResume('workflow_signal');
+    }
+
+    public function test_query_task_without_cutoff_waits_for_later_update_resume(): void
+    {
+        $this->assertQueryTaskWithoutCutoffWaitsForLaterResume('workflow_update');
+    }
+
     public function test_query_task_poll_yields_without_long_poll_when_ready_resume_blocks_pending_query(): void
     {
         Queue::fake();
@@ -3377,6 +3509,150 @@ class WorkflowQueryTaskBrokerTest extends TestCase
         return [
             'codec' => 'avro',
             'blob' => Serializer::serializeWithCodec('avro', ['summary']),
+        ];
+    }
+
+    private function assertQueryTaskWithoutCutoffWaitsForLaterResume(string $resumeKind): void
+    {
+        Queue::fake();
+        config(['server.polling.timeout' => 0]);
+        Carbon::setTestNow(Carbon::parse('2026-05-20 00:10:00.000000'));
+
+        try {
+            $suffix = $resumeKind === 'workflow_update' ? 'update' : 'signal';
+            $workflowId = "wf-query-task-no-cutoff-later-{$suffix}";
+            $workerId = "python-query-no-cutoff-later-{$suffix}-worker";
+
+            $this->registerPythonWorker(
+                $workerId,
+                'python-queries',
+                ['python.queryable'],
+                workflowCommandContracts: [
+                    'python.queryable' => $this->querySignalUpdateCommandContract(),
+                ],
+            );
+            $run = $this->startRemoteWorkflow($workflowId);
+
+            $initialPoll = $this->postJson('/api/worker/workflow-tasks/poll', [
+                'worker_id' => $workerId,
+                'task_queue' => 'python-queries',
+            ], $this->workerHeaders());
+
+            $initialPoll->assertOk()
+                ->assertJsonPath('poll_status', 'leased')
+                ->assertJsonPath('task.run_id', $run->id);
+
+            $this->postJson("/api/worker/workflow-tasks/{$initialPoll->json('task.task_id')}/complete", [
+                'lease_owner' => $initialPoll->json('task.lease_owner'),
+                'workflow_task_attempt' => $initialPoll->json('task.workflow_task_attempt'),
+                'commands' => [
+                    [
+                        'type' => 'open_signal_wait',
+                        'signal_name' => 'increment',
+                        'timeout_seconds' => 300,
+                    ],
+                ],
+            ], $this->workerHeaders())
+                ->assertOk()
+                ->assertJsonPath('run_status', 'waiting');
+
+            Carbon::setTestNow(Carbon::parse('2026-05-20 00:10:01.000000'));
+            /** @var WorkflowQueryTaskBroker $broker */
+            $broker = app(WorkflowQueryTaskBroker::class);
+            $queryTask = $broker->enqueue('default', $run->refresh(), 'current', $this->queryArguments());
+
+            $this->assertArrayNotHasKey('history_cutoff_sequence', $queryTask);
+
+            Carbon::setTestNow(Carbon::parse('2026-05-20 00:10:02.000000'));
+
+            if ($resumeKind === 'workflow_update') {
+                $this->postJson("/api/workflows/{$workflowId}/update/approve", [
+                    'input' => [true],
+                    'request_id' => 'no-cutoff-later-update-1',
+                    'wait_for' => 'accepted',
+                ], $this->apiHeaders())
+                    ->assertAccepted()
+                    ->assertJsonPath('command_status', 'accepted');
+            } else {
+                $this->postJson("/api/workflows/{$workflowId}/signal/increment", [
+                    'input' => ['amount' => 5],
+                    'request_id' => 'no-cutoff-later-signal-1',
+                ], $this->apiHeaders())
+                    ->assertAccepted()
+                    ->assertJsonPath('command_status', 'accepted');
+            }
+
+            $readyResumeTask = WorkflowTask::query()
+                ->where('workflow_run_id', $run->id)
+                ->where('task_type', 'workflow')
+                ->where('status', 'ready')
+                ->where('payload->resume_source_kind', $resumeKind)
+                ->firstOrFail();
+
+            $this->assertTrue(
+                $readyResumeTask->created_at->gt(Carbon::parse((string) $queryTask['created_at'])),
+            );
+
+            $queryPoll = $this->postJson('/api/worker/query-tasks/poll', [
+                'worker_id' => $workerId,
+                'task_queue' => 'python-queries',
+                'timeout_seconds' => 0,
+            ], $this->workerHeaders());
+
+            $queryPoll->assertOk()
+                ->assertJsonPath('task', null)
+                ->assertJsonPath('poll_status', 'empty');
+
+            $stored = $broker->task((string) $queryTask['query_task_id']);
+            $this->assertIsArray($stored);
+            $this->assertSame('pending', $stored['status'] ?? null);
+            $this->assertArrayNotHasKey('history_cutoff_sequence', $stored);
+
+            $workflowPoll = $this->postJson('/api/worker/workflow-tasks/poll', [
+                'worker_id' => $workerId,
+                'task_queue' => 'python-queries',
+            ], $this->workerHeaders());
+
+            $workflowPoll->assertOk()
+                ->assertJsonPath('poll_status', 'leased')
+                ->assertJsonPath('task.task_id', $readyResumeTask->id)
+                ->assertJsonPath('task.resume_source_kind', $resumeKind);
+        } finally {
+            Carbon::setTestNow();
+        }
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    private function querySignalUpdateCommandContract(): array
+    {
+        return [
+            'queries' => ['current'],
+            'query_contracts' => [
+                [
+                    'name' => 'current',
+                    'parameters' => [],
+                ],
+            ],
+            'signals' => ['increment'],
+            'signal_contracts' => [
+                [
+                    'name' => 'increment',
+                    'parameters' => [
+                        $this->typedCommandParameter('amount', 0, 'int'),
+                    ],
+                ],
+            ],
+            'updates' => ['approve'],
+            'update_contracts' => [
+                [
+                    'name' => 'approve',
+                    'parameters' => [
+                        $this->typedCommandParameter('approved', 0, 'bool'),
+                    ],
+                ],
+            ],
         ];
     }
 

@@ -418,6 +418,9 @@ final class WorkflowQueryTaskBroker
         $commandContextAttributes = $commandContext?->attributes();
         $principal = $this->commandContextPrincipal($commandContextAttributes);
         $compatibilityScope = $this->queryTaskCompatibilityScope($run);
+        $historyCutoffSequence = $this->hasActiveWorkflowTaskLeaseForRun((string) $run->id)
+            ? (int) ($run->last_history_sequence ?? 0)
+            : null;
         $task = [
             'query_task_id' => $queryTaskId,
             'status' => 'pending',
@@ -434,6 +437,10 @@ final class WorkflowQueryTaskBroker
             'attempt_count' => 0,
             'created_at' => now()->toJSON(),
         ];
+
+        if ($historyCutoffSequence !== null) {
+            $task['history_cutoff_sequence'] = $historyCutoffSequence;
+        }
 
         if ($compatibilityScope !== null) {
             $task['compatibility_scope'] = $compatibilityScope;
@@ -1605,10 +1612,17 @@ final class WorkflowQueryTaskBroker
             ->where('queue', $taskQueue)
             ->where('task_type', TaskType::Workflow->value)
             ->where('status', TaskStatus::Ready->value)
-            ->get(['id', 'payload', 'compatibility', 'available_at']);
+            ->get(['id', 'payload', 'compatibility', 'available_at', 'created_at']);
 
         foreach ($tasks as $task) {
             if ($this->workflowTaskAvailableAtIsFuture($task->available_at)) {
+                continue;
+            }
+
+            if (
+                $this->queryTaskHasHistoryCutoff($queryTask)
+                && $this->workflowTaskCreatedAfterQueryTask($task->created_at, $queryTask['created_at'] ?? null)
+            ) {
                 continue;
             }
 
@@ -1627,6 +1641,26 @@ final class WorkflowQueryTaskBroker
         }
 
         return false;
+    }
+
+    /**
+     * @param  array<string, mixed>  $queryTask
+     */
+    private function queryTaskHasHistoryCutoff(array $queryTask): bool
+    {
+        return $this->integerValue($queryTask['history_cutoff_sequence'] ?? null) !== null;
+    }
+
+    private function workflowTaskCreatedAfterQueryTask(mixed $workflowTaskCreatedAt, mixed $queryTaskCreatedAt): bool
+    {
+        $queryCreatedAt = $this->timestamp($queryTaskCreatedAt);
+        $workflowCreatedAt = $this->timestamp($workflowTaskCreatedAt);
+
+        if (! $queryCreatedAt instanceof Carbon || ! $workflowCreatedAt instanceof Carbon) {
+            return false;
+        }
+
+        return $workflowCreatedAt->gt($queryCreatedAt);
     }
 
     private function workflowTaskAvailableAtIsFuture(mixed $availableAt): bool
@@ -1689,7 +1723,16 @@ final class WorkflowQueryTaskBroker
             return false;
         }
 
-        $query = WorkflowTask::query()
+        return $this->hasActiveWorkflowTaskLeaseForRun($runId);
+    }
+
+    private function hasActiveWorkflowTaskLeaseForRun(string $runId): bool
+    {
+        if (! Schema::hasTable('workflow_tasks')) {
+            return false;
+        }
+
+        return WorkflowTask::query()
             ->where('workflow_run_id', $runId)
             ->where('task_type', TaskType::Workflow->value)
             ->where('status', TaskStatus::Leased->value)
@@ -1697,9 +1740,8 @@ final class WorkflowQueryTaskBroker
                 $query
                     ->whereNull('lease_expires_at')
                     ->orWhere('lease_expires_at', '>', now());
-            });
-
-        return $query->exists();
+            })
+            ->exists();
     }
 
     /**
@@ -1733,6 +1775,9 @@ final class WorkflowQueryTaskBroker
     private function queryTaskPayload(array $task): array
     {
         $run = WorkflowRun::query()->find($task['run_id'] ?? null);
+        $historyCutoffSequence = $this->historyCutoffSequence($task, $run);
+        $lastHistorySequence = $historyCutoffSequence
+            ?? (int) ($run?->last_history_sequence ?? 0);
 
         $payload = [
             'query_task_id' => $task['query_task_id'],
@@ -1753,9 +1798,12 @@ final class WorkflowQueryTaskBroker
                 : null,
             'query_arguments' => $this->queryArgumentsEnvelope($task),
             'run_status' => $run?->status?->value,
-            'last_history_sequence' => (int) ($run?->last_history_sequence ?? 0),
-            'history_events' => $run instanceof WorkflowRun ? $this->historyEvents($run) : [],
-            'history_export' => $run instanceof WorkflowRun ? HistoryExport::forRun($run) : null,
+            'last_history_sequence' => $lastHistorySequence,
+            'history_cutoff_sequence' => $historyCutoffSequence,
+            'history_events' => $run instanceof WorkflowRun ? $this->historyEvents($run, $historyCutoffSequence) : [],
+            'history_export' => $run instanceof WorkflowRun
+                ? $this->historyExport($run, $historyCutoffSequence)
+                : null,
             'task_queue' => $task['task_queue'],
             'lease_owner' => $task['lease_owner'] ?? null,
             'lease_expires_at' => $task['lease_expires_at'] ?? null,
@@ -1893,14 +1941,42 @@ final class WorkflowQueryTaskBroker
         );
     }
 
+    private function historyCutoffSequence(array $task, ?WorkflowRun $run): ?int
+    {
+        $cutoff = $this->integerValue($task['history_cutoff_sequence'] ?? null);
+
+        if ($cutoff === null || $run === null) {
+            return null;
+        }
+
+        return max(0, min($cutoff, (int) ($run->last_history_sequence ?? $cutoff)));
+    }
+
+    /**
+     * @return array<string, mixed>|null
+     */
+    private function historyExport(WorkflowRun $run, ?int $historyCutoffSequence): ?array
+    {
+        if ($historyCutoffSequence !== null) {
+            return null;
+        }
+
+        return HistoryExport::forRun($run);
+    }
+
     /**
      * @return list<array<string, mixed>>
      */
-    private function historyEvents(WorkflowRun $run): array
+    private function historyEvents(WorkflowRun $run, ?int $historyCutoffSequence = null): array
     {
-        $events = WorkflowHistoryEvent::query()
-            ->where('workflow_run_id', $run->id)
-            ->orderBy('sequence')
+        $query = WorkflowHistoryEvent::query()
+            ->where('workflow_run_id', $run->id);
+
+        if ($historyCutoffSequence !== null) {
+            $query->where('sequence', '<=', $historyCutoffSequence);
+        }
+
+        $events = $query->orderBy('sequence')
             ->get()
             ->map(fn (WorkflowHistoryEvent $event): array => [
                 'id' => $event->id,
@@ -2585,6 +2661,19 @@ final class WorkflowQueryTaskBroker
     private function stringValue(mixed $value): ?string
     {
         return is_string($value) && trim($value) !== '' ? trim($value) : null;
+    }
+
+    private function integerValue(mixed $value): ?int
+    {
+        if (is_int($value)) {
+            return $value;
+        }
+
+        if (is_string($value) && trim($value) !== '' && preg_match('/^-?\d+$/', trim($value)) === 1) {
+            return (int) trim($value);
+        }
+
+        return null;
     }
 
     private function queryTimeoutSeconds(): int
