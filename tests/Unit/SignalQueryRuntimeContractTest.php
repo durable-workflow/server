@@ -14,7 +14,7 @@ class SignalQueryRuntimeContractTest extends TestCase
         $manifest = SignalQueryRuntimeContract::manifest();
 
         $this->assertSame('durable-workflow.v2.signal-query-runtime.contract', $manifest['schema']);
-        $this->assertSame(27, SignalQueryRuntimeContract::VERSION);
+        $this->assertSame(29, SignalQueryRuntimeContract::VERSION);
         $this->assertSame(SignalQueryRuntimeContract::VERSION, $manifest['version']);
         $this->assertSame('durable-workflow.v2.signal-query-runtime.result', $manifest['result_schema']);
         $this->assertSame('signal_query_runtime_contract', $manifest['fixture_category']);
@@ -250,6 +250,7 @@ class SignalQueryRuntimeContractTest extends TestCase
         );
         foreach ([
             'completed_at',
+            'terminal_status',
             'signal_api_sample',
             'signal_error.status_code',
             'signal_error.reason',
@@ -257,6 +258,10 @@ class SignalQueryRuntimeContractTest extends TestCase
             'query_api_sample',
             'query_result_or_error.status_code',
             'query_result_or_error.outcome',
+            'terminal_state_before_operations.history_event_count',
+            'terminal_state_after_operations.history_event_count',
+            'terminal_result_changed_after_operations',
+            'terminal_history_changed_after_operations',
         ] as $field) {
             $this->assertContains($field, $requirements['completed_run_signal_and_query']['evidence']);
         }
@@ -297,7 +302,7 @@ class SignalQueryRuntimeContractTest extends TestCase
         $resultGate = SignalQueryRuntimeContract::manifest()['result_gate'];
 
         $this->assertSame(SignalQueryRuntimeResultGate::SCHEMA, $resultGate['schema']);
-        $this->assertSame(23, SignalQueryRuntimeResultGate::VERSION);
+        $this->assertSame(24, SignalQueryRuntimeResultGate::VERSION);
         $this->assertSame(SignalQueryRuntimeResultGate::VERSION, $resultGate['version']);
         $this->assertSame(
             SignalQueryRuntimeContract::RESULT_SCHEMA,
@@ -329,6 +334,10 @@ class SignalQueryRuntimeContractTest extends TestCase
         $this->assertContains('each_pass_scenario_includes_required_evidence', $resultGate['pass_requires']);
         $this->assertContains('replay_timing_timestamps_are_ordered', $resultGate['pass_requires']);
         $this->assertContains('terminal_run_status_codes_and_reasons_are_typed', $resultGate['pass_requires']);
+        $this->assertContains(
+            'terminal_run_result_and_history_are_unchanged_after_operations',
+            $resultGate['pass_requires'],
+        );
         $this->assertContains('each_non_pass_scenario_has_linked_findings', $resultGate['pass_requires']);
         $this->assertContains('omitted_required_scenarios_link_findings', $resultGate['pass_requires']);
         $this->assertContains('run_timestamps_outcome_and_finding_links_are_recorded', $resultGate['pass_requires']);
@@ -583,6 +592,7 @@ class SignalQueryRuntimeContractTest extends TestCase
             [
                 'completed_run_id',
                 'completed_at',
+                'terminal_status',
                 'signal_api_sample',
                 'signal_error.status_code',
                 'signal_error.reason',
@@ -593,9 +603,21 @@ class SignalQueryRuntimeContractTest extends TestCase
                 'signal_error',
                 'query_result_or_error',
                 'public_query_surfaces',
+                'terminal_state_before_operations.history_event_count',
+                'terminal_state_after_operations.history_event_count',
+                'terminal_result_changed_after_operations',
+                'terminal_history_changed_after_operations',
                 'run_status_after_operations',
             ],
             $hostRunner['evidence_shards']['completed_run_handling']['required_evidence_fields'],
+        );
+        $this->assertSame(
+            'signal_query_completed_run_handling_failed',
+            $hostRunner['evidence_shards']['completed_run_handling']['finding_type_when_product_behavior_fails'],
+        );
+        $this->assertSame(
+            'signal_query_completed_run_probe_unavailable',
+            $hostRunner['evidence_shards']['completed_run_handling']['finding_type_when_probe_unavailable'],
         );
         $this->assertSame(
             [
@@ -673,6 +695,8 @@ class SignalQueryRuntimeContractTest extends TestCase
             'signal_query_cross_language_client_matrix_uncovered',
             'signal_query_replay_timing_uncovered',
             'signal_query_completed_run_handling_uncovered',
+            'signal_query_completed_run_handling_failed',
+            'signal_query_completed_run_probe_unavailable',
             'signal_query_unknown_handler_errors_uncovered',
             'signal_query_unknown_handler_errors_current_evidence_missing',
             'signal_query_adversarial_error_shapes_uncovered',
@@ -1006,6 +1030,125 @@ print(json.dumps({
 PY);
 
         $this->assertSame([6, 7], $result['amounts']);
+    }
+
+    public function test_host_runner_public_snapshot_reads_control_plane_history_events(): void
+    {
+        $result = $this->runSignalQueryRunnerPythonSnippet(<<<'PY'
+paths = []
+
+def fake_http_json(base_url, path, **kwargs):
+    paths.append(path)
+    if path == api_path("workflows", "wf-terminal", "runs", "run-terminal"):
+        return {
+            "status_code": 200,
+            "body": {
+                "run_id": "run-terminal",
+                "status": "completed",
+                "result": {"counter": 0},
+            },
+        }
+    if path == api_path("workflows", "wf-terminal", "runs", "run-terminal", "history") + "?page_size=1000":
+        return {
+            "status_code": 200,
+            "body": {
+                "events": [
+                    {"event_type": "WorkflowStarted", "payload": {}},
+                    {"event_type": "WorkflowCompleted", "payload": {}},
+                ],
+                "next_page_token": None,
+            },
+        }
+    raise AssertionError(f"unexpected path {path}")
+
+globals()["http_json"] = fake_http_json
+snapshot = workflow_public_snapshot(
+    "http://unused",
+    "token",
+    "default",
+    "wf-terminal",
+    "run-terminal",
+)
+
+print(json.dumps({
+    "paths": paths,
+    "snapshot": snapshot,
+}, sort_keys=True))
+PY);
+
+        $this->assertSame(
+            [
+                '/api/workflows/wf-terminal/runs/run-terminal',
+                '/api/workflows/wf-terminal/runs/run-terminal/history?page_size=1000',
+            ],
+            $result['paths'],
+        );
+        $this->assertSame(2, $result['snapshot']['history_event_count']);
+        $this->assertSame(
+            ['WorkflowStarted', 'WorkflowCompleted'],
+            $result['snapshot']['history_event_types'],
+        );
+    }
+
+    public function test_host_runner_public_snapshot_falls_back_to_legacy_history_events(): void
+    {
+        $result = $this->runSignalQueryRunnerPythonSnippet(<<<'PY'
+current = public_history_events({
+    "events": [
+        {"event_type": "WorkflowStarted"},
+        {"event_type": "WorkflowCompleted"},
+    ],
+})
+legacy = public_history_events({
+    "history_events": [
+        {"event_type": "WorkflowStarted"},
+    ],
+})
+missing = public_history_events({"items": []})
+
+print(json.dumps({
+    "current_count": len(current) if current is not None else None,
+    "legacy_count": len(legacy) if legacy is not None else None,
+    "missing": missing,
+}, sort_keys=True))
+PY);
+
+        $this->assertSame(2, $result['current_count']);
+        $this->assertSame(1, $result['legacy_count']);
+        $this->assertNull($result['missing']);
+    }
+
+    public function test_host_runner_only_compares_observed_history_counts(): void
+    {
+        $result = $this->runSignalQueryRunnerPythonSnippet(<<<'PY'
+print(json.dumps({
+    "same": observed_count_changed(
+        {"history_event_count": 2},
+        {"history_event_count": 2},
+        "history_event_count",
+    ),
+    "changed": observed_count_changed(
+        {"history_event_count": 2},
+        {"history_event_count": 3},
+        "history_event_count",
+    ),
+    "missing_after": observed_count_changed(
+        {"history_event_count": 2},
+        {},
+        "history_event_count",
+    ),
+    "bool_value": observed_count_changed(
+        {"history_event_count": False},
+        {"history_event_count": 2},
+        "history_event_count",
+    ),
+}, sort_keys=True))
+PY);
+
+        $this->assertFalse($result['same']);
+        $this->assertTrue($result['changed']);
+        $this->assertNull($result['missing_after']);
+        $this->assertNull($result['bool_value']);
     }
 
     public function test_host_runner_collects_ordered_signal_evidence_from_one_batched_task(): void
@@ -2863,6 +3006,17 @@ def answer_next_query_task(base_url, token, namespace, worker_id, task_queue, re
 def run_status(base_url, token, namespace, workflow_id):
     return "completed"
 
+def workflow_public_snapshot(base_url, token, namespace, workflow_id, run_id=None):
+    return {
+        "status_code": 200,
+        "workflow_id": workflow_id,
+        "run_id": run_id,
+        "status": "completed",
+        "result": {"counter": 0, "status": "completed"},
+        "history_event_count": 2,
+        "history_event_types": ["WorkflowExecutionStarted", "WorkflowExecutionCompleted"],
+    }
+
 evidence, descriptor = run_replay_terminal_probe(
     "http://server.test",
     "token",
@@ -2931,6 +3085,204 @@ PY);
         $this->assertSame('run_not_active', $terminalOutputs['signal_error']['reason']);
         $this->assertSame(200, $terminalOutputs['query_result_or_error']['status_code']);
         $this->assertSame('completed', $terminalOutputs['run_status_after_operations']);
+    }
+
+    public function test_replay_terminal_probe_reports_focused_completed_run_failure_after_replay_evidence(): void
+    {
+        $result = $this->runSignalQueryRunnerPythonSnippet(<<<'PY'
+events = []
+replay_query_ready = threading.Event()
+replay_completed = threading.Event()
+timestamp_index = 0
+
+def now() -> str:
+    global timestamp_index
+    timestamp_index += 1
+    return f"2026-05-20T00:00:00.{timestamp_index:06d}Z"
+
+def http_json(base_url, path, *, method="GET", body=None, token, namespace, worker=False, timeout=30.0):
+    if path == api_path("worker", "register"):
+        return {"status_code": 200, "body": {}}
+    if method == "POST" and path == api_path("workflows"):
+        workflow_id = body["workflow_id"]
+        return {"status_code": 200, "body": {"run_id": f"run-{workflow_id}"}}
+    if "/query/state" in path:
+        replay_query_ready.wait(5)
+        return {"status_code": 200, "body": {"result": 0}}
+    if "/signal/increment" in path:
+        return {"status_code": 202, "body": {"outcome": "signal_received"}}
+    raise RuntimeError(f"unexpected HTTP call {method} {path}")
+
+poll_tasks = [
+    {"task_id": "replay-task", "lease_owner": "worker", "workflow_task_attempt": 1},
+    {
+        "task_id": "signal-task",
+        "lease_owner": "worker",
+        "workflow_task_attempt": 1,
+        "signal_name": "increment",
+        "history_events": [
+            {
+                "event_type": "SignalReceived",
+                "payload": {"signal_name": "increment", "arguments": {"decoded": {"amount": 5}}},
+            }
+        ],
+    },
+    {"task_id": "terminal-task", "lease_owner": "worker", "workflow_task_attempt": 1},
+]
+
+def poll_workflow_task(base_url, token, namespace, worker_id, task_queue, timeout=45.0):
+    return {"status_code": 200, "body": {"task": poll_tasks.pop(0)}}
+
+def complete_workflow_task(base_url, token, namespace, task, commands, timeout=30.0):
+    if task["task_id"] == "replay-task":
+        events.append("replay_complete")
+        replay_completed.set()
+        return {"status_code": 200, "body": {}}
+    if task["task_id"] == "signal-task":
+        events.append("signal_applied")
+        return {"status_code": 200, "body": {}}
+    if task["task_id"] == "terminal-task":
+        events.append("terminal_complete_failed")
+        return {
+            "status_code": 409,
+            "body": {
+                "reason": "terminal_completion_rejected",
+                "message": "Terminal probe completion was rejected.",
+            },
+        }
+    raise RuntimeError(f"unexpected task {task}")
+
+def answer_next_query_task(base_url, token, namespace, worker_id, task_queue, result, log_file, holder, poll_timeout=45.0):
+    holder["query_poll_started_at"] = now()
+    events.append("replay_query_poll_started")
+    replay_completed.wait(5)
+    events.append("replay_query_answer_started")
+    holder["poll"] = {"status_code": 200}
+    holder["query_handler_invoked_at"] = now()
+    holder["query_task"] = {"query_task_id": "replay-query-task", "query_task_attempt": 1}
+    holder["result"] = result
+    holder["complete"] = {"status_code": 200}
+    holder["query_completed_at"] = now()
+    replay_query_ready.set()
+
+evidence, descriptor = run_replay_terminal_probe(
+    "http://server.test",
+    "token",
+    "default",
+    "worker",
+    "queue",
+    "conformance.counter",
+    {
+        "server": "0.2.549",
+        "cli": "0.1.86",
+        "sdk-python": "0.4.93",
+        "workflow-php": "2.0.0-alpha.244",
+        "waterline": "2.0.0-alpha.116",
+    },
+    {
+        "server": "published_docker_image",
+        "cli": "published_cli_release",
+        "sdk-python": "published_pypi_package",
+        "workflow-php": "published_composer_package",
+        "waterline": "published_waterline_artifact",
+    },
+    Path("/tmp/replay-terminal-probe-failure.log"),
+)
+
+print(json.dumps({
+    "descriptor": descriptor,
+    "events": events,
+    "evidence": evidence,
+}, sort_keys=True))
+PY);
+
+        $this->assertSame('pass', $result['evidence']['scenario_results']['signal_during_replay']['status']);
+        $this->assertSame('pass', $result['evidence']['scenario_results']['query_during_replay']['status']);
+        $completed = $result['evidence']['scenario_results']['completed_run_signal_and_query'];
+
+        $this->assertSame('fail', $completed['status']);
+        $this->assertSame(
+            'signal_query_completed_run_handling_failed',
+            $completed['linked_findings'][0]['type'],
+        );
+        $this->assertNotSame(
+            'signal_query_completed_run_handling_uncovered',
+            $completed['linked_findings'][0]['type'],
+        );
+        $this->assertSame(
+            'terminal_task_complete',
+            $completed['linked_findings'][0]['current_evidence']['probe_phase'],
+        );
+        $this->assertSame(
+            'terminal_completion_rejected',
+            $completed['observed_outputs']['terminal_complete_response']['reason'],
+        );
+        $this->assertContains(
+            'completed_run_signal_and_query',
+            $result['descriptor']['generated_scenarios'],
+        );
+    }
+
+    public function test_completed_run_runner_rejects_terminal_result_or_history_mutation(): void
+    {
+        $result = $this->runSignalQueryRunnerPythonSnippet(<<<'PY'
+base = {
+    "completed_run_id": "run-completed-1",
+    "completed_at": "2026-05-20T00:01:00Z",
+    "terminal_status": "completed",
+    "signal_api_sample": {"method": "POST", "path": "/api/workflows/wf/signal/increment"},
+    "signal_error": {
+        "status_code": 409,
+        "reason": "run_not_active",
+        "rejection_reason": "run_not_active",
+    },
+    "query_api_sample": {"method": "POST", "path": "/api/workflows/wf/query/current"},
+    "query_result_or_error": {
+        "status_code": 200,
+        "outcome": "completed_query_replayed_final_state",
+        "result": {"current": 8},
+    },
+    "public_query_surfaces": ["control-plane-api", "worker-query-task-protocol"],
+    "terminal_state_before_operations": {
+        "status": "completed",
+        "result": {"current": 8},
+        "history_event_count": 2,
+    },
+    "terminal_state_after_operations": {
+        "status": "completed",
+        "result": {"current": 8},
+        "history_event_count": 2,
+    },
+    "terminal_result_changed_after_operations": False,
+    "terminal_history_changed_after_operations": False,
+    "run_status_after_operations": "completed",
+}
+
+result_changed = json.loads(json.dumps(base))
+result_changed["terminal_result_changed_after_operations"] = True
+result_changed["terminal_state_after_operations"]["result"] = {"current": 9}
+
+history_changed = json.loads(json.dumps(base))
+history_changed["terminal_history_changed_after_operations"] = True
+history_changed["terminal_state_after_operations"]["history_event_count"] = 3
+
+print(json.dumps({
+    "result_changed": completed_run_scenario_result(result_changed),
+    "history_changed": completed_run_scenario_result(history_changed),
+}, sort_keys=True))
+PY);
+
+        foreach (['result_changed', 'history_changed'] as $case) {
+            $this->assertSame('fail', $result[$case]['status']);
+            $this->assertSame(
+                'signal_query_completed_run_handling_failed',
+                $result[$case]['linked_findings'][0]['type'],
+            );
+            $this->assertNotSame(
+                'signal_query_completed_run_handling_uncovered',
+                $result[$case]['linked_findings'][0]['type'],
+            );
+        }
     }
 
     public function test_host_runner_rejects_imported_matrix_evidence_with_mismatched_artifact_versions(): void
@@ -3726,6 +4078,14 @@ PY);
         $result = $this->completeSignalQueryResult();
         unset($result['scenario_results']['completed_run_signal_and_query']['observed_outputs']['run_status_after_operations']);
         unset($result['terminal_run_behavior']['completed_run_signal_and_query']['run_status_after_operations']);
+        unset(
+            $result['scenario_results']['completed_run_signal_and_query']['observed_outputs']
+                ['terminal_state_after_operations']['history_event_count']
+        );
+        unset(
+            $result['terminal_run_behavior']['completed_run_signal_and_query']
+                ['terminal_state_after_operations']['history_event_count']
+        );
         unset($result['scenario_results']['unknown_signal_and_query_errors']['observed_outputs']['missing_workflow_query']);
         unset($result['adversarial_errors']['unknown_signal_and_query_errors']['missing_workflow_query']);
         unset($result['scenario_results']['malformed_signal_and_query_payloads']['observed_outputs']['invalid_query_arguments']);
@@ -3795,6 +4155,14 @@ PY);
                 'code' => 'missing_required_pass_evidence',
                 'scenario_id' => 'completed_run_signal_and_query',
                 'evidence_key' => 'run_status_after_operations',
+            ],
+            $missingEvidence,
+        );
+        $this->assertContains(
+            [
+                'code' => 'missing_required_pass_evidence',
+                'scenario_id' => 'completed_run_signal_and_query',
+                'evidence_key' => 'terminal_state_after_operations.history_event_count',
             ],
             $missingEvidence,
         );
@@ -4109,6 +4477,42 @@ PY);
         );
         $this->assertContains(
             'unexpected_terminal_signal_reason',
+            array_column($evaluation['gate_failures'], 'code'),
+        );
+    }
+
+    public function test_result_gate_rejects_completed_run_terminal_result_or_history_mutation(): void
+    {
+        foreach ([
+            'terminal_result_changed_after_operations' => static function (array &$outputs): void {
+                $outputs['terminal_result_changed_after_operations'] = true;
+                $outputs['terminal_state_after_operations']['result'] = ['current' => 9];
+            },
+            'terminal_history_changed_after_operations' => static function (array &$outputs): void {
+                $outputs['terminal_history_changed_after_operations'] = true;
+                $outputs['terminal_state_after_operations']['history_event_count'] = 3;
+            },
+        ] as $expectedCode => $mutate) {
+            $result = $this->completeSignalQueryResult();
+            $mutate($result['scenario_results']['completed_run_signal_and_query']['observed_outputs']);
+            $mutate($result['terminal_run_behavior']['completed_run_signal_and_query']);
+
+            $evaluation = SignalQueryRuntimeResultGate::evaluate($result);
+
+            $this->assertSame('non_passing', $evaluation['status']);
+            $this->assertContains($expectedCode, array_column($evaluation['gate_failures'], 'code'));
+        }
+
+        $sectionOnly = $this->completeSignalQueryResult();
+        $sectionOnly['terminal_run_behavior']['completed_run_signal_and_query'][
+            'terminal_result_changed_after_operations'
+        ] = true;
+
+        $evaluation = SignalQueryRuntimeResultGate::evaluate($sectionOnly);
+
+        $this->assertSame('non_passing', $evaluation['status']);
+        $this->assertContains(
+            'terminal_result_changed_after_operations',
             array_column($evaluation['gate_failures'], 'code'),
         );
     }
@@ -5090,6 +5494,7 @@ PY);
         $scenarioResults['completed_run_signal_and_query']['observed_outputs'] = [
             'completed_run_id' => 'run-completed-1',
             'completed_at' => '2026-05-20T00:01:00Z',
+            'terminal_status' => 'completed',
             'signal_api_sample' => [
                 'method' => 'POST',
                 'path' => '/api/workflows/wf-completed/signal/increment',
@@ -5111,6 +5516,26 @@ PY);
                 'current' => 8,
             ],
             'public_query_surfaces' => ['cli', 'sdk-python', 'workflow-php-sdk'],
+            'terminal_state_before_operations' => [
+                'status_code' => 200,
+                'workflow_id' => 'wf-completed',
+                'run_id' => 'run-completed-1',
+                'status' => 'completed',
+                'result' => ['current' => 8],
+                'history_event_count' => 2,
+                'history_event_types' => ['WorkflowStarted', 'WorkflowCompleted'],
+            ],
+            'terminal_state_after_operations' => [
+                'status_code' => 200,
+                'workflow_id' => 'wf-completed',
+                'run_id' => 'run-completed-1',
+                'status' => 'completed',
+                'result' => ['current' => 8],
+                'history_event_count' => 2,
+                'history_event_types' => ['WorkflowStarted', 'WorkflowCompleted'],
+            ],
+            'terminal_result_changed_after_operations' => false,
+            'terminal_history_changed_after_operations' => false,
             'run_status_after_operations' => 'completed',
         ];
         $scenarioResults['unknown_signal_and_query_errors']['observed_outputs'] = [

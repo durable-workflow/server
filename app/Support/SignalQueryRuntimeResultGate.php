@@ -10,7 +10,7 @@ final class SignalQueryRuntimeResultGate
 {
     public const SCHEMA = 'durable-workflow.v2.signal-query-runtime.result-gate';
 
-    public const VERSION = 23;
+    public const VERSION = 24;
 
     private const EVIDENCE_SECTION_SCENARIOS = [
         'replay_timing' => [
@@ -108,6 +108,7 @@ final class SignalQueryRuntimeResultGate
                 'php_worker_baseline_version_matches_run_tuple',
                 'replay_timing_timestamps_are_ordered',
                 'terminal_run_status_codes_and_reasons_are_typed',
+                'terminal_run_result_and_history_are_unchanged_after_operations',
                 'each_non_pass_scenario_has_linked_findings',
                 'omitted_required_scenarios_link_findings',
                 'run_timestamps_outcome_and_finding_links_are_recorded',
@@ -1634,6 +1635,7 @@ final class SignalQueryRuntimeResultGate
                         'query_result_or_error.status_code' => [200, 499],
                     ]),
                     ...self::terminalRunReasonFailures($result, $scenarioResult, $scenarioId),
+                    ...self::terminalRunImmutabilityFailures($result, $scenarioResult, $scenarioId),
                 );
             }
 
@@ -2084,6 +2086,53 @@ final class SignalQueryRuntimeResultGate
                 'code' => 'missing_terminal_query_reason',
                 'scenario_id' => $scenarioId,
                 'status_code' => $queryStatus,
+            ];
+        }
+
+        return $failures;
+    }
+
+    /**
+     * @param array<string, mixed> $result
+     * @param array<string, mixed> $scenarioResult
+     *
+     * @return array<int, array<string, mixed>>
+     */
+    private static function terminalRunImmutabilityFailures(
+        array $result,
+        array $scenarioResult,
+        string $scenarioId,
+    ): array {
+        $failures = [];
+
+        foreach ([
+            'terminal_result_changed_after_operations' => 'terminal_result_changed_after_operations',
+            'terminal_history_changed_after_operations' => 'terminal_history_changed_after_operations',
+        ] as $evidenceKey => $code) {
+            $actualValues = [];
+            foreach (self::evidenceContainers($result, $scenarioResult, $scenarioId) as $container) {
+                $actual = str_contains($evidenceKey, '.')
+                    ? self::pathValue($container, explode('.', $evidenceKey))
+                    : self::recursiveKeyValue($container, $evidenceKey);
+                if (self::evidencePresent($actual)) {
+                    $actualValues[] = $actual;
+                }
+            }
+
+            $unexpectedValues = array_values(array_filter(
+                $actualValues,
+                static fn (mixed $actual): bool => $actual !== false,
+            ));
+            if ($unexpectedValues === []) {
+                continue;
+            }
+
+            $failures[] = [
+                'code' => $code,
+                'scenario_id' => $scenarioId,
+                'evidence_key' => $evidenceKey,
+                'expected_value' => false,
+                'actual_values' => $actualValues,
             ];
         }
 

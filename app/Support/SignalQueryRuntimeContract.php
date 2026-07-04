@@ -16,7 +16,7 @@ final class SignalQueryRuntimeContract
 {
     public const SCHEMA = 'durable-workflow.v2.signal-query-runtime.contract';
 
-    public const VERSION = 27;
+    public const VERSION = 29;
 
     public const RESULT_SCHEMA = 'durable-workflow.v2.signal-query-runtime.result';
 
@@ -282,6 +282,7 @@ final class SignalQueryRuntimeContract
                     'evidence' => [
                         'completed_run_id',
                         'completed_at',
+                        'terminal_status',
                         'signal_api_sample',
                         'signal_error.status_code',
                         'signal_error.reason',
@@ -292,6 +293,10 @@ final class SignalQueryRuntimeContract
                         'signal_error',
                         'query_result_or_error',
                         'public_query_surfaces',
+                        'terminal_state_before_operations.history_event_count',
+                        'terminal_state_after_operations.history_event_count',
+                        'terminal_result_changed_after_operations',
+                        'terminal_history_changed_after_operations',
                         'run_status_after_operations',
                     ],
                 ],
@@ -595,6 +600,7 @@ final class SignalQueryRuntimeContract
                         'required_evidence_fields' => [
                             'completed_run_id',
                             'completed_at',
+                            'terminal_status',
                             'signal_api_sample',
                             'signal_error.status_code',
                             'signal_error.reason',
@@ -605,9 +611,15 @@ final class SignalQueryRuntimeContract
                             'signal_error',
                             'query_result_or_error',
                             'public_query_surfaces',
+                            'terminal_state_before_operations.history_event_count',
+                            'terminal_state_after_operations.history_event_count',
+                            'terminal_result_changed_after_operations',
+                            'terminal_history_changed_after_operations',
                             'run_status_after_operations',
                         ],
                         'finding_type_when_missing' => 'signal_query_completed_run_handling_uncovered',
+                        'finding_type_when_product_behavior_fails' => 'signal_query_completed_run_handling_failed',
+                        'finding_type_when_probe_unavailable' => 'signal_query_completed_run_probe_unavailable',
                         'owning_surface' => 'server, workflow, sdk-python, cli',
                     ],
                     'unknown_handler_errors' => [

@@ -2986,6 +2986,29 @@ def history_event_types_from_task(task: dict[str, Any]) -> list[str]:
     return event_types
 
 
+def public_history_events(history_body: Any) -> list[dict[str, Any]] | None:
+    if not isinstance(history_body, dict):
+        return None
+
+    events = history_body.get("events")
+    if not isinstance(events, list):
+        events = history_body.get("history_events")
+    if not isinstance(events, list):
+        return None
+
+    return [event for event in events if isinstance(event, dict)]
+
+
+def observed_count_changed(before: dict[str, Any], after: dict[str, Any], key: str) -> bool | None:
+    before_value = before.get(key)
+    after_value = after.get(key)
+    if isinstance(before_value, bool) or isinstance(after_value, bool):
+        return None
+    if isinstance(before_value, int) and isinstance(after_value, int):
+        return before_value != after_value
+    return None
+
+
 def signal_name_from_task(task: dict[str, Any]) -> str | None:
     signal_name = task.get("signal_name")
     if isinstance(signal_name, str) and signal_name:
@@ -3020,6 +3043,74 @@ def run_status(base_url: str, token: str, namespace: str, workflow_id: str) -> s
     return status if isinstance(status, str) else None
 
 
+def workflow_public_snapshot(
+    base_url: str,
+    token: str,
+    namespace: str,
+    workflow_id: str,
+    run_id: str | None = None,
+) -> dict[str, Any]:
+    path = (
+        api_path("workflows", workflow_id, "runs", run_id)
+        if run_id
+        else api_path("workflows", workflow_id)
+    )
+    response = http_json(
+        base_url,
+        path,
+        method="GET",
+        token=token,
+        namespace=namespace,
+        timeout=30,
+    )
+    body = response.get("body")
+    if not isinstance(body, dict):
+        body = {}
+
+    snapshot: dict[str, Any] = {
+        "status_code": response.get("status_code"),
+        "workflow_id": workflow_id,
+    }
+    for key in (
+        "run_id",
+        "status",
+        "workflow_type",
+        "task_queue",
+        "result",
+        "output",
+        "completed_at",
+        "closed_at",
+        "last_history_sequence",
+        "history_sequence",
+    ):
+        if key in body:
+            snapshot[key] = body[key]
+    if run_id is not None:
+        snapshot.setdefault("run_id", run_id)
+
+    snapshot_run_id = run_id or snapshot.get("run_id")
+    if isinstance(snapshot_run_id, str) and snapshot_run_id:
+        history = http_json(
+            base_url,
+            api_path("workflows", workflow_id, "runs", snapshot_run_id, "history") + "?page_size=1000",
+            method="GET",
+            token=token,
+            namespace=namespace,
+            timeout=30,
+        )
+        history_body = history.get("body")
+        history_events = public_history_events(history_body)
+        if history_events is not None:
+            snapshot["history_event_count"] = len(history_events)
+            snapshot["history_event_types"] = [
+                event.get("event_type")
+                for event in history_events
+                if isinstance(event, dict) and isinstance(event.get("event_type"), str)
+            ]
+
+    return snapshot
+
+
 REPLAY_TIMING_SCENARIO_TITLES = {
     "signal_during_replay": "Signal during replay timing could not be proved",
     "query_during_replay": "Query during replay timing could not be proved",
@@ -3047,6 +3138,15 @@ REPLAY_TIMING_ACCEPTANCE = {
         "record the query public response and prove the handler ran after replay completion",
     ],
 }
+
+COMPLETED_RUN_FAILURE_TYPE = "signal_query_completed_run_handling_failed"
+COMPLETED_RUN_UNAVAILABLE_TYPE = "signal_query_completed_run_probe_unavailable"
+COMPLETED_RUN_ACCEPTANCE = [
+    "complete Counter cleanly and record the terminal transition",
+    "send a signal after completion and capture the public terminal response",
+    "query after completion and capture the final-state response or documented typed error",
+    "record before/after terminal state and history readouts",
+]
 
 
 class ReplayTimingProbeFailure(Exception):
@@ -3216,6 +3316,159 @@ def replay_timing_scenario_result(
 
     return {
         "scenario_id": scenario,
+        "status": status,
+        "observed_outputs": observed,
+        "linked_findings": [finding],
+    }
+
+
+def completed_run_context_outputs(
+    context: dict[str, Any],
+    versions: dict[str, str],
+    sources: dict[str, str],
+) -> dict[str, Any]:
+    keys = [
+        "completed_workflow_id",
+        "completed_run_id",
+        "completed_at",
+        "terminal_status",
+        "terminal_start_response",
+        "terminal_complete_response",
+        "signal_sent_at",
+        "signal_api_sample",
+        "signal_error",
+        "query_sent_at",
+        "query_api_sample",
+        "query_result_or_error",
+        "public_query_surfaces",
+        "terminal_state_before_operations",
+        "terminal_state_after_operations",
+        "terminal_state_changed_after_operations",
+        "terminal_result_changed_after_operations",
+        "terminal_history_changed_after_operations",
+        "run_status_after_operations",
+    ]
+    outputs = {
+        "published_artifact_versions": versions,
+        "artifact_sources": sources,
+    }
+    for key in keys:
+        value = context.get(key)
+        if value is not None:
+            outputs[key] = value
+
+    phase = context.get("phase")
+    if isinstance(phase, str) and phase:
+        outputs["probe_phase"] = phase
+
+    reason = context.get("terminal_failure_reason")
+    if isinstance(reason, str) and reason:
+        outputs["failure_reason"] = reason
+
+    return outputs
+
+
+def completed_run_missing_evidence(observed: dict[str, Any]) -> list[str]:
+    missing = []
+    for evidence_key in SCENARIO_REQUIRED_EVIDENCE.get("completed_run_signal_and_query", []):
+        if not required_evidence_satisfied(evidence_key, evidence_lookup(observed, evidence_key)):
+            missing.append(evidence_key)
+
+    return missing
+
+
+def completed_run_terminal_unchanged(observed: dict[str, Any]) -> bool:
+    return (
+        evidence_lookup(observed, "terminal_result_changed_after_operations") is False
+        and evidence_lookup(observed, "terminal_history_changed_after_operations") is False
+    )
+
+
+def completed_run_finding(
+    observed: dict[str, Any],
+    *,
+    status: str,
+    reason: str,
+    phase: str,
+    owner: str,
+    blocker_kind: str | None = None,
+) -> dict[str, Any]:
+    finding_type = (
+        COMPLETED_RUN_UNAVAILABLE_TYPE
+        if status == "runner_blocked"
+        else COMPLETED_RUN_FAILURE_TYPE
+    )
+    current_evidence = {
+        "published_artifact_evidence_present": True,
+        "probe_phase": phase,
+        "reason": reason,
+        "observed_outputs": observed,
+        "required_terminal_contract": {
+            "signal_error.reason": "run_not_active",
+            "signal_error.rejection_reason": "run_not_active",
+            "signal_error.status_code": "400..499",
+            "query_result_or_error.status_code": "200..499",
+            "terminal_result_changed_after_operations": False,
+            "terminal_history_changed_after_operations": False,
+        },
+    }
+    missing_evidence = completed_run_missing_evidence(observed)
+    if missing_evidence:
+        current_evidence["missing_current_evidence"] = missing_evidence
+
+    finding = {
+        "id": finding_type,
+        "type": finding_type,
+        "scenario_id": "completed_run_signal_and_query",
+        "owner": owner,
+        "title": "Signals/queries completed-run handling could not be proved",
+        "current_evidence": current_evidence,
+        "acceptance": COMPLETED_RUN_ACCEPTANCE,
+    }
+    if status == "runner_blocked" and blocker_kind is not None:
+        finding["blocker_kind"] = blocker_kind
+    else:
+        finding["observed_behavior"] = (
+            "current published artifacts did not prove the completed-run signal/query contract"
+        )
+
+    return finding
+
+
+def completed_run_scenario_result(
+    observed: dict[str, Any],
+    *,
+    status: str | None = None,
+    reason: str = "",
+    phase: str = "",
+    owner: str = "server, workflow, sdk-python, cli",
+    blocker_kind: str | None = None,
+) -> dict[str, Any]:
+    if (
+        status is None
+        and has_required_evidence("completed_run_signal_and_query", observed)
+        and completed_run_terminal_unchanged(observed)
+    ):
+        return {
+            "scenario_id": "completed_run_signal_and_query",
+            "status": "pass",
+            "observed_outputs": observed,
+        }
+
+    status = status or "fail"
+    reason = reason or "Observed completed-run output did not satisfy the terminal signal/query contract."
+    phase = phase or str(observed.get("probe_phase") or "completed_run_validation")
+    finding = completed_run_finding(
+        observed,
+        status=status,
+        reason=reason,
+        phase=phase,
+        owner=owner,
+        blocker_kind=blocker_kind,
+    )
+
+    return {
+        "scenario_id": "completed_run_signal_and_query",
         "status": status,
         "observed_outputs": observed,
         "linked_findings": [finding],
@@ -3538,6 +3791,7 @@ def run_replay_terminal_probe(
             "replay_timing_observed": True,
         })
 
+        probe_context["phase"] = "terminal_workflow_start"
         terminal_start = http_json(
             base_url,
             api_path("workflows"),
@@ -3551,12 +3805,20 @@ def run_replay_terminal_probe(
             namespace=namespace,
             timeout=30,
         )
+        probe_context["terminal_start_response"] = response_sample(terminal_start)
         if int(terminal_start["status_code"]) >= 400:
+            probe_context["terminal_failure_reason"] = f"terminal workflow start failed: {response_sample(terminal_start)}"
             raise RuntimeError(f"terminal workflow start failed: {terminal_start}")
 
         terminal_run_id = str(terminal_start["body"]["run_id"])
+        probe_context.update({
+            "completed_workflow_id": terminal_workflow_id,
+            "completed_run_id": terminal_run_id,
+        })
+        probe_context["phase"] = "terminal_task_poll"
         terminal_poll = poll_workflow_task(base_url, token, namespace, probe_worker_id, probe_task_queue)
         terminal_task = task_from_poll(terminal_poll, "terminal")
+        probe_context["phase"] = "terminal_task_complete"
         terminal_complete = complete_workflow_task(
             base_url,
             token,
@@ -3570,10 +3832,32 @@ def run_replay_terminal_probe(
                 },
             ],
         )
+        probe_context["terminal_complete_response"] = response_sample(terminal_complete)
         if int(terminal_complete["status_code"]) >= 400:
+            probe_context["terminal_failure_reason"] = f"terminal workflow completion failed: {response_sample(terminal_complete)}"
             raise RuntimeError(f"terminal workflow completion failed: {terminal_complete}")
         completed_at = now()
+        terminal_state_before_operations = workflow_public_snapshot(
+            base_url,
+            token,
+            namespace,
+            terminal_workflow_id,
+            terminal_run_id,
+        )
+        terminal_status = terminal_state_before_operations.get("status") or run_status(
+            base_url,
+            token,
+            namespace,
+            terminal_workflow_id,
+        )
+        probe_context.update({
+            "completed_at": completed_at,
+            "terminal_status": terminal_status,
+            "terminal_state_before_operations": terminal_state_before_operations,
+        })
 
+        probe_context["phase"] = "terminal_signal_after_completion"
+        terminal_signal_sent_at = now()
         terminal_signal = http_json(
             base_url,
             api_path("workflows", terminal_workflow_id, "signal", "increment"),
@@ -3583,7 +3867,19 @@ def run_replay_terminal_probe(
             namespace=namespace,
             timeout=30,
         )
+        terminal_signal_sample = response_sample(terminal_signal)
+        probe_context.update({
+            "signal_sent_at": terminal_signal_sent_at,
+            "signal_api_sample": {
+                "method": "POST",
+                "path": api_path("workflows", terminal_workflow_id, "signal", "increment"),
+                "body": {"input": {"amount": 1}},
+                "response": terminal_signal_sample,
+            },
+            "signal_error": terminal_signal_sample,
+        })
 
+        probe_context["phase"] = "terminal_query_after_completion"
         terminal_query_holder: dict[str, Any] = {}
         terminal_query_thread = threading.Thread(
             target=workflow_query_call,
@@ -3591,6 +3887,10 @@ def run_replay_terminal_probe(
             daemon=True,
         )
         terminal_query_thread.start()
+        terminal_query_sent_deadline = time.time() + 2
+        while "query_sent_at" not in terminal_query_holder and time.time() < terminal_query_sent_deadline:
+            time.sleep(0.01)
+        probe_context["query_sent_at"] = terminal_query_holder.get("query_sent_at")
 
         terminal_query_task_holder: dict[str, Any] = {}
         terminal_query_responder: threading.Thread | None = None
@@ -3615,6 +3915,7 @@ def run_replay_terminal_probe(
             terminal_query_responder.join(timeout=8)
         terminal_query_thread.join(timeout=20)
         if terminal_query_thread.is_alive():
+            probe_context["terminal_failure_reason"] = "completed-run query API call timed out"
             raise RuntimeError("completed-run query API call timed out")
 
         terminal_query = (
@@ -3628,9 +3929,60 @@ def run_replay_terminal_probe(
             terminal_query_responder.is_alive() or terminal_query_task_holder.get("error")
         ):
             if terminal_query_status < 400 or terminal_query_status > 499:
+                probe_context["terminal_failure_reason"] = (
+                    "completed-run query responder failed: "
+                    f"{terminal_query_task_holder.get('error', 'timeout')}"
+                )
                 raise RuntimeError(
                     f"completed-run query responder failed: {terminal_query_task_holder.get('error', 'timeout')}"
                 )
+
+        terminal_state_after_operations = workflow_public_snapshot(
+            base_url,
+            token,
+            namespace,
+            terminal_workflow_id,
+            terminal_run_id,
+        )
+        before_result = terminal_state_before_operations.get("result", terminal_state_before_operations.get("output"))
+        after_result = terminal_state_after_operations.get("result", terminal_state_after_operations.get("output"))
+        terminal_history_changed_after_operations = observed_count_changed(
+            terminal_state_before_operations,
+            terminal_state_after_operations,
+            "history_event_count",
+        )
+        query_result_or_error = {
+            "status_code": terminal_query.get("status_code"),
+            "reason": terminal_query_body.get("reason") if isinstance(terminal_query_body, dict) else None,
+            "outcome": "completed_query_replayed_final_state"
+            if int(terminal_query.get("status_code") or 0) < 400
+            else "completed_query_typed_error",
+            "result": terminal_query_body.get("result") if isinstance(terminal_query_body, dict) else None,
+        }
+        terminal_query_sample = {
+            "method": "POST",
+            "path": api_path("workflows", terminal_workflow_id, "query", "state"),
+            "body": {},
+            "response": response_sample(terminal_query),
+        }
+        probe_context.update({
+            "query_api_sample": terminal_query_sample,
+            "query_result_or_error": query_result_or_error,
+            "public_query_surfaces": [
+                "control-plane-api",
+                "worker-query-task-protocol",
+            ],
+            "terminal_state_after_operations": terminal_state_after_operations,
+            "terminal_state_changed_after_operations": terminal_state_before_operations != terminal_state_after_operations,
+            "terminal_result_changed_after_operations": before_result != after_result,
+            "terminal_history_changed_after_operations": terminal_history_changed_after_operations,
+            "run_status_after_operations": terminal_state_after_operations.get("status") or run_status(
+                base_url,
+                token,
+                namespace,
+                terminal_workflow_id,
+            ),
+        })
 
         signal_outputs = {
             "signal_api_sample": {
@@ -3679,32 +4031,28 @@ def run_replay_terminal_probe(
         terminal_outputs = {
             "completed_run_id": terminal_run_id,
             "completed_at": completed_at,
+            "terminal_status": terminal_status,
+            "signal_sent_at": terminal_signal_sent_at,
             "signal_api_sample": {
                 "method": "POST",
                 "path": api_path("workflows", terminal_workflow_id, "signal", "increment"),
                 "body": {"input": {"amount": 1}},
-                "response": response_sample(terminal_signal),
+                "response": terminal_signal_sample,
             },
-            "signal_error": response_sample(terminal_signal),
-            "query_api_sample": {
-                "method": "POST",
-                "path": api_path("workflows", terminal_workflow_id, "query", "state"),
-                "body": {},
-                "response": response_sample(terminal_query),
-            },
-            "query_result_or_error": {
-                "status_code": terminal_query.get("status_code"),
-                "reason": terminal_query_body.get("reason") if isinstance(terminal_query_body, dict) else None,
-                "outcome": "completed_query_replayed_final_state"
-                if int(terminal_query.get("status_code") or 0) < 400
-                else "completed_query_typed_error",
-                "result": terminal_query_body.get("result") if isinstance(terminal_query_body, dict) else None,
-            },
+            "signal_error": terminal_signal_sample,
+            "query_sent_at": terminal_query_holder.get("query_sent_at"),
+            "query_api_sample": terminal_query_sample,
+            "query_result_or_error": query_result_or_error,
             "public_query_surfaces": [
                 "control-plane-api",
                 "worker-query-task-protocol",
             ],
-            "run_status_after_operations": run_status(base_url, token, namespace, terminal_workflow_id),
+            "terminal_state_before_operations": terminal_state_before_operations,
+            "terminal_state_after_operations": terminal_state_after_operations,
+            "terminal_state_changed_after_operations": terminal_state_before_operations != terminal_state_after_operations,
+            "terminal_result_changed_after_operations": before_result != after_result,
+            "terminal_history_changed_after_operations": terminal_history_changed_after_operations,
+            "run_status_after_operations": probe_context["run_status_after_operations"],
             "workflow_id": terminal_workflow_id,
             "published_artifact_versions": versions,
             "artifact_sources": sources,
@@ -3721,10 +4069,9 @@ def run_replay_terminal_probe(
                     "query_during_replay",
                     query_outputs,
                 ),
-                "completed_run_signal_and_query": {
-                    "status": "pass",
-                    "observed_outputs": terminal_outputs,
-                },
+                "completed_run_signal_and_query": completed_run_scenario_result(
+                    terminal_outputs,
+                ),
             },
         }
         descriptor = {
@@ -3744,46 +4091,107 @@ def run_replay_terminal_probe(
         return evidence, descriptor
     except ReplayTimingProbeFailure as exc:
         log_line(log_file, f"replay timing probe produced focused finding: {type(exc).__name__}: {exc}")
+        terminal_result = completed_run_scenario_result(
+            completed_run_context_outputs(probe_context, versions, sources),
+            status="runner_blocked",
+            reason=(
+                "Completed-run signal/query handling was not exercised because the shared "
+                f"replay/terminal probe stopped during {exc.phase}: {exc}"
+            ),
+            phase=exc.phase,
+            owner="conformance_harness",
+            blocker_kind=f"completed_run_probe_blocked_by_{exc.phase}",
+        )
         if probe_context.get("replay_timing_observed"):
+            scenario_results = replay_timing_results_from_context(probe_context, versions, sources)
+            scenario_results["completed_run_signal_and_query"] = terminal_result
             return {
                 "artifact_versions": versions,
-                "scenario_results": replay_timing_results_from_context(probe_context, versions, sources),
+                "scenario_results": scenario_results,
             }, {
                 "workflow_id": probe_context.get("workflow_id"),
                 "run_id": probe_context.get("run_id"),
                 "worker_id": probe_context.get("worker_id"),
                 "task_queue": probe_context.get("task_queue"),
                 "server_base_url": base_url,
-                "generated_scenarios": ["signal_during_replay", "query_during_replay"],
+                "generated_scenarios": [
+                    "signal_during_replay",
+                    "query_during_replay",
+                    "completed_run_signal_and_query",
+                ],
                 "completed_run_probe": {
                     "error": f"{type(exc).__name__}: {exc}",
                     "probe_phase": exc.phase,
                 },
             }
-        return replay_timing_probe_failure_evidence(exc, probe_context, versions, sources)
+        evidence, descriptor = replay_timing_probe_failure_evidence(exc, probe_context, versions, sources)
+        scenario_results = evidence.setdefault("scenario_results", {})
+        if isinstance(scenario_results, dict):
+            scenario_results["completed_run_signal_and_query"] = terminal_result
+        descriptor["generated_scenarios"] = [
+            "signal_during_replay",
+            "query_during_replay",
+            "completed_run_signal_and_query",
+        ]
+        descriptor["completed_run_probe"] = {
+            "error": f"{type(exc).__name__}: {exc}",
+            "probe_phase": exc.phase,
+        }
+        return evidence, descriptor
     except Exception as exc:  # noqa: BLE001 - failed probe becomes uncovered evidence.
         log_line(log_file, f"replay/terminal probe failed: {type(exc).__name__}: {exc}")
+        phase = str(probe_context.get("phase") or "replay_terminal_probe")
+        reason = str(probe_context.get("terminal_failure_reason") or f"{type(exc).__name__}: {exc}")
+        terminal_status = "fail" if phase.startswith("terminal_") else "runner_blocked"
+        terminal_owner = "server, workflow, sdk-python, cli" if terminal_status == "fail" else "conformance_harness"
+        terminal_result = completed_run_scenario_result(
+            completed_run_context_outputs(probe_context, versions, sources),
+            status=terminal_status,
+            reason=reason,
+            phase=phase,
+            owner=terminal_owner,
+            blocker_kind="completed_run_probe_unavailable" if terminal_status == "runner_blocked" else None,
+        )
         if probe_context.get("replay_timing_observed"):
+            scenario_results = replay_timing_results_from_context(probe_context, versions, sources)
+            scenario_results["completed_run_signal_and_query"] = terminal_result
             return {
                 "artifact_versions": versions,
-                "scenario_results": replay_timing_results_from_context(probe_context, versions, sources),
+                "scenario_results": scenario_results,
             }, {
                 "workflow_id": probe_context.get("workflow_id"),
                 "run_id": probe_context.get("run_id"),
                 "worker_id": probe_context.get("worker_id"),
                 "task_queue": probe_context.get("task_queue"),
                 "server_base_url": base_url,
-                "generated_scenarios": ["signal_during_replay", "query_during_replay"],
+                "generated_scenarios": [
+                    "signal_during_replay",
+                    "query_during_replay",
+                    "completed_run_signal_and_query",
+                ],
                 "completed_run_probe": {
                     "error": f"{type(exc).__name__}: {exc}",
-                    "probe_phase": probe_context.get("phase"),
+                    "probe_phase": phase,
                 },
             }
         failure = ReplayTimingProbeFailure(
             f"{type(exc).__name__}: {exc}",
-            phase=str(probe_context.get("phase") or "replay_timing_probe"),
+            phase=phase,
         )
-        return replay_timing_probe_failure_evidence(failure, probe_context, versions, sources)
+        evidence, descriptor = replay_timing_probe_failure_evidence(failure, probe_context, versions, sources)
+        scenario_results = evidence.setdefault("scenario_results", {})
+        if isinstance(scenario_results, dict):
+            scenario_results["completed_run_signal_and_query"] = terminal_result
+        descriptor["generated_scenarios"] = [
+            "signal_during_replay",
+            "query_during_replay",
+            "completed_run_signal_and_query",
+        ]
+        descriptor["completed_run_probe"] = {
+            "error": f"{type(exc).__name__}: {exc}",
+            "probe_phase": phase,
+        }
+        return evidence, descriptor
 
 
 def probe_artifact_versions() -> dict[str, str]:
@@ -7611,6 +8019,7 @@ SCENARIO_REQUIRED_EVIDENCE: dict[str, list[str]] = {
     "completed_run_signal_and_query": [
         "completed_run_id",
         "completed_at",
+        "terminal_status",
         "signal_api_sample",
         "signal_error.status_code",
         "signal_error.reason",
@@ -7621,6 +8030,10 @@ SCENARIO_REQUIRED_EVIDENCE: dict[str, list[str]] = {
         "signal_error",
         "query_result_or_error",
         "public_query_surfaces",
+        "terminal_state_before_operations.history_event_count",
+        "terminal_state_after_operations.history_event_count",
+        "terminal_result_changed_after_operations",
+        "terminal_history_changed_after_operations",
         "run_status_after_operations",
     ],
     "unknown_signal_and_query_errors": [
@@ -8037,6 +8450,8 @@ def has_required_evidence(scenario: str, observed: dict[str, Any]) -> bool:
             and query_status is not None
             and 200 <= query_status <= 499
             and (query_status < 400 or required_evidence_satisfied("query_result_or_error.reason", query_reason))
+            and evidence_lookup(observed, "terminal_result_changed_after_operations") is False
+            and evidence_lookup(observed, "terminal_history_changed_after_operations") is False
         )
 
     if scenario == "unknown_signal_and_query_errors":
