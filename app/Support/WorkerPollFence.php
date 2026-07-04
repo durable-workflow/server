@@ -3,6 +3,8 @@
 namespace App\Support;
 
 use App\Models\WorkerRegistration;
+use Carbon\CarbonInterface;
+use Workflow\V2\Support\StandaloneWorkerVisibility;
 
 final class WorkerPollFence
 {
@@ -41,6 +43,11 @@ final class WorkerPollFence
         return self::matchesCurrent($snapshot, true);
     }
 
+    public static function isFresh(WorkerRegistration $worker): bool
+    {
+        return ! self::isStale($worker);
+    }
+
     /**
      * @param  array<string, mixed>  $snapshot
      */
@@ -67,6 +74,10 @@ final class WorkerPollFence
             return false;
         }
 
+        if (self::isStale($current)) {
+            return false;
+        }
+
         $currentSnapshot = self::snapshot($current);
 
         if (($snapshot['routing_revision'] ?? null) !== ($currentSnapshot['routing_revision'] ?? null)) {
@@ -86,6 +97,28 @@ final class WorkerPollFence
 
         return ($snapshot['updated_at'] ?? null) === ($currentSnapshot['updated_at'] ?? null)
             && ($snapshot['last_heartbeat_at'] ?? null) === ($currentSnapshot['last_heartbeat_at'] ?? null);
+    }
+
+    private static function isStale(WorkerRegistration $worker): bool
+    {
+        $heartbeat = $worker->last_heartbeat_at;
+
+        if (! $heartbeat instanceof CarbonInterface) {
+            return true;
+        }
+
+        return $heartbeat->lt(now()->subSeconds(self::workerStaleAfterSeconds()));
+    }
+
+    private static function workerStaleAfterSeconds(): int
+    {
+        $configured = config('server.workers.stale_after_seconds');
+        $pollingTimeout = config('server.polling.timeout');
+
+        return StandaloneWorkerVisibility::staleAfterSeconds(
+            is_numeric($configured) ? (int) $configured : null,
+            is_numeric($pollingTimeout) ? (int) $pollingTimeout : null,
+        );
     }
 
     private static function routingRevision(WorkerRegistration $worker): string

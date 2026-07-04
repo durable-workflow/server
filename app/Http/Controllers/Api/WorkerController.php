@@ -12,6 +12,7 @@ use App\Support\NamespaceWorkflowScope;
 use App\Support\QueryTaskQueueUnavailableException;
 use App\Support\SearchAttributeValueValidator;
 use App\Support\ServiceModeTimerDispatcher;
+use App\Support\WorkerPollFence;
 use App\Support\WorkerProtocol;
 use App\Support\WorkflowQueryTaskBroker;
 use App\Support\WorkflowTaskLeaseRecovery;
@@ -2072,6 +2073,13 @@ class WorkerController
 
         if ($worker instanceof JsonResponse) {
             return $worker;
+        }
+
+        if (! WorkerPollFence::isFresh($worker)) {
+            return WorkerProtocol::json([
+                'task' => null,
+                'poll_status' => 'stale_worker_registration',
+            ]);
         }
 
         try {

@@ -64,6 +64,13 @@ final class WorkflowTaskPoller
     ): array {
         $pollRequestId = $this->nonEmptyString($pollRequestId);
 
+        if (! WorkerPollFence::isFresh($worker)) {
+            return [
+                'task' => null,
+                'poll_status' => 'stale_worker_registration',
+            ];
+        }
+
         if ($pollRequestId === null) {
             return $this->performPoll(
                 request: $request,
@@ -119,7 +126,16 @@ final class WorkflowTaskPoller
         bool $acceptsQueryTasks = false,
         ?int $timeoutSeconds = null,
     ): array {
+        $workerPollFence = WorkerPollFence::snapshot($worker);
+
         for ($attempt = 0; $attempt < 3; $attempt++) {
+            if (! WorkerPollFence::isCurrent($workerPollFence)) {
+                return [
+                    'task' => null,
+                    'poll_status' => 'stale_worker_registration',
+                ];
+            }
+
             $cached = $this->cachedPollResult(
                 $namespace,
                 $taskQueue,
@@ -168,11 +184,25 @@ final class WorkflowTaskPoller
             );
 
             if ($observed['resolved']) {
+                if (! WorkerPollFence::isCurrent($workerPollFence)) {
+                    return [
+                        'task' => null,
+                        'poll_status' => 'stale_worker_registration',
+                    ];
+                }
+
                 return [
                     'task' => $observed['task'],
                     'poll_status' => $observed['poll_status'] ?? $this->defaultPollStatus($observed['task']),
                 ];
             }
+        }
+
+        if (! WorkerPollFence::isCurrent($workerPollFence)) {
+            return [
+                'task' => null,
+                'poll_status' => 'stale_worker_registration',
+            ];
         }
 
         $cached = $this->cachedPollResult(

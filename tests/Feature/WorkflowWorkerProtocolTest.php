@@ -2780,6 +2780,76 @@ class WorkflowWorkerProtocolTest extends TestCase
         $this->assertNull($task->lease_expires_at);
     }
 
+    public function test_stale_workflow_task_poll_after_heartbeat_expiry_does_not_claim_ready_task(): void
+    {
+        Queue::fake();
+
+        config(['server.workers.stale_after_seconds' => 3]);
+
+        $this->configureWorkflowTypes();
+        $this->createNamespace('default', 'Default namespace');
+
+        $registeredAt = now()->startOfSecond();
+        $this->travelTo($registeredAt);
+
+        $this->registerWorker('php-worker-expired-heartbeat', 'external-workflows');
+        $this->registerWorker('php-worker-fresh-heartbeat', 'external-workflows');
+
+        $this->travelTo($registeredAt->copy()->addSeconds(5));
+
+        $this->withHeaders($this->workerHeaders())
+            ->postJson('/api/worker/heartbeat', [
+                'worker_id' => 'php-worker-fresh-heartbeat',
+            ])
+            ->assertOk()
+            ->assertJsonPath('acknowledged', true);
+
+        $start = $this->withHeaders($this->apiHeaders())
+            ->postJson('/api/workflows', [
+                'workflow_id' => 'wf-stale-heartbeat-poll-fence',
+                'workflow_type' => 'tests.external-greeting-workflow',
+                'task_queue' => 'external-workflows',
+                'input' => ['Ada'],
+            ]);
+
+        $start->assertCreated();
+
+        $stalePoll = $this->withHeaders($this->workerHeaders())
+            ->postJson('/api/worker/workflow-tasks/poll', [
+                'worker_id' => 'php-worker-expired-heartbeat',
+                'task_queue' => 'external-workflows',
+            ]);
+
+        $stalePoll->assertOk()
+            ->assertJsonPath('task', null)
+            ->assertJsonPath('poll_status', 'stale_worker_registration');
+
+        $task = WorkflowTask::query()
+            ->where('workflow_run_id', (string) $start->json('run_id'))
+            ->where('task_type', TaskType::Workflow->value)
+            ->firstOrFail();
+
+        $this->assertSame(TaskStatus::Ready, $task->status);
+        $this->assertNull($task->lease_owner);
+        $this->assertNull($task->lease_expires_at);
+
+        $freshPoll = $this->withHeaders($this->workerHeaders())
+            ->postJson('/api/worker/workflow-tasks/poll', [
+                'worker_id' => 'php-worker-fresh-heartbeat',
+                'task_queue' => 'external-workflows',
+            ]);
+
+        $freshPoll->assertOk()
+            ->assertJsonPath('poll_status', 'leased')
+            ->assertJsonPath('task.workflow_id', 'wf-stale-heartbeat-poll-fence')
+            ->assertJsonPath('task.lease_owner', 'php-worker-fresh-heartbeat');
+
+        $task->refresh();
+
+        $this->assertSame(TaskStatus::Leased, $task->status);
+        $this->assertSame('php-worker-fresh-heartbeat', $task->lease_owner);
+    }
+
     public function test_worker_reregistration_without_process_identity_releases_leased_workflow_tasks(): void
     {
         Queue::fake();
