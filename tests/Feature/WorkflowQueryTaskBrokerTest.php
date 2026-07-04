@@ -2525,18 +2525,18 @@ class WorkflowQueryTaskBrokerTest extends TestCase
             ->assertJsonPath('poll_status', 'query_task_pending');
     }
 
-    public function test_claimable_query_task_preempts_ready_workflow_task_poll(): void
+    public function test_ready_workflow_task_leases_before_claimable_query_task_poll(): void
     {
         Queue::fake();
         config(['server.polling.timeout' => 10]);
 
-        $run = $this->startRemoteWorkflow('wf-query-task-preempts-workflow');
-        $this->registerPythonWorker('python-query-preempt-worker', 'python-queries', ['python.queryable']);
-        $this->primeQueryTaskPoller('python-query-preempt-worker');
+        $run = $this->startRemoteWorkflow('wf-query-task-ready-before-query');
+        $this->registerPythonWorker('python-query-ready-before-query-worker', 'python-queries', ['python.queryable']);
+        $this->primeQueryTaskPoller('python-query-ready-before-query-worker');
 
         /** @var WorkflowQueryTaskBroker $broker */
         $broker = app(WorkflowQueryTaskBroker::class);
-        $broker->enqueue('default', $run, 'status', $this->queryArguments());
+        $queryTask = $broker->enqueue('default', $run, 'status', $this->queryArguments());
 
         $this->assertTrue(
             WorkflowTask::query()
@@ -2547,20 +2547,81 @@ class WorkflowQueryTaskBrokerTest extends TestCase
         );
 
         $poll = $this->postJson('/api/worker/workflow-tasks/poll', [
-            'worker_id' => 'python-query-preempt-worker',
+            'worker_id' => 'python-query-ready-before-query-worker',
             'task_queue' => 'python-queries',
         ], $this->workerHeaders());
 
         $poll->assertOk()
-            ->assertJsonPath('task', null)
-            ->assertJsonPath('poll_status', 'query_task_pending');
+            ->assertJsonPath('poll_status', 'leased')
+            ->assertJsonPath('task.run_id', $run->id)
+            ->assertJsonPath('task.lease_owner', 'python-query-ready-before-query-worker');
 
         $this->assertSame(
-            TaskStatus::Ready,
+            'pending',
+            $broker->task((string) $queryTask['query_task_id'])['status'] ?? null,
+        );
+        $this->assertSame(
+            TaskStatus::Leased,
             WorkflowTask::query()
                 ->where('workflow_run_id', $run->id)
                 ->where('task_type', 'workflow')
                 ->value('status'),
+        );
+    }
+
+    public function test_pending_query_task_does_not_block_initial_workflow_task_for_other_run(): void
+    {
+        Queue::fake();
+        config(['server.polling.timeout' => 10]);
+
+        $workerId = 'python-query-cross-run-ready-worker';
+        $this->registerPythonWorker($workerId, 'python-queries', ['python.queryable']);
+        $this->primeQueryTaskPoller($workerId);
+
+        $queriedRun = $this->startRemoteWorkflow('wf-query-task-cross-run-query');
+
+        $initialPoll = $this->postJson('/api/worker/workflow-tasks/poll', [
+            'worker_id' => $workerId,
+            'task_queue' => 'python-queries',
+        ], $this->workerHeaders());
+
+        $initialPoll->assertOk()
+            ->assertJsonPath('poll_status', 'leased')
+            ->assertJsonPath('task.run_id', $queriedRun->id);
+
+        $this->postJson("/api/worker/workflow-tasks/{$initialPoll->json('task.task_id')}/complete", [
+            'lease_owner' => $initialPoll->json('task.lease_owner'),
+            'workflow_task_attempt' => $initialPoll->json('task.workflow_task_attempt'),
+            'commands' => [
+                [
+                    'type' => 'open_condition_wait',
+                    'condition_key' => 'cross-run-query-ready',
+                    'timeout_seconds' => 300,
+                ],
+            ],
+        ], $this->workerHeaders())
+            ->assertOk()
+            ->assertJsonPath('run_status', 'waiting');
+
+        /** @var WorkflowQueryTaskBroker $broker */
+        $broker = app(WorkflowQueryTaskBroker::class);
+        $queryTask = $broker->enqueue('default', $queriedRun->refresh(), 'current', $this->queryArguments());
+
+        $readyRun = $this->startRemoteWorkflow('wf-query-task-cross-run-ready');
+
+        $poll = $this->postJson('/api/worker/workflow-tasks/poll', [
+            'worker_id' => $workerId,
+            'task_queue' => 'python-queries',
+        ], $this->workerHeaders());
+
+        $poll->assertOk()
+            ->assertJsonPath('poll_status', 'leased')
+            ->assertJsonPath('task.run_id', $readyRun->id)
+            ->assertJsonPath('task.lease_owner', $workerId);
+
+        $this->assertSame(
+            'pending',
+            $broker->task((string) $queryTask['query_task_id'])['status'] ?? null,
         );
     }
 
@@ -2968,12 +3029,12 @@ class WorkflowQueryTaskBrokerTest extends TestCase
             ->assertJsonPath('task.lease_owner', $workerId);
     }
 
-    public function test_advertised_query_capability_preempts_ready_workflow_task_without_query_poll_marker(): void
+    public function test_advertised_query_capability_leases_ready_workflow_task_without_query_poll_marker(): void
     {
         Queue::fake();
         config(['server.polling.timeout' => 10]);
 
-        $run = $this->startRemoteWorkflow('wf-query-task-advertised-preempts-ready');
+        $run = $this->startRemoteWorkflow('wf-query-task-advertised-ready-first');
         $this->registerPythonWorker('python-query-advertised-ready-worker', 'python-queries', ['python.queryable']);
 
         /** @var WorkflowQueryTaskBroker $broker */
@@ -2986,20 +3047,35 @@ class WorkflowQueryTaskBrokerTest extends TestCase
         ], $this->workerHeaders());
 
         $poll->assertOk()
-            ->assertJsonPath('task', null)
-            ->assertJsonPath('poll_status', 'query_task_pending');
+            ->assertJsonPath('poll_status', 'leased')
+            ->assertJsonPath('task.run_id', $run->id)
+            ->assertJsonPath('task.lease_owner', 'python-query-advertised-ready-worker');
 
         $this->assertSame(
             'pending',
             $broker->task((string) $queryTask['query_task_id'])['status'] ?? null,
         );
         $this->assertSame(
-            TaskStatus::Ready,
+            TaskStatus::Leased,
             WorkflowTask::query()
                 ->where('workflow_run_id', $run->id)
                 ->where('task_type', 'workflow')
                 ->value('status'),
         );
+
+        $this->postJson("/api/worker/workflow-tasks/{$poll->json('task.task_id')}/complete", [
+            'lease_owner' => $poll->json('task.lease_owner'),
+            'workflow_task_attempt' => $poll->json('task.workflow_task_attempt'),
+            'commands' => [
+                [
+                    'type' => 'open_condition_wait',
+                    'condition_key' => 'advertised-ready-first',
+                    'timeout_seconds' => 300,
+                ],
+            ],
+        ], $this->workerHeaders())
+            ->assertOk()
+            ->assertJsonPath('run_status', 'waiting');
 
         $queryPoll = $this->postJson('/api/worker/query-tasks/poll', [
             'worker_id' => 'python-query-advertised-ready-worker',
@@ -3011,7 +3087,7 @@ class WorkflowQueryTaskBrokerTest extends TestCase
             ->assertJsonPath('task.lease_owner', 'python-query-advertised-ready-worker');
     }
 
-    public function test_same_worker_query_task_preempts_next_workflow_poll_while_run_lease_is_active(): void
+    public function test_ready_workflow_task_leases_before_same_worker_query_task_while_other_run_lease_is_active(): void
     {
         Queue::fake();
         config(['server.polling.timeout' => 10]);
@@ -3041,15 +3117,16 @@ class WorkflowQueryTaskBrokerTest extends TestCase
         ], $this->workerHeaders());
 
         $poll->assertOk()
-            ->assertJsonPath('task', null)
-            ->assertJsonPath('poll_status', 'query_task_pending');
+            ->assertJsonPath('poll_status', 'leased')
+            ->assertJsonPath('task.run_id', $readyRun->id)
+            ->assertJsonPath('task.lease_owner', 'python-query-same-lease-preempt-worker');
 
         $this->assertSame(
             'pending',
             $broker->task((string) $queryTask['query_task_id'])['status'] ?? null,
         );
         $this->assertSame(
-            TaskStatus::Ready,
+            TaskStatus::Leased,
             WorkflowTask::query()
                 ->where('workflow_run_id', $readyRun->id)
                 ->where('task_type', 'workflow')

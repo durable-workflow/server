@@ -472,43 +472,6 @@ final class WorkflowTaskPoller
             ): array {
                 $this->runDueServiceModeTimers($namespace, $taskQueue, $buildId);
 
-                // A registered query-capable worker must let pending queries
-                // preempt ready workflow tasks even before its first query-poll
-                // marker is current; otherwise an initial query can sit behind
-                // the just-started workflow task.
-                if ($this->queryTasks->hasClaimablePendingTaskForPoller(
-                    $namespace,
-                    $taskQueue,
-                    $supportedWorkflowTypes,
-                    $buildId,
-                    $acceptsQueryTasks || $supportsQueryTasks,
-                    $workflowDefinitionFingerprints,
-                )) {
-                    return [
-                        'task' => null,
-                        'poll_status' => 'query_task_pending',
-                        'next_probe_at' => null,
-                    ];
-                }
-
-                if (
-                    $supportsQueryTasks
-                    && $this->queryTasks->hasPendingTaskForActiveWorkflowLeaseOwner(
-                        $namespace,
-                        $taskQueue,
-                        $supportedWorkflowTypes,
-                        $buildId,
-                        $workflowDefinitionFingerprints,
-                        $leaseOwner,
-                    )
-                ) {
-                    return [
-                        'task' => null,
-                        'poll_status' => 'query_task_pending',
-                        'next_probe_at' => null,
-                    ];
-                }
-
                 $task = $this->admission->withLeaseAdmission(
                     $namespace,
                     $taskQueue,
@@ -569,6 +532,46 @@ final class WorkflowTaskPoller
                             'next_probe_at' => null,
                         ];
                     }
+                }
+
+                // A registered query-capable worker may let pending queries
+                // preempt an otherwise idle workflow poll, but only after
+                // proving no workflow task was claimable. Returning
+                // query_task_pending before the claim attempt can hide ready
+                // workflow tasks from other runs on the same queue and strand
+                // ordered signal/query delivery behind a query that needs the
+                // workflow worker to advance first.
+                if ($this->queryTasks->hasClaimablePendingTaskForPoller(
+                    $namespace,
+                    $taskQueue,
+                    $supportedWorkflowTypes,
+                    $buildId,
+                    $acceptsQueryTasks || $supportsQueryTasks,
+                    $workflowDefinitionFingerprints,
+                )) {
+                    return [
+                        'task' => null,
+                        'poll_status' => 'query_task_pending',
+                        'next_probe_at' => null,
+                    ];
+                }
+
+                if (
+                    $supportsQueryTasks
+                    && $this->queryTasks->hasPendingTaskForActiveWorkflowLeaseOwner(
+                        $namespace,
+                        $taskQueue,
+                        $supportedWorkflowTypes,
+                        $buildId,
+                        $workflowDefinitionFingerprints,
+                        $leaseOwner,
+                    )
+                ) {
+                    return [
+                        'task' => null,
+                        'poll_status' => 'query_task_pending',
+                        'next_probe_at' => null,
+                    ];
                 }
 
                 if ($this->queryTasks->hasPendingTaskForPoller($namespace, $taskQueue, $supportedWorkflowTypes, $buildId)) {
