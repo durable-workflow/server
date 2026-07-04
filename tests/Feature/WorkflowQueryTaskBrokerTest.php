@@ -389,6 +389,140 @@ class WorkflowQueryTaskBrokerTest extends TestCase
             ->assertJsonPath('task.run_id', $run->id);
     }
 
+    public function test_query_task_long_poll_waits_while_ready_workflow_resume_task_blocks_claim(): void
+    {
+        Queue::fake();
+        config([
+            'server.polling.timeout' => 1,
+            'server.query_tasks.timeout' => 1,
+        ]);
+
+        $workerId = 'python-query-ready-resume-wait-worker';
+        $this->registerPythonWorker(
+            $workerId,
+            'python-queries',
+            ['python.queryable'],
+            workflowCommandContracts: [
+                'python.queryable' => $this->querySignalUpdateCommandContract(),
+            ],
+        );
+        $run = $this->startRemoteWorkflow('wf-query-task-ready-resume-long-poll');
+
+        $initialPoll = $this->postJson('/api/worker/workflow-tasks/poll', [
+            'worker_id' => $workerId,
+            'task_queue' => 'python-queries',
+        ], $this->workerHeaders());
+
+        $initialPoll->assertOk()
+            ->assertJsonPath('poll_status', 'leased')
+            ->assertJsonPath('task.run_id', $run->id);
+
+        $this->postJson("/api/worker/workflow-tasks/{$initialPoll->json('task.task_id')}/complete", [
+            'lease_owner' => $initialPoll->json('task.lease_owner'),
+            'workflow_task_attempt' => $initialPoll->json('task.workflow_task_attempt'),
+            'commands' => [
+                [
+                    'type' => 'open_signal_wait',
+                    'signal_name' => 'increment',
+                    'timeout_seconds' => 60,
+                ],
+            ],
+        ], $this->workerHeaders())
+            ->assertOk()
+            ->assertJsonPath('run_status', 'waiting');
+
+        /** @var WorkflowQueryTaskBroker $broker */
+        $broker = app(WorkflowQueryTaskBroker::class);
+        $queryTask = $broker->enqueue('default', $run->refresh(), 'current', $this->queryArguments());
+        $this->assertArrayNotHasKey('history_cutoff_sequence', $queryTask);
+
+        $this->postJson('/api/workflows/wf-query-task-ready-resume-long-poll/signal/increment', [
+            'input' => ['amount' => 5],
+            'request_id' => 'ready-resume-long-poll-signal-1',
+        ], $this->apiHeaders())
+            ->assertAccepted()
+            ->assertJsonPath('command_status', 'accepted');
+
+        /** @var WorkflowTask $readyResumeTask */
+        $readyResumeTask = WorkflowTask::query()
+            ->where('workflow_run_id', $run->id)
+            ->where('task_type', 'workflow')
+            ->where('status', 'ready')
+            ->where('payload->resume_source_kind', 'workflow_signal')
+            ->firstOrFail();
+
+        /** @var LongPollSignalStore $signals */
+        $signals = app(LongPollSignalStore::class);
+        /** @var LongPollWaitSlotStore $waitSlots */
+        $waitSlots = app(LongPollWaitSlotStore::class);
+        $poller = new class($signals, $waitSlots) extends LongPoller
+        {
+            public int $pauseCalls = 0;
+
+            /** @var callable(int): void|null */
+            public $afterPause = null;
+
+            protected function pause(int $milliseconds): void
+            {
+                $this->pauseCalls++;
+
+                if (is_callable($this->afterPause)) {
+                    ($this->afterPause)($this->pauseCalls);
+                }
+            }
+        };
+
+        $waitingBroker = new WorkflowQueryTaskBroker(
+            app(ServerPollingCache::class),
+            $poller,
+            $signals,
+            app(ExternalPayloadEnvelopeService::class),
+            app(QueryTaskPollRequestStore::class),
+        );
+
+        $poller->afterPause = function (int $pauseCalls) use ($readyResumeTask, $workerId): void {
+            if ($pauseCalls !== 1) {
+                return;
+            }
+
+            $resumePoll = $this->postJson('/api/worker/workflow-tasks/poll', [
+                'worker_id' => $workerId,
+                'task_queue' => 'python-queries',
+            ], $this->workerHeaders());
+
+            $resumePoll->assertOk()
+                ->assertJsonPath('poll_status', 'leased')
+                ->assertJsonPath('task.task_id', $readyResumeTask->id)
+                ->assertJsonPath('task.resume_source_kind', 'workflow_signal');
+
+            $this->postJson("/api/worker/workflow-tasks/{$readyResumeTask->id}/complete", [
+                'lease_owner' => $resumePoll->json('task.lease_owner'),
+                'workflow_task_attempt' => $resumePoll->json('task.workflow_task_attempt'),
+                'commands' => [
+                    [
+                        'type' => 'open_condition_wait',
+                        'condition_key' => 'ready-resume-long-poll-drained',
+                        'timeout_seconds' => 60,
+                    ],
+                ],
+            ], $this->workerHeaders())
+                ->assertOk()
+                ->assertJsonPath('run_status', 'waiting');
+        };
+
+        /** @var WorkerRegistration $worker */
+        $worker = WorkerRegistration::query()
+            ->where('namespace', 'default')
+            ->where('worker_id', $workerId)
+            ->firstOrFail();
+
+        $poll = $waitingBroker->poll('default', $worker, 'query-poll-ready-resume-wait-1', 1);
+
+        $this->assertSame($queryTask['query_task_id'], $poll['query_task_id'] ?? null);
+        $this->assertSame($workerId, $poll['lease_owner'] ?? null);
+        $this->assertSame(1, $poller->pauseCalls);
+    }
+
     public function test_worker_routed_query_task_exposes_server_derived_principal(): void
     {
         Queue::fake();
@@ -2617,7 +2751,7 @@ class WorkflowQueryTaskBrokerTest extends TestCase
         $this->assertQueryTaskWithoutCutoffWaitsForLaterResume('workflow_update');
     }
 
-    public function test_query_task_poll_yields_without_long_poll_when_ready_resume_blocks_pending_query(): void
+    public function test_query_task_poll_yields_without_long_poll_when_ready_resume_blocks_nonblocking_pending_query(): void
     {
         Queue::fake();
         config(['server.polling.timeout' => 10]);
@@ -2670,7 +2804,7 @@ class WorkflowQueryTaskBrokerTest extends TestCase
             ->where('worker_id', 'python-query-signal-resume-yield-worker')
             ->firstOrFail();
 
-        $poll = $broker->poll('default', $worker, null, 10);
+        $poll = $broker->poll('default', $worker, null, 0);
 
         $this->assertNull($poll);
         $this->assertSame(0, $poller->pauseCalls);

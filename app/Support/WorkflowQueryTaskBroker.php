@@ -771,7 +771,8 @@ final class WorkflowQueryTaskBroker
                     $pollRequestId,
                 );
             },
-            static fn (?array $task): bool => $task !== null,
+            static fn (?array $task): bool => $task !== null
+                && ($task['poll_status'] ?? null) !== 'workflow_task_pending',
             timeoutSeconds: $timeoutSeconds,
             wakeChannels: $this->signals->queryTaskPollChannels($namespace, $taskQueue),
             reserveWorkerWaitSlot: true,

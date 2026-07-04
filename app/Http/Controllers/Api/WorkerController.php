@@ -1213,6 +1213,9 @@ class WorkerController
 
         /** @var WorkflowTaskBridge $bridge */
         $bridge = app(WorkflowTaskBridge::class);
+        $workflowTaskQueue = WorkflowTask::query()
+            ->whereKey($taskId)
+            ->value('queue');
 
         try {
             $outcome = $bridge->complete($taskId, $commands);
@@ -1232,7 +1235,7 @@ class WorkerController
         }
 
         app(ServiceModeTimerDispatcher::class)->dispatchCreatedTaskIds($outcome['created_task_ids'] ?? []);
-        $this->wakeQueryTaskPollersForWorkflowTask($namespace, $taskId);
+        $this->wakeQueryTaskPollersForWorkflowTaskQueue($namespace, $workflowTaskQueue);
 
         return WorkerProtocol::json([
             'task_id' => $taskId,
@@ -2234,15 +2237,11 @@ class WorkerController
         );
     }
 
-    private function wakeQueryTaskPollersForWorkflowTask(mixed $namespace, string $taskId): void
+    private function wakeQueryTaskPollersForWorkflowTaskQueue(mixed $namespace, mixed $taskQueue): void
     {
         if (! is_string($namespace) || trim($namespace) === '') {
             return;
         }
-
-        $taskQueue = WorkflowTask::query()
-            ->whereKey($taskId)
-            ->value('queue');
 
         $this->queryTasks->wakeTaskQueue($namespace, is_string($taskQueue) ? $taskQueue : null);
     }
