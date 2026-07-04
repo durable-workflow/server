@@ -131,6 +131,9 @@ final class HeartbeatRuntimeResultGate
                 'cadence_drift_reports_numeric_intervals_within_tolerance',
                 'stale_transition_matches_acknowledged_window',
                 'stale_worker_routing_reports_zero_claims',
+                'two_worker_stale_routing_records_before_and_after_observations',
+                'stale_routing_records_conformance_run_id_timestamp_and_public_surfaces',
+                'fresh_worker_remains_eligible_after_peer_stale',
                 'waterline_visibility_reports_rendered_worker_status',
                 'adversarial_heartbeat_rejections_are_4xx_typed_and_not_persisted',
                 'cross_namespace_isolation_reports_zero_leaks',
@@ -1498,17 +1501,500 @@ final class HeartbeatRuntimeResultGate
      */
     private static function staleRoutingSemanticFailures(array $outputs): array
     {
+        $failures = [];
+        $staleWorkerId = self::stringValue(self::fieldValue($outputs, 'stale_worker_id'));
+        $freshWorkerId = self::stringValue(self::fieldValue($outputs, 'fresh_worker_id'));
+        $threshold = self::numberValue(self::fieldValue($outputs, 'configured_stale_threshold_seconds'));
+        $transitionTiming = self::arrayField($outputs, ['observed_stale_transition_timing']);
+        $beforeObservations = self::arrayField($outputs, ['routing_observations_before_stale']);
+        $afterObservations = self::arrayField($outputs, ['routing_observations_after_stale']);
+        $freshEligibility = self::fieldValue($outputs, 'fresh_worker_eligibility_after_stale');
+        $surfaces = self::publicSurfaceStrings(self::fieldValue($outputs, 'public_surfaces'));
+        $runId = self::fieldValue($outputs, 'conformance_run_id');
+        $timestamp = self::timestampValue(self::fieldValue($outputs, 'timestamp'));
         $claimCount = self::numberValue(self::fieldValue($outputs, 'stale_worker_claim_count'));
-        if ($claimCount === 0.0) {
+
+        if ($staleWorkerId === '' || $freshWorkerId === '') {
+            $failures[] = [
+                'code' => 'stale_worker_routing_missing_two_worker_ids',
+                'scenario_id' => 'stale_worker_routing_exclusion',
+                'stale_worker_id' => $staleWorkerId !== '' ? $staleWorkerId : null,
+                'fresh_worker_id' => $freshWorkerId !== '' ? $freshWorkerId : null,
+            ];
+        } elseif ($staleWorkerId === $freshWorkerId) {
+            $failures[] = [
+                'code' => 'stale_worker_routing_worker_ids_not_distinct',
+                'scenario_id' => 'stale_worker_routing_exclusion',
+                'worker_id' => $staleWorkerId,
+            ];
+        }
+
+        if ($threshold === null || $threshold <= 0) {
+            $failures[] = [
+                'code' => 'stale_worker_routing_invalid_configured_threshold',
+                'scenario_id' => 'stale_worker_routing_exclusion',
+                'field' => 'configured_stale_threshold_seconds',
+                'value' => self::fieldValue($outputs, 'configured_stale_threshold_seconds'),
+            ];
+        }
+
+        if (self::isEmptyEvidence($transitionTiming)) {
+            $failures[] = [
+                'code' => 'stale_worker_routing_missing_transition_timing',
+                'scenario_id' => 'stale_worker_routing_exclusion',
+                'field' => 'observed_stale_transition_timing',
+            ];
+        }
+
+        if (self::isEmptyEvidence($beforeObservations)) {
+            $failures[] = [
+                'code' => 'stale_worker_routing_missing_before_observations',
+                'scenario_id' => 'stale_worker_routing_exclusion',
+                'field' => 'routing_observations_before_stale',
+            ];
+        }
+
+        if (self::isEmptyEvidence($afterObservations)) {
+            $failures[] = [
+                'code' => 'stale_worker_routing_missing_after_observations',
+                'scenario_id' => 'stale_worker_routing_exclusion',
+                'field' => 'routing_observations_after_stale',
+            ];
+        }
+
+        if ($staleWorkerId !== '' && $freshWorkerId !== '' && $staleWorkerId !== $freshWorkerId) {
+            array_push(
+                $failures,
+                ...self::staleRoutingWorkerBindingFailures(
+                    $beforeObservations,
+                    $afterObservations,
+                    $staleWorkerId,
+                    $freshWorkerId,
+                ),
+            );
+        }
+
+        if (! self::freshWorkerEligibleEvidence($freshEligibility, $freshWorkerId)) {
+            $failures[] = [
+                'code' => 'fresh_worker_not_eligible_after_peer_stale',
+                'scenario_id' => 'stale_worker_routing_exclusion',
+                'field' => 'fresh_worker_eligibility_after_stale',
+                'value' => $freshEligibility,
+            ];
+        }
+
+        if (! self::hasWorkerStatusSurface($surfaces)) {
+            $failures[] = [
+                'code' => 'stale_worker_routing_missing_worker_status_surface',
+                'scenario_id' => 'stale_worker_routing_exclusion',
+                'field' => 'public_surfaces',
+                'surfaces' => $surfaces,
+            ];
+        }
+
+        if (! self::hasRoutingSurface($surfaces)) {
+            $failures[] = [
+                'code' => 'stale_worker_routing_missing_routing_surface',
+                'scenario_id' => 'stale_worker_routing_exclusion',
+                'field' => 'public_surfaces',
+                'surfaces' => $surfaces,
+            ];
+        }
+
+        if (! self::isConcreteEvidence($runId)) {
+            $failures[] = [
+                'code' => 'stale_worker_routing_missing_conformance_run_id',
+                'scenario_id' => 'stale_worker_routing_exclusion',
+                'field' => 'conformance_run_id',
+            ];
+        }
+
+        if ($timestamp === null) {
+            $failures[] = [
+                'code' => 'stale_worker_routing_missing_parseable_timestamp',
+                'scenario_id' => 'stale_worker_routing_exclusion',
+                'field' => 'timestamp',
+            ];
+        }
+
+        if ($claimCount !== 0.0) {
+            $failures[] = [
+                'code' => 'stale_worker_routing_claims_not_zero',
+                'scenario_id' => 'stale_worker_routing_exclusion',
+                'field' => 'stale_worker_claim_count',
+                'value' => self::fieldValue($outputs, 'stale_worker_claim_count'),
+            ];
+        }
+
+        return $failures;
+    }
+
+    /**
+     * @return list<array<string, mixed>>
+     */
+    private static function staleRoutingWorkerBindingFailures(
+        ?array $beforeObservations,
+        ?array $afterObservations,
+        string $staleWorkerId,
+        string $freshWorkerId,
+    ): array {
+        $failures = [];
+        $beforePositiveWorkerIds = self::routingPositiveWorkerIds($beforeObservations);
+        $beforeNegativeWorkerIds = self::routingNegativeWorkerIds($beforeObservations);
+        $afterPositiveWorkerIds = self::routingPositiveWorkerIds($afterObservations);
+        $afterNegativeWorkerIds = self::routingNegativeWorkerIds($afterObservations);
+
+        if (! in_array($staleWorkerId, $beforePositiveWorkerIds, true)) {
+            $failures[] = [
+                'code' => 'stale_worker_routing_before_missing_stale_worker_evidence',
+                'scenario_id' => 'stale_worker_routing_exclusion',
+                'field' => 'routing_observations_before_stale',
+                'worker_id' => $staleWorkerId,
+                'observed_worker_ids' => $beforePositiveWorkerIds,
+            ];
+        }
+
+        if (! in_array($freshWorkerId, $beforePositiveWorkerIds, true)) {
+            $failures[] = [
+                'code' => 'stale_worker_routing_before_missing_fresh_worker_evidence',
+                'scenario_id' => 'stale_worker_routing_exclusion',
+                'field' => 'routing_observations_before_stale',
+                'worker_id' => $freshWorkerId,
+                'observed_worker_ids' => $beforePositiveWorkerIds,
+            ];
+        }
+
+        if (in_array($staleWorkerId, $beforeNegativeWorkerIds, true)) {
+            $failures[] = [
+                'code' => 'stale_worker_routing_before_stale_worker_already_excluded',
+                'scenario_id' => 'stale_worker_routing_exclusion',
+                'field' => 'routing_observations_before_stale',
+                'worker_id' => $staleWorkerId,
+                'observed_worker_ids' => $beforeNegativeWorkerIds,
+            ];
+        }
+
+        if (! in_array($freshWorkerId, $afterPositiveWorkerIds, true)) {
+            $failures[] = [
+                'code' => 'stale_worker_routing_after_missing_fresh_worker_evidence',
+                'scenario_id' => 'stale_worker_routing_exclusion',
+                'field' => 'routing_observations_after_stale',
+                'worker_id' => $freshWorkerId,
+                'observed_worker_ids' => $afterPositiveWorkerIds,
+            ];
+        }
+
+        if (! in_array($staleWorkerId, $afterNegativeWorkerIds, true)) {
+            $failures[] = [
+                'code' => 'stale_worker_routing_after_missing_stale_worker_exclusion',
+                'scenario_id' => 'stale_worker_routing_exclusion',
+                'field' => 'routing_observations_after_stale',
+                'worker_id' => $staleWorkerId,
+                'observed_worker_ids' => $afterNegativeWorkerIds,
+            ];
+        }
+
+        if (in_array($staleWorkerId, $afterPositiveWorkerIds, true)) {
+            $failures[] = [
+                'code' => 'stale_worker_routing_after_stale_worker_still_eligible',
+                'scenario_id' => 'stale_worker_routing_exclusion',
+                'field' => 'routing_observations_after_stale',
+                'worker_id' => $staleWorkerId,
+                'observed_worker_ids' => $afterPositiveWorkerIds,
+            ];
+        }
+
+        if (in_array($freshWorkerId, $afterNegativeWorkerIds, true)) {
+            $failures[] = [
+                'code' => 'stale_worker_routing_after_fresh_worker_excluded',
+                'scenario_id' => 'stale_worker_routing_exclusion',
+                'field' => 'routing_observations_after_stale',
+                'worker_id' => $freshWorkerId,
+                'observed_worker_ids' => $afterNegativeWorkerIds,
+            ];
+        }
+
+        return $failures;
+    }
+
+    private static function freshWorkerEligibleEvidence(mixed $value, string $freshWorkerId): bool
+    {
+        if ($freshWorkerId === '' || ! is_array($value) || self::isEmptyEvidence($value)) {
+            return false;
+        }
+
+        if (! in_array($freshWorkerId, self::evidenceWorkerIds($value), true)) {
+            return false;
+        }
+
+        if (self::hasNegativeEligibilityEvidence($value)) {
+            return false;
+        }
+
+        return self::hasPositiveEligibilityEvidence($value);
+    }
+
+    /**
+     * @return list<string>
+     */
+    private static function routingPositiveWorkerIds(mixed $value): array
+    {
+        return self::routingWorkerIds($value, [
+            'eligible_workers',
+            'eligibleWorkers',
+            'fresh_workers',
+            'freshWorkers',
+            'active_workers',
+            'activeWorkers',
+            'included_workers',
+            'includedWorkers',
+            'routable_workers',
+            'routableWorkers',
+            'admitted_workers',
+            'admittedWorkers',
+            'accepted_workers',
+            'acceptedWorkers',
+            'routed_workers',
+            'routedWorkers',
+            'claiming_workers',
+            'claimingWorkers',
+            'claimed_workers',
+            'claimedWorkers',
+            'lease_owners',
+            'leaseOwners',
+            'query_task_lease_owners',
+            'queryTaskLeaseOwners',
+            'workflow_task_lease_owners',
+            'workflowTaskLeaseOwners',
+            'worker_ids',
+            'workerIds',
+        ], true);
+    }
+
+    /**
+     * @return list<string>
+     */
+    private static function routingNegativeWorkerIds(mixed $value): array
+    {
+        return self::routingWorkerIds($value, [
+            'excluded_workers',
+            'excludedWorkers',
+            'stale_workers',
+            'staleWorkers',
+            'ineligible_workers',
+            'ineligibleWorkers',
+            'blocked_workers',
+            'blockedWorkers',
+            'rejected_workers',
+            'rejectedWorkers',
+            'denied_workers',
+            'deniedWorkers',
+            'skipped_workers',
+            'skippedWorkers',
+            'not_routed_workers',
+            'notRoutedWorkers',
+        ], false);
+    }
+
+    /**
+     * @param list<string> $workerListFields
+     *
+     * @return list<string>
+     */
+    private static function routingWorkerIds(mixed $value, array $workerListFields, bool $positive): array
+    {
+        if (! is_array($value)) {
             return [];
         }
 
-        return [[
-            'code' => 'stale_worker_routing_claims_not_zero',
-            'scenario_id' => 'stale_worker_routing_exclusion',
-            'field' => 'stale_worker_claim_count',
-            'value' => self::fieldValue($outputs, 'stale_worker_claim_count'),
-        ]];
+        $workerIds = [];
+        $isList = array_is_list($value);
+
+        foreach ($value as $key => $item) {
+            if (is_string($key) && in_array($key, $workerListFields, true)) {
+                array_push($workerIds, ...self::evidenceWorkerIds($item));
+                continue;
+            }
+
+            if (! is_array($item)) {
+                continue;
+            }
+
+            array_push($workerIds, ...self::routingWorkerIds($item, $workerListFields, $positive));
+        }
+
+        if (! $isList) {
+            $workerId = self::stringField($value, ['worker_id', 'workerId', 'worker']);
+            if ($workerId !== '') {
+                if ($positive && self::hasPositiveEligibilityEvidence($value) && ! self::hasNegativeEligibilityEvidence($value)) {
+                    $workerIds[] = $workerId;
+                }
+
+                if (! $positive && self::hasNegativeEligibilityEvidence($value)) {
+                    $workerIds[] = $workerId;
+                }
+            }
+        }
+
+        return array_values(array_unique($workerIds));
+    }
+
+    /**
+     * @return list<string>
+     */
+    private static function evidenceWorkerIds(mixed $value): array
+    {
+        if (is_string($value) && trim($value) !== '') {
+            return [trim($value)];
+        }
+
+        if (! is_array($value)) {
+            return [];
+        }
+
+        $workerIds = [];
+        $isList = array_is_list($value);
+
+        if (! $isList) {
+            $workerId = self::stringField($value, [
+                'worker_id',
+                'workerId',
+                'worker',
+                'worker_name',
+                'workerName',
+            ]);
+            if ($workerId !== '') {
+                $workerIds[] = $workerId;
+            }
+        }
+
+        foreach ($value as $key => $item) {
+            if (is_string($key) && in_array($key, [
+                'worker_id',
+                'workerId',
+                'worker',
+                'worker_name',
+                'workerName',
+            ], true)) {
+                continue;
+            }
+
+            if (is_int($key) && is_string($item) && trim($item) !== '') {
+                $workerIds[] = trim($item);
+                continue;
+            }
+
+            if (is_array($item)) {
+                array_push($workerIds, ...self::evidenceWorkerIds($item));
+            }
+        }
+
+        return array_values(array_unique($workerIds));
+    }
+
+    private static function hasPositiveEligibilityEvidence(array $value): bool
+    {
+        foreach ([
+            'eligible',
+            'is_eligible',
+            'fresh_worker_eligible',
+            'freshWorkerEligible',
+            'routing_eligible',
+            'routingEligible',
+            'admitted',
+            'accepted',
+            'routable',
+            'claimable',
+            'claimed',
+        ] as $field) {
+            if (self::isPositiveEligibilityValue(self::fieldValue($value, $field))) {
+                return true;
+            }
+        }
+
+        foreach (['status', 'routing_status', 'routingStatus'] as $field) {
+            if (self::isPositiveEligibilityValue(self::fieldValue($value, $field))) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    private static function hasNegativeEligibilityEvidence(array $value): bool
+    {
+        foreach ([
+            'eligible',
+            'is_eligible',
+            'fresh_worker_eligible',
+            'freshWorkerEligible',
+            'routing_eligible',
+            'routingEligible',
+            'admitted',
+            'accepted',
+            'routable',
+            'claimable',
+            'claimed',
+        ] as $field) {
+            $candidate = self::fieldValue($value, $field);
+            if ($candidate === false) {
+                return true;
+            }
+
+            if (is_string($candidate) && self::isNegativeEligibilityValue($candidate)) {
+                return true;
+            }
+        }
+
+        foreach (['status', 'routing_status', 'routingStatus', 'reason', 'routing_reason', 'routingReason'] as $field) {
+            if (self::isNegativeEligibilityValue(self::fieldValue($value, $field))) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    private static function isPositiveEligibilityValue(mixed $value): bool
+    {
+        if ($value === true) {
+            return true;
+        }
+
+        if (! is_string($value)) {
+            return false;
+        }
+
+        return in_array(strtolower(trim($value)), [
+            'active',
+            'admitted',
+            'eligible',
+            'fresh',
+            'routable',
+            'true',
+            'yes',
+        ], true);
+    }
+
+    private static function isNegativeEligibilityValue(mixed $value): bool
+    {
+        if (! is_string($value)) {
+            return false;
+        }
+
+        return in_array(strtolower(trim($value)), [
+            'blocked',
+            'denied',
+            'excluded',
+            'false',
+            'ineligible',
+            'not eligible',
+            'not_eligible',
+            'rejected',
+            'stale',
+            'stale_worker_registration',
+            'unavailable',
+        ], true);
     }
 
     /**
@@ -1785,6 +2271,74 @@ final class HeartbeatRuntimeResultGate
         }
 
         return array_values(array_unique($workerIds));
+    }
+
+    /**
+     * @return list<string>
+     */
+    private static function publicSurfaceStrings(mixed $value): array
+    {
+        if (is_string($value) && trim($value) !== '') {
+            return [trim($value)];
+        }
+
+        if (! is_array($value)) {
+            return [];
+        }
+
+        $surfaces = [];
+        foreach ($value as $item) {
+            if (is_string($item) && trim($item) !== '') {
+                $surfaces[] = trim($item);
+                continue;
+            }
+
+            if (is_array($item)) {
+                array_push($surfaces, ...self::publicSurfaceStrings($item));
+            }
+        }
+
+        return array_values(array_unique($surfaces));
+    }
+
+    /**
+     * @param list<string> $surfaces
+     */
+    private static function hasWorkerStatusSurface(array $surfaces): bool
+    {
+        foreach ($surfaces as $surface) {
+            $normalized = strtolower($surface);
+            if (str_contains($normalized, '/api/workers')
+                || str_contains($normalized, 'worker:list')
+                || str_contains($normalized, 'worker list')
+                || str_contains($normalized, 'worker:describe')
+                || str_contains($normalized, 'worker describe')
+                || str_contains($normalized, 'worker status')) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /**
+     * @param list<string> $surfaces
+     */
+    private static function hasRoutingSurface(array $surfaces): bool
+    {
+        foreach ($surfaces as $surface) {
+            $normalized = strtolower($surface);
+            if (str_contains($normalized, '/api/workflows')
+                || str_contains($normalized, '/api/worker/query-tasks')
+                || str_contains($normalized, 'workflow start')
+                || str_contains($normalized, 'query task')
+                || str_contains($normalized, 'query routing')
+                || str_contains($normalized, 'task routing')) {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     /**

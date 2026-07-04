@@ -14,9 +14,10 @@ class HeartbeatRuntimeContractTest extends TestCase
         $manifest = HeartbeatRuntimeContract::manifest();
 
         $this->assertSame('durable-workflow.v2.heartbeat-runtime.contract', $manifest['schema']);
-        $this->assertSame(1, HeartbeatRuntimeContract::VERSION);
+        $this->assertSame(2, HeartbeatRuntimeContract::VERSION);
         $this->assertSame(HeartbeatRuntimeContract::VERSION, $manifest['version']);
         $this->assertSame('durable-workflow.v2.heartbeat-runtime.result', $manifest['result_schema']);
+        $this->assertSame(2, $manifest['result_version']);
         $this->assertSame('heartbeat_runtime_contract', $manifest['fixture_category']);
         $this->assertSame(
             PlatformConformanceSuite::SCHEMA,
@@ -77,6 +78,7 @@ class HeartbeatRuntimeContractTest extends TestCase
         $this->assertContains('Waterline Worker Status view', $manifest['required_matrix']['operator_visibility_paths']);
         $this->assertContains('stale_workers_excluded_from_workflow_start', $manifest['required_matrix']['routing_cells']);
         $this->assertContains('stale_workers_excluded_from_query_tasks', $manifest['required_matrix']['routing_cells']);
+        $this->assertContains('fresh_worker_remains_eligible_after_peer_stale', $manifest['required_matrix']['routing_cells']);
         $this->assertContains('malformed_heartbeat_rejection', $manifest['required_matrix']['adversarial_cells']);
         $this->assertContains('cross_namespace_isolation', $manifest['required_matrix']['adversarial_cells']);
 
@@ -200,6 +202,18 @@ class HeartbeatRuntimeContractTest extends TestCase
         $this->assertContains('artifact_sources_are_recognized_published_channels', $resultGate['pass_requires']);
         $this->assertContains('stale_worker_routing_reports_zero_claims', $resultGate['pass_requires']);
         $this->assertContains(
+            'two_worker_stale_routing_records_before_and_after_observations',
+            $resultGate['pass_requires'],
+        );
+        $this->assertContains(
+            'stale_routing_records_conformance_run_id_timestamp_and_public_surfaces',
+            $resultGate['pass_requires'],
+        );
+        $this->assertContains(
+            'fresh_worker_remains_eligible_after_peer_stale',
+            $resultGate['pass_requires'],
+        );
+        $this->assertContains(
             'adversarial_heartbeat_rejections_are_4xx_typed_and_not_persisted',
             $resultGate['pass_requires'],
         );
@@ -307,6 +321,123 @@ class HeartbeatRuntimeContractTest extends TestCase
             static fn (array $failure): bool => ($failure['code'] ?? null) === 'stale_worker_routing_claims_not_zero'
                 && ($failure['value'] ?? null) === 2,
         ));
+    }
+
+    public function test_result_gate_requires_fresh_worker_eligibility_to_name_declared_worker(): void
+    {
+        $result = $this->completeHeartbeatResult();
+        $outputs = &$result['scenario_results']['stale_worker_routing_exclusion']['observed_outputs'];
+        $outputs['fresh_worker_eligibility_after_stale'] = 'eligible';
+
+        $genericEvaluation = HeartbeatRuntimeResultGate::evaluate($result);
+        $genericFailureCodes = array_column($genericEvaluation['gate_failures'], 'code');
+
+        $this->assertSame('non_passing', $genericEvaluation['status']);
+        $this->assertContains('fresh_worker_not_eligible_after_peer_stale', $genericFailureCodes);
+
+        $outputs['fresh_worker_eligibility_after_stale'] = [
+            'worker_id' => 'rust-worker',
+            'eligible' => true,
+            'status' => 'active',
+        ];
+
+        $wrongWorkerEvaluation = HeartbeatRuntimeResultGate::evaluate($result);
+        $wrongWorkerFailureCodes = array_column($wrongWorkerEvaluation['gate_failures'], 'code');
+
+        $this->assertSame('non_passing', $wrongWorkerEvaluation['status']);
+        $this->assertContains('fresh_worker_not_eligible_after_peer_stale', $wrongWorkerFailureCodes);
+        unset($outputs);
+    }
+
+    public function test_result_gate_rejects_contradictory_fresh_worker_eligibility(): void
+    {
+        $result = $this->completeHeartbeatResult();
+        $result['scenario_results']['stale_worker_routing_exclusion']['observed_outputs']['fresh_worker_eligibility_after_stale'] = [
+            'worker_id' => 'php-worker',
+            'eligible' => false,
+            'status' => 'active',
+        ];
+
+        $evaluation = HeartbeatRuntimeResultGate::evaluate($result);
+        $failureCodes = array_column($evaluation['gate_failures'], 'code');
+
+        $this->assertSame('non_passing', $evaluation['status']);
+        $this->assertContains('fresh_worker_not_eligible_after_peer_stale', $failureCodes);
+    }
+
+    public function test_result_gate_requires_before_and_after_routing_observations_for_declared_workers(): void
+    {
+        $result = $this->completeHeartbeatResult();
+        $outputs = &$result['scenario_results']['stale_worker_routing_exclusion']['observed_outputs'];
+        $outputs['routing_observations_before_stale'] = [
+            'phase' => 'both_workers_fresh',
+            'eligible_workers' => ['php-worker', 'rust-worker'],
+        ];
+        $outputs['routing_observations_after_stale'] = [
+            'phase' => 'python_worker_stale',
+            'eligible_workers' => ['rust-worker'],
+            'excluded_workers' => ['rust-worker'],
+        ];
+
+        $evaluation = HeartbeatRuntimeResultGate::evaluate($result);
+        $failureCodes = array_column($evaluation['gate_failures'], 'code');
+
+        $this->assertSame('non_passing', $evaluation['status']);
+        $this->assertContains('stale_worker_routing_before_missing_stale_worker_evidence', $failureCodes);
+        $this->assertContains('stale_worker_routing_after_missing_fresh_worker_evidence', $failureCodes);
+        $this->assertContains('stale_worker_routing_after_missing_stale_worker_exclusion', $failureCodes);
+        unset($outputs);
+    }
+
+    public function test_result_gate_rejects_after_stale_routing_observation_contradictions(): void
+    {
+        $result = $this->completeHeartbeatResult();
+        $outputs = &$result['scenario_results']['stale_worker_routing_exclusion']['observed_outputs'];
+        $outputs['routing_observations_after_stale'] = [
+            'phase' => 'python_worker_stale',
+            'eligible_workers' => ['php-worker', 'python-worker'],
+            'excluded_workers' => ['php-worker'],
+        ];
+
+        $evaluation = HeartbeatRuntimeResultGate::evaluate($result);
+        $failureCodes = array_column($evaluation['gate_failures'], 'code');
+
+        $this->assertSame('non_passing', $evaluation['status']);
+        $this->assertContains('stale_worker_routing_after_missing_stale_worker_exclusion', $failureCodes);
+        $this->assertContains('stale_worker_routing_after_stale_worker_still_eligible', $failureCodes);
+        $this->assertContains('stale_worker_routing_after_fresh_worker_excluded', $failureCodes);
+        unset($outputs);
+    }
+
+    public function test_result_gate_rejects_incomplete_focused_stale_routing_evidence(): void
+    {
+        $result = $this->completeHeartbeatResult();
+        $outputs = &$result['scenario_results']['stale_worker_routing_exclusion']['observed_outputs'];
+        $outputs['fresh_worker_id'] = $outputs['stale_worker_id'];
+        $outputs['configured_stale_threshold_seconds'] = 0;
+        $outputs['observed_stale_transition_timing'] = [];
+        $outputs['routing_observations_before_stale'] = [];
+        $outputs['routing_observations_after_stale'] = [];
+        $outputs['fresh_worker_eligibility_after_stale'] = false;
+        $outputs['public_surfaces'] = ['internal harness'];
+        $outputs['conformance_run_id'] = 'observed';
+        $outputs['timestamp'] = 'not-a-date';
+        unset($outputs);
+
+        $evaluation = HeartbeatRuntimeResultGate::evaluate($result);
+        $failureCodes = array_column($evaluation['gate_failures'], 'code');
+
+        $this->assertSame('non_passing', $evaluation['status']);
+        $this->assertContains('stale_worker_routing_worker_ids_not_distinct', $failureCodes);
+        $this->assertContains('stale_worker_routing_invalid_configured_threshold', $failureCodes);
+        $this->assertContains('stale_worker_routing_missing_transition_timing', $failureCodes);
+        $this->assertContains('stale_worker_routing_missing_before_observations', $failureCodes);
+        $this->assertContains('stale_worker_routing_missing_after_observations', $failureCodes);
+        $this->assertContains('fresh_worker_not_eligible_after_peer_stale', $failureCodes);
+        $this->assertContains('stale_worker_routing_missing_worker_status_surface', $failureCodes);
+        $this->assertContains('stale_worker_routing_missing_routing_surface', $failureCodes);
+        $this->assertContains('stale_worker_routing_missing_conformance_run_id', $failureCodes);
+        $this->assertContains('stale_worker_routing_missing_parseable_timestamp', $failureCodes);
     }
 
     public function test_result_gate_rejects_successful_or_untyped_heartbeat_rejections(): void
@@ -567,9 +698,41 @@ class HeartbeatRuntimeContractTest extends TestCase
         ];
         $scenarioResults['stale_worker_routing_exclusion']['observed_outputs'] = [
             'stale_worker_id' => 'python-worker',
-            'start_or_query_request' => ['task_queue' => 'hb-shared', 'query' => 'status'],
-            'routing_result' => ['admitted' => false, 'reason' => 'stale_worker_excluded'],
+            'fresh_worker_id' => 'php-worker',
+            'configured_stale_threshold_seconds' => 60,
+            'observed_stale_transition_timing' => [
+                'stop_timestamp' => '2026-06-05T16:03:00Z',
+                'stale_observed_at' => '2026-06-05T16:04:03Z',
+                'observed_seconds' => 63,
+            ],
+            'routing_observations_before_stale' => [
+                'phase' => 'both_workers_fresh',
+                'task_queue' => 'hb-shared',
+                'eligible_workers' => ['php-worker', 'python-worker'],
+                'workflow_start_admitted' => true,
+            ],
+            'routing_observations_after_stale' => [
+                'phase' => 'python_worker_stale',
+                'task_queue' => 'hb-shared',
+                'eligible_workers' => ['php-worker'],
+                'excluded_workers' => ['python-worker'],
+                'workflow_start_admitted' => true,
+                'query_task_lease_owners' => ['php-worker'],
+            ],
+            'fresh_worker_eligibility_after_stale' => [
+                'worker_id' => 'php-worker',
+                'eligible' => true,
+                'status' => 'active',
+            ],
             'stale_worker_claim_count' => 0,
+            'public_surfaces' => [
+                'GET /api/workers',
+                'GET /api/workers/{workerId}',
+                'POST /api/workflows',
+                'POST /api/worker/query-tasks/poll',
+            ],
+            'conformance_run_id' => '6671',
+            'timestamp' => '2026-06-05T16:04:05Z',
         ];
         $scenarioResults['waterline_worker_status_visibility']['observed_outputs'] = [
             'surface_snapshot' => ['view' => 'Waterline Worker Status', 'workers' => 3],

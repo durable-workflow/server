@@ -985,6 +985,7 @@ class ClusterInfoTest extends TestCase
         $this->assertContains('Waterline Worker Status view', $contract['required_matrix']['operator_visibility_paths']);
         $this->assertContains('stale_workers_excluded_from_workflow_start', $contract['required_matrix']['routing_cells']);
         $this->assertContains('stale_workers_excluded_from_query_tasks', $contract['required_matrix']['routing_cells']);
+        $this->assertContains('fresh_worker_remains_eligible_after_peer_stale', $contract['required_matrix']['routing_cells']);
         $this->assertContains('php_sdk_heartbeat_loop', $contract['required_scenarios']);
         $this->assertContains('python_sdk_heartbeat_loop', $contract['required_scenarios']);
         $this->assertContains('rust_sdk_heartbeat_loop', $contract['required_scenarios']);
@@ -994,6 +995,10 @@ class ClusterInfoTest extends TestCase
         $this->assertContains('cross_namespace_isolation', $contract['required_scenarios']);
         $this->assertContains(
             'runner_blocked_false_for_product_evidence',
+            $contract['coverage_gate']['passing_outcome_requires'],
+        );
+        $this->assertContains(
+            'fresh_worker_remains_eligible_after_peer_stale',
             $contract['coverage_gate']['passing_outcome_requires'],
         );
         $this->assertSame(

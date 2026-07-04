@@ -17,11 +17,11 @@ final class HeartbeatRuntimeContract
 {
     public const SCHEMA = 'durable-workflow.v2.heartbeat-runtime.contract';
 
-    public const VERSION = 1;
+    public const VERSION = 2;
 
     public const RESULT_SCHEMA = 'durable-workflow.v2.heartbeat-runtime.result';
 
-    public const RESULT_VERSION = 1;
+    public const RESULT_VERSION = 2;
 
     /**
      * @return array<string, mixed>
@@ -190,6 +190,7 @@ final class HeartbeatRuntimeContract
                 'routing_cells' => [
                     'stale_workers_excluded_from_workflow_start',
                     'stale_workers_excluded_from_query_tasks',
+                    'fresh_worker_remains_eligible_after_peer_stale',
                 ],
                 'adversarial_cells' => [
                     'malformed_heartbeat_rejection',
@@ -225,6 +226,9 @@ final class HeartbeatRuntimeContract
                     'cadence_drift_dataset_covers_full_window',
                     'stale_transition_timing_matches_server_acknowledged_window',
                     'stale_workers_are_excluded_from_routing',
+                    'two_worker_stale_routing_records_before_and_after_observations',
+                    'stale_routing_records_conformance_run_id_timestamp_and_public_surfaces',
+                    'fresh_worker_remains_eligible_after_peer_stale',
                     'restart_identity_policy_is_observed_and_documented',
                     'api_cli_and_waterline_operator_visibility_reported',
                     'adversarial_heartbeat_rejections_reported',
@@ -490,11 +494,18 @@ final class HeartbeatRuntimeContract
             'stale_worker_routing_exclusion' => [
                 'required_fields' => [
                     'stale_worker_id',
-                    'start_or_query_request',
-                    'routing_result',
+                    'fresh_worker_id',
+                    'configured_stale_threshold_seconds',
+                    'observed_stale_transition_timing',
+                    'routing_observations_before_stale',
+                    'routing_observations_after_stale',
+                    'fresh_worker_eligibility_after_stale',
                     'stale_worker_claim_count',
+                    'public_surfaces',
+                    'conformance_run_id',
+                    'timestamp',
                 ],
-                'expected_behavior' => 'stale workers are not counted as active routing capacity and do not receive workflow or query work',
+                'expected_behavior' => 'two-worker evidence proves a stopped worker becomes stale, later routing excludes the stale worker, and a fresh peer remains eligible for workflow or query work',
             ],
             'restart_identity_determinism' => [
                 'required_fields' => [

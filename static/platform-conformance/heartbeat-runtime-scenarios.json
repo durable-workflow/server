@@ -4,7 +4,7 @@
   "suite_schema": "durable-workflow.v2.platform-conformance.suite",
   "suite_version": 18,
   "result_schema": "durable-workflow.v2.heartbeat-runtime.result",
-  "result_version": 1,
+  "result_version": 2,
   "result_statuses": [
     "pass",
     "fail",
@@ -87,7 +87,8 @@
     ],
     "routing_cells": [
       "stale_workers_excluded_from_workflow_start",
-      "stale_workers_excluded_from_query_tasks"
+      "stale_workers_excluded_from_query_tasks",
+      "fresh_worker_remains_eligible_after_peer_stale"
     ],
     "adversarial_cells": [
       "malformed_heartbeat_rejection",
@@ -273,11 +274,18 @@
     "stale_worker_routing_exclusion": {
       "required_fields": [
         "stale_worker_id",
-        "start_or_query_request",
-        "routing_result",
-        "stale_worker_claim_count"
+        "fresh_worker_id",
+        "configured_stale_threshold_seconds",
+        "observed_stale_transition_timing",
+        "routing_observations_before_stale",
+        "routing_observations_after_stale",
+        "fresh_worker_eligibility_after_stale",
+        "stale_worker_claim_count",
+        "public_surfaces",
+        "conformance_run_id",
+        "timestamp"
       ],
-      "expected_behavior": "stale workers are not counted as active routing capacity and do not receive workflow or query work"
+      "expected_behavior": "two-worker evidence proves a stopped worker becomes stale, later routing excludes the stale worker, and a fresh peer remains eligible for workflow or query work"
     },
     "restart_identity_determinism": {
       "required_fields": [
