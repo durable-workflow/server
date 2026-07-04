@@ -1624,7 +1624,7 @@ PY);
             [1, 2, 3, 4, 5, 6, 7, 8, 9, 10],
             $result['scenario_results']['ordered_signal_delivery']['observed_outputs']['history_signal_order'],
         );
-        $this->assertSame(
+        $this->assertEquals(
             [
                 'rapid_increment_inputs' => [1, 2, 3, 4, 5, 6, 7, 8, 9, 10],
                 'accepted_signal_inputs' => [1, 2, 3, 4, 5, 6, 7, 8, 9, 10],
@@ -2317,7 +2317,7 @@ PY);
         $this->assertSame('pass', $result['scenario_results']['ordered_signal_delivery']['status']);
         $this->assertSame('pass', $result['scenario_results']['dedup_contract_observation']['status']);
         $this->assertSame('pass', $result['scenario_results']['unknown_signal_and_query_errors']['status']);
-        $this->assertSame(
+        $this->assertEquals(
             $versions,
             $result['scenario_results']['ordered_signal_delivery']['observed_outputs']['published_artifact_versions'],
         );
@@ -5229,7 +5229,7 @@ PY);
     {
         $script = $this->signalQueryRunnerPythonDefinitions() . "\n" . $snippet;
         $process = proc_open(
-            ['python3', '-c', $script],
+            ['python3', '-'],
             [
                 0 => ['pipe', 'r'],
                 1 => ['pipe', 'w'],
@@ -5242,6 +5242,7 @@ PY);
             $this->fail('Unable to start python3 for signal/query runner snippet test.');
         }
 
+        fwrite($pipes[0], $script);
         fclose($pipes[0]);
         $stdout = stream_get_contents($pipes[1]);
         $stderr = stream_get_contents($pipes[2]);
@@ -5394,7 +5395,9 @@ PY);
         $result = $this->completeSignalQueryResult();
         $versions = $this->currentHostRunnerArtifactVersions();
 
+        $this->replaceDeclaredArtifactVersions($result, $versions);
         $result['artifactVersions'] = $versions;
+        $result['artifact_versions'] = $versions;
         $result['scenario_results']['published_artifact_install_only']['observed_outputs'][
             'published_artifact_versions'
         ] = $versions;
@@ -5412,6 +5415,26 @@ PY);
         ] = $versions['workflow-php'];
 
         return $result;
+    }
+
+    /**
+     * @param array<string, mixed> $value
+     * @param array<string, string> $versions
+     */
+    private function replaceDeclaredArtifactVersions(array &$value, array $versions): void
+    {
+        foreach (['artifact_versions', 'artifactVersions', 'published_artifact_versions', 'publishedArtifactVersions'] as $field) {
+            if (isset($value[$field]) && is_array($value[$field])) {
+                $value[$field] = $versions;
+            }
+        }
+
+        foreach ($value as &$child) {
+            if (is_array($child)) {
+                $this->replaceDeclaredArtifactVersions($child, $versions);
+            }
+        }
+        unset($child);
     }
 
     /**

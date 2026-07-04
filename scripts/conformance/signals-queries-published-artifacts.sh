@@ -3666,6 +3666,7 @@ def run_replay_terminal_probe(
                 phase="query_during_replay_worker_poll_start",
             )
         probe_context["query_poll_started_at"] = query_task_holder.get("query_poll_started_at")
+        time.sleep(env_float("DW_SIGNALS_QUERIES_REPLAY_QUERY_ENQUEUE_GRACE_SECONDS", 0.75))
 
         probe_context["phase"] = "signal_during_replay_api_call"
         signal_sent_at = now()
