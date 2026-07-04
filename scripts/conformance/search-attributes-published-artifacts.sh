@@ -184,7 +184,7 @@ const TOPOLOGY = {
   reserved_name_refusals: [],
 };
 const RESULT_GATE_SCHEMA = 'durable-workflow.v2.search-attribute-runtime.result-gate';
-const RESULT_GATE_VERSION = 9;
+const RESULT_GATE_VERSION = 10;
 const REQUIRED_QUERIES = {
   equality: 'customer_id = "cust-7"',
   range: 'order_total_cents > 5000 AND order_total_cents <= 10000',
@@ -198,6 +198,7 @@ const ALLOWED_STATUSES = ['pass', 'fail', 'unsupported', 'not_covered', 'runner_
 const ALLOWED_OUTCOMES = ['pass', 'non_passing', 'non_passing_runner_blocked', 'non_passing_with_root_cause_finding'];
 const REQUIRED_RUN_RECORD_FIELDS = [
   'artifact_versions',
+  'run_id',
   'started_at',
   'finished_at',
   'generated_at',
@@ -210,6 +211,7 @@ const REQUIRED_RUN_RECORD_FIELDS = [
   'query_verdicts',
   'codec_round_trips',
   'latency_distribution',
+  'load_profile',
 ];
 const REQUIRED_RUNTIME_CELLS = RUNTIME_MATRIX.runtime_cells;
 const REQUIRED_CROSS_LANGUAGE_CELLS = RUNTIME_MATRIX.cross_language_cells;
@@ -241,6 +243,10 @@ const FULL_PARITY_SCENARIOS = [
 
 function now() {
   return new Date().toISOString().replace(/\.\d{3}Z$/, 'Z');
+}
+
+function defaultRunId(startedAt) {
+  return `search-attributes-${startedAt.replace(/[^0-9TZ]/g, '')}`;
 }
 
 function writeJson(file, value) {
@@ -1370,6 +1376,42 @@ function queryVerdictFailures(section) {
   return failures;
 }
 
+function latencyAndLoadContractEvidenceFailures(section, scenarioId, codePrefix, requiredObservedBoundFields) {
+  const failures = [];
+
+  if (!hasNonPlaceholderField(section, [
+    'consistency_contract',
+    'consistencyContract',
+    'user_visible_consistency_contract',
+    'userVisibleConsistencyContract',
+  ])) {
+    failures.push({ code: `missing_${codePrefix}_consistency_contract`, scenario_id: scenarioId });
+  }
+
+  const observedBounds = firstArrayField(section, ['observed_bounds', 'observedBounds']);
+  if (observedBounds === null || !nonEmptyValue(observedBounds)) {
+    failures.push({ code: `missing_${codePrefix}_observed_bounds`, scenario_id: scenarioId });
+  } else {
+    for (const field of requiredObservedBoundFields) {
+      if (!hasNumericField(observedBounds, [field, camelize(field)])) {
+        failures.push({ code: `missing_${codePrefix}_observed_bound_field`, scenario_id: scenarioId, field });
+      }
+    }
+  }
+
+  const surfaces = (stringArrayField(section, [
+    'public_observation_surfaces',
+    'publicObservationSurfaces',
+    'observation_surfaces',
+    'observationSurfaces',
+  ]) || []).filter((surface) => !isPlaceholderEvidence(surface));
+  if (surfaces.length === 0) {
+    failures.push({ code: `missing_${codePrefix}_public_observation_surfaces`, scenario_id: scenarioId });
+  }
+
+  return failures;
+}
+
 function waterlineEvidenceSection(section) {
   if (!isObject(section)) {
     return {};
@@ -1819,6 +1861,12 @@ function evaluateResultGate(result) {
         }
       }
     }
+    failures.push(...latencyAndLoadContractEvidenceFailures(
+      section,
+      'indexing_latency_distribution',
+      'latency',
+      ['documented_bound_ms', 'p95_ms', 'max_ms'],
+    ));
   }
   if (scenarioStatuses.load_and_bounded_latency === 'pass') {
     const section = sectionValue(result, 'load_profile') || {};
@@ -1843,6 +1891,12 @@ function evaluateResultGate(result) {
         }
       }
     }
+    failures.push(...latencyAndLoadContractEvidenceFailures(
+      section,
+      'load_and_bounded_latency',
+      'load',
+      ['workflow_count', 'p50_ms', 'p95_ms', 'max_ms'],
+    ));
   }
   if (['equality_range_bool_query_behavior', 'or_not_query_grammar', 'keyword_list_membership']
     .some((scenarioId) => scenarioStatuses[scenarioId] === 'pass')) {
@@ -2004,6 +2058,7 @@ function applyGateEvaluation(result, versions) {
 function normalizeResult(result, startedAt, finishedAt, versions) {
   const normalized = { ...result };
   normalized.schema = normalized.schema || SCHEMA;
+  normalized.run_id = normalized.run_id || normalized.runId || defaultRunId(startedAt);
   normalized.started_at = normalized.started_at || startedAt;
   normalized.finished_at = normalized.finished_at || finishedAt;
   normalized.generated_at = normalized.generated_at || finishedAt;
@@ -2032,6 +2087,7 @@ function blockedResult(reason, startedAt, finishedAt, versions) {
   const findings = REQUIRED_SCENARIOS.map((scenarioId) => findingFor(scenarioId, reason, versions));
   return {
     schema: SCHEMA,
+    run_id: defaultRunId(startedAt),
     outcome: 'non_passing_runner_blocked',
     runner_blocked: true,
     started_at: startedAt,
@@ -2064,6 +2120,7 @@ function partialCoverageResult(reason, startedAt, finishedAt, versions) {
   const findings = REQUIRED_SCENARIOS.map((scenarioId) => coverageGapFindingFor(scenarioId, reason, versions));
   return {
     schema: SCHEMA,
+    run_id: defaultRunId(startedAt),
     outcome: 'non_passing',
     runner_blocked: false,
     started_at: startedAt,
@@ -2321,6 +2378,7 @@ const record = {
   experiment: 'search-attributes',
   outcome,
   runnerBlocked,
+  runId: result.run_id || result.runId,
   artifactVersions: result.artifactVersions || versions,
   findings,
   resultGate: gateEvaluation,

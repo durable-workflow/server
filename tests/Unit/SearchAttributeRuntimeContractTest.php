@@ -14,7 +14,7 @@ class SearchAttributeRuntimeContractTest extends TestCase
         $manifest = SearchAttributeRuntimeContract::manifest();
 
         $this->assertSame('durable-workflow.v2.search-attribute-runtime.contract', $manifest['schema']);
-        $this->assertSame(10, SearchAttributeRuntimeContract::VERSION);
+        $this->assertSame(11, SearchAttributeRuntimeContract::VERSION);
         $this->assertSame(SearchAttributeRuntimeContract::VERSION, $manifest['version']);
         $this->assertSame('durable-workflow.v2.search-attribute-runtime.result', $manifest['result_schema']);
         $this->assertSame('search_attribute_runtime_contract', $manifest['fixture_category']);
@@ -51,6 +51,7 @@ class SearchAttributeRuntimeContractTest extends TestCase
 
         foreach ([
             'artifact_versions',
+            'run_id',
             'started_at',
             'finished_at',
             'generated_at',
@@ -63,6 +64,7 @@ class SearchAttributeRuntimeContractTest extends TestCase
             'query_verdicts',
             'codec_round_trips',
             'latency_distribution',
+            'load_profile',
         ] as $field) {
             $this->assertContains($field, $manifest['artifact_policy']['required_run_record_fields']);
         }
@@ -96,12 +98,28 @@ class SearchAttributeRuntimeContractTest extends TestCase
             $manifest['scenario_requirements']['indexing_latency_distribution']['documented_bound_compared_fields'],
         );
         $this->assertSame(
+            ['consistency_contract', 'observed_bounds', 'public_observation_surfaces'],
+            $manifest['scenario_requirements']['indexing_latency_distribution']['required_evidence_fields'],
+        );
+        $this->assertSame(
+            ['documented_bound_ms', 'p95_ms', 'max_ms'],
+            $manifest['scenario_requirements']['indexing_latency_distribution']['required_observed_bound_fields'],
+        );
+        $this->assertSame(
             ['equality', 'range', 'bool', 'keyword_list'],
             $manifest['scenario_requirements']['load_and_bounded_latency']['required_query_latency_classes'],
         );
         $this->assertSame(
             ['p50_ms', 'p95_ms', 'max_ms'],
             $manifest['scenario_requirements']['load_and_bounded_latency']['required_query_latency_fields'],
+        );
+        $this->assertSame(
+            ['consistency_contract', 'observed_bounds', 'public_observation_surfaces'],
+            $manifest['scenario_requirements']['load_and_bounded_latency']['required_evidence_fields'],
+        );
+        $this->assertSame(
+            ['workflow_count', 'p50_ms', 'p95_ms', 'max_ms'],
+            $manifest['scenario_requirements']['load_and_bounded_latency']['required_observed_bound_fields'],
         );
 
         $this->assertContains(
@@ -157,6 +175,9 @@ class SearchAttributeRuntimeContractTest extends TestCase
             'load_latency_reported',
             'indexing_latency_p95_and_max_compared_to_documented_bound',
             'load_latency_reported_per_query_class',
+            'latency_and_load_evidence_names_consistency_contract',
+            'latency_and_load_evidence_records_public_observation_surfaces',
+            'latency_and_load_evidence_records_run_id_and_observed_bounds',
             'or_not_grammar_reported_with_exact_query_counts',
             'query_injection_hardening_reported_with_status_and_response_body',
             'runner_blocked_false_for_product_evidence',
@@ -171,7 +192,7 @@ class SearchAttributeRuntimeContractTest extends TestCase
         $resultGate = SearchAttributeRuntimeContract::manifest()['result_gate'];
 
         $this->assertSame(SearchAttributeRuntimeResultGate::SCHEMA, $resultGate['schema']);
-        $this->assertSame(9, SearchAttributeRuntimeResultGate::VERSION);
+        $this->assertSame(10, SearchAttributeRuntimeResultGate::VERSION);
         $this->assertSame(SearchAttributeRuntimeResultGate::VERSION, $resultGate['version']);
         $this->assertSame(
             SearchAttributeRuntimeContract::RESULT_SCHEMA,
@@ -212,6 +233,18 @@ class SearchAttributeRuntimeContractTest extends TestCase
         );
         $this->assertContains(
             'load_latency_reported_for_equality_range_bool_and_keyword_list_filters',
+            $resultGate['pass_requires'],
+        );
+        $this->assertContains(
+            'latency_and_load_evidence_names_consistency_contract',
+            $resultGate['pass_requires'],
+        );
+        $this->assertContains(
+            'latency_and_load_evidence_records_public_observation_surfaces',
+            $resultGate['pass_requires'],
+        );
+        $this->assertContains(
+            'latency_and_load_evidence_records_run_id_and_observed_bounds',
             $resultGate['pass_requires'],
         );
         $this->assertContains('runner_blocked_false_for_product_evidence', $resultGate['pass_requires']);
@@ -569,6 +602,8 @@ class SearchAttributeRuntimeContractTest extends TestCase
 
             $this->assertSame('pass', $result['outcome']);
             $this->assertSame('pass', $record['outcome']);
+            $this->assertSame('search-attributes-20260520T120000Z', $result['run_id']);
+            $this->assertSame('search-attributes-20260520T120000Z', $record['runId']);
             $this->assertSame('pass', $result['result_gate']['status']);
             $this->assertSame('pass', $record['resultGate']['status']);
             $this->assertSame([], $result['result_gate']['gate_failures']);
@@ -944,6 +979,40 @@ class SearchAttributeRuntimeContractTest extends TestCase
         $this->assertContains(
             'missing_load_query_latency_field',
             array_column($evaluation['gate_failures'], 'code'),
+        );
+    }
+
+    public function test_result_gate_requires_latency_and_load_contract_evidence(): void
+    {
+        $result = $this->completeSearchAttributeResult();
+        unset($result['run_id']);
+        unset($result['latency_distribution']['consistency_contract']);
+        unset($result['latency_distribution']['observed_bounds']['max_ms']);
+        unset($result['latency_distribution']['public_observation_surfaces']);
+        unset($result['load_profile']['consistency_contract']);
+        unset($result['load_profile']['observed_bounds']);
+        $result['load_profile']['public_observation_surfaces'] = ['ok'];
+
+        $evaluation = SearchAttributeRuntimeResultGate::evaluate($result);
+        $failureCodes = array_column($evaluation['gate_failures'], 'code');
+
+        $this->assertSame('non_passing', $evaluation['status']);
+        $this->assertContains('missing_run_record_field', $failureCodes);
+        $this->assertContains('missing_latency_consistency_contract', $failureCodes);
+        $this->assertContains('missing_latency_observed_bound_field', $failureCodes);
+        $this->assertContains('missing_latency_public_observation_surfaces', $failureCodes);
+        $this->assertContains('missing_load_consistency_contract', $failureCodes);
+        $this->assertContains('missing_load_observed_bounds', $failureCodes);
+        $this->assertContains('missing_load_public_observation_surfaces', $failureCodes);
+        $this->assertContains(
+            'run_id',
+            array_column(
+                array_filter(
+                    $evaluation['gate_failures'],
+                    static fn (array $failure): bool => ($failure['code'] ?? null) === 'missing_run_record_field',
+                ),
+                'field',
+            ),
         );
     }
 
@@ -1726,6 +1795,7 @@ class SearchAttributeRuntimeContractTest extends TestCase
             'schema' => SearchAttributeRuntimeContract::RESULT_SCHEMA,
             'outcome' => 'pass',
             'runner_blocked' => false,
+            'run_id' => 'search-attributes-20260520T120000Z',
             'started_at' => '2026-05-20T12:00:00Z',
             'finished_at' => '2026-05-20T12:05:00Z',
             'generated_at' => '2026-05-20T12:05:01Z',
@@ -1817,18 +1887,39 @@ class SearchAttributeRuntimeContractTest extends TestCase
                 ],
             ],
             'latency_distribution' => [
+                'consistency_contract' => 'A search attribute written by workflow code is queryable through public list/filter APIs within the documented five-second consistency window.',
+                'public_observation_surfaces' => [
+                    'dw workflows list --query',
+                    'sdk-python workflow list query',
+                ],
                 'sample_count' => 20,
                 'min_ms' => 8,
                 'p50_ms' => 12,
                 'p95_ms' => 40,
                 'max_ms' => 48,
                 'documented_bound_ms' => 5000,
+                'observed_bounds' => [
+                    'documented_bound_ms' => 5000,
+                    'p95_ms' => 40,
+                    'max_ms' => 48,
+                ],
             ],
             'load_profile' => [
+                'consistency_contract' => 'Under the load profile, public search-attribute filters continue to return only indexed matching workflows within the documented consistency window.',
+                'public_observation_surfaces' => [
+                    'dw workflows list --query',
+                    'server workflow visibility list API',
+                ],
                 'workflow_count' => 1000,
                 'p50_ms' => 14,
                 'p95_ms' => 45,
                 'max_ms' => 80,
+                'observed_bounds' => [
+                    'workflow_count' => 1000,
+                    'p50_ms' => 14,
+                    'p95_ms' => 45,
+                    'max_ms' => 80,
+                ],
                 'query_latencies' => [
                     'equality' => [
                         'query' => 'customer_id = "cust-7"',

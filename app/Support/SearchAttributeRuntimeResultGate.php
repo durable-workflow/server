@@ -10,7 +10,7 @@ final class SearchAttributeRuntimeResultGate
 {
     public const SCHEMA = 'durable-workflow.v2.search-attribute-runtime.result-gate';
 
-    public const VERSION = 9;
+    public const VERSION = 10;
 
     /**
      * @return array<string, mixed>
@@ -59,6 +59,9 @@ final class SearchAttributeRuntimeResultGate
                 'waterline_operator_visibility_includes_operator_surface_matrix',
                 'indexing_latency_p95_and_max_do_not_exceed_documented_bound',
                 'load_latency_reported_for_equality_range_bool_and_keyword_list_filters',
+                'latency_and_load_evidence_names_consistency_contract',
+                'latency_and_load_evidence_records_public_observation_surfaces',
+                'latency_and_load_evidence_records_run_id_and_observed_bounds',
                 'each_pass_scenario_has_observed_outputs',
                 'each_pass_scenario_has_scenario_specific_evidence',
                 'each_non_pass_scenario_has_linked_findings',
@@ -1586,6 +1589,16 @@ final class SearchAttributeRuntimeResultGate
             }
         }
 
+        array_push(
+            $failures,
+            ...self::latencyAndLoadContractEvidenceFailures(
+                $section,
+                $requirements,
+                $scenarioId,
+                'latency',
+            ),
+        );
+
         return $failures;
     }
 
@@ -1786,6 +1799,87 @@ final class SearchAttributeRuntimeResultGate
                         'field' => $field,
                     ];
                 }
+            }
+        }
+
+        array_push(
+            $failures,
+            ...self::latencyAndLoadContractEvidenceFailures(
+                $section,
+                $requirements,
+                'load_and_bounded_latency',
+                'load',
+            ),
+        );
+
+        return $failures;
+    }
+
+    /**
+     * @param array<mixed> $section
+     * @param array<mixed> $requirements
+     *
+     * @return array<int, array<string, mixed>>
+     */
+    private static function latencyAndLoadContractEvidenceFailures(
+        array $section,
+        array $requirements,
+        string $scenarioId,
+        string $codePrefix,
+    ): array {
+        $failures = [];
+        $requiredFields = self::stringList($requirements['required_evidence_fields'] ?? []);
+
+        if (in_array('consistency_contract', $requiredFields, true)
+            && ! self::hasNonPlaceholderField($section, [
+                'consistency_contract',
+                'consistencyContract',
+                'user_visible_consistency_contract',
+                'userVisibleConsistencyContract',
+            ])) {
+            $failures[] = [
+                'code' => 'missing_'.$codePrefix.'_consistency_contract',
+                'scenario_id' => $scenarioId,
+            ];
+        }
+
+        if (in_array('observed_bounds', $requiredFields, true)) {
+            $observedBounds = self::arrayField($section, ['observed_bounds', 'observedBounds']);
+            if ($observedBounds === null || $observedBounds === []) {
+                $failures[] = [
+                    'code' => 'missing_'.$codePrefix.'_observed_bounds',
+                    'scenario_id' => $scenarioId,
+                ];
+            } else {
+                foreach (self::stringList($requirements['required_observed_bound_fields'] ?? []) as $field) {
+                    if (! self::hasNumericField($observedBounds, [$field, self::camelize($field)])) {
+                        $failures[] = [
+                            'code' => 'missing_'.$codePrefix.'_observed_bound_field',
+                            'scenario_id' => $scenarioId,
+                            'field' => $field,
+                        ];
+                    }
+                }
+            }
+        }
+
+        if (in_array('public_observation_surfaces', $requiredFields, true)) {
+            $surfaces = self::stringArrayField($section, [
+                'public_observation_surfaces',
+                'publicObservationSurfaces',
+                'observation_surfaces',
+                'observationSurfaces',
+            ]) ?? [];
+            $surfaces = array_values(array_filter(
+                $surfaces,
+                static fn (string $surface): bool => ! self::isPlaceholderEvidence($surface),
+            ));
+
+            if ($surfaces === []) {
+                $failures[] = [
+                    'code' => 'missing_'.$codePrefix.'_public_observation_surfaces',
+                    'scenario_id' => $scenarioId,
+                ];
             }
         }
 

@@ -16,7 +16,7 @@ final class SearchAttributeRuntimeContract
 {
     public const SCHEMA = 'durable-workflow.v2.search-attribute-runtime.contract';
 
-    public const VERSION = 10;
+    public const VERSION = 11;
 
     public const RESULT_SCHEMA = 'durable-workflow.v2.search-attribute-runtime.result';
 
@@ -67,6 +67,7 @@ final class SearchAttributeRuntimeContract
                 ],
                 'required_run_record_fields' => [
                     'artifact_versions',
+                    'run_id',
                     'started_at',
                     'finished_at',
                     'generated_at',
@@ -79,6 +80,7 @@ final class SearchAttributeRuntimeContract
                     'query_verdicts',
                     'codec_round_trips',
                     'latency_distribution',
+                    'load_profile',
                 ],
             ],
             'scenario_statuses' => [
@@ -279,6 +281,16 @@ final class SearchAttributeRuntimeContract
                         'p95_ms',
                         'max_ms',
                     ],
+                    'required_evidence_fields' => [
+                        'consistency_contract',
+                        'observed_bounds',
+                        'public_observation_surfaces',
+                    ],
+                    'required_observed_bound_fields' => [
+                        'documented_bound_ms',
+                        'p95_ms',
+                        'max_ms',
+                    ],
                 ],
                 'load_and_bounded_latency' => [
                     'minimum_workflow_count' => 1000,
@@ -294,6 +306,17 @@ final class SearchAttributeRuntimeContract
                         'keyword_list',
                     ],
                     'required_query_latency_fields' => [
+                        'p50_ms',
+                        'p95_ms',
+                        'max_ms',
+                    ],
+                    'required_evidence_fields' => [
+                        'consistency_contract',
+                        'observed_bounds',
+                        'public_observation_surfaces',
+                    ],
+                    'required_observed_bound_fields' => [
+                        'workflow_count',
                         'p50_ms',
                         'p95_ms',
                         'max_ms',
@@ -382,6 +405,9 @@ final class SearchAttributeRuntimeContract
                     'load_latency_reported',
                     'indexing_latency_p95_and_max_compared_to_documented_bound',
                     'load_latency_reported_per_query_class',
+                    'latency_and_load_evidence_names_consistency_contract',
+                    'latency_and_load_evidence_records_public_observation_surfaces',
+                    'latency_and_load_evidence_records_run_id_and_observed_bounds',
                     'or_not_grammar_reported_with_exact_query_counts',
                     'query_injection_hardening_reported_with_status_and_response_body',
                     'artifact_versions_match_latest_published_set',
