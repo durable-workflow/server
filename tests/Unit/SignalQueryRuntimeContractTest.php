@@ -3309,8 +3309,11 @@ PY);
 
         $result = $this->runSignalQueryHostRunner($evidence);
 
-        $this->assertSame('not_covered', $result['scenario_results']['query_during_replay']['status']);
-        $this->assertContains('signal_query_replay_timing_uncovered', array_column($result['findings'], 'type'));
+        $this->assertSame('fail', $result['scenario_results']['query_during_replay']['status']);
+        $this->assertContains(
+            'signal_query_query_during_replay_timing_failed',
+            array_column($result['findings'], 'type'),
+        );
     }
 
     public function test_result_gate_rejects_python_smoke_subset_even_when_the_smoke_passes(): void

@@ -3020,6 +3020,259 @@ def run_status(base_url: str, token: str, namespace: str, workflow_id: str) -> s
     return status if isinstance(status, str) else None
 
 
+REPLAY_TIMING_SCENARIO_TITLES = {
+    "signal_during_replay": "Signal during replay timing could not be proved",
+    "query_during_replay": "Query during replay timing could not be proved",
+}
+
+REPLAY_TIMING_FAILURE_TYPES = {
+    "signal_during_replay": "signal_query_signal_during_replay_timing_failed",
+    "query_during_replay": "signal_query_query_during_replay_timing_failed",
+}
+
+REPLAY_TIMING_UNAVAILABLE_TYPES = {
+    "signal_during_replay": "signal_query_signal_during_replay_probe_unavailable",
+    "query_during_replay": "signal_query_query_during_replay_probe_unavailable",
+}
+
+REPLAY_TIMING_ACCEPTANCE = {
+    "signal_during_replay": [
+        "restart a worker with non-empty history",
+        "send a signal while replay is in progress",
+        "record the signal public response and prove application after replay completion",
+    ],
+    "query_during_replay": [
+        "restart a worker with non-empty history",
+        "query while replay is in progress",
+        "record the query public response and prove the handler ran after replay completion",
+    ],
+}
+
+
+class ReplayTimingProbeFailure(Exception):
+    def __init__(
+        self,
+        message: str,
+        *,
+        phase: str,
+        status: str = "runner_blocked",
+        owner: str = "conformance_harness",
+        blocker_kind: str = "replay_timing_probe_unavailable",
+    ) -> None:
+        super().__init__(message)
+        self.phase = phase
+        self.status = status
+        self.owner = owner
+        self.blocker_kind = blocker_kind
+
+
+def replay_timing_context_outputs(
+    scenario: str,
+    context: dict[str, Any],
+    versions: dict[str, str],
+    sources: dict[str, str],
+) -> dict[str, Any]:
+    keys = [
+        "workflow_id",
+        "run_id",
+        "worker_id",
+        "task_queue",
+        "worker_restart_at",
+        "replay_completed_at",
+        "leased_replay_task_id",
+    ]
+    if scenario == "signal_during_replay":
+        keys.extend([
+            "signal_api_sample",
+            "signal_status_code",
+            "signal_sent_at",
+            "signal_applied_at",
+            "signal_application_task_id",
+            "signal_application_history_event_types",
+        ])
+    else:
+        keys.extend([
+            "query_api_sample",
+            "query_status_code",
+            "query_sent_at",
+            "query_poll_started_at",
+            "query_handler_invoked_at",
+            "query_completed_at",
+            "query_answer",
+            "expected_answer",
+            "query_task_id",
+        ])
+
+    outputs = {
+        "published_artifact_versions": versions,
+        "artifact_sources": sources,
+    }
+    for key in keys:
+        value = context.get(key)
+        if value is not None:
+            outputs[key] = value
+
+    phase = context.get("phase")
+    if isinstance(phase, str) and phase:
+        outputs["probe_phase"] = phase
+
+    return outputs
+
+
+def replay_timing_missing_evidence(scenario: str, observed: dict[str, Any]) -> list[str]:
+    missing = []
+    for evidence_key in SCENARIO_REQUIRED_EVIDENCE.get(scenario, []):
+        if not required_evidence_satisfied(evidence_key, evidence_lookup(observed, evidence_key)):
+            missing.append(evidence_key)
+
+    return missing
+
+
+def replay_timing_finding(
+    scenario: str,
+    observed: dict[str, Any],
+    *,
+    status: str,
+    reason: str,
+    phase: str,
+    owner: str,
+    blocker_kind: str | None = None,
+) -> dict[str, Any]:
+    finding_type = (
+        REPLAY_TIMING_UNAVAILABLE_TYPES[scenario]
+        if status == "runner_blocked"
+        else REPLAY_TIMING_FAILURE_TYPES[scenario]
+    )
+    missing_evidence = replay_timing_missing_evidence(scenario, observed)
+    current_evidence = {
+        "published_artifact_evidence_present": True,
+        "probe_phase": phase,
+        "reason": reason,
+        "observed_outputs": observed,
+    }
+    if missing_evidence:
+        current_evidence["missing_current_evidence"] = missing_evidence
+    if scenario == "signal_during_replay":
+        current_evidence["required_timestamp_order"] = [
+            "worker_restart_at <= signal_sent_at",
+            "signal_sent_at < replay_completed_at",
+            "replay_completed_at <= signal_applied_at",
+        ]
+    else:
+        current_evidence["required_timestamp_order"] = [
+            "worker_restart_at <= query_sent_at",
+            "query_sent_at <= query_poll_started_at",
+            "query_poll_started_at < replay_completed_at",
+            "replay_completed_at <= query_handler_invoked_at",
+            "query_handler_invoked_at <= query_completed_at",
+        ]
+
+    finding = {
+        "id": finding_type,
+        "type": finding_type,
+        "scenario_id": scenario,
+        "owner": owner,
+        "title": REPLAY_TIMING_SCENARIO_TITLES[scenario],
+        "current_evidence": current_evidence,
+        "acceptance": REPLAY_TIMING_ACCEPTANCE[scenario],
+    }
+    if status == "runner_blocked" and blocker_kind is not None:
+        finding["blocker_kind"] = blocker_kind
+    else:
+        finding["observed_behavior"] = "current published artifacts did not prove the replay timing contract"
+
+    return finding
+
+
+def replay_timing_scenario_result(
+    scenario: str,
+    observed: dict[str, Any],
+    *,
+    status: str | None = None,
+    reason: str = "",
+    phase: str = "",
+    owner: str = "workflow, sdk-python, server",
+    blocker_kind: str | None = None,
+) -> dict[str, Any]:
+    if status is None and has_required_evidence(scenario, observed):
+        return {
+            "scenario_id": scenario,
+            "status": "pass",
+            "observed_outputs": observed,
+        }
+
+    status = status or "fail"
+    reason = reason or "Observed replay timing output did not satisfy the scenario contract."
+    phase = phase or str(observed.get("probe_phase") or "replay_timing_validation")
+    finding = replay_timing_finding(
+        scenario,
+        observed,
+        status=status,
+        reason=reason,
+        phase=phase,
+        owner=owner,
+        blocker_kind=blocker_kind,
+    )
+
+    return {
+        "scenario_id": scenario,
+        "status": status,
+        "observed_outputs": observed,
+        "linked_findings": [finding],
+    }
+
+
+def replay_timing_results_from_context(
+    context: dict[str, Any],
+    versions: dict[str, str],
+    sources: dict[str, str],
+) -> dict[str, dict[str, Any]]:
+    return {
+        scenario: replay_timing_scenario_result(
+            scenario,
+            replay_timing_context_outputs(scenario, context, versions, sources),
+        )
+        for scenario in ("signal_during_replay", "query_during_replay")
+    }
+
+
+def replay_timing_probe_failure_evidence(
+    failure: ReplayTimingProbeFailure,
+    context: dict[str, Any],
+    versions: dict[str, str],
+    sources: dict[str, str],
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    scenario_results = {}
+    for scenario in ("signal_during_replay", "query_during_replay"):
+        observed = replay_timing_context_outputs(scenario, context, versions, sources)
+        observed["probe_error"] = {
+            "type": type(failure).__name__,
+            "message": str(failure),
+        }
+        scenario_results[scenario] = replay_timing_scenario_result(
+            scenario,
+            observed,
+            status=failure.status,
+            reason=str(failure),
+            phase=failure.phase,
+            owner=failure.owner,
+            blocker_kind=failure.blocker_kind,
+        )
+
+    return {
+        "artifact_versions": versions,
+        "scenario_results": scenario_results,
+    }, {
+        "workflow_id": context.get("workflow_id"),
+        "run_id": context.get("run_id"),
+        "worker_id": context.get("worker_id"),
+        "task_queue": context.get("task_queue"),
+        "generated_scenarios": ["signal_during_replay", "query_during_replay"],
+        "error": f"{type(failure).__name__}: {failure}",
+        "probe_phase": failure.phase,
+    }
+
+
 def run_replay_terminal_probe(
     base_url: str,
     token: str,
@@ -3034,13 +3287,20 @@ def run_replay_terminal_probe(
     if not env_flag("DW_SIGNALS_QUERIES_RUN_REPLAY_TERMINAL_PROBE", True):
         return None, {"skipped": "disabled_by_env"}
 
+    probe_context: dict[str, Any] = {"phase": "setup"}
     try:
         suffix = hashlib.sha1(f"{time.time()}-replay-terminal".encode("utf-8")).hexdigest()[:10]
         replay_workflow_id = f"wf-sq-replay-{suffix}"
         terminal_workflow_id = f"wf-sq-terminal-{suffix}"
         probe_task_queue = f"{task_queue}-replay-terminal-{suffix}"
         probe_worker_id = f"{worker_id}-replay-terminal-{suffix}"
+        probe_context.update({
+            "workflow_id": replay_workflow_id,
+            "worker_id": probe_worker_id,
+            "task_queue": probe_task_queue,
+        })
 
+        probe_context["phase"] = "worker_registration"
         register = http_json(
             base_url,
             api_path("worker", "register"),
@@ -3062,8 +3322,15 @@ def run_replay_terminal_probe(
             timeout=30,
         )
         if int(register["status_code"]) >= 400:
-            raise RuntimeError(f"replay/terminal worker registration failed: {register}")
+            raise ReplayTimingProbeFailure(
+                f"replay/terminal worker registration failed: {register}",
+                phase="worker_registration",
+                status="fail",
+                owner="server",
+                blocker_kind="replay_timing_worker_registration_failed",
+            )
 
+        probe_context["phase"] = "workflow_start"
         replay_start = http_json(
             base_url,
             api_path("workflows"),
@@ -3078,12 +3345,24 @@ def run_replay_terminal_probe(
             timeout=30,
         )
         if int(replay_start["status_code"]) >= 400:
-            raise RuntimeError(f"replay timing workflow start failed: {replay_start}")
+            raise ReplayTimingProbeFailure(
+                f"replay timing workflow start failed: {replay_start}",
+                phase="workflow_start",
+                status="fail",
+                owner="server",
+                blocker_kind="replay_timing_workflow_start_failed",
+            )
 
         replay_run_id = str(replay_start["body"]["run_id"])
         worker_restart_at = now()
+        probe_context.update({
+            "run_id": replay_run_id,
+            "worker_restart_at": worker_restart_at,
+        })
+        probe_context["phase"] = "replay_task_poll"
         replay_poll = poll_workflow_task(base_url, token, namespace, probe_worker_id, probe_task_queue)
         replay_task = task_from_poll(replay_poll, "replay timing")
+        probe_context["leased_replay_task_id"] = replay_task.get("task_id")
 
         query_holder: dict[str, Any] = {}
         query_thread = threading.Thread(
@@ -3096,7 +3375,11 @@ def run_replay_terminal_probe(
         while "query_sent_at" not in query_holder and time.time() < query_sent_deadline:
             time.sleep(0.01)
         if "query_sent_at" not in query_holder:
-            raise RuntimeError("query during replay thread did not start before replay completion")
+            raise ReplayTimingProbeFailure(
+                "query during replay thread did not start before replay completion",
+                phase="query_during_replay_api_call_start",
+            )
+        probe_context["query_sent_at"] = query_holder.get("query_sent_at")
 
         query_task_holder: dict[str, Any] = {}
         query_responder = threading.Thread(
@@ -3109,8 +3392,13 @@ def run_replay_terminal_probe(
         while "query_poll_started_at" not in query_task_holder and time.time() < query_poll_deadline:
             time.sleep(0.01)
         if "query_poll_started_at" not in query_task_holder:
-            raise RuntimeError("query during replay responder did not start polling before replay completion")
+            raise ReplayTimingProbeFailure(
+                "query during replay responder did not start polling before replay completion",
+                phase="query_during_replay_worker_poll_start",
+            )
+        probe_context["query_poll_started_at"] = query_task_holder.get("query_poll_started_at")
 
+        probe_context["phase"] = "signal_during_replay_api_call"
         signal_sent_at = now()
         signal_response = http_json(
             base_url,
@@ -3121,10 +3409,27 @@ def run_replay_terminal_probe(
             namespace=namespace,
             timeout=30,
         )
+        probe_context.update({
+            "signal_sent_at": signal_sent_at,
+            "signal_api_sample": {
+                "method": "POST",
+                "path": api_path("workflows", replay_workflow_id, "signal", "increment"),
+                "body": {"input": {"amount": 5}},
+                "response": response_sample(signal_response),
+            },
+            "signal_status_code": signal_response.get("status_code"),
+        })
         if int(signal_response["status_code"]) >= 400:
-            raise RuntimeError(f"signal during replay failed: {signal_response}")
+            raise ReplayTimingProbeFailure(
+                f"signal during replay failed: {response_sample(signal_response)}",
+                phase="signal_during_replay_api_call",
+                status="fail",
+                owner="server",
+                blocker_kind="signal_during_replay_api_failed",
+            )
 
         time.sleep(0.3)
+        probe_context["phase"] = "replay_task_complete"
         replay_complete = complete_workflow_task(
             base_url,
             token,
@@ -3139,20 +3444,46 @@ def run_replay_terminal_probe(
             ],
         )
         if int(replay_complete["status_code"]) >= 400:
-            raise RuntimeError(f"replay timing workflow task completion failed: {replay_complete}")
+            raise ReplayTimingProbeFailure(
+                f"replay timing workflow task completion failed: {replay_complete}",
+                phase="replay_task_complete",
+                status="fail",
+                owner="server, workflow, sdk-python",
+                blocker_kind="replay_task_completion_failed",
+            )
         replay_completed_at = now()
+        probe_context["replay_completed_at"] = replay_completed_at
 
         query_responder.join(timeout=20)
         query_thread.join(timeout=20)
         if query_responder.is_alive() or query_task_holder.get("error"):
-            raise RuntimeError(f"query during replay responder failed: {query_task_holder.get('error', 'timeout')}")
+            raise ReplayTimingProbeFailure(
+                f"query during replay responder failed: {query_task_holder.get('error', 'timeout')}",
+                phase="query_during_replay_worker_response",
+                status="fail",
+                owner="server, workflow, sdk-python",
+                blocker_kind="query_during_replay_worker_response_failed",
+            )
         if query_thread.is_alive():
-            raise RuntimeError("query during replay API call timed out")
+            raise ReplayTimingProbeFailure(
+                "query during replay API call timed out",
+                phase="query_during_replay_api_response",
+                status="fail",
+                owner="server",
+                blocker_kind="query_during_replay_api_timeout",
+            )
 
+        probe_context["phase"] = "signal_application_after_replay"
         signal_apply_poll = poll_workflow_task(base_url, token, namespace, probe_worker_id, probe_task_queue)
         signal_apply_task = task_from_poll(signal_apply_poll, "signal application")
         if signal_name_from_task(signal_apply_task) != "increment":
-            raise RuntimeError(f"signal application task did not carry increment signal: {signal_apply_task}")
+            raise ReplayTimingProbeFailure(
+                f"signal application task did not carry increment signal: {signal_apply_task}",
+                phase="signal_application_after_replay",
+                status="fail",
+                owner="server, workflow, sdk-python",
+                blocker_kind="signal_application_task_missing_signal",
+            )
 
         signal_apply_complete = complete_workflow_task(
             base_url,
@@ -3168,12 +3499,44 @@ def run_replay_terminal_probe(
             ],
         )
         if int(signal_apply_complete["status_code"]) >= 400:
-            raise RuntimeError(f"signal application workflow task completion failed: {signal_apply_complete}")
+            raise ReplayTimingProbeFailure(
+                f"signal application workflow task completion failed: {signal_apply_complete}",
+                phase="signal_application_after_replay",
+                status="fail",
+                owner="server, workflow, sdk-python",
+                blocker_kind="signal_application_task_completion_failed",
+            )
         signal_applied_at = now()
 
         query_response = query_holder.get("response") if isinstance(query_holder.get("response"), dict) else {}
         query_body = query_response.get("body") if isinstance(query_response, dict) else {}
         query_answer = query_body.get("result") if isinstance(query_body, dict) else None
+        probe_context.update({
+            "phase": "replay_timing_observed",
+            "signal_applied_at": signal_applied_at,
+            "signal_application_task_id": signal_apply_task.get("task_id"),
+            "signal_application_history_event_types": history_event_types_from_task(signal_apply_task),
+            "query_api_sample": {
+                "method": "POST",
+                "path": api_path("workflows", replay_workflow_id, "query", "state"),
+                "body": {},
+                "response": response_sample(query_response),
+            },
+            "query_status_code": query_response.get("status_code"),
+            "query_handler_invoked_at": query_task_holder.get("query_handler_invoked_at"),
+            "query_completed_at": (
+                query_holder.get("query_completed_at")
+                or query_task_holder.get("query_completed_at")
+            ),
+            "query_answer": query_answer,
+            "expected_answer": 0,
+            "query_task_id": (
+                query_task_holder.get("query_task", {}).get("query_task_id")
+                if isinstance(query_task_holder.get("query_task"), dict)
+                else None
+            ),
+            "replay_timing_observed": True,
+        })
 
         terminal_start = http_json(
             base_url,
@@ -3350,14 +3713,14 @@ def run_replay_terminal_probe(
         evidence = {
             "artifact_versions": versions,
             "scenario_results": {
-                "signal_during_replay": {
-                    "status": "pass",
-                    "observed_outputs": signal_outputs,
-                },
-                "query_during_replay": {
-                    "status": "pass",
-                    "observed_outputs": query_outputs,
-                },
+                "signal_during_replay": replay_timing_scenario_result(
+                    "signal_during_replay",
+                    signal_outputs,
+                ),
+                "query_during_replay": replay_timing_scenario_result(
+                    "query_during_replay",
+                    query_outputs,
+                ),
                 "completed_run_signal_and_query": {
                     "status": "pass",
                     "observed_outputs": terminal_outputs,
@@ -3379,12 +3742,48 @@ def run_replay_terminal_probe(
             ],
         }
         return evidence, descriptor
+    except ReplayTimingProbeFailure as exc:
+        log_line(log_file, f"replay timing probe produced focused finding: {type(exc).__name__}: {exc}")
+        if probe_context.get("replay_timing_observed"):
+            return {
+                "artifact_versions": versions,
+                "scenario_results": replay_timing_results_from_context(probe_context, versions, sources),
+            }, {
+                "workflow_id": probe_context.get("workflow_id"),
+                "run_id": probe_context.get("run_id"),
+                "worker_id": probe_context.get("worker_id"),
+                "task_queue": probe_context.get("task_queue"),
+                "server_base_url": base_url,
+                "generated_scenarios": ["signal_during_replay", "query_during_replay"],
+                "completed_run_probe": {
+                    "error": f"{type(exc).__name__}: {exc}",
+                    "probe_phase": exc.phase,
+                },
+            }
+        return replay_timing_probe_failure_evidence(exc, probe_context, versions, sources)
     except Exception as exc:  # noqa: BLE001 - failed probe becomes uncovered evidence.
         log_line(log_file, f"replay/terminal probe failed: {type(exc).__name__}: {exc}")
-        return None, {
-            "file": log_file.name,
-            "error": f"{type(exc).__name__}: {exc}",
-        }
+        if probe_context.get("replay_timing_observed"):
+            return {
+                "artifact_versions": versions,
+                "scenario_results": replay_timing_results_from_context(probe_context, versions, sources),
+            }, {
+                "workflow_id": probe_context.get("workflow_id"),
+                "run_id": probe_context.get("run_id"),
+                "worker_id": probe_context.get("worker_id"),
+                "task_queue": probe_context.get("task_queue"),
+                "server_base_url": base_url,
+                "generated_scenarios": ["signal_during_replay", "query_during_replay"],
+                "completed_run_probe": {
+                    "error": f"{type(exc).__name__}: {exc}",
+                    "probe_phase": probe_context.get("phase"),
+                },
+            }
+        failure = ReplayTimingProbeFailure(
+            f"{type(exc).__name__}: {exc}",
+            phase=str(probe_context.get("phase") or "replay_timing_probe"),
+        )
+        return replay_timing_probe_failure_evidence(failure, probe_context, versions, sources)
 
 
 def probe_artifact_versions() -> dict[str, str]:
@@ -7897,6 +8296,8 @@ def imported_scenario_result(scenario: str) -> dict[str, Any] | None:
                 "observed_outputs": observed,
             }
         if not has_required_evidence(scenario, observed):
+            if scenario in {"signal_during_replay", "query_during_replay"}:
+                return replay_timing_scenario_result(scenario, observed)
             return None
         return {
             "scenario_id": scenario,
