@@ -4,6 +4,7 @@ namespace App\Support;
 
 use DateTimeInterface;
 use Workflow\V2\Contracts\ScheduleWorkflowStarter;
+use Workflow\V2\Enums\ScheduleStatus;
 use Workflow\V2\Exceptions\WorkflowExecutionUnavailableException;
 use Workflow\V2\Models\WorkflowSchedule;
 use Workflow\V2\Support\ScheduleStartResult;
@@ -26,6 +27,28 @@ final class RemoteScheduleStarter implements ScheduleWorkflowStarter
         string $outcome,
         ?string $effectiveOverlapPolicy = null,
     ): ScheduleStartResult {
+        /** @var WorkflowSchedule|null $freshSchedule */
+        $freshSchedule = WorkflowSchedule::query()->find($schedule->getKey());
+        $status = $freshSchedule?->status;
+
+        if ($freshSchedule === null || ! $status?->allowsTrigger()) {
+            $reason = $status === ScheduleStatus::Deleted
+                ? 'schedule_deleted'
+                : ($freshSchedule === null ? 'schedule_missing' : 'schedule_not_triggerable');
+
+            throw new WorkflowExecutionUnavailableException(
+                'schedule_start',
+                $schedule->schedule_id,
+                $reason,
+                sprintf(
+                    'Schedule [%s] is no longer active and cannot start a workflow.',
+                    $schedule->schedule_id,
+                ),
+            );
+        }
+
+        $schedule = $freshSchedule;
+
         $workflowStatus = $this->readiness->workflowStatus();
         $blockedBy = is_array($workflowStatus['blocked_by'] ?? null)
             ? array_values(array_filter($workflowStatus['blocked_by'], static fn (mixed $value): bool => is_string($value) && $value !== ''))

@@ -4,6 +4,7 @@ namespace Tests\Feature;
 
 use App\Models\SearchAttributeDefinition;
 use App\Models\WorkflowNamespace;
+use App\Support\RemoteScheduleStarter;
 use App\Support\WorkerProtocol;
 use App\Support\WorkflowStartService;
 use Illuminate\Foundation\Testing\RefreshDatabase;
@@ -11,9 +12,12 @@ use Illuminate\Support\Facades\Artisan;
 use Illuminate\Support\Facades\DB;
 use Mockery\MockInterface;
 use Tests\TestCase;
+use Workflow\V2\Enums\HistoryEventType;
+use Workflow\V2\Exceptions\WorkflowExecutionUnavailableException;
 use Workflow\V2\Models\WorkflowInstance;
 use Workflow\V2\Models\WorkflowRun;
 use Workflow\V2\Models\WorkflowSchedule;
+use Workflow\V2\Models\WorkflowScheduleHistoryEvent;
 use Workflow\V2\Models\WorkflowTask;
 
 class ScheduleEvaluateTest extends TestCase
@@ -542,6 +546,57 @@ class ScheduleEvaluateTest extends TestCase
 
         $schedule = WorkflowSchedule::where('schedule_id', 'paused-drain')->first();
         $this->assertCount(1, $schedule->buffered_actions);
+    }
+
+    public function test_deleted_schedule_selected_before_dispatch_is_not_started_or_attributed(): void
+    {
+        $startServiceCalled = false;
+        $this->fakeStartService(callback: function () use (&$startServiceCalled): array {
+            $startServiceCalled = true;
+
+            return [
+                'workflow_id' => 'wf-stale-delete',
+                'run_id' => 'run-stale-delete',
+                'workflow_type' => 'TestWorkflow',
+                'outcome' => 'started_new',
+                'reason' => null,
+            ];
+        });
+
+        $schedule = WorkflowSchedule::create([
+            'schedule_id' => 'stale-delete-before-dispatch',
+            'namespace' => 'default',
+            'spec' => ['cron_expressions' => ['* * * * *']],
+            'action' => ['workflow_type' => 'TestWorkflow'],
+            'status' => 'active',
+            'next_fire_at' => now()->subMinute(),
+        ]);
+        $selectedBeforeDelete = WorkflowSchedule::whereKey($schedule->id)->firstOrFail();
+
+        $schedule->forceFill([
+            'status' => 'deleted',
+            'deleted_at' => now(),
+            'next_fire_at' => null,
+        ])->save();
+
+        try {
+            $this->app->make(RemoteScheduleStarter::class)->start(
+                $selectedBeforeDelete,
+                now()->subMinute(),
+                'scheduled',
+            );
+            $this->fail('Deleted schedules must not dispatch selected stale work.');
+        } catch (WorkflowExecutionUnavailableException $exception) {
+            $this->assertSame('schedule_deleted', $exception->blockedReason());
+        }
+
+        $this->assertFalse($startServiceCalled);
+        $this->assertFalse(
+            WorkflowScheduleHistoryEvent::query()
+                ->where('workflow_schedule_id', $schedule->id)
+                ->where('event_type', HistoryEventType::ScheduleTriggered->value)
+                ->exists(),
+        );
     }
 
     public function test_drain_failure_is_recorded(): void
