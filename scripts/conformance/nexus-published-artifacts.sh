@@ -100,6 +100,7 @@ const evidencePath = process.argv[2] || '';
 const requiredScenarioIds = [
   'tenant_a_calls_shared_service',
   'tenant_b_calls_shared_service',
+  'transient_failure_retries_with_policy',
 ];
 const sharedServicePassRequirements = {
   tenant_a_calls_shared_service: [
@@ -129,6 +130,13 @@ const sharedServicePassRequirements = {
     {fields: ['service_call_record', 'serviceCallRecord', 'service_call_detail', 'serviceCallDetail'], kind: 'non_empty_object'},
     {fields: ['caller_history_evidence', 'callerHistoryEvidence', 'caller_history', 'callerHistory'], kind: 'non_empty_object'},
     {fields: ['caller_history_recorded', 'callerHistoryRecorded'], kind: 'boolean_true'},
+  ],
+  transient_failure_retries_with_policy: [
+    {fields: ['service_call_id', 'serviceCallId'], kind: 'non_empty_string'},
+    {fields: ['retry_policy', 'retryPolicy'], kind: 'non_empty_object'},
+    {fields: ['retry_attempts', 'retryAttempts', 'history_attempts', 'historyAttempts', 'service_call_attempts', 'serviceCallAttempts'], kind: 'attempts_at_least', min: 2},
+    {fields: ['history_attempt_visibility_includes_retry_attempts', 'historyAttemptVisibilityIncludesRetryAttempts'], kind: 'boolean_true'},
+    {fields: ['completed_after_retry', 'completedAfterRetry'], kind: 'boolean_true'},
   ],
 };
 
@@ -200,6 +208,12 @@ function isMissingEvidenceValue(value, kind) {
   if (kind === 'non_empty_object') {
     return !hasNonEmptyObject(value);
   }
+  if (kind === 'attempts_at_least') {
+    if (Array.isArray(value)) {
+      return value.length === 0;
+    }
+    return Number(value) === 0 || Number.isNaN(Number(value));
+  }
 
   return stringValue(value) === '';
 }
@@ -214,6 +228,11 @@ function evidenceRequirementSatisfied(requirement, value) {
       return truthy(value);
     case 'value_equals':
       return stringValue(value) === stringValue(requirement.value);
+    case 'attempts_at_least':
+      if (Array.isArray(value)) {
+        return value.length >= Number(requirement.min);
+      }
+      return Number(value) >= Number(requirement.min);
     default:
       return false;
   }
@@ -292,6 +311,7 @@ const adversarialScenarioIds = [
 ];
 const builtInProbeScenarioIds = [
   ...scenarioIds,
+  'transient_failure_retries_with_policy',
   ...adversarialScenarioIds,
   'worker_restart_replay_does_not_reissue_call',
   'caller_cancellation_propagates_to_service',
@@ -899,7 +919,34 @@ async function setupSharedService(baseUrl, token) {
     throw new Error(`operation create failed: ${JSON.stringify(operation.body)}`);
   }
 
-  return {endpoint, service, operation};
+  const retryOperation = await apiRequest(baseUrl, token, 'shared', 'POST', '/service-endpoints/shared-greeter/services/Greeter/operations', {
+    operation_name: 'greet-retry',
+    description: 'Retrying greeting operation for Nexus transient-failure conformance',
+    operation_mode: 'sync',
+    handler_binding_kind: 'query_workflow',
+    handler_target_reference: 'Greeter.greet',
+    handler_binding: {
+      workflow_instance_id: 'shared-greeter-transient-service',
+      query_name: 'greet',
+    },
+    retry_policy: {
+      max_attempts: 3,
+      backoff_seconds: [0, 0],
+    },
+    boundary_policy: {
+      authorization: {
+        caller_namespaces: {
+          allow: ['tenant-a', 'tenant-b'],
+        },
+      },
+    },
+    metadata: {conformance: 'nexus-transient-retry-service'},
+  });
+  if (![200, 201, 409].includes(retryOperation.status)) {
+    throw new Error(`retry operation create failed: ${JSON.stringify(retryOperation.body)}`);
+  }
+
+  return {endpoint, service, operation, retryOperation};
 }
 
 async function invokeSharedService(baseUrl, token, callerNamespace, versions) {
@@ -1407,6 +1454,32 @@ function historyRowsFrom(response) {
   return Array.isArray(response.body?.nexus_operations) ? response.body.nexus_operations : [];
 }
 
+function attemptEntriesFrom(value) {
+  return Array.isArray(value)
+    ? value.filter((entry) => entry && typeof entry === 'object' && !Array.isArray(entry))
+    : [];
+}
+
+function serviceCallAttemptsFrom(record) {
+  return attemptEntriesFrom(record?.service_call_attempts ?? record?.serviceCallAttempts);
+}
+
+function retryPolicyMaxAttempts(policy) {
+  const candidates = [
+    policy?.max_attempts,
+    policy?.maximum_attempts,
+    policy?.maximumAttempts,
+  ];
+  for (const candidate of candidates) {
+    const parsed = Number(candidate);
+    if (Number.isFinite(parsed) && parsed > 0) {
+      return parsed;
+    }
+  }
+
+  return 0;
+}
+
 function millisecondsBetween(start, end) {
   const startMs = Date.parse(start);
   const endMs = Date.parse(end);
@@ -1415,6 +1488,427 @@ function millisecondsBetween(start, end) {
   }
 
   return Math.max(0, endMs - startMs);
+}
+
+function transientRetryProbePhp() {
+  return `<?php
+declare(strict_types=1);
+
+use Illuminate\\Contracts\\Console\\Kernel;
+use Workflow\\V2\\Contracts\\WorkflowControlPlane;
+use Workflow\\V2\\Contracts\\ServiceBoundaryPolicy;
+use Workflow\\V2\\Models\\WorkflowServiceCall;
+use Workflow\\V2\\Support\\DefaultServiceControlPlane;
+
+require '/app/vendor/autoload.php';
+
+$app = require '/app/bootstrap/app.php';
+$app->make(Kernel::class)->bootstrap();
+
+$callerWorkflowInstanceId = $argv[1] ?? 'tenant-a-transient-retry-caller';
+$callerWorkflowRunId = $argv[2] ?? '01NEXUSTRANSIENTRETRY000';
+$idempotencyKey = $argv[3] ?? 'nexus-transient-retry';
+$serviceWorkflowInstanceId = $argv[4] ?? 'shared-greeter-transient-service';
+$serviceWorkflowRunId = $argv[5] ?? '01NEXUSTRANSIENTSVC0000';
+
+$fakeWorkflow = new class($serviceWorkflowInstanceId, $serviceWorkflowRunId) implements WorkflowControlPlane {
+    private int $queryCount = 0;
+
+    /** @var list<array<string, mixed>> */
+    public array $queryObservations = [];
+
+    public function __construct(
+        private readonly string $serviceWorkflowInstanceId,
+        private readonly string $serviceWorkflowRunId,
+    ) {
+    }
+
+    public function start(string $workflowType, ?string $instanceId = null, array $options = []): array
+    {
+        return [
+            'started' => false,
+            'workflow_instance_id' => $instanceId ?? '',
+            'workflow_run_id' => null,
+            'workflow_type' => $workflowType,
+            'outcome' => 'unsupported',
+            'task_id' => null,
+            'reason' => 'not_used_by_nexus_retry_probe',
+        ];
+    }
+
+    public function signal(string $instanceId, string $name, array $options = []): array
+    {
+        return [
+            'accepted' => false,
+            'workflow_instance_id' => $instanceId,
+            'workflow_command_id' => null,
+            'reason' => 'not_used_by_nexus_retry_probe',
+        ];
+    }
+
+    public function query(string $instanceId, string $name, array $options = []): array
+    {
+        $this->queryCount++;
+        $observation = [
+            'attempt' => $this->queryCount,
+            'workflow_instance_id' => $instanceId,
+            'workflow_run_id' => $this->serviceWorkflowRunId,
+            'query_name' => $name,
+            'arguments' => $options['arguments'] ?? [],
+        ];
+
+        if ($this->queryCount < 3) {
+            $result = [
+                'success' => false,
+                'workflow_instance_id' => $this->serviceWorkflowInstanceId,
+                'workflow_id' => $this->serviceWorkflowInstanceId,
+                'run_id' => $this->serviceWorkflowRunId,
+                'target_scope' => 'instance',
+                'query_name' => $name,
+                'result' => null,
+                'reason' => 'transient_greeter_failure',
+                'message' => 'transient Greeter.greet failure before retry success',
+                'error_type' => 'TransientGreetingFailure',
+                'status' => 503,
+            ];
+        } else {
+            $result = [
+                'success' => true,
+                'workflow_instance_id' => $this->serviceWorkflowInstanceId,
+                'workflow_id' => $this->serviceWorkflowInstanceId,
+                'run_id' => $this->serviceWorkflowRunId,
+                'target_scope' => 'instance',
+                'query_name' => $name,
+                'result' => 'hello, world after retry',
+                'result_envelope' => [
+                    'codec' => 'json/plain',
+                    'blob' => json_encode('hello, world after retry', JSON_UNESCAPED_SLASHES),
+                ],
+                'reason' => null,
+                'status' => 200,
+            ];
+        }
+
+        $this->queryObservations[] = $observation + [
+            'success' => $result['success'],
+            'reason' => $result['reason'],
+            'error_type' => $result['error_type'] ?? null,
+            'result' => $result['result'],
+        ];
+
+        return $result;
+    }
+
+    public function update(string $instanceId, string $name, array $options = []): array
+    {
+        return [
+            'accepted' => false,
+            'workflow_instance_id' => $instanceId,
+            'update_id' => null,
+            'reason' => 'not_used_by_nexus_retry_probe',
+        ];
+    }
+
+    public function cancel(string $instanceId, array $options = []): array
+    {
+        return [
+            'accepted' => false,
+            'workflow_instance_id' => $instanceId,
+            'workflow_command_id' => null,
+            'reason' => 'not_used_by_nexus_retry_probe',
+        ];
+    }
+
+    public function terminate(string $instanceId, array $options = []): array
+    {
+        return [
+            'accepted' => false,
+            'workflow_instance_id' => $instanceId,
+            'workflow_command_id' => null,
+            'reason' => 'not_used_by_nexus_retry_probe',
+        ];
+    }
+
+    public function repair(string $instanceId, array $options = []): array
+    {
+        return [
+            'accepted' => false,
+            'workflow_instance_id' => $instanceId,
+            'workflow_command_id' => null,
+            'reason' => 'not_used_by_nexus_retry_probe',
+        ];
+    }
+
+    public function archive(string $instanceId, array $options = []): array
+    {
+        return [
+            'accepted' => false,
+            'workflow_instance_id' => $instanceId,
+            'workflow_command_id' => null,
+            'reason' => 'not_used_by_nexus_retry_probe',
+        ];
+    }
+
+    public function describe(string $instanceId, array $options = []): array
+    {
+        return [
+            'found' => true,
+            'workflow_instance_id' => $instanceId,
+            'workflow_type' => 'nexus.transient.greeter',
+            'workflow_class' => 'nexus.transient.greeter',
+            'namespace' => $options['namespace'] ?? 'shared',
+            'business_key' => null,
+            'run' => [
+                'workflow_run_id' => $this->serviceWorkflowRunId,
+                'run_number' => 1,
+                'is_current_run' => true,
+                'status' => 'running',
+                'status_bucket' => 'running',
+                'closed_reason' => null,
+                'compatibility' => null,
+                'connection' => null,
+                'queue' => null,
+                'started_at' => null,
+                'closed_at' => null,
+                'last_progress_at' => null,
+                'wait_kind' => null,
+                'wait_reason' => null,
+            ],
+            'run_count' => 1,
+            'actions' => [
+                'can_signal' => true,
+                'can_query' => true,
+                'can_update' => false,
+                'can_cancel' => true,
+                'can_terminate' => true,
+                'can_repair' => false,
+                'can_archive' => false,
+            ],
+            'reason' => null,
+        ];
+    }
+};
+
+$controlPlane = new DefaultServiceControlPlane(
+    $fakeWorkflow,
+    $app->make(ServiceBoundaryPolicy::class),
+);
+
+$result = $controlPlane->execute('shared-greeter', 'Greeter', 'greet-retry', [
+    'namespace' => 'shared',
+    'caller_namespace' => 'tenant-a',
+    'caller_workflow_instance_id' => $callerWorkflowInstanceId,
+    'caller_workflow_run_id' => $callerWorkflowRunId,
+    'target_workflow_instance_id' => $serviceWorkflowInstanceId,
+    'idempotency_key' => $idempotencyKey,
+    'arguments' => [
+        'name' => 'world',
+        'scenario' => 'transient_failure_retries_with_policy',
+    ],
+]);
+
+$serviceCallId = (string) ($result['service_call_id'] ?? '');
+$call = $serviceCallId !== '' ? WorkflowServiceCall::query()->find($serviceCallId) : null;
+$metadata = is_array($call?->metadata) ? $call->metadata : [];
+$attempts = is_array($metadata['service_call_attempts'] ?? null)
+    ? array_values(array_filter($metadata['service_call_attempts'], 'is_array'))
+    : (is_array($result['service_call_attempts'] ?? null) ? $result['service_call_attempts'] : []);
+$serviceCallOutcome = $call?->outcome;
+if ($serviceCallOutcome instanceof \\BackedEnum) {
+    $serviceCallOutcome = $serviceCallOutcome->value;
+}
+
+echo json_encode([
+    'ok' => ($result['accepted'] ?? false) === true,
+    'service_call_id' => $serviceCallId,
+    'caller_workflow_instance_id' => $callerWorkflowInstanceId,
+    'caller_workflow_run_id' => $callerWorkflowRunId,
+    'service_workflow_instance_id' => $serviceWorkflowInstanceId,
+    'service_workflow_run_id' => $serviceWorkflowRunId,
+    'query_observations' => $fakeWorkflow->queryObservations,
+    'query_count' => count($fakeWorkflow->queryObservations),
+    'final_successful_result' => 'hello, world after retry',
+    'service_call_attempts' => $attempts,
+    'retry_policy' => is_array($call?->retry_policy) ? $call->retry_policy : ($result['retry_policy'] ?? null),
+    'service_call_status' => $call?->status,
+    'service_call_outcome' => $serviceCallOutcome,
+    'result' => $result,
+], JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES).PHP_EOL;
+`;
+}
+
+async function probeTransientFailureRetries(baseUrl, token, versions, compose) {
+  const scenarioId = 'transient_failure_retries_with_policy';
+  const callerNamespace = 'tenant-a';
+  const callerWorkflowInstanceId = `${callerNamespace}-transient-retry-${crypto.randomBytes(5).toString('hex')}`;
+  const callerWorkflowRunId = ulidLike();
+  const serviceWorkflowInstanceId = 'shared-greeter-transient-service';
+  const serviceWorkflowRunId = ulidLike();
+  const idempotencyKey = `${callerWorkflowInstanceId}-nexus-${crypto.randomBytes(5).toString('hex')}`;
+  const probePath = path.join(compose.runRoot, 'nexus-transient-retry-probe.php');
+  fs.writeFileSync(probePath, transientRetryProbePhp());
+
+  const copy = spawnSync('docker', [
+    'compose',
+    '-p',
+    compose.project,
+    '-f',
+    compose.composePath,
+    'cp',
+    probePath,
+    'server:/tmp/nexus-transient-retry-probe.php',
+  ], {
+    cwd: compose.runRoot,
+    encoding: 'utf8',
+    maxBuffer: 8 * 1024 * 1024,
+  });
+  fs.writeFileSync(
+    path.join(resultDir, 'nexus-transient-retry-probe-copy.log'),
+    [`exit_status=${copy.status ?? 'null'}`, copy.stdout || '', copy.stderr || ''].join('\n'),
+  );
+
+  let probePayload = {};
+  if (copy.status === 0) {
+    const probe = spawnSync('docker', [
+      'compose',
+      '-p',
+      compose.project,
+      '-f',
+      compose.composePath,
+      'exec',
+      '-T',
+      'server',
+      'php',
+      '/tmp/nexus-transient-retry-probe.php',
+      callerWorkflowInstanceId,
+      callerWorkflowRunId,
+      idempotencyKey,
+      serviceWorkflowInstanceId,
+      serviceWorkflowRunId,
+    ], {
+      cwd: compose.runRoot,
+      encoding: 'utf8',
+      maxBuffer: 16 * 1024 * 1024,
+    });
+    fs.writeFileSync(
+      path.join(resultDir, 'nexus-transient-retry-probe-exec.log'),
+      [`exit_status=${probe.status ?? 'null'}`, probe.stdout || '', probe.stderr || ''].join('\n'),
+    );
+
+    if (probe.status === 0) {
+      try {
+        probePayload = JSON.parse(probe.stdout || '{}');
+      } catch (error) {
+        probePayload = {parse_error: `${error.name}: ${error.message}`, raw_stdout: probe.stdout};
+      }
+    } else {
+      probePayload = {
+        exit_status: probe.status,
+        stdout: probe.stdout,
+        stderr: probe.stderr,
+      };
+    }
+  } else {
+    probePayload = {
+      copy_exit_status: copy.status,
+      copy_stdout: copy.stdout,
+      copy_stderr: copy.stderr,
+    };
+  }
+
+  const serviceCallId = String(probePayload.service_call_id || '');
+  const describe = serviceCallId === ''
+    ? {ok: false, status: 0, body: null, request: null}
+    : await apiRequest(
+      baseUrl,
+      token,
+      'shared',
+      'GET',
+      `/service-endpoints/shared-greeter/services/Greeter/operations/greet-retry/service-calls/${encodeURIComponent(serviceCallId)}`,
+    );
+  const history = await apiRequest(
+    baseUrl,
+    token,
+    callerNamespace,
+    'GET',
+    `/workflows/${encodeURIComponent(callerWorkflowInstanceId)}/runs/${encodeURIComponent(callerWorkflowRunId)}/nexus-operations`,
+  );
+  const historyRows = historyRowsFrom(history);
+  const matchingHistoryRows = historyRows.filter((row) => String(row.service_call_id || '') === serviceCallId);
+  const serviceCallDetailAttempts = serviceCallAttemptsFrom(describe.body);
+  const probeAttempts = attemptEntriesFrom(probePayload.service_call_attempts);
+  const serviceCallAttempts = serviceCallDetailAttempts.length > 0 ? serviceCallDetailAttempts : probeAttempts;
+  const callerHistoryAttempts = matchingHistoryRows.flatMap(serviceCallAttemptsFrom);
+  const retryPolicy = describe.body?.retry_policy
+    || matchingHistoryRows.find((row) => row.retry_policy)?.retry_policy
+    || probePayload.retry_policy
+    || {};
+  const historyAttemptVisibilityIncludesRetries = matchingHistoryRows.some((row) => {
+    const attempts = serviceCallAttemptsFrom(row);
+    return attempts.length >= serviceCallAttempts.length && Number(row.retry_attempt_count || attempts.length) >= serviceCallAttempts.length;
+  });
+  const firstTwoRetried = serviceCallAttempts.slice(0, 2).length >= 2
+    && serviceCallAttempts.slice(0, 2).every((attempt) => attempt.retry_scheduled === true);
+  const terminalAttempt = serviceCallAttempts[serviceCallAttempts.length - 1] || {};
+  const terminalCompleted = String(terminalAttempt.status || '').toLowerCase() === 'completed'
+    || String(terminalAttempt.outcome || '').toLowerCase() === 'completed';
+  const completedAfterRetry = Boolean(
+    probePayload.ok === true
+    && describe.ok
+    && describe.body?.found === true
+    && String(describe.body?.status || '').toLowerCase() === 'completed'
+    && serviceCallAttempts.length >= 3
+    && firstTwoRetried
+    && terminalCompleted,
+  );
+  const observedOutputs = {
+    caller_namespace: callerNamespace,
+    target_namespace: 'shared',
+    endpoint_name: 'shared-greeter',
+    service_name: 'Greeter',
+    operation_name: 'greet-retry',
+    service_call_id: serviceCallId,
+    caller_workflow_instance_id: callerWorkflowInstanceId,
+    caller_workflow_run_id: callerWorkflowRunId,
+    service_workflow_instance_id: serviceWorkflowInstanceId,
+    service_workflow_run_id: serviceWorkflowRunId,
+    retry_policy: retryPolicy,
+    retry_attempts: serviceCallAttempts,
+    service_call_attempts: serviceCallAttempts,
+    history_attempts: callerHistoryAttempts.length > 0 ? callerHistoryAttempts : serviceCallAttempts,
+    caller_history_attempts: callerHistoryAttempts,
+    service_call_detail_attempts: serviceCallDetailAttempts,
+    history_attempt_visibility_includes_retry_attempts: historyAttemptVisibilityIncludesRetries,
+    completed_after_retry: completedAfterRetry,
+    final_successful_result: probePayload.final_successful_result || null,
+    service_call_record: describe.body,
+    caller_history_rows: matchingHistoryRows.length > 0 ? matchingHistoryRows : historyRows,
+    caller_history_evidence: history.body,
+    handler_observations: probePayload.query_observations || [],
+    probe_response: probePayload,
+  };
+  const pass = serviceCallId !== ''
+    && retryPolicyMaxAttempts(retryPolicy) >= 3
+    && serviceCallAttempts.length >= 3
+    && callerHistoryAttempts.length >= serviceCallAttempts.length
+    && historyAttemptVisibilityIncludesRetries
+    && completedAfterRetry
+    && String(probePayload.final_successful_result || '') === 'hello, world after retry';
+
+  if (pass) {
+    return scenarioResult('pass', scenarioId, observedOutputs);
+  }
+
+  return scenarioResult('fail', scenarioId, observedOutputs, [
+    scenarioProductFailure(
+      scenarioId,
+      versions,
+      !historyAttemptVisibilityIncludesRetries ? 'retry_attempt_visibility_gap' : 'nexus_transient_retry_policy_mismatch',
+      `Transient retry probe did not prove retry policy completion through public describe/history evidence: ${JSON.stringify(observedOutputs).slice(0, 1000)}`,
+      'A Nexus service call with a transient service failure retries according to the recorded retry policy, exposes retry attempts, and completes successfully.',
+      'fix Nexus retry policy execution or attempt visibility and rerun the transient retry-policy cell',
+    ),
+  ]);
 }
 
 async function probeWorkerRestartReplay(baseUrl, token, versions, sources, image, compose) {
@@ -1961,6 +2455,11 @@ async function main() {
       scenarioResults = [
         await invokeSharedService(baseUrl, token, 'tenant-a', versions),
         await invokeSharedService(baseUrl, token, 'tenant-b', versions),
+        await probeTransientFailureRetries(baseUrl, token, versions, {
+          project,
+          composePath,
+          runRoot,
+        }),
         await probeEndpointPermissionDenied(baseUrl, token, versions),
         await probeMalformedPayloadRefusal(baseUrl, token, versions),
         await probeNonexistentEndpointNotFound(baseUrl, token, versions),
@@ -2023,6 +2522,7 @@ async function main() {
           endpoint: {status: registration.endpoint.status, body: registration.endpoint.body},
           service: {status: registration.service.status, body: registration.service.body},
           operation: {status: registration.operation.status, body: registration.operation.body},
+          retry_operation: {status: registration.retryOperation.status, body: registration.retryOperation.body},
         },
       },
       findings,
@@ -2088,6 +2588,7 @@ const mergedPath = process.argv[4];
 const builtInProbeScenarioIds = [
   'tenant_a_calls_shared_service',
   'tenant_b_calls_shared_service',
+  'transient_failure_retries_with_policy',
   'endpoint_permission_denied_without_information_leak',
   'malformed_payload_refused_before_dispatch',
   'nonexistent_endpoint_typed_not_found',

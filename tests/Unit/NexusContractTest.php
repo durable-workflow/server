@@ -416,6 +416,11 @@ class NexusContractTest extends TestCase
         $this->assertStringContainsString('supplied_evidence_path', $contents);
         $this->assertStringContainsString('setupSharedService', $contents);
         $this->assertStringContainsString('invokeSharedService', $contents);
+        $this->assertStringContainsString('probeTransientFailureRetries', $contents);
+        $this->assertStringContainsString('greet-retry', $contents);
+        $this->assertStringContainsString('TransientGreetingFailure', $contents);
+        $this->assertStringContainsString('history_attempt_visibility_includes_retry_attempts', $contents);
+        $this->assertStringContainsString('final_successful_result', $contents);
         $this->assertStringContainsString('probeWorkerRestartReplay', $contents);
         $this->assertStringContainsString('probeCallerCancellation', $contents);
         $this->assertStringContainsString('duplicate_call_issue_count', $contents);
