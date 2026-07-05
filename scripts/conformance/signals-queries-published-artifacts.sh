@@ -2594,6 +2594,7 @@ def answer_next_query_task(
     result: Any,
     log_file: Path,
     holder: dict[str, Any],
+    workflow_condition_key: str | None = None,
     poll_timeout: float = 45.0,
 ) -> None:
     try:
@@ -2629,10 +2630,44 @@ def answer_next_query_task(
                 timeout=remaining + 5.0,
             )
             holder["poll"] = poll
-            task_candidate = poll.get("body", {}).get("task") if isinstance(poll.get("body"), dict) else None
+            poll_body = poll.get("body") if isinstance(poll.get("body"), dict) else {}
+            task_candidate = poll_body.get("task") if isinstance(poll_body, dict) else None
             if isinstance(task_candidate, dict):
                 task = task_candidate
                 break
+
+            if (
+                isinstance(poll_body, dict)
+                and poll_body.get("poll_status") == "workflow_task_pending"
+                and workflow_condition_key is not None
+            ):
+                pending_count = int(holder.get("workflow_task_pending_count") or 0) + 1
+                holder["workflow_task_pending_count"] = pending_count
+                workflow_poll = poll_workflow_task(
+                    base_url,
+                    token,
+                    namespace,
+                    worker_id,
+                    task_queue,
+                    timeout=min(10.0, max(1.0, remaining)),
+                )
+                holder["workflow_task_pending_poll"] = workflow_poll
+                workflow_task = task_from_poll(
+                    workflow_poll,
+                    f"{worker_id} workflow task pending before query {pending_count}",
+                )
+                complete_pending = complete_open_wait(
+                    base_url,
+                    token,
+                    namespace,
+                    workflow_task,
+                    workflow_condition_key,
+                )
+                holder["workflow_task_pending_complete"] = complete_pending
+                if int(complete_pending.get("status_code") or 0) >= 400:
+                    holder["error"] = f"workflow task pending completion failed: {complete_pending}"
+                    return
+                continue
 
             empty_polls.append(response_sample(poll))
             holder["empty_polls"] = empty_polls
@@ -2990,11 +3025,12 @@ def query_with_worker_result(
     result: Any,
     log_file: Path,
     call: Any,
+    workflow_condition_key: str | None = None,
 ) -> dict[str, Any]:
     holder: dict[str, Any] = {}
     responder = threading.Thread(
         target=answer_next_query_task,
-        args=(base_url, token, namespace, worker_id, task_queue, result, log_file, holder),
+        args=(base_url, token, namespace, worker_id, task_queue, result, log_file, holder, workflow_condition_key),
         daemon=True,
     )
     responder.start()
@@ -6032,6 +6068,7 @@ def run_baseline_probe(result_dir: Path) -> tuple[dict[str, Any] | None, dict[st
                     namespace=namespace,
                     timeout=60,
                 ),
+                workflow_condition_key=f"{baseline_workflow_id}-initial",
             )
             known_query_after_unknown_result = sample_result_value(known_query_after_unknown_errors)
 
@@ -6194,6 +6231,7 @@ def run_baseline_probe(result_dir: Path) -> tuple[dict[str, Any] | None, dict[st
                     ordered_query_result_from_task,
                     log_file,
                     ordered_query_holder,
+                    f"{ordered_workflow_id}-query",
                 ),
                 daemon=True,
             )

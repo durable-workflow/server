@@ -1339,6 +1339,100 @@ PY);
         $this->assertSame(55, $result['complete_bodies'][0]['result']);
     }
 
+    public function test_host_runner_query_responder_processes_pending_workflow_task_before_query_task(): void
+    {
+        $result = $this->runSignalQueryRunnerPythonSnippet(<<<'PY'
+heartbeat_bodies = []
+query_poll_bodies = []
+workflow_poll_bodies = []
+workflow_complete_bodies = []
+query_complete_bodies = []
+
+def fake_http_json(base_url, path, **kwargs):
+    if path.endswith("/worker/heartbeat"):
+        heartbeat_bodies.append(kwargs.get("body"))
+        return {"status_code": 200, "body": {"acknowledged": True}}
+
+    if path.endswith("/worker/query-tasks/poll"):
+        query_poll_bodies.append(kwargs.get("body"))
+        if len(query_poll_bodies) == 1:
+            return {"status_code": 200, "body": {"task": None, "poll_status": "workflow_task_pending"}}
+        return {
+            "status_code": 200,
+            "body": {
+                "task": {
+                    "query_task_id": "query-task-1",
+                    "query_task_attempt": 1,
+                    "lease_owner": "leased-worker",
+                },
+            },
+        }
+
+    if path.endswith("/worker/workflow-tasks/poll"):
+        workflow_poll_bodies.append(kwargs.get("body"))
+        return {
+            "status_code": 200,
+            "body": {
+                "task": {
+                    "task_id": "workflow-task-1",
+                    "workflow_task_attempt": 1,
+                    "lease_owner": "leased-worker",
+                },
+            },
+        }
+
+    if path.endswith("/worker/workflow-tasks/workflow-task-1/complete"):
+        workflow_complete_bodies.append(kwargs.get("body"))
+        return {"status_code": 200, "body": {"outcome": "completed"}}
+
+    if path.endswith("/worker/query-tasks/query-task-1/complete"):
+        query_complete_bodies.append(kwargs.get("body"))
+        return {"status_code": 200, "body": {"outcome": "completed"}}
+
+    raise AssertionError(f"unexpected path {path}")
+
+globals()["http_json"] = fake_http_json
+holder = {}
+answer_next_query_task(
+    "http://unused",
+    "token",
+    "default",
+    "polling-worker",
+    "queue-1",
+    55,
+    Path("/tmp/signals-queries-query-workflow-pending-test.log"),
+    holder,
+    workflow_condition_key="baseline-open",
+    poll_timeout=5,
+)
+
+print(json.dumps({
+    "heartbeat_count": len(heartbeat_bodies),
+    "query_poll_count": len(query_poll_bodies),
+    "workflow_poll_count": len(workflow_poll_bodies),
+    "workflow_complete_bodies": workflow_complete_bodies,
+    "query_complete_bodies": query_complete_bodies,
+    "workflow_task_pending_count": holder.get("workflow_task_pending_count"),
+    "error": holder.get("error"),
+}, sort_keys=True))
+PY);
+
+        $this->assertNull($result['error']);
+        $this->assertSame(3, $result['heartbeat_count']);
+        $this->assertSame(2, $result['query_poll_count']);
+        $this->assertSame(1, $result['workflow_poll_count']);
+        $this->assertSame(1, $result['workflow_task_pending_count']);
+        $this->assertSame(
+            'open_condition_wait',
+            $result['workflow_complete_bodies'][0]['commands'][0]['type'],
+        );
+        $this->assertSame(
+            'baseline-open',
+            $result['workflow_complete_bodies'][0]['commands'][0]['condition_key'],
+        );
+        $this->assertSame(55, $result['query_complete_bodies'][0]['result']);
+    }
+
     public function test_host_runner_query_responder_does_not_cut_off_server_long_poll(): void
     {
         $result = $this->runSignalQueryRunnerPythonSnippet(<<<'PY'
