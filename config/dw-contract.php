@@ -386,6 +386,12 @@ return [
             'since' => '2.0.0',
             'legacy' => 'WORKFLOW_SERVER_QUERY_TASK_LEASE_TIMEOUT',
         ],
+        'DW_QUERY_TASK_POLL_TIMEOUT' => [
+            'description' => 'Maximum seconds a single query-task worker poll may wait before returning empty. Workers can immediately re-poll; the shorter window keeps synchronous control-plane queries from depending on one long-held worker request.',
+            'default' => '5',
+            'since' => '2.0.0',
+            'legacy' => 'WORKFLOW_SERVER_QUERY_TASK_POLL_TIMEOUT',
+        ],
         'DW_QUERY_TASK_TTL_SECONDS' => [
             'description' => 'Configured retention floor for query-task result rows; effective retention is at least query timeout plus effective lease plus 60 seconds.',
             'default' => '180',

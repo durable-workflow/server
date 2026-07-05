@@ -529,7 +529,7 @@ final class WorkflowQueryTaskBroker
                 $pollRequestId,
                 $supportedWorkflowTypes,
                 $workflowDefinitionFingerprints,
-                $timeoutSeconds,
+                $this->queryPollTimeoutSeconds($timeoutSeconds),
                 $workerPollFence,
             );
         }
@@ -541,7 +541,7 @@ final class WorkflowQueryTaskBroker
             $supportedWorkflowTypes,
             $workflowDefinitionFingerprints,
             $buildId,
-            timeoutSeconds: $timeoutSeconds,
+            timeoutSeconds: $this->queryPollTimeoutSeconds($timeoutSeconds),
             workerPollFence: $workerPollFence,
         ));
     }
@@ -2776,6 +2776,19 @@ final class WorkflowQueryTaskBroker
     private function queryTimeoutSeconds(): int
     {
         return max(0, (int) config('server.query_tasks.timeout', config('server.polling.timeout', 30)));
+    }
+
+    private function queryPollTimeoutSeconds(?int $timeoutSeconds): int
+    {
+        $requested = $timeoutSeconds ?? max(0, (int) config('server.polling.timeout', 30));
+
+        if ($requested <= 0) {
+            return 0;
+        }
+
+        $cap = max(1, (int) config('server.query_tasks.poll_timeout', 5));
+
+        return min($requested, $cap);
     }
 
     private function leaseTtlSeconds(): int
