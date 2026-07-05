@@ -1272,12 +1272,17 @@ PY);
         $result = $this->runSignalQueryRunnerPythonSnippet(<<<'PY'
 poll_paths = []
 complete_bodies = []
+heartbeat_bodies = []
 sleep_intervals = []
 original_sleep = time.sleep
 time.sleep = lambda seconds: sleep_intervals.append(seconds)
 
 try:
     def fake_http_json(base_url, path, **kwargs):
+        if path.endswith("/worker/heartbeat"):
+            heartbeat_bodies.append(kwargs.get("body"))
+            return {"status_code": 200, "body": {"acknowledged": True}}
+
         if path.endswith("/worker/query-tasks/poll"):
             poll_paths.append(path)
             if len(poll_paths) == 1:
@@ -1317,6 +1322,7 @@ finally:
 
 print(json.dumps({
     "poll_count": len(poll_paths),
+    "heartbeat_count": len(heartbeat_bodies),
     "complete_bodies": complete_bodies,
     "empty_poll_count": len(holder.get("empty_polls", [])),
     "error": holder.get("error"),
@@ -1324,6 +1330,7 @@ print(json.dumps({
 }, sort_keys=True))
 PY);
 
+        $this->assertSame(2, $result['heartbeat_count']);
         $this->assertSame(2, $result['poll_count']);
         $this->assertSame(1, $result['empty_poll_count']);
         $this->assertNull($result['error']);
@@ -1335,11 +1342,16 @@ PY);
     public function test_host_runner_query_responder_does_not_cut_off_server_long_poll(): void
     {
         $result = $this->runSignalQueryRunnerPythonSnippet(<<<'PY'
+heartbeat_bodies = []
 poll_bodies = []
 poll_timeouts = []
 complete_bodies = []
 
 def fake_http_json(base_url, path, **kwargs):
+    if path.endswith("/worker/heartbeat"):
+        heartbeat_bodies.append(kwargs.get("body"))
+        return {"status_code": 200, "body": {"acknowledged": True}}
+
     if path.endswith("/worker/query-tasks/poll"):
         poll_bodies.append(kwargs.get("body"))
         poll_timeouts.append(kwargs.get("timeout"))
@@ -1375,6 +1387,7 @@ answer_next_query_task(
 )
 
 print(json.dumps({
+    "heartbeat_bodies": heartbeat_bodies,
     "poll_bodies": poll_bodies,
     "poll_timeouts": poll_timeouts,
     "complete_bodies": complete_bodies,
@@ -1383,6 +1396,7 @@ print(json.dumps({
 PY);
 
         $this->assertNull($result['error']);
+        $this->assertSame('polling-worker', $result['heartbeat_bodies'][0]['worker_id']);
         $this->assertSame(12, $result['poll_bodies'][0]['timeout_seconds']);
         $this->assertGreaterThan(12.0, $result['poll_timeouts'][0]);
         $this->assertSame(55, $result['complete_bodies'][0]['result']);
@@ -1392,8 +1406,13 @@ PY);
     {
         $result = $this->runSignalQueryRunnerPythonSnippet(<<<'PY'
 complete_bodies = []
+heartbeat_bodies = []
 
 def fake_http_json(base_url, path, **kwargs):
+    if path.endswith("/worker/heartbeat"):
+        heartbeat_bodies.append(kwargs.get("body"))
+        return {"status_code": 200, "body": {"acknowledged": True}}
+
     if path.endswith("/worker/query-tasks/poll"):
         return {
             "status_code": 200,
@@ -1452,6 +1471,7 @@ answer_next_query_task(
 )
 
 print(json.dumps({
+    "heartbeat_count": len(heartbeat_bodies),
     "complete_bodies": complete_bodies,
     "computed_order": holder.get("computed_order"),
     "history_signal_order": holder.get("history_signal_order"),
@@ -1461,6 +1481,7 @@ print(json.dumps({
 PY);
 
         $this->assertNull($result['error']);
+        $this->assertSame(1, $result['heartbeat_count']);
         $this->assertSame([2, 4], $result['computed_order']);
         $this->assertSame([2, 4], $result['history_signal_order']);
         $this->assertSame(6, $result['result']);

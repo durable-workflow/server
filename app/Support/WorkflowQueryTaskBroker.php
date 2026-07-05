@@ -489,6 +489,18 @@ final class WorkflowQueryTaskBroker
         ?string $pollRequestId = null,
         ?int $timeoutSeconds = null,
     ): ?array {
+        return $this->pollResult($namespace, $worker, $pollRequestId, $timeoutSeconds)['task'];
+    }
+
+    /**
+     * @return array{task: array<string, mixed>|null, poll_status: string}
+     */
+    public function pollResult(
+        string $namespace,
+        WorkerRegistration $worker,
+        ?string $pollRequestId = null,
+        ?int $timeoutSeconds = null,
+    ): array {
         $pollRequestId = $this->stringValue($pollRequestId);
         $taskQueue = (string) $worker->task_queue;
         $buildId = $this->stringValue($worker->build_id);
@@ -496,7 +508,10 @@ final class WorkflowQueryTaskBroker
         $workflowDefinitionFingerprints = $this->fingerprintMap($worker->workflow_definition_fingerprints);
 
         if (! WorkerPollFence::isFresh($worker)) {
-            return null;
+            return [
+                'task' => null,
+                'poll_status' => 'stale_worker_registration',
+            ];
         }
 
         $workerPollFence = WorkerPollFence::snapshot($worker);
@@ -506,7 +521,7 @@ final class WorkflowQueryTaskBroker
         if ($pollRequestId !== null) {
             $this->pollRequests->markCurrentIfFresh($namespace, $taskQueue, $buildId, $worker->worker_id, $pollRequestId);
 
-            return $this->coordinatedPoll(
+            return $this->coordinatedPollResult(
                 $namespace,
                 $taskQueue,
                 $buildId,
@@ -519,7 +534,7 @@ final class WorkflowQueryTaskBroker
             );
         }
 
-        return $this->performPoll(
+        return $this->pollResultFromValue($this->performPoll(
             $namespace,
             $taskQueue,
             $worker->worker_id,
@@ -528,15 +543,15 @@ final class WorkflowQueryTaskBroker
             $buildId,
             timeoutSeconds: $timeoutSeconds,
             workerPollFence: $workerPollFence,
-        );
+        ));
     }
 
     /**
      * @param  list<string>  $supportedWorkflowTypes
      * @param  array<string, string>  $workflowDefinitionFingerprints
-     * @return array<string, mixed>|null
+     * @return array{task: array<string, mixed>|null, poll_status: string}
      */
-    private function coordinatedPoll(
+    private function coordinatedPollResult(
         string $namespace,
         string $taskQueue,
         ?string $buildId,
@@ -546,20 +561,23 @@ final class WorkflowQueryTaskBroker
         array $workflowDefinitionFingerprints,
         ?int $timeoutSeconds,
         array $workerPollFence,
-    ): ?array {
+    ): array {
         for ($attempt = 0; $attempt < 3; $attempt++) {
             if (! WorkerPollFence::isCurrent($workerPollFence)) {
-                return null;
+                return [
+                    'task' => null,
+                    'poll_status' => 'stale_worker_registration',
+                ];
             }
 
             $cached = $this->cachedPollResult($namespace, $taskQueue, $buildId, $leaseOwner, $pollRequestId);
 
             if ($cached['resolved']) {
-                return $cached['task'];
+                return $this->pollResultFromCached($cached);
             }
 
             if ($this->pollRequests->tryStart($namespace, $taskQueue, $buildId, $leaseOwner, $pollRequestId)) {
-                return $this->runCoordinatedPollLeader(
+                return $this->runCoordinatedPollLeaderResult(
                     $namespace,
                     $taskQueue,
                     $buildId,
@@ -582,26 +600,34 @@ final class WorkflowQueryTaskBroker
 
             if ($observed['resolved']) {
                 if (! WorkerPollFence::isCurrent($workerPollFence)) {
-                    return null;
+                    return [
+                        'task' => null,
+                        'poll_status' => 'stale_worker_registration',
+                    ];
                 }
 
-                return $observed['task'];
+                return $this->pollResultFromCached($observed);
             }
         }
 
         if (! WorkerPollFence::isCurrent($workerPollFence)) {
-            return null;
+            return [
+                'task' => null,
+                'poll_status' => 'stale_worker_registration',
+            ];
         }
 
-        return $this->cachedPollResult($namespace, $taskQueue, $buildId, $leaseOwner, $pollRequestId)['task'];
+        return $this->pollResultFromCached(
+            $this->cachedPollResult($namespace, $taskQueue, $buildId, $leaseOwner, $pollRequestId),
+        );
     }
 
     /**
      * @param  list<string>  $supportedWorkflowTypes
      * @param  array<string, string>  $workflowDefinitionFingerprints
-     * @return array<string, mixed>|null
+     * @return array{task: array<string, mixed>|null, poll_status: string}
      */
-    private function runCoordinatedPollLeader(
+    private function runCoordinatedPollLeaderResult(
         string $namespace,
         string $taskQueue,
         ?string $buildId,
@@ -611,7 +637,7 @@ final class WorkflowQueryTaskBroker
         array $workflowDefinitionFingerprints,
         ?int $timeoutSeconds,
         array $workerPollFence,
-    ): ?array {
+    ): array {
         try {
             $task = $this->performPoll(
                 $namespace,
@@ -630,17 +656,53 @@ final class WorkflowQueryTaskBroker
             throw $exception;
         }
 
+        $pollResult = $this->pollResultFromValue($task);
+
         $this->pollRequests->rememberResult(
             $namespace,
             $taskQueue,
             $buildId,
             $leaseOwner,
             $pollRequestId,
-            $task,
-            is_array($task) ? 'leased' : 'empty',
+            $pollResult['task'],
+            $pollResult['poll_status'],
         );
 
-        return $task;
+        return $pollResult;
+    }
+
+    /**
+     * @param  array{resolved?: bool, task?: array<string, mixed>|null, poll_status?: string|null}  $cached
+     * @return array{task: array<string, mixed>|null, poll_status: string}
+     */
+    private function pollResultFromCached(array $cached): array
+    {
+        $task = $cached['task'] ?? null;
+        $pollStatus = $this->stringValue($cached['poll_status'] ?? null);
+
+        return [
+            'task' => is_array($task) ? $task : null,
+            'poll_status' => $pollStatus ?? (is_array($task) ? 'leased' : 'empty'),
+        ];
+    }
+
+    /**
+     * @param  array<string, mixed>|null  $task
+     * @return array{task: array<string, mixed>|null, poll_status: string}
+     */
+    private function pollResultFromValue(?array $task): array
+    {
+        if (is_array($task) && ! array_key_exists('query_task_id', $task)) {
+            return [
+                'task' => null,
+                'poll_status' => $this->stringValue($task['poll_status'] ?? null) ?? 'empty',
+            ];
+        }
+
+        return [
+            'task' => $task,
+            'poll_status' => is_array($task) ? 'leased' : 'empty',
+        ];
     }
 
     /**
@@ -801,8 +863,7 @@ final class WorkflowQueryTaskBroker
                     $workerPollFence,
                 );
             },
-            static fn (?array $task): bool => $task !== null
-                && ($task['poll_status'] ?? null) !== 'workflow_task_pending',
+            static fn (?array $task): bool => $task !== null,
             timeoutSeconds: $timeoutSeconds,
             wakeChannels: $this->signals->queryTaskPollChannels($namespace, $taskQueue),
             reserveWorkerWaitSlot: true,
@@ -811,7 +872,7 @@ final class WorkflowQueryTaskBroker
 
         return in_array(
             $result['poll_status'] ?? null,
-            ['superseded', 'workflow_task_pending', 'stale_worker_registration'],
+            ['superseded', 'stale_worker_registration'],
             true,
         ) ? null : $result;
     }

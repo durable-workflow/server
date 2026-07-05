@@ -2607,6 +2607,12 @@ def answer_next_query_task(
             remaining = max(0.2, deadline - time.time())
             if "query_poll_started_at" not in holder:
                 holder["query_poll_started_at"] = now()
+            holder["heartbeat"] = heartbeat_worker(
+                base_url,
+                token,
+                namespace,
+                worker_id,
+            )
             poll = http_json(
                 base_url,
                 api_path("worker", "query-tasks", "poll"),
@@ -2676,6 +2682,8 @@ def poll_workflow_task(
     task_queue: str,
     timeout: float = 45.0,
 ) -> dict[str, Any]:
+    heartbeat_worker(base_url, token, namespace, worker_id)
+
     return http_json(
         base_url,
         api_path("worker", "workflow-tasks", "poll"),
@@ -2689,6 +2697,31 @@ def poll_workflow_task(
         namespace=namespace,
         worker=True,
         timeout=timeout,
+    )
+
+
+def heartbeat_worker(
+    base_url: str,
+    token: str,
+    namespace: str,
+    worker_id: str,
+) -> dict[str, Any]:
+    return http_json(
+        base_url,
+        api_path("worker", "heartbeat"),
+        method="POST",
+        body={
+            "worker_id": worker_id,
+            "task_slots": {
+                "workflow_available": 2,
+                "activity_available": 0,
+            },
+            "heartbeat_interval_seconds": 10,
+        },
+        token=token,
+        namespace=namespace,
+        worker=True,
+        timeout=10,
     )
 
 

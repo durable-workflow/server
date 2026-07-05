@@ -2083,7 +2083,7 @@ class WorkerController
         }
 
         try {
-            $task = $this->queryTasks->poll(
+            $poll = $this->queryTasks->pollResult(
                 $namespace,
                 $worker,
                 $validated['poll_request_id'] ?? null,
@@ -2112,8 +2112,8 @@ class WorkerController
         }
 
         return WorkerProtocol::json([
-            'task' => $task,
-            'poll_status' => is_array($task) ? 'leased' : 'empty',
+            'task' => $poll['task'],
+            'poll_status' => $poll['poll_status'],
         ]);
     }
 

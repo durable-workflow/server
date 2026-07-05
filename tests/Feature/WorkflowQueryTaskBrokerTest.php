@@ -2600,11 +2600,24 @@ class WorkflowQueryTaskBrokerTest extends TestCase
         $queryPoll = $this->postJson('/api/worker/query-tasks/poll', [
             'worker_id' => 'python-query-signal-resume-barrier-worker',
             'task_queue' => 'python-queries',
+            'poll_request_id' => 'query-poll-signal-resume-barrier-1',
+            'timeout_seconds' => 0,
         ], $this->workerHeaders());
 
         $queryPoll->assertOk()
             ->assertJsonPath('task', null)
-            ->assertJsonPath('poll_status', 'empty');
+            ->assertJsonPath('poll_status', 'workflow_task_pending');
+
+        $duplicateQueryPoll = $this->postJson('/api/worker/query-tasks/poll', [
+            'worker_id' => 'python-query-signal-resume-barrier-worker',
+            'task_queue' => 'python-queries',
+            'poll_request_id' => 'query-poll-signal-resume-barrier-1',
+            'timeout_seconds' => 0,
+        ], $this->workerHeaders());
+
+        $duplicateQueryPoll->assertOk()
+            ->assertJsonPath('task', null)
+            ->assertJsonPath('poll_status', 'workflow_task_pending');
 
         $this->assertSame(
             'pending',
@@ -2755,7 +2768,7 @@ class WorkflowQueryTaskBrokerTest extends TestCase
         $this->assertQueryTaskWithoutCutoffWaitsForLaterResume('workflow_update');
     }
 
-    public function test_query_task_poll_yields_without_long_poll_when_ready_resume_blocks_nonblocking_pending_query(): void
+    public function test_query_task_poll_yields_without_long_poll_when_ready_resume_blocks_pending_query(): void
     {
         Queue::fake();
         config(['server.polling.timeout' => 10]);
@@ -2808,9 +2821,10 @@ class WorkflowQueryTaskBrokerTest extends TestCase
             ->where('worker_id', 'python-query-signal-resume-yield-worker')
             ->firstOrFail();
 
-        $poll = $broker->poll('default', $worker, null, 0);
+        $poll = $broker->pollResult('default', $worker, null, 10);
 
-        $this->assertNull($poll);
+        $this->assertNull($poll['task']);
+        $this->assertSame('workflow_task_pending', $poll['poll_status']);
         $this->assertSame(0, $poller->pauseCalls);
         $this->assertSame(
             'pending',
@@ -3755,7 +3769,7 @@ class WorkflowQueryTaskBrokerTest extends TestCase
 
             $queryPoll->assertOk()
                 ->assertJsonPath('task', null)
-                ->assertJsonPath('poll_status', 'empty');
+                ->assertJsonPath('poll_status', 'workflow_task_pending');
 
             $stored = $broker->task((string) $queryTask['query_task_id']);
             $this->assertIsArray($stored);
