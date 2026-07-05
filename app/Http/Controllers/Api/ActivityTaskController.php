@@ -144,6 +144,7 @@ class ActivityTaskController
                 'run_id' => $claim['workflow_run_id'],
                 'activity_execution_id' => $claim['activity_execution_id'],
                 'activity_attempt_id' => $claim['activity_attempt_id'],
+                'idempotency_key' => $claim['idempotency_key'] ?? $claim['activity_execution_id'],
                 'attempt_number' => $claim['attempt_number'],
                 'activity_type' => $claim['activity_type'],
                 'payload_codec' => $claim['payload_codec'],

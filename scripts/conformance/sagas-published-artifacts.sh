@@ -1685,11 +1685,65 @@ function side_store_path(): string
     return getenv('SAGA_SIDE_STORE') ?: __DIR__.'/side-store.jsonl';
 }
 
+function business_effect_key(array $row): ?string
+{
+    $kind = is_string($row['kind'] ?? null) ? $row['kind'] : '';
+    if (! in_array($kind, ['forward', 'compensation', 'marker'], true)) {
+        return null;
+    }
+
+    $scenario = is_string($row['scenario_id'] ?? null) ? $row['scenario_id'] : '';
+    $step = is_string($row['step'] ?? null) ? $row['step'] : '';
+    if ($scenario === '' || $step === '') {
+        return null;
+    }
+
+    $idempotencyKey = is_string($row['idempotency_key'] ?? null) ? $row['idempotency_key'] : '';
+    if ($idempotencyKey !== '') {
+        return $idempotencyKey;
+    }
+
+    return $scenario.'|'.$kind.'|'.$step;
+}
+
 function append_side_store(array $row): void
 {
     $row['runtime'] = 'workflow-php';
     $row['recorded_at'] = gmdate('c');
-    file_put_contents(side_store_path(), json_encode($row, JSON_THROW_ON_ERROR)."\n", FILE_APPEND | LOCK_EX);
+    $effectKey = business_effect_key($row);
+    if ($effectKey !== null) {
+        $row['idempotency_key'] = $effectKey;
+    }
+
+    $path = side_store_path();
+    $handle = fopen($path, 'c+');
+    if ($handle === false) {
+        throw new RuntimeException('Unable to open saga side store '.$path);
+    }
+
+    try {
+        flock($handle, LOCK_EX);
+
+        if ($effectKey !== null) {
+            rewind($handle);
+            while (($line = fgets($handle)) !== false) {
+                $decoded = json_decode(trim($line), true);
+                if (! is_array($decoded)) {
+                    continue;
+                }
+
+                if (business_effect_key($decoded) === $effectKey) {
+                    return;
+                }
+            }
+        }
+
+        fseek($handle, 0, SEEK_END);
+        fwrite($handle, json_encode($row, JSON_THROW_ON_ERROR)."\n");
+    } finally {
+        flock($handle, LOCK_UN);
+        fclose($handle);
+    }
 }
 
 function fail_once_state_path(string $scenario, string $activity): string
@@ -1708,14 +1762,24 @@ function handle_activity_task(array $task): void
         $statePath = fail_once_state_path($scenario, $activityType);
         if (! is_file($statePath)) {
             file_put_contents($statePath, '1');
-            append_side_store(['scenario_id' => $scenario, 'kind' => 'compensation_attempt', 'step' => $activityType]);
+            append_side_store([
+                'scenario_id' => $scenario,
+                'kind' => 'compensation_attempt',
+                'step' => $activityType,
+                'activity_attempt_id' => $task['activity_attempt_id'] ?? $task['attempt_id'] ?? null,
+            ]);
             fail_activity_task($task, 'cancel_hotel injected retryable failure', 'RetryableHotelCancelError');
             return;
         }
     }
 
     if ($activityType === 'cancel_flight' && ($payload['cancel_flight_fail'] ?? false)) {
-        append_side_store(['scenario_id' => $scenario, 'kind' => 'compensation_attempt', 'step' => $activityType]);
+        append_side_store([
+            'scenario_id' => $scenario,
+            'kind' => 'compensation_attempt',
+            'step' => $activityType,
+            'activity_attempt_id' => $task['activity_attempt_id'] ?? $task['attempt_id'] ?? null,
+        ]);
         fail_activity_task($task, 'cancel_flight typed compensation failure', 'TypedCancelFlightError');
         return;
     }
@@ -1737,7 +1801,14 @@ function handle_activity_task(array $task): void
     if ($activityType === 'pause_after_refund') {
         $kind = 'marker';
     }
-    append_side_store(['scenario_id' => $scenario, 'kind' => $kind, 'step' => $activityType]);
+    append_side_store([
+        'scenario_id' => $scenario,
+        'kind' => $kind,
+        'step' => $activityType,
+        'idempotency_key' => $task['idempotency_key'] ?? $task['activity_execution_id'] ?? null,
+        'activity_execution_id' => $task['activity_execution_id'] ?? null,
+        'activity_attempt_id' => $task['activity_attempt_id'] ?? $task['attempt_id'] ?? null,
+    ]);
     complete_activity_task($task, ['activity' => $activityType, 'runtime' => 'workflow-php'], $codec);
 }
 
@@ -1801,6 +1872,7 @@ cat > "$run_root/python-worker.py" <<'PY'
 from __future__ import annotations
 
 import asyncio
+import fcntl
 import json
 import os
 from datetime import datetime, timezone
@@ -1821,10 +1893,63 @@ def now() -> str:
     return datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
 
 
+def business_effect_key(row: dict[str, Any]) -> str | None:
+    kind = row.get("kind")
+    if kind not in {"forward", "compensation", "marker"}:
+        return None
+    scenario = row.get("scenario_id")
+    step = row.get("step")
+    if not isinstance(scenario, str) or not scenario or not isinstance(step, str) or not step:
+        return None
+    explicit = row.get("idempotency_key")
+    if isinstance(explicit, str) and explicit:
+        return explicit
+    return f"{scenario}|{kind}|{step}"
+
+
+def existing_business_effect_keys(handle: Any) -> set[str]:
+    handle.seek(0)
+    keys: set[str] = set()
+    for line in handle:
+        if not line.strip():
+            continue
+        try:
+            decoded = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if not isinstance(decoded, dict):
+            continue
+        key = business_effect_key(decoded)
+        if key is not None:
+            keys.add(key)
+    return keys
+
+
 def append_row(row: dict[str, Any]) -> None:
     row = {**row, "runtime": "sdk-python", "recorded_at": now()}
-    with SIDE_STORE.open("a", encoding="utf-8") as handle:
+    effect_key = business_effect_key(row)
+    if effect_key is not None:
+        row["idempotency_key"] = effect_key
+    with SIDE_STORE.open("a+", encoding="utf-8") as handle:
+        fcntl.flock(handle, fcntl.LOCK_EX)
+        if effect_key is not None and effect_key in existing_business_effect_keys(handle):
+            fcntl.flock(handle, fcntl.LOCK_UN)
+            return
+        handle.seek(0, os.SEEK_END)
         handle.write(json.dumps(row, sort_keys=True) + "\n")
+        fcntl.flock(handle, fcntl.LOCK_UN)
+
+
+def activity_metadata() -> dict[str, Any]:
+    try:
+        info = activity.context().info
+    except RuntimeError:
+        return {}
+    return {
+        "task_id": info.task_id,
+        "activity_attempt_id": info.activity_attempt_id,
+        "attempt_number": info.attempt_number,
+    }
 
 
 def runtime_queue(runtime: str) -> str:
@@ -1860,15 +1985,16 @@ def fail_once_path(scenario: str, activity_type: str) -> Path:
 
 async def activity_body(activity_type: str, payload: dict[str, Any]) -> dict[str, str]:
     scenario = str(payload.get("scenario_id", "unknown"))
+    metadata = activity_metadata()
     if activity_type == "cancel_hotel" and payload.get("cancel_hotel_fail_once"):
         path = fail_once_path(scenario, activity_type)
         if not path.exists():
             path.write_text("1", encoding="utf-8")
-            append_row({"scenario_id": scenario, "kind": "compensation_attempt", "step": activity_type})
+            append_row({"scenario_id": scenario, "kind": "compensation_attempt", "step": activity_type, **metadata})
             raise RuntimeError("cancel_hotel injected retryable failure")
 
     if activity_type == "cancel_flight" and payload.get("cancel_flight_fail"):
-        append_row({"scenario_id": scenario, "kind": "compensation_attempt", "step": activity_type})
+        append_row({"scenario_id": scenario, "kind": "compensation_attempt", "step": activity_type, **metadata})
         raise TypedCancelFlightError("cancel_flight typed compensation failure")
 
     if activity_type == str(payload.get("fail_step") or "") and payload.get("failure_mode") == "before_forward":
@@ -1877,7 +2003,7 @@ async def activity_body(activity_type: str, payload: dict[str, Any]) -> dict[str
     if activity_type == "saga_planned_failure":
         raise RuntimeError(str(payload.get("failure_message") or "planned saga failure"))
 
-    append_row({"scenario_id": scenario, "kind": activity_kind(activity_type), "step": activity_type})
+    append_row({"scenario_id": scenario, "kind": activity_kind(activity_type), "step": activity_type, **metadata})
     return {"activity": activity_type, "runtime": "sdk-python"}
 
 

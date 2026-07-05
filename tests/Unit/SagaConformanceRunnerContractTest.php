@@ -1072,6 +1072,42 @@ class SagaConformanceRunnerContractTest extends TestCase
         );
     }
 
+    public function test_generated_saga_side_store_business_effects_are_idempotent(): void
+    {
+        $source = $this->read('scripts/conformance/sagas-published-artifacts.sh');
+
+        $this->assertStringContainsString(
+            'function business_effect_key(array $row): ?string',
+            $source,
+            'the generated PHP saga worker must derive a stable idempotency key for business-effect rows',
+        );
+        $this->assertStringContainsString(
+            'business_effect_key($decoded) === $effectKey',
+            $source,
+            'the generated PHP saga worker must suppress duplicate side-store business effects after task redelivery',
+        );
+        $this->assertStringContainsString(
+            "'idempotency_key' => \$task['idempotency_key'] ?? \$task['activity_execution_id'] ?? null,",
+            $source,
+            'PHP activity rows must prefer the server-provided activity idempotency key',
+        );
+        $this->assertStringContainsString(
+            'def business_effect_key(row: dict[str, Any]) -> str | None:',
+            $source,
+            'the generated Python saga worker must also derive stable business-effect keys',
+        );
+        $this->assertStringContainsString(
+            'if effect_key is not None and effect_key in existing_business_effect_keys(handle):',
+            $source,
+            'the generated Python saga worker must suppress duplicate side-store business effects after task redelivery',
+        );
+        $this->assertStringContainsString(
+            'metadata = activity_metadata()',
+            $source,
+            'Python activity rows must include current activity attempt metadata for duplicate-delivery diagnostics',
+        );
+    }
+
     private function read(string $path): string
     {
         $source = file_get_contents(dirname(__DIR__, 2).'/'.$path);

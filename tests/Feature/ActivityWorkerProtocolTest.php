@@ -89,6 +89,12 @@ class ActivityWorkerProtocolTest extends TestCase
             ->assertJsonPath('task.run_id', $start->runId())
             ->assertJsonPath('task.activity_type', 'tests.external-greeting-activity');
 
+        $this->assertSame(
+            $poll->json('task.activity_execution_id'),
+            $poll->json('task.idempotency_key'),
+            'activity poll responses must expose the stable activity execution id as the idempotency key',
+        );
+
         $taskId = (string) $poll->json('task.task_id');
         $attemptId = (string) $poll->json('task.activity_attempt_id');
         $leaseOwner = (string) $poll->json('task.lease_owner');
@@ -389,6 +395,7 @@ class ActivityWorkerProtocolTest extends TestCase
             ->assertJsonPath('task.run_id', $start->runId())
             ->assertJsonPath('task.activity_execution_id', $execution->id)
             ->assertJsonPath('task.activity_attempt_id', 'attempt-bridge-1')
+            ->assertJsonPath('task.idempotency_key', $execution->id)
             ->assertJsonPath('task.attempt_number', 1)
             ->assertJsonPath('task.activity_type', 'tests.external-greeting-activity')
             ->assertJsonPath('task.lease_owner', 'php-activity-worker-bridge')
