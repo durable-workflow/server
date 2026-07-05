@@ -16,7 +16,7 @@ final class SearchAttributeRuntimeContract
 {
     public const SCHEMA = 'durable-workflow.v2.search-attribute-runtime.contract';
 
-    public const VERSION = 11;
+    public const VERSION = 12;
 
     public const RESULT_SCHEMA = 'durable-workflow.v2.search-attribute-runtime.result';
 
@@ -408,7 +408,7 @@ final class SearchAttributeRuntimeContract
                     'latency_and_load_evidence_names_consistency_contract',
                     'latency_and_load_evidence_records_public_observation_surfaces',
                     'latency_and_load_evidence_records_run_id_and_observed_bounds',
-                    'or_not_grammar_reported_with_exact_query_counts',
+                    'or_not_grammar_reported_with_exact_query_counts_and_public_surface',
                     'query_injection_hardening_reported_with_status_and_response_body',
                     'artifact_versions_match_latest_published_set',
                     'run_timestamps_outcome_and_finding_links_are_recorded',

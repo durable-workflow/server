@@ -14,7 +14,7 @@ class SearchAttributeRuntimeContractTest extends TestCase
         $manifest = SearchAttributeRuntimeContract::manifest();
 
         $this->assertSame('durable-workflow.v2.search-attribute-runtime.contract', $manifest['schema']);
-        $this->assertSame(11, SearchAttributeRuntimeContract::VERSION);
+        $this->assertSame(12, SearchAttributeRuntimeContract::VERSION);
         $this->assertSame(SearchAttributeRuntimeContract::VERSION, $manifest['version']);
         $this->assertSame('durable-workflow.v2.search-attribute-runtime.result', $manifest['result_schema']);
         $this->assertSame('search_attribute_runtime_contract', $manifest['fixture_category']);
@@ -178,7 +178,7 @@ class SearchAttributeRuntimeContractTest extends TestCase
             'latency_and_load_evidence_names_consistency_contract',
             'latency_and_load_evidence_records_public_observation_surfaces',
             'latency_and_load_evidence_records_run_id_and_observed_bounds',
-            'or_not_grammar_reported_with_exact_query_counts',
+            'or_not_grammar_reported_with_exact_query_counts_and_public_surface',
             'query_injection_hardening_reported_with_status_and_response_body',
             'runner_blocked_false_for_product_evidence',
             'findings_linked_for_non_pass_scenarios',
@@ -192,7 +192,7 @@ class SearchAttributeRuntimeContractTest extends TestCase
         $resultGate = SearchAttributeRuntimeContract::manifest()['result_gate'];
 
         $this->assertSame(SearchAttributeRuntimeResultGate::SCHEMA, $resultGate['schema']);
-        $this->assertSame(10, SearchAttributeRuntimeResultGate::VERSION);
+        $this->assertSame(11, SearchAttributeRuntimeResultGate::VERSION);
         $this->assertSame(SearchAttributeRuntimeResultGate::VERSION, $resultGate['version']);
         $this->assertSame(
             SearchAttributeRuntimeContract::RESULT_SCHEMA,
@@ -217,6 +217,10 @@ class SearchAttributeRuntimeContractTest extends TestCase
         );
         $this->assertContains(
             'query_verdict_exact_query_expected_and_actual_counts_match',
+            $resultGate['pass_requires'],
+        );
+        $this->assertContains(
+            'or_not_query_verdicts_include_public_surface_and_command_arguments',
             $resultGate['pass_requires'],
         );
         $this->assertContains(
@@ -1331,6 +1335,33 @@ class SearchAttributeRuntimeContractTest extends TestCase
         $this->assertNotEmpty($matchingFailures);
     }
 
+    public function test_result_gate_requires_public_surface_evidence_on_or_not_query_verdicts(): void
+    {
+        $result = $this->completeSearchAttributeResult();
+        unset($result['query_verdicts']['or']['public_surface'], $result['query_verdicts']['or']['arguments']);
+        unset($result['query_verdicts']['not']['public_surface'], $result['query_verdicts']['not']['arguments']);
+
+        $evaluation = SearchAttributeRuntimeResultGate::evaluate($result);
+        $matchingFailures = array_filter(
+            $evaluation['gate_failures'],
+            static fn (array $failure): bool => ($failure['code'] ?? null) === 'missing_query_public_surface',
+        );
+
+        $this->assertSame('non_passing', $evaluation['status']);
+        $this->assertSame(
+            [
+                ['or', 'public_surface'],
+                ['or', 'arguments'],
+                ['not', 'public_surface'],
+                ['not', 'arguments'],
+            ],
+            array_values(array_map(
+                static fn (array $failure): array => [$failure['query_class'], $failure['field']],
+                $matchingFailures,
+            )),
+        );
+    }
+
     public function test_result_gate_requires_injection_rejection_status_and_response_body(): void
     {
         $result = $this->completeSearchAttributeResult();
@@ -1348,6 +1379,58 @@ class SearchAttributeRuntimeContractTest extends TestCase
 
         $this->assertSame('non_passing', $evaluation['status']);
         $this->assertSame(['status_code', 'response_body'], array_values(array_column($matchingFailures, 'field')));
+    }
+
+    public function test_published_artifact_runner_rejects_missing_or_not_public_surface_evidence(): void
+    {
+        if (trim((string) shell_exec('command -v node 2>/dev/null')) === '') {
+            $this->markTestSkipped('node is required to exercise the search-attributes runner.');
+        }
+
+        $repoRoot = dirname(__DIR__, 2);
+        $runner = SearchAttributeRuntimeContract::manifest()['host_runner_contract'];
+        $resultDir = sys_get_temp_dir().'/dw-search-attributes-'.bin2hex(random_bytes(6));
+        mkdir($resultDir);
+        $resultFile = $resultDir.'/supplied-search-attributes-missing-query-public-surface.json';
+
+        try {
+            $supplied = $this->completeSearchAttributeResult();
+            unset($supplied['query_verdicts']['or']['public_surface'], $supplied['query_verdicts']['or']['arguments']);
+
+            file_put_contents(
+                $resultFile,
+                json_encode($supplied, JSON_PRETTY_PRINT | JSON_THROW_ON_ERROR)."\n",
+            );
+
+            $command = implode(' ', [
+                'DW_SEARCH_ATTRIBUTES_RESULT_FILE='.escapeshellarg($resultFile),
+                escapeshellarg($repoRoot.'/'.$runner['runner_path']),
+                '--result-dir',
+                escapeshellarg($resultDir),
+            ]);
+
+            $output = [];
+            $exitCode = 0;
+            exec($command.' 2>&1', $output, $exitCode);
+
+            $this->assertSame(1, $exitCode, implode("\n", $output));
+
+            $result = json_decode(
+                (string) file_get_contents($resultDir.'/search-attributes-result.json'),
+                true,
+                512,
+                JSON_THROW_ON_ERROR,
+            );
+
+            $this->assertSame('non_passing', $result['outcome']);
+            $this->assertSame('non_passing', $result['result_gate']['status']);
+            $this->assertContains(
+                'missing_query_public_surface',
+                array_column($result['result_gate']['gate_failures'], 'code'),
+            );
+        } finally {
+            $this->removeDirectory($resultDir);
+        }
     }
 
     public function test_result_gate_accepts_a_complete_passing_matrix(): void
@@ -1860,11 +1943,17 @@ class SearchAttributeRuntimeContractTest extends TestCase
                 ],
                 'or' => [
                     'query' => 'customer_id = "cust-2" OR customer_id = "cust-8"',
+                    'public_surface' => 'dw workflows list --query',
+                    'command' => 'dw',
+                    'arguments' => ['workflows', 'list', '--query', 'customer_id = "cust-2" OR customer_id = "cust-8"'],
                     'expected_count' => 2,
                     'actual_count' => 2,
                 ],
                 'not' => [
                     'query' => 'priority_tier IN ("gold","platinum") AND NOT is_vip',
+                    'public_surface' => 'dw workflows list --query',
+                    'command' => 'dw',
+                    'arguments' => ['workflows', 'list', '--query', 'priority_tier IN ("gold","platinum") AND NOT is_vip'],
                     'expected_count' => 3,
                     'actual_count' => 3,
                 ],

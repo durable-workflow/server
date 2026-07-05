@@ -10,7 +10,7 @@ final class SearchAttributeRuntimeResultGate
 {
     public const SCHEMA = 'durable-workflow.v2.search-attribute-runtime.result-gate';
 
-    public const VERSION = 10;
+    public const VERSION = 11;
 
     /**
      * @return array<string, mixed>
@@ -55,6 +55,7 @@ final class SearchAttributeRuntimeResultGate
                 'codec_round_trips_include_encoded_payload_or_wire_value_context',
                 'codec_round_trips_compare_written_or_wire_values_to_decoded_attributes',
                 'query_verdict_exact_query_expected_and_actual_counts_match',
+                'or_not_query_verdicts_include_public_surface_and_command_arguments',
                 'query_injection_required_rejection_probes_status_and_response_are_reported',
                 'waterline_operator_visibility_includes_operator_surface_matrix',
                 'indexing_latency_p95_and_max_do_not_exceed_documented_bound',
@@ -1980,6 +1981,44 @@ final class SearchAttributeRuntimeResultGate
                     'actual_count' => $actualCount,
                 ];
             }
+
+            if (in_array($queryClass, ['or', 'not'], true)) {
+                array_push($failures, ...self::queryPublicSurfaceFailures($verdict, $queryClass));
+            }
+        }
+
+        return $failures;
+    }
+
+    /**
+     * @param array<mixed> $verdict
+     *
+     * @return array<int, array<string, mixed>>
+     */
+    private static function queryPublicSurfaceFailures(array $verdict, string $queryClass): array
+    {
+        $failures = [];
+
+        if (! self::hasNonPlaceholderField($verdict, [
+            'public_surface',
+            'publicSurface',
+            'surface',
+            'observed_surface',
+            'observedSurface',
+        ])) {
+            $failures[] = [
+                'code' => 'missing_query_public_surface',
+                'query_class' => $queryClass,
+                'field' => 'public_surface',
+            ];
+        }
+
+        if (! self::hasNonEmptyField($verdict, ['arguments', 'args', 'argv'])) {
+            $failures[] = [
+                'code' => 'missing_query_public_surface',
+                'query_class' => $queryClass,
+                'field' => 'arguments',
+            ];
         }
 
         return $failures;

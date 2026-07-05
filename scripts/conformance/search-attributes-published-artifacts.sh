@@ -184,7 +184,7 @@ const TOPOLOGY = {
   reserved_name_refusals: [],
 };
 const RESULT_GATE_SCHEMA = 'durable-workflow.v2.search-attribute-runtime.result-gate';
-const RESULT_GATE_VERSION = 10;
+const RESULT_GATE_VERSION = 11;
 const REQUIRED_QUERIES = {
   equality: 'customer_id = "cust-7"',
   range: 'order_total_cents > 5000 AND order_total_cents <= 10000',
@@ -1372,6 +1372,26 @@ function queryVerdictFailures(section) {
       });
     }
     failures.push(...queryCountFailures(verdict, queryClass, ''));
+    if (['or', 'not'].includes(queryClass)) {
+      failures.push(...queryPublicSurfaceFailures(verdict, queryClass));
+    }
+  }
+  return failures;
+}
+
+function queryPublicSurfaceFailures(verdict, queryClass) {
+  const failures = [];
+  if (!hasNonPlaceholderField(verdict, [
+    'public_surface',
+    'publicSurface',
+    'surface',
+    'observed_surface',
+    'observedSurface',
+  ])) {
+    failures.push({ code: 'missing_query_public_surface', query_class: queryClass, field: 'public_surface' });
+  }
+  if (!hasNonEmptyField(verdict, ['arguments', 'args', 'argv'])) {
+    failures.push({ code: 'missing_query_public_surface', query_class: queryClass, field: 'arguments' });
   }
   return failures;
 }
