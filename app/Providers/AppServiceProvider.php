@@ -8,6 +8,7 @@ use App\Observers\WorkflowHistoryEventObserver;
 use App\Observers\WorkflowTaskObserver;
 use App\Support\NamespaceExternalPayloadStorage;
 use App\Support\RemoteScheduleStarter;
+use App\Support\ServerWorkflowControlPlane;
 use App\Support\ServiceCallBoundary;
 use App\Support\ServiceModeBusDispatcher;
 use App\Support\WorkflowPackageApiFloor;
@@ -16,9 +17,11 @@ use Illuminate\Support\ServiceProvider;
 use Workflow\V2\Contracts\ExternalPayloadStoragePolicy;
 use Workflow\V2\Contracts\ScheduleWorkflowStarter;
 use Workflow\V2\Contracts\ServiceBoundaryPolicy;
+use Workflow\V2\Contracts\WorkflowControlPlane;
 use Workflow\V2\Models\WorkflowHistoryEvent;
 use Workflow\V2\Models\WorkflowTask;
 use Workflow\V2\Support\DefaultServiceBoundaryPolicy;
+use Workflow\V2\Support\DefaultWorkflowControlPlane;
 use Workflow\V2\Support\ServiceBoundaryAuditRecorder;
 
 class AppServiceProvider extends ServiceProvider
@@ -48,6 +51,8 @@ class AppServiceProvider extends ServiceProvider
         });
 
         $this->app->singleton(ScheduleWorkflowStarter::class, RemoteScheduleStarter::class);
+        $this->app->singleton(DefaultWorkflowControlPlane::class);
+        $this->app->singleton(WorkflowControlPlane::class, ServerWorkflowControlPlane::class);
         $this->app->singleton(NamespaceExternalPayloadStorage::class);
         $this->app->singleton(
             ExternalPayloadStoragePolicy::class,

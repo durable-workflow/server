@@ -5,6 +5,7 @@ namespace Tests\Feature;
 use App\Models\WorkerBuildIdRollout;
 use App\Models\WorkerRegistration;
 use App\Models\WorkflowNamespace;
+use App\Support\ServerWorkflowControlPlane;
 use App\Support\WorkerProtocol;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\Queue;
@@ -26,7 +27,6 @@ use Workflow\V2\Models\WorkflowLink;
 use Workflow\V2\Models\WorkflowRun;
 use Workflow\V2\Models\WorkflowRunLineageEntry;
 use Workflow\V2\Models\WorkflowTask;
-use Workflow\V2\Support\DefaultWorkflowControlPlane;
 use Workflow\V2\Support\WorkerCompatibilityFleet;
 use Workflow\V2\Support\WorkflowExecutor;
 
@@ -37,7 +37,7 @@ class WorkflowControlPlaneTest extends TestCase
     public function test_the_package_provider_resolves_the_workflow_control_plane_contract(): void
     {
         $this->assertInstanceOf(
-            DefaultWorkflowControlPlane::class,
+            ServerWorkflowControlPlane::class,
             app(WorkflowControlPlane::class),
         );
     }

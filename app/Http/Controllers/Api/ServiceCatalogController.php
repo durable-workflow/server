@@ -1046,6 +1046,10 @@ class ServiceCatalogController
             'outcome_category' => $call->outcome_category,
             'outcome_reason' => $call->outcome_reason,
             'outcome_message' => $call->outcome_message,
+            'outcome_metadata' => $call->outcome_metadata,
+            'service_error_type' => $this->metadataString($call->outcome_metadata, 'service_error_type'),
+            'caller_observed_error_type' => $this->metadataString($call->outcome_metadata, 'caller_observed_error_type'),
+            'typed_error_message' => $this->metadataString($call->outcome_metadata, 'typed_error_message'),
             'resolved_binding_kind' => $call->resolved_binding_kind,
             'resolved_target_reference' => $call->resolved_target_reference,
             'linked_workflow_instance_id' => $call->linked_workflow_instance_id,
@@ -1560,6 +1564,9 @@ class ServiceCatalogController
             'outcome_reason' => $serviceCall->outcome_reason,
             'outcome_message' => $serviceCall->outcome_message,
             'outcome_metadata' => $serviceCall->outcome_metadata,
+            'service_error_type' => $this->metadataString($serviceCall->outcome_metadata, 'service_error_type'),
+            'caller_observed_error_type' => $this->metadataString($serviceCall->outcome_metadata, 'caller_observed_error_type'),
+            'typed_error_message' => $this->metadataString($serviceCall->outcome_metadata, 'typed_error_message'),
             'policy_name' => $serviceCall->policy_name,
             'retry_after_seconds' => $serviceCall->retry_after_seconds,
             'operation_mode' => $serviceCall->operation_mode,
@@ -1609,6 +1616,19 @@ class ServiceCatalogController
         }
 
         return [];
+    }
+
+    private function metadataString(mixed $metadata, string $key): ?string
+    {
+        if (! is_array($metadata)) {
+            return null;
+        }
+
+        $value = $metadata[$key] ?? null;
+
+        return is_string($value) && trim($value) !== ''
+            ? trim($value)
+            : null;
     }
 
     private function normalizeCatalogName(string $name): string

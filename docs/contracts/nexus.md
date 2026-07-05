@@ -232,8 +232,11 @@ These return every `workflow_service_calls` row whose
 `caller_workflow_instance_id` matches, ordered by `accepted_at`
 descending. Each row carries the durable service-call id, the resolved
 binding, the lifecycle status, the outcome, the linked target
-reference, the retry policy, per-attempt retry records, the caller
-principal that admitted it, and the closure timestamps. Operators
+reference, the retry policy, per-attempt retry records, the typed
+service error metadata (`service_error_type`,
+`caller_observed_error_type`, and `typed_error_message`) when a worker
+rejects the operation, the caller principal that admitted it, and the
+closure timestamps. Operators
 debugging a failed run answer "what cross-namespace calls did this
 workflow make and how did each attempt settle?" from this single surface
 — without inspecting raw transport logs or the per-target catalog index.

@@ -161,13 +161,23 @@ final class WorkflowQueryTaskBroker
         }
 
         if (($result['status'] ?? null) === 'failed') {
+            $message = $this->stringValue($result['message'] ?? null) ?? 'Query failed on the worker.';
+            $failureType = $this->stringValue($result['failure_type'] ?? null);
+
             return $this->queryFailed(
                 $run,
                 $queryName,
                 $this->stringValue($result['reason'] ?? null) ?? 'query_rejected',
-                $this->stringValue($result['message'] ?? null) ?? 'Query failed on the worker.',
+                $message,
                 (int) ($result['http_status'] ?? 409),
                 $this->validationErrors($result['validation_errors'] ?? null),
+                array_filter([
+                    'error_type' => $failureType,
+                    'failure_type' => $failureType,
+                    'service_error_type' => $failureType,
+                    'caller_observed_error_type' => $failureType,
+                    'typed_error_message' => $failureType !== null ? $message : null,
+                ], static fn (mixed $value): bool => $value !== null),
             );
         }
 

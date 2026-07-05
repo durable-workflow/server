@@ -56,6 +56,13 @@ class NexusOperationsHistoryTest extends TestCase
                 'nexus_contract.multi_namespace_caller_pattern.per_caller_registration_required',
                 false,
             );
+
+        $responseFields = $response->json('nexus_contract.caller_history_surface.response_fields');
+        $this->assertIsArray($responseFields);
+
+        foreach (['outcome_metadata', 'service_error_type', 'caller_observed_error_type', 'typed_error_message'] as $field) {
+            $this->assertContains($field, $responseFields);
+        }
     }
 
     public function test_caller_history_for_workflow_returns_only_calls_made_from_that_workflow(): void
@@ -331,6 +338,63 @@ class NexusOperationsHistoryTest extends TestCase
             ->assertJsonPath('nexus_operations.0.service_call_attempts.2.outcome', 'completed');
     }
 
+    public function test_caller_history_and_service_detail_expose_typed_worker_errors(): void
+    {
+        [$endpoint, $service, $operation] = $this->createCatalog('billing', 'invoicing', 'createinvoice');
+
+        $call = $this->recordCall(
+            namespace: 'billing',
+            endpoint: $endpoint,
+            service: $service,
+            operation: $operation,
+            callerNamespace: 'finance',
+            callerInstanceId: 'finance-typed-error-orchestrator',
+            callerRunId: (string) Str::ulid(),
+            outcome: 'handler_failed',
+            status: 'failed',
+            attempts: [
+                [
+                    'attempt' => 1,
+                    'status' => 'failed',
+                    'outcome' => 'handler_failed',
+                    'failure_type' => 'SharedGreeterUnavailable',
+                    'failure_message' => 'shared greeter is permanently unavailable',
+                    'retry_scheduled' => false,
+                ],
+            ],
+            outcomeMetadata: [
+                'failure_reason' => 'handler_failure',
+                'service_error_type' => 'SharedGreeterUnavailable',
+                'caller_observed_error_type' => 'SharedGreeterUnavailable',
+                'typed_error_message' => 'shared greeter is permanently unavailable',
+            ],
+            failureMessage: 'shared greeter is permanently unavailable',
+        );
+
+        $history = $this->withHeaders($this->apiHeaders('finance'))
+            ->getJson('/api/workflows/finance-typed-error-orchestrator/nexus-operations');
+
+        $history->assertOk()
+            ->assertJsonPath('nexus_operations.0.service_call_id', $call->id)
+            ->assertJsonPath('nexus_operations.0.outcome_metadata.service_error_type', 'SharedGreeterUnavailable')
+            ->assertJsonPath('nexus_operations.0.service_error_type', 'SharedGreeterUnavailable')
+            ->assertJsonPath('nexus_operations.0.caller_observed_error_type', 'SharedGreeterUnavailable')
+            ->assertJsonPath('nexus_operations.0.typed_error_message', 'shared greeter is permanently unavailable');
+
+        $detail = $this->withHeaders($this->apiHeaders('billing'))
+            ->getJson(sprintf(
+                '/api/service-endpoints/billing/services/invoicing/operations/createinvoice/service-calls/%s',
+                $call->id,
+            ));
+
+        $detail->assertOk()
+            ->assertJsonPath('service_call_id', $call->id)
+            ->assertJsonPath('outcome_metadata.service_error_type', 'SharedGreeterUnavailable')
+            ->assertJsonPath('service_error_type', 'SharedGreeterUnavailable')
+            ->assertJsonPath('caller_observed_error_type', 'SharedGreeterUnavailable')
+            ->assertJsonPath('typed_error_message', 'shared greeter is permanently unavailable');
+    }
+
     public function test_caller_history_limit_is_capped_by_configured_maximum(): void
     {
         config()->set('server.limits.max_nexus_operations_per_caller', 5);
@@ -408,6 +472,8 @@ class NexusOperationsHistoryTest extends TestCase
         string $status,
         array $retryPolicy = [],
         array $attempts = [],
+        array $outcomeMetadata = [],
+        ?string $failureMessage = null,
     ): WorkflowServiceCall {
         return WorkflowServiceCall::query()->create([
             'namespace' => $namespace,
@@ -431,6 +497,8 @@ class NexusOperationsHistoryTest extends TestCase
                 'service_call_attempts' => $attempts,
                 'retry_attempt_count' => count($attempts),
             ],
+            'outcome_metadata' => $outcomeMetadata === [] ? null : $outcomeMetadata,
+            'failure_message' => $failureMessage,
             'caller_principal_subject' => 'svc:'.$callerNamespace,
             'caller_principal_method' => 'token',
             'accepted_at' => now(),
