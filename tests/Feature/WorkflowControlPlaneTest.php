@@ -15,6 +15,7 @@ use Tests\Fixtures\InteractiveCommandWorkflow;
 use Tests\Fixtures\InternalChildWorkflow;
 use Tests\Fixtures\InternalParentWorkflow;
 use Tests\TestCase;
+use Workflow\V2\Contracts\ServiceControlPlane;
 use Workflow\V2\Contracts\WorkflowControlPlane;
 use Workflow\V2\Enums\HistoryEventType;
 use Workflow\V2\Enums\RunStatus;
@@ -27,6 +28,7 @@ use Workflow\V2\Models\WorkflowLink;
 use Workflow\V2\Models\WorkflowRun;
 use Workflow\V2\Models\WorkflowRunLineageEntry;
 use Workflow\V2\Models\WorkflowTask;
+use Workflow\V2\Support\DefaultServiceControlPlane;
 use Workflow\V2\Support\WorkerCompatibilityFleet;
 use Workflow\V2\Support\WorkflowExecutor;
 
@@ -39,6 +41,16 @@ class WorkflowControlPlaneTest extends TestCase
         $this->assertInstanceOf(
             ServerWorkflowControlPlane::class,
             app(WorkflowControlPlane::class),
+        );
+
+        $serviceControlPlane = app(ServiceControlPlane::class);
+        $this->assertInstanceOf(DefaultServiceControlPlane::class, $serviceControlPlane);
+
+        $workflowControlPlane = new \ReflectionProperty(DefaultServiceControlPlane::class, 'workflowControlPlane');
+        $workflowControlPlane->setAccessible(true);
+        $this->assertInstanceOf(
+            ServerWorkflowControlPlane::class,
+            $workflowControlPlane->getValue($serviceControlPlane),
         );
     }
 

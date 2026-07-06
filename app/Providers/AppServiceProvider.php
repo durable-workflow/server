@@ -17,10 +17,12 @@ use Illuminate\Support\ServiceProvider;
 use Workflow\V2\Contracts\ExternalPayloadStoragePolicy;
 use Workflow\V2\Contracts\ScheduleWorkflowStarter;
 use Workflow\V2\Contracts\ServiceBoundaryPolicy;
+use Workflow\V2\Contracts\ServiceControlPlane;
 use Workflow\V2\Contracts\WorkflowControlPlane;
 use Workflow\V2\Models\WorkflowHistoryEvent;
 use Workflow\V2\Models\WorkflowTask;
 use Workflow\V2\Support\DefaultServiceBoundaryPolicy;
+use Workflow\V2\Support\DefaultServiceControlPlane;
 use Workflow\V2\Support\DefaultWorkflowControlPlane;
 use Workflow\V2\Support\ServiceBoundaryAuditRecorder;
 
@@ -73,6 +75,14 @@ class AppServiceProvider extends ServiceProvider
 
             return new DefaultServiceBoundaryPolicy($rules);
         });
+
+        $this->app->singleton(
+            ServiceControlPlane::class,
+            fn ($app): ServiceControlPlane => new DefaultServiceControlPlane(
+                $app->make(WorkflowControlPlane::class),
+                $app->make(ServiceBoundaryPolicy::class),
+            ),
+        );
 
         $this->app->singleton(ServiceBoundaryAuditRecorder::class);
 

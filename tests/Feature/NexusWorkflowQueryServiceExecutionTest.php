@@ -148,22 +148,102 @@ class NexusWorkflowQueryServiceExecutionTest extends TestCase
             ->assertJsonPath('nexus_operations.0.retry_attempt_count', 1);
     }
 
+    public function test_cross_namespace_workflow_query_service_operation_preserves_non_retryable_typed_worker_error(): void
+    {
+        $this->createNamespace('tenant-a', 'Tenant namespace');
+        $this->createNamespace('shared', 'Shared namespace');
+
+        $this->bindScriptedQueryWorker([
+            [
+                'outcome' => 'failed',
+                'reason' => 'service_error',
+                'message' => 'shared greeter is permanently unavailable',
+                'type' => 'SharedGreeterUnavailable',
+            ],
+        ], 'shared', 'shared-query-worker', 'shared-queries');
+
+        $this->registerQueryWorker('shared-query-worker', 'shared-queries', ['python.queryable'], 'shared');
+        $this->startRemoteWorkflow('shared-greeter-workflow', 'shared', 'python.queryable', 'shared-queries');
+        $this->createWorkflowQueryOperation(
+            [
+                'max_attempts' => 3,
+                'non_retryable_error_types' => ['SharedGreeterUnavailable'],
+            ],
+            'shared',
+            'permanent-endpoint',
+            'permanent-service',
+            'permanent-query',
+            'shared-greeter-workflow',
+        );
+
+        $callerRunId = (string) Str::ulid();
+        $response = $this->withHeaders($this->apiHeaders('shared'))
+            ->postJson('/api/service-endpoints/permanent-endpoint/services/permanent-service/operations/permanent-query/execute', [
+                'arguments' => ['scenario' => 'permanent_failure_preserves_typed_error'],
+                'mode_override' => 'sync',
+                'wait_for' => 'completed',
+                'caller_namespace' => 'tenant-a',
+                'caller_workflow_instance_id' => 'nexus-permanent-caller',
+                'caller_workflow_run_id' => $callerRunId,
+                'idempotency_key' => 'permanent-typed-error',
+            ]);
+
+        $response->assertStatus(409)
+            ->assertJsonPath('accepted', false)
+            ->assertJsonPath('status', 'failed')
+            ->assertJsonPath('service_error_type', 'SharedGreeterUnavailable')
+            ->assertJsonPath('caller_observed_error_type', 'SharedGreeterUnavailable')
+            ->assertJsonPath('typed_error_message', 'shared greeter is permanently unavailable')
+            ->assertJsonPath('retry_policy.max_attempts', 3)
+            ->assertJsonPath('retry_attempt_count', 1);
+
+        $serviceCallId = (string) $response->json('id');
+        $detail = $this->withHeaders($this->apiHeaders('shared'))
+            ->getJson(sprintf(
+                '/api/service-endpoints/permanent-endpoint/services/permanent-service/operations/permanent-query/service-calls/%s',
+                $serviceCallId,
+            ));
+
+        $detail->assertOk()
+            ->assertJsonPath('service_call_id', $serviceCallId)
+            ->assertJsonPath('outcome_metadata.service_error_type', 'SharedGreeterUnavailable')
+            ->assertJsonPath('service_error_type', 'SharedGreeterUnavailable')
+            ->assertJsonPath('caller_observed_error_type', 'SharedGreeterUnavailable')
+            ->assertJsonPath('typed_error_message', 'shared greeter is permanently unavailable')
+            ->assertJsonPath('retry_attempt_count', 1);
+
+        $history = $this->withHeaders($this->apiHeaders('tenant-a'))
+            ->getJson(sprintf('/api/workflows/nexus-permanent-caller/runs/%s/nexus-operations', $callerRunId));
+
+        $history->assertOk()
+            ->assertJsonPath('nexus_operations.0.service_call_id', $serviceCallId)
+            ->assertJsonPath('nexus_operations.0.service_error_type', 'SharedGreeterUnavailable')
+            ->assertJsonPath('nexus_operations.0.caller_observed_error_type', 'SharedGreeterUnavailable')
+            ->assertJsonPath('nexus_operations.0.typed_error_message', 'shared greeter is permanently unavailable')
+            ->assertJsonPath('nexus_operations.0.retry_attempt_count', 1);
+    }
+
     /**
      * @param list<array<string, mixed>> $outcomes
      */
-    private function bindScriptedQueryWorker(array $outcomes): void
+    private function bindScriptedQueryWorker(
+        array $outcomes,
+        string $namespace = 'default',
+        string $workerId = 'python-query-worker',
+        string $taskQueue = 'python-queries',
+    ): void
     {
         $signals = app(LongPollSignalStore::class);
         $cache = app(ServerPollingCache::class);
-        $workerStep = function (array $task) use (&$outcomes): void {
+        $workerStep = function (array $task) use (&$outcomes, $namespace, $workerId, $taskQueue): void {
             if (($task['status'] ?? null) !== 'pending' || ! is_string($task['query_task_id'] ?? null)) {
                 return;
             }
 
             $poll = $this->postJson('/api/worker/query-tasks/poll', [
-                'worker_id' => 'python-query-worker',
-                'task_queue' => 'python-queries',
-            ], $this->workerHeaders());
+                'worker_id' => $workerId,
+                'task_queue' => $taskQueue,
+            ], $this->workerHeaders($namespace));
 
             $poll->assertOk()
                 ->assertHeader(WorkerProtocol::HEADER, WorkerProtocol::VERSION)
@@ -184,7 +264,7 @@ class NexusWorkflowQueryServiceExecutionTest extends TestCase
                         'message' => $outcome['message'] ?? 'Query failed on the worker.',
                         'type' => $outcome['type'] ?? null,
                     ],
-                ], $this->workerHeaders())->assertOk();
+                ], $this->workerHeaders($namespace))->assertOk();
 
                 return;
             }
@@ -193,7 +273,7 @@ class NexusWorkflowQueryServiceExecutionTest extends TestCase
                 'lease_owner' => $leaseOwner,
                 'query_task_attempt' => $attempt,
                 'result' => $outcome['result'] ?? null,
-            ], $this->workerHeaders())->assertOk();
+            ], $this->workerHeaders($namespace))->assertOk();
         };
 
         $longPoller = new class($signals, app(LongPollWaitSlotStore::class), $workerStep) extends LongPoller
@@ -240,14 +320,19 @@ class NexusWorkflowQueryServiceExecutionTest extends TestCase
         ));
     }
 
-    private function startRemoteWorkflow(string $workflowId): WorkflowRun
+    private function startRemoteWorkflow(
+        string $workflowId,
+        string $namespace = 'default',
+        string $workflowType = 'python.queryable',
+        string $taskQueue = 'python-queries',
+    ): WorkflowRun
     {
         $start = $this->postJson('/api/workflows', [
             'workflow_id' => $workflowId,
-            'workflow_type' => 'python.queryable',
-            'task_queue' => 'python-queries',
+            'workflow_type' => $workflowType,
+            'task_queue' => $taskQueue,
             'input' => ['Ada'],
-        ], $this->apiHeaders());
+        ], $this->apiHeaders($namespace));
 
         $start->assertCreated();
 
@@ -260,11 +345,16 @@ class NexusWorkflowQueryServiceExecutionTest extends TestCase
     /**
      * @param list<string> $supportedWorkflowTypes
      */
-    private function registerQueryWorker(string $workerId, string $taskQueue, array $supportedWorkflowTypes): void
+    private function registerQueryWorker(
+        string $workerId,
+        string $taskQueue,
+        array $supportedWorkflowTypes,
+        string $namespace = 'default',
+    ): void
     {
         WorkerRegistration::query()->create([
             'worker_id' => $workerId,
-            'namespace' => 'default',
+            'namespace' => $namespace,
             'task_queue' => $taskQueue,
             'runtime' => 'python',
             'sdk_version' => 'durable-workflow-python/0.4.93',
@@ -278,7 +368,11 @@ class NexusWorkflowQueryServiceExecutionTest extends TestCase
         ]);
     }
 
-    private function primeQueryTaskPoller(string $workerId): void
+    private function primeQueryTaskPoller(
+        string $workerId,
+        string $namespace = 'default',
+        string $taskQueue = 'python-queries',
+    ): void
     {
         $pollingTimeout = config('server.polling.timeout');
 
@@ -287,8 +381,8 @@ class NexusWorkflowQueryServiceExecutionTest extends TestCase
         try {
             $this->postJson('/api/worker/query-tasks/poll', [
                 'worker_id' => $workerId,
-                'task_queue' => 'python-queries',
-            ], $this->workerHeaders())
+                'task_queue' => $taskQueue,
+            ], $this->workerHeaders($namespace))
                 ->assertOk()
                 ->assertJsonPath('task', null)
                 ->assertJsonPath('poll_status', 'empty');
@@ -301,30 +395,38 @@ class NexusWorkflowQueryServiceExecutionTest extends TestCase
      * @param array<string, mixed> $retryPolicy
      * @return array{0: WorkflowServiceEndpoint, 1: WorkflowService, 2: WorkflowServiceOperation}
      */
-    private function createWorkflowQueryOperation(array $retryPolicy): array
+    private function createWorkflowQueryOperation(
+        array $retryPolicy,
+        string $namespace = 'default',
+        string $endpointName = 'greeter',
+        string $serviceName = 'shared',
+        string $operationName = 'greet',
+        string $workflowInstanceId = 'shared-greeter-workflow',
+        string $queryName = 'greet',
+    ): array
     {
         $endpoint = WorkflowServiceEndpoint::query()->create([
-            'namespace' => 'default',
-            'endpoint_name' => 'greeter',
+            'namespace' => $namespace,
+            'endpoint_name' => $endpointName,
         ]);
 
         $service = WorkflowService::query()->create([
-            'namespace' => 'default',
+            'namespace' => $namespace,
             'workflow_service_endpoint_id' => $endpoint->id,
-            'service_name' => 'shared',
+            'service_name' => $serviceName,
         ]);
 
         $operation = WorkflowServiceOperation::query()->create([
-            'namespace' => 'default',
+            'namespace' => $namespace,
             'workflow_service_endpoint_id' => $endpoint->id,
             'workflow_service_id' => $service->id,
-            'operation_name' => 'greet',
+            'operation_name' => $operationName,
             'operation_mode' => 'sync',
             'handler_binding_kind' => 'workflow_query',
-            'handler_target_reference' => 'greet',
+            'handler_target_reference' => $queryName,
             'handler_binding' => [
-                'workflow_instance_id' => 'shared-greeter-workflow',
-                'query_name' => 'greet',
+                'workflow_instance_id' => $workflowInstanceId,
+                'query_name' => $queryName,
             ],
             'retry_policy' => $retryPolicy,
         ]);
