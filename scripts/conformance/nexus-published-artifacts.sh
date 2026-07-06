@@ -2240,6 +2240,48 @@ function crossLanguageScenarioResult({
   ]);
 }
 
+function crossLanguageRuntimeBody(response) {
+  const body = response?.body;
+  return body && typeof body === 'object' && !Array.isArray(body) ? body : null;
+}
+
+function crossLanguageRuntimeObject(field, health, probe) {
+  for (const body of [crossLanguageRuntimeBody(health), crossLanguageRuntimeBody(probe)]) {
+    const value = body?.[field];
+    if (value && typeof value === 'object' && !Array.isArray(value)) {
+      return value;
+    }
+  }
+
+  return null;
+}
+
+function crossLanguageRuntimeArray(field, health, probe) {
+  for (const body of [crossLanguageRuntimeBody(health), crossLanguageRuntimeBody(probe)]) {
+    if (Array.isArray(body?.[field])) {
+      return body[field];
+    }
+  }
+
+  return [];
+}
+
+function crossLanguageRuntimeString(field, health, probe, fallback = '') {
+  for (const body of [crossLanguageRuntimeBody(health), crossLanguageRuntimeBody(probe)]) {
+    const value = stringValue(body?.[field]);
+    if (value !== '') {
+      return value;
+    }
+  }
+
+  return fallback;
+}
+
+function crossLanguageRuntimeBool(field, health, probe) {
+  return crossLanguageRuntimeBody(health)?.[field] === true
+    || crossLanguageRuntimeBody(probe)?.[field] === true;
+}
+
 async function probePublishedPhpPythonServiceCalls(baseUrl, token, versions, sources, verification, compose) {
   const started = [];
   try {
@@ -2262,25 +2304,25 @@ async function probePublishedPhpPythonServiceCalls(baseUrl, token, versions, sou
     const runtimeEvidence = {
       python: {
         container_image: 'python:3.12-slim',
-        package_imported: pythonHealth.body?.package_imported === true,
-        package_version: String(pythonHealth.body?.package_version || versions['sdk-python'] || ''),
-        service_started: pythonHealth.ok === true,
+        package_imported: crossLanguageRuntimeBool('package_imported', pythonHealth, pythonProbe),
+        package_version: crossLanguageRuntimeString('package_version', pythonHealth, pythonProbe, versions['sdk-python'] || ''),
+        service_started: pythonHealth.ok === true || pythonProbe.ok === true || crossLanguageRuntimeBool('service_started', pythonHealth, pythonProbe),
         health_response: responseSummary(pythonHealth),
         invocation_response: responseSummary(pythonProbe),
-        service_runtime_surface: pythonHealth.body?.service_runtime_surface || null,
-        public_service_call_surface: pythonHealth.body?.public_service_call_surface || null,
-        service_call_methods: Array.isArray(pythonHealth.body?.service_call_methods) ? pythonHealth.body.service_call_methods : [],
+        service_runtime_surface: crossLanguageRuntimeObject('service_runtime_surface', pythonHealth, pythonProbe),
+        public_service_call_surface: crossLanguageRuntimeObject('public_service_call_surface', pythonHealth, pythonProbe),
+        service_call_methods: crossLanguageRuntimeArray('service_call_methods', pythonHealth, pythonProbe),
       },
       php: {
         container_image: 'composer:2',
-        package_imported: phpHealth.body?.package_imported === true,
-        package_version: String(phpHealth.body?.package_version || versions.workflow || ''),
-        service_started: phpHealth.ok === true,
+        package_imported: crossLanguageRuntimeBool('package_imported', phpHealth, phpProbe),
+        package_version: crossLanguageRuntimeString('package_version', phpHealth, phpProbe, versions.workflow || ''),
+        service_started: phpHealth.ok === true || phpProbe.ok === true || crossLanguageRuntimeBool('service_started', phpHealth, phpProbe),
         health_response: responseSummary(phpHealth),
         invocation_response: responseSummary(phpProbe),
-        service_runtime_surface: phpHealth.body?.service_runtime_surface || null,
-        public_service_call_surface: phpHealth.body?.public_service_call_surface || null,
-        service_call_methods: Array.isArray(phpHealth.body?.service_call_methods) ? phpHealth.body.service_call_methods : [],
+        service_runtime_surface: crossLanguageRuntimeObject('service_runtime_surface', phpHealth, phpProbe),
+        public_service_call_surface: crossLanguageRuntimeObject('public_service_call_surface', phpHealth, phpProbe),
+        service_call_methods: crossLanguageRuntimeArray('service_call_methods', phpHealth, phpProbe),
       },
     };
     const tuple = artifactTuple(versions, sources, verification);
