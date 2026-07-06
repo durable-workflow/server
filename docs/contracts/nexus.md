@@ -63,6 +63,10 @@ The authoritative machine-readable contract is published from
   request, response, service-call record, or caller-history evidence used
   to prove that `tenant-a` and `tenant-b` reached the same shared
   `Greeter.greet` endpoint,
+  when PHP/Python service-call matrix cells omit caller workflow id/run id,
+  caller and service SDK language, operation name, request payload,
+  response-or-failure surface, durable service-call id, artifact tuple, or
+  published workflow-php plus sdk-python worker execution evidence,
   when replay evidence omits call ids, caller-history rows, target
   service logs, restart timing, a single-invocation count, or a
   duplicate-call assertion, when cancellation evidence omits

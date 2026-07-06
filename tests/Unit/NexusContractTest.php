@@ -262,6 +262,28 @@ class NexusContractTest extends TestCase
             'published_artifact_worker_execution',
             $manifest['scenario_evidence_requirements']['caller_cancellation_propagates_to_service'],
         );
+        foreach ([
+            'php_caller_python_service',
+            'python_caller_php_service',
+        ] as $crossLanguageScenario) {
+            foreach ([
+                'caller_workflow_instance_id',
+                'caller_workflow_run_id',
+                'caller_sdk_language',
+                'service_sdk_language',
+                'operation_name',
+                'request_payload',
+                'response_or_failure_surface',
+                'service_call_id',
+                'artifact_tuple',
+                'published_artifact_worker_execution',
+            ] as $requiredField) {
+                $this->assertContains(
+                    $requiredField,
+                    $manifest['scenario_evidence_requirements'][$crossLanguageScenario],
+                );
+            }
+        }
         $this->assertContains(
             'authorization_refusal_disclosed_endpoint_existence',
             $manifest['scenario_evidence_requirements']['endpoint_permission_denied_without_information_leak'],
@@ -556,6 +578,127 @@ class NexusContractTest extends TestCase
         $this->assertIsArray($resultFiles);
         $this->assertNotContains('shared-service-evidence.json', $resultFiles);
         $this->assertNotContains('merged-shared-service-evidence.json', $resultFiles);
+    }
+
+    public function test_host_runner_accepts_canonical_cross_language_response_or_failure_surface(): void
+    {
+        $nodeBinary = trim((string) shell_exec('command -v node 2>/dev/null'));
+        if ($nodeBinary === '') {
+            $this->markTestSkipped('node is required to exercise the Nexus runner result gate.');
+        }
+
+        $evidence = $this->completeRunnerEvidence();
+        foreach ($evidence['scenario_results'] as &$scenario) {
+            if (! in_array($scenario['scenario_id'] ?? null, [
+                'php_caller_python_service',
+                'python_caller_php_service',
+            ], true)) {
+                continue;
+            }
+
+            unset(
+                $scenario['observed_outputs']['response'],
+                $scenario['observed_outputs']['responseEvidence'],
+                $scenario['observed_outputs']['invocation_response'],
+                $scenario['observed_outputs']['invocationResponse'],
+                $scenario['observed_outputs']['failure_surface'],
+                $scenario['observed_outputs']['failureSurface'],
+            );
+            $scenario['observed_outputs']['response_or_failure_surface'] = [
+                'status' => 'completed',
+                'body' => [
+                    'service_call_id' => $scenario['observed_outputs']['service_call_id'],
+                    'round_trip' => true,
+                ],
+            ];
+        }
+        unset($scenario);
+
+        $result = $this->runNexusEvidence($evidence, 'dw-nexus-cross-language-canonical-response-');
+
+        $this->assertSame('pass', $result['outcome']);
+        foreach ([
+            'php_caller_python_service',
+            'python_caller_php_service',
+        ] as $scenarioId) {
+            $scenario = $this->scenarioResult($result, $scenarioId);
+
+            $this->assertSame('pass', $scenario['status']);
+            $this->assertArrayHasKey('response_or_failure_surface', $scenario['observed_outputs']);
+            $this->assertArrayHasKey('artifact_tuple', $scenario['observed_outputs']);
+        }
+    }
+
+    public function test_host_runner_rejects_cross_language_cell_without_both_published_workers(): void
+    {
+        $nodeBinary = trim((string) shell_exec('command -v node 2>/dev/null'));
+        if ($nodeBinary === '') {
+            $this->markTestSkipped('node is required to exercise the Nexus runner result gate.');
+        }
+
+        $evidence = $this->completeRunnerEvidence();
+        foreach ($evidence['scenario_results'] as &$scenario) {
+            if (($scenario['scenario_id'] ?? null) !== 'php_caller_python_service') {
+                continue;
+            }
+
+            $scenario['observed_outputs']['published_artifact_worker_execution'] = $this->publishedWorkerExecution(
+                $evidence['artifact_versions'],
+                $evidence['artifact_sources'],
+            );
+        }
+        unset($scenario);
+
+        $result = $this->runNexusEvidence($evidence, 'dw-nexus-cross-language-php-only-worker-');
+        $scenario = $this->scenarioResult($result, 'php_caller_python_service');
+
+        $this->assertSame('fail', $result['outcome']);
+        $this->assertSame('fail', $scenario['status']);
+        $this->assertContains(
+            'published_artifact_worker_execution',
+            array_column($scenario['observed_outputs']['scenario_evidence_failures'], 'field'),
+        );
+    }
+
+    public function test_host_runner_reports_missing_cross_language_response_surface_as_coverage_gap(): void
+    {
+        $nodeBinary = trim((string) shell_exec('command -v node 2>/dev/null'));
+        if ($nodeBinary === '') {
+            $this->markTestSkipped('node is required to exercise the Nexus runner result gate.');
+        }
+
+        $evidence = $this->completeRunnerEvidence();
+        foreach ($evidence['scenario_results'] as &$scenario) {
+            if (($scenario['scenario_id'] ?? null) !== 'php_caller_python_service') {
+                continue;
+            }
+
+            unset(
+                $scenario['observed_outputs']['response_or_failure_surface'],
+                $scenario['observed_outputs']['responseOrFailureSurface'],
+                $scenario['observed_outputs']['response'],
+                $scenario['observed_outputs']['responseEvidence'],
+                $scenario['observed_outputs']['invocation_response'],
+                $scenario['observed_outputs']['invocationResponse'],
+                $scenario['observed_outputs']['failure_surface'],
+                $scenario['observed_outputs']['failureSurface'],
+            );
+        }
+        unset($scenario);
+
+        $result = $this->runNexusEvidence($evidence, 'dw-nexus-cross-language-missing-response-');
+        $scenario = $this->scenarioResult($result, 'php_caller_python_service');
+
+        $this->assertSame('fail', $result['outcome']);
+        $this->assertSame('not_covered', $scenario['status']);
+        $this->assertContains(
+            'response_or_failure_surface',
+            array_column($scenario['observed_outputs']['scenario_evidence_failures'], 'field'),
+        );
+        $this->assertContains(
+            'conformance_runner_coverage_gap',
+            array_column($scenario['linked_findings'], 'finding_type'),
+        );
     }
 
     public function test_host_runner_preserves_runner_blocked_evidence_as_non_passing(): void
@@ -1093,9 +1236,11 @@ class NexusContractTest extends TestCase
             $this->markTestSkipped('node is required to exercise the Nexus runner result gate.');
         }
 
+        $evidence = $this->completeRunnerEvidence();
+        $evidence['conformance_run_id'] = 'nexus-run-6886';
         $record = null;
         $result = $this->runNexusEvidence(
-            $this->completeRunnerEvidence(),
+            $evidence,
             'dw-nexus-record-scenario-results-',
             null,
             null,
@@ -1104,6 +1249,9 @@ class NexusContractTest extends TestCase
 
         $this->assertIsArray($record);
         $this->assertSame('nexus', $record['experiment']);
+        $this->assertSame('nexus-run-6886', $result['conformance_run_id']);
+        $this->assertSame('nexus-run-6886', $record['conformance_run_id']);
+        $this->assertSame('nexus-run-6886', $record['conformanceRunId']);
         $this->assertSame($result['scenario_results'], $record['scenario_results']);
         $this->assertSame($result['scenario_results'], $record['scenarioResults']);
         $this->assertSame($result['finding_links'], $record['finding_links']);
@@ -2406,14 +2554,50 @@ class NexusContractTest extends TestCase
                 'typed_cancellation_observed' => true,
             ],
             'php_caller_python_service' => $base + [
-                'caller_runtime' => 'workflow-php',
-                'service_runtime' => 'sdk-python',
+                'caller_workflow_instance_id' => 'caller-'.$scenarioId,
+                'caller_workflow_run_id' => 'run-'.$scenarioId,
+                'caller_sdk_language' => 'workflow-php',
+                'service_sdk_language' => 'sdk-python',
+                'operation_name' => 'Greeter.greet',
+                'request_payload' => [
+                    'name' => 'world',
+                    'scenario' => $scenarioId,
+                ],
+                'response_or_failure_surface' => [
+                    'status' => 'completed',
+                    'body' => [
+                        'result' => 'hello from python',
+                    ],
+                ],
+                'artifact_tuple' => $artifactVersions,
+                'published_artifact_worker_execution' => $this->publishedCrossLanguageWorkerExecution(
+                    $artifactVersions,
+                    $artifactSources,
+                ),
                 'payload_round_trip' => true,
                 'typed_error_round_trip' => true,
             ],
             'python_caller_php_service' => $base + [
-                'caller_runtime' => 'sdk-python',
-                'service_runtime' => 'workflow-php',
+                'caller_workflow_instance_id' => 'caller-'.$scenarioId,
+                'caller_workflow_run_id' => 'run-'.$scenarioId,
+                'caller_sdk_language' => 'sdk-python',
+                'service_sdk_language' => 'workflow-php',
+                'operation_name' => 'Greeter.greet',
+                'request_payload' => [
+                    'name' => 'world',
+                    'scenario' => $scenarioId,
+                ],
+                'response_or_failure_surface' => [
+                    'status' => 'completed',
+                    'body' => [
+                        'result' => 'hello from php',
+                    ],
+                ],
+                'artifact_tuple' => $artifactVersions,
+                'published_artifact_worker_execution' => $this->publishedCrossLanguageWorkerExecution(
+                    $artifactVersions,
+                    $artifactSources,
+                ),
                 'payload_round_trip' => true,
                 'typed_error_round_trip' => true,
             ],
@@ -2665,6 +2849,36 @@ class NexusContractTest extends TestCase
                     'artifact' => 'workflow-php',
                     'version' => $artifactVersions['workflow'],
                     'source' => $artifactSources['workflow'],
+                    'status' => 'pass',
+                    'local_product_source_checkouts_used' => false,
+                ],
+            ],
+        ];
+    }
+
+    /**
+     * @param array<string, string> $artifactVersions
+     * @param array<string, string> $artifactSources
+     *
+     * @return array<string, mixed>
+     */
+    private function publishedCrossLanguageWorkerExecution(array $artifactVersions, array $artifactSources): array
+    {
+        return [
+            'local_product_source_checkouts_used' => false,
+            'worker_execution_mode' => 'published_php_python_worker_matrix',
+            'artifacts' => [
+                [
+                    'artifact' => 'workflow-php',
+                    'version' => $artifactVersions['workflow'],
+                    'source' => $artifactSources['workflow'],
+                    'status' => 'pass',
+                    'local_product_source_checkouts_used' => false,
+                ],
+                [
+                    'artifact' => 'sdk-python',
+                    'version' => $artifactVersions['sdk-python'],
+                    'source' => $artifactSources['sdk-python'],
                     'status' => 'pass',
                     'local_product_source_checkouts_used' => false,
                 ],

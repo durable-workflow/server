@@ -2886,16 +2886,30 @@ const scenarioEvidenceRequirements = {
     {fields: ['typed_cancellation_observed', 'typedCancellationObserved'], kind: 'boolean_true', expected: 'target worker observed typed cancellation'},
   ],
   php_caller_python_service: [
-    {fields: ['caller_runtime', 'callerRuntime'], kind: 'value_equals', value: 'workflow-php', expected: 'PHP workflow caller runtime'},
-    {fields: ['service_runtime', 'serviceRuntime'], kind: 'value_equals', value: 'sdk-python', expected: 'Python service runtime'},
+    {fields: ['caller_workflow_instance_id', 'callerWorkflowInstanceId', 'caller_workflow_id', 'callerWorkflowId'], kind: 'non_empty_string', expected: 'caller workflow id for the PHP caller'},
+    {fields: ['caller_workflow_run_id', 'callerWorkflowRunId', 'caller_run_id', 'callerRunId', 'run_id', 'runId'], kind: 'non_empty_string', expected: 'caller workflow run id for the PHP caller'},
+    {fields: ['caller_sdk_language', 'callerSdkLanguage', 'caller_runtime', 'callerRuntime'], kind: 'value_equals', value: 'workflow-php', expected: 'PHP workflow caller SDK language'},
+    {fields: ['service_sdk_language', 'serviceSdkLanguage', 'service_runtime', 'serviceRuntime'], kind: 'value_equals', value: 'sdk-python', expected: 'Python service SDK language'},
+    {fields: ['operation_name', 'operationName'], kind: 'non_empty_string', expected: 'operation name invoked across the PHP-to-Python service boundary'},
+    {fields: ['request_payload', 'requestPayload', 'request', 'requestEvidence', 'invocation_request', 'invocationRequest'], kind: 'non_empty_object', expected: 'request payload sent by the PHP caller to the Python service'},
+    {fields: ['response_or_failure_surface', 'responseOrFailureSurface', 'response', 'responseEvidence', 'invocation_response', 'invocationResponse', 'failure_surface', 'failureSurface', 'invocation_failure', 'invocationFailure'], kind: 'non_empty_object', expected: 'response or failure surface observed by the PHP caller from the Python service'},
     {fields: ['service_call_id', 'serviceCallId'], kind: 'non_empty_string', expected: 'durable service-call id for the cross-language call'},
+    {fields: ['artifact_tuple', 'artifactTuple', 'artifact_versions', 'artifactVersions', 'published_artifact_versions', 'publishedArtifactVersions', 'resolved_artifact_versions', 'resolvedArtifactVersions'], kind: 'artifact_tuple', expected: 'published artifact tuple used for the PHP-to-Python service-call cell'},
+    {fields: ['published_artifact_worker_execution', 'publishedArtifactWorkerExecution', 'published_worker_execution', 'publishedWorkerExecution'], kind: 'published_cross_language_worker_execution', expected: 'published workflow-php and sdk-python worker execution evidence for the PHP-to-Python service-call cell'},
     {fields: ['payload_round_trip', 'payloadRoundTrip'], kind: 'boolean_true', expected: 'payload round-tripped between PHP and Python'},
     {fields: ['typed_error_round_trip', 'typedErrorRoundTrip'], kind: 'boolean_true', expected: 'typed error round-tripped between PHP and Python'},
   ],
   python_caller_php_service: [
-    {fields: ['caller_runtime', 'callerRuntime'], kind: 'value_equals', value: 'sdk-python', expected: 'Python caller runtime'},
-    {fields: ['service_runtime', 'serviceRuntime'], kind: 'value_equals', value: 'workflow-php', expected: 'PHP workflow service runtime'},
+    {fields: ['caller_workflow_instance_id', 'callerWorkflowInstanceId', 'caller_workflow_id', 'callerWorkflowId'], kind: 'non_empty_string', expected: 'caller workflow id for the Python caller'},
+    {fields: ['caller_workflow_run_id', 'callerWorkflowRunId', 'caller_run_id', 'callerRunId', 'run_id', 'runId'], kind: 'non_empty_string', expected: 'caller workflow run id for the Python caller'},
+    {fields: ['caller_sdk_language', 'callerSdkLanguage', 'caller_runtime', 'callerRuntime'], kind: 'value_equals', value: 'sdk-python', expected: 'Python caller SDK language'},
+    {fields: ['service_sdk_language', 'serviceSdkLanguage', 'service_runtime', 'serviceRuntime'], kind: 'value_equals', value: 'workflow-php', expected: 'PHP workflow service SDK language'},
+    {fields: ['operation_name', 'operationName'], kind: 'non_empty_string', expected: 'operation name invoked across the Python-to-PHP service boundary'},
+    {fields: ['request_payload', 'requestPayload', 'request', 'requestEvidence', 'invocation_request', 'invocationRequest'], kind: 'non_empty_object', expected: 'request payload sent by the Python caller to the PHP service'},
+    {fields: ['response_or_failure_surface', 'responseOrFailureSurface', 'response', 'responseEvidence', 'invocation_response', 'invocationResponse', 'failure_surface', 'failureSurface', 'invocation_failure', 'invocationFailure'], kind: 'non_empty_object', expected: 'response or failure surface observed by the Python caller from the PHP service'},
     {fields: ['service_call_id', 'serviceCallId'], kind: 'non_empty_string', expected: 'durable service-call id for the cross-language call'},
+    {fields: ['artifact_tuple', 'artifactTuple', 'artifact_versions', 'artifactVersions', 'published_artifact_versions', 'publishedArtifactVersions', 'resolved_artifact_versions', 'resolvedArtifactVersions'], kind: 'artifact_tuple', expected: 'published artifact tuple used for the Python-to-PHP service-call cell'},
+    {fields: ['published_artifact_worker_execution', 'publishedArtifactWorkerExecution', 'published_worker_execution', 'publishedWorkerExecution'], kind: 'published_cross_language_worker_execution', expected: 'published workflow-php and sdk-python worker execution evidence for the Python-to-PHP service-call cell'},
     {fields: ['payload_round_trip', 'payloadRoundTrip'], kind: 'boolean_true', expected: 'payload round-tripped between Python and PHP'},
     {fields: ['typed_error_round_trip', 'typedErrorRoundTrip'], kind: 'boolean_true', expected: 'typed error round-tripped between Python and PHP'},
   ],
@@ -3050,6 +3064,15 @@ function artifactSourcesFromEnv() {
   }
 
   return sources;
+}
+
+function conformanceRunIdFrom(evidence) {
+  return stringValue(evidence.conformance_run_id)
+    || stringValue(evidence.conformanceRunId)
+    || envValue('DW_NEXUS_CONFORMANCE_RUN_ID')
+    || envValue('DW_CONFORMANCE_RUN_ID')
+    || envValue('CONFORMANCE_RUN_ID')
+    || null;
 }
 
 function readEvidence(filePath) {
@@ -3385,7 +3408,13 @@ function isMissingEvidenceValue(value, kind) {
   if (kind === 'non_empty_object') {
     return !value || typeof value !== 'object' || Array.isArray(value) || Object.keys(value).length === 0;
   }
+  if (kind === 'artifact_tuple') {
+    return !hasNonEmptyObjectValue(value);
+  }
   if (kind === 'published_worker_execution') {
+    return !hasNonEmptyObjectValue(value);
+  }
+  if (kind === 'published_cross_language_worker_execution') {
     return !hasNonEmptyObjectValue(value);
   }
   if (kind === 'array_length_at_least') {
@@ -3424,11 +3453,49 @@ function evidenceRequirementSatisfied(requirement, value) {
       }
 
       return (numberValue(value) ?? 0) >= Number(requirement.min);
+    case 'artifact_tuple':
+      return artifactTupleSatisfied(value);
     case 'published_worker_execution':
       return publishedWorkerExecutionSatisfied(value);
+    case 'published_cross_language_worker_execution':
+      return publishedCrossLanguageWorkerExecutionSatisfied(value);
     default:
       return false;
   }
+}
+
+function artifactTupleSatisfied(value) {
+  if (!hasNonEmptyObjectValue(value)) {
+    return false;
+  }
+
+  const versions = normalizeArtifactMap(mergeMaps(
+    value.artifact_versions,
+    value.artifactVersions,
+    value.published_artifact_versions,
+    value.publishedArtifactVersions,
+    value.resolved_artifact_versions,
+    value.resolvedArtifactVersions,
+    value.versions,
+    value,
+  ));
+
+  if (Array.isArray(value.artifacts)) {
+    for (const entry of value.artifacts) {
+      if (!hasNonEmptyObjectValue(entry)) {
+        continue;
+      }
+      const artifact = canonicalPublishedWorkerArtifact(entry.artifact ?? entry.name ?? entry.id);
+      const key = artifact === 'workflow-php' ? 'workflow' : artifact;
+      if (requiredArtifacts.includes(key) && stringValue(versions[key]) === '') {
+        versions[key] = entry.version ?? entry.artifact_version ?? entry.artifactVersion;
+      }
+    }
+  }
+
+  return requiredArtifacts.every((artifact) => (
+    isExactPublishedArtifactVersion(stringValue(versions[artifact]))
+  ));
 }
 
 function publishedWorkerExecutionSatisfied(value) {
@@ -3465,6 +3532,18 @@ function publishedWorkerExecutionSatisfied(value) {
       && !truthy(entry.local_product_source_checkouts_used)
       && !truthy(entry.localProductSourceCheckoutsUsed);
   });
+}
+
+function publishedCrossLanguageWorkerExecutionSatisfied(value) {
+  if (!publishedWorkerExecutionSatisfied(value)) {
+    return false;
+  }
+
+  const artifacts = new Set(publishedWorkerExecutionEntries(value).map((entry) => (
+    canonicalPublishedWorkerArtifact(entry.artifact ?? entry.name ?? entry.id)
+  )));
+
+  return artifacts.has('workflow-php') && artifacts.has('sdk-python');
 }
 
 function publishedWorkerExecutionEntries(value) {
@@ -5102,6 +5181,7 @@ const artifactSourceVerification = normalizeArtifactEvidenceMap(mergeMaps(
   evidence.artifact_source_resolution,
   evidence.artifactSourceResolution,
 ));
+const conformanceRunId = conformanceRunIdFrom(evidence);
 
 const runnerBlocked = runnerBlockedIn(evidence);
 const runnerBlockedReason = runnerBlockedReasonFrom(evidence);
@@ -5281,6 +5361,7 @@ const pins = {
   artifact_install_evidence: artifactInstallEvidence,
   local_product_source_checkouts_used: localProductSourceCheckoutsUsed,
   evidence_path: evidencePath || null,
+  ...(conformanceRunId !== null ? {conformance_run_id: conformanceRunId} : {}),
 };
 
 const result = {
@@ -5291,6 +5372,7 @@ const result = {
   outcome,
   runner_blocked: runnerBlocked,
   ...(runnerBlocked ? {blocked_reason: runnerBlockedReason} : {}),
+  ...(conformanceRunId !== null ? {conformance_run_id: conformanceRunId, conformanceRunId} : {}),
   started_at: evidence.started_at || startedAt,
   finished_at: evidence.finished_at || finishedAt,
   generated_at: finishedAt,
@@ -5333,6 +5415,7 @@ const record = {
   runner_blocked: runnerBlocked,
   runnerBlocked,
   ...(runnerBlocked ? {blockedReason: runnerBlockedReason} : {}),
+  ...(conformanceRunId !== null ? {conformance_run_id: conformanceRunId, conformanceRunId} : {}),
   artifact_versions: artifactVersions,
   artifactVersions,
   published_artifact_versions: artifactVersions,
