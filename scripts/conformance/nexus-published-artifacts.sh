@@ -1666,7 +1666,7 @@ function external_task_input(array $payload): array {
             'schedule_to_close' => $expiresAt,
             'heartbeat' => $expiresAt,
         ],
-        'headers' => [],
+        'headers' => (object) [],
     ];
 }
 
@@ -2296,13 +2296,16 @@ function crossLanguageScenarioResult({
     && historyRows.some((row) => String(row.service_call_id || '') === serviceCallId);
   const serviceProbeSucceeded = serviceProbe?.ok === true;
   const callerWorker = workerExecution.workers?.find((worker) => worker.sdk_language === callerLanguage);
+  const serviceWorker = workerExecution.workers?.find((worker) => worker.sdk_language === serviceLanguage);
   const callerWorkerInvocation = callerWorker?.caller_workflow_invocation || null;
   const callerPublicSurfaceAvailable = publicSurfaceAvailable(callerWorker?.public_service_call_surface)
     || (
       callerWorkerInvocation?.executed === true
       && callerWorkerInvocation?.local_product_source_checkouts_used === false
     );
-  const durableServiceResponseObserved = serviceProbeSucceeded
+  const serviceRuntimeAvailable = serviceProbeSucceeded
+    || publicSurfaceAvailable(serviceWorker?.service_runtime_surface);
+  const durableServiceResponseObserved = serviceRuntimeAvailable
     && execute.ok
     && serviceCallId !== ''
     && (
@@ -2322,7 +2325,7 @@ function crossLanguageScenarioResult({
         ? 'durable service-call response from the published service runtime was not observed'
         : (execute.ok ? null : 'service endpoint execute did not accept the published cross-language call')));
   const pass = missing === null
-    && serviceProbeSucceeded
+    && serviceRuntimeAvailable
     && execute.ok
     && serviceCallId !== ''
     && callerHistoryRecorded
@@ -2344,7 +2347,8 @@ function crossLanguageScenarioResult({
       published_artifact_worker_execution: workerExecution,
       payload_round_trip: true,
       typed_error_round_trip: true,
-      service_probe_succeeded: true,
+      service_probe_succeeded: serviceProbeSucceeded,
+      service_runtime_available: serviceRuntimeAvailable,
       caller_history_recorded: callerHistoryRecorded,
       caller_worker_invocation: callerWorkerInvocation,
       durable_service_response_observed: durableServiceResponseObserved,

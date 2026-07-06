@@ -490,6 +490,11 @@ class NexusContractTest extends TestCase
         $this->assertStringContainsString("crossLanguageRuntimeArray('service_call_methods', phpHealth, phpProbe, phpReflection)", $contents);
         $this->assertStringContainsString('InvocableHttpAdapter', $contents);
         $this->assertStringContainsString('InvocableActivityHandler', $contents);
+        $this->assertStringContainsString("'headers' => (object) [],", $contents);
+        $this->assertStringContainsString('const serviceRuntimeAvailable = serviceProbeSucceeded', $contents);
+        $this->assertStringContainsString('durableServiceResponseObserved = serviceRuntimeAvailable', $contents);
+        $this->assertStringContainsString('service_probe_succeeded: serviceProbeSucceeded', $contents);
+        $this->assertStringContainsString('service_runtime_available: serviceRuntimeAvailable', $contents);
         $this->assertStringContainsString('nexus_unsupported_surface', $contents);
 
         $this->assertMatchesRegularExpression(
