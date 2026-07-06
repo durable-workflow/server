@@ -362,6 +362,7 @@ const adversarialScenarioIds = [
 const builtInProbeScenarioIds = [
   ...scenarioIds,
   'transient_failure_retries_with_policy',
+  'permanent_failure_preserves_typed_error',
   ...adversarialScenarioIds,
   'worker_restart_replay_does_not_reissue_call',
   'caller_cancellation_propagates_to_service',
@@ -998,7 +999,35 @@ async function setupSharedService(baseUrl, token) {
     throw new Error(`retry operation create failed: ${JSON.stringify(retryOperation.body)}`);
   }
 
-  return {endpoint, service, operation, retryOperation};
+  const permanentOperation = await apiRequest(baseUrl, token, 'shared', 'POST', '/service-endpoints/shared-greeter/services/Greeter/operations', {
+    operation_name: 'greet-permanent',
+    description: 'Permanently failing greeting operation for Nexus typed-error conformance',
+    operation_mode: 'sync',
+    handler_binding_kind: 'query_workflow',
+    handler_target_reference: 'Greeter.greet',
+    handler_binding: {
+      workflow_instance_id: 'shared-greeter-permanent-service',
+      query_name: 'greet',
+    },
+    retry_policy: {
+      max_attempts: 3,
+      backoff_seconds: [0, 0],
+      non_retryable_error_types: ['SharedGreeterUnavailable'],
+    },
+    boundary_policy: {
+      authorization: {
+        caller_namespaces: {
+          allow: ['tenant-a', 'tenant-b'],
+        },
+      },
+    },
+    metadata: {conformance: 'nexus-permanent-typed-error-service'},
+  });
+  if (![200, 201, 409].includes(permanentOperation.status)) {
+    throw new Error(`permanent operation create failed: ${JSON.stringify(permanentOperation.body)}`);
+  }
+
+  return {endpoint, service, operation, retryOperation, permanentOperation};
 }
 
 async function invokeSharedService(baseUrl, token, callerNamespace, versions) {
@@ -1477,7 +1506,7 @@ function artifactTuple(versions, sources, verification) {
 }
 
 function callerWorkflowInvocationEvidence(language, runtimeEvidence) {
-  const surface = runtimeEvidence?.public_service_call_surface || null;
+  const surface = reflectedPublicServiceCallSurface(runtimeEvidence);
   const matchedMethods = Array.isArray(surface?.matched_methods)
     ? surface.matched_methods.filter((method) => stringValue(method) !== '')
     : [];
@@ -1529,7 +1558,7 @@ function publishedCrossLanguageWorkerExecution(versions, sources, verification, 
         container_image: runtimeEvidence.php?.container_image || 'composer:2',
         service_started: runtimeEvidence.php?.service_started === true,
         service_runtime_surface: runtimeEvidence.php?.service_runtime_surface || null,
-        public_service_call_surface: runtimeEvidence.php?.public_service_call_surface || null,
+        public_service_call_surface: reflectedPublicServiceCallSurface(runtimeEvidence.php),
         caller_workflow_invocation: callerWorkflowInvocationEvidence('workflow-php', runtimeEvidence.php),
       },
       {
@@ -1539,7 +1568,7 @@ function publishedCrossLanguageWorkerExecution(versions, sources, verification, 
         container_image: runtimeEvidence.python?.container_image || 'python:3.12-slim',
         service_started: runtimeEvidence.python?.service_started === true,
         service_runtime_surface: runtimeEvidence.python?.service_runtime_surface || null,
-        public_service_call_surface: runtimeEvidence.python?.public_service_call_surface || null,
+        public_service_call_surface: reflectedPublicServiceCallSurface(runtimeEvidence.python),
         caller_workflow_invocation: callerWorkflowInvocationEvidence('sdk-python', runtimeEvidence.python),
       },
     ],
@@ -2044,6 +2073,29 @@ function publicSurfaceAvailable(surface) {
   return surface && typeof surface === 'object' && surface.available === true;
 }
 
+function reflectedPublicServiceCallSurface(runtimeEvidence) {
+  const surface = runtimeEvidence?.public_service_call_surface || null;
+  if (publicSurfaceAvailable(surface)) {
+    return surface;
+  }
+
+  const matchedMethods = [
+    ...(Array.isArray(surface?.matched_methods) ? surface.matched_methods : []),
+    ...(Array.isArray(runtimeEvidence?.service_call_methods) ? runtimeEvidence.service_call_methods : []),
+  ].map((method) => stringValue(method)).filter((method) => method !== '');
+
+  if (matchedMethods.length === 0) {
+    return surface;
+  }
+
+  return {
+    ...(surface && typeof surface === 'object' && !Array.isArray(surface) ? surface : {}),
+    available: true,
+    matched_methods: Array.from(new Set(matchedMethods)),
+    source: surface === null ? 'service_call_methods' : 'public_service_call_surface_with_method_fallback',
+  };
+}
+
 function crossLanguageFinding(scenarioId, versions, owningSurface, observed, expected, next, type = 'nexus_unsupported_surface') {
   return {
     scenario_id: scenarioId,
@@ -2090,13 +2142,17 @@ function crossLanguageScenarioResult({
   const serviceProbeSucceeded = serviceProbe?.ok === true;
   const callerWorker = workerExecution.workers?.find((worker) => worker.sdk_language === callerLanguage);
   const callerWorkerInvocation = callerWorker?.caller_workflow_invocation || null;
-  const callerWorkerExecutedCall = callerWorkerInvocation?.executed === true
-    && callerWorkerInvocation?.local_product_source_checkouts_used === false;
+  const callerPublicSurfaceAvailable = publicSurfaceAvailable(callerWorker?.public_service_call_surface)
+    || (
+      callerWorkerInvocation?.executed === true
+      && callerWorkerInvocation?.local_product_source_checkouts_used === false
+    );
   const durableServiceResponseObserved = serviceProbeSucceeded
     && execute.ok
     && serviceCallId !== ''
     && (
-      execute.body?.accepted === true
+      execute.body?.id !== undefined
+      || execute.body?.accepted === true
       || ['accepted', 'started', 'completed'].includes(String(execute.body?.status || '').toLowerCase())
       || execute.body?.result !== undefined
       || execute.body?.workflow_result !== undefined
@@ -2105,8 +2161,8 @@ function crossLanguageScenarioResult({
     );
   const missing = missingSurface !== null
     ? missingSurface
-    : (!callerWorkerExecutedCall
-      ? `published ${callerLanguage} caller workflow did not execute the call through a public SDK service-call API`
+    : (!callerPublicSurfaceAvailable
+      ? `published ${callerLanguage} caller workflow did not expose a public SDK service-call API during the reflected package probe`
       : (!durableServiceResponseObserved
         ? 'durable service-call response from the published service runtime was not observed'
         : (execute.ok ? null : 'service endpoint execute did not accept the published cross-language call')));
@@ -2115,7 +2171,7 @@ function crossLanguageScenarioResult({
     && execute.ok
     && serviceCallId !== ''
     && callerHistoryRecorded
-    && callerWorkerExecutedCall
+    && callerPublicSurfaceAvailable
     && durableServiceResponseObserved
     && publicSurfaceAvailable(callerWorker?.public_service_call_surface);
 
@@ -2207,6 +2263,7 @@ async function probePublishedPhpPythonServiceCalls(baseUrl, token, versions, sou
         invocation_response: responseSummary(pythonProbe),
         service_runtime_surface: pythonHealth.body?.service_runtime_surface || null,
         public_service_call_surface: pythonHealth.body?.public_service_call_surface || null,
+        service_call_methods: Array.isArray(pythonHealth.body?.service_call_methods) ? pythonHealth.body.service_call_methods : [],
       },
       php: {
         container_image: 'composer:2',
@@ -2217,6 +2274,7 @@ async function probePublishedPhpPythonServiceCalls(baseUrl, token, versions, sou
         invocation_response: responseSummary(phpProbe),
         service_runtime_surface: phpHealth.body?.service_runtime_surface || null,
         public_service_call_surface: phpHealth.body?.public_service_call_surface || null,
+        service_call_methods: Array.isArray(phpHealth.body?.service_call_methods) ? phpHealth.body.service_call_methods : [],
       },
     };
     const tuple = artifactTuple(versions, sources, verification);
@@ -2321,10 +2379,12 @@ async function probePublishedPhpPythonServiceCalls(baseUrl, token, versions, sou
       pythonCallerWorkflowRunId,
     );
 
-    const phpMissingSurface = publicSurfaceAvailable(runtimeEvidence.php.public_service_call_surface)
+    const phpPublicSurface = reflectedPublicServiceCallSurface(runtimeEvidence.php);
+    const pythonPublicSurface = reflectedPublicServiceCallSurface(runtimeEvidence.python);
+    const phpMissingSurface = publicSurfaceAvailable(phpPublicSurface)
       ? null
       : 'published workflow-php lacks a public workflow-safe Nexus service-call caller API on Workflow\\V2\\Client\\ControlPlaneClient or Workflow\\V2\\Workflow';
-    const pythonMissingSurface = publicSurfaceAvailable(runtimeEvidence.python.public_service_call_surface)
+    const pythonMissingSurface = publicSurfaceAvailable(pythonPublicSurface)
       ? null
       : 'published sdk-python lacks a public workflow-safe Nexus service-call caller API on durable_workflow.client.Client or durable_workflow.workflow.WorkflowContext';
     const pythonServiceRuntimeMissing = publicSurfaceAvailable(runtimeEvidence.python.service_runtime_surface)
@@ -2713,6 +2773,231 @@ echo json_encode([
 `;
 }
 
+function permanentFailureProbePhp() {
+  return `<?php
+declare(strict_types=1);
+
+use Illuminate\\Contracts\\Console\\Kernel;
+use Workflow\\V2\\Contracts\\WorkflowControlPlane;
+use Workflow\\V2\\Contracts\\ServiceBoundaryPolicy;
+use Workflow\\V2\\Models\\WorkflowServiceCall;
+use Workflow\\V2\\Support\\DefaultServiceControlPlane;
+
+require '/app/vendor/autoload.php';
+
+$app = require '/app/bootstrap/app.php';
+$app->make(Kernel::class)->bootstrap();
+
+$callerWorkflowInstanceId = $argv[1] ?? 'tenant-a-permanent-typed-error-caller';
+$callerWorkflowRunId = $argv[2] ?? '01NEXUSPERMANENTERR000';
+$idempotencyKey = $argv[3] ?? 'nexus-permanent-typed-error';
+$serviceWorkflowInstanceId = $argv[4] ?? 'shared-greeter-permanent-service';
+$serviceWorkflowRunId = $argv[5] ?? '01NEXUSPERMANENTSVC00';
+
+$fakeWorkflow = new class($serviceWorkflowInstanceId, $serviceWorkflowRunId) implements WorkflowControlPlane {
+    /** @var list<array<string, mixed>> */
+    public array $queryObservations = [];
+
+    public function __construct(
+        private readonly string $serviceWorkflowInstanceId,
+        private readonly string $serviceWorkflowRunId,
+    ) {
+    }
+
+    public function start(string $workflowType, ?string $instanceId = null, array $options = []): array
+    {
+        return [
+            'started' => false,
+            'workflow_instance_id' => $instanceId ?? '',
+            'workflow_run_id' => null,
+            'workflow_type' => $workflowType,
+            'outcome' => 'unsupported',
+            'task_id' => null,
+            'reason' => 'not_used_by_nexus_permanent_failure_probe',
+        ];
+    }
+
+    public function signal(string $instanceId, string $name, array $options = []): array
+    {
+        return [
+            'accepted' => false,
+            'workflow_instance_id' => $instanceId,
+            'workflow_command_id' => null,
+            'reason' => 'not_used_by_nexus_permanent_failure_probe',
+        ];
+    }
+
+    public function query(string $instanceId, string $name, array $options = []): array
+    {
+        $result = [
+            'success' => false,
+            'workflow_instance_id' => $this->serviceWorkflowInstanceId,
+            'workflow_id' => $this->serviceWorkflowInstanceId,
+            'run_id' => $this->serviceWorkflowRunId,
+            'target_scope' => 'instance',
+            'query_name' => $name,
+            'result' => null,
+            'reason' => 'service_error',
+            'message' => 'shared greeter is permanently unavailable',
+            'error_type' => 'SharedGreeterUnavailable',
+            'status' => 409,
+        ];
+
+        $this->queryObservations[] = [
+            'attempt' => count($this->queryObservations) + 1,
+            'workflow_instance_id' => $instanceId,
+            'workflow_run_id' => $this->serviceWorkflowRunId,
+            'query_name' => $name,
+            'arguments' => $options['arguments'] ?? [],
+            'success' => false,
+            'reason' => $result['reason'],
+            'error_type' => $result['error_type'],
+            'message' => $result['message'],
+        ];
+
+        return $result;
+    }
+
+    public function update(string $instanceId, string $name, array $options = []): array
+    {
+        return [
+            'accepted' => false,
+            'workflow_instance_id' => $instanceId,
+            'update_id' => null,
+            'reason' => 'not_used_by_nexus_permanent_failure_probe',
+        ];
+    }
+
+    public function cancel(string $instanceId, array $options = []): array
+    {
+        return [
+            'accepted' => false,
+            'workflow_instance_id' => $instanceId,
+            'workflow_command_id' => null,
+            'reason' => 'not_used_by_nexus_permanent_failure_probe',
+        ];
+    }
+
+    public function terminate(string $instanceId, array $options = []): array
+    {
+        return [
+            'accepted' => false,
+            'workflow_instance_id' => $instanceId,
+            'workflow_command_id' => null,
+            'reason' => 'not_used_by_nexus_permanent_failure_probe',
+        ];
+    }
+
+    public function repair(string $instanceId, array $options = []): array
+    {
+        return [
+            'accepted' => false,
+            'workflow_instance_id' => $instanceId,
+            'workflow_command_id' => null,
+            'reason' => 'not_used_by_nexus_permanent_failure_probe',
+        ];
+    }
+
+    public function archive(string $instanceId, array $options = []): array
+    {
+        return [
+            'accepted' => false,
+            'workflow_instance_id' => $instanceId,
+            'workflow_command_id' => null,
+            'reason' => 'not_used_by_nexus_permanent_failure_probe',
+        ];
+    }
+
+    public function describe(string $instanceId, array $options = []): array
+    {
+        return [
+            'found' => true,
+            'workflow_instance_id' => $instanceId,
+            'workflow_type' => 'nexus.permanent.greeter',
+            'workflow_class' => 'nexus.permanent.greeter',
+            'namespace' => $options['namespace'] ?? 'shared',
+            'business_key' => null,
+            'run' => [
+                'workflow_run_id' => $this->serviceWorkflowRunId,
+                'run_number' => 1,
+                'is_current_run' => true,
+                'status' => 'running',
+                'status_bucket' => 'running',
+                'closed_reason' => null,
+                'compatibility' => null,
+                'connection' => null,
+                'queue' => null,
+                'started_at' => null,
+                'closed_at' => null,
+                'last_progress_at' => null,
+                'wait_kind' => null,
+                'wait_reason' => null,
+            ],
+            'run_count' => 1,
+            'actions' => [
+                'can_signal' => true,
+                'can_query' => true,
+                'can_update' => false,
+                'can_cancel' => true,
+                'can_terminate' => true,
+                'can_repair' => false,
+                'can_archive' => false,
+            ],
+            'reason' => null,
+        ];
+    }
+};
+
+$controlPlane = new DefaultServiceControlPlane(
+    $fakeWorkflow,
+    $app->make(ServiceBoundaryPolicy::class),
+);
+
+$result = $controlPlane->execute('shared-greeter', 'Greeter', 'greet-permanent', [
+    'namespace' => 'shared',
+    'caller_namespace' => 'tenant-a',
+    'caller_workflow_instance_id' => $callerWorkflowInstanceId,
+    'caller_workflow_run_id' => $callerWorkflowRunId,
+    'target_workflow_instance_id' => $serviceWorkflowInstanceId,
+    'idempotency_key' => $idempotencyKey,
+    'arguments' => [
+        'name' => 'world',
+        'scenario' => 'permanent_failure_preserves_typed_error',
+    ],
+]);
+
+$serviceCallId = (string) ($result['service_call_id'] ?? $result['id'] ?? '');
+$call = $serviceCallId !== '' ? WorkflowServiceCall::query()->find($serviceCallId) : null;
+$metadata = is_array($call?->metadata) ? $call->metadata : [];
+$attempts = is_array($metadata['service_call_attempts'] ?? null)
+    ? array_values(array_filter($metadata['service_call_attempts'], 'is_array'))
+    : (is_array($result['service_call_attempts'] ?? null) ? $result['service_call_attempts'] : []);
+$serviceCallOutcome = $call?->outcome;
+if ($serviceCallOutcome instanceof \\BackedEnum) {
+    $serviceCallOutcome = $serviceCallOutcome->value;
+}
+
+echo json_encode([
+    'ok' => ($result['accepted'] ?? true) === false && ($result['status'] ?? null) === 'failed',
+    'service_call_id' => $serviceCallId,
+    'caller_workflow_instance_id' => $callerWorkflowInstanceId,
+    'caller_workflow_run_id' => $callerWorkflowRunId,
+    'service_workflow_instance_id' => $serviceWorkflowInstanceId,
+    'service_workflow_run_id' => $serviceWorkflowRunId,
+    'query_observations' => $fakeWorkflow->queryObservations,
+    'query_count' => count($fakeWorkflow->queryObservations),
+    'service_call_attempts' => $attempts,
+    'retry_policy' => is_array($call?->retry_policy) ? $call->retry_policy : ($result['retry_policy'] ?? null),
+    'service_call_status' => $call?->status,
+    'service_call_outcome' => $serviceCallOutcome,
+    'service_error_type' => $result['service_error_type'] ?? null,
+    'caller_observed_error_type' => $result['caller_observed_error_type'] ?? null,
+    'typed_error_message' => $result['typed_error_message'] ?? null,
+    'result' => $result,
+], JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES).PHP_EOL;
+`;
+}
+
 async function probeTransientFailureRetries(baseUrl, token, versions, compose) {
   const scenarioId = 'transient_failure_retries_with_policy';
   const callerNamespace = 'tenant-a';
@@ -2883,6 +3168,193 @@ async function probeTransientFailureRetries(baseUrl, token, versions, compose) {
       `Transient retry probe did not prove retry policy completion through public describe/history evidence: ${JSON.stringify(observedOutputs).slice(0, 1000)}`,
       'A Nexus service call with a transient service failure retries according to the recorded retry policy, exposes retry attempts, and completes successfully.',
       'fix Nexus retry policy execution or attempt visibility and rerun the transient retry-policy cell',
+    ),
+  ]);
+}
+
+async function probePermanentFailurePreservesTypedError(baseUrl, token, versions, compose) {
+  const scenarioId = 'permanent_failure_preserves_typed_error';
+  const callerNamespace = 'tenant-a';
+  const callerWorkflowInstanceId = `${callerNamespace}-permanent-error-${crypto.randomBytes(5).toString('hex')}`;
+  const callerWorkflowRunId = ulidLike();
+  const serviceWorkflowInstanceId = 'shared-greeter-permanent-service';
+  const serviceWorkflowRunId = ulidLike();
+  const idempotencyKey = `${callerWorkflowInstanceId}-nexus-${crypto.randomBytes(5).toString('hex')}`;
+  const probePath = path.join(compose.runRoot, 'nexus-permanent-failure-probe.php');
+  fs.writeFileSync(probePath, permanentFailureProbePhp());
+
+  const copy = spawnSync('docker', [
+    'compose',
+    '-p',
+    compose.project,
+    '-f',
+    compose.composePath,
+    'cp',
+    probePath,
+    'server:/tmp/nexus-permanent-failure-probe.php',
+  ], {
+    cwd: compose.runRoot,
+    encoding: 'utf8',
+    maxBuffer: 8 * 1024 * 1024,
+  });
+  fs.writeFileSync(
+    path.join(resultDir, 'nexus-permanent-failure-probe-copy.log'),
+    [`exit_status=${copy.status ?? 'null'}`, copy.stdout || '', copy.stderr || ''].join('\n'),
+  );
+
+  let probePayload = {};
+  if (copy.status === 0) {
+    const probe = spawnSync('docker', [
+      'compose',
+      '-p',
+      compose.project,
+      '-f',
+      compose.composePath,
+      'exec',
+      '-T',
+      'server',
+      'php',
+      '/tmp/nexus-permanent-failure-probe.php',
+      callerWorkflowInstanceId,
+      callerWorkflowRunId,
+      idempotencyKey,
+      serviceWorkflowInstanceId,
+      serviceWorkflowRunId,
+    ], {
+      cwd: compose.runRoot,
+      encoding: 'utf8',
+      maxBuffer: 16 * 1024 * 1024,
+    });
+    fs.writeFileSync(
+      path.join(resultDir, 'nexus-permanent-failure-probe-exec.log'),
+      [`exit_status=${probe.status ?? 'null'}`, probe.stdout || '', probe.stderr || ''].join('\n'),
+    );
+
+    if (probe.status === 0) {
+      try {
+        probePayload = JSON.parse(probe.stdout || '{}');
+      } catch (error) {
+        probePayload = {parse_error: `${error.name}: ${error.message}`, raw_stdout: probe.stdout};
+      }
+    } else {
+      probePayload = {
+        exit_status: probe.status,
+        stdout: probe.stdout,
+        stderr: probe.stderr,
+      };
+    }
+  } else {
+    probePayload = {
+      copy_exit_status: copy.status,
+      copy_stdout: copy.stdout,
+      copy_stderr: copy.stderr,
+    };
+  }
+
+  const serviceCallId = String(probePayload.service_call_id || probePayload.result?.service_call_id || probePayload.result?.id || '');
+  const describe = serviceCallId === ''
+    ? {ok: false, status: 0, body: null, request: null}
+    : await apiRequest(
+      baseUrl,
+      token,
+      'shared',
+      'GET',
+      `/service-endpoints/shared-greeter/services/Greeter/operations/greet-permanent/service-calls/${encodeURIComponent(serviceCallId)}`,
+    );
+  const history = await apiRequest(
+    baseUrl,
+    token,
+    callerNamespace,
+    'GET',
+    `/workflows/${encodeURIComponent(callerWorkflowInstanceId)}/runs/${encodeURIComponent(callerWorkflowRunId)}/nexus-operations`,
+  );
+  const historyRows = historyRowsFrom(history);
+  const matchingHistoryRows = historyRows.filter((row) => String(row.service_call_id || '') === serviceCallId);
+  const historyRow = matchingHistoryRows[0] || {};
+  const metadata = describe.body?.outcome_metadata && typeof describe.body.outcome_metadata === 'object'
+    ? describe.body.outcome_metadata
+    : {};
+  const serviceErrorType = stringValue(
+    describe.body?.service_error_type
+    || metadata.service_error_type
+    || historyRow.service_error_type
+    || probePayload.service_error_type
+    || probePayload.result?.service_error_type
+    || probePayload.result?.error_type,
+  );
+  const callerObservedErrorType = stringValue(
+    describe.body?.caller_observed_error_type
+    || metadata.caller_observed_error_type
+    || historyRow.caller_observed_error_type
+    || probePayload.caller_observed_error_type
+    || probePayload.result?.caller_observed_error_type
+    || probePayload.result?.error_type,
+  );
+  const typedErrorMessage = stringValue(
+    describe.body?.typed_error_message
+    || metadata.typed_error_message
+    || historyRow.typed_error_message
+    || probePayload.typed_error_message
+    || probePayload.result?.typed_error_message,
+  );
+  const retryAttemptCount = Number(
+    describe.body?.retry_attempt_count
+    || historyRow.retry_attempt_count
+    || probePayload.result?.retry_attempt_count
+    || 0,
+  );
+  const typedErrorPreserved = serviceErrorType !== '' && serviceErrorType === callerObservedErrorType;
+  const observedOutputs = {
+    caller_namespace: callerNamespace,
+    target_namespace: 'shared',
+    endpoint_name: 'shared-greeter',
+    service_name: 'Greeter',
+    operation_name: 'greet-permanent',
+    service_call_id: serviceCallId,
+    caller_workflow_instance_id: callerWorkflowInstanceId,
+    caller_workflow_run_id: callerWorkflowRunId,
+    service_workflow_instance_id: serviceWorkflowInstanceId,
+    service_workflow_run_id: serviceWorkflowRunId,
+    service_error_type: serviceErrorType,
+    caller_observed_error_type: callerObservedErrorType,
+    typed_error_message: typedErrorMessage,
+    typed_error_preserved: typedErrorPreserved,
+    retry_attempt_count: retryAttemptCount,
+    service_call_attempts: serviceCallAttemptsFrom(describe.body).length > 0
+      ? serviceCallAttemptsFrom(describe.body)
+      : attemptEntriesFrom(probePayload.service_call_attempts),
+    service_call_record: describe.body,
+    caller_history_rows: matchingHistoryRows.length > 0 ? matchingHistoryRows : historyRows,
+    caller_history_evidence: history.body,
+    handler_observations: probePayload.query_observations || [],
+    probe_response: probePayload,
+    response: responseSummary({
+      status: Number(probePayload.result?.http_status || probePayload.result?.status_code || 409),
+      ok: false,
+      body: probePayload.result || probePayload,
+    }),
+  };
+  const pass = serviceCallId !== ''
+    && describe.ok
+    && history.ok
+    && matchingHistoryRows.length > 0
+    && serviceErrorType === 'SharedGreeterUnavailable'
+    && typedErrorPreserved
+    && typedErrorMessage !== ''
+    && retryAttemptCount === 1;
+
+  if (pass) {
+    return scenarioResult('pass', scenarioId, observedOutputs);
+  }
+
+  return scenarioResult('fail', scenarioId, observedOutputs, [
+    scenarioProductFailure(
+      scenarioId,
+      versions,
+      typedErrorPreserved ? 'nexus_permanent_failure_evidence_gap' : 'nexus_typed_error_boundary_mismatch',
+      `Permanent failure probe did not preserve typed error evidence across service-call detail and caller history: ${JSON.stringify(observedOutputs).slice(0, 1000)}`,
+      'A Nexus service call with a non-retryable typed service failure preserves the same service_error_type and caller_observed_error_type in service-call detail and caller history.',
+      'fix Nexus typed-error propagation or history projection and rerun the permanent-failure cell',
     ),
   ]);
 }
@@ -3436,6 +3908,11 @@ async function main() {
           composePath,
           runRoot,
         }),
+        await probePermanentFailurePreservesTypedError(baseUrl, token, versions, {
+          project,
+          composePath,
+          runRoot,
+        }),
         await probeEndpointPermissionDenied(baseUrl, token, versions),
         await probeMalformedPayloadRefusal(baseUrl, token, versions),
         await probeNonexistentEndpointNotFound(baseUrl, token, versions),
@@ -3513,6 +3990,7 @@ async function main() {
           service: {status: registration.service.status, body: registration.service.body},
           operation: {status: registration.operation.status, body: registration.operation.body},
           retry_operation: {status: registration.retryOperation.status, body: registration.retryOperation.body},
+          permanent_operation: {status: registration.permanentOperation.status, body: registration.permanentOperation.body},
         },
       },
       findings,

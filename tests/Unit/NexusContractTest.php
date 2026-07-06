@@ -447,6 +447,9 @@ class NexusContractTest extends TestCase
         $this->assertStringContainsString('TransientGreetingFailure', $contents);
         $this->assertStringContainsString('history_attempt_visibility_includes_retry_attempts', $contents);
         $this->assertStringContainsString('final_successful_result', $contents);
+        $this->assertStringContainsString('probePermanentFailurePreservesTypedError', $contents);
+        $this->assertStringContainsString('greet-permanent', $contents);
+        $this->assertStringContainsString('SharedGreeterUnavailable', $contents);
         $this->assertStringContainsString('probeWorkerRestartReplay', $contents);
         $this->assertStringContainsString('probeCallerCancellation', $contents);
         $this->assertStringContainsString('duplicate_call_issue_count', $contents);
@@ -468,6 +471,8 @@ class NexusContractTest extends TestCase
         $this->assertStringContainsString('serviceOperation', $contents);
         $this->assertStringContainsString('call_nexus_service', $contents);
         $this->assertStringContainsString('start_nexus_operation', $contents);
+        $this->assertStringContainsString('reflectedPublicServiceCallSurface', $contents);
+        $this->assertStringContainsString('service_call_methods', $contents);
         $this->assertStringContainsString('callerWorkflowInvocationEvidence', $contents);
         $this->assertStringContainsString('InvocableHttpAdapter', $contents);
         $this->assertStringContainsString('InvocableActivityHandler', $contents);
