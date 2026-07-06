@@ -2246,24 +2246,26 @@ function crossLanguageRuntimeBody(response) {
 }
 
 function crossLanguageRuntimeObject(field, health, probe) {
+  const values = [];
   for (const body of [crossLanguageRuntimeBody(health), crossLanguageRuntimeBody(probe)]) {
     const value = body?.[field];
     if (value && typeof value === 'object' && !Array.isArray(value)) {
-      return value;
+      values.push(value);
     }
   }
 
-  return null;
+  return values.find(publicSurfaceAvailable) || values[0] || null;
 }
 
 function crossLanguageRuntimeArray(field, health, probe) {
+  const values = [];
   for (const body of [crossLanguageRuntimeBody(health), crossLanguageRuntimeBody(probe)]) {
     if (Array.isArray(body?.[field])) {
-      return body[field];
+      values.push(body[field]);
     }
   }
 
-  return [];
+  return values.find((value) => value.length > 0) || values[0] || [];
 }
 
 function crossLanguageRuntimeString(field, health, probe, fallback = '') {

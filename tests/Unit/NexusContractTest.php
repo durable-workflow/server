@@ -476,6 +476,8 @@ class NexusContractTest extends TestCase
         $this->assertStringContainsString('callerWorkflowInvocationEvidence', $contents);
         $this->assertStringContainsString('crossLanguageRuntimeObject', $contents);
         $this->assertStringContainsString('crossLanguageRuntimeArray', $contents);
+        $this->assertStringContainsString('values.find(publicSurfaceAvailable)', $contents);
+        $this->assertStringContainsString('values.find((value) => value.length > 0)', $contents);
         $this->assertStringContainsString("crossLanguageRuntimeObject('public_service_call_surface', pythonHealth, pythonProbe)", $contents);
         $this->assertStringContainsString("crossLanguageRuntimeObject('public_service_call_surface', phpHealth, phpProbe)", $contents);
         $this->assertStringContainsString("crossLanguageRuntimeArray('service_call_methods', phpHealth, phpProbe)", $contents);
