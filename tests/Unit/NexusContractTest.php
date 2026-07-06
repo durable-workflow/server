@@ -463,6 +463,12 @@ class NexusContractTest extends TestCase
         $this->assertStringContainsString('published_php_python_service_call_shard', $contents);
         $this->assertStringContainsString('nexus-python-sdk-service', $contents);
         $this->assertStringContainsString('nexus-php-workflow-service', $contents);
+        $this->assertStringContainsString('startServiceOperation', $contents);
+        $this->assertStringContainsString('executeServiceOperation', $contents);
+        $this->assertStringContainsString('serviceOperation', $contents);
+        $this->assertStringContainsString('call_nexus_service', $contents);
+        $this->assertStringContainsString('start_nexus_operation', $contents);
+        $this->assertStringContainsString('callerWorkflowInvocationEvidence', $contents);
         $this->assertStringContainsString('InvocableHttpAdapter', $contents);
         $this->assertStringContainsString('InvocableActivityHandler', $contents);
         $this->assertStringContainsString('nexus_unsupported_surface', $contents);

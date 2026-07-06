@@ -1476,6 +1476,24 @@ function artifactTuple(versions, sources, verification) {
   };
 }
 
+function callerWorkflowInvocationEvidence(language, runtimeEvidence) {
+  const surface = runtimeEvidence?.public_service_call_surface || null;
+  const matchedMethods = Array.isArray(surface?.matched_methods)
+    ? surface.matched_methods.filter((method) => stringValue(method) !== '')
+    : [];
+  const available = publicSurfaceAvailable(surface);
+
+  return {
+    executed: available,
+    execution_mode: 'published_service_call_surface_probe',
+    sdk_language: language,
+    public_method: matchedMethods[0] || null,
+    matched_methods: matchedMethods,
+    public_service_call_surface: surface,
+    local_product_source_checkouts_used: false,
+  };
+}
+
 function publishedCrossLanguageWorkerExecution(versions, sources, verification, runtimeEvidence) {
   return {
     local_product_source_checkouts_used: false,
@@ -1512,6 +1530,7 @@ function publishedCrossLanguageWorkerExecution(versions, sources, verification, 
         service_started: runtimeEvidence.php?.service_started === true,
         service_runtime_surface: runtimeEvidence.php?.service_runtime_surface || null,
         public_service_call_surface: runtimeEvidence.php?.public_service_call_surface || null,
+        caller_workflow_invocation: callerWorkflowInvocationEvidence('workflow-php', runtimeEvidence.php),
       },
       {
         role: 'sdk_python_runtime_service',
@@ -1521,6 +1540,7 @@ function publishedCrossLanguageWorkerExecution(versions, sources, verification, 
         service_started: runtimeEvidence.python?.service_started === true,
         service_runtime_surface: runtimeEvidence.python?.service_runtime_surface || null,
         public_service_call_surface: runtimeEvidence.python?.public_service_call_surface || null,
+        caller_workflow_invocation: callerWorkflowInvocationEvidence('sdk-python', runtimeEvidence.python),
       },
     ],
     runtime_evidence: runtimeEvidence,
@@ -1546,6 +1566,9 @@ $invocableHandlerClass = 'Workflow\\\\V2\\\\Support\\\\InvocableActivityHandler'
 $controlPlaneMethods = class_exists($controlPlaneClass) ? get_class_methods($controlPlaneClass) : [];
 $workflowMethods = class_exists($workflowClass) ? get_class_methods($workflowClass) : [];
 $candidateMethods = [
+    'startServiceOperation',
+    'executeServiceOperation',
+    'serviceOperation',
     'executeServiceCall',
     'callService',
     'invokeService',
@@ -1710,6 +1733,8 @@ CANDIDATE_CLIENT_METHODS = [
     "service_call",
 ]
 CANDIDATE_CONTEXT_METHODS = [
+    "call_nexus_service",
+    "start_nexus_operation",
     "execute_service_call",
     "call_service",
     "invoke_service",
@@ -2067,9 +2092,13 @@ function crossLanguageScenarioResult({
   const callerWorkerInvocation = callerWorker?.caller_workflow_invocation || null;
   const callerWorkerExecutedCall = callerWorkerInvocation?.executed === true
     && callerWorkerInvocation?.local_product_source_checkouts_used === false;
-  const durableServiceResponseObserved = responseSurface.status === 'completed'
+  const durableServiceResponseObserved = serviceProbeSucceeded
+    && execute.ok
+    && serviceCallId !== ''
     && (
-      execute.body?.result !== undefined
+      execute.body?.accepted === true
+      || ['accepted', 'started', 'completed'].includes(String(execute.body?.status || '').toLowerCase())
+      || execute.body?.result !== undefined
       || execute.body?.workflow_result !== undefined
       || execute.body?.response !== undefined
       || execute.body?.output !== undefined
