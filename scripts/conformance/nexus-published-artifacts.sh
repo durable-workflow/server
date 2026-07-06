@@ -2088,6 +2088,7 @@ import json
 from importlib.metadata import version
 
 from durable_workflow.client import Client
+from durable_workflow.invocable import InvocableActivityHandler
 from durable_workflow.workflow import WorkflowContext
 
 client_candidates = [
@@ -2115,6 +2116,13 @@ print(json.dumps({
     "package_imported": True,
     "package_version": version("durable-workflow"),
     "service_call_methods": service_call_methods,
+    "service_runtime_surface": {
+        "available": InvocableActivityHandler is not None,
+        "checked_classes": ["durable_workflow.invocable.InvocableActivityHandler"],
+        "handler": "nexus.greeter",
+        "carrier": "published-sdk-python-nexus-shard",
+        "source": "container_reflection",
+    },
     "public_service_call_surface": {
         "available": bool(service_call_methods),
         "checked_classes": ["durable_workflow.client.Client", "durable_workflow.workflow.WorkflowContext"],
@@ -2133,6 +2141,8 @@ require 'vendor/autoload.php';
 
 $controlPlaneClass = Workflow\\V2\\Client\\ControlPlaneClient::class;
 $workflowClass = Workflow\\V2\\Workflow::class;
+$invocableAdapterClass = Workflow\\V2\\Support\\InvocableHttpAdapter::class;
+$invocableHandlerClass = Workflow\\V2\\Support\\InvocableActivityHandler::class;
 $candidateMethods = [
     'startServiceOperation',
     'executeServiceOperation',
@@ -2156,6 +2166,13 @@ echo json_encode([
     'package_imported' => class_exists($controlPlaneClass) || class_exists($workflowClass),
     'package_version' => $installedVersion,
     'service_call_methods' => $serviceCallMethods,
+    'service_runtime_surface' => [
+        'available' => class_exists($invocableAdapterClass) && class_exists($invocableHandlerClass),
+        'checked_classes' => [$invocableAdapterClass, $invocableHandlerClass],
+        'handler' => 'nexus.greeter',
+        'carrier' => 'published-workflow-php-service',
+        'source' => 'container_reflection',
+    ],
     'public_service_call_surface' => [
         'available' => count($serviceCallMethods) > 0,
         'checked_classes' => [$controlPlaneClass, $workflowClass],
@@ -2445,7 +2462,7 @@ async function probePublishedPhpPythonServiceCalls(baseUrl, token, versions, sou
         health_response: responseSummary(pythonHealth),
         invocation_response: responseSummary(pythonProbe),
         caller_reflection_response: responseSummary(pythonReflection),
-        service_runtime_surface: crossLanguageRuntimeObject('service_runtime_surface', pythonHealth, pythonProbe),
+        service_runtime_surface: crossLanguageRuntimeObject('service_runtime_surface', pythonHealth, pythonProbe, pythonReflection),
         public_service_call_surface: crossLanguageRuntimeObject('public_service_call_surface', pythonHealth, pythonProbe, pythonReflection),
         service_call_methods: crossLanguageRuntimeArray('service_call_methods', pythonHealth, pythonProbe, pythonReflection),
       },
@@ -2457,7 +2474,7 @@ async function probePublishedPhpPythonServiceCalls(baseUrl, token, versions, sou
         health_response: responseSummary(phpHealth),
         invocation_response: responseSummary(phpProbe),
         caller_reflection_response: responseSummary(phpReflection),
-        service_runtime_surface: crossLanguageRuntimeObject('service_runtime_surface', phpHealth, phpProbe),
+        service_runtime_surface: crossLanguageRuntimeObject('service_runtime_surface', phpHealth, phpProbe, phpReflection),
         public_service_call_surface: crossLanguageRuntimeObject('public_service_call_surface', phpHealth, phpProbe, phpReflection),
         service_call_methods: crossLanguageRuntimeArray('service_call_methods', phpHealth, phpProbe, phpReflection),
       },
