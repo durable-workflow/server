@@ -1946,6 +1946,53 @@ function dockerStop(containerName, logPath) {
   );
 }
 
+function dockerExecJson(containerName, command, logPath) {
+  const result = spawnSync('docker', ['exec', containerName, 'sh', '-lc', command], {
+    encoding: 'utf8',
+    maxBuffer: 8 * 1024 * 1024,
+  });
+  fs.writeFileSync(
+    logPath,
+    [
+      `$ docker exec ${containerName} sh -lc ${JSON.stringify(command)}`,
+      `exit_status=${result.status ?? 'null'}`,
+      result.stdout || '',
+      result.stderr || '',
+    ].join('\n'),
+  );
+
+  if (result.status !== 0) {
+    return {
+      ok: false,
+      status: 0,
+      body: {
+        error: `docker exec ${containerName} failed with status ${result.status ?? 'null'}`,
+        stderr: (result.stderr || '').slice(-2000),
+      },
+      raw_body: result.stdout || '',
+    };
+  }
+
+  try {
+    return {
+      ok: true,
+      status: 0,
+      body: JSON.parse(result.stdout || '{}'),
+      raw_body: result.stdout || '',
+    };
+  } catch (error) {
+    return {
+      ok: false,
+      status: 0,
+      body: {
+        error: `docker exec ${containerName} returned non-JSON output: ${error.name}: ${error.message}`,
+        stdout: (result.stdout || '').slice(-2000),
+      },
+      raw_body: result.stdout || '',
+    };
+  }
+}
+
 async function waitForJson(url, timeoutMs) {
   const deadline = Date.now() + timeoutMs;
   let lastError = '';
@@ -2033,6 +2080,91 @@ async function startPhpWorkflowService(compose, versions) {
 
   const health = await waitForJson(`http://127.0.0.1:${port}/health`, 180000);
   return {containerName, port, health};
+}
+
+function reflectPublishedPythonSdkSurface(containerName) {
+  return dockerExecJson(containerName, `. /tmp/dw-python/bin/activate && python <<'PY'
+import json
+from importlib.metadata import version
+
+from durable_workflow.client import Client
+from durable_workflow.workflow import WorkflowContext
+
+client_candidates = [
+    "execute_service_call",
+    "call_service",
+    "invoke_service",
+    "execute_nexus_operation",
+    "invoke_nexus_service",
+    "service_call",
+]
+context_candidates = [
+    "call_nexus_service",
+    "start_nexus_operation",
+    "execute_service_call",
+    "call_service",
+    "invoke_service",
+    "nexus_call",
+    "service_call",
+]
+client_matches = [name for name in client_candidates if hasattr(Client, name)]
+context_matches = [name for name in context_candidates if hasattr(WorkflowContext, name)]
+service_call_methods = client_matches + context_matches
+print(json.dumps({
+    "runtime": "sdk-python",
+    "package_imported": True,
+    "package_version": version("durable-workflow"),
+    "service_call_methods": service_call_methods,
+    "public_service_call_surface": {
+        "available": bool(service_call_methods),
+        "checked_classes": ["durable_workflow.client.Client", "durable_workflow.workflow.WorkflowContext"],
+        "candidate_methods": client_candidates + context_candidates,
+        "matched_methods": service_call_methods,
+        "source": "container_reflection",
+    },
+}, sort_keys=True))
+PY`, path.join(resultDir, 'nexus-python-sdk-service-reflection.log'));
+}
+
+function reflectPublishedPhpWorkflowSurface(containerName) {
+  return dockerExecJson(containerName, `cd /tmp/dw-php && php <<'PHP'
+<?php
+require 'vendor/autoload.php';
+
+$controlPlaneClass = Workflow\\V2\\Client\\ControlPlaneClient::class;
+$workflowClass = Workflow\\V2\\Workflow::class;
+$candidateMethods = [
+    'startServiceOperation',
+    'executeServiceOperation',
+    'serviceOperation',
+    'executeServiceCall',
+    'callService',
+    'invokeService',
+    'executeNexusOperation',
+    'invokeNexusService',
+    'serviceCall',
+];
+$controlPlaneMethods = class_exists($controlPlaneClass) ? get_class_methods($controlPlaneClass) : [];
+$workflowMethods = class_exists($workflowClass) ? get_class_methods($workflowClass) : [];
+$serviceCallMethods = array_values(array_intersect($candidateMethods, array_merge($controlPlaneMethods, $workflowMethods)));
+$installedVersion = class_exists(Composer\\InstalledVersions::class)
+    ? (Composer\\InstalledVersions::getPrettyVersion('durable-workflow/workflow') ?: null)
+    : null;
+
+echo json_encode([
+    'runtime' => 'workflow-php',
+    'package_imported' => class_exists($controlPlaneClass) || class_exists($workflowClass),
+    'package_version' => $installedVersion,
+    'service_call_methods' => $serviceCallMethods,
+    'public_service_call_surface' => [
+        'available' => count($serviceCallMethods) > 0,
+        'checked_classes' => [$controlPlaneClass, $workflowClass],
+        'candidate_methods' => $candidateMethods,
+        'matched_methods' => $serviceCallMethods,
+        'source' => 'container_reflection',
+    ],
+], JSON_UNESCAPED_SLASHES | JSON_PRETTY_PRINT) . PHP_EOL;
+PHP`, path.join(resultDir, 'nexus-php-workflow-service-reflection.log'));
 }
 
 async function setupCrossLanguageService(baseUrl, token, target, serviceUrl) {
@@ -2245,9 +2377,9 @@ function crossLanguageRuntimeBody(response) {
   return body && typeof body === 'object' && !Array.isArray(body) ? body : null;
 }
 
-function crossLanguageRuntimeObject(field, health, probe) {
+function crossLanguageRuntimeObject(field, ...responses) {
   const values = [];
-  for (const body of [crossLanguageRuntimeBody(health), crossLanguageRuntimeBody(probe)]) {
+  for (const body of responses.map((response) => crossLanguageRuntimeBody(response))) {
     const value = body?.[field];
     if (value && typeof value === 'object' && !Array.isArray(value)) {
       values.push(value);
@@ -2257,9 +2389,9 @@ function crossLanguageRuntimeObject(field, health, probe) {
   return values.find(publicSurfaceAvailable) || values[0] || null;
 }
 
-function crossLanguageRuntimeArray(field, health, probe) {
+function crossLanguageRuntimeArray(field, ...responses) {
   const values = [];
-  for (const body of [crossLanguageRuntimeBody(health), crossLanguageRuntimeBody(probe)]) {
+  for (const body of responses.map((response) => crossLanguageRuntimeBody(response))) {
     if (Array.isArray(body?.[field])) {
       values.push(body[field]);
     }
@@ -2268,8 +2400,8 @@ function crossLanguageRuntimeArray(field, health, probe) {
   return values.find((value) => value.length > 0) || values[0] || [];
 }
 
-function crossLanguageRuntimeString(field, health, probe, fallback = '') {
-  for (const body of [crossLanguageRuntimeBody(health), crossLanguageRuntimeBody(probe)]) {
+function crossLanguageRuntimeString(field, fallback, ...responses) {
+  for (const body of responses.map((response) => crossLanguageRuntimeBody(response))) {
     const value = stringValue(body?.[field]);
     if (value !== '') {
       return value;
@@ -2279,9 +2411,8 @@ function crossLanguageRuntimeString(field, health, probe, fallback = '') {
   return fallback;
 }
 
-function crossLanguageRuntimeBool(field, health, probe) {
-  return crossLanguageRuntimeBody(health)?.[field] === true
-    || crossLanguageRuntimeBody(probe)?.[field] === true;
+function crossLanguageRuntimeBool(field, ...responses) {
+  return responses.some((response) => crossLanguageRuntimeBody(response)?.[field] === true);
 }
 
 async function probePublishedPhpPythonServiceCalls(baseUrl, token, versions, sources, verification, compose) {
@@ -2302,29 +2433,33 @@ async function probePublishedPhpPythonServiceCalls(baseUrl, token, versions, sou
       name: 'world',
       scenario: 'python_caller_php_service',
     });
+    const pythonReflection = reflectPublishedPythonSdkSurface(pythonService.containerName);
+    const phpReflection = reflectPublishedPhpWorkflowSurface(phpService.containerName);
 
     const runtimeEvidence = {
       python: {
         container_image: 'python:3.12-slim',
-        package_imported: crossLanguageRuntimeBool('package_imported', pythonHealth, pythonProbe),
-        package_version: crossLanguageRuntimeString('package_version', pythonHealth, pythonProbe, versions['sdk-python'] || ''),
-        service_started: pythonHealth.ok === true || pythonProbe.ok === true || crossLanguageRuntimeBool('service_started', pythonHealth, pythonProbe),
+        package_imported: crossLanguageRuntimeBool('package_imported', pythonHealth, pythonProbe, pythonReflection),
+        package_version: crossLanguageRuntimeString('package_version', versions['sdk-python'] || '', pythonHealth, pythonProbe, pythonReflection),
+        service_started: pythonHealth.ok === true || pythonProbe.ok === true || crossLanguageRuntimeBool('service_started', pythonHealth, pythonProbe, pythonReflection),
         health_response: responseSummary(pythonHealth),
         invocation_response: responseSummary(pythonProbe),
+        caller_reflection_response: responseSummary(pythonReflection),
         service_runtime_surface: crossLanguageRuntimeObject('service_runtime_surface', pythonHealth, pythonProbe),
-        public_service_call_surface: crossLanguageRuntimeObject('public_service_call_surface', pythonHealth, pythonProbe),
-        service_call_methods: crossLanguageRuntimeArray('service_call_methods', pythonHealth, pythonProbe),
+        public_service_call_surface: crossLanguageRuntimeObject('public_service_call_surface', pythonHealth, pythonProbe, pythonReflection),
+        service_call_methods: crossLanguageRuntimeArray('service_call_methods', pythonHealth, pythonProbe, pythonReflection),
       },
       php: {
         container_image: 'composer:2',
-        package_imported: crossLanguageRuntimeBool('package_imported', phpHealth, phpProbe),
-        package_version: crossLanguageRuntimeString('package_version', phpHealth, phpProbe, versions.workflow || ''),
-        service_started: phpHealth.ok === true || phpProbe.ok === true || crossLanguageRuntimeBool('service_started', phpHealth, phpProbe),
+        package_imported: crossLanguageRuntimeBool('package_imported', phpHealth, phpProbe, phpReflection),
+        package_version: crossLanguageRuntimeString('package_version', versions.workflow || '', phpHealth, phpProbe, phpReflection),
+        service_started: phpHealth.ok === true || phpProbe.ok === true || crossLanguageRuntimeBool('service_started', phpHealth, phpProbe, phpReflection),
         health_response: responseSummary(phpHealth),
         invocation_response: responseSummary(phpProbe),
+        caller_reflection_response: responseSummary(phpReflection),
         service_runtime_surface: crossLanguageRuntimeObject('service_runtime_surface', phpHealth, phpProbe),
-        public_service_call_surface: crossLanguageRuntimeObject('public_service_call_surface', phpHealth, phpProbe),
-        service_call_methods: crossLanguageRuntimeArray('service_call_methods', phpHealth, phpProbe),
+        public_service_call_surface: crossLanguageRuntimeObject('public_service_call_surface', phpHealth, phpProbe, phpReflection),
+        service_call_methods: crossLanguageRuntimeArray('service_call_methods', phpHealth, phpProbe, phpReflection),
       },
     };
     const tuple = artifactTuple(versions, sources, verification);
