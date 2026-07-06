@@ -14,6 +14,7 @@ use Illuminate\Validation\ValidationException;
 use Workflow\Serializers\CodecRegistry;
 use Workflow\Serializers\Serializer;
 use Workflow\V2\CommandContext;
+use Workflow\V2\Enums\HistoryEventType;
 use Workflow\V2\Enums\RunStatus;
 use Workflow\V2\Enums\TaskStatus;
 use Workflow\V2\Enums\TaskType;
@@ -428,8 +429,9 @@ final class WorkflowQueryTaskBroker
         $commandContextAttributes = $commandContext?->attributes();
         $principal = $this->commandContextPrincipal($commandContextAttributes);
         $compatibilityScope = $this->queryTaskCompatibilityScope($run);
+        $historyObservedSequence = (int) ($run->last_history_sequence ?? 0);
         $historyCutoffSequence = $this->hasActiveWorkflowTaskLeaseForRun((string) $run->id)
-            ? (int) ($run->last_history_sequence ?? 0)
+            ? $historyObservedSequence
             : null;
         $task = [
             'query_task_id' => $queryTaskId,
@@ -446,6 +448,7 @@ final class WorkflowQueryTaskBroker
             'query_arguments' => $queryArguments,
             'attempt_count' => 0,
             'created_at' => now()->toJSON(),
+            'history_observed_sequence' => $historyObservedSequence,
         ];
 
         if ($historyCutoffSequence !== null) {
@@ -1745,6 +1748,10 @@ final class WorkflowQueryTaskBroker
                 continue;
             }
 
+            if ($this->resumePayloadAlreadyVisibleToQuery($queryTask, $payload)) {
+                continue;
+            }
+
             $compatibility = $this->stringValue($task->compatibility)
                 ?? $this->stringValue($queryTask['compatibility'] ?? null);
 
@@ -1754,6 +1761,56 @@ final class WorkflowQueryTaskBroker
         }
 
         return false;
+    }
+
+    /**
+     * @param  array<string, mixed>  $queryTask
+     * @param  array<string, mixed>  $payload
+     */
+    private function resumePayloadAlreadyVisibleToQuery(array $queryTask, array $payload): bool
+    {
+        $observedSequence = $this->integerValue($queryTask['history_observed_sequence'] ?? null);
+
+        if ($observedSequence === null || $observedSequence < 1) {
+            return false;
+        }
+
+        if ($this->stringValue($payload['resume_source_kind'] ?? null) !== 'workflow_signal') {
+            return false;
+        }
+
+        $signalId = $this->stringValue($payload['workflow_signal_id'] ?? null)
+            ?? $this->stringValue($payload['resume_source_id'] ?? null);
+
+        if ($signalId === null) {
+            return false;
+        }
+
+        $signalReceivedSequence = $this->signalReceivedHistorySequence(
+            $this->stringValue($queryTask['run_id'] ?? null),
+            $signalId,
+        );
+
+        return $signalReceivedSequence !== null && $signalReceivedSequence <= $observedSequence;
+    }
+
+    private function signalReceivedHistorySequence(?string $runId, string $signalId): ?int
+    {
+        if ($runId === null) {
+            return null;
+        }
+
+        /** @var WorkflowHistoryEvent|null $event */
+        $event = WorkflowHistoryEvent::query()
+            ->where('workflow_run_id', $runId)
+            ->where('event_type', HistoryEventType::SignalReceived->value)
+            ->orderBy('sequence')
+            ->get(['sequence', 'payload'])
+            ->first(function (WorkflowHistoryEvent $event) use ($signalId): bool {
+                return $this->stringValue($event->payload['signal_id'] ?? null) === $signalId;
+            });
+
+        return $event instanceof WorkflowHistoryEvent ? (int) $event->sequence : null;
     }
 
     /**

@@ -3040,6 +3040,147 @@ class WorkflowQueryTaskBrokerTest extends TestCase
             ->assertJsonPath('task.lease_owner', $workerId);
     }
 
+    public function test_query_task_poll_leases_when_ordered_signal_history_is_visible_before_all_signal_resume_tasks_apply(): void
+    {
+        Queue::fake();
+        config(['server.polling.timeout' => 0]);
+
+        $workflowId = 'wf-query-task-after-batched-ordered-signal-history';
+        $workerId = 'python-query-after-batched-ordered-signal-history-worker';
+        $this->registerPythonWorker(
+            $workerId,
+            'python-queries',
+            ['python.queryable'],
+            workflowCommandContracts: [
+                'python.queryable' => [
+                    'queries' => ['state'],
+                    'query_contracts' => [
+                        [
+                            'name' => 'state',
+                            'parameters' => [],
+                        ],
+                    ],
+                    'signals' => ['increment'],
+                    'signal_contracts' => [
+                        [
+                            'name' => 'increment',
+                            'parameters' => [
+                                $this->typedCommandParameter('amount', 0, 'int'),
+                            ],
+                        ],
+                    ],
+                    'updates' => [],
+                    'update_contracts' => [],
+                ],
+            ],
+        );
+        $run = $this->startRemoteWorkflow($workflowId);
+
+        $initialPoll = $this->postJson('/api/worker/workflow-tasks/poll', [
+            'worker_id' => $workerId,
+            'task_queue' => 'python-queries',
+        ], $this->workerHeaders());
+
+        $initialPoll->assertOk()
+            ->assertJsonPath('poll_status', 'leased');
+
+        $this->postJson("/api/worker/workflow-tasks/{$initialPoll->json('task.task_id')}/complete", [
+            'lease_owner' => $initialPoll->json('task.lease_owner'),
+            'workflow_task_attempt' => $initialPoll->json('task.workflow_task_attempt'),
+            'commands' => [
+                [
+                    'type' => 'open_condition_wait',
+                    'condition_key' => 'ordered-initial',
+                    'timeout_seconds' => 300,
+                ],
+            ],
+        ], $this->workerHeaders())
+            ->assertOk()
+            ->assertJsonPath('run_status', 'waiting');
+
+        foreach (range(1, 10) as $amount) {
+            $this->postJson("/api/workflows/{$workflowId}/signal/increment", [
+                'input' => ['amount' => $amount],
+                'request_id' => "ordered-signal-{$amount}",
+            ], $this->apiHeaders())
+                ->assertAccepted()
+                ->assertJsonPath('command_status', 'accepted');
+        }
+
+        $batchedSignalPoll = $this->postJson('/api/worker/workflow-tasks/poll', [
+            'worker_id' => $workerId,
+            'task_queue' => 'python-queries',
+        ], $this->workerHeaders());
+
+        $batchedSignalPoll->assertOk()
+            ->assertJsonPath('poll_status', 'leased')
+            ->assertJsonPath('task.resume_source_kind', 'workflow_signal')
+            ->assertJsonPath('task.signal_name', 'increment');
+
+        $historySignalCount = WorkflowHistoryEvent::query()
+            ->where('workflow_run_id', $run->id)
+            ->where('event_type', HistoryEventType::SignalReceived->value)
+            ->count();
+
+        $this->assertSame(10, $historySignalCount);
+
+        $batchedWorkflowSignalOrder = collect($batchedSignalPoll->json('task.history_events'))
+            ->filter(fn (mixed $event): bool => is_array($event) && ($event['event_type'] ?? null) === 'SignalReceived')
+            ->map(fn (array $event): ?int => $this->signalAmountFromHistoryPayload($event['payload'] ?? null))
+            ->filter(static fn (?int $amount): bool => $amount !== null)
+            ->values()
+            ->all();
+
+        $this->assertSame(range(1, 10), $batchedWorkflowSignalOrder);
+
+        $this->postJson("/api/worker/workflow-tasks/{$batchedSignalPoll->json('task.task_id')}/complete", [
+            'lease_owner' => $batchedSignalPoll->json('task.lease_owner'),
+            'workflow_task_attempt' => $batchedSignalPoll->json('task.workflow_task_attempt'),
+            'commands' => [
+                [
+                    'type' => 'open_condition_wait',
+                    'condition_key' => 'ordered-after-batch',
+                    'timeout_seconds' => 300,
+                ],
+            ],
+        ], $this->workerHeaders())
+            ->assertOk()
+            ->assertJsonPath('run_status', 'waiting');
+
+        $this->assertTrue(
+            WorkflowTask::query()
+                ->where('workflow_run_id', $run->id)
+                ->where('task_type', 'workflow')
+                ->where('status', 'ready')
+                ->where('payload->resume_source_kind', 'workflow_signal')
+                ->exists(),
+        );
+
+        /** @var WorkflowQueryTaskBroker $broker */
+        $broker = app(WorkflowQueryTaskBroker::class);
+        $queryTask = $broker->enqueue('default', $run->refresh(), 'state', $this->queryArguments());
+
+        $queryPoll = $this->postJson('/api/worker/query-tasks/poll', [
+            'worker_id' => $workerId,
+            'task_queue' => 'python-queries',
+        ], $this->workerHeaders());
+
+        $queryPoll->assertOk()
+            ->assertJsonPath('poll_status', 'leased')
+            ->assertJsonPath('task.query_task_id', $queryTask['query_task_id'])
+            ->assertJsonPath('task.lease_owner', $workerId);
+
+        $queryHistorySignalOrder = collect($queryPoll->json('task.history_events'))
+            ->filter(fn (mixed $event): bool => is_array($event) && ($event['event_type'] ?? null) === 'SignalReceived')
+            ->map(fn (array $event): ?int => $this->signalAmountFromHistoryPayload($event['payload'] ?? null))
+            ->filter(static fn (?int $amount): bool => $amount !== null)
+            ->values()
+            ->all();
+
+        $this->assertSame(range(1, 10), $queryHistorySignalOrder);
+        $this->assertSame(55, array_sum($queryHistorySignalOrder));
+    }
+
     public function test_advertised_query_capability_leases_ready_workflow_task_without_query_poll_marker(): void
     {
         Queue::fake();
@@ -3732,6 +3873,53 @@ class WorkflowQueryTaskBrokerTest extends TestCase
             'codec' => 'avro',
             'blob' => Serializer::serializeWithCodec('avro', ['summary']),
         ];
+    }
+
+    private function signalAmountFromHistoryPayload(mixed $payload): ?int
+    {
+        if (! is_array($payload)) {
+            return null;
+        }
+
+        $arguments = $payload['arguments'] ?? null;
+
+        if (is_array($arguments)) {
+            try {
+                $arguments = Serializer::unserializeWithCodec(
+                    (string) ($arguments['codec'] ?? ''),
+                    (string) ($arguments['blob'] ?? ''),
+                );
+            } catch (\Throwable) {
+                return null;
+            }
+        }
+
+        return $this->signalAmountFromDecodedArguments($arguments);
+    }
+
+    private function signalAmountFromDecodedArguments(mixed $arguments): ?int
+    {
+        if (is_int($arguments)) {
+            return $arguments;
+        }
+
+        if (! is_array($arguments)) {
+            return null;
+        }
+
+        if (isset($arguments['amount']) && is_int($arguments['amount'])) {
+            return $arguments['amount'];
+        }
+
+        $first = $arguments[0] ?? null;
+
+        if (is_int($first)) {
+            return $first;
+        }
+
+        return is_array($first) && isset($first['amount']) && is_int($first['amount'])
+            ? $first['amount']
+            : null;
     }
 
     private function assertQueryTaskWithoutCutoffWaitsForLaterResume(string $resumeKind): void
