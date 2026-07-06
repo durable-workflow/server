@@ -398,6 +398,12 @@ function env(name) {
   return typeof value === 'string' && value.trim() !== '' ? value.trim() : null;
 }
 
+function stringValue(value) {
+  return typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean'
+    ? String(value).trim()
+    : '';
+}
+
 function suppliedMapValue(mapNames, artifact) {
   for (const mapName of mapNames) {
     const map = suppliedEvidence[mapName];
@@ -4057,6 +4063,7 @@ const builtInProbeScenarioIds = [
   'tenant_a_calls_shared_service',
   'tenant_b_calls_shared_service',
   'transient_failure_retries_with_policy',
+  'permanent_failure_preserves_typed_error',
   'endpoint_permission_denied_without_information_leak',
   'malformed_payload_refused_before_dispatch',
   'nonexistent_endpoint_typed_not_found',

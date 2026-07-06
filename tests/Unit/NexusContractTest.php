@@ -477,6 +477,26 @@ class NexusContractTest extends TestCase
         $this->assertStringContainsString('InvocableHttpAdapter', $contents);
         $this->assertStringContainsString('InvocableActivityHandler', $contents);
         $this->assertStringContainsString('nexus_unsupported_surface', $contents);
+
+        $this->assertMatchesRegularExpression(
+            "/if node - \\\"\\\$result_dir\\\" \\\"\\\$generated_evidence_path\\\" \\\"\\\$supplied_evidence_path\\\" <<'NODE'\\n(?P<block>.*?)\\nNODE/s",
+            $contents,
+        );
+        preg_match(
+            "/if node - \\\"\\\$result_dir\\\" \\\"\\\$generated_evidence_path\\\" \\\"\\\$supplied_evidence_path\\\" <<'NODE'\\n(?P<block>.*?)\\nNODE/s",
+            $contents,
+            $sharedServiceBlock,
+        );
+        $this->assertStringContainsString('function stringValue(value)', $sharedServiceBlock['block']);
+        $this->assertStringContainsString('reflectedPublicServiceCallSurface', $sharedServiceBlock['block']);
+        $this->assertStringContainsString('probePermanentFailurePreservesTypedError', $sharedServiceBlock['block']);
+
+        preg_match(
+            "/node - \\\"\\\$supplied_evidence_path\\\" \\\"\\\$generated_evidence_path\\\" \\\"\\\$merged_evidence_path\\\" <<'NODE'\\n(?P<block>.*?)\\nNODE/s",
+            $contents,
+            $mergeBlock,
+        );
+        $this->assertStringContainsString("'permanent_failure_preserves_typed_error'", $mergeBlock['block']);
         $this->assertStringNotContainsString('version_pin_recorded', $contents);
     }
 
