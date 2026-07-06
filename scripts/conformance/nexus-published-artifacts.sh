@@ -28,6 +28,9 @@ Environment overrides:
   DW_NEXUS_SKIP_REPLAY_CANCEL_PROBE=1
                                     Skip the built-in replay/cancellation probe
                                     when no host evidence JSON is supplied.
+  DW_NEXUS_SKIP_PHP_PYTHON_SERVICE_SHARD=1
+                                    Skip the published workflow-php/sdk-python
+                                    service-call evidence shard.
   DW_NEXUS_KEEP_RUN_ROOT=1          Keep the probe scratch directory.
   DW_NEXUS_SERVER_PORT              Host port for the published server probe.
   DW_NEXUS_SKIP_DOCKER_PULL=1       Reuse a local server image for the probe.
@@ -101,6 +104,8 @@ const requiredScenarioIds = [
   'tenant_a_calls_shared_service',
   'tenant_b_calls_shared_service',
   'transient_failure_retries_with_policy',
+  'php_caller_python_service',
+  'python_caller_php_service',
 ];
 const sharedServicePassRequirements = {
   tenant_a_calls_shared_service: [
@@ -137,6 +142,34 @@ const sharedServicePassRequirements = {
     {fields: ['retry_attempts', 'retryAttempts', 'history_attempts', 'historyAttempts', 'service_call_attempts', 'serviceCallAttempts'], kind: 'attempts_at_least', min: 2},
     {fields: ['history_attempt_visibility_includes_retry_attempts', 'historyAttemptVisibilityIncludesRetryAttempts'], kind: 'boolean_true'},
     {fields: ['completed_after_retry', 'completedAfterRetry'], kind: 'boolean_true'},
+  ],
+  php_caller_python_service: [
+    {fields: ['caller_workflow_instance_id', 'callerWorkflowInstanceId', 'caller_workflow_id', 'callerWorkflowId'], kind: 'non_empty_string'},
+    {fields: ['caller_workflow_run_id', 'callerWorkflowRunId', 'caller_run_id', 'callerRunId', 'run_id', 'runId'], kind: 'non_empty_string'},
+    {fields: ['caller_sdk_language', 'callerSdkLanguage', 'caller_runtime', 'callerRuntime'], kind: 'value_equals', value: 'workflow-php'},
+    {fields: ['service_sdk_language', 'serviceSdkLanguage', 'service_runtime', 'serviceRuntime'], kind: 'value_equals', value: 'sdk-python'},
+    {fields: ['operation_name', 'operationName'], kind: 'non_empty_string'},
+    {fields: ['request_payload', 'requestPayload', 'request', 'requestEvidence', 'invocation_request', 'invocationRequest'], kind: 'non_empty_object'},
+    {fields: ['response_or_failure_surface', 'responseOrFailureSurface', 'response', 'responseEvidence', 'invocation_response', 'invocationResponse', 'failure_surface', 'failureSurface', 'invocation_failure', 'invocationFailure'], kind: 'non_empty_object'},
+    {fields: ['service_call_id', 'serviceCallId'], kind: 'non_empty_string'},
+    {fields: ['artifact_tuple', 'artifactTuple', 'artifact_versions', 'artifactVersions', 'published_artifact_versions', 'publishedArtifactVersions', 'resolved_artifact_versions', 'resolvedArtifactVersions'], kind: 'non_empty_object'},
+    {fields: ['published_artifact_worker_execution', 'publishedArtifactWorkerExecution', 'published_worker_execution', 'publishedWorkerExecution'], kind: 'non_empty_object'},
+    {fields: ['payload_round_trip', 'payloadRoundTrip'], kind: 'boolean_true'},
+    {fields: ['typed_error_round_trip', 'typedErrorRoundTrip'], kind: 'boolean_true'},
+  ],
+  python_caller_php_service: [
+    {fields: ['caller_workflow_instance_id', 'callerWorkflowInstanceId', 'caller_workflow_id', 'callerWorkflowId'], kind: 'non_empty_string'},
+    {fields: ['caller_workflow_run_id', 'callerWorkflowRunId', 'caller_run_id', 'callerRunId', 'run_id', 'runId'], kind: 'non_empty_string'},
+    {fields: ['caller_sdk_language', 'callerSdkLanguage', 'caller_runtime', 'callerRuntime'], kind: 'value_equals', value: 'sdk-python'},
+    {fields: ['service_sdk_language', 'serviceSdkLanguage', 'service_runtime', 'serviceRuntime'], kind: 'value_equals', value: 'workflow-php'},
+    {fields: ['operation_name', 'operationName'], kind: 'non_empty_string'},
+    {fields: ['request_payload', 'requestPayload', 'request', 'requestEvidence', 'invocation_request', 'invocationRequest'], kind: 'non_empty_object'},
+    {fields: ['response_or_failure_surface', 'responseOrFailureSurface', 'response', 'responseEvidence', 'invocation_response', 'invocationResponse', 'failure_surface', 'failureSurface', 'invocation_failure', 'invocationFailure'], kind: 'non_empty_object'},
+    {fields: ['service_call_id', 'serviceCallId'], kind: 'non_empty_string'},
+    {fields: ['artifact_tuple', 'artifactTuple', 'artifact_versions', 'artifactVersions', 'published_artifact_versions', 'publishedArtifactVersions', 'resolved_artifact_versions', 'resolvedArtifactVersions'], kind: 'non_empty_object'},
+    {fields: ['published_artifact_worker_execution', 'publishedArtifactWorkerExecution', 'published_worker_execution', 'publishedWorkerExecution'], kind: 'non_empty_object'},
+    {fields: ['payload_round_trip', 'payloadRoundTrip'], kind: 'boolean_true'},
+    {fields: ['typed_error_round_trip', 'typedErrorRoundTrip'], kind: 'boolean_true'},
   ],
 };
 
@@ -248,6 +281,15 @@ function hasSharedServicePassEvidence(scenarioId, outputs) {
   });
 }
 
+function hasAttemptedCallEvidence(scenario) {
+  const outputs = scenario?.observed_outputs && typeof scenario.observed_outputs === 'object'
+    ? scenario.observed_outputs
+    : {};
+
+  return hasNonEmptyObject(outputs.attempted_call_evidence)
+    || hasNonEmptyObject(outputs.attemptedCallEvidence);
+}
+
 function hasSpecificEvidence(scenarioId, scenario) {
   if (!scenario || typeof scenario !== 'object') {
     return false;
@@ -266,6 +308,10 @@ function hasSpecificEvidence(scenarioId, scenario) {
     return hasNonEmptyObject(outputs.error_shape)
       || String(outputs.failure_reason || '') !== ''
       || (Array.isArray(scenario.linked_findings) && scenario.linked_findings.length > 0);
+  }
+
+  if (status === 'unsupported') {
+    return hasAttemptedCallEvidence(scenario);
   }
 
   return false;
@@ -304,6 +350,10 @@ const scenarioIds = [
   'tenant_a_calls_shared_service',
   'tenant_b_calls_shared_service',
 ];
+const crossLanguageScenarioIds = [
+  'php_caller_python_service',
+  'python_caller_php_service',
+];
 const adversarialScenarioIds = [
   'endpoint_permission_denied_without_information_leak',
   'malformed_payload_refused_before_dispatch',
@@ -315,6 +365,7 @@ const builtInProbeScenarioIds = [
   ...adversarialScenarioIds,
   'worker_restart_replay_does_not_reissue_call',
   'caller_cancellation_propagates_to_service',
+  ...crossLanguageScenarioIds,
 ];
 const artifactAliases = {
   server: ['server'],
@@ -633,8 +684,9 @@ function runLogged(command, args, logPath, options = {}) {
   return result.stdout || '';
 }
 
-function freePort() {
-  const requested = env('DW_NEXUS_SERVER_PORT');
+function freePort(options = {}) {
+  const honorServerPortOverride = options.honorServerPortOverride !== false;
+  const requested = honorServerPortOverride ? env('DW_NEXUS_SERVER_PORT') : null;
   if (requested !== null) {
     return Promise.resolve(Number(requested));
   }
@@ -1408,6 +1460,900 @@ function publishedServerWorkerExecution(versions, sources, image) {
   };
 }
 
+function artifactTuple(versions, sources, verification) {
+  return {
+    artifact_versions: compactObject(versions),
+    artifact_sources: sources,
+    artifact_source_verification: verification,
+    local_product_source_checkouts_used: false,
+    artifacts: requiredArtifacts.map((artifact) => ({
+      artifact,
+      version: versions[artifact],
+      source: sources[artifact],
+      source_verification: verification[artifact],
+      local_product_source_checkout_used_as_artifact: false,
+    })),
+  };
+}
+
+function publishedCrossLanguageWorkerExecution(versions, sources, verification, runtimeEvidence) {
+  return {
+    local_product_source_checkouts_used: false,
+    worker_execution_mode: 'published_php_python_service_call_shard',
+    source_integrity_statement: 'workflow-php and sdk-python were installed from published package channels inside disposable runtime containers; no local product checkout path was mounted as an artifact under test',
+    artifacts: [
+      {
+        artifact: 'workflow-php',
+        version: versions.workflow,
+        source: sources.workflow,
+        status: runtimeEvidence.php?.package_imported === true ? 'pass' : 'fail',
+        install_channel: 'packagist',
+        source_verification: verification.workflow,
+        local_product_source_checkout_used_as_artifact: false,
+        local_product_source_checkouts_used: false,
+      },
+      {
+        artifact: 'sdk-python',
+        version: versions['sdk-python'],
+        source: sources['sdk-python'],
+        status: runtimeEvidence.python?.package_imported === true ? 'pass' : 'fail',
+        install_channel: 'pypi',
+        source_verification: verification['sdk-python'],
+        local_product_source_checkout_used_as_artifact: false,
+        local_product_source_checkouts_used: false,
+      },
+    ],
+    workers: [
+      {
+        role: 'workflow_php_runtime_service',
+        sdk_language: 'workflow-php',
+        package_version: runtimeEvidence.php?.package_version || versions.workflow,
+        container_image: runtimeEvidence.php?.container_image || 'composer:2',
+        service_started: runtimeEvidence.php?.service_started === true,
+        service_runtime_surface: runtimeEvidence.php?.service_runtime_surface || null,
+        public_service_call_surface: runtimeEvidence.php?.public_service_call_surface || null,
+      },
+      {
+        role: 'sdk_python_runtime_service',
+        sdk_language: 'sdk-python',
+        package_version: runtimeEvidence.python?.package_version || versions['sdk-python'],
+        container_image: runtimeEvidence.python?.container_image || 'python:3.12-slim',
+        service_started: runtimeEvidence.python?.service_started === true,
+        service_runtime_surface: runtimeEvidence.python?.service_runtime_surface || null,
+        public_service_call_surface: runtimeEvidence.python?.public_service_call_surface || null,
+      },
+    ],
+    runtime_evidence: runtimeEvidence,
+  };
+}
+
+function phpPublishedServiceScript() {
+  return `<?php
+declare(strict_types=1);
+
+use Workflow\\Serializers\\Serializer;
+use Workflow\\V2\\Support\\InvocableHttpAdapter;
+
+require '/tmp/dw-php/vendor/autoload.php';
+
+$installedVersion = class_exists('Composer\\\\InstalledVersions')
+    ? (Composer\\\\InstalledVersions::getPrettyVersion('durable-workflow/workflow') ?: null)
+    : null;
+$controlPlaneClass = 'Workflow\\\\V2\\\\Client\\\\ControlPlaneClient';
+$workflowClass = 'Workflow\\\\V2\\\\Workflow';
+$invocableAdapterClass = 'Workflow\\\\V2\\\\Support\\\\InvocableHttpAdapter';
+$invocableHandlerClass = 'Workflow\\\\V2\\\\Support\\\\InvocableActivityHandler';
+$controlPlaneMethods = class_exists($controlPlaneClass) ? get_class_methods($controlPlaneClass) : [];
+$workflowMethods = class_exists($workflowClass) ? get_class_methods($workflowClass) : [];
+$candidateMethods = [
+    'executeServiceCall',
+    'callService',
+    'invokeService',
+    'executeNexusOperation',
+    'invokeNexusService',
+    'serviceCall',
+];
+$serviceCallMethods = array_values(array_intersect($candidateMethods, array_merge($controlPlaneMethods, $workflowMethods)));
+
+function emit_json(array $payload, int $status = 200): void {
+    http_response_code($status);
+    header('Content-Type: application/json');
+    echo json_encode($payload, JSON_UNESCAPED_SLASHES | JSON_PRETTY_PRINT);
+}
+
+function iso_future(int $seconds = 300): string {
+    return (new DateTimeImmutable('now', new DateTimeZone('UTC')))
+        ->modify('+' . $seconds . ' seconds')
+        ->setTimezone(new DateTimeZone('UTC'))
+        ->format('Y-m-d\\TH:i:s.u\\Z');
+}
+
+function external_task_input(array $payload): array {
+    $expiresAt = iso_future();
+
+    return [
+        'schema' => 'durable-workflow.v2.external-task-input',
+        'version' => 1,
+        'task' => [
+            'id' => 'nexus-php-service-task',
+            'kind' => 'activity_task',
+            'attempt' => 1,
+            'activity_attempt_id' => 'nexus-php-service-attempt',
+            'task_queue' => 'nexus-php-service',
+            'handler' => 'nexus.greeter',
+            'connection' => null,
+            'idempotency_key' => 'nexus-php-service-attempt',
+        ],
+        'workflow' => [
+            'id' => (string) ($payload['caller_workflow_instance_id'] ?? 'nexus-php-service'),
+            'run_id' => (string) ($payload['caller_workflow_run_id'] ?? 'nexus-php-service-run'),
+        ],
+        'lease' => [
+            'owner' => 'published-workflow-php-service',
+            'expires_at' => $expiresAt,
+            'heartbeat_endpoint' => '/api/worker/activity-tasks/nexus-php-service-task/heartbeat',
+        ],
+        'payloads' => [
+            'arguments' => [
+                'codec' => 'json',
+                'blob' => Serializer::serializeWithCodec('json', [
+                    (string) ($payload['name'] ?? 'world'),
+                    (string) ($payload['scenario'] ?? 'nexus'),
+                ]),
+            ],
+        ],
+        'deadlines' => [
+            'schedule_to_start' => $expiresAt,
+            'start_to_close' => $expiresAt,
+            'schedule_to_close' => $expiresAt,
+            'heartbeat' => $expiresAt,
+        ],
+        'headers' => [],
+    ];
+}
+
+$path = parse_url($_SERVER['REQUEST_URI'] ?? '/', PHP_URL_PATH) ?: '/';
+$body = file_get_contents('php://input') ?: '';
+$decoded = json_decode($body, true);
+if (! is_array($decoded)) {
+    $decoded = [];
+}
+
+$base = [
+    'runtime' => 'workflow-php',
+    'package_imported' => class_exists($workflowClass) || class_exists($controlPlaneClass) || class_exists($invocableAdapterClass),
+    'package_version' => $installedVersion,
+    'control_plane_client_present' => class_exists($controlPlaneClass),
+    'workflow_authoring_class_present' => class_exists($workflowClass),
+    'service_runtime_surface' => [
+        'available' => class_exists($invocableAdapterClass) && class_exists($invocableHandlerClass),
+        'checked_classes' => [$invocableAdapterClass, $invocableHandlerClass],
+        'handler' => 'nexus.greeter',
+        'carrier' => 'published-workflow-php-service',
+    ],
+    'service_call_methods' => $serviceCallMethods,
+    'public_service_call_surface' => [
+        'available' => count($serviceCallMethods) > 0,
+        'checked_classes' => [$controlPlaneClass, $workflowClass],
+        'candidate_methods' => $candidateMethods,
+        'matched_methods' => $serviceCallMethods,
+    ],
+];
+
+if ($path === '/health') {
+    emit_json($base + ['service_started' => true]);
+    return;
+}
+
+if ($path === '/greeter') {
+    if (! class_exists($invocableAdapterClass)) {
+        emit_json($base + [
+            'service_started' => true,
+            'request_payload' => $decoded,
+            'runtime_error' => 'Workflow\\\\V2\\\\Support\\\\InvocableHttpAdapter is not available in the published workflow-php package',
+        ], 500);
+        return;
+    }
+
+    $adapter = new InvocableHttpAdapter([
+        'nexus.greeter' => function (string $name = 'world', string $scenario = 'nexus') use ($decoded): array {
+            return [
+                'message' => 'hello from workflow-php, ' . $name,
+                'scenario' => $scenario,
+                'request_payload' => $decoded,
+            ];
+        },
+    ], carrier: 'published-workflow-php-service', resultCodec: 'json');
+    $adapterResponse = $adapter->handle(json_encode(external_task_input($decoded), JSON_THROW_ON_ERROR));
+    $adapterBody = json_decode((string) ($adapterResponse['body'] ?? ''), true);
+    if (! is_array($adapterBody)) {
+        $adapterBody = ['raw_body' => (string) ($adapterResponse['body'] ?? '')];
+    }
+
+    emit_json($base + [
+        'service_started' => true,
+        'request_payload' => $decoded,
+        'invocable_http_response' => [
+            'status' => (int) ($adapterResponse['status'] ?? 0),
+            'headers' => $adapterResponse['headers'] ?? [],
+            'body' => $adapterBody,
+        ],
+    ], (int) ($adapterResponse['status'] ?? 200));
+    return;
+}
+
+emit_json($base + ['error' => 'not_found', 'path' => $path], 404);
+`;
+}
+
+function pythonPublishedServiceScript() {
+  return `from __future__ import annotations
+
+import asyncio
+import json
+from datetime import datetime, timedelta, timezone
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from importlib.metadata import version
+
+from durable_workflow import serializer
+from durable_workflow.client import Client
+from durable_workflow.invocable import InvocableActivityHandler
+from durable_workflow.workflow import WorkflowContext
+
+PACKAGE_VERSION = version("durable-workflow")
+CANDIDATE_CLIENT_METHODS = [
+    "execute_service_call",
+    "call_service",
+    "invoke_service",
+    "execute_nexus_operation",
+    "invoke_nexus_service",
+    "service_call",
+]
+CANDIDATE_CONTEXT_METHODS = [
+    "execute_service_call",
+    "call_service",
+    "invoke_service",
+    "nexus_call",
+    "service_call",
+]
+
+
+def iso_future(seconds: int = 300) -> str:
+    return (datetime.now(timezone.utc) + timedelta(seconds=seconds)).isoformat(timespec="microseconds").replace("+00:00", "Z")
+
+
+def public_surface() -> dict:
+    client_matches = [name for name in CANDIDATE_CLIENT_METHODS if hasattr(Client, name)]
+    context_matches = [name for name in CANDIDATE_CONTEXT_METHODS if hasattr(WorkflowContext, name)]
+    return {
+        "available": bool(client_matches or context_matches),
+        "checked_classes": ["durable_workflow.client.Client", "durable_workflow.workflow.WorkflowContext"],
+        "candidate_methods": CANDIDATE_CLIENT_METHODS + CANDIDATE_CONTEXT_METHODS,
+        "matched_methods": client_matches + context_matches,
+    }
+
+
+async def run_invocable(payload: dict) -> dict:
+    async def greet(name: str = "world", scenario: str = "nexus") -> dict:
+        return {
+            "message": f"hello from sdk-python, {name}",
+            "scenario": scenario,
+            "request_payload": payload,
+        }
+
+    envelope = {
+        "schema": "durable-workflow.v2.external-task-input",
+        "version": 1,
+        "task": {
+            "id": "nexus-python-service-task",
+            "kind": "activity_task",
+            "attempt": 1,
+            "activity_attempt_id": "nexus-python-service-attempt",
+            "task_queue": "nexus-python-service",
+            "handler": "nexus.greeter",
+            "connection": None,
+            "idempotency_key": "nexus-python-service-attempt",
+        },
+        "workflow": {
+            "id": str(payload.get("caller_workflow_instance_id") or "nexus-python-service"),
+            "run_id": str(payload.get("caller_workflow_run_id") or "nexus-python-service-run"),
+        },
+        "lease": {
+            "owner": "published-sdk-python-service",
+            "expires_at": iso_future(),
+            "heartbeat_endpoint": "/api/worker/activity-tasks/nexus-python-service-task/heartbeat",
+        },
+        "payloads": {
+            "arguments": serializer.envelope([
+                str(payload.get("name") or "world"),
+                str(payload.get("scenario") or "nexus"),
+            ], codec=serializer.JSON_CODEC),
+        },
+        "deadlines": {
+            "schedule_to_start": iso_future(),
+            "start_to_close": iso_future(),
+            "schedule_to_close": iso_future(),
+            "heartbeat": iso_future(),
+        },
+        "headers": {},
+    }
+    return await InvocableActivityHandler(
+        {"nexus.greeter": greet},
+        carrier="published-sdk-python-nexus-shard",
+        result_codec=serializer.JSON_CODEC,
+    ).handle(envelope)
+
+
+class Handler(BaseHTTPRequestHandler):
+    def _json(self, payload: dict, status: int = 200) -> None:
+        body = json.dumps(payload, indent=2, sort_keys=True).encode()
+        self.send_response(status)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def do_GET(self) -> None:
+        if self.path.split("?", 1)[0] != "/health":
+            self._json({"error": "not_found", "path": self.path}, 404)
+            return
+        self._json({
+            "runtime": "sdk-python",
+            "package_imported": True,
+            "package_version": PACKAGE_VERSION,
+            "service_started": True,
+            "service_runtime_surface": {
+                "available": True,
+                "checked_classes": ["durable_workflow.invocable.InvocableActivityHandler"],
+                "handler": "nexus.greeter",
+                "carrier": "published-sdk-python-nexus-shard",
+            },
+            "public_service_call_surface": public_surface(),
+        })
+
+    def do_POST(self) -> None:
+        raw = self.rfile.read(int(self.headers.get("Content-Length", "0") or "0"))
+        try:
+            payload = json.loads(raw.decode() or "{}")
+        except json.JSONDecodeError:
+            payload = {}
+        if self.path.split("?", 1)[0] != "/greeter":
+            self._json({"error": "not_found", "path": self.path}, 404)
+            return
+        result = asyncio.run(run_invocable(payload))
+        self._json({
+            "runtime": "sdk-python",
+            "package_imported": True,
+            "package_version": PACKAGE_VERSION,
+            "service_started": True,
+            "service_runtime_surface": {
+                "available": True,
+                "checked_classes": ["durable_workflow.invocable.InvocableActivityHandler"],
+                "handler": "nexus.greeter",
+                "carrier": "published-sdk-python-nexus-shard",
+            },
+            "public_service_call_surface": public_surface(),
+            "request_payload": payload,
+            "invocable_result": result,
+        })
+
+    def log_message(self, fmt: str, *args: object) -> None:
+        return
+
+
+ThreadingHTTPServer(("0.0.0.0", 8091), Handler).serve_forever()
+`;
+}
+
+function dockerComposeNetwork(project) {
+  return `${project}_default`;
+}
+
+function dockerRunDetached(args, logPath) {
+  const result = spawnSync('docker', ['run', '-d', ...args], {
+    encoding: 'utf8',
+    maxBuffer: 16 * 1024 * 1024,
+  });
+  fs.writeFileSync(
+    logPath,
+    [
+      `$ docker run -d ${args.join(' ')}`,
+      `exit_status=${result.status ?? 'null'}`,
+      result.stdout || '',
+      result.stderr || '',
+    ].join('\n'),
+  );
+  if (result.status !== 0) {
+    throw new Error(`docker run -d ${args.join(' ')} failed; see ${logPath}`);
+  }
+
+  return (result.stdout || '').trim();
+}
+
+function dockerStop(containerName, logPath) {
+  const result = spawnSync('docker', ['rm', '-f', containerName], {
+    encoding: 'utf8',
+    maxBuffer: 8 * 1024 * 1024,
+  });
+  fs.writeFileSync(
+    logPath,
+    [
+      `$ docker rm -f ${containerName}`,
+      `exit_status=${result.status ?? 'null'}`,
+      result.stdout || '',
+      result.stderr || '',
+    ].join('\n'),
+  );
+}
+
+async function waitForJson(url, timeoutMs) {
+  const deadline = Date.now() + timeoutMs;
+  let lastError = '';
+  while (Date.now() < deadline) {
+    try {
+      const response = await fetch(url);
+      const rawBody = await response.text();
+      let body = null;
+      try {
+        body = rawBody === '' ? null : JSON.parse(rawBody);
+      } catch {
+        body = {raw_body: rawBody};
+      }
+      if (response.ok) {
+        return {ok: true, status: response.status, body, raw_body: rawBody};
+      }
+      lastError = `HTTP ${response.status}: ${rawBody}`;
+    } catch (error) {
+      lastError = `${error.name}: ${error.message}`;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 1000));
+  }
+
+  return {ok: false, status: 0, body: {error: lastError}, raw_body: ''};
+}
+
+async function postJson(url, body) {
+  try {
+    const response = await fetch(url, {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json', Accept: 'application/json'},
+      body: JSON.stringify(body),
+    });
+    const rawBody = await response.text();
+    let parsed = null;
+    try {
+      parsed = rawBody === '' ? null : JSON.parse(rawBody);
+    } catch {
+      parsed = {raw_body: rawBody};
+    }
+
+    return {ok: response.ok, status: response.status, body: parsed, raw_body: rawBody};
+  } catch (error) {
+    return {ok: false, status: 0, body: {error: `${error.name}: ${error.message}`}, raw_body: ''};
+  }
+}
+
+async function startPythonSdkService(compose, versions) {
+  const port = await freePort({honorServerPortOverride: false});
+  const scriptPath = path.join(compose.runRoot, 'nexus-python-sdk-service.py');
+  const containerName = `${compose.project}-python-sdk-service`;
+  fs.writeFileSync(scriptPath, pythonPublishedServiceScript());
+  dockerRunDetached([
+    '--name', containerName,
+    '--network', dockerComposeNetwork(compose.project),
+    '--network-alias', 'nexus-python-sdk-service',
+    '-p', `127.0.0.1:${port}:8091`,
+    '-v', `${compose.runRoot}:/work:ro`,
+    'python:3.12-slim',
+    'sh',
+    '-lc',
+    `python -m venv /tmp/dw-python && . /tmp/dw-python/bin/activate && pip install --no-cache-dir durable-workflow==${JSON.stringify(versions['sdk-python']).slice(1, -1)} >/tmp/dw-python-pip.log 2>&1 && python /work/nexus-python-sdk-service.py`,
+  ], path.join(resultDir, 'nexus-python-sdk-service-start.log'));
+
+  const health = await waitForJson(`http://127.0.0.1:${port}/health`, 120000);
+  return {containerName, port, health};
+}
+
+async function startPhpWorkflowService(compose, versions) {
+  const port = await freePort({honorServerPortOverride: false});
+  const scriptPath = path.join(compose.runRoot, 'nexus-php-workflow-service.php');
+  const containerName = `${compose.project}-php-workflow-service`;
+  fs.writeFileSync(scriptPath, phpPublishedServiceScript());
+  dockerRunDetached([
+    '--name', containerName,
+    '--network', dockerComposeNetwork(compose.project),
+    '--network-alias', 'nexus-php-workflow-service',
+    '-p', `127.0.0.1:${port}:8092`,
+    '-v', `${compose.runRoot}:/work:ro`,
+    'composer:2',
+    'sh',
+    '-lc',
+    `mkdir -p /tmp/dw-php && cd /tmp/dw-php && composer init --no-interaction --name=dw/nexus-conformance --require=durable-workflow/workflow:${JSON.stringify(versions.workflow).slice(1, -1)} >/tmp/dw-php-composer-init.log 2>&1 && composer update --no-interaction --prefer-dist --no-progress >/tmp/dw-php-composer-update.log 2>&1 && php -S 0.0.0.0:8092 /work/nexus-php-workflow-service.php`,
+  ], path.join(resultDir, 'nexus-php-workflow-service-start.log'));
+
+  const health = await waitForJson(`http://127.0.0.1:${port}/health`, 180000);
+  return {containerName, port, health};
+}
+
+async function setupCrossLanguageService(baseUrl, token, target, serviceUrl) {
+  const endpointName = `${target}-published-service`;
+  const serviceName = 'PublishedGreeter';
+  const operationName = target === 'python' ? 'greet-python' : 'greet-php';
+  const serviceLanguage = target === 'python' ? 'sdk-python' : 'workflow-php';
+
+  const endpoint = await apiRequest(baseUrl, token, 'shared', 'POST', '/service-endpoints', {
+    endpoint_name: endpointName,
+    description: `Published ${serviceLanguage} Nexus conformance endpoint`,
+    metadata: {conformance: 'nexus-published-php-python-service-shard'},
+  });
+  const service = await apiRequest(baseUrl, token, 'shared', 'POST', `/service-endpoints/${endpointName}/services`, {
+    service_name: serviceName,
+    description: `Published ${serviceLanguage} Greeter service for Nexus conformance`,
+    metadata: {conformance: 'nexus-published-php-python-service-shard', service_sdk_language: serviceLanguage},
+  });
+  const operation = await apiRequest(baseUrl, token, 'shared', 'POST', `/service-endpoints/${endpointName}/services/${serviceName}/operations`, {
+    operation_name: operationName,
+    description: `Invoke the published ${serviceLanguage} Greeter service`,
+    operation_mode: 'async',
+    handler_binding_kind: 'invocable_http',
+    handler_target_reference: serviceUrl,
+    handler_binding: {
+      carrier_endpoint: serviceUrl,
+      carrier_handler: 'nexus.greeter',
+      carrier: `${target}-published-service`,
+    },
+    boundary_policy: {
+      authorization: {
+        caller_namespaces: {
+          allow: ['tenant-a', 'tenant-b'],
+        },
+      },
+    },
+    metadata: {conformance: 'nexus-published-php-python-service-shard'},
+  });
+
+  return {endpointName, serviceName, operationName, endpoint, service, operation};
+}
+
+function publicSurfaceAvailable(surface) {
+  return surface && typeof surface === 'object' && surface.available === true;
+}
+
+function crossLanguageFinding(scenarioId, versions, owningSurface, observed, expected, next, type = 'nexus_unsupported_surface') {
+  return {
+    scenario_id: scenarioId,
+    type,
+    finding_type: type,
+    owning_surface: owningSurface,
+    artifact_versions: compactObject(versions),
+    observed_behavior: observed,
+    expected_behavior: expected,
+    next_acceptance_criterion: next,
+  };
+}
+
+function crossLanguageScenarioResult({
+  scenarioId,
+  callerLanguage,
+  serviceLanguage,
+  callerWorkflowInstanceId,
+  callerWorkflowRunId,
+  operationName,
+  requestPayload,
+  execute,
+  describe,
+  history,
+  serviceProbe,
+  artifactTupleEvidence,
+  workerExecution,
+  missingSurface,
+  missingSurfaceOwner,
+  versions,
+}) {
+  const serviceCallId = serviceCallIdFrom(execute) || serviceCallIdFrom(describe);
+  const responseSurface = {
+    status: missingSurface === null && execute.ok ? 'completed' : 'unsupported',
+    execute_response: responseSummary(execute),
+    describe_response: responseSummary(describe),
+    caller_history_response: responseSummary(history),
+    service_probe_response: serviceProbe,
+    missing_public_surface: missingSurface,
+  };
+  const historyRows = historyRowsFrom(history);
+  const callerHistoryRecorded = serviceCallId !== ''
+    && historyRows.some((row) => String(row.service_call_id || '') === serviceCallId);
+  const serviceProbeSucceeded = serviceProbe?.ok === true;
+  const callerWorker = workerExecution.workers?.find((worker) => worker.sdk_language === callerLanguage);
+  const callerWorkerInvocation = callerWorker?.caller_workflow_invocation || null;
+  const callerWorkerExecutedCall = callerWorkerInvocation?.executed === true
+    && callerWorkerInvocation?.local_product_source_checkouts_used === false;
+  const durableServiceResponseObserved = responseSurface.status === 'completed'
+    && (
+      execute.body?.result !== undefined
+      || execute.body?.workflow_result !== undefined
+      || execute.body?.response !== undefined
+      || execute.body?.output !== undefined
+    );
+  const missing = missingSurface !== null
+    ? missingSurface
+    : (!callerWorkerExecutedCall
+      ? `published ${callerLanguage} caller workflow did not execute the call through a public SDK service-call API`
+      : (!durableServiceResponseObserved
+        ? 'durable service-call response from the published service runtime was not observed'
+        : (execute.ok ? null : 'service endpoint execute did not accept the published cross-language call')));
+  const pass = missing === null
+    && serviceProbeSucceeded
+    && execute.ok
+    && serviceCallId !== ''
+    && callerHistoryRecorded
+    && callerWorkerExecutedCall
+    && durableServiceResponseObserved
+    && publicSurfaceAvailable(callerWorker?.public_service_call_surface);
+
+  if (pass) {
+    return scenarioResult('pass', scenarioId, {
+      caller_workflow_instance_id: callerWorkflowInstanceId,
+      caller_workflow_run_id: callerWorkflowRunId,
+      caller_sdk_language: callerLanguage,
+      service_sdk_language: serviceLanguage,
+      operation_name: operationName,
+      request_payload: requestPayload,
+      response_or_failure_surface: responseSurface,
+      service_call_id: serviceCallId,
+      artifact_tuple: artifactTupleEvidence,
+      published_artifact_worker_execution: workerExecution,
+      payload_round_trip: true,
+      typed_error_round_trip: true,
+      service_probe_succeeded: true,
+      caller_history_recorded: callerHistoryRecorded,
+      caller_worker_invocation: callerWorkerInvocation,
+      durable_service_response_observed: durableServiceResponseObserved,
+    });
+  }
+
+  const attemptedCallEvidence = {
+    execute_request: execute.request,
+    execute_response: responseSummary(execute),
+    describe_response: responseSummary(describe),
+    caller_history_response: responseSummary(history),
+    service_probe_response: serviceProbe,
+    durable_service_call_id_observed: serviceCallId !== '',
+    caller_history_recorded: callerHistoryRecorded,
+    caller_worker_invocation: callerWorkerInvocation,
+    missing_public_surface: missing,
+  };
+
+  return scenarioResult('unsupported', scenarioId, {
+    caller_workflow_instance_id: callerWorkflowInstanceId,
+    caller_workflow_run_id: callerWorkflowRunId,
+    caller_sdk_language: callerLanguage,
+    service_sdk_language: serviceLanguage,
+    operation_name: operationName,
+    request_payload: requestPayload,
+    response_or_failure_surface: responseSurface,
+    service_call_id: serviceCallId,
+    artifact_tuple: artifactTupleEvidence,
+    published_artifact_worker_execution: workerExecution,
+    payload_round_trip: serviceProbeSucceeded,
+    typed_error_round_trip: serviceProbeSucceeded,
+    attempted_call_evidence: attemptedCallEvidence,
+  }, [
+    crossLanguageFinding(
+      scenarioId,
+      versions,
+      missingSurfaceOwner,
+      `${scenarioId} attempted the published ${callerLanguage} to ${serviceLanguage} Nexus call, but ${missing}. Evidence: ${JSON.stringify(attemptedCallEvidence).slice(0, 1000)}`,
+      `The published ${callerLanguage} caller SDK exposes a workflow-safe Nexus service-call API and the published ${serviceLanguage} service runtime executes the call through the durable service-call path.`,
+      `publish the missing ${callerLanguage} Nexus service-call surface, wire it to the ${serviceLanguage} runtime service, and rerun the published PHP/Python Nexus shard`,
+    ),
+  ]);
+}
+
+async function probePublishedPhpPythonServiceCalls(baseUrl, token, versions, sources, verification, compose) {
+  const started = [];
+  try {
+    const pythonService = await startPythonSdkService(compose, versions);
+    started.push(pythonService.containerName);
+    const phpService = await startPhpWorkflowService(compose, versions);
+    started.push(phpService.containerName);
+
+    const pythonHealth = pythonService.health;
+    const phpHealth = phpService.health;
+    const pythonProbe = await postJson(`http://127.0.0.1:${pythonService.port}/greeter`, {
+      name: 'world',
+      scenario: 'php_caller_python_service',
+    });
+    const phpProbe = await postJson(`http://127.0.0.1:${phpService.port}/greeter`, {
+      name: 'world',
+      scenario: 'python_caller_php_service',
+    });
+
+    const runtimeEvidence = {
+      python: {
+        container_image: 'python:3.12-slim',
+        package_imported: pythonHealth.body?.package_imported === true,
+        package_version: String(pythonHealth.body?.package_version || versions['sdk-python'] || ''),
+        service_started: pythonHealth.ok === true,
+        health_response: responseSummary(pythonHealth),
+        invocation_response: responseSummary(pythonProbe),
+        service_runtime_surface: pythonHealth.body?.service_runtime_surface || null,
+        public_service_call_surface: pythonHealth.body?.public_service_call_surface || null,
+      },
+      php: {
+        container_image: 'composer:2',
+        package_imported: phpHealth.body?.package_imported === true,
+        package_version: String(phpHealth.body?.package_version || versions.workflow || ''),
+        service_started: phpHealth.ok === true,
+        health_response: responseSummary(phpHealth),
+        invocation_response: responseSummary(phpProbe),
+        service_runtime_surface: phpHealth.body?.service_runtime_surface || null,
+        public_service_call_surface: phpHealth.body?.public_service_call_surface || null,
+      },
+    };
+    const tuple = artifactTuple(versions, sources, verification);
+    const workerExecution = publishedCrossLanguageWorkerExecution(versions, sources, verification, runtimeEvidence);
+
+    const pythonOperation = await setupCrossLanguageService(
+      baseUrl,
+      token,
+      'python',
+      'http://nexus-python-sdk-service:8091/greeter',
+    );
+    const phpOperation = await setupCrossLanguageService(
+      baseUrl,
+      token,
+      'php',
+      'http://nexus-php-workflow-service:8092/greeter',
+    );
+
+    const phpCallerWorkflowInstanceId = `php-caller-python-service-${crypto.randomBytes(5).toString('hex')}`;
+    const phpCallerWorkflowRunId = ulidLike();
+    const phpToPythonRequest = {
+      name: 'world',
+      scenario: 'php_caller_python_service',
+      caller_sdk_language: 'workflow-php',
+      service_sdk_language: 'sdk-python',
+    };
+    const phpToPythonExecute = await apiRequest(
+      baseUrl,
+      token,
+      'shared',
+      'POST',
+      `/service-endpoints/${pythonOperation.endpointName}/services/${pythonOperation.serviceName}/operations/${pythonOperation.operationName}/execute`,
+      {
+        arguments: phpToPythonRequest,
+        mode_override: 'async',
+        wait_for: 'accepted',
+        caller_namespace: 'tenant-a',
+        caller_workflow_instance_id: phpCallerWorkflowInstanceId,
+        caller_workflow_run_id: phpCallerWorkflowRunId,
+        idempotency_key: `${phpCallerWorkflowInstanceId}-nexus-${crypto.randomBytes(5).toString('hex')}`,
+        metadata: {conformance: 'php_caller_python_service'},
+      },
+    );
+    const phpToPythonServiceCallId = serviceCallIdFrom(phpToPythonExecute);
+    const phpToPythonDescribe = phpToPythonServiceCallId === ''
+      ? {ok: false, status: 0, body: null, request: null}
+      : await apiRequest(
+        baseUrl,
+        token,
+        'shared',
+        'GET',
+        `/service-endpoints/${pythonOperation.endpointName}/services/${pythonOperation.serviceName}/operations/${pythonOperation.operationName}/service-calls/${encodeURIComponent(phpToPythonServiceCallId)}`,
+      );
+    const phpToPythonHistory = await callerHistory(
+      baseUrl,
+      token,
+      'tenant-a',
+      phpCallerWorkflowInstanceId,
+      phpCallerWorkflowRunId,
+    );
+
+    const pythonCallerWorkflowInstanceId = `python-caller-php-service-${crypto.randomBytes(5).toString('hex')}`;
+    const pythonCallerWorkflowRunId = ulidLike();
+    const pythonToPhpRequest = {
+      name: 'world',
+      scenario: 'python_caller_php_service',
+      caller_sdk_language: 'sdk-python',
+      service_sdk_language: 'workflow-php',
+    };
+    const pythonToPhpExecute = await apiRequest(
+      baseUrl,
+      token,
+      'shared',
+      'POST',
+      `/service-endpoints/${phpOperation.endpointName}/services/${phpOperation.serviceName}/operations/${phpOperation.operationName}/execute`,
+      {
+        arguments: pythonToPhpRequest,
+        mode_override: 'async',
+        wait_for: 'accepted',
+        caller_namespace: 'tenant-b',
+        caller_workflow_instance_id: pythonCallerWorkflowInstanceId,
+        caller_workflow_run_id: pythonCallerWorkflowRunId,
+        idempotency_key: `${pythonCallerWorkflowInstanceId}-nexus-${crypto.randomBytes(5).toString('hex')}`,
+        metadata: {conformance: 'python_caller_php_service'},
+      },
+    );
+    const pythonToPhpServiceCallId = serviceCallIdFrom(pythonToPhpExecute);
+    const pythonToPhpDescribe = pythonToPhpServiceCallId === ''
+      ? {ok: false, status: 0, body: null, request: null}
+      : await apiRequest(
+        baseUrl,
+        token,
+        'shared',
+        'GET',
+        `/service-endpoints/${phpOperation.endpointName}/services/${phpOperation.serviceName}/operations/${phpOperation.operationName}/service-calls/${encodeURIComponent(pythonToPhpServiceCallId)}`,
+      );
+    const pythonToPhpHistory = await callerHistory(
+      baseUrl,
+      token,
+      'tenant-b',
+      pythonCallerWorkflowInstanceId,
+      pythonCallerWorkflowRunId,
+    );
+
+    const phpMissingSurface = publicSurfaceAvailable(runtimeEvidence.php.public_service_call_surface)
+      ? null
+      : 'published workflow-php lacks a public workflow-safe Nexus service-call caller API on Workflow\\V2\\Client\\ControlPlaneClient or Workflow\\V2\\Workflow';
+    const pythonMissingSurface = publicSurfaceAvailable(runtimeEvidence.python.public_service_call_surface)
+      ? null
+      : 'published sdk-python lacks a public workflow-safe Nexus service-call caller API on durable_workflow.client.Client or durable_workflow.workflow.WorkflowContext';
+    const pythonServiceRuntimeMissing = publicSurfaceAvailable(runtimeEvidence.python.service_runtime_surface)
+      ? null
+      : 'published sdk-python lacks a public invocable service runtime surface on durable_workflow.invocable.InvocableActivityHandler';
+    const phpServiceRuntimeMissing = publicSurfaceAvailable(runtimeEvidence.php.service_runtime_surface)
+      ? null
+      : 'published workflow-php lacks a public invocable service runtime surface on Workflow\\V2\\Support\\InvocableHttpAdapter';
+    const phpToPythonMissing = phpMissingSurface || pythonServiceRuntimeMissing;
+    const phpToPythonOwner = phpMissingSurface !== null ? 'workflow' : 'sdk-python';
+    const pythonToPhpMissing = pythonMissingSurface || phpServiceRuntimeMissing;
+    const pythonToPhpOwner = pythonMissingSurface !== null ? 'sdk-python' : 'workflow';
+
+    return [
+      crossLanguageScenarioResult({
+        scenarioId: 'php_caller_python_service',
+        callerLanguage: 'workflow-php',
+        serviceLanguage: 'sdk-python',
+        callerWorkflowInstanceId: phpCallerWorkflowInstanceId,
+        callerWorkflowRunId: phpCallerWorkflowRunId,
+        operationName: `${pythonOperation.serviceName}.${pythonOperation.operationName}`,
+        requestPayload: phpToPythonRequest,
+        execute: phpToPythonExecute,
+        describe: phpToPythonDescribe,
+        history: phpToPythonHistory,
+        serviceProbe: responseSummary(pythonProbe),
+        artifactTupleEvidence: tuple,
+        workerExecution,
+        missingSurface: phpToPythonMissing,
+        missingSurfaceOwner: phpToPythonOwner,
+        versions,
+      }),
+      crossLanguageScenarioResult({
+        scenarioId: 'python_caller_php_service',
+        callerLanguage: 'sdk-python',
+        serviceLanguage: 'workflow-php',
+        callerWorkflowInstanceId: pythonCallerWorkflowInstanceId,
+        callerWorkflowRunId: pythonCallerWorkflowRunId,
+        operationName: `${phpOperation.serviceName}.${phpOperation.operationName}`,
+        requestPayload: pythonToPhpRequest,
+        execute: pythonToPhpExecute,
+        describe: pythonToPhpDescribe,
+        history: pythonToPhpHistory,
+        serviceProbe: responseSummary(phpProbe),
+        artifactTupleEvidence: tuple,
+        workerExecution,
+        missingSurface: pythonToPhpMissing,
+        missingSurfaceOwner: pythonToPhpOwner,
+        versions,
+      }),
+    ];
+  } finally {
+    for (const containerName of started) {
+      dockerStop(containerName, path.join(resultDir, `${containerName}-stop.log`));
+    }
+  }
+}
+
 function scenarioProductFailure(scenarioId, versions, type, observed, expected, next) {
   return {
     scenario_id: scenarioId,
@@ -1433,6 +2379,7 @@ function scenarioResult(status, scenarioId, observedOutputs, linkedFindings = []
 function responseSummary(response) {
   return {
     status: response.status,
+    ok: response.ok === true,
     body: response.body,
   };
 }
@@ -2476,6 +3423,20 @@ async function main() {
           await probeCallerCancellation(baseUrl, token, versions, sources, image),
         );
       }
+      if (env('DW_NEXUS_SKIP_PHP_PYTHON_SERVICE_SHARD') !== '1') {
+        scenarioResults.push(...await probePublishedPhpPythonServiceCalls(
+          baseUrl,
+          token,
+          versions,
+          sources,
+          verification,
+          {
+            project,
+            composePath,
+            runRoot,
+          },
+        ));
+      }
     } catch (error) {
       writeEvidence(productFailureEvidence(
         startedAt,
@@ -2594,6 +3555,8 @@ const builtInProbeScenarioIds = [
   'nonexistent_endpoint_typed_not_found',
   'worker_restart_replay_does_not_reissue_call',
   'caller_cancellation_propagates_to_service',
+  'php_caller_python_service',
+  'python_caller_php_service',
 ];
 
 function readJson(path) {

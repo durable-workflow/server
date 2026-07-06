@@ -458,6 +458,14 @@ class NexusContractTest extends TestCase
         $this->assertStringContainsString('verifyGithubReleaseAsset', $contents);
         $this->assertStringContainsString('verifyPackagistPackage', $contents);
         $this->assertStringContainsString('verifyPypiPackage', $contents);
+        $this->assertStringContainsString('DW_NEXUS_SKIP_PHP_PYTHON_SERVICE_SHARD', $contents);
+        $this->assertStringContainsString('probePublishedPhpPythonServiceCalls', $contents);
+        $this->assertStringContainsString('published_php_python_service_call_shard', $contents);
+        $this->assertStringContainsString('nexus-python-sdk-service', $contents);
+        $this->assertStringContainsString('nexus-php-workflow-service', $contents);
+        $this->assertStringContainsString('InvocableHttpAdapter', $contents);
+        $this->assertStringContainsString('InvocableActivityHandler', $contents);
+        $this->assertStringContainsString('nexus_unsupported_surface', $contents);
         $this->assertStringNotContainsString('version_pin_recorded', $contents);
     }
 
@@ -699,6 +707,107 @@ class NexusContractTest extends TestCase
             'conformance_runner_coverage_gap',
             array_column($scenario['linked_findings'], 'finding_type'),
         );
+    }
+
+    public function test_host_runner_preserves_cross_language_attempted_call_unsupported_findings(): void
+    {
+        $nodeBinary = trim((string) shell_exec('command -v node 2>/dev/null'));
+        if ($nodeBinary === '') {
+            $this->markTestSkipped('node is required to exercise the Nexus runner result gate.');
+        }
+
+        $evidence = $this->completeRunnerEvidence();
+        $unsupportedSurfaces = [
+            'php_caller_python_service' => [
+                'owner' => 'workflow',
+                'message' => 'published workflow-php lacks a public workflow-safe Nexus service-call caller API on Workflow\\V2\\Client\\ControlPlaneClient or Workflow\\V2\\Workflow',
+            ],
+            'python_caller_php_service' => [
+                'owner' => 'sdk-python',
+                'message' => 'published sdk-python lacks a public workflow-safe Nexus service-call caller API on durable_workflow.client.Client or durable_workflow.workflow.WorkflowContext',
+            ],
+        ];
+
+        foreach ($evidence['scenario_results'] as &$scenario) {
+            $scenarioId = $scenario['scenario_id'] ?? '';
+            if (! isset($unsupportedSurfaces[$scenarioId])) {
+                continue;
+            }
+
+            $message = $unsupportedSurfaces[$scenarioId]['message'];
+            $serviceCallId = 'svc-'.$scenarioId;
+            $executeResponse = [
+                'status' => 202,
+                'body' => [
+                    'accepted' => true,
+                    'service_call_id' => $serviceCallId,
+                ],
+            ];
+            $probeResponse = [
+                'status' => 200,
+                'body' => [
+                    'service_started' => true,
+                    'package_imported' => true,
+                ],
+            ];
+
+            $scenario['status'] = 'unsupported';
+            $scenario['observed_outputs']['service_call_id'] = $serviceCallId;
+            $scenario['observed_outputs']['response_or_failure_surface'] = [
+                'status' => 'unsupported',
+                'execute_response' => $executeResponse,
+                'service_probe_response' => $probeResponse,
+                'missing_public_surface' => $message,
+            ];
+            $scenario['observed_outputs']['attempted_call_evidence'] = [
+                'execute_request' => [
+                    'method' => 'POST',
+                    'path' => '/api/service-endpoints/published-service/services/PublishedGreeter/operations/greet/execute',
+                ],
+                'execute_response' => $executeResponse,
+                'service_probe_response' => $probeResponse,
+                'durable_service_call_id_observed' => true,
+                'missing_public_surface' => $message,
+            ];
+            $workerExecution = $this->publishedCrossLanguageWorkerExecution(
+                $evidence['artifact_versions'],
+                $evidence['artifact_sources'],
+            );
+            $workerExecution['worker_execution_mode'] = 'published_php_python_service_call_shard';
+            $scenario['observed_outputs']['published_artifact_worker_execution'] = $workerExecution;
+            $scenario['linked_findings'] = [
+                [
+                    'scenario_id' => $scenarioId,
+                    'type' => 'nexus_unsupported_surface',
+                    'finding_type' => 'nexus_unsupported_surface',
+                    'owning_surface' => $unsupportedSurfaces[$scenarioId]['owner'],
+                    'artifact_versions' => $evidence['artifact_versions'],
+                    'observed_behavior' => $message.' after a concrete published-artifact call attempt.',
+                    'expected_behavior' => 'The published caller SDK exposes a workflow-safe Nexus service-call API and the published service runtime handles the operation.',
+                    'next_acceptance_criterion' => 'publish the missing Nexus service-call surface and rerun the published PHP/Python Nexus shard',
+                ],
+            ];
+        }
+        unset($scenario);
+
+        $result = $this->runNexusEvidence($evidence, 'dw-nexus-cross-language-unsupported-attempt-');
+
+        $this->assertSame('fail', $result['outcome']);
+        foreach (array_keys($unsupportedSurfaces) as $scenarioId) {
+            $scenario = $this->scenarioResult($result, $scenarioId);
+
+            $this->assertSame('unsupported', $scenario['status']);
+            $this->assertArrayHasKey('attempted_call_evidence', $scenario['observed_outputs']);
+            $this->assertSame(
+                $unsupportedSurfaces[$scenarioId]['message'],
+                $scenario['observed_outputs']['attempted_call_evidence']['missing_public_surface'],
+            );
+            $this->assertContains(
+                'nexus_unsupported_surface',
+                array_column($scenario['linked_findings'], 'finding_type'),
+            );
+            $this->assertTrue($result['non_pass_routes'][$scenarioId]['routed']);
+        }
     }
 
     public function test_host_runner_preserves_runner_blocked_evidence_as_non_passing(): void
