@@ -455,6 +455,53 @@ class NexusContractTest extends TestCase
         $this->assertSame('pass', $result['scenario_results'][0]['status']);
     }
 
+    public function test_host_runner_derives_caller_history_attempt_visibility_from_retry_evidence(): void
+    {
+        $nodeBinary = trim((string) shell_exec('command -v node 2>/dev/null'));
+        if ($nodeBinary === '') {
+            $this->markTestSkipped('node is required to exercise the Nexus runner result gate.');
+        }
+
+        $evidence = $this->completeRunnerEvidence();
+        $evidence['scenario_results'] = array_values(array_filter(
+            $evidence['scenario_results'],
+            static fn (array $scenario): bool => ($scenario['scenario_id'] ?? null) !== 'caller_history_attempt_visibility',
+        ));
+        foreach ($evidence['scenario_results'] as &$scenario) {
+            if (($scenario['scenario_id'] ?? null) !== 'transient_failure_retries_with_policy') {
+                continue;
+            }
+
+            $scenario['observed_outputs'] += [
+                'caller_workflow_instance_id' => 'tenant-a-retry-proof',
+                'caller_workflow_run_id' => '01JRETRYPROOF0000000000',
+                'caller_history_attempts' => [
+                    ['attempt' => 1, 'outcome' => 'handler_failed'],
+                    ['attempt' => 2, 'outcome' => 'handler_failed'],
+                    ['attempt' => 3, 'outcome' => 'completed'],
+                ],
+                'service_call_detail_attempts' => [
+                    ['attempt' => 1, 'outcome' => 'handler_failed'],
+                    ['attempt' => 2, 'outcome' => 'handler_failed'],
+                    ['attempt' => 3, 'outcome' => 'completed'],
+                ],
+                'final_successful_result' => 'hello, world after retry',
+            ];
+        }
+        unset($scenario);
+
+        $result = $this->runNexusEvidence($evidence, 'dw-nexus-derived-caller-history-');
+        $scenario = $this->scenarioResult($result, 'caller_history_attempt_visibility');
+
+        $this->assertSame('pass', $result['outcome']);
+        $this->assertSame('pass', $scenario['status']);
+        $this->assertSame(
+            'transient_failure_retries_with_policy',
+            $scenario['observed_outputs']['derived_from_scenario'],
+        );
+        $this->assertSame('tenant-a-retry-proof', $scenario['observed_outputs']['caller_workflow_instance_id']);
+    }
+
     public function test_host_runner_does_not_probe_complete_aliased_shared_service_evidence(): void
     {
         $nodeBinary = trim((string) shell_exec('command -v node 2>/dev/null'));
@@ -1365,6 +1412,7 @@ class NexusContractTest extends TestCase
 
         $result = $this->runNexusWithoutEvidence('dw-nexus-no-image-');
         $tenantScenario = $this->scenarioResult($result, 'tenant_a_calls_shared_service');
+        $callerHistoryScenario = $this->scenarioResult($result, 'caller_history_attempt_visibility');
 
         $this->assertSame('fail', $result['outcome']);
         $this->assertFalse($result['runner_blocked']);
@@ -1372,6 +1420,15 @@ class NexusContractTest extends TestCase
         $this->assertContains(
             'conformance_runner_coverage_gap',
             array_column($tenantScenario['linked_findings'], 'finding_type'),
+        );
+        $this->assertSame('not_covered', $callerHistoryScenario['status']);
+        $this->assertNotContains(
+            'retry_attempt_visibility_gap',
+            array_column($callerHistoryScenario['linked_findings'], 'finding_type'),
+        );
+        $this->assertContains(
+            'conformance_runner_coverage_gap',
+            array_column($callerHistoryScenario['linked_findings'], 'finding_type'),
         );
     }
 

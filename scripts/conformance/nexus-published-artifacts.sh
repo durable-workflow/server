@@ -4253,6 +4253,125 @@ function withResultRecordAndRoutingScenario(scenarioResults, artifactVersions) {
   ));
 }
 
+function withDerivedCallerHistoryAttemptVisibility(scenarioResults, artifactVersions) {
+  const scenarios = new Map(scenarioResults.map((scenario) => [scenario.scenario_id, scenario]));
+  const callerHistoryScenario = scenarios.get('caller_history_attempt_visibility');
+  const transientRetryScenario = scenarios.get('transient_failure_retries_with_policy');
+
+  if (!callerHistoryScenario
+    || callerHistoryScenario.status !== 'not_covered'
+    || !transientRetryEvidenceWasAttempted(transientRetryScenario)) {
+    return scenarioResults;
+  }
+
+  const observedOutputs = derivedCallerHistoryAttemptOutputs(transientRetryScenario.observed_outputs);
+  const evidenceFailures = scenarioEvidenceFailures(
+    'caller_history_attempt_visibility',
+    observedOutputs,
+  );
+  const status = evidenceFailures.length === 0
+    ? 'pass'
+    : (evidenceFailures.some((failure) => failure.result_status === 'fail') ? 'fail' : 'not_covered');
+  const derivedScenario = {
+    scenario_id: 'caller_history_attempt_visibility',
+    status,
+    observed_outputs: {
+      ...observedOutputs,
+      artifact_versions: artifactVersions,
+      derived_from_scenario: 'transient_failure_retries_with_policy',
+    },
+    linked_findings: evidenceFailures.map((failure) => (
+      scenarioEvidenceFinding('caller_history_attempt_visibility', artifactVersions, failure)
+    )),
+  };
+
+  return scenarioResults.map((scenario) => (
+    scenario.scenario_id === 'caller_history_attempt_visibility' ? derivedScenario : scenario
+  ));
+}
+
+function transientRetryEvidenceWasAttempted(scenario) {
+  if (!scenario || typeof scenario !== 'object' || Array.isArray(scenario)) {
+    return false;
+  }
+
+  const outputs = scenario.observed_outputs && typeof scenario.observed_outputs === 'object' && !Array.isArray(scenario.observed_outputs)
+    ? scenario.observed_outputs
+    : {};
+
+  if (stringValue(outputs.service_call_id ?? outputs.serviceCallId) !== '') {
+    return true;
+  }
+  if (hasNonEmptyObjectValue(outputs.retry_policy ?? outputs.retryPolicy)
+    || hasNonEmptyObjectValue(outputs.service_call_record ?? outputs.serviceCallRecord)
+    || hasNonEmptyObjectValue(outputs.caller_history_evidence ?? outputs.callerHistoryEvidence)
+    || hasNonEmptyObjectValue(outputs.probe_response ?? outputs.probeResponse)) {
+    return true;
+  }
+  if (Object.hasOwn(outputs, 'history_attempt_visibility_includes_retry_attempts')
+    || Object.hasOwn(outputs, 'historyAttemptVisibilityIncludesRetryAttempts')
+    || Object.hasOwn(outputs, 'completed_after_retry')
+    || Object.hasOwn(outputs, 'completedAfterRetry')) {
+    return true;
+  }
+
+  return [
+    outputs.retry_attempts,
+    outputs.retryAttempts,
+    outputs.history_attempts,
+    outputs.historyAttempts,
+    outputs.service_call_attempts,
+    outputs.serviceCallAttempts,
+    outputs.caller_history_attempts,
+    outputs.callerHistoryAttempts,
+    outputs.service_call_detail_attempts,
+    outputs.serviceCallDetailAttempts,
+  ].some((value) => Array.isArray(value) && value.length > 0);
+}
+
+function derivedCallerHistoryAttemptOutputs(retryOutputs) {
+  const outputs = retryOutputs && typeof retryOutputs === 'object' && !Array.isArray(retryOutputs)
+    ? retryOutputs
+    : {};
+  const callerHistoryAttempts = firstArray(
+    outputs.caller_history_attempts,
+    outputs.callerHistoryAttempts,
+    outputs.history_attempts,
+    outputs.historyAttempts,
+  );
+  const serviceCallDetailAttempts = firstArray(
+    outputs.service_call_detail_attempts,
+    outputs.serviceCallDetailAttempts,
+    outputs.service_call_attempts,
+    outputs.serviceCallAttempts,
+    outputs.retry_attempts,
+    outputs.retryAttempts,
+  );
+
+  return {
+    service_call_id: stringValue(outputs.service_call_id ?? outputs.serviceCallId),
+    caller_workflow_instance_id: stringValue(outputs.caller_workflow_instance_id ?? outputs.callerWorkflowInstanceId),
+    caller_workflow_run_id: stringValue(outputs.caller_workflow_run_id ?? outputs.callerWorkflowRunId),
+    service_workflow_instance_id: stringValue(outputs.service_workflow_instance_id ?? outputs.serviceWorkflowInstanceId),
+    service_workflow_run_id: stringValue(outputs.service_workflow_run_id ?? outputs.serviceWorkflowRunId),
+    retry_policy: outputs.retry_policy ?? outputs.retryPolicy ?? {},
+    caller_history_attempts: callerHistoryAttempts,
+    history_attempt_visibility_includes_retry_attempts: outputs.history_attempt_visibility_includes_retry_attempts
+      ?? outputs.historyAttemptVisibilityIncludesRetryAttempts
+      ?? false,
+    service_call_detail_attempts: serviceCallDetailAttempts,
+    final_successful_result: outputs.final_successful_result ?? outputs.finalSuccessfulResult ?? null,
+    final_failure: outputs.final_failure ?? outputs.finalFailure ?? null,
+    caller_history_rows: firstArray(outputs.caller_history_rows, outputs.callerHistoryRows),
+    service_call_record: outputs.service_call_record ?? outputs.serviceCallRecord ?? null,
+    artifact_tuple: outputs.artifact_tuple ?? outputs.artifactTuple ?? null,
+  };
+}
+
+function firstArray(...values) {
+  return values.find((value) => Array.isArray(value)) || [];
+}
+
 function resultRecordAndRoutingScenarioResult(nonRoutingScenarios, artifactVersions) {
   const scenarioStatuses = {};
   const statusCounts = {};
@@ -5071,6 +5190,7 @@ if (!runnerBlocked) {
       && artifactInstallEvidence !== null
       && localProductSourceCheckoutsUsed === false,
   );
+  scenarioResults = withDerivedCallerHistoryAttemptVisibility(scenarioResults, artifactVersions);
 }
 const installScenarioArtifactPolicyFailures = runnerBlocked
   ? []
