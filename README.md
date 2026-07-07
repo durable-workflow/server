@@ -44,7 +44,7 @@ curl -X POST http://localhost:8080/api/worker/register \
   -H "Authorization: Bearer $DW_AUTH_TOKEN" \
   -H "Content-Type: application/json" \
   -H "X-Namespace: default" \
-  -H "X-Durable-Workflow-Protocol-Version: 1.12" \
+  -H "X-Durable-Workflow-Protocol-Version: 1.13" \
   -d '{"worker_id":"quickstart-worker","task_queue":"quickstart","runtime":"python"}'
 ```
 
@@ -93,7 +93,7 @@ curl -X POST http://localhost:8080/api/worker/register \
   -H "Authorization: Bearer $DW_AUTH_TOKEN" \
   -H "Content-Type: application/json" \
   -H "X-Namespace: default" \
-  -H "X-Durable-Workflow-Protocol-Version: 1.12" \
+  -H "X-Durable-Workflow-Protocol-Version: 1.13" \
   -d '{"worker_id":"compose-worker","task_queue":"compose","runtime":"python"}'
 ```
 
@@ -239,7 +239,7 @@ The long-running `server`, `worker`, and `scheduler` services each pin
 `DW_SERVER_TOPOLOGY_SHAPE` and `DW_SERVER_PROCESS_CLASS` so
 `GET /api/cluster/info` reports the role class you actually launched during
 local split-role testing.
-The local compose files pass `WORKFLOW_PACKAGE_REF=2.0.0-alpha.236`, matching
+The local compose files pass `WORKFLOW_PACKAGE_REF=2.0.0-alpha.249`, matching
 the Dockerfile fallback, so `docker compose up --build` works from a clean
 checkout with Composer metadata aligned to the embedded workflow package.
 Override `WORKFLOW_PACKAGE_SOURCE`, `WORKFLOW_PACKAGE_REF`, or
@@ -339,7 +339,7 @@ curl -X POST $SERVER/api/worker/register \
   -H "Authorization: Bearer $WORKER_TOKEN" \
   -H "Content-Type: application/json" \
   -H "X-Namespace: default" \
-  -H "X-Durable-Workflow-Protocol-Version: 1.12" \
+  -H "X-Durable-Workflow-Protocol-Version: 1.13" \
   -d '{
     "worker_id": "worker-1",
     "task_queue": "order-workers",
@@ -369,7 +369,7 @@ curl -X POST $SERVER/api/worker/workflow-tasks/poll \
   -H "Authorization: Bearer $WORKER_TOKEN" \
   -H "Content-Type: application/json" \
   -H "X-Namespace: default" \
-  -H "X-Durable-Workflow-Protocol-Version: 1.12" \
+  -H "X-Durable-Workflow-Protocol-Version: 1.13" \
   -d '{
     "worker_id": "worker-1",
     "task_queue": "order-workers"
@@ -380,7 +380,7 @@ The response includes the task, its history events, and lease metadata:
 
 ```json
 {
-  "protocol_version": "1.12",
+  "protocol_version": "1.13",
   "task": {
     "task_id": "task-xyz",
     "workflow_id": "order-42",
@@ -406,7 +406,7 @@ curl -X POST $SERVER/api/worker/workflow-tasks/task-xyz/complete \
   -H "Authorization: Bearer $WORKER_TOKEN" \
   -H "Content-Type: application/json" \
   -H "X-Namespace: default" \
-  -H "X-Durable-Workflow-Protocol-Version: 1.12" \
+  -H "X-Durable-Workflow-Protocol-Version: 1.13" \
   -d '{
     "lease_owner": "worker-1",
     "workflow_task_attempt": 1,
@@ -428,7 +428,7 @@ curl -X POST $SERVER/api/worker/workflow-tasks/task-xyz/complete \
   -H "Authorization: Bearer $WORKER_TOKEN" \
   -H "Content-Type: application/json" \
   -H "X-Namespace: default" \
-  -H "X-Durable-Workflow-Protocol-Version: 1.12" \
+  -H "X-Durable-Workflow-Protocol-Version: 1.13" \
   -d '{
     "lease_owner": "worker-1",
     "workflow_task_attempt": 1,
@@ -451,7 +451,7 @@ curl -X POST $SERVER/api/worker/activity-tasks/poll \
   -H "Authorization: Bearer $WORKER_TOKEN" \
   -H "Content-Type: application/json" \
   -H "X-Namespace: default" \
-  -H "X-Durable-Workflow-Protocol-Version: 1.12" \
+  -H "X-Durable-Workflow-Protocol-Version: 1.13" \
   -d '{"worker_id": "worker-1", "task_queue": "order-workers"}'
 
 # Complete (use task_id and activity_attempt_id from the poll response)
@@ -459,7 +459,7 @@ curl -X POST $SERVER/api/worker/activity-tasks/TASK_ID/complete \
   -H "Authorization: Bearer $WORKER_TOKEN" \
   -H "Content-Type: application/json" \
   -H "X-Namespace: default" \
-  -H "X-Durable-Workflow-Protocol-Version: 1.12" \
+  -H "X-Durable-Workflow-Protocol-Version: 1.13" \
   -d '{
     "activity_attempt_id": "ATTEMPT_ID",
     "lease_owner": "worker-1",
@@ -705,13 +705,13 @@ can still ask for the expired diagnostic set with `status=stale`, and stale
 workers stop being considered for query-task dispatch and routing-gate
 admission.
 
-The current server advertises worker protocol `1.12` by default. Worker-plane
+The current server advertises worker protocol `1.13` by default. Worker-plane
 requests should send the highest `X-Durable-Workflow-Protocol-Version` their SDK
 implements, and worker-plane responses always echo the server's advertised
 version in the same header plus the `protocol_version` body field.
 Worker-protocol compatibility is same-major with a worker minor less than or
-equal to the server minor: a server advertising `1.12` accepts worker requests
-for `1.0` through `1.12`, including older `1.11` and `1.10` workers. Requests
+equal to the server minor: a server advertising `1.13` accepts worker requests
+for `1.0` through `1.13`, including older `1.12` and `1.11` workers. Requests
 with a missing, malformed, different-major, or higher-minor protocol version are
 rejected with `missing_protocol_version` or `unsupported_protocol_version` and a
 `supported_version` value that tells the worker what the server advertises.
@@ -872,7 +872,7 @@ future carriers can validate parser behavior without repository-local fixture
 paths. A human-readable summary lives in
 `docs/contracts/external-task-result.md`.
 
-Within worker protocol version `1.12`, `worker_protocol.version`,
+Within worker protocol version `1.13`, `worker_protocol.version`,
 `server_capabilities.long_poll_timeout`, and
 `server_capabilities.supported_workflow_task_commands` are stable contract
 fields. The command-option booleans under `server_capabilities` are additive
@@ -1126,7 +1126,7 @@ docker run --rm -p 8080:8080 \
   durable-workflow-server
 ```
 
-The Dockerfile clones the `durable-workflow/workflow` `2.0.0-alpha.236` tag
+The Dockerfile clones the `durable-workflow/workflow` `2.0.0-alpha.249` tag
 into the build by default and refreshes the Composer package metadata from that
 source before installing production dependencies. Use
 `--build-arg WORKFLOW_PACKAGE_SOURCE=...`,

@@ -1403,7 +1403,7 @@ SH
 
     public function test_skew_runner_summarizes_compatible_cli_cell_from_inside_window_artifact_evidence(): void
     {
-        $compatibilityWindow = 'control-plane version 2; worker protocol same-major <= 1.12';
+        $compatibilityWindow = 'control-plane version 2; worker protocol same-major <= 1.13';
         $nextStep = 'No compatibility remediation is required for this inside-window pair. If the cli command returns a domain error, use the captured response reason as the next operational step.';
         $summary = $this->evaluateSkewPairingSummary([
             [
@@ -1500,7 +1500,7 @@ SH
 
     public function test_skew_runner_summarizes_compatible_python_sdk_cell_from_typed_inside_window_artifact_evidence(): void
     {
-        $compatibilityWindow = 'control-plane version 2; worker protocol same-major <= 1.12';
+        $compatibilityWindow = 'control-plane version 2; worker protocol same-major <= 1.13';
         $nextStep = 'No compatibility remediation is required for this inside-window pair. If the sdk-python command returns a domain error, use the captured response reason as the next operational step.';
         $summary = $this->evaluateSkewPairingSummary(
             [
