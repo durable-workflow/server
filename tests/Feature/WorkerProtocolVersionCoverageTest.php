@@ -150,7 +150,7 @@ class WorkerProtocolVersionCoverageTest extends TestCase
             'worker_id' => 'php-protocol-113-worker',
             'task_queue' => 'signals-queries-current',
             'runtime' => 'php',
-            'sdk_version' => 'durable-workflow/workflow 2.0.0-alpha.249',
+            'sdk_version' => 'durable-workflow/workflow 2.0.0-alpha.250',
             'supported_workflow_types' => ['SignalQueryMirrorWorkflow'],
             'supported_activity_types' => ['SignalQueryMirrorActivity'],
             'capabilities' => ['query_tasks'],
