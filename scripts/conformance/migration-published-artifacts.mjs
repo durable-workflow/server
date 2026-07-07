@@ -75,6 +75,30 @@ const REQUIRED_TOP_LEVEL_FIELDS = [
   'version_skew_observations',
   'storage_connection_smoke',
 ];
+const REQUIRED_RUNBOOK_COMMAND_OUTPUT_FIELDS = [
+  'migration_plan',
+  'preupgrade_state_snapshot',
+  'postupgrade_state_snapshot',
+  'history_dumps',
+  'activity_attempts',
+  'schedule_ticks',
+  'worker_registration_observations',
+  'cli_observations',
+  'waterline_observations',
+  'rollback_observations',
+  'version_skew_observations',
+  'storage_connection_smoke',
+];
+const COMMAND_OUTPUT_COLLECTION_FIELDS = [
+  'command_outputs',
+  'commandOutputs',
+  'step_outputs',
+  'stepOutputs',
+  'executed_steps',
+  'executedSteps',
+  'command_results',
+  'commandResults',
+];
 const OBSERVED_STATE_ENTRY_FIELDS = [
   'observed_states',
   'observedStates',
@@ -397,73 +421,73 @@ async function main() {
     scenario_results: scenarioResults,
     findings: [],
     finding_links: {},
-    migration_plan: nonEmptyObject(fieldValue(evidence, 'migration_plan'))
+    migration_plan: topLevelRunbookObservation(evidence, 'migration_plan')
       ?? missingRunRecordObservation(
         'migration_plan',
         'No public migration-guide execution plan was supplied.',
         storageSmokeOnlyProductEvidence,
       ),
-    preupgrade_state_snapshot: nonEmptyObject(fieldValue(evidence, 'preupgrade_state_snapshot'))
+    preupgrade_state_snapshot: topLevelRunbookObservation(evidence, 'preupgrade_state_snapshot')
       ?? missingRunRecordObservation(
         'preupgrade_state_snapshot',
         'No realistic v1 state snapshot was supplied.',
         storageSmokeOnlyProductEvidence,
       ),
-    postupgrade_state_snapshot: nonEmptyObject(fieldValue(evidence, 'postupgrade_state_snapshot'))
+    postupgrade_state_snapshot: topLevelRunbookObservation(evidence, 'postupgrade_state_snapshot')
       ?? missingRunRecordObservation(
         'postupgrade_state_snapshot',
         'No migrated v2 state snapshot was supplied.',
         storageSmokeOnlyProductEvidence,
       ),
-    history_dumps: nonEmptyObject(fieldValue(evidence, 'history_dumps'))
+    history_dumps: topLevelRunbookObservation(evidence, 'history_dumps')
       ?? missingRunRecordObservation(
         'history_dumps',
         'No before/after history dumps were supplied.',
         storageSmokeOnlyProductEvidence,
       ),
-    activity_attempts: nonEmptyObject(fieldValue(evidence, 'activity_attempts'))
+    activity_attempts: topLevelRunbookObservation(evidence, 'activity_attempts')
       ?? missingRunRecordObservation(
         'activity_attempts',
         'No activity retry observations were supplied.',
         storageSmokeOnlyProductEvidence,
       ),
-    schedule_ticks: nonEmptyObject(fieldValue(evidence, 'schedule_ticks'))
+    schedule_ticks: topLevelRunbookObservation(evidence, 'schedule_ticks')
       ?? missingRunRecordObservation(
         'schedule_ticks',
         'No cross-upgrade schedule tick observations were supplied.',
         storageSmokeOnlyProductEvidence,
       ),
-    worker_registration_observations: nonEmptyObject(fieldValue(evidence, 'worker_registration_observations'))
+    worker_registration_observations: topLevelRunbookObservation(evidence, 'worker_registration_observations')
       ?? missingRunRecordObservation(
         'worker_registration_observations',
         'No worker registration projection observations were supplied.',
         storageSmokeOnlyProductEvidence,
       ),
-    cli_observations: nonEmptyObject(fieldValue(evidence, 'cli_observations'))
+    cli_observations: topLevelRunbookObservation(evidence, 'cli_observations')
       ?? missingRunRecordObservation(
         'cli_observations',
         'No CLI observations against migrated state were supplied.',
         storageSmokeOnlyProductEvidence,
       ),
-    waterline_observations: nonEmptyObject(fieldValue(evidence, 'waterline_observations'))
+    waterline_observations: topLevelRunbookObservation(evidence, 'waterline_observations')
       ?? missingRunRecordObservation(
         'waterline_observations',
         'No Waterline/operator observations were supplied.',
         storageSmokeOnlyProductEvidence,
       ),
-    rollback_observations: nonEmptyObject(fieldValue(evidence, 'rollback_observations'))
+    rollback_observations: topLevelRunbookObservation(evidence, 'rollback_observations')
       ?? missingRunRecordObservation(
         'rollback_observations',
         'No rollback observations were supplied.',
         storageSmokeOnlyProductEvidence,
       ),
-    version_skew_observations: nonEmptyObject(fieldValue(evidence, 'version_skew_observations'))
+    version_skew_observations: topLevelRunbookObservation(evidence, 'version_skew_observations')
       ?? missingRunRecordObservation(
         'version_skew_observations',
         'No version-skew refusal observations were supplied.',
         storageSmokeOnlyProductEvidence,
       ),
-    storage_connection_smoke: storageSmoke,
+    storage_connection_smoke: topLevelRunbookObservation({ storage_connection_smoke: storageSmoke }, 'storage_connection_smoke') ?? storageSmoke,
     implementation_identity: {
       runner: 'scripts/conformance/migration-published-artifacts.sh',
       evidence_input: fs.existsSync(evidencePath) ? evidencePath : null,
@@ -727,10 +751,21 @@ function artifactPrerequisiteFindings(scenarioId, artifactVersions, artifactPrer
 }
 
 function normalizeScenarioResult(scenarioId, scenario, artifactVersions) {
-  const observedOutputs = nonEmptyObject(scenario.observed_outputs)
+  let observedOutputs = nonEmptyObject(scenario.observed_outputs)
     ?? nonEmptyObject(scenario.observedOutputs)
     ?? nonEmptyObject(scenario.evidence)
     ?? {};
+  const commandOutputs = runbookSectionCommandOutputs({
+    ...objectValue(scenario),
+    observed_outputs: observedOutputs,
+  });
+  observedOutputs = withoutDirectCommandOutputFields(observedOutputs);
+  if (!isEmptyEvidence(commandOutputs)) {
+    observedOutputs = {
+      ...observedOutputs,
+      command_outputs: commandOutputs,
+    };
+  }
   const commandFailure = containsFoundationCommandFailure({
     ...objectValue(scenario),
     observed_outputs: observedOutputs,
@@ -829,8 +864,21 @@ function missingRequiredFieldsForScenario(scenarioId, scenario, observedOutputs)
 
   return uniqueStrings([
     ...missing,
+    ...missingScenarioCommandOutputFields(scenarioId, scenario, observedOutputs),
     ...scenarioSpecificMissingRequiredFields(scenarioId, scenario, observedOutputs),
   ]);
+}
+
+function missingScenarioCommandOutputFields(scenarioId, scenario, observedOutputs) {
+  if (scenarioId === 'published_artifact_install_only') {
+    return [];
+  }
+
+  const scenarioOutputs = runbookSectionCommandOutputs(scenario);
+  const observedOutputCommands = runbookSectionCommandOutputs(observedOutputs);
+  return isEmptyEvidence(scenarioOutputs) && isEmptyEvidence(observedOutputCommands)
+    ? ['command_outputs']
+    : [];
 }
 
 function scenarioSpecificMissingRequiredFields(scenarioId, scenario, observedOutputs) {
@@ -1107,6 +1155,29 @@ function foundationScenarioResult(scenarioId, source, observedOutputs, startedAt
       local_product_source_checkouts_used: false,
       ...observedOutputs,
     },
+  };
+}
+
+function topLevelRunbookObservation(evidence, field) {
+  const value = nonEmptyObject(fieldValue(evidence, field));
+  if (value === null) {
+    return null;
+  }
+
+  return withRunbookCommandOutputs(value);
+}
+
+function withRunbookCommandOutputs(value) {
+  const observation = objectValue(value);
+  const commandOutputs = runbookSectionCommandOutputs(observation);
+  const normalizedObservation = withoutDirectCommandOutputFields(observation);
+  if (isEmptyEvidence(commandOutputs)) {
+    return normalizedObservation;
+  }
+
+  return {
+    ...normalizedObservation,
+    command_outputs: commandOutputs,
   };
 }
 
@@ -1981,6 +2052,12 @@ function resultPasses(result) {
     if (isEmptyEvidence(result[field])) {
       return false;
     }
+    if (
+      runRecordCommandOutputsRequired(field)
+      && isEmptyEvidence(runbookSectionCommandOutputs(result[field]))
+    ) {
+      return false;
+    }
   }
 
   return artifactMapComplete(result.published_artifact_versions, false)
@@ -2180,6 +2257,15 @@ function missingRunRecordFindingsFor(result, artifactVersions) {
 
   for (const field of REQUIRED_TOP_LEVEL_FIELDS) {
     if (!isEmptyEvidence(fieldValue(result, field))) {
+      if (runRecordCommandOutputsRequired(field) && isEmptyEvidence(runbookSectionCommandOutputs(fieldValue(result, field)))) {
+        findings.push(coverageGapFinding('run_record', artifactVersions, {
+          observed_behavior: `No concrete command-output evidence was supplied for migration run record ${field}.`,
+          expected_behavior: 'Passing migration conformance records queryable command, request, output, status, exit-code, response, or timing evidence for every migration runbook section required by the public scenario manifest.',
+          next_acceptance_criterion: `attach concrete command_outputs entries to ${field} before recording migration conformance as passing`,
+          missing_run_record_field: field,
+          missing_run_record_command_outputs: field,
+        }));
+      }
       continue;
     }
 
@@ -2214,6 +2300,10 @@ function missingRunRecordFindingsFor(result, artifactVersions) {
   }
 
   return findings;
+}
+
+function runRecordCommandOutputsRequired(field) {
+  return REQUIRED_RUNBOOK_COMMAND_OUTPUT_FIELDS.includes(field);
 }
 
 function mergeFindingLinks(evidence, scenarioResults, runRecordFindings = []) {
@@ -2758,11 +2848,13 @@ function observedOutputsForRunbookScenario(scenarioId, source) {
     }
   }
 
+  const sectionCommandOutputs = runbookSectionCommandOutputs(source);
+  if (!isEmptyEvidence(sectionCommandOutputs)) {
+    observed.command_outputs ??= sectionCommandOutputs;
+  }
+
   if (scenarioId === 'documented_migration_steps_execute') {
-    const commandOutputs = runbookMigrationCommandOutputs(source);
-    if (!isEmptyEvidence(commandOutputs)) {
-      observed.command_outputs ??= commandOutputs;
-    }
+    const commandOutputs = sectionCommandOutputs;
 
     if (isEmptyEvidence(observed.commands_executed)) {
       observed.commands_executed = commandsExecutedFromCommandOutputs(commandOutputs);
@@ -2795,17 +2887,31 @@ function observedOutputsForRunbookScenario(scenarioId, source) {
   );
 }
 
+function runbookSectionCommandOutputs(source) {
+  const direct = runbookDirectCommandOutputs(source);
+  if (!isEmptyEvidence(direct)) {
+    return direct;
+  }
+
+  const synthesized = commandOutputsFromExecutedCommands(source);
+  if (!isEmptyEvidence(synthesized)) {
+    return synthesized;
+  }
+
+  const nested = nestedCommandOutputCollection(source);
+  if (!isEmptyEvidence(nested)) {
+    return nested;
+  }
+
+  return undefined;
+}
+
 function runbookMigrationCommandOutputs(source) {
-  const direct = runbookFirstNonEmptyField(source, [
-    'command_outputs',
-    'commandOutputs',
-    'step_outputs',
-    'stepOutputs',
-    'executed_steps',
-    'executedSteps',
-    'command_results',
-    'commandResults',
-  ]);
+  return runbookSectionCommandOutputs(source);
+}
+
+function runbookDirectCommandOutputs(source) {
+  const direct = runbookFirstNonEmptyField(source, COMMAND_OUTPUT_COLLECTION_FIELDS);
   const concreteDirect = concreteCommandOutputCollection(direct);
   if (!isEmptyEvidence(concreteDirect)) {
     return concreteDirect;
@@ -2818,6 +2924,99 @@ function runbookMigrationCommandOutputs(source) {
   }
 
   return undefined;
+}
+
+function commandOutputsFromExecutedCommands(source) {
+  const commands = arrayOfStrings(
+    runbookFieldValue(source, 'commands_executed')
+      ?? runbookFieldValue(source, 'commands')
+      ?? runbookFieldValue(source, 'steps'),
+  );
+  if (commands.length === 0) {
+    return undefined;
+  }
+
+  const exitCodes = arrayValue(runbookFieldValue(source, 'exit_codes'));
+  const timings = objectValue(
+    runbookFieldValue(source, 'command_timings')
+      ?? runbookFieldValue(source, 'timings'),
+  );
+  const sectionStatus = normalizedStatus(source.status || source.outcome);
+  const entries = commands.map((command, index) => {
+    const rawExitCode = exitCodes[index];
+    const exitCode = typeof rawExitCode === 'number' || typeof rawExitCode === 'string'
+      ? Number.parseInt(String(rawExitCode), 10)
+      : undefined;
+    const timing = commandOutputTiming({ duration_ms: timings[command] });
+    const entry = {
+      command,
+    };
+
+    if (Number.isFinite(exitCode)) {
+      entry.exit_code = exitCode;
+      entry.status = exitCode === 0 ? 'pass' : 'fail';
+    } else if (sectionStatus !== '') {
+      entry.status = sectionStatus;
+    }
+
+    if (timing !== undefined) {
+      entry.duration_ms = timing;
+    }
+
+    return entry;
+  }).filter((entry) => hasConcreteCommandOutput(entry));
+
+  return entries.length > 0 ? entries : undefined;
+}
+
+function nestedCommandOutputCollection(source) {
+  const outputs = [];
+  collectNestedCommandOutputs(source, outputs, new Set());
+
+  return outputs.length > 0 ? outputs : undefined;
+}
+
+function collectNestedCommandOutputs(value, outputs, seen) {
+  if (isEmptyEvidence(value) || value === null || typeof value !== 'object') {
+    return;
+  }
+
+  if (seen.has(value)) {
+    return;
+  }
+  seen.add(value);
+
+  if (Array.isArray(value)) {
+    for (const entry of value) {
+      collectNestedCommandOutputs(entry, outputs, seen);
+    }
+    return;
+  }
+
+  if (hasConcreteCommandOutput(value)) {
+    outputs.push(value);
+  }
+
+  for (const [key, entry] of Object.entries(value)) {
+    if (COMMAND_OUTPUT_COLLECTION_FIELDS.includes(key)) {
+      const direct = concreteCommandOutputCollection(entry);
+      if (Array.isArray(direct)) {
+        outputs.push(...direct);
+      } else if (direct && typeof direct === 'object') {
+        outputs.push(...Object.values(direct));
+      }
+      continue;
+    }
+
+    collectNestedCommandOutputs(entry, outputs, seen);
+  }
+}
+
+function withoutDirectCommandOutputFields(value) {
+  return Object.fromEntries(
+    Object.entries(objectValue(value))
+      .filter(([key]) => !COMMAND_OUTPUT_COLLECTION_FIELDS.includes(key)),
+  );
 }
 
 function concreteCommandOutputCollection(commandOutputs) {

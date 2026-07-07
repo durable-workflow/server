@@ -777,6 +777,11 @@ class MigrationConformanceRunnerContractTest extends TestCase
                             'php artisan workflow:start MigrationCompletedWorkflow',
                             'php artisan workflow:signal migration-awaiting-signal approve',
                         ],
+                        'command_outputs' => [
+                            $this->commandOutput('composer require durable-workflow/workflow:'.$artifactVersions['workflow-php-v1']),
+                            $this->commandOutput('php artisan workflow:start MigrationCompletedWorkflow'),
+                            $this->commandOutput('php artisan workflow:signal migration-awaiting-signal approve'),
+                        ],
                     ],
                     'preupgrade_state_snapshot' => $preupgradeSnapshot,
                     'postupgrade_state_snapshot' => $postupgradeSnapshot,
@@ -2096,6 +2101,35 @@ COMMAND;
         $this->assertContains('schema_or_storage_migration_output', $observedOutputs['missing_required_fields']);
     }
 
+    public function test_runner_rejects_malformed_direct_runbook_section_command_outputs(): void
+    {
+        $nodeBinary = trim((string) shell_exec('command -v node 2>/dev/null'));
+        if ($nodeBinary === '') {
+            $this->markTestSkipped('node is required to exercise the migration runner command-output gate.');
+        }
+
+        $complete = $this->completeRunnerEvidence();
+        $runbook = $this->completeRunbookEvidence($complete, $complete['migration_plan']);
+        $runbook['historyDumps'] = [
+            'completed' => true,
+            'running' => true,
+            'command_outputs' => ['captured'],
+        ];
+
+        $result = $this->runRunnerEvidence($nodeBinary, $runbook, 'dw-migration-malformed-section-command-outputs-');
+        $runRecordFindings = $result['finding_links']['run_record'] ?? [];
+
+        $this->assertSame('non_passing', $result['outcome']);
+        $this->assertContains(
+            'history_dumps',
+            array_column($runRecordFindings, 'missing_run_record_command_outputs'),
+        );
+        $this->assertSame(
+            'pass',
+            $result['scenario_results']['completed_history_preservation_and_replay']['status'],
+        );
+    }
+
     public function test_runner_normalizes_contract_release_artifact_aliases_before_passing(): void
     {
         $nodeBinary = trim((string) shell_exec('command -v node 2>/dev/null'));
@@ -2546,6 +2580,16 @@ COMMAND;
             ],
         ];
 
+        foreach ($scenarioResults as $scenarioId => $scenarioResult) {
+            if ($scenarioId === 'published_artifact_install_only') {
+                continue;
+            }
+
+            $scenarioResults[$scenarioId]['observed_outputs']['command_outputs'] ??= [
+                $this->commandOutput('dw migration-conformance '.$scenarioId),
+            ];
+        }
+
         return [
             'outcome' => 'pass',
             'started_at' => '2026-05-31T22:39:36Z',
@@ -2560,18 +2604,41 @@ COMMAND;
                 'guide_revision' => 'docs/2.0/migration',
                 'commands_executed' => $scenarioResults['documented_migration_steps_execute']['observed_outputs']['commands_executed'],
                 'command_timings' => $scenarioResults['documented_migration_steps_execute']['observed_outputs']['command_timings'],
+                'command_outputs' => $scenarioResults['documented_migration_steps_execute']['observed_outputs']['command_outputs'],
             ],
             'preupgrade_state_snapshot' => $this->stateSnapshotEvidence('preupgrade'),
             'postupgrade_state_snapshot' => $this->stateSnapshotEvidence('postupgrade'),
-            'history_dumps' => ['completed' => true, 'running' => true],
-            'activity_attempts' => ['retry_preserved' => true],
-            'schedule_ticks' => ['cadence_preserved' => true],
-            'worker_registration_observations' => ['projection_preserved' => true],
-            'cli_observations' => ['preupgrade_state_readable' => true],
-            'waterline_observations' => ['preupgrade_state_visible' => true],
+            'history_dumps' => [
+                'completed' => true,
+                'running' => true,
+                'command_outputs' => [$this->commandOutput('dw workflow:history-export migration-completed')],
+            ],
+            'activity_attempts' => [
+                'retry_preserved' => true,
+                'command_outputs' => [$this->commandOutput('dw workflow:describe migration-retrying-activity')],
+            ],
+            'schedule_ticks' => [
+                'cadence_preserved' => true,
+                'command_outputs' => [$this->commandOutput('dw schedule:list --json')],
+            ],
+            'worker_registration_observations' => [
+                'projection_preserved' => true,
+                'command_outputs' => [$this->commandOutput('GET /api/workers?task_queue=migration-v1')],
+            ],
+            'cli_observations' => [
+                'preupgrade_state_readable' => true,
+                'command_outputs' => [$this->commandOutput('dw workflow:describe migration-completed --json')],
+            ],
+            'waterline_observations' => [
+                'preupgrade_state_visible' => true,
+                'command_outputs' => [$this->commandOutput('GET /waterline/api/instances/migration-completed')],
+            ],
             'rollback_observations' => $scenarioResults['rollback_contract_verified']['observed_outputs'],
             'version_skew_observations' => $scenarioResults['version_skew_refusal']['observed_outputs'],
-            'storage_connection_smoke' => ['passed' => true],
+            'storage_connection_smoke' => [
+                'passed' => true,
+                'command_outputs' => [$this->commandOutput('php artisan migrate:status')],
+            ],
             'scenario_results' => $scenarioResults,
         ];
     }
@@ -2640,6 +2707,11 @@ COMMAND;
     {
         return [
             'state_kinds' => MigrationRuntimeContract::manifest()['required_matrix']['state_kinds'],
+            'command_outputs' => [
+                $this->commandOutput('dw workflow:list --phase='.$phase),
+                $this->commandOutput('dw schedule:list --phase='.$phase),
+                $this->commandOutput('GET /api/workers?phase='.$phase),
+            ],
             'observed_states' => [
                 [
                     'state_kind' => 'completed_history',
@@ -2675,6 +2747,21 @@ COMMAND;
                     'task_queue' => 'migration-v1',
                 ],
             ],
+        ];
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    private function commandOutput(string $command, string $stdout = 'captured migration conformance output'): array
+    {
+        return [
+            'command' => $command,
+            'status' => 'pass',
+            'exit_code' => 0,
+            'duration_ms' => 42,
+            'stdout' => $stdout,
+            'stderr' => '',
         ];
     }
 
