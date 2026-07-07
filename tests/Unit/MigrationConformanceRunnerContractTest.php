@@ -2066,6 +2066,36 @@ COMMAND;
         );
     }
 
+    public function test_runner_rejects_malformed_direct_migration_plan_command_outputs(): void
+    {
+        $nodeBinary = trim((string) shell_exec('command -v node 2>/dev/null'));
+        if ($nodeBinary === '') {
+            $this->markTestSkipped('node is required to exercise the migration runner command-output gate.');
+        }
+
+        $complete = $this->completeRunnerEvidence();
+        $documentedOutputs = $complete['scenario_results']['documented_migration_steps_execute']['observed_outputs'];
+        $runbook = $this->completeRunbookEvidence($complete, [
+            'source' => 'published_migration_guide_execution',
+            'migration_guide_revision' => $documentedOutputs['migration_guide_revision'],
+            'guide_command_executability' => $documentedOutputs['guide_command_executability'],
+            'command_outputs' => ['captured'],
+        ]);
+
+        $result = $this->runRunnerEvidence($nodeBinary, $runbook, 'dw-migration-malformed-command-outputs-');
+        $scenario = $result['scenario_results']['documented_migration_steps_execute'];
+        $observedOutputs = $scenario['observed_outputs'];
+
+        $this->assertSame('non_passing', $result['outcome']);
+        $this->assertSame('not_covered', $scenario['status']);
+        $this->assertArrayNotHasKey('command_outputs', $observedOutputs);
+        $this->assertArrayNotHasKey('schema_or_storage_migration_output', $observedOutputs);
+        $this->assertContains('commands_executed', $observedOutputs['missing_required_fields']);
+        $this->assertContains('exit_codes', $observedOutputs['missing_required_fields']);
+        $this->assertContains('command_timings', $observedOutputs['missing_required_fields']);
+        $this->assertContains('schema_or_storage_migration_output', $observedOutputs['missing_required_fields']);
+    }
+
     public function test_runner_normalizes_contract_release_artifact_aliases_before_passing(): void
     {
         $nodeBinary = trim((string) shell_exec('command -v node 2>/dev/null'));
@@ -2543,6 +2573,63 @@ COMMAND;
             'version_skew_observations' => $scenarioResults['version_skew_refusal']['observed_outputs'],
             'storage_connection_smoke' => ['passed' => true],
             'scenario_results' => $scenarioResults,
+        ];
+    }
+
+    /**
+     * @param array<string, mixed> $complete
+     * @param array<string, mixed> $migrationPlan
+     *
+     * @return array<string, mixed>
+     */
+    private function completeRunbookEvidence(array $complete, array $migrationPlan): array
+    {
+        $scenarioResults = $complete['scenario_results'];
+
+        return [
+            'outcome' => 'pass',
+            'startedAt' => $complete['started_at'],
+            'finishedAt' => $complete['finished_at'],
+            'localProductSourceCheckoutsUsed' => false,
+            'pinnedVersions' => [
+                'v1' => [
+                    'server' => $complete['published_artifact_versions']['server-v1'],
+                    'cli' => $complete['published_artifact_versions']['cli-v1'],
+                    'workflow' => $complete['published_artifact_versions']['workflow-php-v1'],
+                    'waterline' => $complete['published_artifact_versions']['waterline-v1'],
+                    'sampleApp' => $complete['published_artifact_versions']['sample-app-v1'],
+                ],
+                'v2' => [
+                    'server' => $complete['published_artifact_versions']['server-v2'],
+                    'cli' => $complete['published_artifact_versions']['cli-v2'],
+                    'workflow' => $complete['published_artifact_versions']['workflow-php-v2'],
+                    'pythonSdk' => $complete['published_artifact_versions']['sdk-python'],
+                    'waterline' => $complete['published_artifact_versions']['waterline-v2'],
+                ],
+            ],
+            'artifactSources' => $complete['artifact_sources'],
+            'realisticV1StateSnapshot' => $scenarioResults['latest_supported_v1_state_setup']['observed_outputs'],
+            'migrationPlan' => $migrationPlan,
+            'completedHistoryReplay' => $scenarioResults['completed_history_preservation_and_replay']['observed_outputs'],
+            'inFlightWorkflowProgress' => $scenarioResults['in_flight_workflow_progress_preserved']['observed_outputs'],
+            'midActivityRetryPreserved' => $scenarioResults['mid_activity_retry_preserved']['observed_outputs'],
+            'scheduleCrossUpgradeCadencePreserved' => $scenarioResults['schedule_cross_upgrade_cadence_preserved']['observed_outputs'],
+            'workerRegistrationProjectionPreserved' => $scenarioResults['worker_registration_projection_preserved']['observed_outputs'],
+            'waterlineOperatorVisibilityPreserved' => $scenarioResults['waterline_operator_visibility_preserved']['observed_outputs'],
+            'cliAccessToPreupgradeState' => $scenarioResults['cli_access_to_preupgrade_state']['observed_outputs'],
+            'newV2WorkflowStartAfterUpgrade' => $scenarioResults['new_v2_workflow_start_after_upgrade']['observed_outputs'],
+            'rollbackResult' => $scenarioResults['rollback_contract_verified']['observed_outputs'],
+            'versionSkewObservations' => $scenarioResults['version_skew_refusal']['observed_outputs'],
+            'preupgradeStateSnapshot' => $complete['preupgrade_state_snapshot'],
+            'postupgradeStateSnapshot' => $complete['postupgrade_state_snapshot'],
+            'historyDumps' => $complete['history_dumps'],
+            'activityAttempts' => $complete['activity_attempts'],
+            'scheduleTicks' => $complete['schedule_ticks'],
+            'workerRegistrationObservations' => $complete['worker_registration_observations'],
+            'cliObservations' => $complete['cli_observations'],
+            'waterlineObservations' => $complete['waterline_observations'],
+            'rollbackObservations' => $complete['rollback_observations'],
+            'storageConnectionSmoke' => $complete['storage_connection_smoke'],
         ];
     }
 

@@ -2806,16 +2806,31 @@ function runbookMigrationCommandOutputs(source) {
     'command_results',
     'commandResults',
   ]);
-  if (!isEmptyEvidence(direct)) {
-    return direct;
+  const concreteDirect = concreteCommandOutputCollection(direct);
+  if (!isEmptyEvidence(concreteDirect)) {
+    return concreteDirect;
   }
 
   const commands = runbookFieldValue(source, 'commands');
-  if (Array.isArray(commands) && commands.some((entry) => hasConcreteCommandOutput(entry))) {
-    return commands;
+  const concreteCommands = concreteCommandOutputCollection(commands);
+  if (!isEmptyEvidence(concreteCommands)) {
+    return concreteCommands;
   }
 
   return undefined;
+}
+
+function concreteCommandOutputCollection(commandOutputs) {
+  const entries = commandOutputEntries(commandOutputs);
+  if (entries.length === 0) {
+    return undefined;
+  }
+
+  if (Array.isArray(commandOutputs)) {
+    return entries.map(([, entry]) => entry);
+  }
+
+  return Object.fromEntries(entries);
 }
 
 function commandsExecutedFromCommandOutputs(commandOutputs) {
@@ -2852,12 +2867,12 @@ function commandOutputEntries(commandOutputs) {
   if (Array.isArray(commandOutputs)) {
     return commandOutputs
       .map((entry, index) => [String(index + 1), normalizeCommandOutputEntry(entry, String(index + 1))])
-      .filter(([, entry]) => hasConcreteCommandOutput(entry));
+      .filter(([key, entry]) => hasConcreteCommandOutput(entry, key));
   }
 
   return Object.entries(objectValue(commandOutputs))
     .map(([key, entry]) => [key, normalizeCommandOutputEntry(entry, key)])
-    .filter(([, entry]) => hasConcreteCommandOutput(entry));
+    .filter(([key, entry]) => hasConcreteCommandOutput(entry, key));
 }
 
 function normalizeCommandOutputEntry(entry, fallbackKey = '') {
@@ -2875,7 +2890,7 @@ function normalizeCommandOutputEntry(entry, fallbackKey = '') {
   };
 }
 
-function hasConcreteCommandOutput(entry) {
+function hasConcreteCommandOutput(entry, fallbackKey = '') {
   if (isEmptyEvidence(entry)) {
     return false;
   }
@@ -2885,7 +2900,12 @@ function hasConcreteCommandOutput(entry) {
   }
 
   const output = objectValue(entry);
+  if (commandOutputLabel(output, fallbackKey) === '') {
+    return false;
+  }
+
   return [
+    'status',
     'stdout',
     'stderr',
     'output',
