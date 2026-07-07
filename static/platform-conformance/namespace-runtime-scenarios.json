@@ -113,6 +113,11 @@
         "schedule_cleanup",
         "search_attribute_cleanup",
         "worker_registration_cleanup",
+        "pre_delete_resources",
+        "deleted_counts",
+        "post_delete_refusals",
+        "operator_surface_cleanup",
+        "retained_resources",
         "recreate_state_empty",
         "external_payload_contexts_checked"
       ]

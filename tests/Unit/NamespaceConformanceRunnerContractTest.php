@@ -239,6 +239,32 @@ class NamespaceConformanceRunnerContractTest extends TestCase
         $this->assertStringNotContainsString('"cross_namespace_schedule_mutation_denied": sched_b_describe_a', $source);
     }
 
+    public function test_runner_records_namespace_deletion_cleanup_surfaces_before_and_after_recreate(): void
+    {
+        $source = $this->read('scripts/conformance/namespaces-published-artifacts.sh');
+
+        foreach ([
+            'cleanup_pre_delete_resources = {',
+            'cleanup_retained_resources = {',
+            'post_delete_refusals = {',
+            '"operator_surface_cleanup": {',
+            '"deleted_counts": delete_response.get("deleted")',
+            '"pre_delete_resources": cleanup_pre_delete_resources',
+            '"retained_resources": {',
+            '"workflow_cleanup": {',
+            '"schedule_cleanup": {',
+            '"search_attribute_cleanup": {',
+            '"worker_registration_cleanup": {',
+            '"after_delete_refused": post_delete_workflow_list_refused',
+            '"after_delete_refused": post_delete_schedule_list_refused',
+            '"after_delete_refused": post_delete_search_attributes_refused',
+            '"after_delete_refused": post_delete_workers_refused',
+            '"deleted_namespace_absent_from_list": NAMESPACES["a"] not in post_delete_list_names',
+        ] as $needle) {
+            $this->assertStringContainsString($needle, $source);
+        }
+    }
+
     public function test_runner_records_non_source_published_artifact_policy(): void
     {
         $source = $this->read('scripts/conformance/namespaces-published-artifacts.sh');

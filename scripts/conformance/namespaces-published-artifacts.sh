@@ -2212,28 +2212,93 @@ def main() -> int:
         reserved_findings,
     ))
 
+    cleanup_pre_delete_resources = {
+        "namespace": NAMESPACES["a"],
+        "workflow_ids": sorted({wf_a, mutation_a, wf_worker_a, sa_workflow, sdk_wf}),
+        "schedule_ids": [sched_a_id],
+        "search_attribute_names": ["customer_id"],
+        "worker_ids": [worker_a],
+        "nexus_caller_namespace": NAMESPACES["a"],
+    }
+    cleanup_retained_resources = {
+        "tenant_b_workflow_ids": sorted({wf_b, wf_worker_b}),
+        "tenant_b_schedule_ids": [sched_b_id],
+        "shared_namespace_service_endpoint": "shared-nexus",
+        "tenant_b_nexus_call": nexus_b,
+    }
     delete_response = request("DELETE", "/namespaces/tenant-a", namespace=NAMESPACES["a"])["json"]
+    post_delete_namespace_describe = request("GET", "/namespaces/tenant-a", namespace=NAMESPACES["b"], allowed={404})
+    post_delete_namespace_list = request("GET", "/namespaces", namespace=NAMESPACES["b"])["json"]
+    post_delete_workflow_list_refused = request("GET", "/workflows", namespace=NAMESPACES["a"], allowed={404})
+    post_delete_workflow_describe_refused = request("GET", f"/workflows/{wf_a}", namespace=NAMESPACES["a"], allowed={404})
+    post_delete_schedule_list_refused = request("GET", "/schedules", namespace=NAMESPACES["a"], allowed={404})
+    post_delete_schedule_describe_refused = request("GET", f"/schedules/{sched_a_id}", namespace=NAMESPACES["a"], allowed={404})
+    post_delete_search_attributes_refused = request("GET", "/search-attributes", namespace=NAMESPACES["a"], allowed={404})
+    post_delete_workers_refused = request("GET", "/workers", namespace=NAMESPACES["a"], allowed={404})
+    post_delete_tenant_b_workflows = request("GET", "/workflows", namespace=NAMESPACES["b"])["json"]
+    post_delete_tenant_b_schedules = request("GET", "/schedules", namespace=NAMESPACES["b"])["json"]
+    post_delete_tenant_b_search_attributes = request("GET", "/search-attributes", namespace=NAMESPACES["b"])["json"]
+    post_delete_tenant_b_workers = request("GET", "/workers", namespace=NAMESPACES["b"])["json"]
     recreate_response = create_namespace(NAMESPACES["a"], "Recreated tenant A")
     post_delete_workflows = request("GET", "/workflows", namespace=NAMESPACES["a"])["json"]
     post_delete_schedules = request("GET", "/schedules", namespace=NAMESPACES["a"])["json"]
     post_delete_search_attributes = request("GET", "/search-attributes", namespace=NAMESPACES["a"])["json"]
     post_delete_workers = request("GET", "/workers", namespace=NAMESPACES["a"])["json"]
     cleanup_failures = []
+    deleted_counts = delete_response.get("deleted") if isinstance(delete_response, dict) else {}
+    for table_name in [
+        "workflow_runs",
+        "workflow_schedules",
+        "search_attribute_definitions",
+        "workflow_worker_registrations",
+    ]:
+        if int((deleted_counts or {}).get(table_name) or 0) < 1:
+            cleanup_failures.append(f"namespace delete response did not report removing {table_name}")
+    recreate_failures = []
     if workflow_ids_in_list(post_delete_workflows):
+        recreate_failures.append("recreated tenant-a inherited workflow visibility rows")
         cleanup_failures.append("recreated tenant-a inherited workflow visibility rows")
     if schedules_in_list(post_delete_schedules):
+        recreate_failures.append("recreated tenant-a inherited schedule rows")
         cleanup_failures.append("recreated tenant-a inherited schedule rows")
     if "customer_id" in (post_delete_search_attributes.get("custom_attributes") or {}):
+        recreate_failures.append("recreated tenant-a inherited custom search attribute definition")
         cleanup_failures.append("recreated tenant-a inherited custom search attribute definition")
     if post_delete_workers.get("workers"):
+        recreate_failures.append("recreated tenant-a inherited worker registrations")
         cleanup_failures.append("recreated tenant-a inherited worker registrations")
+    post_delete_refusals = {
+        "namespace_describe": post_delete_namespace_describe,
+        "workflow_list": post_delete_workflow_list_refused,
+        "workflow_describe": post_delete_workflow_describe_refused,
+        "schedule_list": post_delete_schedule_list_refused,
+        "schedule_describe": post_delete_schedule_describe_refused,
+        "search_attribute_list": post_delete_search_attributes_refused,
+        "worker_list": post_delete_workers_refused,
+    }
+    for surface, probe in post_delete_refusals.items():
+        if probe["status_code"] != 404:
+            cleanup_failures.append(f"deleted tenant-a {surface} did not return namespace_not_found/not_found")
+    post_delete_list_names = [str(item.get("name") or "") for item in post_delete_namespace_list.get("namespaces", []) if isinstance(item, dict)]
+    if NAMESPACES["a"] in post_delete_list_names:
+        cleanup_failures.append("deleted tenant-a remained visible in namespace list")
+    tenant_b_workflow_ids_after_delete = workflow_ids_in_list(post_delete_tenant_b_workflows)
+    tenant_b_schedule_ids_after_delete = schedules_in_list(post_delete_tenant_b_schedules)
+    if wf_b not in tenant_b_workflow_ids_after_delete:
+        cleanup_failures.append("tenant-b workflow was not retained after tenant-a deletion")
+    if sched_b_id not in tenant_b_schedule_ids_after_delete:
+        cleanup_failures.append("tenant-b schedule was not retained after tenant-a deletion")
+    if "customer_id" in (post_delete_tenant_b_search_attributes.get("custom_attributes") or {}):
+        cleanup_failures.append("tenant-b search attributes inherited tenant-a custom definition after deletion")
+    if worker_b not in [str(item.get("worker_id") or "") for item in post_delete_tenant_b_workers.get("workers", []) if isinstance(item, dict)]:
+        cleanup_failures.append("tenant-b worker registration was not retained after tenant-a deletion")
     cleanup_findings = [
         finding(
             "namespace_lifecycle_cleanup_and_recreate",
             "server",
             "; ".join(cleanup_failures),
-            "namespace deletion removes active workflows, schedules, search attributes, and worker registrations before recreate",
-            "extend namespace lifecycle cleanup to delete dangling namespace-owned state and prove recreate starts empty",
+            "namespace deletion removes owned runtime state, refuses deleted-namespace surfaces, preserves other namespaces, and recreates empty",
+            "extend namespace lifecycle cleanup or runner evidence until workflow, schedule, search, worker, and operator surfaces prove no stale tenant data",
         )
     ] if cleanup_failures else []
     add(scenario(
@@ -2241,11 +2306,40 @@ def main() -> int:
         status_from_failures(cleanup_failures),
         {
             "deleted_namespace": delete_response,
-            "workflow_cleanup": {"after_recreate": post_delete_workflows},
-            "schedule_cleanup": {"after_recreate": post_delete_schedules},
-            "search_attribute_cleanup": {"after_recreate": post_delete_search_attributes},
-            "worker_registration_cleanup": {"after_recreate": post_delete_workers},
-            "recreate_state_empty": not cleanup_failures,
+            "pre_delete_resources": cleanup_pre_delete_resources,
+            "deleted_counts": deleted_counts,
+            "post_delete_refusals": post_delete_refusals,
+            "operator_surface_cleanup": {
+                "namespace_describe_after_delete": post_delete_namespace_describe,
+                "namespace_list_after_delete": post_delete_namespace_list,
+                "deleted_namespace_absent_from_list": NAMESPACES["a"] not in post_delete_list_names,
+            },
+            "workflow_cleanup": {
+                "after_delete_refused": post_delete_workflow_list_refused,
+                "describe_after_delete_refused": post_delete_workflow_describe_refused,
+                "after_recreate": post_delete_workflows,
+            },
+            "schedule_cleanup": {
+                "after_delete_refused": post_delete_schedule_list_refused,
+                "describe_after_delete_refused": post_delete_schedule_describe_refused,
+                "after_recreate": post_delete_schedules,
+            },
+            "search_attribute_cleanup": {
+                "after_delete_refused": post_delete_search_attributes_refused,
+                "after_recreate": post_delete_search_attributes,
+            },
+            "worker_registration_cleanup": {
+                "after_delete_refused": post_delete_workers_refused,
+                "after_recreate": post_delete_workers,
+            },
+            "retained_resources": {
+                "expected": cleanup_retained_resources,
+                "tenant_b_workflows_after_delete": post_delete_tenant_b_workflows,
+                "tenant_b_schedules_after_delete": post_delete_tenant_b_schedules,
+                "tenant_b_search_attributes_after_delete": post_delete_tenant_b_search_attributes,
+                "tenant_b_workers_after_delete": post_delete_tenant_b_workers,
+            },
+            "recreate_state_empty": not recreate_failures,
             "external_payload_contexts_checked": "no external payload storage contexts were configured in this published-artifact pass",
             "recreated_namespace": recreate_response,
         },

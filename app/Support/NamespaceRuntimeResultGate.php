@@ -76,6 +76,11 @@ final class NamespaceRuntimeResultGate
                 'schedule_cleanup' => ['schedule_cleanup', 'scheduleCleanup'],
                 'search_attribute_cleanup' => ['search_attribute_cleanup', 'searchAttributeCleanup'],
                 'worker_registration_cleanup' => ['worker_registration_cleanup', 'workerRegistrationCleanup'],
+                'pre_delete_resources' => ['pre_delete_resources', 'preDeleteResources'],
+                'deleted_counts' => ['deleted_counts', 'deletedCounts'],
+                'post_delete_refusals' => ['post_delete_refusals', 'postDeleteRefusals'],
+                'operator_surface_cleanup' => ['operator_surface_cleanup', 'operatorSurfaceCleanup'],
+                'retained_resources' => ['retained_resources', 'retainedResources'],
                 'recreate_state_empty' => ['recreate_state_empty', 'recreateStateEmpty'],
                 'external_payload_contexts_checked' => [
                     'external_payload_contexts_checked',
