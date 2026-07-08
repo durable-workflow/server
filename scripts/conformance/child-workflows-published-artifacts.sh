@@ -24,6 +24,12 @@ Environment overrides:
   DW_CHILD_WORKFLOWS_TYPED_FAILURE_EVIDENCE
                                       JSON proof for failure-round-trip cells observed through published
                                       artifacts. A partial cell set is recorded but cannot pass the matrix.
+                                      Defaults to typed-failure-evidence.json in the result directory when present.
+  DW_CHILD_WORKFLOWS_SKIP_FOCUSED_TYPED_FAILURE_PROBE=1
+                                      Skip the focused published-image typed child failure probe.
+  DW_CHILD_WORKFLOWS_PYTHON_BIN       Optional Python executable with durable-workflow installed.
+                                      Defaults to a run-root venv installed from DW_PYTHON_SDK_VERSION when
+                                      python3 and pip are available.
   DW_SERVER_IMAGE                       Exact server image tag or digest to test.
   DW_SERVER_VERSION                     Exact patch server Docker tag; required for digest-only DW_SERVER_IMAGE.
   DW_CLI_VERSION                        Exact CLI release version.
@@ -115,6 +121,501 @@ started_at="$(timestamp)"
 if ! require_command python3; then
   printf '%s\n' 'required command not found: python3' >&2
   exit 1
+fi
+
+focused_probe_app_key="${APP_KEY:-base64:Q0hJTEQtV09SS0ZMT1dTLVRZUEVELUZBSUxVUkUtUFJPQkU=}"
+
+should_run_focused_typed_failure_probe() {
+  if [[ "${DW_CHILD_WORKFLOWS_SKIP_FOCUSED_TYPED_FAILURE_PROBE:-0}" == "1" \
+    || "${DW_CHILD_WORKFLOWS_SKIP_FOCUSED_TYPED_FAILURE_PROBE:-}" == "true" ]]; then
+    return 1
+  fi
+  if [[ -n "${DW_CHILD_WORKFLOWS_TYPED_FAILURE_EVIDENCE:-}" ]]; then
+    return 1
+  fi
+  if [[ -s "$result_dir/typed-failure-evidence.json" ]]; then
+    return 1
+  fi
+  if [[ "$repo_root" != "/app" || -d "$repo_root/.git" ]]; then
+    return 1
+  fi
+  if [[ ! -f "$repo_root/artisan" || ! -f "$repo_root/vendor/autoload.php" ]]; then
+    return 1
+  fi
+
+  require_command php
+}
+
+prepare_focused_python_sdk() {
+  if [[ -n "${DW_CHILD_WORKFLOWS_PYTHON_BIN:-}" ]]; then
+    return 0
+  fi
+  if [[ -z "${DW_PYTHON_SDK_VERSION:-}" ]]; then
+    return 1
+  fi
+  if ! require_command python3; then
+    return 1
+  fi
+
+  local venv="$run_root/sdk-python-typed-child-failure-venv"
+  local install_log="$result_dir/sdk-python-typed-child-failure-install.log"
+  if python3 -m venv "$venv" >"$install_log" 2>&1 \
+    && "$venv/bin/python" -m pip install --disable-pip-version-check --no-input "durable-workflow==${DW_PYTHON_SDK_VERSION}" >>"$install_log" 2>&1; then
+    export DW_CHILD_WORKFLOWS_PYTHON_BIN="$venv/bin/python"
+    return 0
+  fi
+
+  return 1
+}
+
+run_focused_typed_failure_probe() {
+  local probe_db="$run_root/child-workflows-typed-failure-probe.sqlite"
+  local server_evidence="$result_dir/focused-typed-failure-server-evidence.json"
+  local python_log="$result_dir/focused-typed-failure-python-sdk.log"
+
+  : > "$probe_db"
+  if ! prepare_focused_python_sdk; then
+    printf '%s\n' 'focused typed child failure probe skipped: published Python SDK is unavailable' >"$python_log"
+    return 0
+  fi
+
+  APP_ENV=production \
+  APP_DEBUG=false \
+  APP_KEY="$focused_probe_app_key" \
+  DB_CONNECTION=sqlite \
+  DB_DATABASE="$probe_db" \
+  QUEUE_CONNECTION=database \
+  CACHE_STORE=array \
+  SESSION_DRIVER=array \
+  DW_AUTH_DRIVER=none \
+  DW_TASK_DISPATCH_MODE=poll \
+  DW_V2_TASK_DISPATCH_MODE=poll \
+  RUNNER_REPO_ROOT="$repo_root" \
+  RESULT_DIR="$result_dir" \
+  php <<'PHP' || true
+<?php
+declare(strict_types=1);
+
+use App\Models\WorkflowNamespace;
+use App\Support\ControlPlaneProtocol;
+use App\Support\WorkerProtocol;
+use Illuminate\Contracts\Console\Kernel as ConsoleKernel;
+use Illuminate\Contracts\Http\Kernel as HttpKernel;
+use Illuminate\Http\Request;
+use Illuminate\Support\Facades\Artisan;
+use Workflow\Serializers\Serializer;
+use Workflow\V2\Enums\HistoryEventType;
+use Workflow\V2\Enums\RunStatus;
+use Workflow\V2\Models\WorkflowFailure;
+use Workflow\V2\Models\WorkflowRun;
+
+const CHILD_WORKFLOWS_NAMESPACE = 'child-workflows-conformance';
+const CHILD_WORKFLOWS_TASK_QUEUE = 'cw-typed-failure';
+const PARENT_WORKFLOW_TYPE = 'conformance.sdk-python.parent-typed-child-failure';
+const CHILD_WORKFLOW_TYPE = 'conformance.sdk-python.child-domain-failure';
+const CHILD_EXCEPTION_CLASS = 'conformance.child_failure.ChildDomainFailure';
+const CHILD_EXCEPTION_TYPE = 'ChildDomainFailure';
+const CHILD_EXCEPTION_MESSAGE = 'typed child domain failure from published artifacts';
+
+$repoRoot = getenv('RUNNER_REPO_ROOT') ?: '/app';
+if (! is_dir($repoRoot)) {
+    throw new RuntimeException('published server root is not available');
+}
+chdir($repoRoot);
+
+require $repoRoot.'/vendor/autoload.php';
+
+function now_iso(): string
+{
+    return gmdate('Y-m-d\TH:i:s\Z');
+}
+
+function write_json_file(string $path, array $value): void
+{
+    file_put_contents($path, json_encode($value, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES)."\n");
+}
+
+function focused_result_dir(): string
+{
+    return rtrim(getenv('RESULT_DIR') ?: sys_get_temp_dir(), '/');
+}
+
+function bootstrap_application(string $repoRoot): void
+{
+    $app = require $repoRoot.'/bootstrap/app.php';
+    $app->make(ConsoleKernel::class)->bootstrap();
+
+    config([
+        'app.key' => getenv('APP_KEY') ?: 'base64:Q0hJTEQtV09SS0ZMT1dTLVRZUEVELUZBSUxVUkUtUFJPQkU=',
+        'database.default' => 'sqlite',
+        'database.connections.sqlite.database' => getenv('DB_DATABASE') ?: ':memory:',
+        'queue.default' => 'database',
+        'cache.default' => 'array',
+        'session.driver' => 'array',
+        'server.auth.driver' => 'none',
+        'server.mode' => 'service',
+        'workflows.v2.task_dispatch_mode' => 'poll',
+    ]);
+
+    Artisan::call('migrate', ['--force' => true]);
+
+    WorkflowNamespace::query()->updateOrCreate(
+        ['name' => CHILD_WORKFLOWS_NAMESPACE],
+        [
+            'description' => 'Child-workflows conformance namespace',
+            'retention_days' => 30,
+            'status' => 'active',
+        ]
+    );
+}
+
+function header_key(string $name): string
+{
+    return 'HTTP_'.str_replace('-', '_', strtoupper($name));
+}
+
+function request_json(string $method, string $path, ?array $body = null, array $allowed = []): array
+{
+    static $kernel = null;
+    $kernel ??= app(HttpKernel::class);
+
+    $server = [
+        'HTTP_ACCEPT' => 'application/json',
+        'CONTENT_TYPE' => 'application/json',
+        'HTTP_X_NAMESPACE' => CHILD_WORKFLOWS_NAMESPACE,
+        header_key(ControlPlaneProtocol::HEADER) => ControlPlaneProtocol::VERSION,
+        header_key(WorkerProtocol::HEADER) => WorkerProtocol::VERSION,
+    ];
+    $content = $body === null ? null : json_encode($body, JSON_THROW_ON_ERROR);
+    $request = Request::create('/api'.$path, $method, [], [], [], $server, $content);
+    $response = $kernel->handle($request);
+    $kernel->terminate($request, $response);
+    $status = $response->getStatusCode();
+    $payload = (string) $response->getContent();
+
+    if (($status >= 400 || $status === 0) && ! in_array($status, $allowed, true)) {
+        throw new RuntimeException(sprintf('%s %s failed with HTTP %d: %s', $method, $path, $status, $payload));
+    }
+
+    if ($payload === '') {
+        return [];
+    }
+
+    $decoded = json_decode($payload, true, flags: JSON_THROW_ON_ERROR);
+
+    return is_array($decoded) ? $decoded : [];
+}
+
+function event_type(array $event): string
+{
+    return is_string($event['event_type'] ?? null)
+        ? $event['event_type']
+        : (is_string($event['type'] ?? null) ? $event['type'] : '');
+}
+
+function event_payload(array $event): array
+{
+    return is_array($event['payload'] ?? null) ? $event['payload'] : [];
+}
+
+function first_event(array $events, string $eventType): ?array
+{
+    foreach ($events as $event) {
+        if (is_array($event) && event_type($event) === $eventType) {
+            return $event;
+        }
+    }
+
+    return null;
+}
+
+function register_worker(string $workerId, string $workflowType): void
+{
+    request_json('POST', '/worker/register', [
+        'worker_id' => $workerId,
+        'task_queue' => CHILD_WORKFLOWS_TASK_QUEUE,
+        'runtime' => 'python',
+        'sdk_version' => getenv('DW_PYTHON_SDK_VERSION') ?: null,
+        'supported_workflow_types' => [$workflowType],
+        'supported_activity_types' => [],
+    ], [201]);
+}
+
+function poll_workflow_task(string $workerId): array
+{
+    $poll = request_json('POST', '/worker/workflow-tasks/poll', [
+        'worker_id' => $workerId,
+        'task_queue' => CHILD_WORKFLOWS_TASK_QUEUE,
+    ]);
+
+    if (! is_array($poll['task'] ?? null)) {
+        throw new RuntimeException(sprintf('worker %s did not receive a workflow task: %s', $workerId, json_encode($poll)));
+    }
+
+    return $poll['task'];
+}
+
+function complete_task(array $task, array $commands): array
+{
+    $taskId = is_string($task['task_id'] ?? null) ? $task['task_id'] : '';
+    if ($taskId === '') {
+        throw new RuntimeException('workflow task is missing task_id');
+    }
+
+    return request_json('POST', '/worker/workflow-tasks/'.$taskId.'/complete', [
+        'lease_owner' => $task['lease_owner'] ?? null,
+        'workflow_task_attempt' => $task['workflow_task_attempt'] ?? null,
+        'commands' => $commands,
+    ]);
+}
+
+try {
+    bootstrap_application($repoRoot);
+
+    $parentWorkflowId = 'cw-typed-parent-'.bin2hex(random_bytes(6));
+    $start = request_json('POST', '/workflows', [
+        'workflow_id' => $parentWorkflowId,
+        'workflow_type' => PARENT_WORKFLOW_TYPE,
+        'task_queue' => CHILD_WORKFLOWS_TASK_QUEUE,
+        'input' => ['typed-child-failure'],
+    ], [201]);
+    $parentRunId = is_string($start['run_id'] ?? null) ? $start['run_id'] : '';
+    if ($parentRunId === '') {
+        throw new RuntimeException('start response did not include parent run id');
+    }
+
+    register_worker('cw-typed-parent-worker', PARENT_WORKFLOW_TYPE);
+    register_worker('cw-typed-child-worker', CHILD_WORKFLOW_TYPE);
+    register_worker('cw-typed-parent-resume-worker', PARENT_WORKFLOW_TYPE);
+
+    $parentTask = poll_workflow_task('cw-typed-parent-worker');
+    complete_task($parentTask, [[
+        'type' => 'start_child_workflow',
+        'workflow_type' => CHILD_WORKFLOW_TYPE,
+        'queue' => CHILD_WORKFLOWS_TASK_QUEUE,
+        'arguments' => Serializer::serializeWithCodec('avro', ['typed-child-failure']),
+    ]]);
+
+    $childTask = poll_workflow_task('cw-typed-child-worker');
+    $childRunId = is_string($childTask['run_id'] ?? null) ? $childTask['run_id'] : '';
+    $childWorkflowId = is_string($childTask['workflow_id'] ?? null) ? $childTask['workflow_id'] : '';
+    if ($childRunId === '' || $childWorkflowId === '') {
+        throw new RuntimeException('child poll response did not include workflow/run identifiers');
+    }
+
+    complete_task($childTask, [[
+        'type' => 'fail_workflow',
+        'message' => CHILD_EXCEPTION_MESSAGE,
+        'exception_type' => CHILD_EXCEPTION_TYPE,
+        'exception_class' => CHILD_EXCEPTION_CLASS,
+        'exception' => [
+            'type' => CHILD_EXCEPTION_TYPE,
+            'class' => CHILD_EXCEPTION_CLASS,
+            'message' => CHILD_EXCEPTION_MESSAGE,
+            'details' => [
+                'domain_code' => 'CHILD_DOMAIN_FAILURE',
+                'surface' => 'published server worker protocol',
+            ],
+        ],
+    ]]);
+
+    $parentResumeTask = poll_workflow_task('cw-typed-parent-resume-worker');
+    $resumeEvents = is_array($parentResumeTask['history_events'] ?? null) ? $parentResumeTask['history_events'] : [];
+    $childRunFailed = first_event($resumeEvents, HistoryEventType::ChildRunFailed->value);
+    if ($childRunFailed === null) {
+        throw new RuntimeException('parent resume history did not include ChildRunFailed');
+    }
+
+    $failedPayload = event_payload($childRunFailed);
+    if (($failedPayload['exception_class'] ?? null) !== CHILD_EXCEPTION_CLASS) {
+        throw new RuntimeException('ChildRunFailed lost exception_class metadata');
+    }
+    if (($failedPayload['message'] ?? null) !== CHILD_EXCEPTION_MESSAGE) {
+        throw new RuntimeException('ChildRunFailed lost exception message metadata');
+    }
+    if (($failedPayload['failure_category'] ?? null) !== 'child_workflow') {
+        throw new RuntimeException('ChildRunFailed lost child_workflow failure category');
+    }
+
+    /** @var WorkflowRun $childRun */
+    $childRun = WorkflowRun::query()->findOrFail($childRunId);
+    if ($childRun->status !== RunStatus::Failed) {
+        throw new RuntimeException('child run did not reach failed status');
+    }
+
+    /** @var WorkflowFailure|null $childFailure */
+    $childFailure = WorkflowFailure::query()
+        ->where('workflow_run_id', $childRunId)
+        ->first();
+
+    $parentHistory = request_json('GET', '/workflows/'.$parentWorkflowId.'/runs/'.$parentRunId.'/history');
+    $childHistory = request_json('GET', '/workflows/'.$childWorkflowId.'/runs/'.$childRunId.'/history');
+
+    write_json_file(focused_result_dir().'/focused-typed-failure-server-evidence.json', [
+        'schema' => 'durable-workflow.v2.child-workflow-runtime.focused-typed-failure-server-evidence',
+        'generated_at' => now_iso(),
+        'local_product_source_checkouts_used' => false,
+        'parent' => 'sdk-python',
+        'child' => 'sdk-python',
+        'parent_workflow_id' => $parentWorkflowId,
+        'parent_run_id' => $parentRunId,
+        'child_workflow_id' => $childWorkflowId,
+        'child_run_id' => $childRunId,
+        'task_queue' => CHILD_WORKFLOWS_TASK_QUEUE,
+        'parent_resume_task' => [
+            'task_id' => $parentResumeTask['task_id'] ?? null,
+            'workflow_event_type' => $parentResumeTask['workflow_event_type'] ?? null,
+            'workflow_sequence' => $parentResumeTask['workflow_sequence'] ?? null,
+            'resume_source_kind' => $parentResumeTask['resume_source_kind'] ?? null,
+            'resume_source_id' => $parentResumeTask['resume_source_id'] ?? null,
+            'child_workflow_run_id' => $parentResumeTask['child_workflow_run_id'] ?? null,
+            'child_call_id' => $parentResumeTask['child_call_id'] ?? null,
+        ],
+        'parent_history_observations' => array_values(array_map(
+            static fn (array $event): string => event_type($event),
+            array_filter($parentHistory['events'] ?? [], 'is_array')
+        )),
+        'child_history_observations' => array_values(array_map(
+            static fn (array $event): string => event_type($event),
+            array_filter($childHistory['events'] ?? [], 'is_array')
+        )),
+        'parent_child_run_failed_event' => $childRunFailed,
+        'child_failure_row' => $childFailure instanceof WorkflowFailure ? [
+            'failure_id' => $childFailure->id,
+            'failure_category' => $childFailure->failure_category?->value,
+            'exception_type' => $childFailure->exception_type,
+            'exception_class' => $childFailure->exception_class,
+            'message' => $childFailure->message,
+        ] : null,
+        'parent_history' => $parentHistory,
+        'child_history' => $childHistory,
+    ]);
+} catch (Throwable $throwable) {
+    write_json_file(focused_result_dir().'/focused-typed-failure-server-evidence-error.json', [
+        'schema' => 'durable-workflow.v2.child-workflow-runtime.focused-typed-failure-server-evidence-error',
+        'generated_at' => now_iso(),
+        'local_product_source_checkouts_used' => false,
+        'error' => $throwable::class.': '.$throwable->getMessage(),
+        'trace' => $throwable->getTraceAsString(),
+    ]);
+}
+PHP
+
+  if [[ ! -s "$server_evidence" ]]; then
+    return 0
+  fi
+
+  "$DW_CHILD_WORKFLOWS_PYTHON_BIN" - "$server_evidence" "$result_dir/typed-failure-evidence.json" >"$python_log" 2>&1 <<'PY' || true
+from __future__ import annotations
+
+import json
+import os
+import sys
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Any
+
+from durable_workflow import workflow
+from durable_workflow.errors import ChildWorkflowFailed
+from durable_workflow.workflow import CompleteWorkflow, WorkflowContext, replay
+
+
+@workflow.defn(name="conformance.sdk-python.parent-typed-child-failure")
+class FocusedTypedChildFailureParent:
+    def run(self, ctx: WorkflowContext) -> dict[str, Any]:  # type: ignore[no-untyped-def]
+        try:
+            yield ctx.start_child_workflow("conformance.sdk-python.child-domain-failure", ["typed-child-failure"])
+        except ChildWorkflowFailed as exc:
+            return {
+                "message": str(exc),
+                "exception_class": exc.exception_class,
+                "failure_kind": exc.failure_kind,
+                "child_workflow_run_id": exc.child_workflow_run_id,
+                "child_workflow_type": exc.child_workflow_type,
+            }
+        return {"unexpected_success": True}
+
+
+def utc_now() -> str:
+    return datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+
+
+server_evidence_path = Path(sys.argv[1])
+output_path = Path(sys.argv[2])
+server_evidence = json.loads(server_evidence_path.read_text(encoding="utf-8"))
+parent_history = server_evidence["parent_history"]["events"]
+outcome = replay(FocusedTypedChildFailureParent, parent_history, ["typed-child-failure"])
+if len(outcome.commands) != 1 or not isinstance(outcome.commands[0], CompleteWorkflow):
+    raise RuntimeError(f"Python SDK replay did not complete after ChildRunFailed: {outcome.commands!r}")
+
+parent_observed_failure = outcome.commands[0].result
+if not isinstance(parent_observed_failure, dict):
+    raise RuntimeError("Python SDK replay did not return typed failure details")
+
+expected_class = "conformance.child_failure.ChildDomainFailure"
+expected_message = "typed child domain failure from published artifacts"
+if parent_observed_failure.get("exception_class") != expected_class:
+    raise RuntimeError(f"Python SDK replay saw exception_class={parent_observed_failure.get('exception_class')!r}")
+if parent_observed_failure.get("message") != expected_message:
+    raise RuntimeError(f"Python SDK replay saw message={parent_observed_failure.get('message')!r}")
+if parent_observed_failure.get("failure_kind") != "child_workflow":
+    raise RuntimeError(f"Python SDK replay saw failure_kind={parent_observed_failure.get('failure_kind')!r}")
+
+artifact_versions = {
+    "server": os.environ.get("DW_SERVER_VERSION", "").strip(),
+    "cli": os.environ.get("DW_CLI_VERSION", "").strip().removeprefix("v"),
+    "sdk-python": os.environ.get("DW_PYTHON_SDK_VERSION", "").strip(),
+    "workflow": os.environ.get("DW_WORKFLOW_PHP_VERSION", "").strip(),
+    "waterline": os.environ.get("DW_WATERLINE_VERSION", "").strip(),
+}
+
+parent_observations = list(server_evidence.get("parent_history_observations") or [])
+child_observations = list(server_evidence.get("child_history_observations") or [])
+
+evidence = {
+    "schema": "durable-workflow.v2.child-workflow-runtime.typed-failure-evidence",
+    "generated_at": utc_now(),
+    "local_product_source_checkouts_used": False,
+    "artifact_versions": artifact_versions,
+    "failure_round_trip_cells": [
+        {
+            "scenario": "child_failure_round_trip_matrix",
+            "parent": "sdk-python",
+            "child": "sdk-python",
+            "status": "pass",
+            "exception_class": expected_class,
+            "message": expected_message,
+            "failure_kind": "child_workflow",
+            "parent_workflow_id": server_evidence["parent_workflow_id"],
+            "parent_run_id": server_evidence["parent_run_id"],
+            "child_workflow_id": server_evidence["child_workflow_id"],
+            "child_run_id": server_evidence["child_run_id"],
+            "parent_history_observations": parent_observations,
+            "child_history_observations": child_observations,
+            "public_surfaces": [
+                "server worker protocol workflow-task complete",
+                "server worker protocol parent resume poll",
+                "server history API",
+                "published durable-workflow Python SDK replay surface",
+            ],
+            "parent_observed_failure": parent_observed_failure,
+            "server_child_run_failed_event": server_evidence.get("parent_child_run_failed_event"),
+            "server_child_failure_row": server_evidence.get("child_failure_row"),
+            "local_product_source_checkouts_used": False,
+        }
+    ],
+}
+output_path.write_text(json.dumps(evidence, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+print(json.dumps({"status": "pass", "output": str(output_path)}, sort_keys=True))
+PY
+}
+
+if should_run_focused_typed_failure_probe; then
+  run_focused_typed_failure_probe
+fi
+
+if [[ -z "${DW_CHILD_WORKFLOWS_TYPED_FAILURE_EVIDENCE:-}" && -s "$result_dir/typed-failure-evidence.json" ]]; then
+  export DW_CHILD_WORKFLOWS_TYPED_FAILURE_EVIDENCE="$result_dir/typed-failure-evidence.json"
 fi
 
 python3 - "$result_dir" "$started_at" "$scenario_manifest" <<'PY'

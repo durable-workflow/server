@@ -323,6 +323,10 @@ class ChildWorkflowRuntimeContractTest extends TestCase
         $this->assertStringContainsString('DW_CHILD_WORKFLOWS_SCENARIO_MANIFEST', $source);
         $this->assertStringContainsString('DW_CHILD_WORKFLOWS_ARTIFACT_INSTALL_EVIDENCE', $source);
         $this->assertStringContainsString('DW_CHILD_WORKFLOWS_TYPED_FAILURE_EVIDENCE', $source);
+        $this->assertStringContainsString('DW_CHILD_WORKFLOWS_SKIP_FOCUSED_TYPED_FAILURE_PROBE', $source);
+        $this->assertStringContainsString('DW_CHILD_WORKFLOWS_PYTHON_BIN', $source);
+        $this->assertStringContainsString('focused-typed-failure-server-evidence.json', $source);
+        $this->assertStringContainsString('published durable-workflow Python SDK replay surface', $source);
 
         foreach ([
             'DW_SERVER_VERSION',
@@ -354,6 +358,8 @@ class ChildWorkflowRuntimeContractTest extends TestCase
             'install_evidence_pass',
             'not_exercised',
             'FORBIDDEN_INSTALL_SOURCE_TOKENS',
+            'repo_root" != "/app"',
+            'local_product_source_checkouts_used": False',
         ] as $token) {
             $this->assertStringContainsString($token, $source);
         }
@@ -486,6 +492,36 @@ class ChildWorkflowRuntimeContractTest extends TestCase
         $this->assertStringContainsString(
             'typed failure evidence did not include required failure round-trip cells',
             $scenario['linked_findings'][0]['observed_behavior'] ?? '',
+        );
+    }
+
+    public function test_published_artifact_runner_consumes_default_typed_failure_evidence_path(): void
+    {
+        $run = $this->runChildWorkflowRunnerWithEvidence(
+            $this->childWorkflowRunnerBaseEnv(),
+            [
+                'DW_CHILD_WORKFLOWS_ARTIFACT_INSTALL_EVIDENCE' => [
+                    'name' => 'artifact-install-evidence.json',
+                    'content' => $this->childWorkflowArtifactInstallEvidence(),
+                ],
+                'typed_failure_default' => [
+                    'name' => 'typed-failure-evidence.json',
+                    'content' => $this->childWorkflowTypedFailureEvidence([
+                        $this->childWorkflowTypedFailureCell('sdk-python', 'sdk-python'),
+                    ]),
+                ],
+            ],
+        );
+        $result = $run['result'];
+        $scenario = $this->scenarioResult($result, 'child_failure_round_trip_matrix');
+        $cellStatuses = $this->failureRoundTripStatusByCell($result);
+
+        $this->assertSame(1, $run['exitCode']);
+        $this->assertSame('not_covered', $scenario['status']);
+        $this->assertSame('pass', $cellStatuses['sdk-python->sdk-python'] ?? null);
+        $this->assertSame(
+            'typed-failure-evidence.json',
+            basename((string) ($result['failure_round_trip']['typed_failure_evidence_path'] ?? '')),
         );
     }
 
