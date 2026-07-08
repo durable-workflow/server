@@ -229,6 +229,22 @@ const RUNBOOK_SECTION_ALIASES = {
     'storageConnectionSmokeResult',
   ],
 };
+const SCENARIO_RUNBOOK_SECTION_FIELDS = {
+  latest_supported_v1_state_setup: ['preupgrade_state_snapshot'],
+  documented_migration_steps_execute: ['migration_plan'],
+  completed_history_preservation_and_replay: ['history_dumps', 'postupgrade_state_snapshot'],
+  in_flight_workflow_progress_preserved: ['history_dumps', 'postupgrade_state_snapshot'],
+  mid_activity_retry_preserved: ['activity_attempts', 'postupgrade_state_snapshot'],
+  schedule_cross_upgrade_cadence_preserved: ['schedule_ticks', 'postupgrade_state_snapshot'],
+  worker_registration_projection_preserved: ['worker_registration_observations', 'postupgrade_state_snapshot'],
+  waterline_operator_visibility_preserved: ['waterline_observations'],
+  cli_access_to_preupgrade_state: ['cli_observations'],
+  new_v2_workflow_start_after_upgrade: ['postupgrade_state_snapshot'],
+  rollback_contract_verified: ['rollback_observations'],
+  version_skew_refusal: ['version_skew_observations'],
+  storage_connection_smoke: ['storage_connection_smoke'],
+  migration_storage_connection_smoke: ['storage_connection_smoke'],
+};
 const OBSERVED_STATE_ENTRY_FIELDS = [
   'observed_states',
   'observedStates',
@@ -2773,6 +2789,7 @@ function runbookEvidenceFrom(evidence) {
   }
 
   mergeRunbookCommandOutputSections(runbook, commandOutputSections);
+  mergeScenarioRunbookSections(runbook, evidence);
 
   const scenarios = runbookScenarioResultsFrom({
     ...evidence,
@@ -2927,6 +2944,257 @@ function mergeRunbookCommandOutputSections(runbook, sections) {
 
     runbook[field] = merged;
   }
+}
+
+function mergeScenarioRunbookSections(runbook, evidence) {
+  for (const [scenarioId, scenario] of Object.entries(scenarioResultsById(evidence))) {
+    const scenarioObject = objectValue(scenario);
+    const observedOutputs = nonEmptyObject(scenarioObject.observed_outputs)
+      ?? nonEmptyObject(scenarioObject.observedOutputs)
+      ?? nonEmptyObject(scenarioObject.evidence)
+      ?? {};
+    const commandOutputs = runbookSectionCommandOutputs({
+      ...scenarioObject,
+      observed_outputs: observedOutputs,
+    });
+
+    if (isEmptyEvidence(commandOutputs)) {
+      continue;
+    }
+
+    for (const field of scenarioRunbookSectionFields(scenarioId)) {
+      const observation = scenarioRunbookObservation(
+        field,
+        scenarioId,
+        scenarioObject,
+        observedOutputs,
+        commandOutputs,
+      );
+      if (observation !== null) {
+        mergeRunbookObservationIntoSection(runbook, field, observation);
+      }
+    }
+  }
+}
+
+function scenarioRunbookSectionFields(scenarioId) {
+  const direct = runbookSectionFieldFor(scenarioId);
+  return uniqueStrings([
+    ...arrayOfStrings(SCENARIO_RUNBOOK_SECTION_FIELDS[scenarioId]),
+    direct,
+  ]);
+}
+
+function scenarioRunbookObservation(field, scenarioId, scenario, observedOutputs, commandOutputs) {
+  const concrete = concreteCommandOutputCollection(commandOutputs);
+  if (isEmptyEvidence(concrete)) {
+    return null;
+  }
+
+  const status = normalizedStatus(scenario.status || scenario.outcome || observedOutputs.status || observedOutputs.outcome || 'pass');
+  const observation = {
+    ...withoutDirectCommandOutputFields(observedOutputs),
+    kind: field,
+    source: `scenario_result.${scenarioId}`,
+    scenario_id: scenarioId,
+    status,
+    command_outputs: concrete,
+  };
+
+  if (['preupgrade_state_snapshot', 'postupgrade_state_snapshot'].includes(field)) {
+    const phase = field === 'preupgrade_state_snapshot' ? 'preupgrade' : 'postupgrade';
+    const observedStates = observedStateEntriesForScenario(scenarioId, observedOutputs, concrete, phase);
+    if (!isEmptyEvidence(observedStates)) {
+      observation.observed_states = observedStates;
+      observation.state_kinds = uniqueStrings(observedStates
+        .map((entry) => stateKindString(objectValue(entry).state_kind ?? objectValue(entry).stateKind ?? objectValue(entry).kind))
+        .filter(Boolean));
+    }
+  }
+
+  return withRunbookCommandOutputs(observation);
+}
+
+function mergeRunbookObservationIntoSection(runbook, field, observation) {
+  const current = nonEmptyObject(fieldValue(runbook, field)) ?? {};
+  const currentOutputs = runbookSectionCommandOutputs(current);
+  const incomingOutputs = runbookSectionCommandOutputs(observation);
+  const mergedOutputs = mergeCommandOutputCollections(currentOutputs, incomingOutputs);
+  const currentWithoutOutputs = withoutDirectCommandOutputFields(current);
+  const incomingWithoutOutputs = withoutDirectCommandOutputFields(observation);
+  const merged = withRunbookCommandOutputs(mergeEvidenceValue(currentWithoutOutputs, {
+    ...incomingWithoutOutputs,
+    command_outputs: mergedOutputs,
+  }));
+  const currentStatus = normalizedStatus(current.status || current.outcome);
+  const incomingStatus = normalizedStatus(observation.status || observation.outcome);
+  const outputStatus = isEmptyEvidence(mergedOutputs) ? '' : commandOutputCollectionStatus(mergedOutputs);
+
+  if (currentStatus === 'pass') {
+    merged.status = 'pass';
+  } else if (incomingStatus === 'pass' && !containsFoundationCommandFailure(observation)) {
+    merged.status = 'pass';
+  } else if (outputStatus === 'fail' || incomingStatus === 'fail') {
+    merged.status = 'fail';
+  } else if (incomingStatus === 'pass' && outputStatus === 'pass') {
+    merged.status = 'pass';
+  } else if (currentStatus !== '' && currentStatus !== 'not_covered') {
+    merged.status = currentStatus;
+  } else {
+    merged.status = incomingStatus || outputStatus || currentStatus || 'not_covered';
+  }
+
+  runbook[field] = merged;
+}
+
+function observedStateEntriesForScenario(scenarioId, observedOutputs, commandOutputs, phase) {
+  const entries = [
+    ...observedStateEntriesFromCommandOutputs(commandOutputs),
+    ...derivedStateEntriesFromScenarioOutputs(scenarioId, observedOutputs, phase),
+  ];
+
+  return entries.length > 0 ? entries : undefined;
+}
+
+function derivedStateEntriesFromScenarioOutputs(scenarioId, observedOutputs, phase) {
+  switch (scenarioId) {
+    case 'latest_supported_v1_state_setup':
+      return [
+        ...stateEntriesFromScenarioField(
+          nestedScenarioEvidence(observedOutputs, 'seeded_workflows', 'completed_workflow'),
+          'completed_history',
+          phase,
+          'seeded_workflows.completed_workflow',
+        ),
+        ...stateEntriesFromScenarioField(
+          nestedScenarioEvidence(observedOutputs, 'seeded_workflows', 'running_workflow_waiting_on_signal'),
+          'in_flight_workflow',
+          phase,
+          'seeded_workflows.running_workflow_waiting_on_signal',
+        ),
+        ...stateEntriesFromScenarioField(
+          nestedScenarioEvidence(observedOutputs, 'seeded_workflows', 'workflow_mid_activity_retry'),
+          'retrying_activity',
+          phase,
+          'seeded_workflows.workflow_mid_activity_retry',
+        ),
+        ...stateEntriesFromScenarioField(
+          nestedScenarioEvidence(observedOutputs, 'seeded_schedules', 'active_schedule'),
+          'schedule',
+          phase,
+          'seeded_schedules.active_schedule',
+        ),
+        ...stateEntriesFromScenarioField(
+          nestedScenarioEvidence(observedOutputs, 'seeded_worker_registrations', 'registered_workers'),
+          'worker_registration',
+          phase,
+          'seeded_worker_registrations.registered_workers',
+        ),
+      ];
+    case 'completed_history_preservation_and_replay':
+      return stateEntriesFromScenarioField(
+        firstNonEmptyScenarioEvidence(observedOutputs, [
+          'postupgrade_history_export',
+          'replay_result',
+          'query_result',
+        ]),
+        'completed_history',
+        phase,
+        'completed_history_preservation_and_replay',
+      );
+    case 'in_flight_workflow_progress_preserved':
+      return stateEntriesFromScenarioField(
+        firstNonEmptyScenarioEvidence(observedOutputs, [
+          'postupgrade_progress_marker',
+          'completion_result',
+        ]),
+        'in_flight_workflow',
+        phase,
+        'in_flight_workflow_progress_preserved',
+      );
+    case 'mid_activity_retry_preserved':
+      return stateEntriesFromScenarioField(
+        firstNonEmptyScenarioEvidence(observedOutputs, [
+          'postupgrade_activity_attempt',
+          'final_activity_result',
+          'retry_policy',
+        ]),
+        'retrying_activity',
+        phase,
+        'mid_activity_retry_preserved',
+      );
+    case 'schedule_cross_upgrade_cadence_preserved':
+      return stateEntriesFromScenarioField(
+        firstNonEmptyScenarioEvidence(observedOutputs, [
+          'first_tick_after_upgrade',
+          'missed_or_duplicate_ticks',
+          'preupgrade_schedule_spec',
+        ]),
+        'schedule',
+        phase,
+        'schedule_cross_upgrade_cadence_preserved',
+      );
+    case 'worker_registration_projection_preserved':
+      return stateEntriesFromScenarioField(
+        firstNonEmptyScenarioEvidence(observedOutputs, [
+          'postupgrade_worker_list',
+          'task_queue_projection',
+          'polling_continuity',
+        ]),
+        'worker_registration',
+        phase,
+        'worker_registration_projection_preserved',
+      );
+    default:
+      return [];
+  }
+}
+
+function nestedScenarioEvidence(container, field, childField) {
+  return fieldValue(objectValue(fieldValue(container, field)), childField);
+}
+
+function firstNonEmptyScenarioEvidence(container, fields) {
+  for (const field of fields) {
+    const value = fieldValue(container, field);
+    if (!isEmptyEvidence(value)) {
+      return value;
+    }
+  }
+
+  return undefined;
+}
+
+function stateEntriesFromScenarioField(value, stateKind, phase, sourceField) {
+  if (isEmptyEvidence(value)) {
+    return [];
+  }
+
+  if (Array.isArray(value)) {
+    return value
+      .filter((entry) => !isEmptyEvidence(entry))
+      .map((entry, index) => stateEntryFromScenarioEvidence(entry, stateKind, phase, `${sourceField}.${index + 1}`));
+  }
+
+  if (value && typeof value === 'object') {
+    const object = objectValue(value);
+    if (Object.keys(object).length > 0 && Object.values(object).every((entry) => entry && typeof entry === 'object')) {
+      return Object.entries(object)
+        .filter(([, entry]) => !isEmptyEvidence(entry))
+        .map(([key, entry]) => stateEntryFromScenarioEvidence(entry, stateKind, phase, `${sourceField}.${key}`));
+    }
+  }
+
+  return [stateEntryFromScenarioEvidence(value, stateKind, phase, sourceField)];
+}
+
+function stateEntryFromScenarioEvidence(value, stateKind, phase, sourceField) {
+  return {
+    state_kind: stateKind,
+    phase,
+    source_field: sourceField,
+    evidence: value,
+  };
 }
 
 function commandOutputCollectionStatus(commandOutputs) {

@@ -2207,6 +2207,88 @@ COMMAND;
         $this->assertArrayNotHasKey('run_record', $result['finding_links']);
     }
 
+    public function test_runner_promotes_scenario_command_outputs_to_required_record_sections(): void
+    {
+        $nodeBinary = trim((string) shell_exec('command -v node 2>/dev/null'));
+        if ($nodeBinary === '') {
+            $this->markTestSkipped('node is required to exercise the migration runner scenario command-output gate.');
+        }
+
+        $evidence = $this->completeRunnerEvidence();
+        foreach ([
+            'migration_plan',
+            'preupgrade_state_snapshot',
+            'postupgrade_state_snapshot',
+            'history_dumps',
+            'activity_attempts',
+            'schedule_ticks',
+            'worker_registration_observations',
+            'cli_observations',
+            'waterline_observations',
+            'rollback_observations',
+            'version_skew_observations',
+            'storage_connection_smoke',
+        ] as $field) {
+            unset($evidence[$field]);
+        }
+
+        $evidence['scenario_results']['storage_connection_smoke'] = [
+            'status' => 'pass',
+            'observed_outputs' => [
+                'storage_connection' => 'workflow_storage',
+                'command_outputs' => [
+                    $this->commandOutput('php artisan migrate:status --database=workflow_storage'),
+                ],
+            ],
+        ];
+
+        $result = $this->runRunnerEvidence($nodeBinary, $evidence, 'dw-migration-scenario-command-outputs-');
+        $requiredStateKinds = MigrationRuntimeContract::manifest()['required_matrix']['state_kinds'];
+
+        $this->assertSame('pass', $result['outcome']);
+        $this->assertArrayNotHasKey(
+            'run_record',
+            $result['finding_links'],
+            'scenario-attached command outputs must satisfy the queryable migration run record sections',
+        );
+
+        foreach ([
+            'migration_plan',
+            'preupgrade_state_snapshot',
+            'postupgrade_state_snapshot',
+            'history_dumps',
+            'activity_attempts',
+            'schedule_ticks',
+            'worker_registration_observations',
+            'cli_observations',
+            'waterline_observations',
+            'rollback_observations',
+            'version_skew_observations',
+            'storage_connection_smoke',
+        ] as $field) {
+            $this->assertSame('pass', $result[$field]['status']);
+            $this->assertArrayHasKey('command_outputs', $result[$field]);
+            $this->assertNotEmpty($result[$field]['command_outputs']);
+            $this->assertArrayHasKey($field, $result['runbook_command_outputs']);
+        }
+
+        foreach (['preupgrade_state_snapshot', 'postupgrade_state_snapshot'] as $field) {
+            $observedKinds = array_values(array_unique(array_column($result[$field]['observed_states'], 'state_kind')));
+            foreach ($requiredStateKinds as $stateKind) {
+                $this->assertContains($stateKind, $observedKinds);
+            }
+        }
+
+        $this->assertSame(
+            'scenario_result.documented_migration_steps_execute',
+            $result['migration_plan']['source'],
+        );
+        $this->assertSame(
+            'scenario_result.storage_connection_smoke',
+            $result['storage_connection_smoke']['source'],
+        );
+    }
+
     public function test_runner_normalizes_contract_release_artifact_aliases_before_passing(): void
     {
         $nodeBinary = trim((string) shell_exec('command -v node 2>/dev/null'));
