@@ -295,7 +295,7 @@ final class MigrationRuntimeContract
                     'migration-conformance-record.json',
                 ],
                 'evidence_inputs' => [
-                    'DW_MIGRATION_EVIDENCE_JSON' => 'Optional full-result, runbook-shaped, or scenario-shard JSON captured by the host runner after executing the public migration guide against published artifacts.',
+                    'DW_MIGRATION_EVIDENCE_JSON' => 'Optional full-result, runbook-shaped, sectioned runbookCommandOutputs, or scenario-shard JSON captured by the host runner after executing the public migration guide against published artifacts.',
                     'DW_MIGRATION_EVIDENCE_DIR' => 'Optional directory of JSON evidence shards; files are merged in lexical order so the host runner can collect required migration scopes independently.',
                     'DW_MIGRATION_STORAGE_SMOKE_JSON' => 'Optional storage-connection smoke JSON to attach as context. Focused foundation runs may include migration_plan, latest_supported_v1_state_setup, preupgrade_state_snapshot, and postupgrade_state_snapshot evidence in this file.',
                     'DW_MIGRATION_RUN_PUBLIC_GUIDE_AUDIT' => 'Set to 0/false/no to disable the automatic live public migration-guide audit, or 1/true/force to run it even without storage-smoke evidence.',

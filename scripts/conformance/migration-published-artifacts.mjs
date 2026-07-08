@@ -99,6 +99,136 @@ const COMMAND_OUTPUT_COLLECTION_FIELDS = [
   'command_results',
   'commandResults',
 ];
+const RUNBOOK_COMMAND_OUTPUT_EVIDENCE_FIELDS = [
+  'runbook_command_outputs',
+  'runbookCommandOutputs',
+  'command_outputs_by_section',
+  'commandOutputsBySection',
+  'section_command_outputs',
+  'sectionCommandOutputs',
+  'runbook_section_outputs',
+  'runbookSectionOutputs',
+  'migration_record_command_outputs',
+  'migrationRecordCommandOutputs',
+  'migration_runbook_command_outputs',
+  'migrationRunbookCommandOutputs',
+  'command_output_evidence',
+  'commandOutputEvidence',
+];
+const RUNBOOK_SECTION_CONTAINER_FIELDS = [
+  'runbook',
+  'runbookEvidence',
+  'runbook_evidence',
+  'migration_runbook',
+  'migrationRunbook',
+  'runbook_sections',
+  'runbookSections',
+  'sections',
+  'scenario_outputs',
+  'scenarioOutputs',
+];
+const RUNBOOK_SECTION_ALIASES = {
+  migration_plan: [
+    'migration_plan',
+    'migrationPlan',
+    'documented_migration_steps_execute',
+    'documentedMigrationStepsExecute',
+    'migration_guide_execution',
+    'migrationGuideExecution',
+    'guide_execution',
+    'guideExecution',
+    'step_by_step_guide',
+    'stepByStepGuide',
+  ],
+  preupgrade_state_snapshot: [
+    'preupgrade_state_snapshot',
+    'preupgradeStateSnapshot',
+    'pre_upgrade_state_snapshot',
+    'preUpgradeStateSnapshot',
+    'latest_supported_v1_state_setup',
+    'latestSupportedV1StateSetup',
+    'realistic_v1_state_setup',
+    'realisticV1StateSetup',
+    'realistic_v1_state_snapshot',
+    'realisticV1StateSnapshot',
+    'v1_state_snapshot',
+    'v1StateSnapshot',
+  ],
+  postupgrade_state_snapshot: [
+    'postupgrade_state_snapshot',
+    'postupgradeStateSnapshot',
+    'post_upgrade_state_snapshot',
+    'postUpgradeStateSnapshot',
+    'post_upgrade_verification',
+    'postUpgradeVerification',
+  ],
+  history_dumps: [
+    'history_dumps',
+    'historyDumps',
+    'completed_history_preservation_and_replay',
+    'completedHistoryPreservationAndReplay',
+    'completed_history_replay',
+    'completedHistoryReplay',
+  ],
+  activity_attempts: [
+    'activity_attempts',
+    'activityAttempts',
+    'mid_activity_retry_preserved',
+    'midActivityRetryPreserved',
+  ],
+  schedule_ticks: [
+    'schedule_ticks',
+    'scheduleTicks',
+    'schedule_cross_upgrade_cadence_preserved',
+    'scheduleCrossUpgradeCadencePreserved',
+  ],
+  worker_registration_observations: [
+    'worker_registration_observations',
+    'workerRegistrationObservations',
+    'worker_registration_projection_preserved',
+    'workerRegistrationProjectionPreserved',
+    'worker_registrations',
+    'workerRegistrations',
+  ],
+  cli_observations: [
+    'cli_observations',
+    'cliObservations',
+    'cli_access_to_preupgrade_state',
+    'cliAccessToPreupgradeState',
+  ],
+  waterline_observations: [
+    'waterline_observations',
+    'waterlineObservations',
+    'waterline_operator_visibility_preserved',
+    'waterlineOperatorVisibilityPreserved',
+    'operator_projections',
+    'operatorProjections',
+  ],
+  rollback_observations: [
+    'rollback_observations',
+    'rollbackObservations',
+    'rollback_result',
+    'rollbackResult',
+    'rollback_contract_verified',
+    'rollbackContractVerified',
+  ],
+  version_skew_observations: [
+    'version_skew_observations',
+    'versionSkewObservations',
+    'version_skew_refusal',
+    'versionSkewRefusal',
+    'skew_observations',
+    'skewObservations',
+  ],
+  storage_connection_smoke: [
+    'storage_connection_smoke',
+    'storageConnectionSmoke',
+    'storage_smoke',
+    'storageSmoke',
+    'storage_connection_smoke_result',
+    'storageConnectionSmokeResult',
+  ],
+};
 const OBSERVED_STATE_ENTRY_FIELDS = [
   'observed_states',
   'observedStates',
@@ -496,6 +626,8 @@ async function main() {
     },
   };
 
+  result.runbook_command_outputs = runbookCommandOutputRecord(result);
+  result.runbookCommandOutputs = result.runbook_command_outputs;
   const missingRunRecordFindings = missingRunRecordFindingsFor(result, resolvedArtifactVersions);
   result.finding_links = mergeFindingLinks(evidence, scenarioResults, missingRunRecordFindings);
   result.findings = mergeFindings(evidence, result.finding_links, missingRunRecordFindings);
@@ -2443,7 +2575,17 @@ function writeResult(result) {
     rollback_observations: result.rollback_observations,
     version_skew_observations: result.version_skew_observations,
     storage_connection_smoke: result.storage_connection_smoke,
+    runbook_command_outputs: result.runbook_command_outputs ?? runbookCommandOutputRecord(result),
+    runbookCommandOutputs: result.runbook_command_outputs ?? runbookCommandOutputRecord(result),
   });
+}
+
+function runbookCommandOutputRecord(result) {
+  return Object.fromEntries(
+    REQUIRED_RUNBOOK_COMMAND_OUTPUT_FIELDS
+      .map((field) => [field, runbookSectionCommandOutputs(fieldValue(result, field))])
+      .filter(([, commandOutputs]) => !isEmptyEvidence(commandOutputs)),
+  );
 }
 
 function writeJson(fileName, value) {
@@ -2562,6 +2704,13 @@ function unwrappedEvidenceCandidates(evidence) {
     'migrationConformanceResult',
     'migration_conformance_record',
     'migrationConformanceRecord',
+    'runbook',
+    'runbookEvidence',
+    'runbook_evidence',
+    'migration_runbook',
+    'migrationRunbook',
+    'runbook_sections',
+    'runbookSections',
   ]) {
     const value = objectValue(root[field]);
     if (Object.keys(value).length > 0) {
@@ -2574,6 +2723,7 @@ function unwrappedEvidenceCandidates(evidence) {
 
 function runbookEvidenceFrom(evidence) {
   const runbook = {};
+  const commandOutputSections = runbookCommandOutputSections(evidence);
   const pinnedVersions = firstNonEmptyObject(evidence, [
     'pinned_versions',
     'pinnedVersions',
@@ -2618,90 +2768,16 @@ function runbookEvidenceFrom(evidence) {
     runbook.artifact_sources = installSources;
   }
 
-  setRunbookSection(runbook, evidence, 'migration_plan', [
-    'migration_guide_execution',
-    'migrationGuideExecution',
-    'guide_execution',
-    'guideExecution',
-    'step_by_step_guide',
-    'stepByStepGuide',
-  ]);
-  setRunbookSection(runbook, evidence, 'preupgrade_state_snapshot', [
-    'preupgrade_state_snapshot',
-    'preupgradeStateSnapshot',
-    'pre_upgrade_state_snapshot',
-    'preUpgradeStateSnapshot',
-    'realistic_v1_state_snapshot',
-    'realisticV1StateSnapshot',
-    'v1_state_snapshot',
-    'v1StateSnapshot',
-  ]);
-  setRunbookSection(runbook, evidence, 'postupgrade_state_snapshot', [
-    'postupgrade_state_snapshot',
-    'postupgradeStateSnapshot',
-    'post_upgrade_state_snapshot',
-    'postUpgradeStateSnapshot',
-    'post_upgrade_verification',
-    'postUpgradeVerification',
-  ]);
-  setRunbookSection(runbook, evidence, 'history_dumps', [
-    'history_dumps',
-    'historyDumps',
-    'completed_history_preservation_and_replay',
-    'completedHistoryPreservationAndReplay',
-    'completed_history_replay',
-    'completedHistoryReplay',
-  ]);
-  setRunbookSection(runbook, evidence, 'activity_attempts', [
-    'activity_attempts',
-    'activityAttempts',
-    'mid_activity_retry_preserved',
-    'midActivityRetryPreserved',
-  ]);
-  setRunbookSection(runbook, evidence, 'schedule_ticks', [
-    'schedule_ticks',
-    'scheduleTicks',
-    'schedule_cross_upgrade_cadence_preserved',
-    'scheduleCrossUpgradeCadencePreserved',
-  ]);
-  setRunbookSection(runbook, evidence, 'worker_registration_observations', [
-    'worker_registration_observations',
-    'workerRegistrationObservations',
-    'worker_registration_projection_preserved',
-    'workerRegistrationProjectionPreserved',
-  ]);
-  setRunbookSection(runbook, evidence, 'cli_observations', [
-    'cli_observations',
-    'cliObservations',
-    'cli_access_to_preupgrade_state',
-    'cliAccessToPreupgradeState',
-  ]);
-  setRunbookSection(runbook, evidence, 'waterline_observations', [
-    'waterline_observations',
-    'waterlineObservations',
-    'waterline_operator_visibility_preserved',
-    'waterlineOperatorVisibilityPreserved',
-    'operator_projections',
-    'operatorProjections',
-  ]);
-  setRunbookSection(runbook, evidence, 'rollback_observations', [
-    'rollback_observations',
-    'rollbackObservations',
-    'rollback_result',
-    'rollbackResult',
-    'rollback_contract_verified',
-    'rollbackContractVerified',
-  ]);
-  setRunbookSection(runbook, evidence, 'version_skew_observations', [
-    'version_skew_observations',
-    'versionSkewObservations',
-    'version_skew_refusal',
-    'versionSkewRefusal',
-    'skew_observations',
-    'skewObservations',
-  ]);
+  for (const [field, aliases] of Object.entries(RUNBOOK_SECTION_ALIASES)) {
+    setRunbookSection(runbook, evidence, field, aliases);
+  }
 
-  const scenarios = runbookScenarioResultsFrom(evidence);
+  mergeRunbookCommandOutputSections(runbook, commandOutputSections);
+
+  const scenarios = runbookScenarioResultsFrom({
+    ...evidence,
+    ...runbook,
+  });
   if (Object.keys(scenarios).length > 0) {
     runbook.scenario_results = scenarios;
   }
@@ -2714,6 +2790,204 @@ function setRunbookSection(target, evidence, field, aliases) {
   if (Object.keys(value).length > 0) {
     target[field] = value;
   }
+}
+
+function runbookCommandOutputSections(evidence) {
+  const sections = {};
+
+  for (const field of RUNBOOK_COMMAND_OUTPUT_EVIDENCE_FIELDS) {
+    collectRunbookCommandOutputSections(fieldValue(evidence, field), sections);
+  }
+
+  for (const field of RUNBOOK_SECTION_CONTAINER_FIELDS) {
+    collectRunbookCommandOutputSections(fieldValue(evidence, field), sections);
+  }
+
+  return sections;
+}
+
+function collectRunbookCommandOutputSections(value, sections) {
+  if (!value || typeof value !== 'object' || isEmptyEvidence(value)) {
+    return;
+  }
+
+  if (Array.isArray(value)) {
+    for (const entry of value) {
+      collectRunbookCommandOutputEntry(entry, sections);
+    }
+    return;
+  }
+
+  const object = objectValue(value);
+  const directSection = runbookSectionFieldFor(commandOutputSectionValue(object));
+  if (directSection !== '') {
+    mergeCommandOutputsIntoSection(
+      sections,
+      directSection,
+      runbookSectionCommandOutputs(object) ?? object,
+    );
+    return;
+  }
+
+  for (const [key, entry] of Object.entries(object)) {
+    const section = runbookSectionFieldFor(key);
+    if (section !== '') {
+      mergeCommandOutputsIntoSection(sections, section, entry);
+      continue;
+    }
+
+    if (RUNBOOK_COMMAND_OUTPUT_EVIDENCE_FIELDS.includes(key) || RUNBOOK_SECTION_CONTAINER_FIELDS.includes(key)) {
+      collectRunbookCommandOutputSections(entry, sections);
+    }
+  }
+}
+
+function collectRunbookCommandOutputEntry(entry, sections) {
+  if (!entry || typeof entry !== 'object' || Array.isArray(entry)) {
+    return;
+  }
+
+  const object = objectValue(entry);
+  const section = runbookSectionFieldFor(commandOutputSectionValue(object));
+  if (section === '') {
+    collectRunbookCommandOutputSections(object, sections);
+    return;
+  }
+
+  mergeCommandOutputsIntoSection(
+    sections,
+    section,
+    runbookSectionCommandOutputs(object) ?? object,
+  );
+}
+
+function commandOutputSectionValue(entry) {
+  for (const field of [
+    'runbook_section',
+    'runbookSection',
+    'section',
+    'section_id',
+    'sectionId',
+    'scenario_id',
+    'scenarioId',
+    'scenario',
+    'kind',
+  ]) {
+    const value = stringValue(entry[field]);
+    if (value !== '') {
+      return value;
+    }
+  }
+
+  return '';
+}
+
+function mergeCommandOutputsIntoSection(sections, field, value) {
+  const concrete = concreteCommandOutputCollection(runbookSectionCommandOutputs(value) ?? value);
+  if (isEmptyEvidence(concrete)) {
+    return;
+  }
+
+  const existing = sections[field];
+  sections[field] = mergeCommandOutputCollections(existing, concrete);
+}
+
+function mergeRunbookCommandOutputSections(runbook, sections) {
+  for (const [field, commandOutputs] of Object.entries(sections)) {
+    const concrete = concreteCommandOutputCollection(commandOutputs);
+    if (isEmptyEvidence(concrete)) {
+      continue;
+    }
+
+    const current = nonEmptyObject(fieldValue(runbook, field)) ?? {};
+    const existingOutputs = runbookSectionCommandOutputs(current);
+    const mergedOutputs = mergeCommandOutputCollections(existingOutputs, concrete);
+    const merged = withRunbookCommandOutputs({
+      ...current,
+      command_outputs: mergedOutputs,
+    });
+    const currentStatus = stringValue(current.status ?? current.outcome).toLowerCase();
+    if (['', 'not_covered', 'runner_blocked'].includes(currentStatus)) {
+      merged.status = commandOutputCollectionStatus(mergedOutputs);
+    }
+
+    if (['preupgrade_state_snapshot', 'postupgrade_state_snapshot'].includes(field)) {
+      const observedStates = observedStateEntriesFromCommandOutputs(mergedOutputs);
+      if (!isEmptyEvidence(observedStates) && isEmptyEvidence(fieldValue(merged, 'observed_states'))) {
+        merged.observed_states = observedStates;
+      }
+
+      const stateKinds = uniqueStrings(observedStates
+        .map((entry) => stateKindString(entry.state_kind ?? entry.stateKind ?? entry.kind))
+        .filter(Boolean));
+      if (stateKinds.length > 0 && isEmptyEvidence(fieldValue(merged, 'state_kinds'))) {
+        merged.state_kinds = stateKinds;
+      }
+    }
+
+    runbook[field] = merged;
+  }
+}
+
+function commandOutputCollectionStatus(commandOutputs) {
+  const entries = commandOutputEntries(commandOutputs).map(([, entry]) => objectValue(entry));
+  if (entries.length === 0) {
+    return 'not_covered';
+  }
+
+  return entries.some((entry) => commandOutputEntryFailed(entry)) ? 'fail' : 'pass';
+}
+
+function commandOutputEntryFailed(entry) {
+  const status = stringValue(entry.status).toLowerCase();
+  if (['fail', 'failed', 'error', 'timeout', 'timed_out'].includes(status)) {
+    return true;
+  }
+
+  const exitCode = commandOutputExitCode(entry);
+  if (exitCode !== undefined && exitCode !== 0) {
+    return true;
+  }
+
+  if (truthy(entry.timed_out ?? entry.timedOut) || stringValue(entry.signal) !== '') {
+    return true;
+  }
+
+  return false;
+}
+
+function mergeCommandOutputCollections(...collections) {
+  const entries = [];
+  for (const collection of collections) {
+    entries.push(...commandOutputEntries(collection).map(([, entry]) => entry));
+  }
+
+  return entries.length > 0 ? entries : undefined;
+}
+
+function observedStateEntriesFromCommandOutputs(commandOutputs) {
+  return commandOutputEntries(commandOutputs)
+    .map(([, entry]) => objectValue(entry))
+    .filter((entry) => stateKindString(entry.state_kind ?? entry.stateKind ?? entry.kind) !== '');
+}
+
+function runbookSectionFieldFor(value) {
+  const token = evidenceKeyToken(value);
+  if (token === '') {
+    return '';
+  }
+
+  for (const [field, aliases] of Object.entries(RUNBOOK_SECTION_ALIASES)) {
+    if (token === evidenceKeyToken(field) || aliases.some((alias) => token === evidenceKeyToken(alias))) {
+      return field;
+    }
+  }
+
+  return '';
+}
+
+function evidenceKeyToken(value) {
+  return stringValue(value).toLowerCase().replace(/[^a-z0-9]/g, '');
 }
 
 function runbookScenarioResultsFrom(evidence) {

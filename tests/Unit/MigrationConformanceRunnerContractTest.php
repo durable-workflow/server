@@ -1217,10 +1217,11 @@ GUIDE;
         $this->assertArrayHasKey('worker-v2-to-server-v1', $skewOutputs['worker_skew_observations']);
         $this->assertArrayHasKey('cli-v1-to-server-v2', $skewOutputs['request_response_evidence']);
         $this->assertArrayHasKey('worker-v2-to-server-v1', $skewOutputs['request_response_evidence']);
-        $this->assertArrayNotHasKey(
-            'run_record',
-            $result['finding_links'],
-            'guide-audit observations should fill the required run-record sections while the live migration cells remain non-passing',
+        $runRecordFindings = $result['finding_links']['run_record'] ?? [];
+        $this->assertContains(
+            'migration_plan',
+            array_column($runRecordFindings, 'missing_run_record_command_outputs'),
+            'guide-audit observations are not a substitute for concrete command-output evidence from the migration runbook',
         );
     }
 
@@ -2128,6 +2129,82 @@ COMMAND;
             'pass',
             $result['scenario_results']['completed_history_preservation_and_replay']['status'],
         );
+    }
+
+    public function test_runner_promotes_sectioned_runbook_command_outputs_to_required_record_sections(): void
+    {
+        $nodeBinary = trim((string) shell_exec('command -v node 2>/dev/null'));
+        if ($nodeBinary === '') {
+            $this->markTestSkipped('node is required to exercise the migration runner command-output sidecar gate.');
+        }
+
+        $evidence = $this->completeRunnerEvidence();
+        foreach ([
+            'migration_plan',
+            'preupgrade_state_snapshot',
+            'postupgrade_state_snapshot',
+            'history_dumps',
+            'activity_attempts',
+            'schedule_ticks',
+            'worker_registration_observations',
+            'cli_observations',
+            'waterline_observations',
+            'rollback_observations',
+            'version_skew_observations',
+            'storage_connection_smoke',
+        ] as $field) {
+            unset($evidence[$field]);
+        }
+
+        $stateOutputs = function (string $phase): array {
+            return array_map(
+                fn (string $stateKind): array => $this->commandOutput('dw migration:state '.$phase.' '.$stateKind) + [
+                    'state_kind' => $stateKind,
+                    'phase' => $phase,
+                ],
+                MigrationRuntimeContract::manifest()['required_matrix']['state_kinds'],
+            );
+        };
+
+        $evidence['runbookCommandOutputs'] = [
+            'migrationPlan' => $evidence['scenario_results']['documented_migration_steps_execute']['observed_outputs']['command_outputs'],
+            'preupgradeStateSnapshot' => $stateOutputs('preupgrade'),
+            'postupgradeStateSnapshot' => $stateOutputs('postupgrade'),
+            'historyDumps' => [$this->commandOutput('dw workflow:history-export migration-completed')],
+            'activityAttempts' => [$this->commandOutput('dw workflow:describe migration-retrying-activity')],
+            'scheduleTicks' => [$this->commandOutput('dw schedule:list --json')],
+            'workerRegistrationObservations' => [$this->commandOutput('GET /api/workers?task_queue=migration-v1')],
+            'cliObservations' => [$this->commandOutput('dw workflow:describe migration-completed --json')],
+            'waterlineObservations' => [$this->commandOutput('GET /waterline/api/instances/migration-completed')],
+            'rollbackResult' => [$this->commandOutput('php artisan queue:restart')],
+            'versionSkewRefusal' => [$this->commandOutput('dw workflow:list --server http://server-v1')],
+            'storageConnectionSmoke' => [$this->commandOutput('php artisan migrate:status')],
+        ];
+
+        $result = $this->runRunnerEvidence($nodeBinary, $evidence, 'dw-migration-sectioned-command-outputs-');
+
+        $this->assertSame('pass', $result['outcome']);
+        foreach ([
+            'migration_plan',
+            'preupgrade_state_snapshot',
+            'postupgrade_state_snapshot',
+            'history_dumps',
+            'activity_attempts',
+            'schedule_ticks',
+            'worker_registration_observations',
+            'cli_observations',
+            'waterline_observations',
+            'rollback_observations',
+            'version_skew_observations',
+            'storage_connection_smoke',
+        ] as $field) {
+            $this->assertArrayHasKey('command_outputs', $result[$field]);
+            $this->assertNotEmpty($result[$field]['command_outputs']);
+            $this->assertArrayHasKey($field, $result['runbook_command_outputs']);
+        }
+        $this->assertArrayHasKey('observed_states', $result['preupgrade_state_snapshot']);
+        $this->assertArrayHasKey('observed_states', $result['postupgrade_state_snapshot']);
+        $this->assertArrayNotHasKey('run_record', $result['finding_links']);
     }
 
     public function test_runner_normalizes_contract_release_artifact_aliases_before_passing(): void
