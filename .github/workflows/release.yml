@@ -91,6 +91,7 @@ jobs:
 
       - name: Build and push exact image tags
         id: build
+        timeout-minutes: 15
         continue-on-error: true
         uses: docker/build-push-action@v7
         with:
@@ -99,8 +100,6 @@ jobs:
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max,ignore-error=true
           provenance: false
           build-args: |
             WORKFLOW_PACKAGE_REF=${{ steps.workflow.outputs.tag }}
