@@ -4,7 +4,7 @@
         "Read more about it at https://getcomposer.org/doc/01-basic-usage.md#installing-dependencies",
         "This file is @generated automatically"
     ],
-    "content-hash": "9abfd7291b47b29fceac6dc4834ba57e",
+    "content-hash": "06b0727dbb1245c4b4d206c932079573",
     "packages": [
         {
             "name": "apache/avro",
@@ -505,11 +505,11 @@
         },
         {
             "name": "durable-workflow/workflow",
-            "version": "2.0.0-alpha.250",
+            "version": "2.0.0-alpha.252",
             "dist": {
                 "type": "path",
                 "url": "/workflow",
-                "reference": "cdb59bc5e27401be6749c893b28636a24b1f6530"
+                "reference": "b8c12d6a810b109e0554dfc9f142d2d672f86575"
             },
             "require": {
                 "apache/avro": "^1.12",
@@ -551,7 +551,9 @@
                 }
             },
             "scripts": {
-                "ecs": "vendor/bin/ecs check --fix",
+                "ecs": [
+                    "vendor/bin/ecs check --fix"
+                ],
                 "stan": [
                     "vendor/bin/phpstan analyse src tests"
                 ],
@@ -559,22 +561,36 @@
                     "Composer\\Config::disableProcessTimeout",
                     "phpunit --testdox --testsuite feature"
                 ],
-                "unit": "phpunit --testdox --testsuite unit",
-                "test": "phpunit --testdox",
-                "coverage": "XDEBUG_MODE=coverage phpunit --testdox --testsuite unit --coverage-clover coverage.xml",
+                "unit": [
+                    "phpunit --testdox --testsuite unit"
+                ],
+                "test": [
+                    "phpunit --testdox"
+                ],
+                "coverage": [
+                    "XDEBUG_MODE=coverage phpunit --testdox --testsuite unit --coverage-clover coverage.xml"
+                ],
                 "post-autoload-dump": [
                     "@clear",
                     "@prepare"
                 ],
-                "clear": "@php vendor/bin/testbench package:purge-skeleton --ansi",
-                "prepare": "@php vendor/bin/testbench package:discover --ansi",
-                "build": "@php vendor/bin/testbench workbench:build --ansi",
+                "clear": [
+                    "@php vendor/bin/testbench package:purge-skeleton --ansi"
+                ],
+                "prepare": [
+                    "@php vendor/bin/testbench package:discover --ansi"
+                ],
+                "build": [
+                    "@php vendor/bin/testbench workbench:build --ansi"
+                ],
                 "serve": [
                     "Composer\\Config::disableProcessTimeout",
                     "@build",
                     "@php vendor/bin/testbench serve --ansi"
                 ],
-                "lint": "@php vendor/bin/phpstan analyse --verbose --ansi"
+                "lint": [
+                    "@php vendor/bin/phpstan analyse --verbose --ansi"
+                ]
             },
             "license": [
                 "MIT"
@@ -8447,9 +8463,7 @@
     ],
     "aliases": [],
     "minimum-stability": "dev",
-    "stability-flags": {
-        "durable-workflow/workflow": 15
-    },
+    "stability-flags": {},
     "prefer-stable": true,
     "prefer-lowest": false,
     "platform": {

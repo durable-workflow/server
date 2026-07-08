@@ -192,7 +192,7 @@ class SearchAttributeRuntimeContractTest extends TestCase
         $resultGate = SearchAttributeRuntimeContract::manifest()['result_gate'];
 
         $this->assertSame(SearchAttributeRuntimeResultGate::SCHEMA, $resultGate['schema']);
-        $this->assertSame(11, SearchAttributeRuntimeResultGate::VERSION);
+        $this->assertSame(12, SearchAttributeRuntimeResultGate::VERSION);
         $this->assertSame(SearchAttributeRuntimeResultGate::VERSION, $resultGate['version']);
         $this->assertSame(
             SearchAttributeRuntimeContract::RESULT_SCHEMA,

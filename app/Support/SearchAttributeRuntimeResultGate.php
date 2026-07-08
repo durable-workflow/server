@@ -10,7 +10,7 @@ final class SearchAttributeRuntimeResultGate
 {
     public const SCHEMA = 'durable-workflow.v2.search-attribute-runtime.result-gate';
 
-    public const VERSION = 11;
+    public const VERSION = 12;
 
     /**
      * @return array<string, mixed>
@@ -2996,6 +2996,7 @@ final class SearchAttributeRuntimeResultGate
     private static function probeEvidenceMatches(string $evidence, string $requiredProbe): bool
     {
         $evidence = self::normalizeProbeLabel($evidence);
+        $requiredProbe = self::normalizeProbeLabel($requiredProbe);
         if ($evidence === '') {
             return false;
         }
