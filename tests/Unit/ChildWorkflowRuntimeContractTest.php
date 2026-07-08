@@ -587,6 +587,66 @@ class ChildWorkflowRuntimeContractTest extends TestCase
         $this->assertSame('child-workflows-full-matrix', $result['namespace_behavior']['lineage_links'][0]['parent'] ?? null);
     }
 
+    public function test_published_artifact_runner_does_not_fail_pass_record_when_external_run_root_cannot_be_removed(): void
+    {
+        $repoRoot = dirname(__DIR__, 2);
+        $runRoot = $repoRoot . '/storage/framework/child-workflows-run-root-' . bin2hex(random_bytes(4));
+        $fakeBin = $repoRoot . '/storage/framework/child-workflows-bin-' . bin2hex(random_bytes(4));
+        $this->assertTrue(mkdir($runRoot, 0777, true));
+        $this->assertTrue(mkdir($fakeBin, 0777, true));
+
+        try {
+            $realRm = trim((string) shell_exec('command -v rm 2>/dev/null')) ?: '/bin/rm';
+            file_put_contents($fakeBin . '/rm', str_replace('__REAL_RM__', escapeshellarg($realRm), <<<'SH'
+#!/usr/bin/env bash
+set -eu
+for arg in "$@"; do
+  if [[ "$arg" == "${DW_CHILD_WORKFLOWS_PROTECTED_RUN_ROOT:?}" ]]; then
+    printf 'fake rm cleanup failure: %s\n' "$*" >&2
+    exit 1
+  fi
+done
+exec __REAL_RM__ "$@"
+SH));
+            chmod($fakeBin . '/rm', 0755);
+
+            $run = $this->runChildWorkflowRunnerWithEvidence(
+                array_merge($this->childWorkflowRunnerBaseEnv(), [
+                    'PATH' => $fakeBin . PATH_SEPARATOR . (string) getenv('PATH'),
+                    'DW_CHILD_WORKFLOWS_RUN_ROOT' => $runRoot,
+                    'DW_CHILD_WORKFLOWS_PROTECTED_RUN_ROOT' => $runRoot,
+                    'DW_CHILD_WORKFLOWS_SKIP_FOCUSED_TYPED_FAILURE_PROBE' => '1',
+                ]),
+                [
+                    'DW_CHILD_WORKFLOWS_ARTIFACT_INSTALL_EVIDENCE' => [
+                        'name' => 'artifact-install-evidence.json',
+                        'content' => $this->childWorkflowArtifactInstallEvidence(),
+                    ],
+                    'DW_CHILD_WORKFLOWS_FULL_MATRIX_EVIDENCE' => [
+                        'name' => 'full-matrix-evidence.json',
+                        'content' => $this->childWorkflowFullMatrixEvidence(),
+                    ],
+                ],
+            );
+
+            $this->assertSame(0, $run['exitCode']);
+            $this->assertSame('pass', $run['result']['outcome'] ?? null);
+            $this->assertDirectoryExists($runRoot);
+        } finally {
+            foreach (glob($fakeBin . '/*') ?: [] as $file) {
+                if (is_file($file)) {
+                    unlink($file);
+                }
+            }
+            if (is_dir($fakeBin)) {
+                rmdir($fakeBin);
+            }
+            if (is_dir($runRoot)) {
+                rmdir($runRoot);
+            }
+        }
+    }
+
     public function test_manifest_publishes_an_enforceable_result_gate(): void
     {
         $resultGate = ChildWorkflowRuntimeContract::manifest()['result_gate'];

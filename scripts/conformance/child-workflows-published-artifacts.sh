@@ -101,8 +101,10 @@ repo_root="$(cd "$script_dir/../.." && pwd)"
 scenario_manifest="${DW_CHILD_WORKFLOWS_SCENARIO_MANIFEST:-$repo_root/static/platform-conformance/child-workflow-runtime-scenarios.json}"
 
 run_root="${DW_CHILD_WORKFLOWS_RUN_ROOT:-}"
+run_root_owned=0
 if [[ -z "$run_root" ]]; then
   run_root="$(mktemp -d "${TMPDIR:-/tmp}/dw-child-workflows.XXXXXX")"
+  run_root_owned=1
 fi
 mkdir -p "$run_root"
 
@@ -115,7 +117,13 @@ cleanup() {
   local code=$?
 
   if [[ "$keep_run_root" != "1" && "$code" -eq 0 && "$result_dir" != "$run_root" ]]; then
-    rm -rf "$run_root"
+    if [[ "$run_root_owned" == "1" ]]; then
+      rm -rf "$run_root" \
+        || printf 'warning: unable to remove child-workflows conformance run root %s\n' "$run_root" >&2
+    else
+      find "$run_root" -mindepth 1 -maxdepth 1 -exec rm -rf -- {} + \
+        || printf 'warning: unable to clean child-workflows conformance run root contents: %s\n' "$run_root" >&2
+    fi
   fi
 }
 trap cleanup EXIT
