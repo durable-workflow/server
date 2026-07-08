@@ -21,6 +21,9 @@ Environment overrides:
   DW_CHILD_WORKFLOWS_ARTIFACT_INSTALL_EVIDENCE
                                       JSON proof that each published artifact was downloaded/installed.
                                       Defaults to artifact-install-evidence.json in the result directory.
+  DW_CHILD_WORKFLOWS_TYPED_FAILURE_EVIDENCE
+                                      JSON proof for failure-round-trip cells observed through published
+                                      artifacts. A partial cell set is recorded but cannot pass the matrix.
   DW_SERVER_IMAGE                       Exact server image tag or digest to test.
   DW_SERVER_VERSION                     Exact patch server Docker tag; required for digest-only DW_SERVER_IMAGE.
   DW_CLI_VERSION                        Exact CLI release version.
@@ -299,6 +302,22 @@ def entry_source(entry: dict[str, Any]) -> str:
     return ""
 
 
+def first_string(entry: dict[str, Any], keys: list[str]) -> str:
+    for key in keys:
+        value = string_value(entry.get(key))
+        if value:
+            return value
+    return ""
+
+
+def array_value(entry: dict[str, Any], keys: list[str]) -> list[Any]:
+    for key in keys:
+        value = entry.get(key)
+        if isinstance(value, list):
+            return value
+    return []
+
+
 def load_artifact_install_evidence(path: Path) -> Optional[dict[str, Any]]:
     if not path.exists():
         return None
@@ -494,6 +513,363 @@ def artifact_install_evidence_failures(
     return failures
 
 
+def load_typed_failure_evidence(path_text: str) -> Optional[dict[str, Any]]:
+    if not path_text:
+        return None
+
+    path = Path(path_text)
+    if not path.exists():
+        return {
+            "schema": "durable-workflow.v2.child-workflow-runtime.typed-failure-evidence",
+            "generated_at": now(),
+            "local_product_source_checkouts_used": False,
+            "failure_round_trip_cells": [],
+            "evidence_load_error": f"{path}: missing",
+        }
+
+    try:
+        evidence = json.loads(path.read_text(encoding="utf-8"))
+    except Exception as exc:  # noqa: BLE001 - malformed focused evidence must be routed as result data
+        return {
+            "schema": "durable-workflow.v2.child-workflow-runtime.typed-failure-evidence",
+            "generated_at": now(),
+            "local_product_source_checkouts_used": False,
+            "failure_round_trip_cells": [],
+            "evidence_load_error": f"{path}: {exc}",
+        }
+
+    return evidence if isinstance(evidence, dict) else {
+        "schema": "durable-workflow.v2.child-workflow-runtime.typed-failure-evidence",
+        "generated_at": now(),
+        "local_product_source_checkouts_used": False,
+        "failure_round_trip_cells": [],
+        "evidence_load_error": f"{path}: expected a JSON object",
+    }
+
+
+def raw_typed_failure_cells(evidence: Optional[dict[str, Any]]) -> list[dict[str, Any]]:
+    if not isinstance(evidence, dict):
+        return []
+
+    for key in ("failure_round_trip_cells", "failureRoundTripCells", "cells", "matrix"):
+        value = evidence.get(key)
+        if isinstance(value, list):
+            return [item for item in value if isinstance(item, dict)]
+
+    for key in ("failure_round_trip", "failureRoundTrip"):
+        section = evidence.get(key)
+        if not isinstance(section, dict):
+            continue
+        for section_key in ("failure_round_trip_cells", "failureRoundTripCells", "cells", "matrix"):
+            value = section.get(section_key)
+            if isinstance(value, list):
+                return [item for item in value if isinstance(item, dict)]
+
+    return []
+
+
+def normalize_typed_failure_cell(cell: dict[str, Any]) -> dict[str, Any]:
+    public_surfaces = array_value(cell, ["public_surfaces", "publicSurfaces", "observation_surfaces"])
+    parent_history = array_value(
+        cell,
+        ["parent_history_observations", "parentHistoryObservations", "parent_history_excerpt", "parentHistoryExcerpt"],
+    )
+    child_history = array_value(
+        cell,
+        ["child_history_observations", "childHistoryObservations", "child_history_excerpt", "childHistoryExcerpt"],
+    )
+    observed_failure = cell.get("parent_observed_failure") or cell.get("parentObservedFailure") or {}
+    if not isinstance(observed_failure, dict):
+        observed_failure = {}
+
+    return {
+        "scenario": first_string(cell, ["scenario", "scenario_id", "scenarioId"]) or "child_failure_round_trip_matrix",
+        "parent": first_string(cell, ["parent", "parent_runtime", "parentRuntime"]),
+        "child": first_string(cell, ["child", "child_runtime", "childRuntime"]),
+        "status": normalized_status(cell.get("status") or cell.get("result") or cell.get("outcome")),
+        "exception_class": first_string(cell, ["exception_class", "exceptionClass", "error_class", "errorClass"]),
+        "message": first_string(cell, ["message", "error_message", "errorMessage"]),
+        "failure_kind": first_string(cell, ["failure_kind", "failureKind", "kind"]),
+        "parent_workflow_id": first_string(cell, ["parent_workflow_id", "parentWorkflowId"]),
+        "parent_run_id": first_string(cell, ["parent_run_id", "parentRunId"]),
+        "child_workflow_id": first_string(cell, ["child_workflow_id", "childWorkflowId"]),
+        "child_run_id": first_string(cell, ["child_run_id", "childRunId"]),
+        "parent_history_observations": parent_history,
+        "child_history_observations": child_history,
+        "public_surfaces": public_surfaces,
+        "parent_observed_failure": observed_failure,
+        "local_product_source_checkouts_used": truthy_flag(
+            cell.get("local_product_source_checkouts_used") or cell.get("localProductSourceCheckoutsUsed"),
+        ),
+        "owning_surface": first_string(cell, ["owning_surface", "owningSurface", "root_cause_surface", "rootCauseSurface"]),
+        "observed_behavior": first_string(cell, ["observed_behavior", "observedBehavior", "detail"]),
+    }
+
+
+def normalize_typed_failure_evidence(evidence: Optional[dict[str, Any]]) -> dict[str, Any]:
+    top_local = bool(
+        isinstance(evidence, dict)
+        and (
+            truthy_flag(evidence.get("local_product_source_checkouts_used"))
+            or truthy_flag(evidence.get("localProductSourceCheckoutsUsed"))
+        ),
+    )
+    top_explicit_false = bool(
+        isinstance(evidence, dict)
+        and (
+            explicit_false_flag(evidence.get("local_product_source_checkouts_used"))
+            or explicit_false_flag(evidence.get("localProductSourceCheckoutsUsed"))
+        ),
+    )
+    cells = [normalize_typed_failure_cell(item) for item in raw_typed_failure_cells(evidence)]
+    versions = {}
+    if isinstance(evidence, dict):
+        raw_versions = evidence.get("artifact_versions") or evidence.get("artifactVersions") or {}
+        if isinstance(raw_versions, dict):
+            versions = {str(key): string_value(value) for key, value in raw_versions.items()}
+
+    return {
+        "schema": string_value(evidence.get("schema") if isinstance(evidence, dict) else "")
+        or "durable-workflow.v2.child-workflow-runtime.typed-failure-evidence",
+        "generated_at": string_value(evidence.get("generated_at") if isinstance(evidence, dict) else "") or now(),
+        "local_product_source_checkouts_used": top_local
+        or any(item["local_product_source_checkouts_used"] for item in cells),
+        "local_product_source_checkouts_used_explicit_false": top_explicit_false,
+        "artifact_versions": versions,
+        "evidence_load_error": string_value(evidence.get("evidence_load_error") if isinstance(evidence, dict) else ""),
+        "failure_round_trip_cells": cells,
+    }
+
+
+def typed_failure_evidence_failures(
+    evidence: dict[str, Any],
+    artifact_versions: dict[str, str],
+    evidence_was_supplied: bool,
+    install_evidence_pass: bool,
+) -> list[str]:
+    if not evidence_was_supplied:
+        return []
+
+    failures: list[str] = []
+    if evidence.get("evidence_load_error"):
+        failures.append(f"typed_failure_evidence load failed: {evidence['evidence_load_error']}")
+    if not install_evidence_pass:
+        failures.append("typed_failure_evidence requires passing published artifact install evidence")
+    if evidence.get("local_product_source_checkouts_used"):
+        failures.append("typed_failure_evidence.local_product_source_checkouts_used=true")
+    if not evidence.get("local_product_source_checkouts_used_explicit_false"):
+        failures.append("typed_failure_evidence.local_product_source_checkouts_used=false missing")
+
+    reported_versions = evidence.get("artifact_versions")
+    if isinstance(reported_versions, dict):
+        for artifact in ("server", "cli", "sdk-python", "workflow", "waterline"):
+            reported = string_value(reported_versions.get(artifact))
+            expected = string_value(artifact_versions.get(artifact))
+            if reported and expected and reported != expected:
+                failures.append(f"typed_failure_evidence.{artifact}.version={reported} does not match {expected}")
+
+    cells = evidence.get("failure_round_trip_cells")
+    if not isinstance(cells, list) or not cells:
+        failures.append("typed_failure_evidence.failure_round_trip_cells=missing")
+
+    return failures
+
+
+def cell_matches(cell: dict[str, Any], required_cell: dict[str, Any]) -> bool:
+    return (
+        cell.get("scenario") == required_cell.get("scenario")
+        and cell.get("parent") == required_cell.get("parent")
+        and cell.get("child") == required_cell.get("child")
+    )
+
+
+def find_cell(cells: list[dict[str, Any]], required_cell: dict[str, Any]) -> Optional[dict[str, Any]]:
+    for cell in cells:
+        if cell_matches(cell, required_cell):
+            return cell
+    return None
+
+
+def typed_failure_cell_failures(cell: dict[str, Any]) -> list[str]:
+    failures: list[str] = []
+    if cell.get("local_product_source_checkouts_used"):
+        failures.append("local_product_source_checkouts_used=true")
+
+    status = normalized_status(cell.get("status"))
+    if status != "pass":
+        return failures
+
+    for field in (
+        "exception_class",
+        "message",
+        "failure_kind",
+        "parent_workflow_id",
+        "parent_run_id",
+        "child_workflow_id",
+        "child_run_id",
+    ):
+        if not string_value(cell.get(field)):
+            failures.append(f"{field}=missing")
+
+    for field in ("parent_history_observations", "child_history_observations", "public_surfaces"):
+        value = cell.get(field)
+        if not isinstance(value, list) or not value:
+            failures.append(f"{field}=missing")
+
+    return failures
+
+
+def failure_round_trip_evidence_state(
+    matrix: dict[str, Any],
+    typed_failure_evidence: dict[str, Any],
+    typed_failure_failures: list[str],
+    typed_failure_evidence_was_supplied: bool,
+    default_status: str,
+) -> dict[str, Any]:
+    required_cells = matrix.get("failure_round_trip_cells")
+    if not isinstance(required_cells, list):
+        required_cells = []
+    supplied_cells = typed_failure_evidence.get("failure_round_trip_cells")
+    if not isinstance(supplied_cells, list):
+        supplied_cells = []
+
+    evidence_is_usable = typed_failure_evidence_was_supplied and not typed_failure_failures
+    cells: list[dict[str, Any]] = []
+    missing_cells: list[dict[str, Any]] = []
+    invalid_cells: list[dict[str, Any]] = []
+    failed_cells: list[dict[str, Any]] = []
+
+    for required_cell in required_cells:
+        if not isinstance(required_cell, dict):
+            continue
+        item = dict(required_cell)
+        matched = find_cell(supplied_cells, required_cell)
+        if matched is None:
+            item["status"] = default_status
+            cells.append(item)
+            missing_cells.append(dict(required_cell))
+            continue
+
+        item.update({key: value for key, value in matched.items() if value not in ("", [], {})})
+        cell_failures = typed_failure_cell_failures(matched)
+        if not evidence_is_usable:
+            item["status"] = default_status
+        elif cell_failures:
+            item["status"] = "not_covered"
+            invalid_cells.append({"cell": dict(required_cell), "failures": cell_failures})
+        else:
+            status = normalized_status(matched.get("status")) or "not_covered"
+            item["status"] = status
+            if status != "pass":
+                failed_cells.append(dict(item))
+        cells.append(item)
+
+    all_cells_pass = bool(required_cells) and not missing_cells and not invalid_cells and not failed_cells and evidence_is_usable
+    if all_cells_pass:
+        status = "pass"
+    elif failed_cells and evidence_is_usable:
+        status = "fail"
+    else:
+        status = default_status
+
+    return {
+        "status": status,
+        "cells": cells,
+        "all_cells_pass": all_cells_pass,
+        "missing_cells": missing_cells,
+        "invalid_cells": invalid_cells,
+        "failed_cells": failed_cells,
+    }
+
+
+def failure_round_trip_findings(
+    state: dict[str, Any],
+    typed_failure_failures: list[str],
+    artifact_versions: dict[str, str],
+    default_runner_blocked: bool,
+) -> list[dict[str, Any]]:
+    findings: list[dict[str, Any]] = []
+    if typed_failure_failures:
+        findings.append(
+            finding(
+                "child_failure_round_trip_matrix",
+                DEFAULT_EXPECTED_BEHAVIOR["child_failure_round_trip_matrix"],
+                artifact_versions,
+                default_runner_blocked,
+                "; ".join(typed_failure_failures),
+            ),
+        )
+
+    missing_cells = state.get("missing_cells")
+    if isinstance(missing_cells, list) and missing_cells:
+        cell_labels = [
+            f"{item.get('parent', 'unknown')}->{item.get('child', 'unknown')}"
+            for item in missing_cells
+            if isinstance(item, dict)
+        ]
+        findings.append(
+            finding(
+                "child_failure_round_trip_matrix",
+                DEFAULT_EXPECTED_BEHAVIOR["child_failure_round_trip_matrix"],
+                artifact_versions,
+                False,
+                "typed failure evidence did not include required failure round-trip cells: " + ", ".join(cell_labels),
+            ),
+        )
+
+    invalid_cells = state.get("invalid_cells")
+    if isinstance(invalid_cells, list) and invalid_cells:
+        details = []
+        for item in invalid_cells:
+            if not isinstance(item, dict):
+                continue
+            cell = item.get("cell") if isinstance(item.get("cell"), dict) else {}
+            failures = item.get("failures") if isinstance(item.get("failures"), list) else []
+            details.append(
+                f"{cell.get('parent', 'unknown')}->{cell.get('child', 'unknown')} ({'; '.join(map(str, failures))})",
+            )
+        findings.append(
+            finding(
+                "child_failure_round_trip_matrix",
+                DEFAULT_EXPECTED_BEHAVIOR["child_failure_round_trip_matrix"],
+                artifact_versions,
+                False,
+                "typed failure evidence cells were missing stable metadata: " + ", ".join(details),
+            ),
+        )
+
+    failed_cells = state.get("failed_cells")
+    if isinstance(failed_cells, list):
+        for cell in failed_cells:
+            if not isinstance(cell, dict):
+                continue
+            observed = string_value(cell.get("observed_behavior")) or (
+                "a child workflow typed/domain failure was not observed by the parent with stable failure metadata"
+            )
+            findings.append(
+                {
+                    "scenario_id": "child_failure_round_trip_matrix",
+                    "finding_type": "product_behavior_gap",
+                    "owning_surface": string_value(cell.get("owning_surface")) or "workflow_runtime",
+                    "artifact_versions": artifact_versions,
+                    "expected_behavior": DEFAULT_EXPECTED_BEHAVIOR["child_failure_round_trip_matrix"],
+                    "observed_behavior": observed,
+                    "user_visible_reproduction_steps": [
+                        "Install the exact published artifacts recorded in artifact_versions.",
+                        f"Run a {cell.get('parent', 'parent')} parent workflow that starts a {cell.get('child', 'child')} child workflow which throws a typed/domain failure.",
+                        "Observe the parent workflow result, parent history, and public CLI/SDK read surfaces for typed failure metadata.",
+                    ],
+                    "next_acceptance_criterion": (
+                        "the parent observes the child failure as a typed/domain failure with exception class, "
+                        "message, failure kind, workflow/run identifiers, and history observations"
+                    ),
+                    "priority": "P1",
+                },
+            )
+
+    return findings
+
+
 def artifact_sources_from_install_evidence(evidence: dict[str, Any]) -> dict[str, str]:
     entries = artifact_install_entry_by_name(evidence)
     sources = {
@@ -590,6 +966,16 @@ def with_cell_status(cells: Any, status: str) -> list[dict[str, Any]]:
     return result
 
 
+def finding_links_by_scenario(findings: list[dict[str, Any]]) -> dict[str, list[dict[str, Any]]]:
+    links: dict[str, list[dict[str, Any]]] = {}
+    for item in findings:
+        scenario_id = string_value(item.get("scenario_id"))
+        if not scenario_id:
+            continue
+        links.setdefault(scenario_id, []).append(item)
+    return links
+
+
 def main() -> int:
     manifest = load_manifest()
     scenarios = scenario_defs(manifest)
@@ -634,10 +1020,43 @@ def main() -> int:
         install_evidence_was_supplied,
     )
     install_evidence_pass = not pin_failures and not install_failures
+    typed_failure_evidence_path_text = env("DW_CHILD_WORKFLOWS_TYPED_FAILURE_EVIDENCE")
+    typed_failure_evidence_path = Path(typed_failure_evidence_path_text) if typed_failure_evidence_path_text else None
+    raw_typed_failure_evidence = load_typed_failure_evidence(typed_failure_evidence_path_text)
+    typed_failure_evidence_was_supplied = raw_typed_failure_evidence is not None
+    typed_failure_evidence = normalize_typed_failure_evidence(raw_typed_failure_evidence)
+    typed_failure_failures = typed_failure_evidence_failures(
+        typed_failure_evidence,
+        artifact_versions,
+        typed_failure_evidence_was_supplied,
+        install_evidence_pass,
+    )
     runner_blocked = bool(pin_failures)
     blocked_reason = "; ".join(pin_failures)
     non_install_status = "runner_blocked" if runner_blocked else "not_covered"
     finished_at = now()
+    failure_round_trip_state = failure_round_trip_evidence_state(
+        matrix,
+        typed_failure_evidence,
+        typed_failure_failures,
+        typed_failure_evidence_was_supplied,
+        non_install_status,
+    )
+    failure_round_trip_section = {
+        "status": failure_round_trip_state["status"],
+        "cells": failure_round_trip_state["cells"],
+    }
+    if typed_failure_evidence_was_supplied:
+        failure_round_trip_section.update(
+            {
+                "typed_failure_evidence": typed_failure_evidence,
+                "typed_failure_evidence_path": str(typed_failure_evidence_path),
+                "typed_failure_evidence_failures": typed_failure_failures,
+                "missing_failure_round_trip_cells": failure_round_trip_state["missing_cells"],
+                "invalid_failure_round_trip_cells": failure_round_trip_state["invalid_cells"],
+                "failed_failure_round_trip_cells": failure_round_trip_state["failed_cells"],
+            },
+        )
 
     findings: list[dict[str, Any]] = []
     scenario_results: list[dict[str, Any]] = []
@@ -669,6 +1088,50 @@ def main() -> int:
                     "observed_outputs": observed_outputs,
                 },
             )
+            continue
+
+        if scenario_id == "child_failure_round_trip_matrix" and typed_failure_evidence_was_supplied:
+            scenario_findings = failure_round_trip_findings(
+                failure_round_trip_state,
+                typed_failure_failures,
+                published_artifact_versions,
+                runner_blocked,
+            )
+            findings.extend(scenario_findings)
+            if failure_round_trip_state["all_cells_pass"]:
+                scenario_results.append(
+                    {
+                        "scenario_id": scenario_id,
+                        "status": "pass",
+                        "expected_behavior": expected_behavior,
+                        "observed_outputs": {
+                            "failure_round_trip": failure_round_trip_section,
+                            "typed_failure_evidence": typed_failure_evidence,
+                            "typed_failure_evidence_path": str(typed_failure_evidence_path),
+                        },
+                    },
+                )
+            else:
+                scenario_status = (
+                    "fail"
+                    if failure_round_trip_state["status"] == "fail"
+                    else ("runner_blocked" if runner_blocked else "not_covered")
+                )
+                scenario_results.append(
+                    {
+                        "scenario_id": scenario_id,
+                        "status": scenario_status,
+                        "expected_behavior": expected_behavior,
+                        "observed_outputs": {
+                            "coverage_status": scenario_status,
+                            "failure_round_trip": failure_round_trip_section,
+                            "typed_failure_evidence": typed_failure_evidence,
+                            "typed_failure_evidence_path": str(typed_failure_evidence_path),
+                            "typed_failure_evidence_failures": typed_failure_failures,
+                        },
+                        "linked_findings": scenario_findings,
+                    },
+                )
             continue
 
         scenario_reason = blocked_reason
@@ -710,7 +1173,7 @@ def main() -> int:
         "runtimes": list(matrix.get("runtimes", ["workflow-php", "sdk-python"])),
         "same_language_cells": with_cell_status(matrix.get("same_language_cells"), non_install_status),
         "cross_language_cells": with_cell_status(matrix.get("cross_language_cells"), non_install_status),
-        "failure_round_trip_cells": with_cell_status(matrix.get("failure_round_trip_cells"), non_install_status),
+        "failure_round_trip_cells": failure_round_trip_state["cells"],
     }
 
     published_artifact_install = {
@@ -763,10 +1226,7 @@ def main() -> int:
                 "sdk-python": {"parent": "PythonParent", "child": "PythonChild"},
             },
         },
-        "failure_round_trip": {
-            "status": non_install_status,
-            "cells": runtime_matrix["failure_round_trip_cells"],
-        },
+        "failure_round_trip": failure_round_trip_section,
         "cancellation_propagation": {
             "parent_to_child": {"status": non_install_status},
             "direct_child": {"status": non_install_status},
@@ -779,10 +1239,7 @@ def main() -> int:
         "namespace_behavior": {"status": non_install_status},
         "scenario_results": scenario_results,
         "findings": findings,
-        "finding_links": {
-            item["scenario_id"]: [item]
-            for item in findings
-        },
+        "finding_links": finding_links_by_scenario(findings),
     }
 
     metadata = {
@@ -794,6 +1251,8 @@ def main() -> int:
         "artifact_sources": artifact_sources,
         "artifact_install_evidence_path": str(install_evidence_path),
         "artifact_install_evidence_supplied": install_evidence_was_supplied,
+        "typed_failure_evidence_path": str(typed_failure_evidence_path) if typed_failure_evidence_path else "",
+        "typed_failure_evidence_supplied": typed_failure_evidence_was_supplied,
         "scenario_manifest": str(MANIFEST_PATH),
     }
 

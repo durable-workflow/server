@@ -322,6 +322,7 @@ class ChildWorkflowRuntimeContractTest extends TestCase
         $this->assertStringContainsString('child-workflows-record.json', $source);
         $this->assertStringContainsString('DW_CHILD_WORKFLOWS_SCENARIO_MANIFEST', $source);
         $this->assertStringContainsString('DW_CHILD_WORKFLOWS_ARTIFACT_INSTALL_EVIDENCE', $source);
+        $this->assertStringContainsString('DW_CHILD_WORKFLOWS_TYPED_FAILURE_EVIDENCE', $source);
 
         foreach ([
             'DW_SERVER_VERSION',
@@ -348,6 +349,8 @@ class ChildWorkflowRuntimeContractTest extends TestCase
             'extend the host runner to execute this scenario against published artifacts',
             'artifact_install_evidence',
             'artifact_install_evidence missing',
+            'typed_failure_evidence requires passing published artifact install evidence',
+            'typed failure evidence did not include required failure round-trip cells',
             'install_evidence_pass',
             'not_exercised',
             'FORBIDDEN_INSTALL_SOURCE_TOKENS',
@@ -426,6 +429,96 @@ class ChildWorkflowRuntimeContractTest extends TestCase
                 rmdir($resultDir);
             }
         }
+    }
+
+    public function test_published_artifact_runner_rejects_typed_failure_evidence_without_install_evidence(): void
+    {
+        $run = $this->runChildWorkflowRunnerWithEvidence(
+            $this->childWorkflowRunnerBaseEnv(),
+            [
+                'DW_CHILD_WORKFLOWS_TYPED_FAILURE_EVIDENCE' => [
+                    'name' => 'typed-failure-evidence.json',
+                    'content' => $this->childWorkflowTypedFailureEvidence(),
+                ],
+            ],
+        );
+        $result = $run['result'];
+        $scenario = $this->scenarioResult($result, 'child_failure_round_trip_matrix');
+
+        $this->assertSame(1, $run['exitCode']);
+        $this->assertSame('not_covered', $scenario['status']);
+        $this->assertSame('not_covered', $result['failure_round_trip']['status'] ?? null);
+        $this->assertNotContains('pass', array_column($result['failure_round_trip']['cells'] ?? [], 'status'));
+        $this->assertContains(
+            'typed_failure_evidence requires passing published artifact install evidence',
+            $result['failure_round_trip']['typed_failure_evidence_failures'] ?? [],
+        );
+    }
+
+    public function test_published_artifact_runner_keeps_partial_typed_failure_evidence_non_passing(): void
+    {
+        $run = $this->runChildWorkflowRunnerWithEvidence(
+            $this->childWorkflowRunnerBaseEnv(),
+            [
+                'DW_CHILD_WORKFLOWS_ARTIFACT_INSTALL_EVIDENCE' => [
+                    'name' => 'artifact-install-evidence.json',
+                    'content' => $this->childWorkflowArtifactInstallEvidence(),
+                ],
+                'DW_CHILD_WORKFLOWS_TYPED_FAILURE_EVIDENCE' => [
+                    'name' => 'typed-failure-evidence.json',
+                    'content' => $this->childWorkflowTypedFailureEvidence([
+                        $this->childWorkflowTypedFailureCell('sdk-python', 'sdk-python'),
+                    ]),
+                ],
+            ],
+        );
+        $result = $run['result'];
+        $scenario = $this->scenarioResult($result, 'child_failure_round_trip_matrix');
+        $cellStatuses = $this->failureRoundTripStatusByCell($result);
+
+        $this->assertSame(1, $run['exitCode']);
+        $this->assertSame('not_covered', $scenario['status']);
+        $this->assertSame('not_covered', $result['failure_round_trip']['status'] ?? null);
+        $this->assertSame('pass', $cellStatuses['sdk-python->sdk-python'] ?? null);
+        $this->assertSame('not_covered', $cellStatuses['workflow-php->workflow-php'] ?? null);
+        $this->assertSame('not_covered', $cellStatuses['workflow-php->sdk-python'] ?? null);
+        $this->assertSame('not_covered', $cellStatuses['sdk-python->workflow-php'] ?? null);
+        $this->assertStringContainsString(
+            'typed failure evidence did not include required failure round-trip cells',
+            $scenario['linked_findings'][0]['observed_behavior'] ?? '',
+        );
+    }
+
+    public function test_published_artifact_runner_passes_typed_failure_matrix_only_with_all_required_cells(): void
+    {
+        $run = $this->runChildWorkflowRunnerWithEvidence(
+            $this->childWorkflowRunnerBaseEnv(),
+            [
+                'DW_CHILD_WORKFLOWS_ARTIFACT_INSTALL_EVIDENCE' => [
+                    'name' => 'artifact-install-evidence.json',
+                    'content' => $this->childWorkflowArtifactInstallEvidence(),
+                ],
+                'DW_CHILD_WORKFLOWS_TYPED_FAILURE_EVIDENCE' => [
+                    'name' => 'typed-failure-evidence.json',
+                    'content' => $this->childWorkflowTypedFailureEvidence(),
+                ],
+            ],
+        );
+        $result = $run['result'];
+        $scenario = $this->scenarioResult($result, 'child_failure_round_trip_matrix');
+
+        $this->assertSame(1, $run['exitCode']);
+        $this->assertSame('pass', $scenario['status']);
+        $this->assertSame('pass', $result['failure_round_trip']['status'] ?? null);
+        $this->assertSame(
+            ['pass', 'pass', 'pass', 'pass'],
+            array_column($result['failure_round_trip']['cells'] ?? [], 'status'),
+        );
+        $this->assertSame(
+            'non_passing',
+            $result['outcome'] ?? null,
+            'passing the focused typed-failure matrix must not reopen the broader child-workflows matrix',
+        );
     }
 
     public function test_manifest_publishes_an_enforceable_result_gate(): void
@@ -1171,6 +1264,222 @@ class ChildWorkflowRuntimeContractTest extends TestCase
             'finding_links' => [],
             'scenario_results' => $scenarioResults,
         ];
+    }
+
+    /**
+     * @param array<string, string> $env
+     * @param array<string, array{name: string, content: array<string, mixed>}> $evidenceFiles
+     *
+     * @return array{exitCode: int, result: array<string, mixed>}
+     */
+    private function runChildWorkflowRunnerWithEvidence(array $env, array $evidenceFiles): array
+    {
+        if (trim((string) shell_exec('command -v bash 2>/dev/null')) === ''
+            || trim((string) shell_exec('command -v python3 2>/dev/null')) === '') {
+            $this->markTestSkipped('bash and python3 are required to exercise the child-workflows runner.');
+        }
+
+        $repoRoot = dirname(__DIR__, 2);
+        $resultDir = $repoRoot . '/storage/framework/child-workflows-' . bin2hex(random_bytes(4));
+        $this->assertTrue(mkdir($resultDir, 0777, true));
+
+        try {
+            foreach ($evidenceFiles as $envName => $spec) {
+                $path = $resultDir . '/' . $spec['name'];
+                file_put_contents(
+                    $path,
+                    json_encode($spec['content'], JSON_THROW_ON_ERROR | JSON_PRETTY_PRINT) . "\n",
+                );
+                $env[$envName] = $path;
+            }
+
+            $envPrefix = implode(' ', array_map(
+                static fn (string $name, string $value): string => $name . '=' . escapeshellarg($value),
+                array_keys($env),
+                array_values($env),
+            ));
+            $command = sprintf(
+                '%s bash %s --result-dir %s >/dev/null 2>&1',
+                $envPrefix,
+                escapeshellarg($repoRoot . '/scripts/conformance/child-workflows-published-artifacts.sh'),
+                escapeshellarg($resultDir),
+            );
+
+            exec($command, $output, $exitCode);
+            $result = json_decode(
+                file_get_contents($resultDir . '/child-workflows-result.json') ?: '',
+                true,
+                512,
+                JSON_THROW_ON_ERROR,
+            );
+
+            return [
+                'exitCode' => $exitCode,
+                'result' => $result,
+            ];
+        } finally {
+            foreach (glob($resultDir . '/*') ?: [] as $file) {
+                if (is_file($file)) {
+                    unlink($file);
+                }
+            }
+            if (is_dir($resultDir)) {
+                rmdir($resultDir);
+            }
+        }
+    }
+
+    /**
+     * @return array<string, string>
+     */
+    private function childWorkflowRunnerBaseEnv(): array
+    {
+        return [
+            'DW_SERVER_VERSION' => '9.9.9',
+            'DW_CLI_VERSION' => '9.9.9',
+            'DW_PYTHON_SDK_VERSION' => '9.9.9',
+            'DW_WORKFLOW_PHP_VERSION' => '9.9.9',
+            'DW_WATERLINE_VERSION' => '9.9.9',
+        ];
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    private function childWorkflowArtifactInstallEvidence(): array
+    {
+        return [
+            'schema' => 'durable-workflow.v2.child-workflow-runtime.artifact-install-evidence',
+            'generated_at' => '2026-07-08T05:30:00Z',
+            'local_product_source_checkouts_used' => false,
+            'artifacts' => [
+                [
+                    'artifact' => 'server',
+                    'version' => '9.9.9',
+                    'source' => 'docker://durableworkflow/server:9.9.9',
+                    'status' => 'pass',
+                ],
+                [
+                    'artifact' => 'cli',
+                    'version' => '9.9.9',
+                    'source' => 'https://github.com/durable-workflow/cli/releases/download/v9.9.9/dw-linux-amd64',
+                    'status' => 'pass',
+                ],
+                [
+                    'artifact' => 'sdk-python',
+                    'version' => '9.9.9',
+                    'source' => 'pypi:durable-workflow==9.9.9',
+                    'status' => 'pass',
+                ],
+                [
+                    'artifact' => 'workflow-php',
+                    'version' => '9.9.9',
+                    'source' => 'packagist:durable-workflow/workflow:9.9.9',
+                    'status' => 'pass',
+                ],
+                [
+                    'artifact' => 'waterline',
+                    'version' => '9.9.9',
+                    'source' => 'packagist:durable-workflow/waterline:9.9.9',
+                    'status' => 'pass',
+                ],
+            ],
+        ];
+    }
+
+    /**
+     * @param list<array<string, mixed>>|null $cells
+     *
+     * @return array<string, mixed>
+     */
+    private function childWorkflowTypedFailureEvidence(?array $cells = null): array
+    {
+        return [
+            'schema' => 'durable-workflow.v2.child-workflow-runtime.typed-failure-evidence',
+            'generated_at' => '2026-07-08T05:31:00Z',
+            'local_product_source_checkouts_used' => false,
+            'artifact_versions' => [
+                'server' => '9.9.9',
+                'cli' => '9.9.9',
+                'sdk-python' => '9.9.9',
+                'workflow' => '9.9.9',
+                'waterline' => '9.9.9',
+            ],
+            'failure_round_trip_cells' => $cells ?? [
+                $this->childWorkflowTypedFailureCell('sdk-python', 'sdk-python'),
+                $this->childWorkflowTypedFailureCell('workflow-php', 'workflow-php'),
+                $this->childWorkflowTypedFailureCell('workflow-php', 'sdk-python'),
+                $this->childWorkflowTypedFailureCell('sdk-python', 'workflow-php'),
+            ],
+        ];
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    private function childWorkflowTypedFailureCell(string $parent, string $child): array
+    {
+        $label = str_replace('-', '_', $parent . '_' . $child);
+
+        return [
+            'scenario' => 'child_failure_round_trip_matrix',
+            'parent' => $parent,
+            'child' => $child,
+            'status' => 'pass',
+            'exception_class' => 'ChildWorkflowDomainError',
+            'message' => $child . ' child failed with a domain error',
+            'failure_kind' => 'child_workflow',
+            'parent_workflow_id' => 'parent-' . $label,
+            'parent_run_id' => 'parent-run-' . $label,
+            'child_workflow_id' => 'child-' . $label,
+            'child_run_id' => 'child-run-' . $label,
+            'parent_history_observations' => [
+                'ChildWorkflowScheduled',
+                'ChildWorkflowFailed',
+            ],
+            'child_history_observations' => [
+                'WorkflowTaskFailed',
+            ],
+            'public_surfaces' => [
+                $parent . ' child await surface',
+                'server history API',
+            ],
+        ];
+    }
+
+    /**
+     * @param array<string, mixed> $result
+     *
+     * @return array<string, mixed>
+     */
+    private function scenarioResult(array $result, string $scenarioId): array
+    {
+        foreach ($result['scenario_results'] ?? [] as $scenario) {
+            if (is_array($scenario) && ($scenario['scenario_id'] ?? null) === $scenarioId) {
+                return $scenario;
+            }
+        }
+
+        $this->fail('Missing scenario result for ' . $scenarioId);
+    }
+
+    /**
+     * @param array<string, mixed> $result
+     *
+     * @return array<string, string>
+     */
+    private function failureRoundTripStatusByCell(array $result): array
+    {
+        $statuses = [];
+        foreach ($result['failure_round_trip']['cells'] ?? [] as $cell) {
+            if (! is_array($cell)) {
+                continue;
+            }
+
+            $statuses[($cell['parent'] ?? '') . '->' . ($cell['child'] ?? '')] = (string) ($cell['status'] ?? '');
+        }
+
+        return $statuses;
     }
 
     private function read(string $path): string
