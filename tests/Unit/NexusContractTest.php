@@ -277,6 +277,7 @@ class NexusContractTest extends TestCase
                 'service_call_id',
                 'artifact_tuple',
                 'published_artifact_worker_execution',
+                'service_health',
             ] as $requiredField) {
                 $this->assertContains(
                     $requiredField,
@@ -398,6 +399,10 @@ class NexusContractTest extends TestCase
             'replay_and_cancellation_cells_attach_published_worker_execution',
             $manifest['result_gate']['pass_requires'],
         );
+        $this->assertContains(
+            'php_python_service_shards_return_valid_health',
+            $manifest['result_gate']['pass_requires'],
+        );
 
         $hostRunner = $manifest['host_runner_contract'];
         $this->assertSame('required_for_passing_nexus_conformance', $hostRunner['status']);
@@ -466,6 +471,9 @@ class NexusContractTest extends TestCase
         $this->assertStringContainsString('published_php_python_service_call_shard', $contents);
         $this->assertStringContainsString('nexus-python-sdk-service', $contents);
         $this->assertStringContainsString('nexus-php-workflow-service', $contents);
+        $this->assertStringContainsString('validServiceHealthResponse', $contents);
+        $this->assertStringContainsString('service_health', $contents);
+        $this->assertStringContainsString('nexus_published_service_health_failed', $contents);
         $this->assertStringContainsString('startServiceOperation', $contents);
         $this->assertStringContainsString('executeServiceOperation', $contents);
         $this->assertStringContainsString('serviceOperation', $contents);
@@ -755,6 +763,55 @@ class NexusContractTest extends TestCase
         );
         $this->assertContains(
             'conformance_runner_coverage_gap',
+            array_column($scenario['linked_findings'], 'finding_type'),
+        );
+    }
+
+    public function test_host_runner_rejects_php_service_cell_without_valid_health_response(): void
+    {
+        $nodeBinary = trim((string) shell_exec('command -v node 2>/dev/null'));
+        if ($nodeBinary === '') {
+            $this->markTestSkipped('node is required to exercise the Nexus runner result gate.');
+        }
+
+        $evidence = $this->completeRunnerEvidence();
+        foreach ($evidence['scenario_results'] as &$scenario) {
+            if (($scenario['scenario_id'] ?? null) !== 'python_caller_php_service') {
+                continue;
+            }
+
+            $scenario['observed_outputs']['service_health'] = [
+                'sdk_language' => 'workflow-php',
+                'endpoint' => '/health',
+                'health_succeeded' => false,
+                'package_version' => $evidence['artifact_versions']['workflow'],
+                'health_response' => [
+                    'ok' => false,
+                    'status' => 500,
+                    'body' => [
+                        'runtime' => 'workflow-php',
+                        'package_imported' => false,
+                        'service_started' => false,
+                        'package_version' => $evidence['artifact_versions']['workflow'],
+                        'error' => 'PHP parse error before health response',
+                    ],
+                ],
+                'local_product_source_checkouts_used' => false,
+            ];
+        }
+        unset($scenario);
+
+        $result = $this->runNexusEvidence($evidence, 'dw-nexus-php-service-health-failed-');
+        $scenario = $this->scenarioResult($result, 'python_caller_php_service');
+
+        $this->assertSame('fail', $result['outcome']);
+        $this->assertSame('fail', $scenario['status']);
+        $this->assertContains(
+            'service_health',
+            array_column($scenario['observed_outputs']['scenario_evidence_failures'], 'field'),
+        );
+        $this->assertContains(
+            'nexus_published_service_health_failed',
             array_column($scenario['linked_findings'], 'finding_type'),
         );
     }
@@ -2733,6 +2790,10 @@ class NexusContractTest extends TestCase
                     $artifactVersions,
                     $artifactSources,
                 ),
+                'service_health' => $this->publishedServiceHealth(
+                    'sdk-python',
+                    $artifactVersions['sdk-python'],
+                ),
                 'payload_round_trip' => true,
                 'typed_error_round_trip' => true,
             ],
@@ -2756,6 +2817,10 @@ class NexusContractTest extends TestCase
                 'published_artifact_worker_execution' => $this->publishedCrossLanguageWorkerExecution(
                     $artifactVersions,
                     $artifactSources,
+                ),
+                'service_health' => $this->publishedServiceHealth(
+                    'workflow-php',
+                    $artifactVersions['workflow'],
                 ),
                 'payload_round_trip' => true,
                 'typed_error_round_trip' => true,
@@ -3023,15 +3088,24 @@ class NexusContractTest extends TestCase
      */
     private function publishedCrossLanguageWorkerExecution(array $artifactVersions, array $artifactSources): array
     {
+        $phpHealth = $this->publishedServiceHealth('workflow-php', $artifactVersions['workflow']);
+        $pythonHealth = $this->publishedServiceHealth('sdk-python', $artifactVersions['sdk-python']);
+
         return [
             'local_product_source_checkouts_used' => false,
             'worker_execution_mode' => 'published_php_python_worker_matrix',
+            'service_health' => [
+                'workflow-php' => $phpHealth,
+                'sdk-python' => $pythonHealth,
+            ],
             'artifacts' => [
                 [
                     'artifact' => 'workflow-php',
                     'version' => $artifactVersions['workflow'],
                     'source' => $artifactSources['workflow'],
                     'status' => 'pass',
+                    'service_health_succeeded' => true,
+                    'service_health' => $phpHealth,
                     'local_product_source_checkouts_used' => false,
                 ],
                 [
@@ -3039,9 +3113,55 @@ class NexusContractTest extends TestCase
                     'version' => $artifactVersions['sdk-python'],
                     'source' => $artifactSources['sdk-python'],
                     'status' => 'pass',
+                    'service_health_succeeded' => true,
+                    'service_health' => $pythonHealth,
                     'local_product_source_checkouts_used' => false,
                 ],
             ],
+            'workers' => [
+                [
+                    'role' => 'workflow_php_runtime_service',
+                    'sdk_language' => 'workflow-php',
+                    'package_version' => $artifactVersions['workflow'],
+                    'service_started' => true,
+                    'service_health_succeeded' => true,
+                    'service_health' => $phpHealth,
+                ],
+                [
+                    'role' => 'sdk_python_runtime_service',
+                    'sdk_language' => 'sdk-python',
+                    'package_version' => $artifactVersions['sdk-python'],
+                    'service_started' => true,
+                    'service_health_succeeded' => true,
+                    'service_health' => $pythonHealth,
+                ],
+            ],
+        ];
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    private function publishedServiceHealth(string $runtime, string $version): array
+    {
+        return [
+            'sdk_language' => $runtime,
+            'endpoint' => '/health',
+            'health_succeeded' => true,
+            'service_started' => true,
+            'package_imported' => true,
+            'package_version' => $version,
+            'health_response' => [
+                'ok' => true,
+                'status' => 200,
+                'body' => [
+                    'runtime' => $runtime,
+                    'service_started' => true,
+                    'package_imported' => true,
+                    'package_version' => $version,
+                ],
+            ],
+            'local_product_source_checkouts_used' => false,
         ];
     }
 

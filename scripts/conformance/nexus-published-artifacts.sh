@@ -154,6 +154,7 @@ const sharedServicePassRequirements = {
     {fields: ['service_call_id', 'serviceCallId'], kind: 'non_empty_string'},
     {fields: ['artifact_tuple', 'artifactTuple', 'artifact_versions', 'artifactVersions', 'published_artifact_versions', 'publishedArtifactVersions', 'resolved_artifact_versions', 'resolvedArtifactVersions'], kind: 'non_empty_object'},
     {fields: ['published_artifact_worker_execution', 'publishedArtifactWorkerExecution', 'published_worker_execution', 'publishedWorkerExecution'], kind: 'non_empty_object'},
+    {fields: ['service_health', 'serviceHealth', 'published_service_health', 'publishedServiceHealth'], kind: 'non_empty_object'},
     {fields: ['payload_round_trip', 'payloadRoundTrip'], kind: 'boolean_true'},
     {fields: ['typed_error_round_trip', 'typedErrorRoundTrip'], kind: 'boolean_true'},
   ],
@@ -168,6 +169,7 @@ const sharedServicePassRequirements = {
     {fields: ['service_call_id', 'serviceCallId'], kind: 'non_empty_string'},
     {fields: ['artifact_tuple', 'artifactTuple', 'artifact_versions', 'artifactVersions', 'published_artifact_versions', 'publishedArtifactVersions', 'resolved_artifact_versions', 'resolvedArtifactVersions'], kind: 'non_empty_object'},
     {fields: ['published_artifact_worker_execution', 'publishedArtifactWorkerExecution', 'published_worker_execution', 'publishedWorkerExecution'], kind: 'non_empty_object'},
+    {fields: ['service_health', 'serviceHealth', 'published_service_health', 'publishedServiceHealth'], kind: 'non_empty_object'},
     {fields: ['payload_round_trip', 'payloadRoundTrip'], kind: 'boolean_true'},
     {fields: ['typed_error_round_trip', 'typedErrorRoundTrip'], kind: 'boolean_true'},
   ],
@@ -1529,11 +1531,75 @@ function callerWorkflowInvocationEvidence(language, runtimeEvidence) {
   };
 }
 
+function runtimeKeyForLanguage(language) {
+  return language === 'workflow-php' ? 'php' : 'python';
+}
+
+function validServiceHealthResponse(language, response) {
+  const body = response?.body && typeof response.body === 'object' && !Array.isArray(response.body)
+    ? response.body
+    : {};
+  const status = Number(response?.status ?? 0);
+
+  return response?.ok === true
+    && status >= 200
+    && status < 300
+    && stringValue(body.runtime) === language
+    && body.service_started === true
+    && body.package_imported === true;
+}
+
+function serviceHealthFailureSummary(summary) {
+  const status = Number(summary?.status ?? 0);
+  const body = summary?.body && typeof summary.body === 'object' && !Array.isArray(summary.body)
+    ? summary.body
+    : {};
+  const detail = stringValue(body.error)
+    || stringValue(body.raw_body)
+    || stringValue(summary?.raw_body)
+    || JSON.stringify(body).slice(0, 500);
+
+  return `status=${status}; ok=${summary?.ok === true}; ${detail}`;
+}
+
+function publishedServiceHealthEvidence(language, runtimeEvidence) {
+  const healthResponse = runtimeEvidence?.health_response
+    && typeof runtimeEvidence.health_response === 'object'
+    && !Array.isArray(runtimeEvidence.health_response)
+    ? runtimeEvidence.health_response
+    : {};
+  const body = healthResponse.body && typeof healthResponse.body === 'object' && !Array.isArray(healthResponse.body)
+    ? healthResponse.body
+    : {};
+  const healthSucceeded = validServiceHealthResponse(language, healthResponse);
+
+  return {
+    sdk_language: language,
+    endpoint: '/health',
+    health_succeeded: healthSucceeded,
+    service_started: healthSucceeded,
+    package_imported: body.package_imported === true || runtimeEvidence?.package_imported === true,
+    package_version: stringValue(body.package_version) || stringValue(runtimeEvidence?.package_version),
+    container_image: runtimeEvidence?.container_image || null,
+    health_response: healthResponse,
+    service_runtime_surface: runtimeEvidence?.service_runtime_surface || null,
+    public_service_call_surface: reflectedPublicServiceCallSurface(runtimeEvidence),
+    local_product_source_checkouts_used: false,
+  };
+}
+
 function publishedCrossLanguageWorkerExecution(versions, sources, verification, runtimeEvidence) {
+  const phpServiceHealth = publishedServiceHealthEvidence('workflow-php', runtimeEvidence.php);
+  const pythonServiceHealth = publishedServiceHealthEvidence('sdk-python', runtimeEvidence.python);
+
   return {
     local_product_source_checkouts_used: false,
     worker_execution_mode: 'published_php_python_service_call_shard',
     source_integrity_statement: 'workflow-php and sdk-python were installed from published package channels inside disposable runtime containers; no local product checkout path was mounted as an artifact under test',
+    service_health: {
+      'workflow-php': phpServiceHealth,
+      'sdk-python': pythonServiceHealth,
+    },
     artifacts: [
       {
         artifact: 'workflow-php',
@@ -1542,6 +1608,8 @@ function publishedCrossLanguageWorkerExecution(versions, sources, verification, 
         status: runtimeEvidence.php?.package_imported === true ? 'pass' : 'fail',
         install_channel: 'packagist',
         source_verification: verification.workflow,
+        service_health_succeeded: phpServiceHealth.health_succeeded === true,
+        service_health: phpServiceHealth,
         local_product_source_checkout_used_as_artifact: false,
         local_product_source_checkouts_used: false,
       },
@@ -1552,6 +1620,8 @@ function publishedCrossLanguageWorkerExecution(versions, sources, verification, 
         status: runtimeEvidence.python?.package_imported === true ? 'pass' : 'fail',
         install_channel: 'pypi',
         source_verification: verification['sdk-python'],
+        service_health_succeeded: pythonServiceHealth.health_succeeded === true,
+        service_health: pythonServiceHealth,
         local_product_source_checkout_used_as_artifact: false,
         local_product_source_checkouts_used: false,
       },
@@ -1562,7 +1632,9 @@ function publishedCrossLanguageWorkerExecution(versions, sources, verification, 
         sdk_language: 'workflow-php',
         package_version: runtimeEvidence.php?.package_version || versions.workflow,
         container_image: runtimeEvidence.php?.container_image || 'composer:2',
-        service_started: runtimeEvidence.php?.service_started === true,
+        service_started: phpServiceHealth.health_succeeded === true,
+        service_health_succeeded: phpServiceHealth.health_succeeded === true,
+        service_health: phpServiceHealth,
         service_runtime_surface: runtimeEvidence.php?.service_runtime_surface || null,
         public_service_call_surface: reflectedPublicServiceCallSurface(runtimeEvidence.php),
         caller_workflow_invocation: callerWorkflowInvocationEvidence('workflow-php', runtimeEvidence.php),
@@ -1572,7 +1644,9 @@ function publishedCrossLanguageWorkerExecution(versions, sources, verification, 
         sdk_language: 'sdk-python',
         package_version: runtimeEvidence.python?.package_version || versions['sdk-python'],
         container_image: runtimeEvidence.python?.container_image || 'python:3.12-slim',
-        service_started: runtimeEvidence.python?.service_started === true,
+        service_started: pythonServiceHealth.health_succeeded === true,
+        service_health_succeeded: pythonServiceHealth.health_succeeded === true,
+        service_health: pythonServiceHealth,
         service_runtime_surface: runtimeEvidence.python?.service_runtime_surface || null,
         public_service_call_surface: reflectedPublicServiceCallSurface(runtimeEvidence.python),
         caller_workflow_invocation: callerWorkflowInvocationEvidence('sdk-python', runtimeEvidence.python),
@@ -1588,11 +1662,12 @@ declare(strict_types=1);
 
 use Workflow\\Serializers\\Serializer;
 use Workflow\\V2\\Support\\InvocableHttpAdapter;
+use Composer\\InstalledVersions;
 
 require '/tmp/dw-php/vendor/autoload.php';
 
-$installedVersion = class_exists('Composer\\\\InstalledVersions')
-    ? (Composer\\\\InstalledVersions::getPrettyVersion('durable-workflow/workflow') ?: null)
+$installedVersion = class_exists(InstalledVersions::class)
+    ? (InstalledVersions::getPrettyVersion('durable-workflow/workflow') ?: InstalledVersions::getVersion('durable-workflow/workflow') ?: null)
     : null;
 $controlPlaneClass = 'Workflow\\\\V2\\\\Client\\\\ControlPlaneClient';
 $workflowClass = 'Workflow\\\\V2\\\\Workflow';
@@ -2251,6 +2326,22 @@ function reflectedPublicServiceCallSurface(runtimeEvidence) {
   };
 }
 
+function serviceHealthEvidenceFromWorkerExecution(workerExecution, language) {
+  const key = runtimeKeyForLanguage(language);
+  const serviceHealth = workerExecution?.service_health;
+  if (serviceHealth && typeof serviceHealth === 'object' && !Array.isArray(serviceHealth)) {
+    for (const field of [language, key, language.replace('-', '_'), `${key}_service`, `${key}Service`]) {
+      const value = serviceHealth[field];
+      if (value && typeof value === 'object' && !Array.isArray(value)) {
+        return value;
+      }
+    }
+  }
+
+  const runtimeEvidence = workerExecution?.runtime_evidence?.[key] || {};
+  return publishedServiceHealthEvidence(language, runtimeEvidence);
+}
+
 function crossLanguageFinding(scenarioId, versions, owningSurface, observed, expected, next, type = 'nexus_unsupported_surface') {
   return {
     scenario_id: scenarioId,
@@ -2298,13 +2389,15 @@ function crossLanguageScenarioResult({
   const callerWorker = workerExecution.workers?.find((worker) => worker.sdk_language === callerLanguage);
   const serviceWorker = workerExecution.workers?.find((worker) => worker.sdk_language === serviceLanguage);
   const callerWorkerInvocation = callerWorker?.caller_workflow_invocation || null;
+  const serviceHealth = serviceHealthEvidenceFromWorkerExecution(workerExecution, serviceLanguage);
+  const serviceHealthSucceeded = serviceHealth.health_succeeded === true;
   const callerPublicSurfaceAvailable = publicSurfaceAvailable(callerWorker?.public_service_call_surface)
     || (
       callerWorkerInvocation?.executed === true
       && callerWorkerInvocation?.local_product_source_checkouts_used === false
     );
-  const serviceRuntimeAvailable = serviceProbeSucceeded
-    || publicSurfaceAvailable(serviceWorker?.service_runtime_surface);
+  const serviceRuntimeAvailable = serviceHealthSucceeded
+    && publicSurfaceAvailable(serviceWorker?.service_runtime_surface);
   const durableServiceResponseObserved = serviceRuntimeAvailable
     && execute.ok
     && serviceCallId !== ''
@@ -2321,10 +2414,15 @@ function crossLanguageScenarioResult({
     ? missingSurface
     : (!callerPublicSurfaceAvailable
       ? `published ${callerLanguage} caller workflow did not expose a public SDK service-call API during the reflected package probe`
-      : (!durableServiceResponseObserved
-        ? 'durable service-call response from the published service runtime was not observed'
-        : (execute.ok ? null : 'service endpoint execute did not accept the published cross-language call')));
+      : (!serviceHealthSucceeded
+        ? `published ${serviceLanguage} service shard did not return a valid /health response: ${serviceHealthFailureSummary(serviceHealth.health_response)}`
+        : (!publicSurfaceAvailable(serviceWorker?.service_runtime_surface)
+          ? `published ${serviceLanguage} service shard health passed but did not expose an invocable service runtime surface`
+          : (!durableServiceResponseObserved
+            ? 'durable service-call response from the published service runtime was not observed'
+            : (execute.ok ? null : 'service endpoint execute did not accept the published cross-language call')))));
   const pass = missing === null
+    && serviceHealthSucceeded
     && serviceRuntimeAvailable
     && execute.ok
     && serviceCallId !== ''
@@ -2345,6 +2443,8 @@ function crossLanguageScenarioResult({
       service_call_id: serviceCallId,
       artifact_tuple: artifactTupleEvidence,
       published_artifact_worker_execution: workerExecution,
+      service_health: serviceHealth,
+      service_health_succeeded: serviceHealthSucceeded,
       payload_round_trip: true,
       typed_error_round_trip: true,
       service_probe_succeeded: serviceProbeSucceeded,
@@ -2361,11 +2461,23 @@ function crossLanguageScenarioResult({
     describe_response: responseSummary(describe),
     caller_history_response: responseSummary(history),
     service_probe_response: serviceProbe,
+    service_health: serviceHealth,
+    service_health_succeeded: serviceHealthSucceeded,
     durable_service_call_id_observed: serviceCallId !== '',
     caller_history_recorded: callerHistoryRecorded,
     caller_worker_invocation: callerWorkerInvocation,
     missing_public_surface: missing,
   };
+  const healthFailureObserved = callerPublicSurfaceAvailable && serviceHealthSucceeded !== true;
+  const findingType = healthFailureObserved
+    ? 'nexus_published_service_health_failed'
+    : 'nexus_unsupported_surface';
+  const expectedBehavior = healthFailureObserved
+    ? `The published ${serviceLanguage} service shard serves /health with runtime, package import, and package version evidence before the Nexus run can pass.`
+    : `The published ${callerLanguage} caller SDK exposes a workflow-safe Nexus service-call API and the published ${serviceLanguage} service runtime executes the call through the durable service-call path.`;
+  const nextAcceptanceCriterion = healthFailureObserved
+    ? `fix published ${serviceLanguage} service startup, serve valid /health evidence, and rerun the published PHP/Python Nexus shard`
+    : `publish the missing ${callerLanguage} Nexus service-call surface, wire it to the ${serviceLanguage} runtime service, and rerun the published PHP/Python Nexus shard`;
 
   return scenarioResult('unsupported', scenarioId, {
     caller_workflow_instance_id: callerWorkflowInstanceId,
@@ -2378,6 +2490,8 @@ function crossLanguageScenarioResult({
     service_call_id: serviceCallId,
     artifact_tuple: artifactTupleEvidence,
     published_artifact_worker_execution: workerExecution,
+    service_health: serviceHealth,
+    service_health_succeeded: serviceHealthSucceeded,
     payload_round_trip: serviceProbeSucceeded,
     typed_error_round_trip: serviceProbeSucceeded,
     attempted_call_evidence: attemptedCallEvidence,
@@ -2387,8 +2501,9 @@ function crossLanguageScenarioResult({
       versions,
       missingSurfaceOwner,
       `${scenarioId} attempted the published ${callerLanguage} to ${serviceLanguage} Nexus call, but ${missing}. Evidence: ${JSON.stringify(attemptedCallEvidence).slice(0, 1000)}`,
-      `The published ${callerLanguage} caller SDK exposes a workflow-safe Nexus service-call API and the published ${serviceLanguage} service runtime executes the call through the durable service-call path.`,
-      `publish the missing ${callerLanguage} Nexus service-call surface, wire it to the ${serviceLanguage} runtime service, and rerun the published PHP/Python Nexus shard`,
+      expectedBehavior,
+      nextAcceptanceCriterion,
+      findingType,
     ),
   ]);
 }
@@ -2463,6 +2578,7 @@ async function probePublishedPhpPythonServiceCalls(baseUrl, token, versions, sou
         package_imported: crossLanguageRuntimeBool('package_imported', pythonHealth, pythonProbe, pythonReflection),
         package_version: crossLanguageRuntimeString('package_version', versions['sdk-python'] || '', pythonHealth, pythonProbe, pythonReflection),
         service_started: pythonHealth.ok === true || pythonProbe.ok === true || crossLanguageRuntimeBool('service_started', pythonHealth, pythonProbe, pythonReflection),
+        service_health_succeeded: validServiceHealthResponse('sdk-python', pythonHealth),
         health_response: responseSummary(pythonHealth),
         invocation_response: responseSummary(pythonProbe),
         caller_reflection_response: responseSummary(pythonReflection),
@@ -2475,6 +2591,7 @@ async function probePublishedPhpPythonServiceCalls(baseUrl, token, versions, sou
         package_imported: crossLanguageRuntimeBool('package_imported', phpHealth, phpProbe, phpReflection),
         package_version: crossLanguageRuntimeString('package_version', versions.workflow || '', phpHealth, phpProbe, phpReflection),
         service_started: phpHealth.ok === true || phpProbe.ok === true || crossLanguageRuntimeBool('service_started', phpHealth, phpProbe, phpReflection),
+        service_health_succeeded: validServiceHealthResponse('workflow-php', phpHealth),
         health_response: responseSummary(phpHealth),
         invocation_response: responseSummary(phpProbe),
         caller_reflection_response: responseSummary(phpReflection),
@@ -2593,12 +2710,16 @@ async function probePublishedPhpPythonServiceCalls(baseUrl, token, versions, sou
     const pythonMissingSurface = publicSurfaceAvailable(pythonPublicSurface)
       ? null
       : 'published sdk-python lacks a public workflow-safe Nexus service-call caller API on durable_workflow.client.Client or durable_workflow.workflow.WorkflowContext';
-    const pythonServiceRuntimeMissing = publicSurfaceAvailable(runtimeEvidence.python.service_runtime_surface)
-      ? null
-      : 'published sdk-python lacks a public invocable service runtime surface on durable_workflow.invocable.InvocableActivityHandler';
-    const phpServiceRuntimeMissing = publicSurfaceAvailable(runtimeEvidence.php.service_runtime_surface)
-      ? null
-      : 'published workflow-php lacks a public invocable service runtime surface on Workflow\\V2\\Support\\InvocableHttpAdapter';
+    const pythonServiceRuntimeMissing = runtimeEvidence.python.service_health_succeeded !== true
+      ? `published sdk-python service shard did not return a valid /health response: ${serviceHealthFailureSummary(runtimeEvidence.python.health_response)}`
+      : (publicSurfaceAvailable(runtimeEvidence.python.service_runtime_surface)
+        ? null
+        : 'published sdk-python lacks a public invocable service runtime surface on durable_workflow.invocable.InvocableActivityHandler');
+    const phpServiceRuntimeMissing = runtimeEvidence.php.service_health_succeeded !== true
+      ? `published workflow-php service shard did not return a valid /health response: ${serviceHealthFailureSummary(runtimeEvidence.php.health_response)}`
+      : (publicSurfaceAvailable(runtimeEvidence.php.service_runtime_surface)
+        ? null
+        : 'published workflow-php lacks a public invocable service runtime surface on Workflow\\V2\\Support\\InvocableHttpAdapter');
     const phpToPythonMissing = phpMissingSurface || pythonServiceRuntimeMissing;
     const phpToPythonOwner = phpMissingSurface !== null ? 'workflow' : 'sdk-python';
     const pythonToPhpMissing = pythonMissingSurface || phpServiceRuntimeMissing;
@@ -4573,6 +4694,15 @@ const scenarioEvidenceRequirements = {
     {fields: ['service_call_id', 'serviceCallId'], kind: 'non_empty_string', expected: 'durable service-call id for the cross-language call'},
     {fields: ['artifact_tuple', 'artifactTuple', 'artifact_versions', 'artifactVersions', 'published_artifact_versions', 'publishedArtifactVersions', 'resolved_artifact_versions', 'resolvedArtifactVersions'], kind: 'artifact_tuple', expected: 'published artifact tuple used for the PHP-to-Python service-call cell'},
     {fields: ['published_artifact_worker_execution', 'publishedArtifactWorkerExecution', 'published_worker_execution', 'publishedWorkerExecution'], kind: 'published_cross_language_worker_execution', expected: 'published workflow-php and sdk-python worker execution evidence for the PHP-to-Python service-call cell'},
+    {
+      fields: ['service_health', 'serviceHealth', 'published_service_health', 'publishedServiceHealth'],
+      kind: 'published_service_health',
+      runtime: 'sdk-python',
+      expected: 'valid /health response from the published Python service shard used by the PHP-to-Python service-call cell',
+      invalid_code: 'nexus_published_service_health_failed',
+      finding_type: 'nexus_published_service_health_failed',
+      owning_surface: 'sdk-python',
+    },
     {fields: ['payload_round_trip', 'payloadRoundTrip'], kind: 'boolean_true', expected: 'payload round-tripped between PHP and Python'},
     {fields: ['typed_error_round_trip', 'typedErrorRoundTrip'], kind: 'boolean_true', expected: 'typed error round-tripped between PHP and Python'},
   ],
@@ -4587,6 +4717,15 @@ const scenarioEvidenceRequirements = {
     {fields: ['service_call_id', 'serviceCallId'], kind: 'non_empty_string', expected: 'durable service-call id for the cross-language call'},
     {fields: ['artifact_tuple', 'artifactTuple', 'artifact_versions', 'artifactVersions', 'published_artifact_versions', 'publishedArtifactVersions', 'resolved_artifact_versions', 'resolvedArtifactVersions'], kind: 'artifact_tuple', expected: 'published artifact tuple used for the Python-to-PHP service-call cell'},
     {fields: ['published_artifact_worker_execution', 'publishedArtifactWorkerExecution', 'published_worker_execution', 'publishedWorkerExecution'], kind: 'published_cross_language_worker_execution', expected: 'published workflow-php and sdk-python worker execution evidence for the Python-to-PHP service-call cell'},
+    {
+      fields: ['service_health', 'serviceHealth', 'published_service_health', 'publishedServiceHealth'],
+      kind: 'published_service_health',
+      runtime: 'workflow-php',
+      expected: 'valid /health response from the published PHP service shard used by the Python-to-PHP service-call cell',
+      invalid_code: 'nexus_published_service_health_failed',
+      finding_type: 'nexus_published_service_health_failed',
+      owning_surface: 'workflow',
+    },
     {fields: ['payload_round_trip', 'payloadRoundTrip'], kind: 'boolean_true', expected: 'payload round-tripped between Python and PHP'},
     {fields: ['typed_error_round_trip', 'typedErrorRoundTrip'], kind: 'boolean_true', expected: 'typed error round-tripped between Python and PHP'},
   ],
@@ -5094,6 +5233,9 @@ function isMissingEvidenceValue(value, kind) {
   if (kind === 'published_cross_language_worker_execution') {
     return !hasNonEmptyObjectValue(value);
   }
+  if (kind === 'published_service_health') {
+    return !hasNonEmptyObjectValue(value);
+  }
   if (kind === 'array_length_at_least') {
     return !Array.isArray(value) || value.length === 0;
   }
@@ -5136,6 +5278,8 @@ function evidenceRequirementSatisfied(requirement, value) {
       return publishedWorkerExecutionSatisfied(value);
     case 'published_cross_language_worker_execution':
       return publishedCrossLanguageWorkerExecutionSatisfied(value);
+    case 'published_service_health':
+      return publishedServiceHealthSatisfied(value, requirement.runtime);
     default:
       return false;
   }
@@ -5221,6 +5365,74 @@ function publishedCrossLanguageWorkerExecutionSatisfied(value) {
   )));
 
   return artifacts.has('workflow-php') && artifacts.has('sdk-python');
+}
+
+function publishedServiceHealthSatisfied(value, runtime) {
+  const entry = publishedServiceHealthEntry(value, runtime);
+  if (!hasNonEmptyObjectValue(entry)) {
+    return false;
+  }
+
+  const response = firstObject(
+    entry.health_response,
+    entry.healthResponse,
+    entry.response,
+    entry.probe_response,
+    entry.probeResponse,
+  );
+  const body = firstObject(response?.body, entry.body);
+  const status = numberValue(response?.status ?? entry.status);
+  const version = stringValue(
+    entry.package_version
+      ?? entry.packageVersion
+      ?? entry.artifact_version
+      ?? entry.artifactVersion
+      ?? body?.package_version
+      ?? body?.packageVersion,
+  );
+
+  return truthy(entry.health_succeeded ?? entry.healthSucceeded ?? entry.service_health_succeeded ?? entry.serviceHealthSucceeded)
+    && status !== null
+    && status >= 200
+    && status < 300
+    && truthy(response?.ok ?? entry.ok)
+    && stringValue(body?.runtime ?? entry.runtime ?? entry.sdk_language ?? entry.sdkLanguage) === runtime
+    && truthy(body?.service_started ?? body?.serviceStarted ?? entry.service_started ?? entry.serviceStarted)
+    && truthy(body?.package_imported ?? body?.packageImported ?? entry.package_imported ?? entry.packageImported)
+    && isExactPublishedArtifactVersion(version);
+}
+
+function publishedServiceHealthEntry(value, runtime) {
+  if (!hasNonEmptyObjectValue(value)) {
+    return null;
+  }
+
+  const runtimeKey = runtime === 'workflow-php' ? 'php' : 'python';
+  const aliases = [
+    runtime,
+    runtime.replace('-', '_'),
+    runtimeKey,
+    `${runtimeKey}_service`,
+    `${runtimeKey}Service`,
+    runtime === 'workflow-php' ? 'workflow_php' : 'sdk_python',
+    runtime === 'workflow-php' ? 'workflowPhp' : 'sdkPython',
+  ];
+
+  for (const alias of aliases) {
+    if (hasNonEmptyObjectValue(value[alias])) {
+      return value[alias];
+    }
+  }
+
+  if (stringValue(value.sdk_language ?? value.sdkLanguage ?? value.runtime) === runtime) {
+    return value;
+  }
+
+  return null;
+}
+
+function firstObject(...values) {
+  return values.find(hasNonEmptyObjectValue) || {};
 }
 
 function publishedWorkerExecutionEntries(value) {
