@@ -16,7 +16,7 @@ final class SearchAttributeRuntimeContract
 {
     public const SCHEMA = 'durable-workflow.v2.search-attribute-runtime.contract';
 
-    public const VERSION = 12;
+    public const VERSION = 13;
 
     public const RESULT_SCHEMA = 'durable-workflow.v2.search-attribute-runtime.result';
 
