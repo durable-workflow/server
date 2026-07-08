@@ -16,7 +16,7 @@ final class SearchAttributeRuntimeContract
 {
     public const SCHEMA = 'durable-workflow.v2.search-attribute-runtime.contract';
 
-    public const VERSION = 13;
+    public const VERSION = 14;
 
     public const RESULT_SCHEMA = 'durable-workflow.v2.search-attribute-runtime.result';
 
@@ -432,6 +432,7 @@ final class SearchAttributeRuntimeContract
                     'pins.json',
                     'run-metadata.json',
                     'artifact-install-evidence.json',
+                    'workflow-php-search-attributes-shard.json',
                     'waterline-search-attributes-shard.json',
                     'codec-round-trip-shard.json',
                     'search-attributes-result.json',

@@ -11,6 +11,7 @@ The runner writes these files to the result directory:
   pins.json
   run-metadata.json
   artifact-install-evidence.json
+  workflow-php-search-attributes-shard.json
   waterline-search-attributes-shard.json
   codec-round-trip-shard.json
   search-attributes-result.json
@@ -20,6 +21,8 @@ Environment overrides:
   DW_SEARCH_ATTRIBUTES_RESULT_DIR              Result directory when --result-dir is omitted.
   DW_SEARCH_ATTRIBUTES_RESULT_FILE             Complete JSON result from a host-backed matrix run.
   DW_SEARCH_ATTRIBUTES_RESULT_JSON             Complete JSON result string from a host-backed matrix run.
+  DW_SEARCH_ATTRIBUTES_WORKFLOW_PHP_SHARD_FILE Workflow PHP shard JSON emitted by workflow:v2:search-attributes-conformance.
+  DW_SEARCH_ATTRIBUTES_WORKFLOW_PHP_SHARD_JSON Workflow PHP shard JSON string.
   DW_SEARCH_ATTRIBUTES_WATERLINE_SHARD_FILE    Waterline shard JSON emitted by waterline:search-attributes-conformance.
   DW_SEARCH_ATTRIBUTES_WATERLINE_SHARD_JSON    Waterline shard JSON string.
   DW_SEARCH_ATTRIBUTES_CODEC_SHARD_FILE        PHP/Python codec round-trip shard JSON.
@@ -88,6 +91,8 @@ DW_WORKFLOW_PHP_VERSION="${DW_WORKFLOW_PHP_VERSION:-unresolved}" \
 DW_WATERLINE_VERSION="${DW_WATERLINE_VERSION:-unresolved}" \
 DW_SEARCH_ATTRIBUTES_RESULT_FILE="${DW_SEARCH_ATTRIBUTES_RESULT_FILE:-}" \
 DW_SEARCH_ATTRIBUTES_RESULT_JSON="${DW_SEARCH_ATTRIBUTES_RESULT_JSON:-}" \
+DW_SEARCH_ATTRIBUTES_WORKFLOW_PHP_SHARD_FILE="${DW_SEARCH_ATTRIBUTES_WORKFLOW_PHP_SHARD_FILE:-}" \
+DW_SEARCH_ATTRIBUTES_WORKFLOW_PHP_SHARD_JSON="${DW_SEARCH_ATTRIBUTES_WORKFLOW_PHP_SHARD_JSON:-}" \
 DW_SEARCH_ATTRIBUTES_WATERLINE_SHARD_FILE="${DW_SEARCH_ATTRIBUTES_WATERLINE_SHARD_FILE:-}" \
 DW_SEARCH_ATTRIBUTES_WATERLINE_SHARD_JSON="${DW_SEARCH_ATTRIBUTES_WATERLINE_SHARD_JSON:-}" \
 DW_SEARCH_ATTRIBUTES_CODEC_SHARD_FILE="${DW_SEARCH_ATTRIBUTES_CODEC_SHARD_FILE:-}" \
@@ -103,6 +108,7 @@ const RESULT_FILES = [
   'pins.json',
   'run-metadata.json',
   'artifact-install-evidence.json',
+  'workflow-php-search-attributes-shard.json',
   'waterline-search-attributes-shard.json',
   'codec-round-trip-shard.json',
   'search-attributes-result.json',
@@ -2212,6 +2218,91 @@ function shardLinkedFindings(entry, shard, scenarioId, status, versions) {
   )];
 }
 
+function workflowPhpUnsupportedPublicSurfaceFinding(reason, versions) {
+  return {
+    id: 'unsupported-public-surface-php-worker-start-and-upsert-visibility',
+    scenario_id: 'php_worker_start_and_upsert_visibility',
+    finding_type: 'unsupported_public_surface',
+    owner: 'workflow-php',
+    owning_surface: 'workflow-php',
+    required_execution_scope: 'workflow-php-search-attribute-shard',
+    artifact_versions: versions,
+    observed_behavior: `published durable-workflow/workflow does not expose workflow:v2:search-attributes-conformance: ${reason}`,
+    expected_behavior: 'the published workflow PHP package exposes workflow:v2:search-attributes-conformance and emits workflow-php search-attribute runtime evidence',
+    next_acceptance_criterion: 'publish the Workflow PHP search-attributes conformance command or keep the public contract explicitly unsupported, then rerun the workflow-php search-attribute shard',
+    priority: 'P1',
+    diagnostic: {
+      step: 'artisan_command_missing',
+      command: 'workflow:v2:search-attributes-conformance',
+    },
+  };
+}
+
+function workflowPhpScenarioFromShard(shard) {
+  const scenarioId = 'php_worker_start_and_upsert_visibility';
+  const scenarioResults = scenarioResultsById({ scenario_results: shard.scenario_results || shard.scenarioResults || {} });
+  if (isObject(scenarioResults[scenarioId])) {
+    return scenarioResults[scenarioId];
+  }
+  if (stringValue(shard.scenario_id || shard.scenarioId || shard.id) === scenarioId) {
+    return shard;
+  }
+  return null;
+}
+
+function workflowPhpCommandMissing(reason) {
+  const value = stringValue(reason).toLowerCase();
+  return value.includes('workflow:v2:search-attributes-conformance')
+    || value.includes('artisan_command_missing')
+    || value.includes('artisan command missing');
+}
+
+function workflowPhpLinkedFindings(entry, shard, status, versions, reason) {
+  const supplied = firstArrayField(entry, ['linked_findings', 'linkedFindings', 'finding_links', 'findingLinks'])
+    || firstArrayField(shard, ['linked_findings', 'linkedFindings', 'finding_links', 'findingLinks']);
+  if (supplied !== null && nonEmptyValue(supplied)) {
+    return Array.isArray(supplied) ? supplied : Object.values(supplied);
+  }
+  if (status === 'pass') {
+    return [];
+  }
+  if (status === 'unsupported' || workflowPhpCommandMissing(reason)) {
+    return [workflowPhpUnsupportedPublicSurfaceFinding(reason, versions)];
+  }
+  return [coverageGapFindingFor(
+    'php_worker_start_and_upsert_visibility',
+    'workflow PHP shard reported a non-pass status without a linked root-cause finding',
+    versions
+  )];
+}
+
+function mergeWorkflowPhpShard(result, shard, versions, reason) {
+  const scenarioId = 'php_worker_start_and_upsert_visibility';
+  const entry = workflowPhpScenarioFromShard(shard);
+  if (!isObject(entry)) {
+    return;
+  }
+  const status = statusForShardEntry(entry, shard);
+  const observedOutputs = firstArrayField(entry, ['observed_outputs', 'observedOutputs'])
+    || firstArrayField(shard, ['observed_outputs', 'observedOutputs'])
+    || {};
+  const linkedFindings = workflowPhpLinkedFindings(entry, shard, status, versions, reason);
+  const existing = scenarioResultsById(result);
+  clearFindingsForScenario(result, scenarioId);
+  existing[scenarioId] = {
+    scenario_id: scenarioId,
+    status,
+    observed_outputs: observedOutputs,
+    linked_findings: linkedFindings,
+  };
+  result.scenario_results = existing;
+  for (const finding of linkedFindings) {
+    if (isObject(finding)) {
+      mergeFinding(result, finding);
+    }
+  }
+}
+
 function mergeCodecShard(result, shard, versions) {
   if (!isObject(result.codec_round_trips)) {
     result.codec_round_trips = {};
@@ -2244,6 +2335,77 @@ function mergeCodecShard(result, shard, versions) {
     }
   }
   result.scenario_results = existing;
+}
+
+function workflowPhpUnsupportedShard(reason, versions) {
+  const finding = workflowPhpUnsupportedPublicSurfaceFinding(reason, versions);
+  return {
+    schema: 'durable-workflow.v2.search-attribute-runtime.workflow-php-shard',
+    scenario_id: 'php_worker_start_and_upsert_visibility',
+    status: 'unsupported',
+    runner_blocked: false,
+    artifact_versions: versions,
+    observed_outputs: {
+      shard_command: 'workflow:v2:search-attributes-conformance',
+      artisan_command_missing: true,
+      required_execution_scope: 'workflow-php-search-attribute-shard',
+      published_artifacts_only: true,
+    },
+    scenario_results: {
+      php_worker_start_and_upsert_visibility: {
+        scenario_id: 'php_worker_start_and_upsert_visibility',
+        status: 'unsupported',
+        observed_outputs: {
+          shard_command: 'workflow:v2:search-attributes-conformance',
+          artisan_command_missing: true,
+          missing_reason: reason,
+          required_execution_scope: 'workflow-php-search-attribute-shard',
+          published_artifacts_only: true,
+        },
+        linked_findings: [finding],
+      },
+    },
+    linked_findings: [finding],
+    findings: [finding],
+  };
+}
+
+function workflowPhpShardFor(result, supplied, reason, versions) {
+  if (!isObject(supplied) && workflowPhpCommandMissing(reason)) {
+    return workflowPhpUnsupportedShard(reason, versions);
+  }
+
+  const source = isObject(supplied) ? { ...supplied } : {};
+  const scenarioId = 'php_worker_start_and_upsert_visibility';
+  const scenario = isObject(supplied)
+    ? (workflowPhpScenarioFromShard(supplied) || scenarioResultsById(result)[scenarioId] || {})
+    : (scenarioResultsById(result)[scenarioId] || {});
+  const status = statusForShardEntry(scenario, source);
+  const observedOutputs = firstArrayField(scenario, ['observed_outputs', 'observedOutputs'])
+    || firstArrayField(source, ['observed_outputs', 'observedOutputs'])
+    || {};
+  const linkedFindings = workflowPhpLinkedFindings(scenario, source, status, versions, reason);
+
+  return {
+    ...source,
+    schema: source.schema || 'durable-workflow.v2.search-attribute-runtime.workflow-php-shard',
+    scenario_id: source.scenario_id || source.scenarioId || scenarioId,
+    status,
+    runner_blocked: Boolean(source.runner_blocked || source.runnerBlocked || status === 'runner_blocked'),
+    artifact_versions: source.artifact_versions || source.artifactVersions || result.artifactVersions || versions,
+    observed_outputs: observedOutputs,
+    scenario_results: {
+      ...(isObject(source.scenario_results) ? source.scenario_results : {}),
+      [scenarioId]: {
+        scenario_id: scenarioId,
+        status,
+        observed_outputs: observedOutputs,
+        linked_findings: linkedFindings,
+      },
+    },
+    linked_findings: linkedFindings,
+    findings: Array.isArray(source.findings) && source.findings.length > 0 ? source.findings : linkedFindings,
+  };
 }
 
 function waterlineShardFor(result, supplied, reason, versions) {
@@ -2337,6 +2499,10 @@ const reason = (process.env.DW_SEARCH_ATTRIBUTES_BLOCKED_REASON || '').trim()
   || 'search-attributes host-backed shard evidence was not supplied';
 
 let result = loadJson('DW_SEARCH_ATTRIBUTES_RESULT_FILE', 'DW_SEARCH_ATTRIBUTES_RESULT_JSON');
+let workflowPhpShard = loadJson(
+  'DW_SEARCH_ATTRIBUTES_WORKFLOW_PHP_SHARD_FILE',
+  'DW_SEARCH_ATTRIBUTES_WORKFLOW_PHP_SHARD_JSON'
+);
 let waterlineShard = loadJson(
   'DW_SEARCH_ATTRIBUTES_WATERLINE_SHARD_FILE',
   'DW_SEARCH_ATTRIBUTES_WATERLINE_SHARD_JSON'
@@ -2348,7 +2514,7 @@ let codecShard = loadJson(
 
 if (isObject(result)) {
   result = normalizeResult(result, startedAt, finishedAt, versions);
-} else if (isObject(codecShard)) {
+} else if (isObject(workflowPhpShard) || isObject(codecShard)) {
   result = partialCoverageResult(reason, startedAt, finishedAt, versions);
 } else {
   result = blockedResult(reason, startedAt, finishedAt, versions);
@@ -2361,11 +2527,16 @@ if (isObject(waterlineShard)) {
     || waterlineShard;
 }
 
+if (isObject(workflowPhpShard)) {
+  mergeWorkflowPhpShard(result, workflowPhpShard, versions, reason);
+}
+
 if (isObject(codecShard)) {
   mergeCodecShard(result, codecShard, versions);
 }
 
 const gateEvaluation = applyGateEvaluation(result, versions);
+workflowPhpShard = workflowPhpShardFor(result, workflowPhpShard, reason, versions);
 waterlineShard = waterlineShardFor(result, waterlineShard, reason, versions);
 codecShard = codecShardFor(result, codecShard);
 const runnerBlocked = Boolean(result.runner_blocked || result.runnerBlocked || false);
@@ -2409,6 +2580,7 @@ const record = {
 writeJson(path.join(resultDir, 'pins.json'), pins);
 writeJson(path.join(resultDir, 'run-metadata.json'), metadata);
 writeJson(path.join(resultDir, 'artifact-install-evidence.json'), installEvidence);
+writeJson(path.join(resultDir, 'workflow-php-search-attributes-shard.json'), workflowPhpShard);
 writeJson(path.join(resultDir, 'waterline-search-attributes-shard.json'), waterlineShard);
 writeJson(path.join(resultDir, 'codec-round-trip-shard.json'), codecShard);
 writeJson(path.join(resultDir, 'search-attributes-result.json'), result);

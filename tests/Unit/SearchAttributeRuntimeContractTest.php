@@ -14,7 +14,7 @@ class SearchAttributeRuntimeContractTest extends TestCase
         $manifest = SearchAttributeRuntimeContract::manifest();
 
         $this->assertSame('durable-workflow.v2.search-attribute-runtime.contract', $manifest['schema']);
-        $this->assertSame(13, SearchAttributeRuntimeContract::VERSION);
+        $this->assertSame(14, SearchAttributeRuntimeContract::VERSION);
         $this->assertSame(SearchAttributeRuntimeContract::VERSION, $manifest['version']);
         $this->assertSame('durable-workflow.v2.search-attribute-runtime.result', $manifest['result_schema']);
         $this->assertSame('search_attribute_runtime_contract', $manifest['fixture_category']);
@@ -272,6 +272,7 @@ class SearchAttributeRuntimeContractTest extends TestCase
             'cluster info must not advertise a search-attributes host runner path that is missing from the release tree',
         );
         $this->assertTrue(is_executable($runnerPath), 'the advertised search-attributes host runner must be executable');
+        $this->assertContains('workflow-php-search-attributes-shard.json', $runner['result_files']);
         $this->assertContains('waterline-search-attributes-shard.json', $runner['result_files']);
         $this->assertContains('codec-round-trip-shard.json', $runner['result_files']);
         $this->assertTrue($runner['must_execute_against_published_artifacts']);
@@ -398,6 +399,60 @@ class SearchAttributeRuntimeContractTest extends TestCase
             $this->assertNotContains('missing_run_record_field', $failureCodes);
             $this->assertNotContains('missing_non_pass_finding', $failureCodes);
             $this->assertNotContains('invalid_declared_outcome', $failureCodes);
+        } finally {
+            $this->removeDirectory($resultDir);
+        }
+    }
+
+    public function test_published_artifact_runner_writes_missing_workflow_php_command_as_unsupported_surface(): void
+    {
+        if (trim((string) shell_exec('command -v node 2>/dev/null')) === '') {
+            $this->markTestSkipped('node is required to exercise the search-attributes runner.');
+        }
+
+        $repoRoot = dirname(__DIR__, 2);
+        $runner = SearchAttributeRuntimeContract::manifest()['host_runner_contract'];
+        $resultDir = sys_get_temp_dir().'/dw-search-attributes-'.bin2hex(random_bytes(6));
+        mkdir($resultDir);
+        $missingCommandReason = 'The Composer-installed PHP package does not expose workflow:v2:search-attributes-conformance.';
+
+        try {
+            $command = implode(' ', [
+                'DW_SERVER_VERSION=0.2.224',
+                'DW_CLI_VERSION=0.1.74',
+                'DW_PYTHON_SDK_VERSION=0.4.84',
+                'DW_WORKFLOW_PHP_VERSION=2.0.0-alpha.187',
+                'DW_WATERLINE_VERSION=2.0.0-alpha.69',
+                'DW_SEARCH_ATTRIBUTES_BLOCKED_REASON='.escapeshellarg($missingCommandReason),
+                escapeshellarg($repoRoot.'/'.$runner['runner_path']),
+                '--result-dir',
+                escapeshellarg($resultDir),
+            ]);
+
+            $output = [];
+            $exitCode = 0;
+            exec($command.' 2>&1', $output, $exitCode);
+
+            $this->assertSame(1, $exitCode, implode("\n", $output));
+
+            $workflowPhpShard = json_decode(
+                (string) file_get_contents($resultDir.'/workflow-php-search-attributes-shard.json'),
+                true,
+                512,
+                JSON_THROW_ON_ERROR,
+            );
+            $scenario = $workflowPhpShard['scenario_results']['php_worker_start_and_upsert_visibility'];
+            $finding = $scenario['linked_findings'][0];
+
+            $this->assertSame('unsupported', $workflowPhpShard['status']);
+            $this->assertFalse($workflowPhpShard['runner_blocked']);
+            $this->assertSame('unsupported', $scenario['status']);
+            $this->assertTrue($scenario['observed_outputs']['artisan_command_missing']);
+            $this->assertSame('workflow:v2:search-attributes-conformance', $finding['diagnostic']['command']);
+            $this->assertSame('unsupported_public_surface', $finding['finding_type']);
+            $this->assertSame('workflow-php', $finding['owner']);
+            $this->assertSame('workflow-php', $finding['owning_surface']);
+            $this->assertSame('workflow-php-search-attribute-shard', $finding['required_execution_scope']);
         } finally {
             $this->removeDirectory($resultDir);
         }
