@@ -323,6 +323,7 @@ class ChildWorkflowRuntimeContractTest extends TestCase
         $this->assertStringContainsString('DW_CHILD_WORKFLOWS_SCENARIO_MANIFEST', $source);
         $this->assertStringContainsString('DW_CHILD_WORKFLOWS_ARTIFACT_INSTALL_EVIDENCE', $source);
         $this->assertStringContainsString('DW_CHILD_WORKFLOWS_TYPED_FAILURE_EVIDENCE', $source);
+        $this->assertStringContainsString('DW_CHILD_WORKFLOWS_FULL_MATRIX_EVIDENCE', $source);
         $this->assertStringContainsString('DW_CHILD_WORKFLOWS_SKIP_FOCUSED_TYPED_FAILURE_PROBE', $source);
         $this->assertStringContainsString('DW_CHILD_WORKFLOWS_PYTHON_BIN', $source);
         $this->assertStringContainsString('focused-typed-failure-server-evidence.json', $source);
@@ -355,6 +356,8 @@ class ChildWorkflowRuntimeContractTest extends TestCase
             'artifact_install_evidence missing',
             'typed_failure_evidence requires passing published artifact install evidence',
             'typed failure evidence did not include required failure round-trip cells',
+            'full_matrix_evidence requires passing published artifact install evidence',
+            'full_matrix_evidence.local_product_source_checkouts_used=false missing',
             'install_evidence_pass',
             'not_exercised',
             'FORBIDDEN_INSTALL_SOURCE_TOKENS',
@@ -365,7 +368,7 @@ class ChildWorkflowRuntimeContractTest extends TestCase
         }
 
         $this->assertStringContainsString(
-            '"outcome": "error" if runner_blocked else "fail"',
+            '"outcome": "pass" if pass_result else ("error" if runner_blocked else "fail")',
             $source,
             'coverage gaps must record a non-runner-blocked fail; only missing host prerequisites may become runner-blocked',
         );
@@ -555,6 +558,33 @@ class ChildWorkflowRuntimeContractTest extends TestCase
             $result['outcome'] ?? null,
             'passing the focused typed-failure matrix must not reopen the broader child-workflows matrix',
         );
+    }
+
+    public function test_published_artifact_runner_passes_with_full_matrix_evidence(): void
+    {
+        $run = $this->runChildWorkflowRunnerWithEvidence(
+            $this->childWorkflowRunnerBaseEnv(),
+            [
+                'DW_CHILD_WORKFLOWS_ARTIFACT_INSTALL_EVIDENCE' => [
+                    'name' => 'artifact-install-evidence.json',
+                    'content' => $this->childWorkflowArtifactInstallEvidence(),
+                ],
+                'DW_CHILD_WORKFLOWS_FULL_MATRIX_EVIDENCE' => [
+                    'name' => 'full-matrix-evidence.json',
+                    'content' => $this->childWorkflowFullMatrixEvidence(),
+                ],
+            ],
+        );
+
+        $result = $run['result'];
+        $evaluation = ChildWorkflowRuntimeResultGate::evaluate($result);
+
+        $this->assertSame(0, $run['exitCode']);
+        $this->assertSame('pass', $result['outcome'] ?? null);
+        $this->assertSame('pass', $evaluation['status']);
+        $this->assertSame('pass', $this->scenarioResult($result, 'php_parent_python_child_cross_language')['status']);
+        $this->assertSame('pass', $result['failure_round_trip']['status'] ?? null);
+        $this->assertSame('child-workflows-full-matrix', $result['namespace_behavior']['lineage_links'][0]['parent'] ?? null);
     }
 
     public function test_manifest_publishes_an_enforceable_result_gate(): void
@@ -1481,6 +1511,30 @@ class ChildWorkflowRuntimeContractTest extends TestCase
                 'server history API',
             ],
         ];
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    private function childWorkflowFullMatrixEvidence(): array
+    {
+        $result = $this->completeChildWorkflowResult();
+        $result['schema'] = 'durable-workflow.v2.child-workflow-runtime.full-matrix-evidence';
+        $result['generated_at'] = '2026-07-08T05:32:00Z';
+        $result['local_product_source_checkouts_used'] = false;
+        $result['artifact_versions'] = [
+            'server' => '9.9.9',
+            'cli' => '9.9.9',
+            'sdk-python' => '9.9.9',
+            'workflow' => '9.9.9',
+            'waterline' => '9.9.9',
+        ];
+        $result['failure_round_trip']['status'] = 'pass';
+        $result['namespace_behavior']['lineage_links'] = [
+            ['parent' => 'child-workflows-full-matrix', 'child' => 'child-workflows-full-matrix-child'],
+        ];
+
+        return $result;
     }
 
     /**

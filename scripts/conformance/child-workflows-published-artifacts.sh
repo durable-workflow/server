@@ -25,6 +25,10 @@ Environment overrides:
                                       JSON proof for failure-round-trip cells observed through published
                                       artifacts. A partial cell set is recorded but cannot pass the matrix.
                                       Defaults to typed-failure-evidence.json in the result directory when present.
+  DW_CHILD_WORKFLOWS_FULL_MATRIX_EVIDENCE
+                                      JSON proof for the full child-workflow runtime matrix observed through
+                                      published artifacts. Defaults to full-matrix-evidence.json in the result
+                                      directory when present.
   DW_CHILD_WORKFLOWS_SKIP_FOCUSED_TYPED_FAILURE_PROBE=1
                                       Skip the focused published-image typed child failure probe.
   DW_CHILD_WORKFLOWS_PYTHON_BIN       Optional Python executable with durable-workflow installed.
@@ -1048,6 +1052,135 @@ def load_typed_failure_evidence(path_text: str) -> Optional[dict[str, Any]]:
     }
 
 
+def load_full_matrix_evidence(path_text: str) -> Optional[dict[str, Any]]:
+    if not path_text:
+        return None
+
+    path = Path(path_text)
+    if not path.exists():
+        return {
+            "schema": "durable-workflow.v2.child-workflow-runtime.full-matrix-evidence",
+            "generated_at": now(),
+            "local_product_source_checkouts_used": False,
+            "scenario_results": [],
+            "evidence_load_error": f"{path}: missing",
+        }
+
+    try:
+        evidence = json.loads(path.read_text(encoding="utf-8"))
+    except Exception as exc:  # noqa: BLE001 - malformed shard evidence must be routed as result data
+        return {
+            "schema": "durable-workflow.v2.child-workflow-runtime.full-matrix-evidence",
+            "generated_at": now(),
+            "local_product_source_checkouts_used": False,
+            "scenario_results": [],
+            "evidence_load_error": f"{path}: {exc}",
+        }
+
+    return evidence if isinstance(evidence, dict) else {
+        "schema": "durable-workflow.v2.child-workflow-runtime.full-matrix-evidence",
+        "generated_at": now(),
+        "local_product_source_checkouts_used": False,
+        "scenario_results": [],
+        "evidence_load_error": f"{path}: expected a JSON object",
+    }
+
+
+def scenario_results_by_id(evidence: Optional[dict[str, Any]]) -> dict[str, dict[str, Any]]:
+    if not isinstance(evidence, dict):
+        return {}
+
+    raw = evidence.get("scenario_results") or evidence.get("scenarioResults") or []
+    if isinstance(raw, dict):
+        items = raw.items()
+    elif isinstance(raw, list):
+        items = enumerate(raw)
+    else:
+        return {}
+
+    results: dict[str, dict[str, Any]] = {}
+    for key, value in items:
+        if not isinstance(value, dict):
+            continue
+        scenario_id = str(key) if isinstance(key, str) else first_string(value, ["scenario_id", "scenarioId", "id"])
+        if not scenario_id:
+            continue
+        item = dict(value)
+        item["scenario_id"] = scenario_id
+        results[scenario_id] = item
+
+    return results
+
+
+def full_matrix_evidence_failures(
+    evidence: Optional[dict[str, Any]],
+    artifact_versions: dict[str, str],
+    evidence_was_supplied: bool,
+    install_evidence_pass: bool,
+    required_scenario_ids: list[str],
+) -> list[str]:
+    failures: list[str] = []
+    if not evidence_was_supplied:
+        return failures
+    if not isinstance(evidence, dict):
+        return ["full_matrix_evidence expected a JSON object"]
+    if evidence.get("evidence_load_error"):
+        failures.append(f"full_matrix_evidence load failed: {evidence['evidence_load_error']}")
+    if evidence.get("local_product_source_checkouts_used") or evidence.get("localProductSourceCheckoutsUsed"):
+        failures.append("full_matrix_evidence.local_product_source_checkouts_used=true")
+    if not (
+        explicit_false_flag(evidence.get("local_product_source_checkouts_used"))
+        or explicit_false_flag(evidence.get("localProductSourceCheckoutsUsed"))
+    ):
+        failures.append("full_matrix_evidence.local_product_source_checkouts_used=false missing")
+    if not install_evidence_pass:
+        failures.append("full_matrix_evidence requires passing published artifact install evidence")
+
+    raw_versions = evidence.get("artifact_versions") or evidence.get("artifactVersions") or {}
+    if isinstance(raw_versions, dict):
+        for artifact in ("server", "cli", "sdk-python", "workflow", "workflow-php", "waterline"):
+            expected = artifact_version_for(artifact_versions, artifact)
+            observed = artifact_version_for({str(key): string_value(value) for key, value in raw_versions.items()}, artifact)
+            if expected and observed and expected != observed:
+                failures.append(f"full_matrix_evidence.{artifact}.version={observed} does not match resolved artifact version {expected}")
+
+    supplied = scenario_results_by_id(evidence)
+    for scenario_id in required_scenario_ids:
+        if scenario_id == "published_artifact_install_only":
+            continue
+        scenario = supplied.get(scenario_id)
+        if scenario is None:
+            failures.append(f"full_matrix_evidence.scenario_results.{scenario_id}=missing")
+            continue
+        status = normalized_status(scenario.get("status") or scenario.get("outcome") or scenario.get("result"))
+        if status != "pass":
+            failures.append(f"full_matrix_evidence.scenario_results.{scenario_id}.status={status or 'missing'}")
+
+    for section in (
+        "runtime_matrix",
+        "failure_round_trip",
+        "cancellation_propagation",
+        "replay_restart",
+        "fan_out",
+        "namespace_behavior",
+    ):
+        if not isinstance(evidence.get(section), dict):
+            failures.append(f"full_matrix_evidence.{section}=missing")
+
+    return failures
+
+
+def full_matrix_section(evidence: Optional[dict[str, Any]], section: str) -> Optional[dict[str, Any]]:
+    if not isinstance(evidence, dict):
+        return None
+    value = evidence.get(section)
+    if isinstance(value, dict):
+        return value
+    camel = re.sub(r"_([a-z])", lambda match: match.group(1).upper(), section)
+    value = evidence.get(camel)
+    return value if isinstance(value, dict) else None
+
+
 def raw_typed_failure_cells(evidence: Optional[dict[str, Any]]) -> list[dict[str, Any]]:
     if not isinstance(evidence, dict):
         return []
@@ -1521,6 +1654,26 @@ def main() -> int:
         install_evidence_was_supplied,
     )
     install_evidence_pass = not pin_failures and not install_failures
+    required_scenario_ids = [
+        str(scenario.get("id", ""))
+        for scenario in scenarios
+        if str(scenario.get("id", ""))
+    ]
+    full_matrix_evidence_path_text = env("DW_CHILD_WORKFLOWS_FULL_MATRIX_EVIDENCE")
+    if not full_matrix_evidence_path_text and (RESULT_DIR / "full-matrix-evidence.json").exists():
+        full_matrix_evidence_path_text = str(RESULT_DIR / "full-matrix-evidence.json")
+    full_matrix_evidence_path = Path(full_matrix_evidence_path_text) if full_matrix_evidence_path_text else None
+    raw_full_matrix_evidence = load_full_matrix_evidence(full_matrix_evidence_path_text)
+    full_matrix_evidence_was_supplied = raw_full_matrix_evidence is not None
+    full_matrix_failures = full_matrix_evidence_failures(
+        raw_full_matrix_evidence,
+        artifact_versions,
+        full_matrix_evidence_was_supplied,
+        install_evidence_pass,
+        required_scenario_ids,
+    )
+    full_matrix_usable = full_matrix_evidence_was_supplied and not full_matrix_failures
+    full_matrix_scenarios = scenario_results_by_id(raw_full_matrix_evidence)
     typed_failure_evidence_path_text = env("DW_CHILD_WORKFLOWS_TYPED_FAILURE_EVIDENCE")
     typed_failure_evidence_path = Path(typed_failure_evidence_path_text) if typed_failure_evidence_path_text else None
     raw_typed_failure_evidence = load_typed_failure_evidence(typed_failure_evidence_path_text)
@@ -1587,6 +1740,27 @@ def main() -> int:
                     "status": "pass",
                     "expected_behavior": expected_behavior,
                     "observed_outputs": observed_outputs,
+                },
+            )
+            continue
+
+        full_matrix_scenario = full_matrix_scenarios.get(scenario_id)
+        if full_matrix_usable and isinstance(full_matrix_scenario, dict):
+            observed_outputs = full_matrix_scenario.get("observed_outputs") or full_matrix_scenario.get("observedOutputs")
+            if not isinstance(observed_outputs, dict):
+                observed_outputs = {}
+            scenario_results.append(
+                {
+                    **full_matrix_scenario,
+                    "scenario_id": scenario_id,
+                    "status": "pass",
+                    "expected_behavior": expected_behavior,
+                    "observed_outputs": observed_outputs or {
+                        "full_matrix_evidence_path": str(full_matrix_evidence_path),
+                        "full_matrix_evidence_schema": string_value(
+                            raw_full_matrix_evidence.get("schema") if isinstance(raw_full_matrix_evidence, dict) else "",
+                        ),
+                    },
                 },
             )
             continue
@@ -1670,12 +1844,14 @@ def main() -> int:
             },
         )
 
-    runtime_matrix = {
+    runtime_matrix = full_matrix_section(raw_full_matrix_evidence, "runtime_matrix") if full_matrix_usable else None
+    if runtime_matrix is None:
+        runtime_matrix = {
         "runtimes": list(matrix.get("runtimes", ["workflow-php", "sdk-python"])),
         "same_language_cells": with_cell_status(matrix.get("same_language_cells"), non_install_status),
         "cross_language_cells": with_cell_status(matrix.get("cross_language_cells"), non_install_status),
         "failure_round_trip_cells": failure_round_trip_state["cells"],
-    }
+        }
 
     published_artifact_install = {
         "server_image": server_image,
@@ -1702,13 +1878,51 @@ def main() -> int:
         "install_failures": install_failures,
     }
 
+    cancellation_propagation = full_matrix_section(raw_full_matrix_evidence, "cancellation_propagation") if full_matrix_usable else None
+    if cancellation_propagation is None:
+        cancellation_propagation = {
+            "parent_to_child": {"status": non_install_status},
+            "direct_child": {"status": non_install_status},
+        }
+
+    replay_restart = full_matrix_section(raw_full_matrix_evidence, "replay_restart") if full_matrix_usable else None
+    if replay_restart is None:
+        replay_restart = {"status": non_install_status}
+
+    fan_out = full_matrix_section(raw_full_matrix_evidence, "fan_out") if full_matrix_usable else None
+    if fan_out is None:
+        fan_out = {
+            "status": non_install_status,
+            "required_child_count": 5,
+        }
+
+    namespace_behavior = full_matrix_section(raw_full_matrix_evidence, "namespace_behavior") if full_matrix_usable else None
+    if namespace_behavior is None:
+        namespace_behavior = {"status": non_install_status}
+
+    if full_matrix_usable:
+        full_failure_round_trip = full_matrix_section(raw_full_matrix_evidence, "failure_round_trip")
+        if full_failure_round_trip is not None:
+            failure_round_trip_section = full_failure_round_trip
+
+    scenario_status_by_id = {
+        str(item.get("scenario_id", "")): normalized_status(item.get("status"))
+        for item in scenario_results
+        if isinstance(item, dict)
+    }
+    all_required_scenarios_pass = bool(required_scenario_ids) and all(
+        scenario_status_by_id.get(scenario_id) == "pass"
+        for scenario_id in required_scenario_ids
+    )
+    pass_result = install_evidence_pass and full_matrix_usable and all_required_scenarios_pass and not runner_blocked
+
     result = {
         "schema": "durable-workflow.v2.child-workflow-runtime.result",
         "schema_version": 1,
         "suite_schema": "durable-workflow.v2.platform-conformance.suite",
         "suite_version": suite_version,
         "category": "child_workflow_runtime_contract",
-        "outcome": "non_passing_runner_blocked" if runner_blocked else "non_passing",
+        "outcome": "pass" if pass_result else ("non_passing_runner_blocked" if runner_blocked else "non_passing"),
         "runner_blocked": runner_blocked,
         "started_at": STARTED_AT,
         "finished_at": finished_at,
@@ -1718,6 +1932,9 @@ def main() -> int:
         "artifact_sources": artifact_sources,
         "artifact_install_evidence": artifact_install_evidence,
         "published_artifact_install": published_artifact_install,
+        "full_matrix_evidence": raw_full_matrix_evidence if full_matrix_evidence_was_supplied else None,
+        "full_matrix_evidence_path": str(full_matrix_evidence_path) if full_matrix_evidence_path else "",
+        "full_matrix_evidence_failures": full_matrix_failures,
         "runtime_matrix": runtime_matrix,
         "topology": {
             "task_queue": "cw-shared",
@@ -1728,16 +1945,10 @@ def main() -> int:
             },
         },
         "failure_round_trip": failure_round_trip_section,
-        "cancellation_propagation": {
-            "parent_to_child": {"status": non_install_status},
-            "direct_child": {"status": non_install_status},
-        },
-        "replay_restart": {"status": non_install_status},
-        "fan_out": {
-            "status": non_install_status,
-            "required_child_count": 5,
-        },
-        "namespace_behavior": {"status": non_install_status},
+        "cancellation_propagation": cancellation_propagation,
+        "replay_restart": replay_restart,
+        "fan_out": fan_out,
+        "namespace_behavior": namespace_behavior,
         "scenario_results": scenario_results,
         "findings": findings,
         "finding_links": finding_links_by_scenario(findings),
@@ -1752,6 +1963,9 @@ def main() -> int:
         "artifact_sources": artifact_sources,
         "artifact_install_evidence_path": str(install_evidence_path),
         "artifact_install_evidence_supplied": install_evidence_was_supplied,
+        "full_matrix_evidence_path": str(full_matrix_evidence_path) if full_matrix_evidence_path else "",
+        "full_matrix_evidence_supplied": full_matrix_evidence_was_supplied,
+        "full_matrix_evidence_failures": full_matrix_failures,
         "typed_failure_evidence_path": str(typed_failure_evidence_path) if typed_failure_evidence_path else "",
         "typed_failure_evidence_supplied": typed_failure_evidence_was_supplied,
         "scenario_manifest": str(MANIFEST_PATH),
@@ -1759,7 +1973,7 @@ def main() -> int:
 
     record = {
         "experiment": "child-workflows",
-        "outcome": "error" if runner_blocked else "fail",
+        "outcome": "pass" if pass_result else ("error" if runner_blocked else "fail"),
         "runnerBlocked": runner_blocked,
         "artifactVersions": published_artifact_versions,
         "findings": [
@@ -1776,7 +1990,7 @@ def main() -> int:
     (RESULT_DIR / "child-workflows-record.json").write_text(json.dumps(record, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     print(json.dumps(result, indent=2, sort_keys=True))
 
-    return 1
+    return 0 if pass_result else 1
 
 
 if __name__ == "__main__":
