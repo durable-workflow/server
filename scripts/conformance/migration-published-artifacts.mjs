@@ -8,6 +8,8 @@ import process from 'node:process';
 const RESULT_SCHEMA = 'durable-workflow.v2.migration-runtime.result';
 const RECORD_SCHEMA = 'durable-workflow.v2.migration-runtime.record';
 const ARTIFACT_SCHEMA = 'durable-workflow.v2.migration-runtime.published-artifacts';
+const WORKFLOW_V1_PRIMARY_PACKAGE = 'durable-workflow/workflow';
+const WORKFLOW_V1_LEGACY_PACKAGE = 'laravel-workflow/laravel-workflow';
 
 const repoRoot = process.env.DW_MIGRATION_REPO_ROOT
   ?? path.resolve(path.dirname(new URL(import.meta.url).pathname), '../..');
@@ -4561,29 +4563,7 @@ async function resolvePublicArtifactDefaults() {
     return resolution;
   }
 
-  if (stringValue(resolution.artifact_versions['workflow-php-v1']) === '') {
-    try {
-      const workflowV1 = await latestPackagistVersion('laravel-workflow/laravel-workflow', /^v?1\./);
-      if (workflowV1 !== '') {
-        resolution.artifact_versions['workflow-php-v1'] = workflowV1;
-        resolution.artifact_sources['workflow-php-v1'] =
-          `packagist:laravel-workflow/laravel-workflow:${workflowV1}`;
-        resolution.observations['workflow-php-v1'] = {
-          status: 'resolved',
-          channel: 'packagist',
-          package: 'laravel-workflow/laravel-workflow',
-          version: workflowV1,
-        };
-      }
-    } catch (error) {
-      resolution.observations['workflow-php-v1'] = {
-        status: 'resolution_error',
-        channel: 'packagist',
-        package: 'laravel-workflow/laravel-workflow',
-        error: errorMessage(error),
-      };
-    }
-  }
+  await resolveV1WorkflowPackage(resolution, fixture);
 
   if (
     stringValue(resolution.artifact_versions['server-v1']) === ''
@@ -4699,6 +4679,116 @@ async function resolvePublicArtifactDefaults() {
   return resolution;
 }
 
+async function resolveV1WorkflowPackage(resolution, fixture) {
+  const existingVersion = stringValue(resolution.artifact_versions['workflow-php-v1']);
+  const existingSource = stringValue(resolution.artifact_sources['workflow-php-v1']);
+  const packageVersionCache = objectValue(
+    fixture?.packagist_versions ?? fixture?.packagistVersions,
+  );
+  const packageDefinitions = [
+    { key: 'current_namespace', package: WORKFLOW_V1_PRIMARY_PACKAGE },
+    { key: 'legacy_alias', package: WORKFLOW_V1_LEGACY_PACKAGE },
+  ];
+
+  if (
+    existingVersion !== ''
+    && !packageDefinitions.some(({ package: packageName }) => existingSource.includes(packageName))
+  ) {
+    return;
+  }
+
+  const candidates = {};
+  for (const definition of packageDefinitions) {
+    const packageName = definition.package;
+    try {
+      let version = '';
+      let metadataSource = 'packagist_api';
+      if (Object.prototype.hasOwnProperty.call(packageVersionCache, packageName)) {
+        version = latestStableVersion(packageVersionCache[packageName], /^v?1\./);
+        metadataSource = 'public_artifact_fixture_cache';
+      } else if (existingVersion !== '' && existingSource.includes(packageName)) {
+        version = existingVersion;
+        metadataSource = 'public_artifact_fixture_cache';
+      } else {
+        version = await latestPackagistVersion(packageName, /^v?1\./);
+      }
+
+      candidates[definition.key] = {
+        status: version === '' ? 'missing' : 'resolved',
+        channel: 'packagist',
+        package: packageName,
+        version,
+        metadata_source: metadataSource,
+      };
+    } catch (error) {
+      candidates[definition.key] = {
+        status: 'resolution_error',
+        channel: 'packagist',
+        package: packageName,
+        error: errorMessage(error),
+      };
+    }
+  }
+
+  const current = candidates.current_namespace?.status === 'resolved'
+    ? candidates.current_namespace
+    : null;
+  const legacy = candidates.legacy_alias?.status === 'resolved'
+    ? candidates.legacy_alias
+    : null;
+  const latestSupportedVersion = [current, legacy]
+    .filter(Boolean)
+    .map((candidate) => candidate.version)
+    .sort(compareVersionStrings)
+    .pop() ?? '';
+  const legacyIsSameOrNewer = legacy !== null
+    && current !== null
+    && compareVersionStrings(legacy.version, current.version) >= 0;
+  const selected = current !== null && current.version === latestSupportedVersion
+    ? current
+    : legacy !== null && legacy.version === latestSupportedVersion && legacyIsSameOrNewer
+      ? legacy
+      : null;
+
+  if (selected === null) {
+    delete resolution.artifact_versions['workflow-php-v1'];
+    delete resolution.artifact_sources['workflow-php-v1'];
+    resolution.observations['workflow-php-v1'] = {
+      status: 'resolution_error',
+      channel: 'packagist',
+      selection_policy: 'latest_supported_v1_with_current_namespace_preference',
+      latest_observed_version: latestSupportedVersion,
+      legacy_alias_fallback: {
+        eligible: false,
+        selected: false,
+        comparison_version: current?.version ?? null,
+      },
+      candidates,
+      error: 'No supported workflow package baseline could be proven across the public v1 namespaces.',
+    };
+    return;
+  }
+
+  resolution.artifact_versions['workflow-php-v1'] = selected.version;
+  resolution.artifact_sources['workflow-php-v1'] =
+    `packagist:${selected.package}:${selected.version}`;
+  resolution.observations['workflow-php-v1'] = {
+    status: 'resolved',
+    channel: 'packagist',
+    package: selected.package,
+    version: selected.version,
+    latest_supported_version: latestSupportedVersion,
+    selection_policy: 'latest_supported_v1_with_current_namespace_preference',
+    current_namespace_preferred: selected.package === WORKFLOW_V1_PRIMARY_PACKAGE,
+    legacy_alias_fallback: {
+      eligible: legacyIsSameOrNewer,
+      selected: selected.package === WORKFLOW_V1_LEGACY_PACKAGE,
+      comparison_version: current?.version ?? selected.version,
+    },
+    candidates,
+  };
+}
+
 function pinV1ServerBaselineFromWorkflowRuntime(resolution) {
   if (stringValue(resolution.artifact_versions['server-v1']) !== '') {
     return;
@@ -4709,8 +4799,11 @@ function pinV1ServerBaselineFromWorkflowRuntime(resolution) {
     return;
   }
 
+  const workflowObservation = objectValue(resolution.observations['workflow-php-v1']);
+  const workflowPackage = stringValue(workflowObservation.package)
+    || WORKFLOW_V1_PRIMARY_PACKAGE;
   const workflowSource = stringValue(resolution.artifact_sources['workflow-php-v1'])
-    || `packagist:laravel-workflow/laravel-workflow:${workflowV1}`;
+    || `packagist:${workflowPackage}:${workflowV1}`;
   const standaloneServerImage = objectValue(resolution.observations['server-v1']);
 
   resolution.artifact_versions['server-v1'] = workflowV1;
@@ -4719,7 +4812,7 @@ function pinV1ServerBaselineFromWorkflowRuntime(resolution) {
   resolution.observations['server-v1'] = {
     status: 'resolved',
     channel: 'packagist',
-    package: 'laravel-workflow/laravel-workflow',
+    package: workflowPackage,
     version: workflowV1,
     runtime: 'embedded-v1-server-runtime',
     baseline_source: 'workflow-php-v1',
@@ -4758,8 +4851,14 @@ function mergePublicArtifactResolution(target, source) {
 
 async function latestPackagistVersion(packageName, versionPattern) {
   const metadata = await fetchJson(`https://repo.packagist.org/p2/${packageName}.json`);
-  const versions = arrayValue(metadata?.packages?.[packageName])
-    .map((entry) => stringValue(entry?.version))
+  return latestStableVersion(metadata?.packages?.[packageName], versionPattern);
+}
+
+function latestStableVersion(entries, versionPattern) {
+  const versions = (Array.isArray(entries) ? entries : [entries])
+    .map((entry) => stringValue(
+      entry && typeof entry === 'object' ? entry.version : entry,
+    ))
     .filter((version) => versionPattern.test(version) && !isPrereleaseVersion(version));
 
   return versions.sort(compareVersionStrings).pop() ?? '';

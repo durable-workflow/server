@@ -60,11 +60,11 @@ final class MigrationRuntimeContract
                     '{{ version }}',
                 ],
                 'install_channels' => [
-                    'server-v1' => 'latest supported v1 server runtime pinned from a public channel; use the standalone durableworkflow/server v1 image when published, otherwise use the embedded Laravel Workflow v1 runtime package release',
+                    'server-v1' => 'latest supported v1 server runtime pinned from a public channel; use the standalone durableworkflow/server v1 image when published, otherwise use the embedded runtime from the selected latest v1 workflow package release',
                     'server-v2' => 'Docker image durableworkflow/server:<exact patch version or digest with DW_SERVER_VERSION>',
                     'cli-v1' => 'latest supported v1 dw CLI release asset or install path after downloadability check',
                     'cli-v2' => 'official dw GitHub release install.sh asset for the target v2 train after downloadability check',
-                    'workflow-php-v1' => 'Composer package durable-workflow/workflow or laravel-workflow/laravel-workflow at the latest supported v1 release',
+                    'workflow-php-v1' => 'Composer package durable-workflow/workflow at the latest supported v1 release; allow the laravel-workflow/laravel-workflow legacy alias only when it resolves to the same or a newer supported release',
                     'workflow-php-v2' => 'Composer package durable-workflow/workflow:2.0.0-alpha.<exact>',
                     'sdk-python' => 'PyPI package durable-workflow==<exact>',
                     'waterline-v1' => 'published Waterline package at the latest supported v1 release',

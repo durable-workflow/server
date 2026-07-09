@@ -48,7 +48,8 @@ Environment overrides:
   DW_MIGRATION_GUIDE_AUDIT_FILE      Guide text/HTML fixture path for the audit.
   DW_MIGRATION_RESOLVE_PUBLIC_ARTIFACTS
                                       Resolve missing v1 artifact pins from public package registries. Defaults to 1.
-  DW_MIGRATION_PUBLIC_ARTIFACTS_JSON Optional JSON fixture/cache for public artifact resolution.
+  DW_MIGRATION_PUBLIC_ARTIFACTS_JSON Optional JSON fixture/cache for public artifact resolution,
+                                      including packagist_versions keyed by package name.
   DW_SERVER_V1_VERSION               Exact latest supported v1 server runtime version.
                                       When no standalone v1 image is published,
                                       this is the embedded v1 runtime package.
@@ -59,8 +60,10 @@ Environment overrides:
   DW_CLI_V1_ARTIFACT_SOURCE          Published source for the v1 CLI artifact.
   DW_CLI_VERSION                     Exact published v2 CLI version.
   DW_CLI_ARTIFACT_SOURCE             Published source for the v2 CLI artifact.
-  DW_WORKFLOW_PHP_V1_VERSION         Exact published v1 workflow package version.
-  DW_WORKFLOW_PHP_V1_ARTIFACT_SOURCE Published source for the v1 workflow package.
+  DW_WORKFLOW_PHP_V1_VERSION         Exact latest published v1 workflow package version.
+  DW_WORKFLOW_PHP_V1_ARTIFACT_SOURCE Published source for the v1 workflow package. Resolution
+                                      prefers durable-workflow/workflow and uses the legacy alias
+                                      only at the same or a newer supported version.
   DW_WORKFLOW_PHP_VERSION            Exact published v2 workflow package version.
   DW_WORKFLOW_PHP_ARTIFACT_SOURCE    Published source for the v2 workflow package.
   DW_PYTHON_SDK_VERSION              Exact published Python SDK version.

@@ -61,6 +61,8 @@ class MigrationConformanceRunnerContractTest extends TestCase
             'pinnedVersions',
             'resolvePublicArtifactDefaults',
             'latestPackagistVersion',
+            'resolveV1WorkflowPackage',
+            'latest_supported_v1_with_current_namespace_preference',
             'latestDockerHubTag',
             'latestGithubReleaseVersion',
             'latestGithubBranchCommit',
@@ -354,24 +356,22 @@ class MigrationConformanceRunnerContractTest extends TestCase
             file_put_contents(
                 $metadataPath,
                 json_encode([
+                    'packagist_versions' => [
+                        'durable-workflow/workflow' => ['1.0.75', '1.0.77', '2.0.0-alpha.204'],
+                        'laravel-workflow/laravel-workflow' => ['1.0.76'],
+                    ],
                     'artifact_versions' => [
-                        'workflow-php-v1' => '1.0.76',
                         'cli-v1' => '0.1.44',
                         'waterline-v1' => '1.0.16',
                         'sample-app-v1' => 'e769ac5f4147498c652445f517ae724d73afa4de',
                     ],
                     'artifact_sources' => [
-                        'workflow-php-v1' => 'packagist:laravel-workflow/laravel-workflow:1.0.76',
                         'server-v1' => 'docker_hub:durableworkflow/server:no_v1_release_tag_found',
                         'cli-v1' => 'github_release:durable-workflow/cli:0.1.44:install.sh',
                         'waterline-v1' => 'packagist:laravel-workflow/waterline:1.0.16',
                         'sample-app-v1' => 'github_branch:durable-workflow/sample-app:Laravel-12@e769ac5f4147498c652445f517ae724d73afa4de',
                     ],
                     'observations' => [
-                        'workflow-php-v1' => [
-                            'status' => 'resolved',
-                            'channel' => 'packagist',
-                        ],
                         'server-v1' => [
                             'status' => 'missing',
                             'channel' => 'docker_hub',
@@ -441,18 +441,41 @@ class MigrationConformanceRunnerContractTest extends TestCase
                 JSON_THROW_ON_ERROR,
             );
 
-            $this->assertSame('1.0.76', $result['published_artifact_versions']['workflow-php-v1']);
+            $this->assertSame('1.0.77', $result['published_artifact_versions']['workflow-php-v1']);
             $this->assertSame(
-                'packagist:laravel-workflow/laravel-workflow:1.0.76',
+                'packagist:durable-workflow/workflow:1.0.77',
                 $result['artifact_sources']['workflow-php-v1'],
             );
             $this->assertSame(
+                'durable-workflow/workflow',
+                $result['public_artifact_resolution']['observations']['workflow-php-v1']['package'],
+            );
+            $this->assertSame(
+                '1.0.77',
+                $result['public_artifact_resolution']['observations']['workflow-php-v1']['latest_supported_version'],
+            );
+            $this->assertTrue(
+                $result['public_artifact_resolution']['observations']['workflow-php-v1']['current_namespace_preferred'],
+            );
+            $this->assertFalse(
+                $result['public_artifact_resolution']['observations']['workflow-php-v1']['legacy_alias_fallback']['eligible'],
+                'an older legacy alias must not replace the current package namespace',
+            );
+            $this->assertSame(
                 '1.0.76',
+                $result['public_artifact_resolution']['observations']['workflow-php-v1']['candidates']['legacy_alias']['version'],
+            );
+            $this->assertSame(
+                '1.0.77',
                 $result['published_artifact_versions']['server-v1'],
             );
             $this->assertSame(
-                'packagist:laravel-workflow/laravel-workflow:1.0.76:embedded-v1-server-runtime',
+                'packagist:durable-workflow/workflow:1.0.77:embedded-v1-server-runtime',
                 $result['artifact_sources']['server-v1'],
+            );
+            $this->assertSame(
+                'durable-workflow/workflow',
+                $result['public_artifact_resolution']['observations']['server-v1']['package'],
             );
             $this->assertSame(
                 'resolved',
@@ -496,6 +519,64 @@ class MigrationConformanceRunnerContractTest extends TestCase
         } finally {
             $this->removeTree($tempRoot);
         }
+    }
+
+    public function test_runner_selects_legacy_v1_alias_only_when_it_is_newer(): void
+    {
+        $nodeBinary = trim((string) shell_exec('command -v node 2>/dev/null'));
+        if ($nodeBinary === '') {
+            $this->markTestSkipped('node is required to exercise the migration runner public artifact resolver.');
+        }
+
+        $result = $this->runPublicV1ResolverFixture(
+            $nodeBinary,
+            [
+                'durable-workflow/workflow' => ['1.0.77'],
+                'laravel-workflow/laravel-workflow' => ['1.0.78'],
+            ],
+        );
+        $observation = $result['public_artifact_resolution']['observations']['workflow-php-v1'];
+
+        $this->assertSame('1.0.78', $result['published_artifact_versions']['workflow-php-v1']);
+        $this->assertSame(
+            'packagist:laravel-workflow/laravel-workflow:1.0.78',
+            $result['artifact_sources']['workflow-php-v1'],
+        );
+        $this->assertSame(
+            'packagist:laravel-workflow/laravel-workflow:1.0.78:embedded-v1-server-runtime',
+            $result['artifact_sources']['server-v1'],
+        );
+        $this->assertFalse($observation['current_namespace_preferred']);
+        $this->assertTrue($observation['legacy_alias_fallback']['eligible']);
+        $this->assertTrue($observation['legacy_alias_fallback']['selected']);
+        $this->assertSame('1.0.77', $observation['legacy_alias_fallback']['comparison_version']);
+    }
+
+    public function test_runner_rejects_legacy_v1_alias_without_a_current_namespace_comparison(): void
+    {
+        $nodeBinary = trim((string) shell_exec('command -v node 2>/dev/null'));
+        if ($nodeBinary === '') {
+            $this->markTestSkipped('node is required to exercise the migration runner public artifact resolver.');
+        }
+
+        $result = $this->runPublicV1ResolverFixture(
+            $nodeBinary,
+            [
+                'durable-workflow/workflow' => [],
+                'laravel-workflow/laravel-workflow' => ['1.0.78'],
+            ],
+        );
+        $observation = $result['public_artifact_resolution']['observations']['workflow-php-v1'];
+
+        $this->assertSame('', $result['published_artifact_versions']['workflow-php-v1']);
+        $this->assertSame('', $result['published_artifact_versions']['server-v1']);
+        $this->assertSame('resolution_error', $observation['status']);
+        $this->assertFalse($observation['legacy_alias_fallback']['eligible']);
+        $this->assertNull($observation['legacy_alias_fallback']['comparison_version']);
+        $this->assertContains(
+            'workflow-php-v1',
+            array_column($result['artifact_prerequisite_failures'], 'artifact'),
+        );
     }
 
     public function test_runner_synthesizes_published_install_cell_from_artifact_pins(): void
@@ -2992,6 +3073,91 @@ COMMAND;
             'DW_SAMPLE_APP_V1_VERSION' => $artifactVersions['sample-app-v1'],
             'DW_SAMPLE_APP_V1_ARTIFACT_SOURCE' => $artifactSources['sample-app-v1'],
         ];
+    }
+
+    /**
+     * @param array<string, list<string>> $packagistVersions
+     *
+     * @return array<string, mixed>
+     */
+    private function runPublicV1ResolverFixture(string $nodeBinary, array $packagistVersions): array
+    {
+        $repoRoot = dirname(__DIR__, 2);
+        $tempRoot = sys_get_temp_dir().'/dw-migration-public-v1-alias-'.bin2hex(random_bytes(6));
+        $resultDir = $tempRoot.'/result';
+        $metadataPath = $tempRoot.'/public-artifacts.json';
+
+        try {
+            mkdir($resultDir, 0777, true);
+            file_put_contents(
+                $metadataPath,
+                json_encode([
+                    'packagist_versions' => $packagistVersions,
+                    'artifact_versions' => [
+                        'cli-v1' => '0.1.44',
+                        'waterline-v1' => '1.0.16',
+                        'sample-app-v1' => 'e769ac5f4147498c652445f517ae724d73afa4de',
+                    ],
+                    'artifact_sources' => [
+                        'server-v1' => 'docker_hub:durableworkflow/server:no_v1_release_tag_found',
+                        'cli-v1' => 'github_release:durable-workflow/cli:0.1.44:install.sh',
+                        'waterline-v1' => 'packagist:laravel-workflow/waterline:1.0.16',
+                        'sample-app-v1' => 'github_branch:durable-workflow/sample-app:Laravel-12@e769ac5f4147498c652445f517ae724d73afa4de',
+                    ],
+                    'observations' => [
+                        'server-v1' => ['status' => 'missing', 'channel' => 'docker_hub'],
+                        'cli-v1' => ['status' => 'resolved', 'channel' => 'github_release'],
+                        'waterline-v1' => ['status' => 'resolved', 'channel' => 'packagist'],
+                        'sample-app-v1' => ['status' => 'resolved', 'channel' => 'github_branch'],
+                    ],
+                ], JSON_PRETTY_PRINT | JSON_THROW_ON_ERROR)."\n",
+            );
+
+            $process = proc_open(
+                [$nodeBinary, $repoRoot.'/scripts/conformance/migration-published-artifacts.mjs'],
+                [
+                    1 => ['pipe', 'w'],
+                    2 => ['pipe', 'w'],
+                ],
+                $pipes,
+                $repoRoot,
+                [
+                    'PATH' => getenv('PATH') ?: '/usr/bin:/bin',
+                    'DW_MIGRATION_REPO_ROOT' => $repoRoot,
+                    'DW_MIGRATION_RESULT_DIR' => $resultDir,
+                    'DW_MIGRATION_RESOLVE_PUBLIC_ARTIFACTS' => '1',
+                    'DW_MIGRATION_PUBLIC_ARTIFACTS_JSON' => $metadataPath,
+                    'DW_SERVER_VERSION' => '0.2.276',
+                    'DW_SERVER_ARTIFACT_SOURCE' => 'published_docker_image',
+                    'DW_CLI_VERSION' => '0.1.76',
+                    'DW_CLI_ARTIFACT_SOURCE' => 'official_install_script',
+                    'DW_WORKFLOW_PHP_VERSION' => '2.0.0-alpha.195',
+                    'DW_WORKFLOW_PHP_ARTIFACT_SOURCE' => 'composer_release',
+                    'DW_PYTHON_SDK_VERSION' => '0.4.85',
+                    'DW_PYTHON_SDK_ARTIFACT_SOURCE' => 'pypi_release',
+                    'DW_WATERLINE_VERSION' => '2.0.0-alpha.81',
+                    'DW_WATERLINE_ARTIFACT_SOURCE' => 'published_waterline_release',
+                ],
+            );
+
+            $this->assertIsResource($process);
+            $stdout = stream_get_contents($pipes[1]);
+            $stderr = stream_get_contents($pipes[2]);
+            fclose($pipes[1]);
+            fclose($pipes[2]);
+            $exitCode = proc_close($process);
+
+            $this->assertSame(0, $exitCode, ($stdout === false ? '' : $stdout).($stderr === false ? '' : $stderr));
+
+            return json_decode(
+                (string) file_get_contents($resultDir.'/migration-conformance-result.json'),
+                true,
+                512,
+                JSON_THROW_ON_ERROR,
+            );
+        } finally {
+            $this->removeTree($tempRoot);
+        }
     }
 
     private function removeTree(string $path): void
