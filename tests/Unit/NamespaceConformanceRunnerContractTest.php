@@ -369,6 +369,19 @@ class NamespaceConformanceRunnerContractTest extends TestCase
         $this->assertNotContains('declared_outcome_status_mismatch', $failureCodes);
     }
 
+    public function test_runner_reconciles_verified_pass_record_before_exiting(): void
+    {
+        $source = $this->read('scripts/conformance/namespaces-published-artifacts.sh');
+
+        $this->assertStringContainsString('recorded_pass_status="$(', $source);
+        $this->assertStringContainsString('record.get("outcome") == "pass"', $source);
+        $this->assertStringContainsString('result.get("outcome") == "pass"', $source);
+        $this->assertStringContainsString('scenario_statuses.get(scenario_id) == "pass"', $source);
+        $this->assertStringContainsString('artifacts_match', $source);
+        $this->assertStringContainsString('findings_empty', $source);
+        $this->assertStringContainsString('orchestrate_status=0', $source);
+    }
+
     public function test_runner_blocked_output_uses_gate_conformant_declared_outcome(): void
     {
         if (! is_file('/bin/bash')) {

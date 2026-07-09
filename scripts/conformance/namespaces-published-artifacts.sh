@@ -2551,4 +2551,69 @@ if [[ ! -f "$result_dir/namespaces-result.json" ]]; then
   exit 1
 fi
 
+if [[ "$orchestrate_status" -ne 0 && -f "$result_dir/namespaces-record.json" ]]; then
+  recorded_pass_status="$(
+    python3 - "$result_dir/namespaces-record.json" "$result_dir/namespaces-result.json" "$namespace_suite_version" <<'PY'
+from __future__ import annotations
+
+import json
+import sys
+from pathlib import Path
+
+required = [
+    "published_artifact_install_only",
+    "namespace_create_update_describe_and_list",
+    "workflow_cross_namespace_visibility_isolation",
+    "workflow_cross_namespace_mutation_isolation",
+    "php_worker_task_queue_namespace_isolation",
+    "cli_namespace_context_and_default_scope",
+    "sdk_namespace_selection_parity",
+    "search_attribute_schema_and_value_query_isolation",
+    "schedule_namespace_isolation",
+    "namespace_lifecycle_cleanup_and_recreate",
+    "waterline_operator_namespace_visibility",
+    "nexus_explicit_cross_namespace_invocation",
+    "reserved_namespace_name_refusal",
+    "result_record_and_product_finding_routing",
+]
+
+try:
+    record = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
+    result = json.loads(Path(sys.argv[2]).read_text(encoding="utf-8"))
+    expected_suite_version = int(sys.argv[3])
+    scenario_statuses = {
+        str(item.get("scenario_id") or ""): str(item.get("status") or "").lower()
+        for item in result.get("scenario_results", [])
+        if isinstance(item, dict)
+    }
+    all_required_pass = all(scenario_statuses.get(scenario_id) == "pass" for scenario_id in required)
+    suite_version_matches = int(result.get("suite_version", -1)) == expected_suite_version
+    record_artifacts = record.get("artifactVersions") if isinstance(record.get("artifactVersions"), dict) else {}
+    result_artifacts = result.get("artifact_versions") if isinstance(result.get("artifact_versions"), dict) else {}
+    artifacts_match = all(
+        str(record_artifacts.get(key) or "") == str(result_artifacts.get(key) or "")
+        for key in ["server", "cli", "workflow-php", "sdk-python", "waterline"]
+    )
+    findings_empty = not record.get("findings") and not result.get("findings")
+    is_pass = (
+        record.get("outcome") == "pass"
+        and result.get("outcome") == "pass"
+        and record.get("runnerBlocked") is not True
+        and result.get("runner_blocked") is not True
+        and suite_version_matches
+        and artifacts_match
+        and all_required_pass
+        and findings_empty
+    )
+except Exception:
+    is_pass = False
+
+print("pass" if is_pass else "non_passing")
+PY
+  )"
+  if [[ "$recorded_pass_status" == "pass" ]]; then
+    orchestrate_status=0
+  fi
+fi
+
 exit "$orchestrate_status"
