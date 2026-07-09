@@ -830,6 +830,7 @@ PY
         composer:2 php artisan workflow:v2:namespace-conformance \
           --server-url "http://127.0.0.1:8080" \
           --token "admin-token" \
+          --worker-token "worker-token" \
           --run-id "published-namespaces-${RUN_ID:-workflow-php}" \
           --task-queue "workflow-php-namespace-shard" \
           "${workflow_php_artifact_args[@]}" \

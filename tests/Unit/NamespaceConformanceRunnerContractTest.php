@@ -157,6 +157,7 @@ class NamespaceConformanceRunnerContractTest extends TestCase
         $this->assertStringContainsString('--network "container:${server_container_id}"', $source);
         $this->assertStringContainsString('composer:2 php artisan workflow:v2:namespace-conformance', $source);
         $this->assertStringContainsString('--server-url "http://127.0.0.1:8080"', $source);
+        $this->assertStringContainsString('--worker-token "worker-token"', $source);
         $this->assertStringContainsString('--output /result/workflow-php-namespace-result.json', $source);
         $this->assertStringContainsString('DW_NAMESPACES_WORKFLOW_PHP_RESULT="$workflow_php_result_path"', $source);
         $this->assertStringContainsString('write_workflow_php_setup_failure', $source);
@@ -248,7 +249,8 @@ class NamespaceConformanceRunnerContractTest extends TestCase
             'cleanup_retained_resources = {',
             'post_delete_refusals = {',
             '"operator_surface_cleanup": {',
-            '"deleted_counts": delete_response.get("deleted")',
+            'deleted_counts = delete_response.get("deleted") if isinstance(delete_response, dict) else {}',
+            '"deleted_counts": deleted_counts',
             '"pre_delete_resources": cleanup_pre_delete_resources',
             '"retained_resources": {',
             '"workflow_cleanup": {',
@@ -389,7 +391,7 @@ class NamespaceConformanceRunnerContractTest extends TestCase
             mkdir($binDir, 0777, true);
             mkdir($resultDir, 0777, true);
 
-            foreach (['date', 'dirname', 'mkdir'] as $command) {
+            foreach (['date', 'dirname', 'head', 'mkdir', 'sed'] as $command) {
                 $this->linkSystemCommand($binDir, $command);
             }
             symlink($python, $binDir.'/python3');
