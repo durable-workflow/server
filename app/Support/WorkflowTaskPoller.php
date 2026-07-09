@@ -718,29 +718,8 @@ final class WorkflowTaskPoller
         // default class so unmarked tenants are never crowded out.
         $readyTasks = $this->reorderForFairness($taskQueue, $readyTasks);
 
-        \Log::info('[WorkflowTaskPoller] claimReadyTask called', [
-            'namespace' => $namespace,
-            'taskQueue' => $taskQueue,
-            'leaseOwner' => $leaseOwner,
-            'buildId' => $buildId,
-            'supportedWorkflowTypes' => $supportedWorkflowTypes,
-            'readyTasksCount' => count($readyTasks),
-        ]);
-
         foreach ($readyTasks as $readyTask) {
-            \Log::debug('[WorkflowTaskPoller] Checking task', [
-                'taskId' => $readyTask['task_id'] ?? null,
-                'workflowType' => $readyTask['workflow_type'] ?? null,
-                'compatibility' => $readyTask['compatibility'] ?? null,
-                'availableAt' => $readyTask['available_at'] ?? null,
-            ]);
-
             if ($this->availableAtIsFuture($readyTask['available_at'] ?? null)) {
-                \Log::debug('[WorkflowTaskPoller] Skipping task: available_at is in the future', [
-                    'taskId' => $readyTask['task_id'] ?? null,
-                    'availableAt' => $readyTask['available_at'] ?? null,
-                ]);
-
                 continue;
             }
 
@@ -749,12 +728,6 @@ final class WorkflowTaskPoller
                 : null;
 
             if ($workflowId === null || ! NamespaceWorkflowScope::workflowBound($namespace, $workflowId)) {
-                \Log::debug('[WorkflowTaskPoller] Skipping task: workflow not bound to namespace', [
-                    'taskId' => $readyTask['task_id'] ?? null,
-                    'workflowId' => $workflowId,
-                    'namespace' => $namespace,
-                ]);
-
                 continue;
             }
 
@@ -762,13 +735,6 @@ final class WorkflowTaskPoller
             $this->backfillReadyTaskCompatibility($namespace, $readyTask, $effectiveCompatibility);
 
             if (! $this->matchesCompatibility($buildId, $effectiveCompatibility)) {
-                \Log::debug('[WorkflowTaskPoller] Skipping task: build_id mismatch', [
-                    'taskId' => $readyTask['task_id'] ?? null,
-                    'workerBuildId' => $buildId,
-                    'taskCompatibility' => $readyTask['compatibility'] ?? null,
-                    'effectiveCompatibility' => $effectiveCompatibility,
-                ]);
-
                 continue;
             }
 
@@ -781,12 +747,6 @@ final class WorkflowTaskPoller
                 // task whose type-key is not in the worker's registered
                 // list could be leased to the wrong worker and the run
                 // would stall pending until lease recovery.
-                \Log::debug('[WorkflowTaskPoller] Skipping task: workflow_type not in supported list', [
-                    'taskId' => $readyTask['task_id'] ?? null,
-                    'workflowType' => $readyTask['workflow_type'] ?? null,
-                    'supportedWorkflowTypes' => $supportedWorkflowTypes,
-                ]);
-
                 continue;
             }
 
@@ -795,15 +755,8 @@ final class WorkflowTaskPoller
                 : null;
 
             if ($taskId === null) {
-                \Log::debug('[WorkflowTaskPoller] Skipping task: task_id is null');
-
                 continue;
             }
-
-            \Log::debug('[WorkflowTaskPoller] Task passed all checks, attempting to claim', [
-                'taskId' => $taskId,
-                'leaseOwner' => $leaseOwner,
-            ]);
 
             $claim = DB::transaction(function () use ($taskId, $leaseOwner, $workerPollFence): array {
                 if ($workerPollFence !== [] && ! WorkerPollFence::isCurrentForUpdate($workerPollFence)) {
@@ -814,19 +767,8 @@ final class WorkflowTaskPoller
             });
 
             if (($claim['claimed'] ?? false) !== true) {
-                \Log::debug('[WorkflowTaskPoller] Skipping task: claim failed', [
-                    'taskId' => $taskId,
-                    'claimResult' => $claim,
-                ]);
-
                 continue;
             }
-
-            \Log::info('[WorkflowTaskPoller] Task claimed successfully', [
-                'taskId' => $taskId,
-                'leaseOwner' => $leaseOwner,
-                'workflowType' => $readyTask['workflow_type'] ?? null,
-            ]);
 
             // Record the dispatch against the shared fairness state so
             // future polls (in this process or another) see the deficit
@@ -850,16 +792,8 @@ final class WorkflowTaskPoller
                 continue;
             }
 
-            \Log::info('[WorkflowTaskPoller] Returning task to worker', [
-                'taskId' => $taskId,
-                'workflowType' => $readyTask['workflow_type'] ?? null,
-                'historyEventsCount' => count($history['history_events'] ?? []),
-            ]);
-
             return $this->taskPayload($namespace, $claim, $attempt, $history, $workflowId);
         }
-
-        \Log::debug('[WorkflowTaskPoller] No tasks claimed (examined all ready tasks)');
 
         return null;
     }
