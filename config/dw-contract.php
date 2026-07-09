@@ -255,7 +255,7 @@ return [
             'legacy' => 'WORKFLOW_SERVER_WORKER_LONG_POLL_MAX_CONCURRENT',
         ],
         'DW_WORKER_LONG_POLL_RESERVED_HTTP_WORKERS' => [
-            'description' => 'Optional number of PHP CLI server workers reserved for health and control-plane requests when deriving the workflow/activity long-poll wait cap. Unset derives a reserve from PHP_CLI_SERVER_WORKERS, keeping at least half of declared standalone CLI server workers outside held long-poll waits.',
+            'description' => 'Optional number of PHP CLI server workers reserved for health and control-plane requests when deriving the workflow/activity long-poll wait cap. Unset derives a reserve from PHP_CLI_SERVER_WORKERS, keeping more than half of declared standalone CLI server workers outside held long-poll waits.',
             'default' => '(unset; derived from PHP_CLI_SERVER_WORKERS)',
             'since' => '2.0.0',
             'legacy' => 'WORKFLOW_SERVER_WORKER_LONG_POLL_RESERVED_HTTP_WORKERS',
@@ -405,7 +405,7 @@ return [
             'legacy' => 'WORKFLOW_SERVER_QUERY_TASK_MAX_PENDING_PER_QUEUE',
         ],
         'DW_QUERY_TASK_POLL_MAX_CONCURRENT' => [
-            'description' => 'Optional cap for concurrent held idle query-task worker long-poll waits on this server node. Pending query tasks can still be claimed immediately before a poll waits. Unset derives up to two held query-task polls when PHP_CLI_SERVER_WORKERS leaves capacity after reserved HTTP workers, API-reserved workers, and workflow/activity waits.',
+            'description' => 'Optional cap for concurrent held idle query-task worker long-poll waits on this server node. Pending query tasks can still be claimed immediately before a poll waits. Unset derives one held query-task poll when PHP_CLI_SERVER_WORKERS leaves capacity after reserved HTTP workers, API-reserved workers, and workflow/activity waits.',
             'default' => '(unset; derived for PHP_CLI_SERVER_WORKERS)',
             'since' => '2.0.0',
             'legacy' => 'WORKFLOW_SERVER_QUERY_TASK_POLL_MAX_CONCURRENT',

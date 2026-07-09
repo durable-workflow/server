@@ -70,7 +70,7 @@ class LongPollWaitSlotStoreTest extends TestCase
         }
     }
 
-    public function test_default_query_task_poll_capacity_scales_for_multi_queue_workers(): void
+    public function test_default_query_task_poll_capacity_keeps_api_capacity_with_configured_http_reserve(): void
     {
         $previous = getenv('PHP_CLI_SERVER_WORKERS');
         putenv('PHP_CLI_SERVER_WORKERS=8');
@@ -86,18 +86,15 @@ class LongPollWaitSlotStoreTest extends TestCase
             $slots = app(LongPollWaitSlotStore::class);
 
             $this->assertSame(2, $slots->maxConcurrentWaits());
-            $this->assertSame(2, $slots->maxConcurrentQueryTaskPollWaits());
+            $this->assertSame(1, $slots->maxConcurrentQueryTaskPollWaits());
 
             $firstQuery = $slots->tryAcquireQueryTaskPoll(30);
             $secondQuery = $slots->tryAcquireQueryTaskPoll(30);
-            $thirdQuery = $slots->tryAcquireQueryTaskPoll(30);
 
             $this->assertNotNull($firstQuery);
-            $this->assertNotNull($secondQuery);
-            $this->assertNull($thirdQuery);
+            $this->assertNull($secondQuery);
 
             $firstQuery->release();
-            $secondQuery->release();
         } finally {
             if ($previous === false) {
                 putenv('PHP_CLI_SERVER_WORKERS');
@@ -122,7 +119,7 @@ class LongPollWaitSlotStoreTest extends TestCase
             /** @var LongPollWaitSlotStore $slots */
             $slots = app(LongPollWaitSlotStore::class);
 
-            $this->assertSame(2, $slots->maxConcurrentWaits());
+            $this->assertSame(1, $slots->maxConcurrentWaits());
             $this->assertSame(1, $slots->maxConcurrentQueryTaskPollWaits());
         } finally {
             if ($previous === false) {
@@ -207,8 +204,8 @@ class LongPollWaitSlotStoreTest extends TestCase
             /** @var LongPollWaitSlotStore $slots */
             $slots = app(LongPollWaitSlotStore::class);
 
-            $this->assertSame(9, $slots->maxConcurrentWaits());
-            $this->assertSame(2, $slots->maxConcurrentQueryTaskPollWaits());
+            $this->assertSame(2, $slots->maxConcurrentWaits());
+            $this->assertSame(1, $slots->maxConcurrentQueryTaskPollWaits());
         } finally {
             if ($previous === false) {
                 putenv('PHP_CLI_SERVER_WORKERS');
@@ -216,5 +213,65 @@ class LongPollWaitSlotStoreTest extends TestCase
                 putenv('PHP_CLI_SERVER_WORKERS='.$previous);
             }
         }
+    }
+
+    public function test_published_image_default_preserves_api_workers_for_load_profiles(): void
+    {
+        $previous = getenv('PHP_CLI_SERVER_WORKERS');
+        $workerCount = $this->dockerfilePhpCliServerWorkers();
+        putenv('PHP_CLI_SERVER_WORKERS='.$workerCount);
+
+        config([
+            'server.polling.max_concurrent_waits' => null,
+            'server.polling.reserved_http_workers' => null,
+            'server.query_tasks.max_concurrent_poll_waits' => null,
+        ]);
+
+        try {
+            /** @var LongPollWaitSlotStore $slots */
+            $slots = app(LongPollWaitSlotStore::class);
+
+            $this->assertGreaterThanOrEqual(16, $workerCount);
+            $this->assertSame(2, $slots->maxConcurrentWaits());
+            $this->assertSame(1, $slots->maxConcurrentQueryTaskPollWaits());
+            $this->assertGreaterThanOrEqual(
+                13,
+                $workerCount - $slots->maxConcurrentWaits() - $slots->maxConcurrentQueryTaskPollWaits(),
+            );
+
+            $firstWorker = $slots->tryAcquire(30);
+            $secondWorker = $slots->tryAcquire(30);
+            $thirdWorker = $slots->tryAcquire(30);
+            $query = $slots->tryAcquireQueryTaskPoll(30);
+            $extraQuery = $slots->tryAcquireQueryTaskPoll(30);
+
+            $this->assertNotNull($firstWorker);
+            $this->assertNotNull($secondWorker);
+            $this->assertNull($thirdWorker);
+            $this->assertNotNull($query);
+            $this->assertNull($extraQuery);
+
+            $firstWorker->release();
+            $secondWorker->release();
+            $query->release();
+        } finally {
+            if ($previous === false) {
+                putenv('PHP_CLI_SERVER_WORKERS');
+            } else {
+                putenv('PHP_CLI_SERVER_WORKERS='.$previous);
+            }
+        }
+    }
+
+    private function dockerfilePhpCliServerWorkers(): int
+    {
+        $dockerfile = file_get_contents(base_path('Dockerfile'));
+
+        $this->assertIsString($dockerfile);
+        $this->assertMatchesRegularExpression('/ENV\s+PHP_CLI_SERVER_WORKERS=(\d+)\b/', $dockerfile);
+
+        preg_match('/ENV\s+PHP_CLI_SERVER_WORKERS=(\d+)\b/', $dockerfile, $matches);
+
+        return (int) $matches[1];
     }
 }

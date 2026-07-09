@@ -1150,7 +1150,7 @@ health and control-plane routes. Empty workflow and activity worker long-polls
 acquire a short-lived wait slot before sleeping; once the node-local slot cap
 is reached, additional polls return their immediate empty result instead of
 holding another PHP server worker for the full poll timeout. Idle query-task
-polls use a separate wait-slot budget, derived to two slots on the default
+polls use a separate wait-slot budget, derived to one slot on the default
 standalone image, so workflow/activity polls cannot starve live workflow queries
 across the PHP and Python worker queues, and query-task polls cannot consume the
 request workers needed by the waiting query request and the worker's completion
@@ -1406,7 +1406,7 @@ every operator-facing variable the server honors.
 | `DW_QUERY_TASK_LEASE_TIMEOUT` | `DW_WORKFLOW_TASK_TIMEOUT` | Configured lease timeout for ephemeral query tasks; when `DW_QUERY_TASK_TIMEOUT` is nonzero, effective leases are at least `DW_QUERY_TASK_TIMEOUT + 5` seconds. |
 | `DW_QUERY_TASK_TTL_SECONDS` | `180` | Configured retention floor for query-task result rows; effective retention is at least query timeout + effective lease + 60 seconds. |
 | `DW_QUERY_TASK_MAX_PENDING_PER_QUEUE` | `1024` | Max pending cache-backed query tasks per namespace/task queue before new queries are rejected. |
-| `DW_QUERY_TASK_POLL_MAX_CONCURRENT` | (unset; derived for PHP CLI server) | Optional cap for concurrent held idle query-task worker long-poll waits. Pending query tasks are still claimed immediately before an idle poll waits; the default standalone image derives two query-task wait slots. |
+| `DW_QUERY_TASK_POLL_MAX_CONCURRENT` | (unset; derived for PHP CLI server) | Optional cap for concurrent held idle query-task worker long-poll waits. Pending query tasks are still claimed immediately before an idle poll waits; the default standalone image derives one query-task wait slot. |
 | `DW_WORKFLOW_TASK_TIMEOUT` | `60` | Default workflow-task lease timeout (seconds). |
 | `DW_ACTIVITY_TASK_TIMEOUT` | `300` | Default activity-task lease timeout (seconds). |
 | `DW_WORKER_STALE_AFTER_SECONDS` | `max(DW_WORKER_POLL_TIMEOUT * 2, 60)` | Seconds before a worker heartbeat is considered stale. |
@@ -1476,17 +1476,20 @@ each one it sees.
 ### HTTP concurrency (PHP_CLI_SERVER_WORKERS)
 
 The image's default CMD runs `php artisan serve --no-reload` with
-`PHP_CLI_SERVER_WORKERS=8`. The `--no-reload` flag is required for
+`PHP_CLI_SERVER_WORKERS=16`. The `--no-reload` flag is required for
 Laravel's built-in server to honour the worker count — without it the
 server logs `Unable to respect the PHP_CLI_SERVER_WORKERS environment
 variable without the --no-reload flag` and falls back to a single
 thread, which will block every other request while one worker holds a
 long-poll connection open.
 
-Raise the worker count for polyglot or multi-worker deployments:
+The server derives a conservative idle long-poll budget from the worker
+count so public workflow APIs and worker completions keep request
+capacity during load. Raise the worker count further for polyglot or
+multi-worker deployments:
 
 ```bash
-docker run --rm -p 8080:8080 -e PHP_CLI_SERVER_WORKERS=16 \
+docker run --rm -p 8080:8080 -e PHP_CLI_SERVER_WORKERS=32 \
   --env-file .env durable-workflow-server
 ```
 

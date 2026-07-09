@@ -130,20 +130,24 @@ final class LongPollWaitSlotStore
             return 0;
         }
 
-        $controlPlaneReservation = $availableWorkers <= 2
-            ? 0
-            : max(1, intdiv($availableWorkers, 3));
+        $remainingAfterQueryPolls = max(0, $availableWorkers - $queryTaskPollWaits);
 
-        return max(0, $availableWorkers - $queryTaskPollWaits - $controlPlaneReservation);
+        if ($remainingAfterQueryPolls <= 1) {
+            return $remainingAfterQueryPolls;
+        }
+
+        $controlPlaneReservation = max(1, intdiv($availableWorkers + 1, 2));
+
+        return min(2, max(1, $remainingAfterQueryPolls - $controlPlaneReservation));
     }
 
     private function defaultQueryTaskPollWaits(int $availableWorkers): int
     {
-        if ($availableWorkers <= 0) {
+        if ($availableWorkers <= 1) {
             return 0;
         }
 
-        return min(2, max(1, intdiv($availableWorkers, 3)));
+        return 1;
     }
 
     private function phpCliServerWorkers(): ?int
@@ -178,7 +182,7 @@ final class LongPollWaitSlotStore
             return 1;
         }
 
-        return max(2, intdiv($phpServerWorkers, 2));
+        return min($phpServerWorkers - 1, max(2, intdiv($phpServerWorkers, 2) + 1));
     }
 
     private function slotKey(int $slot, string $pool): string
