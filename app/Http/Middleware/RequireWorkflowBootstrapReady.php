@@ -18,7 +18,7 @@ class RequireWorkflowBootstrapReady
 
     public function handle(Request $request, Closure $next): Response
     {
-        $status = $this->readiness->workflowStatus();
+        $status = $this->readiness->bootstrapStatus();
         $blockedBy = is_array($status['blocked_by'] ?? null)
             ? array_values(array_filter($status['blocked_by'], static fn (mixed $value): bool => is_string($value) && $value !== ''))
             : [];

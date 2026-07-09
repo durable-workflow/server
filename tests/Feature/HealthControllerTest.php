@@ -9,6 +9,7 @@ use App\Support\ServerTopology;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Schema;
+use Tests\Feature\Concerns\ServerTestHelpers;
 use Tests\Fixtures\HeaderAuthProvider;
 use Tests\TestCase;
 use Workflow\V2\Support\WorkerCompatibilityFleet;
@@ -16,6 +17,7 @@ use Workflow\V2\Support\WorkerCompatibilityFleet;
 class HealthControllerTest extends TestCase
 {
     use RefreshDatabase;
+    use ServerTestHelpers;
 
     public function test_health_check_returns_serving_when_database_is_available(): void
     {
@@ -473,6 +475,138 @@ class HealthControllerTest extends TestCase
             );
         } finally {
             WorkerCompatibilityFleet::clear();
+        }
+    }
+
+    public function test_public_health_and_runtime_admission_stay_bounded_with_growing_history_and_ready_tasks(): void
+    {
+        $this->createNamespace('default');
+        $this->seedGrowthCardinality(1000);
+        $this->registerWorker(
+            'health-growth-worker',
+            'health-growth-live',
+            supportedWorkflowTypes: ['tests.health-growth'],
+        );
+
+        $queries = [];
+        DB::listen(static function ($query) use (&$queries): void {
+            $queries[] = strtolower((string) $query->sql);
+        });
+
+        $maxProbeLatencySeconds = 0.0;
+        $availableResponses = 0;
+
+        for ($attempt = 0; $attempt < 5; $attempt++) {
+            foreach (['/api/health', '/api/ready'] as $path) {
+                $startedAt = hrtime(true);
+                $response = $this->getJson($path);
+                $maxProbeLatencySeconds = max(
+                    $maxProbeLatencySeconds,
+                    (hrtime(true) - $startedAt) / 1_000_000_000,
+                );
+
+                $response->assertOk();
+                $availableResponses++;
+            }
+        }
+
+        $this->withHeaders($this->apiHeaders())
+            ->postJson('/api/workflows', [
+                'workflow_id' => 'health-growth-live-start',
+                'workflow_type' => 'tests.health-growth',
+                'task_queue' => 'health-growth-live',
+                'input' => [],
+            ])
+            ->assertCreated();
+        $availableResponses++;
+
+        $this->withHeaders($this->apiHeaders())
+            ->getJson('/api/workflows?per_page=10')
+            ->assertOk();
+        $availableResponses++;
+
+        $this->withHeaders($this->workerHeaders())
+            ->postJson('/api/worker/workflow-tasks/poll', [
+                'worker_id' => 'health-growth-worker',
+                'task_queue' => 'health-growth-live',
+                'poll_request_id' => 'health-growth-poll',
+            ])
+            ->assertOk();
+        $availableResponses++;
+
+        $allRunsCommandContractScans = array_values(array_filter(
+            $queries,
+            static fn (string $query): bool => str_contains($query, 'workflow_runs')
+                && str_contains($query, 'workflow_history_events')
+                && str_contains($query, 'exists'),
+        ));
+
+        $this->assertSame(13, $availableResponses);
+        $this->assertLessThan(
+            3.0,
+            $maxProbeLatencySeconds,
+            sprintf('Public health/readiness exceeded the three-second probe budget: %.3fs', $maxProbeLatencySeconds),
+        );
+        $this->assertSame(
+            [],
+            $allRunsCommandContractScans,
+            'Public probes and bootstrap admission must not page through every run with a WorkflowStarted event.',
+        );
+    }
+
+    private function seedGrowthCardinality(int $count): void
+    {
+        $now = now();
+
+        foreach (array_chunk(range(1, $count), 200) as $indexes) {
+            $runs = [];
+            $historyEvents = [];
+            $tasks = [];
+
+            foreach ($indexes as $index) {
+                $runId = '01'.str_pad((string) $index, 24, '0', STR_PAD_LEFT);
+
+                $runs[] = [
+                    'id' => $runId,
+                    'workflow_instance_id' => 'health-growth-'.$index,
+                    'run_number' => 1,
+                    'workflow_class' => 'Tests\\Fixtures\\HealthGrowthWorkflow',
+                    'workflow_type' => 'tests.health-growth.seeded',
+                    'namespace' => 'default',
+                    'status' => 'running',
+                    'queue' => 'health-growth-seeded',
+                    'last_history_sequence' => 1,
+                    'started_at' => $now,
+                    'last_progress_at' => $now,
+                    'created_at' => $now,
+                    'updated_at' => $now,
+                ];
+                $historyEvents[] = [
+                    'id' => '02'.str_pad((string) $index, 24, '0', STR_PAD_LEFT),
+                    'workflow_run_id' => $runId,
+                    'sequence' => 1,
+                    'event_type' => 'WorkflowStarted',
+                    'payload' => '{}',
+                    'recorded_at' => $now,
+                    'created_at' => $now,
+                    'updated_at' => $now,
+                ];
+                $tasks[] = [
+                    'id' => '03'.str_pad((string) $index, 24, '0', STR_PAD_LEFT),
+                    'workflow_run_id' => $runId,
+                    'namespace' => 'default',
+                    'task_type' => 'workflow',
+                    'status' => 'ready',
+                    'queue' => 'health-growth-seeded',
+                    'available_at' => $now,
+                    'created_at' => $now,
+                    'updated_at' => $now,
+                ];
+            }
+
+            DB::table('workflow_runs')->insert($runs);
+            DB::table('workflow_history_events')->insert($historyEvents);
+            DB::table('workflow_tasks')->insert($tasks);
         }
     }
 }

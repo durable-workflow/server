@@ -15,6 +15,7 @@ on:
       - "app/Support/LongPollWaitSlotStore.php"
       - "app/Support/ProjectionDriftMetrics.php"
       - "app/Support/ServerReadiness.php"
+      - "app/Support/RemoteScheduleStarter.php"
       - "app/Support/ServerPollingCache.php"
       - "app/Support/TaskQueueAdmission.php"
       - "app/Support/WorkerPollClaimGate.php"
@@ -25,6 +26,7 @@ on:
       - "app/Support/QueryTaskPollRequestStore.php"
       - "app/Support/WorkflowTaskPollRequestStore.php"
       - "app/Http/Controllers/Api/SystemController.php"
+      - "app/Http/Middleware/RequireWorkflowBootstrapReady.php"
       - "app/Services/PrometheusMetricsSummary.php"
       - "config/dw-bounded-growth.php"
       - "config/server.php"
@@ -35,6 +37,7 @@ on:
       - "tests/Unit/BoundedMetricPolicyTest.php"
       - "tests/Unit/ServerPerfHarnessContractTest.php"
       - "tests/Feature/SystemMetricsTest.php"
+      - "tests/Feature/HealthControllerTest.php"
   push:
     branches: [main]
     paths:
@@ -49,6 +52,7 @@ on:
       - "app/Support/LongPollWaitSlotStore.php"
       - "app/Support/ProjectionDriftMetrics.php"
       - "app/Support/ServerReadiness.php"
+      - "app/Support/RemoteScheduleStarter.php"
       - "app/Support/ServerPollingCache.php"
       - "app/Support/TaskQueueAdmission.php"
       - "app/Support/WorkerPollClaimGate.php"
@@ -59,6 +63,7 @@ on:
       - "app/Support/QueryTaskPollRequestStore.php"
       - "app/Support/WorkflowTaskPollRequestStore.php"
       - "app/Http/Controllers/Api/SystemController.php"
+      - "app/Http/Middleware/RequireWorkflowBootstrapReady.php"
       - "app/Services/PrometheusMetricsSummary.php"
       - "config/dw-bounded-growth.php"
       - "config/server.php"
@@ -69,6 +74,7 @@ on:
       - "tests/Unit/BoundedMetricPolicyTest.php"
       - "tests/Unit/ServerPerfHarnessContractTest.php"
       - "tests/Feature/SystemMetricsTest.php"
+      - "tests/Feature/HealthControllerTest.php"
 permissions:
   contents: read
 
@@ -116,6 +122,11 @@ jobs:
           DW_PERF_CONCURRENCY: "8"
           DW_PERF_NAMESPACES: "4"
           DW_PERF_TASK_QUEUES: "8"
+          DW_PERF_WORKFLOW_RUNS: "1000"
+          DW_PERF_START_CONCURRENCY: "8"
+          DW_PERF_HEALTH_INTERVAL_SECONDS: "0.5"
+          DW_PERF_MAX_HEALTH_LATENCY_SECONDS: "3"
+          DW_PERF_WORKFLOW_VERSION: "2.0.0-alpha.258"
           DW_PERF_MAX_SERVER_MEMORY_MB: "768"
           DW_PERF_MAX_POLLING_KEYS: "512"
           DW_PERF_MAX_FINAL_POLLING_KEYS: "0"

@@ -26,10 +26,24 @@ class ServerPerfHarnessContractTest extends TestCase
             'max_server_cache_keys_by_policy',
             'final_server_cache_keys_by_policy',
             'sampling_health',
+            'workflow_runs_target',
+            'final_workflow_runs',
+            'final_ready_tasks',
+            'request_availability',
+            'worker_poll',
+            'max_health_latency_seconds',
+            'artifact_versions',
+            'workflow_start_loop',
+            'workflow_list_loop',
+            'health_probe_loop',
+            'workflow growth target incomplete',
+            'availability fell below 1.0',
+            'latency exceeded',
             'resource sampling failed',
             'unhealthy_field_counts',
             'field failures:',
             'docker_stats_ok',
+            'server_container_healthy',
             'redis_sample_ok',
             'mysql_sample_ok',
             'workflow_worker_registrations',
@@ -110,6 +124,26 @@ class ServerPerfHarnessContractTest extends TestCase
         );
 
         $this->assertStringContainsString('PERF_WORKFLOW_TYPE = ', $source);
+    }
+
+    public function test_short_perf_smoke_exercises_health_during_thousand_run_growth(): void
+    {
+        $workflow = file_get_contents(dirname(__DIR__, 2).'/.github/workflows/server-perf.yml');
+        $this->assertNotFalse($workflow, '.github/workflows/server-perf.yml must be readable');
+
+        foreach ([
+            'DW_PERF_WORKFLOW_RUNS: "1000"',
+            'DW_PERF_START_CONCURRENCY: "8"',
+            'DW_PERF_HEALTH_INTERVAL_SECONDS: "0.5"',
+            'DW_PERF_MAX_HEALTH_LATENCY_SECONDS: "3"',
+            'DW_PERF_WORKFLOW_VERSION: "2.0.0-alpha.258"',
+        ] as $needle) {
+            $this->assertStringContainsString(
+                $needle,
+                $workflow,
+                "Short perf smoke must retain the health-growth setting {$needle}.",
+            );
+        }
     }
 
     public function test_polling_assertions_are_decoupled_from_redis_dbsize(): void

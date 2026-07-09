@@ -515,7 +515,7 @@ workflow-task command payload.
 
 ### System
 - `GET /api/health` — Health check plus a machine-readable topology summary for the current node
-- `GET /api/ready` — Readiness check for migrations, default namespace, cache, auth config, workflow v2 rollout-safety health, and the current node topology summary
+- `GET /api/ready` — Bounded readiness check for migrations, default namespace, cache, auth config, fail-closed backend/fleet admission, and the current node topology summary
 - `GET /api/cluster/info` — Server capabilities, role topology, coordination-health summary, full operator metrics snapshot, and version
 - `GET /api/system/health` — Full rollout-safety health snapshot for the requested namespace, including check status, categories, routing-drain state, operator metrics, and structural limits
 - `GET /api/system/metrics` — Server metrics including bounded stuck workflow-task diagnostics
@@ -794,7 +794,7 @@ The same `GET /api/cluster/info` response now includes a versioned
 `coordination_health` manifest for rollout-safety coordination risk. It
 summarizes the current server-wide workflow v2 health status, warning and error
 check names, category counts, the normalized check list that already powers the
-readiness gate, and a `routing_drains` summary that lists namespaces and task
+bounded readiness gate, and a `routing_drains` summary that lists namespaces and task
 queues with draining build-id cohorts. The manifest is intentionally
 `all_namespaces` scoped so it describes the server's fleet-wide coordination
 posture; use `GET /api/system/health` for the namespace-scoped
@@ -811,6 +811,12 @@ worker, and repair detail alongside the fleet-wide `coordination_health`
 manifest. Use the dedicated `GET /api/system/operator-metrics` endpoint when
 operators need an admin-gated, control-plane-versioned read of the same
 snapshot.
+
+Liveness, readiness, and runtime bootstrap admission never build this full
+snapshot. Their database and CPU work stays fixed as workflow history and ready
+task cardinality grow. Use `GET /api/system/health`,
+`GET /api/system/operator-metrics`, or the discovery snapshot when detailed
+backlog, projection, history, and command-contract diagnostics are required.
 
 The activity-grade external execution surface is published from
 `GET /api/cluster/info` at
@@ -1164,9 +1170,11 @@ Across Compose, plain Docker, and Kubernetes, the supported bootstrap contract
 is the same: run the image's `server-bootstrap` command once before starting the
 server and worker processes. `/api/health` is a liveness check; `/api/ready`
 is the readiness check to gate workers and load balancers. After bootstrap it
-also evaluates the workflow v2 rollout-safety snapshot, so fail-closed health
-such as `DW_V2_FLEET_VALIDATION_MODE=fail` and error-severity backend
-admission issues keep the server unready until corrected.
+also evaluates the bounded workflow v2 backend and fleet admission checks, so
+`DW_V2_FLEET_VALIDATION_MODE=fail` incompatibility and error-severity backend
+issues keep the server unready until corrected. Full rollout-safety and
+operator-metrics snapshots remain explicit diagnostic requests and are not
+executed by recurring liveness/readiness probes.
 
 ### Dedicated Matching-Role Daemon
 

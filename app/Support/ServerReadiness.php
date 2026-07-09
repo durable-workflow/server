@@ -8,9 +8,11 @@ use App\Contracts\AuthProvider;
 use App\Models\WorkflowNamespace;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Schema;
-use Workflow\V2\Support\HealthCheck;
+use Workflow\V2\Support\BackendCapabilities;
 use Workflow\V2\Support\ReadinessContract;
 use Workflow\V2\Support\WaterlineEngineSource;
+use Workflow\V2\Support\WorkerCompatibility;
+use Workflow\V2\Support\WorkerCompatibilityFleet;
 
 final class ServerReadiness
 {
@@ -58,6 +60,21 @@ final class ServerReadiness
         ];
 
         return $this->normalizeWorkflowCheck($this->workflowCheck($checks));
+    }
+
+    /**
+     * Runtime-serving routes only need to fail closed while durable storage
+     * has not been bootstrapped. Keep this admission check independent from
+     * workflow history, task backlog, and operator-metrics cardinality.
+     *
+     * @return array<string, mixed>
+     */
+    public function bootstrapStatus(): array
+    {
+        return $this->normalizeWorkflowCheck($this->bootstrapCheck([
+            'database' => $this->databaseCheck(),
+            'migrations' => $this->migrationCheck(),
+        ]));
     }
 
     private function databaseCheck(): array
@@ -322,24 +339,13 @@ final class ServerReadiness
      */
     private function workflowCheck(array $checks): array
     {
-        $blockedBy = [];
-
-        foreach (['database', 'migrations'] as $key) {
-            if (! self::statusAllowsReady($checks[$key]['status'] ?? null)) {
-                $blockedBy[] = $key;
-            }
-        }
-
-        if ($blockedBy !== []) {
-            return [
-                'status' => 'blocked',
-                'blocked_by' => $blockedBy,
-                'remediation' => 'Restore database connectivity and migrate the workflow tables before relying on workflow v2 rollout-safety health.',
-            ];
+        $bootstrap = $this->bootstrapCheck($checks);
+        if (($bootstrap['status'] ?? null) === 'blocked') {
+            return $bootstrap;
         }
 
         try {
-            $snapshot = HealthCheck::snapshot();
+            $snapshot = $this->boundedWorkflowSnapshot();
         } catch (\Throwable $exception) {
             return [
                 'status' => 'unavailable',
@@ -351,7 +357,6 @@ final class ServerReadiness
         $checksList = [];
         $warningChecks = [];
         $errorChecks = [];
-        $fleetValidationMode = config('workflows.v2.fleet.validation_mode', 'warn');
 
         foreach (is_array($snapshot['checks'] ?? null) ? $snapshot['checks'] : [] as $check) {
             if (! is_array($check)) {
@@ -364,13 +369,6 @@ final class ServerReadiness
                 'category' => is_string($check['category'] ?? null) ? $check['category'] : null,
                 'message' => is_string($check['message'] ?? null) ? $check['message'] : null,
             ];
-            if (
-                $fleetValidationMode === 'fail'
-                && $entry['name'] === 'worker_compatibility'
-                && $entry['status'] === 'warning'
-            ) {
-                $entry['status'] = 'error';
-            }
             $checksList[] = $entry;
 
             if ($entry['status'] === 'warning') {
@@ -398,6 +396,127 @@ final class ServerReadiness
             'warning_checks' => $warningChecks,
             'error_checks' => $errorChecks,
             'checks' => $checksList,
+        ];
+    }
+
+    /**
+     * @param  array<string, array<string, mixed>>  $checks
+     * @return array<string, mixed>
+     */
+    private function bootstrapCheck(array $checks): array
+    {
+        $blockedBy = [];
+
+        foreach (['database', 'migrations'] as $key) {
+            if (! self::statusAllowsReady($checks[$key]['status'] ?? null)) {
+                $blockedBy[] = $key;
+            }
+        }
+
+        if ($blockedBy !== []) {
+            return [
+                'status' => 'blocked',
+                'blocked_by' => $blockedBy,
+                'remediation' => 'Restore database connectivity and migrate the workflow tables before relying on workflow v2 rollout-safety health.',
+            ];
+        }
+
+        return [
+            'status' => 'ok',
+            'generated_at' => now()->toJSON(),
+            'http_status' => 200,
+            'categories' => [],
+            'warning_checks' => [],
+            'error_checks' => [],
+            'checks' => [],
+        ];
+    }
+
+    /**
+     * Build only the fixed-cost checks that can make public readiness fail.
+     * Detailed rollout-safety diagnostics remain available from the system
+     * health and operator-metrics endpoints.
+     *
+     * @return array<string, mixed>
+     */
+    private function boundedWorkflowSnapshot(): array
+    {
+        $backend = BackendCapabilities::snapshot();
+        $backendSeverity = is_string($backend['severity'] ?? null)
+            ? $backend['severity']
+            : (($backend['supported'] ?? false) === true ? 'ok' : 'error');
+        $backendStatus = match ($backendSeverity) {
+            'error' => 'error',
+            'warning' => 'warning',
+            default => 'ok',
+        };
+        $backendCheck = [
+            'name' => 'backend_capabilities',
+            'status' => $backendStatus,
+            'category' => 'correctness',
+            'message' => match ($backendStatus) {
+                'error' => 'One or more configured v2 backend capabilities are unsupported.',
+                'warning' => 'One or more configured v2 backend capabilities are degraded but non-blocking.',
+                default => 'The configured database, queue, cache, and codec backends satisfy the v2 capability contract.',
+            },
+        ];
+
+        $required = WorkerCompatibility::current();
+        $namespace = WorkerCompatibilityFleet::scopeNamespace();
+        $fleet = $namespace === null
+            ? WorkerCompatibilityFleet::details($required)
+            : WorkerCompatibilityFleet::detailsForNamespace($namespace, $required);
+        $supportingWorkerIds = [];
+
+        foreach ($fleet as $worker) {
+            $workerId = is_string($worker['worker_id'] ?? null) ? $worker['worker_id'] : null;
+            if ($workerId === null || $workerId === '') {
+                continue;
+            }
+
+            if (($worker['supports_required'] ?? false) === true) {
+                $supportingWorkerIds[$workerId] = true;
+            }
+        }
+
+        $validationMode = strtolower(trim((string) config('workflows.v2.fleet.validation_mode', 'warn'))) === 'fail'
+            ? 'fail'
+            : 'warn';
+        $fleetSupportsRequired = $required === null || $supportingWorkerIds !== [];
+        $workerStatus = $fleetSupportsRequired ? 'ok' : ($validationMode === 'fail' ? 'error' : 'warning');
+        $workerCheck = [
+            'name' => 'worker_compatibility',
+            'status' => $workerStatus,
+            'category' => 'correctness',
+            'message' => match ($workerStatus) {
+                'error' => 'No active worker heartbeat advertises the current v2 compatibility marker; fleet validation mode is fail-closed.',
+                'warning' => 'No active worker heartbeat advertises the current v2 compatibility marker.',
+                default => $required === null
+                    ? 'No current v2 compatibility marker is required.'
+                    : 'At least one active worker heartbeat advertises the current v2 compatibility marker.',
+            },
+        ];
+
+        $checks = [$backendCheck, $workerCheck];
+        $statuses = array_column($checks, 'status');
+        $status = in_array('error', $statuses, true)
+            ? 'error'
+            : (in_array('warning', $statuses, true) ? 'warning' : 'ok');
+
+        return [
+            'generated_at' => now()->toJSON(),
+            'status' => $status,
+            'categories' => [
+                'correctness' => [
+                    'status' => $status,
+                    'check_count' => count($checks),
+                ],
+                'acceleration' => [
+                    'status' => 'ok',
+                    'check_count' => 0,
+                ],
+            ],
+            'checks' => $checks,
         ];
     }
 

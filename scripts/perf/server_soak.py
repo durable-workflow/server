@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Run a bounded-growth stress pass against the server worker poll path."""
+"""Run bounded-growth worker-poll and public-health stress profiles."""
 
 from __future__ import annotations
 
@@ -146,6 +146,63 @@ class Metrics:
         return "\n".join(lines)
 
 
+class EndpointMetrics:
+    def __init__(self) -> None:
+        self.lock = threading.Lock()
+        self.endpoints: dict[str, dict[str, Any]] = {}
+
+    def record(self, endpoint: str, status: int, latency: float) -> None:
+        with self.lock:
+            entry = self.endpoints.setdefault(
+                endpoint,
+                {"requests": 0, "errors": 0, "statuses": Counter(), "latencies": []},
+            )
+            entry["requests"] += 1
+            entry["statuses"][str(status)] += 1
+            entry["latencies"].append(latency)
+
+    def record_error(self, endpoint: str, latency: float) -> None:
+        with self.lock:
+            entry = self.endpoints.setdefault(
+                endpoint,
+                {"requests": 0, "errors": 0, "statuses": Counter(), "latencies": []},
+            )
+            entry["requests"] += 1
+            entry["errors"] += 1
+            entry["latencies"].append(latency)
+
+    def snapshot(self) -> dict[str, Any]:
+        with self.lock:
+            snapshot: dict[str, Any] = {}
+            for endpoint, entry in self.endpoints.items():
+                latencies = sorted(float(value) for value in entry["latencies"])
+                successful = sum(
+                    count
+                    for status, count in entry["statuses"].items()
+                    if 200 <= int(status) < 300
+                )
+                requests = int(entry["requests"])
+                snapshot[endpoint] = {
+                    "requests": requests,
+                    "successful": successful,
+                    "errors": int(entry["errors"]),
+                    "availability": 0.0 if requests == 0 else round(successful / requests, 6),
+                    "statuses": dict(entry["statuses"]),
+                    "latency_seconds": {
+                        "average": 0.0 if not latencies else round(sum(latencies) / len(latencies), 6),
+                        "p95": 0.0
+                        if not latencies
+                        else round(
+                            latencies[min(len(latencies) - 1, math.ceil(len(latencies) * 0.95) - 1)],
+                            6,
+                        ),
+                        "max": 0.0 if not latencies else round(latencies[-1], 6),
+                    },
+                }
+
+            return snapshot
+
+
 class MetricsHandler(BaseHTTPRequestHandler):
     metrics: Metrics
 
@@ -176,6 +233,18 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--task-queues", type=int, default=int(os.environ.get("DW_PERF_TASK_QUEUES", "8")))
     parser.add_argument("--sample-interval-seconds", type=float, default=float(os.environ.get("DW_PERF_SAMPLE_INTERVAL_SECONDS", "5")))
     parser.add_argument("--poll-timeout-seconds", type=int, default=int(os.environ.get("DW_PERF_POLL_TIMEOUT", "1")))
+    parser.add_argument("--workflow-runs", type=int, default=int(os.environ.get("DW_PERF_WORKFLOW_RUNS", "0")))
+    parser.add_argument("--start-concurrency", type=int, default=int(os.environ.get("DW_PERF_START_CONCURRENCY", "8")))
+    parser.add_argument(
+        "--health-interval-seconds",
+        type=float,
+        default=float(os.environ.get("DW_PERF_HEALTH_INTERVAL_SECONDS", "0.5")),
+    )
+    parser.add_argument(
+        "--max-health-latency-seconds",
+        type=float,
+        default=float(os.environ.get("DW_PERF_MAX_HEALTH_LATENCY_SECONDS", "3")),
+    )
     parser.add_argument("--drain-seconds", type=int, default=int(os.environ.get("DW_PERF_DRAIN_SECONDS", "12")))
     parser.add_argument("--artifact-dir", default=os.environ.get("DW_PERF_ARTIFACT_DIR", "build/perf"))
     parser.add_argument("--compose-project", default=os.environ.get("DW_PERF_COMPOSE_PROJECT", ""))
@@ -285,7 +354,13 @@ def emit_progress(message: str) -> None:
     print(f"[server-soak] {timestamp} {message}", flush=True)
 
 
-def http_json(method: str, url: str, headers: dict[str, str], payload: dict[str, Any] | None = None) -> tuple[int, Any]:
+def http_json(
+    method: str,
+    url: str,
+    headers: dict[str, str],
+    payload: dict[str, Any] | None = None,
+    timeout_seconds: float = 20,
+) -> tuple[int, Any]:
     data = None if payload is None else json.dumps(payload).encode("utf-8")
     request = urllib.request.Request(url, data=data, method=method)
     for key, value in headers.items():
@@ -295,7 +370,7 @@ def http_json(method: str, url: str, headers: dict[str, str], payload: dict[str,
     request.add_header("Accept", "application/json")
 
     try:
-        with urllib.request.urlopen(request, timeout=20) as response:
+        with urllib.request.urlopen(request, timeout=timeout_seconds) as response:
             body = response.read().decode("utf-8")
             return response.status, json.loads(body) if body else {}
     except urllib.error.HTTPError as exc:
@@ -472,6 +547,10 @@ def docker_stats(project: str) -> dict[str, int]:
 
     stats = {f"{service}_memory_bytes": memory_by_id.get(container_id[:12], 0) for service, container_id in ids_by_service.items()}
     stats["docker_stats_ok"] = 1 if result.returncode == 0 and all(stats.values()) else 0
+    health = command_output(
+        ["docker", "inspect", "--format", "{{.State.Health.Status}}", ids_by_service["server"]],
+    )
+    stats["server_container_healthy"] = 1 if health == "healthy" else 0
 
     return stats
 
@@ -547,7 +626,9 @@ def mysql_counts(project: str) -> dict[str, int]:
     query = (
         "SELECT "
         "(SELECT COUNT(*) FROM workflow_namespaces) AS namespaces, "
-        "(SELECT COUNT(*) FROM workflow_worker_registrations) AS workers;"
+        "(SELECT COUNT(*) FROM workflow_worker_registrations) AS workers, "
+        "(SELECT COUNT(*) FROM workflow_runs) AS workflow_runs, "
+        "(SELECT COUNT(*) FROM workflow_tasks WHERE status = 'ready') AS ready_tasks;"
     )
     result = run_command(
         compose_command(
@@ -565,11 +646,13 @@ def mysql_counts(project: str) -> dict[str, int]:
         )
     )
     parts = result.stdout.strip().split()
-    if len(parts) >= 2:
+    if len(parts) >= 4:
         return {
             "mysql_sample_ok": 1 if result.returncode == 0 else 0,
             "mysql_namespaces": int(parts[0]),
             "mysql_worker_registrations": int(parts[1]),
+            "mysql_workflow_runs": int(parts[2]),
+            "mysql_ready_tasks": int(parts[3]),
         }
     return {"mysql_sample_ok": 0}
 
@@ -594,6 +677,7 @@ def sample_health(samples: list[dict[str, Any]], compose_project: str) -> dict[s
 
     required_ok_fields = (
         "docker_stats_ok",
+        "server_container_healthy",
         "redis_sample_ok",
         "mysql_sample_ok",
     )
@@ -629,6 +713,7 @@ def worker_loop(
     token: str,
     workers: list[tuple[str, str, str]],
     metrics: Metrics,
+    endpoint_metrics: EndpointMetrics,
     errors_path: Path,
     worker_index: int,
 ) -> None:
@@ -654,12 +739,163 @@ def worker_loop(
             )
             latency = time.monotonic() - started
             metrics.record_request(status, latency)
+            endpoint_metrics.record("worker_poll", status, latency)
             if status != 200:
                 metrics.record_error()
                 write_jsonl(errors_path, {"status": status, "body": body, "namespace": namespace, "queue": queue})
         except Exception as exc:  # noqa: BLE001
             metrics.record_error()
+            endpoint_metrics.record_error("worker_poll", time.monotonic() - started)
             write_jsonl(errors_path, {"exception": repr(exc), "namespace": namespace, "queue": queue})
+
+
+def workflow_start_loop(
+    stop_at: float,
+    base_url: str,
+    token: str,
+    workers: list[tuple[str, str, str]],
+    target_runs: int,
+    start_concurrency: int,
+    worker_index: int,
+    endpoint_metrics: EndpointMetrics,
+    errors_path: Path,
+) -> None:
+    for index in range(worker_index, target_runs, start_concurrency):
+        if time.monotonic() >= stop_at:
+            return
+
+        namespace, queue, _worker_id = workers[index % len(workers)]
+        started = time.monotonic()
+        try:
+            status, body = http_json(
+                "POST",
+                f"{base_url}/api/workflows",
+                auth_headers(token, namespace),
+                {
+                    "workflow_id": f"perf-health-growth-{index:06d}",
+                    "workflow_type": PERF_WORKFLOW_TYPE,
+                    "task_queue": queue,
+                    "input": [index],
+                },
+            )
+            latency = time.monotonic() - started
+            endpoint_metrics.record("workflow_start", status, latency)
+            if status not in (200, 201):
+                write_jsonl(
+                    errors_path,
+                    {"endpoint": "workflow_start", "status": status, "body": body, "run_index": index},
+                )
+        except Exception as exc:  # noqa: BLE001
+            endpoint_metrics.record_error("workflow_start", time.monotonic() - started)
+            write_jsonl(
+                errors_path,
+                {"endpoint": "workflow_start", "exception": repr(exc), "run_index": index},
+            )
+
+
+def workflow_list_loop(
+    stop_at: float,
+    base_url: str,
+    token: str,
+    namespaces: list[str],
+    endpoint_metrics: EndpointMetrics,
+    errors_path: Path,
+) -> None:
+    sequence = 0
+    while time.monotonic() < stop_at:
+        namespace = namespaces[sequence % len(namespaces)]
+        sequence += 1
+        started = time.monotonic()
+        try:
+            status, body = http_json(
+                "GET",
+                f"{base_url}/api/workflows?per_page=10",
+                auth_headers(token, namespace),
+            )
+            endpoint_metrics.record("workflow_list", status, time.monotonic() - started)
+            if status != 200:
+                write_jsonl(
+                    errors_path,
+                    {"endpoint": "workflow_list", "status": status, "body": body, "namespace": namespace},
+                )
+        except Exception as exc:  # noqa: BLE001
+            endpoint_metrics.record_error("workflow_list", time.monotonic() - started)
+            write_jsonl(
+                errors_path,
+                {"endpoint": "workflow_list", "exception": repr(exc), "namespace": namespace},
+            )
+
+        time.sleep(0.2)
+
+
+def health_probe_loop(
+    stop_at: float,
+    base_url: str,
+    interval_seconds: float,
+    timeout_seconds: float,
+    endpoint_metrics: EndpointMetrics,
+    errors_path: Path,
+) -> None:
+    while time.monotonic() < stop_at:
+        for endpoint, expected_status in (("health", "serving"), ("ready", "ready")):
+            started = time.monotonic()
+            try:
+                status, body = http_json(
+                    "GET",
+                    f"{base_url}/api/{endpoint}",
+                    {},
+                    timeout_seconds=timeout_seconds,
+                )
+                endpoint_metrics.record(endpoint, status, time.monotonic() - started)
+                body_status = body.get("status") if isinstance(body, dict) else None
+                if status != 200 or body_status != expected_status:
+                    write_jsonl(
+                        errors_path,
+                        {"endpoint": endpoint, "status": status, "body": body},
+                    )
+            except Exception as exc:  # noqa: BLE001
+                endpoint_metrics.record_error(endpoint, time.monotonic() - started)
+                write_jsonl(errors_path, {"endpoint": endpoint, "exception": repr(exc)})
+
+        time.sleep(max(0.05, interval_seconds))
+
+
+def composer_package_version(package_name: str) -> str | None:
+    lock_path = Path(__file__).resolve().parents[2] / "composer.lock"
+    try:
+        lock = json.loads(lock_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+
+    for package in lock.get("packages", []):
+        if isinstance(package, dict) and package.get("name") == package_name:
+            version = package.get("version")
+            return version if isinstance(version, str) and version else None
+
+    return None
+
+
+def artifact_versions(base_url: str, token: str, namespace: str) -> dict[str, str | None]:
+    server_version = os.environ.get("DW_PERF_SERVER_VERSION")
+    try:
+        status, body = http_json(
+            "GET",
+            f"{base_url}/api/cluster/info",
+            auth_headers(token, namespace),
+        )
+        if status == 200 and isinstance(body, dict) and isinstance(body.get("version"), str):
+            server_version = body["version"]
+    except Exception:  # noqa: BLE001
+        pass
+
+    return {
+        "cli": os.environ.get("DW_PERF_CLI_VERSION"),
+        "sdk-python": os.environ.get("DW_PERF_SDK_PYTHON_VERSION"),
+        "server": server_version,
+        "workflow": os.environ.get("DW_PERF_WORKFLOW_VERSION")
+        or composer_package_version("durable-workflow/workflow"),
+        "waterline": os.environ.get("DW_PERF_WATERLINE_VERSION"),
+    }
 
 
 def memory_slope_mb_hour(samples: list[dict[str, Any]]) -> float | None:
@@ -860,6 +1096,7 @@ def main() -> int:
             path.unlink()
 
     metrics = Metrics()
+    endpoint_metrics = EndpointMetrics()
     metrics_server = start_metrics_server(metrics, args.metrics_port)
     base_url = args.base_url.rstrip("/")
     started_at = datetime.now(timezone.utc)
@@ -874,6 +1111,7 @@ def main() -> int:
         queues = [f"perf-queue-{index:03d}" for index in range(max(1, args.task_queues))]
         create_namespaces(base_url, args.token, namespaces)
         workers = register_workers(base_url, args.token, namespaces, queues)
+        resolved_artifact_versions = artifact_versions(base_url, args.token, namespaces[0])
         emit_progress(
             f"registered {len(workers)} workers across {len(namespaces)} namespaces and {len(queues)} task queues"
         )
@@ -886,13 +1124,63 @@ def main() -> int:
         expected_periodic_samples = max(1, math.floor(args.duration_seconds / sample_interval))
         emit_progress(
             f"starting load for {args.duration_seconds}s with concurrency={args.concurrency} "
-            f"and sample_interval={sample_interval}s"
+            f"workflow_runs={args.workflow_runs} and sample_interval={sample_interval}s"
         )
 
-        with ThreadPoolExecutor(max_workers=max(1, args.concurrency)) as executor:
+        growth_workers = max(1, args.start_concurrency) + 2 if args.workflow_runs > 0 else 0
+        with ThreadPoolExecutor(max_workers=max(1, args.concurrency) + growth_workers) as executor:
             for index in range(max(1, args.concurrency)):
                 futures.append(
-                    executor.submit(worker_loop, stop_at, base_url, args.token, workers, metrics, errors_path, index)
+                    executor.submit(
+                        worker_loop,
+                        stop_at,
+                        base_url,
+                        args.token,
+                        workers,
+                        metrics,
+                        endpoint_metrics,
+                        errors_path,
+                        index,
+                    )
+                )
+
+            if args.workflow_runs > 0:
+                for index in range(max(1, args.start_concurrency)):
+                    futures.append(
+                        executor.submit(
+                            workflow_start_loop,
+                            stop_at,
+                            base_url,
+                            args.token,
+                            workers,
+                            args.workflow_runs,
+                            max(1, args.start_concurrency),
+                            index,
+                            endpoint_metrics,
+                            errors_path,
+                        )
+                    )
+                futures.append(
+                    executor.submit(
+                        workflow_list_loop,
+                        stop_at,
+                        base_url,
+                        args.token,
+                        namespaces,
+                        endpoint_metrics,
+                        errors_path,
+                    )
+                )
+                futures.append(
+                    executor.submit(
+                        health_probe_loop,
+                        stop_at,
+                        base_url,
+                        args.health_interval_seconds,
+                        args.max_health_latency_seconds,
+                        endpoint_metrics,
+                        errors_path,
+                    )
                 )
 
             next_sample = time.monotonic()
@@ -953,6 +1241,8 @@ def main() -> int:
         final_pattern_polling_keys = int(final_sample.get("redis_polling_keys") or 0)
         final_server_cache_keys = int(final_sample.get("redis_server_keys") or 0)
         final_redis_db_keys = int(final_sample.get("redis_db_keys") or 0)
+        final_workflow_runs = int(final_sample.get("mysql_workflow_runs") or 0)
+        final_ready_tasks = int(final_sample.get("mysql_ready_tasks") or 0)
         final_server_cache_keys_by_policy = {
             policy_id: int((final_sample.get("redis_server_keys_by_policy") or {}).get(policy_id) or 0)
             for policy_id in SERVER_CACHE_KEY_PATTERNS
@@ -967,6 +1257,7 @@ def main() -> int:
         sample_count = len(samples)
         observed_sample_coverage = periodic_sample_count / expected_samples
         sampling_health = sample_health(samples, args.compose_project)
+        request_availability = endpoint_metrics.snapshot()
 
         provenance = evidence_provenance(base_url, args.compose_project)
 
@@ -984,6 +1275,8 @@ def main() -> int:
             "duration_seconds": args.duration_seconds,
             "elapsed_seconds": round(elapsed_seconds, 2),
             "concurrency": args.concurrency,
+            "workflow_runs_target": args.workflow_runs,
+            "start_concurrency": args.start_concurrency,
             "namespaces": len(namespaces),
             "task_queues": len(queues),
             "sample_interval_seconds": args.sample_interval_seconds,
@@ -1005,9 +1298,12 @@ def main() -> int:
             "final_server_cache_keys": final_server_cache_keys,
             "final_server_cache_keys_by_policy": final_server_cache_keys_by_policy,
             "final_redis_db_keys": final_redis_db_keys,
+            "final_workflow_runs": final_workflow_runs,
+            "final_ready_tasks": final_ready_tasks,
             "polling_observation_status": polling_observation_status,
             "server_memory_slope_mb_hour": None if slope is None else round(slope, 2),
             "sampling_health": sampling_health,
+            "request_availability": request_availability,
             "assertions": {
                 "max_server_memory_mb": args.max_server_memory_mb,
                 "max_polling_keys": args.max_polling_keys,
@@ -1018,11 +1314,13 @@ def main() -> int:
                 "max_final_server_cache_keys_by_policy": args.max_final_server_cache_keys_by_policy,
                 "max_server_memory_slope_mb_hour": args.max_server_memory_slope_mb_hour,
                 "min_sample_coverage": args.min_sample_coverage,
+                "max_health_latency_seconds": args.max_health_latency_seconds,
                 "require_trusted_evidence": args.require_trusted_evidence,
             },
             "evidence": {
                 "started_at": started_at.isoformat().replace("+00:00", "Z"),
                 "finished_at": finished_at.isoformat().replace("+00:00", "Z"),
+                "artifact_versions": resolved_artifact_versions,
                 "provenance": provenance,
             },
         }
@@ -1030,6 +1328,37 @@ def main() -> int:
         failures = []
         if metrics.errors > 0:
             failures.append(f"{metrics.errors} load-generator errors")
+        if args.workflow_runs > 0:
+            start_results = request_availability.get("workflow_start", {})
+            if int(start_results.get("successful") or 0) < args.workflow_runs:
+                failures.append(
+                    f"workflow growth target incomplete: expected {args.workflow_runs} successful starts "
+                    f"but observed {start_results.get('successful', 0)}"
+                )
+            if args.compose_project and final_workflow_runs < args.workflow_runs:
+                failures.append(
+                    f"workflow run cardinality below target: expected at least {args.workflow_runs} "
+                    f"but sampled {final_workflow_runs}"
+                )
+
+            for endpoint in ("health", "ready", "workflow_list", "worker_poll"):
+                result = request_availability.get(endpoint, {})
+                if int(result.get("requests") or 0) == 0:
+                    failures.append(f"{endpoint} availability was not sampled during workflow growth")
+                elif float(result.get("availability") or 0.0) < 1.0:
+                    failures.append(
+                        f"{endpoint} availability fell below 1.0 "
+                        f"(observed {result.get('availability')})"
+                    )
+
+            for endpoint in ("health", "ready"):
+                result = request_availability.get(endpoint, {})
+                observed_latency = float((result.get("latency_seconds") or {}).get("max") or 0.0)
+                if observed_latency > args.max_health_latency_seconds:
+                    failures.append(
+                        f"{endpoint} latency exceeded {args.max_health_latency_seconds}s "
+                        f"(observed {observed_latency}s)"
+                    )
         if periodic_sample_count < min_samples:
             failures.append(
                 f"sample coverage below trusted minimum {min_samples} "

@@ -49,7 +49,7 @@ final class RemoteScheduleStarter implements ScheduleWorkflowStarter
 
         $schedule = $freshSchedule;
 
-        $workflowStatus = $this->readiness->workflowStatus();
+        $workflowStatus = $this->readiness->bootstrapStatus();
         $blockedBy = is_array($workflowStatus['blocked_by'] ?? null)
             ? array_values(array_filter($workflowStatus['blocked_by'], static fn (mixed $value): bool => is_string($value) && $value !== ''))
             : [];
