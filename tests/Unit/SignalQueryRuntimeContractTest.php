@@ -302,7 +302,7 @@ class SignalQueryRuntimeContractTest extends TestCase
         $resultGate = SignalQueryRuntimeContract::manifest()['result_gate'];
 
         $this->assertSame(SignalQueryRuntimeResultGate::SCHEMA, $resultGate['schema']);
-        $this->assertSame(24, SignalQueryRuntimeResultGate::VERSION);
+        $this->assertSame(25, SignalQueryRuntimeResultGate::VERSION);
         $this->assertSame(SignalQueryRuntimeResultGate::VERSION, $resultGate['version']);
         $this->assertSame(
             SignalQueryRuntimeContract::RESULT_SCHEMA,
@@ -525,6 +525,7 @@ class SignalQueryRuntimeContractTest extends TestCase
                 'workflow_php_artifact_source',
                 'workflow_php_sdk_version',
                 'php_worker_query_task_routing',
+                'routed_current_query_task',
                 'cli_signal_and_query',
                 'workflow_php_signal_and_query',
                 'immediate_repeat_query_consistency',
@@ -2212,14 +2213,21 @@ def fake_cli_json_sample(cli_bin, base_url, token, namespace, args, log_file):
     raise AssertionError(f"unexpected CLI args {args}")
 
 def fake_wait_for_php_query_route_evidence(query_route_evidence_path, workflow_id, worker_id):
-    return {
-        "status": "pass",
-        "worker_runtime": "workflow-php",
-        "worker_id": worker_id,
-        "workflow_id": workflow_id,
-        "run_id": "run-php-baseline",
-        "query_name": "current",
-    }
+	    return {
+	        "status": "pass",
+	        "worker_runtime": "workflow-php",
+	        "worker_id": worker_id,
+	        "task_queue": "signals-queries-workflow-php-test",
+	        "query_task_id": "query-task-php-current",
+	        "query_task_attempt": 1,
+	        "workflow_id": workflow_id,
+	        "run_id": "run-php-baseline",
+	        "workflow_type": "conformance.counter.php",
+	        "query_name": "current",
+	        "lease_owner": worker_id,
+	        "server_route": "worker_query_task_poll",
+	        "completion_route": "worker_query_task_complete",
+	    }
 
 globals()["php_docker_command"] = fake_php_docker_command
 globals()["run_command"] = fake_run_command
@@ -5154,6 +5162,48 @@ PY);
         );
     }
 
+    public function test_result_gate_rejects_php_baseline_pass_without_routed_current_query_task(): void
+    {
+        $result = $this->completeSignalQueryResult();
+        unset($result['scenario_results']['php_worker_cli_and_sdk_baseline']['observed_outputs']['routed_current_query_task']);
+
+        $evaluation = SignalQueryRuntimeResultGate::evaluate($result);
+
+        $this->assertSame('non_passing', $evaluation['status']);
+        $this->assertContains(
+            'php_worker_baseline_current_query_not_routed',
+            array_column($evaluation['gate_failures'], 'code'),
+        );
+    }
+
+    public function test_result_gate_rejects_php_baseline_pass_with_python_routed_current_query_task(): void
+    {
+        $result = $this->completeSignalQueryResult();
+        $result['scenario_results']['php_worker_cli_and_sdk_baseline']['observed_outputs'][
+            'routed_current_query_task'
+        ] = $this->routedCurrentQueryTaskEvidence([
+            'workflow_id' => 'wf-php-baseline',
+            'run_id' => 'run-php-baseline',
+            'task_queue' => 'signals-queries-workflow-php',
+            'worker_id' => 'signals-queries-workflow-php-worker',
+            'lease_owner' => 'signals-queries-workflow-php-worker',
+        ]);
+
+        $evaluation = SignalQueryRuntimeResultGate::evaluate($result);
+
+        $this->assertSame('non_passing', $evaluation['status']);
+        $this->assertContains(
+            [
+                'code' => 'php_worker_baseline_current_query_not_routed',
+                'scenario_id' => 'php_worker_cli_and_sdk_baseline',
+                'field' => 'routed_current_query_task.worker_runtime',
+                'expected' => 'workflow-php',
+                'actual' => 'sdk-python',
+            ],
+            $evaluation['gate_failures'],
+        );
+    }
+
     public function test_result_gate_rejects_forbidden_sources_reported_in_section_evidence(): void
     {
         $result = $this->completeSignalQueryResult();
@@ -5733,6 +5783,15 @@ PY);
             'workflow_php_artifact_source' => 'published_composer_package',
             'workflow_php_sdk_version' => '2.0.0-alpha.161',
             'php_worker_query_task_routing' => true,
+            'routed_current_query_task' => $this->routedCurrentQueryTaskEvidence([
+                'worker_runtime' => 'workflow-php',
+                'workflow_id' => 'wf-php-baseline',
+                'run_id' => 'run-php-baseline',
+                'task_queue' => 'signals-queries-workflow-php',
+                'worker_id' => 'signals-queries-workflow-php-worker',
+                'lease_owner' => 'signals-queries-workflow-php-worker',
+                'observed_via' => 'workflow-php worker query task executor',
+            ]),
             'cli_signal_and_query' => true,
             'workflow_php_signal_and_query' => true,
             'immediate_repeat_query_consistency' => true,

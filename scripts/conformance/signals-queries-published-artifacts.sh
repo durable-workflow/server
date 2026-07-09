@@ -2239,7 +2239,7 @@ def load_query_route_records(path: Path) -> list[dict[str, Any]]:
     return records
 
 
-def routed_current_query_task_satisfied(value: Any) -> bool:
+def routed_current_query_task_satisfied(value: Any, expected_runtime: str = "sdk-python") -> bool:
     if not isinstance(value, dict):
         return False
 
@@ -2273,7 +2273,7 @@ def routed_current_query_task_satisfied(value: Any) -> bool:
     except (TypeError, ValueError):
         return False
 
-    return attempt >= 1 and str(value.get("worker_runtime")) == "sdk-python"
+    return attempt >= 1 and str(value.get("worker_runtime")) == expected_runtime
 
 
 def routed_current_query_task_matches(
@@ -5473,6 +5473,19 @@ def run_workflow_php_baseline(
             and sample_result_value(cli_query) == 3
         )
 
+        routed_query = wait_for_php_query_route_evidence(
+            query_route_evidence_path,
+            workflow_id=workflow_id,
+            worker_id=worker_id,
+        )
+        routed_query = {
+            **routed_query,
+            "public_query_surface": "cli",
+        }
+        outputs["routed_current_query_task"] = routed_query
+        outputs["php_routed_current_query_task"] = routed_query
+        outputs["php_worker_query_task_routing"] = True
+
         php_signal = php_workflow_client_sample(
             workflow_php_project,
             base_url,
@@ -5535,14 +5548,6 @@ def run_workflow_php_baseline(
         outputs["immediate_repeat_query_consistency"] = (
             sample_result_value(repeat_query) == sample_result_value(php_query)
         )
-
-        routed_query = wait_for_php_query_route_evidence(
-            query_route_evidence_path,
-            workflow_id=workflow_id,
-            worker_id=worker_id,
-        )
-        outputs["php_routed_current_query_task"] = routed_query
-        outputs["php_worker_query_task_routing"] = True
 
         if python_bin is not None:
             cross_language_outputs = run_php_worker_python_and_cli_clients(
@@ -8090,6 +8095,7 @@ SCENARIO_REQUIRED_EVIDENCE: dict[str, list[str]] = {
         "workflow_php_artifact_source",
         "workflow_php_sdk_version",
         "php_worker_query_task_routing",
+        "routed_current_query_task",
         "cli_signal_and_query",
         "workflow_php_signal_and_query",
         "immediate_repeat_query_consistency",
@@ -8513,6 +8519,10 @@ def has_required_evidence(scenario: str, observed: dict[str, Any]) -> bool:
     if scenario == "php_worker_cli_and_sdk_baseline":
         return (
             workflow_php_worker_claim_satisfied(observed)
+            and routed_current_query_task_satisfied(
+                evidence_lookup(observed, "routed_current_query_task"),
+                expected_runtime="workflow-php",
+            )
             and all(
                 required_evidence_satisfied(evidence_key, evidence_lookup(observed, evidence_key))
                 for evidence_key in SCENARIO_REQUIRED_EVIDENCE[scenario]
@@ -9192,6 +9202,11 @@ def missing_current_evidence_for(scenario: str, observed: dict[str, Any]) -> lis
             )
         ):
             missing.append("workflow_php_sdk_version")
+        if not routed_current_query_task_satisfied(
+            evidence_lookup(observed, "routed_current_query_task"),
+            expected_runtime="workflow-php",
+        ):
+            missing.append("routed_current_query_task")
         return unique_strings(missing)
 
     if scenario == "ordered_signal_delivery":
@@ -9829,6 +9844,7 @@ scenario_routes = {
             "start Counter on the PHP worker",
             "verify CLI and PHP SDK signals update query-visible state",
             "record PHP handler and query evidence using published artifacts",
+            "record a routed current query task from the public CLI through the server to the PHP worker",
         ],
     },
     "python_worker_php_facing_and_cli_clients": {

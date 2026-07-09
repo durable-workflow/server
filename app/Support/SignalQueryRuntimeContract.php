@@ -528,6 +528,7 @@ final class SignalQueryRuntimeContract
                             'workflow_php_artifact_source',
                             'workflow_php_sdk_version',
                             'php_worker_query_task_routing',
+                            'routed_current_query_task',
                             'cli_signal_and_query',
                             'workflow_php_signal_and_query',
                             'immediate_repeat_query_consistency',

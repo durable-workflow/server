@@ -10,7 +10,7 @@ final class SignalQueryRuntimeResultGate
 {
     public const SCHEMA = 'durable-workflow.v2.signal-query-runtime.result-gate';
 
-    public const VERSION = 24;
+    public const VERSION = 25;
 
     private const EVIDENCE_SECTION_SCENARIOS = [
         'replay_timing' => [
@@ -106,6 +106,7 @@ final class SignalQueryRuntimeResultGate
                 'python_worker_baseline_route_evidence_status_is_pass_or_completed',
                 'php_worker_baseline_identifies_a_published_workflow_php_worker',
                 'php_worker_baseline_version_matches_run_tuple',
+                'php_worker_baseline_route_evidence_status_is_pass_or_completed',
                 'replay_timing_timestamps_are_ordered',
                 'terminal_run_status_codes_and_reasons_are_typed',
                 'terminal_run_result_and_history_are_unchanged_after_operations',
@@ -494,6 +495,18 @@ final class SignalQueryRuntimeResultGate
                 'expected_version' => $expectedVersion,
             ];
         }
+
+        array_push(
+            $failures,
+            ...self::routedCurrentQueryTaskFailures(
+                $result,
+                $scenarioResult,
+                $scenarioId,
+                expectedRuntime: 'workflow-php',
+                failureCode: 'php_worker_baseline_current_query_not_routed',
+                mismatchCode: 'php_worker_baseline_current_query_route_mismatch',
+            ),
+        );
 
         return $failures;
     }
@@ -1745,7 +1758,14 @@ final class SignalQueryRuntimeResultGate
 
         array_push(
             $failures,
-            ...self::routedCurrentQueryTaskFailures($result, $scenarioResult, $scenarioId),
+            ...self::routedCurrentQueryTaskFailures(
+                $result,
+                $scenarioResult,
+                $scenarioId,
+                expectedRuntime: 'sdk-python',
+                failureCode: 'python_worker_baseline_current_query_not_routed',
+                mismatchCode: 'python_worker_baseline_current_query_route_mismatch',
+            ),
         );
 
         return $failures;
@@ -1761,6 +1781,9 @@ final class SignalQueryRuntimeResultGate
         array $result,
         array $scenarioResult,
         string $scenarioId,
+        string $expectedRuntime,
+        string $failureCode,
+        string $mismatchCode,
     ): array {
         $route = self::arrayEvidenceValue(
             $result,
@@ -1772,7 +1795,7 @@ final class SignalQueryRuntimeResultGate
         if ($route === null) {
             return [
                 [
-                    'code' => 'python_worker_baseline_current_query_not_routed',
+                    'code' => $failureCode,
                     'scenario_id' => $scenarioId,
                     'field' => 'routed_current_query_task',
                     'reason' => 'missing_route_metadata',
@@ -1784,7 +1807,7 @@ final class SignalQueryRuntimeResultGate
         $status = strtolower(trim(self::stringValue($route['status'] ?? null)));
         if (! in_array($status, ['pass', 'completed'], true)) {
             $failures[] = [
-                'code' => 'python_worker_baseline_current_query_not_routed',
+                'code' => $failureCode,
                 'scenario_id' => $scenarioId,
                 'field' => 'routed_current_query_task.status',
                 'expected' => ['pass', 'completed'],
@@ -1794,7 +1817,7 @@ final class SignalQueryRuntimeResultGate
 
         foreach ([
             'query_name' => 'current',
-            'worker_runtime' => 'sdk-python',
+            'worker_runtime' => $expectedRuntime,
             'public_query_surface' => 'cli',
             'server_route' => 'worker_query_task_poll',
             'completion_route' => 'worker_query_task_complete',
@@ -1805,7 +1828,7 @@ final class SignalQueryRuntimeResultGate
             }
 
             $failures[] = [
-                'code' => 'python_worker_baseline_current_query_not_routed',
+                'code' => $failureCode,
                 'scenario_id' => $scenarioId,
                 'field' => 'routed_current_query_task.'.$field,
                 'expected' => $expected,
@@ -1827,7 +1850,7 @@ final class SignalQueryRuntimeResultGate
             }
 
             $failures[] = [
-                'code' => 'python_worker_baseline_current_query_not_routed',
+                'code' => $failureCode,
                 'scenario_id' => $scenarioId,
                 'field' => 'routed_current_query_task.'.$field,
                 'reason' => 'missing_public_task_metadata',
@@ -1837,7 +1860,7 @@ final class SignalQueryRuntimeResultGate
         $attempt = self::integerValue($route['query_task_attempt'] ?? null);
         if ($attempt === null || $attempt < 1) {
             $failures[] = [
-                'code' => 'python_worker_baseline_current_query_not_routed',
+                'code' => $failureCode,
                 'scenario_id' => $scenarioId,
                 'field' => 'routed_current_query_task.query_task_attempt',
                 'reason' => 'missing_public_task_attempt',
@@ -1861,7 +1884,7 @@ final class SignalQueryRuntimeResultGate
             }
 
             $failures[] = [
-                'code' => 'python_worker_baseline_current_query_route_mismatch',
+                'code' => $mismatchCode,
                 'scenario_id' => $scenarioId,
                 'field' => 'routed_current_query_task.'.$field,
                 'expected' => $expected,
