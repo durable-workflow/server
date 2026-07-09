@@ -159,12 +159,26 @@ final class LongPollWaitSlotStore
 
     private function availableNonReservedPhpServerWorkers(int $phpServerWorkers): int
     {
-        return max(0, $phpServerWorkers - $this->reservedHttpWorkers());
+        return max(0, $phpServerWorkers - $this->reservedHttpWorkers($phpServerWorkers));
     }
 
-    private function reservedHttpWorkers(): int
+    private function reservedHttpWorkers(int $phpServerWorkers): int
     {
-        return max(0, (int) config('server.polling.reserved_http_workers', 2));
+        $configured = config('server.polling.reserved_http_workers');
+
+        if (is_numeric($configured)) {
+            return max(0, (int) $configured);
+        }
+
+        if ($phpServerWorkers <= 0) {
+            return 0;
+        }
+
+        if ($phpServerWorkers <= 2) {
+            return 1;
+        }
+
+        return max(2, intdiv($phpServerWorkers, 2));
     }
 
     private function slotKey(int $slot, string $pool): string

@@ -229,10 +229,10 @@ return [
             'WORKFLOW_SERVER_WORKER_LONG_POLL_MAX_CONCURRENT',
             null,
         ),
-        'reserved_http_workers' => (int) EnvAuditor::env(
+        'reserved_http_workers' => EnvAuditor::env(
             'DW_WORKER_LONG_POLL_RESERVED_HTTP_WORKERS',
             'WORKFLOW_SERVER_WORKER_LONG_POLL_RESERVED_HTTP_WORKERS',
-            2,
+            null,
         ),
         'max_tasks_per_poll' => (int) EnvAuditor::env('DW_MAX_TASKS_PER_POLL', 'WORKFLOW_SERVER_MAX_TASKS_PER_POLL', 1),
         'sqlite_claim_lock_ttl_seconds' => (int) EnvAuditor::env(

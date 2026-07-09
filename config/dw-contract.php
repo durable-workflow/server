@@ -249,14 +249,14 @@ return [
             'legacy' => 'WORKFLOW_SERVER_WAKE_SIGNAL_TTL_SECONDS',
         ],
         'DW_WORKER_LONG_POLL_MAX_CONCURRENT' => [
-            'description' => 'Optional cap for concurrent held workflow/activity worker long-poll waits on this server node. Query-task polls use their own wait budget so live workflow queries are not starved by idle workflow/activity waits. Unset derives from PHP_CLI_SERVER_WORKERS minus DW_WORKER_LONG_POLL_RESERVED_HTTP_WORKERS, the derived query-task poll wait budget, and an additional API worker reserve when the standalone CLI server declares a worker count.',
+            'description' => 'Optional cap for concurrent held workflow/activity worker long-poll waits on this server node. Query-task polls use their own wait budget so live workflow queries are not starved by idle workflow/activity waits. Unset derives from PHP_CLI_SERVER_WORKERS minus the configured or derived HTTP worker reserve, the derived query-task poll wait budget, and an additional API worker reserve when the standalone CLI server declares a worker count.',
             'default' => '(unset; derived for PHP_CLI_SERVER_WORKERS)',
             'since' => '2.0.0',
             'legacy' => 'WORKFLOW_SERVER_WORKER_LONG_POLL_MAX_CONCURRENT',
         ],
         'DW_WORKER_LONG_POLL_RESERVED_HTTP_WORKERS' => [
-            'description' => 'Number of PHP CLI server workers reserved for health and control-plane requests when deriving the workflow/activity long-poll wait cap.',
-            'default' => '2',
+            'description' => 'Optional number of PHP CLI server workers reserved for health and control-plane requests when deriving the workflow/activity long-poll wait cap. Unset derives a reserve from PHP_CLI_SERVER_WORKERS, keeping at least half of declared standalone CLI server workers outside held long-poll waits.',
+            'default' => '(unset; derived from PHP_CLI_SERVER_WORKERS)',
             'since' => '2.0.0',
             'legacy' => 'WORKFLOW_SERVER_WORKER_LONG_POLL_RESERVED_HTTP_WORKERS',
         ],

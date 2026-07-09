@@ -17,6 +17,7 @@ class LongPollWaitSlotStoreTest extends TestCase
         config([
             'cache.default' => 'array',
             'server.polling.max_concurrent_waits' => 2,
+            'server.polling.reserved_http_workers' => null,
             'server.query_tasks.max_concurrent_poll_waits' => null,
         ]);
     }
@@ -106,6 +107,32 @@ class LongPollWaitSlotStoreTest extends TestCase
         }
     }
 
+    public function test_unset_http_reserve_derives_from_php_cli_server_workers(): void
+    {
+        $previous = getenv('PHP_CLI_SERVER_WORKERS');
+        putenv('PHP_CLI_SERVER_WORKERS=8');
+
+        config([
+            'server.polling.max_concurrent_waits' => null,
+            'server.polling.reserved_http_workers' => null,
+            'server.query_tasks.max_concurrent_poll_waits' => null,
+        ]);
+
+        try {
+            /** @var LongPollWaitSlotStore $slots */
+            $slots = app(LongPollWaitSlotStore::class);
+
+            $this->assertSame(2, $slots->maxConcurrentWaits());
+            $this->assertSame(1, $slots->maxConcurrentQueryTaskPollWaits());
+        } finally {
+            if ($previous === false) {
+                putenv('PHP_CLI_SERVER_WORKERS');
+            } else {
+                putenv('PHP_CLI_SERVER_WORKERS='.$previous);
+            }
+        }
+    }
+
     public function test_query_task_poll_slots_are_separate_from_worker_slots(): void
     {
         config([
@@ -172,7 +199,7 @@ class LongPollWaitSlotStoreTest extends TestCase
 
         config([
             'server.polling.max_concurrent_waits' => null,
-            'server.polling.reserved_http_workers' => 2,
+            'server.polling.reserved_http_workers' => null,
             'server.query_tasks.max_concurrent_poll_waits' => null,
         ]);
 
@@ -180,7 +207,7 @@ class LongPollWaitSlotStoreTest extends TestCase
             /** @var LongPollWaitSlotStore $slots */
             $slots = app(LongPollWaitSlotStore::class);
 
-            $this->assertSame(18, $slots->maxConcurrentWaits());
+            $this->assertSame(9, $slots->maxConcurrentWaits());
             $this->assertSame(2, $slots->maxConcurrentQueryTaskPollWaits());
         } finally {
             if ($previous === false) {
