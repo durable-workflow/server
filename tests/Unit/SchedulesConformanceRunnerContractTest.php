@@ -65,6 +65,28 @@ final class SchedulesConformanceRunnerContractTest extends TestCase
         $this->assertStringNotContainsString("'result' => json_encode(\$completeResult, JSON_THROW_ON_ERROR)", $workerShard);
     }
 
+    public function test_cross_language_schedules_stay_visible_after_first_fire(): void
+    {
+        $repoRoot = dirname(__DIR__, 2);
+        $runner = (string) file_get_contents($repoRoot.'/scripts/conformance/schedules-published-artifacts.mjs');
+        $workerStart = strpos($runner, 'function schedulesPythonWorkerScript()');
+        $workerEnd = strpos($runner, 'function apiRequest(', $workerStart ?: 0);
+
+        $this->assertIsInt($workerStart);
+        $this->assertIsInt($workerEnd);
+        $crossLanguageShard = substr($runner, $workerStart, $workerEnd - $workerStart);
+
+        $this->assertStringContainsString(
+            'const scheduleMaxRuns = Math.max(2, positiveInt(process.env.DW_SCHEDULES_CROSS_LANGUAGE_MAX_RUNS, 2));',
+            $runner,
+        );
+        $this->assertStringContainsString('schedule_max_runs: scheduleMaxRuns', $runner);
+        $this->assertStringContainsString('max_runs=max(2, int(payload.get("schedule_max_runs") or 2))', $crossLanguageShard);
+        $this->assertStringContainsString("'max_runs' => max(2, (int) (\$payload['schedule_max_runs'] ?? 2))", $crossLanguageShard);
+        $this->assertStringNotContainsString('max_runs=1', $crossLanguageShard);
+        $this->assertStringNotContainsString("'max_runs' => 1", $crossLanguageShard);
+    }
+
     public function test_cross_language_worker_poll_failures_retain_action_diagnostics(): void
     {
         $repoRoot = dirname(__DIR__, 2);

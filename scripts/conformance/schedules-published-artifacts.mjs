@@ -5950,6 +5950,7 @@ async function runCrossLanguageShard({ startedAt, artifactVersions, artifactSour
   const interval = stringValue(process.env.DW_SCHEDULES_CROSS_LANGUAGE_INTERVAL) || 'PT30S';
   const timeoutSeconds = positiveInt(process.env.DW_SCHEDULES_CROSS_LANGUAGE_TIMEOUT_SECONDS, 150);
   const schedulerTickSeconds = positiveInt(process.env.DW_SCHEDULES_CROSS_LANGUAGE_SCHEDULER_TICK_SECONDS, 2);
+  const scheduleMaxRuns = Math.max(2, positiveInt(process.env.DW_SCHEDULES_CROSS_LANGUAGE_MAX_RUNS, 2));
   const phpWorkflowType = 'SchedulesConformancePhpWorkflow';
   const pythonWorkflowType = 'SchedulesConformancePythonWorkflow';
   const pythonCreatedPhpScheduleId = `${runId}-python-created-php`;
@@ -6039,6 +6040,7 @@ async function runCrossLanguageShard({ startedAt, artifactVersions, artifactSour
           schedule_id: pythonCreatedPhpScheduleId,
           workflow_type: phpWorkflowType,
           interval,
+          schedule_max_runs: scheduleMaxRuns,
           input: {
             scenario: 'python_created_php_workflow',
             schedule_creator: 'sdk-python',
@@ -6056,6 +6058,7 @@ async function runCrossLanguageShard({ startedAt, artifactVersions, artifactSour
           schedule_id: phpCreatedPythonScheduleId,
           workflow_type: pythonWorkflowType,
           interval,
+          schedule_max_runs: scheduleMaxRuns,
           input: {
             scenario: 'php_created_python_workflow',
             schedule_creator: 'workflow-php-sdk',
@@ -6110,6 +6113,7 @@ async function runCrossLanguageShard({ startedAt, artifactVersions, artifactSour
         pythonCreatedPhp: pythonCreatedPhpScheduleId,
         phpCreatedPython: phpCreatedPythonScheduleId,
       },
+      scheduleMaxRuns,
       workers: {
         php: phpWorkerId,
         python: pythonWorkerId,
@@ -6128,6 +6132,7 @@ async function runCrossLanguageShard({ startedAt, artifactVersions, artifactSour
       server_url: serverUrl,
       namespace,
       task_queue: taskQueue,
+      schedule_max_runs: scheduleMaxRuns,
       server_image: existingServerUrl === '' ? serverImage : null,
       compose_project: existingServerUrl === '' ? composeProject : null,
       cli_executable: cliPath || null,
@@ -6944,6 +6949,7 @@ function crossLanguageEvidenceFromObservations({
   phpCompletion,
   pythonCompletion,
   schedules,
+  scheduleMaxRuns,
   workers,
   focusedScenarios,
 }) {
@@ -7018,6 +7024,7 @@ function crossLanguageEvidenceFromObservations({
     topology: {
       namespace,
       task_queue: taskQueue,
+      schedule_max_runs: scheduleMaxRuns,
       run_id: runId,
       focused_scenarios: Array.from(focusedScenarios),
       worker_execution_mode: 'published_php_python_worker_protocol_clients',
@@ -8466,7 +8473,7 @@ async def run_action(client, payload, output_path):
             ),
             overlap_policy="allow_all",
             jitter_seconds=0,
-            max_runs=1,
+            max_runs=max(2, int(payload.get("schedule_max_runs") or 2)),
         )
         return {"action": "create_schedule", "schedule_id": handle.schedule_id}
     if payload["action"] == "poll_complete":
@@ -8587,7 +8594,7 @@ if ($payload['action'] === 'create_schedule') {
         [
             'overlap_policy' => 'allow_all',
             'jitter_seconds' => 0,
-            'max_runs' => 1,
+            'max_runs' => max(2, (int) ($payload['schedule_max_runs'] ?? 2)),
         ],
     );
     $result = ['action' => 'create_schedule', 'schedule_id' => $response['schedule_id'] ?? $payload['schedule_id'], 'response' => $response];
