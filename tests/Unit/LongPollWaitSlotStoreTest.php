@@ -84,7 +84,7 @@ class LongPollWaitSlotStoreTest extends TestCase
             /** @var LongPollWaitSlotStore $slots */
             $slots = app(LongPollWaitSlotStore::class);
 
-            $this->assertSame(4, $slots->maxConcurrentWaits());
+            $this->assertSame(2, $slots->maxConcurrentWaits());
             $this->assertSame(2, $slots->maxConcurrentQueryTaskPollWaits());
 
             $firstQuery = $slots->tryAcquireQueryTaskPoll(30);
@@ -154,8 +154,34 @@ class LongPollWaitSlotStoreTest extends TestCase
             /** @var LongPollWaitSlotStore $slots */
             $slots = app(LongPollWaitSlotStore::class);
 
-            $this->assertSame(3, $slots->maxConcurrentWaits());
+            $this->assertSame(1, $slots->maxConcurrentWaits());
             $this->assertSame(3, $slots->maxConcurrentQueryTaskPollWaits());
+        } finally {
+            if ($previous === false) {
+                putenv('PHP_CLI_SERVER_WORKERS');
+            } else {
+                putenv('PHP_CLI_SERVER_WORKERS='.$previous);
+            }
+        }
+    }
+
+    public function test_default_worker_poll_capacity_reserves_api_workers_under_large_cli_server_pools(): void
+    {
+        $previous = getenv('PHP_CLI_SERVER_WORKERS');
+        putenv('PHP_CLI_SERVER_WORKERS=32');
+
+        config([
+            'server.polling.max_concurrent_waits' => null,
+            'server.polling.reserved_http_workers' => 2,
+            'server.query_tasks.max_concurrent_poll_waits' => null,
+        ]);
+
+        try {
+            /** @var LongPollWaitSlotStore $slots */
+            $slots = app(LongPollWaitSlotStore::class);
+
+            $this->assertSame(18, $slots->maxConcurrentWaits());
+            $this->assertSame(2, $slots->maxConcurrentQueryTaskPollWaits());
         } finally {
             if ($previous === false) {
                 putenv('PHP_CLI_SERVER_WORKERS');

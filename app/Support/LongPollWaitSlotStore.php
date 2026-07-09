@@ -38,7 +38,7 @@ final class LongPollWaitSlotStore
 
         $available = $this->availableNonReservedPhpServerWorkers($phpServerWorkers);
 
-        return max(0, $available - $this->queryTaskPollWaitReservation($available));
+        return $this->defaultWorkerPollWaits($available, $this->queryTaskPollWaitReservation($available));
     }
 
     public function maxConcurrentQueryTaskPollWaits(): ?int
@@ -51,8 +51,9 @@ final class LongPollWaitSlotStore
         }
 
         $availableWorkers = $this->availableNonReservedPhpServerWorkers($phpServerWorkers);
+        $queryWaitReservation = $this->queryTaskPollWaitReservation($availableWorkers);
         $workerWaits = $this->configuredMaxConcurrentWaits()
-            ?? max(0, $availableWorkers - $this->queryTaskPollWaitReservation($availableWorkers));
+            ?? $this->defaultWorkerPollWaits($availableWorkers, $queryWaitReservation);
         $available = max(0, $availableWorkers - $workerWaits);
 
         if ($configured !== null) {
@@ -121,6 +122,19 @@ final class LongPollWaitSlotStore
         }
 
         return $this->defaultQueryTaskPollWaits($availableWorkers);
+    }
+
+    private function defaultWorkerPollWaits(int $availableWorkers, int $queryTaskPollWaits): int
+    {
+        if ($availableWorkers <= 0) {
+            return 0;
+        }
+
+        $controlPlaneReservation = $availableWorkers <= 2
+            ? 0
+            : max(1, intdiv($availableWorkers, 3));
+
+        return max(0, $availableWorkers - $queryTaskPollWaits - $controlPlaneReservation);
     }
 
     private function defaultQueryTaskPollWaits(int $availableWorkers): int
