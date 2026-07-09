@@ -488,7 +488,14 @@ class TaskQueueController
         );
         $configuredSlots = array_sum($slotCounts);
         $activeWorkerCount = count($activePollers);
-        $serverBudget = $this->admission->budget($namespace, $taskQueue, $taskKind);
+        // This operator endpoint intentionally pays for unbounded counts. The
+        // worker hot path omits them when no admission limit can use them.
+        $serverBudget = $this->admission->budget(
+            $namespace,
+            $taskQueue,
+            $taskKind,
+            includeUnboundedCounts: true,
+        );
 
         return [
             'budget_source' => $budgetSource,

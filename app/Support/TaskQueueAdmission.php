@@ -127,8 +127,17 @@ final class TaskQueueAdmission
      *     lock_supported: bool,
      *     status: string
      * }
+     *
+     * Counts without a corresponding configured limit are skipped by default
+     * because they cannot affect admission. Operator read surfaces may set
+     * $includeUnboundedCounts to retain complete observational counts.
      */
-    public function budget(string $namespace, string $taskQueue, string $taskKind): array
+    public function budget(
+        string $namespace,
+        string $taskQueue,
+        string $taskKind,
+        bool $includeUnboundedCounts = false,
+    ): array
     {
         $limit = $this->maxActiveLeasesPerQueue($namespace, $taskQueue, $taskKind);
         $namespaceLimit = $this->maxActiveLeasesPerNamespace($namespace, $taskQueue, $taskKind);
@@ -138,13 +147,28 @@ final class TaskQueueAdmission
         $budgetGroupDispatchLimit = $budgetGroup['value'] === null
             ? ['value' => null, 'source' => 'server.admission.queue_overrides']
             : $this->maxDispatchesPerMinutePerBudgetGroup($namespace, $taskQueue, $taskKind);
-        $activeLeases = $this->activeLeaseCount($namespace, $taskQueue, $taskKind);
-        $namespaceActiveLeases = $this->namespaceActiveLeaseCount($namespace, $taskKind);
-        $dispatchCount = $this->dispatchCountThisMinute($namespace, $taskQueue, $taskKind);
-        $namespaceDispatchCount = $this->namespaceDispatchCountThisMinute($namespace, $taskKind);
-        $budgetGroupDispatchCount = $budgetGroup['value'] === null
+
+        // Keep the default unlimited path free of storage reads. Pollers call
+        // budget() before every claim probe (and again when reporting an empty
+        // poll), so counting active leases when no corresponding limit exists
+        // makes unrelated queues repeatedly scan the growing task table for a
+        // value that cannot affect admission.
+        $activeLeases = ! $includeUnboundedCounts && $limit['value'] === null
             ? 0
-            : $this->budgetGroupDispatchCountThisMinute($namespace, $budgetGroup['value'], $taskKind);
+            : $this->activeLeaseCount($namespace, $taskQueue, $taskKind);
+        $namespaceActiveLeases = ! $includeUnboundedCounts && $namespaceLimit['value'] === null
+            ? 0
+            : $this->namespaceActiveLeaseCount($namespace, $taskKind);
+        $dispatchCount = ! $includeUnboundedCounts && $dispatchLimit['value'] === null
+            ? 0
+            : $this->dispatchCountThisMinute($namespace, $taskQueue, $taskKind);
+        $namespaceDispatchCount = ! $includeUnboundedCounts && $namespaceDispatchLimit['value'] === null
+            ? 0
+            : $this->namespaceDispatchCountThisMinute($namespace, $taskKind);
+        $budgetGroupDispatchCount = $budgetGroup['value'] === null
+            || (! $includeUnboundedCounts && $budgetGroupDispatchLimit['value'] === null)
+                ? 0
+                : $this->budgetGroupDispatchCountThisMinute($namespace, $budgetGroup['value'], $taskKind);
         $lockSupported = $this->cache->store()->getStore() instanceof LockProvider;
 
         return [

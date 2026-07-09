@@ -3,7 +3,9 @@
 namespace Tests\Feature;
 
 use App\Support\NamespaceWorkflowScope;
+use App\Support\TaskQueueAdmission;
 use Illuminate\Foundation\Testing\RefreshDatabase;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Queue;
 use Tests\Feature\Concerns\ServerTestHelpers;
 use Tests\Fixtures\ExternalGreetingWorkflow;
@@ -14,6 +16,69 @@ class TaskQueueAdmissionTest extends TestCase
 {
     use RefreshDatabase;
     use ServerTestHelpers;
+
+    public function test_unlimited_admission_budget_does_not_query_the_growing_task_table(): void
+    {
+        config([
+            'server.admission.workflow_tasks.max_active_leases_per_queue' => null,
+            'server.admission.workflow_tasks.max_active_leases_per_namespace' => null,
+            'server.admission.workflow_tasks.max_dispatches_per_minute' => null,
+            'server.admission.workflow_tasks.max_dispatches_per_minute_per_namespace' => null,
+            'server.admission.queue_overrides' => [],
+        ]);
+
+        $queries = [];
+        DB::listen(static function ($query) use (&$queries): void {
+            $queries[] = strtolower((string) $query->sql);
+        });
+
+        $budget = app(TaskQueueAdmission::class)->budget(
+            'default',
+            'unrelated-worker-queue',
+            TaskQueueAdmission::WORKFLOW_TASKS,
+        );
+
+        $this->assertSame('unlimited', $budget['status']);
+        $this->assertSame(0, $budget['active_lease_count']);
+        $this->assertSame(0, $budget['namespace_active_lease_count']);
+        $this->assertFalse(
+            collect($queries)->contains(
+                static fn (string $sql): bool => str_contains($sql, 'workflow_tasks'),
+            ),
+            "Unlimited admission must not scan workflow_tasks.\nQueries:\n".implode("\n", $queries),
+        );
+    }
+
+    public function test_dispatch_only_admission_budget_does_not_count_active_task_leases(): void
+    {
+        config([
+            'server.admission.workflow_tasks.max_active_leases_per_queue' => null,
+            'server.admission.workflow_tasks.max_active_leases_per_namespace' => null,
+            'server.admission.workflow_tasks.max_dispatches_per_minute' => 100,
+            'server.admission.workflow_tasks.max_dispatches_per_minute_per_namespace' => null,
+            'server.admission.queue_overrides' => [],
+        ]);
+
+        $queries = [];
+        DB::listen(static function ($query) use (&$queries): void {
+            $queries[] = strtolower((string) $query->sql);
+        });
+
+        $budget = app(TaskQueueAdmission::class)->budget(
+            'default',
+            'unrelated-worker-queue',
+            TaskQueueAdmission::WORKFLOW_TASKS,
+        );
+
+        $this->assertSame(0, $budget['active_lease_count']);
+        $this->assertSame(0, $budget['namespace_active_lease_count']);
+        $this->assertFalse(
+            collect($queries)->contains(
+                static fn (string $sql): bool => str_contains($sql, 'workflow_tasks'),
+            ),
+            "Dispatch-only admission must not count workflow task leases.\nQueries:\n".implode("\n", $queries),
+        );
+    }
 
     public function test_workflow_task_polls_respect_server_side_active_lease_caps(): void
     {
