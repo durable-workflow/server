@@ -111,6 +111,7 @@ class WorkflowController
 
         $hasMore = $workflows->count() > $pageSize;
         $page = $hasMore ? $workflows->slice(0, $pageSize)->values() : $workflows->values();
+        $page->load('searchAttributes');
 
         return ControlPlaneProtocol::jsonForRequest($request, [
             'workflows' => $page->map(fn ($summary) => [

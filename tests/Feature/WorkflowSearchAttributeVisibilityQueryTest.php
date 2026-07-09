@@ -4,6 +4,7 @@ namespace Tests\Feature;
 
 use App\Models\SearchAttributeDefinition;
 use Illuminate\Foundation\Testing\RefreshDatabase;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Queue;
 use Tests\Feature\Concerns\ServerTestHelpers;
 use Tests\Fixtures\AwaitApprovalWorkflow;
@@ -111,6 +112,33 @@ class WorkflowSearchAttributeVisibilityQueryTest extends TestCase
     public function test_workflow_list_query_filters_by_keyword_list_membership(): void
     {
         $this->assertSame(['wf-sa-non-vip', 'wf-sa-match'], $this->workflowIdsForQuery('tags = "urgent"'));
+    }
+
+    public function test_workflow_list_eager_loads_search_attributes_for_page(): void
+    {
+        DB::flushQueryLog();
+        DB::enableQueryLog();
+
+        $response = $this->getJson('/api/workflows?page_size=3', $this->apiHeaders());
+
+        $response->assertOk()
+            ->assertJsonPath('workflow_count', 3)
+            ->assertJsonPath('workflows.0.search_attributes.tags.0', 'urgent');
+
+        $searchAttributeQueries = collect(DB::getQueryLog())
+            ->filter(static fn (array $query): bool => str_contains(
+                strtolower((string) ($query['query'] ?? '')),
+                'workflow_search_attributes'
+            ))
+            ->count();
+
+        DB::disableQueryLog();
+
+        $this->assertSame(
+            1,
+            $searchAttributeQueries,
+            'Workflow list should hydrate search attributes for the page in one relation query.'
+        );
     }
 
     public function test_workflow_list_query_supports_in_and_not_boolean_predicates(): void
