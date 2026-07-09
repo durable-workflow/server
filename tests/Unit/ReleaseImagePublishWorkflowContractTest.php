@@ -101,8 +101,8 @@ class ReleaseImagePublishWorkflowContractTest extends TestCase
         $metadataScript = $this->read('scripts/ci/prepare-release-workflow-composer-metadata.php');
 
         foreach ([
-            'ARG WORKFLOW_PACKAGE_REF=2.0.0-alpha.250',
-            'ARG WORKFLOW_PACKAGE_COMMIT=cdb59bc5e27401be6749c893b28636a24b1f6530',
+            'ARG WORKFLOW_PACKAGE_REF=2.0.0-alpha.253',
+            'ARG WORKFLOW_PACKAGE_COMMIT=cda677d52d25f5a9dbe322c424661874a0483fc0',
             'prepare-release-workflow-composer-metadata.php',
             'composer update durable-workflow/workflow',
             'cp composer.json /tmp/release-composer.json',
@@ -189,7 +189,7 @@ class ReleaseImagePublishWorkflowContractTest extends TestCase
         $this->assertStringContainsString('python3 -m venv "$venv"', $activitiesRunner);
         $this->assertStringContainsString('"durable-workflow==${DW_PYTHON_SDK_VERSION}"', $activitiesRunner);
         $this->assertStringContainsString('run_python_activity_executor', $activitiesRunner);
-        $this->assertStringContainsString('activity_host_evidence missing passing ${requiredMode}/sdk-python cell', $activitiesRunner);
+        $this->assertStringContainsString('activity_host_evidence missing passing ${requiredMode}/${runtime} cell', $activitiesRunner);
 
         $baseOffset = strpos($dockerfile, 'FROM php:8.3-cli AS base');
         $pythonOffset = strpos($dockerfile, 'python3');
@@ -207,8 +207,8 @@ class ReleaseImagePublishWorkflowContractTest extends TestCase
 
     public function test_docker_build_docs_compose_and_ci_defaults_match_workflow_package_fallback(): void
     {
-        $fallback = '2.0.0-alpha.250';
-        $commit = 'cdb59bc5e27401be6749c893b28636a24b1f6530';
+        $fallback = '2.0.0-alpha.253';
+        $commit = 'cda677d52d25f5a9dbe322c424661874a0483fc0';
 
         foreach ([
             'Dockerfile',
@@ -237,8 +237,8 @@ class ReleaseImagePublishWorkflowContractTest extends TestCase
 
         $readme = $this->read('README.md');
 
-        $this->assertStringContainsString('WORKFLOW_PACKAGE_REF=2.0.0-alpha.250', $readme);
-        $this->assertStringContainsString('The Dockerfile clones the `durable-workflow/workflow` `2.0.0-alpha.250` tag', $readme);
+        $this->assertStringContainsString('WORKFLOW_PACKAGE_REF=2.0.0-alpha.253', $readme);
+        $this->assertStringContainsString('The Dockerfile clones the `durable-workflow/workflow` `2.0.0-alpha.253` tag', $readme);
         $this->assertStringContainsString('Composer package metadata', $readme);
         $this->assertStringNotContainsString('The Dockerfile clones the `durable-workflow/workflow` `2.0.0-alpha.200` tag', $readme);
         $this->assertStringNotContainsString('The image build fetches the `durable-workflow/workflow` `2.0.0-alpha.200`', $readme);
@@ -318,7 +318,7 @@ class ReleaseImagePublishWorkflowContractTest extends TestCase
         $this->assertStringContainsString('DOCS_RELEASE_AUDIT_HANDOFF', $auditor);
         $this->assertStringContainsString("schema: 'durable-workflow.docs.refresh-request'", $auditor);
         $this->assertStringContainsString("repository: 'durable-workflow.github.io'", $auditor);
-        $this->assertStringContainsString("refresh_command: 'npm run refresh:public-artifact-versions'", $auditor);
+        $this->assertStringContainsString("const refreshCommand = 'npm run refresh:public-artifact-versions';", $auditor);
         $this->assertStringContainsString('refresh_files: refreshFiles', $auditor);
         $this->assertStringContainsString("'static/quickstart-execution-contract.json'", $auditor);
         $this->assertStringContainsString('const refreshFileList = refreshFiles.join(\', \');', $auditor);
