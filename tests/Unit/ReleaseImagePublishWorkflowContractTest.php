@@ -101,8 +101,8 @@ class ReleaseImagePublishWorkflowContractTest extends TestCase
         $metadataScript = $this->read('scripts/ci/prepare-release-workflow-composer-metadata.php');
 
         foreach ([
-            'ARG WORKFLOW_PACKAGE_REF=2.0.0-alpha.253',
-            'ARG WORKFLOW_PACKAGE_COMMIT=cda677d52d25f5a9dbe322c424661874a0483fc0',
+            'ARG WORKFLOW_PACKAGE_REF=2.0.0-alpha.254',
+            'ARG WORKFLOW_PACKAGE_COMMIT=1350ed51455a71e807da035736d8efc6b95695e4',
             'prepare-release-workflow-composer-metadata.php',
             'composer update durable-workflow/workflow',
             'cp composer.json /tmp/release-composer.json',
@@ -207,8 +207,8 @@ class ReleaseImagePublishWorkflowContractTest extends TestCase
 
     public function test_docker_build_docs_compose_and_ci_defaults_match_workflow_package_fallback(): void
     {
-        $fallback = '2.0.0-alpha.253';
-        $commit = 'cda677d52d25f5a9dbe322c424661874a0483fc0';
+        $fallback = '2.0.0-alpha.254';
+        $commit = '1350ed51455a71e807da035736d8efc6b95695e4';
 
         foreach ([
             'Dockerfile',
@@ -237,8 +237,8 @@ class ReleaseImagePublishWorkflowContractTest extends TestCase
 
         $readme = $this->read('README.md');
 
-        $this->assertStringContainsString('WORKFLOW_PACKAGE_REF=2.0.0-alpha.253', $readme);
-        $this->assertStringContainsString('The Dockerfile clones the `durable-workflow/workflow` `2.0.0-alpha.253` tag', $readme);
+        $this->assertStringContainsString('WORKFLOW_PACKAGE_REF=2.0.0-alpha.254', $readme);
+        $this->assertStringContainsString('The Dockerfile clones the `durable-workflow/workflow` `2.0.0-alpha.254` tag', $readme);
         $this->assertStringContainsString('Composer package metadata', $readme);
         $this->assertStringNotContainsString('The Dockerfile clones the `durable-workflow/workflow` `2.0.0-alpha.200` tag', $readme);
         $this->assertStringNotContainsString('The image build fetches the `durable-workflow/workflow` `2.0.0-alpha.200`', $readme);

@@ -239,7 +239,7 @@ The long-running `server`, `worker`, and `scheduler` services each pin
 `DW_SERVER_TOPOLOGY_SHAPE` and `DW_SERVER_PROCESS_CLASS` so
 `GET /api/cluster/info` reports the role class you actually launched during
 local split-role testing.
-The local compose files pass `WORKFLOW_PACKAGE_REF=2.0.0-alpha.253`, matching
+The local compose files pass `WORKFLOW_PACKAGE_REF=2.0.0-alpha.254`, matching
 the Dockerfile fallback, so `docker compose up --build` works from a clean
 checkout with Composer metadata aligned to the embedded workflow package.
 Override `WORKFLOW_PACKAGE_SOURCE`, `WORKFLOW_PACKAGE_REF`, or
@@ -1126,7 +1126,7 @@ docker run --rm -p 8080:8080 \
   durable-workflow-server
 ```
 
-The Dockerfile clones the `durable-workflow/workflow` `2.0.0-alpha.253` tag
+The Dockerfile clones the `durable-workflow/workflow` `2.0.0-alpha.254` tag
 into the build by default and refreshes the Composer package metadata from that
 source before installing production dependencies. Use
 `--build-arg WORKFLOW_PACKAGE_SOURCE=...`,
