@@ -74,9 +74,17 @@ class MigrationConformanceRunnerContractTest extends TestCase
             'embedded-v1-server-runtime',
             'maybeExecuteFoundationPlan',
             'executeFoundationPlan',
+            'preferFocusedFoundationWorkerEvidence',
             'buildFoundationQueueStateEvidence',
             'queueStateProductFailures',
             'queueResultHasDuplicationObservation',
+            'buildFoundationV2WorkerRegistrationEvidence',
+            'executeWorkerRegistrationOperation',
+            'workerRegistrationProductFailures',
+            'workerProjectionFreshness',
+            'workerProjectionMismatches',
+            'workerRegistrationCommandIsRunnerFailure',
+            'foundationWorkerRegistrationFinding',
             'host_executed_migration_foundation_plan',
             'maybeRunPublicGuideAudit',
             'public_migration_guide_audit',
@@ -1024,7 +1032,6 @@ class MigrationConformanceRunnerContractTest extends TestCase
                 ] + $command('GET /api/tasks/migration-queued-activity/result'),
             ],
         ];
-
         $result = $this->runRunnerEvidence(
             $nodeBinary,
             [],
@@ -1133,6 +1140,500 @@ class MigrationConformanceRunnerContractTest extends TestCase
             'documented_migration_steps_execute',
             array_keys($result['finding_links']),
         );
+    }
+
+    public function test_runner_executes_focused_postupgrade_worker_registration_and_poll_plan(): void
+    {
+        $nodeBinary = trim((string) shell_exec('command -v node 2>/dev/null'));
+        if ($nodeBinary === '') {
+            $this->markTestSkipped('node is required to exercise the focused worker-registration plan.');
+        }
+
+        $artifactVersions = $this->artifactVersions();
+        $artifactSources = $this->artifactSources();
+        $workerId = 'migration-v2-worker-20260710';
+        $namespace = 'migration-conformance';
+        $taskQueue = 'migration-v2-registration-20260710';
+        $request = [
+            'worker_id' => $workerId,
+            'namespace' => $namespace,
+            'task_queue' => $taskQueue,
+            'runtime' => 'php',
+            'sdk_version' => $artifactVersions['workflow-php-v2'],
+            'build_id' => 'migration-v2-build',
+            'supported_workflow_types' => ['migration.worker.registration.probe'],
+            'capabilities' => ['workflow_tasks'],
+            'max_concurrent_workflow_tasks' => 2,
+            'max_concurrent_activity_tasks' => 1,
+        ];
+        $workerProjection = [
+            'worker_id' => $workerId,
+            'namespace' => $namespace,
+            'task_queue' => $taskQueue,
+            'runtime' => 'php',
+            'sdk_version' => $artifactVersions['workflow-php-v2'],
+            'build_id' => 'migration-v2-build',
+            'capabilities' => ['workflow_tasks'],
+            'status' => 'active',
+            'last_heartbeat_at' => gmdate('Y-m-d\TH:i:s\Z'),
+            'task_slots' => [
+                'workflow_available' => 2,
+                'activity_available' => 1,
+                'session_available' => 1,
+                'workflow_capacity' => 2,
+                'activity_capacity' => 1,
+                'session_capacity' => 1,
+            ],
+        ];
+        $protocolMetadata = [
+            'protocol_version' => '1.13',
+            'server_capabilities' => [
+                'poll_status' => true,
+                'worker_status' => ['supported' => true],
+            ],
+        ];
+        $operation = static function (
+            string $endpoint,
+            array $requestBody,
+            array $responseBody,
+            int $httpStatus = 200,
+        ): array {
+            $response = ['http_status' => $httpStatus, 'body' => $responseBody];
+
+            return [
+                'command' => 'printf "%s\\n" '.escapeshellarg(json_encode($response, JSON_THROW_ON_ERROR)),
+                'endpoint' => $endpoint,
+                'request' => $requestBody,
+                'http_status' => $httpStatus,
+            ];
+        };
+        $pollRequest = [
+            'worker_id' => $workerId,
+            'task_queue' => $taskQueue,
+            'poll_request_id' => 'migration-v2-registration-poll-20260710',
+            'timeout_seconds' => 0,
+        ];
+        $plan = [
+            'source' => 'published_artifact_foundation_plan',
+            'new_v2_worker_registration_after_upgrade' => [
+                'worker_id' => $workerId,
+                'namespace' => $namespace,
+                'task_queue' => $taskQueue,
+                'unique_task_queue' => true,
+                'registration_request' => $operation(
+                    'POST /api/worker/register',
+                    $request,
+                    [
+                        'registered' => true,
+                        'worker_id' => $workerId,
+                        'namespace' => $namespace,
+                        'task_queue' => $taskQueue,
+                    ] + $protocolMetadata,
+                    201,
+                ),
+                'operator_api_response' => $operation(
+                    'GET /api/workers/'.$workerId,
+                    ['worker_id' => $workerId, 'namespace' => $namespace],
+                    $workerProjection,
+                ),
+                'cli_worker_projection' => $operation(
+                    'dw worker:list --task-queue='.$taskQueue.' --output=json',
+                    ['namespace' => $namespace, 'task_queue' => $taskQueue],
+                    ['workers' => [$workerProjection]],
+                ),
+                'polling_result' => $operation(
+                    'POST /api/worker/workflow-tasks/poll',
+                    $pollRequest,
+                    ['task' => null, 'poll_status' => 'empty'] + $protocolMetadata,
+                ),
+            ],
+        ];
+        $staleBroadEvidence = $this->completeRunnerEvidence();
+        $staleBroadEvidence['scenario_results']['new_v2_worker_registration_after_upgrade'] = [
+            'status' => 'fail',
+            'observed_outputs' => [
+                'observed_behavior' => 'The broad migration pass did not capture focused worker registration behavior.',
+            ],
+        ];
+        $staleBroadEvidence['finding_links']['new_v2_worker_registration_after_upgrade'] = [[
+            'scenario_id' => 'new_v2_worker_registration_after_upgrade',
+            'owning_surface' => 'conformance_harness',
+            'finding_type' => 'stale_broad_migration_observation',
+        ]];
+
+        $result = $this->runRunnerEvidence(
+            $nodeBinary,
+            $staleBroadEvidence,
+            'dw-migration-focused-worker-registration-',
+            $this->publicGuideAuditArtifactEnvironment($artifactVersions, $artifactSources) + [
+                'DW_MIGRATION_FOUNDATION_PLAN_JSON' => json_encode($plan, JSON_THROW_ON_ERROR),
+                'DW_MIGRATION_RUN_FOUNDATION_PLAN' => '1',
+            ],
+        );
+
+        $scenario = $result['scenario_results']['new_v2_worker_registration_after_upgrade'];
+        $this->assertSame('pass', $result['outcome']);
+        $this->assertFalse($result['runner_blocked']);
+        $this->assertSame('pass', $scenario['status']);
+        $this->assertSame($workerId, $scenario['observed_outputs']['worker_id']);
+        $this->assertSame($namespace, $scenario['observed_outputs']['namespace']);
+        $this->assertSame($taskQueue, $scenario['observed_outputs']['task_queue']);
+        $this->assertTrue($scenario['observed_outputs']['unique_task_queue']);
+        $this->assertSame('active', $scenario['observed_outputs']['task_queue_projection']['status']);
+        $this->assertSame(2, $scenario['observed_outputs']['cli_worker_projection']['task_slots']['workflow_available']);
+        $this->assertSame('1.13', $scenario['observed_outputs']['protocol_metadata']['poll']['protocol_version']);
+        $this->assertSame('empty', $scenario['observed_outputs']['polling_result']['response']['body']['poll_status']);
+        $this->assertSame(0, $scenario['observed_outputs']['exit_codes']['poll']);
+        $this->assertNotEmpty($scenario['observed_outputs']['timestamps']['poll']['started_at']);
+        $this->assertSame(
+            'POST /api/worker/workflow-tasks/poll',
+            $scenario['observed_outputs']['request_response_evidence']['poll']['endpoint'],
+        );
+        $this->assertSame(
+            'command_stdout_json',
+            $scenario['observed_outputs']['request_response_evidence']['poll']['response_source'],
+        );
+        $this->assertTrue($scenario['observed_outputs']['freshness']['operator_api']['valid']);
+        $this->assertTrue($scenario['observed_outputs']['freshness']['cli']['valid']);
+        $this->assertArrayHasKey('cli', $scenario['observed_outputs']['typed_response_contracts']);
+        $this->assertArrayHasKey('worker_poll', $scenario['observed_outputs']['typed_response_contracts']);
+        $this->assertArrayNotHasKey(
+            'new_v2_worker_registration_after_upgrade',
+            $result['finding_links'],
+            'the freshly executed focused cell must replace stale broad-run failure evidence',
+        );
+    }
+
+    public function test_runner_routes_focused_worker_poll_product_failure_with_exact_evidence(): void
+    {
+        $nodeBinary = trim((string) shell_exec('command -v node 2>/dev/null'));
+        if ($nodeBinary === '') {
+            $this->markTestSkipped('node is required to exercise focused worker product-failure routing.');
+        }
+
+        $artifactVersions = $this->artifactVersions();
+        $artifactSources = $this->artifactSources();
+        $plan = $this->focusedWorkerRegistrationPlan($artifactVersions);
+        $failedPoll = [
+            'http_status' => 200,
+            'body' => [
+                'task' => null,
+                'poll_status' => 'no_workflow_capability',
+                'protocol_version' => '1.13',
+                'server_capabilities' => ['poll_status' => true],
+            ],
+        ];
+        $plan['new_v2_worker_registration_after_upgrade']['polling_result']['command'] =
+            'printf "%s\\n" '.escapeshellarg(json_encode($failedPoll, JSON_THROW_ON_ERROR));
+
+        $result = $this->runRunnerEvidence(
+            $nodeBinary,
+            [],
+            'dw-migration-focused-worker-product-failure-',
+            $this->publicGuideAuditArtifactEnvironment($artifactVersions, $artifactSources) + [
+                'DW_MIGRATION_FOUNDATION_PLAN_JSON' => json_encode($plan, JSON_THROW_ON_ERROR),
+                'DW_MIGRATION_RUN_FOUNDATION_PLAN' => '1',
+            ],
+        );
+
+        $scenario = $result['scenario_results']['new_v2_worker_registration_after_upgrade'];
+        $this->assertFalse($result['runner_blocked']);
+        $this->assertSame('fail', $scenario['status']);
+        $this->assertSame('worker_poll_unsuccessful', $scenario['observed_outputs']['product_failures'][0]['code']);
+        $this->assertSame('server', $scenario['observed_outputs']['product_failures'][0]['owning_surface']);
+        $this->assertSame(
+            'POST /api/worker/workflow-tasks/poll',
+            $scenario['observed_outputs']['product_failures'][0]['endpoint'],
+        );
+        $this->assertSame(
+            'no_workflow_capability',
+            $scenario['observed_outputs']['product_failures'][0]['response']['body']['poll_status'],
+        );
+        $this->assertSame($artifactVersions, $result['resolved_artifact_versions']);
+        $detailedFindings = array_values(array_filter(
+            $result['finding_links']['new_v2_worker_registration_after_upgrade'],
+            static fn (array $finding): bool => isset($finding['product_failures']),
+        ));
+        $this->assertCount(1, $detailedFindings);
+        $this->assertSame($artifactVersions, $detailedFindings[0]['artifact_versions']);
+        $this->assertSame('server', $detailedFindings[0]['owning_surface']);
+    }
+
+    public function test_runner_classifies_focused_worker_transport_failure_as_runner_blocked(): void
+    {
+        $nodeBinary = trim((string) shell_exec('command -v node 2>/dev/null'));
+        if ($nodeBinary === '') {
+            $this->markTestSkipped('node is required to exercise focused worker runner-blocked routing.');
+        }
+
+        $artifactVersions = $this->artifactVersions();
+        $artifactSources = $this->artifactSources();
+        $plan = $this->focusedWorkerRegistrationPlan($artifactVersions);
+        $plan['new_v2_worker_registration_after_upgrade']['polling_result']['command'] =
+            'durable-workflow-missing-poll-command';
+
+        $result = $this->runRunnerEvidence(
+            $nodeBinary,
+            [],
+            'dw-migration-focused-worker-runner-blocked-',
+            $this->publicGuideAuditArtifactEnvironment($artifactVersions, $artifactSources) + [
+                'DW_MIGRATION_FOUNDATION_PLAN_JSON' => json_encode($plan, JSON_THROW_ON_ERROR),
+                'DW_MIGRATION_RUN_FOUNDATION_PLAN' => '1',
+            ],
+        );
+
+        $this->assertTrue($result['runner_blocked']);
+        $this->assertSame('non_passing_runner_blocked', $result['outcome']);
+        $this->assertSame(
+            'runner_blocked',
+            $result['scenario_results']['new_v2_worker_registration_after_upgrade']['status'],
+        );
+        $this->assertStringContainsString(
+            'runner_infrastructure failure',
+            $result['scenario_results']['new_v2_worker_registration_after_upgrade']['observed_outputs']['blocked_reason'],
+        );
+    }
+
+    public function test_runner_rejects_plan_supplied_worker_responses_without_command_output(): void
+    {
+        $nodeBinary = trim((string) shell_exec('command -v node 2>/dev/null'));
+        if ($nodeBinary === '') {
+            $this->markTestSkipped('node is required to exercise focused worker response provenance.');
+        }
+
+        $artifactVersions = $this->artifactVersions();
+        $artifactSources = $this->artifactSources();
+        $plan = $this->focusedWorkerRegistrationPlan($artifactVersions);
+        foreach (['registration_request', 'operator_api_response', 'cli_worker_projection', 'polling_result'] as $field) {
+            $plan['new_v2_worker_registration_after_upgrade'][$field]['command'] = true;
+            $plan['new_v2_worker_registration_after_upgrade'][$field]['response'] = [
+                'http_status' => 200,
+                'body' => ['spoofed' => true],
+            ];
+        }
+
+        $result = $this->runRunnerEvidence(
+            $nodeBinary,
+            [],
+            'dw-migration-focused-worker-spoofed-response-',
+            $this->publicGuideAuditArtifactEnvironment($artifactVersions, $artifactSources) + [
+                'DW_MIGRATION_FOUNDATION_PLAN_JSON' => json_encode($plan, JSON_THROW_ON_ERROR),
+                'DW_MIGRATION_RUN_FOUNDATION_PLAN' => '1',
+            ],
+        );
+
+        $this->assertTrue($result['runner_blocked']);
+        $this->assertSame('non_passing_runner_blocked', $result['outcome']);
+        $this->assertStringContainsString(
+            'did not emit a JSON response on stdout',
+            $result['scenario_results']['new_v2_worker_registration_after_upgrade']['observed_outputs']['blocked_reason'],
+        );
+    }
+
+    public function test_runner_rejects_unsuccessful_worker_http_statuses_as_product_failures(): void
+    {
+        $nodeBinary = trim((string) shell_exec('command -v node 2>/dev/null'));
+        if ($nodeBinary === '') {
+            $this->markTestSkipped('node is required to exercise focused worker HTTP status validation.');
+        }
+
+        $artifactVersions = $this->artifactVersions();
+        $artifactSources = $this->artifactSources();
+        $plan = $this->focusedWorkerRegistrationPlan($artifactVersions);
+        foreach (['registration_request', 'operator_api_response', 'polling_result'] as $field) {
+            $response = ['http_status' => 500, 'body' => ['message' => 'forced product failure']];
+            $plan['new_v2_worker_registration_after_upgrade'][$field]['command'] =
+                'printf "%s\\n" '.escapeshellarg(json_encode($response, JSON_THROW_ON_ERROR));
+        }
+
+        $result = $this->runRunnerEvidence(
+            $nodeBinary,
+            [],
+            'dw-migration-focused-worker-http-status-',
+            $this->publicGuideAuditArtifactEnvironment($artifactVersions, $artifactSources) + [
+                'DW_MIGRATION_FOUNDATION_PLAN_JSON' => json_encode($plan, JSON_THROW_ON_ERROR),
+                'DW_MIGRATION_RUN_FOUNDATION_PLAN' => '1',
+            ],
+        );
+
+        $scenario = $result['scenario_results']['new_v2_worker_registration_after_upgrade'];
+        $httpFailures = array_values(array_filter(
+            $scenario['observed_outputs']['product_failures'],
+            static fn (array $failure): bool => ($failure['code'] ?? null) === 'unsuccessful_http_status',
+        ));
+        $this->assertFalse($result['runner_blocked']);
+        $this->assertSame('fail', $scenario['status']);
+        $this->assertSame(['registration', 'operator_api', 'poll'], array_column($httpFailures, 'operation'));
+        $this->assertSame([500, 500, 500], array_column($httpFailures, 'http_status'));
+    }
+
+    public function test_runner_rejects_mismatched_api_and_cli_worker_projections(): void
+    {
+        $nodeBinary = trim((string) shell_exec('command -v node 2>/dev/null'));
+        if ($nodeBinary === '') {
+            $this->markTestSkipped('node is required to exercise focused worker projection parity.');
+        }
+
+        $artifactVersions = $this->artifactVersions();
+        $artifactSources = $this->artifactSources();
+        $plan = $this->focusedWorkerRegistrationPlan($artifactVersions);
+        $cliProjection = $this->focusedWorkerProjection($artifactVersions);
+        $cliProjection['sdk_version'] = '2.0.0-adversarial';
+        $response = ['http_status' => 200, 'body' => ['workers' => [$cliProjection]]];
+        $plan['new_v2_worker_registration_after_upgrade']['cli_worker_projection']['command'] =
+            'printf "%s\\n" '.escapeshellarg(json_encode($response, JSON_THROW_ON_ERROR));
+
+        $result = $this->runRunnerEvidence(
+            $nodeBinary,
+            [],
+            'dw-migration-focused-worker-projection-mismatch-',
+            $this->publicGuideAuditArtifactEnvironment($artifactVersions, $artifactSources) + [
+                'DW_MIGRATION_FOUNDATION_PLAN_JSON' => json_encode($plan, JSON_THROW_ON_ERROR),
+                'DW_MIGRATION_RUN_FOUNDATION_PLAN' => '1',
+            ],
+        );
+
+        $scenario = $result['scenario_results']['new_v2_worker_registration_after_upgrade'];
+        $mismatches = array_values(array_filter(
+            $scenario['observed_outputs']['product_failures'],
+            static fn (array $failure): bool => ($failure['code'] ?? null) === 'worker_projection_mismatch',
+        ));
+        $this->assertSame('fail', $scenario['status']);
+        $this->assertCount(1, $mismatches);
+        $this->assertStringContainsString('sdk_version', $mismatches[0]['detail']);
+    }
+
+    public function test_runner_rejects_invalid_worker_heartbeat_timestamps(): void
+    {
+        $nodeBinary = trim((string) shell_exec('command -v node 2>/dev/null'));
+        if ($nodeBinary === '') {
+            $this->markTestSkipped('node is required to exercise focused worker freshness validation.');
+        }
+
+        $artifactVersions = $this->artifactVersions();
+        $artifactSources = $this->artifactSources();
+        $plan = $this->focusedWorkerRegistrationPlan($artifactVersions);
+        $projection = $this->focusedWorkerProjection($artifactVersions);
+        $projection['last_heartbeat_at'] = 'not-a-timestamp';
+        $apiResponse = ['http_status' => 200, 'body' => $projection];
+        $cliResponse = ['http_status' => 200, 'body' => ['workers' => [$projection]]];
+        $plan['new_v2_worker_registration_after_upgrade']['operator_api_response']['command'] =
+            'printf "%s\\n" '.escapeshellarg(json_encode($apiResponse, JSON_THROW_ON_ERROR));
+        $plan['new_v2_worker_registration_after_upgrade']['cli_worker_projection']['command'] =
+            'printf "%s\\n" '.escapeshellarg(json_encode($cliResponse, JSON_THROW_ON_ERROR));
+
+        $result = $this->runRunnerEvidence(
+            $nodeBinary,
+            [],
+            'dw-migration-focused-worker-invalid-heartbeat-',
+            $this->publicGuideAuditArtifactEnvironment($artifactVersions, $artifactSources) + [
+                'DW_MIGRATION_FOUNDATION_PLAN_JSON' => json_encode($plan, JSON_THROW_ON_ERROR),
+                'DW_MIGRATION_RUN_FOUNDATION_PLAN' => '1',
+            ],
+        );
+
+        $scenario = $result['scenario_results']['new_v2_worker_registration_after_upgrade'];
+        $this->assertSame('fail', $scenario['status']);
+        $this->assertFalse($scenario['observed_outputs']['freshness']['operator_api']['valid']);
+        $this->assertContains(
+            'last_heartbeat_at_invalid',
+            $scenario['observed_outputs']['freshness']['operator_api']['failures'],
+        );
+    }
+
+    public function test_runner_enforces_the_fixed_worker_freshness_window_for_stale_and_future_heartbeats(): void
+    {
+        $nodeBinary = trim((string) shell_exec('command -v node 2>/dev/null'));
+        if ($nodeBinary === '') {
+            $this->markTestSkipped('node is required to exercise focused worker freshness validation.');
+        }
+
+        $artifactVersions = $this->artifactVersions();
+        $artifactSources = $this->artifactSources();
+        $heartbeatCases = [
+            'stale' => [
+                'timestamp' => gmdate('Y-m-d\TH:i:s\Z', time() - 31536000),
+                'failure' => 'last_heartbeat_at_stale',
+            ],
+            'future' => [
+                'timestamp' => gmdate('Y-m-d\TH:i:s\Z', time() + 3600),
+                'failure' => 'last_heartbeat_at_in_future',
+            ],
+        ];
+
+        foreach ($heartbeatCases as $case => $heartbeatCase) {
+            $plan = $this->focusedWorkerRegistrationPlan($artifactVersions);
+            $plan['new_v2_worker_registration_after_upgrade']['stale_after_seconds'] = 31536000;
+            $projection = $this->focusedWorkerProjection($artifactVersions);
+            $projection['last_heartbeat_at'] = $heartbeatCase['timestamp'];
+            $apiResponse = ['http_status' => 200, 'body' => $projection];
+            $cliResponse = ['http_status' => 200, 'body' => ['workers' => [$projection]]];
+            $plan['new_v2_worker_registration_after_upgrade']['operator_api_response']['command'] =
+                'printf "%s\\n" '.escapeshellarg(json_encode($apiResponse, JSON_THROW_ON_ERROR));
+            $plan['new_v2_worker_registration_after_upgrade']['cli_worker_projection']['command'] =
+                'printf "%s\\n" '.escapeshellarg(json_encode($cliResponse, JSON_THROW_ON_ERROR));
+
+            $result = $this->runRunnerEvidence(
+                $nodeBinary,
+                [],
+                'dw-migration-focused-worker-'.$case.'-heartbeat-',
+                $this->publicGuideAuditArtifactEnvironment($artifactVersions, $artifactSources) + [
+                    'DW_MIGRATION_FOUNDATION_PLAN_JSON' => json_encode($plan, JSON_THROW_ON_ERROR),
+                    'DW_MIGRATION_RUN_FOUNDATION_PLAN' => '1',
+                ],
+            );
+
+            $scenario = $result['scenario_results']['new_v2_worker_registration_after_upgrade'];
+            $this->assertFalse($result['runner_blocked']);
+            $this->assertSame('fail', $scenario['status']);
+            $this->assertSame(300, $scenario['observed_outputs']['freshness']['stale_after_seconds']);
+            $this->assertFalse($scenario['observed_outputs']['freshness']['operator_api']['valid']);
+            $this->assertContains(
+                $heartbeatCase['failure'],
+                $scenario['observed_outputs']['freshness']['operator_api']['failures'],
+            );
+        }
+    }
+
+    public function test_runner_routes_observed_non_2xx_empty_poll_as_product_failure(): void
+    {
+        $nodeBinary = trim((string) shell_exec('command -v node 2>/dev/null'));
+        if ($nodeBinary === '') {
+            $this->markTestSkipped('node is required to exercise focused worker HTTP failure routing.');
+        }
+
+        $artifactVersions = $this->artifactVersions();
+        $artifactSources = $this->artifactSources();
+        $plan = $this->focusedWorkerRegistrationPlan($artifactVersions);
+        $plan['new_v2_worker_registration_after_upgrade']['polling_result']['command'] =
+            'printf "500\\n"; exit 22';
+        $plan['new_v2_worker_registration_after_upgrade']['polling_result']['failure_classification'] =
+            'runner_infrastructure';
+
+        $result = $this->runRunnerEvidence(
+            $nodeBinary,
+            [],
+            'dw-migration-focused-worker-empty-http-failure-',
+            $this->publicGuideAuditArtifactEnvironment($artifactVersions, $artifactSources) + [
+                'DW_MIGRATION_FOUNDATION_PLAN_JSON' => json_encode($plan, JSON_THROW_ON_ERROR),
+                'DW_MIGRATION_RUN_FOUNDATION_PLAN' => '1',
+            ],
+        );
+
+        $scenario = $result['scenario_results']['new_v2_worker_registration_after_upgrade'];
+        $httpFailures = array_values(array_filter(
+            $scenario['observed_outputs']['product_failures'],
+            static fn (array $failure): bool => ($failure['code'] ?? null) === 'unsuccessful_http_status'
+                && ($failure['operation'] ?? null) === 'poll',
+        ));
+        $this->assertFalse($result['runner_blocked']);
+        $this->assertSame('non_passing', $result['outcome']);
+        $this->assertSame('fail', $scenario['status']);
+        $this->assertCount(1, $httpFailures);
+        $this->assertSame(500, $httpFailures[0]['http_status']);
+        $this->assertSame(22, $httpFailures[0]['exit_code']);
+        $this->assertNull($httpFailures[0]['response']);
+        $this->assertSame([], $scenario['observed_outputs']['runner_failures']);
     }
 
     public function test_runner_keeps_failed_queue_seed_command_sticky_in_queue_continuity(): void
@@ -3196,6 +3697,116 @@ COMMAND;
     }
 
     /**
+     * @param array<string, string> $artifactVersions
+     *
+     * @return array<string, mixed>
+     */
+    private function focusedWorkerRegistrationPlan(array $artifactVersions): array
+    {
+        $workerId = 'migration-v2-worker-20260710';
+        $namespace = 'migration-conformance';
+        $taskQueue = 'migration-v2-registration-20260710';
+        $registrationRequest = [
+            'worker_id' => $workerId,
+            'namespace' => $namespace,
+            'task_queue' => $taskQueue,
+            'runtime' => 'php',
+            'sdk_version' => $artifactVersions['workflow-php-v2'],
+            'build_id' => 'migration-v2-build',
+            'supported_workflow_types' => ['migration.worker.registration.probe'],
+            'capabilities' => ['workflow_tasks'],
+        ];
+        $projection = $this->focusedWorkerProjection($artifactVersions);
+        $protocol = [
+            'protocol_version' => '1.13',
+            'server_capabilities' => ['poll_status' => true],
+        ];
+        $operation = static fn (
+            string $endpoint,
+            array $request,
+            array $body,
+            int $httpStatus = 200,
+        ): array => [
+            'command' => 'printf "%s\\n" '.escapeshellarg(json_encode([
+                'http_status' => $httpStatus,
+                'body' => $body,
+            ], JSON_THROW_ON_ERROR)),
+            'endpoint' => $endpoint,
+            'request' => $request,
+            'http_status' => $httpStatus,
+        ];
+
+        return [
+            'source' => 'published_artifact_foundation_plan',
+            'new_v2_worker_registration_after_upgrade' => [
+                'worker_id' => $workerId,
+                'namespace' => $namespace,
+                'task_queue' => $taskQueue,
+                'unique_task_queue' => true,
+                'registration_request' => $operation(
+                    'POST /api/worker/register',
+                    $registrationRequest,
+                    [
+                        'registered' => true,
+                        'worker_id' => $workerId,
+                        'namespace' => $namespace,
+                        'task_queue' => $taskQueue,
+                    ] + $protocol,
+                    201,
+                ),
+                'operator_api_response' => $operation(
+                    'GET /api/workers/'.$workerId,
+                    ['worker_id' => $workerId, 'namespace' => $namespace],
+                    $projection,
+                ),
+                'cli_worker_projection' => $operation(
+                    'dw worker:list --task-queue='.$taskQueue.' --output=json',
+                    ['namespace' => $namespace, 'task_queue' => $taskQueue],
+                    ['workers' => [$projection]],
+                ),
+                'polling_result' => $operation(
+                    'POST /api/worker/workflow-tasks/poll',
+                    [
+                        'worker_id' => $workerId,
+                        'task_queue' => $taskQueue,
+                        'poll_request_id' => 'migration-v2-registration-poll-20260710',
+                        'timeout_seconds' => 0,
+                    ],
+                    ['task' => null, 'poll_status' => 'empty'] + $protocol,
+                ),
+            ],
+        ];
+    }
+
+    /**
+     * @param array<string, string> $artifactVersions
+     *
+     * @return array<string, mixed>
+     */
+    private function focusedWorkerProjection(array $artifactVersions): array
+    {
+        return [
+            'worker_id' => 'migration-v2-worker-20260710',
+            'namespace' => 'migration-conformance',
+            'task_queue' => 'migration-v2-registration-20260710',
+            'runtime' => 'php',
+            'sdk_version' => $artifactVersions['workflow-php-v2'],
+            'build_id' => 'migration-v2-build',
+            'capabilities' => ['workflow_tasks'],
+            'status' => 'active',
+            'last_heartbeat_at' => gmdate('Y-m-d\TH:i:s\Z'),
+            'task_slots' => [
+                'workflow_available' => 2,
+                'activity_available' => 1,
+                'session_available' => 1,
+                'workflow_capacity' => 2,
+                'activity_capacity' => 1,
+                'session_capacity' => 1,
+            ],
+        ];
+    }
+
+    /**
      * @return array<string, mixed>
      */
     private function completeRunnerEvidence(): array
@@ -3235,8 +3846,72 @@ COMMAND;
             'schedule' => ['type' => 'schedule', 'schema' => 'durable-workflow.schedule.v2'],
         ];
         $scenarioResults['new_v2_worker_registration_after_upgrade']['observed_outputs']['typed_response_contracts'] = [
+            'cli' => ['schema' => 'durable-workflow.cli.worker-projection.v2'],
             'operator_api' => ['schema' => 'durable-workflow.operator.worker-response.v2'],
             'worker_registration' => ['type' => 'worker_registration', 'schema' => 'durable-workflow.worker-registration.v2'],
+            'worker_poll' => ['type' => 'worker_task_poll', 'schema' => 'durable-workflow.worker-task-poll.v2'],
+        ];
+        $workerProjection = [
+            'worker_id' => 'migration-v2-worker',
+            'namespace' => 'migration-conformance',
+            'task_queue' => 'migration-v2-registration',
+            'status' => 'active',
+            'last_heartbeat_at' => '2026-05-31T22:40:19Z',
+            'task_slots' => [
+                'workflow_available' => 2,
+                'activity_available' => 1,
+                'session_available' => 1,
+                'workflow_capacity' => 2,
+                'activity_capacity' => 1,
+                'session_capacity' => 1,
+            ],
+            'runtime' => 'php',
+            'sdk_version' => $this->artifactVersions()['workflow-php-v2'],
+            'build_id' => 'migration-v2-build',
+            'capabilities' => ['workflow_tasks'],
+        ];
+        $operationTimestamp = [
+            'started_at' => '2026-05-31T22:40:18Z',
+            'finished_at' => '2026-05-31T22:40:19Z',
+        ];
+        $scenarioResults['new_v2_worker_registration_after_upgrade']['observed_outputs'] = [
+            ...$scenarioResults['new_v2_worker_registration_after_upgrade']['observed_outputs'],
+            'worker_id' => $workerProjection['worker_id'],
+            'namespace' => $workerProjection['namespace'],
+            'task_queue' => $workerProjection['task_queue'],
+            'unique_task_queue' => true,
+            'task_queue_projection' => $workerProjection,
+            'cli_worker_projection' => $workerProjection,
+            'protocol_metadata' => [
+                'registration' => ['protocol_version' => '1.13'],
+                'poll' => ['protocol_version' => '1.13'],
+                'operator_api' => ['runtime' => 'php'],
+                'cli' => ['runtime' => 'php'],
+            ],
+            'freshness' => [
+                'stale_after_seconds' => 300,
+                'operator_api' => ['valid' => true, 'last_heartbeat_at' => $workerProjection['last_heartbeat_at']],
+                'cli' => ['valid' => true, 'last_heartbeat_at' => $workerProjection['last_heartbeat_at']],
+            ],
+            'polling_result' => [
+                'request' => ['worker_id' => $workerProjection['worker_id'], 'task_queue' => $workerProjection['task_queue']],
+                'response' => ['poll_status' => 'empty', 'task' => null],
+                'exit_code' => 0,
+                ...$operationTimestamp,
+            ],
+            'request_response_evidence' => [
+                'registration' => ['request' => 'POST /api/worker/register', 'response' => ['registered' => true], 'http_status' => 201, 'response_source' => 'command_stdout_json', 'response_observed_from_command_stdout' => true],
+                'operator_api' => ['request' => 'GET /api/workers/migration-v2-worker', 'response' => $workerProjection, 'http_status' => 200, 'response_source' => 'command_stdout_json', 'response_observed_from_command_stdout' => true],
+                'cli' => ['request' => 'dw worker:list --output=json', 'response' => ['workers' => [$workerProjection]], 'response_source' => 'command_stdout_json', 'response_observed_from_command_stdout' => true],
+                'poll' => ['request' => 'POST /api/worker/workflow-tasks/poll', 'response' => ['poll_status' => 'empty'], 'http_status' => 200, 'response_source' => 'command_stdout_json', 'response_observed_from_command_stdout' => true],
+            ],
+            'exit_codes' => ['registration' => 0, 'operator_api' => 0, 'cli' => 0, 'poll' => 0],
+            'timestamps' => [
+                'registration' => $operationTimestamp,
+                'operator_api' => $operationTimestamp,
+                'cli' => $operationTimestamp,
+                'poll' => $operationTimestamp,
+            ],
         ];
 
         $scenarioResults['latest_supported_v1_state_setup']['observed_outputs'] = [

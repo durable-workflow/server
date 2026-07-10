@@ -12,6 +12,8 @@ final class MigrationRuntimeResultGate
 
     public const VERSION = 2;
 
+    private const FOCUSED_WORKER_PROJECTION_STALE_AFTER_SECONDS = 300;
+
     private const PLACEHOLDER_EVIDENCE_TOKENS = [
         'not_executed',
         'not_executed_by_public_guide_audit',
@@ -628,12 +630,94 @@ final class MigrationRuntimeResultGate
                 'typed_response_contracts',
                 ['cli', 'operator_api', 'schedule'],
             ),
-            'new_v2_worker_registration_after_upgrade' => self::missingEvidenceItemsForField(
-                $scenarioResult,
-                $observedOutputs,
-                'typed_response_contracts',
-                ['operator_api', 'worker_registration'],
-            ),
+            'new_v2_worker_registration_after_upgrade' => [
+                ...self::missingEvidenceItemsForField(
+                    $scenarioResult,
+                    $observedOutputs,
+                    'typed_response_contracts',
+                    ['cli', 'operator_api', 'worker_registration', 'worker_poll'],
+                ),
+                ...self::missingEvidenceItemsForField(
+                    $scenarioResult,
+                    $observedOutputs,
+                    'task_queue_projection',
+                    [
+                        'worker_id',
+                        'namespace',
+                        'task_queue',
+                        'status',
+                        'last_heartbeat_at',
+                        'task_slots',
+                        'runtime',
+                        'sdk_version',
+                        'build_id',
+                        'capabilities',
+                    ],
+                ),
+                ...self::missingEvidenceItemsForField(
+                    $scenarioResult,
+                    $observedOutputs,
+                    'cli_worker_projection',
+                    [
+                        'worker_id',
+                        'namespace',
+                        'task_queue',
+                        'status',
+                        'last_heartbeat_at',
+                        'task_slots',
+                        'runtime',
+                        'sdk_version',
+                        'build_id',
+                        'capabilities',
+                    ],
+                ),
+                ...self::missingEvidenceItemsForField(
+                    $scenarioResult,
+                    $observedOutputs,
+                    'protocol_metadata',
+                    ['registration', 'poll', 'operator_api', 'cli'],
+                ),
+                ...self::missingEvidenceItemsForField(
+                    $scenarioResult,
+                    $observedOutputs,
+                    'freshness',
+                    ['stale_after_seconds', 'operator_api', 'cli'],
+                ),
+                ...self::missingEvidenceItemsForField(
+                    $scenarioResult,
+                    $observedOutputs,
+                    'polling_result',
+                    ['request', 'response', 'exit_code', 'started_at', 'finished_at'],
+                ),
+                ...self::missingEvidenceItemsForField(
+                    $scenarioResult,
+                    $observedOutputs,
+                    'request_response_evidence',
+                    ['registration', 'operator_api', 'cli', 'poll'],
+                ),
+                ...self::missingEvidenceItemsForField(
+                    $scenarioResult,
+                    $observedOutputs,
+                    'exit_codes',
+                    ['registration', 'operator_api', 'cli', 'poll'],
+                ),
+                ...self::missingEvidenceItemsForField(
+                    $scenarioResult,
+                    $observedOutputs,
+                    'timestamps',
+                    ['registration', 'operator_api', 'cli', 'poll'],
+                ),
+                ...(
+                    self::fieldValue($observedOutputs, 'unique_task_queue') === true
+                    || self::fieldValue($scenarioResult, 'unique_task_queue') === true
+                        ? []
+                        : ['unique_task_queue.true']
+                ),
+                ...self::missingFocusedWorkerRegistrationSemanticFields(
+                    $scenarioResult,
+                    $observedOutputs,
+                ),
+            ],
             'version_skew_refusal' => [
                 ...self::missingArrayEvidenceFields(
                     $scenarioResult,
@@ -659,6 +743,136 @@ final class MigrationRuntimeResultGate
             ],
             default => [],
         };
+    }
+
+    /**
+     * @param array<string, mixed> $scenarioResult
+     * @param array<string, mixed> $observedOutputs
+     *
+     * @return list<string>
+     */
+    private static function missingFocusedWorkerRegistrationSemanticFields(
+        array $scenarioResult,
+        array $observedOutputs,
+    ): array {
+        $field = static function (string $name) use ($scenarioResult, $observedOutputs): mixed {
+            $value = self::fieldValue($observedOutputs, $name);
+
+            return self::isEmptyEvidence($value)
+                ? self::fieldValue($scenarioResult, $name)
+                : $value;
+        };
+        $apiProjection = $field('task_queue_projection');
+        $cliProjection = $field('cli_worker_projection');
+        $requestResponse = $field('request_response_evidence');
+        $exitCodes = $field('exit_codes');
+        $timestamps = $field('timestamps');
+        $freshness = $field('freshness');
+        $missing = [];
+
+        $apiProjection = is_array($apiProjection) ? $apiProjection : [];
+        $cliProjection = is_array($cliProjection) ? $cliProjection : [];
+        $requestResponse = is_array($requestResponse) ? $requestResponse : [];
+        $exitCodes = is_array($exitCodes) ? $exitCodes : [];
+        $timestamps = is_array($timestamps) ? $timestamps : [];
+        $freshness = is_array($freshness) ? $freshness : [];
+
+        foreach (['registration', 'operator_api', 'cli', 'poll'] as $operation) {
+            $observation = is_array($requestResponse[$operation] ?? null)
+                ? $requestResponse[$operation]
+                : [];
+            if (
+                ($observation['response_observed_from_command_stdout'] ?? null) !== true
+                || ($observation['response_source'] ?? null) !== 'command_stdout_json'
+            ) {
+                $missing[] = "request_response_evidence.{$operation}.command_stdout_response";
+            }
+            if (! array_key_exists($operation, $exitCodes) || (int) $exitCodes[$operation] !== 0) {
+                $missing[] = "exit_codes.{$operation}.zero";
+            }
+        }
+
+        foreach (['registration', 'operator_api', 'poll'] as $operation) {
+            $observation = is_array($requestResponse[$operation] ?? null)
+                ? $requestResponse[$operation]
+                : [];
+            $httpStatus = filter_var($observation['http_status'] ?? null, FILTER_VALIDATE_INT);
+            if ($httpStatus === false || $httpStatus < 200 || $httpStatus >= 300) {
+                $missing[] = "request_response_evidence.{$operation}.http_status_2xx";
+            }
+        }
+
+        $staleAfter = filter_var($freshness['stale_after_seconds'] ?? null, FILTER_VALIDATE_INT);
+        if ($staleAfter === false || $staleAfter <= 0) {
+            $missing[] = 'freshness.stale_after_seconds.positive';
+        }
+        if ($staleAfter !== self::FOCUSED_WORKER_PROJECTION_STALE_AFTER_SECONDS) {
+            $missing[] = 'freshness.stale_after_seconds.300';
+        }
+        foreach (['operator_api' => $apiProjection, 'cli' => $cliProjection] as $surface => $projection) {
+            $surfaceFreshness = is_array($freshness[$surface] ?? null) ? $freshness[$surface] : [];
+            if (($surfaceFreshness['valid'] ?? null) !== true) {
+                $missing[] = "freshness.{$surface}.valid";
+            }
+            if (strtolower(self::stringValue($projection['status'] ?? null)) !== 'active') {
+                $missing[] = "{$surface}.status.active";
+            }
+
+            $heartbeatValue = self::stringValue($projection['last_heartbeat_at'] ?? null);
+            $heartbeat = preg_match(
+                '/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,9})?(?:Z|[+-]\d{2}:\d{2})$/',
+                $heartbeatValue,
+            ) === 1 ? strtotime($heartbeatValue) : false;
+            $operationTimestamp = is_array($timestamps[$surface] ?? null) ? $timestamps[$surface] : [];
+            $observedAtValue = self::stringValue($operationTimestamp['finished_at'] ?? null);
+            $observedAt = preg_match(
+                '/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,9})?(?:Z|[+-]\d{2}:\d{2})$/',
+                $observedAtValue,
+            ) === 1 ? strtotime($observedAtValue) : false;
+            if ($heartbeat === false) {
+                $missing[] = "{$surface}.last_heartbeat_at.valid";
+            } elseif ($observedAt === false) {
+                $missing[] = "timestamps.{$surface}.finished_at.valid";
+            } elseif (
+                $heartbeat > $observedAt
+                || $observedAt - $heartbeat > self::FOCUSED_WORKER_PROJECTION_STALE_AFTER_SECONDS
+            ) {
+                $missing[] = "freshness.{$surface}.within_stale_window";
+            }
+
+            $taskSlots = is_array($projection['task_slots'] ?? null) ? $projection['task_slots'] : [];
+            foreach ([
+                'workflow_available',
+                'activity_available',
+                'session_available',
+                'workflow_capacity',
+                'activity_capacity',
+                'session_capacity',
+            ] as $slot) {
+                if (! is_int($taskSlots[$slot] ?? null)) {
+                    $missing[] = "{$surface}.task_slots.{$slot}";
+                }
+            }
+        }
+
+        foreach ([
+            'worker_id',
+            'namespace',
+            'task_queue',
+            'status',
+            'last_heartbeat_at',
+            'task_slots',
+            'runtime',
+            'sdk_version',
+            'build_id',
+            'capabilities',
+        ] as $projectionField) {
+            if (($apiProjection[$projectionField] ?? null) != ($cliProjection[$projectionField] ?? null)) {
+                $missing[] = "typed_response_contracts.api_cli_projection_match.{$projectionField}";
+            }
+        }
+
+        return array_values(array_unique($missing));
     }
 
     /**

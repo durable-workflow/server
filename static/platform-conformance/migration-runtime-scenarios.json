@@ -209,10 +209,13 @@
       "dw workflow:history <workflow-id> <run-id>",
       "dw workflow:history-export <workflow-id> <run-id>",
       "dw schedule:list",
+      "dw worker:list --task-queue=<unique-task-queue> --output=json",
+      "dw worker:describe <worker-id> --output=json",
       "GET /api/workflows/{workflowId}",
       "GET /api/workflows/{workflowId}/runs/{runId}",
       "GET /api/workflows/{workflowId}/runs/{runId}/history",
       "GET /api/schedules",
+      "GET /api/workers/{workerId}",
       "GET /waterline/api/instances/{instanceId}",
       "GET /waterline/api/instances/{instanceId}/runs/{runId}"
     ],
@@ -375,11 +378,22 @@
     "new_v2_worker_registration_after_upgrade": {
       "required_fields": [
         "registration_request",
+        "registration_response",
         "worker_id",
+        "namespace",
+        "task_queue",
+        "unique_task_queue",
         "task_queue_projection",
         "operator_api_response",
+        "cli_worker_projection",
         "typed_response_contracts",
-        "polling_result"
+        "protocol_metadata",
+        "freshness",
+        "poll_request",
+        "polling_result",
+        "request_response_evidence",
+        "exit_codes",
+        "timestamps"
       ]
     },
     "rollback_contract_verified": {
@@ -753,14 +767,17 @@
         "cli"
       ],
       "operations": [
-        "register a net-new v2 worker after migration",
-        "inspect its task-queue projection through the v2 operator API",
-        "prove the worker can poll its registered task queue"
+        "register a net-new v2 worker after migration through the public worker protocol on a unique task queue",
+        "inspect the worker through typed v2 operator API and CLI projections",
+        "capture worker identity, namespace, task queue, freshness and status, task slots, and protocol metadata",
+        "poll the unique task queue through the public worker protocol and retain the request, response, exit code, and timestamps"
       ],
       "pass_criteria": [
         "v2 worker registration succeeds regardless of source projection capability",
-        "the operator API returns a typed worker and task-queue projection",
-        "the registered worker polls successfully"
+        "the operator API and CLI return matching typed worker and task-queue projections",
+        "the projections identify a fresh worker with task-slot and protocol metadata",
+        "the registered worker polls successfully with exact request-response and process evidence",
+        "transport or host failures are runner-blocked while HTTP, CLI, projection, or poll contract failures are routed to the owning public surface with the exact artifact tuple"
       ]
     },
     {

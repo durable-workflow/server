@@ -32,7 +32,15 @@ Environment overrides:
   DW_MIGRATION_FOUNDATION_PLAN_FILE  JSON plan of host commands to execute for
                                       latest v1 state and queued-task setup,
                                       migration-guide commands, queue continuity,
-                                      and before/after snapshots.
+                                      before/after snapshots, and a focused
+                                      post-upgrade v2 worker registration cell.
+                                      The worker cell runs registration, typed
+                                      operator API projection, typed CLI
+                                      projection, and public worker-protocol poll
+                                      commands in that order on one unique queue.
+                                      Each operation should emit its JSON body or
+                                      a JSON {http_status,body} envelope; curl's
+                                      trailing HTTP status is also recognized.
                                       Defaults to migration-foundation-plan.json
                                       in the result directory when present.
   DW_MIGRATION_FOUNDATION_PLAN_JSON  Inline JSON plan, or a path to a JSON plan.

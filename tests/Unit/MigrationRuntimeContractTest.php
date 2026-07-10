@@ -111,6 +111,22 @@ class MigrationRuntimeContractTest extends TestCase
             'request_response_evidence',
             $manifest['scenario_requirements']['version_skew_refusal']['required_fields'],
         );
+        foreach ([
+            'namespace',
+            'unique_task_queue',
+            'cli_worker_projection',
+            'protocol_metadata',
+            'freshness',
+            'poll_request',
+            'request_response_evidence',
+            'exit_codes',
+            'timestamps',
+        ] as $field) {
+            $this->assertContains(
+                $field,
+                $manifest['scenario_requirements']['new_v2_worker_registration_after_upgrade']['required_fields'],
+            );
+        }
         $this->assertContains('not_applicable', $manifest['scenario_statuses']);
         $this->assertContains('queue_state', $manifest['required_matrix']['state_kinds']);
         $this->assertContains(
@@ -698,6 +714,106 @@ class MigrationRuntimeContractTest extends TestCase
         }
     }
 
+    public function test_result_gate_requires_decisive_postupgrade_worker_registration_evidence(): void
+    {
+        $result = $this->completeMigrationResult();
+        $worker = &$result['scenario_results']['new_v2_worker_registration_after_upgrade']['observed_outputs'];
+        $worker['unique_task_queue'] = false;
+        unset(
+            $worker['cli_worker_projection']['last_heartbeat_at'],
+            $worker['cli_worker_projection']['task_slots'],
+            $worker['protocol_metadata']['poll'],
+            $worker['request_response_evidence']['poll'],
+            $worker['exit_codes']['poll'],
+            $worker['timestamps']['poll'],
+        );
+
+        $evaluation = MigrationRuntimeResultGate::evaluate($result);
+
+        $this->assertSame('non_passing', $evaluation['status']);
+        $missing = $this->missingScenarioRequiredFields(
+            $evaluation,
+            'new_v2_worker_registration_after_upgrade',
+        );
+        foreach ([
+            'unique_task_queue.true',
+            'cli_worker_projection.last_heartbeat_at',
+            'cli_worker_projection.task_slots',
+            'protocol_metadata.poll',
+            'request_response_evidence.poll',
+            'exit_codes.poll',
+            'timestamps.poll',
+        ] as $field) {
+            $this->assertContains($field, $missing);
+        }
+    }
+
+    public function test_result_gate_rejects_unexecuted_unsuccessful_stale_or_mismatched_worker_evidence(): void
+    {
+        $result = $this->completeMigrationResult();
+        $worker = &$result['scenario_results']['new_v2_worker_registration_after_upgrade']['observed_outputs'];
+        $worker['request_response_evidence']['registration']['response_source'] = 'plan_descriptor';
+        $worker['request_response_evidence']['registration']['response_observed_from_command_stdout'] = false;
+        $worker['request_response_evidence']['operator_api']['http_status'] = 500;
+        $worker['cli_worker_projection']['sdk_version'] = '2.0.0-adversarial';
+        $worker['task_queue_projection']['last_heartbeat_at'] = 'not-a-timestamp';
+
+        $evaluation = MigrationRuntimeResultGate::evaluate($result);
+
+        $this->assertSame('non_passing', $evaluation['status']);
+        $missing = $this->missingScenarioRequiredFields(
+            $evaluation,
+            'new_v2_worker_registration_after_upgrade',
+        );
+        foreach ([
+            'request_response_evidence.registration.command_stdout_response',
+            'request_response_evidence.operator_api.http_status_2xx',
+            'operator_api.last_heartbeat_at.valid',
+            'typed_response_contracts.api_cli_projection_match.last_heartbeat_at',
+            'typed_response_contracts.api_cli_projection_match.sdk_version',
+        ] as $field) {
+            $this->assertContains($field, $missing);
+        }
+    }
+
+    public function test_result_gate_uses_the_documented_worker_freshness_window_instead_of_evidence_input(): void
+    {
+        $result = $this->completeMigrationResult();
+        $worker = &$result['scenario_results']['new_v2_worker_registration_after_upgrade']['observed_outputs'];
+        $worker['freshness']['stale_after_seconds'] = 31536000;
+        $worker['task_queue_projection']['last_heartbeat_at'] = '2025-05-31T22:40:19Z';
+        $worker['cli_worker_projection']['last_heartbeat_at'] = '2025-05-31T22:40:19Z';
+
+        $evaluation = MigrationRuntimeResultGate::evaluate($result);
+
+        $this->assertSame('non_passing', $evaluation['status']);
+        $missing = $this->missingScenarioRequiredFields(
+            $evaluation,
+            'new_v2_worker_registration_after_upgrade',
+        );
+        $this->assertContains('freshness.stale_after_seconds.300', $missing);
+        $this->assertContains('freshness.operator_api.within_stale_window', $missing);
+        $this->assertContains('freshness.cli.within_stale_window', $missing);
+    }
+
+    public function test_result_gate_rejects_future_worker_heartbeat_timestamps(): void
+    {
+        $result = $this->completeMigrationResult();
+        $worker = &$result['scenario_results']['new_v2_worker_registration_after_upgrade']['observed_outputs'];
+        $worker['task_queue_projection']['last_heartbeat_at'] = '2026-06-01T22:40:19Z';
+        $worker['cli_worker_projection']['last_heartbeat_at'] = '2026-06-01T22:40:19Z';
+
+        $evaluation = MigrationRuntimeResultGate::evaluate($result);
+
+        $this->assertSame('non_passing', $evaluation['status']);
+        $missing = $this->missingScenarioRequiredFields(
+            $evaluation,
+            'new_v2_worker_registration_after_upgrade',
+        );
+        $this->assertContains('freshness.operator_api.within_stale_window', $missing);
+        $this->assertContains('freshness.cli.within_stale_window', $missing);
+    }
+
     public function test_result_gate_rejects_not_covered_placeholder_required_evidence(): void
     {
         $result = $this->completeMigrationResult();
@@ -1041,8 +1157,72 @@ class MigrationRuntimeContractTest extends TestCase
             'schedule' => ['type' => 'schedule', 'schema' => 'durable-workflow.schedule.v2'],
         ];
         $scenarioResults['new_v2_worker_registration_after_upgrade']['observed_outputs']['typed_response_contracts'] = [
+            'cli' => ['schema' => 'durable-workflow.cli.worker-projection.v2'],
             'operator_api' => ['schema' => 'durable-workflow.operator.worker-response.v2'],
             'worker_registration' => ['type' => 'worker_registration', 'schema' => 'durable-workflow.worker-registration.v2'],
+            'worker_poll' => ['type' => 'worker_task_poll', 'schema' => 'durable-workflow.worker-task-poll.v2'],
+        ];
+        $workerProjection = [
+            'worker_id' => 'migration-v2-worker',
+            'namespace' => 'migration-conformance',
+            'task_queue' => 'migration-v2-registration',
+            'status' => 'active',
+            'last_heartbeat_at' => '2026-05-31T22:40:19Z',
+            'task_slots' => [
+                'workflow_available' => 2,
+                'activity_available' => 1,
+                'session_available' => 1,
+                'workflow_capacity' => 2,
+                'activity_capacity' => 1,
+                'session_capacity' => 1,
+            ],
+            'runtime' => 'php',
+            'sdk_version' => $this->artifactVersions()['workflow-php-v2'],
+            'build_id' => 'migration-v2-build',
+            'capabilities' => ['workflow_tasks'],
+        ];
+        $operationTimestamp = [
+            'started_at' => '2026-05-31T22:40:18Z',
+            'finished_at' => '2026-05-31T22:40:19Z',
+        ];
+        $scenarioResults['new_v2_worker_registration_after_upgrade']['observed_outputs'] = [
+            ...$scenarioResults['new_v2_worker_registration_after_upgrade']['observed_outputs'],
+            'worker_id' => $workerProjection['worker_id'],
+            'namespace' => $workerProjection['namespace'],
+            'task_queue' => $workerProjection['task_queue'],
+            'unique_task_queue' => true,
+            'task_queue_projection' => $workerProjection,
+            'cli_worker_projection' => $workerProjection,
+            'protocol_metadata' => [
+                'registration' => ['protocol_version' => '1.13'],
+                'poll' => ['protocol_version' => '1.13'],
+                'operator_api' => ['runtime' => 'php'],
+                'cli' => ['runtime' => 'php'],
+            ],
+            'freshness' => [
+                'stale_after_seconds' => 300,
+                'operator_api' => ['valid' => true, 'last_heartbeat_at' => $workerProjection['last_heartbeat_at']],
+                'cli' => ['valid' => true, 'last_heartbeat_at' => $workerProjection['last_heartbeat_at']],
+            ],
+            'polling_result' => [
+                'request' => ['worker_id' => $workerProjection['worker_id'], 'task_queue' => $workerProjection['task_queue']],
+                'response' => ['poll_status' => 'empty', 'task' => null],
+                'exit_code' => 0,
+                ...$operationTimestamp,
+            ],
+            'request_response_evidence' => [
+                'registration' => ['request' => 'POST /api/worker/register', 'response' => ['registered' => true], 'http_status' => 201, 'response_source' => 'command_stdout_json', 'response_observed_from_command_stdout' => true],
+                'operator_api' => ['request' => 'GET /api/workers/migration-v2-worker', 'response' => $workerProjection, 'http_status' => 200, 'response_source' => 'command_stdout_json', 'response_observed_from_command_stdout' => true],
+                'cli' => ['request' => 'dw worker:list --output=json', 'response' => ['workers' => [$workerProjection]], 'response_source' => 'command_stdout_json', 'response_observed_from_command_stdout' => true],
+                'poll' => ['request' => 'POST /api/worker/workflow-tasks/poll', 'response' => ['poll_status' => 'empty'], 'http_status' => 200, 'response_source' => 'command_stdout_json', 'response_observed_from_command_stdout' => true],
+            ],
+            'exit_codes' => ['registration' => 0, 'operator_api' => 0, 'cli' => 0, 'poll' => 0],
+            'timestamps' => [
+                'registration' => $operationTimestamp,
+                'operator_api' => $operationTimestamp,
+                'cli' => $operationTimestamp,
+                'poll' => $operationTimestamp,
+            ],
         ];
 
         $scenarioResults['latest_supported_v1_state_setup']['observed_outputs'] = [

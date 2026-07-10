@@ -10,6 +10,7 @@ const RECORD_SCHEMA = 'durable-workflow.v2.migration-runtime.record';
 const ARTIFACT_SCHEMA = 'durable-workflow.v2.migration-runtime.published-artifacts';
 const WORKFLOW_V1_PRIMARY_PACKAGE = 'durable-workflow/workflow';
 const WORKFLOW_V1_LEGACY_PACKAGE = 'laravel-workflow/laravel-workflow';
+const FOCUSED_WORKER_PROJECTION_STALE_AFTER_SECONDS = 300;
 
 const repoRoot = process.env.DW_MIGRATION_REPO_ROOT
   ?? path.resolve(path.dirname(new URL(import.meta.url).pathname), '../..');
@@ -502,10 +503,10 @@ async function main() {
   fs.mkdirSync(resultDir, { recursive: true });
 
   let evidence = readMigrationEvidence();
-  const blockedReason = stringValue(process.env.DW_MIGRATION_BLOCKED_REASON)
+  let blockedReason = stringValue(process.env.DW_MIGRATION_BLOCKED_REASON)
     || stringValue(evidence.blocked_reason)
     || stringValue(evidence.runner_blocked_reason);
-  const runnerBlocked = truthy(evidence.runner_blocked) || truthy(evidence.runnerBlocked);
+  let runnerBlocked = truthy(evidence.runner_blocked) || truthy(evidence.runnerBlocked);
   const startedAt = stringValue(evidence.started_at)
     || stringValue(evidence.startedAt)
     || stringValue(process.env.DW_MIGRATION_STARTED_AT)
@@ -543,6 +544,7 @@ async function main() {
   );
   if (foundationPlanEvidence !== null) {
     evidence = mergeEvidenceObjects(foundationPlanEvidence, evidence);
+    evidence = preferFocusedFoundationWorkerEvidence(evidence, foundationPlanEvidence);
   }
   let storageSmoke = normalizeStorageSmoke(evidence);
   const storageFoundationEvidence = migrationFoundationEvidenceFromStorageSmoke(
@@ -565,6 +567,12 @@ async function main() {
   if (publicGuideAudit !== null) {
     evidence = mergeEvidenceObjects(publicGuideAudit, evidence);
   }
+  blockedReason = blockedReason
+    || stringValue(evidence.blocked_reason)
+    || stringValue(evidence.runner_blocked_reason);
+  runnerBlocked = runnerBlocked
+    || truthy(evidence.runner_blocked)
+    || truthy(evidence.runnerBlocked);
   storageSmoke = normalizeStorageSmoke(evidence);
   const storageSmokeOnlyProductEvidence = storageSmokeProvidesProductEvidence(storageSmoke)
     && !hasSuppliedFullMigrationEvidence(evidence);
@@ -1525,10 +1533,79 @@ function scenarioSpecificMissingRequiredFields(
         'schedule',
       ]);
     case 'new_v2_worker_registration_after_upgrade':
-      return missingEvidenceItemsForField(scenario, observedOutputs, 'typed_response_contracts', [
-        'operator_api',
-        'worker_registration',
-      ]);
+      return [
+        ...missingEvidenceItemsForField(scenario, observedOutputs, 'typed_response_contracts', [
+          'cli',
+          'operator_api',
+          'worker_registration',
+          'worker_poll',
+        ]),
+        ...missingEvidenceItemsForField(scenario, observedOutputs, 'task_queue_projection', [
+          'worker_id',
+          'namespace',
+          'task_queue',
+          'status',
+          'last_heartbeat_at',
+          'task_slots',
+          'runtime',
+          'sdk_version',
+          'build_id',
+          'capabilities',
+        ]),
+        ...missingEvidenceItemsForField(scenario, observedOutputs, 'cli_worker_projection', [
+          'worker_id',
+          'namespace',
+          'task_queue',
+          'status',
+          'last_heartbeat_at',
+          'task_slots',
+          'runtime',
+          'sdk_version',
+          'build_id',
+          'capabilities',
+        ]),
+        ...missingEvidenceItemsForField(scenario, observedOutputs, 'protocol_metadata', [
+          'registration',
+          'poll',
+          'operator_api',
+          'cli',
+        ]),
+        ...missingEvidenceItemsForField(scenario, observedOutputs, 'freshness', [
+          'stale_after_seconds',
+          'operator_api',
+          'cli',
+        ]),
+        ...missingEvidenceItemsForField(scenario, observedOutputs, 'polling_result', [
+          'request',
+          'response',
+          'exit_code',
+          'started_at',
+          'finished_at',
+        ]),
+        ...missingEvidenceItemsForField(scenario, observedOutputs, 'request_response_evidence', [
+          'registration',
+          'operator_api',
+          'cli',
+          'poll',
+        ]),
+        ...missingEvidenceItemsForField(scenario, observedOutputs, 'exit_codes', [
+          'registration',
+          'operator_api',
+          'cli',
+          'poll',
+        ]),
+        ...missingEvidenceItemsForField(scenario, observedOutputs, 'timestamps', [
+          'registration',
+          'operator_api',
+          'cli',
+          'poll',
+        ]),
+        ...(fieldValue(observedOutputs, 'unique_task_queue') === true
+          || fieldValue(scenario, 'unique_task_queue') === true
+          ? []
+          : ['unique_task_queue.true']),
+        ...missingFocusedWorkerExecutionEvidenceFields(scenario, observedOutputs),
+      ];
     case 'version_skew_refusal':
       return [
         ...['skew_matrix', 'refusal_errors', 'request_response_evidence', 'no_partial_mutation_evidence']
@@ -1548,6 +1625,106 @@ function scenarioSpecificMissingRequiredFields(
     default:
       return [];
   }
+}
+
+function missingFocusedWorkerExecutionEvidenceFields(scenario, observedOutputs) {
+  const evidence = objectValue(
+    fieldValue(observedOutputs, 'request_response_evidence')
+      ?? fieldValue(scenario, 'request_response_evidence'),
+  );
+  const exitCodes = objectValue(
+    fieldValue(observedOutputs, 'exit_codes')
+      ?? fieldValue(scenario, 'exit_codes'),
+  );
+  const freshness = objectValue(
+    fieldValue(observedOutputs, 'freshness')
+      ?? fieldValue(scenario, 'freshness'),
+  );
+  const timestamps = objectValue(
+    fieldValue(observedOutputs, 'timestamps')
+      ?? fieldValue(scenario, 'timestamps'),
+  );
+  const missing = [];
+
+  for (const operation of ['registration', 'operator_api', 'cli', 'poll']) {
+    const observation = objectValue(evidence[operation]);
+    if (
+      observation.response_observed_from_command_stdout !== true
+      || stringValue(observation.response_source) !== 'command_stdout_json'
+    ) {
+      missing.push(`request_response_evidence.${operation}.command_stdout_response`);
+    }
+    if (Number.parseInt(String(exitCodes[operation] ?? ''), 10) !== 0) {
+      missing.push(`exit_codes.${operation}.zero`);
+    }
+  }
+  for (const operation of ['registration', 'operator_api', 'poll']) {
+    const status = Number.parseInt(String(objectValue(evidence[operation]).http_status ?? ''), 10);
+    if (!Number.isInteger(status) || status < 200 || status >= 300) {
+      missing.push(`request_response_evidence.${operation}.http_status_2xx`);
+    }
+  }
+  const staleAfterSeconds = Number.parseInt(String(freshness.stale_after_seconds ?? ''), 10);
+  if (!Number.isInteger(staleAfterSeconds) || staleAfterSeconds <= 0) {
+    missing.push('freshness.stale_after_seconds.positive');
+  }
+  if (staleAfterSeconds !== FOCUSED_WORKER_PROJECTION_STALE_AFTER_SECONDS) {
+    missing.push('freshness.stale_after_seconds.300');
+  }
+  const projections = {
+    operator_api: objectValue(
+      fieldValue(observedOutputs, 'task_queue_projection')
+        ?? fieldValue(scenario, 'task_queue_projection'),
+    ),
+    cli: objectValue(
+      fieldValue(observedOutputs, 'cli_worker_projection')
+        ?? fieldValue(scenario, 'cli_worker_projection'),
+    ),
+  };
+  for (const surface of ['operator_api', 'cli']) {
+    if (objectValue(freshness[surface]).valid !== true) {
+      missing.push(`freshness.${surface}.valid`);
+    }
+    const projection = projections[surface];
+    if (stringValue(projection.status).toLowerCase() !== 'active') {
+      missing.push(`${surface}.status.active`);
+    }
+    const heartbeat = stringValue(projection.last_heartbeat_at);
+    const observedAt = stringValue(objectValue(timestamps[surface]).finished_at);
+    const heartbeatMs = Date.parse(heartbeat);
+    const observedMs = Date.parse(observedAt);
+    if (!validWorkerTimestamp(heartbeat) || !Number.isFinite(heartbeatMs)) {
+      missing.push(`${surface}.last_heartbeat_at.valid`);
+    } else if (!validWorkerTimestamp(observedAt) || !Number.isFinite(observedMs)) {
+      missing.push(`timestamps.${surface}.finished_at.valid`);
+    } else if (
+      Math.floor(heartbeatMs / 1000) > Math.floor(observedMs / 1000)
+      || observedMs - heartbeatMs > FOCUSED_WORKER_PROJECTION_STALE_AFTER_SECONDS * 1000
+    ) {
+      missing.push(`freshness.${surface}.within_stale_window`);
+    }
+    const taskSlots = objectValue(projection.task_slots);
+    for (const slot of [
+      'workflow_available',
+      'activity_available',
+      'session_available',
+      'workflow_capacity',
+      'activity_capacity',
+      'session_capacity',
+    ]) {
+      if (!Number.isInteger(taskSlots[slot])) {
+        missing.push(`${surface}.task_slots.${slot}`);
+      }
+    }
+  }
+
+  const apiProjection = projections.operator_api;
+  const cliProjection = projections.cli;
+  if (workerProjectionMismatches(apiProjection, cliProjection).length > 0) {
+    missing.push('typed_response_contracts.api_cli_projection_match');
+  }
+
+  return missing;
 }
 
 function missingGuideCommandExecutabilityFields(scenario, observedOutputs) {
@@ -5012,6 +5189,47 @@ function maybeExecuteFoundationPlan(
   );
 }
 
+function preferFocusedFoundationWorkerEvidence(evidence, foundationEvidence) {
+  const scenarioId = 'new_v2_worker_registration_after_upgrade';
+  const focusedScenario = scenarioResultsById(foundationEvidence)[scenarioId];
+  if (!focusedScenario) {
+    return evidence;
+  }
+
+  const preferred = { ...objectValue(evidence) };
+  preferred.scenario_results = {
+    ...scenarioResultsById(evidence),
+    [scenarioId]: focusedScenario,
+  };
+  const foundationWorkerObservations = nonEmptyObject(
+    fieldValue(foundationEvidence, 'worker_registration_observations'),
+  );
+  if (foundationWorkerObservations !== null) {
+    preferred.worker_registration_observations = foundationWorkerObservations;
+  }
+
+  const findingLinks = { ...objectValue(preferred.finding_links ?? preferred.findingLinks) };
+  const focusedLinks = arrayValue(
+    objectValue(foundationEvidence.finding_links ?? foundationEvidence.findingLinks)[scenarioId],
+  );
+  if (focusedLinks.length > 0) {
+    findingLinks[scenarioId] = focusedLinks;
+  } else {
+    delete findingLinks[scenarioId];
+  }
+  preferred.finding_links = findingLinks;
+  preferred.findings = arrayValue(preferred.findings)
+    .filter((finding) => stringValue(objectValue(finding).scenario_id) !== scenarioId);
+
+  if (truthy(foundationEvidence.runner_blocked) || truthy(foundationEvidence.runnerBlocked)) {
+    preferred.runner_blocked = true;
+    preferred.runner_blocked_reason = stringValue(foundationEvidence.runner_blocked_reason)
+      || stringValue(foundationEvidence.blocked_reason);
+  }
+
+  return preferred;
+}
+
 function foundationPlanDisabled() {
   return ['0', 'false', 'no', 'off', 'disabled'].includes(foundationPlanMode);
 }
@@ -5101,6 +5319,12 @@ function executeFoundationPlan(
     'queue_state_observations',
     'queueStateObservations',
   ]);
+  const newV2WorkerSource = firstNonEmptyObject(plan, [
+    'new_v2_worker_registration_after_upgrade',
+    'newV2WorkerRegistrationAfterUpgrade',
+    'new_v2_worker_registration',
+    'newV2WorkerRegistration',
+  ]);
   const executedAt = timestamp();
   const v1Setup = buildFoundationV1SetupEvidence(
     v1SetupSource,
@@ -5108,15 +5332,15 @@ function executeFoundationPlan(
     source,
     defaults,
   );
-  const migrationExecution = buildFoundationMigrationStepEvidence(
-    migrationStepSource,
-    guideRevision,
-    source,
-    defaults,
-  );
   const preupgradeSnapshot = buildFoundationSnapshotEvidence(
     'preupgrade_state_snapshot',
     preupgradeSource,
+    source,
+    defaults,
+  );
+  const migrationExecution = buildFoundationMigrationStepEvidence(
+    migrationStepSource,
+    guideRevision,
     source,
     defaults,
   );
@@ -5132,98 +5356,141 @@ function executeFoundationPlan(
     source,
     defaults,
   );
+  const newV2Worker = buildFoundationV2WorkerRegistrationEvidence(
+    newV2WorkerSource,
+    source,
+    defaults,
+  );
   const anyCommandFailed = [
     v1Setup,
     migrationExecution,
     preupgradeSnapshot,
     postupgradeSnapshot,
     queueState,
+    newV2Worker,
   ].some((section) => section.commands_failed);
   const evidence = {
-    migration_plan: foundationTopLevelObservation(
-      'migration_plan',
-      {
-        status: migrationExecution.status,
-        source,
-        migration_guide_revision: migrationExecution.migration_guide_revision,
-        guide_command_executability: migrationExecution.guide_command_executability,
-        commands_executed: migrationExecution.commands_executed,
-        exit_codes: migrationExecution.exit_codes,
-        command_timings: migrationExecution.command_timings,
-        command_outputs: migrationExecution.command_outputs,
-        schema_or_storage_migration_output: migrationExecution.schema_or_storage_migration_output,
-        observed_behavior: migrationExecution.observed_behavior,
-        foundation_plan_executed_at: executedAt,
-        commands_failed: migrationExecution.commands_failed,
-      },
-      resolvedArtifactVersions,
-      publishedArtifactVersions,
-      artifactSources,
-    ),
-    preupgrade_state_snapshot: foundationTopLevelObservation(
-      'preupgrade_state_snapshot',
-      {
-        status: preupgradeSnapshot.status,
-        source,
-        state_kinds: preupgradeSnapshot.state_kinds,
-        observed_states: preupgradeSnapshot.observed_states,
-        observed_behavior: preupgradeSnapshot.observed_behavior,
-        commands_failed: preupgradeSnapshot.commands_failed,
-      },
-      resolvedArtifactVersions,
-      publishedArtifactVersions,
-      artifactSources,
-    ),
-    postupgrade_state_snapshot: foundationTopLevelObservation(
-      'postupgrade_state_snapshot',
-      {
-        status: postupgradeSnapshot.status,
-        source,
-        state_kinds: postupgradeSnapshot.state_kinds,
-        observed_states: postupgradeSnapshot.observed_states,
-        observed_behavior: postupgradeSnapshot.observed_behavior,
-        commands_failed: postupgradeSnapshot.commands_failed,
-      },
-      resolvedArtifactVersions,
-      publishedArtifactVersions,
-      artifactSources,
-    ),
-    scenario_results: {
-      latest_supported_v1_state_setup: {
-        scenario_id: 'latest_supported_v1_state_setup',
-        status: v1Setup.status,
-        started_at: planStartedAt,
-        finished_at: timestamp(),
-        observed_outputs: {
+    ...(Object.keys(migrationStepSource).length > 0 ? {
+      migration_plan: foundationTopLevelObservation(
+        'migration_plan',
+        {
+          status: migrationExecution.status,
           source,
-          local_product_source_checkouts_used: false,
-          source_release_versions: sourceReleaseVersions,
-          seeded_workflows: v1Setup.seeded_workflows,
-          seeded_schedules: v1Setup.seeded_schedules,
-          seeded_worker_registrations: v1Setup.seeded_worker_registrations,
-          seeded_queue_state: v1Setup.seeded_queue_state,
-          queryable_history: v1Setup.queryable_history,
-          observed_behavior: v1Setup.observed_behavior,
-        },
-      },
-      documented_migration_steps_execute: {
-        scenario_id: 'documented_migration_steps_execute',
-        status: migrationExecution.status,
-        started_at: planStartedAt,
-        finished_at: timestamp(),
-        observed_outputs: {
-          source,
-          local_product_source_checkouts_used: false,
           migration_guide_revision: migrationExecution.migration_guide_revision,
           guide_command_executability: migrationExecution.guide_command_executability,
           commands_executed: migrationExecution.commands_executed,
           exit_codes: migrationExecution.exit_codes,
           command_timings: migrationExecution.command_timings,
-          schema_or_storage_migration_output: migrationExecution.schema_or_storage_migration_output,
           command_outputs: migrationExecution.command_outputs,
+          schema_or_storage_migration_output: migrationExecution.schema_or_storage_migration_output,
           observed_behavior: migrationExecution.observed_behavior,
+          foundation_plan_executed_at: executedAt,
+          commands_failed: migrationExecution.commands_failed,
         },
-      },
+        resolvedArtifactVersions,
+        publishedArtifactVersions,
+        artifactSources,
+      ),
+    } : {}),
+    ...(Object.keys(preupgradeSource).length > 0 ? {
+      preupgrade_state_snapshot: foundationTopLevelObservation(
+        'preupgrade_state_snapshot',
+        {
+          status: preupgradeSnapshot.status,
+          source,
+          state_kinds: preupgradeSnapshot.state_kinds,
+          observed_states: preupgradeSnapshot.observed_states,
+          observed_behavior: preupgradeSnapshot.observed_behavior,
+          commands_failed: preupgradeSnapshot.commands_failed,
+        },
+        resolvedArtifactVersions,
+        publishedArtifactVersions,
+        artifactSources,
+      ),
+    } : {}),
+    ...(Object.keys(postupgradeSource).length > 0 ? {
+      postupgrade_state_snapshot: foundationTopLevelObservation(
+        'postupgrade_state_snapshot',
+        {
+          status: postupgradeSnapshot.status,
+          source,
+          state_kinds: postupgradeSnapshot.state_kinds,
+          observed_states: postupgradeSnapshot.observed_states,
+          observed_behavior: postupgradeSnapshot.observed_behavior,
+          commands_failed: postupgradeSnapshot.commands_failed,
+        },
+        resolvedArtifactVersions,
+        publishedArtifactVersions,
+        artifactSources,
+      ),
+    } : {}),
+    ...(Object.keys(newV2WorkerSource).length > 0 ? {
+      worker_registration_observations: foundationTopLevelObservation(
+        'worker_registration_observations',
+        {
+          status: newV2Worker.status,
+          source,
+          worker_id: newV2Worker.worker_id,
+          namespace: newV2Worker.namespace,
+          task_queue: newV2Worker.task_queue,
+          unique_task_queue: newV2Worker.unique_task_queue,
+          task_queue_projection: newV2Worker.task_queue_projection,
+          cli_worker_projection: newV2Worker.cli_worker_projection,
+          protocol_metadata: newV2Worker.protocol_metadata,
+          freshness: newV2Worker.freshness,
+          request_response_evidence: newV2Worker.request_response_evidence,
+          exit_codes: newV2Worker.exit_codes,
+          timestamps: newV2Worker.timestamps,
+          observed_behavior: newV2Worker.observed_behavior,
+          commands_failed: newV2Worker.commands_failed,
+          product_failures: newV2Worker.product_failures,
+          runner_failures: newV2Worker.runner_failures,
+        },
+        resolvedArtifactVersions,
+        publishedArtifactVersions,
+        artifactSources,
+      ),
+    } : {}),
+    scenario_results: {
+      ...(Object.keys(v1SetupSource).length > 0 ? {
+        latest_supported_v1_state_setup: {
+          scenario_id: 'latest_supported_v1_state_setup',
+          status: v1Setup.status,
+          started_at: planStartedAt,
+          finished_at: timestamp(),
+          observed_outputs: {
+            source,
+            local_product_source_checkouts_used: false,
+            source_release_versions: sourceReleaseVersions,
+            seeded_workflows: v1Setup.seeded_workflows,
+            seeded_schedules: v1Setup.seeded_schedules,
+            seeded_worker_registrations: v1Setup.seeded_worker_registrations,
+            seeded_queue_state: v1Setup.seeded_queue_state,
+            queryable_history: v1Setup.queryable_history,
+            observed_behavior: v1Setup.observed_behavior,
+          },
+        },
+      } : {}),
+      ...(Object.keys(migrationStepSource).length > 0 ? {
+        documented_migration_steps_execute: {
+          scenario_id: 'documented_migration_steps_execute',
+          status: migrationExecution.status,
+          started_at: planStartedAt,
+          finished_at: timestamp(),
+          observed_outputs: {
+            source,
+            local_product_source_checkouts_used: false,
+            migration_guide_revision: migrationExecution.migration_guide_revision,
+            guide_command_executability: migrationExecution.guide_command_executability,
+            commands_executed: migrationExecution.commands_executed,
+            exit_codes: migrationExecution.exit_codes,
+            command_timings: migrationExecution.command_timings,
+            schema_or_storage_migration_output: migrationExecution.schema_or_storage_migration_output,
+            command_outputs: migrationExecution.command_outputs,
+            observed_behavior: migrationExecution.observed_behavior,
+          },
+        },
+      } : {}),
       ...(Object.keys(queueStateSource).length > 0 ? {
         queue_state_preserved: {
           scenario_id: 'queue_state_preserved',
@@ -5242,10 +5509,47 @@ function executeFoundationPlan(
           },
         },
       } : {}),
+      ...(Object.keys(newV2WorkerSource).length > 0 ? {
+        new_v2_worker_registration_after_upgrade: {
+          scenario_id: 'new_v2_worker_registration_after_upgrade',
+          status: newV2Worker.status,
+          started_at: newV2Worker.started_at,
+          finished_at: newV2Worker.finished_at,
+          observed_outputs: {
+            source,
+            local_product_source_checkouts_used: false,
+            registration_request: newV2Worker.registration_request,
+            registration_response: newV2Worker.registration_response,
+            worker_id: newV2Worker.worker_id,
+            namespace: newV2Worker.namespace,
+            task_queue: newV2Worker.task_queue,
+            unique_task_queue: newV2Worker.unique_task_queue,
+            task_queue_projection: newV2Worker.task_queue_projection,
+            operator_api_response: newV2Worker.operator_api_response,
+            cli_worker_projection: newV2Worker.cli_worker_projection,
+            typed_response_contracts: newV2Worker.typed_response_contracts,
+            protocol_metadata: newV2Worker.protocol_metadata,
+            freshness: newV2Worker.freshness,
+            poll_request: newV2Worker.poll_request,
+            polling_result: newV2Worker.polling_result,
+            request_response_evidence: newV2Worker.request_response_evidence,
+            exit_codes: newV2Worker.exit_codes,
+            timestamps: newV2Worker.timestamps,
+            observed_behavior: newV2Worker.observed_behavior,
+            commands_failed: newV2Worker.commands_failed,
+            product_failures: newV2Worker.product_failures,
+            runner_failures: newV2Worker.runner_failures,
+          },
+        },
+      } : {}),
     },
+    ...(newV2Worker.runner_blocked ? {
+      runner_blocked: true,
+      runner_blocked_reason: newV2Worker.observed_behavior,
+    } : {}),
   };
 
-  if (anyCommandFailed) {
+  if (anyCommandFailed || newV2Worker.status === 'fail') {
     evidence.finding_links = {
       latest_supported_v1_state_setup: v1Setup.commands_failed ? [
         foundationCommandFailureFinding(
@@ -5266,6 +5570,12 @@ function executeFoundationPlan(
           'queue_state_preserved',
           resolvedArtifactVersions,
           queueState.observed_behavior,
+        ),
+      ] : [],
+      new_v2_worker_registration_after_upgrade: newV2Worker.product_failures.length > 0 ? [
+        foundationWorkerRegistrationFinding(
+          resolvedArtifactVersions,
+          newV2Worker,
         ),
       ] : [],
     };
@@ -5391,6 +5701,828 @@ function buildFoundationQueueStateEvidence(source, v1Setup, evidenceSource, defa
           missingEvidence,
           evidenceSource,
         ),
+  };
+}
+
+function buildFoundationV2WorkerRegistrationEvidence(source, evidenceSource, defaults) {
+  const worker = objectValue(source);
+  const startedAt = timestamp();
+  if (Object.keys(worker).length === 0) {
+    return {
+      status: 'not_covered',
+      started_at: startedAt,
+      finished_at: timestamp(),
+      worker_id: '',
+      namespace: '',
+      task_queue: '',
+      unique_task_queue: false,
+      task_queue_projection: {},
+      cli_worker_projection: {},
+      protocol_metadata: {},
+      request_response_evidence: {},
+      exit_codes: {},
+      timestamps: {},
+      commands_failed: false,
+      product_failures: [],
+      runner_failures: [],
+      runner_blocked: false,
+      observed_behavior: 'No focused post-upgrade v2 worker registration plan was supplied.',
+    };
+  }
+
+  const registration = executeWorkerRegistrationOperation(
+    firstNonEmptyObject(worker, [
+      'registration_request',
+      'registrationRequest',
+      'register',
+      'registration',
+    ]),
+    'registration',
+    'POST /api/worker/register',
+    defaults,
+  );
+  const operatorApi = executeWorkerRegistrationOperation(
+    firstNonEmptyObject(worker, [
+      'operator_api_response',
+      'operatorApiResponse',
+      'operator_api_projection',
+      'operatorApiProjection',
+      'api_projection',
+      'apiProjection',
+    ]),
+    'operator_api',
+    'GET /api/workers/{worker_id}',
+    defaults,
+  );
+  const cliProjection = executeWorkerRegistrationOperation(
+    firstNonEmptyObject(worker, [
+      'cli_worker_projection',
+      'cliWorkerProjection',
+      'cli_projection',
+      'cliProjection',
+      'worker_list_json',
+      'workerListJson',
+    ]),
+    'cli',
+    'dw worker:list --task-queue=<unique-task-queue> --output=json',
+    defaults,
+  );
+  const poll = executeWorkerRegistrationOperation(
+    firstNonEmptyObject(worker, [
+      'polling_result',
+      'pollingResult',
+      'poll_request',
+      'pollRequest',
+      'poll',
+    ]),
+    'poll',
+    'POST /api/worker/workflow-tasks/poll',
+    defaults,
+  );
+  const registrationBody = workerOperationResponseBody(registration);
+  const workerId = stringValue(worker.worker_id)
+    || stringValue(worker.workerId)
+    || stringValue(objectValue(registration.request).worker_id)
+    || stringValue(objectValue(registration.request).workerId)
+    || stringValue(objectValue(registrationBody).worker_id)
+    || stringValue(objectValue(registrationBody).workerId);
+  const namespace = stringValue(worker.namespace)
+    || stringValue(objectValue(registration.request).namespace)
+    || stringValue(objectValue(registrationBody).namespace);
+  const taskQueue = stringValue(worker.task_queue)
+    || stringValue(worker.taskQueue)
+    || stringValue(objectValue(registration.request).task_queue)
+    || stringValue(objectValue(registration.request).taskQueue)
+    || stringValue(objectValue(registrationBody).task_queue)
+    || stringValue(objectValue(registrationBody).taskQueue);
+  const apiWorker = workerProjectionFor(workerOperationResponseBody(operatorApi), workerId);
+  const cliWorker = workerProjectionFor(workerOperationResponseBody(cliProjection), workerId);
+  const pollBody = workerOperationResponseBody(poll);
+  const protocolMetadata = {
+    registration: workerProtocolMetadata(registrationBody),
+    poll: workerProtocolMetadata(pollBody),
+    operator_api: projectionProtocolMetadata(apiWorker),
+    cli: projectionProtocolMetadata(cliWorker),
+  };
+  const staleAfterSeconds = workerProjectionStaleAfterSeconds();
+  const freshness = {
+    stale_after_seconds: staleAfterSeconds,
+    operator_api: workerProjectionFreshness(apiWorker, operatorApi, staleAfterSeconds),
+    cli: workerProjectionFreshness(cliWorker, cliProjection, staleAfterSeconds),
+  };
+  const operations = {
+    registration,
+    operator_api: operatorApi,
+    cli: cliProjection,
+    poll,
+  };
+  const runnerFailures = [];
+  const productFailures = [];
+
+  for (const [operation, observation] of Object.entries(operations)) {
+    if (stringValue(observation.command) === '') {
+      runnerFailures.push(workerRegistrationFailure(
+        'missing_operation_command',
+        operation,
+        observation,
+        `The focused worker-registration plan did not supply an executable ${operation} command.`,
+        'conformance_harness',
+      ));
+      continue;
+    }
+    if (
+      operation !== 'cli'
+      && Number.isInteger(observation.http_status)
+      && (observation.http_status < 200 || observation.http_status >= 300)
+    ) {
+      productFailures.push(workerRegistrationFailure(
+        'unsuccessful_http_status',
+        operation,
+        observation,
+        `The ${operation} endpoint returned HTTP ${observation.http_status}; a successful 2xx response is required.`,
+        workerRegistrationOperationOwner(operation),
+      ));
+      continue;
+    }
+    if (stringValue(observation.status) === 'pass') {
+      if (observation.response_observed_from_command_stdout !== true) {
+        runnerFailures.push(workerRegistrationFailure(
+          'operation_response_not_observed',
+          operation,
+          observation,
+          `The ${operation} command did not emit a JSON response on stdout. Plan-supplied response fields are not observations.`,
+          'conformance_harness',
+        ));
+      }
+      continue;
+    }
+
+    const failure = workerRegistrationFailure(
+      'operation_command_failed',
+      operation,
+      observation,
+      `The ${operation} command did not exit successfully.`,
+      workerRegistrationOperationOwner(operation),
+    );
+    if (workerRegistrationCommandIsRunnerFailure(observation)) {
+      runnerFailures.push(failure);
+    } else {
+      productFailures.push(failure);
+    }
+  }
+
+  if (worker.unique_task_queue !== true && worker.uniqueTaskQueue !== true) {
+    runnerFailures.push(workerRegistrationFailure(
+      'task_queue_not_proven_unique',
+      'registration',
+      registration,
+      'The focused plan did not attest unique_task_queue=true for the net-new post-upgrade worker queue.',
+      'conformance_harness',
+    ));
+  }
+
+  if (runnerFailures.length === 0) {
+    productFailures.push(...workerRegistrationProductFailures({
+      workerId,
+      namespace,
+      taskQueue,
+      uniqueTaskQueue: worker.unique_task_queue === true || worker.uniqueTaskQueue === true,
+      registration,
+      registrationBody,
+      operatorApi,
+      apiWorker,
+      cliProjection,
+      cliWorker,
+      poll,
+      pollBody,
+      freshness,
+    }));
+  }
+
+  const commandsFailed = Object.values(operations)
+    .some((operation) => stringValue(operation.status) !== 'pass');
+  const runnerBlocked = runnerFailures.length > 0;
+  const status = runnerBlocked || productFailures.length > 0 ? 'fail' : 'pass';
+  const finishedAt = timestamp();
+  const requestResponseEvidence = Object.fromEntries(
+    Object.entries(operations).map(([operation, observation]) => [operation, {
+      endpoint: observation.endpoint,
+      command: observation.command,
+      request: observation.request,
+      response: observation.response,
+      response_source: observation.response_source,
+      response_observed_from_command_stdout: observation.response_observed_from_command_stdout,
+      http_status: observation.http_status,
+      exit_code: observation.exit_code,
+      started_at: observation.started_at,
+      finished_at: observation.finished_at,
+    }]),
+  );
+  const exitCodes = Object.fromEntries(
+    Object.entries(operations).map(([operation, observation]) => [operation, observation.exit_code]),
+  );
+  const timestamps = Object.fromEntries(
+    Object.entries(operations).map(([operation, observation]) => [operation, {
+      started_at: observation.started_at,
+      finished_at: observation.finished_at,
+    }]),
+  );
+  const observedBehavior = status === 'pass'
+    ? `Registered net-new v2 worker ${workerId} on unique task queue ${taskQueue}, observed matching typed API and CLI projections, and completed a public worker-protocol poll.`
+    : runnerBlocked
+      ? workerRegistrationFailureSummary('runner_infrastructure', runnerFailures, evidenceSource)
+      : workerRegistrationFailureSummary('product', productFailures, evidenceSource);
+
+  return {
+    status,
+    started_at: startedAt,
+    finished_at: finishedAt,
+    registration_request: registration,
+    registration_response: registrationBody,
+    worker_id: workerId,
+    namespace,
+    task_queue: taskQueue,
+    unique_task_queue: worker.unique_task_queue === true || worker.uniqueTaskQueue === true,
+    task_queue_projection: apiWorker,
+    operator_api_response: operatorApi,
+    cli_worker_projection: cliWorker,
+    typed_response_contracts: {
+      operator_api: typedWorkerProjectionContract('operator_api', apiWorker, freshness.operator_api),
+      cli: typedWorkerProjectionContract('cli', cliWorker, freshness.cli),
+      worker_registration: {
+        type: 'worker_registration',
+        schema: 'durable-workflow.worker-registration.v2',
+        response_type: jsonType(registrationBody),
+      },
+      worker_poll: {
+        type: 'worker_task_poll',
+        schema: 'durable-workflow.worker-task-poll.v2',
+        response_type: jsonType(pollBody),
+      },
+    },
+    protocol_metadata: protocolMetadata,
+    freshness,
+    poll_request: poll.request,
+    polling_result: poll,
+    request_response_evidence: requestResponseEvidence,
+    exit_codes: exitCodes,
+    timestamps,
+    commands_failed: commandsFailed,
+    product_failures: productFailures,
+    runner_failures: runnerFailures,
+    runner_blocked: runnerBlocked,
+    observed_behavior: observedBehavior,
+  };
+}
+
+function executeWorkerRegistrationOperation(rawOperation, operation, defaultEndpoint, defaults) {
+  const descriptor = objectValue(rawOperation);
+  if (Object.keys(descriptor).length === 0) {
+    return {
+      operation,
+      endpoint: defaultEndpoint,
+      command: '',
+      request: {},
+      response: null,
+      response_source: 'missing_command_stdout_json',
+      response_observed_from_command_stdout: false,
+      http_status: null,
+      exit_code: 127,
+      status: 'fail',
+      started_at: timestamp(),
+      finished_at: timestamp(),
+      timed_out: false,
+      signal: null,
+      stderr: 'focused worker-registration operation was not supplied',
+    };
+  }
+
+  const executed = objectValue(executeCommandDescriptor(descriptor, defaults));
+  const parsedStdout = parseJsonCommandOutput(executed.stdout);
+  const response = parsedStdout;
+  const request = firstDefinedValue(executed, [
+    'request',
+    'request_body',
+    'requestBody',
+    'payload',
+    'body',
+  ]) ?? {};
+  const httpStatus = workerOperationHttpStatus(executed.stdout, response);
+
+  return {
+    ...executed,
+    operation,
+    endpoint: stringValue(executed.endpoint)
+      || stringValue(executed.path)
+      || defaultEndpoint,
+    request,
+    response,
+    response_source: parsedStdout === null ? 'missing_command_stdout_json' : 'command_stdout_json',
+    response_observed_from_command_stdout: parsedStdout !== null,
+    http_status: httpStatus,
+  };
+}
+
+function parseJsonCommandOutput(value) {
+  const output = stringValue(value).trim();
+  if (output === '') {
+    return null;
+  }
+
+  const candidates = [
+    output,
+    ...output.split(/\r?\n/).map((line) => line.trim()).filter(Boolean).reverse(),
+  ];
+  const objectStart = output.indexOf('{');
+  const objectEnd = output.lastIndexOf('}');
+  if (objectStart >= 0 && objectEnd > objectStart) {
+    candidates.push(output.slice(objectStart, objectEnd + 1));
+  }
+  const arrayStart = output.indexOf('[');
+  const arrayEnd = output.lastIndexOf(']');
+  if (arrayStart >= 0 && arrayEnd > arrayStart) {
+    candidates.push(output.slice(arrayStart, arrayEnd + 1));
+  }
+  for (const candidate of candidates) {
+    try {
+      const parsed = JSON.parse(candidate);
+      if (parsed !== null && typeof parsed === 'object') {
+        return parsed;
+      }
+    } catch {
+      // Commands may log before emitting a final JSON response line.
+    }
+  }
+
+  return null;
+}
+
+function firstDefinedValue(container, fields) {
+  const object = objectValue(container);
+  for (const field of fields) {
+    if (Object.hasOwn(object, field) && object[field] !== undefined && object[field] !== null) {
+      return object[field];
+    }
+  }
+
+  return undefined;
+}
+
+function workerOperationHttpStatus(stdout, response) {
+  for (const source of [objectValue(response)]) {
+    for (const field of ['http_status', 'httpStatus', 'status_code', 'statusCode']) {
+      const value = Number.parseInt(String(objectValue(source)[field] ?? ''), 10);
+      if (Number.isInteger(value) && value >= 100 && value <= 599) {
+        return value;
+      }
+    }
+  }
+
+  const outputStatus = stringValue(stdout).match(/(?:^|\n)([1-5]\d\d)\s*$/);
+  if (outputStatus !== null) {
+    return Number.parseInt(outputStatus[1], 10);
+  }
+
+  return null;
+}
+
+function workerOperationResponseBody(operation) {
+  const response = operation?.response;
+  if (!response || typeof response !== 'object') {
+    return response;
+  }
+
+  for (const field of ['body', 'response_body', 'responseBody']) {
+    const value = response[field];
+    if (value !== undefined && value !== null) {
+      return value;
+    }
+  }
+
+  return response;
+}
+
+function workerProjectionFor(value, workerId) {
+  if (!value || typeof value !== 'object') {
+    return {};
+  }
+  if (Array.isArray(value)) {
+    for (const entry of value) {
+      const projection = workerProjectionFor(entry, workerId);
+      if (Object.keys(projection).length > 0) {
+        return projection;
+      }
+    }
+    return {};
+  }
+
+  const object = objectValue(value);
+  const projectedWorkerId = stringValue(object.worker_id) || stringValue(object.workerId);
+  if (projectedWorkerId !== '' && (workerId === '' || projectedWorkerId === workerId)) {
+    return object;
+  }
+
+  for (const field of ['workers', 'worker', 'data', 'result', 'items']) {
+    const projection = workerProjectionFor(object[field], workerId);
+    if (Object.keys(projection).length > 0) {
+      return projection;
+    }
+  }
+
+  return {};
+}
+
+function workerProtocolMetadata(value) {
+  const body = objectValue(value);
+  return {
+    protocol_version: stringValue(body.protocol_version) || stringValue(body.protocolVersion),
+    server_capabilities: objectValue(body.server_capabilities ?? body.serverCapabilities),
+  };
+}
+
+function projectionProtocolMetadata(projection) {
+  const worker = objectValue(projection);
+  return {
+    runtime: worker.runtime ?? null,
+    sdk_version: worker.sdk_version ?? worker.sdkVersion ?? null,
+    build_id: worker.build_id ?? worker.buildId ?? null,
+    capabilities: Array.isArray(worker.capabilities) ? worker.capabilities : [],
+  };
+}
+
+function typedWorkerProjectionContract(surface, projection, freshness) {
+  const worker = objectValue(projection);
+  return {
+    type: 'worker_projection',
+    schema: surface === 'cli'
+      ? 'durable-workflow.cli.worker-projection.v2'
+      : 'durable-workflow.operator.worker-projection.v2',
+    surface,
+    projection: workerProjectionComparisonValue(worker),
+    freshness,
+    field_types: {
+      worker_id: jsonType(worker.worker_id),
+      namespace: jsonType(worker.namespace),
+      task_queue: jsonType(worker.task_queue),
+      status: jsonType(worker.status),
+      last_heartbeat_at: jsonType(worker.last_heartbeat_at),
+      task_slots: jsonType(worker.task_slots),
+      runtime: jsonType(worker.runtime),
+      sdk_version: jsonType(worker.sdk_version),
+      build_id: jsonType(worker.build_id),
+      capabilities: jsonType(worker.capabilities),
+    },
+  };
+}
+
+function jsonType(value) {
+  if (value === null) {
+    return 'null';
+  }
+  if (Array.isArray(value)) {
+    return 'array';
+  }
+
+  return typeof value;
+}
+
+function workerRegistrationProductFailures(context) {
+  const failures = [];
+  const add = (code, operation, observation, detail, owner = workerRegistrationOperationOwner(operation)) => {
+    failures.push(workerRegistrationFailure(code, operation, observation, detail, owner));
+  };
+  const registration = objectValue(context.registrationBody);
+  for (const [operation, observation] of [
+    ['registration', context.registration],
+    ['operator_api', context.operatorApi],
+    ['poll', context.poll],
+  ]) {
+    if (!Number.isInteger(observation.http_status)) {
+      add(
+        'http_status_not_observed',
+        operation,
+        observation,
+        `The ${operation} command output did not include an HTTP status.`,
+      );
+    }
+  }
+  if (context.workerId === '' || context.namespace === '' || context.taskQueue === '') {
+    add(
+      'missing_worker_identity_scope',
+      'registration',
+      context.registration,
+      'Registration evidence did not identify a worker_id, namespace, and task_queue.',
+    );
+  }
+  if (
+    registration.registered !== true
+    || stringValue(registration.worker_id) !== context.workerId
+    || stringValue(registration.namespace) !== context.namespace
+    || stringValue(registration.task_queue) !== context.taskQueue
+  ) {
+    add(
+      'registration_response_mismatch',
+      'registration',
+      context.registration,
+      'The public worker registration response did not confirm the requested worker identity, namespace, and unique task queue.',
+    );
+  }
+  for (const [operation, observation, projection] of [
+    ['operator_api', context.operatorApi, context.apiWorker],
+    ['cli', context.cliProjection, context.cliWorker],
+  ]) {
+    const missing = workerProjectionFailures(
+      projection,
+      context.workerId,
+      context.namespace,
+      context.taskQueue,
+      context.freshness[operation],
+    );
+    if (missing.length > 0) {
+      add(
+        'worker_projection_incomplete',
+        operation,
+        observation,
+        `The ${operation} worker projection was missing or mismatched: ${missing.join(', ')}.`,
+      );
+    }
+  }
+  const projectionMismatches = workerProjectionMismatches(context.apiWorker, context.cliWorker);
+  if (projectionMismatches.length > 0) {
+    add(
+      'worker_projection_mismatch',
+      'cli',
+      context.cliProjection,
+      `The typed API and CLI worker projections disagree on: ${projectionMismatches.join(', ')}.`,
+      'cli',
+    );
+  }
+  const registrationProtocol = workerProtocolMetadata(context.registrationBody);
+  const pollProtocol = workerProtocolMetadata(context.pollBody);
+  if (
+    registrationProtocol.protocol_version === ''
+    || Object.keys(registrationProtocol.server_capabilities).length === 0
+    || pollProtocol.protocol_version === ''
+    || Object.keys(pollProtocol.server_capabilities).length === 0
+  ) {
+    add(
+      'worker_protocol_metadata_missing',
+      'poll',
+      context.poll,
+      'Registration and poll responses must expose protocol_version and server_capabilities metadata.',
+    );
+  }
+  const pollRequest = objectValue(context.poll.request);
+  const pollBody = objectValue(context.pollBody);
+  const pollStatus = stringValue(pollBody.poll_status) || stringValue(pollBody.pollStatus);
+  if (
+    stringValue(pollRequest.worker_id) !== context.workerId
+    || stringValue(pollRequest.task_queue) !== context.taskQueue
+  ) {
+    add(
+      'poll_request_scope_mismatch',
+      'poll',
+      context.poll,
+      'The worker poll request did not use the registered worker identity and unique task queue.',
+    );
+  }
+  if (!['empty', 'leased'].includes(pollStatus)) {
+    add(
+      'worker_poll_unsuccessful',
+      'poll',
+      context.poll,
+      `The registered worker poll returned poll_status=${pollStatus || '(missing)'} instead of empty or leased.`,
+    );
+  }
+
+  return failures;
+}
+
+function workerProjectionFailures(value, workerId, namespace, taskQueue, freshness) {
+  const projection = objectValue(value);
+  const missing = [];
+  for (const [field, expected] of [
+    ['worker_id', workerId],
+    ['namespace', namespace],
+    ['task_queue', taskQueue],
+  ]) {
+    if (stringValue(projection[field]) !== expected) {
+      missing.push(field);
+    }
+  }
+  const status = stringValue(projection.status).toLowerCase();
+  if (status !== 'active') {
+    missing.push('fresh_status');
+  }
+  if (freshness.valid !== true) {
+    missing.push(...arrayOfStrings(freshness.failures).map((failure) => `freshness.${failure}`));
+  }
+  const taskSlots = objectValue(projection.task_slots);
+  for (const field of [
+    'workflow_available',
+    'activity_available',
+    'session_available',
+    'workflow_capacity',
+    'activity_capacity',
+    'session_capacity',
+  ]) {
+    if (!Object.hasOwn(taskSlots, field) || !Number.isInteger(taskSlots[field])) {
+      missing.push(`task_slots.${field}`);
+    }
+  }
+  for (const field of ['runtime', 'sdk_version', 'build_id', 'capabilities']) {
+    if (!Object.hasOwn(projection, field)) {
+      missing.push(`protocol_metadata.${field}`);
+    }
+  }
+  if (stringValue(projection.runtime) === '' || stringValue(projection.sdk_version) === '') {
+    missing.push('protocol_metadata.runtime_or_sdk_version');
+  }
+  if (!Array.isArray(projection.capabilities)) {
+    missing.push('protocol_metadata.capabilities');
+  }
+
+  return uniqueStrings(missing);
+}
+
+function workerProjectionStaleAfterSeconds() {
+  return FOCUSED_WORKER_PROJECTION_STALE_AFTER_SECONDS;
+}
+
+function workerProjectionFreshness(projection, observation, staleAfterSeconds) {
+  const heartbeat = stringValue(objectValue(projection).last_heartbeat_at);
+  const observedAt = stringValue(observation.finished_at);
+  const heartbeatMs = Date.parse(heartbeat);
+  const observedMs = Date.parse(observedAt);
+  const failures = [];
+  let ageSeconds = null;
+
+  if (!validWorkerTimestamp(heartbeat) || !Number.isFinite(heartbeatMs)) {
+    failures.push('last_heartbeat_at_invalid');
+  }
+  if (!validWorkerTimestamp(observedAt) || !Number.isFinite(observedMs)) {
+    failures.push('observation_timestamp_invalid');
+  }
+  if (Number.isFinite(heartbeatMs) && Number.isFinite(observedMs)) {
+    ageSeconds = (observedMs - heartbeatMs) / 1000;
+    if (Math.floor(heartbeatMs / 1000) > Math.floor(observedMs / 1000)) {
+      failures.push('last_heartbeat_at_in_future');
+    }
+    if (ageSeconds > staleAfterSeconds) {
+      failures.push('last_heartbeat_at_stale');
+    }
+  }
+
+  return {
+    status: stringValue(objectValue(projection).status),
+    last_heartbeat_at: heartbeat || null,
+    observed_at: observedAt || null,
+    age_seconds: ageSeconds,
+    stale_after_seconds: staleAfterSeconds,
+    valid: failures.length === 0 && stringValue(objectValue(projection).status).toLowerCase() === 'active',
+    failures,
+  };
+}
+
+function validWorkerTimestamp(value) {
+  return /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,9})?(?:Z|[+-]\d{2}:\d{2})$/.test(stringValue(value));
+}
+
+function workerProjectionMismatches(apiProjection, cliProjection) {
+  const api = workerProjectionComparisonValue(apiProjection);
+  const cli = workerProjectionComparisonValue(cliProjection);
+
+  return Object.keys(api).filter((field) => !workerProjectionValuesEqual(api[field], cli[field]));
+}
+
+function workerProjectionComparisonValue(projection) {
+  const worker = objectValue(projection);
+  return Object.fromEntries([
+    'worker_id',
+    'namespace',
+    'task_queue',
+    'status',
+    'last_heartbeat_at',
+    'task_slots',
+    'runtime',
+    'sdk_version',
+    'build_id',
+    'capabilities',
+  ].map((field) => [field, worker[field] ?? null]));
+}
+
+function workerProjectionValuesEqual(left, right) {
+  return JSON.stringify(canonicalJsonValue(left)) === JSON.stringify(canonicalJsonValue(right));
+}
+
+function canonicalJsonValue(value) {
+  if (Array.isArray(value)) {
+    return value.map((entry) => canonicalJsonValue(entry));
+  }
+  if (!value || typeof value !== 'object') {
+    return value;
+  }
+
+  return Object.fromEntries(
+    Object.entries(value)
+      .sort(([left], [right]) => left.localeCompare(right))
+      .map(([key, entry]) => [key, canonicalJsonValue(entry)]),
+  );
+}
+
+function workerRegistrationCommandIsRunnerFailure(operation) {
+  if (
+    Number.isInteger(operation.http_status)
+    && (operation.http_status < 200 || operation.http_status >= 300)
+  ) {
+    return false;
+  }
+  if (operation.timed_out === true || stringValue(operation.signal) !== '') {
+    return true;
+  }
+  if ([126, 127].includes(operation.exit_code)) {
+    return true;
+  }
+  if ([5, 6, 7, 28, 35, 52, 56].includes(operation.exit_code)) {
+    return true;
+  }
+  if (!isEmptyEvidence(operation.response) || Number.isInteger(operation.http_status)) {
+    return false;
+  }
+
+  const classification = stringValue(
+    operation.failure_classification
+      ?? operation.failureClassification
+      ?? operation.failure_owner
+      ?? operation.failureOwner,
+  ).toLowerCase();
+  if (['runner', 'runner_infrastructure', 'infrastructure', 'harness'].includes(classification)) {
+    return true;
+  }
+  if (['product', 'server', 'cli'].includes(classification)) {
+    return false;
+  }
+
+  return true;
+}
+
+function workerRegistrationFailure(code, operation, observation, detail, owningSurface) {
+  return {
+    code,
+    operation,
+    owning_surface: owningSurface,
+    endpoint: observation.endpoint ?? null,
+    command: observation.command ?? null,
+    request: observation.request ?? null,
+    response: observation.response ?? null,
+    http_status: observation.http_status ?? null,
+    exit_code: observation.exit_code ?? null,
+    started_at: observation.started_at ?? null,
+    finished_at: observation.finished_at ?? null,
+    detail,
+  };
+}
+
+function workerRegistrationOperationOwner(operation) {
+  return operation === 'cli' ? 'cli' : 'server';
+}
+
+function workerRegistrationFailureSummary(classification, failures, evidenceSource) {
+  const first = objectValue(failures[0]);
+  return `Focused post-upgrade worker registration classified ${classification} failure from ${evidenceSource}: ${stringValue(first.detail)} endpoint=${stringValue(first.endpoint) || '(none)'} command=${stringValue(first.command) || '(none)'} exit_code=${String(first.exit_code ?? '(none)')} response=${compactJson(first.response)}.`;
+}
+
+function compactJson(value) {
+  if (typeof value === 'string') {
+    return value;
+  }
+  try {
+    return JSON.stringify(value);
+  } catch {
+    return String(value ?? '');
+  }
+}
+
+function foundationWorkerRegistrationFinding(artifactVersions, worker) {
+  const first = objectValue(worker.product_failures[0]);
+  return {
+    scenario_id: 'new_v2_worker_registration_after_upgrade',
+    owning_surface: stringValue(first.owning_surface) || 'server',
+    finding_type: 'postupgrade_worker_registration_regression',
+    artifact_versions: artifactVersions,
+    operation: first.operation ?? null,
+    endpoint: first.endpoint ?? null,
+    command: first.command ?? null,
+    request: first.request ?? null,
+    response: first.response ?? null,
+    http_status: first.http_status ?? null,
+    exit_code: first.exit_code ?? null,
+    started_at: first.started_at ?? null,
+    finished_at: first.finished_at ?? null,
+    observed_behavior: worker.observed_behavior,
+    expected_behavior: SCENARIO_FINDING_POLICIES.new_v2_worker_registration_after_upgrade.expected_behavior,
+    next_acceptance_criterion: SCENARIO_FINDING_POLICIES.new_v2_worker_registration_after_upgrade.next_acceptance_criterion,
+    product_failures: worker.product_failures,
   };
 }
 
@@ -5588,6 +6720,15 @@ function executeCommandDescriptor(rawDescriptor, defaults) {
       'env',
       'expected_exit_code',
       'expectedExitCode',
+      'observed_response',
+      'observedResponse',
+      'response',
+      'response_body',
+      'responseBody',
+      'http_status',
+      'httpStatus',
+      'status_code',
+      'statusCode',
     ].includes(key)),
   );
   const started = timestamp();
