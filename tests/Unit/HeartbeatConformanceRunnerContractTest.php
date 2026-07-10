@@ -1,0 +1,258 @@
+<?php
+
+namespace Tests\Unit;
+
+use PHPUnit\Framework\TestCase;
+
+final class HeartbeatConformanceRunnerContractTest extends TestCase
+{
+    public function test_runner_executes_the_pinned_public_php_worker_loop(): void
+    {
+        $source = $this->runnerSource();
+
+        foreach ([
+            "'durable-workflow/workflow': WORKFLOW_VERSION",
+            "'minimum-stability': 'dev'",
+            'use Workflow\\\\V2\\\\Worker\\\\WorkerProtocolClient;',
+            'use Workflow\\\\V2\\\\Worker\\\\StandaloneWorkflowWorker;',
+            '$worker->tickWithHeartbeat(',
+            '$worker->run(',
+            "'workflow:start'",
+            "'--wait'",
+            "'worker:list'",
+            "'worker:describe'",
+            "'stale_worker_registration'",
+        ] as $needle) {
+            $this->assertStringContainsString($needle, $source);
+        }
+
+        $this->assertStringContainsString('sdk_emitted_heartbeat_timestamps', $source);
+        $this->assertStringContainsString('server_last_heartbeat_timestamps', $source);
+        $this->assertStringContainsString('bounded_advertised_cadence', $source);
+        $this->assertStringContainsString('work_processed_records', $source);
+        $this->assertStringContainsString(
+            'stale_worker_claim_count: Array.isArray(stalePoll.tasks) ? stalePoll.tasks.length : null',
+            $source,
+        );
+        $this->assertStringContainsString('fresh_worker_eligibility_after_stale', $source);
+    }
+
+    public function test_runner_records_mergeable_focused_evidence_without_claiming_sibling_cells(): void
+    {
+        $source = $this->runnerSource();
+
+        $this->assertStringContainsString(
+            "schema: 'durable-workflow.v2.heartbeat-runtime.php-sdk-loop-evidence'",
+            $source,
+        );
+        $this->assertStringContainsString("scenario_id: 'php_sdk_heartbeat_loop'", $source);
+        $this->assertStringContainsString("writeJson('php-sdk-heartbeat-loop-evidence.json'", $source);
+        $this->assertStringContainsString("'python_sdk_heartbeat_loop'", $source);
+        $this->assertStringContainsString("'rust_sdk_heartbeat_loop'", $source);
+        $this->assertStringContainsString("'waterline_worker_status_visibility'", $source);
+        $this->assertStringContainsString('local_product_source_checkouts_used: false', $source);
+        $this->assertStringNotContainsString('path repository', strtolower($source));
+    }
+
+    public function test_runner_registers_idempotent_cleanup_before_resources_can_partially_start(): void
+    {
+        $source = $this->runnerSource();
+        $composeCleanup = strpos($source, 'cleanupCommands.push(() => cleanupComposeProject(project, composeArgs, composeEnv));');
+        $composeUp = strpos($source, "run('docker', [...composeArgs, 'up', '-d', '--wait', 'server']");
+        $workerFunction = strpos($source, 'function startWorker(workerId)');
+        $workerTracking = strpos($source, 'workerContainers.add(containerName);', $workerFunction);
+        $workerRun = strpos($source, "const result = run('docker', [", $workerFunction);
+
+        $this->assertIsInt($composeCleanup);
+        $this->assertIsInt($composeUp);
+        $this->assertLessThan($composeUp, $composeCleanup);
+        $this->assertIsInt($workerTracking);
+        $this->assertIsInt($workerRun);
+        $this->assertLessThan($workerRun, $workerTracking);
+        $this->assertStringContainsString("run('docker', ['rm', '-f', containerName], { timeout: 30_000 });", $source);
+        $this->assertStringContainsString("run('docker', [...composeArgs, 'down', '-v'], { env: composeEnv, timeout: 120_000 });", $source);
+        $this->assertStringContainsString("'volume', 'ls'", $source);
+        $this->assertStringContainsString('recordCleanupFailure(cleanupFailures);', $source);
+        $this->assertSame(1, substr_count($source, 'writeResultFiles(completedContext);'));
+        $this->assertLessThan(
+            strpos($source, 'writeResultFiles(completedContext);'),
+            strpos($source, 'for (const containerName of workerContainers)'),
+        );
+    }
+
+    public function test_all_php_project_mounts_use_the_invoking_host_uid_and_gid(): void
+    {
+        $source = $this->runnerSource();
+
+        $this->assertStringContainsString("const CONTAINER_USER = `\${HOST_UID}:\${HOST_GID}`;", $source);
+        $this->assertSame(4, substr_count($source, "'-v', `\${PROJECT_DIR}:/app`"));
+        $this->assertSame(4, substr_count($source, "'--user', CONTAINER_USER"));
+    }
+
+    public function test_host_control_address_is_configurable_without_changing_the_worker_container_gateway(): void
+    {
+        $source = $this->runnerSource();
+
+        $this->assertStringContainsString(
+            "const SERVER_HOST = env('DW_HEARTBEATS_SERVER_HOST') || '127.0.0.1';",
+            $source,
+        );
+        $this->assertStringContainsString('serverBaseUrl = `http://${SERVER_HOST}:${port}`;', $source);
+        $this->assertStringContainsString("new URL('/api/ready', serverBaseUrl)", $source);
+        $this->assertStringContainsString('DURABLE_WORKFLOW_SERVER_URL: serverBaseUrl', $source);
+        $this->assertStringContainsString("parsed.hostname = 'host.docker.internal';", $source);
+        $this->assertSame(2, substr_count($source, 'workerBaseUrl(serverBaseUrl)'));
+        $this->assertStringNotContainsString(
+            "if (['127.0.0.1', 'localhost'].includes(parsed.hostname))",
+            $source,
+        );
+
+        $shell = (string) file_get_contents(dirname(__DIR__, 2).'/scripts/conformance/heartbeats-published-artifacts.sh');
+        $this->assertStringContainsString('DW_HEARTBEATS_SERVER_HOST', $shell);
+    }
+
+    public function test_runner_resolves_artifacts_only_from_exact_public_release_sources(): void
+    {
+        $source = $this->runnerSource();
+        $inspectEvidenceSource = (string) file_get_contents(
+            dirname(__DIR__, 2).'/scripts/conformance/heartbeat-container-inspect-evidence.mjs',
+        );
+
+        $this->assertStringContainsString("run('docker', ['pull', SERVER_IMAGE]", $source);
+        $this->assertStringContainsString("run('docker', ['image', 'inspect', SERVER_IMAGE]", $source);
+        $this->assertStringContainsString('digest-pinned server image does not match public version tag', $source);
+        $this->assertStringContainsString('SERVER_CONTAINER_IMAGE_INSPECT_FORMAT', $source);
+        $this->assertStringContainsString('captureTransform: safeContainerInspectCommandRecord', $source);
+        $this->assertStringContainsString('container?.Image !== image.Id || container?.Config?.Image !== SERVER_IMAGE', $source);
+        $this->assertStringNotContainsString("['container', 'inspect', containerId]", $source);
+        $this->assertStringContainsString(
+            '{"Image":{{json .Image}},"Config":{"Image":{{json .Config.Image}}}}',
+            $inspectEvidenceSource,
+        );
+        $this->assertStringNotContainsString('.Config.Env', $inspectEvidenceSource);
+        $this->assertStringContainsString('parseCliVersionOutput(versionOutput)', $source);
+        $this->assertStringNotContainsString('includes(CLI_VERSION)', $source);
+        $this->assertStringNotContainsString('DW_HEARTBEATS_SERVER_URL', $source);
+        $this->assertStringNotContainsString('DW_HEARTBEATS_CLI_BIN', $source);
+        $this->assertStringNotContainsString('DW_HEARTBEATS_CLI_SOURCE_URL', $source);
+    }
+
+    public function test_container_inspect_evidence_omits_supplied_secret_sentinels(): void
+    {
+        $nodeBinary = trim((string) shell_exec('command -v node 2>/dev/null'));
+        if ($nodeBinary === '') {
+            $this->markTestSkipped('node is required to exercise the heartbeat inspect-evidence sanitizer.');
+        }
+
+        $repoRoot = dirname(__DIR__, 2);
+        $suffix = bin2hex(random_bytes(4));
+        $artifact = $repoRoot.'/storage/framework/heartbeat-inspect-evidence-'.$suffix.'.json';
+        $authSentinel = 'heartbeat-auth-sentinel-'.$suffix;
+        $databaseSentinel = 'heartbeat-database-sentinel-'.$suffix;
+
+        try {
+            $script = <<<'JS'
+import fs from 'node:fs';
+import { pathToFileURL } from 'node:url';
+
+const moduleUrl = pathToFileURL(process.argv[2]).href;
+const { safeContainerInspectCommandRecord } = await import(moduleUrl);
+const imageId = `sha256:${'a'.repeat(64)}`;
+const record = {
+  command: ['docker', 'container', 'inspect', process.env.DW_AUTH_TOKEN],
+  status: 0,
+  signal: null,
+  stdout: JSON.stringify([{
+    Id: 'b'.repeat(64),
+    Image: imageId,
+    Config: {
+      Image: 'durableworkflow/server:0.2.622',
+      Env: [
+        `DW_AUTH_TOKEN=${process.env.DW_AUTH_TOKEN}`,
+        `DB_PASSWORD=${process.env.DW_DATABASE_PASSWORD}`,
+      ],
+    },
+  }]),
+  stderr: `diagnostic ${process.env.DW_DATABASE_PASSWORD}`,
+};
+
+fs.writeFileSync(process.argv[3], JSON.stringify(safeContainerInspectCommandRecord(record)));
+JS;
+
+            $process = proc_open(
+                [
+                    $nodeBinary,
+                    '--input-type=module',
+                    '-e',
+                    $script,
+                    'heartbeat-inspect-evidence-test',
+                    $repoRoot.'/scripts/conformance/heartbeat-container-inspect-evidence.mjs',
+                    $artifact,
+                ],
+                [
+                    1 => ['pipe', 'w'],
+                    2 => ['pipe', 'w'],
+                ],
+                $pipes,
+                $repoRoot,
+                [
+                    'PATH' => getenv('PATH') ?: '/usr/bin:/bin',
+                    'DW_AUTH_TOKEN' => $authSentinel,
+                    'DW_DATABASE_PASSWORD' => $databaseSentinel,
+                ],
+            );
+
+            $this->assertIsResource($process);
+            $stdout = stream_get_contents($pipes[1]);
+            $stderr = stream_get_contents($pipes[2]);
+            fclose($pipes[1]);
+            fclose($pipes[2]);
+            $exitCode = proc_close($process);
+
+            $this->assertSame(0, $exitCode, $stderr ?: $stdout);
+            $contents = (string) file_get_contents($artifact);
+            $this->assertStringNotContainsString($authSentinel, $contents);
+            $this->assertStringNotContainsString($databaseSentinel, $contents);
+
+            $evidence = json_decode($contents, true, 512, JSON_THROW_ON_ERROR);
+            $this->assertTrue($evidence['raw_output_omitted']);
+            $this->assertSame('sha256:'.str_repeat('a', 64), $evidence['inspection']['Image']);
+            $this->assertSame(
+                'durableworkflow/server:0.2.622',
+                $evidence['inspection']['Config']['Image'],
+            );
+            $this->assertArrayNotHasKey('command', $evidence);
+            $this->assertArrayNotHasKey('stdout', $evidence);
+            $this->assertArrayNotHasKey('stderr', $evidence);
+            $this->assertArrayNotHasKey('Env', $evidence['inspection']['Config']);
+        } finally {
+            if (is_file($artifact)) {
+                unlink($artifact);
+            }
+        }
+    }
+
+    public function test_shell_handoff_requires_exact_release_pins_and_names_all_outputs(): void
+    {
+        $shell = (string) file_get_contents(dirname(__DIR__, 2).'/scripts/conformance/heartbeats-published-artifacts.sh');
+
+        $this->assertStringContainsString('DW_SERVER_VERSION', $shell);
+        $this->assertStringContainsString('DW_CLI_VERSION', $shell);
+        $this->assertStringContainsString('DW_WORKFLOW_PHP_VERSION', $shell);
+        $this->assertStringContainsString('pins.json', $shell);
+        $this->assertStringContainsString('run-metadata.json', $shell);
+        $this->assertStringContainsString('php-sdk-heartbeat-loop-evidence.json', $shell);
+        $this->assertStringContainsString('heartbeat-cadence-dataset.json', $shell);
+        $this->assertStringContainsString('heartbeat-request-response-captures.json', $shell);
+        $this->assertStringNotContainsString('DW_HEARTBEATS_SERVER_URL', $shell);
+        $this->assertStringNotContainsString('DW_HEARTBEATS_CLI_BIN', $shell);
+        $this->assertStringNotContainsString('DW_HEARTBEATS_CLI_SOURCE_URL', $shell);
+    }
+
+    private function runnerSource(): string
+    {
+        return (string) file_get_contents(
+            dirname(__DIR__, 2).'/scripts/conformance/heartbeats-published-artifacts.mjs',
+        );
+    }
+}

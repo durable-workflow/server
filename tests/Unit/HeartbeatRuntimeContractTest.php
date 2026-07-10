@@ -14,7 +14,7 @@ class HeartbeatRuntimeContractTest extends TestCase
         $manifest = HeartbeatRuntimeContract::manifest();
 
         $this->assertSame('durable-workflow.v2.heartbeat-runtime.contract', $manifest['schema']);
-        $this->assertSame(2, HeartbeatRuntimeContract::VERSION);
+        $this->assertSame(3, HeartbeatRuntimeContract::VERSION);
         $this->assertSame(HeartbeatRuntimeContract::VERSION, $manifest['version']);
         $this->assertSame('durable-workflow.v2.heartbeat-runtime.result', $manifest['result_schema']);
         $this->assertSame(2, $manifest['result_version']);
@@ -106,6 +106,54 @@ class HeartbeatRuntimeContractTest extends TestCase
         );
         $this->assertSame('non_passing', $manifest['coverage_gate']['smoke_subset_outcome']);
         $this->assertTrue($manifest['coverage_gate']['focused_findings_required_for_uncovered_cells']);
+    }
+
+    public function test_manifest_publishes_the_focused_php_sdk_heartbeat_runner(): void
+    {
+        $manifest = HeartbeatRuntimeContract::manifest();
+        $runner = $manifest['host_runner_contract']['focused_runners']['workflow-php-heartbeat-loop'];
+
+        $this->assertSame('host_executable_published_artifact_runner', $runner['status']);
+        $this->assertSame('server', $runner['runner_repository']);
+        $this->assertSame('scripts/conformance/heartbeats-published-artifacts.sh', $runner['runner_path']);
+        $this->assertSame('php_sdk_heartbeat_loop', $runner['scenario_id']);
+        $this->assertSame(
+            'durable-workflow.v2.heartbeat-runtime.php-sdk-loop-evidence',
+            $runner['result_schema'],
+        );
+        $this->assertSame('php-sdk-heartbeat-loop-evidence.json', $runner['result_file']);
+        $this->assertTrue($runner['host_runner_implemented']);
+        $this->assertTrue($runner['must_execute_against_published_artifacts']);
+        $this->assertTrue($runner['must_record_runner_blocked_false_for_product_evidence']);
+        $this->assertSame(['server', 'cli', 'workflow-php'], $runner['required_artifact_pins']);
+        $this->assertContains(
+            'Workflow\\V2\\Worker\\WorkerProtocolClient',
+            $runner['required_worker_api'],
+        );
+        $this->assertContains(
+            'Workflow\\V2\\Worker\\StandaloneWorkflowWorker::tickWithHeartbeat()',
+            $runner['required_worker_api'],
+        );
+        $this->assertContains(
+            'Workflow\\V2\\Worker\\StandaloneWorkflowWorker::run()',
+            $runner['required_worker_api'],
+        );
+        $this->assertContains('at_least_two_sdk_emitted_heartbeat_timestamps', $runner['must_prove']);
+        $this->assertContains('stale_php_worker_poll_is_refused', $runner['must_prove']);
+        $this->assertContains('fresh_php_peer_remains_eligible_for_new_work', $runner['must_prove']);
+        $this->assertSame([
+            'python_sdk_heartbeat_loop',
+            'rust_sdk_heartbeat_loop',
+            'waterline_worker_status_visibility',
+        ], $runner['does_not_claim_scenarios']);
+        $this->assertContains(
+            'php-sdk-heartbeat-loop-evidence.json',
+            $manifest['host_runner_contract']['result_files'],
+        );
+        $this->assertSame(
+            'workflow-php-heartbeat-loop',
+            $manifest['host_runner_contract']['runtime_shards']['workflow-php']['focused_runner'],
+        );
     }
 
     public function test_scenario_manifest_source_path_is_published_and_matches_contract(): void

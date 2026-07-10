@@ -1,0 +1,1297 @@
+import fs from 'node:fs';
+import net from 'node:net';
+import os from 'node:os';
+import path from 'node:path';
+import process from 'node:process';
+import { spawnSync } from 'node:child_process';
+import {
+  SERVER_CONTAINER_IMAGE_INSPECT_FORMAT,
+  safeContainerInspectCommandRecord,
+} from './heartbeat-container-inspect-evidence.mjs';
+
+const RESULT_DIR = mustEnv('RESULT_DIR');
+const REPO_ROOT = mustEnv('REPO_ROOT');
+const STARTED_AT = now();
+const RUN_ID = `${Date.now()}-${Math.random().toString(16).slice(2, 10)}`;
+const SUFFIX = RUN_ID.replace(/[^a-zA-Z0-9]/g, '').slice(-12).toLowerCase();
+const NAMESPACE = env('DW_HEARTBEATS_NAMESPACE') || 'heartbeats-conformance';
+const TASK_QUEUE = `hb-php-${SUFFIX}`;
+const STALE_WORKER_ID = `heartbeat-php-stale-${SUFFIX}`;
+const FRESH_WORKER_ID = `heartbeat-php-fresh-${SUFFIX}`;
+const WORKFLOW_TYPE = 'conformance.heartbeat.php';
+const TOKEN = env('DW_HEARTBEATS_AUTH_TOKEN') || 'dev-token';
+const PHP_IMAGE = env('DW_HEARTBEATS_PHP_IMAGE') || 'composer:2';
+const SERVER_VERSION = env('DW_SERVER_VERSION');
+const CLI_VERSION = normalizeVersion(env('DW_CLI_VERSION'));
+const WORKFLOW_VERSION = env('DW_WORKFLOW_PHP_VERSION');
+const SERVER_IMAGE = env('DW_SERVER_IMAGE') || `durableworkflow/server:${SERVER_VERSION}`;
+const SERVER_HOST = env('DW_HEARTBEATS_SERVER_HOST') || '127.0.0.1';
+const HEARTBEAT_SECONDS = positiveInt(env('DW_HEARTBEATS_HEARTBEAT_SECONDS'), 2);
+const CONFIGURED_STALE_AFTER_SECONDS = positiveInt(env('DW_HEARTBEATS_STALE_AFTER_SECONDS'), 7);
+const KEEP_RUN_ROOT = truthy(env('DW_HEARTBEATS_KEEP_RUN_ROOT'));
+const HOST_UID = typeof process.getuid === 'function' ? process.getuid() : null;
+const HOST_GID = typeof process.getgid === 'function' ? process.getgid() : null;
+const CONTAINER_USER = `${HOST_UID}:${HOST_GID}`;
+const RUN_ROOT = fs.mkdtempSync(path.join(RESULT_DIR, 'php-heartbeat-run.'));
+const PROJECT_DIR = path.join(RUN_ROOT, 'workflow-php');
+const COMPOSE_OVERRIDE = path.join(RUN_ROOT, 'docker-compose.heartbeat.yml');
+const COMPOSE_FILE = path.join(REPO_ROOT, 'docker-compose.published.yml');
+const ARTIFACT_VERSIONS = {
+  server: SERVER_VERSION,
+  cli: CLI_VERSION,
+  'workflow-php': WORKFLOW_VERSION,
+};
+const ARTIFACT_SOURCES = {
+  server: `docker://${SERVER_IMAGE}`,
+  cli: 'github_release',
+  'workflow-php': `packagist://durable-workflow/workflow@${WORKFLOW_VERSION}`,
+};
+
+const cleanupCommands = [];
+const workerContainers = new Set();
+const requestCaptures = [];
+const evidence = {
+  schema: 'durable-workflow.v2.heartbeat-runtime.php-sdk-loop-evidence',
+  version: 1,
+  scenario_id: 'php_sdk_heartbeat_loop',
+  conformance_run_id: RUN_ID,
+  started_at: STARTED_AT,
+  finished_at: null,
+  generated_at: null,
+  outcome: 'runner_blocked',
+  runner_blocked: true,
+  artifact_versions: ARTIFACT_VERSIONS,
+  artifact_sources: ARTIFACT_SOURCES,
+  local_product_source_checkouts_used: false,
+  topology: {
+    namespace: NAMESPACE,
+    task_queue: TASK_QUEUE,
+    stale_worker_id: STALE_WORKER_ID,
+    fresh_worker_id: FRESH_WORKER_ID,
+    workflow_type: WORKFLOW_TYPE,
+  },
+  scenario_results: {},
+  findings: [],
+};
+
+let publishedExecutionStarted = false;
+let serverBaseUrl = '';
+let cliBin = '';
+
+function env(name) {
+  return (process.env[name] ?? '').trim();
+}
+
+function mustEnv(name) {
+  const value = env(name);
+  if (!value) throw new Error(`${name} is required`);
+  return value;
+}
+
+function now() {
+  return new Date().toISOString().replace(/\.\d{3}Z$/, 'Z');
+}
+
+function normalizeVersion(value) {
+  return value.startsWith('v') ? value.slice(1) : value;
+}
+
+function truthy(value) {
+  return ['1', 'true', 'yes', 'on'].includes(String(value).trim().toLowerCase());
+}
+
+function positiveInt(value, fallback) {
+  const parsed = Number.parseInt(value, 10);
+  return Number.isInteger(parsed) && parsed > 0 ? parsed : fallback;
+}
+
+function sleep(milliseconds) {
+  return new Promise((resolve) => setTimeout(resolve, milliseconds));
+}
+
+function writeJson(fileName, value) {
+  fs.writeFileSync(path.join(RESULT_DIR, fileName), `${JSON.stringify(value, null, 2)}\n`, 'utf8');
+}
+
+function log(message) {
+  fs.appendFileSync(path.join(RESULT_DIR, 'php-sdk-heartbeat-loop.log'), `[${now()}] ${message}\n`, 'utf8');
+}
+
+function commandExists(command) {
+  const result = spawnSync('sh', ['-c', `command -v "$1" >/dev/null 2>&1`, 'sh', command]);
+  return result.status === 0;
+}
+
+function run(command, args, options = {}) {
+  const rendered = [command, ...args].join(' ');
+  log(`command: ${rendered}`);
+  const result = spawnSync(command, args, {
+    cwd: options.cwd ?? RUN_ROOT,
+    env: options.env ?? process.env,
+    encoding: 'utf8',
+    maxBuffer: 20 * 1024 * 1024,
+    timeout: options.timeout ?? 180_000,
+  });
+  const record = {
+    command: [command, ...args],
+    status: result.status,
+    signal: result.signal,
+    stdout: result.stdout ?? '',
+    stderr: result.stderr ?? '',
+  };
+  if (options.captureFile) {
+    const capturedRecord = typeof options.captureTransform === 'function'
+      ? options.captureTransform(record)
+      : record;
+    writeJson(options.captureFile, capturedRecord);
+  }
+  if (!options.allowFailure && result.status !== 0) {
+    throw new Error(`${rendered} failed (${result.status}): ${(result.stderr || result.stdout || '').trim()}`);
+  }
+  return record;
+}
+
+function parseJsonOutput(text) {
+  const trimmed = String(text ?? '').trim();
+  if (!trimmed) return {};
+  try {
+    return JSON.parse(trimmed);
+  } catch {
+    const lines = trimmed.split(/\r?\n/).reverse();
+    for (const line of lines) {
+      try {
+        return JSON.parse(line);
+      } catch {
+        // Keep looking for the final structured line after installer warnings.
+      }
+    }
+  }
+  return { raw_output: trimmed };
+}
+
+function parseCliVersionOutput(output) {
+  const raw = String(output ?? '').trim();
+  const match = raw.match(/(?:^|\s)v?(\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?)(?=$|\s|\))/);
+  return match ? normalizeVersion(match[1]) : '';
+}
+
+function dockerObjectMissing(result) {
+  return result.status !== 0 && /no such (?:object|container)/i.test(`${result.stderr}\n${result.stdout}`);
+}
+
+function errorSummary(error) {
+  return error instanceof Error ? error.message : String(error);
+}
+
+function cleanupWorkerContainer(containerName) {
+  const initialInspect = run('docker', ['container', 'inspect', containerName], {
+    allowFailure: true,
+    timeout: 30_000,
+  });
+  if (dockerObjectMissing(initialInspect)) {
+    return { resource: 'worker_container', name: containerName, status: 'already_absent' };
+  }
+  const removalErrors = [];
+  let logCapture = 'not_attempted';
+  if (initialInspect.status === 0) {
+    const containerLogs = run('docker', ['logs', containerName], { allowFailure: true, timeout: 30_000 });
+    try {
+      fs.writeFileSync(
+        path.join(RESULT_DIR, `${containerName}.log`),
+        `${containerLogs.stdout}${containerLogs.stderr}`,
+        'utf8',
+      );
+      logCapture = containerLogs.status === 0 ? 'captured' : 'captured_with_docker_error';
+    } catch (error) {
+      logCapture = `write_failed: ${errorSummary(error)}`;
+    }
+  } else {
+    removalErrors.push(`initial inspection: ${(initialInspect.stderr || initialInspect.stdout).trim()}`);
+  }
+  for (let attempt = 1; attempt <= 2; attempt += 1) {
+    try {
+      run('docker', ['rm', '-f', containerName], { timeout: 30_000 });
+      break;
+    } catch (error) {
+      removalErrors.push(`attempt ${attempt}: ${errorSummary(error)}`);
+    }
+  }
+  const finalInspect = run('docker', ['container', 'inspect', containerName], {
+    allowFailure: true,
+    timeout: 30_000,
+  });
+  if (!dockerObjectMissing(finalInspect)) {
+    removalErrors.push(finalInspect.status === 0
+      ? `worker container ${containerName} still exists after docker rm -f`
+      : `could not verify removal of worker container ${containerName}: ${(finalInspect.stderr || finalInspect.stdout).trim()}`);
+  }
+  if (removalErrors.length > 0) throw new Error(removalErrors.join('; '));
+  return { resource: 'worker_container', name: containerName, status: 'removed', log_capture: logCapture };
+}
+
+function cleanupComposeProject(project, composeArgs, composeEnv) {
+  const cleanupErrors = [];
+  for (let attempt = 1; attempt <= 2; attempt += 1) {
+    try {
+      run('docker', [...composeArgs, 'down', '-v'], { env: composeEnv, timeout: 120_000 });
+      break;
+    } catch (error) {
+      cleanupErrors.push(`down attempt ${attempt}: ${errorSummary(error)}`);
+    }
+  }
+
+  try {
+    const containers = run('docker', [...composeArgs, 'ps', '-aq'], { env: composeEnv, timeout: 30_000 });
+    if (String(containers.stdout).trim()) {
+      cleanupErrors.push(`compose project ${project} still has containers: ${String(containers.stdout).trim()}`);
+    }
+  } catch (error) {
+    cleanupErrors.push(`container verification: ${errorSummary(error)}`);
+  }
+  try {
+    const volumes = run('docker', [
+      'volume', 'ls',
+      '--filter', `label=com.docker.compose.project=${project}`,
+      '--format', '{{.Name}}',
+    ], { timeout: 30_000 });
+    if (String(volumes.stdout).trim()) {
+      cleanupErrors.push(`compose project ${project} still has volumes: ${String(volumes.stdout).trim()}`);
+    }
+  } catch (error) {
+    cleanupErrors.push(`volume verification: ${errorSummary(error)}`);
+  }
+  if (cleanupErrors.length > 0) throw new Error(cleanupErrors.join('; '));
+  return { resource: 'compose_project', name: project, status: 'removed_with_volumes' };
+}
+
+function ensureExactPins() {
+  const failures = [];
+  if (!/^\d+\.\d+\.\d+$/.test(SERVER_VERSION)) failures.push('DW_SERVER_VERSION must be an exact patch release');
+  if (!/^\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?$/.test(CLI_VERSION)) failures.push('DW_CLI_VERSION must be an exact release');
+  if (!/^\d+\.\d+\.\d+-alpha\.\d+$/.test(WORKFLOW_VERSION)) failures.push('DW_WORKFLOW_PHP_VERSION must be an exact 2.0 alpha release');
+  const exactTag = new RegExp(`^(?:(?:docker\\.io|index\\.docker\\.io)/)?durableworkflow/server:${escapeRegex(SERVER_VERSION)}$`).test(SERVER_IMAGE);
+  const exactDigest = /^(?:(?:docker\.io|index\.docker\.io)\/)?durableworkflow\/server(?::[^@]+)?@sha256:[0-9a-f]{64}$/i.test(SERVER_IMAGE);
+  if (!exactTag && !exactDigest) {
+    failures.push('DW_SERVER_IMAGE must be an exact durableworkflow/server tag matching DW_SERVER_VERSION or a digest pin');
+  }
+  if (!Number.isInteger(HOST_UID) || !Number.isInteger(HOST_GID)) {
+    failures.push('the heartbeat runner requires a host UID and GID for mounted Docker writes');
+  }
+  if (failures.length > 0) throw new Error(failures.join('; '));
+}
+
+function escapeRegex(value) {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+async function freePort() {
+  const server = net.createServer();
+  await new Promise((resolve, reject) => {
+    server.once('error', reject);
+    server.listen(0, '127.0.0.1', resolve);
+  });
+  const address = server.address();
+  const port = typeof address === 'object' && address ? address.port : 0;
+  await new Promise((resolve) => server.close(resolve));
+  if (!port) throw new Error('could not allocate a server port');
+  return port;
+}
+
+function workerBaseUrl(baseUrl) {
+  const parsed = new URL(baseUrl);
+  parsed.hostname = 'host.docker.internal';
+  return parsed.toString().replace(/\/$/, '');
+}
+
+function controlPlaneHeaders() {
+  return {
+    Accept: 'application/json',
+    'Content-Type': 'application/json',
+    Authorization: `Bearer ${TOKEN}`,
+    'X-Namespace': NAMESPACE,
+    'X-Durable-Workflow-Protocol-Version': '1.0',
+    'X-Durable-Workflow-Control-Plane-Version': '2',
+  };
+}
+
+async function api(pathName, query = {}) {
+  const url = new URL(`/api${pathName}`, serverBaseUrl);
+  for (const [key, value] of Object.entries(query)) url.searchParams.set(key, String(value));
+  const response = await fetch(url, { headers: controlPlaneHeaders() });
+  const raw = await response.text();
+  const body = parseJsonOutput(raw);
+  const capture = { timestamp: now(), method: 'GET', url: url.toString(), status: response.status, body };
+  requestCaptures.push(capture);
+  if (!response.ok) throw new Error(`GET ${url} returned ${response.status}: ${raw}`);
+  return body;
+}
+
+async function ensureNamespace() {
+  const url = new URL('/api/namespaces', serverBaseUrl);
+  const response = await fetch(url, {
+    method: 'POST',
+    headers: controlPlaneHeaders(),
+    body: JSON.stringify({
+      name: NAMESPACE,
+      description: 'Published PHP heartbeat-loop conformance namespace',
+      retention_days: 1,
+    }),
+  });
+  const raw = await response.text();
+  const body = parseJsonOutput(raw);
+  requestCaptures.push({ timestamp: now(), method: 'POST', url: url.toString(), status: response.status, body });
+  if (![201, 409].includes(response.status)) {
+    throw new Error(`POST ${url} returned ${response.status}: ${raw}`);
+  }
+  evidence.namespace_setup = {
+    status: response.status === 201 ? 'created' : 'already_exists',
+    response: body,
+  };
+}
+
+async function waitFor(label, callback, timeoutMs, intervalMs = 500) {
+  const deadline = Date.now() + timeoutMs;
+  let lastError = null;
+  while (Date.now() < deadline) {
+    try {
+      const value = await callback();
+      if (value) return value;
+    } catch (error) {
+      lastError = error;
+    }
+    await sleep(intervalMs);
+  }
+  throw new Error(`${label} did not become true within ${timeoutMs}ms${lastError ? `: ${lastError.message}` : ''}`);
+}
+
+function writePhpProject() {
+  fs.mkdirSync(PROJECT_DIR, { recursive: true });
+  writeProjectJson('composer.json', {
+    require: { 'durable-workflow/workflow': WORKFLOW_VERSION },
+    'minimum-stability': 'dev',
+    'prefer-stable': true,
+    config: {
+      'preferred-install': 'dist',
+      'sort-packages': true,
+      'allow-plugins': { 'php-http/discovery': true },
+    },
+  });
+  fs.writeFileSync(path.join(PROJECT_DIR, 'heartbeat-worker.php'), phpWorkerSource(), 'utf8');
+  fs.writeFileSync(path.join(PROJECT_DIR, 'stale-poll.php'), phpStalePollSource(), 'utf8');
+}
+
+function writeProjectJson(fileName, value) {
+  fs.writeFileSync(path.join(PROJECT_DIR, fileName), `${JSON.stringify(value, null, 2)}\n`, 'utf8');
+}
+
+function phpWorkerSource() {
+  return `<?php
+
+declare(strict_types=1);
+
+require __DIR__.'/vendor/autoload.php';
+
+use Composer\\InstalledVersions;
+use Illuminate\\Http\\Client\\Factory as HttpFactory;
+use ReflectionMethod;
+use Workflow\\V2\\Attributes\\Type;
+use Workflow\\V2\\Support\\TypeRegistry;
+use Workflow\\V2\\Support\\WorkflowDefinition;
+use Workflow\\V2\\Worker\\StandaloneWorkflowWorker;
+use Workflow\\V2\\Worker\\WorkerProtocolClient;
+use Workflow\\V2\\Workflow;
+
+#[Type('${WORKFLOW_TYPE}')]
+final class PhpHeartbeatConformanceWorkflow extends Workflow
+{
+    public function handle(): mixed
+    {
+        return ['completed' => true, 'runtime' => 'workflow-php'];
+    }
+}
+
+function heartbeat_log(array $record): void
+{
+    $record['observed_at'] ??= (new DateTimeImmutable('now', new DateTimeZone('UTC')))->format('Y-m-d\\TH:i:s.v\\Z');
+    fwrite(STDOUT, json_encode($record, JSON_UNESCAPED_SLASHES).PHP_EOL);
+    fflush(STDOUT);
+}
+
+function heartbeat_log_tick(?array $result): void
+{
+    if (!is_array($result)) return;
+    foreach (($result['worker_heartbeats'] ?? []) as $ack) {
+        heartbeat_log(['event' => 'worker_heartbeat', 'acknowledgement' => $ack]);
+    }
+    if (($result['processed'] ?? false) === true) {
+        heartbeat_log(['event' => 'work_processed', 'result' => $result]);
+    }
+}
+
+if ($argc < 6) {
+    fwrite(STDERR, "usage: heartbeat-worker.php <base-url> <namespace> <task-queue> <worker-id> <seconds>\\n");
+    exit(2);
+}
+
+[$script, $baseUrl, $namespace, $taskQueue, $workerId, $seconds] = $argv;
+$token = getenv('DURABLE_WORKFLOW_AUTH_TOKEN');
+if (!is_string($token) || $token === '') {
+    throw new RuntimeException('DURABLE_WORKFLOW_AUTH_TOKEN is required');
+}
+$sdkVersion = InstalledVersions::getPrettyVersion('durable-workflow/workflow') ?? 'unknown';
+$client = new WorkerProtocolClient(new HttpFactory(), $baseUrl, $token, $namespace, defaultRequestTimeoutSeconds: 10);
+$arguments = [
+    'workerId' => $workerId,
+    'taskQueue' => $taskQueue,
+    'supportedWorkflowTypes' => [TypeRegistry::for(PhpHeartbeatConformanceWorkflow::class)],
+    'supportedActivityTypes' => [],
+    'sdkVersion' => 'durable-workflow/workflow@'.$sdkVersion,
+    'maxConcurrentWorkflowTasks' => 2,
+    'maxConcurrentActivityTasks' => 1,
+    'workflowDefinitionFingerprints' => [
+        TypeRegistry::for(PhpHeartbeatConformanceWorkflow::class) => WorkflowDefinition::fingerprint(PhpHeartbeatConformanceWorkflow::class),
+    ],
+];
+$parameters = array_map(
+    static fn (ReflectionParameter $parameter): string => $parameter->getName(),
+    (new ReflectionMethod($client, 'registerWorker'))->getParameters(),
+);
+if (in_array('workflowCommandContracts', $parameters, true)) {
+    $arguments['workflowCommandContracts'] = [
+        TypeRegistry::for(PhpHeartbeatConformanceWorkflow::class) => WorkflowDefinition::commandContract(PhpHeartbeatConformanceWorkflow::class),
+    ];
+}
+$registration = $client->registerWorker(...$arguments) ?? [];
+heartbeat_log([
+    'event' => 'worker_registered',
+    'worker_id' => $workerId,
+    'task_queue' => $taskQueue,
+    'workflow_type' => TypeRegistry::for(PhpHeartbeatConformanceWorkflow::class),
+    'sdk_version' => $sdkVersion,
+    'registration' => $registration,
+]);
+
+$worker = new StandaloneWorkflowWorker($client, [
+    TypeRegistry::for(PhpHeartbeatConformanceWorkflow::class) => PhpHeartbeatConformanceWorkflow::class,
+]);
+$first = $worker->tickWithHeartbeat(
+    queue: $taskQueue,
+    workerId: $workerId,
+    queryPollTimeoutSeconds: 0,
+    workflowPollTimeoutSeconds: 1,
+    taskSlots: ['workflow_available' => 2, 'activity_available' => 1],
+    processMetrics: ['process_id' => getmypid(), 'memory_bytes' => memory_get_usage(true), 'host' => gethostname()],
+);
+heartbeat_log_tick($first);
+$deadline = time() + max(1, (int) $seconds);
+$summary = $worker->run(
+    queue: $taskQueue,
+    workerId: $workerId,
+    shouldContinue: static function (int $ticks, ?array $lastResult) use ($deadline): bool {
+        heartbeat_log_tick($lastResult);
+        return time() < $deadline;
+    },
+    queryPollTimeoutSeconds: 0,
+    workflowPollTimeoutSeconds: 1,
+    taskSlots: ['workflow_available' => 2, 'activity_available' => 1],
+    processMetrics: ['process_id' => getmypid(), 'memory_bytes' => memory_get_usage(true), 'host' => gethostname()],
+    idleSleepMicroseconds: 100000,
+);
+heartbeat_log(['event' => 'worker_loop_stopped', 'summary' => $summary]);
+`;
+}
+
+function phpStalePollSource() {
+  return `<?php
+
+declare(strict_types=1);
+
+require __DIR__.'/vendor/autoload.php';
+
+use Illuminate\\Http\\Client\\Factory as HttpFactory;
+use Workflow\\V2\\Worker\\WorkerProtocolClient;
+
+if ($argc < 5) exit(2);
+[$script, $baseUrl, $namespace, $taskQueue, $workerId] = $argv;
+$token = getenv('DURABLE_WORKFLOW_AUTH_TOKEN');
+if (!is_string($token) || $token === '') throw new RuntimeException('DURABLE_WORKFLOW_AUTH_TOKEN is required');
+$client = new WorkerProtocolClient(new HttpFactory(), $baseUrl, $token, $namespace, defaultRequestTimeoutSeconds: 10);
+$tasks = $client->pollWorkflowTasks(queue: $taskQueue, timeoutSeconds: 0, workerId: $workerId);
+echo json_encode([
+    'worker_id' => $workerId,
+    'task_queue' => $taskQueue,
+    'tasks' => $tasks,
+    'poll' => $client->lastWorkflowTaskPoll(),
+], JSON_UNESCAPED_SLASHES).PHP_EOL;
+`;
+}
+
+async function startServer() {
+  if (!commandExists('docker')) throw new Error('docker is required to start the pinned published server');
+  if (!fs.existsSync(COMPOSE_FILE)) throw new Error(`published compose file not found: ${COMPOSE_FILE}`);
+  const port = await freePort();
+  const project = `dw-hb-php-${SUFFIX}`;
+  fs.writeFileSync(COMPOSE_OVERRIDE, `services:
+  server:
+    environment:
+      DW_WORKER_HEARTBEAT_INTERVAL_SECONDS: "${HEARTBEAT_SECONDS}"
+      DW_WORKER_STALE_AFTER_SECONDS: "${CONFIGURED_STALE_AFTER_SECONDS}"
+      DW_WORKER_POLL_TIMEOUT: "1"
+`, 'utf8');
+  const composeEnv = {
+    ...process.env,
+    SERVER_PORT: String(port),
+    DW_SERVER_TAG: SERVER_VERSION,
+    DW_SERVER_IMAGE: SERVER_IMAGE,
+    DW_AUTH_TOKEN: TOKEN,
+    DW_AUTH_BACKWARD_COMPATIBLE: 'true',
+  };
+  const composeArgs = ['compose', '-p', project, '-f', COMPOSE_FILE, '-f', COMPOSE_OVERRIDE];
+  cleanupCommands.push(() => cleanupComposeProject(project, composeArgs, composeEnv));
+  const pull = run('docker', ['pull', SERVER_IMAGE], {
+    captureFile: 'server-image-pull.json',
+    timeout: 300_000,
+  });
+  const imageInspect = run('docker', ['image', 'inspect', SERVER_IMAGE], {
+    captureFile: 'server-image-inspect-command.json',
+    timeout: 60_000,
+  });
+  const image = parseJsonOutput(imageInspect.stdout)?.[0];
+  if (!image?.Id || !String(image.Id).startsWith('sha256:')) {
+    throw new Error(`could not resolve the pulled server image id for ${SERVER_IMAGE}`);
+  }
+  const publicDigest = (image.RepoDigests ?? []).find((digest) =>
+    /^(?:(?:docker\.io|index\.docker\.io)\/)?durableworkflow\/server@sha256:[0-9a-f]{64}$/i.test(String(digest)));
+  if (!publicDigest) {
+    throw new Error(`pulled server image ${SERVER_IMAGE} has no durableworkflow/server repository digest`);
+  }
+  const canonicalPublicDigest = String(publicDigest).replace(/^(?:docker\.io|index\.docker\.io)\//i, '');
+  const versionTagReference = `durableworkflow/server:${SERVER_VERSION}`;
+  if (SERVER_IMAGE.includes('@sha256:')) {
+    run('docker', ['pull', versionTagReference], {
+      captureFile: 'server-version-tag-pull.json',
+      timeout: 300_000,
+    });
+    const versionTagInspect = run('docker', ['image', 'inspect', versionTagReference], {
+      captureFile: 'server-version-tag-inspect-command.json',
+      timeout: 60_000,
+    });
+    const versionTagImage = parseJsonOutput(versionTagInspect.stdout)?.[0];
+    if (versionTagImage?.Id !== image.Id) {
+      throw new Error(`digest-pinned server image does not match public version tag ${versionTagReference}`);
+    }
+  }
+  ARTIFACT_SOURCES.server = `docker://${canonicalPublicDigest}`;
+  writeJson('server-image-inspect.json', image);
+
+  run('docker', [...composeArgs, 'up', '-d', '--wait', 'server'], { env: composeEnv, timeout: 300_000 });
+  const serverContainer = run('docker', [...composeArgs, 'ps', '-q', 'server'], {
+    env: composeEnv,
+    timeout: 30_000,
+  });
+  const containerId = String(serverContainer.stdout).trim();
+  if (!containerId) throw new Error('compose did not report a running published server container');
+  const containerInspect = run('docker', [
+    'container',
+    'inspect',
+    '--format',
+    SERVER_CONTAINER_IMAGE_INSPECT_FORMAT,
+    containerId,
+  ], {
+    captureFile: 'server-container-inspect-command.json',
+    captureTransform: safeContainerInspectCommandRecord,
+    timeout: 60_000,
+  });
+  const container = parseJsonOutput(containerInspect.stdout);
+  if (container?.Image !== image.Id || container?.Config?.Image !== SERVER_IMAGE) {
+    throw new Error(`running server image mismatch: expected ${SERVER_IMAGE} (${image.Id}), got ${container?.Config?.Image ?? 'unknown'} (${container?.Image ?? 'unknown'})`);
+  }
+  evidence.server_image_install = {
+    requested_reference: SERVER_IMAGE,
+    public_version_tag: versionTagReference,
+    resolved_public_digest: canonicalPublicDigest,
+    resolved_image_id: image.Id,
+    running_container_id: containerId,
+    running_configured_reference: container.Config.Image,
+    running_image_id: container.Image,
+    pulled_stdout: String(pull.stdout).trim(),
+    exact_published_image_verified: true,
+  };
+  serverBaseUrl = `http://${SERVER_HOST}:${port}`;
+  evidence.server_endpoint = serverBaseUrl;
+  await waitFor('published server readiness', async () => {
+    const response = await fetch(new URL('/api/ready', serverBaseUrl), { headers: controlPlaneHeaders() });
+    return response.ok;
+  }, 120_000, 1_000);
+}
+
+function installCli() {
+  if (!commandExists('curl')) throw new Error('curl is required to install the pinned published CLI');
+  const cliRoot = path.join(RUN_ROOT, 'cli');
+  const binDir = path.join(cliRoot, 'bin');
+  fs.mkdirSync(binDir, { recursive: true });
+  const installer = path.join(cliRoot, 'install.sh');
+  let sourceUrl = '';
+  for (const tag of [CLI_VERSION, `v${CLI_VERSION}`]) {
+    const url = `https://github.com/durable-workflow/cli/releases/download/${tag}/install.sh`;
+    const result = run('curl', ['--fail', '--location', '--silent', '--show-error', url, '--output', installer], {
+      allowFailure: true,
+      timeout: 60_000,
+    });
+    if (result.status === 0) {
+      sourceUrl = url;
+      break;
+    }
+  }
+  if (!sourceUrl) throw new Error(`could not download the official dw ${CLI_VERSION} installer`);
+  fs.chmodSync(installer, 0o755);
+  run('sh', [installer], {
+    env: {
+      ...process.env,
+      VERSION: CLI_VERSION,
+      DURABLE_WORKFLOW_INSTALL_DIR: binDir,
+      DURABLE_WORKFLOW_INSTALL_VERIFY_ATTESTATIONS: '0',
+    },
+    timeout: 180_000,
+  });
+  cliBin = path.join(binDir, os.platform() === 'win32' ? 'dw.exe' : 'dw');
+  const version = run(cliBin, ['--version'], { timeout: 30_000 });
+  const versionOutput = String(version.stdout || version.stderr).trim();
+  const installedVersion = parseCliVersionOutput(versionOutput);
+  if (installedVersion !== CLI_VERSION) {
+    throw new Error(`pinned CLI version mismatch: expected ${CLI_VERSION}, got ${versionOutput || 'empty'}`);
+  }
+  evidence.cli_version_output = versionOutput;
+  ARTIFACT_SOURCES.cli = sourceUrl;
+  evidence.cli_install = {
+    version: CLI_VERSION,
+    detected_version: installedVersion,
+    source: ARTIFACT_SOURCES.cli,
+    source_url: ARTIFACT_SOURCES.cli,
+    binary: path.basename(cliBin),
+  };
+}
+
+function installPhpPackage() {
+  if (!commandExists('docker')) throw new Error('docker is required to install the pinned public PHP package');
+  writePhpProject();
+  run('docker', [
+    'run', '--rm',
+    '--user', CONTAINER_USER,
+    '-v', `${PROJECT_DIR}:/app`,
+    '-w', '/app',
+    PHP_IMAGE,
+    'install', '--no-interaction', '--no-progress', '--prefer-dist', '--no-scripts',
+  ], { timeout: 600_000 });
+  const version = run('docker', [
+    'run', '--rm',
+    '--user', CONTAINER_USER,
+    '-v', `${PROJECT_DIR}:/app`,
+    '-w', '/app',
+    '--entrypoint', 'php',
+    PHP_IMAGE,
+    '-r', "require 'vendor/autoload.php'; echo Composer\\InstalledVersions::getPrettyVersion('durable-workflow/workflow') ?: '';",
+  ], { timeout: 60_000 });
+  const installed = String(version.stdout).trim();
+  if (normalizeVersion(installed) !== WORKFLOW_VERSION) {
+    throw new Error(`pinned PHP package mismatch: expected ${WORKFLOW_VERSION}, got ${installed || 'empty'}`);
+  }
+  evidence.php_package_install = {
+    package: 'durable-workflow/workflow',
+    requested_version: WORKFLOW_VERSION,
+    installed_version: installed,
+    source: ARTIFACT_SOURCES['workflow-php'],
+    installer_runtime: PHP_IMAGE,
+    preferred_install: 'dist',
+  };
+}
+
+function startWorker(workerId) {
+  const containerName = `dw-hb-${workerId}`.slice(0, 63);
+  workerContainers.add(containerName);
+  const result = run('docker', [
+    'run', '-d', '--name', containerName,
+    '--user', CONTAINER_USER,
+    '--add-host', 'host.docker.internal:host-gateway',
+    '--env', 'DURABLE_WORKFLOW_AUTH_TOKEN',
+    '-v', `${PROJECT_DIR}:/app`,
+    '-w', '/app',
+    '--entrypoint', 'php',
+    PHP_IMAGE,
+    'heartbeat-worker.php',
+    workerBaseUrl(serverBaseUrl),
+    NAMESPACE,
+    TASK_QUEUE,
+    workerId,
+    '600',
+  ], {
+    env: { ...process.env, DURABLE_WORKFLOW_AUTH_TOKEN: TOKEN },
+    timeout: 60_000,
+  });
+  return {
+    worker_id: workerId,
+    container_name: containerName,
+    container_id: String(result.stdout).trim(),
+  };
+}
+
+function stopWorker(worker) {
+  const stoppedAt = now();
+  run('docker', ['stop', '--time', '2', worker.container_name], { allowFailure: true, timeout: 30_000 });
+  return stoppedAt;
+}
+
+function workerLogRecords(worker) {
+  const result = run('docker', ['logs', worker.container_name], { allowFailure: true, timeout: 30_000 });
+  return String(result.stdout).split(/\r?\n/).flatMap((line) => {
+    if (!line.trim()) return [];
+    try {
+      const parsed = JSON.parse(line);
+      return parsed && typeof parsed === 'object' ? [parsed] : [];
+    } catch {
+      return [];
+    }
+  });
+}
+
+function workerRegistration(worker) {
+  return workerLogRecords(worker).find((record) => record.event === 'worker_registered') ?? null;
+}
+
+function workerHeartbeatRecords(worker) {
+  return workerLogRecords(worker).filter((record) => record.event === 'worker_heartbeat');
+}
+
+async function waitForWorkerRegistration(worker) {
+  return waitFor(`${worker.worker_id} registration`, async () => {
+    const registration = workerRegistration(worker);
+    if (!registration) return null;
+    const detail = await api(`/workers/${encodeURIComponent(worker.worker_id)}`);
+    return { registration, detail };
+  }, 90_000, 500);
+}
+
+async function observeSuccessiveHeartbeats(worker, registrationEvidence) {
+  const heartbeatTimestamps = [];
+  const apiTimestamps = [];
+  const apiSamples = [];
+  const advertised = Number(registrationEvidence.registration.registration?.heartbeat_interval_seconds
+    ?? registrationEvidence.detail.heartbeat_interval_seconds
+    ?? 60);
+  const timeout = Math.max(20_000, (advertised * 4 + 10) * 1_000);
+  await waitFor(`${worker.worker_id} successive SDK heartbeats`, async () => {
+    const records = workerHeartbeatRecords(worker);
+    for (const record of records) {
+      if (record.observed_at && !heartbeatTimestamps.includes(record.observed_at)) heartbeatTimestamps.push(record.observed_at);
+    }
+    const detail = await api(`/workers/${encodeURIComponent(worker.worker_id)}`);
+    apiSamples.push({ observed_at: now(), worker: detail });
+    if (detail.last_heartbeat_at && !apiTimestamps.includes(detail.last_heartbeat_at)) apiTimestamps.push(detail.last_heartbeat_at);
+    return heartbeatTimestamps.length >= 2 && apiTimestamps.length >= 2;
+  }, timeout, Math.min(1_000, Math.max(250, advertised * 250)));
+
+  const intervals = [];
+  for (let index = 1; index < heartbeatTimestamps.length; index += 1) {
+    intervals.push((Date.parse(heartbeatTimestamps[index]) - Date.parse(heartbeatTimestamps[index - 1])) / 1_000);
+  }
+  const bounded = intervals.length > 0 && intervals.every((interval) =>
+    interval >= Math.max(0.5, advertised * 0.5) && interval <= Math.max(advertised * 2, advertised + 2));
+  return {
+    advertised_heartbeat_interval_seconds: advertised,
+    sdk_emitted_heartbeat_timestamps: heartbeatTimestamps,
+    server_last_heartbeat_timestamps: apiTimestamps,
+    inter_arrival_seconds: intervals,
+    bounded_advertised_cadence: bounded,
+    api_samples: apiSamples,
+    acknowledgements: workerHeartbeatRecords(worker).map((record) => record.acknowledgement),
+  };
+}
+
+function cliEnvironment() {
+  return {
+    ...process.env,
+    DURABLE_WORKFLOW_SERVER_URL: serverBaseUrl,
+    DURABLE_WORKFLOW_AUTH_TOKEN: TOKEN,
+    DURABLE_WORKFLOW_NAMESPACE: NAMESPACE,
+    DURABLE_WORKFLOW_TLS_VERIFY: 'false',
+  };
+}
+
+function cli(command, options = {}) {
+  const result = run(cliBin, [...command, '--output=json'], {
+    env: cliEnvironment(),
+    allowFailure: options.allowFailure ?? false,
+    timeout: options.timeout ?? 120_000,
+  });
+  return {
+    command: ['dw', ...command, '--output=json'],
+    exit_code: result.status,
+    stdout: result.stdout,
+    stderr: result.stderr,
+    output: parseJsonOutput(result.stdout),
+  };
+}
+
+function startWorkflow(label) {
+  const workflowId = `hb-php-${label}-${SUFFIX}`;
+  const sample = cli([
+    'workflow:start',
+    `--type=${WORKFLOW_TYPE}`,
+    `--workflow-id=${workflowId}`,
+    `--task-queue=${TASK_QUEUE}`,
+    '--wait',
+  ], { timeout: 120_000 });
+  return { workflow_id: workflowId, ...sample };
+}
+
+function completedWorkflow(sample) {
+  const status = String(sample.output?.status ?? sample.output?.run?.status ?? '').toLowerCase();
+  return sample.exit_code === 0 && status === 'completed';
+}
+
+async function captureOperatorVisibility(staleWorkerStatus = null) {
+  const apiList = await api('/workers', { task_queue: TASK_QUEUE });
+  const apiStaleList = staleWorkerStatus ? await api('/workers', { task_queue: TASK_QUEUE, status: 'stale' }) : null;
+  const apiStaleDetail = staleWorkerStatus ? await api(`/workers/${encodeURIComponent(STALE_WORKER_ID)}`) : null;
+  return {
+    raw_api: {
+      worker_list: apiList,
+      stale_worker_list: apiStaleList,
+      stale_worker_detail: apiStaleDetail,
+      fresh_worker_detail: await api(`/workers/${encodeURIComponent(FRESH_WORKER_ID)}`),
+    },
+    cli: {
+      worker_list: cli(['worker:list', `--task-queue=${TASK_QUEUE}`]),
+      fresh_worker_describe: cli(['worker:describe', FRESH_WORKER_ID]),
+      stale_worker_list: staleWorkerStatus ? cli(['worker:list', `--task-queue=${TASK_QUEUE}`, '--status=stale']) : null,
+      stale_worker_describe: staleWorkerStatus ? cli(['worker:describe', STALE_WORKER_ID]) : null,
+    },
+  };
+}
+
+function workersFromList(payload) {
+  return Array.isArray(payload?.workers) ? payload.workers : [];
+}
+
+async function waitForStaleTransition(stoppedAt, staleAfterSeconds) {
+  return waitFor(`${STALE_WORKER_ID} stale transition`, async () => {
+    const detail = await api(`/workers/${encodeURIComponent(STALE_WORKER_ID)}`);
+    const active = await api('/workers', { task_queue: TASK_QUEUE });
+    const stale = await api('/workers', { task_queue: TASK_QUEUE, status: 'stale' });
+    const activeIds = workersFromList(active).map((worker) => worker.worker_id);
+    const staleIds = workersFromList(stale).map((worker) => worker.worker_id);
+    if (detail.status !== 'stale' || activeIds.includes(STALE_WORKER_ID) || !staleIds.includes(STALE_WORKER_ID)) return null;
+    const observedStaleAt = now();
+    const transitionElapsedSeconds = (Date.parse(observedStaleAt) - Date.parse(stoppedAt)) / 1_000;
+    const boundedMaxSeconds = staleAfterSeconds + 5;
+    return {
+      stopped_at: stoppedAt,
+      observed_stale_at: observedStaleAt,
+      stale_after_seconds: staleAfterSeconds,
+      transition_elapsed_seconds: transitionElapsedSeconds,
+      bounded_max_seconds: boundedMaxSeconds,
+      within_bounded_window: transitionElapsedSeconds >= 0 && transitionElapsedSeconds <= boundedMaxSeconds,
+      stale_worker_detail: detail,
+      default_active_worker_list: active,
+      stale_worker_list: stale,
+    };
+  }, (staleAfterSeconds + 20) * 1_000, 500);
+}
+
+function stalePollProbe() {
+  const result = run('docker', [
+    'run', '--rm',
+    '--user', CONTAINER_USER,
+    '--add-host', 'host.docker.internal:host-gateway',
+    '--env', 'DURABLE_WORKFLOW_AUTH_TOKEN',
+    '-v', `${PROJECT_DIR}:/app`,
+    '-w', '/app',
+    '--entrypoint', 'php',
+    PHP_IMAGE,
+    'stale-poll.php',
+    workerBaseUrl(serverBaseUrl),
+    NAMESPACE,
+    TASK_QUEUE,
+    STALE_WORKER_ID,
+  ], {
+    env: { ...process.env, DURABLE_WORKFLOW_AUTH_TOKEN: TOKEN },
+    timeout: 60_000,
+  });
+  return parseJsonOutput(result.stdout);
+}
+
+function workerLogEvidence(worker) {
+  const records = workerLogRecords(worker);
+  return {
+    worker_id: worker.worker_id,
+    registration: records.find((record) => record.event === 'worker_registered') ?? null,
+    heartbeat_records: records.filter((record) => record.event === 'worker_heartbeat'),
+    work_processed_records: records.filter((record) => record.event === 'work_processed'),
+    loop_stopped: records.find((record) => record.event === 'worker_loop_stopped') ?? null,
+  };
+}
+
+function apiHasWorker(payload, workerId, expectedStatus = null) {
+  const worker = workersFromList(payload).find((candidate) => candidate.worker_id === workerId);
+  return Boolean(worker && (expectedStatus === null || worker.status === expectedStatus));
+}
+
+function cliWorker(payload) {
+  const output = payload?.output ?? {};
+  if (Array.isArray(output?.workers)) return output.workers;
+  return output && typeof output === 'object' ? [output] : [];
+}
+
+function buildChecks(context) {
+  const staleDetail = context.afterVisibility.raw_api.stale_worker_detail ?? {};
+  const freshDetail = context.afterVisibility.raw_api.fresh_worker_detail ?? {};
+  const activeList = context.afterVisibility.raw_api.worker_list ?? {};
+  const staleList = context.afterVisibility.raw_api.stale_worker_list ?? {};
+  const cliFresh = cliWorker(context.afterVisibility.cli.fresh_worker_describe)[0] ?? {};
+  const cliStale = cliWorker(context.afterVisibility.cli.stale_worker_describe)[0] ?? {};
+  const cliActiveList = cliWorker(context.afterVisibility.cli.worker_list);
+  const cliStaleList = cliWorker(context.afterVisibility.cli.stale_worker_list);
+  const stalePollStatus = context.stalePoll.poll?.poll_status ?? context.stalePoll.poll?.reason ?? '';
+  return {
+    exact_published_artifacts_installed: evidence.server_image_install?.exact_published_image_verified === true
+      && evidence.php_package_install?.installed_version === WORKFLOW_VERSION
+      && evidence.cli_install?.detected_version === CLI_VERSION,
+    real_workflow_completed_by_php_loop: completedWorkflow(context.initialWorkflow)
+      && completedWorkflow(context.freshWorkflow)
+      && context.staleWorkerLog.work_processed_records.length >= 1
+      && context.freshWorkerLog.work_processed_records.length >= 1,
+    at_least_two_sdk_heartbeats: context.staleCadence.sdk_emitted_heartbeat_timestamps.length >= 2,
+    server_observed_successive_heartbeats: context.staleCadence.server_last_heartbeat_timestamps.length >= 2,
+    advertised_cadence_bounded: context.staleCadence.bounded_advertised_cadence,
+    task_queue_association_visible: staleDetail.task_queue === TASK_QUEUE && freshDetail.task_queue === TASK_QUEUE,
+    task_slots_visible: Boolean(staleDetail.task_slots && freshDetail.task_slots),
+    process_metrics_visible: Boolean(staleDetail.process_metrics && freshDetail.process_metrics),
+    stale_worker_excluded_from_default_list: staleDetail.status === 'stale'
+      && !apiHasWorker(activeList, STALE_WORKER_ID)
+      && apiHasWorker(staleList, STALE_WORKER_ID, 'stale'),
+    stale_transition_bounded: context.staleTransition.within_bounded_window === true,
+    stale_sdk_poll_refused: Array.isArray(context.stalePoll.tasks)
+      && context.stalePoll.tasks.length === 0
+      && ['stale_worker_registration', 'worker_heartbeat_stale'].includes(String(stalePollStatus)),
+    fresh_worker_remains_eligible: freshDetail.status === 'active'
+      && apiHasWorker(activeList, FRESH_WORKER_ID, 'active')
+      && completedWorkflow(context.freshWorkflow),
+    cli_fresh_and_stale_visible: cliFresh.worker_id === FRESH_WORKER_ID
+      && cliFresh.status === 'active'
+      && cliFresh.task_queue === TASK_QUEUE
+      && cliStale.worker_id === STALE_WORKER_ID
+      && cliStale.status === 'stale'
+      && cliStale.task_queue === TASK_QUEUE
+      && cliActiveList.some((worker) => worker.worker_id === FRESH_WORKER_ID && worker.task_queue === TASK_QUEUE)
+      && cliStaleList.some((worker) => worker.worker_id === STALE_WORKER_ID && worker.task_queue === TASK_QUEUE),
+  };
+}
+
+function writeResultFiles(context = null) {
+  const finishedAt = now();
+  evidence.finished_at = finishedAt;
+  evidence.generated_at = finishedAt;
+  evidence.artifact_sources = ARTIFACT_SOURCES;
+
+  const pins = {
+    schema: 'durable-workflow.v2.heartbeat-runtime.php-sdk-loop-pins',
+    generated_at: finishedAt,
+    artifact_versions: ARTIFACT_VERSIONS,
+    artifact_sources: ARTIFACT_SOURCES,
+    local_product_source_checkouts_used: false,
+  };
+  const metadata = {
+    schema: 'durable-workflow.v2.heartbeat-runtime.php-sdk-loop-run-metadata',
+    conformance_run_id: RUN_ID,
+    started_at: STARTED_AT,
+    finished_at: finishedAt,
+    outcome: evidence.outcome,
+    runner_blocked: evidence.runner_blocked,
+    topology: evidence.topology,
+    public_surfaces: [
+      'POST /api/namespaces',
+      'POST /api/worker/register',
+      'POST /api/worker/heartbeat',
+      'POST /api/worker/workflow-tasks/poll',
+      'GET /api/workers',
+      'GET /api/workers/{workerId}',
+      'dw workflow:start --wait',
+      'dw worker:list',
+      'dw worker:describe',
+    ],
+  };
+  writeJson('pins.json', pins);
+  writeJson('run-metadata.json', metadata);
+  writeJson('php-sdk-heartbeat-loop-evidence.json', evidence);
+  writeJson('heartbeat-request-response-captures.json', {
+    schema: 'durable-workflow.v2.heartbeat-runtime.request-response-captures',
+    conformance_run_id: RUN_ID,
+    captures: requestCaptures,
+  });
+  writeJson('heartbeat-cadence-dataset.json', context ? {
+    schema: 'durable-workflow.v2.heartbeat-runtime.cadence-dataset',
+    conformance_run_id: RUN_ID,
+    task_queue: TASK_QUEUE,
+    workers: {
+      [STALE_WORKER_ID]: context.staleCadence,
+      [FRESH_WORKER_ID]: context.freshCadence,
+    },
+  } : {
+    schema: 'durable-workflow.v2.heartbeat-runtime.cadence-dataset',
+    conformance_run_id: RUN_ID,
+    workers: {},
+  });
+}
+
+function recordFailure(error) {
+  const summary = error instanceof Error ? error.message : String(error);
+  evidence.outcome = publishedExecutionStarted ? 'fail' : 'runner_blocked';
+  evidence.runner_blocked = !publishedExecutionStarted;
+  evidence.scenario_results.php_sdk_heartbeat_loop = {
+    scenario_id: 'php_sdk_heartbeat_loop',
+    status: evidence.runner_blocked ? 'runner_blocked' : 'fail',
+    classification: evidence.runner_blocked ? 'runner-gap' : 'product-gap',
+    observed_outputs: {
+      runtime: 'workflow-php',
+      worker_id: STALE_WORKER_ID,
+      task_queue: TASK_QUEUE,
+      published_artifact_worker_execution: publishedExecutionStarted,
+      local_product_source_checkouts_used: false,
+      error: summary,
+    },
+  };
+  evidence.findings.push({
+    finding_id: `php-sdk-heartbeat-loop-${evidence.runner_blocked ? 'runner-gap' : 'product-gap'}-${SUFFIX}`,
+    finding_type: evidence.runner_blocked ? 'conformance_runner_blocked' : 'php_sdk_heartbeat_loop_gap',
+    classification: evidence.runner_blocked ? 'runner-gap' : 'product-gap',
+    scenario_id: 'php_sdk_heartbeat_loop',
+    owning_surface: evidence.runner_blocked ? 'conformance_harness' : 'workflow-php-or-server-worker-protocol',
+    artifact_versions: ARTIFACT_VERSIONS,
+    observed_behavior: summary,
+    expected_behavior: 'The pinned public PHP workflow package emits successive acknowledged heartbeats while completing real workflow work, then stale routing excludes the stopped worker while a fresh peer remains eligible.',
+    next_acceptance_criterion: evidence.runner_blocked
+      ? 'Restore the missing host prerequisite and rerun the focused published-artifact PHP heartbeat shard.'
+      : 'Fix the owning public worker or server surface and rerun this focused shard against the next published tuple.',
+  });
+}
+
+function recordCleanupFailure(cleanupFailures) {
+  const summary = cleanupFailures.map((failure) => `${failure.resource}: ${failure.error}`).join('; ');
+  evidence.execution_outcome_before_cleanup = evidence.outcome;
+  evidence.outcome = 'runner_blocked';
+  evidence.runner_blocked = true;
+  evidence.classification = 'conformance-cleanup-failed';
+  evidence.scenario_results.php_sdk_heartbeat_loop.execution_status_before_cleanup =
+    evidence.scenario_results.php_sdk_heartbeat_loop.status;
+  evidence.scenario_results.php_sdk_heartbeat_loop.status = 'runner_blocked';
+  evidence.scenario_results.php_sdk_heartbeat_loop.classification = 'runner-gap';
+  evidence.scenario_results.php_sdk_heartbeat_loop.observed_outputs.cleanup_error = summary;
+  evidence.findings.push({
+    finding_id: `php-sdk-heartbeat-loop-cleanup-${SUFFIX}`,
+    finding_type: 'conformance_runner_cleanup_failed',
+    classification: 'runner-gap',
+    scenario_id: 'php_sdk_heartbeat_loop',
+    owning_surface: 'conformance_harness',
+    artifact_versions: ARTIFACT_VERSIONS,
+    observed_behavior: summary,
+    expected_behavior: 'The focused runner removes every named PHP worker container and the compose project volumes before it emits consumable evidence.',
+    next_acceptance_criterion: 'Restore deterministic Docker cleanup and rerun the focused published-artifact PHP heartbeat shard.',
+  });
+}
+
+let completedContext = null;
+
+async function main() {
+  ensureExactPins();
+  for (const command of ['docker']) {
+    if (!commandExists(command)) throw new Error(`required command not found: ${command}`);
+  }
+  await startServer();
+  await ensureNamespace();
+  installCli();
+  installPhpPackage();
+  publishedExecutionStarted = true;
+
+  const staleWorker = startWorker(STALE_WORKER_ID);
+  const staleRegistration = await waitForWorkerRegistration(staleWorker);
+  const staleCadence = await observeSuccessiveHeartbeats(staleWorker, staleRegistration);
+  const initialWorkflow = startWorkflow('initial');
+  if (!completedWorkflow(initialWorkflow)) throw new Error('the initial real workflow did not complete through the PHP worker loop');
+
+  const freshWorker = startWorker(FRESH_WORKER_ID);
+  const freshRegistration = await waitForWorkerRegistration(freshWorker);
+  const freshCadence = await observeSuccessiveHeartbeats(freshWorker, freshRegistration);
+  const beforeVisibility = await captureOperatorVisibility();
+
+  const stoppedAt = stopWorker(staleWorker);
+  const staleAfterSeconds = Number(staleRegistration.registration.registration?.stale_after_seconds
+    ?? staleRegistration.detail.stale_after_seconds
+    ?? CONFIGURED_STALE_AFTER_SECONDS);
+  const staleTransition = await waitForStaleTransition(stoppedAt, staleAfterSeconds);
+  const stalePoll = stalePollProbe();
+  const freshWorkflow = startWorkflow('fresh-after-stale');
+  if (!completedWorkflow(freshWorkflow)) throw new Error('the fresh PHP worker did not complete work after its peer became stale');
+  const afterVisibility = await captureOperatorVisibility('stale');
+  stopWorker(freshWorker);
+
+  const context = {
+    staleWorker,
+    freshWorker,
+    staleRegistration,
+    freshRegistration,
+    staleCadence,
+    freshCadence,
+    initialWorkflow,
+    freshWorkflow,
+    beforeVisibility,
+    afterVisibility,
+    staleTransition,
+    stalePoll,
+    staleWorkerLog: workerLogEvidence(staleWorker),
+    freshWorkerLog: workerLogEvidence(freshWorker),
+  };
+  completedContext = context;
+  const checks = buildChecks(context);
+  const failedChecks = Object.entries(checks).filter(([, value]) => value !== true).map(([key]) => key);
+  if (failedChecks.length > 0) throw new Error(`PHP SDK heartbeat-loop assertions failed: ${failedChecks.join(', ')}`);
+
+  const heartbeatAcks = context.staleCadence.acknowledgements;
+  const lastAck = heartbeatAcks[heartbeatAcks.length - 1] ?? {};
+  evidence.outcome = 'pass';
+  evidence.runner_blocked = false;
+  evidence.classification = 'published-php-sdk-heartbeat-loop-proven';
+  evidence.covered_scenarios = ['php_sdk_heartbeat_loop'];
+  evidence.separate_uncovered_cells = [
+    'python_sdk_heartbeat_loop',
+    'rust_sdk_heartbeat_loop',
+    'waterline_worker_status_visibility',
+  ];
+  evidence.scenario_results.php_sdk_heartbeat_loop = {
+    scenario_id: 'php_sdk_heartbeat_loop',
+    status: 'pass',
+    classification: 'product-behavior-passed',
+    observed_outputs: {
+      runtime: 'workflow-php',
+      worker_id: STALE_WORKER_ID,
+      peer_worker_id: FRESH_WORKER_ID,
+      namespace: NAMESPACE,
+      task_queue: TASK_QUEUE,
+      registered_types: {
+        workflows: [WORKFLOW_TYPE],
+        activities: [],
+      },
+      heartbeat_timestamps: context.staleCadence.sdk_emitted_heartbeat_timestamps,
+      server_heartbeat_timestamps: context.staleCadence.server_last_heartbeat_timestamps,
+      heartbeat_acknowledgements: heartbeatAcks,
+      heartbeat_interval_seconds: context.staleCadence.advertised_heartbeat_interval_seconds,
+      stale_after_seconds: Number(lastAck.stale_after_seconds ?? staleAfterSeconds),
+      task_slots: staleTransition.stale_worker_detail.task_slots,
+      process_metrics: staleTransition.stale_worker_detail.process_metrics,
+      published_artifact_worker_execution: true,
+      public_package: 'durable-workflow/workflow',
+      public_package_version: WORKFLOW_VERSION,
+      worker_protocol_client: 'Workflow\\V2\\Worker\\WorkerProtocolClient',
+      worker_loop: [
+        'Workflow\\V2\\Worker\\StandaloneWorkflowWorker::tickWithHeartbeat()',
+        'Workflow\\V2\\Worker\\StandaloneWorkflowWorker::run()',
+      ],
+      local_product_source_checkouts_used: false,
+      real_workflow_execution: {
+        before_stale: initialWorkflow,
+        after_stale: freshWorkflow,
+        stale_worker_processed_records: context.staleWorkerLog.work_processed_records,
+        fresh_worker_processed_records: context.freshWorkerLog.work_processed_records,
+      },
+      cadence: context.staleCadence,
+      checks,
+    },
+  };
+  evidence.stale_transition = staleTransition;
+  evidence.routing_exclusion = {
+    stale_worker_id: STALE_WORKER_ID,
+    fresh_worker_id: FRESH_WORKER_ID,
+    configured_stale_threshold_seconds: staleAfterSeconds,
+    observed_stale_transition_timing: staleTransition,
+    routing_observations_before_stale: beforeVisibility,
+    routing_observations_after_stale: afterVisibility,
+    stale_sdk_poll: stalePoll,
+    stale_worker_claim_count: Array.isArray(stalePoll.tasks) ? stalePoll.tasks.length : null,
+    fresh_worker_eligibility_after_stale: {
+      worker_id: FRESH_WORKER_ID,
+      eligible: true,
+      status: afterVisibility.raw_api.fresh_worker_detail.status,
+      completed_workflow_id: freshWorkflow.workflow_id,
+    },
+    public_surfaces: [
+      'POST /api/worker/workflow-tasks/poll',
+      'GET /api/workers',
+      'GET /api/workers/{workerId}',
+      'dw workflow:start --wait',
+    ],
+    conformance_run_id: RUN_ID,
+    timestamp: now(),
+  };
+  evidence.operator_visibility = afterVisibility;
+  evidence.worker_list_snapshots = {
+    before_stale: beforeVisibility,
+    after_stale: afterVisibility,
+  };
+  evidence.php_worker_logs = {
+    stale: context.staleWorkerLog,
+    fresh: context.freshWorkerLog,
+  };
+  evidence.findings = [];
+}
+
+try {
+  await main();
+} catch (error) {
+  log(`failure: ${error instanceof Error ? error.stack ?? error.message : String(error)}`);
+  recordFailure(error);
+  process.exitCode = 1;
+} finally {
+  const cleanupResults = [];
+  const cleanupFailures = [];
+  for (const containerName of workerContainers) {
+    try {
+      cleanupResults.push(cleanupWorkerContainer(containerName));
+    } catch (error) {
+      cleanupFailures.push({ resource: `worker_container:${containerName}`, error: errorSummary(error) });
+    }
+  }
+  for (const cleanup of cleanupCommands.reverse()) {
+    try {
+      cleanupResults.push(cleanup());
+    } catch (error) {
+      cleanupFailures.push({ resource: 'compose_project', error: errorSummary(error) });
+    }
+  }
+  if (!KEEP_RUN_ROOT) {
+    try {
+      fs.rmSync(RUN_ROOT, { recursive: true, force: true });
+      cleanupResults.push({ resource: 'run_root', name: path.basename(RUN_ROOT), status: 'removed' });
+    } catch (error) {
+      cleanupFailures.push({ resource: 'run_root', error: errorSummary(error) });
+    }
+  } else {
+    cleanupResults.push({ resource: 'run_root', name: RUN_ROOT, status: 'retained_by_request' });
+  }
+  evidence.cleanup = {
+    status: cleanupFailures.length === 0 ? 'pass' : 'fail',
+    worker_container_names: [...workerContainers],
+    results: cleanupResults,
+    failures: cleanupFailures,
+    finished_at: now(),
+  };
+  if (cleanupFailures.length > 0) {
+    recordCleanupFailure(cleanupFailures);
+    process.exitCode = 1;
+    log(`cleanup failed: ${cleanupFailures.map((failure) => `${failure.resource}: ${failure.error}`).join('; ')}`);
+  }
+  try {
+    writeResultFiles(completedContext);
+  } catch (error) {
+    process.exitCode = 1;
+    process.stderr.write(`could not write PHP heartbeat evidence: ${errorSummary(error)}\n`);
+  }
+}
