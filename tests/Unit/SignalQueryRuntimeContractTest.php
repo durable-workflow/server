@@ -1030,31 +1030,33 @@ PY);
         );
     }
 
-    public function test_host_runner_extracts_signal_amounts_from_avro_history_envelopes(): void
+    public function test_host_runner_extracts_cross_language_signal_amounts_from_official_avro_envelopes(): void
     {
         $result = $this->runSignalQueryRunnerPythonSnippet(<<<'PY'
-def avro_long(value):
-    raw = (value << 1) ^ (value >> 63)
-    encoded = bytearray()
-    while raw & ~0x7F:
-        encoded.append((raw & 0x7F) | 0x80)
-        raw >>= 7
-    encoded.append(raw)
-    return bytes(encoded)
+import avro.io
+import avro.schema
 
-def avro_generic_json(value):
-    payload = json.dumps(value, separators=(",", ":")).encode("utf-8")
-    return base64.b64encode(b"\x00" + avro_long(len(payload)) + payload + avro_long(1)).decode("ascii")
+def official_avro_generic_json(value):
+    buffer = io.BytesIO()
+    writer = avro.io.DatumWriter(avro.schema.parse(AVRO_GENERIC_WRAPPER_SCHEMA_JSON))
+    writer.write(
+        {
+            "json": json.dumps(value, separators=(",", ":")),
+            "version": 1,
+        },
+        avro.io.BinaryEncoder(buffer),
+    )
+    return base64.b64encode(b"\x00" + buffer.getvalue()).decode("ascii")
 
 events = [
     {
         "event_type": "SignalReceived",
         "payload": {
             "signal_name": "increment",
-            "signal_id": "sig-avro-1",
+            "signal_id": "sig-avro-php",
             "arguments": {
                 "codec": "avro",
-                "blob": avro_generic_json({"amount": 6}),
+                "blob": official_avro_generic_json({"amount": 6}),
             },
         },
     },
@@ -1062,10 +1064,21 @@ events = [
         "event_type": "SignalReceived",
         "payload": {
             "signal_name": "increment",
-            "signal_id": "sig-avro-2",
+            "signal_id": "sig-avro-python",
             "arguments": {
                 "codec": "avro",
-                "blob": avro_generic_json([7]),
+                "blob": official_avro_generic_json([7]),
+            },
+        },
+    },
+    {
+        "event_type": "SignalReceived",
+        "payload": {
+            "signal_name": "increment",
+            "signal_id": "sig-avro-rust",
+            "arguments": {
+                "codec": "avro",
+                "blob": official_avro_generic_json({"n": "8"}),
             },
         },
     },
@@ -1073,10 +1086,42 @@ events = [
 
 print(json.dumps({
     "amounts": increment_signal_amounts_from_history_events(events),
+    "json_fallback_amounts": [
+        amount_from_arguments(decode_json_blob(json.dumps({"amount": 9}))),
+        amount_from_arguments(decode_json_blob(
+            base64.b64encode(json.dumps([10]).encode("utf-8")).decode("ascii")
+        )),
+    ],
+    "malformed": [
+        decode_json_blob("not json or base64"),
+        decode_json_blob(base64.b64encode(b"\x00\xff").decode("ascii")),
+    ],
 }, sort_keys=True))
 PY);
 
-        $this->assertSame([6, 7], $result['amounts']);
+        $this->assertSame([6, 7, 8], $result['amounts']);
+        $this->assertSame([9, 10], $result['json_fallback_amounts']);
+        $this->assertSame([null, null], $result['malformed']);
+    }
+
+    public function test_host_runner_uses_the_official_python_avro_runtime(): void
+    {
+        $source = (string) file_get_contents(
+            dirname(__DIR__, 2) . '/scripts/conformance/signals-queries-published-artifacts.sh',
+        );
+
+        foreach ([
+            'import avro.io',
+            'import avro.schema',
+            'avro.io.BinaryDecoder(',
+            'avro.io.DatumReader(',
+            'avro.schema.parse(AVRO_GENERIC_WRAPPER_SCHEMA_JSON)',
+            'add_python_sdk_avro_dependency(',
+        ] as $needle) {
+            $this->assertStringContainsString($needle, $source);
+        }
+
+        $this->assertStringNotContainsString('def decode_' . 'avro_long(', $source);
     }
 
     public function test_host_runner_public_snapshot_reads_control_plane_history_events(): void

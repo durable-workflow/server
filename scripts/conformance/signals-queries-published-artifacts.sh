@@ -110,6 +110,7 @@ from __future__ import annotations
 
 import base64
 import hashlib
+import io
 import json
 import math
 import os
@@ -1063,6 +1064,7 @@ def ensure_python_sdk(run_root: Path, log_file: Path) -> tuple[str, dict[str, An
     sdk_version = artifact_version_value(artifact_versions, "sdk-python")
     explicit = env_text("DW_SIGNALS_QUERIES_PYTHON")
     if explicit:
+        add_python_sdk_avro_dependency(explicit, log_file)
         return explicit, configured_artifact_entry(
             "sdk-python",
             sdk_version,
@@ -1091,12 +1093,38 @@ def ensure_python_sdk(run_root: Path, log_file: Path) -> tuple[str, dict[str, An
     if install.returncode != 0:
         raise RuntimeError("could not install the public Python SDK artifact")
 
+    add_python_sdk_avro_dependency(str(python_bin), log_file)
     return str(python_bin), installed_public_artifact_entry(
         "sdk-python",
         sdk_version,
         EXPECTED_ARTIFACT_SOURCES["sdk-python"],
         "pypi_package_install",
     )
+
+
+def add_python_sdk_avro_dependency(python_bin: str, log_file: Path) -> None:
+    locate = run_command(
+        [
+            python_bin,
+            "-c",
+            (
+                "from pathlib import Path; import avro; "
+                "print(Path(avro.__file__).resolve().parent.parent)"
+            ),
+        ],
+        log_file=log_file,
+        timeout=30,
+    )
+    if locate.returncode != 0:
+        raise RuntimeError("Python SDK environment does not provide its required avro dependency")
+
+    package_root = Path(locate.stdout.strip())
+    if not package_root.is_dir():
+        raise RuntimeError("Python SDK avro dependency path could not be resolved")
+
+    package_root_text = str(package_root)
+    if package_root_text not in sys.path:
+        sys.path.insert(0, package_root_text)
 
 
 def python_sdk_distribution_version(python_bin: str, log_file: Path) -> str:
@@ -2359,34 +2387,32 @@ def decode_json_blob(blob: Any) -> Any:
         return decode_avro_generic_wrapper(decoded_bytes)
 
 
-def decode_avro_long(data: bytes, offset: int) -> tuple[int, int] | None:
-    raw = 0
-    shift = 0
-    while offset < len(data) and shift <= 63:
-        byte = data[offset]
-        offset += 1
-        raw |= (byte & 0x7F) << shift
-        if (byte & 0x80) == 0:
-            return ((raw >> 1) ^ -(raw & 1), offset)
-        shift += 7
-
-    return None
+AVRO_GENERIC_WRAPPER_SCHEMA_JSON = (
+    '{"type":"record","name":"Payload","namespace":"durable_workflow",'
+    '"fields":[{"name":"json","type":"string"},'
+    '{"name":"version","type":"int","default":1}]}'
+)
+avro_generic_wrapper_schema: Any = None
 
 
 def decode_avro_generic_wrapper(data: bytes) -> Any:
-    if len(data) < 2 or data[0] != 0:
-        return None
-
-    length_result = decode_avro_long(data, 1)
-    if length_result is None:
-        return None
-
-    length, offset = length_result
-    if length < 0 or offset + length > len(data):
+    if not data.startswith(b"\x00"):
         return None
 
     try:
-        return json.loads(data[offset:offset + length].decode("utf-8"))
+        import avro.io
+        import avro.schema
+
+        global avro_generic_wrapper_schema
+        if avro_generic_wrapper_schema is None:
+            avro_generic_wrapper_schema = avro.schema.parse(AVRO_GENERIC_WRAPPER_SCHEMA_JSON)
+
+        decoder = avro.io.BinaryDecoder(io.BytesIO(data[1:]))
+        record = avro.io.DatumReader(avro_generic_wrapper_schema).read(decoder)
+        if not isinstance(record, dict) or not isinstance(record.get("json"), str):
+            return None
+
+        return json.loads(record["json"])
     except Exception:
         return None
 
