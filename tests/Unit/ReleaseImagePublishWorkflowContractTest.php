@@ -442,6 +442,22 @@ class ReleaseImagePublishWorkflowContractTest extends TestCase
         $this->assertStringContainsString('mixes artifact_versions.server=0.2.619', $result['stderr']);
     }
 
+    public function test_docs_audit_rejects_internally_mixed_rust_distribution_surfaces(): void
+    {
+        $audit = $this->validDocsReleaseAudit('0.2.619');
+        $audit['artifact_distribution_surfaces']['sdk-rust'][0]['url'] = 'https://crates.io/crates/stale-package';
+
+        $result = $this->runDocsReleaseAudit(
+            json_encode($audit, JSON_THROW_ON_ERROR),
+            '0.2.620',
+        );
+
+        $this->assertSame(1, $result['exitCode']);
+        $this->assertSame('public_safety_failure', $result['evidence']['outcome']);
+        $this->assertSame('mixed_artifact_tuple', $result['evidence']['failure_kind']);
+        $this->assertStringContainsString('mixes artifact_versions.sdk-rust=0.1.0', $result['stderr']);
+    }
+
     public function test_docs_audit_rejects_default_version_policy_drift(): void
     {
         $audit = $this->validDocsReleaseAudit('0.2.619');
@@ -1228,6 +1244,7 @@ SH;
         $versions = [
             'cli' => '0.1.86',
             'sdk-python' => '0.4.98',
+            'sdk-rust' => '0.1.0',
             'server' => $serverVersion,
             'waterline' => '2.0.0-alpha.123',
             'workflow' => '2.0.0-alpha.259',
@@ -1248,6 +1265,7 @@ SH;
                 'synchronized_fields' => [
                     'artifact_versions',
                     'artifact_distribution_surfaces.server',
+                    'artifact_distribution_surfaces.sdk-rust',
                 ],
                 'current_server_artifact' => [
                     'version' => $serverVersion,
@@ -1269,6 +1287,23 @@ SH;
                         'image' => 'ghcr.io/durable-workflow/server',
                         'tag' => $serverVersion,
                         'reference' => $serverReferences[1],
+                    ],
+                ],
+                'sdk-rust' => [
+                    [
+                        'surface' => 'crates_io_package',
+                        'package' => 'durable-workflow',
+                        'version' => '0.1.0',
+                        'url' => 'https://crates.io/crates/durable-workflow',
+                    ],
+                    [
+                        'surface' => 'source_repository',
+                        'repository' => 'durable-workflow/sdk-rust',
+                        'url' => 'https://github.com/durable-workflow/sdk-rust',
+                    ],
+                    [
+                        'surface' => 'api_documentation',
+                        'url' => 'https://rust.durable-workflow.com/',
                     ],
                 ],
             ],

@@ -65,8 +65,8 @@ NODE
 }
 
 case "$artifact" in
-    cli|sdk-python|server|workflow|waterline) ;;
-    *) fail "Docs release-audit artifact required" "DOCS_RELEASE_AUDIT_ARTIFACT must be one of cli, sdk-python, server, workflow, or waterline." ;;
+    cli|sdk-python|sdk-rust|server|workflow|waterline) ;;
+    *) fail "Docs release-audit artifact required" "DOCS_RELEASE_AUDIT_ARTIFACT must be one of cli, sdk-python, sdk-rust, server, workflow, or waterline." ;;
 esac
 
 expected="${expected#v}"
@@ -97,10 +97,11 @@ const fs = require('fs');
 const [auditPath, artifact, expected, auditUrl, evidencePath, handoffPath] = process.argv.slice(2);
 const auditSchema = 'durable-workflow.docs.page-release-audit';
 const artifactVersionSchema = 'durable-workflow.docs.public-artifact-versions';
-const expectedArtifacts = ['cli', 'sdk-python', 'server', 'waterline', 'workflow'];
+const expectedArtifacts = ['cli', 'sdk-python', 'sdk-rust', 'server', 'waterline', 'workflow'];
 const expectedSynchronizedFields = [
   'artifact_versions',
   'artifact_distribution_surfaces.server',
+  'artifact_distribution_surfaces.sdk-rust',
 ];
 const expectedServerSurfaces = [
   {
@@ -112,6 +113,22 @@ const expectedServerSurfaces = [
     surface: 'ghcr_container_image',
     registry: 'ghcr',
     image: 'ghcr.io/durable-workflow/server',
+  },
+];
+const expectedRustSurfaces = [
+  {
+    surface: 'crates_io_package',
+    package: 'durable-workflow',
+    url: 'https://crates.io/crates/durable-workflow',
+  },
+  {
+    surface: 'source_repository',
+    repository: 'durable-workflow/sdk-rust',
+    url: 'https://github.com/durable-workflow/sdk-rust',
+  },
+  {
+    surface: 'api_documentation',
+    url: 'https://rust.durable-workflow.com/',
   },
 ];
 const verdicts = ['CLEAN', 'LEAK', 'MIXED'];
@@ -473,6 +490,57 @@ if (
       expected_server_references: expectedServerReferences,
     }
   );
+}
+
+if (!Array.isArray(distributionSurfaces['sdk-rust'])) {
+  malformed(`${auditUrl} must describe artifact_distribution_surfaces.sdk-rust.`);
+}
+
+if (distributionSurfaces['sdk-rust'].length !== expectedRustSurfaces.length) {
+  publicSafetyFailure(
+    'mixed_artifact_tuple',
+    `${auditUrl} must describe the crates.io, source repository, and API documentation ` +
+      `surfaces for the Rust SDK; found ${distributionSurfaces['sdk-rust'].length}.`,
+    {
+      observed_artifact_versions: versions,
+      observed_rust_surfaces: distributionSurfaces['sdk-rust'],
+    }
+  );
+}
+
+for (const expectedSurface of expectedRustSurfaces) {
+  const surface = distributionSurfaces['sdk-rust'].find(candidate => (
+    isRecord(candidate) && candidate.surface === expectedSurface.surface
+  ));
+
+  if (!surface) {
+    publicSafetyFailure(
+      'mixed_artifact_tuple',
+      `${auditUrl} is missing the ${expectedSurface.surface} Rust SDK surface.`,
+      {
+        observed_artifact_versions: versions,
+        observed_rust_surfaces: distributionSurfaces['sdk-rust'],
+      }
+    );
+  }
+
+  const expectedFields = expectedSurface.surface === 'crates_io_package'
+    ? {...expectedSurface, version: versions['sdk-rust']}
+    : expectedSurface;
+
+  for (const [field, expectedValue] of Object.entries(expectedFields)) {
+    if (surface[field] !== expectedValue) {
+      publicSafetyFailure(
+        'mixed_artifact_tuple',
+        `${auditUrl} mixes artifact_versions.sdk-rust=${versions['sdk-rust']} with ` +
+          `${expectedSurface.surface}.${field}=${surface[field] ?? '<missing>'}; expected ${expectedValue}.`,
+        {
+          observed_artifact_versions: versions,
+          observed_rust_surfaces: distributionSurfaces['sdk-rust'],
+        }
+      );
+    }
+  }
 }
 
 const guardrail = audit.release_status_guardrail;
