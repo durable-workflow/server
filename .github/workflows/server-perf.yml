@@ -94,7 +94,7 @@ jobs:
         uses: actions/checkout@v6
 
       - name: Checkout workflow package
-        run: git clone --depth=1 --branch 2.0.0-alpha.258 https://github.com/durable-workflow/workflow.git workflow-package
+        run: git clone --depth=1 --branch 2.0.0-alpha.260 https://github.com/durable-workflow/workflow.git workflow-package
 
       - name: Run bounded-growth contract tests
         run: |
@@ -126,7 +126,7 @@ jobs:
           DW_PERF_START_CONCURRENCY: "8"
           DW_PERF_HEALTH_INTERVAL_SECONDS: "0.5"
           DW_PERF_MAX_HEALTH_LATENCY_SECONDS: "3"
-          DW_PERF_WORKFLOW_VERSION: "2.0.0-alpha.258"
+          DW_PERF_WORKFLOW_VERSION: "2.0.0-alpha.260"
           DW_PERF_MAX_SERVER_MEMORY_MB: "768"
           DW_PERF_MAX_POLLING_KEYS: "512"
           DW_PERF_MAX_FINAL_POLLING_KEYS: "0"

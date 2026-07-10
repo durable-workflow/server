@@ -661,6 +661,32 @@ class ClusterInfoCompatibilityTest extends TestCase
     {
         $response = $this->getJson('/api/cluster/info')->assertOk();
 
+        $response
+            ->assertJsonPath('surface_stability_contract.version', 2)
+            ->assertJsonPath(
+                'surface_stability_contract.surface_families.official_sdks.package_compatibility.rust_sdk.package',
+                'durable-workflow',
+            )
+            ->assertJsonPath(
+                'surface_stability_contract.surface_families.official_sdks.package_compatibility.rust_sdk.worker_protocol_version',
+                '1.2',
+            )
+            ->assertJsonPath(
+                'surface_stability_contract.surface_families.worker_protocol.negotiation.default_advertised_version',
+                WorkerProtocol::VERSION,
+            )
+            ->assertJsonPath(
+                'surface_stability_contract.surface_families.worker_protocol.negotiation.request_header_rule',
+                'same_major_and_minor_less_than_or_equal_to_advertised',
+            );
+
+        $acceptedVersions = $response->json(
+            'surface_stability_contract.surface_families.worker_protocol.negotiation.accepted_request_versions_by_default',
+        );
+        $this->assertIsArray($acceptedVersions);
+        $this->assertContains('1.2', $acceptedVersions);
+        $this->assertContains(WorkerProtocol::VERSION, $acceptedVersions);
+
         $this->assertSame(
             SurfaceStabilityContract::manifest(),
             $response->json('surface_stability_contract'),

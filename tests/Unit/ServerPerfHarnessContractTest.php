@@ -136,7 +136,7 @@ class ServerPerfHarnessContractTest extends TestCase
             'DW_PERF_START_CONCURRENCY: "8"',
             'DW_PERF_HEALTH_INTERVAL_SECONDS: "0.5"',
             'DW_PERF_MAX_HEALTH_LATENCY_SECONDS: "3"',
-            'DW_PERF_WORKFLOW_VERSION: "2.0.0-alpha.258"',
+            'DW_PERF_WORKFLOW_VERSION: "2.0.0-alpha.260"',
         ] as $needle) {
             $this->assertStringContainsString(
                 $needle,

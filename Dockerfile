@@ -49,8 +49,8 @@ WORKDIR /app
 FROM composer:2 AS workflow-source
 
 ARG WORKFLOW_PACKAGE_SOURCE=https://github.com/durable-workflow/workflow.git
-ARG WORKFLOW_PACKAGE_REF=2.0.0-alpha.258
-ARG WORKFLOW_PACKAGE_COMMIT=70ac7d56d392ffe14cee01ba41eedeb683d3b976
+ARG WORKFLOW_PACKAGE_REF=2.0.0-alpha.260
+ARG WORKFLOW_PACKAGE_COMMIT=002cb55073762f1a0b7b28b7001391c1fcf85224
 
 RUN git clone --depth 1 --branch "${WORKFLOW_PACKAGE_REF}" "${WORKFLOW_PACKAGE_SOURCE}" /workflow \
     && cd /workflow \
@@ -66,8 +66,8 @@ RUN git clone --depth 1 --branch "${WORKFLOW_PACKAGE_REF}" "${WORKFLOW_PACKAGE_S
 # ── Dependencies ──────────────────────────────────────────────────────
 FROM base AS vendor
 
-ARG WORKFLOW_PACKAGE_REF=2.0.0-alpha.258
-ARG WORKFLOW_PACKAGE_COMMIT=70ac7d56d392ffe14cee01ba41eedeb683d3b976
+ARG WORKFLOW_PACKAGE_REF=2.0.0-alpha.260
+ARG WORKFLOW_PACKAGE_COMMIT=002cb55073762f1a0b7b28b7001391c1fcf85224
 
 COPY --from=workflow-source /workflow /workflow
 COPY composer.json composer.lock ./
@@ -87,8 +87,8 @@ RUN cp /tmp/release-composer.json composer.json \
 FROM base AS production
 
 ARG WORKFLOW_PACKAGE_SOURCE=https://github.com/durable-workflow/workflow.git
-ARG WORKFLOW_PACKAGE_REF=2.0.0-alpha.258
-ARG WORKFLOW_PACKAGE_COMMIT=70ac7d56d392ffe14cee01ba41eedeb683d3b976
+ARG WORKFLOW_PACKAGE_REF=2.0.0-alpha.260
+ARG WORKFLOW_PACKAGE_COMMIT=002cb55073762f1a0b7b28b7001391c1fcf85224
 
 COPY --from=vendor /app /app
 COPY --from=workflow-source /workflow/.package-provenance /app/.package-provenance
