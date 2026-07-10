@@ -1,4 +1,5 @@
 import fs from 'node:fs';
+import crypto from 'node:crypto';
 import net from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
@@ -16,6 +17,7 @@ const RUN_ID = `${Date.now()}-${Math.random().toString(16).slice(2, 10)}`;
 const SUFFIX = RUN_ID.replace(/[^a-zA-Z0-9]/g, '').slice(-12).toLowerCase();
 const CELL = env('DW_HEARTBEATS_CELL') || 'php';
 const IS_PYTHON_CELL = CELL === 'python';
+const IS_RUST_CELL = CELL === 'rust';
 const NAMESPACE = env('DW_HEARTBEATS_NAMESPACE') || 'heartbeats-conformance';
 const TASK_QUEUE = `hb-${CELL}-${SUFFIX}`;
 const STALE_WORKER_ID = `heartbeat-${CELL}-stale-${SUFFIX}`;
@@ -24,10 +26,12 @@ const WORKFLOW_TYPE = `conformance.heartbeat.${CELL}`;
 const TOKEN = env('DW_HEARTBEATS_AUTH_TOKEN') || 'dev-token';
 const PHP_IMAGE = env('DW_HEARTBEATS_PHP_IMAGE') || 'composer:2';
 const PYTHON_IMAGE = env('DW_HEARTBEATS_PYTHON_IMAGE') || 'python:3.12-slim';
+const RUST_IMAGE = env('DW_HEARTBEATS_RUST_IMAGE') || 'rust:1.86.0-slim-bookworm';
 const SERVER_VERSION = env('DW_SERVER_VERSION');
 const CLI_VERSION = normalizeVersion(env('DW_CLI_VERSION'));
 const WORKFLOW_VERSION = env('DW_WORKFLOW_PHP_VERSION');
 const SDK_PYTHON_VERSION = env('DW_PYTHON_SDK_VERSION');
+const SDK_RUST_VERSION = env('DW_RUST_SDK_VERSION');
 const SERVER_IMAGE = env('DW_SERVER_IMAGE') || `durableworkflow/server:${SERVER_VERSION}`;
 const SERVER_HOST = env('DW_HEARTBEATS_SERVER_HOST') || '127.0.0.1';
 const HEARTBEAT_SECONDS = positiveInt(env('DW_HEARTBEATS_HEARTBEAT_SECONDS'), 2);
@@ -37,27 +41,36 @@ const HOST_UID = typeof process.getuid === 'function' ? process.getuid() : null;
 const HOST_GID = typeof process.getgid === 'function' ? process.getgid() : null;
 const CONTAINER_USER = `${HOST_UID}:${HOST_GID}`;
 const RUN_ROOT = fs.mkdtempSync(path.join(RESULT_DIR, `${CELL}-heartbeat-run.`));
-const PROJECT_DIR = path.join(RUN_ROOT, IS_PYTHON_CELL ? 'sdk-python' : 'workflow-php');
+const PROJECT_DIR = path.join(
+  RUN_ROOT,
+  IS_PYTHON_CELL ? 'sdk-python' : (IS_RUST_CELL ? 'sdk-rust' : 'workflow-php'),
+);
 const COMPOSE_OVERRIDE = path.join(RUN_ROOT, 'docker-compose.heartbeat.yml');
 const COMPOSE_FILE = path.join(REPO_ROOT, 'docker-compose.published.yml');
+const SDK_ARTIFACT = IS_PYTHON_CELL ? 'sdk-python' : (IS_RUST_CELL ? 'sdk-rust' : 'workflow-php');
+const SDK_ARTIFACT_VERSION = IS_PYTHON_CELL ? SDK_PYTHON_VERSION : (IS_RUST_CELL ? SDK_RUST_VERSION : WORKFLOW_VERSION);
 const ARTIFACT_VERSIONS = {
   server: SERVER_VERSION,
   cli: CLI_VERSION,
-  [IS_PYTHON_CELL ? 'sdk-python' : 'workflow-php']: IS_PYTHON_CELL ? SDK_PYTHON_VERSION : WORKFLOW_VERSION,
+  [SDK_ARTIFACT]: SDK_ARTIFACT_VERSION,
 };
 const ARTIFACT_SOURCES = {
   server: `docker://${SERVER_IMAGE}`,
   cli: 'github_release',
-  [IS_PYTHON_CELL ? 'sdk-python' : 'workflow-php']: IS_PYTHON_CELL
+  [SDK_ARTIFACT]: IS_PYTHON_CELL
     ? `pypi://durable-workflow==${SDK_PYTHON_VERSION}`
-    : `packagist://durable-workflow/workflow@${WORKFLOW_VERSION}`,
+    : (IS_RUST_CELL
+      ? `crates.io://durable-workflow@${SDK_RUST_VERSION}`
+      : `packagist://durable-workflow/workflow@${WORKFLOW_VERSION}`),
 };
 const SCENARIO_ID = `${CELL}_sdk_heartbeat_loop`;
-const RUNTIME = IS_PYTHON_CELL ? 'sdk-python' : 'workflow-php';
+const RUNTIME = SDK_ARTIFACT;
 const EVIDENCE_FILE = `${CELL}-sdk-heartbeat-loop-evidence.json`;
 const SEPARATE_UNCOVERED_CELLS = IS_PYTHON_CELL
   ? ['php_sdk_heartbeat_loop', 'rust_sdk_heartbeat_loop', 'waterline_worker_status_visibility']
-  : ['python_sdk_heartbeat_loop', 'rust_sdk_heartbeat_loop', 'waterline_worker_status_visibility'];
+  : (IS_RUST_CELL
+    ? ['php_sdk_heartbeat_loop', 'python_sdk_heartbeat_loop', 'waterline_worker_status_visibility']
+    : ['python_sdk_heartbeat_loop', 'rust_sdk_heartbeat_loop', 'waterline_worker_status_visibility']);
 
 const cleanupCommands = [];
 const workerContainers = new Set();
@@ -279,13 +292,16 @@ function cleanupComposeProject(project, composeArgs, composeEnv) {
 
 function ensureExactPins() {
   const failures = [];
-  if (!['php', 'python'].includes(CELL)) failures.push('DW_HEARTBEATS_CELL must be php or python');
+  if (!['php', 'python', 'rust'].includes(CELL)) failures.push('DW_HEARTBEATS_CELL must be php, python, or rust');
   if (!/^\d+\.\d+\.\d+$/.test(SERVER_VERSION)) failures.push('DW_SERVER_VERSION must be an exact patch release');
   if (!/^\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?$/.test(CLI_VERSION)) failures.push('DW_CLI_VERSION must be an exact release');
   if (IS_PYTHON_CELL && !/^\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?$/.test(SDK_PYTHON_VERSION)) {
     failures.push('DW_PYTHON_SDK_VERSION must be an exact release');
   }
-  if (!IS_PYTHON_CELL && !/^\d+\.\d+\.\d+-alpha\.\d+$/.test(WORKFLOW_VERSION)) {
+  if (IS_RUST_CELL && !/^\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?$/.test(SDK_RUST_VERSION)) {
+    failures.push('DW_RUST_SDK_VERSION must be an exact release');
+  }
+  if (!IS_PYTHON_CELL && !IS_RUST_CELL && !/^\d+\.\d+\.\d+-alpha\.\d+$/.test(WORKFLOW_VERSION)) {
     failures.push('DW_WORKFLOW_PHP_VERSION must be an exact 2.0 alpha release');
   }
   const exactTag = new RegExp(`^(?:(?:docker\\.io|index\\.docker\\.io)/)?durableworkflow/server:${escapeRegex(SERVER_VERSION)}$`).test(SERVER_IMAGE);
@@ -688,6 +704,156 @@ if __name__ == "__main__":
 `;
 }
 
+function writeRustProject() {
+  fs.mkdirSync(path.join(PROJECT_DIR, 'src', 'bin'), { recursive: true });
+  fs.writeFileSync(path.join(PROJECT_DIR, 'Cargo.toml'), `[package]
+name = "durable-workflow-heartbeat-probe"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+[dependencies]
+durable-workflow = "=${SDK_RUST_VERSION}"
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "time"] }
+
+[[bin]]
+name = "heartbeat-worker"
+path = "src/bin/heartbeat-worker.rs"
+
+[[bin]]
+name = "stale-poll"
+path = "src/bin/stale-poll.rs"
+`, 'utf8');
+  fs.writeFileSync(
+    path.join(PROJECT_DIR, 'src', 'bin', 'heartbeat-worker.rs'),
+    rustWorkerSource(),
+    'utf8',
+  );
+  fs.writeFileSync(
+    path.join(PROJECT_DIR, 'src', 'bin', 'stale-poll.rs'),
+    rustStalePollSource(),
+    'utf8',
+  );
+}
+
+function rustWorkerSource() {
+  return `use std::{env, process, time::Duration};
+
+use durable_workflow::{json, Client, Result, Value, Worker};
+
+fn emit(record: Value) {
+    println!("{record}");
+}
+
+#[tokio::main]
+async fn main() -> Result<()> {
+    let arguments: Vec<String> = env::args().collect();
+    if arguments.len() != 6 {
+        eprintln!("usage: heartbeat-worker <base-url> <namespace> <task-queue> <worker-id> <seconds>");
+        process::exit(2);
+    }
+    let base_url = &arguments[1];
+    let namespace = &arguments[2];
+    let task_queue = &arguments[3];
+    let worker_id = &arguments[4];
+    let seconds = arguments[5].parse::<u64>().unwrap_or(600);
+    let token = env::var("DURABLE_WORKFLOW_AUTH_TOKEN").unwrap_or_default();
+    if token.is_empty() {
+        eprintln!("DURABLE_WORKFLOW_AUTH_TOKEN is required");
+        process::exit(2);
+    }
+
+    let client = Client::builder(base_url)
+        .token(Some(token))
+        .namespace(namespace)
+        .timeout(Duration::from_secs(10))
+        .build()?;
+    let mut worker = Worker::new(client, task_queue)
+        .worker_id(worker_id)
+        .poll_timeout(Duration::from_secs(1))
+        .max_concurrent_workflow_tasks(2)
+        .max_concurrent_activity_tasks(1)
+        .on_worker_heartbeat(|observation| {
+            emit(json!({
+                "event": "worker_heartbeat",
+                "worker_id": observation.worker_id,
+                "task_queue": observation.task_queue,
+                "observed_at_unix_millis": observation.acknowledged_at_unix_millis,
+                "acknowledgement": observation.acknowledgement,
+            }));
+        });
+    worker.register_workflow("${WORKFLOW_TYPE}", |_context, _input| async move {
+        emit(json!({
+            "event": "work_processed",
+            "workflow_type": "${WORKFLOW_TYPE}",
+            "runtime": "sdk-rust",
+        }));
+        Ok(json!({"completed": true, "runtime": "sdk-rust"}))
+    });
+
+    let registration = worker.register().await?;
+    emit(json!({
+        "event": "worker_registered",
+        "worker_id": registration.worker_id,
+        "task_queue": task_queue,
+        "workflow_type": "${WORKFLOW_TYPE}",
+        "sdk_version": "${SDK_RUST_VERSION}",
+        "registration": {
+            "registered": registration.registered,
+            "heartbeat_interval_seconds": registration.heartbeat_interval_seconds,
+            "protocol_version": registration.protocol_version,
+            "server_capabilities": registration.server_capabilities,
+        },
+    }));
+    worker.run_until(tokio::time::sleep(Duration::from_secs(seconds))).await?;
+    emit(json!({"event": "worker_loop_stopped", "worker_id": worker_id}));
+    Ok(())
+}
+`;
+}
+
+function rustStalePollSource() {
+  return `use std::{env, process, time::Duration};
+
+use durable_workflow::{json, Client, Result};
+
+#[tokio::main]
+async fn main() -> Result<()> {
+    let arguments: Vec<String> = env::args().collect();
+    if arguments.len() != 5 {
+        eprintln!("usage: stale-poll <base-url> <namespace> <task-queue> <worker-id>");
+        process::exit(2);
+    }
+    let token = env::var("DURABLE_WORKFLOW_AUTH_TOKEN").unwrap_or_default();
+    if token.is_empty() {
+        eprintln!("DURABLE_WORKFLOW_AUTH_TOKEN is required");
+        process::exit(2);
+    }
+    let client = Client::builder(&arguments[1])
+        .token(Some(token))
+        .namespace(&arguments[2])
+        .timeout(Duration::from_secs(10))
+        .build()?;
+    let response = client
+        .poll_workflow_task_response(&arguments[4], &arguments[3], Duration::from_secs(0))
+        .await?;
+    let tasks = if response.task.is_some() { vec!["claimed"] } else { Vec::new() };
+    println!("{}", json!({
+        "worker_id": arguments[4],
+        "task_queue": arguments[3],
+        "tasks": tasks,
+        "poll": {
+            "poll_status": response.poll_status,
+            "reason": response.reason,
+            "protocol_version": response.protocol_version,
+            "server_capabilities": response.server_capabilities,
+        },
+    }));
+    Ok(())
+}
+`;
+}
+
 async function startServer() {
   if (!commandExists('docker')) throw new Error('docker is required to start the pinned published server');
   if (!fs.existsSync(COMPOSE_FILE)) throw new Error(`published compose file not found: ${COMPOSE_FILE}`);
@@ -920,9 +1086,94 @@ function installPythonPackage() {
   };
 }
 
+function rustRuntimeArgs() {
+  return [
+    '--user', CONTAINER_USER,
+    '--env', 'HOME=/tmp',
+    '--env', 'CARGO_HOME=/app/.cargo-home',
+    '-v', `${PROJECT_DIR}:/app`,
+    '-w', '/app',
+  ];
+}
+
+function installRustPackage() {
+  if (!commandExists('docker')) throw new Error('docker is required to install the pinned public Rust package');
+  writeRustProject();
+  run('docker', ['pull', RUST_IMAGE], { timeout: 300_000 });
+  try {
+    run('docker', [
+      'run', '--rm',
+      ...rustRuntimeArgs(),
+      RUST_IMAGE,
+      'cargo', 'generate-lockfile',
+    ], { timeout: 600_000 });
+  } catch (error) {
+    if (/no matching package named|failed to select a version|not found in registry/i.test(errorSummary(error))) {
+      publishedExecutionStarted = true;
+    }
+    throw error;
+  }
+  // The exact registry version resolved. Failures from this point are defects
+  // in the published crate or its compatibility with the pinned server tuple.
+  publishedExecutionStarted = true;
+  const metadataResult = run('docker', [
+    'run', '--rm',
+    ...rustRuntimeArgs(),
+    RUST_IMAGE,
+    'cargo', 'metadata', '--locked', '--format-version=1',
+  ], { timeout: 600_000 });
+  const metadata = parseJsonOutput(metadataResult.stdout);
+  const installedPackage = Array.isArray(metadata.packages)
+    ? metadata.packages.find((candidate) => candidate.name === 'durable-workflow' && candidate.version === SDK_RUST_VERSION)
+    : null;
+  if (!installedPackage) {
+    throw new Error(`pinned Rust package mismatch: expected durable-workflow ${SDK_RUST_VERSION} in Cargo metadata`);
+  }
+  if (!String(installedPackage.source ?? '').startsWith('registry+')) {
+    throw new Error(`pinned Rust package did not resolve from a public Cargo registry: ${installedPackage.source ?? 'missing source'}`);
+  }
+  if (installedPackage.repository !== 'https://github.com/durable-workflow/server') {
+    throw new Error(`pinned Rust package repository provenance mismatch: ${installedPackage.repository ?? 'missing repository'}`);
+  }
+  const releaseMetadata = installedPackage.metadata?.['durable-workflow'] ?? {};
+  if (releaseMetadata['supported-server-versions'] !== '>=0.2,<0.3') {
+    throw new Error('pinned Rust package is missing the supported Durable Workflow server range');
+  }
+  run('docker', [
+    'run', '--rm',
+    ...rustRuntimeArgs(),
+    RUST_IMAGE,
+    'cargo', 'build', '--release', '--locked',
+  ], { timeout: 900_000 });
+
+  const cargoLock = fs.readFileSync(path.join(PROJECT_DIR, 'Cargo.lock'), 'utf8');
+  const packageBlock = cargoLock.split('[[package]]').find((block) =>
+    block.includes('name = "durable-workflow"') && block.includes(`version = "${SDK_RUST_VERSION}"`));
+  const registryChecksum = packageBlock?.match(/checksum = "([0-9a-f]{64})"/)?.[1] ?? '';
+  if (!registryChecksum) throw new Error('pinned Rust package Cargo.lock entry has no registry checksum');
+  evidence.rust_package_install = {
+    package: 'durable-workflow',
+    requested_version: SDK_RUST_VERSION,
+    installed_version: installedPackage.version,
+    source: ARTIFACT_SOURCES['sdk-rust'],
+    resolved_registry_source: installedPackage.source,
+    resolved_manifest_path: installedPackage.manifest_path,
+    repository: installedPackage.repository,
+    registry_checksum_sha256: registryChecksum,
+    cargo_lock_sha256: crypto.createHash('sha256').update(cargoLock).digest('hex'),
+    installer_runtime: RUST_IMAGE,
+    install_mode: 'exact crates.io dependency with Cargo.lock',
+    release_metadata: releaseMetadata,
+  };
+}
+
 function installSdkPackage() {
   if (IS_PYTHON_CELL) {
     installPythonPackage();
+    return;
+  }
+  if (IS_RUST_CELL) {
+    installRustPackage();
     return;
   }
   installPhpPackage();
@@ -931,6 +1182,29 @@ function installSdkPackage() {
 function startWorker(workerId) {
   const containerName = `dw-hb-${workerId}`.slice(0, 63);
   workerContainers.add(containerName);
+  if (IS_RUST_CELL) {
+    const result = run('docker', [
+      'run', '-d', '--name', containerName,
+      ...rustRuntimeArgs(),
+      '--add-host', 'host.docker.internal:host-gateway',
+      '--env', 'DURABLE_WORKFLOW_AUTH_TOKEN',
+      RUST_IMAGE,
+      '/app/target/release/heartbeat-worker',
+      workerBaseUrl(serverBaseUrl),
+      NAMESPACE,
+      TASK_QUEUE,
+      workerId,
+      '600',
+    ], {
+      env: { ...process.env, DURABLE_WORKFLOW_AUTH_TOKEN: TOKEN },
+      timeout: 60_000,
+    });
+    return {
+      worker_id: workerId,
+      container_name: containerName,
+      container_id: String(result.stdout).trim(),
+    };
+  }
   if (IS_PYTHON_CELL) {
     const result = run('docker', [
       'run', '-d', '--name', containerName,
@@ -992,6 +1266,11 @@ function workerLogRecords(worker) {
     if (!line.trim()) return [];
     try {
       const parsed = JSON.parse(line);
+      if (parsed && typeof parsed === 'object'
+        && !parsed.observed_at
+        && Number.isFinite(Number(parsed.observed_at_unix_millis))) {
+        parsed.observed_at = new Date(Number(parsed.observed_at_unix_millis)).toISOString();
+      }
       return parsed && typeof parsed === 'object' ? [parsed] : [];
     } catch {
       return [];
@@ -1144,6 +1423,24 @@ async function waitForStaleTransition(stoppedAt, staleAfterSeconds) {
 }
 
 function stalePollProbe() {
+  if (IS_RUST_CELL) {
+    const result = run('docker', [
+      'run', '--rm',
+      ...rustRuntimeArgs(),
+      '--add-host', 'host.docker.internal:host-gateway',
+      '--env', 'DURABLE_WORKFLOW_AUTH_TOKEN',
+      RUST_IMAGE,
+      '/app/target/release/stale-poll',
+      workerBaseUrl(serverBaseUrl),
+      NAMESPACE,
+      TASK_QUEUE,
+      STALE_WORKER_ID,
+    ], {
+      env: { ...process.env, DURABLE_WORKFLOW_AUTH_TOKEN: TOKEN },
+      timeout: 60_000,
+    });
+    return parseJsonOutput(result.stdout);
+  }
   if (IS_PYTHON_CELL) {
     const result = run('docker', [
       'run', '--rm',
@@ -1209,6 +1506,13 @@ function validTimestamp(value) {
   return typeof value === 'string' && Number.isFinite(Date.parse(value));
 }
 
+function validProtocolMetadata(value) {
+  return typeof value?.protocol_version === 'string'
+    && /^\d+\.\d+$/.test(value.protocol_version)
+    && value?.server_capabilities
+    && typeof value.server_capabilities === 'object';
+}
+
 function workerSurfacesConsistent(apiWorker, cliProjection) {
   if (apiWorker?.worker_id !== cliProjection?.worker_id
     || apiWorker?.task_queue !== cliProjection?.task_queue
@@ -1238,7 +1542,11 @@ function buildChecks(context) {
     exact_published_artifacts_installed: evidence.server_image_install?.exact_published_image_verified === true
       && (IS_PYTHON_CELL
         ? evidence.python_package_install?.installed_version === SDK_PYTHON_VERSION
-        : evidence.php_package_install?.installed_version === WORKFLOW_VERSION)
+        : (IS_RUST_CELL
+          ? evidence.rust_package_install?.installed_version === SDK_RUST_VERSION
+            && evidence.rust_package_install?.resolved_registry_source?.startsWith('registry+')
+            && /^[0-9a-f]{64}$/.test(evidence.rust_package_install?.registry_checksum_sha256 ?? '')
+          : evidence.php_package_install?.installed_version === WORKFLOW_VERSION))
       && evidence.cli_install?.detected_version === CLI_VERSION,
     real_workflow_completed_by_sdk_loop: completedWorkflow(context.initialWorkflow)
       && completedWorkflow(context.freshWorkflow)
@@ -1248,6 +1556,25 @@ function buildChecks(context) {
     server_observed_successive_heartbeats: context.staleCadence.server_last_heartbeat_timestamps.length >= 2,
     advertised_cadence_bounded: context.staleCadence.bounded_advertised_cadence,
     task_queue_association_visible: staleDetail.task_queue === TASK_QUEUE && freshDetail.task_queue === TASK_QUEUE,
+    worker_identity_namespace_visible: !IS_RUST_CELL || (
+      staleDetail.worker_id === STALE_WORKER_ID
+      && freshDetail.worker_id === FRESH_WORKER_ID
+      && staleDetail.namespace === NAMESPACE
+      && freshDetail.namespace === NAMESPACE
+    ),
+    runtime_and_protocol_metadata_visible: !IS_RUST_CELL || (
+      staleDetail.runtime === 'rust'
+      && freshDetail.runtime === 'rust'
+      && staleDetail.sdk_version === `durable-workflow-rust/${SDK_RUST_VERSION}`
+      && freshDetail.sdk_version === `durable-workflow-rust/${SDK_RUST_VERSION}`
+      && validProtocolMetadata(context.staleRegistration.registration.registration)
+      && context.staleCadence.acknowledgements.every(validProtocolMetadata)
+      && cliFresh.runtime === 'rust'
+      && cliFresh.sdk_version === `durable-workflow-rust/${SDK_RUST_VERSION}`
+      && cliFresh.namespace === NAMESPACE
+      && cliFresh.task_slots && typeof cliFresh.task_slots === 'object'
+      && cliFresh.process_metrics && typeof cliFresh.process_metrics === 'object'
+    ),
     heartbeat_freshness_visible: validTimestamp(staleDetail.last_heartbeat_at)
       && validTimestamp(freshDetail.last_heartbeat_at),
     task_slots_visible: Boolean(staleDetail.task_slots && freshDetail.task_slots),
@@ -1466,22 +1793,30 @@ async function main() {
       heartbeat_timestamps: context.staleCadence.sdk_emitted_heartbeat_timestamps,
       server_heartbeat_timestamps: context.staleCadence.server_last_heartbeat_timestamps,
       heartbeat_acknowledgements: heartbeatAcks,
+      protocol_metadata: {
+        registration: context.staleRegistration.registration.registration,
+        heartbeat_acknowledgements: heartbeatAcks,
+        api_runtime: staleTransition.stale_worker_detail.runtime,
+        api_sdk_version: staleTransition.stale_worker_detail.sdk_version,
+      },
       heartbeat_interval_seconds: context.staleCadence.advertised_heartbeat_interval_seconds,
       stale_after_seconds: Number(lastAck.stale_after_seconds ?? staleAfterSeconds),
       task_slots: staleTransition.stale_worker_detail.task_slots,
       process_metrics: staleTransition.stale_worker_detail.process_metrics,
       published_artifact_worker_execution: true,
-      public_package: IS_PYTHON_CELL ? 'durable-workflow' : 'durable-workflow/workflow',
-      public_package_version: IS_PYTHON_CELL ? SDK_PYTHON_VERSION : WORKFLOW_VERSION,
-      worker_protocol_client: IS_PYTHON_CELL
-        ? 'durable_workflow.Client'
-        : 'Workflow\\V2\\Worker\\WorkerProtocolClient',
-      worker_loop: IS_PYTHON_CELL
-        ? ['durable_workflow.Worker.run()', 'durable_workflow.Worker._heartbeat_loop()']
-        : [
-          'Workflow\\V2\\Worker\\StandaloneWorkflowWorker::tickWithHeartbeat()',
-          'Workflow\\V2\\Worker\\StandaloneWorkflowWorker::run()',
-        ],
+      public_package: IS_RUST_CELL ? 'durable-workflow' : (IS_PYTHON_CELL ? 'durable-workflow' : 'durable-workflow/workflow'),
+      public_package_version: SDK_ARTIFACT_VERSION,
+      worker_protocol_client: IS_RUST_CELL
+        ? 'durable_workflow::Client'
+        : (IS_PYTHON_CELL ? 'durable_workflow.Client' : 'Workflow\\V2\\Worker\\WorkerProtocolClient'),
+      worker_loop: IS_RUST_CELL
+        ? ['durable_workflow::Worker::run_until()', 'durable_workflow::Worker::on_worker_heartbeat()']
+        : (IS_PYTHON_CELL
+          ? ['durable_workflow.Worker.run()', 'durable_workflow.Worker._heartbeat_loop()']
+          : [
+            'Workflow\\V2\\Worker\\StandaloneWorkflowWorker::tickWithHeartbeat()',
+            'Workflow\\V2\\Worker\\StandaloneWorkflowWorker::run()',
+          ]),
       local_product_source_checkouts_used: false,
       real_workflow_execution: {
         before_stale: initialWorkflow,

@@ -355,6 +355,7 @@
       "heartbeat-request-response-captures.json",
       "php-sdk-heartbeat-loop-evidence.json",
       "python-sdk-heartbeat-loop-evidence.json",
+      "rust-sdk-heartbeat-loop-evidence.json",
       "waterline-worker-status-evidence.json"
     ],
     "must_execute_against_published_artifacts": true,
@@ -393,6 +394,7 @@
       },
       "sdk-rust": {
         "artifact": "durable-workflow",
+        "focused_runner": "sdk-rust-heartbeat-loop",
         "must_cover_scenarios": [
           "rust_sdk_heartbeat_loop",
           "heartbeat_wire_shape_uniformity",
@@ -489,6 +491,45 @@
         "does_not_claim_scenarios": [
           "php_sdk_heartbeat_loop",
           "rust_sdk_heartbeat_loop",
+          "waterline_worker_status_visibility"
+        ]
+      },
+      "sdk-rust-heartbeat-loop": {
+        "status": "host_executable_published_artifact_runner",
+        "runner_repository": "server",
+        "runner_path": "scripts/conformance/heartbeats-rust-published-artifacts.sh",
+        "runner_command": "scripts/conformance/heartbeats-rust-published-artifacts.sh --result-dir <result-dir>",
+        "scenario_id": "rust_sdk_heartbeat_loop",
+        "result_schema": "durable-workflow.v2.heartbeat-runtime.rust-sdk-loop-evidence",
+        "result_file": "rust-sdk-heartbeat-loop-evidence.json",
+        "host_runner_implemented": true,
+        "must_execute_against_published_artifacts": true,
+        "must_record_runner_blocked_false_for_product_evidence": true,
+        "required_artifact_pins": [
+          "server",
+          "cli",
+          "sdk-rust"
+        ],
+        "required_worker_api": [
+          "durable_workflow::Client",
+          "durable_workflow::Worker::run_until()",
+          "durable_workflow::Worker::on_worker_heartbeat()"
+        ],
+        "must_prove": [
+          "exact_crates_io_durable_workflow_package_install",
+          "registry_checksum_and_repository_provenance",
+          "real_workflow_completion_on_unique_task_queue",
+          "at_least_two_sdk_emitted_heartbeat_timestamps",
+          "server_acknowledged_bounded_heartbeat_cadence",
+          "api_and_cli_task_queue_freshness_visibility",
+          "stopped_rust_worker_transitions_to_stale",
+          "stale_rust_worker_poll_is_refused",
+          "fresh_rust_peer_remains_eligible_for_new_work",
+          "artifact_versions_sources_and_run_timestamps_recorded"
+        ],
+        "does_not_claim_scenarios": [
+          "php_sdk_heartbeat_loop",
+          "python_sdk_heartbeat_loop",
           "waterline_worker_status_visibility"
         ]
       }

@@ -413,11 +413,23 @@ impl Client {
         task_queue: &str,
         timeout: Duration,
     ) -> Result<Option<WorkflowTask>> {
+        Ok(self
+            .poll_workflow_task_response(worker_id, task_queue, timeout)
+            .await?
+            .task)
+    }
+
+    pub async fn poll_workflow_task_response(
+        &self,
+        worker_id: &str,
+        task_queue: &str,
+        timeout: Duration,
+    ) -> Result<PollWorkflowTaskResponse> {
         let body = json!({
             "worker_id": worker_id,
             "task_queue": task_queue,
         });
-        let data: PollWorkflowTaskResponse = self
+        let mut data: PollWorkflowTaskResponse = self
             .request_json_with_timeout(
                 reqwest::Method::POST,
                 "/worker/workflow-tasks/poll",
@@ -426,14 +438,13 @@ impl Client {
                 timeout + Duration::from_secs(5),
             )
             .await?;
-        let mut task = data.task;
 
-        if let Some(task) = task.as_mut() {
+        if let Some(task) = data.task.as_mut() {
             self.fetch_remaining_workflow_history(worker_id, task)
                 .await?;
         }
 
-        Ok(task)
+        Ok(data)
     }
 
     async fn fetch_remaining_workflow_history(
@@ -843,12 +854,24 @@ pub struct RegisterWorkerResponse {
     pub registered: bool,
     #[serde(default)]
     pub heartbeat_interval_seconds: Option<u64>,
+    #[serde(default)]
+    pub protocol_version: Option<String>,
+    #[serde(default)]
+    pub server_capabilities: Option<Value>,
 }
 
 #[derive(Clone, Debug, Deserialize)]
-struct PollWorkflowTaskResponse {
+pub struct PollWorkflowTaskResponse {
     #[serde(default)]
-    task: Option<WorkflowTask>,
+    pub task: Option<WorkflowTask>,
+    #[serde(default)]
+    pub poll_status: Option<String>,
+    #[serde(default)]
+    pub reason: Option<String>,
+    #[serde(default)]
+    pub protocol_version: Option<String>,
+    #[serde(default)]
+    pub server_capabilities: Option<Value>,
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -962,6 +985,15 @@ type WorkflowFuture = Pin<Box<dyn Future<Output = Result<Value>> + Send + 'stati
 type WorkflowHandler = Arc<dyn Fn(WorkflowContext, Value) -> WorkflowFuture + Send + Sync>;
 type ActivityFuture = Pin<Box<dyn Future<Output = Result<Value>> + Send + 'static>>;
 type ActivityHandler = Arc<dyn Fn(ActivityContext, Value) -> ActivityFuture + Send + Sync>;
+type WorkerHeartbeatObserver = Arc<dyn Fn(&WorkerHeartbeatObservation) + Send + Sync>;
+
+#[derive(Clone, Debug)]
+pub struct WorkerHeartbeatObservation {
+    pub worker_id: String,
+    pub task_queue: String,
+    pub acknowledged_at_unix_millis: u64,
+    pub acknowledgement: Value,
+}
 
 #[derive(Clone)]
 pub struct Worker {
@@ -974,6 +1006,7 @@ pub struct Worker {
     max_concurrent_activity_tasks: usize,
     poll_timeout: Duration,
     heartbeat_interval: Duration,
+    heartbeat_observer: Option<WorkerHeartbeatObserver>,
 }
 
 impl Worker {
@@ -988,6 +1021,7 @@ impl Worker {
             max_concurrent_activity_tasks: 10,
             poll_timeout: Duration::from_secs(30),
             heartbeat_interval: Duration::from_secs(60),
+            heartbeat_observer: None,
         }
     }
 
@@ -1003,6 +1037,14 @@ impl Worker {
 
     pub fn heartbeat_interval(mut self, interval: Duration) -> Self {
         self.heartbeat_interval = interval;
+        self
+    }
+
+    pub fn on_worker_heartbeat<F>(mut self, observer: F) -> Self
+    where
+        F: Fn(&WorkerHeartbeatObservation) + Send + Sync + 'static,
+    {
+        self.heartbeat_observer = Some(Arc::new(observer));
         self
     }
 
@@ -1088,7 +1130,7 @@ impl Worker {
                     break;
                 }
                 _ = heartbeat.tick() => {
-                    if let Err(error) = self.client
+                    match self.client
                         .heartbeat_worker(
                             &self.worker_id,
                             self.max_concurrent_workflow_tasks,
@@ -1096,9 +1138,26 @@ impl Worker {
                         )
                         .await
                     {
-                        stop.store(true, Ordering::SeqCst);
-                        join_pollers(workflow_poller.take(), activity_poller.take()).await?;
-                        return Err(error);
+                        Ok(acknowledgement) => {
+                            if let Some(observer) = &self.heartbeat_observer {
+                                observer(&WorkerHeartbeatObservation {
+                                    worker_id: self.worker_id.clone(),
+                                    task_queue: self.task_queue.clone(),
+                                    acknowledged_at_unix_millis: SystemTime::now()
+                                        .duration_since(UNIX_EPOCH)
+                                        .unwrap_or_default()
+                                        .as_millis()
+                                        .min(u64::MAX as u128)
+                                        as u64,
+                                    acknowledgement,
+                                });
+                            }
+                        }
+                        Err(error) => {
+                            stop.store(true, Ordering::SeqCst);
+                            join_pollers(workflow_poller.take(), activity_poller.take()).await?;
+                            return Err(error);
+                        }
                     }
                 }
                 result = OptionFuture::from(workflow_poller.as_mut()), if workflow_poller.is_some() => {
@@ -1562,7 +1621,11 @@ fn decode_task_arguments(value: Option<&Value>, codec: &str) -> Result<Value> {
 }
 
 fn decode_resume_signal(task: &WorkflowTask) -> Result<Option<ResumeSignal>> {
-    let Some(signal_name) = task.signal_name.as_deref().filter(|value| !value.is_empty()) else {
+    let Some(signal_name) = task
+        .signal_name
+        .as_deref()
+        .filter(|value| !value.is_empty())
+    else {
         return Ok(None);
     };
     let Some(arguments) = task.signal_arguments.as_ref() else {
@@ -1834,9 +1897,10 @@ mod tests {
             .worker_id("activity-only-worker")
             .poll_timeout(Duration::from_millis(10));
 
-        worker.register_activity("activity.only", |_ctx, _args| async move {
-            Ok(Value::Null)
-        });
+        worker.register_activity(
+            "activity.only",
+            |_ctx, _args| async move { Ok(Value::Null) },
+        );
 
         worker.run_until(async {}).await.expect("run worker");
     }
@@ -1852,11 +1916,47 @@ mod tests {
             .worker_id("workflow-only-worker")
             .poll_timeout(Duration::from_millis(10));
 
-        worker.register_workflow("workflow.only", |_ctx, _input| async move {
-            Ok(Value::Null)
-        });
+        worker.register_workflow(
+            "workflow.only",
+            |_ctx, _input| async move { Ok(Value::Null) },
+        );
 
         worker.run_until(async {}).await.expect("run worker");
+    }
+
+    #[tokio::test]
+    async fn worker_heartbeat_observer_receives_server_acknowledgements() {
+        let server = MockWorkerServer::start();
+        let client = Client::builder(server.base_url())
+            .timeout(Duration::from_secs(2))
+            .build()
+            .expect("client");
+        let observations = Arc::new(Mutex::new(Vec::new()));
+        let observed = Arc::clone(&observations);
+        let mut worker = Worker::new(client, "rust-workers")
+            .worker_id("observed-heartbeat-worker")
+            .poll_timeout(Duration::from_millis(10))
+            .on_worker_heartbeat(move |observation| {
+                observed
+                    .lock()
+                    .expect("heartbeat observations")
+                    .push(observation.clone());
+            });
+
+        worker.register_workflow("workflow.observed", |_ctx, _input| async move {
+            Ok(Value::Null)
+        });
+        worker
+            .run_until(tokio::time::sleep(Duration::from_millis(20)))
+            .await
+            .expect("run worker");
+
+        let observations = observations.lock().expect("heartbeat observations");
+        let first = observations.first().expect("heartbeat acknowledgement");
+        assert_eq!(first.worker_id, "observed-heartbeat-worker");
+        assert_eq!(first.task_queue, "rust-workers");
+        assert!(first.acknowledged_at_unix_millis > 0);
+        assert_eq!(first.acknowledgement, json!({}));
     }
 
     struct MockWorkerServer {

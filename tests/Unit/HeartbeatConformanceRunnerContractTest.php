@@ -49,9 +49,7 @@ final class HeartbeatConformanceRunnerContractTest extends TestCase
         $this->assertStringContainsString('writeJson(EVIDENCE_FILE, evidence)', $source);
         $this->assertStringContainsString("const SCENARIO_ID = `\${CELL}_sdk_heartbeat_loop`;", $source);
         $this->assertStringContainsString(
-            "const SEPARATE_UNCOVERED_CELLS = IS_PYTHON_CELL\n"
-                . "  ? ['php_sdk_heartbeat_loop', 'rust_sdk_heartbeat_loop', 'waterline_worker_status_visibility']\n"
-                . "  : ['python_sdk_heartbeat_loop', 'rust_sdk_heartbeat_loop', 'waterline_worker_status_visibility'];",
+            "? ['php_sdk_heartbeat_loop', 'python_sdk_heartbeat_loop', 'waterline_worker_status_visibility']",
             $source,
         );
         $this->assertStringContainsString('separate_uncovered_cells: SEPARATE_UNCOVERED_CELLS', $source);
@@ -192,6 +190,32 @@ SH);
         $this->assertStringNotContainsString('fixture_response', $source);
     }
 
+    public function test_rust_shard_installs_and_executes_the_exact_public_crate(): void
+    {
+        $source = $this->runnerSource();
+
+        foreach ([
+            "const SDK_RUST_VERSION = env('DW_RUST_SDK_VERSION');",
+            '`crates.io://durable-workflow@${SDK_RUST_VERSION}`',
+            'durable-workflow = "=${SDK_RUST_VERSION}"',
+            "'cargo', 'metadata', '--locked', '--format-version=1'",
+            "installedPackage.source ?? '').startsWith('registry+')",
+            "installedPackage.repository !== 'https://github.com/durable-workflow/server'",
+            'registry_checksum_sha256: registryChecksum',
+            "'cargo', 'build', '--release', '--locked'",
+            '.on_worker_heartbeat(|observation|',
+            '.poll_workflow_task_response(&arguments[4], &arguments[3]',
+            "'/app/target/release/heartbeat-worker'",
+            "'/app/target/release/stale-poll'",
+            "evidence.rust_package_install?.installed_version === SDK_RUST_VERSION",
+        ] as $needle) {
+            $this->assertStringContainsString($needle, $source);
+        }
+
+        $this->assertStringNotContainsString('DW_HEARTBEATS_PLAN', $source);
+        $this->assertStringNotContainsString('fixture_response', $source);
+    }
+
     public function test_runner_registers_idempotent_cleanup_before_resources_can_partially_start(): void
     {
         $source = $this->runnerSource();
@@ -223,8 +247,8 @@ SH);
         $source = $this->runnerSource();
 
         $this->assertStringContainsString("const CONTAINER_USER = `\${HOST_UID}:\${HOST_GID}`;", $source);
-        $this->assertSame(4, substr_count($source, "'-v', `\${PROJECT_DIR}:/app`"));
-        $this->assertSame(4, substr_count($source, "'--user', CONTAINER_USER"));
+        $this->assertGreaterThanOrEqual(4, substr_count($source, "'-v', `\${PROJECT_DIR}:/app`"));
+        $this->assertGreaterThanOrEqual(4, substr_count($source, "'--user', CONTAINER_USER"));
     }
 
     public function test_host_control_address_is_configurable_without_changing_the_worker_container_gateway(): void
@@ -401,6 +425,22 @@ JS;
         $this->assertStringContainsString('python-sdk-heartbeat-loop-evidence.json', $shell);
         $this->assertStringNotContainsString('DW_WORKFLOW_PHP_VERSION', $shell);
         $this->assertStringNotContainsString('composer', strtolower($shell));
+        $this->assertStringNotContainsString('waterline', strtolower($shell));
+    }
+
+    public function test_rust_shell_handoff_is_a_separate_focused_cell(): void
+    {
+        $shell = (string) file_get_contents(
+            dirname(__DIR__, 2).'/scripts/conformance/heartbeats-rust-published-artifacts.sh',
+        );
+
+        $this->assertStringContainsString('DW_HEARTBEATS_CELL=rust', $shell);
+        $this->assertStringContainsString('DW_SERVER_VERSION', $shell);
+        $this->assertStringContainsString('DW_CLI_VERSION', $shell);
+        $this->assertStringContainsString('DW_RUST_SDK_VERSION', $shell);
+        $this->assertStringContainsString('rust-sdk-heartbeat-loop-evidence.json', $shell);
+        $this->assertStringNotContainsString('DW_WORKFLOW_PHP_VERSION', $shell);
+        $this->assertStringNotContainsString('python', strtolower($shell));
         $this->assertStringNotContainsString('waterline', strtolower($shell));
     }
 
