@@ -14,16 +14,20 @@ const REPO_ROOT = mustEnv('REPO_ROOT');
 const STARTED_AT = now();
 const RUN_ID = `${Date.now()}-${Math.random().toString(16).slice(2, 10)}`;
 const SUFFIX = RUN_ID.replace(/[^a-zA-Z0-9]/g, '').slice(-12).toLowerCase();
+const CELL = env('DW_HEARTBEATS_CELL') || 'php';
+const IS_PYTHON_CELL = CELL === 'python';
 const NAMESPACE = env('DW_HEARTBEATS_NAMESPACE') || 'heartbeats-conformance';
-const TASK_QUEUE = `hb-php-${SUFFIX}`;
-const STALE_WORKER_ID = `heartbeat-php-stale-${SUFFIX}`;
-const FRESH_WORKER_ID = `heartbeat-php-fresh-${SUFFIX}`;
-const WORKFLOW_TYPE = 'conformance.heartbeat.php';
+const TASK_QUEUE = `hb-${CELL}-${SUFFIX}`;
+const STALE_WORKER_ID = `heartbeat-${CELL}-stale-${SUFFIX}`;
+const FRESH_WORKER_ID = `heartbeat-${CELL}-fresh-${SUFFIX}`;
+const WORKFLOW_TYPE = `conformance.heartbeat.${CELL}`;
 const TOKEN = env('DW_HEARTBEATS_AUTH_TOKEN') || 'dev-token';
 const PHP_IMAGE = env('DW_HEARTBEATS_PHP_IMAGE') || 'composer:2';
+const PYTHON_IMAGE = env('DW_HEARTBEATS_PYTHON_IMAGE') || 'python:3.12-slim';
 const SERVER_VERSION = env('DW_SERVER_VERSION');
 const CLI_VERSION = normalizeVersion(env('DW_CLI_VERSION'));
 const WORKFLOW_VERSION = env('DW_WORKFLOW_PHP_VERSION');
+const SDK_PYTHON_VERSION = env('DW_PYTHON_SDK_VERSION');
 const SERVER_IMAGE = env('DW_SERVER_IMAGE') || `durableworkflow/server:${SERVER_VERSION}`;
 const SERVER_HOST = env('DW_HEARTBEATS_SERVER_HOST') || '127.0.0.1';
 const HEARTBEAT_SECONDS = positiveInt(env('DW_HEARTBEATS_HEARTBEAT_SECONDS'), 2);
@@ -32,28 +36,36 @@ const KEEP_RUN_ROOT = truthy(env('DW_HEARTBEATS_KEEP_RUN_ROOT'));
 const HOST_UID = typeof process.getuid === 'function' ? process.getuid() : null;
 const HOST_GID = typeof process.getgid === 'function' ? process.getgid() : null;
 const CONTAINER_USER = `${HOST_UID}:${HOST_GID}`;
-const RUN_ROOT = fs.mkdtempSync(path.join(RESULT_DIR, 'php-heartbeat-run.'));
-const PROJECT_DIR = path.join(RUN_ROOT, 'workflow-php');
+const RUN_ROOT = fs.mkdtempSync(path.join(RESULT_DIR, `${CELL}-heartbeat-run.`));
+const PROJECT_DIR = path.join(RUN_ROOT, IS_PYTHON_CELL ? 'sdk-python' : 'workflow-php');
 const COMPOSE_OVERRIDE = path.join(RUN_ROOT, 'docker-compose.heartbeat.yml');
 const COMPOSE_FILE = path.join(REPO_ROOT, 'docker-compose.published.yml');
 const ARTIFACT_VERSIONS = {
   server: SERVER_VERSION,
   cli: CLI_VERSION,
-  'workflow-php': WORKFLOW_VERSION,
+  [IS_PYTHON_CELL ? 'sdk-python' : 'workflow-php']: IS_PYTHON_CELL ? SDK_PYTHON_VERSION : WORKFLOW_VERSION,
 };
 const ARTIFACT_SOURCES = {
   server: `docker://${SERVER_IMAGE}`,
   cli: 'github_release',
-  'workflow-php': `packagist://durable-workflow/workflow@${WORKFLOW_VERSION}`,
+  [IS_PYTHON_CELL ? 'sdk-python' : 'workflow-php']: IS_PYTHON_CELL
+    ? `pypi://durable-workflow==${SDK_PYTHON_VERSION}`
+    : `packagist://durable-workflow/workflow@${WORKFLOW_VERSION}`,
 };
+const SCENARIO_ID = `${CELL}_sdk_heartbeat_loop`;
+const RUNTIME = IS_PYTHON_CELL ? 'sdk-python' : 'workflow-php';
+const EVIDENCE_FILE = `${CELL}-sdk-heartbeat-loop-evidence.json`;
+const SEPARATE_UNCOVERED_CELLS = IS_PYTHON_CELL
+  ? ['php_sdk_heartbeat_loop', 'rust_sdk_heartbeat_loop', 'waterline_worker_status_visibility']
+  : ['python_sdk_heartbeat_loop', 'rust_sdk_heartbeat_loop', 'waterline_worker_status_visibility'];
 
 const cleanupCommands = [];
 const workerContainers = new Set();
 const requestCaptures = [];
 const evidence = {
-  schema: 'durable-workflow.v2.heartbeat-runtime.php-sdk-loop-evidence',
+  schema: `durable-workflow.v2.heartbeat-runtime.${CELL}-sdk-loop-evidence`,
   version: 1,
-  scenario_id: 'php_sdk_heartbeat_loop',
+  scenario_id: SCENARIO_ID,
   conformance_run_id: RUN_ID,
   started_at: STARTED_AT,
   finished_at: null,
@@ -63,6 +75,7 @@ const evidence = {
   artifact_versions: ARTIFACT_VERSIONS,
   artifact_sources: ARTIFACT_SOURCES,
   local_product_source_checkouts_used: false,
+  separate_uncovered_cells: SEPARATE_UNCOVERED_CELLS,
   topology: {
     namespace: NAMESPACE,
     task_queue: TASK_QUEUE,
@@ -114,7 +127,7 @@ function writeJson(fileName, value) {
 }
 
 function log(message) {
-  fs.appendFileSync(path.join(RESULT_DIR, 'php-sdk-heartbeat-loop.log'), `[${now()}] ${message}\n`, 'utf8');
+  fs.appendFileSync(path.join(RESULT_DIR, `${CELL}-sdk-heartbeat-loop.log`), `[${now()}] ${message}\n`, 'utf8');
 }
 
 function commandExists(command) {
@@ -266,9 +279,15 @@ function cleanupComposeProject(project, composeArgs, composeEnv) {
 
 function ensureExactPins() {
   const failures = [];
+  if (!['php', 'python'].includes(CELL)) failures.push('DW_HEARTBEATS_CELL must be php or python');
   if (!/^\d+\.\d+\.\d+$/.test(SERVER_VERSION)) failures.push('DW_SERVER_VERSION must be an exact patch release');
   if (!/^\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?$/.test(CLI_VERSION)) failures.push('DW_CLI_VERSION must be an exact release');
-  if (!/^\d+\.\d+\.\d+-alpha\.\d+$/.test(WORKFLOW_VERSION)) failures.push('DW_WORKFLOW_PHP_VERSION must be an exact 2.0 alpha release');
+  if (IS_PYTHON_CELL && !/^\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?$/.test(SDK_PYTHON_VERSION)) {
+    failures.push('DW_PYTHON_SDK_VERSION must be an exact release');
+  }
+  if (!IS_PYTHON_CELL && !/^\d+\.\d+\.\d+-alpha\.\d+$/.test(WORKFLOW_VERSION)) {
+    failures.push('DW_WORKFLOW_PHP_VERSION must be an exact 2.0 alpha release');
+  }
   const exactTag = new RegExp(`^(?:(?:docker\\.io|index\\.docker\\.io)/)?durableworkflow/server:${escapeRegex(SERVER_VERSION)}$`).test(SERVER_IMAGE);
   const exactDigest = /^(?:(?:docker\.io|index\.docker\.io)\/)?durableworkflow\/server(?::[^@]+)?@sha256:[0-9a-f]{64}$/i.test(SERVER_IMAGE);
   if (!exactTag && !exactDigest) {
@@ -303,6 +322,10 @@ function workerBaseUrl(baseUrl) {
   return parsed.toString().replace(/\/$/, '');
 }
 
+function pythonWorkerBaseUrl() {
+  return workerBaseUrl(String(serverBaseUrl));
+}
+
 function controlPlaneHeaders() {
   return {
     Accept: 'application/json',
@@ -333,7 +356,7 @@ async function ensureNamespace() {
     headers: controlPlaneHeaders(),
     body: JSON.stringify({
       name: NAMESPACE,
-      description: 'Published PHP heartbeat-loop conformance namespace',
+      description: `Published ${CELL} heartbeat-loop conformance namespace`,
       retention_days: 1,
     }),
   });
@@ -526,11 +549,150 @@ echo json_encode([
 `;
 }
 
+function writePythonProject() {
+  fs.mkdirSync(PROJECT_DIR, { recursive: true });
+  fs.writeFileSync(path.join(PROJECT_DIR, 'heartbeat-worker.py'), pythonWorkerSource(), 'utf8');
+  fs.writeFileSync(path.join(PROJECT_DIR, 'stale-poll.py'), pythonStalePollSource(), 'utf8');
+}
+
+function pythonWorkerSource() {
+  return `from __future__ import annotations
+
+import asyncio
+import json
+import os
+import sys
+from datetime import datetime, timezone
+from importlib import metadata
+from typing import Any
+
+from durable_workflow import Client, Worker, workflow
+
+
+def observed_at() -> str:
+    return datetime.now(timezone.utc).isoformat(timespec="milliseconds").replace("+00:00", "Z")
+
+
+def emit(record: dict[str, Any]) -> None:
+    record.setdefault("observed_at", observed_at())
+    print(json.dumps(record, separators=(",", ":")), flush=True)
+
+
+class EvidenceClient(Client):
+    async def register_worker(self, **kwargs: Any) -> Any:
+        acknowledgement = await super().register_worker(**kwargs)
+        emit({
+            "event": "worker_registered",
+            "worker_id": kwargs.get("worker_id"),
+            "task_queue": kwargs.get("task_queue"),
+            "workflow_type": "${WORKFLOW_TYPE}",
+            "sdk_version": metadata.version("durable-workflow"),
+            "registration": acknowledgement,
+        })
+        return acknowledgement
+
+    async def heartbeat_worker(self, **kwargs: Any) -> Any:
+        acknowledgement = await super().heartbeat_worker(**kwargs)
+        emit({
+            "event": "worker_heartbeat",
+            "worker_id": kwargs.get("worker_id"),
+            "task_slots": kwargs.get("task_slots"),
+            "process_metrics": kwargs.get("process_metrics"),
+            "acknowledgement": acknowledgement,
+        })
+        return acknowledgement
+
+    async def complete_workflow_task(self, **kwargs: Any) -> Any:
+        acknowledgement = await super().complete_workflow_task(**kwargs)
+        emit({
+            "event": "work_processed",
+            "task_id": kwargs.get("task_id"),
+            "workflow_task_attempt": kwargs.get("workflow_task_attempt"),
+            "acknowledgement": acknowledgement,
+        })
+        return acknowledgement
+
+
+@workflow.defn(name="${WORKFLOW_TYPE}")
+class PythonHeartbeatConformanceWorkflow:
+    def run(self, ctx: Any) -> dict[str, Any]:
+        return {"completed": True, "runtime": "sdk-python"}
+
+
+async def main() -> None:
+    if len(sys.argv) != 6:
+        raise SystemExit("usage: heartbeat-worker.py <base-url> <namespace> <task-queue> <worker-id> <seconds>")
+    base_url, namespace, task_queue, worker_id, seconds = sys.argv[1:]
+    token = os.environ.get("DURABLE_WORKFLOW_AUTH_TOKEN", "")
+    if not token:
+        raise RuntimeError("DURABLE_WORKFLOW_AUTH_TOKEN is required")
+    async with EvidenceClient(base_url, token=token, namespace=namespace, timeout=10.0) as client:
+        worker = Worker(
+            client,
+            task_queue=task_queue,
+            workflows=[PythonHeartbeatConformanceWorkflow],
+            worker_id=worker_id,
+            poll_timeout=1.0,
+            max_concurrent_workflow_tasks=2,
+            max_concurrent_activity_tasks=1,
+            heartbeat_interval=60.0,
+        )
+        worker_task = asyncio.create_task(worker.run())
+        try:
+            await asyncio.sleep(max(1, int(seconds)))
+        finally:
+            await worker.stop()
+            await worker_task
+            emit({"event": "worker_loop_stopped", "worker_id": worker_id})
+
+
+if __name__ == "__main__":
+    asyncio.run(main())
+`;
+}
+
+function pythonStalePollSource() {
+  return `from __future__ import annotations
+
+import asyncio
+import json
+import os
+import sys
+
+from durable_workflow import Client
+
+
+async def main() -> None:
+    if len(sys.argv) != 5:
+        raise SystemExit("usage: stale-poll.py <base-url> <namespace> <task-queue> <worker-id>")
+    base_url, namespace, task_queue, worker_id = sys.argv[1:]
+    token = os.environ.get("DURABLE_WORKFLOW_AUTH_TOKEN", "")
+    if not token:
+        raise RuntimeError("DURABLE_WORKFLOW_AUTH_TOKEN is required")
+    async with Client(base_url, token=token, namespace=namespace, timeout=10.0) as client:
+        poll = await client.poll_workflow_task_response(
+            worker_id=worker_id,
+            task_queue=task_queue,
+            timeout=0.0,
+        )
+    print(json.dumps({
+        "worker_id": worker_id,
+        "task_queue": task_queue,
+        "tasks": [poll["task"]] if poll.get("task") is not None else [],
+        "poll": poll,
+    }, separators=(",", ":")))
+
+
+if __name__ == "__main__":
+    asyncio.run(main())
+`;
+}
+
 async function startServer() {
   if (!commandExists('docker')) throw new Error('docker is required to start the pinned published server');
   if (!fs.existsSync(COMPOSE_FILE)) throw new Error(`published compose file not found: ${COMPOSE_FILE}`);
   const port = await freePort();
-  const project = `dw-hb-php-${SUFFIX}`;
+  const project = `dw-hb-${CELL}-${SUFFIX}`;
   fs.writeFileSync(COMPOSE_OVERRIDE, `services:
   server:
     environment:
@@ -706,9 +868,92 @@ function installPhpPackage() {
   };
 }
 
+function pythonProjectMount() {
+  return `${PROJECT_DIR}:/app`;
+}
+
+function pythonContainerUser() {
+  return CONTAINER_USER;
+}
+
+function pythonRuntimeArgs() {
+  return [
+    '--user', pythonContainerUser(),
+    '--env', 'HOME=/tmp',
+    '--env', 'PYTHONPATH=/app/site-packages',
+    '-v', pythonProjectMount(),
+    '-w', '/app',
+  ];
+}
+
+function installPythonPackage() {
+  if (!commandExists('docker')) throw new Error('docker is required to install the pinned public Python package');
+  writePythonProject();
+  run('docker', [
+    'pull', PYTHON_IMAGE,
+  ], { timeout: 300_000 });
+  run('docker', [
+    'run', '--rm',
+    ...pythonRuntimeArgs(),
+    PYTHON_IMAGE,
+    'python', '-m', 'pip', 'install', '--disable-pip-version-check', '--no-cache-dir',
+    '--target', '/app/site-packages',
+    `durable-workflow==${SDK_PYTHON_VERSION}`,
+  ], { timeout: 600_000 });
+  const version = run('docker', [
+    'run', '--rm',
+    ...pythonRuntimeArgs(),
+    PYTHON_IMAGE,
+    'python', '-c', "from importlib.metadata import version; print(version('durable-workflow'))",
+  ], { timeout: 60_000 });
+  const installed = normalizeVersion(String(version.stdout).trim());
+  if (installed !== SDK_PYTHON_VERSION) {
+    throw new Error(`pinned Python package mismatch: expected ${SDK_PYTHON_VERSION}, got ${installed || 'empty'}`);
+  }
+  evidence.python_package_install = {
+    package: 'durable-workflow',
+    requested_version: SDK_PYTHON_VERSION,
+    installed_version: installed,
+    source: ARTIFACT_SOURCES['sdk-python'],
+    installer_runtime: PYTHON_IMAGE,
+    install_mode: 'pip --target',
+  };
+}
+
+function installSdkPackage() {
+  if (IS_PYTHON_CELL) {
+    installPythonPackage();
+    return;
+  }
+  installPhpPackage();
+}
+
 function startWorker(workerId) {
   const containerName = `dw-hb-${workerId}`.slice(0, 63);
   workerContainers.add(containerName);
+  if (IS_PYTHON_CELL) {
+    const result = run('docker', [
+      'run', '-d', '--name', containerName,
+      ...pythonRuntimeArgs(),
+      '--add-host', 'host.docker.internal:host-gateway',
+      '--env', 'DURABLE_WORKFLOW_AUTH_TOKEN',
+      PYTHON_IMAGE,
+      'python', 'heartbeat-worker.py',
+      pythonWorkerBaseUrl(),
+      NAMESPACE,
+      TASK_QUEUE,
+      workerId,
+      '600',
+    ], {
+      env: { ...process.env, DURABLE_WORKFLOW_AUTH_TOKEN: TOKEN },
+      timeout: 60_000,
+    });
+    return {
+      worker_id: workerId,
+      container_name: containerName,
+      container_id: String(result.stdout).trim(),
+    };
+  }
   const result = run('docker', [
     'run', '-d', '--name', containerName,
     '--user', CONTAINER_USER,
@@ -833,7 +1078,7 @@ function cli(command, options = {}) {
 }
 
 function startWorkflow(label) {
-  const workflowId = `hb-php-${label}-${SUFFIX}`;
+  const workflowId = `hb-${CELL}-${label}-${SUFFIX}`;
   const sample = cli([
     'workflow:start',
     `--type=${WORKFLOW_TYPE}`,
@@ -899,6 +1144,24 @@ async function waitForStaleTransition(stoppedAt, staleAfterSeconds) {
 }
 
 function stalePollProbe() {
+  if (IS_PYTHON_CELL) {
+    const result = run('docker', [
+      'run', '--rm',
+      ...pythonRuntimeArgs(),
+      '--add-host', 'host.docker.internal:host-gateway',
+      '--env', 'DURABLE_WORKFLOW_AUTH_TOKEN',
+      PYTHON_IMAGE,
+      'python', 'stale-poll.py',
+      pythonWorkerBaseUrl(),
+      NAMESPACE,
+      TASK_QUEUE,
+      STALE_WORKER_ID,
+    ], {
+      env: { ...process.env, DURABLE_WORKFLOW_AUTH_TOKEN: TOKEN },
+      timeout: 60_000,
+    });
+    return parseJsonOutput(result.stdout);
+  }
   const result = run('docker', [
     'run', '--rm',
     '--user', CONTAINER_USER,
@@ -942,6 +1205,25 @@ function cliWorker(payload) {
   return output && typeof output === 'object' ? [output] : [];
 }
 
+function validTimestamp(value) {
+  return typeof value === 'string' && Number.isFinite(Date.parse(value));
+}
+
+function workerSurfacesConsistent(apiWorker, cliProjection) {
+  if (apiWorker?.worker_id !== cliProjection?.worker_id
+    || apiWorker?.task_queue !== cliProjection?.task_queue
+    || apiWorker?.status !== cliProjection?.status
+    || !validTimestamp(apiWorker?.last_heartbeat_at)
+    || !validTimestamp(cliProjection?.last_heartbeat_at)) {
+    return false;
+  }
+  const advertised = Number(apiWorker.heartbeat_interval_seconds ?? HEARTBEAT_SECONDS);
+  const timestampDeltaSeconds = Math.abs(
+    Date.parse(apiWorker.last_heartbeat_at) - Date.parse(cliProjection.last_heartbeat_at),
+  ) / 1_000;
+  return timestampDeltaSeconds <= Math.max(advertised * 2, advertised + 2);
+}
+
 function buildChecks(context) {
   const staleDetail = context.afterVisibility.raw_api.stale_worker_detail ?? {};
   const freshDetail = context.afterVisibility.raw_api.fresh_worker_detail ?? {};
@@ -954,9 +1236,11 @@ function buildChecks(context) {
   const stalePollStatus = context.stalePoll.poll?.poll_status ?? context.stalePoll.poll?.reason ?? '';
   return {
     exact_published_artifacts_installed: evidence.server_image_install?.exact_published_image_verified === true
-      && evidence.php_package_install?.installed_version === WORKFLOW_VERSION
+      && (IS_PYTHON_CELL
+        ? evidence.python_package_install?.installed_version === SDK_PYTHON_VERSION
+        : evidence.php_package_install?.installed_version === WORKFLOW_VERSION)
       && evidence.cli_install?.detected_version === CLI_VERSION,
-    real_workflow_completed_by_php_loop: completedWorkflow(context.initialWorkflow)
+    real_workflow_completed_by_sdk_loop: completedWorkflow(context.initialWorkflow)
       && completedWorkflow(context.freshWorkflow)
       && context.staleWorkerLog.work_processed_records.length >= 1
       && context.freshWorkerLog.work_processed_records.length >= 1,
@@ -964,8 +1248,12 @@ function buildChecks(context) {
     server_observed_successive_heartbeats: context.staleCadence.server_last_heartbeat_timestamps.length >= 2,
     advertised_cadence_bounded: context.staleCadence.bounded_advertised_cadence,
     task_queue_association_visible: staleDetail.task_queue === TASK_QUEUE && freshDetail.task_queue === TASK_QUEUE,
+    heartbeat_freshness_visible: validTimestamp(staleDetail.last_heartbeat_at)
+      && validTimestamp(freshDetail.last_heartbeat_at),
     task_slots_visible: Boolean(staleDetail.task_slots && freshDetail.task_slots),
     process_metrics_visible: Boolean(staleDetail.process_metrics && freshDetail.process_metrics),
+    api_cli_worker_state_consistent: workerSurfacesConsistent(freshDetail, cliFresh)
+      && workerSurfacesConsistent(staleDetail, cliStale),
     stale_worker_excluded_from_default_list: staleDetail.status === 'stale'
       && !apiHasWorker(activeList, STALE_WORKER_ID)
       && apiHasWorker(staleList, STALE_WORKER_ID, 'stale'),
@@ -994,14 +1282,14 @@ function writeResultFiles(context = null) {
   evidence.artifact_sources = ARTIFACT_SOURCES;
 
   const pins = {
-    schema: 'durable-workflow.v2.heartbeat-runtime.php-sdk-loop-pins',
+    schema: `durable-workflow.v2.heartbeat-runtime.${CELL}-sdk-loop-pins`,
     generated_at: finishedAt,
     artifact_versions: ARTIFACT_VERSIONS,
     artifact_sources: ARTIFACT_SOURCES,
     local_product_source_checkouts_used: false,
   };
   const metadata = {
-    schema: 'durable-workflow.v2.heartbeat-runtime.php-sdk-loop-run-metadata',
+    schema: `durable-workflow.v2.heartbeat-runtime.${CELL}-sdk-loop-run-metadata`,
     conformance_run_id: RUN_ID,
     started_at: STARTED_AT,
     finished_at: finishedAt,
@@ -1022,7 +1310,7 @@ function writeResultFiles(context = null) {
   };
   writeJson('pins.json', pins);
   writeJson('run-metadata.json', metadata);
-  writeJson('php-sdk-heartbeat-loop-evidence.json', evidence);
+  writeJson(EVIDENCE_FILE, evidence);
   writeJson('heartbeat-request-response-captures.json', {
     schema: 'durable-workflow.v2.heartbeat-runtime.request-response-captures',
     conformance_run_id: RUN_ID,
@@ -1047,12 +1335,12 @@ function recordFailure(error) {
   const summary = error instanceof Error ? error.message : String(error);
   evidence.outcome = publishedExecutionStarted ? 'fail' : 'runner_blocked';
   evidence.runner_blocked = !publishedExecutionStarted;
-  evidence.scenario_results.php_sdk_heartbeat_loop = {
-    scenario_id: 'php_sdk_heartbeat_loop',
+  evidence.scenario_results[SCENARIO_ID] = {
+    scenario_id: SCENARIO_ID,
     status: evidence.runner_blocked ? 'runner_blocked' : 'fail',
     classification: evidence.runner_blocked ? 'runner-gap' : 'product-gap',
     observed_outputs: {
-      runtime: 'workflow-php',
+      runtime: RUNTIME,
       worker_id: STALE_WORKER_ID,
       task_queue: TASK_QUEUE,
       published_artifact_worker_execution: publishedExecutionStarted,
@@ -1061,16 +1349,16 @@ function recordFailure(error) {
     },
   };
   evidence.findings.push({
-    finding_id: `php-sdk-heartbeat-loop-${evidence.runner_blocked ? 'runner-gap' : 'product-gap'}-${SUFFIX}`,
-    finding_type: evidence.runner_blocked ? 'conformance_runner_blocked' : 'php_sdk_heartbeat_loop_gap',
+    finding_id: `${CELL}-sdk-heartbeat-loop-${evidence.runner_blocked ? 'runner-gap' : 'product-gap'}-${SUFFIX}`,
+    finding_type: evidence.runner_blocked ? 'conformance_runner_blocked' : `${CELL}_sdk_heartbeat_loop_gap`,
     classification: evidence.runner_blocked ? 'runner-gap' : 'product-gap',
-    scenario_id: 'php_sdk_heartbeat_loop',
-    owning_surface: evidence.runner_blocked ? 'conformance_harness' : 'workflow-php-or-server-worker-protocol',
+    scenario_id: SCENARIO_ID,
+    owning_surface: evidence.runner_blocked ? 'conformance_harness' : `${RUNTIME}-or-server-worker-protocol`,
     artifact_versions: ARTIFACT_VERSIONS,
     observed_behavior: summary,
-    expected_behavior: 'The pinned public PHP workflow package emits successive acknowledged heartbeats while completing real workflow work, then stale routing excludes the stopped worker while a fresh peer remains eligible.',
+    expected_behavior: `The pinned public ${CELL} SDK emits successive acknowledged heartbeats while completing real workflow work, then stale routing excludes the stopped worker while a fresh peer remains eligible.`,
     next_acceptance_criterion: evidence.runner_blocked
-      ? 'Restore the missing host prerequisite and rerun the focused published-artifact PHP heartbeat shard.'
+      ? `Restore the missing host prerequisite and rerun the focused published-artifact ${CELL} heartbeat shard.`
       : 'Fix the owning public worker or server surface and rerun this focused shard against the next published tuple.',
   });
 }
@@ -1081,21 +1369,21 @@ function recordCleanupFailure(cleanupFailures) {
   evidence.outcome = 'runner_blocked';
   evidence.runner_blocked = true;
   evidence.classification = 'conformance-cleanup-failed';
-  evidence.scenario_results.php_sdk_heartbeat_loop.execution_status_before_cleanup =
-    evidence.scenario_results.php_sdk_heartbeat_loop.status;
-  evidence.scenario_results.php_sdk_heartbeat_loop.status = 'runner_blocked';
-  evidence.scenario_results.php_sdk_heartbeat_loop.classification = 'runner-gap';
-  evidence.scenario_results.php_sdk_heartbeat_loop.observed_outputs.cleanup_error = summary;
+  evidence.scenario_results[SCENARIO_ID].execution_status_before_cleanup =
+    evidence.scenario_results[SCENARIO_ID].status;
+  evidence.scenario_results[SCENARIO_ID].status = 'runner_blocked';
+  evidence.scenario_results[SCENARIO_ID].classification = 'runner-gap';
+  evidence.scenario_results[SCENARIO_ID].observed_outputs.cleanup_error = summary;
   evidence.findings.push({
-    finding_id: `php-sdk-heartbeat-loop-cleanup-${SUFFIX}`,
+    finding_id: `${CELL}-sdk-heartbeat-loop-cleanup-${SUFFIX}`,
     finding_type: 'conformance_runner_cleanup_failed',
     classification: 'runner-gap',
-    scenario_id: 'php_sdk_heartbeat_loop',
+    scenario_id: SCENARIO_ID,
     owning_surface: 'conformance_harness',
     artifact_versions: ARTIFACT_VERSIONS,
     observed_behavior: summary,
-    expected_behavior: 'The focused runner removes every named PHP worker container and the compose project volumes before it emits consumable evidence.',
-    next_acceptance_criterion: 'Restore deterministic Docker cleanup and rerun the focused published-artifact PHP heartbeat shard.',
+    expected_behavior: `The focused runner removes every named ${CELL} worker container and the compose project volumes before it emits consumable evidence.`,
+    next_acceptance_criterion: `Restore deterministic Docker cleanup and rerun the focused published-artifact ${CELL} heartbeat shard.`,
   });
 }
 
@@ -1109,14 +1397,14 @@ async function main() {
   await startServer();
   await ensureNamespace();
   installCli();
-  installPhpPackage();
+  installSdkPackage();
   publishedExecutionStarted = true;
 
   const staleWorker = startWorker(STALE_WORKER_ID);
   const staleRegistration = await waitForWorkerRegistration(staleWorker);
   const staleCadence = await observeSuccessiveHeartbeats(staleWorker, staleRegistration);
   const initialWorkflow = startWorkflow('initial');
-  if (!completedWorkflow(initialWorkflow)) throw new Error('the initial real workflow did not complete through the PHP worker loop');
+  if (!completedWorkflow(initialWorkflow)) throw new Error(`the initial real workflow did not complete through the ${CELL} worker loop`);
 
   const freshWorker = startWorker(FRESH_WORKER_ID);
   const freshRegistration = await waitForWorkerRegistration(freshWorker);
@@ -1130,7 +1418,7 @@ async function main() {
   const staleTransition = await waitForStaleTransition(stoppedAt, staleAfterSeconds);
   const stalePoll = stalePollProbe();
   const freshWorkflow = startWorkflow('fresh-after-stale');
-  if (!completedWorkflow(freshWorkflow)) throw new Error('the fresh PHP worker did not complete work after its peer became stale');
+  if (!completedWorkflow(freshWorkflow)) throw new Error(`the fresh ${CELL} worker did not complete work after its peer became stale`);
   const afterVisibility = await captureOperatorVisibility('stale');
   stopWorker(freshWorker);
 
@@ -1153,25 +1441,20 @@ async function main() {
   completedContext = context;
   const checks = buildChecks(context);
   const failedChecks = Object.entries(checks).filter(([, value]) => value !== true).map(([key]) => key);
-  if (failedChecks.length > 0) throw new Error(`PHP SDK heartbeat-loop assertions failed: ${failedChecks.join(', ')}`);
+  if (failedChecks.length > 0) throw new Error(`${CELL} SDK heartbeat-loop assertions failed: ${failedChecks.join(', ')}`);
 
   const heartbeatAcks = context.staleCadence.acknowledgements;
   const lastAck = heartbeatAcks[heartbeatAcks.length - 1] ?? {};
   evidence.outcome = 'pass';
   evidence.runner_blocked = false;
-  evidence.classification = 'published-php-sdk-heartbeat-loop-proven';
-  evidence.covered_scenarios = ['php_sdk_heartbeat_loop'];
-  evidence.separate_uncovered_cells = [
-    'python_sdk_heartbeat_loop',
-    'rust_sdk_heartbeat_loop',
-    'waterline_worker_status_visibility',
-  ];
-  evidence.scenario_results.php_sdk_heartbeat_loop = {
-    scenario_id: 'php_sdk_heartbeat_loop',
+  evidence.classification = `published-${CELL}-sdk-heartbeat-loop-proven`;
+  evidence.covered_scenarios = [SCENARIO_ID];
+  evidence.scenario_results[SCENARIO_ID] = {
+    scenario_id: SCENARIO_ID,
     status: 'pass',
     classification: 'product-behavior-passed',
     observed_outputs: {
-      runtime: 'workflow-php',
+      runtime: RUNTIME,
       worker_id: STALE_WORKER_ID,
       peer_worker_id: FRESH_WORKER_ID,
       namespace: NAMESPACE,
@@ -1188,13 +1471,17 @@ async function main() {
       task_slots: staleTransition.stale_worker_detail.task_slots,
       process_metrics: staleTransition.stale_worker_detail.process_metrics,
       published_artifact_worker_execution: true,
-      public_package: 'durable-workflow/workflow',
-      public_package_version: WORKFLOW_VERSION,
-      worker_protocol_client: 'Workflow\\V2\\Worker\\WorkerProtocolClient',
-      worker_loop: [
-        'Workflow\\V2\\Worker\\StandaloneWorkflowWorker::tickWithHeartbeat()',
-        'Workflow\\V2\\Worker\\StandaloneWorkflowWorker::run()',
-      ],
+      public_package: IS_PYTHON_CELL ? 'durable-workflow' : 'durable-workflow/workflow',
+      public_package_version: IS_PYTHON_CELL ? SDK_PYTHON_VERSION : WORKFLOW_VERSION,
+      worker_protocol_client: IS_PYTHON_CELL
+        ? 'durable_workflow.Client'
+        : 'Workflow\\V2\\Worker\\WorkerProtocolClient',
+      worker_loop: IS_PYTHON_CELL
+        ? ['durable_workflow.Worker.run()', 'durable_workflow.Worker._heartbeat_loop()']
+        : [
+          'Workflow\\V2\\Worker\\StandaloneWorkflowWorker::tickWithHeartbeat()',
+          'Workflow\\V2\\Worker\\StandaloneWorkflowWorker::run()',
+        ],
       local_product_source_checkouts_used: false,
       real_workflow_execution: {
         before_stale: initialWorkflow,
@@ -1236,7 +1523,7 @@ async function main() {
     before_stale: beforeVisibility,
     after_stale: afterVisibility,
   };
-  evidence.php_worker_logs = {
+  evidence.sdk_worker_logs = {
     stale: context.staleWorkerLog,
     fresh: context.freshWorkerLog,
   };
@@ -1292,6 +1579,6 @@ try {
     writeResultFiles(completedContext);
   } catch (error) {
     process.exitCode = 1;
-    process.stderr.write(`could not write PHP heartbeat evidence: ${errorSummary(error)}\n`);
+    process.stderr.write(`could not write ${CELL} heartbeat evidence: ${errorSummary(error)}\n`);
   }
 }

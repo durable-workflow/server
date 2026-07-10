@@ -42,16 +42,154 @@ final class HeartbeatConformanceRunnerContractTest extends TestCase
         $source = $this->runnerSource();
 
         $this->assertStringContainsString(
-            "schema: 'durable-workflow.v2.heartbeat-runtime.php-sdk-loop-evidence'",
+            'schema: `durable-workflow.v2.heartbeat-runtime.${CELL}-sdk-loop-evidence`',
             $source,
         );
-        $this->assertStringContainsString("scenario_id: 'php_sdk_heartbeat_loop'", $source);
-        $this->assertStringContainsString("writeJson('php-sdk-heartbeat-loop-evidence.json'", $source);
-        $this->assertStringContainsString("'python_sdk_heartbeat_loop'", $source);
-        $this->assertStringContainsString("'rust_sdk_heartbeat_loop'", $source);
-        $this->assertStringContainsString("'waterline_worker_status_visibility'", $source);
+        $this->assertStringContainsString('scenario_id: SCENARIO_ID', $source);
+        $this->assertStringContainsString('writeJson(EVIDENCE_FILE, evidence)', $source);
+        $this->assertStringContainsString("const SCENARIO_ID = `\${CELL}_sdk_heartbeat_loop`;", $source);
+        $this->assertStringContainsString(
+            "const SEPARATE_UNCOVERED_CELLS = IS_PYTHON_CELL\n"
+                . "  ? ['php_sdk_heartbeat_loop', 'rust_sdk_heartbeat_loop', 'waterline_worker_status_visibility']\n"
+                . "  : ['python_sdk_heartbeat_loop', 'rust_sdk_heartbeat_loop', 'waterline_worker_status_visibility'];",
+            $source,
+        );
+        $this->assertStringContainsString('separate_uncovered_cells: SEPARATE_UNCOVERED_CELLS', $source);
         $this->assertStringContainsString('local_product_source_checkouts_used: false', $source);
         $this->assertStringNotContainsString('path repository', strtolower($source));
+    }
+
+    public function test_python_shard_uses_the_standard_pin_and_result_gate_artifact_source(): void
+    {
+        $source = $this->runnerSource();
+
+        $this->assertStringContainsString(
+            "const SDK_PYTHON_VERSION = env('DW_PYTHON_SDK_VERSION');",
+            $source,
+        );
+        $this->assertStringContainsString(
+            '`pypi://durable-workflow==${SDK_PYTHON_VERSION}`',
+            $source,
+        );
+        $this->assertStringContainsString(
+            "failures.push('DW_PYTHON_SDK_VERSION must be an exact release')",
+            $source,
+        );
+        $this->assertStringNotContainsString('DW_SDK_PYTHON_VERSION', $source);
+    }
+
+    public function test_python_shard_emits_canonical_pin_source_and_truthful_focused_noncoverage(): void
+    {
+        $nodeBinary = trim((string) shell_exec('command -v node 2>/dev/null'));
+        if ($nodeBinary === '') {
+            $this->markTestSkipped('node is required to exercise the Python heartbeat handoff.');
+        }
+
+        $runRoot = sys_get_temp_dir().'/dw-heartbeats-python-handoff-'.bin2hex(random_bytes(4));
+        $binDir = $runRoot.'/bin';
+        $resultDir = $runRoot.'/results';
+        $dockerBinary = $binDir.'/docker';
+        mkdir($binDir, 0777, true);
+        mkdir($resultDir, 0777, true);
+        file_put_contents($dockerBinary, <<<'SH'
+#!/bin/sh
+case "$*" in
+  *"pull durableworkflow/server:"*) exit 64 ;;
+esac
+exit 0
+SH);
+        chmod($dockerBinary, 0755);
+
+        try {
+            $process = proc_open(
+                [
+                    '/bin/bash',
+                    dirname(__DIR__, 2).'/scripts/conformance/heartbeats-python-published-artifacts.sh',
+                    '--result-dir',
+                    $resultDir,
+                ],
+                [
+                    1 => ['pipe', 'w'],
+                    2 => ['pipe', 'w'],
+                ],
+                $pipes,
+                dirname(__DIR__, 2),
+                [
+                    'PATH' => $binDir.':'.(getenv('PATH') ?: '/usr/bin:/bin'),
+                    'DW_SERVER_VERSION' => '0.2.623',
+                    'DW_CLI_VERSION' => '0.1.86',
+                    'DW_PYTHON_SDK_VERSION' => '0.4.98',
+                ],
+            );
+
+            $this->assertIsResource($process);
+            $stdout = stream_get_contents($pipes[1]);
+            $stderr = stream_get_contents($pipes[2]);
+            fclose($pipes[1]);
+            fclose($pipes[2]);
+            $exitCode = proc_close($process);
+
+            $this->assertSame(1, $exitCode, $stderr ?: $stdout);
+            $evidence = json_decode(
+                (string) file_get_contents($resultDir.'/python-sdk-heartbeat-loop-evidence.json'),
+                true,
+                512,
+                JSON_THROW_ON_ERROR,
+            );
+            $pins = json_decode(
+                (string) file_get_contents($resultDir.'/pins.json'),
+                true,
+                512,
+                JSON_THROW_ON_ERROR,
+            );
+
+            $this->assertSame('0.4.98', $evidence['artifact_versions']['sdk-python']);
+            $this->assertSame(
+                'pypi://durable-workflow==0.4.98',
+                $evidence['artifact_sources']['sdk-python'],
+            );
+            $this->assertSame(
+                $evidence['artifact_sources']['sdk-python'],
+                $pins['artifact_sources']['sdk-python'],
+            );
+            $this->assertSame([
+                'php_sdk_heartbeat_loop',
+                'rust_sdk_heartbeat_loop',
+                'waterline_worker_status_visibility',
+            ], $evidence['separate_uncovered_cells']);
+        } finally {
+            $this->removeDirectory($runRoot);
+        }
+    }
+
+    public function test_python_shard_uses_the_public_worker_heartbeat_loop_and_authoritative_surfaces(): void
+    {
+        $source = $this->runnerSource();
+
+        foreach ([
+            'class EvidenceClient(Client):',
+            'acknowledgement = await super().register_worker(**kwargs)',
+            'acknowledgement = await super().heartbeat_worker(**kwargs)',
+            'worker = Worker(',
+            'worker_task = asyncio.create_task(worker.run())',
+            'poll = await client.poll_workflow_task_response(',
+            "install_mode: 'pip --target'",
+            '`durable-workflow==${SDK_PYTHON_VERSION}`',
+            'evidence.python_package_install?.installed_version === SDK_PYTHON_VERSION',
+            'at_least_two_sdk_heartbeats',
+            'advertised_cadence_bounded',
+            'heartbeat_freshness_visible',
+            'api_cli_worker_state_consistent',
+            'stale_sdk_poll_refused',
+            'fresh_worker_remains_eligible',
+            "'worker:list'",
+            "'worker:describe'",
+        ] as $needle) {
+            $this->assertStringContainsString($needle, $source);
+        }
+
+        $this->assertStringNotContainsString('DW_HEARTBEATS_PLAN', $source);
+        $this->assertStringNotContainsString('fixture_response', $source);
     }
 
     public function test_runner_registers_idempotent_cleanup_before_resources_can_partially_start(): void
@@ -249,10 +387,49 @@ JS;
         $this->assertStringNotContainsString('DW_HEARTBEATS_CLI_SOURCE_URL', $shell);
     }
 
+    public function test_python_shell_handoff_is_a_separate_focused_cell(): void
+    {
+        $shell = (string) file_get_contents(
+            dirname(__DIR__, 2).'/scripts/conformance/heartbeats-python-published-artifacts.sh',
+        );
+
+        $this->assertStringContainsString('DW_HEARTBEATS_CELL=python', $shell);
+        $this->assertStringContainsString('DW_SERVER_VERSION', $shell);
+        $this->assertStringContainsString('DW_CLI_VERSION', $shell);
+        $this->assertStringContainsString('DW_PYTHON_SDK_VERSION', $shell);
+        $this->assertStringNotContainsString('DW_SDK_PYTHON_VERSION', $shell);
+        $this->assertStringContainsString('python-sdk-heartbeat-loop-evidence.json', $shell);
+        $this->assertStringNotContainsString('DW_WORKFLOW_PHP_VERSION', $shell);
+        $this->assertStringNotContainsString('composer', strtolower($shell));
+        $this->assertStringNotContainsString('waterline', strtolower($shell));
+    }
+
     private function runnerSource(): string
     {
         return (string) file_get_contents(
             dirname(__DIR__, 2).'/scripts/conformance/heartbeats-published-artifacts.mjs',
         );
+    }
+
+    private function removeDirectory(string $path): void
+    {
+        if (! is_dir($path)) {
+            return;
+        }
+
+        $iterator = new \RecursiveIteratorIterator(
+            new \RecursiveDirectoryIterator($path, \FilesystemIterator::SKIP_DOTS),
+            \RecursiveIteratorIterator::CHILD_FIRST,
+        );
+
+        foreach ($iterator as $entry) {
+            if ($entry->isDir()) {
+                rmdir($entry->getPathname());
+            } else {
+                unlink($entry->getPathname());
+            }
+        }
+
+        rmdir($path);
     }
 }

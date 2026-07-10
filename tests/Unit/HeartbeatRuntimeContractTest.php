@@ -14,7 +14,7 @@ class HeartbeatRuntimeContractTest extends TestCase
         $manifest = HeartbeatRuntimeContract::manifest();
 
         $this->assertSame('durable-workflow.v2.heartbeat-runtime.contract', $manifest['schema']);
-        $this->assertSame(3, HeartbeatRuntimeContract::VERSION);
+        $this->assertSame(4, HeartbeatRuntimeContract::VERSION);
         $this->assertSame(HeartbeatRuntimeContract::VERSION, $manifest['version']);
         $this->assertSame('durable-workflow.v2.heartbeat-runtime.result', $manifest['result_schema']);
         $this->assertSame(2, $manifest['result_version']);
@@ -153,6 +153,47 @@ class HeartbeatRuntimeContractTest extends TestCase
         $this->assertSame(
             'workflow-php-heartbeat-loop',
             $manifest['host_runner_contract']['runtime_shards']['workflow-php']['focused_runner'],
+        );
+    }
+
+    public function test_manifest_publishes_the_focused_python_sdk_heartbeat_runner(): void
+    {
+        $manifest = HeartbeatRuntimeContract::manifest();
+        $runner = $manifest['host_runner_contract']['focused_runners']['sdk-python-heartbeat-loop'];
+
+        $this->assertSame('host_executable_published_artifact_runner', $runner['status']);
+        $this->assertSame('server', $runner['runner_repository']);
+        $this->assertSame(
+            'scripts/conformance/heartbeats-python-published-artifacts.sh',
+            $runner['runner_path'],
+        );
+        $this->assertSame('python_sdk_heartbeat_loop', $runner['scenario_id']);
+        $this->assertSame(
+            'durable-workflow.v2.heartbeat-runtime.python-sdk-loop-evidence',
+            $runner['result_schema'],
+        );
+        $this->assertSame('python-sdk-heartbeat-loop-evidence.json', $runner['result_file']);
+        $this->assertTrue($runner['host_runner_implemented']);
+        $this->assertTrue($runner['must_execute_against_published_artifacts']);
+        $this->assertTrue($runner['must_record_runner_blocked_false_for_product_evidence']);
+        $this->assertSame(['server', 'cli', 'sdk-python'], $runner['required_artifact_pins']);
+        $this->assertContains('durable_workflow.Client', $runner['required_worker_api']);
+        $this->assertContains('durable_workflow.Worker.run()', $runner['required_worker_api']);
+        $this->assertContains('at_least_two_sdk_emitted_heartbeat_timestamps', $runner['must_prove']);
+        $this->assertContains('stale_python_worker_poll_is_refused', $runner['must_prove']);
+        $this->assertContains('fresh_python_peer_remains_eligible_for_new_work', $runner['must_prove']);
+        $this->assertSame([
+            'php_sdk_heartbeat_loop',
+            'rust_sdk_heartbeat_loop',
+            'waterline_worker_status_visibility',
+        ], $runner['does_not_claim_scenarios']);
+        $this->assertContains(
+            'python-sdk-heartbeat-loop-evidence.json',
+            $manifest['host_runner_contract']['result_files'],
+        );
+        $this->assertSame(
+            'sdk-python-heartbeat-loop',
+            $manifest['host_runner_contract']['runtime_shards']['sdk-python']['focused_runner'],
         );
     }
 
