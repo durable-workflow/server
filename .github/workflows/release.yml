@@ -168,7 +168,7 @@ jobs:
           WORKFLOW_PACKAGE_COMMIT: ${{ steps.workflow.outputs.commit }}
         run: scripts/ci/write-release-image-publish-evidence.sh
 
-      - name: Verify live docs release audit after public images
+      - name: Classify live docs release readiness after public images
         if: ${{ steps.exact.outputs.exact_publish_outcome == 'success' }}
         env:
           DOCS_RELEASE_AUDIT_ARTIFACT: server

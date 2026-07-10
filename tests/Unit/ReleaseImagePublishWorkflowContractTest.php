@@ -298,7 +298,7 @@ class ReleaseImagePublishWorkflowContractTest extends TestCase
         $auditor = $this->read('scripts/ci/check-docs-release-audit.sh');
 
         foreach ([
-            'Verify live docs release audit after public images',
+            'Classify live docs release readiness after public images',
             "if: \${{ steps.exact.outputs.exact_publish_outcome == 'success' }}",
             'DOCS_RELEASE_AUDIT_ARTIFACT: server',
             'DOCS_RELEASE_AUDIT_VERSION: ${{ steps.release_publish.outputs.tag || github.event.inputs.tag || github.ref_name }}',
@@ -325,11 +325,18 @@ class ReleaseImagePublishWorkflowContractTest extends TestCase
         $this->assertStringNotContainsString('scripts/public-artifact-versions.json plus docs/compatibility.md', $auditor);
         $this->assertStringContainsString('docs_artifact_tuple_handoff: handoff', $auditor);
         $this->assertStringContainsString('observed_artifact_versions: versions', $auditor);
+        $this->assertStringContainsString("writeEvidence('downstream_pending'", $auditor);
+        $this->assertStringContainsString("release_readiness: 'docs_tuple_refresh_required'", $auditor);
+        $this->assertStringContainsString("failure_kind: 'unreachable_audit'", $auditor);
+        $this->assertStringContainsString("'mixed_artifact_tuple'", $auditor);
+        $this->assertStringContainsString("'default_version_policy'", $auditor);
+        $this->assertStringContainsString("'non_clean_page_verdicts'", $auditor);
+        $this->assertStringContainsString("'live_docs_version_not_behind_publication'", $auditor);
 
         $buildOffset = strpos($workflow, 'Build and push exact image tags');
         $exactOffset = strpos($workflow, 'Verify exact image publication');
         $writeEvidenceOffset = strpos($workflow, 'Write release image publish evidence');
-        $docsAuditOffset = strpos($workflow, 'Verify live docs release audit after public images');
+        $docsAuditOffset = strpos($workflow, 'Classify live docs release readiness after public images');
         $uploadOffset = strpos($workflow, 'Upload release image publish evidence');
 
         $this->assertIsInt($buildOffset);
@@ -341,6 +348,135 @@ class ReleaseImagePublishWorkflowContractTest extends TestCase
         $this->assertLessThan($writeEvidenceOffset, $exactOffset);
         $this->assertLessThan($docsAuditOffset, $writeEvidenceOffset);
         $this->assertLessThan($uploadOffset, $docsAuditOffset);
+    }
+
+    public function test_docs_audit_keeps_clean_expected_tuple_lag_non_blocking(): void
+    {
+        $result = $this->runDocsReleaseAudit(
+            json_encode($this->validDocsReleaseAudit('0.2.619'), JSON_THROW_ON_ERROR),
+            '0.2.620',
+        );
+
+        $this->assertSame(0, $result['exitCode']);
+        $this->assertStringContainsString('The image publication remains successful', $result['stdout']);
+        $this->assertStringContainsString('::warning title=Docs release readiness pending', $result['stderr']);
+        $this->assertSame('downstream_pending', $result['evidence']['outcome']);
+        $this->assertSame('success', $result['evidence']['status']);
+        $this->assertSame('docs_tuple_refresh_required', $result['evidence']['release_readiness']);
+        $this->assertSame('pass', $result['evidence']['public_safety']['outcome']);
+        $this->assertSame(0, $result['evidence']['public_safety']['verdict_counts']['LEAK']);
+        $this->assertSame(0, $result['evidence']['public_safety']['verdict_counts']['MIXED']);
+        $this->assertSame('durable-workflow.release.docs-artifact-tuple-handoff', $result['handoff']['schema']);
+        $this->assertSame('0.2.620', $result['handoff']['stale_artifact']['expected_version']);
+        $this->assertSame('0.2.619', $result['handoff']['stale_artifact']['live_version']);
+        $this->assertStringContainsString('Public images published; docs tuple refresh pending', $result['summary']);
+    }
+
+    public function test_docs_audit_accepts_clean_current_tuple(): void
+    {
+        $result = $this->runDocsReleaseAudit(
+            json_encode($this->validDocsReleaseAudit('0.2.620'), JSON_THROW_ON_ERROR),
+            '0.2.620',
+        );
+
+        $this->assertSame(0, $result['exitCode']);
+        $this->assertSame('pass', $result['evidence']['outcome']);
+        $this->assertSame('fully_surfaced', $result['evidence']['release_readiness']);
+        $this->assertSame('pass', $result['evidence']['public_safety']['outcome']);
+        $this->assertNull($result['handoff']);
+    }
+
+    public function test_docs_audit_does_not_treat_a_newer_live_tuple_as_expected_lag(): void
+    {
+        $result = $this->runDocsReleaseAudit(
+            json_encode($this->validDocsReleaseAudit('0.2.621'), JSON_THROW_ON_ERROR),
+            '0.2.620',
+        );
+
+        $this->assertSame(1, $result['exitCode']);
+        $this->assertSame('release_readiness_failure', $result['evidence']['outcome']);
+        $this->assertSame('live_docs_version_not_behind_publication', $result['evidence']['failure_kind']);
+        $this->assertStringContainsString('newer than the published version 0.2.620', $result['stderr']);
+        $this->assertNull($result['handoff']);
+    }
+
+    public function test_docs_audit_rejects_leak_and_mixed_verdicts(): void
+    {
+        foreach (['LEAK', 'MIXED'] as $verdict) {
+            $audit = $this->validDocsReleaseAudit('0.2.619');
+            $audit['page_inventory'][1]['verdict'] = $verdict;
+            $audit['page_inventory'][1]['leak_count'] = 1;
+            $audit['page_inventory'][1]['findings'] = [
+                ['summary' => "Focused {$verdict} release-status finding"],
+            ];
+            $audit['summary']['verdict_counts']['CLEAN'] = 1;
+            $audit['summary']['verdict_counts'][$verdict] = 1;
+
+            $result = $this->runDocsReleaseAudit(
+                json_encode($audit, JSON_THROW_ON_ERROR),
+                '0.2.620',
+            );
+
+            $this->assertSame(1, $result['exitCode'], "{$verdict} must fail even while the tuple is stale.");
+            $this->assertSame('public_safety_failure', $result['evidence']['outcome']);
+            $this->assertSame('non_clean_page_verdicts', $result['evidence']['failure_kind']);
+            $this->assertSame($verdict, $result['evidence']['non_clean_pages'][0]['verdict']);
+            $this->assertStringContainsString('all public surfaces must be CLEAN', $result['stderr']);
+        }
+    }
+
+    public function test_docs_audit_rejects_internally_mixed_server_tuple(): void
+    {
+        $audit = $this->validDocsReleaseAudit('0.2.619');
+        $audit['artifact_distribution_surfaces']['server'][0]['tag'] = '0.2.618';
+        $audit['artifact_distribution_surfaces']['server'][0]['reference'] = 'durableworkflow/server:0.2.618';
+
+        $result = $this->runDocsReleaseAudit(
+            json_encode($audit, JSON_THROW_ON_ERROR),
+            '0.2.620',
+        );
+
+        $this->assertSame(1, $result['exitCode']);
+        $this->assertSame('public_safety_failure', $result['evidence']['outcome']);
+        $this->assertSame('mixed_artifact_tuple', $result['evidence']['failure_kind']);
+        $this->assertStringContainsString('mixes artifact_versions.server=0.2.619', $result['stderr']);
+    }
+
+    public function test_docs_audit_rejects_default_version_policy_drift(): void
+    {
+        $audit = $this->validDocsReleaseAudit('0.2.619');
+        $audit['release_status_guardrail']['stable_default_docs_version'] = '2.0';
+
+        $result = $this->runDocsReleaseAudit(
+            json_encode($audit, JSON_THROW_ON_ERROR),
+            '0.2.620',
+        );
+
+        $this->assertSame(1, $result['exitCode']);
+        $this->assertSame('public_safety_failure', $result['evidence']['outcome']);
+        $this->assertSame('default_version_policy', $result['evidence']['failure_kind']);
+        $this->assertStringContainsString('stable_default_docs_version=1.x', $result['stderr']);
+    }
+
+    public function test_docs_audit_rejects_malformed_and_unreachable_surfaces_with_evidence(): void
+    {
+        $malformed = $this->runDocsReleaseAudit('{not-json', '0.2.620');
+
+        $this->assertSame(1, $malformed['exitCode']);
+        $this->assertSame('malformed', $malformed['evidence']['outcome']);
+        $this->assertSame('malformed_audit', $malformed['evidence']['failure_kind']);
+        $this->assertStringContainsString('did not return parseable JSON', $malformed['stderr']);
+
+        $unreachable = $this->runDocsReleaseAudit(
+            json_encode($this->validDocsReleaseAudit('0.2.619'), JSON_THROW_ON_ERROR),
+            '0.2.620',
+            'file:///does-not-exist/docs-page-release-audit.json',
+        );
+
+        $this->assertSame(1, $unreachable['exitCode']);
+        $this->assertSame('unavailable', $unreachable['evidence']['outcome']);
+        $this->assertSame('unreachable_audit', $unreachable['evidence']['failure_kind']);
+        $this->assertStringContainsString('Could not fetch', $unreachable['stderr']);
     }
 
     public function test_release_guard_rejects_pull_request_publish_context(): void
@@ -1082,6 +1218,138 @@ SH;
             $result['stderr'],
         );
         $this->assertStringContainsString('2.0.0-alpha.198 advertises worker protocol 1.9', $result['stderr']);
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    private function validDocsReleaseAudit(string $serverVersion): array
+    {
+        $versions = [
+            'cli' => '0.1.86',
+            'sdk-python' => '0.4.98',
+            'server' => $serverVersion,
+            'waterline' => '2.0.0-alpha.123',
+            'workflow' => '2.0.0-alpha.259',
+        ];
+        $serverReferences = [
+            "durableworkflow/server:{$serverVersion}",
+            "ghcr.io/durable-workflow/server:{$serverVersion}",
+        ];
+
+        return [
+            'schema' => 'durable-workflow.docs.page-release-audit',
+            'schema_version' => 1,
+            'classifier' => 'content-derived-release-status-v2',
+            'artifact_versions' => $versions,
+            'artifact_version_source' => [
+                'schema' => 'durable-workflow.docs.public-artifact-versions',
+                'source_file' => 'scripts/public-artifact-versions.json',
+                'synchronized_fields' => [
+                    'artifact_versions',
+                    'artifact_distribution_surfaces.server',
+                ],
+                'current_server_artifact' => [
+                    'version' => $serverVersion,
+                    'references' => $serverReferences,
+                ],
+            ],
+            'artifact_distribution_surfaces' => [
+                'server' => [
+                    [
+                        'surface' => 'docker_hub_container_image',
+                        'registry' => 'docker_hub',
+                        'image' => 'durableworkflow/server',
+                        'tag' => $serverVersion,
+                        'reference' => $serverReferences[0],
+                    ],
+                    [
+                        'surface' => 'ghcr_container_image',
+                        'registry' => 'ghcr',
+                        'image' => 'ghcr.io/durable-workflow/server',
+                        'tag' => $serverVersion,
+                        'reference' => $serverReferences[1],
+                    ],
+                ],
+            ],
+            'release_status_guardrail' => [
+                'stable_default_docs_version' => '1.x',
+                'explicit_prerelease_docs_version' => '2.0',
+            ],
+            'summary' => [
+                'stable_default_docs_pages' => 1,
+                'explicit_prerelease_2_0_pages' => 1,
+                'edge_surfaces' => 0,
+                'verdict_counts' => [
+                    'CLEAN' => 2,
+                    'LEAK' => 0,
+                    'MIXED' => 0,
+                ],
+                'missing_classifications' => [],
+            ],
+            'page_inventory' => [
+                [
+                    'path' => '/docs/introduction/',
+                    'verdict' => 'CLEAN',
+                    'leak_count' => 0,
+                    'findings' => [],
+                ],
+                [
+                    'path' => '/docs/2.0/introduction/',
+                    'verdict' => 'CLEAN',
+                    'leak_count' => 0,
+                    'findings' => [],
+                ],
+            ],
+        ];
+    }
+
+    /**
+     * @return array{exitCode:int, stdout:string, stderr:string, evidence:?array<string, mixed>, handoff:?array<string, mixed>, summary:string}
+     */
+    private function runDocsReleaseAudit(string $auditSource, string $expectedVersion, ?string $auditUrl = null): array
+    {
+        $tmpDir = sys_get_temp_dir().'/docs-release-audit-'.bin2hex(random_bytes(4));
+        $this->assertTrue(mkdir($tmpDir));
+        $auditFile = $tmpDir.'/audit.json';
+        $evidenceFile = $tmpDir.'/evidence.json';
+        $handoffFile = $tmpDir.'/handoff.json';
+        $summaryFile = $tmpDir.'/summary.md';
+        file_put_contents($auditFile, $auditSource);
+
+        try {
+            $result = $this->runScript('scripts/ci/check-docs-release-audit.sh', [
+                'DOCS_RELEASE_AUDIT_ARTIFACT' => 'server',
+                'DOCS_RELEASE_AUDIT_VERSION' => $expectedVersion,
+                'DOCS_RELEASE_AUDIT_URL' => $auditUrl ?? 'file://'.$auditFile,
+                'DOCS_RELEASE_AUDIT_ATTEMPTS' => '1',
+                'DOCS_RELEASE_AUDIT_RETRY_SLEEP' => '0',
+                'DOCS_RELEASE_AUDIT_EVIDENCE' => $evidenceFile,
+                'DOCS_RELEASE_AUDIT_HANDOFF' => $handoffFile,
+                'GITHUB_STEP_SUMMARY' => $summaryFile,
+                'RUNNER_TEMP' => $tmpDir,
+            ]);
+
+            $evidence = is_file($evidenceFile)
+                ? json_decode((string) file_get_contents($evidenceFile), true, flags: JSON_THROW_ON_ERROR)
+                : null;
+            $handoff = is_file($handoffFile)
+                ? json_decode((string) file_get_contents($handoffFile), true, flags: JSON_THROW_ON_ERROR)
+                : null;
+            $summary = is_file($summaryFile) ? (string) file_get_contents($summaryFile) : '';
+
+            return $result + [
+                'evidence' => $evidence,
+                'handoff' => $handoff,
+                'summary' => $summary,
+            ];
+        } finally {
+            @unlink($auditFile);
+            @unlink($evidenceFile);
+            @unlink($handoffFile);
+            @unlink($summaryFile);
+            @rmdir($tmpDir);
+        }
     }
 
     /**
