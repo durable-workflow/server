@@ -27,6 +27,9 @@ final class HeartbeatConformanceRunnerContractTest extends TestCase
         }
 
         $this->assertStringContainsString('sdk_emitted_heartbeat_timestamps', $source);
+        $this->assertStringContainsString('sdk_heartbeat_acknowledgement_count >= 2', $source);
+        $this->assertStringContainsString('cadence_observation_source', $source);
+        $this->assertStringContainsString("'acknowledgement_logged_at'", $source);
         $this->assertStringContainsString('server_last_heartbeat_timestamps', $source);
         $this->assertStringContainsString('bounded_advertised_cadence', $source);
         $this->assertStringContainsString('work_processed_records', $source);
@@ -35,6 +38,37 @@ final class HeartbeatConformanceRunnerContractTest extends TestCase
             $source,
         );
         $this->assertStringContainsString('fresh_worker_eligibility_after_stale', $source);
+    }
+
+    public function test_heartbeat_cadence_timestamp_attribution_regressions(): void
+    {
+        $nodeBinary = trim((string) shell_exec('command -v node 2>/dev/null'));
+        if ($nodeBinary === '') {
+            $this->markTestSkipped('node is required to exercise heartbeat cadence attribution.');
+        }
+
+        $process = proc_open(
+            [
+                $nodeBinary,
+                '--test',
+                __DIR__.'/HeartbeatCadenceObservationRegression.mjs',
+            ],
+            [
+                1 => ['pipe', 'w'],
+                2 => ['pipe', 'w'],
+            ],
+            $pipes,
+            dirname(__DIR__, 2),
+        );
+
+        $this->assertIsResource($process);
+        $stdout = stream_get_contents($pipes[1]);
+        $stderr = stream_get_contents($pipes[2]);
+        fclose($pipes[1]);
+        fclose($pipes[2]);
+        $exitCode = proc_close($process);
+
+        $this->assertSame(0, $exitCode, $stderr ?: $stdout);
     }
 
     public function test_runner_records_mergeable_focused_evidence_without_claiming_sibling_cells(): void

@@ -9,6 +9,7 @@ import {
   SERVER_CONTAINER_IMAGE_INSPECT_FORMAT,
   safeContainerInspectCommandRecord,
 } from './heartbeat-container-inspect-evidence.mjs';
+import { heartbeatCadenceObservation } from './heartbeat-cadence-observation.mjs';
 
 const RESULT_DIR = mustEnv('RESULT_DIR');
 const REPO_ROOT = mustEnv('REPO_ROOT');
@@ -449,9 +450,9 @@ final class PhpHeartbeatConformanceWorkflow extends Workflow
     }
 }
 
-function heartbeat_log(array $record): void
+function heartbeat_log(array $record, string $timestampField = 'observed_at'): void
 {
-    $record['observed_at'] ??= (new DateTimeImmutable('now', new DateTimeZone('UTC')))->format('Y-m-d\\TH:i:s.v\\Z');
+    $record[$timestampField] ??= (new DateTimeImmutable('now', new DateTimeZone('UTC')))->format('Y-m-d\\TH:i:s.v\\Z');
     fwrite(STDOUT, json_encode($record, JSON_UNESCAPED_SLASHES).PHP_EOL);
     fflush(STDOUT);
 }
@@ -460,7 +461,10 @@ function heartbeat_log_tick(?array $result): void
 {
     if (!is_array($result)) return;
     foreach (($result['worker_heartbeats'] ?? []) as $ack) {
-        heartbeat_log(['event' => 'worker_heartbeat', 'acknowledgement' => $ack]);
+        heartbeat_log(
+            ['event' => 'worker_heartbeat', 'acknowledgement' => $ack],
+            'acknowledgement_logged_at',
+        );
     }
     if (($result['processed'] ?? false) === true) {
         heartbeat_log(['event' => 'work_processed', 'result' => $result]);
@@ -1296,7 +1300,6 @@ async function waitForWorkerRegistration(worker) {
 }
 
 async function observeSuccessiveHeartbeats(worker, registrationEvidence) {
-  const heartbeatTimestamps = [];
   const apiTimestamps = [];
   const apiSamples = [];
   const advertised = Number(registrationEvidence.registration.registration?.heartbeat_interval_seconds
@@ -1305,29 +1308,30 @@ async function observeSuccessiveHeartbeats(worker, registrationEvidence) {
   const timeout = Math.max(20_000, (advertised * 4 + 10) * 1_000);
   await waitFor(`${worker.worker_id} successive SDK heartbeats`, async () => {
     const records = workerHeartbeatRecords(worker);
-    for (const record of records) {
-      if (record.observed_at && !heartbeatTimestamps.includes(record.observed_at)) heartbeatTimestamps.push(record.observed_at);
-    }
     const detail = await api(`/workers/${encodeURIComponent(worker.worker_id)}`);
     apiSamples.push({ observed_at: now(), worker: detail });
     if (detail.last_heartbeat_at && !apiTimestamps.includes(detail.last_heartbeat_at)) apiTimestamps.push(detail.last_heartbeat_at);
-    return heartbeatTimestamps.length >= 2 && apiTimestamps.length >= 2;
+    const observation = heartbeatCadenceObservation({
+      cell: CELL,
+      heartbeatRecords: records,
+      serverHeartbeatTimestamps: apiTimestamps,
+      advertisedSeconds: advertised,
+    });
+    return observation.sdk_heartbeat_acknowledgement_count >= 2
+      && observation.server_last_heartbeat_timestamps.length >= 2
+      && (IS_PYTHON_CELL || IS_RUST_CELL
+        ? observation.sdk_native_heartbeat_timestamps.length >= 2
+        : true);
   }, timeout, Math.min(1_000, Math.max(250, advertised * 250)));
 
-  const intervals = [];
-  for (let index = 1; index < heartbeatTimestamps.length; index += 1) {
-    intervals.push((Date.parse(heartbeatTimestamps[index]) - Date.parse(heartbeatTimestamps[index - 1])) / 1_000);
-  }
-  const bounded = intervals.length > 0 && intervals.every((interval) =>
-    interval >= Math.max(0.5, advertised * 0.5) && interval <= Math.max(advertised * 2, advertised + 2));
   return {
-    advertised_heartbeat_interval_seconds: advertised,
-    sdk_emitted_heartbeat_timestamps: heartbeatTimestamps,
-    server_last_heartbeat_timestamps: apiTimestamps,
-    inter_arrival_seconds: intervals,
-    bounded_advertised_cadence: bounded,
+    ...heartbeatCadenceObservation({
+      cell: CELL,
+      heartbeatRecords: workerHeartbeatRecords(worker),
+      serverHeartbeatTimestamps: apiTimestamps,
+      advertisedSeconds: advertised,
+    }),
     api_samples: apiSamples,
-    acknowledgements: workerHeartbeatRecords(worker).map((record) => record.acknowledgement),
   };
 }
 
@@ -1552,7 +1556,7 @@ function buildChecks(context) {
       && completedWorkflow(context.freshWorkflow)
       && context.staleWorkerLog.work_processed_records.length >= 1
       && context.freshWorkerLog.work_processed_records.length >= 1,
-    at_least_two_sdk_heartbeats: context.staleCadence.sdk_emitted_heartbeat_timestamps.length >= 2,
+    at_least_two_sdk_heartbeats: context.staleCadence.sdk_heartbeat_acknowledgement_count >= 2,
     server_observed_successive_heartbeats: context.staleCadence.server_last_heartbeat_timestamps.length >= 2,
     advertised_cadence_bounded: context.staleCadence.bounded_advertised_cadence,
     task_queue_association_visible: staleDetail.task_queue === TASK_QUEUE && freshDetail.task_queue === TASK_QUEUE,
@@ -1791,6 +1795,7 @@ async function main() {
         activities: [],
       },
       heartbeat_timestamps: context.staleCadence.sdk_emitted_heartbeat_timestamps,
+      heartbeat_timestamp_source: context.staleCadence.cadence_observation_source,
       server_heartbeat_timestamps: context.staleCadence.server_last_heartbeat_timestamps,
       heartbeat_acknowledgements: heartbeatAcks,
       protocol_metadata: {
