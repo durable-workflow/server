@@ -1136,7 +1136,7 @@ function installRustPackage() {
   if (!String(installedPackage.source ?? '').startsWith('registry+')) {
     throw new Error(`pinned Rust package did not resolve from a public Cargo registry: ${installedPackage.source ?? 'missing source'}`);
   }
-  if (installedPackage.repository !== 'https://github.com/durable-workflow/server') {
+  if (installedPackage.repository !== 'https://github.com/durable-workflow/sdk-rust') {
     throw new Error(`pinned Rust package repository provenance mismatch: ${installedPackage.repository ?? 'missing repository'}`);
   }
   const releaseMetadata = installedPackage.metadata?.['durable-workflow'] ?? {};

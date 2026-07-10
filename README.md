@@ -1544,6 +1544,13 @@ worker = Worker(
 await worker.run()
 ```
 
+### Rust
+
+The Rust SDK is developed and released independently in the
+[durable-workflow/sdk-rust](https://github.com/durable-workflow/sdk-rust)
+repository. Installation and API guidance are available from the
+[Rust SDK documentation](https://rust.durable-workflow.com/).
+
 MIT
 ## Public Boundary Checks
 

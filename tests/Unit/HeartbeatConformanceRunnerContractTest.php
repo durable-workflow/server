@@ -234,7 +234,7 @@ SH);
             'durable-workflow = "=${SDK_RUST_VERSION}"',
             "'cargo', 'metadata', '--locked', '--format-version=1'",
             "installedPackage.source ?? '').startsWith('registry+')",
-            "installedPackage.repository !== 'https://github.com/durable-workflow/server'",
+            "installedPackage.repository !== 'https://github.com/durable-workflow/sdk-rust'",
             'registry_checksum_sha256: registryChecksum',
             "'cargo', 'build', '--release', '--locked'",
             '.on_worker_heartbeat(|observation|',
