@@ -10,7 +10,7 @@ final class MigrationRuntimeResultGate
 {
     public const SCHEMA = 'durable-workflow.v2.migration-runtime.result-gate';
 
-    public const VERSION = 1;
+    public const VERSION = 2;
 
     private const PLACEHOLDER_EVIDENCE_TOKENS = [
         'not_executed',
@@ -77,6 +77,9 @@ final class MigrationRuntimeResultGate
                 'not_covered',
                 'runner_blocked',
             ],
+            'neutral_statuses' => [
+                'not_applicable',
+            ],
             'artifact_version_policy' => [
                 'requires_recorded_and_pinned_versions' => true,
                 'requires_v1_and_v2_artifact_versions' => true,
@@ -98,11 +101,12 @@ final class MigrationRuntimeResultGate
                 'every_required_scenario_has_one_result',
                 'every_result_uses_a_published_status',
                 'latest_supported_v1_state_is_seeded',
+                'selected_v1_source_capabilities_are_inventoried_before_continuity',
                 'public_migration_guide_steps_are_executed_verbatim',
-                'completed_histories_remain_readable_and_replay_safe',
-                'in_flight_progress_retry_schedules_and_workers_are_preserved',
+                'completed_histories_in_flight_progress_retries_and_queue_state_are_preserved',
+                'source_absent_control_plane_cells_are_capability_backed_not_applicable',
                 'cli_and_waterline_operator_surfaces_cover_preupgrade_state',
-                'new_v2_starts_are_verified_after_upgrade',
+                'new_v2_workflows_schedules_and_worker_registrations_are_verified_after_upgrade',
                 'rollback_contract_or_documented_no_rollback_is_verified',
                 'rollback_public_operator_signal_is_recorded',
                 'cli_and_worker_skew_request_response_evidence_is_recorded',
@@ -179,6 +183,12 @@ final class MigrationRuntimeResultGate
             }
 
             if ($status === 'pass') {
+                if (self::scenarioMustBeNotApplicable($scenarioId, $result, $contract)) {
+                    $failures[] = [
+                        'code' => 'source_absent_scenario_must_be_not_applicable',
+                        'scenario_id' => $scenarioId,
+                    ];
+                }
                 if (! self::hasObservedOutputs($scenarioResult)) {
                     $failures[] = [
                         'code' => 'missing_pass_observed_outputs',
@@ -186,11 +196,19 @@ final class MigrationRuntimeResultGate
                     ];
                 }
 
-                foreach (self::missingRequiredFields($scenarioId, $scenarioResult, $contract) as $field) {
+                foreach (self::missingRequiredFields($scenarioId, $scenarioResult, $contract, $result) as $field) {
                     $failures[] = [
                         'code' => 'missing_scenario_required_field',
                         'scenario_id' => $scenarioId,
                         'field' => $field,
+                    ];
+                }
+            } elseif ($status === 'not_applicable') {
+                if (! self::validNotApplicableScenario($scenarioId, $scenarioResult, $result, $contract)) {
+                    $nonPassScenarios[] = $scenarioId;
+                    $failures[] = [
+                        'code' => 'invalid_not_applicable_scenario',
+                        'scenario_id' => $scenarioId,
                     ];
                 }
             } else {
@@ -309,13 +327,144 @@ final class MigrationRuntimeResultGate
     }
 
     /**
+     * @param array<string, mixed> $result
+     * @param array<string, mixed> $contract
+     */
+    private static function scenarioMustBeNotApplicable(
+        string $scenarioId,
+        array $result,
+        array $contract,
+    ): bool {
+        $scenarioCapabilities = $contract['source_capability_policy']['not_applicable_scenarios'] ?? [];
+        if (is_array($scenarioCapabilities)) {
+            $capability = self::stringValue($scenarioCapabilities[$scenarioId] ?? null);
+            if ($capability !== '') {
+                return self::sourceCapabilityStatus($result, $capability) === 'unsupported';
+            }
+        }
+
+        if ($scenarioId !== 'version_skew_refusal') {
+            return false;
+        }
+
+        $cells = $contract['required_matrix']['skew_cells'] ?? [];
+        if (! is_array($cells) || $cells === []) {
+            return false;
+        }
+
+        foreach ($cells as $cell) {
+            if (! is_array($cell)) {
+                return false;
+            }
+            $requirements = self::stringList($cell['requires_source_capabilities'] ?? []);
+            if ($requirements === []) {
+                return false;
+            }
+            $hasAbsentCapability = false;
+            foreach ($requirements as $capability) {
+                if (self::sourceCapabilityStatus($result, $capability) === 'unsupported') {
+                    $hasAbsentCapability = true;
+                    break;
+                }
+            }
+            if (! $hasAbsentCapability) {
+                return false;
+            }
+        }
+
+        return true;
+    }
+
+    /**
+     * @param array<string, mixed> $scenarioResult
+     * @param array<string, mixed> $result
+     * @param array<string, mixed> $contract
+     */
+    private static function validNotApplicableScenario(
+        string $scenarioId,
+        array $scenarioResult,
+        array $result,
+        array $contract,
+    ): bool {
+        if (! self::scenarioMustBeNotApplicable($scenarioId, $result, $contract)) {
+            return false;
+        }
+
+        $outputs = self::arrayField($scenarioResult, ['observed_outputs', 'observedOutputs']) ?? [];
+        if ($scenarioId === 'version_skew_refusal') {
+            $applicability = self::arrayField($outputs, ['applicability_evidence', 'applicabilityEvidence']) ?? [];
+            $cells = $contract['required_matrix']['skew_cells'] ?? [];
+            foreach (is_array($cells) ? $cells : [] as $cell) {
+                if (! is_array($cell)) {
+                    return false;
+                }
+                $cellId = self::skewCellId($cell);
+                $actual = is_array($applicability[$cellId] ?? null) ? $applicability[$cellId] : [];
+                $requirements = self::stringList($cell['requires_source_capabilities'] ?? []);
+                $expectedReasons = [];
+                foreach ($requirements as $capability) {
+                    if (self::sourceCapabilityStatus($result, $capability) === 'unsupported') {
+                        $reason = self::sourceCapabilityReason($result, $capability);
+                        if ($reason !== '') {
+                            $expectedReasons[] = $reason;
+                        }
+                    }
+                }
+                $actualReasons = self::stringList($actual['reason_codes'] ?? $actual['reasonCodes'] ?? []);
+                sort($expectedReasons);
+                sort($actualReasons);
+                if (
+                    self::stringValue($actual['status'] ?? null) !== 'not_applicable'
+                    || $expectedReasons === []
+                    || $actualReasons !== $expectedReasons
+                    || ($actual['durable_state_mutation_attempted'] ?? null) !== false
+                ) {
+                    return false;
+                }
+            }
+
+            return true;
+        }
+
+        $scenarioCapabilities = $contract['source_capability_policy']['not_applicable_scenarios'] ?? [];
+        $capability = is_array($scenarioCapabilities)
+            ? self::stringValue($scenarioCapabilities[$scenarioId] ?? null)
+            : '';
+        $applicability = self::arrayField($outputs, ['applicability']) ?? [];
+
+        return $capability !== ''
+            && self::stringValue($applicability['status'] ?? null) === 'not_applicable'
+            && self::stringValue($applicability['source_capability'] ?? $applicability['sourceCapability'] ?? null) === $capability
+            && self::stringValue($applicability['reason_code'] ?? $applicability['reasonCode'] ?? null) === self::sourceCapabilityReason($result, $capability)
+            && ($applicability['durable_state_mutation_attempted'] ?? null) === false;
+    }
+
+    /**
+     * @param array<string, mixed> $cell
+     */
+    private static function skewCellId(array $cell): string
+    {
+        $server = self::stringValue($cell['server'] ?? null);
+        $worker = self::stringValue($cell['worker'] ?? null);
+        if ($worker !== '') {
+            return preg_replace('/^workflow-php-/', 'worker-', $worker).'-to-'.$server;
+        }
+
+        return self::stringValue($cell['client'] ?? null).'-to-'.$server;
+    }
+
+    /**
      * @param array<string, mixed> $scenarioResult
      * @param array<string, mixed> $contract
      *
      * @return list<string>
      */
-    private static function missingRequiredFields(string $scenarioId, array $scenarioResult, array $contract): array
-    {
+    private static function missingRequiredFields(
+        string $scenarioId,
+        array $scenarioResult,
+        array $contract,
+        array $result,
+    ): array {
         $requirements = $contract['scenario_requirements'][$scenarioId]['required_fields'] ?? [];
         if (! is_array($requirements) || $requirements === []) {
             return [];
@@ -335,7 +484,13 @@ final class MigrationRuntimeResultGate
 
         array_push(
             $missing,
-            ...self::missingScenarioSpecificRequiredFields($scenarioId, $scenarioResult, $observedOutputs),
+            ...self::missingScenarioSpecificRequiredFields(
+                $scenarioId,
+                $scenarioResult,
+                $observedOutputs,
+                $result,
+                $contract,
+            ),
         );
 
         return array_values(array_unique($missing));
@@ -351,6 +506,8 @@ final class MigrationRuntimeResultGate
         string $scenarioId,
         array $scenarioResult,
         array $observedOutputs,
+        array $result,
+        array $contract,
     ): array {
         return match ($scenarioId) {
             'latest_supported_v1_state_setup' => [
@@ -365,6 +522,9 @@ final class MigrationRuntimeResultGate
                 ]),
                 ...self::missingEvidenceItemsForField($scenarioResult, $observedOutputs, 'seeded_worker_registrations', [
                     'registered_workers',
+                ]),
+                ...self::missingEvidenceItemsForField($scenarioResult, $observedOutputs, 'seeded_queue_state', [
+                    'queued_task',
                 ]),
                 ...self::missingEvidenceItemsForField($scenarioResult, $observedOutputs, 'queryable_history', [
                     'queryable_history',
@@ -392,6 +552,24 @@ final class MigrationRuntimeResultGate
                 ),
                 ...self::missingRollbackClassificationFields($scenarioResult, $observedOutputs),
             ],
+            'cli_access_to_preupgrade_state' => self::missingEvidenceItemsForField(
+                $scenarioResult,
+                $observedOutputs,
+                'typed_response_contracts',
+                ['cli', 'operator_api'],
+            ),
+            'new_v2_schedule_after_upgrade' => self::missingEvidenceItemsForField(
+                $scenarioResult,
+                $observedOutputs,
+                'typed_response_contracts',
+                ['cli', 'operator_api', 'schedule'],
+            ),
+            'new_v2_worker_registration_after_upgrade' => self::missingEvidenceItemsForField(
+                $scenarioResult,
+                $observedOutputs,
+                'typed_response_contracts',
+                ['operator_api', 'worker_registration'],
+            ),
             'version_skew_refusal' => [
                 ...self::missingArrayEvidenceFields(
                     $scenarioResult,
@@ -404,19 +582,16 @@ final class MigrationRuntimeResultGate
                     ],
                 ),
                 ...self::missingEvidenceItemsForField($scenarioResult, $observedOutputs, 'cli_skew_observations', [
-                    'cli-v1-to-server-v2',
-                    'cli-v2-to-server-v1',
+                    ...self::applicableSkewCellIds('client', $result, $contract),
                 ]),
                 ...self::missingEvidenceItemsForField($scenarioResult, $observedOutputs, 'worker_skew_observations', [
-                    'worker-v1-to-server-v2',
-                    'worker-v2-to-server-v1',
+                    ...self::applicableSkewCellIds('worker', $result, $contract),
                 ]),
                 ...self::missingEvidenceItemsForField($scenarioResult, $observedOutputs, 'request_response_evidence', [
-                    'cli-v1-to-server-v2',
-                    'cli-v2-to-server-v1',
-                    'worker-v1-to-server-v2',
-                    'worker-v2-to-server-v1',
+                    ...self::applicableSkewCellIds('client', $result, $contract),
+                    ...self::applicableSkewCellIds('worker', $result, $contract),
                 ]),
+                ...self::missingSkewApplicabilityFields($scenarioResult, $observedOutputs, $result, $contract),
             ],
             default => [],
         };
@@ -442,6 +617,102 @@ final class MigrationRuntimeResultGate
         }
 
         return ['rollback_supported_state.supported_refused_or_irreversible'];
+    }
+
+    /**
+     * @param array<string, mixed> $result
+     * @param array<string, mixed> $contract
+     *
+     * @return list<string>
+     */
+    private static function applicableSkewCellIds(string $kind, array $result, array $contract): array
+    {
+        $cells = $contract['required_matrix']['skew_cells'] ?? [];
+        if (! is_array($cells)) {
+            return [];
+        }
+
+        $ids = [];
+        foreach ($cells as $cell) {
+            if (! is_array($cell)) {
+                continue;
+            }
+            $field = $kind === 'worker' ? 'worker' : 'client';
+            if (self::stringValue($cell[$field] ?? null) === '') {
+                continue;
+            }
+            $requirements = self::stringList($cell['requires_source_capabilities'] ?? []);
+            $absent = array_filter(
+                $requirements,
+                static fn (string $capability): bool => self::sourceCapabilityStatus($result, $capability) === 'unsupported',
+            );
+            if ($absent === []) {
+                $ids[] = self::skewCellId($cell);
+            }
+        }
+
+        return $ids;
+    }
+
+    /**
+     * @param array<string, mixed> $scenarioResult
+     * @param array<string, mixed> $observedOutputs
+     * @param array<string, mixed> $result
+     * @param array<string, mixed> $contract
+     *
+     * @return list<string>
+     */
+    private static function missingSkewApplicabilityFields(
+        array $scenarioResult,
+        array $observedOutputs,
+        array $result,
+        array $contract,
+    ): array {
+        $value = self::fieldValue($observedOutputs, 'applicability_evidence');
+        if (self::isEmptyEvidence($value)) {
+            $value = self::fieldValue($scenarioResult, 'applicability_evidence');
+        }
+        $actual = is_array($value) ? $value : [];
+        $cells = $contract['required_matrix']['skew_cells'] ?? [];
+        $missing = [];
+
+        foreach (is_array($cells) ? $cells : [] as $cell) {
+            if (! is_array($cell)) {
+                continue;
+            }
+            $cellId = self::skewCellId($cell);
+            $entry = is_array($actual[$cellId] ?? null) ? $actual[$cellId] : [];
+            $requirements = self::stringList($cell['requires_source_capabilities'] ?? []);
+            $expectedReasons = [];
+            foreach ($requirements as $capability) {
+                if (self::sourceCapabilityStatus($result, $capability) === 'unsupported') {
+                    $reason = self::sourceCapabilityReason($result, $capability);
+                    if ($reason !== '') {
+                        $expectedReasons[] = $reason;
+                    }
+                }
+            }
+            $expectedStatus = $expectedReasons === [] ? 'applicable' : 'not_applicable';
+            if (self::stringValue($entry['status'] ?? null) !== $expectedStatus) {
+                $missing[] = 'applicability_evidence.'.$cellId.'.status_'.$expectedStatus;
+                continue;
+            }
+            if ($expectedStatus === 'applicable') {
+                continue;
+            }
+
+            $actualReasons = self::stringList($entry['reason_codes'] ?? $entry['reasonCodes'] ?? []);
+            sort($actualReasons);
+            sort($expectedReasons);
+            if ($actualReasons !== $expectedReasons) {
+                $missing[] = 'applicability_evidence.'.$cellId.'.stable_reason_codes';
+            }
+            if (($entry['durable_state_mutation_attempted'] ?? null) !== false) {
+                $missing[] = 'applicability_evidence.'.$cellId.'.no_durable_state_mutation';
+            }
+        }
+
+        return $missing;
     }
 
     /**
@@ -596,6 +867,7 @@ final class MigrationRuntimeResultGate
         }
 
         array_push($failures, ...self::stateSnapshotFailures($result, $contract));
+        array_push($failures, ...self::sourceCapabilityFailures($result, $contract));
 
         return $failures;
     }
@@ -619,6 +891,12 @@ final class MigrationRuntimeResultGate
 
             $stateKinds = self::observedStateKindsForSnapshot($snapshot, $requiredStateKinds);
             foreach ($requiredStateKinds as $stateKind) {
+                if (
+                    $field === 'preupgrade_state_snapshot'
+                    && self::sourceStateKindNotApplicable($result, $contract, $stateKind)
+                ) {
+                    continue;
+                }
                 if (isset($stateKinds[$stateKind])) {
                     continue;
                 }
@@ -632,6 +910,157 @@ final class MigrationRuntimeResultGate
         }
 
         return $failures;
+    }
+
+    /**
+     * @param array<string, mixed> $result
+     * @param array<string, mixed> $contract
+     *
+     * @return list<array<string, mixed>>
+     */
+    private static function sourceCapabilityFailures(array $result, array $contract): array
+    {
+        $failures = [];
+        $inventory = self::sourceCapabilities($result);
+        $policy = is_array($contract['source_capability_policy'] ?? null)
+            ? $contract['source_capability_policy']
+            : [];
+        $definitions = is_array($policy['required_capabilities'] ?? null)
+            ? $policy['required_capabilities']
+            : [];
+
+        if ($inventory === [] || self::stringValue($inventory['status'] ?? null) !== 'complete') {
+            return [[
+                'code' => 'missing_or_incomplete_source_capability_inventory',
+            ]];
+        }
+
+        if (($inventory['inventoried_before_continuity'] ?? null) !== true) {
+            $failures[] = [
+                'code' => 'source_capabilities_not_inventoried_before_continuity',
+            ];
+        }
+        foreach (['source_artifact', 'source_version', 'runtime_topology', 'inventory_source'] as $field) {
+            if (self::stringValue($inventory[$field] ?? null) === '') {
+                $failures[] = [
+                    'code' => 'missing_source_capability_inventory_field',
+                    'field' => $field,
+                ];
+            }
+        }
+
+        $capabilities = is_array($inventory['capabilities'] ?? null) ? $inventory['capabilities'] : [];
+        foreach ($definitions as $capability => $definitionValue) {
+            if (! is_string($capability)) {
+                continue;
+            }
+            $entry = is_array($capabilities[$capability] ?? null) ? $capabilities[$capability] : [];
+            $status = self::stringValue($entry['status'] ?? null);
+            if (! in_array($status, ['supported', 'unsupported'], true)) {
+                $failures[] = [
+                    'code' => 'missing_source_capability_status',
+                    'capability' => $capability,
+                ];
+                continue;
+            }
+            if (self::stringValue($entry['evidence_basis'] ?? $entry['evidenceBasis'] ?? null) === '') {
+                $failures[] = [
+                    'code' => 'missing_source_capability_evidence_basis',
+                    'capability' => $capability,
+                ];
+            }
+
+            $definition = is_array($definitionValue) ? $definitionValue : [];
+            $expectedReason = self::stringValue($definition['absent_reason_code'] ?? null);
+            if (
+                $status === 'unsupported'
+                && $expectedReason !== ''
+                && self::stringValue($entry['reason_code'] ?? $entry['reasonCode'] ?? null) !== $expectedReason
+            ) {
+                $failures[] = [
+                    'code' => 'invalid_source_capability_reason',
+                    'capability' => $capability,
+                    'expected_reason_code' => $expectedReason,
+                ];
+            }
+
+            if (
+                self::stringValue($definition['continuity'] ?? null) === 'required'
+                && $status !== 'supported'
+            ) {
+                $failures[] = [
+                    'code' => 'required_v1_durable_state_capability_unsupported',
+                    'capability' => $capability,
+                ];
+            }
+        }
+
+        return $failures;
+    }
+
+    /**
+     * @param array<string, mixed> $result
+     * @param array<string, mixed> $contract
+     */
+    private static function sourceStateKindNotApplicable(array $result, array $contract, string $stateKind): bool
+    {
+        $definitions = $contract['source_capability_policy']['required_capabilities'] ?? [];
+        if (! is_array($definitions)) {
+            return false;
+        }
+
+        foreach ($definitions as $capability => $definitionValue) {
+            if (! is_string($capability) || ! is_array($definitionValue)) {
+                continue;
+            }
+            if (
+                self::stringValue($definitionValue['state_kind'] ?? null) === $stateKind
+                && self::stringValue($definitionValue['continuity'] ?? null) === 'when_source_supported'
+            ) {
+                return self::sourceCapabilityStatus($result, $capability) === 'unsupported';
+            }
+        }
+
+        return false;
+    }
+
+    /**
+     * @param array<string, mixed> $result
+     *
+     * @return array<string, mixed>
+     */
+    private static function sourceCapabilities(array $result): array
+    {
+        return self::arrayField($result, [
+            'source_capabilities',
+            'sourceCapabilities',
+            'v1_capabilities',
+            'v1Capabilities',
+        ]) ?? [];
+    }
+
+    /**
+     * @param array<string, mixed> $result
+     */
+    private static function sourceCapabilityStatus(array $result, string $capability): string
+    {
+        $inventory = self::sourceCapabilities($result);
+        $capabilities = is_array($inventory['capabilities'] ?? null) ? $inventory['capabilities'] : [];
+        $entry = is_array($capabilities[$capability] ?? null) ? $capabilities[$capability] : [];
+
+        return self::stringValue($entry['status'] ?? null);
+    }
+
+    /**
+     * @param array<string, mixed> $result
+     */
+    private static function sourceCapabilityReason(array $result, string $capability): string
+    {
+        $inventory = self::sourceCapabilities($result);
+        $capabilities = is_array($inventory['capabilities'] ?? null) ? $inventory['capabilities'] : [];
+        $entry = is_array($capabilities[$capability] ?? null) ? $capabilities[$capability] : [];
+
+        return self::stringValue($entry['reason_code'] ?? $entry['reasonCode'] ?? null);
     }
 
     /**

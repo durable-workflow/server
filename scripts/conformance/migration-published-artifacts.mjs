@@ -52,11 +52,14 @@ const FALLBACK_REQUIRED_SCENARIOS = [
   'completed_history_preservation_and_replay',
   'in_flight_workflow_progress_preserved',
   'mid_activity_retry_preserved',
+  'queue_state_preserved',
   'schedule_cross_upgrade_cadence_preserved',
   'worker_registration_projection_preserved',
   'waterline_operator_visibility_preserved',
   'cli_access_to_preupgrade_state',
   'new_v2_workflow_start_after_upgrade',
+  'new_v2_schedule_after_upgrade',
+  'new_v2_worker_registration_after_upgrade',
   'rollback_contract_verified',
   'version_skew_refusal',
 ];
@@ -64,6 +67,7 @@ const REQUIRED_TOP_LEVEL_FIELDS = [
   'published_artifact_versions',
   'resolved_artifact_versions',
   'artifact_sources',
+  'source_capabilities',
   'migration_plan',
   'preupgrade_state_snapshot',
   'postupgrade_state_snapshot',
@@ -183,12 +187,20 @@ const RUNBOOK_SECTION_ALIASES = {
     'scheduleTicks',
     'schedule_cross_upgrade_cadence_preserved',
     'scheduleCrossUpgradeCadencePreserved',
+    'new_v2_schedule_after_upgrade',
+    'newV2ScheduleAfterUpgrade',
+    'new_v2_schedule',
+    'newV2Schedule',
   ],
   worker_registration_observations: [
     'worker_registration_observations',
     'workerRegistrationObservations',
     'worker_registration_projection_preserved',
     'workerRegistrationProjectionPreserved',
+    'new_v2_worker_registration_after_upgrade',
+    'newV2WorkerRegistrationAfterUpgrade',
+    'new_v2_worker_registration',
+    'newV2WorkerRegistration',
     'worker_registrations',
     'workerRegistrations',
   ],
@@ -231,17 +243,34 @@ const RUNBOOK_SECTION_ALIASES = {
     'storageConnectionSmokeResult',
   ],
 };
+const TARGET_ONLY_RUNBOOK_SECTION_ALIASES = {
+  schedule_ticks: [
+    'new_v2_schedule_after_upgrade',
+    'newV2ScheduleAfterUpgrade',
+    'new_v2_schedule',
+    'newV2Schedule',
+  ],
+  worker_registration_observations: [
+    'new_v2_worker_registration_after_upgrade',
+    'newV2WorkerRegistrationAfterUpgrade',
+    'new_v2_worker_registration',
+    'newV2WorkerRegistration',
+  ],
+};
 const SCENARIO_RUNBOOK_SECTION_FIELDS = {
   latest_supported_v1_state_setup: ['preupgrade_state_snapshot'],
   documented_migration_steps_execute: ['migration_plan'],
   completed_history_preservation_and_replay: ['history_dumps', 'postupgrade_state_snapshot'],
   in_flight_workflow_progress_preserved: ['history_dumps', 'postupgrade_state_snapshot'],
   mid_activity_retry_preserved: ['activity_attempts', 'postupgrade_state_snapshot'],
+  queue_state_preserved: ['preupgrade_state_snapshot', 'postupgrade_state_snapshot'],
   schedule_cross_upgrade_cadence_preserved: ['schedule_ticks', 'postupgrade_state_snapshot'],
   worker_registration_projection_preserved: ['worker_registration_observations', 'postupgrade_state_snapshot'],
   waterline_operator_visibility_preserved: ['waterline_observations'],
   cli_access_to_preupgrade_state: ['cli_observations'],
   new_v2_workflow_start_after_upgrade: ['postupgrade_state_snapshot'],
+  new_v2_schedule_after_upgrade: ['schedule_ticks', 'postupgrade_state_snapshot'],
+  new_v2_worker_registration_after_upgrade: ['worker_registration_observations', 'postupgrade_state_snapshot'],
   rollback_contract_verified: ['rollback_observations'],
   version_skew_refusal: ['version_skew_observations'],
   storage_connection_smoke: ['storage_connection_smoke'],
@@ -382,6 +411,12 @@ const SCENARIO_FINDING_POLICIES = {
     expected_behavior: 'Activity retry attempt counts, retry timing, and final results survive migration without duplicate execution.',
     next_acceptance_criterion: 'preserve mid-activity retry state across migration and attach retry attempt evidence',
   },
+  queue_state_preserved: {
+    owning_surface: 'workflow',
+    finding_type: 'queue_state_loss',
+    expected_behavior: 'Pending v1 workflow and activity task identity remains durable and executable after migration.',
+    next_acceptance_criterion: 'preserve queued task identity across migration and attach before/after queue and completion evidence',
+  },
   schedule_cross_upgrade_cadence_preserved: {
     owning_surface: 'server',
     finding_type: 'schedule_drift',
@@ -412,6 +447,18 @@ const SCENARIO_FINDING_POLICIES = {
     expected_behavior: 'New v2 workflows can start and complete after the migrated v1-origin state remains readable.',
     next_acceptance_criterion: 'start and complete a new v2 workflow after migration and attach completion and history evidence',
   },
+  new_v2_schedule_after_upgrade: {
+    owning_surface: 'server',
+    finding_type: 'postupgrade_schedule_regression',
+    expected_behavior: 'A net-new v2 schedule can be created, inspected through typed operator responses, and produce a run after migration.',
+    next_acceptance_criterion: 'create and observe a v2 schedule after migration and attach typed CLI/API and tick evidence',
+  },
+  new_v2_worker_registration_after_upgrade: {
+    owning_surface: 'server',
+    finding_type: 'postupgrade_worker_registration_regression',
+    expected_behavior: 'A net-new v2 worker can register, appear in typed operator projections, and poll after migration.',
+    next_acceptance_criterion: 'register and poll a v2 worker after migration and attach typed worker projection evidence',
+  },
   rollback_contract_verified: {
     owning_surface: 'docs',
     finding_type: 'rollback_mismatch',
@@ -432,6 +479,9 @@ const requiredScenarios = Array.isArray(scenarioManifest.scenarios)
   ? scenarioManifest.scenarios.map((scenario) => stringValue(scenario?.id)).filter(Boolean)
   : [];
 const scenarioRequirements = objectValue(scenarioManifest.scenario_requirements);
+const sourceCapabilityPolicy = objectValue(scenarioManifest.source_capability_policy);
+const sourceCapabilityDefinitions = objectValue(sourceCapabilityPolicy.required_capabilities);
+const sourceNotApplicableScenarios = objectValue(sourceCapabilityPolicy.not_applicable_scenarios);
 const releaseArtifactAliases = objectOfStringLists(scenarioManifest?.artifact_policy?.release_artifact_aliases);
 const placeholderVersionExamples = uniqueStrings([
   ...FALLBACK_PLACEHOLDER_VERSION_EXAMPLES,
@@ -519,7 +569,21 @@ async function main() {
   const storageSmokeOnlyProductEvidence = storageSmokeProvidesProductEvidence(storageSmoke)
     && !hasSuppliedFullMigrationEvidence(evidence);
 
-  writeArtifacts(publishedArtifactVersions, resolvedArtifactVersions, artifactSources, evidence, publicArtifactResolution);
+  const sourceCapabilities = sourceCapabilityInventory(
+    evidence,
+    publicArtifactResolution,
+    resolvedArtifactVersions,
+    artifactSources,
+  );
+
+  writeArtifacts(
+    publishedArtifactVersions,
+    resolvedArtifactVersions,
+    artifactSources,
+    evidence,
+    publicArtifactResolution,
+    sourceCapabilities,
+  );
 
   if (blockedReason !== '' || runnerBlocked) {
     writeResult(blockedResult(
@@ -548,11 +612,12 @@ async function main() {
     artifactSources,
     storageSmokeOnlyProductEvidence,
     storageSmoke,
+    sourceCapabilities,
   );
   const localProductSourceCheckoutsUsed = localProductSourceCheckoutsUsedIn(evidence, scenarioResults);
   const result = {
     schema: RESULT_SCHEMA,
-    version: 1,
+    version: 2,
     suite_version: scenarioManifest.suite_version ?? null,
     started_at: startedAt,
     finished_at: finishedAt,
@@ -563,6 +628,7 @@ async function main() {
     published_artifact_versions: publishedArtifactVersions,
     resolved_artifact_versions: resolvedArtifactVersions,
     artifact_sources: artifactSources,
+    source_capabilities: sourceCapabilities,
     public_artifact_resolution: publicArtifactResolution,
     artifact_prerequisite_failures: artifactPrerequisiteFailures,
     local_product_source_checkouts_used: localProductSourceCheckoutsUsed,
@@ -629,12 +695,14 @@ async function main() {
         'No rollback observations were supplied.',
         storageSmokeOnlyProductEvidence,
       ),
-    version_skew_observations: topLevelRunbookObservation(evidence, 'version_skew_observations')
-      ?? missingRunRecordObservation(
-        'version_skew_observations',
-        'No version-skew refusal observations were supplied.',
-        storageSmokeOnlyProductEvidence,
-      ),
+    version_skew_observations: scenarioResults.version_skew_refusal?.status === 'not_applicable'
+      ? scenarioResults.version_skew_refusal.observed_outputs
+      : topLevelRunbookObservation(evidence, 'version_skew_observations')
+        ?? missingRunRecordObservation(
+          'version_skew_observations',
+          'No version-skew refusal observations were supplied.',
+          storageSmokeOnlyProductEvidence,
+        ),
     storage_connection_smoke: topLevelRunbookObservation({ storage_connection_smoke: storageSmoke }, 'storage_connection_smoke') ?? storageSmoke,
     implementation_identity: {
       runner: 'scripts/conformance/migration-published-artifacts.sh',
@@ -661,16 +729,32 @@ function buildScenarioResults(
   artifactSources = {},
   storageSmokeOnlyProductEvidence = false,
   storageSmoke = {},
+  sourceCapabilities = {},
 ) {
   const supplied = scenarioResultsById(evidence);
   const results = {};
 
   for (const scenarioId of effectiveRequiredScenarios()) {
+    const notApplicable = notApplicableScenarioResult(
+      scenarioId,
+      sourceCapabilities,
+      artifactVersions,
+    );
+    if (notApplicable !== null && artifactPrerequisiteFailures.length === 0) {
+      results[scenarioId] = notApplicable;
+      continue;
+    }
+
     const suppliedScenario = supplied[scenarioId];
     if (suppliedScenario) {
       results[scenarioId] = scenarioResultWithArtifactPrerequisiteFailures(
         scenarioId,
-        normalizeScenarioResult(scenarioId, suppliedScenario, artifactVersions),
+        normalizeScenarioResult(
+          scenarioId,
+          suppliedScenario,
+          artifactVersions,
+          sourceCapabilities,
+        ),
         artifactVersions,
         artifactPrerequisiteFailures,
       );
@@ -717,7 +801,12 @@ function buildScenarioResults(
     if (!Object.hasOwn(results, scenarioId)) {
       results[scenarioId] = scenarioResultWithArtifactPrerequisiteFailures(
         scenarioId,
-        normalizeScenarioResult(scenarioId, suppliedScenario, artifactVersions),
+        normalizeScenarioResult(
+          scenarioId,
+          suppliedScenario,
+          artifactVersions,
+          sourceCapabilities,
+        ),
         artifactVersions,
         artifactPrerequisiteFailures,
       );
@@ -900,11 +989,247 @@ function artifactPrerequisiteFindings(scenarioId, artifactVersions, artifactPrer
   });
 }
 
-function normalizeScenarioResult(scenarioId, scenario, artifactVersions) {
+function sourceCapabilityInventory(evidence, publicArtifactResolution, artifactVersions, artifactSources) {
+  const supplied = firstNonEmptyEvidenceObject(evidence, [
+    'source_capabilities',
+    'sourceCapabilities',
+    'v1_capabilities',
+    'v1Capabilities',
+    'source_capability_inventory',
+    'sourceCapabilityInventory',
+  ]);
+  const serverV1Source = stringValue(artifactMapEntry(objectValue(artifactSources), 'server-v1'));
+  const serverV1Observation = objectValue(
+    publicArtifactResolution?.observations?.['server-v1'],
+  );
+  const embedded = serverV1Source.includes('embedded-v1-server-runtime')
+    || stringValue(serverV1Observation.runtime) === 'embedded-v1-server-runtime'
+    || stringValue(supplied.runtime_topology ?? supplied.runtimeTopology) === 'embedded_laravel';
+  const suppliedCapabilities = objectValue(supplied.capabilities);
+  const capabilities = {};
+
+  for (const [capability, definitionValue] of Object.entries(sourceCapabilityDefinitions)) {
+    const definition = objectValue(definitionValue);
+    const suppliedCapability = objectValue(suppliedCapabilities[capability]);
+    let status = normalizedCapabilityStatus(suppliedCapability.status);
+    let reasonCode = stringValue(suppliedCapability.reason_code ?? suppliedCapability.reasonCode);
+    let evidenceBasis = stringValue(suppliedCapability.evidence_basis ?? suppliedCapability.evidenceBasis);
+
+    if (embedded) {
+      status = stringValue(definition.continuity) === 'required' ? 'supported' : 'unsupported';
+      reasonCode = status === 'unsupported' ? stringValue(definition.absent_reason_code) : '';
+      evidenceBasis = 'selected_v1_embedded_runtime_profile';
+    }
+
+    const entry = {
+      status,
+      evidence_basis: evidenceBasis,
+    };
+    if (reasonCode !== '') {
+      entry.reason_code = reasonCode;
+    }
+    capabilities[capability] = entry;
+  }
+
+  const runtimeTopology = embedded
+    ? 'embedded_laravel'
+    : stringValue(supplied.runtime_topology ?? supplied.runtimeTopology);
+  const inventorySource = embedded
+    ? 'published_artifact_runtime_metadata'
+    : stringValue(supplied.inventory_source ?? supplied.inventorySource);
+  const sourceVersion = stringValue(artifactMapEntry(objectValue(artifactVersions), 'workflow-php-v1'));
+  const complete = runtimeTopology !== ''
+    && inventorySource !== ''
+    && sourceVersion !== ''
+    && Object.entries(capabilities).every(([capability, entry]) => {
+      if (!['supported', 'unsupported'].includes(entry.status)) {
+        return false;
+      }
+      if (stringValue(entry.evidence_basis) === '') {
+        return false;
+      }
+      if (entry.status !== 'unsupported') {
+        return true;
+      }
+
+      const expectedReason = stringValue(
+        objectValue(sourceCapabilityDefinitions[capability]).absent_reason_code,
+      );
+      return expectedReason === '' || entry.reason_code === expectedReason;
+    });
+
+  return {
+    schema: stringValue(sourceCapabilityPolicy.inventory_schema)
+      || 'durable-workflow.v2.migration-runtime.source-capabilities',
+    status: complete ? 'complete' : 'not_covered',
+    source_artifact: 'workflow-php-v1',
+    source_version: sourceVersion,
+    runtime_topology: runtimeTopology,
+    inventory_source: inventorySource,
+    inventoried_before_continuity: complete,
+    capabilities,
+  };
+}
+
+function normalizedCapabilityStatus(value) {
+  const status = stringValue(value).toLowerCase();
+  return ['supported', 'unsupported'].includes(status) ? status : 'not_covered';
+}
+
+function sourceCapabilityStatus(sourceCapabilities, capability) {
+  return normalizedCapabilityStatus(
+    objectValue(objectValue(sourceCapabilities).capabilities)[capability]?.status,
+  );
+}
+
+function sourceCapabilitiesComplete(sourceCapabilities) {
+  return stringValue(objectValue(sourceCapabilities).status) === 'complete'
+    && Object.keys(sourceCapabilityDefinitions).every(
+      (capability) => ['supported', 'unsupported'].includes(
+        sourceCapabilityStatus(sourceCapabilities, capability),
+      ),
+    );
+}
+
+function notApplicableScenarioResult(scenarioId, sourceCapabilities, artifactVersions) {
+  if (!sourceCapabilitiesComplete(sourceCapabilities)) {
+    return null;
+  }
+
+  const capability = stringValue(sourceNotApplicableScenarios[scenarioId]);
+  if (capability !== '' && sourceCapabilityStatus(sourceCapabilities, capability) === 'unsupported') {
+    return capabilityNotApplicableScenario(scenarioId, capability, sourceCapabilities, artifactVersions);
+  }
+
+  if (scenarioId !== 'version_skew_refusal') {
+    return null;
+  }
+
+  const applicability = skewApplicabilityEvidence(sourceCapabilities);
+  const cells = Object.values(applicability);
+  if (cells.length === 0 || cells.some((cell) => cell.status !== 'not_applicable')) {
+    return null;
+  }
+
+  return {
+    scenario_id: scenarioId,
+    status: 'not_applicable',
+    observed_outputs: {
+      applicability_evidence: applicability,
+      skew_matrix: applicability,
+      refusal_errors: uniqueStrings(cells.flatMap((cell) => arrayOfStrings(cell.reason_codes))),
+      operator_visible_reason: {
+        code: 'source_skew_endpoints_not_exposed',
+        message: 'The selected v1 artifact is an embedded runtime; cross-generation standalone skew probes are refused before a request or durable-state mutation.',
+      },
+      request_response_evidence: Object.fromEntries(
+        Object.entries(applicability).map(([cellId, cell]) => [cellId, {
+          status: cell.status,
+          preflight_refusal: true,
+          reason_codes: cell.reason_codes,
+          request_sent: false,
+        }]),
+      ),
+      no_partial_mutation_evidence: {
+        preflight_refusal: true,
+        durable_state_mutation_attempted: false,
+      },
+      source_capabilities: sourceCapabilities,
+    },
+  };
+}
+
+function capabilityNotApplicableScenario(scenarioId, capability, sourceCapabilities, artifactVersions) {
+  const capabilityEntry = objectValue(objectValue(sourceCapabilities.capabilities)[capability]);
+
+  return {
+    scenario_id: scenarioId,
+    status: 'not_applicable',
+    observed_outputs: {
+      applicability: {
+        status: 'not_applicable',
+        source_capability: capability,
+        source_capability_status: 'unsupported',
+        reason_code: stringValue(capabilityEntry.reason_code),
+        source_artifact: stringValue(sourceCapabilities.source_artifact),
+        source_version: stringValue(sourceCapabilities.source_version),
+        durable_state_mutation_attempted: false,
+      },
+      source_capabilities: sourceCapabilities,
+      artifact_versions: artifactVersions,
+    },
+  };
+}
+
+function skewApplicabilityEvidence(sourceCapabilities) {
+  const result = {};
+  for (const cell of arrayValue(scenarioManifest?.required_matrix?.skew_cells)) {
+    const kind = stringValue(cell.client) !== '' ? 'client' : 'worker';
+    const cellId = skewCellId(cell, kind);
+    const requiredCapabilities = arrayOfStrings(cell.requires_source_capabilities);
+    const absentCapabilities = requiredCapabilities.filter(
+      (capability) => sourceCapabilityStatus(sourceCapabilities, capability) === 'unsupported',
+    );
+    const reasonCodes = absentCapabilities
+      .map((capability) => stringValue(
+        objectValue(objectValue(sourceCapabilities.capabilities)[capability]).reason_code,
+      ))
+      .filter(Boolean);
+
+    result[cellId] = {
+      status: absentCapabilities.length === 0 ? 'applicable' : 'not_applicable',
+      required_source_capabilities: requiredCapabilities,
+      absent_source_capabilities: absentCapabilities,
+      reason_codes: reasonCodes,
+      preflight_refusal: absentCapabilities.length > 0,
+      durable_state_mutation_attempted: false,
+    };
+  }
+
+  return result;
+}
+
+function validNotApplicableScenario(scenarioId, scenario, sourceCapabilities) {
+  if (stringValue(scenario.status) !== 'not_applicable' || !sourceCapabilitiesComplete(sourceCapabilities)) {
+    return false;
+  }
+
+  const observedOutputs = objectValue(scenario.observed_outputs);
+  if (scenarioId === 'version_skew_refusal') {
+    const applicability = objectValue(observedOutputs.applicability_evidence);
+    const expected = skewApplicabilityEvidence(sourceCapabilities);
+    return Object.keys(expected).length > 0
+      && Object.keys(expected).every((cellId) => {
+        const expectedCell = objectValue(expected[cellId]);
+        const actualCell = objectValue(applicability[cellId]);
+        return expectedCell.status === 'not_applicable'
+          && stringValue(actualCell.status) === 'not_applicable'
+          && JSON.stringify(arrayOfStrings(actualCell.reason_codes).sort())
+            === JSON.stringify(arrayOfStrings(expectedCell.reason_codes).sort())
+          && actualCell.durable_state_mutation_attempted === false;
+      });
+  }
+
+  const capability = stringValue(sourceNotApplicableScenarios[scenarioId]);
+  const applicability = objectValue(observedOutputs.applicability);
+  const capabilityEntry = objectValue(objectValue(sourceCapabilities.capabilities)[capability]);
+  return capability !== ''
+    && sourceCapabilityStatus(sourceCapabilities, capability) === 'unsupported'
+    && stringValue(applicability.source_capability) === capability
+    && stringValue(applicability.reason_code) === stringValue(capabilityEntry.reason_code)
+    && applicability.durable_state_mutation_attempted === false;
+}
+
+function normalizeScenarioResult(scenarioId, scenario, artifactVersions, sourceCapabilities = {}) {
   let observedOutputs = nonEmptyObject(scenario.observed_outputs)
     ?? nonEmptyObject(scenario.observedOutputs)
     ?? nonEmptyObject(scenario.evidence)
     ?? {};
+  observedOutputs = withSourceCapabilityEvidence(
+    scenarioId,
+    observedOutputs,
+    sourceCapabilities,
+  );
   const commandOutputs = runbookSectionCommandOutputs({
     ...objectValue(scenario),
     observed_outputs: observedOutputs,
@@ -922,7 +1247,7 @@ function normalizeScenarioResult(scenarioId, scenario, artifactVersions) {
   });
   const status = commandFailure ? 'fail' : normalizedStatus(scenario.status);
   const missingRequiredFields = status === 'pass'
-    ? missingRequiredFieldsForScenario(scenarioId, scenario, observedOutputs)
+    ? missingRequiredFieldsForScenario(scenarioId, scenario, observedOutputs, sourceCapabilities)
     : [];
   const normalized = {
     ...scenario,
@@ -955,6 +1280,63 @@ function normalizeScenarioResult(scenarioId, scenario, artifactVersions) {
   }
 
   return normalized;
+}
+
+function withSourceCapabilityEvidence(scenarioId, observedOutputs, sourceCapabilities) {
+  if (!sourceCapabilitiesComplete(sourceCapabilities)) {
+    return observedOutputs;
+  }
+
+  if (scenarioId === 'latest_supported_v1_state_setup') {
+    const scheduleNotApplicable = capabilityStateCell(
+      sourceCapabilities,
+      'schedule',
+      'active_schedule',
+    );
+    const workerNotApplicable = capabilityStateCell(
+      sourceCapabilities,
+      'worker_registration',
+      'registered_workers',
+    );
+
+    return {
+      ...observedOutputs,
+      source_capabilities: sourceCapabilities,
+      seeded_schedules: scheduleNotApplicable === null
+        ? observedOutputs.seeded_schedules
+        : mergeEvidenceValue(observedOutputs.seeded_schedules, scheduleNotApplicable),
+      seeded_worker_registrations: workerNotApplicable === null
+        ? observedOutputs.seeded_worker_registrations
+        : mergeEvidenceValue(observedOutputs.seeded_worker_registrations, workerNotApplicable),
+    };
+  }
+
+  if (scenarioId === 'version_skew_refusal') {
+    return {
+      ...observedOutputs,
+      applicability_evidence: mergeEvidenceValue(
+        skewApplicabilityEvidence(sourceCapabilities),
+        observedOutputs.applicability_evidence,
+      ),
+    };
+  }
+
+  return observedOutputs;
+}
+
+function capabilityStateCell(sourceCapabilities, capability, item) {
+  if (sourceCapabilityStatus(sourceCapabilities, capability) !== 'unsupported') {
+    return null;
+  }
+  const capabilityEntry = objectValue(objectValue(sourceCapabilities.capabilities)[capability]);
+  return {
+    [item]: {
+      status: 'not_applicable',
+      source_capability: capability,
+      reason_code: stringValue(capabilityEntry.reason_code),
+      durable_state_mutation_attempted: false,
+    },
+  };
 }
 
 function findingForNonPassScenario(scenarioId, status, scenario, artifactVersions) {
@@ -1003,7 +1385,7 @@ function observedBehaviorForScenarioFailure(scenarioId, status, scenario) {
   return detail || `Migration scenario ${scenarioId} reported ${status} without a detailed observed behavior.`;
 }
 
-function missingRequiredFieldsForScenario(scenarioId, scenario, observedOutputs) {
+function missingRequiredFieldsForScenario(scenarioId, scenario, observedOutputs, sourceCapabilities = {}) {
   const missing = [];
 
   for (const field of requiredFieldsFor(scenarioId)) {
@@ -1015,7 +1397,7 @@ function missingRequiredFieldsForScenario(scenarioId, scenario, observedOutputs)
   return uniqueStrings([
     ...missing,
     ...missingScenarioCommandOutputFields(scenarioId, scenario, observedOutputs),
-    ...scenarioSpecificMissingRequiredFields(scenarioId, scenario, observedOutputs),
+    ...scenarioSpecificMissingRequiredFields(scenarioId, scenario, observedOutputs, sourceCapabilities),
   ]);
 }
 
@@ -1031,7 +1413,7 @@ function missingScenarioCommandOutputFields(scenarioId, scenario, observedOutput
     : [];
 }
 
-function scenarioSpecificMissingRequiredFields(scenarioId, scenario, observedOutputs) {
+function scenarioSpecificMissingRequiredFields(scenarioId, scenario, observedOutputs, sourceCapabilities = {}) {
   switch (scenarioId) {
     case 'latest_supported_v1_state_setup':
       return [
@@ -1046,6 +1428,9 @@ function scenarioSpecificMissingRequiredFields(scenarioId, scenario, observedOut
         ]),
         ...missingEvidenceItemsForField(scenario, observedOutputs, 'seeded_worker_registrations', [
           'registered_workers',
+        ]),
+        ...missingEvidenceItemsForField(scenario, observedOutputs, 'seeded_queue_state', [
+          'queued_task',
         ]),
         ...missingEvidenceItemsForField(scenario, observedOutputs, 'queryable_history', [
           'queryable_history',
@@ -1063,24 +1448,37 @@ function scenarioSpecificMissingRequiredFields(scenarioId, scenario, observedOut
           .filter((field) => !hasNonEmptyArrayField(observedOutputs, field) && !hasNonEmptyArrayField(scenario, field)),
         ...missingRollbackClassificationFields(scenario, observedOutputs),
       ];
+    case 'cli_access_to_preupgrade_state':
+      return missingEvidenceItemsForField(scenario, observedOutputs, 'typed_response_contracts', [
+        'cli',
+        'operator_api',
+      ]);
+    case 'new_v2_schedule_after_upgrade':
+      return missingEvidenceItemsForField(scenario, observedOutputs, 'typed_response_contracts', [
+        'cli',
+        'operator_api',
+        'schedule',
+      ]);
+    case 'new_v2_worker_registration_after_upgrade':
+      return missingEvidenceItemsForField(scenario, observedOutputs, 'typed_response_contracts', [
+        'operator_api',
+        'worker_registration',
+      ]);
     case 'version_skew_refusal':
       return [
         ...['skew_matrix', 'refusal_errors', 'request_response_evidence', 'no_partial_mutation_evidence']
           .filter((field) => !hasNonEmptyArrayField(observedOutputs, field) && !hasNonEmptyArrayField(scenario, field)),
         ...missingEvidenceItemsForField(scenario, observedOutputs, 'cli_skew_observations', [
-          'cli-v1-to-server-v2',
-          'cli-v2-to-server-v1',
+          ...applicableSkewCellIds('client', sourceCapabilities),
         ]),
         ...missingEvidenceItemsForField(scenario, observedOutputs, 'worker_skew_observations', [
-          'worker-v1-to-server-v2',
-          'worker-v2-to-server-v1',
+          ...applicableSkewCellIds('worker', sourceCapabilities),
         ]),
         ...missingEvidenceItemsForField(scenario, observedOutputs, 'request_response_evidence', [
-          'cli-v1-to-server-v2',
-          'cli-v2-to-server-v1',
-          'worker-v1-to-server-v2',
-          'worker-v2-to-server-v1',
+          ...applicableSkewCellIds('client', sourceCapabilities),
+          ...applicableSkewCellIds('worker', sourceCapabilities),
         ]),
+        ...missingSkewApplicabilityFields(scenario, observedOutputs, sourceCapabilities),
       ];
     default:
       return [];
@@ -1122,6 +1520,54 @@ function missingRollbackClassificationFields(scenario, observedOutputs) {
   return evidenceContainsAnyToken(value, ['supported', 'refused', 'irreversible', 'unsupported'])
     ? []
     : ['rollback_supported_state.supported_refused_or_irreversible'];
+}
+
+function applicableSkewCellIds(kind, sourceCapabilities) {
+  if (!sourceCapabilitiesComplete(sourceCapabilities)) {
+    return skewCellsFor(kind).map((cell) => skewCellId(cell, kind));
+  }
+
+  const applicability = skewApplicabilityEvidence(sourceCapabilities);
+  return skewCellsFor(kind)
+    .map((cell) => skewCellId(cell, kind))
+    .filter((cellId) => objectValue(applicability[cellId]).status === 'applicable');
+}
+
+function missingSkewApplicabilityFields(scenario, observedOutputs, sourceCapabilities) {
+  if (!sourceCapabilitiesComplete(sourceCapabilities)) {
+    return ['applicability_evidence.source_capabilities_complete'];
+  }
+
+  let supplied = fieldValue(observedOutputs, 'applicability_evidence');
+  if (isEmptyEvidence(supplied)) {
+    supplied = fieldValue(scenario, 'applicability_evidence');
+  }
+  const actual = objectValue(supplied);
+  const expected = skewApplicabilityEvidence(sourceCapabilities);
+  const missing = [];
+
+  for (const [cellId, expectedValue] of Object.entries(expected)) {
+    const expectedCell = objectValue(expectedValue);
+    const actualCell = objectValue(actual[cellId]);
+    if (stringValue(actualCell.status) !== stringValue(expectedCell.status)) {
+      missing.push(`applicability_evidence.${cellId}.status_${expectedCell.status}`);
+      continue;
+    }
+    if (expectedCell.status !== 'not_applicable') {
+      continue;
+    }
+    if (
+      JSON.stringify(arrayOfStrings(actualCell.reason_codes).sort())
+        !== JSON.stringify(arrayOfStrings(expectedCell.reason_codes).sort())
+    ) {
+      missing.push(`applicability_evidence.${cellId}.stable_reason_codes`);
+    }
+    if (actualCell.durable_state_mutation_attempted !== false) {
+      missing.push(`applicability_evidence.${cellId}.no_durable_state_mutation`);
+    }
+  }
+
+  return missing;
 }
 
 function missingEvidenceItemsForField(scenario, observedOutputs, field, items) {
@@ -2134,7 +2580,7 @@ function blockedResult(reason, startedAt, finishedAt, artifactVersions, artifact
 
   return {
     schema: RESULT_SCHEMA,
-    version: 1,
+    version: 2,
     suite_version: scenarioManifest.suite_version ?? null,
     started_at: startedAt,
     finished_at: finishedAt,
@@ -2145,6 +2591,10 @@ function blockedResult(reason, startedAt, finishedAt, artifactVersions, artifact
     published_artifact_versions: artifactVersions,
     resolved_artifact_versions: artifactVersions,
     artifact_sources: artifactSources,
+    source_capabilities: notCoveredObservation(
+      'source_capabilities',
+      'The migration runner was blocked before the selected v1 capability inventory could be completed.',
+    ),
     local_product_source_checkouts_used: false,
     scenario_results: scenarioResults,
     findings,
@@ -2172,12 +2622,24 @@ function resultPasses(result) {
     || arrayValue(result.artifact_prerequisite_failures).length > 0
     || artifactSourceFailuresForEvidence(result).length > 0
     || containsFoundationCommandFailure(result)
+    || !sourceCapabilitiesComplete(result.source_capabilities)
   ) {
     return false;
   }
 
   const scenarios = objectValue(result.scenario_results);
   for (const scenarioId of effectiveRequiredScenarios()) {
+    if (scenarios[scenarioId]?.status === 'not_applicable') {
+      if (!validNotApplicableScenario(
+        scenarioId,
+        objectValue(scenarios[scenarioId]),
+        result.source_capabilities,
+      )) {
+        return false;
+      }
+      continue;
+    }
+
     if (scenarios[scenarioId]?.status !== 'pass') {
       return false;
     }
@@ -2193,7 +2655,12 @@ function resultPasses(result) {
       }
     }
 
-    if (missingRequiredFieldsForScenario(scenarioId, scenarios[scenarioId], observedOutputs).length > 0) {
+    if (missingRequiredFieldsForScenario(
+      scenarioId,
+      scenarios[scenarioId],
+      observedOutputs,
+      result.source_capabilities,
+    ).length > 0) {
       return false;
     }
   }
@@ -2203,7 +2670,7 @@ function resultPasses(result) {
       return false;
     }
     if (
-      runRecordCommandOutputsRequired(field)
+      runRecordCommandOutputsRequired(field, result)
       && isEmptyEvidence(runbookSectionCommandOutputs(result[field]))
     ) {
       return false;
@@ -2244,6 +2711,12 @@ function stateSnapshotFailuresFor(result) {
 
     const stateKinds = observedStateKindsForSnapshot(snapshot, requiredStateKinds);
     for (const stateKind of requiredStateKinds) {
+      if (
+        field === 'preupgrade_state_snapshot'
+        && sourceStateKindNotApplicable(result.source_capabilities, stateKind)
+      ) {
+        continue;
+      }
       if (!stateKinds.has(stateKind)) {
         failures.push({
           field,
@@ -2254,6 +2727,20 @@ function stateSnapshotFailuresFor(result) {
   }
 
   return failures;
+}
+
+function sourceStateKindNotApplicable(sourceCapabilities, stateKind) {
+  for (const [capability, definitionValue] of Object.entries(sourceCapabilityDefinitions)) {
+    const definition = objectValue(definitionValue);
+    if (
+      stringValue(definition.state_kind) === stateKind
+      && stringValue(definition.continuity) === 'when_source_supported'
+    ) {
+      return sourceCapabilityStatus(sourceCapabilities, capability) === 'unsupported';
+    }
+  }
+
+  return false;
 }
 
 function observedStateKindsForSnapshot(snapshot, requiredStateKinds) {
@@ -2407,7 +2894,7 @@ function missingRunRecordFindingsFor(result, artifactVersions) {
 
   for (const field of REQUIRED_TOP_LEVEL_FIELDS) {
     if (!isEmptyEvidence(fieldValue(result, field))) {
-      if (runRecordCommandOutputsRequired(field) && isEmptyEvidence(runbookSectionCommandOutputs(fieldValue(result, field)))) {
+      if (runRecordCommandOutputsRequired(field, result) && isEmptyEvidence(runbookSectionCommandOutputs(fieldValue(result, field)))) {
         findings.push(coverageGapFinding('run_record', artifactVersions, {
           observed_behavior: `No concrete command-output evidence was supplied for migration run record ${field}.`,
           expected_behavior: 'Passing migration conformance records queryable command, request, output, status, exit-code, response, or timing evidence for every migration runbook section required by the public scenario manifest.',
@@ -2452,7 +2939,14 @@ function missingRunRecordFindingsFor(result, artifactVersions) {
   return findings;
 }
 
-function runRecordCommandOutputsRequired(field) {
+function runRecordCommandOutputsRequired(field, result = {}) {
+  if (
+    field === 'version_skew_observations'
+    && objectValue(objectValue(result).scenario_results).version_skew_refusal?.status === 'not_applicable'
+  ) {
+    return false;
+  }
+
   return REQUIRED_RUNBOOK_COMMAND_OUTPUT_FIELDS.includes(field);
 }
 
@@ -2518,6 +3012,7 @@ function writeArtifacts(
   artifactSources,
   evidence,
   publicArtifactResolution = {},
+  sourceCapabilities = {},
 ) {
   writeJson('migration-published-artifacts.json', {
     schema: ARTIFACT_SCHEMA,
@@ -2526,6 +3021,7 @@ function writeArtifacts(
     resolved_artifact_versions: resolvedArtifactVersions,
     artifact_sources: artifactSources,
     public_artifact_resolution: publicArtifactResolution,
+    source_capabilities: sourceCapabilities,
     local_product_source_checkouts_used: localProductSourceCheckoutsUsedIn(evidence),
     required_artifacts: effectiveRequiredArtifacts(),
   });
@@ -2538,7 +3034,7 @@ function writeResult(result) {
   writeJson('migration-conformance-result.json', result);
   writeJson('migration-conformance-record.json', {
     schema: RECORD_SCHEMA,
-    version: 1,
+    version: 2,
     experiment: 'migration',
     generated_at: result.generated_at,
     started_at: result.started_at,
@@ -2554,6 +3050,8 @@ function writeResult(result) {
     resolvedArtifactVersions: result.resolved_artifact_versions,
     artifact_sources: result.artifact_sources,
     artifactSources: result.artifact_sources,
+    source_capabilities: result.source_capabilities,
+    sourceCapabilities: result.source_capabilities,
     public_artifact_resolution: result.public_artifact_resolution ?? {},
     publicArtifactResolution: result.public_artifact_resolution ?? {},
     artifact_prerequisite_failures: result.artifact_prerequisite_failures,
@@ -2573,10 +3071,13 @@ function writeResult(result) {
       Object.entries(scenarioResults).map(([scenarioId, scenario]) => [scenarioId, scenario?.status ?? null]),
     ),
     non_pass_scenarios: Object.entries(scenarioResults)
-      .filter(([, scenario]) => scenario?.status !== 'pass')
+      .filter(([, scenario]) => !['pass', 'not_applicable'].includes(scenario?.status))
       .map(([scenarioId]) => scenarioId),
     nonPassScenarios: Object.entries(scenarioResults)
-      .filter(([, scenario]) => scenario?.status !== 'pass')
+      .filter(([, scenario]) => !['pass', 'not_applicable'].includes(scenario?.status))
+      .map(([scenarioId]) => scenarioId),
+    not_applicable_scenarios: Object.entries(scenarioResults)
+      .filter(([, scenario]) => scenario?.status === 'not_applicable')
       .map(([scenarioId]) => scenarioId),
     finding_links: result.finding_links,
     findingLinks: result.finding_links,
@@ -2805,10 +3306,44 @@ function runbookEvidenceFrom(evidence) {
 }
 
 function setRunbookSection(target, evidence, field, aliases) {
-  const value = firstNonEmptyObject(evidence, aliases);
+  const targetAliases = arrayOfStrings(TARGET_ONLY_RUNBOOK_SECTION_ALIASES[field]);
+  const sourceAliases = aliases.filter((alias) => !targetAliases.includes(alias));
+  const sourceValue = firstNonEmptyObject(evidence, sourceAliases);
+  const targetValue = preferredConcreteRunbookSection(evidence, targetAliases);
+  let value = mergeEvidenceValue(sourceValue, targetValue);
+
+  if (Object.keys(targetValue).length > 0) {
+    value = withRunbookCommandOutputs(value);
+    const suppliedTargetStatus = normalizedStatus(targetValue.status || targetValue.outcome);
+    const targetCommandOutputs = runbookSectionCommandOutputs(targetValue);
+    value.status = suppliedTargetStatus !== 'not_covered'
+      ? suppliedTargetStatus
+      : commandOutputCollectionStatus(targetCommandOutputs);
+  }
+
   if (Object.keys(value).length > 0) {
     target[field] = value;
   }
+}
+
+function preferredConcreteRunbookSection(evidence, aliases) {
+  let fallback = {};
+
+  for (const alias of aliases) {
+    const value = objectValue(objectValue(evidence)[alias]);
+    if (Object.keys(value).length === 0) {
+      continue;
+    }
+
+    if (Object.keys(fallback).length === 0) {
+      fallback = value;
+    }
+    if (!isEmptyEvidence(runbookSectionCommandOutputs(value))) {
+      return value;
+    }
+  }
+
+  return fallback;
 }
 
 function runbookCommandOutputSections(evidence) {
@@ -3081,6 +3616,12 @@ function derivedStateEntriesFromScenarioOutputs(scenarioId, observedOutputs, pha
           'seeded_workflows.workflow_mid_activity_retry',
         ),
         ...stateEntriesFromScenarioField(
+          nestedScenarioEvidence(observedOutputs, 'seeded_queue_state', 'queued_task'),
+          'queue_state',
+          phase,
+          'seeded_queue_state.queued_task',
+        ),
+        ...stateEntriesFromScenarioField(
           nestedScenarioEvidence(observedOutputs, 'seeded_schedules', 'active_schedule'),
           'schedule',
           phase,
@@ -3125,6 +3666,17 @@ function derivedStateEntriesFromScenarioOutputs(scenarioId, observedOutputs, pha
         phase,
         'mid_activity_retry_preserved',
       );
+    case 'queue_state_preserved': {
+      const sourceField = phase === 'preupgrade'
+        ? 'preupgrade_queue_state'
+        : 'postupgrade_queue_state';
+      return stateEntriesFromScenarioField(
+        fieldValue(observedOutputs, sourceField),
+        'queue_state',
+        phase,
+        `queue_state_preserved.${sourceField}`,
+      );
+    }
     case 'schedule_cross_upgrade_cadence_preserved':
       return stateEntriesFromScenarioField(
         firstNonEmptyScenarioEvidence(observedOutputs, [
@@ -3147,6 +3699,36 @@ function derivedStateEntriesFromScenarioOutputs(scenarioId, observedOutputs, pha
         phase,
         'worker_registration_projection_preserved',
       );
+    case 'new_v2_schedule_after_upgrade':
+      if (phase !== 'postupgrade') {
+        return [];
+      }
+      return stateEntriesFromScenarioField(
+        firstNonEmptyScenarioEvidence(observedOutputs, [
+          'operator_api_response',
+          'schedule_list_json',
+          'observed_ticks',
+          'schedule_id',
+        ]),
+        'schedule',
+        phase,
+        'new_v2_schedule_after_upgrade',
+      );
+    case 'new_v2_worker_registration_after_upgrade':
+      if (phase !== 'postupgrade') {
+        return [];
+      }
+      return stateEntriesFromScenarioField(
+        firstNonEmptyScenarioEvidence(observedOutputs, [
+          'operator_api_response',
+          'task_queue_projection',
+          'polling_result',
+          'worker_id',
+        ]),
+        'worker_registration',
+        phase,
+        'new_v2_worker_registration_after_upgrade',
+      );
     default:
       return [];
   }
@@ -3168,7 +3750,7 @@ function firstNonEmptyScenarioEvidence(container, fields) {
 }
 
 function stateEntriesFromScenarioField(value, stateKind, phase, sourceField) {
-  if (isEmptyEvidence(value)) {
+  if (isEmptyEvidence(value) || scenarioStateEvidenceNotApplicable(value)) {
     return [];
   }
 
@@ -3188,6 +3770,13 @@ function stateEntriesFromScenarioField(value, stateKind, phase, sourceField) {
   }
 
   return [stateEntryFromScenarioEvidence(value, stateKind, phase, sourceField)];
+}
+
+function scenarioStateEvidenceNotApplicable(value) {
+  return value
+    && typeof value === 'object'
+    && !Array.isArray(value)
+    && normalizedStatus(objectValue(value).status ?? objectValue(value).outcome) === 'not_applicable';
 }
 
 function stateEntryFromScenarioEvidence(value, stateKind, phase, sourceField) {
@@ -3309,6 +3898,14 @@ function runbookScenarioResultsFrom(evidence) {
       'edge_case_results',
       'edgeCaseResults',
     ]),
+    queue_state_preserved: firstNonEmptyObject(evidence, [
+      'queue_state_preserved',
+      'queueStatePreserved',
+      'queue_state_observations',
+      'queueStateObservations',
+      'post_upgrade_verification',
+      'postUpgradeVerification',
+    ]),
     schedule_cross_upgrade_cadence_preserved: firstNonEmptyObject(evidence, [
       'schedule_cross_upgrade_cadence_preserved',
       'scheduleCrossUpgradeCadencePreserved',
@@ -3346,6 +3943,22 @@ function runbookScenarioResultsFrom(evidence) {
       'newV2Workflow',
       'post_upgrade_verification',
       'postUpgradeVerification',
+    ]),
+    new_v2_schedule_after_upgrade: firstNonEmptyObject(evidence, [
+      'new_v2_schedule_after_upgrade',
+      'newV2ScheduleAfterUpgrade',
+      'new_v2_schedule',
+      'newV2Schedule',
+      'schedule_ticks',
+      'scheduleTicks',
+    ]),
+    new_v2_worker_registration_after_upgrade: firstNonEmptyObject(evidence, [
+      'new_v2_worker_registration_after_upgrade',
+      'newV2WorkerRegistrationAfterUpgrade',
+      'new_v2_worker_registration',
+      'newV2WorkerRegistration',
+      'worker_registration_observations',
+      'workerRegistrationObservations',
     ]),
     rollback_contract_verified: firstNonEmptyObject(evidence, [
       'rollback_contract_verified',
@@ -5058,7 +5671,7 @@ function effectiveRequiredScenarios() {
 
 function normalizedStatus(value) {
   const status = stringValue(value);
-  return ['pass', 'fail', 'unsupported', 'not_covered', 'runner_blocked'].includes(status)
+  return ['pass', 'fail', 'unsupported', 'not_applicable', 'not_covered', 'runner_blocked'].includes(status)
     ? status
     : 'not_covered';
 }

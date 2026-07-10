@@ -16,11 +16,11 @@ final class MigrationRuntimeContract
 {
     public const SCHEMA = 'durable-workflow.v2.migration-runtime.contract';
 
-    public const VERSION = 1;
+    public const VERSION = 2;
 
     public const RESULT_SCHEMA = 'durable-workflow.v2.migration-runtime.result';
 
-    public const RESULT_VERSION = 1;
+    public const RESULT_VERSION = 2;
 
     /**
      * @return array<string, mixed>
@@ -97,6 +97,7 @@ final class MigrationRuntimeContract
                     'scenario_results',
                     'findings',
                     'finding_links',
+                    'source_capabilities',
                     'migration_plan',
                     'preupgrade_state_snapshot',
                     'postupgrade_state_snapshot',
@@ -115,8 +116,84 @@ final class MigrationRuntimeContract
                 'pass',
                 'fail',
                 'unsupported',
+                'not_applicable',
                 'not_covered',
                 'runner_blocked',
+            ],
+            'source_capability_policy' => [
+                'inventory_field' => 'source_capabilities',
+                'inventory_schema' => 'durable-workflow.v2.migration-runtime.source-capabilities',
+                'allowed_statuses' => [
+                    'supported',
+                    'unsupported',
+                ],
+                'required_capabilities' => [
+                    'completed_history' => [
+                        'continuity' => 'required',
+                        'state_kind' => 'completed_history',
+                    ],
+                    'in_flight_workflow' => [
+                        'continuity' => 'required',
+                        'state_kind' => 'in_flight_workflow',
+                    ],
+                    'retrying_activity' => [
+                        'continuity' => 'required',
+                        'state_kind' => 'retrying_activity',
+                    ],
+                    'queue_state' => [
+                        'continuity' => 'required',
+                        'state_kind' => 'queue_state',
+                    ],
+                    'schedule' => [
+                        'continuity' => 'when_source_supported',
+                        'state_kind' => 'schedule',
+                        'absent_reason_code' => 'v1_embedded_runtime_no_durable_schedule_surface',
+                    ],
+                    'worker_registration' => [
+                        'continuity' => 'when_source_supported',
+                        'state_kind' => 'worker_registration',
+                        'absent_reason_code' => 'v1_embedded_runtime_no_worker_registration_projection',
+                    ],
+                    'standalone_server_api' => [
+                        'continuity' => 'not_a_durable_state_cell',
+                        'absent_reason_code' => 'v1_embedded_runtime_no_standalone_server_api',
+                    ],
+                    'standalone_cli_server_surface' => [
+                        'continuity' => 'not_a_durable_state_cell',
+                        'absent_reason_code' => 'v1_embedded_runtime_no_standalone_cli_server_surface',
+                    ],
+                    'remote_worker_endpoint' => [
+                        'continuity' => 'not_a_durable_state_cell',
+                        'absent_reason_code' => 'v1_embedded_runtime_no_remote_worker_endpoint',
+                    ],
+                ],
+                'embedded_v1_profile' => [
+                    'runtime_topology' => 'embedded_laravel',
+                    'detection_source' => 'server-v1 published artifact runtime metadata',
+                    'supported_capabilities' => [
+                        'completed_history',
+                        'in_flight_workflow',
+                        'retrying_activity',
+                        'queue_state',
+                    ],
+                    'unsupported_capabilities' => [
+                        'schedule',
+                        'worker_registration',
+                        'standalone_server_api',
+                        'standalone_cli_server_surface',
+                        'remote_worker_endpoint',
+                    ],
+                ],
+                'not_applicable_scenarios' => [
+                    'schedule_cross_upgrade_cadence_preserved' => 'schedule',
+                    'worker_registration_projection_preserved' => 'worker_registration',
+                ],
+                'not_applicable_requires' => [
+                    'status_not_applicable',
+                    'source_capability_unsupported',
+                    'stable_reason_code',
+                    'no_durable_state_mutation_attempted',
+                ],
             ],
             'topology' => [
                 'namespace' => 'migration-conformance',
@@ -131,10 +208,13 @@ final class MigrationRuntimeContract
                     'running_workflow_waiting_on_signal',
                     'workflow_with_activity',
                     'workflow_mid_activity_retry',
-                    'active_schedule',
-                    'registered_workers',
+                    'queued_workflow_or_activity_task',
                     'queryable_history',
                     'waterline_projection',
+                ],
+                'required_postupgrade_v2_control_plane_state' => [
+                    'active_schedule',
+                    'registered_worker',
                 ],
                 'operator_visibility_paths' => [
                     'dw workflow:describe <workflow-id>',
@@ -188,6 +268,7 @@ final class MigrationRuntimeContract
                     'completed_history',
                     'in_flight_workflow',
                     'retrying_activity',
+                    'queue_state',
                     'schedule',
                     'worker_registration',
                 ],
@@ -196,21 +277,34 @@ final class MigrationRuntimeContract
                         'server' => 'server-v1',
                         'client' => 'cli-v2',
                         'scenario' => 'version_skew_refusal',
+                        'requires_source_capabilities' => [
+                            'standalone_server_api',
+                        ],
                     ],
                     [
                         'server' => 'server-v2',
                         'client' => 'cli-v1',
                         'scenario' => 'version_skew_refusal',
+                        'requires_source_capabilities' => [
+                            'standalone_cli_server_surface',
+                        ],
                     ],
                     [
                         'server' => 'server-v1',
                         'worker' => 'workflow-php-v2',
                         'scenario' => 'version_skew_refusal',
+                        'requires_source_capabilities' => [
+                            'standalone_server_api',
+                            'remote_worker_endpoint',
+                        ],
                     ],
                     [
                         'server' => 'server-v2',
                         'worker' => 'workflow-php-v1',
                         'scenario' => 'version_skew_refusal',
+                        'requires_source_capabilities' => [
+                            'remote_worker_endpoint',
+                        ],
                     ],
                 ],
             ],
@@ -221,11 +315,14 @@ final class MigrationRuntimeContract
                 'completed_history_preservation_and_replay',
                 'in_flight_workflow_progress_preserved',
                 'mid_activity_retry_preserved',
+                'queue_state_preserved',
                 'schedule_cross_upgrade_cadence_preserved',
                 'worker_registration_projection_preserved',
                 'waterline_operator_visibility_preserved',
                 'cli_access_to_preupgrade_state',
                 'new_v2_workflow_start_after_upgrade',
+                'new_v2_schedule_after_upgrade',
+                'new_v2_worker_registration_after_upgrade',
                 'rollback_contract_verified',
                 'version_skew_refusal',
             ],
@@ -251,8 +348,12 @@ final class MigrationRuntimeContract
                     'public_migration_guide_steps_executed_verbatim',
                     'completed_history_preservation_and_replay_reported',
                     'in_flight_progress_mid_activity_retry_schedule_and_worker_cells_reported',
+                    'source_capability_inventory_recorded_before_continuity_evaluation',
+                    'v1_durable_queue_state_preservation_reported',
+                    'source_absent_control_plane_cells_are_explicitly_not_applicable',
                     'cli_and_waterline_preupgrade_state_visibility_reported',
                     'new_v2_workflow_start_reported',
+                    'new_v2_schedule_and_worker_registration_reported',
                     'rollback_or_documented_no_rollback_reported',
                     'rollback_public_operator_signal_recorded',
                     'cli_and_worker_skew_request_response_evidence_recorded',
@@ -272,6 +373,7 @@ final class MigrationRuntimeContract
                 'smoke_subset_outcome' => 'non_passing',
                 'storage_connection_smoke_only_outcome' => 'non_passing',
                 'unsupported_public_surface_outcome' => 'non_passing_with_root_cause_finding',
+                'source_absent_control_plane_cell_outcome' => 'passing_not_applicable_with_stable_reason',
                 'runner_blocked_outcome' => 'non_passing_runner_blocked',
             ],
             'host_runner_contract' => [
@@ -295,7 +397,7 @@ final class MigrationRuntimeContract
                     'migration-conformance-record.json',
                 ],
                 'evidence_inputs' => [
-                    'DW_MIGRATION_EVIDENCE_JSON' => 'Optional full-result, runbook-shaped, sectioned runbookCommandOutputs, or scenario-shard JSON captured by the host runner after executing the public migration guide against published artifacts.',
+                    'DW_MIGRATION_EVIDENCE_JSON' => 'Optional full-result, runbook-shaped, sectioned runbookCommandOutputs, or scenario-shard JSON captured by the host runner after executing the public migration guide against published artifacts. May include source_capabilities; embedded v1 runtime metadata selects the published embedded capability profile automatically.',
                     'DW_MIGRATION_EVIDENCE_DIR' => 'Optional directory of JSON evidence shards; files are merged in lexical order so the host runner can collect required migration scopes independently.',
                     'DW_MIGRATION_STORAGE_SMOKE_JSON' => 'Optional storage-connection smoke JSON to attach as context. Focused foundation runs may include migration_plan, latest_supported_v1_state_setup, preupgrade_state_snapshot, and postupgrade_state_snapshot evidence in this file.',
                     'DW_MIGRATION_RUN_PUBLIC_GUIDE_AUDIT' => 'Set to 0/false/no to disable the automatic live public migration-guide audit, or 1/true/force to run it even without storage-smoke evidence.',
@@ -312,11 +414,14 @@ final class MigrationRuntimeContract
                     'completed-history-replay',
                     'in-flight-progress',
                     'mid-activity-retry',
+                    'queue-state',
                     'schedule-cadence',
                     'worker-registration-projection',
                     'waterline-operator-visibility',
                     'cli-access-to-preupgrade-state',
                     'new-v2-start',
+                    'new-v2-schedule',
+                    'new-v2-worker-registration',
                     'rollback-contract',
                     'version-skew-refusal',
                     'storage-connection-smoke',
@@ -329,11 +434,14 @@ final class MigrationRuntimeContract
                         'completed-history-replay',
                         'in-flight-progress',
                         'mid-activity-retry',
+                        'queue-state',
                         'schedule-cadence',
                         'worker-registration-projection',
                         'waterline-operator-visibility',
                         'cli-access-to-preupgrade-state',
                         'new-v2-start',
+                        'new-v2-schedule',
+                        'new-v2-worker-registration',
                         'rollback-contract',
                         'version-skew-refusal',
                         'storage-connection-smoke',
@@ -379,6 +487,11 @@ final class MigrationRuntimeContract
                         'scenario_status' => 'unsupported',
                         'finding_source' => 'migration_runtime_contract.finding_policy',
                     ],
+                    'source_capability_absent' => [
+                        'scenario_status' => 'not_applicable',
+                        'finding_required' => false,
+                        'reason_source' => 'migration_runtime_contract.source_capability_policy',
+                    ],
                 ],
             ],
             'result_gate' => MigrationRuntimeResultGate::spec(),
@@ -386,6 +499,7 @@ final class MigrationRuntimeContract
                 'missing_or_invalid_published_migration_artifact' => 'link_root_cause_finding_against_artifact_surface_owner',
                 'missing_or_wrong_migration_guide_step' => 'link_root_cause_finding_against_docs',
                 'data_loss_or_replay_break' => 'link_root_cause_finding_against_workflow_or_server',
+                'queue_state_loss' => 'link_root_cause_finding_against_workflow_or_server',
                 'schedule_drift' => 'link_root_cause_finding_against_server_or_workflow',
                 'waterline_visibility_break' => 'link_root_cause_finding_against_waterline',
                 'cli_regression' => 'link_root_cause_finding_against_cli',
@@ -413,9 +527,11 @@ final class MigrationRuntimeContract
             'latest_supported_v1_state_setup' => [
                 'required_fields' => [
                     'source_release_versions',
+                    'source_capabilities',
                     'seeded_workflows',
                     'seeded_schedules',
                     'seeded_worker_registrations',
+                    'seeded_queue_state',
                     'queryable_history',
                 ],
             ],
@@ -453,6 +569,14 @@ final class MigrationRuntimeContract
                     'final_activity_result',
                 ],
             ],
+            'queue_state_preserved' => [
+                'required_fields' => [
+                    'preupgrade_queue_state',
+                    'postupgrade_queue_state',
+                    'pending_task_identity',
+                    'dequeue_or_completion_result',
+                ],
+            ],
             'schedule_cross_upgrade_cadence_preserved' => [
                 'required_fields' => [
                     'preupgrade_schedule_spec',
@@ -481,7 +605,8 @@ final class MigrationRuntimeContract
                 'required_fields' => [
                     'workflow_describe_json',
                     'workflow_history_json',
-                    'schedule_list_json',
+                    'operator_api_responses',
+                    'typed_response_contracts',
                     'exit_codes',
                 ],
             ],
@@ -491,6 +616,26 @@ final class MigrationRuntimeContract
                     'run_id',
                     'completion_result',
                     'history_dumps',
+                ],
+            ],
+            'new_v2_schedule_after_upgrade' => [
+                'required_fields' => [
+                    'create_request',
+                    'schedule_id',
+                    'schedule_list_json',
+                    'operator_api_response',
+                    'typed_response_contracts',
+                    'observed_ticks',
+                ],
+            ],
+            'new_v2_worker_registration_after_upgrade' => [
+                'required_fields' => [
+                    'registration_request',
+                    'worker_id',
+                    'task_queue_projection',
+                    'operator_api_response',
+                    'typed_response_contracts',
+                    'polling_result',
                 ],
             ],
             'rollback_contract_verified' => [
@@ -511,6 +656,7 @@ final class MigrationRuntimeContract
                     'operator_visible_reason',
                     'request_response_evidence',
                     'no_partial_mutation_evidence',
+                    'applicability_evidence',
                 ],
             ],
         ];

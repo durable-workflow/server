@@ -47,6 +47,10 @@ class MigrationConformanceRunnerContractTest extends TestCase
             'published_artifact_versions',
             'resolved_artifact_versions',
             'artifact_sources',
+            'source_capabilities',
+            'sourceCapabilityInventory',
+            'not_applicable',
+            'v1_embedded_runtime_no_durable_schedule_surface',
             'storage_connection_smoke',
             'public_artifact_resolution',
             'public_operator_signal',
@@ -99,11 +103,14 @@ class MigrationConformanceRunnerContractTest extends TestCase
             'completed_history_preservation_and_replay',
             'in_flight_workflow_progress_preserved',
             'mid_activity_retry_preserved',
+            'queue_state_preserved',
             'schedule_cross_upgrade_cadence_preserved',
             'worker_registration_projection_preserved',
             'waterline_operator_visibility_preserved',
             'cli_access_to_preupgrade_state',
             'new_v2_workflow_start_after_upgrade',
+            'new_v2_schedule_after_upgrade',
+            'new_v2_worker_registration_after_upgrade',
             'rollback_contract_verified',
             'version_skew_refusal',
             'not_covered',
@@ -485,6 +492,15 @@ class MigrationConformanceRunnerContractTest extends TestCase
                 'embedded-v1-server-runtime',
                 $result['public_artifact_resolution']['observations']['server-v1']['runtime'],
             );
+            $this->assertSame('complete', $result['source_capabilities']['status']);
+            $this->assertSame(
+                'unsupported',
+                $result['source_capabilities']['capabilities']['standalone_server_api']['status'],
+            );
+            $this->assertSame(
+                'v1_embedded_runtime_no_durable_schedule_surface',
+                $result['source_capabilities']['capabilities']['schedule']['reason_code'],
+            );
             $this->assertSame(
                 'missing',
                 $result['public_artifact_resolution']['observations']['server-v1']['standalone_server_image']['status'],
@@ -711,7 +727,7 @@ class MigrationConformanceRunnerContractTest extends TestCase
         $this->assertSame('fail', $result['scenario_results']['documented_migration_steps_execute']['status']);
         $this->assertSame('fail', $result['scenario_results']['waterline_operator_visibility_preserved']['status']);
         $this->assertSame('fail', $result['scenario_results']['cli_access_to_preupgrade_state']['status']);
-        $this->assertSame('fail', $result['scenario_results']['version_skew_refusal']['status']);
+        $this->assertSame('not_applicable', $result['scenario_results']['version_skew_refusal']['status']);
         $this->assertSame('fail', $result['migration_plan']['status']);
         $this->assertSame(true, $result['migration_plan']['storage_connection_smoke_only']);
         $this->assertArrayNotHasKey(
@@ -884,7 +900,7 @@ class MigrationConformanceRunnerContractTest extends TestCase
             $result['scenario_results']['completed_history_preservation_and_replay']['status'],
         );
         $this->assertSame(
-            'not_covered',
+            'not_applicable',
             $result['scenario_results']['schedule_cross_upgrade_cadence_preserved']['status'],
         );
         $this->assertSame(
@@ -1131,7 +1147,7 @@ class MigrationConformanceRunnerContractTest extends TestCase
         $this->assertTrue($result['migration_plan']['commands_failed']);
     }
 
-    public function test_runner_downgrades_shallow_rollback_and_skew_pass_evidence(): void
+    public function test_runner_downgrades_shallow_rollback_and_classifies_source_absent_skew(): void
     {
         $nodeBinary = trim((string) shell_exec('command -v node 2>/dev/null'));
         if ($nodeBinary === '') {
@@ -1167,25 +1183,88 @@ class MigrationConformanceRunnerContractTest extends TestCase
             $result['scenario_results']['rollback_contract_verified']['observed_outputs']['missing_required_fields'],
         );
 
-        $this->assertSame('not_covered', $result['scenario_results']['version_skew_refusal']['status']);
-        foreach ([
-            'cli_skew_observations.cli-v1-to-server-v2',
-            'cli_skew_observations.cli-v2-to-server-v1',
-            'worker_skew_observations.worker-v1-to-server-v2',
-            'worker_skew_observations.worker-v2-to-server-v1',
-            'request_response_evidence.cli-v1-to-server-v2',
-            'request_response_evidence.worker-v2-to-server-v1',
-            'no_partial_mutation_evidence',
-        ] as $field) {
-            $this->assertContains(
-                $field,
-                $result['scenario_results']['version_skew_refusal']['observed_outputs']['missing_required_fields'],
-            );
-        }
+        $skew = $result['scenario_results']['version_skew_refusal'];
+        $this->assertSame('not_applicable', $skew['status']);
         $this->assertSame(
-            'conformance_runner_coverage_gap',
-            $result['scenario_results']['version_skew_refusal']['linked_findings'][0]['finding_type'],
+            'v1_embedded_runtime_no_standalone_cli_server_surface',
+            $skew['observed_outputs']['applicability_evidence']['cli-v1-to-server-v2']['reason_codes'][0],
         );
+        $this->assertFalse(
+            $skew['observed_outputs']['applicability_evidence']['worker-v2-to-server-v1']['durable_state_mutation_attempted'],
+        );
+    }
+
+    public function test_runner_keeps_v1_durable_state_strict_while_classifying_absent_control_plane_cells(): void
+    {
+        $nodeBinary = trim((string) shell_exec('command -v node 2>/dev/null'));
+        if ($nodeBinary === '') {
+            $this->markTestSkipped('node is required to exercise source-capability migration classification.');
+        }
+
+        $evidence = $this->completeRunnerEvidence();
+        unset(
+            $evidence['scenario_results']['latest_supported_v1_state_setup']['observed_outputs']['seeded_schedules'],
+            $evidence['scenario_results']['latest_supported_v1_state_setup']['observed_outputs']['seeded_worker_registrations'],
+        );
+        $evidence['scenario_results']['schedule_cross_upgrade_cadence_preserved'] = [
+            'status' => 'fail',
+            'observed_outputs' => [
+                'failure_reason' => 'the selected v1 embedded runtime has no durable schedule surface',
+            ],
+        ];
+        $evidence['scenario_results']['worker_registration_projection_preserved'] = [
+            'status' => 'fail',
+            'observed_outputs' => [
+                'failure_reason' => 'the selected v1 embedded runtime has no worker-registration projection',
+            ],
+        ];
+        $evidence['scenario_results']['version_skew_refusal'] = [
+            'status' => 'fail',
+            'observed_outputs' => [
+                'failure_reason' => 'there is no standalone v1 endpoint for a skew request',
+            ],
+        ];
+        $evidence['preupgrade_state_snapshot']['observed_states'] = array_values(array_filter(
+            $evidence['preupgrade_state_snapshot']['observed_states'],
+            static fn (array $state): bool => ! in_array(
+                $state['state_kind'],
+                ['schedule', 'worker_registration'],
+                true,
+            ),
+        ));
+
+        $result = $this->runRunnerEvidence(
+            $nodeBinary,
+            $evidence,
+            'dw-migration-source-capabilities-',
+        );
+
+        $this->assertSame('pass', $result['outcome']);
+        $this->assertSame('complete', $result['source_capabilities']['status']);
+        $this->assertSame(
+            'supported',
+            $result['source_capabilities']['capabilities']['queue_state']['status'],
+        );
+        $this->assertSame('pass', $result['scenario_results']['queue_state_preserved']['status']);
+        $this->assertSame(
+            'not_applicable',
+            $result['scenario_results']['schedule_cross_upgrade_cadence_preserved']['status'],
+        );
+        $this->assertSame(
+            'v1_embedded_runtime_no_durable_schedule_surface',
+            $result['scenario_results']['schedule_cross_upgrade_cadence_preserved']['observed_outputs']['applicability']['reason_code'],
+        );
+        $this->assertSame(
+            'not_applicable',
+            $result['scenario_results']['worker_registration_projection_preserved']['status'],
+        );
+        $this->assertSame(
+            'not_applicable',
+            $result['scenario_results']['version_skew_refusal']['status'],
+        );
+        $this->assertSame('pass', $result['scenario_results']['cli_access_to_preupgrade_state']['status']);
+        $this->assertSame('pass', $result['scenario_results']['new_v2_schedule_after_upgrade']['status']);
+        $this->assertSame('pass', $result['scenario_results']['new_v2_worker_registration_after_upgrade']['status']);
     }
 
     public function test_runner_audits_public_guide_when_storage_smoke_is_the_only_product_evidence(): void
@@ -1945,7 +2024,16 @@ COMMAND;
             $this->assertSame($evidence['migration_plan'], $record['migration_plan']);
             $this->assertSame($evidence['preupgrade_state_snapshot'], $record['preupgrade_state_snapshot']);
             $this->assertSame($evidence['rollback_observations'], $record['rollback_observations']);
-            $this->assertSame($evidence['version_skew_observations'], $record['version_skew_observations']);
+            $this->assertSame('complete', $record['source_capabilities']['status']);
+            $this->assertSame(
+                'not_applicable',
+                $record['scenario_statuses']['version_skew_refusal'],
+            );
+            $this->assertContains('version_skew_refusal', $record['not_applicable_scenarios']);
+            $this->assertSame(
+                $result['version_skew_observations'],
+                $record['version_skew_observations'],
+            );
             $this->assertSame(
                 'pass',
                 $record['scenario_statuses']['latest_supported_v1_state_setup'],
@@ -2013,11 +2101,14 @@ COMMAND;
             'completedHistoryReplay' => $scenarioResults['completed_history_preservation_and_replay']['observed_outputs'],
             'inFlightWorkflowProgress' => $scenarioResults['in_flight_workflow_progress_preserved']['observed_outputs'],
             'midActivityRetryPreserved' => $scenarioResults['mid_activity_retry_preserved']['observed_outputs'],
+            'queueStatePreserved' => $scenarioResults['queue_state_preserved']['observed_outputs'],
             'scheduleCrossUpgradeCadencePreserved' => $scenarioResults['schedule_cross_upgrade_cadence_preserved']['observed_outputs'],
             'workerRegistrationProjectionPreserved' => $scenarioResults['worker_registration_projection_preserved']['observed_outputs'],
             'waterlineOperatorVisibilityPreserved' => $scenarioResults['waterline_operator_visibility_preserved']['observed_outputs'],
             'cliAccessToPreupgradeState' => $scenarioResults['cli_access_to_preupgrade_state']['observed_outputs'],
             'newV2WorkflowStartAfterUpgrade' => $scenarioResults['new_v2_workflow_start_after_upgrade']['observed_outputs'],
+            'newV2ScheduleAfterUpgrade' => $scenarioResults['new_v2_schedule_after_upgrade']['observed_outputs'],
+            'newV2WorkerRegistrationAfterUpgrade' => $scenarioResults['new_v2_worker_registration_after_upgrade']['observed_outputs'],
             'rollbackResult' => $scenarioResults['rollback_contract_verified']['observed_outputs'],
             'versionSkewObservations' => $scenarioResults['version_skew_refusal']['observed_outputs'],
             'preupgradeStateSnapshot' => $complete['preupgrade_state_snapshot'],
@@ -2043,6 +2134,85 @@ COMMAND;
         $this->assertSame(
             $scenarioResults['documented_migration_steps_execute']['observed_outputs']['commands_executed'],
             $result['scenario_results']['documented_migration_steps_execute']['observed_outputs']['commands_executed'],
+        );
+        $this->assertSame('pass', $result['scenario_results']['queue_state_preserved']['status']);
+        $this->assertSame('pass', $result['scenario_results']['new_v2_schedule_after_upgrade']['status']);
+        $this->assertSame('pass', $result['scenario_results']['new_v2_worker_registration_after_upgrade']['status']);
+        $this->assertSame(
+            $scenarioResults['queue_state_preserved']['observed_outputs']['postupgrade_queue_state'],
+            $result['scenario_results']['queue_state_preserved']['observed_outputs']['postupgrade_queue_state'],
+        );
+        $this->assertSame(
+            $scenarioResults['new_v2_schedule_after_upgrade']['observed_outputs']['typed_response_contracts'],
+            $result['scenario_results']['new_v2_schedule_after_upgrade']['observed_outputs']['typed_response_contracts'],
+        );
+        $this->assertSame(
+            $scenarioResults['new_v2_worker_registration_after_upgrade']['observed_outputs']['typed_response_contracts'],
+            $result['scenario_results']['new_v2_worker_registration_after_upgrade']['observed_outputs']['typed_response_contracts'],
+        );
+    }
+
+    public function test_runner_keeps_source_absence_and_target_control_plane_runbook_evidence(): void
+    {
+        $nodeBinary = trim((string) shell_exec('command -v node 2>/dev/null'));
+        if ($nodeBinary === '') {
+            $this->markTestSkipped('node is required to exercise the migration runner runbook normalization.');
+        }
+
+        $complete = $this->completeRunnerEvidence();
+        $scenarioResults = $complete['scenario_results'];
+        $runbook = $this->completeRunbookEvidence($complete, $complete['migration_plan']);
+        unset($runbook['scheduleTicks'], $runbook['workerRegistrationObservations']);
+
+        $runbook['scheduleCrossUpgradeCadencePreserved'] = [
+            'status' => 'not_applicable',
+            'applicability' => [
+                'status' => 'not_applicable',
+                'source_capability' => 'schedule',
+                'reason_code' => 'v1_embedded_runtime_no_durable_schedule_surface',
+                'durable_state_mutation_attempted' => false,
+            ],
+        ];
+        $runbook['workerRegistrationProjectionPreserved'] = [
+            'status' => 'not_applicable',
+            'applicability' => [
+                'status' => 'not_applicable',
+                'source_capability' => 'worker_registration',
+                'reason_code' => 'v1_embedded_runtime_no_worker_registration_projection',
+                'durable_state_mutation_attempted' => false,
+            ],
+        ];
+
+        $result = $this->runRunnerEvidence($nodeBinary, $runbook, 'dw-migration-runbook-target-control-plane-');
+
+        $this->assertSame('pass', $result['outcome']);
+        $this->assertSame(
+            'not_applicable',
+            $result['scenario_results']['schedule_cross_upgrade_cadence_preserved']['status'],
+        );
+        $this->assertSame(
+            'not_applicable',
+            $result['scenario_results']['worker_registration_projection_preserved']['status'],
+        );
+        $this->assertSame('pass', $result['scenario_results']['new_v2_schedule_after_upgrade']['status']);
+        $this->assertSame('pass', $result['scenario_results']['new_v2_worker_registration_after_upgrade']['status']);
+        $this->assertSame('pass', $result['schedule_ticks']['status']);
+        $this->assertSame('pass', $result['worker_registration_observations']['status']);
+        $this->assertSame(
+            $scenarioResults['new_v2_schedule_after_upgrade']['observed_outputs']['command_outputs'],
+            $result['schedule_ticks']['command_outputs'],
+        );
+        $this->assertSame(
+            $scenarioResults['new_v2_worker_registration_after_upgrade']['observed_outputs']['command_outputs'],
+            $result['worker_registration_observations']['command_outputs'],
+        );
+        $this->assertSame(
+            'v1_embedded_runtime_no_durable_schedule_surface',
+            $result['schedule_ticks']['applicability']['reason_code'],
+        );
+        $this->assertSame(
+            'v1_embedded_runtime_no_worker_registration_projection',
+            $result['worker_registration_observations']['applicability']['reason_code'],
         );
     }
 
@@ -2118,11 +2288,14 @@ COMMAND;
             'completedHistoryReplay' => $scenarioResults['completed_history_preservation_and_replay']['observed_outputs'],
             'inFlightWorkflowProgress' => $scenarioResults['in_flight_workflow_progress_preserved']['observed_outputs'],
             'midActivityRetryPreserved' => $scenarioResults['mid_activity_retry_preserved']['observed_outputs'],
+            'queueStatePreserved' => $scenarioResults['queue_state_preserved']['observed_outputs'],
             'scheduleCrossUpgradeCadencePreserved' => $scenarioResults['schedule_cross_upgrade_cadence_preserved']['observed_outputs'],
             'workerRegistrationProjectionPreserved' => $scenarioResults['worker_registration_projection_preserved']['observed_outputs'],
             'waterlineOperatorVisibilityPreserved' => $scenarioResults['waterline_operator_visibility_preserved']['observed_outputs'],
             'cliAccessToPreupgradeState' => $scenarioResults['cli_access_to_preupgrade_state']['observed_outputs'],
             'newV2WorkflowStartAfterUpgrade' => $scenarioResults['new_v2_workflow_start_after_upgrade']['observed_outputs'],
+            'newV2ScheduleAfterUpgrade' => $scenarioResults['new_v2_schedule_after_upgrade']['observed_outputs'],
+            'newV2WorkerRegistrationAfterUpgrade' => $scenarioResults['new_v2_worker_registration_after_upgrade']['observed_outputs'],
             'rollbackResult' => $scenarioResults['rollback_contract_verified']['observed_outputs'],
             'versionSkewObservations' => $scenarioResults['version_skew_refusal']['observed_outputs'],
             'preupgradeStateSnapshot' => $complete['preupgrade_state_snapshot'],
@@ -2288,7 +2461,7 @@ COMMAND;
         $this->assertArrayNotHasKey('run_record', $result['finding_links']);
     }
 
-    public function test_runner_promotes_scenario_command_outputs_to_required_record_sections(): void
+    public function test_runner_promotes_capability_aware_scenarios_to_required_record_sections(): void
     {
         $nodeBinary = trim((string) shell_exec('command -v node 2>/dev/null'));
         if ($nodeBinary === '') {
@@ -2312,6 +2485,14 @@ COMMAND;
         ] as $field) {
             unset($evidence[$field]);
         }
+
+        unset(
+            $evidence['scenario_results']['latest_supported_v1_state_setup']['observed_outputs']['seeded_schedules'],
+            $evidence['scenario_results']['latest_supported_v1_state_setup']['observed_outputs']['seeded_worker_registrations'],
+            $evidence['scenario_results']['schedule_cross_upgrade_cadence_preserved'],
+            $evidence['scenario_results']['worker_registration_projection_preserved'],
+            $evidence['scenario_results']['version_skew_refusal'],
+        );
 
         $evidence['scenario_results']['storage_connection_smoke'] = [
             'status' => 'pass',
@@ -2344,7 +2525,6 @@ COMMAND;
             'cli_observations',
             'waterline_observations',
             'rollback_observations',
-            'version_skew_observations',
             'storage_connection_smoke',
         ] as $field) {
             $this->assertSame('pass', $result[$field]['status']);
@@ -2353,12 +2533,59 @@ COMMAND;
             $this->assertArrayHasKey($field, $result['runbook_command_outputs']);
         }
 
-        foreach (['preupgrade_state_snapshot', 'postupgrade_state_snapshot'] as $field) {
-            $observedKinds = array_values(array_unique(array_column($result[$field]['observed_states'], 'state_kind')));
-            foreach ($requiredStateKinds as $stateKind) {
-                $this->assertContains($stateKind, $observedKinds);
-            }
+        $skew = $result['scenario_results']['version_skew_refusal'];
+        $this->assertSame('not_applicable', $skew['status']);
+        $this->assertSame(
+            'source_skew_endpoints_not_exposed',
+            $skew['observed_outputs']['operator_visible_reason']['code'],
+        );
+        foreach ($skew['observed_outputs']['applicability_evidence'] as $cell) {
+            $this->assertSame('not_applicable', $cell['status']);
+            $this->assertTrue($cell['preflight_refusal']);
+            $this->assertFalse($cell['durable_state_mutation_attempted']);
         }
+        $this->assertArrayNotHasKey('command_outputs', $result['version_skew_observations']);
+        $this->assertArrayNotHasKey('version_skew_observations', $result['runbook_command_outputs']);
+
+        $preupgradeKinds = array_values(array_unique(array_column(
+            $result['preupgrade_state_snapshot']['observed_states'],
+            'state_kind',
+        )));
+        $postupgradeKinds = array_values(array_unique(array_column(
+            $result['postupgrade_state_snapshot']['observed_states'],
+            'state_kind',
+        )));
+
+        foreach (['completed_history', 'in_flight_workflow', 'retrying_activity', 'queue_state'] as $stateKind) {
+            $this->assertContains($stateKind, $preupgradeKinds);
+        }
+        $this->assertNotContains('schedule', $preupgradeKinds);
+        $this->assertNotContains('worker_registration', $preupgradeKinds);
+
+        foreach ($requiredStateKinds as $stateKind) {
+            $this->assertContains($stateKind, $postupgradeKinds);
+        }
+
+        $this->assertSame(
+            'not_applicable',
+            $result['scenario_results']['schedule_cross_upgrade_cadence_preserved']['status'],
+        );
+        $this->assertSame(
+            'not_applicable',
+            $result['scenario_results']['worker_registration_projection_preserved']['status'],
+        );
+        $this->assertSame(
+            'not_applicable',
+            $result['scenario_results']['version_skew_refusal']['status'],
+        );
+
+        $preupgradeSources = array_column($result['preupgrade_state_snapshot']['observed_states'], 'source_field');
+        $postupgradeSources = array_column($result['postupgrade_state_snapshot']['observed_states'], 'source_field');
+        $this->assertContains('seeded_queue_state.queued_task', $preupgradeSources);
+        $this->assertContains('queue_state_preserved.preupgrade_queue_state', $preupgradeSources);
+        $this->assertContains('queue_state_preserved.postupgrade_queue_state', $postupgradeSources);
+        $this->assertContains('new_v2_schedule_after_upgrade', $postupgradeSources);
+        $this->assertContains('new_v2_worker_registration_after_upgrade', $postupgradeSources);
 
         $this->assertSame(
             'scenario_result.documented_migration_steps_execute',
@@ -2665,6 +2892,20 @@ COMMAND;
             ];
         }
 
+        $scenarioResults['cli_access_to_preupgrade_state']['observed_outputs']['typed_response_contracts'] = [
+            'cli' => ['schema' => 'durable-workflow.cli.workflow-response.v2'],
+            'operator_api' => ['schema' => 'durable-workflow.operator.workflow-response.v2'],
+        ];
+        $scenarioResults['new_v2_schedule_after_upgrade']['observed_outputs']['typed_response_contracts'] = [
+            'cli' => ['schema' => 'durable-workflow.cli.schedule-response.v2'],
+            'operator_api' => ['schema' => 'durable-workflow.operator.schedule-response.v2'],
+            'schedule' => ['type' => 'schedule', 'schema' => 'durable-workflow.schedule.v2'],
+        ];
+        $scenarioResults['new_v2_worker_registration_after_upgrade']['observed_outputs']['typed_response_contracts'] = [
+            'operator_api' => ['schema' => 'durable-workflow.operator.worker-response.v2'],
+            'worker_registration' => ['type' => 'worker_registration', 'schema' => 'durable-workflow.worker-registration.v2'],
+        ];
+
         $scenarioResults['latest_supported_v1_state_setup']['observed_outputs'] = [
             'source_release_versions' => $this->artifactVersions(),
             'seeded_workflows' => [
@@ -2701,6 +2942,13 @@ COMMAND;
                         'worker_id' => 'migration-v1-worker',
                         'task_queue' => 'migration-v1',
                     ],
+                ],
+            ],
+            'seeded_queue_state' => [
+                'queued_task' => [
+                    'task_id' => 'migration-queued-activity',
+                    'task_queue' => 'migration-v1',
+                    'status' => 'pending',
                 ],
             ],
             'queryable_history' => [
@@ -2920,11 +3168,14 @@ COMMAND;
             'completedHistoryReplay' => $scenarioResults['completed_history_preservation_and_replay']['observed_outputs'],
             'inFlightWorkflowProgress' => $scenarioResults['in_flight_workflow_progress_preserved']['observed_outputs'],
             'midActivityRetryPreserved' => $scenarioResults['mid_activity_retry_preserved']['observed_outputs'],
+            'queueStatePreserved' => $scenarioResults['queue_state_preserved']['observed_outputs'],
             'scheduleCrossUpgradeCadencePreserved' => $scenarioResults['schedule_cross_upgrade_cadence_preserved']['observed_outputs'],
             'workerRegistrationProjectionPreserved' => $scenarioResults['worker_registration_projection_preserved']['observed_outputs'],
             'waterlineOperatorVisibilityPreserved' => $scenarioResults['waterline_operator_visibility_preserved']['observed_outputs'],
             'cliAccessToPreupgradeState' => $scenarioResults['cli_access_to_preupgrade_state']['observed_outputs'],
             'newV2WorkflowStartAfterUpgrade' => $scenarioResults['new_v2_workflow_start_after_upgrade']['observed_outputs'],
+            'newV2ScheduleAfterUpgrade' => $scenarioResults['new_v2_schedule_after_upgrade']['observed_outputs'],
+            'newV2WorkerRegistrationAfterUpgrade' => $scenarioResults['new_v2_worker_registration_after_upgrade']['observed_outputs'],
             'rollbackResult' => $scenarioResults['rollback_contract_verified']['observed_outputs'],
             'versionSkewObservations' => $scenarioResults['version_skew_refusal']['observed_outputs'],
             'preupgradeStateSnapshot' => $complete['preupgrade_state_snapshot'],
@@ -2975,17 +3226,26 @@ COMMAND;
                     'attempt' => $phase === 'preupgrade' ? 2 : 3,
                 ],
                 [
-                    'state_kind' => 'schedule',
+                    'state_kind' => 'queue_state',
                     'phase' => $phase,
-                    'schedule_id' => 'migration-cross-upgrade-schedule',
-                    'next_fire_at' => '2026-05-31T22:45:00Z',
-                ],
-                [
-                    'state_kind' => 'worker_registration',
-                    'phase' => $phase,
-                    'worker_id' => 'migration-v1-worker',
+                    'task_id' => 'migration-queued-activity',
                     'task_queue' => 'migration-v1',
+                    'status' => $phase === 'preupgrade' ? 'pending' : 'completed',
                 ],
+                ...($phase === 'postupgrade' ? [
+                    [
+                        'state_kind' => 'schedule',
+                        'phase' => $phase,
+                        'schedule_id' => 'migration-v2-schedule',
+                        'next_fire_at' => '2026-05-31T22:45:00Z',
+                    ],
+                    [
+                        'state_kind' => 'worker_registration',
+                        'phase' => $phase,
+                        'worker_id' => 'migration-v2-worker',
+                        'task_queue' => 'migration-v2',
+                    ],
+                ] : []),
             ],
         ];
     }

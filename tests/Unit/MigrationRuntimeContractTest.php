@@ -68,11 +68,14 @@ class MigrationRuntimeContractTest extends TestCase
             'completed_history_preservation_and_replay',
             'in_flight_workflow_progress_preserved',
             'mid_activity_retry_preserved',
+            'queue_state_preserved',
             'schedule_cross_upgrade_cadence_preserved',
             'worker_registration_projection_preserved',
             'waterline_operator_visibility_preserved',
             'cli_access_to_preupgrade_state',
             'new_v2_workflow_start_after_upgrade',
+            'new_v2_schedule_after_upgrade',
+            'new_v2_worker_registration_after_upgrade',
             'rollback_contract_verified',
             'version_skew_refusal',
         ] as $scenario) {
@@ -107,6 +110,16 @@ class MigrationRuntimeContractTest extends TestCase
         $this->assertContains(
             'request_response_evidence',
             $manifest['scenario_requirements']['version_skew_refusal']['required_fields'],
+        );
+        $this->assertContains('not_applicable', $manifest['scenario_statuses']);
+        $this->assertContains('queue_state', $manifest['required_matrix']['state_kinds']);
+        $this->assertContains(
+            'source_capabilities',
+            $manifest['artifact_policy']['required_run_record_fields'],
+        );
+        $this->assertSame(
+            'v1_embedded_runtime_no_durable_schedule_surface',
+            $manifest['source_capability_policy']['required_capabilities']['schedule']['absent_reason_code'],
         );
         $this->assertContains(
             'cli_skew_observations',
@@ -148,11 +161,14 @@ class MigrationRuntimeContractTest extends TestCase
             'completed-history-replay',
             'in-flight-progress',
             'mid-activity-retry',
+            'queue-state',
             'schedule-cadence',
             'worker-registration-projection',
             'waterline-operator-visibility',
             'cli-access-to-preupgrade-state',
             'new-v2-start',
+            'new-v2-schedule',
+            'new-v2-worker-registration',
             'rollback-contract',
             'version-skew-refusal',
             'storage-connection-smoke',
@@ -288,6 +304,7 @@ class MigrationRuntimeContractTest extends TestCase
         );
         $this->assertTrue($scenarioManifest['artifact_policy']['requires_artifact_sources_for_each_required_artifact']);
         $this->assertContains('artifact_sources', $scenarioManifest['common_result_evidence']);
+        $this->assertContains('source_capabilities', $scenarioManifest['common_result_evidence']);
         $this->assertContains('artifact_prerequisite_failures', $scenarioManifest['common_result_evidence']);
         $this->assertContains('storage_connection_smoke', $scenarioManifest['common_result_evidence']);
         $this->assertSame(
@@ -364,6 +381,39 @@ class MigrationRuntimeContractTest extends TestCase
         $this->assertSame([], $evaluation['missing_scenarios']);
         $this->assertSame([], $evaluation['non_pass_scenarios']);
         $this->assertSame([], $evaluation['gate_failures']);
+    }
+
+    public function test_result_gate_rejects_unproven_not_applicable_classification(): void
+    {
+        $result = $this->completeMigrationResult();
+        $result['scenario_results']['schedule_cross_upgrade_cadence_preserved']['observed_outputs']['applicability']['reason_code'] =
+            'surface_was_not_tested';
+
+        $evaluation = MigrationRuntimeResultGate::evaluate($result);
+
+        $this->assertSame('non_passing', $evaluation['status']);
+        $this->assertContains(
+            'invalid_not_applicable_scenario',
+            array_column($evaluation['gate_failures'], 'code'),
+        );
+    }
+
+    public function test_result_gate_keeps_actual_v1_durable_capabilities_required(): void
+    {
+        $result = $this->completeMigrationResult();
+        $result['source_capabilities']['capabilities']['queue_state'] = [
+            'status' => 'unsupported',
+            'reason_code' => 'queue_state_not_checked',
+        ];
+
+        $evaluation = MigrationRuntimeResultGate::evaluate($result);
+
+        $this->assertSame('non_passing', $evaluation['status']);
+        $this->assertNotEmpty(array_filter(
+            $evaluation['gate_failures'],
+            static fn (array $failure): bool => ($failure['code'] ?? null) === 'required_v1_durable_state_capability_unsupported'
+                && ($failure['capability'] ?? null) === 'queue_state',
+        ));
     }
 
     public function test_result_gate_rejects_empty_scenario_required_field_values(): void
@@ -560,6 +610,18 @@ class MigrationRuntimeContractTest extends TestCase
             'postrollback_visibility' => ['status' => 'checked'],
             'postrollback_execution_result' => ['status' => 'checked'],
         ];
+        foreach ([
+            'standalone_server_api',
+            'standalone_cli_server_surface',
+            'remote_worker_endpoint',
+        ] as $capability) {
+            $result['source_capabilities']['capabilities'][$capability] = [
+                'status' => 'supported',
+                'evidence_basis' => 'standalone_v1_endpoint_probe',
+            ];
+        }
+        $result['source_capabilities']['runtime_topology'] = 'standalone';
+        $result['scenario_results']['version_skew_refusal']['status'] = 'pass';
         $result['scenario_results']['version_skew_refusal']['observed_outputs'] = [
             'skew_matrix' => [
                 'cli-v1-to-server-v2' => ['server' => 'server-v2', 'client' => 'cli-v1'],
@@ -589,6 +651,7 @@ class MigrationRuntimeContractTest extends TestCase
             'worker_skew_observations.worker-v2-to-server-v1',
             'request_response_evidence.cli-v1-to-server-v2',
             'request_response_evidence.worker-v2-to-server-v1',
+            'applicability_evidence.cli-v1-to-server-v2.status_applicable',
         ] as $field) {
             $this->assertContains($field, $skewMissingFields);
         }
@@ -669,6 +732,7 @@ class MigrationRuntimeContractTest extends TestCase
             $result['runner_blocked'],
             $result['resolved_artifact_versions'],
             $result['artifact_sources'],
+            $result['source_capabilities'],
             $result['migration_plan'],
             $result['preupgrade_state_snapshot'],
             $result['postupgrade_state_snapshot'],
@@ -687,6 +751,7 @@ class MigrationRuntimeContractTest extends TestCase
             'runner_blocked',
             'resolved_artifact_versions',
             'artifact_sources',
+            'source_capabilities',
             'migration_plan',
             'preupgrade_state_snapshot',
             'postupgrade_state_snapshot',
@@ -925,8 +990,23 @@ class MigrationRuntimeContractTest extends TestCase
             ];
         }
 
+        $scenarioResults['cli_access_to_preupgrade_state']['observed_outputs']['typed_response_contracts'] = [
+            'cli' => ['schema' => 'durable-workflow.cli.workflow-response.v2'],
+            'operator_api' => ['schema' => 'durable-workflow.operator.workflow-response.v2'],
+        ];
+        $scenarioResults['new_v2_schedule_after_upgrade']['observed_outputs']['typed_response_contracts'] = [
+            'cli' => ['schema' => 'durable-workflow.cli.schedule-response.v2'],
+            'operator_api' => ['schema' => 'durable-workflow.operator.schedule-response.v2'],
+            'schedule' => ['type' => 'schedule', 'schema' => 'durable-workflow.schedule.v2'],
+        ];
+        $scenarioResults['new_v2_worker_registration_after_upgrade']['observed_outputs']['typed_response_contracts'] = [
+            'operator_api' => ['schema' => 'durable-workflow.operator.worker-response.v2'],
+            'worker_registration' => ['type' => 'worker_registration', 'schema' => 'durable-workflow.worker-registration.v2'],
+        ];
+
         $scenarioResults['latest_supported_v1_state_setup']['observed_outputs'] = [
             'source_release_versions' => $this->artifactVersions(),
+            'source_capabilities' => $this->sourceCapabilities(),
             'seeded_workflows' => [
                 'completed_workflow' => [
                     'workflow_id' => 'migration-completed',
@@ -949,18 +1029,19 @@ class MigrationRuntimeContractTest extends TestCase
                     'next_retry_at' => '2026-05-31T22:42:00Z',
                 ],
             ],
-            'seeded_schedules' => [
-                'active_schedule' => [
-                    'schedule_id' => 'migration-cross-upgrade-schedule',
-                    'next_fire_at' => '2026-05-31T22:45:00Z',
-                ],
-            ],
-            'seeded_worker_registrations' => [
-                'registered_workers' => [
-                    [
-                        'worker_id' => 'migration-v1-worker',
-                        'task_queue' => 'migration-v1',
-                    ],
+            'seeded_schedules' => $this->notApplicableStateCell(
+                'schedule',
+                'active_schedule',
+            ),
+            'seeded_worker_registrations' => $this->notApplicableStateCell(
+                'worker_registration',
+                'registered_workers',
+            ),
+            'seeded_queue_state' => [
+                'queued_task' => [
+                    'task_id' => 'migration-queued-activity',
+                    'task_queue' => 'migration-v1',
+                    'status' => 'pending',
                 ],
             ],
             'queryable_history' => [
@@ -1079,6 +1160,15 @@ class MigrationRuntimeContractTest extends TestCase
                 'worker_registration_count_after' => 0,
             ],
         ];
+        $scenarioResults['schedule_cross_upgrade_cadence_preserved'] = $this->notApplicableScenario(
+            'schedule_cross_upgrade_cadence_preserved',
+            'schedule',
+        );
+        $scenarioResults['worker_registration_projection_preserved'] = $this->notApplicableScenario(
+            'worker_registration_projection_preserved',
+            'worker_registration',
+        );
+        $scenarioResults['version_skew_refusal'] = $this->notApplicableSkewScenario();
 
         return [
             'schema' => MigrationRuntimeContract::RESULT_SCHEMA,
@@ -1090,6 +1180,7 @@ class MigrationRuntimeContractTest extends TestCase
             'published_artifact_versions' => $this->artifactVersions(),
             'resolved_artifact_versions' => $this->artifactVersions(),
             'artifact_sources' => $this->artifactSources(),
+            'source_capabilities' => $this->sourceCapabilities(),
             'local_product_source_checkouts_used' => false,
             'findings' => [],
             'finding_links' => [],
@@ -1143,16 +1234,130 @@ class MigrationRuntimeContractTest extends TestCase
                     'attempt' => $phase === 'preupgrade' ? 2 : 3,
                 ],
                 [
-                    'state_kind' => 'schedule',
+                    'state_kind' => 'queue_state',
                     'phase' => $phase,
-                    'schedule_id' => 'migration-cross-upgrade-schedule',
-                    'next_fire_at' => '2026-05-31T22:45:00Z',
-                ],
-                [
-                    'state_kind' => 'worker_registration',
-                    'phase' => $phase,
-                    'worker_id' => 'migration-v1-worker',
+                    'task_id' => 'migration-queued-activity',
                     'task_queue' => 'migration-v1',
+                    'status' => $phase === 'preupgrade' ? 'pending' : 'completed',
+                ],
+                ...($phase === 'postupgrade' ? [
+                    [
+                        'state_kind' => 'schedule',
+                        'phase' => $phase,
+                        'schedule_id' => 'migration-v2-schedule',
+                        'next_fire_at' => '2026-05-31T22:45:00Z',
+                    ],
+                    [
+                        'state_kind' => 'worker_registration',
+                        'phase' => $phase,
+                        'worker_id' => 'migration-v2-worker',
+                        'task_queue' => 'migration-v2',
+                    ],
+                ] : []),
+            ],
+        ];
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    private function sourceCapabilities(): array
+    {
+        $definitions = MigrationRuntimeContract::manifest()['source_capability_policy']['required_capabilities'];
+        $capabilities = [];
+        foreach ($definitions as $capability => $definition) {
+            $supported = ($definition['continuity'] ?? null) === 'required';
+            $capabilities[$capability] = [
+                'status' => $supported ? 'supported' : 'unsupported',
+                'evidence_basis' => 'selected_v1_embedded_runtime_profile',
+            ];
+            if (! $supported) {
+                $capabilities[$capability]['reason_code'] = $definition['absent_reason_code'];
+            }
+        }
+
+        return [
+            'schema' => 'durable-workflow.v2.migration-runtime.source-capabilities',
+            'status' => 'complete',
+            'source_artifact' => 'workflow-php-v1',
+            'source_version' => $this->artifactVersions()['workflow-php-v1'],
+            'runtime_topology' => 'embedded_laravel',
+            'inventory_source' => 'published_artifact_runtime_metadata',
+            'inventoried_before_continuity' => true,
+            'capabilities' => $capabilities,
+        ];
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    private function notApplicableStateCell(string $capability, string $item): array
+    {
+        return [
+            $item => [
+                'status' => 'not_applicable',
+                'source_capability' => $capability,
+                'reason_code' => $this->sourceCapabilities()['capabilities'][$capability]['reason_code'],
+                'durable_state_mutation_attempted' => false,
+            ],
+        ];
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    private function notApplicableScenario(string $scenarioId, string $capability): array
+    {
+        return [
+            'status' => 'not_applicable',
+            'observed_outputs' => [
+                'applicability' => [
+                    'status' => 'not_applicable',
+                    'source_capability' => $capability,
+                    'source_capability_status' => 'unsupported',
+                    'reason_code' => $this->sourceCapabilities()['capabilities'][$capability]['reason_code'],
+                    'source_artifact' => 'workflow-php-v1',
+                    'source_version' => $this->artifactVersions()['workflow-php-v1'],
+                    'durable_state_mutation_attempted' => false,
+                ],
+            ],
+        ];
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    private function notApplicableSkewScenario(): array
+    {
+        $applicability = [];
+        foreach (MigrationRuntimeContract::manifest()['required_matrix']['skew_cells'] as $cell) {
+            $subject = isset($cell['worker'])
+                ? preg_replace('/^workflow-php-/', 'worker-', $cell['worker'])
+                : $cell['client'];
+            $reasons = [];
+            foreach ($cell['requires_source_capabilities'] as $capability) {
+                $entry = $this->sourceCapabilities()['capabilities'][$capability];
+                if ($entry['status'] === 'unsupported') {
+                    $reasons[] = $entry['reason_code'];
+                }
+            }
+            $applicability[$subject.'-to-'.$cell['server']] = [
+                'status' => 'not_applicable',
+                'required_source_capabilities' => $cell['requires_source_capabilities'],
+                'reason_codes' => $reasons,
+                'preflight_refusal' => true,
+                'durable_state_mutation_attempted' => false,
+            ];
+        }
+
+        return [
+            'status' => 'not_applicable',
+            'observed_outputs' => [
+                'applicability_evidence' => $applicability,
+                'skew_matrix' => $applicability,
+                'request_response_evidence' => $applicability,
+                'no_partial_mutation_evidence' => [
+                    'durable_state_mutation_attempted' => false,
                 ],
             ],
         ];

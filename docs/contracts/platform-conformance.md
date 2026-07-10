@@ -468,25 +468,52 @@ category emits a warning and does not block.
   Python replay/cache/adversarial plus PHP/Python cross-language shards itself.
 - Migration runtime contract: `GET /api/cluster/info` re-exports
   `migration_runtime_contract`, schema
-  `durable-workflow.v2.migration-runtime.contract`. It names the
-  published-artifact install policy for the latest supported v1 source
-  release set and current v2 target release set, the public guide steps,
-  completed-history replay, in-flight progress, mid-activity retry state,
-  schedule cadence, worker registration projection, CLI and Waterline
-  visibility, new v2 starts, rollback behavior, and version-skew refusal.
+  `durable-workflow.v2.migration-runtime.contract`, contract version 2. It
+  requires each run to inventory the selected v1 artifact's
+  `source_capabilities` before continuity is evaluated. Completed histories,
+  in-flight workflows, retrying activities, and durable queue state are
+  required preservation cells for every supported v1 source. Schedule and
+  worker-registration continuity is required only when the source inventory
+  reports those capabilities as supported. For the embedded Laravel v1
+  profile, the corresponding preservation scenarios are `not_applicable`
+  with the stable reasons
+  `v1_embedded_runtime_no_durable_schedule_surface` and
+  `v1_embedded_runtime_no_worker_registration_projection`; each record must
+  identify the absent source capability and state that no durable-state
+  mutation was attempted. A source-absent control-plane cell is therefore not
+  a continuity failure, while missing or changed v1 durable queue state
+  remains blocking product-loss evidence.
+
+  It also names the published-artifact install policy for the latest supported
+  v1 source release set and current v2 target release set, the public guide steps,
+  completed-history replay, in-flight progress, mid-activity retry and queue
+  state, capability-aware schedule cadence and worker registration projection,
+  CLI and Waterline visibility, new v2 starts, rollback behavior, and
+  version-skew refusal. After upgrade, the v2 CLI and operator APIs must return
+  typed responses while inspecting migrated v1-origin workflow state. The
+  target runtime must also pass `new_v2_schedule_after_upgrade` and
+  `new_v2_worker_registration_after_upgrade`; an absent v1 source capability
+  never waives these v2-only scenarios.
+
   Rollback evidence must classify the documented post-migration behavior as
   supported, refused, or irreversible and include the exact public
-  operator-visible signal. Version-skew evidence must include old/new CLI and
-  worker request/response captures, operator diagnostics, and no-partial-state
-  mutation observations for refused cells.
+  operator-visible signal. A version-skew cell runs only when both artifacts
+  expose its required endpoint. Applicable cells must include old/new CLI and
+  worker request/response captures, operator diagnostics, and
+  no-partial-state-mutation observations for refusals. An impossible embedded
+  v1 combination is recorded as a capability-backed `not_applicable` preflight
+  refusal, with stable reasons and `durable_state_mutation_attempted=false`,
+  instead of attempting a request against a nonexistent endpoint.
+
   Its result gate records the storage-connection smoke as useful context
   but keeps that smoke-only result non-passing until every required upgrade
-  scenario has evidence or a linked root-cause finding, and until every
-  required install channel records its published artifact source. Missing or
-  placeholder v1/v2 install prerequisites are recorded as scenario `fail`
-  results with `missing_or_invalid_published_migration_artifact` findings
-  routed to the owning artifact surface instead of being collapsed into a
-  generic uncovered-cell result. Its
+  scenario passes or has a valid capability-backed `not_applicable` record,
+  and until every required install channel records its published artifact
+  source. Missing or placeholder v1/v2 install prerequisites are recorded as
+  scenario `fail` results with
+  `missing_or_invalid_published_migration_artifact` findings routed to the
+  owning artifact surface instead of being collapsed into a generic
+  uncovered-cell result. Its
   `host_runner_contract` names
   `scripts/conformance/migration-published-artifacts.sh` as the executable
   handoff; the runner writes `migration-conformance-result.json` and

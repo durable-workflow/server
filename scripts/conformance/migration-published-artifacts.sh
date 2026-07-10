@@ -7,9 +7,11 @@ Usage: migration-published-artifacts.sh [--result-dir DIR|--result-dir=DIR] [--k
 
 Composes the public v1-to-v2 migration conformance result from published
 artifact evidence only. The runner never treats a local product checkout as an
-artifact under test. Missing migration cells are recorded as not_covered with
-linked conformance-harness findings so storage-connection smoke cannot pass by
-itself.
+artifact under test. The selected v1 artifact capability inventory is recorded
+before continuity is evaluated, so control-plane surfaces absent from v1 are
+classified explicitly while durable v1 state remains required. Missing
+migration cells are recorded as not_covered with linked conformance-harness
+findings so storage-connection smoke cannot pass by itself.
 
 The runner writes these files to the result directory:
   migration-published-artifacts.json
@@ -22,7 +24,10 @@ Environment overrides:
   DW_MIGRATION_KEEP_RUN_ROOT=1       Keep scratch directory after success.
   DW_MIGRATION_EVIDENCE_JSON         Full-result, runbook-shaped, sectioned
                                       command-output, or scenario-shard JSON from
-                                      the host migration runner.
+                                      the host migration runner. May include a
+                                      source_capabilities inventory; embedded v1
+                                      runtime metadata selects the published
+                                      embedded capability profile automatically.
   DW_MIGRATION_EVIDENCE_DIR          Directory of sorted JSON evidence shards from the host migration runner.
   DW_MIGRATION_FOUNDATION_PLAN_FILE  JSON plan of host commands to execute for
                                       latest v1 state setup, migration-guide
