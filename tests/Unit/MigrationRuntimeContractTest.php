@@ -383,6 +383,47 @@ class MigrationRuntimeContractTest extends TestCase
         $this->assertSame([], $evaluation['gate_failures']);
     }
 
+    public function test_result_gate_accepts_terminal_queue_result_without_postupgrade_queue_state(): void
+    {
+        $result = $this->completeMigrationResult();
+        $queueOutputs = &$result['scenario_results']['queue_state_preserved']['observed_outputs'];
+        $queueOutputs['dequeue_or_completion_result'] = [
+            'task_id' => 'migration-queued-activity',
+            'workflow_id' => 'migration-queue-holder',
+            'activity_id' => 'migration-queued-activity-call',
+            'disposition' => 'completed',
+            'duplicate_execution_count' => 0,
+        ];
+        unset($queueOutputs['postupgrade_queue_state']);
+
+        $evaluation = MigrationRuntimeResultGate::evaluate($result);
+
+        $this->assertSame('pass', $evaluation['status']);
+        $this->assertSame([], $evaluation['gate_failures']);
+    }
+
+    public function test_result_gate_requires_postupgrade_queue_state_for_claimable_disposition(): void
+    {
+        $result = $this->completeMigrationResult();
+        $queueOutputs = &$result['scenario_results']['queue_state_preserved']['observed_outputs'];
+        $queueOutputs['dequeue_or_completion_result'] = [
+            'task_id' => 'migration-queued-activity',
+            'workflow_id' => 'migration-queue-holder',
+            'activity_id' => 'migration-queued-activity-call',
+            'disposition' => 'claimable',
+            'duplicate_execution_count' => 0,
+        ];
+        unset($queueOutputs['postupgrade_queue_state']);
+
+        $evaluation = MigrationRuntimeResultGate::evaluate($result);
+
+        $this->assertSame('non_passing', $evaluation['status']);
+        $this->assertContains(
+            'postupgrade_queue_state',
+            $this->missingScenarioRequiredFields($evaluation, 'queue_state_preserved'),
+        );
+    }
+
     public function test_result_gate_rejects_unproven_not_applicable_classification(): void
     {
         $result = $this->completeMigrationResult();

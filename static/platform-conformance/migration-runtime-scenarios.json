@@ -582,12 +582,12 @@
       "operations": [
         "capture a queued v1 workflow or activity task before migration",
         "migrate without draining or replacing the durable task identity",
-        "poll and complete the migrated task after the v2 runtime starts"
+        "observe the same task and its deterministic disposition after the v2 runtime starts"
       ],
       "pass_criteria": [
-        "the pending task identity and task queue survive migration",
+        "the pending task identity, workflow or activity relationship, and durable pre-upgrade queue placement are observed",
         "the task is not duplicated or silently dropped",
-        "a v2 worker can dequeue or complete the migrated task"
+        "the migrated task remains claimable or is completed, deliberately recovered, or explicitly refused with operator-visible evidence"
       ]
     },
     {

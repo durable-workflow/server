@@ -414,8 +414,8 @@ const SCENARIO_FINDING_POLICIES = {
   queue_state_preserved: {
     owning_surface: 'workflow',
     finding_type: 'queue_state_loss',
-    expected_behavior: 'Pending v1 workflow and activity task identity remains durable and executable after migration.',
-    next_acceptance_criterion: 'preserve queued task identity across migration and attach before/after queue and completion evidence',
+    expected_behavior: 'Pending v1 workflow and activity task identity remains durably accounted for with a deterministic disposition after migration.',
+    next_acceptance_criterion: 'preserve one queued task identity and its workflow or activity relationship across migration, then attach queue placement, disposition, and duplication evidence',
   },
   schedule_cross_upgrade_cadence_preserved: {
     owning_surface: 'server',
@@ -754,6 +754,7 @@ function buildScenarioResults(
           suppliedScenario,
           artifactVersions,
           sourceCapabilities,
+          supplied,
         ),
         artifactVersions,
         artifactPrerequisiteFailures,
@@ -806,6 +807,7 @@ function buildScenarioResults(
           suppliedScenario,
           artifactVersions,
           sourceCapabilities,
+          supplied,
         ),
         artifactVersions,
         artifactPrerequisiteFailures,
@@ -1220,7 +1222,13 @@ function validNotApplicableScenario(scenarioId, scenario, sourceCapabilities) {
     && applicability.durable_state_mutation_attempted === false;
 }
 
-function normalizeScenarioResult(scenarioId, scenario, artifactVersions, sourceCapabilities = {}) {
+function normalizeScenarioResult(
+  scenarioId,
+  scenario,
+  artifactVersions,
+  sourceCapabilities = {},
+  scenarioContext = {},
+) {
   let observedOutputs = nonEmptyObject(scenario.observed_outputs)
     ?? nonEmptyObject(scenario.observedOutputs)
     ?? nonEmptyObject(scenario.evidence)
@@ -1245,9 +1253,27 @@ function normalizeScenarioResult(scenarioId, scenario, artifactVersions, sourceC
     ...objectValue(scenario),
     observed_outputs: observedOutputs,
   });
-  const status = commandFailure ? 'fail' : normalizedStatus(scenario.status);
+  const queueProductFailures = scenarioId === 'queue_state_preserved'
+    ? queueStateProductFailures(scenarioContext, observedOutputs)
+    : [];
+  if (queueProductFailures.length > 0) {
+    observedOutputs = {
+      ...observedOutputs,
+      queue_state_product_failures: queueProductFailures,
+      observed_behavior: queueStateFailureSummary(queueProductFailures),
+    };
+  }
+  const status = commandFailure || queueProductFailures.length > 0
+    ? 'fail'
+    : normalizedStatus(scenario.status);
   const missingRequiredFields = status === 'pass'
-    ? missingRequiredFieldsForScenario(scenarioId, scenario, observedOutputs, sourceCapabilities)
+    ? missingRequiredFieldsForScenario(
+      scenarioId,
+      scenario,
+      observedOutputs,
+      sourceCapabilities,
+      scenarioContext,
+    )
     : [];
   const normalized = {
     ...scenario,
@@ -1385,10 +1411,19 @@ function observedBehaviorForScenarioFailure(scenarioId, status, scenario) {
   return detail || `Migration scenario ${scenarioId} reported ${status} without a detailed observed behavior.`;
 }
 
-function missingRequiredFieldsForScenario(scenarioId, scenario, observedOutputs, sourceCapabilities = {}) {
+function missingRequiredFieldsForScenario(
+  scenarioId,
+  scenario,
+  observedOutputs,
+  sourceCapabilities = {},
+  scenarioContext = {},
+) {
   const missing = [];
 
   for (const field of requiredFieldsFor(scenarioId)) {
+    if (!scenarioRequiredFieldApplies(scenarioId, field, scenarioContext, scenario, observedOutputs)) {
+      continue;
+    }
     if (!hasField(scenario, field) && !hasField(observedOutputs, field)) {
       missing.push(field);
     }
@@ -1397,8 +1432,29 @@ function missingRequiredFieldsForScenario(scenarioId, scenario, observedOutputs,
   return uniqueStrings([
     ...missing,
     ...missingScenarioCommandOutputFields(scenarioId, scenario, observedOutputs),
-    ...scenarioSpecificMissingRequiredFields(scenarioId, scenario, observedOutputs, sourceCapabilities),
+    ...scenarioSpecificMissingRequiredFields(
+      scenarioId,
+      scenario,
+      observedOutputs,
+      sourceCapabilities,
+      scenarioContext,
+    ),
   ]);
+}
+
+function scenarioRequiredFieldApplies(scenarioId, field, scenarioContext, scenario, observedOutputs) {
+  if (scenarioId !== 'queue_state_preserved' || field !== 'postupgrade_queue_state') {
+    return true;
+  }
+
+  const stages = queueContinuityStages(scenarioContext, {
+    ...objectValue(scenario),
+    ...objectValue(observedOutputs),
+  });
+  const disposition = queueTaskDisposition(stages.dequeue_or_completion_result)
+    || queueTaskDisposition(stages.postupgrade_queue_state);
+
+  return !['completed', 'recovered', 'refused'].includes(disposition);
 }
 
 function missingScenarioCommandOutputFields(scenarioId, scenario, observedOutputs) {
@@ -1413,7 +1469,13 @@ function missingScenarioCommandOutputFields(scenarioId, scenario, observedOutput
     : [];
 }
 
-function scenarioSpecificMissingRequiredFields(scenarioId, scenario, observedOutputs, sourceCapabilities = {}) {
+function scenarioSpecificMissingRequiredFields(
+  scenarioId,
+  scenario,
+  observedOutputs,
+  sourceCapabilities = {},
+  scenarioContext = {},
+) {
   switch (scenarioId) {
     case 'latest_supported_v1_state_setup':
       return [
@@ -1432,10 +1494,13 @@ function scenarioSpecificMissingRequiredFields(scenarioId, scenario, observedOut
         ...missingEvidenceItemsForField(scenario, observedOutputs, 'seeded_queue_state', [
           'queued_task',
         ]),
+        ...missingSeededQueueStateEvidence(scenario, observedOutputs),
         ...missingEvidenceItemsForField(scenario, observedOutputs, 'queryable_history', [
           'queryable_history',
         ]),
       ];
+    case 'queue_state_preserved':
+      return queueStateMissingEvidence(scenarioContext, scenario, observedOutputs);
     case 'documented_migration_steps_execute':
       return [
         ...['commands_executed', 'exit_codes', 'command_timings']
@@ -1520,6 +1585,548 @@ function missingRollbackClassificationFields(scenario, observedOutputs) {
   return evidenceContainsAnyToken(value, ['supported', 'refused', 'irreversible', 'unsupported'])
     ? []
     : ['rollback_supported_state.supported_refused_or_irreversible'];
+}
+
+function missingSeededQueueStateEvidence(scenario, observedOutputs) {
+  const seededQueueState = nonEmptyObject(fieldValue(observedOutputs, 'seeded_queue_state'))
+    ?? nonEmptyObject(fieldValue(scenario, 'seeded_queue_state'))
+    ?? {};
+  const task = fieldValue(seededQueueState, 'queued_task');
+
+  if (isEmptyEvidence(task)) {
+    return [];
+  }
+
+  const missing = [];
+  if (queueTaskId(task) === '') {
+    missing.push('seeded_queue_state.queued_task.task_id');
+  }
+  if (queueTaskRelationship(task) === '') {
+    missing.push('seeded_queue_state.queued_task.workflow_or_activity_relationship');
+  }
+  if (queueTaskQueue(task) === '') {
+    missing.push('seeded_queue_state.queued_task.task_queue');
+  }
+  if (queueTaskQueuedAvailability(task) === '') {
+    missing.push('seeded_queue_state.queued_task.availability_state.queued');
+  }
+
+  return missing;
+}
+
+function queueStateMissingEvidence(scenarioContext, scenario, observedOutputs) {
+  const stages = queueContinuityStages(scenarioContext, observedOutputs);
+  const missing = [];
+  const disposition = queueTaskDisposition(stages.dequeue_or_completion_result)
+    || queueTaskDisposition(stages.postupgrade_queue_state);
+  const identityStages = [
+    'seeded_queue_state',
+    'preupgrade_queue_state',
+    'pending_task_identity',
+    'dequeue_or_completion_result',
+    ...(queueDispositionRemainsClaimable(disposition) ? ['postupgrade_queue_state'] : []),
+  ];
+
+  for (const stage of identityStages) {
+    const evidence = stages[stage];
+    if (queueTaskId(evidence) === '') {
+      missing.push(`${stage}.task_id`);
+    }
+    if (queueTaskRelationship(evidence) === '') {
+      missing.push(`${stage}.workflow_or_activity_relationship`);
+    }
+  }
+
+  if (queueTaskQueue(stages.seeded_queue_state) === '') {
+    missing.push('seeded_queue_state.queued_task.task_queue');
+  }
+  if (queueTaskQueuedAvailability(stages.seeded_queue_state) === '') {
+    missing.push('seeded_queue_state.queued_task.availability_state.queued');
+  }
+  if (queueTaskQueue(stages.preupgrade_queue_state) === '') {
+    missing.push('preupgrade_queue_state.task_queue');
+  }
+  if (queueTaskQueuedAvailability(stages.preupgrade_queue_state) === '') {
+    missing.push('preupgrade_queue_state.availability_state.queued');
+  }
+
+  if (disposition === '') {
+    missing.push('dequeue_or_completion_result.disposition');
+  }
+  if (
+    queueDispositionRemainsClaimable(disposition)
+    && queueTaskQueue(stages.postupgrade_queue_state) === ''
+  ) {
+    missing.push('postupgrade_queue_state.task_queue');
+  }
+  if (!queueResultHasDuplicationObservation(stages.dequeue_or_completion_result)) {
+    missing.push('dequeue_or_completion_result.duplicate_execution_count');
+  }
+
+  return uniqueStrings(missing);
+}
+
+function queueStateProductFailures(scenarioContext, observedOutputs) {
+  const stages = queueContinuityStages(scenarioContext, observedOutputs);
+  const failures = [];
+  const identities = Object.entries(stages)
+    .map(([stage, evidence]) => [stage, queueTaskId(evidence)])
+    .filter(([, identity]) => identity !== '');
+  const relationships = Object.entries(stages)
+    .map(([stage, evidence]) => [stage, queueTaskRelationship(evidence)])
+    .filter(([, relationship]) => relationship !== '');
+
+  if (identities.length > 1 && new Set(identities.map(([, value]) => value)).size > 1) {
+    failures.push({
+      code: 'queued_task_identity_changed',
+      observed_identities: Object.fromEntries(identities),
+    });
+  }
+  if (
+    relationships.length > 1
+    && new Set(relationships.map(([, value]) => value)).size > 1
+  ) {
+    failures.push({
+      code: 'queued_task_relationship_changed',
+      observed_relationships: Object.fromEntries(relationships),
+    });
+  }
+
+  const seededQueue = queueTaskQueue(stages.seeded_queue_state);
+  const preupgradeQueue = queueTaskQueue(stages.preupgrade_queue_state);
+  if (seededQueue !== '' && preupgradeQueue !== '' && seededQueue !== preupgradeQueue) {
+    failures.push({
+      code: 'preupgrade_queue_placement_changed',
+      seeded_task_queue: seededQueue,
+      preupgrade_task_queue: preupgradeQueue,
+    });
+  }
+
+  const finalDisposition = queueTaskDisposition(stages.dequeue_or_completion_result)
+    || queueTaskDisposition(stages.postupgrade_queue_state);
+  const postupgradeQueue = queueTaskQueue(stages.postupgrade_queue_state);
+  if (
+    queueDispositionRemainsClaimable(finalDisposition)
+    && preupgradeQueue !== ''
+    && postupgradeQueue !== ''
+    && preupgradeQueue !== postupgradeQueue
+  ) {
+    failures.push({
+      code: 'postupgrade_queue_placement_changed',
+      preupgrade_task_queue: preupgradeQueue,
+      postupgrade_task_queue: postupgradeQueue,
+    });
+  }
+
+  if (finalDisposition === 'refused' && !queueResultIsExplicitRefusal(stages.dequeue_or_completion_result)) {
+    failures.push({
+      code: 'queued_task_refusal_not_explicit',
+      disposition: finalDisposition,
+    });
+  }
+  if (finalDisposition === 'recovered' && !queueResultIsDeliberateRecovery(stages.dequeue_or_completion_result)) {
+    failures.push({
+      code: 'queued_task_recovery_not_deliberate',
+      disposition: finalDisposition,
+    });
+  }
+  if (finalDisposition !== '' && !queueDispositionAccepted(finalDisposition)) {
+    failures.push({
+      code: 'queued_task_unaccounted_disposition',
+      disposition: finalDisposition,
+    });
+  }
+
+  const duplication = queueDuplicationObservation(stages.dequeue_or_completion_result);
+  if (duplication.valid && duplication.value !== 0) {
+    failures.push({
+      code: 'queued_task_duplicate_execution',
+      duplicate_execution_count: duplication.value,
+    });
+  }
+
+  return failures;
+}
+
+function queueStateFailureSummary(failures) {
+  const codes = failures.map((failure) => stringValue(failure.code)).filter(Boolean);
+  return `Queued task continuity failed: ${codes.join(', ')}.`;
+}
+
+function queueContinuityStages(scenarioContext, observedOutputs) {
+  const setupScenario = objectValue(objectValue(scenarioContext).latest_supported_v1_state_setup);
+  const setupOutputs = nonEmptyObject(setupScenario.observed_outputs)
+    ?? nonEmptyObject(setupScenario.observedOutputs)
+    ?? nonEmptyObject(setupScenario.evidence)
+    ?? {};
+  const seededQueueState = nonEmptyObject(fieldValue(setupOutputs, 'seeded_queue_state')) ?? {};
+
+  return {
+    seeded_queue_state: fieldValue(seededQueueState, 'queued_task'),
+    preupgrade_queue_state: fieldValue(observedOutputs, 'preupgrade_queue_state'),
+    pending_task_identity: fieldValue(observedOutputs, 'pending_task_identity'),
+    postupgrade_queue_state: fieldValue(observedOutputs, 'postupgrade_queue_state'),
+    dequeue_or_completion_result: fieldValue(observedOutputs, 'dequeue_or_completion_result'),
+  };
+}
+
+function queueTaskId(value) {
+  if (typeof value === 'string' || typeof value === 'number') {
+    return stringValue(value);
+  }
+
+  return stringValue(queueNestedFieldValue(value, [
+    'durable_task_id',
+    'durableTaskId',
+    'task_id',
+    'taskId',
+    'pending_task_id',
+    'pendingTaskId',
+    'queue_task_id',
+    'queueTaskId',
+  ]));
+}
+
+function queueTaskRelationship(value) {
+  const explicit = queueNestedFieldValue(value, [
+    'workflow_activity_relationship',
+    'workflowActivityRelationship',
+    'workflow_or_activity_relationship',
+    'workflowOrActivityRelationship',
+    'workflow_relationship',
+    'workflowRelationship',
+    'activity_relationship',
+    'activityRelationship',
+    'relationship_id',
+    'relationshipId',
+    'parent_relationship',
+    'parentRelationship',
+  ]);
+  const explicitToken = canonicalQueueEvidenceToken(explicit);
+  if (explicitToken !== '') {
+    return explicitToken;
+  }
+
+  const workflowId = stringValue(queueNestedFieldValue(value, ['workflow_id', 'workflowId']));
+  const runId = stringValue(queueNestedFieldValue(value, ['run_id', 'runId', 'workflow_run_id', 'workflowRunId']));
+  const activityId = stringValue(queueNestedFieldValue(value, ['activity_id', 'activityId']));
+  const activityType = stringValue(queueNestedFieldValue(value, ['activity_type', 'activityType']));
+  const parts = [
+    workflowId === '' ? '' : `workflow:${workflowId}`,
+    runId === '' ? '' : `run:${runId}`,
+    activityId === '' ? '' : `activity:${activityId}`,
+    activityType === '' ? '' : `activity_type:${activityType}`,
+  ].filter(Boolean);
+
+  return parts.join('|');
+}
+
+function queueTaskQueue(value) {
+  return stringValue(queueNestedFieldValue(value, [
+    'task_queue',
+    'taskQueue',
+    'queue_name',
+    'queueName',
+    'queue_id',
+    'queueId',
+    'queue',
+    'durable_queue',
+    'durableQueue',
+  ]));
+}
+
+function queueTaskAvailability(value) {
+  const object = objectValue(value);
+  for (const state of [
+    'queued',
+    'pending',
+    'available',
+    'claimable',
+    'ready',
+    'claimed',
+    'delayed',
+    'reserved',
+  ]) {
+    if (truthy(object[state])) {
+      return state;
+    }
+  }
+  const token = normalizedQueueToken(queueNestedFieldValue(value, [
+    'availability_state',
+    'availabilityState',
+    'queue_state',
+    'queueState',
+    'task_status',
+    'taskStatus',
+    'disposition',
+    'status',
+  ]));
+
+  return [
+    'queued',
+    'claimable',
+    'available',
+    'ready',
+    'pending',
+    'claimed',
+    'delayed',
+    'reserved',
+    'completed',
+    'recovered',
+    'deliberately_recovered',
+    'refused',
+    'explicitly_refused',
+    'rejected',
+  ].includes(token) ? token : '';
+}
+
+function queueTaskQueuedAvailability(value) {
+  const object = objectValue(value);
+  if (
+    truthy(object.completed)
+    || truthy(object.recovered)
+    || truthy(object.deliberately_recovered)
+    || truthy(object.deliberatelyRecovered)
+    || truthy(object.refused)
+    || truthy(object.explicitly_refused)
+    || truthy(object.explicitlyRefused)
+  ) {
+    return '';
+  }
+
+  const explicitAvailability = normalizedQueueToken(queueNestedFieldValue(value, [
+    'availability_state',
+    'availabilityState',
+    'queue_state',
+    'queueState',
+    'task_status',
+    'taskStatus',
+    'disposition',
+    'status',
+  ]));
+  if ([
+    'completed',
+    'recovered',
+    'deliberately_recovered',
+    'refused',
+    'explicitly_refused',
+    'rejected',
+  ].includes(explicitAvailability)) {
+    return '';
+  }
+
+  const availability = queueTaskAvailability(value);
+  return [
+    'queued',
+    'claimable',
+    'available',
+    'ready',
+    'pending',
+    'claimed',
+    'delayed',
+    'reserved',
+  ].includes(availability)
+    ? availability
+    : '';
+}
+
+function queueTaskDisposition(value) {
+  const object = objectValue(value);
+  if (truthy(object.completed) || truthy(object.task_completed) || truthy(object.taskCompleted)) {
+    return 'completed';
+  }
+  if (truthy(object.claimable) || truthy(object.available)) {
+    return 'claimable';
+  }
+  if (truthy(object.deliberately_recovered) || truthy(object.deliberatelyRecovered)) {
+    return 'recovered';
+  }
+  if (truthy(object.explicitly_refused) || truthy(object.explicitlyRefused)) {
+    return 'refused';
+  }
+
+  const token = normalizedQueueToken(queueNestedFieldValue(value, [
+    'disposition',
+    'availability_state',
+    'availabilityState',
+    'queue_state',
+    'queueState',
+    'task_status',
+    'taskStatus',
+    'outcome',
+    'result',
+    'status',
+  ]));
+  if (['claimable', 'available', 'ready', 'pending', 'claimed'].includes(token)) {
+    return token;
+  }
+  if (['completed', 'complete', 'succeeded', 'executed'].includes(token)) {
+    return 'completed';
+  }
+  if (['recovered', 'deliberately_recovered'].includes(token)) {
+    return 'recovered';
+  }
+  if (['refused', 'explicitly_refused', 'rejected'].includes(token)) {
+    return 'refused';
+  }
+  if (['pass', 'fail', 'failed', 'error', 'not_covered', 'runner_blocked'].includes(token)) {
+    return '';
+  }
+
+  return token;
+}
+
+function queueDispositionRemainsClaimable(disposition) {
+  return ['claimable', 'available', 'ready', 'pending', 'claimed'].includes(disposition);
+}
+
+function queueDispositionAccepted(disposition) {
+  return queueDispositionRemainsClaimable(disposition)
+    || ['completed', 'recovered', 'refused'].includes(disposition);
+}
+
+function queueResultIsExplicitRefusal(value) {
+  const rawDisposition = normalizedQueueToken(queueNestedFieldValue(value, [
+    'disposition',
+    'task_status',
+    'taskStatus',
+    'outcome',
+    'result',
+    'status',
+  ]));
+  const explicit = ['refused', 'explicitly_refused', 'rejected'].includes(rawDisposition)
+    || truthy(queueNestedFieldValue(value, ['explicit_refusal', 'explicitRefusal', 'explicitly_refused', 'explicitlyRefused']));
+  const reason = queueNestedFieldValue(value, [
+    'refusal_reason',
+    'refusalReason',
+    'operator_visible_reason',
+    'operatorVisibleReason',
+    'reason',
+    'error',
+  ]);
+
+  return explicit && !isEmptyEvidence(reason);
+}
+
+function queueResultIsDeliberateRecovery(value) {
+  const rawDisposition = normalizedQueueToken(queueNestedFieldValue(value, [
+    'disposition',
+    'task_status',
+    'taskStatus',
+    'outcome',
+    'result',
+    'status',
+  ]));
+  const deliberate = ['recovered', 'deliberately_recovered'].includes(rawDisposition)
+    || truthy(queueNestedFieldValue(value, [
+      'deliberate_recovery',
+      'deliberateRecovery',
+      'deliberately_recovered',
+      'deliberatelyRecovered',
+    ]));
+  const action = queueNestedFieldValue(value, [
+    'recovery_action',
+    'recoveryAction',
+    'recovery_reason',
+    'recoveryReason',
+    'operator_visible_reason',
+    'operatorVisibleReason',
+  ]);
+
+  return deliberate && !isEmptyEvidence(action);
+}
+
+function queueResultHasDuplicationObservation(value) {
+  return queueDuplicationObservation(value).valid;
+}
+
+function queueDuplicationObservation(value) {
+  const observation = queueNestedFieldEntry(value, [
+    'duplicate_execution_count',
+    'duplicateExecutionCount',
+    'duplicate_task_count',
+    'duplicateTaskCount',
+    'duplicate_count',
+    'duplicateCount',
+    'duplicate_executions',
+    'duplicateExecutions',
+    'duplication_count',
+    'duplicationCount',
+    'extra_execution_count',
+    'extraExecutionCount',
+  ]);
+  if (!observation.found || observation.value === null || observation.value === undefined) {
+    return { valid: false, value: null };
+  }
+  if (typeof observation.value === 'string' && observation.value.trim() === '') {
+    return { valid: false, value: null };
+  }
+  if (!['number', 'string'].includes(typeof observation.value)) {
+    return { valid: false, value: null };
+  }
+
+  const number = Number(observation.value);
+  return Number.isFinite(number) && Number.isInteger(number) && number >= 0
+    ? { valid: true, value: number }
+    : { valid: false, value: null };
+}
+
+function queueNestedFieldValue(value, aliases) {
+  return queueNestedFieldEntry(value, aliases).value;
+}
+
+function queueNestedFieldEntry(value, aliases) {
+  if (!value || typeof value !== 'object') {
+    return { found: false, value: undefined };
+  }
+  if (Array.isArray(value)) {
+    for (const entry of value) {
+      const found = queueNestedFieldEntry(entry, aliases);
+      if (found.found) {
+        return found;
+      }
+    }
+    return { found: false, value: undefined };
+  }
+
+  const object = objectValue(value);
+  for (const alias of aliases) {
+    if (Object.hasOwn(object, alias)) {
+      return { found: true, value: object[alias] };
+    }
+  }
+  for (const entry of Object.values(object)) {
+    if (entry && typeof entry === 'object') {
+      const found = queueNestedFieldEntry(entry, aliases);
+      if (found.found) {
+        return found;
+      }
+    }
+  }
+
+  return { found: false, value: undefined };
+}
+
+function normalizedQueueToken(value) {
+  return stringValue(value).toLowerCase().replace(/[\s-]+/g, '_');
+}
+
+function canonicalQueueEvidenceToken(value) {
+  if (typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean') {
+    return stringValue(value);
+  }
+  if (!value || typeof value !== 'object') {
+    return '';
+  }
+  if (Array.isArray(value)) {
+    return value.map((entry) => canonicalQueueEvidenceToken(entry)).filter(Boolean).join('|');
+  }
+
+  return Object.entries(objectValue(value))
+    .sort(([left], [right]) => left.localeCompare(right))
+    .map(([key, entry]) => `${key}:${canonicalQueueEvidenceToken(entry)}`)
+    .filter((entry) => !entry.endsWith(':'))
+    .join('|');
 }
 
 function applicableSkewCellIds(kind, sourceCapabilities) {
@@ -1659,6 +2266,12 @@ function migrationFoundationEvidenceFromStorageSmoke(
     'v2_state_snapshot',
     'v2StateSnapshot',
   ]);
+  const queueStatePreserved = firstNonEmptyEvidenceObject(foundation, [
+    'queue_state_preserved',
+    'queueStatePreserved',
+    'queue_state_observations',
+    'queueStateObservations',
+  ]);
 
   if (Object.keys(migrationPlan).length > 0) {
     result.migration_plan = foundationTopLevelObservation(
@@ -1711,6 +2324,19 @@ function migrationFoundationEvidenceFromStorageSmoke(
       'documented_migration_steps_execute',
       migrationPlan,
       guideOutputs,
+      startedAt,
+    );
+  }
+
+  const queueOutputs = observedOutputsForRunbookScenario(
+    'queue_state_preserved',
+    queueStatePreserved,
+  );
+  if (Object.keys(queueOutputs).length > 0) {
+    scenarioResults.queue_state_preserved = foundationScenarioResult(
+      'queue_state_preserved',
+      queueStatePreserved,
+      queueOutputs,
       startedAt,
     );
   }
@@ -2650,6 +3276,15 @@ function resultPasses(result) {
     }
 
     for (const field of requiredFieldsFor(scenarioId)) {
+      if (!scenarioRequiredFieldApplies(
+        scenarioId,
+        field,
+        scenarios,
+        scenarios[scenarioId],
+        observedOutputs,
+      )) {
+        continue;
+      }
       if (!hasField(scenarios[scenarioId], field) && !hasField(observedOutputs, field)) {
         return false;
       }
@@ -2660,6 +3295,7 @@ function resultPasses(result) {
       scenarios[scenarioId],
       observedOutputs,
       result.source_capabilities,
+      scenarios,
     ).length > 0) {
       return false;
     }
@@ -4459,6 +5095,12 @@ function executeFoundationPlan(
     'post_upgrade_state_snapshot',
     'postUpgradeStateSnapshot',
   ]);
+  const queueStateSource = firstNonEmptyObject(plan, [
+    'queue_state_preserved',
+    'queueStatePreserved',
+    'queue_state_observations',
+    'queueStateObservations',
+  ]);
   const executedAt = timestamp();
   const v1Setup = buildFoundationV1SetupEvidence(
     v1SetupSource,
@@ -4484,11 +5126,18 @@ function executeFoundationPlan(
     source,
     defaults,
   );
+  const queueState = buildFoundationQueueStateEvidence(
+    queueStateSource,
+    v1Setup,
+    source,
+    defaults,
+  );
   const anyCommandFailed = [
     v1Setup,
     migrationExecution,
     preupgradeSnapshot,
     postupgradeSnapshot,
+    queueState,
   ].some((section) => section.commands_failed);
   const evidence = {
     migration_plan: foundationTopLevelObservation(
@@ -4552,6 +5201,7 @@ function executeFoundationPlan(
           seeded_workflows: v1Setup.seeded_workflows,
           seeded_schedules: v1Setup.seeded_schedules,
           seeded_worker_registrations: v1Setup.seeded_worker_registrations,
+          seeded_queue_state: v1Setup.seeded_queue_state,
           queryable_history: v1Setup.queryable_history,
           observed_behavior: v1Setup.observed_behavior,
         },
@@ -4574,6 +5224,24 @@ function executeFoundationPlan(
           observed_behavior: migrationExecution.observed_behavior,
         },
       },
+      ...(Object.keys(queueStateSource).length > 0 ? {
+        queue_state_preserved: {
+          scenario_id: 'queue_state_preserved',
+          status: queueState.status,
+          started_at: planStartedAt,
+          finished_at: timestamp(),
+          observed_outputs: {
+            source,
+            local_product_source_checkouts_used: false,
+            preupgrade_queue_state: queueState.preupgrade_queue_state,
+            postupgrade_queue_state: queueState.postupgrade_queue_state,
+            pending_task_identity: queueState.pending_task_identity,
+            dequeue_or_completion_result: queueState.dequeue_or_completion_result,
+            observed_behavior: queueState.observed_behavior,
+            commands_failed: queueState.commands_failed,
+          },
+        },
+      } : {}),
     },
   };
 
@@ -4591,6 +5259,13 @@ function executeFoundationPlan(
           'documented_migration_steps_execute',
           resolvedArtifactVersions,
           migrationExecution.observed_behavior,
+        ),
+      ] : [],
+      queue_state_preserved: queueState.commands_failed ? [
+        foundationCommandFailureFinding(
+          'queue_state_preserved',
+          resolvedArtifactVersions,
+          queueState.observed_behavior,
         ),
       ] : [],
     };
@@ -4613,6 +5288,10 @@ function buildFoundationV1SetupEvidence(source, sourceReleaseVersions, evidenceS
     firstNonEmptyObject(setup, ['seeded_worker_registrations', 'seededWorkerRegistrations']),
     defaults,
   );
+  const seededQueueState = executeCommandEvidenceValue(
+    firstNonEmptyObject(setup, ['seeded_queue_state', 'seededQueueState']),
+    defaults,
+  );
   const queryableHistory = executeCommandEvidenceValue(
     firstNonEmptyObject(setup, ['queryable_history', 'queryableHistory']),
     defaults,
@@ -4621,6 +5300,7 @@ function buildFoundationV1SetupEvidence(source, sourceReleaseVersions, evidenceS
     seededWorkflows,
     seededSchedules,
     seededWorkerRegistrations,
+    seededQueueState,
     queryableHistory,
   ].some((entry) => containsFailedCommand(entry));
   const missingEvidence = scenarioSpecificMissingRequiredFields(
@@ -4631,6 +5311,7 @@ function buildFoundationV1SetupEvidence(source, sourceReleaseVersions, evidenceS
       seeded_workflows: seededWorkflows,
       seeded_schedules: seededSchedules,
       seeded_worker_registrations: seededWorkerRegistrations,
+      seeded_queue_state: seededQueueState,
       queryable_history: queryableHistory,
     },
   );
@@ -4641,11 +5322,75 @@ function buildFoundationV1SetupEvidence(source, sourceReleaseVersions, evidenceS
     seeded_workflows: seededWorkflows,
     seeded_schedules: seededSchedules,
     seeded_worker_registrations: seededWorkerRegistrations,
+    seeded_queue_state: seededQueueState,
     queryable_history: queryableHistory,
     commands_failed: commandsFailed,
     observed_behavior: status === 'pass'
-      ? 'Executed published-artifact v1 setup commands and captured completed, in-flight, activity, retry, schedule, worker, and history observations.'
+      ? 'Executed published-artifact v1 setup commands and captured completed, in-flight, activity, retry, queue, schedule, worker, and history observations.'
       : foundationFailureSummary('latest_supported_v1_state_setup', commandsFailed, missingEvidence, evidenceSource),
+  };
+}
+
+function buildFoundationQueueStateEvidence(source, v1Setup, evidenceSource, defaults) {
+  const queueState = objectValue(source);
+  const preupgradeQueueState = executeCommandEvidenceValue(
+    fieldValue(queueState, 'preupgrade_queue_state'),
+    defaults,
+  );
+  const postupgradeQueueState = executeCommandEvidenceValue(
+    fieldValue(queueState, 'postupgrade_queue_state'),
+    defaults,
+  );
+  const pendingTaskIdentity = executeCommandEvidenceValue(
+    fieldValue(queueState, 'pending_task_identity'),
+    defaults,
+  );
+  const dequeueOrCompletionResult = executeCommandEvidenceValue(
+    fieldValue(queueState, 'dequeue_or_completion_result'),
+    defaults,
+  );
+  const observedOutputs = {
+    preupgrade_queue_state: preupgradeQueueState,
+    postupgrade_queue_state: postupgradeQueueState,
+    pending_task_identity: pendingTaskIdentity,
+    dequeue_or_completion_result: dequeueOrCompletionResult,
+  };
+  const scenarioContext = {
+    latest_supported_v1_state_setup: {
+      observed_outputs: {
+        seeded_queue_state: v1Setup.seeded_queue_state,
+      },
+    },
+  };
+  const commandsFailed = [
+    v1Setup.seeded_queue_state,
+    preupgradeQueueState,
+    postupgradeQueueState,
+    pendingTaskIdentity,
+    dequeueOrCompletionResult,
+  ].some((entry) => containsFailedCommand(entry));
+  const missingEvidence = queueStateMissingEvidence(scenarioContext, {}, observedOutputs);
+  const productFailures = queueStateProductFailures(scenarioContext, observedOutputs);
+  const status = commandsFailed || missingEvidence.length > 0 || productFailures.length > 0
+    ? 'fail'
+    : 'pass';
+
+  return {
+    status,
+    ...observedOutputs,
+    commands_failed: commandsFailed,
+    missing_evidence: missingEvidence,
+    product_failures: productFailures,
+    observed_behavior: status === 'pass'
+      ? 'Captured one durable v1 queued task through pre-upgrade placement and its deterministic v2 disposition without duplicate execution.'
+      : productFailures.length > 0
+        ? queueStateFailureSummary(productFailures)
+        : foundationFailureSummary(
+          'queue_state_preserved',
+          commandsFailed,
+          missingEvidence,
+          evidenceSource,
+        ),
   };
 }
 

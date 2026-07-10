@@ -74,6 +74,9 @@ class MigrationConformanceRunnerContractTest extends TestCase
             'embedded-v1-server-runtime',
             'maybeExecuteFoundationPlan',
             'executeFoundationPlan',
+            'buildFoundationQueueStateEvidence',
+            'queueStateProductFailures',
+            'queueResultHasDuplicationObservation',
             'host_executed_migration_foundation_plan',
             'maybeRunPublicGuideAudit',
             'public_migration_guide_audit',
@@ -957,6 +960,12 @@ class MigrationConformanceRunnerContractTest extends TestCase
             'php artisan queue:restart',
             'php artisan workflow:v1:list',
         ];
+        $queuedTaskIdentity = [
+            'task_id' => 'migration-queued-activity',
+            'workflow_id' => 'migration-queue-holder',
+            'activity_id' => 'migration-queued-activity-call',
+            'activity_type' => 'migration_sample_activity',
+        ];
         $plan = [
             'source' => 'published_artifact_foundation_plan',
             'source_release_versions' => $artifactVersions,
@@ -977,6 +986,12 @@ class MigrationConformanceRunnerContractTest extends TestCase
                 'seeded_worker_registrations' => [
                     'registered_workers' => $command('GET /api/workers?task_queue=migration-v1'),
                 ],
+                'seeded_queue_state' => [
+                    'queued_task' => $queuedTaskIdentity + [
+                        'task_queue' => 'migration-v1',
+                        'availability_state' => 'pending',
+                    ] + $command('php artisan workflow:start MigrationQueuedActivityWorkflow'),
+                ],
                 'queryable_history' => [
                     'queryable_history' => $command('GET /api/workflows/migration-completed/runs/latest/history'),
                 ],
@@ -993,6 +1008,21 @@ class MigrationConformanceRunnerContractTest extends TestCase
             ],
             'preupgrade_state_snapshot' => $snapshotWithCommands('preupgrade'),
             'postupgrade_state_snapshot' => $snapshotWithCommands('postupgrade'),
+            'queue_state_preserved' => [
+                'preupgrade_queue_state' => $queuedTaskIdentity + [
+                    'task_queue' => 'migration-v1',
+                    'availability_state' => 'pending',
+                ] + $command('GET /api/tasks/migration-queued-activity'),
+                'pending_task_identity' => $queuedTaskIdentity
+                    + $command('GET /api/tasks/migration-queued-activity/identity'),
+                'postupgrade_queue_state' => $queuedTaskIdentity + [
+                    'disposition' => 'completed',
+                ] + $command('GET /api/tasks/migration-queued-activity?runtime=v2'),
+                'dequeue_or_completion_result' => $queuedTaskIdentity + [
+                    'disposition' => 'completed',
+                    'duplicate_execution_count' => 0,
+                ] + $command('GET /api/tasks/migration-queued-activity/result'),
+            ],
         ];
 
         $result = $this->runRunnerEvidence(
@@ -1008,6 +1038,11 @@ class MigrationConformanceRunnerContractTest extends TestCase
         $this->assertSame('non_passing', $result['outcome']);
         $this->assertSame('pass', $result['scenario_results']['latest_supported_v1_state_setup']['status']);
         $this->assertSame('pass', $result['scenario_results']['documented_migration_steps_execute']['status']);
+        $this->assertSame('pass', $result['scenario_results']['queue_state_preserved']['status']);
+        $this->assertSame(
+            'migration-queued-activity',
+            $result['scenario_results']['latest_supported_v1_state_setup']['observed_outputs']['seeded_queue_state']['queued_task']['task_id'],
+        );
         $this->assertSame(
             'published_artifact_foundation_plan',
             $result['scenario_results']['latest_supported_v1_state_setup']['observed_outputs']['source'],
@@ -1097,6 +1132,75 @@ class MigrationConformanceRunnerContractTest extends TestCase
         $this->assertContains(
             'documented_migration_steps_execute',
             array_keys($result['finding_links']),
+        );
+    }
+
+    public function test_runner_keeps_failed_queue_seed_command_sticky_in_queue_continuity(): void
+    {
+        $nodeBinary = trim((string) shell_exec('command -v node 2>/dev/null'));
+        if ($nodeBinary === '') {
+            $this->markTestSkipped('node is required to exercise queued-task foundation commands.');
+        }
+
+        $artifactVersions = $this->artifactVersions();
+        $artifactSources = $this->artifactSources();
+        $queuedTaskIdentity = [
+            'task_id' => 'migration-queued-activity',
+            'workflow_id' => 'migration-queue-holder',
+            'activity_id' => 'migration-queued-activity-call',
+            'activity_type' => 'migration_sample_activity',
+        ];
+        $observationCommand = static fn (string $label): array => [
+            'command' => 'printf "%s\n" '.escapeshellarg($label),
+        ];
+        $plan = [
+            'source' => 'published_artifact_foundation_plan',
+            'source_release_versions' => $artifactVersions,
+            'v1_state_setup' => [
+                'seeded_queue_state' => [
+                    'queued_task' => $queuedTaskIdentity + [
+                        'task_queue' => 'migration-v1',
+                        'availability_state' => 'pending',
+                        'command' => 'printf "queue seed failed\n"; exit 9',
+                    ],
+                ],
+            ],
+            'queue_state_preserved' => [
+                'preupgrade_queue_state' => $queuedTaskIdentity + [
+                    'task_queue' => 'migration-v1',
+                    'availability_state' => 'pending',
+                ] + $observationCommand('preupgrade queue state'),
+                'pending_task_identity' => $queuedTaskIdentity
+                    + $observationCommand('pending task identity'),
+                'postupgrade_queue_state' => $queuedTaskIdentity + [
+                    'disposition' => 'completed',
+                ] + $observationCommand('postupgrade queue state'),
+                'dequeue_or_completion_result' => $queuedTaskIdentity + [
+                    'disposition' => 'completed',
+                    'duplicate_execution_count' => 0,
+                ] + $observationCommand('queue completion result'),
+            ],
+        ];
+
+        $result = $this->runRunnerEvidence(
+            $nodeBinary,
+            $this->completeRunnerEvidence(),
+            'dw-migration-queue-seed-command-failure-',
+            $this->publicGuideAuditArtifactEnvironment($artifactVersions, $artifactSources) + [
+                'DW_MIGRATION_FOUNDATION_PLAN_JSON' => json_encode($plan, JSON_THROW_ON_ERROR),
+                'DW_MIGRATION_RUN_FOUNDATION_PLAN' => '1',
+            ],
+        );
+
+        $this->assertSame('non_passing', $result['outcome']);
+        $this->assertSame('fail', $result['scenario_results']['latest_supported_v1_state_setup']['status']);
+        $this->assertSame('fail', $result['scenario_results']['queue_state_preserved']['status']);
+        $this->assertSame(
+            9,
+            $result['scenario_results']['latest_supported_v1_state_setup']['observed_outputs']['seeded_queue_state']['queued_task']['exit_code'],
+        );
+        $this->assertTrue(
+            $result['scenario_results']['queue_state_preserved']['observed_outputs']['commands_failed'],
         );
     }
 
@@ -2065,6 +2169,228 @@ COMMAND;
         $this->assertSame($this->artifactSources(), $result['artifact_sources']);
     }
 
+    public function test_runner_rejects_queue_continuity_that_switches_from_the_seeded_task(): void
+    {
+        $nodeBinary = trim((string) shell_exec('command -v node 2>/dev/null'));
+        if ($nodeBinary === '') {
+            $this->markTestSkipped('node is required to exercise queued-task identity continuity.');
+        }
+
+        $evidence = $this->completeRunnerEvidence();
+        $evidence['scenario_results']['latest_supported_v1_state_setup']['observed_outputs']['seeded_queue_state']['queued_task']['task_id'] = 'migration-seeded-task-a';
+
+        $result = $this->runRunnerEvidence($nodeBinary, $evidence, 'dw-migration-queue-identity-switch-');
+        $queueResult = $result['scenario_results']['queue_state_preserved'];
+
+        $this->assertSame('non_passing', $result['outcome']);
+        $this->assertSame('fail', $queueResult['status']);
+        $this->assertSame(
+            ['queued_task_identity_changed'],
+            array_column($queueResult['observed_outputs']['queue_state_product_failures'], 'code'),
+        );
+        $this->assertCount(1, $queueResult['linked_findings']);
+        $this->assertSame('workflow', $queueResult['linked_findings'][0]['owning_surface']);
+        $this->assertSame('queue_state_loss', $queueResult['linked_findings'][0]['finding_type']);
+        $this->assertSame($this->artifactVersions(), $queueResult['linked_findings'][0]['artifact_versions']);
+    }
+
+    public function test_runner_requires_a_non_null_finite_queue_duplication_observation(): void
+    {
+        $nodeBinary = trim((string) shell_exec('command -v node 2>/dev/null'));
+        if ($nodeBinary === '') {
+            $this->markTestSkipped('node is required to exercise queued-task duplication evidence.');
+        }
+
+        foreach ([null, '', false, []] as $missingDuplicationCount) {
+            $evidence = $this->completeRunnerEvidence();
+            $evidence['scenario_results']['queue_state_preserved']['observed_outputs']['dequeue_or_completion_result']['duplicate_execution_count'] = $missingDuplicationCount;
+
+            $result = $this->runRunnerEvidence($nodeBinary, $evidence, 'dw-migration-queue-duplication-gap-');
+            $queueResult = $result['scenario_results']['queue_state_preserved'];
+
+            $this->assertSame('non_passing', $result['outcome']);
+            $this->assertSame('not_covered', $queueResult['status']);
+            $this->assertContains(
+                'dequeue_or_completion_result.duplicate_execution_count',
+                $queueResult['observed_outputs']['missing_required_fields'],
+            );
+        }
+    }
+
+    public function test_runner_accepts_claimable_queue_disposition_with_preserved_placement(): void
+    {
+        $nodeBinary = trim((string) shell_exec('command -v node 2>/dev/null'));
+        if ($nodeBinary === '') {
+            $this->markTestSkipped('node is required to exercise claimable queued-task disposition evidence.');
+        }
+
+        $evidence = $this->completeRunnerEvidence();
+        $queueEvidence = &$evidence['scenario_results']['queue_state_preserved']['observed_outputs'];
+        $queueEvidence['postupgrade_queue_state']['disposition'] = 'claimable';
+        $queueEvidence['postupgrade_queue_state']['task_queue'] = 'migration-v1';
+        $queueEvidence['dequeue_or_completion_result']['disposition'] = 'claimable';
+        $queueEvidence['dequeue_or_completion_result']['task_queue'] = 'migration-v1';
+
+        $result = $this->runRunnerEvidence($nodeBinary, $evidence, 'dw-migration-queue-claimable-');
+
+        $this->assertSame('pass', $result['outcome']);
+        $this->assertSame('pass', $result['scenario_results']['queue_state_preserved']['status']);
+    }
+
+    public function test_runner_accepts_terminal_queue_result_without_postupgrade_queue_state(): void
+    {
+        $nodeBinary = trim((string) shell_exec('command -v node 2>/dev/null'));
+        if ($nodeBinary === '') {
+            $this->markTestSkipped('node is required to exercise terminal queued-task disposition evidence.');
+        }
+
+        $terminalResults = [
+            'completed' => [
+                'disposition' => 'completed',
+            ],
+            'recovered' => [
+                'disposition' => 'deliberately_recovered',
+                'deliberate_recovery' => true,
+                'recovery_action' => 'Requeued the task once under the v2 worker runtime.',
+            ],
+            'refused' => [
+                'disposition' => 'explicitly_refused',
+                'explicit_refusal' => true,
+                'refusal_reason' => 'The migrated activity type is not registered by this v2 worker.',
+            ],
+        ];
+
+        foreach ($terminalResults as $terminalDisposition => $terminalResult) {
+            $evidence = $this->completeRunnerEvidence();
+            $queueEvidence = &$evidence['scenario_results']['queue_state_preserved']['observed_outputs'];
+            $queueEvidence['dequeue_or_completion_result'] = array_replace(
+                $queueEvidence['dequeue_or_completion_result'],
+                $terminalResult,
+            );
+            unset($queueEvidence['postupgrade_queue_state']);
+
+            $result = $this->runRunnerEvidence($nodeBinary, $evidence, 'dw-migration-queue-terminal-no-post-state-');
+
+            $this->assertSame('pass', $result['outcome'], $terminalDisposition);
+            $this->assertSame(
+                'pass',
+                $result['scenario_results']['queue_state_preserved']['status'],
+                $terminalDisposition,
+            );
+        }
+    }
+
+    public function test_runner_requires_postupgrade_queue_state_for_claimable_disposition(): void
+    {
+        $nodeBinary = trim((string) shell_exec('command -v node 2>/dev/null'));
+        if ($nodeBinary === '') {
+            $this->markTestSkipped('node is required to exercise claimable queued-task disposition evidence.');
+        }
+
+        $evidence = $this->completeRunnerEvidence();
+        $queueEvidence = &$evidence['scenario_results']['queue_state_preserved']['observed_outputs'];
+        $queueEvidence['dequeue_or_completion_result']['disposition'] = 'claimable';
+        unset($queueEvidence['postupgrade_queue_state']);
+
+        $result = $this->runRunnerEvidence($nodeBinary, $evidence, 'dw-migration-queue-claimable-no-post-state-');
+        $queueResult = $result['scenario_results']['queue_state_preserved'];
+
+        $this->assertSame('non_passing', $result['outcome']);
+        $this->assertSame('not_covered', $queueResult['status']);
+        $this->assertContains('postupgrade_queue_state', $queueResult['observed_outputs']['missing_required_fields']);
+        $this->assertContains('postupgrade_queue_state.task_id', $queueResult['observed_outputs']['missing_required_fields']);
+        $this->assertContains('postupgrade_queue_state.task_queue', $queueResult['observed_outputs']['missing_required_fields']);
+    }
+
+    public function test_runner_rejects_terminal_availability_as_preupgrade_queue_evidence(): void
+    {
+        $nodeBinary = trim((string) shell_exec('command -v node 2>/dev/null'));
+        if ($nodeBinary === '') {
+            $this->markTestSkipped('node is required to exercise pre-upgrade queued-task availability evidence.');
+        }
+
+        foreach (['completed', 'recovered', 'refused'] as $terminalAvailability) {
+            $evidence = $this->completeRunnerEvidence();
+            $evidence['scenario_results']['latest_supported_v1_state_setup']['observed_outputs']['seeded_queue_state']['queued_task']['availability_state'] = $terminalAvailability;
+            $evidence['scenario_results']['queue_state_preserved']['observed_outputs']['preupgrade_queue_state']['availability_state'] = $terminalAvailability;
+
+            $result = $this->runRunnerEvidence($nodeBinary, $evidence, 'dw-migration-queue-terminal-preupgrade-');
+            $setupResult = $result['scenario_results']['latest_supported_v1_state_setup'];
+            $queueResult = $result['scenario_results']['queue_state_preserved'];
+
+            $this->assertSame('non_passing', $result['outcome']);
+            $this->assertSame('not_covered', $setupResult['status']);
+            $this->assertContains(
+                'seeded_queue_state.queued_task.availability_state.queued',
+                $setupResult['observed_outputs']['missing_required_fields'],
+            );
+            $this->assertSame('not_covered', $queueResult['status']);
+            $this->assertContains(
+                'preupgrade_queue_state.availability_state.queued',
+                $queueResult['observed_outputs']['missing_required_fields'],
+            );
+        }
+    }
+
+    public function test_runner_accepts_transport_specific_preupgrade_queue_availability(): void
+    {
+        $nodeBinary = trim((string) shell_exec('command -v node 2>/dev/null'));
+        if ($nodeBinary === '') {
+            $this->markTestSkipped('node is required to exercise transport-specific queued-task availability evidence.');
+        }
+
+        foreach (['delayed', 'reserved'] as $queuedAvailability) {
+            $evidence = $this->completeRunnerEvidence();
+            $evidence['scenario_results']['latest_supported_v1_state_setup']['observed_outputs']['seeded_queue_state']['queued_task']['availability_state'] = $queuedAvailability;
+            $evidence['scenario_results']['queue_state_preserved']['observed_outputs']['preupgrade_queue_state']['availability_state'] = $queuedAvailability;
+
+            $result = $this->runRunnerEvidence($nodeBinary, $evidence, 'dw-migration-queue-transport-preupgrade-');
+
+            $this->assertSame('pass', $result['outcome'], $queuedAvailability);
+            $this->assertSame(
+                'pass',
+                $result['scenario_results']['latest_supported_v1_state_setup']['status'],
+                $queuedAvailability,
+            );
+            $this->assertSame(
+                'pass',
+                $result['scenario_results']['queue_state_preserved']['status'],
+                $queuedAvailability,
+            );
+        }
+    }
+
+    public function test_runner_requires_refusal_to_be_explicit_and_operator_visible(): void
+    {
+        $nodeBinary = trim((string) shell_exec('command -v node 2>/dev/null'));
+        if ($nodeBinary === '') {
+            $this->markTestSkipped('node is required to exercise refused queued-task disposition evidence.');
+        }
+
+        $evidence = $this->completeRunnerEvidence();
+        $queueEvidence = &$evidence['scenario_results']['queue_state_preserved']['observed_outputs'];
+        $queueEvidence['postupgrade_queue_state']['disposition'] = 'refused';
+        $queueEvidence['dequeue_or_completion_result']['disposition'] = 'refused';
+
+        $result = $this->runRunnerEvidence($nodeBinary, $evidence, 'dw-migration-queue-implicit-refusal-');
+        $this->assertSame('fail', $result['scenario_results']['queue_state_preserved']['status']);
+        $this->assertContains(
+            'queued_task_refusal_not_explicit',
+            array_column(
+                $result['scenario_results']['queue_state_preserved']['observed_outputs']['queue_state_product_failures'],
+                'code',
+            ),
+        );
+
+        $queueEvidence['dequeue_or_completion_result']['disposition'] = 'explicitly_refused';
+        $queueEvidence['dequeue_or_completion_result']['explicit_refusal'] = true;
+        $queueEvidence['dequeue_or_completion_result']['refusal_reason'] = 'The migrated activity type is not registered by this v2 worker.';
+
+        $result = $this->runRunnerEvidence($nodeBinary, $evidence, 'dw-migration-queue-explicit-refusal-');
+        $this->assertSame('pass', $result['outcome']);
+        $this->assertSame('pass', $result['scenario_results']['queue_state_preserved']['status']);
+    }
+
     public function test_runner_normalizes_runbook_shaped_host_evidence_before_passing(): void
     {
         $nodeBinary = trim((string) shell_exec('command -v node 2>/dev/null'));
@@ -2892,6 +3218,13 @@ COMMAND;
             ];
         }
 
+        $queuedTaskIdentity = [
+            'task_id' => 'migration-queued-activity',
+            'workflow_id' => 'migration-queue-holder',
+            'activity_id' => 'migration-queued-activity-call',
+            'activity_type' => 'migration_sample_activity',
+        ];
+
         $scenarioResults['cli_access_to_preupgrade_state']['observed_outputs']['typed_response_contracts'] = [
             'cli' => ['schema' => 'durable-workflow.cli.workflow-response.v2'],
             'operator_api' => ['schema' => 'durable-workflow.operator.workflow-response.v2'],
@@ -2945,10 +3278,9 @@ COMMAND;
                 ],
             ],
             'seeded_queue_state' => [
-                'queued_task' => [
-                    'task_id' => 'migration-queued-activity',
+                'queued_task' => $queuedTaskIdentity + [
                     'task_queue' => 'migration-v1',
-                    'status' => 'pending',
+                    'availability_state' => 'pending',
                 ],
             ],
             'queryable_history' => [
@@ -2959,6 +3291,21 @@ COMMAND;
                     ],
                     'history_exported' => true,
                 ],
+            ],
+        ];
+        $scenarioResults['queue_state_preserved']['observed_outputs'] = [
+            'preupgrade_queue_state' => $queuedTaskIdentity + [
+                'task_queue' => 'migration-v1',
+                'availability_state' => 'pending',
+            ],
+            'pending_task_identity' => $queuedTaskIdentity,
+            'postupgrade_queue_state' => $queuedTaskIdentity + [
+                'disposition' => 'completed',
+            ],
+            'dequeue_or_completion_result' => $queuedTaskIdentity + [
+                'disposition' => 'completed',
+                'duplicate_execution_count' => 0,
+                'worker_runtime' => 'workflow-php-v2',
             ],
         ];
         $scenarioResults['documented_migration_steps_execute']['observed_outputs'] = [
@@ -3229,8 +3576,11 @@ COMMAND;
                     'state_kind' => 'queue_state',
                     'phase' => $phase,
                     'task_id' => 'migration-queued-activity',
+                    'workflow_id' => 'migration-queue-holder',
+                    'activity_id' => 'migration-queued-activity-call',
+                    'activity_type' => 'migration_sample_activity',
                     'task_queue' => 'migration-v1',
-                    'status' => $phase === 'preupgrade' ? 'pending' : 'completed',
+                    'availability_state' => $phase === 'preupgrade' ? 'pending' : 'completed',
                 ],
                 ...($phase === 'postupgrade' ? [
                     [

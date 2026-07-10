@@ -474,6 +474,9 @@ final class MigrationRuntimeResultGate
         $missing = [];
 
         foreach (self::stringList($requirements) as $field) {
+            if (! self::scenarioRequiredFieldApplies($scenarioId, $field, $scenarioResult, $observedOutputs)) {
+                continue;
+            }
             if (
                 ! self::hasAnyEvidenceValue($scenarioResult, self::fieldAliases($field))
                 && ! self::hasAnyEvidenceValue($observedOutputs, self::fieldAliases($field))
@@ -494,6 +497,67 @@ final class MigrationRuntimeResultGate
         );
 
         return array_values(array_unique($missing));
+    }
+
+    /**
+     * @param array<string, mixed> $scenarioResult
+     * @param array<string, mixed> $observedOutputs
+     */
+    private static function scenarioRequiredFieldApplies(
+        string $scenarioId,
+        string $field,
+        array $scenarioResult,
+        array $observedOutputs,
+    ): bool {
+        if ($scenarioId !== 'queue_state_preserved' || $field !== 'postupgrade_queue_state') {
+            return true;
+        }
+
+        $result = self::fieldValue($observedOutputs, 'dequeue_or_completion_result');
+        if (self::isEmptyEvidence($result)) {
+            $result = self::fieldValue($scenarioResult, 'dequeue_or_completion_result');
+        }
+        $disposition = self::queueDisposition($result);
+
+        return ! in_array($disposition, ['completed', 'recovered', 'refused'], true);
+    }
+
+    private static function queueDisposition(mixed $value): string
+    {
+        if (! is_array($value)) {
+            return '';
+        }
+        if (
+            ($value['completed'] ?? null) === true
+            || ($value['task_completed'] ?? $value['taskCompleted'] ?? null) === true
+        ) {
+            return 'completed';
+        }
+        if (($value['deliberately_recovered'] ?? $value['deliberatelyRecovered'] ?? null) === true) {
+            return 'recovered';
+        }
+        if (($value['explicitly_refused'] ?? $value['explicitlyRefused'] ?? null) === true) {
+            return 'refused';
+        }
+
+        $raw = self::stringValue(
+            $value['disposition']
+                ?? $value['availability_state']
+                ?? $value['availabilityState']
+                ?? $value['task_status']
+                ?? $value['taskStatus']
+                ?? $value['outcome']
+                ?? $value['status']
+                ?? null,
+        );
+        $token = strtolower((string) preg_replace('/[^a-z0-9]+/i', '_', trim($raw)));
+
+        return match ($token) {
+            'complete', 'completed', 'succeeded', 'executed' => 'completed',
+            'deliberately_recovered' => 'recovered',
+            'explicitly_refused', 'rejected' => 'refused',
+            default => $token,
+        };
     }
 
     /**

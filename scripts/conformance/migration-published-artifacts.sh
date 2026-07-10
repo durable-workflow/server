@@ -30,8 +30,9 @@ Environment overrides:
                                       embedded capability profile automatically.
   DW_MIGRATION_EVIDENCE_DIR          Directory of sorted JSON evidence shards from the host migration runner.
   DW_MIGRATION_FOUNDATION_PLAN_FILE  JSON plan of host commands to execute for
-                                      latest v1 state setup, migration-guide
-                                      commands, and before/after snapshots.
+                                      latest v1 state and queued-task setup,
+                                      migration-guide commands, queue continuity,
+                                      and before/after snapshots.
                                       Defaults to migration-foundation-plan.json
                                       in the result directory when present.
   DW_MIGRATION_FOUNDATION_PLAN_JSON  Inline JSON plan, or a path to a JSON plan.
