@@ -109,7 +109,7 @@ final class HeartbeatRuntimeContract
                 'runner_blocked',
             ],
             'heartbeat_contract' => [
-                'default_heartbeat_interval_seconds' => 60,
+                'default_heartbeat_interval_seconds' => 10,
                 'cadence_tolerance_percent' => 20,
                 'stale_window_source' => 'server heartbeat acknowledgement stale_after_seconds',
                 'stale_worker_default_list_behavior' => 'omitted_from_default_active_worker_list_after_stale_window',

@@ -2,7 +2,9 @@
 
 namespace App\Support;
 
+use App\Models\WorkerRegistration;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\DB;
 use Throwable;
 use Workflow\V2\Enums\TaskStatus;
 use Workflow\V2\Enums\TaskType;
@@ -66,5 +68,56 @@ final class WorkflowTaskLeaseRecovery
         } catch (Throwable) {
             // Repair is best-effort on the worker fence path.
         }
+    }
+
+    /**
+     * Fence and recover a task whose lease owner stopped heartbeating before
+     * the task lease itself expired. The row lock makes the lease attempt the
+     * hand-off boundary: either the old worker completes first, or recovery
+     * expires that attempt and every later completion is rejected.
+     */
+    public function recoverAbandonedTaskLease(
+        Request $request,
+        string $namespace,
+        WorkflowTask $candidate,
+    ): bool {
+        $task = DB::transaction(function () use ($namespace, $candidate): ?WorkflowTask {
+            /** @var WorkflowTask|null $task */
+            $task = WorkflowTask::query()->whereKey($candidate->id)->lockForUpdate()->first();
+
+            if (! $task instanceof WorkflowTask
+                || $task->task_type !== TaskType::Workflow
+                || $task->status !== TaskStatus::Leased
+                || $task->lease_owner !== $candidate->lease_owner
+                || $task->attempt_count !== $candidate->attempt_count
+            ) {
+                return null;
+            }
+
+            $owner = WorkerRegistration::query()
+                ->where('namespace', $namespace)
+                ->where('worker_id', $task->lease_owner)
+                ->first();
+
+            if ($owner instanceof WorkerRegistration && WorkerPollFence::isFresh($owner)) {
+                return null;
+            }
+
+            if ($owner instanceof WorkerRegistration) {
+                $owner->forceFill(['status' => WorkerRegistration::STATUS_SUPERSEDED])->save();
+            }
+
+            $task->forceFill(['lease_expires_at' => now()])->save();
+
+            return $task->refresh();
+        });
+
+        if (! $task instanceof WorkflowTask) {
+            return false;
+        }
+
+        $this->recoverExpiredTaskLease($request, $namespace, $task);
+
+        return true;
     }
 }

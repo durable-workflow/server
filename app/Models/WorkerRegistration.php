@@ -6,6 +6,8 @@ use Illuminate\Database\Eloquent\Model;
 
 class WorkerRegistration extends Model
 {
+    public const STATUS_SUPERSEDED = 'superseded';
+
     protected $table = 'workflow_worker_registrations';
 
     protected $fillable = [

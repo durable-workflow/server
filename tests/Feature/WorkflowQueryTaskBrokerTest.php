@@ -389,6 +389,210 @@ class WorkflowQueryTaskBrokerTest extends TestCase
             ->assertJsonPath('task.run_id', $run->id);
     }
 
+    public function test_distinct_worker_id_recovers_stale_workflow_lease_before_query_deadline(): void
+    {
+        Queue::fake();
+        config([
+            'server.workers.stale_after_seconds' => 3,
+            'server.query_tasks.timeout' => 20,
+        ]);
+        Carbon::setTestNow(Carbon::parse('2026-07-11 08:00:00'));
+
+        try {
+            $run = $this->startRemoteWorkflow('wf-query-distinct-worker-replacement');
+            $this->registerPythonWorker('python-query-worker-old', 'python-queries', ['python.queryable']);
+
+            $oldPoll = $this->postJson('/api/worker/workflow-tasks/poll', [
+                'worker_id' => 'python-query-worker-old',
+                'task_queue' => 'python-queries',
+            ], $this->workerHeaders());
+
+            $oldPoll->assertOk()
+                ->assertJsonPath('poll_status', 'leased')
+                ->assertJsonPath('task.run_id', $run->id)
+                ->assertJsonPath('task.workflow_task_attempt', 1);
+
+            /** @var WorkflowQueryTaskBroker $broker */
+            $broker = app(WorkflowQueryTaskBroker::class);
+            $queryTask = $broker->enqueue('default', $run->refresh(), 'current', $this->queryArguments());
+            $this->assertArrayHasKey('history_cutoff_sequence', $queryTask);
+
+            Carbon::setTestNow(now()->addSeconds(5));
+            $this->registerPythonWorker('python-query-worker-new', 'python-queries', ['python.queryable']);
+
+            $leasedBeforeRecovery = WorkflowTask::query()->findOrFail((string) $oldPoll->json('task.task_id'));
+            $this->assertSame(TaskStatus::Leased, $leasedBeforeRecovery->status);
+            $this->assertSame('python-query-worker-old', $leasedBeforeRecovery->lease_owner);
+            $this->assertTrue($leasedBeforeRecovery->lease_expires_at->isFuture());
+
+            $this->postJson("/api/worker/workflow-tasks/{$oldPoll->json('task.task_id')}/complete", [
+                'lease_owner' => 'python-query-worker-old',
+                'workflow_task_attempt' => 1,
+                'commands' => [
+                    [
+                        'type' => 'complete_workflow',
+                        'result' => Serializer::serializeWithCodec('avro', ['current' => 999]),
+                    ],
+                ],
+            ], $this->workerHeaders())
+                ->assertStatus(409)
+                ->assertJsonPath('reason', 'stale_worker_registration')
+                ->assertJsonPath('lease_owner', 'python-query-worker-old');
+
+            $replacementPoll = $this->postJson('/api/worker/workflow-tasks/poll', [
+                'worker_id' => 'python-query-worker-new',
+                'task_queue' => 'python-queries',
+            ], $this->workerHeaders());
+
+            $replacementPoll->assertOk()
+                ->assertJsonPath('poll_status', 'leased')
+                ->assertJsonPath('task.task_id', $oldPoll->json('task.task_id'))
+                ->assertJsonPath('task.run_id', $run->id)
+                ->assertJsonPath('task.lease_owner', 'python-query-worker-new')
+                ->assertJsonPath('task.workflow_task_attempt', 2);
+
+            $this->postJson('/api/worker/heartbeat', [
+                'worker_id' => 'python-query-worker-old',
+            ], $this->workerHeaders())
+                ->assertStatus(409)
+                ->assertJsonPath('reason', 'worker_registration_superseded');
+
+            $this->postJson("/api/worker/workflow-tasks/{$oldPoll->json('task.task_id')}/complete", [
+                'lease_owner' => 'python-query-worker-old',
+                'workflow_task_attempt' => 1,
+                'commands' => [
+                    [
+                        'type' => 'complete_workflow',
+                        'result' => Serializer::serializeWithCodec('avro', ['current' => 999]),
+                    ],
+                ],
+            ], $this->workerHeaders())
+                ->assertStatus(409)
+                ->assertJsonPath('reason', 'lease_owner_mismatch')
+                ->assertJsonPath('lease_owner', 'python-query-worker-new');
+
+            $this->postJson("/api/worker/workflow-tasks/{$replacementPoll->json('task.task_id')}/complete", [
+                'lease_owner' => 'python-query-worker-new',
+                'workflow_task_attempt' => 2,
+                'commands' => [
+                    [
+                        'type' => 'open_condition_wait',
+                        'condition_key' => 'replacement-query-ready',
+                        'timeout_seconds' => 300,
+                    ],
+                ],
+            ], $this->workerHeaders())
+                ->assertOk()
+                ->assertJsonPath('run_status', 'waiting');
+
+            $queryPoll = $this->postJson('/api/worker/query-tasks/poll', [
+                'worker_id' => 'python-query-worker-new',
+                'task_queue' => 'python-queries',
+                'timeout_seconds' => 0,
+            ], $this->workerHeaders());
+
+            $queryPoll->assertOk()
+                ->assertJsonPath('poll_status', 'leased')
+                ->assertJsonPath('task.query_task_id', $queryTask['query_task_id'])
+                ->assertJsonPath('task.lease_owner', 'python-query-worker-new')
+                ->assertJsonPath('task.query_task_attempt', 1);
+
+            $historyTypes = array_column($queryPoll->json('task.history_events'), 'event_type');
+            $this->assertSame(1, count(array_filter($historyTypes, static fn (string $type): bool => $type === 'WorkflowStarted')));
+            $this->assertSame(
+                1,
+                WorkflowHistoryEvent::query()
+                    ->where('workflow_run_id', $run->id)
+                    ->where('event_type', HistoryEventType::RepairRequested->value)
+                    ->count(),
+            );
+        } finally {
+            Carbon::setTestNow();
+        }
+    }
+
+    public function test_distinct_worker_id_reclaims_stale_query_lease_and_fences_old_attempt(): void
+    {
+        Queue::fake();
+        config(['server.workers.stale_after_seconds' => 3]);
+        Carbon::setTestNow(Carbon::parse('2026-07-11 09:00:00'));
+
+        try {
+            $run = $this->startRemoteWorkflow('wf-query-lease-worker-replacement');
+            WorkflowTask::query()->where('workflow_run_id', $run->id)->delete();
+            $this->registerPythonWorker('python-query-lease-old', 'python-queries', ['python.queryable']);
+
+            /** @var WorkflowQueryTaskBroker $broker */
+            $broker = app(WorkflowQueryTaskBroker::class);
+            $task = $broker->enqueue('default', $run, 'current', $this->queryArguments());
+
+            $oldPoll = $this->postJson('/api/worker/query-tasks/poll', [
+                'worker_id' => 'python-query-lease-old',
+                'task_queue' => 'python-queries',
+                'poll_request_id' => 'query-worker-old-poll-1',
+                'timeout_seconds' => 0,
+            ], $this->workerHeaders());
+
+            $oldPoll->assertOk()
+                ->assertJsonPath('poll_status', 'leased')
+                ->assertJsonPath('task.query_task_id', $task['query_task_id'])
+                ->assertJsonPath('task.query_task_attempt', 1);
+
+            Carbon::setTestNow(now()->addSeconds(5));
+            $this->registerPythonWorker('python-query-lease-new', 'python-queries', ['python.queryable']);
+
+            $this->postJson("/api/worker/query-tasks/{$task['query_task_id']}/complete", [
+                'lease_owner' => 'python-query-lease-old',
+                'query_task_attempt' => 1,
+                'result' => ['current' => 999],
+            ], $this->workerHeaders())
+                ->assertStatus(409)
+                ->assertJsonPath('reason', 'stale_worker_registration')
+                ->assertJsonPath('lease_owner', 'python-query-lease-old');
+
+            // The control-plane result probe owns abandoned query-lease
+            // recovery. A zero timeout still performs the initial probe.
+            $broker->waitForResult((string) $task['query_task_id']);
+
+            $replacementPoll = $this->postJson('/api/worker/query-tasks/poll', [
+                'worker_id' => 'python-query-lease-new',
+                'task_queue' => 'python-queries',
+                'poll_request_id' => 'query-worker-new-poll-1',
+                'timeout_seconds' => 0,
+            ], $this->workerHeaders());
+
+            $replacementPoll->assertOk()
+                ->assertJsonPath('poll_status', 'leased')
+                ->assertJsonPath('task.query_task_id', $task['query_task_id'])
+                ->assertJsonPath('task.lease_owner', 'python-query-lease-new')
+                ->assertJsonPath('task.query_task_attempt', 2);
+
+            $this->postJson("/api/worker/query-tasks/{$task['query_task_id']}/complete", [
+                'lease_owner' => 'python-query-lease-old',
+                'query_task_attempt' => 1,
+                'result' => ['current' => 999],
+            ], $this->workerHeaders())
+                ->assertStatus(409)
+                ->assertJsonPath('reason', 'lease_owner_mismatch')
+                ->assertJsonPath('lease_owner', 'python-query-lease-new');
+
+            $this->postJson("/api/worker/query-tasks/{$task['query_task_id']}/complete", [
+                'lease_owner' => 'python-query-lease-new',
+                'query_task_attempt' => 2,
+                'result' => ['current' => 5],
+            ], $this->workerHeaders())
+                ->assertOk()
+                ->assertJsonPath('outcome', 'completed');
+
+            $stored = $broker->task((string) $task['query_task_id']);
+            $this->assertSame('completed', $stored['status'] ?? null);
+            $this->assertSame(['current' => 5], $stored['result'] ?? null);
+            $this->assertSame(2, $stored['attempt_count'] ?? null);
+        } finally {
+            Carbon::setTestNow();
+        }
+    }
+
     public function test_query_task_long_poll_waits_while_ready_workflow_resume_task_blocks_claim(): void
     {
         Queue::fake();

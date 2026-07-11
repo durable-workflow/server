@@ -56,6 +56,23 @@ class WorkerPollFenceTest extends TestCase
         $this->assertTrue(WorkerPollFence::isCurrent(WorkerPollFence::snapshot($worker)));
     }
 
+    public function test_worker_fence_rejects_superseded_registration_even_with_fresh_heartbeat(): void
+    {
+        $worker = $this->createWorker('php-worker-superseded-fence');
+        $snapshot = WorkerPollFence::snapshot($worker);
+
+        $worker->forceFill([
+            'status' => WorkerRegistration::STATUS_SUPERSEDED,
+            'last_heartbeat_at' => now(),
+        ])->save();
+
+        $worker = $worker->fresh();
+
+        $this->assertInstanceOf(WorkerRegistration::class, $worker);
+        $this->assertFalse(WorkerPollFence::isFresh($worker));
+        $this->assertFalse(WorkerPollFence::isCurrent($snapshot));
+    }
+
     private function createWorker(string $workerId): WorkerRegistration
     {
         return WorkerRegistration::query()->create([

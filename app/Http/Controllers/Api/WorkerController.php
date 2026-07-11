@@ -546,6 +546,15 @@ class WorkerController
             ], 404);
         }
 
+        if ($worker->status === WorkerRegistration::STATUS_SUPERSEDED) {
+            return WorkerProtocol::json([
+                'error' => 'Worker registration was fenced after its leases were recovered.',
+                'reason' => 'worker_registration_superseded',
+                'worker_id' => $worker->worker_id,
+                'remediation' => 'Restart and register the worker with a new worker_id.',
+            ], 409);
+        }
+
         $heartbeatStatus = $this->workerRegistrationStatus(
             $worker->namespace,
             $worker->task_queue,
@@ -866,7 +875,7 @@ class WorkerController
 
     private function advertisedHeartbeatIntervalSeconds(): int
     {
-        $configured = (int) config('server.workers.heartbeat_interval_seconds', 60);
+        $configured = (int) config('server.workers.heartbeat_interval_seconds', 10);
 
         return max(1, min(3600, $configured));
     }
@@ -2335,7 +2344,24 @@ class WorkerController
         );
 
         if ($result['valid']) {
-            return null;
+            $leaseWorker = WorkerRegistration::query()
+                ->where('namespace', $namespace)
+                ->where('worker_id', $leaseOwner)
+                ->first();
+
+            if ($leaseWorker instanceof WorkerRegistration && WorkerPollFence::isFresh($leaseWorker)) {
+                return null;
+            }
+
+            return WorkerProtocol::json([
+                'task_id' => $taskId,
+                'workflow_task_attempt' => $workflowTaskAttempt,
+                'error' => 'Workflow task lease owner is no longer an active worker.',
+                'reason' => 'stale_worker_registration',
+                'task_status' => 'leased',
+                'lease_owner' => $leaseOwner,
+                'lease_expires_at' => $result['status']['lease_expires_at'] ?? null,
+            ], 409);
         }
 
         // Handle expired lease recovery

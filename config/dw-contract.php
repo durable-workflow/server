@@ -375,8 +375,8 @@ return [
         // --- Query task transport --------------------------------------
 
         'DW_QUERY_TASK_TIMEOUT' => [
-            'description' => 'Seconds the control plane waits for a query task response from the worker. The default covers one worker long-poll cycle plus dispatch grace and the workflow-task replay barrier, with a 40 second floor.',
-            'default' => 'max(DW_WORKER_POLL_TIMEOUT + 15, DW_WORKFLOW_TASK_TIMEOUT + 5, 40)',
+            'description' => 'Seconds the control plane waits for a query task response from the worker. The default covers one worker long-poll cycle plus dispatch grace, with a 40 second floor and a 55 second structured-response ceiling.',
+            'default' => 'min(max(DW_WORKER_POLL_TIMEOUT + 15, 40), 55)',
             'since' => '2.0.0',
             'legacy' => 'WORKFLOW_SERVER_QUERY_TASK_TIMEOUT',
         ],
@@ -430,14 +430,14 @@ return [
 
         'DW_WORKER_STALE_AFTER_SECONDS' => [
             'description' => 'Seconds after a worker heartbeat before the worker registration is surfaced as stale.',
-            'default' => 'max(DW_WORKER_POLL_TIMEOUT * 2, 60)',
+            'default' => 'max(DW_WORKER_HEARTBEAT_INTERVAL_SECONDS * 3, 30)',
             'since' => '2.0.0',
             'legacy' => 'WORKFLOW_SERVER_WORKER_STALE_AFTER_SECONDS',
         ],
 
         'DW_WORKER_HEARTBEAT_INTERVAL_SECONDS' => [
             'description' => 'Cadence (in seconds) the server advertises to SDKs in the register/heartbeat acknowledgement so each official SDK ticks at the same beat. Bounded to [1, 3600].',
-            'default' => '60',
+            'default' => '10',
             'since' => '2.1.0',
             'legacy' => 'WORKFLOW_SERVER_WORKER_HEARTBEAT_INTERVAL_SECONDS',
         ],

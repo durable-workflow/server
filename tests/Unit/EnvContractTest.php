@@ -85,7 +85,7 @@ class EnvContractTest extends TestCase
         $this->assertNotFalse($source);
 
         $this->assertSame(
-            'max(DW_WORKER_POLL_TIMEOUT + 15, DW_WORKFLOW_TASK_TIMEOUT + 5, 40)',
+            'min(max(DW_WORKER_POLL_TIMEOUT + 15, 40), 55)',
             self::$contract['vars']['DW_QUERY_TASK_TIMEOUT']['default'] ?? null,
         );
         $this->assertStringContainsString(
@@ -99,10 +99,33 @@ class EnvContractTest extends TestCase
             'The query-task timeout default must retain dispatch grace beyond one worker poll.',
         );
         $this->assertStringContainsString(
-            "EnvAuditor::env('DW_WORKFLOW_TASK_TIMEOUT', 'WORKFLOW_TASK_TIMEOUT', 60) + 5",
+            '55',
             $source,
-            'The query-task timeout default must cover the workflow-task lease barrier.',
+            'The query-task timeout default must reserve time for a structured response before the client transport deadline.',
         );
+    }
+
+    public function test_worker_replacement_defaults_fit_inside_synchronous_query_deadline(): void
+    {
+        $this->assertSame(
+            '10',
+            self::$contract['vars']['DW_WORKER_HEARTBEAT_INTERVAL_SECONDS']['default'] ?? null,
+        );
+        $this->assertSame(
+            'max(DW_WORKER_HEARTBEAT_INTERVAL_SECONDS * 3, 30)',
+            self::$contract['vars']['DW_WORKER_STALE_AFTER_SECONDS']['default'] ?? null,
+        );
+        $this->assertSame(
+            'min(max(DW_WORKER_POLL_TIMEOUT + 15, 40), 55)',
+            self::$contract['vars']['DW_QUERY_TASK_TIMEOUT']['default'] ?? null,
+        );
+
+        $heartbeatSeconds = 10;
+        $staleAfterSeconds = max($heartbeatSeconds * 3, 30);
+        $queryTimeoutSeconds = min(max(30 + 15, 40), 55);
+
+        $this->assertLessThan($queryTimeoutSeconds, $staleAfterSeconds);
+        $this->assertLessThan(60, $queryTimeoutSeconds);
     }
 
     public function test_docker_compose_uses_only_dw_or_framework_names(): void

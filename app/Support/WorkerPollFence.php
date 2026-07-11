@@ -45,7 +45,7 @@ final class WorkerPollFence
 
     public static function isFresh(WorkerRegistration $worker): bool
     {
-        return ! self::isStale($worker);
+        return $worker->status === 'active' && ! self::isStale($worker);
     }
 
     /**
@@ -74,7 +74,7 @@ final class WorkerPollFence
             return false;
         }
 
-        if (self::isStale($current)) {
+        if (! self::isFresh($current)) {
             return false;
         }
 

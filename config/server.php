@@ -370,14 +370,16 @@ return [
         'timeout' => (int) EnvAuditor::env(
             'DW_QUERY_TASK_TIMEOUT',
             'WORKFLOW_SERVER_QUERY_TASK_TIMEOUT',
-            max(
-                (int) EnvAuditor::env(
-                    'DW_WORKER_POLL_TIMEOUT',
-                    'WORKFLOW_SERVER_WORKER_POLL_TIMEOUT',
-                    WorkerProtocolVersion::DEFAULT_LONG_POLL_TIMEOUT,
-                ) + 15,
-                (int) EnvAuditor::env('DW_WORKFLOW_TASK_TIMEOUT', 'WORKFLOW_TASK_TIMEOUT', 60) + 5,
-                40,
+            min(
+                max(
+                    (int) EnvAuditor::env(
+                        'DW_WORKER_POLL_TIMEOUT',
+                        'WORKFLOW_SERVER_WORKER_POLL_TIMEOUT',
+                        WorkerProtocolVersion::DEFAULT_LONG_POLL_TIMEOUT,
+                    ) + 15,
+                    40,
+                ),
+                55,
             ),
         ),
         'lease_timeout' => (int) EnvAuditor::env(
@@ -433,7 +435,14 @@ return [
         'stale_after_seconds' => (int) EnvAuditor::env(
             'DW_WORKER_STALE_AFTER_SECONDS',
             'WORKFLOW_SERVER_WORKER_STALE_AFTER_SECONDS',
-            max((int) EnvAuditor::env('DW_WORKER_POLL_TIMEOUT', 'WORKFLOW_SERVER_WORKER_POLL_TIMEOUT', 30) * 2, 60),
+            max(
+                (int) EnvAuditor::env(
+                    'DW_WORKER_HEARTBEAT_INTERVAL_SECONDS',
+                    'WORKFLOW_SERVER_WORKER_HEARTBEAT_INTERVAL_SECONDS',
+                    10,
+                ) * 3,
+                30,
+            ),
         ),
         // Cadence advertised to SDKs in the register/heartbeat acknowledgement
         // so every official SDK ticks at the same beat by default. SDKs read
@@ -443,7 +452,7 @@ return [
         'heartbeat_interval_seconds' => (int) EnvAuditor::env(
             'DW_WORKER_HEARTBEAT_INTERVAL_SECONDS',
             'WORKFLOW_SERVER_WORKER_HEARTBEAT_INTERVAL_SECONDS',
-            60,
+            10,
         ),
     ],
 

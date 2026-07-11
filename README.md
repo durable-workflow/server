@@ -698,7 +698,7 @@ check in" via `GET /api/workers`, the CLI `dw worker:list` /
 `process_id`, that lets the server distinguish a restarted process that reused
 the same worker id and OS pid. The register and heartbeat acknowledgements
 advertise the recommended cadence in `heartbeat_interval_seconds` (default
-60s, configurable via `DW_WORKER_HEARTBEAT_INTERVAL_SECONDS`); workers that
+10s, configurable via `DW_WORKER_HEARTBEAT_INTERVAL_SECONDS`); workers that
 miss enough heartbeats fall out of the default `GET /api/workers` and
 `dw worker:list` active roster after `DW_WORKER_STALE_AFTER_SECONDS`; operators
 can still ask for the expired diagnostic set with `status=stale`, and stale
@@ -1410,14 +1410,15 @@ every operator-facing variable the server honors.
 | `DW_WORKER_PROTOCOL_VERSION` | `WorkerProtocol::VERSION` | Override for the advertised worker protocol version. |
 | `DW_HISTORY_PAGE_SIZE_DEFAULT` | `DEFAULT_HISTORY_PAGE_SIZE` | Default page size for worker history reads. |
 | `DW_HISTORY_PAGE_SIZE_MAX` | `MAX_HISTORY_PAGE_SIZE` | Maximum page size honored for worker history reads. |
-| `DW_QUERY_TASK_TIMEOUT` | `max(DW_WORKER_POLL_TIMEOUT + 15, DW_WORKFLOW_TASK_TIMEOUT + 5, 40)` | Seconds the control plane waits for a worker query response. The default covers one worker long-poll cycle plus dispatch grace and the workflow-task replay barrier, with a 40 second floor, so first queries do not time out while a query-capable worker is rotating polls or an active workflow-task lease is settling. |
+| `DW_QUERY_TASK_TIMEOUT` | `min(max(DW_WORKER_POLL_TIMEOUT + 15, 40), 55)` | Seconds the control plane waits for a worker query response. The default covers one worker long-poll cycle plus dispatch grace, while the 55-second ceiling preserves time to return a structured failure before the standard client transport deadline. |
 | `DW_QUERY_TASK_LEASE_TIMEOUT` | `DW_WORKFLOW_TASK_TIMEOUT` | Configured lease timeout for ephemeral query tasks; when `DW_QUERY_TASK_TIMEOUT` is nonzero, effective leases are at least `DW_QUERY_TASK_TIMEOUT + 5` seconds. |
 | `DW_QUERY_TASK_TTL_SECONDS` | `180` | Configured retention floor for query-task result rows; effective retention is at least query timeout + effective lease + 60 seconds. |
 | `DW_QUERY_TASK_MAX_PENDING_PER_QUEUE` | `1024` | Max pending cache-backed query tasks per namespace/task queue before new queries are rejected. |
 | `DW_QUERY_TASK_POLL_MAX_CONCURRENT` | (unset; derived for PHP CLI server) | Optional cap for concurrent held idle query-task worker long-poll waits. Pending query tasks are still claimed immediately before an idle poll waits; the default standalone image derives one query-task wait slot. |
 | `DW_WORKFLOW_TASK_TIMEOUT` | `60` | Default workflow-task lease timeout (seconds). |
 | `DW_ACTIVITY_TASK_TIMEOUT` | `300` | Default activity-task lease timeout (seconds). |
-| `DW_WORKER_STALE_AFTER_SECONDS` | `max(DW_WORKER_POLL_TIMEOUT * 2, 60)` | Seconds before a worker heartbeat is considered stale. |
+| `DW_WORKER_STALE_AFTER_SECONDS` | `max(DW_WORKER_HEARTBEAT_INTERVAL_SECONDS * 3, 30)` | Seconds before a worker heartbeat is considered stale. |
+| `DW_WORKER_HEARTBEAT_INTERVAL_SECONDS` | `10` | Cadence in seconds advertised to SDK workers for fleet heartbeats. |
 | `DW_MAX_HISTORY_EVENTS` | `50000` | Max history events per run before continue-as-new is enforced. |
 | `DW_HISTORY_RETENTION_DAYS` | `30` | Default retention for closed-run history (namespaces can override). |
 | `DW_MAX_PAYLOAD_BYTES` | `2097152` | Max serialized bytes for a single payload. |

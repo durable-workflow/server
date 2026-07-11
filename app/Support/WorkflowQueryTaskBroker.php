@@ -1007,7 +1007,7 @@ final class WorkflowQueryTaskBroker
     public function waitForResult(string $queryTaskId): ?array
     {
         return $this->longPoller->until(
-            fn (): ?array => $this->task($queryTaskId),
+            fn (): ?array => $this->taskForResultWait($queryTaskId),
             static function (?array $task): bool {
                 $status = $task['status'] ?? null;
 
@@ -1017,6 +1017,90 @@ final class WorkflowQueryTaskBroker
             null,
             [$this->signals->queryTaskResultChannel($queryTaskId)],
         );
+    }
+
+    /**
+     * Requeue a query lease as soon as its worker registration is stale. Query
+     * tasks live in the polling cache rather than the workflow-task table, so
+     * they need their own fenced recovery path instead of waiting for the
+     * longer query lease TTL.
+     *
+     * @return array<string, mixed>|null
+     */
+    private function taskForResultWait(string $queryTaskId): ?array
+    {
+        $task = $this->task($queryTaskId);
+
+        if (! is_array($task) || ($task['status'] ?? null) !== 'leased') {
+            return $task;
+        }
+
+        $namespace = $this->stringValue($task['namespace'] ?? null);
+        $taskQueue = $this->stringValue($task['task_queue'] ?? null);
+        $leaseOwner = $this->stringValue($task['lease_owner'] ?? null);
+
+        if ($namespace === null || $taskQueue === null || $leaseOwner === null) {
+            return $task;
+        }
+
+        $owner = WorkerRegistration::query()
+            ->where('namespace', $namespace)
+            ->where('worker_id', $leaseOwner)
+            ->first();
+
+        if ($owner instanceof WorkerRegistration && WorkerPollFence::isFresh($owner)) {
+            return $task;
+        }
+
+        $recovered = $this->withQueueLock(
+            $namespace,
+            $taskQueue,
+            function () use ($namespace, $taskQueue, $leaseOwner, $queryTaskId, $task): bool {
+                $current = $this->task($queryTaskId);
+
+                if (! is_array($current)
+                    || ($current['status'] ?? null) !== 'leased'
+                    || ($current['lease_owner'] ?? null) !== $leaseOwner
+                    || (int) ($current['attempt_count'] ?? 0) !== (int) ($task['attempt_count'] ?? 0)
+                ) {
+                    return false;
+                }
+
+                $owner = WorkerRegistration::query()
+                    ->where('namespace', $namespace)
+                    ->where('worker_id', $leaseOwner)
+                    ->first();
+
+                if ($owner instanceof WorkerRegistration && WorkerPollFence::isFresh($owner)) {
+                    return false;
+                }
+
+                if ($owner instanceof WorkerRegistration) {
+                    $owner->forceFill(['status' => WorkerRegistration::STATUS_SUPERSEDED])->save();
+                }
+
+                $this->forgetLeasedTask($current);
+                $current['status'] = 'pending';
+                $current['abandoned_lease_owner'] = $leaseOwner;
+                $current['abandoned_lease_attempt'] = (int) ($current['attempt_count'] ?? 0);
+                $current['recovered_at'] = now()->toJSON();
+                unset($current['lease_owner'], $current['lease_expires_at'], $current['leased_at']);
+
+                $this->putTask($current);
+                $this->store()->forget($this->leaseKey($queryTaskId));
+                $pending = $this->pendingTaskIds($namespace, $taskQueue);
+                $pending[] = $queryTaskId;
+                $this->storePendingTaskIds($namespace, $taskQueue, array_values(array_unique($pending)));
+
+                return true;
+            },
+        );
+
+        if ($recovered) {
+            $this->signals->signalQueryTaskQueue($namespace, $taskQueue);
+        }
+
+        return $this->task($queryTaskId);
     }
 
     /**
@@ -2325,6 +2409,23 @@ final class WorkflowQueryTaskBroker
             ];
         }
 
+        $leaseWorker = WorkerRegistration::query()
+            ->where('namespace', $namespace)
+            ->where('worker_id', $leaseOwner)
+            ->first();
+
+        if (! $leaseWorker instanceof WorkerRegistration || ! WorkerPollFence::isFresh($leaseWorker)) {
+            return [
+                'query_task_id' => $queryTaskId,
+                'query_task_attempt' => $queryTaskAttempt,
+                'outcome' => 'rejected',
+                'reason' => 'stale_worker_registration',
+                'error' => 'Query task lease owner is no longer an active worker.',
+                'lease_owner' => $leaseOwner,
+                'status' => 409,
+            ];
+        }
+
         $leaseExpiresAt = $this->timestamp($task['lease_expires_at'] ?? null);
 
         if ($leaseExpiresAt instanceof Carbon && $leaseExpiresAt->lte(now())) {
@@ -2905,7 +3006,7 @@ final class WorkflowQueryTaskBroker
 
     private function staleAfterSeconds(): int
     {
-        return max(1, (int) config('server.workers.stale_after_seconds', 60));
+        return max(1, (int) config('server.workers.stale_after_seconds', 30));
     }
 
     private function leaseGraceSeconds(): int

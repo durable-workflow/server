@@ -692,7 +692,7 @@ final class WorkerSessionRegistry
 
     private function workerStaleAfterSeconds(): int
     {
-        return max(1, (int) config('server.workers.stale_after_seconds', 300));
+        return max(1, (int) config('server.workers.stale_after_seconds', 30));
     }
 
     /**

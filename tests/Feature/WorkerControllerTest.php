@@ -475,7 +475,7 @@ class WorkerControllerTest extends TestCase
         $response->assertOk()
             ->assertJsonPath('worker_id', 'heartbeat-worker')
             ->assertJsonPath('acknowledged', true)
-            ->assertJsonPath('heartbeat_interval_seconds', 60);
+            ->assertJsonPath('heartbeat_interval_seconds', 10);
     }
 
     public function test_heartbeat_records_task_slots_and_process_metrics(): void
@@ -515,7 +515,7 @@ class WorkerControllerTest extends TestCase
 
         $response->assertOk()
             ->assertJsonPath('acknowledged', true)
-            ->assertJsonPath('heartbeat_interval_seconds', 60);
+            ->assertJsonPath('heartbeat_interval_seconds', 10);
 
         $worker = WorkerRegistration::query()
             ->where('worker_id', 'metrics-worker')

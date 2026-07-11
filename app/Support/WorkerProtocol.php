@@ -310,11 +310,11 @@ class WorkerProtocol
                 'supported' => true,
                 'heartbeat_interval_seconds' => max(1, min(3600, (int) config(
                     'server.workers.heartbeat_interval_seconds',
-                    60,
+                    10,
                 ))),
                 'stale_after_seconds' => max(1, (int) config(
                     'server.workers.stale_after_seconds',
-                    300,
+                    30,
                 )),
                 'fields' => [
                     'task_slots' => ['workflow_available', 'activity_available', 'session_available'],

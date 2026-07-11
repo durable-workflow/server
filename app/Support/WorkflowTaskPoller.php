@@ -532,7 +532,7 @@ final class WorkflowTaskPoller
                     ];
                 }
 
-                if ($this->recoverExpiredLeases($request, $namespace, $taskQueue)) {
+                if ($this->recoverUnavailableLeases($request, $namespace, $taskQueue)) {
                     $task = $this->admission->withLeaseAdmission(
                         $namespace,
                         $taskQueue,
@@ -818,33 +818,87 @@ final class WorkflowTaskPoller
         );
     }
 
-    private function recoverExpiredLeases(
+    private function recoverUnavailableLeases(
         Request $request,
         string $namespace,
         string $taskQueue,
     ): bool {
         $limit = max(1, (int) config('server.polling.expired_workflow_task_recovery_scan_limit', 5));
 
-        $expiredTasks = NamespaceWorkflowScope::taskQuery($namespace)
+        $queueLeaseOwners = NamespaceWorkflowScope::taskQuery($namespace)
             ->where('workflow_tasks.task_type', TaskType::Workflow->value)
             ->where('workflow_tasks.status', TaskStatus::Leased->value)
             ->where('workflow_tasks.queue', $taskQueue)
             ->whereNotNull('workflow_tasks.lease_owner')
-            ->whereNotNull('workflow_tasks.lease_expires_at')
-            ->where('workflow_tasks.lease_expires_at', '<=', now())
+            ->distinct()
+            ->pluck('workflow_tasks.lease_owner')
+            ->filter(static fn (mixed $workerId): bool => is_string($workerId) && $workerId !== '')
+            ->values()
+            ->all();
+
+        $freshLeaseOwners = WorkerRegistration::query()
+            ->where('namespace', $namespace)
+            ->whereIn('worker_id', $queueLeaseOwners)
+            ->get()
+            ->filter(static fn (WorkerRegistration $worker): bool => WorkerPollFence::isFresh($worker))
+            ->pluck('worker_id')
+            ->filter(static fn (mixed $workerId): bool => is_string($workerId) && $workerId !== '')
+            ->values()
+            ->all();
+
+        $leasedTasks = NamespaceWorkflowScope::taskQuery($namespace)
+            ->where('workflow_tasks.task_type', TaskType::Workflow->value)
+            ->where('workflow_tasks.status', TaskStatus::Leased->value)
+            ->where('workflow_tasks.queue', $taskQueue)
+            ->whereNotNull('workflow_tasks.lease_owner')
+            ->where(function ($query) use ($freshLeaseOwners): void {
+                $query->where(function ($query): void {
+                    $query->whereNotNull('workflow_tasks.lease_expires_at')
+                        ->where('workflow_tasks.lease_expires_at', '<=', now());
+                });
+
+                if ($freshLeaseOwners === []) {
+                    $query->orWhereNotNull('workflow_tasks.lease_owner');
+
+                    return;
+                }
+
+                $query->orWhereNotIn('workflow_tasks.lease_owner', $freshLeaseOwners);
+            })
             ->orderBy('workflow_tasks.lease_expires_at')
             ->limit($limit)
             ->get();
 
         $recovered = false;
 
-        foreach ($expiredTasks as $task) {
+        foreach ($leasedTasks as $task) {
+            $leaseExpired = $task->lease_expires_at !== null && $task->lease_expires_at->lte(now());
+            $leaseOwner = $this->nonEmptyString($task->lease_owner);
+            $owner = $leaseOwner === null
+                ? null
+                : WorkerRegistration::query()
+                    ->where('namespace', $namespace)
+                    ->where('worker_id', $leaseOwner)
+                    ->first();
+            $ownerUnavailable = ! $owner instanceof WorkerRegistration || ! WorkerPollFence::isFresh($owner);
+
+            if (! $leaseExpired && ! $ownerUnavailable) {
+                continue;
+            }
+
             if (! $this->markRecoveryAttempt($task->id)) {
                 continue;
             }
 
-            $this->leaseRecovery->recoverExpiredTaskLease($request, $namespace, $task);
-            $recovered = true;
+            if ($leaseExpired) {
+                $this->leaseRecovery->recoverExpiredTaskLease($request, $namespace, $task);
+                $recovered = true;
+
+                continue;
+            }
+
+            $recovered = $this->leaseRecovery->recoverAbandonedTaskLease($request, $namespace, $task)
+                || $recovered;
         }
 
         return $recovered;
