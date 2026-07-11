@@ -1165,6 +1165,10 @@ try:
         "worker_type": "conformance.counter.php" in worker,
         "worker_contracts": "workflowCommandContracts" in worker,
         "worker_query_executor": "WorkflowQueryTaskExecutor::CAPABILITY" in worker,
+        "worker_uses_combined_tick": "$standaloneWorker->tick(" in worker,
+        "worker_polls_queries_directly": "$standaloneWorker->processOneQueryTask(" in worker,
+        "worker_polls_workflows_directly": "$standaloneWorker->processOneWorkflowTask(" in worker,
+        "worker_retains_query_evidence": "sq_record_standalone_query_task($tickResult" in worker,
         "client_uses_workflow_client": "new WorkflowClient" in client,
     }, sort_keys=True))
 finally:
@@ -1177,6 +1181,10 @@ PY);
         $this->assertTrue($result['worker_type']);
         $this->assertTrue($result['worker_contracts']);
         $this->assertTrue($result['worker_query_executor']);
+        $this->assertTrue($result['worker_uses_combined_tick']);
+        $this->assertFalse($result['worker_polls_queries_directly']);
+        $this->assertFalse($result['worker_polls_workflows_directly']);
+        $this->assertTrue($result['worker_retains_query_evidence']);
         $this->assertTrue($result['client_uses_workflow_client']);
     }
 

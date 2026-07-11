@@ -1550,22 +1550,17 @@ while (time() < $deadline) {
     }
 
     try {
-        $queryResult = $standaloneWorker->processOneQueryTask($taskQueue, $workerId, 1);
-        if (($queryResult['processed'] ?? false) === true) {
-            sq_record_standalone_query_task($queryResult, $workerId, $taskQueue, $evidencePath);
-            continue;
-        }
-    } catch (Throwable $throwable) {
-        sq_json_log(['event' => 'query_poll_failed', 'message' => $throwable->getMessage()]);
-    }
+        $tickResult = $standaloneWorker->tick($taskQueue, $workerId, 1, 1);
+        sq_record_standalone_query_task($tickResult, $workerId, $taskQueue, $evidencePath);
 
-    try {
-        $workflowResult = $standaloneWorker->processOneWorkflowTask($taskQueue, $workerId, 1);
-        if (($workflowResult['processed'] ?? false) === true) {
+        $workflowResult = ($tickResult['kind'] ?? null) === 'workflow_task'
+            ? $tickResult
+            : ($tickResult['deferred_workflow_task'] ?? null);
+        if (is_array($workflowResult) && ($workflowResult['processed'] ?? false) === true) {
             sq_json_log(['event' => 'workflow_task_processed', 'result' => $workflowResult]);
         }
     } catch (Throwable $throwable) {
-        sq_json_log(['event' => 'workflow_poll_failed', 'message' => $throwable->getMessage()]);
+        sq_json_log(['event' => 'worker_tick_failed', 'message' => $throwable->getMessage()]);
     }
 }
 ''',
