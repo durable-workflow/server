@@ -549,6 +549,18 @@ function cw_failure_cell(string $parentRuntime, string $childRuntime): array
     $childHistory = cw_history($childWorkflowId, $childRunId);
     $failed = cw_require_child_event($parentHistory, 'ChildRunFailed', $childRunId);
     $payload = is_array($failed['payload'] ?? null) ? $failed['payload'] : [];
+    $parentRuntimeResult = $parentResume['observation']['runtime_result'] ?? null;
+    if (! is_array($parentRuntimeResult)) {
+        throw new RuntimeException('typed child failure was not observed by the parent runtime');
+    }
+    $parentFailureKind = (string) ($parentRuntimeResult['failure_kind'] ?? '');
+    if ($parentFailureKind !== 'child_workflow') {
+        throw new RuntimeException('parent runtime did not classify the typed failure as child_workflow');
+    }
+    $childFailureCategory = (string) ($payload['failure_category'] ?? '');
+    if ($childFailureCategory === '') {
+        throw new RuntimeException('ChildRunFailed omitted its child failure category');
+    }
     $exceptionClass = (string) ($payload['exception_class'] ?? $payload['exception_type'] ?? '');
     $observedMessage = (string) ($payload['message'] ?? '');
     if ($exceptionClass === '' || $observedMessage !== $message) {
@@ -560,7 +572,8 @@ function cw_failure_cell(string $parentRuntime, string $childRuntime): array
         'parent' => $parentRuntime,
         'child' => $childRuntime,
         'status' => 'pass',
-        'failure_kind' => (string) ($payload['failure_category'] ?? 'child_workflow'),
+        'failure_kind' => $parentFailureKind,
+        'child_failure_category' => $childFailureCategory,
         'exception_class' => $exceptionClass,
         'exception_type' => (string) ($payload['exception_type'] ?? $exceptionClass),
         'message' => $observedMessage,

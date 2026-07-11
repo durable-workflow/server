@@ -355,6 +355,22 @@ class ChildWorkflowRuntimeContractTest extends TestCase
         $this->assertStringContainsString('output_sample', $installProbe);
         $this->assertStringContainsString('WorkflowFiberRunner::forClass(', $runtimeProbe);
         $this->assertStringContainsString('cw_failure_cell(', $runtimeProbe);
+        $this->assertStringContainsString(
+            '$parentRuntimeResult = $parentResume[\'observation\'][\'runtime_result\'] ?? null;',
+            $runtimeProbe,
+        );
+        $this->assertStringContainsString('$parentFailureKind !== \'child_workflow\'', $runtimeProbe);
+        $this->assertStringContainsString(
+            '$childFailureCategory = (string) ($payload[\'failure_category\'] ?? \'\');',
+            $runtimeProbe,
+        );
+        $this->assertStringContainsString('$childFailureCategory === \'\'', $runtimeProbe);
+        $this->assertStringContainsString('\'failure_kind\' => $parentFailureKind', $runtimeProbe);
+        $this->assertStringContainsString('\'child_failure_category\' => $childFailureCategory', $runtimeProbe);
+        $this->assertStringNotContainsString(
+            '\'failure_kind\' => (string) ($payload[\'failure_category\'] ?? \'child_workflow\')',
+            $runtimeProbe,
+        );
         $this->assertStringContainsString('cw_parent_cancellation(', $runtimeProbe);
         $this->assertStringContainsString('cw_direct_child_cancellation(', $runtimeProbe);
         $this->assertStringContainsString('cw_parent_close_policy(', $runtimeProbe);
