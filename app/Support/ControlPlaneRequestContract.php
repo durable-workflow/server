@@ -77,6 +77,24 @@ final class ControlPlaneRequestContract
                         'request_id',
                     ],
                 ],
+                'import_waterline_v1' => [
+                    'fields' => [
+                        'source_id' => [
+                            'type' => 'string',
+                            'required' => true,
+                            'description' => 'Stable identifier for the source Waterline deployment.',
+                        ],
+                        'workflow' => [
+                            'type' => 'object',
+                            'required' => true,
+                            'description' => 'Public Waterline v1 workflow detail projection.',
+                        ],
+                        'dry_run' => [
+                            'type' => 'boolean',
+                            'required' => false,
+                        ],
+                    ],
+                ],
                 'update' => [
                     'fields' => [
                         'wait_for' => [

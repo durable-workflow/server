@@ -6,6 +6,7 @@ use App\Support\ControlPlaneProtocol;
 use App\Support\ExternalPayloadEnvelopeService;
 use App\Support\LongPoller;
 use App\Support\LongPollSignalStore;
+use App\Support\LegacyV1Projection;
 use App\Support\NamespaceWorkflowScope;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
@@ -64,7 +65,7 @@ class HistoryController
         $page = $hasMore ? $events->slice(0, $pageSize)->values() : $events->values();
         $lastSequence = $page->last()?->sequence;
 
-        return ControlPlaneProtocol::jsonForRequest($request, [
+        $payload = [
             'workflow_id' => $workflowId,
             'run_id' => $runId,
             'compatibility' => $run->compatibility,
@@ -81,7 +82,13 @@ class HistoryController
             'next_page_token' => $hasMore && $lastSequence !== null
                 ? self::encodePageToken((int) $lastSequence)
                 : null,
-        ]);
+        ];
+
+        if ($migrationProjection = LegacyV1Projection::metadataForRun($run)) {
+            $payload['migration_projection'] = $migrationProjection;
+        }
+
+        return ControlPlaneProtocol::jsonForRequest($request, $payload);
     }
 
     /**
@@ -107,7 +114,10 @@ class HistoryController
         /** @var OperatorObservabilityRepository $repository */
         $repository = app(OperatorObservabilityRepository::class);
 
-        return ControlPlaneProtocol::json($repository->runHistoryExport($run->fresh()));
+        $fresh = $run->fresh() ?? $run;
+        $bundle = $repository->runHistoryExport($fresh);
+
+        return ControlPlaneProtocol::json(LegacyV1Projection::decorateHistoryExport($bundle, $fresh));
     }
 
     private function loadEvents(string $runId, ?int $afterSequence, int $pageSize)

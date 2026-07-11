@@ -10,6 +10,7 @@ use App\Support\ControlPlaneResultMapper;
 use App\Support\ExternalPayloadEnvelopeService;
 use App\Support\ExternalPayloadStorageUnavailable;
 use App\Support\ExternalWorkflowUpdateAdmission;
+use App\Support\LegacyV1Projection;
 use App\Support\NamespaceExternalPayloadStorage;
 use App\Support\NamespaceWorkflowScope;
 use App\Support\SearchAttributeValueValidator;
@@ -356,11 +357,11 @@ class WorkflowController
             ], 404);
         }
 
-        return ControlPlaneProtocol::jsonForRequest($request, $this->formatRun(
-            $run,
-            $namespace,
-            $this->workflowControlPlane->describe($workflowId, ['namespace' => $namespace]),
-        ));
+        $description = LegacyV1Projection::isProjectedRun($run)
+            ? []
+            : $this->workflowControlPlane->describe($workflowId, ['namespace' => $namespace]);
+
+        return ControlPlaneProtocol::jsonForRequest($request, $this->formatRun($run, $namespace, $description));
     }
 
     public function runs(Request $request, string $workflowId): JsonResponse
@@ -420,14 +421,14 @@ class WorkflowController
             return $this->runNotFound($request, $workflowId, $runId);
         }
 
-        return ControlPlaneProtocol::jsonForRequest($request, $this->formatRun(
-            $run,
-            $namespace,
-            $this->workflowControlPlane->describe($workflowId, [
+        $description = LegacyV1Projection::isProjectedRun($run)
+            ? []
+            : $this->workflowControlPlane->describe($workflowId, [
                 'namespace' => $namespace,
                 'run_id' => $runId,
-            ]),
-        ));
+            ]);
+
+        return ControlPlaneProtocol::jsonForRequest($request, $this->formatRun($run, $namespace, $description));
     }
 
     public function debug(Request $request, string $workflowId): JsonResponse
@@ -517,6 +518,10 @@ class WorkflowController
             ], static fn (mixed $value): bool => $value !== null), 404);
         }
 
+        if ($response = $this->rejectProjectedV1Operation($request, $namespace, $workflowId, 'signal')) {
+            return $response;
+        }
+
         $validated = $request->validate([
             'input' => ['nullable', 'array'],
             'request_id' => ['nullable', 'string', 'max:255'],
@@ -586,6 +591,10 @@ class WorkflowController
         ]);
 
         $run = NamespaceWorkflowScope::currentRun($namespace, $workflowId);
+
+        if (LegacyV1Projection::isProjectedRun($run)) {
+            return $this->projectedV1OperationResponse($request, $run, 'query');
+        }
 
         if ($run instanceof WorkflowRun && $this->rejectsTerminalQuery($run)) {
             return $this->resultMapper->query(
@@ -710,6 +719,10 @@ class WorkflowController
             ], 404);
         }
 
+        if ($response = $this->rejectProjectedV1Operation($request, $namespace, $workflowId, 'update')) {
+            return $response;
+        }
+
         $validated = $request->validate([
             'input' => ['nullable', 'array'],
             'request_id' => ['nullable', 'string', 'max:255'],
@@ -789,6 +802,10 @@ class WorkflowController
             ], 404);
         }
 
+        if ($response = $this->rejectProjectedV1Operation($request, $namespace, $workflowId, 'cancel')) {
+            return $response;
+        }
+
         $validated = $request->validate([
             'reason' => ['nullable', 'string', 'max:1000'],
             'request_id' => ['nullable', 'string', 'max:255'],
@@ -832,6 +849,10 @@ class WorkflowController
                 'message' => 'Workflow not found.',
                 'reason' => 'instance_not_found',
             ], 404);
+        }
+
+        if ($response = $this->rejectProjectedV1Operation($request, $namespace, $workflowId, 'terminate')) {
+            return $response;
         }
 
         $validated = $request->validate([
@@ -879,6 +900,10 @@ class WorkflowController
             ], 404);
         }
 
+        if ($response = $this->rejectProjectedV1Operation($request, $namespace, $workflowId, 'repair')) {
+            return $response;
+        }
+
         $validated = $request->validate([
             'request_id' => ['nullable', 'string', 'max:255'],
         ]);
@@ -919,6 +944,10 @@ class WorkflowController
                 'message' => 'Workflow not found.',
                 'reason' => 'instance_not_found',
             ], 404);
+        }
+
+        if ($response = $this->rejectProjectedV1Operation($request, $namespace, $workflowId, 'archive')) {
+            return $response;
         }
 
         $validated = $request->validate([
@@ -1068,6 +1097,7 @@ class WorkflowController
      */
     private function formatRun(WorkflowRun $run, string $namespace, array $description = []): array
     {
+        $migrationProjection = LegacyV1Projection::metadataForRun($run);
         $runDescription = is_array($description['run'] ?? null)
             ? $description['run']
             : [];
@@ -1083,7 +1113,14 @@ class WorkflowController
                 'can_archive' => false,
             ];
         $isCurrentRun = ($runDescription['is_current_run'] ?? null) !== false;
-        $actions['can_query'] = $isCurrentRun && $this->canServeQuery($namespace, $run);
+        $actions['can_query'] = $migrationProjection === null
+            && $isCurrentRun
+            && $this->canServeQuery($namespace, $run);
+        if ($migrationProjection !== null) {
+            foreach (array_keys($actions) as $action) {
+                $actions[$action] = false;
+            }
+        }
         $terminalFailure = $this->terminalFailurePayload($run);
 
         $payload = [
@@ -1093,13 +1130,13 @@ class WorkflowController
             'workflow_type' => $run->workflow_type,
             'business_key' => $description['business_key'] ?? $run->business_key,
             'status' => $run->status->value,
-            'status_bucket' => $runDescription['status_bucket'] ?? null,
+            'status_bucket' => $runDescription['status_bucket'] ?? $run->status->statusBucket()->value,
             'is_terminal' => $run->status->isTerminal(),
-            'closed_reason' => $runDescription['closed_reason'] ?? null,
+            'closed_reason' => $runDescription['closed_reason'] ?? $run->closed_reason,
             'task_queue' => $run->queue,
             'run_number' => $runDescription['run_number'] ?? (int) $run->run_number,
-            'run_count' => $description['run_count'] ?? null,
-            'is_current_run' => $runDescription['is_current_run'] ?? null,
+            'run_count' => $description['run_count'] ?? ($migrationProjection !== null ? 1 : null),
+            'is_current_run' => $runDescription['is_current_run'] ?? ($migrationProjection !== null ? true : null),
             'compatibility' => $runDescription['compatibility'] ?? $run->compatibility,
             'compatibility_status' => $this->compatibilityStatus($namespace, $run),
             'compatibility_supported_in_fleet' => $this->compatibilitySupportedInFleet($namespace, $run),
@@ -1135,6 +1172,13 @@ class WorkflowController
             'updates' => $this->runUpdateDiagnostics($run),
         ];
 
+        if ($migrationProjection !== null) {
+            $payload['migration_projection'] = $migrationProjection;
+            $payload['action_blocked_reason'] = 'v1_projection_read_only';
+            $payload['input'] = null;
+            $payload['output'] = null;
+        }
+
         if ($terminalFailure !== null) {
             $payload['error'] = $terminalFailure['message'] ?? null;
             $payload['failure'] = $terminalFailure;
@@ -1143,6 +1187,35 @@ class WorkflowController
         }
 
         return $payload;
+    }
+
+    private function rejectProjectedV1Operation(
+        Request $request,
+        string $namespace,
+        string $workflowId,
+        string $operation,
+    ): ?JsonResponse {
+        $run = NamespaceWorkflowScope::currentRun($namespace, $workflowId);
+
+        return LegacyV1Projection::isProjectedRun($run)
+            ? $this->projectedV1OperationResponse($request, $run, $operation)
+            : null;
+    }
+
+    private function projectedV1OperationResponse(Request $request, WorkflowRun $run, string $operation): JsonResponse
+    {
+        return ControlPlaneProtocol::jsonForRequest($request, [
+            'message' => sprintf(
+                'Operation [%s] is unavailable because this execution is a read-only projection owned by the source v1 runtime.',
+                $operation,
+            ),
+            'reason' => 'v1_projection_read_only',
+            'remediation' => 'Run commands against the source v1 application until it completes; repeat projection never dispatches or advances standalone execution.',
+            'workflow_id' => $run->workflow_instance_id,
+            'run_id' => $run->id,
+            'operation' => $operation,
+            'execution_owner' => 'v1',
+        ], 409);
     }
 
     /**

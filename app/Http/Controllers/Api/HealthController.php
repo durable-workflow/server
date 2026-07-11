@@ -15,6 +15,7 @@ use App\Support\CoordinationHealthContract;
 use App\Support\FilesystemDiskAvailability;
 use App\Support\HeartbeatRuntimeContract;
 use App\Support\MigrationRuntimeContract;
+use App\Support\LegacyV1ProjectionContract;
 use App\Support\NamespaceRuntimeContract;
 use App\Support\NexusContract;
 use App\Support\PrincipalAttributionContract;
@@ -156,6 +157,7 @@ class HealthController
             'workflow_lifecycle_contract' => true,
             'workflow_update_runtime_contract' => true,
             'embedded_v2_import' => $embeddedV2ImportAvailable,
+            'waterline_v1_projection' => true,
             'payload_codecs' => CodecRegistry::universal(),
             'response_compression' => (bool) config('server.compression.enabled', true)
                 ? ['gzip', 'deflate']
@@ -211,6 +213,7 @@ class HealthController
             'skew_refusal_matrix_contract' => SkewRefusalMatrixContract::manifest(),
             'worker_versioning_runtime_contract' => WorkerVersioningRuntimeContract::manifest(),
             'migration_runtime_contract' => MigrationRuntimeContract::manifest(),
+            'waterline_v1_projection_contract' => LegacyV1ProjectionContract::manifest(),
             'workflow_lifecycle_contract' => WorkflowLifecycleContract::manifest(),
             'workflow_update_runtime_contract' => WorkflowUpdateRuntimeContract::manifest(),
             'namespace_runtime_contract' => NamespaceRuntimeContract::manifest(),

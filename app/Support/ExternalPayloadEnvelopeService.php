@@ -134,6 +134,7 @@ class ExternalPayloadEnvelopeService
                 $payload['exception'],
                 $codec,
                 $this->redactActivityFailureRuntimeInternals($eventType, $payload),
+                $this->isLegacyV1OpaqueExceptionProjection($eventType, $payload),
             );
         }
 
@@ -181,6 +182,7 @@ class ExternalPayloadEnvelopeService
         array $snapshot,
         ?string $fallbackCodec,
         bool $redactRuntimeInternals = false,
+        bool $preserveOpaqueProjectionValue = false,
     ): array {
         $codec = $this->stringValue($snapshot['details_payload_codec'] ?? null) ?? $fallbackCodec;
 
@@ -206,7 +208,38 @@ class ExternalPayloadEnvelopeService
             }
         }
 
+        if (
+            $preserveOpaqueProjectionValue
+            && isset($snapshot['value'])
+            && $this->isOpaqueLegacyPayloadDescriptor($snapshot['value'])
+        ) {
+            $neutral['value'] = $snapshot['value'];
+        }
+
         return $neutral;
+    }
+
+    /** @param array<string, mixed> $payload */
+    private function isLegacyV1OpaqueExceptionProjection(?string $eventType, array $payload): bool
+    {
+        $projection = is_array($payload['migration_projection'] ?? null)
+            ? $payload['migration_projection']
+            : [];
+
+        return $eventType === 'ActivityFailed'
+            && ($projection['source_record'] ?? null) === 'workflow_exception';
+    }
+
+    private function isOpaqueLegacyPayloadDescriptor(mixed $value): bool
+    {
+        return is_array($value)
+            && is_bool($value['available'] ?? null)
+            && ($value['encoding'] ?? null) === 'php-serialize'
+            && array_key_exists('value', $value)
+            && (is_string($value['value'] ?? null) || ($value['value'] ?? null) === null)
+            && ($value['portable'] ?? null) === false
+            && ($value['unsupported_reason'] ?? null) === 'legacy_php_serialization_not_portable'
+            && ($value['remediation'] ?? null) === 'Treat the preserved value as opaque; export decoded JSON from the source application if portable payload access is required.';
     }
 
     /**

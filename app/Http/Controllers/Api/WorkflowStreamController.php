@@ -4,6 +4,7 @@ namespace App\Http\Controllers\Api;
 
 use App\Models\WorkflowDurableStream;
 use App\Support\ControlPlaneProtocol;
+use App\Support\LegacyV1Projection;
 use App\Support\NamespaceWorkflowScope;
 use App\Support\StreamClosedException;
 use App\Support\StreamErroredException;
@@ -156,6 +157,10 @@ class WorkflowStreamController
             return $this->notFound($request);
         }
 
+        if (LegacyV1Projection::isProjectedRun($run)) {
+            return $this->projectedRunReadOnly($request, $workflowId, $runId);
+        }
+
         $payload = $request->validate([
             'items' => ['required', 'array', 'min:1', 'max:'.WorkflowStreamService::DEFAULT_MAX_ITEMS_PER_APPEND],
             'items.*' => ['array'],
@@ -232,6 +237,10 @@ class WorkflowStreamController
             return $this->notFound($request);
         }
 
+        if (LegacyV1Projection::isProjectedRun($run)) {
+            return $this->projectedRunReadOnly($request, $workflowId, $runId);
+        }
+
         $payload = $request->validate([
             'error_reason' => ['nullable', 'string', 'max:191'],
             'retention_seconds' => ['nullable', 'integer', 'min:1'],
@@ -262,6 +271,18 @@ class WorkflowStreamController
             'workflow_run_id' => $runId,
             'stream' => $this->formatStream($stream),
         ]);
+    }
+
+    private function projectedRunReadOnly(Request $request, string $workflowId, string $runId): JsonResponse
+    {
+        return ControlPlaneProtocol::jsonForRequest($request, [
+            'message' => 'Durable streams cannot mutate a read-only v1 projection.',
+            'reason' => 'v1_projection_read_only',
+            'remediation' => 'Continue execution and stream production on the source v1 application.',
+            'workflow_id' => $workflowId,
+            'run_id' => $runId,
+            'execution_owner' => 'v1',
+        ], 409);
     }
 
     private function notFound(Request $request): JsonResponse
