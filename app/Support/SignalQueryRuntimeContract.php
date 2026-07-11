@@ -16,7 +16,7 @@ final class SignalQueryRuntimeContract
 {
     public const SCHEMA = 'durable-workflow.v2.signal-query-runtime.contract';
 
-    public const VERSION = 32;
+    public const VERSION = 33;
 
     public const RESULT_SCHEMA = 'durable-workflow.v2.signal-query-runtime.result';
 
@@ -760,9 +760,10 @@ final class SignalQueryRuntimeContract
                         ],
                         'crate' => [
                             'package' => 'durable-workflow',
-                            'version' => '0.1.2',
                             'source' => 'crates.io',
-                            'cargo_requirement' => '=0.1.2',
+                            'version_source' => 'artifactVersions.sdk-rust',
+                            'cargo_requirement_template' => '={version}',
+                            'requires_exact_semver' => true,
                         ],
                         'query_state_models' => [
                             'rust_worker_rust_php_python_clients' => 'snapshot_derived_transport_state',

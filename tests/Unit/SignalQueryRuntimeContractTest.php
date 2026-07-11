@@ -14,7 +14,7 @@ class SignalQueryRuntimeContractTest extends TestCase
         $manifest = SignalQueryRuntimeContract::manifest();
 
         $this->assertSame('durable-workflow.v2.signal-query-runtime.contract', $manifest['schema']);
-        $this->assertSame(32, SignalQueryRuntimeContract::VERSION);
+        $this->assertSame(33, SignalQueryRuntimeContract::VERSION);
         $this->assertSame(SignalQueryRuntimeContract::VERSION, $manifest['version']);
         $this->assertSame('durable-workflow.v2.signal-query-runtime.result', $manifest['result_schema']);
         $this->assertSame('signal_query_runtime_contract', $manifest['fixture_category']);
@@ -125,7 +125,7 @@ class SignalQueryRuntimeContractTest extends TestCase
         );
     }
 
-    public function test_manifest_requires_the_exact_suite_v19_rust_cells_and_provenance(): void
+    public function test_manifest_requires_artifact_tuple_rust_cells_and_provenance(): void
     {
         $manifest = SignalQueryRuntimeContract::manifest();
         $rustScenarios = [
@@ -147,7 +147,9 @@ class SignalQueryRuntimeContractTest extends TestCase
 
         $rustShard = $manifest['host_runner_contract']['evidence_shards']['rust_published_artifact_matrix'];
         $this->assertSame($rustScenarios, $rustShard['must_cover_scenarios']);
-        $this->assertSame('=0.1.2', $rustShard['crate']['cargo_requirement']);
+        $this->assertSame('artifactVersions.sdk-rust', $rustShard['crate']['version_source']);
+        $this->assertSame('={version}', $rustShard['crate']['cargo_requirement_template']);
+        $this->assertTrue($rustShard['crate']['requires_exact_semver']);
         $this->assertSame('crates.io', $rustShard['crate']['source']);
         $this->assertSame(
             'snapshot_derived_transport_state',
@@ -376,7 +378,7 @@ PY);
         $resultGate = SignalQueryRuntimeContract::manifest()['result_gate'];
 
         $this->assertSame(SignalQueryRuntimeResultGate::SCHEMA, $resultGate['schema']);
-        $this->assertSame(27, SignalQueryRuntimeResultGate::VERSION);
+        $this->assertSame(28, SignalQueryRuntimeResultGate::VERSION);
         $this->assertSame(SignalQueryRuntimeResultGate::VERSION, $resultGate['version']);
         $this->assertSame(
             SignalQueryRuntimeContract::RESULT_SCHEMA,
@@ -465,6 +467,21 @@ PY);
         $this->assertSame('non_passing', $evaluation['status']);
         $this->assertContains('rust_sdk_version_mismatch', $failureCodes);
         $this->assertContains('rust_worker_registration_sdk_version_mismatch', $failureCodes);
+    }
+
+    public function test_result_gate_requires_official_crates_io_provenance_for_rust_and_avro(): void
+    {
+        $result = $this->completeSignalQueryResult();
+        $outputs = &$result['scenario_results']['rust_worker_rust_php_python_clients']['observed_outputs'];
+        $outputs['rust_crate_provenance']['source'] = 'registry+https://packages.example.test/index';
+        $outputs['apache_avro_provenance']['source'] = 'registry+https://packages.example.test/index';
+
+        $evaluation = SignalQueryRuntimeResultGate::evaluate($result);
+        $failureCodes = array_column($evaluation['gate_failures'], 'code');
+
+        $this->assertSame('non_passing', $evaluation['status']);
+        $this->assertContains('rust_crate_registry_provenance_mismatch', $failureCodes);
+        $this->assertContains('rust_valid_avro_round_trip_not_proved', $failureCodes);
     }
 
     public function test_result_gate_rejects_replay_query_command_mutation(): void
@@ -958,6 +975,11 @@ PY);
         }
 
         $this->assertStringContainsString('durable-workflow = "={version}"', $runner);
+        $this->assertStringContainsString(
+            'version = rust_crate_version_from_artifact_tuple(artifact_versions)',
+            $runner,
+        );
+        $this->assertStringNotContainsString('version != "0.1.2"', $runner);
         $this->assertStringContainsString('Cargo.lock', $runner);
         $this->assertStringContainsString('registry_checksum', $runner);
         $this->assertStringContainsString('apache_avro_provenance', $runner);
@@ -982,6 +1004,77 @@ PY);
             'record["rejection_reason"] = rejection_reason.clone();',
             $probe,
         );
+    }
+
+    public function test_host_runner_uses_the_exact_rust_version_from_the_artifact_tuple(): void
+    {
+        $result = $this->runSignalQueryRunnerPythonSnippet(<<<'PY'
+versions = {"sdk-rust": "0.1.3"}
+accepted = rust_crate_version_from_artifact_tuple(versions)
+errors = []
+for rejected in ("0.1", "latest", "=0.1.3", ""):
+    try:
+        rust_crate_version_from_artifact_tuple({"sdk-rust": rejected})
+    except RustCrateArtifactError as exc:
+        errors.append(probe_error_payload(exc))
+print(json.dumps({"accepted": accepted, "errors": errors}, sort_keys=True))
+PY);
+
+        $this->assertSame('0.1.3', $result['accepted']);
+        $this->assertCount(4, $result['errors']);
+        foreach ($result['errors'] as $error) {
+            $this->assertSame('rust_crate_version_not_exact', $error['code']);
+            $this->assertSame('sdk-rust', $error['artifact']);
+            $this->assertSame('durable-workflow', $error['package']);
+            $this->assertSame('validate_artifact_tuple', $error['phase']);
+            $this->assertSame('published_crates_io_package', $error['source']);
+        }
+    }
+
+    public function test_host_runner_reports_crates_io_resolution_and_build_failures_as_machine_readable_evidence(): void
+    {
+        $result = $this->runSignalQueryRunnerPythonSnippet(<<<'PY'
+errors = []
+for code, phase, command, stderr in (
+    (
+        "rust_crate_resolution_failed",
+        "cargo_generate_lockfile",
+        ["cargo", "generate-lockfile"],
+        "no matching package",
+    ),
+    (
+        "rust_crate_build_failed",
+        "cargo_build_locked_release",
+        ["cargo", "build", "--locked", "--release"],
+        "incompatible API",
+    ),
+):
+    exc = RustCrateArtifactError(
+        code,
+        stderr,
+        version="0.1.404",
+        phase=phase,
+        command_result=subprocess.CompletedProcess(
+            args=command,
+            returncode=101,
+            stdout="",
+            stderr=stderr,
+        ),
+    )
+    errors.append(probe_error_payload(exc))
+print(json.dumps(errors, sort_keys=True))
+PY);
+
+        $this->assertSame('rust_crate_resolution_failed', $result[0]['code']);
+        $this->assertSame('cargo_generate_lockfile', $result[0]['phase']);
+        $this->assertSame('no matching package', $result[0]['command']['stderr']);
+        $this->assertSame('rust_crate_build_failed', $result[1]['code']);
+        $this->assertSame('cargo_build_locked_release', $result[1]['phase']);
+        $this->assertSame('incompatible API', $result[1]['command']['stderr']);
+        foreach ($result as $error) {
+            $this->assertSame('0.1.404', $error['requested_version']);
+            $this->assertSame(101, $error['command']['exit_code']);
+        }
     }
 
     public function test_host_runner_rejects_missing_or_changed_rust_terminal_rejection_reason(): void

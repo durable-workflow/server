@@ -22,7 +22,7 @@ Environment overrides:
                                              published install evidence.
   DW_CLI_VERSION                            Published CLI version under test.
   DW_PYTHON_SDK_VERSION                     Published Python SDK version under test.
-  DW_RUST_SDK_VERSION                       Published Rust SDK version under test (0.1.2).
+  DW_RUST_SDK_VERSION                       Exact published Rust SDK version from the artifact tuple.
   DW_WORKFLOW_PHP_VERSION                   Published PHP workflow version under test.
   DW_WATERLINE_VERSION                      Published Waterline version under test.
   DW_SIGNALS_QUERIES_RESULT_DIR             Result directory when --result-dir is omitted.
@@ -4557,10 +4557,59 @@ def rust_probe_docker_command(
     return command
 
 
+class RustCrateArtifactError(RuntimeError):
+    def __init__(
+        self,
+        code: str,
+        message: str,
+        *,
+        version: str,
+        phase: str,
+        package: str = "durable-workflow",
+        command_result: subprocess.CompletedProcess[str] | None = None,
+        details: dict[str, Any] | None = None,
+    ):
+        super().__init__(message)
+        self.code = code
+        self.version = version
+        self.phase = phase
+        self.package = package
+        self.command_result = command_result
+        self.details = details or {}
+
+
+def rust_crate_version_from_artifact_tuple(versions: dict[str, Any]) -> str:
+    version = artifact_version_value(versions, "sdk-rust")
+    exact_semver = re.fullmatch(
+        r"(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)"
+        r"(?:-[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?"
+        r"(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?",
+        version,
+    )
+    if is_placeholder_version(version) or exact_semver is None:
+        raise RustCrateArtifactError(
+            "rust_crate_version_not_exact",
+            "DW_RUST_SDK_VERSION must be an exact semantic version from the published artifact tuple",
+            version=version,
+            phase="validate_artifact_tuple",
+        )
+    return version
+
+
+def official_crates_io_registry_source(source: str) -> bool:
+    return source in {
+        "registry+https://github.com/rust-lang/crates.io-index",
+        "registry+https://index.crates.io",
+        "registry+https://index.crates.io/",
+        "registry+sparse+https://index.crates.io",
+        "registry+sparse+https://index.crates.io/",
+        "sparse+https://index.crates.io",
+        "sparse+https://index.crates.io/",
+    }
+
+
 def prepare_rust_probe(run_root: Path, log_file: Path) -> tuple[Path, dict[str, Any], dict[str, Any]]:
-    version = artifact_version_value(artifact_versions, "sdk-rust")
-    if version != "0.1.2":
-        raise RuntimeError("DW_RUST_SDK_VERSION must be the exact published 0.1.2 crate for suite v19")
+    version = rust_crate_version_from_artifact_tuple(artifact_versions)
     if not command_available("docker"):
         raise RuntimeError("docker is required to install the published Rust SDK crate")
 
@@ -4591,14 +4640,26 @@ def prepare_rust_probe(run_root: Path, log_file: Path) -> tuple[Path, dict[str, 
         timeout=600,
     )
     if generate.returncode != 0:
-        raise RuntimeError("could not resolve the exact crates.io Rust SDK probe dependencies")
+        raise RustCrateArtifactError(
+            "rust_crate_resolution_failed",
+            "could not resolve the artifact-tuple Rust SDK from crates.io",
+            version=version,
+            phase="cargo_generate_lockfile",
+            command_result=generate,
+        )
     build = run_command(
         rust_probe_docker_command(project_dir, ["cargo", "build", "--locked", "--release"]),
         log_file=log_file,
         timeout=1200,
     )
     if build.returncode != 0:
-        raise RuntimeError("could not build the exact crates.io Rust SDK probe")
+        raise RustCrateArtifactError(
+            "rust_crate_build_failed",
+            "the artifact-tuple Rust SDK could not build in the published conformance probe",
+            version=version,
+            phase="cargo_build_locked_release",
+            command_result=build,
+        )
 
     with (project_dir / "Cargo.lock").open("rb") as handle:
         lock = __import__("tomllib").load(handle)
@@ -4615,15 +4676,34 @@ def prepare_rust_probe(run_root: Path, log_file: Path) -> tuple[Path, dict[str, 
                 continue
             source = str(package.get("source") or "")
             checksum = str(package.get("checksum") or "")
-            if not source.startswith("registry+") or not re.fullmatch(r"[0-9a-f]{64}", checksum):
-                raise RuntimeError(f"{name} was not resolved with crates.io registry checksum provenance")
+            if not official_crates_io_registry_source(source) or not re.fullmatch(r"[0-9a-f]{64}", checksum):
+                raise RustCrateArtifactError(
+                    "rust_crate_registry_provenance_invalid"
+                    if name == "durable-workflow"
+                    else "apache_avro_registry_provenance_invalid",
+                    f"{name} was not resolved with official crates.io registry checksum provenance",
+                    version=version,
+                    phase="inspect_cargo_lock",
+                    package=name,
+                    details={
+                        "resolved_version": resolved_version,
+                        "registry_source": source,
+                        "checksum": checksum,
+                    },
+                )
             return {
                 "package": name,
                 "resolved_version": resolved_version,
                 "source": source,
                 "checksum": checksum,
             }
-        raise RuntimeError(f"Cargo.lock did not resolve {name} {expected_version or ''}".strip())
+        raise RustCrateArtifactError(
+            "rust_crate_not_resolved" if name == "durable-workflow" else "apache_avro_not_resolved",
+            f"Cargo.lock did not resolve {name} {expected_version or ''}".strip(),
+            version=version,
+            phase="inspect_cargo_lock",
+            package=name,
+        )
 
     rust_provenance = package_provenance("durable-workflow", version)
     avro_provenance = package_provenance("apache-avro")
@@ -6537,11 +6617,29 @@ def run_workflow_php_baseline(
         run_command(["docker", "rm", "-f", container_name], log_file=log_file, timeout=60)
 
 
-def probe_error_payload(exc: Exception) -> dict[str, str]:
-    return {
+def probe_error_payload(exc: Exception) -> dict[str, Any]:
+    payload: dict[str, Any] = {
         "type": type(exc).__name__,
         "message": str(exc),
     }
+    if isinstance(exc, RustCrateArtifactError):
+        payload.update({
+            "code": exc.code,
+            "artifact": "sdk-rust",
+            "package": exc.package,
+            "requested_version": exc.version,
+            "source": EXPECTED_ARTIFACT_SOURCES["sdk-rust"],
+            "phase": exc.phase,
+        })
+        payload.update(exc.details)
+        if exc.command_result is not None:
+            payload["command"] = command_summary(
+                ["cargo", "generate-lockfile"]
+                if exc.phase == "cargo_generate_lockfile"
+                else ["cargo", "build", "--locked", "--release"],
+                exc.command_result,
+            )
+    return payload
 
 
 def run_baseline_probe(result_dir: Path) -> tuple[dict[str, Any] | None, dict[str, Any] | None]:
@@ -6647,7 +6745,7 @@ def run_baseline_probe(result_dir: Path) -> tuple[dict[str, Any] | None, dict[st
 
         rust_matrix_evidence: dict[str, Any] | None = None
         rust_matrix_descriptor: dict[str, Any] | None = None
-        rust_install_error: dict[str, str] | None = None
+        rust_install_error: dict[str, Any] | None = None
         if not env_flag("DW_SIGNALS_QUERIES_RUN_RUST_MATRIX_PROBE", True):
             rust_matrix_descriptor = {"skipped": "disabled_by_env", "log_file": log_file.name}
         elif python_bin is None or workflow_php_project is None:
@@ -6673,6 +6771,7 @@ def run_baseline_probe(result_dir: Path) -> tuple[dict[str, Any] | None, dict[st
                 log_line(log_file, f"Rust published-artifact matrix failed: {type(exc).__name__}: {exc}")
                 rust_matrix_descriptor = {
                     "error": f"{type(exc).__name__}: {exc}",
+                    "artifact_error": rust_install_error,
                     "log_file": log_file.name,
                     "generated_scenarios": [
                         "rust_worker_rust_php_python_clients",
@@ -6694,6 +6793,7 @@ def run_baseline_probe(result_dir: Path) -> tuple[dict[str, Any] | None, dict[st
                 rust_install["not_proved_reason"] = (
                     f"{rust_install_error['type']}: {rust_install_error['message']}"
                 )
+                rust_install["artifact_error"] = rust_install_error
             install_entries["sdk-rust"] = rust_install
         sources = probe_artifact_sources(cleanup_commands, install_entries)
         install_outputs = {

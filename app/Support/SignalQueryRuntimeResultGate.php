@@ -10,7 +10,7 @@ final class SignalQueryRuntimeResultGate
 {
     public const SCHEMA = 'durable-workflow.v2.signal-query-runtime.result-gate';
 
-    public const VERSION = 27;
+    public const VERSION = 28;
 
     private const EVIDENCE_SECTION_SCENARIOS = [
         'replay_timing' => [
@@ -1767,7 +1767,7 @@ final class SignalQueryRuntimeResultGate
             self::evidenceValue($result, $scenarioResult, $scenarioId, 'rust_crate_provenance.checksum'),
         );
         if ($resolvedVersion !== $expectedVersion
-            || ! str_starts_with($source, 'registry+')
+            || ! self::isOfficialCratesIoRegistrySource($source)
             || preg_match('/^[0-9a-f]{64}$/', $checksum) !== 1) {
             $failures[] = [
                 'code' => 'rust_crate_registry_provenance_mismatch',
@@ -1804,7 +1804,7 @@ final class SignalQueryRuntimeResultGate
             $defaultCodec = self::stringValue(
                 self::evidenceValue($result, $scenarioResult, $scenarioId, 'valid_avro_signal_and_query.default_codec'),
             );
-            if (! str_starts_with($avroSource, 'registry+')
+            if (! self::isOfficialCratesIoRegistrySource($avroSource)
                 || preg_match('/^[0-9a-f]{64}$/', $avroChecksum) !== 1
                 || $defaultCodec !== 'avro'
                 || $payloadCodec !== 'avro') {
@@ -2057,6 +2057,19 @@ final class SignalQueryRuntimeResultGate
         }
 
         return $failures;
+    }
+
+    private static function isOfficialCratesIoRegistrySource(string $source): bool
+    {
+        return in_array($source, [
+            'registry+https://github.com/rust-lang/crates.io-index',
+            'registry+https://index.crates.io',
+            'registry+https://index.crates.io/',
+            'registry+sparse+https://index.crates.io',
+            'registry+sparse+https://index.crates.io/',
+            'sparse+https://index.crates.io',
+            'sparse+https://index.crates.io/',
+        ], true);
     }
 
     /**
