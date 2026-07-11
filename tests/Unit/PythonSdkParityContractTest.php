@@ -111,4 +111,26 @@ class PythonSdkParityContractTest extends TestCase
         $this->assertStringContainsString('asset_download_url(release, required_asset_name)', $script);
         $this->assertStringNotContainsString('f"v{override}"', $script);
     }
+
+    public function test_runner_installs_pinned_composer_prereleases_under_explicit_policy(): void
+    {
+        $script = (string) file_get_contents(dirname(__DIR__, 2).'/scripts/conformance/python-published-artifacts.sh');
+
+        $this->assertStringContainsString('"minimum-stability": "alpha"', $script);
+        $this->assertStringContainsString('"prefer-stable": true', $script);
+        $this->assertStringContainsString(
+            'write_prerelease_composer_manifest "$run_root/artifacts/workflow"',
+            $script,
+        );
+        $this->assertStringContainsString(
+            'write_prerelease_composer_manifest "$run_root/artifacts/waterline"',
+            $script,
+        );
+        $composerRequire = <<<'SH'
+                "durable-workflow/workflow:$workflow_version" \
+                "durable-workflow/waterline:$waterline_version"
+            SH;
+        $this->assertStringContainsString($composerRequire, $script);
+        $this->assertStringNotContainsString('"repositories"', $script);
+    }
 }

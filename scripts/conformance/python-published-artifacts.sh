@@ -481,6 +481,21 @@ if [[ ! -x "$run_root/cli/bin/dw" ]]; then
   fail_blocked "official CLI installer did not create an executable dw binary"
 fi
 
+write_prerelease_composer_manifest() {
+  local project_dir="$1"
+  local project_name="$2"
+
+  cat > "$project_dir/composer.json" <<JSON
+{
+  "name": "durable-workflow/${project_name}",
+  "type": "project",
+  "minimum-stability": "alpha",
+  "prefer-stable": true
+}
+JSON
+}
+
+write_prerelease_composer_manifest "$run_root/artifacts/workflow" "python-conformance-workflow-probe"
 docker run --rm --user "$(id -u):$(id -g)" \
   -e COMPOSER_HOME=/tmp/composer-home \
   -e COMPOSER_CACHE_DIR=/tmp/composer-cache \
@@ -488,13 +503,15 @@ docker run --rm --user "$(id -u):$(id -g)" \
   composer require --no-interaction --no-progress --prefer-dist --no-scripts \
     "durable-workflow/workflow:$workflow_version" > "$result_dir/workflow-artifact-install.log" 2>&1 \
   || fail_blocked "published workflow artifact install failed for durable-workflow/workflow:$workflow_version"
+write_prerelease_composer_manifest "$run_root/artifacts/waterline" "python-conformance-waterline-probe"
 docker run --rm --user "$(id -u):$(id -g)" \
   -e COMPOSER_HOME=/tmp/composer-home \
   -e COMPOSER_CACHE_DIR=/tmp/composer-cache \
   -v "$run_root/artifacts/waterline:/app" composer:2 \
   composer require --no-interaction --no-progress --prefer-dist --no-scripts \
+    "durable-workflow/workflow:$workflow_version" \
     "durable-workflow/waterline:$waterline_version" > "$result_dir/waterline-artifact-install.log" 2>&1 \
-  || fail_blocked "published Waterline artifact install failed for durable-workflow/waterline:$waterline_version"
+  || fail_blocked "published Waterline artifact install failed for durable-workflow/waterline:$waterline_version with durable-workflow/workflow:$workflow_version"
 
 python3 - "$run_root/pins.json" "$result_dir/server-image-digest.txt" "$result_dir/run-metadata.json" "$server_base_url" <<'PY'
 from __future__ import annotations
