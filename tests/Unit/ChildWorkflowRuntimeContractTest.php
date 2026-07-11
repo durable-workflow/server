@@ -444,6 +444,18 @@ class ChildWorkflowRuntimeContractTest extends TestCase
         );
     }
 
+    public function test_published_artifact_resolvers_handle_tag_conventions_and_transient_registries(): void
+    {
+        if (trim((string) shell_exec('command -v python3 2>/dev/null')) === '') {
+            $this->markTestSkipped('python3 is required to exercise the child-workflow artifact resolvers.');
+        }
+
+        $test = dirname(__DIR__, 2) . '/tests/Unit/Support/child_workflows_artifact_resolver_test.py';
+        exec('python3 ' . escapeshellarg($test) . ' 2>&1', $output, $exitCode);
+
+        $this->assertSame(0, $exitCode, implode("\n", $output));
+    }
+
     public function test_published_artifact_runner_does_not_pass_install_cell_without_install_evidence(): void
     {
         if (trim((string) shell_exec('command -v bash 2>/dev/null')) === ''

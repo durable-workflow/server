@@ -15,6 +15,13 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from child_workflows_artifact_resolver import (
+    PublicArtifactResolutionError,
+    fetch_bytes,
+    resolve_cli_release,
+    resolve_rust_crate,
+)
+
 
 RESULT_DIR = Path(sys.argv[1])
 RUN_ROOT = Path(sys.argv[2])
@@ -98,18 +105,14 @@ except Exception as exc:
     artifacts.append(entry("server", server_version, f"docker://durableworkflow/server:{server_version}", [], str(exc), "fail"))
 
 try:
-    release_url = f"https://api.github.com/repos/durable-workflow/cli/releases/tags/v{cli_version}"
-    release, release_output = fetch_json(release_url)
-    assets = release.get("assets") if isinstance(release.get("assets"), list) else []
-    installer_url = next(
-        (str(asset.get("browser_download_url")) for asset in assets if isinstance(asset, dict) and asset.get("name") == "install.sh"),
-        "",
-    )
-    if not installer_url:
-        raise RuntimeError("CLI release does not publish install.sh")
+    installer_url, cli_commands = resolve_cli_release(cli_version)
     installer = RUN_ROOT / "cli-install.sh"
-    with urllib.request.urlopen(urllib.request.Request(installer_url, headers={"User-Agent": "durable-workflow-conformance"}), timeout=60) as response:
-        installer.write_bytes(response.read())
+    try:
+        installer_body, installer_fetch = fetch_bytes(installer_url)
+    except PublicArtifactResolutionError as exc:
+        raise PublicArtifactResolutionError(str(exc), cli_commands + exc.commands) from exc
+    cli_commands.append(installer_fetch)
+    installer.write_bytes(installer_body)
     installer.chmod(installer.stat().st_mode | stat.S_IXUSR)
     cli_bin_dir = RUN_ROOT / "cli-bin"
     cli_bin_dir.mkdir(parents=True, exist_ok=True)
@@ -128,7 +131,7 @@ try:
         cli_version,
         installer_url,
         [
-            {"argv": ["GET", release_url], "exit_code": 0, "output": release_output[-1000:]},
+            *cli_commands,
             {"argv": ["sh", str(installer)], "exit_code": install_code, "output": install_output[-2000:]},
             {"argv": [str(dw), "--version"], "exit_code": version_code, "output": version_output[-2000:]},
         ],
@@ -136,7 +139,8 @@ try:
         status,
     ))
 except Exception as exc:
-    artifacts.append(entry("cli", cli_version, f"https://github.com/durable-workflow/cli/releases/tag/v{cli_version}", [], str(exc), "fail"))
+    commands = exc.commands if isinstance(exc, PublicArtifactResolutionError) else []
+    artifacts.append(entry("cli", cli_version, f"https://github.com/durable-workflow/cli/releases/tag/{cli_version}", commands, str(exc), "fail"))
 
 python_venv = RUN_ROOT / "python-venv"
 try:
@@ -163,20 +167,17 @@ except Exception as exc:
     artifacts.append(entry("sdk-python", python_version, f"https://pypi.org/project/durable-workflow/{python_version}/", [], str(exc), "fail"))
 
 try:
-    crate_url = f"https://crates.io/api/v1/crates/durable-workflow/{rust_version}"
-    crate, crate_output = fetch_json(crate_url)
-    crate_version = str((crate.get("version") or {}).get("num") or "") if isinstance(crate.get("version"), dict) else ""
-    if crate_version != rust_version:
-        raise RuntimeError(f"crates.io resolved durable-workflow {crate_version!r}, expected {rust_version}")
+    rust_commands, crate_output = resolve_rust_crate(rust_version)
     artifacts.append(entry(
         "sdk-rust",
         rust_version,
         f"https://crates.io/crates/durable-workflow/{rust_version}",
-        [{"argv": ["GET", crate_url], "exit_code": 0, "output": crate_output[-2000:]}],
+        rust_commands,
         crate_output,
     ))
 except Exception as exc:
-    artifacts.append(entry("sdk-rust", rust_version, f"https://crates.io/crates/durable-workflow/{rust_version}", [], str(exc), "fail"))
+    commands = exc.commands if isinstance(exc, PublicArtifactResolutionError) else []
+    artifacts.append(entry("sdk-rust", rust_version, f"https://crates.io/crates/durable-workflow/{rust_version}", commands, str(exc), "fail"))
 
 
 def packagist_entry(artifact: str, package: str, version: str, require_installed: bool) -> dict[str, Any]:
