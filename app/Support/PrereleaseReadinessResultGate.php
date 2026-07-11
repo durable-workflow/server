@@ -575,7 +575,7 @@ final class PrereleaseReadinessResultGate
     private static function hasVersionedPrereleaseDocsUrl(array $urls): bool
     {
         foreach ($urls as $url) {
-            if (preg_match('#/docs/(?:v?2(?:\.0)?|version-2(?:\.0)?)(?:[/?#]|$)#', strtolower($url)) === 1) {
+            if (preg_match('~/docs/(?:v?2(?:\.0)?|version-2(?:\.0)?)(?:[/?#]|$)~', strtolower($url)) === 1) {
                 return true;
             }
         }

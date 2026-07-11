@@ -149,6 +149,26 @@ class PrereleaseReadinessContractTest extends TestCase
         $this->assertSame([], $evaluation['gate_failures']);
     }
 
+    public function test_result_gate_accepts_documented_versioned_prerelease_docs_routes(): void
+    {
+        foreach ([
+            'https://durable-workflow.com/docs/2.0/introduction/',
+            'https://durable-workflow.com/docs/2/introduction/',
+            'https://durable-workflow.com/docs/v2/introduction/',
+            'https://durable-workflow.com/docs/v2.0/introduction/',
+            'https://durable-workflow.com/docs/version-2/introduction/',
+            'https://durable-workflow.com/docs/version-2.0/introduction/',
+        ] as $url) {
+            $result = $this->completeMatrixResult();
+            $result['public_docs_urls'] = ['introduction' => $url];
+
+            $evaluation = PrereleaseReadinessResultGate::evaluate($result);
+
+            $this->assertSame('pass', $evaluation['status'], $url);
+            $this->assertSame([], $evaluation['gate_failures'], $url);
+        }
+    }
+
     public function test_result_gate_requires_runner_blocked_false_for_product_evidence(): void
     {
         $result = $this->completeMatrixResult();
