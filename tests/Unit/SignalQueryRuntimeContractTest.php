@@ -14,7 +14,7 @@ class SignalQueryRuntimeContractTest extends TestCase
         $manifest = SignalQueryRuntimeContract::manifest();
 
         $this->assertSame('durable-workflow.v2.signal-query-runtime.contract', $manifest['schema']);
-        $this->assertSame(29, SignalQueryRuntimeContract::VERSION);
+        $this->assertSame(30, SignalQueryRuntimeContract::VERSION);
         $this->assertSame(SignalQueryRuntimeContract::VERSION, $manifest['version']);
         $this->assertSame('durable-workflow.v2.signal-query-runtime.result', $manifest['result_schema']);
         $this->assertSame('signal_query_runtime_contract', $manifest['fixture_category']);
@@ -29,6 +29,10 @@ class SignalQueryRuntimeContractTest extends TestCase
         $this->assertSame(
             'signal_query_runtime_contract',
             $manifest['scenario_manifest']['category'],
+        );
+        $this->assertSame(
+            PlatformConformanceSuite::VERSION,
+            $manifest['scenario_manifest']['suite_version'],
         );
         $this->assertSame(
             'https://durable-workflow.github.io/platform-conformance/signal-query-runtime-scenarios.json',
@@ -52,12 +56,12 @@ class SignalQueryRuntimeContractTest extends TestCase
             $this->assertContains($example, $manifest['artifact_policy']['placeholder_version_examples']);
         }
 
-        foreach (['server', 'cli', 'workflow-php', 'sdk-python', 'waterline'] as $artifact) {
+        foreach (['server', 'cli', 'workflow-php', 'sdk-python', 'sdk-rust', 'waterline'] as $artifact) {
             $this->assertArrayHasKey($artifact, $manifest['artifact_policy']['install_channels']);
         }
 
         $this->assertSame(
-            ['server', 'cli', 'sdk-python'],
+            ['server', 'cli', 'sdk-python', 'sdk-rust'],
             $manifest['artifact_policy']['install_proof_artifacts'],
         );
 
@@ -67,6 +71,7 @@ class SignalQueryRuntimeContractTest extends TestCase
                 'cli' => 'published_cli_release',
                 'workflow-php' => 'published_composer_package',
                 'sdk-python' => 'published_pypi_package',
+                'sdk-rust' => 'published_crates_io_package',
                 'waterline' => 'published_waterline_artifact',
             ],
             $manifest['artifact_policy']['expected_sources'],
@@ -94,10 +99,11 @@ class SignalQueryRuntimeContractTest extends TestCase
     {
         $matrix = SignalQueryRuntimeContract::manifest()['required_matrix'];
 
-        $this->assertSame(['workflow-php', 'sdk-python'], $matrix['runtimes']);
+        $this->assertSame(['workflow-php', 'sdk-python', 'sdk-rust'], $matrix['runtimes']);
         $this->assertContains('cli', $matrix['client_paths']);
         $this->assertContains('workflow-php-sdk', $matrix['client_paths']);
         $this->assertContains('sdk-python', $matrix['client_paths']);
+        $this->assertContains('sdk-rust', $matrix['client_paths']);
         $this->assertContains('waterline-selected-run-detail', $matrix['observer_paths']);
         $this->assertContains('waterline-query-action', $matrix['observer_paths']);
 
@@ -116,6 +122,53 @@ class SignalQueryRuntimeContractTest extends TestCase
                 'scenario' => 'php_worker_python_and_cli_clients',
             ],
             $matrix['cross_language_cells'],
+        );
+    }
+
+    public function test_manifest_requires_the_exact_suite_v19_rust_cells_and_provenance(): void
+    {
+        $manifest = SignalQueryRuntimeContract::manifest();
+        $rustScenarios = [
+            'rust_worker_rust_php_python_clients',
+            'python_worker_rust_client',
+            'php_worker_rust_client',
+            'rust_query_error_and_immutability',
+            'rust_replayed_instance_state_query_after_cold_restart',
+        ];
+
+        foreach ($rustScenarios as $scenario) {
+            $this->assertContains($scenario, $manifest['required_scenarios']);
+            $evidence = $manifest['scenario_requirements'][$scenario]['evidence'];
+            $this->assertContains('rust_sdk_version', $evidence);
+            $this->assertContains('rust_crate_provenance.source', $evidence);
+            $this->assertContains('rust_crate_provenance.resolved_version', $evidence);
+            $this->assertContains('rust_crate_provenance.checksum', $evidence);
+        }
+
+        $rustShard = $manifest['host_runner_contract']['evidence_shards']['rust_published_artifact_matrix'];
+        $this->assertSame($rustScenarios, $rustShard['must_cover_scenarios']);
+        $this->assertSame('=0.1.2', $rustShard['crate']['cargo_requirement']);
+        $this->assertSame('crates.io', $rustShard['crate']['source']);
+        $this->assertSame(
+            'snapshot_derived_transport_state',
+            $rustShard['query_state_models']['rust_query_error_and_immutability'],
+        );
+        $this->assertSame(
+            'replayed_workflow_instance_state',
+            $rustShard['query_state_models']['rust_replayed_instance_state_query_after_cold_restart'],
+        );
+        $requirements = $manifest['scenario_requirements'];
+        $this->assertSame(
+            ['query_payload_decode_failed'],
+            $requirements['rust_query_error_and_immutability']['allowed_reasons']['malformed_query_payload'],
+        );
+        $this->assertContains(
+            'terminal_signal.rejection_reason',
+            $requirements['rust_query_error_and_immutability']['evidence'],
+        );
+        $this->assertSame(
+            ['rejected_unknown_query'],
+            $requirements['rust_replayed_instance_state_query_after_cold_restart']['failed_query_allowed_reasons'],
         );
     }
 
@@ -148,10 +201,15 @@ class SignalQueryRuntimeContractTest extends TestCase
             'php_worker_cli_and_sdk_baseline',
             'python_worker_php_facing_and_cli_clients',
             'php_worker_python_and_cli_clients',
+            'rust_worker_rust_php_python_clients',
+            'python_worker_rust_client',
+            'php_worker_rust_client',
+            'rust_query_error_and_immutability',
             'ordered_signal_delivery',
             'dedup_contract_observation',
             'signal_during_replay',
             'query_during_replay',
+            'rust_replayed_instance_state_query_after_cold_restart',
             'completed_run_signal_and_query',
             'unknown_signal_and_query_errors',
             'malformed_signal_and_query_payloads',
@@ -302,7 +360,7 @@ class SignalQueryRuntimeContractTest extends TestCase
         $resultGate = SignalQueryRuntimeContract::manifest()['result_gate'];
 
         $this->assertSame(SignalQueryRuntimeResultGate::SCHEMA, $resultGate['schema']);
-        $this->assertSame(25, SignalQueryRuntimeResultGate::VERSION);
+        $this->assertSame(26, SignalQueryRuntimeResultGate::VERSION);
         $this->assertSame(SignalQueryRuntimeResultGate::VERSION, $resultGate['version']);
         $this->assertSame(
             SignalQueryRuntimeContract::RESULT_SCHEMA,
@@ -364,6 +422,106 @@ class SignalQueryRuntimeContractTest extends TestCase
         );
         $this->assertNotContains('published_artifact_versions_are_recorded', $resultGate['pass_requires']);
         $this->assertSame('non_passing', $resultGate['smoke_subset_outcome']);
+    }
+
+    public function test_result_gate_rejects_php_python_only_coverage_when_rust_is_in_the_tuple(): void
+    {
+        $result = $this->completeSignalQueryResult();
+        unset($result['scenario_results']['rust_worker_rust_php_python_clients']);
+
+        $evaluation = SignalQueryRuntimeResultGate::evaluate($result);
+
+        $this->assertSame('non_passing', $evaluation['status']);
+        $this->assertContains('rust_worker_rust_php_python_clients', $evaluation['missing_scenarios']);
+    }
+
+    public function test_result_gate_rejects_probe_package_version_as_rust_sdk_provenance(): void
+    {
+        $result = $this->completeSignalQueryResult();
+        $result['scenario_results']['rust_worker_rust_php_python_clients']['observed_outputs']
+            ['rust_sdk_version'] = '0.0.0';
+        $result['scenario_results']['rust_worker_rust_php_python_clients']['observed_outputs']
+            ['rust_worker_registration']['sdk_version'] = 'signals-queries-published-probe/0.0.0';
+
+        $evaluation = SignalQueryRuntimeResultGate::evaluate($result);
+        $failureCodes = array_column($evaluation['gate_failures'], 'code');
+
+        $this->assertSame('non_passing', $evaluation['status']);
+        $this->assertContains('rust_sdk_version_mismatch', $failureCodes);
+        $this->assertContains('rust_worker_registration_sdk_version_mismatch', $failureCodes);
+    }
+
+    public function test_result_gate_rejects_replay_query_command_mutation(): void
+    {
+        $result = $this->completeSignalQueryResult();
+        $result['scenario_results']['rust_replayed_instance_state_query_after_cold_restart']
+            ['observed_outputs']['immutability_checkpoints']['cold_restarted']
+            ['after_successful_and_failed_queries']['workflow_command_count'] = 2;
+
+        $evaluation = SignalQueryRuntimeResultGate::evaluate($result);
+        $failureCodes = array_column($evaluation['gate_failures'], 'code');
+
+        $this->assertSame('non_passing', $evaluation['status']);
+        $this->assertContains('rust_replay_query_history_or_commands_changed', $failureCodes);
+    }
+
+    public function test_result_gate_rejects_undocumented_rust_stable_outcome_reason(): void
+    {
+        $result = $this->completeSignalQueryResult();
+        $result['scenario_results']['rust_query_error_and_immutability']['observed_outputs']
+            ['malformed_query_payload']['reason'] = 'server_error';
+
+        $evaluation = SignalQueryRuntimeResultGate::evaluate($result);
+        $failureCodes = array_column($evaluation['gate_failures'], 'code');
+
+        $this->assertSame('non_passing', $evaluation['status']);
+        $this->assertContains('rust_stable_outcome_reason_mismatch', $failureCodes);
+    }
+
+    public function test_result_gate_requires_rust_terminal_signal_rejection_reason(): void
+    {
+        foreach (['missing', 'changed'] as $mutation) {
+            $result = $this->completeSignalQueryResult();
+            $terminalSignal = &$result['scenario_results']['rust_query_error_and_immutability']
+                ['observed_outputs']['terminal_signal'];
+
+            if ($mutation === 'missing') {
+                unset($terminalSignal['rejection_reason']);
+            } else {
+                $terminalSignal['rejection_reason'] = 'accepted';
+            }
+
+            $evaluation = SignalQueryRuntimeResultGate::evaluate($result);
+            $terminalFailures = array_values(array_filter(
+                $evaluation['gate_failures'],
+                static fn (array $failure): bool => ($failure['scenario_id'] ?? null)
+                    === 'rust_query_error_and_immutability'
+                    && in_array(($failure['code'] ?? null), [
+                        'missing_required_pass_evidence',
+                        'rust_stable_outcome_reason_mismatch',
+                    ], true)
+                    && in_array(($failure['evidence_key'] ?? $failure['field'] ?? null), [
+                        'terminal_signal.rejection_reason',
+                    ], true),
+            ));
+
+            $this->assertSame('non_passing', $evaluation['status'], $mutation);
+            $this->assertNotEmpty($terminalFailures, $mutation);
+        }
+    }
+
+    public function test_result_gate_recomputes_completed_replay_failed_query_immutability(): void
+    {
+        $result = $this->completeSignalQueryResult();
+        $result['scenario_results']['rust_replayed_instance_state_query_after_cold_restart']
+            ['observed_outputs']['immutability_checkpoints']['completed']
+            ['answer_after_failed_query'] = 6;
+
+        $evaluation = SignalQueryRuntimeResultGate::evaluate($result);
+        $failureCodes = array_column($evaluation['gate_failures'], 'code');
+
+        $this->assertSame('non_passing', $evaluation['status']);
+        $this->assertContains('rust_replay_failed_query_changed_later_answer', $failureCodes);
     }
 
     public function test_manifest_publishes_host_runner_contract_for_split_out_evidence(): void
@@ -429,12 +587,13 @@ class SignalQueryRuntimeContractTest extends TestCase
                 'cli' => 'published_cli_release',
                 'workflow-php' => 'published_composer_package',
                 'sdk-python' => 'published_pypi_package',
+                'sdk-rust' => 'published_crates_io_package',
                 'waterline' => 'published_waterline_artifact',
             ],
             $hostRunner['evidence_shards']['published_artifact_install']['expected_artifact_sources'],
         );
         $this->assertSame(
-            ['server', 'cli', 'sdk-python'],
+            ['server', 'cli', 'sdk-python', 'sdk-rust'],
             $hostRunner['evidence_shards']['published_artifact_install']['install_proof_artifacts'],
         );
         $this->assertContains(
@@ -760,6 +919,111 @@ class SignalQueryRuntimeContractTest extends TestCase
             '--selected-run-query-capture=' . '/app/conformance',
         ] as $forbiddenNeedle) {
             $this->assertStringNotContainsString($forbiddenNeedle, $source);
+        }
+    }
+
+    public function test_host_runner_executes_the_exact_published_rust_matrix(): void
+    {
+        $runner = (string) file_get_contents(
+            dirname(__DIR__, 2) . '/scripts/conformance/signals-queries-published-artifacts.sh',
+        );
+        $probe = (string) file_get_contents(
+            dirname(__DIR__, 2) . '/scripts/conformance/signals-queries-rust-probe.rs',
+        );
+
+        foreach ([
+            'rust_worker_rust_php_python_clients',
+            'python_worker_rust_client',
+            'php_worker_rust_client',
+            'rust_query_error_and_immutability',
+            'rust_replayed_instance_state_query_after_cold_restart',
+        ] as $scenario) {
+            $this->assertStringContainsString($scenario, $runner);
+        }
+
+        $this->assertStringContainsString('durable-workflow = "={version}"', $runner);
+        $this->assertStringContainsString('Cargo.lock', $runner);
+        $this->assertStringContainsString('registry_checksum', $runner);
+        $this->assertStringContainsString('apache_avro_provenance', $runner);
+        $this->assertStringContainsString('history_and_commands_before_first_successful_query', $runner);
+        $this->assertStringContainsString('valid_avro_signal_and_query', $runner);
+        $this->assertStringContainsString('completed_after_failure = wait_for_query_result(', $runner);
+        $this->assertStringContainsString('answer_after_failed_query', $runner);
+        $this->assertStringContainsString(
+            '"X-Durable-Workflow-Protocol-Version": "2.0"',
+            $runner,
+        );
+        $this->assertStringNotContainsString(
+            '"X-Durable-Workflow-Protocol-Version": "1.7"',
+            $runner,
+        );
+        $this->assertStringContainsString('register_replayed_workflow', $probe);
+        $this->assertStringContainsString('register_replayed_query', $probe);
+        $this->assertStringContainsString('DEFAULT_CODEC', $probe);
+        $this->assertStringContainsString('SDK_VERSION', $probe);
+        $this->assertStringContainsString('record["reason"] = reason.clone();', $probe);
+        $this->assertStringContainsString(
+            'record["rejection_reason"] = rejection_reason.clone();',
+            $probe,
+        );
+    }
+
+    public function test_host_runner_rejects_missing_or_changed_rust_terminal_rejection_reason(): void
+    {
+        $result = $this->runSignalQueryRunnerPythonSnippet(<<<'PY'
+def complete_rust_error_outputs():
+    observed = {}
+    for evidence_key in SCENARIO_REQUIRED_EVIDENCE["rust_query_error_and_immutability"]:
+        current = observed
+        segments = evidence_key.split(".")
+        for segment in segments[:-1]:
+            current = current.setdefault(segment, {})
+        current[segments[-1]] = True
+    observed["terminal_signal"] = {
+        "reason": "run_not_active",
+        "rejection_reason": "run_not_active",
+    }
+    return observed
+
+
+def runner_verdict(observed):
+    status = (
+        "pass"
+        if has_required_evidence("rust_query_error_and_immutability", observed)
+        else "fail"
+    )
+    scenario_results = {
+        "rust_query_error_and_immutability": {"status": status},
+    }
+    findings = [] if status == "pass" else ["rust_query_error_and_immutability"]
+    outcome = (
+        "pass"
+        if not findings and all(item["status"] == "pass" for item in scenario_results.values())
+        else "non_passing"
+    )
+    return {"scenario_status": status, "outcome": outcome}
+
+
+complete = complete_rust_error_outputs()
+missing = complete_rust_error_outputs()
+del missing["terminal_signal"]["rejection_reason"]
+changed = complete_rust_error_outputs()
+changed["terminal_signal"]["rejection_reason"] = "accepted"
+
+print(json.dumps({
+    "complete": runner_verdict(complete),
+    "missing": runner_verdict(missing),
+    "changed": runner_verdict(changed),
+}, sort_keys=True))
+PY);
+
+        $this->assertSame(
+            ['scenario_status' => 'pass', 'outcome' => 'pass'],
+            $result['complete'],
+        );
+        foreach (['missing', 'changed'] as $mutation) {
+            $this->assertSame('fail', $result[$mutation]['scenario_status'], $mutation);
+            $this->assertSame('non_passing', $result[$mutation]['outcome'], $mutation);
         }
     }
 
@@ -2421,6 +2685,7 @@ PY);
             'server' => 'published',
             'cli' => 'published_cli_release',
             'sdk-python' => 'published_pypi_package',
+            'sdk-rust' => 'published_crates_io_package',
             'workflow-php' => 'published_composer_package',
             'waterline' => 'published_waterline_artifact',
         ];
@@ -2868,6 +3133,7 @@ PY);
             'server' => 'published_docker_image',
             'cli' => 'published_cli_release',
             'sdk-python' => 'published_pypi_package',
+            'sdk-rust' => 'published_crates_io_package',
             'workflow-php' => 'published_composer_package',
             'waterline' => 'published_waterline_artifact',
         ];
@@ -2914,6 +3180,7 @@ PY);
                 'server' => 'published_docker_image',
                 'cli' => 'published_cli_release',
                 'sdk-python' => 'published_pypi_package',
+                'sdk-rust' => 'published_crates_io_package',
                 'workflow-php' => 'published_composer_package',
                 'waterline' => 'published_waterline_artifact',
             ],
@@ -2930,6 +3197,7 @@ PY);
             'server' => 'published_docker_image',
             'cli' => 'published_cli_release',
             'sdk-python' => 'published_pypi_package',
+            'sdk-rust' => 'published_crates_io_package',
             'workflow-php' => 'published_composer_package',
             'waterline' => 'published_waterline_artifact',
         ];
@@ -2954,6 +3222,7 @@ PY);
             'server' => 'published_docker_image',
             'cli' => 'published_cli_release',
             'sdk-python' => 'published_pypi_package',
+            'sdk-rust' => 'published_crates_io_package',
             'workflow-php' => 'published_composer_package',
             'waterline' => 'published_waterline_artifact',
         ];
@@ -2963,7 +3232,7 @@ PY);
                 $this->installEvidenceForVersions($versions, $sources)['artifacts'],
                 static fn (array $artifact): bool => in_array(
                     $artifact['artifact'],
-                    ['server', 'cli', 'sdk-python'],
+                    ['server', 'cli', 'sdk-python', 'sdk-rust'],
                     true,
                 ),
             )),
@@ -2977,7 +3246,7 @@ PY);
 
         $this->assertSame('pass', $result['scenario_results']['published_artifact_install_only']['status']);
         $this->assertSame(
-            ['server', 'cli', 'sdk-python'],
+            ['server', 'cli', 'sdk-python', 'sdk-rust'],
             array_column(
                 $result['scenario_results']['published_artifact_install_only']['observed_outputs']
                     ['artifact_install_evidence']['artifacts'],
@@ -2998,6 +3267,7 @@ PY);
                     'server' => 'published_docker_image',
                     'cli' => 'published_cli_release',
                     'sdk-python' => 'published_pypi_package',
+                    'sdk-rust' => 'published_crates_io_package',
                     'workflow-php' => 'published_composer_package',
                     'waterline' => 'published_waterline_artifact',
                 ],
@@ -5329,11 +5599,13 @@ PY);
                 'DW_SERVER_VERSION=0.2.224',
                 'DW_CLI_VERSION=0.1.74',
                 'DW_PYTHON_SDK_VERSION=0.4.84',
+                'DW_RUST_SDK_VERSION=0.1.2',
                 'DW_WORKFLOW_PHP_VERSION=2.0.0-alpha.187',
                 'DW_WATERLINE_VERSION=2.0.0-alpha.69',
                 'DW_SIGNALS_QUERIES_RUN_BASELINE_PROBE=0',
                 'DW_SIGNALS_QUERIES_RUN_ADVERSARIAL_PROBE=0',
                 'DW_SIGNALS_QUERIES_RUN_WATERLINE_OBSERVER_PROBE=0',
+                'DW_SIGNALS_QUERIES_RUN_RUST_MATRIX_PROBE=0',
                 'DW_SIGNALS_QUERIES_SMOKE_EVIDENCE=' . escapeshellarg($smokePath),
                 escapeshellarg($root . '/scripts/conformance/signals-queries-published-artifacts.sh'),
                 '--result-dir',
@@ -5392,9 +5664,11 @@ PY);
                 'DW_SERVER_VERSION' => '0.2.224',
                 'DW_CLI_VERSION' => '0.1.74',
                 'DW_PYTHON_SDK_VERSION' => '0.4.84',
+                'DW_RUST_SDK_VERSION' => '0.1.2',
                 'DW_WORKFLOW_PHP_VERSION' => '2.0.0-alpha.187',
                 'DW_WATERLINE_VERSION' => '2.0.0-alpha.69',
                 'DW_SIGNALS_QUERIES_RUN_WATERLINE_OBSERVER_PROBE' => '0',
+                'DW_SIGNALS_QUERIES_RUN_RUST_MATRIX_PROBE' => '0',
             ];
             foreach ($environment as $key => $value) {
                 $assignments[$key] = $value;
@@ -5610,7 +5884,7 @@ PY);
     private function installEvidenceForVersions(array $versions, array $sources): array
     {
         $artifacts = [];
-        foreach (['server', 'cli', 'sdk-python', 'workflow-php', 'waterline'] as $artifact) {
+        foreach (['server', 'cli', 'sdk-python', 'sdk-rust', 'workflow-php', 'waterline'] as $artifact) {
             $version = $versions[$artifact] ?? ($artifact === 'workflow-php' ? ($versions['workflow'] ?? '') : '');
             $artifacts[] = [
                 'artifact' => $artifact,
@@ -5636,6 +5910,7 @@ PY);
             'server' => '0.2.224',
             'cli' => '0.1.74',
             'sdk-python' => '0.4.84',
+            'sdk-rust' => '0.1.2',
             'workflow' => '2.0.0-alpha.187',
             'workflow-php' => '2.0.0-alpha.187',
             'waterline' => '2.0.0-alpha.69',
@@ -5651,6 +5926,7 @@ PY);
             'server' => 'published_docker_image',
             'cli' => 'published_cli_release',
             'sdk-python' => 'published_pypi_package',
+            'sdk-rust' => 'published_crates_io_package',
             'workflow-php' => 'published_composer_package',
             'waterline' => 'published_waterline_artifact',
         ];
@@ -5787,6 +6063,7 @@ PY);
             'server' => '0.2.140',
             'cli' => '0.1.45',
             'sdk-python' => '0.4.58',
+            'sdk-rust' => '0.1.2',
             'workflow' => '2.0.0-alpha.161',
             'workflow-php' => '2.0.0-alpha.161',
             'waterline' => '2.0.0-alpha.54',
@@ -5795,6 +6072,7 @@ PY);
             'server' => 'published_docker_image',
             'cli' => 'published_cli_release',
             'sdk-python' => 'published_pypi_package',
+            'sdk-rust' => 'published_crates_io_package',
             'workflow-php' => 'published_composer_package',
             'waterline' => 'published_waterline_artifact',
         ];
@@ -5852,6 +6130,127 @@ PY);
             'cli_signal_and_query' => true,
             'cross_language_query_consistency' => true,
             'wire_envelope_compatibility' => true,
+        ];
+        $rustProvenance = [
+            'package' => 'durable-workflow',
+            'resolved_version' => '0.1.2',
+            'source' => 'registry+https://github.com/rust-lang/crates.io-index',
+            'checksum' => str_repeat('a', 64),
+        ];
+        $rustIdentity = [
+            'rust_sdk_version' => '0.1.2',
+            'rust_crate_provenance' => $rustProvenance,
+        ];
+        $scenarioResults['rust_worker_rust_php_python_clients']['observed_outputs'] = [
+            ...$rustIdentity,
+            'worker_runtime' => 'sdk-rust',
+            'rust_worker_registration' => ['sdk_version' => 'durable-workflow-rust/0.1.2'],
+            'apache_avro_provenance' => [
+                'package' => 'apache-avro',
+                'resolved_version' => '0.21.0',
+                'source' => 'registry+https://github.com/rust-lang/crates.io-index',
+                'checksum' => str_repeat('b', 64),
+            ],
+            'query_state_model' => 'snapshot_derived_transport_state',
+            'ordered_signal_values' => [3, 5],
+            'rust_query_results' => ['running' => 8, 'completed' => 8],
+            'workflow_php_query_results' => ['running' => 8, 'completed' => 8],
+            'sdk_python_query_results' => ['running' => 8, 'completed' => 8],
+            'valid_avro_signal_and_query' => [
+                'default_codec' => 'avro',
+                'payload_codec' => 'avro',
+                'observed_value' => 8,
+            ],
+            'repeat_query_consistency' => true,
+        ];
+        $scenarioResults['python_worker_rust_client']['observed_outputs'] = [
+            ...$rustIdentity,
+            'worker_runtime' => 'sdk-python',
+            'ordered_signal_values' => [4, 6],
+            'default_codec' => 'avro',
+            'payload_codec' => 'avro',
+            'rust_query_results' => [10, 10],
+            'repeat_query_consistency' => true,
+        ];
+        $scenarioResults['php_worker_rust_client']['observed_outputs'] = [
+            ...$rustIdentity,
+            'worker_runtime' => 'workflow-php',
+            'ordered_signal_values' => [4, 6],
+            'default_codec' => 'avro',
+            'payload_codec' => 'avro',
+            'rust_query_results' => [10, 10],
+            'repeat_query_consistency' => true,
+        ];
+        $scenarioResults['rust_query_error_and_immutability']['observed_outputs'] = [
+            ...$rustIdentity,
+            'query_state_model' => 'snapshot_derived_transport_state',
+            'unknown_query' => ['reason' => 'rejected_unknown_query'],
+            'malformed_query_payload' => ['reason' => 'query_payload_decode_failed'],
+            'unavailable_query_handler' => ['reason' => 'query_handler_unavailable'],
+            'incompatible_query_protocol' => ['reason' => 'unsupported_protocol_version'],
+            'missing_workflow' => ['reason' => 'instance_not_found'],
+            'terminal_signal' => [
+                'reason' => 'run_not_active',
+                'rejection_reason' => 'run_not_active',
+            ],
+            'history_and_commands_before_first_successful_query' => [
+                'history_event_count' => 6,
+                'workflow_command_count' => 1,
+            ],
+            'history_and_commands_after_successful_queries' => [
+                'history_event_count' => 6,
+                'workflow_command_count' => 1,
+            ],
+            'history_and_commands_after_failure_queries' => [
+                'history_event_count' => 6,
+                'workflow_command_count' => 1,
+            ],
+            'successful_queries_appended_no_history' => true,
+            'successful_queries_emitted_no_workflow_commands' => true,
+            'failed_queries_appended_no_history' => true,
+            'failed_queries_emitted_no_workflow_commands' => true,
+            'answer_before_failures' => 8,
+            'answer_after_failures' => 8,
+            'failed_query_did_not_change_later_answer' => true,
+        ];
+        $scenarioResults['rust_replayed_instance_state_query_after_cold_restart']['observed_outputs'] = [
+            ...$rustIdentity,
+            'worker_runtime' => 'sdk-rust',
+            'query_state_model' => 'replayed_workflow_instance_state',
+            'initial_worker_process_id' => '101',
+            'cold_restart' => [
+                'fresh_worker_process_id' => '202',
+                'durable_history_restored' => true,
+            ],
+            'running_query_results' => ['sdk_rust' => 5, 'workflow_php_sdk' => 5, 'sdk_python' => 5],
+            'restored_query_results' => ['sdk_rust' => 5, 'workflow_php_sdk' => 5, 'sdk_python' => 5],
+            'completed_query_results' => ['sdk_rust' => 5, 'workflow_php_sdk' => 5, 'sdk_python' => 5],
+            'immutability_checkpoints' => [
+                'running' => [
+                    'before_first_successful_query' => ['history_event_count' => 6, 'workflow_command_count' => 1],
+                    'answer_before_failed_query' => 5,
+                    'failed_query' => ['reason' => 'rejected_unknown_query'],
+                    'answer_after_failed_query' => 5,
+                    'after_successful_and_failed_queries' => ['history_event_count' => 6, 'workflow_command_count' => 1],
+                ],
+                'cold_restarted' => [
+                    'before_first_successful_query' => ['history_event_count' => 6, 'workflow_command_count' => 1],
+                    'answer_before_failed_query' => 5,
+                    'failed_query' => ['reason' => 'rejected_unknown_query'],
+                    'answer_after_failed_query' => 5,
+                    'after_successful_and_failed_queries' => ['history_event_count' => 6, 'workflow_command_count' => 1],
+                ],
+                'completed' => [
+                    'before_first_successful_query' => ['history_event_count' => 9, 'workflow_command_count' => 2],
+                    'answer_before_failed_query' => 5,
+                    'failed_query' => ['reason' => 'rejected_unknown_query'],
+                    'answer_after_failed_query' => 5,
+                    'after_successful_and_failed_queries' => ['history_event_count' => 9, 'workflow_command_count' => 2],
+                ],
+            ],
+            'successful_and_failed_queries_appended_no_history' => true,
+            'successful_and_failed_queries_emitted_no_workflow_commands' => true,
+            'failed_query_did_not_change_later_answer' => true,
         ];
         $scenarioResults['ordered_signal_delivery']['observed_outputs'] = [
             'rapid_increment_inputs' => [1, 2, 3, 4, 5, 6, 7, 8, 9, 10],
@@ -6055,6 +6454,7 @@ PY);
                 'server' => '0.2.140',
                 'cli' => '0.1.45',
                 'sdk-python' => '0.4.58',
+                'sdk-rust' => '0.1.2',
                 'workflow-php' => '2.0.0-alpha.161',
                 'waterline' => '2.0.0-alpha.54',
             ],
@@ -6062,6 +6462,7 @@ PY);
                 'server' => 'docker_image',
                 'cli' => 'official_install_script',
                 'sdk-python' => 'pypi_package',
+                'sdk-rust' => 'published_crates_io_package',
                 'workflow-php' => 'packagist_package',
                 'waterline' => 'packagist_package',
             ],
@@ -6116,12 +6517,13 @@ PY);
                 'server' => '0.2.140',
                 'cli' => '0.1.45',
                 'sdk-python' => '0.4.58',
+                'sdk-rust' => '0.1.2',
                 'workflow' => '2.0.0-alpha.161',
                 'workflow-php' => '2.0.0-alpha.161',
                 'waterline' => '2.0.0-alpha.54',
             ],
             'runtime_matrix' => [
-                'runtimes' => ['workflow-php', 'sdk-python'],
+                'runtimes' => ['workflow-php', 'sdk-python', 'sdk-rust'],
                 'same_language_cells' => [
                     [
                         'scenario' => 'python_worker_cli_and_sdk_baseline',
@@ -6132,6 +6534,11 @@ PY);
                         'scenario' => 'php_worker_cli_and_sdk_baseline',
                         'worker' => 'workflow-php',
                         'clients' => ['cli', 'workflow-php-sdk'],
+                    ],
+                    [
+                        'scenario' => 'rust_worker_rust_php_python_clients',
+                        'worker' => 'sdk-rust',
+                        'clients' => ['sdk-rust', 'workflow-php-sdk', 'sdk-python'],
                     ],
                 ],
                 'cross_language_cells' => [
@@ -6144,6 +6551,16 @@ PY);
                         'scenario' => 'php_worker_python_and_cli_clients',
                         'worker' => 'workflow-php',
                         'clients' => ['sdk-python', 'cli'],
+                    ],
+                    [
+                        'scenario' => 'python_worker_rust_client',
+                        'worker' => 'sdk-python',
+                        'clients' => ['sdk-rust'],
+                    ],
+                    [
+                        'scenario' => 'php_worker_rust_client',
+                        'worker' => 'workflow-php',
+                        'clients' => ['sdk-rust'],
                     ],
                 ],
             ],

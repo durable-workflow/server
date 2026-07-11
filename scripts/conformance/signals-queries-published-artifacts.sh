@@ -22,6 +22,7 @@ Environment overrides:
                                              published install evidence.
   DW_CLI_VERSION                            Published CLI version under test.
   DW_PYTHON_SDK_VERSION                     Published Python SDK version under test.
+  DW_RUST_SDK_VERSION                       Published Rust SDK version under test (0.1.2).
   DW_WORKFLOW_PHP_VERSION                   Published PHP workflow version under test.
   DW_WATERLINE_VERSION                      Published Waterline version under test.
   DW_SIGNALS_QUERIES_RESULT_DIR             Result directory when --result-dir is omitted.
@@ -34,6 +35,8 @@ Environment overrides:
                                              Set to 0 to skip the live replay/terminal shard.
   DW_SIGNALS_QUERIES_RUN_WATERLINE_OBSERVER_PROBE
                                              Set to 0 to skip the published Waterline observer shard.
+  DW_SIGNALS_QUERIES_RUN_RUST_MATRIX_PROBE   Set to 0 to skip the mandatory crates.io Rust matrix.
+  DW_SIGNALS_QUERIES_RUST_DOCKER_IMAGE       Rust build/runtime image. Defaults to rust:1.86-slim-bookworm.
   DW_SIGNALS_QUERIES_SERVER_URL             Reuse an already-running published server for the adversarial shard.
   DW_SIGNALS_QUERIES_SERVER_CONNECT_HOST    Preferred host/address to probe for a self-started published server.
   DW_SIGNALS_QUERIES_SERVER_READY_TIMEOUT_SECONDS
@@ -101,6 +104,7 @@ REPO_ROOT="$repo_root" \
 DW_SERVER_VERSION="${DW_SERVER_VERSION:-unresolved}" \
 DW_CLI_VERSION="${DW_CLI_VERSION:-unresolved}" \
 DW_PYTHON_SDK_VERSION="${DW_PYTHON_SDK_VERSION:-unresolved}" \
+DW_RUST_SDK_VERSION="${DW_RUST_SDK_VERSION:-unresolved}" \
 DW_WORKFLOW_PHP_VERSION="${DW_WORKFLOW_PHP_VERSION:-unresolved}" \
 DW_WATERLINE_VERSION="${DW_WATERLINE_VERSION:-unresolved}" \
 DW_SIGNALS_QUERIES_EVIDENCE="${DW_SIGNALS_QUERIES_EVIDENCE:-${DW_SIGNALS_QUERIES_SMOKE_EVIDENCE:-}}" \
@@ -3220,6 +3224,13 @@ def workflow_public_snapshot(
                 for event in history_events
                 if isinstance(event, dict) and isinstance(event.get("event_type"), str)
             ]
+            workflow_command_count = 0
+            for event in history_events:
+                payload = event.get("payload") if isinstance(event, dict) else None
+                commands = payload.get("commands") if isinstance(payload, dict) else None
+                if isinstance(commands, list):
+                    workflow_command_count += len(commands)
+            snapshot["workflow_command_count"] = workflow_command_count
 
     return snapshot
 
@@ -4327,6 +4338,7 @@ def probe_artifact_versions() -> dict[str, str]:
         "server": artifact_version_value(artifact_versions, "server"),
         "cli": artifact_version_value(artifact_versions, "cli"),
         "sdk-python": artifact_version_value(artifact_versions, "sdk-python"),
+        "sdk-rust": artifact_version_value(artifact_versions, "sdk-rust"),
         "workflow-php": artifact_version_value(artifact_versions, "workflow-php"),
         "waterline": artifact_version_value(artifact_versions, "waterline"),
     }
@@ -4514,6 +4526,877 @@ def stop_python_sdk_counter_worker(process: subprocess.Popen[str], log_file: Pat
         except subprocess.TimeoutExpired:
             process.kill()
             process.wait(timeout=10)
+
+
+def rust_probe_image() -> str:
+    return env_text("DW_SIGNALS_QUERIES_RUST_DOCKER_IMAGE") or "rust:1.86-slim-bookworm"
+
+
+def rust_probe_docker_command(
+    project_dir: Path,
+    args: list[str],
+    *,
+    env: dict[str, str] | None = None,
+    name: str | None = None,
+    detach: bool = False,
+) -> list[str]:
+    command = ["docker", "run"]
+    if detach:
+        if not name:
+            raise RuntimeError("detached Rust probe command requires a container name")
+        command.extend(["-d", "--name", name])
+    else:
+        command.append("--rm")
+    command.extend([
+        "--add-host",
+        "host.docker.internal:host-gateway",
+        "-v",
+        docker_volume_spec(project_dir),
+        "-w",
+        "/app",
+    ])
+    for key, value in sorted((env or {}).items()):
+        command.extend(["-e", f"{key}={value}"])
+    command.append(rust_probe_image())
+    command.extend(args)
+    return command
+
+
+def prepare_rust_probe(run_root: Path, log_file: Path) -> tuple[Path, dict[str, Any], dict[str, Any]]:
+    version = artifact_version_value(artifact_versions, "sdk-rust")
+    if version != "0.1.2":
+        raise RuntimeError("DW_RUST_SDK_VERSION must be the exact published 0.1.2 crate for suite v19")
+    if not command_available("docker"):
+        raise RuntimeError("docker is required to install the published Rust SDK crate")
+
+    project_dir = run_root / "sdk-rust"
+    source_dir = project_dir / "src"
+    source_dir.mkdir(parents=True, exist_ok=True)
+    probe_source = Path(os.environ["REPO_ROOT"]) / "scripts" / "conformance" / "signals-queries-rust-probe.rs"
+    shutil.copyfile(probe_source, source_dir / "main.rs")
+    (project_dir / "Cargo.toml").write_text(
+        "\n".join([
+            "[package]",
+            'name = "signals-queries-published-probe"',
+            'version = "0.0.0"',
+            'edition = "2021"',
+            "",
+            "[dependencies]",
+            f'durable-workflow = "={version}"',
+            'serde_json = "1"',
+            'tokio = { version = "1", features = ["macros", "rt-multi-thread"] }',
+            "",
+        ]),
+        encoding="utf-8",
+    )
+
+    generate = run_command(
+        rust_probe_docker_command(project_dir, ["cargo", "generate-lockfile"]),
+        log_file=log_file,
+        timeout=600,
+    )
+    if generate.returncode != 0:
+        raise RuntimeError("could not resolve the exact crates.io Rust SDK probe dependencies")
+    build = run_command(
+        rust_probe_docker_command(project_dir, ["cargo", "build", "--locked", "--release"]),
+        log_file=log_file,
+        timeout=1200,
+    )
+    if build.returncode != 0:
+        raise RuntimeError("could not build the exact crates.io Rust SDK probe")
+
+    with (project_dir / "Cargo.lock").open("rb") as handle:
+        lock = __import__("tomllib").load(handle)
+    packages = lock.get("package") if isinstance(lock, dict) else None
+    if not isinstance(packages, list):
+        raise RuntimeError("Cargo.lock did not contain resolved package provenance")
+
+    def package_provenance(name: str, expected_version: str | None = None) -> dict[str, Any]:
+        for package in packages:
+            if not isinstance(package, dict) or package.get("name") != name:
+                continue
+            resolved_version = str(package.get("version") or "")
+            if expected_version is not None and resolved_version != expected_version:
+                continue
+            source = str(package.get("source") or "")
+            checksum = str(package.get("checksum") or "")
+            if not source.startswith("registry+") or not re.fullmatch(r"[0-9a-f]{64}", checksum):
+                raise RuntimeError(f"{name} was not resolved with crates.io registry checksum provenance")
+            return {
+                "package": name,
+                "resolved_version": resolved_version,
+                "source": source,
+                "checksum": checksum,
+            }
+        raise RuntimeError(f"Cargo.lock did not resolve {name} {expected_version or ''}".strip())
+
+    rust_provenance = package_provenance("durable-workflow", version)
+    avro_provenance = package_provenance("apache-avro")
+    install_entry = installed_public_artifact_entry(
+        "sdk-rust",
+        version,
+        EXPECTED_ARTIFACT_SOURCES["sdk-rust"],
+        "cargo_exact_registry_install",
+    )
+    install_entry.update({
+        "cargo_requirement": f"={version}",
+        "registry_source": rust_provenance["source"],
+        "registry_checksum": rust_provenance["checksum"],
+        "runtime_image": rust_probe_image(),
+    })
+    return project_dir, rust_provenance, {"package": avro_provenance, "install_entry": install_entry}
+
+
+def rust_probe_env(base_url: str, token: str, namespace: str, task_queue: str = "") -> dict[str, str]:
+    return {
+        "DURABLE_WORKFLOW_SERVER_URL": docker_host_base_url(base_url),
+        "DURABLE_WORKFLOW_TOKEN": token,
+        "DURABLE_WORKFLOW_NAMESPACE": namespace,
+        "TASK_QUEUE": task_queue,
+    }
+
+
+def rust_client_sample(
+    project_dir: Path,
+    base_url: str,
+    token: str,
+    namespace: str,
+    task_queue: str,
+    operation: str,
+    workflow_id: str,
+    name: str,
+    args: list[Any],
+    log_file: Path,
+) -> dict[str, Any]:
+    command = rust_probe_docker_command(
+        project_dir,
+        [
+            "/app/target/release/signals-queries-published-probe",
+            "client",
+            operation,
+            workflow_id,
+            name,
+            json.dumps(args),
+        ],
+        env=rust_probe_env(base_url, token, namespace, task_queue),
+    )
+    completed = run_command(command, log_file=log_file, timeout=120)
+    sample = json_sample_from_stdout(completed.stdout)
+    sample.setdefault("client", "sdk-rust")
+    sample.setdefault("operation", operation)
+    sample.setdefault("operation_name", name)
+    sample.setdefault("exit_code", completed.returncode)
+    return sample
+
+
+def start_rust_probe_worker(
+    project_dir: Path,
+    base_url: str,
+    token: str,
+    namespace: str,
+    task_queue: str,
+    worker_id: str,
+    model: str,
+    container_name: str,
+    log_file: Path,
+) -> dict[str, Any]:
+    run_command(["docker", "rm", "-f", container_name], log_file=log_file, timeout=30)
+    command = rust_probe_docker_command(
+        project_dir,
+        ["/app/target/release/signals-queries-published-probe", "worker", model],
+        env={
+            **rust_probe_env(base_url, token, namespace, task_queue),
+            "WORKER_ID": worker_id,
+        },
+        name=container_name,
+        detach=True,
+    )
+    started = run_command(command, log_file=log_file, timeout=60)
+    if started.returncode != 0:
+        raise RuntimeError(f"Rust {model} worker container failed to start")
+    try:
+        registration = wait_for_docker_worker_registered(
+            base_url=base_url,
+            token=token,
+            namespace=namespace,
+            worker_id=worker_id,
+            container_name=container_name,
+            log_file=log_file,
+            timeout_seconds=90,
+        )
+    except Exception:
+        capture_command_summary(["docker", "logs", container_name], log_file=log_file, timeout=30)
+        run_command(["docker", "rm", "-f", container_name], log_file=log_file, timeout=30)
+        raise
+    inspect = run_command(
+        ["docker", "inspect", "-f", "{{.Id}}:{{.State.Pid}}", container_name],
+        log_file=log_file,
+        timeout=30,
+    )
+    return {
+        "registration": registration,
+        "process_id": inspect.stdout.strip(),
+        "container_name": container_name,
+    }
+
+
+def stop_rust_probe_worker(container_name: str, log_file: Path) -> None:
+    capture_command_summary(["docker", "logs", container_name], log_file=log_file, timeout=30)
+    run_command(["docker", "rm", "-f", container_name], log_file=log_file, timeout=30)
+
+
+def wait_for_history_signals(
+    base_url: str,
+    token: str,
+    namespace: str,
+    workflow_id: str,
+    run_id: str,
+    expected: int,
+    log_file: Path,
+) -> dict[str, Any]:
+    deadline = time.time() + 60
+    last: dict[str, Any] = {}
+    stable_observations = 0
+    last_counts: tuple[Any, Any] | None = None
+    while time.time() < deadline:
+        last = workflow_public_snapshot(base_url, token, namespace, workflow_id, run_id)
+        event_types = last.get("history_event_types")
+        if isinstance(event_types, list) and event_types.count("SignalReceived") >= expected:
+            counts = (last.get("history_event_count"), last.get("workflow_command_count"))
+            stable_observations = stable_observations + 1 if counts == last_counts else 1
+            last_counts = counts
+            if stable_observations >= 3:
+                return last
+        time.sleep(0.5)
+    log_line(log_file, f"Rust workflow history wait last snapshot: {last}")
+    raise RuntimeError(f"{workflow_id} did not commit {expected} signals")
+
+
+def wait_for_terminal_snapshot(
+    base_url: str,
+    token: str,
+    namespace: str,
+    workflow_id: str,
+    run_id: str,
+) -> dict[str, Any]:
+    deadline = time.time() + 60
+    last: dict[str, Any] = {}
+    while time.time() < deadline:
+        last = workflow_public_snapshot(base_url, token, namespace, workflow_id, run_id)
+        if str(last.get("status") or "").lower() in {
+            "completed", "failed", "cancelled", "terminated", "timed_out"
+        }:
+            return last
+        time.sleep(0.5)
+    raise RuntimeError(f"{workflow_id} did not reach a terminal state: {last}")
+
+
+def rust_query_sample_value(sample: dict[str, Any]) -> Any:
+    return sample_result_value(sample)
+
+
+def rust_provenance_outputs(
+    rust_version: str,
+    rust_provenance: dict[str, Any],
+) -> dict[str, Any]:
+    return {
+        "rust_sdk_version": rust_version,
+        "rust_crate_provenance": rust_provenance,
+    }
+
+
+def incompatible_query_protocol_sample(
+    base_url: str,
+    token: str,
+    namespace: str,
+    task_queue: str,
+) -> dict[str, Any]:
+    headers = {
+        "Accept": "application/json",
+        "Content-Type": "application/json",
+        "Authorization": f"Bearer {token}",
+        "X-Namespace": namespace,
+        "X-Durable-Workflow-Protocol-Version": "2.0",
+    }
+    request = urllib.request.Request(
+        url_join(base_url, "/api/worker/query-tasks/poll"),
+        data=json.dumps({
+            "worker_id": "rust-incompatible-query-protocol",
+            "task_queue": task_queue,
+            "timeout_seconds": 1,
+            "poll_request_id": f"rust-incompatible-{time.time_ns()}",
+        }).encode("utf-8"),
+        headers=headers,
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=10) as response:
+            raw = response.read().decode("utf-8")
+            body = json.loads(raw) if raw.strip() else {}
+            return {"status_code": response.status, **(body if isinstance(body, dict) else {})}
+    except urllib.error.HTTPError as exc:
+        raw = exc.read().decode("utf-8", errors="replace")
+        try:
+            body = json.loads(raw) if raw.strip() else {}
+        except json.JSONDecodeError:
+            body = {"raw": raw}
+        return {"status_code": exc.code, **(body if isinstance(body, dict) else {})}
+
+
+def counts_unchanged(before: dict[str, Any], after: dict[str, Any]) -> bool:
+    return all(
+        before.get(key) == after.get(key)
+        and isinstance(before.get(key), int)
+        for key in ("history_event_count", "workflow_command_count")
+    )
+
+
+def query_all_published_clients(
+    *,
+    project_dir: Path,
+    workflow_php_project: Path,
+    python_bin: str,
+    base_url: str,
+    token: str,
+    namespace: str,
+    task_queue: str,
+    workflow_type: str,
+    workflow_id: str,
+    expected: Any,
+    log_file: Path,
+) -> dict[str, Any]:
+    rust = wait_for_query_result(
+        label=f"Rust query for {workflow_id}",
+        expected=expected,
+        log_file=log_file,
+        sample_factory=lambda: rust_client_sample(
+            project_dir, base_url, token, namespace, task_queue,
+            "query", workflow_id, "current", [], log_file,
+        ),
+    )
+    php = wait_for_query_result(
+        label=f"PHP query for Rust workflow {workflow_id}",
+        expected=expected,
+        log_file=log_file,
+        sample_factory=lambda: php_workflow_client_sample(
+            workflow_php_project, base_url, token, namespace,
+            "query", workflow_type, workflow_id, task_queue, "current", log_file,
+        ),
+    )
+    python = wait_for_query_result(
+        label=f"Python query for Rust workflow {workflow_id}",
+        expected=expected,
+        log_file=log_file,
+        sample_factory=lambda: sdk_success_sample(
+            python_bin, base_url, token, namespace, workflow_id,
+            "query", "current", log_file,
+        ),
+    )
+    return {
+        "sdk_rust": rust_query_sample_value(rust),
+        "workflow_php_sdk": sample_result_value(php),
+        "sdk_python": sample_result_value(python),
+        "samples": {"sdk_rust": rust, "workflow_php_sdk": php, "sdk_python": python},
+    }
+
+
+def run_rust_matrix_probe(
+    *,
+    base_url: str,
+    token: str,
+    namespace: str,
+    python_bin: str,
+    workflow_php_project: Path,
+    run_root: Path,
+    log_file: Path,
+) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any]]:
+    project_dir, rust_provenance, rust_install = prepare_rust_probe(run_root, log_file)
+    rust_version = artifact_version_value(artifact_versions, "sdk-rust")
+    avro_provenance = rust_install["package"]
+    suffix = hashlib.sha1(f"{time.time()}-rust-signals-queries".encode()).hexdigest()[:10]
+    snapshot_queue = f"signals-queries-rust-snapshot-{suffix}"
+    snapshot_worker_id = f"signals-queries-rust-snapshot-worker-{suffix}"
+    snapshot_container = f"dw-sq-rust-snapshot-{suffix}"
+    replay_queue = f"signals-queries-rust-replay-{suffix}"
+    replay_container = f"dw-sq-rust-replay-{suffix}"
+    replay_container_fresh = f"dw-sq-rust-replay-fresh-{suffix}"
+    provenance = rust_provenance_outputs(rust_version, rust_provenance)
+    scenarios: dict[str, dict[str, Any]] = {}
+    descriptor: dict[str, Any] = {
+        "rust_project": project_dir.name,
+        "cargo_requirement": f"={rust_version}",
+        "rust_crate_provenance": rust_provenance,
+        "apache_avro_provenance": avro_provenance,
+        "generated_scenarios": [
+            "rust_worker_rust_php_python_clients",
+            "python_worker_rust_client",
+            "php_worker_rust_client",
+            "rust_query_error_and_immutability",
+            "rust_replayed_instance_state_query_after_cold_restart",
+        ],
+    }
+
+    snapshot_worker: dict[str, Any] | None = None
+    try:
+        snapshot_worker = start_rust_probe_worker(
+            project_dir, base_url, token, namespace, snapshot_queue,
+            snapshot_worker_id, "snapshot", snapshot_container, log_file,
+        )
+        workflow_id = f"wf-sq-rust-snapshot-{suffix}"
+        start = rust_client_sample(
+            project_dir, base_url, token, namespace, snapshot_queue,
+            "start", workflow_id, "conformance.counter.rust.snapshot", [], log_file,
+        )
+        run_id = workflow_start_run_id(start)
+        if not public_sample_ok(start) or not run_id:
+            raise RuntimeError(f"Rust snapshot workflow start failed: {start}")
+
+        for amount in (3, 5):
+            signal = rust_client_sample(
+                project_dir, base_url, token, namespace, snapshot_queue,
+                "signal", workflow_id, "increment", [amount], log_file,
+            )
+            if not public_sample_ok(signal):
+                raise RuntimeError(f"Rust Avro increment signal failed: {signal}")
+        before_first_query = wait_for_history_signals(
+            base_url, token, namespace, workflow_id, run_id, 2, log_file,
+        )
+        running = query_all_published_clients(
+            project_dir=project_dir,
+            workflow_php_project=workflow_php_project,
+            python_bin=python_bin,
+            base_url=base_url,
+            token=token,
+            namespace=namespace,
+            task_queue=snapshot_queue,
+            workflow_type="conformance.counter.rust.snapshot",
+            workflow_id=workflow_id,
+            expected=8,
+            log_file=log_file,
+        )
+        repeat = rust_client_sample(
+            project_dir, base_url, token, namespace, snapshot_queue,
+            "query", workflow_id, "current", [], log_file,
+        )
+        after_success = workflow_public_snapshot(base_url, token, namespace, workflow_id, run_id)
+        answer_before_failures = rust_query_sample_value(repeat)
+
+        unknown = rust_client_sample(
+            project_dir, base_url, token, namespace, snapshot_queue,
+            "query", workflow_id, "does-not-exist", [], log_file,
+        )
+        malformed_response = http_json(
+            base_url,
+            api_path("workflows", workflow_id, "query", "current"),
+            method="POST",
+            body={"input": {"codec": "avro", "blob": "not-valid-avro"}},
+            token=token,
+            namespace=namespace,
+            timeout=30,
+        )
+        malformed = response_sample(malformed_response)
+        missing = rust_client_sample(
+            project_dir, base_url, token, namespace, snapshot_queue,
+            "query", f"missing-{suffix}", "current", [], log_file,
+        )
+        unavailable_id = f"wf-sq-rust-unavailable-{suffix}"
+        unavailable_start = rust_client_sample(
+            project_dir, base_url, token, namespace, snapshot_queue,
+            "start", unavailable_id, "conformance.counter.rust.unavailable", [], log_file,
+        )
+        if not public_sample_ok(unavailable_start):
+            raise RuntimeError(f"Rust unavailable-handler workflow start failed: {unavailable_start}")
+        unavailable = rust_client_sample(
+            project_dir, base_url, token, namespace, snapshot_queue,
+            "query", unavailable_id, "current", [], log_file,
+        )
+        incompatible = incompatible_query_protocol_sample(
+            base_url, token, namespace, snapshot_queue,
+        )
+        answer_after_sample = rust_client_sample(
+            project_dir, base_url, token, namespace, snapshot_queue,
+            "query", workflow_id, "current", [], log_file,
+        )
+        answer_after_failures = rust_query_sample_value(answer_after_sample)
+        after_failures = workflow_public_snapshot(base_url, token, namespace, workflow_id, run_id)
+
+        finish = rust_client_sample(
+            project_dir, base_url, token, namespace, snapshot_queue,
+            "signal", workflow_id, "finish", [], log_file,
+        )
+        if not public_sample_ok(finish):
+            raise RuntimeError(f"Rust snapshot finish signal failed: {finish}")
+        terminal_snapshot = wait_for_terminal_snapshot(
+            base_url, token, namespace, workflow_id, run_id,
+        )
+        completed = query_all_published_clients(
+            project_dir=project_dir,
+            workflow_php_project=workflow_php_project,
+            python_bin=python_bin,
+            base_url=base_url,
+            token=token,
+            namespace=namespace,
+            task_queue=snapshot_queue,
+            workflow_type="conformance.counter.rust.snapshot",
+            workflow_id=workflow_id,
+            expected=8,
+            log_file=log_file,
+        )
+        terminal_signal = rust_client_sample(
+            project_dir, base_url, token, namespace, snapshot_queue,
+            "signal", workflow_id, "increment", [1], log_file,
+        )
+
+        registration = snapshot_worker["registration"]
+        snapshot_outputs = {
+            **provenance,
+            "worker_runtime": "sdk-rust",
+            "rust_worker_registration": registration,
+            "apache_avro_provenance": avro_provenance,
+            "query_state_model": "snapshot_derived_transport_state",
+            "ordered_signal_values": [3, 5],
+            "rust_query_results": {"running": running["sdk_rust"], "completed": completed["sdk_rust"]},
+            "workflow_php_query_results": {"running": running["workflow_php_sdk"], "completed": completed["workflow_php_sdk"]},
+            "sdk_python_query_results": {"running": running["sdk_python"], "completed": completed["sdk_python"]},
+            "valid_avro_signal_and_query": {
+                "default_codec": repeat.get("default_codec"),
+                "payload_codec": repeat.get("payload_codec"),
+                "observed_value": rust_query_sample_value(repeat),
+            },
+            "repeat_query_consistency": rust_query_sample_value(repeat) == running["sdk_rust"],
+            "running_client_samples": running["samples"],
+            "completed_client_samples": completed["samples"],
+            "terminal_snapshot": terminal_snapshot,
+        }
+        scenarios["rust_worker_rust_php_python_clients"] = {
+            "scenario_id": "rust_worker_rust_php_python_clients",
+            "status": "pass" if has_required_evidence("rust_worker_rust_php_python_clients", snapshot_outputs) else "fail",
+            "observed_outputs": snapshot_outputs,
+        }
+
+        error_outputs = {
+            **provenance,
+            "query_state_model": "snapshot_derived_transport_state",
+            "unknown_query": unknown,
+            "malformed_query_payload": malformed,
+            "unavailable_query_handler": unavailable,
+            "incompatible_query_protocol": incompatible,
+            "missing_workflow": missing,
+            "terminal_signal": terminal_signal,
+            "history_and_commands_before_first_successful_query": before_first_query,
+            "history_and_commands_after_successful_queries": after_success,
+            "history_and_commands_after_failure_queries": after_failures,
+            "successful_queries_appended_no_history": before_first_query.get("history_event_count") == after_success.get("history_event_count"),
+            "successful_queries_emitted_no_workflow_commands": before_first_query.get("workflow_command_count") == after_success.get("workflow_command_count"),
+            "failed_queries_appended_no_history": after_success.get("history_event_count") == after_failures.get("history_event_count"),
+            "failed_queries_emitted_no_workflow_commands": after_success.get("workflow_command_count") == after_failures.get("workflow_command_count"),
+            "answer_before_failures": answer_before_failures,
+            "answer_after_failures": answer_after_failures,
+            "failed_query_did_not_change_later_answer": answer_before_failures == answer_after_failures,
+        }
+        scenarios["rust_query_error_and_immutability"] = {
+            "scenario_id": "rust_query_error_and_immutability",
+            "status": "pass" if has_required_evidence("rust_query_error_and_immutability", error_outputs) else "fail",
+            "observed_outputs": error_outputs,
+        }
+    finally:
+        if snapshot_worker is not None:
+            stop_rust_probe_worker(snapshot_container, log_file)
+
+    python_queue = f"signals-queries-python-rust-client-{suffix}"
+    python_worker_id = f"signals-queries-python-rust-client-worker-{suffix}"
+    python_process = start_python_sdk_counter_worker(
+        python_bin=python_bin,
+        base_url=base_url,
+        token=token,
+        namespace=namespace,
+        task_queue=python_queue,
+        worker_id=python_worker_id,
+        query_route_evidence_path=run_root / f"{python_worker_id}.jsonl",
+        run_root=run_root,
+        log_file=log_file,
+    )
+    try:
+        wait_for_worker_registered(
+            base_url=base_url, token=token, namespace=namespace,
+            worker_id=python_worker_id, process=python_process, log_file=log_file,
+        )
+        workflow_id = f"wf-sq-python-rust-client-{suffix}"
+        start = rust_client_sample(
+            project_dir, base_url, token, namespace, python_queue,
+            "start", workflow_id, "conformance.counter", [], log_file,
+        )
+        if not public_sample_ok(start):
+            raise RuntimeError(f"Rust client could not start Python workflow: {start}")
+        values = []
+        for amount in (4, 6):
+            signal = rust_client_sample(
+                project_dir, base_url, token, namespace, python_queue,
+                "signal", workflow_id, "increment", [amount], log_file,
+            )
+            if not public_sample_ok(signal):
+                raise RuntimeError(f"Rust client could not signal Python workflow: {signal}")
+            values.append(amount)
+        query = wait_for_query_result(
+            label="Rust client query against Python worker", expected=sum(values), log_file=log_file,
+            sample_factory=lambda: rust_client_sample(
+                project_dir, base_url, token, namespace, python_queue,
+                "query", workflow_id, "current", [], log_file,
+            ),
+        )
+        repeat = rust_client_sample(
+            project_dir, base_url, token, namespace, python_queue,
+            "query", workflow_id, "current", [], log_file,
+        )
+        outputs = {
+            **provenance,
+            "worker_runtime": "sdk-python",
+            "ordered_signal_values": values,
+            "default_codec": query.get("default_codec"),
+            "payload_codec": query.get("payload_codec"),
+            "rust_query_results": [sample_result_value(query), sample_result_value(repeat)],
+            "repeat_query_consistency": sample_result_value(query) == sample_result_value(repeat),
+        }
+        scenarios["python_worker_rust_client"] = {
+            "scenario_id": "python_worker_rust_client",
+            "status": "pass" if has_required_evidence("python_worker_rust_client", outputs) else "fail",
+            "observed_outputs": outputs,
+        }
+    finally:
+        stop_python_sdk_counter_worker(python_process, log_file)
+
+    php_queue = f"signals-queries-php-rust-client-{suffix}"
+    php_worker_id = f"signals-queries-php-rust-client-worker-{suffix}"
+    php_container = f"dw-sq-php-rust-client-{suffix}"
+    php_evidence = run_root / f"{php_worker_id}.jsonl"
+    php_start = run_command(
+        php_docker_command(
+            workflow_php_project,
+            [
+                "php", "php-counter-worker.php", docker_host_base_url(base_url), token,
+                namespace, php_queue, php_worker_id, f"/app/{php_evidence.name}", "600",
+            ],
+            name=php_container,
+            detach=True,
+        ),
+        log_file=log_file,
+        timeout=60,
+    )
+    try:
+        if php_start.returncode != 0:
+            raise RuntimeError("PHP worker for Rust client matrix failed to start")
+        wait_for_docker_worker_registered(
+            base_url=base_url, token=token, namespace=namespace,
+            worker_id=php_worker_id, container_name=php_container, log_file=log_file,
+        )
+        workflow_id = f"wf-sq-php-rust-client-{suffix}"
+        start = rust_client_sample(
+            project_dir, base_url, token, namespace, php_queue,
+            "start", workflow_id, "conformance.counter.php", [], log_file,
+        )
+        if not public_sample_ok(start):
+            raise RuntimeError(f"Rust client could not start PHP workflow: {start}")
+        values = []
+        for amount in (4, 6):
+            signal = rust_client_sample(
+                project_dir, base_url, token, namespace, php_queue,
+                "signal", workflow_id, "increment", [amount], log_file,
+            )
+            if not public_sample_ok(signal):
+                raise RuntimeError(f"Rust client could not signal PHP workflow: {signal}")
+            values.append(amount)
+        query = wait_for_query_result(
+            label="Rust client query against PHP worker", expected=sum(values), log_file=log_file,
+            sample_factory=lambda: rust_client_sample(
+                project_dir, base_url, token, namespace, php_queue,
+                "query", workflow_id, "current", [], log_file,
+            ),
+        )
+        repeat = rust_client_sample(
+            project_dir, base_url, token, namespace, php_queue,
+            "query", workflow_id, "current", [], log_file,
+        )
+        outputs = {
+            **provenance,
+            "worker_runtime": "workflow-php",
+            "ordered_signal_values": values,
+            "default_codec": query.get("default_codec"),
+            "payload_codec": query.get("payload_codec"),
+            "rust_query_results": [sample_result_value(query), sample_result_value(repeat)],
+            "repeat_query_consistency": sample_result_value(query) == sample_result_value(repeat),
+        }
+        scenarios["php_worker_rust_client"] = {
+            "scenario_id": "php_worker_rust_client",
+            "status": "pass" if has_required_evidence("php_worker_rust_client", outputs) else "fail",
+            "observed_outputs": outputs,
+        }
+    finally:
+        stop_rust_probe_worker(php_container, log_file)
+
+    replay_worker = start_rust_probe_worker(
+        project_dir, base_url, token, namespace, replay_queue,
+        f"signals-queries-rust-replay-worker-{suffix}", "replay", replay_container, log_file,
+    )
+    try:
+        workflow_id = f"wf-sq-rust-replay-{suffix}"
+        start = rust_client_sample(
+            project_dir, base_url, token, namespace, replay_queue,
+            "start", workflow_id, "conformance.counter.rust.replayed", [], log_file,
+        )
+        run_id = workflow_start_run_id(start)
+        if not public_sample_ok(start) or not run_id:
+            raise RuntimeError(f"Rust replay workflow start failed: {start}")
+        for amount in (2, 3):
+            signal = rust_client_sample(
+                project_dir, base_url, token, namespace, replay_queue,
+                "signal", workflow_id, "increment", [amount], log_file,
+            )
+            if not public_sample_ok(signal):
+                raise RuntimeError(f"Rust replay increment failed: {signal}")
+        running_before = wait_for_history_signals(
+            base_url, token, namespace, workflow_id, run_id, 2, log_file,
+        )
+        running = query_all_published_clients(
+            project_dir=project_dir, workflow_php_project=workflow_php_project,
+            python_bin=python_bin, base_url=base_url, token=token, namespace=namespace,
+            task_queue=replay_queue, workflow_type="conformance.counter.rust.replayed",
+            workflow_id=workflow_id, expected=5, log_file=log_file,
+        )
+        running_failure = rust_client_sample(
+            project_dir, base_url, token, namespace, replay_queue,
+            "query", workflow_id, "unknown", [], log_file,
+        )
+        running_after_failure = wait_for_query_result(
+            label="Rust replay running query after failed query", expected=5, log_file=log_file,
+            sample_factory=lambda: rust_client_sample(
+                project_dir, base_url, token, namespace, replay_queue,
+                "query", workflow_id, "current", [], log_file,
+            ),
+        )
+        running_after = workflow_public_snapshot(base_url, token, namespace, workflow_id, run_id)
+        initial_process_id = replay_worker["process_id"]
+    finally:
+        stop_rust_probe_worker(replay_container, log_file)
+
+    cold_before = workflow_public_snapshot(base_url, token, namespace, workflow_id, run_id)
+    fresh_worker = start_rust_probe_worker(
+        project_dir, base_url, token, namespace, replay_queue,
+        f"signals-queries-rust-replay-fresh-worker-{suffix}", "replay",
+        replay_container_fresh, log_file,
+    )
+    try:
+        restored = query_all_published_clients(
+            project_dir=project_dir, workflow_php_project=workflow_php_project,
+            python_bin=python_bin, base_url=base_url, token=token, namespace=namespace,
+            task_queue=replay_queue, workflow_type="conformance.counter.rust.replayed",
+            workflow_id=workflow_id, expected=5, log_file=log_file,
+        )
+        restored_failure = rust_client_sample(
+            project_dir, base_url, token, namespace, replay_queue,
+            "query", workflow_id, "unknown", [], log_file,
+        )
+        restored_after_failure = wait_for_query_result(
+            label="Rust replay cold-restarted query after failed query", expected=5, log_file=log_file,
+            sample_factory=lambda: rust_client_sample(
+                project_dir, base_url, token, namespace, replay_queue,
+                "query", workflow_id, "current", [], log_file,
+            ),
+        )
+        cold_after = workflow_public_snapshot(base_url, token, namespace, workflow_id, run_id)
+        complete_signal = rust_client_sample(
+            project_dir, base_url, token, namespace, replay_queue,
+            "signal", workflow_id, "increment", [0], log_file,
+        )
+        if not public_sample_ok(complete_signal):
+            raise RuntimeError(f"Rust replay completion signal failed: {complete_signal}")
+        wait_for_terminal_snapshot(base_url, token, namespace, workflow_id, run_id)
+        completed_before = workflow_public_snapshot(base_url, token, namespace, workflow_id, run_id)
+        completed = query_all_published_clients(
+            project_dir=project_dir, workflow_php_project=workflow_php_project,
+            python_bin=python_bin, base_url=base_url, token=token, namespace=namespace,
+            task_queue=replay_queue, workflow_type="conformance.counter.rust.replayed",
+            workflow_id=workflow_id, expected=5, log_file=log_file,
+        )
+        completed_failure = rust_client_sample(
+            project_dir, base_url, token, namespace, replay_queue,
+            "query", workflow_id, "unknown", [], log_file,
+        )
+        completed_after_failure = wait_for_query_result(
+            label="Rust replay completed query after failed query", expected=5, log_file=log_file,
+            sample_factory=lambda: rust_client_sample(
+                project_dir, base_url, token, namespace, replay_queue,
+                "query", workflow_id, "current", [], log_file,
+            ),
+        )
+        completed_after = workflow_public_snapshot(base_url, token, namespace, workflow_id, run_id)
+        immutable = all([
+            counts_unchanged(running_before, running_after),
+            counts_unchanged(cold_before, cold_after),
+            counts_unchanged(completed_before, completed_after),
+        ])
+        replay_outputs = {
+            **provenance,
+            "worker_runtime": "sdk-rust",
+            "query_state_model": "replayed_workflow_instance_state",
+            "initial_worker_process_id": initial_process_id,
+            "cold_restart": {
+                "fresh_worker_process_id": fresh_worker["process_id"],
+                "durable_history_restored": restored["sdk_rust"] == running["sdk_rust"] == 5,
+            },
+            "running_query_results": {key: running[key] for key in ("sdk_rust", "workflow_php_sdk", "sdk_python")},
+            "restored_query_results": {key: restored[key] for key in ("sdk_rust", "workflow_php_sdk", "sdk_python")},
+            "completed_query_results": {key: completed[key] for key in ("sdk_rust", "workflow_php_sdk", "sdk_python")},
+            "failure_samples": {
+                "running": running_failure,
+                "cold_restarted": restored_failure,
+                "completed": completed_failure,
+            },
+            "immutability_checkpoints": {
+                "running": {
+                    "before_first_successful_query": running_before,
+                    "answer_before_failed_query": running["sdk_rust"],
+                    "failed_query": running_failure,
+                    "answer_after_failed_query": rust_query_sample_value(running_after_failure),
+                    "after_successful_and_failed_queries": running_after,
+                },
+                "cold_restarted": {
+                    "before_first_successful_query": cold_before,
+                    "answer_before_failed_query": restored["sdk_rust"],
+                    "failed_query": restored_failure,
+                    "answer_after_failed_query": rust_query_sample_value(restored_after_failure),
+                    "after_successful_and_failed_queries": cold_after,
+                },
+                "completed": {
+                    "before_first_successful_query": completed_before,
+                    "answer_before_failed_query": completed["sdk_rust"],
+                    "failed_query": completed_failure,
+                    "answer_after_failed_query": rust_query_sample_value(completed_after_failure),
+                    "after_successful_and_failed_queries": completed_after,
+                },
+            },
+            "successful_and_failed_queries_appended_no_history": immutable,
+            "successful_and_failed_queries_emitted_no_workflow_commands": immutable,
+            "failed_query_did_not_change_later_answer": all([
+                running["sdk_rust"] == rust_query_sample_value(running_after_failure) == 5,
+                restored["sdk_rust"] == rust_query_sample_value(restored_after_failure) == 5,
+                completed["sdk_rust"] == rust_query_sample_value(completed_after_failure) == 5,
+            ]),
+        }
+        scenarios["rust_replayed_instance_state_query_after_cold_restart"] = {
+            "scenario_id": "rust_replayed_instance_state_query_after_cold_restart",
+            "status": "pass" if has_required_evidence(
+                "rust_replayed_instance_state_query_after_cold_restart", replay_outputs
+            ) else "fail",
+            "observed_outputs": replay_outputs,
+        }
+    finally:
+        stop_rust_probe_worker(replay_container_fresh, log_file)
+
+    return {
+        "artifact_versions": probe_artifact_versions(),
+        "artifact_sources": dict(EXPECTED_ARTIFACT_SOURCES),
+        "scenario_results": scenarios,
+    }, rust_install["install_entry"], descriptor
 
 
 def wait_for_worker_registered(
@@ -5725,6 +6608,57 @@ def run_baseline_probe(result_dir: Path) -> tuple[dict[str, Any] | None, dict[st
                 "error": f"{type(exc).__name__}: {exc}",
                 "log_file": log_file.name,
             }
+
+        rust_matrix_evidence: dict[str, Any] | None = None
+        rust_matrix_descriptor: dict[str, Any] | None = None
+        rust_install_error: dict[str, str] | None = None
+        if not env_flag("DW_SIGNALS_QUERIES_RUN_RUST_MATRIX_PROBE", True):
+            rust_matrix_descriptor = {"skipped": "disabled_by_env", "log_file": log_file.name}
+        elif python_bin is None or workflow_php_project is None:
+            rust_matrix_descriptor = {
+                "skipped": "python_or_php_published_client_unavailable",
+                "install_probes": install_descriptors,
+                "log_file": log_file.name,
+            }
+        else:
+            try:
+                rust_matrix_evidence, rust_install, rust_matrix_descriptor = run_rust_matrix_probe(
+                    base_url=base_url,
+                    token=token,
+                    namespace=namespace,
+                    python_bin=python_bin,
+                    workflow_php_project=workflow_php_project,
+                    run_root=run_root,
+                    log_file=log_file,
+                )
+                install_entries["sdk-rust"] = rust_install
+            except Exception as exc:  # noqa: BLE001 - preserve the non-Rust shards and focused Rust finding.
+                rust_install_error = probe_error_payload(exc)
+                log_line(log_file, f"Rust published-artifact matrix failed: {type(exc).__name__}: {exc}")
+                rust_matrix_descriptor = {
+                    "error": f"{type(exc).__name__}: {exc}",
+                    "log_file": log_file.name,
+                    "generated_scenarios": [
+                        "rust_worker_rust_php_python_clients",
+                        "python_worker_rust_client",
+                        "php_worker_rust_client",
+                        "rust_query_error_and_immutability",
+                        "rust_replayed_instance_state_query_after_cold_restart",
+                    ],
+                }
+        if "sdk-rust" not in install_entries:
+            rust_install = configured_artifact_entry(
+                "sdk-rust",
+                artifact_version_value(versions, "sdk-rust"),
+                EXPECTED_ARTIFACT_SOURCES["sdk-rust"],
+                "cargo_exact_registry_install",
+            )
+            rust_install["status"] = "not_covered"
+            if rust_install_error is not None:
+                rust_install["not_proved_reason"] = (
+                    f"{rust_install_error['type']}: {rust_install_error['message']}"
+                )
+            install_entries["sdk-rust"] = rust_install
         sources = probe_artifact_sources(cleanup_commands, install_entries)
         install_outputs = {
             "published_artifact_versions": versions,
@@ -5878,6 +6812,14 @@ def run_baseline_probe(result_dir: Path) -> tuple[dict[str, Any] | None, dict[st
             },
         }
         generated_scenarios = ["published_artifact_install_only"]
+        if isinstance(rust_matrix_evidence, dict):
+            rust_scenarios = rust_matrix_evidence.get("scenario_results")
+            if isinstance(rust_scenarios, dict):
+                for rust_scenario_id, rust_result in rust_scenarios.items():
+                    if not isinstance(rust_scenario_id, str) or not isinstance(rust_result, dict):
+                        continue
+                    scenario_results[rust_scenario_id] = rust_result
+                    generated_scenarios.append(rust_scenario_id)
 
         def optional_sample(field: str, callback: Any) -> Any:
             try:
@@ -6481,6 +7423,17 @@ def run_baseline_probe(result_dir: Path) -> tuple[dict[str, Any] | None, dict[st
             + [
                 scenario
                 for scenario in (
+                    "rust_worker_rust_php_python_clients",
+                    "python_worker_rust_client",
+                    "php_worker_rust_client",
+                    "rust_query_error_and_immutability",
+                    "rust_replayed_instance_state_query_after_cold_restart",
+                )
+                if scenario_results.get(scenario, {}).get("status") != "pass"
+            ]
+            + [
+                scenario
+                for scenario in (
                     "ordered_signal_delivery",
                     "dedup_contract_observation",
                     "unknown_signal_and_query_errors",
@@ -6513,6 +7466,7 @@ def run_baseline_probe(result_dir: Path) -> tuple[dict[str, Any] | None, dict[st
                     if php_worker_python_cross_result is not None
                     else {"skipped": "php_worker_or_python_client_unavailable"}
                 ),
+                "rust_published_artifact_matrix": rust_matrix_descriptor,
                 "install_probes": install_descriptors,
                 "server_readiness": readiness_probe,
                 "published_artifact_sources_observed": sorted(sources),
@@ -7825,12 +8779,13 @@ def artifact_versions_pinned() -> bool:
     return all(not is_placeholder_version(str(artifact_versions.get(artifact, ""))) for artifact in REQUIRED_INSTALL_ARTIFACTS)
 
 
-REQUIRED_INSTALL_ARTIFACTS = ("server", "cli", "sdk-python", "workflow-php", "waterline")
-REQUIRED_INSTALL_PROOF_ARTIFACTS = ("server", "cli", "sdk-python")
+REQUIRED_INSTALL_ARTIFACTS = ("server", "cli", "sdk-python", "sdk-rust", "workflow-php", "waterline")
+REQUIRED_INSTALL_PROOF_ARTIFACTS = ("server", "cli", "sdk-python", "sdk-rust")
 EXPECTED_ARTIFACT_SOURCES = {
     "server": "published_docker_image",
     "cli": "published_cli_release",
     "sdk-python": "published_pypi_package",
+    "sdk-rust": "published_crates_io_package",
     "workflow-php": "published_composer_package",
     "waterline": "published_waterline_artifact",
 }
@@ -7838,6 +8793,7 @@ EXPECTED_ARTIFACT_SOURCES = {
 ARTIFACT_VERSION_ALIASES: dict[str, list[str]] = {
     "workflow-php": ["workflow-php", "workflow_php", "workflow"],
     "sdk-python": ["sdk-python", "sdk_python", "python"],
+    "sdk-rust": ["sdk-rust", "sdk_rust", "rust"],
     "waterline": ["waterline", "waterline-ui", "waterline_ui"],
 }
 
@@ -8138,6 +9094,79 @@ SCENARIO_REQUIRED_EVIDENCE: dict[str, list[str]] = {
         "cross_language_query_consistency",
         "wire_envelope_compatibility",
     ],
+    "rust_worker_rust_php_python_clients": [
+        "worker_runtime",
+        "rust_sdk_version",
+        "rust_worker_registration.sdk_version",
+        "rust_crate_provenance.source",
+        "rust_crate_provenance.checksum",
+        "rust_crate_provenance.resolved_version",
+        "apache_avro_provenance.source",
+        "apache_avro_provenance.checksum",
+        "query_state_model",
+        "ordered_signal_values",
+        "rust_query_results.running",
+        "workflow_php_query_results.running",
+        "sdk_python_query_results.running",
+        "rust_query_results.completed",
+        "workflow_php_query_results.completed",
+        "sdk_python_query_results.completed",
+        "valid_avro_signal_and_query.default_codec",
+        "valid_avro_signal_and_query.payload_codec",
+        "valid_avro_signal_and_query.observed_value",
+        "repeat_query_consistency",
+    ],
+    "python_worker_rust_client": [
+        "worker_runtime",
+        "rust_sdk_version",
+        "rust_crate_provenance.source",
+        "rust_crate_provenance.resolved_version",
+        "rust_crate_provenance.checksum",
+        "ordered_signal_values",
+        "default_codec",
+        "payload_codec",
+        "rust_query_results",
+        "repeat_query_consistency",
+    ],
+    "php_worker_rust_client": [
+        "worker_runtime",
+        "rust_sdk_version",
+        "rust_crate_provenance.source",
+        "rust_crate_provenance.resolved_version",
+        "rust_crate_provenance.checksum",
+        "ordered_signal_values",
+        "default_codec",
+        "payload_codec",
+        "rust_query_results",
+        "repeat_query_consistency",
+    ],
+    "rust_query_error_and_immutability": [
+        "rust_sdk_version",
+        "rust_crate_provenance.source",
+        "rust_crate_provenance.resolved_version",
+        "rust_crate_provenance.checksum",
+        "query_state_model",
+        "unknown_query.reason",
+        "malformed_query_payload.reason",
+        "unavailable_query_handler.reason",
+        "incompatible_query_protocol.reason",
+        "missing_workflow.reason",
+        "terminal_signal.reason",
+        "terminal_signal.rejection_reason",
+        "history_and_commands_before_first_successful_query.history_event_count",
+        "history_and_commands_before_first_successful_query.workflow_command_count",
+        "history_and_commands_after_successful_queries.history_event_count",
+        "history_and_commands_after_successful_queries.workflow_command_count",
+        "history_and_commands_after_failure_queries.history_event_count",
+        "history_and_commands_after_failure_queries.workflow_command_count",
+        "successful_queries_appended_no_history",
+        "successful_queries_emitted_no_workflow_commands",
+        "failed_queries_appended_no_history",
+        "failed_queries_emitted_no_workflow_commands",
+        "answer_before_failures",
+        "answer_after_failures",
+        "failed_query_did_not_change_later_answer",
+    ],
     "ordered_signal_delivery": [
         "rapid_increment_inputs",
         "accepted_signal_inputs",
@@ -8170,6 +9199,50 @@ SCENARIO_REQUIRED_EVIDENCE: dict[str, list[str]] = {
         "query_completed_at",
         "query_answer",
         "expected_answer",
+    ],
+    "rust_replayed_instance_state_query_after_cold_restart": [
+        "worker_runtime",
+        "rust_sdk_version",
+        "rust_crate_provenance.source",
+        "rust_crate_provenance.resolved_version",
+        "rust_crate_provenance.checksum",
+        "query_state_model",
+        "initial_worker_process_id",
+        "cold_restart.fresh_worker_process_id",
+        "cold_restart.durable_history_restored",
+        "running_query_results.sdk_rust",
+        "running_query_results.workflow_php_sdk",
+        "running_query_results.sdk_python",
+        "restored_query_results.sdk_rust",
+        "restored_query_results.workflow_php_sdk",
+        "restored_query_results.sdk_python",
+        "completed_query_results.sdk_rust",
+        "completed_query_results.workflow_php_sdk",
+        "completed_query_results.sdk_python",
+        "immutability_checkpoints.running.before_first_successful_query.history_event_count",
+        "immutability_checkpoints.running.before_first_successful_query.workflow_command_count",
+        "immutability_checkpoints.running.answer_before_failed_query",
+        "immutability_checkpoints.running.failed_query.reason",
+        "immutability_checkpoints.running.answer_after_failed_query",
+        "immutability_checkpoints.running.after_successful_and_failed_queries.history_event_count",
+        "immutability_checkpoints.running.after_successful_and_failed_queries.workflow_command_count",
+        "immutability_checkpoints.cold_restarted.before_first_successful_query.history_event_count",
+        "immutability_checkpoints.cold_restarted.before_first_successful_query.workflow_command_count",
+        "immutability_checkpoints.cold_restarted.answer_before_failed_query",
+        "immutability_checkpoints.cold_restarted.failed_query.reason",
+        "immutability_checkpoints.cold_restarted.answer_after_failed_query",
+        "immutability_checkpoints.cold_restarted.after_successful_and_failed_queries.history_event_count",
+        "immutability_checkpoints.cold_restarted.after_successful_and_failed_queries.workflow_command_count",
+        "immutability_checkpoints.completed.before_first_successful_query.history_event_count",
+        "immutability_checkpoints.completed.before_first_successful_query.workflow_command_count",
+        "immutability_checkpoints.completed.answer_before_failed_query",
+        "immutability_checkpoints.completed.failed_query.reason",
+        "immutability_checkpoints.completed.answer_after_failed_query",
+        "immutability_checkpoints.completed.after_successful_and_failed_queries.history_event_count",
+        "immutability_checkpoints.completed.after_successful_and_failed_queries.workflow_command_count",
+        "successful_and_failed_queries_appended_no_history",
+        "successful_and_failed_queries_emitted_no_workflow_commands",
+        "failed_query_did_not_change_later_answer",
     ],
     "completed_run_signal_and_query": [
         "completed_run_id",
@@ -8249,6 +9322,15 @@ TRUTHY_REQUIRED_EVIDENCE = {
     "wire_envelope_compatibility",
     "comparison.run_status_matches_public_clients",
     "comparison.counter_state_matches_public_clients",
+    "repeat_query_consistency",
+    "successful_queries_appended_no_history",
+    "successful_queries_emitted_no_workflow_commands",
+    "failed_queries_appended_no_history",
+    "failed_queries_emitted_no_workflow_commands",
+    "failed_query_did_not_change_later_answer",
+    "successful_and_failed_queries_appended_no_history",
+    "successful_and_failed_queries_emitted_no_workflow_commands",
+    "cold_restart.durable_history_restored",
 }
 
 
@@ -8557,6 +9639,16 @@ def has_required_evidence(scenario: str, observed: dict[str, Any]) -> bool:
 
     if scenario == "ordered_signal_delivery":
         return ordered_delivery_observations_agree(observed)
+
+    if scenario == "rust_query_error_and_immutability":
+        return (
+            all(
+                required_evidence_satisfied(evidence_key, evidence_lookup(observed, evidence_key))
+                for evidence_key in SCENARIO_REQUIRED_EVIDENCE[scenario]
+            )
+            and evidence_lookup(observed, "terminal_signal.reason") == "run_not_active"
+            and evidence_lookup(observed, "terminal_signal.rejection_reason") == "run_not_active"
+        )
 
     if scenario == "signal_during_replay":
         return (
@@ -9731,6 +10823,7 @@ artifact_versions = {
     "server": os.environ["DW_SERVER_VERSION"],
     "cli": os.environ["DW_CLI_VERSION"],
     "sdk-python": os.environ["DW_PYTHON_SDK_VERSION"],
+    "sdk-rust": os.environ["DW_RUST_SDK_VERSION"],
     "workflow": os.environ["DW_WORKFLOW_PHP_VERSION"],
     "workflow-php": os.environ["DW_WORKFLOW_PHP_VERSION"],
     "waterline": os.environ["DW_WATERLINE_VERSION"],
@@ -9809,10 +10902,15 @@ required_scenarios = [
     "php_worker_cli_and_sdk_baseline",
     "python_worker_php_facing_and_cli_clients",
     "php_worker_python_and_cli_clients",
+    "rust_worker_rust_php_python_clients",
+    "python_worker_rust_client",
+    "php_worker_rust_client",
+    "rust_query_error_and_immutability",
     "ordered_signal_delivery",
     "dedup_contract_observation",
     "signal_during_replay",
     "query_during_replay",
+    "rust_replayed_instance_state_query_after_cold_restart",
     "completed_run_signal_and_query",
     "unknown_signal_and_query_errors",
     "malformed_signal_and_query_payloads",
@@ -9893,6 +10991,44 @@ scenario_routes = {
             "prove query results agree across clients",
         ],
     },
+    "rust_worker_rust_php_python_clients": {
+        "type": "signal_query_rust_worker_client_matrix_uncovered",
+        "owner": "sdk-rust, workflow, sdk-python, server",
+        "title": "Signals/queries Rust worker and published client matrix remains unproved",
+        "acceptance": [
+            "install the exact durable-workflow crate from crates.io",
+            "run the Rust snapshot-query worker and exercise Rust, PHP, and Python callers",
+            "prove a valid Apache Avro signal/query round trip and completed-run reads",
+        ],
+    },
+    "python_worker_rust_client": {
+        "type": "signal_query_python_worker_rust_client_uncovered",
+        "owner": "sdk-rust, sdk-python, server",
+        "title": "Signals/queries Python worker with Rust client remains unproved",
+        "acceptance": [
+            "send ordered Avro signals from the exact crates.io Rust client to a Python workflow",
+            "query repeatedly through Rust and observe the expected state",
+        ],
+    },
+    "php_worker_rust_client": {
+        "type": "signal_query_php_worker_rust_client_uncovered",
+        "owner": "sdk-rust, workflow, server",
+        "title": "Signals/queries PHP worker with Rust client remains unproved",
+        "acceptance": [
+            "send ordered Avro signals from the exact crates.io Rust client to a PHP workflow",
+            "query repeatedly through Rust and observe the expected state",
+        ],
+    },
+    "rust_query_error_and_immutability": {
+        "type": "signal_query_rust_error_immutability_uncovered",
+        "owner": "sdk-rust, server",
+        "title": "Rust query error and immutability outcomes remain unproved",
+        "acceptance": [
+            "capture the history and workflow-command baseline before the first successful Rust query",
+            "exercise every stable query failure and terminal signal outcome",
+            "prove successful and failed queries append no history, emit no commands, and preserve later answers",
+        ],
+    },
     "signal_during_replay": {
         "type": "signal_query_replay_timing_uncovered",
         "owner": "workflow, sdk-python, server",
@@ -9911,6 +11047,17 @@ scenario_routes = {
             "restart a worker with non-empty history",
             "query while replay is in progress",
             "prove the answer matches the expected replay-consistent state",
+        ],
+    },
+    "rust_replayed_instance_state_query_after_cold_restart": {
+        "type": "signal_query_rust_replayed_state_cold_restart_uncovered",
+        "owner": "sdk-rust, workflow, sdk-python, server",
+        "title": "Rust replayed instance-state query after cold restart remains unproved",
+        "acceptance": [
+            "use register_replayed_workflow and register_replayed_query from the exact published crate",
+            "cold-stop the first worker and query restored durable state from a fresh worker process",
+            "verify running, restored, and completed state through Rust, PHP, and Python callers",
+            "keep deterministic workflow replay evidence distinct from snapshot inspection",
         ],
     },
     "completed_run_signal_and_query": {
@@ -10330,7 +11477,7 @@ result = {
     "artifactVersions": artifact_versions,
     "artifact_sources": pins["artifact_sources"],
     "runtime_matrix": {
-        "runtimes": ["workflow-php", "sdk-python"],
+        "runtimes": ["workflow-php", "sdk-python", "sdk-rust"],
         "same_language_cells": [
             {
                 "scenario": "python_worker_cli_and_sdk_baseline",
@@ -10341,6 +11488,11 @@ result = {
                 "scenario": "php_worker_cli_and_sdk_baseline",
                 "worker": "workflow-php",
                 "clients": ["cli", "workflow-php-sdk"],
+            },
+            {
+                "scenario": "rust_worker_rust_php_python_clients",
+                "worker": "sdk-rust",
+                "clients": ["sdk-rust", "workflow-php-sdk", "sdk-python"],
             },
         ],
         "cross_language_cells": [
@@ -10353,6 +11505,16 @@ result = {
                 "scenario": "php_worker_python_and_cli_clients",
                 "worker": "workflow-php",
                 "clients": ["sdk-python", "cli"],
+            },
+            {
+                "scenario": "python_worker_rust_client",
+                "worker": "sdk-python",
+                "clients": ["sdk-rust"],
+            },
+            {
+                "scenario": "php_worker_rust_client",
+                "worker": "workflow-php",
+                "clients": ["sdk-rust"],
             },
         ],
     },

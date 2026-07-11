@@ -10,7 +10,7 @@ final class SignalQueryRuntimeResultGate
 {
     public const SCHEMA = 'durable-workflow.v2.signal-query-runtime.result-gate';
 
-    public const VERSION = 25;
+    public const VERSION = 26;
 
     private const EVIDENCE_SECTION_SCENARIOS = [
         'replay_timing' => [
@@ -41,6 +41,15 @@ final class SignalQueryRuntimeResultGate
         'wire_envelope_compatibility',
         'comparison.run_status_matches_public_clients',
         'comparison.counter_state_matches_public_clients',
+        'repeat_query_consistency',
+        'successful_queries_appended_no_history',
+        'successful_queries_emitted_no_workflow_commands',
+        'failed_queries_appended_no_history',
+        'failed_queries_emitted_no_workflow_commands',
+        'failed_query_did_not_change_later_answer',
+        'successful_and_failed_queries_appended_no_history',
+        'successful_and_failed_queries_emitted_no_workflow_commands',
+        'cold_restart.durable_history_restored',
     ];
 
     /**
@@ -104,6 +113,11 @@ final class SignalQueryRuntimeResultGate
                 'published_artifact_install_only_includes_per_artifact_install_proof',
                 'python_worker_baseline_identifies_a_published_python_sdk_worker',
                 'python_worker_baseline_route_evidence_status_is_pass_or_completed',
+                'rust_cells_identify_the_exact_crates_io_sdk_and_registry_checksum',
+                'rust_worker_registration_reports_the_resolved_sdk_version',
+                'rust_avro_cell_executes_a_valid_cross_language_round_trip',
+                'rust_query_immutability_baseline_precedes_the_first_successful_query',
+                'rust_snapshot_and_replayed_instance_state_models_are_distinct',
                 'php_worker_baseline_identifies_a_published_workflow_php_worker',
                 'php_worker_baseline_version_matches_run_tuple',
                 'php_worker_baseline_route_evidence_status_is_pass_or_completed',
@@ -811,6 +825,7 @@ final class SignalQueryRuntimeResultGate
         $aliases = [
             'workflow-php' => ['workflow-php', 'workflow_php', 'workflow'],
             'sdk-python' => ['sdk-python', 'sdk_python', 'python'],
+            'sdk-rust' => ['sdk-rust', 'sdk_rust', 'rust'],
             'waterline' => ['waterline', 'waterline-ui', 'waterline_ui'],
         ];
 
@@ -831,6 +846,7 @@ final class SignalQueryRuntimeResultGate
         $aliases = [
             'workflow-php' => ['workflow-php', 'workflow_php', 'workflow'],
             'sdk-python' => ['sdk-python', 'sdk_python', 'python'],
+            'sdk-rust' => ['sdk-rust', 'sdk_rust', 'rust'],
             'waterline' => ['waterline', 'waterline-ui', 'waterline_ui'],
         ];
 
@@ -959,6 +975,7 @@ final class SignalQueryRuntimeResultGate
             'cli' => 'published_cli_release',
             'workflow-php' => 'published_composer_package',
             'sdk-python' => 'published_pypi_package',
+            'sdk-rust' => 'published_crates_io_package',
             'waterline' => 'published_waterline_artifact',
         ];
 
@@ -1604,6 +1621,19 @@ final class SignalQueryRuntimeResultGate
                 );
             }
 
+            if (in_array($scenarioId, [
+                'rust_worker_rust_php_python_clients',
+                'python_worker_rust_client',
+                'php_worker_rust_client',
+                'rust_query_error_and_immutability',
+                'rust_replayed_instance_state_query_after_cold_restart',
+            ], true)) {
+                array_push(
+                    $failures,
+                    ...self::rustScenarioFailures($result, $contract, $scenarioResult, $scenarioId),
+                );
+            }
+
             if ($scenarioId === 'signal_during_replay') {
                 array_push(
                     $failures,
@@ -1691,6 +1721,336 @@ final class SignalQueryRuntimeResultGate
                     ]),
                     ...self::malformedPayloadReasonFailures($result, $scenarioResult, $scenarioId),
                 );
+            }
+        }
+
+        return $failures;
+    }
+
+    /**
+     * @param array<string, mixed> $result
+     * @param array<string, mixed> $contract
+     * @param array<string, mixed> $scenarioResult
+     *
+     * @return array<int, array<string, mixed>>
+     */
+    private static function rustScenarioFailures(
+        array $result,
+        array $contract,
+        array $scenarioResult,
+        string $scenarioId,
+    ): array {
+        $failures = [];
+        $versions = self::artifactVersions($result);
+        $expectedVersion = self::artifactVersionValue($versions, 'sdk-rust');
+        $reportedVersion = self::stringValue(
+            self::evidenceValue($result, $scenarioResult, $scenarioId, 'rust_sdk_version'),
+        );
+        if ($expectedVersion === '' || $reportedVersion !== $expectedVersion) {
+            $failures[] = [
+                'code' => 'rust_sdk_version_mismatch',
+                'scenario_id' => $scenarioId,
+                'expected_version' => $expectedVersion,
+                'actual_version' => $reportedVersion,
+            ];
+        }
+
+        $resolvedVersion = self::stringValue(
+            self::evidenceValue($result, $scenarioResult, $scenarioId, 'rust_crate_provenance.resolved_version'),
+        );
+        $source = self::stringValue(
+            self::evidenceValue($result, $scenarioResult, $scenarioId, 'rust_crate_provenance.source'),
+        );
+        $checksum = self::stringValue(
+            self::evidenceValue($result, $scenarioResult, $scenarioId, 'rust_crate_provenance.checksum'),
+        );
+        if ($resolvedVersion !== $expectedVersion
+            || ! str_starts_with($source, 'registry+')
+            || preg_match('/^[0-9a-f]{64}$/', $checksum) !== 1) {
+            $failures[] = [
+                'code' => 'rust_crate_registry_provenance_mismatch',
+                'scenario_id' => $scenarioId,
+                'expected_version' => $expectedVersion,
+                'resolved_version' => $resolvedVersion,
+                'source' => $source,
+                'checksum' => $checksum,
+            ];
+        }
+
+        if ($scenarioId === 'rust_worker_rust_php_python_clients') {
+            $registrationVersion = self::stringValue(
+                self::evidenceValue($result, $scenarioResult, $scenarioId, 'rust_worker_registration.sdk_version'),
+            );
+            if ($expectedVersion === '' || ! str_ends_with($registrationVersion, '/'.$expectedVersion)) {
+                $failures[] = [
+                    'code' => 'rust_worker_registration_sdk_version_mismatch',
+                    'scenario_id' => $scenarioId,
+                    'expected_version' => $expectedVersion,
+                    'registration_sdk_version' => $registrationVersion,
+                ];
+            }
+
+            $avroSource = self::stringValue(
+                self::evidenceValue($result, $scenarioResult, $scenarioId, 'apache_avro_provenance.source'),
+            );
+            $avroChecksum = self::stringValue(
+                self::evidenceValue($result, $scenarioResult, $scenarioId, 'apache_avro_provenance.checksum'),
+            );
+            $payloadCodec = self::stringValue(
+                self::evidenceValue($result, $scenarioResult, $scenarioId, 'valid_avro_signal_and_query.payload_codec'),
+            );
+            $defaultCodec = self::stringValue(
+                self::evidenceValue($result, $scenarioResult, $scenarioId, 'valid_avro_signal_and_query.default_codec'),
+            );
+            if (! str_starts_with($avroSource, 'registry+')
+                || preg_match('/^[0-9a-f]{64}$/', $avroChecksum) !== 1
+                || $defaultCodec !== 'avro'
+                || $payloadCodec !== 'avro') {
+                $failures[] = [
+                    'code' => 'rust_valid_avro_round_trip_not_proved',
+                    'scenario_id' => $scenarioId,
+                    'apache_avro_source' => $avroSource,
+                    'apache_avro_checksum' => $avroChecksum,
+                    'default_codec' => $defaultCodec,
+                    'payload_codec' => $payloadCodec,
+                ];
+            }
+        }
+
+        if (in_array($scenarioId, ['python_worker_rust_client', 'php_worker_rust_client'], true)) {
+            $defaultCodec = self::stringValue(
+                self::evidenceValue($result, $scenarioResult, $scenarioId, 'default_codec'),
+            );
+            $payloadCodec = self::stringValue(
+                self::evidenceValue($result, $scenarioResult, $scenarioId, 'payload_codec'),
+            );
+            if ($defaultCodec !== 'avro' || $payloadCodec !== 'avro') {
+                $failures[] = [
+                    'code' => 'rust_valid_avro_round_trip_not_proved',
+                    'scenario_id' => $scenarioId,
+                    'default_codec' => $defaultCodec,
+                    'payload_codec' => $payloadCodec,
+                ];
+            }
+        }
+
+        $expectedModel = match ($scenarioId) {
+            'rust_worker_rust_php_python_clients',
+            'rust_query_error_and_immutability' => 'snapshot_derived_transport_state',
+            'rust_replayed_instance_state_query_after_cold_restart' => 'replayed_workflow_instance_state',
+            default => null,
+        };
+        if ($expectedModel !== null) {
+            $model = self::stringValue(
+                self::evidenceValue($result, $scenarioResult, $scenarioId, 'query_state_model'),
+            );
+            if ($model !== $expectedModel) {
+                $failures[] = [
+                    'code' => 'rust_query_state_model_mismatch',
+                    'scenario_id' => $scenarioId,
+                    'expected_model' => $expectedModel,
+                    'actual_model' => $model,
+                ];
+            }
+        }
+
+        if ($scenarioId === 'rust_query_error_and_immutability') {
+            $requirements = self::arrayValue($contract, 'scenario_requirements') ?? [];
+            $rustRequirements = self::arrayValue($requirements, $scenarioId) ?? [];
+            $allowedReasonContract = self::arrayValue($rustRequirements, 'allowed_reasons') ?? [];
+            $documentedReasons = [
+                'unknown_query.reason' => 'unknown_query',
+                'malformed_query_payload.reason' => 'malformed_query_payload',
+                'unavailable_query_handler.reason' => 'unavailable_query_handler',
+                'incompatible_query_protocol.reason' => 'incompatible_query_protocol',
+                'missing_workflow.reason' => 'missing_workflow',
+                'terminal_signal.reason' => 'terminal_signal',
+                'terminal_signal.rejection_reason' => 'terminal_signal',
+            ];
+            foreach ($documentedReasons as $path => $outcome) {
+                $expectedReasons = self::stringList($allowedReasonContract[$outcome] ?? []);
+                $actualReason = self::stringValue(
+                    self::evidenceValue($result, $scenarioResult, $scenarioId, $path),
+                );
+                if (! in_array($actualReason, $expectedReasons, true)) {
+                    $failures[] = [
+                        'code' => 'rust_stable_outcome_reason_mismatch',
+                        'scenario_id' => $scenarioId,
+                        'field' => $path,
+                        'expected_reasons' => $expectedReasons,
+                        'actual_reason' => $actualReason,
+                    ];
+                }
+            }
+
+            $beforeHistory = self::integerValue(self::evidenceValue(
+                $result,
+                $scenarioResult,
+                $scenarioId,
+                'history_and_commands_before_first_successful_query.history_event_count',
+            ));
+            $afterSuccessHistory = self::integerValue(self::evidenceValue(
+                $result,
+                $scenarioResult,
+                $scenarioId,
+                'history_and_commands_after_successful_queries.history_event_count',
+            ));
+            $afterFailureHistory = self::integerValue(self::evidenceValue(
+                $result,
+                $scenarioResult,
+                $scenarioId,
+                'history_and_commands_after_failure_queries.history_event_count',
+            ));
+            $beforeCommands = self::integerValue(self::evidenceValue(
+                $result,
+                $scenarioResult,
+                $scenarioId,
+                'history_and_commands_before_first_successful_query.workflow_command_count',
+            ));
+            $afterSuccessCommands = self::integerValue(self::evidenceValue(
+                $result,
+                $scenarioResult,
+                $scenarioId,
+                'history_and_commands_after_successful_queries.workflow_command_count',
+            ));
+            $afterFailureCommands = self::integerValue(self::evidenceValue(
+                $result,
+                $scenarioResult,
+                $scenarioId,
+                'history_and_commands_after_failure_queries.workflow_command_count',
+            ));
+            if ($beforeHistory === null
+                || $beforeCommands === null
+                || $beforeHistory !== $afterSuccessHistory
+                || $beforeHistory !== $afterFailureHistory
+                || $beforeCommands !== $afterSuccessCommands
+                || $beforeCommands !== $afterFailureCommands) {
+                $failures[] = [
+                    'code' => 'rust_query_history_or_commands_changed',
+                    'scenario_id' => $scenarioId,
+                    'history_counts' => [$beforeHistory, $afterSuccessHistory, $afterFailureHistory],
+                    'workflow_command_counts' => [$beforeCommands, $afterSuccessCommands, $afterFailureCommands],
+                ];
+            }
+
+            $beforeAnswer = self::evidenceValue(
+                $result,
+                $scenarioResult,
+                $scenarioId,
+                'answer_before_failures',
+            );
+            $afterAnswer = self::evidenceValue(
+                $result,
+                $scenarioResult,
+                $scenarioId,
+                'answer_after_failures',
+            );
+            if ($beforeAnswer !== $afterAnswer) {
+                $failures[] = [
+                    'code' => 'rust_failed_query_changed_later_answer',
+                    'scenario_id' => $scenarioId,
+                    'answer_before_failures' => $beforeAnswer,
+                    'answer_after_failures' => $afterAnswer,
+                ];
+            }
+        }
+
+        if ($scenarioId === 'rust_replayed_instance_state_query_after_cold_restart') {
+            $requirements = self::arrayValue($contract, 'scenario_requirements') ?? [];
+            $rustRequirements = self::arrayValue($requirements, $scenarioId) ?? [];
+            $failedQueryReasons = self::stringList($rustRequirements['failed_query_allowed_reasons'] ?? []);
+            $initialProcess = self::stringValue(
+                self::evidenceValue($result, $scenarioResult, $scenarioId, 'initial_worker_process_id'),
+            );
+            $freshProcess = self::stringValue(
+                self::evidenceValue($result, $scenarioResult, $scenarioId, 'cold_restart.fresh_worker_process_id'),
+            );
+            if ($initialProcess === '' || $freshProcess === '' || $initialProcess === $freshProcess) {
+                $failures[] = [
+                    'code' => 'rust_replay_cold_restart_not_proved',
+                    'scenario_id' => $scenarioId,
+                    'initial_worker_process_id' => $initialProcess,
+                    'fresh_worker_process_id' => $freshProcess,
+                ];
+            }
+
+            foreach (['running', 'cold_restarted', 'completed'] as $checkpoint) {
+                $beforeHistory = self::integerValue(self::evidenceValue(
+                    $result,
+                    $scenarioResult,
+                    $scenarioId,
+                    "immutability_checkpoints.$checkpoint.before_first_successful_query.history_event_count",
+                ));
+                $afterHistory = self::integerValue(self::evidenceValue(
+                    $result,
+                    $scenarioResult,
+                    $scenarioId,
+                    "immutability_checkpoints.$checkpoint.after_successful_and_failed_queries.history_event_count",
+                ));
+                $beforeCommands = self::integerValue(self::evidenceValue(
+                    $result,
+                    $scenarioResult,
+                    $scenarioId,
+                    "immutability_checkpoints.$checkpoint.before_first_successful_query.workflow_command_count",
+                ));
+                $afterCommands = self::integerValue(self::evidenceValue(
+                    $result,
+                    $scenarioResult,
+                    $scenarioId,
+                    "immutability_checkpoints.$checkpoint.after_successful_and_failed_queries.workflow_command_count",
+                ));
+                if ($beforeHistory === null
+                    || $beforeCommands === null
+                    || $beforeHistory !== $afterHistory
+                    || $beforeCommands !== $afterCommands) {
+                    $failures[] = [
+                        'code' => 'rust_replay_query_history_or_commands_changed',
+                        'scenario_id' => $scenarioId,
+                        'checkpoint' => $checkpoint,
+                        'before_history_event_count' => $beforeHistory,
+                        'after_history_event_count' => $afterHistory,
+                        'before_workflow_command_count' => $beforeCommands,
+                        'after_workflow_command_count' => $afterCommands,
+                    ];
+                }
+
+                $failedReason = self::stringValue(self::evidenceValue(
+                    $result,
+                    $scenarioResult,
+                    $scenarioId,
+                    "immutability_checkpoints.$checkpoint.failed_query.reason",
+                ));
+                if (! in_array($failedReason, $failedQueryReasons, true)) {
+                    $failures[] = [
+                        'code' => 'rust_replay_failed_query_reason_mismatch',
+                        'scenario_id' => $scenarioId,
+                        'checkpoint' => $checkpoint,
+                        'expected_reasons' => $failedQueryReasons,
+                        'actual_reason' => $failedReason,
+                    ];
+                }
+
+                $beforeAnswer = self::evidenceValue(
+                    $result,
+                    $scenarioResult,
+                    $scenarioId,
+                    "immutability_checkpoints.$checkpoint.answer_before_failed_query",
+                );
+                $afterAnswer = self::evidenceValue(
+                    $result,
+                    $scenarioResult,
+                    $scenarioId,
+                    "immutability_checkpoints.$checkpoint.answer_after_failed_query",
+                );
+                if ($beforeAnswer !== $afterAnswer) {
+                    $failures[] = [
+                        'code' => 'rust_replay_failed_query_changed_later_answer',
+                        'scenario_id' => $scenarioId,
+                        'checkpoint' => $checkpoint,
+                        'answer_before_failed_query' => $beforeAnswer,
+                        'answer_after_failed_query' => $afterAnswer,
+                    ];
+                }
             }
         }
 
@@ -2637,6 +2997,7 @@ final class SignalQueryRuntimeResultGate
         $aliases = [
             'workflow-php' => ['workflow-php', 'workflow_php', 'php', 'php_worker'],
             'sdk-python' => ['sdk-python', 'sdk_python', 'python', 'python_worker'],
+            'sdk-rust' => ['sdk-rust', 'sdk_rust', 'rust', 'rust_worker'],
         ];
 
         return in_array($reported, $aliases[$required] ?? [$required], true);

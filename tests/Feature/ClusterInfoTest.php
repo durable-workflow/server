@@ -237,6 +237,16 @@ class ClusterInfoTest extends TestCase
         $this->assertIsArray($contract);
         $this->assertContains('workflow-php', $contract['required_matrix']['runtimes']);
         $this->assertContains('sdk-python', $contract['required_matrix']['runtimes']);
+        $this->assertContains('sdk-rust', $contract['required_matrix']['runtimes']);
+        foreach ([
+            'rust_worker_rust_php_python_clients',
+            'python_worker_rust_client',
+            'php_worker_rust_client',
+            'rust_query_error_and_immutability',
+            'rust_replayed_instance_state_query_after_cold_restart',
+        ] as $rustScenario) {
+            $this->assertContains($rustScenario, $contract['required_scenarios']);
+        }
         $this->assertContains('waterline_operator_visibility', $contract['required_scenarios']);
         $this->assertContains(
             'findings_linked_for_non_pass_scenarios',
