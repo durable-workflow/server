@@ -38,7 +38,7 @@ final class WorkflowCommandContextFactory
         // authenticated Principal and is never read from request input or
         // forwarded headers. It is the non-spoofable identity recorded on
         // every workflow history event for audit and incident review.
-        $serverDerivedPrincipal = $this->serverDerivedPrincipal($principal);
+        $serverDerivedPrincipal = $this->principalForRequest($request);
 
         if ($serverDerivedPrincipal !== null) {
             $context = $context->withPrincipal(
@@ -49,6 +49,16 @@ final class WorkflowCommandContextFactory
         }
 
         return $context;
+    }
+
+    /**
+     * Return the non-spoofable principal derived by server authentication.
+     *
+     * @return array{type: string, id: string, label?: string}|null
+     */
+    public function principalForRequest(Request $request): ?array
+    {
+        return $this->serverDerivedPrincipal(Authenticate::principal($request));
     }
 
     /**

@@ -4,14 +4,19 @@ declare(strict_types=1);
 
 namespace Tests\Feature;
 
+use App\Support\WorkerProtocol;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\Queue;
 use Tests\Feature\Concerns\ServerTestHelpers;
 use Tests\Fixtures\HeaderAuthProvider;
 use Tests\Fixtures\InteractiveCommandWorkflow;
 use Tests\TestCase;
+use Workflow\Serializers\Serializer;
+use Workflow\V2\Contracts\WorkflowTaskBridge;
+use Workflow\V2\Enums\HistoryEventType;
 use Workflow\V2\Models\WorkflowCommand;
 use Workflow\V2\Models\WorkflowHistoryEvent;
+use Workflow\V2\Models\WorkflowTask;
 
 /**
  * Contract test for server-derived principal attribution on workflow
@@ -486,6 +491,131 @@ class WorkflowHistoryPrincipalAttributionTest extends TestCase
         $this->assertSame('auth:test-header', $startEvent['principal']['type'] ?? null);
     }
 
+    public function test_worker_terminal_events_use_the_authenticated_worker_principal(): void
+    {
+        Queue::fake();
+
+        config([
+            'server.auth.provider' => null,
+            'server.auth.driver' => 'token',
+            'server.auth.token' => null,
+            'server.auth.backward_compatible' => false,
+            'server.auth.principal_tokens' => json_encode([
+                [
+                    'token' => 'operator-token',
+                    'subject' => 'workflow-operator',
+                    'roles' => ['operator'],
+                    'label' => 'Workflow Operator',
+                ],
+                [
+                    'token' => 'worker-token',
+                    'subject' => 'worker:principal-attribution',
+                    'roles' => ['worker'],
+                    'label' => 'Worker',
+                ],
+            ]),
+        ]);
+
+        $cases = [
+            [
+                'workflow_id' => 'wf-worker-principal-completed',
+                'event_type' => HistoryEventType::WorkflowCompleted,
+                'command' => [
+                    'type' => 'complete_workflow',
+                    'result' => Serializer::serializeWithCodec(
+                        (string) config('workflows.serializer'),
+                        ['status' => 'completed'],
+                    ),
+                    'principal' => ['type' => 'attacker', 'id' => 'mallory'],
+                ],
+                'run_status' => 'completed',
+            ],
+            [
+                'workflow_id' => 'wf-worker-principal-failed',
+                'event_type' => HistoryEventType::WorkflowFailed,
+                'command' => [
+                    'type' => 'fail_workflow',
+                    'message' => 'expected worker failure',
+                    'principal_id' => 'mallory',
+                    'principal_type' => 'attacker',
+                ],
+                'run_status' => 'failed',
+            ],
+        ];
+
+        foreach ($cases as $case) {
+            $start = $this->withHeaders($this->bearerHeaders('operator-token'))
+                ->postJson('/api/workflows', [
+                    'workflow_id' => $case['workflow_id'],
+                    'workflow_type' => 'tests.interactive-command-workflow',
+                ]);
+
+            $start->assertCreated();
+            $runId = (string) $start->json('run_id');
+
+            /** @var WorkflowTask $task */
+            $task = WorkflowTask::query()
+                ->where('workflow_run_id', $runId)
+                ->where('task_type', 'workflow')
+                ->where('status', 'ready')
+                ->firstOrFail();
+
+            $this->registerWorker(
+                workerId: 'worker-principal-attribution',
+                taskQueue: (string) $task->queue,
+                supportedWorkflowTypes: ['tests.interactive-command-workflow'],
+            );
+
+            /** @var WorkflowTaskBridge $bridge */
+            $bridge = app(WorkflowTaskBridge::class);
+            $claim = $bridge->claim($task->id, 'worker-principal-attribution');
+            $this->assertIsArray($claim);
+
+            $task->refresh();
+
+            $response = $this->withHeaders($this->workerPrincipalHeaders('worker-token', [
+                'X-Workflow-Principal-Id' => 'mallory',
+                'X-Workflow-Principal-Type' => 'attacker',
+                'X-Forwarded-User' => 'mallory',
+            ]))->postJson("/api/worker/workflow-tasks/{$task->id}/complete", [
+                'lease_owner' => 'worker-principal-attribution',
+                'workflow_task_attempt' => (int) $task->attempt_count,
+                'principal' => ['type' => 'attacker', 'id' => 'mallory'],
+                'principal_id' => 'mallory',
+                'principal_type' => 'attacker',
+                'commands' => [$case['command']],
+            ]);
+
+            $response->assertOk()
+                ->assertJsonPath('recorded', true)
+                ->assertJsonPath('run_status', $case['run_status']);
+
+            $event = WorkflowHistoryEvent::query()
+                ->where('workflow_run_id', $runId)
+                ->where('event_type', $case['event_type']->value)
+                ->firstOrFail();
+            $principal = $event->payload['command'] ?? null;
+
+            $this->assertIsArray($principal);
+            $this->assertSame('auth:token', $principal['principal_type'] ?? null);
+            $this->assertSame('worker:principal-attribution', $principal['principal_id'] ?? null);
+            $this->assertSame('Worker', $principal['principal_label'] ?? null);
+            $this->assertNotSame('mallory', $principal['principal_id'] ?? null);
+
+            $history = $this->withHeaders($this->bearerHeaders('operator-token'))
+                ->getJson("/api/workflows/{$case['workflow_id']}/runs/{$runId}/history");
+
+            $history->assertOk();
+            $terminalEvent = collect($history->json('events'))
+                ->first(static fn (array $item): bool => ($item['event_type'] ?? null) === $case['event_type']->value);
+
+            $this->assertIsArray($terminalEvent);
+            $this->assertSame('auth:token', $terminalEvent['principal']['type'] ?? null);
+            $this->assertSame('worker:principal-attribution', $terminalEvent['principal']['id'] ?? null);
+            $this->assertSame('Worker', $terminalEvent['principal']['label'] ?? null);
+        }
+    }
+
     /**
      * @param  array<string, string>  $extra
      * @return array<string, string>
@@ -516,6 +646,19 @@ class WorkflowHistoryPrincipalAttributionTest extends TestCase
             'Authorization' => 'Bearer '.$token,
             'X-Namespace' => 'default',
             'X-Durable-Workflow-Control-Plane-Version' => '2',
+        ], $extra);
+    }
+
+    /**
+     * @param  array<string, string>  $extra
+     * @return array<string, string>
+     */
+    private function workerPrincipalHeaders(string $token, array $extra = []): array
+    {
+        return array_merge([
+            'Authorization' => 'Bearer '.$token,
+            'X-Namespace' => 'default',
+            WorkerProtocol::HEADER => WorkerProtocol::VERSION,
         ], $extra);
     }
 

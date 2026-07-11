@@ -14,6 +14,7 @@ use App\Support\SearchAttributeValueValidator;
 use App\Support\ServiceModeTimerDispatcher;
 use App\Support\WorkerPollFence;
 use App\Support\WorkerProtocol;
+use App\Support\WorkerTerminalEventAttribution;
 use App\Support\WorkflowQueryTaskBroker;
 use App\Support\WorkflowTaskLeaseRecovery;
 use App\Support\WorkflowTaskPoller;
@@ -50,6 +51,7 @@ class WorkerController
         private readonly WorkflowQueryTaskBroker $queryTasks,
         private readonly NamespaceExternalPayloadStorage $externalPayloadStorage,
         private readonly SearchAttributeValueValidator $searchAttributeValues,
+        private readonly WorkerTerminalEventAttribution $terminalEventAttribution,
     ) {}
 
     /**
@@ -1228,7 +1230,12 @@ class WorkerController
             ->value('queue');
 
         try {
-            $outcome = $bridge->complete($taskId, $commands);
+            $outcome = DB::transaction(function () use ($bridge, $commands, $request, $taskId): array {
+                $outcome = $bridge->complete($taskId, $commands);
+                $this->terminalEventAttribution->record($request, $taskId, $outcome);
+
+                return $outcome;
+            });
         } catch (StructuralLimitExceededException $e) {
             return WorkerProtocol::json([
                 'task_id' => $taskId,
