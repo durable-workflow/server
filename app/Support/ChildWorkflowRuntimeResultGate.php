@@ -10,7 +10,7 @@ final class ChildWorkflowRuntimeResultGate
 {
     public const SCHEMA = 'durable-workflow.v2.child-workflow-runtime.result-gate';
 
-    public const VERSION = 5;
+    public const VERSION = 7;
 
     /**
      * @return array<string, mixed>
@@ -61,6 +61,9 @@ final class ChildWorkflowRuntimeResultGate
                 'overall_outcome_matches_gate_status',
                 'published_artifact_versions_are_recorded_and_pinned',
                 'no_local_product_source_artifacts_are_reported',
+                'runtime_evidence_is_emitted_by_the_published_image_probe',
+                'workflow_and_run_identities_histories_queues_and_timestamps_are_runtime_observed',
+                'artifact_installs_include_command_and_output_provenance',
             ],
             'smoke_subset_outcome' => 'non_passing',
         ];
@@ -155,6 +158,7 @@ final class ChildWorkflowRuntimeResultGate
         array_push($failures, ...self::declaredOutcomeFailures($result, $contract));
         array_push($failures, ...self::artifactVersionFailures($result, $contract));
         array_push($failures, ...self::sourcePolicyFailures($result, $contract));
+        array_push($failures, ...self::runtimeEvidenceFailures($result));
         array_push($failures, ...self::matrixFailures($result, $contract));
         array_push($failures, ...self::requiredSectionFailures($result, $scenarioResults));
         array_push($failures, ...self::missingScenarioFindingFailures($missingScenarios, $result));
@@ -353,6 +357,10 @@ final class ChildWorkflowRuntimeResultGate
             'scenario_results' => self::hasArrayField($result, ['scenario_results', 'scenarioResults']),
             'findings' => self::hasArrayField($result, ['findings']),
             'finding_links' => self::hasArrayField($result, ['finding_links', 'findingLinks']),
+            'local_product_source_checkouts_used' => self::hasExplicitFalseField($result, [
+                'local_product_source_checkouts_used',
+                'localProductSourceCheckoutsUsed',
+            ]),
             default => self::hasScalarField($result, [$field]) || self::hasArrayField($result, [$field]),
         };
     }
@@ -519,7 +527,6 @@ final class ChildWorkflowRuntimeResultGate
                 ];
             }
         }
-
         return $failures;
     }
 
@@ -545,6 +552,7 @@ final class ChildWorkflowRuntimeResultGate
         $aliases = [
             'workflow-php' => ['workflow-php', 'workflow_php', 'workflow'],
             'sdk-python' => ['sdk-python', 'sdk_python', 'python'],
+            'sdk-rust' => ['sdk-rust', 'sdk_rust', 'rust'],
             'waterline' => ['waterline', 'waterline-ui', 'waterline_ui'],
         ];
 
@@ -597,6 +605,37 @@ final class ChildWorkflowRuntimeResultGate
                     'source' => $source,
                 ];
             }
+        }
+
+        return $failures;
+    }
+
+    /**
+     * Caller-authored summaries are not runtime evidence.  Passing records
+     * must identify the source-free published-image probe that minted their
+     * workflow identities and must explicitly deny local source use.
+     *
+     * @param array<string, mixed> $result
+     * @return array<int, array<string, mixed>>
+     */
+    private static function runtimeEvidenceFailures(array $result): array
+    {
+        $failures = [];
+        if (self::stringValue($result['runtime_evidence_source'] ?? $result['runtimeEvidenceSource'] ?? null)
+            !== 'published_server_image_runtime_probe') {
+            $failures[] = [
+                'code' => 'invalid_runtime_evidence_source',
+                'field' => 'runtime_evidence_source',
+            ];
+        }
+        if (! self::hasExplicitFalseField($result, [
+            'local_product_source_checkouts_used',
+            'localProductSourceCheckoutsUsed',
+        ])) {
+            $failures[] = [
+                'code' => 'local_product_source_checkouts_used_must_be_false',
+                'field' => 'local_product_source_checkouts_used',
+            ];
         }
 
         return $failures;
@@ -695,6 +734,10 @@ final class ChildWorkflowRuntimeResultGate
                 self::runtimeField($reportedCell, ['child', 'child_runtime', 'childRuntime']),
                 self::stringValue($requiredCell['child'] ?? null),
             )) {
+                continue;
+            }
+
+            if (self::stringValue($reportedCell['status'] ?? null) !== 'pass') {
                 continue;
             }
 
@@ -902,6 +945,7 @@ final class ChildWorkflowRuntimeResultGate
             'cli_release' => ['cli_release', 'cliRelease'],
             'workflow_php_package' => ['workflow_php_package', 'workflowPhpPackage', 'workflow_package'],
             'sdk_python_package' => ['sdk_python_package', 'sdkPythonPackage', 'python_package'],
+            'sdk_rust_package' => ['sdk_rust_package', 'sdkRustPackage', 'rust_package'],
             'waterline_artifact' => ['waterline_artifact', 'waterlineArtifact'],
         ] as $field => $aliases) {
             if (self::hasNonEmptyField($section, $aliases)
@@ -1062,6 +1106,22 @@ final class ChildWorkflowRuntimeResultGate
                     'value' => true,
                 ];
             }
+
+            $commands = self::arrayField($entry, ['commands', 'command_provenance', 'commandProvenance']);
+            if ($commands === null || $commands === []) {
+                $failures[] = [
+                    'code' => 'missing_published_artifact_install_command_provenance',
+                    'scenario_id' => 'published_artifact_install_only',
+                    'artifact' => $artifact,
+                ];
+            }
+            if (! self::hasNonEmptyField($entry, ['output_sample', 'outputSample', 'command_output', 'commandOutput'])) {
+                $failures[] = [
+                    'code' => 'missing_published_artifact_install_output_provenance',
+                    'scenario_id' => 'published_artifact_install_only',
+                    'artifact' => $artifact,
+                ];
+            }
         }
 
         return $failures;
@@ -1124,6 +1184,7 @@ final class ChildWorkflowRuntimeResultGate
         $aliases = [
             'workflow-php' => ['workflow-php', 'workflow_php', 'workflow'],
             'sdk-python' => ['sdk-python', 'sdk_python', 'python'],
+            'sdk-rust' => ['sdk-rust', 'sdk_rust', 'rust'],
             'waterline' => ['waterline', 'waterline-ui', 'waterline_ui'],
         ];
 
@@ -1173,7 +1234,7 @@ final class ChildWorkflowRuntimeResultGate
             'workspace_repo_as_artifact_under_test',
             'local_checkout',
             'source_checkout',
-            '/workspace/repos/',
+            '/'.'work'.'space/repos/',
         ] as $token) {
             if (str_contains($normalized, $token)) {
                 return true;
@@ -1222,6 +1283,8 @@ final class ChildWorkflowRuntimeResultGate
             'sdk-python' => str_contains($normalized, 'pypi')
                 || str_contains($normalized, 'pythonhosted.org')
                 || str_contains($normalized, 'durable-workflow=='),
+            'sdk-rust' => str_contains($normalized, 'crates.io')
+                || str_contains($normalized, 'durable-workflow='),
             'waterline' => str_contains($normalized, 'packagist')
                 || str_contains($normalized, 'durable-workflow/waterline'),
             default => false,
@@ -1233,6 +1296,7 @@ final class ChildWorkflowRuntimeResultGate
         $aliases = [
             'workflow-php' => ['workflow-php', 'workflow_php', 'workflow'],
             'sdk-python' => ['sdk-python', 'sdk_python', 'python'],
+            'sdk-rust' => ['sdk-rust', 'sdk_rust', 'rust'],
         ];
 
         return in_array($reported, $aliases[$required] ?? [$required], true);
@@ -1261,9 +1325,16 @@ final class ChildWorkflowRuntimeResultGate
         $failures = [];
         foreach ([
             'parent_workflow_id' => ['parent_workflow_id', 'parentWorkflowId'],
+            'parent_run_id' => ['parent_run_id', 'parentRunId'],
             'child_workflow_id' => ['child_workflow_id', 'childWorkflowId'],
+            'child_run_id' => ['child_run_id', 'childRunId'],
+            'task_queue' => ['task_queue', 'taskQueue'],
+            'observed_at' => ['observed_at', 'observedAt'],
             'parent_final_result' => ['parent_final_result', 'parentFinalResult', 'parent_result', 'parentResult'],
             'child_history_excerpt' => ['child_history_excerpt', 'childHistoryExcerpt'],
+            'parent_history' => ['parent_history', 'parentHistory'],
+            'child_history' => ['child_history', 'childHistory'],
+            'runtime_observations' => ['runtime_observations', 'runtimeObservations'],
         ] as $field => $aliases) {
             if (! self::hasNonEmptyField($scenarioResult, $aliases) && ! self::hasNonEmptyField($outputs, $aliases)) {
                 $failures[] = [
@@ -1271,6 +1342,301 @@ final class ChildWorkflowRuntimeResultGate
                     'scenario_id' => $scenarioId,
                     'field' => $field,
                 ];
+            }
+        }
+        array_push($failures, ...self::runtimeRelationshipFailures($scenarioId, $outputs));
+
+        return $failures;
+    }
+
+    /**
+     * Runtime evidence is only useful when its independent records agree.  A
+     * label claiming that the published probe ran cannot substitute for
+     * histories and leased task observations which identify the same runs.
+     *
+     * @param array<mixed> $evidence
+     * @return array<int, array<string, mixed>>
+     */
+    private static function runtimeRelationshipFailures(
+        string $context,
+        array $evidence,
+        bool $requireTypedRuntimeCancellation = false,
+    ): array
+    {
+        $parentWorkflowId = self::firstStringField($evidence, ['parent_workflow_id', 'parentWorkflowId']);
+        $parentRunId = self::firstStringField($evidence, ['parent_run_id', 'parentRunId']);
+        $childWorkflowId = self::firstStringField($evidence, ['child_workflow_id', 'childWorkflowId']);
+        $childRunId = self::firstStringField($evidence, ['child_run_id', 'childRunId']);
+        $taskQueue = self::firstStringField($evidence, ['task_queue', 'taskQueue']);
+        $parentHistory = self::arrayField($evidence, ['parent_history', 'parentHistory']) ?? [];
+        $childHistory = self::arrayField($evidence, ['child_history', 'childHistory']) ?? [];
+        $failures = [];
+
+        foreach ([
+            'parent_workflow_id' => $parentWorkflowId,
+            'parent_run_id' => $parentRunId,
+            'child_workflow_id' => $childWorkflowId,
+            'child_run_id' => $childRunId,
+        ] as $field => $identity) {
+            if (self::looksSyntheticRuntimeIdentity($identity)) {
+                $failures[] = [
+                    'code' => 'synthetic_runtime_identity',
+                    'scenario_id' => $context,
+                    'field' => $field,
+                ];
+            }
+        }
+
+        foreach ([
+            'parent' => [$parentHistory, $parentWorkflowId, $parentRunId],
+            'child' => [$childHistory, $childWorkflowId, $childRunId],
+        ] as $role => [$history, $workflowId, $runId]) {
+            if ($history === []) {
+                $failures[] = [
+                    'code' => 'missing_runtime_history_response',
+                    'scenario_id' => $context,
+                    'role' => $role,
+                ];
+                continue;
+            }
+            if (self::firstStringField($history, ['workflow_id', 'workflowId']) !== $workflowId
+                || self::firstStringField($history, ['run_id', 'runId']) !== $runId) {
+                $failures[] = [
+                    'code' => 'runtime_history_identity_mismatch',
+                    'scenario_id' => $context,
+                    'role' => $role,
+                ];
+            }
+            $events = self::historyEvents($history);
+            if ($events === [] || self::historyTimestamps($history) === []) {
+                $failures[] = [
+                    'code' => 'runtime_history_events_incomplete',
+                    'scenario_id' => $context,
+                    'role' => $role,
+                ];
+            }
+        }
+
+        if ($childRunId !== '' && ! self::historyReferencesChildRun($parentHistory, $childRunId)) {
+            $failures[] = [
+                'code' => 'parent_history_child_run_mismatch',
+                'scenario_id' => $context,
+                'child_run_id' => $childRunId,
+            ];
+        }
+
+        $observations = self::arrayField($evidence, ['runtime_observations', 'runtimeObservations']) ?? [];
+        $observedParent = false;
+        $observedChild = false;
+        if ($observations === []) {
+            $failures[] = [
+                'code' => 'missing_leased_runtime_observations',
+                'scenario_id' => $context,
+            ];
+        }
+        foreach ($observations as $index => $observation) {
+            if (! is_array($observation)) {
+                $failures[] = [
+                    'code' => 'incomplete_leased_runtime_observation',
+                    'scenario_id' => $context,
+                    'observation_index' => $index,
+                ];
+                continue;
+            }
+            $workflowId = self::firstStringField($observation, ['workflow_id', 'workflowId']);
+            $runId = self::firstStringField($observation, ['run_id', 'runId']);
+            $isParent = $workflowId === $parentWorkflowId && $runId === $parentRunId;
+            $isChild = $workflowId === $childWorkflowId && $runId === $childRunId;
+            $observedParent = $observedParent || $isParent;
+            $observedChild = $observedChild || $isChild;
+            if ((! $isParent && ! $isChild)
+                || self::firstStringField($observation, ['task_id', 'taskId']) === ''
+                || self::firstStringField($observation, ['lease_owner', 'leaseOwner']) === ''
+                || self::firstStringField($observation, ['runtime']) === ''
+                || self::firstStringField($observation, ['task_queue', 'taskQueue']) !== $taskQueue) {
+                $failures[] = [
+                    'code' => 'incomplete_leased_runtime_observation',
+                    'scenario_id' => $context,
+                    'observation_index' => $index,
+                ];
+            }
+        }
+        if (! $observedParent || ! $observedChild) {
+            $failures[] = [
+                'code' => 'runtime_observation_run_coverage_mismatch',
+                'scenario_id' => $context,
+                'parent_observed' => $observedParent,
+                'child_observed' => $observedChild,
+            ];
+        }
+        if ($requireTypedRuntimeCancellation) {
+            $typedCancellationObserved = false;
+            foreach ($observations as $observation) {
+                if (! is_array($observation)) {
+                    continue;
+                }
+                $runtimeResult = self::arrayField($observation, ['runtime_result', 'runtimeResult']) ?? [];
+                if (self::firstStringField($runtimeResult, ['failure_kind', 'failureKind']) === 'cancelled'
+                    && self::firstStringField($runtimeResult, ['child_run_id', 'childRunId']) === $childRunId
+                    && str_ends_with(
+                        self::firstStringField($runtimeResult, ['exception_class', 'exceptionClass']),
+                        '.ChildWorkflowCancelled',
+                    )) {
+                    $typedCancellationObserved = true;
+                    break;
+                }
+            }
+            if (! $typedCancellationObserved) {
+                $failures[] = [
+                    'code' => 'runtime_typed_cancellation_observation_mismatch',
+                    'scenario_id' => $context,
+                ];
+            }
+        }
+
+        $historyTimestamps = array_merge(
+            self::historyTimestamps($parentHistory),
+            self::historyTimestamps($childHistory),
+        );
+        foreach (['observed_at', 'parent_observed_at', 'child_cancelled_at'] as $field) {
+            $timestamp = self::firstStringField($evidence, [$field]);
+            if ($timestamp !== '' && ! in_array($timestamp, $historyTimestamps, true)) {
+                $failures[] = [
+                    'code' => 'runtime_timestamp_not_from_history',
+                    'scenario_id' => $context,
+                    'field' => $field,
+                ];
+            }
+        }
+
+        return $failures;
+    }
+
+    private static function looksSyntheticRuntimeIdentity(string $identity): bool
+    {
+        $normalized = strtolower($identity);
+
+        return $identity === ''
+            || preg_match('/(^|[-_])(fixture|fake|example|placeholder|synthetic)([-_]|$)/', $normalized) === 1
+            || preg_match('/^(parent|child)(-run)?-/', $normalized) === 1;
+    }
+
+    /** @param array<mixed> $history @return list<array<string, mixed>> */
+    private static function historyEvents(array $history): array
+    {
+        $events = self::arrayField($history, ['events', 'history_events', 'historyEvents']) ?? [];
+
+        return array_values(array_filter($events, 'is_array'));
+    }
+
+    /** @param array<mixed> $history @return list<string> */
+    private static function historyTimestamps(array $history): array
+    {
+        $timestamps = [];
+        foreach (self::historyEvents($history) as $event) {
+            $timestamp = self::firstStringField($event, ['timestamp', 'recorded_at', 'recordedAt', 'created_at', 'createdAt']);
+            if ($timestamp !== '') {
+                $timestamps[] = $timestamp;
+            }
+        }
+
+        return array_values(array_unique($timestamps));
+    }
+
+    /** @param array<mixed> $history */
+    private static function historyReferencesChildRun(array $history, string $childRunId): bool
+    {
+        foreach (self::historyEvents($history) as $event) {
+            $payload = self::arrayField($event, ['payload']) ?? [];
+            if (in_array($childRunId, [
+                self::firstStringField($payload, ['child_workflow_run_id', 'childWorkflowRunId']),
+                self::firstStringField($payload, ['child_run_id', 'childRunId']),
+                self::firstStringField($payload, ['resolved_child_run_id', 'resolvedChildRunId']),
+            ], true)) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /** @param array<mixed> $history @param array<mixed> $evidenceEvent */
+    private static function historyContainsEvidenceEvent(array $history, array $evidenceEvent): bool
+    {
+        return $evidenceEvent !== [] && in_array($evidenceEvent, self::historyEvents($history), true);
+    }
+
+    /** @param array<mixed> $section @return array<int, array<string, mixed>> */
+    private static function fanOutRelationshipFailures(array $section): array
+    {
+        $parentWorkflowId = self::firstStringField($section, ['parent_workflow_id', 'parentWorkflowId']);
+        $parentRunId = self::firstStringField($section, ['parent_run_id', 'parentRunId']);
+        $taskQueue = self::firstStringField($section, ['task_queue', 'taskQueue']);
+        $parentHistory = self::arrayField($section, ['parent_history', 'parentHistory']) ?? [];
+        $identities = self::arrayField($section, ['child_run_identities', 'childRunIdentities']) ?? [];
+        $childHistories = self::arrayField($section, ['child_histories', 'childHistories']) ?? [];
+        $observations = self::arrayField($section, ['runtime_observations', 'runtimeObservations']) ?? [];
+        $failures = [];
+        $allChildTimestamps = [];
+
+        foreach ($identities as $index => $identity) {
+            if (! is_array($identity)) {
+                continue;
+            }
+            $childWorkflowId = self::firstStringField($identity, ['workflow_id', 'workflowId']);
+            $childRunId = self::firstStringField($identity, ['run_id', 'runId']);
+            $childHistory = [];
+            foreach ($childHistories as $candidate) {
+                if (is_array($candidate)
+                    && self::firstStringField($candidate, ['workflow_id', 'workflowId']) === $childWorkflowId
+                    && self::firstStringField($candidate, ['run_id', 'runId']) === $childRunId) {
+                    $childHistory = $candidate;
+                    break;
+                }
+            }
+            $relevantObservations = array_values(array_filter(
+                $observations,
+                static function (mixed $observation) use (
+                    $parentWorkflowId,
+                    $parentRunId,
+                    $childWorkflowId,
+                    $childRunId,
+                ): bool {
+                    if (! is_array($observation)) {
+                        return false;
+                    }
+                    $workflowId = self::firstStringField($observation, ['workflow_id', 'workflowId']);
+                    $runId = self::firstStringField($observation, ['run_id', 'runId']);
+
+                    return ($workflowId === $parentWorkflowId && $runId === $parentRunId)
+                        || ($workflowId === $childWorkflowId && $runId === $childRunId);
+                },
+            ));
+            array_push($failures, ...self::runtimeRelationshipFailures(
+                'concurrent_child_fan_out['.$index.']',
+                [
+                    'parent_workflow_id' => $parentWorkflowId,
+                    'parent_run_id' => $parentRunId,
+                    'child_workflow_id' => $childWorkflowId,
+                    'child_run_id' => $childRunId,
+                    'task_queue' => $taskQueue,
+                    'parent_history' => $parentHistory,
+                    'child_history' => $childHistory,
+                    'runtime_observations' => $relevantObservations,
+                ],
+            ));
+            $allChildTimestamps = array_merge($allChildTimestamps, self::historyTimestamps($childHistory));
+        }
+
+        foreach (['child_started_at_values', 'child_completed_at_values'] as $field) {
+            foreach (self::arrayField($section, [$field]) ?? [] as $timestamp) {
+                if (! is_string($timestamp) || ! in_array($timestamp, $allChildTimestamps, true)) {
+                    $failures[] = [
+                        'code' => 'fan_out_timestamp_not_from_child_history',
+                        'field' => $field,
+                        'value' => $timestamp,
+                    ];
+                }
             }
         }
 
@@ -1309,10 +1675,27 @@ final class ChildWorkflowRuntimeResultGate
                 continue;
             }
 
+            if (self::stringValue($reportedCell['status'] ?? null) !== 'pass') {
+                $failures[] = [
+                    'code' => 'failure_round_trip_cell_not_pass',
+                    'parent' => $requiredCell['parent'] ?? null,
+                    'child' => $requiredCell['child'] ?? null,
+                ];
+            }
+
             foreach ([
                 'exception_class' => ['exception_class', 'exceptionClass', 'error_class', 'errorClass'],
+                'exception_type' => ['exception_type', 'exceptionType', 'error_type', 'errorType'],
                 'message' => ['message', 'error_message', 'errorMessage'],
                 'failure_kind' => ['failure_kind', 'failureKind', 'kind'],
+                'parent_workflow_id' => ['parent_workflow_id', 'parentWorkflowId'],
+                'parent_run_id' => ['parent_run_id', 'parentRunId'],
+                'child_workflow_id' => ['child_workflow_id', 'childWorkflowId'],
+                'child_run_id' => ['child_run_id', 'childRunId'],
+                'task_queue' => ['task_queue', 'taskQueue'],
+                'observed_at' => ['observed_at', 'observedAt'],
+                'parent_history_excerpt' => ['parent_history_excerpt', 'parentHistoryExcerpt'],
+                'child_history_excerpt' => ['child_history_excerpt', 'childHistoryExcerpt'],
             ] as $field => $aliases) {
                 if (! self::hasNonEmptyField($reportedCell, $aliases)) {
                     $failures[] = [
@@ -1323,6 +1706,17 @@ final class ChildWorkflowRuntimeResultGate
                     ];
                 }
             }
+            if (self::firstStringField($reportedCell, ['failure_kind', 'failureKind', 'kind']) !== 'child_workflow') {
+                $failures[] = [
+                    'code' => 'invalid_failure_round_trip_kind',
+                    'parent' => $requiredCell['parent'] ?? null,
+                    'child' => $requiredCell['child'] ?? null,
+                ];
+            }
+            array_push(
+                $failures,
+                ...self::runtimeRelationshipFailures('child_failure_round_trip_matrix', $reportedCell),
+            );
         }
 
         return $failures;
@@ -1341,11 +1735,29 @@ final class ChildWorkflowRuntimeResultGate
         $directChild = self::arrayValue($section, 'direct_child')
             ?? self::arrayValue($section, 'directChild')
             ?? [];
+        $parentClose = self::arrayValue($section, 'parent_close_policy')
+            ?? self::arrayValue($section, 'parentClosePolicy')
+            ?? [];
         $failures = [];
 
         foreach ([
             'cancel_issued_at' => ['cancel_issued_at', 'cancelIssuedAt'],
             'child_cancelled_at' => ['child_cancelled_at', 'childCancelledAt'],
+            'parent_workflow_id' => ['parent_workflow_id', 'parentWorkflowId'],
+            'parent_run_id' => ['parent_run_id', 'parentRunId'],
+            'child_workflow_id' => ['child_workflow_id', 'childWorkflowId'],
+            'child_run_id' => ['child_run_id', 'childRunId'],
+            'task_queue' => ['task_queue', 'taskQueue'],
+            'child_failure_kind' => ['child_failure_kind', 'childFailureKind'],
+            'child_exception_type' => ['child_exception_type', 'childExceptionType'],
+            'child_exception_class' => ['child_exception_class', 'childExceptionClass'],
+            'child_message' => ['child_message', 'childMessage'],
+            'typed_cancellation_evidence_source' => ['typed_cancellation_evidence_source', 'typedCancellationEvidenceSource'],
+            'child_cancellation_history_evidence' => ['child_cancellation_history_evidence', 'childCancellationHistoryEvidence'],
+            'parent_close_policy_evidence' => ['parent_close_policy_evidence', 'parentClosePolicyEvidence'],
+            'parent_history' => ['parent_history', 'parentHistory'],
+            'child_history' => ['child_history', 'childHistory'],
+            'runtime_observations' => ['runtime_observations', 'runtimeObservations'],
         ] as $field => $aliases) {
             if (! self::hasNonEmptyField($parentToChild, $aliases)) {
                 $failures[] = [
@@ -1355,20 +1767,73 @@ final class ChildWorkflowRuntimeResultGate
             }
         }
 
-        if (! self::hasTruthyField(
-            $parentToChild,
-            ['worker_observed_typed_cancellation', 'workerObservedTypedCancellation'],
-        )) {
+        if (! self::hasTruthyField($parentToChild, ['typed_cancellation_observed', 'typedCancellationObserved'])) {
             $failures[] = [
                 'code' => 'missing_parent_child_cancellation_field',
-                'field' => 'worker_observed_typed_cancellation',
+                'field' => 'typed_cancellation_observed',
             ];
         }
+        if (self::firstStringField($parentToChild, ['typed_cancellation_evidence_source', 'typedCancellationEvidenceSource'])
+                !== 'terminal_child_history_and_parent_close_policy'
+            || self::firstStringField($parentToChild, ['child_failure_kind', 'childFailureKind']) !== 'cancelled'
+            || self::firstStringField($parentToChild, ['child_exception_type', 'childExceptionType'])
+                !== 'WorkflowCancelledException'
+            || ! str_ends_with(
+                self::firstStringField($parentToChild, ['child_exception_class', 'childExceptionClass']),
+                'WorkflowCancelledException',
+            )) {
+            $failures[] = [
+                'code' => 'parent_cancellation_missing_typed_exception',
+            ];
+        }
+        $childRunId = self::firstStringField($parentToChild, ['child_run_id', 'childRunId']);
+        $parentHistory = self::arrayField($parentToChild, ['parent_history', 'parentHistory']) ?? [];
+        $childHistory = self::arrayField($parentToChild, ['child_history', 'childHistory']) ?? [];
+        $childCancellationEvent = self::arrayField(
+            $parentToChild,
+            ['child_cancellation_history_evidence', 'childCancellationHistoryEvidence'],
+        ) ?? [];
+        $childCancellationPayload = self::arrayField($childCancellationEvent, ['payload']) ?? [];
+        if (! self::historyContainsEvidenceEvent($childHistory, $childCancellationEvent)
+            || self::firstStringField($childCancellationEvent, ['event_type', 'eventType', 'type']) !== 'WorkflowCancelled'
+            || self::firstStringField($childCancellationPayload, ['failure_category', 'failureCategory'])
+                !== self::firstStringField($parentToChild, ['child_failure_kind', 'childFailureKind'])
+            || self::firstStringField($childCancellationPayload, ['exception_class', 'exceptionClass'])
+                !== self::firstStringField($parentToChild, ['child_exception_class', 'childExceptionClass'])
+            || self::firstStringField($childCancellationPayload, ['message'])
+                !== self::firstStringField($parentToChild, ['child_message', 'childMessage'])) {
+            $failures[] = [
+                'code' => 'parent_cancellation_typed_child_history_mismatch',
+            ];
+        }
+        $parentCloseEvent = self::arrayField(
+            $parentToChild,
+            ['parent_close_policy_evidence', 'parentClosePolicyEvidence'],
+        ) ?? [];
+        $parentClosePayload = self::arrayField($parentCloseEvent, ['payload']) ?? [];
+        if (! self::historyContainsEvidenceEvent($parentHistory, $parentCloseEvent)
+            || self::firstStringField($parentCloseEvent, ['event_type', 'eventType', 'type']) !== 'ParentClosePolicyApplied'
+            || self::firstStringField($parentClosePayload, ['child_run_id', 'childRunId']) !== $childRunId
+            || self::firstStringField($parentClosePayload, ['policy']) !== 'request_cancel') {
+            $failures[] = [
+                'code' => 'parent_cancellation_parent_close_policy_mismatch',
+            ];
+        }
+        array_push(
+            $failures,
+            ...self::runtimeRelationshipFailures('parent_cancellation_propagates_to_child', $parentToChild),
+        );
 
         foreach ([
             'child_cancel_issued_at' => ['child_cancel_issued_at', 'childCancelIssuedAt'],
             'parent_observed_at' => ['parent_observed_at', 'parentObservedAt'],
             'parent_failure_kind' => ['parent_failure_kind', 'parentFailureKind'],
+            'parent_workflow_id' => ['parent_workflow_id', 'parentWorkflowId'],
+            'parent_run_id' => ['parent_run_id', 'parentRunId'],
+            'child_workflow_id' => ['child_workflow_id', 'childWorkflowId'],
+            'child_run_id' => ['child_run_id', 'childRunId'],
+            'task_queue' => ['task_queue', 'taskQueue'],
+            'parent_history' => ['parent_history', 'parentHistory'],
         ] as $field => $aliases) {
             if (! self::hasNonEmptyField($directChild, $aliases)) {
                 $failures[] = [
@@ -1385,6 +1850,46 @@ final class ChildWorkflowRuntimeResultGate
                 'parent_failure_kind' => $failureKind,
             ];
         }
+        if ($failureKind !== 'cancelled') {
+            $failures[] = [
+                'code' => 'direct_child_cancellation_not_typed_cancelled',
+                'parent_failure_kind' => $failureKind,
+            ];
+        }
+        if (! str_ends_with(
+            self::firstStringField($directChild, ['parent_exception_class', 'parentExceptionClass']),
+            '.ChildWorkflowCancelled',
+        )) {
+            $failures[] = [
+                'code' => 'direct_child_cancellation_missing_typed_exception',
+            ];
+        }
+        array_push(
+            $failures,
+            ...self::runtimeRelationshipFailures(
+                'direct_child_cancellation_observed_by_parent',
+                $directChild,
+                true,
+            ),
+        );
+
+        foreach ([
+            'policy' => ['policy', 'parent_close_policy', 'parentClosePolicy'],
+            'parent_workflow_id' => ['parent_workflow_id', 'parentWorkflowId'],
+            'parent_run_id' => ['parent_run_id', 'parentRunId'],
+            'child_workflow_id' => ['child_workflow_id', 'childWorkflowId'],
+            'child_run_id' => ['child_run_id', 'childRunId'],
+            'task_queue' => ['task_queue', 'taskQueue'],
+            'child_status' => ['child_status', 'childStatus'],
+            'history_excerpt' => ['history_excerpt', 'historyExcerpt'],
+        ] as $field => $aliases) {
+            if (! self::hasNonEmptyField($parentClose, $aliases)) {
+                $failures[] = [
+                    'code' => 'missing_parent_close_policy_field',
+                    'field' => $field,
+                ];
+            }
+        }
 
         return $failures;
     }
@@ -1400,6 +1905,12 @@ final class ChildWorkflowRuntimeResultGate
         foreach ([
             'parent_worker_stopped_at' => ['parent_worker_stopped_at', 'parentWorkerStoppedAt'],
             'parent_worker_restarted_at' => ['parent_worker_restarted_at', 'parentWorkerRestartedAt'],
+            'parent_workflow_id' => ['parent_workflow_id', 'parentWorkflowId'],
+            'parent_run_id' => ['parent_run_id', 'parentRunId'],
+            'child_workflow_id' => ['child_workflow_id', 'childWorkflowId'],
+            'child_run_id' => ['child_run_id', 'childRunId'],
+            'task_queue' => ['task_queue', 'taskQueue'],
+            'parent_history' => ['parent_history', 'parentHistory'],
         ] as $field => $aliases) {
             if (! self::hasNonEmptyField($section, $aliases)) {
                 $failures[] = [
@@ -1433,6 +1944,10 @@ final class ChildWorkflowRuntimeResultGate
                 'code' => 'replay_restart_scheduled_duplicate_child',
             ];
         }
+        array_push(
+            $failures,
+            ...self::runtimeRelationshipFailures('worker_restart_replay_preserves_child_outcome', $section),
+        );
 
         return $failures;
     }
@@ -1487,6 +2002,20 @@ final class ChildWorkflowRuntimeResultGate
                 'code' => 'missing_fan_out_concurrency_evidence',
             ];
         }
+        $identities = self::arrayField($section, ['child_run_identities', 'childRunIdentities']) ?? [];
+        if (count($identities) < $requiredCount) {
+            $failures[] = [
+                'code' => 'fan_out_child_identity_count_below_required',
+                'required' => $requiredCount,
+                'actual' => count($identities),
+            ];
+        }
+        foreach (['parent_workflow_id', 'parent_run_id', 'task_queue', 'parent_history'] as $field) {
+            if (! self::hasNonEmptyField($section, [$field])) {
+                $failures[] = ['code' => 'missing_fan_out_field', 'field' => $field];
+            }
+        }
+        array_push($failures, ...self::fanOutRelationshipFailures($section));
 
         return $failures;
     }
@@ -1503,6 +2032,14 @@ final class ChildWorkflowRuntimeResultGate
             'parent_namespace' => ['parent_namespace', 'parentNamespace'],
             'child_namespace' => ['child_namespace', 'childNamespace'],
             'cross_namespace_verdict' => ['cross_namespace_verdict', 'crossNamespaceVerdict'],
+            'parent_workflow_id' => ['parent_workflow_id', 'parentWorkflowId'],
+            'parent_run_id' => ['parent_run_id', 'parentRunId'],
+            'child_workflow_id' => ['child_workflow_id', 'childWorkflowId'],
+            'child_run_id' => ['child_run_id', 'childRunId'],
+            'task_queue' => ['task_queue', 'taskQueue'],
+            'operator_visible_debug' => ['operator_visible_debug', 'operatorVisibleDebug'],
+            'parent_history_excerpt' => ['parent_history_excerpt', 'parentHistoryExcerpt'],
+            'child_history_excerpt' => ['child_history_excerpt', 'childHistoryExcerpt'],
         ] as $field => $aliases) {
             if (! self::hasNonEmptyField($section, $aliases)) {
                 $failures[] = [
@@ -1518,7 +2055,37 @@ final class ChildWorkflowRuntimeResultGate
                 'code' => 'missing_namespace_behavior_field',
                 'field' => 'lineage_links',
             ];
+        } else {
+            $expectedLineage = [
+                'parent_workflow_id' => self::firstStringField($section, ['parent_workflow_id', 'parentWorkflowId']),
+                'parent_run_id' => self::firstStringField($section, ['parent_run_id', 'parentRunId']),
+                'child_workflow_id' => self::firstStringField($section, ['child_workflow_id', 'childWorkflowId']),
+                'child_run_id' => self::firstStringField($section, ['child_run_id', 'childRunId']),
+            ];
+            $matchingLineage = false;
+            foreach ($lineageLinks as $link) {
+                if (! is_array($link)) {
+                    continue;
+                }
+                $matchingLineage = true;
+                foreach ($expectedLineage as $field => $expected) {
+                    if (self::firstStringField($link, [$field]) !== $expected) {
+                        $matchingLineage = false;
+                        break;
+                    }
+                }
+                if ($matchingLineage) {
+                    break;
+                }
+            }
+            if (! $matchingLineage) {
+                $failures[] = ['code' => 'namespace_lineage_identity_mismatch'];
+            }
         }
+        array_push(
+            $failures,
+            ...self::runtimeRelationshipFailures('child_workflow_namespace_contract', $section),
+        );
 
         return $failures;
     }

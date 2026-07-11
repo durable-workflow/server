@@ -401,12 +401,15 @@ category emits a warning and does not block.
   matrix, typed child failure propagation, parent and direct child
   cancellation evidence, replay across parent-worker restart, N=5
   fan-out concurrency evidence, namespace behavior, published artifact
-  versions including Waterline, run timestamps and outcome, the coverage
+  versions including the crates.io Rust SDK and Waterline, run timestamps and outcome, the coverage
   gate that keeps a Python-only smoke subset non-passing, and a
   source-free runner at
   `scripts/conformance/child-workflows-published-artifacts.sh` that emits
-  one result per required scenario. The result-gate evaluator rejects
-  incomplete, placeholder, or finding-free non-pass scenario records. A
+  one result per required scenario. The runner installs or resolves every
+  exact artifact itself, executes PHP tasks through the published Workflow
+  fiber runtime and Python tasks through the pinned PyPI replay engine, and
+  rejects caller-authored install or scenario JSON. The result-gate evaluator
+  rejects incomplete, placeholder, provenance-free, or finding-free non-pass scenario records. A
   child-workflow result whose scenario matrix is green but whose declared
   outcome is non-passing
   remains non-passing; every declared outcome alias (`outcome`, `status`,

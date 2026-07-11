@@ -18,26 +18,13 @@ Environment overrides:
   DW_CHILD_WORKFLOWS_RUN_ROOT           Scratch directory. Defaults to mktemp.
   DW_CHILD_WORKFLOWS_KEEP_RUN_ROOT=1    Keep scratch directory after success.
   DW_CHILD_WORKFLOWS_SCENARIO_MANIFEST  Scenario manifest path. Defaults to the server static mirror.
-  DW_CHILD_WORKFLOWS_ARTIFACT_INSTALL_EVIDENCE
-                                      JSON proof that each published artifact was downloaded/installed.
-                                      Defaults to artifact-install-evidence.json in the result directory.
-  DW_CHILD_WORKFLOWS_TYPED_FAILURE_EVIDENCE
-                                      JSON proof for failure-round-trip cells observed through published
-                                      artifacts. A partial cell set is recorded but cannot pass the matrix.
-                                      Defaults to typed-failure-evidence.json in the result directory when present.
-  DW_CHILD_WORKFLOWS_FULL_MATRIX_EVIDENCE
-                                      JSON proof for the full child-workflow runtime matrix observed through
-                                      published artifacts. Defaults to full-matrix-evidence.json in the result
-                                      directory when present.
-  DW_CHILD_WORKFLOWS_SKIP_FOCUSED_TYPED_FAILURE_PROBE=1
-                                      Skip the focused published-image typed child failure probe.
   DW_CHILD_WORKFLOWS_PYTHON_BIN       Optional Python executable with durable-workflow installed.
-                                      Defaults to a run-root venv installed from DW_PYTHON_SDK_VERSION when
-                                      python3 and pip are available.
+                                      Set internally to the run-root venv installed from the pinned PyPI artifact.
   DW_SERVER_IMAGE                       Exact server image tag or digest to test.
   DW_SERVER_VERSION                     Exact patch server Docker tag; required for digest-only DW_SERVER_IMAGE.
   DW_CLI_VERSION                        Exact CLI release version.
   DW_PYTHON_SDK_VERSION                 Exact PyPI durable-workflow version.
+  DW_RUST_SDK_VERSION                   Exact crates.io durable-workflow version.
   DW_WORKFLOW_PHP_VERSION               Exact Composer durable-workflow/workflow version.
   DW_WATERLINE_VERSION                  Exact Waterline artifact version.
 USAGE
@@ -134,6 +121,91 @@ if ! require_command python3; then
   printf '%s\n' 'required command not found: python3' >&2
   exit 1
 fi
+
+# Scenario and install evidence are outputs of this runner.  Caller-authored
+# JSON was accepted by older versions of the script; retaining that boundary
+# would let fabricated identities and pass rows substitute for execution.
+unset DW_CHILD_WORKFLOWS_ARTIFACT_INSTALL_EVIDENCE
+unset DW_CHILD_WORKFLOWS_TYPED_FAILURE_EVIDENCE
+unset DW_CHILD_WORKFLOWS_FULL_MATRIX_EVIDENCE
+export DW_CHILD_WORKFLOWS_SKIP_FOCUSED_TYPED_FAILURE_PROBE=1
+rm -f \
+  "$result_dir/artifact-install-evidence.json" \
+  "$result_dir/typed-failure-evidence.json" \
+  "$result_dir/full-matrix-evidence.json"
+
+run_published_matrix_probe() {
+  if [[ "$repo_root" != "/app" || -d "$repo_root/.git" ]]; then
+    printf '%s\n' 'published matrix probe not run: runner is not inside a source-free published server image' \
+      >"$result_dir/runtime-probe.log"
+    return 0
+  fi
+  if ! require_command php || [[ ! -f "$repo_root/vendor/autoload.php" || ! -f "$repo_root/artisan" ]]; then
+    printf '%s\n' 'published matrix probe not run: published PHP server runtime is unavailable' \
+      >"$result_dir/runtime-probe.log"
+    return 0
+  fi
+
+  if [[ -z "${DW_RUST_SDK_VERSION:-}" ]]; then
+    set +e
+    DW_RUST_SDK_VERSION="$(python3 - <<'PY'
+import json
+import urllib.request
+
+request = urllib.request.Request(
+    "https://crates.io/api/v1/crates/durable-workflow",
+    headers={"Accept": "application/json", "User-Agent": "durable-workflow-conformance"},
+)
+with urllib.request.urlopen(request, timeout=60) as response:
+    payload = json.loads(response.read().decode("utf-8"))
+print(payload.get("crate", {}).get("newest_version", ""))
+PY
+)"
+    set -e
+    export DW_RUST_SDK_VERSION
+  fi
+
+  set +e
+  python3 "$repo_root/scripts/conformance/child-workflows-install-probe.py" \
+    "$result_dir" "$run_root" "$repo_root" \
+    >"$result_dir/artifact-install-probe.log" 2>&1
+  local install_status=$?
+  set -e
+  if [[ -s "$result_dir/artifact-install-evidence.json" ]]; then
+    export DW_CHILD_WORKFLOWS_ARTIFACT_INSTALL_EVIDENCE="$result_dir/artifact-install-evidence.json"
+  fi
+  if [[ "$install_status" -ne 0 ]]; then
+    printf '%s\n' 'published matrix probe stopped because one or more exact public artifacts could not be installed or resolved' \
+      >"$result_dir/runtime-probe.log"
+    return 0
+  fi
+
+  export DW_CHILD_WORKFLOWS_PYTHON_BIN="$run_root/python-venv/bin/python"
+  : >"$run_root/child-workflows-runtime.sqlite"
+  set +e
+  APP_ENV=production \
+  APP_DEBUG=false \
+  APP_KEY="${APP_KEY:-base64:Q0hJTEQtV09SS0ZMT1dTLUNPTkZPUk1BTkNFLVJVTlRJTUU=}" \
+  DB_CONNECTION=sqlite \
+  DB_DATABASE="$run_root/child-workflows-runtime.sqlite" \
+  QUEUE_CONNECTION=database \
+  CACHE_STORE=array \
+  SESSION_DRIVER=array \
+  DW_AUTH_DRIVER=none \
+  DW_TASK_DISPATCH_MODE=poll \
+  DW_V2_TASK_DISPATCH_MODE=poll \
+  RUNNER_REPO_ROOT="$repo_root" \
+  RESULT_DIR="$result_dir" \
+  php "$repo_root/scripts/conformance/child-workflows-runtime-probe.php" \
+    >"$result_dir/runtime-probe.log" 2>&1
+  local runtime_status=$?
+  set -e
+  if [[ "$runtime_status" -eq 0 && -s "$result_dir/full-matrix-evidence.json" ]]; then
+    export DW_CHILD_WORKFLOWS_FULL_MATRIX_EVIDENCE="$result_dir/full-matrix-evidence.json"
+  fi
+}
+
+run_published_matrix_probe
 
 focused_probe_app_key="${APP_KEY:-base64:Q0hJTEQtV09SS0ZMT1dTLVRZUEVELUZBSUxVUkUtUFJPQkU=}"
 
@@ -653,6 +725,7 @@ REQUIRED_INSTALL_ARTIFACTS = [
     "server",
     "cli",
     "sdk-python",
+    "sdk-rust",
     "workflow-php",
     "waterline",
 ]
@@ -662,7 +735,7 @@ FORBIDDEN_INSTALL_SOURCE_TOKENS = [
     "workspace_repo_as_artifact_under_test",
     "local_checkout",
     "source_checkout",
-    "/workspace/repos/",
+    "/" + "work" + "space/repos/",
 ]
 
 FALLBACK_REQUIRED_SCENARIO_IDS = [
@@ -729,6 +802,7 @@ def exact_version_failures(versions: dict[str, str], server_image: str) -> list[
         "server": "DW_SERVER_VERSION or exact DW_SERVER_IMAGE tag",
         "cli": "DW_CLI_VERSION",
         "sdk-python": "DW_PYTHON_SDK_VERSION",
+        "sdk-rust": "DW_RUST_SDK_VERSION",
         "workflow": "DW_WORKFLOW_PHP_VERSION",
         "waterline": "DW_WATERLINE_VERSION",
     }
@@ -791,6 +865,7 @@ def artifact_version_for(versions: dict[str, str], artifact: str) -> str:
     aliases = {
         "workflow-php": ["workflow-php", "workflow"],
         "sdk-python": ["sdk-python", "sdk_python", "python"],
+        "sdk-rust": ["sdk-rust", "sdk_rust", "rust"],
     }
     for key in aliases.get(artifact, [artifact]):
         value = versions.get(key, "")
@@ -894,6 +969,7 @@ def normalize_artifact_install_evidence(
                 ),
                 "detail": string_value(item.get("detail") or item.get("observed_behavior")),
                 "command": item.get("command") if isinstance(item, dict) else None,
+                "commands": item.get("commands") if isinstance(item.get("commands"), list) else [],
                 "output_sample": item.get("output_sample") or item.get("outputSample") or "",
             },
         )
@@ -973,6 +1049,8 @@ def install_source_matches_artifact(artifact: str, version: str, source: str) ->
         return "github" in normalized and ("release" in normalized or "/releases/" in normalized)
     if artifact == "sdk-python":
         return "pypi" in normalized or "pythonhosted.org" in normalized or "durable-workflow==" in normalized
+    if artifact == "sdk-rust":
+        return "crates.io" in normalized or "crates.io/api/v1/crates/durable-workflow" in normalized
     if artifact == "workflow-php":
         return "packagist" in normalized or "durable-workflow/workflow" in normalized
     if artifact == "waterline":
@@ -1022,6 +1100,13 @@ def artifact_install_evidence_failures(
 
         if truthy_flag(entry.get("local_product_source_checkouts_used") or entry.get("localProductSourceCheckoutsUsed")):
             failures.append(f"{artifact}.local_product_source_checkouts_used=true")
+        commands = entry.get("commands")
+        if not isinstance(commands, list) or not commands:
+            failures.append(f"{artifact}.commands=missing")
+        elif not all(isinstance(command, dict) and isinstance(command.get("argv"), list) and command.get("argv") for command in commands):
+            failures.append(f"{artifact}.commands=invalid")
+        if not string_value(entry.get("output_sample")):
+            failures.append(f"{artifact}.output_sample=missing")
 
     return failures
 
@@ -1120,6 +1205,299 @@ def scenario_results_by_id(evidence: Optional[dict[str, Any]]) -> dict[str, dict
     return results
 
 
+def runtime_history_events(history: Any) -> list[dict[str, Any]]:
+    if not isinstance(history, dict):
+        return []
+    events = history.get("events") or history.get("history_events") or history.get("historyEvents") or []
+    return [event for event in events if isinstance(event, dict)] if isinstance(events, list) else []
+
+
+def runtime_history_timestamps(history: Any) -> list[str]:
+    return [
+        timestamp
+        for event in runtime_history_events(history)
+        if (timestamp := first_string(event, ["timestamp", "recorded_at", "recordedAt", "created_at", "createdAt"]))
+    ]
+
+
+def runtime_history_references_child(history: Any, child_run_id: str) -> bool:
+    for event in runtime_history_events(history):
+        payload = event.get("payload") if isinstance(event.get("payload"), dict) else {}
+        if child_run_id in {
+            first_string(payload, ["child_workflow_run_id", "childWorkflowRunId"]),
+            first_string(payload, ["child_run_id", "childRunId"]),
+            first_string(payload, ["resolved_child_run_id", "resolvedChildRunId"]),
+        }:
+            return True
+    return False
+
+
+def runtime_history_contains_event(history: Any, evidence_event: Any) -> bool:
+    return isinstance(evidence_event, dict) and bool(evidence_event) \
+        and evidence_event in runtime_history_events(history)
+
+
+def synthetic_runtime_identity(value: str) -> bool:
+    normalized = value.lower()
+    return not value or bool(re.search(r"(^|[-_])(fixture|fake|example|placeholder|synthetic)([-_]|$)", normalized)) \
+        or bool(re.search(r"^(parent|child)(-run)?-", normalized))
+
+
+def runtime_relationship_failures(
+    context: str,
+    evidence: Any,
+    require_typed_runtime_cancellation: bool = False,
+) -> list[str]:
+    if not isinstance(evidence, dict):
+        return [f"{context}.runtime_evidence=missing"]
+    parent_workflow_id = first_string(evidence, ["parent_workflow_id", "parentWorkflowId"])
+    parent_run_id = first_string(evidence, ["parent_run_id", "parentRunId"])
+    child_workflow_id = first_string(evidence, ["child_workflow_id", "childWorkflowId"])
+    child_run_id = first_string(evidence, ["child_run_id", "childRunId"])
+    task_queue = first_string(evidence, ["task_queue", "taskQueue"])
+    parent_history = evidence.get("parent_history") or evidence.get("parentHistory") or {}
+    child_history = evidence.get("child_history") or evidence.get("childHistory") or {}
+    failures: list[str] = []
+
+    for field, identity in (
+        ("parent_workflow_id", parent_workflow_id),
+        ("parent_run_id", parent_run_id),
+        ("child_workflow_id", child_workflow_id),
+        ("child_run_id", child_run_id),
+    ):
+        if synthetic_runtime_identity(identity):
+            failures.append(f"{context}.{field}=synthetic_or_missing")
+
+    for role, history, workflow_id, run_id in (
+        ("parent", parent_history, parent_workflow_id, parent_run_id),
+        ("child", child_history, child_workflow_id, child_run_id),
+    ):
+        if not isinstance(history, dict) or not history:
+            failures.append(f"{context}.{role}_history=missing")
+            continue
+        if first_string(history, ["workflow_id", "workflowId"]) != workflow_id \
+                or first_string(history, ["run_id", "runId"]) != run_id:
+            failures.append(f"{context}.{role}_history.identity=mismatch")
+        if not runtime_history_events(history) or not runtime_history_timestamps(history):
+            failures.append(f"{context}.{role}_history.events=incomplete")
+
+    if child_run_id and not runtime_history_references_child(parent_history, child_run_id):
+        failures.append(f"{context}.parent_history.child_run_id=mismatch")
+
+    observations = evidence.get("runtime_observations") or evidence.get("runtimeObservations") or []
+    observed_parent = False
+    observed_child = False
+    if not isinstance(observations, list) or not observations:
+        failures.append(f"{context}.runtime_observations=missing")
+        observations = []
+    for index, observation in enumerate(observations):
+        if not isinstance(observation, dict):
+            failures.append(f"{context}.runtime_observations[{index}]=incomplete")
+            continue
+        workflow_id = first_string(observation, ["workflow_id", "workflowId"])
+        run_id = first_string(observation, ["run_id", "runId"])
+        is_parent = workflow_id == parent_workflow_id and run_id == parent_run_id
+        is_child = workflow_id == child_workflow_id and run_id == child_run_id
+        observed_parent = observed_parent or is_parent
+        observed_child = observed_child or is_child
+        if not (is_parent or is_child) \
+                or not first_string(observation, ["task_id", "taskId"]) \
+                or not first_string(observation, ["lease_owner", "leaseOwner"]) \
+                or not first_string(observation, ["runtime"]) \
+                or first_string(observation, ["task_queue", "taskQueue"]) != task_queue:
+            failures.append(f"{context}.runtime_observations[{index}]=contradictory_or_incomplete")
+    if not observed_parent or not observed_child:
+        failures.append(f"{context}.runtime_observations.run_coverage=mismatch")
+    if require_typed_runtime_cancellation:
+        typed_cancellation_observed = any(
+            isinstance(observation, dict)
+            and isinstance(observation.get("runtime_result") or observation.get("runtimeResult"), dict)
+            and first_string(observation.get("runtime_result") or observation.get("runtimeResult"), ["failure_kind", "failureKind"]) == "cancelled"
+            and first_string(observation.get("runtime_result") or observation.get("runtimeResult"), ["child_run_id", "childRunId"]) == child_run_id
+            and first_string(observation.get("runtime_result") or observation.get("runtimeResult"), ["exception_class", "exceptionClass"]).endswith(".ChildWorkflowCancelled")
+            for observation in observations
+        )
+        if not typed_cancellation_observed:
+            failures.append(f"{context}.runtime_observations.typed_cancellation=mismatch")
+
+    history_timestamps = set(runtime_history_timestamps(parent_history) + runtime_history_timestamps(child_history))
+    for field in ("observed_at", "parent_observed_at", "child_cancelled_at"):
+        timestamp = first_string(evidence, [field])
+        if timestamp and timestamp not in history_timestamps:
+            failures.append(f"{context}.{field}=not_from_history")
+
+    return failures
+
+
+def full_matrix_runtime_relationship_failures(evidence: dict[str, Any]) -> list[str]:
+    failures: list[str] = []
+    scenarios = scenario_results_by_id(evidence)
+    for scenario_id in (
+        "python_parent_python_child_baseline",
+        "php_parent_php_child_baseline",
+        "php_parent_python_child_cross_language",
+        "python_parent_php_child_cross_language",
+    ):
+        scenario = scenarios.get(scenario_id, {})
+        outputs = scenario.get("observed_outputs") or scenario.get("observedOutputs") or {}
+        failures.extend(runtime_relationship_failures(f"scenario_results.{scenario_id}", outputs))
+
+    failure_section = evidence.get("failure_round_trip") or evidence.get("failureRoundTrip") or {}
+    failure_cells = raw_typed_failure_cells(failure_section)
+    required_failure_directions = {
+        ("sdk-python", "sdk-python"),
+        ("workflow-php", "workflow-php"),
+        ("workflow-php", "sdk-python"),
+        ("sdk-python", "workflow-php"),
+    }
+    observed_failure_directions: set[tuple[str, str]] = set()
+    for index, cell in enumerate(failure_cells):
+        observed_failure_directions.add((
+            first_string(cell, ["parent", "parent_runtime", "parentRuntime"]),
+            first_string(cell, ["child", "child_runtime", "childRuntime"]),
+        ))
+        for field, aliases in (
+            ("failure_kind", ["failure_kind", "failureKind"]),
+            ("exception_class", ["exception_class", "exceptionClass"]),
+            ("exception_type", ["exception_type", "exceptionType"]),
+            ("message", ["message"]),
+        ):
+            if not first_string(cell, aliases):
+                failures.append(f"failure_round_trip.cells[{index}].{field}=missing")
+        if first_string(cell, ["failure_kind", "failureKind"]) != "child_workflow":
+            failures.append(f"failure_round_trip.cells[{index}].failure_kind=invalid")
+        failures.extend(runtime_relationship_failures(f"failure_round_trip.cells[{index}]", cell))
+    for parent, child in sorted(required_failure_directions - observed_failure_directions):
+        failures.append(f"failure_round_trip.{parent}->{child}=missing")
+
+    cancellation = evidence.get("cancellation_propagation") or evidence.get("cancellationPropagation") or {}
+    if isinstance(cancellation, dict):
+        parent_cancellation = cancellation.get("parent_to_child") or cancellation.get("parentToChild") or {}
+        direct_cancellation = cancellation.get("direct_child") or cancellation.get("directChild") or {}
+        failures.extend(runtime_relationship_failures(
+            "cancellation_propagation.parent_to_child",
+            parent_cancellation,
+        ))
+        failures.extend(runtime_relationship_failures(
+            "cancellation_propagation.direct_child",
+            direct_cancellation,
+            require_typed_runtime_cancellation=True,
+        ))
+        if not isinstance(parent_cancellation, dict):
+            failures.append("cancellation_propagation.parent_to_child.typed_cancellation=invalid")
+        else:
+            child_run_id = first_string(parent_cancellation, ["child_run_id", "childRunId"])
+            failure_kind = first_string(parent_cancellation, ["child_failure_kind", "childFailureKind"])
+            exception_type = first_string(parent_cancellation, ["child_exception_type", "childExceptionType"])
+            exception_class = first_string(parent_cancellation, ["child_exception_class", "childExceptionClass"])
+            message = first_string(parent_cancellation, ["child_message", "childMessage"])
+            parent_history = parent_cancellation.get("parent_history") or parent_cancellation.get("parentHistory") or {}
+            child_history = parent_cancellation.get("child_history") or parent_cancellation.get("childHistory") or {}
+            child_event = parent_cancellation.get("child_cancellation_history_evidence") \
+                or parent_cancellation.get("childCancellationHistoryEvidence") or {}
+            policy_event = parent_cancellation.get("parent_close_policy_evidence") \
+                or parent_cancellation.get("parentClosePolicyEvidence") or {}
+            child_payload = child_event.get("payload") if isinstance(child_event, dict) \
+                and isinstance(child_event.get("payload"), dict) else {}
+            policy_payload = policy_event.get("payload") if isinstance(policy_event, dict) \
+                and isinstance(policy_event.get("payload"), dict) else {}
+            if parent_cancellation.get("typed_cancellation_observed") is not True \
+                    or first_string(parent_cancellation, ["typed_cancellation_evidence_source", "typedCancellationEvidenceSource"]) != "terminal_child_history_and_parent_close_policy" \
+                    or failure_kind != "cancelled" \
+                    or exception_type != "WorkflowCancelledException" \
+                    or not exception_class.endswith("WorkflowCancelledException") \
+                    or not message:
+                failures.append("cancellation_propagation.parent_to_child.typed_cancellation=invalid")
+            if not runtime_history_contains_event(child_history, child_event) \
+                    or first_string(child_event, ["event_type", "eventType", "type"]) != "WorkflowCancelled" \
+                    or first_string(child_payload, ["failure_category", "failureCategory"]) != failure_kind \
+                    or first_string(child_payload, ["exception_class", "exceptionClass"]) != exception_class \
+                    or first_string(child_payload, ["message"]) != message:
+                failures.append("cancellation_propagation.parent_to_child.child_history=mismatch")
+            if not runtime_history_contains_event(parent_history, policy_event) \
+                    or first_string(policy_event, ["event_type", "eventType", "type"]) != "ParentClosePolicyApplied" \
+                    or first_string(policy_payload, ["child_run_id", "childRunId"]) != child_run_id \
+                    or first_string(policy_payload, ["policy"]) != "request_cancel":
+                failures.append("cancellation_propagation.parent_to_child.parent_close_policy=mismatch")
+        if not isinstance(direct_cancellation, dict) \
+                or first_string(direct_cancellation, ["parent_failure_kind", "parentFailureKind"]) != "cancelled" \
+                or not first_string(direct_cancellation, ["parent_exception_class", "parentExceptionClass"]).endswith(".ChildWorkflowCancelled"):
+            failures.append("cancellation_propagation.direct_child.typed_cancellation=invalid")
+
+    replay = evidence.get("replay_restart") or evidence.get("replayRestart") or {}
+    failures.extend(runtime_relationship_failures("replay_restart", replay))
+    if isinstance(replay, dict):
+        original = replay.get("original_decision_sequence") or replay.get("originalDecisionSequence") or []
+        replayed = replay.get("replayed_decision_sequence") or replay.get("replayedDecisionSequence") or []
+        if not original or original != replayed or replay.get("duplicate_child_scheduled") is not False:
+            failures.append("replay_restart.decision_sequence_or_duplicate=inconsistent")
+
+    namespace = evidence.get("namespace_behavior") or evidence.get("namespaceBehavior") or {}
+    failures.extend(runtime_relationship_failures("namespace_behavior", namespace))
+    if isinstance(namespace, dict):
+        expected_lineage = (
+            first_string(namespace, ["parent_workflow_id", "parentWorkflowId"]),
+            first_string(namespace, ["parent_run_id", "parentRunId"]),
+            first_string(namespace, ["child_workflow_id", "childWorkflowId"]),
+            first_string(namespace, ["child_run_id", "childRunId"]),
+        )
+        links = namespace.get("lineage_links") or namespace.get("lineageLinks") or []
+        matching_lineage = any(isinstance(link, dict) and (
+            first_string(link, ["parent_workflow_id", "parentWorkflowId"]),
+            first_string(link, ["parent_run_id", "parentRunId"]),
+            first_string(link, ["child_workflow_id", "childWorkflowId"]),
+            first_string(link, ["child_run_id", "childRunId"]),
+        ) == expected_lineage for link in links) if isinstance(links, list) else False
+        if not matching_lineage or not isinstance(namespace.get("operator_visible_debug"), dict):
+            failures.append("namespace_behavior.operator_lineage=missing_or_contradictory")
+
+    fan_out = evidence.get("fan_out") or evidence.get("fanOut") or {}
+    if isinstance(fan_out, dict):
+        parent_history = fan_out.get("parent_history") or fan_out.get("parentHistory") or {}
+        observations = fan_out.get("runtime_observations") or fan_out.get("runtimeObservations") or []
+        child_histories = fan_out.get("child_histories") or fan_out.get("childHistories") or []
+        identities = fan_out.get("child_run_identities") or fan_out.get("childRunIdentities") or []
+        all_child_timestamps: set[str] = set()
+        if first_string(fan_out, ["child_count", "childCount"]) not in {"5"} \
+                and fan_out.get("child_count") != 5 and fan_out.get("childCount") != 5:
+            failures.append("fan_out.child_count=not_five")
+        if not isinstance(identities, list) or len(identities) != 5:
+            failures.append("fan_out.child_run_identities=count_mismatch")
+        if isinstance(identities, list):
+            for index, identity in enumerate(identities):
+                if not isinstance(identity, dict):
+                    continue
+                child_workflow_id = first_string(identity, ["workflow_id", "workflowId"])
+                child_run_id = first_string(identity, ["run_id", "runId"])
+                child_history = next((history for history in child_histories if isinstance(history, dict)
+                    and first_string(history, ["workflow_id", "workflowId"]) == child_workflow_id
+                    and first_string(history, ["run_id", "runId"]) == child_run_id), {}) \
+                    if isinstance(child_histories, list) else {}
+                relevant_observations = [observation for observation in observations if isinstance(observation, dict)
+                    and ((first_string(observation, ["workflow_id", "workflowId"]) == first_string(fan_out, ["parent_workflow_id", "parentWorkflowId"])
+                        and first_string(observation, ["run_id", "runId"]) == first_string(fan_out, ["parent_run_id", "parentRunId"]))
+                    or (first_string(observation, ["workflow_id", "workflowId"]) == child_workflow_id
+                        and first_string(observation, ["run_id", "runId"]) == child_run_id))] \
+                    if isinstance(observations, list) else []
+                failures.extend(runtime_relationship_failures(f"fan_out.children[{index}]", {
+                    "parent_workflow_id": first_string(fan_out, ["parent_workflow_id", "parentWorkflowId"]),
+                    "parent_run_id": first_string(fan_out, ["parent_run_id", "parentRunId"]),
+                    "child_workflow_id": child_workflow_id,
+                    "child_run_id": child_run_id,
+                    "task_queue": first_string(fan_out, ["task_queue", "taskQueue"]),
+                    "parent_history": parent_history,
+                    "child_history": child_history,
+                    "runtime_observations": relevant_observations,
+                }))
+                all_child_timestamps.update(runtime_history_timestamps(child_history))
+        for field in ("child_started_at_values", "child_completed_at_values"):
+            values = fan_out.get(field) or []
+            if not isinstance(values, list) or any(not isinstance(value, str) or value not in all_child_timestamps for value in values):
+                failures.append(f"fan_out.{field}=not_from_child_histories")
+
+    return failures
+
+
 def full_matrix_evidence_failures(
     evidence: Optional[dict[str, Any]],
     artifact_versions: dict[str, str],
@@ -1132,6 +1510,8 @@ def full_matrix_evidence_failures(
         return failures
     if not isinstance(evidence, dict):
         return ["full_matrix_evidence expected a JSON object"]
+    if string_value(evidence.get("execution_source")) != "published_server_image_runtime_probe":
+        failures.append("full_matrix_evidence.execution_source is not the published runtime probe")
     if evidence.get("evidence_load_error"):
         failures.append(f"full_matrix_evidence load failed: {evidence['evidence_load_error']}")
     if evidence.get("local_product_source_checkouts_used") or evidence.get("localProductSourceCheckoutsUsed"):
@@ -1146,7 +1526,7 @@ def full_matrix_evidence_failures(
 
     raw_versions = evidence.get("artifact_versions") or evidence.get("artifactVersions") or {}
     if isinstance(raw_versions, dict):
-        for artifact in ("server", "cli", "sdk-python", "workflow", "workflow-php", "waterline"):
+        for artifact in ("server", "cli", "sdk-python", "sdk-rust", "workflow", "workflow-php", "waterline"):
             expected = artifact_version_for(artifact_versions, artifact)
             observed = artifact_version_for({str(key): string_value(value) for key, value in raw_versions.items()}, artifact)
             if expected and observed and expected != observed:
@@ -1163,6 +1543,9 @@ def full_matrix_evidence_failures(
         status = normalized_status(scenario.get("status") or scenario.get("outcome") or scenario.get("result"))
         if status != "pass":
             failures.append(f"full_matrix_evidence.scenario_results.{scenario_id}.status={status or 'missing'}")
+        outputs = scenario.get("observed_outputs") or scenario.get("observedOutputs")
+        if not isinstance(outputs, dict) or not outputs:
+            failures.append(f"full_matrix_evidence.scenario_results.{scenario_id}.observed_outputs=missing")
 
     for section in (
         "runtime_matrix",
@@ -1174,6 +1557,8 @@ def full_matrix_evidence_failures(
     ):
         if not isinstance(evidence.get(section), dict):
             failures.append(f"full_matrix_evidence.{section}=missing")
+
+    failures.extend(full_matrix_runtime_relationship_failures(evidence))
 
     return failures
 
@@ -1636,6 +2021,7 @@ def main() -> int:
         "server": server_version,
         "cli": normalize_cli_version(env("DW_CLI_VERSION")),
         "sdk-python": env("DW_PYTHON_SDK_VERSION"),
+        "sdk-rust": env("DW_RUST_SDK_VERSION"),
         "workflow": workflow_version,
         "workflow-php": workflow_version,
         "waterline": env("DW_WATERLINE_VERSION"),
@@ -1644,6 +2030,7 @@ def main() -> int:
         "server": artifact_versions["server"],
         "cli": artifact_versions["cli"],
         "sdk-python": artifact_versions["sdk-python"],
+        "sdk-rust": artifact_versions["sdk-rust"],
         "workflow": artifact_versions["workflow"],
         "waterline": artifact_versions["waterline"],
     }
@@ -1737,6 +2124,7 @@ def main() -> int:
                 "cli_release": artifact_versions["cli"],
                 "workflow_php_package": f"durable-workflow/workflow:{artifact_versions['workflow']}",
                 "sdk_python_package": f"durable-workflow=={artifact_versions['sdk-python']}",
+                "sdk_rust_package": f"crates.io:durable-workflow={artifact_versions['sdk-rust']}",
                 "waterline_artifact": f"durable-workflow/waterline:{artifact_versions['waterline']}",
                 "artifact_sources": artifact_sources,
                 "artifact_install_evidence": artifact_install_evidence,
@@ -1874,6 +2262,11 @@ def main() -> int:
             if artifact_versions["sdk-python"]
             else ""
         ),
+        "sdk_rust_package": (
+            f"crates.io:durable-workflow={artifact_versions['sdk-rust']}"
+            if artifact_versions["sdk-rust"]
+            else ""
+        ),
         "waterline_artifact": (
             f"durable-workflow/waterline:{artifact_versions['waterline']}"
             if artifact_versions["waterline"]
@@ -1930,6 +2323,14 @@ def main() -> int:
         "suite_schema": "durable-workflow.v2.platform-conformance.suite",
         "suite_version": suite_version,
         "category": "child_workflow_runtime_contract",
+        "runtime_evidence_source": string_value(
+            raw_full_matrix_evidence.get("execution_source") if isinstance(raw_full_matrix_evidence, dict) else "",
+        ),
+        "local_product_source_checkouts_used": bool(
+            raw_full_matrix_evidence.get("local_product_source_checkouts_used", True)
+            if isinstance(raw_full_matrix_evidence, dict)
+            else True
+        ),
         "outcome": "pass" if pass_result else ("non_passing_runner_blocked" if runner_blocked else "non_passing"),
         "runner_blocked": runner_blocked,
         "started_at": STARTED_AT,

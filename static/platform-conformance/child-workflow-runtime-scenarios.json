@@ -25,6 +25,7 @@
       "cli",
       "workflow-php",
       "sdk-python",
+      "sdk-rust",
       "waterline"
     ],
     "release_artifact_aliases": {
@@ -146,6 +147,7 @@
         "cli_release",
         "workflow_php_package",
         "sdk_python_package",
+        "sdk_rust_package",
         "waterline_artifact"
       ],
       "expected_behavior": "all artifacts are resolved from published channels and no local product checkout is used as an artifact under test"

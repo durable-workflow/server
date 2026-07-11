@@ -38,7 +38,7 @@ class ChildWorkflowRuntimeContractTest extends TestCase
             $manifest['scenario_manifest']['source_path'],
         );
 
-        foreach (['server', 'cli', 'workflow-php', 'sdk-python', 'waterline'] as $artifact) {
+        foreach (['server', 'cli', 'workflow-php', 'sdk-python', 'sdk-rust', 'waterline'] as $artifact) {
             $this->assertArrayHasKey($artifact, $manifest['artifact_policy']['install_channels']);
         }
 
@@ -89,6 +89,10 @@ class ChildWorkflowRuntimeContractTest extends TestCase
         );
         $this->assertContains(
             'sdk-python',
+            $scenarioManifest['artifact_policy']['required_artifacts'],
+        );
+        $this->assertContains(
+            'sdk-rust',
             $scenarioManifest['artifact_policy']['required_artifacts'],
         );
         $this->assertContains(
@@ -204,6 +208,7 @@ class ChildWorkflowRuntimeContractTest extends TestCase
             'cli_release',
             'workflow_php_package',
             'sdk_python_package',
+            'sdk_rust_package',
             'waterline_artifact',
         ] as $field) {
             $this->assertContains($field, $requirements['published_artifact_install_only']['evidence']);
@@ -213,6 +218,16 @@ class ChildWorkflowRuntimeContractTest extends TestCase
             'child_reaches_cancelled_after_parent_cancel',
             $requirements['parent_cancellation_propagates_to_child']['required_behavior'],
         );
+        foreach ([
+            'typed_cancellation_observed',
+            'child_cancellation_history_evidence',
+            'parent_close_policy_evidence',
+        ] as $field) {
+            $this->assertContains(
+                $field,
+                $requirements['parent_cancellation_propagates_to_child']['evidence'],
+            );
+        }
         $this->assertSame(
             'parent_observes_typed_child_cancellation_not_timeout',
             $requirements['direct_child_cancellation_observed_by_parent']['required_behavior'],
@@ -328,11 +343,66 @@ class ChildWorkflowRuntimeContractTest extends TestCase
         $this->assertStringContainsString('DW_CHILD_WORKFLOWS_PYTHON_BIN', $source);
         $this->assertStringContainsString('focused-typed-failure-server-evidence.json', $source);
         $this->assertStringContainsString('published durable-workflow Python SDK replay surface', $source);
+        $this->assertStringContainsString('child-workflows-install-probe.py', $source);
+        $this->assertStringContainsString('child-workflows-runtime-probe.php', $source);
+        $this->assertStringContainsString('unset DW_CHILD_WORKFLOWS_FULL_MATRIX_EVIDENCE', $source);
+        $this->assertStringContainsString('unset DW_CHILD_WORKFLOWS_ARTIFACT_INSTALL_EVIDENCE', $source);
+
+        $installProbe = $this->read('scripts/conformance/child-workflows-install-probe.py');
+        $runtimeProbe = $this->read('scripts/conformance/child-workflows-runtime-probe.php');
+        $pythonRuntime = $this->read('scripts/conformance/child-workflows-python-runtime.py');
+        $this->assertStringContainsString('command', $installProbe);
+        $this->assertStringContainsString('output_sample', $installProbe);
+        $this->assertStringContainsString('WorkflowFiberRunner::forClass(', $runtimeProbe);
+        $this->assertStringContainsString('cw_failure_cell(', $runtimeProbe);
+        $this->assertStringContainsString('cw_parent_cancellation(', $runtimeProbe);
+        $this->assertStringContainsString('cw_direct_child_cancellation(', $runtimeProbe);
+        $this->assertStringContainsString('cw_parent_close_policy(', $runtimeProbe);
+        $this->assertStringContainsString('cw_replay_restart(', $runtimeProbe);
+        $this->assertStringContainsString('cw_fan_out(', $runtimeProbe);
+        $this->assertStringContainsString('commands_to_server_commands(', $pythonRuntime);
+        $directCancellationBody = substr(
+            $runtimeProbe,
+            strpos($runtimeProbe, 'function cw_direct_child_cancellation(): array'),
+            strpos($runtimeProbe, 'function cw_parent_close_policy(): array')
+                - strpos($runtimeProbe, 'function cw_direct_child_cancellation(): array'),
+        );
+        $parentCancellationBody = substr(
+            $runtimeProbe,
+            strpos($runtimeProbe, 'function cw_parent_cancellation(): array'),
+            strpos($runtimeProbe, 'function cw_direct_child_cancellation(): array')
+                - strpos($runtimeProbe, 'function cw_parent_cancellation(): array'),
+        );
+        $postCancelParentCancellationBody = substr(
+            $parentCancellationBody,
+            strpos($parentCancellationBody, "'/cancel'"),
+        );
+        $this->assertStringNotContainsString('cw_poll(', $postCancelParentCancellationBody);
+        $this->assertStringNotContainsString('cw_python_step(', $postCancelParentCancellationBody);
+        $this->assertStringContainsString("'ParentClosePolicyApplied'", $postCancelParentCancellationBody);
+        $this->assertStringContainsString("'WorkflowCancelledException'", $postCancelParentCancellationBody);
+        $fanOutBody = substr(
+            $runtimeProbe,
+            strpos($runtimeProbe, 'function cw_fan_out(): array'),
+            strpos($runtimeProbe, "\ntry {") - strpos($runtimeProbe, 'function cw_fan_out(): array'),
+        );
+        $this->assertStringNotContainsString('$aggregate', $directCancellationBody);
+        $this->assertStringNotContainsString('$startedEpochs', $directCancellationBody);
+        $this->assertStringContainsString("['failure_kind'] ?? null) !== 'cancelled'", $directCancellationBody);
+        $this->assertStringContainsString(
+            '($runtimeResult[\'child_run_id\'] ?? null) !== $childRunId',
+            $directCancellationBody,
+        );
+        $this->assertStringContainsString('$aggregate', $fanOutBody);
+        $this->assertStringContainsString('$overlapObserved', $fanOutBody);
+        $this->assertStringContainsString('runtime_relationship_failures(', $source);
+        $this->assertStringContainsString('full_matrix_runtime_relationship_failures(', $source);
 
         foreach ([
             'DW_SERVER_VERSION',
             'DW_CLI_VERSION',
             'DW_PYTHON_SDK_VERSION',
+            'DW_RUST_SDK_VERSION',
             'DW_WORKFLOW_PHP_VERSION',
             'DW_WATERLINE_VERSION',
         ] as $envName) {
@@ -390,6 +460,7 @@ class ChildWorkflowRuntimeContractTest extends TestCase
                 'DW_SERVER_VERSION' => '9.9.9',
                 'DW_CLI_VERSION' => '9.9.9',
                 'DW_PYTHON_SDK_VERSION' => '9.9.9',
+                'DW_RUST_SDK_VERSION' => '9.9.9',
                 'DW_WORKFLOW_PHP_VERSION' => '9.9.9',
                 'DW_WATERLINE_VERSION' => '9.9.9',
             ];
@@ -440,7 +511,7 @@ class ChildWorkflowRuntimeContractTest extends TestCase
         }
     }
 
-    public function test_published_artifact_runner_rejects_typed_failure_evidence_without_install_evidence(): void
+    public function test_published_artifact_runner_rejects_caller_authored_typed_failure_evidence(): void
     {
         $run = $this->runChildWorkflowRunnerWithEvidence(
             $this->childWorkflowRunnerBaseEnv(),
@@ -458,10 +529,8 @@ class ChildWorkflowRuntimeContractTest extends TestCase
         $this->assertSame('not_covered', $scenario['status']);
         $this->assertSame('not_covered', $result['failure_round_trip']['status'] ?? null);
         $this->assertNotContains('pass', array_column($result['failure_round_trip']['cells'] ?? [], 'status'));
-        $this->assertContains(
-            'typed_failure_evidence requires passing published artifact install evidence',
-            $result['failure_round_trip']['typed_failure_evidence_failures'] ?? [],
-        );
+        $this->assertSame('', $result['runtime_evidence_source'] ?? null);
+        $this->assertTrue($result['local_product_source_checkouts_used'] ?? false);
     }
 
     public function test_published_artifact_runner_keeps_partial_typed_failure_evidence_non_passing(): void
@@ -488,17 +557,14 @@ class ChildWorkflowRuntimeContractTest extends TestCase
         $this->assertSame(1, $run['exitCode']);
         $this->assertSame('not_covered', $scenario['status']);
         $this->assertSame('not_covered', $result['failure_round_trip']['status'] ?? null);
-        $this->assertSame('pass', $cellStatuses['sdk-python->sdk-python'] ?? null);
+        $this->assertSame('not_covered', $cellStatuses['sdk-python->sdk-python'] ?? null);
         $this->assertSame('not_covered', $cellStatuses['workflow-php->workflow-php'] ?? null);
         $this->assertSame('not_covered', $cellStatuses['workflow-php->sdk-python'] ?? null);
         $this->assertSame('not_covered', $cellStatuses['sdk-python->workflow-php'] ?? null);
-        $this->assertStringContainsString(
-            'typed failure evidence did not include required failure round-trip cells',
-            $scenario['linked_findings'][0]['observed_behavior'] ?? '',
-        );
+        $this->assertSame('', $result['runtime_evidence_source'] ?? null);
     }
 
-    public function test_published_artifact_runner_consumes_default_typed_failure_evidence_path(): void
+    public function test_published_artifact_runner_rejects_default_path_caller_evidence(): void
     {
         $run = $this->runChildWorkflowRunnerWithEvidence(
             $this->childWorkflowRunnerBaseEnv(),
@@ -521,14 +587,11 @@ class ChildWorkflowRuntimeContractTest extends TestCase
 
         $this->assertSame(1, $run['exitCode']);
         $this->assertSame('not_covered', $scenario['status']);
-        $this->assertSame('pass', $cellStatuses['sdk-python->sdk-python'] ?? null);
-        $this->assertSame(
-            'typed-failure-evidence.json',
-            basename((string) ($result['failure_round_trip']['typed_failure_evidence_path'] ?? '')),
-        );
+        $this->assertSame('not_covered', $cellStatuses['sdk-python->sdk-python'] ?? null);
+        $this->assertArrayNotHasKey('typed_failure_evidence_path', $result['failure_round_trip']);
     }
 
-    public function test_published_artifact_runner_passes_typed_failure_matrix_only_with_all_required_cells(): void
+    public function test_published_artifact_runner_rejects_complete_caller_typed_failure_matrix(): void
     {
         $run = $this->runChildWorkflowRunnerWithEvidence(
             $this->childWorkflowRunnerBaseEnv(),
@@ -547,12 +610,9 @@ class ChildWorkflowRuntimeContractTest extends TestCase
         $scenario = $this->scenarioResult($result, 'child_failure_round_trip_matrix');
 
         $this->assertSame(1, $run['exitCode']);
-        $this->assertSame('pass', $scenario['status']);
-        $this->assertSame('pass', $result['failure_round_trip']['status'] ?? null);
-        $this->assertSame(
-            ['pass', 'pass', 'pass', 'pass'],
-            array_column($result['failure_round_trip']['cells'] ?? [], 'status'),
-        );
+        $this->assertSame('not_covered', $scenario['status']);
+        $this->assertSame('not_covered', $result['failure_round_trip']['status'] ?? null);
+        $this->assertNotContains('pass', array_column($result['failure_round_trip']['cells'] ?? [], 'status'));
         $this->assertSame(
             'non_passing',
             $result['outcome'] ?? null,
@@ -560,7 +620,7 @@ class ChildWorkflowRuntimeContractTest extends TestCase
         );
     }
 
-    public function test_published_artifact_runner_passes_with_full_matrix_evidence(): void
+    public function test_published_artifact_runner_rejects_complete_caller_authored_full_matrix_evidence(): void
     {
         $run = $this->runChildWorkflowRunnerWithEvidence(
             $this->childWorkflowRunnerBaseEnv(),
@@ -579,12 +639,12 @@ class ChildWorkflowRuntimeContractTest extends TestCase
         $result = $run['result'];
         $evaluation = ChildWorkflowRuntimeResultGate::evaluate($result);
 
-        $this->assertSame(0, $run['exitCode']);
-        $this->assertSame('pass', $result['outcome'] ?? null);
-        $this->assertSame('pass', $evaluation['status']);
-        $this->assertSame('pass', $this->scenarioResult($result, 'php_parent_python_child_cross_language')['status']);
-        $this->assertSame('pass', $result['failure_round_trip']['status'] ?? null);
-        $this->assertSame('child-workflows-full-matrix', $result['namespace_behavior']['lineage_links'][0]['parent'] ?? null);
+        $this->assertSame(1, $run['exitCode']);
+        $this->assertSame('non_passing', $result['outcome'] ?? null);
+        $this->assertSame('non_passing', $evaluation['status']);
+        $this->assertSame('not_covered', $this->scenarioResult($result, 'php_parent_python_child_cross_language')['status']);
+        $this->assertSame('not_covered', $result['failure_round_trip']['status'] ?? null);
+        $this->assertSame('', $result['runtime_evidence_source'] ?? null);
     }
 
     public function test_published_artifact_runner_does_not_fail_pass_record_when_external_run_root_cannot_be_removed(): void
@@ -629,8 +689,8 @@ SH));
                 ],
             );
 
-            $this->assertSame(0, $run['exitCode']);
-            $this->assertSame('pass', $run['result']['outcome'] ?? null);
+            $this->assertSame(1, $run['exitCode']);
+            $this->assertSame('non_passing', $run['result']['outcome'] ?? null);
             $this->assertDirectoryExists($runRoot);
         } finally {
             foreach (glob($fakeBin . '/*') ?: [] as $file) {
@@ -810,6 +870,87 @@ SH));
         foreach (['started_at', 'finished_at', 'generated_at', 'outcome'] as $field) {
             $this->assertContains($field, $missingFields);
         }
+    }
+
+    public function test_result_gate_rejects_results_without_published_runtime_probe_provenance(): void
+    {
+        $result = $this->completeChildWorkflowResult();
+        unset($result['runtime_evidence_source'], $result['local_product_source_checkouts_used']);
+
+        $evaluation = ChildWorkflowRuntimeResultGate::evaluate($result);
+        $codes = array_column($evaluation['gate_failures'], 'code');
+
+        $this->assertSame('non_passing', $evaluation['status']);
+        $this->assertContains('invalid_runtime_evidence_source', $codes);
+        $this->assertContains('local_product_source_checkouts_used_must_be_false', $codes);
+    }
+
+    public function test_result_gate_rejects_synthetic_runtime_identities_even_with_probe_label(): void
+    {
+        $result = $this->completeChildWorkflowResult();
+        $outputs = &$result['scenario_results']['python_parent_python_child_baseline']['observed_outputs'];
+        $outputs['parent_workflow_id'] = 'parent-fixture';
+        $outputs['parent_history']['workflow_id'] = 'parent-fixture';
+        $outputs['runtime_observations'][0]['workflow_id'] = 'parent-fixture';
+
+        $evaluation = ChildWorkflowRuntimeResultGate::evaluate($result);
+
+        $this->assertSame('non_passing', $evaluation['status']);
+        $this->assertContains('synthetic_runtime_identity', array_column($evaluation['gate_failures'], 'code'));
+    }
+
+    public function test_result_gate_rejects_contradictory_history_and_runtime_run_identities(): void
+    {
+        $result = $this->completeChildWorkflowResult();
+        $outputs = &$result['scenario_results']['php_parent_python_child_cross_language']['observed_outputs'];
+        $outputs['child_history']['run_id'] = '01CONTRADICTORYRUNIDENTITY0';
+        $outputs['runtime_observations'][1]['task_queue'] = 'contradictory-queue';
+
+        $evaluation = ChildWorkflowRuntimeResultGate::evaluate($result);
+        $codes = array_column($evaluation['gate_failures'], 'code');
+
+        $this->assertSame('non_passing', $evaluation['status']);
+        $this->assertContains('runtime_history_identity_mismatch', $codes);
+        $this->assertContains('incomplete_leased_runtime_observation', $codes);
+    }
+
+    public function test_result_gate_rejects_structurally_incomplete_event_and_lease_evidence(): void
+    {
+        $result = $this->completeChildWorkflowResult();
+        $outputs = &$result['scenario_results']['python_parent_php_child_cross_language']['observed_outputs'];
+        unset(
+            $outputs['parent_history']['events'][0]['payload']['child_workflow_run_id'],
+            $outputs['runtime_observations'][0]['lease_owner'],
+        );
+        $outputs['observed_at'] = '2026-05-20T06:00:00Z';
+
+        $evaluation = ChildWorkflowRuntimeResultGate::evaluate($result);
+        $codes = array_column($evaluation['gate_failures'], 'code');
+
+        $this->assertSame('non_passing', $evaluation['status']);
+        $this->assertContains('parent_history_child_run_mismatch', $codes);
+        $this->assertContains('incomplete_leased_runtime_observation', $codes);
+        $this->assertContains('runtime_timestamp_not_from_history', $codes);
+    }
+
+    public function test_result_gate_rejects_install_rows_without_command_and_output_provenance(): void
+    {
+        $result = $this->completeChildWorkflowResult();
+        unset(
+            $result['artifact_install_evidence']['artifacts'][0]['commands'],
+            $result['artifact_install_evidence']['artifacts'][0]['output_sample'],
+            $result['published_artifact_install']['artifact_install_evidence']['artifacts'][0]['commands'],
+            $result['published_artifact_install']['artifact_install_evidence']['artifacts'][0]['output_sample'],
+            $result['scenario_results']['published_artifact_install_only']['observed_outputs']['artifact_install_evidence']['artifacts'][0]['commands'],
+            $result['scenario_results']['published_artifact_install_only']['observed_outputs']['artifact_install_evidence']['artifacts'][0]['output_sample']
+        );
+
+        $evaluation = ChildWorkflowRuntimeResultGate::evaluate($result);
+        $codes = array_column($evaluation['gate_failures'], 'code');
+
+        $this->assertSame('non_passing', $evaluation['status']);
+        $this->assertContains('missing_published_artifact_install_command_provenance', $codes);
+        $this->assertContains('missing_published_artifact_install_output_provenance', $codes);
     }
 
     public function test_result_gate_requires_started_at_when_generated_at_is_present(): void
@@ -1022,6 +1163,7 @@ SH));
             'cli_release',
             'workflow_php_package',
             'sdk_python_package',
+            'sdk_rust_package',
             'waterline_artifact',
         ], array_column($installFailures, 'field'));
     }
@@ -1084,6 +1226,39 @@ SH));
         $this->assertSame([], $evaluation['missing_scenarios']);
         $this->assertSame([], $evaluation['non_pass_scenarios']);
         $this->assertSame([], $evaluation['gate_failures']);
+    }
+
+    public function test_result_gate_rejects_parent_cancellation_without_matching_terminal_history_and_policy(): void
+    {
+        $result = $this->completeChildWorkflowResult();
+        $parentCancellation = &$result['cancellation_propagation']['parent_to_child'];
+        $parentCancellation['worker_observed_typed_cancellation'] = true;
+        unset(
+            $parentCancellation['child_cancellation_history_evidence'],
+            $parentCancellation['parent_close_policy_evidence']
+        );
+
+        $evaluation = ChildWorkflowRuntimeResultGate::evaluate($result);
+        $failureCodes = array_column($evaluation['gate_failures'], 'code');
+
+        $this->assertSame('non_passing', $evaluation['status']);
+        $this->assertContains('parent_cancellation_typed_child_history_mismatch', $failureCodes);
+        $this->assertContains('parent_cancellation_parent_close_policy_mismatch', $failureCodes);
+    }
+
+    public function test_result_gate_rejects_parent_cancellation_policy_for_a_different_child_run(): void
+    {
+        $result = $this->completeChildWorkflowResult();
+        $result['cancellation_propagation']['parent_to_child']['parent_close_policy_evidence']['payload']['child_run_id'] =
+            '4A852DDE50B15BA85B88EE73BF';
+
+        $evaluation = ChildWorkflowRuntimeResultGate::evaluate($result);
+
+        $this->assertSame('non_passing', $evaluation['status']);
+        $this->assertContains(
+            'parent_cancellation_parent_close_policy_mismatch',
+            array_column($evaluation['gate_failures'], 'code'),
+        );
     }
 
     public function test_result_gate_rejects_all_pass_checks_when_status_alias_is_non_passing(): void
@@ -1169,6 +1344,173 @@ SH));
     /**
      * @return array<string, mixed>
      */
+    private function runtimeEvidence(
+        string $label,
+        string $timestamp,
+        string $parentEvent = 'ChildRunCompleted',
+        string $childEvent = 'WorkflowCompleted',
+    ): array {
+        $hash = strtoupper(hash('sha256', $label));
+        $parentWorkflowId = 'cw-' . strtolower(substr($hash, 0, 16));
+        $childWorkflowId = 'cw-' . strtolower(substr($hash, 16, 16));
+        $parentRunId = substr($hash, 0, 26);
+        $childRunId = substr($hash, 26, 26);
+        $taskQueue = 'cw-queue-' . strtolower(substr($hash, 52, 8));
+
+        return [
+            'parent_workflow_id' => $parentWorkflowId,
+            'parent_run_id' => $parentRunId,
+            'child_workflow_id' => $childWorkflowId,
+            'child_run_id' => $childRunId,
+            'task_queue' => $taskQueue,
+            'observed_at' => $timestamp,
+            'parent_history' => [
+                'workflow_id' => $parentWorkflowId,
+                'run_id' => $parentRunId,
+                'events' => [[
+                    'event_type' => $parentEvent,
+                    'timestamp' => $timestamp,
+                    'payload' => ['child_workflow_run_id' => $childRunId],
+                ]],
+            ],
+            'child_history' => [
+                'workflow_id' => $childWorkflowId,
+                'run_id' => $childRunId,
+                'events' => [[
+                    'event_type' => $childEvent,
+                    'timestamp' => $timestamp,
+                    'payload' => [],
+                ]],
+            ],
+            'runtime_observations' => [
+                [
+                    'runtime' => 'sdk-python',
+                    'task_id' => substr($hash, 0, 24),
+                    'lease_owner' => 'worker-' . strtolower(substr($hash, 0, 8)),
+                    'task_queue' => $taskQueue,
+                    'workflow_id' => $parentWorkflowId,
+                    'run_id' => $parentRunId,
+                ],
+                [
+                    'runtime' => 'workflow-php',
+                    'task_id' => substr($hash, 8, 24),
+                    'lease_owner' => 'worker-' . strtolower(substr($hash, 8, 8)),
+                    'task_queue' => $taskQueue,
+                    'workflow_id' => $childWorkflowId,
+                    'run_id' => $childRunId,
+                ],
+            ],
+        ];
+    }
+
+    /** @return array<string, mixed> */
+    private function fanOutRuntimeEvidence(): array
+    {
+        $parent = $this->runtimeEvidence('fan-out-parent', '2026-05-20T05:04:01.000Z');
+        $taskQueue = $parent['task_queue'];
+        $identities = [];
+        $histories = [];
+        $started = [];
+        $completed = [];
+        $parentEvents = [];
+        $observations = [$parent['runtime_observations'][0]];
+
+        for ($index = 0; $index < 5; ++$index) {
+            $start = sprintf('2026-05-20T05:04:00.%03dZ', $index * 10);
+            $finish = sprintf('2026-05-20T05:04:01.%03dZ', $index * 10);
+            $child = $this->runtimeEvidence('fan-out-child-' . $index, $finish);
+            $child['child_history']['events'] = [
+                ['event_type' => 'WorkflowStarted', 'timestamp' => $start, 'payload' => []],
+                ['event_type' => 'WorkflowCompleted', 'timestamp' => $finish, 'payload' => []],
+            ];
+            $identities[] = [
+                'workflow_id' => $child['child_workflow_id'],
+                'run_id' => $child['child_run_id'],
+            ];
+            $histories[] = $child['child_history'];
+            $started[] = $start;
+            $completed[] = $finish;
+            $parentEvents[] = [
+                'event_type' => 'ChildRunCompleted',
+                'timestamp' => $finish,
+                'payload' => ['child_workflow_run_id' => $child['child_run_id']],
+            ];
+            $observation = $child['runtime_observations'][1];
+            $observation['task_queue'] = $taskQueue;
+            $observations[] = $observation;
+        }
+
+        return [
+            'child_count' => 5,
+            'child_started_at_values' => $started,
+            'child_completed_at_values' => $completed,
+            'aggregate_result' => ['child_count' => 5, 'values' => ['0', '1', '2', '3', '4']],
+            'overlap_observed' => true,
+            'parent_workflow_id' => $parent['parent_workflow_id'],
+            'parent_run_id' => $parent['parent_run_id'],
+            'task_queue' => $taskQueue,
+            'parent_history' => [
+                'workflow_id' => $parent['parent_workflow_id'],
+                'run_id' => $parent['parent_run_id'],
+                'events' => $parentEvents,
+            ],
+            'child_run_identities' => $identities,
+            'child_histories' => $histories,
+            'runtime_observations' => $observations,
+        ];
+    }
+
+    /** @return list<array<string, mixed>> */
+    private function cancellationRuntimeObservations(string $label, string $timestamp): array
+    {
+        $evidence = $this->runtimeEvidence($label, $timestamp, 'ChildRunCancelled', 'WorkflowCancelled');
+        $evidence['runtime_observations'][0]['runtime_result'] = [
+            'failure_kind' => 'cancelled',
+            'exception_type' => 'ChildWorkflowCancelled',
+            'exception_class' => 'durable_workflow.errors.ChildWorkflowCancelled',
+            'child_run_id' => $evidence['child_run_id'],
+        ];
+
+        return $evidence['runtime_observations'];
+    }
+
+    /** @return array<string, mixed> */
+    private function parentCancellationRuntimeEvidence(): array
+    {
+        $evidence = $this->runtimeEvidence(
+            'parent-cancellation',
+            '2026-05-20T05:01:03Z',
+            'ParentClosePolicyApplied',
+            'WorkflowCancelled',
+        );
+        $exceptionClass = 'Workflow\\V2\\Exceptions\\WorkflowCancelledException';
+        $message = 'Parent workflow closed (cancelled); parent-close policy: request_cancel.';
+        $evidence['parent_history']['events'][0]['payload'] = [
+            'child_run_id' => $evidence['child_run_id'],
+            'policy' => 'request_cancel',
+            'reason' => $message,
+        ];
+        $evidence['child_history']['events'][0]['payload'] = [
+            'failure_category' => 'cancelled',
+            'exception_class' => $exceptionClass,
+            'message' => $message,
+        ];
+        return $evidence + [
+            'worker_observed_typed_cancellation' => false,
+            'typed_cancellation_observed' => true,
+            'typed_cancellation_evidence_source' => 'terminal_child_history_and_parent_close_policy',
+            'child_failure_kind' => 'cancelled',
+            'child_exception_type' => 'WorkflowCancelledException',
+            'child_exception_class' => $exceptionClass,
+            'child_message' => $message,
+            'child_cancellation_history_evidence' => $evidence['child_history']['events'][0],
+            'parent_close_policy_evidence' => $evidence['parent_history']['events'][0],
+        ];
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
     private function completeChildWorkflowResult(): array
     {
         $scenarioResults = [];
@@ -1178,8 +1520,7 @@ SH));
                 'status' => 'pass',
                 'observed_outputs' => [
                     'recorded' => true,
-                    'parent_workflow_id' => 'parent-' . $scenario,
-                    'child_workflow_id' => 'child-' . $scenario,
+                    ...$this->runtimeEvidence($scenario, '2026-05-20T05:00:30Z'),
                     'parent_final_result' => 'parent-result-' . $scenario,
                     'child_history_excerpt' => ['ChildWorkflowScheduled', 'ChildRunCompleted'],
                 ],
@@ -1195,30 +1536,48 @@ SH));
                     'version' => '0.2.144',
                     'source' => 'docker://durableworkflow/server:0.2.144',
                     'status' => 'pass',
+                    'commands' => [['argv' => ['docker', 'pull', 'durableworkflow/server:0.2.144']]],
+                    'output_sample' => 'pulled durableworkflow/server:0.2.144',
                 ],
                 [
                     'artifact' => 'cli',
                     'version' => '0.1.45',
                     'source' => 'https://github.com/durable-workflow/cli/releases/download/v0.1.45/dw-linux-amd64',
                     'status' => 'pass',
+                    'commands' => [['argv' => ['sh', 'install.sh']]],
+                    'output_sample' => 'dw 0.1.45',
                 ],
                 [
                     'artifact' => 'workflow-php',
                     'version' => '2.0.0-alpha.164',
                     'source' => 'packagist:durable-workflow/workflow:2.0.0-alpha.164',
                     'status' => 'pass',
+                    'commands' => [['argv' => ['composer', 'require', 'durable-workflow/workflow:2.0.0-alpha.164']]],
+                    'output_sample' => 'installed durable-workflow/workflow 2.0.0-alpha.164',
                 ],
                 [
                     'artifact' => 'sdk-python',
                     'version' => '0.4.60',
                     'source' => 'pypi:durable-workflow==0.4.60',
                     'status' => 'pass',
+                    'commands' => [['argv' => ['pip', 'install', 'durable-workflow==0.4.60']]],
+                    'output_sample' => 'installed durable-workflow 0.4.60',
+                ],
+                [
+                    'artifact' => 'sdk-rust',
+                    'version' => '0.1.5',
+                    'source' => 'https://crates.io/crates/durable-workflow/0.1.5',
+                    'status' => 'pass',
+                    'commands' => [['argv' => ['GET', 'https://crates.io/api/v1/crates/durable-workflow/0.1.5']]],
+                    'output_sample' => 'resolved durable-workflow 0.1.5',
                 ],
                 [
                     'artifact' => 'waterline',
                     'version' => '2.0.0-alpha.54',
                     'source' => 'packagist:durable-workflow/waterline:2.0.0-alpha.54',
                     'status' => 'pass',
+                    'commands' => [['argv' => ['composer', 'require', 'durable-workflow/waterline:2.0.0-alpha.54']]],
+                    'output_sample' => 'resolved durable-workflow/waterline 2.0.0-alpha.54',
                 ],
             ],
         ];
@@ -1227,6 +1586,8 @@ SH));
 
         return [
             'schema' => ChildWorkflowRuntimeContract::RESULT_SCHEMA,
+            'runtime_evidence_source' => 'published_server_image_runtime_probe',
+            'local_product_source_checkouts_used' => false,
             'started_at' => '2026-05-20T05:00:00Z',
             'finished_at' => '2026-05-20T05:05:00Z',
             'generated_at' => '2026-05-20T05:05:00Z',
@@ -1235,6 +1596,7 @@ SH));
                 'server' => '0.2.144',
                 'cli' => '0.1.45',
                 'sdk-python' => '0.4.60',
+                'sdk-rust' => '0.1.5',
                 'workflow' => '2.0.0-alpha.164',
                 'waterline' => '2.0.0-alpha.54',
             ],
@@ -1242,6 +1604,7 @@ SH));
                 'server' => 'docker://durableworkflow/server:0.2.144',
                 'cli' => 'https://github.com/durable-workflow/cli/releases/download/v0.1.45/dw-linux-amd64',
                 'sdk-python' => 'pypi:durable-workflow==0.4.60',
+                'sdk-rust' => 'https://crates.io/crates/durable-workflow/0.1.5',
                 'workflow' => 'packagist:durable-workflow/workflow:2.0.0-alpha.164',
                 'workflow-php' => 'packagist:durable-workflow/workflow:2.0.0-alpha.164',
                 'waterline' => 'packagist:durable-workflow/waterline:2.0.0-alpha.54',
@@ -1252,6 +1615,7 @@ SH));
                 'cli_release' => 'dw 0.1.45',
                 'workflow_php_package' => 'durable-workflow/workflow 2.0.0-alpha.164',
                 'sdk_python_package' => 'durable-workflow 0.4.60',
+                'sdk_rust_package' => 'durable-workflow 0.1.5',
                 'waterline_artifact' => 'waterline 2.0.0-alpha.54',
                 'artifact_install_evidence' => $artifactInstallEvidence,
             ],
@@ -1262,11 +1626,13 @@ SH));
                         'scenario' => 'python_parent_python_child_baseline',
                         'parent' => 'sdk-python',
                         'child' => 'sdk-python',
+                        'status' => 'pass',
                     ],
                     [
                         'scenario' => 'php_parent_php_child_baseline',
                         'parent' => 'workflow-php',
                         'child' => 'workflow-php',
+                        'status' => 'pass',
                     ],
                 ],
                 'cross_language_cells' => [
@@ -1274,11 +1640,13 @@ SH));
                         'scenario' => 'php_parent_python_child_cross_language',
                         'parent' => 'workflow-php',
                         'child' => 'sdk-python',
+                        'status' => 'pass',
                     ],
                     [
                         'scenario' => 'python_parent_php_child_cross_language',
                         'parent' => 'sdk-python',
                         'child' => 'workflow-php',
+                        'status' => 'pass',
                     ],
                 ],
                 'failure_round_trip_cells' => [
@@ -1286,21 +1654,25 @@ SH));
                         'scenario' => 'child_failure_round_trip_matrix',
                         'parent' => 'sdk-python',
                         'child' => 'sdk-python',
+                        'status' => 'pass',
                     ],
                     [
                         'scenario' => 'child_failure_round_trip_matrix',
                         'parent' => 'workflow-php',
                         'child' => 'workflow-php',
+                        'status' => 'pass',
                     ],
                     [
                         'scenario' => 'child_failure_round_trip_matrix',
                         'parent' => 'workflow-php',
                         'child' => 'sdk-python',
+                        'status' => 'pass',
                     ],
                     [
                         'scenario' => 'child_failure_round_trip_matrix',
                         'parent' => 'sdk-python',
                         'child' => 'workflow-php',
+                        'status' => 'pass',
                     ],
                 ],
             ],
@@ -1310,33 +1682,97 @@ SH));
                         'scenario' => 'child_failure_round_trip_matrix',
                         'parent' => 'sdk-python',
                         'child' => 'sdk-python',
+                        'status' => 'pass',
                         'exception_class' => 'ChildWorkflowError',
+                        'exception_type' => 'ChildWorkflowError',
                         'message' => 'python child failed',
                         'failure_kind' => 'child_workflow',
+                        'parent_workflow_id' => 'parent-python-python-failure',
+                        'parent_run_id' => 'parent-run-python-python-failure',
+                        'child_workflow_id' => 'child-python-python-failure',
+                        'child_run_id' => 'child-run-python-python-failure',
+                        'task_queue' => 'failure-python-python',
+                        'observed_at' => '2026-05-20T05:00:40Z',
+                        'parent_history_excerpt' => ['ChildWorkflowScheduled', 'ChildRunFailed'],
+                        'child_history_excerpt' => ['WorkflowFailed'],
+                        ...$this->runtimeEvidence(
+                            'failure-python-python',
+                            '2026-05-20T05:00:40Z',
+                            'ChildRunFailed',
+                            'WorkflowFailed',
+                        ),
                     ],
                     [
                         'scenario' => 'child_failure_round_trip_matrix',
                         'parent' => 'workflow-php',
                         'child' => 'workflow-php',
+                        'status' => 'pass',
                         'exception_class' => 'ChildWorkflowError',
+                        'exception_type' => 'ChildWorkflowError',
                         'message' => 'php child failed',
                         'failure_kind' => 'child_workflow',
+                        'parent_workflow_id' => 'parent-php-php-failure',
+                        'parent_run_id' => 'parent-run-php-php-failure',
+                        'child_workflow_id' => 'child-php-php-failure',
+                        'child_run_id' => 'child-run-php-php-failure',
+                        'task_queue' => 'failure-php-php',
+                        'observed_at' => '2026-05-20T05:00:41Z',
+                        'parent_history_excerpt' => ['ChildWorkflowScheduled', 'ChildRunFailed'],
+                        'child_history_excerpt' => ['WorkflowFailed'],
+                        ...$this->runtimeEvidence(
+                            'failure-php-php',
+                            '2026-05-20T05:00:41Z',
+                            'ChildRunFailed',
+                            'WorkflowFailed',
+                        ),
                     ],
                     [
                         'scenario' => 'child_failure_round_trip_matrix',
                         'parent' => 'workflow-php',
                         'child' => 'sdk-python',
+                        'status' => 'pass',
                         'exception_class' => 'ChildWorkflowError',
+                        'exception_type' => 'ChildWorkflowError',
                         'message' => 'python child failed',
                         'failure_kind' => 'child_workflow',
+                        'parent_workflow_id' => 'parent-php-python-failure',
+                        'parent_run_id' => 'parent-run-php-python-failure',
+                        'child_workflow_id' => 'child-php-python-failure',
+                        'child_run_id' => 'child-run-php-python-failure',
+                        'task_queue' => 'failure-php-python',
+                        'observed_at' => '2026-05-20T05:00:42Z',
+                        'parent_history_excerpt' => ['ChildWorkflowScheduled', 'ChildRunFailed'],
+                        'child_history_excerpt' => ['WorkflowFailed'],
+                        ...$this->runtimeEvidence(
+                            'failure-php-python',
+                            '2026-05-20T05:00:42Z',
+                            'ChildRunFailed',
+                            'WorkflowFailed',
+                        ),
                     ],
                     [
                         'scenario' => 'child_failure_round_trip_matrix',
                         'parent' => 'sdk-python',
                         'child' => 'workflow-php',
+                        'status' => 'pass',
                         'exception_class' => 'ChildWorkflowError',
+                        'exception_type' => 'ChildWorkflowError',
                         'message' => 'php child failed',
                         'failure_kind' => 'child_workflow',
+                        'parent_workflow_id' => 'parent-python-php-failure',
+                        'parent_run_id' => 'parent-run-python-php-failure',
+                        'child_workflow_id' => 'child-python-php-failure',
+                        'child_run_id' => 'child-run-python-php-failure',
+                        'task_queue' => 'failure-python-php',
+                        'observed_at' => '2026-05-20T05:00:43Z',
+                        'parent_history_excerpt' => ['ChildWorkflowScheduled', 'ChildRunFailed'],
+                        'child_history_excerpt' => ['WorkflowFailed'],
+                        ...$this->runtimeEvidence(
+                            'failure-python-php',
+                            '2026-05-20T05:00:43Z',
+                            'ChildRunFailed',
+                            'WorkflowFailed',
+                        ),
                     ],
                 ],
             ],
@@ -1344,12 +1780,43 @@ SH));
                 'parent_to_child' => [
                     'cancel_issued_at' => '2026-05-20T05:01:00Z',
                     'child_cancelled_at' => '2026-05-20T05:01:03Z',
-                    'worker_observed_typed_cancellation' => true,
+                    ...$this->parentCancellationRuntimeEvidence(),
+                    'parent_observed_at' => '2026-05-20T05:01:03Z',
+                    'child_cancelled_at' => '2026-05-20T05:01:03Z',
                 ],
                 'direct_child' => [
                     'child_cancel_issued_at' => '2026-05-20T05:02:00Z',
                     'parent_observed_at' => '2026-05-20T05:02:02Z',
                     'parent_failure_kind' => 'cancelled',
+                    'parent_workflow_id' => 'parent-direct-cancel',
+                    'parent_run_id' => 'parent-run-direct-cancel',
+                    'child_workflow_id' => 'child-direct-cancel',
+                    'child_run_id' => 'child-run-direct-cancel',
+                    'task_queue' => 'direct-cancel-queue',
+                    'parent_history' => ['events' => [['event_type' => 'ChildRunCancelled']]],
+                    'parent_exception_type' => 'ChildWorkflowCancelled',
+                    'parent_exception_class' => 'durable_workflow.errors.ChildWorkflowCancelled',
+                    ...$this->runtimeEvidence(
+                        'direct-child-cancellation',
+                        '2026-05-20T05:02:02Z',
+                        'ChildRunCancelled',
+                        'WorkflowCancelled',
+                    ),
+                    'runtime_observations' => $this->cancellationRuntimeObservations(
+                        'direct-child-cancellation',
+                        '2026-05-20T05:02:02Z',
+                    ),
+                    'parent_observed_at' => '2026-05-20T05:02:02Z',
+                ],
+                'parent_close_policy' => [
+                    'policy' => 'request_cancel',
+                    'parent_workflow_id' => 'parent-close',
+                    'parent_run_id' => 'parent-run-close',
+                    'child_workflow_id' => 'child-close',
+                    'child_run_id' => 'child-run-close',
+                    'task_queue' => 'parent-close-queue',
+                    'child_status' => 'cancelled',
+                    'history_excerpt' => ['CancelRequested', 'WorkflowCancelled'],
                 ],
             ],
             'replay_restart' => [
@@ -1358,6 +1825,13 @@ SH));
                 'original_decision_sequence' => ['start_child', 'await_child', 'complete_parent'],
                 'replayed_decision_sequence' => ['start_child', 'await_child', 'complete_parent'],
                 'duplicate_child_scheduled' => false,
+                'parent_workflow_id' => 'parent-replay',
+                'parent_run_id' => 'parent-run-replay',
+                'child_workflow_id' => 'child-replay',
+                'child_run_id' => 'child-run-replay',
+                'task_queue' => 'replay-queue',
+                'parent_history' => ['events' => [['event_type' => 'ChildRunCompleted']]],
+                ...$this->runtimeEvidence('worker-restart-replay', '2026-05-20T05:03:05Z'),
             ],
             'fan_out' => [
                 'child_count' => 5,
@@ -1377,14 +1851,40 @@ SH));
                 ],
                 'aggregate_result' => 15,
                 'overlap_observed' => true,
+                'parent_workflow_id' => 'parent-fan-out',
+                'parent_run_id' => 'parent-run-fan-out',
+                'task_queue' => 'fan-out-queue',
+                'parent_history' => ['events' => [['event_type' => 'ChildWorkflowScheduled']]],
+                'child_run_identities' => [
+                    ['workflow_id' => 'fan-child-1', 'run_id' => 'fan-run-1'],
+                    ['workflow_id' => 'fan-child-2', 'run_id' => 'fan-run-2'],
+                    ['workflow_id' => 'fan-child-3', 'run_id' => 'fan-run-3'],
+                    ['workflow_id' => 'fan-child-4', 'run_id' => 'fan-run-4'],
+                    ['workflow_id' => 'fan-child-5', 'run_id' => 'fan-run-5'],
+                ],
+                ...$this->fanOutRuntimeEvidence(),
             ],
             'namespace_behavior' => [
                 'parent_namespace' => 'tenant-a',
                 'child_namespace' => 'tenant-a',
                 'lineage_links' => [
-                    ['parent' => 'tenant-a/parent', 'child' => 'tenant-a/child'],
+                    [
+                        'parent_workflow_id' => 'cw-e09d50ec2aa2f6f0',
+                        'parent_run_id' => 'E09D50EC2AA2F6F087DE881DD2',
+                        'child_workflow_id' => 'cw-87de881dd22ec71a',
+                        'child_run_id' => '2EC71A235114222CE34E15D597',
+                    ],
                 ],
                 'cross_namespace_verdict' => 'documented',
+                'parent_workflow_id' => 'namespace-parent',
+                'parent_run_id' => 'namespace-parent-run',
+                'child_workflow_id' => 'namespace-child',
+                'child_run_id' => 'namespace-child-run',
+                'task_queue' => 'namespace-queue',
+                'operator_visible_debug' => ['lineage' => 'visible'],
+                'parent_history_excerpt' => ['ChildWorkflowScheduled', 'ChildRunCompleted'],
+                'child_history_excerpt' => ['WorkflowStarted', 'WorkflowCompleted'],
+                ...$this->runtimeEvidence('namespace-lineage', '2026-05-20T05:04:30Z'),
             ],
             'findings' => [],
             'finding_links' => [],
@@ -1464,6 +1964,7 @@ SH));
             'DW_SERVER_VERSION' => '9.9.9',
             'DW_CLI_VERSION' => '9.9.9',
             'DW_PYTHON_SDK_VERSION' => '9.9.9',
+            'DW_RUST_SDK_VERSION' => '9.9.9',
             'DW_WORKFLOW_PHP_VERSION' => '9.9.9',
             'DW_WATERLINE_VERSION' => '9.9.9',
         ];
@@ -1509,6 +2010,12 @@ SH));
                     'source' => 'packagist:durable-workflow/waterline:9.9.9',
                     'status' => 'pass',
                 ],
+                [
+                    'artifact' => 'sdk-rust',
+                    'version' => '9.9.9',
+                    'source' => 'https://crates.io/crates/durable-workflow/9.9.9',
+                    'status' => 'pass',
+                ],
             ],
         ];
     }
@@ -1528,6 +2035,7 @@ SH));
                 'server' => '9.9.9',
                 'cli' => '9.9.9',
                 'sdk-python' => '9.9.9',
+                'sdk-rust' => '9.9.9',
                 'workflow' => '9.9.9',
                 'waterline' => '9.9.9',
             ],
@@ -1586,6 +2094,7 @@ SH));
             'server' => '9.9.9',
             'cli' => '9.9.9',
             'sdk-python' => '9.9.9',
+            'sdk-rust' => '9.9.9',
             'workflow' => '9.9.9',
             'waterline' => '9.9.9',
         ];

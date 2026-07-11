@@ -16,7 +16,7 @@ final class ChildWorkflowRuntimeContract
 {
     public const SCHEMA = 'durable-workflow.v2.child-workflow-runtime.contract';
 
-    public const VERSION = 9;
+    public const VERSION = 10;
 
     public const RESULT_SCHEMA = 'durable-workflow.v2.child-workflow-runtime.result';
 
@@ -49,6 +49,7 @@ final class ChildWorkflowRuntimeContract
                     'cli' => 'official dw install script pinned to its latest release tag',
                     'workflow-php' => 'Composer package durable-workflow/workflow:2.0.0-alpha.<latest>',
                     'sdk-python' => 'PyPI package durable-workflow==<latest>',
+                    'sdk-rust' => 'crates.io package durable-workflow=<latest>',
                     'waterline' => 'published Waterline observer artifact when claimed by the release set',
                 ],
                 'forbidden_sources' => [
@@ -64,6 +65,8 @@ final class ChildWorkflowRuntimeContract
                     'scenario_results',
                     'findings',
                     'finding_links',
+                    'runtime_evidence_source',
+                    'local_product_source_checkouts_used',
                 ],
             ],
             'scenario_statuses' => [
@@ -174,23 +177,37 @@ final class ChildWorkflowRuntimeContract
                         'cli_release',
                         'workflow_php_package',
                         'sdk_python_package',
+                        'sdk_rust_package',
                         'waterline_artifact',
+                        'per_artifact_command_and_output_provenance',
                     ],
                 ],
                 'child_result_round_trip' => [
                     'evidence' => [
                         'parent_workflow_id',
+                        'parent_run_id',
                         'child_workflow_id',
+                        'child_run_id',
+                        'task_queue',
+                        'observed_at',
                         'parent_final_result',
+                        'parent_history',
+                        'child_history',
                         'child_history_excerpt',
+                        'runtime_observations',
                     ],
                     'result_integrity' => 'parent_result_contains_child_return_value_without_string_shaping',
                 ],
                 'child_failure_round_trip_matrix' => [
                     'required_parent_failure_fields' => [
                         'exception_class',
+                        'exception_type',
                         'message',
                         'failure_kind',
+                        'parent_and_child_workflow_run_identities',
+                        'task_queue',
+                        'history_excerpts',
+                        'observed_at',
                     ],
                     'required_cells' => 'all_same_language_and_cross_language_parent_child_pairs',
                 ],
@@ -199,7 +216,9 @@ final class ChildWorkflowRuntimeContract
                     'evidence' => [
                         'cancel_issued_at',
                         'child_cancelled_at',
-                        'worker_observed_typed_cancellation',
+                        'typed_cancellation_observed',
+                        'child_cancellation_history_evidence',
+                        'parent_close_policy_evidence',
                     ],
                 ],
                 'direct_child_cancellation_observed_by_parent' => [
@@ -257,6 +276,8 @@ final class ChildWorkflowRuntimeContract
                     'omitted_required_scenarios_link_findings',
                     'artifact_versions_match_latest_published_set',
                     'no_local_product_source_artifacts',
+                    'runtime_evidence_emitted_by_published_image_probe',
+                    'caller_authored_scenario_json_rejected',
                     'findings_linked_for_non_pass_scenarios',
                 ],
                 'uncovered_required_scenario_outcome' => 'non_passing',
@@ -270,6 +291,8 @@ final class ChildWorkflowRuntimeContract
                 'published_artifact_runner' => 'scripts/conformance/child-workflows-published-artifacts.sh',
                 'must_probe_runtime_published_surfaces' => true,
                 'must_emit_result_for_every_required_scenario' => true,
+                'must_generate_evidence_internally' => true,
+                'caller_authored_pass_json_allowed' => false,
                 'smoke_summary_only_outcome' => 'non_passing',
                 'unexecuted_required_scenario_status' => 'not_covered',
                 'coverage_gap_finding_type' => 'conformance_runner_coverage_gap',
@@ -281,6 +304,7 @@ final class ChildWorkflowRuntimeContract
                     'cross-language-parent-child-shard',
                     'failure-round-trip-shard',
                     'cancellation-propagation-shard',
+                    'parent-close-policy-shard',
                     'replay-restart-shard',
                     'fan-out-concurrency-shard',
                     'namespace-behavior-shard',
@@ -313,6 +337,7 @@ final class ChildWorkflowRuntimeContract
                         'cross-language-parent-child-shard',
                         'failure-round-trip-shard',
                         'cancellation-propagation-shard',
+                        'parent-close-policy-shard',
                         'replay-restart-shard',
                         'fan-out-concurrency-shard',
                         'namespace-behavior-shard',
