@@ -16,7 +16,7 @@ final class SignalQueryRuntimeContract
 {
     public const SCHEMA = 'durable-workflow.v2.signal-query-runtime.contract';
 
-    public const VERSION = 30;
+    public const VERSION = 32;
 
     public const RESULT_SCHEMA = 'durable-workflow.v2.signal-query-runtime.result';
 
@@ -297,6 +297,9 @@ final class SignalQueryRuntimeContract
                         'default_codec',
                         'payload_codec',
                         'rust_query_results',
+                        'rust_query_observed_values',
+                        'prefix_consistent_query_results',
+                        'query_result_rollback_free',
                         'repeat_query_consistency',
                     ],
                 ],

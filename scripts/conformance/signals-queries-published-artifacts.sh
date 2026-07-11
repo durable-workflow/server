@@ -5205,17 +5205,21 @@ def run_rust_matrix_probe(
             if not public_sample_ok(signal):
                 raise RuntimeError(f"Rust client could not signal PHP workflow: {signal}")
             values.append(amount)
+        query_samples: list[dict[str, Any]] = []
         query = wait_for_query_result(
             label="Rust client query against PHP worker", expected=sum(values), log_file=log_file,
             sample_factory=lambda: rust_client_sample(
                 project_dir, base_url, token, namespace, php_queue,
                 "query", workflow_id, "current", [], log_file,
             ),
+            observed_samples=query_samples,
         )
         repeat = rust_client_sample(
             project_dir, base_url, token, namespace, php_queue,
             "query", workflow_id, "current", [], log_file,
         )
+        query_samples.append(repeat)
+        observed_values = integer_query_observations(query_samples)
         outputs = {
             **provenance,
             "worker_runtime": "workflow-php",
@@ -5223,6 +5227,12 @@ def run_rust_matrix_probe(
             "default_codec": query.get("default_codec"),
             "payload_codec": query.get("payload_codec"),
             "rust_query_results": [sample_result_value(query), sample_result_value(repeat)],
+            "rust_query_observed_values": observed_values,
+            "prefix_consistent_query_results": increment_query_observations_are_prefix_consistent(
+                observed_values,
+                values,
+            ),
+            "query_result_rollback_free": increment_query_observations_are_rollback_free(observed_values),
             "repeat_query_consistency": sample_result_value(query) == sample_result_value(repeat),
         }
         scenarios["php_worker_rust_client"] = {
@@ -5444,12 +5454,15 @@ def wait_for_query_result(
     timeout_seconds: float = 60.0,
     last_sample_holder: dict[str, Any] | None = None,
     last_sample_key: str | None = None,
+    observed_samples: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     deadline = time.time() + timeout_seconds
     last_sample: dict[str, Any] | None = None
     while time.time() < deadline:
         sample = sample_factory()
         last_sample = sample
+        if observed_samples is not None:
+            observed_samples.append(sample)
         if last_sample_holder is not None and last_sample_key is not None:
             last_sample_holder[last_sample_key] = sample
         if public_sample_ok(sample) and sample_result_value(sample) == expected:
@@ -5458,6 +5471,34 @@ def wait_for_query_result(
 
     log_line(log_file, f"{label} last sample: {last_sample}")
     raise RuntimeError(f"{label} did not return {expected!r} within {timeout_seconds}s")
+
+
+def integer_query_observations(samples: list[dict[str, Any]]) -> list[int]:
+    values: list[int] = []
+    for sample in samples:
+        if not public_sample_ok(sample):
+            continue
+        value = sample_result_value(sample)
+        if isinstance(value, int) and not isinstance(value, bool):
+            values.append(value)
+    return values
+
+
+def increment_query_observations_are_prefix_consistent(
+    observed_values: list[int],
+    increments: list[int],
+) -> bool:
+    prefixes = [0]
+    for amount in increments:
+        prefixes.append(prefixes[-1] + amount)
+    return bool(observed_values) and all(value in prefixes for value in observed_values)
+
+
+def increment_query_observations_are_rollback_free(observed_values: list[int]) -> bool:
+    return bool(observed_values) and all(
+        current >= previous
+        for previous, current in zip(observed_values, observed_values[1:])
+    )
 
 
 def install_evidence_for_artifacts(
@@ -9138,6 +9179,9 @@ SCENARIO_REQUIRED_EVIDENCE: dict[str, list[str]] = {
         "default_codec",
         "payload_codec",
         "rust_query_results",
+        "rust_query_observed_values",
+        "prefix_consistent_query_results",
+        "query_result_rollback_free",
         "repeat_query_consistency",
     ],
     "rust_query_error_and_immutability": [
@@ -9322,6 +9366,8 @@ TRUTHY_REQUIRED_EVIDENCE = {
     "wire_envelope_compatibility",
     "comparison.run_status_matches_public_clients",
     "comparison.counter_state_matches_public_clients",
+    "prefix_consistent_query_results",
+    "query_result_rollback_free",
     "repeat_query_consistency",
     "successful_queries_appended_no_history",
     "successful_queries_emitted_no_workflow_commands",

@@ -14,7 +14,7 @@ class SignalQueryRuntimeContractTest extends TestCase
         $manifest = SignalQueryRuntimeContract::manifest();
 
         $this->assertSame('durable-workflow.v2.signal-query-runtime.contract', $manifest['schema']);
-        $this->assertSame(30, SignalQueryRuntimeContract::VERSION);
+        $this->assertSame(32, SignalQueryRuntimeContract::VERSION);
         $this->assertSame(SignalQueryRuntimeContract::VERSION, $manifest['version']);
         $this->assertSame('durable-workflow.v2.signal-query-runtime.result', $manifest['result_schema']);
         $this->assertSame('signal_query_runtime_contract', $manifest['fixture_category']);
@@ -170,6 +170,22 @@ class SignalQueryRuntimeContractTest extends TestCase
             ['rejected_unknown_query'],
             $requirements['rust_replayed_instance_state_query_after_cold_restart']['failed_query_allowed_reasons'],
         );
+    }
+
+    public function test_rust_client_scenario_evidence_requirements_match_the_host_runner(): void
+    {
+        $runnerRequirements = $this->runSignalQueryRunnerPythonSnippet(<<<'PY'
+print(json.dumps(SCENARIO_REQUIRED_EVIDENCE))
+PY);
+        $manifestRequirements = SignalQueryRuntimeContract::manifest()['scenario_requirements'];
+
+        foreach (['python_worker_rust_client', 'php_worker_rust_client'] as $scenario) {
+            $this->assertSame(
+                $manifestRequirements[$scenario]['evidence'],
+                $runnerRequirements[$scenario],
+                "Evidence requirements differ for {$scenario}.",
+            );
+        }
     }
 
     public function test_manifest_keeps_smoke_only_coverage_non_passing(): void
@@ -360,7 +376,7 @@ class SignalQueryRuntimeContractTest extends TestCase
         $resultGate = SignalQueryRuntimeContract::manifest()['result_gate'];
 
         $this->assertSame(SignalQueryRuntimeResultGate::SCHEMA, $resultGate['schema']);
-        $this->assertSame(26, SignalQueryRuntimeResultGate::VERSION);
+        $this->assertSame(27, SignalQueryRuntimeResultGate::VERSION);
         $this->assertSame(SignalQueryRuntimeResultGate::VERSION, $resultGate['version']);
         $this->assertSame(
             SignalQueryRuntimeContract::RESULT_SCHEMA,
@@ -2595,6 +2611,43 @@ PY);
             $result['cli_operations'],
         );
         $this->assertFalse($result['has_probe_error']);
+    }
+
+    public function test_php_rust_query_probe_grades_every_observed_answer(): void
+    {
+        $result = $this->runSignalQueryRunnerPythonSnippet(<<<'PY'
+prefix_samples = [
+    {"ok": True, "result": 4},
+    {"ok": True, "result": 10},
+    {"ok": True, "result": 10},
+]
+impossible_samples = [
+    {"ok": True, "result": 14},
+    {"ok": True, "result": 10},
+    {"ok": True, "result": 10},
+]
+prefix_values = integer_query_observations(prefix_samples)
+impossible_values = integer_query_observations(impossible_samples)
+
+print(json.dumps({
+    "prefix_values": prefix_values,
+    "prefix_consistent": increment_query_observations_are_prefix_consistent(prefix_values, [4, 6]),
+    "prefix_rollback_free": increment_query_observations_are_rollback_free(prefix_values),
+    "impossible_values": impossible_values,
+    "impossible_prefix_consistent": increment_query_observations_are_prefix_consistent(
+        impossible_values,
+        [4, 6],
+    ),
+    "impossible_rollback_free": increment_query_observations_are_rollback_free(impossible_values),
+}, sort_keys=True))
+PY);
+
+        $this->assertSame([4, 10, 10], $result['prefix_values']);
+        $this->assertTrue($result['prefix_consistent']);
+        $this->assertTrue($result['prefix_rollback_free']);
+        $this->assertSame([14, 10, 10], $result['impossible_values']);
+        $this->assertFalse($result['impossible_prefix_consistent']);
+        $this->assertFalse($result['impossible_rollback_free']);
     }
 
     public function test_baseline_probe_external_worker_contract_declares_current_query(): void
@@ -6179,6 +6232,9 @@ PY);
             'default_codec' => 'avro',
             'payload_codec' => 'avro',
             'rust_query_results' => [10, 10],
+            'rust_query_observed_values' => [4, 10, 10],
+            'prefix_consistent_query_results' => true,
+            'query_result_rollback_free' => true,
             'repeat_query_consistency' => true,
         ];
         $scenarioResults['rust_query_error_and_immutability']['observed_outputs'] = [
