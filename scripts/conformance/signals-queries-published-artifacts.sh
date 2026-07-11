@@ -54,6 +54,9 @@ Environment overrides:
                                              Defaults to durableworkflow/server:<DW_SERVER_VERSION> so pdo_mysql
                                              is available when observing a MySQL-backed server.
   DW_SIGNALS_QUERIES_KEEP_RUN_ROOT          Set to 1 to keep the adversarial shard scratch directory.
+  DW_SIGNALS_QUERIES_CLEANUP_TERMINATION_READY_FILE
+                                             Regression-only checkpoint written after every bind-mounted
+                                             runtime path is populated; the runner then waits for termination.
 USAGE
 }
 
@@ -100,20 +103,22 @@ started_at="$(timestamp)"
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 repo_root="$(cd "$script_dir/../.." && pwd)"
 
-RESULT_DIR="$result_dir" \
-STARTED_AT="$started_at" \
-REPO_ROOT="$repo_root" \
-DW_SERVER_VERSION="${DW_SERVER_VERSION:-unresolved}" \
-DW_CLI_VERSION="${DW_CLI_VERSION:-unresolved}" \
-DW_PYTHON_SDK_VERSION="${DW_PYTHON_SDK_VERSION:-unresolved}" \
-DW_RUST_SDK_VERSION="${DW_RUST_SDK_VERSION:-unresolved}" \
-DW_WORKFLOW_PHP_VERSION="${DW_WORKFLOW_PHP_VERSION:-unresolved}" \
-DW_WATERLINE_VERSION="${DW_WATERLINE_VERSION:-unresolved}" \
-DW_SIGNALS_QUERIES_EVIDENCE="${DW_SIGNALS_QUERIES_EVIDENCE:-${DW_SIGNALS_QUERIES_SMOKE_EVIDENCE:-}}" \
-DW_SIGNALS_QUERIES_SMOKE_EVIDENCE="${DW_SIGNALS_QUERIES_SMOKE_EVIDENCE:-}" \
-python3 - <<'PY'
+exec env \
+  RESULT_DIR="$result_dir" \
+  STARTED_AT="$started_at" \
+  REPO_ROOT="$repo_root" \
+  DW_SERVER_VERSION="${DW_SERVER_VERSION:-unresolved}" \
+  DW_CLI_VERSION="${DW_CLI_VERSION:-unresolved}" \
+  DW_PYTHON_SDK_VERSION="${DW_PYTHON_SDK_VERSION:-unresolved}" \
+  DW_RUST_SDK_VERSION="${DW_RUST_SDK_VERSION:-unresolved}" \
+  DW_WORKFLOW_PHP_VERSION="${DW_WORKFLOW_PHP_VERSION:-unresolved}" \
+  DW_WATERLINE_VERSION="${DW_WATERLINE_VERSION:-unresolved}" \
+  DW_SIGNALS_QUERIES_EVIDENCE="${DW_SIGNALS_QUERIES_EVIDENCE:-${DW_SIGNALS_QUERIES_SMOKE_EVIDENCE:-}}" \
+  DW_SIGNALS_QUERIES_SMOKE_EVIDENCE="${DW_SIGNALS_QUERIES_SMOKE_EVIDENCE:-}" \
+  python3 - <<'PY'
 from __future__ import annotations
 
+import atexit
 import base64
 import hashlib
 import io
@@ -121,6 +126,7 @@ import json
 import math
 import os
 import re
+import signal
 import shutil
 import socket
 import subprocess
@@ -322,6 +328,233 @@ def run_command(
     if completed.stderr:
         log_line(log_file, "stderr " + completed.stderr.strip())
     return completed
+
+
+ACTIVE_COMPOSE_PROJECTS: dict[str, tuple[Path, dict[str, str], Path]] = {}
+ACTIVE_CONTAINER_NAMES: dict[str, Path] = {}
+ACTIVE_SCRATCH_ROOTS: dict[Path, Path] = {}
+DOCKER_RUN_RESOURCE_LABEL = f"com.durableworkflow.conformance.run=signals-queries-{os.getpid()}-{time.time_ns()}"
+DOCKER_RUN_COMMAND_BUILT = False
+
+
+class ConformanceCleanupError(RuntimeError):
+    pass
+
+
+def docker_host_user_options() -> list[str]:
+    """Keep every bind-mounted output owned by the invoking host identity."""
+    return [
+        "--user",
+        f"{os.getuid()}:{os.getgid()}",
+        "-e",
+        "HOME=/tmp/dw-home",
+        "-e",
+        "COMPOSER_HOME=/tmp/dw-composer",
+        "-e",
+        "CARGO_HOME=/tmp/dw-cargo",
+    ]
+
+
+def docker_run_resource_options() -> list[str]:
+    global DOCKER_RUN_COMMAND_BUILT
+    DOCKER_RUN_COMMAND_BUILT = True
+    return [
+        *docker_host_user_options(),
+        "--label",
+        DOCKER_RUN_RESOURCE_LABEL,
+    ]
+
+
+def register_scratch_root(path: Path, log_file: Path) -> None:
+    if not env_flag("DW_SIGNALS_QUERIES_KEEP_RUN_ROOT", False):
+        ACTIVE_SCRATCH_ROOTS[path] = log_file
+
+
+def remove_scratch_root(path: Path) -> None:
+    if path.exists() or path.is_symlink():
+        shutil.rmtree(path)
+    if path.exists() or path.is_symlink():
+        raise ConformanceCleanupError(f"scratch root still exists after removal: {path}")
+    ACTIVE_SCRATCH_ROOTS.pop(path, None)
+
+
+def register_container(container_name: str, log_file: Path) -> None:
+    ACTIVE_CONTAINER_NAMES[container_name] = log_file
+
+
+def cleanup_container(container_name: str, log_file: Path) -> None:
+    removal = run_command(
+        ["docker", "rm", "-f", container_name],
+        log_file=log_file,
+        timeout=60,
+    )
+    inspect = run_command(
+        ["docker", "inspect", container_name],
+        log_file=log_file,
+        timeout=30,
+    )
+    if inspect.returncode == 0:
+        raise ConformanceCleanupError(
+            f"container still exists after removal: {container_name}; rm exit={removal.returncode}"
+        )
+    ACTIVE_CONTAINER_NAMES.pop(container_name, None)
+
+
+def cleanup_labeled_docker_runs(log_file: Path) -> None:
+    if not DOCKER_RUN_COMMAND_BUILT or not command_available("docker"):
+        return
+    listed = run_command(
+        ["docker", "container", "ls", "-a", "-q", "--filter", f"label={DOCKER_RUN_RESOURCE_LABEL}"],
+        log_file=log_file,
+        timeout=30,
+    )
+    if listed.returncode != 0:
+        raise ConformanceCleanupError("could not enumerate labeled signals/queries Docker runs")
+    containers = [line.strip() for line in listed.stdout.splitlines() if line.strip()]
+    if containers:
+        run_command(["docker", "rm", "-f", *containers], log_file=log_file, timeout=120)
+    verify = run_command(
+        ["docker", "container", "ls", "-a", "-q", "--filter", f"label={DOCKER_RUN_RESOURCE_LABEL}"],
+        log_file=log_file,
+        timeout=30,
+    )
+    if verify.returncode != 0 or verify.stdout.strip():
+        raise ConformanceCleanupError(
+            f"labeled signals/queries Docker runs remain after cleanup: {verify.stdout.strip()}"
+        )
+
+
+def register_compose_project(
+    project: str,
+    compose: Path,
+    env: dict[str, str],
+    log_file: Path,
+) -> None:
+    # Registration precedes `compose up`, so partial setup and interruption are covered.
+    ACTIVE_COMPOSE_PROJECTS[project] = (compose, dict(env), log_file)
+
+
+def docker_project_resources(kind: str, project: str, log_file: Path) -> list[str]:
+    command = [
+        "docker",
+        kind,
+        "ls",
+        "-q",
+        "--filter",
+        f"label=com.docker.compose.project={project}",
+    ]
+    if kind == "container":
+        command.insert(3, "-a")
+    listed = run_command(command, log_file=log_file, timeout=30)
+    if listed.returncode != 0:
+        raise ConformanceCleanupError(
+            f"could not enumerate {kind} resources for Compose project {project}"
+        )
+    return [line.strip() for line in listed.stdout.splitlines() if line.strip()]
+
+
+def cleanup_compose_project(project: str) -> None:
+    registered = ACTIVE_COMPOSE_PROJECTS.get(project)
+    if registered is None:
+        return
+    compose, env, log_file = registered
+    prefix = ["docker", "compose", "-p", project, "-f", str(compose)]
+
+    # Exact label-scoped fallback removal handles partial projects and interrupted down calls.
+    run_command(
+        [*prefix, "down", "-v", "--remove-orphans"],
+        log_file=log_file,
+        env=env,
+        timeout=180,
+    )
+    remaining: dict[str, list[str]] = {}
+    for _attempt in range(2):
+        containers = docker_project_resources("container", project, log_file)
+        if containers:
+            run_command(["docker", "rm", "-f", *containers], log_file=log_file, timeout=120)
+
+        volumes = docker_project_resources("volume", project, log_file)
+        if volumes:
+            run_command(["docker", "volume", "rm", "-f", *volumes], log_file=log_file, timeout=120)
+
+        networks = docker_project_resources("network", project, log_file)
+        if networks:
+            run_command(["docker", "network", "rm", *networks], log_file=log_file, timeout=120)
+
+        remaining = {
+            kind: docker_project_resources(kind, project, log_file)
+            for kind in ("container", "volume", "network")
+        }
+        if not any(remaining.values()):
+            ACTIVE_COMPOSE_PROJECTS.pop(project, None)
+            return
+
+    raise ConformanceCleanupError(
+        f"Compose project resources remain after cleanup: {project}: {remaining}"
+    )
+
+
+def cleanup_commands_deterministically(commands: list[list[str]]) -> None:
+    for command in commands:
+        try:
+            project = command[command.index("-p") + 1]
+        except (ValueError, IndexError):
+            raise ConformanceCleanupError(f"cleanup command does not identify a Compose project: {command}")
+        cleanup_compose_project(project)
+
+
+def cleanup_registered_resources() -> None:
+    failures: list[str] = []
+    cleanup_log = Path(os.devnull)
+    if ACTIVE_SCRATCH_ROOTS:
+        cleanup_log = next(iter(ACTIVE_SCRATCH_ROOTS.values()))
+    if ACTIVE_COMPOSE_PROJECTS:
+        cleanup_log = next(iter(ACTIVE_COMPOSE_PROJECTS.values()))[2]
+    if ACTIVE_CONTAINER_NAMES:
+        cleanup_log = next(iter(ACTIVE_CONTAINER_NAMES.values()))
+    if DOCKER_RUN_COMMAND_BUILT:
+        try:
+            cleanup_labeled_docker_runs(cleanup_log)
+        except Exception as exc:  # noqa: BLE001 - finish every exact cleanup before reporting.
+            failures.append(f"labeled Docker runs: {type(exc).__name__}: {exc}")
+    for container_name, log_file in list(ACTIVE_CONTAINER_NAMES.items())[::-1]:
+        try:
+            cleanup_container(container_name, log_file)
+        except Exception as exc:  # noqa: BLE001 - finish every exact cleanup before reporting.
+            failures.append(f"container {container_name}: {type(exc).__name__}: {exc}")
+    for project in list(ACTIVE_COMPOSE_PROJECTS)[::-1]:
+        try:
+            cleanup_compose_project(project)
+        except Exception as exc:  # noqa: BLE001 - finish every exact cleanup before reporting.
+            failures.append(f"Compose project {project}: {type(exc).__name__}: {exc}")
+    for path in list(ACTIVE_SCRATCH_ROOTS)[::-1]:
+        try:
+            remove_scratch_root(path)
+        except Exception as exc:  # noqa: BLE001 - finish every exact cleanup before reporting.
+            failures.append(f"scratch root {path}: {type(exc).__name__}: {exc}")
+    if failures:
+        raise ConformanceCleanupError("; ".join(failures))
+
+
+def emergency_cleanup() -> None:
+    try:
+        cleanup_registered_resources()
+    except Exception as exc:  # noqa: BLE001 - cleanup may not fail silently at process exit.
+        print(f"signals/queries conformance cleanup failed: {type(exc).__name__}: {exc}", file=sys.stderr)
+        sys.stderr.flush()
+        os._exit(1)
+
+
+def terminate_after_cleanup(signum: int, _frame: Any) -> None:
+    # Ignore repeat termination while Python unwinds its `finally` blocks and atexit cleanup.
+    signal.signal(signal.SIGTERM, signal.SIG_IGN)
+    signal.signal(signal.SIGINT, signal.SIG_IGN)
+    raise SystemExit(128 + signum)
+
+
+atexit.register(emergency_cleanup)
+signal.signal(signal.SIGTERM, terminate_after_cleanup)
+signal.signal(signal.SIGINT, terminate_after_cleanup)
 
 
 class ServerReadinessTopologyError(RuntimeError):
@@ -855,6 +1088,7 @@ def start_published_server(run_root: Path, log_file: Path) -> tuple[str, list[li
     ]
     cleanup_command = commands[0]
 
+    register_compose_project(project, compose, env, log_file)
     run_command(commands[0], log_file=log_file, env=env, timeout=120)
     up = run_command(commands[1], log_file=log_file, env=env, timeout=240)
     if up.returncode != 0:
@@ -1212,6 +1446,7 @@ def php_docker_command(
 
     command.extend(
         [
+            *docker_run_resource_options(),
             "--add-host",
             "host.docker.internal:host-gateway",
             "-v",
@@ -4546,6 +4781,7 @@ def rust_probe_docker_command(
     else:
         command.append("--rm")
     command.extend([
+        *docker_run_resource_options(),
         "--add-host",
         "host.docker.internal:host-gateway",
         "-v",
@@ -4779,6 +5015,7 @@ def start_rust_probe_worker(
     log_file: Path,
 ) -> dict[str, Any]:
     run_command(["docker", "rm", "-f", container_name], log_file=log_file, timeout=30)
+    register_container(container_name, log_file)
     command = rust_probe_docker_command(
         project_dir,
         ["/app/target/release/signals-queries-published-probe", "worker", model],
@@ -4804,7 +5041,7 @@ def start_rust_probe_worker(
         )
     except Exception:
         capture_command_summary(["docker", "logs", container_name], log_file=log_file, timeout=30)
-        run_command(["docker", "rm", "-f", container_name], log_file=log_file, timeout=30)
+        cleanup_container(container_name, log_file)
         raise
     inspect = run_command(
         ["docker", "inspect", "-f", "{{.Id}}:{{.State.Pid}}", container_name],
@@ -4820,7 +5057,7 @@ def start_rust_probe_worker(
 
 def stop_rust_probe_worker(container_name: str, log_file: Path) -> None:
     capture_command_summary(["docker", "logs", container_name], log_file=log_file, timeout=30)
-    run_command(["docker", "rm", "-f", container_name], log_file=log_file, timeout=30)
+    cleanup_container(container_name, log_file)
 
 
 def wait_for_history_signals(
@@ -5717,6 +5954,7 @@ def run_rust_matrix_probe(
         checkpoint=checkpoint,
         log_file=log_file,
     ):
+        register_container(php_container, log_file)
         php_start = run_command(
             php_docker_command(
                 workflow_php_project,
@@ -7126,6 +7364,7 @@ def run_workflow_php_baseline(
         "log_file": log_file.name,
     }
 
+    register_container(container_name, log_file)
     start = run_command(
         php_docker_command(
             workflow_php_project,
@@ -7367,7 +7606,7 @@ def run_workflow_php_baseline(
         return outputs, descriptor
     finally:
         capture_command_summary(["docker", "logs", container_name], log_file=log_file, timeout=60)
-        run_command(["docker", "rm", "-f", container_name], log_file=log_file, timeout=60)
+        cleanup_container(container_name, log_file)
 
 
 def probe_error_payload(exc: Exception) -> dict[str, Any]:
@@ -7405,6 +7644,7 @@ def run_baseline_probe(result_dir: Path) -> tuple[dict[str, Any] | None, dict[st
     )
     run_root.mkdir(parents=True, exist_ok=True)
     log_file = result_dir / "signals-queries-baseline-probe.log"
+    register_scratch_root(run_root, log_file)
     cleanup_commands: list[list[str]] = []
 
     namespace = (
@@ -8422,10 +8662,10 @@ def run_baseline_probe(result_dir: Path) -> tuple[dict[str, Any] | None, dict[st
             "partial_cell_evidence_preserved": partial_evidence is not None,
         }
     finally:
-        for command in cleanup_commands:
-            run_command(command, log_file=log_file, timeout=120)
+        cleanup_labeled_docker_runs(log_file)
+        cleanup_commands_deterministically(cleanup_commands)
         if not env_flag("DW_SIGNALS_QUERIES_KEEP_RUN_ROOT", False):
-            shutil.rmtree(run_root, ignore_errors=True)
+            remove_scratch_root(run_root)
 
 
 def run_adversarial_probe(result_dir: Path, current_evidence: Any) -> tuple[dict[str, Any] | None, dict[str, Any] | None]:
@@ -8438,6 +8678,7 @@ def run_adversarial_probe(result_dir: Path, current_evidence: Any) -> tuple[dict
     )
     run_root.mkdir(parents=True, exist_ok=True)
     log_file = result_dir / "signals-queries-adversarial-probe.log"
+    register_scratch_root(run_root, log_file)
     cleanup_commands: list[list[str]] = []
 
     namespace = (
@@ -8881,10 +9122,10 @@ def run_adversarial_probe(result_dir: Path, current_evidence: Any) -> tuple[dict
             "error": f"{type(exc).__name__}: {exc}",
         }
     finally:
-        for command in cleanup_commands:
-            run_command(command, log_file=log_file, timeout=120)
+        cleanup_labeled_docker_runs(log_file)
+        cleanup_commands_deterministically(cleanup_commands)
         if not env_flag("DW_SIGNALS_QUERIES_KEEP_RUN_ROOT", False):
-            shutil.rmtree(run_root, ignore_errors=True)
+            remove_scratch_root(run_root)
 
 
 def merge_probe_evidence(base: Any, probe: dict[str, Any]) -> dict[str, Any]:
@@ -9166,6 +9407,7 @@ def docker_run_for_project(
         "docker",
         "run",
         "--rm",
+        *docker_run_resource_options(),
     ]
     if entrypoint is not None:
         docker_command.extend(["--entrypoint", entrypoint])
@@ -9256,7 +9498,7 @@ def waterline_query_responder_inputs(public_evidence: dict[str, Any]) -> dict[st
     }
 
 
-def run_waterline_observer_probe(
+def _run_waterline_observer_probe(
     result_dir: Path,
     current_evidence: Any,
     server_topology: dict[str, Any] | None = None,
@@ -9332,6 +9574,15 @@ def run_waterline_observer_probe(
             reason="Laravel app creation failed before Waterline observer shard execution.",
             blocker_kind="waterline_create_project",
         ), {"error": "waterline_create_project", "log_file": log_file.name}
+
+    termination_ready_file = env_text("DW_SIGNALS_QUERIES_CLEANUP_TERMINATION_READY_FILE")
+    if termination_ready_file is not None:
+        checkpoint = Path(termination_ready_file)
+        checkpoint.parent.mkdir(parents=True, exist_ok=True)
+        checkpoint.write_text(DOCKER_RUN_RESOURCE_LABEL + "\n", encoding="utf-8")
+        log_line(log_file, f"cleanup termination regression ready at {checkpoint}")
+        while checkpoint.exists():
+            time.sleep(0.1)
 
     (waterline_root / "database").mkdir(parents=True, exist_ok=True)
     (waterline_root / "database" / "database.sqlite").touch()
@@ -9546,6 +9797,22 @@ def run_waterline_observer_probe(
         },
     }
     return waterline_report if isinstance(waterline_report, dict) else None, descriptor
+
+
+def run_waterline_observer_probe(
+    result_dir: Path,
+    current_evidence: Any,
+    server_topology: dict[str, Any] | None = None,
+) -> tuple[dict[str, Any] | None, dict[str, Any] | None]:
+    waterline_root = result_dir / "waterline-signals-queries-observer"
+    log_file = result_dir / "waterline-signals-queries-observer.log"
+    register_scratch_root(waterline_root, log_file)
+    try:
+        return _run_waterline_observer_probe(result_dir, current_evidence, server_topology)
+    finally:
+        cleanup_labeled_docker_runs(log_file)
+        if not env_flag("DW_SIGNALS_QUERIES_KEEP_RUN_ROOT", False):
+            remove_scratch_root(waterline_root)
 
 
 MISSING = object()

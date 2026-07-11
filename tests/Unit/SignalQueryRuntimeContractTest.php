@@ -955,6 +955,88 @@ PY);
         }
     }
 
+    public function test_host_runner_keeps_bind_mounts_host_owned_and_registers_cleanup_before_startup(): void
+    {
+        $source = (string) file_get_contents(
+            dirname(__DIR__, 2) . '/scripts/conformance/signals-queries-published-artifacts.sh',
+        );
+
+        foreach ([
+            'f"{os.getuid()}:{os.getgid()}"',
+            '*docker_host_user_options()',
+            'register_compose_project(project, compose, env, log_file)',
+            'cleanup_commands_deterministically(cleanup_commands)',
+            'docker_project_resources("container", project, log_file)',
+            'docker_project_resources("volume", project, log_file)',
+            'docker_project_resources("network", project, log_file)',
+            'signal.signal(signal.SIGTERM, terminate_after_cleanup)',
+            'cleanup_labeled_docker_runs(log_file)',
+            'remove_scratch_root(run_root)',
+            'remove_scratch_root(waterline_root)',
+        ] as $needle) {
+            $this->assertStringContainsString($needle, $source);
+        }
+
+        $registration = strpos($source, 'register_compose_project(project, compose, env, log_file)');
+        $startup = strpos($source, 'up = run_command(commands[1]');
+        $this->assertNotFalse($registration);
+        $this->assertNotFalse($startup);
+        $this->assertLessThan($startup, $registration);
+        $this->assertStringNotContainsString('shutil.rmtree(run_root, ignore_errors=True)', $source);
+    }
+
+    public function test_cleanup_regression_terminates_a_populated_isolated_run_and_checks_exact_resources(): void
+    {
+        $script = dirname(__DIR__, 2) . '/scripts/conformance/signals-queries-cleanup-regression.sh';
+        $source = (string) file_get_contents($script);
+
+        $this->assertFileIsExecutable($script);
+        foreach ([
+            'DW_SIGNALS_QUERIES_CLEANUP_TERMINATION_READY_FILE="$ready_file"',
+            '"$run_root/workflow-php/vendor"',
+            '"$run_root/sdk-rust/target"',
+            '"$result_dir/waterline-signals-queries-observer/vendor"',
+            'kill -TERM "$runner_pid"',
+            'docker "$kind" "${list_args[@]}"',
+            'docker container ls -a -q --filter "label=$resource_label"',
+            '! -uid "$(id -u)"',
+            'rm -rf "$scratch"',
+            '"runtime_resources_remaining":0',
+        ] as $needle) {
+            $this->assertStringContainsString($needle, $source);
+        }
+    }
+
+    public function test_every_bind_mounted_runtime_command_maps_the_invoking_user(): void
+    {
+        $result = $this->runSignalQueryRunnerPythonSnippet(<<<'PY'
+artifact_versions = {
+    "server": "0.2.634",
+    "workflow-php": "2.0.0-alpha.213",
+}
+project = Path("/tmp/signals-queries-host-ownership-contract")
+commands = {
+    "php": php_docker_command(project, ["install"]),
+    "rust": rust_probe_docker_command(project, ["cargo", "build"]),
+    "waterline": docker_run_for_project(project, ["php", "artisan", "list"]),
+}
+identity = f"{os.getuid()}:{os.getgid()}"
+print(json.dumps({
+    name: {
+        "user": command[command.index("--user") + 1],
+        "identity": identity,
+        "mount": docker_volume_spec(project) in command,
+    }
+    for name, command in commands.items()
+}, sort_keys=True))
+PY);
+
+        foreach (['php', 'rust', 'waterline'] as $runtime) {
+            $this->assertSame($result[$runtime]['identity'], $result[$runtime]['user'], $runtime);
+            $this->assertTrue($result[$runtime]['mount'], $runtime);
+        }
+    }
+
     public function test_host_runner_executes_the_exact_published_rust_matrix(): void
     {
         $runner = (string) file_get_contents(
