@@ -544,6 +544,7 @@ async function main() {
   );
   if (foundationPlanEvidence !== null) {
     evidence = mergeEvidenceObjects(foundationPlanEvidence, evidence);
+    evidence = preferFocusedFoundationScheduleEvidence(evidence, foundationPlanEvidence);
     evidence = preferFocusedFoundationWorkerEvidence(evidence, foundationPlanEvidence);
   }
   let storageSmoke = normalizeStorageSmoke(evidence);
@@ -5230,6 +5231,44 @@ function preferFocusedFoundationWorkerEvidence(evidence, foundationEvidence) {
   return preferred;
 }
 
+function preferFocusedFoundationScheduleEvidence(evidence, foundationEvidence) {
+  const scenarioId = 'new_v2_schedule_after_upgrade';
+  const focusedScenario = scenarioResultsById(foundationEvidence)[scenarioId];
+  if (!focusedScenario) {
+    return evidence;
+  }
+
+  const preferred = { ...objectValue(evidence) };
+  preferred.scenario_results = {
+    ...scenarioResultsById(evidence),
+    [scenarioId]: focusedScenario,
+  };
+  const focusedScheduleObservations = nonEmptyObject(
+    fieldValue(foundationEvidence, 'schedule_ticks'),
+  );
+  if (focusedScheduleObservations !== null) {
+    preferred.schedule_ticks = {
+      ...objectValue(fieldValue(evidence, 'schedule_ticks')),
+      ...focusedScheduleObservations,
+    };
+  }
+
+  const findingLinks = { ...objectValue(preferred.finding_links ?? preferred.findingLinks) };
+  const focusedLinks = arrayValue(
+    objectValue(foundationEvidence.finding_links ?? foundationEvidence.findingLinks)[scenarioId],
+  );
+  if (focusedLinks.length > 0) {
+    findingLinks[scenarioId] = focusedLinks;
+  } else {
+    delete findingLinks[scenarioId];
+  }
+  preferred.finding_links = findingLinks;
+  preferred.findings = arrayValue(preferred.findings)
+    .filter((finding) => stringValue(objectValue(finding).scenario_id) !== scenarioId);
+
+  return preferred;
+}
+
 function foundationPlanDisabled() {
   return ['0', 'false', 'no', 'off', 'disabled'].includes(foundationPlanMode);
 }
@@ -5325,6 +5364,12 @@ function executeFoundationPlan(
     'new_v2_worker_registration',
     'newV2WorkerRegistration',
   ]);
+  const newV2ScheduleSource = firstNonEmptyObject(plan, [
+    'new_v2_schedule_after_upgrade',
+    'newV2ScheduleAfterUpgrade',
+    'new_v2_schedule',
+    'newV2Schedule',
+  ]);
   const executedAt = timestamp();
   const v1Setup = buildFoundationV1SetupEvidence(
     v1SetupSource,
@@ -5361,12 +5406,22 @@ function executeFoundationPlan(
     source,
     defaults,
   );
+  const newV2Schedule = buildFoundationV2ScheduleEvidence(
+    newV2ScheduleSource,
+    source,
+    defaults,
+    {
+      postupgrade_state_observed: Object.keys(postupgradeSource).length > 0
+        && postupgradeSnapshot.status === 'pass',
+    },
+  );
   const anyCommandFailed = [
     v1Setup,
     migrationExecution,
     preupgradeSnapshot,
     postupgradeSnapshot,
     queueState,
+    newV2Schedule,
     newV2Worker,
   ].some((section) => section.commands_failed);
   const evidence = {
@@ -5445,6 +5500,25 @@ function executeFoundationPlan(
           commands_failed: newV2Worker.commands_failed,
           product_failures: newV2Worker.product_failures,
           runner_failures: newV2Worker.runner_failures,
+        },
+        resolvedArtifactVersions,
+        publishedArtifactVersions,
+        artifactSources,
+      ),
+    } : {}),
+    ...(Object.keys(newV2ScheduleSource).length > 0 ? {
+      schedule_ticks: foundationTopLevelObservation(
+        'schedule_ticks',
+        {
+          status: newV2Schedule.status,
+          source,
+          schedule_id: newV2Schedule.schedule_id,
+          workflow_id: newV2Schedule.workflow_id,
+          run_id: newV2Schedule.run_id,
+          request_response_evidence: newV2Schedule.request_response_evidence,
+          failure_classification: newV2Schedule.failure_classification,
+          observed_behavior: newV2Schedule.observed_behavior,
+          commands_failed: newV2Schedule.commands_failed,
         },
         resolvedArtifactVersions,
         publishedArtifactVersions,
@@ -5542,6 +5616,34 @@ function executeFoundationPlan(
           },
         },
       } : {}),
+      ...(Object.keys(newV2ScheduleSource).length > 0 ? {
+        new_v2_schedule_after_upgrade: {
+          scenario_id: 'new_v2_schedule_after_upgrade',
+          status: newV2Schedule.status,
+          started_at: newV2Schedule.started_at,
+          finished_at: newV2Schedule.finished_at,
+          observed_outputs: {
+            source,
+            local_product_source_checkouts_used: false,
+            create_request: newV2Schedule.create_request,
+            schedule_id: newV2Schedule.schedule_id,
+            workflow_id: newV2Schedule.workflow_id,
+            run_id: newV2Schedule.run_id,
+            schedule_list_json: newV2Schedule.schedule_list_json,
+            operator_api_response: newV2Schedule.operator_api_response,
+            typed_response_contracts: newV2Schedule.typed_response_contracts,
+            observed_ticks: newV2Schedule.observed_ticks,
+            schedule_history: newV2Schedule.schedule_history,
+            workflow_run: newV2Schedule.workflow_run,
+            request_response_evidence: newV2Schedule.request_response_evidence,
+            exit_codes: newV2Schedule.exit_codes,
+            timestamps: newV2Schedule.timestamps,
+            failure_classification: newV2Schedule.failure_classification,
+            observed_behavior: newV2Schedule.observed_behavior,
+            commands_failed: newV2Schedule.commands_failed,
+          },
+        },
+      } : {}),
     },
     ...(newV2Worker.runner_blocked ? {
       runner_blocked: true,
@@ -5549,7 +5651,7 @@ function executeFoundationPlan(
     } : {}),
   };
 
-  if (anyCommandFailed || newV2Worker.status === 'fail') {
+  if (anyCommandFailed || newV2Schedule.status === 'fail' || newV2Worker.status === 'fail') {
     evidence.finding_links = {
       latest_supported_v1_state_setup: v1Setup.commands_failed ? [
         foundationCommandFailureFinding(
@@ -5571,6 +5673,9 @@ function executeFoundationPlan(
           resolvedArtifactVersions,
           queueState.observed_behavior,
         ),
+      ] : [],
+      new_v2_schedule_after_upgrade: newV2Schedule.status === 'fail' ? [
+        foundationScheduleFinding(resolvedArtifactVersions, newV2Schedule),
       ] : [],
       new_v2_worker_registration_after_upgrade: newV2Worker.product_failures.length > 0 ? [
         foundationWorkerRegistrationFinding(
@@ -5701,6 +5806,475 @@ function buildFoundationQueueStateEvidence(source, v1Setup, evidenceSource, defa
           missingEvidence,
           evidenceSource,
         ),
+  };
+}
+
+function buildFoundationV2ScheduleEvidence(source, evidenceSource, defaults, prerequisites = {}) {
+  const schedule = objectValue(source);
+  const startedAt = timestamp();
+  if (Object.keys(schedule).length === 0) {
+    return {
+      status: 'not_covered',
+      started_at: startedAt,
+      finished_at: timestamp(),
+      schedule_id: '',
+      workflow_id: '',
+      run_id: '',
+      request_response_evidence: {},
+      failure_classification: emptyScheduleFailureClassification(),
+      commands_failed: false,
+      observed_behavior: 'No focused post-upgrade v2 schedule plan was supplied.',
+    };
+  }
+
+  const operation = (fields, name, endpoint) => executeWorkerRegistrationOperation(
+    firstNonEmptyObject(schedule, fields),
+    name,
+    endpoint,
+    defaults,
+  );
+  const operations = {
+    create: operation(
+      ['create_request', 'createRequest', 'schedule_create', 'scheduleCreate', 'create'],
+      'create',
+      'dw schedules create --schedule-id=<schedule-id> --output=json',
+    ),
+    cli_describe: operation(
+      ['schedule_list_json', 'scheduleListJson', 'cli_describe', 'cliDescribe', 'cli_projection', 'cliProjection'],
+      'cli_describe',
+      'dw schedules describe <schedule-id> --output=json',
+    ),
+    operator_api: operation(
+      ['operator_api_response', 'operatorApiResponse', 'operator_describe', 'operatorDescribe', 'api_projection', 'apiProjection'],
+      'operator_api',
+      'GET /api/schedules/{schedule_id}',
+    ),
+    trigger: operation(
+      ['trigger_response', 'triggerResponse', 'trigger_request', 'triggerRequest', 'trigger'],
+      'trigger',
+      'POST /api/schedules/{schedule_id}/trigger',
+    ),
+    history: operation(
+      ['schedule_history', 'scheduleHistory', 'history_response', 'historyResponse', 'history'],
+      'history',
+      'GET /api/schedules/{schedule_id}/history',
+    ),
+    workflow_run: operation(
+      ['workflow_run', 'workflowRun', 'run_response', 'runResponse', 'run_describe', 'runDescribe'],
+      'workflow_run',
+      'GET /api/workflows/{workflow_id}/runs/{run_id}',
+    ),
+  };
+  const createBody = workerOperationResponseBody(operations.create);
+  const cliBody = workerOperationResponseBody(operations.cli_describe);
+  const operatorBody = workerOperationResponseBody(operations.operator_api);
+  const triggerBody = workerOperationResponseBody(operations.trigger);
+  const historyBody = workerOperationResponseBody(operations.history);
+  const runBody = workerOperationResponseBody(operations.workflow_run);
+  const scheduleId = stringValue(schedule.schedule_id)
+    || stringValue(schedule.scheduleId)
+    || stringValue(objectValue(operations.create.request).schedule_id)
+    || stringValue(objectValue(operations.create.request).scheduleId)
+    || stringValue(objectValue(createBody).schedule_id)
+    || stringValue(objectValue(createBody).scheduleId);
+  const cliProjection = scheduleProjectionFor(cliBody, scheduleId);
+  const operatorProjection = scheduleProjectionFor(operatorBody, scheduleId);
+  const workflowId = stringValue(objectValue(triggerBody).workflow_id)
+    || stringValue(objectValue(triggerBody).workflowId);
+  const runId = stringValue(objectValue(triggerBody).run_id)
+    || stringValue(objectValue(triggerBody).runId);
+  const failureClassification = emptyScheduleFailureClassification();
+
+  if (prerequisites.postupgrade_state_observed !== true) {
+    failureClassification.setup.push(scheduleFailure(
+      'postupgrade_preservation_not_observed',
+      'create',
+      operations.create,
+      'The focused schedule cell requires a passing post-upgrade state snapshot before its target-runtime verdict can be accepted.',
+    ));
+  }
+  if (schedule.isolated_public_server_artifact !== true && schedule.isolatedPublicServerArtifact !== true) {
+    failureClassification.setup.push(scheduleFailure(
+      'isolated_public_server_artifact_not_attested',
+      'create',
+      operations.create,
+      'The focused schedule plan did not attest that its control-plane commands target an isolated published server artifact.',
+    ));
+  }
+
+  for (const [name, observation] of Object.entries(operations)) {
+    const classification = scheduleOperationFailureClass(name, observation);
+    if (classification !== '') {
+      failureClassification[classification].push(scheduleFailure(
+        `${classification}_operation_failure`,
+        name,
+        observation,
+        scheduleOperationFailureDetail(classification, name, observation),
+      ));
+    }
+  }
+
+  if (!scheduleFailureClassificationHasFailures(failureClassification)) {
+    const assertions = scheduleAssertionFailures({
+      scheduleId,
+      workflowId,
+      runId,
+      createBody,
+      cliProjection,
+      operatorProjection,
+      triggerBody,
+      historyBody,
+      runBody,
+      operations,
+    });
+    failureClassification.assertion.push(...assertions);
+  }
+
+  const commandsFailed = Object.values(operations)
+    .some((entry) => stringValue(entry.status) !== 'pass');
+  const status = scheduleFailureClassificationHasFailures(failureClassification) ? 'fail' : 'pass';
+  const finishedAt = timestamp();
+  const requestResponseEvidence = Object.fromEntries(
+    Object.entries(operations).map(([name, observation]) => [name, {
+      endpoint: observation.endpoint,
+      command: observation.command,
+      request: observation.request,
+      response: observation.response,
+      response_source: observation.response_source,
+      response_observed_from_command_stdout: observation.response_observed_from_command_stdout,
+      http_status: observation.http_status,
+      exit_code: observation.exit_code,
+      started_at: observation.started_at,
+      finished_at: observation.finished_at,
+      timed_out: observation.timed_out,
+      stderr: observation.stderr,
+    }]),
+  );
+  const exitCodes = Object.fromEntries(
+    Object.entries(operations).map(([name, observation]) => [name, observation.exit_code]),
+  );
+  const timestamps = Object.fromEntries(
+    Object.entries(operations).map(([name, observation]) => [name, {
+      started_at: observation.started_at,
+      finished_at: observation.finished_at,
+    }]),
+  );
+  const observedTicks = {
+    trigger_response: triggerBody,
+    schedule_history: historyBody,
+    workflow_run: runBody,
+    workflow_id: workflowId,
+    run_id: runId,
+  };
+
+  return {
+    status,
+    started_at: startedAt,
+    finished_at: finishedAt,
+    create_request: operations.create,
+    schedule_id: scheduleId,
+    workflow_id: workflowId,
+    run_id: runId,
+    schedule_list_json: operations.cli_describe,
+    operator_api_response: operations.operator_api,
+    typed_response_contracts: {
+      cli: {
+        type: 'schedule_cli_create_describe',
+        schema: 'durable-workflow.cli.schedule-create-describe.v2',
+        create_field_types: {
+          schedule_id: jsonType(objectValue(createBody).schedule_id),
+          outcome: jsonType(objectValue(createBody).outcome),
+        },
+        describe: typedScheduleProjectionContract('cli', cliProjection),
+      },
+      operator_api: typedScheduleProjectionContract('operator_api', operatorProjection),
+      schedule: {
+        type: 'postupgrade_schedule_execution',
+        schema: 'durable-workflow.schedule-execution.v2',
+        schedule_id: jsonType(scheduleId),
+        workflow_id: jsonType(workflowId),
+        run_id: jsonType(runId),
+        trigger_response: jsonType(triggerBody),
+        history_response: jsonType(historyBody),
+        workflow_run_response: jsonType(runBody),
+      },
+    },
+    observed_ticks: observedTicks,
+    schedule_history: operations.history,
+    workflow_run: operations.workflow_run,
+    request_response_evidence: requestResponseEvidence,
+    exit_codes: exitCodes,
+    timestamps,
+    failure_classification: failureClassification,
+    commands_failed: commandsFailed,
+    observed_behavior: status === 'pass'
+      ? `Created net-new v2 schedule ${scheduleId}, observed matching typed CLI and operator API projections, triggered durable run ${runId}, and found the same identity in schedule history and the workflow run projection.`
+      : scheduleFailureSummary(failureClassification, evidenceSource),
+  };
+}
+
+function emptyScheduleFailureClassification() {
+  return {
+    setup: [],
+    transport: [],
+    product: [],
+    assertion: [],
+  };
+}
+
+function scheduleFailureClassificationHasFailures(classification) {
+  return Object.values(objectValue(classification)).some((failures) => arrayValue(failures).length > 0);
+}
+
+function scheduleOperationFailureClass(operation, observation) {
+  if (stringValue(observation.command) === '' || observation.exit_code === 127) {
+    return 'setup';
+  }
+  if (
+    observation.timed_out === true
+    || observation.signal !== null
+    || /(?:connection refused|could not resolve|timed? out|network is unreachable|failed to connect)/i.test(stringValue(observation.stderr))
+  ) {
+    return 'transport';
+  }
+  if (
+    !['create', 'cli_describe'].includes(operation)
+    && Number.isInteger(observation.http_status)
+    && (observation.http_status < 200 || observation.http_status >= 300)
+  ) {
+    return 'product';
+  }
+  if (stringValue(observation.status) !== 'pass') {
+    return observation.response_observed_from_command_stdout === true ? 'product' : 'transport';
+  }
+  if (observation.response_observed_from_command_stdout !== true) {
+    return 'assertion';
+  }
+  if (!['create', 'cli_describe'].includes(operation) && !Number.isInteger(observation.http_status)) {
+    return 'assertion';
+  }
+
+  return '';
+}
+
+function scheduleOperationFailureDetail(classification, operation, observation) {
+  if (classification === 'setup') {
+    return `The focused schedule plan did not supply an executable ${operation} command.`;
+  }
+  if (classification === 'transport') {
+    return `The ${operation} command could not complete transport to the isolated published server artifact.`;
+  }
+  if (classification === 'product') {
+    return `The ${operation} command reached the product but returned an unsuccessful response.`;
+  }
+
+  return `The ${operation} command completed without a parseable typed JSON response and HTTP status.`;
+}
+
+function scheduleAssertionFailures(context) {
+  const failures = [];
+  const add = (code, operation, detail) => failures.push(scheduleFailure(
+    code,
+    operation,
+    context.operations[operation],
+    detail,
+  ));
+  if (context.scheduleId === '') {
+    add('missing_schedule_identity', 'create', 'Schedule creation did not return the requested schedule_id.');
+  }
+  if (
+    stringValue(objectValue(context.createBody).schedule_id) !== context.scheduleId
+    || stringValue(objectValue(context.createBody).outcome) !== 'created'
+  ) {
+    add('create_response_mismatch', 'create', 'The create response did not confirm the net-new schedule identity and created outcome.');
+  }
+  for (const [operation, projection] of [
+    ['cli_describe', context.cliProjection],
+    ['operator_api', context.operatorProjection],
+  ]) {
+    if (stringValue(objectValue(projection).schedule_id) !== context.scheduleId) {
+      add('schedule_projection_identity_mismatch', operation, `The ${operation} projection did not describe the created schedule identity.`);
+    }
+    const projectionFailures = scheduleProjectionFailures(projection);
+    if (projectionFailures.length > 0) {
+      add('schedule_projection_incomplete', operation, `The ${operation} projection was missing typed schedule fields: ${projectionFailures.join(', ')}.`);
+    }
+  }
+  const projectionMismatches = ['schedule_id', 'namespace']
+    .filter((field) => compactJson(objectValue(context.cliProjection)[field]) !== compactJson(objectValue(context.operatorProjection)[field]));
+  if (projectionMismatches.length > 0) {
+    add('schedule_projection_mismatch', 'cli_describe', `The CLI and operator API schedule projections disagree on: ${projectionMismatches.join(', ')}.`);
+  }
+  if (
+    stringValue(objectValue(context.triggerBody).schedule_id) !== context.scheduleId
+    || stringValue(objectValue(context.triggerBody).outcome) !== 'triggered'
+    || context.workflowId === ''
+    || context.runId === ''
+  ) {
+    add('trigger_run_identity_missing', 'trigger', 'The trigger response did not return a triggered outcome with workflow_id and run_id.');
+  }
+  const triggeredEvent = scheduleTriggeredHistoryEvent(context.historyBody, context.scheduleId, context.workflowId, context.runId);
+  if (Object.keys(triggeredEvent).length === 0) {
+    add('schedule_history_run_identity_missing', 'history', 'Schedule history did not retain a trigger event for the observed workflow and run identity.');
+  }
+  const runProjection = workflowRunProjectionFor(context.runBody, context.runId);
+  if (
+    stringValue(runProjection.run_id) !== context.runId
+    || (stringValue(runProjection.workflow_id) !== '' && stringValue(runProjection.workflow_id) !== context.workflowId)
+    || stringValue(runProjection.status) === ''
+  ) {
+    add('workflow_run_projection_mismatch', 'workflow_run', 'The workflow run projection did not retain the trigger response run identity.');
+  }
+
+  return failures;
+}
+
+function scheduleProjectionFailures(value) {
+  const projection = objectValue(value);
+  const missing = [];
+  for (const field of ['schedule_id', 'namespace']) {
+    if (stringValue(projection[field]) === '') {
+      missing.push(field);
+    }
+  }
+  for (const field of ['state', 'spec', 'action']) {
+    if (Object.keys(objectValue(projection[field])).length === 0) {
+      missing.push(field);
+    }
+  }
+  return missing;
+}
+
+function scheduleProjectionFor(value, scheduleId) {
+  return projectionForIdentity(value, 'schedule_id', scheduleId, ['schedules', 'schedule', 'data', 'result', 'items']);
+}
+
+function workflowRunProjectionFor(value, runId) {
+  return projectionForIdentity(value, 'run_id', runId, ['runs', 'run', 'workflow_run', 'data', 'result', 'items']);
+}
+
+function projectionForIdentity(value, identityField, identity, childFields) {
+  if (!value || typeof value !== 'object') {
+    return {};
+  }
+  if (Array.isArray(value)) {
+    for (const entry of value) {
+      const projection = projectionForIdentity(entry, identityField, identity, childFields);
+      if (Object.keys(projection).length > 0) {
+        return projection;
+      }
+    }
+    return {};
+  }
+  const object = objectValue(value);
+  const projectedIdentity = stringValue(object[identityField]);
+  if (projectedIdentity !== '' && (identity === '' || projectedIdentity === identity)) {
+    return object;
+  }
+  for (const field of childFields) {
+    const projection = projectionForIdentity(object[field], identityField, identity, childFields);
+    if (Object.keys(projection).length > 0) {
+      return projection;
+    }
+  }
+  return {};
+}
+
+function scheduleTriggeredHistoryEvent(value, scheduleId, workflowId, runId) {
+  const body = objectValue(value);
+  if (scheduleId !== '' && stringValue(body.schedule_id) !== scheduleId) {
+    return {};
+  }
+  for (const event of arrayValue(body.events)) {
+    const output = objectValue(event);
+    if (
+      stringValue(output.event_type) === 'ScheduleTriggered'
+      && stringValue(output.workflow_instance_id) === workflowId
+      && stringValue(output.workflow_run_id) === runId
+      && stringValue(output.recorded_at) !== ''
+    ) {
+      return output;
+    }
+  }
+  return {};
+}
+
+function typedScheduleProjectionContract(surface, projection) {
+  const schedule = objectValue(projection);
+  return {
+    type: 'schedule_projection',
+    schema: surface === 'cli'
+      ? 'durable-workflow.cli.schedule-projection.v2'
+      : 'durable-workflow.operator.schedule-projection.v2',
+    surface,
+    field_types: {
+      schedule_id: jsonType(schedule.schedule_id),
+      namespace: jsonType(schedule.namespace),
+      state: jsonType(schedule.state),
+      spec: jsonType(schedule.spec),
+      action: jsonType(schedule.action),
+    },
+  };
+}
+
+function scheduleFailure(code, operation, observation, detail) {
+  return {
+    code,
+    operation,
+    owning_surface: ['create', 'cli_describe'].includes(operation) ? 'cli' : 'server',
+    endpoint: observation.endpoint ?? null,
+    command: observation.command ?? null,
+    request: observation.request ?? null,
+    response: observation.response ?? null,
+    http_status: observation.http_status ?? null,
+    exit_code: observation.exit_code ?? null,
+    started_at: observation.started_at ?? null,
+    finished_at: observation.finished_at ?? null,
+    detail,
+  };
+}
+
+function scheduleFailureSummary(classification, evidenceSource) {
+  for (const kind of ['setup', 'transport', 'product', 'assertion']) {
+    const first = objectValue(arrayValue(classification[kind])[0]);
+    if (Object.keys(first).length > 0) {
+      return `Focused post-upgrade schedule classified ${kind} failure from ${evidenceSource}: ${stringValue(first.detail)} endpoint=${stringValue(first.endpoint) || '(none)'} command=${stringValue(first.command) || '(none)'} exit_code=${String(first.exit_code ?? '(none)')} response=${compactJson(first.response)}.`;
+    }
+  }
+  return `Focused post-upgrade schedule failed without classified evidence from ${evidenceSource}.`;
+}
+
+function foundationScheduleFinding(artifactVersions, schedule) {
+  const classification = objectValue(schedule.failure_classification);
+  let kind = 'assertion';
+  let first = {};
+  for (const candidate of ['setup', 'transport', 'product', 'assertion']) {
+    const failure = objectValue(arrayValue(classification[candidate])[0]);
+    if (Object.keys(failure).length > 0) {
+      kind = candidate;
+      first = failure;
+      break;
+    }
+  }
+  return {
+    scenario_id: 'new_v2_schedule_after_upgrade',
+    owning_surface: stringValue(first.owning_surface) || (kind === 'setup' || kind === 'transport' ? 'conformance_harness' : 'server'),
+    finding_type: kind === 'product' || kind === 'assertion'
+      ? 'postupgrade_schedule_regression'
+      : `postupgrade_schedule_${kind}_failure`,
+    artifact_versions: artifactVersions,
+    failure_classification: kind,
+    operation: first.operation ?? null,
+    endpoint: first.endpoint ?? null,
+    command: first.command ?? null,
+    request: first.request ?? null,
+    response: first.response ?? null,
+    http_status: first.http_status ?? null,
+    exit_code: first.exit_code ?? null,
+    observed_behavior: schedule.observed_behavior,
+    expected_behavior: SCENARIO_FINDING_POLICIES.new_v2_schedule_after_upgrade.expected_behavior,
+    next_acceptance_criterion: SCENARIO_FINDING_POLICIES.new_v2_schedule_after_upgrade.next_acceptance_criterion,
+    failure_classification_details: classification,
   };
 }
 

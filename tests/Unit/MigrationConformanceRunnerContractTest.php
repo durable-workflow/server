@@ -74,10 +74,14 @@ class MigrationConformanceRunnerContractTest extends TestCase
             'embedded-v1-server-runtime',
             'maybeExecuteFoundationPlan',
             'executeFoundationPlan',
+            'preferFocusedFoundationScheduleEvidence',
             'preferFocusedFoundationWorkerEvidence',
             'buildFoundationQueueStateEvidence',
             'queueStateProductFailures',
             'queueResultHasDuplicationObservation',
+            'buildFoundationV2ScheduleEvidence',
+            'scheduleAssertionFailures',
+            'foundationScheduleFinding',
             'buildFoundationV2WorkerRegistrationEvidence',
             'executeWorkerRegistrationOperation',
             'workerRegistrationProductFailures',
@@ -1140,6 +1144,162 @@ class MigrationConformanceRunnerContractTest extends TestCase
             'documented_migration_steps_execute',
             array_keys($result['finding_links']),
         );
+    }
+
+    public function test_runner_executes_focused_postupgrade_schedule_cell_independently_of_v1_schedule_absence(): void
+    {
+        $nodeBinary = trim((string) shell_exec('command -v node 2>/dev/null'));
+        if ($nodeBinary === '') {
+            $this->markTestSkipped('node is required to exercise the focused schedule plan.');
+        }
+
+        $artifactVersions = $this->artifactVersions();
+        $artifactSources = $this->artifactSources();
+        $evidence = $this->completeRunnerEvidence();
+        $evidence['scenario_results']['schedule_cross_upgrade_cadence_preserved'] = [
+            'status' => 'not_applicable',
+            'observed_outputs' => [
+                'applicability' => [
+                    'status' => 'not_applicable',
+                    'source_capability' => 'schedule',
+                    'reason_code' => 'v1_embedded_runtime_no_durable_schedule_surface',
+                    'durable_state_mutation_attempted' => false,
+                ],
+            ],
+        ];
+        $evidence['scenario_results']['new_v2_schedule_after_upgrade'] = [
+            'status' => 'fail',
+            'observed_outputs' => [
+                'observed_behavior' => 'The broad migration pass derived the target schedule verdict from source capability.',
+            ],
+        ];
+        $evidence['finding_links']['new_v2_schedule_after_upgrade'] = [[
+            'scenario_id' => 'new_v2_schedule_after_upgrade',
+            'owning_surface' => 'conformance_harness',
+            'finding_type' => 'stale_source_capability_interpretation',
+        ]];
+
+        $result = $this->runRunnerEvidence(
+            $nodeBinary,
+            $evidence,
+            'dw-migration-focused-schedule-',
+            $this->publicGuideAuditArtifactEnvironment($artifactVersions, $artifactSources) + [
+                'DW_MIGRATION_FOUNDATION_PLAN_JSON' => json_encode(
+                    $this->focusedSchedulePlan(),
+                    JSON_THROW_ON_ERROR,
+                ),
+                'DW_MIGRATION_RUN_FOUNDATION_PLAN' => '1',
+            ],
+        );
+
+        $scenario = $result['scenario_results']['new_v2_schedule_after_upgrade'];
+        $this->assertSame('pass', $result['outcome']);
+        $this->assertFalse($result['runner_blocked']);
+        $this->assertSame('not_applicable', $result['scenario_results']['schedule_cross_upgrade_cadence_preserved']['status']);
+        $this->assertSame(
+            'v1_embedded_runtime_no_durable_schedule_surface',
+            $result['scenario_results']['schedule_cross_upgrade_cadence_preserved']['observed_outputs']['applicability']['reason_code'],
+        );
+        $this->assertSame('pass', $scenario['status']);
+        $this->assertSame('migration-v2-schedule-focused', $scenario['observed_outputs']['schedule_id']);
+        $this->assertSame('migration-v2-scheduled-workflow', $scenario['observed_outputs']['workflow_id']);
+        $this->assertSame('migration-v2-scheduled-run', $scenario['observed_outputs']['run_id']);
+        $this->assertSame(
+            'migration-v2-scheduled-run',
+            $scenario['observed_outputs']['observed_ticks']['schedule_history']['events'][0]['workflow_run_id'],
+        );
+        $this->assertSame(
+            'command_stdout_json',
+            $scenario['observed_outputs']['request_response_evidence']['cli_describe']['response_source'],
+        );
+        $this->assertSame(
+            ['setup' => [], 'transport' => [], 'product' => [], 'assertion' => []],
+            $scenario['observed_outputs']['failure_classification'],
+        );
+        $this->assertArrayHasKey('cli', $scenario['observed_outputs']['typed_response_contracts']);
+        $this->assertArrayHasKey('operator_api', $scenario['observed_outputs']['typed_response_contracts']);
+        $this->assertArrayHasKey('schedule', $scenario['observed_outputs']['typed_response_contracts']);
+        $this->assertArrayNotHasKey('new_v2_schedule_after_upgrade', $result['finding_links']);
+    }
+
+    public function test_runner_classifies_focused_schedule_failures_without_losing_command_evidence(): void
+    {
+        $nodeBinary = trim((string) shell_exec('command -v node 2>/dev/null'));
+        if ($nodeBinary === '') {
+            $this->markTestSkipped('node is required to exercise focused schedule failure routing.');
+        }
+
+        $artifactVersions = $this->artifactVersions();
+        $artifactSources = $this->artifactSources();
+        $cases = [
+            'setup' => static function (array $plan): array {
+                $plan['new_v2_schedule_after_upgrade']['create_request'] = [];
+
+                return $plan;
+            },
+            'transport' => static function (array $plan): array {
+                $plan['new_v2_schedule_after_upgrade']['trigger_response'] = [
+                    'command' => 'printf "%s\\n" '.escapeshellarg('connection refused').' >&2; exit 7',
+                    'endpoint' => 'POST /api/schedules/migration-v2-schedule-focused/trigger',
+                ];
+
+                return $plan;
+            },
+            'product' => static function (array $plan): array {
+                $response = ['http_status' => 500, 'body' => ['reason' => 'schedule_trigger_failed']];
+                $plan['new_v2_schedule_after_upgrade']['trigger_response'] = [
+                    'command' => 'printf "%s\\n" '.escapeshellarg(json_encode($response, JSON_THROW_ON_ERROR)),
+                    'endpoint' => 'POST /api/schedules/migration-v2-schedule-focused/trigger',
+                ];
+
+                return $plan;
+            },
+            'assertion' => static function (array $plan): array {
+                $response = ['http_status' => 200, 'body' => [
+                    'schedule_id' => 'migration-v2-schedule-focused',
+                    'outcome' => 'triggered',
+                    'workflow_id' => 'migration-v2-scheduled-workflow',
+                    'run_id' => 'different-run',
+                ]];
+                $plan['new_v2_schedule_after_upgrade']['trigger_response'] = [
+                    'command' => 'printf "%s\\n" '.escapeshellarg(json_encode($response, JSON_THROW_ON_ERROR)),
+                    'endpoint' => 'POST /api/schedules/migration-v2-schedule-focused/trigger',
+                ];
+
+                return $plan;
+            },
+        ];
+
+        foreach ($cases as $classification => $mutate) {
+            $result = $this->runRunnerEvidence(
+                $nodeBinary,
+                $this->completeRunnerEvidence(),
+                'dw-migration-focused-schedule-'.$classification.'-',
+                $this->publicGuideAuditArtifactEnvironment($artifactVersions, $artifactSources) + [
+                    'DW_MIGRATION_FOUNDATION_PLAN_JSON' => json_encode(
+                        $mutate($this->focusedSchedulePlan()),
+                        JSON_THROW_ON_ERROR,
+                    ),
+                    'DW_MIGRATION_RUN_FOUNDATION_PLAN' => '1',
+                ],
+            );
+
+            $scenario = $result['scenario_results']['new_v2_schedule_after_upgrade'];
+            $this->assertSame('non_passing', $result['outcome'], $classification);
+            $this->assertFalse($result['runner_blocked'], $classification);
+            $this->assertSame('fail', $scenario['status'], $classification);
+            $this->assertNotEmpty($scenario['observed_outputs']['failure_classification'][$classification], $classification);
+            $this->assertNotEmpty(
+                $scenario['observed_outputs']['request_response_evidence']['trigger']['command']
+                    ?? $scenario['observed_outputs']['request_response_evidence']['create']['endpoint'],
+                $classification,
+            );
+            $this->assertSame(
+                $classification,
+                $result['finding_links']['new_v2_schedule_after_upgrade'][0]['failure_classification'],
+                $classification,
+            );
+        }
     }
 
     public function test_runner_executes_focused_postupgrade_worker_registration_and_poll_plan(): void
@@ -4216,6 +4376,104 @@ COMMAND;
     /**
      * @return array<string, mixed>
      */
+    private function focusedSchedulePlan(): array
+    {
+        $scheduleId = 'migration-v2-schedule-focused';
+        $workflowId = 'migration-v2-scheduled-workflow';
+        $runId = 'migration-v2-scheduled-run';
+        $namespace = 'migration-conformance';
+        $operation = static function (
+            string $endpoint,
+            array $requestBody,
+            array $responseBody,
+            int $httpStatus = 200,
+        ): array {
+            $response = ['http_status' => $httpStatus, 'body' => $responseBody];
+
+            return [
+                'command' => 'printf "%s\\n" '.escapeshellarg(json_encode($response, JSON_THROW_ON_ERROR)),
+                'endpoint' => $endpoint,
+                'request' => $requestBody,
+            ];
+        };
+        $projection = [
+            'schedule_id' => $scheduleId,
+            'namespace' => $namespace,
+            'state' => ['paused' => false],
+            'spec' => ['intervals' => [['every' => 'PT1H']]],
+            'action' => [
+                'workflow_type' => 'migration.v2.scheduled',
+                'workflow_id' => $workflowId,
+                'task_queue' => 'migration-v2-schedule-queue',
+            ],
+        ];
+
+        return [
+            'source' => 'published_artifact_foundation_plan',
+            'postupgrade_state_snapshot' => $this->stateSnapshotEvidence('postupgrade'),
+            'new_v2_schedule_after_upgrade' => [
+                'isolated_public_server_artifact' => true,
+                'schedule_id' => $scheduleId,
+                'create_request' => $operation(
+                    'dw schedules create --schedule-id='.$scheduleId.' --output=json',
+                    [
+                        'schedule_id' => $scheduleId,
+                        'namespace' => $namespace,
+                        'spec' => $projection['spec'],
+                        'action' => $projection['action'],
+                    ],
+                    ['schedule_id' => $scheduleId, 'outcome' => 'created'],
+                    201,
+                ),
+                'schedule_list_json' => $operation(
+                    'dw schedules describe '.$scheduleId.' --output=json',
+                    ['schedule_id' => $scheduleId, 'namespace' => $namespace],
+                    $projection,
+                ),
+                'operator_api_response' => $operation(
+                    'GET /api/schedules/'.$scheduleId,
+                    ['schedule_id' => $scheduleId, 'namespace' => $namespace],
+                    $projection,
+                ),
+                'trigger_response' => $operation(
+                    'POST /api/schedules/'.$scheduleId.'/trigger',
+                    ['schedule_id' => $scheduleId, 'namespace' => $namespace],
+                    [
+                        'schedule_id' => $scheduleId,
+                        'outcome' => 'triggered',
+                        'workflow_id' => $workflowId,
+                        'run_id' => $runId,
+                    ],
+                ),
+                'schedule_history' => $operation(
+                    'GET /api/schedules/'.$scheduleId.'/history',
+                    ['schedule_id' => $scheduleId, 'namespace' => $namespace],
+                    [
+                        'schedule_id' => $scheduleId,
+                        'namespace' => $namespace,
+                        'events' => [[
+                            'sequence' => 2,
+                            'event_type' => 'ScheduleTriggered',
+                            'workflow_instance_id' => $workflowId,
+                            'workflow_run_id' => $runId,
+                            'recorded_at' => '2026-07-11T00:00:00Z',
+                        ]],
+                    ],
+                ),
+                'workflow_run' => $operation(
+                    'GET /api/workflows/'.$workflowId.'/runs/'.$runId,
+                    ['workflow_id' => $workflowId, 'run_id' => $runId, 'namespace' => $namespace],
+                    [
+                        'workflow_id' => $workflowId,
+                        'run_id' => $runId,
+                        'status' => 'running',
+                        'workflow_type' => 'migration.v2.scheduled',
+                    ],
+                ),
+            ],
+        ];
+    }
+
     private function stateSnapshotEvidence(string $phase): array
     {
         return [

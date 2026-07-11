@@ -33,7 +33,14 @@ Environment overrides:
                                       latest v1 state and queued-task setup,
                                       migration-guide commands, queue continuity,
                                       before/after snapshots, and a focused
-                                      post-upgrade v2 worker registration cell.
+                                      post-upgrade v2 schedule cell plus a v2
+                                      worker registration cell. The schedule cell
+                                      creates one schedule with the public CLI on an
+                                      isolated server artifact, describes the same
+                                      identity through the CLI and operator API, triggers it,
+                                      and captures schedule history and workflow-run
+                                      identity. Setup, transport, product, and
+                                      assertion failures remain distinct.
                                       The worker cell runs registration, typed
                                       operator API projection, typed CLI
                                       projection, and public worker-protocol poll
