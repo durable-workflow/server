@@ -1004,6 +1004,13 @@ PY);
             'record["rejection_reason"] = rejection_reason.clone();',
             $probe,
         );
+        $this->assertStringContainsString('with preserve_rust_matrix_cell(', $runner);
+        $this->assertStringContainsString('atomic_write_json(checkpoint_path', $runner);
+        $this->assertStringContainsString('checkpoint_baseline_cells()', $runner);
+        $this->assertStringContainsString('return partial_evidence, {', $runner);
+        $this->assertStringContainsString('"route_and_lease_diagnostics": diagnostics', $runner);
+        $this->assertStringContainsString('"partial_observed_outputs": partial_outputs', $runner);
+        $this->assertStringContainsString('def record_phase(', $runner);
     }
 
     public function test_host_runner_uses_the_exact_rust_version_from_the_artifact_tuple(): void
@@ -1029,6 +1036,458 @@ PY);
             $this->assertSame('validate_artifact_tuple', $error['phase']);
             $this->assertSame('published_crates_io_package', $error['source']);
         }
+    }
+
+    public function test_rust_matrix_preserves_completed_cells_and_continues_after_a_later_failure(): void
+    {
+        $result = $this->runSignalQueryRunnerPythonSnippet(<<<'PY'
+scenarios = {}
+descriptor = {}
+checkpoints = []
+log_file = Path(tempfile.gettempdir()) / "signals-queries-rust-cell-test.log"
+base_outputs = {
+    "rust_sdk_version": "0.1.3",
+    "rust_crate_provenance": {
+        "source": "crates.io",
+        "resolved_version": "0.1.3",
+        "checksum": "sha256:test",
+    },
+    "apache_avro_provenance": {
+        "name": "apache-avro",
+        "resolved_version": "0.21.0",
+        "source": "crates.io",
+        "checksum": "sha256:avro-test",
+    },
+}
+partial_outputs = {
+    "rust_worker_rust_php_python_clients": dict(base_outputs),
+    "rust_query_error_and_immutability": {
+        **base_outputs,
+        "answer_before_failures": 8,
+        "history_and_commands_before_first_successful_query": {
+            "history_event_count": 6,
+            "workflow_command_count": 2,
+        },
+        "history_and_commands_after_successful_queries": {
+            "history_event_count": 6,
+            "workflow_command_count": 2,
+        },
+        "completed_probe_phases": ["successful_query_immutability_observed"],
+    },
+    "python_worker_rust_client": dict(base_outputs),
+    "rust_replayed_instance_state_query_after_cold_restart": {
+        **base_outputs,
+        "worker_process_identities": [
+            {"worker_id": "rust-replay-initial", "process_id": "container:initial"},
+            {"worker_id": "rust-replay-fresh", "process_id": "container:fresh"},
+        ],
+        "running_query_results": {
+            "sdk_rust": 5,
+            "workflow_php_sdk": 5,
+            "sdk_python": 5,
+        },
+        "immutability_checkpoints": {
+            "running": {
+                "before_first_successful_query": {
+                    "history_event_count": 7,
+                    "workflow_command_count": 2,
+                },
+                "answer_before_failed_query": 5,
+                "failed_query": {"reason": "query_not_found"},
+                "answer_after_failed_query": 5,
+                "after_successful_and_failed_queries": {
+                    "history_event_count": 7,
+                    "workflow_command_count": 2,
+                },
+            },
+            "cold_restarted": {
+                "before_first_successful_query": {
+                    "history_event_count": 7,
+                    "workflow_command_count": 2,
+                },
+            },
+        },
+        "completed_probe_phases": [
+            "running_query_immutability_observed",
+            "cold_restart_history_before_queries_observed",
+            "fresh_worker_registered",
+        ],
+    },
+}
+
+def checkpoint():
+    checkpoints.append({key: value["status"] for key, value in scenarios.items()})
+
+with preserve_rust_matrix_cell(
+    scenarios=scenarios,
+    descriptor=descriptor,
+    scenario_ids=(
+        "rust_worker_rust_php_python_clients",
+        "rust_query_error_and_immutability",
+    ),
+    base_outputs=base_outputs,
+    partial_outputs=partial_outputs,
+    failure_diagnostics=lambda: {
+        "probe_phase": "rust_snapshot_errors",
+        "task_queue": "rust-snapshot",
+        "worker_process_identities": [{"worker_id": "rust-worker", "process_id": "container:42"}],
+        "last_client_samples": {"sdk_rust": {"reason": "query_worker_timeout"}},
+    },
+    checkpoint=checkpoint,
+    log_file=log_file,
+):
+    scenarios["rust_worker_rust_php_python_clients"] = {
+        "scenario_id": "rust_worker_rust_php_python_clients",
+        "status": "pass",
+        "observed_outputs": base_outputs,
+    }
+    raise RuntimeError("late immutability query timed out")
+
+with preserve_rust_matrix_cell(
+    scenarios=scenarios,
+    descriptor=descriptor,
+    scenario_ids=("python_worker_rust_client",),
+    base_outputs=base_outputs,
+    partial_outputs=partial_outputs,
+    failure_diagnostics=lambda: {},
+    checkpoint=checkpoint,
+    log_file=log_file,
+):
+    scenarios["python_worker_rust_client"] = {
+        "scenario_id": "python_worker_rust_client",
+        "status": "pass",
+        "observed_outputs": base_outputs,
+    }
+
+with preserve_rust_matrix_cell(
+    scenarios=scenarios,
+    descriptor=descriptor,
+    scenario_ids=("rust_replayed_instance_state_query_after_cold_restart",),
+    base_outputs=base_outputs,
+    partial_outputs=partial_outputs,
+    failure_diagnostics=lambda: {
+        "probe_phase": "rust_replayed_instance_state_cold_restart",
+        "task_queue": "rust-replay",
+        "last_client_samples": {"sdk_rust": {"reason": "query_worker_timeout"}},
+    },
+    checkpoint=checkpoint,
+    log_file=log_file,
+):
+    raise RuntimeError("cold-restarted query did not return within 60s")
+
+print(json.dumps({
+    "scenarios": scenarios,
+    "descriptor": descriptor,
+    "checkpoints": checkpoints,
+}, sort_keys=True))
+PY);
+
+        $this->assertSame('pass', $result['scenarios']['rust_worker_rust_php_python_clients']['status']);
+        $failed = $result['scenarios']['rust_query_error_and_immutability'];
+        $this->assertSame('fail', $failed['status']);
+        $this->assertSame('late immutability query timed out', $failed['observed_outputs']['probe_error']['message']);
+        $this->assertSame('0.21.0', $failed['observed_outputs']['apache_avro_provenance']['resolved_version']);
+        $this->assertSame(8, $failed['observed_outputs']['answer_before_failures']);
+        $this->assertSame(
+            6,
+            $failed['observed_outputs']['history_and_commands_after_successful_queries']['history_event_count'],
+        );
+        $this->assertSame(
+            ['successful_query_immutability_observed'],
+            $failed['observed_outputs']['completed_probe_phases'],
+        );
+        $this->assertSame(
+            'query_worker_timeout',
+            $failed['observed_outputs']['route_and_lease_diagnostics']['last_client_samples']['sdk_rust']['reason'],
+        );
+        $this->assertSame(
+            'signal_query_rust_error_immutability_failed',
+            $failed['linked_findings'][0]['type'],
+        );
+        $this->assertSame('pass', $result['scenarios']['python_worker_rust_client']['status']);
+        $this->assertSame('pass', $result['descriptor']['cell_verdicts']['rust_worker_rust_php_python_clients']['status']);
+        $this->assertSame('fail', $result['descriptor']['cell_verdicts']['rust_query_error_and_immutability']['status']);
+        $this->assertSame('pass', $result['descriptor']['cell_verdicts']['python_worker_rust_client']['status']);
+        $replayFailure = $result['scenarios']['rust_replayed_instance_state_query_after_cold_restart'];
+        $this->assertSame('fail', $replayFailure['status']);
+        $this->assertSame(
+            5,
+            $replayFailure['observed_outputs']['running_query_results']['sdk_rust'],
+        );
+        $this->assertSame(
+            7,
+            $replayFailure['observed_outputs']['immutability_checkpoints']['running'][
+                'after_successful_and_failed_queries'
+            ]['history_event_count'],
+        );
+        $this->assertSame(
+            'container:fresh',
+            $replayFailure['observed_outputs']['worker_process_identities'][1]['process_id'],
+        );
+        $this->assertSame(
+            '0.21.0',
+            $replayFailure['observed_outputs']['apache_avro_provenance']['resolved_version'],
+        );
+        $this->assertSame(
+            'rust_replayed_instance_state_cold_restart',
+            $replayFailure['observed_outputs']['route_and_lease_diagnostics']['probe_phase'],
+        );
+        $this->assertCount(3, $result['checkpoints']);
+        $this->assertSame('pass', $result['checkpoints'][0]['rust_worker_rust_php_python_clients']);
+        $this->assertSame('fail', $result['checkpoints'][0]['rust_query_error_and_immutability']);
+    }
+
+    public function test_production_rust_matrix_checkpoints_worker_clients_before_terminal_signal_failure(): void
+    {
+        $result = $this->runSignalQueryRunnerPythonSnippet(<<<'PY'
+artifact_versions = {"sdk-rust": "0.1.3"}
+events = []
+completed_workflows = set()
+run_root = Path(tempfile.mkdtemp(prefix="dw-rust-matrix-terminal-signal-test."))
+log_file = run_root / "probe.log"
+
+rust_provenance = {
+    "source": "crates.io",
+    "resolved_version": "0.1.3",
+    "checksum": "sha256:durable-workflow-test",
+}
+avro_provenance = {
+    "name": "apache-avro",
+    "source": "crates.io",
+    "resolved_version": "0.21.0",
+    "checksum": "sha256:apache-avro-test",
+}
+
+class FakeProcess:
+    pid = 4242
+
+    def poll(self):
+        return None
+
+
+def fake_prepare_rust_probe(run_root, log_file):
+    project_dir = run_root / "sdk-rust"
+    project_dir.mkdir(parents=True, exist_ok=True)
+    return project_dir, rust_provenance, {
+        "package": avro_provenance,
+        "install_entry": {
+            "artifact": "sdk-rust",
+            "status": "pass",
+            "version": "0.1.3",
+            "source": "published_crates_io_package",
+        },
+    }
+
+
+def fake_probe_artifact_versions():
+    return {
+        "server": "0.2.631",
+        "sdk-rust": "0.1.3",
+        "sdk-python": "0.4.98",
+        "workflow-php": "2.0.0-alpha.264",
+    }
+
+
+def fake_start_rust_probe_worker(
+    project_dir, base_url, token, namespace, task_queue,
+    worker_id, mode, container_name, log_file,
+):
+    events.append(f"start:{mode}:{worker_id}")
+    return {
+        "process_id": f"container:{worker_id}",
+        "registration": {"worker_id": worker_id, "sdk_version": "0.1.3"},
+    }
+
+
+def fake_stop_rust_probe_worker(container_name, log_file):
+    events.append(f"stop:{container_name}")
+
+
+def fake_start_python_sdk_counter_worker(**kwargs):
+    events.append("start:python-worker-rust-client")
+    return FakeProcess()
+
+
+def fake_stop_python_sdk_counter_worker(process, log_file):
+    events.append("stop:python-worker-rust-client")
+
+
+def fake_wait_for_worker_registered(**kwargs):
+    return {"worker_id": kwargs["worker_id"], "sdk_version": "0.4.98"}
+
+
+def fake_wait_for_docker_worker_registered(**kwargs):
+    return {"worker_id": kwargs["worker_id"], "sdk_version": "2.0.0-alpha.264"}
+
+
+def query_value(workflow_id):
+    if "rust-snapshot" in workflow_id:
+        return 8
+    if "python-rust-client" in workflow_id or "php-rust-client" in workflow_id:
+        return 10
+    return 5
+
+
+def fake_rust_client_sample(
+    project_dir, base_url, token, namespace, task_queue,
+    operation, workflow_id, name, args, log_file,
+):
+    if operation == "start":
+        return {"ok": True, "result": {"run_id": f"run-{workflow_id}"}}
+    if operation == "signal":
+        if workflow_id in completed_workflows:
+            events.append("snapshot-terminal-signal-failed")
+            raise TimeoutError("terminal signal operation timed out")
+        return {"ok": True, "result": {"accepted": True}}
+    if "missing-" in workflow_id:
+        return {"ok": False, "reason": "workflow_not_found"}
+    if "unavailable-" in workflow_id:
+        return {"ok": False, "reason": "query_handler_unavailable"}
+    if name in {"unknown", "does-not-exist"}:
+        return {"ok": False, "reason": "query_not_found"}
+    return {
+        "ok": True,
+        "result": query_value(workflow_id),
+        "default_codec": "avro",
+        "payload_codec": "avro",
+    }
+
+
+def fake_query_all_published_clients(*, workflow_id, expected, diagnostic_samples=None, **kwargs):
+    sample = {
+        "ok": True,
+        "result": expected,
+        "default_codec": "avro",
+        "payload_codec": "avro",
+    }
+    samples = {
+        "sdk_rust": dict(sample),
+        "workflow_php_sdk": dict(sample),
+        "sdk_python": dict(sample),
+    }
+    if diagnostic_samples is not None:
+        diagnostic_samples.update(samples)
+    return {
+        "sdk_rust": expected,
+        "workflow_php_sdk": expected,
+        "sdk_python": expected,
+        "samples": samples,
+    }
+
+
+def fake_wait_for_history_signals(*args, **kwargs):
+    return {"history_event_count": 6, "workflow_command_count": 2}
+
+
+def fake_workflow_public_snapshot(base_url, token, namespace, workflow_id, run_id=None):
+    return {
+        "workflow_id": workflow_id,
+        "run_id": run_id,
+        "status": "completed" if workflow_id in completed_workflows else "running",
+        "history_event_count": 6,
+        "workflow_command_count": 2,
+    }
+
+
+def fake_wait_for_terminal_snapshot(base_url, token, namespace, workflow_id, run_id):
+    completed_workflows.add(workflow_id)
+    return fake_workflow_public_snapshot(base_url, token, namespace, workflow_id, run_id)
+
+
+def fake_http_json(base_url, path, **kwargs):
+    if "/query/current" in path:
+        return {"status_code": 400, "body": {"reason": "malformed_payload"}}
+    return {"status_code": 200, "body": {"worker_id": "diagnostic-worker"}}
+
+
+def fake_run_command(command, **kwargs):
+    if "php-counter-worker.php" in command:
+        events.append("start:php-worker-rust-client")
+    return subprocess.CompletedProcess(
+        command,
+        0,
+        stdout="container:test-process\n",
+        stderr="",
+    )
+
+
+globals().update({
+    "prepare_rust_probe": fake_prepare_rust_probe,
+    "probe_artifact_versions": fake_probe_artifact_versions,
+    "start_rust_probe_worker": fake_start_rust_probe_worker,
+    "stop_rust_probe_worker": fake_stop_rust_probe_worker,
+    "start_python_sdk_counter_worker": fake_start_python_sdk_counter_worker,
+    "stop_python_sdk_counter_worker": fake_stop_python_sdk_counter_worker,
+    "wait_for_worker_registered": fake_wait_for_worker_registered,
+    "wait_for_docker_worker_registered": fake_wait_for_docker_worker_registered,
+    "rust_client_sample": fake_rust_client_sample,
+    "query_all_published_clients": fake_query_all_published_clients,
+    "wait_for_history_signals": fake_wait_for_history_signals,
+    "workflow_public_snapshot": fake_workflow_public_snapshot,
+    "wait_for_terminal_snapshot": fake_wait_for_terminal_snapshot,
+    "incompatible_query_protocol_sample": lambda *args: {"reason": "incompatible_query_protocol"},
+    "http_json": fake_http_json,
+    "run_command": fake_run_command,
+    "php_docker_command": lambda *args, **kwargs: ["php-counter-worker.php"],
+})
+
+evidence, install, descriptor = run_rust_matrix_probe(
+    base_url="http://server.test",
+    token="token",
+    namespace="default",
+    python_bin=sys.executable,
+    workflow_php_project=run_root / "workflow-php",
+    run_root=run_root,
+    log_file=log_file,
+)
+checkpoint = json.loads((run_root / "signals-queries-rust-cell-results.json").read_text())
+
+print(json.dumps({
+    "events": events,
+    "scenario_results": evidence["scenario_results"],
+    "checkpoint_results": checkpoint["scenario_results"],
+    "cell_verdicts": descriptor["cell_verdicts"],
+}, sort_keys=True))
+PY);
+
+        $scenarioResults = $result['scenario_results'];
+        $this->assertSame('pass', $scenarioResults['rust_worker_rust_php_python_clients']['status']);
+        $this->assertSame(
+            ['running' => 8, 'completed' => 8],
+            $scenarioResults['rust_worker_rust_php_python_clients']['observed_outputs']['rust_query_results'],
+        );
+
+        $terminalFailure = $scenarioResults['rust_query_error_and_immutability'];
+        $this->assertSame('fail', $terminalFailure['status']);
+        $this->assertSame(
+            'terminal signal operation timed out',
+            $terminalFailure['observed_outputs']['probe_error']['message'],
+        );
+        $this->assertSame(
+            'rust_snapshot_terminal_signal',
+            $terminalFailure['observed_outputs']['route_and_lease_diagnostics']['probe_phase'],
+        );
+
+        foreach ([
+            'python_worker_rust_client',
+            'php_worker_rust_client',
+            'rust_replayed_instance_state_query_after_cold_restart',
+        ] as $siblingScenario) {
+            $this->assertSame('pass', $scenarioResults[$siblingScenario]['status'], $siblingScenario);
+            $this->assertSame('pass', $result['cell_verdicts'][$siblingScenario]['status'], $siblingScenario);
+        }
+
+        $this->assertContains('snapshot-terminal-signal-failed', $result['events']);
+        $this->assertContains('start:python-worker-rust-client', $result['events']);
+        $this->assertContains('start:php-worker-rust-client', $result['events']);
+        $this->assertSame(
+            'pass',
+            $result['checkpoint_results']['rust_worker_rust_php_python_clients']['status'],
+        );
+        $this->assertSame(
+            'fail',
+            $result['checkpoint_results']['rust_query_error_and_immutability']['status'],
+        );
     }
 
     public function test_host_runner_reports_crates_io_resolution_and_build_failures_as_machine_readable_evidence(): void
