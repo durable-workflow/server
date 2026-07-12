@@ -1,5 +1,5 @@
 use std::{
-    env,
+    env, fmt,
     sync::{
         atomic::{AtomicBool, Ordering},
         Arc, Mutex,
@@ -11,6 +11,49 @@ use durable_workflow::{
     json, Client, Error, PayloadEnvelope, Result, Value, Worker, WorkflowCommandOptions,
     WorkflowResultOptions, WorkflowStartOptions, DEFAULT_CODEC,
 };
+
+type ProbeResult<T> = std::result::Result<T, ProbeFailure>;
+
+#[derive(Debug)]
+struct ProbeFailure {
+    error: Error,
+    stable_reason: Option<&'static str>,
+    failing_cell: Option<&'static str>,
+    scenario_outcome: Option<Value>,
+}
+
+impl ProbeFailure {
+    fn scenario(
+        error: Error,
+        stable_reason: &'static str,
+        failing_cell: &'static str,
+        scenario_outcome: Value,
+    ) -> Self {
+        Self {
+            error,
+            stable_reason: Some(stable_reason),
+            failing_cell: Some(failing_cell),
+            scenario_outcome: Some(scenario_outcome),
+        }
+    }
+}
+
+impl From<Error> for ProbeFailure {
+    fn from(error: Error) -> Self {
+        Self {
+            error,
+            stable_reason: None,
+            failing_cell: None,
+            scenario_outcome: None,
+        }
+    }
+}
+
+impl fmt::Display for ProbeFailure {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        fmt::Display::fmt(&self.error, formatter)
+    }
+}
 
 fn suffix() -> u128 {
     SystemTime::now()
@@ -144,9 +187,30 @@ fn validated_product_failure(message: &str) -> Option<(&'static str, &'static st
             "selected_run_command_identity_mismatch",
             "selected_run_guard",
         ),
+        ("stale_run_successor_not_promoted", "stale_run_rejection"),
+        (
+            "stale_run_successor_identity_not_distinct",
+            "stale_run_rejection",
+        ),
+        (
+            "stale_run_predecessor_task_identity_mismatch",
+            "stale_run_rejection",
+        ),
         ("typed_stale_rejection_not_observed", "stale_run_rejection"),
         ("stale_run_rejection_status_not_409", "stale_run_rejection"),
         ("stale_run_rejection_reason_unstable", "stale_run_rejection"),
+        (
+            "stale_run_rejection_target_scope_unstable",
+            "stale_run_rejection",
+        ),
+        (
+            "stale_run_rejection_workflow_identity_mismatch",
+            "stale_run_rejection",
+        ),
+        (
+            "stale_run_rejection_run_identity_mismatch",
+            "stale_run_rejection",
+        ),
         ("typed_failed_not_observed", "typed_failed"),
         (
             "server_terminal_typed_timeout_reason_unstable",
@@ -170,7 +234,11 @@ fn validated_product_failure(message: &str) -> Option<(&'static str, &'static st
 async fn main() {
     if let Err(error) = run_probe().await {
         let error_message = error.to_string();
-        if let Some((stable_reason, failing_cell)) = validated_product_failure(&error_message) {
+        let validated_failure = error
+            .stable_reason
+            .zip(error.failing_cell)
+            .or_else(|| validated_product_failure(&error_message));
+        if let Some((stable_reason, failing_cell)) = validated_failure {
             let sdk_version = env::var("DW_RUST_SDK_VERSION").unwrap_or_default();
             let server_version = env::var("DW_SERVER_VERSION").unwrap_or_default();
             let server_http_process =
@@ -182,6 +250,15 @@ async fn main() {
             let observed_behavior = format!(
                 "Rust lifecycle scenario {failing_cell} did not satisfy {stable_reason}: {bounded_error}"
             );
+            let mut scenario_outcome = error.scenario_outcome.unwrap_or_else(|| json!({}));
+            if let Some(fields) = scenario_outcome.as_object_mut() {
+                fields.insert("status".to_string(), json!("fail"));
+                fields.insert("stable_reason".to_string(), json!(stable_reason));
+                fields.insert(
+                    "observed_behavior".to_string(),
+                    json!(observed_behavior.clone()),
+                );
+            }
             println!(
                 "{}",
                 json!({
@@ -192,11 +269,7 @@ async fn main() {
                     "unsupported_cells":[],
                     "typed_errors":[],
                     "scenario_outcomes":{
-                        (failing_cell):{
-                            "status":"fail",
-                            "stable_reason":stable_reason,
-                            "observed_behavior":observed_behavior.clone(),
-                        }
+                        (failing_cell):scenario_outcome
                     },
                     "stable_reason":stable_reason,
                     "stable_reasons":[stable_reason],
@@ -221,7 +294,7 @@ async fn main() {
     }
 }
 
-async fn run_probe() -> Result<()> {
+async fn run_probe() -> ProbeResult<()> {
     let base_url = env::var("DURABLE_WORKFLOW_SERVER_URL")
         .unwrap_or_else(|_| "http://127.0.0.1:8080".to_string());
     let token = env::var("DURABLE_WORKFLOW_TOKEN").unwrap_or_else(|_| "dev-token".to_string());
@@ -327,16 +400,13 @@ async fn run_probe() -> Result<()> {
         Ok(_) => {
             return Err(Error::Codec(
                 "typed_cancelled_not_observed:workflow_returned_success".to_string(),
-            ))
+            )
+            .into())
         }
     };
     let cancel_reason = match cancel_error {
         Error::WorkflowCancelled(outcome) => outcome.reason,
-        other => {
-            return Err(Error::Codec(format!(
-                "typed_cancelled_not_observed:{other}"
-            )))
-        }
+        other => return Err(Error::Codec(format!("typed_cancelled_not_observed:{other}")).into()),
     };
     let observation = activity_observation
         .lock()
@@ -457,16 +527,13 @@ async fn run_probe() -> Result<()> {
         Ok(_) => {
             return Err(Error::Codec(
                 "typed_terminated_not_observed:workflow_returned_success".to_string(),
-            ))
+            )
+            .into())
         }
     };
     let terminate_reason = match terminate_error {
         Error::WorkflowTerminated(outcome) => outcome.reason,
-        other => {
-            return Err(Error::Codec(format!(
-                "typed_terminated_not_observed:{other}"
-            )))
-        }
+        other => return Err(Error::Codec(format!("typed_terminated_not_observed:{other}")).into()),
     };
     outcomes.insert(
         "instance_terminate".into(),
@@ -496,11 +563,12 @@ async fn run_probe() -> Result<()> {
         Arc::clone(&selected_settlement_gate),
         selected_observation,
     );
+    let selected_workflow_id = format!("rust-lifecycle-selected-{}", suffix());
     let selected_handle = client
         .start_workflow(
             "rust.lifecycle.pending",
             &selected_queue,
-            &format!("rust-lifecycle-selected-{}", suffix()),
+            &selected_workflow_id,
             json!([]),
         )
         .await?;
@@ -530,7 +598,74 @@ async fn run_probe() -> Result<()> {
         }),
     );
 
-    let selected_error = match selected_handle
+    let stale_queue = format!("rust-lifecycle-stale-{}", suffix());
+    let stale_worker_id = "rust-lifecycle-stale-worker";
+    let mut stale_worker = Worker::new(client.clone(), &stale_queue)
+        .worker_id(stale_worker_id)
+        .poll_timeout(Duration::from_millis(250));
+    stale_worker.register_workflow("rust.lifecycle.pending", |_ctx, _| async move {
+        Ok(json!({"unexpected":"stale_predecessor_executed"}))
+    });
+    stale_worker.register().await?;
+    let stale_workflow_id = format!("rust-lifecycle-stale-{}", suffix());
+    let stale_handle = client
+        .start_workflow(
+            "rust.lifecycle.pending",
+            &stale_queue,
+            &stale_workflow_id,
+            json!([]),
+        )
+        .await?;
+    identities.push(identity(&stale_handle, "stale_run_rejection_predecessor"));
+    let stale_task = client
+        .poll_workflow_task(stale_worker_id, &stale_queue, Duration::from_secs(5))
+        .await
+        .map_err(|error| Error::Codec(format!("stale_run_successor_not_promoted:{error}")))?
+        .ok_or_else(|| {
+            Error::Codec("stale_run_successor_not_promoted:workflow_task_missing".to_string())
+        })?;
+    require(
+        stale_task.run_id == stale_handle.run_id,
+        "stale_run_predecessor_task_identity_mismatch",
+    )?;
+    let stale_lease_owner = stale_task.lease_owner.as_deref().unwrap_or(stale_worker_id);
+    let successor_arguments = PayloadEnvelope::avro(&json!([]))?;
+    let successor_completion = client
+        .complete_workflow_task(
+            &stale_task.task_id,
+            stale_lease_owner,
+            stale_task.workflow_task_attempt,
+            vec![json!({
+                "type":"continue_as_new",
+                "workflow_type":"rust.lifecycle.pending",
+                "arguments":{
+                    "codec":successor_arguments.codec,
+                    "blob":successor_arguments.blob,
+                },
+            })],
+        )
+        .await
+        .map_err(|error| Error::Codec(format!("stale_run_successor_not_promoted:{error}")))?;
+    require(
+        successor_completion["recorded"] == true,
+        "stale_run_successor_not_promoted",
+    )?;
+    let successor_description = client
+        .describe_workflow(&stale_workflow_id)
+        .await
+        .map_err(|error| Error::Codec(format!("stale_run_successor_not_promoted:{error}")))?;
+    let successor_run_id = successor_description.run_id.clone();
+    require(
+        successor_run_id.is_some() && successor_run_id != stale_handle.run_id,
+        "stale_run_successor_identity_not_distinct",
+    )?;
+    identities.push(json!({
+        "scenario":"stale_run_rejection_successor",
+        "workflow_id":stale_workflow_id,
+        "run_id":successor_run_id,
+    }));
+
+    let selected_error = match stale_handle
         .cancel_selected_run(WorkflowCommandOptions::default())
         .await
     {
@@ -538,28 +673,61 @@ async fn run_probe() -> Result<()> {
         Ok(_) => {
             return Err(Error::Codec(
                 "typed_stale_rejection_not_observed:command_was_accepted".to_string(),
-            ))
+            )
+            .into())
         }
     };
     let stale = match selected_error {
         Error::WorkflowCommandRejected(rejection) => rejection,
         other => {
-            return Err(Error::Codec(format!(
-                "typed_stale_rejection_not_observed:{other}"
-            )))
+            return Err(Error::Codec(format!("typed_stale_rejection_not_observed:{other}")).into())
         }
     };
-    require(stale.status == 409, "stale_run_rejection_status_not_409")?;
-    require(
-        stale.reason == "historical_run_command_rejected",
-        "stale_run_rejection_reason_unstable",
-    )?;
+    let stale_failure = |stable_reason: &'static str| {
+        ProbeFailure::scenario(
+            Error::Codec(stable_reason.to_string()),
+            stable_reason,
+            "stale_run_rejection",
+            json!({
+                "typed_error":"WorkflowCommandRejected",
+                "http_status":stale.status,
+                "reason":stale.reason,
+                "target_scope":stale.target_scope,
+                "workflow_id":stale.workflow_id,
+                "run_id":stale.run_id,
+                "prior_run_id":stale_handle.run_id,
+                "successor_run_id":successor_run_id,
+                "successor_workflow_id":stale_workflow_id,
+            }),
+        )
+    };
+    if stale.status != 409 {
+        return Err(stale_failure("stale_run_rejection_status_not_409"));
+    }
+    if stale.reason != "historical_run_command_rejected" {
+        return Err(stale_failure("stale_run_rejection_reason_unstable"));
+    }
+    if stale.target_scope.as_deref() != Some("run") {
+        return Err(stale_failure("stale_run_rejection_target_scope_unstable"));
+    }
+    if stale.workflow_id != stale_workflow_id {
+        return Err(stale_failure(
+            "stale_run_rejection_workflow_identity_mismatch",
+        ));
+    }
+    if stale.run_id != stale_handle.run_id {
+        return Err(stale_failure("stale_run_rejection_run_identity_mismatch"));
+    }
     outcomes.insert(
         "stale_run_rejection".into(),
         json!({
             "status":"pass", "typed_error":"WorkflowCommandRejected",
             "http_status":stale.status, "reason":stale.reason,
+            "workflow_id":stale.workflow_id,
             "run_id":stale.run_id, "target_scope":stale.target_scope,
+            "prior_run_id":stale_handle.run_id,
+            "successor_run_id":successor_run_id,
+            "successor_workflow_id":stale_workflow_id,
         }),
     );
     reasons.push("historical_run_command_rejected".to_string());
@@ -587,7 +755,8 @@ async fn run_probe() -> Result<()> {
         Ok(_) => {
             return Err(Error::Codec(
                 "typed_failed_not_observed:workflow_returned_success".to_string(),
-            ))
+            )
+            .into())
         }
     };
     match fail_error {
@@ -601,7 +770,7 @@ async fn run_probe() -> Result<()> {
                 }),
             );
         }
-        other => return Err(Error::Codec(format!("typed_failed_not_observed:{other}"))),
+        other => return Err(Error::Codec(format!("typed_failed_not_observed:{other}")).into()),
     }
 
     let timeout_queue = format!("rust-lifecycle-timeout-{}", suffix());
@@ -637,7 +806,8 @@ async fn run_probe() -> Result<()> {
         Ok(_) => {
             return Err(Error::Codec(
                 "typed_timeout_not_observed:workflow_returned_success".to_string(),
-            ))
+            )
+            .into())
         }
     };
     match timeout_error {
@@ -646,13 +816,14 @@ async fn run_probe() -> Result<()> {
                 return Err(Error::Codec(format!(
                     "server_terminal_typed_timeout_reason_unstable:observed_reason={}",
                     outcome.reason
-                )));
+                ))
+                .into());
             }
             if outcome.failure_category.as_deref() == Some("client_timeout") {
                 return Err(Error::Codec(
                     "client_wait_timeout_mislabeled_as_server_terminal:observed_failure_category=client_timeout"
                         .to_string(),
-                ));
+                ).into());
             }
             reasons.push(outcome.reason.clone());
             outcomes.insert(
@@ -669,7 +840,7 @@ async fn run_probe() -> Result<()> {
                 }),
             );
         }
-        other => return Err(Error::Codec(format!("typed_timeout_not_observed:{other}"))),
+        other => return Err(Error::Codec(format!("typed_timeout_not_observed:{other}")).into()),
     }
 
     let envelope = PayloadEnvelope::avro(&json!([{"probe":"official-apache-avro-envelope"}]))?;

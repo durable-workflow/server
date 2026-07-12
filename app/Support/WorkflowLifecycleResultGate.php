@@ -1579,6 +1579,27 @@ final class WorkflowLifecycleResultGate
                 'Rust stale-run rejection evidence must report HTTP 409',
             );
         }
+        $staleOutcome = is_array($scenarioOutcomes['stale_run_rejection'] ?? null)
+            ? $scenarioOutcomes['stale_run_rejection']
+            : [];
+        $staleWorkflowId = self::stringValue($staleOutcome['workflow_id'] ?? null);
+        $staleRunId = self::stringValue($staleOutcome['run_id'] ?? null);
+        $priorRunId = self::stringValue($staleOutcome['prior_run_id'] ?? null);
+        $successorRunId = self::stringValue($staleOutcome['successor_run_id'] ?? null);
+        $successorWorkflowId = self::stringValue($staleOutcome['successor_workflow_id'] ?? null);
+        if ($staleWorkflowId === ''
+            || $staleRunId === ''
+            || $priorRunId === ''
+            || $successorRunId === ''
+            || $successorWorkflowId !== $staleWorkflowId
+            || $staleRunId !== $priorRunId
+            || $successorRunId === $priorRunId) {
+            $failures = self::addSemanticFailure(
+                $failures,
+                'rust_sdk_historical_run_boundary_not_proven',
+                'Rust stale-run evidence must identify a distinct successor current run for the same workflow and retain the rejected prior run identity',
+            );
+        }
         $exactOutcome('typed_failed', 'typed_outcome', 'WorkflowFailed');
         $exactOutcome('typed_cancelled', 'typed_outcome', 'WorkflowCancelled');
         $exactOutcome('typed_terminated', 'typed_outcome', 'WorkflowTerminated');

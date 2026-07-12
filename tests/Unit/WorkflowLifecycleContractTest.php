@@ -292,6 +292,10 @@ class WorkflowLifecycleContractTest extends TestCase
             );
             $this->assertStringContainsString('client_timeout', $rust['linked_findings'][0]['summary']);
             $this->assertStringContainsString('typed_timed_out', $rust['linked_findings'][0]['next_acceptance_criterion']);
+            $this->assertSame(
+                $rust['observed_outputs']['scenario_outcomes']['typed_timed_out'],
+                $rust['linked_findings'][0]['observed_evidence'],
+            );
             $this->assertSame($rust, $record['scenarioResults']['rust_sdk_lifecycle_surface']);
         } finally {
             $this->removeDirectory($resultDir);
@@ -558,6 +562,64 @@ class WorkflowLifecycleContractTest extends TestCase
         }
     }
 
+    public function test_rust_producer_preserves_typed_stale_rejection_evidence_in_outcome_and_finding(): void
+    {
+        $resultDir = sys_get_temp_dir().'/dw-workflow-lifecycle-rust-'.bin2hex(random_bytes(6));
+        $fakeBin = sys_get_temp_dir().'/dw-workflow-lifecycle-rust-bin-'.bin2hex(random_bytes(6));
+        mkdir($resultDir, 0777, true);
+        mkdir($fakeBin, 0777, true);
+        $this->writeFakeRustDocker($fakeBin);
+        $staleOutcome = [
+            'status' => 'fail',
+            'stable_reason' => 'stale_run_rejection_reason_unstable',
+            'observed_behavior' => 'Typed rejection retained with an unexpected reason.',
+            'typed_error' => 'WorkflowCommandRejected',
+            'http_status' => 409,
+            'reason' => 'run_not_active',
+            'target_scope' => 'run',
+            'workflow_id' => 'rust-selected',
+            'run_id' => 'rust-run-selected',
+            'prior_run_id' => 'rust-run-selected',
+            'successor_run_id' => 'rust-run-selected-successor',
+            'successor_workflow_id' => 'rust-selected',
+        ];
+        $probeOutput = json_encode([
+            'sdk' => 'sdk-rust',
+            'artifact_version' => '0.1.10',
+            'server_version' => '0.2.644',
+            'covered_cells' => [],
+            'unsupported_cells' => [],
+            'typed_errors' => [],
+            'probe_outcome' => 'fail',
+            'stable_reason' => 'stale_run_rejection_reason_unstable',
+            'stable_reasons' => ['stale_run_rejection_reason_unstable'],
+            'failure_message' => 'stale rejection returned run_not_active',
+            'failing_lifecycle_cell' => 'stale_run_rejection',
+            'scenario_outcomes' => ['stale_run_rejection' => $staleOutcome],
+            'rust_shard_contract_version' => 2,
+            'published_artifact_cell_executed' => true,
+            'local_product_source_checkouts_used' => false,
+        ], JSON_THROW_ON_ERROR);
+
+        try {
+            exec($this->rustProducerCommand($resultDir, $fakeBin, $probeOutput, 19), $output, $exitCode);
+
+            $this->assertSame(19, $exitCode, implode("\n", $output));
+            $sidecar = $this->readJson($resultDir.'/rust-sdk-lifecycle-evidence.json');
+            $rust = $sidecar['scenario_results']['rust_sdk_lifecycle_surface'];
+            $observed = $rust['observed_outputs']['scenario_outcomes']['stale_run_rejection'];
+            $findingEvidence = $rust['linked_findings'][0]['observed_evidence'];
+
+            foreach (['http_status', 'reason', 'target_scope', 'workflow_id', 'run_id'] as $field) {
+                $this->assertSame($staleOutcome[$field], $observed[$field]);
+                $this->assertSame($staleOutcome[$field], $findingEvidence[$field]);
+            }
+        } finally {
+            $this->removeDirectory($resultDir);
+            $this->removeDirectory($fakeBin);
+        }
+    }
+
     /**
      * @dataProvider invalidRustProbeOutputs
      */
@@ -649,6 +711,32 @@ class WorkflowLifecycleContractTest extends TestCase
         $this->assertContains('rust_sdk_executor_topology_invalid', $failureCodes);
     }
 
+    public function test_result_gate_does_not_accept_a_terminal_current_run_as_stale_run_evidence(): void
+    {
+        $result = $this->completeLifecycleResult();
+        $stale = &$result['scenario_results']['rust_sdk_lifecycle_surface']['observed_outputs']['scenario_outcomes']['stale_run_rejection'];
+        $stale['successor_run_id'] = $stale['prior_run_id'];
+
+        $evaluation = WorkflowLifecycleResultGate::evaluate($result);
+
+        $this->assertContains(
+            'rust_sdk_historical_run_boundary_not_proven',
+            array_column($evaluation['gate_failures'], 'code'),
+        );
+    }
+
+    public function test_result_gate_accepts_stale_run_evidence_with_a_distinct_same_workflow_successor(): void
+    {
+        $result = $this->completeLifecycleResult();
+
+        $evaluation = WorkflowLifecycleResultGate::evaluate($result);
+
+        $this->assertNotContains(
+            'rust_sdk_historical_run_boundary_not_proven',
+            array_column($evaluation['gate_failures'], 'code'),
+        );
+    }
+
     public function test_result_gate_rejects_restart_evidence_without_observed_replacement_poll_ordering(): void
     {
         $result = $this->completeLifecycleResult();
@@ -682,6 +770,13 @@ class WorkflowLifecycleContractTest extends TestCase
         $this->assertStringContainsString('validated_product_failure', $probe);
         $this->assertStringContainsString('PayloadEnvelope::avro', $probe);
         $this->assertStringContainsString('historical_run_command_rejected', $probe);
+        $this->assertStringContainsString('"type":"continue_as_new"', $probe);
+        $this->assertStringContainsString('complete_workflow_task(', $probe);
+        $this->assertStringContainsString('describe_workflow(&stale_workflow_id)', $probe);
+        $this->assertStringContainsString('stale_run_rejection_successor', $probe);
+        $this->assertStringContainsString('successor_run_id != stale_handle.run_id', $probe);
+        $this->assertStringContainsString('observed_evidence: outputs.scenario_outcomes?.[failingCell]', $runner);
+        $this->assertStringContainsString('observed_evidence: boundedOutputs.scenario_outcomes?.[failingCell]', $gate);
         $this->assertStringContainsString('ActivityTaskRejected', $probe);
         $this->assertStringContainsString('start_workflow_with_options', $probe);
         $this->assertStringContainsString('WorkflowStartOptions::new()', $probe);
@@ -1649,7 +1744,18 @@ SH);
                     'instance_cancel' => ['status' => 'pass', 'command_status' => 'accepted', 'target_scope' => 'instance', 'typed_outcome' => 'WorkflowCancelled', 'reason' => 'run_cancelled'],
                     'instance_terminate' => ['status' => 'pass', 'command_status' => 'accepted', 'target_scope' => 'instance', 'typed_outcome' => 'WorkflowTerminated', 'reason' => 'run_terminated'],
                     'selected_run_guard' => ['status' => 'pass', 'command_status' => 'accepted', 'target_scope' => 'run', 'workflow_id' => 'rust-selected', 'run_id' => 'rust-run-selected'],
-                    'stale_run_rejection' => ['status' => 'pass', 'typed_error' => 'WorkflowCommandRejected', 'http_status' => 409, 'reason' => 'historical_run_command_rejected', 'target_scope' => 'run'],
+                    'stale_run_rejection' => [
+                        'status' => 'pass',
+                        'typed_error' => 'WorkflowCommandRejected',
+                        'http_status' => 409,
+                        'reason' => 'historical_run_command_rejected',
+                        'target_scope' => 'run',
+                        'workflow_id' => 'rust-selected',
+                        'run_id' => 'rust-run-selected',
+                        'prior_run_id' => 'rust-run-selected',
+                        'successor_run_id' => 'rust-run-selected-successor',
+                        'successor_workflow_id' => 'rust-selected',
+                    ],
                     'typed_failed' => ['status' => 'pass', 'typed_outcome' => 'WorkflowFailed'],
                     'typed_cancelled' => ['status' => 'pass', 'typed_outcome' => 'WorkflowCancelled'],
                     'typed_terminated' => ['status' => 'pass', 'typed_outcome' => 'WorkflowTerminated'],

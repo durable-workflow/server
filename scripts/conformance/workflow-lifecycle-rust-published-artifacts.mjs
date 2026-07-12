@@ -112,6 +112,7 @@ function writeSidecar(status, classification, outputs, summary = '', shardExitSt
     scenario_id: 'rust_sdk_lifecycle_surface',
     owning_surface: classification === 'runner-gap' ? 'conformance_harness' : 'sdk-rust-or-server',
     summary: safeSummary,
+    observed_evidence: outputs.scenario_outcomes?.[failingCell] || {},
     next_acceptance_criterion: executed
       ? `Make ${failingCell} satisfy the Rust lifecycle contract against the exact crate and server artifact tuple, then rerun workflow-lifecycle conformance.`
       : 'Run every Rust lifecycle cell using the exact crates.io package against the matching published server image.',

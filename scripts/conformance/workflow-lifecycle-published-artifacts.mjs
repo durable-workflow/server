@@ -373,6 +373,7 @@ function normalizeRustSidecar(sidecar) {
       scenario_id: RUST_SCENARIO_ID,
       owning_surface: 'sdk-rust-and-server',
       summary,
+      observed_evidence: boundedOutputs.scenario_outcomes?.[failingCell] || {},
       next_acceptance_criterion: `Make ${failingCell} satisfy the Rust lifecycle contract against the exact crate and server artifact tuple, then rerun workflow-lifecycle conformance.`,
     }],
   };
@@ -1153,6 +1154,20 @@ function validateRustSdkLifecycleSurface(outputs) {
   if (numberValue(scenarioOutcomes.stale_run_rejection?.http_status) !== 409) {
     failures.push('stale_run_rejection.http_status must be 409');
   }
+  const staleOutcome = nonEmptyObject(scenarioOutcomes.stale_run_rejection)
+    ? scenarioOutcomes.stale_run_rejection
+    : {};
+  const staleWorkflowId = stringValue(staleOutcome.workflow_id);
+  const staleRunId = stringValue(staleOutcome.run_id);
+  const priorRunId = stringValue(staleOutcome.prior_run_id);
+  const successorRunId = stringValue(staleOutcome.successor_run_id);
+  const successorWorkflowId = stringValue(staleOutcome.successor_workflow_id);
+  if (!staleWorkflowId || !staleRunId || !priorRunId || !successorRunId
+      || successorWorkflowId !== staleWorkflowId
+      || staleRunId !== priorRunId
+      || successorRunId === priorRunId) {
+    failures.push('stale_run_rejection must retain the rejected prior run and a distinct successor current run for the same workflow');
+  }
   exactOutcome('typed_failed', 'typed_outcome', 'WorkflowFailed');
   exactOutcome('typed_cancelled', 'typed_outcome', 'WorkflowCancelled');
   exactOutcome('typed_terminated', 'typed_outcome', 'WorkflowTerminated');
@@ -1340,6 +1355,9 @@ function normalizeSuppliedFindings(entry, scenario, status, classification, fall
       owning_surface: stringValue(finding.owning_surface ?? finding.owningSurface)
         || owningSurface(scenario.id, classification),
       summary: stringValue(finding.summary) || fallbackSummary,
+      observed_evidence: nonEmptyObject(finding.observed_evidence ?? finding.observedEvidence)
+        ? (finding.observed_evidence ?? finding.observedEvidence)
+        : {},
       next_acceptance_criterion: stringValue(finding.next_acceptance_criterion ?? finding.nextAcceptanceCriterion)
         || nextAcceptance(scenario, status),
     }));
