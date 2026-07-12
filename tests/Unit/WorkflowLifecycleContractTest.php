@@ -38,8 +38,21 @@ class WorkflowLifecycleContractTest extends TestCase
         $this->assertContains('configured_python_binary', $hostRunner['python_sdk_probe_executors']);
         $this->assertContains('DW_WORKFLOW_LIFECYCLE_PYTHON_BIN', $hostRunner['python_sdk_probe_binary_overrides']);
         $this->assertContains('<result-dir>/python-sdk-lifecycle-evidence.json', $hostRunner['evidence_inputs']);
+        $this->assertContains('<result-dir>/rust-sdk-lifecycle-evidence.json', $hostRunner['evidence_inputs']);
         $this->assertContains('python-sdk-lifecycle-evidence.json', $hostRunner['result_files']);
+        $this->assertContains('rust-sdk-lifecycle-evidence.json', $hostRunner['result_files']);
         $this->assertTrue($hostRunner['python_sdk_probe_does_not_require_docker_inside_server_container']);
+        $this->assertTrue($hostRunner['rust_sdk_probe_required']);
+        $this->assertSame('0.1.10', $hostRunner['rust_sdk_probe_minimum_version']);
+        $this->assertContains('docker_rust_1_86_exact_crates_io_install', $hostRunner['rust_sdk_probe_executors']);
+        $this->assertSame('scripts/conformance/workflow-lifecycle-host-published-artifacts.sh', $hostRunner['runner_path']);
+        $this->assertSame('docker_capable_host', $hostRunner['runner_execution_context']);
+        $this->assertSame('extract_from_exact_published_server_image', $hostRunner['runner_distribution']);
+        $this->assertSame('/app/scripts/conformance/workflow-lifecycle-host-published-artifacts.sh', $hostRunner['runner_image_path']);
+        $this->assertSame('docker_capable_host', $hostRunner['published_topology']['executor']);
+        $this->assertSame('scripts_extracted_from_exact_server_image', $hostRunner['published_topology']['runner_source']);
+        $this->assertTrue($hostRunner['rust_sdk_probe_requires_http_and_scheduler_topology']);
+        $this->assertTrue($hostRunner['rust_sdk_probe_runs_outside_server_container']);
     }
 
     public function test_result_gate_accepts_complete_published_artifact_lifecycle_pass(): void
@@ -77,6 +90,7 @@ class WorkflowLifecycleContractTest extends TestCase
         mkdir($resultDir, 0777, true);
         $evidencePath = $resultDir.'/workflow-lifecycle-evidence.json';
         file_put_contents($evidencePath, json_encode($this->hostEvidence(), JSON_THROW_ON_ERROR));
+        $this->writeRustSidecar($resultDir);
 
         try {
             exec($this->runnerCommand($resultDir, [
@@ -106,6 +120,7 @@ class WorkflowLifecycleContractTest extends TestCase
         $hostEvidence = $this->hostEvidence();
         unset($hostEvidence['scenario_results']['php_sdk_lifecycle_surface']);
         file_put_contents($evidencePath, json_encode($hostEvidence, JSON_THROW_ON_ERROR));
+        $this->writeRustSidecar($resultDir);
         file_put_contents($sidecarPath, json_encode([
             'schema' => 'durable-workflow.v2.workflow-lifecycle.php-sdk-sidecar',
             'runner_blocked' => false,
@@ -152,6 +167,7 @@ class WorkflowLifecycleContractTest extends TestCase
         $hostEvidence = $this->hostEvidence();
         unset($hostEvidence['scenario_results']['python_sdk_lifecycle_surface']);
         file_put_contents($evidencePath, json_encode($hostEvidence, JSON_THROW_ON_ERROR));
+        $this->writeRustSidecar($resultDir);
         file_put_contents($sidecarPath, json_encode([
             'schema' => 'durable-workflow.v2.workflow-lifecycle.python-sdk-sidecar',
             'runner_blocked' => false,
@@ -186,6 +202,151 @@ class WorkflowLifecycleContractTest extends TestCase
         } finally {
             $this->removeDirectory($resultDir);
         }
+    }
+
+    public function test_published_artifact_runner_fails_closed_when_rust_sidecar_is_missing(): void
+    {
+        $resultDir = sys_get_temp_dir().'/dw-workflow-lifecycle-'.bin2hex(random_bytes(6));
+        mkdir($resultDir, 0777, true);
+        $evidencePath = $resultDir.'/workflow-lifecycle-evidence.json';
+        file_put_contents($evidencePath, json_encode($this->hostEvidence(), JSON_THROW_ON_ERROR));
+
+        try {
+            exec($this->runnerCommand($resultDir, [
+                'DW_WORKFLOW_LIFECYCLE_EVIDENCE_PATH' => $evidencePath,
+            ]), $output, $exitCode);
+
+            $this->assertSame(0, $exitCode, implode("\n", $output));
+            $result = $this->readJson($resultDir.'/workflow-lifecycle-result.json');
+            $rust = $result['scenario_results']['rust_sdk_lifecycle_surface'];
+
+            $this->assertSame('non_passing', $result['outcome']);
+            $this->assertSame('not_covered', $rust['status']);
+            $this->assertSame('rust_sdk_shard_missing', $rust['observed_outputs']['stable_reason']);
+        } finally {
+            $this->removeDirectory($resultDir);
+        }
+    }
+
+    public function test_published_artifact_runner_fails_closed_when_rust_shard_exits_unsuccessfully(): void
+    {
+        $resultDir = sys_get_temp_dir().'/dw-workflow-lifecycle-'.bin2hex(random_bytes(6));
+        mkdir($resultDir, 0777, true);
+        $evidencePath = $resultDir.'/workflow-lifecycle-evidence.json';
+        file_put_contents($evidencePath, json_encode($this->hostEvidence(), JSON_THROW_ON_ERROR));
+        $this->writeRustSidecar($resultDir);
+        $sidecar = $this->readJson($resultDir.'/rust-sdk-lifecycle-evidence.json');
+        $sidecar['shard_exit_status'] = 17;
+        file_put_contents(
+            $resultDir.'/rust-sdk-lifecycle-evidence.json',
+            json_encode($sidecar, JSON_THROW_ON_ERROR),
+        );
+
+        try {
+            exec($this->runnerCommand($resultDir, [
+                'DW_WORKFLOW_LIFECYCLE_EVIDENCE_PATH' => $evidencePath,
+            ]), $output, $exitCode);
+
+            $this->assertSame(0, $exitCode, implode("\n", $output));
+            $result = $this->readJson($resultDir.'/workflow-lifecycle-result.json');
+            $rust = $result['scenario_results']['rust_sdk_lifecycle_surface'];
+
+            $this->assertSame('non_passing', $result['outcome']);
+            $this->assertFalse($result['runner_blocked']);
+            $this->assertSame('fail', $rust['status']);
+            $this->assertSame('rust_sdk_shard_exit_unsuccessful', $rust['observed_outputs']['stable_reason']);
+        } finally {
+            $this->removeDirectory($resultDir);
+        }
+    }
+
+    public function test_result_gate_rejects_mismatched_or_incomplete_rust_shard(): void
+    {
+        $result = $this->completeLifecycleResult();
+        $outputs = &$result['scenario_results']['rust_sdk_lifecycle_surface']['observed_outputs'];
+        $outputs['artifact_version'] = '0.1.7';
+        $outputs['install_provenance']['requested_version'] = '0.1.7';
+        $outputs['install_provenance']['installed_version'] = '0.1.7';
+        $outputs['covered_cells'] = array_values(array_diff(
+            $outputs['covered_cells'],
+            ['late_activity_completion_refused'],
+        ));
+
+        $evaluation = WorkflowLifecycleResultGate::evaluate($result);
+        $failureCodes = array_column($evaluation['gate_failures'], 'code');
+
+        $this->assertSame('non_passing', $evaluation['status']);
+        $this->assertContains('rust_sdk_artifact_version_mismatch', $failureCodes);
+        $this->assertContains('rust_sdk_required_cell_missing', $failureCodes);
+    }
+
+    public function test_result_gate_rejects_rust_pass_labels_without_required_lifecycle_semantics(): void
+    {
+        $result = $this->completeLifecycleResult();
+        $outputs = &$result['scenario_results']['rust_sdk_lifecycle_surface']['observed_outputs'];
+        $outputs['scenario_outcomes']['typed_timed_out'] = [
+            'status' => 'pass',
+            'typed_outcome' => 'WorkflowTimedOut',
+            'reason' => 'result_wait_timeout',
+            'failure_category' => 'client_timeout',
+        ];
+        $outputs['scenario_outcomes']['worker_restart_during_cancellation'] = ['status' => 'pass'];
+        $outputs['executor_topology']['scheduler_process'] = false;
+        $outputs['shard_exit_status'] = 17;
+
+        $evaluation = WorkflowLifecycleResultGate::evaluate($result);
+        $failureCodes = array_column($evaluation['gate_failures'], 'code');
+
+        $this->assertSame('non_passing', $evaluation['status']);
+        $this->assertContains('rust_sdk_scenario_semantics_invalid', $failureCodes);
+        $this->assertContains('rust_sdk_server_terminal_timeout_not_proven', $failureCodes);
+        $this->assertContains('rust_sdk_restart_boundary_not_proven', $failureCodes);
+        $this->assertContains('rust_sdk_shard_execution_invalid', $failureCodes);
+        $this->assertContains('rust_sdk_executor_topology_invalid', $failureCodes);
+    }
+
+    public function test_result_gate_rejects_restart_evidence_without_observed_replacement_poll_ordering(): void
+    {
+        $result = $this->completeLifecycleResult();
+        $restart = &$result['scenario_results']['rust_sdk_lifecycle_surface']['observed_outputs']['scenario_outcomes']['worker_restart_during_cancellation'];
+        $restart['replacement_poll_start_observed'] = false;
+        $restart['replacement_poll_started_elapsed_ns'] = 30;
+        $restart['settlement_released_elapsed_ns'] = 20;
+
+        $evaluation = WorkflowLifecycleResultGate::evaluate($result);
+
+        $this->assertSame('non_passing', $evaluation['status']);
+        $this->assertContains(
+            'rust_sdk_restart_boundary_not_proven',
+            array_column($evaluation['gate_failures'], 'code'),
+        );
+    }
+
+    public function test_rust_lifecycle_probe_uses_exact_registry_artifacts_and_public_envelope(): void
+    {
+        $repoRoot = dirname(__DIR__, 2);
+        $runner = file_get_contents($repoRoot.'/scripts/conformance/workflow-lifecycle-rust-published-artifacts.mjs') ?: '';
+        $gate = file_get_contents($repoRoot.'/scripts/conformance/workflow-lifecycle-published-artifacts.mjs') ?: '';
+        $probe = file_get_contents($repoRoot.'/scripts/conformance/workflow-lifecycle-rust-probe.rs') ?: '';
+
+        $this->assertStringContainsString('durable-workflow = "=${SDK_VERSION}"', $runner);
+        $this->assertStringContainsString('apache-avro = { version = "0.21"', $runner);
+        $this->assertStringContainsString("provenance(lock, 'durable-workflow', SDK_VERSION)", $runner);
+        $this->assertStringContainsString("provenance(lock, 'apache-avro')", $runner);
+        $this->assertStringContainsString("'rust_sdk_shard_unsuccessful'", $runner);
+        $this->assertStringContainsString('PayloadEnvelope::avro', $probe);
+        $this->assertStringContainsString('historical_run_command_rejected', $probe);
+        $this->assertStringContainsString('ActivityTaskRejected', $probe);
+        $this->assertStringContainsString('start_workflow_with_options', $probe);
+        $this->assertStringContainsString('WorkflowStartOptions::new()', $probe);
+        $this->assertStringContainsString('"observation_source":"WorkflowHandle::result"', $probe);
+        $this->assertStringContainsString('"restart_phase":"cancellation_pending"', $probe);
+        $this->assertStringContainsString('wait_observed_at(&replacement_poll_started_at).await?', $probe);
+        $this->assertStringContainsString('"replacement_poll_start_observed":replacement_poll_start_observed', $probe);
+        $this->assertStringContainsString('replacement_poll_started_elapsed_ns', $probe);
+        $this->assertStringContainsString('restartOutcome.replacement_poll_start_observed', $gate);
+        $this->assertStringContainsString('replacementPollStartedAt < settlementReleasedAt', $gate);
+        $this->assertStringNotContainsString('result_wait_timeout', $probe);
     }
 
     public function test_published_artifact_runner_uses_local_php_composer_for_php_sdk_probe_without_docker(): void
@@ -468,6 +629,7 @@ SH);
         mkdir($resultDir, 0777, true);
         $evidencePath = $resultDir.'/workflow-lifecycle-evidence.json';
         file_put_contents($evidencePath, json_encode($this->hostEvidenceWithRetryRefusal(), JSON_THROW_ON_ERROR));
+        $this->writeRustSidecar($resultDir);
 
         try {
             exec($this->runnerCommand($resultDir, [
@@ -510,11 +672,13 @@ SH);
             'should_run_focused_host_probes',
             'run_php_sdk_lifecycle_probe',
             'run_python_sdk_lifecycle_probe',
+            'run_rust_sdk_lifecycle_probe',
             'php_sdk_probe_executor',
             'write_php_sdk_product_gap',
             'write_python_sdk_product_gap',
             'php-sdk-lifecycle-evidence.json',
             'python-sdk-lifecycle-evidence.json',
+            'rust-sdk-lifecycle-evidence.json',
             'published-php-sdk-lifecycle-surface-probe',
             'published-python-sdk-lifecycle-surface-probe',
             'WorkflowClientException',
@@ -523,6 +687,8 @@ SH);
             'DW_WORKFLOW_LIFECYCLE_PHP_BIN',
             'DW_WORKFLOW_LIFECYCLE_COMPOSER_BIN',
             'DW_WORKFLOW_LIFECYCLE_PYTHON_BIN',
+            'DW_WORKFLOW_LIFECYCLE_CARGO_BIN',
+            'DW_RUST_SDK_VERSION',
             'php_sdk_resolve_command',
             'python_sdk_resolve_command',
             'php-sdk-lifecycle-composer-home',
@@ -586,6 +752,23 @@ SH);
             'published_artifact_cell_executed',
         ] as $token) {
             $this->assertStringContainsString($token, $source);
+        }
+
+        $hostSource = file_get_contents(dirname(__DIR__, 2).'/scripts/conformance/workflow-lifecycle-host-published-artifacts.sh') ?: '';
+        foreach ([
+            'required host command not found',
+            'server-bootstrap',
+            'DW_SERVER_PROCESS_CLASS=server_http_node',
+            'DW_SERVER_PROCESS_CLASS=scheduler_node',
+            'schedule:evaluate --limit=100 --json',
+            'workflow-lifecycle-rust-published-artifacts.mjs',
+            'DW_WORKFLOW_LIFECYCLE_SERVER_HTTP_PROCESS=exact_published_image',
+            'DW_WORKFLOW_LIFECYCLE_SCHEDULER_PROCESS=exact_published_image',
+            'DW_WORKFLOW_LIFECYCLE_RUST_EXECUTOR=host_rust_container',
+            'DW_WORKFLOW_LIFECYCLE_SKIP_RUST_SDK_PROBE=1',
+            'workflow-lifecycle-result.json',
+        ] as $token) {
+            $this->assertStringContainsString($token, $hostSource);
         }
     }
 
@@ -847,6 +1030,7 @@ SH);
             'workflow-php' => '2.0.0-alpha.224',
             'workflow' => '2.0.0-alpha.224',
             'sdk-python' => '0.4.91',
+            'sdk-rust' => '0.1.8',
             'waterline' => '2.0.0-alpha.111',
         ];
         $artifactSources = [
@@ -855,6 +1039,7 @@ SH);
             'workflow-php' => 'packagist://durable-workflow/workflow:2.0.0-alpha.224',
             'workflow' => 'packagist://durable-workflow/workflow:2.0.0-alpha.224',
             'sdk-python' => 'pypi://durable-workflow/0.4.91',
+            'sdk-rust' => 'crates.io://durable-workflow@0.1.8',
             'waterline' => 'npm://durable-workflow-waterline/2.0.0-alpha.111',
         ];
         $sourcePolicy = [
@@ -1080,6 +1265,72 @@ SH);
                 'typed_errors' => [],
                 'artifact_version' => '0.4.91',
             ],
+            'rust_sdk_lifecycle_surface' => [
+                'sdk' => 'sdk-rust',
+                'covered_cells' => [
+                    'instance_cancel',
+                    'instance_terminate',
+                    'selected_run_guard',
+                    'stale_run_rejection',
+                    'typed_failed',
+                    'typed_cancelled',
+                    'typed_terminated',
+                    'typed_timed_out',
+                    'cancellation_heartbeat',
+                    'late_activity_completion_refused',
+                    'worker_restart_during_cancellation',
+                ],
+                'unsupported_cells' => [],
+                'typed_errors' => [],
+                'artifact_version' => '0.1.8',
+                'server_version' => '0.2.512',
+                'server_cluster_info' => ['version' => '0.2.512'],
+                'install_provenance' => [
+                    'package' => 'durable-workflow',
+                    'requested_version' => '0.1.8',
+                    'installed_version' => '0.1.8',
+                    'registry_source' => 'registry+https://index.crates.io',
+                    'registry_checksum_sha256' => str_repeat('a', 64),
+                ],
+                'workflow_identities' => [
+                    ['scenario' => 'instance_cancel', 'workflow_id' => 'rust-cancel', 'run_id' => 'rust-run-cancel'],
+                    ['scenario' => 'instance_terminate', 'workflow_id' => 'rust-terminate', 'run_id' => 'rust-run-terminate'],
+                    ['scenario' => 'selected_run_guard', 'workflow_id' => 'rust-selected', 'run_id' => 'rust-run-selected'],
+                    ['scenario' => 'typed_failed', 'workflow_id' => 'rust-failed', 'run_id' => 'rust-run-failed'],
+                    ['scenario' => 'typed_timed_out', 'workflow_id' => 'rust-timeout', 'run_id' => 'rust-run-timeout'],
+                ],
+                'scenario_outcomes' => [
+                    'instance_cancel' => ['status' => 'pass', 'command_status' => 'accepted', 'target_scope' => 'instance', 'typed_outcome' => 'WorkflowCancelled', 'reason' => 'run_cancelled'],
+                    'instance_terminate' => ['status' => 'pass', 'command_status' => 'accepted', 'target_scope' => 'instance', 'typed_outcome' => 'WorkflowTerminated', 'reason' => 'run_terminated'],
+                    'selected_run_guard' => ['status' => 'pass', 'command_status' => 'accepted', 'target_scope' => 'run', 'workflow_id' => 'rust-selected', 'run_id' => 'rust-run-selected'],
+                    'stale_run_rejection' => ['status' => 'pass', 'typed_error' => 'WorkflowCommandRejected', 'http_status' => 409, 'reason' => 'historical_run_command_rejected', 'target_scope' => 'run'],
+                    'typed_failed' => ['status' => 'pass', 'typed_outcome' => 'WorkflowFailed'],
+                    'typed_cancelled' => ['status' => 'pass', 'typed_outcome' => 'WorkflowCancelled'],
+                    'typed_terminated' => ['status' => 'pass', 'typed_outcome' => 'WorkflowTerminated'],
+                    'typed_timed_out' => ['status' => 'pass', 'typed_outcome' => 'WorkflowTimedOut', 'reason' => 'run_timeout', 'failure_category' => 'timeout', 'observation_source' => 'WorkflowHandle::result', 'server_terminal' => true, 'server_closed_reason' => 'timed_out'],
+                    'cancellation_heartbeat' => ['status' => 'pass', 'cancel_requested' => true, 'should_stop' => true, 'reason' => 'run_cancelled', 'run_closed_reason' => 'cancelled'],
+                    'late_activity_completion_refused' => ['status' => 'pass', 'typed_error' => 'ActivityTaskRejected', 'http_status' => 409, 'reason' => 'run_cancelled'],
+                    'worker_restart_during_cancellation' => ['status' => 'pass', 'restart_phase' => 'cancellation_pending', 'replacement_registered' => true, 'replacement_poll_start_observed' => true, 'original_activity_unsettled_when_replacement_poll_started' => true, 'replacement_started_before_original_settled' => true, 'settlement_released_after_replacement_started' => true, 'original_settled_after_restart' => true, 'replacement_poll_started_elapsed_ns' => 10, 'settlement_released_elapsed_ns' => 20, 'original_settlement_observed_elapsed_ns' => 30],
+                ],
+                'stable_reasons' => ['run_cancelled', 'run_terminated', 'historical_run_command_rejected', 'run_timeout'],
+                'payload_contract' => [
+                    'codec' => 'avro',
+                    'envelope_contract' => 'durable-workflow-published-envelope',
+                    'apache_avro_package' => 'apache-avro',
+                    'official_crates_io_provenance' => true,
+                    'apache_avro_registry_source' => 'registry+https://index.crates.io',
+                    'apache_avro_registry_checksum_sha256' => str_repeat('b', 64),
+                ],
+                'executor_topology' => [
+                    'server_http_process' => 'exact_published_image',
+                    'scheduler_process' => 'exact_published_image',
+                    'rust_executor' => 'host_rust_container',
+                    'rust_executor_outside_server_image' => true,
+                ],
+                'rust_shard_contract_version' => 2,
+                'shard_runner' => 'published-rust-sdk-lifecycle-surface-probe',
+                'shard_exit_status' => 0,
+            ],
             'operator_diagnostics_surfaces' => [
                 'workflow_id' => 'wf-diagnostics',
                 'cli_fields' => ['workflow_id', 'run_id', 'status'],
@@ -1105,10 +1356,12 @@ SH);
             'DW_SERVER_VERSION' => '0.2.512',
             'DW_CLI_VERSION' => '0.1.82',
             'DW_PYTHON_SDK_VERSION' => '0.4.91',
+            'DW_RUST_SDK_VERSION' => '0.1.8',
             'DW_WORKFLOW_PHP_VERSION' => '2.0.0-alpha.224',
             'DW_WATERLINE_VERSION' => '2.0.0-alpha.111',
             'DW_WORKFLOW_LIFECYCLE_SKIP_PHP_SDK_PROBE' => '1',
             'DW_WORKFLOW_LIFECYCLE_SKIP_PYTHON_SDK_PROBE' => '1',
+            'DW_WORKFLOW_LIFECYCLE_SKIP_RUST_SDK_PROBE' => '1',
         ], $extraEnv);
 
         $envPrefix = implode(' ', array_map(
@@ -1123,6 +1376,26 @@ SH);
             escapeshellarg($repoRoot.'/scripts/conformance/workflow-lifecycle-published-artifacts.sh'),
             escapeshellarg($resultDir),
         );
+    }
+
+    private function writeRustSidecar(string $resultDir): void
+    {
+        file_put_contents($resultDir.'/rust-sdk-lifecycle-evidence.json', json_encode([
+            'schema' => 'durable-workflow.v2.workflow-lifecycle.rust-sdk-sidecar',
+            'version' => 1,
+            'runner' => 'published-rust-sdk-lifecycle-surface-probe',
+            'runner_blocked' => false,
+            'shard_exit_status' => 0,
+            'scenario_results' => [
+                'rust_sdk_lifecycle_surface' => [
+                    'scenario_id' => 'rust_sdk_lifecycle_surface',
+                    'status' => 'pass',
+                    'classification' => 'product-gap',
+                    'published_artifact_cell_executed' => true,
+                    'observed_outputs' => $this->outputsForScenario('rust_sdk_lifecycle_surface'),
+                ],
+            ],
+        ], JSON_THROW_ON_ERROR));
     }
 
     /**

@@ -1244,9 +1244,17 @@ class ClusterInfoTest extends TestCase
         $this->assertContains('local_product_source_checkouts_used', $contract['artifact_policy']['required_run_record_fields']);
         $this->assertContains('source_policy', $contract['artifact_policy']['required_run_record_fields']);
         $this->assertSame(
-            'scripts/conformance/workflow-lifecycle-published-artifacts.sh',
+            'scripts/conformance/workflow-lifecycle-host-published-artifacts.sh',
             $contract['host_runner_contract']['runner_path'],
         );
+        $this->assertSame(
+            'scripts/conformance/workflow-lifecycle-published-artifacts.sh',
+            $contract['host_runner_contract']['published_image_result_runner_path'],
+        );
+        $this->assertSame('docker_capable_host', $contract['host_runner_contract']['published_topology']['executor']);
+        $this->assertSame('extract_from_exact_published_server_image', $contract['host_runner_contract']['runner_distribution']);
+        $this->assertSame('/app/scripts/conformance/workflow-lifecycle-host-published-artifacts.sh', $contract['host_runner_contract']['runner_image_path']);
+        $this->assertTrue($contract['host_runner_contract']['rust_sdk_probe_runs_outside_server_container']);
         $this->assertContains(
             'DW_WORKFLOW_LIFECYCLE_EVIDENCE_PATH',
             $contract['host_runner_contract']['evidence_inputs'],

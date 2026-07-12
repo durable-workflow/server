@@ -19,7 +19,7 @@ const ALLOWED_CLASSIFICATIONS = new Set([
   'stale-artifact',
   'pipeline-churn',
 ]);
-const REQUIRED_ARTIFACTS = ['server', 'cli', 'workflow', 'sdk-python', 'waterline'];
+const REQUIRED_ARTIFACTS = ['server', 'cli', 'workflow', 'sdk-python', 'sdk-rust', 'waterline'];
 const FORBIDDEN_SOURCE_TOKENS = [
   'local_product_source_checkout',
   'workspace_repo_as_artifact_under_test',
@@ -76,6 +76,11 @@ const SCENARIO_REQUIREMENTS = {
     description: 'The published Python SDK can exercise supported lifecycle cells, or unsupported cells produce documented typed errors.',
     required_evidence: ['sdk', 'covered_cells', 'unsupported_cells', 'typed_errors', 'artifact_version'],
     required_behavior: 'python_sdk_exercises_supported_lifecycle_cells_or_refuses_unsupported_cells_with_typed_errors',
+  },
+  rust_sdk_lifecycle_surface: {
+    description: 'The exact released Rust SDK crate exercises lifecycle behavior against the matching published server image with official Avro payload provenance.',
+    required_evidence: ['sdk', 'covered_cells', 'unsupported_cells', 'typed_errors', 'artifact_version', 'server_version', 'server_cluster_info', 'install_provenance', 'workflow_identities', 'scenario_outcomes', 'stable_reasons', 'payload_contract', 'executor_topology', 'rust_shard_contract_version', 'shard_runner', 'shard_exit_status'],
+    required_behavior: 'rust_sdk_exact_crate_exercises_lifecycle_against_the_matching_published_server_image',
   },
   operator_diagnostics_surfaces: {
     description: 'CLI, API, history, and Waterline-visible state expose enough information for operators and agents to diagnose every lifecycle transition.',
@@ -150,7 +155,7 @@ function mergeEvidenceSidecars(record) {
     : {};
   const sources = [record.source];
 
-  for (const fileName of ['php-sdk-lifecycle-evidence.json', 'python-sdk-lifecycle-evidence.json']) {
+  for (const fileName of ['php-sdk-lifecycle-evidence.json', 'python-sdk-lifecycle-evidence.json', 'rust-sdk-lifecycle-evidence.json']) {
     const sidecarPath = path.join(RESULT_DIR, fileName);
     if (!fs.existsSync(sidecarPath)) {
       continue;
@@ -158,6 +163,39 @@ function mergeEvidenceSidecars(record) {
 
     const sidecar = readJson(sidecarPath) ?? {};
     sources.push(sidecarPath);
+
+    if (fileName === 'rust-sdk-lifecycle-evidence.json') {
+      const rustScenario = sidecar.scenario_results?.rust_sdk_lifecycle_surface
+        ?? sidecar.scenarioResults?.rust_sdk_lifecycle_surface;
+      const rustOutputs = outputsFrom(rustScenario);
+      const sidecarValid = sidecar.schema === 'durable-workflow.v2.workflow-lifecycle.rust-sdk-sidecar'
+        && sidecar.version === 1
+        && sidecar.runner === 'published-rust-sdk-lifecycle-surface-probe'
+        && !truthyFlag(sidecar.runner_blocked)
+        && Number(sidecar.shard_exit_status) === 0
+        && rustScenario
+        && normalizeStatus(rustScenario.status) === 'pass'
+        && truthyFlag(rustScenario.published_artifact_cell_executed)
+        && rustOutputs.rust_shard_contract_version === 2;
+      if (!sidecarValid) {
+        const unsuccessfulExit = Number.isFinite(Number(sidecar.shard_exit_status))
+          && Number(sidecar.shard_exit_status) !== 0;
+        sidecar.scenario_results = {
+          rust_sdk_lifecycle_surface: {
+            scenario_id: 'rust_sdk_lifecycle_surface',
+            status: 'fail',
+            classification: unsuccessfulExit ? 'product-gap' : 'runner-gap',
+            published_artifact_cell_executed: unsuccessfulExit,
+            observed_outputs: {
+              stable_reason: unsuccessfulExit
+                ? 'rust_sdk_shard_exit_unsuccessful'
+                : 'rust_sdk_sidecar_contract_invalid',
+            },
+          },
+        };
+        sidecar.runner_blocked = !unsuccessfulExit;
+      }
+    }
 
     const mergedScenarios = {
       ...(merged.scenario_results ?? merged.scenarioResults ?? {}),
@@ -171,6 +209,20 @@ function mergeEvidenceSidecars(record) {
       || truthyFlag(merged.runnerBlocked)
       || truthyFlag(sidecar.runner_blocked)
       || truthyFlag(sidecar.runnerBlocked);
+  }
+
+  const rustSidecarPath = path.join(RESULT_DIR, 'rust-sdk-lifecycle-evidence.json');
+  if (!fs.existsSync(rustSidecarPath)) {
+    merged.scenario_results = {
+      ...(merged.scenario_results ?? merged.scenarioResults ?? {}),
+      rust_sdk_lifecycle_surface: {
+        scenario_id: 'rust_sdk_lifecycle_surface',
+        status: 'not_covered',
+        classification: 'coverage-gap',
+        published_artifact_cell_executed: false,
+        observed_outputs: { stable_reason: 'rust_sdk_shard_missing' },
+      },
+    };
   }
 
   return {
@@ -233,6 +285,7 @@ function artifactObject(source) {
     workflow: stringValue(source.workflow ?? source['workflow-php']),
     'workflow-php': stringValue(source['workflow-php'] ?? source.workflow),
     'sdk-python': stringValue(source['sdk-python'] ?? source.sdk_python ?? source.python),
+    'sdk-rust': stringValue(source['sdk-rust'] ?? source.sdk_rust ?? source.rust),
     waterline: stringValue(source.waterline),
   };
 }
@@ -261,6 +314,7 @@ function artifactVersions(evidence) {
     workflow: env('DW_WORKFLOW_PHP_VERSION') || fromEvidence.workflow || 'unresolved',
     'workflow-php': env('DW_WORKFLOW_PHP_VERSION') || fromEvidence['workflow-php'] || fromEvidence.workflow || 'unresolved',
     'sdk-python': env('DW_PYTHON_SDK_VERSION') || fromEvidence['sdk-python'] || 'unresolved',
+    'sdk-rust': env('DW_RUST_SDK_VERSION') || fromEvidence['sdk-rust'] || 'unresolved',
     waterline: env('DW_WATERLINE_VERSION') || fromEvidence.waterline || 'unresolved',
   };
 }
@@ -289,6 +343,8 @@ function artifactSources(versions, evidence) {
       || (versions['workflow-php'] !== 'unresolved' ? `packagist://durable-workflow/workflow@${versions['workflow-php']}` : 'unresolved'),
     'sdk-python': stringValue(supplied['sdk-python'] ?? supplied.sdk_python ?? supplied.python)
       || (versions['sdk-python'] !== 'unresolved' ? `pypi://durable-workflow==${versions['sdk-python']}` : 'unresolved'),
+    'sdk-rust': stringValue(supplied['sdk-rust'] ?? supplied.sdk_rust ?? supplied.rust)
+      || (versions['sdk-rust'] !== 'unresolved' ? `crates.io://durable-workflow@${versions['sdk-rust']}` : 'unresolved'),
     waterline: stringValue(supplied.waterline)
       || (versions.waterline !== 'unresolved' ? `packagist://durable-workflow/waterline@${versions.waterline}` : 'unresolved'),
   };
@@ -549,7 +605,7 @@ function requiredEvidenceValueMissing(scenarioId, field, value) {
 }
 
 function requiredFieldAllowsEmptyList(scenarioId, field) {
-  return ['php_sdk_lifecycle_surface', 'python_sdk_lifecycle_surface'].includes(scenarioId)
+  return ['php_sdk_lifecycle_surface', 'python_sdk_lifecycle_surface', 'rust_sdk_lifecycle_surface'].includes(scenarioId)
     && ['unsupported_cells', 'typed_errors'].includes(field);
 }
 
@@ -631,6 +687,8 @@ function semanticEvidenceFailures(scenario, outputs) {
       return validateSdkLifecycleSurface(outputs, ['php', 'workflow']);
     case 'python_sdk_lifecycle_surface':
       return validateSdkLifecycleSurface(outputs, ['python']);
+    case 'rust_sdk_lifecycle_surface':
+      return validateRustSdkLifecycleSurface(outputs);
     case 'operator_diagnostics_surfaces':
       return validateOperatorDiagnostics(outputs);
     default:
@@ -847,6 +905,142 @@ function validateSdkLifecycleSurface(outputs, expectedSdkFragments) {
   return failures;
 }
 
+function validateRustSdkLifecycleSurface(outputs) {
+  const failures = validateSdkLifecycleSurface(outputs, ['rust']);
+  const requiredCells = [
+    'instance_cancel', 'instance_terminate', 'selected_run_guard', 'stale_run_rejection',
+    'typed_failed', 'typed_cancelled', 'typed_terminated', 'typed_timed_out',
+    'cancellation_heartbeat', 'late_activity_completion_refused',
+    'worker_restart_during_cancellation',
+  ];
+  for (const cell of requiredCells) {
+    if (!listContainsValue(outputs.covered_cells, cell)) failures.push(`covered_cells must include ${cell}`);
+  }
+  const scenarioOutcomes = nonEmptyObject(outputs.scenario_outcomes) ? outputs.scenario_outcomes : {};
+  for (const cell of requiredCells) {
+    if (!nonEmptyObject(scenarioOutcomes[cell]) || normalizeStatus(scenarioOutcomes[cell].status) !== 'pass') {
+      failures.push(`scenario_outcomes.${cell} must report pass`);
+    }
+  }
+  const exactOutcome = (cell, field, expected) => {
+    if (normalizedText(scenarioOutcomes[cell]?.[field]) !== normalizedText(expected)) {
+      failures.push(`scenario_outcomes.${cell}.${field} must be ${expected}`);
+    }
+  };
+  exactOutcome('instance_cancel', 'command_status', 'accepted');
+  exactOutcome('instance_cancel', 'target_scope', 'instance');
+  exactOutcome('instance_cancel', 'typed_outcome', 'WorkflowCancelled');
+  exactOutcome('instance_terminate', 'command_status', 'accepted');
+  exactOutcome('instance_terminate', 'target_scope', 'instance');
+  exactOutcome('instance_terminate', 'typed_outcome', 'WorkflowTerminated');
+  exactOutcome('selected_run_guard', 'command_status', 'accepted');
+  exactOutcome('selected_run_guard', 'target_scope', 'run');
+  if (!stringValue(scenarioOutcomes.selected_run_guard?.workflow_id)
+      || !stringValue(scenarioOutcomes.selected_run_guard?.run_id)) {
+    failures.push('selected_run_guard must retain workflow and selected run identity');
+  }
+  exactOutcome('stale_run_rejection', 'typed_error', 'WorkflowCommandRejected');
+  exactOutcome('stale_run_rejection', 'reason', 'historical_run_command_rejected');
+  exactOutcome('stale_run_rejection', 'target_scope', 'run');
+  if (numberValue(scenarioOutcomes.stale_run_rejection?.http_status) !== 409) {
+    failures.push('stale_run_rejection.http_status must be 409');
+  }
+  exactOutcome('typed_failed', 'typed_outcome', 'WorkflowFailed');
+  exactOutcome('typed_cancelled', 'typed_outcome', 'WorkflowCancelled');
+  exactOutcome('typed_terminated', 'typed_outcome', 'WorkflowTerminated');
+  exactOutcome('typed_timed_out', 'typed_outcome', 'WorkflowTimedOut');
+  exactOutcome('typed_timed_out', 'reason', 'run_timeout');
+  exactOutcome('typed_timed_out', 'observation_source', 'WorkflowHandle::result');
+  exactOutcome('typed_timed_out', 'server_closed_reason', 'timed_out');
+  if (!truthyFlag(scenarioOutcomes.typed_timed_out?.server_terminal)
+      || normalizedText(scenarioOutcomes.typed_timed_out?.failure_category) === 'client_timeout') {
+    failures.push('typed_timed_out must prove an SDK-observed server-terminal timeout, not a client wait deadline');
+  }
+  if (!truthyFlag(scenarioOutcomes.cancellation_heartbeat?.cancel_requested)
+      || !truthyFlag(scenarioOutcomes.cancellation_heartbeat?.should_stop)
+      || normalizedText(scenarioOutcomes.cancellation_heartbeat?.run_closed_reason) !== 'cancelled') {
+    failures.push('cancellation_heartbeat must prove cancellation was observed and the activity was told to stop');
+  }
+  exactOutcome('late_activity_completion_refused', 'typed_error', 'ActivityTaskRejected');
+  if (numberValue(scenarioOutcomes.late_activity_completion_refused?.http_status) !== 409
+      || normalizedText(scenarioOutcomes.late_activity_completion_refused?.reason) !== 'run_cancelled') {
+    failures.push('late_activity_completion_refused must report the stable 409 run_cancelled refusal');
+  }
+  exactOutcome('worker_restart_during_cancellation', 'restart_phase', 'cancellation_pending');
+  const restartOutcome = nonEmptyObject(scenarioOutcomes.worker_restart_during_cancellation)
+    ? scenarioOutcomes.worker_restart_during_cancellation
+    : {};
+  const replacementPollStartedAt = numberValue(restartOutcome.replacement_poll_started_elapsed_ns);
+  const settlementReleasedAt = numberValue(restartOutcome.settlement_released_elapsed_ns);
+  const originalSettlementObservedAt = numberValue(restartOutcome.original_settlement_observed_elapsed_ns);
+  const observedOrdering = replacementPollStartedAt !== null
+    && settlementReleasedAt !== null
+    && originalSettlementObservedAt !== null
+    && replacementPollStartedAt < settlementReleasedAt
+    && settlementReleasedAt <= originalSettlementObservedAt;
+  if (!truthyFlag(restartOutcome.replacement_registered)
+      || !truthyFlag(restartOutcome.replacement_poll_start_observed)
+      || !truthyFlag(restartOutcome.original_activity_unsettled_when_replacement_poll_started)
+      || !truthyFlag(restartOutcome.replacement_started_before_original_settled)
+      || !truthyFlag(restartOutcome.settlement_released_after_replacement_started)
+      || !truthyFlag(restartOutcome.original_settled_after_restart)
+      || !observedOrdering) {
+    failures.push('worker_restart_during_cancellation must observe the replacement poll before releasing original activity settlement');
+  }
+  const provenance = nonEmptyObject(outputs.install_provenance) ? outputs.install_provenance : {};
+  if (provenance.package !== 'durable-workflow'
+      || provenance.requested_version !== outputs.artifact_version
+      || provenance.installed_version !== outputs.artifact_version
+      || !normalizedText(provenance.registry_source).includes('crates.io')
+      || !/^[0-9a-f]{64}$/.test(stringValue(provenance.registry_checksum_sha256))) {
+    failures.push('install_provenance must prove the exact crates.io durable-workflow package and checksum');
+  }
+  const payload = nonEmptyObject(outputs.payload_contract) ? outputs.payload_contract : {};
+  if (payload.codec !== 'avro'
+      || payload.envelope_contract !== 'durable-workflow-published-envelope'
+      || payload.apache_avro_package !== 'apache-avro'
+      || !truthyFlag(payload.official_crates_io_provenance)
+      || !normalizedText(payload.apache_avro_registry_source).includes('crates.io')
+      || !/^[0-9a-f]{64}$/.test(stringValue(payload.apache_avro_registry_checksum_sha256))) {
+    failures.push('payload_contract must prove the official apache-avro crate and published Avro envelope');
+  }
+  if (!nonEmptyList(outputs.workflow_identities)) failures.push('workflow_identities must be non-empty');
+  if (!nonEmptyObject(outputs.scenario_outcomes)) failures.push('scenario_outcomes must be non-empty');
+  if (!nonEmptyList(outputs.stable_reasons)) failures.push('stable_reasons must be non-empty');
+  for (const reason of ['run_cancelled', 'run_terminated', 'historical_run_command_rejected', 'run_timeout']) {
+    if (!listContainsValue(outputs.stable_reasons, reason)) failures.push(`stable_reasons must include ${reason}`);
+  }
+  const requiredIdentityScenarios = ['instance_cancel', 'instance_terminate', 'selected_run_guard', 'typed_failed', 'typed_timed_out'];
+  for (const scenario of requiredIdentityScenarios) {
+    const identity = Array.isArray(outputs.workflow_identities)
+      ? outputs.workflow_identities.find((entry) => normalizedText(entry?.scenario) === scenario)
+      : null;
+    if (!identity || !stringValue(identity.workflow_id) || !stringValue(identity.run_id)) {
+      failures.push(`workflow_identities must retain workflow_id and run_id for ${scenario}`);
+    }
+  }
+  const topology = nonEmptyObject(outputs.executor_topology) ? outputs.executor_topology : {};
+  if (outputs.rust_shard_contract_version !== 2
+      || outputs.shard_runner !== 'published-rust-sdk-lifecycle-surface-probe'
+      || numberValue(outputs.shard_exit_status) !== 0
+      || topology.server_http_process !== 'exact_published_image'
+      || topology.scheduler_process !== 'exact_published_image'
+      || topology.rust_executor !== 'host_rust_container'
+      || !truthyFlag(topology.rust_executor_outside_server_image)) {
+    failures.push('executor_topology must prove exact-image HTTP and scheduler processes plus the external Rust executor');
+  }
+  if (stringValue(outputs.server_version) !== stringValue(artifactVersions({}).server)) {
+    failures.push('server_version must match the pinned published server version');
+  }
+  if (!JSON.stringify(outputs.server_cluster_info ?? {}).includes(stringValue(outputs.server_version))) {
+    failures.push('server_cluster_info must report the pinned published server version');
+  }
+  if (stringValue(outputs.artifact_version) !== stringValue(artifactVersions({})['sdk-rust'])) {
+    failures.push('artifact_version must match the pinned published Rust SDK version');
+  }
+  return failures;
+}
+
 function validateOperatorDiagnostics(outputs) {
   const failures = [];
   for (const field of ['cli_fields', 'api_fields', 'history_fields', 'waterline_fields']) {
@@ -888,6 +1082,9 @@ function owningSurface(scenarioId, classification) {
   }
   if (scenarioId.startsWith('python')) {
     return 'sdk-python';
+  }
+  if (scenarioId.startsWith('rust')) {
+    return 'sdk-rust-and-server';
   }
   if (scenarioId.includes('operator')) {
     return 'cli-api-history-waterline';
@@ -1142,7 +1339,7 @@ const evidenceSource = evidenceRecord.source;
 
 const result = {
   schema: RESULT_SCHEMA,
-  version: 1,
+  version: 2,
   started_at: STARTED_AT,
   finished_at: finishedAt,
   generated_at: finishedAt,
@@ -1172,7 +1369,7 @@ const result = {
 
 const record = {
   schema: RECORD_SCHEMA,
-  version: 1,
+  version: 2,
   experiment: 'workflow-lifecycle',
   outcome,
   runnerBlocked,

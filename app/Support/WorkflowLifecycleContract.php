@@ -11,11 +11,11 @@ final class WorkflowLifecycleContract
 {
     public const SCHEMA = 'durable-workflow.v2.workflow-lifecycle.contract';
 
-    public const VERSION = 1;
+    public const VERSION = 2;
 
     public const RESULT_SCHEMA = 'durable-workflow.v2.workflow-lifecycle.result';
 
-    public const RESULT_VERSION = 1;
+    public const RESULT_VERSION = 2;
 
     /**
      * @return array<string, mixed>
@@ -58,11 +58,13 @@ final class WorkflowLifecycleContract
                     'cli' => 'official dw release install script pinned to its latest release tag',
                     'workflow-php' => 'Composer package durable-workflow/workflow:2.0.0-alpha.<latest>',
                     'sdk-python' => 'PyPI package durable-workflow==<latest>',
+                    'sdk-rust' => 'crates.io package durable-workflow=<exact released version>',
                     'waterline' => 'published Waterline observer artifact matching the release set',
                 ],
                 'release_artifact_aliases' => [
                     'workflow-php' => ['workflow'],
                     'sdk-python' => ['python'],
+                    'sdk-rust' => ['rust'],
                 ],
                 'forbidden_sources' => [
                     'local_product_source_checkout',
@@ -112,6 +114,7 @@ final class WorkflowLifecycleContract
                 'required_workers' => [
                     'workflow-php',
                     'sdk-python',
+                    'sdk-rust',
                 ],
             ],
             'required_scenarios' => array_keys($scenarioRequirements),
@@ -148,7 +151,11 @@ final class WorkflowLifecycleContract
                     'workflow_timeout_records_operator_visible_timing_and_terminal_state',
                     'workflow_retry_backoff_is_proven_or_unsupported_retry_refuses_clearly',
                     'unsupported_cells_report_documented_typed_refusal_evidence',
-                    'php_and_python_sdk_cells_pass_or_emit_documented_typed_errors',
+                    'php_python_and_rust_sdk_cells_pass_or_emit_documented_typed_errors',
+                    'rust_sdk_shard_uses_exact_crates_io_and_matching_server_artifacts',
+                    'rust_sdk_timed_out_is_server_terminal_not_client_wait_timeout',
+                    'rust_sdk_replacement_worker_starts_before_cancelled_activity_settles',
+                    'rust_sdk_machine_readable_outcomes_are_semantically_validated',
                     'cli_api_history_and_waterline_surfaces_are_operator_diagnostic_enough',
                 ],
             ],
@@ -157,14 +164,28 @@ final class WorkflowLifecycleContract
                 'runner_id' => 'workflow-lifecycle',
                 'result_schema' => self::RESULT_SCHEMA,
                 'runner_repository' => 'server',
-                'runner_path' => 'scripts/conformance/workflow-lifecycle-published-artifacts.sh',
-                'runner_command' => 'scripts/conformance/workflow-lifecycle-published-artifacts.sh --result-dir <result-dir>',
+                'runner_path' => 'scripts/conformance/workflow-lifecycle-host-published-artifacts.sh',
+                'runner_command' => 'scripts/conformance/workflow-lifecycle-host-published-artifacts.sh --result-dir <result-dir>',
+                'runner_execution_context' => 'docker_capable_host',
+                'runner_distribution' => 'extract_from_exact_published_server_image',
+                'runner_image_path' => '/app/scripts/conformance/workflow-lifecycle-host-published-artifacts.sh',
+                'runner_extraction_command' => 'docker cp <created-server-container>:/app/scripts/conformance/workflow-lifecycle-host-published-artifacts.sh <host-runner-path>',
+                'published_image_result_runner_path' => 'scripts/conformance/workflow-lifecycle-published-artifacts.sh',
+                'published_topology' => [
+                    'executor' => 'docker_capable_host',
+                    'server' => 'exact_durableworkflow_server_image_http_process',
+                    'scheduler' => 'exact_durableworkflow_server_image_scheduler_process',
+                    'rust' => 'pinned_rust_image_exact_crates_io_probe',
+                    'runner_source' => 'scripts_extracted_from_exact_server_image',
+                    'network' => 'isolated_docker_network',
+                ],
                 'evidence_inputs' => [
                     'DW_WORKFLOW_LIFECYCLE_EVIDENCE',
                     'DW_WORKFLOW_LIFECYCLE_EVIDENCE_PATH',
                     '<result-dir>/workflow-lifecycle-evidence.json',
                     '<result-dir>/php-sdk-lifecycle-evidence.json',
                     '<result-dir>/python-sdk-lifecycle-evidence.json',
+                    '<result-dir>/rust-sdk-lifecycle-evidence.json',
                 ],
                 'php_sdk_probe_executors' => [
                     'published_server_php_and_composer',
@@ -187,11 +208,25 @@ final class WorkflowLifecycleContract
                     'PYTHON_BIN',
                 ],
                 'python_sdk_probe_does_not_require_docker_inside_server_container' => true,
+                'rust_sdk_probe_executors' => [
+                    'docker_rust_1_86_exact_crates_io_install',
+                    'configured_cargo_binary',
+                ],
+                'rust_sdk_probe_binary_overrides' => [
+                    'DW_WORKFLOW_LIFECYCLE_CARGO_BIN',
+                    'CARGO_BIN',
+                ],
+                'rust_sdk_probe_required' => true,
+                'rust_sdk_probe_minimum_version' => '0.1.10',
+                'rust_sdk_probe_requires_http_and_scheduler_topology' => true,
+                'rust_sdk_probe_runs_outside_server_container' => true,
+                'rust_sdk_probe_source_policy' => 'published_crates_io_package_and_published_server_image_only',
                 'result_files' => [
                     'pins.json',
                     'run-metadata.json',
                     'php-sdk-lifecycle-evidence.json',
                     'python-sdk-lifecycle-evidence.json',
+                    'rust-sdk-lifecycle-evidence.json',
                     'workflow-lifecycle-result.json',
                     'workflow-lifecycle-record.json',
                     'workflow-lifecycle-findings.json',
@@ -224,6 +259,7 @@ final class WorkflowLifecycleContract
                     'workflow-retry-backoff-or-refusal',
                     'php-sdk-lifecycle-surface',
                     'python-sdk-lifecycle-surface',
+                    'rust-sdk-lifecycle-surface',
                     'cli-api-history-waterline-operator-diagnostics',
                 ],
             ],
@@ -325,6 +361,12 @@ final class WorkflowLifecycleContract
                 'required_fields' => $sharedFields,
                 'evidence' => ['sdk', 'covered_cells', 'unsupported_cells', 'typed_errors', 'artifact_version'],
                 'required_behavior' => 'python_sdk_exercises_supported_lifecycle_cells_or_refuses_unsupported_cells_with_typed_errors',
+            ],
+            'rust_sdk_lifecycle_surface' => [
+                'title' => 'Rust SDK exact-crate lifecycle surface',
+                'required_fields' => $sharedFields,
+                'evidence' => ['sdk', 'covered_cells', 'unsupported_cells', 'typed_errors', 'artifact_version', 'server_version', 'server_cluster_info', 'install_provenance', 'workflow_identities', 'scenario_outcomes', 'stable_reasons', 'payload_contract', 'executor_topology', 'rust_shard_contract_version', 'shard_runner', 'shard_exit_status'],
+                'required_behavior' => 'rust_sdk_exact_crate_exercises_lifecycle_against_the_matching_published_server_image',
             ],
             'operator_diagnostics_surfaces' => [
                 'title' => 'CLI, API, history, and Waterline lifecycle diagnostics',

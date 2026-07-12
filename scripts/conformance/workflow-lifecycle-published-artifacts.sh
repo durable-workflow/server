@@ -13,6 +13,7 @@ The runner writes these files to the result directory:
   workflow-lifecycle-result.json
   workflow-lifecycle-record.json
   workflow-lifecycle-findings.json
+  rust-sdk-lifecycle-evidence.json
   lifecycle-result.json
   lifecycle-record.json
 
@@ -31,6 +32,9 @@ Environment overrides:
   DW_WORKFLOW_LIFECYCLE_SKIP_PYTHON_SDK_PROBE=1
                                     Skip the published Python SDK lifecycle
                                     surface probe.
+  DW_WORKFLOW_LIFECYCLE_SKIP_RUST_SDK_PROBE=1
+                                    Skip execution of the mandatory Rust shard.
+                                    A missing Rust sidecar is always non-passing.
   DW_WORKFLOW_LIFECYCLE_PHP_SDK_EXECUTOR
                                     Optional executor override: local or docker.
                                     By default the probe uses local PHP and
@@ -46,6 +50,10 @@ Environment overrides:
   DW_WORKFLOW_LIFECYCLE_PYTHON_BIN  Optional Python binary with the published
                                     durable-workflow package already installed
                                     for the Python SDK probe.
+  DW_WORKFLOW_LIFECYCLE_CARGO_BIN   Optional Cargo binary for the Rust shard.
+                                    Otherwise the probe uses a pinned Rust image.
+  DW_WORKFLOW_LIFECYCLE_SERVER_URL  Public server endpoint used by the Rust shard.
+  DW_RUST_SDK_VERSION               Exact crates.io durable-workflow version.
   DW_SERVER_IMAGE                   Exact server image tag or digest under test.
   DW_SERVER_VERSION                 Exact server version under test.
   DW_CLI_VERSION                    Exact CLI release version.
@@ -1321,6 +1329,19 @@ PY
   if [[ ! -s "$result_dir/python-sdk-lifecycle-evidence.json" ]]; then
     write_python_sdk_product_gap 'Published Python SDK lifecycle probe completed without writing evidence; see python-sdk-lifecycle-probe.log.' 'probe_evidence_missing' "$executor"
   fi
+}
+
+run_rust_sdk_lifecycle_probe() {
+  if [[ "${DW_WORKFLOW_LIFECYCLE_SKIP_RUST_SDK_PROBE:-0}" == "1" || "${DW_WORKFLOW_LIFECYCLE_SKIP_RUST_SDK_PROBE:-}" == "true" ]]; then
+    return 0
+  fi
+
+  RESULT_DIR="$result_dir" \
+  REPO_ROOT="$repo_root" \
+  DW_SERVER_IMAGE="${DW_SERVER_IMAGE:-}" \
+  DW_SERVER_VERSION="${DW_SERVER_VERSION:-}" \
+  DW_RUST_SDK_VERSION="${DW_RUST_SDK_VERSION:-}" \
+  node "$script_dir/workflow-lifecycle-rust-published-artifacts.mjs"
 }
 
 run_focused_host_probes() {
@@ -2783,6 +2804,7 @@ fi
 
 run_php_sdk_lifecycle_probe
 run_python_sdk_lifecycle_probe
+run_rust_sdk_lifecycle_probe
 
 RESULT_DIR="$result_dir" \
 STARTED_AT="$started_at" \
@@ -2791,6 +2813,7 @@ DW_SERVER_IMAGE="${DW_SERVER_IMAGE:-}" \
 DW_SERVER_VERSION="${DW_SERVER_VERSION:-}" \
 DW_CLI_VERSION="${DW_CLI_VERSION:-}" \
 DW_PYTHON_SDK_VERSION="${DW_PYTHON_SDK_VERSION:-}" \
+DW_RUST_SDK_VERSION="${DW_RUST_SDK_VERSION:-}" \
 DW_WORKFLOW_PHP_VERSION="${DW_WORKFLOW_PHP_VERSION:-}" \
 DW_WATERLINE_VERSION="${DW_WATERLINE_VERSION:-}" \
 node "$script_dir/workflow-lifecycle-published-artifacts.mjs"

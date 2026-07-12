@@ -127,17 +127,19 @@ post-cancel. The operator-visible shard records `status=waiting`,
 deadline observed before wake-up. The record names the exact public artifact
 sources and states that a local product source checkout is not pass evidence.
 
-The server repo also ships a source-free standalone workflow lifecycle runner
-at `scripts/conformance/workflow-lifecycle-published-artifacts.sh`. Host
+The server image also ships a source-free host workflow lifecycle runner at
+`scripts/conformance/workflow-lifecycle-host-published-artifacts.sh`. Host
 conformance runners can discover that runner from `GET /api/cluster/info`
-under `workflow_lifecycle_contract.host_runner_contract` and invoke it
-against the current published server image, CLI release, Python SDK, PHP
-workflow runtime, and Waterline artifact versions. The runner accepts host
+under `workflow_lifecycle_contract.host_runner_contract`, extract it from the
+exact image under test, and invoke it on a Docker-capable host
+against the current published server image, CLI release, Python SDK, Rust SDK,
+PHP workflow runtime, and Waterline artifact versions. The runner accepts host
 runtime evidence through `DW_WORKFLOW_LIFECYCLE_EVIDENCE`,
 `DW_WORKFLOW_LIFECYCLE_EVIDENCE_PATH`, or
 `<result-dir>/workflow-lifecycle-evidence.json`. The runner can also merge
-generated `<result-dir>/php-sdk-lifecycle-evidence.json` and
-`<result-dir>/python-sdk-lifecycle-evidence.json` sidecars for SDK lifecycle
+generated `<result-dir>/php-sdk-lifecycle-evidence.json`,
+`<result-dir>/python-sdk-lifecycle-evidence.json`, and mandatory
+`<result-dir>/rust-sdk-lifecycle-evidence.json` sidecars for SDK lifecycle
 surfaces. The PHP sidecar can be produced with PHP and Composer from the
 published server image, with explicit `DW_WORKFLOW_LIFECYCLE_PHP_BIN` /
 `DW_WORKFLOW_LIFECYCLE_COMPOSER_BIN` binary paths supplied by the host, or with
@@ -145,7 +147,19 @@ Docker's `composer:2` image when the host has Docker but no local PHP toolchain.
 The Python sidecar can be produced from a temporary venv that installs the
 pinned PyPI `durable-workflow` artifact, or with an explicit
 `DW_WORKFLOW_LIFECYCLE_PYTHON_BIN` binary whose environment already contains
-that published package. The runner then records artifact versions, public
+that published package. The Rust sidecar resolves an exact `durable-workflow`
+requirement from crates.io into `Cargo.lock`, records the registry checksum for it and the
+official `apache-avro` dependency, and executes against the matching published
+server HTTP and scheduler processes on an isolated network. It requires Rust
+SDK 0.1.10 or a later lifecycle successor so the one-second run deadline is
+created through the SDK rather than a separate raw control-plane request. The Rust compiler
+and probe run outside the server container; runner scripts are copied from the
+exact published image, so neither Cargo nor Docker is required in that image.
+Its required cells cover instance and selected-run lifecycle
+commands, historical-run rejection, typed terminal outcomes, cancellation
+heartbeats, late activity completion refusal, and worker restart during
+cancellation. A missing, mismatched, incomplete, or unsuccessful Rust shard is
+always non-passing. The runner then records artifact versions, public
 artifact sources, source policy, local source checkout usage, and per-cell
 outcomes. A cell can pass only when host runtime evidence marks
 `published_artifact_cell_executed=true`; a status string alone is not execution
@@ -153,8 +167,8 @@ evidence. Required cells cover continue-as-new run-chain
 visibility, logical workflow identity, history continuity, duplicate side-effect
 prevention, public cancellation, public termination, workflow id reuse /
 duplicate start policy, workflow timeout terminal state, workflow-level
-retry/backoff or typed refusal, PHP SDK coverage, Python SDK coverage, and
-CLI/API/history/Waterline diagnostics. Missing cells remain `not_covered` with
+retry/backoff or typed refusal, PHP SDK coverage, Python SDK coverage, Rust SDK
+coverage, and CLI/API/history/Waterline diagnostics. Missing cells remain `not_covered` with
 focused coverage findings; unsupported cells remain non-passing and must carry
 documented typed refusal evidence. A pass is recorded only when every required
 published-artifact cell passes and no local product source checkout is used as

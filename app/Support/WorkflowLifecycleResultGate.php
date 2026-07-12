@@ -10,7 +10,7 @@ final class WorkflowLifecycleResultGate
 {
     public const SCHEMA = 'durable-workflow.v2.workflow-lifecycle.result-gate';
 
-    public const VERSION = 1;
+    public const VERSION = 2;
 
     /**
      * @return array<string, mixed>
@@ -81,7 +81,11 @@ final class WorkflowLifecycleResultGate
                 'duplicate_start_policy_is_enforced_or_refused_clearly',
                 'workflow_timeout_records_operator_visible_timing_and_terminal_state',
                 'workflow_retry_backoff_is_proven_or_unsupported_retry_refuses_clearly',
-                'php_and_python_sdk_cells_pass_or_emit_documented_typed_errors',
+                'php_python_and_rust_sdk_cells_pass_or_emit_documented_typed_errors',
+                'rust_sdk_shard_uses_exact_crates_io_and_matching_server_artifacts',
+                'rust_sdk_timed_out_is_server_terminal_not_client_wait_timeout',
+                'rust_sdk_replacement_worker_starts_before_cancelled_activity_settles',
+                'rust_sdk_machine_readable_outcomes_are_semantically_validated',
                 'cli_api_history_and_waterline_surfaces_are_operator_diagnostic_enough',
                 'each_unsupported_scenario_reports_documented_typed_refusal',
                 'each_non_pass_cell_has_focused_findings',
@@ -190,7 +194,7 @@ final class WorkflowLifecycleResultGate
                     ];
                 }
 
-                foreach (self::semanticScenarioFailures($scenarioId, $scenarioResult) as $failure) {
+                foreach (self::semanticScenarioFailures($scenarioId, $scenarioResult, $result) as $failure) {
                     $failures[] = [
                         'code' => $failure['code'],
                         'scenario_id' => $scenarioId,
@@ -980,7 +984,7 @@ final class WorkflowLifecycleResultGate
      *
      * @return list<array{code: string, reason: string}>
      */
-    private static function semanticScenarioFailures(string $scenarioId, array $scenarioResult): array
+    private static function semanticScenarioFailures(string $scenarioId, array $scenarioResult, array $result): array
     {
         $outputs = self::observedOutputs($scenarioResult);
 
@@ -1007,6 +1011,22 @@ final class WorkflowLifecycleResultGate
             'workflow_retry_backoff_or_refusal' => self::validateWorkflowRetry($outputs),
             'php_sdk_lifecycle_surface' => self::validateSdkLifecycleSurface($outputs, ['php', 'workflow']),
             'python_sdk_lifecycle_surface' => self::validateSdkLifecycleSurface($outputs, ['python']),
+            'rust_sdk_lifecycle_surface' => array_merge(
+                self::validateSdkLifecycleSurface($outputs, ['rust']),
+                self::validateRustSdkLifecycleSurface(
+                    $outputs,
+                    self::artifactValue(
+                        self::arrayField($result, ['artifact_versions', 'artifactVersions']) ?? [],
+                        'sdk-rust',
+                        WorkflowLifecycleContract::manifest(),
+                    ),
+                    self::artifactValue(
+                        self::arrayField($result, ['artifact_versions', 'artifactVersions']) ?? [],
+                        'server',
+                        WorkflowLifecycleContract::manifest(),
+                    ),
+                ),
+            ),
             'operator_diagnostics_surfaces' => self::validateOperatorDiagnostics($outputs),
             default => [],
         };
@@ -1467,6 +1487,259 @@ final class WorkflowLifecycleResultGate
      *
      * @return list<array{code: string, reason: string}>
      */
+    private static function validateRustSdkLifecycleSurface(
+        array $outputs,
+        string $expectedVersion,
+        string $expectedServerVersion,
+    ): array
+    {
+        $failures = [];
+        if ($expectedVersion === '' || ($outputs['artifact_version'] ?? null) !== $expectedVersion) {
+            $failures = self::addSemanticFailure(
+                $failures,
+                'rust_sdk_artifact_version_mismatch',
+                'Rust SDK lifecycle evidence version must match the pinned artifact tuple',
+            );
+        }
+        if ($expectedServerVersion === '' || ($outputs['server_version'] ?? null) !== $expectedServerVersion) {
+            $failures = self::addSemanticFailure(
+                $failures,
+                'rust_sdk_server_version_mismatch',
+                'Rust SDK lifecycle evidence server version must match the pinned artifact tuple',
+            );
+        }
+        $requiredCells = [
+            'instance_cancel',
+            'instance_terminate',
+            'selected_run_guard',
+            'stale_run_rejection',
+            'typed_failed',
+            'typed_cancelled',
+            'typed_terminated',
+            'typed_timed_out',
+            'cancellation_heartbeat',
+            'late_activity_completion_refused',
+            'worker_restart_during_cancellation',
+        ];
+        $covered = self::stringList($outputs['covered_cells'] ?? []);
+        foreach ($requiredCells as $cell) {
+            if (! in_array($cell, $covered, true)) {
+                $failures = self::addSemanticFailure(
+                    $failures,
+                    'rust_sdk_required_cell_missing',
+                    'Rust SDK lifecycle evidence is missing required cell '.$cell,
+                );
+            }
+        }
+
+        $scenarioOutcomes = self::arrayField($outputs, ['scenario_outcomes']) ?? [];
+        foreach ($requiredCells as $cell) {
+            $outcome = $scenarioOutcomes[$cell] ?? null;
+            if (! is_array($outcome) || self::normalizedStatus($outcome['status'] ?? null) !== 'pass') {
+                $failures = self::addSemanticFailure(
+                    $failures,
+                    'rust_sdk_scenario_outcome_missing',
+                    'Rust SDK lifecycle evidence must report a passing outcome for '.$cell,
+                );
+            }
+        }
+
+        $exactOutcome = static function (string $cell, string $field, string $expected) use (&$failures, $scenarioOutcomes): void {
+            if (self::normalizedText($scenarioOutcomes[$cell][$field] ?? null) !== self::normalizedText($expected)) {
+                $failures = self::addSemanticFailure(
+                    $failures,
+                    'rust_sdk_scenario_semantics_invalid',
+                    sprintf('Rust SDK lifecycle evidence %s.%s must be %s', $cell, $field, $expected),
+                );
+            }
+        };
+        $exactOutcome('instance_cancel', 'command_status', 'accepted');
+        $exactOutcome('instance_cancel', 'target_scope', 'instance');
+        $exactOutcome('instance_cancel', 'typed_outcome', 'WorkflowCancelled');
+        $exactOutcome('instance_terminate', 'command_status', 'accepted');
+        $exactOutcome('instance_terminate', 'target_scope', 'instance');
+        $exactOutcome('instance_terminate', 'typed_outcome', 'WorkflowTerminated');
+        $exactOutcome('selected_run_guard', 'command_status', 'accepted');
+        $exactOutcome('selected_run_guard', 'target_scope', 'run');
+        if (self::stringValue($scenarioOutcomes['selected_run_guard']['workflow_id'] ?? null) === ''
+            || self::stringValue($scenarioOutcomes['selected_run_guard']['run_id'] ?? null) === '') {
+            $failures = self::addSemanticFailure(
+                $failures,
+                'rust_sdk_selected_run_identity_missing',
+                'Rust selected-run evidence must retain workflow and selected run identity',
+            );
+        }
+        $exactOutcome('stale_run_rejection', 'typed_error', 'WorkflowCommandRejected');
+        $exactOutcome('stale_run_rejection', 'reason', 'historical_run_command_rejected');
+        $exactOutcome('stale_run_rejection', 'target_scope', 'run');
+        if (self::numberValue($scenarioOutcomes['stale_run_rejection']['http_status'] ?? null) !== 409.0) {
+            $failures = self::addSemanticFailure(
+                $failures,
+                'rust_sdk_stale_run_status_invalid',
+                'Rust stale-run rejection evidence must report HTTP 409',
+            );
+        }
+        $exactOutcome('typed_failed', 'typed_outcome', 'WorkflowFailed');
+        $exactOutcome('typed_cancelled', 'typed_outcome', 'WorkflowCancelled');
+        $exactOutcome('typed_terminated', 'typed_outcome', 'WorkflowTerminated');
+        $exactOutcome('typed_timed_out', 'typed_outcome', 'WorkflowTimedOut');
+        $exactOutcome('typed_timed_out', 'reason', 'run_timeout');
+        $exactOutcome('typed_timed_out', 'observation_source', 'WorkflowHandle::result');
+        $exactOutcome('typed_timed_out', 'server_closed_reason', 'timed_out');
+        if (! self::truthy($scenarioOutcomes['typed_timed_out']['server_terminal'] ?? null)
+            || self::normalizedText($scenarioOutcomes['typed_timed_out']['failure_category'] ?? null) === 'client_timeout') {
+            $failures = self::addSemanticFailure(
+                $failures,
+                'rust_sdk_server_terminal_timeout_not_proven',
+                'Rust typed timeout evidence must come from WorkflowHandle::result observing a server-terminal timeout',
+            );
+        }
+        if (! self::truthy($scenarioOutcomes['cancellation_heartbeat']['cancel_requested'] ?? null)
+            || ! self::truthy($scenarioOutcomes['cancellation_heartbeat']['should_stop'] ?? null)
+            || self::normalizedText($scenarioOutcomes['cancellation_heartbeat']['run_closed_reason'] ?? null) !== 'cancelled') {
+            $failures = self::addSemanticFailure(
+                $failures,
+                'rust_sdk_cancellation_heartbeat_not_proven',
+                'Rust cancellation heartbeat evidence must show cancellation and a stop response',
+            );
+        }
+        $exactOutcome('late_activity_completion_refused', 'typed_error', 'ActivityTaskRejected');
+        if (self::numberValue($scenarioOutcomes['late_activity_completion_refused']['http_status'] ?? null) !== 409.0
+            || self::normalizedText($scenarioOutcomes['late_activity_completion_refused']['reason'] ?? null) !== 'run_cancelled') {
+            $failures = self::addSemanticFailure(
+                $failures,
+                'rust_sdk_late_completion_refusal_invalid',
+                'Rust late activity completion must report the stable 409 run_cancelled refusal',
+            );
+        }
+        $exactOutcome('worker_restart_during_cancellation', 'restart_phase', 'cancellation_pending');
+        $restartOutcome = is_array($scenarioOutcomes['worker_restart_during_cancellation'] ?? null)
+            ? $scenarioOutcomes['worker_restart_during_cancellation']
+            : [];
+        $replacementPollStartedAt = self::numberValue($restartOutcome['replacement_poll_started_elapsed_ns'] ?? null);
+        $settlementReleasedAt = self::numberValue($restartOutcome['settlement_released_elapsed_ns'] ?? null);
+        $originalSettlementObservedAt = self::numberValue($restartOutcome['original_settlement_observed_elapsed_ns'] ?? null);
+        $observedOrdering = $replacementPollStartedAt !== null
+            && $settlementReleasedAt !== null
+            && $originalSettlementObservedAt !== null
+            && $replacementPollStartedAt < $settlementReleasedAt
+            && $settlementReleasedAt <= $originalSettlementObservedAt;
+        if (! self::truthy($restartOutcome['replacement_registered'] ?? null)
+            || ! self::truthy($restartOutcome['replacement_poll_start_observed'] ?? null)
+            || ! self::truthy($restartOutcome['original_activity_unsettled_when_replacement_poll_started'] ?? null)
+            || ! self::truthy($restartOutcome['replacement_started_before_original_settled'] ?? null)
+            || ! self::truthy($restartOutcome['settlement_released_after_replacement_started'] ?? null)
+            || ! self::truthy($restartOutcome['original_settled_after_restart'] ?? null)
+            || ! $observedOrdering) {
+            $failures = self::addSemanticFailure(
+                $failures,
+                'rust_sdk_restart_boundary_not_proven',
+                'Rust worker restart evidence must observe the replacement poll before releasing original activity settlement',
+            );
+        }
+        $provenance = self::arrayField($outputs, ['install_provenance']) ?? [];
+        if (($provenance['package'] ?? null) !== 'durable-workflow'
+            || ($provenance['requested_version'] ?? null) !== ($outputs['artifact_version'] ?? null)
+            || ($provenance['installed_version'] ?? null) !== ($outputs['artifact_version'] ?? null)
+            || ! str_contains(strtolower(self::stringValue($provenance['registry_source'] ?? null)), 'crates.io')
+            || preg_match('/^[0-9a-f]{64}$/', self::stringValue($provenance['registry_checksum_sha256'] ?? null)) !== 1) {
+            $failures = self::addSemanticFailure(
+                $failures,
+                'rust_sdk_install_provenance_invalid',
+                'Rust SDK lifecycle evidence must identify the exact crates.io package and registry checksum',
+            );
+        }
+
+        $payload = self::arrayField($outputs, ['payload_contract']) ?? [];
+        if (($payload['codec'] ?? null) !== 'avro'
+            || ($payload['envelope_contract'] ?? null) !== 'durable-workflow-published-envelope'
+            || ($payload['apache_avro_package'] ?? null) !== 'apache-avro'
+            || ! self::truthy($payload['official_crates_io_provenance'] ?? null)
+            || ! str_contains(strtolower(self::stringValue($payload['apache_avro_registry_source'] ?? null)), 'crates.io')
+            || preg_match('/^[0-9a-f]{64}$/', self::stringValue($payload['apache_avro_registry_checksum_sha256'] ?? null)) !== 1) {
+            $failures = self::addSemanticFailure(
+                $failures,
+                'rust_sdk_payload_contract_invalid',
+                'Rust SDK lifecycle evidence must use the published Avro envelope and official apache-avro crate',
+            );
+        }
+
+        $stableReasons = self::stringList($outputs['stable_reasons'] ?? []);
+        foreach (['run_cancelled', 'run_terminated', 'historical_run_command_rejected', 'run_timeout'] as $reason) {
+            if (! in_array($reason, $stableReasons, true)) {
+                $failures = self::addSemanticFailure(
+                    $failures,
+                    'rust_sdk_stable_reason_missing',
+                    'Rust lifecycle evidence stable_reasons must include '.$reason,
+                );
+            }
+        }
+        $identities = self::arrayField($outputs, ['workflow_identities']) ?? [];
+        foreach (['instance_cancel', 'instance_terminate', 'selected_run_guard', 'typed_failed', 'typed_timed_out'] as $scenario) {
+            $matching = array_values(array_filter(
+                $identities,
+                static fn (mixed $identity): bool => is_array($identity)
+                    && self::normalizedText($identity['scenario'] ?? null) === $scenario
+                    && self::stringValue($identity['workflow_id'] ?? null) !== ''
+                    && self::stringValue($identity['run_id'] ?? null) !== '',
+            ));
+            if ($matching === []) {
+                $failures = self::addSemanticFailure(
+                    $failures,
+                    'rust_sdk_workflow_identity_missing',
+                    'Rust lifecycle evidence must retain workflow and run identity for '.$scenario,
+                );
+            }
+        }
+        $topology = self::arrayField($outputs, ['executor_topology']) ?? [];
+        if (($outputs['rust_shard_contract_version'] ?? null) !== 2
+            || ($outputs['shard_runner'] ?? null) !== 'published-rust-sdk-lifecycle-surface-probe'
+            || self::numberValue($outputs['shard_exit_status'] ?? null) !== 0.0) {
+            $failures = self::addSemanticFailure(
+                $failures,
+                'rust_sdk_shard_execution_invalid',
+                'Rust lifecycle evidence must identify the successful versioned shard executor',
+            );
+        }
+        if (($topology['server_http_process'] ?? null) !== 'exact_published_image'
+            || ($topology['scheduler_process'] ?? null) !== 'exact_published_image'
+            || ($topology['rust_executor'] ?? null) !== 'host_rust_container'
+            || ! self::truthy($topology['rust_executor_outside_server_image'] ?? null)) {
+            $failures = self::addSemanticFailure(
+                $failures,
+                'rust_sdk_executor_topology_invalid',
+                'Rust lifecycle evidence must prove exact-image HTTP and scheduler processes plus the external Rust executor',
+            );
+        }
+        $clusterInfo = self::arrayField($outputs, ['server_cluster_info']) ?? [];
+        $clusterJson = json_encode($clusterInfo);
+        if (! is_string($clusterJson) || ! str_contains($clusterJson, $expectedServerVersion)) {
+            $failures = self::addSemanticFailure(
+                $failures,
+                'rust_sdk_server_identity_not_observed',
+                'Rust lifecycle evidence must retain cluster-info observation of the pinned server version',
+            );
+        }
+
+        if (! self::isNonEmptyList($outputs['workflow_identities'] ?? null)
+            || ! self::isNonEmptyList($outputs['stable_reasons'] ?? null)
+            || ! is_array($outputs['scenario_outcomes'] ?? null)
+            || $outputs['scenario_outcomes'] === []) {
+            $failures = self::addSemanticFailure(
+                $failures,
+                'rust_sdk_machine_readable_evidence_missing',
+                'Rust SDK lifecycle evidence must record identities, per-scenario outcomes, and stable reasons',
+            );
+        }
+
+        return $failures;
+    }
+
+    /**
+     * @param array<string, mixed> $outputs
+     *
+     * @return list<array{code: string, reason: string}>
+     */
     private static function validateOperatorDiagnostics(array $outputs): array
     {
         $failures = [];
@@ -1541,7 +1814,7 @@ final class WorkflowLifecycleResultGate
     {
         $artifacts = array_keys($contract['artifact_policy']['install_channels'] ?? []);
         if ($artifacts === []) {
-            return ['server', 'cli', 'workflow-php', 'sdk-python', 'waterline'];
+            return ['server', 'cli', 'workflow-php', 'sdk-python', 'sdk-rust', 'waterline'];
         }
 
         return array_values(array_map(static fn (mixed $artifact): string => (string) $artifact, $artifacts));
@@ -1814,7 +2087,7 @@ final class WorkflowLifecycleResultGate
 
     private static function requiredFieldAllowsEmptyList(string $scenarioId, string $field): bool
     {
-        return in_array($scenarioId, ['php_sdk_lifecycle_surface', 'python_sdk_lifecycle_surface'], true)
+        return in_array($scenarioId, ['php_sdk_lifecycle_surface', 'python_sdk_lifecycle_surface', 'rust_sdk_lifecycle_surface'], true)
             && in_array($field, ['unsupported_cells', 'typed_errors'], true);
     }
 

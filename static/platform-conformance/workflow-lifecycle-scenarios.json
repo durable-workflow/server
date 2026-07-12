@@ -30,6 +30,7 @@
     "workflow_retry_backoff_or_refusal",
     "php_sdk_lifecycle_surface",
     "python_sdk_lifecycle_surface",
+    "rust_sdk_lifecycle_surface",
     "operator_diagnostics_surfaces"
   ],
   "scenarios": [
@@ -94,6 +95,12 @@
       "description": "The published Python SDK can exercise supported lifecycle cells, or unsupported cells produce documented typed errors.",
       "required_evidence": ["sdk", "covered_cells", "unsupported_cells", "typed_errors", "artifact_version"],
       "required_behavior": "python_sdk_exercises_supported_lifecycle_cells_or_refuses_unsupported_cells_with_typed_errors"
+    },
+    {
+      "id": "rust_sdk_lifecycle_surface",
+      "description": "The exact released Rust SDK crate exercises lifecycle behavior against the matching published server image with official Avro payload provenance.",
+      "required_evidence": ["sdk", "covered_cells", "unsupported_cells", "typed_errors", "artifact_version", "server_version", "server_cluster_info", "install_provenance", "workflow_identities", "scenario_outcomes", "stable_reasons", "payload_contract", "executor_topology", "rust_shard_contract_version", "shard_runner", "shard_exit_status"],
+      "required_behavior": "rust_sdk_exact_crate_exercises_lifecycle_against_the_matching_published_server_image"
     },
     {
       "id": "operator_diagnostics_surfaces",
