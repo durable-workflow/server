@@ -2859,6 +2859,8 @@ def answer_next_query_task(
     holder: dict[str, Any],
     workflow_condition_key: str | None = None,
     poll_timeout: float = 45.0,
+    ready_event: threading.Event | None = None,
+    capture_claim_eligibility: bool = False,
 ) -> None:
     try:
         deadline = time.time() + poll_timeout
@@ -2877,6 +2879,14 @@ def answer_next_query_task(
                 namespace,
                 worker_id,
             )
+            heartbeat_status = holder["heartbeat"].get("status_code")
+            if not isinstance(heartbeat_status, int) or heartbeat_status >= 400:
+                holder["error"] = f"query responder heartbeat failed: {holder['heartbeat']}"
+                return
+            holder["heartbeat_acknowledged_at"] = now()
+            holder["query_poll_ready_at"] = now()
+            if ready_event is not None:
+                ready_event.set()
             poll = http_json(
                 base_url,
                 api_path("worker", "query-tasks", "poll"),
@@ -2947,6 +2957,25 @@ def answer_next_query_task(
 
         holder["query_handler_invoked_at"] = now()
         holder["query_task"] = task
+        if capture_claim_eligibility:
+            try:
+                holder["worker_eligibility_when_claimed"] = worker_eligibility_sample(
+                    http_json(
+                        base_url,
+                        api_path("workers", worker_id),
+                        token=token,
+                        namespace=namespace,
+                        timeout=10,
+                    ),
+                    worker_id,
+                    task_queue,
+                )
+            except Exception as exc:  # noqa: BLE001 - query completion remains authoritative claim evidence.
+                holder["worker_eligibility_when_claimed"] = {
+                    "eligible": False,
+                    "error": f"{type(exc).__name__}: {exc}",
+                    "observed_at": now(),
+                }
         task_history_signal_order = increment_signal_amounts_from_history_events(task.get("history_events"))
         if task_history_signal_order:
             holder["history_signal_order"] = task_history_signal_order
@@ -3021,6 +3050,140 @@ def heartbeat_worker(
         worker=True,
         timeout=10,
     )
+
+
+class WorkerHeartbeatGuard:
+    def __init__(
+        self,
+        base_url: str,
+        token: str,
+        namespace: str,
+        worker_id: str,
+        log_file: Path,
+        interval_seconds: float = 5.0,
+    ) -> None:
+        self.base_url = base_url
+        self.token = token
+        self.namespace = namespace
+        self.worker_id = worker_id
+        self.log_file = log_file
+        self.interval_seconds = max(0.1, interval_seconds)
+        self.started_at: str | None = None
+        self.stopped_at: str | None = None
+        self.attempt_count = 0
+        self.success_count = 0
+        self.latest_success: dict[str, Any] | None = None
+        self.latest_failure: dict[str, Any] | None = None
+        self._lock = threading.Lock()
+        self._eligible = threading.Event()
+        self._stop = threading.Event()
+        self._thread: threading.Thread | None = None
+
+    def start(self) -> None:
+        if self._thread is not None:
+            raise RuntimeError(f"heartbeat guard for {self.worker_id} was already started")
+
+        self.started_at = now()
+        self._thread = threading.Thread(
+            target=self._run,
+            name=f"heartbeat-{self.worker_id}",
+            daemon=True,
+        )
+        self._thread.start()
+
+    def wait_until_eligible(self, timeout: float = 15.0) -> bool:
+        return self._eligible.wait(timeout)
+
+    def stop(self) -> None:
+        self._stop.set()
+        if self._thread is not None:
+            self._thread.join(timeout=15)
+        self.stopped_at = now()
+
+    def snapshot(self) -> dict[str, Any]:
+        with self._lock:
+            return {
+                "worker_id": self.worker_id,
+                "started_at": self.started_at,
+                "stopped_at": self.stopped_at,
+                "attempt_count": self.attempt_count,
+                "success_count": self.success_count,
+                "eligible": self._eligible.is_set(),
+                "latest_success": self.latest_success,
+                "latest_failure": self.latest_failure,
+            }
+
+    def _run(self) -> None:
+        while not self._stop.is_set():
+            attempted_at = now()
+            with self._lock:
+                self.attempt_count += 1
+
+            try:
+                response = heartbeat_worker(
+                    self.base_url,
+                    self.token,
+                    self.namespace,
+                    self.worker_id,
+                )
+                status_code = response.get("status_code")
+                if not isinstance(status_code, int) or status_code >= 400:
+                    raise RuntimeError(f"worker heartbeat was not acknowledged: {response}")
+
+                body = response.get("body") if isinstance(response.get("body"), dict) else {}
+                with self._lock:
+                    self.success_count += 1
+                    self.latest_success = {
+                        "attempted_at": attempted_at,
+                        "acknowledged_at": now(),
+                        "status_code": status_code,
+                        "acknowledged": body.get("acknowledged"),
+                        "heartbeat_interval_seconds": body.get("heartbeat_interval_seconds"),
+                        "stale_after_seconds": body.get("stale_after_seconds"),
+                    }
+                self._eligible.set()
+            except Exception as exc:  # noqa: BLE001 - retain heartbeat failures as runner evidence.
+                failure = {
+                    "attempted_at": attempted_at,
+                    "failed_at": now(),
+                    "error": f"{type(exc).__name__}: {exc}",
+                }
+                with self._lock:
+                    self.latest_failure = failure
+                log_line(self.log_file, f"worker heartbeat guard failed: {failure['error']}")
+
+            self._stop.wait(self.interval_seconds)
+
+
+def worker_eligibility_sample(
+    response: dict[str, Any],
+    worker_id: str,
+    task_queue: str,
+) -> dict[str, Any]:
+    body = response.get("body") if isinstance(response.get("body"), dict) else {}
+    capabilities = body.get("capabilities") if isinstance(body.get("capabilities"), list) else []
+    status_code = response.get("status_code")
+    eligible = (
+        isinstance(status_code, int)
+        and status_code < 400
+        and body.get("worker_id") == worker_id
+        and body.get("task_queue") == task_queue
+        and body.get("status") == "active"
+        and "query_tasks" in capabilities
+        and isinstance(body.get("last_heartbeat_at"), str)
+    )
+
+    return {
+        "eligible": eligible,
+        "status_code": status_code,
+        "worker_id": body.get("worker_id"),
+        "task_queue": body.get("task_queue"),
+        "status": body.get("status"),
+        "capabilities": capabilities,
+        "last_heartbeat_at": body.get("last_heartbeat_at"),
+        "stale_after_seconds": body.get("stale_after_seconds"),
+        "observed_at": now(),
+    }
 
 
 def complete_workflow_task(
@@ -7663,6 +7826,7 @@ def run_baseline_probe(result_dir: Path) -> tuple[dict[str, Any] | None, dict[st
     partial_evidence: dict[str, Any] | None = None
     generated_scenarios: list[str] = []
     baseline_checkpoint_path = result_dir / "signals-queries-baseline-cell-results.json"
+    heartbeat_guard: WorkerHeartbeatGuard | None = None
 
     try:
         if not isinstance(base_url, str) or base_url.strip() == "":
@@ -7958,6 +8122,7 @@ def run_baseline_probe(result_dir: Path) -> tuple[dict[str, Any] | None, dict[st
         task_queue = f"signals-queries-baseline-{suffix}"
         worker_id = f"signals-queries-baseline-worker-{suffix}"
         workflow_type = "conformance.counter"
+        worker_process_started_at = now()
 
         register = http_json(
             base_url,
@@ -7970,6 +8135,9 @@ def run_baseline_probe(result_dir: Path) -> tuple[dict[str, Any] | None, dict[st
                 "sdk_version": "signals-queries-baseline-probe",
                 "supported_workflow_types": [workflow_type],
                 "capabilities": ["query_tasks"],
+                "process_metrics": {
+                    "process_started_at": worker_process_started_at,
+                },
                 "workflow_command_contracts": {
                     workflow_type: command_contract(),
                 },
@@ -7981,6 +8149,19 @@ def run_baseline_probe(result_dir: Path) -> tuple[dict[str, Any] | None, dict[st
         )
         if int(register["status_code"]) >= 400:
             raise RuntimeError(f"baseline worker registration failed: {register}")
+
+        heartbeat_guard = WorkerHeartbeatGuard(
+            base_url,
+            token,
+            namespace,
+            worker_id,
+            log_file,
+        )
+        heartbeat_guard.start()
+        if not heartbeat_guard.wait_until_eligible():
+            raise RuntimeError(
+                f"baseline worker heartbeat guard did not establish eligibility: {heartbeat_guard.snapshot()}"
+            )
 
         def optional_sample(field: str, callback: Any) -> Any:
             try:
@@ -8260,6 +8441,8 @@ def run_baseline_probe(result_dir: Path) -> tuple[dict[str, Any] | None, dict[st
             "namespace": namespace,
             "worker_id": worker_id,
             "task_queue": task_queue,
+            "worker_process_started_at": worker_process_started_at,
+            "worker_registration": register,
             "published_artifact_versions": versions,
             "artifact_sources": sources,
         }
@@ -8347,6 +8530,8 @@ def run_baseline_probe(result_dir: Path) -> tuple[dict[str, Any] | None, dict[st
             ordered_outputs["contract_expected_total"] = sum(rapid_inputs)
             ordered_outputs["expected_total"] = sum(accepted_signal_inputs)
             ordered_query_holder: dict[str, Any] = {}
+            ordered_query_ready = threading.Event()
+
             def ordered_query_result_from_task(task: dict[str, Any], holder: dict[str, Any]) -> int:
                 query_history_order = increment_signal_amounts_from_history_events(task.get("history_events"))
                 if query_history_order:
@@ -8368,23 +8553,32 @@ def run_baseline_probe(result_dir: Path) -> tuple[dict[str, Any] | None, dict[st
                     ordered_query_holder,
                     f"{ordered_workflow_id}-query",
                 ),
+                kwargs={
+                    "ready_event": ordered_query_ready,
+                    "capture_claim_eligibility": True,
+                },
                 daemon=True,
             )
             ordered_responder.start()
             ordered_query: dict[str, Any] | None = None
             ordered_query_error: Exception | None = None
-            try:
-                ordered_query = http_json(
-                    base_url,
-                    api_path("workflows", ordered_workflow_id, "query", "state"),
-                    method="POST",
-                    body={},
-                    token=token,
-                    namespace=namespace,
-                    timeout=60,
+            if not ordered_query_ready.wait(timeout=15):
+                ordered_query_error = RuntimeError(
+                    "ordered query responder did not acknowledge a heartbeat before the query request"
                 )
-            except Exception as exc:  # noqa: BLE001 - record the exact public query failure.
-                ordered_query_error = exc
+            else:
+                try:
+                    ordered_query = http_json(
+                        base_url,
+                        api_path("workflows", ordered_workflow_id, "query", "state"),
+                        method="POST",
+                        body={},
+                        token=token,
+                        namespace=namespace,
+                        timeout=60,
+                    )
+                except Exception as exc:  # noqa: BLE001 - record the exact public query failure.
+                    ordered_query_error = exc
             ordered_responder.join(timeout=20)
             if ordered_responder.is_alive() or ordered_query_holder.get("error"):
                 responder_error = ordered_query_holder.get("error", "timeout")
@@ -8399,6 +8593,48 @@ def run_baseline_probe(result_dir: Path) -> tuple[dict[str, Any] | None, dict[st
                 ordered_query_result = None
             else:
                 ordered_query_result = sample_result_value(ordered_query or {})
+            claimed_query_task = ordered_query_holder.get("query_task")
+            if not isinstance(claimed_query_task, dict):
+                claimed_query_task = {}
+            claim_eligibility = ordered_query_holder.get("worker_eligibility_when_claimed")
+            if not isinstance(claim_eligibility, dict):
+                claim_eligibility = {"eligible": False}
+            completed_query = ordered_query_holder.get("complete")
+            if not isinstance(completed_query, dict):
+                completed_query = {}
+            ordered_responder_evidence = {
+                "worker_id": worker_id,
+                "task_queue": task_queue,
+                "process_started_at": worker_process_started_at,
+                "heartbeat_guard": heartbeat_guard.snapshot() if heartbeat_guard is not None else None,
+                "heartbeat_before_poll": ordered_query_holder.get("heartbeat"),
+                "heartbeat_acknowledged_at": ordered_query_holder.get("heartbeat_acknowledged_at"),
+                "query_poll_ready_at": ordered_query_holder.get("query_poll_ready_at"),
+                "query_claimed_at": ordered_query_holder.get("query_handler_invoked_at"),
+                "claim_eligibility": claim_eligibility,
+                "claimed_query_task": {
+                    "query_task_id": claimed_query_task.get("query_task_id"),
+                    "query_task_attempt": claimed_query_task.get("query_task_attempt"),
+                    "workflow_id": claimed_query_task.get("workflow_id"),
+                    "run_id": claimed_query_task.get("run_id"),
+                    "query_name": claimed_query_task.get("query_name"),
+                    "task_queue": claimed_query_task.get("task_queue"),
+                    "lease_owner": claimed_query_task.get("lease_owner"),
+                },
+                "query_task_completion": response_sample(completed_query) if completed_query else None,
+            }
+            ordered_responder_evidence["eligible_when_claimed"] = (
+                claim_eligibility.get("eligible") is True
+                and isinstance(claimed_query_task.get("query_task_id"), str)
+                and claimed_query_task.get("workflow_id") == ordered_workflow_id
+                and claimed_query_task.get("run_id") == ordered_run_id
+                and claimed_query_task.get("query_name") == "state"
+                and claimed_query_task.get("task_queue") == task_queue
+                and claimed_query_task.get("lease_owner") == worker_id
+                and isinstance(completed_query.get("status_code"), int)
+                and int(completed_query["status_code"]) < 400
+            )
+            ordered_outputs["ordered_query_responder"] = ordered_responder_evidence
             query_task_history_order = ordered_query_holder.get("history_signal_order")
             if (
                 isinstance(query_task_history_order, list)
@@ -8423,6 +8659,10 @@ def run_baseline_probe(result_dir: Path) -> tuple[dict[str, Any] | None, dict[st
             if history_signal_order != accepted_signal_inputs:
                 raise RuntimeError(
                     f"ordered signal history order {history_signal_order}, expected {accepted_signal_inputs}"
+                )
+            if ordered_responder_evidence["eligible_when_claimed"] is not True:
+                raise RuntimeError(
+                    f"ordered query responder eligibility was not proved: {ordered_responder_evidence}"
                 )
             if ordered_query_result != sum(accepted_signal_inputs):
                 raise RuntimeError(
@@ -8662,6 +8902,8 @@ def run_baseline_probe(result_dir: Path) -> tuple[dict[str, Any] | None, dict[st
             "partial_cell_evidence_preserved": partial_evidence is not None,
         }
     finally:
+        if heartbeat_guard is not None:
+            heartbeat_guard.stop()
         cleanup_labeled_docker_runs(log_file)
         cleanup_commands_deterministically(cleanup_commands)
         if not env_flag("DW_SIGNALS_QUERIES_KEEP_RUN_ROOT", False):
@@ -10220,6 +10462,8 @@ def exact_python_smoke_present() -> bool:
 
 def exact_ordered_delivery_smoke_present() -> bool:
     observed = {
+        "workflow_id": smoke_field("workflow_id", "ordered_signal_delivery"),
+        "run_id": smoke_field("run_id", "ordered_signal_delivery"),
         "rapid_increment_inputs": smoke_field("rapid_increment_inputs", "ordered_signal_delivery"),
         "accepted_signal_inputs": smoke_field("accepted_signal_inputs", "ordered_signal_delivery"),
         "accepted_signal_total": smoke_field("accepted_signal_total", "ordered_signal_delivery"),
@@ -10227,6 +10471,9 @@ def exact_ordered_delivery_smoke_present() -> bool:
         "history_signal_order": smoke_field("history_signal_order", "ordered_signal_delivery"),
         "final_run_status": smoke_field("final_run_status", "ordered_signal_delivery"),
     }
+    ordered_query_responder = smoke_field("ordered_query_responder", "ordered_signal_delivery")
+    if ordered_query_responder is not MISSING:
+        observed["ordered_query_responder"] = ordered_query_responder
 
     return ordered_delivery_observations_agree(observed)
 
@@ -10593,6 +10840,63 @@ def ordered_delivery_reference_inputs(observed: dict[str, Any]) -> list[int] | N
     return integer_sequence(evidence_lookup(observed, "rapid_increment_inputs"))
 
 
+def ordered_query_responder_satisfied(observed: dict[str, Any]) -> bool:
+    responder = evidence_lookup(observed, "ordered_query_responder")
+    if not isinstance(responder, dict):
+        return False
+
+    worker_id = responder.get("worker_id")
+    task_queue = responder.get("task_queue")
+    workflow_id = evidence_lookup(observed, "workflow_id")
+    run_id = evidence_lookup(observed, "run_id")
+    claim_eligibility = responder.get("claim_eligibility")
+    claimed_query_task = responder.get("claimed_query_task")
+    completion = responder.get("query_task_completion")
+    capabilities = (
+        claim_eligibility.get("capabilities")
+        if isinstance(claim_eligibility, dict)
+        and isinstance(claim_eligibility.get("capabilities"), list)
+        else []
+    )
+    completion_status = (
+        integer_value(completion.get("status_code"))
+        if isinstance(completion, dict)
+        else None
+    )
+
+    return (
+        isinstance(worker_id, str)
+        and worker_id.strip() != ""
+        and isinstance(task_queue, str)
+        and task_queue.strip() != ""
+        and isinstance(workflow_id, str)
+        and workflow_id.strip() != ""
+        and isinstance(run_id, str)
+        and run_id.strip() != ""
+        and evidence_true(responder.get("eligible_when_claimed"))
+        and isinstance(responder.get("query_claimed_at"), str)
+        and responder["query_claimed_at"].strip() != ""
+        and isinstance(claim_eligibility, dict)
+        and evidence_true(claim_eligibility.get("eligible"))
+        and claim_eligibility.get("worker_id") == worker_id
+        and claim_eligibility.get("task_queue") == task_queue
+        and claim_eligibility.get("status") == "active"
+        and "query_tasks" in capabilities
+        and isinstance(claim_eligibility.get("last_heartbeat_at"), str)
+        and claim_eligibility["last_heartbeat_at"].strip() != ""
+        and isinstance(claimed_query_task, dict)
+        and isinstance(claimed_query_task.get("query_task_id"), str)
+        and claimed_query_task["query_task_id"].strip() != ""
+        and claimed_query_task.get("workflow_id") == workflow_id
+        and claimed_query_task.get("run_id") == run_id
+        and claimed_query_task.get("query_name") == "state"
+        and claimed_query_task.get("task_queue") == task_queue
+        and claimed_query_task.get("lease_owner") == worker_id
+        and completion_status is not None
+        and completion_status < 400
+    )
+
+
 def ordered_delivery_observations_agree(observed: dict[str, Any]) -> bool:
     rapid_inputs = integer_sequence(evidence_lookup(observed, "rapid_increment_inputs"))
     accepted_inputs = integer_sequence(evidence_lookup(observed, "accepted_signal_inputs"))
@@ -10608,6 +10912,7 @@ def ordered_delivery_observations_agree(observed: dict[str, Any]) -> bool:
         and queried_total == sum(accepted_inputs)
         and history_signal_order == accepted_inputs
         and required_evidence_satisfied("final_run_status", final_run_status)
+        and ordered_query_responder_satisfied(observed)
     )
 
 
@@ -11214,12 +11519,15 @@ BASELINE_CURRENT_EVIDENCE_FIELDS = {
         "wire_envelope_compatibility",
     ],
     "ordered_signal_delivery": [
+        "workflow_id",
+        "run_id",
         "rapid_increment_inputs",
         "accepted_signal_inputs",
         "accepted_signal_total",
         "queried_total",
         "history_signal_order",
         "final_run_status",
+        "ordered_query_responder",
     ],
     "dedup_contract_observation": [
         "client_side_key_support",
@@ -11381,13 +11689,20 @@ def current_evidence_candidate_status(scenario: str) -> str:
 
 def ordered_delivery_missing_current_evidence(observed: dict[str, Any]) -> list[str]:
     missing = []
+    workflow_id = evidence_lookup(observed, "workflow_id")
+    run_id = evidence_lookup(observed, "run_id")
     rapid_inputs = evidence_lookup(observed, "rapid_increment_inputs")
     accepted_inputs = evidence_lookup(observed, "accepted_signal_inputs")
     accepted_signal_total = evidence_lookup(observed, "accepted_signal_total")
     queried_total = evidence_lookup(observed, "queried_total")
     history_signal_order = evidence_lookup(observed, "history_signal_order")
     final_run_status = evidence_lookup(observed, "final_run_status")
+    ordered_query_responder = evidence_lookup(observed, "ordered_query_responder")
 
+    if not required_evidence_satisfied("workflow_id", workflow_id):
+        missing.append("workflow_id")
+    if not required_evidence_satisfied("run_id", run_id):
+        missing.append("run_id")
     if rapid_inputs is MISSING:
         missing.append("rapid_increment_inputs")
     if accepted_inputs is MISSING:
@@ -11400,6 +11715,10 @@ def ordered_delivery_missing_current_evidence(observed: dict[str, Any]) -> list[
         missing.append("history_signal_order")
     if not required_evidence_satisfied("final_run_status", final_run_status):
         missing.append("final_run_status")
+    if ordered_query_responder is MISSING:
+        missing.append("ordered_query_responder")
+    elif not ordered_query_responder_satisfied(observed):
+        missing.append("ordered_query_responder.eligible_when_claimed")
 
     return missing
 
@@ -12365,6 +12684,8 @@ for scenario in required_scenarios:
     elif ordered_delivery_pass and scenario == "ordered_signal_delivery":
         status = "pass"
         observed = {
+            "workflow_id": smoke_field("workflow_id", scenario),
+            "run_id": smoke_field("run_id", scenario),
             "rapid_increment_inputs": smoke_field("rapid_increment_inputs", scenario),
             "accepted_signal_inputs": smoke_field("accepted_signal_inputs", scenario),
             "accepted_signal_total": smoke_field("accepted_signal_total", scenario),
@@ -12373,6 +12694,9 @@ for scenario in required_scenarios:
             "final_run_status": smoke_field("final_run_status", scenario),
             "external_smoke_evidence": smoke_descriptor,
         }
+        ordered_query_responder = smoke_field("ordered_query_responder", scenario)
+        if ordered_query_responder is not MISSING:
+            observed["ordered_query_responder"] = ordered_query_responder
         result = {
             "scenario_id": scenario,
             "status": status,

@@ -14,7 +14,7 @@ class SignalQueryRuntimeContractTest extends TestCase
         $manifest = SignalQueryRuntimeContract::manifest();
 
         $this->assertSame('durable-workflow.v2.signal-query-runtime.contract', $manifest['schema']);
-        $this->assertSame(33, SignalQueryRuntimeContract::VERSION);
+        $this->assertSame(34, SignalQueryRuntimeContract::VERSION);
         $this->assertSame(SignalQueryRuntimeContract::VERSION, $manifest['version']);
         $this->assertSame('durable-workflow.v2.signal-query-runtime.result', $manifest['result_schema']);
         $this->assertSame('signal_query_runtime_contract', $manifest['fixture_category']);
@@ -702,12 +702,15 @@ PY);
         );
         $this->assertSame(
             [
+                'workflow_id',
+                'run_id',
                 'rapid_increment_inputs',
                 'accepted_signal_inputs',
                 'accepted_signal_total',
                 'queried_total',
                 'history_signal_order',
                 'final_run_status',
+                'ordered_query_responder',
             ],
             $hostRunner['evidence_shards']['ordered_signal_delivery']['current_evidence_fields'],
         );
@@ -2307,6 +2310,270 @@ PY);
         $this->assertSame(55, $result['complete_bodies'][0]['result']);
     }
 
+    public function test_host_runner_heartbeat_guard_keeps_synthetic_worker_eligible(): void
+    {
+        $result = $this->runSignalQueryRunnerPythonSnippet(<<<'PY'
+heartbeat_calls = []
+
+def fake_heartbeat_worker(base_url, token, namespace, worker_id):
+    heartbeat_calls.append(worker_id)
+    return {
+        "status_code": 200,
+        "body": {
+            "worker_id": worker_id,
+            "acknowledged": True,
+            "heartbeat_interval_seconds": 10,
+            "stale_after_seconds": 30,
+        },
+    }
+
+globals()["heartbeat_worker"] = fake_heartbeat_worker
+guard = WorkerHeartbeatGuard(
+    "http://unused",
+    "token",
+    "default",
+    "ordered-worker",
+    Path("/tmp/signals-queries-heartbeat-guard-test.log"),
+    interval_seconds=0.01,
+)
+guard.start()
+eligible = guard.wait_until_eligible(timeout=1)
+deadline = time.time() + 1
+while len(heartbeat_calls) < 3 and time.time() < deadline:
+    time.sleep(0.01)
+before_stop = guard.snapshot()
+guard.stop()
+count_after_stop = len(heartbeat_calls)
+time.sleep(0.03)
+after_stop = guard.snapshot()
+
+print(json.dumps({
+    "eligible": eligible,
+    "heartbeat_count": count_after_stop,
+    "count_stable_after_stop": len(heartbeat_calls) == count_after_stop,
+    "success_count": before_stop["success_count"],
+    "latest_success": before_stop["latest_success"],
+    "stopped_at": after_stop["stopped_at"],
+}, sort_keys=True))
+PY);
+
+        $this->assertTrue($result['eligible']);
+        $this->assertGreaterThanOrEqual(3, $result['heartbeat_count']);
+        $this->assertSame($result['heartbeat_count'], $result['success_count']);
+        $this->assertTrue($result['count_stable_after_stop']);
+        $this->assertTrue($result['latest_success']['acknowledged']);
+        $this->assertSame(30, $result['latest_success']['stale_after_seconds']);
+        $this->assertNotNull($result['stopped_at']);
+    }
+
+    public function test_host_runner_query_responder_records_claim_time_worker_eligibility(): void
+    {
+        $result = $this->runSignalQueryRunnerPythonSnippet(<<<'PY'
+ready = threading.Event()
+events = []
+
+def fake_http_json(base_url, path, **kwargs):
+    if path.endswith("/worker/heartbeat"):
+        events.append("heartbeat")
+        return {"status_code": 200, "body": {"acknowledged": True}}
+
+    if path.endswith("/worker/query-tasks/poll"):
+        events.append("poll")
+        assert ready.is_set()
+        return {
+            "status_code": 200,
+            "body": {
+                "task": {
+                    "query_task_id": "ordered-query-task-1",
+                    "query_task_attempt": 1,
+                    "workflow_id": "wf-ordered",
+                    "run_id": "run-ordered",
+                    "query_name": "state",
+                    "task_queue": "ordered-queue",
+                    "lease_owner": "ordered-worker",
+                },
+            },
+        }
+
+    if path.endswith("/workers/ordered-worker"):
+        events.append("eligibility")
+        return {
+            "status_code": 200,
+            "body": {
+                "worker_id": "ordered-worker",
+                "task_queue": "ordered-queue",
+                "status": "active",
+                "capabilities": ["query_tasks"],
+                "last_heartbeat_at": "2026-07-12T12:00:00Z",
+                "stale_after_seconds": 30,
+            },
+        }
+
+    if path.endswith("/worker/query-tasks/ordered-query-task-1/complete"):
+        events.append("complete")
+        return {"status_code": 200, "body": {"outcome": "completed"}}
+
+    raise AssertionError(f"unexpected path {path}")
+
+globals()["http_json"] = fake_http_json
+holder = {}
+answer_next_query_task(
+    "http://unused",
+    "token",
+    "default",
+    "ordered-worker",
+    "ordered-queue",
+    55,
+    Path("/tmp/signals-queries-query-eligibility-test.log"),
+    holder,
+    poll_timeout=2,
+    ready_event=ready,
+    capture_claim_eligibility=True,
+)
+
+print(json.dumps({
+    "events": events,
+    "ready": ready.is_set(),
+    "heartbeat_acknowledged_at": holder.get("heartbeat_acknowledged_at"),
+    "query_task": holder.get("query_task"),
+    "eligibility": holder.get("worker_eligibility_when_claimed"),
+    "complete": holder.get("complete"),
+    "error": holder.get("error"),
+}, sort_keys=True))
+PY);
+
+        $this->assertNull($result['error']);
+        $this->assertTrue($result['ready']);
+        $this->assertSame(['heartbeat', 'poll', 'eligibility', 'complete'], $result['events']);
+        $this->assertNotNull($result['heartbeat_acknowledged_at']);
+        $this->assertSame('ordered-worker', $result['query_task']['lease_owner']);
+        $this->assertTrue($result['eligibility']['eligible']);
+        $this->assertSame('active', $result['eligibility']['status']);
+        $this->assertSame(200, $result['complete']['status_code']);
+    }
+
+    public function test_host_runner_rejects_ordered_delivery_when_responder_was_not_eligible_at_claim(): void
+    {
+        $result = $this->runSignalQueryRunnerPythonSnippet(<<<'PY'
+observed = {
+    "workflow_id": "wf-ordered",
+    "run_id": "run-ordered",
+    "rapid_increment_inputs": list(range(1, 11)),
+    "accepted_signal_inputs": list(range(1, 11)),
+    "accepted_signal_total": 55,
+    "queried_total": 55,
+    "history_signal_order": list(range(1, 11)),
+    "final_run_status": "waiting",
+}
+missing_rejected = ordered_delivery_observations_agree(observed)
+missing_evidence = ordered_delivery_missing_current_evidence(observed)
+observed["ordered_query_responder"] = {
+    "worker_id": "ordered-worker",
+    "task_queue": "ordered-queue",
+    "query_claimed_at": "2026-07-12T12:00:01Z",
+    "eligible_when_claimed": False,
+    "claim_eligibility": {
+        "eligible": True,
+        "worker_id": "ordered-worker",
+        "task_queue": "ordered-queue",
+        "status": "active",
+        "capabilities": ["query_tasks"],
+        "last_heartbeat_at": "2026-07-12T12:00:00Z",
+    },
+    "claimed_query_task": {
+        "query_task_id": "ordered-query-task-1",
+        "workflow_id": "wf-ordered",
+        "run_id": "run-ordered",
+        "query_name": "state",
+        "task_queue": "ordered-queue",
+        "lease_owner": "ordered-worker",
+    },
+    "query_task_completion": {"status_code": 200},
+}
+ineligible_rejected = ordered_delivery_observations_agree(observed)
+observed["ordered_query_responder"]["eligible_when_claimed"] = True
+accepted = ordered_delivery_observations_agree(observed)
+
+print(json.dumps({
+    "missing_rejected": missing_rejected,
+    "missing_evidence": missing_evidence,
+    "ineligible_rejected": ineligible_rejected,
+    "accepted": accepted,
+}, sort_keys=True))
+PY);
+
+        $this->assertFalse($result['missing_rejected']);
+        $this->assertContains('ordered_query_responder', $result['missing_evidence']);
+        $this->assertFalse($result['ineligible_rejected']);
+        $this->assertTrue($result['accepted']);
+    }
+
+    public function test_host_runner_rejects_ordered_responder_claim_for_different_query_identity(): void
+    {
+        $result = $this->runSignalQueryRunnerPythonSnippet(<<<'PY'
+observed = {
+    "workflow_id": "wf-ordered",
+    "run_id": "run-ordered",
+    "rapid_increment_inputs": list(range(1, 11)),
+    "accepted_signal_inputs": list(range(1, 11)),
+    "accepted_signal_total": 55,
+    "queried_total": 55,
+    "history_signal_order": list(range(1, 11)),
+    "final_run_status": "waiting",
+    "ordered_query_responder": {
+        "worker_id": "ordered-worker",
+        "task_queue": "ordered-queue",
+        "query_claimed_at": "2026-07-12T12:00:01Z",
+        "eligible_when_claimed": True,
+        "claim_eligibility": {
+            "eligible": True,
+            "worker_id": "ordered-worker",
+            "task_queue": "ordered-queue",
+            "status": "active",
+            "capabilities": ["query_tasks"],
+            "last_heartbeat_at": "2026-07-12T12:00:00Z",
+        },
+        "claimed_query_task": {
+            "query_task_id": "ordered-query-task-1",
+            "workflow_id": "wf-ordered",
+            "run_id": "run-ordered",
+            "query_name": "state",
+            "task_queue": "ordered-queue",
+            "lease_owner": "ordered-worker",
+        },
+        "query_task_completion": {"status_code": 200},
+    },
+}
+matching_claim_accepted = ordered_delivery_observations_agree(observed)
+mismatches = {}
+for field, unrelated_value in {
+    "workflow_id": "wf-unrelated",
+    "run_id": "run-unrelated",
+    "query_name": "unrelated-query",
+}.items():
+    claimed = observed["ordered_query_responder"]["claimed_query_task"]
+    expected_value = claimed[field]
+    claimed[field] = unrelated_value
+    mismatches[field] = ordered_delivery_observations_agree(observed)
+    claimed[field] = expected_value
+
+print(json.dumps({
+    "matching_claim_accepted": matching_claim_accepted,
+    "mismatches": mismatches,
+}, sort_keys=True))
+PY);
+
+        $this->assertTrue($result['matching_claim_accepted']);
+        $this->assertSame(
+            [
+                'query_name' => false,
+                'run_id' => false,
+                'workflow_id' => false,
+            ],
+            $result['mismatches'],
+        );
+    }
+
     public function test_host_runner_query_responder_processes_pending_workflow_task_before_query_task(): void
     {
         $result = $this->runSignalQueryRunnerPythonSnippet(<<<'PY'
@@ -2656,12 +2923,15 @@ PY);
             'cli_signal_and_query' => true,
             'sdk_python_signal_and_query' => true,
             'immediate_repeat_query_consistency' => true,
+            'workflow_id' => 'wf-ordered',
+            'run_id' => 'run-ordered',
             'rapid_increment_inputs' => [1, 2, 3, 4, 5, 6, 7, 8, 9, 10],
             'accepted_signal_inputs' => [1, 2, 3, 4, 5, 6, 7, 8, 9, 10],
             'accepted_signal_total' => 55,
             'queried_total' => 55,
             'history_signal_order' => [1, 2, 3, 5, 4, 6, 7, 8, 9, 10],
             'final_run_status' => 'waiting',
+            'ordered_query_responder' => $this->orderedQueryResponderEvidence(),
         ]);
 
         $this->assertSame('pass', $result['scenario_results']['python_worker_cli_and_sdk_baseline']['status']);
@@ -2693,12 +2963,15 @@ PY);
             'cli_signal_and_query' => true,
             'sdk_python_signal_and_query' => true,
             'immediate_repeat_query_consistency' => true,
+            'workflow_id' => 'wf-ordered',
+            'run_id' => 'run-ordered',
             'rapid_increment_inputs' => [1, 2, 3, 4, 5, 6, 7, 8, 9, 10],
             'accepted_signal_inputs' => [1, 2, 3, 4, 5, 6, 7, 8, 9, 10],
             'accepted_signal_total' => 55,
             'queried_total' => 55,
             'history_signal_order' => [1, 2, 3, 4, 5, 6, 7, 8, 9, 10],
             'final_run_status' => 'waiting',
+            'ordered_query_responder' => $this->orderedQueryResponderEvidence(),
         ]);
         $result = $run['result'];
         $record = $run['record'];
@@ -2713,12 +2986,15 @@ PY);
         );
         $this->assertEquals(
             [
+                'workflow_id' => 'wf-ordered',
+                'run_id' => 'run-ordered',
                 'rapid_increment_inputs' => [1, 2, 3, 4, 5, 6, 7, 8, 9, 10],
                 'accepted_signal_inputs' => [1, 2, 3, 4, 5, 6, 7, 8, 9, 10],
                 'accepted_signal_total' => 55,
                 'queried_total' => 55,
                 'history_signal_order' => [1, 2, 3, 4, 5, 6, 7, 8, 9, 10],
                 'final_run_status' => 'waiting',
+                'ordered_query_responder' => $this->orderedQueryResponderEvidence(),
             ],
             $record['ordered_signal_delivery_evidence'] ?? null,
         );
@@ -3504,12 +3780,15 @@ PY);
 
         $expectedMissing = [
             'ordered_signal_delivery' => [
+                'workflow_id',
+                'run_id',
                 'rapid_increment_inputs',
                 'accepted_signal_inputs',
                 'accepted_signal_total',
                 'queried_total',
                 'history_signal_order',
                 'final_run_status',
+                'ordered_query_responder',
             ],
             'dedup_contract_observation' => [
                 'client_side_key_support',
@@ -6655,6 +6934,38 @@ PY);
     }
 
     /**
+     * @return array<string, mixed>
+     */
+    private function orderedQueryResponderEvidence(): array
+    {
+        return [
+            'worker_id' => 'ordered-worker',
+            'task_queue' => 'ordered-queue',
+            'query_claimed_at' => '2026-07-12T12:00:01Z',
+            'eligible_when_claimed' => true,
+            'claim_eligibility' => [
+                'eligible' => true,
+                'worker_id' => 'ordered-worker',
+                'task_queue' => 'ordered-queue',
+                'status' => 'active',
+                'capabilities' => ['query_tasks'],
+                'last_heartbeat_at' => '2026-07-12T12:00:00Z',
+            ],
+            'claimed_query_task' => [
+                'query_task_id' => 'ordered-query-task-1',
+                'workflow_id' => 'wf-ordered',
+                'run_id' => 'run-ordered',
+                'query_name' => 'state',
+                'task_queue' => 'ordered-queue',
+                'lease_owner' => 'ordered-worker',
+            ],
+            'query_task_completion' => [
+                'status_code' => 200,
+            ],
+        ];
+    }
+
+    /**
      * @param array<string, mixed> $result
      *
      * @return array<string, mixed>
@@ -6951,12 +7262,15 @@ PY);
             'failed_query_did_not_change_later_answer' => true,
         ];
         $scenarioResults['ordered_signal_delivery']['observed_outputs'] = [
+            'workflow_id' => 'wf-ordered',
+            'run_id' => 'run-ordered',
             'rapid_increment_inputs' => [1, 2, 3, 4, 5, 6, 7, 8, 9, 10],
             'accepted_signal_inputs' => [1, 2, 3, 4, 5, 6, 7, 8, 9, 10],
             'accepted_signal_total' => 55,
             'queried_total' => 55,
             'history_signal_order' => [1, 2, 3, 4, 5, 6, 7, 8, 9, 10],
             'final_run_status' => 'waiting',
+            'ordered_query_responder' => $this->orderedQueryResponderEvidence(),
         ];
         $scenarioResults['dedup_contract_observation']['observed_outputs'] = [
             'client_side_key_support' => false,
