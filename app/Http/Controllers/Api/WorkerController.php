@@ -7,11 +7,13 @@ use App\Models\WorkerRegistration;
 use App\Support\BackendLockPressure;
 use App\Support\ExternalPayloadStorageUnavailable;
 use App\Support\HistoryRetentionEnforcer;
+use App\Support\LongPollCapacityExhaustedException;
 use App\Support\NamespaceExternalPayloadStorage;
 use App\Support\NamespaceWorkflowScope;
 use App\Support\QueryTaskQueueUnavailableException;
 use App\Support\SearchAttributeValueValidator;
 use App\Support\ServiceModeTimerDispatcher;
+use App\Support\WorkerPollBackpressure;
 use App\Support\WorkerPollFence;
 use App\Support\WorkerProtocol;
 use App\Support\WorkerTerminalEventAttribution;
@@ -993,6 +995,16 @@ class WorkerController
                 timeoutSeconds: $timeoutSeconds,
             );
         } catch (\Throwable $exception) {
+            if ($exception instanceof LongPollCapacityExhaustedException) {
+                return WorkerPollBackpressure::response(
+                    'workflow_task',
+                    $namespace,
+                    $validated['task_queue'],
+                    $exception,
+                    is_string($worker->runtime) ? $worker->runtime : null,
+                );
+            }
+
             if (BackendLockPressure::is($exception)) {
                 return BackendLockPressure::workerPollResponse(
                     'workflow_task',
@@ -2116,6 +2128,16 @@ class WorkerController
                 'task_queue' => $validated['task_queue'],
             ], 503);
         } catch (\Throwable $exception) {
+            if ($exception instanceof LongPollCapacityExhaustedException) {
+                return WorkerPollBackpressure::response(
+                    'query_task',
+                    $namespace,
+                    $validated['task_queue'],
+                    $exception,
+                    is_string($worker->runtime) ? $worker->runtime : null,
+                );
+            }
+
             if (BackendLockPressure::is($exception)) {
                 return BackendLockPressure::workerPollResponse(
                     'query_task',

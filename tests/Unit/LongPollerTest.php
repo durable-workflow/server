@@ -2,8 +2,9 @@
 
 namespace Tests\Unit;
 
-use App\Support\LongPollSignalStore;
+use App\Support\LongPollCapacityExhaustedException;
 use App\Support\LongPoller;
+use App\Support\LongPollSignalStore;
 use App\Support\LongPollWaitSlotStore;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Tests\TestCase;
@@ -206,7 +207,7 @@ class LongPollerTest extends TestCase
         $this->assertSame(1, $poller->pauseCalls);
     }
 
-    public function test_it_returns_immediate_probe_result_when_worker_wait_slots_are_exhausted(): void
+    public function test_it_backpressures_when_worker_wait_slots_are_exhausted(): void
     {
         config([
             'server.polling.max_concurrent_waits' => 1,
@@ -232,22 +233,27 @@ class LongPollerTest extends TestCase
         };
 
         try {
-            $result = $poller->until(
-                function () use (&$probeCount): ?string {
-                    $probeCount++;
+            try {
+                $poller->until(
+                    function () use (&$probeCount): ?string {
+                        $probeCount++;
 
-                    return null;
-                },
-                static fn (?string $value): bool => $value === 'ready',
-                timeoutSeconds: 1,
-                intervalMilliseconds: 5,
-                reserveWorkerWaitSlot: true,
-            );
+                        return null;
+                    },
+                    static fn (?string $value): bool => $value === 'ready',
+                    timeoutSeconds: 1,
+                    intervalMilliseconds: 5,
+                    reserveWorkerWaitSlot: true,
+                );
+
+                $this->fail('An exhausted long-poll wait pool must apply backpressure.');
+            } catch (LongPollCapacityExhaustedException $exception) {
+                $this->assertSame('worker', $exception->pool);
+            }
         } finally {
             $heldSlot->release();
         }
 
-        $this->assertNull($result);
         $this->assertSame(1, $probeCount);
         $this->assertSame(0, $poller->pauseCalls);
     }

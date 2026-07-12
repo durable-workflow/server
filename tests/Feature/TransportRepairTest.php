@@ -28,7 +28,7 @@ class TransportRepairTest extends TestCase
 
     public function test_cluster_info_includes_task_repair_diagnostics(): void
     {
-        $this->getJson('/api/cluster/info')
+        $this->getJson('/api/cluster/info?include=diagnostics')
             ->assertOk()
             ->assertJsonStructure([
                 'task_repair' => [
@@ -53,7 +53,7 @@ class TransportRepairTest extends TestCase
 
     public function test_cluster_info_repair_policy_reflects_configuration(): void
     {
-        $response = $this->getJson('/api/cluster/info');
+        $response = $this->getJson('/api/cluster/info?include=diagnostics');
 
         $response->assertOk()
             ->assertJsonPath('task_repair.policy.scan_strategy', 'scope_fair_round_robin')
@@ -65,7 +65,7 @@ class TransportRepairTest extends TestCase
 
     public function test_cluster_info_shows_zero_repair_candidates_when_healthy(): void
     {
-        $this->getJson('/api/cluster/info')
+        $this->getJson('/api/cluster/info?include=diagnostics')
             ->assertOk()
             ->assertJsonPath('task_repair.candidates.total_candidates', 0)
             ->assertJsonPath('task_repair.candidates.existing_task_candidates', 0)

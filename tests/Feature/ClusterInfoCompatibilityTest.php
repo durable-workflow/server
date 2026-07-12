@@ -38,15 +38,43 @@ class ClusterInfoCompatibilityTest extends TestCase
 {
     use RefreshDatabase;
 
+    public function test_default_cluster_info_keeps_compatibility_preflight_bounded(): void
+    {
+        $this->getJson('/api/cluster/info')
+            ->assertOk()
+            ->assertJsonPath('discovery.mode', 'compatibility')
+            ->assertJsonPath('discovery.diagnostics_query', 'include=diagnostics')
+            ->assertJsonPath('discovery.diagnostics_path', '/api/cluster/info?include=diagnostics')
+            ->assertJsonPath('discovery.operator_metrics_path', '/api/system/operator-metrics')
+            ->assertJsonPath('discovery.task_repair_path', '/api/system/repair')
+            ->assertJsonPath('control_plane.version', ControlPlaneProtocol::VERSION)
+            ->assertJsonPath(
+                'control_plane.request_contract.schema',
+                ControlPlaneRequestContract::SCHEMA,
+            )
+            ->assertJsonPath('worker_protocol.version', WorkerProtocol::VERSION)
+            ->assertJsonPath('client_compatibility.authority', 'protocol_manifests')
+            ->assertJsonPath('capabilities.workflow_tasks', true)
+            ->assertJsonPath('platform_protocol_specs.schema', PlatformProtocolSpecs::SCHEMA)
+            ->assertJsonPath('surface_stability_contract.version', 2)
+            ->assertJsonPath('activity_runtime_contract.version', 1)
+            ->assertJsonPath('topology.schema', ServerTopology::SCHEMA)
+            ->assertJsonMissingPath('worker_fleet')
+            ->assertJsonMissingPath('operator_metrics')
+            ->assertJsonMissingPath('task_repair')
+            ->assertJsonMissingPath('coordination_health');
+    }
+
     public function test_cluster_info_is_a_versionless_protocol_discovery_contract(): void
     {
-        $response = $this->getJson('/api/cluster/info', [
+        $response = $this->getJson('/api/cluster/info?include=diagnostics', [
             'X-Namespace' => 'default',
             ControlPlaneProtocol::HEADER => ControlPlaneProtocol::VERSION,
             WorkerProtocol::HEADER => WorkerProtocol::VERSION,
         ]);
 
         $response->assertOk()
+            ->assertJsonPath('discovery.mode', 'diagnostics')
             ->assertHeaderMissing(ControlPlaneProtocol::HEADER)
             ->assertHeaderMissing(WorkerProtocol::HEADER)
             ->assertJsonMissingPath('protocol_version')

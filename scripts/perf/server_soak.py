@@ -181,12 +181,20 @@ class EndpointMetrics:
                     for status, count in entry["statuses"].items()
                     if 200 <= int(status) < 300
                 )
+                backpressured = (
+                    int(entry["statuses"].get("429", 0))
+                    if endpoint == "worker_poll"
+                    else 0
+                )
+                available = successful + backpressured
                 requests = int(entry["requests"])
                 snapshot[endpoint] = {
                     "requests": requests,
                     "successful": successful,
+                    "backpressured": backpressured,
+                    "available": available,
                     "errors": int(entry["errors"]),
-                    "availability": 0.0 if requests == 0 else round(successful / requests, 6),
+                    "availability": 0.0 if requests == 0 else round(available / requests, 6),
                     "statuses": dict(entry["statuses"]),
                     "latency_seconds": {
                         "average": 0.0 if not latencies else round(sum(latencies) / len(latencies), 6),
@@ -244,6 +252,16 @@ def parse_args() -> argparse.Namespace:
         "--max-health-latency-seconds",
         type=float,
         default=float(os.environ.get("DW_PERF_MAX_HEALTH_LATENCY_SECONDS", "3")),
+    )
+    parser.add_argument(
+        "--control-plane-interval-seconds",
+        type=float,
+        default=float(os.environ.get("DW_PERF_CONTROL_PLANE_INTERVAL_SECONDS", "5")),
+    )
+    parser.add_argument(
+        "--max-control-plane-latency-seconds",
+        type=float,
+        default=float(os.environ.get("DW_PERF_MAX_CONTROL_PLANE_LATENCY_SECONDS", "5")),
     )
     parser.add_argument("--drain-seconds", type=int, default=int(os.environ.get("DW_PERF_DRAIN_SECONDS", "12")))
     parser.add_argument("--artifact-dir", default=os.environ.get("DW_PERF_ARTIFACT_DIR", "build/perf"))
@@ -444,7 +462,10 @@ def register_workers(base_url: str, token: str, namespaces: list[str], queues: l
                 {
                     "worker_id": worker_id,
                     "task_queue": queue,
-                    "runtime": "php",
+                    # Model the remote SDK loops that use HTTP-level 429
+                    # backpressure rather than the PHP release-compatibility
+                    # response.
+                    "runtime": "python",
                     "sdk_version": "perf-harness",
                     "max_concurrent_workflow_tasks": 100,
                     # Workers must advertise at least one workflow type so
@@ -740,7 +761,10 @@ def worker_loop(
             latency = time.monotonic() - started
             metrics.record_request(status, latency)
             endpoint_metrics.record("worker_poll", status, latency)
-            if status != 200:
+            if status == 429:
+                retry_after = body.get("retry_after_seconds", 1) if isinstance(body, dict) else 1
+                time.sleep(max(0.05, min(5.0, float(retry_after))))
+            elif status != 200:
                 metrics.record_error()
                 write_jsonl(errors_path, {"status": status, "body": body, "namespace": namespace, "queue": queue})
         except Exception as exc:  # noqa: BLE001
@@ -856,6 +880,38 @@ def health_probe_loop(
             except Exception as exc:  # noqa: BLE001
                 endpoint_metrics.record_error(endpoint, time.monotonic() - started)
                 write_jsonl(errors_path, {"endpoint": endpoint, "exception": repr(exc)})
+
+        time.sleep(max(0.05, interval_seconds))
+
+
+def cluster_info_probe_loop(
+    stop_at: float,
+    base_url: str,
+    token: str,
+    namespace: str,
+    interval_seconds: float,
+    timeout_seconds: float,
+    endpoint_metrics: EndpointMetrics,
+    errors_path: Path,
+) -> None:
+    while time.monotonic() < stop_at:
+        started = time.monotonic()
+        try:
+            status, body = http_json(
+                "GET",
+                f"{base_url}/api/cluster/info",
+                auth_headers(token, namespace),
+                timeout_seconds=timeout_seconds,
+            )
+            endpoint_metrics.record("cluster_info", status, time.monotonic() - started)
+            if status != 200 or not isinstance(body, dict) or not body.get("version"):
+                write_jsonl(
+                    errors_path,
+                    {"endpoint": "cluster_info", "status": status, "body": body},
+                )
+        except Exception as exc:  # noqa: BLE001
+            endpoint_metrics.record_error("cluster_info", time.monotonic() - started)
+            write_jsonl(errors_path, {"endpoint": "cluster_info", "exception": repr(exc)})
 
         time.sleep(max(0.05, interval_seconds))
 
@@ -1127,7 +1183,7 @@ def main() -> int:
             f"workflow_runs={args.workflow_runs} and sample_interval={sample_interval}s"
         )
 
-        growth_workers = max(1, args.start_concurrency) + 2 if args.workflow_runs > 0 else 0
+        growth_workers = max(1, args.start_concurrency) + 3 if args.workflow_runs > 0 else 0
         with ThreadPoolExecutor(max_workers=max(1, args.concurrency) + growth_workers) as executor:
             for index in range(max(1, args.concurrency)):
                 futures.append(
@@ -1178,6 +1234,19 @@ def main() -> int:
                         base_url,
                         args.health_interval_seconds,
                         args.max_health_latency_seconds,
+                        endpoint_metrics,
+                        errors_path,
+                    )
+                )
+                futures.append(
+                    executor.submit(
+                        cluster_info_probe_loop,
+                        stop_at,
+                        base_url,
+                        args.token,
+                        namespaces[0],
+                        args.control_plane_interval_seconds,
+                        args.max_control_plane_latency_seconds,
                         endpoint_metrics,
                         errors_path,
                     )
@@ -1280,6 +1349,7 @@ def main() -> int:
             "namespaces": len(namespaces),
             "task_queues": len(queues),
             "sample_interval_seconds": args.sample_interval_seconds,
+            "control_plane_interval_seconds": args.control_plane_interval_seconds,
             "sample_count": sample_count,
             "periodic_sample_count": periodic_sample_count,
             "expected_periodic_samples": expected_samples,
@@ -1315,6 +1385,7 @@ def main() -> int:
                 "max_server_memory_slope_mb_hour": args.max_server_memory_slope_mb_hour,
                 "min_sample_coverage": args.min_sample_coverage,
                 "max_health_latency_seconds": args.max_health_latency_seconds,
+                "max_control_plane_latency_seconds": args.max_control_plane_latency_seconds,
                 "require_trusted_evidence": args.require_trusted_evidence,
             },
             "evidence": {
@@ -1341,7 +1412,7 @@ def main() -> int:
                     f"but sampled {final_workflow_runs}"
                 )
 
-            for endpoint in ("health", "ready", "workflow_list", "worker_poll"):
+            for endpoint in ("health", "ready", "cluster_info", "workflow_list", "worker_poll"):
                 result = request_availability.get(endpoint, {})
                 if int(result.get("requests") or 0) == 0:
                     failures.append(f"{endpoint} availability was not sampled during workflow growth")
@@ -1359,6 +1430,14 @@ def main() -> int:
                         f"{endpoint} latency exceeded {args.max_health_latency_seconds}s "
                         f"(observed {observed_latency}s)"
                     )
+
+            cluster_info = request_availability.get("cluster_info", {})
+            cluster_info_latency = float((cluster_info.get("latency_seconds") or {}).get("max") or 0.0)
+            if cluster_info_latency > args.max_control_plane_latency_seconds:
+                failures.append(
+                    f"cluster_info latency exceeded {args.max_control_plane_latency_seconds}s "
+                    f"(observed {cluster_info_latency}s)"
+                )
         if periodic_sample_count < min_samples:
             failures.append(
                 f"sample coverage below trusted minimum {min_samples} "

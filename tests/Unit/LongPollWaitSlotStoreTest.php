@@ -231,12 +231,17 @@ class LongPollWaitSlotStoreTest extends TestCase
             /** @var LongPollWaitSlotStore $slots */
             $slots = app(LongPollWaitSlotStore::class);
 
-            $this->assertGreaterThanOrEqual(16, $workerCount);
+            $this->assertGreaterThanOrEqual(
+                24,
+                $workerCount,
+                'The published request pool must keep liveness capacity during the mixed-load profile.',
+            );
             $this->assertSame(2, $slots->maxConcurrentWaits());
             $this->assertSame(1, $slots->maxConcurrentQueryTaskPollWaits());
             $this->assertGreaterThanOrEqual(
-                13,
+                21,
                 $workerCount - $slots->maxConcurrentWaits() - $slots->maxConcurrentQueryTaskPollWaits(),
+                'Idle long polls must leave enough request workers for starts, control-plane traffic, and liveness.',
             );
 
             $firstWorker = $slots->tryAcquire(30);

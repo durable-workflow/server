@@ -497,7 +497,7 @@ class HealthControllerTest extends TestCase
         $availableResponses = 0;
 
         for ($attempt = 0; $attempt < 5; $attempt++) {
-            foreach (['/api/health', '/api/ready'] as $path) {
+            foreach (['/api/health', '/api/ready', '/api/cluster/info'] as $path) {
                 $startedAt = hrtime(true);
                 $response = $this->getJson($path);
                 $maxProbeLatencySeconds = max(
@@ -541,11 +541,14 @@ class HealthControllerTest extends TestCase
                 && str_contains($query, 'exists'),
         ));
 
-        $this->assertSame(13, $availableResponses);
+        $this->assertSame(18, $availableResponses);
         $this->assertLessThan(
             3.0,
             $maxProbeLatencySeconds,
-            sprintf('Public health/readiness exceeded the three-second probe budget: %.3fs', $maxProbeLatencySeconds),
+            sprintf(
+                'Public health/readiness/discovery exceeded the three-second probe budget: %.3fs',
+                $maxProbeLatencySeconds,
+            ),
         );
         $this->assertSame(
             [],

@@ -1625,7 +1625,7 @@ class ClusterInfoTest extends TestCase
 
     public function test_it_publishes_a_versioned_coordination_health_manifest(): void
     {
-        $response = $this->getJson('/api/cluster/info')->assertOk();
+        $response = $this->getJson('/api/cluster/info?include=diagnostics')->assertOk();
 
         $response
             ->assertJsonPath('coordination_health.schema', CoordinationHealthContract::SCHEMA)
@@ -1657,7 +1657,7 @@ class ClusterInfoTest extends TestCase
             ->where('migration', '2026_04_21_000300_add_workflow_definition_fingerprints_to_worker_registrations')
             ->delete();
 
-        $response = $this->getJson('/api/cluster/info')->assertOk();
+        $response = $this->getJson('/api/cluster/info?include=diagnostics')->assertOk();
 
         $response
             ->assertJsonPath('coordination_health.status', 'blocked')
@@ -1717,7 +1717,7 @@ class ClusterInfoTest extends TestCase
             'drained_at' => now()->subMinutes(5),
         ]);
 
-        $this->getJson('/api/cluster/info')
+        $this->getJson('/api/cluster/info?include=diagnostics')
             ->assertOk()
             ->assertJsonPath('coordination_health.routing_drains.queues_with_drains', 2)
             ->assertJsonPath('coordination_health.routing_drains.draining_build_id_count', 2)
@@ -1759,7 +1759,7 @@ class ClusterInfoTest extends TestCase
                 'worker-b',
             );
 
-            $response = $this->getJson('/api/cluster/info')->assertOk();
+            $response = $this->getJson('/api/cluster/info?include=diagnostics')->assertOk();
 
             $response
                 ->assertJsonPath('coordination_health.status', 'warning')
@@ -1800,7 +1800,7 @@ class ClusterInfoTest extends TestCase
                 'worker-b',
             );
 
-            $response = $this->getJson('/api/cluster/info')->assertOk();
+            $response = $this->getJson('/api/cluster/info?include=diagnostics')->assertOk();
 
             $response
                 ->assertJsonPath('coordination_health.status', 'error')
@@ -2699,7 +2699,7 @@ class ClusterInfoTest extends TestCase
             'status' => 'active',
         ]);
 
-        $response = $this->getJson('/api/cluster/info');
+        $response = $this->getJson('/api/cluster/info?include=diagnostics');
 
         $response->assertOk()
             ->assertJsonStructure([
@@ -2773,7 +2773,7 @@ class ClusterInfoTest extends TestCase
 
         config(['server.default_namespace' => 'default']);
 
-        $response = $this->getJson('/api/cluster/info');
+        $response = $this->getJson('/api/cluster/info?include=diagnostics');
 
         $response->assertOk()
             ->assertJsonPath('default_namespace', 'default')
@@ -2796,7 +2796,7 @@ class ClusterInfoTest extends TestCase
             'status' => 'active',
         ]);
 
-        $response = $this->getJson('/api/cluster/info', ['X-Namespace' => 'imports']);
+        $response = $this->getJson('/api/cluster/info?include=diagnostics', ['X-Namespace' => 'imports']);
 
         $response->assertOk()
             ->assertJsonPath('operator_metrics.runs.total', 0);

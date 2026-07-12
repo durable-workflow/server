@@ -302,7 +302,7 @@ class WorkflowWorkerProtocolTest extends TestCase
 
         $this->withHeaders([
             'X-Namespace' => 'default',
-        ])->getJson('/api/cluster/info')
+        ])->getJson('/api/cluster/info?include=diagnostics')
             ->assertOk()
             ->assertJsonPath('worker_fleet.namespace', 'default')
             ->assertJsonPath('control_plane.version', '2')
@@ -350,7 +350,7 @@ class WorkflowWorkerProtocolTest extends TestCase
 
         $this->withHeaders([
             'X-Namespace' => 'default',
-        ])->getJson('/api/cluster/info')
+        ])->getJson('/api/cluster/info?include=diagnostics')
             ->assertOk()
             ->assertJsonPath('worker_protocol.version', WorkerProtocol::VERSION)
             ->assertJsonPath('worker_fleet.active_workers', 1)

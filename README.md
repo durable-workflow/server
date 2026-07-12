@@ -516,7 +516,8 @@ workflow-task command payload.
 ### System
 - `GET /api/health` — Health check plus a machine-readable topology summary for the current node
 - `GET /api/ready` — Bounded readiness check for migrations, default namespace, cache, auth config, fail-closed backend/fleet admission, and the current node topology summary
-- `GET /api/cluster/info` — Server capabilities, role topology, coordination-health summary, full operator metrics snapshot, and version
+- `GET /api/cluster/info` — Bounded server compatibility and capability discovery used by SDK and CLI preflight
+- `GET /api/cluster/info?include=diagnostics` — Compatibility discovery plus explicit coordination health, fleet detail, task-repair diagnostics, and operator metrics
 - `GET /api/system/health` — Full rollout-safety health snapshot for the requested namespace, including check status, categories, routing-drain state, operator metrics, and structural limits
 - `GET /api/system/metrics` — Server metrics including bounded stuck workflow-task diagnostics
 - `GET /api/system/operator-metrics` — Full operator metrics snapshot (runs, tasks, backlog, repair, workers/fleet, backend, structural limits) for namespace-scoped rollout-safety coordination health
@@ -741,8 +742,8 @@ Server-owned cache keys and metric label sets are governed by the bounded-growth
 policy in `config/dw-bounded-growth.php`; the human-readable inventory lives in
 `docs/bounded-growth.md`.
 
-Cluster discovery also publishes a `topology` manifest. It freezes the server's
-role vocabulary (`api_ingress`, `control_plane`, `matching`,
+Default cluster discovery publishes the full bounded `topology` manifest. It
+freezes the server's role vocabulary (`api_ingress`, `control_plane`, `matching`,
 `history_projection`, `scheduler`, `execution_plane`), the product's supported
 deployment shapes (`embedded`, `standalone_server`,
 `split_control_execution`), the roles currently hosted by this node's
@@ -790,7 +791,7 @@ worker-protocol traffic return `503` with `reason: "workflow_v2_blocked"` plus
 incomplete rollout state. Run-scoped debug and history diagnostics stay
 available so operators can inspect the broken node.
 
-The same `GET /api/cluster/info` response now includes a versioned
+The explicit `GET /api/cluster/info?include=diagnostics` response includes a versioned
 `coordination_health` manifest for rollout-safety coordination risk. It
 summarizes the current server-wide workflow v2 health status, warning and error
 check names, category counts, the normalized check list that already powers the
@@ -800,23 +801,27 @@ queues with draining build-id cohorts. The manifest is intentionally
 posture; use `GET /api/system/health` for the namespace-scoped
 `routing_drains` view.
 
-Cluster discovery also publishes the full operator metrics snapshot at
+Explicit diagnostic discovery also publishes the full operator metrics snapshot at
 `operator_metrics`, scoped to the requested namespace (or
 `server.default_namespace` when no `X-Namespace` header is supplied). The
 snapshot mirrors the shape served by `GET /api/system/operator-metrics` —
 `runs`, `tasks`, `backlog`, `repair`, `workers` (including the live `fleet`
 detail), `backend`, `structural_limits`, and `repair_policy` — so the
-standalone server's discovery surface carries namespace-specific backlog,
+standalone server's diagnostic discovery surface carries namespace-specific backlog,
 worker, and repair detail alongside the fleet-wide `coordination_health`
 manifest. Use the dedicated `GET /api/system/operator-metrics` endpoint when
 operators need an admin-gated, control-plane-versioned read of the same
 snapshot.
 
-Liveness, readiness, and runtime bootstrap admission never build this full
-snapshot. Their database and CPU work stays fixed as workflow history and ready
-task cardinality grow. Use `GET /api/system/health`,
-`GET /api/system/operator-metrics`, or the discovery snapshot when detailed
-backlog, projection, history, and command-contract diagnostics are required.
+Default cluster discovery, liveness, readiness, and runtime bootstrap admission
+never build this full snapshot. Their database and CPU work stays fixed as
+workflow history and ready-task cardinality grow. Default discovery retains the
+compatibility, capability, control-plane, worker-protocol, auth-composition,
+limits, static contract manifests, and full topology fields required by public
+SDK and CLI preflight. Use
+`GET /api/system/health`, `GET /api/system/operator-metrics`, or
+`GET /api/cluster/info?include=diagnostics` when detailed backlog, projection,
+history, command-contract, and fleet diagnostics are required.
 
 The activity-grade external execution surface is published from
 `GET /api/cluster/info` at
@@ -1154,15 +1159,22 @@ multi-worker deployments should use MySQL/PostgreSQL with Redis.
 The standalone server image also reserves PHP request-worker capacity for
 health and control-plane routes. Empty workflow and activity worker long-polls
 acquire a short-lived wait slot before sleeping; once the node-local slot cap
-is reached, additional polls return their immediate empty result instead of
-holding another PHP server worker for the full poll timeout. Idle query-task
+is reached, additional idle polls receive `Retry-After: 1` instead of entering
+a tight empty-poll loop or holding another PHP server worker for the full poll
+timeout. Python, Rust, and other remote runtimes receive `429 Too Many Requests`
+with `poll_status: unavailable`, which first-party workers handle through their
+bounded error-retry path. PHP workers from earlier Workflow package releases
+receive a protocol-compatible HTTP 200 empty response with the same
+`long_poll_capacity_exhausted` reason and retry header so their existing bounded
+idle sleep remains compatible. Idle query-task
 polls use a separate wait-slot budget, derived to one slot on the default
 standalone image, so workflow/activity polls cannot starve live workflow queries
 across the PHP and Python worker queues, and query-task polls cannot consume the
 request workers needed by the waiting query request and the worker's completion
 callback. A
 poll that arrives after a query task is pending still claims it immediately
-before any wait slot is required. Size `PHP_CLI_SERVER_WORKERS` for expected
+before any wait slot or backpressure response is required. Size
+`PHP_CLI_SERVER_WORKERS` for expected
 concurrent workflow, activity, and query workers when using the standalone
 server.
 
@@ -1485,7 +1497,7 @@ each one it sees.
 ### HTTP concurrency (PHP_CLI_SERVER_WORKERS)
 
 The image's default CMD runs `php artisan serve --no-reload` with
-`PHP_CLI_SERVER_WORKERS=16`. The `--no-reload` flag is required for
+`PHP_CLI_SERVER_WORKERS=24`. The `--no-reload` flag is required for
 Laravel's built-in server to honour the worker count — without it the
 server logs `Unable to respect the PHP_CLI_SERVER_WORKERS environment
 variable without the --no-reload flag` and falls back to a single
@@ -1493,9 +1505,10 @@ thread, which will block every other request while one worker holds a
 long-poll connection open.
 
 The server derives a conservative idle long-poll budget from the worker
-count so public workflow APIs and worker completions keep request
-capacity during load. Raise the worker count further for polyglot or
-multi-worker deployments:
+count. The published default also leaves request capacity for recurring
+liveness probes while eight workflow starts, eight worker polls, workflow
+listing, readiness, and compatibility discovery are concurrent. Raise the
+worker count further for larger polyglot or multi-worker deployments:
 
 ```bash
 docker run --rm -p 8080:8080 -e PHP_CLI_SERVER_WORKERS=32 \

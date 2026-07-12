@@ -10,8 +10,10 @@ use App\Support\ExternalPayloadEnvelopeService;
 use App\Support\ExternalPayloadStorageUnavailable;
 use App\Support\ExternalExecutorConfigContract;
 use App\Support\InvocableCarrierContract;
+use App\Support\LongPollCapacityExhaustedException;
 use App\Support\NamespaceExternalPayloadStorage;
 use App\Support\NamespaceWorkflowScope;
+use App\Support\WorkerPollBackpressure;
 use App\Support\WorkerProtocol;
 use App\Support\WorkerSessionRegistry;
 use Carbon\CarbonInterface;
@@ -116,6 +118,16 @@ class ActivityTaskController
                 timeoutSeconds: $timeoutSeconds,
             );
         } catch (\Throwable $exception) {
+            if ($exception instanceof LongPollCapacityExhaustedException) {
+                return WorkerPollBackpressure::response(
+                    'activity_task',
+                    $namespace,
+                    $validated['task_queue'],
+                    $exception,
+                    is_string($worker->runtime) ? $worker->runtime : null,
+                );
+            }
+
             if (BackendLockPressure::is($exception)) {
                 return BackendLockPressure::workerPollResponse(
                     'activity_task',

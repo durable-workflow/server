@@ -7,6 +7,7 @@ use App\Models\WorkerRegistration;
 use App\Models\WorkflowNamespace;
 use App\Support\ControlPlaneProtocol;
 use App\Support\ExternalPayloadEnvelopeService;
+use App\Support\LongPollCapacityExhaustedException;
 use App\Support\LongPoller;
 use App\Support\LongPollSignalStore;
 use App\Support\LongPollWaitSlotStore;
@@ -2527,7 +2528,7 @@ class WorkflowQueryTaskBrokerTest extends TestCase
         $this->assertSame(1, $poller->pauseCalls);
     }
 
-    public function test_query_task_poll_returns_empty_when_query_poll_wait_slots_are_exhausted(): void
+    public function test_query_task_poll_backpressures_when_query_poll_wait_slots_are_exhausted(): void
     {
         Queue::fake();
         config([
@@ -2568,12 +2569,17 @@ class WorkflowQueryTaskBrokerTest extends TestCase
             ->firstOrFail();
 
         try {
-            $poll = $broker->poll('default', $worker, 'query-poll-slot-exhausted-1');
+            try {
+                $broker->poll('default', $worker, 'query-poll-slot-exhausted-1');
+
+                $this->fail('An exhausted query-task poll wait pool must apply backpressure.');
+            } catch (LongPollCapacityExhaustedException $exception) {
+                $this->assertSame('query-task', $exception->pool);
+            }
         } finally {
             $heldSlot->release();
         }
 
-        $this->assertNull($poll);
         $this->assertSame(0, $poller->pauseCalls);
     }
 

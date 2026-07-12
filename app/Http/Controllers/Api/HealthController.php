@@ -108,6 +108,7 @@ class HealthController
         $serviceExecutionContract = 'Workflow\\V2\\Support\\ServiceExecutionContract';
         $embeddedV2ImportAvailable = class_exists($embeddedV2Importer);
         $serviceExecutionAvailable = class_exists($serviceExecutionContract);
+        $includeDiagnostics = $request->query('include') === 'diagnostics';
 
         $capabilities = [
             'workflow_tasks' => true,
@@ -174,11 +175,15 @@ class HealthController
             'version' => env('APP_VERSION', '2.0.0'),
             'default_namespace' => config('server.default_namespace'),
             'namespace' => $this->namespacePolicy($namespace),
+            'discovery' => [
+                'mode' => $includeDiagnostics ? 'diagnostics' : 'compatibility',
+                'diagnostics_query' => 'include=diagnostics',
+                'diagnostics_path' => '/api/cluster/info?include=diagnostics',
+                'operator_metrics_path' => '/api/system/operator-metrics',
+                'task_repair_path' => '/api/system/repair',
+            ],
             'supported_sdk_versions' => ClientCompatibility::supportedSdkVersions(),
             'capabilities' => $capabilities,
-            'worker_fleet' => StandaloneWorkerVisibility::fleetSummary($namespace),
-            'operator_metrics' => OperatorMetrics::snapshot(null, $namespace),
-            'task_repair' => $this->taskRepairDiagnostics(),
             'limits' => [
                 'max_payload_bytes' => (int) config('server.limits.max_payload_bytes', 2 * 1024 * 1024),
                 'max_memo_bytes' => (int) config('server.limits.max_memo_bytes', 256 * 1024),
@@ -191,10 +196,6 @@ class HealthController
             ],
             'structural_limits' => StructuralLimits::snapshot(),
             'topology' => ServerTopology::info(),
-            'coordination_health' => CoordinationHealthContract::manifest(
-                $this->readiness->workflowStatus(),
-                $this->buildIdRollouts->routingDrains(),
-            ),
             'client_compatibility' => ClientCompatibility::info(),
             'surface_stability_contract' => SurfaceStabilityContract::manifest(),
             'platform_protocol_specs' => PlatformProtocolSpecs::manifest(),
@@ -223,6 +224,18 @@ class HealthController
             'bridge_adapter_outcome_contract' => BridgeAdapterOutcomeContract::manifest(),
             'replay_verification_contract' => ReplayVerificationContract::manifest(),
         ];
+
+        if ($includeDiagnostics) {
+            $response = array_merge($response, [
+                'worker_fleet' => StandaloneWorkerVisibility::fleetSummary($namespace),
+                'operator_metrics' => OperatorMetrics::snapshot(null, $namespace),
+                'task_repair' => $this->taskRepairDiagnostics(),
+                'coordination_health' => CoordinationHealthContract::manifest(
+                    $this->readiness->workflowStatus(),
+                    $this->buildIdRollouts->routingDrains(),
+                ),
+            ]);
+        }
 
         if (class_exists($embeddedV2ImportContract)) {
             $response['embedded_v2_import_contract'] = $embeddedV2ImportContract::manifest();

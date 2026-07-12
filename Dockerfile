@@ -120,14 +120,15 @@ LABEL org.opencontainers.image.title="Durable Workflow Server" \
 
 EXPOSE 8080
 
-# Default to 16 CLI server worker processes so a default SDK worker can
-# complete workflow tasks while public workflow APIs keep request-worker
-# capacity. `php artisan serve` only honours PHP_CLI_SERVER_WORKERS when
-# `--no-reload` is set (otherwise it warns and falls back to a single
+# Default to 24 CLI server worker processes so concurrent workflow starts,
+# bounded worker polls, and control-plane requests cannot consume every
+# request worker ahead of liveness probes. `php artisan serve` only honours
+# PHP_CLI_SERVER_WORKERS when `--no-reload` is set (otherwise it warns and
+# falls back to a single
 # server thread), so both must be present together. The runtime long-poll
 # wait gate derives a smaller idle-wait budget from this count and keeps
 # the rest for health, workflow start/list, and worker completion traffic.
-ENV PHP_CLI_SERVER_WORKERS=16 \
+ENV PHP_CLI_SERVER_WORKERS=24 \
     DB_CONNECTION=sqlite \
     DB_DATABASE=/app/database/database.sqlite \
     QUEUE_CONNECTION=database \

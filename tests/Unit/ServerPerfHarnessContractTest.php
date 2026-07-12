@@ -31,11 +31,15 @@ class ServerPerfHarnessContractTest extends TestCase
             'final_ready_tasks',
             'request_availability',
             'worker_poll',
+            'backpressured',
+            'cluster_info',
             'max_health_latency_seconds',
+            'max_control_plane_latency_seconds',
             'artifact_versions',
             'workflow_start_loop',
             'workflow_list_loop',
             'health_probe_loop',
+            'cluster_info_probe_loop',
             'workflow growth target incomplete',
             'availability fell below 1.0',
             'latency exceeded',
@@ -124,6 +128,7 @@ class ServerPerfHarnessContractTest extends TestCase
         );
 
         $this->assertStringContainsString('PERF_WORKFLOW_TYPE = ', $source);
+        $this->assertStringContainsString('"runtime": "python"', $source);
     }
 
     public function test_short_perf_smoke_exercises_health_during_thousand_run_growth(): void
@@ -136,6 +141,8 @@ class ServerPerfHarnessContractTest extends TestCase
             'DW_PERF_START_CONCURRENCY: "8"',
             'DW_PERF_HEALTH_INTERVAL_SECONDS: "0.5"',
             'DW_PERF_MAX_HEALTH_LATENCY_SECONDS: "3"',
+            'DW_PERF_CONTROL_PLANE_INTERVAL_SECONDS: "5"',
+            'DW_PERF_MAX_CONTROL_PLANE_LATENCY_SECONDS: "5"',
             'DW_PERF_WORKFLOW_VERSION: "2.0.0-alpha.262"',
         ] as $needle) {
             $this->assertStringContainsString(

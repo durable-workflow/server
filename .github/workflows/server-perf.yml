@@ -12,7 +12,10 @@ on:
       - "app/Support/HistoryRetentionEnforcer.php"
       - "app/Support/BoundedMetricPolicy.php"
       - "app/Support/LongPollSignalStore.php"
+      - "app/Support/LongPoller.php"
+      - "app/Support/LongPollCapacityExhaustedException.php"
       - "app/Support/LongPollWaitSlotStore.php"
+      - "app/Support/WorkerPollBackpressure.php"
       - "app/Support/ProjectionDriftMetrics.php"
       - "app/Support/ServerReadiness.php"
       - "app/Support/RemoteScheduleStarter.php"
@@ -26,6 +29,8 @@ on:
       - "app/Support/QueryTaskPollRequestStore.php"
       - "app/Support/WorkflowTaskPollRequestStore.php"
       - "app/Http/Controllers/Api/SystemController.php"
+      - "app/Http/Controllers/Api/ActivityTaskController.php"
+      - "app/Http/Controllers/Api/WorkerController.php"
       - "app/Http/Middleware/RequireWorkflowBootstrapReady.php"
       - "app/Services/PrometheusMetricsSummary.php"
       - "config/dw-bounded-growth.php"
@@ -38,6 +43,7 @@ on:
       - "tests/Unit/ServerPerfHarnessContractTest.php"
       - "tests/Feature/SystemMetricsTest.php"
       - "tests/Feature/HealthControllerTest.php"
+      - "tests/Feature/WorkerPollBackpressureTest.php"
   push:
     branches: [main]
     paths:
@@ -49,7 +55,10 @@ on:
       - "app/Support/HistoryRetentionEnforcer.php"
       - "app/Support/BoundedMetricPolicy.php"
       - "app/Support/LongPollSignalStore.php"
+      - "app/Support/LongPoller.php"
+      - "app/Support/LongPollCapacityExhaustedException.php"
       - "app/Support/LongPollWaitSlotStore.php"
+      - "app/Support/WorkerPollBackpressure.php"
       - "app/Support/ProjectionDriftMetrics.php"
       - "app/Support/ServerReadiness.php"
       - "app/Support/RemoteScheduleStarter.php"
@@ -63,6 +72,8 @@ on:
       - "app/Support/QueryTaskPollRequestStore.php"
       - "app/Support/WorkflowTaskPollRequestStore.php"
       - "app/Http/Controllers/Api/SystemController.php"
+      - "app/Http/Controllers/Api/ActivityTaskController.php"
+      - "app/Http/Controllers/Api/WorkerController.php"
       - "app/Http/Middleware/RequireWorkflowBootstrapReady.php"
       - "app/Services/PrometheusMetricsSummary.php"
       - "config/dw-bounded-growth.php"
@@ -75,6 +86,7 @@ on:
       - "tests/Unit/ServerPerfHarnessContractTest.php"
       - "tests/Feature/SystemMetricsTest.php"
       - "tests/Feature/HealthControllerTest.php"
+      - "tests/Feature/WorkerPollBackpressureTest.php"
 permissions:
   contents: read
 
@@ -126,6 +138,8 @@ jobs:
           DW_PERF_START_CONCURRENCY: "8"
           DW_PERF_HEALTH_INTERVAL_SECONDS: "0.5"
           DW_PERF_MAX_HEALTH_LATENCY_SECONDS: "3"
+          DW_PERF_CONTROL_PLANE_INTERVAL_SECONDS: "5"
+          DW_PERF_MAX_CONTROL_PLANE_LATENCY_SECONDS: "5"
           DW_PERF_WORKFLOW_VERSION: "2.0.0-alpha.262"
           DW_PERF_MAX_SERVER_MEMORY_MB: "768"
           DW_PERF_MAX_POLLING_KEYS: "512"

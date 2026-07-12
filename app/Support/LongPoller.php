@@ -62,7 +62,7 @@ class LongPoller
                 : $this->waitSlots->tryAcquire($timeoutSeconds);
 
             if ($waitSlot === null) {
-                return $value;
+                throw new LongPollCapacityExhaustedException($waitSlotPool);
             }
         }
 
