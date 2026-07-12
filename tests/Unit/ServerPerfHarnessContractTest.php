@@ -32,6 +32,7 @@ class ServerPerfHarnessContractTest extends TestCase
             'request_availability',
             'worker_poll',
             'backpressured',
+            'long_poll_capacity_exhausted',
             'cluster_info',
             'max_health_latency_seconds',
             'max_control_plane_latency_seconds',

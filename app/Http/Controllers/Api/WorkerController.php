@@ -1001,7 +1001,6 @@ class WorkerController
                     $namespace,
                     $validated['task_queue'],
                     $exception,
-                    is_string($worker->runtime) ? $worker->runtime : null,
                 );
             }
 
@@ -2134,7 +2133,6 @@ class WorkerController
                     $namespace,
                     $validated['task_queue'],
                     $exception,
-                    is_string($worker->runtime) ? $worker->runtime : null,
                 );
             }
 

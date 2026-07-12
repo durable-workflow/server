@@ -40,8 +40,10 @@ class WorkerPollBackpressureTest extends TestCase
         ]);
     }
 
-    public function test_workflow_poll_exhaustion_returns_retryable_backpressure(): void
+    public function test_rust_workflow_poll_exhaustion_returns_compatible_bounded_backpressure(): void
     {
+        $this->setWorkerRuntime('rust');
+
         $this->assertBackpressuredPoll('/api/worker/workflow-tasks/poll', [
             'worker_id' => 'backpressured-worker',
             'task_queue' => 'backpressure-queue',
@@ -50,7 +52,7 @@ class WorkerPollBackpressureTest extends TestCase
         ], 'workflow_task', 'worker');
     }
 
-    public function test_activity_poll_exhaustion_returns_retryable_backpressure(): void
+    public function test_python_activity_poll_exhaustion_returns_compatible_bounded_backpressure(): void
     {
         $this->assertBackpressuredPoll('/api/worker/activity-tasks/poll', [
             'worker_id' => 'backpressured-worker',
@@ -60,8 +62,10 @@ class WorkerPollBackpressureTest extends TestCase
         ], 'activity_task', 'worker');
     }
 
-    public function test_query_poll_exhaustion_returns_retryable_backpressure(): void
+    public function test_php_query_poll_exhaustion_returns_compatible_bounded_backpressure(): void
     {
+        $this->setWorkerRuntime('php');
+
         $this->assertBackpressuredPoll('/api/worker/query-tasks/poll', [
             'worker_id' => 'backpressured-worker',
             'task_queue' => 'backpressure-queue',
@@ -70,23 +74,36 @@ class WorkerPollBackpressureTest extends TestCase
         ], 'query_task', 'query-task');
     }
 
-    public function test_php_worker_keeps_protocol_level_backpressure_for_release_compatibility(): void
+    public function test_backpressure_response_enforces_the_advertised_cooldown(): void
     {
-        WorkerRegistration::query()
-            ->where('worker_id', 'backpressured-worker')
-            ->update(['runtime' => 'php']);
+        $startedAt = microtime(true);
 
-        $this->postJson('/api/worker/workflow-tasks/poll', [
-            'worker_id' => 'backpressured-worker',
-            'task_queue' => 'backpressure-queue',
-            'poll_request_id' => 'php-workflow-backpressure-1',
-            'timeout_seconds' => 1,
-        ], $this->workerHeaders())
-            ->assertOk()
-            ->assertHeader('Retry-After', '1')
-            ->assertJsonPath('task', null)
-            ->assertJsonPath('poll_status', 'empty')
-            ->assertJsonPath('reason', 'long_poll_capacity_exhausted');
+        foreach ([1, 2] as $attempt) {
+            $this->postJson('/api/worker/workflow-tasks/poll', [
+                'worker_id' => 'backpressured-worker',
+                'task_queue' => 'backpressure-queue',
+                'poll_request_id' => "bounded-workflow-backpressure-{$attempt}",
+                'timeout_seconds' => 1,
+            ], $this->workerHeaders())
+                ->assertOk()
+                ->assertHeader('Retry-After', '1')
+                ->assertJsonPath('task', null)
+                ->assertJsonPath('poll_status', 'empty')
+                ->assertJsonPath('reason', 'long_poll_capacity_exhausted');
+        }
+
+        $this->assertGreaterThanOrEqual(
+            1.9,
+            microtime(true) - $startedAt,
+            'Compatibility backpressure must bound clients that immediately repoll after an empty response.',
+        );
+        $worker = WorkerRegistration::query()
+            ->where('namespace', 'default')
+            ->where('worker_id', 'backpressured-worker')
+            ->firstOrFail();
+
+        $this->assertSame('backpressure-queue', $worker->task_queue);
+        $this->assertSame('active', $worker->status);
     }
 
     /**
@@ -99,14 +116,21 @@ class WorkerPollBackpressureTest extends TestCase
         string $waitPool,
     ): void {
         $this->postJson($path, $payload, $this->workerHeaders())
-            ->assertStatus(429)
+            ->assertOk()
             ->assertHeader('Retry-After', '1')
             ->assertHeader(WorkerProtocol::HEADER, WorkerProtocol::VERSION)
             ->assertJsonPath('task', null)
-            ->assertJsonPath('poll_status', 'unavailable')
+            ->assertJsonPath('poll_status', 'empty')
             ->assertJsonPath('reason', 'long_poll_capacity_exhausted')
             ->assertJsonPath('task_kind', $taskKind)
             ->assertJsonPath('wait_pool', $waitPool)
             ->assertJsonPath('retry_after_seconds', 1);
+    }
+
+    private function setWorkerRuntime(string $runtime): void
+    {
+        WorkerRegistration::query()
+            ->where('worker_id', 'backpressured-worker')
+            ->update(['runtime' => $runtime]);
     }
 }

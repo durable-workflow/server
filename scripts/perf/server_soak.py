@@ -151,15 +151,17 @@ class EndpointMetrics:
         self.lock = threading.Lock()
         self.endpoints: dict[str, dict[str, Any]] = {}
 
-    def record(self, endpoint: str, status: int, latency: float) -> None:
+    def record(self, endpoint: str, status: int, latency: float, *, backpressured: bool = False) -> None:
         with self.lock:
             entry = self.endpoints.setdefault(
                 endpoint,
-                {"requests": 0, "errors": 0, "statuses": Counter(), "latencies": []},
+                {"requests": 0, "errors": 0, "statuses": Counter(), "latencies": [], "backpressured": 0},
             )
             entry["requests"] += 1
             entry["statuses"][str(status)] += 1
             entry["latencies"].append(latency)
+            if backpressured:
+                entry["backpressured"] = int(entry.get("backpressured", 0)) + 1
 
     def record_error(self, endpoint: str, latency: float) -> None:
         with self.lock:
@@ -181,12 +183,13 @@ class EndpointMetrics:
                     for status, count in entry["statuses"].items()
                     if 200 <= int(status) < 300
                 )
-                backpressured = (
+                http_backpressured = (
                     int(entry["statuses"].get("429", 0))
                     if endpoint == "worker_poll"
                     else 0
                 )
-                available = successful + backpressured
+                backpressured = int(entry.get("backpressured", 0)) + http_backpressured
+                available = successful + http_backpressured
                 requests = int(entry["requests"])
                 snapshot[endpoint] = {
                     "requests": requests,
@@ -462,9 +465,8 @@ def register_workers(base_url: str, token: str, namespaces: list[str], queues: l
                 {
                     "worker_id": worker_id,
                     "task_queue": queue,
-                    # Model the remote SDK loops that use HTTP-level 429
-                    # backpressure rather than the PHP release-compatibility
-                    # response.
+                    # Model a published remote SDK that requires successful
+                    # empty poll responses under capacity backpressure.
                     "runtime": "python",
                     "sdk_version": "perf-harness",
                     "max_concurrent_workflow_tasks": 100,
@@ -760,7 +762,17 @@ def worker_loop(
             )
             latency = time.monotonic() - started
             metrics.record_request(status, latency)
-            endpoint_metrics.record("worker_poll", status, latency)
+            compatible_backpressure = (
+                status == 200
+                and isinstance(body, dict)
+                and body.get("reason") == "long_poll_capacity_exhausted"
+            )
+            endpoint_metrics.record(
+                "worker_poll",
+                status,
+                latency,
+                backpressured=compatible_backpressure,
+            )
             if status == 429:
                 retry_after = body.get("retry_after_seconds", 1) if isinstance(body, dict) else 1
                 time.sleep(max(0.05, min(5.0, float(retry_after))))

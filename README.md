@@ -1161,12 +1161,13 @@ health and control-plane routes. Empty workflow and activity worker long-polls
 acquire a short-lived wait slot before sleeping; once the node-local slot cap
 is reached, additional idle polls receive `Retry-After: 1` instead of entering
 a tight empty-poll loop or holding another PHP server worker for the full poll
-timeout. Python, Rust, and other remote runtimes receive `429 Too Many Requests`
-with `poll_status: unavailable`, which first-party workers handle through their
-bounded error-retry path. PHP workers from earlier Workflow package releases
-receive a protocol-compatible HTTP 200 empty response with the same
-`long_poll_capacity_exhausted` reason and retry header so their existing bounded
-idle sleep remains compatible. Idle query-task
+timeout. Published Python, Rust, PHP, and other supported workers receive a
+protocol-compatible HTTP 200 empty response with the
+`long_poll_capacity_exhausted` reason and retry header. The server holds that
+compatibility response for the advertised one-second cooldown because existing
+worker poll APIs do not all expose retry headers to their loops. This keeps
+workers alive and bounds immediate empty repolling without admitting another
+full long-poll wait. Idle query-task
 polls use a separate wait-slot budget, derived to one slot on the default
 standalone image, so workflow/activity polls cannot starve live workflow queries
 across the PHP and Python worker queues, and query-task polls cannot consume the
