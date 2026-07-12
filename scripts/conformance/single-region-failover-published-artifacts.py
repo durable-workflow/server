@@ -49,6 +49,10 @@ READINESS_OBSERVATION_LIMIT = 12
 TOPOLOGY_START_FAILURE_READINESS_TIMEOUT = 5
 DIAGNOSTIC_OUTPUT_LIMIT = 12000
 
+# Loaded from the released image's public failover contract during topology
+# startup so new lifecycle states inherit their published bucket semantics.
+PUBLIC_RUN_STATUS_CONTRACT: dict[str, dict[str, Any]] = {}
+
 
 def parse_connect_host(value: str) -> str:
     if not value or value != value.strip():
@@ -247,6 +251,108 @@ def wait_for(label: str, callback: Callable[[], Any], timeout: float, interval: 
     raise AssertionError(f"timed out waiting for {label}; last observation: {last!r}")
 
 
+def redacted_run_summary(body: Any) -> dict[str, Any]:
+    if not isinstance(body, dict):
+        body = {}
+    return {
+        "workflow_id": body.get("workflow_id") if isinstance(body.get("workflow_id"), str) else None,
+        "run_id": body.get("run_id") if isinstance(body.get("run_id"), str) else None,
+        "raw_status": body.get("status") if isinstance(body.get("status"), str) else None,
+        "status_bucket": body.get("status_bucket") if isinstance(body.get("status_bucket"), str) else None,
+        "is_terminal": body.get("is_terminal") if isinstance(body.get("is_terminal"), bool) else None,
+    }
+
+
+def parse_public_run_status_contract(value: Any) -> dict[str, dict[str, Any]]:
+    if not isinstance(value, dict) or not value:
+        raise AssertionError("released image does not expose a public run-status contract")
+
+    contract: dict[str, dict[str, Any]] = {}
+    for raw_status, fields in value.items():
+        require(isinstance(raw_status, str) and bool(raw_status), "run-status contract contains an invalid raw status")
+        require(isinstance(fields, dict), f"run-status contract for {raw_status} is not an object")
+        status_bucket = fields.get("status_bucket")
+        is_terminal = fields.get("is_terminal")
+        require(
+            status_bucket in ("running", "completed", "failed"),
+            f"run-status contract for {raw_status} has an invalid status bucket",
+        )
+        require(
+            isinstance(is_terminal, bool),
+            f"run-status contract for {raw_status} has an invalid terminal flag",
+        )
+        require(
+            (status_bucket == "running") is (not is_terminal),
+            f"run-status contract for {raw_status} has inconsistent bucket and terminal fields",
+        )
+        contract[raw_status] = {
+            "status_bucket": status_bucket,
+            "is_terminal": is_terminal,
+        }
+    return contract
+
+
+def survivor_run_observation(
+    http_status: int,
+    body: Any,
+    expected_workflow_id: str,
+    expected_run_id: str,
+) -> dict[str, Any]:
+    summary = redacted_run_summary(body)
+    raw_status = summary["raw_status"]
+    expected_status = PUBLIC_RUN_STATUS_CONTRACT.get(raw_status)
+    rejection_reason: str | None = None
+
+    if http_status != 200:
+        rejection_reason = "http_status_not_ok"
+    elif summary["workflow_id"] != expected_workflow_id:
+        rejection_reason = "workflow_identity_mismatch"
+    elif summary["run_id"] != expected_run_id:
+        rejection_reason = "run_identity_mismatch"
+    elif expected_status is None:
+        rejection_reason = "missing_or_unknown_raw_status"
+    elif summary["status_bucket"] != expected_status["status_bucket"]:
+        rejection_reason = "status_bucket_contract_mismatch"
+    elif summary["is_terminal"] is not expected_status["is_terminal"]:
+        rejection_reason = "terminal_flag_contract_mismatch"
+    elif expected_status["is_terminal"] or expected_status["status_bucket"] != "running":
+        rejection_reason = "terminal_run"
+
+    return {
+        "http_status": http_status,
+        "response_summary": summary,
+        "accepted": rejection_reason is None,
+        "rejection_reason": rejection_reason,
+    }
+
+
+def wait_for_survivor_traffic(
+    workflow_id: str,
+    run_id: str,
+    timeout: float,
+    evidence: dict[str, Any],
+    interval: float = 0.5,
+) -> dict[str, Any]:
+    deadline = time.monotonic() + timeout
+    last: dict[str, Any] | None = None
+    while time.monotonic() < deadline:
+        status, body, elapsed = describe(workflow_id, run_id, LB)
+        last = {
+            **survivor_run_observation(status, body, workflow_id, run_id),
+            "request_ms": elapsed,
+            "observed_at": now(),
+        }
+        evidence.clear()
+        evidence.update(last)
+        if last["accepted"]:
+            return last
+        time.sleep(interval)
+    raise AssertionError(
+        "timed out waiting for useful shared-endpoint traffic after API node loss; "
+        f"last observation: {last!r}"
+    )
+
+
 def ready(base: str, expected_status: int = 200) -> dict[str, Any] | None:
     status, body, elapsed = request(base, "/api/ready", authenticated=False, timeout=3)
     if status == expected_status:
@@ -346,6 +452,22 @@ def refresh_topology_diagnostics() -> None:
                 **exception_diagnostic(error),
             }
     TOPOLOGY_DIAGNOSTICS["published_port_mappings"] = mappings
+
+
+def api_node_loss_failure_diagnostics() -> dict[str, Any]:
+    diagnostics: dict[str, Any] = {}
+    for name, args in (
+        ("compose_ps", ("ps", "--all", "--format", "json")),
+        ("load_balancer_logs", ("logs", "--no-color", "--tail", "200", "load-balancer")),
+        ("surviving_node_logs", ("logs", "--no-color", "--tail", "200", "server-b")),
+    ):
+        try:
+            diagnostics[name] = command_diagnostic(
+                compose(*args, check=False, timeout=30)
+            )
+        except Exception as error:
+            diagnostics[name] = exception_diagnostic(error)
+    return diagnostics
 
 
 def observe_topology_readiness(name: str, base: str, timeout: float) -> bool:
@@ -549,6 +671,7 @@ RESULT: dict[str, Any] = {
     },
     "local_product_source_checkouts_used": False,
     "phase_outcomes": {},
+    "phase_evidence": {},
     "readiness_transitions": [],
     "recovery_timings_ms": {},
     "identities": {},
@@ -677,7 +800,11 @@ def start_topology() -> dict[str, Any]:
     contract = cluster.get("single_region_failover_contract", {})
     require(contract.get("schema") == "durable-workflow.v2.single-region-failover.contract", "released image does not expose the single-region failover contract")
     require(contract.get("host_runner_contract", {}).get("runner_key") == "single-region-failover", "released image exposes an incompatible runner contract")
+    run_status_contract = parse_public_run_status_contract(contract.get("run_status_contract"))
+    PUBLIC_RUN_STATUS_CONTRACT.clear()
+    PUBLIC_RUN_STATUS_CONTRACT.update(run_status_contract)
     RESULT["artifacts"]["server_reported_version"] = cluster.get("version")
+    RESULT["artifacts"]["run_status_contract"] = run_status_contract
     return {
         "running_services": sorted(running),
         "cluster_info_contract_version": contract.get("version"),
@@ -712,26 +839,96 @@ def api_node_loss_phase() -> dict[str, Any]:
     register_worker(worker)
     started = start_workflow(unique("api-loss"))
     task = poll_task(worker, SERVER_A)
+    require(
+        task.get("workflow_id") == started["workflow_id"]
+        and task.get("run_id") == started["run_id"],
+        f"wrong task claimed before API node loss: {task}",
+    )
+    phase_evidence = RESULT["phase_evidence"].setdefault("api_node_loss", {})
+    phase_evidence["acknowledged_task"] = {
+        "workflow_id": task.get("workflow_id"),
+        "run_id": task.get("run_id"),
+        "task_id": task.get("task_id"),
+        "claim_node": "server-a",
+    }
     loss_started = time.monotonic()
     compose("stop", "server-a", timeout=60)
+    running_result = compose("ps", "--status", "running", "--services", check=False, timeout=30)
+    running_services = running_result.stdout.splitlines()
+    phase_evidence["topology_after_stop"] = {
+        "running_services": running_services,
+        "server_a_stopped": "server-a" not in running_services,
+        "server_b_running": "server-b" in running_services,
+        "load_balancer_running": "load-balancer" in running_services,
+        "compose_ps": command_diagnostic(running_result),
+    }
+    require("server-a" not in running_services, f"server-a remained running after stop: {running_services}")
+    require("server-b" in running_services, f"server-b was not running after server-a stop: {running_services}")
+    require("load-balancer" in running_services, f"shared endpoint was not running after server-a stop: {running_services}")
 
-    def survivor_traffic() -> dict[str, Any] | None:
-        status, body, _ = describe(started["workflow_id"], started["run_id"], LB)
-        return body if status == 200 and body.get("status") == "running" else None
-
-    wait_for("useful shared-endpoint traffic after API node loss", survivor_traffic, BOUNDS["api_node_useful_traffic_seconds"])
+    surviving_readiness = ready(SERVER_B)
+    phase_evidence["surviving_node_readiness"] = surviving_readiness
+    require(surviving_readiness is not None, f"server-b was not ready after server-a stop: {surviving_readiness}")
+    survivor_evidence: dict[str, Any] = {}
+    phase_evidence["survivor_traffic"] = survivor_evidence
+    survivor = wait_for_survivor_traffic(
+        started["workflow_id"],
+        started["run_id"],
+        BOUNDS["api_node_useful_traffic_seconds"],
+        survivor_evidence,
+    )
     recovery_ms = monotonic_ms(loss_started)
     status, completed, _ = complete_task(task, SERVER_B)
+    phase_evidence["survivor_completion"] = {
+        "http_status": status,
+        "recorded": completed.get("recorded") is True,
+        "completion_node": "server-b",
+    }
     require(status in (200, 202) and completed.get("recorded") is True, f"survivor completion failed: {status} {completed}")
     show_status, shown, _ = describe(started["workflow_id"], started["run_id"], SERVER_B)
-    require(show_status == 200 and shown.get("status") == "completed", f"acknowledged state was not preserved: {shown}")
+    final_observation = survivor_run_observation(
+        show_status,
+        shown,
+        started["workflow_id"],
+        started["run_id"],
+    )
+    final_summary = final_observation["response_summary"]
+    final_description = {
+        "http_status": show_status,
+        "response_summary": final_summary,
+    }
+    phase_evidence["final_description"] = final_description
+    require(
+        show_status == 200
+        and final_summary["workflow_id"] == started["workflow_id"]
+        and final_summary["run_id"] == started["run_id"]
+        and final_summary["raw_status"] == "completed"
+        and final_summary["status_bucket"] == "completed"
+        and final_summary["is_terminal"] is True,
+        f"acknowledged state was not preserved: {final_observation}",
+    )
     compose("start", "server-a")
     wait_for("server-a restart readiness", lambda: ready(SERVER_A), 30)
     RESULT["recovery_timings_ms"]["api_node_useful_traffic"] = recovery_ms
     RESULT["recovery_bounds"]["api_node_useful_traffic_seconds"]["passed"] = recovery_ms <= BOUNDS["api_node_useful_traffic_seconds"] * 1000
-    RESULT["identities"]["api_node_loss"] = {**started, "task_id": task["task_id"], "lost_node": "server-a", "surviving_node": "server-b"}
+    RESULT["identities"]["api_node_loss"] = {
+        **started,
+        "task_id": task["task_id"],
+        "lost_node": "server-a",
+        "surviving_node": "server-b",
+        "completion_node": "server-b",
+    }
     RESULT["loss_assertions"].append({"phase": "api_node_loss", "acknowledged_state_present": True, "passed": True})
-    return {"recovery_ms": recovery_ms, "final_status": shown["status"], "acknowledged_state_present": True}
+    return {
+        "recovery_ms": recovery_ms,
+        "lost_node_stopped": True,
+        "shared_endpoint_reached_surviving_node": True,
+        "survivor_response": survivor,
+        "completion_node": "server-b",
+        "final_description": final_description,
+        "final_status": final_summary["raw_status"],
+        "acknowledged_state_present": True,
+    }
 
 
 def database_interruption_phase() -> dict[str, Any]:
@@ -1004,6 +1201,9 @@ def main() -> int:
         }
         if active_phase == "topology_start":
             failure.update(TOPOLOGY_DIAGNOSTICS)
+        elif active_phase == "api_node_loss":
+            failure.update(api_node_loss_failure_diagnostics())
+            failure["phase_evidence"] = RESULT["phase_evidence"].get("api_node_loss", {})
         RESULT["phase_outcomes"][active_phase] = failure
         RESULT["outcome"] = "fail"
         return 1

@@ -2,6 +2,7 @@
 
 namespace App\Support;
 
+use Workflow\V2\Enums\RunStatus;
 use Workflow\V2\Support\PlatformConformanceSuite;
 
 /**
@@ -13,7 +14,7 @@ final class SingleRegionFailoverContract
 {
     public const SCHEMA = 'durable-workflow.v2.single-region-failover.contract';
 
-    public const VERSION = 2;
+    public const VERSION = 3;
 
     public const RESULT_SCHEMA = 'durable-workflow.v2.single-region-failover.result';
 
@@ -103,6 +104,18 @@ final class SingleRegionFailoverContract
                     'durable_correctness' => 'preserved_by_database_poll_fallback',
                 ],
             ],
+            'run_status_contract' => array_reduce(
+                RunStatus::cases(),
+                static function (array $contract, RunStatus $status): array {
+                    $contract[$status->value] = [
+                        'status_bucket' => $status->statusBucket()->value,
+                        'is_terminal' => $status->isTerminal(),
+                    ];
+
+                    return $contract;
+                },
+                [],
+            ),
             'result_requirements' => [
                 'topology',
                 'artifacts',
@@ -139,6 +152,17 @@ final class SingleRegionFailoverContract
                     'compose_ps',
                     'published_port_mappings',
                     'readiness_observations',
+                ],
+                'api_node_loss_evidence' => [
+                    'compose_ps',
+                    'load_balancer_logs',
+                    'surviving_node_logs',
+                    'last_http_status',
+                    'redacted_run_description',
+                    'lost_node_stopped',
+                    'surviving_node_ready',
+                    'completion_node',
+                    'final_run_description',
                 ],
                 'required_host_capabilities' => [
                     'bash',

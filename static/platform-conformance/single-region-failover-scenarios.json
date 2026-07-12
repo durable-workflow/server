@@ -1,6 +1,6 @@
 {
   "schema": "durable-workflow.v2.platform-conformance.runtime-scenarios",
-  "version": 1,
+  "version": 2,
   "category": "single_region_failover_contract",
   "suite_schema": "durable-workflow.v2.platform-conformance-suite",
   "artifact_policy": {
@@ -23,8 +23,8 @@
     },
     {
       "id": "api_node_loss",
-      "requirement": "Stop one API node while acknowledged work is open and observe useful shared-endpoint traffic through the survivor within the configured bound.",
-      "required_evidence": ["workflow_id", "run_id", "lost_node", "surviving_node", "recovery_ms", "acknowledged_state_present"]
+      "requirement": "Stop one API node while acknowledged work is open, preserve an identity-matching nonterminal run description through the shared endpoint, then complete the acknowledged task through the survivor.",
+      "required_evidence": ["workflow_id", "run_id", "task_id", "lost_node", "lost_node_stopped", "surviving_node", "shared_endpoint_reached_surviving_node", "survivor_response", "completion_node", "final_description", "recovery_ms", "acknowledged_state_present"]
     },
     {
       "id": "database_interruption",

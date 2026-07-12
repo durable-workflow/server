@@ -691,7 +691,7 @@ class ClusterInfoTest extends TestCase
             );
 
         $contract = $response->json('single_region_failover_contract');
-        $this->assertSame(2, $contract['version']);
+        $this->assertSame(3, $contract['version']);
         $this->assertSame(2, $contract['required_topology']['api_nodes']);
         $this->assertSame(1, $contract['required_topology']['scheduler_maintenance_runners']);
         $this->assertFalse($contract['required_topology']['sticky_sessions']);

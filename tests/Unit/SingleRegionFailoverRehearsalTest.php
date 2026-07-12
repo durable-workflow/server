@@ -22,6 +22,15 @@ class SingleRegionFailoverRehearsalTest extends TestCase
             array_column($scenarioDocument['scenarios'], 'id'),
         );
         $this->assertSame(SingleRegionFailoverContract::RESULT_SCHEMA, $scenarioDocument['result_contract']['schema']);
+        $this->assertSame([
+            'pending' => ['status_bucket' => 'running', 'is_terminal' => false],
+            'running' => ['status_bucket' => 'running', 'is_terminal' => false],
+            'waiting' => ['status_bucket' => 'running', 'is_terminal' => false],
+            'cancelled' => ['status_bucket' => 'failed', 'is_terminal' => true],
+            'terminated' => ['status_bucket' => 'failed', 'is_terminal' => true],
+            'completed' => ['status_bucket' => 'completed', 'is_terminal' => true],
+            'failed' => ['status_bucket' => 'failed', 'is_terminal' => true],
+        ], $manifest['run_status_contract']);
     }
 
     public function test_compose_rehearsal_has_no_product_build_or_source_mount(): void

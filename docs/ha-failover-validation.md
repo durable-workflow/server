@@ -311,10 +311,13 @@ The rehearsal:
   resumes accelerated discovery within the recorded recovery bound after the
   cache reconnects.
 - proves losing one API node mid-traffic does not produce
-  acknowledged-write loss. The test issues steady write traffic
-  through the load balancer, kills one API container, and asserts
-  the load balancer removes it within the configured readiness
-  interval and the remaining nodes serve every subsequent request.
+  acknowledged-write loss. The test claims a workflow task through one node,
+  stops that node, and accepts shared-endpoint traffic only when the workflow
+  and run identity match and the public run-status fields consistently describe
+  a nonterminal run. It then completes the acknowledged task through the
+  surviving node and verifies the same run reaches `completed`. On failure, the
+  result retains the last redacted run description together with Compose state
+  and bounded load-balancer and survivor logs.
 - proves worker lease loss preserves the running workflow until the configured
   lease expires, then reclaims and completes it without mutating workflow input.
 - proves the scheduler/maintenance runner can be stopped and
