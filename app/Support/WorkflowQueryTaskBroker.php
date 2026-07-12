@@ -2553,11 +2553,21 @@ final class WorkflowQueryTaskBroker
 
     private function queryPollingWorkerIsCurrent(string $namespace, WorkerRegistration $worker): bool
     {
-        return $this->store()->get($this->queryPollingWorkerKey(
-            $namespace,
-            (string) $worker->task_queue,
-            $worker->worker_id,
-        )) === true;
+        if (! $this->cache->available()) {
+            return false;
+        }
+
+        try {
+            return $this->store()->get($this->queryPollingWorkerKey(
+                $namespace,
+                (string) $worker->task_queue,
+                $worker->worker_id,
+            )) === true;
+        } catch (\Throwable) {
+            // Query-task eligibility is an acceleration mirror. A cache
+            // interruption must not prevent ordinary durable workflow polls.
+            return false;
+        }
     }
 
     private function rememberQueryTaskPollingWorker(

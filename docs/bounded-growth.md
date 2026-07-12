@@ -43,6 +43,7 @@ added without a TTL, admission, scan, or cardinality contract.
 
 | Policy ID | Prefix | Owner | Growth Bound |
 | --- | --- | --- | --- |
+| `polling_cache_availability_probe` | `server:polling-cache:` | `App\Support\ServerPollingCache` | One fixed, read-only key address probes shared polling-cache availability; the probe does not write or retain a value. |
 | `long_poll_signals` | `server:long-poll-signal:` | `App\Support\LongPollSignalStore` | One expiring key per wake channel touched during the TTL window; no retained index. |
 | `workflow_task_poll_requests` | `server:workflow-task-poll-request:` | `App\Support\WorkflowTaskPollRequestStore` | One pending key and one short replay-result key per idempotent worker poll request. |
 | `activity_task_poll_requests` | `server:activity-task-poll-request:` | `App\Support\ActivityTaskPollRequestStore` | One pending key and one short replay-result key per idempotent activity worker poll request. |

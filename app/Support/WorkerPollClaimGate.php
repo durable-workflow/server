@@ -33,6 +33,10 @@ final class WorkerPollClaimGate
             return $callback();
         }
 
+        if (! $this->cache->available()) {
+            return $callback();
+        }
+
         $store = $this->cache->store()->getStore();
 
         if (! $store instanceof LockProvider) {

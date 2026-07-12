@@ -216,10 +216,10 @@ final class ServerReadiness
 
             if ($read !== $value) {
                 return [
-                    'status' => 'unavailable',
+                    'status' => $this->cacheFailureStatus(),
                     'store' => (string) config('cache.default'),
                     'message' => 'Cache store did not round-trip the readiness probe value.',
-                ];
+                ] + $this->cacheFailureDetails();
             }
 
             return [
@@ -228,11 +228,35 @@ final class ServerReadiness
             ];
         } catch (\Throwable $exception) {
             return [
-                'status' => 'unavailable',
+                'status' => $this->cacheFailureStatus(),
                 'store' => (string) config('cache.default'),
                 'message' => $exception->getMessage(),
-            ];
+            ] + $this->cacheFailureDetails();
         }
+    }
+
+    private function cacheFailureStatus(): string
+    {
+        // Redis wake signals and admission locks accelerate multi-node polling,
+        // but workflow history, task rows, leases, and schedule deduplication
+        // remain database-backed. Keep Redis-only loss in the load-balancer
+        // rotation while making the degraded acceleration layer explicit.
+        return (string) config('cache.default') === 'redis' ? 'warning' : 'unavailable';
+    }
+
+    /**
+     * @return array<string, string>
+     */
+    private function cacheFailureDetails(): array
+    {
+        if ((string) config('cache.default') !== 'redis') {
+            return [];
+        }
+
+        return [
+            'correctness_substrate' => 'database',
+            'degraded_capability' => 'long_poll_wake_acceleration',
+        ];
     }
 
     /**

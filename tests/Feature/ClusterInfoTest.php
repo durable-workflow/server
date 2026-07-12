@@ -31,6 +31,7 @@ use App\Support\SchedulesRuntimeContract;
 use App\Support\SchedulesRuntimeResultGate;
 use App\Support\SignalQueryRuntimeContract;
 use App\Support\SignalQueryRuntimeResultGate;
+use App\Support\SingleRegionFailoverContract;
 use App\Support\SkewRefusalMatrixContract;
 use App\Support\SkewRefusalMatrixResultGate;
 use App\Support\TimerRuntimeContract;
@@ -671,6 +672,34 @@ class ClusterInfoTest extends TestCase
             'cross_language_schedule_workflow_cells_are_reported',
             $contract['result_gate']['pass_requires'],
         );
+    }
+
+    public function test_it_publishes_the_single_region_failover_rehearsal_contract(): void
+    {
+        $response = $this->getJson('/api/cluster/info')
+            ->assertOk()
+            ->assertJsonPath('capabilities.single_region_failover_contract', true)
+            ->assertJsonPath('single_region_failover_contract.schema', SingleRegionFailoverContract::SCHEMA)
+            ->assertJsonPath('single_region_failover_contract.version', SingleRegionFailoverContract::VERSION)
+            ->assertJsonPath(
+                'single_region_failover_contract.scenario_manifest.source_path',
+                'static/platform-conformance/single-region-failover-scenarios.json',
+            )
+            ->assertJsonPath(
+                'single_region_failover_contract.host_runner_contract.runner_path',
+                'scripts/conformance/single-region-failover-published-artifacts.sh',
+            );
+
+        $contract = $response->json('single_region_failover_contract');
+        $this->assertSame(2, $contract['required_topology']['api_nodes']);
+        $this->assertSame(1, $contract['required_topology']['scheduler_maintenance_runners']);
+        $this->assertFalse($contract['required_topology']['sticky_sessions']);
+        $this->assertContains('database_interruption', $contract['required_scenarios']);
+        $this->assertContains('redis_interruption', $contract['required_scenarios']);
+        $this->assertContains('worker_lease_loss', $contract['required_scenarios']);
+        $this->assertContains('singleton_scheduler_restart', $contract['required_scenarios']);
+        $this->assertTrue($contract['artifact_policy']['published_artifacts_only']);
+        $this->assertTrue($contract['host_runner_contract']['must_fail_closed_on_local_product_runtime']);
     }
 
     public function test_it_publishes_the_worker_versioning_runtime_conformance_contract(): void

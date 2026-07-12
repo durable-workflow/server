@@ -6,6 +6,7 @@ use Closure;
 use Illuminate\Contracts\Cache\LockProvider;
 use Illuminate\Contracts\Cache\LockTimeoutException;
 use Illuminate\Support\Facades\Log;
+use Throwable;
 use Workflow\V2\Enums\TaskStatus;
 use Workflow\V2\Enums\TaskType;
 
@@ -27,7 +28,15 @@ final class TaskQueueAdmission
      */
     public function withLeaseAdmission(string $namespace, string $taskQueue, string $taskKind, Closure $callback): mixed
     {
-        $budget = $this->budget($namespace, $taskQueue, $taskKind);
+        if (! $this->cache->available()) {
+            return $callback();
+        }
+
+        try {
+            $budget = $this->budget($namespace, $taskQueue, $taskKind);
+        } catch (Throwable) {
+            return $callback();
+        }
 
         if ($budget['lock_required'] !== true) {
             return $callback();

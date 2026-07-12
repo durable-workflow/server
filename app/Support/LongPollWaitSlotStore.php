@@ -2,6 +2,8 @@
 
 namespace App\Support;
 
+use Throwable;
+
 final class LongPollWaitSlotStore
 {
     private const CACHE_PREFIX = 'server:long-poll-wait-slot:';
@@ -73,6 +75,10 @@ final class LongPollWaitSlotStore
             return LongPollWaitSlot::unlimited();
         }
 
+        if (! $this->cache->available()) {
+            return LongPollWaitSlot::unlimited();
+        }
+
         if ($maxConcurrentWaits <= 0) {
             return null;
         }
@@ -83,8 +89,15 @@ final class LongPollWaitSlotStore
         for ($slot = 0; $slot < $maxConcurrentWaits; $slot++) {
             $key = $this->slotKey($slot, $pool);
 
-            if ($this->cache->store()->add($key, $owner, $expiresAt)) {
-                return LongPollWaitSlot::acquired($this->cache, $key, $owner);
+            try {
+                if ($this->cache->store()->add($key, $owner, $expiresAt)) {
+                    return LongPollWaitSlot::acquired($this->cache, $key, $owner);
+                }
+            } catch (Throwable) {
+                // A local HTTP-worker reservation cannot provide cross-node
+                // correctness. During cache loss, keep bounded DB polling
+                // available and rely on the HTTP server's own worker limit.
+                return LongPollWaitSlot::unlimited();
             }
         }
 

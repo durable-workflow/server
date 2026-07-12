@@ -4,6 +4,7 @@ namespace App\Support;
 
 use Illuminate\Contracts\Cache\Repository as CacheRepository;
 use Illuminate\Support\Str;
+use Throwable;
 use Workflow\V2\Contracts\LongPollWakeStore;
 use Workflow\V2\Enums\TaskType;
 use Workflow\V2\Models\WorkflowHistoryEvent;
@@ -34,8 +35,17 @@ final class LongPollSignalStore implements LongPollWakeStore
     public function snapshot(array $channels): array
     {
         $snapshot = [];
+        $channels = $this->normalizeChannels($channels);
 
-        foreach ($this->normalizeChannels($channels) as $channel) {
+        if (! $this->cache->available()) {
+            foreach ($channels as $channel) {
+                $snapshot[$channel] = null;
+            }
+
+            return $snapshot;
+        }
+
+        foreach ($channels as $channel) {
             $snapshot[$channel] = $this->version($channel);
         }
 
@@ -47,6 +57,10 @@ final class LongPollSignalStore implements LongPollWakeStore
      */
     public function changed(array $snapshot): bool
     {
+        if (! $this->cache->available()) {
+            return false;
+        }
+
         foreach ($snapshot as $channel => $version) {
             if ($this->version($channel) !== $version) {
                 return true;
@@ -64,14 +78,25 @@ final class LongPollSignalStore implements LongPollWakeStore
             return;
         }
 
+        if (! $this->cache->available()) {
+            return;
+        }
+
         $version = sprintf('%.6F:%s', microtime(true), (string) Str::ulid());
 
-        foreach ($channels as $channel) {
-            $this->store()->put(
-                $this->cacheKey($channel),
-                $version,
-                now()->addSeconds($this->signalTtlSeconds()),
-            );
+        try {
+            $store = $this->store();
+
+            foreach ($channels as $channel) {
+                $store->put(
+                    $this->cacheKey($channel),
+                    $version,
+                    now()->addSeconds($this->signalTtlSeconds()),
+                );
+            }
+        } catch (Throwable) {
+            // Wake signals are acceleration only. The durable database
+            // remains authoritative and pollers re-probe it on cadence.
         }
     }
 
@@ -271,7 +296,11 @@ final class LongPollSignalStore implements LongPollWakeStore
 
     private function version(string $channel): ?string
     {
-        $version = $this->store()->get($this->cacheKey($channel));
+        try {
+            $version = $this->store()->get($this->cacheKey($channel));
+        } catch (Throwable) {
+            return null;
+        }
 
         return is_string($version) && $version !== ''
             ? $version

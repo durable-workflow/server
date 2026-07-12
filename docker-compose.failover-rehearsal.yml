@@ -1,0 +1,155 @@
+name: durable-workflow-single-region-failover
+
+x-server-image: &server-image ${DW_FAILOVER_SERVER_IMAGE:?Run through scripts/conformance/single-region-failover-published-artifacts.sh}
+
+x-server-environment: &server-environment
+  APP_NAME: "Durable Workflow Server"
+  APP_ENV: testing
+  APP_VERSION: ${DW_FAILOVER_SERVER_VERSION:?The runner records the concrete server version}
+  APP_DEBUG: "false"
+  DW_SERVER_KEY: ${DW_SERVER_KEY:-base64:5Zt4nUhlCm3DD0nLXZJQdHiwPfb56yGo9gNV/g3jYbY=}
+  DB_CONNECTION: mysql
+  DB_HOST: mysql
+  DB_PORT: 3306
+  DB_DATABASE: ${DB_DATABASE:-durable_workflow}
+  DB_USERNAME: ${DB_USERNAME:-workflow}
+  DB_PASSWORD: ${DB_PASSWORD:-workflow}
+  REDIS_HOST: redis
+  REDIS_PORT: 6379
+  QUEUE_CONNECTION: redis
+  CACHE_STORE: redis
+  DW_AUTH_DRIVER: token
+  DW_AUTH_TOKEN: ${DW_AUTH_TOKEN:-failover-rehearsal-token}
+  DW_AUTH_BACKWARD_COMPATIBLE: "true"
+  DW_SERVER_TOPOLOGY_SHAPE: standalone_server
+  DW_V2_MULTI_NODE: "true"
+  DW_TASK_DISPATCH_MODE: poll
+  DW_WORKER_POLL_TIMEOUT: "2"
+  DW_WORKER_POLL_INTERVAL_MS: "200"
+  DW_WORKFLOW_TASK_TIMEOUT: ${DW_FAILOVER_WORKFLOW_TASK_LEASE_SECONDS:-8}
+  DW_V2_TASK_REPAIR_REDISPATCH_AFTER_SECONDS: "1"
+  DW_V2_TASK_REPAIR_LOOP_THROTTLE_SECONDS: "1"
+  DW_ENV_AUDIT_STRICT: "1"
+
+services:
+  bootstrap:
+    image: *server-image
+    command: ["server-bootstrap"]
+    environment:
+      <<: *server-environment
+      DW_SERVER_ID: failover-bootstrap
+    depends_on:
+      mysql:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  server-a:
+    image: *server-image
+    ports:
+      - "${DW_FAILOVER_SERVER_A_PORT:-18084}:8080"
+    environment:
+      <<: *server-environment
+      DW_SERVER_ID: failover-server-a
+      DW_SERVER_PROCESS_CLASS: server_http_node
+    depends_on:
+      bootstrap:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/api/ready"]
+      interval: 2s
+      timeout: 2s
+      retries: 30
+
+  server-b:
+    image: *server-image
+    ports:
+      - "${DW_FAILOVER_SERVER_B_PORT:-18085}:8080"
+    environment:
+      <<: *server-environment
+      DW_SERVER_ID: failover-server-b
+      DW_SERVER_PROCESS_CLASS: server_http_node
+    depends_on:
+      bootstrap:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/api/ready"]
+      interval: 2s
+      timeout: 2s
+      retries: 30
+
+  scheduler:
+    image: *server-image
+    init: true
+    command: >-
+      sh -c 'while true; do php artisan schedule:evaluate --limit=100 --json; php artisan activity:timeout-enforce --limit=100; php artisan history:prune --limit=100; sleep 1; done'
+    environment:
+      <<: *server-environment
+      DW_SERVER_ID: failover-scheduler
+      DW_SERVER_PROCESS_CLASS: scheduler_node
+    depends_on:
+      bootstrap:
+        condition: service_completed_successfully
+
+  load-balancer:
+    image: ${DW_FAILOVER_NGINX_IMAGE:?The runner resolves the load-balancer image}
+    ports:
+      - "${DW_FAILOVER_LB_PORT:-18086}:8080"
+    command:
+      - /bin/sh
+      - -ec
+      - |
+        cat >/etc/nginx/conf.d/default.conf <<'NGINX'
+        upstream durable_workflow_api {
+          zone durable_workflow_api 64k;
+          server server-a:8080 max_fails=1 fail_timeout=2s;
+          server server-b:8080 max_fails=1 fail_timeout=2s;
+        }
+
+        server {
+          listen 8080;
+
+          location / {
+            proxy_http_version 1.1;
+            proxy_connect_timeout 1s;
+            proxy_read_timeout 65s;
+            proxy_next_upstream error timeout http_502 http_503 http_504;
+            proxy_next_upstream_tries 2;
+            proxy_set_header Host $$host;
+            proxy_set_header X-Forwarded-For $$proxy_add_x_forwarded_for;
+            proxy_pass http://durable_workflow_api;
+          }
+        }
+        NGINX
+        exec nginx -g 'daemon off;'
+    depends_on:
+      server-a:
+        condition: service_healthy
+      server-b:
+        condition: service_healthy
+
+  mysql:
+    image: ${DW_FAILOVER_MYSQL_IMAGE:?The runner resolves the database image}
+    environment:
+      MYSQL_DATABASE: ${DB_DATABASE:-durable_workflow}
+      MYSQL_USER: ${DB_USERNAME:-workflow}
+      MYSQL_PASSWORD: ${DB_PASSWORD:-workflow}
+      MYSQL_ROOT_PASSWORD: ${DB_ROOT_PASSWORD:-root}
+    volumes:
+      - mysql_data:/var/lib/mysql
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost"]
+      interval: 2s
+      timeout: 2s
+      retries: 60
+
+  redis:
+    image: ${DW_FAILOVER_REDIS_IMAGE:?The runner resolves the acceleration image}
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 2s
+      timeout: 2s
+      retries: 30
+
+volumes:
+  mysql_data:

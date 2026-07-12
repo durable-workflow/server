@@ -29,6 +29,7 @@ CONTROL_PLANE_VERSION = os.environ.get("DW_PERF_CONTROL_PLANE_VERSION", "2")
 WORKER_PROTOCOL_VERSION = os.environ.get("DW_PERF_WORKER_PROTOCOL_VERSION", "1.2")
 ERROR_WRITE_LOCK = threading.Lock()
 SERVER_CACHE_KEY_PATTERNS = {
+    "polling_cache_availability_probe": "*server:polling-cache:*",
     "long_poll_signals": "*server:long-poll-signal:*",
     "workflow_task_poll_requests": "*server:workflow-task-poll-request:*",
     "activity_task_poll_requests": "*server:activity-task-poll-request:*",

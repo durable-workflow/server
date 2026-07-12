@@ -1,0 +1,50 @@
+name: Single-Region Failover Rehearsal
+
+on:
+  workflow_dispatch:
+    inputs:
+      server_image:
+        description: Exact public durableworkflow/server tag or digest
+        required: false
+  schedule:
+    - cron: "17 4 * * 3"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: single-region-failover-${{ github.event_name }}-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  bounded-rehearsal:
+    name: Exact public image / MySQL
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+
+    steps:
+      - name: Checkout runner contract
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Select exact released server image
+        env:
+          REQUESTED_IMAGE: ${{ inputs.server_image }}
+        run: |
+          image="$(scripts/ci/select-single-region-failover-server-image.sh)"
+          echo "DW_SERVER_IMAGE=$image" >> "$GITHUB_ENV"
+
+      - name: Run bounded published-artifact rehearsal
+        env:
+          DW_FAILOVER_MODE: bounded
+        run: scripts/conformance/single-region-failover-published-artifacts.sh --result-dir artifacts/single-region-failover
+
+      - name: Upload machine-readable recovery packet
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: single-region-failover-${{ github.run_id }}-${{ github.run_attempt }}
+          path: artifacts/single-region-failover/single-region-failover-result.json
+          if-no-files-found: error
+          retention-days: 30

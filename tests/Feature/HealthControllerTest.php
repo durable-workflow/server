@@ -273,6 +273,31 @@ class HealthControllerTest extends TestCase
         );
     }
 
+    public function test_readiness_keeps_redis_only_acceleration_loss_non_blocking(): void
+    {
+        WorkflowNamespace::query()->create([
+            'name' => 'default',
+            'description' => 'Default namespace',
+            'retention_days' => 30,
+            'status' => 'active',
+        ]);
+
+        config([
+            'cache.default' => 'redis',
+            'cache.stores.redis' => ['driver' => 'redis', 'connection' => 'missing-readiness-connection'],
+        ]);
+        app('cache')->forgetDriver('redis');
+
+        $response = $this->getJson('/api/ready');
+
+        $response->assertOk()
+            ->assertJsonPath('status', 'ready')
+            ->assertJsonPath('checks.cache.status', 'warning')
+            ->assertJsonPath('checks.cache.store', 'redis')
+            ->assertJsonPath('checks.cache.correctness_substrate', 'database')
+            ->assertJsonPath('checks.cache.degraded_capability', 'long_poll_wake_acceleration');
+    }
+
     public function test_readiness_check_reports_missing_auth_credential(): void
     {
         WorkflowNamespace::query()->create([

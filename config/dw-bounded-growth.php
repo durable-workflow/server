@@ -7,6 +7,7 @@ use App\Support\LongPollSignalStore;
 use App\Support\LongPollWaitSlotStore;
 use App\Support\ProjectionDriftMetrics;
 use App\Support\QueryTaskPollRequestStore;
+use App\Support\ServerPollingCache;
 use App\Support\ServerReadiness;
 use App\Support\ActivityTaskPollRequestStore;
 use App\Support\TaskQueueAdmission;
@@ -50,6 +51,18 @@ return [
     ],
 
     'cache_keys' => [
+        'polling_cache_availability_probe' => [
+            'owner' => ServerPollingCache::class,
+            'prefix' => 'server:polling-cache:',
+            'dimensions' => [
+                'probe_kind',
+            ],
+            'ttl' => 'No value is written or retained; the fixed availability-probe key is read only.',
+            'bound' => 'One fixed key address is probed for the configured shared polling cache.',
+            'admission' => 'The probe key is a server-owned literal with no user-controlled dimensions.',
+            'eviction' => 'Not applicable because the availability probe does not write a cache value.',
+        ],
+
         'long_poll_signals' => [
             'owner' => LongPollSignalStore::class,
             'prefix' => 'server:long-poll-signal:',

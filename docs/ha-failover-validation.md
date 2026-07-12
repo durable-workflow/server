@@ -149,25 +149,26 @@ as follows:
 
 - Use **`GET /api/ready`** as the health/readiness check. Do not use
   `/api/health` alone. `/api/health` only proves the process is
-  serving HTTP; `/api/ready` proves the server can use its configured
-  database and Redis. During a database outage, `/api/ready` will
+  serving HTTP; `/api/ready` proves the server can use its durable database
+  and reports whether Redis wake acceleration is healthy or degraded. During a
+  database outage, `/api/ready` will
   fail on every node — that is the correct signal, and the load
   balancer MUST NOT fall back to a stale "last known good" roster.
 - Use a check **interval of 5–10 seconds** and a removal threshold of
   2–3 consecutive failures. Smaller intervals shorten recovery time;
-  smaller thresholds reduce false positives during a managed Redis
-  reconnect window where one node may briefly fail readiness.
+  choose the threshold to balance database-outage removal time against
+  transient connection resets during substrate promotion.
 - Do **not** require sticky sessions. Worker registration, workflow
   task polling, and workflow task completion all flow through any
   API node; the small-cluster smoke proves an external worker can
   poll `server-a` and complete on `server-b`.
-- During a Redis-only failover, readiness MAY remain green on every
-  node (the engine treats Redis loss as acceleration degradation,
-  not substrate failure). The acceleration-layer health checks
-  surface as **warnings** on `backend_capabilities` and
-  `long_poll_wake_acceleration`; do not configure the load balancer
-  to remove nodes on those warnings.
-- During a database failover, readiness MAY fail on every node
+- During a Redis-only failover, readiness remains green on every
+  node while the durable database is available (the engine treats Redis loss
+  as acceleration degradation, not substrate failure). The acceleration-layer
+  health check surfaces `checks.cache.status=warning` and
+  `checks.cache.degraded_capability=long_poll_wake_acceleration`; do not
+  configure the load balancer to remove nodes on that warning.
+- During a database failover, readiness fails on every node
   simultaneously. The load balancer MUST tolerate the all-down
   state; it returns a `5xx` to clients and the engine does not need
   manual draining.
@@ -209,7 +210,7 @@ server is:
 | Event | Operator-visible behavior | Engine recovery bound (after substrate / runner is back) |
 | --- | --- | --- |
 | Managed-database failover | Writes fail with the underlying database error and are not silently buffered. Reads fail. `/api/ready` fails on every API node and on the scheduler. No work is silently lost. | Connection-pool reconnect, plus one `task_repair` cadence (default 3s), plus one long-poll timeout (default 30s, max 60s) for in-flight pollers. |
-| Managed-Redis failover | Wake signals dropped → discovery falls back to long-poll timeout. `backend_capabilities` and `long_poll_wake_acceleration` go to **warning**, not error. `/api/ready` typically stays green. Admission locks fall back to "allow"; query-task locks reacquired on next attempt. | Redis client reconnect interval. |
+| Managed-Redis failover | Wake signals dropped → discovery falls back to long-poll timeout. `checks.cache.status` goes to **warning** and names `long_poll_wake_acceleration` as the degraded capability. `/api/ready` stays green while the durable database remains available. Admission locks fall back to "allow"; query-task locks reacquired on next attempt. | Redis client reconnect interval. |
 | API node loss (1 of N) | Load balancer removes the failed node within its readiness interval. In-flight requests against the failed node fail at the LB and are retried by the client. Tasks leased through the failed node remain leased; they are not redelivered until normal lease expiry. | Load-balancer readiness interval (operator-controlled, typically 5–10s). |
 | Worker loss | Tasks held by the failed worker pause until lease expiry. Other workers continue claiming their own tasks. The engine never mutates run status to "recover" from worker loss. | Lease expiry (5 min for activity tasks per `ActivityLease::DURATION_MINUTES`), plus one `task_repair` cadence. |
 | Scheduler/maintenance restart | Schedule fires pause; activity-timeout enforcement pauses; history pruning pauses. All three resume on the next tick after the orchestrator brings the runner back. No duplicate fires occur because the runner is a singleton. | Orchestrator restart latency, plus one `ScheduleManager::tick()` cadence. |
@@ -248,45 +249,57 @@ holding:
   signal, update, claim, completion, or schedule fire is durable
   through every event class above.
 
-## CI Harness
+## Exact-artifact Rehearsal
 
-Single-region HA is validated as a **runbook contract layered on the
-existing small-cluster smoke**, not as a new container-level CI
-suite. The harness shape is:
+The reusable baseline rehearsal is
+`scripts/conformance/single-region-failover-published-artifacts.sh`, backed by
+`docker-compose.failover-rehearsal.yml`. It requires an explicit public server
+tag or digest, pulls it, resolves every runtime image to a repository digest,
+and then launches only those immutable references. The Compose file has no
+build section or product-source bind mount. The runner refuses local, rolling,
+or non-public server references before any topology starts.
 
-- `docker-compose.small-cluster.yml` and `scripts/smoke-small-cluster.sh`
-  remain the steady-state CI smoke. They prove the topology that the
-  HA contract layers on top of: 2 API nodes behind nginx, shared
-  Redis, MySQL or PostgreSQL, a singleton scheduler/maintenance
-  runner, and a worker that polls one node and completes on the
-  other.
-- An explicit **failover-rehearsal acceptance test** runs against the
-  operator's own database and Redis providers (the engine has no
-  provider-specific path, so an in-CI mock would not prove anything
-  the operator's environment cares about). The rehearsal is the
-  evidence required to claim this contract.
+Run it from a clean host with Docker Engine, Docker Compose v2, Python 3.11 or
+newer, and public registry access:
 
-The rehearsal acceptance test, at minimum, MUST:
+```bash
+DW_SERVER_IMAGE=durableworkflow/server:<released-version> \
+  scripts/conformance/single-region-failover-published-artifacts.sh \
+  --result-dir ./failover-result
+```
 
-- prove a managed-database failover event completes without any
+The bounded CI invocation runs the same required failure cells with the
+contract recovery limits and uploads
+`single-region-failover-result.json`. Public CI runs it weekly and on manual
+dispatch. Provider-specific rehearsals should invoke the same scenario and
+result contract while replacing the Compose stop/start actions with the
+provider's promotion API.
+
+The rehearsal:
+
+- proves a database interruption completes without any
   acknowledged-write loss. The test starts a long-running workflow,
   triggers the database failover, and asserts the workflow resumes
   from the last committed history record after promotion. Any
   acknowledged write before the failover must be present after
   promotion.
-- prove a managed-Redis failover event does not cause any
-  acknowledged-work loss and surfaces only as **warnings** on
-  `backend_capabilities` and `long_poll_wake_acceleration`, not as
-  `/api/ready` failures. The test starts a workflow, triggers the
+- proves a Redis interruption does not cause any
+  acknowledged-work loss and surfaces `checks.cache.status=warning` with
+  `long_poll_wake_acceleration` as the degraded capability, not as an
+  `/api/ready` failure. The test starts a workflow, triggers the
   Redis failover during steady-state polling, and asserts the
-  workflow continues making progress at the long-poll cadence and
-  resumes sub-second discovery after the cache reconnects.
-- prove losing one API node mid-traffic does not produce
+  workflow continues making progress at the long-poll cadence, including a
+  request-ID poll retried through the other API node as the same durable lease, and
+  resumes accelerated discovery within the recorded recovery bound after the
+  cache reconnects.
+- proves losing one API node mid-traffic does not produce
   acknowledged-write loss. The test issues steady write traffic
   through the load balancer, kills one API container, and asserts
   the load balancer removes it within the configured readiness
   interval and the remaining nodes serve every subsequent request.
-- prove the scheduler/maintenance runner can be stopped and
+- proves worker lease loss preserves the running workflow until the configured
+  lease expires, then reclaims and completes it without mutating workflow input.
+- proves the scheduler/maintenance runner can be stopped and
   restarted on a different host without firing duplicate schedules
   and without leaving any schedule unevaluated past its
   `next_fire_at` plus one tick. The test creates a schedule with a
@@ -294,7 +307,8 @@ The rehearsal acceptance test, at minimum, MUST:
   starts a new runner on a different host, and asserts exactly one
   fire is observed.
 
-The rehearsal records, for the operator's recovery packet:
+The result uses schema `durable-workflow.v2.single-region-failover.result` and
+records, for the operator's recovery packet:
 
 - the elapsed wall-clock recovery time for each event class;
 - the observed substrate behavior (no acknowledged-write loss,
@@ -303,7 +317,18 @@ The rehearsal records, for the operator's recovery packet:
   scheduler restart);
 - the configuration of the database, Redis, load balancer, and
   scheduler orchestrator at the time of the rehearsal so the
-  evidence is reproducible.
+  evidence is reproducible;
+- the requested image references, resolved repository digests, runtime image
+  IDs, Docker/Compose/Python versions, and a hash of the normalized Compose
+  configuration;
+- every phase outcome, readiness transition, workflow/run/task/schedule
+  identity, duplicate/loss assertion, measured recovery time, and bound
+  verdict.
+
+The baseline uses one MySQL container to exercise the engine-visible outage
+class; it does not claim to validate a cloud provider's promotion mechanism or
+promotion time. An operator claiming managed MySQL, PostgreSQL, or Redis HA
+must retain provider-native promotion evidence alongside this result.
 
 A deployment that has not run the rehearsal is not yet self-serve
 under this contract; it remains support-led until the rehearsal

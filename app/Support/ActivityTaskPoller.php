@@ -29,6 +29,7 @@ final class ActivityTaskPoller
         private readonly TaskFairnessState $fairnessState,
         private readonly WorkerPollClaimGate $claimGate,
         private readonly WorkflowQueryTaskBroker $queryTasks,
+        private readonly ServerPollingCache $cache,
     ) {}
 
     /**
@@ -55,7 +56,7 @@ final class ActivityTaskPoller
             ];
         }
 
-        if ($pollRequestId === null) {
+        if ($pollRequestId === null || ! $this->cache->available()) {
             return $this->performPoll(
                 namespace: $namespace,
                 taskQueue: $taskQueue,
@@ -697,12 +698,16 @@ final class ActivityTaskPoller
                     );
                 }
 
-                if ($task === null && $this->queryTasks->hasPendingTaskForPoller(
-                    $namespace,
-                    $taskQueue,
-                    $this->stringList($worker->supported_workflow_types ?? []),
-                    $buildId,
-                )) {
+                if (
+                    $task === null
+                    && $this->cache->available()
+                    && $this->queryTasks->hasPendingTaskForPoller(
+                        $namespace,
+                        $taskQueue,
+                        $this->stringList($worker->supported_workflow_types ?? []),
+                        $buildId,
+                    )
+                ) {
                     return [
                         'task' => null,
                         'poll_status' => 'query_task_pending',

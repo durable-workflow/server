@@ -71,7 +71,7 @@ final class WorkflowTaskPoller
             ];
         }
 
-        if ($pollRequestId === null) {
+        if ($pollRequestId === null || ! $this->cache->available()) {
             return $this->performPoll(
                 request: $request,
                 namespace: $namespace,
@@ -376,7 +376,8 @@ final class WorkflowTaskPoller
             'next_probe_at' => null,
         ];
         $workerPollFence = WorkerPollFence::snapshot($worker);
-        $supportsQueryTasks = $this->queryTasks->workerSupportsQueryTasks($namespace, $worker);
+        $supportsQueryTasks = $this->cache->available()
+            && $this->queryTasks->workerSupportsQueryTasks($namespace, $worker);
 
         $pollResult = $this->longPoller->until(
             function () use (
@@ -532,6 +533,26 @@ final class WorkflowTaskPoller
                     ];
                 }
 
+                if (! $this->cache->available()) {
+                    $task = $this->activeLeasedTaskForWorker(
+                        namespace: $namespace,
+                        taskQueue: $taskQueue,
+                        leaseOwner: $leaseOwner,
+                        buildId: $buildId,
+                        historyPageSize: $historyPageSize,
+                        acceptHistoryEncoding: $acceptHistoryEncoding,
+                        supportedWorkflowTypes: $supportedWorkflowTypes,
+                    );
+
+                    if (is_array($task)) {
+                        return [
+                            'task' => $task,
+                            'poll_status' => 'leased',
+                            'next_probe_at' => null,
+                        ];
+                    }
+                }
+
                 if ($this->recoverUnavailableLeases($request, $namespace, $taskQueue)) {
                     $task = $this->admission->withLeaseAdmission(
                         $namespace,
@@ -571,14 +592,17 @@ final class WorkflowTaskPoller
                 // workflow tasks from other runs on the same queue and strand
                 // ordered signal/query delivery behind a query that needs the
                 // workflow worker to advance first.
-                if ($this->queryTasks->hasClaimablePendingTaskForPoller(
-                    $namespace,
-                    $taskQueue,
-                    $supportedWorkflowTypes,
-                    $buildId,
-                    $acceptsQueryTasks || $supportsQueryTasks,
-                    $workflowDefinitionFingerprints,
-                )) {
+                if (
+                    $this->cache->available()
+                    && $this->queryTasks->hasClaimablePendingTaskForPoller(
+                        $namespace,
+                        $taskQueue,
+                        $supportedWorkflowTypes,
+                        $buildId,
+                        $acceptsQueryTasks || $supportsQueryTasks,
+                        $workflowDefinitionFingerprints,
+                    )
+                ) {
                     return [
                         'task' => null,
                         'poll_status' => 'query_task_pending',
@@ -587,7 +611,8 @@ final class WorkflowTaskPoller
                 }
 
                 if (
-                    $supportsQueryTasks
+                    $this->cache->available()
+                    && $supportsQueryTasks
                     && $this->queryTasks->hasPendingTaskForActiveWorkflowLeaseOwner(
                         $namespace,
                         $taskQueue,
@@ -604,7 +629,10 @@ final class WorkflowTaskPoller
                     ];
                 }
 
-                if ($this->queryTasks->hasPendingTaskForPoller($namespace, $taskQueue, $supportedWorkflowTypes, $buildId)) {
+                if (
+                    $this->cache->available()
+                    && $this->queryTasks->hasPendingTaskForPoller($namespace, $taskQueue, $supportedWorkflowTypes, $buildId)
+                ) {
                     return [
                         'task' => null,
                         'poll_status' => 'query_task_pending',
@@ -816,6 +844,79 @@ final class WorkflowTaskPoller
             $namespace,
             $supportedWorkflowTypes,
         );
+    }
+
+    /**
+     * Rebuild the worker's live lease from durable rows when the optional
+     * poll-result mirror is unavailable. This preserves request-ID replay
+     * without granting a second lease or depending on sticky routing.
+     *
+     * @param  list<string>  $supportedWorkflowTypes
+     * @return array<string, mixed>|null
+     */
+    private function activeLeasedTaskForWorker(
+        string $namespace,
+        string $taskQueue,
+        string $leaseOwner,
+        ?string $buildId,
+        ?int $historyPageSize,
+        ?string $acceptHistoryEncoding,
+        array $supportedWorkflowTypes = [],
+    ): ?array {
+        $tasks = NamespaceWorkflowScope::taskQuery($namespace)
+            ->where('workflow_tasks.task_type', TaskType::Workflow->value)
+            ->where('workflow_tasks.status', TaskStatus::Leased->value)
+            ->where('workflow_tasks.queue', $taskQueue)
+            ->where('workflow_tasks.lease_owner', $leaseOwner)
+            ->whereNotNull('workflow_tasks.lease_expires_at')
+            ->where('workflow_tasks.lease_expires_at', '>', now())
+            ->orderBy('workflow_tasks.leased_at')
+            ->orderBy('workflow_tasks.id')
+            ->limit(10)
+            ->get();
+
+        foreach ($tasks as $task) {
+            if (! $task instanceof WorkflowTask || ! $this->matchesCompatibility($buildId, $task->compatibility)) {
+                continue;
+            }
+
+            /** @var WorkflowRun|null $run */
+            $run = WorkflowRun::query()->find($task->workflow_run_id);
+
+            if (
+                ! $run instanceof WorkflowRun
+                || ! $this->matchesWorkflowType($supportedWorkflowTypes, $run->workflow_type)
+            ) {
+                continue;
+            }
+
+            $history = $this->fetchHistory($namespace, (string) $task->id, $historyPageSize, $acceptHistoryEncoding);
+
+            if (! is_array($history)) {
+                continue;
+            }
+
+            return $this->taskPayload(
+                $namespace,
+                [
+                    'task_id' => (string) $task->id,
+                    'workflow_instance_id' => (string) $run->workflow_instance_id,
+                    'workflow_run_id' => (string) $run->id,
+                    'workflow_type' => (string) $run->workflow_type,
+                    'payload_codec' => $this->nonEmptyString($run->payload_codec) ?? CodecRegistry::defaultCodec(),
+                    'queue' => $this->nonEmptyString($task->queue),
+                    'connection' => $this->nonEmptyString($task->connection),
+                    'compatibility' => $this->nonEmptyString($task->compatibility),
+                    'lease_owner' => $leaseOwner,
+                    'lease_expires_at' => $task->lease_expires_at?->toJSON(),
+                ],
+                $this->packageAttemptCount((string) $task->id),
+                $history,
+                (string) $run->workflow_instance_id,
+            );
+        }
+
+        return null;
     }
 
     private function recoverUnavailableLeases(
@@ -1151,11 +1252,20 @@ final class WorkflowTaskPoller
     {
         $ttl = max(1, (int) config('server.polling.expired_workflow_task_recovery_ttl_seconds', 5));
 
-        return $this->cache->store()->add(
-            $this->recoveryKey($taskId),
-            now()->toJSON(),
-            now()->addSeconds($ttl),
-        );
+        if (! $this->cache->available()) {
+            return true;
+        }
+
+        try {
+            return $this->cache->store()->add(
+                $this->recoveryKey($taskId),
+                now()->toJSON(),
+                now()->addSeconds($ttl),
+            );
+        } catch (Throwable) {
+            // The durable lease transition remains guarded by the database.
+            return true;
+        }
     }
 
     private function recoveryKey(string $taskId): string

@@ -214,6 +214,7 @@ return [
         ),
         'interval_ms' => (int) EnvAuditor::env('DW_WORKER_POLL_INTERVAL_MS', 'WORKFLOW_SERVER_WORKER_POLL_INTERVAL_MS', 1000),
         'signal_check_interval_ms' => (int) EnvAuditor::env('DW_WORKER_POLL_SIGNAL_CHECK_INTERVAL_MS', 'WORKFLOW_SERVER_WORKER_POLL_SIGNAL_CHECK_INTERVAL_MS', 100),
+        'cache_retry_interval_ms' => 1000,
         'cache_path' => EnvAuditor::env(
             'DW_POLLING_CACHE_PATH',
             'WORKFLOW_SERVER_POLLING_CACHE_PATH',
