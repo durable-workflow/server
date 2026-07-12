@@ -5,6 +5,7 @@ namespace Tests\Unit;
 use App\Support\SingleRegionFailoverContract;
 use PHPUnit\Framework\Attributes\DataProvider;
 use Tests\TestCase;
+use Workflow\V2\Support\PlatformConformanceSuite;
 
 class SingleRegionFailoverRehearsalTest extends TestCase
 {
@@ -22,6 +23,8 @@ class SingleRegionFailoverRehearsalTest extends TestCase
             $manifest['required_scenarios'],
             array_column($scenarioDocument['scenarios'], 'id'),
         );
+        $this->assertSame(PlatformConformanceSuite::SCHEMA, $manifest['scenario_manifest']['suite_schema']);
+        $this->assertSame($manifest['scenario_manifest']['suite_schema'], $scenarioDocument['suite_schema']);
         $this->assertSame(SingleRegionFailoverContract::RESULT_SCHEMA, $scenarioDocument['result_contract']['schema']);
         $this->assertSame([
             'pending' => ['status_bucket' => 'running', 'is_terminal' => false],
@@ -117,6 +120,17 @@ class SingleRegionFailoverRehearsalTest extends TestCase
             '/^export DW_FAILOVER_RUNNER_VERSION="'.SingleRegionFailoverContract::VERSION.'"$/m',
             $runner,
         );
+    }
+
+    public function test_released_runner_requires_and_preserves_the_canonical_suite_schema(): void
+    {
+        $runner = (string) file_get_contents(base_path('scripts/conformance/single-region-failover-published-artifacts.py'));
+
+        $this->assertStringContainsString(
+            'PLATFORM_CONFORMANCE_SUITE_SCHEMA = "'.PlatformConformanceSuite::SCHEMA.'"',
+            $runner,
+        );
+        $this->assertStringContainsString('RESULT["artifacts"]["suite_schema"] = suite_schema', $runner);
     }
 
     public function test_workflow_dispatch_image_override_is_optional_and_has_no_frozen_default(): void

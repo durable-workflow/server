@@ -14,7 +14,7 @@ final class SingleRegionFailoverContract
 {
     public const SCHEMA = 'durable-workflow.v2.single-region-failover.contract';
 
-    public const VERSION = 4;
+    public const VERSION = 5;
 
     public const RESULT_SCHEMA = 'durable-workflow.v2.single-region-failover.result';
 
@@ -35,6 +35,7 @@ final class SingleRegionFailoverContract
             'scenario_manifest' => [
                 'schema' => 'durable-workflow.v2.platform-conformance.runtime-scenarios',
                 'category' => 'single_region_failover_contract',
+                'suite_schema' => PlatformConformanceSuite::SCHEMA,
                 'suite_version' => PlatformConformanceSuite::VERSION,
                 'public_path' => 'https://durable-workflow.com/platform-conformance/single-region-failover-scenarios.json',
                 'source_path' => 'static/platform-conformance/single-region-failover-scenarios.json',

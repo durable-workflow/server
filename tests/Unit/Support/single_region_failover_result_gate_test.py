@@ -72,6 +72,23 @@ class ResultGateTest(unittest.TestCase):
                             runner.run_phase(phase, lambda: {})
                         runner.RESULT["recovery_bounds"][bound]["passed"] = True
 
+    def test_released_contract_requires_the_canonical_suite_schema(self) -> None:
+        canonical = {
+            "scenario_manifest": {
+                "suite_schema": runner.PLATFORM_CONFORMANCE_SUITE_SCHEMA,
+            },
+        }
+        self.assertEqual(
+            runner.PLATFORM_CONFORMANCE_SUITE_SCHEMA,
+            runner.parse_public_suite_schema(canonical),
+        )
+
+        for value in (None, {}, "durable-workflow.v2.platform-conformance-suite"):
+            with self.subTest(suite_schema=value):
+                contract = {"scenario_manifest": {"suite_schema": value}}
+                with self.assertRaisesRegex(AssertionError, "non-canonical"):
+                    runner.parse_public_suite_schema(contract)
+
     def test_cache_readiness_requires_the_cache_check_to_recover(self) -> None:
         original_ready = runner.ready
 

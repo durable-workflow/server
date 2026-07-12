@@ -24,6 +24,7 @@ import urllib.request
 
 
 SCHEMA = "durable-workflow.v2.single-region-failover.result"
+PLATFORM_CONFORMANCE_SUITE_SCHEMA = "durable-workflow.v2.platform-conformance.suite"
 TOKEN = os.environ.get("DW_AUTH_TOKEN", "failover-rehearsal-token")
 NAMESPACE = "default"
 TASK_QUEUE = "single-region-failover"
@@ -290,6 +291,18 @@ def parse_public_run_status_contract(value: Any) -> dict[str, dict[str, Any]]:
             "is_terminal": is_terminal,
         }
     return contract
+
+
+def parse_public_suite_schema(contract: Any) -> str:
+    require(isinstance(contract, dict), "released image does not expose the single-region failover contract")
+    scenario_manifest = contract.get("scenario_manifest")
+    require(isinstance(scenario_manifest, dict), "released image does not expose a failover scenario manifest contract")
+    suite_schema = scenario_manifest.get("suite_schema")
+    require(
+        suite_schema == PLATFORM_CONFORMANCE_SUITE_SCHEMA,
+        "released image exposes a non-canonical platform conformance suite schema",
+    )
+    return suite_schema
 
 
 def nonterminal_run_observation(
@@ -800,14 +813,17 @@ def start_topology() -> dict[str, Any]:
     contract = cluster.get("single_region_failover_contract", {})
     require(contract.get("schema") == "durable-workflow.v2.single-region-failover.contract", "released image does not expose the single-region failover contract")
     require(contract.get("host_runner_contract", {}).get("runner_key") == "single-region-failover", "released image exposes an incompatible runner contract")
+    suite_schema = parse_public_suite_schema(contract)
     run_status_contract = parse_public_run_status_contract(contract.get("run_status_contract"))
     PUBLIC_RUN_STATUS_CONTRACT.clear()
     PUBLIC_RUN_STATUS_CONTRACT.update(run_status_contract)
     RESULT["artifacts"]["server_reported_version"] = cluster.get("version")
+    RESULT["artifacts"]["suite_schema"] = suite_schema
     RESULT["artifacts"]["run_status_contract"] = run_status_contract
     return {
         "running_services": sorted(running),
         "cluster_info_contract_version": contract.get("version"),
+        "suite_schema": suite_schema,
         **TOPOLOGY_DIAGNOSTICS,
     }
 

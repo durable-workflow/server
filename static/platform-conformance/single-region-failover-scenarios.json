@@ -1,8 +1,8 @@
 {
   "schema": "durable-workflow.v2.platform-conformance.runtime-scenarios",
-  "version": 3,
+  "version": 4,
   "category": "single_region_failover_contract",
-  "suite_schema": "durable-workflow.v2.platform-conformance-suite",
+  "suite_schema": "durable-workflow.v2.platform-conformance.suite",
   "artifact_policy": {
     "published_artifacts_only": true,
     "server_runtime_reference": "resolved_repo_digest",
