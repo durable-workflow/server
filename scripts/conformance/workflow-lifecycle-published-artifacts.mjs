@@ -26,6 +26,20 @@ const FORBIDDEN_SOURCE_TOKENS = [
   'source_checkout',
   'local_checkout',
 ];
+const RUST_SIDECAR_SCHEMA = 'durable-workflow.v2.workflow-lifecycle.rust-sdk-sidecar';
+const RUST_SIDECAR_RUNNER = 'published-rust-sdk-lifecycle-surface-probe';
+const RUST_SCENARIO_ID = 'rust_sdk_lifecycle_surface';
+const STABLE_REASON_RE = /^[a-z0-9][a-z0-9_]{0,95}$/;
+const FAILURE_MESSAGE_LIMIT = 512;
+const FORBIDDEN_FAILURE_FIELD_RE = /(authorization|credential|password|passwd|secret|token|api[_-]?key|std(?:out|err)|process[_-]?output|command[_-]?output|logs?)/i;
+const RUST_RUNNER_REASONS = new Set([
+  'rust_executor_unavailable',
+  'rust_sdk_probe_launch_failed',
+  'rust_sdk_probe_output_contract_invalid',
+  'rust_sdk_probe_artifact_mismatch',
+  'rust_sdk_runner_command_failed',
+  'rust_sdk_runner_setup_failed',
+]);
 const SCENARIO_REQUIREMENTS = {
   continue_as_new_run_chain_visibility: {
     description: 'Continue-as-new creates a visible run chain under one logical workflow id, with distinct run ids and monotonic run numbers.',
@@ -149,6 +163,222 @@ function loadEvidence() {
   };
 }
 
+function redactSensitiveText(value, limit = FAILURE_MESSAGE_LIMIT) {
+  let text = stringValue(value)
+    .replace(/[\u0000-\u001f\u007f]+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+  for (const name of [
+    'DW_WORKFLOW_LIFECYCLE_AUTH_TOKEN',
+    'DURABLE_WORKFLOW_TOKEN',
+    'DW_TOKEN',
+    'APP_KEY',
+  ]) {
+    const secret = stringValue(process.env[name]);
+    if (secret) {
+      text = text.split(secret).join('[REDACTED]');
+    }
+  }
+  text = text
+    .replace(/(authorization\s*[:=]\s*(?:bearer\s+)?)[^\s,;]+/ig, '$1[REDACTED]')
+    .replace(/((?:credential|password|passwd|secret|token|api[_-]?key)\s*[:=]\s*)[^\s,;]+/ig, '$1[REDACTED]')
+    .replace(/(https?:\/\/)[^\s/@:]+:[^\s/@]+@/ig, '$1[REDACTED]@');
+  return text.slice(0, limit);
+}
+
+function boundedRustValue(value, depth = 0) {
+  if (depth > 6 || value === null || value === undefined) {
+    return value ?? null;
+  }
+  if (typeof value === 'string') {
+    return redactSensitiveText(value, 512);
+  }
+  if (typeof value === 'number' || typeof value === 'boolean') {
+    return value;
+  }
+  if (Array.isArray(value)) {
+    return value.slice(0, 32).map((entry) => boundedRustValue(entry, depth + 1));
+  }
+  if (typeof value !== 'object') {
+    return null;
+  }
+
+  const result = {};
+  for (const [key, entry] of Object.entries(value).slice(0, 48)) {
+    if (!FORBIDDEN_FAILURE_FIELD_RE.test(key)) {
+      result[key] = boundedRustValue(entry, depth + 1);
+    }
+  }
+  return result;
+}
+
+function rustArtifactMismatch(outputs) {
+  const sdkVersion = env('DW_RUST_SDK_VERSION');
+  const serverVersion = env('DW_SERVER_VERSION');
+  const provenance = outputs.install_provenance;
+  return stringValue(outputs.artifact_version) !== sdkVersion
+    || stringValue(outputs.server_version) !== serverVersion
+    || !provenance
+    || typeof provenance !== 'object'
+    || Array.isArray(provenance)
+    || stringValue(provenance.package) !== 'durable-workflow'
+    || stringValue(provenance.requested_version) !== sdkVersion
+    || stringValue(provenance.installed_version) !== sdkVersion
+    || !stringValue(provenance.registry_source).includes('crates.io')
+    || !/^[0-9a-f]{64}$/.test(stringValue(provenance.registry_checksum_sha256));
+}
+
+function validatedRustFailureEvidence(outputs, stableReason) {
+  const failureMessage = redactSensitiveText(outputs.failure_message);
+  const failingCell = stringValue(outputs.failing_lifecycle_cell);
+  const scenarioOutcomes = outputs.scenario_outcomes;
+  const failingOutcome = scenarioOutcomes
+    && typeof scenarioOutcomes === 'object'
+    && !Array.isArray(scenarioOutcomes)
+    ? scenarioOutcomes[failingCell]
+    : null;
+  const valid = STABLE_REASON_RE.test(stableReason)
+    && STABLE_REASON_RE.test(failingCell)
+    && failureMessage !== ''
+    && failingOutcome
+    && typeof failingOutcome === 'object'
+    && !Array.isArray(failingOutcome)
+    && failingOutcome.status === 'fail'
+    && failingOutcome.stable_reason === stableReason
+    && redactSensitiveText(failingOutcome.observed_behavior) !== '';
+
+  return valid ? { failureMessage, failingCell } : null;
+}
+
+function invalidRustScenario(stableReason) {
+  return {
+    scenario_id: RUST_SCENARIO_ID,
+    status: 'runner_blocked',
+    classification: 'runner-gap',
+    published_artifact_cell_executed: false,
+    observed_outputs: {
+      stable_reason: stableReason,
+      published_artifact_cell_executed: false,
+    },
+  };
+}
+
+function normalizeRustRunnerFailure(outputs, stableReason, exitStatus) {
+  const boundedOutputs = boundedRustValue(outputs);
+  boundedOutputs.stable_reason = stableReason;
+  boundedOutputs.published_artifact_cell_executed = false;
+  boundedOutputs.shard_exit_status = exitStatus;
+  const summary = redactSensitiveText(
+    outputs.failure_message || `Rust lifecycle runner stopped with ${stableReason}.`,
+  );
+  return {
+    scenario: {
+      scenario_id: RUST_SCENARIO_ID,
+      status: 'runner_blocked',
+      classification: 'runner-gap',
+      published_artifact_cell_executed: false,
+      observed_outputs: boundedOutputs,
+      linked_findings: [{
+        finding_id: `workflow-lifecycle-rust-sdk-lifecycle-surface-${stableReason}`,
+        finding_type: 'conformance_runner_blocked',
+        classification: 'runner-gap',
+        scenario_id: RUST_SCENARIO_ID,
+        owning_surface: 'conformance-harness',
+        summary,
+        next_acceptance_criterion: 'Produce a valid executed Rust lifecycle probe envelope from the exact crate and server artifact tuple.',
+      }],
+    },
+    runnerBlocked: true,
+  };
+}
+
+function normalizeRustSidecar(sidecar) {
+  const scenario = sidecar.scenario_results?.[RUST_SCENARIO_ID]
+    ?? sidecar.scenarioResults?.[RUST_SCENARIO_ID];
+  const outputs = outputsFrom(scenario);
+  const status = normalizeStatus(scenario?.status);
+  const exitStatus = sidecar.shard_exit_status;
+  const envelopeValid = sidecar.schema === RUST_SIDECAR_SCHEMA
+    && sidecar.version === 1
+    && sidecar.runner === RUST_SIDECAR_RUNNER
+    && scenario
+    && stringValue(scenario.scenario_id ?? scenario.scenarioId) === RUST_SCENARIO_ID
+    && Number.isInteger(exitStatus)
+    && exitStatus >= 0
+    && (!Number.isInteger(outputs.shard_exit_status) || outputs.shard_exit_status === exitStatus);
+
+  const stableReason = stringValue(outputs.stable_reason);
+  const declaredRunnerFailure = envelopeValid
+    && (truthyFlag(sidecar.runner_blocked) || truthyFlag(sidecar.runnerBlocked))
+    && status === 'runner_blocked'
+    && normalizeClassification(status, scenario.classification) === 'runner-gap'
+    && !truthyFlag(scenario.published_artifact_cell_executed)
+    && !truthyFlag(outputs.published_artifact_cell_executed)
+    && RUST_RUNNER_REASONS.has(stableReason);
+  if (declaredRunnerFailure) {
+    return normalizeRustRunnerFailure(outputs, stableReason, exitStatus);
+  }
+
+  const baseValid = envelopeValid
+    && !truthyFlag(sidecar.runner_blocked)
+    && !truthyFlag(sidecar.runnerBlocked)
+    && scenario.published_artifact_cell_executed === true
+    && outputs.sdk === 'sdk-rust'
+    && outputs.rust_shard_contract_version === 2
+    && outputs.shard_runner === RUST_SIDECAR_RUNNER
+    && Number.isInteger(outputs.shard_exit_status)
+    && outputs.shard_exit_status === exitStatus;
+
+  if (!baseValid) {
+    return { scenario: invalidRustScenario('rust_sdk_sidecar_contract_invalid'), runnerBlocked: true };
+  }
+  if (rustArtifactMismatch(outputs)) {
+    return { scenario: invalidRustScenario('rust_sdk_sidecar_artifact_mismatch'), runnerBlocked: true };
+  }
+  if (status === 'pass' && exitStatus === 0 && outputs.probe_outcome === 'pass') {
+    return { scenario, runnerBlocked: false };
+  }
+
+  const failureEvidence = validatedRustFailureEvidence(outputs, stableReason);
+  const productFailure = status === 'fail'
+    && normalizeClassification(status, scenario.classification) === 'product-gap'
+    && exitStatus > 0
+    && outputs.probe_outcome === 'fail'
+    && outputs.published_artifact_cell_executed === true
+    && failureEvidence !== null;
+  if (!productFailure) {
+    return { scenario: invalidRustScenario('rust_sdk_sidecar_contract_invalid'), runnerBlocked: true };
+  }
+
+  const { failureMessage, failingCell } = failureEvidence;
+  const boundedOutputs = boundedRustValue(outputs);
+  boundedOutputs.stable_reason = stableReason;
+  boundedOutputs.failure_message = failureMessage;
+  boundedOutputs.shard_exit_status = exitStatus;
+  boundedOutputs.published_artifact_cell_executed = true;
+  boundedOutputs.failing_lifecycle_cell = failingCell;
+  const summary = redactSensitiveText(
+    `Rust lifecycle cell ${failingCell} failed against durable-workflow ${outputs.artifact_version} and server ${outputs.server_version}: ${failureMessage}`,
+  );
+  const normalizedScenario = {
+    scenario_id: RUST_SCENARIO_ID,
+    status: 'fail',
+    classification: 'product-gap',
+    published_artifact_cell_executed: true,
+    observed_outputs: boundedOutputs,
+    linked_findings: [{
+      finding_id: 'workflow-lifecycle-rust-sdk-lifecycle-surface-product-gap',
+      finding_type: 'product_behavior_gap',
+      classification: 'product-gap',
+      scenario_id: RUST_SCENARIO_ID,
+      owning_surface: 'sdk-rust-and-server',
+      summary,
+      next_acceptance_criterion: `Make ${failingCell} satisfy the Rust lifecycle contract against the exact crate and server artifact tuple, then rerun workflow-lifecycle conformance.`,
+    }],
+  };
+  return { scenario: normalizedScenario, runnerBlocked: false };
+}
+
 function mergeEvidenceSidecars(record) {
   const merged = record.value && typeof record.value === 'object' && !Array.isArray(record.value)
     ? { ...record.value }
@@ -161,40 +391,18 @@ function mergeEvidenceSidecars(record) {
       continue;
     }
 
-    const sidecar = readJson(sidecarPath) ?? {};
+    let sidecar;
+    try {
+      sidecar = readJson(sidecarPath) ?? {};
+    } catch {
+      sidecar = {};
+    }
     sources.push(sidecarPath);
 
     if (fileName === 'rust-sdk-lifecycle-evidence.json') {
-      const rustScenario = sidecar.scenario_results?.rust_sdk_lifecycle_surface
-        ?? sidecar.scenarioResults?.rust_sdk_lifecycle_surface;
-      const rustOutputs = outputsFrom(rustScenario);
-      const sidecarValid = sidecar.schema === 'durable-workflow.v2.workflow-lifecycle.rust-sdk-sidecar'
-        && sidecar.version === 1
-        && sidecar.runner === 'published-rust-sdk-lifecycle-surface-probe'
-        && !truthyFlag(sidecar.runner_blocked)
-        && Number(sidecar.shard_exit_status) === 0
-        && rustScenario
-        && normalizeStatus(rustScenario.status) === 'pass'
-        && truthyFlag(rustScenario.published_artifact_cell_executed)
-        && rustOutputs.rust_shard_contract_version === 2;
-      if (!sidecarValid) {
-        const unsuccessfulExit = Number.isFinite(Number(sidecar.shard_exit_status))
-          && Number(sidecar.shard_exit_status) !== 0;
-        sidecar.scenario_results = {
-          rust_sdk_lifecycle_surface: {
-            scenario_id: 'rust_sdk_lifecycle_surface',
-            status: 'fail',
-            classification: unsuccessfulExit ? 'product-gap' : 'runner-gap',
-            published_artifact_cell_executed: unsuccessfulExit,
-            observed_outputs: {
-              stable_reason: unsuccessfulExit
-                ? 'rust_sdk_shard_exit_unsuccessful'
-                : 'rust_sdk_sidecar_contract_invalid',
-            },
-          },
-        };
-        sidecar.runner_blocked = !unsuccessfulExit;
-      }
+      const normalized = normalizeRustSidecar(sidecar);
+      sidecar.scenario_results = { [RUST_SCENARIO_ID]: normalized.scenario };
+      sidecar.runner_blocked = normalized.runnerBlocked;
     }
 
     const mergedScenarios = {

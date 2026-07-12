@@ -13,6 +13,25 @@ const PROJECT_DIR = path.join(RESULT_DIR, 'rust-sdk-lifecycle-probe');
 const SIDECAR = path.join(RESULT_DIR, 'rust-sdk-lifecycle-evidence.json');
 const SEMVER = /^\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?$/;
 const MINIMUM_LIFECYCLE_SDK = [0, 1, 10];
+const FAILURE_MESSAGE_LIMIT = 512;
+
+class CommandFailure extends Error {
+  constructor(command, status) {
+    super(`${path.basename(command)} failed before validated Rust probe evidence was available`);
+    this.name = 'CommandFailure';
+    this.stableReason = 'rust_sdk_runner_command_failed';
+    this.exitStatus = Number.isInteger(status) && status > 0 ? status : 1;
+  }
+}
+
+class ProbeContractFailure extends Error {
+  constructor(stableReason, message, status = 1) {
+    super(message);
+    this.name = 'ProbeContractFailure';
+    this.stableReason = stableReason;
+    this.exitStatus = Number.isInteger(status) && status > 0 ? status : 1;
+  }
+}
 
 function required(name) {
   const value = (process.env[name] || '').trim();
@@ -30,10 +49,45 @@ function run(command, args, options = {}) {
   });
   if (result.error) throw result.error;
   if (result.status !== 0) {
-    const detail = String(result.stderr || result.stdout || '').trim().slice(-4000);
-    throw new Error(`${command} ${args.join(' ')} exited ${result.status}: ${detail}`);
+    throw new CommandFailure(command, result.status);
   }
   return String(result.stdout || '').trim();
+}
+
+function runProbe(command, args, options = {}) {
+  const result = spawnSync(command, args, {
+    encoding: 'utf8',
+    maxBuffer: 4 * 1024 * 1024,
+    timeout: options.timeout || 900_000,
+    env: options.env || process.env,
+    cwd: options.cwd,
+  });
+  if (result.error) {
+    throw new ProbeContractFailure(
+      'rust_sdk_probe_launch_failed',
+      'The Rust lifecycle probe process could not be launched.',
+    );
+  }
+  return {
+    exitStatus: Number.isInteger(result.status) && result.status >= 0 ? result.status : 1,
+    stdout: String(result.stdout || ''),
+  };
+}
+
+function boundedFailureMessage(value) {
+  let message = String(value || '')
+    .replace(/[\u0000-\u001f\u007f]+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+  for (const name of ['DW_WORKFLOW_LIFECYCLE_AUTH_TOKEN', 'DURABLE_WORKFLOW_TOKEN', 'DW_TOKEN', 'APP_KEY']) {
+    const secret = String(process.env[name] || '').trim();
+    if (secret) message = message.split(secret).join('[REDACTED]');
+  }
+  message = message
+    .replace(/(authorization\s*[:=]\s*(?:bearer\s+)?)[^\s,;]+/ig, '$1[REDACTED]')
+    .replace(/((?:credential|password|passwd|secret|token|api[_-]?key)\s*[:=]\s*)[^\s,;]+/ig, '$1[REDACTED]')
+    .replace(/(https?:\/\/)[^\s/@:]+:[^\s/@]+@/ig, '$1[REDACTED]@');
+  return message.slice(0, FAILURE_MESSAGE_LIMIT);
 }
 
 function commandExists(command) {
@@ -47,15 +101,20 @@ function versionAtLeast(version, minimum) {
     || numeric.every((part, index) => part === minimum[index]);
 }
 
-function writeSidecar(status, classification, outputs, summary = '') {
+function writeSidecar(status, classification, outputs, summary = '', shardExitStatus = status === 'pass' ? 0 : 1) {
+  const executed = Boolean(outputs.published_artifact_cell_executed);
+  const safeSummary = boundedFailureMessage(summary);
+  const failingCell = String(outputs.failing_lifecycle_cell || 'rust_sdk_lifecycle_surface');
   const finding = status === 'pass' ? [] : [{
     finding_id: `workflow-lifecycle-rust-sdk-lifecycle-surface-${classification}`,
     finding_type: classification === 'runner-gap' ? 'conformance_runner_blocked' : 'product_behavior_failure',
     classification,
     scenario_id: 'rust_sdk_lifecycle_surface',
     owning_surface: classification === 'runner-gap' ? 'conformance_harness' : 'sdk-rust-or-server',
-    summary,
-    next_acceptance_criterion: 'Run every Rust lifecycle cell using the exact crates.io package against the matching published server image.',
+    summary: safeSummary,
+    next_acceptance_criterion: executed
+      ? `Make ${failingCell} satisfy the Rust lifecycle contract against the exact crate and server artifact tuple, then rerun workflow-lifecycle conformance.`
+      : 'Run every Rust lifecycle cell using the exact crates.io package against the matching published server image.',
   }];
   fs.writeFileSync(SIDECAR, `${JSON.stringify({
     schema: 'durable-workflow.v2.workflow-lifecycle.rust-sdk-sidecar',
@@ -63,13 +122,13 @@ function writeSidecar(status, classification, outputs, summary = '') {
     generated_at: new Date().toISOString(),
     runner: 'published-rust-sdk-lifecycle-surface-probe',
     runner_blocked: status === 'runner_blocked',
-    shard_exit_status: status === 'pass' ? 0 : 1,
+    shard_exit_status: shardExitStatus,
     scenario_results: {
       rust_sdk_lifecycle_surface: {
         scenario_id: 'rust_sdk_lifecycle_surface',
         status,
         classification,
-        published_artifact_cell_executed: status !== 'runner_blocked',
+        published_artifact_cell_executed: executed,
         observed_outputs: outputs,
         linked_findings: finding,
       },
@@ -94,6 +153,72 @@ function provenance(lock, name, version = '') {
   return { package: name, resolved_version: resolvedVersion, registry_source: source, registry_checksum_sha256: checksum };
 }
 
+function parseProbeOutput(probe) {
+  const line = probe.stdout.split(/\r?\n/).map((entry) => entry.trim()).filter(Boolean).at(-1);
+  let outputs;
+  try {
+    outputs = JSON.parse(line || '');
+  } catch {
+    throw new ProbeContractFailure(
+      'rust_sdk_probe_output_contract_invalid',
+      'The Rust lifecycle probe did not emit a valid JSON result envelope.',
+      probe.exitStatus,
+    );
+  }
+  if (!outputs || typeof outputs !== 'object' || Array.isArray(outputs)
+      || outputs.rust_shard_contract_version !== 2
+      || outputs.sdk !== 'sdk-rust'
+      || outputs.artifact_version !== SDK_VERSION
+      || outputs.server_version !== SERVER_VERSION
+      || outputs.published_artifact_cell_executed !== true
+      || !outputs.scenario_outcomes
+      || typeof outputs.scenario_outcomes !== 'object'
+      || Array.isArray(outputs.scenario_outcomes)) {
+    const mismatch = outputs?.artifact_version !== undefined
+      && (outputs.artifact_version !== SDK_VERSION || outputs.server_version !== SERVER_VERSION);
+    throw new ProbeContractFailure(
+      mismatch ? 'rust_sdk_probe_artifact_mismatch' : 'rust_sdk_probe_output_contract_invalid',
+      mismatch
+        ? 'The Rust lifecycle probe result did not match the requested crate and server tuple.'
+        : 'The Rust lifecycle probe result did not satisfy lifecycle shard contract version 2.',
+      probe.exitStatus,
+    );
+  }
+
+  if (outputs.probe_outcome === 'pass' && probe.exitStatus === 0) {
+    return { status: 'pass', outputs };
+  }
+
+  const stableReason = String(outputs.stable_reason || '');
+  const failureMessage = boundedFailureMessage(outputs.failure_message);
+  const failingCell = String(outputs.failing_lifecycle_cell || '');
+  const failingOutcome = outputs.scenario_outcomes[failingCell];
+  const validFailure = outputs.probe_outcome === 'fail'
+    && probe.exitStatus > 0
+    && /^[a-z0-9][a-z0-9_]{0,95}$/.test(stableReason)
+    && /^[a-z0-9][a-z0-9_]{0,95}$/.test(failingCell)
+    && failureMessage !== ''
+    && failingOutcome
+    && typeof failingOutcome === 'object'
+    && !Array.isArray(failingOutcome)
+    && failingOutcome.status === 'fail'
+    && failingOutcome.stable_reason === stableReason
+    && boundedFailureMessage(failingOutcome.observed_behavior) !== '';
+  if (!validFailure) {
+    throw new ProbeContractFailure(
+      'rust_sdk_probe_output_contract_invalid',
+      'The unsuccessful Rust lifecycle probe did not emit validated executed failure evidence.',
+      probe.exitStatus,
+    );
+  }
+
+  outputs.failure_message = failureMessage;
+  outputs.scenario_outcomes[failingCell].observed_behavior = boundedFailureMessage(
+    failingOutcome.observed_behavior,
+  );
+  return { status: 'fail', outputs };
+}
+
 function dockerArgs(extra) {
   return [
     'run', '--rm',
@@ -111,6 +236,7 @@ function dockerArgs(extra) {
   ];
 }
 
+let installProvenance = null;
 try {
   if (!SEMVER.test(SDK_VERSION)) throw new Error('DW_RUST_SDK_VERSION must be exact semver');
   if (!versionAtLeast(SDK_VERSION, MINIMUM_LIFECYCLE_SDK)) {
@@ -169,7 +295,7 @@ tokio = { version = "1", features = ["macros", "rt-multi-thread", "time"] }
   const sdk = provenance(lock, 'durable-workflow', SDK_VERSION);
   if (sdk.resolved_version !== SDK_VERSION) throw new Error('resolved durable-workflow version does not match the requested tuple');
   const avro = provenance(lock, 'apache-avro');
-  const install = {
+  installProvenance = {
     package: 'durable-workflow',
     requested_version: SDK_VERSION,
     installed_version: sdk.resolved_version,
@@ -181,9 +307,9 @@ tokio = { version = "1", features = ["macros", "rt-multi-thread", "time"] }
     install_mode: 'exact crates.io dependency with Cargo.lock',
   };
 
-  let stdout;
+  let probe;
   if (useLocal) {
-    stdout = run(path.join(PROJECT_DIR, 'target/release/workflow-lifecycle-published-rust-probe'), [], {
+    probe = runProbe(path.join(PROJECT_DIR, 'target/release/workflow-lifecycle-published-rust-probe'), [], {
       env: {
         ...process.env,
         DURABLE_WORKFLOW_SERVER_URL: process.env.DW_WORKFLOW_LIFECYCLE_SERVER_URL || 'http://127.0.0.1:8080',
@@ -197,12 +323,11 @@ tokio = { version = "1", features = ["macros", "rt-multi-thread", "time"] }
       },
     });
   } else {
-    stdout = run('docker', dockerArgs(['/app/target/release/workflow-lifecycle-published-rust-probe']));
+    probe = runProbe('docker', dockerArgs(['/app/target/release/workflow-lifecycle-published-rust-probe']));
   }
-  const line = stdout.split(/\r?\n/).filter(Boolean).at(-1);
-  const outputs = JSON.parse(line || '{}');
-  if (outputs.rust_shard_contract_version !== 2) throw new Error('Rust probe did not emit lifecycle shard contract version 2');
-  outputs.install_provenance = install;
+  const probeEvidence = parseProbeOutput(probe);
+  const outputs = probeEvidence.outputs;
+  outputs.install_provenance = installProvenance;
   outputs.payload_contract = {
     ...outputs.payload_contract,
     apache_avro_version: avro.resolved_version,
@@ -213,14 +338,43 @@ tokio = { version = "1", features = ["macros", "rt-multi-thread", "time"] }
   outputs.artifact_source = `crates.io://durable-workflow@${SDK_VERSION}`;
   outputs.server_artifact_source = `docker://${SERVER_IMAGE}`;
   outputs.shard_runner = 'published-rust-sdk-lifecycle-surface-probe';
-  outputs.shard_exit_status = 0;
-  writeSidecar('pass', 'product-gap', outputs);
+  outputs.shard_exit_status = probe.exitStatus;
+  if (probeEvidence.status === 'fail') {
+    writeSidecar('fail', 'product-gap', outputs, outputs.failure_message, probe.exitStatus);
+    process.exitCode = probe.exitStatus;
+  } else {
+    writeSidecar('pass', 'product-gap', outputs);
+  }
 } catch (error) {
-  writeSidecar('fail', 'product-gap', {
-    sdk: 'sdk-rust', artifact_version: SDK_VERSION, server_version: SERVER_VERSION,
-    server_image: SERVER_IMAGE, stable_reason: 'rust_sdk_shard_unsuccessful',
-    failure_message: error instanceof Error ? error.message : String(error),
-    published_artifact_cell_executed: true, local_product_source_checkouts_used: false,
-  }, error instanceof Error ? error.message : String(error));
+  const failureMessage = boundedFailureMessage(error instanceof Error ? error.message : String(error));
+  const stableReason = error?.stableReason || 'rust_sdk_runner_setup_failed';
+  const shardExitStatus = Number.isInteger(error?.exitStatus) ? error.exitStatus : 1;
+  writeSidecar('runner_blocked', 'runner-gap', {
+    sdk: 'sdk-rust',
+    covered_cells: [],
+    unsupported_cells: [],
+    typed_errors: [],
+    artifact_version: SDK_VERSION,
+    server_version: SERVER_VERSION,
+    server_image: SERVER_IMAGE,
+    server_artifact_source: `docker://${SERVER_IMAGE}`,
+    artifact_source: `crates.io://durable-workflow@${SDK_VERSION}`,
+    install_provenance: installProvenance,
+    stable_reason: stableReason,
+    stable_reasons: [stableReason],
+    failure_message: failureMessage,
+    scenario_outcomes: {},
+    rust_shard_contract_version: 2,
+    shard_runner: 'published-rust-sdk-lifecycle-surface-probe',
+    shard_exit_status: shardExitStatus,
+    executor_topology: {
+      server_http_process: process.env.DW_WORKFLOW_LIFECYCLE_SERVER_HTTP_PROCESS || '',
+      scheduler_process: process.env.DW_WORKFLOW_LIFECYCLE_SCHEDULER_PROCESS || '',
+      rust_executor: process.env.DW_WORKFLOW_LIFECYCLE_RUST_EXECUTOR || '',
+      rust_executor_outside_server_image: true,
+    },
+    published_artifact_cell_executed: false,
+    local_product_source_checkouts_used: false,
+  }, failureMessage, shardExitStatus);
   process.exitCode = 1;
 }

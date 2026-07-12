@@ -124,8 +124,104 @@ async fn wait_observed_at(observed_at: &Mutex<Option<Instant>>) -> Result<Instan
     Err(Error::Timeout)
 }
 
+fn validated_product_failure(message: &str) -> Option<(&'static str, &'static str)> {
+    const ASSERTIONS: &[(&str, &str)] = &[
+        ("typed_cancelled_not_observed", "typed_cancelled"),
+        (
+            "cancellation_heartbeat_not_observed",
+            "cancellation_heartbeat",
+        ),
+        (
+            "late_activity_completion_not_refused",
+            "late_activity_completion_refused",
+        ),
+        (
+            "replacement_worker_reclaimed_cancelled_activity",
+            "worker_restart_during_cancellation",
+        ),
+        ("typed_terminated_not_observed", "typed_terminated"),
+        (
+            "selected_run_command_identity_mismatch",
+            "selected_run_guard",
+        ),
+        ("typed_stale_rejection_not_observed", "stale_run_rejection"),
+        ("stale_run_rejection_status_not_409", "stale_run_rejection"),
+        ("stale_run_rejection_reason_unstable", "stale_run_rejection"),
+        ("typed_failed_not_observed", "typed_failed"),
+        (
+            "server_terminal_typed_timeout_reason_unstable",
+            "typed_timed_out",
+        ),
+        (
+            "client_wait_timeout_mislabeled_as_server_terminal",
+            "typed_timed_out",
+        ),
+        ("typed_timeout_not_observed", "typed_timed_out"),
+        ("published_avro_envelope_not_used", "payload_contract"),
+    ];
+
+    ASSERTIONS
+        .iter()
+        .find(|(reason, _)| message.contains(reason))
+        .copied()
+}
+
 #[tokio::main]
-async fn main() -> Result<()> {
+async fn main() {
+    if let Err(error) = run_probe().await {
+        let error_message = error.to_string();
+        if let Some((stable_reason, failing_cell)) = validated_product_failure(&error_message) {
+            let sdk_version = env::var("DW_RUST_SDK_VERSION").unwrap_or_default();
+            let server_version = env::var("DW_SERVER_VERSION").unwrap_or_default();
+            let server_http_process =
+                env::var("DW_WORKFLOW_LIFECYCLE_SERVER_HTTP_PROCESS").unwrap_or_default();
+            let scheduler_process =
+                env::var("DW_WORKFLOW_LIFECYCLE_SCHEDULER_PROCESS").unwrap_or_default();
+            let rust_executor = env::var("DW_WORKFLOW_LIFECYCLE_RUST_EXECUTOR").unwrap_or_default();
+            let bounded_error = error_message.chars().take(384).collect::<String>();
+            let observed_behavior = format!(
+                "Rust lifecycle scenario {failing_cell} did not satisfy {stable_reason}: {bounded_error}"
+            );
+            println!(
+                "{}",
+                json!({
+                    "sdk":"sdk-rust",
+                    "artifact_version":sdk_version,
+                    "server_version":server_version,
+                    "covered_cells":[],
+                    "unsupported_cells":[],
+                    "typed_errors":[],
+                    "scenario_outcomes":{
+                        (failing_cell):{
+                            "status":"fail",
+                            "stable_reason":stable_reason,
+                            "observed_behavior":observed_behavior.clone(),
+                        }
+                    },
+                    "stable_reason":stable_reason,
+                    "stable_reasons":[stable_reason],
+                    "failure_message":observed_behavior,
+                    "failing_lifecycle_cell":failing_cell,
+                    "probe_outcome":"fail",
+                    "rust_shard_contract_version":2,
+                    "executor_topology":{
+                        "server_http_process":server_http_process,
+                        "scheduler_process":scheduler_process,
+                        "rust_executor":rust_executor,
+                        "rust_executor_outside_server_image":true
+                    },
+                    "published_artifact_cell_executed":true,
+                    "local_product_source_checkouts_used":false
+                })
+            );
+        } else {
+            eprintln!("Rust lifecycle probe stopped without validated scenario failure evidence.");
+        }
+        std::process::exit(1);
+    }
+}
+
+async fn run_probe() -> Result<()> {
     let base_url = env::var("DURABLE_WORKFLOW_SERVER_URL")
         .unwrap_or_else(|_| "http://127.0.0.1:8080".to_string());
     let token = env::var("DURABLE_WORKFLOW_TOKEN").unwrap_or_else(|_| "dev-token".to_string());
@@ -226,10 +322,14 @@ async fn main() -> Result<()> {
     let replacement_handled = replacement_running
         .await
         .map_err(|error| Error::WorkerLoop(error.to_string()))??;
-    let cancel_error = cancel_handle
-        .result(WorkflowResultOptions::default())
-        .await
-        .expect_err("cancelled workflow must return a typed outcome");
+    let cancel_error = match cancel_handle.result(WorkflowResultOptions::default()).await {
+        Err(error) => error,
+        Ok(_) => {
+            return Err(Error::Codec(
+                "typed_cancelled_not_observed:workflow_returned_success".to_string(),
+            ))
+        }
+    };
     let cancel_reason = match cancel_error {
         Error::WorkflowCancelled(outcome) => outcome.reason,
         other => {
@@ -349,10 +449,17 @@ async fn main() -> Result<()> {
     terminate_running
         .await
         .map_err(|error| Error::WorkerLoop(error.to_string()))??;
-    let terminate_error = terminate_handle
+    let terminate_error = match terminate_handle
         .result(WorkflowResultOptions::default())
         .await
-        .expect_err("terminated workflow must return a typed outcome");
+    {
+        Err(error) => error,
+        Ok(_) => {
+            return Err(Error::Codec(
+                "typed_terminated_not_observed:workflow_returned_success".to_string(),
+            ))
+        }
+    };
     let terminate_reason = match terminate_error {
         Error::WorkflowTerminated(outcome) => outcome.reason,
         other => {
@@ -423,10 +530,17 @@ async fn main() -> Result<()> {
         }),
     );
 
-    let selected_error = selected_handle
+    let selected_error = match selected_handle
         .cancel_selected_run(WorkflowCommandOptions::default())
         .await
-        .expect_err("historical selected run must be rejected");
+    {
+        Err(error) => error,
+        Ok(_) => {
+            return Err(Error::Codec(
+                "typed_stale_rejection_not_observed:command_was_accepted".to_string(),
+            ))
+        }
+    };
     let stale = match selected_error {
         Error::WorkflowCommandRejected(rejection) => rejection,
         other => {
@@ -468,10 +582,14 @@ async fn main() -> Result<()> {
     identities.push(identity(&fail_handle, "typed_failed"));
     fail_worker.register().await?;
     fail_worker.run_once().await?;
-    let fail_error = fail_handle
-        .result(WorkflowResultOptions::default())
-        .await
-        .expect_err("failed workflow must return a typed outcome");
+    let fail_error = match fail_handle.result(WorkflowResultOptions::default()).await {
+        Err(error) => error,
+        Ok(_) => {
+            return Err(Error::Codec(
+                "typed_failed_not_observed:workflow_returned_success".to_string(),
+            ))
+        }
+    };
     match fail_error {
         Error::WorkflowFailed(outcome) => {
             reasons.push(outcome.reason.clone());
@@ -508,23 +626,34 @@ async fn main() -> Result<()> {
     identities.push(identity(&timeout_handle, "typed_timed_out"));
     tokio::time::sleep(Duration::from_millis(1_500)).await;
     timeout_worker.run_once().await?;
-    let timeout_error = timeout_handle
+    let timeout_result = timeout_handle
         .result(WorkflowResultOptions {
             poll_interval: Duration::from_millis(200),
             timeout: Duration::from_secs(15),
         })
-        .await
-        .expect_err("server-terminal run timeout must return a typed timeout");
+        .await;
+    let timeout_error = match timeout_result {
+        Err(error) => error,
+        Ok(_) => {
+            return Err(Error::Codec(
+                "typed_timeout_not_observed:workflow_returned_success".to_string(),
+            ))
+        }
+    };
     match timeout_error {
         Error::WorkflowTimedOut(outcome) => {
-            require(
-                outcome.reason == "run_timeout",
-                "server_terminal_typed_timeout_reason_unstable",
-            )?;
-            require(
-                outcome.failure_category.as_deref() != Some("client_timeout"),
-                "client_wait_timeout_mislabeled_as_server_terminal",
-            )?;
+            if outcome.reason != "run_timeout" {
+                return Err(Error::Codec(format!(
+                    "server_terminal_typed_timeout_reason_unstable:observed_reason={}",
+                    outcome.reason
+                )));
+            }
+            if outcome.failure_category.as_deref() == Some("client_timeout") {
+                return Err(Error::Codec(
+                    "client_wait_timeout_mislabeled_as_server_terminal:observed_failure_category=client_timeout"
+                        .to_string(),
+                ));
+            }
             reasons.push(outcome.reason.clone());
             outcomes.insert(
                 "typed_timed_out".into(),
@@ -570,6 +699,7 @@ async fn main() -> Result<()> {
             "workflow_identities":identities,
             "scenario_outcomes":outcomes,
             "stable_reasons":reasons,
+            "probe_outcome":"pass",
             "payload_contract":{
                 "codec":"avro",
                 "envelope_contract":"durable-workflow-published-envelope",

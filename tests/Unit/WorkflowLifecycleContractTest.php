@@ -228,7 +228,7 @@ class WorkflowLifecycleContractTest extends TestCase
         }
     }
 
-    public function test_published_artifact_runner_fails_closed_when_rust_shard_exits_unsuccessfully(): void
+    public function test_published_artifact_runner_preserves_executed_rust_product_failure(): void
     {
         $resultDir = sys_get_temp_dir().'/dw-workflow-lifecycle-'.bin2hex(random_bytes(6));
         mkdir($resultDir, 0777, true);
@@ -237,6 +237,166 @@ class WorkflowLifecycleContractTest extends TestCase
         $this->writeRustSidecar($resultDir);
         $sidecar = $this->readJson($resultDir.'/rust-sdk-lifecycle-evidence.json');
         $sidecar['shard_exit_status'] = 17;
+        $rustScenario = &$sidecar['scenario_results']['rust_sdk_lifecycle_surface'];
+        $rustScenario['status'] = 'fail';
+        $rustScenario['classification'] = 'product-gap';
+        $rustScenario['observed_outputs']['probe_outcome'] = 'fail';
+        $rustScenario['observed_outputs']['shard_exit_status'] = 17;
+        $rustScenario['observed_outputs']['stable_reason'] = 'server_terminal_typed_timeout_reason_unstable';
+        $rustScenario['observed_outputs']['failure_message'] = 'typed_timed_out observed client_timeout; token=private-test-token '.str_repeat('detail ', 100);
+        $rustScenario['observed_outputs']['failing_lifecycle_cell'] = 'typed_timed_out';
+        $rustScenario['observed_outputs']['command_output'] = 'unrelated process output';
+        $rustScenario['observed_outputs']['auth_token'] = 'private-test-token';
+        $rustScenario['observed_outputs']['scenario_outcomes']['typed_timed_out'] = [
+            'status' => 'fail',
+            'stable_reason' => 'server_terminal_typed_timeout_reason_unstable',
+            'observed_behavior' => 'WorkflowTimedOut returned client_timeout instead of a server terminal timeout.',
+            'typed_outcome' => 'WorkflowTimedOut',
+            'failure_category' => 'client_timeout',
+            'server_terminal' => false,
+        ];
+        file_put_contents(
+            $resultDir.'/rust-sdk-lifecycle-evidence.json',
+            json_encode($sidecar, JSON_THROW_ON_ERROR),
+        );
+
+        try {
+            exec($this->runnerCommand($resultDir, [
+                'DW_WORKFLOW_LIFECYCLE_EVIDENCE_PATH' => $evidencePath,
+                'DW_WORKFLOW_LIFECYCLE_AUTH_TOKEN' => 'private-test-token',
+            ]), $output, $exitCode);
+
+            $this->assertSame(0, $exitCode, implode("\n", $output));
+            $result = $this->readJson($resultDir.'/workflow-lifecycle-result.json');
+            $record = $this->readJson($resultDir.'/workflow-lifecycle-record.json');
+            $rust = $result['scenario_results']['rust_sdk_lifecycle_surface'];
+
+            $this->assertSame('non_passing', $result['outcome']);
+            $this->assertFalse($result['runner_blocked']);
+            $this->assertSame('fail', $rust['status']);
+            $this->assertSame('product-gap', $rust['classification']);
+            $this->assertTrue($rust['observed_outputs']['published_artifact_cell_executed']);
+            $this->assertSame('server_terminal_typed_timeout_reason_unstable', $rust['observed_outputs']['stable_reason']);
+            $this->assertSame('typed_timed_out', $rust['observed_outputs']['failing_lifecycle_cell']);
+            $this->assertSame('client_timeout', $rust['observed_outputs']['scenario_outcomes']['typed_timed_out']['failure_category']);
+            $this->assertSame('0.1.8', $rust['observed_outputs']['install_provenance']['installed_version']);
+            $this->assertSame('0.2.512', $rust['observed_outputs']['server_version']);
+            $this->assertStringNotContainsString('private-test-token', $rust['observed_outputs']['failure_message']);
+            $this->assertStringContainsString('[REDACTED]', $rust['observed_outputs']['failure_message']);
+            $this->assertSame(512, strlen($rust['observed_outputs']['failure_message']));
+            $this->assertArrayNotHasKey('command_output', $rust['observed_outputs']);
+            $this->assertArrayNotHasKey('auth_token', $rust['observed_outputs']);
+            $this->assertSame(
+                'workflow-lifecycle-rust-sdk-lifecycle-surface-product-gap',
+                $rust['linked_findings'][0]['finding_id'],
+            );
+            $this->assertStringContainsString('client_timeout', $rust['linked_findings'][0]['summary']);
+            $this->assertStringContainsString('typed_timed_out', $rust['linked_findings'][0]['next_acceptance_criterion']);
+            $this->assertSame($rust, $record['scenarioResults']['rust_sdk_lifecycle_surface']);
+        } finally {
+            $this->removeDirectory($resultDir);
+        }
+    }
+
+    /**
+     * @dataProvider invalidNormalizedRustFailureEvidence
+     *
+     * @param array<string, mixed> $scenarioOutcomes
+     */
+    public function test_published_artifact_runner_fails_closed_for_invalid_rust_product_failure_evidence(
+        string $failingCell,
+        array $scenarioOutcomes,
+        string $observedExecutionMarker = 'true',
+    ): void {
+        $resultDir = sys_get_temp_dir().'/dw-workflow-lifecycle-'.bin2hex(random_bytes(6));
+        mkdir($resultDir, 0777, true);
+        $evidencePath = $resultDir.'/workflow-lifecycle-evidence.json';
+        file_put_contents($evidencePath, json_encode($this->hostEvidence(), JSON_THROW_ON_ERROR));
+        $this->writeRustSidecar($resultDir);
+        $sidecar = $this->readJson($resultDir.'/rust-sdk-lifecycle-evidence.json');
+        $sidecar['shard_exit_status'] = 17;
+        $rust = &$sidecar['scenario_results']['rust_sdk_lifecycle_surface'];
+        $rust['status'] = 'fail';
+        $rust['classification'] = 'product-gap';
+        $rust['observed_outputs']['probe_outcome'] = 'fail';
+        $rust['observed_outputs']['shard_exit_status'] = 17;
+        $rust['observed_outputs']['stable_reason'] = 'server_terminal_typed_timeout_reason_unstable';
+        $rust['observed_outputs']['failure_message'] = 'Rust timeout behavior did not satisfy the lifecycle contract.';
+        $rust['observed_outputs']['failing_lifecycle_cell'] = $failingCell;
+        $rust['observed_outputs']['scenario_outcomes'] = $scenarioOutcomes;
+        if ($observedExecutionMarker === 'false') {
+            $rust['observed_outputs']['published_artifact_cell_executed'] = false;
+        } elseif ($observedExecutionMarker === 'missing') {
+            unset($rust['observed_outputs']['published_artifact_cell_executed']);
+        }
+        file_put_contents(
+            $resultDir.'/rust-sdk-lifecycle-evidence.json',
+            json_encode($sidecar, JSON_THROW_ON_ERROR),
+        );
+
+        try {
+            exec($this->runnerCommand($resultDir, [
+                'DW_WORKFLOW_LIFECYCLE_EVIDENCE_PATH' => $evidencePath,
+            ]), $output, $exitCode);
+
+            $this->assertSame(0, $exitCode, implode("\n", $output));
+            $result = $this->readJson($resultDir.'/workflow-lifecycle-result.json');
+            $rust = $result['scenario_results']['rust_sdk_lifecycle_surface'];
+
+            $this->assertTrue($result['runner_blocked']);
+            $this->assertSame('runner_blocked', $rust['status']);
+            $this->assertSame('runner-gap', $rust['classification']);
+            $this->assertFalse($rust['published_artifact_cell_executed']);
+            $this->assertFalse($rust['observed_outputs']['published_artifact_cell_executed']);
+            $this->assertSame('rust_sdk_sidecar_contract_invalid', $rust['observed_outputs']['stable_reason']);
+            $this->assertNotContains(
+                'workflow-lifecycle-rust-sdk-lifecycle-surface-product-gap',
+                array_column($result['findings'], 'finding_id'),
+            );
+        } finally {
+            $this->removeDirectory($resultDir);
+        }
+    }
+
+    /**
+     * @return iterable<string, array{0: string, 1: array<string, mixed>, 2?: string}>
+     */
+    public static function invalidNormalizedRustFailureEvidence(): iterable
+    {
+        $validOutcome = [
+            'status' => 'fail',
+            'stable_reason' => 'server_terminal_typed_timeout_reason_unstable',
+            'observed_behavior' => 'WorkflowTimedOut returned client_timeout.',
+        ];
+
+        yield 'missing scenario outcome' => ['typed_timed_out', []];
+        yield 'missing failing lifecycle cell' => ['', ['typed_timed_out' => $validOutcome]];
+        yield 'contradictory scenario status' => ['typed_timed_out', [
+            'typed_timed_out' => [...$validOutcome, 'status' => 'pass'],
+        ]];
+        yield 'contradictory stable reason' => ['typed_timed_out', [
+            'typed_timed_out' => [...$validOutcome, 'stable_reason' => 'different_failure'],
+        ]];
+        yield 'missing observed behavior' => ['typed_timed_out', [
+            'typed_timed_out' => [...$validOutcome, 'observed_behavior' => ''],
+        ]];
+        yield 'false observed-output execution marker' => ['typed_timed_out', [
+            'typed_timed_out' => $validOutcome,
+        ], 'false'];
+        yield 'missing observed-output execution marker' => ['typed_timed_out', [
+            'typed_timed_out' => $validOutcome,
+        ], 'missing'];
+    }
+
+    public function test_published_artifact_runner_fails_closed_for_artifact_mismatched_rust_sidecar(): void
+    {
+        $resultDir = sys_get_temp_dir().'/dw-workflow-lifecycle-'.bin2hex(random_bytes(6));
+        mkdir($resultDir, 0777, true);
+        $evidencePath = $resultDir.'/workflow-lifecycle-evidence.json';
+        file_put_contents($evidencePath, json_encode($this->hostEvidence(), JSON_THROW_ON_ERROR));
+        $this->writeRustSidecar($resultDir);
+        $sidecar = $this->readJson($resultDir.'/rust-sdk-lifecycle-evidence.json');
+        $sidecar['scenario_results']['rust_sdk_lifecycle_surface']['observed_outputs']['artifact_version'] = '0.1.7';
         file_put_contents(
             $resultDir.'/rust-sdk-lifecycle-evidence.json',
             json_encode($sidecar, JSON_THROW_ON_ERROR),
@@ -252,12 +412,196 @@ class WorkflowLifecycleContractTest extends TestCase
             $rust = $result['scenario_results']['rust_sdk_lifecycle_surface'];
 
             $this->assertSame('non_passing', $result['outcome']);
-            $this->assertFalse($result['runner_blocked']);
-            $this->assertSame('fail', $rust['status']);
-            $this->assertSame('rust_sdk_shard_exit_unsuccessful', $rust['observed_outputs']['stable_reason']);
+            $this->assertTrue($result['runner_blocked']);
+            $this->assertSame('runner_blocked', $rust['status']);
+            $this->assertSame('runner-gap', $rust['classification']);
+            $this->assertFalse($rust['observed_outputs']['published_artifact_cell_executed']);
+            $this->assertSame('rust_sdk_sidecar_artifact_mismatch', $rust['observed_outputs']['stable_reason']);
+            $this->assertNotContains(
+                'workflow-lifecycle-rust-sdk-lifecycle-surface-product-gap',
+                array_column($result['findings'], 'finding_id'),
+            );
         } finally {
             $this->removeDirectory($resultDir);
         }
+    }
+
+    public function test_published_artifact_runner_fails_closed_for_malformed_rust_sidecar(): void
+    {
+        $resultDir = sys_get_temp_dir().'/dw-workflow-lifecycle-'.bin2hex(random_bytes(6));
+        mkdir($resultDir, 0777, true);
+        $evidencePath = $resultDir.'/workflow-lifecycle-evidence.json';
+        file_put_contents($evidencePath, json_encode($this->hostEvidence(), JSON_THROW_ON_ERROR));
+        file_put_contents($resultDir.'/rust-sdk-lifecycle-evidence.json', '{invalid-json');
+
+        try {
+            exec($this->runnerCommand($resultDir, [
+                'DW_WORKFLOW_LIFECYCLE_EVIDENCE_PATH' => $evidencePath,
+            ]), $output, $exitCode);
+
+            $this->assertSame(0, $exitCode, implode("\n", $output));
+            $result = $this->readJson($resultDir.'/workflow-lifecycle-result.json');
+            $rust = $result['scenario_results']['rust_sdk_lifecycle_surface'];
+
+            $this->assertTrue($result['runner_blocked']);
+            $this->assertSame('runner_blocked', $rust['status']);
+            $this->assertFalse($rust['observed_outputs']['published_artifact_cell_executed']);
+            $this->assertSame('rust_sdk_sidecar_contract_invalid', $rust['observed_outputs']['stable_reason']);
+        } finally {
+            $this->removeDirectory($resultDir);
+        }
+    }
+
+    public function test_published_artifact_runner_preserves_validated_rust_runner_failure_reason(): void
+    {
+        $resultDir = sys_get_temp_dir().'/dw-workflow-lifecycle-'.bin2hex(random_bytes(6));
+        mkdir($resultDir, 0777, true);
+        $evidencePath = $resultDir.'/workflow-lifecycle-evidence.json';
+        file_put_contents($evidencePath, json_encode($this->hostEvidence(), JSON_THROW_ON_ERROR));
+        $this->writeRustSidecar($resultDir);
+        $sidecar = $this->readJson($resultDir.'/rust-sdk-lifecycle-evidence.json');
+        $sidecar['runner_blocked'] = true;
+        $sidecar['shard_exit_status'] = 125;
+        $rust = &$sidecar['scenario_results']['rust_sdk_lifecycle_surface'];
+        $rust['status'] = 'runner_blocked';
+        $rust['classification'] = 'runner-gap';
+        $rust['published_artifact_cell_executed'] = false;
+        $rust['observed_outputs']['published_artifact_cell_executed'] = false;
+        $rust['observed_outputs']['shard_exit_status'] = 125;
+        $rust['observed_outputs']['stable_reason'] = 'rust_sdk_probe_output_contract_invalid';
+        $rust['observed_outputs']['failure_message'] = 'Probe process exited without a valid result envelope.';
+        file_put_contents(
+            $resultDir.'/rust-sdk-lifecycle-evidence.json',
+            json_encode($sidecar, JSON_THROW_ON_ERROR),
+        );
+
+        try {
+            exec($this->runnerCommand($resultDir, [
+                'DW_WORKFLOW_LIFECYCLE_EVIDENCE_PATH' => $evidencePath,
+            ]), $output, $exitCode);
+
+            $this->assertSame(0, $exitCode, implode("\n", $output));
+            $result = $this->readJson($resultDir.'/workflow-lifecycle-result.json');
+            $rust = $result['scenario_results']['rust_sdk_lifecycle_surface'];
+
+            $this->assertTrue($result['runner_blocked']);
+            $this->assertSame('runner_blocked', $rust['status']);
+            $this->assertFalse($rust['published_artifact_cell_executed']);
+            $this->assertSame(
+                'rust_sdk_probe_output_contract_invalid',
+                $rust['observed_outputs']['stable_reason'],
+            );
+            $this->assertSame(125, $rust['observed_outputs']['shard_exit_status']);
+        } finally {
+            $this->removeDirectory($resultDir);
+        }
+    }
+
+    public function test_rust_producer_preserves_only_validated_executed_product_failure(): void
+    {
+        $resultDir = sys_get_temp_dir().'/dw-workflow-lifecycle-rust-'.bin2hex(random_bytes(6));
+        $fakeBin = sys_get_temp_dir().'/dw-workflow-lifecycle-rust-bin-'.bin2hex(random_bytes(6));
+        mkdir($resultDir, 0777, true);
+        mkdir($fakeBin, 0777, true);
+        $this->writeFakeRustDocker($fakeBin);
+        $probeOutput = json_encode([
+            'sdk' => 'sdk-rust',
+            'artifact_version' => '0.1.10',
+            'server_version' => '0.2.644',
+            'covered_cells' => [],
+            'unsupported_cells' => [],
+            'typed_errors' => [],
+            'probe_outcome' => 'fail',
+            'stable_reason' => 'server_terminal_typed_timeout_reason_unstable',
+            'stable_reasons' => ['server_terminal_typed_timeout_reason_unstable'],
+            'failure_message' => 'typed_timed_out observed client_timeout; token=private-test-token',
+            'failing_lifecycle_cell' => 'typed_timed_out',
+            'scenario_outcomes' => [
+                'typed_timed_out' => [
+                    'status' => 'fail',
+                    'stable_reason' => 'server_terminal_typed_timeout_reason_unstable',
+                    'observed_behavior' => 'WorkflowTimedOut returned client_timeout',
+                ],
+            ],
+            'rust_shard_contract_version' => 2,
+            'published_artifact_cell_executed' => true,
+            'local_product_source_checkouts_used' => false,
+        ], JSON_THROW_ON_ERROR);
+
+        try {
+            exec($this->rustProducerCommand($resultDir, $fakeBin, $probeOutput, 17), $output, $exitCode);
+
+            $this->assertSame(17, $exitCode, implode("\n", $output));
+            $sidecar = $this->readJson($resultDir.'/rust-sdk-lifecycle-evidence.json');
+            $rust = $sidecar['scenario_results']['rust_sdk_lifecycle_surface'];
+
+            $this->assertFalse($sidecar['runner_blocked']);
+            $this->assertSame(17, $sidecar['shard_exit_status']);
+            $this->assertSame('fail', $rust['status']);
+            $this->assertSame('product-gap', $rust['classification']);
+            $this->assertTrue($rust['published_artifact_cell_executed']);
+            $this->assertSame(
+                'server_terminal_typed_timeout_reason_unstable',
+                $rust['observed_outputs']['stable_reason'],
+            );
+            $this->assertSame('typed_timed_out', $rust['observed_outputs']['failing_lifecycle_cell']);
+            $this->assertSame('0.1.10', $rust['observed_outputs']['install_provenance']['installed_version']);
+            $this->assertSame('0.2.644', $rust['observed_outputs']['server_version']);
+            $this->assertStringNotContainsString(
+                'private-test-token',
+                $rust['observed_outputs']['failure_message'],
+            );
+            $this->assertStringContainsString('[REDACTED]', $rust['observed_outputs']['failure_message']);
+        } finally {
+            $this->removeDirectory($resultDir);
+            $this->removeDirectory($fakeBin);
+        }
+    }
+
+    /**
+     * @dataProvider invalidRustProbeOutputs
+     */
+    public function test_rust_producer_keeps_process_and_output_contract_failures_runner_blocked(
+        string $probeOutput,
+        int $probeExit,
+    ): void {
+        $resultDir = sys_get_temp_dir().'/dw-workflow-lifecycle-rust-'.bin2hex(random_bytes(6));
+        $fakeBin = sys_get_temp_dir().'/dw-workflow-lifecycle-rust-bin-'.bin2hex(random_bytes(6));
+        mkdir($resultDir, 0777, true);
+        mkdir($fakeBin, 0777, true);
+        $this->writeFakeRustDocker($fakeBin);
+
+        try {
+            exec($this->rustProducerCommand($resultDir, $fakeBin, $probeOutput, $probeExit), $output, $exitCode);
+
+            $this->assertSame(1, $exitCode, implode("\n", $output));
+            $sidecar = $this->readJson($resultDir.'/rust-sdk-lifecycle-evidence.json');
+            $rust = $sidecar['scenario_results']['rust_sdk_lifecycle_surface'];
+
+            $this->assertTrue($sidecar['runner_blocked']);
+            $this->assertSame('runner_blocked', $rust['status']);
+            $this->assertSame('runner-gap', $rust['classification']);
+            $this->assertFalse($rust['published_artifact_cell_executed']);
+            $this->assertFalse($rust['observed_outputs']['published_artifact_cell_executed']);
+            $this->assertSame(
+                'rust_sdk_probe_output_contract_invalid',
+                $rust['observed_outputs']['stable_reason'],
+            );
+            $this->assertSame([], $rust['observed_outputs']['scenario_outcomes']);
+        } finally {
+            $this->removeDirectory($resultDir);
+            $this->removeDirectory($fakeBin);
+        }
+    }
+
+    /**
+     * @return iterable<string, array{0: string, 1: int}>
+     */
+    public static function invalidRustProbeOutputs(): iterable
+    {
+        yield 'docker process exits without probe output' => ['', 125];
+        yield 'probe emits malformed json' => ['not-json', 1];
+        yield 'probe emits wrong contract' => ['{"rust_shard_contract_version":1}', 1];
     }
 
     public function test_result_gate_rejects_mismatched_or_incomplete_rust_shard(): void
@@ -333,7 +677,9 @@ class WorkflowLifecycleContractTest extends TestCase
         $this->assertStringContainsString('apache-avro = { version = "0.21"', $runner);
         $this->assertStringContainsString("provenance(lock, 'durable-workflow', SDK_VERSION)", $runner);
         $this->assertStringContainsString("provenance(lock, 'apache-avro')", $runner);
-        $this->assertStringContainsString("'rust_sdk_shard_unsuccessful'", $runner);
+        $this->assertStringContainsString("'rust_sdk_probe_output_contract_invalid'", $runner);
+        $this->assertStringContainsString("outputs.probe_outcome === 'fail'", $runner);
+        $this->assertStringContainsString('validated_product_failure', $probe);
         $this->assertStringContainsString('PayloadEnvelope::avro', $probe);
         $this->assertStringContainsString('historical_run_command_rejected', $probe);
         $this->assertStringContainsString('ActivityTaskRejected', $probe);
@@ -1328,6 +1674,7 @@ SH);
                     'rust_executor_outside_server_image' => true,
                 ],
                 'rust_shard_contract_version' => 2,
+                'probe_outcome' => 'pass',
                 'shard_runner' => 'published-rust-sdk-lifecycle-surface-probe',
                 'shard_exit_status' => 0,
             ],
@@ -1376,6 +1723,77 @@ SH);
             escapeshellarg($repoRoot.'/scripts/conformance/workflow-lifecycle-published-artifacts.sh'),
             escapeshellarg($resultDir),
         );
+    }
+
+    private function rustProducerCommand(
+        string $resultDir,
+        string $fakeBin,
+        string $probeOutput,
+        int $probeExit,
+    ): string {
+        $repoRoot = dirname(__DIR__, 2);
+        $env = [
+            'PATH' => $fakeBin.':'.(getenv('PATH') ?: '/usr/bin:/bin'),
+            'RESULT_DIR' => $resultDir,
+            'REPO_ROOT' => $repoRoot,
+            'DW_SERVER_IMAGE' => 'durableworkflow/server:0.2.644',
+            'DW_SERVER_VERSION' => '0.2.644',
+            'DW_RUST_SDK_VERSION' => '0.1.10',
+            'DW_WORKFLOW_LIFECYCLE_AUTH_TOKEN' => 'private-test-token',
+            'DW_WORKFLOW_LIFECYCLE_SERVER_HTTP_PROCESS' => 'exact_published_image',
+            'DW_WORKFLOW_LIFECYCLE_SCHEDULER_PROCESS' => 'exact_published_image',
+            'DW_WORKFLOW_LIFECYCLE_RUST_EXECUTOR' => 'host_rust_container',
+            'FAKE_RUST_PROBE_OUTPUT' => $probeOutput,
+            'FAKE_RUST_PROBE_EXIT' => (string) $probeExit,
+        ];
+        $envPrefix = implode(' ', array_map(
+            static fn (string $name, string $value): string => $name.'='.escapeshellarg($value),
+            array_keys($env),
+            array_values($env),
+        ));
+
+        return sprintf(
+            '%s node %s 2>&1',
+            $envPrefix,
+            escapeshellarg($repoRoot.'/scripts/conformance/workflow-lifecycle-rust-published-artifacts.mjs'),
+        );
+    }
+
+    private function writeFakeRustDocker(string $fakeBin): void
+    {
+        $script = <<<'SH'
+#!/usr/bin/env bash
+set -euo pipefail
+if [[ "${1:-}" == "pull" ]]; then
+    exit 0
+fi
+if [[ " $* " == *" cargo generate-lockfile "* ]]; then
+    mkdir -p "$RESULT_DIR/rust-sdk-lifecycle-probe"
+    cat > "$RESULT_DIR/rust-sdk-lifecycle-probe/Cargo.lock" <<'LOCK'
+[[package]]
+name = "durable-workflow"
+version = "0.1.10"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+
+[[package]]
+name = "apache-avro"
+version = "0.21.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+LOCK
+    exit 0
+fi
+if [[ " $* " == *" cargo build --locked --release "* ]]; then
+    exit 0
+fi
+if [[ -n "${FAKE_RUST_PROBE_OUTPUT:-}" ]]; then
+    printf '%s\n' "$FAKE_RUST_PROBE_OUTPUT"
+fi
+exit "${FAKE_RUST_PROBE_EXIT:-1}"
+SH;
+        file_put_contents($fakeBin.'/docker', $script);
+        chmod($fakeBin.'/docker', 0755);
     }
 
     private function writeRustSidecar(string $resultDir): void
