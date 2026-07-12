@@ -5,6 +5,7 @@ import os
 from pathlib import Path
 import subprocess
 import unittest
+from unittest import mock
 
 
 ROOT = Path(__file__).resolve().parents[3]
@@ -55,8 +56,10 @@ class ResultGateTest(unittest.TestCase):
             for name, seconds in runner.BOUNDS.items()
         }
         runner.RESULT["phase_evidence"] = {}
+        runner.RESULT["readiness_transitions"] = []
         runner.RESULT["recovery_timings_ms"] = {}
         runner.RESULT["identities"] = {}
+        runner.RESULT["duplicate_assertions"] = []
         runner.RESULT["loss_assertions"] = []
 
     def test_phase_rejects_false_or_unset_bound(self) -> None:
@@ -149,10 +152,10 @@ class ResultGateTest(unittest.TestCase):
             runner.request = original_request
             runner.TOPOLOGY_DIAGNOSTICS = original_diagnostics
 
-    def test_survivor_traffic_accepts_every_public_running_raw_status(self) -> None:
+    def test_nonterminal_observation_accepts_every_public_running_raw_status(self) -> None:
         for raw_status in ("pending", "running", "waiting"):
             with self.subTest(raw_status=raw_status):
-                observation = runner.survivor_run_observation(
+                observation = runner.nonterminal_run_observation(
                     200,
                     {
                         "workflow_id": "workflow-1",
@@ -177,7 +180,7 @@ class ResultGateTest(unittest.TestCase):
             "is_terminal": False,
         }
 
-        observation = runner.survivor_run_observation(
+        observation = runner.nonterminal_run_observation(
             200,
             {
                 "workflow_id": "workflow-1",
@@ -192,7 +195,7 @@ class ResultGateTest(unittest.TestCase):
 
         self.assertTrue(observation["accepted"])
 
-    def test_survivor_traffic_rejects_terminal_run_descriptions(self) -> None:
+    def test_nonterminal_observation_rejects_terminal_run_descriptions(self) -> None:
         for raw_status, status_bucket in (
             ("completed", "completed"),
             ("cancelled", "failed"),
@@ -200,7 +203,7 @@ class ResultGateTest(unittest.TestCase):
             ("failed", "failed"),
         ):
             with self.subTest(raw_status=raw_status):
-                observation = runner.survivor_run_observation(
+                observation = runner.nonterminal_run_observation(
                     200,
                     {
                         "workflow_id": "workflow-1",
@@ -216,7 +219,7 @@ class ResultGateTest(unittest.TestCase):
                 self.assertFalse(observation["accepted"])
                 self.assertEqual("terminal_run", observation["rejection_reason"])
 
-    def test_survivor_traffic_rejects_identity_mismatches(self) -> None:
+    def test_nonterminal_observation_rejects_identity_mismatches(self) -> None:
         for field in ("workflow_id", "run_id"):
             with self.subTest(field=field):
                 body = {
@@ -227,7 +230,7 @@ class ResultGateTest(unittest.TestCase):
                     "is_terminal": False,
                 }
                 body[field] = "wrong-identity"
-                observation = runner.survivor_run_observation(
+                observation = runner.nonterminal_run_observation(
                     200,
                     body,
                     "workflow-1",
@@ -240,7 +243,7 @@ class ResultGateTest(unittest.TestCase):
                     observation["rejection_reason"],
                 )
 
-    def test_survivor_traffic_fails_closed_for_missing_or_inconsistent_status_contract(self) -> None:
+    def test_nonterminal_observation_fails_closed_for_missing_or_inconsistent_status_contract(self) -> None:
         invalid_bodies = (
             {"status_bucket": "running", "is_terminal": False},
             {"status": "waiting", "is_terminal": False},
@@ -252,7 +255,7 @@ class ResultGateTest(unittest.TestCase):
 
         for invalid in invalid_bodies:
             with self.subTest(invalid=invalid):
-                observation = runner.survivor_run_observation(
+                observation = runner.nonterminal_run_observation(
                     200,
                     {"workflow_id": "workflow-1", "run_id": "run-1", **invalid},
                     "workflow-1",
@@ -380,6 +383,140 @@ class ResultGateTest(unittest.TestCase):
         finally:
             for name, value in originals.items():
                 setattr(runner, name, value)
+
+    def test_database_interruption_accepts_every_public_running_raw_status(self) -> None:
+        for raw_status in ("pending", "running", "waiting"):
+            with self.subTest(raw_status=raw_status):
+                result, trace = self.run_database_interruption({
+                    "workflow_id": "workflow-1",
+                    "run_id": "run-1",
+                    "status": raw_status,
+                    "status_bucket": "running",
+                    "is_terminal": False,
+                    "input": {"secret": "must not enter evidence"},
+                })
+
+                post_recovery = result["post_recovery_description"]
+                self.assertTrue(post_recovery["accepted"])
+                self.assertEqual(raw_status, post_recovery["response_summary"]["raw_status"])
+                self.assertNotIn("input", post_recovery["response_summary"])
+                self.assertEqual([("stop", "mysql"), ("start", "mysql")], trace["compose_calls"])
+                self.assertEqual([runner.SERVER_B, runner.SERVER_A], trace["completion_bases"])
+                self.assertEqual(["task-1", "task-1"], trace["completion_task_ids"])
+                self.assertEqual(503, result["failed_write_status"])
+                self.assertEqual(2, len(result["readiness_down"]))
+                self.assertEqual(2, len(result["readiness_recovered"]))
+                self.assertTrue(result["duplicate_completion_refused"])
+                self.assertEqual("completed", result["final_status"])
+                self.assertTrue(result["final_description"]["response_summary"]["is_terminal"])
+                self.assertNotIn("output", result["final_description"]["response_summary"])
+                self.assertEqual(
+                    post_recovery,
+                    runner.RESULT["phase_evidence"]["database_interruption"]["post_recovery_description"],
+                )
+
+    def test_database_interruption_fails_closed_for_invalid_post_recovery_descriptions(self) -> None:
+        valid = {
+            "workflow_id": "workflow-1",
+            "run_id": "run-1",
+            "status": "waiting",
+            "status_bucket": "running",
+            "is_terminal": False,
+        }
+        cases = (
+            ("missing state", 200, {key: value for key, value in valid.items() if key != "status"}, "missing_or_unknown_raw_status"),
+            ("terminal state", 200, {**valid, "status": "completed", "status_bucket": "completed", "is_terminal": True}, "terminal_run"),
+            ("workflow mismatch", 200, {**valid, "workflow_id": "wrong-workflow"}, "workflow_identity_mismatch"),
+            ("run mismatch", 200, {**valid, "run_id": "wrong-run"}, "run_identity_mismatch"),
+            ("contradictory bucket", 200, {**valid, "status_bucket": "completed"}, "status_bucket_contract_mismatch"),
+            ("contradictory terminal flag", 200, {**valid, "is_terminal": True}, "terminal_flag_contract_mismatch"),
+            ("non-200 response", 503, valid, "http_status_not_ok"),
+        )
+
+        for label, http_status, body, reason in cases:
+            with self.subTest(case=label), self.assertRaisesRegex(AssertionError, reason):
+                self.run_database_interruption(body, http_status=http_status)
+
+    def run_database_interruption(
+        self,
+        post_recovery_body: dict,
+        *,
+        http_status: int = 200,
+    ) -> tuple[dict, dict]:
+        trace = {
+            "compose_calls": [],
+            "completion_bases": [],
+            "completion_task_ids": [],
+        }
+        completion_recorded = False
+
+        def fake_compose(*args, **_kwargs):
+            trace["compose_calls"].append(args)
+            return subprocess.CompletedProcess(args, 0, "", "")
+
+        def fake_ready(base, expected_status=200):
+            database_status = "unavailable" if expected_status == 503 else "ok"
+            return {
+                "http_status": expected_status,
+                "body": {
+                    "status": "not_ready" if expected_status == 503 else "ready",
+                    "node": base,
+                    "checks": {"database": {"status": database_status}},
+                },
+                "request_ms": 1,
+            }
+
+        def fake_describe(workflow_id, run_id, _base=runner.LB):
+            if not completion_recorded:
+                return http_status, post_recovery_body, 3
+            return 200, {
+                "workflow_id": workflow_id,
+                "run_id": run_id,
+                "status": "completed",
+                "status_bucket": "completed",
+                "is_terminal": True,
+                "output": {"secret": "must not enter evidence"},
+            }, 4
+
+        def fake_complete(task, base):
+            nonlocal completion_recorded
+            trace["completion_bases"].append(base)
+            trace["completion_task_ids"].append(task["task_id"])
+            if completion_recorded:
+                return 409, {"recorded": False}, 2
+            completion_recorded = True
+            return 202, {"recorded": True, "run_id": task["run_id"]}, 2
+
+        runner.RESULT["phase_evidence"] = {}
+        runner.RESULT["readiness_transitions"] = []
+        runner.RESULT["recovery_timings_ms"] = {}
+        runner.RESULT["identities"] = {}
+        runner.RESULT["duplicate_assertions"] = []
+        runner.RESULT["loss_assertions"] = []
+        with mock.patch.multiple(
+            runner,
+            register_worker=lambda *_args, **_kwargs: {},
+            start_workflow=lambda *_args, **_kwargs: {
+                "workflow_id": "workflow-1",
+                "run_id": "run-1",
+                "status": 201,
+                "ack_ms": 1,
+            },
+            poll_task=lambda *_args, **_kwargs: {
+                "workflow_id": "workflow-1",
+                "run_id": "run-1",
+                "task_id": "task-1",
+                "lease_owner": "worker-1",
+                "workflow_task_attempt": 1,
+            },
+            compose=fake_compose,
+            ready=fake_ready,
+            request=lambda *_args, **_kwargs: (503, {"error": "database unavailable"}, 1),
+            describe=fake_describe,
+            complete_task=fake_complete,
+            wait_for=lambda _label, callback, *_args, **_kwargs: callback(),
+        ):
+            return runner.database_interruption_phase(), trace
 
     def test_final_result_rejects_false_or_unset_bound(self) -> None:
         bound = "scheduler_fire_after_restart_seconds"

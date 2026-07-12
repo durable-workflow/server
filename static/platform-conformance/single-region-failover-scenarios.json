@@ -1,6 +1,6 @@
 {
   "schema": "durable-workflow.v2.platform-conformance.runtime-scenarios",
-  "version": 2,
+  "version": 3,
   "category": "single_region_failover_contract",
   "suite_schema": "durable-workflow.v2.platform-conformance-suite",
   "artifact_policy": {
@@ -28,8 +28,8 @@
     },
     {
       "id": "database_interruption",
-      "requirement": "Readiness and writes fail during database loss; acknowledged state remains and completes exactly once after database recovery.",
-      "required_evidence": ["readiness_transitions", "failed_write_status", "recovery_ms", "workflow_id", "run_id", "duplicate_completion_refused"]
+      "requirement": "Readiness and writes fail during database loss; after recovery, an identity-matching nonterminal run description remains and the acknowledged task completes exactly once.",
+      "required_evidence": ["readiness_down", "readiness_recovered", "failed_write_status", "recovery_ms", "workflow_id", "run_id", "task_id", "post_recovery_description", "completion", "duplicate_completion_refused", "final_description", "final_status", "acknowledged_state_present"]
     },
     {
       "id": "redis_interruption",

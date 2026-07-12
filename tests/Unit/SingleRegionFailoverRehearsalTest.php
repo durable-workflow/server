@@ -3,6 +3,7 @@
 namespace Tests\Unit;
 
 use App\Support\SingleRegionFailoverContract;
+use PHPUnit\Framework\Attributes\DataProvider;
 use Tests\TestCase;
 
 class SingleRegionFailoverRehearsalTest extends TestCase
@@ -33,6 +34,55 @@ class SingleRegionFailoverRehearsalTest extends TestCase
         ], $manifest['run_status_contract']);
     }
 
+    #[DataProvider('nonterminalRunStatusProvider')]
+    public function test_manifest_publishes_each_allowed_nonterminal_run_status(string $rawStatus): void
+    {
+        $status = SingleRegionFailoverContract::manifest()['run_status_contract'][$rawStatus] ?? null;
+
+        $this->assertSame([
+            'status_bucket' => 'running',
+            'is_terminal' => false,
+        ], $status);
+    }
+
+    /** @return iterable<string, array{string}> */
+    public static function nonterminalRunStatusProvider(): iterable
+    {
+        yield 'pending' => ['pending'];
+        yield 'running' => ['running'];
+        yield 'waiting' => ['waiting'];
+    }
+
+    public function test_database_interruption_contract_requires_bounded_run_state_evidence(): void
+    {
+        $manifest = SingleRegionFailoverContract::manifest();
+        $scenarioDocument = json_decode(
+            (string) file_get_contents(base_path('static/platform-conformance/single-region-failover-scenarios.json')),
+            true,
+            512,
+            JSON_THROW_ON_ERROR,
+        );
+        $scenario = current(array_filter(
+            $scenarioDocument['scenarios'],
+            static fn (array $candidate): bool => $candidate['id'] === 'database_interruption',
+        ));
+
+        $this->assertSame([
+            'acknowledged_task',
+            'readiness_down',
+            'database_down_write',
+            'readiness_recovered',
+            'post_recovery_description',
+            'completion',
+            'duplicate_completion',
+            'final_description',
+        ], $manifest['host_runner_contract']['database_interruption_evidence']);
+        $this->assertIsArray($scenario);
+        $this->assertContains('post_recovery_description', $scenario['required_evidence']);
+        $this->assertContains('final_description', $scenario['required_evidence']);
+        $this->assertContains('duplicate_completion_refused', $scenario['required_evidence']);
+    }
+
     public function test_compose_rehearsal_has_no_product_build_or_source_mount(): void
     {
         $compose = (string) file_get_contents(base_path('docker-compose.failover-rehearsal.yml'));
@@ -57,6 +107,16 @@ class SingleRegionFailoverRehearsalTest extends TestCase
         $this->assertStringContainsString('DW_FAILOVER_CONNECT_HOST', $runner);
         $this->assertStringNotContainsString('docker build', $runner);
         $this->assertStringNotContainsString('docker compose build', $runner);
+    }
+
+    public function test_shell_runner_version_matches_the_published_contract_version(): void
+    {
+        $runner = (string) file_get_contents(base_path('scripts/conformance/single-region-failover-published-artifacts.sh'));
+
+        $this->assertMatchesRegularExpression(
+            '/^export DW_FAILOVER_RUNNER_VERSION="'.SingleRegionFailoverContract::VERSION.'"$/m',
+            $runner,
+        );
     }
 
     public function test_workflow_dispatch_image_override_is_optional_and_has_no_frozen_default(): void
@@ -104,7 +164,7 @@ class SingleRegionFailoverRehearsalTest extends TestCase
         $this->assertSame([$requested], $result['output']);
     }
 
-    public function test_rehearsal_result_fails_closed_for_false_or_unset_recovery_bounds(): void
+    public function test_python_rehearsal_contract_suite_covers_result_and_database_run_state_gates(): void
     {
         if (trim((string) shell_exec('command -v python3 2>/dev/null')) === '') {
             $this->markTestSkipped('python3 is required to exercise the failover result gate.');
@@ -113,12 +173,22 @@ class SingleRegionFailoverRehearsalTest extends TestCase
         $output = [];
         $status = 0;
         exec(
-            'python3 '.escapeshellarg(base_path('tests/Unit/Support/single_region_failover_result_gate_test.py')).' 2>&1',
+            'python3 '.escapeshellarg(base_path('tests/Unit/Support/single_region_failover_result_gate_test.py'))
+                .' -v 2>&1',
             $output,
             $status,
         );
 
         $this->assertSame(0, $status, implode("\n", $output));
+        $transcript = implode("\n", $output);
+        $this->assertStringContainsString(
+            'test_database_interruption_accepts_every_public_running_raw_status',
+            $transcript,
+        );
+        $this->assertStringContainsString(
+            'test_database_interruption_fails_closed_for_invalid_post_recovery_descriptions',
+            $transcript,
+        );
     }
 
     public function test_redis_cell_uses_request_id_polling_and_rejects_duplicate_leases(): void

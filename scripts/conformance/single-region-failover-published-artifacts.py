@@ -292,7 +292,7 @@ def parse_public_run_status_contract(value: Any) -> dict[str, dict[str, Any]]:
     return contract
 
 
-def survivor_run_observation(
+def nonterminal_run_observation(
     http_status: int,
     body: Any,
     expected_workflow_id: str,
@@ -338,7 +338,7 @@ def wait_for_survivor_traffic(
     while time.monotonic() < deadline:
         status, body, elapsed = describe(workflow_id, run_id, LB)
         last = {
-            **survivor_run_observation(status, body, workflow_id, run_id),
+            **nonterminal_run_observation(status, body, workflow_id, run_id),
             "request_ms": elapsed,
             "observed_at": now(),
         }
@@ -886,7 +886,7 @@ def api_node_loss_phase() -> dict[str, Any]:
     }
     require(status in (200, 202) and completed.get("recorded") is True, f"survivor completion failed: {status} {completed}")
     show_status, shown, _ = describe(started["workflow_id"], started["run_id"], SERVER_B)
-    final_observation = survivor_run_observation(
+    final_observation = nonterminal_run_observation(
         show_status,
         shown,
         started["workflow_id"],
@@ -936,11 +936,28 @@ def database_interruption_phase() -> dict[str, Any]:
     register_worker(worker)
     started = start_workflow(unique("database-interruption"))
     task = poll_task(worker, SERVER_A)
+    require(
+        task.get("workflow_id") == started["workflow_id"]
+        and task.get("run_id") == started["run_id"],
+        f"wrong task claimed before database interruption: {task}",
+    )
+    phase_evidence = RESULT["phase_evidence"].setdefault("database_interruption", {})
+    phase_evidence["acknowledged_task"] = {
+        "workflow_id": task.get("workflow_id"),
+        "run_id": task.get("run_id"),
+        "task_id": task.get("task_id"),
+        "claim_node": "server-a",
+    }
     compose("stop", "mysql", timeout=60)
     down_transitions = []
+    phase_evidence["readiness_down"] = down_transitions
     for node, base in (("server-a", SERVER_A), ("server-b", SERVER_B)):
         observation = wait_for(f"database-down readiness on {node}", lambda base=base: ready(base, 503), 20)
-        require(observation["body"].get("checks", {}).get("database", {}).get("status") == "unavailable", f"database readiness contract mismatch: {observation}")
+        require(
+            observation["body"].get("status") == "not_ready"
+            and observation["body"].get("checks", {}).get("database", {}).get("status") == "unavailable",
+            f"database readiness contract mismatch: {observation}",
+        )
         transition = {"phase": "database_interruption", "node": node, "state": "not_ready", **observation}
         RESULT["readiness_transitions"].append(transition)
         down_transitions.append(transition)
@@ -953,31 +970,91 @@ def database_interruption_phase() -> dict[str, Any]:
         payload={"workflow_id": failed_id, "workflow_type": WORKFLOW_TYPE, "task_queue": TASK_QUEUE, "input": []},
         timeout=5,
     )
+    phase_evidence["database_down_write"] = {
+        "http_status": failed_status,
+        "acknowledged": 200 <= failed_status < 300,
+    }
     require(failed_status == 0 or failed_status >= 500, f"database-down write was unexpectedly acknowledged: {failed_status} {failed_body}")
 
     recovery_started = time.monotonic()
     compose("start", "mysql")
     recovered = []
+    phase_evidence["readiness_recovered"] = recovered
     for node, base in (("server-a", SERVER_A), ("server-b", SERVER_B)):
         observation = wait_for(f"database recovery readiness on {node}", lambda base=base: ready(base), BOUNDS["database_ready_after_return_seconds"])
+        require(
+            observation["body"].get("status") == "ready"
+            and observation["body"].get("checks", {}).get("database", {}).get("status") == "ok",
+            f"database recovery readiness contract mismatch: {observation}",
+        )
         transition = {"phase": "database_interruption", "node": node, "state": "ready", **observation}
         RESULT["readiness_transitions"].append(transition)
         recovered.append(transition)
     recovery_ms = monotonic_ms(recovery_started)
     show_status, shown, _ = describe(started["workflow_id"], started["run_id"], SERVER_B)
-    require(show_status == 200 and shown.get("status") == "running", f"acknowledged database state was lost: {shown}")
+    post_recovery_description = nonterminal_run_observation(
+        show_status,
+        shown,
+        started["workflow_id"],
+        started["run_id"],
+    )
+    phase_evidence["post_recovery_description"] = post_recovery_description
+    require(
+        post_recovery_description["accepted"],
+        "post-recovery run description did not satisfy the public nonterminal contract: "
+        f"{post_recovery_description}",
+    )
     status, completed, _ = complete_task(task, SERVER_B)
+    completion = {
+        "http_status": status,
+        "recorded": completed.get("recorded") is True,
+        "completion_node": "server-b",
+    }
+    phase_evidence["completion"] = completion
     require(status in (200, 202) and completed.get("recorded") is True, f"post-database completion failed: {status} {completed}")
     duplicate_status, duplicate_body, _ = complete_task(task, SERVER_A)
+    phase_evidence["duplicate_completion"] = {
+        "http_status": duplicate_status,
+        "rejected": duplicate_status == 409,
+        "completion_node": "server-a",
+    }
     require(duplicate_status == 409, f"duplicate completion was not refused: {duplicate_status} {duplicate_body}")
-    _, final, _ = describe(started["workflow_id"], started["run_id"], SERVER_A)
-    require(final.get("status") == "completed", f"database workflow did not complete: {final}")
+    final_status, final, _ = describe(started["workflow_id"], started["run_id"], SERVER_A)
+    final_description = {
+        "http_status": final_status,
+        "response_summary": redacted_run_summary(final),
+    }
+    phase_evidence["final_description"] = final_description
+    final_summary = final_description["response_summary"]
+    require(
+        final_status == 200
+        and final_summary["workflow_id"] == started["workflow_id"]
+        and final_summary["run_id"] == started["run_id"]
+        and final_summary["raw_status"] == "completed"
+        and final_summary["status_bucket"] == "completed"
+        and final_summary["is_terminal"] is True,
+        f"database workflow did not complete exactly once: {final_description}",
+    )
     RESULT["recovery_timings_ms"]["database_ready_after_return"] = recovery_ms
     RESULT["recovery_bounds"]["database_ready_after_return_seconds"]["passed"] = recovery_ms <= BOUNDS["database_ready_after_return_seconds"] * 1000
     RESULT["identities"]["database_interruption"] = {**started, "task_id": task["task_id"]}
     RESULT["duplicate_assertions"].append({"phase": "database_interruption", "duplicate_completion_http_status": duplicate_status, "passed": True})
     RESULT["loss_assertions"].append({"phase": "database_interruption", "acknowledged_state_present": True, "unacknowledged_write_present": False, "passed": True})
-    return {"readiness_down": down_transitions, "readiness_recovered": recovered, "failed_write_status": failed_status, "recovery_ms": recovery_ms, "duplicate_completion_refused": True}
+    return {
+        "readiness_down": down_transitions,
+        "readiness_recovered": recovered,
+        "failed_write_status": failed_status,
+        "recovery_ms": recovery_ms,
+        "workflow_id": started["workflow_id"],
+        "run_id": started["run_id"],
+        "task_id": task["task_id"],
+        "post_recovery_description": post_recovery_description,
+        "completion": completion,
+        "duplicate_completion_refused": True,
+        "final_description": final_description,
+        "final_status": final_summary["raw_status"],
+        "acknowledged_state_present": True,
+    }
 
 
 def timed_discovery(worker_id: str, workflow_prefix: str) -> tuple[dict[str, Any], dict[str, Any], int, str]:
@@ -1204,6 +1281,8 @@ def main() -> int:
         elif active_phase == "api_node_loss":
             failure.update(api_node_loss_failure_diagnostics())
             failure["phase_evidence"] = RESULT["phase_evidence"].get("api_node_loss", {})
+        elif active_phase == "database_interruption":
+            failure["phase_evidence"] = RESULT["phase_evidence"].get("database_interruption", {})
         RESULT["phase_outcomes"][active_phase] = failure
         RESULT["outcome"] = "fail"
         return 1

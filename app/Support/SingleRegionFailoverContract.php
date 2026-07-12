@@ -14,7 +14,7 @@ final class SingleRegionFailoverContract
 {
     public const SCHEMA = 'durable-workflow.v2.single-region-failover.contract';
 
-    public const VERSION = 3;
+    public const VERSION = 4;
 
     public const RESULT_SCHEMA = 'durable-workflow.v2.single-region-failover.result';
 
@@ -163,6 +163,16 @@ final class SingleRegionFailoverContract
                     'surviving_node_ready',
                     'completion_node',
                     'final_run_description',
+                ],
+                'database_interruption_evidence' => [
+                    'acknowledged_task',
+                    'readiness_down',
+                    'database_down_write',
+                    'readiness_recovered',
+                    'post_recovery_description',
+                    'completion',
+                    'duplicate_completion',
+                    'final_description',
                 ],
                 'required_host_capabilities' => [
                     'bash',
