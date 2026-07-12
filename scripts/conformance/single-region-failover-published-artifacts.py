@@ -10,9 +10,11 @@ from __future__ import annotations
 import concurrent.futures
 import datetime as dt
 import hashlib
+import ipaddress
 import json
 import os
 from pathlib import Path
+import re
 import subprocess
 import sys
 import time
@@ -33,9 +35,104 @@ PROJECT = os.environ["DW_FAILOVER_PROJECT"]
 KEEP_STACK = os.environ.get("DW_FAILOVER_KEEP_STACK") == "1"
 MODE = os.environ.get("DW_FAILOVER_MODE", "full")
 
-LB = f"http://127.0.0.1:{os.environ.get('DW_FAILOVER_LB_PORT', '18086')}"
-SERVER_A = f"http://127.0.0.1:{os.environ.get('DW_FAILOVER_SERVER_A_PORT', '18084')}"
-SERVER_B = f"http://127.0.0.1:{os.environ.get('DW_FAILOVER_SERVER_B_PORT', '18085')}"
+DEFAULT_PORTS = {
+    "server_a": 18084,
+    "server_b": 18085,
+    "load_balancer": 18086,
+}
+PORT_ENVIRONMENT = {
+    "server_a": "DW_FAILOVER_SERVER_A_PORT",
+    "server_b": "DW_FAILOVER_SERVER_B_PORT",
+    "load_balancer": "DW_FAILOVER_LB_PORT",
+}
+READINESS_OBSERVATION_LIMIT = 12
+TOPOLOGY_START_FAILURE_READINESS_TIMEOUT = 5
+DIAGNOSTIC_OUTPUT_LIMIT = 12000
+
+
+def parse_connect_host(value: str) -> str:
+    if not value or value != value.strip():
+        raise ValueError("DW_FAILOVER_CONNECT_HOST must be a hostname or IP without surrounding whitespace")
+    if "://" in value or any(character in value for character in "/?#@"):
+        raise ValueError("DW_FAILOVER_CONNECT_HOST must not include a URL scheme, path, query, fragment, or user info")
+
+    candidate = value
+    if value.startswith("[") or value.endswith("]"):
+        if not (value.startswith("[") and value.endswith("]")):
+            raise ValueError("DW_FAILOVER_CONNECT_HOST contains unmatched IPv6 brackets")
+        candidate = value[1:-1]
+
+    if "%" in candidate:
+        raise ValueError("DW_FAILOVER_CONNECT_HOST must not use an interface-scoped IPv6 literal")
+
+    try:
+        return str(ipaddress.ip_address(candidate))
+    except ValueError:
+        pass
+
+    try:
+        hostname = candidate.encode("idna").decode("ascii")
+    except UnicodeError as error:
+        raise ValueError("DW_FAILOVER_CONNECT_HOST is not a valid DNS hostname") from error
+
+    labels = hostname[:-1].split(".") if hostname.endswith(".") else hostname.split(".")
+    if (
+        len(hostname.rstrip(".")) > 253
+        or not labels
+        or any(
+            not label
+            or len(label) > 63
+            or re.fullmatch(r"[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?", label) is None
+            for label in labels
+        )
+    ):
+        raise ValueError("DW_FAILOVER_CONNECT_HOST is not a valid DNS hostname")
+    return hostname
+
+
+def parse_published_port(name: str, value: str) -> int:
+    try:
+        port = int(value)
+    except ValueError as error:
+        raise ValueError(f"{PORT_ENVIRONMENT[name]} must be an integer port") from error
+    if not 1 <= port <= 65535:
+        raise ValueError(f"{PORT_ENVIRONMENT[name]} must be between 1 and 65535")
+    return port
+
+
+def build_probe_endpoints(connect_host: str, ports: dict[str, int] | None = None) -> dict[str, str]:
+    host = parse_connect_host(connect_host)
+    try:
+        address = ipaddress.ip_address(host)
+    except ValueError:
+        url_host = host
+    else:
+        url_host = f"[{host}]" if address.version == 6 else host
+
+    selected_ports = ports or DEFAULT_PORTS
+    return {
+        name: f"http://{url_host}:{selected_ports[name]}"
+        for name in DEFAULT_PORTS
+    }
+
+
+CONFIGURATION_ERROR: str | None = None
+try:
+    CONNECT_HOST = parse_connect_host(os.environ.get("DW_FAILOVER_CONNECT_HOST", "127.0.0.1"))
+    PUBLISHED_PORTS = {
+        name: parse_published_port(name, os.environ.get(environment, str(DEFAULT_PORTS[name])))
+        for name, environment in PORT_ENVIRONMENT.items()
+    }
+    PROBE_ENDPOINTS = build_probe_endpoints(CONNECT_HOST, PUBLISHED_PORTS)
+except ValueError as error:
+    CONFIGURATION_ERROR = str(error)
+    CONNECT_HOST = os.environ.get("DW_FAILOVER_CONNECT_HOST", "127.0.0.1")
+    PUBLISHED_PORTS = DEFAULT_PORTS.copy()
+    PROBE_ENDPOINTS = {name: "" for name in DEFAULT_PORTS}
+
+LB = PROBE_ENDPOINTS["load_balancer"]
+SERVER_A = PROBE_ENDPOINTS["server_a"]
+SERVER_B = PROBE_ENDPOINTS["server_b"]
 
 BOUNDS = {
     "api_node_useful_traffic_seconds": 15,
@@ -157,6 +254,159 @@ def ready(base: str, expected_status: int = 200) -> dict[str, Any] | None:
     return None
 
 
+def command_diagnostic(result: subprocess.CompletedProcess[str]) -> dict[str, Any]:
+    return {
+        "exit_code": result.returncode,
+        "stdout": result.stdout[-DIAGNOSTIC_OUTPUT_LIMIT:],
+        "stderr": result.stderr[-DIAGNOSTIC_OUTPUT_LIMIT:],
+        "output_truncated": (
+            len(result.stdout) > DIAGNOSTIC_OUTPUT_LIMIT
+            or len(result.stderr) > DIAGNOSTIC_OUTPUT_LIMIT
+        ),
+    }
+
+
+def exception_diagnostic(error: Exception) -> dict[str, Any]:
+    diagnostic: dict[str, Any] = {
+        "error_type": type(error).__name__,
+        "reason": str(error),
+    }
+    if isinstance(error, subprocess.CalledProcessError):
+        diagnostic.update({
+            "exit_code": error.returncode,
+            "stdout": (error.stdout or "")[-DIAGNOSTIC_OUTPUT_LIMIT:],
+            "stderr": (error.stderr or "")[-DIAGNOSTIC_OUTPUT_LIMIT:],
+            "output_truncated": (
+                len(error.stdout or "") > DIAGNOSTIC_OUTPUT_LIMIT
+                or len(error.stderr or "") > DIAGNOSTIC_OUTPUT_LIMIT
+            ),
+        })
+    return diagnostic
+
+
+def initial_topology_diagnostics() -> dict[str, Any]:
+    endpoints = {
+        name: {
+            "base_url": base,
+            "readiness_url": f"{base}/api/ready",
+            "published_port": PUBLISHED_PORTS[name],
+        }
+        for name, base in PROBE_ENDPOINTS.items()
+    }
+    return {
+        "connect_host": CONNECT_HOST,
+        "resolved_probe_endpoints": endpoints,
+        "compose_up": None,
+        "compose_ps": None,
+        "published_port_mappings": {},
+        "readiness_observations": {
+            name: {
+                "endpoint": endpoint["readiness_url"],
+                "attempt_count": 0,
+                "observations_truncated": 0,
+                "ready": False,
+                "observations": [],
+            }
+            for name, endpoint in endpoints.items()
+        },
+    }
+
+
+TOPOLOGY_DIAGNOSTICS = initial_topology_diagnostics()
+
+
+def refresh_topology_diagnostics() -> None:
+    try:
+        TOPOLOGY_DIAGNOSTICS["compose_ps"] = command_diagnostic(
+            compose("ps", "--all", "--format", "json", check=False, timeout=30)
+        )
+    except Exception as error:
+        TOPOLOGY_DIAGNOSTICS["compose_ps"] = exception_diagnostic(error)
+
+    mappings: dict[str, Any] = {}
+    for name, service in (
+        ("server_a", "server-a"),
+        ("server_b", "server-b"),
+        ("load_balancer", "load-balancer"),
+    ):
+        try:
+            result = compose("port", service, "8080", check=False, timeout=30)
+            mappings[name] = {
+                "service": service,
+                "container_port": "8080/tcp",
+                "configured_host_port": PUBLISHED_PORTS[name],
+                "published": result.stdout.splitlines(),
+                **command_diagnostic(result),
+            }
+        except Exception as error:
+            mappings[name] = {
+                "service": service,
+                "container_port": "8080/tcp",
+                "configured_host_port": PUBLISHED_PORTS[name],
+                **exception_diagnostic(error),
+            }
+    TOPOLOGY_DIAGNOSTICS["published_port_mappings"] = mappings
+
+
+def observe_topology_readiness(name: str, base: str, timeout: float) -> bool:
+    started = time.monotonic()
+    try:
+        status, body, elapsed = request(
+            base,
+            "/api/ready",
+            authenticated=False,
+            timeout=max(0.1, min(3, timeout)),
+        )
+    except Exception as error:
+        status = 0
+        body = exception_diagnostic(error)
+        elapsed = monotonic_ms(started)
+    observation = {
+        "http_status": status,
+        "body": body,
+        "request_ms": elapsed,
+        "observed_at": now(),
+    }
+    evidence = TOPOLOGY_DIAGNOSTICS["readiness_observations"][name]
+    evidence["attempt_count"] += 1
+    observations = evidence["observations"]
+    if len(observations) == READINESS_OBSERVATION_LIMIT:
+        observations.pop(0)
+        evidence["observations_truncated"] += 1
+    observations.append(observation)
+    if status == 200:
+        evidence["ready"] = True
+        return True
+    return False
+
+
+def wait_for_topology_readiness(timeout: float = 30) -> None:
+    deadline = time.monotonic() + timeout
+    pending = set(PROBE_ENDPOINTS)
+    while pending and time.monotonic() < deadline:
+        remaining = max(0.1, deadline - time.monotonic())
+        with concurrent.futures.ThreadPoolExecutor(max_workers=len(pending)) as executor:
+            attempts = {
+                name: executor.submit(observe_topology_readiness, name, PROBE_ENDPOINTS[name], remaining)
+                for name in pending
+            }
+            for name, attempt in attempts.items():
+                if attempt.result():
+                    pending.remove(name)
+        if pending:
+            time.sleep(min(0.5, max(0, deadline - time.monotonic())))
+
+    if pending:
+        summary = {
+            name: TOPOLOGY_DIAGNOSTICS["readiness_observations"][name]["observations"][-1]
+            for name in sorted(pending)
+        }
+        raise AssertionError(
+            f"timed out waiting for topology readiness at {', '.join(sorted(pending))}; "
+            f"last observations: {summary!r}"
+        )
+
+
 def cache_ready(base: str) -> dict[str, Any] | None:
     observation = ready(base)
     if observation is None:
@@ -274,6 +524,8 @@ RESULT: dict[str, Any] = {
         "region_count": 1,
         "api_nodes": ["server-a", "server-b"],
         "shared_endpoint": "load-balancer",
+        "connect_host": CONNECT_HOST,
+        "published_ports": PUBLISHED_PORTS,
         "database": {"engine": "mysql", "instances": 1, "durability": "named_volume"},
         "redis": {"instances": 1, "role": "acceleration_layer"},
         "scheduler_maintenance_runners": ["scheduler"],
@@ -336,6 +588,7 @@ def require_passing_result() -> None:
 
 
 def provenance_phase() -> dict[str, Any]:
+    require(CONFIGURATION_ERROR is None, CONFIGURATION_ERROR or "invalid runner configuration")
     raw = compose("config", "--format", "json").stdout
     config = json.loads(raw)
     services = config.get("services", {})
@@ -394,9 +647,23 @@ echo json_encode($package, JSON_THROW_ON_ERROR);
 
 
 def start_topology() -> dict[str, Any]:
-    compose("up", "-d", "--wait", "--wait-timeout", "180", timeout=240)
-    for base in (SERVER_A, SERVER_B, LB):
-        wait_for(f"readiness at {base}", lambda base=base: ready(base), 30)
+    try:
+        up_result = compose("up", "-d", "--wait", "--wait-timeout", "180", timeout=240)
+    except Exception as error:
+        TOPOLOGY_DIAGNOSTICS["compose_up"] = exception_diagnostic(error)
+        refresh_topology_diagnostics()
+        try:
+            wait_for_topology_readiness(TOPOLOGY_START_FAILURE_READINESS_TIMEOUT)
+        except Exception:
+            # The original Compose failure remains the phase error. The bounded
+            # probe's observations are retained in TOPOLOGY_DIAGNOSTICS.
+            pass
+        raise
+
+    TOPOLOGY_DIAGNOSTICS["compose_up"] = command_diagnostic(up_result)
+    refresh_topology_diagnostics()
+    wait_for_topology_readiness(30)
+
     running = compose("ps", "--status", "running", "--services").stdout.splitlines()
     require(running.count("scheduler") == 1, f"expected one running scheduler, got: {running}")
     image_ids: dict[str, str] = {}
@@ -411,7 +678,11 @@ def start_topology() -> dict[str, Any]:
     require(contract.get("schema") == "durable-workflow.v2.single-region-failover.contract", "released image does not expose the single-region failover contract")
     require(contract.get("host_runner_contract", {}).get("runner_key") == "single-region-failover", "released image exposes an incompatible runner contract")
     RESULT["artifacts"]["server_reported_version"] = cluster.get("version")
-    return {"running_services": sorted(running), "cluster_info_contract_version": contract.get("version")}
+    return {
+        "running_services": sorted(running),
+        "cluster_info_contract_version": contract.get("version"),
+        **TOPOLOGY_DIAGNOSTICS,
+    }
 
 
 def cross_node_phase() -> dict[str, Any]:
@@ -726,11 +997,14 @@ def main() -> int:
         RESULT["outcome"] = "pass"
         return 0
     except Exception as error:  # evidence must survive every bounded failure
-        RESULT["phase_outcomes"][active_phase] = {
+        failure = {
             "status": "fail",
             "reason": str(error),
             "error_type": type(error).__name__,
         }
+        if active_phase == "topology_start":
+            failure.update(TOPOLOGY_DIAGNOSTICS)
+        RESULT["phase_outcomes"][active_phase] = failure
         RESULT["outcome"] = "fail"
         return 1
     finally:

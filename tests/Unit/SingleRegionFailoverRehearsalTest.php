@@ -45,6 +45,7 @@ class SingleRegionFailoverRehearsalTest extends TestCase
         $this->assertStringContainsString('durableworkflow/server', $runner);
         $this->assertStringContainsString('RepoDigests', $runner);
         $this->assertStringContainsString('DW_FAILOVER_SERVER_IMAGE=', $runner);
+        $this->assertStringContainsString('DW_FAILOVER_CONNECT_HOST', $runner);
         $this->assertStringNotContainsString('docker build', $runner);
         $this->assertStringNotContainsString('docker compose build', $runner);
     }
@@ -120,6 +121,17 @@ class SingleRegionFailoverRehearsalTest extends TestCase
         $this->assertStringContainsString('duplicate_lease_observed', $runner);
         $this->assertStringContainsString('"poll_request_id"', $manifest);
         $this->assertStringContainsString('"duplicate_lease_observed"', $manifest);
+    }
+
+    public function test_runner_documents_the_docker_socket_connect_host_override(): void
+    {
+        $runner = (string) file_get_contents(base_path('scripts/conformance/single-region-failover-published-artifacts.sh'));
+        $documentation = (string) file_get_contents(base_path('docs/ha-failover-validation.md'));
+
+        $this->assertStringContainsString('DW_FAILOVER_CONNECT_HOST', $runner);
+        $this->assertStringContainsString('Defaults to 127.0.0.1', $runner);
+        $this->assertStringContainsString('DW_FAILOVER_CONNECT_HOST=host.docker.internal', $documentation);
+        $this->assertStringContainsString('without a URL', $documentation);
     }
 
     public function test_redis_recovery_requires_healthy_cache_readiness_before_discovery(): void

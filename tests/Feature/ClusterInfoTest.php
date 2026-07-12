@@ -691,6 +691,7 @@ class ClusterInfoTest extends TestCase
             );
 
         $contract = $response->json('single_region_failover_contract');
+        $this->assertSame(2, $contract['version']);
         $this->assertSame(2, $contract['required_topology']['api_nodes']);
         $this->assertSame(1, $contract['required_topology']['scheduler_maintenance_runners']);
         $this->assertFalse($contract['required_topology']['sticky_sessions']);
@@ -700,6 +701,11 @@ class ClusterInfoTest extends TestCase
         $this->assertContains('singleton_scheduler_restart', $contract['required_scenarios']);
         $this->assertTrue($contract['artifact_policy']['published_artifacts_only']);
         $this->assertTrue($contract['host_runner_contract']['must_fail_closed_on_local_product_runtime']);
+        $this->assertSame('DW_FAILOVER_CONNECT_HOST', $contract['host_runner_contract']['connect_host_environment']);
+        $this->assertContains(
+            'readiness_observations',
+            $contract['host_runner_contract']['topology_start_failure_evidence'],
+        );
     }
 
     public function test_it_publishes_the_worker_versioning_runtime_conformance_contract(): void

@@ -268,6 +268,24 @@ DW_SERVER_IMAGE=durableworkflow/server:<released-version> \
   --result-dir ./failover-result
 ```
 
+The runner connects to all three published endpoints through `127.0.0.1` by
+default. When the runner itself is in a container that controls a Docker daemon
+through a mounted socket, set `DW_FAILOVER_CONNECT_HOST` to the Docker host
+gateway hostname or IP:
+
+```bash
+DW_SERVER_IMAGE=durableworkflow/server:<released-version> \
+DW_FAILOVER_CONNECT_HOST=host.docker.internal \
+  scripts/conformance/single-region-failover-published-artifacts.sh \
+  --result-dir ./failover-result
+```
+
+The override is one hostname, IPv4 address, or IPv6 address, without a URL
+scheme, path, or port. The runner adds IPv6 URL brackets when needed. Port
+publication remains independently configurable with
+`DW_FAILOVER_SERVER_A_PORT`, `DW_FAILOVER_SERVER_B_PORT`, and
+`DW_FAILOVER_LB_PORT`.
+
 The bounded CI invocation runs the same required failure cells with the
 contract recovery limits and uploads
 `single-region-failover-result.json`. Public CI runs it weekly and on manual
@@ -321,6 +339,8 @@ records, for the operator's recovery packet:
 - the requested image references, resolved repository digests, runtime image
   IDs, Docker/Compose/Python versions, and a hash of the normalized Compose
   configuration;
+- resolved probe endpoints, Compose service state, published-port mappings,
+  and bounded readiness observations when topology startup fails;
 - every phase outcome, readiness transition, workflow/run/task/schedule
   identity, duplicate/loss assertion, measured recovery time, and bound
   verdict.

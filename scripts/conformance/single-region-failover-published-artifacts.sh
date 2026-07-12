@@ -21,6 +21,11 @@ Optional exact supporting artifacts:
   DW_FAILOVER_RESULT_DIR          Alternative to --result-dir.
   DW_FAILOVER_MODE                full or bounded (same required failure cells;
                                   bounded uses the contract's CI time limits).
+  DW_FAILOVER_CONNECT_HOST        Hostname or IP used to reach all three
+                                  published endpoints. Defaults to 127.0.0.1.
+  DW_FAILOVER_SERVER_A_PORT       Published server A port. Defaults to 18084.
+  DW_FAILOVER_SERVER_B_PORT       Published server B port. Defaults to 18085.
+  DW_FAILOVER_LB_PORT             Published load-balancer port. Defaults to 18086.
   DW_FAILOVER_KEEP_STACK=1        Keep the Compose stack for inspection.
 USAGE
 }
@@ -137,7 +142,7 @@ export DW_FAILOVER_NGINX_IMAGE_REQUESTED="$nginx_requested"
 export DW_FAILOVER_DOCKER_VERSION="$(docker version --format '{{.Server.Version}}')"
 export DW_FAILOVER_COMPOSE_VERSION="$(docker compose version --short)"
 export DW_FAILOVER_BASH_VERSION="$BASH_VERSION"
-export DW_FAILOVER_RUNNER_VERSION="1"
+export DW_FAILOVER_RUNNER_VERSION="2"
 export DW_FAILOVER_RESULT_DIR="$result_dir"
 export DW_FAILOVER_COMPOSE_FILE="$compose_file"
 export DW_FAILOVER_KEEP_STACK="$keep_stack"

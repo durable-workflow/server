@@ -13,7 +13,7 @@ final class SingleRegionFailoverContract
 {
     public const SCHEMA = 'durable-workflow.v2.single-region-failover.contract';
 
-    public const VERSION = 1;
+    public const VERSION = 2;
 
     public const RESULT_SCHEMA = 'durable-workflow.v2.single-region-failover.result';
 
@@ -126,6 +126,20 @@ final class SingleRegionFailoverContract
                 'runner_path' => 'scripts/conformance/single-region-failover-published-artifacts.sh',
                 'invocation' => 'DW_SERVER_IMAGE=<public-image-tag-or-digest> scripts/conformance/single-region-failover-published-artifacts.sh --result-dir <result-dir>',
                 'bounded_invocation' => 'DW_FAILOVER_MODE=bounded DW_SERVER_IMAGE=<public-image-tag-or-digest> scripts/conformance/single-region-failover-published-artifacts.sh --result-dir <result-dir>',
+                'connect_host_environment' => 'DW_FAILOVER_CONNECT_HOST',
+                'connect_host_default' => '127.0.0.1',
+                'connect_host_value' => 'hostname_or_ip_without_url_scheme_path_or_port',
+                'published_port_environment' => [
+                    'server_a' => 'DW_FAILOVER_SERVER_A_PORT',
+                    'server_b' => 'DW_FAILOVER_SERVER_B_PORT',
+                    'load_balancer' => 'DW_FAILOVER_LB_PORT',
+                ],
+                'topology_start_failure_evidence' => [
+                    'resolved_probe_endpoints',
+                    'compose_ps',
+                    'published_port_mappings',
+                    'readiness_observations',
+                ],
                 'required_host_capabilities' => [
                     'bash',
                     'docker_engine',
