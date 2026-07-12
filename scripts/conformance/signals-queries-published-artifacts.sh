@@ -2866,11 +2866,16 @@ def answer_next_query_task(
         deadline = time.time() + poll_timeout
         poll_attempt = 0
         empty_polls: list[dict[str, Any]] = []
+        poll_transport_errors: list[dict[str, Any]] = []
         task: dict[str, Any] | None = None
 
         while time.time() < deadline:
             poll_attempt += 1
             remaining = max(0.2, deadline - time.time())
+            # A synthetic responder must retain more than one opportunity to
+            # claim. Under host load a single delayed transport request must
+            # not consume the control-plane query's entire claim window.
+            claim_poll_seconds = max(1, min(2, int(math.ceil(remaining))))
             if "query_poll_started_at" not in holder:
                 holder["query_poll_started_at"] = now()
             holder["heartbeat"] = heartbeat_worker(
@@ -2887,22 +2892,37 @@ def answer_next_query_task(
             holder["query_poll_ready_at"] = now()
             if ready_event is not None:
                 ready_event.set()
-            poll = http_json(
-                base_url,
-                api_path("worker", "query-tasks", "poll"),
-                method="POST",
-                body={
-                    "worker_id": worker_id,
-                    "task_queue": task_queue,
-                    "poll_request_id": f"query-{int(time.time() * 1000)}-{poll_attempt}",
-                    "timeout_seconds": max(1, int(math.ceil(remaining))),
-                },
-                token=token,
-                namespace=namespace,
-                worker=True,
-                timeout=remaining + 5.0,
-            )
+            try:
+                poll = http_json(
+                    base_url,
+                    api_path("worker", "query-tasks", "poll"),
+                    method="POST",
+                    body={
+                        "worker_id": worker_id,
+                        "task_queue": task_queue,
+                        "poll_request_id": f"query-{int(time.time() * 1000)}-{poll_attempt}",
+                        "timeout_seconds": claim_poll_seconds,
+                    },
+                    token=token,
+                    namespace=namespace,
+                    worker=True,
+                    timeout=min(remaining + 1.0, claim_poll_seconds + 5.0),
+                )
+            except TimeoutError as exc:
+                # The server may still finish the abandoned poll and lease the
+                # task. A successor poll by the same worker recovers that lease.
+                poll_transport_errors.append({
+                    "attempt": poll_attempt,
+                    "timeout_seconds": claim_poll_seconds,
+                    "failed_at": now(),
+                    "error": f"{type(exc).__name__}: {exc}",
+                })
+                holder["poll_transport_errors"] = poll_transport_errors
+                holder["query_poll_attempt_count"] = poll_attempt
+                continue
+
             holder["poll"] = poll
+            holder["query_poll_attempt_count"] = poll_attempt
             poll_body = poll.get("body") if isinstance(poll.get("body"), dict) else {}
             task_candidate = poll_body.get("task") if isinstance(poll_body, dict) else None
             if isinstance(task_candidate, dict):
@@ -8727,7 +8747,10 @@ def run_baseline_probe(result_dir: Path) -> tuple[dict[str, Any] | None, dict[st
                 "heartbeat_guard": heartbeat_guard.snapshot() if heartbeat_guard is not None else None,
                 "heartbeat_before_poll": ordered_query_holder.get("heartbeat"),
                 "heartbeat_acknowledged_at": ordered_query_holder.get("heartbeat_acknowledged_at"),
+                "query_poll_started_at": ordered_query_holder.get("query_poll_started_at"),
                 "query_poll_ready_at": ordered_query_holder.get("query_poll_ready_at"),
+                "query_poll_attempt_count": ordered_query_holder.get("query_poll_attempt_count"),
+                "query_poll_transport_errors": ordered_query_holder.get("poll_transport_errors", []),
                 "query_claimed_at": ordered_query_holder.get("query_handler_invoked_at"),
                 "claim_eligibility": claim_eligibility,
                 "claimed_query_task": {

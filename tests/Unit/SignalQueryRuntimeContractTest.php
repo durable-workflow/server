@@ -2819,7 +2819,7 @@ PY);
         $this->assertSame(55, $result['query_complete_bodies'][0]['result']);
     }
 
-    public function test_host_runner_query_responder_does_not_cut_off_server_long_poll(): void
+    public function test_host_runner_query_responder_uses_bounded_claim_polls(): void
     {
         $result = $this->runSignalQueryRunnerPythonSnippet(<<<'PY'
 heartbeat_bodies = []
@@ -2877,9 +2877,79 @@ PY);
 
         $this->assertNull($result['error']);
         $this->assertSame('polling-worker', $result['heartbeat_bodies'][0]['worker_id']);
-        $this->assertSame(12, $result['poll_bodies'][0]['timeout_seconds']);
-        $this->assertGreaterThan(12.0, $result['poll_timeouts'][0]);
+        $this->assertSame(2, $result['poll_bodies'][0]['timeout_seconds']);
+        $this->assertLessThanOrEqual(7.0, $result['poll_timeouts'][0]);
         $this->assertSame(55, $result['complete_bodies'][0]['result']);
+    }
+
+    public function test_host_runner_query_responder_retries_a_timed_out_claim_poll(): void
+    {
+        $result = $this->runSignalQueryRunnerPythonSnippet(<<<'PY'
+poll_bodies = []
+poll_timeouts = []
+
+def fake_http_json(base_url, path, **kwargs):
+    if path.endswith("/worker/heartbeat"):
+        return {"status_code": 200, "body": {"acknowledged": True}}
+
+    if path.endswith("/worker/query-tasks/poll"):
+        poll_bodies.append(kwargs.get("body"))
+        poll_timeouts.append(kwargs.get("timeout"))
+        if len(poll_bodies) == 1:
+            raise TimeoutError("delayed claim poll")
+        return {
+            "status_code": 200,
+            "body": {
+                "task": {
+                    "query_task_id": "query-task-retried-1",
+                    "query_task_attempt": 1,
+                    "lease_owner": "leased-worker",
+                },
+            },
+        }
+
+    if path.endswith("/worker/query-tasks/query-task-retried-1/complete"):
+        return {"status_code": 200, "body": {"outcome": "completed"}}
+
+    raise AssertionError(f"unexpected path {path}")
+
+globals()["http_json"] = fake_http_json
+holder = {}
+answer_next_query_task(
+    "http://unused",
+    "token",
+    "default",
+    "polling-worker",
+    "queue-1",
+    55,
+    Path("/tmp/signals-queries-query-retry-test.log"),
+    holder,
+    poll_timeout=12,
+)
+
+print(json.dumps({
+    "poll_bodies": poll_bodies,
+    "poll_timeouts": poll_timeouts,
+    "poll_attempt_count": holder.get("query_poll_attempt_count"),
+    "poll_transport_errors": holder.get("poll_transport_errors"),
+    "query_task_id": holder.get("query_task", {}).get("query_task_id"),
+    "error": holder.get("error"),
+}, sort_keys=True))
+PY);
+
+        $this->assertNull($result['error']);
+        $this->assertSame(2, $result['poll_attempt_count']);
+        $this->assertCount(2, $result['poll_bodies']);
+        $this->assertCount(1, $result['poll_transport_errors']);
+        $this->assertSame(1, $result['poll_transport_errors'][0]['attempt']);
+        $this->assertSame('TimeoutError: delayed claim poll', $result['poll_transport_errors'][0]['error']);
+        $this->assertSame('query-task-retried-1', $result['query_task_id']);
+        foreach ($result['poll_bodies'] as $body) {
+            $this->assertSame(2, $body['timeout_seconds']);
+        }
+        foreach ($result['poll_timeouts'] as $timeout) {
+            $this->assertLessThanOrEqual(7.0, $timeout);
+        }
     }
 
     public function test_host_runner_query_responder_can_answer_from_query_task_history(): void
