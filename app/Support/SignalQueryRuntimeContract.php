@@ -16,7 +16,7 @@ final class SignalQueryRuntimeContract
 {
     public const SCHEMA = 'durable-workflow.v2.signal-query-runtime.contract';
 
-    public const VERSION = 34;
+    public const VERSION = 35;
 
     public const RESULT_SCHEMA = 'durable-workflow.v2.signal-query-runtime.result';
 
@@ -481,12 +481,27 @@ final class SignalQueryRuntimeContract
                         'rejected_unknown_query',
                     ],
                     'evidence' => [
+                        'workflow_id',
+                        'run_id',
+                        'worker_id',
+                        'task_queue',
                         'unknown_signal',
                         'missing_workflow_signal',
                         'missing_workflow_query',
                         'query_not_found',
                         'rejected_unknown_query',
                         'known_query_after_unknown_errors',
+                        'known_query_after_unknown_expected',
+                        'known_query_after_unknown_result',
+                        'post_error_query_responder',
+                        'history_and_commands_before_rejected_requests.history_event_count',
+                        'history_and_commands_before_rejected_requests.workflow_command_count',
+                        'history_and_commands_after_recovery_query.history_event_count',
+                        'history_and_commands_after_recovery_query.workflow_command_count',
+                        'history_and_commands_after_all_requests.history_event_count',
+                        'history_and_commands_after_all_requests.workflow_command_count',
+                        'rejected_requests_and_recovery_appended_no_history',
+                        'rejected_requests_and_recovery_emitted_no_workflow_commands',
                     ],
                     'optional_public_client_error_samples' => [
                         'cli_unknown_signal_sample',
@@ -837,12 +852,27 @@ final class SignalQueryRuntimeContract
                             'unknown_signal_and_query_errors',
                         ],
                         'required_evidence_fields' => [
+                            'workflow_id',
+                            'run_id',
+                            'worker_id',
+                            'task_queue',
                             'unknown_signal',
                             'missing_workflow_signal',
                             'missing_workflow_query',
                             'query_not_found',
                             'rejected_unknown_query',
                             'known_query_after_unknown_errors',
+                            'known_query_after_unknown_expected',
+                            'known_query_after_unknown_result',
+                            'post_error_query_responder',
+                            'history_and_commands_before_rejected_requests.history_event_count',
+                            'history_and_commands_before_rejected_requests.workflow_command_count',
+                            'history_and_commands_after_recovery_query.history_event_count',
+                            'history_and_commands_after_recovery_query.workflow_command_count',
+                            'history_and_commands_after_all_requests.history_event_count',
+                            'history_and_commands_after_all_requests.workflow_command_count',
+                            'rejected_requests_and_recovery_appended_no_history',
+                            'rejected_requests_and_recovery_emitted_no_workflow_commands',
                         ],
                         'optional_evidence_fields' => [
                             'cli_unknown_signal_sample',

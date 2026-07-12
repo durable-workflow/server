@@ -14,7 +14,7 @@ class SignalQueryRuntimeContractTest extends TestCase
         $manifest = SignalQueryRuntimeContract::manifest();
 
         $this->assertSame('durable-workflow.v2.signal-query-runtime.contract', $manifest['schema']);
-        $this->assertSame(34, SignalQueryRuntimeContract::VERSION);
+        $this->assertSame(35, SignalQueryRuntimeContract::VERSION);
         $this->assertSame(SignalQueryRuntimeContract::VERSION, $manifest['version']);
         $this->assertSame('durable-workflow.v2.signal-query-runtime.result', $manifest['result_schema']);
         $this->assertSame('signal_query_runtime_contract', $manifest['fixture_category']);
@@ -653,12 +653,27 @@ PY);
         );
         $this->assertSame(
             [
+                'workflow_id',
+                'run_id',
+                'worker_id',
+                'task_queue',
                 'unknown_signal',
                 'missing_workflow_signal',
                 'missing_workflow_query',
                 'query_not_found',
                 'rejected_unknown_query',
                 'known_query_after_unknown_errors',
+                'known_query_after_unknown_expected',
+                'known_query_after_unknown_result',
+                'post_error_query_responder',
+                'history_and_commands_before_rejected_requests.history_event_count',
+                'history_and_commands_before_rejected_requests.workflow_command_count',
+                'history_and_commands_after_recovery_query.history_event_count',
+                'history_and_commands_after_recovery_query.workflow_command_count',
+                'history_and_commands_after_all_requests.history_event_count',
+                'history_and_commands_after_all_requests.workflow_command_count',
+                'rejected_requests_and_recovery_appended_no_history',
+                'rejected_requests_and_recovery_emitted_no_workflow_commands',
             ],
             $hostRunner['evidence_shards']['unknown_handler_errors']['required_evidence_fields'],
         );
@@ -2574,6 +2589,142 @@ PY);
         );
     }
 
+    public function test_host_runner_requires_exact_post_error_recovery_claim_and_immutable_history(): void
+    {
+        $result = $this->runSignalQueryRunnerPythonSnippet(<<<'PY'
+observed = {
+    "workflow_id": "wf-adversarial",
+    "run_id": "run-adversarial",
+    "worker_id": "adversarial-worker",
+    "task_queue": "adversarial-queue",
+    "unknown_signal": {"status_code": 404, "reason": "unknown_signal"},
+    "missing_workflow_signal": {"status_code": 404, "reason": "instance_not_found"},
+    "missing_workflow_query": {"status_code": 404, "reason": "instance_not_found"},
+    "query_not_found": {"status_code": 404, "reason": "query_not_found"},
+    "rejected_unknown_query": {"status_code": 404, "reason": "query_not_found"},
+    "known_query_after_unknown_errors": {"status_code": 200, "body": {"result": 0}},
+    "known_query_after_unknown_expected": 0,
+    "known_query_after_unknown_result": 0,
+    "history_and_commands_before_rejected_requests": {
+        "history_event_count": 2,
+        "workflow_command_count": 1,
+    },
+    "history_and_commands_after_recovery_query": {
+        "history_event_count": 2,
+        "workflow_command_count": 1,
+    },
+    "history_and_commands_after_all_requests": {
+        "history_event_count": 2,
+        "workflow_command_count": 1,
+    },
+    "rejected_requests_and_recovery_appended_no_history": True,
+    "rejected_requests_and_recovery_emitted_no_workflow_commands": True,
+    "post_error_query_responder": {
+        "worker_id": "adversarial-worker",
+        "task_queue": "adversarial-queue",
+        "heartbeat_before_poll": {"status_code": 200},
+        "heartbeat_acknowledged_at": "2026-07-12T12:00:00Z",
+        "query_poll_ready_at": "2026-07-12T12:00:00Z",
+        "query_claimed_at": "2026-07-12T12:00:01Z",
+        "eligible_when_claimed": True,
+        "claim_eligibility": {
+            "eligible": True,
+            "worker_id": "adversarial-worker",
+            "task_queue": "adversarial-queue",
+            "status": "active",
+            "capabilities": ["query_tasks"],
+            "last_heartbeat_at": "2026-07-12T12:00:00Z",
+        },
+        "claimed_query_task": {
+            "query_task_id": "query-task-1",
+            "workflow_id": "wf-adversarial",
+            "run_id": "run-adversarial",
+            "query_name": "state",
+            "task_queue": "adversarial-queue",
+            "lease_owner": "adversarial-worker",
+        },
+        "query_task_completion": {"status_code": 200},
+        "responder_error": None,
+        "responder_timed_out": False,
+    },
+}
+
+accepted = has_required_evidence("unknown_signal_and_query_errors", observed)
+rejections = {}
+responder = observed["post_error_query_responder"]
+for field, bad_value in {
+    "responder_timed_out": True,
+    "eligible_when_claimed": False,
+}.items():
+    original = responder[field]
+    responder[field] = bad_value
+    rejections[field] = has_required_evidence("unknown_signal_and_query_errors", observed)
+    responder[field] = original
+
+claimed = responder["claimed_query_task"]
+for field, bad_value in {
+    "workflow_id": "wf-unrelated",
+    "run_id": "run-unrelated",
+    "query_name": "unrelated",
+    "task_queue": "unrelated-queue",
+    "lease_owner": "unrelated-worker",
+}.items():
+    original = claimed[field]
+    claimed[field] = bad_value
+    rejections[f"claim.{field}"] = has_required_evidence("unknown_signal_and_query_errors", observed)
+    claimed[field] = original
+
+observed["history_and_commands_after_recovery_query"]["history_event_count"] = 3
+history_mutation_rejected = has_required_evidence("unknown_signal_and_query_errors", observed)
+
+print(json.dumps({
+    "accepted": accepted,
+    "rejections": rejections,
+    "history_mutation_rejected": history_mutation_rejected,
+}, sort_keys=True))
+PY);
+
+        $this->assertTrue($result['accepted']);
+        $this->assertNotEmpty($result['rejections']);
+        foreach ($result['rejections'] as $accepted) {
+            $this->assertFalse($accepted);
+        }
+        $this->assertFalse($result['history_mutation_rejected']);
+    }
+
+    public function test_adversarial_recovery_query_is_synchronized_directly_after_server_errors(): void
+    {
+        $body = file_get_contents(
+            dirname(__DIR__, 2) . '/scripts/conformance/signals-queries-published-artifacts.sh',
+        );
+        $this->assertIsString($body);
+
+        $adversarialProbe = strpos($body, 'def run_adversarial_probe(');
+        $unknownQuery = strpos($body, 'missing_workflow_query = http_json(', $adversarialProbe);
+        $recoveryReady = strpos($body, 'if not responder_ready.wait(timeout=15):', $unknownQuery);
+        $recoveryQuery = strpos($body, 'post_error_query = http_json(', $recoveryReady);
+        $optionalClient = strpos($body, 'cli_invalid_signal = cli_json_sample(', $recoveryQuery);
+
+        $this->assertIsInt($adversarialProbe);
+        $this->assertIsInt($unknownQuery);
+        $this->assertIsInt($recoveryReady);
+        $this->assertIsInt($recoveryQuery);
+        $this->assertIsInt($optionalClient);
+        $this->assertLessThan($unknownQuery, $adversarialProbe);
+        $this->assertLessThan($recoveryReady, $unknownQuery);
+        $this->assertLessThan($recoveryQuery, $recoveryReady);
+        $this->assertLessThan($optionalClient, $recoveryQuery);
+        $this->assertStringContainsString(
+            'initial_task = task_from_poll(initial_poll, "adversarial initial state")',
+            $body,
+        );
+        $this->assertStringContainsString('"capture_claim_eligibility": True', $body);
+        $this->assertStringContainsString(
+            'history_and_commands_after_recovery_query = workflow_public_snapshot(',
+            $body,
+        );
+    }
+
     public function test_host_runner_query_responder_processes_pending_workflow_task_before_query_task(): void
     {
         $result = $this->runSignalQueryRunnerPythonSnippet(<<<'PY'
@@ -3796,12 +3947,27 @@ PY);
                 'handler_observation_count',
             ],
             'unknown_signal_and_query_errors' => [
+                'workflow_id',
+                'run_id',
+                'worker_id',
+                'task_queue',
                 'unknown_signal',
                 'missing_workflow_signal',
                 'missing_workflow_query',
                 'query_not_found',
                 'rejected_unknown_query',
                 'known_query_after_unknown_errors',
+                'known_query_after_unknown_expected',
+                'known_query_after_unknown_result',
+                'post_error_query_responder',
+                'history_and_commands_before_rejected_requests.history_event_count',
+                'history_and_commands_before_rejected_requests.workflow_command_count',
+                'history_and_commands_after_recovery_query.history_event_count',
+                'history_and_commands_after_recovery_query.workflow_command_count',
+                'history_and_commands_after_all_requests.history_event_count',
+                'history_and_commands_after_all_requests.workflow_command_count',
+                'rejected_requests_and_recovery_appended_no_history',
+                'rejected_requests_and_recovery_emitted_no_workflow_commands',
             ],
         ];
         $expectedTypes = [
@@ -6966,6 +7132,45 @@ PY);
     }
 
     /**
+     * @return array<string, mixed>
+     */
+    private function postErrorQueryResponderEvidence(): array
+    {
+        return [
+            'worker_id' => 'unknown-worker',
+            'task_queue' => 'unknown-queue',
+            'heartbeat_before_poll' => [
+                'status_code' => 200,
+            ],
+            'heartbeat_acknowledged_at' => '2026-07-12T12:00:00Z',
+            'query_poll_ready_at' => '2026-07-12T12:00:00Z',
+            'query_claimed_at' => '2026-07-12T12:00:01Z',
+            'eligible_when_claimed' => true,
+            'claim_eligibility' => [
+                'eligible' => true,
+                'worker_id' => 'unknown-worker',
+                'task_queue' => 'unknown-queue',
+                'status' => 'active',
+                'capabilities' => ['query_tasks'],
+                'last_heartbeat_at' => '2026-07-12T12:00:00Z',
+            ],
+            'claimed_query_task' => [
+                'query_task_id' => 'post-error-query-task-1',
+                'workflow_id' => 'wf-unknown',
+                'run_id' => 'run-unknown',
+                'query_name' => 'state',
+                'task_queue' => 'unknown-queue',
+                'lease_owner' => 'unknown-worker',
+            ],
+            'query_task_completion' => [
+                'status_code' => 200,
+            ],
+            'responder_error' => null,
+            'responder_timed_out' => false,
+        ];
+    }
+
+    /**
      * @param array<string, mixed> $result
      *
      * @return array<string, mixed>
@@ -7358,6 +7563,10 @@ PY);
             'run_status_after_operations' => 'completed',
         ];
         $scenarioResults['unknown_signal_and_query_errors']['observed_outputs'] = [
+            'workflow_id' => 'wf-unknown',
+            'run_id' => 'run-unknown',
+            'worker_id' => 'unknown-worker',
+            'task_queue' => 'unknown-queue',
             'unknown_signal' => ['status_code' => 404, 'reason' => 'unknown_signal'],
             'missing_workflow_signal' => ['status_code' => 404, 'reason' => 'instance_not_found'],
             'missing_workflow_query' => ['status_code' => 404, 'reason' => 'instance_not_found'],
@@ -7413,6 +7622,23 @@ PY);
                 'status_code' => 200,
                 'body' => ['result' => 8],
             ],
+            'known_query_after_unknown_expected' => 8,
+            'known_query_after_unknown_result' => 8,
+            'post_error_query_responder' => $this->postErrorQueryResponderEvidence(),
+            'history_and_commands_before_rejected_requests' => [
+                'history_event_count' => 2,
+                'workflow_command_count' => 1,
+            ],
+            'history_and_commands_after_recovery_query' => [
+                'history_event_count' => 2,
+                'workflow_command_count' => 1,
+            ],
+            'history_and_commands_after_all_requests' => [
+                'history_event_count' => 2,
+                'workflow_command_count' => 1,
+            ],
+            'rejected_requests_and_recovery_appended_no_history' => true,
+            'rejected_requests_and_recovery_emitted_no_workflow_commands' => true,
         ];
         $scenarioResults['malformed_signal_and_query_payloads']['observed_outputs'] = [
             'invalid_signal_arguments' => [

@@ -3454,17 +3454,56 @@ def query_with_worker_result(
     workflow_condition_key: str | None = None,
 ) -> dict[str, Any]:
     holder: dict[str, Any] = {}
+    ready = threading.Event()
     responder = threading.Thread(
         target=answer_next_query_task,
         args=(base_url, token, namespace, worker_id, task_queue, result, log_file, holder, workflow_condition_key),
+        kwargs={
+            "ready_event": ready,
+            "capture_claim_eligibility": True,
+        },
         daemon=True,
     )
     responder.start()
+    if not ready.wait(timeout=15):
+        raise RuntimeError(
+            f"{workflow_id} {query_name} query responder did not acknowledge a heartbeat before the query request"
+        )
     sample = call()
     responder.join(timeout=20)
-    if responder.is_alive() or holder.get("error"):
+    responder_timed_out = responder.is_alive()
+    if responder_timed_out or holder.get("error"):
         raise RuntimeError(f"{workflow_id} {query_name} query responder failed: {holder.get('error', 'timeout')}")
-    sample["query_task"] = {
+
+    claimed_query_task = holder.get("query_task")
+    if not isinstance(claimed_query_task, dict):
+        claimed_query_task = {}
+    claim_eligibility = holder.get("worker_eligibility_when_claimed")
+    if not isinstance(claim_eligibility, dict):
+        claim_eligibility = {"eligible": False}
+    completed_query = holder.get("complete")
+    if not isinstance(completed_query, dict):
+        completed_query = {}
+    query_task_evidence = {
+        "worker_id": worker_id,
+        "task_queue": task_queue,
+        "heartbeat_before_poll": holder.get("heartbeat"),
+        "heartbeat_acknowledged_at": holder.get("heartbeat_acknowledged_at"),
+        "query_poll_ready_at": holder.get("query_poll_ready_at"),
+        "query_claimed_at": holder.get("query_handler_invoked_at"),
+        "claim_eligibility": claim_eligibility,
+        "claimed_query_task": {
+            "query_task_id": claimed_query_task.get("query_task_id"),
+            "query_task_attempt": claimed_query_task.get("query_task_attempt"),
+            "workflow_id": claimed_query_task.get("workflow_id"),
+            "run_id": claimed_query_task.get("run_id"),
+            "query_name": claimed_query_task.get("query_name"),
+            "task_queue": claimed_query_task.get("task_queue"),
+            "lease_owner": claimed_query_task.get("lease_owner"),
+        },
+        "query_task_completion": response_sample(completed_query) if completed_query else None,
+        "responder_error": holder.get("error"),
+        "responder_timed_out": responder_timed_out,
         "poll_status_code": holder.get("poll", {}).get("status_code")
         if isinstance(holder.get("poll"), dict)
         else None,
@@ -3474,6 +3513,17 @@ def query_with_worker_result(
         "query_handler_invoked_at": holder.get("query_handler_invoked_at"),
         "query_completed_at": holder.get("query_completed_at"),
     }
+    query_task_evidence["eligible_when_claimed"] = (
+        claim_eligibility.get("eligible") is True
+        and isinstance(claimed_query_task.get("query_task_id"), str)
+        and claimed_query_task.get("workflow_id") == workflow_id
+        and claimed_query_task.get("query_name") == query_name
+        and claimed_query_task.get("task_queue") == task_queue
+        and claimed_query_task.get("lease_owner") == worker_id
+        and isinstance(completed_query.get("status_code"), int)
+        and int(completed_query["status_code"]) < 400
+    )
+    sample["query_task"] = query_task_evidence
     return sample
 
 
@@ -5326,6 +5376,15 @@ def counts_unchanged(before: dict[str, Any], after: dict[str, Any]) -> bool:
         before.get(key) == after.get(key)
         and isinstance(before.get(key), int)
         for key in ("history_event_count", "workflow_command_count")
+    )
+
+
+def snapshot_count_unchanged(before: dict[str, Any], after: dict[str, Any], key: str) -> bool:
+    return (
+        isinstance(before.get(key), int)
+        and not isinstance(before.get(key), bool)
+        and not isinstance(after.get(key), bool)
+        and before.get(key) == after.get(key)
     )
 
 
@@ -8196,6 +8255,13 @@ def run_baseline_probe(result_dir: Path) -> tuple[dict[str, Any] | None, dict[st
                 f"{baseline_workflow_id}-initial",
             )
             counter = 0
+            history_and_commands_before_rejected_requests = workflow_public_snapshot(
+                base_url,
+                token,
+                namespace,
+                baseline_workflow_id,
+                baseline_run_id,
+            )
 
             unknown_signal = http_json(
                 base_url,
@@ -8232,6 +8298,35 @@ def run_baseline_probe(result_dir: Path) -> tuple[dict[str, Any] | None, dict[st
                 token=token,
                 namespace=namespace,
                 timeout=30,
+            )
+            known_query_after_unknown_errors = query_with_worker_result(
+                base_url,
+                token,
+                namespace,
+                worker_id,
+                task_queue,
+                baseline_workflow_id,
+                "state",
+                counter,
+                log_file,
+                lambda: http_json(
+                    base_url,
+                    api_path("workflows", baseline_workflow_id, "query", "state"),
+                    method="POST",
+                    body={},
+                    token=token,
+                    namespace=namespace,
+                    timeout=60,
+                ),
+                workflow_condition_key=f"{baseline_workflow_id}-initial",
+            )
+            known_query_after_unknown_result = sample_result_value(known_query_after_unknown_errors)
+            history_and_commands_after_recovery_query = workflow_public_snapshot(
+                base_url,
+                token,
+                namespace,
+                baseline_workflow_id,
+                baseline_run_id,
             )
             if cli_bin is not None:
                 optional_unknown_outputs.update(
@@ -8364,30 +8459,41 @@ def run_baseline_probe(result_dir: Path) -> tuple[dict[str, Any] | None, dict[st
                 for field, sample in optional_unknown_outputs.items()
                 if sample is not MISSING
             }
-            known_query_after_unknown_errors = query_with_worker_result(
+            history_and_commands_after_all_requests = workflow_public_snapshot(
                 base_url,
                 token,
                 namespace,
-                worker_id,
-                task_queue,
                 baseline_workflow_id,
-                "state",
-                counter,
-                log_file,
-                lambda: http_json(
-                    base_url,
-                    api_path("workflows", baseline_workflow_id, "query", "state"),
-                    method="POST",
-                    body={},
-                    token=token,
-                    namespace=namespace,
-                    timeout=60,
-                ),
-                workflow_condition_key=f"{baseline_workflow_id}-initial",
+                baseline_run_id,
             )
-            known_query_after_unknown_result = sample_result_value(known_query_after_unknown_errors)
+            rejected_requests_and_recovery_appended_no_history = (
+                snapshot_count_unchanged(
+                    history_and_commands_before_rejected_requests,
+                    history_and_commands_after_recovery_query,
+                    "history_event_count",
+                )
+                and snapshot_count_unchanged(
+                    history_and_commands_before_rejected_requests,
+                    history_and_commands_after_all_requests,
+                    "history_event_count",
+                )
+            )
+            rejected_requests_and_recovery_emitted_no_workflow_commands = (
+                snapshot_count_unchanged(
+                    history_and_commands_before_rejected_requests,
+                    history_and_commands_after_recovery_query,
+                    "workflow_command_count",
+                )
+                and snapshot_count_unchanged(
+                    history_and_commands_before_rejected_requests,
+                    history_and_commands_after_all_requests,
+                    "workflow_command_count",
+                )
+            )
 
             unknown_outputs = {
+                "worker_id": worker_id,
+                "task_queue": task_queue,
                 "unknown_signal": response_sample(unknown_signal),
                 "missing_workflow_signal": response_sample(missing_workflow_signal),
                 "missing_workflow_query": response_sample(missing_workflow_query),
@@ -8396,6 +8502,18 @@ def run_baseline_probe(result_dir: Path) -> tuple[dict[str, Any] | None, dict[st
                 "known_query_after_unknown_errors": known_query_after_unknown_errors,
                 "known_query_after_unknown_result": known_query_after_unknown_result,
                 "known_query_after_unknown_expected": counter,
+                "post_error_query_responder": known_query_after_unknown_errors.get("query_task"),
+                "history_and_commands_before_rejected_requests": (
+                    history_and_commands_before_rejected_requests
+                ),
+                "history_and_commands_after_recovery_query": history_and_commands_after_recovery_query,
+                "history_and_commands_after_all_requests": history_and_commands_after_all_requests,
+                "rejected_requests_and_recovery_appended_no_history": (
+                    rejected_requests_and_recovery_appended_no_history
+                ),
+                "rejected_requests_and_recovery_emitted_no_workflow_commands": (
+                    rejected_requests_and_recovery_emitted_no_workflow_commands
+                ),
                 "workflow_id": baseline_workflow_id,
                 "run_id": baseline_run_id,
                 "published_artifact_versions": versions,
@@ -8936,6 +9054,7 @@ def run_adversarial_probe(result_dir: Path, current_evidence: Any) -> tuple[dict
     )
     base_url = env_text("DW_SIGNALS_QUERIES_SERVER_URL") or env_text("DURABLE_WORKFLOW_SERVER_URL")
     readiness_probe: dict[str, Any] | None = None
+    heartbeat_guard: WorkerHeartbeatGuard | None = None
 
     try:
         if not isinstance(base_url, str) or base_url.strip() == "":
@@ -8958,10 +9077,12 @@ def run_adversarial_probe(result_dir: Path, current_evidence: Any) -> tuple[dict
             "sdk-python": python_install,
         }
 
-        workflow_id = "wf-sq-adversarial-" + hashlib.sha1(str(time.time()).encode("utf-8")).hexdigest()[:10]
-        task_queue = "signals-queries-adversarial"
-        worker_id = "signals-queries-adversarial-worker"
+        suffix = hashlib.sha1(str(time.time()).encode("utf-8")).hexdigest()[:10]
+        workflow_id = f"wf-sq-adversarial-{suffix}"
+        task_queue = f"signals-queries-adversarial-{suffix}"
+        worker_id = f"signals-queries-adversarial-worker-{suffix}"
         workflow_type = "conformance.counter"
+        worker_process_started_at = now()
 
         register = http_json(
             base_url,
@@ -8974,6 +9095,9 @@ def run_adversarial_probe(result_dir: Path, current_evidence: Any) -> tuple[dict
                 "sdk_version": "signals-queries-adversarial-probe",
                 "supported_workflow_types": [workflow_type],
                 "capabilities": ["query_tasks"],
+                "process_metrics": {
+                    "process_started_at": worker_process_started_at,
+                },
                 "workflow_command_contracts": {
                     workflow_type: command_contract(),
                 },
@@ -8985,6 +9109,20 @@ def run_adversarial_probe(result_dir: Path, current_evidence: Any) -> tuple[dict
         )
         if int(register["status_code"]) >= 400:
             raise RuntimeError(f"worker registration failed: {register}")
+
+        heartbeat_guard = WorkerHeartbeatGuard(
+            base_url,
+            token,
+            namespace,
+            worker_id,
+            log_file,
+        )
+        heartbeat_guard.start()
+        if not heartbeat_guard.wait_until_eligible():
+            raise RuntimeError(
+                "adversarial worker heartbeat guard did not establish eligibility: "
+                f"{heartbeat_guard.snapshot()}"
+            )
 
         start = http_json(
             base_url,
@@ -9002,6 +9140,33 @@ def run_adversarial_probe(result_dir: Path, current_evidence: Any) -> tuple[dict
         if int(start["status_code"]) >= 400:
             raise RuntimeError(f"workflow start failed: {start}")
         run_id = str(start["body"]["run_id"])
+
+        initial_poll = poll_workflow_task(
+            base_url,
+            token,
+            namespace,
+            worker_id,
+            task_queue,
+        )
+        initial_task = task_from_poll(initial_poll, "adversarial initial state")
+        initial_complete = complete_open_wait(
+            base_url,
+            token,
+            namespace,
+            initial_task,
+            f"{workflow_id}-committed-state",
+        )
+        if int(initial_complete.get("status_code") or 0) >= 400:
+            raise RuntimeError(f"adversarial initial state commit failed: {initial_complete}")
+
+        committed_state = 0
+        history_and_commands_before_rejected_requests = workflow_public_snapshot(
+            base_url,
+            token,
+            namespace,
+            workflow_id,
+            run_id,
+        )
 
         invalid_signal = http_json(
             base_url,
@@ -9056,6 +9221,113 @@ def run_adversarial_probe(result_dir: Path, current_evidence: Any) -> tuple[dict
             token=token,
             namespace=namespace,
             timeout=30,
+        )
+
+        holder: dict[str, Any] = {}
+        responder_ready = threading.Event()
+        responder = threading.Thread(
+            target=answer_next_query_task,
+            args=(
+                base_url,
+                token,
+                namespace,
+                worker_id,
+                task_queue,
+                committed_state,
+                log_file,
+                holder,
+            ),
+            kwargs={
+                "ready_event": responder_ready,
+                "capture_claim_eligibility": True,
+            },
+            daemon=True,
+        )
+        responder.start()
+        if not responder_ready.wait(timeout=15):
+            raise RuntimeError(
+                "post-error query responder did not acknowledge a heartbeat before the recovery query"
+            )
+        post_error_query = http_json(
+            base_url,
+            api_path("workflows", workflow_id, "query", "state"),
+            method="POST",
+            body={},
+            token=token,
+            namespace=namespace,
+            timeout=45,
+        )
+        responder.join(timeout=20)
+        responder_timed_out = responder.is_alive()
+        if responder_timed_out or holder.get("error"):
+            raise RuntimeError(f"query responder failed: {holder.get('error', 'timeout')}")
+
+        post_error_result = (
+            post_error_query.get("body", {}).get("result")
+            if isinstance(post_error_query.get("body"), dict)
+            else None
+        )
+        claimed_query_task = holder.get("query_task")
+        if not isinstance(claimed_query_task, dict):
+            claimed_query_task = {}
+        claim_eligibility = holder.get("worker_eligibility_when_claimed")
+        if not isinstance(claim_eligibility, dict):
+            claim_eligibility = {"eligible": False}
+        completed_query = holder.get("complete")
+        if not isinstance(completed_query, dict):
+            completed_query = {}
+        post_error_query_responder = {
+            "worker_id": worker_id,
+            "task_queue": task_queue,
+            "process_started_at": worker_process_started_at,
+            "heartbeat_guard": heartbeat_guard.snapshot(),
+            "heartbeat_before_poll": holder.get("heartbeat"),
+            "heartbeat_acknowledged_at": holder.get("heartbeat_acknowledged_at"),
+            "query_poll_ready_at": holder.get("query_poll_ready_at"),
+            "query_claimed_at": holder.get("query_handler_invoked_at"),
+            "claim_eligibility": claim_eligibility,
+            "claimed_query_task": {
+                "query_task_id": claimed_query_task.get("query_task_id"),
+                "query_task_attempt": claimed_query_task.get("query_task_attempt"),
+                "workflow_id": claimed_query_task.get("workflow_id"),
+                "run_id": claimed_query_task.get("run_id"),
+                "query_name": claimed_query_task.get("query_name"),
+                "task_queue": claimed_query_task.get("task_queue"),
+                "lease_owner": claimed_query_task.get("lease_owner"),
+            },
+            "query_task_completion": response_sample(completed_query) if completed_query else None,
+            "responder_error": holder.get("error"),
+            "responder_timed_out": responder_timed_out,
+        }
+        post_error_query_responder["eligible_when_claimed"] = (
+            claim_eligibility.get("eligible") is True
+            and isinstance(claimed_query_task.get("query_task_id"), str)
+            and claimed_query_task.get("workflow_id") == workflow_id
+            and claimed_query_task.get("run_id") == run_id
+            and claimed_query_task.get("query_name") == "state"
+            and claimed_query_task.get("task_queue") == task_queue
+            and claimed_query_task.get("lease_owner") == worker_id
+            and isinstance(completed_query.get("status_code"), int)
+            and int(completed_query["status_code"]) < 400
+        )
+        if post_error_query_responder["eligible_when_claimed"] is not True:
+            raise RuntimeError(
+                "post-error query responder eligibility was not proved: "
+                f"{post_error_query_responder}"
+            )
+        if int(post_error_query.get("status_code") or 0) >= 400:
+            raise RuntimeError(f"post-error recovery query failed: {post_error_query}")
+        if post_error_result != committed_state:
+            raise RuntimeError(
+                f"post-error recovery query returned {post_error_result}, expected {committed_state}"
+            )
+
+        history_and_commands_after_recovery_query = workflow_public_snapshot(
+            base_url,
+            token,
+            namespace,
+            workflow_id,
+            run_id,
         )
 
         cli_invalid_signal = cli_json_sample(
@@ -9212,34 +9484,38 @@ def run_adversarial_probe(result_dir: Path, current_evidence: Any) -> tuple[dict
             timeout=30,
         )
         signal_count = count_signal_received(history, "increment")
-
-        holder: dict[str, Any] = {}
-        responder = threading.Thread(
-            target=answer_next_query_task,
-            args=(base_url, token, namespace, worker_id, task_queue, 0, log_file, holder),
-            daemon=True,
-        )
-        responder.start()
-        time.sleep(0.2)
-        post_error_query = http_json(
+        history_and_commands_after_all_requests = workflow_public_snapshot(
             base_url,
-            api_path("workflows", workflow_id, "query", "state"),
-            method="POST",
-            body={},
-            token=token,
-            namespace=namespace,
-            timeout=45,
+            token,
+            namespace,
+            workflow_id,
+            run_id,
         )
-        responder.join(timeout=10)
-        if responder.is_alive() or holder.get("error"):
-            raise RuntimeError(f"query responder failed: {holder.get('error', 'timeout')}")
-
-        post_error_result = (
-            post_error_query.get("body", {}).get("result")
-            if isinstance(post_error_query.get("body"), dict)
-            else None
+        rejected_requests_and_recovery_appended_no_history = (
+            snapshot_count_unchanged(
+                history_and_commands_before_rejected_requests,
+                history_and_commands_after_recovery_query,
+                "history_event_count",
+            )
+            and snapshot_count_unchanged(
+                history_and_commands_before_rejected_requests,
+                history_and_commands_after_all_requests,
+                "history_event_count",
+            )
         )
-        query_state_mutations = 0 if post_error_result == 0 else 1
+        rejected_requests_and_recovery_emitted_no_workflow_commands = (
+            snapshot_count_unchanged(
+                history_and_commands_before_rejected_requests,
+                history_and_commands_after_recovery_query,
+                "workflow_command_count",
+            )
+            and snapshot_count_unchanged(
+                history_and_commands_before_rejected_requests,
+                history_and_commands_after_all_requests,
+                "workflow_command_count",
+            )
+        )
+        query_state_mutations = 0 if post_error_result == committed_state else 1
 
         versions = {
             "server": artifact_version_value(artifact_versions, "server"),
@@ -9291,6 +9567,10 @@ def run_adversarial_probe(result_dir: Path, current_evidence: Any) -> tuple[dict
             "artifact_sources": sources,
         }
         unknown_outputs = {
+            "workflow_id": workflow_id,
+            "run_id": run_id,
+            "worker_id": worker_id,
+            "task_queue": task_queue,
             "unknown_signal": response_sample(unknown_signal),
             "missing_workflow_signal": response_sample(missing_workflow_signal),
             "missing_workflow_query": response_sample(missing_workflow_query),
@@ -9305,6 +9585,18 @@ def run_adversarial_probe(result_dir: Path, current_evidence: Any) -> tuple[dict
             "sdk_python_missing_workflow_signal_sample": sdk_missing_workflow_signal,
             "sdk_python_missing_workflow_query_sample": sdk_missing_workflow_query,
             "known_query_after_unknown_errors": post_error_query,
+            "known_query_after_unknown_expected": committed_state,
+            "known_query_after_unknown_result": post_error_result,
+            "post_error_query_responder": post_error_query_responder,
+            "history_and_commands_before_rejected_requests": history_and_commands_before_rejected_requests,
+            "history_and_commands_after_recovery_query": history_and_commands_after_recovery_query,
+            "history_and_commands_after_all_requests": history_and_commands_after_all_requests,
+            "rejected_requests_and_recovery_appended_no_history": (
+                rejected_requests_and_recovery_appended_no_history
+            ),
+            "rejected_requests_and_recovery_emitted_no_workflow_commands": (
+                rejected_requests_and_recovery_emitted_no_workflow_commands
+            ),
             "published_artifact_versions": versions,
             "artifact_sources": sources,
         }
@@ -9364,6 +9656,8 @@ def run_adversarial_probe(result_dir: Path, current_evidence: Any) -> tuple[dict
             "error": f"{type(exc).__name__}: {exc}",
         }
     finally:
+        if heartbeat_guard is not None:
+            heartbeat_guard.stop()
         cleanup_labeled_docker_runs(log_file)
         cleanup_commands_deterministically(cleanup_commands)
         if not env_flag("DW_SIGNALS_QUERIES_KEEP_RUN_ROOT", False):
@@ -10692,12 +10986,27 @@ SCENARIO_REQUIRED_EVIDENCE: dict[str, list[str]] = {
         "run_status_after_operations",
     ],
     "unknown_signal_and_query_errors": [
+        "workflow_id",
+        "run_id",
+        "worker_id",
+        "task_queue",
         "unknown_signal",
         "missing_workflow_signal",
         "missing_workflow_query",
         "query_not_found",
         "rejected_unknown_query",
         "known_query_after_unknown_errors",
+        "known_query_after_unknown_expected",
+        "known_query_after_unknown_result",
+        "post_error_query_responder",
+        "history_and_commands_before_rejected_requests.history_event_count",
+        "history_and_commands_before_rejected_requests.workflow_command_count",
+        "history_and_commands_after_recovery_query.history_event_count",
+        "history_and_commands_after_recovery_query.workflow_command_count",
+        "history_and_commands_after_all_requests.history_event_count",
+        "history_and_commands_after_all_requests.workflow_command_count",
+        "rejected_requests_and_recovery_appended_no_history",
+        "rejected_requests_and_recovery_emitted_no_workflow_commands",
     ],
     "malformed_signal_and_query_payloads": [
         "invalid_signal_arguments",
@@ -10759,6 +11068,8 @@ TRUTHY_REQUIRED_EVIDENCE = {
     "failed_query_did_not_change_later_answer",
     "successful_and_failed_queries_appended_no_history",
     "successful_and_failed_queries_emitted_no_workflow_commands",
+    "rejected_requests_and_recovery_appended_no_history",
+    "rejected_requests_and_recovery_emitted_no_workflow_commands",
     "cold_restart.durable_history_restored",
 }
 
@@ -10894,6 +11205,90 @@ def ordered_query_responder_satisfied(observed: dict[str, Any]) -> bool:
         and claimed_query_task.get("lease_owner") == worker_id
         and completion_status is not None
         and completion_status < 400
+    )
+
+
+def post_error_query_responder_satisfied(observed: dict[str, Any]) -> bool:
+    responder = evidence_lookup(observed, "post_error_query_responder")
+    if not isinstance(responder, dict):
+        return False
+
+    workflow_id = evidence_lookup(observed, "workflow_id")
+    run_id = evidence_lookup(observed, "run_id")
+    worker_id = evidence_lookup(observed, "worker_id")
+    task_queue = evidence_lookup(observed, "task_queue")
+    claim_eligibility = responder.get("claim_eligibility")
+    claimed_query_task = responder.get("claimed_query_task")
+    completion = responder.get("query_task_completion")
+    heartbeat = responder.get("heartbeat_before_poll")
+    capabilities = (
+        claim_eligibility.get("capabilities")
+        if isinstance(claim_eligibility, dict)
+        and isinstance(claim_eligibility.get("capabilities"), list)
+        else []
+    )
+
+    return (
+        isinstance(workflow_id, str)
+        and workflow_id != ""
+        and isinstance(run_id, str)
+        and run_id != ""
+        and isinstance(worker_id, str)
+        and worker_id != ""
+        and isinstance(task_queue, str)
+        and task_queue != ""
+        and responder.get("worker_id") == worker_id
+        and responder.get("task_queue") == task_queue
+        and evidence_true(responder.get("eligible_when_claimed"))
+        and responder.get("responder_timed_out") is False
+        and responder.get("responder_error") in (None, "")
+        and isinstance(responder.get("heartbeat_acknowledged_at"), str)
+        and responder["heartbeat_acknowledged_at"].strip() != ""
+        and isinstance(responder.get("query_poll_ready_at"), str)
+        and responder["query_poll_ready_at"].strip() != ""
+        and isinstance(responder.get("query_claimed_at"), str)
+        and responder["query_claimed_at"].strip() != ""
+        and isinstance(heartbeat, dict)
+        and integer_value(heartbeat.get("status_code")) is not None
+        and int(heartbeat["status_code"]) < 400
+        and isinstance(claim_eligibility, dict)
+        and evidence_true(claim_eligibility.get("eligible"))
+        and claim_eligibility.get("worker_id") == worker_id
+        and claim_eligibility.get("task_queue") == task_queue
+        and claim_eligibility.get("status") == "active"
+        and "query_tasks" in capabilities
+        and isinstance(claim_eligibility.get("last_heartbeat_at"), str)
+        and claim_eligibility["last_heartbeat_at"].strip() != ""
+        and isinstance(claimed_query_task, dict)
+        and isinstance(claimed_query_task.get("query_task_id"), str)
+        and claimed_query_task["query_task_id"].strip() != ""
+        and claimed_query_task.get("workflow_id") == workflow_id
+        and claimed_query_task.get("run_id") == run_id
+        and claimed_query_task.get("query_name") == "state"
+        and claimed_query_task.get("task_queue") == task_queue
+        and claimed_query_task.get("lease_owner") == worker_id
+        and isinstance(completion, dict)
+        and status_code_in_range({"completion": completion}, "completion.status_code", 200, 299)
+    )
+
+
+def post_error_recovery_immutability_satisfied(observed: dict[str, Any]) -> bool:
+    before = evidence_lookup(observed, "history_and_commands_before_rejected_requests")
+    after_recovery = evidence_lookup(observed, "history_and_commands_after_recovery_query")
+    after_all = evidence_lookup(observed, "history_and_commands_after_all_requests")
+
+    return (
+        isinstance(before, dict)
+        and isinstance(after_recovery, dict)
+        and isinstance(after_all, dict)
+        and counts_unchanged(before, after_recovery)
+        and counts_unchanged(before, after_all)
+        and evidence_true(
+            evidence_lookup(observed, "rejected_requests_and_recovery_appended_no_history")
+        )
+        and evidence_true(
+            evidence_lookup(observed, "rejected_requests_and_recovery_emitted_no_workflow_commands")
+        )
     )
 
 
@@ -11209,6 +11604,10 @@ def has_required_evidence(scenario: str, observed: dict[str, Any]) -> bool:
             and reason_in(observed, "missing_workflow_query.reason", {"instance_not_found"})
             and reason_in(observed, "query_not_found.reason", query_reasons)
             and reason_in(observed, "rejected_unknown_query.reason", query_reasons)
+            and evidence_lookup(observed, "known_query_after_unknown_result")
+            == evidence_lookup(observed, "known_query_after_unknown_expected")
+            and post_error_query_responder_satisfied(observed)
+            and post_error_recovery_immutability_satisfied(observed)
         )
         if not required_passed:
             return False
@@ -11535,12 +11934,27 @@ BASELINE_CURRENT_EVIDENCE_FIELDS = {
         "handler_observation_count",
     ],
     "unknown_signal_and_query_errors": [
+        "workflow_id",
+        "run_id",
+        "worker_id",
+        "task_queue",
         "unknown_signal",
         "missing_workflow_signal",
         "missing_workflow_query",
         "query_not_found",
         "rejected_unknown_query",
         "known_query_after_unknown_errors",
+        "known_query_after_unknown_expected",
+        "known_query_after_unknown_result",
+        "post_error_query_responder",
+        "history_and_commands_before_rejected_requests.history_event_count",
+        "history_and_commands_before_rejected_requests.workflow_command_count",
+        "history_and_commands_after_recovery_query.history_event_count",
+        "history_and_commands_after_recovery_query.workflow_command_count",
+        "history_and_commands_after_all_requests.history_event_count",
+        "history_and_commands_after_all_requests.workflow_command_count",
+        "rejected_requests_and_recovery_appended_no_history",
+        "rejected_requests_and_recovery_emitted_no_workflow_commands",
     ],
 }
 
@@ -11749,6 +12163,11 @@ def unknown_handler_missing_current_evidence(observed: dict[str, Any]) -> list[s
     ):
         if evidence_lookup(observed, evidence_key) is MISSING:
             missing.append(evidence_key)
+
+    if not post_error_query_responder_satisfied(observed):
+        missing.append("post_error_query_responder.eligible_when_claimed")
+    if not post_error_recovery_immutability_satisfied(observed):
+        missing.append("rejected_requests_and_recovery_history_and_commands_unchanged")
 
     return unique_strings(missing)
 
@@ -12262,6 +12681,21 @@ def unknown_handler_behavior_failures(observed: dict[str, Any]) -> list[dict[str
             "known_query_after_unknown_result",
             expected_known_result,
             actual_known_result,
+        ))
+
+    if evidence_lookup(observed, "rejected_requests_and_recovery_appended_no_history") is False:
+        failures.append(behavior_failure(
+            "rejected_requests_or_recovery_appended_history",
+            "rejected_requests_and_recovery_appended_no_history",
+            True,
+            False,
+        ))
+    if evidence_lookup(observed, "rejected_requests_and_recovery_emitted_no_workflow_commands") is False:
+        failures.append(behavior_failure(
+            "rejected_requests_or_recovery_emitted_workflow_commands",
+            "rejected_requests_and_recovery_emitted_no_workflow_commands",
+            True,
+            False,
         ))
 
     return failures
