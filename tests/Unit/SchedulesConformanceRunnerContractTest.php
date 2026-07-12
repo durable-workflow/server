@@ -87,6 +87,35 @@ final class SchedulesConformanceRunnerContractTest extends TestCase
         $this->assertStringNotContainsString("'max_runs' => 1", $crossLanguageShard);
     }
 
+    public function test_cross_language_workers_refresh_liveness_before_polling_for_scheduled_fires(): void
+    {
+        $repoRoot = dirname(__DIR__, 2);
+        $runner = (string) file_get_contents($repoRoot.'/scripts/conformance/schedules-published-artifacts.mjs');
+        $pythonStart = strpos($runner, 'function schedulesPythonWorkerScript()');
+        $phpStart = strpos($runner, 'function schedulesPhpWorkerScript()', $pythonStart ?: 0);
+        $workerEnd = strpos($runner, 'function apiRequest(', $phpStart ?: 0);
+
+        $this->assertIsInt($pythonStart);
+        $this->assertIsInt($phpStart);
+        $this->assertIsInt($workerEnd);
+        $pythonWorker = substr($runner, $pythonStart, $phpStart - $pythonStart);
+        $phpWorker = substr($runner, $phpStart, $workerEnd - $phpStart);
+
+        $pythonHeartbeat = strpos($pythonWorker, 'heartbeat_response = await client.heartbeat_worker(');
+        $pythonPoll = strpos($pythonWorker, 'task = await client.poll_workflow_task(');
+        $phpHeartbeat = strpos($phpWorker, '$heartbeatResponse = $client->heartbeatWorker(');
+        $phpPoll = strpos($phpWorker, '$tasks = $client->pollWorkflowTasks(');
+
+        $this->assertIsInt($pythonHeartbeat);
+        $this->assertIsInt($pythonPoll);
+        $this->assertLessThan($pythonPoll, $pythonHeartbeat);
+        $this->assertStringContainsString('process_metrics=process_metrics()', $pythonWorker);
+        $this->assertIsInt($phpHeartbeat);
+        $this->assertIsInt($phpPoll);
+        $this->assertLessThan($phpPoll, $phpHeartbeat);
+        $this->assertStringContainsString("'heartbeat_response' => \$heartbeatResponse", $phpWorker);
+    }
+
     public function test_cross_language_worker_poll_failures_retain_action_diagnostics(): void
     {
         $repoRoot = dirname(__DIR__, 2);

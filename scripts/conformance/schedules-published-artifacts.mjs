@@ -8477,6 +8477,17 @@ async def run_action(client, payload, output_path):
         )
         return {"action": "create_schedule", "schedule_id": handle.schedule_id}
     if payload["action"] == "poll_complete":
+        # This protocol helper runs one action per process, so it must perform
+        # the liveness tick that a long-running SDK Worker sends in background.
+        write_progress(output_path, payload, "worker_protocol_heartbeat_started")
+        heartbeat_response = await client.heartbeat_worker(
+            worker_id=payload["worker_id"],
+            task_slots={"workflow_available": 10, "activity_available": 10},
+            process_metrics=process_metrics(),
+        )
+        write_progress(output_path, payload, "worker_protocol_heartbeat_returned", {
+            "heartbeat_response": heartbeat_response,
+        })
         write_progress(output_path, payload, "worker_protocol_poll_started", {
             "poll_timeout_seconds": 3.0,
         })
@@ -8518,7 +8529,12 @@ async def run_action(client, payload, output_path):
                 "workflow_id": task.get("workflow_id"),
                 "run_id": task.get("run_id"),
             })
-        return {"action": "poll_complete", "task": task, "complete_response": complete_response}
+        return {
+            "action": "poll_complete",
+            "heartbeat_response": heartbeat_response,
+            "task": task,
+            "complete_response": complete_response,
+        }
     raise RuntimeError(f"unknown action: {payload['action']}")
 
 
@@ -8622,6 +8638,12 @@ if ($payload['action'] === 'create_schedule') {
         );
         $result = ['action' => 'register', 'response' => $response, 'task' => null];
     } elseif ($payload['action'] === 'poll_complete') {
+        // This protocol helper runs one action per process, so it must perform
+        // the liveness tick that a long-running SDK worker sends in background.
+        $heartbeatResponse = $client->heartbeatWorker(
+            (string) $payload['worker_id'],
+            ['workflow_available' => 10, 'activity_available' => 10],
+        );
         $tasks = $client->pollWorkflowTasks(
             queue: (string) $payload['task_queue'],
             timeoutSeconds: 3,
@@ -8655,7 +8677,12 @@ if ($payload['action'] === 'create_schedule') {
             );
         }
 
-        $result = ['action' => 'poll_complete', 'task' => $task, 'complete_response' => $completeResponse];
+        $result = [
+            'action' => 'poll_complete',
+            'heartbeat_response' => $heartbeatResponse,
+            'task' => $task,
+            'complete_response' => $completeResponse,
+        ];
     } else {
         throw new RuntimeException('unknown action: '.(string) $payload['action']);
     }
