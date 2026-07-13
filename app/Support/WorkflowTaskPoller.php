@@ -19,12 +19,15 @@ use Workflow\V2\Models\WorkflowRun;
 use Workflow\V2\Models\WorkflowSignal;
 use Workflow\V2\Models\WorkflowTask;
 use Workflow\V2\Support\DefaultWorkflowTaskBridge;
+use Workflow\V2\Support\HistoryBudget;
 use Workflow\V2\Support\HistoryPayloadCompression;
 use Workflow\V2\Support\StandaloneWorkerVisibility;
 use Workflow\V2\Support\TaskFairnessKey;
 use Workflow\V2\Support\TaskFairnessScheduler;
 use Workflow\V2\Support\TaskFairnessState;
+use Workflow\V2\Support\WorkerHistoryPayloadContract;
 use Workflow\V2\Support\WorkerCompatibilityFleet;
+use Workflow\V2\Support\WorkerProtocolVersion;
 
 final class WorkflowTaskPoller
 {
@@ -810,7 +813,13 @@ final class WorkflowTaskPoller
             // atomically inside claimStatus().
             $attempt = $this->packageAttemptCount($taskId);
 
-            $history = $this->fetchHistory($namespace, $taskId, $historyPageSize, $acceptHistoryEncoding);
+            $history = $this->fetchHistory(
+                $namespace,
+                $taskId,
+                $historyPageSize,
+                $acceptHistoryEncoding,
+                $this->nonEmptyString($claim['payload_codec'] ?? null),
+            );
 
             if (! is_array($history)) {
                 \Log::warning('[WorkflowTaskPoller] Task claimed but history fetch failed', [
@@ -890,7 +899,13 @@ final class WorkflowTaskPoller
                 continue;
             }
 
-            $history = $this->fetchHistory($namespace, (string) $task->id, $historyPageSize, $acceptHistoryEncoding);
+            $history = $this->fetchHistory(
+                $namespace,
+                (string) $task->id,
+                $historyPageSize,
+                $acceptHistoryEncoding,
+                $this->nonEmptyString($run->payload_codec),
+            );
 
             if (! is_array($history)) {
                 continue;
@@ -1404,19 +1419,37 @@ final class WorkflowTaskPoller
         string $taskId,
         ?int $historyPageSize,
         ?string $acceptHistoryEncoding,
+        ?string $payloadCodec,
+        int $afterSequence = 0,
     ): ?array {
-        try {
-            if ($historyPageSize !== null) {
-                $history = $this->bridge->historyPayloadPaginated($taskId, 0, $historyPageSize);
-            } else {
-                $history = $this->bridge->historyPayload($taskId);
-            }
-        } catch (InvalidArgumentException $exception) {
-            if (! str_contains($exception->getMessage(), 'Unknown payload codec')) {
-                throw $exception;
-            }
+        $acceptedHistoryEncoding = $acceptHistoryEncoding === null
+            ? null
+            : HistoryPayloadCompression::resolveEncoding($acceptHistoryEncoding);
+        $pageSize = $historyPageSize;
 
-            $history = $this->rawHistoryPayload($taskId, $historyPageSize);
+        // Compression is page-oriented even when the worker does not choose
+        // an explicit size. This keeps compression bounded while preserving
+        // the same cursor metadata used by explicit pagination.
+        if ($pageSize === null && $acceptedHistoryEncoding !== null) {
+            $pageSize = max(1, min(
+                (int) config(
+                    'server.worker_protocol.history_page_size_default',
+                    WorkerProtocolVersion::DEFAULT_HISTORY_PAGE_SIZE,
+                ),
+                (int) config(
+                    'server.worker_protocol.history_page_size_max',
+                    WorkerProtocolVersion::MAX_HISTORY_PAGE_SIZE,
+                ),
+                WorkerProtocolVersion::MAX_HISTORY_PAGE_SIZE,
+            ));
+        }
+
+        if ($this->defaultBridgeCannotEnvelopeCodec($payloadCodec)) {
+            $history = $this->rawHistoryPayload($taskId, $pageSize, $afterSequence);
+        } elseif ($pageSize !== null) {
+            $history = $this->bridge->historyPayloadPaginated($taskId, $afterSequence, $pageSize);
+        } else {
+            $history = $this->bridge->historyPayload($taskId);
         }
 
         if (! is_array($history)) {
@@ -1438,13 +1471,69 @@ final class WorkflowTaskPoller
     }
 
     /**
+     * Fetch one bounded continuation page through the same bridge and codec
+     * path used by the initial poll response.
+     *
+     * @return array<string, mixed>|null
+     */
+    public function historyPage(
+        string $namespace,
+        string $taskId,
+        int $afterSequence,
+        int $pageSize,
+        ?string $acceptHistoryEncoding,
+    ): ?array {
+        $payloadCodec = null;
+
+        if ($this->bridge instanceof DefaultWorkflowTaskBridge) {
+            /** @var WorkflowTask|null $task */
+            $task = WorkflowTask::query()->find($taskId);
+            /** @var WorkflowRun|null $run */
+            $run = $task instanceof WorkflowTask
+                ? WorkflowRun::query()->find($task->workflow_run_id)
+                : null;
+            $payloadCodec = $run instanceof WorkflowRun
+                ? $this->nonEmptyString($run->payload_codec)
+                : null;
+        }
+
+        return $this->fetchHistory(
+            $namespace,
+            $taskId,
+            $pageSize,
+            $acceptHistoryEncoding,
+            $payloadCodec,
+            $afterSequence,
+        );
+    }
+
+    private function defaultBridgeCannotEnvelopeCodec(?string $payloadCodec): bool
+    {
+        if (! $this->bridge instanceof DefaultWorkflowTaskBridge) {
+            return false;
+        }
+
+        try {
+            CodecRegistry::canonicalize($payloadCodec);
+
+            return false;
+        } catch (InvalidArgumentException) {
+            return true;
+        }
+    }
+
+    /**
      * Build the worker-facing history payload without asking the package to
      * decode or canonicalize the run's payload codec. Non-PHP workers may be
      * able to handle codecs that this process cannot decode locally.
      *
      * @return array<string, mixed>|null
      */
-    private function rawHistoryPayload(string $taskId, ?int $historyPageSize): ?array
+    private function rawHistoryPayload(
+        string $taskId,
+        ?int $historyPageSize,
+        int $afterSequence = 0,
+    ): ?array
     {
         /** @var WorkflowTask|null $task */
         $task = WorkflowTask::query()->find($taskId);
@@ -1462,10 +1551,14 @@ final class WorkflowTaskPoller
 
         $query = WorkflowHistoryEvent::query()
             ->where('workflow_run_id', $run->id)
+            ->when(
+                $historyPageSize !== null,
+                static fn ($query) => $query->where('sequence', '>', $afterSequence),
+            )
             ->orderBy('sequence');
 
         $pageSize = $historyPageSize !== null
-            ? max(1, min($historyPageSize, 500))
+            ? max(1, min($historyPageSize, WorkerProtocolVersion::MAX_HISTORY_PAGE_SIZE))
             : null;
 
         if ($pageSize !== null) {
@@ -1479,7 +1572,14 @@ final class WorkflowTaskPoller
             $events = $query->get();
             $hasMore = false;
             $lastEventSequence = null;
+            $run->setRelation('historyEvents', $events);
         }
+
+        $historyBudget = WorkerHistoryPayloadContract::fromBudget(
+            $pageSize === null
+                ? HistoryBudget::forRun($run)
+                : HistoryBudget::forRunBounded($run),
+        );
 
         return array_filter([
             'task_id' => $task->id,
@@ -1494,7 +1594,8 @@ final class WorkflowTaskPoller
             'sticky_until' => $task->sticky_until?->toJSON(),
             'sticky_replay_mode' => $this->nonEmptyString($task->sticky_replay_mode),
             'last_history_sequence' => (int) ($run->last_history_sequence ?? 0),
-            'after_sequence' => $pageSize !== null ? 0 : null,
+            ...$historyBudget,
+            'after_sequence' => $pageSize !== null ? $afterSequence : null,
             'page_size' => $pageSize,
             'has_more' => $pageSize !== null ? $hasMore : null,
             'next_after_sequence' => $hasMore ? $lastEventSequence : null,
@@ -1543,7 +1644,13 @@ final class WorkflowTaskPoller
                 )
                 : null,
             'run_status' => $history['run_status'] ?? null,
-            'last_history_sequence' => $history['last_history_sequence'] ?? 0,
+            'last_history_sequence' => $history['last_history_sequence'],
+            'total_history_events' => $history['total_history_events'],
+            'history_size_bytes' => $history['history_size_bytes'],
+            'history_fan_out' => $history['history_fan_out'],
+            'continue_as_new_recommended' => $history['continue_as_new_recommended'],
+            'history_budget_pressure' => $history['history_budget_pressure'],
+            'history_budget_pressure_dimensions' => $history['history_budget_pressure_dimensions'],
             'history_events' => $history['history_events'] ?? [],
             'task_queue' => $claim['queue'],
             'connection' => $claim['connection'],
@@ -1557,7 +1664,6 @@ final class WorkflowTaskPoller
         // Include pagination metadata when history was fetched via
         // historyPayloadPaginated() so the controller can build page tokens.
         if (array_key_exists('has_more', $history)) {
-            $payload['total_history_events'] = $history['last_history_sequence'] ?? count($history['history_events'] ?? []);
             $payload['has_more'] = $history['has_more'];
             $payload['next_after_sequence'] = $history['next_after_sequence'] ?? null;
         }

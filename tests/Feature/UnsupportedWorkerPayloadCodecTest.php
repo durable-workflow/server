@@ -5,8 +5,11 @@ namespace Tests\Feature;
 use App\Models\WorkflowNamespace;
 use App\Support\WorkflowQueryTaskBroker;
 use Illuminate\Foundation\Testing\RefreshDatabase;
+use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Event;
 use Illuminate\Support\Facades\File;
 use Illuminate\Support\Facades\Queue;
+use Illuminate\Support\Str;
 use Tests\Feature\Concerns\ServerTestHelpers;
 use Tests\TestCase;
 use Workflow\Serializers\Serializer;
@@ -16,7 +19,9 @@ use Workflow\V2\Enums\TaskStatus;
 use Workflow\V2\Models\ActivityExecution;
 use Workflow\V2\Models\WorkflowHistoryEvent;
 use Workflow\V2\Models\WorkflowRun;
+use Workflow\V2\Models\WorkflowRunSummary;
 use Workflow\V2\Models\WorkflowTask;
+use Workflow\V2\Support\HistoryBudget;
 
 class UnsupportedWorkerPayloadCodecTest extends TestCase
 {
@@ -141,6 +146,191 @@ class UnsupportedWorkerPayloadCodecTest extends TestCase
             ->assertJsonPath('task.arguments.blob', $arguments);
 
         $this->assertArrayNotHasKey('external_storage', $poll->json('task.arguments'));
+    }
+
+    public function test_opaque_codec_empty_history_preserves_falsey_budget_across_response_paths(): void
+    {
+        Queue::fake();
+
+        $run = $this->startRemoteWorkflow('wf-worker-opaque-codec-empty-history');
+
+        WorkflowHistoryEvent::query()
+            ->where('workflow_run_id', $run->id)
+            ->delete();
+        WorkflowRunSummary::query()->whereKey($run->id)->delete();
+        $run->forceFill([
+            'last_history_sequence' => 0,
+            'payload_codec' => 'zstd',
+        ])->save();
+
+        $this->registerWorker(
+            'python-codec-empty-history',
+            'python-workflows',
+            supportedWorkflowTypes: ['python.codec-workflow'],
+        );
+
+        $poll = $this->withHeaders($this->workerHeaders())
+            ->postJson('/api/worker/workflow-tasks/poll', [
+                'worker_id' => 'python-codec-empty-history',
+                'task_queue' => 'python-workflows',
+            ]);
+
+        $poll->assertOk()
+            ->assertJsonPath('task.payload_codec', 'zstd')
+            ->assertJsonPath('task.history_events', [])
+            ->assertJsonPath('task.next_history_page_token', null);
+
+        $pollTask = $poll->json('task');
+
+        $this->assertIsArray($pollTask);
+        $this->assertEmptyHistoryBudget($pollTask);
+
+        $taskId = (string) $poll->json('task.task_id');
+        $attempt = (int) $poll->json('task.workflow_task_attempt');
+        $historyRequest = [
+            'lease_owner' => 'python-codec-empty-history',
+            'workflow_task_attempt' => $attempt,
+            'next_history_page_token' => base64_encode('0'),
+            'history_page_size' => 1,
+        ];
+
+        $historyPage = $this->withHeaders($this->workerHeaders())
+            ->postJson("/api/worker/workflow-tasks/{$taskId}/history", $historyRequest);
+
+        $historyPage->assertOk()
+            ->assertJsonPath('history_events', [])
+            ->assertJsonPath('next_history_page_token', null);
+
+        $historyPagePayload = $historyPage->json();
+
+        $this->assertIsArray($historyPagePayload);
+        $this->assertEmptyHistoryBudget($historyPagePayload);
+
+        // Compression negotiation uses the same bounded page path. An empty
+        // event list remains inline because it is below the public threshold.
+        $compressedPath = $this->withHeaders($this->workerHeaders())
+            ->postJson("/api/worker/workflow-tasks/{$taskId}/history", [
+                ...$historyRequest,
+                'accept_history_encoding' => 'gzip',
+            ]);
+
+        $compressedPath->assertOk()
+            ->assertJsonPath('history_events', [])
+            ->assertJsonPath('next_history_page_token', null)
+            ->assertJsonMissingPath('history_events_compressed')
+            ->assertJsonMissingPath('history_events_encoding');
+
+        $compressedPathPayload = $compressedPath->json();
+
+        $this->assertIsArray($compressedPathPayload);
+        $this->assertEmptyHistoryBudget($compressedPathPayload);
+    }
+
+    public function test_opaque_codec_history_pages_reuse_one_bounded_budget_without_hydrating_the_run_history(): void
+    {
+        Queue::fake();
+
+        $run = $this->startRemoteWorkflow('wf-worker-opaque-codec-bounded-history');
+        $lastSequence = (int) WorkflowHistoryEvent::query()
+            ->where('workflow_run_id', $run->id)
+            ->max('sequence');
+        $recordedAt = now();
+        $rows = [];
+
+        for ($offset = 1; $offset <= 80; $offset++) {
+            $rows[] = [
+                'id' => (string) Str::ulid(),
+                'workflow_run_id' => $run->id,
+                'sequence' => $lastSequence + $offset,
+                'event_type' => HistoryEventType::SideEffectRecorded->value,
+                'payload' => json_encode(['result' => "opaque-history-{$offset}"], JSON_THROW_ON_ERROR),
+                'workflow_task_id' => null,
+                'workflow_command_id' => null,
+                'recorded_at' => $recordedAt,
+                'created_at' => $recordedAt,
+                'updated_at' => $recordedAt,
+            ];
+        }
+
+        DB::table('workflow_history_events')->insert($rows);
+        $run->forceFill([
+            'last_history_sequence' => $lastSequence + count($rows),
+            'payload_codec' => 'zstd',
+        ])->save();
+        WorkflowRunSummary::query()->whereKey($run->id)->delete();
+
+        $expectedBudget = HistoryBudget::forRun($run->refresh());
+        $run->unsetRelation('historyEvents');
+
+        $this->registerWorker(
+            'python-codec-bounded-history',
+            'python-workflows',
+            supportedWorkflowTypes: ['python.codec-workflow'],
+        );
+
+        $retrievedHistoryEvents = 0;
+        Event::listen(
+            'eloquent.retrieved: '.WorkflowHistoryEvent::class,
+            static function () use (&$retrievedHistoryEvents): void {
+                $retrievedHistoryEvents++;
+            },
+        );
+
+        DB::flushQueryLog();
+        DB::enableQueryLog();
+        $poll = $this->withHeaders($this->workerHeaders())
+            ->postJson('/api/worker/workflow-tasks/poll', [
+                'worker_id' => 'python-codec-bounded-history',
+                'task_queue' => 'python-workflows',
+                'history_page_size' => 1,
+            ]);
+        $pollQueries = DB::getQueryLog();
+        DB::disableQueryLog();
+
+        $poll->assertOk()
+            ->assertJsonPath('task.payload_codec', 'zstd')
+            ->assertJsonPath('task.total_history_events', $expectedBudget['history_event_count'])
+            ->assertJsonPath('task.history_size_bytes', $expectedBudget['history_size_bytes'])
+            ->assertJsonPath('task.history_fan_out', $expectedBudget['history_fan_out'])
+            ->assertJsonPath('task.continue_as_new_recommended', $expectedBudget['continue_as_new_recommended'])
+            ->assertJsonPath('task.history_budget_pressure', $expectedBudget['pressure'])
+            ->assertJsonPath('task.history_budget_pressure_dimensions', $expectedBudget['pressure_dimensions']);
+
+        $this->assertCount(1, $poll->json('task.history_events'));
+        $this->assertIsString($poll->json('task.next_history_page_token'));
+        $this->assertSame(2, $retrievedHistoryEvents);
+        $this->assertCount(1, $this->historyAggregateQueries($pollQueries));
+        $this->assertFalse($run->relationLoaded('historyEvents'));
+
+        $retrievedHistoryEvents = 0;
+        DB::flushQueryLog();
+        DB::enableQueryLog();
+        $historyPage = $this->withHeaders($this->workerHeaders())
+            ->postJson(sprintf('/api/worker/workflow-tasks/%s/history', $poll->json('task.task_id')), [
+                'lease_owner' => 'python-codec-bounded-history',
+                'workflow_task_attempt' => $poll->json('task.workflow_task_attempt'),
+                'next_history_page_token' => $poll->json('task.next_history_page_token'),
+                'history_page_size' => 60,
+                'accept_history_encoding' => 'gzip',
+            ]);
+        $pageQueries = DB::getQueryLog();
+        DB::disableQueryLog();
+
+        $historyPage->assertOk()
+            ->assertJsonPath('history_events', [])
+            ->assertJsonPath('history_events_encoding', 'gzip')
+            ->assertJsonPath('total_history_events', $expectedBudget['history_event_count'])
+            ->assertJsonPath('history_size_bytes', $expectedBudget['history_size_bytes'])
+            ->assertJsonPath('history_fan_out', $expectedBudget['history_fan_out'])
+            ->assertJsonPath('continue_as_new_recommended', $expectedBudget['continue_as_new_recommended'])
+            ->assertJsonPath('history_budget_pressure', $expectedBudget['pressure'])
+            ->assertJsonPath('history_budget_pressure_dimensions', $expectedBudget['pressure_dimensions']);
+
+        $this->assertIsString($historyPage->json('history_events_compressed'));
+        $this->assertIsString($historyPage->json('next_history_page_token'));
+        $this->assertSame(61, $retrievedHistoryEvents);
+        $this->assertCount(0, $this->historyAggregateQueries($pageQueries));
+        $this->assertFalse($run->relationLoaded('historyEvents'));
     }
 
     public function test_history_response_preserves_opaque_payload_codec_in_envelopes(): void
@@ -420,5 +610,38 @@ class UnsupportedWorkerPayloadCodecTest extends TestCase
         $start->assertCreated();
 
         return WorkflowRun::query()->findOrFail((string) $start->json('run_id'));
+    }
+
+    /**
+     * @param  list<array{query: string, bindings: array<mixed>, time: float|null}>  $queries
+     * @return list<array{query: string, bindings: array<mixed>, time: float|null}>
+     */
+    private function historyAggregateQueries(array $queries): array
+    {
+        return array_values(array_filter(
+            $queries,
+            static fn (array $query): bool => str_contains($query['query'], 'workflow_history_events')
+                && str_contains(strtolower($query['query']), 'count(*)'),
+        ));
+    }
+
+    /**
+     * @param  array<string, mixed>  $payload
+     */
+    private function assertEmptyHistoryBudget(array $payload): void
+    {
+        $expected = [
+            'total_history_events' => 0,
+            'history_size_bytes' => 0,
+            'history_fan_out' => 0,
+            'continue_as_new_recommended' => false,
+            'history_budget_pressure' => 'ok',
+            'history_budget_pressure_dimensions' => [],
+        ];
+
+        foreach ($expected as $key => $value) {
+            $this->assertArrayHasKey($key, $payload);
+            $this->assertSame($value, $payload[$key]);
+        }
     }
 }

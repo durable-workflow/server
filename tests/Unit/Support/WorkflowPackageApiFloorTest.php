@@ -32,6 +32,7 @@ use Workflow\V2\Support\PayloadEnvelopeResolver;
 use Workflow\V2\Support\RunCommandContract;
 use Workflow\V2\Support\ServiceExecutionContract;
 use Workflow\V2\Support\TypeRegistry;
+use Workflow\V2\Support\WorkerHistoryPayloadContract;
 use Workflow\V2\Support\WorkerProtocolVersion;
 use Workflow\V2\Support\WorkflowCommandNormalizer;
 use Workflow\V2\Support\WorkflowDefinition;
@@ -65,6 +66,15 @@ class WorkflowPackageApiFloorTest extends TestCase
     {
         $reflection = new ReflectionClass(CodecRegistry::class);
         $method = $reflection->getMethod('engineSpecific');
+
+        $this->assertTrue($method->isPublic());
+        $this->assertTrue($method->isStatic());
+    }
+
+    public function test_worker_history_payload_contract_manifest_is_public_static(): void
+    {
+        $reflection = new ReflectionClass(WorkerHistoryPayloadContract::class);
+        $method = $reflection->getMethod('manifest');
 
         $this->assertTrue($method->isPublic());
         $this->assertTrue($method->isStatic());

@@ -37,7 +37,6 @@ use Workflow\V2\Models\ActivityAttempt;
 use Workflow\V2\Models\ActivityExecution;
 use Workflow\V2\Models\WorkflowRun;
 use Workflow\V2\Models\WorkflowTask;
-use Workflow\V2\Support\HistoryPayloadCompression;
 use Workflow\V2\Support\PayloadEnvelopeResolver;
 use Workflow\V2\Support\StandaloneWorkerVisibility;
 use Workflow\V2\Support\WorkerProtocolVersion;
@@ -1082,9 +1081,13 @@ class WorkerController
         );
         $pageSize = min($validated['history_page_size'] ?? $defaultPageSize, $maxPageSize);
 
-        /** @var WorkflowTaskBridge $bridge */
-        $bridge = app(WorkflowTaskBridge::class);
-        $history = $bridge->historyPayloadPaginated($taskId, $afterSequence, $pageSize);
+        $history = $this->workflowTaskPoller->historyPage(
+            $namespace,
+            $taskId,
+            $afterSequence,
+            $pageSize,
+            $validated['accept_history_encoding'] ?? null,
+        );
 
         if (! is_array($history)) {
             return WorkerProtocol::json([
@@ -1094,26 +1097,19 @@ class WorkerController
             ], 404);
         }
 
-        $acceptHistoryEncoding = $validated['accept_history_encoding'] ?? null;
-
-        $history['history_events'] = $this->workflowTaskPoller->historyEventsWithSignalArguments(
-            $history['history_events'] ?? [],
-            $namespace,
-            is_string($history['payload_codec'] ?? null) ? $history['payload_codec'] : null,
-        );
-
-        if ($acceptHistoryEncoding !== null) {
-            $history = HistoryPayloadCompression::compress($history, $acceptHistoryEncoding);
-        }
-
-        $hasMore = $history['has_more'] ?? false;
+        $hasMore = $history['has_more'];
         $nextAfterSequence = $history['next_after_sequence'] ?? null;
 
         $response = [
             'task_id' => $taskId,
             'workflow_task_attempt' => (int) $validated['workflow_task_attempt'],
             'history_events' => $history['history_events'] ?? [],
-            'total_history_events' => $history['last_history_sequence'] ?? 0,
+            'total_history_events' => $history['total_history_events'],
+            'history_size_bytes' => $history['history_size_bytes'],
+            'history_fan_out' => $history['history_fan_out'],
+            'continue_as_new_recommended' => $history['continue_as_new_recommended'],
+            'history_budget_pressure' => $history['history_budget_pressure'],
+            'history_budget_pressure_dimensions' => $history['history_budget_pressure_dimensions'],
             'next_history_page_token' => $hasMore && $nextAfterSequence !== null
                 ? self::encodeHistoryPageToken((int) $nextAfterSequence)
                 : null,
@@ -2309,14 +2305,6 @@ class WorkerController
 
         $hasMore = $task['has_more'] ?? false;
         $nextAfterSequence = $task['next_after_sequence'] ?? null;
-
-        // Prefer the run's last sequence when the poller did not already set
-        // a total; compressed responses intentionally carry an empty event list.
-        if (! isset($task['total_history_events'])) {
-            $task['total_history_events'] = isset($task['last_history_sequence'])
-                ? (int) $task['last_history_sequence']
-                : count($task['history_events'] ?? []);
-        }
 
         $task['next_history_page_token'] = ($hasMore && $nextAfterSequence !== null)
             ? self::encodeHistoryPageToken((int) $nextAfterSequence)

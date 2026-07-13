@@ -4,6 +4,7 @@ namespace App\Support;
 
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
+use Workflow\V2\Support\WorkerHistoryPayloadContract;
 use Workflow\V2\Support\WorkerProtocolVersion;
 
 class WorkerProtocol
@@ -223,6 +224,7 @@ class WorkerProtocol
      *     poll_status: bool,
      *     history_page_size_default: int,
      *     history_page_size_max: int,
+     *     workflow_history_budget: array<string, mixed>,
      *     query_tasks: bool,
      *     query_task_poll_request_idempotency: bool,
      *     query_task_timeouts: array{control_plane_timeout_seconds: int, lease_timeout_seconds: int, lease_grace_seconds: int},
@@ -271,6 +273,7 @@ class WorkerProtocol
                 'server.worker_protocol.history_page_size_max',
                 WorkerProtocolVersion::MAX_HISTORY_PAGE_SIZE,
             ),
+            'workflow_history_budget' => WorkerHistoryPayloadContract::manifest(),
             'query_tasks' => true,
             'query_task_poll_request_idempotency' => true,
             'query_task_timeouts' => self::queryTaskTimeouts(),

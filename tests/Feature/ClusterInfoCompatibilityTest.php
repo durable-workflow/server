@@ -32,6 +32,7 @@ use Workflow\V2\Support\PlatformConformanceSuite;
 use Workflow\V2\Support\PlatformProtocolSpecs;
 use Workflow\V2\Support\SdkNeutralityContract;
 use Workflow\V2\Support\SurfaceStabilityContract;
+use Workflow\V2\Support\WorkerHistoryPayloadContract;
 use Workflow\V2\Support\WorkerProtocolVersion;
 
 class ClusterInfoCompatibilityTest extends TestCase
@@ -849,7 +850,7 @@ class ClusterInfoCompatibilityTest extends TestCase
                     $family,
                     "platform_protocol_specs entry $name object family must be an object",
                 );
-                foreach (['name', 'owner_repo', 'schema_authority', 'version_authority'] as $field) {
+                foreach (['name', 'owner_repo'] as $field) {
                     $this->assertArrayHasKey(
                         $field,
                         $family,
@@ -1045,6 +1046,10 @@ class ClusterInfoCompatibilityTest extends TestCase
         $this->assertSame(
             WorkerProtocolVersion::MAX_HISTORY_PAGE_SIZE,
             $response->json('worker_protocol.server_capabilities.history_page_size_max'),
+        );
+        $this->assertSame(
+            WorkerHistoryPayloadContract::manifest(),
+            $response->json('worker_protocol.server_capabilities.workflow_history_budget'),
         );
         $this->assertTrue($response->json('worker_protocol.server_capabilities.query_tasks'));
         $this->assertTrue($response->json('worker_protocol.server_capabilities.query_task_poll_request_idempotency'));

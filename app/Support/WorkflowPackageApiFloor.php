@@ -28,6 +28,7 @@ use Workflow\V2\Support\PayloadEnvelopeResolver;
 use Workflow\V2\Support\RunCommandContract;
 use Workflow\V2\Support\ServiceExecutionContract;
 use Workflow\V2\Support\TypeRegistry;
+use Workflow\V2\Support\WorkerHistoryPayloadContract;
 use Workflow\V2\Support\WorkerProtocolVersion;
 use Workflow\V2\Support\WorkflowCommandNormalizer;
 use Workflow\V2\Support\WorkflowDefinition;
@@ -37,9 +38,9 @@ use Workflow\V2\Support\WorkflowQueryContract;
  * Enforces the minimum `durable-workflow/workflow` API surface the server
  * depends on at runtime.
  *
- * The server's composer constraint for the workflow package is a floating
- * `dev-v2` path/Git source. A stale build or cached install can resolve to
- * an older v2 snapshot that lacks APIs the server assumes are present,
+ * The server's composer constraint pins the workflow package release that
+ * owns its current bridge contract. A stale build or cached install can still
+ * expose an older v2 snapshot that lacks APIs the server assumes are present,
  * producing hard-to-diagnose fatals on `/api/cluster/info` (missing
  * `CodecRegistry::universal()`), typed task polling regressions
  * (missing workflow/activity type filtering), or service-mode queue
@@ -81,6 +82,10 @@ final class WorkflowPackageApiFloor
         [WorkerProtocolVersion::class, 'queryTaskVerbs'],
         [WorkerProtocolVersion::class, 'workerCapabilities'],
         [WorkerProtocolVersion::class, 'queryTaskSemantics'],
+        // Complete bounded worker-history budget contract. The standalone
+        // server consumes this shape directly from full and paginated bridge
+        // responses and advertises the same manifest in discovery.
+        [WorkerHistoryPayloadContract::class, 'manifest'],
         // External payload storage protocol: server controllers and
         // envelope services depend on the package-owned wire helpers.
         [PayloadEnvelopeResolver::class, 'resolve'],

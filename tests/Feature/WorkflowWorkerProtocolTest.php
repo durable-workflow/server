@@ -28,6 +28,8 @@ use Workflow\V2\Models\WorkflowRun;
 use Workflow\V2\Models\WorkflowTask;
 use Workflow\V2\Support\DefaultWorkflowTaskBridge;
 use Workflow\V2\Support\WorkerCompatibilityFleet;
+use Workflow\V2\Support\WorkerHistoryPayloadContract;
+use Workflow\V2\Support\WorkerProtocolVersion;
 
 class WorkflowWorkerProtocolTest extends TestCase
 {
@@ -651,12 +653,23 @@ class WorkflowWorkerProtocolTest extends TestCase
             'task_id' => $task->id,
             'workflow_run_id' => $runId,
             'workflow_instance_id' => $workflowId,
+            'namespace' => 'default',
             'workflow_type' => 'tests.external-greeting-workflow',
             'workflow_class' => ExternalGreetingWorkflow::class,
             'payload_codec' => (string) config('workflows.serializer'),
             'arguments' => null,
+            'arguments_envelope' => null,
             'run_status' => 'pending',
+            'sticky_worker_id' => null,
+            'sticky_until' => null,
+            'sticky_replay_mode' => null,
             'last_history_sequence' => 2,
+            'total_history_events' => 2,
+            'history_size_bytes' => 512,
+            'history_fan_out' => 1,
+            'continue_as_new_recommended' => false,
+            'history_budget_pressure' => 'ok',
+            'history_budget_pressure_dimensions' => [],
             'history_events' => [
                 [
                     'id' => 'evt-start-accepted',
@@ -788,7 +801,13 @@ class WorkflowWorkerProtocolTest extends TestCase
             ->assertJsonPath('task.workflow_id', $workflowId)
             ->assertJsonPath('task.run_id', $runId)
             ->assertJsonPath('task.workflow_task_attempt', 1)
-            ->assertJsonPath('task.lease_owner', 'php-worker-bridge');
+            ->assertJsonPath('task.lease_owner', 'php-worker-bridge')
+            ->assertJsonPath('task.total_history_events', 2)
+            ->assertJsonPath('task.history_size_bytes', 512)
+            ->assertJsonPath('task.history_fan_out', 1)
+            ->assertJsonPath('task.continue_as_new_recommended', false)
+            ->assertJsonPath('task.history_budget_pressure', 'ok')
+            ->assertJsonPath('task.history_budget_pressure_dimensions', []);
 
         // The server sources workflow_task_attempt from the package's
         // authoritative attempt_count, normalized to >= 1 for the protocol.
@@ -4225,10 +4244,20 @@ class WorkflowWorkerProtocolTest extends TestCase
 
         $events = $poll->json('task.history_events');
         $totalEvents = $poll->json('task.total_history_events');
+        $historySizeBytes = $poll->json('task.history_size_bytes');
+        $historyFanOut = $poll->json('task.history_fan_out');
+        $continueAsNewRecommended = $poll->json('task.continue_as_new_recommended');
+        $historyBudgetPressure = $poll->json('task.history_budget_pressure');
+        $historyBudgetPressureDimensions = $poll->json('task.history_budget_pressure_dimensions');
         $nextToken = $poll->json('task.next_history_page_token');
 
         $this->assertCount(1, $events);
         $this->assertGreaterThan(1, $totalEvents);
+        $this->assertIsInt($historySizeBytes);
+        $this->assertIsInt($historyFanOut);
+        $this->assertIsBool($continueAsNewRecommended);
+        $this->assertIsString($historyBudgetPressure);
+        $this->assertIsArray($historyBudgetPressureDimensions);
         $this->assertNotNull($nextToken);
 
         $taskId = (string) $poll->json('task.task_id');
@@ -4246,7 +4275,12 @@ class WorkflowWorkerProtocolTest extends TestCase
         $historyPage->assertOk()
             ->assertJsonPath('task_id', $taskId)
             ->assertJsonPath('workflow_task_attempt', $attempt)
-            ->assertJsonPath('total_history_events', $totalEvents);
+            ->assertJsonPath('total_history_events', $totalEvents)
+            ->assertJsonPath('history_size_bytes', $historySizeBytes)
+            ->assertJsonPath('history_fan_out', $historyFanOut)
+            ->assertJsonPath('continue_as_new_recommended', $continueAsNewRecommended)
+            ->assertJsonPath('history_budget_pressure', $historyBudgetPressure)
+            ->assertJsonPath('history_budget_pressure_dimensions', $historyBudgetPressureDimensions);
 
         $pageEvents = $historyPage->json('history_events');
 
@@ -4537,7 +4571,11 @@ class WorkflowWorkerProtocolTest extends TestCase
 
         $register->assertCreated()
             ->assertJsonPath('server_capabilities.history_page_size_default', 500)
-            ->assertJsonPath('server_capabilities.history_page_size_max', 1000);
+            ->assertJsonPath('server_capabilities.history_page_size_max', 1000)
+            ->assertJsonPath(
+                'server_capabilities.workflow_history_budget',
+                WorkerHistoryPayloadContract::manifest(),
+            );
     }
 
     public function test_server_capabilities_advertise_history_compression(): void
@@ -4661,19 +4699,34 @@ class WorkflowWorkerProtocolTest extends TestCase
                     'reason_detail' => null,
                 ]);
 
-            $mock->shouldReceive('historyPayload')
+            $mock->shouldReceive('historyPayloadPaginated')
                 ->once()
-                ->with('wf-task-compress')
+                ->with('wf-task-compress', 0, WorkerProtocolVersion::DEFAULT_HISTORY_PAGE_SIZE)
                 ->andReturn([
                     'task_id' => 'wf-task-compress',
                     'workflow_run_id' => 'run-compress',
                     'workflow_instance_id' => 'wf-compress-mock',
+                    'namespace' => 'default',
                     'workflow_type' => 'tests.external-greeting-workflow',
                     'workflow_class' => ExternalGreetingWorkflow::class,
                     'payload_codec' => (string) config('workflows.serializer'),
                     'arguments' => null,
+                    'arguments_envelope' => null,
                     'run_status' => 'pending',
-                    'last_history_sequence' => 60,
+                    'sticky_worker_id' => null,
+                    'sticky_until' => null,
+                    'sticky_replay_mode' => null,
+                    'last_history_sequence' => 73,
+                    'total_history_events' => 60,
+                    'history_size_bytes' => 8192,
+                    'history_fan_out' => 12,
+                    'continue_as_new_recommended' => true,
+                    'history_budget_pressure' => 'continue_as_new_recommended',
+                    'history_budget_pressure_dimensions' => ['fan_out'],
+                    'after_sequence' => 0,
+                    'page_size' => WorkerProtocolVersion::DEFAULT_HISTORY_PAGE_SIZE,
+                    'has_more' => false,
+                    'next_after_sequence' => null,
                     'history_events' => $events,
                 ]);
         });
@@ -4695,6 +4748,15 @@ class WorkflowWorkerProtocolTest extends TestCase
         $this->assertSame('gzip', $poll->json('task.history_events_encoding'));
         $this->assertSame([], $poll->json('task.history_events'));
         $this->assertSame(60, $poll->json('task.total_history_events'));
+        $this->assertSame(8192, $poll->json('task.history_size_bytes'));
+        $this->assertSame(12, $poll->json('task.history_fan_out'));
+        $this->assertTrue($poll->json('task.continue_as_new_recommended'));
+        $this->assertSame(
+            'continue_as_new_recommended',
+            $poll->json('task.history_budget_pressure'),
+        );
+        $this->assertSame(['fan_out'], $poll->json('task.history_budget_pressure_dimensions'));
+        $this->assertNull($poll->json('task.next_history_page_token'));
 
         // Verify the compressed payload is decompressible.
         $compressed = base64_decode($poll->json('task.history_events_compressed'), true);

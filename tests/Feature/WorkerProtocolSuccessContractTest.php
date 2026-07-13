@@ -2957,7 +2957,7 @@ class WorkerProtocolSuccessContractTest extends TestCase
 
         $defaultBridge = app()->make(DefaultWorkflowTaskBridge::class);
 
-        $this->mock(WorkflowTaskBridge::class, function (MockInterface $mock) use ($defaultBridge, $events, $taskId): void {
+        $this->mock(WorkflowTaskBridge::class, function (MockInterface $mock) use ($defaultBridge, $events, $runId, $taskId): void {
             $mock->shouldReceive('status')
                 ->andReturnUsing(static fn (string $taskId): array => $defaultBridge->status($taskId));
 
@@ -2965,7 +2965,26 @@ class WorkerProtocolSuccessContractTest extends TestCase
                 ->once()
                 ->with($taskId, 1, 100)
                 ->andReturn([
-                    'last_history_sequence' => 61,
+                    'task_id' => $taskId,
+                    'workflow_run_id' => $runId,
+                    'workflow_instance_id' => 'wf-history-page-compression-contract',
+                    'namespace' => 'default',
+                    'workflow_type' => 'tests.external-greeting-workflow',
+                    'workflow_class' => ExternalGreetingWorkflow::class,
+                    'payload_codec' => (string) config('workflows.serializer'),
+                    'arguments' => null,
+                    'arguments_envelope' => null,
+                    'run_status' => 'waiting',
+                    'last_history_sequence' => 89,
+                    'sticky_worker_id' => null,
+                    'sticky_until' => null,
+                    'sticky_replay_mode' => null,
+                    'total_history_events' => 61,
+                    'history_size_bytes' => 16384,
+                    'history_fan_out' => 24,
+                    'continue_as_new_recommended' => true,
+                    'history_budget_pressure' => 'continue_as_new_recommended',
+                    'history_budget_pressure_dimensions' => ['size_bytes', 'fan_out'],
                     'after_sequence' => 1,
                     'page_size' => 100,
                     'has_more' => false,
@@ -2988,6 +3007,11 @@ class WorkerProtocolSuccessContractTest extends TestCase
             ->assertJsonPath('history_events', [])
             ->assertJsonPath('history_events_encoding', 'gzip')
             ->assertJsonPath('total_history_events', 61)
+            ->assertJsonPath('history_size_bytes', 16384)
+            ->assertJsonPath('history_fan_out', 24)
+            ->assertJsonPath('continue_as_new_recommended', true)
+            ->assertJsonPath('history_budget_pressure', 'continue_as_new_recommended')
+            ->assertJsonPath('history_budget_pressure_dimensions', ['size_bytes', 'fan_out'])
             ->assertJsonPath('next_history_page_token', null);
 
         $compressed = base64_decode((string) $history->json('history_events_compressed'), true);
