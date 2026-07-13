@@ -1,16 +1,25 @@
 use std::{
     env, fmt,
+    process::Command,
     sync::{
-        atomic::{AtomicBool, Ordering},
+        atomic::{AtomicBool, AtomicUsize, Ordering},
         Arc, Mutex,
     },
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
+use axum::{
+    body::{to_bytes, Body},
+    extract::State,
+    http::{header, Request, Response, StatusCode},
+    routing::any,
+    Router,
+};
 use durable_workflow::{
     json, Client, Error, PayloadEnvelope, Result, Value, Worker, WorkflowCommandOptions,
     WorkflowResultOptions, WorkflowStartOptions, DEFAULT_CODEC,
 };
+use tokio::{net::TcpListener, sync::oneshot};
 
 type ProbeResult<T> = std::result::Result<T, ProbeFailure>;
 
@@ -76,6 +85,320 @@ fn require(condition: bool, reason: &str) -> Result<()> {
     } else {
         Err(Error::Codec(reason.to_string()))
     }
+}
+
+#[derive(Clone)]
+struct CompletionRetryProxy {
+    server_url: String,
+    client: reqwest::Client,
+    observation: Arc<Mutex<Value>>,
+    retried_transition: Arc<AtomicBool>,
+}
+
+async fn proxy_request(
+    State(proxy): State<CompletionRetryProxy>,
+    request: Request<Body>,
+) -> Response<Body> {
+    let (parts, body) = request.into_parts();
+    let body = match to_bytes(body, 8 * 1024 * 1024).await {
+        Ok(body) => body,
+        Err(error) => {
+            return Response::builder()
+                .status(StatusCode::BAD_GATEWAY)
+                .body(Body::from(format!(
+                    "could not read proxied request: {error}"
+                )))
+                .unwrap_or_else(|_| Response::new(Body::empty()))
+        }
+    };
+    let target = format!("{}{}", proxy.server_url, parts.uri);
+    let mut forward = proxy.client.request(parts.method.clone(), &target);
+    for (name, value) in &parts.headers {
+        if name != header::HOST && name != header::CONTENT_LENGTH {
+            forward = forward.header(name, value);
+        }
+    }
+    let first = match forward.body(body.clone()).send().await {
+        Ok(response) => response,
+        Err(error) => {
+            return Response::builder()
+                .status(StatusCode::BAD_GATEWAY)
+                .body(Body::from(format!("could not forward request: {error}")))
+                .unwrap_or_else(|_| Response::new(Body::empty()))
+        }
+    };
+    let first_status = first.status();
+    let first_headers = first.headers().clone();
+    let first_body = first.bytes().await.unwrap_or_default();
+
+    let completion = parts.uri.path().contains("/worker/workflow-tasks/")
+        && parts.uri.path().ends_with("/complete");
+    let request_json = serde_json::from_slice::<Value>(&body).unwrap_or(Value::Null);
+    let commands = request_json["commands"]
+        .as_array()
+        .cloned()
+        .unwrap_or_default();
+    let command_types = commands
+        .iter()
+        .filter_map(|command| command["type"].as_str().map(str::to_string))
+        .collect::<Vec<_>>();
+    let transition = command_types
+        .iter()
+        .any(|command| command == "continue_as_new");
+
+    if completion {
+        if let Ok(mut observation) = proxy.observation.lock() {
+            *observation = json!({
+                "completion_delivery_count":1,
+                "task_path":parts.uri.path(),
+                "commands":commands,
+                "command_types":command_types,
+                "first_response_status":first_status.as_u16(),
+                "first_response":serde_json::from_slice::<Value>(&first_body).unwrap_or(Value::Null),
+            });
+        }
+    }
+
+    if completion && transition && !proxy.retried_transition.swap(true, Ordering::SeqCst) {
+        let mut retry = proxy.client.request(parts.method, &target);
+        for (name, value) in &parts.headers {
+            if name != header::HOST && name != header::CONTENT_LENGTH {
+                retry = retry.header(name, value);
+            }
+        }
+        let (retry_status, retry_body) = match retry.body(body).send().await {
+            Ok(response) => {
+                let status = response.status().as_u16();
+                let body = response.bytes().await.unwrap_or_default();
+                (
+                    status,
+                    serde_json::from_slice::<Value>(&body).unwrap_or(Value::Null),
+                )
+            }
+            Err(error) => (0, json!({"transport_error":error.to_string()})),
+        };
+        if let Ok(mut observation) = proxy.observation.lock() {
+            observation["completion_delivery_count"] = json!(2);
+            observation["retry_response_status"] = json!(retry_status);
+            observation["retry_response"] = retry_body;
+        }
+    }
+
+    let mut response = Response::builder().status(first_status);
+    if let Some(content_type) = first_headers.get(header::CONTENT_TYPE) {
+        response = response.header(header::CONTENT_TYPE, content_type);
+    }
+    response
+        .body(Body::from(first_body))
+        .unwrap_or_else(|_| Response::new(Body::empty()))
+}
+
+fn transition_worker(
+    client: Client,
+    queue: &str,
+    worker_id: &str,
+    phase: &'static str,
+    callback_calls: Arc<AtomicUsize>,
+) -> Worker {
+    let mut worker = Worker::new(client, queue)
+        .worker_id(worker_id)
+        .poll_timeout(Duration::from_millis(500));
+    worker.register_workflow("rust.lifecycle.continue-replay", move |ctx, input| {
+        let callback_calls = Arc::clone(&callback_calls);
+        async move {
+            let input_phase = input
+                .get(0)
+                .and_then(|value| value.get("phase"))
+                .and_then(Value::as_str)
+                .unwrap_or("predecessor");
+            require(
+                input_phase == phase,
+                "continue_as_new_phase_routing_mismatch",
+            )?;
+            let identity = ctx.workflow_identity()?;
+            if phase == "predecessor" {
+                let captured: String = ctx.side_effect(|| {
+                    callback_calls.fetch_add(1, Ordering::SeqCst);
+                    format!("predecessor-side-effect-{}", suffix())
+                })?;
+                let version = ctx.get_version("rust-continue-predecessor", 1, 2)?;
+                return ctx.continue_as_new(json!([{
+                    "phase":"successor",
+                    "predecessor_side_effect":captured,
+                    "predecessor_version":version,
+                }]));
+            }
+
+            let captured: String = ctx.side_effect(|| {
+                callback_calls.fetch_add(1, Ordering::SeqCst);
+                format!("successor-side-effect-{}", suffix())
+            })?;
+            let version = ctx.get_version("rust-continue-successor", 1, 3)?;
+            Ok(json!({
+                "status":"completed",
+                "workflow_id":identity.workflow_id,
+                "run_id":identity.run_id,
+                "successor_side_effect":captured,
+                "successor_version":version,
+            }))
+        }
+    });
+    worker
+}
+
+fn argument(name: &str) -> Option<String> {
+    let args = env::args().collect::<Vec<_>>();
+    args.windows(2)
+        .find(|pair| pair[0] == name)
+        .map(|pair| pair[1].clone())
+}
+
+async fn run_transition_phase(phase: &'static str) -> Result<Value> {
+    let server_url = env::var("DURABLE_WORKFLOW_SERVER_URL")
+        .unwrap_or_else(|_| "http://127.0.0.1:8080".to_string());
+    let token = env::var("DURABLE_WORKFLOW_TOKEN").unwrap_or_else(|_| "dev-token".to_string());
+    let namespace = env::var("DURABLE_WORKFLOW_NAMESPACE")
+        .unwrap_or_else(|_| "workflow-lifecycle-conformance".to_string());
+    let queue = argument("--queue")
+        .ok_or_else(|| Error::Codec("transition phase queue is required".to_string()))?;
+    let worker_id = format!("rust-continue-{phase}-{}", std::process::id());
+    let observation = Arc::new(Mutex::new(Value::Null));
+    let proxy = CompletionRetryProxy {
+        server_url,
+        client: reqwest::Client::new(),
+        observation: Arc::clone(&observation),
+        retried_transition: Arc::new(AtomicBool::new(false)),
+    };
+    let listener = TcpListener::bind("127.0.0.1:0")
+        .await
+        .map_err(|error| Error::Codec(format!("could not bind completion retry proxy: {error}")))?;
+    let proxy_url = format!(
+        "http://{}",
+        listener
+            .local_addr()
+            .map_err(|error| Error::Codec(format!("could not inspect proxy address: {error}")))?
+    );
+    let (shutdown_tx, shutdown_rx) = oneshot::channel::<()>();
+    let proxy_task = tokio::spawn(async move {
+        axum::serve(
+            listener,
+            Router::new()
+                .route("/{*path}", any(proxy_request))
+                .with_state(proxy),
+        )
+        .with_graceful_shutdown(async move {
+            let _ = shutdown_rx.await;
+        })
+        .await
+    });
+
+    let client = Client::builder(&proxy_url)
+        .token(Some(token))
+        .namespace(namespace)
+        .timeout(Duration::from_secs(15))
+        .build()?;
+    let callback_calls = Arc::new(AtomicUsize::new(0));
+    let worker = transition_worker(
+        client,
+        &queue,
+        &worker_id,
+        phase,
+        Arc::clone(&callback_calls),
+    );
+    worker.register().await?;
+    let handled_tasks = worker.run_once().await?;
+    drop(worker);
+    let _ = shutdown_tx.send(());
+    proxy_task
+        .await
+        .map_err(|error| Error::WorkerLoop(error.to_string()))?
+        .map_err(|error| Error::WorkerLoop(error.to_string()))?;
+    let completion = observation
+        .lock()
+        .map_err(|_| Error::WorkflowStatePoisoned)?
+        .clone();
+
+    Ok(json!({
+        "phase":phase,
+        "process_id":std::process::id(),
+        "worker_id":worker_id,
+        "handled_tasks":handled_tasks,
+        "callback_calls":callback_calls.load(Ordering::SeqCst),
+        "completion":completion,
+    }))
+}
+
+fn run_transition_phase_process(phase: &str, queue: &str) -> Result<Value> {
+    let executable = env::current_exe()
+        .map_err(|error| Error::Codec(format!("cannot resolve Rust probe executable: {error}")))?;
+    let output = Command::new(executable)
+        .args(["--transition-phase", phase, "--queue", queue])
+        .output()
+        .map_err(|error| Error::Codec(format!("cannot launch {phase} worker process: {error}")))?;
+    if !output.status.success() {
+        return Err(Error::Codec(format!(
+            "{phase} worker process failed: {}",
+            String::from_utf8_lossy(&output.stderr).trim()
+        )));
+    }
+    let last_line = String::from_utf8_lossy(&output.stdout)
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .next_back()
+        .unwrap_or("")
+        .to_string();
+    serde_json::from_str(&last_line)
+        .map_err(|error| Error::Codec(format!("{phase} worker evidence is invalid: {error}")))
+}
+
+async fn control_plane_get(
+    server_url: &str,
+    token: &str,
+    namespace: &str,
+    path: &str,
+) -> Result<Value> {
+    let response = reqwest::Client::new()
+        .get(format!("{server_url}/api{path}"))
+        .bearer_auth(token)
+        .header("Accept", "application/json")
+        .header("X-Namespace", namespace)
+        .header("X-Durable-Workflow-Control-Plane-Version", "2")
+        .send()
+        .await
+        .map_err(|error| Error::Codec(format!("control-plane request failed: {error}")))?;
+    let status = response.status();
+    let body = response
+        .json::<Value>()
+        .await
+        .map_err(|error| Error::Codec(format!("control-plane response was not JSON: {error}")))?;
+    if !status.is_success() {
+        return Err(Error::Codec(format!(
+            "control-plane request returned HTTP {}: {body}",
+            status.as_u16()
+        )));
+    }
+    Ok(body)
+}
+
+fn history_event_count(history: &Value, event_type: &str) -> usize {
+    history["events"]
+        .as_array()
+        .map(|events| {
+            events
+                .iter()
+                .filter(|event| event["event_type"] == event_type)
+                .count()
+        })
+        .unwrap_or_default()
+}
+
+fn history_event_payload<'a>(history: &'a Value, event_type: &str) -> Option<&'a Value> {
+    history["events"]
+        .as_array()?
+        .iter()
+        .find(|event| event["event_type"] == event_type)
+        .map(|event| &event["payload"])
 }
 
 fn pending_worker(
@@ -222,6 +545,42 @@ fn validated_product_failure(message: &str) -> Option<(&'static str, &'static st
         ),
         ("typed_timeout_not_observed", "typed_timed_out"),
         ("published_avro_envelope_not_used", "payload_contract"),
+        (
+            "continue_as_new_transition_execution_failed",
+            "continue_as_new_replay_boundary",
+        ),
+        (
+            "continue_as_new_completion_redelivery_not_proven",
+            "continue_as_new_replay_boundary",
+        ),
+        (
+            "continue_as_new_worker_process_replacement_not_proven",
+            "continue_as_new_replay_boundary",
+        ),
+        (
+            "continue_as_new_run_identity_not_proven",
+            "continue_as_new_replay_boundary",
+        ),
+        (
+            "continue_as_new_history_links_not_proven",
+            "continue_as_new_replay_boundary",
+        ),
+        (
+            "continue_as_new_duplicate_predecessor_decisions_observed",
+            "continue_as_new_replay_boundary",
+        ),
+        (
+            "continue_as_new_callback_reinvoked",
+            "continue_as_new_replay_boundary",
+        ),
+        (
+            "continue_as_new_successor_decisions_not_distinct",
+            "continue_as_new_replay_boundary",
+        ),
+        (
+            "continue_as_new_result_routing_not_proven",
+            "continue_as_new_replay_boundary",
+        ),
     ];
 
     ASSERTIONS
@@ -232,6 +591,27 @@ fn validated_product_failure(message: &str) -> Option<(&'static str, &'static st
 
 #[tokio::main]
 async fn main() {
+    if let Some(phase) = argument("--transition-phase") {
+        let phase = match phase.as_str() {
+            "predecessor" => "predecessor",
+            "successor" => "successor",
+            other => {
+                eprintln!("unsupported transition phase: {other}");
+                std::process::exit(2);
+            }
+        };
+        match run_transition_phase(phase).await {
+            Ok(evidence) => {
+                println!("{evidence}");
+                return;
+            }
+            Err(error) => {
+                eprintln!("{error}");
+                std::process::exit(1);
+            }
+        }
+    }
+
     if let Err(error) = run_probe().await {
         let error_message = error.to_string();
         let validated_failure = error
@@ -276,7 +656,7 @@ async fn main() {
                     "failure_message":observed_behavior,
                     "failing_lifecycle_cell":failing_cell,
                     "probe_outcome":"fail",
-                    "rust_shard_contract_version":2,
+                    "rust_shard_contract_version":3,
                     "executor_topology":{
                         "server_http_process":server_http_process,
                         "scheduler_process":scheduler_process,
@@ -327,6 +707,255 @@ async fn run_probe() -> ProbeResult<()> {
     let mut identities = Vec::new();
     let mut outcomes = serde_json::Map::new();
     let mut reasons: Vec<String> = Vec::new();
+
+    let transition_queue = format!("rust-lifecycle-continue-{}", suffix());
+    let transition_workflow_id = format!("rust-lifecycle-continue-{}", suffix());
+    let transition_handle = client
+        .start_workflow(
+            "rust.lifecycle.continue-replay",
+            &transition_queue,
+            &transition_workflow_id,
+            json!([{"phase":"predecessor"}]),
+        )
+        .await?;
+    let predecessor_run_id = transition_handle.run_id.clone().unwrap_or_default();
+    identities.push(identity(
+        &transition_handle,
+        "continue_as_new_replay_boundary_predecessor",
+    ));
+    let predecessor_process = run_transition_phase_process("predecessor", &transition_queue)
+        .map_err(|error| {
+            ProbeFailure::scenario(
+                error,
+                "continue_as_new_transition_execution_failed",
+                "continue_as_new_replay_boundary",
+                json!({"phase":"predecessor"}),
+            )
+        })?;
+    let successor_after_transition = transition_handle.describe().await.map_err(|error| {
+        ProbeFailure::scenario(
+            error,
+            "continue_as_new_transition_execution_failed",
+            "continue_as_new_replay_boundary",
+            json!({"phase":"successor_description"}),
+        )
+    })?;
+    let successor_run_id = successor_after_transition
+        .run_id
+        .clone()
+        .unwrap_or_default();
+    identities.push(json!({
+        "scenario":"continue_as_new_replay_boundary_successor",
+        "workflow_id":transition_workflow_id,
+        "run_id":successor_run_id,
+    }));
+    let successor_process =
+        run_transition_phase_process("successor", &transition_queue).map_err(|error| {
+            ProbeFailure::scenario(
+                error,
+                "continue_as_new_transition_execution_failed",
+                "continue_as_new_replay_boundary",
+                json!({"phase":"successor"}),
+            )
+        })?;
+    let final_result = transition_handle
+        .result(WorkflowResultOptions::default())
+        .await
+        .map_err(|error| {
+            ProbeFailure::scenario(
+                error,
+                "continue_as_new_result_routing_not_proven",
+                "continue_as_new_replay_boundary",
+                json!({"phase":"chain_result"}),
+            )
+        })?;
+    let current_run = transition_handle.describe().await?;
+    let selected_historical_run = transition_handle.describe_selected_run().await?;
+    let run_chain = control_plane_get(
+        &base_url,
+        &token,
+        &namespace,
+        &format!("/workflows/{transition_workflow_id}/runs"),
+    )
+    .await?;
+    let predecessor_history = control_plane_get(
+        &base_url,
+        &token,
+        &namespace,
+        &format!(
+            "/workflows/{transition_workflow_id}/runs/{predecessor_run_id}/history?page_size=200"
+        ),
+    )
+    .await?;
+    let successor_history = control_plane_get(
+        &base_url,
+        &token,
+        &namespace,
+        &format!(
+            "/workflows/{transition_workflow_id}/runs/{successor_run_id}/history?page_size=200"
+        ),
+    )
+    .await?;
+    let predecessor_counts = json!({
+        "SideEffectRecorded":history_event_count(&predecessor_history, "SideEffectRecorded"),
+        "VersionMarkerRecorded":history_event_count(&predecessor_history, "VersionMarkerRecorded"),
+        "WorkflowContinuedAsNew":history_event_count(&predecessor_history, "WorkflowContinuedAsNew"),
+    });
+    let successor_counts = json!({
+        "SideEffectRecorded":history_event_count(&successor_history, "SideEffectRecorded"),
+        "VersionMarkerRecorded":history_event_count(&successor_history, "VersionMarkerRecorded"),
+        "WorkflowContinuedAsNew":history_event_count(&successor_history, "WorkflowContinuedAsNew"),
+    });
+    let transition_link = history_event_payload(&predecessor_history, "WorkflowContinuedAsNew")
+        .cloned()
+        .unwrap_or(Value::Null);
+    let successor_link = history_event_payload(&successor_history, "WorkflowStarted")
+        .cloned()
+        .unwrap_or(Value::Null);
+    let transition_outcome = json!({
+        "status":"pass",
+        "workflow_id":transition_workflow_id,
+        "predecessor_run_id":predecessor_run_id,
+        "successor_run_id":successor_run_id,
+        "current_run_id":current_run.run_id,
+        "selected_historical_run_id":selected_historical_run.run_id,
+        "selected_historical_closed_reason":selected_historical_run.closed_reason,
+        "run_chain":run_chain,
+        "predecessor_history":predecessor_history,
+        "successor_history":successor_history,
+        "predecessor_history_event_counts":predecessor_counts,
+        "successor_history_event_counts":successor_counts,
+        "predecessor_transition_link":transition_link,
+        "successor_transition_link":successor_link,
+        "predecessor_worker_process":predecessor_process,
+        "successor_worker_process":successor_process,
+        "final_result":final_result,
+        "final_result_observation_source":"WorkflowHandle::result",
+        "current_run_observation_source":"WorkflowHandle::describe",
+        "selected_run_observation_source":"WorkflowHandle::describe_selected_run",
+        "predecessor_decisions_immutable":true,
+        "successor_decisions_are_new_run_decisions":true,
+        "successor_count":1,
+    });
+    let transition_failure = |stable_reason: &'static str| {
+        ProbeFailure::scenario(
+            Error::Codec(stable_reason.to_string()),
+            stable_reason,
+            "continue_as_new_replay_boundary",
+            transition_outcome.clone(),
+        )
+    };
+    let predecessor_commands = &predecessor_process["completion"]["command_types"];
+    let successor_commands = &successor_process["completion"]["command_types"];
+    if predecessor_process["completion"]["completion_delivery_count"] != 2
+        || predecessor_process["completion"]["first_response"]["recorded"] != true
+        || predecessor_process["completion"]["retry_response_status"] != 409
+        || predecessor_process["completion"]["retry_response"]["reason"]
+            .as_str()
+            .unwrap_or("")
+            .is_empty()
+        || predecessor_commands
+            != &json!([
+                "record_side_effect",
+                "record_version_marker",
+                "continue_as_new"
+            ])
+    {
+        return Err(transition_failure(
+            "continue_as_new_completion_redelivery_not_proven",
+        ));
+    }
+    if predecessor_process["process_id"] == successor_process["process_id"]
+        || predecessor_process["worker_id"] == successor_process["worker_id"]
+        || predecessor_process["handled_tasks"] != 1
+        || successor_process["handled_tasks"] != 1
+    {
+        return Err(transition_failure(
+            "continue_as_new_worker_process_replacement_not_proven",
+        ));
+    }
+    let run_ids = run_chain["runs"]
+        .as_array()
+        .map(|runs| {
+            runs.iter()
+                .filter_map(|run| run["run_id"].as_str())
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    let run_numbers = run_chain["runs"]
+        .as_array()
+        .map(|runs| {
+            runs.iter()
+                .filter_map(|run| run["run_number"].as_u64())
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    if predecessor_run_id.is_empty()
+        || successor_run_id.is_empty()
+        || predecessor_run_id == successor_run_id
+        || run_chain["workflow_id"] != transition_workflow_id
+        || run_chain["run_count"] != 2
+        || run_ids != vec![predecessor_run_id.as_str(), successor_run_id.as_str()]
+        || run_numbers != vec![1, 2]
+        || current_run.workflow_id.as_deref() != Some(transition_workflow_id.as_str())
+        || current_run.run_id.as_deref() != Some(successor_run_id.as_str())
+        || selected_historical_run.workflow_id.as_deref() != Some(transition_workflow_id.as_str())
+        || selected_historical_run.run_id.as_deref() != Some(predecessor_run_id.as_str())
+        || selected_historical_run.closed_reason.as_deref() != Some("continued")
+    {
+        return Err(transition_failure(
+            "continue_as_new_run_identity_not_proven",
+        ));
+    }
+    if transition_link["continued_to_run_id"] != successor_run_id
+        || successor_link["continued_from_run_id"] != predecessor_run_id
+        || predecessor_history["workflow_id"] != transition_workflow_id
+        || predecessor_history["run_id"] != predecessor_run_id
+        || successor_history["workflow_id"] != transition_workflow_id
+        || successor_history["run_id"] != successor_run_id
+    {
+        return Err(transition_failure(
+            "continue_as_new_history_links_not_proven",
+        ));
+    }
+    if predecessor_counts["SideEffectRecorded"] != 1
+        || predecessor_counts["VersionMarkerRecorded"] != 1
+        || predecessor_counts["WorkflowContinuedAsNew"] != 1
+    {
+        return Err(transition_failure(
+            "continue_as_new_duplicate_predecessor_decisions_observed",
+        ));
+    }
+    if predecessor_process["callback_calls"] != 1 {
+        return Err(transition_failure("continue_as_new_callback_reinvoked"));
+    }
+    if successor_process["callback_calls"] != 1
+        || successor_process["completion"]["completion_delivery_count"] != 1
+        || successor_commands
+            != &json!([
+                "record_side_effect",
+                "record_version_marker",
+                "complete_workflow"
+            ])
+        || successor_counts["SideEffectRecorded"] != 1
+        || successor_counts["VersionMarkerRecorded"] != 1
+        || successor_counts["WorkflowContinuedAsNew"] != 0
+    {
+        return Err(transition_failure(
+            "continue_as_new_successor_decisions_not_distinct",
+        ));
+    }
+    if final_result["status"] != "completed"
+        || final_result["workflow_id"] != transition_workflow_id
+        || final_result["run_id"] != successor_run_id
+        || final_result["successor_version"] != 3
+    {
+        return Err(transition_failure(
+            "continue_as_new_result_routing_not_proven",
+        ));
+    }
+    outcomes.insert("continue_as_new_replay_boundary".into(), transition_outcome);
+    reasons.push("workflow_task_completion_redelivery_rejected".to_string());
 
     let queue = format!("rust-lifecycle-cancel-{}", suffix());
     let started = Arc::new(AtomicBool::new(false));
@@ -863,7 +1492,7 @@ async fn run_probe() -> ProbeResult<()> {
                 "instance_cancel", "instance_terminate", "selected_run_guard", "stale_run_rejection",
                 "typed_failed", "typed_cancelled", "typed_terminated", "typed_timed_out",
                 "cancellation_heartbeat", "late_activity_completion_refused",
-                "worker_restart_during_cancellation"
+                "worker_restart_during_cancellation", "continue_as_new_replay_boundary"
             ],
             "unsupported_cells":[],
             "typed_errors":[],
@@ -877,7 +1506,7 @@ async fn run_probe() -> ProbeResult<()> {
                 "apache_avro_package":"apache-avro",
                 "official_crates_io_provenance":true
             },
-            "rust_shard_contract_version":2,
+            "rust_shard_contract_version":3,
             "executor_topology":{
                 "server_http_process":server_http_process,
                 "scheduler_process":scheduler_process,

@@ -85,6 +85,7 @@ final class WorkflowLifecycleResultGate
                 'rust_sdk_shard_uses_exact_crates_io_and_matching_server_artifacts',
                 'rust_sdk_timed_out_is_server_terminal_not_client_wait_timeout',
                 'rust_sdk_replacement_worker_starts_before_cancelled_activity_settles',
+                'rust_sdk_continue_as_new_redelivery_preserves_predecessor_decisions_across_process_replacement',
                 'rust_sdk_machine_readable_outcomes_are_semantically_validated',
                 'cli_api_history_and_waterline_surfaces_are_operator_diagnostic_enough',
                 'each_unsupported_scenario_reports_documented_typed_refusal',
@@ -1520,6 +1521,7 @@ final class WorkflowLifecycleResultGate
             'cancellation_heartbeat',
             'late_activity_completion_refused',
             'worker_restart_during_cancellation',
+            'continue_as_new_replay_boundary',
         ];
         $covered = self::stringList($outputs['covered_cells'] ?? []);
         foreach ($requiredCells as $cell) {
@@ -1658,6 +1660,155 @@ final class WorkflowLifecycleResultGate
                 'Rust worker restart evidence must observe the replacement poll before releasing original activity settlement',
             );
         }
+        $continueOutcome = is_array($scenarioOutcomes['continue_as_new_replay_boundary'] ?? null)
+            ? $scenarioOutcomes['continue_as_new_replay_boundary']
+            : [];
+        $workflowId = self::stringValue($continueOutcome['workflow_id'] ?? null);
+        $predecessorRunId = self::stringValue($continueOutcome['predecessor_run_id'] ?? null);
+        $successorRunId = self::stringValue($continueOutcome['successor_run_id'] ?? null);
+        $runChain = self::arrayField($continueOutcome, ['run_chain']) ?? [];
+        $runs = self::arrayField($runChain, ['runs']) ?? [];
+        $runIds = array_values(array_filter(array_map(
+            static fn (mixed $run): string => is_array($run)
+                ? self::stringValue($run['run_id'] ?? null)
+                : '',
+            $runs,
+        ), static fn (string $runId): bool => $runId !== ''));
+        $runNumbers = array_map(
+            static fn (mixed $run): ?float => is_array($run)
+                ? self::numberValue($run['run_number'] ?? null)
+                : null,
+            $runs,
+        );
+        if ($workflowId === ''
+            || $predecessorRunId === ''
+            || $successorRunId === ''
+            || $predecessorRunId === $successorRunId
+            || self::stringValue($continueOutcome['current_run_id'] ?? null) !== $successorRunId
+            || self::stringValue($continueOutcome['selected_historical_run_id'] ?? null) !== $predecessorRunId
+            || self::normalizedText($continueOutcome['selected_historical_closed_reason'] ?? null) !== 'continued'
+            || self::stringValue($runChain['workflow_id'] ?? null) !== $workflowId
+            || self::numberValue($runChain['run_count'] ?? null) !== 2.0
+            || $runIds !== [$predecessorRunId, $successorRunId]
+            || $runNumbers !== [1.0, 2.0]
+            || self::numberValue($continueOutcome['successor_count'] ?? null) !== 1.0) {
+            $failures = self::addSemanticFailure(
+                $failures,
+                'rust_sdk_continue_as_new_run_identity_invalid',
+                'Rust continue-as-new evidence must retain one workflow identity, exactly two distinct ordered runs, historical selection, and current successor routing',
+            );
+        }
+
+        $predecessorProcess = self::arrayField($continueOutcome, ['predecessor_worker_process']) ?? [];
+        $successorProcess = self::arrayField($continueOutcome, ['successor_worker_process']) ?? [];
+        $predecessorCompletion = self::arrayField($predecessorProcess, ['completion']) ?? [];
+        $successorCompletion = self::arrayField($successorProcess, ['completion']) ?? [];
+        if (self::numberValue($predecessorProcess['process_id'] ?? null) === null
+            || self::numberValue($successorProcess['process_id'] ?? null) === null
+            || self::numberValue($predecessorProcess['process_id'] ?? null)
+                === self::numberValue($successorProcess['process_id'] ?? null)
+            || self::stringValue($predecessorProcess['worker_id'] ?? null) === ''
+            || self::stringValue($successorProcess['worker_id'] ?? null) === ''
+            || self::stringValue($predecessorProcess['worker_id'] ?? null)
+                === self::stringValue($successorProcess['worker_id'] ?? null)
+            || self::numberValue($predecessorProcess['handled_tasks'] ?? null) !== 1.0
+            || self::numberValue($successorProcess['handled_tasks'] ?? null) !== 1.0) {
+            $failures = self::addSemanticFailure(
+                $failures,
+                'rust_sdk_continue_as_new_process_replacement_invalid',
+                'Rust continue-as-new evidence must execute predecessor and successor tasks in distinct worker processes and worker identities',
+            );
+        }
+        if (self::numberValue($predecessorCompletion['completion_delivery_count'] ?? null) !== 2.0
+            || self::numberValue($predecessorCompletion['first_response_status'] ?? null) !== 200.0
+            || ! self::truthy($predecessorCompletion['first_response']['recorded'] ?? null)
+            || self::numberValue($predecessorCompletion['retry_response_status'] ?? null) !== 409.0
+            || self::stringValue($predecessorCompletion['retry_response']['reason'] ?? null) === ''
+            || self::stringList($predecessorCompletion['command_types'] ?? [])
+                !== ['record_side_effect', 'record_version_marker', 'continue_as_new']
+            || ! self::isNonEmptyList($predecessorCompletion['commands'] ?? null)) {
+            $failures = self::addSemanticFailure(
+                $failures,
+                'rust_sdk_continue_as_new_completion_redelivery_invalid',
+                'Rust continue-as-new evidence must retry the exact committed predecessor completion and retain its rejected redelivery response',
+            );
+        }
+        if (self::numberValue($successorCompletion['completion_delivery_count'] ?? null) !== 1.0
+            || self::numberValue($successorCompletion['first_response_status'] ?? null) !== 200.0
+            || ! self::truthy($successorCompletion['first_response']['recorded'] ?? null)
+            || self::stringList($successorCompletion['command_types'] ?? [])
+                !== ['record_side_effect', 'record_version_marker', 'complete_workflow']
+            || ! self::isNonEmptyList($successorCompletion['commands'] ?? null)) {
+            $failures = self::addSemanticFailure(
+                $failures,
+                'rust_sdk_continue_as_new_successor_commands_invalid',
+                'Rust continue-as-new successor must record its own new-run side effect and version marker before final completion',
+            );
+        }
+
+        $predecessorHistory = self::arrayField($continueOutcome, ['predecessor_history']) ?? [];
+        $successorHistory = self::arrayField($continueOutcome, ['successor_history']) ?? [];
+        $historyCount = static function (array $history, string $eventType): int {
+            $events = is_array($history['events'] ?? null) ? $history['events'] : [];
+
+            return count(array_filter(
+                $events,
+                static fn (mixed $event): bool => is_array($event)
+                    && ($event['event_type'] ?? null) === $eventType,
+            ));
+        };
+        $predecessorCounts = self::arrayField($continueOutcome, ['predecessor_history_event_counts']) ?? [];
+        $successorCounts = self::arrayField($continueOutcome, ['successor_history_event_counts']) ?? [];
+        if (self::stringValue($predecessorHistory['workflow_id'] ?? null) !== $workflowId
+            || self::stringValue($predecessorHistory['run_id'] ?? null) !== $predecessorRunId
+            || self::stringValue($successorHistory['workflow_id'] ?? null) !== $workflowId
+            || self::stringValue($successorHistory['run_id'] ?? null) !== $successorRunId
+            || $historyCount($predecessorHistory, 'SideEffectRecorded') !== 1
+            || $historyCount($predecessorHistory, 'VersionMarkerRecorded') !== 1
+            || $historyCount($predecessorHistory, 'WorkflowContinuedAsNew') !== 1
+            || $historyCount($successorHistory, 'SideEffectRecorded') !== 1
+            || $historyCount($successorHistory, 'VersionMarkerRecorded') !== 1
+            || $historyCount($successorHistory, 'WorkflowContinuedAsNew') !== 0
+            || self::numberValue($predecessorCounts['SideEffectRecorded'] ?? null) !== 1.0
+            || self::numberValue($predecessorCounts['VersionMarkerRecorded'] ?? null) !== 1.0
+            || self::numberValue($predecessorCounts['WorkflowContinuedAsNew'] ?? null) !== 1.0
+            || self::numberValue($successorCounts['SideEffectRecorded'] ?? null) !== 1.0
+            || self::numberValue($successorCounts['VersionMarkerRecorded'] ?? null) !== 1.0
+            || self::numberValue($successorCounts['WorkflowContinuedAsNew'] ?? null) !== 0.0) {
+            $failures = self::addSemanticFailure(
+                $failures,
+                'rust_sdk_continue_as_new_history_decisions_invalid',
+                'Rust continue-as-new histories must keep predecessor decisions immutable and count successor decisions only in the new run',
+            );
+        }
+        $predecessorLink = self::arrayField($continueOutcome, ['predecessor_transition_link']) ?? [];
+        $successorLink = self::arrayField($continueOutcome, ['successor_transition_link']) ?? [];
+        if (self::stringValue($predecessorLink['continued_to_run_id'] ?? null) !== $successorRunId
+            || self::stringValue($successorLink['continued_from_run_id'] ?? null) !== $predecessorRunId) {
+            $failures = self::addSemanticFailure(
+                $failures,
+                'rust_sdk_continue_as_new_history_links_invalid',
+                'Rust continue-as-new histories must link predecessor and successor run identities in both directions',
+            );
+        }
+        $finalResult = self::arrayField($continueOutcome, ['final_result']) ?? [];
+        if (self::numberValue($predecessorProcess['callback_calls'] ?? null) !== 1.0
+            || self::numberValue($successorProcess['callback_calls'] ?? null) !== 1.0
+            || ! self::truthy($continueOutcome['predecessor_decisions_immutable'] ?? null)
+            || ! self::truthy($continueOutcome['successor_decisions_are_new_run_decisions'] ?? null)
+            || self::normalizedText($continueOutcome['final_result_observation_source'] ?? null) !== 'workflowhandle::result'
+            || self::normalizedText($continueOutcome['current_run_observation_source'] ?? null) !== 'workflowhandle::describe'
+            || self::normalizedText($continueOutcome['selected_run_observation_source'] ?? null) !== 'workflowhandle::describe_selected_run'
+            || self::normalizedText($finalResult['status'] ?? null) !== 'completed'
+            || self::stringValue($finalResult['workflow_id'] ?? null) !== $workflowId
+            || self::stringValue($finalResult['run_id'] ?? null) !== $successorRunId
+            || self::numberValue($finalResult['successor_version'] ?? null) !== 3.0) {
+            $failures = self::addSemanticFailure(
+                $failures,
+                'rust_sdk_continue_as_new_callback_or_routing_invalid',
+                'Rust continue-as-new evidence must invoke each run callback once and route current, selected historical, and final result reads through the chain',
+            );
+        }
         $provenance = self::arrayField($outputs, ['install_provenance']) ?? [];
         if (($provenance['package'] ?? null) !== 'durable-workflow'
             || ($provenance['requested_version'] ?? null) !== ($outputs['artifact_version'] ?? null)
@@ -1686,7 +1837,7 @@ final class WorkflowLifecycleResultGate
         }
 
         $stableReasons = self::stringList($outputs['stable_reasons'] ?? []);
-        foreach (['run_cancelled', 'run_terminated', 'historical_run_command_rejected', 'run_timeout'] as $reason) {
+        foreach (['run_cancelled', 'run_terminated', 'historical_run_command_rejected', 'run_timeout', 'workflow_task_completion_redelivery_rejected'] as $reason) {
             if (! in_array($reason, $stableReasons, true)) {
                 $failures = self::addSemanticFailure(
                     $failures,
@@ -1696,7 +1847,7 @@ final class WorkflowLifecycleResultGate
             }
         }
         $identities = self::arrayField($outputs, ['workflow_identities']) ?? [];
-        foreach (['instance_cancel', 'instance_terminate', 'selected_run_guard', 'typed_failed', 'typed_timed_out'] as $scenario) {
+        foreach (['instance_cancel', 'instance_terminate', 'selected_run_guard', 'typed_failed', 'typed_timed_out', 'continue_as_new_replay_boundary_predecessor', 'continue_as_new_replay_boundary_successor'] as $scenario) {
             $matching = array_values(array_filter(
                 $identities,
                 static fn (mixed $identity): bool => is_array($identity)
@@ -1713,7 +1864,7 @@ final class WorkflowLifecycleResultGate
             }
         }
         $topology = self::arrayField($outputs, ['executor_topology']) ?? [];
-        if (($outputs['rust_shard_contract_version'] ?? null) !== 2
+        if (($outputs['rust_shard_contract_version'] ?? null) !== 3
             || ($outputs['shard_runner'] ?? null) !== 'published-rust-sdk-lifecycle-surface-probe'
             || self::numberValue($outputs['shard_exit_status'] ?? null) !== 0.0) {
             $failures = self::addSemanticFailure(

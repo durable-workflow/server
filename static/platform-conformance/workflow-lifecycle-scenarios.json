@@ -98,9 +98,9 @@
     },
     {
       "id": "rust_sdk_lifecycle_surface",
-      "description": "The exact released Rust SDK crate exercises lifecycle behavior against the matching published server image with official Avro payload provenance.",
+      "description": "The exact released Rust SDK crate exercises lifecycle behavior against the matching published server image with official Avro payload provenance, including immutable predecessor decisions across continue-as-new completion redelivery and worker-process replacement.",
       "required_evidence": ["sdk", "covered_cells", "unsupported_cells", "typed_errors", "artifact_version", "server_version", "server_cluster_info", "install_provenance", "workflow_identities", "scenario_outcomes", "stable_reasons", "payload_contract", "executor_topology", "rust_shard_contract_version", "shard_runner", "shard_exit_status"],
-      "required_behavior": "rust_sdk_exact_crate_exercises_lifecycle_against_the_matching_published_server_image"
+      "required_behavior": "rust_sdk_exact_crate_exercises_lifecycle_and_preserves_committed_predecessor_decisions_across_continue_as_new_redelivery_and_worker_process_replacement"
     },
     {
       "id": "operator_diagnostics_surfaces",

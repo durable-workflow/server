@@ -324,7 +324,7 @@ function normalizeRustSidecar(sidecar) {
     && !truthyFlag(sidecar.runnerBlocked)
     && scenario.published_artifact_cell_executed === true
     && outputs.sdk === 'sdk-rust'
-    && outputs.rust_shard_contract_version === 2
+    && outputs.rust_shard_contract_version === 3
     && outputs.shard_runner === RUST_SIDECAR_RUNNER
     && Number.isInteger(outputs.shard_exit_status)
     && outputs.shard_exit_status === exitStatus;
@@ -1120,7 +1120,7 @@ function validateRustSdkLifecycleSurface(outputs) {
     'instance_cancel', 'instance_terminate', 'selected_run_guard', 'stale_run_rejection',
     'typed_failed', 'typed_cancelled', 'typed_terminated', 'typed_timed_out',
     'cancellation_heartbeat', 'late_activity_completion_refused',
-    'worker_restart_during_cancellation',
+    'worker_restart_during_cancellation', 'continue_as_new_replay_boundary',
   ];
   for (const cell of requiredCells) {
     if (!listContainsValue(outputs.covered_cells, cell)) failures.push(`covered_cells must include ${cell}`);
@@ -1210,6 +1210,123 @@ function validateRustSdkLifecycleSurface(outputs) {
       || !observedOrdering) {
     failures.push('worker_restart_during_cancellation must observe the replacement poll before releasing original activity settlement');
   }
+  const continueOutcome = nonEmptyObject(scenarioOutcomes.continue_as_new_replay_boundary)
+    ? scenarioOutcomes.continue_as_new_replay_boundary
+    : {};
+  const workflowId = stringValue(continueOutcome.workflow_id);
+  const predecessorRunId = stringValue(continueOutcome.predecessor_run_id);
+  const continuedRunId = stringValue(continueOutcome.successor_run_id);
+  const runChain = nonEmptyObject(continueOutcome.run_chain) ? continueOutcome.run_chain : {};
+  const runIds = Array.isArray(runChain.runs)
+    ? runChain.runs.map((run) => stringValue(run?.run_id)).filter(Boolean)
+    : [];
+  const runNumbers = Array.isArray(runChain.runs)
+    ? runChain.runs.map((run) => numberValue(run?.run_number))
+    : [];
+  if (!workflowId || !predecessorRunId || !continuedRunId || predecessorRunId === continuedRunId
+      || stringValue(continueOutcome.current_run_id) !== continuedRunId
+      || stringValue(continueOutcome.selected_historical_run_id) !== predecessorRunId
+      || normalizedText(continueOutcome.selected_historical_closed_reason) !== 'continued'
+      || stringValue(runChain.workflow_id) !== workflowId
+      || numberValue(runChain.run_count) !== 2
+      || JSON.stringify(runIds) !== JSON.stringify([predecessorRunId, continuedRunId])
+      || JSON.stringify(runNumbers) !== JSON.stringify([1, 2])
+      || numberValue(continueOutcome.successor_count) !== 1) {
+    failures.push('continue_as_new_replay_boundary must retain one workflow identity, exactly two distinct ordered runs, historical selection, and current successor routing');
+  }
+  const predecessorProcess = nonEmptyObject(continueOutcome.predecessor_worker_process)
+    ? continueOutcome.predecessor_worker_process
+    : {};
+  const successorProcess = nonEmptyObject(continueOutcome.successor_worker_process)
+    ? continueOutcome.successor_worker_process
+    : {};
+  const predecessorCompletion = nonEmptyObject(predecessorProcess.completion)
+    ? predecessorProcess.completion
+    : {};
+  const successorCompletion = nonEmptyObject(successorProcess.completion)
+    ? successorProcess.completion
+    : {};
+  if (numberValue(predecessorProcess.process_id) === null
+      || numberValue(successorProcess.process_id) === null
+      || numberValue(predecessorProcess.process_id) === numberValue(successorProcess.process_id)
+      || !stringValue(predecessorProcess.worker_id)
+      || !stringValue(successorProcess.worker_id)
+      || stringValue(predecessorProcess.worker_id) === stringValue(successorProcess.worker_id)
+      || numberValue(predecessorProcess.handled_tasks) !== 1
+      || numberValue(successorProcess.handled_tasks) !== 1) {
+    failures.push('continue_as_new_replay_boundary must execute predecessor and successor tasks in distinct worker processes and worker identities');
+  }
+  if (numberValue(predecessorCompletion.completion_delivery_count) !== 2
+      || numberValue(predecessorCompletion.first_response_status) !== 200
+      || !truthyFlag(predecessorCompletion.first_response?.recorded)
+      || numberValue(predecessorCompletion.retry_response_status) !== 409
+      || !stringValue(predecessorCompletion.retry_response?.reason)
+      || JSON.stringify(predecessorCompletion.command_types) !== JSON.stringify([
+        'record_side_effect', 'record_version_marker', 'continue_as_new',
+      ])
+      || !nonEmptyList(predecessorCompletion.commands)) {
+    failures.push('continue_as_new_replay_boundary must retry the exact committed predecessor completion and retain its rejected redelivery response');
+  }
+  if (numberValue(successorCompletion.completion_delivery_count) !== 1
+      || numberValue(successorCompletion.first_response_status) !== 200
+      || !truthyFlag(successorCompletion.first_response?.recorded)
+      || JSON.stringify(successorCompletion.command_types) !== JSON.stringify([
+        'record_side_effect', 'record_version_marker', 'complete_workflow',
+      ])
+      || !nonEmptyList(successorCompletion.commands)) {
+    failures.push('continue_as_new_replay_boundary successor must record its own new-run side effect and version marker before final completion');
+  }
+  const predecessorHistory = nonEmptyObject(continueOutcome.predecessor_history)
+    ? continueOutcome.predecessor_history
+    : {};
+  const successorHistory = nonEmptyObject(continueOutcome.successor_history)
+    ? continueOutcome.successor_history
+    : {};
+  const historyCount = (history, eventType) => Array.isArray(history.events)
+    ? history.events.filter((event) => event?.event_type === eventType).length
+    : 0;
+  const predecessorCounts = nonEmptyObject(continueOutcome.predecessor_history_event_counts)
+    ? continueOutcome.predecessor_history_event_counts
+    : {};
+  const successorCounts = nonEmptyObject(continueOutcome.successor_history_event_counts)
+    ? continueOutcome.successor_history_event_counts
+    : {};
+  if (stringValue(predecessorHistory.workflow_id) !== workflowId
+      || stringValue(predecessorHistory.run_id) !== predecessorRunId
+      || stringValue(successorHistory.workflow_id) !== workflowId
+      || stringValue(successorHistory.run_id) !== continuedRunId
+      || historyCount(predecessorHistory, 'SideEffectRecorded') !== 1
+      || historyCount(predecessorHistory, 'VersionMarkerRecorded') !== 1
+      || historyCount(predecessorHistory, 'WorkflowContinuedAsNew') !== 1
+      || historyCount(successorHistory, 'SideEffectRecorded') !== 1
+      || historyCount(successorHistory, 'VersionMarkerRecorded') !== 1
+      || historyCount(successorHistory, 'WorkflowContinuedAsNew') !== 0
+      || numberValue(predecessorCounts.SideEffectRecorded) !== 1
+      || numberValue(predecessorCounts.VersionMarkerRecorded) !== 1
+      || numberValue(predecessorCounts.WorkflowContinuedAsNew) !== 1
+      || numberValue(successorCounts.SideEffectRecorded) !== 1
+      || numberValue(successorCounts.VersionMarkerRecorded) !== 1
+      || numberValue(successorCounts.WorkflowContinuedAsNew) !== 0) {
+    failures.push('continue_as_new_replay_boundary histories must keep predecessor decisions immutable and count successor decisions only in the new run');
+  }
+  if (stringValue(continueOutcome.predecessor_transition_link?.continued_to_run_id) !== continuedRunId
+      || stringValue(continueOutcome.successor_transition_link?.continued_from_run_id) !== predecessorRunId) {
+    failures.push('continue_as_new_replay_boundary histories must link predecessor and successor run identities in both directions');
+  }
+  const finalResult = nonEmptyObject(continueOutcome.final_result) ? continueOutcome.final_result : {};
+  if (numberValue(predecessorProcess.callback_calls) !== 1
+      || numberValue(successorProcess.callback_calls) !== 1
+      || !truthyFlag(continueOutcome.predecessor_decisions_immutable)
+      || !truthyFlag(continueOutcome.successor_decisions_are_new_run_decisions)
+      || normalizedText(continueOutcome.final_result_observation_source) !== 'workflowhandle::result'
+      || normalizedText(continueOutcome.current_run_observation_source) !== 'workflowhandle::describe'
+      || normalizedText(continueOutcome.selected_run_observation_source) !== 'workflowhandle::describe_selected_run'
+      || normalizedText(finalResult.status) !== 'completed'
+      || stringValue(finalResult.workflow_id) !== workflowId
+      || stringValue(finalResult.run_id) !== continuedRunId
+      || numberValue(finalResult.successor_version) !== 3) {
+    failures.push('continue_as_new_replay_boundary must invoke each run callback once and route current, selected historical, and final result reads through the chain');
+  }
   const provenance = nonEmptyObject(outputs.install_provenance) ? outputs.install_provenance : {};
   if (provenance.package !== 'durable-workflow'
       || provenance.requested_version !== outputs.artifact_version
@@ -1230,10 +1347,10 @@ function validateRustSdkLifecycleSurface(outputs) {
   if (!nonEmptyList(outputs.workflow_identities)) failures.push('workflow_identities must be non-empty');
   if (!nonEmptyObject(outputs.scenario_outcomes)) failures.push('scenario_outcomes must be non-empty');
   if (!nonEmptyList(outputs.stable_reasons)) failures.push('stable_reasons must be non-empty');
-  for (const reason of ['run_cancelled', 'run_terminated', 'historical_run_command_rejected', 'run_timeout']) {
+  for (const reason of ['run_cancelled', 'run_terminated', 'historical_run_command_rejected', 'run_timeout', 'workflow_task_completion_redelivery_rejected']) {
     if (!listContainsValue(outputs.stable_reasons, reason)) failures.push(`stable_reasons must include ${reason}`);
   }
-  const requiredIdentityScenarios = ['instance_cancel', 'instance_terminate', 'selected_run_guard', 'typed_failed', 'typed_timed_out'];
+  const requiredIdentityScenarios = ['instance_cancel', 'instance_terminate', 'selected_run_guard', 'typed_failed', 'typed_timed_out', 'continue_as_new_replay_boundary_predecessor', 'continue_as_new_replay_boundary_successor'];
   for (const scenario of requiredIdentityScenarios) {
     const identity = Array.isArray(outputs.workflow_identities)
       ? outputs.workflow_identities.find((entry) => normalizedText(entry?.scenario) === scenario)
@@ -1243,7 +1360,7 @@ function validateRustSdkLifecycleSurface(outputs) {
     }
   }
   const topology = nonEmptyObject(outputs.executor_topology) ? outputs.executor_topology : {};
-  if (outputs.rust_shard_contract_version !== 2
+  if (outputs.rust_shard_contract_version !== 3
       || outputs.shard_runner !== 'published-rust-sdk-lifecycle-surface-probe'
       || numberValue(outputs.shard_exit_status) !== 0
       || topology.server_http_process !== 'exact_published_image'

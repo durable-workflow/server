@@ -152,14 +152,22 @@ that published package. The Rust sidecar resolves an exact `durable-workflow`
 requirement from crates.io into `Cargo.lock`, records the registry checksum for it and the
 official `apache-avro` dependency, and executes against the matching published
 server HTTP and scheduler processes on an isolated network. It requires Rust
-SDK 0.1.10 or a later lifecycle successor so the one-second run deadline is
-created through the SDK rather than a separate raw control-plane request. The Rust compiler
+SDK 0.1.15 or a later lifecycle successor so deterministic continue-as-new,
+side effects, version markers, and server-enforced run deadlines are all
+exercised through the published SDK. The Rust compiler
 and probe run outside the server container; runner scripts are copied from the
 exact published image, so neither Cargo nor Docker is required in that image.
 Its required cells cover instance and selected-run lifecycle
 commands, historical-run rejection, typed terminal outcomes, cancellation
 heartbeats, late activity completion refusal, and worker restart during
-cancellation. A missing, mismatched, incomplete, or unsuccessful Rust shard is
+cancellation. The continue-as-new cell runs the predecessor and successor in
+different worker processes, retries the predecessor's exact committed
+completion, and retains both public histories. Passing evidence requires one
+successor, one predecessor side-effect event, one predecessor version-marker
+event, a callback count of one, bidirectional run-history links, current and
+selected-run visibility, and final result routing. A successor side effect or
+version marker intentionally emitted by successor code is counted only in the
+new run. A missing, mismatched, incomplete, or unsuccessful Rust shard is
 always non-passing. The runner then records artifact versions, public
 artifact sources, source policy, local source checkout usage, and per-cell
 outcomes. A cell can pass only when host runtime evidence marks

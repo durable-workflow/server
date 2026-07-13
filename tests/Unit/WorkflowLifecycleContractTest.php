@@ -43,7 +43,7 @@ class WorkflowLifecycleContractTest extends TestCase
         $this->assertContains('rust-sdk-lifecycle-evidence.json', $hostRunner['result_files']);
         $this->assertTrue($hostRunner['python_sdk_probe_does_not_require_docker_inside_server_container']);
         $this->assertTrue($hostRunner['rust_sdk_probe_required']);
-        $this->assertSame('0.1.10', $hostRunner['rust_sdk_probe_minimum_version']);
+        $this->assertSame('0.1.15', $hostRunner['rust_sdk_probe_minimum_version']);
         $this->assertContains('docker_rust_1_86_exact_crates_io_install', $hostRunner['rust_sdk_probe_executors']);
         $this->assertSame('scripts/conformance/workflow-lifecycle-host-published-artifacts.sh', $hostRunner['runner_path']);
         $this->assertSame('docker_capable_host', $hostRunner['runner_execution_context']);
@@ -279,8 +279,8 @@ class WorkflowLifecycleContractTest extends TestCase
             $this->assertSame('server_terminal_typed_timeout_reason_unstable', $rust['observed_outputs']['stable_reason']);
             $this->assertSame('typed_timed_out', $rust['observed_outputs']['failing_lifecycle_cell']);
             $this->assertSame('client_timeout', $rust['observed_outputs']['scenario_outcomes']['typed_timed_out']['failure_category']);
-            $this->assertSame('0.1.8', $rust['observed_outputs']['install_provenance']['installed_version']);
-            $this->assertSame('0.2.512', $rust['observed_outputs']['server_version']);
+            $this->assertSame('0.1.15', $rust['observed_outputs']['install_provenance']['installed_version']);
+            $this->assertSame('0.2.649', $rust['observed_outputs']['server_version']);
             $this->assertStringNotContainsString('private-test-token', $rust['observed_outputs']['failure_message']);
             $this->assertStringContainsString('[REDACTED]', $rust['observed_outputs']['failure_message']);
             $this->assertSame(512, strlen($rust['observed_outputs']['failure_message']));
@@ -510,8 +510,8 @@ class WorkflowLifecycleContractTest extends TestCase
         $this->writeFakeRustDocker($fakeBin);
         $probeOutput = json_encode([
             'sdk' => 'sdk-rust',
-            'artifact_version' => '0.1.10',
-            'server_version' => '0.2.644',
+            'artifact_version' => '0.1.15',
+            'server_version' => '0.2.649',
             'covered_cells' => [],
             'unsupported_cells' => [],
             'typed_errors' => [],
@@ -527,7 +527,7 @@ class WorkflowLifecycleContractTest extends TestCase
                     'observed_behavior' => 'WorkflowTimedOut returned client_timeout',
                 ],
             ],
-            'rust_shard_contract_version' => 2,
+            'rust_shard_contract_version' => 3,
             'published_artifact_cell_executed' => true,
             'local_product_source_checkouts_used' => false,
         ], JSON_THROW_ON_ERROR);
@@ -549,8 +549,8 @@ class WorkflowLifecycleContractTest extends TestCase
                 $rust['observed_outputs']['stable_reason'],
             );
             $this->assertSame('typed_timed_out', $rust['observed_outputs']['failing_lifecycle_cell']);
-            $this->assertSame('0.1.10', $rust['observed_outputs']['install_provenance']['installed_version']);
-            $this->assertSame('0.2.644', $rust['observed_outputs']['server_version']);
+            $this->assertSame('0.1.15', $rust['observed_outputs']['install_provenance']['installed_version']);
+            $this->assertSame('0.2.649', $rust['observed_outputs']['server_version']);
             $this->assertStringNotContainsString(
                 'private-test-token',
                 $rust['observed_outputs']['failure_message'],
@@ -585,8 +585,8 @@ class WorkflowLifecycleContractTest extends TestCase
         ];
         $probeOutput = json_encode([
             'sdk' => 'sdk-rust',
-            'artifact_version' => '0.1.10',
-            'server_version' => '0.2.644',
+            'artifact_version' => '0.1.15',
+            'server_version' => '0.2.649',
             'covered_cells' => [],
             'unsupported_cells' => [],
             'typed_errors' => [],
@@ -596,7 +596,7 @@ class WorkflowLifecycleContractTest extends TestCase
             'failure_message' => 'stale rejection returned run_not_active',
             'failing_lifecycle_cell' => 'stale_run_rejection',
             'scenario_outcomes' => ['stale_run_rejection' => $staleOutcome],
-            'rust_shard_contract_version' => 2,
+            'rust_shard_contract_version' => 3,
             'published_artifact_cell_executed' => true,
             'local_product_source_checkouts_used' => false,
         ], JSON_THROW_ON_ERROR);
@@ -754,6 +754,33 @@ class WorkflowLifecycleContractTest extends TestCase
         );
     }
 
+    public function test_result_gate_rejects_incomplete_rust_continue_as_new_redelivery_evidence(): void
+    {
+        $result = $this->completeLifecycleResult();
+        $continue = &$result['scenario_results']['rust_sdk_lifecycle_surface']['observed_outputs']['scenario_outcomes']['continue_as_new_replay_boundary'];
+        $continue['run_chain']['run_count'] = 3;
+        $continue['predecessor_worker_process']['process_id'] = $continue['successor_worker_process']['process_id'];
+        $continue['predecessor_worker_process']['completion']['completion_delivery_count'] = 1;
+        $continue['predecessor_history']['events'][] = [
+            'event_type' => 'SideEffectRecorded',
+            'payload' => ['sequence' => 4],
+        ];
+        $continue['predecessor_transition_link']['continued_to_run_id'] = 'wrong-successor';
+        $continue['predecessor_worker_process']['callback_calls'] = 2;
+        $continue['final_result']['run_id'] = 'wrong-successor';
+
+        $evaluation = WorkflowLifecycleResultGate::evaluate($result);
+        $failureCodes = array_column($evaluation['gate_failures'], 'code');
+
+        $this->assertSame('non_passing', $evaluation['status']);
+        $this->assertContains('rust_sdk_continue_as_new_run_identity_invalid', $failureCodes);
+        $this->assertContains('rust_sdk_continue_as_new_process_replacement_invalid', $failureCodes);
+        $this->assertContains('rust_sdk_continue_as_new_completion_redelivery_invalid', $failureCodes);
+        $this->assertContains('rust_sdk_continue_as_new_history_decisions_invalid', $failureCodes);
+        $this->assertContains('rust_sdk_continue_as_new_history_links_invalid', $failureCodes);
+        $this->assertContains('rust_sdk_continue_as_new_callback_or_routing_invalid', $failureCodes);
+    }
+
     public function test_rust_lifecycle_probe_uses_exact_registry_artifacts_and_public_envelope(): void
     {
         $repoRoot = dirname(__DIR__, 2);
@@ -763,6 +790,8 @@ class WorkflowLifecycleContractTest extends TestCase
 
         $this->assertStringContainsString('durable-workflow = "=${SDK_VERSION}"', $runner);
         $this->assertStringContainsString('apache-avro = { version = "0.21"', $runner);
+        $this->assertStringContainsString('axum = "0.8"', $runner);
+        $this->assertStringContainsString('reqwest = { version = "0.12"', $runner);
         $this->assertStringContainsString("provenance(lock, 'durable-workflow', SDK_VERSION)", $runner);
         $this->assertStringContainsString("provenance(lock, 'apache-avro')", $runner);
         $this->assertStringContainsString("'rust_sdk_probe_output_contract_invalid'", $runner);
@@ -787,6 +816,11 @@ class WorkflowLifecycleContractTest extends TestCase
         $this->assertStringContainsString('replacement_poll_started_elapsed_ns', $probe);
         $this->assertStringContainsString('restartOutcome.replacement_poll_start_observed', $gate);
         $this->assertStringContainsString('replacementPollStartedAt < settlementReleasedAt', $gate);
+        $this->assertStringContainsString('CompletionRetryProxy', $probe);
+        $this->assertStringContainsString('run_transition_phase_process("predecessor"', $probe);
+        $this->assertStringContainsString('run_transition_phase_process("successor"', $probe);
+        $this->assertStringContainsString('continue_as_new_replay_boundary', $gate);
+        $this->assertStringContainsString('workflow_task_completion_redelivery_rejected', $probe);
         $this->assertStringNotContainsString('result_wait_timeout', $probe);
     }
 
@@ -1466,21 +1500,21 @@ SH);
     private function completeLifecycleResult(): array
     {
         $artifactVersions = [
-            'server' => '0.2.512',
+            'server' => '0.2.649',
             'cli' => '0.1.82',
             'workflow-php' => '2.0.0-alpha.224',
             'workflow' => '2.0.0-alpha.224',
             'sdk-python' => '0.4.91',
-            'sdk-rust' => '0.1.8',
+            'sdk-rust' => '0.1.15',
             'waterline' => '2.0.0-alpha.111',
         ];
         $artifactSources = [
-            'server' => 'docker://durableworkflow/server:0.2.512',
+            'server' => 'docker://durableworkflow/server:0.2.649',
             'cli' => 'github-release://durable-workflow/cli/v0.1.82/install.sh',
             'workflow-php' => 'packagist://durable-workflow/workflow:2.0.0-alpha.224',
             'workflow' => 'packagist://durable-workflow/workflow:2.0.0-alpha.224',
             'sdk-python' => 'pypi://durable-workflow/0.4.91',
-            'sdk-rust' => 'crates.io://durable-workflow@0.1.8',
+            'sdk-rust' => 'crates.io://durable-workflow@0.1.15',
             'waterline' => 'npm://durable-workflow-waterline/2.0.0-alpha.111',
         ];
         $sourcePolicy = [
@@ -1720,16 +1754,17 @@ SH);
                     'cancellation_heartbeat',
                     'late_activity_completion_refused',
                     'worker_restart_during_cancellation',
+                    'continue_as_new_replay_boundary',
                 ],
                 'unsupported_cells' => [],
                 'typed_errors' => [],
-                'artifact_version' => '0.1.8',
-                'server_version' => '0.2.512',
-                'server_cluster_info' => ['version' => '0.2.512'],
+                'artifact_version' => '0.1.15',
+                'server_version' => '0.2.649',
+                'server_cluster_info' => ['version' => '0.2.649'],
                 'install_provenance' => [
                     'package' => 'durable-workflow',
-                    'requested_version' => '0.1.8',
-                    'installed_version' => '0.1.8',
+                    'requested_version' => '0.1.15',
+                    'installed_version' => '0.1.15',
                     'registry_source' => 'registry+https://index.crates.io',
                     'registry_checksum_sha256' => str_repeat('a', 64),
                 ],
@@ -1739,6 +1774,8 @@ SH);
                     ['scenario' => 'selected_run_guard', 'workflow_id' => 'rust-selected', 'run_id' => 'rust-run-selected'],
                     ['scenario' => 'typed_failed', 'workflow_id' => 'rust-failed', 'run_id' => 'rust-run-failed'],
                     ['scenario' => 'typed_timed_out', 'workflow_id' => 'rust-timeout', 'run_id' => 'rust-run-timeout'],
+                    ['scenario' => 'continue_as_new_replay_boundary_predecessor', 'workflow_id' => 'rust-continue', 'run_id' => 'rust-run-predecessor'],
+                    ['scenario' => 'continue_as_new_replay_boundary_successor', 'workflow_id' => 'rust-continue', 'run_id' => 'rust-run-successor'],
                 ],
                 'scenario_outcomes' => [
                     'instance_cancel' => ['status' => 'pass', 'command_status' => 'accepted', 'target_scope' => 'instance', 'typed_outcome' => 'WorkflowCancelled', 'reason' => 'run_cancelled'],
@@ -1763,8 +1800,105 @@ SH);
                     'cancellation_heartbeat' => ['status' => 'pass', 'cancel_requested' => true, 'should_stop' => true, 'reason' => 'run_cancelled', 'run_closed_reason' => 'cancelled'],
                     'late_activity_completion_refused' => ['status' => 'pass', 'typed_error' => 'ActivityTaskRejected', 'http_status' => 409, 'reason' => 'run_cancelled'],
                     'worker_restart_during_cancellation' => ['status' => 'pass', 'restart_phase' => 'cancellation_pending', 'replacement_registered' => true, 'replacement_poll_start_observed' => true, 'original_activity_unsettled_when_replacement_poll_started' => true, 'replacement_started_before_original_settled' => true, 'settlement_released_after_replacement_started' => true, 'original_settled_after_restart' => true, 'replacement_poll_started_elapsed_ns' => 10, 'settlement_released_elapsed_ns' => 20, 'original_settlement_observed_elapsed_ns' => 30],
+                    'continue_as_new_replay_boundary' => [
+                        'status' => 'pass',
+                        'workflow_id' => 'rust-continue',
+                        'predecessor_run_id' => 'rust-run-predecessor',
+                        'successor_run_id' => 'rust-run-successor',
+                        'current_run_id' => 'rust-run-successor',
+                        'selected_historical_run_id' => 'rust-run-predecessor',
+                        'selected_historical_closed_reason' => 'continued',
+                        'run_chain' => [
+                            'workflow_id' => 'rust-continue',
+                            'run_count' => 2,
+                            'runs' => [
+                                ['run_id' => 'rust-run-predecessor', 'run_number' => 1, 'status' => 'completed'],
+                                ['run_id' => 'rust-run-successor', 'run_number' => 2, 'status' => 'completed'],
+                            ],
+                        ],
+                        'predecessor_history' => [
+                            'workflow_id' => 'rust-continue',
+                            'run_id' => 'rust-run-predecessor',
+                            'events' => [
+                                ['event_type' => 'WorkflowStarted', 'payload' => []],
+                                ['event_type' => 'SideEffectRecorded', 'payload' => ['sequence' => 1]],
+                                ['event_type' => 'VersionMarkerRecorded', 'payload' => ['sequence' => 2]],
+                                ['event_type' => 'WorkflowContinuedAsNew', 'payload' => ['continued_to_run_id' => 'rust-run-successor']],
+                            ],
+                        ],
+                        'successor_history' => [
+                            'workflow_id' => 'rust-continue',
+                            'run_id' => 'rust-run-successor',
+                            'events' => [
+                                ['event_type' => 'WorkflowStarted', 'payload' => ['continued_from_run_id' => 'rust-run-predecessor']],
+                                ['event_type' => 'SideEffectRecorded', 'payload' => ['sequence' => 1]],
+                                ['event_type' => 'VersionMarkerRecorded', 'payload' => ['sequence' => 2]],
+                                ['event_type' => 'WorkflowCompleted', 'payload' => []],
+                            ],
+                        ],
+                        'predecessor_history_event_counts' => [
+                            'SideEffectRecorded' => 1,
+                            'VersionMarkerRecorded' => 1,
+                            'WorkflowContinuedAsNew' => 1,
+                        ],
+                        'successor_history_event_counts' => [
+                            'SideEffectRecorded' => 1,
+                            'VersionMarkerRecorded' => 1,
+                            'WorkflowContinuedAsNew' => 0,
+                        ],
+                        'predecessor_transition_link' => ['continued_to_run_id' => 'rust-run-successor'],
+                        'successor_transition_link' => ['continued_from_run_id' => 'rust-run-predecessor'],
+                        'predecessor_worker_process' => [
+                            'process_id' => 101,
+                            'worker_id' => 'rust-continue-predecessor-101',
+                            'handled_tasks' => 1,
+                            'callback_calls' => 1,
+                            'completion' => [
+                                'completion_delivery_count' => 2,
+                                'first_response_status' => 200,
+                                'first_response' => ['recorded' => true],
+                                'retry_response_status' => 409,
+                                'retry_response' => ['reason' => 'task_not_leased'],
+                                'command_types' => ['record_side_effect', 'record_version_marker', 'continue_as_new'],
+                                'commands' => [
+                                    ['type' => 'record_side_effect'],
+                                    ['type' => 'record_version_marker'],
+                                    ['type' => 'continue_as_new'],
+                                ],
+                            ],
+                        ],
+                        'successor_worker_process' => [
+                            'process_id' => 202,
+                            'worker_id' => 'rust-continue-successor-202',
+                            'handled_tasks' => 1,
+                            'callback_calls' => 1,
+                            'completion' => [
+                                'completion_delivery_count' => 1,
+                                'first_response_status' => 200,
+                                'first_response' => ['recorded' => true],
+                                'command_types' => ['record_side_effect', 'record_version_marker', 'complete_workflow'],
+                                'commands' => [
+                                    ['type' => 'record_side_effect'],
+                                    ['type' => 'record_version_marker'],
+                                    ['type' => 'complete_workflow'],
+                                ],
+                            ],
+                        ],
+                        'final_result' => [
+                            'status' => 'completed',
+                            'workflow_id' => 'rust-continue',
+                            'run_id' => 'rust-run-successor',
+                            'successor_version' => 3,
+                        ],
+                        'final_result_observation_source' => 'WorkflowHandle::result',
+                        'current_run_observation_source' => 'WorkflowHandle::describe',
+                        'selected_run_observation_source' => 'WorkflowHandle::describe_selected_run',
+                        'predecessor_decisions_immutable' => true,
+                        'successor_decisions_are_new_run_decisions' => true,
+                        'successor_count' => 1,
+                    ],
                 ],
-                'stable_reasons' => ['run_cancelled', 'run_terminated', 'historical_run_command_rejected', 'run_timeout'],
+                'stable_reasons' => ['run_cancelled', 'run_terminated', 'historical_run_command_rejected', 'run_timeout', 'workflow_task_completion_redelivery_rejected'],
                 'payload_contract' => [
                     'codec' => 'avro',
                     'envelope_contract' => 'durable-workflow-published-envelope',
@@ -1779,7 +1913,7 @@ SH);
                     'rust_executor' => 'host_rust_container',
                     'rust_executor_outside_server_image' => true,
                 ],
-                'rust_shard_contract_version' => 2,
+                'rust_shard_contract_version' => 3,
                 'probe_outcome' => 'pass',
                 'shard_runner' => 'published-rust-sdk-lifecycle-surface-probe',
                 'shard_exit_status' => 0,
@@ -1805,11 +1939,11 @@ SH);
     {
         $repoRoot = dirname(__DIR__, 2);
         $env = array_merge([
-            'DW_SERVER_IMAGE' => 'durableworkflow/server:0.2.512',
-            'DW_SERVER_VERSION' => '0.2.512',
+            'DW_SERVER_IMAGE' => 'durableworkflow/server:0.2.649',
+            'DW_SERVER_VERSION' => '0.2.649',
             'DW_CLI_VERSION' => '0.1.82',
             'DW_PYTHON_SDK_VERSION' => '0.4.91',
-            'DW_RUST_SDK_VERSION' => '0.1.8',
+            'DW_RUST_SDK_VERSION' => '0.1.15',
             'DW_WORKFLOW_PHP_VERSION' => '2.0.0-alpha.224',
             'DW_WATERLINE_VERSION' => '2.0.0-alpha.111',
             'DW_WORKFLOW_LIFECYCLE_SKIP_PHP_SDK_PROBE' => '1',
@@ -1842,9 +1976,9 @@ SH);
             'PATH' => $fakeBin.':'.(getenv('PATH') ?: '/usr/bin:/bin'),
             'RESULT_DIR' => $resultDir,
             'REPO_ROOT' => $repoRoot,
-            'DW_SERVER_IMAGE' => 'durableworkflow/server:0.2.644',
-            'DW_SERVER_VERSION' => '0.2.644',
-            'DW_RUST_SDK_VERSION' => '0.1.10',
+            'DW_SERVER_IMAGE' => 'durableworkflow/server:0.2.649',
+            'DW_SERVER_VERSION' => '0.2.649',
+            'DW_RUST_SDK_VERSION' => '0.1.15',
             'DW_WORKFLOW_LIFECYCLE_AUTH_TOKEN' => 'private-test-token',
             'DW_WORKFLOW_LIFECYCLE_SERVER_HTTP_PROCESS' => 'exact_published_image',
             'DW_WORKFLOW_LIFECYCLE_SCHEDULER_PROCESS' => 'exact_published_image',
@@ -1878,7 +2012,7 @@ if [[ " $* " == *" cargo generate-lockfile "* ]]; then
     cat > "$RESULT_DIR/rust-sdk-lifecycle-probe/Cargo.lock" <<'LOCK'
 [[package]]
 name = "durable-workflow"
-version = "0.1.10"
+version = "0.1.15"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
 

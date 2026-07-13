@@ -12,7 +12,7 @@ const RUST_IMAGE = process.env.DW_WORKFLOW_LIFECYCLE_RUST_IMAGE || 'rust:1.86.0-
 const PROJECT_DIR = path.join(RESULT_DIR, 'rust-sdk-lifecycle-probe');
 const SIDECAR = path.join(RESULT_DIR, 'rust-sdk-lifecycle-evidence.json');
 const SEMVER = /^\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?$/;
-const MINIMUM_LIFECYCLE_SDK = [0, 1, 10];
+const MINIMUM_LIFECYCLE_SDK = [0, 1, 15];
 const FAILURE_MESSAGE_LIMIT = 512;
 
 class CommandFailure extends Error {
@@ -167,7 +167,7 @@ function parseProbeOutput(probe) {
     );
   }
   if (!outputs || typeof outputs !== 'object' || Array.isArray(outputs)
-      || outputs.rust_shard_contract_version !== 2
+      || outputs.rust_shard_contract_version !== 3
       || outputs.sdk !== 'sdk-rust'
       || outputs.artifact_version !== SDK_VERSION
       || outputs.server_version !== SERVER_VERSION
@@ -181,7 +181,7 @@ function parseProbeOutput(probe) {
       mismatch ? 'rust_sdk_probe_artifact_mismatch' : 'rust_sdk_probe_output_contract_invalid',
       mismatch
         ? 'The Rust lifecycle probe result did not match the requested crate and server tuple.'
-        : 'The Rust lifecycle probe result did not satisfy lifecycle shard contract version 2.',
+        : 'The Rust lifecycle probe result did not satisfy lifecycle shard contract version 3.',
       probe.exitStatus,
     );
   }
@@ -241,7 +241,7 @@ let installProvenance = null;
 try {
   if (!SEMVER.test(SDK_VERSION)) throw new Error('DW_RUST_SDK_VERSION must be exact semver');
   if (!versionAtLeast(SDK_VERSION, MINIMUM_LIFECYCLE_SDK)) {
-    throw new Error('DW_RUST_SDK_VERSION does not expose server-enforced workflow start deadlines');
+    throw new Error('DW_RUST_SDK_VERSION does not expose deterministic continue-as-new replay');
   }
   if (!/^\d+\.\d+\.\d+$/.test(SERVER_VERSION)) throw new Error('DW_SERVER_VERSION must be an exact patch tag');
   const exactServerTag = SERVER_IMAGE === `durableworkflow/server:${SERVER_VERSION}`
@@ -267,8 +267,10 @@ publish = false
 [dependencies]
 durable-workflow = "=${SDK_VERSION}"
 apache-avro = { version = "0.21", default-features = false }
+axum = "0.8"
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
 serde_json = "1"
-tokio = { version = "1", features = ["macros", "rt-multi-thread", "time"] }
+tokio = { version = "1", features = ["macros", "net", "rt-multi-thread", "sync", "time"] }
 `);
 
   const cargoOverride = (process.env.DW_WORKFLOW_LIFECYCLE_CARGO_BIN || process.env.CARGO_BIN || '').trim();
@@ -365,7 +367,7 @@ tokio = { version = "1", features = ["macros", "rt-multi-thread", "time"] }
     stable_reasons: [stableReason],
     failure_message: failureMessage,
     scenario_outcomes: {},
-    rust_shard_contract_version: 2,
+    rust_shard_contract_version: 3,
     shard_runner: 'published-rust-sdk-lifecycle-surface-probe',
     shard_exit_status: shardExitStatus,
     executor_topology: {
