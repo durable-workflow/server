@@ -48,6 +48,7 @@ fs.writeFileSync(evidencePath, `${JSON.stringify({
   expected_version: expected,
   outcome: 'unavailable',
   status: 'failure',
+  classification: 'unavailable',
   failure_kind: 'unreachable_audit',
   message,
   source_release_check: {
@@ -96,6 +97,9 @@ const fs = require('fs');
 
 const [auditPath, artifact, expected, auditUrl, evidencePath, handoffPath] = process.argv.slice(2);
 const auditSchema = 'durable-workflow.docs.page-release-audit';
+const auditSchemaVersion = 3;
+const auditClassifier = 'route-and-build-inventory-v3';
+const auditGeneratedFrom = 'production sitemap and build artifact inventory';
 const artifactVersionSchema = 'durable-workflow.docs.public-artifact-versions';
 const expectedArtifacts = ['cli', 'sdk-python', 'sdk-rust', 'server', 'waterline', 'workflow'];
 const expectedSynchronizedFields = [
@@ -131,7 +135,21 @@ const expectedRustSurfaces = [
     url: 'https://rust.durable-workflow.com/',
   },
 ];
-const verdicts = ['CLEAN', 'LEAK', 'MIXED'];
+const stableLlmPaths = [
+  '/llms.txt',
+  '/llms-full.txt',
+  '/llms-1.x.txt',
+  '/llms-full-1.x.txt',
+];
+const prereleaseLlmPaths = [
+  '/llms-2.0.txt',
+  '/llms-full-2.0.txt',
+  '/2.0/llms-full.txt',
+];
+const generatedStableDocsNullVersionPaths = [
+  '/docs/',
+  '/docs/platform-conformance/',
+];
 const refreshCommand = 'npm run refresh:public-artifact-versions';
 const refreshFiles = [
   'scripts/public-artifact-versions.json',
@@ -140,8 +158,9 @@ const refreshFiles = [
 ];
 const refreshFileList = refreshFiles.join(', ');
 const releaseAuditAssertions = [
-  'LEAK=0',
-  'MIXED=0',
+  'schema version 3',
+  'route-and-build-inventory-v3',
+  'internally consistent artifact tuple',
   'stable default 1.x',
   'explicit prerelease 2.0',
 ];
@@ -152,6 +171,36 @@ function isRecord(value) {
 
 function sameValues(actual, expectedValues) {
   return JSON.stringify(actual) === JSON.stringify(expectedValues);
+}
+
+function routeKind(routePath) {
+  if (routePath.startsWith('/docs/2.0/')) {
+    return 'explicit_prerelease_2_0_docs';
+  }
+  if (routePath.startsWith('/docs/')) {
+    return 'stable_default_docs';
+  }
+  if (stableLlmPaths.includes(routePath)) {
+    return 'stable_default_llm';
+  }
+  if (prereleaseLlmPaths.includes(routePath)) {
+    return 'explicit_prerelease_2_0_llm';
+  }
+  if (routePath === '/') {
+    return 'homepage';
+  }
+  return 'public_artifact';
+}
+
+function buildArtifactForRoute(routePath) {
+  if (routePath === '/') {
+    return 'build/index.html';
+  }
+
+  const cleanPath = routePath.replace(/^\/+/, '');
+  return routePath.endsWith('/')
+    ? `build/${cleanPath}index.html`
+    : `build/${cleanPath}`;
 }
 
 function parseArtifactVersion(version) {
@@ -248,7 +297,7 @@ function docsRefreshHandoff(message, actualVersion, observedVersions) {
       acceptance: [
         'The public docs release-audit JSON reports the current published artifact tuple.',
         'Stable 1.x remains the default public docs line.',
-        'The live release-audit JSON reports LEAK=0 and MIXED=0.',
+        'The live schema-v3 release audit reports a consistent route inventory and release-status guardrail.',
         'The refresh lands through the docs merge gate, not from a public release workflow.',
       ],
     },
@@ -324,15 +373,24 @@ function fail(title, outcome, failureKind, message, extra = {}) {
 }
 
 function malformed(message, extra = {}) {
-  fail('Malformed docs release audit', 'malformed', 'malformed_audit', message, extra);
+  fail('Malformed docs release audit', 'malformed', 'malformed_audit', message, {
+    classification: 'incompatible',
+    ...extra,
+  });
 }
 
 function publicSafetyFailure(failureKind, message, extra = {}) {
-  fail('Docs public-safety audit failed', 'public_safety_failure', failureKind, message, extra);
+  fail('Docs public-safety audit failed', 'public_safety_failure', failureKind, message, {
+    classification: failureKind === 'mixed_artifact_tuple' ? 'mixed' : 'incompatible',
+    ...extra,
+  });
 }
 
 function releaseReadinessFailure(failureKind, message, extra = {}) {
-  fail('Docs release readiness conflict', 'release_readiness_failure', failureKind, message, extra);
+  fail('Docs release readiness conflict', 'release_readiness_failure', failureKind, message, {
+    classification: 'conflict',
+    ...extra,
+  });
 }
 
 let audit;
@@ -350,15 +408,42 @@ if (audit.schema !== auditSchema) {
   malformed(`${auditUrl} returned schema ${audit.schema || '<missing>'}, not ${auditSchema}.`);
 }
 
-if (audit.schema_version !== 1) {
-  malformed(`${auditUrl} returned schema_version ${audit.schema_version ?? '<missing>'}, not 1.`);
+if (audit.schema_version !== auditSchemaVersion) {
+  malformed(
+    `${auditUrl} returned schema_version ${audit.schema_version ?? '<missing>'}, ` +
+      `not the supported public contract version ${auditSchemaVersion}.`,
+    {
+      observed_schema: audit.schema,
+      observed_schema_version: audit.schema_version ?? null,
+      supported_schema_version: auditSchemaVersion,
+    }
+  );
 }
 
-if (audit.classifier !== 'content-derived-release-status-v2') {
+if (audit.classifier !== auditClassifier) {
   malformed(
     `${auditUrl} returned classifier ${audit.classifier || '<missing>'}, ` +
-      `not content-derived-release-status-v2.`
+      `not ${auditClassifier}.`
   );
+}
+
+if (audit.generated_from !== auditGeneratedFrom) {
+  malformed(
+    `${auditUrl} generated_from must be ${auditGeneratedFrom}; ` +
+      `got ${audit.generated_from || '<missing>'}.`
+  );
+}
+
+if (
+  typeof audit.generated_at !== 'string' ||
+  !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/.test(audit.generated_at) ||
+  Number.isNaN(Date.parse(audit.generated_at))
+) {
+  malformed(`${auditUrl} generated_at must be an ISO-8601 UTC timestamp with millisecond precision.`);
+}
+
+if (typeof audit.docs_revision !== 'string' || !/^[a-f0-9]{40}$/.test(audit.docs_revision)) {
+  malformed(`${auditUrl} docs_revision must be a 40-character lowercase Git SHA.`);
 }
 
 const versions = audit.artifact_versions;
@@ -569,13 +654,25 @@ if (!Array.isArray(audit.page_inventory) || audit.page_inventory.length === 0) {
   malformed(`${auditUrl} must contain a non-empty page_inventory array.`);
 }
 
-const observedVerdictCounts = Object.fromEntries(verdicts.map(verdict => [verdict, 0]));
 const inventoryPaths = new Set();
-const nonCleanPages = [];
+let stableDocsPages = 0;
+let prereleaseDocsPages = 0;
 
 for (const [index, entry] of audit.page_inventory.entries()) {
   if (!isRecord(entry) || typeof entry.path !== 'string' || entry.path.trim() === '') {
     malformed(`${auditUrl} page_inventory[${index}] must contain a non-empty path.`);
+  }
+
+  if (
+    !entry.path.startsWith('/') ||
+    entry.path.includes('\\') ||
+    entry.path.includes('//') ||
+    entry.path.includes('/./') ||
+    entry.path.includes('/../') ||
+    entry.path.includes('?') ||
+    entry.path.includes('#')
+  ) {
+    malformed(`${auditUrl} page_inventory[${index}].path=${entry.path} is not a normalized public path.`);
   }
 
   if (inventoryPaths.has(entry.path)) {
@@ -583,115 +680,119 @@ for (const [index, entry] of audit.page_inventory.entries()) {
   }
   inventoryPaths.add(entry.path);
 
-  if (!verdicts.includes(entry.verdict)) {
+  const expectedRouteKind = routeKind(entry.path);
+  if (entry.route_kind !== expectedRouteKind) {
     malformed(
-      `${auditUrl} page_inventory entry ${entry.path} has invalid verdict ${entry.verdict ?? '<missing>'}.`
+      `${auditUrl} page_inventory entry ${entry.path} has route_kind ` +
+        `${entry.route_kind ?? '<missing>'}; expected ${expectedRouteKind}.`
     );
   }
 
-  if (!Array.isArray(entry.findings) || !Number.isInteger(entry.leak_count) || entry.leak_count < 0) {
+  const expectedBuildArtifact = buildArtifactForRoute(entry.path);
+  if (entry.build_artifact !== expectedBuildArtifact) {
     malformed(
-      `${auditUrl} page_inventory entry ${entry.path} must contain findings and a non-negative leak_count.`
+      `${auditUrl} page_inventory entry ${entry.path} has build_artifact ` +
+        `${entry.build_artifact ?? '<missing>'}; expected ${expectedBuildArtifact}.`
     );
   }
 
-  if (entry.leak_count !== entry.findings.length) {
+  if (
+    entry.docusaurus_version !== null &&
+    (typeof entry.docusaurus_version !== 'string' || entry.docusaurus_version.trim() === '')
+  ) {
     malformed(
-      `${auditUrl} page_inventory entry ${entry.path} has leak_count=${entry.leak_count}, ` +
-        `but ${entry.findings.length} finding(s).`
+      `${auditUrl} page_inventory entry ${entry.path} must contain a string or null docusaurus_version.`
     );
   }
 
-  if (entry.verdict === 'CLEAN' && entry.findings.length !== 0) {
-    malformed(`${auditUrl} page_inventory entry ${entry.path} is CLEAN but has findings.`);
+  if (entry.route_kind === 'stable_default_docs') {
+    stableDocsPages += 1;
+    const generatedStableRoute = generatedStableDocsNullVersionPaths.includes(entry.path);
+    if (entry.docusaurus_version !== '1.x' && !(generatedStableRoute && entry.docusaurus_version === null)) {
+      const observedDocusaurusVersion = entry.docusaurus_version === null
+        ? 'null'
+        : entry.docusaurus_version ?? '<missing>';
+      publicSafetyFailure(
+        'default_version_policy',
+        `${auditUrl} classifies ${entry.path} as stable default docs but reports ` +
+          `docusaurus_version=${observedDocusaurusVersion}; expected 1.x` +
+          `${generatedStableRoute ? ' or the contract-defined null generated-route value' : ''}.`,
+        {observed_page_inventory_entry: entry}
+      );
+    }
   }
 
-  if (entry.verdict !== 'CLEAN' && entry.findings.length === 0) {
-    malformed(`${auditUrl} page_inventory entry ${entry.path} is ${entry.verdict} but has no findings.`);
-  }
-
-  observedVerdictCounts[entry.verdict] += 1;
-  if (entry.verdict !== 'CLEAN') {
-    nonCleanPages.push({
-      path: entry.path,
-      verdict: entry.verdict,
-      findings: entry.findings,
-    });
+  if (entry.route_kind === 'explicit_prerelease_2_0_docs') {
+    prereleaseDocsPages += 1;
+    const generatedTagRoute = entry.path.startsWith('/docs/2.0/tags/');
+    if (entry.docusaurus_version !== 'current' && !(generatedTagRoute && entry.docusaurus_version === null)) {
+      publicSafetyFailure(
+        'default_version_policy',
+        `${auditUrl} classifies ${entry.path} as explicit prerelease 2.0 docs but reports ` +
+          `docusaurus_version=${entry.docusaurus_version ?? '<missing>'}.`,
+        {observed_page_inventory_entry: entry}
+      );
+    }
   }
 }
 
 const summary = audit.summary;
-if (!isRecord(summary) || !isRecord(summary.verdict_counts)) {
-  malformed(`${auditUrl} must contain summary.verdict_counts.`);
+if (!isRecord(summary)) {
+  malformed(`${auditUrl} must contain a summary object.`);
 }
 
-const reportedVerdictKeys = Object.keys(summary.verdict_counts).sort();
-if (!sameValues(reportedVerdictKeys, [...verdicts].sort())) {
+if (
+  !Number.isInteger(summary.stable_default_docs_pages) ||
+  !Number.isInteger(summary.explicit_prerelease_2_0_pages) ||
+  !Number.isInteger(summary.inventoried_routes)
+) {
   malformed(
-    `${auditUrl} summary.verdict_counts keys must be ${verdicts.join(', ')}; ` +
-      `got ${reportedVerdictKeys.join(', ') || '<none>'}.`
-  );
-}
-
-for (const verdict of verdicts) {
-  if (!Number.isInteger(summary.verdict_counts[verdict]) || summary.verdict_counts[verdict] < 0) {
-    malformed(`${auditUrl} summary.verdict_counts.${verdict} must be a non-negative integer.`);
-  }
-
-  if (summary.verdict_counts[verdict] !== observedVerdictCounts[verdict]) {
-    malformed(
-      `${auditUrl} summary.verdict_counts does not match page_inventory.`,
-      {
-        reported_verdict_counts: summary.verdict_counts,
-        observed_verdict_counts: observedVerdictCounts,
-      }
-    );
-  }
-}
-
-if (!Array.isArray(summary.missing_classifications)) {
-  malformed(`${auditUrl} summary.missing_classifications must be an array.`);
-}
-
-if (summary.missing_classifications.length !== 0) {
-  publicSafetyFailure(
-    'missing_page_classification',
-    `${auditUrl} has ${summary.missing_classifications.length} public surface(s) ` +
-      `without a release-status classification.`,
-    {missing_classifications: summary.missing_classifications}
+    `${auditUrl} summary must contain integer stable_default_docs_pages, ` +
+      `explicit_prerelease_2_0_pages, and inventoried_routes fields.`
   );
 }
 
 if (
-  !Number.isInteger(summary.stable_default_docs_pages) || summary.stable_default_docs_pages < 1 ||
-  !Number.isInteger(summary.explicit_prerelease_2_0_pages) || summary.explicit_prerelease_2_0_pages < 1
+  summary.stable_default_docs_pages !== stableDocsPages ||
+  summary.explicit_prerelease_2_0_pages !== prereleaseDocsPages ||
+  summary.inventoried_routes !== audit.page_inventory.length
 ) {
-  publicSafetyFailure(
-    'default_version_policy',
-    `${auditUrl} must cover at least one stable default 1.x page and one explicit prerelease 2.0 page.`,
+  malformed(
+    `${auditUrl} summary counts do not match page_inventory.`,
     {
-      stable_default_docs_pages: summary.stable_default_docs_pages ?? null,
-      explicit_prerelease_2_0_pages: summary.explicit_prerelease_2_0_pages ?? null,
+      reported_summary: summary,
+      observed_summary: {
+        stable_default_docs_pages: stableDocsPages,
+        explicit_prerelease_2_0_pages: prereleaseDocsPages,
+        inventoried_routes: audit.page_inventory.length,
+      },
     }
   );
 }
 
-if (observedVerdictCounts.LEAK !== 0 || observedVerdictCounts.MIXED !== 0) {
+if (stableDocsPages < 1 || prereleaseDocsPages < 1 || !inventoryPaths.has('/')) {
   publicSafetyFailure(
-    'non_clean_page_verdicts',
-    `${auditUrl} reports LEAK=${observedVerdictCounts.LEAK} and MIXED=${observedVerdictCounts.MIXED}; ` +
-      `all public surfaces must be CLEAN before this release audit can pass.`,
+    'default_version_policy',
+    `${auditUrl} must inventory the homepage, at least one stable default 1.x docs route, ` +
+      `and at least one explicit prerelease 2.0 docs route.`,
     {
-      verdict_counts: observedVerdictCounts,
-      non_clean_pages: nonCleanPages,
+      homepage_inventoried: inventoryPaths.has('/'),
+      stable_default_docs_pages: stableDocsPages,
+      explicit_prerelease_2_0_pages: prereleaseDocsPages,
     }
   );
 }
 
 const publicSafety = {
   outcome: 'pass',
-  verdict_counts: observedVerdictCounts,
-  missing_classifications: [],
+  route_inventory: {
+    schema_version: audit.schema_version,
+    classifier: audit.classifier,
+    docs_revision: audit.docs_revision,
+    stable_default_docs_pages: stableDocsPages,
+    explicit_prerelease_2_0_pages: prereleaseDocsPages,
+    inventoried_routes: audit.page_inventory.length,
+  },
   artifact_tuple_internal_consistency: 'pass',
   stable_default_docs_version: guardrail.stable_default_docs_version,
   explicit_prerelease_docs_version: guardrail.explicit_prerelease_docs_version,
@@ -722,7 +823,7 @@ if (actual !== expected) {
     releaseReadinessFailure(
       'live_docs_version_not_behind_publication',
       `${auditUrl} reports artifact_versions.${artifact}=${actualVersion}, which is newer than the ` +
-        `published version ${expected}. Only a clean live docs version that is behind a newly published ` +
+        `published version ${expected}. Only an otherwise valid live docs version that is behind a newly published ` +
         `artifact is classified as non-blocking tuple lag.`,
       {actual_version: actualVersion, observed_artifact_versions: versions}
     );
@@ -735,11 +836,12 @@ if (actual !== expected) {
   writeHandoff(handoff);
 
   const pendingMessage = `${message} The image publication remains successful because the live audit is ` +
-    `otherwise clean and internally consistent. When DOCS_RELEASE_AUDIT_HANDOFF is set, the uploaded handoff ` +
+    `otherwise valid and internally consistent. When DOCS_RELEASE_AUDIT_HANDOFF is set, the uploaded handoff ` +
     `artifact contains the pipeline-ready docs refresh request.`;
 
   writeEvidence('downstream_pending', {
     status: 'success',
+    classification: 'handoff',
     release_readiness: 'docs_tuple_refresh_required',
     message: pendingMessage,
     public_safety: publicSafety,
@@ -751,7 +853,8 @@ if (actual !== expected) {
   });
   appendSummary(
     'Public images published; docs tuple refresh pending',
-    `${pendingMessage}\n\nPublic-safety checks: LEAK=0, MIXED=0, stable default 1.x, explicit prerelease 2.0.`
+    `${pendingMessage}\n\nPublic-safety checks: schema version 3 route inventory, internally consistent ` +
+      `artifact tuple, stable default 1.x, explicit prerelease 2.0.`
   );
   console.error(`::warning title=Docs release readiness pending::${pendingMessage}`);
   console.log(pendingMessage);
@@ -760,6 +863,7 @@ if (actual !== expected) {
 
 writeEvidence('pass', {
   status: 'success',
+  classification: 'ready',
   release_readiness: 'fully_surfaced',
   public_safety: publicSafety,
   actual_version: actual,

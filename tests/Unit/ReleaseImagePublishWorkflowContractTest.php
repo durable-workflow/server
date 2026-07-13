@@ -452,10 +452,15 @@ class ReleaseImagePublishWorkflowContractTest extends TestCase
         $this->assertStringContainsString("writeEvidence('downstream_pending'", $auditor);
         $this->assertStringContainsString("release_readiness: 'docs_tuple_refresh_required'", $auditor);
         $this->assertStringContainsString("failure_kind: 'unreachable_audit'", $auditor);
+        $this->assertStringContainsString('const auditSchemaVersion = 3;', $auditor);
+        $this->assertStringContainsString("const auditClassifier = 'route-and-build-inventory-v3';", $auditor);
+        $this->assertStringContainsString("classification: 'ready'", $auditor);
+        $this->assertStringContainsString("classification: 'handoff'", $auditor);
         $this->assertStringContainsString("'mixed_artifact_tuple'", $auditor);
         $this->assertStringContainsString("'default_version_policy'", $auditor);
-        $this->assertStringContainsString("'non_clean_page_verdicts'", $auditor);
         $this->assertStringContainsString("'live_docs_version_not_behind_publication'", $auditor);
+        $this->assertStringNotContainsString('content-derived-release-status-v2', $auditor);
+        $this->assertStringNotContainsString('non_clean_page_verdicts', $auditor);
 
         $buildOffset = strpos($workflow, 'Build and push exact image tags');
         $exactOffset = strpos($workflow, 'Verify exact image publication');
@@ -592,7 +597,7 @@ class ReleaseImagePublishWorkflowContractTest extends TestCase
         );
     }
 
-    public function test_docs_audit_keeps_clean_expected_tuple_lag_non_blocking(): void
+    public function test_docs_audit_keeps_valid_expected_tuple_lag_non_blocking(): void
     {
         $result = $this->runDocsReleaseAudit(
             json_encode($this->validDocsReleaseAudit('0.2.619'), JSON_THROW_ON_ERROR),
@@ -604,17 +609,22 @@ class ReleaseImagePublishWorkflowContractTest extends TestCase
         $this->assertStringContainsString('::warning title=Docs release readiness pending', $result['stderr']);
         $this->assertSame('downstream_pending', $result['evidence']['outcome']);
         $this->assertSame('success', $result['evidence']['status']);
+        $this->assertSame('handoff', $result['evidence']['classification']);
         $this->assertSame('docs_tuple_refresh_required', $result['evidence']['release_readiness']);
         $this->assertSame('pass', $result['evidence']['public_safety']['outcome']);
-        $this->assertSame(0, $result['evidence']['public_safety']['verdict_counts']['LEAK']);
-        $this->assertSame(0, $result['evidence']['public_safety']['verdict_counts']['MIXED']);
+        $this->assertSame(3, $result['evidence']['public_safety']['route_inventory']['schema_version']);
+        $this->assertSame(
+            'route-and-build-inventory-v3',
+            $result['evidence']['public_safety']['route_inventory']['classifier'],
+        );
+        $this->assertSame(6, $result['evidence']['public_safety']['route_inventory']['inventoried_routes']);
         $this->assertSame('durable-workflow.release.docs-artifact-tuple-handoff', $result['handoff']['schema']);
         $this->assertSame('0.2.620', $result['handoff']['stale_artifact']['expected_version']);
         $this->assertSame('0.2.619', $result['handoff']['stale_artifact']['live_version']);
         $this->assertStringContainsString('Public images published; docs tuple refresh pending', $result['summary']);
     }
 
-    public function test_docs_audit_accepts_clean_current_tuple(): void
+    public function test_docs_audit_accepts_valid_current_tuple(): void
     {
         $result = $this->runDocsReleaseAudit(
             json_encode($this->validDocsReleaseAudit('0.2.620'), JSON_THROW_ON_ERROR),
@@ -623,6 +633,7 @@ class ReleaseImagePublishWorkflowContractTest extends TestCase
 
         $this->assertSame(0, $result['exitCode']);
         $this->assertSame('pass', $result['evidence']['outcome']);
+        $this->assertSame('ready', $result['evidence']['classification']);
         $this->assertSame('fully_surfaced', $result['evidence']['release_readiness']);
         $this->assertSame('pass', $result['evidence']['public_safety']['outcome']);
         $this->assertNull($result['handoff']);
@@ -642,29 +653,42 @@ class ReleaseImagePublishWorkflowContractTest extends TestCase
         $this->assertNull($result['handoff']);
     }
 
-    public function test_docs_audit_rejects_leak_and_mixed_verdicts(): void
+    public function test_docs_audit_rejects_incompatible_schema_with_actionable_evidence(): void
     {
-        foreach (['LEAK', 'MIXED'] as $verdict) {
-            $audit = $this->validDocsReleaseAudit('0.2.619');
-            $audit['page_inventory'][1]['verdict'] = $verdict;
-            $audit['page_inventory'][1]['leak_count'] = 1;
-            $audit['page_inventory'][1]['findings'] = [
-                ['summary' => "Focused {$verdict} release-status finding"],
-            ];
-            $audit['summary']['verdict_counts']['CLEAN'] = 1;
-            $audit['summary']['verdict_counts'][$verdict] = 1;
+        $audit = $this->validDocsReleaseAudit('0.2.619');
+        $audit['schema_version'] = 2;
 
-            $result = $this->runDocsReleaseAudit(
-                json_encode($audit, JSON_THROW_ON_ERROR),
-                '0.2.620',
-            );
+        $result = $this->runDocsReleaseAudit(
+            json_encode($audit, JSON_THROW_ON_ERROR),
+            '0.2.620',
+        );
 
-            $this->assertSame(1, $result['exitCode'], "{$verdict} must fail even while the tuple is stale.");
-            $this->assertSame('public_safety_failure', $result['evidence']['outcome']);
-            $this->assertSame('non_clean_page_verdicts', $result['evidence']['failure_kind']);
-            $this->assertSame($verdict, $result['evidence']['non_clean_pages'][0]['verdict']);
-            $this->assertStringContainsString('all public surfaces must be CLEAN', $result['stderr']);
-        }
+        $this->assertSame(1, $result['exitCode']);
+        $this->assertSame('malformed', $result['evidence']['outcome']);
+        $this->assertSame('incompatible', $result['evidence']['classification']);
+        $this->assertSame('malformed_audit', $result['evidence']['failure_kind']);
+        $this->assertSame(2, $result['evidence']['observed_schema_version']);
+        $this->assertSame(3, $result['evidence']['supported_schema_version']);
+        $this->assertStringContainsString('not the supported public contract version 3', $result['stderr']);
+    }
+
+    public function test_docs_audit_rejects_structurally_malformed_route_inventory(): void
+    {
+        $audit = $this->validDocsReleaseAudit('0.2.619');
+        $audit['page_inventory'][1]['route_kind'] = 'public_artifact';
+
+        $result = $this->runDocsReleaseAudit(
+            json_encode($audit, JSON_THROW_ON_ERROR),
+            '0.2.620',
+        );
+
+        $this->assertSame(1, $result['exitCode']);
+        $this->assertSame('malformed', $result['evidence']['outcome']);
+        $this->assertSame('malformed_audit', $result['evidence']['failure_kind']);
+        $this->assertStringContainsString(
+            'expected stable_default_docs',
+            $result['stderr'],
+        );
     }
 
     public function test_docs_audit_rejects_internally_mixed_server_tuple(): void
@@ -680,6 +704,7 @@ class ReleaseImagePublishWorkflowContractTest extends TestCase
 
         $this->assertSame(1, $result['exitCode']);
         $this->assertSame('public_safety_failure', $result['evidence']['outcome']);
+        $this->assertSame('mixed', $result['evidence']['classification']);
         $this->assertSame('mixed_artifact_tuple', $result['evidence']['failure_kind']);
         $this->assertStringContainsString('mixes artifact_versions.server=0.2.619', $result['stderr']);
     }
@@ -714,6 +739,65 @@ class ReleaseImagePublishWorkflowContractTest extends TestCase
         $this->assertSame('public_safety_failure', $result['evidence']['outcome']);
         $this->assertSame('default_version_policy', $result['evidence']['failure_kind']);
         $this->assertStringContainsString('stable_default_docs_version=1.x', $result['stderr']);
+    }
+
+    public function test_docs_audit_accepts_only_contract_defined_generated_route_null_versions(): void
+    {
+        $audit = $this->validDocsReleaseAudit('0.2.620');
+
+        $stableNullPaths = array_column(array_filter(
+            $audit['page_inventory'],
+            static fn (array $entry): bool => $entry['route_kind'] === 'stable_default_docs'
+                && $entry['docusaurus_version'] === null,
+        ), 'path');
+        sort($stableNullPaths);
+
+        $this->assertSame([
+            '/docs/',
+            '/docs/platform-conformance/',
+        ], $stableNullPaths);
+
+        $result = $this->runDocsReleaseAudit(
+            json_encode($audit, JSON_THROW_ON_ERROR),
+            '0.2.620',
+        );
+
+        $this->assertSame(0, $result['exitCode']);
+        $this->assertSame('ready', $result['evidence']['classification']);
+    }
+
+    public function test_docs_audit_rejects_stable_content_route_version_drift(): void
+    {
+        $audit = $this->validDocsReleaseAudit('0.2.620');
+        $audit['page_inventory'][2]['docusaurus_version'] = '2.0';
+
+        $result = $this->runDocsReleaseAudit(
+            json_encode($audit, JSON_THROW_ON_ERROR),
+            '0.2.620',
+        );
+
+        $this->assertSame(1, $result['exitCode']);
+        $this->assertSame('public_safety_failure', $result['evidence']['outcome']);
+        $this->assertSame('incompatible', $result['evidence']['classification']);
+        $this->assertSame('default_version_policy', $result['evidence']['failure_kind']);
+        $this->assertStringContainsString('/docs/category/configuration/', $result['stderr']);
+        $this->assertStringContainsString('docusaurus_version=2.0; expected 1.x', $result['stderr']);
+    }
+
+    public function test_docs_audit_rejects_null_version_for_ordinary_stable_content_route(): void
+    {
+        $audit = $this->validDocsReleaseAudit('0.2.620');
+        $audit['page_inventory'][2]['docusaurus_version'] = null;
+
+        $result = $this->runDocsReleaseAudit(
+            json_encode($audit, JSON_THROW_ON_ERROR),
+            '0.2.620',
+        );
+
+        $this->assertSame(1, $result['exitCode']);
+        $this->assertSame('default_version_policy', $result['evidence']['failure_kind']);
+        $this->assertStringContainsString('/docs/category/configuration/', $result['stderr']);
+        $this->assertStringContainsString('docusaurus_version=null; expected 1.x', $result['stderr']);
     }
 
     public function test_docs_audit_rejects_malformed_and_unreachable_surfaces_with_evidence(): void
@@ -1498,8 +1582,11 @@ SH;
 
         return [
             'schema' => 'durable-workflow.docs.page-release-audit',
-            'schema_version' => 1,
-            'classifier' => 'content-derived-release-status-v2',
+            'schema_version' => 3,
+            'generated_at' => '2026-07-13T18:30:00.000Z',
+            'generated_from' => 'production sitemap and build artifact inventory',
+            'classifier' => 'route-and-build-inventory-v3',
+            'docs_revision' => str_repeat('a', 40),
             'artifact_versions' => $versions,
             'artifact_version_source' => [
                 'schema' => 'durable-workflow.docs.public-artifact-versions',
@@ -1554,28 +1641,46 @@ SH;
                 'explicit_prerelease_docs_version' => '2.0',
             ],
             'summary' => [
-                'stable_default_docs_pages' => 1,
-                'explicit_prerelease_2_0_pages' => 1,
-                'edge_surfaces' => 0,
-                'verdict_counts' => [
-                    'CLEAN' => 2,
-                    'LEAK' => 0,
-                    'MIXED' => 0,
-                ],
-                'missing_classifications' => [],
+                'stable_default_docs_pages' => 3,
+                'explicit_prerelease_2_0_pages' => 2,
+                'inventoried_routes' => 6,
             ],
             'page_inventory' => [
                 [
-                    'path' => '/docs/introduction/',
-                    'verdict' => 'CLEAN',
-                    'leak_count' => 0,
-                    'findings' => [],
+                    'path' => '/',
+                    'route_kind' => 'homepage',
+                    'build_artifact' => 'build/index.html',
+                    'docusaurus_version' => null,
+                ],
+                [
+                    'path' => '/docs/',
+                    'route_kind' => 'stable_default_docs',
+                    'build_artifact' => 'build/docs/index.html',
+                    'docusaurus_version' => null,
+                ],
+                [
+                    'path' => '/docs/category/configuration/',
+                    'route_kind' => 'stable_default_docs',
+                    'build_artifact' => 'build/docs/category/configuration/index.html',
+                    'docusaurus_version' => '1.x',
+                ],
+                [
+                    'path' => '/docs/platform-conformance/',
+                    'route_kind' => 'stable_default_docs',
+                    'build_artifact' => 'build/docs/platform-conformance/index.html',
+                    'docusaurus_version' => null,
                 ],
                 [
                     'path' => '/docs/2.0/introduction/',
-                    'verdict' => 'CLEAN',
-                    'leak_count' => 0,
-                    'findings' => [],
+                    'route_kind' => 'explicit_prerelease_2_0_docs',
+                    'build_artifact' => 'build/docs/2.0/introduction/index.html',
+                    'docusaurus_version' => 'current',
+                ],
+                [
+                    'path' => '/docs/2.0/tags/reference/',
+                    'route_kind' => 'explicit_prerelease_2_0_docs',
+                    'build_artifact' => 'build/docs/2.0/tags/reference/index.html',
+                    'docusaurus_version' => null,
                 ],
             ],
         ];
