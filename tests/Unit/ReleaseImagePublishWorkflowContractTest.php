@@ -101,8 +101,11 @@ class ReleaseImagePublishWorkflowContractTest extends TestCase
         $metadataScript = $this->read('scripts/ci/prepare-release-workflow-composer-metadata.php');
 
         foreach ([
-            'ARG WORKFLOW_PACKAGE_REF=2.0.0-alpha.262',
-            'ARG WORKFLOW_PACKAGE_COMMIT=009c0257964f33705941466d09777172068b3a26',
+            'ARG WORKFLOW_PACKAGE_REF=2.0.0-alpha.266',
+            'ARG WORKFLOW_PACKAGE_COMMIT=bbb0fed0179994754ee395f3685a1f2cc260556a',
+            'WORKFLOW_PACKAGE_COMMIT must be a full lowercase Git SHA',
+            'if [ "${RESOLVED_COMMIT}" != "${WORKFLOW_PACKAGE_COMMIT}" ]',
+            'git -C /workflow diff --quiet HEAD --',
             'prepare-release-workflow-composer-metadata.php',
             'composer update durable-workflow/workflow',
             'cp composer.json /tmp/release-composer.json',
@@ -131,6 +134,64 @@ class ReleaseImagePublishWorkflowContractTest extends TestCase
         $this->assertStringContainsString('$repository[\'options\'][\'versions\'][$packageName] = $composerVersion;', $metadataScript);
         $this->assertStringContainsString('$repository[\'options\'][\'reference\'] = \'auto\';', $metadataScript);
         $this->assertStringContainsString('WORKFLOW_PACKAGE_COMMIT', $metadataScript);
+        $this->assertStringContainsString('WORKFLOW_PACKAGE_COMMIT must be a full lowercase Git SHA.', $metadataScript);
+        $this->assertStringContainsString('Workflow package provenance {$provenancePath} does not exist.', $metadataScript);
+    }
+
+    public function test_dockerfile_cannot_replace_workflow_checkout_with_forged_provenance(): void
+    {
+        $dockerfile = $this->read('Dockerfile');
+
+        $this->assertStringNotContainsString('AS workflow-source', $dockerfile);
+        $this->assertStringNotContainsString('AS vendor', $dockerfile);
+        $this->assertStringNotContainsString('COPY --from=workflow-source', $dockerfile);
+        $this->assertStringNotContainsString('COPY --from=vendor', $dockerfile);
+        $this->assertStringNotContainsString('--build-context workflow-source=', $dockerfile);
+        $this->assertStringNotContainsString('--build-context vendor=', $dockerfile);
+        $this->assertDoesNotMatchRegularExpression(
+            '/^COPY\s+--from=\S+\s+\/(?:workflow|app)(?:\/\S*)?\s+/m',
+            $dockerfile,
+            'Verified Workflow source and the installed application must not cross a named-stage boundary.',
+        );
+
+        $productionOffset = strpos($dockerfile, 'FROM base AS production');
+        $cloneOffset = strpos($dockerfile, 'git clone --depth 1 --branch "${WORKFLOW_PACKAGE_REF}"');
+        $verifyOffset = strpos($dockerfile, 'git -C /workflow rev-parse HEAD');
+        $cleanOffset = strpos($dockerfile, 'git -C /workflow diff --quiet HEAD --');
+        $provenanceOffset = strpos($dockerfile, '> /workflow/.package-provenance');
+        $metadataOffset = strpos($dockerfile, 'php scripts/ci/prepare-release-workflow-composer-metadata.php');
+        $composerUpdateOffset = strpos($dockerfile, 'composer update durable-workflow/workflow');
+        $copyApplicationOffset = strpos($dockerfile, "COPY . .\n");
+        $publishProvenanceOffset = strpos($dockerfile, 'cp /workflow/.package-provenance /app/.package-provenance');
+        $removeGitOffset = strpos($dockerfile, 'rm -rf /workflow/.git');
+
+        $this->assertIsInt($productionOffset);
+        $this->assertIsInt($cloneOffset);
+        $this->assertIsInt($verifyOffset);
+        $this->assertIsInt($cleanOffset);
+        $this->assertIsInt($provenanceOffset);
+        $this->assertIsInt($metadataOffset);
+        $this->assertIsInt($composerUpdateOffset);
+        $this->assertIsInt($copyApplicationOffset);
+        $this->assertIsInt($publishProvenanceOffset);
+        $this->assertIsInt($removeGitOffset);
+        $this->assertStringNotContainsString(
+            'COPY --from=',
+            substr($dockerfile, $productionOffset),
+            'The final stage must build its verified Workflow package and application without a named-stage copy.',
+        );
+        $lastStageOffset = strrpos($dockerfile, "\nFROM ");
+        $this->assertIsInt($lastStageOffset);
+        $this->assertSame($productionOffset, $lastStageOffset + 1);
+        $this->assertLessThan($cloneOffset, $productionOffset);
+        $this->assertLessThan($verifyOffset, $cloneOffset);
+        $this->assertLessThan($cleanOffset, $verifyOffset);
+        $this->assertLessThan($provenanceOffset, $cleanOffset);
+        $this->assertLessThan($metadataOffset, $provenanceOffset);
+        $this->assertLessThan($composerUpdateOffset, $metadataOffset);
+        $this->assertLessThan($removeGitOffset, $composerUpdateOffset);
+        $this->assertLessThan($copyApplicationOffset, $removeGitOffset);
+        $this->assertLessThan($publishProvenanceOffset, $copyApplicationOffset);
     }
 
     public function test_dockerfile_installs_redis_extension_from_pinned_phpredis_source(): void
@@ -165,15 +226,12 @@ class ReleaseImagePublishWorkflowContractTest extends TestCase
 
         $baseOffset = strpos($dockerfile, 'FROM php:8.3-cli AS base');
         $nodeOffset = strpos($dockerfile, 'nodejs');
-        $vendorOffset = strpos($dockerfile, 'FROM base AS vendor');
         $productionOffset = strpos($dockerfile, 'FROM base AS production');
 
         $this->assertIsInt($baseOffset);
         $this->assertIsInt($nodeOffset);
-        $this->assertIsInt($vendorOffset);
         $this->assertIsInt($productionOffset);
         $this->assertLessThan($nodeOffset, $baseOffset);
-        $this->assertLessThan($vendorOffset, $nodeOffset);
         $this->assertLessThan($productionOffset, $nodeOffset);
     }
 
@@ -193,22 +251,19 @@ class ReleaseImagePublishWorkflowContractTest extends TestCase
 
         $baseOffset = strpos($dockerfile, 'FROM php:8.3-cli AS base');
         $pythonOffset = strpos($dockerfile, 'python3');
-        $vendorOffset = strpos($dockerfile, 'FROM base AS vendor');
         $productionOffset = strpos($dockerfile, 'FROM base AS production');
 
         $this->assertIsInt($baseOffset);
         $this->assertIsInt($pythonOffset);
-        $this->assertIsInt($vendorOffset);
         $this->assertIsInt($productionOffset);
         $this->assertLessThan($pythonOffset, $baseOffset);
-        $this->assertLessThan($vendorOffset, $pythonOffset);
         $this->assertLessThan($productionOffset, $pythonOffset);
     }
 
     public function test_docker_build_docs_compose_and_ci_defaults_match_workflow_package_fallback(): void
     {
-        $fallback = '2.0.0-alpha.262';
-        $commit = '009c0257964f33705941466d09777172068b3a26';
+        $fallback = '2.0.0-alpha.266';
+        $commit = 'bbb0fed0179994754ee395f3685a1f2cc260556a';
 
         foreach ([
             'Dockerfile',
@@ -237,11 +292,80 @@ class ReleaseImagePublishWorkflowContractTest extends TestCase
 
         $readme = $this->read('README.md');
 
-        $this->assertStringContainsString('WORKFLOW_PACKAGE_REF=2.0.0-alpha.262', $readme);
-        $this->assertStringContainsString('The Dockerfile clones the `durable-workflow/workflow` `2.0.0-alpha.262` tag', $readme);
+        $this->assertStringContainsString('WORKFLOW_PACKAGE_REF=2.0.0-alpha.266', $readme);
+        $this->assertStringContainsString('The Dockerfile clones the `durable-workflow/workflow` `2.0.0-alpha.266` tag', $readme);
         $this->assertStringContainsString('Composer package metadata', $readme);
         $this->assertStringNotContainsString('The Dockerfile clones the `durable-workflow/workflow` `2.0.0-alpha.200` tag', $readme);
         $this->assertStringNotContainsString('The image build fetches the `durable-workflow/workflow` `2.0.0-alpha.200`', $readme);
+    }
+
+    public function test_feature_ci_verifies_the_exact_workflow_source_before_removing_git_metadata(): void
+    {
+        $workflow = $this->read('.github/workflows/phpunit-feature.yml');
+
+        foreach ([
+            'ref: 2.0.0-alpha.266',
+            'WORKFLOW_PACKAGE_REF: 2.0.0-alpha.266',
+            'WORKFLOW_PACKAGE_COMMIT: bbb0fed0179994754ee395f3685a1f2cc260556a',
+            'git -C workflow-package rev-parse HEAD',
+            'if [[ "$resolved_commit" != "$WORKFLOW_PACKAGE_COMMIT" ]]',
+            '> workflow-package/.package-provenance',
+            'rm -rf workflow-package/.git',
+        ] as $needle) {
+            $this->assertStringContainsString($needle, $workflow);
+        }
+
+        $verifyOffset = strpos($workflow, 'git -C workflow-package rev-parse HEAD');
+        $removeOffset = strpos($workflow, 'rm -rf workflow-package/.git');
+        $installOffset = strpos($workflow, 'composer install --no-interaction');
+
+        $this->assertIsInt($verifyOffset);
+        $this->assertIsInt($removeOffset);
+        $this->assertIsInt($installOffset);
+        $this->assertLessThan($removeOffset, $verifyOffset);
+        $this->assertLessThan($installOffset, $removeOffset);
+    }
+
+    public function test_release_workflow_pins_the_selected_workflow_ref_and_commit(): void
+    {
+        $workflow = $this->read('.github/workflows/release.yml');
+
+        $this->assertStringContainsString('WORKFLOW_PACKAGE_REF: 2.0.0-alpha.266', $workflow);
+        $this->assertStringContainsString(
+            'WORKFLOW_PACKAGE_COMMIT: bbb0fed0179994754ee395f3685a1f2cc260556a',
+            $workflow,
+        );
+        $this->assertStringContainsString('scripts/ci/select-compatible-workflow-package-ref.sh', $workflow);
+    }
+
+    public function test_composer_metadata_identifies_the_exact_workflow_source(): void
+    {
+        $expectedVersion = '2.0.0-alpha.266';
+        $expectedCommit = 'bbb0fed0179994754ee395f3685a1f2cc260556a';
+        $composer = json_decode($this->read('composer.json'), true, flags: JSON_THROW_ON_ERROR);
+        $lock = json_decode($this->read('composer.lock'), true, flags: JSON_THROW_ON_ERROR);
+
+        $this->assertSame($expectedVersion, $composer['require']['durable-workflow/workflow']);
+
+        foreach ($composer['repositories'] as $repository) {
+            if (($repository['type'] ?? null) !== 'path') {
+                continue;
+            }
+
+            $this->assertSame(
+                $expectedVersion,
+                $repository['options']['versions']['durable-workflow/workflow'],
+            );
+        }
+
+        $workflowPackages = array_values(array_filter(
+            $lock['packages'],
+            static fn (array $package): bool => ($package['name'] ?? null) === 'durable-workflow/workflow',
+        ));
+
+        $this->assertCount(1, $workflowPackages);
+        $this->assertSame($expectedVersion, $workflowPackages[0]['version']);
+        $this->assertSame($expectedCommit, $workflowPackages[0]['dist']['reference']);
     }
 
     public function test_release_workflow_promotes_rolling_aliases_only_after_current_tag_guard(): void

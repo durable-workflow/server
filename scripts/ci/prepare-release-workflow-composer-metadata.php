@@ -4,8 +4,8 @@
 declare(strict_types=1);
 
 $packageName = 'durable-workflow/workflow';
-$workflowRef = getenv('WORKFLOW_PACKAGE_REF') ?: '2.0.0-alpha.262';
-$workflowCommit = getenv('WORKFLOW_PACKAGE_COMMIT') ?: '009c0257964f33705941466d09777172068b3a26';
+$workflowRef = getenv('WORKFLOW_PACKAGE_REF') ?: '2.0.0-alpha.266';
+$workflowCommit = getenv('WORKFLOW_PACKAGE_COMMIT') ?: 'bbb0fed0179994754ee395f3685a1f2cc260556a';
 $workflowPath = getenv('WORKFLOW_PACKAGE_PATH') ?: '/workflow';
 $composerPath = getenv('COMPOSER_JSON_PATH') ?: getcwd().'/composer.json';
 $provenancePath = $workflowPath.'/.package-provenance';
@@ -76,23 +76,29 @@ if (! is_dir($workflowPath)) {
     fail("Workflow package path {$workflowPath} does not exist.");
 }
 
-if (is_file($provenancePath)) {
-    $provenance = file($provenancePath, FILE_IGNORE_NEW_LINES | FILE_SKIP_EMPTY_LINES);
+if (preg_match('/^[0-9a-f]{40}$/D', $workflowCommit) !== 1) {
+    fail('WORKFLOW_PACKAGE_COMMIT must be a full lowercase Git SHA.');
+}
 
-    if (! is_array($provenance) || count($provenance) < 3) {
-        fail("Workflow package provenance {$provenancePath} must contain source, ref, and commit lines.");
-    }
+if (! is_file($provenancePath)) {
+    fail("Workflow package provenance {$provenancePath} does not exist.");
+}
 
-    $provenanceRef = trim($provenance[1]);
-    $provenanceCommit = trim($provenance[2]);
+$provenance = file($provenancePath, FILE_IGNORE_NEW_LINES | FILE_SKIP_EMPTY_LINES);
 
-    if ($provenanceRef !== $workflowRef) {
-        fail("Workflow package provenance ref {$provenanceRef} does not match WORKFLOW_PACKAGE_REF={$workflowRef}.");
-    }
+if (! is_array($provenance) || count($provenance) < 3) {
+    fail("Workflow package provenance {$provenancePath} must contain source, ref, and commit lines.");
+}
 
-    if ($workflowCommit !== '' && $provenanceCommit !== $workflowCommit) {
-        fail("Workflow package provenance commit {$provenanceCommit} does not match WORKFLOW_PACKAGE_COMMIT={$workflowCommit}.");
-    }
+$provenanceRef = trim($provenance[1]);
+$provenanceCommit = trim($provenance[2]);
+
+if ($provenanceRef !== $workflowRef) {
+    fail("Workflow package provenance ref {$provenanceRef} does not match WORKFLOW_PACKAGE_REF={$workflowRef}.");
+}
+
+if ($provenanceCommit !== $workflowCommit) {
+    fail("Workflow package provenance commit {$provenanceCommit} does not match WORKFLOW_PACKAGE_COMMIT={$workflowCommit}.");
 }
 
 $composerVersion = composerVersionForRef($workflowRef);
@@ -148,8 +154,7 @@ if (! $updatedRepository) {
 
 writeJsonObject($composerPath, $composer);
 
-$commitSuffix = $workflowCommit !== '' ? " at {$workflowCommit}" : '';
 fwrite(
     STDOUT,
-    "Prepared Composer metadata for {$packageName}: {$composerVersion} from {$workflowRef}{$commitSuffix}.\n",
+    "Prepared Composer metadata for {$packageName}: {$composerVersion} from {$workflowRef} at {$workflowCommit}.\n",
 );

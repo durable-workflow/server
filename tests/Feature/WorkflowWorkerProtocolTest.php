@@ -166,6 +166,93 @@ class WorkflowWorkerProtocolTest extends TestCase
         $this->assertContains('WorkflowCompleted', $historyEventTypes);
     }
 
+    public function test_late_external_completion_records_the_selected_run_timeout(): void
+    {
+        Queue::fake();
+
+        $this->configureWorkflowTypes();
+        $this->createNamespace('default', 'Default namespace');
+
+        $start = $this->withHeaders($this->apiHeaders())
+            ->postJson('/api/workflows', [
+                'workflow_id' => 'wf-external-worker-run-timeout',
+                'workflow_type' => 'tests.external-greeting-workflow',
+                'task_queue' => 'external-workflows',
+                'execution_timeout_seconds' => 30,
+                'run_timeout_seconds' => 1,
+                'input' => ['Ada'],
+            ]);
+
+        $start->assertCreated();
+        $workflowId = (string) $start->json('workflow_id');
+        $runId = (string) $start->json('run_id');
+
+        $persistedRun = WorkflowRun::query()->findOrFail($runId);
+        $this->assertSame(1, $persistedRun->run_timeout_seconds);
+        $this->assertNotNull($persistedRun->run_deadline_at);
+        $this->assertNotNull($persistedRun->started_at);
+        $this->assertTrue(
+            $persistedRun->run_deadline_at->equalTo($persistedRun->started_at->copy()->addSecond()),
+        );
+
+        $this->registerWorker('php-worker-timeout', 'external-workflows');
+
+        $poll = $this->withHeaders($this->workerHeaders())
+            ->postJson('/api/worker/workflow-tasks/poll', [
+                'worker_id' => 'php-worker-timeout',
+                'task_queue' => 'external-workflows',
+            ]);
+
+        $poll->assertOk()
+            ->assertJsonPath('task.workflow_id', $workflowId)
+            ->assertJsonPath('task.run_id', $runId);
+
+        $taskId = (string) $poll->json('task.task_id');
+        $leaseOwner = (string) $poll->json('task.lease_owner');
+        $attempt = (int) $poll->json('task.workflow_task_attempt');
+
+        $this->travel(2)->seconds();
+        $this->assertTrue(now()->gte($persistedRun->run_deadline_at));
+
+        $complete = $this->withHeaders($this->workerHeaders())
+            ->postJson("/api/worker/workflow-tasks/{$taskId}/complete", [
+                'lease_owner' => $leaseOwner,
+                'workflow_task_attempt' => $attempt,
+                'commands' => [
+                    [
+                        'type' => 'complete_workflow',
+                        'result' => Serializer::serialize('too late'),
+                    ],
+                ],
+            ]);
+
+        $complete->assertConflict()
+            ->assertJsonPath('recorded', false)
+            ->assertJsonPath('run_id', $runId)
+            ->assertJsonPath('run_status', 'failed')
+            ->assertJsonPath('reason', 'run_timed_out');
+
+        $selectedRun = $this->withHeaders($this->apiHeaders())
+            ->getJson("/api/workflows/{$workflowId}/runs/{$runId}");
+
+        $selectedRun->assertOk()
+            ->assertJsonPath('workflow_id', $workflowId)
+            ->assertJsonPath('run_id', $runId)
+            ->assertJsonPath('status', 'failed')
+            ->assertJsonPath('closed_reason', 'timed_out')
+            ->assertJsonPath('failure.reason', 'run_timeout')
+            ->assertJsonPath('failure.failure_category', 'timeout');
+
+        $this->assertDatabaseHas('workflow_history_events', [
+            'workflow_run_id' => $runId,
+            'event_type' => HistoryEventType::WorkflowTimedOut->value,
+        ]);
+        $this->assertDatabaseMissing('workflow_history_events', [
+            'workflow_run_id' => $runId,
+            'event_type' => HistoryEventType::WorkflowCompleted->value,
+        ]);
+    }
+
     public function test_it_starts_remote_durable_types_without_local_registration_and_completes_them_through_the_worker_protocol(): void
     {
         Queue::fake();

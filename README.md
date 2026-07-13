@@ -239,7 +239,7 @@ The long-running `server`, `worker`, and `scheduler` services each pin
 `DW_SERVER_TOPOLOGY_SHAPE` and `DW_SERVER_PROCESS_CLASS` so
 `GET /api/cluster/info` reports the role class you actually launched during
 local split-role testing.
-The local compose files pass `WORKFLOW_PACKAGE_REF=2.0.0-alpha.262`, matching
+The local compose files pass `WORKFLOW_PACKAGE_REF=2.0.0-alpha.266`, matching
 the Dockerfile fallback, so `docker compose up --build` works from a clean
 checkout with Composer metadata aligned to the embedded workflow package.
 Override `WORKFLOW_PACKAGE_SOURCE`, `WORKFLOW_PACKAGE_REF`, or
@@ -1137,13 +1137,14 @@ docker run --rm -p 8080:8080 \
   durable-workflow-server
 ```
 
-The Dockerfile clones the `durable-workflow/workflow` `2.0.0-alpha.262` tag
+The Dockerfile clones the `durable-workflow/workflow` `2.0.0-alpha.266` tag
 into the build by default and refreshes the Composer package metadata from that
 source before installing production dependencies. Use
 `--build-arg WORKFLOW_PACKAGE_SOURCE=...`,
 `--build-arg WORKFLOW_PACKAGE_REF=...`, and
 `--build-arg WORKFLOW_PACKAGE_COMMIT=...` to point the image build at another
-remote or ref, and optionally require the resolved commit to match.
+remote or ref while requiring the resolved commit to match the supplied full
+SHA.
 
 The production image defaults to `DB_CONNECTION=sqlite`,
 `DB_DATABASE=/app/database/database.sqlite`, `QUEUE_CONNECTION=database`, and
@@ -1255,17 +1256,19 @@ cluster-topology manifest reuses the same matching-role contract and adds
 The `Release` workflow publishes multi-arch images to
 Docker Hub (`durableworkflow/server`) and GitHub Container Registry
 (`ghcr.io/durable-workflow/server`) when a server semver tag is pushed. The
-workflow builds the server image with the latest `durable-workflow/workflow`
-prerelease tag that matches `2.0.0-alpha.*` or `2.0.0-beta.*`, falling back to
-the `v2` branch only when no prerelease tags exist.
+workflow builds the server image with the public
+`durable-workflow/workflow:2.0.0-alpha.266` package and verifies that the tag
+resolves to commit `bbb0fed0179994754ee395f3685a1f2cc260556a` before the
+image can be published.
 
-When the server image needs a workflow package fix that has only landed on the
-workflow `v2` branch, tag workflow first, then tag server:
+When a later server image needs a newer workflow package fix, publish the
+workflow tag first, update both Workflow package pins in the release workflow,
+then tag server:
 
 ```bash
 # In the workflow repo, publish the package ref the server image must consume.
-git tag 2.0.0-alpha.3 origin/v2
-git push origin refs/tags/2.0.0-alpha.3
+git tag 2.0.0-alpha.267 origin/v2
+git push origin refs/tags/2.0.0-alpha.267
 
 # In the server repo, publish the Docker image tags.
 git tag 0.2.0 origin/main

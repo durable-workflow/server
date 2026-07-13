@@ -30,68 +30,52 @@ COPY --from=composer:2 /usr/bin/composer /usr/bin/composer
 
 WORKDIR /app
 
-# ── Workflow package source ──────────────────────────────────────────
-#
-# This stage resolves the durable-workflow/workflow package source.
-#
-# Default: clones from git. Set WORKFLOW_PACKAGE_COMMIT to a full SHA to
-# verify the resolved commit matches (build fails on mismatch).
-#
-# Offline / reproducible builds: override this stage with a pre-built
-# directory using BuildKit's --build-context flag:
-#
-#   docker build --build-context workflow-source=./path/to/workflow ...
-#
-# The replacement context must contain the package source at its root
-# (composer.json, src/, etc.) and optionally a .git directory for
-# provenance recording.
-# ─────────────────────────────────────────────────────────────────────
-FROM composer:2 AS workflow-source
+# ── Dependencies ──────────────────────────────────────────────────────
+# Workflow source verification, dependency installation, and the runtime
+# filesystem deliberately share this final stage. A named build context
+# therefore cannot replace a post-verification /workflow or /app copy.
+FROM base AS production
 
 ARG WORKFLOW_PACKAGE_SOURCE=https://github.com/durable-workflow/workflow.git
-ARG WORKFLOW_PACKAGE_REF=2.0.0-alpha.262
-ARG WORKFLOW_PACKAGE_COMMIT=009c0257964f33705941466d09777172068b3a26
+ARG WORKFLOW_PACKAGE_REF=2.0.0-alpha.266
+ARG WORKFLOW_PACKAGE_COMMIT=bbb0fed0179994754ee395f3685a1f2cc260556a
 
-RUN git clone --depth 1 --branch "${WORKFLOW_PACKAGE_REF}" "${WORKFLOW_PACKAGE_SOURCE}" /workflow \
-    && cd /workflow \
-    && RESOLVED_COMMIT="$(git rev-parse HEAD)" \
-    && echo "${WORKFLOW_PACKAGE_SOURCE}" > /workflow/.package-provenance \
-    && echo "${WORKFLOW_PACKAGE_REF}" >> /workflow/.package-provenance \
-    && echo "${RESOLVED_COMMIT}" >> /workflow/.package-provenance \
-    && if [ -n "${WORKFLOW_PACKAGE_COMMIT}" ] && [ "${RESOLVED_COMMIT}" != "${WORKFLOW_PACKAGE_COMMIT}" ]; then \
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends git \
+    && rm -rf /var/lib/apt/lists/* \
+    && if ! printf '%s' "${WORKFLOW_PACKAGE_COMMIT}" | grep -Eq '^[0-9a-f]{40}$'; then \
+         echo "ERROR: WORKFLOW_PACKAGE_COMMIT must be a full lowercase Git SHA" >&2; \
+         exit 1; \
+       fi \
+    && git clone --depth 1 --branch "${WORKFLOW_PACKAGE_REF}" "${WORKFLOW_PACKAGE_SOURCE}" /workflow \
+    && RESOLVED_COMMIT="$(git -C /workflow rev-parse HEAD)" \
+    && if [ "${RESOLVED_COMMIT}" != "${WORKFLOW_PACKAGE_COMMIT}" ]; then \
          echo "ERROR: Resolved commit ${RESOLVED_COMMIT} does not match pinned WORKFLOW_PACKAGE_COMMIT=${WORKFLOW_PACKAGE_COMMIT}" >&2; \
          exit 1; \
-       fi
+       fi \
+    && git -C /workflow diff --quiet HEAD -- \
+    && printf '%s\n' \
+         "${WORKFLOW_PACKAGE_SOURCE}" \
+         "${WORKFLOW_PACKAGE_REF}" \
+         "${RESOLVED_COMMIT}" \
+         > /workflow/.package-provenance
 
-# ── Dependencies ──────────────────────────────────────────────────────
-FROM base AS vendor
-
-ARG WORKFLOW_PACKAGE_REF=2.0.0-alpha.262
-ARG WORKFLOW_PACKAGE_COMMIT=009c0257964f33705941466d09777172068b3a26
-
-COPY --from=workflow-source /workflow /workflow
 COPY composer.json composer.lock ./
 COPY scripts/ci/prepare-release-workflow-composer-metadata.php scripts/ci/prepare-release-workflow-composer-metadata.php
 RUN php scripts/ci/prepare-release-workflow-composer-metadata.php \
     && composer update durable-workflow/workflow --no-dev --no-scripts --no-autoloader --prefer-dist --no-interaction --no-progress \
     && cp composer.json /tmp/release-composer.json \
-    && cp composer.lock /tmp/release-composer.lock
+    && cp composer.lock /tmp/release-composer.lock \
+    && rm -rf /workflow/.git
 
 COPY . .
 RUN cp /tmp/release-composer.json composer.json \
     && cp /tmp/release-composer.lock composer.lock \
     && rm -f /tmp/release-composer.json /tmp/release-composer.lock \
-    && composer dump-autoload --optimize
+    && composer dump-autoload --optimize \
+    && cp /workflow/.package-provenance /app/.package-provenance
 
 # ── Production image ─────────────────────────────────────────────────
-FROM base AS production
-
-ARG WORKFLOW_PACKAGE_SOURCE=https://github.com/durable-workflow/workflow.git
-ARG WORKFLOW_PACKAGE_REF=2.0.0-alpha.262
-ARG WORKFLOW_PACKAGE_COMMIT=009c0257964f33705941466d09777172068b3a26
-
-COPY --from=vendor /app /app
-COPY --from=workflow-source /workflow/.package-provenance /app/.package-provenance
 COPY docker/bootstrap.sh /usr/local/bin/server-bootstrap
 COPY docker/ensure-sqlite-database.sh /usr/local/bin/server-ensure-sqlite
 COPY docker/entrypoint.sh /usr/local/bin/server-entrypoint

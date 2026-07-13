@@ -1496,6 +1496,7 @@ class WorkflowController
 
         return $this->withoutNullOrEmptyArrays([
             'message' => $message,
+            'reason' => $this->nonEmptyString($terminal['reason'] ?? null),
             'exception_type' => $this->nonEmptyString($terminal['exception_type'] ?? null),
             'exception_class' => $this->nonEmptyString($terminal['exception_class'] ?? null),
             'failure_category' => $this->nonEmptyString($terminal['failure_category'] ?? null),
@@ -1540,6 +1541,7 @@ class WorkflowController
                 'source_kind' => $this->nonEmptyString($failure['source_kind'] ?? null),
                 'source_id' => $this->nonEmptyString($failure['source_id'] ?? null),
                 'propagation_kind' => $this->nonEmptyString($failure['propagation_kind'] ?? null),
+                'reason' => $this->nonEmptyString($failure['reason'] ?? null),
                 'failure_category' => $this->nonEmptyString($failure['failure_category'] ?? null),
                 'non_retryable' => $failure['non_retryable'] ?? null,
                 'handled' => $failure['handled'] ?? null,
