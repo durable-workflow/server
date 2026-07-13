@@ -1,0 +1,136 @@
+#!/usr/bin/env sh
+
+set -eu
+
+release_tag="${RELEASE_TAG:-}"
+server_image="${SERVER_IMAGE:-${DOCKERHUB_IMAGE:-durableworkflow/server}:${release_tag}}"
+workflow_package_ref="${WORKFLOW_PACKAGE_REF:-}"
+workflow_package_commit="${WORKFLOW_PACKAGE_COMMIT:-}"
+public_catalog_url="${PUBLIC_CATALOG_URL:-https://durable-workflow.github.io/platform-protocol-specs.json}"
+evidence_path="${PROTOCOL_CATALOG_CONFORMANCE_EVIDENCE:-release-protocol-catalog-conformance.json}"
+docker_bin="${DOCKER:-docker}"
+curl_bin="${CURL:-curl}"
+node_bin="${NODE:-node}"
+port="${RELEASE_PROTOCOL_CATALOG_PORT:-18080}"
+attempts="${RELEASE_PROTOCOL_CATALOG_ATTEMPTS:-30}"
+retry_sleep="${RELEASE_PROTOCOL_CATALOG_RETRY_SLEEP:-2}"
+tmp_root="${RUNNER_TEMP:-${TMPDIR:-/tmp}}"
+tmp_dir="$(mktemp -d "${tmp_root}/release-protocol-catalog.XXXXXX")"
+container_name="release-protocol-catalog-${GITHUB_RUN_ID:-local}-${GITHUB_RUN_ATTEMPT:-1}-$$"
+container_started=false
+
+cleanup() {
+    if [ "$container_started" = "true" ]; then
+        "$docker_bin" rm -f "$container_name" >/dev/null 2>&1 || true
+    fi
+    rm -rf "$tmp_dir"
+}
+
+trap cleanup EXIT HUP INT TERM
+
+fail() {
+    reason="$1"
+    message="$2"
+
+    if [ -n "${GITHUB_OUTPUT:-}" ]; then
+        printf 'protocol_catalog_conformance_outcome=failure\n' >> "$GITHUB_OUTPUT"
+    fi
+
+    PROTOCOL_CATALOG_FAILURE_REASON="$reason" \
+    PROTOCOL_CATALOG_FAILURE_MESSAGE="$message" \
+    PROTOCOL_CATALOG_CONFORMANCE_EVIDENCE="$evidence_path" \
+    RELEASE_TAG="$release_tag" \
+    SERVER_IMAGE="$server_image" \
+    PUBLIC_CATALOG_URL="$public_catalog_url" \
+    WORKFLOW_PACKAGE_REF="$workflow_package_ref" \
+    WORKFLOW_PACKAGE_COMMIT="$workflow_package_commit" \
+    "$node_bin" <<'NODE'
+const fs = require('fs');
+
+fs.writeFileSync(process.env.PROTOCOL_CATALOG_CONFORMANCE_EVIDENCE, `${JSON.stringify({
+  schema: 'durable-workflow.server.release-protocol-catalog-conformance',
+  schema_version: 1,
+  checked_at: new Date().toISOString(),
+  release_tag: process.env.RELEASE_TAG || null,
+  server_image: process.env.SERVER_IMAGE || null,
+  public_catalog_url: process.env.PUBLIC_CATALOG_URL || null,
+  expected_workflow_package: {
+    name: 'durable-workflow/workflow',
+    version: process.env.WORKFLOW_PACKAGE_REF || null,
+    commit: process.env.WORKFLOW_PACKAGE_COMMIT || null,
+  },
+  outcome: 'fail',
+  findings: [{
+    kind: process.env.PROTOCOL_CATALOG_FAILURE_REASON,
+    message: process.env.PROTOCOL_CATALOG_FAILURE_MESSAGE,
+  }],
+}, null, 2)}\n`);
+NODE
+
+    printf '::error title=Published protocol catalog conformance failed::%s\n' "$message" >&2
+    printf '%s\n' "$message" >&2
+    exit 1
+}
+
+[ -n "$release_tag" ] || fail "release_tag_missing" "RELEASE_TAG is required for published protocol catalog conformance."
+[ -n "$workflow_package_ref" ] || fail "workflow_package_ref_missing" "WORKFLOW_PACKAGE_REF is required for published protocol catalog conformance."
+[ -n "$workflow_package_commit" ] || fail "workflow_package_commit_missing" "WORKFLOW_PACKAGE_COMMIT is required for published protocol catalog conformance."
+
+case "$attempts" in
+    ''|*[!0-9]*) fail "invalid_attempt_count" "RELEASE_PROTOCOL_CATALOG_ATTEMPTS must be a positive integer." ;;
+esac
+case "$retry_sleep" in
+    ''|*[!0-9]*) fail "invalid_retry_delay" "RELEASE_PROTOCOL_CATALOG_RETRY_SLEEP must be a non-negative integer." ;;
+esac
+[ "$attempts" -ge 1 ] || fail "invalid_attempt_count" "RELEASE_PROTOCOL_CATALOG_ATTEMPTS must be at least 1."
+
+if ! "$docker_bin" pull "$server_image" >"${tmp_dir}/docker-pull.log" 2>&1; then
+    detail="$(tail -n 20 "${tmp_dir}/docker-pull.log" 2>/dev/null || true)"
+    fail "published_image_pull_failed" "Could not pull published server image ${server_image}. ${detail}"
+fi
+
+if ! "$docker_bin" run --detach --rm \
+    --name "$container_name" \
+    --publish "127.0.0.1:${port}:8080" \
+    --env DW_AUTH_DRIVER=none \
+    --env DW_EXPOSE_PACKAGE_PROVENANCE=1 \
+    "$server_image" >"${tmp_dir}/container-id" 2>"${tmp_dir}/docker-run.log"; then
+    detail="$(cat "${tmp_dir}/docker-run.log" 2>/dev/null || true)"
+    fail "published_image_start_failed" "Could not start published server image ${server_image}. ${detail}"
+fi
+container_started=true
+
+server_discovery_path="${tmp_dir}/server-discovery.json"
+attempt=1
+while [ "$attempt" -le "$attempts" ]; do
+    if "$curl_bin" --fail --silent --show-error --max-time 10 \
+        --output "$server_discovery_path" \
+        "http://127.0.0.1:${port}/api/cluster/info"; then
+        break
+    fi
+
+    if [ "$attempt" -eq "$attempts" ]; then
+        logs="$("$docker_bin" logs "$container_name" 2>&1 | tail -n 40 || true)"
+        fail "server_discovery_unavailable" "Published server image ${server_image} did not return /api/cluster/info after ${attempts} attempts. ${logs}"
+    fi
+
+    attempt=$((attempt + 1))
+    sleep "$retry_sleep"
+done
+
+public_catalog_path="${tmp_dir}/public-platform-protocol-specs.json"
+if ! "$curl_bin" --fail --silent --show-error --location --retry 3 \
+    --connect-timeout 10 --max-time 30 \
+    --output "$public_catalog_path" "$public_catalog_url"; then
+    fail "public_catalog_unavailable" "Could not fetch the public protocol catalog from ${public_catalog_url}."
+fi
+
+SERVER_DISCOVERY_PATH="$server_discovery_path" \
+PUBLIC_CATALOG_PATH="$public_catalog_path" \
+PROTOCOL_CATALOG_CONFORMANCE_EVIDENCE="$evidence_path" \
+RELEASE_TAG="$release_tag" \
+SERVER_IMAGE="$server_image" \
+PUBLIC_CATALOG_URL="$public_catalog_url" \
+WORKFLOW_PACKAGE_REF="$workflow_package_ref" \
+WORKFLOW_PACKAGE_COMMIT="$workflow_package_commit" \
+"$node_bin" scripts/ci/verify-release-protocol-catalog.mjs

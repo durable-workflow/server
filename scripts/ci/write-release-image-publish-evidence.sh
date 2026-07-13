@@ -11,6 +11,7 @@ exact_publish_outcome="${EXACT_PUBLISH_OUTCOME:-skipped}"
 exact_publish_reason="${EXACT_PUBLISH_REASON:-}"
 exact_verify_outcome="${EXACT_VERIFY_OUTCOME:-skipped}"
 docker_build_outcome="${DOCKER_BUILD_OUTCOME:-skipped}"
+protocol_catalog_conformance_outcome="${PROTOCOL_CATALOG_CONFORMANCE_OUTCOME:-skipped}"
 rolling_guard_outcome="${ROLLING_GUARD_OUTCOME:-skipped}"
 rolling_promote_outcome="${ROLLING_PROMOTE_OUTCOME:-skipped}"
 rolling_status="${ROLLING_ARTIFACT_STATUS:-}"
@@ -119,6 +120,9 @@ elif [ "$exact_publish_outcome" != "success" ]; then
     else
         reason="exact_image_publish_${exact_publish_outcome}"
     fi
+elif [ "$protocol_catalog_conformance_outcome" = "failure" ] || [ "$protocol_catalog_conformance_outcome" = "cancelled" ]; then
+    status="failed"
+    reason="protocol_catalog_conformance_${protocol_catalog_conformance_outcome}"
 elif [ "$rolling_guard_outcome" = "failure" ] || [ "$rolling_guard_outcome" = "cancelled" ]; then
     status="failed"
     reason="rolling_alias_guard_${rolling_guard_outcome}"
@@ -160,6 +164,8 @@ if ! is_stable_semver_tag "$release_tag"; then
     rolling_reason="not_stable_semver_tag"
 elif [ "$exact_publish_outcome" != "success" ]; then
     rolling_reason="exact_image_publish_not_verified"
+elif [ "$protocol_catalog_conformance_outcome" != "success" ] && [ "$protocol_catalog_conformance_outcome" != "skipped" ]; then
+    rolling_reason="protocol_catalog_conformance_${protocol_catalog_conformance_outcome}"
 elif [ "$rolling_guard_outcome" = "failure" ] || [ "$rolling_guard_outcome" = "cancelled" ]; then
     rolling_reason="rolling_alias_guard_${rolling_guard_outcome}"
 elif [ "$rolling_should_promote" = "true" ] && [ "$rolling_promote_outcome" != "success" ]; then
@@ -196,6 +202,10 @@ fi
     printf '    "build_step_outcome": '; json_string "$docker_build_outcome"; printf ',\n'
     printf '    "verification_outcome": '; json_string "$exact_verify_outcome"; printf ',\n'
     printf '    "required_platforms": '; write_platform_array; printf '\n'
+    printf '  },\n'
+    printf '  "protocol_catalog_conformance": {\n'
+    printf '    "outcome": '; json_string "$protocol_catalog_conformance_outcome"; printf ',\n'
+    printf '    "evidence": "release-protocol-catalog-conformance.json"\n'
     printf '  },\n'
     printf '  "rolling": {\n'
     printf '    "eligible": %s,\n' "$(is_stable_semver_tag "$release_tag" && printf 'true' || printf 'false')"

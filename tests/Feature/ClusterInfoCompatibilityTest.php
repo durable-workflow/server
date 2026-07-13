@@ -763,6 +763,11 @@ class ClusterInfoCompatibilityTest extends TestCase
             $response->json('platform_protocol_specs'),
             'cluster info must re-export the workflow package platform-protocol-specs catalog verbatim',
         );
+        $response
+            ->assertJsonPath('platform_protocol_specs.schema', PlatformProtocolSpecs::SCHEMA)
+            ->assertJsonPath('platform_protocol_specs.version', 15)
+            ->assertJsonPath('platform_protocol_specs.catalog_url', PlatformProtocolSpecs::CATALOG_URL)
+            ->assertJsonPath('platform_protocol_specs.authority_url', PlatformProtocolSpecs::AUTHORITY_URL);
 
         $specs = $response->json('platform_protocol_specs.specs');
         $this->assertIsArray($specs);
@@ -771,6 +776,8 @@ class ClusterInfoCompatibilityTest extends TestCase
             'control_plane_api',
             'worker_protocol_api',
             'worker_protocol_stream',
+            'worker_sessions_runtime',
+            'local_activity_runtime',
             'history_event_payloads',
             'history_export_bundle',
             'replay_bundle',
@@ -781,6 +788,7 @@ class ClusterInfoCompatibilityTest extends TestCase
             'mcp_discovery',
             'mcp_tool_results',
             'cluster_info_envelope',
+            'invocable_carrier_execution',
         ];
 
         foreach ($expectedDeliverableSpecs as $expectedSpec) {
@@ -804,10 +812,33 @@ class ClusterInfoCompatibilityTest extends TestCase
                 PlatformProtocolSpecs::statusValues(),
                 "$expectedSpec status must be one of " . implode(', ', PlatformProtocolSpecs::statusValues()),
             );
-            $this->assertSame(
-                PlatformProtocolSpecs::STATUS_PUBLISHED,
-                $specs[$expectedSpec]['status'],
-                "$expectedSpec must remain published in cluster_info because every public machine-facing surface must have a normative spec",
+            $this->assertStringStartsWith(
+                'https://durable-workflow.github.io/platform-protocol-specs/',
+                $specs[$expectedSpec]['spec_url'],
+                "$expectedSpec must expose a direct public specification URL",
+            );
+        }
+
+        $catalogJson = json_encode($response->json('platform_protocol_specs'), JSON_THROW_ON_ERROR);
+        foreach ([
+            '"spec_path"',
+            '"owner_symbol"',
+            '"implementation_symbol"',
+            '"conformance_test"',
+            '"conformance_path"',
+            '"schema_authority"',
+            '"version_authority"',
+            'docs/',
+            'tests/',
+            'scripts/',
+            'static/',
+            '::',
+            '\\\\',
+        ] as $repositoryLocalReference) {
+            $this->assertStringNotContainsString(
+                $repositoryLocalReference,
+                $catalogJson,
+                "cluster info protocol catalog must not expose {$repositoryLocalReference}",
             );
         }
 

@@ -423,7 +423,7 @@ class ReleaseImagePublishWorkflowContractTest extends TestCase
 
         foreach ([
             'Classify live docs release readiness after public images',
-            "if: \${{ steps.exact.outputs.exact_publish_outcome == 'success' }}",
+            "if: \${{ steps.exact.outputs.exact_publish_outcome == 'success' && steps.protocol_catalog.outputs.protocol_catalog_conformance_outcome == 'success' }}",
             'DOCS_RELEASE_AUDIT_ARTIFACT: server',
             'DOCS_RELEASE_AUDIT_VERSION: ${{ steps.release_publish.outputs.tag || github.event.inputs.tag || github.ref_name }}',
             'DOCS_RELEASE_AUDIT_EVIDENCE: docs-release-audit-evidence.json',
@@ -472,6 +472,124 @@ class ReleaseImagePublishWorkflowContractTest extends TestCase
         $this->assertLessThan($writeEvidenceOffset, $exactOffset);
         $this->assertLessThan($docsAuditOffset, $writeEvidenceOffset);
         $this->assertLessThan($uploadOffset, $docsAuditOffset);
+    }
+
+    public function test_release_workflow_verifies_public_catalog_convergence_before_advertising_the_image(): void
+    {
+        $workflow = $this->read('.github/workflows/release.yml');
+        $runner = $this->read('scripts/ci/verify-release-protocol-catalog.sh');
+        $verifier = $this->read('scripts/ci/verify-release-protocol-catalog.mjs');
+
+        foreach ([
+            'Verify published protocol catalog convergence',
+            'id: protocol_catalog',
+            'scripts/ci/verify-release-protocol-catalog.sh',
+            'PUBLIC_CATALOG_URL: https://durable-workflow.github.io/platform-protocol-specs.json',
+            'PROTOCOL_CATALOG_CONFORMANCE_EVIDENCE: release-protocol-catalog-conformance.json',
+            "steps.protocol_catalog.outputs.protocol_catalog_conformance_outcome == 'success'",
+            'release-protocol-catalog-conformance.json',
+        ] as $needle) {
+            $this->assertStringContainsString($needle, $workflow);
+        }
+
+        foreach ([
+            'DW_EXPOSE_PACKAGE_PROVENANCE=1',
+            '/api/cluster/info',
+            'platform-protocol-specs.json',
+            'verify-release-protocol-catalog.mjs',
+        ] as $needle) {
+            $this->assertStringContainsString($needle, $runner);
+        }
+
+        foreach ([
+            'validateConsumerSafeCatalog(publicCatalog',
+            'validateConsumerSafeCatalog(serverCatalog',
+            'compareCatalogs(publicCatalog, serverCatalog',
+            "kind: 'field_set_mismatch'",
+            "kind: 'repository_local_authority_field'",
+            "kind: 'workflow_package_provenance_mismatch'",
+        ] as $needle) {
+            $this->assertStringContainsString($needle, $verifier);
+        }
+
+        $exactOffset = strpos($workflow, 'Verify exact image publication');
+        $catalogOffset = strpos($workflow, 'Verify published protocol catalog convergence');
+        $rollingOffset = strpos($workflow, 'Resolve rolling image aliases');
+        $docsAuditOffset = strpos($workflow, 'Classify live docs release readiness after public images');
+
+        $this->assertIsInt($exactOffset);
+        $this->assertIsInt($catalogOffset);
+        $this->assertIsInt($rollingOffset);
+        $this->assertIsInt($docsAuditOffset);
+        $this->assertLessThan($catalogOffset, $exactOffset);
+        $this->assertLessThan($rollingOffset, $catalogOffset);
+        $this->assertLessThan($docsAuditOffset, $catalogOffset);
+    }
+
+    public function test_release_protocol_catalog_comparator_reports_version_and_field_set_drift(): void
+    {
+        $catalog = \Workflow\V2\Support\PlatformProtocolSpecs::manifest();
+        $provenance = [
+            'source' => 'https://github.com/durable-workflow/workflow.git',
+            'ref' => '2.0.0-alpha.279',
+            'commit' => 'f9a00e18fa21196bcb3505710489025ff93cf5e1',
+        ];
+
+        $passing = $this->runProtocolCatalogComparator($catalog, [
+            'platform_protocol_specs' => $catalog,
+            'package_provenance' => $provenance,
+        ]);
+
+        $this->assertSame(0, $passing['exitCode']);
+        $this->assertSame('pass', $passing['evidence']['outcome']);
+        $this->assertSame(15, $passing['evidence']['observations']['public_catalog']['version']);
+        $this->assertSame(
+            $passing['evidence']['observations']['public_catalog']['sha256'],
+            $passing['evidence']['observations']['server_catalog']['sha256'],
+        );
+        $this->assertSame($provenance, $passing['evidence']['observations']['package_provenance']);
+
+        $staleCatalog = $catalog;
+        $staleCatalog['version'] = 14;
+        $stale = $this->runProtocolCatalogComparator($catalog, [
+            'platform_protocol_specs' => $staleCatalog,
+            'package_provenance' => $provenance,
+        ]);
+
+        $this->assertSame(1, $stale['exitCode']);
+        $this->assertSame('fail', $stale['evidence']['outcome']);
+        $this->assertNotEmpty(array_filter(
+            $stale['evidence']['findings'],
+            static fn (array $finding): bool => ($finding['kind'] ?? null) === 'value_mismatch'
+                && ($finding['path'] ?? null) === '$.version'
+                && ($finding['public_value'] ?? null) === 15
+                && ($finding['server_value'] ?? null) === 14,
+        ));
+        $this->assertStringContainsString('Catalog drift at $.version: public 15, server 14.', $stale['stderr']);
+
+        $unsafeCatalog = $catalog;
+        $unsafeCatalog['specs']['control_plane_api']['spec_path'] = 'tests/Feature/ControlPlaneTest.php';
+        $unsafe = $this->runProtocolCatalogComparator($catalog, [
+            'platform_protocol_specs' => $unsafeCatalog,
+            'package_provenance' => $provenance,
+        ]);
+
+        $this->assertSame(1, $unsafe['exitCode']);
+        $this->assertNotEmpty(array_filter(
+            $unsafe['evidence']['findings'],
+            static fn (array $finding): bool => ($finding['kind'] ?? null) === 'field_set_mismatch'
+                && ($finding['path'] ?? null) === '$.specs.control_plane_api'
+                && ($finding['unexpected_server_fields'] ?? null) === ['spec_path'],
+        ));
+        $this->assertNotEmpty(array_filter(
+            $unsafe['evidence']['findings'],
+            static fn (array $finding): bool => ($finding['kind'] ?? null) === 'repository_local_authority_field'
+                && ($finding['path'] ?? null) === '$.specs.control_plane_api.spec_path',
+        ));
+        $this->assertStringContainsString(
+            'Catalog field set drift at $.specs.control_plane_api',
+            $unsafe['stderr'],
+        );
     }
 
     public function test_docs_audit_keeps_clean_expected_tuple_lag_non_blocking(): void
@@ -1507,6 +1625,49 @@ SH;
             @unlink($evidenceFile);
             @unlink($handoffFile);
             @unlink($summaryFile);
+            @rmdir($tmpDir);
+        }
+    }
+
+    /**
+     * @param array<string, mixed> $publicCatalog
+     * @param array<string, mixed> $serverDiscovery
+     * @return array{exitCode:int, stdout:string, stderr:string, evidence:array<string, mixed>}
+     */
+    private function runProtocolCatalogComparator(array $publicCatalog, array $serverDiscovery): array
+    {
+        $tmpDir = sys_get_temp_dir().'/release-protocol-catalog-'.bin2hex(random_bytes(4));
+        $this->assertTrue(mkdir($tmpDir));
+        $publicCatalogPath = $tmpDir.'/public.json';
+        $serverDiscoveryPath = $tmpDir.'/server.json';
+        $evidencePath = $tmpDir.'/evidence.json';
+        file_put_contents($publicCatalogPath, json_encode($publicCatalog, JSON_THROW_ON_ERROR));
+        file_put_contents($serverDiscoveryPath, json_encode($serverDiscovery, JSON_THROW_ON_ERROR));
+
+        try {
+            $result = $this->runScript('scripts/ci/verify-release-protocol-catalog.mjs', [
+                'SERVER_DISCOVERY_PATH' => $serverDiscoveryPath,
+                'PUBLIC_CATALOG_PATH' => $publicCatalogPath,
+                'PROTOCOL_CATALOG_CONFORMANCE_EVIDENCE' => $evidencePath,
+                'RELEASE_TAG' => '0.2.651',
+                'SERVER_IMAGE' => 'durableworkflow/server:0.2.651',
+                'WORKFLOW_PACKAGE_REF' => '2.0.0-alpha.279',
+                'WORKFLOW_PACKAGE_COMMIT' => 'f9a00e18fa21196bcb3505710489025ff93cf5e1',
+            ]);
+
+            $this->assertFileExists($evidencePath);
+
+            return $result + [
+                'evidence' => json_decode(
+                    (string) file_get_contents($evidencePath),
+                    true,
+                    flags: JSON_THROW_ON_ERROR,
+                ),
+            ];
+        } finally {
+            @unlink($publicCatalogPath);
+            @unlink($serverDiscoveryPath);
+            @unlink($evidencePath);
             @rmdir($tmpDir);
         }
     }

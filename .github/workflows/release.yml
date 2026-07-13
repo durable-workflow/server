@@ -125,9 +125,21 @@ jobs:
           WORKFLOW_PACKAGE_COMMIT: ${{ steps.workflow.outputs.commit }}
         run: scripts/ci/verify-release-exact-images.sh
 
+      - name: Verify published protocol catalog convergence
+        id: protocol_catalog
+        if: ${{ steps.exact.outputs.exact_publish_outcome == 'success' }}
+        env:
+          RELEASE_TAG: ${{ steps.release_publish.outputs.tag }}
+          SERVER_IMAGE: ${{ env.DOCKERHUB_IMAGE }}:${{ steps.release_publish.outputs.tag }}
+          WORKFLOW_PACKAGE_REF: ${{ steps.workflow.outputs.tag }}
+          WORKFLOW_PACKAGE_COMMIT: ${{ steps.workflow.outputs.commit }}
+          PUBLIC_CATALOG_URL: https://durable-workflow.github.io/platform-protocol-specs.json
+          PROTOCOL_CATALOG_CONFORMANCE_EVIDENCE: release-protocol-catalog-conformance.json
+        run: scripts/ci/verify-release-protocol-catalog.sh
+
       - name: Resolve rolling image aliases
         id: rolling
-        if: ${{ steps.release_publish.outputs.is_semver == 'true' && steps.exact.outputs.exact_publish_outcome == 'success' }}
+        if: ${{ steps.release_publish.outputs.is_semver == 'true' && steps.exact.outputs.exact_publish_outcome == 'success' && steps.protocol_catalog.outputs.protocol_catalog_conformance_outcome == 'success' }}
         env:
           RELEASE_TAG: ${{ steps.release_publish.outputs.tag }}
           DOCKERHUB_IMAGE: ${{ env.DOCKERHUB_IMAGE }}
@@ -157,6 +169,7 @@ jobs:
           EXACT_PUBLISH_REASON: ${{ steps.exact.outputs.exact_publish_reason }}
           EXACT_VERIFY_OUTCOME: ${{ steps.exact.outcome || 'skipped' }}
           DOCKER_BUILD_OUTCOME: ${{ steps.build.outcome || 'skipped' }}
+          PROTOCOL_CATALOG_CONFORMANCE_OUTCOME: ${{ steps.protocol_catalog.outputs.protocol_catalog_conformance_outcome || steps.protocol_catalog.outcome || 'skipped' }}
           ROLLING_GUARD_OUTCOME: ${{ steps.rolling.outcome || 'skipped' }}
           ROLLING_PROMOTE_OUTCOME: ${{ steps.promote_rolling.outcome || 'skipped' }}
           ROLLING_ARTIFACT_STATUS: ${{ steps.promote_rolling.outputs.artifact_status || steps.rolling.outputs.artifact_status }}
@@ -171,7 +184,7 @@ jobs:
         run: scripts/ci/write-release-image-publish-evidence.sh
 
       - name: Classify live docs release readiness after public images
-        if: ${{ steps.exact.outputs.exact_publish_outcome == 'success' }}
+        if: ${{ steps.exact.outputs.exact_publish_outcome == 'success' && steps.protocol_catalog.outputs.protocol_catalog_conformance_outcome == 'success' }}
         env:
           DOCS_RELEASE_AUDIT_ARTIFACT: server
           DOCS_RELEASE_AUDIT_VERSION: ${{ steps.release_publish.outputs.tag || github.event.inputs.tag || github.ref_name }}
@@ -186,6 +199,7 @@ jobs:
           name: release-image-publish-evidence
           path: |
             release-image-publish-evidence.json
+            release-protocol-catalog-conformance.json
             docs-release-audit-evidence.json
             docs-release-audit-handoff.json
           if-no-files-found: error
