@@ -1122,6 +1122,7 @@ class WorkflowController
             }
         }
         $terminalFailure = $this->terminalFailurePayload($run);
+        $outputEnvelope = $run->outputEnvelope();
 
         $payload = [
             'workflow_id' => $run->workflow_instance_id,
@@ -1147,17 +1148,13 @@ class WorkflowController
             'execution_deadline_at' => $runDescription['execution_deadline_at'] ?? null,
             'run_deadline_at' => $runDescription['run_deadline_at'] ?? null,
             'input' => $this->workflowArguments($run),
-            'output' => $this->workflowOutput($run),
+            'output' => $run->workflowOutput(),
             'input_envelope' => $this->workerEnvelope(
                 $namespace,
                 $run->payload_codec,
                 is_string($run->arguments) ? $run->arguments : null,
             ),
-            'output_envelope' => $this->workerEnvelope(
-                $namespace,
-                $run->payload_codec,
-                is_string($run->output) ? $run->output : null,
-            ),
+            'output_envelope' => $outputEnvelope,
             'started_at' => $run->started_at?->toJSON(),
             'closed_at' => $run->closed_at?->toJSON(),
             'last_progress_at' => $runDescription['last_progress_at'] ?? $run->last_progress_at?->toJSON(),
@@ -1438,19 +1435,6 @@ class WorkflowController
             return $run->workflowArguments();
         } catch (Throwable) {
             return [];
-        }
-    }
-
-    private function workflowOutput(WorkflowRun $run): mixed
-    {
-        if ($run->output === null) {
-            return null;
-        }
-
-        try {
-            return $run->workflowOutput();
-        } catch (Throwable) {
-            return null;
         }
     }
 

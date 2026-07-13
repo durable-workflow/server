@@ -109,8 +109,8 @@ jobs:
 
       - name: Checkout workflow package
         run: |
-          git clone --depth=1 --branch 2.0.0-alpha.266 https://github.com/durable-workflow/workflow.git workflow-package
-          test "$(git -C workflow-package rev-parse HEAD)" = "bbb0fed0179994754ee395f3685a1f2cc260556a"
+          git clone --depth=1 --branch 2.0.0-alpha.273 https://github.com/durable-workflow/workflow.git workflow-package
+          test "$(git -C workflow-package rev-parse HEAD)" = "4a97a263956d8216b3496ce35b89422a5e5a37aa"
 
       - name: Run bounded-growth contract tests
         run: |
@@ -144,7 +144,7 @@ jobs:
           DW_PERF_MAX_HEALTH_LATENCY_SECONDS: "3"
           DW_PERF_CONTROL_PLANE_INTERVAL_SECONDS: "5"
           DW_PERF_MAX_CONTROL_PLANE_LATENCY_SECONDS: "5"
-          DW_PERF_WORKFLOW_VERSION: "2.0.0-alpha.266"
+          DW_PERF_WORKFLOW_VERSION: "2.0.0-alpha.273"
           DW_PERF_MAX_SERVER_MEMORY_MB: "768"
           DW_PERF_MAX_POLLING_KEYS: "512"
           DW_PERF_MAX_FINAL_POLLING_KEYS: "0"

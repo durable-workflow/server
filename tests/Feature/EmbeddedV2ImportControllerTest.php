@@ -100,6 +100,7 @@ class EmbeddedV2ImportControllerTest extends TestCase
             'status' => RunStatus::Completed->value,
             'closed_reason' => 'completed',
             'payload_codec' => config('workflows.serializer'),
+            'output_payload_codec' => config('workflows.serializer'),
             'arguments' => Serializer::serialize(['order-123']),
             'output' => Serializer::serialize(['ok' => true]),
             'connection' => 'redis',
@@ -122,6 +123,7 @@ class EmbeddedV2ImportControllerTest extends TestCase
         ]);
         WorkflowHistoryEvent::record($run->refresh(), HistoryEventType::WorkflowCompleted, [
             'output' => ['ok' => true],
+            'payload_codec' => config('workflows.serializer'),
         ]);
 
         $shape = config('server.topology.shape');

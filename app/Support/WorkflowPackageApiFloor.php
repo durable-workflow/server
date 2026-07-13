@@ -14,6 +14,7 @@ use Workflow\V2\Contracts\MatchingRole;
 use Workflow\V2\Contracts\ServiceControlPlane;
 use Workflow\V2\Contracts\WorkflowTaskBridge;
 use Workflow\V2\Exceptions\ExternalPayloadIntegrityException;
+use Workflow\V2\Exceptions\WorkflowOutputCodecUnavailableException;
 use Workflow\V2\Models\WorkflowSearchAttribute;
 use Workflow\V2\Models\WorkflowRun;
 use Workflow\V2\Support\BackendCapabilities;
@@ -128,13 +129,18 @@ final class WorkflowPackageApiFloor
     private const REQUIRED_CLASSES = [
         ExternalPayloadIntegrityException::class,
         LocalFilesystemExternalPayloadStorage::class,
+        WorkflowOutputCodecUnavailableException::class,
     ];
 
     /**
-     * Public instance methods the server depends on through package-registered
-     * model observers.
+     * Public instance methods the server depends on at runtime.
      */
     private const REQUIRED_INSTANCE_APIS = [
+        // Terminal reads use the run-row output codec projection. These APIs
+        // must remain independent of completion-history scans.
+        [WorkflowRun::class, 'outputEnvelope'],
+        [WorkflowRun::class, 'outputPayloadCodec'],
+        [WorkflowRun::class, 'workflowOutput'],
         // Package-owned child namespace projection lets the server remove its
         // local WorkflowLink / WorkflowRunLineageEntry observer glue.
         [ChildWorkflowNamespaceProjection::class, 'projectLink'],

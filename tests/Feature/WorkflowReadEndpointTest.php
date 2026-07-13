@@ -8,6 +8,8 @@ use Tests\Feature\Concerns\ServerTestHelpers;
 use Tests\Fixtures\AwaitApprovalWorkflow;
 use Tests\Fixtures\InteractiveCommandWorkflow;
 use Tests\TestCase;
+use Workflow\V2\Enums\HistoryEventType;
+use Workflow\V2\Models\WorkflowHistoryEvent;
 use Workflow\V2\Models\WorkflowRun;
 
 class WorkflowReadEndpointTest extends TestCase
@@ -300,7 +302,7 @@ class WorkflowReadEndpointTest extends TestCase
             ]);
     }
 
-    public function test_show_run_keeps_run_metadata_available_when_payloads_cannot_decode(): void
+    public function test_current_and_selected_run_surface_unknown_legacy_output_codec(): void
     {
         $start = $this->withHeaders($this->apiHeaders())
             ->postJson('/api/workflows', [
@@ -312,35 +314,32 @@ class WorkflowReadEndpointTest extends TestCase
         $start->assertCreated();
         $runId = (string) $start->json('run_id');
 
-        WorkflowRun::query()
-            ->whereKey($runId)
-            ->update([
-                'arguments' => 'not-a-decodable-input-payload',
-                'output' => 'not-a-decodable-output-payload',
-                'payload_codec' => 'python-json',
-                'compatibility' => 'php-worker-v1',
-            ]);
+        $run = WorkflowRun::query()->findOrFail($runId);
+        $run->forceFill([
+            'arguments' => 'not-a-decodable-input-payload',
+            'output' => 'not-a-decodable-output-payload',
+            'output_payload_codec' => null,
+            'payload_codec' => 'python-json',
+            'compatibility' => 'php-worker-v1',
+        ])->save();
 
-        $showRun = $this->withHeaders($this->apiHeaders())
-            ->getJson("/api/workflows/wf-read-show-run-undecodable-payload/runs/{$runId}");
+        WorkflowHistoryEvent::record($run, HistoryEventType::WorkflowCompleted, [
+            'output' => 'not-a-decodable-output-payload',
+        ]);
 
-        $showRun->assertOk()
-            ->assertJsonPath('workflow_id', 'wf-read-show-run-undecodable-payload')
-            ->assertJsonPath('run_id', $runId)
-            ->assertJsonPath('compatibility', 'php-worker-v1')
-            ->assertJsonPath('input', [])
-            ->assertJsonPath('output', null)
-            ->assertJsonPath('input_envelope.codec', 'python-json')
-            ->assertJsonPath('input_envelope.blob', 'not-a-decodable-input-payload')
-            ->assertJsonPath('output_envelope.codec', 'python-json')
-            ->assertJsonPath('output_envelope.blob', 'not-a-decodable-output-payload')
-            ->assertJsonStructure([
-                'status',
-                'status_bucket',
-                'task_queue',
-                'actions',
-                'control_plane',
-            ]);
+        foreach ([
+            '/api/workflows/wf-read-show-run-undecodable-payload',
+            "/api/workflows/wf-read-show-run-undecodable-payload/runs/{$runId}",
+        ] as $path) {
+            $this->withHeaders($this->apiHeaders())
+                ->getJson($path)
+                ->assertStatus(500)
+                ->assertJsonPath('reason', 'workflow_output_codec_unavailable')
+                ->assertJsonPath(
+                    'message',
+                    "Workflow output codec is unavailable for run [{$runId}]; the terminal output cannot be decoded safely.",
+                );
+        }
     }
 
     public function test_show_run_returns_404_for_unknown_run_id(): void

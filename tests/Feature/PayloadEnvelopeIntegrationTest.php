@@ -10,6 +10,7 @@ use App\Models\WorkflowNamespace;
 use App\Support\ExternalPayloadEnvelopeService;
 use App\Support\WorkerProtocol;
 use Illuminate\Foundation\Testing\RefreshDatabase;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\File;
 use Illuminate\Support\Facades\Queue;
 use Illuminate\Testing\TestResponse;
@@ -342,20 +343,27 @@ class PayloadEnvelopeIntegrationTest extends TestCase
         $this->assertContains('approved:yes:envelope-api', (array) $update->json('result.events'));
     }
 
-    public function test_complete_workflow_accepts_envelope_result(): void
+    public function test_complete_workflow_projects_its_result_codec_and_rejects_stale_null_completion(): void
     {
         Queue::fake();
         $this->configureWorkflowTypes();
         $this->createNamespace('default');
 
+        $workflowId = 'wf-envelope-complete';
+        $expected = ['greeting' => 'Hello Ada'];
+
         $this->withHeaders($this->apiHeaders())
             ->postJson('/api/workflows', [
-                'workflow_id' => 'wf-envelope-complete',
+                'workflow_id' => $workflowId,
                 'workflow_type' => 'tests.external-greeting-workflow',
                 'task_queue' => 'ext-q',
-                'input' => ['Ada'],
+                'input' => [
+                    'codec' => 'json',
+                    'blob' => Serializer::serializeWithCodec('json', ['Ada']),
+                ],
             ])
-            ->assertCreated();
+            ->assertCreated()
+            ->assertJsonPath('payload_codec', 'json');
 
         $this->registerWorker('worker-1', 'ext-q');
 
@@ -376,13 +384,102 @@ class PayloadEnvelopeIntegrationTest extends TestCase
                 'commands' => [
                     [
                         'type' => 'complete_workflow',
-                        'result' => $this->avroEnvelope(['greeting' => 'Hello Ada']),
+                        'result' => $this->avroEnvelope($expected),
                     ],
                 ],
             ]);
 
         $complete->assertOk()
             ->assertJsonPath('outcome', 'completed');
+
+        $runId = (string) $poll->json('task.run_id');
+        $projectedRun = WorkflowRun::query()->findOrFail($runId);
+        $this->assertSame('avro', $projectedRun->output_payload_codec);
+
+        DB::flushQueryLog();
+        DB::enableQueryLog();
+        try {
+            $projectedEnvelope = $projectedRun->outputEnvelope();
+            $projectedOutput = $projectedRun->workflowOutput();
+        } finally {
+            $terminalReadQueries = DB::getQueryLog();
+            DB::disableQueryLog();
+        }
+
+        $this->assertSame('avro', $projectedEnvelope['codec'] ?? null);
+        $this->assertSame($expected, $projectedOutput);
+        $this->assertSame([], array_values(array_filter(
+            $terminalReadQueries,
+            static fn (array $query): bool => str_contains($query['query'], 'workflow_history_events'),
+        )), 'Terminal output reads must not query completion history.');
+
+        $current = $this->withHeaders($this->apiHeaders())
+            ->getJson("/api/workflows/{$workflowId}");
+        $selected = $this->withHeaders($this->apiHeaders())
+            ->getJson("/api/workflows/{$workflowId}/runs/{$runId}");
+
+        foreach ([$current, $selected] as $result) {
+            $result->assertOk()
+                ->assertJsonPath('payload_codec', 'json')
+                ->assertJsonPath('output', $expected)
+                ->assertJsonPath('output_envelope.codec', 'avro');
+
+            $this->assertSame(
+                $expected,
+                Serializer::unserializeWithCodec(
+                    'avro',
+                    (string) $result->json('output_envelope.blob'),
+                ),
+            );
+        }
+
+        $completionEvents = WorkflowHistoryEvent::query()
+            ->where('workflow_run_id', $runId)
+            ->where('event_type', HistoryEventType::WorkflowCompleted->value)
+            ->get();
+
+        $this->assertCount(1, $completionEvents);
+        $completionEvent = $completionEvents->first();
+        $this->assertInstanceOf(WorkflowHistoryEvent::class, $completionEvent);
+        $completionPayload = $completionEvent->payload;
+        $this->assertIsArray($completionPayload);
+        $this->assertSame('avro', $completionPayload['payload_codec'] ?? null);
+        $this->assertSame(
+            $expected,
+            Serializer::unserializeWithCodec(
+                'avro',
+                (string) ($completionPayload['output'] ?? ''),
+            ),
+        );
+
+        $this->withHeaders($this->workerHeaders())
+            ->postJson("/api/worker/workflow-tasks/{$taskId}/complete", [
+                'lease_owner' => 'worker-1',
+                'workflow_task_attempt' => $attempt,
+                'commands' => [
+                    [
+                        'type' => 'complete_workflow',
+                        'result' => $this->avroEnvelope(null),
+                    ],
+                ],
+            ])
+            ->assertStatus(409)
+            ->assertJsonPath('reason', 'run_closed');
+
+        $this->assertSame(1, WorkflowHistoryEvent::query()
+            ->where('workflow_run_id', $runId)
+            ->where('event_type', HistoryEventType::WorkflowCompleted->value)
+            ->count());
+
+        $this->withHeaders($this->apiHeaders())
+            ->getJson("/api/workflows/{$workflowId}")
+            ->assertOk()
+            ->assertJsonPath('output', $expected);
+
+        $this->withHeaders($this->apiHeaders())
+            ->getJson("/api/workflows/{$workflowId}/runs/{$runId}")
+            ->assertOk()
+            ->assertJsonPath('output', $expected);
     }
 
     public function test_schedule_activity_accepts_envelope_arguments(): void
@@ -938,7 +1035,8 @@ class PayloadEnvelopeIntegrationTest extends TestCase
         $this->assertIsArray($activityCompleted);
         $this->assertExternalEnvelopeDecodes($activityCompleted['payload']['result'], $activityResult);
 
-        $workflowResultPayload = Serializer::serializeWithCodec('avro', $workflowResult);
+        $workflowResultCodec = 'workflow-serializer-y';
+        $workflowResultPayload = Serializer::serializeWithCodec($workflowResultCodec, $workflowResult);
         $this->withHeaders($this->workerHeaders())
             ->postJson('/api/worker/workflow-tasks/'.$resumePoll->json('task.task_id').'/complete', [
                 'lease_owner' => 'worker-external-roundtrip',
@@ -946,7 +1044,7 @@ class PayloadEnvelopeIntegrationTest extends TestCase
                 'commands' => [
                     [
                         'type' => 'complete_workflow',
-                        'result' => $this->externalStorageEnvelope('avro', $workflowResultPayload),
+                        'result' => $this->externalStorageEnvelope($workflowResultCodec, $workflowResultPayload),
                     ],
                 ],
             ])
@@ -955,6 +1053,7 @@ class PayloadEnvelopeIntegrationTest extends TestCase
 
         $run->refresh();
         $this->assertStoredExternalPayload($run->output);
+        $this->assertSame($workflowResultCodec, $run->output_payload_codec);
         $this->assertSame($workflowResult, $run->workflowOutput());
 
         $history = $this->withHeaders($this->apiHeaders())
@@ -969,15 +1068,28 @@ class PayloadEnvelopeIntegrationTest extends TestCase
         $this->assertIsArray($historyActivityCompleted);
         $this->assertIsArray($historyWorkflowCompleted);
         $this->assertExternalEnvelopeDecodes($historyActivityCompleted['payload']['result'], $activityResult);
-        $this->assertExternalEnvelopeDecodes($historyWorkflowCompleted['payload']['output'], $workflowResult);
+        $this->assertExternalEnvelopeDecodes(
+            $historyWorkflowCompleted['payload']['output'],
+            $workflowResult,
+            $workflowResultCodec,
+        );
 
-        $show = $this->withHeaders($this->apiHeaders())
-            ->getJson('/api/workflows/wf-external-roundtrip');
+        foreach ([
+            '/api/workflows/wf-external-roundtrip',
+            "/api/workflows/wf-external-roundtrip/runs/{$runId}",
+        ] as $path) {
+            $show = $this->withHeaders($this->apiHeaders())->getJson($path);
 
-        $show->assertOk()
-            ->assertJsonPath('output.done', $workflowResult['done'])
-            ->assertJsonStructure(['output_envelope' => ['codec', 'external_storage']]);
-        $this->assertExternalEnvelopeDecodes($show->json('output_envelope'), $workflowResult);
+            $show->assertOk()
+                ->assertJsonPath('output.done', $workflowResult['done'])
+                ->assertJsonPath('output_envelope.codec', $workflowResultCodec)
+                ->assertJsonStructure(['output_envelope' => ['codec', 'external_storage']]);
+            $this->assertExternalEnvelopeDecodes(
+                $show->json('output_envelope'),
+                $workflowResult,
+                $workflowResultCodec,
+            );
+        }
     }
 
     public function test_read_surfaces_do_not_externalize_existing_inline_payloads(): void
@@ -1664,9 +1776,13 @@ class PayloadEnvelopeIntegrationTest extends TestCase
     /**
      * @param  array<string, mixed>  $envelope
      */
-    private function assertExternalEnvelopeDecodes(array $envelope, mixed $expected): void
+    private function assertExternalEnvelopeDecodes(
+        array $envelope,
+        mixed $expected,
+        string $expectedCodec = 'avro',
+    ): void
     {
-        $this->assertSame('avro', $envelope['codec'] ?? null);
+        $this->assertSame($expectedCodec, $envelope['codec'] ?? null);
         $this->assertArrayHasKey('external_storage', $envelope);
         $this->assertArrayNotHasKey('blob', $envelope);
 

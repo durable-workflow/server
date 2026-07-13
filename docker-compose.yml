@@ -4,8 +4,8 @@ services:
       context: .
       args:
         WORKFLOW_PACKAGE_SOURCE: ${WORKFLOW_PACKAGE_SOURCE:-https://github.com/durable-workflow/workflow.git}
-        WORKFLOW_PACKAGE_REF: ${WORKFLOW_PACKAGE_REF:-2.0.0-alpha.266}
-        WORKFLOW_PACKAGE_COMMIT: ${WORKFLOW_PACKAGE_COMMIT:-bbb0fed0179994754ee395f3685a1f2cc260556a}
+        WORKFLOW_PACKAGE_REF: ${WORKFLOW_PACKAGE_REF:-2.0.0-alpha.273}
+        WORKFLOW_PACKAGE_COMMIT: ${WORKFLOW_PACKAGE_COMMIT:-4a97a263956d8216b3496ce35b89422a5e5a37aa}
     command: ["server-bootstrap"]
     environment:
       APP_NAME: "Durable Workflow Server"
@@ -44,8 +44,8 @@ services:
       context: .
       args:
         WORKFLOW_PACKAGE_SOURCE: ${WORKFLOW_PACKAGE_SOURCE:-https://github.com/durable-workflow/workflow.git}
-        WORKFLOW_PACKAGE_REF: ${WORKFLOW_PACKAGE_REF:-2.0.0-alpha.266}
-        WORKFLOW_PACKAGE_COMMIT: ${WORKFLOW_PACKAGE_COMMIT:-bbb0fed0179994754ee395f3685a1f2cc260556a}
+        WORKFLOW_PACKAGE_REF: ${WORKFLOW_PACKAGE_REF:-2.0.0-alpha.273}
+        WORKFLOW_PACKAGE_COMMIT: ${WORKFLOW_PACKAGE_COMMIT:-4a97a263956d8216b3496ce35b89422a5e5a37aa}
     ports:
       - "8080:8080"
     environment:
@@ -90,8 +90,8 @@ services:
       context: .
       args:
         WORKFLOW_PACKAGE_SOURCE: ${WORKFLOW_PACKAGE_SOURCE:-https://github.com/durable-workflow/workflow.git}
-        WORKFLOW_PACKAGE_REF: ${WORKFLOW_PACKAGE_REF:-2.0.0-alpha.266}
-        WORKFLOW_PACKAGE_COMMIT: ${WORKFLOW_PACKAGE_COMMIT:-bbb0fed0179994754ee395f3685a1f2cc260556a}
+        WORKFLOW_PACKAGE_REF: ${WORKFLOW_PACKAGE_REF:-2.0.0-alpha.273}
+        WORKFLOW_PACKAGE_COMMIT: ${WORKFLOW_PACKAGE_COMMIT:-4a97a263956d8216b3496ce35b89422a5e5a37aa}
     command: php artisan queue:work --sleep=1 --tries=3 --max-time=3600
     environment:
       APP_NAME: "Durable Workflow Server"
@@ -124,8 +124,8 @@ services:
       context: .
       args:
         WORKFLOW_PACKAGE_SOURCE: ${WORKFLOW_PACKAGE_SOURCE:-https://github.com/durable-workflow/workflow.git}
-        WORKFLOW_PACKAGE_REF: ${WORKFLOW_PACKAGE_REF:-2.0.0-alpha.266}
-        WORKFLOW_PACKAGE_COMMIT: ${WORKFLOW_PACKAGE_COMMIT:-bbb0fed0179994754ee395f3685a1f2cc260556a}
+        WORKFLOW_PACKAGE_REF: ${WORKFLOW_PACKAGE_REF:-2.0.0-alpha.273}
+        WORKFLOW_PACKAGE_COMMIT: ${WORKFLOW_PACKAGE_COMMIT:-4a97a263956d8216b3496ce35b89422a5e5a37aa}
     # init: true wires Docker's tini as PID 1 so the `sh -c 'while … sleep 10'`
     # loop reaps any short-lived `php artisan` children instead of leaking
     # them as zombies. Without it the container slowly accumulates defunct

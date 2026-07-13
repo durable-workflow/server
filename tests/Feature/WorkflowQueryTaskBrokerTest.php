@@ -3142,6 +3142,281 @@ class WorkflowQueryTaskBrokerTest extends TestCase
         $this->assertSame(4, $poller->timeoutSeconds);
     }
 
+    public function test_python_same_key_signal_query_lifecycle_preserves_terminal_object_result(): void
+    {
+        Queue::fake();
+        config(['server.polling.timeout' => 0]);
+
+        $workflowId = 'wf-python-same-key-signal-query-result';
+        $workerId = 'python-same-key-signal-query-worker';
+        $conditionKey = 'polyglot.signal.polyglot-signal';
+        $this->registerPythonWorker(
+            $workerId,
+            'python-queries',
+            ['python.queryable'],
+            workflowCommandContracts: [
+                'python.queryable' => [
+                    'queries' => ['state'],
+                    'query_contracts' => [
+                        [
+                            'name' => 'state',
+                            'parameters' => [],
+                        ],
+                    ],
+                    'signals' => ['polyglot-signal'],
+                    'signal_contracts' => [
+                        [
+                            'name' => 'polyglot-signal',
+                            'parameters' => [
+                                $this->typedCommandParameter('sequence', 0, 'int'),
+                            ],
+                        ],
+                    ],
+                    'updates' => [],
+                    'update_contracts' => [],
+                ],
+            ],
+        );
+        $run = $this->startRemoteWorkflow($workflowId);
+
+        $initialPoll = $this->postJson('/api/worker/workflow-tasks/poll', [
+            'worker_id' => $workerId,
+            'task_queue' => 'python-queries',
+        ], $this->workerHeaders());
+
+        $initialPoll->assertOk()
+            ->assertJsonPath('poll_status', 'leased')
+            ->assertJsonPath('task.payload_codec', 'avro');
+
+        $this->postJson("/api/worker/workflow-tasks/{$initialPoll->json('task.task_id')}/complete", [
+            'lease_owner' => $initialPoll->json('task.lease_owner'),
+            'workflow_task_attempt' => $initialPoll->json('task.workflow_task_attempt'),
+            'commands' => [
+                [
+                    'type' => 'open_condition_wait',
+                    'condition_key' => $conditionKey,
+                    'timeout_seconds' => 300,
+                ],
+            ],
+        ], $this->workerHeaders())
+            ->assertOk()
+            ->assertJsonPath('run_status', 'waiting');
+
+        /** @var WorkflowQueryTaskBroker $broker */
+        $broker = app(WorkflowQueryTaskBroker::class);
+        $queryObservations = [];
+        $observe = function (array $state) use (
+            $broker,
+            $run,
+            $workerId,
+            &$queryObservations,
+        ): void {
+            $historyCount = WorkflowHistoryEvent::query()
+                ->where('workflow_run_id', $run->id)
+                ->count();
+            $lastHistorySequence = (int) $run->refresh()->last_history_sequence;
+            $runStatus = $run->status;
+            $runOutput = $run->output;
+            $queryTask = $broker->enqueue('default', $run, 'state', $this->queryArguments());
+
+            $queryPoll = $this->postJson('/api/worker/query-tasks/poll', [
+                'worker_id' => $workerId,
+                'task_queue' => 'python-queries',
+            ], $this->workerHeaders());
+
+            $queryPoll->assertOk()
+                ->assertJsonPath('poll_status', 'leased')
+                ->assertJsonPath('task.query_task_id', $queryTask['query_task_id'])
+                ->assertJsonPath('task.query_name', 'state');
+
+            $resultEnvelope = [
+                'codec' => 'avro',
+                'blob' => Serializer::serializeWithCodec('avro', $state),
+            ];
+            $this->postJson("/api/worker/query-tasks/{$queryTask['query_task_id']}/complete", [
+                'lease_owner' => $workerId,
+                'query_task_attempt' => $queryPoll->json('task.query_task_attempt'),
+                'result' => $state,
+                'result_envelope' => $resultEnvelope,
+            ], $this->workerHeaders())
+                ->assertOk()
+                ->assertJsonPath('outcome', 'completed');
+
+            $stored = $broker->task((string) $queryTask['query_task_id']);
+            $this->assertSame($state, $stored['result'] ?? null);
+            $this->assertSame($resultEnvelope, $stored['result_envelope'] ?? null);
+            $this->assertSame($historyCount, WorkflowHistoryEvent::query()
+                ->where('workflow_run_id', $run->id)
+                ->count());
+            $this->assertSame($lastHistorySequence, (int) $run->refresh()->last_history_sequence);
+            $this->assertSame($runStatus, $run->status);
+            $this->assertSame($runOutput, $run->output);
+
+            $queryObservations[] = [
+                'state' => $state,
+                'history_events' => $queryPoll->json('task.history_events'),
+                'result_envelope' => $stored['result_envelope'] ?? null,
+            ];
+        };
+
+        $observe([
+            'stage' => 'waiting',
+            'signal_count' => 0,
+            'signals' => [],
+        ]);
+
+        $this->postJson("/api/workflows/{$workflowId}/signal/polyglot-signal", [
+            'input' => [1],
+            'request_id' => 'python-same-key-signal-1',
+        ], $this->apiHeaders())
+            ->assertAccepted()
+            ->assertJsonPath('command_status', 'accepted');
+
+        $firstSignalPoll = $this->postJson('/api/worker/workflow-tasks/poll', [
+            'worker_id' => $workerId,
+            'task_queue' => 'python-queries',
+        ], $this->workerHeaders());
+
+        $firstSignalPoll->assertOk()
+            ->assertJsonPath('poll_status', 'leased')
+            ->assertJsonPath('task.resume_source_kind', 'workflow_signal');
+
+        $this->postJson("/api/worker/workflow-tasks/{$firstSignalPoll->json('task.task_id')}/complete", [
+            'lease_owner' => $firstSignalPoll->json('task.lease_owner'),
+            'workflow_task_attempt' => $firstSignalPoll->json('task.workflow_task_attempt'),
+            'commands' => [
+                [
+                    'type' => 'open_condition_wait',
+                    'condition_key' => $conditionKey,
+                    'timeout_seconds' => 300,
+                ],
+            ],
+        ], $this->workerHeaders())
+            ->assertOk()
+            ->assertJsonPath('run_status', 'waiting');
+
+        $afterFirstSignal = [
+            'stage' => 'signaled',
+            'signal_count' => 1,
+            'signals' => [1],
+        ];
+        $observe($afterFirstSignal);
+        $observe($afterFirstSignal);
+
+        $this->postJson("/api/workflows/{$workflowId}/signal/polyglot-signal", [
+            'input' => [2],
+            'request_id' => 'python-same-key-signal-2',
+        ], $this->apiHeaders())
+            ->assertAccepted()
+            ->assertJsonPath('command_status', 'accepted');
+
+        $terminalPoll = $this->postJson('/api/worker/workflow-tasks/poll', [
+            'worker_id' => $workerId,
+            'task_queue' => 'python-queries',
+        ], $this->workerHeaders());
+
+        $terminalPoll->assertOk()
+            ->assertJsonPath('poll_status', 'leased')
+            ->assertJsonPath('task.resume_source_kind', 'workflow_signal');
+
+        $expectedResult = [
+            'workflow_runtime' => 'python',
+            'request' => ['Ada'],
+            'signal' => 1,
+        ];
+        $terminalEnvelope = [
+            'codec' => 'json',
+            'blob' => Serializer::serializeWithCodec('json', $expectedResult),
+        ];
+        $terminalCommands = [
+            [
+                'type' => 'complete_workflow',
+                'result' => $terminalEnvelope,
+            ],
+        ];
+
+        $this->assertCount(1, $terminalCommands);
+        $this->assertSame('complete_workflow', $terminalCommands[0]['type']);
+        $this->assertSame(
+            $expectedResult,
+            Serializer::unserializeWithCodec(
+                $terminalCommands[0]['result']['codec'],
+                $terminalCommands[0]['result']['blob'],
+            ),
+        );
+
+        $this->postJson("/api/worker/workflow-tasks/{$terminalPoll->json('task.task_id')}/complete", [
+            'lease_owner' => $terminalPoll->json('task.lease_owner'),
+            'workflow_task_attempt' => $terminalPoll->json('task.workflow_task_attempt'),
+            'commands' => $terminalCommands,
+        ], $this->workerHeaders())
+            ->assertOk()
+            ->assertJsonPath('run_status', 'completed');
+
+        $this->assertSame('json', $run->refresh()->output_payload_codec);
+
+        $completionEvents = WorkflowHistoryEvent::query()
+            ->where('workflow_run_id', $run->id)
+            ->where('event_type', HistoryEventType::WorkflowCompleted->value)
+            ->get();
+        $this->assertCount(1, $completionEvents);
+        $completionEvent = $completionEvents->first();
+        $this->assertInstanceOf(WorkflowHistoryEvent::class, $completionEvent);
+        $completionPayload = $completionEvent->payload;
+        $this->assertIsArray($completionPayload);
+        $this->assertSame('json', $completionPayload['payload_codec'] ?? null);
+        $this->assertSame($terminalEnvelope['blob'], $completionPayload['output'] ?? null);
+        $this->assertSame(
+            $expectedResult,
+            Serializer::unserializeWithCodec(
+                (string) $completionPayload['payload_codec'],
+                (string) $completionPayload['output'],
+            ),
+        );
+
+        foreach ([
+            "/api/workflows/{$workflowId}",
+            "/api/workflows/{$workflowId}/runs/{$run->id}",
+        ] as $resultPath) {
+            $this->getJson($resultPath, $this->apiHeaders())
+                ->assertOk()
+                ->assertJsonPath('output', $expectedResult)
+                ->assertJsonPath('output_envelope', $terminalEnvelope);
+        }
+
+        $this->postJson("/api/worker/workflow-tasks/{$terminalPoll->json('task.task_id')}/complete", [
+            'lease_owner' => $terminalPoll->json('task.lease_owner'),
+            'workflow_task_attempt' => $terminalPoll->json('task.workflow_task_attempt'),
+            'commands' => [
+                [
+                    'type' => 'complete_workflow',
+                    'result' => [
+                        'codec' => 'json',
+                        'blob' => Serializer::serializeWithCodec('json', null),
+                    ],
+                ],
+            ],
+        ], $this->workerHeaders())
+            ->assertStatus(409)
+            ->assertJsonPath('reason', 'run_closed');
+
+        $this->assertCount(3, $queryObservations);
+        $this->assertSame([0, 1, 1], array_column(array_column($queryObservations, 'state'), 'signal_count'));
+        $this->assertSame(1, WorkflowHistoryEvent::query()
+            ->where('workflow_run_id', $run->id)
+            ->where('event_type', HistoryEventType::WorkflowCompleted->value)
+            ->count());
+
+        foreach ([
+            "/api/workflows/{$workflowId}",
+            "/api/workflows/{$workflowId}/runs/{$run->id}",
+        ] as $resultPath) {
+            $this->getJson($resultPath, $this->apiHeaders())
+                ->assertOk()
+                ->assertJsonPath('output', $expectedResult);
+        }
+    }
+
     public function test_query_task_poll_leases_after_ordered_signal_replays_open_new_waits(): void
     {
         Queue::fake();

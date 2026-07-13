@@ -18,6 +18,8 @@ use Workflow\V2\Contracts\MatchingRole;
 use Workflow\V2\Contracts\ServiceControlPlane;
 use Workflow\V2\Contracts\WorkflowTaskBridge;
 use Workflow\V2\Exceptions\ExternalPayloadIntegrityException;
+use Workflow\V2\Exceptions\WorkflowOutputCodecUnavailableException;
+use Workflow\V2\Models\WorkflowRun;
 use Workflow\V2\Models\WorkflowSearchAttribute;
 use Workflow\V2\Support\BackendCapabilities;
 use Workflow\V2\Support\ChildWorkflowNamespaceProjection;
@@ -228,6 +230,19 @@ class WorkflowPackageApiFloorTest extends TestCase
         $this->assertTrue(interface_exists(ExternalPayloadStoragePolicy::class));
         $this->assertTrue(class_exists(ExternalPayloadIntegrityException::class));
         $this->assertTrue(class_exists(LocalFilesystemExternalPayloadStorage::class));
+    }
+
+    public function test_terminal_output_projection_apis_are_listed_in_the_package_floor(): void
+    {
+        $floor = new ReflectionClass(WorkflowPackageApiFloor::class);
+
+        $classes = $this->privateConstant($floor, 'REQUIRED_CLASSES');
+        $this->assertContains(WorkflowOutputCodecUnavailableException::class, $classes);
+
+        $apis = $this->privateConstant($floor, 'REQUIRED_INSTANCE_APIS');
+        $this->assertContains([WorkflowRun::class, 'outputEnvelope'], $apis);
+        $this->assertContains([WorkflowRun::class, 'outputPayloadCodec'], $apis);
+        $this->assertContains([WorkflowRun::class, 'workflowOutput'], $apis);
     }
 
     public function test_external_payload_apis_are_listed_in_the_package_floor(): void

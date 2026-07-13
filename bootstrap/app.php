@@ -13,6 +13,7 @@ use Illuminate\Http\Request;
 use Illuminate\Validation\ValidationException;
 use Symfony\Component\HttpFoundation\Response;
 use Symfony\Component\HttpKernel\Exception\HttpExceptionInterface;
+use Workflow\V2\Exceptions\WorkflowOutputCodecUnavailableException;
 
 return Application::configure(basePath: dirname(__DIR__))
     ->withRouting(
@@ -30,6 +31,17 @@ return Application::configure(basePath: dirname(__DIR__))
         ]);
     })
     ->withExceptions(function (Exceptions $exceptions) {
+        $exceptions->render(function (WorkflowOutputCodecUnavailableException $exception, Request $request) {
+            if (ControlPlaneProtocol::requestVersion($request) !== ControlPlaneProtocol::VERSION) {
+                return null;
+            }
+
+            return ControlPlaneProtocol::jsonForRequest($request, [
+                'message' => $exception->getMessage(),
+                'reason' => 'workflow_output_codec_unavailable',
+            ], 500);
+        });
+
         $exceptions->render(function (ValidationException $exception, Request $request) {
             if (WorkerProtocol::isWorkerPlaneRequest($request)
                 && WorkerProtocol::requestUsesCompatibleProtocolVersion($request)
