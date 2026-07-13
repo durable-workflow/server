@@ -69,7 +69,7 @@ final class ReplayConformanceResultGate
             'pass_requires' => [
                 'every_required_scenario_has_one_result',
                 'every_result_uses_a_published_status',
-                'required_php_and_python_runtimes_are_reported',
+                'required_php_python_and_rust_runtimes_are_reported',
                 'completed_history_families_are_reported_for_each_runtime',
                 'worker_restart_replay_cells_are_reported_for_each_runtime',
                 'adversarial_refusals_have_actionable_diagnostics',
@@ -395,6 +395,7 @@ final class ReplayConformanceResultGate
             'workflow-php' => ['workflow-php', 'workflow_php', 'workflow'],
             'sdk-python' => ['sdk-python', 'sdk_python', 'python'],
             'waterline' => ['waterline', 'waterline-ui', 'waterline_ui'],
+            'sdk-rust' => ['sdk-rust', 'sdk_rust', 'rust'],
         ];
 
         foreach ($aliases[$artifact] ?? [$artifact] as $key) {
@@ -745,6 +746,7 @@ final class ReplayConformanceResultGate
                 'php_completed_history_wait_condition_replay',
                 'php_completed_history_version_marker_replay',
                 'php_completed_history_saga_compensation_replay',
+                'rust_side_effect_replay_after_worker_restart',
             ],
             'worker_restart_replay' => [
                 'python_worker_restart_completed_query',
@@ -759,6 +761,7 @@ final class ReplayConformanceResultGate
                 'php_worker_restart_wait_condition_state',
                 'php_worker_restart_version_marker_state',
                 'php_worker_restart_saga_compensation_state',
+                'rust_version_marker_replay_after_code_upgrade',
             ],
             'adversarial_replay' => [
                 'python_code_divergence_refusal',

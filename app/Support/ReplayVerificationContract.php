@@ -296,12 +296,14 @@ final class ReplayVerificationContract
                         'cli' => 'official dw install script pinned to its latest release tag',
                         'workflow-php' => 'Composer package durable-workflow/workflow:2.0.0-alpha.<latest>',
                         'sdk-python' => 'PyPI package durable-workflow==<latest>',
+                        'sdk-rust' => 'crates.io package durable-workflow@<latest>',
                     ],
                     'required_artifact_versions' => [
                         'server',
                         'cli',
                         'workflow-php',
                         'sdk-python',
+                        'sdk-rust',
                         'waterline',
                     ],
                     'forbidden_sources' => [
@@ -321,6 +323,7 @@ final class ReplayVerificationContract
                 'required_runtimes' => [
                     'workflow-php',
                     'sdk-python',
+                    'sdk-rust',
                 ],
                 'scenario_statuses' => [
                     'pass',
@@ -353,6 +356,12 @@ final class ReplayVerificationContract
                         'malformed_history_refusal',
                         'in_flight_signal_restart_timing',
                     ],
+                    'runtime_specific_scenarios' => [
+                        'sdk-rust' => [
+                            'side_effect_replay_after_worker_restart',
+                            'version_marker_replay_after_code_upgrade',
+                        ],
+                    ],
                 ],
                 'host_runner_contract' => [
                     'status' => 'required_for_passing_replay_conformance',
@@ -366,6 +375,7 @@ final class ReplayVerificationContract
                         'published-artifact-install.json',
                         'python-replay-shard.json',
                         'php-replay-shard.json',
+                        'rust-replay-shard.json',
                         'replay-conformance-result.json',
                         'replay-conformance-record.json',
                     ],
@@ -376,6 +386,7 @@ final class ReplayVerificationContract
                     'must_compose_runtime_shards' => [
                         'workflow-php-runtime-shard',
                         'sdk-python-runtime-shard',
+                        'sdk-rust-runtime-shard',
                     ],
                     'smoke_summary_only_outcome' => 'non_passing',
                     'unexecuted_required_scenario_status' => 'not_covered',
@@ -393,17 +404,26 @@ final class ReplayVerificationContract
                             'fallback_status_when_surface_missing' => 'unsupported',
                             'fallback_finding_type' => 'unsupported_public_surface',
                         ],
+                        'sdk-rust' => [
+                            'scope' => 'sdk-rust-runtime-shard',
+                            'completed_history_surface' => 'durable-workflow-replay-conformance',
+                            'worker_restart_surface' => 'side_effect_and_version_marker_cold_replay',
+                            'fallback_status_when_surface_missing' => 'unsupported',
+                            'fallback_finding_type' => 'unsupported_public_surface',
+                        ],
                     ],
                     'merge_policy' => [
                         'input_scopes' => [
                             'workflow-php-runtime-shard',
                             'sdk-python-runtime-shard',
+                            'sdk-rust-runtime-shard',
                             'live-server-replay-smoke',
                         ],
                         'output_schema' => self::REPLAY_CONFORMANCE_RESULT_SCHEMA,
                         'requires_required_runtimes' => [
                             'workflow-php',
                             'sdk-python',
+                            'sdk-rust',
                         ],
                         'requires_sections' => [
                             'completed_history_replay',
@@ -416,6 +436,7 @@ final class ReplayVerificationContract
                         'published-artifact-install',
                         'workflow-php-runtime-shard',
                         'sdk-python-runtime-shard',
+                        'sdk-rust-runtime-shard',
                         'completed-history-replay',
                         'worker-restart-replay',
                         'code-divergence-refusal',
@@ -541,6 +562,8 @@ final class ReplayVerificationContract
             'malformed_history_refusal',
             'python_in_flight_signal_restart_timing',
             'php_in_flight_signal_restart_timing',
+            'rust_side_effect_replay_after_worker_restart',
+            'rust_version_marker_replay_after_code_upgrade',
         ];
     }
 }

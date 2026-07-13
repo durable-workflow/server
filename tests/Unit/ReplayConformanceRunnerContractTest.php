@@ -22,6 +22,7 @@ class ReplayConformanceRunnerContractTest extends TestCase
         $this->assertStringContainsString('"durable-workflow/cli"', $source);
         $this->assertStringContainsString('latest_pypi_version(', $source);
         $this->assertStringContainsString('latest_packagist_version(', $source);
+        $this->assertStringContainsString('latest_crates_io_version(', $source);
         $this->assertStringContainsString('"artifact_sources"', $source);
         $this->assertStringContainsString('"local_product_source_checkouts_used": False', $source);
         $this->assertStringContainsString('docker pull "$server_image"', $source);
@@ -63,8 +64,11 @@ class ReplayConformanceRunnerContractTest extends TestCase
         $this->assertStringContainsString('php artisan workflow:v2:replay-conformance --json', $source);
         $this->assertStringContainsString('python-replay-shard.json', $source);
         $this->assertStringContainsString('php-replay-shard.json', $source);
+        $this->assertStringContainsString('rust-replay-shard.json', $source);
         $this->assertStringContainsString('workflow-php-runtime-shard', $source);
         $this->assertStringContainsString('sdk-python-runtime-shard', $source);
+        $this->assertStringContainsString('sdk-rust-runtime-shard', $source);
+        $this->assertStringContainsString('cargo install durable-workflow --version "$rust_sdk_version"', $source);
         $this->assertStringContainsString('command -v durable-workflow-replay-conformance', $source);
         $this->assertStringContainsString('php_artisan_command_available', $source);
         $this->assertStringContainsString('NF > 0 && $1 == command', $source);
@@ -117,6 +121,8 @@ class ReplayConformanceRunnerContractTest extends TestCase
             'server_history_mutation_refusal',
             'malformed_history_refusal',
             'php_in_flight_signal_restart_timing',
+            'rust_side_effect_replay_after_worker_restart',
+            'rust_version_marker_replay_after_code_upgrade',
         ] as $scenario) {
             $this->assertStringContainsString('"' . $scenario . '"', $source);
         }
@@ -277,6 +283,7 @@ if [[ "${1:-}" == */resolve-pins.py ]]; then
   "artifact_sources": {
     "cli": "github_release_asset",
     "sdk-python": "pypi_package",
+    "sdk-rust": "crates_io_package",
     "server": "published_docker_image",
     "waterline": "packagist_package",
     "workflow-php": "packagist_package"
@@ -284,6 +291,7 @@ if [[ "${1:-}" == */resolve-pins.py ]]; then
   "artifact_versions": {
     "cli": "0.1.80",
     "sdk-python": "0.4.88",
+    "sdk-rust": "0.1.13",
     "server": "0.2.407",
     "waterline": "2.0.0-alpha.92",
     "workflow-php": "2.0.0-alpha.204"
@@ -591,6 +599,7 @@ if [[ "${1:-}" == */resolve-pins.py ]]; then
   "artifact_sources": {
     "cli": "github_release_asset",
     "sdk-python": "pypi_package",
+    "sdk-rust": "crates_io_package",
     "server": "published_docker_image",
     "waterline": "packagist_package",
     "workflow-php": "packagist_package"
@@ -598,6 +607,7 @@ if [[ "${1:-}" == */resolve-pins.py ]]; then
   "artifact_versions": {
     "cli": "0.1.81",
     "sdk-python": "0.4.89",
+    "sdk-rust": "0.1.13",
     "server": "0.2.449",
     "waterline": "2.0.0-alpha.111",
     "workflow-php": "2.0.0-alpha.210"
@@ -712,6 +722,21 @@ write_php_shard() {
 JSON
 }
 
+write_rust_shard() {
+  local output="$1"
+  mkdir -p "$(dirname "$output")"
+  cat > "$output" <<'JSON'
+{
+  "findings": [],
+  "outcome": "pass",
+  "scenario_results": {
+    "rust_side_effect_replay_after_worker_restart": {"scenario_id": "rust_side_effect_replay_after_worker_restart", "status": "pass", "observed_outputs": {"callback_calls": 1}},
+    "rust_version_marker_replay_after_code_upgrade": {"scenario_id": "rust_version_marker_replay_after_code_upgrade", "status": "pass", "observed_outputs": {"version": 2}}
+  }
+}
+JSON
+}
+
 if [[ "${1:-}" == "compose" ]]; then
   if [[ "${2:-}" == "version" ]]; then
     exit 0
@@ -730,6 +755,30 @@ fi
 
 if [[ "${1:-}" == "run" ]]; then
   joined=" $* "
+  if [[ "$joined" == *" cargo install durable-workflow "* ]]; then
+    previous=""
+    for arg in "$@"; do
+      if [[ "$previous" == "-v" && "$arg" == *":/cargo" ]]; then
+        rust_root="${arg%:/cargo}"
+        mkdir -p "$rust_root/bin"
+        printf '#!/usr/bin/env sh\nexit 0\n' > "$rust_root/bin/durable-workflow-replay-conformance"
+        chmod +x "$rust_root/bin/durable-workflow-replay-conformance"
+      fi
+      previous="$arg"
+    done
+    exit 0
+  fi
+  if [[ "$joined" == *" /cargo/bin/durable-workflow-replay-conformance "* ]]; then
+    previous=""
+    for arg in "$@"; do
+      if [[ "$previous" == "-v" && "$arg" == *":/result" ]]; then
+        result_dir="${arg%:/result}"
+      fi
+      previous="$arg"
+    done
+    write_rust_shard "$result_dir/rust-replay-shard.json"
+    exit 0
+  fi
   if [[ "$joined" == *" php /probe.php "* ]]; then
     printf '%s\n' '{"classes_checked":[],"missing_classes":[],"package":"durable-workflow/waterline","status":"pass","workflow_package_api_floor_missing":[]}'
     exit 0

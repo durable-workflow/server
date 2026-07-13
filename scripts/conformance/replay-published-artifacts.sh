@@ -13,6 +13,7 @@ The runner writes these files to the result directory:
   published-artifact-install.json
   python-replay-shard.json
   php-replay-shard.json
+  rust-replay-shard.json
   replay-conformance-result.json
   replay-conformance-record.json
 
@@ -24,6 +25,7 @@ Environment overrides:
   DW_SERVER_VERSION              Exact patch server Docker tag; required for digest-only DW_SERVER_IMAGE.
   DW_WORKFLOW_PHP_VERSION        Composer version for durable-workflow/workflow.
   DW_PYTHON_SDK_VERSION          PyPI version for durable-workflow.
+  DW_RUST_SDK_VERSION            crates.io version for durable-workflow.
   DW_CLI_VERSION                 GitHub release tag for the official CLI installer.
   DW_WATERLINE_VERSION           Composer version for durable-workflow/waterline.
   DW_REPLAY_SKIP_DOCKER_PULL=1   Reuse a local server image instead of pulling.
@@ -305,12 +307,17 @@ IN_FLIGHT_TIMING_SCENARIOS=(
   "python_in_flight_signal_restart_timing"
   "php_in_flight_signal_restart_timing"
 )
+RUST_REPLAY_SCENARIOS=(
+  "rust_side_effect_replay_after_worker_restart"
+  "rust_version_marker_replay_after_code_upgrade"
+)
 REPLAY_REQUIRED_SCENARIOS=(
   "published_artifact_install_only"
   "${COMPLETED_HISTORY_SCENARIOS[@]}"
   "${WORKER_RESTART_SCENARIOS[@]}"
   "${ADVERSARIAL_REPLAY_SCENARIOS[@]}"
   "${IN_FLIGHT_TIMING_SCENARIOS[@]}"
+  "${RUST_REPLAY_SCENARIOS[@]}"
 )
 
 emit_shell_blocked_finding() {
@@ -440,8 +447,8 @@ blocked_result_without_python() {
   "artifact_versions": {},
   "artifact_sources": {},
   "runtime_matrix": {
-    "runtimes": ["workflow-php", "sdk-python"],
-    "coverage_scopes": ["workflow-php-runtime-shard", "sdk-python-runtime-shard"]
+    "runtimes": ["workflow-php", "sdk-python", "sdk-rust"],
+    "coverage_scopes": ["workflow-php-runtime-shard", "sdk-python-runtime-shard", "sdk-rust-runtime-shard"]
   },
   "source_policy": {
     "artifact_source": "published_artifacts",
@@ -560,8 +567,8 @@ result = {
         "local_product_source_checkouts_used": False,
     },
     "runtime_matrix": {
-        "runtimes": ["workflow-php", "sdk-python"],
-        "coverage_scopes": ["workflow-php-runtime-shard", "sdk-python-runtime-shard"],
+        "runtimes": ["workflow-php", "sdk-python", "sdk-rust"],
+        "coverage_scopes": ["workflow-php-runtime-shard", "sdk-python-runtime-shard", "sdk-rust-runtime-shard"],
     },
     "scenario_results": scenario_results,
     "completed_history_replay": {"status": "runner_blocked", "scenarios": required[1:11]},
@@ -848,8 +855,8 @@ result = {
         "local_product_source_checkouts_used": False,
     },
     "runtime_matrix": {
-        "runtimes": ["workflow-php", "sdk-python"],
-        "coverage_scopes": ["workflow-php-runtime-shard", "sdk-python-runtime-shard"],
+        "runtimes": ["workflow-php", "sdk-python", "sdk-rust"],
+        "coverage_scopes": ["workflow-php-runtime-shard", "sdk-python-runtime-shard", "sdk-rust-runtime-shard"],
     },
     "scenario_results": scenario_results,
     "completed_history_replay": section(REQUIRED[1:11]),
@@ -1203,6 +1210,16 @@ def latest_packagist_version(package: str, override: str | None) -> str:
     return sorted(versions, key=semver_key)[-1]
 
 
+def latest_crates_io_version(package: str, override: str | None) -> str:
+    if override:
+        return override
+    payload = read_json(f"https://crates.io/api/v1/crates/{package}")
+    version = str(payload.get("crate", {}).get("newest_version", ""))
+    if not version:
+        raise RuntimeError(f"could not resolve crates.io version for {package}")
+    return version
+
+
 server_version = latest_docker_tag()
 server_image = env("DW_SERVER_IMAGE") or f"durableworkflow/server:{server_version}"
 cli_version, cli_install_url = github_release(
@@ -1218,6 +1235,10 @@ python_version = latest_pypi_version(
     "durable-workflow",
     env("DW_PYTHON_SDK_VERSION"),
 )
+rust_version = latest_crates_io_version(
+    "durable-workflow",
+    env("DW_RUST_SDK_VERSION"),
+)
 waterline_version = latest_packagist_version(
     "durable-workflow/waterline",
     env("DW_WATERLINE_VERSION"),
@@ -1232,6 +1253,7 @@ result = {
         "cli": cli_version,
         "workflow-php": workflow_version,
         "sdk-python": python_version,
+        "sdk-rust": rust_version,
         "waterline": waterline_version,
     },
     "artifact_sources": {
@@ -1239,6 +1261,7 @@ result = {
         "cli": "github_release_asset",
         "workflow-php": "packagist_package",
         "sdk-python": "pypi_package",
+        "sdk-rust": "crates_io_package",
         "waterline": "packagist_package",
     },
 }
@@ -1298,6 +1321,13 @@ import json
 import sys
 from pathlib import Path
 print(json.loads(Path(sys.argv[1]).read_text())["artifact_versions"]["sdk-python"])
+PY
+)"
+rust_sdk_version="$(python3 - "$result_dir/pins.json" <<'PY'
+import json
+import sys
+from pathlib import Path
+print(json.loads(Path(sys.argv[1]).read_text())["artifact_versions"]["sdk-rust"])
 PY
 )"
 waterline_version="$(python3 - "$result_dir/pins.json" <<'PY'
@@ -1529,8 +1559,16 @@ scenario_ids = {
         "php_code_divergence_refusal",
         "php_in_flight_signal_restart_timing",
     ],
+    "sdk-rust": [
+        "rust_side_effect_replay_after_worker_restart",
+        "rust_version_marker_replay_after_code_upgrade",
+    ],
 }[runtime]
-scope = "sdk-python-runtime-shard" if runtime == "sdk-python" else "workflow-php-runtime-shard"
+scope = {
+    "sdk-python": "sdk-python-runtime-shard",
+    "workflow-php": "workflow-php-runtime-shard",
+    "sdk-rust": "sdk-rust-runtime-shard",
+}[runtime]
 finding_type = "unsupported_public_surface" if status == "unsupported" else "replay_conformance_failure"
 owner = runtime
 finding = {
@@ -1554,7 +1592,7 @@ for scenario_id in scenario_ids:
         "published_artifact_versions": versions,
         "implementation_identity": {
             "runtime": runtime,
-            "package": "durable-workflow" if runtime == "sdk-python" else "durable-workflow/workflow",
+            "package": "durable-workflow/workflow" if runtime == "workflow-php" else "durable-workflow",
             "version": versions.get(runtime),
         },
         "runtime_matrix": {"runtimes": [runtime]},
@@ -1629,6 +1667,54 @@ else
 fi
 
 deactivate || true
+
+rust_root="$run_root/rust-sdk"
+mkdir -p "$rust_root"
+set +e
+docker run --rm \
+  --user "$container_user" \
+  -e CARGO_HOME=/cargo \
+  -e HOME=/tmp \
+  -v "$rust_root:/cargo" \
+  rust:1.86 \
+  cargo install durable-workflow --version "$rust_sdk_version" --locked --root /cargo \
+  > "$result_dir/rust-cargo-install.log" 2>&1
+rust_install_status=$?
+set -e
+if [[ "$rust_install_status" -eq 0 && -x "$rust_root/bin/durable-workflow-replay-conformance" ]]; then
+  set +e
+  docker run --rm --network host \
+    --user "$container_user" \
+    -e HOME=/tmp \
+    -v "$rust_root:/cargo:ro" \
+    -v "$result_dir:/result" \
+    rust:1.86 \
+    /cargo/bin/durable-workflow-replay-conformance \
+      --server-url "$server_base_url" \
+      --token "$auth_token" \
+      --output /result/rust-replay-shard.json \
+      "${artifact_args[@]}" \
+    > "$result_dir/rust-replay-shard.log" 2>&1
+  rust_shard_status=$?
+  set -e
+  if [[ ! -s "$result_dir/rust-replay-shard.json" ]]; then
+    rust_shard_status=1
+    python3 "$run_root/write-runtime-surface-report.py" \
+      sdk-rust fail \
+      "Published durable-workflow@${rust_sdk_version} did not emit a Rust replay shard; see rust-replay-shard.log." \
+      "$result_dir/rust-replay-shard.json" \
+      "$result_dir/pins.json" \
+      > "$result_dir/rust-replay-surface.json"
+  fi
+else
+  rust_shard_status=1
+  python3 "$run_root/write-runtime-surface-report.py" \
+    sdk-rust unsupported \
+    "Published durable-workflow@${rust_sdk_version} does not expose an installable durable-workflow-replay-conformance binary." \
+    "$result_dir/rust-replay-shard.json" \
+    "$result_dir/pins.json" \
+    > "$result_dir/rust-replay-surface.json"
+fi
 
 waterline_app="$run_root/waterline-app"
 mkdir -p "$waterline_app"
@@ -1782,7 +1868,7 @@ else
     > "$result_dir/php-replay-surface.json"
 fi
 
-python3 - "$result_dir" "$result_dir/pins.json" "$server_image" "$server_base_url" "$auth_token" "$dw_bin" "$result_dir/server-image-digest.txt" "$python_pip_status" "$python_install_status" "$python_probe_status" "$php_create_status" "$php_require_status" "$php_artisan_list_status" <<'PY'
+python3 - "$result_dir" "$result_dir/pins.json" "$server_image" "$server_base_url" "$auth_token" "$dw_bin" "$result_dir/server-image-digest.txt" "$python_pip_status" "$python_install_status" "$python_probe_status" "$php_create_status" "$php_require_status" "$php_artisan_list_status" "$rust_install_status" "$rust_shard_status" <<'PY'
 from __future__ import annotations
 
 import json
@@ -1802,6 +1888,8 @@ python_probe_status = int(sys.argv[10])
 php_create_status = int(sys.argv[11])
 php_require_status = int(sys.argv[12])
 php_artisan_list_status = int(sys.argv[13])
+rust_install_status = int(sys.argv[14])
+rust_shard_status = int(sys.argv[15])
 
 def load(path: str) -> object:
     file = result_dir / path
@@ -1890,6 +1978,17 @@ artifacts = [
         },
     },
     {
+        "artifact": "sdk-rust",
+        "version": versions.get("sdk-rust"),
+        "source": sources.get("sdk-rust"),
+        "status": "pass" if rust_install_status == 0 and rust_shard_status == 0 else "fail",
+        "probe": {
+            "cargo_install_exit_code": rust_install_status,
+            "replay_shard_exit_code": rust_shard_status,
+            "replay_shard": load("rust-replay-shard.json"),
+        },
+    },
+    {
         "artifact": "waterline",
         "version": versions.get("waterline"),
         "source": sources.get("waterline"),
@@ -1923,6 +2022,7 @@ result_dir = Path(sys.argv[1])
 started_at = sys.argv[2]
 python_status = int(sys.argv[3])
 php_status = int(sys.argv[4])
+rust_status = int(sys.argv[5])
 
 REQUIRED = [
     "published_artifact_install_only",
@@ -1954,9 +2054,12 @@ REQUIRED = [
     "malformed_history_refusal",
     "python_in_flight_signal_restart_timing",
     "php_in_flight_signal_restart_timing",
+    "rust_side_effect_replay_after_worker_restart",
+    "rust_version_marker_replay_after_code_upgrade",
 ]
 PYTHON_SCENARIOS = {scenario for scenario in REQUIRED if scenario.startswith("python_")}
 PHP_SCENARIOS = {scenario for scenario in REQUIRED if scenario.startswith("php_")}
+RUST_SCENARIOS = {scenario for scenario in REQUIRED if scenario.startswith("rust_")}
 SHARED_SCENARIOS = {
     "published_artifact_install_only",
     "server_history_mutation_refusal",
@@ -2042,8 +2145,10 @@ sources = dict(pins.get("artifact_sources") or {})
 artifact_install_evidence = load_json(result_dir / "published-artifact-install.json") or {}
 python_report = load_json(result_dir / "python-replay-shard.json")
 php_report = load_json(result_dir / "php-replay-shard.json")
+rust_report = load_json(result_dir / "rust-replay-shard.json")
 python_results = scenario_map(python_report)
 php_results = scenario_map(php_report)
+rust_results = scenario_map(rust_report)
 
 results: dict[str, dict[str, Any]] = {}
 findings: list[dict[str, Any]] = []
@@ -2055,7 +2160,7 @@ artifact_install_statuses = {
     for item in artifact_install_artifacts or []
     if isinstance(item, dict) and item.get("artifact")
 }
-required_install_artifacts = ["server", "cli", "sdk-python", "workflow-php", "waterline"]
+required_install_artifacts = ["server", "cli", "sdk-python", "sdk-rust", "workflow-php", "waterline"]
 artifact_install_pass = (
     isinstance(artifact_install_evidence, dict)
     and artifact_install_evidence != {}
@@ -2078,8 +2183,9 @@ results["published_artifact_install_only"] = {
         "artifact_install_statuses": artifact_install_statuses,
         "python_shard_status": python_results.get("published_artifact_install_only", {}).get("status"),
         "php_shard_status": php_results.get("published_artifact_install_only", {}).get("status"),
+        "rust_shard_status": rust_status,
     },
-    "runtime_matrix": {"runtimes": ["workflow-php", "sdk-python"]},
+    "runtime_matrix": {"runtimes": ["workflow-php", "sdk-python", "sdk-rust"]},
 }
 
 for scenario in REQUIRED:
@@ -2092,11 +2198,15 @@ for scenario in REQUIRED:
     if scenario in PHP_SCENARIOS or scenario in SHARED_SCENARIOS:
         if scenario in php_results:
             candidates.append(php_results[scenario])
+    if scenario in RUST_SCENARIOS and scenario in rust_results:
+        candidates.append(rust_results[scenario])
 
     if not candidates:
         if scenario in PYTHON_SCENARIOS and python_report is None:
             status = "runner_blocked"
         elif scenario in PHP_SCENARIOS and php_report is None:
+            status = "runner_blocked"
+        elif scenario in RUST_SCENARIOS and rust_report is None:
             status = "runner_blocked"
         else:
             status = "not_covered"
@@ -2107,6 +2217,7 @@ for scenario in REQUIRED:
             {
                 "python_shard_exit_code": python_status,
                 "php_shard_exit_code": php_status,
+                "rust_shard_exit_code": rust_status,
             },
         )
         results[scenario] = {
@@ -2153,7 +2264,7 @@ for scenario_id, scenario in results.items():
     findings.append(generated)
     finding_links[scenario_id] = [generated]
 
-for report in (python_report, php_report):
+for report in (python_report, php_report, rust_report):
     if not report:
         continue
     raw_findings = report.get("findings") or []
@@ -2179,8 +2290,8 @@ result = {
         "local_product_source_checkouts_used": False,
     },
     "runtime_matrix": {
-        "runtimes": ["workflow-php", "sdk-python"],
-        "coverage_scopes": ["workflow-php-runtime-shard", "sdk-python-runtime-shard"],
+        "runtimes": ["workflow-php", "sdk-python", "sdk-rust"],
+        "coverage_scopes": ["workflow-php-runtime-shard", "sdk-python-runtime-shard", "sdk-rust-runtime-shard"],
         "shards": {
             "workflow-php": {
                 "reported": php_report is not None,
@@ -2192,13 +2303,18 @@ result = {
                 "exit_code": python_status,
                 "outcome": (python_report or {}).get("outcome"),
             },
+            "sdk-rust": {
+                "reported": rust_report is not None,
+                "exit_code": rust_status,
+                "outcome": (rust_report or {}).get("outcome"),
+            },
         },
     },
     "scenario_results": {scenario: results[scenario] for scenario in REQUIRED},
-    "completed_history_replay": section_summary(results, REQUIRED[1:11]),
-    "worker_restart_replay": section_summary(results, REQUIRED[11:23]),
+    "completed_history_replay": section_summary(results, REQUIRED[1:11] + ["rust_side_effect_replay_after_worker_restart"]),
+    "worker_restart_replay": section_summary(results, REQUIRED[11:23] + ["rust_version_marker_replay_after_code_upgrade"]),
     "adversarial_replay": section_summary(results, REQUIRED[23:27]),
-    "in_flight_timing": section_summary(results, REQUIRED[27:]),
+    "in_flight_timing": section_summary(results, REQUIRED[27:29]),
     "findings": findings,
     "finding_links": finding_links,
 }
@@ -2219,12 +2335,14 @@ metadata = {
     "published_artifact_install": artifact_install_evidence,
     "python_shard_exit_code": python_status,
     "php_shard_exit_code": php_status,
+    "rust_shard_exit_code": rust_status,
     "result_files": [
         "pins.json",
         "run-metadata.json",
         "published-artifact-install.json",
         "python-replay-shard.json",
         "php-replay-shard.json",
+        "rust-replay-shard.json",
         "replay-conformance-result.json",
         "replay-conformance-record.json",
     ],
@@ -2252,6 +2370,7 @@ python3 "$run_root/merge-replay-shards.py" \
   "$started_at" \
   "$python_shard_status" \
   "$php_shard_status" \
+  "$rust_shard_status" \
   > "$result_dir/replay-conformance-merge.log" 2>&1
 merge_status=$?
 set -e

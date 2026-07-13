@@ -218,7 +218,7 @@ class ReplayVerificationContractTest extends TestCase
         $this->assertArrayHasKey('sdk-python', $conformance['artifact_policy']['install_channels']);
         $this->assertNotContains('waterline', array_keys($conformance['artifact_policy']['install_channels']));
 
-        foreach (['server', 'cli', 'workflow-php', 'sdk-python', 'waterline'] as $artifact) {
+        foreach (['server', 'cli', 'workflow-php', 'sdk-python', 'sdk-rust', 'waterline'] as $artifact) {
             $this->assertContains($artifact, $conformance['artifact_policy']['required_artifact_versions']);
         }
         $this->assertContains(
@@ -226,7 +226,7 @@ class ReplayVerificationContractTest extends TestCase
             $conformance['artifact_policy']['forbidden_sources'],
         );
 
-        $this->assertSame(['workflow-php', 'sdk-python'], $conformance['required_runtimes']);
+        $this->assertSame(['workflow-php', 'sdk-python', 'sdk-rust'], $conformance['required_runtimes']);
 
         foreach ([
             'artifact_versions',
@@ -279,6 +279,8 @@ class ReplayVerificationContractTest extends TestCase
             'malformed_history_refusal',
             'python_in_flight_signal_restart_timing',
             'php_in_flight_signal_restart_timing',
+            'rust_side_effect_replay_after_worker_restart',
+            'rust_version_marker_replay_after_code_upgrade',
         ] as $scenario) {
             $this->assertContains($scenario, $conformance['required_scenarios']);
         }
@@ -407,6 +409,7 @@ class ReplayVerificationContractTest extends TestCase
             'published-artifact-install.json',
             'python-replay-shard.json',
             'php-replay-shard.json',
+            'rust-replay-shard.json',
             'replay-conformance-result.json',
             'replay-conformance-record.json',
         ] as $file) {
@@ -417,7 +420,7 @@ class ReplayVerificationContractTest extends TestCase
         $this->assertTrue($hostRunner['must_probe_runtime_published_surfaces']);
         $this->assertTrue($hostRunner['must_emit_result_for_every_required_scenario']);
         $this->assertSame(
-            ['workflow-php-runtime-shard', 'sdk-python-runtime-shard'],
+            ['workflow-php-runtime-shard', 'sdk-python-runtime-shard', 'sdk-rust-runtime-shard'],
             $hostRunner['must_compose_runtime_shards'],
         );
         $this->assertSame('non_passing', $hostRunner['smoke_summary_only_outcome']);
@@ -443,11 +446,15 @@ class ReplayVerificationContractTest extends TestCase
             'live_worker_query_replay',
             $hostRunner['runtime_shards']['sdk-python']['worker_restart_surface'],
         );
+        $this->assertSame(
+            'durable-workflow-replay-conformance',
+            $hostRunner['runtime_shards']['sdk-rust']['completed_history_surface'],
+        );
 
-        foreach (['workflow-php-runtime-shard', 'sdk-python-runtime-shard', 'live-server-replay-smoke'] as $scope) {
+        foreach (['workflow-php-runtime-shard', 'sdk-python-runtime-shard', 'sdk-rust-runtime-shard', 'live-server-replay-smoke'] as $scope) {
             $this->assertContains($scope, $hostRunner['merge_policy']['input_scopes']);
         }
-        foreach (['workflow-php', 'sdk-python'] as $runtime) {
+        foreach (['workflow-php', 'sdk-python', 'sdk-rust'] as $runtime) {
             $this->assertContains($runtime, $hostRunner['merge_policy']['requires_required_runtimes']);
         }
         foreach (['completed_history_replay', 'worker_restart_replay', 'adversarial_replay', 'in_flight_timing'] as $section) {
@@ -545,6 +552,7 @@ class ReplayVerificationContractTest extends TestCase
                 'server' => '0.2.140',
                 'cli' => '0.1.45',
                 'sdk-python' => '0.4.59',
+                'sdk-rust' => '0.1.13',
                 'workflow' => '2.0.0-alpha.162',
                 'waterline' => '2.0.0-alpha.54',
             ],
@@ -785,6 +793,7 @@ class ReplayVerificationContractTest extends TestCase
             'server' => 'durableworkflow/server:head',
             'cli' => 'durable-workflow-cli==current',
             'sdk-python' => 'durable-workflow==unresolved',
+            'sdk-rust' => 'durable-workflow@head',
             'workflow' => 'durable-workflow/workflow:placeholder',
             'waterline' => 'durable-workflow/waterline:<latest>',
         ];
@@ -797,7 +806,7 @@ class ReplayVerificationContractTest extends TestCase
 
         $this->assertSame('non_passing', $evaluation['status']);
         $this->assertSame(
-            ['server', 'cli', 'workflow-php', 'sdk-python', 'waterline'],
+            ['server', 'cli', 'workflow-php', 'sdk-python', 'sdk-rust', 'waterline'],
             array_column($placeholderFailures, 'artifact'),
         );
     }
@@ -963,11 +972,12 @@ class ReplayVerificationContractTest extends TestCase
                 'server' => '0.2.140',
                 'cli' => '0.1.45',
                 'sdk-python' => '0.4.59',
+                'sdk-rust' => '0.1.13',
                 'workflow' => '2.0.0-alpha.162',
                 'waterline' => '2.0.0-alpha.54',
             ],
             'runtime_matrix' => [
-                'runtimes' => ['workflow-php', 'sdk-python'],
+                'runtimes' => ['workflow-php', 'sdk-python', 'sdk-rust'],
             ],
             'scenario_results' => $scenarioResults,
             'findings' => [],
