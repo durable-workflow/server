@@ -62,6 +62,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          docker build --target base -t durable-workflow-server-phpunit-base .
           tar \
             --exclude=.git \
             --exclude='*/.git' \
@@ -70,5 +71,5 @@ jobs:
             --exclude=build \
             --exclude='*/build' \
             -cf - . \
-            | docker run --rm -i -w /app --entrypoint sh composer:2 \
+            | docker run --rm -i -w /app --entrypoint sh durable-workflow-server-phpunit-base \
                 -lc 'tar -xf - -C /app && cp -a /app/workflow-package /workflow && composer install --no-interaction --no-progress --prefer-dist && vendor/bin/phpunit tests/Feature --no-progress --colors=never'

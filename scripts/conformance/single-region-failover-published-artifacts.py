@@ -252,6 +252,13 @@ def wait_for(label: str, callback: Callable[[], Any], timeout: float, interval: 
     raise AssertionError(f"timed out waiting for {label}; last observation: {last!r}")
 
 
+class ProbeObservation(dict[str, Any]):
+    """A rejected probe remains diagnostic evidence without satisfying wait_for."""
+
+    def __bool__(self) -> bool:
+        return bool(self.get("accepted"))
+
+
 def redacted_run_summary(body: Any) -> dict[str, Any]:
     if not isinstance(body, dict):
         body = {}
@@ -366,11 +373,18 @@ def wait_for_survivor_traffic(
     )
 
 
-def ready(base: str, expected_status: int = 200) -> dict[str, Any] | None:
+def ready(base: str, expected_status: int = 200) -> ProbeObservation:
     status, body, elapsed = request(base, "/api/ready", authenticated=False, timeout=3)
-    if status == expected_status:
-        return {"http_status": status, "body": body, "request_ms": elapsed, "observed_at": now()}
-    return None
+    accepted = status == expected_status
+
+    return ProbeObservation({
+        "http_status": status,
+        "body": body,
+        "request_ms": elapsed,
+        "observed_at": now(),
+        "accepted": accepted,
+        "rejection_reason": None if accepted else ("transport_error" if status == 0 else "unexpected_http_status"),
+    })
 
 
 def command_diagnostic(result: subprocess.CompletedProcess[str]) -> dict[str, Any]:
@@ -542,13 +556,21 @@ def wait_for_topology_readiness(timeout: float = 30) -> None:
         )
 
 
-def cache_ready(base: str) -> dict[str, Any] | None:
+def cache_ready(base: str) -> ProbeObservation:
     observation = ready(base)
-    if observation is None:
-        return None
+    if not observation:
+        return observation
     if observation["body"].get("checks", {}).get("cache", {}).get("status") != "ok":
-        return None
-    return observation
+        return ProbeObservation({
+            **observation,
+            "accepted": False,
+            "rejection_reason": "cache_not_ready",
+        })
+    return ProbeObservation({
+        **observation,
+        "accepted": True,
+        "rejection_reason": None,
+    })
 
 
 def worker_headers_payload(worker_id: str) -> dict[str, Any]:
@@ -884,7 +906,7 @@ def api_node_loss_phase() -> dict[str, Any]:
 
     surviving_readiness = ready(SERVER_B)
     phase_evidence["surviving_node_readiness"] = surviving_readiness
-    require(surviving_readiness is not None, f"server-b was not ready after server-a stop: {surviving_readiness}")
+    require(bool(surviving_readiness), f"server-b was not ready after server-a stop: {surviving_readiness}")
     survivor_evidence: dict[str, Any] = {}
     phase_evidence["survivor_traffic"] = survivor_evidence
     survivor = wait_for_survivor_traffic(

@@ -93,19 +93,48 @@ class ResultGateTest(unittest.TestCase):
         original_ready = runner.ready
 
         try:
-            for status, expected in (("warning", None), ("unavailable", None), ("ok", "ok")):
+            for status, expected in (("warning", False), ("unavailable", False), ("ok", True)):
                 with self.subTest(status=status):
                     runner.ready = lambda _base, status=status: {
                         "http_status": 200,
                         "body": {"checks": {"cache": {"status": status}}},
                     }
                     observation = runner.cache_ready("http://server-a")
-                    if expected is None:
-                        self.assertIsNone(observation)
-                    else:
-                        self.assertEqual(expected, observation["body"]["checks"]["cache"]["status"])
+                    self.assertIs(expected, bool(observation))
+                    self.assertEqual(status, observation["body"]["checks"]["cache"]["status"])
+                    self.assertEqual(None if expected else "cache_not_ready", observation["rejection_reason"])
         finally:
             runner.ready = original_ready
+
+    def test_readiness_rejection_preserves_http_and_transport_observations(self) -> None:
+        original_request = runner.request
+
+        try:
+            for status, body, reason in (
+                (503, {"status": "not_ready"}, "unexpected_http_status"),
+                (0, {"transport_error": "timed out"}, "transport_error"),
+            ):
+                with self.subTest(status=status):
+                    runner.request = lambda *_args, status=status, body=body, **_kwargs: (status, body, 3000)
+                    observation = runner.ready("http://server-a")
+
+                    self.assertFalse(observation)
+                    self.assertEqual(status, observation["http_status"])
+                    self.assertEqual(body, observation["body"])
+                    self.assertEqual(reason, observation["rejection_reason"])
+        finally:
+            runner.request = original_request
+
+    def test_readiness_timeout_reports_the_last_transport_observation(self) -> None:
+        observation = runner.ProbeObservation({
+            "http_status": 0,
+            "body": {"transport_error": "timed out"},
+            "accepted": False,
+            "rejection_reason": "transport_error",
+        })
+
+        with self.assertRaisesRegex(AssertionError, "transport_error.*timed out"):
+            runner.wait_for("warning readiness", lambda: observation, 0.01, interval=0.001)
 
     def test_native_host_uses_loopback_for_every_default_probe(self) -> None:
         endpoints = runner.build_probe_endpoints("127.0.0.1", runner.DEFAULT_PORTS)

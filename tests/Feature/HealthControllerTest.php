@@ -5,13 +5,17 @@ declare(strict_types=1);
 namespace Tests\Feature;
 
 use App\Models\WorkflowNamespace;
+use App\Support\BoundedRedisReadinessProbe;
+use App\Support\RedisReadinessProcess;
 use App\Support\ServerTopology;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Schema;
+use RuntimeException;
 use Tests\Feature\Concerns\ServerTestHelpers;
 use Tests\Fixtures\HeaderAuthProvider;
 use Tests\TestCase;
+use Workflow\V2\Models\WorkerCompatibilityHeartbeat;
 use Workflow\V2\Support\WorkerCompatibilityFleet;
 
 class HealthControllerTest extends TestCase
@@ -296,6 +300,397 @@ class HealthControllerTest extends TestCase
             ->assertJsonPath('checks.cache.store', 'redis')
             ->assertJsonPath('checks.cache.correctness_substrate', 'database')
             ->assertJsonPath('checks.cache.degraded_capability', 'long_poll_wake_acceleration');
+    }
+
+    public function test_readiness_bounds_a_stalled_redis_transport_and_reports_recovery(): void
+    {
+        if (! function_exists('proc_open')) {
+            $this->markTestSkipped('proc_open is required to exercise a stalled TCP transport.');
+        }
+
+        $this->assertTrue(extension_loaded('redis'), 'The readiness transport suite requires the supported phpredis extension.');
+        WorkflowNamespace::query()->create([
+            'name' => 'default',
+            'description' => 'Default namespace',
+            'retention_days' => 30,
+            'status' => 'active',
+        ]);
+
+        [$process, $pipes, $port, $fallbackPort] = $this->startSlowRedisTransport();
+
+        try {
+            config([
+                'cache.default' => 'redis',
+                'cache.stores.redis' => ['driver' => 'redis', 'connection' => 'stalled-readiness'],
+                'database.redis.client' => 'phpredis',
+                'database.redis.options.read_timeout' => 5,
+                'database.redis.default' => [
+                    'host' => '127.0.0.1',
+                    'port' => $fallbackPort,
+                    'database' => 0,
+                ],
+                'database.redis.stalled-readiness' => [
+                    // Exercise Laravel's configured URL, authentication, and
+                    // database parsing as well as ordinary retry settings.
+                    'url' => sprintf(
+                        'redis://readiness-user:readiness-password@127.0.0.1:%d/1?max_retries=20&backoff_base=1000&backoff_cap=5000',
+                        $port,
+                    ),
+                    'options' => [
+                        'read_timeout' => 5,
+                        'max_retries' => 20,
+                    ],
+                ],
+            ]);
+
+            $started = microtime(true);
+            $warning = $this->getJson('/api/ready');
+            $warningSeconds = microtime(true) - $started;
+
+            $warning->assertOk()
+                ->assertJsonPath('status', 'ready')
+                ->assertJsonPath('checks.cache.status', 'warning')
+                ->assertJsonPath('checks.cache.store', 'redis')
+                ->assertJsonPath('checks.cache.correctness_substrate', 'database')
+                ->assertJsonPath('checks.cache.degraded_capability', 'long_poll_wake_acceleration');
+            $warningMessage = (string) $warning->json('checks.cache.message');
+            $this->assertSame(RedisReadinessProcess::FAILURE_MESSAGE, $warningMessage);
+            $warningPayload = $warning->getContent();
+
+            foreach ([
+                (string) config('database.redis.stalled-readiness.url'),
+                'readiness-user',
+                'readiness-password',
+                sprintf('127.0.0.1:%d', $port),
+            ] as $sensitiveConfiguration) {
+                $this->assertStringNotContainsString($sensitiveConfiguration, $warningPayload);
+            }
+            $this->assertLessThan(
+                BoundedRedisReadinessProbe::RESPONSE_BOUND_SECONDS,
+                $warningSeconds,
+                sprintf('Readiness took %.3fs while Redis was stalled.', $warningSeconds),
+            );
+            $this->assertStringContainsString(
+                'max_retries=20',
+                (string) config('database.redis.stalled-readiness.url'),
+                'Readiness must not mutate the runtime Redis retry configuration.',
+            );
+            $this->assertSame(5, config('database.redis.options.read_timeout'));
+            $this->assertSame(5, config('database.redis.stalled-readiness.options.read_timeout'));
+
+            // Wait until the fixture finishes the timed-out command, observes
+            // the selected socket closing, and re-enters its accept loop. The
+            // close marker alone permits a scheduler race where the fresh client
+            // spends its whole read budget waiting for the fixture to run again.
+            $evidenceDeadline = microtime(true) + 1.5;
+            $transportEvidence = '';
+
+            do {
+                $transportEvidence .= (string) stream_get_contents($pipes[2]);
+
+                if (str_contains($transportEvidence, 'selected:1:closed')
+                    && str_contains($transportEvidence, 'selected:accepting:2')) {
+                    break;
+                }
+
+                usleep(20_000);
+            } while (microtime(true) < $evidenceDeadline);
+
+            $transportEvidence .= (string) stream_get_contents($pipes[2]);
+            $this->assertStringContainsString('selected:1', $transportEvidence);
+            $this->assertStringContainsString('selected:1:closed', $transportEvidence);
+            $this->assertStringContainsString('selected:accepting:2', $transportEvidence);
+            $this->assertStringContainsString('slow:AUTH', $transportEvidence);
+            $this->assertStringContainsString('slow:SELECT', $transportEvidence);
+            $this->assertStringContainsString('slow:SETEX', $transportEvidence);
+            $this->assertStringContainsString('slow:GET', $transportEvidence);
+            $this->assertStringContainsString('slow:DEL', $transportEvidence);
+            $this->assertStringNotContainsString('fallback:accepted', $transportEvidence);
+            $this->assertDoesNotMatchRegularExpression(
+                '/selected:[2-9][0-9]*(?:\r?\n|:command:)/',
+                $transportEvidence,
+                "A failed child cleanup or parent readiness fallback contacted Redis again:\n{$transportEvidence}",
+            );
+
+            // The fixture becomes a functioning Redis peer after its first
+            // adversarial, multi-phase connection.
+            $recoveryStarted = microtime(true);
+            $recovered = $this->getJson('/api/ready');
+            $recoverySeconds = microtime(true) - $recoveryStarted;
+
+            $recoveryEvidenceDeadline = microtime(true) + 0.5;
+
+            do {
+                $transportEvidence .= (string) stream_get_contents($pipes[2]);
+
+                if (preg_match($this->recoveredRedisCommandSequencePattern(), $transportEvidence) === 1) {
+                    break;
+                }
+
+                usleep(10_000);
+            } while (microtime(true) < $recoveryEvidenceDeadline);
+
+            $recoveryDiagnostics = sprintf(
+                "Recovery response: %s\nInitial warning: %s\nTransport evidence:\n%s",
+                $recovered->getContent(),
+                $warningMessage,
+                $transportEvidence,
+            );
+            $this->assertSame('ready', $recovered->json('status'), $recoveryDiagnostics);
+            $this->assertSame('ok', $recovered->json('checks.cache.status'), $recoveryDiagnostics);
+            $this->assertSame('redis', $recovered->json('checks.cache.store'), $recoveryDiagnostics);
+            $this->assertMatchesRegularExpression(
+                $this->recoveredRedisCommandSequencePattern(),
+                $transportEvidence,
+                $recoveryDiagnostics,
+            );
+            $this->assertStringNotContainsString('fallback:accepted', $transportEvidence, $recoveryDiagnostics);
+            $recovered->assertOk();
+            $this->assertLessThan(
+                BoundedRedisReadinessProbe::RESPONSE_BOUND_SECONDS,
+                $recoverySeconds,
+                sprintf('Readiness took %.3fs after Redis recovered.', $recoverySeconds),
+            );
+        } finally {
+            foreach ($pipes as $pipe) {
+                if (is_resource($pipe)) {
+                    fclose($pipe);
+                }
+            }
+            proc_terminate($process);
+            proc_close($process);
+        }
+    }
+
+    public function test_readiness_bounds_an_actually_refused_redis_connection(): void
+    {
+        $this->assertTrue(extension_loaded('redis'), 'The readiness transport suite requires the supported phpredis extension.');
+        WorkflowNamespace::query()->create([
+            'name' => 'default',
+            'description' => 'Default namespace',
+            'retention_days' => 30,
+            'status' => 'active',
+        ]);
+
+        $port = $this->reserveRefusedTcpPort();
+        $configuredUrl = sprintf(
+            'redis://refused-user:refused-password@127.0.0.1:%d/1',
+            $port,
+        );
+
+        WorkerCompatibilityFleet::clear();
+        WorkerCompatibilityHeartbeat::query()->create([
+            'worker_id' => 'database-readiness-worker',
+            'scope_key' => hash('sha256', 'database-readiness-worker/default'),
+            'namespace' => 'default',
+            'host' => null,
+            'process_id' => 'readiness-test',
+            'connection' => 'database',
+            'queue' => 'default',
+            'supported' => ['build-a'],
+            'recorded_at' => now(),
+            'expires_at' => now()->addSeconds(30),
+        ]);
+
+        config([
+            'cache.default' => 'redis',
+            'cache.stores.redis' => ['driver' => 'redis', 'connection' => 'refused-readiness'],
+            'workflows.v2.compatibility.current' => 'build-a',
+            'workflows.v2.compatibility.supported' => ['build-a'],
+            'workflows.v2.compatibility.namespace' => 'default',
+            'workflows.v2.fleet.validation_mode' => 'fail',
+            'database.redis.client' => 'phpredis',
+            'database.redis.refused-readiness' => [
+                'url' => $configuredUrl,
+                'max_retries' => 20,
+                'backoff_base' => 1000,
+                'backoff_cap' => 5000,
+            ],
+        ]);
+
+        try {
+            (new BoundedRedisReadinessProbe(new RedisReadinessProcess))
+                ->roundTrip('sensitive-error-probe', 'value', 10);
+            $this->fail('The refused Redis readiness child should fail.');
+        } catch (RuntimeException $exception) {
+            $capturedError = $exception->getMessage();
+
+            $this->assertSame(RedisReadinessProcess::FAILURE_MESSAGE, $capturedError);
+            $this->assertSensitiveRedisConfigurationIsAbsent($capturedError, $configuredUrl, $port);
+        }
+
+        $started = microtime(true);
+        $warning = $this->getJson('/api/ready');
+        $warningSeconds = microtime(true) - $started;
+
+        $warning->assertOk()
+            ->assertJsonPath('status', 'ready')
+            ->assertJsonPath('checks.cache.status', 'warning')
+            ->assertJsonPath('checks.cache.store', 'redis')
+            ->assertJsonPath('checks.cache.correctness_substrate', 'database')
+            ->assertJsonPath('checks.cache.degraded_capability', 'long_poll_wake_acceleration')
+            ->assertJsonPath('checks.workflow_v2.http_status', 200);
+        $this->assertContains(
+            $warning->json('checks.workflow_v2.status'),
+            ['ok', 'warning'],
+        );
+        $this->assertNotContains(
+            'worker_compatibility',
+            $warning->json('checks.workflow_v2.error_checks', []),
+            'The live database heartbeat must satisfy fail-closed compatibility validation while Redis is down.',
+        );
+        $this->assertLessThan(
+            BoundedRedisReadinessProbe::RESPONSE_BOUND_SECONDS,
+            $warningSeconds,
+            sprintf('Readiness took %.3fs while Redis refused connections.', $warningSeconds),
+        );
+        $this->assertSame(
+            RedisReadinessProcess::FAILURE_MESSAGE,
+            $warning->json('checks.cache.message'),
+        );
+        $this->assertSensitiveRedisConfigurationIsAbsent($warning->getContent(), $configuredUrl, $port);
+        $this->assertSame(20, config('database.redis.refused-readiness.max_retries'));
+    }
+
+    public function test_redis_readiness_child_timeout_is_bounded(): void
+    {
+        $process = new RedisReadinessProcess($this->redisReadinessFailureCommand('timeout'));
+        $started = microtime(true);
+
+        try {
+            $process->run('test-input');
+            $this->fail('The stalled readiness child should time out.');
+        } catch (RuntimeException $exception) {
+            $this->assertStringContainsString('1.5 second deadline', $exception->getMessage());
+        }
+
+        $this->assertLessThan(
+            BoundedRedisReadinessProbe::RESPONSE_BOUND_SECONDS,
+            microtime(true) - $started,
+            'A stalled readiness child exceeded the public response bound.',
+        );
+    }
+
+    public function test_redis_readiness_child_crash_discards_sensitive_bounded_diagnostics(): void
+    {
+        $process = new RedisReadinessProcess($this->redisReadinessFailureCommand('crash'));
+        $configuredUrl = 'redis://private-user:private-password@redis-private.internal:6380/7';
+
+        config(['database.redis.sensitive-readiness.url' => $configuredUrl]);
+
+        try {
+            $process->run((string) config('database.redis.sensitive-readiness.url'));
+            $this->fail('The crashed readiness child should fail.');
+        } catch (RuntimeException $exception) {
+            $capturedError = $exception->getMessage();
+
+            $this->assertSame(RedisReadinessProcess::FAILURE_MESSAGE, $capturedError);
+
+            foreach ([
+                $configuredUrl,
+                'private-user',
+                'private-password',
+                'redis-private.internal:6380',
+            ] as $sensitiveConfiguration) {
+                $this->assertStringNotContainsString($sensitiveConfiguration, $capturedError);
+            }
+        }
+    }
+
+    public function test_redis_readiness_child_rejects_malformed_output(): void
+    {
+        $probe = new BoundedRedisReadinessProbe(
+            new RedisReadinessProcess($this->redisReadinessFailureCommand('malformed')),
+        );
+
+        $this->expectException(RuntimeException::class);
+        $this->expectExceptionMessage('Redis readiness child returned malformed output.');
+
+        $probe->roundTrip('key', 'value', 10);
+    }
+
+    /**
+     * @return array{resource, array<int, resource>, int, int}
+     */
+    private function startSlowRedisTransport(): array
+    {
+        $pipes = [];
+        $process = proc_open(
+            [PHP_BINARY, base_path('tests/Fixtures/slow_redis_transport.php')],
+            [
+                0 => ['pipe', 'r'],
+                1 => ['pipe', 'w'],
+                2 => ['pipe', 'w'],
+            ],
+            $pipes,
+        );
+
+        $this->assertIsResource($process);
+        fclose($pipes[0]);
+        $ports = json_decode(trim((string) fgets($pipes[1])), true);
+        stream_set_blocking($pipes[2], false);
+
+        $this->assertIsArray($ports, trim((string) stream_get_contents($pipes[2])));
+        $this->assertIsInt($ports['selected_port'] ?? null);
+        $this->assertIsInt($ports['fallback_port'] ?? null);
+
+        return [$process, $pipes, $ports['selected_port'], $ports['fallback_port']];
+    }
+
+    private function reserveRefusedTcpPort(): int
+    {
+        $server = stream_socket_server('tcp://127.0.0.1:0', $errorCode, $errorMessage);
+        $this->assertIsResource($server, sprintf(
+            'Unable to reserve a refused Redis port (%d): %s',
+            $errorCode,
+            $errorMessage,
+        ));
+        $address = stream_socket_get_name($server, false);
+        fclose($server);
+
+        $this->assertIsString($address);
+        $this->assertMatchesRegularExpression('/:[0-9]+$/', $address);
+
+        return (int) substr($address, (int) strrpos($address, ':') + 1);
+    }
+
+    /** @return list<string> */
+    private function redisReadinessFailureCommand(string $mode): array
+    {
+        return [
+            PHP_BINARY,
+            base_path('tests/Fixtures/redis_readiness_child_failure.php'),
+            $mode,
+        ];
+    }
+
+    private function assertSensitiveRedisConfigurationIsAbsent(
+        string $diagnostics,
+        string $configuredUrl,
+        int $port,
+    ): void
+    {
+        foreach ([
+            $configuredUrl,
+            'refused-user',
+            'refused-password',
+            sprintf('127.0.0.1:%d', $port),
+        ] as $sensitiveConfiguration) {
+            $this->assertStringNotContainsString($sensitiveConfiguration, $diagnostics);
+        }
+    }
+
+    private function recoveredRedisCommandSequencePattern(): string
+    {
+        // A failed Laravel wrapper may have created setup-only connections in
+        // older implementations. Recovery is whichever later connection
+        // performs one complete cache round trip, not necessarily number two.
+        return '/selected:(?<recovery>[2-9][0-9]*):command:AUTH'
+            .'.*selected:\k<recovery>:command:SELECT'
+            .'.*selected:\k<recovery>:command:SETEX'
+            .'.*selected:\k<recovery>:command:GET'
+            .'.*selected:\k<recovery>:command:DEL'
+            .'.*selected:\k<recovery>:closed/s';
     }
 
     public function test_readiness_check_reports_missing_auth_credential(): void

@@ -154,6 +154,18 @@ as follows:
   database outage, `/api/ready` will
   fail on every node — that is the correct signal, and the load
   balancer MUST NOT fall back to a stale "last known good" roster.
+- Give each readiness request a transport timeout of at least **two seconds**.
+  The Redis portion of readiness runs in a short-lived child process through
+  the configured Laravel Redis client. Its selected-only configuration and
+  probe value travel over stdin, not process arguments. The connection is
+  non-persistent, disables retries, and gives each blocking transport phase a
+  200 ms limit. The parent terminates the child after 1.5 seconds, so a stopped
+  or unresponsive Redis endpoint still produces the complete readiness
+  response within two seconds while the durable database remains available.
+  After that warning, the same readiness snapshot reads required worker-
+  compatibility evidence directly from durable heartbeat rows and does not
+  fall back to the unavailable Redis cache.
+  Runtime Redis operations retain their configured retry and backoff policy.
 - Use a check **interval of 5–10 seconds** and a removal threshold of
   2–3 consecutive failures. Smaller intervals shorten recovery time;
   choose the threshold to balance database-outage removal time against

@@ -19,6 +19,8 @@ final class ServerReadiness
     public function __construct(
         private readonly ServerPollingCache $cache,
         private readonly MigrationAdoption $migrationAdoption,
+        private readonly BoundedRedisReadinessProbe $redisReadiness,
+        private readonly DatabaseWorkerCompatibilityReadiness $databaseWorkerCompatibility,
     ) {}
 
     /**
@@ -209,10 +211,9 @@ final class ServerReadiness
         try {
             $key = 'server:readiness:'.bin2hex(random_bytes(8));
             $value = bin2hex(random_bytes(8));
-            $store = $this->cache->store();
-            $store->put($key, $value, 10);
-            $read = $store->get($key);
-            $store->forget($key);
+            $read = $this->redisCacheIsConfigured()
+                ? $this->redisReadiness->roundTrip($key, $value, 10)
+                : $this->cacheRoundTrip($key, $value);
 
             if ($read !== $value) {
                 return [
@@ -230,7 +231,9 @@ final class ServerReadiness
             return [
                 'status' => $this->cacheFailureStatus(),
                 'store' => (string) config('cache.default'),
-                'message' => $exception->getMessage(),
+                'message' => $this->redisCacheIsConfigured()
+                    ? RedisReadinessProcess::FAILURE_MESSAGE
+                    : $exception->getMessage(),
             ] + $this->cacheFailureDetails();
         }
     }
@@ -242,6 +245,21 @@ final class ServerReadiness
         // remain database-backed. Keep Redis-only loss in the load-balancer
         // rotation while making the degraded acceleration layer explicit.
         return (string) config('cache.default') === 'redis' ? 'warning' : 'unavailable';
+    }
+
+    private function redisCacheIsConfigured(): bool
+    {
+        return (string) config('cache.default') === 'redis';
+    }
+
+    private function cacheRoundTrip(string $key, string $value): mixed
+    {
+        $store = $this->cache->store();
+        $store->put($key, $value, 10);
+        $read = $store->get($key);
+        $store->forget($key);
+
+        return $read;
     }
 
     /**
@@ -369,7 +387,9 @@ final class ServerReadiness
         }
 
         try {
-            $snapshot = $this->boundedWorkflowSnapshot();
+            $snapshot = $this->boundedWorkflowSnapshot(
+                $this->redisAccelerationIsDegraded($checks['cache'] ?? []),
+            );
         } catch (\Throwable $exception) {
             return [
                 'status' => 'unavailable',
@@ -463,7 +483,7 @@ final class ServerReadiness
      *
      * @return array<string, mixed>
      */
-    private function boundedWorkflowSnapshot(): array
+    private function boundedWorkflowSnapshot(bool $databaseOnlyFleet): array
     {
         $backend = BackendCapabilities::snapshot();
         $backendSeverity = is_string($backend['severity'] ?? null)
@@ -487,26 +507,15 @@ final class ServerReadiness
 
         $required = WorkerCompatibility::current();
         $namespace = WorkerCompatibilityFleet::scopeNamespace();
-        $fleet = $namespace === null
-            ? WorkerCompatibilityFleet::details($required)
-            : WorkerCompatibilityFleet::detailsForNamespace($namespace, $required);
-        $supportingWorkerIds = [];
-
-        foreach ($fleet as $worker) {
-            $workerId = is_string($worker['worker_id'] ?? null) ? $worker['worker_id'] : null;
-            if ($workerId === null || $workerId === '') {
-                continue;
-            }
-
-            if (($worker['supports_required'] ?? false) === true) {
-                $supportingWorkerIds[$workerId] = true;
-            }
-        }
+        $fleetSupportsRequired = $this->fleetSupportsRequired(
+            $namespace,
+            $required,
+            $databaseOnlyFleet,
+        );
 
         $validationMode = strtolower(trim((string) config('workflows.v2.fleet.validation_mode', 'warn'))) === 'fail'
             ? 'fail'
             : 'warn';
-        $fleetSupportsRequired = $required === null || $supportingWorkerIds !== [];
         $workerStatus = $fleetSupportsRequired ? 'ok' : ($validationMode === 'fail' ? 'error' : 'warning');
         $workerCheck = [
             'name' => 'worker_compatibility',
@@ -542,6 +551,45 @@ final class ServerReadiness
             ],
             'checks' => $checks,
         ];
+    }
+
+    /**
+     * Once Redis has failed its bounded readiness probe, the package fleet
+     * merger's legacy cache fallback is no longer safe to call in the same
+     * request. Required compatibility still fails closed against live,
+     * durable database heartbeats rather than being treated as an empty fleet.
+     */
+    private function fleetSupportsRequired(?string $namespace, ?string $required, bool $databaseOnly): bool
+    {
+        if ($required === null) {
+            return true;
+        }
+
+        if ($databaseOnly) {
+            return $this->databaseWorkerCompatibility->supportsRequired($namespace, $required);
+        }
+
+        $fleet = $namespace === null
+            ? WorkerCompatibilityFleet::details($required)
+            : WorkerCompatibilityFleet::detailsForNamespace($namespace, $required);
+
+        foreach ($fleet as $worker) {
+            $workerId = is_string($worker['worker_id'] ?? null) ? $worker['worker_id'] : null;
+
+            if ($workerId !== null && $workerId !== '' && ($worker['supports_required'] ?? false) === true) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /** @param array<string, mixed> $cacheCheck */
+    private function redisAccelerationIsDegraded(array $cacheCheck): bool
+    {
+        return ($cacheCheck['status'] ?? null) === 'warning'
+            && ($cacheCheck['store'] ?? null) === 'redis'
+            && ($cacheCheck['correctness_substrate'] ?? null) === 'database';
     }
 
     /**
