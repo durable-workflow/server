@@ -1,0 +1,117 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "durable-workflow.v2.invocable-carrier-execution",
+  "title": "Invocable HTTP Carrier Execution Surface",
+  "description": "JSON Schema for the invocable HTTP carrier execution surface. Covers the activity-only HTTP carrier contract, external task input envelope, external task result envelope, the external execution surface boundary, and the handler-mapping config contract that routes activity tasks to carrier endpoints.",
+  "x-durable-workflow-catalog-entry": "invocable_carrier_execution",
+  "x-durable-workflow-catalog-schema": "durable-workflow.v2.platform-protocol-specs.catalog",
+  "x-durable-workflow-catalog-version": 15,
+  "x-durable-workflow-evolution-rule": "additive_minor_breaking_major",
+  "x-durable-workflow-object-families": [
+    {
+      "name": "invocable_carrier_contract",
+      "owner_repo": "durable-workflow/server"
+    },
+    {
+      "name": "external_execution_surface_contract",
+      "owner_repo": "durable-workflow/server"
+    },
+    {
+      "name": "external_executor_config_contract",
+      "owner_repo": "durable-workflow/server"
+    }
+  ],
+  "x-status": "in_progress",
+  "x-spec-version": 1,
+  "type": "object",
+  "properties": {
+    "invocable_carrier_contract": {
+      "description": "Published HTTP carrier contract: activity-only scope, HTTP method, request/response content types, target URL constraints, transport retry budget, auth requirements, and rollout safety rules.",
+      "$ref": "#/$defs/InvocableCarrierContract"
+    },
+    "external_execution_surface_contract": {
+      "description": "External execution surface boundary: defines what external handlers may and must not do, the MVP journeys, contract seams, and carrier neutrality requirements.",
+      "$ref": "#/$defs/ExternalExecutionSurfaceContract"
+    },
+    "external_executor_config_contract": {
+      "description": "Handler-mapping config contract: configuration-first routing from task kind, queue, and handler name to a carrier invocation, with validation, redaction, and runtime discovery rules.",
+      "$ref": "#/$defs/ExternalExecutorConfigContract"
+    }
+  },
+  "$defs": {
+    "InvocableCarrierContract": {
+      "type": "object",
+      "description": "Machine-readable contract for the invocable HTTP activity carrier.",
+      "properties": {
+        "schema": { "type": "string", "const": "durable-workflow.v2.invocable-carrier.contract" },
+        "version": { "type": "integer" },
+        "carrier_type": { "type": "string", "const": "invocable_http" },
+        "scope": {
+          "type": "object",
+          "properties": {
+            "task_kinds": { "type": "array", "items": { "type": "string" } },
+            "explicit_non_goals": { "type": "array", "items": { "type": "string" } }
+          }
+        },
+        "request": {
+          "type": "object",
+          "properties": {
+            "method": { "type": "string" },
+            "content_type": { "type": "string" },
+            "body_schema": { "type": "string" },
+            "body_version": { "type": "integer" },
+            "idempotency_key_source": { "type": "string" }
+          }
+        },
+        "response": {
+          "type": "object",
+          "properties": {
+            "content_type": { "type": "string" },
+            "body_schema": { "type": "string" },
+            "body_version": { "type": "integer" },
+            "success_result_path": { "type": "string" },
+            "failure_path": { "type": "string" }
+          }
+        },
+        "failure_mapping": { "type": "object" },
+        "auth": { "type": "object" },
+        "rollout_safety": { "type": "object" }
+      },
+      "required": ["schema", "version", "carrier_type", "scope", "request", "response"]
+    },
+    "ExternalExecutionSurfaceContract": {
+      "type": "object",
+      "description": "Surface boundary contract defining what external activity handlers may and must not do.",
+      "properties": {
+        "schema": { "type": "string", "const": "durable-workflow.v2.external-execution-surface.contract" },
+        "version": { "type": "integer" },
+        "product_boundary": { "type": "object" },
+        "runtime_boundary": {
+          "type": "object",
+          "properties": {
+            "external_handlers_may": { "type": "array", "items": { "type": "string" } },
+            "external_handlers_must_not": { "type": "array", "items": { "type": "string" } }
+          }
+        },
+        "contract_seams": { "type": "object" },
+        "carrier_neutrality": { "type": "object" },
+        "non_goals": { "type": "array", "items": { "type": "string" } }
+      },
+      "required": ["schema", "version", "runtime_boundary"]
+    },
+    "ExternalExecutorConfigContract": {
+      "type": "object",
+      "description": "Configuration-first handler-mapping contract for routing activity tasks to carrier endpoints.",
+      "properties": {
+        "schema": { "type": "string", "const": "durable-workflow.v2.external-executor-config.contract" },
+        "version": { "type": "integer" },
+        "config_schema": { "type": "object" },
+        "steady_state_surface": { "type": "string" },
+        "override_precedence": { "type": "array", "items": { "type": "string" } },
+        "validation": { "type": "object" },
+        "redaction": { "type": "object" }
+      },
+      "required": ["schema", "version"]
+    }
+  }
+}
