@@ -518,9 +518,7 @@ if ($argc < 5) exit(2);
 $token = getenv('DURABLE_WORKFLOW_AUTH_TOKEN');
 if (!is_string($token) || $token === '') throw new RuntimeException('DURABLE_WORKFLOW_AUTH_TOKEN is required');
 $client = new Client($baseUrl, token: $token, namespace: $namespace);
-$poll = method_exists($client, 'pollWorkflowTaskResponse')
-    ? $client->pollWorkflowTaskResponse($workerId, $taskQueue, 0)
-    : ['task' => $client->pollWorkflowTask($workerId, $taskQueue, 0)];
+$poll = $client->pollWorkflowTaskResponse($workerId, $taskQueue, 0);
 $task = isset($poll['task']) && is_array($poll['task']) ? $poll['task'] : null;
 echo json_encode([
     'worker_id' => $workerId,
@@ -1503,7 +1501,7 @@ function buildChecks(context) {
   const cliStale = cliWorker(context.afterVisibility.cli.stale_worker_describe)[0] ?? {};
   const cliActiveList = cliWorker(context.afterVisibility.cli.worker_list);
   const cliStaleList = cliWorker(context.afterVisibility.cli.stale_worker_list);
-  const stalePollStatus = context.stalePoll.poll?.poll_status ?? context.stalePoll.poll?.reason ?? '';
+  const stalePollStatus = context.stalePoll.poll?.poll_status ?? '';
   return {
     exact_published_artifacts_installed: evidence.server_image_install?.exact_published_image_verified === true
       && (IS_PYTHON_CELL

@@ -17,9 +17,9 @@ final class HeartbeatConformanceRunnerContractTest extends TestCase
             'use DurableWorkflow\\\\Worker;',
             '$worker->tick(1)',
             '$client->heartbeatWorker(',
-            "method_exists(\$client, 'pollWorkflowTaskResponse')",
-            '$client->pollWorkflowTaskResponse(',
+            '$poll = $client->pollWorkflowTaskResponse($workerId, $taskQueue, 0);',
             "'poll' => \$poll",
+            "const stalePollStatus = context.stalePoll.poll?.poll_status ?? '';",
             "'workflow:start'",
             "'--wait'",
             "'worker:list'",
@@ -41,6 +41,12 @@ final class HeartbeatConformanceRunnerContractTest extends TestCase
             $source,
         );
         $this->assertStringContainsString('fresh_worker_eligibility_after_stale', $source);
+        $this->assertStringNotContainsString(
+            "method_exists(\$client, 'pollWorkflowTaskResponse')",
+            $source,
+        );
+        $this->assertStringNotContainsString('$client->pollWorkflowTask(', $source);
+        $this->assertStringNotContainsString('context.stalePoll.poll?.reason', $source);
         $this->assertStringNotContainsString("'poll' => ['task' => \$task]", $source);
     }
 
