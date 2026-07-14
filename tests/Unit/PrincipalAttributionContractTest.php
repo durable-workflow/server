@@ -33,6 +33,10 @@ class PrincipalAttributionContractTest extends TestCase
             'scripts/conformance/principal-attribution-published-artifacts.sh',
             $manifest['host_runner_contract']['runner_path'],
         );
+        $this->assertContains(
+            'waterline-principal-attribution-execution.json',
+            $manifest['host_runner_contract']['result_files'],
+        );
         $this->assertTrue($manifest['host_runner_contract']['must_execute_against_published_artifacts']);
         $this->assertTrue($manifest['host_runner_contract']['must_record_runner_blocked_false_for_product_evidence']);
         $this->assertTrue($manifest['host_runner_contract']['must_attempt_spoofing_payloads_and_headers']);
@@ -604,6 +608,8 @@ class PrincipalAttributionContractTest extends TestCase
         $this->assertStringContainsString('waterline:principal-attribution-conformance', $script);
         $this->assertStringContainsString('WATERLINE_PRINCIPAL_RESULT="$waterline_result_path"', $script);
         $this->assertStringContainsString('load_waterline_principal_shard', $script);
+        $this->assertStringContainsString('def aggregate_waterline_evidence()', $script);
+        $this->assertStringContainsString('def write_principal_attribution_aggregate(', $script);
         $this->assertStringContainsString('waterline_status = waterline_item.get("status") if isinstance(waterline_item, dict) else "unsupported"', $script);
         $this->assertStringContainsString('waterline_output_sample_missing = True', $script);
         $this->assertStringContainsString('if isinstance(waterline_item, dict) and "output_sample" in waterline_item:', $script);
@@ -614,7 +620,9 @@ class PrincipalAttributionContractTest extends TestCase
         $this->assertStringContainsString('waterline_claimed_pass and waterline_output_sample_missing', $script);
         $this->assertStringContainsString('if waterline_missing_required_pass_evidence:', $script);
         $this->assertStringContainsString('scenario_results.append(scenario(', $script);
-        $this->assertStringContainsString('"waterline": {"status": waterline_status', $script);
+        $this->assertStringContainsString('"waterline": {"status": waterline_evidence["status"]', $script);
+        $this->assertStringContainsString('"waterlineOperatorVisibility": waterline_scenario', $script);
+        $this->assertStringContainsString('"waterlineShardExecution": waterline_execution', $script);
         $this->assertStringNotContainsString('Waterline operator surface was not exercised by this runner revision', $script);
         $this->assertStringNotContainsString('waterline_output_sample = json.dumps(waterline_payload', $script);
         $this->assertStringNotContainsString('waterline_principal_visible = True', $script);

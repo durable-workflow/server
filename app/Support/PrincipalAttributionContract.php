@@ -195,6 +195,7 @@ final class PrincipalAttributionContract
                     'pins.json',
                     'run-metadata.json',
                     'artifact-install-evidence.json',
+                    'waterline-principal-attribution-execution.json',
                     'principal-attribution-result.json',
                     'principal-attribution-record.json',
                 ],
