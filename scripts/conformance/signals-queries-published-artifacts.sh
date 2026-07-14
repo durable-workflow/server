@@ -145,6 +145,9 @@ from pathlib import Path
 from typing import Any
 
 
+DIAGNOSTIC_OUTPUT_LIMIT = 8192
+
+
 def now() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="microseconds").replace("+00:00", "Z")
 
@@ -590,11 +593,18 @@ def diagnostic_command(command: list[str]) -> list[str]:
 
 
 def command_summary(command: list[str], completed: subprocess.CompletedProcess[str]) -> dict[str, Any]:
+    def bounded(value: str) -> str:
+        if len(value) <= DIAGNOSTIC_OUTPUT_LIMIT:
+            return value
+
+        omitted = len(value) - DIAGNOSTIC_OUTPUT_LIMIT
+        return value[:DIAGNOSTIC_OUTPUT_LIMIT] + f"\n... {omitted} characters omitted"
+
     return {
         "command": diagnostic_command(command),
         "exit_code": completed.returncode,
-        "stdout": completed.stdout.strip(),
-        "stderr": completed.stderr.strip(),
+        "stdout": bounded(completed.stdout.strip()),
+        "stderr": bounded(completed.stderr.strip()),
     }
 
 
@@ -1388,6 +1398,147 @@ def sdk_php_docker_image() -> str:
     return env_text("DW_SIGNALS_QUERIES_PHP_DOCKER_IMAGE") or "composer:2"
 
 
+class PhpSdkArtifactError(RuntimeError):
+    def __init__(
+        self,
+        code: str,
+        message: str,
+        *,
+        version: str,
+        phase: str,
+        command: list[str] | None = None,
+        command_result: subprocess.CompletedProcess[str] | None = None,
+        details: dict[str, Any] | None = None,
+    ):
+        super().__init__(message)
+        self.code = code
+        self.version = version
+        self.phase = phase
+        self.command = command
+        self.command_result = command_result
+        self.details = details or {}
+
+
+def sdk_php_fixture_root(sdk_version: str) -> Path:
+    exported_root = env_text("REPO_ROOT")
+    if exported_root is None:
+        raise PhpSdkArtifactError(
+            "php_sdk_fixture_root_unavailable",
+            "the published server contract did not export its packaged fixture root",
+            version=sdk_version,
+            phase="resolve_packaged_fixtures",
+        )
+
+    fixture_root = Path(exported_root) / "scripts" / "conformance" / "fixtures" / "php-sdk"
+    fixture_names = ("signals-queries-worker.php", "signals-queries-client.php")
+    missing = [name for name in fixture_names if not (fixture_root / name).is_file()]
+    if missing:
+        raise PhpSdkArtifactError(
+            "php_sdk_packaged_fixtures_missing",
+            "the published server contract is missing packaged PHP signal/query fixtures",
+            version=sdk_version,
+            phase="resolve_packaged_fixtures",
+            details={
+                "fixture_root": diagnostic_path(str(fixture_root)),
+                "missing_fixtures": missing,
+            },
+        )
+
+    return fixture_root
+
+
+def composer_versions_match(expected: str, actual: str) -> bool:
+    return expected.strip().lstrip("v") == actual.strip().lstrip("v")
+
+
+def sdk_php_package_provenance(project_dir: Path, sdk_version: str) -> dict[str, Any]:
+    lock_path = project_dir / "composer.lock"
+    installed_path = project_dir / "vendor" / "composer" / "installed.json"
+    try:
+        lock = json.loads(lock_path.read_text(encoding="utf-8"))
+        installed = json.loads(installed_path.read_text(encoding="utf-8"))
+    except Exception as exc:
+        raise PhpSdkArtifactError(
+            "php_sdk_composer_metadata_unreadable",
+            "could not read Composer metadata for the installed PHP SDK",
+            version=sdk_version,
+            phase="inspect_composer_provenance",
+            details={"metadata_error": f"{type(exc).__name__}: {exc}"},
+        ) from exc
+
+    locked_packages = lock.get("packages", []) if isinstance(lock, dict) else []
+    installed_packages: list[Any]
+    if isinstance(installed, list):
+        installed_packages = installed
+    elif isinstance(installed, dict) and isinstance(installed.get("packages"), list):
+        installed_packages = installed["packages"]
+    else:
+        installed_packages = []
+
+    locked_sdk = next(
+        (
+            package
+            for package in locked_packages
+            if isinstance(package, dict) and package.get("name") == "durable-workflow/sdk"
+        ),
+        None,
+    )
+    installed_sdk = next(
+        (
+            package
+            for package in installed_packages
+            if isinstance(package, dict) and package.get("name") == "durable-workflow/sdk"
+        ),
+        None,
+    )
+    locked_version = str(locked_sdk.get("version") or "") if isinstance(locked_sdk, dict) else ""
+    installed_version = str(installed_sdk.get("version") or "") if isinstance(installed_sdk, dict) else ""
+    dist = locked_sdk.get("dist") if isinstance(locked_sdk, dict) else None
+    installation_source = (
+        str(installed_sdk.get("installation-source") or "") if isinstance(installed_sdk, dict) else ""
+    )
+    dist_url = str(dist.get("url") or "") if isinstance(dist, dict) else ""
+    source = locked_sdk.get("source") if isinstance(locked_sdk, dict) else None
+    source_url = str(source.get("url") or "") if isinstance(source, dict) else ""
+    local_source_pattern = re.compile(
+        r"(^file://|^/|^\.\.?/|local[_ -]?(product[_ -]?)?(source|checkout|artifact))",
+        re.IGNORECASE,
+    )
+
+    problems: list[str] = []
+    if not isinstance(locked_sdk, dict) or not isinstance(installed_sdk, dict):
+        problems.append("durable-workflow/sdk is absent from Composer metadata")
+    if not composer_versions_match(sdk_version, locked_version):
+        problems.append(f"locked version {locked_version!r} does not match {sdk_version!r}")
+    if not composer_versions_match(sdk_version, installed_version):
+        problems.append(f"installed version {installed_version!r} does not match {sdk_version!r}")
+    if installation_source != "dist":
+        problems.append(f"installation source {installation_source!r} is not dist")
+    if dist_url == "":
+        problems.append("Composer lock metadata does not contain a dist URL")
+    if any(local_source_pattern.search(candidate) for candidate in (dist_url, source_url) if candidate):
+        problems.append("Composer metadata resolves the PHP SDK from a local product source")
+    if problems:
+        raise PhpSdkArtifactError(
+            "php_sdk_packagist_provenance_invalid",
+            "the installed PHP SDK does not have exact Packagist distribution provenance",
+            version=sdk_version,
+            phase="inspect_composer_provenance",
+            details={"provenance_failures": problems},
+        )
+
+    return {
+        "package": "durable-workflow/sdk",
+        "version": locked_version,
+        "source": "packagist",
+        "dist": dist,
+        "source_reference": source,
+        "composer_content_hash": lock.get("content-hash"),
+        "install_preference": "dist",
+        "installation_source": installation_source,
+    }
+
+
 def waterline_php_docker_image() -> str:
     configured = env_text("DW_SIGNALS_QUERIES_WATERLINE_PHP_DOCKER_IMAGE")
     if configured:
@@ -1479,45 +1630,77 @@ def write_sdk_php_project(project_dir: Path) -> None:
             },
         },
     )
-    fixture_root = repo_root / "scripts" / "conformance" / "fixtures" / "php-sdk"
+    fixture_root = sdk_php_fixture_root(sdk_version)
     shutil.copyfile(fixture_root / "signals-queries-worker.php", project_dir / "php-counter-worker.php")
     shutil.copyfile(fixture_root / "signals-queries-client.php", project_dir / "php-workflow-client.php")
+
 
 def ensure_sdk_php_sdk(run_root: Path, log_file: Path) -> tuple[Path, dict[str, Any]]:
     sdk_version = artifact_version_value(artifact_versions, "sdk-php")
     if is_placeholder_version(sdk_version):
-        raise RuntimeError("DW_PHP_SDK_VERSION must be concrete to install durable-workflow/sdk")
+        raise PhpSdkArtifactError(
+            "php_sdk_version_not_exact",
+            "DW_PHP_SDK_VERSION must be concrete to install durable-workflow/sdk",
+            version=sdk_version,
+            phase="validate_artifact_tuple",
+        )
     if not command_available("docker"):
-        raise RuntimeError("docker is required to install and run the published PHP SDK")
+        raise PhpSdkArtifactError(
+            "php_sdk_runtime_unavailable",
+            "docker is required to install and run the published PHP SDK",
+            version=sdk_version,
+            phase="validate_runtime",
+        )
 
     project_dir = run_root / "sdk-php"
     project_dir.mkdir(parents=True, exist_ok=True)
     write_sdk_php_project(project_dir)
 
+    install_command = php_docker_command(
+        project_dir,
+        ["install", "--no-interaction", "--no-progress", "--prefer-dist"],
+    )
     install = run_command(
-        php_docker_command(
-            project_dir,
-            ["install", "--no-interaction", "--no-progress", "--prefer-dist"],
-        ),
+        install_command,
         log_file=log_file,
         timeout=600,
     )
     if install.returncode != 0:
-        raise RuntimeError("could not install the public durable-workflow/sdk package")
+        raise PhpSdkArtifactError(
+            "php_sdk_composer_install_failed",
+            "could not install the public durable-workflow/sdk package",
+            version=sdk_version,
+            phase="composer_install",
+            command=install_command,
+            command_result=install,
+        )
 
+    provenance = sdk_php_package_provenance(project_dir, sdk_version)
+
+    version_command = php_docker_command(
+        project_dir,
+        [
+            "php",
+            "-r",
+            "require 'vendor/autoload.php'; echo Composer\\InstalledVersions::getPrettyVersion('durable-workflow/sdk') ?: '';",
+        ],
+    )
     check = run_command(
-        php_docker_command(
-            project_dir,
-            [
-                "php",
-                "-r",
-                "require 'vendor/autoload.php'; echo Composer\\InstalledVersions::getPrettyVersion('durable-workflow/sdk') ?: '';",
-            ],
-        ),
+        version_command,
         log_file=log_file,
         timeout=60,
     )
-    installed_version = check.stdout.strip() or sdk_version
+    installed_version = check.stdout.strip()
+    if check.returncode != 0 or not composer_versions_match(sdk_version, installed_version):
+        raise PhpSdkArtifactError(
+            "php_sdk_runtime_version_mismatch",
+            "the installed durable-workflow/sdk runtime version does not match the artifact tuple",
+            version=sdk_version,
+            phase="verify_installed_version",
+            command=version_command,
+            command_result=check,
+            details={"installed_version": installed_version},
+        )
 
     entry = installed_public_artifact_entry(
         "sdk-php",
@@ -1527,6 +1710,7 @@ def ensure_sdk_php_sdk(run_root: Path, log_file: Path) -> tuple[Path, dict[str, 
     )
     entry["installed_version"] = installed_version
     entry["runtime_image"] = sdk_php_docker_image()
+    entry["package_provenance"] = provenance
 
     return project_dir, entry
 
@@ -6668,6 +6852,8 @@ def run_php_worker_python_and_cli_clients(
         "published_artifact_versions": versions,
         "artifact_sources": sources,
     }
+    phase = "python_sdk_workflow_start"
+    outputs["probe_phase"] = phase
 
     try:
         start_sample = sdk_start_workflow_sample(
@@ -6689,6 +6875,8 @@ def run_php_worker_python_and_cli_clients(
             raise RuntimeError(f"Python SDK start against PHP worker did not return a run_id: {start_sample}")
         outputs["run_id"] = run_id
 
+        phase = "cli_initial_query"
+        outputs["probe_phase"] = phase
         initial_cli_query = wait_for_query_result(
             label="PHP worker CLI initial query after Python SDK start",
             expected=0,
@@ -6709,6 +6897,8 @@ def run_php_worker_python_and_cli_clients(
         )
         outputs["cli_initial_query_sample"] = initial_cli_query
 
+        phase = "python_sdk_signal"
+        outputs["probe_phase"] = phase
         sdk_signal = sdk_success_sample(
             python_bin,
             base_url,
@@ -6724,6 +6914,8 @@ def run_php_worker_python_and_cli_clients(
         if not public_sample_ok(sdk_signal):
             raise RuntimeError(f"Python SDK signal against PHP worker failed: {sdk_signal}")
 
+        phase = "python_sdk_query"
+        outputs["probe_phase"] = phase
         sdk_query = wait_for_query_result(
             label="PHP worker Python SDK query after Python SDK signal",
             expected=4,
@@ -6741,6 +6933,8 @@ def run_php_worker_python_and_cli_clients(
         )
         outputs["sdk_python_query_sample"] = sdk_query
 
+        phase = "cli_signal"
+        outputs["probe_phase"] = phase
         cli_signal = cli_json_sample(
             cli_bin,
             base_url,
@@ -6760,6 +6954,8 @@ def run_php_worker_python_and_cli_clients(
         if not public_sample_ok(cli_signal):
             raise RuntimeError(f"CLI signal against PHP worker failed: {cli_signal}")
 
+        phase = "cli_query"
+        outputs["probe_phase"] = phase
         cli_query = wait_for_query_result(
             label="PHP worker CLI query after Python SDK and CLI signals",
             expected=10,
@@ -6780,6 +6976,8 @@ def run_php_worker_python_and_cli_clients(
         )
         outputs["cli_query_sample"] = cli_query
 
+        phase = "python_sdk_repeat_query"
+        outputs["probe_phase"] = phase
         repeat_sdk_query = wait_for_query_result(
             label="PHP worker Python SDK repeat query after CLI signal",
             expected=10,
@@ -6839,8 +7037,11 @@ def run_php_worker_python_and_cli_clients(
             "cli_signal": cli_signal.get("command"),
             "cli_query": cli_query.get("command"),
         }
+        outputs["probe_phase"] = "complete"
     except Exception as exc:  # noqa: BLE001 - partial public samples are the failure evidence.
-        outputs["probe_error"] = probe_error_payload(exc)
+        error = probe_error_payload(exc)
+        error.setdefault("phase", phase)
+        outputs["probe_error"] = error
         log_line(
             log_file,
             "PHP worker Python/CLI client matrix probe failed: "
@@ -7208,10 +7409,12 @@ def run_sdk_php_baseline(
         "runtime_image": sdk_php_docker_image(),
         "log_file": log_file.name,
     }
+    phase = "worker_start"
+    outputs["probe_phase"] = phase
 
     register_container(container_name, log_file)
-    start = run_command(
-        php_docker_command(
+    try:
+        worker_command = php_docker_command(
             sdk_php_project,
             [
                 "php",
@@ -7226,16 +7429,19 @@ def run_sdk_php_baseline(
             ],
             name=container_name,
             detach=True,
-        ),
-        log_file=log_file,
-        timeout=90,
-    )
-    if start.returncode != 0:
-        raise RuntimeError("PHP worker container failed to start")
-    descriptor["container_name"] = container_name
-    descriptor["container_id"] = start.stdout.strip()
+        )
+        start = run_command(
+            worker_command,
+            log_file=log_file,
+            timeout=90,
+        )
+        if start.returncode != 0:
+            raise RuntimeError("PHP worker container failed to start")
+        descriptor["container_name"] = container_name
+        descriptor["container_id"] = start.stdout.strip()
 
-    try:
+        phase = "worker_registration"
+        outputs["probe_phase"] = phase
         worker_registration = wait_for_docker_worker_registered(
             base_url=base_url,
             token=token,
@@ -7249,6 +7455,8 @@ def run_sdk_php_baseline(
         if isinstance(capabilities, list) and "query_tasks" in capabilities:
             outputs["registered_query_task_capability"] = True
 
+        phase = "workflow_start"
+        outputs["probe_phase"] = phase
         start_sample = php_workflow_client_sample(
             sdk_php_project,
             base_url,
@@ -7271,6 +7479,8 @@ def run_sdk_php_baseline(
         outputs["run_id"] = run_id
         descriptor["run_id"] = run_id
 
+        phase = "initial_query"
+        outputs["probe_phase"] = phase
         initial_query = wait_for_query_result(
             label="PHP worker initial CLI query",
             expected=0,
@@ -7291,6 +7501,8 @@ def run_sdk_php_baseline(
         )
         outputs["initial_query_sample"] = initial_query
 
+        phase = "cli_signal"
+        outputs["probe_phase"] = phase
         cli_signal = cli_json_sample(
             cli_bin,
             base_url,
@@ -7310,6 +7522,8 @@ def run_sdk_php_baseline(
             raise RuntimeError(f"PHP worker CLI signal failed: {cli_signal}")
         outputs["cli_signal_sample"] = cli_signal
 
+        phase = "cli_query"
+        outputs["probe_phase"] = phase
         cli_query = wait_for_query_result(
             label="PHP worker CLI query after CLI signal",
             expected=3,
@@ -7335,6 +7549,8 @@ def run_sdk_php_baseline(
             and sample_result_value(cli_query) == 3
         )
 
+        phase = "routed_current_query"
+        outputs["probe_phase"] = phase
         routed_query = wait_for_php_query_route_evidence(
             query_route_evidence_path,
             workflow_id=workflow_id,
@@ -7348,6 +7564,8 @@ def run_sdk_php_baseline(
         outputs["php_routed_current_query_task"] = routed_query
         outputs["php_worker_query_task_routing"] = True
 
+        phase = "sdk_php_signal"
+        outputs["probe_phase"] = phase
         php_signal = php_workflow_client_sample(
             sdk_php_project,
             base_url,
@@ -7365,6 +7583,8 @@ def run_sdk_php_baseline(
             raise RuntimeError(f"PHP SDK signal failed: {php_signal}")
         outputs["sdk_php_signal_sample"] = php_signal
 
+        phase = "sdk_php_query"
+        outputs["probe_phase"] = phase
         php_query = wait_for_query_result(
             label="PHP worker PHP SDK query after PHP SDK signal",
             expected=8,
@@ -7389,6 +7609,8 @@ def run_sdk_php_baseline(
             and sample_result_value(php_query) == 8
         )
 
+        phase = "sdk_php_repeat_query"
+        outputs["probe_phase"] = phase
         repeat_query = wait_for_query_result(
             label="PHP worker repeat PHP SDK query",
             expected=8,
@@ -7412,6 +7634,8 @@ def run_sdk_php_baseline(
         )
 
         if python_bin is not None:
+            phase = "python_and_cli_cross_language_clients"
+            outputs["probe_phase"] = phase
             cross_language_outputs = run_php_worker_python_and_cli_clients(
                 base_url=base_url,
                 token=token,
@@ -7442,9 +7666,11 @@ def run_sdk_php_baseline(
                 cross_language_outputs,
             )
 
+        outputs["probe_phase"] = "complete"
         return outputs, descriptor
     except Exception as exc:  # noqa: BLE001 - retain partial PHP evidence for a focused mirror finding.
         error = probe_error_payload(exc)
+        error.setdefault("phase", phase)
         outputs["probe_error"] = error
         descriptor["error"] = f"{type(exc).__name__}: {exc}"
         log_line(log_file, f"PHP worker mirror probe stopped after partial evidence: {type(exc).__name__}: {exc}")
@@ -7459,7 +7685,19 @@ def probe_error_payload(exc: Exception) -> dict[str, Any]:
         "type": type(exc).__name__,
         "message": str(exc),
     }
-    if isinstance(exc, RustCrateArtifactError):
+    if isinstance(exc, PhpSdkArtifactError):
+        payload.update({
+            "code": exc.code,
+            "artifact": "sdk-php",
+            "package": "durable-workflow/sdk",
+            "requested_version": exc.version,
+            "source": EXPECTED_ARTIFACT_SOURCES["sdk-php"],
+            "phase": exc.phase,
+        })
+        payload.update(exc.details)
+        if exc.command is not None and exc.command_result is not None:
+            payload["command"] = command_summary(exc.command, exc.command_result)
+    elif isinstance(exc, RustCrateArtifactError):
         payload.update({
             "code": exc.code,
             "artifact": "sdk-rust",
@@ -7530,7 +7768,7 @@ def run_baseline_probe(result_dir: Path) -> tuple[dict[str, Any] | None, dict[st
         cli_bin: str | None = None
         python_bin: str | None = None
         sdk_php_project: Path | None = None
-        sdk_php_install_error: dict[str, str] | None = None
+        sdk_php_install_error: dict[str, Any] | None = None
         install_descriptors: dict[str, Any] = {}
         try:
             cli_bin, cli_install = install_cli(run_root, log_file)

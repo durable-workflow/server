@@ -1802,12 +1802,17 @@ PY);
         $this->assertStringNotContainsString('"published_server_endpoint"', $source);
     }
 
-    public function test_host_runner_generates_published_php_worker_project_for_mirror_baseline(): void
+    public function test_host_runner_resolves_php_fixtures_from_released_server_contract_root(): void
     {
         $result = $this->runSignalQueryRunnerPythonSnippet(<<<'PY'
 artifact_versions = {"sdk-php": "0.1.1"}
 project = Path(tempfile.mkdtemp(prefix="dw-php-project-test."))
+source_root = Path(os.environ["REPO_ROOT"])
+released_root = Path(tempfile.mkdtemp(prefix="dw-released-server-contract."))
 try:
+    packaged_fixtures = released_root / "scripts" / "conformance" / "fixtures" / "php-sdk"
+    shutil.copytree(source_root / "scripts" / "conformance" / "fixtures" / "php-sdk", packaged_fixtures)
+    os.environ["REPO_ROOT"] = str(released_root)
     write_sdk_php_project(project)
     composer = json.loads((project / "composer.json").read_text(encoding="utf-8"))
     worker = (project / "php-counter-worker.php").read_text(encoding="utf-8")
@@ -1822,9 +1827,12 @@ try:
         "worker_runs": "$worker->run(1)" in worker,
         "client_uses_sdk": "use DurableWorkflow\\Client;" in client,
         "client_constructs_sdk": "new Client(" in client,
+        "released_root_has_git_checkout": (released_root / ".git").exists(),
+        "fixture_root": str(sdk_php_fixture_root("0.1.1").relative_to(released_root)),
     }, sort_keys=True))
 finally:
     shutil.rmtree(project, ignore_errors=True)
+    shutil.rmtree(released_root, ignore_errors=True)
 PY);
 
         $this->assertSame('http://host.docker.internal:8080', $result['localhost_url']);
@@ -1836,6 +1844,114 @@ PY);
         $this->assertTrue($result['worker_runs']);
         $this->assertTrue($result['client_uses_sdk']);
         $this->assertTrue($result['client_constructs_sdk']);
+        $this->assertFalse($result['released_root_has_git_checkout']);
+        $this->assertSame('scripts/conformance/fixtures/php-sdk', $result['fixture_root']);
+    }
+
+    public function test_host_runner_records_exact_php_sdk_packagist_distribution_provenance(): void
+    {
+        $result = $this->runSignalQueryRunnerPythonSnippet(<<<'PY'
+project = Path(tempfile.mkdtemp(prefix="dw-php-provenance-test."))
+try:
+    (project / "vendor" / "composer").mkdir(parents=True)
+    write_json(project / "composer.lock", {
+        "content-hash": "content-hash",
+        "packages": [{
+            "name": "durable-workflow/sdk",
+            "version": "0.1.3",
+            "dist": {
+                "type": "zip",
+                "url": "https://api.github.com/repos/durable-workflow/sdk-php/zipball/release-ref",
+                "reference": "release-ref",
+            },
+            "source": {
+                "type": "git",
+                "url": "https://github.com/durable-workflow/sdk-php.git",
+                "reference": "release-ref",
+            },
+        }],
+    })
+    write_json(project / "vendor" / "composer" / "installed.json", {
+        "packages": [{
+            "name": "durable-workflow/sdk",
+            "version": "0.1.3",
+            "installation-source": "dist",
+        }],
+    })
+    provenance = sdk_php_package_provenance(project, "0.1.3")
+    print(json.dumps({
+        "package": provenance["package"],
+        "version": provenance["version"],
+        "source": provenance["source"],
+        "dist_url": provenance["dist"]["url"],
+        "install_preference": provenance["install_preference"],
+        "workflow_engine_version": "2.0.0-alpha.280",
+    }, sort_keys=True))
+finally:
+    shutil.rmtree(project, ignore_errors=True)
+PY);
+
+        $this->assertSame('durable-workflow/sdk', $result['package']);
+        $this->assertSame('0.1.3', $result['version']);
+        $this->assertSame('packagist', $result['source']);
+        $this->assertSame(
+            'https://api.github.com/repos/durable-workflow/sdk-php/zipball/release-ref',
+            $result['dist_url'],
+        );
+        $this->assertSame('dist', $result['install_preference']);
+        $this->assertSame('2.0.0-alpha.280', $result['workflow_engine_version']);
+        $this->assertNotSame($result['version'], $result['workflow_engine_version']);
+    }
+
+    public function test_host_runner_preserves_php_fixture_failure_phase_and_bounds_command_diagnostics(): void
+    {
+        $result = $this->runSignalQueryRunnerPythonSnippet(<<<'PY'
+released_root = Path(tempfile.mkdtemp(prefix="dw-released-server-missing-fixtures."))
+try:
+    os.environ["REPO_ROOT"] = str(released_root)
+    try:
+        sdk_php_fixture_root("0.1.3")
+    except Exception as fixture_exc:
+        fixture_error = probe_error_payload(fixture_exc)
+    command_exc = PhpSdkArtifactError(
+        "php_sdk_composer_install_failed",
+        "could not install the public durable-workflow/sdk package",
+        version="0.1.3",
+        phase="composer_install",
+        command=["composer", "install"],
+        command_result=subprocess.CompletedProcess(
+            ["composer", "install"],
+            1,
+            stdout="x" * (DIAGNOSTIC_OUTPUT_LIMIT + 1000),
+            stderr="y" * (DIAGNOSTIC_OUTPUT_LIMIT + 1000),
+        ),
+    )
+    command_error = probe_error_payload(command_exc)
+    print(json.dumps({
+        "fixture_code": fixture_error["code"],
+        "fixture_phase": fixture_error["phase"],
+        "missing_fixtures": fixture_error["missing_fixtures"],
+        "command_phase": command_error["phase"],
+        "stdout_length": len(command_error["command"]["stdout"]),
+        "stderr_length": len(command_error["command"]["stderr"]),
+        "stdout_truncated": "characters omitted" in command_error["command"]["stdout"],
+        "stderr_truncated": "characters omitted" in command_error["command"]["stderr"],
+    }, sort_keys=True))
+finally:
+    shutil.rmtree(released_root, ignore_errors=True)
+PY);
+
+        $this->assertSame('php_sdk_packaged_fixtures_missing', $result['fixture_code']);
+        $this->assertSame('resolve_packaged_fixtures', $result['fixture_phase']);
+        $this->assertSame(
+            ['signals-queries-worker.php', 'signals-queries-client.php'],
+            $result['missing_fixtures'],
+        );
+        $this->assertSame('composer_install', $result['command_phase']);
+        $this->assertLessThan(8300, $result['stdout_length']);
+        $this->assertLessThan(8300, $result['stderr_length']);
+        $this->assertTrue($result['stdout_truncated']);
+        $this->assertTrue($result['stderr_truncated']);
     }
 
     public function test_host_runner_records_configured_server_image_overrides_as_non_published_install_evidence(): void
@@ -3578,7 +3694,7 @@ PY);
         $this->assertSame('run-warning-prefix', $result['readout_result_run_id']);
     }
 
-    public function test_php_baseline_accepts_nested_workflow_start_run_id_and_continues_probe(): void
+    public function test_php_baseline_keeps_later_cross_language_failure_independent(): void
     {
         $result = $this->runSignalQueryRunnerPythonSnippet(<<<'PY'
 versions = {
@@ -3612,6 +3728,8 @@ def fake_php_docker_command(project_dir, args, name=None, detach=False):
 
 def fake_run_command(command, *, log_file, env=None, cwd=None, timeout=120.0):
     commands.append(command)
+    if command[:2] == ["docker", "inspect"]:
+        return subprocess.CompletedProcess(command, 1, stdout="", stderr="not found")
     return subprocess.CompletedProcess(command, 0, stdout="container-php\n", stderr="")
 
 def fake_wait_for_docker_worker_registered(**kwargs):
@@ -3691,12 +3809,27 @@ def fake_wait_for_php_query_route_evidence(query_route_evidence_path, workflow_i
 	        "completion_route": "worker_query_task_complete",
 	    }
 
+def fake_run_php_worker_python_and_cli_clients(**kwargs):
+    return {
+        "worker_runtime": "sdk-php",
+        "sdk_python_signal_and_query": True,
+        "cli_signal_and_query": True,
+        "cross_language_query_consistency": False,
+        "wire_envelope_compatibility": True,
+        "probe_error": {
+            "type": "RuntimeError",
+            "message": "repeat query changed without an intervening signal",
+            "phase": "python_sdk_repeat_query",
+        },
+    }
+
 globals()["php_docker_command"] = fake_php_docker_command
 globals()["run_command"] = fake_run_command
 globals()["wait_for_docker_worker_registered"] = fake_wait_for_docker_worker_registered
 globals()["php_workflow_client_sample"] = fake_php_workflow_client_sample
 globals()["cli_json_sample"] = fake_cli_json_sample
 globals()["wait_for_php_query_route_evidence"] = fake_wait_for_php_query_route_evidence
+globals()["run_php_worker_python_and_cli_clients"] = fake_run_php_worker_python_and_cli_clients
 
 run_root = Path(tempfile.mkdtemp(prefix="dw-signals-php-nested-start-test."))
 outputs, descriptor = run_sdk_php_baseline(
@@ -3704,6 +3837,7 @@ outputs, descriptor = run_sdk_php_baseline(
     token="token",
     namespace="default",
     cli_bin="/tmp/dw",
+    python_bin="/tmp/python",
     sdk_php_project=run_root / "sdk-php",
     versions=versions,
     sources=sources,
@@ -3728,6 +3862,10 @@ print(json.dumps({
     "php_operations": [call["operation"] for call in php_calls],
     "cli_operations": [call[0] for call in cli_calls],
     "has_probe_error": "probe_error" in outputs,
+    "cross_language_status": descriptor["cross_language_scenario_results"]
+        ["php_worker_python_and_cli_clients"]["status"],
+    "cross_language_failure_phase": descriptor["cross_language_scenario_results"]
+        ["php_worker_python_and_cli_clients"]["observed_outputs"]["probe_error"]["phase"],
 }, sort_keys=True))
 PY);
 
@@ -3748,6 +3886,8 @@ PY);
             $result['cli_operations'],
         );
         $this->assertFalse($result['has_probe_error']);
+        $this->assertSame('fail', $result['cross_language_status']);
+        $this->assertSame('python_sdk_repeat_query', $result['cross_language_failure_phase']);
     }
 
     public function test_php_rust_query_probe_grades_every_observed_answer(): void
@@ -7049,7 +7189,10 @@ PY);
      */
     private function runSignalQueryRunnerPythonSnippet(string $snippet): array
     {
-        $script = $this->signalQueryRunnerPythonDefinitions() . "\n" . $snippet;
+        $repoRoot = dirname(__DIR__, 2);
+        $script = $this->signalQueryRunnerPythonDefinitions()
+            . "\nos.environ[\"REPO_ROOT\"] = " . json_encode($repoRoot, JSON_THROW_ON_ERROR)
+            . "\n" . $snippet;
         $process = proc_open(
             ['python3', '-'],
             [
