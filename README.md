@@ -956,7 +956,7 @@ heartbeat, complete, and fail responses include `run_closed_reason` and
 `run_closed_at` alongside `cancel_requested: true`.
 
 ### Schedules
-- `GET /api/schedules` — List schedules
+- `GET /api/schedules` — List schedules with visibility filters and cursor paging
 - `POST /api/schedules` — Create schedule
 - `GET /api/schedules/{id}` — Describe schedule
 - `PUT /api/schedules/{id}` — Update schedule
@@ -965,6 +965,24 @@ heartbeat, complete, and fail responses include `run_closed_reason` and
 - `POST /api/schedules/{id}/resume` — Resume schedule
 - `POST /api/schedules/{id}/trigger` — Trigger immediately
 - `POST /api/schedules/{id}/backfill` — Backfill missed runs
+
+Schedule listing is namespace-scoped and never returns deleted schedules. The
+optional `status` (`active` or `paused`) and `workflow_type` filters are exact
+matches. `query` accepts equality predicates joined by `AND` for
+`ScheduleId`, `Status`, `WorkflowType`, `TaskQueue`, `Note`, and registered
+search-attribute names. String literals use quotes; number and boolean literals
+retain their JSON types. Other operators and fields are rejected instead of
+being ignored. All supplied filters combine with AND semantics.
+
+`page_size` defaults to 50 and accepts 1 through 200. Results use the stable
+order `created_at DESC, schedule_id ASC`. A non-null `next_page_token` is an
+opaque, signed keyset cursor; pass it back unchanged with the same namespace,
+status, workflow type, and visibility query. `page_size` may change between
+pages. A null token terminates traversal. Malformed, cross-namespace,
+filter-mismatched, and stale cursors return typed errors with `reason`, `field`,
+`errors`, and `last_safe_cursor` evidence. A cursor becomes stale when its
+anchor schedule is deleted or no longer matches the original filtered set;
+restart the traversal without a token in that case.
 
 ### Task Queues
 - `GET /api/task-queues` — List task queues

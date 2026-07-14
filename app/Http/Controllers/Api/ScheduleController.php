@@ -3,11 +3,15 @@
 namespace App\Http\Controllers\Api;
 
 use App\Support\ControlPlaneProtocol;
+use App\Support\ScheduleVisibilityQuery;
+use App\Support\ScheduleVisibilityQueryException;
 use App\Support\SearchAttributeValueValidator;
 use App\Support\WorkflowCommandContextFactory;
+use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Validator;
 use Illuminate\Support\Str;
 use LogicException;
 use Workflow\V2\Enums\ScheduleOverlapPolicy;
@@ -21,6 +25,7 @@ class ScheduleController
     public function __construct(
         private readonly WorkflowCommandContextFactory $commandContexts,
         private readonly SearchAttributeValueValidator $searchAttributeValues,
+        private readonly ScheduleVisibilityQuery $visibilityQuery,
     ) {}
 
     public function index(Request $request): JsonResponse
@@ -29,19 +34,154 @@ class ScheduleController
             return $response;
         }
 
-        $namespace = $request->attributes->get('namespace');
+        $namespace = (string) $request->attributes->get('namespace');
+        $filterInput = $request->query();
+        unset($filterInput['namespace']);
 
-        $schedules = WorkflowSchedule::query()
-            ->where('namespace', $namespace)
-            ->whereNot('status', ScheduleStatus::Deleted)
-            ->orderBy('created_at', 'desc')
-            ->get()
-            ->map(fn (WorkflowSchedule $s) => $this->formatListItem($s))
-            ->all();
+        $allowed = ['status', 'workflow_type', 'query', 'page_size', 'next_page_token'];
+        $unsupported = array_values(array_diff(array_keys($filterInput), $allowed));
 
-        return ControlPlaneProtocol::json([
-            'schedules' => $schedules,
-            'next_page_token' => null,
+        if ($unsupported !== []) {
+            $field = (string) $unsupported[0];
+
+            return $this->scheduleListError(
+                $request,
+                422,
+                'unsupported_schedule_list_filter',
+                $field,
+                sprintf('Schedule list filter [%s] is not supported.', $field),
+            );
+        }
+
+        $validator = Validator::make($filterInput, [
+            'status' => ['sometimes', 'required', 'string', 'in:active,paused'],
+            'workflow_type' => ['sometimes', 'required', 'string', 'min:1', 'max:255', 'regex:/\S/'],
+            'query' => ['sometimes', 'required', 'string', 'min:1', 'max:2048'],
+            'page_size' => ['sometimes', 'required', 'integer', 'min:1', 'max:200'],
+            'next_page_token' => ['sometimes', 'required', 'string', 'min:1', 'max:8192'],
+        ]);
+
+        if ($validator->fails()) {
+            $errors = $validator->errors()->toArray();
+            $field = (string) array_key_first($errors);
+
+            return $this->scheduleListError(
+                $request,
+                422,
+                'validation_failed',
+                $field,
+                (string) ($errors[$field][0] ?? 'Schedule list filter validation failed.'),
+                $errors,
+            );
+        }
+
+        /** @var array{
+         *     status?: string,
+         *     workflow_type?: string,
+         *     query?: string,
+         *     page_size?: int,
+         *     next_page_token?: string
+         * } $filters
+         */
+        $filters = $validator->validated();
+        $token = null;
+
+        if (isset($filters['next_page_token'])) {
+            $token = $this->decodeSchedulePageToken($filters['next_page_token']);
+
+            if ($token === null) {
+                return $this->scheduleListError(
+                    $request,
+                    400,
+                    'malformed_schedule_page_token',
+                    'next_page_token',
+                    'Schedule continuation token is malformed or has an invalid signature.',
+                );
+            }
+        }
+
+        $lastSafeCursor = $token === null ? null : $this->publicScheduleCursor($token['cursor']);
+
+        if ($token !== null && ! hash_equals($token['namespace'], $namespace)) {
+            return $this->scheduleListError(
+                $request,
+                403,
+                'schedule_page_token_namespace_mismatch',
+                'next_page_token',
+                'Schedule continuation token belongs to a different namespace.',
+                lastSafeCursor: $lastSafeCursor,
+            );
+        }
+
+        try {
+            $predicates = isset($filters['query'])
+                ? $this->visibilityQuery->parse($namespace, $filters['query'])
+                : [];
+        } catch (ScheduleVisibilityQueryException $exception) {
+            return $this->scheduleListError(
+                $request,
+                422,
+                $exception->reason,
+                'query',
+                $exception->getMessage(),
+                lastSafeCursor: $lastSafeCursor,
+            );
+        }
+
+        $fingerprint = $this->scheduleFilterFingerprint($filters, $predicates);
+
+        if ($token !== null && ! hash_equals($token['filter_fingerprint'], $fingerprint)) {
+            return $this->scheduleListError(
+                $request,
+                409,
+                'schedule_page_token_filter_mismatch',
+                'next_page_token',
+                'Schedule continuation token must be reused with the same status, workflow type, and visibility query.',
+                lastSafeCursor: $lastSafeCursor,
+            );
+        }
+
+        $query = $this->scheduleListQuery($namespace, $filters, $predicates);
+
+        if ($token !== null && ! $this->scheduleCursorIsCurrent(clone $query, $token['cursor'])) {
+            return $this->scheduleListError(
+                $request,
+                409,
+                'stale_schedule_page_token',
+                'next_page_token',
+                'Schedule continuation token cursor is no longer present in the unchanged filtered set. '
+                    .'Restart pagination without a token.',
+                lastSafeCursor: $lastSafeCursor,
+            );
+        }
+
+        if ($token !== null) {
+            $cursor = $token['cursor'];
+            $query->where(function (Builder $after) use ($cursor): void {
+                $after->where('created_at', '<', $cursor['created_at'])
+                    ->orWhere(function (Builder $sameTime) use ($cursor): void {
+                        $sameTime->where('created_at', '=', $cursor['created_at'])
+                            ->where('schedule_id', '>', $cursor['schedule_id']);
+                    });
+            });
+        }
+
+        $pageSize = (int) ($filters['page_size'] ?? 50);
+        $rows = $query
+            ->orderByDesc('created_at')
+            ->orderBy('schedule_id')
+            ->limit($pageSize + 1)
+            ->get();
+        $hasMore = $rows->count() > $pageSize;
+        $page = $hasMore ? $rows->slice(0, $pageSize)->values() : $rows->values();
+        $last = $page->last();
+
+        return ControlPlaneProtocol::jsonForRequest($request, [
+            'schedules' => $page->map(fn (WorkflowSchedule $schedule) => $this->formatListItem($schedule))->all(),
+            'schedule_count' => $page->count(),
+            'next_page_token' => $hasMore && $last instanceof WorkflowSchedule
+                ? $this->encodeSchedulePageToken($namespace, $fingerprint, $last)
+                : null,
         ]);
     }
 
@@ -554,6 +694,229 @@ class ScheduleController
     }
 
     /**
+     * @param array{
+     *     status?: string|null,
+     *     workflow_type?: string|null,
+     *     query?: string|null,
+     *     page_size?: int|null,
+     *     next_page_token?: string|null
+     * } $filters
+     * @param list<array{field: string, column: string|null, type: string, literal: bool|float|int|string}> $predicates
+     */
+    private function scheduleListQuery(string $namespace, array $filters, array $predicates): Builder
+    {
+        $query = WorkflowSchedule::query()
+            ->where('namespace', $namespace)
+            ->whereNot('status', ScheduleStatus::Deleted)
+            ->when(
+                isset($filters['status']),
+                static fn (Builder $builder) => $builder->where('status', $filters['status']),
+            )
+            ->when(
+                isset($filters['workflow_type']),
+                static fn (Builder $builder) => $builder->where('action->workflow_type', $filters['workflow_type']),
+            );
+
+        $this->visibilityQuery->apply($query, $predicates);
+
+        return $query;
+    }
+
+    /**
+     * @param array{
+     *     status?: string|null,
+     *     workflow_type?: string|null,
+     *     query?: string|null,
+     *     page_size?: int|null,
+     *     next_page_token?: string|null
+     * } $filters
+     * @param list<array{field: string, column: string|null, type: string, literal: bool|float|int|string}> $predicates
+     */
+    private function scheduleFilterFingerprint(array $filters, array $predicates): string
+    {
+        return hash('sha256', json_encode([
+            'status' => $filters['status'] ?? null,
+            'workflow_type' => $filters['workflow_type'] ?? null,
+            'visibility_predicates' => $predicates,
+        ], JSON_THROW_ON_ERROR));
+    }
+
+    private function encodeSchedulePageToken(
+        string $namespace,
+        string $filterFingerprint,
+        WorkflowSchedule $schedule,
+    ): string
+    {
+        $payload = [
+            'version' => 1,
+            'namespace' => $namespace,
+            'filter_fingerprint' => $filterFingerprint,
+            'cursor' => [
+                'created_at' => $this->scheduleCursorTimestamp($schedule->created_at),
+                'schedule_id' => (string) $schedule->schedule_id,
+            ],
+        ];
+        $encoded = $this->base64UrlEncode(json_encode($payload, JSON_THROW_ON_ERROR));
+        $signature = hash_hmac('sha256', $encoded, $this->schedulePageTokenKey());
+
+        return $encoded.'.'.$signature;
+    }
+
+    /**
+     * @return array{
+     *     version: int,
+     *     namespace: string,
+     *     filter_fingerprint: string,
+     *     cursor: array{created_at: string, schedule_id: string}
+     * }|null
+     */
+    private function decodeSchedulePageToken(string $token): ?array
+    {
+        $parts = explode('.', $token);
+
+        if (count($parts) !== 2 || $parts[0] === '' || preg_match('/^[a-f0-9]{64}$/', $parts[1]) !== 1) {
+            return null;
+        }
+
+        [$encoded, $signature] = $parts;
+        $expected = hash_hmac('sha256', $encoded, $this->schedulePageTokenKey());
+
+        if (! hash_equals($expected, $signature)) {
+            return null;
+        }
+
+        $json = $this->base64UrlDecode($encoded);
+
+        if ($json === null) {
+            return null;
+        }
+
+        try {
+            $payload = json_decode($json, true, flags: JSON_THROW_ON_ERROR);
+        } catch (\JsonException) {
+            return null;
+        }
+
+        if (! is_array($payload)
+            || ($payload['version'] ?? null) !== 1
+            || ! is_string($payload['namespace'] ?? null)
+            || $payload['namespace'] === ''
+            || ! is_string($payload['filter_fingerprint'] ?? null)
+            || preg_match('/^[a-f0-9]{64}$/', $payload['filter_fingerprint']) !== 1
+            || ! is_array($payload['cursor'] ?? null)
+            || ! is_string($payload['cursor']['created_at'] ?? null)
+            || ! is_string($payload['cursor']['schedule_id'] ?? null)
+            || $payload['cursor']['schedule_id'] === ''
+            || ! $this->validScheduleCursorTimestamp($payload['cursor']['created_at'])
+        ) {
+            return null;
+        }
+
+        /** @var array{
+         *     version: int,
+         *     namespace: string,
+         *     filter_fingerprint: string,
+         *     cursor: array{created_at: string, schedule_id: string}
+         * } $payload
+         */
+        return $payload;
+    }
+
+    /**
+     * @param array{created_at: string, schedule_id: string} $cursor
+     */
+    private function scheduleCursorIsCurrent(Builder $query, array $cursor): bool
+    {
+        $schedule = $query
+            ->where('schedule_id', $cursor['schedule_id'])
+            ->first();
+
+        return $schedule instanceof WorkflowSchedule
+            && hash_equals($cursor['created_at'], $this->scheduleCursorTimestamp($schedule->created_at));
+    }
+
+    private function scheduleCursorTimestamp(mixed $value): string
+    {
+        if ($value instanceof \DateTimeInterface) {
+            return $value->format('Y-m-d H:i:s.u');
+        }
+
+        return (string) $value;
+    }
+
+    private function validScheduleCursorTimestamp(string $value): bool
+    {
+        $date = \DateTimeImmutable::createFromFormat('!Y-m-d H:i:s.u', $value);
+
+        return $date instanceof \DateTimeImmutable
+            && $date->format('Y-m-d H:i:s.u') === $value;
+    }
+
+    private function schedulePageTokenKey(): string
+    {
+        return hash('sha256', 'durable-workflow.schedule-list.page-token|'.(string) config('app.key'), true);
+    }
+
+    private function base64UrlEncode(string $value): string
+    {
+        return rtrim(strtr(base64_encode($value), '+/', '-_'), '=');
+    }
+
+    private function base64UrlDecode(string $value): ?string
+    {
+        if ($value === '' || preg_match('/^[A-Za-z0-9_-]+$/', $value) !== 1) {
+            return null;
+        }
+
+        $padding = (4 - strlen($value) % 4) % 4;
+        $decoded = base64_decode(strtr($value, '-_', '+/').str_repeat('=', $padding), true);
+
+        return is_string($decoded) ? $decoded : null;
+    }
+
+    /**
+     * @param array{created_at: string, schedule_id: string} $cursor
+     * @return array{created_at: string, schedule_id: string}
+     */
+    private function publicScheduleCursor(array $cursor): array
+    {
+        $createdAt = \DateTimeImmutable::createFromFormat('!Y-m-d H:i:s.u', $cursor['created_at']);
+
+        return [
+            'created_at' => $createdAt instanceof \DateTimeImmutable
+                ? $createdAt->format('Y-m-d\TH:i:s.u\Z')
+                : $cursor['created_at'],
+            'schedule_id' => $cursor['schedule_id'],
+        ];
+    }
+
+    /**
+     * @param array<string, list<string>>|null $errors
+     * @param array{created_at: string, schedule_id: string}|null $lastSafeCursor
+     */
+    private function scheduleListError(
+        Request $request,
+        int $status,
+        string $reason,
+        string $field,
+        string $message,
+        ?array $errors = null,
+        ?array $lastSafeCursor = null,
+    ): JsonResponse
+    {
+        $errors ??= [$field => [$message]];
+
+        return ControlPlaneProtocol::jsonForRequest($request, [
+            'message' => $message,
+            'reason' => $reason,
+            'field' => $field,
+            'errors' => $errors,
+            'validation_errors' => $errors,
+            'last_safe_cursor' => $lastSafeCursor,
+        ], $status);
+    }
+
+    /**
      * @return array<string, mixed>
      */
     private function formatListItem(WorkflowSchedule $schedule): array
@@ -566,6 +929,9 @@ class ScheduleController
             : null;
         $item['next_fire_at'] = $schedule->next_fire_at?->toIso8601String();
         $item['last_fired_at'] = $schedule->last_fired_at?->toIso8601String();
+        $item['search_attributes'] = $schedule->search_attributes;
+        $item['created_at'] = $schedule->created_at?->toIso8601String();
+        $item['updated_at'] = $schedule->updated_at?->toIso8601String();
 
         return array_merge($item, array_filter([
             'fires_count' => (int) $schedule->fires_count,

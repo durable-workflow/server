@@ -1939,6 +1939,9 @@ function pythonLifecycleEvidenceFromOutput({
     resume: operations.resume === true,
     manual_trigger: operations.manual_trigger === true,
     delete: operations.delete === true,
+    visibility_filtering: operations.visibility_filtering === true,
+    visibility_pagination: operations.visibility_pagination === true,
+    visibility_typed_refusals: operations.visibility_typed_refusals === true,
     triggered_workflow_completion: completion.workflow_completed === true,
   };
 
@@ -2070,6 +2073,10 @@ function pythonLifecycleEvidenceFromOutput({
       resume: operationChecks.resume,
       trigger: operationChecks.manual_trigger,
       delete: operationChecks.delete,
+      visibility_filtering: operationChecks.visibility_filtering,
+      visibility_pagination: operationChecks.visibility_pagination,
+      visibility_typed_refusals: operationChecks.visibility_typed_refusals,
+      visibility_contract: objectValue(lifecycleOutputs.schedule_state).visibility_contract ?? {},
       triggered_workflow_completed: operationChecks.triggered_workflow_completion,
       invalid_cron_refused: invalidOutputs.refused,
       invalid_cron_typed_error: invalidOutputs.typed_error,
@@ -2084,6 +2091,9 @@ function pythonLifecycleEvidenceFromOutput({
         'resume',
         'manual_trigger',
         'delete',
+        'visibility_filtering',
+        'visibility_pagination',
+        'visibility_typed_refusals',
         'triggered_workflow_completion',
         'invalid_cron_refusal',
         'invalid_cron_public_persistence_check',
@@ -8063,7 +8073,7 @@ import time
 from typing import Any
 
 from durable_workflow import Client, ScheduleAction, ScheduleSpec, serializer
-from durable_workflow.errors import InvalidArgument, ScheduleNotFound, ServerError
+from durable_workflow.errors import InvalidArgument, ScheduleListError, ScheduleNotFound, ServerError
 
 
 def as_dict(value: Any) -> dict[str, Any]:
@@ -8107,7 +8117,15 @@ def exception_record(error: BaseException) -> dict[str, Any]:
         "type": error.__class__.__name__,
         "message": str(error),
     }
-    if isinstance(error, InvalidArgument):
+    if isinstance(error, ScheduleListError):
+        record["status"] = error.status
+        record["body"] = error.body
+        record["reason"] = error.reason()
+        record["field"] = error.field
+        record["errors"] = error.errors
+        record["last_safe_cursor"] = error.last_safe_cursor
+        record["typed_error"] = True
+    elif isinstance(error, InvalidArgument):
         record["typed_error"] = True
         record["errors"] = error.errors
     elif isinstance(error, ServerError):
@@ -8118,6 +8136,235 @@ def exception_record(error: BaseException) -> dict[str, Any]:
     else:
         record["typed_error"] = False
     return record
+
+
+async def schedule_list_refusal(client: Client, **filters: Any) -> dict[str, Any]:
+    try:
+        page = await client.list_schedules(**filters)
+        return {
+            "refused": False,
+            "response": {
+                "schedule_ids": schedule_ids(page),
+                "next_page_token": getattr(page, "next_page_token", None),
+            },
+        }
+    except ScheduleListError as error:
+        return {"refused": True, "error": exception_record(error)}
+    except Exception as error:
+        return {"refused": True, "error": exception_record(error)}
+
+
+async def schedule_visibility_probe(
+    client: Client,
+    *,
+    prefix: str,
+    task_queue: str,
+    server_url: str,
+    token: str,
+    namespace: str,
+) -> dict[str, Any]:
+    for name, attribute_type in [
+        ("ScheduleFilterRun", "keyword"),
+        ("Region", "keyword"),
+        ("Priority", "int"),
+    ]:
+        await client.create_search_attribute(name, attribute_type)
+
+    workflow_type_a = f"{prefix}.orders"
+    workflow_type_b = f"{prefix}.reports"
+    definitions = [
+        (f"{prefix}-active-orders-eu", "active", workflow_type_a, "eu", 1),
+        (f"{prefix}-paused-orders-eu", "paused", workflow_type_a, "eu", 2),
+        (f"{prefix}-active-orders-us", "active", workflow_type_a, "us", 2),
+        (f"{prefix}-paused-reports-us", "paused", workflow_type_b, "us", 3),
+        (f"{prefix}-active-reports-eu", "active", workflow_type_b, "eu", 2),
+        (f"{prefix}-deleted-orders-eu", "deleted", workflow_type_a, "eu", 2),
+    ]
+    created_ids: list[str] = []
+
+    try:
+        for schedule_id, desired_status, workflow_type, region, priority in definitions:
+            handle = await client.create_schedule(
+                schedule_id=schedule_id,
+                spec=ScheduleSpec(intervals=[{"every": "PT24H"}], timezone="UTC"),
+                action=ScheduleAction(
+                    workflow_type=workflow_type,
+                    task_queue=task_queue,
+                    input=[{"scenario": "schedule_visibility_filtering", "schedule_id": schedule_id}],
+                ),
+                search_attributes={
+                    "ScheduleFilterRun": prefix,
+                    "Region": region,
+                    "Priority": priority,
+                },
+                paused=desired_status == "paused",
+            )
+            created_ids.append(handle.schedule_id)
+            if desired_status == "deleted":
+                await client.delete_schedule(schedule_id)
+
+        marker_query = f'ScheduleFilterRun = "{prefix}"'
+        all_expected = sorted(schedule_id for schedule_id, status, *_ in definitions if status != "deleted")
+        paused_expected = sorted(schedule_id for schedule_id, status, *_ in definitions if status == "paused")
+        type_expected = sorted(
+            schedule_id
+            for schedule_id, status, workflow_type, *_ in definitions
+            if status != "deleted" and workflow_type == workflow_type_a
+        )
+        query_expected = sorted([
+            f"{prefix}-paused-orders-eu",
+            f"{prefix}-active-reports-eu",
+        ])
+        combined_expected = [f"{prefix}-paused-orders-eu"]
+
+        all_page = await client.list_schedules(query=marker_query, page_size=200)
+        paused_page = await client.list_schedules(status="paused", query=marker_query, page_size=200)
+        type_page = await client.list_schedules(
+            workflow_type=workflow_type_a,
+            query=marker_query,
+            page_size=200,
+        )
+        query_page = await client.list_schedules(
+            query=f'{marker_query} AND Region = "eu" AND Priority = 2',
+            page_size=200,
+        )
+        combined_page = await client.list_schedules(
+            status="paused",
+            workflow_type=workflow_type_a,
+            query=f'{marker_query} AND Region = "eu"',
+            page_size=200,
+        )
+
+        traversed: list[str] = []
+        page_tokens: list[str | None] = []
+        next_page_token: str | None = None
+        while True:
+            page = await client.list_schedules(
+                query=marker_query,
+                page_size=2,
+                next_page_token=next_page_token,
+            )
+            traversed.extend(schedule_ids(page))
+            next_page_token = getattr(page, "next_page_token", None)
+            page_tokens.append(next_page_token)
+            if next_page_token is None:
+                break
+            if len(page_tokens) > 3:
+                raise RuntimeError("schedule visibility pagination did not terminate")
+
+        cursor_page = await client.list_schedules(query=marker_query, page_size=2)
+        cursor_token = getattr(cursor_page, "next_page_token", None)
+        cursor_anchor_ids = schedule_ids(cursor_page)
+        if not cursor_token or not cursor_anchor_ids:
+            raise RuntimeError("schedule visibility probe did not receive a continuation cursor")
+
+        malformed = await schedule_list_refusal(client, next_page_token="not-an-opaque-token")
+        invalid_query = await schedule_list_refusal(
+            client,
+            query='Region STARTS_WITH "e"',
+            next_page_token=cursor_token,
+        )
+        invalid_page_size = await schedule_list_refusal(client, page_size=0)
+        filter_mismatch = await schedule_list_refusal(
+            client,
+            status="paused",
+            query=marker_query,
+            next_page_token=cursor_token,
+        )
+
+        other_namespace = f"{namespace}-cursor-other"
+        await client.create_namespace(other_namespace, description="Schedule cursor isolation probe")
+        async with Client(server_url, token=token, namespace=other_namespace, timeout=8.0) as other_client:
+            namespace_mismatch = await schedule_list_refusal(
+                other_client,
+                query=marker_query,
+                next_page_token=cursor_token,
+            )
+
+        cursor_anchor = cursor_anchor_ids[-1]
+        await client.delete_schedule(cursor_anchor)
+        stale = await schedule_list_refusal(
+            client,
+            query=marker_query,
+            next_page_token=cursor_token,
+        )
+
+        observed = {
+            "all": sorted(schedule_ids(all_page)),
+            "status": sorted(schedule_ids(paused_page)),
+            "workflow_type": sorted(schedule_ids(type_page)),
+            "query": sorted(schedule_ids(query_page)),
+            "combined": sorted(schedule_ids(combined_page)),
+        }
+        expected = {
+            "all": all_expected,
+            "status": paused_expected,
+            "workflow_type": type_expected,
+            "query": query_expected,
+            "combined": combined_expected,
+        }
+        refusals = {
+            "malformed": malformed,
+            "invalid_query": invalid_query,
+            "invalid_page_size": invalid_page_size,
+            "filter_mismatch": filter_mismatch,
+            "namespace_mismatch": namespace_mismatch,
+            "stale": stale,
+        }
+        expected_reasons = {
+            "malformed": (400, "malformed_schedule_page_token", "next_page_token", False),
+            "invalid_query": (422, "unsupported_schedule_visibility_predicate", "query", True),
+            "invalid_page_size": (422, "validation_failed", "page_size", False),
+            "filter_mismatch": (409, "schedule_page_token_filter_mismatch", "next_page_token", True),
+            "namespace_mismatch": (403, "schedule_page_token_namespace_mismatch", "next_page_token", True),
+            "stale": (409, "stale_schedule_page_token", "next_page_token", True),
+        }
+        refusal_checks = {}
+        for name, (status, reason, field, cursor_required) in expected_reasons.items():
+            error = refusals[name].get("error") or {}
+            refusal_checks[name] = (
+                refusals[name].get("refused") is True
+                and error.get("typed_error") is True
+                and error.get("status") == status
+                and error.get("reason") == reason
+                and error.get("field") == field
+                and isinstance(error.get("errors"), dict)
+                and (
+                    not cursor_required
+                    or isinstance(error.get("last_safe_cursor"), dict)
+                )
+            )
+
+        return {
+            "filters_passed": observed == expected,
+            "pagination_passed": (
+                sorted(traversed) == all_expected
+                and len(traversed) == len(set(traversed))
+                and len(page_tokens) == 3
+                and page_tokens[-1] is None
+            ),
+            "typed_refusals_passed": all(refusal_checks.values()),
+            "namespace_and_deleted_isolation_passed": (
+                f"{prefix}-deleted-orders-eu" not in observed["all"]
+                and len(observed["all"]) == 5
+            ),
+            "expected": expected,
+            "observed": observed,
+            "pagination": {
+                "page_size": 2,
+                "page_count": len(page_tokens),
+                "schedule_ids": traversed,
+                "terminal_token": page_tokens[-1],
+            },
+            "refusals": refusals,
+            "refusal_checks": refusal_checks,
+        }
+    finally:
+        for schedule_id in created_ids:
+            try:
+                await client.delete_schedule(schedule_id)
+            except Exception:
+                pass
 
 
 async def poll_and_complete_workflow(
@@ -8312,6 +8559,14 @@ async def main() -> None:
             overlap_policy="allow_all",
             jitter_seconds=0,
         )
+        visibility_contract = await schedule_visibility_probe(
+            client,
+            prefix=f"{schedule_id}-visibility",
+            task_queue=task_queue,
+            server_url=payload["server_url"],
+            token=payload["token"],
+            namespace=payload["namespace"],
+        )
         list_after_create = await client.list_schedules()
         describe_after_create = await client.describe_schedule(schedule_id)
 
@@ -8367,6 +8622,10 @@ async def main() -> None:
                 and bool(getattr(trigger, "workflow_id", None)),
             "delete": schedule_id not in schedule_ids(list_after_delete)
                 and describe_after_delete_found is False,
+            "visibility_filtering": visibility_contract["filters_passed"]
+                and visibility_contract["namespace_and_deleted_isolation_passed"],
+            "visibility_pagination": visibility_contract["pagination_passed"],
+            "visibility_typed_refusals": visibility_contract["typed_refusals_passed"],
         },
         "schedule_state": {
             "list_after_create": [as_dict(item) for item in getattr(list_after_create, "schedules", [])],
@@ -8376,6 +8635,7 @@ async def main() -> None:
             "list_after_delete": [as_dict(item) for item in getattr(list_after_delete, "schedules", [])],
             "describe_after_delete_found": describe_after_delete_found,
             "describe_after_delete_status": describe_after_delete_status,
+            "visibility_contract": visibility_contract,
         },
         "trigger_result": as_dict(trigger),
         "triggered_workflow_completion": completion,
