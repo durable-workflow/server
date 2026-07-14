@@ -32,6 +32,10 @@ use Workflow\V2\Support\WorkflowTaskPayload;
 
 final class ExternalWorkflowUpdateAdmission
 {
+    public function __construct(
+        private readonly SqliteControlPlaneMutationRetrier $mutations,
+    ) {}
+
     /**
      * @param  array<int|string, mixed>  $arguments
      * @return array<string, mixed>|null
@@ -45,7 +49,7 @@ final class ExternalWorkflowUpdateAdmission
         string $waitFor = UpdateWaitPolicy::WAIT_FOR_ACCEPTED,
         ?int $waitTimeoutSeconds = null,
     ): ?array {
-        $result = DB::transaction(function () use (
+        $result = $this->mutations->run(fn (): ?array => DB::transaction(function () use (
             $namespace,
             $workflowId,
             $updateName,
@@ -166,7 +170,7 @@ final class ExternalWorkflowUpdateAdmission
             $this->projectRun($run);
 
             return $this->resultPayload($command, $update, $waitFor, false, $waitTimeoutSeconds);
-        });
+        }));
 
         if (($result['update_status'] ?? null) === UpdateStatus::Accepted->value
             && $waitFor === UpdateWaitPolicy::WAIT_FOR_COMPLETED

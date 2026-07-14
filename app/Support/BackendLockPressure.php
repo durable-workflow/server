@@ -4,6 +4,7 @@ namespace App\Support;
 
 use Illuminate\Database\QueryException;
 use Illuminate\Http\JsonResponse;
+use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
 use PDOException;
 use Throwable;
@@ -77,6 +78,25 @@ final class BackendLockPressure
         ], 503)->header('Retry-After', (string) self::RETRY_AFTER_SECONDS);
     }
 
+    public static function controlPlaneResponse(Request $request): JsonResponse
+    {
+        return ControlPlaneProtocol::jsonForRequest($request, [
+            'message' => 'The database backend is temporarily locked while applying the control-plane operation. Retry with backoff.',
+            'reason' => 'backend_lock_pressure',
+            'retryable' => true,
+            'retry_after_seconds' => self::RETRY_AFTER_SECONDS,
+            'backend' => [
+                'driver' => self::workflowDriverName(),
+                'lock_pressure' => true,
+            ],
+        ], 503)->header('Retry-After', (string) self::RETRY_AFTER_SECONDS);
+    }
+
+    public static function isSqliteBackend(): bool
+    {
+        return self::workflowDriverName() === 'sqlite';
+    }
+
     /**
      * @param  array<int, mixed>  $errorInfo
      */
@@ -99,6 +119,18 @@ final class BackendLockPressure
     {
         try {
             return DB::connection()->getDriverName();
+        } catch (Throwable) {
+            return null;
+        }
+    }
+
+    private static function workflowDriverName(): ?string
+    {
+        try {
+            $connection = config('workflows.storage.connection');
+
+            return DB::connection(is_string($connection) && $connection !== '' ? $connection : null)
+                ->getDriverName();
         } catch (Throwable) {
             return null;
         }

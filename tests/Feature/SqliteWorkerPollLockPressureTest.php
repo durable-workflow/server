@@ -11,10 +11,15 @@ use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Queue;
 use PDO;
 use Tests\Fixtures\ExternalGreetingWorkflow;
+use Tests\Fixtures\InteractiveCommandWorkflow;
 use Tests\TestCase;
+use Workflow\V2\Enums\CommandType;
+use Workflow\V2\Enums\TaskStatus;
 use Workflow\V2\Enums\TaskType;
 use Workflow\V2\Jobs\RunWorkflowTask;
 use Workflow\V2\Models\ActivityExecution;
+use Workflow\V2\Models\WorkflowCommand;
+use Workflow\V2\Models\WorkflowSignal;
 use Workflow\V2\Models\WorkflowTask;
 use Workflow\V2\Support\WorkflowExecutor;
 use Workflow\V2\WorkflowStub;
@@ -41,7 +46,7 @@ class SqliteWorkerPollLockPressureTest extends TestCase
             'database.default' => 'sqlite',
             'database.connections.sqlite.database' => $path,
             'database.connections.sqlite.busy_timeout' => 1,
-            'database.connections.sqlite.journal_mode' => 'DELETE',
+            'database.connections.sqlite.journal_mode' => 'WAL',
             'database.connections.sqlite.transaction_mode' => 'IMMEDIATE',
         ]);
 
@@ -138,6 +143,139 @@ class SqliteWorkerPollLockPressureTest extends TestCase
         }
     }
 
+    public function test_consecutive_signals_retry_a_worker_lease_write_without_recording_a_duplicate(): void
+    {
+        Queue::fake();
+
+        WorkflowNamespace::query()->updateOrCreate(
+            ['name' => 'default'],
+            ['description' => 'Default namespace', 'retention_days' => 30, 'status' => 'active'],
+        );
+
+        $workflow = WorkflowStub::make(
+            InteractiveCommandWorkflow::class,
+            'wf-sqlite-control-plane-lock-pressure',
+        );
+        $start = $workflow->start();
+
+        NamespaceWorkflowScope::bind('default', $workflow->id(), InteractiveCommandWorkflow::class);
+
+        $this->runReadyWorkflowTask($start->runId());
+
+        $firstSignal = $this->withHeaders($this->controlPlaneHeaders())
+            ->postJson('/api/workflows/wf-sqlite-control-plane-lock-pressure/signal/advance', [
+                'input' => ['Ada'],
+                'request_id' => 'sqlite-signal-advance',
+            ]);
+
+        $firstSignal->assertAccepted()
+            ->assertJsonPath('reason', null)
+            ->assertJsonPath('signal_name', 'advance');
+
+        /** @var WorkflowTask|null $leasedTask */
+        $leasedTask = WorkflowTask::query()
+            ->where('workflow_run_id', $start->runId())
+            ->where('task_type', TaskType::Workflow->value)
+            ->where('status', TaskStatus::Ready->value)
+            ->first();
+
+        $this->assertInstanceOf(WorkflowTask::class, $leasedTask);
+
+        $leasedTask->forceFill([
+            'status' => TaskStatus::Leased->value,
+            'lease_owner' => 'php-sqlite-worker',
+            'leased_at' => now(),
+            'lease_expires_at' => now()->addSeconds(30),
+            'attempt_count' => 1,
+        ])->save();
+
+        $leaseWriter = $this->startTransientLeaseUpdate($leasedTask->id);
+
+        try {
+            $secondSignal = $this->withHeaders($this->controlPlaneHeaders())
+                ->postJson('/api/workflows/wf-sqlite-control-plane-lock-pressure/signal/finish', [
+                    'request_id' => 'sqlite-signal-finish',
+                ]);
+
+            $secondSignal->assertAccepted()
+                ->assertHeader(ControlPlaneProtocol::HEADER, ControlPlaneProtocol::VERSION)
+                ->assertJsonPath('reason', null)
+                ->assertJsonPath('signal_name', 'finish')
+                ->assertJsonPath('control_plane.operation', 'signal');
+        } finally {
+            $this->finishTransientLeaseUpdate($leaseWriter);
+        }
+
+        $signals = WorkflowSignal::query()
+            ->where('workflow_run_id', $start->runId())
+            ->orderBy('command_sequence')
+            ->get();
+
+        $this->assertSame(['advance', 'finish'], $signals->pluck('signal_name')->all());
+        $this->assertSame(
+            $signals[0]->command_sequence + 1,
+            $signals[1]->command_sequence,
+            'A rolled-back retry must not consume an extra command sequence.',
+        );
+        $this->assertSame(
+            2,
+            WorkflowCommand::query()
+                ->where('workflow_run_id', $start->runId())
+                ->where('command_type', CommandType::Signal->value)
+                ->count(),
+        );
+    }
+
+    public function test_exhausted_control_plane_lock_pressure_returns_a_typed_retryable_response(): void
+    {
+        Queue::fake();
+
+        WorkflowNamespace::query()->updateOrCreate(
+            ['name' => 'default'],
+            ['description' => 'Default namespace', 'retention_days' => 30, 'status' => 'active'],
+        );
+
+        $workflow = WorkflowStub::make(
+            InteractiveCommandWorkflow::class,
+            'wf-sqlite-control-plane-lock-response',
+        );
+        $start = $workflow->start();
+
+        NamespaceWorkflowScope::bind('default', $workflow->id(), InteractiveCommandWorkflow::class);
+        $this->runReadyWorkflowTask($start->runId());
+
+        $task = WorkflowTask::query()
+            ->where('workflow_run_id', $start->runId())
+            ->where('task_type', TaskType::Workflow->value)
+            ->first();
+
+        $this->assertInstanceOf(WorkflowTask::class, $task);
+
+        $this->holdSqliteWriteLock($task->id);
+
+        $this->withHeaders($this->controlPlaneHeaders())
+            ->postJson('/api/workflows/wf-sqlite-control-plane-lock-response/signal/advance', [
+                'input' => ['Ada'],
+                'request_id' => 'sqlite-signal-exhausted-lock',
+            ])
+            ->assertStatus(503)
+            ->assertHeader(ControlPlaneProtocol::HEADER, ControlPlaneProtocol::VERSION)
+            ->assertHeader('Retry-After', '1')
+            ->assertJsonPath('reason', 'backend_lock_pressure')
+            ->assertJsonPath('retryable', true)
+            ->assertJsonPath('backend.driver', 'sqlite')
+            ->assertJsonPath('backend.lock_pressure', true)
+            ->assertJsonPath('control_plane.operation', 'signal');
+
+        $this->assertSame(
+            0,
+            WorkflowCommand::query()
+                ->where('workflow_run_id', $start->runId())
+                ->where('command_type', CommandType::Signal->value)
+                ->count(),
+        );
+    }
+
     private function registerWorker(string $workerId, string $runtime): void
     {
         WorkerRegistration::query()->create([
@@ -163,6 +301,111 @@ class SqliteWorkerPollLockPressureTest extends TestCase
         $pdo->exec("UPDATE workflow_tasks SET updated_at = updated_at WHERE id = ".$pdo->quote($taskId));
 
         $this->lockConnection = $pdo;
+    }
+
+    /**
+     * @return array{process: resource, pipes: array<int, resource>, marker: string}
+     */
+    private function startTransientLeaseUpdate(string $taskId): array
+    {
+        $this->assertIsString($this->databasePath);
+
+        $marker = tempnam(sys_get_temp_dir(), 'dw-server-sqlite-lease-lock-');
+
+        if ($marker === false) {
+            $this->fail('Could not allocate a marker for the SQLite lease writer.');
+        }
+
+        @unlink($marker);
+
+        $script = <<<'PHP'
+$pdo = new PDO('sqlite:'.$argv[1]);
+$pdo->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
+$pdo->exec('PRAGMA busy_timeout = 1000');
+$pdo->beginTransaction();
+
+try {
+    $statement = $pdo->prepare("UPDATE workflow_tasks SET lease_expires_at = datetime('now', '+30 seconds'), updated_at = updated_at WHERE id = ?");
+    $statement->execute([$argv[2]]);
+    file_put_contents($argv[3], 'locked');
+    usleep(125000);
+
+    if ($pdo->inTransaction()) {
+        $pdo->commit();
+    }
+} catch (Throwable $exception) {
+    if ($pdo->inTransaction()) {
+        $pdo->rollBack();
+    }
+
+    throw $exception;
+}
+PHP;
+
+        $process = proc_open(
+            [PHP_BINARY, '-r', $script, $this->databasePath, $taskId, $marker],
+            [
+                0 => ['pipe', 'r'],
+                1 => ['pipe', 'w'],
+                2 => ['pipe', 'w'],
+            ],
+            $pipes,
+        );
+
+        if (! is_resource($process)) {
+            $this->fail('Could not start the SQLite lease writer process.');
+        }
+
+        fclose($pipes[0]);
+
+        $deadline = microtime(true) + 2;
+
+        while (! is_file($marker) && microtime(true) < $deadline) {
+            usleep(1000);
+        }
+
+        if (! is_file($marker)) {
+            $error = stream_get_contents($pipes[2]);
+            proc_terminate($process);
+            fclose($pipes[1]);
+            fclose($pipes[2]);
+            proc_close($process);
+            @unlink($marker);
+
+            $this->fail('SQLite lease writer did not acquire its lock: '.$error);
+        }
+
+        return [
+            'process' => $process,
+            'pipes' => $pipes,
+            'marker' => $marker,
+        ];
+    }
+
+    /**
+     * @param  array{process: resource, pipes: array<int, resource>, marker: string}  $leaseWriter
+     */
+    private function finishTransientLeaseUpdate(array $leaseWriter): void
+    {
+        $output = stream_get_contents($leaseWriter['pipes'][1]);
+        $error = stream_get_contents($leaseWriter['pipes'][2]);
+
+        fclose($leaseWriter['pipes'][1]);
+        fclose($leaseWriter['pipes'][2]);
+
+        $exitCode = proc_close($leaseWriter['process']);
+
+        @unlink($leaseWriter['marker']);
+
+        $this->assertSame(0, $exitCode, trim($error."\n".$output));
+    }
+
+    private function controlPlaneHeaders(): array
+    {
+        return [
+            'X-Namespace' => 'default',
+            ControlPlaneProtocol::HEADER => ControlPlaneProtocol::VERSION,
+        ];
     }
 
     private function workerHeaders(): array

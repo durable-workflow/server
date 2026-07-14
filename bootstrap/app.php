@@ -105,6 +105,12 @@ return Application::configure(basePath: dirname(__DIR__))
                 return null;
             }
 
+            if (ControlPlaneProtocol::requestVersion($request) === ControlPlaneProtocol::VERSION
+                && BackendLockPressure::isSqliteBackend()
+            ) {
+                return BackendLockPressure::controlPlaneResponse($request);
+            }
+
             $requestedVersion = WorkerProtocol::requestVersion($request);
             $supportedVersion = (string) config('server.worker_protocol.version', WorkerProtocol::VERSION);
 

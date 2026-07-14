@@ -16,6 +16,7 @@ final class ServerWorkflowControlPlane implements WorkflowControlPlane
     public function __construct(
         private readonly DefaultWorkflowControlPlane $inner,
         private readonly WorkflowQueryTaskBroker $queryTasks,
+        private readonly SqliteControlPlaneMutationRetrier $mutations,
     ) {}
 
     public function start(string $workflowType, ?string $instanceId = null, array $options = []): array
@@ -25,7 +26,9 @@ final class ServerWorkflowControlPlane implements WorkflowControlPlane
 
     public function signal(string $instanceId, string $name, array $options = []): array
     {
-        return $this->inner->signal($instanceId, $name, $options);
+        return $this->mutations->run(
+            fn (): array => $this->inner->signal($instanceId, $name, $options),
+        );
     }
 
     public function query(string $instanceId, string $name, array $options = []): array
@@ -56,27 +59,37 @@ final class ServerWorkflowControlPlane implements WorkflowControlPlane
 
     public function update(string $instanceId, string $name, array $options = []): array
     {
-        return $this->inner->update($instanceId, $name, $options);
+        return $this->mutations->run(
+            fn (): array => $this->inner->update($instanceId, $name, $options),
+        );
     }
 
     public function cancel(string $instanceId, array $options = []): array
     {
-        return $this->inner->cancel($instanceId, $options);
+        return $this->mutations->run(
+            fn (): array => $this->inner->cancel($instanceId, $options),
+        );
     }
 
     public function terminate(string $instanceId, array $options = []): array
     {
-        return $this->inner->terminate($instanceId, $options);
+        return $this->mutations->run(
+            fn (): array => $this->inner->terminate($instanceId, $options),
+        );
     }
 
     public function repair(string $instanceId, array $options = []): array
     {
-        return $this->inner->repair($instanceId, $options);
+        return $this->mutations->run(
+            fn (): array => $this->inner->repair($instanceId, $options),
+        );
     }
 
     public function archive(string $instanceId, array $options = []): array
     {
-        return $this->inner->archive($instanceId, $options);
+        return $this->mutations->run(
+            fn (): array => $this->inner->archive($instanceId, $options),
+        );
     }
 
     public function describe(string $instanceId, array $options = []): array
