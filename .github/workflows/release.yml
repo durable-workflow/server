@@ -200,6 +200,8 @@ jobs:
           path: |
             release-image-publish-evidence.json
             release-protocol-catalog-conformance.json
+            release-protocol-catalog-bootstrap.log
+            release-protocol-catalog-server.log
             docs-release-audit-evidence.json
             docs-release-audit-handoff.json
           if-no-files-found: error

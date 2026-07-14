@@ -495,12 +495,18 @@ class ReleaseImagePublishWorkflowContractTest extends TestCase
             'PROTOCOL_CATALOG_CONFORMANCE_EVIDENCE: release-protocol-catalog-conformance.json',
             "steps.protocol_catalog.outputs.protocol_catalog_conformance_outcome == 'success'",
             'release-protocol-catalog-conformance.json',
+            'release-protocol-catalog-bootstrap.log',
+            'release-protocol-catalog-server.log',
         ] as $needle) {
             $this->assertStringContainsString($needle, $workflow);
         }
 
         foreach ([
             'DW_EXPOSE_PACKAGE_PROVENANCE=1',
+            'server-bootstrap',
+            'RELEASE_PROTOCOL_CATALOG_BOOTSTRAP_TIMEOUT',
+            'server_bootstrap_failed',
+            'server_bootstrap_timed_out',
             '/api/cluster/info',
             'platform-protocol-specs.json',
             'verify-release-protocol-catalog.mjs',
@@ -531,6 +537,206 @@ class ReleaseImagePublishWorkflowContractTest extends TestCase
         $this->assertLessThan($catalogOffset, $exactOffset);
         $this->assertLessThan($rollingOffset, $catalogOffset);
         $this->assertLessThan($docsAuditOffset, $catalogOffset);
+    }
+
+    public function test_release_protocol_catalog_runner_bootstraps_before_discovery_with_shared_storage(): void
+    {
+        $tmpDir = sys_get_temp_dir().'/release-protocol-catalog-lifecycle-'.bin2hex(random_bytes(4));
+        $this->assertTrue(mkdir($tmpDir));
+        $dockerBin = $tmpDir.'/docker';
+        $curlBin = $tmpDir.'/curl';
+        $nodeBin = $tmpDir.'/node';
+        $eventLog = $tmpDir.'/events.log';
+        $bootstrapLog = $tmpDir.'/bootstrap.log';
+        $serverLog = $tmpDir.'/server.log';
+
+        file_put_contents($dockerBin, <<<'SH'
+#!/usr/bin/env sh
+printf 'docker' >> "$DW_FAKE_EVENT_LOG"
+for argument in "$@"; do
+    printf '\t%s' "$argument" >> "$DW_FAKE_EVENT_LOG"
+done
+printf '\n' >> "$DW_FAKE_EVENT_LOG"
+
+if [ "$1" = "pull" ]; then
+    exit 0
+fi
+if [ "$1" = "volume" ] && [ "$2" = "create" ]; then
+    printf '%s\n' "$3"
+    exit 0
+fi
+if [ "$1" = "volume" ] && [ "$2" = "rm" ]; then
+    exit 0
+fi
+if [ "$1" = "run" ]; then
+    case " $* " in
+        *" server-bootstrap "*) printf 'bootstrap complete\n'; exit 0 ;;
+        *) printf 'container-id\n'; exit 0 ;;
+    esac
+fi
+if [ "$1" = "logs" ]; then
+    printf 'api server log\n'
+    exit 0
+fi
+if [ "$1" = "rm" ]; then
+    exit 0
+fi
+
+exit 1
+SH);
+        file_put_contents($curlBin, <<<'SH'
+#!/usr/bin/env sh
+output=''
+url=''
+while [ "$#" -gt 0 ]; do
+    case "$1" in
+        --output) shift; output="$1" ;;
+        http://*|https://*) url="$1" ;;
+    esac
+    shift
+done
+printf 'curl\t%s\n' "$url" >> "$DW_FAKE_EVENT_LOG"
+printf '{}\n' > "$output"
+SH);
+        file_put_contents($nodeBin, <<<'SH'
+#!/usr/bin/env sh
+printf 'node\t%s\n' "$*" >> "$DW_FAKE_EVENT_LOG"
+SH);
+        chmod($dockerBin, 0755);
+        chmod($curlBin, 0755);
+        chmod($nodeBin, 0755);
+
+        try {
+            $result = $this->runScript('scripts/ci/verify-release-protocol-catalog.sh', [
+                'RELEASE_TAG' => '0.2.653',
+                'SERVER_IMAGE' => 'durableworkflow/server:0.2.653',
+                'WORKFLOW_PACKAGE_REF' => '2.0.0-alpha.280',
+                'WORKFLOW_PACKAGE_COMMIT' => '3fa9bff54c8ccef5537a885b167e470a629661b9',
+                'DOCKER' => $dockerBin,
+                'CURL' => $curlBin,
+                'NODE' => $nodeBin,
+                'DW_FAKE_EVENT_LOG' => $eventLog,
+                'RUNNER_TEMP' => $tmpDir,
+                'PROTOCOL_CATALOG_BOOTSTRAP_LOG' => $bootstrapLog,
+                'PROTOCOL_CATALOG_SERVER_LOG' => $serverLog,
+                'PROTOCOL_CATALOG_CONFORMANCE_EVIDENCE' => $tmpDir.'/evidence.json',
+                'RELEASE_PROTOCOL_CATALOG_ATTEMPTS' => '1',
+                'RELEASE_PROTOCOL_CATALOG_RETRY_SLEEP' => '0',
+                'RELEASE_PROTOCOL_CATALOG_BOOTSTRAP_TIMEOUT' => '5',
+            ]);
+
+            $this->assertSame(0, $result['exitCode'], $result['stderr']);
+            $events = file($eventLog, FILE_IGNORE_NEW_LINES | FILE_SKIP_EMPTY_LINES);
+            $this->assertIsArray($events);
+
+            $volumeName = null;
+            $bootstrapIndex = null;
+            $serverIndex = null;
+            $discoveryIndex = null;
+            foreach ($events as $index => $event) {
+                if (preg_match('/^docker\tvolume\tcreate\t([^\t]+)$/', $event, $matches) === 1) {
+                    $volumeName = $matches[1];
+                }
+                if (str_contains($event, "\tdurableworkflow/server:0.2.653\tserver-bootstrap")) {
+                    $bootstrapIndex = $index;
+                }
+                if (str_starts_with($event, "docker\trun\t--detach")) {
+                    $serverIndex = $index;
+                }
+                if (str_contains($event, '/api/cluster/info')) {
+                    $discoveryIndex = $index;
+                }
+            }
+
+            $this->assertIsString($volumeName);
+            $this->assertIsInt($bootstrapIndex);
+            $this->assertIsInt($serverIndex);
+            $this->assertIsInt($discoveryIndex);
+            $this->assertLessThan($serverIndex, $bootstrapIndex);
+            $this->assertLessThan($discoveryIndex, $serverIndex);
+            $mount = "\t--volume\t{$volumeName}:/app/database";
+            $this->assertStringContainsString($mount, $events[$bootstrapIndex]);
+            $this->assertStringContainsString($mount, $events[$serverIndex]);
+            $this->assertStringContainsString("\tdurableworkflow/server:0.2.653", $events[$bootstrapIndex]);
+            $this->assertStringContainsString("\tdurableworkflow/server:0.2.653", $events[$serverIndex]);
+        } finally {
+            foreach (glob($tmpDir.'/*') ?: [] as $path) {
+                @unlink($path);
+            }
+            @rmdir($tmpDir);
+        }
+    }
+
+    public function test_release_protocol_catalog_runner_classifies_bootstrap_failure_with_diagnostics(): void
+    {
+        $tmpDir = sys_get_temp_dir().'/release-protocol-catalog-bootstrap-failure-'.bin2hex(random_bytes(4));
+        $this->assertTrue(mkdir($tmpDir));
+        $dockerBin = $tmpDir.'/docker';
+        $eventLog = $tmpDir.'/events.log';
+        $bootstrapLog = $tmpDir.'/bootstrap.log';
+        $serverLog = $tmpDir.'/server.log';
+        $evidencePath = $tmpDir.'/evidence.json';
+
+        file_put_contents($dockerBin, <<<'SH'
+#!/usr/bin/env sh
+printf 'docker' >> "$DW_FAKE_EVENT_LOG"
+for argument in "$@"; do
+    printf '\t%s' "$argument" >> "$DW_FAKE_EVENT_LOG"
+done
+printf '\n' >> "$DW_FAKE_EVENT_LOG"
+
+if [ "$1" = "pull" ]; then
+    exit 0
+fi
+if [ "$1" = "volume" ]; then
+    exit 0
+fi
+if [ "$1" = "run" ]; then
+    case " $* " in
+        *" server-bootstrap "*) printf 'migration failed for workflow_namespaces\n' >&2; exit 9 ;;
+        *) exit 98 ;;
+    esac
+fi
+
+exit 1
+SH);
+        chmod($dockerBin, 0755);
+
+        try {
+            $result = $this->runScript('scripts/ci/verify-release-protocol-catalog.sh', [
+                'RELEASE_TAG' => '0.2.653',
+                'SERVER_IMAGE' => 'durableworkflow/server:0.2.653',
+                'WORKFLOW_PACKAGE_REF' => '2.0.0-alpha.280',
+                'WORKFLOW_PACKAGE_COMMIT' => '3fa9bff54c8ccef5537a885b167e470a629661b9',
+                'DOCKER' => $dockerBin,
+                'DW_FAKE_EVENT_LOG' => $eventLog,
+                'RUNNER_TEMP' => $tmpDir,
+                'PROTOCOL_CATALOG_BOOTSTRAP_LOG' => $bootstrapLog,
+                'PROTOCOL_CATALOG_SERVER_LOG' => $serverLog,
+                'PROTOCOL_CATALOG_CONFORMANCE_EVIDENCE' => $evidencePath,
+                'RELEASE_PROTOCOL_CATALOG_BOOTSTRAP_TIMEOUT' => '5',
+            ]);
+
+            $this->assertSame(1, $result['exitCode']);
+            $this->assertStringContainsString('failed server-bootstrap with exit code 9', $result['stderr']);
+            $this->assertStringContainsString('migration failed for workflow_namespaces', $result['stderr']);
+            $evidence = json_decode((string) file_get_contents($evidencePath), true, flags: JSON_THROW_ON_ERROR);
+            $this->assertSame('fail', $evidence['outcome']);
+            $this->assertSame('server_bootstrap', $evidence['lifecycle']['failed_stage']);
+            $this->assertSame('server_bootstrap_failed', $evidence['findings'][0]['kind']);
+            $this->assertContains(
+                'migration failed for workflow_namespaces',
+                $evidence['diagnostics']['bootstrap_log']['tail'],
+            );
+            $events = (string) file_get_contents($eventLog);
+            $this->assertStringNotContainsString("docker\trun\t--detach", $events);
+            $this->assertStringContainsString("docker\tvolume\trm\t-f", $events);
+        } finally {
+            foreach (glob($tmpDir.'/*') ?: [] as $path) {
+                @unlink($path);
+            }
+            @rmdir($tmpDir);
+        }
     }
 
     public function test_release_protocol_catalog_comparator_reports_version_and_field_set_drift(): void

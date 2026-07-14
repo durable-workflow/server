@@ -425,6 +425,15 @@ function main() {
       version: expectedWorkflowRef,
       commit: expectedWorkflowCommit,
     },
+    lifecycle: process.env.PROTOCOL_CATALOG_BOOTSTRAP_OUTCOME ? {
+      storage: process.env.PROTOCOL_CATALOG_STORAGE_KIND || null,
+      bootstrap: process.env.PROTOCOL_CATALOG_BOOTSTRAP_OUTCOME,
+      discovery: process.env.PROTOCOL_CATALOG_DISCOVERY_OUTCOME || null,
+    } : undefined,
+    diagnostics: process.env.PROTOCOL_CATALOG_BOOTSTRAP_LOG || process.env.PROTOCOL_CATALOG_SERVER_LOG ? {
+      bootstrap_log: process.env.PROTOCOL_CATALOG_BOOTSTRAP_LOG || null,
+      server_log: process.env.PROTOCOL_CATALOG_SERVER_LOG || null,
+    } : undefined,
     observations: {
       public_catalog: isRecord(publicCatalog) ? {
         schema: publicCatalog.schema ?? null,
@@ -484,6 +493,15 @@ try {
           version: process.env.WORKFLOW_PACKAGE_REF || null,
           commit: process.env.WORKFLOW_PACKAGE_COMMIT || null,
         },
+        lifecycle: process.env.PROTOCOL_CATALOG_BOOTSTRAP_OUTCOME ? {
+          storage: process.env.PROTOCOL_CATALOG_STORAGE_KIND || null,
+          bootstrap: process.env.PROTOCOL_CATALOG_BOOTSTRAP_OUTCOME,
+          discovery: process.env.PROTOCOL_CATALOG_DISCOVERY_OUTCOME || null,
+        } : undefined,
+        diagnostics: process.env.PROTOCOL_CATALOG_BOOTSTRAP_LOG || process.env.PROTOCOL_CATALOG_SERVER_LOG ? {
+          bootstrap_log: process.env.PROTOCOL_CATALOG_BOOTSTRAP_LOG || null,
+          server_log: process.env.PROTOCOL_CATALOG_SERVER_LOG || null,
+        } : undefined,
         outcome: 'fail',
         findings: [{kind: 'runner_failure', message: error.message}],
       }, null, 2)}\n`,
