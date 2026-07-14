@@ -97,10 +97,6 @@ write_failure() {
   local stage="${3:?stage is required}"
   local summary="${4:?summary is required}"
   local diagnostic_file="${5:-}"
-  local runner_blocked=false
-  if [[ "$classification" == "runner" ]]; then
-    runner_blocked=true
-  fi
 
   RESULT_DIR="$result_dir" \
   SDK_VERSION="$sdk_version" \
@@ -114,16 +110,24 @@ write_failure() {
   FAILURE_STAGE="$stage" \
   FAILURE_SUMMARY="$summary" \
   FAILURE_DIAGNOSTIC_FILE="$diagnostic_file" \
-  RUNNER_BLOCKED="$runner_blocked" \
+  FAILURE_EVIDENCE_HELPER="$script_dir/php-sdk-runtime-failure-evidence.cjs" \
+  CONTROL_TOKEN="$control_token" \
+  WORKER_TOKEN="$worker_token" \
   node <<'NODE'
 const fs = require('node:fs');
 const path = require('node:path');
+const {
+  assertCompleteHttpFailureEvidence,
+  extractRuntimeFailureEvidence,
+  failureSummary,
+} = require(process.env.FAILURE_EVIDENCE_HELPER);
 
 const resultDir = process.env.RESULT_DIR;
-const runnerBlocked = process.env.RUNNER_BLOCKED === 'true';
 const version = process.env.SDK_VERSION || '';
-const summary = process.env.FAILURE_SUMMARY || 'PHP SDK conformance failed.';
-const classification = process.env.FAILURE_CLASSIFICATION || 'sdk';
+const fallbackSummary = process.env.FAILURE_SUMMARY || 'PHP SDK conformance failed.';
+const requestedClassification = process.env.FAILURE_CLASSIFICATION || 'sdk';
+let classification = requestedClassification;
+let owningSurface = process.env.FAILURE_OWNER || 'sdk-php';
 const diagnosticFile = process.env.FAILURE_DIAGNOSTIC_FILE || '';
 const readJson = (file) => {
   try {
@@ -134,22 +138,38 @@ const readJson = (file) => {
   }
 };
 let diagnostic = null;
+let runtimeFailure = null;
 if (diagnosticFile && fs.existsSync(diagnosticFile)) {
   const excerpt = fs.readFileSync(diagnosticFile, 'utf8');
   diagnostic = {path: path.basename(diagnosticFile), excerpt};
+  runtimeFailure = extractRuntimeFailureEvidence(excerpt, {
+    secrets: [process.env.CONTROL_TOKEN, process.env.WORKER_TOKEN],
+  });
+  if (runtimeFailure) {
+    runtimeFailure.failure_stage = process.env.FAILURE_STAGE || 'unknown';
+    classification = runtimeFailure.classification;
+    owningSurface = runtimeFailure.owning_surface;
+  }
 }
+assertCompleteHttpFailureEvidence(runtimeFailure, requestedClassification);
+const runnerBlocked = classification === 'runner';
+const summary = failureSummary(runtimeFailure, process.env.FAILURE_STAGE || 'unknown', fallbackSummary);
 const finding = {
   finding_id: `php-sdk-${process.env.FAILURE_STAGE || 'unknown'}-failure`,
   finding_type: runnerBlocked
     ? 'conformance_runner_blocked'
     : (classification === 'package-publication' ? 'package_publication_gap' : 'product_behavior_gap'),
   classification,
-  owning_surface: process.env.FAILURE_OWNER,
+  owning_surface: owningSurface,
   failure_stage: process.env.FAILURE_STAGE,
   summary,
   observed_behavior: summary,
   next_acceptance_criterion: 'Correct the named failure surface and rerun the exact Packagist SDK against the exact public server image.',
 };
+if (runtimeFailure) {
+  finding.owning_surface = runtimeFailure.owning_surface;
+  finding.observed_evidence = runtimeFailure;
+}
 if (diagnostic) {
   finding.diagnostic = diagnostic;
 }
@@ -165,10 +185,13 @@ const observed = {
   published_artifact_cell_executed: process.env.FAILURE_STAGE !== 'preflight',
   local_product_source_checkouts_used: false,
   failure_stage: process.env.FAILURE_STAGE,
-  failure_classification: process.env.FAILURE_CLASSIFICATION,
-  failure_owner: process.env.FAILURE_OWNER,
+  failure_classification: classification,
+  failure_owner: owningSurface,
   failure_summary: summary,
 };
+if (runtimeFailure) {
+  observed.runtime_failure_evidence = runtimeFailure;
+}
 if (diagnostic) {
   observed.failure_diagnostic = diagnostic;
 }
@@ -228,7 +251,7 @@ const sidecar = {
     php_sdk_lifecycle_surface: {
       scenario_id: 'php_sdk_lifecycle_surface',
       status: result.outcome,
-      classification: process.env.FAILURE_CLASSIFICATION,
+      classification,
       published_artifact_cell_executed: observed.published_artifact_cell_executed,
       observed_outputs: observed,
       linked_findings: [finding],
@@ -504,12 +527,15 @@ if ! (
   exit 0
 fi
 
+cp "$script_dir/php-sdk-runtime-failure.php" "$project_dir/runtime-failure.php"
+
 cat > "$project_dir/worker.php" <<'PHP'
 <?php
 
 declare(strict_types=1);
 
 require __DIR__.'/vendor/autoload.php';
+require __DIR__.'/runtime-failure.php';
 
 use Composer\InstalledVersions;
 use DurableWorkflow\Client;
@@ -524,6 +550,7 @@ if ($argc < 9) {
 }
 
 [$script, $server, $namespace, $controlToken, $workerToken, $queue, $workerId, $resultDir, $scope] = $argv;
+install_runtime_failure_handler('worker', $scope, [$controlToken, $workerToken]);
 $client = new Client($server, namespace: $namespace, controlToken: $controlToken, workerToken: $workerToken);
 $callbackFile = $resultDir.'/php-sdk-callback-counts.json';
 $namespaceScope = $scope === 'namespace';
@@ -573,6 +600,7 @@ function decoded_signal_total(QueryContext $context, Client $client): int
     return $total;
 }
 
+set_runtime_failure_context('worker.register', 'POST', '/api/workers/register');
 $registration = $client->registerWorker(
     $workerId,
     $queue,
@@ -584,6 +612,7 @@ $registration = $client->registerWorker(
         ? ['graceful_shutdown']
         : ['query_tasks', 'workflow_updates', 'durable_history_replay', 'graceful_shutdown'],
 );
+set_runtime_failure_context('worker.heartbeat', 'POST', '/api/workers/{worker_id}/heartbeat');
 $heartbeatAck = $client->heartbeatWorker($workerId, ['workflow_available' => 1, 'activity_available' => 1]);
 file_put_contents($resultDir.'/php-sdk-worker-'.$workerId.'.json', json_encode([
     'worker_id' => $workerId,
@@ -674,6 +703,7 @@ if (! $namespaceScope) {
         },
     );
 }
+set_runtime_failure_context('worker.run', 'MULTIPLE', '/api/worker-protocol/*');
 $worker->run(1);
 PHP
 
@@ -683,6 +713,7 @@ cat > "$project_dir/client.php" <<'PHP'
 declare(strict_types=1);
 
 require __DIR__.'/vendor/autoload.php';
+require __DIR__.'/runtime-failure.php';
 
 use Composer\InstalledVersions;
 use DurableWorkflow\Client;
@@ -691,7 +722,6 @@ use DurableWorkflow\Exception\WorkflowFailed;
 use DurableWorkflow\Exception\WorkflowTerminated;
 use DurableWorkflow\Model\ScheduleAction;
 use DurableWorkflow\Model\ScheduleSpec;
-use Throwable;
 
 if ($argc < 8) {
     fwrite(STDERR, "usage: client.php <phase> <server> <namespace> <token> <queue> <result-dir> <suffix>\n");
@@ -699,6 +729,7 @@ if ($argc < 8) {
 }
 
 [$script, $phase, $server, $namespace, $token, $queue, $resultDir, $suffix] = $argv;
+install_runtime_failure_handler('client', $phase, [$token]);
 $client = new Client($server, token: $token, namespace: $namespace);
 $stateFile = $resultDir.'/php-sdk-replay-state.json';
 
@@ -706,17 +737,6 @@ function emit(array $payload): never
 {
     echo json_encode($payload, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES)."\n";
     exit(0);
-}
-
-function terminal_exception(callable $operation): array
-{
-    try {
-        $operation();
-
-        return ['type' => null, 'message' => 'operation unexpectedly returned'];
-    } catch (Throwable $exception) {
-        return ['type' => $exception::class, 'message' => $exception->getMessage()];
-    }
 }
 
 function event_types(array $history): array
@@ -735,31 +755,47 @@ function run_namespace_probe(
     string $suffix,
     array $identity,
 ): array {
+    set_runtime_failure_context('cluster.info', 'GET', '/api/cluster/info');
     $cluster = $client->clusterInfo(includeDiagnostics: true);
+    set_runtime_failure_context('namespace.list', 'GET', '/api/namespaces');
     $namespacesBefore = $client->listNamespaces();
     $temporaryNamespace = 'php-sdk-'.$suffix;
+    set_runtime_failure_context('namespace.create', 'POST', '/api/namespaces');
     $created = $client->createNamespace($temporaryNamespace, 'PHP SDK published-artifact conformance', 1);
+    set_runtime_failure_context('namespace.describe', 'GET', '/api/namespaces/{namespace}');
     $described = $client->describeNamespace($temporaryNamespace);
+    set_runtime_failure_context('namespace.update', 'PUT', '/api/namespaces/{namespace}');
     $updated = $client->updateNamespace($temporaryNamespace, 'updated by PHP SDK conformance', 2);
+    set_runtime_failure_context('namespace.describe_after_update', 'GET', '/api/namespaces/{namespace}');
     $describedAfterUpdate = $client->describeNamespace($temporaryNamespace);
+    set_runtime_failure_context('namespace.list_after_create', 'GET', '/api/namespaces');
     $namespacesAfterCreate = $client->listNamespaces();
     $listedNamesAfterCreate = array_map(static fn ($item): string => $item->name, $namespacesAfterCreate);
     $scopedClient = $client->withNamespace($temporaryNamespace);
+    set_runtime_failure_context('workflow.list_in_selected_namespace', 'GET', '/api/workflows');
     $scopedWorkflows = $scopedClient->listWorkflows();
+    set_runtime_failure_context('namespace.delete', 'DELETE', '/api/namespaces/{namespace}');
     $deleted = $client->deleteNamespace($temporaryNamespace);
+    set_runtime_failure_context('namespace.list_after_delete', 'GET', '/api/namespaces');
+    $namespacesAfterDelete = $client->listNamespaces();
     $listedNamesAfterDelete = array_map(
         static fn ($item): string => $item->name,
-        $client->listNamespaces(),
+        $namespacesAfterDelete,
     );
 
+    $simpleWorkflowId = 'php-sdk-simple-'.$suffix;
+    set_runtime_failure_context('workflow.start:simple', 'POST', '/api/workflows', $simpleWorkflowId);
     $simple = $client->startWorkflow(
         'php.sdk.simple',
-        'php-sdk-simple-'.$suffix,
+        $simpleWorkflowId,
         $queue,
         [['message' => 'hello', 'count' => 7]],
     );
+    set_runtime_failure_context('workflow.result:simple', 'GET', '/api/workflows/{workflow_id}/runs/{run_id}/result', $simple->workflowId, $simple->selectedRunId);
     $simpleResult = $simple->result(timeoutSeconds: 30, pollIntervalSeconds: 0.2);
+    set_runtime_failure_context('workflow.describe:simple', 'GET', '/api/workflows/{workflow_id}/runs/{run_id}', $simple->workflowId, $simple->selectedRunId);
     $simpleDescription = $simple->describeSelectedRun();
+    set_runtime_failure_context('workflow.history:simple', 'GET', '/api/workflows/{workflow_id}/runs/{run_id}/history', $simple->workflowId, $simple->selectedRunId);
     $simpleHistory = $client->workflowHistory($simple->workflowId, (string) $simple->selectedRunId);
 
     $evidence = [
@@ -813,45 +849,83 @@ if ($phase === 'baseline' || $phase === 'namespace') {
 
     $searchAttributeName = 'php_sdk_'.str_replace('-', '_', $suffix);
     $searchAttributeValue = 'published-sdk';
+    set_runtime_failure_context('search_attribute.create', 'POST', '/api/search-attributes');
     $createdSearchAttribute = $client->createSearchAttribute($searchAttributeName, 'keyword');
+    set_runtime_failure_context('search_attribute.list', 'GET', '/api/search-attributes');
     $searchDefinitions = $client->listSearchAttributes();
+    $searchWorkflowId = 'php-sdk-search-'.$suffix;
+    set_runtime_failure_context('workflow.start:search', 'POST', '/api/workflows', $searchWorkflowId);
     $searchWorkflow = $client->startWorkflow(
         'php.sdk.search',
-        'php-sdk-search-'.$suffix,
+        $searchWorkflowId,
         $queue,
         [$searchAttributeName, $searchAttributeValue],
     );
+    set_runtime_failure_context('workflow.result:search', 'GET', '/api/workflows/{workflow_id}/runs/{run_id}/result', $searchWorkflow->workflowId, $searchWorkflow->selectedRunId);
     $searchResult = $searchWorkflow->result(timeoutSeconds: 30, pollIntervalSeconds: 0.2);
+    set_runtime_failure_context('workflow.describe:search', 'GET', '/api/workflows/{workflow_id}/runs/{run_id}', $searchWorkflow->workflowId, $searchWorkflow->selectedRunId);
     $searchDescription = $searchWorkflow->describeSelectedRun();
+    set_runtime_failure_context('workflow.list_by_search_attribute', 'GET', '/api/workflows?query={query}');
     $searchPage = $client->listWorkflows(query: sprintf('%s = "%s"', $searchAttributeName, $searchAttributeValue));
+    set_runtime_failure_context('search_attribute.delete', 'DELETE', '/api/search-attributes/{name}');
     $client->deleteSearchAttribute($searchAttributeName);
 
-    $addressable = $client->startWorkflow('php.sdk.waiting', 'php-sdk-addressable-'.$suffix, $queue);
+    $addressableWorkflowId = 'php-sdk-addressable-'.$suffix;
+    set_runtime_failure_context('workflow.start:addressable', 'POST', '/api/workflows', $addressableWorkflowId);
+    $addressable = $client->startWorkflow('php.sdk.waiting', $addressableWorkflowId, $queue);
+    set_runtime_failure_context('workflow.signal:increment', 'POST', '/api/workflows/{workflow_id}/signal/increment', $addressable->workflowId, $addressable->selectedRunId);
     $addressable->signal('increment', [3]);
+    set_runtime_failure_context('workflow.signal:increment', 'POST', '/api/workflows/{workflow_id}/signal/increment', $addressable->workflowId, $addressable->selectedRunId);
     $addressable->signal('increment', [5]);
+    set_runtime_failure_context('workflow.query:current', 'POST', '/api/workflows/{workflow_id}/query/current', $addressable->workflowId, $addressable->selectedRunId);
     $queryResult = $addressable->query('current');
+    set_runtime_failure_context('workflow.update:set', 'POST', '/api/workflows/{workflow_id}/update/set', $addressable->workflowId, $addressable->selectedRunId);
     $updateResult = $addressable->update('set', [13], waitTimeoutSeconds: 20, requestId: 'php-sdk-update-'.$suffix);
+    set_runtime_failure_context('workflow.cancel', 'POST', '/api/workflows/{workflow_id}/cancel', $addressable->workflowId, $addressable->selectedRunId);
     $addressable->cancel('published SDK cancellation');
-    $cancelException = terminal_exception(static fn (): mixed => $addressable->result(20, 0.2));
+    set_runtime_failure_context('workflow.result:cancelled', 'GET', '/api/workflows/{workflow_id}/runs/{run_id}/result', $addressable->workflowId, $addressable->selectedRunId);
+    $cancelException = capture_expected_terminal_exception(
+        static fn (): mixed => $addressable->result(20, 0.2),
+        WorkflowCancelled::class,
+    );
 
-    $terminated = $client->startWorkflow('php.sdk.waiting', 'php-sdk-terminated-'.$suffix, $queue);
+    $terminatedWorkflowId = 'php-sdk-terminated-'.$suffix;
+    set_runtime_failure_context('workflow.start:terminated', 'POST', '/api/workflows', $terminatedWorkflowId);
+    $terminated = $client->startWorkflow('php.sdk.waiting', $terminatedWorkflowId, $queue);
+    set_runtime_failure_context('workflow.terminate', 'POST', '/api/workflows/{workflow_id}/terminate', $terminated->workflowId, $terminated->selectedRunId);
     $terminated->terminate('published SDK termination');
-    $terminateException = terminal_exception(static fn (): mixed => $terminated->result(20, 0.2));
+    set_runtime_failure_context('workflow.result:terminated', 'GET', '/api/workflows/{workflow_id}/runs/{run_id}/result', $terminated->workflowId, $terminated->selectedRunId);
+    $terminateException = capture_expected_terminal_exception(
+        static fn (): mixed => $terminated->result(20, 0.2),
+        WorkflowTerminated::class,
+    );
 
-    $failed = $client->startWorkflow('php.sdk.failure', 'php-sdk-failed-'.$suffix, $queue);
-    $failureException = terminal_exception(static fn (): mixed => $failed->result(20, 0.2));
+    $failedWorkflowId = 'php-sdk-failed-'.$suffix;
+    set_runtime_failure_context('workflow.start:failure', 'POST', '/api/workflows', $failedWorkflowId);
+    $failed = $client->startWorkflow('php.sdk.failure', $failedWorkflowId, $queue);
+    set_runtime_failure_context('workflow.result:failed', 'GET', '/api/workflows/{workflow_id}/runs/{run_id}/result', $failed->workflowId, $failed->selectedRunId);
+    $failureException = capture_expected_terminal_exception(
+        static fn (): mixed => $failed->result(20, 0.2),
+        WorkflowFailed::class,
+    );
 
     $scheduleId = 'php-sdk-schedule-'.$suffix;
+    set_runtime_failure_context('schedule.create', 'POST', '/api/schedules');
     $schedule = $client->createSchedule(
         new ScheduleSpec(intervals: [['every' => 'PT1H']]),
         new ScheduleAction('php.sdk.simple', $queue, [['scheduled' => true]]),
         scheduleId: $scheduleId,
         paused: true,
     );
+    set_runtime_failure_context('schedule.describe', 'GET', '/api/schedules/{schedule_id}');
     $scheduleDescription = $schedule->describe();
+    set_runtime_failure_context('schedule.list', 'GET', '/api/schedules');
     $schedulePage = $client->listSchedules();
+    set_runtime_failure_context('schedule.pause', 'POST', '/api/schedules/{schedule_id}/pause');
     $schedule->pause('conformance pause');
+    set_runtime_failure_context('schedule.resume', 'POST', '/api/schedules/{schedule_id}/resume');
     $schedule->resume('conformance resume');
+    set_runtime_failure_context('schedule.delete', 'DELETE', '/api/schedules/{schedule_id}');
     $schedule->delete();
 
     emit(['phase' => $phase] + $namespaceProbe + [
@@ -885,9 +959,11 @@ if ($phase === 'baseline' || $phase === 'namespace') {
 }
 
 if ($phase === 'start-replay') {
+    $replayWorkflowId = 'php-sdk-replay-'.$suffix;
+    set_runtime_failure_context('workflow.start:replay', 'POST', '/api/workflows', $replayWorkflowId);
     $handle = $client->startWorkflow(
         'php.sdk.replay',
-        'php-sdk-replay-'.$suffix,
+        $replayWorkflowId,
         $queue,
         [['replay' => true]],
     );
@@ -900,6 +976,7 @@ if ($phase === 'wait-replay-checkpoint') {
     $state = json_decode((string) file_get_contents($stateFile), true, flags: JSON_THROW_ON_ERROR);
     $deadline = microtime(true) + 30;
     do {
+        set_runtime_failure_context('workflow.history:replay_checkpoint', 'GET', '/api/workflows/{workflow_id}/runs/{run_id}/history', (string) $state['workflow_id'], (string) $state['run_id']);
         $history = $client->workflowHistory((string) $state['workflow_id'], (string) $state['run_id']);
         $types = event_types($history);
         if (in_array('ActivityCompleted', $types, true) && in_array('TimerScheduled', $types, true)) {
@@ -921,7 +998,9 @@ if ($phase === 'wait-replay-checkpoint') {
 if ($phase === 'finish-replay') {
     $state = json_decode((string) file_get_contents($stateFile), true, flags: JSON_THROW_ON_ERROR);
     $handle = $client->workflowHandle((string) $state['workflow_id'], (string) $state['run_id']);
+    set_runtime_failure_context('workflow.result:replay', 'GET', '/api/workflows/{workflow_id}/runs/{run_id}/result', (string) $state['workflow_id'], (string) $state['run_id']);
     $result = $handle->resultOfSelectedRun(timeoutSeconds: 40, pollIntervalSeconds: 0.2);
+    set_runtime_failure_context('workflow.history:replay', 'GET', '/api/workflows/{workflow_id}/runs/{run_id}/history', (string) $state['workflow_id'], (string) $state['run_id']);
     $history = $client->workflowHistory((string) $state['workflow_id'], (string) $state['run_id']);
     emit([
         'phase' => $phase,

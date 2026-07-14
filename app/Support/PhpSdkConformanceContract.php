@@ -87,6 +87,19 @@ final class PhpSdkConformanceContract
                 'package-publication' => 'sdk-php-release',
                 'runner' => 'conformance_harness',
             ],
+            'runtime_failure_evidence' => [
+                'durable_observed_evidence_required' => true,
+                'diagnostic_file_reference_alone_forbidden' => true,
+                'public_error_envelope_max_bytes' => 2048,
+                'required_http_failure_fields' => [
+                    'status_code',
+                    'public_error_envelope',
+                    'operation',
+                    'workflow_id_when_available',
+                    'run_id_when_available',
+                    'owning_surface',
+                ],
+            ],
             'host_runner_contract' => [
                 'runner_id' => 'workflow-lifecycle',
                 'host_runner_path' => 'scripts/conformance/workflow-lifecycle-host-published-artifacts.sh',

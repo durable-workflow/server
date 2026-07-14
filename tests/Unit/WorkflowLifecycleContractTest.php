@@ -157,6 +157,92 @@ class WorkflowLifecycleContractTest extends TestCase
         }
     }
 
+    public function test_published_artifact_runner_preserves_php_http_failure_observed_evidence(): void
+    {
+        $resultDir = sys_get_temp_dir().'/dw-workflow-lifecycle-'.bin2hex(random_bytes(6));
+        mkdir($resultDir, 0777, true);
+        $evidencePath = $resultDir.'/workflow-lifecycle-evidence.json';
+        $sidecarPath = $resultDir.'/php-sdk-lifecycle-evidence.json';
+
+        $hostEvidence = $this->hostEvidence();
+        unset($hostEvidence['scenario_results']['php_sdk_lifecycle_surface']);
+        file_put_contents($evidencePath, json_encode($hostEvidence, JSON_THROW_ON_ERROR));
+        $this->writeRustSidecar($resultDir);
+        $httpFailure = [
+            'schema' => 'durable-workflow.v2.php-sdk-runtime-failure',
+            'classification' => 'server',
+            'owning_surface' => 'server',
+            'process' => 'client',
+            'failure_stage' => 'baseline_client',
+            'operation' => 'workflow.update:set',
+            'http_method' => 'POST',
+            'endpoint' => '/api/workflows/{workflow_id}/update/set',
+            'status_code' => 404,
+            'public_error_envelope' => [
+                'error' => 'workflow_update_not_found',
+                'reason' => 'unknown_update',
+                'message' => 'Update set is not declared for this workflow.',
+            ],
+            'workflow_id' => 'php-sdk-addressable-123',
+            'run_id' => 'run-456',
+            'exception_type' => 'DurableWorkflow\\Exception\\UpdateFailed',
+            'message' => 'Update set is not declared for this workflow.',
+        ];
+        file_put_contents($sidecarPath, json_encode([
+            'schema' => 'durable-workflow.v2.workflow-lifecycle.php-sdk-sidecar',
+            'runner_blocked' => false,
+            'scenario_results' => [
+                'php_sdk_lifecycle_surface' => [
+                    'status' => 'fail',
+                    'classification' => 'server',
+                    'published_artifact_cell_executed' => true,
+                    'observed_outputs' => $this->outputsForScenario('php_sdk_lifecycle_surface') + [
+                        'artifact_source' => 'packagist://durable-workflow/sdk@0.1.1',
+                        'runtime_failure_evidence' => $httpFailure,
+                    ],
+                    'linked_findings' => [[
+                        'finding_id' => 'php-sdk-baseline-client-failure',
+                        'finding_type' => 'product_behavior_gap',
+                        'classification' => 'server',
+                        'owning_surface' => 'server',
+                        'summary' => 'The released PHP SDK operation workflow.update:set received HTTP 404 during baseline_client.',
+                        'observed_evidence' => $httpFailure,
+                        'next_acceptance_criterion' => 'Correct the named failure surface and rerun the exact published artifacts.',
+                    ]],
+                ],
+            ],
+        ], JSON_THROW_ON_ERROR));
+
+        try {
+            exec($this->runnerCommand($resultDir, [
+                'DW_WORKFLOW_LIFECYCLE_EVIDENCE_PATH' => $evidencePath,
+                'DW_WORKFLOW_LIFECYCLE_SKIP_PHP_SDK_PROBE' => '1',
+            ]), $output, $exitCode);
+
+            $this->assertSame(0, $exitCode, implode("\n", $output));
+            $result = $this->readJson($resultDir.'/workflow-lifecycle-result.json');
+            $record = $this->readJson($resultDir.'/workflow-lifecycle-record.json');
+            $php = $result['scenario_results']['php_sdk_lifecycle_surface'];
+            $finding = array_values(array_filter(
+                $result['findings'],
+                static fn (array $candidate): bool => ($candidate['finding_id'] ?? null) === 'php-sdk-baseline-client-failure',
+            ))[0] ?? null;
+
+            $this->assertSame('non_passing', $result['outcome']);
+            $this->assertFalse($result['runner_blocked']);
+            $this->assertSame('fail', $php['status']);
+            $this->assertSame($httpFailure, $php['observed_outputs']['runtime_failure_evidence']);
+            $this->assertIsArray($finding);
+            $this->assertSame(404, $finding['observed_evidence']['status_code']);
+            $this->assertSame('workflow.update:set', $finding['observed_evidence']['operation']);
+            $this->assertSame('php-sdk-addressable-123', $finding['observed_evidence']['workflow_id']);
+            $this->assertSame('server', $finding['owning_surface']);
+            $this->assertSame($php, $record['scenarioResults']['php_sdk_lifecycle_surface']);
+        } finally {
+            $this->removeDirectory($resultDir);
+        }
+    }
+
     public function test_published_artifact_runner_merges_python_sdk_lifecycle_sidecar(): void
     {
         $resultDir = sys_get_temp_dir().'/dw-workflow-lifecycle-'.bin2hex(random_bytes(6));

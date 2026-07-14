@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 
-readonly PHP_SDK_SERVER_FAILURE_PATTERN='serverexception|status[_ ]?code[^0-9]*[45][0-9][0-9]|http/[0-9.]+ [45][0-9][0-9]|http (response )?[45][0-9][0-9]|server[_ -]error'
-readonly PHP_SDK_RUNNER_FAILURE_PATTERN='transportexception|connection refused|could not resolve|name or service not known|network is unreachable|connection timed out|curl error'
+readonly PHP_SDK_SERVER_FAILURE_PATTERN='"classification":"server"|serverexception|status[_ ]?code[^0-9]*[45][0-9][0-9]|http/[0-9.]+ [45][0-9][0-9]|http (response )?[45][0-9][0-9]|server[_ -]error'
+readonly PHP_SDK_RUNNER_FAILURE_PATTERN='"classification":"runner"|transportexception|connection refused|could not resolve|name or service not known|network is unreachable|connection timed out|curl error'
 
 runtime_failure_pattern() {
   case "${1:-}" in
@@ -29,6 +29,11 @@ runtime_failure_match_excerpt() {
   LC_ALL=C awk -v pattern="$pattern" '
     {
       line = tolower($0)
+      marker = index(line, "dw_php_sdk_runtime_failure=")
+      if (marker > 0) {
+        print substr($0, marker, 6144)
+        exit
+      }
       if (match(line, pattern)) {
         start = RSTART > 256 ? RSTART - 256 : 1
         excerpt = substr($0, start, 1024)
@@ -51,7 +56,7 @@ capture_runtime_diagnostic() {
   local diagnostic_file="${3:?diagnostic file is required}"
   local classification="${4:-sdk}"
   local unmatched_tail_bytes=3800
-  local matched_tail_bytes=2700
+  local matched_tail_bytes=1500
 
   : > "$diagnostic_file"
   for stream in stdout stderr; do
