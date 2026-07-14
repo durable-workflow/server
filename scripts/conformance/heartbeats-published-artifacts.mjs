@@ -518,12 +518,15 @@ if ($argc < 5) exit(2);
 $token = getenv('DURABLE_WORKFLOW_AUTH_TOKEN');
 if (!is_string($token) || $token === '') throw new RuntimeException('DURABLE_WORKFLOW_AUTH_TOKEN is required');
 $client = new Client($baseUrl, token: $token, namespace: $namespace);
-$task = $client->pollWorkflowTask($workerId, $taskQueue, 0);
+$poll = method_exists($client, 'pollWorkflowTaskResponse')
+    ? $client->pollWorkflowTaskResponse($workerId, $taskQueue, 0)
+    : ['task' => $client->pollWorkflowTask($workerId, $taskQueue, 0)];
+$task = isset($poll['task']) && is_array($poll['task']) ? $poll['task'] : null;
 echo json_encode([
     'worker_id' => $workerId,
     'task_queue' => $taskQueue,
     'tasks' => $task === null ? [] : [$task],
-    'poll' => ['task' => $task],
+    'poll' => $poll,
 ], JSON_UNESCAPED_SLASHES).PHP_EOL;
 `;
 }

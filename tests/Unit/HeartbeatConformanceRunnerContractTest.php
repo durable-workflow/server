@@ -17,6 +17,9 @@ final class HeartbeatConformanceRunnerContractTest extends TestCase
             'use DurableWorkflow\\\\Worker;',
             '$worker->tick(1)',
             '$client->heartbeatWorker(',
+            "method_exists(\$client, 'pollWorkflowTaskResponse')",
+            '$client->pollWorkflowTaskResponse(',
+            "'poll' => \$poll",
             "'workflow:start'",
             "'--wait'",
             "'worker:list'",
@@ -38,6 +41,7 @@ final class HeartbeatConformanceRunnerContractTest extends TestCase
             $source,
         );
         $this->assertStringContainsString('fresh_worker_eligibility_after_stale', $source);
+        $this->assertStringNotContainsString("'poll' => ['task' => \$task]", $source);
     }
 
     public function test_heartbeat_cadence_timestamp_attribution_regressions(): void
