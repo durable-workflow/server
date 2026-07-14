@@ -22,6 +22,7 @@ Environment overrides:
   DW_SERVER_VERSION                        Exact patch server Docker tag; required for digest-only DW_SERVER_IMAGE.
   DW_CLI_VERSION                           GitHub release tag for the official CLI installer.
   DW_PYTHON_SDK_VERSION                    PyPI version for durable-workflow.
+  DW_PHP_SDK_VERSION                       Composer version for durable-workflow/sdk.
   DW_WORKFLOW_PHP_VERSION                  Composer version for durable-workflow/workflow.
   DW_WATERLINE_VERSION                     Composer version for durable-workflow/waterline.
   DW_PRINCIPAL_ATTRIBUTION_SKIP_DOCKER_PULL=1 Reuse local image instead of pulling.
@@ -239,7 +240,7 @@ principal_blocked_finding_versions() {
   local artifact_versions_json="$1"
 
   if [[ "$artifact_versions_json" == "{}" ]]; then
-    printf '{"cli":"unresolved","sdk-python":"unresolved","server":"unresolved","waterline":"unresolved","workflow":"unresolved","workflow-php":"unresolved"}'
+    printf '{"cli":"unresolved","sdk-php":"unresolved","sdk-python":"unresolved","server":"unresolved","waterline":"unresolved","workflow":"unresolved"}'
   else
     printf '%s' "$artifact_versions_json"
   fi
@@ -336,7 +337,7 @@ blocked_result() {
     artifact_versions_json="$(python3 -c 'import json,sys; print(json.dumps(json.load(open(sys.argv[1])).get("published_artifact_versions", {}), sort_keys=True))' "$result_dir/run-metadata.json" 2>/dev/null || printf '{}')"
     artifact_sources_json="$(python3 -c 'import json,sys; print(json.dumps(json.load(open(sys.argv[1])).get("artifact_sources", {}), sort_keys=True))' "$result_dir/run-metadata.json" 2>/dev/null || printf '{}')"
   elif command -v python3 >/dev/null 2>&1 && [[ -f "$result_dir/pins.json" ]]; then
-    artifact_versions_json="$(python3 -c 'import json,sys; pins=json.load(open(sys.argv[1])); print(json.dumps({k:pins[k] for k in ("server","cli","workflow","workflow-php","sdk-python","waterline") if k in pins}, sort_keys=True))' "$result_dir/pins.json" 2>/dev/null || printf '{}')"
+    artifact_versions_json="$(python3 -c 'import json,sys; pins=json.load(open(sys.argv[1])); print(json.dumps({k:pins[k] for k in ("server","cli","workflow","sdk-php","sdk-python","waterline") if k in pins}, sort_keys=True))' "$result_dir/pins.json" 2>/dev/null || printf '{}')"
     artifact_sources_json="$(python3 -c 'import json,sys; print(json.dumps(json.load(open(sys.argv[1])).get("artifact_sources", {}), sort_keys=True))' "$result_dir/pins.json" 2>/dev/null || printf '{}')"
   fi
 
@@ -678,6 +679,7 @@ server_image, server_version = docker_server_image()
 cli_version, cli_installer_url = github_release_with_downloadable_asset("durable-workflow/cli", env("DW_CLI_VERSION"), "install.sh")
 python_version = env("DW_PYTHON_SDK_VERSION") or read_json("https://pypi.org/pypi/durable-workflow/json")["info"]["version"]
 workflow_version = packagist_version("durable-workflow/workflow", env("DW_WORKFLOW_PHP_VERSION"))
+php_sdk_version = packagist_version("durable-workflow/sdk", env("DW_PHP_SDK_VERSION"))
 waterline_version = packagist_version("durable-workflow/waterline", env("DW_WATERLINE_VERSION"))
 
 json.dump(
@@ -687,14 +689,14 @@ json.dump(
         "cli": cli_version,
         "cli_installer_url": cli_installer_url,
         "workflow": workflow_version,
-        "workflow-php": workflow_version,
+        "sdk-php": php_sdk_version,
         "sdk-python": python_version,
         "waterline": waterline_version,
         "artifact_sources": {
             "server": "docker",
             "cli": "github-release",
             "workflow": "packagist",
-            "workflow-php": "packagist",
+            "sdk-php": "packagist",
             "sdk-python": "pypi",
             "waterline": "packagist",
         },
@@ -718,7 +720,7 @@ cp "$result_dir/pins.json" "$run_root/pins.json"
 server_image="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["server_image"])' "$run_root/pins.json")"
 cli_version="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["cli"])' "$run_root/pins.json")"
 cli_installer_url="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["cli_installer_url"])' "$run_root/pins.json")"
-workflow_php_version="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["workflow-php"])' "$run_root/pins.json")"
+workflow_php_version="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["workflow"])' "$run_root/pins.json")"
 waterline_version="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["waterline"])' "$run_root/pins.json")"
 
 if [[ "${DW_PRINCIPAL_ATTRIBUTION_SKIP_DOCKER_PULL:-0}" != "1" ]]; then
@@ -966,10 +968,18 @@ def main() -> int:
         smoke_python(root, pins["sdk-python"], str(sources.get("sdk-python", "pypi"))),
         smoke_composer_package(
             root,
-            "workflow-php",
+            "sdk-php",
+            "durable-workflow/sdk",
+            pins["sdk-php"],
+            str(sources.get("sdk-php", "packagist")),
+            "if (!class_exists('DurableWorkflow\\\\Client')) { fwrite(STDERR, 'DurableWorkflow\\\\Client missing'); exit(1); } echo 'ok';",
+        ),
+        smoke_composer_package(
+            root,
+            "workflow",
             "durable-workflow/workflow",
-            pins["workflow-php"],
-            str(sources.get("workflow-php", "packagist")),
+            pins["workflow"],
+            str(sources.get("workflow", "packagist")),
             "if (!class_exists('Workflow\\\\Workflow')) { fwrite(STDERR, 'Workflow\\\\Workflow missing'); exit(1); } echo 'ok';",
         ),
         smoke_composer_package(
@@ -1028,7 +1038,7 @@ metadata = {
         "server": pins["server"],
         "cli": pins["cli"],
         "workflow": pins["workflow"],
-        "workflow-php": pins["workflow-php"],
+        "sdk-php": pins["sdk-php"],
         "sdk-python": pins["sdk-python"],
         "waterline": pins["waterline"],
     },
@@ -1152,11 +1162,13 @@ waterline_artifact_args=(
   --artifact-version "server=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["server"])' "$run_root/pins.json")"
   --artifact-version "cli=$cli_version"
   --artifact-version "workflow=$workflow_php_version"
+  --artifact-version "sdk-php=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["sdk-php"])' "$run_root/pins.json")"
   --artifact-version "sdk-python=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["sdk-python"])' "$run_root/pins.json")"
   --artifact-version "waterline=$waterline_version"
   --artifact-source "server=docker_image"
   --artifact-source "cli=published_install_script"
   --artifact-source "workflow=published_composer_package"
+  --artifact-source "sdk-php=published_packagist_package"
   --artifact-source "sdk-python=published_pypi_package"
   --artifact-source "waterline=published_package"
 )
@@ -1182,7 +1194,7 @@ versions = {
     "server": pins["server"],
     "cli": pins["cli"],
     "workflow": pins["workflow"],
-    "workflow-php": pins["workflow-php"],
+    "sdk-php": pins["sdk-php"],
     "sdk-python": pins["sdk-python"],
     "waterline": pins["waterline"],
 }
@@ -1190,7 +1202,7 @@ sources = {
     "server": "docker_image",
     "cli": "published_install_script",
     "workflow": "published_composer_package",
-    "workflow-php": "published_composer_package",
+    "sdk-php": "published_packagist_package",
     "sdk-python": "published_pypi_package",
     "waterline": "published_package",
 }
@@ -1385,7 +1397,7 @@ ANONYMOUS_API = ANONYMOUS_SERVER_URL + "/api"
 RESULT_DIR = Path(os.environ["RESULT_DIR"])
 DW_BIN = Path(os.environ["DW_BIN"])
 PYTHON_BIN = Path(os.environ["PYTHON_BIN"])
-WORKFLOW_PHP_AUTOLOAD = Path(os.environ["WORKFLOW_PHP_AUTOLOAD"])
+PHP_SDK_AUTOLOAD = Path(os.environ["PHP_SDK_AUTOLOAD"])
 WATERLINE_PRINCIPAL_RESULT = Path(os.environ["WATERLINE_PRINCIPAL_RESULT"]) if os.environ.get("WATERLINE_PRINCIPAL_RESULT") else None
 PHP_BIN = os.environ.get("PHP_BIN", "php")
 STARTED_AT = os.environ["STARTED_AT"]
@@ -1908,14 +1920,14 @@ def run_php_code(code: str, env: dict[str, str], *, timeout: int = 45) -> subpro
             stdout=f"PHP binary missing ({PHP_BIN}) and docker is unavailable for composer:2 fallback",
         )
 
-    app_dir = WORKFLOW_PHP_AUTOLOAD.parent.parent
+    app_dir = PHP_SDK_AUTOLOAD.parent.parent
     container_env = {
         "SERVER_URL": env["SERVER_URL"],
         "TOKEN": env["TOKEN"],
         "WORKFLOW_ID": env["WORKFLOW_ID"],
         "WORKFLOW_TYPE": env["WORKFLOW_TYPE"],
         "TASK_QUEUE": env["TASK_QUEUE"],
-        "WORKFLOW_PHP_AUTOLOAD": "/app/vendor/autoload.php",
+        "PHP_SDK_AUTOLOAD": "/app/vendor/autoload.php",
     }
     docker_command = [
         docker,
@@ -1943,35 +1955,38 @@ def run_php_code(code: str, env: dict[str, str], *, timeout: int = 45) -> subpro
 
 
 def run_php_client_operation(workflow_id: str) -> dict[str, Any]:
-    if not WORKFLOW_PHP_AUTOLOAD.exists():
-        return {"status": "not_covered", "errors": [f"Workflow PHP autoload missing at {WORKFLOW_PHP_AUTOLOAD}"]}
+    if not PHP_SDK_AUTOLOAD.exists():
+        return {"status": "not_covered", "errors": [f"PHP SDK autoload missing at {PHP_SDK_AUTOLOAD}"]}
 
     code = r'''
-$autoload = getenv('WORKFLOW_PHP_AUTOLOAD');
+$autoload = getenv('PHP_SDK_AUTOLOAD');
 require $autoload;
 
 $workflowId = getenv('WORKFLOW_ID');
-$http = new \Illuminate\Http\Client\Factory();
-$client = new \Workflow\V2\Client\WorkflowClient($http, getenv('SERVER_URL'), getenv('TOKEN'), 'default', 10);
-$start = $client->startWorkflow(
-    getenv('WORKFLOW_TYPE'),
-    $workflowId,
-    [['client' => 'php-workflow-client']],
-    ['task_queue' => getenv('TASK_QUEUE')],
+$client = new \DurableWorkflow\Client(
+    getenv('SERVER_URL'),
+    token: getenv('TOKEN'),
+    namespace: 'default',
 );
-$signal = $client->signalWorkflow($workflowId, 'nudge', [['client' => 'php-workflow-client']]);
+$handle = $client->startWorkflow(
+    workflowType: getenv('WORKFLOW_TYPE'),
+    workflowId: $workflowId,
+    taskQueue: getenv('TASK_QUEUE'),
+    input: [['client' => 'php-sdk-client']],
+);
+$signal = $client->signalWorkflow($workflowId, 'nudge', [['client' => 'php-sdk-client']]);
 echo json_encode([
     'workflow_id' => $workflowId,
-    'run_id' => $start['run_id'] ?? $start['workflow_run_id'] ?? null,
+    'run_id' => $handle->selectedRunId,
     'autoload' => $autoload,
-    'client_class' => \Workflow\V2\Client\WorkflowClient::class,
-    'operation' => 'WorkflowClient::startWorkflow + WorkflowClient::signalWorkflow',
+    'client_class' => \DurableWorkflow\Client::class,
+    'operation' => 'Client::startWorkflow + Client::signalWorkflow',
     'operations' => ['start_workflow', 'signal_workflow'],
     'operation_outputs' => [
-        'start_workflow' => $start,
+        'start_workflow' => ['workflow_id' => $handle->workflowId, 'run_id' => $handle->selectedRunId],
         'signal_workflow' => $signal,
     ],
-    'start_response' => $start,
+    'start_response' => ['workflow_id' => $handle->workflowId, 'run_id' => $handle->selectedRunId],
     'signal_response' => $signal,
 ]).PHP_EOL;
 '''
@@ -1982,7 +1997,7 @@ echo json_encode([
         "WORKFLOW_ID": workflow_id,
         "WORKFLOW_TYPE": WORKFLOW_TYPE,
         "TASK_QUEUE": MAIN_TASK_QUEUE,
-        "WORKFLOW_PHP_AUTOLOAD": str(WORKFLOW_PHP_AUTOLOAD),
+        "PHP_SDK_AUTOLOAD": str(PHP_SDK_AUTOLOAD),
     }
     completed = run_php_code(code, env, timeout=120)
 
@@ -1994,7 +2009,7 @@ echo json_encode([
     except Exception as exc:  # noqa: BLE001
         return {"status": "fail", "errors": [f"PHP client output was not JSON: {exc}; output={completed.stdout[-4000:]}"]}
 
-    return {"status": "pass", "client_operation": "php WorkflowClient startWorkflow + signalWorkflow", **payload, "output": completed.stdout[-4000:]}
+    return {"status": "pass", "client_operation": "PHP SDK Client startWorkflow + signalWorkflow", **payload, "output": completed.stdout[-4000:]}
 
 
 def install_status_and_findings(evidence: dict[str, Any]) -> tuple[str, list[str]]:
@@ -2038,7 +2053,7 @@ def current_artifact_versions() -> dict[str, Any]:
         return {}
 
     pins = json.loads(pins_path.read_text())
-    return {k: pins[k] for k in ("server", "cli", "workflow", "workflow-php", "sdk-python", "waterline") if k in pins}
+    return {k: pins[k] for k in ("server", "cli", "workflow", "sdk-php", "sdk-python", "waterline") if k in pins}
 
 
 def finding(scenario_id: str, surface: str, observed: str, expected: str, next_acceptance: str, severity: str = "P1") -> dict[str, Any]:
@@ -2142,7 +2157,7 @@ def load_waterline_principal_shard() -> tuple[dict[str, Any] | None, dict[str, A
 def main() -> int:
     pins = json.loads((RESULT_DIR / "pins.json").read_text())
     artifact_install_evidence = json.loads((RESULT_DIR / "artifact-install-evidence.json").read_text())
-    versions = {k: pins[k] for k in ("server", "cli", "workflow", "workflow-php", "sdk-python", "waterline") if k in pins}
+    versions = {k: pins[k] for k in ("server", "cli", "workflow", "sdk-php", "sdk-python", "waterline") if k in pins}
     findings: list[dict[str, Any]] = []
     history_dumps: dict[str, Any] = {}
     scenario_results: list[dict[str, Any]] = []
@@ -2286,7 +2301,7 @@ def main() -> int:
     install_status, install_findings = install_status_and_findings(artifact_install_evidence)
     scenario_results.append(scenario(install_status, "published_artifact_install_only", resolved_artifact_versions=versions, artifact_sources=pins.get("artifact_sources", {}), local_product_source_checkouts_used=False, artifact_install_evidence=artifact_install_evidence, findings=install_findings))
     for install_finding in install_findings:
-        findings.append(finding("published_artifact_install_only", "conformance_harness", install_finding, "every required artifact is installed from its published channel and exercised before install-only coverage passes", "install and import-smoke the server, CLI, Python SDK, PHP workflow package, and Waterline artifacts before marking this scenario pass"))
+        findings.append(finding("published_artifact_install_only", "conformance_harness", install_finding, "every required artifact is installed from its published channel and exercised before install-only coverage passes", "install and import-smoke the server, CLI, Python SDK, PHP SDK, embedded Workflow engine, and Waterline artifacts before marking this scenario pass"))
 
     expected_main = {
         "WorkflowStarted": {"type": "auth:token", "id": "alice"},
@@ -2577,7 +2592,7 @@ def main() -> int:
     php_expected_principal = {"type": "auth:token", "id": "alice"}
     php_raw_http_reference_principal = main_principals.get("WorkflowStarted")
     php_recorded_principal = php_principals.get("SignalReceived") or php_principals.get("WorkflowStarted")
-    php_operation_outputs = sdk_operation_outputs(php_operation, php_client_id, "workflow-php")
+    php_operation_outputs = sdk_operation_outputs(php_operation, php_client_id, "sdk-php")
     php_failures = list(php_operation.get("errors", [])) if isinstance(php_operation.get("errors"), list) else []
     if php_operation.get("status") != "pass":
         php_failures.append(f"PHP client operation status={php_operation.get('status')}")
@@ -2593,13 +2608,13 @@ def main() -> int:
         )
     php_linked_findings: list[dict[str, Any]] = []
     if php_failures:
-        php_linked_findings.append(finding("php_client_visibility", "workflow", f"PHP client attribution failures: {php_failures}", "PHP-authored client calls record the same principal shape as raw HTTP", "fix PHP credential propagation or server attribution shape before marking PHP visibility pass"))
+        php_linked_findings.append(finding("php_client_visibility", "sdk-php", f"PHP client attribution failures: {php_failures}", "PHP-authored client calls record the same principal shape as raw HTTP", "fix PHP credential propagation or server attribution shape before marking PHP visibility pass"))
         findings.extend(php_linked_findings)
     scenario_results.append(scenario(
         "pass" if not php_failures else "fail",
         "php_client_visibility",
         client_operation=php_operation,
-        sdk_package_version=versions.get("workflow-php") or versions.get("workflow"),
+        sdk_package_version=versions.get("sdk-php"),
         credential_used={"actor": "alice", "credential_ref": "alice-token-v1"},
         expected_principal=php_expected_principal,
         raw_http_reference_principal=php_raw_http_reference_principal,
@@ -2630,7 +2645,7 @@ def main() -> int:
         },
         "php_client_visibility": {
             "status": "pass" if not php_failures else "fail",
-            "sdk_package_version": versions.get("workflow-php") or versions.get("workflow"),
+            "sdk_package_version": versions.get("sdk-php"),
             "credential_used": {"actor": "alice", "credential_ref": "alice-token-v1"},
             "expected_principal": php_expected_principal,
             "raw_http_reference_principal": php_raw_http_reference_principal,
@@ -2789,7 +2804,7 @@ ANONYMOUS_SERVER_URL="$anonymous_server_base_url" \
 RESULT_DIR="$result_dir" \
 DW_BIN="$run_root/cli/bin/dw" \
 PYTHON_BIN="$run_root/artifacts/python-sdk/bin/python" \
-WORKFLOW_PHP_AUTOLOAD="$run_root/artifacts/workflow-php/vendor/autoload.php" \
+PHP_SDK_AUTOLOAD="$run_root/artifacts/sdk-php/vendor/autoload.php" \
 WATERLINE_PRINCIPAL_RESULT="$waterline_result_path" \
 STARTED_AT="$started_at" \
 PRINCIPAL_ATTRIBUTION_SUITE_VERSION="$principal_suite_version" \

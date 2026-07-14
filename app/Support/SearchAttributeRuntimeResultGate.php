@@ -10,7 +10,7 @@ final class SearchAttributeRuntimeResultGate
 {
     public const SCHEMA = 'durable-workflow.v2.search-attribute-runtime.result-gate';
 
-    public const VERSION = 12;
+    public const VERSION = 13;
 
     /**
      * @return array<string, mixed>
@@ -557,6 +557,7 @@ final class SearchAttributeRuntimeResultGate
     private static function artifactVersionValue(array $versions, string $artifact): string
     {
         $aliases = [
+            'sdk-php' => ['sdk-php', 'sdk_php', 'php', 'php_worker'],
             'workflow-php' => ['workflow-php', 'workflow_php', 'workflow'],
             'sdk-python' => ['sdk-python', 'sdk_python', 'python'],
             'waterline' => ['waterline', 'waterline-ui', 'waterline_ui'],
@@ -835,7 +836,7 @@ final class SearchAttributeRuntimeResultGate
 
         foreach ([
             'python_worker_start_and_upsert_visibility' => 'sdk-python',
-            'php_worker_start_and_upsert_visibility' => 'workflow-php',
+            'php_worker_start_and_upsert_visibility' => 'sdk-php',
         ] as $scenarioId => $runtime) {
             if (self::isPassScenario($scenarioResults, $scenarioId)) {
                 array_push(
@@ -2668,7 +2669,7 @@ final class SearchAttributeRuntimeResultGate
     private static function sameRuntime(string $reported, string $required): bool
     {
         $aliases = [
-            'workflow-php' => ['workflow-php', 'workflow_php', 'php', 'php_worker'],
+            'sdk-php' => ['sdk-php', 'sdk_php', 'php', 'php_worker'],
             'sdk-python' => ['sdk-python', 'sdk_python', 'python', 'python_worker'],
         ];
 

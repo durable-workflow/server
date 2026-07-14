@@ -23,6 +23,7 @@ Environment overrides:
   DW_SERVER_VERSION            Exact published server version under test.
   DW_CLI_VERSION               Published CLI version under test.
   DW_PYTHON_SDK_VERSION        Published PyPI durable-workflow version under test.
+  DW_PHP_SDK_VERSION           Exact published durable-workflow/sdk version under test.
   DW_WORKFLOW_PHP_VERSION      Published durable-workflow/workflow version under test.
   DW_WATERLINE_VERSION         Published Waterline version under test.
   DW_SKEW_WATERLINE_URL        Optional existing Composer-installed Waterline HTTP surface.
@@ -421,7 +422,7 @@ if [[ -z "$server_url" ]]; then
 
   if [[ -z "$server_queue_worker_id" ]]; then
     docker compose -p "$compose_project" -f "$repo_root/docker-compose.published.yml" logs worker >"$result_dir/server-queue-worker.log" 2>&1 || true
-    write_blocked_result "published server queue worker failed to start; workflow-worker compatible skew evidence requires queue-backed workflow task fixture polling; see server-queue-worker.log"
+    write_blocked_result "published server queue worker failed to start; sdk-php compatible skew evidence requires queue-backed workflow task fixture polling; see server-queue-worker.log"
     exit 0
   fi
 fi
@@ -486,30 +487,31 @@ if [[ -n "${DW_PYTHON_SDK_VERSION:-}" ]]; then
   fi
 fi
 
-workflow_status="not_covered"
-workflow_reason="DW_WORKFLOW_PHP_VERSION is required to install the published PHP workflow artifact"
-workflow_app_dir=""
-workflow_source="not_installed"
+php_sdk_status="not_covered"
+php_sdk_reason="DW_PHP_SDK_VERSION is required to install the published PHP SDK artifact"
+php_sdk_app_dir=""
+php_sdk_source="not_installed"
+php_sdk_version="${DW_PHP_SDK_VERSION:-}"
 workflow_version="${DW_WORKFLOW_PHP_VERSION:-${DW_WORKFLOW_VERSION:-}}"
-if [[ -n "$workflow_version" ]]; then
-  mkdir -p "$run_root/php-worker"
-  if ! is_exact_semver "$workflow_version"; then
-    workflow_status="runner_blocked"
-    workflow_reason="Workflow install requires an exact durable-workflow/workflow version; got ${workflow_version}"
+if [[ -n "$php_sdk_version" ]]; then
+  mkdir -p "$run_root/php-sdk-worker"
+  if ! is_exact_semver "$php_sdk_version"; then
+    php_sdk_status="runner_blocked"
+    php_sdk_reason="PHP SDK install requires an exact durable-workflow/sdk version; got ${php_sdk_version}"
   elif require_command docker; then
-    if docker run --rm -v "$run_root/php-worker:/app" composer:2 \
-      composer require --no-interaction --no-progress "durable-workflow/workflow:${workflow_version}" >"$result_dir/workflow-composer-install.log" 2>&1; then
-      workflow_status="available"
-      workflow_reason=""
-      workflow_source="packagist"
-      workflow_app_dir="$run_root/php-worker"
+    if docker run --rm -v "$run_root/php-sdk-worker:/app" composer:2 \
+      composer require --no-interaction --no-progress "durable-workflow/sdk:${php_sdk_version}" >"$result_dir/php-sdk-composer-install.log" 2>&1; then
+      php_sdk_status="available"
+      php_sdk_reason=""
+      php_sdk_source="packagist"
+      php_sdk_app_dir="$run_root/php-sdk-worker"
     else
-      workflow_status="runner_blocked"
-      workflow_reason="Composer install failed for durable-workflow/workflow:${workflow_version}; see workflow-composer-install.log"
+      php_sdk_status="runner_blocked"
+      php_sdk_reason="Composer install failed for durable-workflow/sdk:${php_sdk_version}; see php-sdk-composer-install.log"
     fi
   else
-    workflow_status="runner_blocked"
-    workflow_reason="docker is required to install the PHP workflow artifact through composer:2"
+    php_sdk_status="runner_blocked"
+    php_sdk_reason="docker is required to install the PHP SDK artifact through composer:2"
   fi
 fi
 
@@ -790,10 +792,11 @@ PYTHON_STATUS="$python_status" \
 PYTHON_REASON="$python_reason" \
 PYTHON_SOURCE="$python_source" \
 PYTHON_EXECUTABLE="$python_executable" \
-WORKFLOW_STATUS="$workflow_status" \
-WORKFLOW_REASON="$workflow_reason" \
-WORKFLOW_SOURCE="$workflow_source" \
-WORKFLOW_APP_DIR="$workflow_app_dir" \
+PHP_SDK_STATUS="$php_sdk_status" \
+PHP_SDK_REASON="$php_sdk_reason" \
+PHP_SDK_SOURCE="$php_sdk_source" \
+PHP_SDK_APP_DIR="$php_sdk_app_dir" \
+PHP_SDK_VERSION="$php_sdk_version" \
 WORKFLOW_VERSION="$workflow_version" \
 WATERLINE_STATUS="$waterline_status" \
 WATERLINE_REASON="$waterline_reason" \
@@ -811,6 +814,7 @@ const surface = (status, reason, source, extra = {}) => ({
 });
 
 const workflowVersion = env.WORKFLOW_VERSION || env.DW_WORKFLOW_PHP_VERSION || env.DW_WORKFLOW_VERSION || '';
+const phpSdkVersion = env.PHP_SDK_VERSION || env.DW_PHP_SDK_VERSION || '';
 const manifest = {
   schema: 'durable-workflow.v2.skew-refusal-matrix.published-artifacts',
   artifact_versions: {
@@ -818,19 +822,21 @@ const manifest = {
     cli: env.DW_CLI_VERSION || '',
     'sdk-python': env.DW_PYTHON_SDK_VERSION || '',
     workflow: workflowVersion,
+    'sdk-php': phpSdkVersion,
     waterline: env.DW_WATERLINE_VERSION || '',
   },
   artifact_sources: {
     server: env.SERVER_ARTIFACT_SOURCE || 'published_server_url',
     cli: env.CLI_SOURCE || 'not_installed',
     'sdk-python': env.PYTHON_SOURCE || 'not_installed',
-    workflow: env.WORKFLOW_SOURCE || 'not_installed',
+    workflow: workflowVersion ? 'packagist' : 'not_installed',
+    'sdk-php': env.PHP_SDK_SOURCE || 'not_installed',
     waterline: env.WATERLINE_SOURCE || 'not_installed',
   },
   surfaces: {
     cli: surface(env.CLI_STATUS, env.CLI_REASON, env.CLI_SOURCE, { executable: env.CLI_EXECUTABLE }),
     'sdk-python': surface(env.PYTHON_STATUS, env.PYTHON_REASON, env.PYTHON_SOURCE, { python: env.PYTHON_EXECUTABLE }),
-    workflow: surface(env.WORKFLOW_STATUS, env.WORKFLOW_REASON, env.WORKFLOW_SOURCE, { app_dir: env.WORKFLOW_APP_DIR }),
+    'sdk-php': surface(env.PHP_SDK_STATUS, env.PHP_SDK_REASON, env.PHP_SDK_SOURCE, { app_dir: env.PHP_SDK_APP_DIR }),
     waterline: surface(env.WATERLINE_STATUS, env.WATERLINE_REASON, env.WATERLINE_SOURCE, {
       app_dir: env.WATERLINE_APP_DIR,
       surface_url: env.WATERLINE_SURFACE_URL,

@@ -10,7 +10,7 @@ final class ReplayConformanceResultGate
 {
     public const SCHEMA = 'durable-workflow.v2.replay-conformance.result-gate';
 
-    public const VERSION = 3;
+    public const VERSION = 4;
 
     private const OUTCOME_FIELDS = [
         'outcome',
@@ -392,6 +392,7 @@ final class ReplayConformanceResultGate
     private static function artifactVersionValue(array $versions, string $artifact): string
     {
         $aliases = [
+            'sdk-php' => ['sdk-php', 'sdk_php'],
             'workflow-php' => ['workflow-php', 'workflow_php', 'workflow'],
             'sdk-python' => ['sdk-python', 'sdk_python', 'python'],
             'waterline' => ['waterline', 'waterline-ui', 'waterline_ui'],
@@ -1064,7 +1065,7 @@ final class ReplayConformanceResultGate
     private static function sameRuntime(string $reported, string $required): bool
     {
         $aliases = [
-            'workflow-php' => ['workflow-php', 'workflow_php', 'php', 'php_worker'],
+            'sdk-php' => ['sdk-php', 'sdk_php', 'php', 'php_worker'],
             'sdk-python' => ['sdk-python', 'sdk_python', 'python', 'python_worker'],
         ];
 

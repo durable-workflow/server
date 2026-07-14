@@ -906,7 +906,7 @@ class SagaConformanceRunnerContractTest extends TestCase
         $source = $this->read('scripts/conformance/sagas-published-artifacts.sh');
 
         $this->assertStringContainsString(
-            'use Workflow\V2\Worker\WorkflowFiberRunner;',
+            'use Workflow\V2\Support\WorkflowFiberRunner;',
             $source,
             'the PHP saga worker must use the published worker-protocol replay runner instead of a partial local replay loop',
         );
@@ -968,7 +968,7 @@ class SagaConformanceRunnerContractTest extends TestCase
         $source = $this->read('scripts/conformance/sagas-published-artifacts.sh');
 
         $this->assertStringContainsString(
-            'use Workflow\V2\Worker\WorkflowStep;',
+            'use Workflow\V2\Support\WorkflowStep;',
             $source,
             'the generated PHP worker must inspect package runner wait steps explicitly',
         );

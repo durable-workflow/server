@@ -1,0 +1,1018 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+usage() {
+  cat <<'USAGE'
+Usage: php-sdk-published-artifacts.sh [--result-dir DIR|--result-dir=DIR]
+
+Runs the released durable-workflow/sdk package against an already-running,
+exact public server image. The runner creates a disposable Composer project,
+starts independent PHP worker and client processes, and never mounts or loads
+a product source checkout.
+
+Required environment:
+  DW_PHP_SDK_VERSION                  Exact Packagist durable-workflow/sdk version.
+  DW_SERVER_VERSION                   Exact public server image version.
+  DW_SERVER_IMAGE                     Exact durableworkflow/server image tag or digest.
+  DW_PHP_SDK_CONFORMANCE_SERVER_URL   Reachable public server endpoint.
+
+Optional environment:
+  DW_PHP_SDK_CONFORMANCE_RESULT_DIR   Result directory when --result-dir is omitted.
+  DW_PHP_SDK_CONFORMANCE_NAMESPACE    Defaults to workflow-lifecycle-conformance.
+  DW_PHP_SDK_CONFORMANCE_TOKEN        Defaults to dev-token.
+  DW_PHP_SDK_CONFORMANCE_CONTROL_TOKEN Optional control-plane token; defaults to TOKEN.
+  DW_PHP_SDK_CONFORMANCE_WORKER_TOKEN Optional worker-plane token; defaults to TOKEN.
+  DW_PHP_SDK_CONFORMANCE_PHP_BIN      PHP binary override.
+  DW_PHP_SDK_CONFORMANCE_COMPOSER_BIN Composer binary override.
+USAGE
+}
+
+result_dir="${DW_PHP_SDK_CONFORMANCE_RESULT_DIR:-}"
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --result-dir)
+      result_dir="${2:?--result-dir requires a value}"
+      shift 2
+      ;;
+    --result-dir=*)
+      result_dir="${1#--result-dir=}"
+      shift
+      ;;
+    -h|--help)
+      usage
+      exit 0
+      ;;
+    *)
+      printf 'unknown argument: %s\n' "$1" >&2
+      usage >&2
+      exit 2
+      ;;
+  esac
+done
+
+if [[ -z "$result_dir" ]]; then
+  result_dir="$(mktemp -d "${TMPDIR:-/tmp}/dw-php-sdk-conformance.XXXXXX")"
+fi
+mkdir -p "$result_dir"
+result_dir="$(cd "$result_dir" && pwd)"
+
+sdk_version="${DW_PHP_SDK_VERSION:-}"
+server_version="${DW_SERVER_VERSION:-}"
+server_image="${DW_SERVER_IMAGE:-}"
+server_url="${DW_PHP_SDK_CONFORMANCE_SERVER_URL:-${DW_WORKFLOW_LIFECYCLE_SERVER_URL:-}}"
+namespace="${DW_PHP_SDK_CONFORMANCE_NAMESPACE:-workflow-lifecycle-conformance}"
+token="${DW_PHP_SDK_CONFORMANCE_TOKEN:-${DW_WORKFLOW_LIFECYCLE_AUTH_TOKEN:-dev-token}}"
+control_token="${DW_PHP_SDK_CONFORMANCE_CONTROL_TOKEN:-$token}"
+worker_token="${DW_PHP_SDK_CONFORMANCE_WORKER_TOKEN:-$token}"
+php_bin="${DW_PHP_SDK_CONFORMANCE_PHP_BIN:-${PHP_BIN:-php}}"
+composer_bin="${DW_PHP_SDK_CONFORMANCE_COMPOSER_BIN:-${COMPOSER_BIN:-composer}}"
+project_dir="$result_dir/php-sdk-project"
+result_file="$result_dir/php-sdk-conformance-result.json"
+sidecar_file="$result_dir/php-sdk-lifecycle-evidence.json"
+started_at="$(date -u '+%Y-%m-%dT%H:%M:%SZ')"
+worker_pid=""
+
+write_failure() {
+  local classification="${1:?classification is required}"
+  local owning_surface="${2:?owning surface is required}"
+  local stage="${3:?stage is required}"
+  local summary="${4:?summary is required}"
+  local runner_blocked=false
+  if [[ "$classification" == "runner" ]]; then
+    runner_blocked=true
+  fi
+
+  RESULT_DIR="$result_dir" \
+  SDK_VERSION="$sdk_version" \
+  SERVER_VERSION="$server_version" \
+  SERVER_IMAGE="$server_image" \
+  SERVER_URL="$server_url" \
+  NAMESPACE="$namespace" \
+  STARTED_AT="$started_at" \
+  FAILURE_CLASSIFICATION="$classification" \
+  FAILURE_OWNER="$owning_surface" \
+  FAILURE_STAGE="$stage" \
+  FAILURE_SUMMARY="$summary" \
+  RUNNER_BLOCKED="$runner_blocked" \
+  node <<'NODE'
+const fs = require('node:fs');
+const path = require('node:path');
+
+const resultDir = process.env.RESULT_DIR;
+const runnerBlocked = process.env.RUNNER_BLOCKED === 'true';
+const version = process.env.SDK_VERSION || '';
+const summary = process.env.FAILURE_SUMMARY || 'PHP SDK conformance failed.';
+const classification = process.env.FAILURE_CLASSIFICATION || 'sdk';
+const finding = {
+  finding_id: `php-sdk-${process.env.FAILURE_STAGE || 'unknown'}-failure`,
+  finding_type: runnerBlocked
+    ? 'conformance_runner_blocked'
+    : (classification === 'package-publication' ? 'package_publication_gap' : 'product_behavior_gap'),
+  classification,
+  owning_surface: process.env.FAILURE_OWNER,
+  failure_stage: process.env.FAILURE_STAGE,
+  summary,
+  next_acceptance_criterion: 'Correct the named failure surface and rerun the exact Packagist SDK against the exact public server image.',
+};
+const observed = {
+  sdk: 'sdk-php',
+  artifact_version: version,
+  server_version: process.env.SERVER_VERSION || '',
+  artifact_source: version ? `packagist://durable-workflow/sdk@${version}` : 'packagist://durable-workflow/sdk@unresolved',
+  composer_package: 'durable-workflow/sdk',
+  server_image: process.env.SERVER_IMAGE || '',
+  server_url: process.env.SERVER_URL || '',
+  namespace: process.env.NAMESPACE || '',
+  published_artifact_cell_executed: process.env.FAILURE_STAGE !== 'preflight',
+  local_product_source_checkouts_used: false,
+  failure_stage: process.env.FAILURE_STAGE,
+  failure_classification: process.env.FAILURE_CLASSIFICATION,
+  failure_owner: process.env.FAILURE_OWNER,
+  failure_summary: summary,
+};
+const result = {
+  schema: 'durable-workflow.v2.php-sdk-published-artifact-conformance',
+  version: 1,
+  generated_at: new Date().toISOString().replace(/\.\d{3}Z$/, 'Z'),
+  started_at: process.env.STARTED_AT,
+  finished_at: new Date().toISOString().replace(/\.\d{3}Z$/, 'Z'),
+  outcome: runnerBlocked ? 'runner_blocked' : 'fail',
+  runner_blocked: runnerBlocked,
+  artifact_versions: {'sdk-php': version, server: process.env.SERVER_VERSION || ''},
+  artifact_sources: {
+    'sdk-php': observed.artifact_source,
+    server: observed.server_image ? `docker://${observed.server_image.replace(/^docker:\/\//, '')}` : '',
+  },
+  local_product_source_checkouts_used: false,
+  process_boundary: {client_worker_distinct_processes: false},
+  scenario_results: {},
+  findings: [finding],
+};
+const sidecar = {
+  schema: 'durable-workflow.v2.workflow-lifecycle.php-sdk-sidecar',
+  generated_at: result.generated_at,
+  runner: 'published-php-sdk-process-boundary-conformance',
+  runner_blocked: runnerBlocked,
+  scenario_results: {
+    php_sdk_lifecycle_surface: {
+      scenario_id: 'php_sdk_lifecycle_surface',
+      status: result.outcome,
+      classification: process.env.FAILURE_CLASSIFICATION,
+      published_artifact_cell_executed: observed.published_artifact_cell_executed,
+      observed_outputs: observed,
+      linked_findings: [finding],
+    },
+  },
+};
+fs.writeFileSync(path.join(resultDir, 'php-sdk-conformance-result.json'), `${JSON.stringify(result, null, 2)}\n`);
+fs.writeFileSync(path.join(resultDir, 'php-sdk-lifecycle-evidence.json'), `${JSON.stringify(sidecar, null, 2)}\n`);
+NODE
+}
+
+classify_runtime_failure() {
+  local log_file="${1:?log file is required}"
+  if [[ -f "$log_file" ]] && grep -Eqi 'ServerException|status[_ ]?code|HTTP/[0-9.]+ [45][0-9][0-9]|server[_ -]error' "$log_file"; then
+    printf '%s\n' server
+    return
+  fi
+  if [[ -f "$log_file" ]] && grep -Eqi 'TransportException|connection refused|could not resolve|name or service not known|network is unreachable|connection timed out|curl error' "$log_file"; then
+    printf '%s\n' runner
+    return
+  fi
+  printf '%s\n' sdk
+}
+
+failure_owner_for() {
+  case "${1:?classification is required}" in
+    server) printf '%s\n' server ;;
+    runner) printf '%s\n' conformance_harness ;;
+    package-publication) printf '%s\n' sdk-php-release ;;
+    *) printf '%s\n' sdk-php ;;
+  esac
+}
+
+classify_composer_failure() {
+  local log_file="${1:?log file is required}"
+  if [[ -f "$log_file" ]] && grep -Eqi 'curl error|could not resolve|network is unreachable|connection timed out|failed to open stream|temporary failure' "$log_file"; then
+    printf '%s\n' runner
+    return
+  fi
+  printf '%s\n' package-publication
+}
+
+cleanup() {
+  local exit_code=$?
+  if [[ -n "$worker_pid" ]] && kill -0 "$worker_pid" >/dev/null 2>&1; then
+    kill -TERM "$worker_pid" >/dev/null 2>&1 || true
+    wait "$worker_pid" >/dev/null 2>&1 || true
+  fi
+  exit "$exit_code"
+}
+trap cleanup EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
+
+if ! command -v node >/dev/null 2>&1; then
+  printf '%s\n' 'node is required to write typed conformance evidence' >&2
+  exit 2
+fi
+if [[ -z "$sdk_version" || ! "$sdk_version" =~ ^[0-9]+\.[0-9]+\.[0-9]+([.-][0-9A-Za-z.-]+)?$ ]]; then
+  write_failure package-publication sdk-php-release preflight 'DW_PHP_SDK_VERSION must be an exact published Composer version.'
+  exit 0
+fi
+if [[ -z "$server_version" || ! "$server_version" =~ ^[0-9]+\.[0-9]+\.[0-9]+([.-][0-9A-Za-z.-]+)?$ ]]; then
+  write_failure runner conformance_harness preflight 'DW_SERVER_VERSION must be an exact published server version.'
+  exit 0
+fi
+if [[ -z "$server_image" || -z "$server_url" ]]; then
+  write_failure runner conformance_harness preflight 'DW_SERVER_VERSION, DW_SERVER_IMAGE, and DW_PHP_SDK_CONFORMANCE_SERVER_URL are required.'
+  exit 0
+fi
+if [[ "$server_image" != "durableworkflow/server:${server_version}" \
+  && "$server_image" != "docker.io/durableworkflow/server:${server_version}" \
+  && ! "$server_image" =~ ^(docker\.io/)?durableworkflow/server(@sha256:[0-9a-fA-F]{64})$ ]]; then
+  write_failure runner conformance_harness preflight 'DW_SERVER_IMAGE must be the exact requested durableworkflow/server tag or a digest pin.'
+  exit 0
+fi
+if ! command -v "$php_bin" >/dev/null 2>&1; then
+  write_failure runner conformance_harness preflight "PHP binary is unavailable: $php_bin"
+  exit 0
+fi
+if ! command -v "$composer_bin" >/dev/null 2>&1; then
+  write_failure runner conformance_harness preflight "Composer binary is unavailable: $composer_bin"
+  exit 0
+fi
+
+rm -rf "$project_dir"
+mkdir -p "$project_dir"
+
+cat > "$project_dir/composer.json" <<JSON
+{
+  "name": "durable-workflow/php-sdk-conformance",
+  "type": "project",
+  "require": {
+    "durable-workflow/sdk": "$sdk_version"
+  },
+  "config": {
+    "preferred-install": "dist",
+    "sort-packages": true,
+    "allow-plugins": {}
+  },
+  "minimum-stability": "stable",
+  "prefer-stable": true
+}
+JSON
+
+if ! (
+  cd "$project_dir"
+  COMPOSER_ALLOW_SUPERUSER=1 \
+  COMPOSER_HOME="$result_dir/composer-home" \
+  COMPOSER_CACHE_DIR="$result_dir/composer-cache" \
+  "$composer_bin" install --no-interaction --no-progress --prefer-dist --no-scripts
+) >"$result_dir/php-sdk-composer-install.log" 2>&1; then
+  composer_classification="$(classify_composer_failure "$result_dir/php-sdk-composer-install.log")"
+  write_failure "$composer_classification" "$(failure_owner_for "$composer_classification")" composer_install "Composer could not install durable-workflow/sdk:$sdk_version from Packagist."
+  exit 0
+fi
+
+cat > "$project_dir/worker.php" <<'PHP'
+<?php
+
+declare(strict_types=1);
+
+require __DIR__.'/vendor/autoload.php';
+
+use Composer\InstalledVersions;
+use DurableWorkflow\Client;
+use DurableWorkflow\Worker;
+use DurableWorkflow\Worker\ActivityContext;
+use DurableWorkflow\Worker\QueryContext;
+use DurableWorkflow\Worker\WorkflowContext;
+
+if ($argc < 8) {
+    fwrite(STDERR, "usage: worker.php <server> <namespace> <control-token> <worker-token> <queue> <worker-id> <result-dir>\n");
+    exit(2);
+}
+
+[$script, $server, $namespace, $controlToken, $workerToken, $queue, $workerId, $resultDir] = $argv;
+$client = new Client($server, namespace: $namespace, controlToken: $controlToken, workerToken: $workerToken);
+$callbackFile = $resultDir.'/php-sdk-callback-counts.json';
+
+function increment_callback(string $file, string $name): int
+{
+    $handle = fopen($file, 'c+');
+    if ($handle === false) {
+        throw new RuntimeException("Unable to open callback counter {$file}.");
+    }
+    try {
+        if (! flock($handle, LOCK_EX)) {
+            throw new RuntimeException('Unable to lock callback counter.');
+        }
+        $raw = stream_get_contents($handle);
+        $counts = is_string($raw) && trim($raw) !== '' ? json_decode($raw, true) : [];
+        if (! is_array($counts)) {
+            $counts = [];
+        }
+        $counts[$name] = (int) ($counts[$name] ?? 0) + 1;
+        ftruncate($handle, 0);
+        rewind($handle);
+        fwrite($handle, json_encode($counts, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES)."\n");
+        fflush($handle);
+        flock($handle, LOCK_UN);
+
+        return $counts[$name];
+    } finally {
+        fclose($handle);
+    }
+}
+
+function decoded_signal_total(QueryContext $context, Client $client): int
+{
+    $total = 0;
+    foreach ($context->events('SignalReceived') as $event) {
+        $payload = is_array($event['payload'] ?? null) ? $event['payload'] : [];
+        if (($payload['signal_name'] ?? null) !== 'increment') {
+            continue;
+        }
+        $raw = $payload['value'] ?? $payload['input'] ?? $payload['arguments'] ?? null;
+        $decoded = is_array($raw) || is_string($raw) ? $client->payloadCodec()->decodeEnvelope($raw) : [];
+        $arguments = is_array($decoded) && array_is_list($decoded) ? $decoded : [$decoded];
+        $total += (int) ($arguments[0] ?? 0);
+    }
+
+    return $total;
+}
+
+$registration = $client->registerWorker(
+    $workerId,
+    $queue,
+    ['php.sdk.simple', 'php.sdk.replay', 'php.sdk.waiting', 'php.sdk.failure', 'php.sdk.search'],
+    ['php.sdk.echo'],
+    ['query_tasks', 'workflow_updates', 'durable_history_replay', 'graceful_shutdown'],
+);
+$heartbeatAck = $client->heartbeatWorker($workerId, ['workflow_available' => 1, 'activity_available' => 1]);
+file_put_contents($resultDir.'/php-sdk-worker-'.$workerId.'.json', json_encode([
+    'worker_id' => $workerId,
+    'process_id' => getmypid(),
+    'host' => gethostname(),
+    'php_version' => PHP_VERSION,
+    'sdk_version' => InstalledVersions::getPrettyVersion('durable-workflow/sdk')
+        ?: InstalledVersions::getVersion('durable-workflow/sdk'),
+    'registration_ack' => $registration,
+    'heartbeat_ack' => $heartbeatAck,
+], JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES)."\n");
+
+$worker = new Worker($client, $queue, workerId: $workerId, heartbeatIntervalSeconds: 1);
+$worker->registerActivity(
+    'php.sdk.echo',
+    static function (ActivityContext $context, mixed $value) use ($callbackFile): array {
+        increment_callback($callbackFile, 'activity');
+        increment_callback($callbackFile, 'activity_heartbeat');
+        $context->heartbeat(['phase' => 'activity', 'callback_count' => 1]);
+
+        return ['echo' => $value, 'activity_process_id' => getmypid()];
+    },
+);
+$worker->registerWorkflow(
+    'php.sdk.simple',
+    static function (WorkflowContext $context, mixed $value) use ($callbackFile): Generator {
+        increment_callback($callbackFile, 'simple_workflow_replays');
+        $activity = yield $context->activity('php.sdk.echo', [$value]);
+
+        return ['result' => $activity, 'workflow_process_id' => getmypid()];
+    },
+);
+$worker->registerWorkflow(
+    'php.sdk.replay',
+    static function (WorkflowContext $context, mixed $value) use ($callbackFile): Generator {
+        increment_callback($callbackFile, 'replay_workflow_replays');
+        $activity = yield $context->activity('php.sdk.echo', [$value]);
+        yield $context->sleep(10);
+
+        return ['replayed_result' => $activity, 'workflow_process_id' => getmypid()];
+    },
+);
+$worker->registerWorkflow(
+    'php.sdk.waiting',
+    static function (WorkflowContext $context) use ($callbackFile): Generator {
+        increment_callback($callbackFile, 'waiting_workflow_replays');
+        $context->throwIfCancellationRequested();
+        yield $context->sleep(300);
+
+        return ['unexpected' => 'timer-fired'];
+    },
+);
+$worker->registerWorkflow(
+    'php.sdk.failure',
+    static function () use ($callbackFile): never {
+        increment_callback($callbackFile, 'failure_workflow');
+        throw new DomainException('php-sdk-conformance-failure');
+    },
+);
+$worker->registerWorkflow(
+    'php.sdk.search',
+    static function (WorkflowContext $context, string $name, string $value) use ($callbackFile): Generator {
+        increment_callback($callbackFile, 'search_workflow_replays');
+        yield $context->upsertSearchAttributes([$name => $value]);
+
+        return ['search_attribute' => $name, 'value' => $value, 'workflow_process_id' => getmypid()];
+    },
+);
+$worker->registerQuery(
+    'php.sdk.waiting',
+    'current',
+    static function (QueryContext $context) use ($client, $callbackFile): array {
+        increment_callback($callbackFile, 'query');
+
+        return ['total' => decoded_signal_total($context, $client), 'query_process_id' => getmypid()];
+    },
+);
+$worker->registerUpdate(
+    'php.sdk.waiting',
+    'set',
+    static function (QueryContext $context, int $value) use ($callbackFile): array {
+        increment_callback($callbackFile, 'update');
+
+        return ['accepted' => true, 'value' => $value, 'run_id' => $context->runId];
+    },
+);
+$worker->run(1);
+PHP
+
+cat > "$project_dir/client.php" <<'PHP'
+<?php
+
+declare(strict_types=1);
+
+require __DIR__.'/vendor/autoload.php';
+
+use Composer\InstalledVersions;
+use DurableWorkflow\Client;
+use DurableWorkflow\Exception\WorkflowCancelled;
+use DurableWorkflow\Exception\WorkflowFailed;
+use DurableWorkflow\Exception\WorkflowTerminated;
+use DurableWorkflow\Model\ScheduleAction;
+use DurableWorkflow\Model\ScheduleSpec;
+use Throwable;
+
+if ($argc < 8) {
+    fwrite(STDERR, "usage: client.php <phase> <server> <namespace> <token> <queue> <result-dir> <suffix>\n");
+    exit(2);
+}
+
+[$script, $phase, $server, $namespace, $token, $queue, $resultDir, $suffix] = $argv;
+$client = new Client($server, token: $token, namespace: $namespace);
+$stateFile = $resultDir.'/php-sdk-replay-state.json';
+
+function emit(array $payload): never
+{
+    echo json_encode($payload, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES)."\n";
+    exit(0);
+}
+
+function terminal_exception(callable $operation): array
+{
+    try {
+        $operation();
+
+        return ['type' => null, 'message' => 'operation unexpectedly returned'];
+    } catch (Throwable $exception) {
+        return ['type' => $exception::class, 'message' => $exception->getMessage()];
+    }
+}
+
+function event_types(array $history): array
+{
+    return array_values(array_map(
+        static fn (array $event): string => (string) ($event['event_type'] ?? $event['type'] ?? ''),
+        array_values(array_filter($history['events'] ?? $history['history'] ?? [], 'is_array')),
+    ));
+}
+
+$identity = [
+    'process_id' => getmypid(),
+    'host' => gethostname(),
+    'php_version' => PHP_VERSION,
+    'sdk_version' => InstalledVersions::getPrettyVersion('durable-workflow/sdk')
+        ?: InstalledVersions::getVersion('durable-workflow/sdk'),
+];
+
+if ($phase === 'baseline') {
+    $cluster = $client->clusterInfo(includeDiagnostics: true);
+    $namespaces = $client->listNamespaces();
+    $temporaryNamespace = 'php-sdk-'.$suffix;
+    $client->createNamespace($temporaryNamespace, 'PHP SDK published-artifact conformance', 1);
+    $client->describeNamespace($temporaryNamespace);
+    $client->updateNamespace($temporaryNamespace, 'updated by PHP SDK conformance', 2);
+    $scopedClient = $client->withNamespace($temporaryNamespace);
+    $scopedWorkflows = $scopedClient->listWorkflows();
+    $client->deleteNamespace($temporaryNamespace);
+
+    $simple = $client->startWorkflow(
+        'php.sdk.simple',
+        'php-sdk-simple-'.$suffix,
+        $queue,
+        [['message' => 'hello', 'count' => 7]],
+    );
+    $simpleResult = $simple->result(timeoutSeconds: 30, pollIntervalSeconds: 0.2);
+    $simpleDescription = $simple->describeSelectedRun();
+    $simpleHistory = $client->workflowHistory($simple->workflowId, (string) $simple->selectedRunId);
+
+    $searchAttributeName = 'php_sdk_'.str_replace('-', '_', $suffix);
+    $searchAttributeValue = 'published-sdk';
+    $createdSearchAttribute = $client->createSearchAttribute($searchAttributeName, 'keyword');
+    $searchDefinitions = $client->listSearchAttributes();
+    $searchWorkflow = $client->startWorkflow(
+        'php.sdk.search',
+        'php-sdk-search-'.$suffix,
+        $queue,
+        [$searchAttributeName, $searchAttributeValue],
+    );
+    $searchResult = $searchWorkflow->result(timeoutSeconds: 30, pollIntervalSeconds: 0.2);
+    $searchDescription = $searchWorkflow->describeSelectedRun();
+    $searchPage = $client->listWorkflows(query: sprintf('%s = "%s"', $searchAttributeName, $searchAttributeValue));
+    $client->deleteSearchAttribute($searchAttributeName);
+
+    $addressable = $client->startWorkflow('php.sdk.waiting', 'php-sdk-addressable-'.$suffix, $queue);
+    $addressable->signal('increment', [3]);
+    $addressable->signal('increment', [5]);
+    $queryResult = $addressable->query('current');
+    $updateResult = $addressable->update('set', [13], waitTimeoutSeconds: 20, requestId: 'php-sdk-update-'.$suffix);
+    $addressable->cancel('published SDK cancellation');
+    $cancelException = terminal_exception(static fn (): mixed => $addressable->result(20, 0.2));
+
+    $terminated = $client->startWorkflow('php.sdk.waiting', 'php-sdk-terminated-'.$suffix, $queue);
+    $terminated->terminate('published SDK termination');
+    $terminateException = terminal_exception(static fn (): mixed => $terminated->result(20, 0.2));
+
+    $failed = $client->startWorkflow('php.sdk.failure', 'php-sdk-failed-'.$suffix, $queue);
+    $failureException = terminal_exception(static fn (): mixed => $failed->result(20, 0.2));
+
+    $scheduleId = 'php-sdk-schedule-'.$suffix;
+    $schedule = $client->createSchedule(
+        new ScheduleSpec(intervals: [['every' => 'PT1H']]),
+        new ScheduleAction('php.sdk.simple', $queue, [['scheduled' => true]]),
+        scheduleId: $scheduleId,
+        paused: true,
+    );
+    $scheduleDescription = $schedule->describe();
+    $schedulePage = $client->listSchedules();
+    $schedule->pause('conformance pause');
+    $schedule->resume('conformance resume');
+    $schedule->delete();
+
+    emit([
+        'phase' => $phase,
+        'identity' => $identity,
+        'cluster_info' => $cluster->raw,
+        'namespace_count' => count($namespaces),
+        'namespace_lifecycle' => [
+            'created' => true,
+            'updated' => true,
+            'deleted' => true,
+            'selected_namespace' => $scopedClient->namespace,
+            'selected_namespace_workflow_count' => $scopedWorkflows->workflowCount,
+        ],
+        'simple_workflow' => [
+            'workflow_id' => $simple->workflowId,
+            'run_id' => $simple->selectedRunId,
+            'status' => $simpleDescription->status,
+            'result' => $simpleResult,
+            'history_event_types' => event_types($simpleHistory),
+        ],
+        'search_attributes' => [
+            'name' => $searchAttributeName,
+            'value' => $searchAttributeValue,
+            'created_name' => $createdSearchAttribute->name,
+            'listed_type' => $searchDefinitions->customAttributes[$searchAttributeName] ?? null,
+            'workflow_id' => $searchWorkflow->workflowId,
+            'run_id' => $searchWorkflow->selectedRunId,
+            'result' => $searchResult,
+            'described_attributes' => $searchDescription->searchAttributes,
+            'query_workflow_ids' => array_map(
+                static fn ($execution): string => $execution->workflowId,
+                $searchPage->executions,
+            ),
+            'deleted' => true,
+        ],
+        'signal_query' => ['signals_sent' => 2, 'expected_total' => 8, 'query_result' => $queryResult],
+        'update' => ['request_id' => 'php-sdk-update-'.$suffix, 'result' => $updateResult],
+        'cancellation' => $cancelException + ['expected_type' => WorkflowCancelled::class],
+        'termination' => $terminateException + ['expected_type' => WorkflowTerminated::class],
+        'failure_envelope' => $failureException + ['expected_type' => WorkflowFailed::class],
+        'schedule' => [
+            'schedule_id' => $scheduleId,
+            'described_id' => $scheduleDescription->scheduleId,
+            'listed_ids' => array_map(static fn ($item): string => $item->scheduleId, $schedulePage->schedules),
+            'paused_resumed_deleted' => true,
+        ],
+    ]);
+}
+
+if ($phase === 'start-replay') {
+    $handle = $client->startWorkflow(
+        'php.sdk.replay',
+        'php-sdk-replay-'.$suffix,
+        $queue,
+        [['replay' => true]],
+    );
+    $state = ['workflow_id' => $handle->workflowId, 'run_id' => $handle->selectedRunId];
+    file_put_contents($stateFile, json_encode($state, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES)."\n");
+    emit(['phase' => $phase, 'identity' => $identity] + $state);
+}
+
+if ($phase === 'wait-replay-checkpoint') {
+    $state = json_decode((string) file_get_contents($stateFile), true, flags: JSON_THROW_ON_ERROR);
+    $deadline = microtime(true) + 30;
+    do {
+        $history = $client->workflowHistory((string) $state['workflow_id'], (string) $state['run_id']);
+        $types = event_types($history);
+        if (in_array('ActivityCompleted', $types, true) && in_array('TimerScheduled', $types, true)) {
+            emit([
+                'phase' => $phase,
+                'identity' => $identity,
+                'workflow_id' => $state['workflow_id'],
+                'run_id' => $state['run_id'],
+                'history_event_types' => $types,
+                'activity_completed_before_restart' => true,
+                'timer_scheduled_before_restart' => true,
+            ]);
+        }
+        usleep(200000);
+    } while (microtime(true) < $deadline);
+    throw new RuntimeException('Replay checkpoint did not contain ActivityCompleted and TimerScheduled within 30 seconds.');
+}
+
+if ($phase === 'finish-replay') {
+    $state = json_decode((string) file_get_contents($stateFile), true, flags: JSON_THROW_ON_ERROR);
+    $handle = $client->workflowHandle((string) $state['workflow_id'], (string) $state['run_id']);
+    $result = $handle->resultOfSelectedRun(timeoutSeconds: 40, pollIntervalSeconds: 0.2);
+    $history = $client->workflowHistory((string) $state['workflow_id'], (string) $state['run_id']);
+    emit([
+        'phase' => $phase,
+        'identity' => $identity,
+        'workflow_id' => $state['workflow_id'],
+        'run_id' => $state['run_id'],
+        'result' => $result,
+        'history_event_types' => event_types($history),
+    ]);
+}
+
+throw new InvalidArgumentException("Unknown client phase: {$phase}");
+PHP
+
+cat > "$project_dir/aggregate.php" <<'PHP'
+<?php
+
+declare(strict_types=1);
+
+if ($argc < 8) {
+    fwrite(STDERR, "usage: aggregate.php <result-dir> <sdk-version> <server-version> <server-image> <server-url> <namespace> <started-at>\n");
+    exit(2);
+}
+
+[$script, $resultDir, $expectedSdkVersion, $serverVersion, $serverImage, $serverUrl, $namespace, $startedAt] = $argv;
+
+function read_json(string $path): array
+{
+    $value = json_decode((string) file_get_contents($path), true, flags: JSON_THROW_ON_ERROR);
+    if (! is_array($value)) {
+        throw new RuntimeException("{$path} did not contain a JSON object.");
+    }
+
+    return $value;
+}
+
+function package_from_lock(array $lock, string $name): array
+{
+    foreach (array_merge($lock['packages'] ?? [], $lock['packages-dev'] ?? []) as $package) {
+        if (is_array($package) && ($package['name'] ?? null) === $name) {
+            return $package;
+        }
+    }
+    throw new RuntimeException("composer.lock does not contain {$name}.");
+}
+
+function normalized_version(?string $version): string
+{
+    return ltrim((string) $version, 'v');
+}
+
+$baseline = read_json($resultDir.'/php-sdk-client-baseline.json');
+$replayStart = read_json($resultDir.'/php-sdk-client-start-replay.json');
+$checkpoint = read_json($resultDir.'/php-sdk-client-replay-checkpoint.json');
+$replayFinish = read_json($resultDir.'/php-sdk-client-finish-replay.json');
+$callbacks = read_json($resultDir.'/php-sdk-callback-counts.json');
+$workerOne = read_json($resultDir.'/php-sdk-worker-php-sdk-worker-1.json');
+$workerTwo = read_json($resultDir.'/php-sdk-worker-php-sdk-worker-2.json');
+$lock = read_json($resultDir.'/php-sdk-project/composer.lock');
+$composerProject = read_json($resultDir.'/php-sdk-project/composer.json');
+$sdk = package_from_lock($lock, 'durable-workflow/sdk');
+$avro = package_from_lock($lock, 'apache/avro');
+$history = $replayFinish['history_event_types'] ?? [];
+$clusterVersion = (string) ($baseline['cluster_info']['version'] ?? $baseline['cluster_info']['server_version'] ?? '');
+
+$assertions = [
+    'exact_sdk_version' => normalized_version($sdk['version'] ?? null) === normalized_version($expectedSdkVersion),
+    'exact_server_version' => $clusterVersion !== '' && normalized_version($clusterVersion) === normalized_version($serverVersion),
+    'sdk_dist_provenance' => isset($sdk['dist']['type'], $sdk['dist']['url']) && $sdk['dist']['type'] !== 'path',
+    'official_apache_avro_dependency' => ($avro['name'] ?? null) === 'apache/avro'
+        && isset($avro['dist']['type'], $avro['dist']['url'], $avro['source']['url'])
+        && str_contains((string) $avro['source']['url'], 'apache/avro'),
+    'source_free_composer_project' => ! isset($composerProject['repositories'])
+        && array_reduce(
+            array_merge($lock['packages'] ?? [], $lock['packages-dev'] ?? []),
+            static fn (bool $valid, array $package): bool => $valid
+                && isset($package['dist']['type'], $package['dist']['url'])
+                && ($package['dist']['type'] ?? null) !== 'path'
+                && filter_var((string) ($package['dist']['url'] ?? ''), FILTER_VALIDATE_URL) !== false,
+            true,
+        ),
+    'distinct_client_worker_processes' => ($baseline['identity']['process_id'] ?? null) !== ($workerOne['process_id'] ?? null),
+    'distinct_worker_restart_processes' => ($workerOne['process_id'] ?? null) !== ($workerTwo['process_id'] ?? null),
+    'worker_registration' => ($workerOne['worker_id'] ?? null) === 'php-sdk-worker-1'
+        && ($workerTwo['worker_id'] ?? null) === 'php-sdk-worker-2'
+        && is_array($workerOne['registration_ack'] ?? null)
+        && is_array($workerTwo['registration_ack'] ?? null),
+    'worker_heartbeat' => is_array($workerOne['heartbeat_ack'] ?? null)
+        && is_array($workerTwo['heartbeat_ack'] ?? null),
+    'start_result' => ($baseline['simple_workflow']['status'] ?? null) === 'completed' && isset($baseline['simple_workflow']['result']),
+    'signal_query' => ($baseline['signal_query']['query_result']['total'] ?? null) === 8,
+    'update' => ($baseline['update']['result']['accepted'] ?? null) === true && ($baseline['update']['result']['value'] ?? null) === 13,
+    'cancellation' => ($baseline['cancellation']['type'] ?? null) === ($baseline['cancellation']['expected_type'] ?? null),
+    'termination' => ($baseline['termination']['type'] ?? null) === ($baseline['termination']['expected_type'] ?? null),
+    'failure_envelope' => ($baseline['failure_envelope']['type'] ?? null) === ($baseline['failure_envelope']['expected_type'] ?? null),
+    'activity_callback_once_for_replay' => (int) ($callbacks['activity'] ?? 0) === 2,
+    'activity_heartbeat_callback' => (int) ($callbacks['activity_heartbeat'] ?? 0) === 2,
+    'namespace_lifecycle' => ($baseline['namespace_lifecycle']['created'] ?? false)
+        && ($baseline['namespace_lifecycle']['updated'] ?? false)
+        && ($baseline['namespace_lifecycle']['deleted'] ?? false),
+    'namespace_selection' => ($baseline['namespace_lifecycle']['selected_namespace'] ?? null) !== null
+        && ($baseline['namespace_lifecycle']['selected_namespace_workflow_count'] ?? null) === 0,
+    'search_attributes' => ($baseline['search_attributes']['created_name'] ?? null) === ($baseline['search_attributes']['name'] ?? null)
+        && ($baseline['search_attributes']['listed_type'] ?? null) === 'keyword'
+        && ($baseline['search_attributes']['result']['search_attribute'] ?? null) === ($baseline['search_attributes']['name'] ?? null)
+        && ($baseline['search_attributes']['described_attributes'][$baseline['search_attributes']['name'] ?? ''] ?? null) === ($baseline['search_attributes']['value'] ?? null)
+        && in_array($baseline['search_attributes']['workflow_id'] ?? null, $baseline['search_attributes']['query_workflow_ids'] ?? [], true)
+        && ($baseline['search_attributes']['deleted'] ?? false),
+    'schedule_lifecycle' => ($baseline['schedule']['paused_resumed_deleted'] ?? false)
+        && in_array($baseline['schedule']['schedule_id'] ?? null, $baseline['schedule']['listed_ids'] ?? [], true),
+    'replay_checkpoint' => ($checkpoint['activity_completed_before_restart'] ?? false)
+        && ($checkpoint['timer_scheduled_before_restart'] ?? false),
+    'durable_replay_history' => in_array('ActivityCompleted', $history, true)
+        && in_array('TimerScheduled', $history, true)
+        && in_array('TimerFired', $history, true),
+    'durable_replay_result' => isset($replayFinish['result']['replayed_result']),
+    'local_product_source_checkouts_used_false' => true,
+];
+$failedAssertions = array_keys(array_filter($assertions, static fn (bool $value): bool => ! $value));
+$assertionDomains = [
+    'exact_sdk_version' => 'package-publication',
+    'sdk_dist_provenance' => 'package-publication',
+    'official_apache_avro_dependency' => 'package-publication',
+    'source_free_composer_project' => 'package-publication',
+    'exact_server_version' => 'server',
+    'distinct_client_worker_processes' => 'runner',
+    'distinct_worker_restart_processes' => 'runner',
+    'worker_registration' => 'sdk',
+    'worker_heartbeat' => 'sdk',
+    'start_result' => 'server',
+    'signal_query' => 'server',
+    'update' => 'sdk',
+    'cancellation' => 'sdk',
+    'termination' => 'sdk',
+    'failure_envelope' => 'sdk',
+    'activity_callback_once_for_replay' => 'server',
+    'activity_heartbeat_callback' => 'sdk',
+    'namespace_lifecycle' => 'server',
+    'namespace_selection' => 'sdk',
+    'search_attributes' => 'sdk',
+    'schedule_lifecycle' => 'server',
+    'replay_checkpoint' => 'server',
+    'durable_replay_history' => 'server',
+    'durable_replay_result' => 'sdk',
+    'local_product_source_checkouts_used_false' => 'runner',
+];
+$failedByDomain = [];
+foreach ($failedAssertions as $assertion) {
+    $domain = $assertionDomains[$assertion] ?? 'sdk';
+    $failedByDomain[$domain][] = $assertion;
+}
+$runnerBlocked = $failedAssertions !== [] && array_keys($failedByDomain) === ['runner'];
+$status = $failedAssertions === [] ? 'pass' : ($runnerBlocked ? 'runner_blocked' : 'fail');
+$coveredCells = [
+    'start_result', 'signal_query', 'update', 'cancellation', 'termination', 'activities',
+    'namespaces', 'search_attributes', 'schedules', 'workflow_lifecycle', 'failure_envelopes', 'heartbeat',
+    'worker_restart', 'durable_replay',
+];
+$domainPolicy = [
+    'sdk' => ['owner' => 'sdk-php', 'type' => 'product_behavior_gap'],
+    'server' => ['owner' => 'server', 'type' => 'product_behavior_gap'],
+    'package-publication' => ['owner' => 'sdk-php-release', 'type' => 'package_publication_gap'],
+    'runner' => ['owner' => 'conformance_harness', 'type' => 'conformance_runner_blocked'],
+];
+$findings = [];
+foreach ($failedByDomain as $domain => $domainAssertions) {
+    $policy = $domainPolicy[$domain];
+    $findings[] = [
+        'finding_id' => 'php-sdk-published-artifact-'.str_replace('_', '-', $domain).'-failure',
+        'finding_type' => $policy['type'],
+        'classification' => $domain,
+        'owning_surface' => $policy['owner'],
+        'failure_stage' => 'runtime_assertions',
+        'failed_assertions' => $domainAssertions,
+        'summary' => sprintf('Failed %s assertions: %s', $domain, implode(', ', $domainAssertions)),
+        'next_acceptance_criterion' => 'Correct the named failure surface and rerun the exact Packagist SDK against the exact public server image.',
+    ];
+}
+$provenance = [
+    'package' => 'durable-workflow/sdk',
+    'version' => $sdk['version'] ?? null,
+    'source' => 'packagist',
+    'dist' => $sdk['dist'] ?? null,
+    'source_reference' => $sdk['source'] ?? null,
+    'composer_content_hash' => $lock['content-hash'] ?? null,
+    'install_preference' => 'dist',
+];
+$avroProvenance = [
+    'package' => 'apache/avro',
+    'version' => $avro['version'] ?? null,
+    'dist' => $avro['dist'] ?? null,
+    'source_reference' => $avro['source'] ?? null,
+];
+$observed = [
+    'sdk' => 'sdk-php',
+    'covered_cells' => $coveredCells,
+    'unsupported_cells' => [],
+    'typed_errors' => [
+        $baseline['cancellation'] ?? [],
+        $baseline['termination'] ?? [],
+        $baseline['failure_envelope'] ?? [],
+    ],
+    'artifact_version' => $sdk['version'] ?? null,
+    'server_version' => $serverVersion,
+    'server_image' => $serverImage,
+    'server_cluster_info' => $baseline['cluster_info'] ?? [],
+    'artifact_source' => 'packagist://durable-workflow/sdk@'.$expectedSdkVersion,
+    'composer_package' => 'durable-workflow/sdk',
+    'packagist_artifact_verified' => $assertions['exact_sdk_version'] && $assertions['sdk_dist_provenance'],
+    'install_provenance' => $provenance,
+    'apache_avro_provenance' => $avroProvenance,
+    'client_processes' => [
+        $baseline['identity'] ?? [],
+        $replayStart['identity'] ?? [],
+        $checkpoint['identity'] ?? [],
+        $replayFinish['identity'] ?? [],
+    ],
+    'worker_processes' => [$workerOne, $workerTwo],
+    'worker_identities' => [$workerOne['worker_id'] ?? null, $workerTwo['worker_id'] ?? null],
+    'callback_counts' => $callbacks,
+    'namespace_evidence' => $baseline['namespace_lifecycle'] ?? [],
+    'search_attribute_evidence' => $baseline['search_attributes'] ?? [],
+    'history_assertions' => [
+        'checkpoint_event_types' => $checkpoint['history_event_types'] ?? [],
+        'final_event_types' => $history,
+        'activity_completed_before_restart' => $assertions['replay_checkpoint'],
+        'timer_fired_after_restart' => in_array('TimerFired', $history, true),
+        'activity_callbacks_total_expected_two' => $assertions['activity_callback_once_for_replay'],
+    ],
+    'scenario_assertions' => $assertions,
+    'failure_domains' => $failedByDomain,
+    'published_artifact_cell_executed' => true,
+    'client_worker_distinct_processes' => $assertions['distinct_client_worker_processes'],
+    'worker_restart_distinct_processes' => $assertions['distinct_worker_restart_processes'],
+    'local_product_source_checkouts_used' => false,
+];
+$result = [
+    'schema' => 'durable-workflow.v2.php-sdk-published-artifact-conformance',
+    'version' => 1,
+    'generated_at' => gmdate('Y-m-d\TH:i:s\Z'),
+    'started_at' => $startedAt,
+    'finished_at' => gmdate('Y-m-d\TH:i:s\Z'),
+    'outcome' => $status,
+    'runner_blocked' => $runnerBlocked,
+    'artifact_versions' => ['sdk-php' => $expectedSdkVersion, 'server' => $serverVersion],
+    'artifact_sources' => [
+        'sdk-php' => 'packagist://durable-workflow/sdk@'.$expectedSdkVersion,
+        'server' => 'docker://'.preg_replace('/^docker:\/\//', '', $serverImage),
+    ],
+    'package_provenance' => $provenance,
+    'apache_avro_provenance' => $avroProvenance,
+    'server_url' => $serverUrl,
+    'namespace' => $namespace,
+    'process_boundary' => [
+        'client_worker_distinct_processes' => $assertions['distinct_client_worker_processes'],
+        'worker_restart_distinct_processes' => $assertions['distinct_worker_restart_processes'],
+        'client_processes' => $observed['client_processes'],
+        'worker_processes' => $observed['worker_processes'],
+    ],
+    'callback_counts' => $callbacks,
+    'history_assertions' => $observed['history_assertions'],
+    'scenario_results' => array_fill_keys($coveredCells, ['status' => $status]),
+    'assertions' => $assertions,
+    'local_product_source_checkouts_used' => false,
+    'failure_domains' => $failedByDomain,
+    'findings' => $findings,
+];
+$sidecar = [
+    'schema' => 'durable-workflow.v2.workflow-lifecycle.php-sdk-sidecar',
+    'generated_at' => $result['generated_at'],
+    'runner' => 'published-php-sdk-process-boundary-conformance',
+    'runner_blocked' => $runnerBlocked,
+    'scenario_results' => [
+        'php_sdk_lifecycle_surface' => [
+            'scenario_id' => 'php_sdk_lifecycle_surface',
+            'status' => $status,
+            'classification' => $status === 'pass' ? 'passed' : implode('+', array_keys($failedByDomain)),
+            'published_artifact_cell_executed' => true,
+            'observed_outputs' => $observed,
+            'linked_findings' => $findings,
+        ],
+    ],
+];
+
+file_put_contents($resultDir.'/php-sdk-conformance-result.json', json_encode($result, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES)."\n");
+file_put_contents($resultDir.'/php-sdk-lifecycle-evidence.json', json_encode($sidecar, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES)."\n");
+exit($status === 'pass' ? 0 : 1);
+PHP
+
+suffix="$(date -u +%s)-$$-${RANDOM}"
+queue="php-sdk-conformance-$suffix"
+
+start_worker() {
+  local worker_id="${1:?worker id is required}"
+  "$php_bin" "$project_dir/worker.php" \
+    "$server_url" "$namespace" "$control_token" "$worker_token" "$queue" "$worker_id" "$result_dir" \
+    >"$result_dir/${worker_id}.log" 2>&1 &
+  worker_pid=$!
+  local metadata="$result_dir/php-sdk-worker-${worker_id}.json"
+  for attempt in $(seq 1 100); do
+    if [[ -s "$metadata" ]] && kill -0 "$worker_pid" >/dev/null 2>&1; then
+      return 0
+    fi
+    if ! kill -0 "$worker_pid" >/dev/null 2>&1; then
+      return 1
+    fi
+    sleep 0.1
+  done
+  return 1
+}
+
+run_client_phase() {
+  local phase="${1:?phase is required}"
+  local output="${2:?output path is required}"
+  "$php_bin" "$project_dir/client.php" \
+    "$phase" "$server_url" "$namespace" "$control_token" "$queue" "$result_dir" "$suffix" \
+    >"$output" 2>"$output.log"
+}
+
+if ! start_worker php-sdk-worker-1; then
+  worker_classification="$(classify_runtime_failure "$result_dir/php-sdk-worker-1.log")"
+  write_failure "$worker_classification" "$(failure_owner_for "$worker_classification")" worker_start 'The first released PHP SDK worker process exited before registration.'
+  exit 0
+fi
+
+if ! run_client_phase baseline "$result_dir/php-sdk-client-baseline.json"; then
+  client_classification="$(classify_runtime_failure "$result_dir/php-sdk-client-baseline.json.log")"
+  write_failure "$client_classification" "$(failure_owner_for "$client_classification")" baseline_client 'The released PHP SDK baseline client process failed; inspect php-sdk-client-baseline.json.log.'
+  exit 0
+fi
+if ! run_client_phase start-replay "$result_dir/php-sdk-client-start-replay.json"; then
+  client_classification="$(classify_runtime_failure "$result_dir/php-sdk-client-start-replay.json.log")"
+  write_failure "$client_classification" "$(failure_owner_for "$client_classification")" replay_start 'The released PHP SDK replay client could not start its workflow.'
+  exit 0
+fi
+if ! run_client_phase wait-replay-checkpoint "$result_dir/php-sdk-client-replay-checkpoint.json"; then
+  write_failure server server replay_checkpoint 'The server history did not expose the durable pre-restart activity and timer checkpoint.'
+  exit 0
+fi
+
+kill -TERM "$worker_pid" >/dev/null 2>&1 || true
+wait "$worker_pid" >/dev/null 2>&1 || true
+worker_pid=""
+
+if ! start_worker php-sdk-worker-2; then
+  worker_classification="$(classify_runtime_failure "$result_dir/php-sdk-worker-2.log")"
+  write_failure "$worker_classification" "$(failure_owner_for "$worker_classification")" worker_restart 'The replacement released PHP SDK worker process exited before registration.'
+  exit 0
+fi
+if ! run_client_phase finish-replay "$result_dir/php-sdk-client-finish-replay.json"; then
+  client_classification="$(classify_runtime_failure "$result_dir/php-sdk-client-finish-replay.json.log")"
+  write_failure "$client_classification" "$(failure_owner_for "$client_classification")" replay_finish 'The replacement PHP SDK worker did not complete durable replay.'
+  exit 0
+fi
+
+kill -TERM "$worker_pid" >/dev/null 2>&1 || true
+wait "$worker_pid" >/dev/null 2>&1 || true
+worker_pid=""
+
+if ! "$php_bin" "$project_dir/aggregate.php" \
+  "$result_dir" "$sdk_version" "$server_version" "$server_image" "$server_url" "$namespace" "$started_at" \
+  >"$result_dir/php-sdk-aggregate.log" 2>&1; then
+  if [[ ! -s "$result_file" || ! -s "$sidecar_file" ]]; then
+    aggregate_classification="$(classify_runtime_failure "$result_dir/php-sdk-aggregate.log")"
+    write_failure "$aggregate_classification" "$(failure_owner_for "$aggregate_classification")" aggregate 'PHP SDK conformance completed without valid aggregate evidence.'
+  fi
+fi
+
+exit 0

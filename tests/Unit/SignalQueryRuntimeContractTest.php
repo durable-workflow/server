@@ -56,12 +56,12 @@ class SignalQueryRuntimeContractTest extends TestCase
             $this->assertContains($example, $manifest['artifact_policy']['placeholder_version_examples']);
         }
 
-        foreach (['server', 'cli', 'workflow-php', 'sdk-python', 'sdk-rust', 'waterline'] as $artifact) {
+        foreach (['server', 'cli', 'sdk-php', 'sdk-python', 'sdk-rust', 'workflow', 'waterline'] as $artifact) {
             $this->assertArrayHasKey($artifact, $manifest['artifact_policy']['install_channels']);
         }
 
         $this->assertSame(
-            ['server', 'cli', 'sdk-python', 'sdk-rust'],
+            ['server', 'cli', 'sdk-php', 'sdk-python', 'sdk-rust'],
             $manifest['artifact_policy']['install_proof_artifacts'],
         );
 
@@ -69,9 +69,10 @@ class SignalQueryRuntimeContractTest extends TestCase
             [
                 'server' => 'published_docker_image',
                 'cli' => 'published_cli_release',
-                'workflow-php' => 'published_composer_package',
+                'sdk-php' => 'published_composer_package',
                 'sdk-python' => 'published_pypi_package',
                 'sdk-rust' => 'published_crates_io_package',
+                'workflow' => 'published_composer_package',
                 'waterline' => 'published_waterline_artifact',
             ],
             $manifest['artifact_policy']['expected_sources'],
@@ -99,9 +100,9 @@ class SignalQueryRuntimeContractTest extends TestCase
     {
         $matrix = SignalQueryRuntimeContract::manifest()['required_matrix'];
 
-        $this->assertSame(['workflow-php', 'sdk-python', 'sdk-rust'], $matrix['runtimes']);
+        $this->assertSame(['sdk-php', 'sdk-python', 'sdk-rust'], $matrix['runtimes']);
         $this->assertContains('cli', $matrix['client_paths']);
-        $this->assertContains('workflow-php-sdk', $matrix['client_paths']);
+        $this->assertContains('sdk-php', $matrix['client_paths']);
         $this->assertContains('sdk-python', $matrix['client_paths']);
         $this->assertContains('sdk-rust', $matrix['client_paths']);
         $this->assertContains('waterline-selected-run-detail', $matrix['observer_paths']);
@@ -110,14 +111,14 @@ class SignalQueryRuntimeContractTest extends TestCase
         $this->assertContains(
             [
                 'worker' => 'sdk-python',
-                'clients' => ['workflow-php-sdk', 'cli'],
+                'clients' => ['sdk-php', 'cli'],
                 'scenario' => 'python_worker_php_facing_and_cli_clients',
             ],
             $matrix['cross_language_cells'],
         );
         $this->assertContains(
             [
-                'worker' => 'workflow-php',
+                'worker' => 'sdk-php',
                 'clients' => ['sdk-python', 'cli'],
                 'scenario' => 'php_worker_python_and_cli_clients',
             ],
@@ -618,15 +619,16 @@ PY);
             [
                 'server' => 'published_docker_image',
                 'cli' => 'published_cli_release',
-                'workflow-php' => 'published_composer_package',
+                'sdk-php' => 'published_composer_package',
                 'sdk-python' => 'published_pypi_package',
                 'sdk-rust' => 'published_crates_io_package',
+                'workflow' => 'published_composer_package',
                 'waterline' => 'published_waterline_artifact',
             ],
             $hostRunner['evidence_shards']['published_artifact_install']['expected_artifact_sources'],
         );
         $this->assertSame(
-            ['server', 'cli', 'sdk-python', 'sdk-rust'],
+            ['server', 'cli', 'sdk-php', 'sdk-python', 'sdk-rust'],
             $hostRunner['evidence_shards']['published_artifact_install']['install_proof_artifacts'],
         );
         $this->assertContains(
@@ -732,12 +734,12 @@ PY);
         $this->assertSame(
             [
                 'worker_runtime',
-                'workflow_php_artifact_source',
-                'workflow_php_sdk_version',
+                'sdk_php_artifact_source',
+                'sdk_php_sdk_version',
                 'php_worker_query_task_routing',
                 'routed_current_query_task',
                 'cli_signal_and_query',
-                'workflow_php_signal_and_query',
+                'sdk_php_signal_and_query',
                 'immediate_repeat_query_consistency',
             ],
             $hostRunner['evidence_shards']['php_worker_mirror']['required_evidence_fields'],
@@ -752,12 +754,12 @@ PY);
             [
                 'probe_error',
                 'worker_registration',
-                'workflow_php_start',
+                'sdk_php_start',
                 'initial_query',
                 'cli_signal',
                 'cli_query',
-                'workflow_php_signal',
-                'workflow_php_query',
+                'sdk_php_signal',
+                'sdk_php_query',
                 'repeat_query',
             ],
             $hostRunner['evidence_shards']['php_worker_mirror']['retained_failure_diagnostics'][
@@ -1011,7 +1013,7 @@ PY);
         $this->assertFileIsExecutable($script);
         foreach ([
             'DW_SIGNALS_QUERIES_CLEANUP_TERMINATION_READY_FILE="$ready_file"',
-            '"$run_root/workflow-php/vendor"',
+            '"$run_root/sdk-php/vendor"',
             '"$run_root/sdk-rust/target"',
             '"$result_dir/waterline-signals-queries-observer/vendor"',
             'kill -TERM "$runner_pid"',
@@ -1030,7 +1032,7 @@ PY);
         $result = $this->runSignalQueryRunnerPythonSnippet(<<<'PY'
 artifact_versions = {
     "server": "0.2.634",
-    "workflow-php": "2.0.0-alpha.213",
+    "sdk-php": "0.1.213",
 }
 project = Path("/tmp/signals-queries-host-ownership-contract")
 commands = {
@@ -1183,7 +1185,7 @@ partial_outputs = {
         ],
         "running_query_results": {
             "sdk_rust": 5,
-            "workflow_php_sdk": 5,
+            "sdk_php_sdk": 5,
             "sdk_python": 5,
         },
         "immutability_checkpoints": {
@@ -1384,7 +1386,7 @@ def fake_probe_artifact_versions():
         "server": "0.2.631",
         "sdk-rust": "0.1.3",
         "sdk-python": "0.4.98",
-        "workflow-php": "2.0.0-alpha.264",
+        "sdk-php": "0.1.264",
     }
 
 
@@ -1462,14 +1464,14 @@ def fake_query_all_published_clients(*, workflow_id, expected, diagnostic_sample
     }
     samples = {
         "sdk_rust": dict(sample),
-        "workflow_php_sdk": dict(sample),
+        "sdk_php_sdk": dict(sample),
         "sdk_python": dict(sample),
     }
     if diagnostic_samples is not None:
         diagnostic_samples.update(samples)
     return {
         "sdk_rust": expected,
-        "workflow_php_sdk": expected,
+        "sdk_php_sdk": expected,
         "sdk_python": expected,
         "samples": samples,
     }
@@ -1536,7 +1538,7 @@ evidence, install, descriptor = run_rust_matrix_probe(
     token="token",
     namespace="default",
     python_bin=sys.executable,
-    workflow_php_project=run_root / "workflow-php",
+    sdk_php_project=run_root / "sdk-php",
     run_root=run_root,
     log_file=log_file,
 )
@@ -1735,7 +1737,7 @@ PY);
 
         $this->assertStringContainsString('DW_SIGNALS_QUERIES_WATERLINE_PHP_DOCKER_IMAGE', $body);
         $this->assertStringContainsString('durableworkflow/server:{server_version}', $body);
-        $this->assertStringContainsString('return workflow_php_docker_image()', $body);
+        $this->assertStringContainsString('return sdk_php_docker_image()', $body);
         $this->assertStringContainsString('"runtime_image": waterline_php_docker_image()', $source);
         $this->assertGreaterThanOrEqual(5, substr_count($source, 'image=waterline_php_docker_image()'));
         $this->assertGreaterThanOrEqual(5, substr_count($source, 'entrypoint=""'));
@@ -1788,10 +1790,10 @@ PY);
             'install_status = "pass" if install_outputs_cover_required_artifacts(install_outputs) else "not_covered"',
             'install_status == "pass"',
             'and has_required_evidence("python_worker_cli_and_sdk_baseline", python_sdk_outputs)',
-            'and has_required_evidence("php_worker_cli_and_sdk_baseline", workflow_php_outputs)',
+            'and has_required_evidence("php_worker_cli_and_sdk_baseline", sdk_php_outputs)',
             '"status": install_status',
             '"status": python_sdk_status',
-            '"status": workflow_php_status',
+            '"status": sdk_php_status',
             'DW_SIGNALS_QUERIES_RUN_PHP_BASELINE_PROBE',
         ] as $needle) {
             $this->assertStringContainsString($needle, $source);
@@ -1803,25 +1805,23 @@ PY);
     public function test_host_runner_generates_published_php_worker_project_for_mirror_baseline(): void
     {
         $result = $this->runSignalQueryRunnerPythonSnippet(<<<'PY'
-artifact_versions = {"workflow-php": "2.0.0-alpha.213"}
+artifact_versions = {"sdk-php": "0.1.1"}
 project = Path(tempfile.mkdtemp(prefix="dw-php-project-test."))
 try:
-    write_workflow_php_project(project)
+    write_sdk_php_project(project)
     composer = json.loads((project / "composer.json").read_text(encoding="utf-8"))
     worker = (project / "php-counter-worker.php").read_text(encoding="utf-8")
     client = (project / "php-workflow-client.php").read_text(encoding="utf-8")
     print(json.dumps({
         "localhost_url": docker_host_base_url("http://127.0.0.1:8080"),
         "remote_url": docker_host_base_url("https://server.example.test:8443/base"),
-        "package": composer["require"]["durable-workflow/workflow"],
+        "package": composer["require"]["durable-workflow/sdk"],
         "worker_type": "conformance.counter.php" in worker,
-        "worker_contracts": "workflowCommandContracts" in worker,
-        "worker_query_executor": "WorkflowQueryTaskExecutor::CAPABILITY" in worker,
-        "worker_uses_combined_tick": "$standaloneWorker->tick(" in worker,
-        "worker_polls_queries_directly": "$standaloneWorker->processOneQueryTask(" in worker,
-        "worker_polls_workflows_directly": "$standaloneWorker->processOneWorkflowTask(" in worker,
-        "worker_retains_query_evidence": "sq_record_standalone_query_task($tickResult" in worker,
-        "client_uses_workflow_client": "new WorkflowClient" in client,
+        "worker_uses_sdk": "use DurableWorkflow\\Worker;" in worker,
+        "worker_registers_query": "$worker->registerQuery($workflowType, 'current'" in worker,
+        "worker_runs": "$worker->run(1)" in worker,
+        "client_uses_sdk": "use DurableWorkflow\\Client;" in client,
+        "client_constructs_sdk": "new Client(" in client,
     }, sort_keys=True))
 finally:
     shutil.rmtree(project, ignore_errors=True)
@@ -1829,15 +1829,13 @@ PY);
 
         $this->assertSame('http://host.docker.internal:8080', $result['localhost_url']);
         $this->assertSame('https://server.example.test:8443/base', $result['remote_url']);
-        $this->assertSame('2.0.0-alpha.213', $result['package']);
+        $this->assertSame('0.1.1', $result['package']);
         $this->assertTrue($result['worker_type']);
-        $this->assertTrue($result['worker_contracts']);
-        $this->assertTrue($result['worker_query_executor']);
-        $this->assertTrue($result['worker_uses_combined_tick']);
-        $this->assertFalse($result['worker_polls_queries_directly']);
-        $this->assertFalse($result['worker_polls_workflows_directly']);
-        $this->assertTrue($result['worker_retains_query_evidence']);
-        $this->assertTrue($result['client_uses_workflow_client']);
+        $this->assertTrue($result['worker_uses_sdk']);
+        $this->assertTrue($result['worker_registers_query']);
+        $this->assertTrue($result['worker_runs']);
+        $this->assertTrue($result['client_uses_sdk']);
+        $this->assertTrue($result['client_constructs_sdk']);
     }
 
     public function test_host_runner_records_configured_server_image_overrides_as_non_published_install_evidence(): void
@@ -3283,14 +3281,14 @@ versions = {
     "cli": "0.1.74",
     "sdk-python": "0.4.84",
     "workflow": "2.0.0-alpha.187",
-    "workflow-php": "2.0.0-alpha.187",
+    "sdk-php": "0.1.187",
     "waterline": "2.0.0-alpha.69",
 }
 sources = {
     "server": "published_docker_image",
     "cli": "published_cli_release",
     "sdk-python": "published_pypi_package",
-    "workflow-php": "published_composer_package",
+    "sdk-php": "published_composer_package",
     "waterline": "published_waterline_artifact",
 }
 globals()["artifact_versions"] = versions
@@ -3395,14 +3393,14 @@ versions = {
     "cli": "0.1.74",
     "sdk-python": "0.4.84",
     "workflow": "2.0.0-alpha.187",
-    "workflow-php": "2.0.0-alpha.187",
+    "sdk-php": "0.1.187",
     "waterline": "2.0.0-alpha.69",
 }
 sources = {
     "server": "published_docker_image",
     "cli": "published_cli_release",
     "sdk-python": "published_pypi_package",
-    "workflow-php": "published_composer_package",
+    "sdk-php": "published_composer_package",
     "waterline": "published_waterline_artifact",
 }
 globals()["artifact_versions"] = versions
@@ -3557,7 +3555,7 @@ PY);
     {
         $result = $this->runSignalQueryRunnerPythonSnippet(<<<'PY'
 stdout = """PHP Warning:  Module "sockets" is already loaded in Unknown on line 0
-{"client":"workflow-php","operation":"start","operation_name":"start","ok":true,"result":{"success":true,"workflow_id":"wf-warning-prefix","run_id":"run-warning-prefix"}}
+{"client":"sdk-php","operation":"start","operation_name":"start","ok":true,"result":{"success":true,"workflow_id":"wf-warning-prefix","run_id":"run-warning-prefix"}}
 """
 sample = json_sample_from_stdout(stdout)
 readout = sample_readout(sample)
@@ -3588,14 +3586,14 @@ versions = {
     "cli": "0.1.82",
     "sdk-python": "0.4.90",
     "workflow": "2.0.0-alpha.250",
-    "workflow-php": "2.0.0-alpha.250",
+    "sdk-php": "0.1.250",
     "waterline": "2.0.0-alpha.111",
 }
 sources = {
     "server": "published_docker_image",
     "cli": "published_cli_release",
     "sdk-python": "published_pypi_package",
-    "workflow-php": "published_composer_package",
+    "sdk-php": "published_composer_package",
     "waterline": "published_waterline_artifact",
 }
 globals()["artifact_versions"] = versions
@@ -3619,12 +3617,12 @@ def fake_run_command(command, *, log_file, env=None, cwd=None, timeout=120.0):
 def fake_wait_for_docker_worker_registered(**kwargs):
     return {
         "worker_id": kwargs["worker_id"],
-        "task_queue": kwargs["container_name"].replace("dw-sq-php-", "signals-queries-workflow-php-"),
+        "task_queue": kwargs["container_name"].replace("dw-sq-php-", "signals-queries-sdk-php-"),
         "capabilities": ["workflow_tasks", "query_tasks"],
     }
 
 def fake_php_workflow_client_sample(
-    workflow_php_project,
+    sdk_php_project,
     base_url,
     token,
     namespace,
@@ -3679,9 +3677,9 @@ def fake_cli_json_sample(cli_bin, base_url, token, namespace, args, log_file):
 def fake_wait_for_php_query_route_evidence(query_route_evidence_path, workflow_id, worker_id):
 	    return {
 	        "status": "pass",
-	        "worker_runtime": "workflow-php",
+	        "worker_runtime": "sdk-php",
 	        "worker_id": worker_id,
-	        "task_queue": "signals-queries-workflow-php-test",
+	        "task_queue": "signals-queries-sdk-php-test",
 	        "query_task_id": "query-task-php-current",
 	        "query_task_attempt": 1,
 	        "workflow_id": workflow_id,
@@ -3701,12 +3699,12 @@ globals()["cli_json_sample"] = fake_cli_json_sample
 globals()["wait_for_php_query_route_evidence"] = fake_wait_for_php_query_route_evidence
 
 run_root = Path(tempfile.mkdtemp(prefix="dw-signals-php-nested-start-test."))
-outputs, descriptor = run_workflow_php_baseline(
+outputs, descriptor = run_sdk_php_baseline(
     base_url="http://server.test",
     token="token",
     namespace="default",
     cli_bin="/tmp/dw",
-    workflow_php_project=run_root / "workflow-php",
+    sdk_php_project=run_root / "sdk-php",
     versions=versions,
     sources=sources,
     install_entry={"status": "pass", "source": "published_composer_package"},
@@ -3721,11 +3719,11 @@ print(json.dumps({
     "descriptor_run_id": descriptor["run_id"],
     "query_task_routing": outputs["php_worker_query_task_routing"],
     "cli_signal_and_query": outputs["cli_signal_and_query"],
-    "workflow_php_signal_and_query": outputs["workflow_php_signal_and_query"],
+    "sdk_php_signal_and_query": outputs["sdk_php_signal_and_query"],
     "immediate_repeat_query_consistency": outputs["immediate_repeat_query_consistency"],
     "initial_query": sample_result_value(outputs["initial_query_sample"]),
     "cli_query": sample_result_value(outputs["cli_query_sample"]),
-    "php_query": sample_result_value(outputs["workflow_php_query_sample"]),
+    "php_query": sample_result_value(outputs["sdk_php_query_sample"]),
     "repeat_query": sample_result_value(outputs["repeat_query_sample"]),
     "php_operations": [call["operation"] for call in php_calls],
     "cli_operations": [call[0] for call in cli_calls],
@@ -3738,7 +3736,7 @@ PY);
         $this->assertSame('run-php-baseline', $result['descriptor_run_id']);
         $this->assertTrue($result['query_task_routing']);
         $this->assertTrue($result['cli_signal_and_query']);
-        $this->assertTrue($result['workflow_php_signal_and_query']);
+        $this->assertTrue($result['sdk_php_signal_and_query']);
         $this->assertTrue($result['immediate_repeat_query_consistency']);
         $this->assertSame(0, $result['initial_query']);
         $this->assertSame(3, $result['cli_query']);
@@ -3878,7 +3876,8 @@ PY);
             'cli' => 'published_cli_release',
             'sdk-python' => 'published_pypi_package',
             'sdk-rust' => 'published_crates_io_package',
-            'workflow-php' => 'published_composer_package',
+            'sdk-php' => 'published_composer_package',
+            'workflow' => 'published_composer_package',
             'waterline' => 'published_waterline_artifact',
         ];
         $evidence = [
@@ -3923,7 +3922,7 @@ PY);
             'cli' => '0.1.45',
             'sdk-python' => '0.4.58',
             'workflow' => '2.0.0-alpha.161',
-            'workflow-php' => '2.0.0-alpha.161',
+            'sdk-php' => '0.1.161',
             'waterline' => '2.0.0-alpha.54',
         ];
         $evidence = [
@@ -3966,7 +3965,7 @@ PY);
                 'cli' => '0.1.45',
                 'sdk-python' => '0.4.58',
                 'workflow' => '2.0.0-alpha.161',
-                'workflow-php' => '2.0.0-alpha.161',
+                'sdk-php' => '0.1.161',
                 'waterline' => '2.0.0-alpha.54',
             ],
             'scenario_results' => [
@@ -4148,21 +4147,21 @@ PY);
         $php = $complete['scenario_results']['php_worker_cli_and_sdk_baseline'];
         $php['observed_outputs']['published_artifact_versions'] = $versions;
         $php['observed_outputs']['artifact_sources'] = $sources;
-        $php['observed_outputs']['workflow_php_signal_and_query'] = false;
-        $php['observed_outputs']['workflow_php_signal_sample'] = [
+        $php['observed_outputs']['sdk_php_signal_and_query'] = false;
+        $php['observed_outputs']['sdk_php_signal_sample'] = [
             'ok' => true,
-            'client' => 'workflow-php',
+            'client' => 'sdk-php',
             'operation' => 'signal',
             'operation_name' => 'increment',
         ];
-        $php['observed_outputs']['workflow_php_query_sample'] = [
+        $php['observed_outputs']['sdk_php_query_sample'] = [
             'ok' => true,
-            'client' => 'workflow-php',
+            'client' => 'sdk-php',
             'operation' => 'query',
             'operation_name' => 'current',
             'result' => 7,
         ];
-        $php['observed_outputs']['workflow_php_signal_and_query_error'] = [
+        $php['observed_outputs']['sdk_php_signal_and_query_error'] = [
             'type' => 'RuntimeError',
             'message' => 'PHP SDK query current returned 7, expected 8',
         ];
@@ -4344,7 +4343,8 @@ PY);
             'cli' => 'published_cli_release',
             'sdk-python' => 'published_pypi_package',
             'sdk-rust' => 'published_crates_io_package',
-            'workflow-php' => 'published_composer_package',
+            'sdk-php' => 'published_composer_package',
+            'workflow' => 'published_composer_package',
             'waterline' => 'published_waterline_artifact',
         ];
         $externalEvidence = [
@@ -4391,7 +4391,8 @@ PY);
                 'cli' => 'published_cli_release',
                 'sdk-python' => 'published_pypi_package',
                 'sdk-rust' => 'published_crates_io_package',
-                'workflow-php' => 'published_composer_package',
+                'sdk-php' => 'published_composer_package',
+                'workflow' => 'published_composer_package',
                 'waterline' => 'published_waterline_artifact',
             ],
         ]);
@@ -4408,7 +4409,8 @@ PY);
             'cli' => 'published_cli_release',
             'sdk-python' => 'published_pypi_package',
             'sdk-rust' => 'published_crates_io_package',
-            'workflow-php' => 'published_composer_package',
+            'sdk-php' => 'published_composer_package',
+            'workflow' => 'published_composer_package',
             'waterline' => 'published_waterline_artifact',
         ];
 
@@ -4421,7 +4423,7 @@ PY);
         $this->assertSame('pass', $result['scenario_results']['published_artifact_install_only']['status']);
         $this->assertSame(
             'published_composer_package',
-            $result['scenario_results']['published_artifact_install_only']['observed_outputs']['artifact_sources']['workflow-php'],
+            $result['scenario_results']['published_artifact_install_only']['observed_outputs']['artifact_sources']['sdk-php'],
         );
     }
 
@@ -4433,7 +4435,8 @@ PY);
             'cli' => 'published_cli_release',
             'sdk-python' => 'published_pypi_package',
             'sdk-rust' => 'published_crates_io_package',
-            'workflow-php' => 'published_composer_package',
+            'sdk-php' => 'published_composer_package',
+            'workflow' => 'published_composer_package',
             'waterline' => 'published_waterline_artifact',
         ];
         $installEvidence = [
@@ -4442,7 +4445,7 @@ PY);
                 $this->installEvidenceForVersions($versions, $sources)['artifacts'],
                 static fn (array $artifact): bool => in_array(
                     $artifact['artifact'],
-                    ['server', 'cli', 'sdk-python', 'sdk-rust'],
+                    ['server', 'cli', 'sdk-php', 'sdk-python', 'sdk-rust'],
                     true,
                 ),
             )),
@@ -4456,7 +4459,7 @@ PY);
 
         $this->assertSame('pass', $result['scenario_results']['published_artifact_install_only']['status']);
         $this->assertSame(
-            ['server', 'cli', 'sdk-python', 'sdk-rust'],
+            ['server', 'cli', 'sdk-php', 'sdk-python', 'sdk-rust'],
             array_column(
                 $result['scenario_results']['published_artifact_install_only']['observed_outputs']
                     ['artifact_install_evidence']['artifacts'],
@@ -4478,7 +4481,8 @@ PY);
                     'cli' => 'published_cli_release',
                     'sdk-python' => 'published_pypi_package',
                     'sdk-rust' => 'published_crates_io_package',
-                    'workflow-php' => 'published_composer_package',
+                    'sdk-php' => 'published_composer_package',
+                    'workflow' => 'published_composer_package',
                     'waterline' => 'published_waterline_artifact',
                 ],
                 $sourceOverrides,
@@ -4510,7 +4514,8 @@ PY);
             'server' => 'configured_server_endpoint',
             'cli' => 'configured_cli_binary',
             'sdk-python' => 'configured_python_environment',
-            'workflow-php' => 'published_composer_package',
+            'sdk-php' => 'published_composer_package',
+            'workflow' => 'published_composer_package',
             'waterline' => 'published_waterline_artifact',
         ];
         $installEvidence = [
@@ -4726,14 +4731,14 @@ evidence, descriptor = run_replay_terminal_probe(
         "server": "0.2.549",
         "cli": "0.1.86",
         "sdk-python": "0.4.93",
-        "workflow-php": "2.0.0-alpha.244",
+        "sdk-php": "0.1.244",
         "waterline": "2.0.0-alpha.116",
     },
     {
         "server": "published_docker_image",
         "cli": "published_cli_release",
         "sdk-python": "published_pypi_package",
-        "workflow-php": "published_composer_package",
+        "sdk-php": "published_composer_package",
         "waterline": "published_waterline_artifact",
     },
     Path("/tmp/replay-terminal-probe.log"),
@@ -4874,14 +4879,14 @@ evidence, descriptor = run_replay_terminal_probe(
         "server": "0.2.549",
         "cli": "0.1.86",
         "sdk-python": "0.4.93",
-        "workflow-php": "2.0.0-alpha.244",
+        "sdk-php": "0.1.244",
         "waterline": "2.0.0-alpha.116",
     },
     {
         "server": "published_docker_image",
         "cli": "published_cli_release",
         "sdk-python": "published_pypi_package",
-        "workflow-php": "published_composer_package",
+        "sdk-php": "published_composer_package",
         "waterline": "published_waterline_artifact",
     },
     Path("/tmp/replay-terminal-probe-failure.log"),
@@ -4988,14 +4993,14 @@ evidence, descriptor = run_replay_terminal_probe(
         "server": "0.2.562",
         "cli": "0.1.86",
         "sdk-python": "0.4.93",
-        "workflow-php": "2.0.0-alpha.245",
+        "sdk-php": "0.1.245",
         "waterline": "2.0.0-alpha.119",
     },
     {
         "server": "published_docker_image",
         "cli": "published_cli_release",
         "sdk-python": "published_pypi_package",
-        "workflow-php": "published_composer_package",
+        "sdk-php": "published_composer_package",
         "waterline": "published_waterline_artifact",
     },
     Path("/tmp/replay-terminal-probe-query-failure.log"),
@@ -5115,7 +5120,7 @@ PY);
     public function test_host_runner_does_not_pass_imported_matrix_cell_with_missing_required_evidence(): void
     {
         $evidence = $this->completeSignalQueryResultForCurrentHostRunner();
-        unset($evidence['scenario_results']['php_worker_cli_and_sdk_baseline']['observed_outputs']['workflow_php_signal_and_query']);
+        unset($evidence['scenario_results']['php_worker_cli_and_sdk_baseline']['observed_outputs']['sdk_php_signal_and_query']);
 
         $result = $this->runSignalQueryHostRunner($evidence);
 
@@ -5197,7 +5202,7 @@ PY);
     {
         $evidence = $this->completeSignalQueryResultForCurrentHostRunner();
         $evidence['scenario_results']['php_worker_cli_and_sdk_baseline']['observed_outputs'][
-            'workflow_php_sdk_version'
+            'sdk_php_sdk_version'
         ] = '2.0.0-alpha.1';
 
         $result = $this->runSignalQueryHostRunner($evidence);
@@ -5207,7 +5212,7 @@ PY);
         $this->assertNotEmpty($findings);
         $this->assertSame('signal_query_php_worker_mirror_failed', $findings[0]['type'] ?? null);
         $this->assertSame(
-            'workflow_php_sdk_version_mismatch',
+            'sdk_php_sdk_version_mismatch',
             $findings[0]['current_evidence']['current_behavior_failures'][0]['code'] ?? null,
         );
         $this->assertArrayNotHasKey(
@@ -5235,7 +5240,7 @@ PY);
     public function test_host_runner_does_not_pass_imported_matrix_cell_with_false_boolean_evidence(): void
     {
         $evidence = $this->completeSignalQueryResultForCurrentHostRunner();
-        $evidence['scenario_results']['php_worker_cli_and_sdk_baseline']['observed_outputs']['workflow_php_signal_and_query'] = false;
+        $evidence['scenario_results']['php_worker_cli_and_sdk_baseline']['observed_outputs']['sdk_php_signal_and_query'] = false;
 
         $result = $this->runSignalQueryHostRunner($evidence);
 
@@ -5278,11 +5283,11 @@ PY);
             'message' => 'PHP worker did not record routed current query evidence',
         ];
         $outputs['worker_registration'] = [
-            'worker_id' => 'signals-queries-workflow-php-worker',
-            'task_queue' => 'signals-queries-workflow-php',
+            'worker_id' => 'signals-queries-sdk-php-worker',
+            'task_queue' => 'signals-queries-sdk-php',
             'capabilities' => ['query_tasks'],
         ];
-        $outputs['workflow_php_start_sample'] = [
+        $outputs['sdk_php_start_sample'] = [
             'ok' => true,
             'status_code' => 201,
             'result' => ['run_id' => 'run-php-baseline'],
@@ -5301,11 +5306,11 @@ PY);
             'status_code' => 200,
             'result' => 3,
         ];
-        $outputs['workflow_php_signal_sample'] = [
+        $outputs['sdk_php_signal_sample'] = [
             'ok' => true,
             'status_code' => 202,
         ];
-        $outputs['workflow_php_query_sample'] = [
+        $outputs['sdk_php_query_sample'] = [
             'ok' => true,
             'status_code' => 200,
             'result' => 8,
@@ -5342,18 +5347,18 @@ PY);
         );
         $this->assertSame(0, $recordActual['initial_query']['result'] ?? null);
         $this->assertSame(3, $recordActual['cli_query']['result'] ?? null);
-        $this->assertSame(8, $recordActual['workflow_php_query']['result'] ?? null);
+        $this->assertSame(8, $recordActual['sdk_php_query']['result'] ?? null);
         $this->assertSame(8, $recordActual['repeat_query']['result'] ?? null);
 
         foreach ([
             'probe_error',
             'worker_registration',
-            'workflow_php_start',
+            'sdk_php_start',
             'initial_query',
             'cli_signal',
             'cli_query',
-            'workflow_php_signal',
-            'workflow_php_query',
+            'sdk_php_signal',
+            'sdk_php_query',
             'repeat_query',
         ] as $field) {
             $this->assertArrayHasKey($field, $recordActual);
@@ -5380,11 +5385,11 @@ PY);
             'message' => 'PHP worker did not record routed current query evidence',
         ];
         $outputs['worker_registration'] = [
-            'worker_id' => 'signals-queries-workflow-php-worker',
-            'task_queue' => 'signals-queries-workflow-php',
+            'worker_id' => 'signals-queries-sdk-php-worker',
+            'task_queue' => 'signals-queries-sdk-php',
             'capabilities' => ['query_tasks'],
         ];
-        $outputs['workflow_php_start_sample'] = [
+        $outputs['sdk_php_start_sample'] = [
             'ok' => true,
             'status_code' => 201,
             'result' => ['run_id' => 'run-php-baseline'],
@@ -5403,11 +5408,11 @@ PY);
             'status_code' => 200,
             'result' => 3,
         ];
-        $outputs['workflow_php_signal_sample'] = [
+        $outputs['sdk_php_signal_sample'] = [
             'ok' => true,
             'status_code' => 202,
         ];
-        $outputs['workflow_php_query_sample'] = [
+        $outputs['sdk_php_query_sample'] = [
             'ok' => true,
             'status_code' => 200,
             'result' => 8,
@@ -5448,18 +5453,18 @@ PY);
         );
         $this->assertSame(0, $recordActual['initial_query']['result'] ?? null);
         $this->assertSame(3, $recordActual['cli_query']['result'] ?? null);
-        $this->assertSame(8, $recordActual['workflow_php_query']['result'] ?? null);
+        $this->assertSame(8, $recordActual['sdk_php_query']['result'] ?? null);
         $this->assertSame(8, $recordActual['repeat_query']['result'] ?? null);
 
         foreach ([
             'probe_error',
             'worker_registration',
-            'workflow_php_start',
+            'sdk_php_start',
             'initial_query',
             'cli_signal',
             'cli_query',
-            'workflow_php_signal',
-            'workflow_php_query',
+            'sdk_php_signal',
+            'sdk_php_query',
             'repeat_query',
         ] as $field) {
             $this->assertArrayHasKey($field, $recordActual);
@@ -5720,7 +5725,7 @@ PY);
 
         $this->assertSame('non_passing', $evaluation['status']);
         $this->assertSame(
-            ['server', 'cli', 'workflow-php', 'sdk-python', 'waterline'],
+            ['server', 'cli', 'sdk-php', 'sdk-python', 'waterline'],
             array_column($placeholderFailures, 'artifact'),
         );
     }
@@ -5806,7 +5811,7 @@ PY);
     public function test_result_gate_requires_declared_evidence_for_pass_scenarios(): void
     {
         $result = $this->completeSignalQueryResult();
-        unset($result['scenario_results']['php_worker_cli_and_sdk_baseline']['observed_outputs']['workflow_php_signal_and_query']);
+        unset($result['scenario_results']['php_worker_cli_and_sdk_baseline']['observed_outputs']['sdk_php_signal_and_query']);
         unset($result['scenario_results']['query_during_replay']['observed_outputs']['expected_answer']);
         unset($result['replay_timing']['query_during_replay']['expected_answer']);
 
@@ -5827,7 +5832,7 @@ PY);
             [
                 'code' => 'missing_required_pass_evidence',
                 'scenario_id' => 'php_worker_cli_and_sdk_baseline',
-                'evidence_key' => 'workflow_php_signal_and_query',
+                'evidence_key' => 'sdk_php_signal_and_query',
             ],
             $missingEvidence,
         );
@@ -5844,7 +5849,7 @@ PY);
     public function test_result_gate_rejects_false_boolean_evidence_for_pass_matrix_scenarios(): void
     {
         $result = $this->completeSignalQueryResult();
-        $result['scenario_results']['php_worker_cli_and_sdk_baseline']['observed_outputs']['workflow_php_signal_and_query'] = false;
+        $result['scenario_results']['php_worker_cli_and_sdk_baseline']['observed_outputs']['sdk_php_signal_and_query'] = false;
 
         $evaluation = SignalQueryRuntimeResultGate::evaluate($result);
 
@@ -5853,7 +5858,7 @@ PY);
             [
                 'code' => 'missing_required_pass_evidence',
                 'scenario_id' => 'php_worker_cli_and_sdk_baseline',
-                'evidence_key' => 'workflow_php_signal_and_query',
+                'evidence_key' => 'sdk_php_signal_and_query',
             ],
             $evaluation['gate_failures'],
         );
@@ -6448,7 +6453,8 @@ PY);
             'server' => 'configured_server_endpoint',
             'cli' => 'configured_cli_binary',
             'sdk-python' => 'configured_python_environment',
-            'workflow-php' => 'published_composer_package',
+            'sdk-php' => 'published_composer_package',
+            'workflow' => 'published_composer_package',
             'waterline' => 'published_waterline_artifact',
         ];
         $findingId = 'signal_query_published_artifact_install_uncovered';
@@ -6584,7 +6590,7 @@ PY);
 
         $this->assertSame('non_passing', $evaluation['status']);
         $this->assertContains(
-            'php_worker_baseline_runtime_not_workflow_php',
+            'php_worker_baseline_runtime_not_sdk_php',
             array_column($evaluation['gate_failures'], 'code'),
         );
     }
@@ -6593,14 +6599,14 @@ PY);
     {
         $result = $this->completeSignalQueryResult();
         $result['scenario_results']['php_worker_cli_and_sdk_baseline']['observed_outputs'][
-            'workflow_php_artifact_source'
+            'sdk_php_artifact_source'
         ] = 'published';
 
         $evaluation = SignalQueryRuntimeResultGate::evaluate($result);
 
         $this->assertSame('non_passing', $evaluation['status']);
         $this->assertContains(
-            'php_worker_baseline_source_not_published_workflow_php',
+            'php_worker_baseline_source_not_published_sdk_php',
             array_column($evaluation['gate_failures'], 'code'),
         );
     }
@@ -6609,7 +6615,7 @@ PY);
     {
         $result = $this->completeSignalQueryResult();
         $result['scenario_results']['php_worker_cli_and_sdk_baseline']['observed_outputs'][
-            'workflow_php_sdk_version'
+            'sdk_php_sdk_version'
         ] = '2.0.0-alpha.1';
 
         $evaluation = SignalQueryRuntimeResultGate::evaluate($result);
@@ -6709,9 +6715,9 @@ PY);
         ] = $this->routedCurrentQueryTaskEvidence([
             'workflow_id' => 'wf-php-baseline',
             'run_id' => 'run-php-baseline',
-            'task_queue' => 'signals-queries-workflow-php',
-            'worker_id' => 'signals-queries-workflow-php-worker',
-            'lease_owner' => 'signals-queries-workflow-php-worker',
+            'task_queue' => 'signals-queries-sdk-php',
+            'worker_id' => 'signals-queries-sdk-php-worker',
+            'lease_owner' => 'signals-queries-sdk-php-worker',
         ]);
 
         $evaluation = SignalQueryRuntimeResultGate::evaluate($result);
@@ -6722,7 +6728,7 @@ PY);
                 'code' => 'php_worker_baseline_current_query_not_routed',
                 'scenario_id' => 'php_worker_cli_and_sdk_baseline',
                 'field' => 'routed_current_query_task.worker_runtime',
-                'expected' => 'workflow-php',
+                'expected' => 'sdk-php',
                 'actual' => 'sdk-python',
             ],
             $evaluation['gate_failures'],
@@ -6810,6 +6816,7 @@ PY);
                 'DW_CLI_VERSION=0.1.74',
                 'DW_PYTHON_SDK_VERSION=0.4.84',
                 'DW_RUST_SDK_VERSION=0.1.2',
+                'DW_PHP_SDK_VERSION=0.1.1',
                 'DW_WORKFLOW_PHP_VERSION=2.0.0-alpha.187',
                 'DW_WATERLINE_VERSION=2.0.0-alpha.69',
                 'DW_SIGNALS_QUERIES_RUN_BASELINE_PROBE=0',
@@ -6875,6 +6882,7 @@ PY);
                 'DW_CLI_VERSION' => '0.1.74',
                 'DW_PYTHON_SDK_VERSION' => '0.4.84',
                 'DW_RUST_SDK_VERSION' => '0.1.2',
+                'DW_PHP_SDK_VERSION' => '0.1.1',
                 'DW_WORKFLOW_PHP_VERSION' => '2.0.0-alpha.187',
                 'DW_WATERLINE_VERSION' => '2.0.0-alpha.69',
                 'DW_SIGNALS_QUERIES_RUN_WATERLINE_OBSERVER_PROBE' => '0',
@@ -7094,8 +7102,8 @@ PY);
     private function installEvidenceForVersions(array $versions, array $sources): array
     {
         $artifacts = [];
-        foreach (['server', 'cli', 'sdk-python', 'sdk-rust', 'workflow-php', 'waterline'] as $artifact) {
-            $version = $versions[$artifact] ?? ($artifact === 'workflow-php' ? ($versions['workflow'] ?? '') : '');
+        foreach (['server', 'cli', 'sdk-python', 'sdk-rust', 'sdk-php', 'waterline'] as $artifact) {
+            $version = $versions[$artifact] ?? '';
             $artifacts[] = [
                 'artifact' => $artifact,
                 'status' => 'pass',
@@ -7122,7 +7130,7 @@ PY);
             'sdk-python' => '0.4.84',
             'sdk-rust' => '0.1.2',
             'workflow' => '2.0.0-alpha.187',
-            'workflow-php' => '2.0.0-alpha.187',
+            'sdk-php' => '0.1.1',
             'waterline' => '2.0.0-alpha.69',
         ];
     }
@@ -7137,7 +7145,8 @@ PY);
             'cli' => 'published_cli_release',
             'sdk-python' => 'published_pypi_package',
             'sdk-rust' => 'published_crates_io_package',
-            'workflow-php' => 'published_composer_package',
+            'sdk-php' => 'published_composer_package',
+            'workflow' => 'published_composer_package',
             'waterline' => 'published_waterline_artifact',
         ];
     }
@@ -7298,8 +7307,8 @@ PY);
             'python_worker_sdk_version'
         ] = $versions['sdk-python'];
         $result['scenario_results']['php_worker_cli_and_sdk_baseline']['observed_outputs'][
-            'workflow_php_sdk_version'
-        ] = $versions['workflow-php'];
+            'sdk_php_sdk_version'
+        ] = $versions['sdk-php'];
 
         return $result;
     }
@@ -7346,7 +7355,7 @@ PY);
             'sdk-python' => '0.4.58',
             'sdk-rust' => '0.1.2',
             'workflow' => '2.0.0-alpha.161',
-            'workflow-php' => '2.0.0-alpha.161',
+            'sdk-php' => '0.1.161',
             'waterline' => '2.0.0-alpha.54',
         ];
         $artifactSources = [
@@ -7354,7 +7363,8 @@ PY);
             'cli' => 'published_cli_release',
             'sdk-python' => 'published_pypi_package',
             'sdk-rust' => 'published_crates_io_package',
-            'workflow-php' => 'published_composer_package',
+            'sdk-php' => 'published_composer_package',
+            'workflow' => 'published_composer_package',
             'waterline' => 'published_waterline_artifact',
         ];
         $scenarioResults['published_artifact_install_only']['observed_outputs'] = [
@@ -7383,21 +7393,21 @@ PY);
             'worker_id' => 'signals-queries-python-sdk-worker',
         ];
         $scenarioResults['php_worker_cli_and_sdk_baseline']['observed_outputs'] = [
-            'worker_runtime' => 'workflow-php',
-            'workflow_php_artifact_source' => 'published_composer_package',
-            'workflow_php_sdk_version' => '2.0.0-alpha.161',
+            'worker_runtime' => 'sdk-php',
+            'sdk_php_artifact_source' => 'published_composer_package',
+            'sdk_php_sdk_version' => '2.0.0-alpha.161',
             'php_worker_query_task_routing' => true,
             'routed_current_query_task' => $this->routedCurrentQueryTaskEvidence([
-                'worker_runtime' => 'workflow-php',
+                'worker_runtime' => 'sdk-php',
                 'workflow_id' => 'wf-php-baseline',
                 'run_id' => 'run-php-baseline',
-                'task_queue' => 'signals-queries-workflow-php',
-                'worker_id' => 'signals-queries-workflow-php-worker',
-                'lease_owner' => 'signals-queries-workflow-php-worker',
-                'observed_via' => 'workflow-php worker query task executor',
+                'task_queue' => 'signals-queries-sdk-php',
+                'worker_id' => 'signals-queries-sdk-php-worker',
+                'lease_owner' => 'signals-queries-sdk-php-worker',
+                'observed_via' => 'sdk-php worker query task executor',
             ]),
             'cli_signal_and_query' => true,
-            'workflow_php_signal_and_query' => true,
+            'sdk_php_signal_and_query' => true,
             'immediate_repeat_query_consistency' => true,
         ];
         $scenarioResults['python_worker_php_facing_and_cli_clients']['observed_outputs'] = [
@@ -7435,7 +7445,7 @@ PY);
             'query_state_model' => 'snapshot_derived_transport_state',
             'ordered_signal_values' => [3, 5],
             'rust_query_results' => ['running' => 8, 'completed' => 8],
-            'workflow_php_query_results' => ['running' => 8, 'completed' => 8],
+            'sdk_php_query_results' => ['running' => 8, 'completed' => 8],
             'sdk_python_query_results' => ['running' => 8, 'completed' => 8],
             'valid_avro_signal_and_query' => [
                 'default_codec' => 'avro',
@@ -7455,7 +7465,7 @@ PY);
         ];
         $scenarioResults['php_worker_rust_client']['observed_outputs'] = [
             ...$rustIdentity,
-            'worker_runtime' => 'workflow-php',
+            'worker_runtime' => 'sdk-php',
             'ordered_signal_values' => [4, 6],
             'default_codec' => 'avro',
             'payload_codec' => 'avro',
@@ -7506,9 +7516,9 @@ PY);
                 'fresh_worker_process_id' => '202',
                 'durable_history_restored' => true,
             ],
-            'running_query_results' => ['sdk_rust' => 5, 'workflow_php_sdk' => 5, 'sdk_python' => 5],
-            'restored_query_results' => ['sdk_rust' => 5, 'workflow_php_sdk' => 5, 'sdk_python' => 5],
-            'completed_query_results' => ['sdk_rust' => 5, 'workflow_php_sdk' => 5, 'sdk_python' => 5],
+            'running_query_results' => ['sdk_rust' => 5, 'sdk_php_sdk' => 5, 'sdk_python' => 5],
+            'restored_query_results' => ['sdk_rust' => 5, 'sdk_php_sdk' => 5, 'sdk_python' => 5],
+            'completed_query_results' => ['sdk_rust' => 5, 'sdk_php_sdk' => 5, 'sdk_python' => 5],
             'immutability_checkpoints' => [
                 'running' => [
                     'before_first_successful_query' => ['history_event_count' => 6, 'workflow_command_count' => 1],
@@ -7609,7 +7619,7 @@ PY);
                 'outcome' => 'completed_query_replayed_final_state',
                 'current' => 8,
             ],
-            'public_query_surfaces' => ['cli', 'sdk-python', 'workflow-php-sdk'],
+            'public_query_surfaces' => ['cli', 'sdk-python', 'sdk-php'],
             'terminal_state_before_operations' => [
                 'status_code' => 200,
                 'workflow_id' => 'wf-completed',
@@ -7763,7 +7773,7 @@ PY);
                 'cli' => '0.1.45',
                 'sdk-python' => '0.4.58',
                 'sdk-rust' => '0.1.2',
-                'workflow-php' => '2.0.0-alpha.161',
+                'sdk-php' => '0.1.161',
                 'waterline' => '2.0.0-alpha.54',
             ],
             'artifact_sources' => [
@@ -7771,7 +7781,7 @@ PY);
                 'cli' => 'official_install_script',
                 'sdk-python' => 'pypi_package',
                 'sdk-rust' => 'published_crates_io_package',
-                'workflow-php' => 'packagist_package',
+                'sdk-php' => 'packagist_package',
                 'waterline' => 'packagist_package',
             ],
             'captured_at' => '2026-05-20T00:04:00Z',
@@ -7827,11 +7837,11 @@ PY);
                 'sdk-python' => '0.4.58',
                 'sdk-rust' => '0.1.2',
                 'workflow' => '2.0.0-alpha.161',
-                'workflow-php' => '2.0.0-alpha.161',
+                'sdk-php' => '0.1.161',
                 'waterline' => '2.0.0-alpha.54',
             ],
             'runtime_matrix' => [
-                'runtimes' => ['workflow-php', 'sdk-python', 'sdk-rust'],
+                'runtimes' => ['sdk-php', 'sdk-python', 'sdk-rust'],
                 'same_language_cells' => [
                     [
                         'scenario' => 'python_worker_cli_and_sdk_baseline',
@@ -7840,24 +7850,24 @@ PY);
                     ],
                     [
                         'scenario' => 'php_worker_cli_and_sdk_baseline',
-                        'worker' => 'workflow-php',
-                        'clients' => ['cli', 'workflow-php-sdk'],
+                        'worker' => 'sdk-php',
+                        'clients' => ['cli', 'sdk-php'],
                     ],
                     [
                         'scenario' => 'rust_worker_rust_php_python_clients',
                         'worker' => 'sdk-rust',
-                        'clients' => ['sdk-rust', 'workflow-php-sdk', 'sdk-python'],
+                        'clients' => ['sdk-rust', 'sdk-php', 'sdk-python'],
                     ],
                 ],
                 'cross_language_cells' => [
                     [
                         'scenario' => 'python_worker_php_facing_and_cli_clients',
                         'worker' => 'sdk-python',
-                        'clients' => ['workflow-php-sdk', 'cli'],
+                        'clients' => ['sdk-php', 'cli'],
                     ],
                     [
                         'scenario' => 'php_worker_python_and_cli_clients',
-                        'worker' => 'workflow-php',
+                        'worker' => 'sdk-php',
                         'clients' => ['sdk-python', 'cli'],
                     ],
                     [
@@ -7867,7 +7877,7 @@ PY);
                     ],
                     [
                         'scenario' => 'php_worker_rust_client',
-                        'worker' => 'workflow-php',
+                        'worker' => 'sdk-php',
                         'clients' => ['sdk-rust'],
                     ],
                 ],

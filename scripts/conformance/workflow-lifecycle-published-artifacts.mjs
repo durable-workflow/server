@@ -19,7 +19,7 @@ const ALLOWED_CLASSIFICATIONS = new Set([
   'stale-artifact',
   'pipeline-churn',
 ]);
-const REQUIRED_ARTIFACTS = ['server', 'cli', 'workflow', 'sdk-python', 'sdk-rust', 'waterline'];
+const REQUIRED_ARTIFACTS = ['server', 'cli', 'workflow', 'sdk-php', 'sdk-python', 'sdk-rust', 'waterline'];
 const FORBIDDEN_SOURCE_TOKENS = [
   'local_product_source_checkout',
   'workspace_repo_as_artifact_under_test',
@@ -82,8 +82,8 @@ const SCENARIO_REQUIREMENTS = {
     required_behavior: 'workflow_retry_backoff_is_executed_where_supported_or_retry_policy_is_refused_clearly',
   },
   php_sdk_lifecycle_surface: {
-    description: 'The published PHP workflow package can exercise supported lifecycle cells, or unsupported cells produce documented typed errors.',
-    required_evidence: ['sdk', 'covered_cells', 'unsupported_cells', 'typed_errors', 'artifact_version'],
+    description: 'The exact released PHP SDK package drives distinct client and worker processes against the matching public server.',
+    required_evidence: ['sdk', 'covered_cells', 'unsupported_cells', 'typed_errors', 'artifact_version', 'server_version', 'install_provenance', 'apache_avro_provenance', 'client_processes', 'worker_processes', 'callback_counts', 'history_assertions', 'local_product_source_checkouts_used'],
     required_behavior: 'php_sdk_exercises_supported_lifecycle_cells_or_refuses_unsupported_cells_with_typed_errors',
   },
   python_sdk_lifecycle_surface: {
@@ -493,6 +493,7 @@ function artifactObject(source) {
     cli: normalizeCliVersion(stringValue(source.cli)),
     workflow: stringValue(source.workflow ?? source['workflow-php']),
     'workflow-php': stringValue(source['workflow-php'] ?? source.workflow),
+    'sdk-php': stringValue(source['sdk-php']),
     'sdk-python': stringValue(source['sdk-python'] ?? source.sdk_python ?? source.python),
     'sdk-rust': stringValue(source['sdk-rust'] ?? source.sdk_rust ?? source.rust),
     waterline: stringValue(source.waterline),
@@ -522,6 +523,7 @@ function artifactVersions(evidence) {
     cli: normalizeCliVersion(env('DW_CLI_VERSION') || fromEvidence.cli || 'unresolved'),
     workflow: env('DW_WORKFLOW_PHP_VERSION') || fromEvidence.workflow || 'unresolved',
     'workflow-php': env('DW_WORKFLOW_PHP_VERSION') || fromEvidence['workflow-php'] || fromEvidence.workflow || 'unresolved',
+    'sdk-php': env('DW_PHP_SDK_VERSION') || fromEvidence['sdk-php'] || 'unresolved',
     'sdk-python': env('DW_PYTHON_SDK_VERSION') || fromEvidence['sdk-python'] || 'unresolved',
     'sdk-rust': env('DW_RUST_SDK_VERSION') || fromEvidence['sdk-rust'] || 'unresolved',
     waterline: env('DW_WATERLINE_VERSION') || fromEvidence.waterline || 'unresolved',
@@ -550,6 +552,8 @@ function artifactSources(versions, evidence) {
       || (versions.workflow !== 'unresolved' ? `packagist://durable-workflow/workflow@${versions.workflow}` : 'unresolved'),
     'workflow-php': stringValue(supplied['workflow-php'] ?? supplied.workflow)
       || (versions['workflow-php'] !== 'unresolved' ? `packagist://durable-workflow/workflow@${versions['workflow-php']}` : 'unresolved'),
+    'sdk-php': stringValue(supplied['sdk-php'])
+      || (versions['sdk-php'] !== 'unresolved' ? `packagist://durable-workflow/sdk@${versions['sdk-php']}` : 'unresolved'),
     'sdk-python': stringValue(supplied['sdk-python'] ?? supplied.sdk_python ?? supplied.python)
       || (versions['sdk-python'] !== 'unresolved' ? `pypi://durable-workflow==${versions['sdk-python']}` : 'unresolved'),
     'sdk-rust': stringValue(supplied['sdk-rust'] ?? supplied.sdk_rust ?? supplied.rust)
@@ -893,7 +897,7 @@ function semanticEvidenceFailures(scenario, outputs) {
     case 'workflow_retry_backoff_or_refusal':
       return validateWorkflowRetry(outputs);
     case 'php_sdk_lifecycle_surface':
-      return validateSdkLifecycleSurface(outputs, ['php', 'workflow']);
+      return validateSdkLifecycleSurface(outputs, ['sdk-php']);
     case 'python_sdk_lifecycle_surface':
       return validateSdkLifecycleSurface(outputs, ['python']);
     case 'rust_sdk_lifecycle_surface':
@@ -1418,7 +1422,7 @@ function owningSurface(scenarioId, classification) {
     return 'server-sdk-and-docs';
   }
   if (scenarioId.startsWith('php')) {
-    return 'workflow-php';
+    return 'sdk-php';
   }
   if (scenarioId.startsWith('python')) {
     return 'sdk-python';

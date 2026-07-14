@@ -20,6 +20,7 @@ use App\Support\NamespaceRuntimeContract;
 use App\Support\NexusContract;
 use App\Support\PrincipalAttributionContract;
 use App\Support\PrereleaseReadinessContract;
+use App\Support\PhpSdkConformanceContract;
 use App\Support\PythonSdkParityContract;
 use App\Support\ReplayVerificationContract;
 use App\Support\SagaRuntimeContract;
@@ -152,6 +153,7 @@ class HealthController
             'saga_runtime_contract' => true,
             'heartbeat_runtime_contract' => true,
             'principal_attribution_contract' => true,
+            'php_sdk_conformance_contract' => true,
             'python_sdk_parity_contract' => true,
             'prerelease_readiness_contract' => true,
             'skew_refusal_matrix_contract' => true,
@@ -212,6 +214,7 @@ class HealthController
             'saga_runtime_contract' => SagaRuntimeContract::manifest(),
             'heartbeat_runtime_contract' => HeartbeatRuntimeContract::manifest(),
             'principal_attribution_contract' => PrincipalAttributionContract::manifest(),
+            'php_sdk_conformance_contract' => PhpSdkConformanceContract::manifest(),
             'python_sdk_parity_contract' => PythonSdkParityContract::manifest(),
             'prerelease_readiness_contract' => PrereleaseReadinessContract::manifest(),
             'skew_refusal_matrix_contract' => SkewRefusalMatrixContract::manifest(),

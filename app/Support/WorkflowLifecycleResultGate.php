@@ -1010,7 +1010,7 @@ final class WorkflowLifecycleResultGate
             'workflow_id_reuse_duplicate_start_policy' => self::validateDuplicateStartPolicy($outputs),
             'workflow_timeout_terminal_state' => self::validateWorkflowTimeout($outputs),
             'workflow_retry_backoff_or_refusal' => self::validateWorkflowRetry($outputs),
-            'php_sdk_lifecycle_surface' => self::validateSdkLifecycleSurface($outputs, ['php', 'workflow']),
+            'php_sdk_lifecycle_surface' => self::validateSdkLifecycleSurface($outputs, ['sdk-php']),
             'python_sdk_lifecycle_surface' => self::validateSdkLifecycleSurface($outputs, ['python']),
             'rust_sdk_lifecycle_surface' => array_merge(
                 self::validateSdkLifecycleSurface($outputs, ['rust']),
@@ -1986,7 +1986,7 @@ final class WorkflowLifecycleResultGate
     {
         $artifacts = array_keys($contract['artifact_policy']['install_channels'] ?? []);
         if ($artifacts === []) {
-            return ['server', 'cli', 'workflow-php', 'sdk-python', 'sdk-rust', 'waterline'];
+            return ['server', 'cli', 'workflow-php', 'sdk-php', 'sdk-python', 'sdk-rust', 'waterline'];
         }
 
         return array_values(array_map(static fn (mixed $artifact): string => (string) $artifact, $artifacts));

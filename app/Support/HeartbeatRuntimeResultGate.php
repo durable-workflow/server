@@ -22,7 +22,7 @@ final class HeartbeatRuntimeResultGate
             'published_cli_release',
             'github_release',
         ],
-        'workflow-php' => [
+        'sdk-php' => [
             'composer_packagist',
             'composer_release',
             'packagist',
@@ -681,7 +681,7 @@ final class HeartbeatRuntimeResultGate
     private static function sdkHeartbeatLoopArtifacts(): array
     {
         return [
-            'php_sdk_heartbeat_loop' => 'workflow-php',
+            'php_sdk_heartbeat_loop' => 'sdk-php',
             'python_sdk_heartbeat_loop' => 'sdk-python',
             'rust_sdk_heartbeat_loop' => 'sdk-rust',
         ];
@@ -968,7 +968,7 @@ final class HeartbeatRuntimeResultGate
 
     private static function isKnownWorkerArtifact(string $artifact): bool
     {
-        return in_array($artifact, ['workflow-php', 'sdk-python', 'sdk-rust'], true);
+        return in_array($artifact, ['sdk-php', 'sdk-python', 'sdk-rust'], true);
     }
 
     /**
@@ -1038,7 +1038,7 @@ final class HeartbeatRuntimeResultGate
         return match ($artifact) {
             'server' => self::matchesServerArtifactSource($version, $source),
             'cli' => self::matchesCliArtifactSource($version, $source),
-            'workflow-php' => self::matchesComposerArtifactSource('durable-workflow/workflow', $version, $source),
+            'sdk-php' => self::matchesComposerArtifactSource('durable-workflow/sdk', $version, $source),
             'sdk-python' => self::matchesPythonArtifactSource($version, $source),
             'sdk-rust' => self::matchesRustArtifactSource($version, $source),
             'waterline' => self::matchesComposerArtifactSource('durable-workflow/waterline', $version, $source),
@@ -2667,7 +2667,7 @@ final class HeartbeatRuntimeResultGate
     private static function artifactVersionValue(array $versions, string $artifact): string
     {
         $aliases = [
-            'workflow-php' => ['workflow-php', 'workflow_php', 'workflow'],
+            'sdk-php' => ['sdk-php', 'sdk_php'],
             'sdk-python' => ['sdk-python', 'sdk_python', 'python'],
             'sdk-rust' => ['sdk-rust', 'sdk_rust', 'rust'],
             'waterline' => ['waterline', 'waterline-ui', 'waterline_ui'],
@@ -2709,11 +2709,10 @@ final class HeartbeatRuntimeResultGate
     {
         $normalized = strtolower(str_replace(['_', ' '], '-', trim($artifact)));
 
-        if ($normalized === 'workflow'
-            || $normalized === 'php'
-            || $normalized === 'workflow-php'
-            || str_contains($normalized, 'durable-workflow/workflow')) {
-            return 'workflow-php';
+        if ($normalized === 'php'
+            || $normalized === 'sdk-php'
+            || str_contains($normalized, 'durable-workflow/sdk')) {
+            return 'sdk-php';
         }
 
         if ($normalized === 'python'
@@ -2735,11 +2734,10 @@ final class HeartbeatRuntimeResultGate
     {
         $normalized = strtolower(str_replace(['_', ' '], '-', trim($artifact)));
 
-        if ($normalized === 'workflow'
-            || $normalized === 'php'
-            || $normalized === 'workflow-php'
-            || str_contains($normalized, 'durable-workflow/workflow')) {
-            return 'workflow-php';
+        if ($normalized === 'php'
+            || $normalized === 'sdk-php'
+            || str_contains($normalized, 'durable-workflow/sdk')) {
+            return 'sdk-php';
         }
 
         if ($normalized === 'python'

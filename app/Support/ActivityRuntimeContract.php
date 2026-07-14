@@ -141,6 +141,7 @@ final class ActivityRuntimeContract
                 ],
                 'runtimes' => [
                     'workflow-php',
+                    'sdk-php',
                     'sdk-python',
                 ],
                 'activity_cells' => [

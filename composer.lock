@@ -4,7 +4,7 @@
         "Read more about it at https://getcomposer.org/doc/01-basic-usage.md#installing-dependencies",
         "This file is @generated automatically"
     ],
-    "content-hash": "749e16924d1733d07ec862d0a3a84c0f",
+    "content-hash": "a2534b9ae4a8dcbc5fa56d4b83c922f3",
     "packages": [
         {
             "name": "apache/avro",
@@ -505,11 +505,11 @@
         },
         {
             "name": "durable-workflow/workflow",
-            "version": "2.0.0-alpha.279",
+            "version": "2.0.0-alpha.280",
             "dist": {
                 "type": "path",
                 "url": "/workflow",
-                "reference": "f9a00e18fa21196bcb3505710489025ff93cf5e1"
+                "reference": "3fa9bff54c8ccef5537a885b167e470a629661b9"
             },
             "require": {
                 "apache/avro": "^1.12",
@@ -524,6 +524,9 @@
                 "orchestra/testbench": "^8.0|^11.0",
                 "phpstan/phpstan": "^2.0",
                 "symplify/easy-coding-standard": "^11.0"
+            },
+            "suggest": {
+                "durable-workflow/sdk": "Framework-neutral client and remote-worker SDK for the standalone Durable Workflow server."
             },
             "type": "library",
             "extra": {
@@ -601,7 +604,7 @@
                     "email": "support@durable-workflow.com"
                 }
             ],
-            "description": "Durable workflow engine that allows users to write long running persistent distributed workflows (orchestrations) in PHP powered by Laravel queues.",
+            "description": "Embedded durable workflow runtime and orchestration engine for Laravel applications.",
             "transport-options": {
                 "symlink": false,
                 "relative": false

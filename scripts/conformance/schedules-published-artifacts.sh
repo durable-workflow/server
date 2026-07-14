@@ -22,7 +22,7 @@ Environment overrides:
   DW_SERVER_VERSION                 Published server version under test.
   DW_CLI_VERSION                    Published CLI version under test.
   DW_PYTHON_SDK_VERSION             Published PyPI durable-workflow version.
-  DW_WORKFLOW_PHP_VERSION           Published durable-workflow/workflow version.
+  DW_PHP_SDK_VERSION                Published durable-workflow/sdk version.
   DW_WATERLINE_VERSION              Published Waterline version under test.
   DW_SCHEDULES_SMOKE_EVIDENCE       Optional JSON from a published-artifact
                                     smoke or shard run. Scenario results in

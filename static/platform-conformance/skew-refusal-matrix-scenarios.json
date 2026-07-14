@@ -4,7 +4,7 @@
   "category": "skew_refusal_matrix_contract",
   "suite_schema": "durable-workflow.v2.platform-conformance.suite",
   "suite_version": 15,
-  "description": "Public scenario manifest for published-artifact version-skew refusal across CLI, Python SDK, PHP workflow worker, and Waterline surfaces.",
+  "description": "Public scenario manifest for published-artifact version-skew refusal across CLI, Python SDK, PHP SDK worker, and Waterline surfaces.",
   "fixture_type": "published_artifact_runtime_scenario_manifest",
   "result_schema": "durable-workflow.v2.skew-refusal-matrix.result",
   "result_statuses": [
@@ -24,6 +24,7 @@
       "cli",
       "sdk-python",
       "workflow",
+      "sdk-php",
       "waterline"
     ],
     "required_run_record_fields": [
@@ -64,7 +65,7 @@
     "surfaces": [
       "cli",
       "sdk-python",
-      "workflow-worker",
+      "sdk-php",
       "waterline"
     ],
     "pairing_classes": [
@@ -85,7 +86,7 @@
         "worker_lifecycle",
         "schedule_control_plane"
       ],
-      "workflow-worker": [
+      "sdk-php": [
         "cluster_info_probe",
         "worker_lifecycle"
       ],
@@ -161,7 +162,7 @@
       ]
     },
     "workflow_worker_version_pair_matrix": {
-      "required_surface": "workflow-worker",
+      "required_surface": "sdk-php",
       "required_pairing_classes": [
         "compatible",
         "backward_skew",
@@ -262,7 +263,7 @@
       "published-artifact-install",
       "cli-skew-surface-shard",
       "sdk-python-skew-surface-shard",
-      "workflow-worker-skew-surface-shard",
+      "sdk-php-skew-surface-shard",
       "waterline-skew-surface-shard",
       "future-version-boundary-shard",
       "request-response-evidence-shard"
@@ -305,9 +306,9 @@
         "fallback_status_when_surface_missing": "not_covered",
         "fallback_finding_type": "conformance_runner_coverage_gap"
       },
-      "workflow-worker": {
-        "scope": "workflow-worker-skew-surface-shard",
-        "artifact": "workflow",
+      "sdk-php": {
+        "scope": "sdk-php-skew-surface-shard",
+        "artifact": "sdk-php",
         "owner": "durable-workflow/workflow",
         "must_cover_pairing_classes": [
           "compatible",
@@ -393,12 +394,13 @@
     {
       "id": "published_artifact_install_only",
       "title": "Published artifacts are pinned",
-      "summary": "Resolve and install the exact server, CLI, Python SDK, workflow, and Waterline artifacts under test from their public channels.",
+      "summary": "Resolve and install the exact server, CLI, Python SDK, Workflow engine, PHP SDK, and Waterline artifacts under test from their public channels.",
       "operations": [
         "resolve_published_server_artifact",
         "resolve_published_cli_artifact",
         "resolve_published_sdk_python_artifact",
         "resolve_published_workflow_artifact",
+        "resolve_published_php_sdk_artifact",
         "resolve_published_waterline_artifact"
       ],
       "pass_criteria": [
@@ -441,10 +443,10 @@
     },
     {
       "id": "workflow_worker_version_pair_matrix",
-      "title": "PHP workflow worker skew matrix",
-      "summary": "Exercise PHP workflow worker registration, heartbeat, polling, complete, and fail calls against compatible and skewed server versions.",
+      "title": "PHP SDK worker skew matrix",
+      "summary": "Exercise PHP SDK worker registration, heartbeat, polling, complete, and fail calls against compatible and skewed server versions.",
       "operations": [
-        "GET /api/cluster/info during PHP workflow worker bootstrap",
+        "GET /api/cluster/info during PHP SDK worker bootstrap",
         "POST /api/worker/register",
         "POST /api/worker/heartbeat",
         "POST /api/worker/workflow-tasks/poll",
@@ -497,7 +499,7 @@
       "operations": [
         "capture skewed CLI wire exchange",
         "capture skewed Python SDK wire exchange",
-        "capture skewed PHP workflow worker wire exchange",
+        "capture skewed PHP SDK worker wire exchange",
         "capture skewed Waterline wire exchange"
       ],
       "pass_criteria": [

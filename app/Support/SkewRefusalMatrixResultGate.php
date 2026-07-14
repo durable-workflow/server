@@ -1325,7 +1325,7 @@ final class SkewRefusalMatrixResultGate
             return [];
         }
 
-        if ($surface === 'workflow-worker') {
+        if ($surface === 'sdk-php') {
             $classification = self::stringValue(
                 $row['worker_skew_classification']
                     ?? $row['workerSkewClassification']
@@ -1873,7 +1873,7 @@ final class SkewRefusalMatrixResultGate
     private static function isFindingCellToken(string $token): bool
     {
         return $token === 'smoke_only'
-            || preg_match('/^(cli|sdk-python|workflow-worker|waterline)(\.[A-Za-z0-9_-]+){0,3}$/', $token) === 1;
+            || preg_match('/^(cli|sdk-python|sdk-php|waterline)(\.[A-Za-z0-9_-]+){0,3}$/', $token) === 1;
     }
 
     /**

@@ -204,7 +204,7 @@ class NexusContractTest extends TestCase
     {
         $manifest = NexusContract::manifest();
 
-        $this->assertContains('workflow-php', $manifest['required_matrix']['caller_runtimes']);
+        $this->assertContains('sdk-php', $manifest['required_matrix']['caller_runtimes']);
         $this->assertContains('sdk-python', $manifest['required_matrix']['service_runtimes']);
         $this->assertContains('tenant_a_calls_shared_service', $manifest['required_scenarios']);
         $this->assertContains('worker_restart_replay_does_not_reissue_call', $manifest['required_scenarios']);
@@ -826,8 +826,8 @@ class NexusContractTest extends TestCase
         $evidence = $this->completeRunnerEvidence();
         $unsupportedSurfaces = [
             'php_caller_python_service' => [
-                'owner' => 'workflow',
-                'message' => 'published workflow-php lacks a public workflow-safe Nexus service-call caller API on Workflow\\V2\\Client\\ControlPlaneClient or Workflow\\V2\\Workflow',
+                'owner' => 'sdk-php',
+                'message' => 'published sdk-php lacks the public DurableWorkflow\\Client Nexus service-operation API',
             ],
             'python_caller_php_service' => [
                 'owner' => 'sdk-python',
@@ -1426,7 +1426,7 @@ class NexusContractTest extends TestCase
         $this->assertFalse($installScenario['observed_outputs']['local_product_source_checkouts_used']);
         $this->assertTrue($installScenario['observed_outputs']['install_channels_verified']);
         $this->assertTrue($installScenario['observed_outputs']['published_install_tuple_proven']);
-        $this->assertCount(5, $installScenario['observed_outputs']['artifact_install_evidence']['artifacts']);
+        $this->assertCount(6, $installScenario['observed_outputs']['artifact_install_evidence']['artifacts']);
 
         $this->assertSame('pass', $routingScenario['status']);
         $this->assertSame([], $routingScenario['linked_findings']);
@@ -1519,7 +1519,7 @@ class NexusContractTest extends TestCase
         $this->assertSame('pass', $result['outcome']);
         $this->assertSame('pass', $installScenario['status']);
         $this->assertSame([], $result['artifact_policy_failures']);
-        $this->assertCount(5, $installScenario['observed_outputs']['artifact_install_evidence']['artifacts']);
+        $this->assertCount(6, $installScenario['observed_outputs']['artifact_install_evidence']['artifacts']);
         $this->assertSame(
             'DW_NEXUS_ARTIFACT_INSTALL_EVIDENCE',
             $result['artifact_install_evidence']['supplied_install_evidence_source'],
@@ -1568,7 +1568,7 @@ class NexusContractTest extends TestCase
         $this->assertSame([], $installScenario['linked_findings']);
         $this->assertSame($evidence['artifact_versions'], $installScenario['observed_outputs']['artifact_versions']);
         $this->assertSame($evidence['artifact_sources'], $installScenario['observed_outputs']['artifact_sources']);
-        $this->assertCount(5, $installScenario['observed_outputs']['artifact_install_evidence']['artifacts']);
+        $this->assertCount(6, $installScenario['observed_outputs']['artifact_install_evidence']['artifacts']);
         $this->assertSame([], $result['artifact_policy_failures']);
     }
 
@@ -1591,7 +1591,7 @@ class NexusContractTest extends TestCase
 
         $this->assertSame('pass', $result['outcome']);
         $this->assertSame('pass', $installScenario['status']);
-        $this->assertCount(5, $result['artifact_install_evidence']['artifacts']);
+        $this->assertCount(6, $result['artifact_install_evidence']['artifacts']);
         $this->assertSame(
             'scenario_results.published_artifact_install_only.observed_outputs.artifact_install_evidence',
             $result['artifact_install_evidence']['supplied_install_evidence_source'],
@@ -1660,7 +1660,7 @@ class NexusContractTest extends TestCase
         $this->assertSame('published_artifact_tuple', $result['artifact_install_evidence']['install_evidence_source']);
         $this->assertSame('published_artifact_tuple', $result['artifact_install_evidence']['derived_install_evidence_source']);
         $this->assertArrayNotHasKey('supplied_install_evidence_source', $result['artifact_install_evidence']);
-        $this->assertCount(5, $installScenario['observed_outputs']['artifact_install_evidence']['artifacts']);
+        $this->assertCount(6, $installScenario['observed_outputs']['artifact_install_evidence']['artifacts']);
         $this->assertFalse(
             $installScenario['observed_outputs']['artifact_install_evidence']['supplied_install_evidence'],
         );
@@ -1702,7 +1702,7 @@ class NexusContractTest extends TestCase
         $this->assertTrue($result['artifact_install_evidence']['derived_install_evidence']);
         $this->assertSame('published_artifact_tuple', $result['artifact_install_evidence']['derived_install_evidence_source']);
         $this->assertArrayNotHasKey('supplied_install_evidence_source', $result['artifact_install_evidence']);
-        $this->assertCount(5, $result['artifact_install_evidence']['artifacts']);
+        $this->assertCount(6, $result['artifact_install_evidence']['artifacts']);
     }
 
     public function test_host_runner_does_not_pass_from_reachability_and_artifact_pins_alone(): void
@@ -2589,6 +2589,7 @@ class NexusContractTest extends TestCase
             'server' => '0.2.247',
             'cli' => '0.1.75',
             'workflow' => '2.0.0-alpha.190',
+            'sdk-php' => '0.1.1',
             'sdk-python' => '0.4.84',
             'waterline' => '2.0.0-alpha.77',
         ];
@@ -2596,6 +2597,7 @@ class NexusContractTest extends TestCase
             'server' => 'docker://durableworkflow/server:0.2.247',
             'cli' => 'https://github.com/durable-workflow/cli/releases/download/0.1.75/dw-linux-x86_64',
             'workflow' => 'packagist://durable-workflow/workflow@2.0.0-alpha.190',
+            'sdk-php' => 'packagist://durable-workflow/sdk@0.1.1',
             'sdk-python' => 'pypi://durable-workflow==0.4.84',
             'waterline' => 'packagist://durable-workflow/waterline@2.0.0-alpha.77',
         ];
@@ -2772,7 +2774,7 @@ class NexusContractTest extends TestCase
             'php_caller_python_service' => $base + [
                 'caller_workflow_instance_id' => 'caller-'.$scenarioId,
                 'caller_workflow_run_id' => 'run-'.$scenarioId,
-                'caller_sdk_language' => 'workflow-php',
+                'caller_sdk_language' => 'sdk-php',
                 'service_sdk_language' => 'sdk-python',
                 'operation_name' => 'Greeter.greet',
                 'request_payload' => [
@@ -3109,6 +3111,15 @@ class NexusContractTest extends TestCase
                     'local_product_source_checkouts_used' => false,
                 ],
                 [
+                    'artifact' => 'sdk-php',
+                    'version' => $artifactVersions['sdk-php'],
+                    'source' => $artifactSources['sdk-php'],
+                    'status' => 'pass',
+                    'service_health_succeeded' => true,
+                    'service_health' => $phpHealth,
+                    'local_product_source_checkouts_used' => false,
+                ],
+                [
                     'artifact' => 'sdk-python',
                     'version' => $artifactVersions['sdk-python'],
                     'source' => $artifactSources['sdk-python'],
@@ -3203,6 +3214,7 @@ class NexusContractTest extends TestCase
             'server' => 'docker',
             'cli' => 'github_release_asset',
             'workflow' => 'packagist',
+            'sdk-php' => 'packagist',
             'sdk-python' => 'pypi',
             'waterline' => 'packagist',
         ];
@@ -3280,6 +3292,7 @@ class NexusContractTest extends TestCase
                 'server' => '0.2.247',
                 'cli' => '0.1.75',
                 'workflow' => '2.0.0-alpha.190',
+                'sdk-php' => '0.1.1',
                 'sdk-python' => '0.4.84',
                 'waterline' => '2.0.0-alpha.77',
             ],

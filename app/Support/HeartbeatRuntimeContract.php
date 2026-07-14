@@ -62,13 +62,12 @@ final class HeartbeatRuntimeContract
                 'install_channels' => [
                     'server' => 'docker image durableworkflow/server:<exact published version or digest>',
                     'cli' => 'official dw release install script pinned to its latest release tag',
-                    'workflow-php' => 'Composer package durable-workflow/workflow:2.0.0-alpha.<latest>',
+                    'sdk-php' => 'Composer package durable-workflow/sdk:<exact released version>',
                     'sdk-python' => 'PyPI package durable-workflow==<latest>',
                     'sdk-rust' => 'crates.io package durable-workflow=<latest> when Rust is advertised in client compatibility',
                     'waterline' => 'published Waterline observer artifact matching the release set',
                 ],
                 'release_artifact_aliases' => [
-                    'workflow-php' => ['workflow'],
                     'sdk-python' => ['python'],
                     'sdk-rust' => ['rust'],
                 ],
@@ -135,7 +134,7 @@ final class HeartbeatRuntimeContract
                 'secondary_namespace' => 'heartbeats-conformance-other',
                 'task_queue' => 'hb-shared',
                 'required_workers' => [
-                    'workflow-php',
+                    'sdk-php',
                     'sdk-python',
                     'sdk-rust',
                 ],
@@ -161,7 +160,7 @@ final class HeartbeatRuntimeContract
             ],
             'required_matrix' => [
                 'runtimes' => [
-                    'workflow-php',
+                    'sdk-php',
                     'sdk-python',
                     'sdk-rust',
                 ],
@@ -281,9 +280,9 @@ final class HeartbeatRuntimeContract
                     'cross-namespace-isolation',
                 ],
                 'runtime_shards' => [
-                    'workflow-php' => [
-                        'artifact' => 'durable-workflow/workflow',
-                        'focused_runner' => 'workflow-php-heartbeat-loop',
+                    'sdk-php' => [
+                        'artifact' => 'durable-workflow/sdk',
+                        'focused_runner' => 'sdk-php-heartbeat-loop',
                         'must_cover_scenarios' => [
                             'php_sdk_heartbeat_loop',
                             'heartbeat_wire_shape_uniformity',
@@ -328,7 +327,7 @@ final class HeartbeatRuntimeContract
                     ],
                 ],
                 'focused_runners' => [
-                    'workflow-php-heartbeat-loop' => [
+                    'sdk-php-heartbeat-loop' => [
                         'status' => 'host_executable_published_artifact_runner',
                         'runner_repository' => 'server',
                         'runner_path' => 'scripts/conformance/heartbeats-published-artifacts.sh',
@@ -342,15 +341,15 @@ final class HeartbeatRuntimeContract
                         'required_artifact_pins' => [
                             'server',
                             'cli',
-                            'workflow-php',
+                            'sdk-php',
                         ],
                         'required_worker_api' => [
-                            'Workflow\\V2\\Worker\\WorkerProtocolClient',
-                            'Workflow\\V2\\Worker\\StandaloneWorkflowWorker::tickWithHeartbeat()',
-                            'Workflow\\V2\\Worker\\StandaloneWorkflowWorker::run()',
+                            'DurableWorkflow\\Client',
+                            'DurableWorkflow\\Worker::tick()',
+                            'DurableWorkflow\\Client::heartbeatWorker()',
                         ],
                         'must_prove' => [
-                            'exact_packagist_workflow_package_install',
+                            'exact_packagist_sdk_package_install',
                             'real_workflow_completion_on_unique_task_queue',
                             'at_least_two_sdk_emitted_heartbeat_timestamps',
                             'server_acknowledged_bounded_heartbeat_cadence',
@@ -473,7 +472,7 @@ final class HeartbeatRuntimeContract
             'result_gate' => HeartbeatRuntimeResultGate::spec(),
             'finding_policy' => [
                 'root_cause_owners' => [
-                    'php_sdk_heartbeat_loop_gap' => 'workflow-php',
+                    'php_sdk_heartbeat_loop_gap' => 'sdk-php',
                     'python_sdk_heartbeat_loop_gap' => 'sdk-python',
                     'rust_sdk_heartbeat_loop_gap' => 'sdk-rust',
                     'heartbeat_wire_shape_mismatch' => 'offending_sdk_or_server_worker_protocol',
@@ -498,7 +497,7 @@ final class HeartbeatRuntimeContract
                     'next_acceptance_criterion',
                 ],
                 'surface_routing' => [
-                    'PHP worker does not emit heartbeat loop' => 'workflow-php',
+                    'PHP worker does not emit heartbeat loop' => 'sdk-php',
                     'Python worker does not emit heartbeat loop' => 'sdk-python',
                     'Rust worker does not emit heartbeat loop' => 'sdk-rust',
                     'stale worker remains active past acknowledged stale window' => 'server',

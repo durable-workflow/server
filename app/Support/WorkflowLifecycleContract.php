@@ -57,6 +57,7 @@ final class WorkflowLifecycleContract
                     'server' => 'docker image durableworkflow/server:<exact published version or digest>',
                     'cli' => 'official dw release install script pinned to its latest release tag',
                     'workflow-php' => 'Composer package durable-workflow/workflow:2.0.0-alpha.<latest>',
+                    'sdk-php' => 'Composer package durable-workflow/sdk:<exact released version>',
                     'sdk-python' => 'PyPI package durable-workflow==<latest>',
                     'sdk-rust' => 'crates.io package durable-workflow=<exact released version>',
                     'waterline' => 'published Waterline observer artifact matching the release set',
@@ -112,7 +113,7 @@ final class WorkflowLifecycleContract
                     'Waterline workflow run detail and history views',
                 ],
                 'required_workers' => [
-                    'workflow-php',
+                    'sdk-php',
                     'sdk-python',
                     'sdk-rust',
                 ],
@@ -189,9 +190,8 @@ final class WorkflowLifecycleContract
                     '<result-dir>/rust-sdk-lifecycle-evidence.json',
                 ],
                 'php_sdk_probe_executors' => [
-                    'published_server_php_and_composer',
+                    'published_server_php_and_composer_separate_processes',
                     'local_php_and_composer',
-                    'docker_composer_2',
                 ],
                 'php_sdk_probe_binary_overrides' => [
                     'DW_WORKFLOW_LIFECYCLE_PHP_BIN',
@@ -200,6 +200,10 @@ final class WorkflowLifecycleContract
                     'COMPOSER_BIN',
                 ],
                 'php_sdk_probe_does_not_require_docker_inside_server_container' => true,
+                'php_sdk_package' => 'durable-workflow/sdk',
+                'php_sdk_version_environment' => 'DW_PHP_SDK_VERSION',
+                'php_sdk_process_boundary_required' => true,
+                'php_sdk_runner_path' => 'scripts/conformance/php-sdk-published-artifacts.sh',
                 'python_sdk_probe_executors' => [
                     'python_venv_pypi_install',
                     'configured_python_binary',
@@ -226,6 +230,7 @@ final class WorkflowLifecycleContract
                     'pins.json',
                     'run-metadata.json',
                     'php-sdk-lifecycle-evidence.json',
+                    'php-sdk-conformance-result.json',
                     'python-sdk-lifecycle-evidence.json',
                     'rust-sdk-lifecycle-evidence.json',
                     'workflow-lifecycle-result.json',
@@ -354,7 +359,7 @@ final class WorkflowLifecycleContract
             'php_sdk_lifecycle_surface' => [
                 'title' => 'PHP SDK lifecycle surface',
                 'required_fields' => $sharedFields,
-                'evidence' => ['sdk', 'covered_cells', 'unsupported_cells', 'typed_errors', 'artifact_version'],
+                'evidence' => ['sdk', 'covered_cells', 'unsupported_cells', 'typed_errors', 'artifact_version', 'server_version', 'install_provenance', 'apache_avro_provenance', 'client_processes', 'worker_processes', 'callback_counts', 'history_assertions', 'local_product_source_checkouts_used'],
                 'required_behavior' => 'php_sdk_exercises_supported_lifecycle_cells_or_refuses_unsupported_cells_with_typed_errors',
             ],
             'python_sdk_lifecycle_surface' => [

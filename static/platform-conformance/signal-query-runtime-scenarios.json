@@ -1,0 +1,99 @@
+{
+  "schema": "durable-workflow.v2.platform-conformance.runtime-scenarios",
+  "category": "signal_query_runtime_contract",
+  "suite_schema": "durable-workflow.v2.platform-conformance.suite",
+  "suite_version": 30,
+  "result_schema": "durable-workflow.v2.signal-query-runtime.result",
+  "result_version": 1,
+  "result_statuses": [
+    "pass",
+    "fail",
+    "unsupported",
+    "not_covered",
+    "runner_blocked"
+  ],
+  "artifact_policy": {
+    "published_artifacts_only": true,
+    "requires_resolved_versions": true,
+    "rejects_placeholder_versions": true,
+    "requires_local_product_source_checkouts_used_false": true,
+    "required_artifacts": [
+      "server",
+      "cli",
+      "workflow",
+      "sdk-php",
+      "sdk-python",
+      "sdk-rust",
+      "waterline"
+    ],
+    "install_proof_artifacts": [
+      "server",
+      "cli",
+      "sdk-php",
+      "sdk-python",
+      "sdk-rust"
+    ],
+    "sdk_php_package": "durable-workflow/sdk"
+  },
+  "topology": {
+    "workflow_type": "Counter",
+    "required_workers": [
+      "sdk-php",
+      "sdk-python",
+      "sdk-rust"
+    ],
+    "required_handlers": {
+      "signals": [
+        "increment",
+        "set"
+      ],
+      "queries": [
+        "current"
+      ]
+    }
+  },
+  "required_matrix": {
+    "runtimes": [
+      "sdk-php",
+      "sdk-python",
+      "sdk-rust"
+    ],
+    "client_paths": [
+      "cli",
+      "sdk-php",
+      "sdk-python",
+      "sdk-rust"
+    ],
+    "observer_paths": [
+      "waterline-selected-run-detail",
+      "waterline-query-action"
+    ]
+  },
+  "scenarios": [
+    "published_artifact_install_only",
+    "python_worker_cli_and_sdk_baseline",
+    "php_worker_cli_and_sdk_baseline",
+    "python_worker_php_facing_and_cli_clients",
+    "php_worker_python_and_cli_clients",
+    "rust_worker_rust_php_python_clients",
+    "python_worker_rust_client",
+    "php_worker_rust_client",
+    "rust_query_error_and_immutability",
+    "ordered_signal_delivery",
+    "dedup_contract_observation",
+    "signal_during_replay",
+    "query_during_replay",
+    "rust_replayed_instance_state_query_after_cold_restart",
+    "completed_run_signal_and_query",
+    "unknown_signal_and_query_errors",
+    "malformed_signal_and_query_payloads",
+    "waterline_operator_visibility"
+  ],
+  "host_runner_contract": {
+    "runner_id": "signals-queries",
+    "runner_path": "scripts/conformance/signals-queries-published-artifacts.sh",
+    "php_worker_fixture": "scripts/conformance/fixtures/php-sdk/signals-queries-worker.php",
+    "php_client_fixture": "scripts/conformance/fixtures/php-sdk/signals-queries-client.php",
+    "source_free_php_sdk_project_required": true
+  }
+}

@@ -133,18 +133,18 @@ The server image also ships a source-free host workflow lifecycle runner at
 conformance runners can discover that runner from `GET /api/cluster/info`
 under `workflow_lifecycle_contract.host_runner_contract`, extract it from the
 exact image under test, and invoke it on a Docker-capable host
-against the current published server image, CLI release, Python SDK, Rust SDK,
-PHP workflow runtime, and Waterline artifact versions. The runner accepts host
-runtime evidence through `DW_WORKFLOW_LIFECYCLE_EVIDENCE`,
+against the current published server image, CLI release, PHP SDK, Python SDK,
+Rust SDK, embedded Workflow engine, and Waterline artifact versions. The runner
+accepts host runtime evidence through `DW_WORKFLOW_LIFECYCLE_EVIDENCE`,
 `DW_WORKFLOW_LIFECYCLE_EVIDENCE_PATH`, or
 `<result-dir>/workflow-lifecycle-evidence.json`. The runner can also merge
 generated `<result-dir>/php-sdk-lifecycle-evidence.json`,
 `<result-dir>/python-sdk-lifecycle-evidence.json`, and mandatory
 `<result-dir>/rust-sdk-lifecycle-evidence.json` sidecars for SDK lifecycle
-surfaces. The PHP sidecar can be produced with PHP and Composer from the
-published server image, with explicit `DW_WORKFLOW_LIFECYCLE_PHP_BIN` /
-`DW_WORKFLOW_LIFECYCLE_COMPOSER_BIN` binary paths supplied by the host, or with
-Docker's `composer:2` image when the host has Docker but no local PHP toolchain.
+surfaces. The PHP sidecar runs the exact Packagist SDK in separate client and
+worker processes inside the published server image, with explicit
+`DW_WORKFLOW_LIFECYCLE_PHP_BIN` / `DW_WORKFLOW_LIFECYCLE_COMPOSER_BIN` binary
+paths available for equivalent local execution.
 The Python sidecar can be produced from a temporary venv that installs the
 pinned PyPI `durable-workflow` artifact, or with an explicit
 `DW_WORKFLOW_LIFECYCLE_PYTHON_BIN` binary whose environment already contains
@@ -192,9 +192,10 @@ starts update-capable workflows through the public control-plane API, drives
 accepted, waiting, completed, failed, duplicate/idempotent, unknown update,
 invalid input, payload-envelope, terminal-workflow, and authenticated-principal
 attribution cells, then records API and history evidence with
-`runner_blocked=false`. The handoff also installs the pinned Packagist
-`durable-workflow/workflow` package in a disposable Laravel app and imports its
-PHP client/worker update shard evidence. It also installs the pinned PyPI
+`runner_blocked=false`. The handoff also installs the exact Packagist
+`durable-workflow/sdk` package in a disposable Composer project and runs its
+PHP client and worker in separate processes before importing the update shard
+evidence. It also installs the pinned PyPI
 `durable-workflow` package in a disposable virtual environment and imports its
 Python client/worker update shard evidence. The result remains non-passing
 until the full matrix is covered: official CLI JSON and Waterline selected-run
@@ -224,7 +225,7 @@ Host conformance runners discover the heartbeat runtime handoff from
 `GET /api/cluster/info` under
 `heartbeat_runtime_contract.host_runner_contract.runner_id=heartbeats` and
 exercise it against the current published server image, CLI release, Python
-SDK, PHP workflow runtime, Rust worker artifact, and Waterline package
+SDK, PHP SDK, Rust worker artifact, and Waterline package
 versions. A passing result must record PHP, Python, and Rust SDK heartbeat
 loops; heartbeat-shape uniformity; cadence drift; stale transition timing;
 stale-worker exclusion from task and query routing; worker list/detail API
@@ -239,12 +240,13 @@ The server repo also ships a source-free principal-attribution runner at
 conformance runners can discover that handoff from `GET /api/cluster/info`
 under `principal_attribution_contract.host_runner_contract` and invoke it
 against the current published server image plus public CLI, Python SDK, PHP
-workflow, and Waterline packages. Principal-attribution evidence must record
+SDK, Workflow engine, and Waterline packages. Principal-attribution evidence
+must record
 the server-derived actor for workflow start, signal, query, cancellation,
 completion, failure, anonymous, and server-originated history surfaces, plus
 adversarial payload/header spoofing attempts. The SDK parity cells must execute
 authenticated operations through the published Python client and the published
-PHP `Workflow\V2\Client\WorkflowClient`, then compare their history API
+`DurableWorkflow\Client`, then compare their history API
 principal samples with equivalent raw HTTP operations. Any missing public
 surface is non-passing unless it links a focused root-cause finding.
 
@@ -252,17 +254,18 @@ The server repo also ships a source-free namespace runner at
 `scripts/conformance/namespaces-published-artifacts.sh`. Host conformance
 runners can discover that handoff from `GET /api/cluster/info` under
 `namespace_runtime_contract.host_runner_contract` and invoke it against the
-current published server image, CLI release, Python SDK, PHP workflow runtime,
-and Waterline package versions. The runner exercises namespace creation,
+current published server image, CLI release, Python SDK, PHP SDK, embedded
+Workflow engine, and Waterline package versions. The runner exercises namespace creation,
 workflow read/mutation isolation, same-queue worker matching, search-attribute
 schema and value isolation, schedule isolation, namespace deletion cleanup and
 recreate, explicit Nexus crossing, CLI default-scope behavior, SDK namespace
-selection, and adversarial namespace-name refusal. The published Workflow PHP
-namespace shard is required for a passing result and is run automatically from a
-disposable Laravel app unless `DW_NAMESPACES_WORKFLOW_PHP_RESULT` points at a
-pre-generated `workflow:v2:namespace-conformance` report for the same artifact
-tuple; the aggregated evidence records the shard report as executed before the
-PHP worker task-queue cell can pass. A published Waterline shard is run
+selection, and adversarial namespace-name refusal. The exact Packagist PHP SDK
+namespace shard is required for a passing result and is run automatically in a
+separate process from the exact published server image unless
+`DW_NAMESPACES_SDK_PHP_RESULT` points at a pre-generated
+`php-sdk-published-artifacts` report for the same artifact tuple; the aggregated
+evidence records the shard report as executed before the PHP worker task-queue
+cell can pass. A published Waterline shard is run
 automatically from a disposable Laravel app unless
 `DW_NAMESPACES_WATERLINE_RESULT` points at a pre-generated
 `waterline:namespace-conformance` report for the same artifact tuple. When a
@@ -274,8 +277,9 @@ The server repo also ships a source-free Nexus runner at
 `scripts/conformance/nexus-published-artifacts.sh`. Host conformance
 runners can discover that handoff from `GET /api/cluster/info` under
 `nexus_contract.host_runner_contract` and invoke it against the current
-published server image, GitHub CLI release asset, PyPI Python SDK,
-Packagist PHP workflow runtime, and Packagist Waterline package versions.
+published server image, GitHub CLI release asset, Packagist PHP SDK, PyPI
+Python SDK, Packagist Workflow service runtime, and Packagist Waterline package
+versions.
 The runner composes host evidence for
 cross-namespace calls from `tenant-a` and `tenant-b` into `shared`,
 activity-style retry, typed failure propagation, replay without duplicate
@@ -490,7 +494,7 @@ category emits a warning and does not block.
   directions, and the adversarial no-version-bump cell; any incompatible
   delivery count above zero is blocking product evidence. When no external
   published-worker evidence shard is supplied, the handoff attempts to install
-  the published PyPI Python SDK and Packagist PHP workflow runtime and generate
+  the published PyPI Python SDK and Packagist PHP SDK and generate
   Python replay/cache/adversarial plus PHP/Python cross-language shards itself.
 - Migration runtime contract: `GET /api/cluster/info` re-exports
   `migration_runtime_contract`, schema

@@ -30,7 +30,7 @@ const PYTHON_IMAGE = env('DW_HEARTBEATS_PYTHON_IMAGE') || 'python:3.12-slim';
 const RUST_IMAGE = env('DW_HEARTBEATS_RUST_IMAGE') || 'rust:1.86.0-slim-bookworm';
 const SERVER_VERSION = env('DW_SERVER_VERSION');
 const CLI_VERSION = normalizeVersion(env('DW_CLI_VERSION'));
-const WORKFLOW_VERSION = env('DW_WORKFLOW_PHP_VERSION');
+const SDK_PHP_VERSION = env('DW_PHP_SDK_VERSION');
 const SDK_PYTHON_VERSION = env('DW_PYTHON_SDK_VERSION');
 const SDK_RUST_VERSION = env('DW_RUST_SDK_VERSION');
 const SERVER_IMAGE = env('DW_SERVER_IMAGE') || `durableworkflow/server:${SERVER_VERSION}`;
@@ -44,12 +44,12 @@ const CONTAINER_USER = `${HOST_UID}:${HOST_GID}`;
 const RUN_ROOT = fs.mkdtempSync(path.join(RESULT_DIR, `${CELL}-heartbeat-run.`));
 const PROJECT_DIR = path.join(
   RUN_ROOT,
-  IS_PYTHON_CELL ? 'sdk-python' : (IS_RUST_CELL ? 'sdk-rust' : 'workflow-php'),
+  IS_PYTHON_CELL ? 'sdk-python' : (IS_RUST_CELL ? 'sdk-rust' : 'sdk-php'),
 );
 const COMPOSE_OVERRIDE = path.join(RUN_ROOT, 'docker-compose.heartbeat.yml');
 const COMPOSE_FILE = path.join(REPO_ROOT, 'docker-compose.published.yml');
-const SDK_ARTIFACT = IS_PYTHON_CELL ? 'sdk-python' : (IS_RUST_CELL ? 'sdk-rust' : 'workflow-php');
-const SDK_ARTIFACT_VERSION = IS_PYTHON_CELL ? SDK_PYTHON_VERSION : (IS_RUST_CELL ? SDK_RUST_VERSION : WORKFLOW_VERSION);
+const SDK_ARTIFACT = IS_PYTHON_CELL ? 'sdk-python' : (IS_RUST_CELL ? 'sdk-rust' : 'sdk-php');
+const SDK_ARTIFACT_VERSION = IS_PYTHON_CELL ? SDK_PYTHON_VERSION : (IS_RUST_CELL ? SDK_RUST_VERSION : SDK_PHP_VERSION);
 const ARTIFACT_VERSIONS = {
   server: SERVER_VERSION,
   cli: CLI_VERSION,
@@ -62,7 +62,7 @@ const ARTIFACT_SOURCES = {
     ? `pypi://durable-workflow==${SDK_PYTHON_VERSION}`
     : (IS_RUST_CELL
       ? `crates.io://durable-workflow@${SDK_RUST_VERSION}`
-      : `packagist://durable-workflow/workflow@${WORKFLOW_VERSION}`),
+      : `packagist://durable-workflow/sdk@${SDK_PHP_VERSION}`),
 };
 const SCENARIO_ID = `${CELL}_sdk_heartbeat_loop`;
 const RUNTIME = SDK_ARTIFACT;
@@ -302,8 +302,8 @@ function ensureExactPins() {
   if (IS_RUST_CELL && !/^\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?$/.test(SDK_RUST_VERSION)) {
     failures.push('DW_RUST_SDK_VERSION must be an exact release');
   }
-  if (!IS_PYTHON_CELL && !IS_RUST_CELL && !/^\d+\.\d+\.\d+-alpha\.\d+$/.test(WORKFLOW_VERSION)) {
-    failures.push('DW_WORKFLOW_PHP_VERSION must be an exact 2.0 alpha release');
+  if (!IS_PYTHON_CELL && !IS_RUST_CELL && !/^\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?$/.test(SDK_PHP_VERSION)) {
+    failures.push('DW_PHP_SDK_VERSION must be an exact released PHP SDK version');
   }
   const exactTag = new RegExp(`^(?:(?:docker\\.io|index\\.docker\\.io)/)?durableworkflow/server:${escapeRegex(SERVER_VERSION)}$`).test(SERVER_IMAGE);
   const exactDigest = /^(?:(?:docker\.io|index\.docker\.io)\/)?durableworkflow\/server(?::[^@]+)?@sha256:[0-9a-f]{64}$/i.test(SERVER_IMAGE);
@@ -407,8 +407,8 @@ async function waitFor(label, callback, timeoutMs, intervalMs = 500) {
 function writePhpProject() {
   fs.mkdirSync(PROJECT_DIR, { recursive: true });
   writeProjectJson('composer.json', {
-    require: { 'durable-workflow/workflow': WORKFLOW_VERSION },
-    'minimum-stability': 'dev',
+    require: { 'durable-workflow/sdk': SDK_PHP_VERSION },
+    'minimum-stability': 'stable',
     'prefer-stable': true,
     config: {
       'preferred-install': 'dist',
@@ -432,23 +432,9 @@ declare(strict_types=1);
 require __DIR__.'/vendor/autoload.php';
 
 use Composer\\InstalledVersions;
-use Illuminate\\Http\\Client\\Factory as HttpFactory;
-use ReflectionMethod;
-use Workflow\\V2\\Attributes\\Type;
-use Workflow\\V2\\Support\\TypeRegistry;
-use Workflow\\V2\\Support\\WorkflowDefinition;
-use Workflow\\V2\\Worker\\StandaloneWorkflowWorker;
-use Workflow\\V2\\Worker\\WorkerProtocolClient;
-use Workflow\\V2\\Workflow;
-
-#[Type('${WORKFLOW_TYPE}')]
-final class PhpHeartbeatConformanceWorkflow extends Workflow
-{
-    public function handle(): mixed
-    {
-        return ['completed' => true, 'runtime' => 'workflow-php'];
-    }
-}
+use DurableWorkflow\\Client;
+use DurableWorkflow\\Worker;
+use DurableWorkflow\\Worker\\WorkflowContext;
 
 function heartbeat_log(array $record, string $timestampField = 'observed_at'): void
 {
@@ -481,66 +467,40 @@ $token = getenv('DURABLE_WORKFLOW_AUTH_TOKEN');
 if (!is_string($token) || $token === '') {
     throw new RuntimeException('DURABLE_WORKFLOW_AUTH_TOKEN is required');
 }
-$sdkVersion = InstalledVersions::getPrettyVersion('durable-workflow/workflow') ?? 'unknown';
-$client = new WorkerProtocolClient(new HttpFactory(), $baseUrl, $token, $namespace, defaultRequestTimeoutSeconds: 10);
-$arguments = [
-    'workerId' => $workerId,
-    'taskQueue' => $taskQueue,
-    'supportedWorkflowTypes' => [TypeRegistry::for(PhpHeartbeatConformanceWorkflow::class)],
-    'supportedActivityTypes' => [],
-    'sdkVersion' => 'durable-workflow/workflow@'.$sdkVersion,
-    'maxConcurrentWorkflowTasks' => 2,
-    'maxConcurrentActivityTasks' => 1,
-    'workflowDefinitionFingerprints' => [
-        TypeRegistry::for(PhpHeartbeatConformanceWorkflow::class) => WorkflowDefinition::fingerprint(PhpHeartbeatConformanceWorkflow::class),
-    ],
-];
-$parameters = array_map(
-    static fn (ReflectionParameter $parameter): string => $parameter->getName(),
-    (new ReflectionMethod($client, 'registerWorker'))->getParameters(),
+$sdkVersion = InstalledVersions::getPrettyVersion('durable-workflow/sdk') ?? 'unknown';
+$client = new Client($baseUrl, token: $token, namespace: $namespace);
+$registration = $client->registerWorker(
+    $workerId,
+    $taskQueue,
+    ['${WORKFLOW_TYPE}'],
+    [],
+    ['query_tasks', 'workflow_updates', 'durable_history_replay', 'graceful_shutdown'],
+    maxConcurrentWorkflowTasks: 2,
 );
-if (in_array('workflowCommandContracts', $parameters, true)) {
-    $arguments['workflowCommandContracts'] = [
-        TypeRegistry::for(PhpHeartbeatConformanceWorkflow::class) => WorkflowDefinition::commandContract(PhpHeartbeatConformanceWorkflow::class),
-    ];
-}
-$registration = $client->registerWorker(...$arguments) ?? [];
 heartbeat_log([
     'event' => 'worker_registered',
     'worker_id' => $workerId,
     'task_queue' => $taskQueue,
-    'workflow_type' => TypeRegistry::for(PhpHeartbeatConformanceWorkflow::class),
+    'workflow_type' => '${WORKFLOW_TYPE}',
     'sdk_version' => $sdkVersion,
     'registration' => $registration,
 ]);
 
-$worker = new StandaloneWorkflowWorker($client, [
-    TypeRegistry::for(PhpHeartbeatConformanceWorkflow::class) => PhpHeartbeatConformanceWorkflow::class,
-]);
-$first = $worker->tickWithHeartbeat(
-    queue: $taskQueue,
-    workerId: $workerId,
-    queryPollTimeoutSeconds: 0,
-    workflowPollTimeoutSeconds: 1,
-    taskSlots: ['workflow_available' => 2, 'activity_available' => 1],
-    processMetrics: ['process_id' => getmypid(), 'memory_bytes' => memory_get_usage(true), 'host' => gethostname()],
+$worker = new Worker($client, $taskQueue, workerId: $workerId, heartbeatIntervalSeconds: 1);
+$worker->registerWorkflow(
+    '${WORKFLOW_TYPE}',
+    static fn (WorkflowContext $context): array => ['completed' => true, 'runtime' => 'sdk-php'],
 );
-heartbeat_log_tick($first);
 $deadline = time() + max(1, (int) $seconds);
-$summary = $worker->run(
-    queue: $taskQueue,
-    workerId: $workerId,
-    shouldContinue: static function (int $ticks, ?array $lastResult) use ($deadline): bool {
-        heartbeat_log_tick($lastResult);
-        return time() < $deadline;
-    },
-    queryPollTimeoutSeconds: 0,
-    workflowPollTimeoutSeconds: 1,
-    taskSlots: ['workflow_available' => 2, 'activity_available' => 1],
-    processMetrics: ['process_id' => getmypid(), 'memory_bytes' => memory_get_usage(true), 'host' => gethostname()],
-    idleSleepMicroseconds: 100000,
-);
-heartbeat_log(['event' => 'worker_loop_stopped', 'summary' => $summary]);
+$ticks = 0;
+while (time() < $deadline) {
+    $processed = $worker->tick(1);
+    $ack = $client->heartbeatWorker($workerId, ['workflow_available' => 2, 'activity_available' => 1]);
+    heartbeat_log(['event' => 'worker_heartbeat', 'acknowledgement' => $ack], 'acknowledgement_logged_at');
+    if ($processed) heartbeat_log(['event' => 'work_processed']);
+    ++$ticks;
+}
+heartbeat_log(['event' => 'worker_loop_stopped', 'summary' => ['ticks' => $ticks]]);
 `;
 }
 
@@ -551,20 +511,19 @@ declare(strict_types=1);
 
 require __DIR__.'/vendor/autoload.php';
 
-use Illuminate\\Http\\Client\\Factory as HttpFactory;
-use Workflow\\V2\\Worker\\WorkerProtocolClient;
+use DurableWorkflow\\Client;
 
 if ($argc < 5) exit(2);
 [$script, $baseUrl, $namespace, $taskQueue, $workerId] = $argv;
 $token = getenv('DURABLE_WORKFLOW_AUTH_TOKEN');
 if (!is_string($token) || $token === '') throw new RuntimeException('DURABLE_WORKFLOW_AUTH_TOKEN is required');
-$client = new WorkerProtocolClient(new HttpFactory(), $baseUrl, $token, $namespace, defaultRequestTimeoutSeconds: 10);
-$tasks = $client->pollWorkflowTasks(queue: $taskQueue, timeoutSeconds: 0, workerId: $workerId);
+$client = new Client($baseUrl, token: $token, namespace: $namespace);
+$task = $client->pollWorkflowTask($workerId, $taskQueue, 0);
 echo json_encode([
     'worker_id' => $workerId,
     'task_queue' => $taskQueue,
-    'tasks' => $tasks,
-    'poll' => $client->lastWorkflowTaskPoll(),
+    'tasks' => $task === null ? [] : [$task],
+    'poll' => ['task' => $task],
 ], JSON_UNESCAPED_SLASHES).PHP_EOL;
 `;
 }
@@ -1022,17 +981,17 @@ function installPhpPackage() {
     '-w', '/app',
     '--entrypoint', 'php',
     PHP_IMAGE,
-    '-r', "require 'vendor/autoload.php'; echo Composer\\InstalledVersions::getPrettyVersion('durable-workflow/workflow') ?: '';",
+    '-r', "require 'vendor/autoload.php'; echo Composer\\InstalledVersions::getPrettyVersion('durable-workflow/sdk') ?: '';",
   ], { timeout: 60_000 });
   const installed = String(version.stdout).trim();
-  if (normalizeVersion(installed) !== WORKFLOW_VERSION) {
-    throw new Error(`pinned PHP package mismatch: expected ${WORKFLOW_VERSION}, got ${installed || 'empty'}`);
+  if (normalizeVersion(installed) !== SDK_PHP_VERSION) {
+    throw new Error(`pinned PHP package mismatch: expected ${SDK_PHP_VERSION}, got ${installed || 'empty'}`);
   }
   evidence.php_package_install = {
-    package: 'durable-workflow/workflow',
-    requested_version: WORKFLOW_VERSION,
+    package: 'durable-workflow/sdk',
+    requested_version: SDK_PHP_VERSION,
     installed_version: installed,
-    source: ARTIFACT_SOURCES['workflow-php'],
+    source: ARTIFACT_SOURCES['sdk-php'],
     installer_runtime: PHP_IMAGE,
     preferred_install: 'dist',
   };
@@ -1550,7 +1509,7 @@ function buildChecks(context) {
           ? evidence.rust_package_install?.installed_version === SDK_RUST_VERSION
             && evidence.rust_package_install?.resolved_registry_source?.startsWith('registry+')
             && /^[0-9a-f]{64}$/.test(evidence.rust_package_install?.registry_checksum_sha256 ?? '')
-          : evidence.php_package_install?.installed_version === WORKFLOW_VERSION))
+          : evidence.php_package_install?.installed_version === SDK_PHP_VERSION))
       && evidence.cli_install?.detected_version === CLI_VERSION,
     real_workflow_completed_by_sdk_loop: completedWorkflow(context.initialWorkflow)
       && completedWorkflow(context.freshWorkflow)
@@ -1809,18 +1768,18 @@ async function main() {
       task_slots: staleTransition.stale_worker_detail.task_slots,
       process_metrics: staleTransition.stale_worker_detail.process_metrics,
       published_artifact_worker_execution: true,
-      public_package: IS_RUST_CELL ? 'durable-workflow' : (IS_PYTHON_CELL ? 'durable-workflow' : 'durable-workflow/workflow'),
+      public_package: IS_RUST_CELL ? 'durable-workflow' : (IS_PYTHON_CELL ? 'durable-workflow' : 'durable-workflow/sdk'),
       public_package_version: SDK_ARTIFACT_VERSION,
       worker_protocol_client: IS_RUST_CELL
         ? 'durable_workflow::Client'
-        : (IS_PYTHON_CELL ? 'durable_workflow.Client' : 'Workflow\\V2\\Worker\\WorkerProtocolClient'),
+        : (IS_PYTHON_CELL ? 'durable_workflow.Client' : 'DurableWorkflow\\Client'),
       worker_loop: IS_RUST_CELL
         ? ['durable_workflow::Worker::run_until()', 'durable_workflow::Worker::on_worker_heartbeat()']
         : (IS_PYTHON_CELL
           ? ['durable_workflow.Worker.run()', 'durable_workflow.Worker._heartbeat_loop()']
           : [
-            'Workflow\\V2\\Worker\\StandaloneWorkflowWorker::tickWithHeartbeat()',
-            'Workflow\\V2\\Worker\\StandaloneWorkflowWorker::run()',
+            'DurableWorkflow\\Worker::tick()',
+            'DurableWorkflow\\Client::heartbeatWorker()',
           ]),
       local_product_source_checkouts_used: false,
       real_workflow_execution: {

@@ -21,15 +21,12 @@
     "required_artifacts": [
       "server",
       "cli",
-      "workflow-php",
+      "sdk-php",
       "sdk-python",
       "sdk-rust",
       "waterline"
     ],
     "release_artifact_aliases": {
-      "workflow-php": [
-        "workflow"
-      ],
       "sdk-python": [
         "python"
       ],
@@ -43,7 +40,7 @@
     "secondary_namespace": "heartbeats-conformance-other",
     "task_queue": "hb-shared",
     "required_workers": [
-      "workflow-php",
+      "sdk-php",
       "sdk-python",
       "sdk-rust"
     ],
@@ -59,7 +56,7 @@
   },
   "required_matrix": {
     "runtimes": [
-      "workflow-php",
+      "sdk-php",
       "sdk-python",
       "sdk-rust"
     ],
@@ -372,9 +369,9 @@
       "cross-namespace-isolation"
     ],
     "runtime_shards": {
-      "workflow-php": {
-        "artifact": "durable-workflow/workflow",
-        "focused_runner": "workflow-php-heartbeat-loop",
+      "sdk-php": {
+        "artifact": "durable-workflow/sdk",
+        "focused_runner": "sdk-php-heartbeat-loop",
         "must_cover_scenarios": [
           "php_sdk_heartbeat_loop",
           "heartbeat_wire_shape_uniformity",
@@ -419,7 +416,7 @@
       }
     },
     "focused_runners": {
-      "workflow-php-heartbeat-loop": {
+      "sdk-php-heartbeat-loop": {
         "status": "host_executable_published_artifact_runner",
         "runner_repository": "server",
         "runner_path": "scripts/conformance/heartbeats-published-artifacts.sh",
@@ -433,15 +430,15 @@
         "required_artifact_pins": [
           "server",
           "cli",
-          "workflow-php"
+          "sdk-php"
         ],
         "required_worker_api": [
-          "Workflow\\V2\\Worker\\WorkerProtocolClient",
-          "Workflow\\V2\\Worker\\StandaloneWorkflowWorker::tickWithHeartbeat()",
-          "Workflow\\V2\\Worker\\StandaloneWorkflowWorker::run()"
+          "DurableWorkflow\\Client",
+          "DurableWorkflow\\Worker::tick()",
+          "DurableWorkflow\\Client::heartbeatWorker()"
         ],
         "must_prove": [
-          "exact_packagist_workflow_package_install",
+          "exact_packagist_sdk_package_install",
           "real_workflow_completion_on_unique_task_queue",
           "at_least_two_sdk_emitted_heartbeat_timestamps",
           "server_acknowledged_bounded_heartbeat_cadence",

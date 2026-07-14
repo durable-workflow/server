@@ -24,13 +24,14 @@ Environment overrides:
   DW_SERVER_VERSION          Exact published server version under test.
   DW_CLI_VERSION             Published CLI version under test.
   DW_PYTHON_SDK_VERSION      Published PyPI durable-workflow version under test.
+  DW_PHP_SDK_VERSION         Exact published durable-workflow/sdk version under test.
   DW_WORKFLOW_PHP_VERSION    Published durable-workflow/workflow version under test.
   DW_WATERLINE_VERSION       Published Waterline version under test.
   DW_WV_SERVER_PORT          Host port for the published server. Defaults to a free port.
   DW_WV_AUTH_TOKEN           Token used against the published server. Defaults to dev-token.
   DW_WV_NAMESPACE            Namespace used for probes. Defaults to worker-versioning-conformance.
   DW_WV_ARTIFACT_INSTALL_EVIDENCE
-                              Optional JSON report proving CLI, Python SDK, PHP workflow,
+                              Optional JSON report proving CLI, Python SDK, PHP SDK, Workflow,
                               and Waterline installs from published artifact channels.
   DW_WV_PUBLISHED_WORKER_EVIDENCE
                               Optional JSON report from a host topology that executed

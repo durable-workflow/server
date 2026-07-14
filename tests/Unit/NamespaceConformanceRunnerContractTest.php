@@ -18,17 +18,17 @@ class NamespaceConformanceRunnerContractTest extends TestCase
             $source,
         );
         $this->assertStringContainsString('durable-workflow.v2.namespace-runtime.result', $source);
-        $this->assertStringContainsString('workflow:v2:namespace-conformance', $source);
+        $this->assertStringContainsString('php-sdk-published-artifacts', $source);
         $this->assertStringContainsString('waterline:namespace-conformance', $source);
-        $this->assertStringContainsString('DW_NAMESPACES_WORKFLOW_PHP_RESULT  Optional pre-generated JSON report', $source);
-        $this->assertStringContainsString('If unset, the runner installs the published Workflow PHP artifact and runs this shard.', $source);
+        $this->assertStringContainsString('DW_NAMESPACES_SDK_PHP_RESULT  Optional pre-generated JSON report', $source);
+        $this->assertStringContainsString('If unset, the runner installs the published PHP SDK artifact and runs this shard.', $source);
         $this->assertStringContainsString('If unset, the runner installs the published Waterline artifact and runs this shard.', $source);
         $this->assertStringContainsString('load_required_shard', $source);
-        $this->assertStringContainsString('workflow_php_shard_execution', $source);
+        $this->assertStringContainsString('sdk_php_shard_execution', $source);
         $this->assertStringContainsString('required {scope} report was not supplied', $source);
         $this->assertStringContainsString('validate_shard_report', $source);
         $this->assertStringContainsString('artifact_version_mismatches', $source);
-        $this->assertStringContainsString('WORKFLOW_PHP_REQUIRED_SCENARIOS = [', $source);
+        $this->assertStringContainsString('SDK_PHP_REQUIRED_SCENARIOS = [', $source);
         $this->assertStringContainsString('"namespace_create_update_describe_and_list",', $source);
         $this->assertStringContainsString('"sdk_namespace_selection_parity",', $source);
         $this->assertStringContainsString('"php_worker_task_queue_namespace_isolation",', $source);
@@ -94,7 +94,7 @@ class NamespaceConformanceRunnerContractTest extends TestCase
         $source = $this->read('scripts/conformance/namespaces-published-artifacts.sh');
 
         $this->assertStringContainsString(
-            'REQUIRED_SHARD_ARTIFACTS = ["server", "cli", "workflow-php", "sdk-python", "waterline"]',
+            'REQUIRED_SHARD_ARTIFACTS = ["server", "cli", "workflow-php", "sdk-php", "sdk-python", "waterline"]',
             $source,
         );
         $this->assertStringContainsString('def validate_shard_report(', $source);
@@ -114,7 +114,7 @@ class NamespaceConformanceRunnerContractTest extends TestCase
             'Waterline shard reports must be scope-validated before their scenario row is imported.',
         );
         $this->assertStringContainsString(
-            '"workflow:v2:namespace-conformance",',
+            '"php-sdk-published-artifacts",',
             $source,
         );
         $this->assertStringContainsString(
@@ -145,23 +145,21 @@ class NamespaceConformanceRunnerContractTest extends TestCase
         $this->assertStringContainsString('Waterline namespace shard could not run in the published-artifact harness', $source);
     }
 
-    public function test_runner_executes_published_workflow_php_namespace_shard_when_not_pre_supplied(): void
+    public function test_runner_executes_published_sdk_php_namespace_shard_when_not_pre_supplied(): void
     {
         $source = $this->read('scripts/conformance/namespaces-published-artifacts.sh');
 
-        $this->assertStringContainsString('workflow_php_result_path="${DW_NAMESPACES_WORKFLOW_PHP_RESULT:-}"', $source);
-        $this->assertStringContainsString('workflow_php_result_path="$result_dir/workflow-php-namespace-result.json"', $source);
-        $this->assertStringContainsString('composer create-project laravel/laravel . --no-interaction --no-progress', $source);
-        $this->assertStringContainsString('"durable-workflow/workflow:${workflow_php_version}"', $source);
-        $this->assertStringContainsString('composer:2 php artisan key:generate --force', $source);
+        $this->assertStringContainsString('sdk_php_result_path="${DW_NAMESPACES_SDK_PHP_RESULT:-}"', $source);
+        $this->assertStringContainsString('sdk_php_result_path="$result_dir/sdk-php-namespace-result.json"', $source);
         $this->assertStringContainsString('--network "container:${server_container_id}"', $source);
-        $this->assertStringContainsString('composer:2 php artisan workflow:v2:namespace-conformance', $source);
-        $this->assertStringContainsString('--server-url "http://127.0.0.1:8080"', $source);
-        $this->assertStringContainsString('--worker-token "worker-token"', $source);
-        $this->assertStringContainsString('--output /result/workflow-php-namespace-result.json', $source);
-        $this->assertStringContainsString('DW_NAMESPACES_WORKFLOW_PHP_RESULT="$workflow_php_result_path"', $source);
-        $this->assertStringContainsString('write_workflow_php_setup_failure', $source);
-        $this->assertStringContainsString('Workflow PHP namespace shard could not run in the published-artifact harness', $source);
+        $this->assertStringContainsString('-e DW_PHP_SDK_VERSION="$sdk_php_version"', $source);
+        $this->assertStringContainsString('-e DW_PHP_SDK_CONFORMANCE_SERVER_URL="http://127.0.0.1:8080"', $source);
+        $this->assertStringContainsString('-e DW_PHP_SDK_CONFORMANCE_WORKER_TOKEN=worker-token', $source);
+        $this->assertStringContainsString('scripts/conformance/php-sdk-published-artifacts.sh --result-dir /result', $source);
+        $this->assertStringContainsString('"namespace_selection"', $source);
+        $this->assertStringContainsString('DW_NAMESPACES_SDK_PHP_RESULT="$sdk_php_result_path"', $source);
+        $this->assertStringContainsString('write_sdk_php_setup_failure', $source);
+        $this->assertStringContainsString('PHP SDK namespace shard could not run in the published-artifact harness', $source);
     }
 
     public function test_runner_reports_suite_version_from_namespace_scenario_manifest(): void
@@ -196,19 +194,19 @@ class NamespaceConformanceRunnerContractTest extends TestCase
         );
     }
 
-    public function test_runner_requires_all_workflow_php_namespace_shard_rows_before_passing_php_backed_cells(): void
+    public function test_runner_requires_all_sdk_php_namespace_shard_rows_before_passing_php_backed_cells(): void
     {
         $source = $this->read('scripts/conformance/namespaces-published-artifacts.sh');
 
-        $this->assertStringContainsString('def load_workflow_php_shard(', $source);
-        $this->assertStringContainsString('for scenario_id in WORKFLOW_PHP_REQUIRED_SCENARIOS:', $source);
-        $this->assertStringContainsString('workflow_php_items.get("namespace_create_update_describe_and_list")', $source);
-        $this->assertStringContainsString('workflow_php_items.get("sdk_namespace_selection_parity")', $source);
-        $this->assertStringContainsString('workflow_php_items.get("php_worker_task_queue_namespace_isolation")', $source);
-        $this->assertStringContainsString('"workflow_php_namespace_crud": scenario_observed_outputs(crud_php_item)', $source);
+        $this->assertStringContainsString('def load_sdk_php_shard(', $source);
+        $this->assertStringContainsString('for scenario_id in SDK_PHP_REQUIRED_SCENARIOS:', $source);
+        $this->assertStringContainsString('sdk_php_items.get("namespace_create_update_describe_and_list")', $source);
+        $this->assertStringContainsString('sdk_php_items.get("sdk_namespace_selection_parity")', $source);
+        $this->assertStringContainsString('sdk_php_items.get("php_worker_task_queue_namespace_isolation")', $source);
+        $this->assertStringContainsString('"sdk_php_namespace_crud": scenario_observed_outputs(crud_php_item)', $source);
         $this->assertStringContainsString('"php_client_namespace": sdk_php_outputs.get("php_client_namespace")', $source);
         $this->assertStringContainsString('"covered_scenarios": sorted(items.keys())', $source);
-        $this->assertStringNotContainsString('"php_client_namespace": "workflow:v2:namespace-conformance"', $source);
+        $this->assertStringNotContainsString('"php_client_namespace": "php-sdk-published-artifacts"', $source);
     }
 
     public function test_runner_routes_missing_namespace_shards_as_focused_unsupported_surface_findings(): void
@@ -220,7 +218,7 @@ class NamespaceConformanceRunnerContractTest extends TestCase
         $this->assertStringContainsString('"finding_type": "unsupported_public_surface"', $source);
         $this->assertStringContainsString('"scenario_status": "unsupported"', $source);
         $this->assertStringContainsString(
-            'the Workflow PHP namespace mirror cell remains focused unsupported evidence',
+            'the PHP SDK namespace mirror cell remains focused unsupported evidence',
             $source,
         );
         $this->assertStringContainsString('return status if status in ALLOWED_SCENARIO_STATUSES else "not_covered"', $source);
@@ -277,10 +275,11 @@ class NamespaceConformanceRunnerContractTest extends TestCase
         $this->assertStringContainsString('durableworkflow/server', $source);
         $this->assertStringContainsString('durable-workflow/cli', $source);
         $this->assertStringContainsString('durable-workflow==', $source);
+        $this->assertStringContainsString('durable-workflow/sdk', $source);
         $this->assertStringContainsString('durable-workflow/workflow', $source);
         $this->assertStringContainsString('durable-workflow/waterline', $source);
-        $this->assertStringContainsString('"status": workflow_php_execution["status"]', $source);
-        $this->assertStringContainsString('"namespace_shard_execution": workflow_php_execution', $source);
+        $this->assertStringContainsString('"status": sdk_php_execution["status"]', $source);
+        $this->assertStringContainsString('"namespace_shard_execution": sdk_php_execution', $source);
     }
 
     public function test_runner_completed_non_pass_output_uses_contract_outcome_token(): void
@@ -342,6 +341,7 @@ class NamespaceConformanceRunnerContractTest extends TestCase
                 'cli' => '0.1.71',
                 'workflow' => '2.0.0-alpha.187',
                 'workflow-php' => '2.0.0-alpha.187',
+                'sdk-php' => '0.1.1',
                 'sdk-python' => '0.4.83',
                 'waterline' => '2.0.0-alpha.69',
             ],
@@ -349,8 +349,8 @@ class NamespaceConformanceRunnerContractTest extends TestCase
                 'namespaces' => ['tenant-a', 'tenant-b', 'shared'],
             ],
             'runtime_matrix' => [
-                'runtimes' => ['workflow-php', 'sdk-python'],
-                'client_paths' => ['cli', 'sdk-python', 'workflow-php-sdk'],
+                'runtimes' => ['sdk-php', 'sdk-python'],
+                'client_paths' => ['cli', 'sdk-python', 'sdk-php'],
                 'observer_paths' => ['waterline-list', 'waterline-detail', 'waterline-operator-api'],
             ],
             'scenario_results' => $scenarioResults,

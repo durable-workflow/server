@@ -15,7 +15,7 @@ Runs the focused published-artifact PHP SDK heartbeat-loop contract and writes:
 Required exact artifact pins:
   DW_SERVER_VERSION
   DW_CLI_VERSION
-  DW_WORKFLOW_PHP_VERSION
+  DW_PHP_SDK_VERSION
 
 Optional overrides:
   DW_SERVER_IMAGE                     Exact durableworkflow/server image tag or digest.

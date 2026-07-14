@@ -32,7 +32,7 @@ class HeartbeatRuntimeContractTest extends TestCase
             $manifest['scenario_manifest']['source_path'],
         );
 
-        foreach (['server', 'cli', 'workflow-php', 'sdk-python', 'sdk-rust', 'waterline'] as $artifact) {
+        foreach (['server', 'cli', 'sdk-php', 'sdk-python', 'sdk-rust', 'waterline'] as $artifact) {
             $this->assertArrayHasKey($artifact, $manifest['artifact_policy']['install_channels']);
         }
 
@@ -70,7 +70,7 @@ class HeartbeatRuntimeContractTest extends TestCase
     {
         $manifest = HeartbeatRuntimeContract::manifest();
 
-        $this->assertContains('workflow-php', $manifest['required_matrix']['runtimes']);
+        $this->assertContains('sdk-php', $manifest['required_matrix']['runtimes']);
         $this->assertContains('sdk-python', $manifest['required_matrix']['runtimes']);
         $this->assertContains('sdk-rust', $manifest['required_matrix']['runtimes']);
         $this->assertContains('dw worker:list', $manifest['required_matrix']['operator_visibility_paths']);
@@ -111,7 +111,7 @@ class HeartbeatRuntimeContractTest extends TestCase
     public function test_manifest_publishes_the_focused_php_sdk_heartbeat_runner(): void
     {
         $manifest = HeartbeatRuntimeContract::manifest();
-        $runner = $manifest['host_runner_contract']['focused_runners']['workflow-php-heartbeat-loop'];
+        $runner = $manifest['host_runner_contract']['focused_runners']['sdk-php-heartbeat-loop'];
 
         $this->assertSame('host_executable_published_artifact_runner', $runner['status']);
         $this->assertSame('server', $runner['runner_repository']);
@@ -125,17 +125,17 @@ class HeartbeatRuntimeContractTest extends TestCase
         $this->assertTrue($runner['host_runner_implemented']);
         $this->assertTrue($runner['must_execute_against_published_artifacts']);
         $this->assertTrue($runner['must_record_runner_blocked_false_for_product_evidence']);
-        $this->assertSame(['server', 'cli', 'workflow-php'], $runner['required_artifact_pins']);
+        $this->assertSame(['server', 'cli', 'sdk-php'], $runner['required_artifact_pins']);
         $this->assertContains(
-            'Workflow\\V2\\Worker\\WorkerProtocolClient',
+            'DurableWorkflow\\Client',
             $runner['required_worker_api'],
         );
         $this->assertContains(
-            'Workflow\\V2\\Worker\\StandaloneWorkflowWorker::tickWithHeartbeat()',
+            'DurableWorkflow\\Worker::tick()',
             $runner['required_worker_api'],
         );
         $this->assertContains(
-            'Workflow\\V2\\Worker\\StandaloneWorkflowWorker::run()',
+            'DurableWorkflow\\Client::heartbeatWorker()',
             $runner['required_worker_api'],
         );
         $this->assertContains('at_least_two_sdk_emitted_heartbeat_timestamps', $runner['must_prove']);
@@ -151,8 +151,8 @@ class HeartbeatRuntimeContractTest extends TestCase
             $manifest['host_runner_contract']['result_files'],
         );
         $this->assertSame(
-            'workflow-php-heartbeat-loop',
-            $manifest['host_runner_contract']['runtime_shards']['workflow-php']['focused_runner'],
+            'sdk-php-heartbeat-loop',
+            $manifest['host_runner_contract']['runtime_shards']['sdk-php']['focused_runner'],
         );
     }
 
@@ -621,7 +621,7 @@ class HeartbeatRuntimeContractTest extends TestCase
     public function test_result_gate_enforces_sdk_heartbeat_loop_source_policy(): void
     {
         foreach ([
-            'php_sdk_heartbeat_loop' => 'workflow-php',
+            'php_sdk_heartbeat_loop' => 'sdk-php',
             'python_sdk_heartbeat_loop' => 'sdk-python',
             'rust_sdk_heartbeat_loop' => 'sdk-rust',
         ] as $scenarioId => $artifact) {
@@ -674,7 +674,7 @@ class HeartbeatRuntimeContractTest extends TestCase
     public function test_result_gate_rejects_unverified_sdk_worker_execution_sources(): void
     {
         foreach ([
-            'php_sdk_heartbeat_loop' => 'workflow-php',
+            'php_sdk_heartbeat_loop' => 'sdk-php',
             'python_sdk_heartbeat_loop' => 'sdk-python',
             'rust_sdk_heartbeat_loop' => 'sdk-rust',
         ] as $scenarioId => $artifact) {
@@ -705,7 +705,7 @@ class HeartbeatRuntimeContractTest extends TestCase
             'docker://durableworkflow/server:latest';
         $result['scenario_results']['php_sdk_heartbeat_loop']['observed_outputs'][
             'published_artifact_worker_execution'
-        ]['artifacts'][0]['version'] = 'durable-workflow/workflow:latest';
+        ]['artifacts'][0]['version'] = 'durable-workflow/sdk:latest';
 
         $evaluation = HeartbeatRuntimeResultGate::evaluate($result);
 
@@ -726,8 +726,8 @@ class HeartbeatRuntimeContractTest extends TestCase
             $evaluation['gate_failures'],
             static fn (array $failure): bool => ($failure['code'] ?? null) === 'placeholder_published_artifact_worker_execution_version'
                 && ($failure['scenario_id'] ?? null) === 'php_sdk_heartbeat_loop'
-                && ($failure['artifact'] ?? null) === 'workflow-php'
-                && ($failure['version'] ?? null) === 'durable-workflow/workflow:latest',
+                && ($failure['artifact'] ?? null) === 'sdk-php'
+                && ($failure['version'] ?? null) === 'durable-workflow/sdk:latest',
         ));
     }
 
@@ -740,7 +740,7 @@ class HeartbeatRuntimeContractTest extends TestCase
         $versions = [
             'server' => '0.2.347',
             'cli' => '0.1.77',
-            'workflow' => '2.0.0-alpha.200',
+            'sdk-php' => '0.1.1',
             'sdk-python' => '0.4.85',
             'sdk-rust' => '0.1.0',
             'waterline' => '2.0.0-alpha.83',
@@ -748,7 +748,7 @@ class HeartbeatRuntimeContractTest extends TestCase
         $sources = [
             'server' => 'published_docker_image',
             'cli' => 'official_install_script',
-            'workflow' => 'composer_packagist',
+            'sdk-php' => 'packagist://durable-workflow/sdk@0.1.1',
             'sdk-python' => 'pypi',
             'sdk-rust' => 'crates_io',
             'waterline' => 'published_waterline_release',
@@ -767,7 +767,7 @@ class HeartbeatRuntimeContractTest extends TestCase
         $scenarioResults['published_artifact_install_only']['observed_outputs']['local_product_source_checkouts_used'] = false;
         $scenarioResults['php_sdk_heartbeat_loop']['observed_outputs'] = array_replace(
             $scenarioResults['php_sdk_heartbeat_loop']['observed_outputs'],
-            $this->sdkLoopOutputs('workflow-php', 'php-worker'),
+            $this->sdkLoopOutputs('sdk-php', 'php-worker'),
         );
         $scenarioResults['python_sdk_heartbeat_loop']['observed_outputs'] = array_replace(
             $scenarioResults['python_sdk_heartbeat_loop']['observed_outputs'],
@@ -778,14 +778,14 @@ class HeartbeatRuntimeContractTest extends TestCase
             $this->sdkLoopOutputs('sdk-rust', 'rust-worker'),
         );
         $scenarioResults['php_sdk_heartbeat_loop']['observed_outputs']['published_artifact_worker_execution'] =
-            $this->publishedWorkerExecution('workflow-php', $versions['workflow'], $sources['workflow']);
+            $this->publishedWorkerExecution('sdk-php', $versions['sdk-php'], $sources['sdk-php']);
         $scenarioResults['python_sdk_heartbeat_loop']['observed_outputs']['published_artifact_worker_execution'] =
             $this->publishedWorkerExecution('sdk-python', $versions['sdk-python'], $sources['sdk-python']);
         $scenarioResults['rust_sdk_heartbeat_loop']['observed_outputs']['published_artifact_worker_execution'] =
             $this->publishedWorkerExecution('sdk-rust', $versions['sdk-rust'], $sources['sdk-rust']);
         $scenarioResults['heartbeat_wire_shape_uniformity']['observed_outputs'] = [
             'runtime_records' => [
-                'workflow-php' => ['worker_id', 'task_queue', 'runtime', 'task_slots', 'process_metrics'],
+                'sdk-php' => ['worker_id', 'task_queue', 'runtime', 'task_slots', 'process_metrics'],
                 'sdk-python' => ['worker_id', 'task_queue', 'runtime', 'task_slots', 'process_metrics'],
                 'sdk-rust' => ['worker_id', 'task_queue', 'runtime', 'task_slots', 'process_metrics'],
             ],
@@ -800,7 +800,7 @@ class HeartbeatRuntimeContractTest extends TestCase
             ],
             'language_specific_field_diff' => [],
             'server_records' => [
-                ['worker_id' => 'php-worker', 'runtime' => 'workflow-php'],
+                ['worker_id' => 'php-worker', 'runtime' => 'sdk-php'],
                 ['worker_id' => 'python-worker', 'runtime' => 'sdk-python'],
                 ['worker_id' => 'rust-worker', 'runtime' => 'sdk-rust'],
             ],
@@ -1011,7 +1011,7 @@ class HeartbeatRuntimeContractTest extends TestCase
             'artifact_versions' => [
                 'server' => '0.2.347',
                 'cli' => '0.1.77',
-                'workflow' => '2.0.0-alpha.200',
+                'sdk-php' => '0.1.1',
                 'sdk-python' => '0.4.85',
                 'sdk-rust' => '0.1.0',
                 'waterline' => '2.0.0-alpha.83',

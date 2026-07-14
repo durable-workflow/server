@@ -10,7 +10,7 @@ final class NamespaceRuntimeResultGate
 {
     public const SCHEMA = 'durable-workflow.v2.namespace-runtime.result-gate';
 
-    public const VERSION = 1;
+    public const VERSION = 2;
 
     private const SCENARIO_EVIDENCE_REQUIREMENTS = [
         'published_artifact_install_only' => [
@@ -18,7 +18,7 @@ final class NamespaceRuntimeResultGate
             'fields' => [
                 'server_image' => ['server_image', 'serverImage'],
                 'cli_release' => ['cli_release', 'cliRelease'],
-                'workflow_php_package' => ['workflow_php_package', 'workflowPhpPackage', 'workflow_package'],
+                'sdk_php_package' => ['sdk_php_package', 'sdkPhpPackage'],
                 'sdk_python_package' => ['sdk_python_package', 'sdkPythonPackage', 'python_package'],
                 'waterline_artifact' => ['waterline_artifact', 'waterlineArtifact'],
             ],
@@ -138,11 +138,11 @@ final class NamespaceRuntimeResultGate
                 'tenant_a_delivery' => ['tenant_a_delivery', 'tenantADelivery'],
                 'tenant_b_delivery' => ['tenant_b_delivery', 'tenantBDelivery'],
                 'cross_delivery_absent' => ['cross_delivery_absent', 'crossDeliveryAbsent'],
-                'workflow_php_shard_execution' => [
-                    'workflow_php_shard_execution',
-                    'workflowPhpShardExecution',
-                    'workflow_php_execution',
-                    'workflowPhpExecution',
+                'sdk_php_shard_execution' => [
+                    'sdk_php_shard_execution',
+                    'sdkPhpShardExecution',
+                    'sdk_php_execution',
+                    'sdkPhpExecution',
                 ],
             ],
         ],
@@ -257,7 +257,7 @@ final class NamespaceRuntimeResultGate
                 'each_pass_scenario_has_observed_outputs',
                 'each_pass_scenario_has_scenario_specific_evidence',
                 'each_pass_scenario_has_concrete_named_evidence_fields',
-                'workflow_php_worker_pass_requires_published_shard_execution',
+                'sdk_php_worker_pass_requires_published_shard_execution',
                 'waterline_operator_pass_requires_published_shard_execution',
                 'waterline_operator_visibility_has_scoped_surface_verdicts',
                 'each_non_pass_scenario_has_linked_findings',
@@ -717,6 +717,7 @@ final class NamespaceRuntimeResultGate
     {
         $aliases = [
             'workflow-php' => ['workflow-php', 'workflow_php', 'workflow'],
+            'sdk-php' => ['sdk-php', 'sdk_php'],
             'sdk-python' => ['sdk-python', 'sdk_python', 'python'],
             'waterline' => ['waterline', 'waterline-ui', 'waterline_ui'],
         ];
@@ -1027,7 +1028,7 @@ final class NamespaceRuntimeResultGate
         if (self::isPassScenario($scenarioResults, 'php_worker_task_queue_namespace_isolation')) {
             array_push(
                 $failures,
-                ...self::workflowPhpShardEvidenceFailures(
+                ...self::sdkPhpShardEvidenceFailures(
                     self::scenarioEvidenceSection(
                         $result,
                         $scenarioResults['php_worker_task_queue_namespace_isolation'],
@@ -1053,74 +1054,72 @@ final class NamespaceRuntimeResultGate
      *
      * @return array<int, array<string, mixed>>
      */
-    private static function workflowPhpShardEvidenceFailures(array $section, array $artifactInstall, array $publishedVersions): array
+    private static function sdkPhpShardEvidenceFailures(array $section, array $artifactInstall, array $publishedVersions): array
     {
         $execution = self::firstArrayField($section, [
-            'workflow_php_shard_execution',
-            'workflowPhpShardExecution',
-            'workflow_php_execution',
-            'workflowPhpExecution',
+            'sdk_php_shard_execution',
+            'sdkPhpShardExecution',
+            'sdk_php_execution',
+            'sdkPhpExecution',
         ]);
 
         $failures = [];
         if ($execution === null) {
             $failures[] = [
-                'code' => 'missing_workflow_php_shard_execution',
+                'code' => 'missing_sdk_php_shard_execution',
                 'scenario_id' => 'php_worker_task_queue_namespace_isolation',
             ];
         } else {
             $status = self::stringValue($execution['status'] ?? null);
             if ($status !== 'executed') {
                 $failures[] = [
-                    'code' => 'workflow_php_shard_not_executed',
+                    'code' => 'sdk_php_shard_not_executed',
                     'scenario_id' => 'php_worker_task_queue_namespace_isolation',
                     'status' => $status,
                 ];
             }
 
             $scope = self::stringValue($execution['scope'] ?? $execution['coverage_scope'] ?? $execution['coverageScope'] ?? null);
-            if ($scope !== 'workflow-php-namespace-shard') {
+            if ($scope !== 'sdk-php-namespace-shard') {
                 $failures[] = [
-                    'code' => 'workflow_php_shard_scope_mismatch',
+                    'code' => 'sdk_php_shard_scope_mismatch',
                     'scenario_id' => 'php_worker_task_queue_namespace_isolation',
-                    'expected_scope' => 'workflow-php-namespace-shard',
+                    'expected_scope' => 'sdk-php-namespace-shard',
                     'actual_scope' => $scope,
                 ];
             }
 
             $command = self::stringValue($execution['shard_command'] ?? $execution['shardCommand'] ?? null);
-            if ($command !== 'workflow:v2:namespace-conformance') {
+            if ($command !== 'php-sdk-published-artifacts') {
                 $failures[] = [
-                    'code' => 'workflow_php_shard_command_mismatch',
+                    'code' => 'sdk_php_shard_command_mismatch',
                     'scenario_id' => 'php_worker_task_queue_namespace_isolation',
-                    'expected_command' => 'workflow:v2:namespace-conformance',
+                    'expected_command' => 'php-sdk-published-artifacts',
                     'actual_command' => $command,
                 ];
             }
 
             if (self::stringValue($execution['report_path'] ?? $execution['reportPath'] ?? null) === '') {
                 $failures[] = [
-                    'code' => 'missing_workflow_php_shard_report_path',
+                    'code' => 'missing_sdk_php_shard_report_path',
                     'scenario_id' => 'php_worker_task_queue_namespace_isolation',
                 ];
             }
 
             array_push(
                 $failures,
-                ...self::workflowPhpShardArtifactVersionFailures($execution, $publishedVersions),
-                ...self::workflowPhpShardRequiredScenarioFailures($execution),
+                ...self::sdkPhpShardArtifactVersionFailures($execution, $publishedVersions),
+                ...self::sdkPhpShardRequiredScenarioFailures($execution),
             );
         }
 
         $package = self::firstArrayField($artifactInstall, [
-            'workflow_php_package',
-            'workflowPhpPackage',
-            'workflow_package',
-            'workflowPackage',
+            'sdk_php_package',
+            'sdkPhpPackage',
         ]);
         if ($package === null) {
             $failures[] = [
-                'code' => 'missing_workflow_php_artifact_execution_record',
+                'code' => 'missing_sdk_php_artifact_execution_record',
                 'scenario_id' => 'published_artifact_install_only',
             ];
 
@@ -1130,7 +1129,7 @@ final class NamespaceRuntimeResultGate
         $packageStatus = self::stringValue($package['status'] ?? null);
         if ($packageStatus !== 'executed') {
             $failures[] = [
-                'code' => 'workflow_php_artifact_not_marked_executed',
+                'code' => 'sdk_php_artifact_not_marked_executed',
                 'scenario_id' => 'published_artifact_install_only',
                 'status' => $packageStatus,
             ];
@@ -1139,17 +1138,17 @@ final class NamespaceRuntimeResultGate
         $packageExecution = self::firstArrayField($package, [
             'namespace_shard_execution',
             'namespaceShardExecution',
-            'workflow_php_shard_execution',
-            'workflowPhpShardExecution',
+            'sdk_php_shard_execution',
+            'sdkPhpShardExecution',
         ]);
         if ($packageExecution === null) {
             $failures[] = [
-                'code' => 'missing_workflow_php_artifact_shard_execution_record',
+                'code' => 'missing_sdk_php_artifact_shard_execution_record',
                 'scenario_id' => 'published_artifact_install_only',
             ];
         } elseif (self::stringValue($packageExecution['status'] ?? null) !== 'executed') {
             $failures[] = [
-                'code' => 'workflow_php_artifact_shard_not_executed',
+                'code' => 'sdk_php_artifact_shard_not_executed',
                 'scenario_id' => 'published_artifact_install_only',
                 'status' => self::stringValue($packageExecution['status'] ?? null),
             ];
@@ -1163,7 +1162,7 @@ final class NamespaceRuntimeResultGate
      *
      * @return array<int, array<string, mixed>>
      */
-    private static function workflowPhpShardRequiredScenarioFailures(array $execution): array
+    private static function sdkPhpShardRequiredScenarioFailures(array $execution): array
     {
         $requiredScenarios = [
             'namespace_create_update_describe_and_list',
@@ -1183,7 +1182,7 @@ final class NamespaceRuntimeResultGate
         foreach ($requiredScenarios as $scenarioId) {
             if (! in_array($scenarioId, $coveredScenarios, true)) {
                 $failures[] = [
-                    'code' => 'workflow_php_shard_missing_required_scenario',
+                    'code' => 'sdk_php_shard_missing_required_scenario',
                     'scenario_id' => 'php_worker_task_queue_namespace_isolation',
                     'missing_scenario_id' => $scenarioId,
                 ];
@@ -1192,7 +1191,7 @@ final class NamespaceRuntimeResultGate
             $status = self::stringValue($scenarioStatuses[$scenarioId] ?? null);
             if ($status !== 'pass') {
                 $failures[] = [
-                    'code' => 'workflow_php_shard_required_scenario_not_passed',
+                    'code' => 'sdk_php_shard_required_scenario_not_passed',
                     'scenario_id' => 'php_worker_task_queue_namespace_isolation',
                     'required_scenario_id' => $scenarioId,
                     'status' => $status,
@@ -1209,7 +1208,7 @@ final class NamespaceRuntimeResultGate
      *
      * @return array<int, array<string, mixed>>
      */
-    private static function workflowPhpShardArtifactVersionFailures(array $execution, array $publishedVersions): array
+    private static function sdkPhpShardArtifactVersionFailures(array $execution, array $publishedVersions): array
     {
         $reportedVersions = self::arrayValue($execution, 'artifact_versions')
             ?? self::arrayValue($execution, 'artifactVersions')
@@ -1219,13 +1218,13 @@ final class NamespaceRuntimeResultGate
 
         if ($reportedVersions === []) {
             return [[
-                'code' => 'missing_workflow_php_shard_artifact_versions',
+                'code' => 'missing_sdk_php_shard_artifact_versions',
                 'scenario_id' => 'php_worker_task_queue_namespace_isolation',
             ]];
         }
 
         $failures = [];
-        foreach (['server', 'cli', 'workflow-php', 'sdk-python', 'waterline'] as $artifact) {
+        foreach (['server', 'cli', 'workflow-php', 'sdk-php', 'sdk-python', 'waterline'] as $artifact) {
             $expected = self::artifactVersionValue($publishedVersions, $artifact);
             if ($expected === '') {
                 continue;
@@ -1234,7 +1233,7 @@ final class NamespaceRuntimeResultGate
             $actual = self::artifactVersionValue($reportedVersions, $artifact);
             if ($actual === '') {
                 $failures[] = [
-                    'code' => 'missing_workflow_php_shard_artifact_version',
+                    'code' => 'missing_sdk_php_shard_artifact_version',
                     'scenario_id' => 'php_worker_task_queue_namespace_isolation',
                     'artifact' => $artifact,
                     'expected_version' => $expected,
@@ -1244,7 +1243,7 @@ final class NamespaceRuntimeResultGate
 
             if ($actual !== $expected) {
                 $failures[] = [
-                    'code' => 'workflow_php_shard_artifact_version_mismatch',
+                    'code' => 'sdk_php_shard_artifact_version_mismatch',
                     'scenario_id' => 'php_worker_task_queue_namespace_isolation',
                     'artifact' => $artifact,
                     'expected_version' => $expected,
@@ -1494,7 +1493,7 @@ final class NamespaceRuntimeResultGate
         }
 
         $failures = [];
-        foreach (['server', 'cli', 'workflow-php', 'sdk-python', 'waterline'] as $artifact) {
+        foreach (['server', 'cli', 'workflow-php', 'sdk-php', 'sdk-python', 'waterline'] as $artifact) {
             $expected = self::artifactVersionValue($publishedVersions, $artifact);
             $actual = self::artifactVersionValue($reportedVersions, $artifact);
             if ($actual === '') {
@@ -1651,7 +1650,7 @@ final class NamespaceRuntimeResultGate
     private static function sameRuntime(string $reported, string $required): bool
     {
         $aliases = [
-            'workflow-php' => ['workflow-php', 'workflow_php', 'php', 'php_worker'],
+            'sdk-php' => ['sdk-php', 'sdk_php', 'php', 'php_worker'],
             'sdk-python' => ['sdk-python', 'sdk_python', 'python', 'python_worker'],
         ];
 

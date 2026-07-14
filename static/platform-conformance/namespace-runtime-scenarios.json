@@ -36,7 +36,7 @@
       "required_fields": [
         "server_image",
         "cli_release",
-        "workflow_php_package",
+        "sdk_php_package",
         "sdk_python_package",
         "waterline_artifact"
       ]
@@ -72,7 +72,7 @@
         "tenant_a_delivery",
         "tenant_b_delivery",
         "cross_delivery_absent",
-        "workflow_php_shard_execution"
+        "sdk_php_shard_execution"
       ]
     },
     "cli_namespace_context_and_default_scope": {

@@ -536,11 +536,6 @@ final class WorkerVersioningRuntimeResultGate
             str_replace('_', '-', $artifact),
         ];
 
-        if ($artifact === 'workflow-php') {
-            $aliases[] = 'workflow';
-            $aliases[] = 'php';
-        }
-
         if ($artifact === 'sdk-python') {
             $aliases[] = 'python';
             $aliases[] = 'durable-workflow';
@@ -1324,7 +1319,7 @@ final class WorkerVersioningRuntimeResultGate
             }
 
             $reported = self::stringField($entry, ['artifact', 'name', 'id']);
-            if ($reported === $artifact || ($artifact === 'workflow-php' && $reported === 'workflow')) {
+            if ($reported === $artifact) {
                 return $entry;
             }
         }
@@ -1857,7 +1852,7 @@ final class WorkerVersioningRuntimeResultGate
 
         foreach ($entries as $index => $entry) {
             $artifact = self::canonicalWorkerArtifact(self::stringField($entry, ['artifact', 'name', 'id']));
-            if (! in_array($artifact, ['sdk-python', 'workflow-php'], true)) {
+            if (! in_array($artifact, ['sdk-python', 'sdk-php'], true)) {
                 $failures[] = [
                     'code' => 'unsupported_published_worker_execution_artifact',
                     'scenario_id' => $scenarioId,
@@ -1955,14 +1950,14 @@ final class WorkerVersioningRuntimeResultGate
         }
 
         $requiredArtifacts = $requiresBothPhpAndPython
-            ? ['workflow-php', 'sdk-python']
-            : ['workflow-php', 'sdk-python'];
+            ? ['sdk-php', 'sdk-python']
+            : ['sdk-php', 'sdk-python'];
         $missingArtifacts = $requiresBothPhpAndPython
             ? array_values(array_filter(
                 $requiredArtifacts,
                 static fn (string $artifact): bool => ! isset($validArtifacts[$artifact]),
             ))
-            : (array_intersect(array_keys($validArtifacts), $requiredArtifacts) === [] ? ['workflow-php-or-sdk-python'] : []);
+            : (array_intersect(array_keys($validArtifacts), $requiredArtifacts) === [] ? ['sdk-php-or-sdk-python'] : []);
 
         foreach ($missingArtifacts as $artifact) {
             $failures[] = [
@@ -2001,7 +1996,7 @@ final class WorkerVersioningRuntimeResultGate
     {
         return match (self::normalizeRuntimeSurface($artifact)) {
             'sdkpython' => 'sdk-python',
-            'workflowphp' => 'workflow-php',
+            'sdkphp' => 'sdk-php',
             default => strtolower(str_replace('_', '-', trim($artifact))),
         };
     }
@@ -2288,13 +2283,12 @@ final class WorkerVersioningRuntimeResultGate
     {
         $normalized = self::normalizeToken($value);
         $aliases = [
-            'php' => 'workflowphp',
-            'phpworker' => 'workflowphp',
-            'phpruntime' => 'workflowphp',
-            'workflow' => 'workflowphp',
-            'workflowphp' => 'workflowphp',
-            'workflowphpworker' => 'workflowphp',
-            'workflowphpruntime' => 'workflowphp',
+            'php' => 'sdkphp',
+            'phpworker' => 'sdkphp',
+            'phpruntime' => 'sdkphp',
+            'sdkphp' => 'sdkphp',
+            'sdkphpworker' => 'sdkphp',
+            'sdkphpruntime' => 'sdkphp',
             'python' => 'sdkpython',
             'pythonworker' => 'sdkpython',
             'pythonruntime' => 'sdkpython',
@@ -2315,10 +2309,9 @@ final class WorkerVersioningRuntimeResultGate
             'pythonclient' => 'sdkpython',
             'pythonsdk' => 'sdkpython',
             'sdkpython' => 'sdkpython',
-            'phpclient' => 'workflowphpsdk',
-            'phpsdk' => 'workflowphpsdk',
-            'workflowphpclient' => 'workflowphpsdk',
-            'workflowphpsdk' => 'workflowphpsdk',
+            'phpclient' => 'sdkphp',
+            'phpsdk' => 'sdkphp',
+            'sdkphp' => 'sdkphp',
         ];
 
         return $aliases[$normalized] ?? $normalized;

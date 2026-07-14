@@ -24,7 +24,7 @@ use Workflow\V2\Attributes\Type;
 use Workflow\V2\Enums\ParentClosePolicy;
 use Workflow\V2\Support\ChildWorkflowOptions;
 use Workflow\V2\Support\FailureFactory;
-use Workflow\V2\Worker\WorkflowFiberRunner;
+use Workflow\V2\Support\WorkflowFiberRunner;
 use Workflow\V2\Workflow;
 use function Workflow\V2\child;
 use function Workflow\V2\timer;

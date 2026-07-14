@@ -37,7 +37,7 @@ final class SchedulesRuntimeResultGate
             'pypi_release',
             'published_pypi_release',
         ],
-        'workflow-php' => [
+        'sdk-php' => [
             'composer_packagist',
             'composer_release',
             'packagist',
@@ -590,7 +590,7 @@ final class SchedulesRuntimeResultGate
     private static function artifactVersionValue(array $versions, string $artifact): string
     {
         $aliases = [
-            'workflow-php' => ['workflow-php', 'workflow_php', 'workflow'],
+            'sdk-php' => ['sdk-php', 'sdk_php'],
             'sdk-python' => ['sdk-python', 'sdk_python', 'python'],
             'waterline' => ['waterline', 'waterline-ui', 'waterline_ui'],
         ];
@@ -630,7 +630,7 @@ final class SchedulesRuntimeResultGate
     private static function artifactEvidenceValue(array $values, string $artifact): array
     {
         $aliases = [
-            'workflow-php' => ['workflow-php', 'workflow_php', 'workflow'],
+            'sdk-php' => ['sdk-php', 'sdk_php'],
             'sdk-python' => ['sdk-python', 'sdk_python', 'python'],
             'waterline' => ['waterline', 'waterline-ui', 'waterline_ui'],
         ];
@@ -696,7 +696,7 @@ final class SchedulesRuntimeResultGate
             'server' => self::matchesServerArtifactSource($version, $source),
             'cli' => self::matchesCliArtifactSource($version, $source),
             'sdk-python' => self::matchesPythonArtifactSource($version, $source),
-            'workflow-php' => self::matchesComposerArtifactSource('durable-workflow/workflow', $version, $source),
+            'sdk-php' => self::matchesComposerArtifactSource('durable-workflow/sdk', $version, $source),
             'waterline' => self::matchesComposerArtifactSource('durable-workflow/waterline', $version, $source),
             default => false,
         };
@@ -1124,9 +1124,9 @@ final class SchedulesRuntimeResultGate
                 'restart_survival' => array_push($failures, ...self::restartEvidenceFailures($result, $scenarioResult)),
                 'cli_schedule_surface' => array_push($failures, ...self::clientSurfaceEvidenceFailures($result, $scenarioResult, 'cli')),
                 'python_sdk_schedule_surface' => array_push($failures, ...self::clientSurfaceEvidenceFailures($result, $scenarioResult, 'sdk-python')),
-                'php_schedule_surface' => array_push($failures, ...self::clientSurfaceEvidenceFailures($result, $scenarioResult, 'workflow-php-sdk')),
-                'python_created_php_workflow' => array_push($failures, ...self::crossLanguageEvidenceFailures($result, $scenarioResult, 'sdk-python', 'workflow-php')),
-                'php_created_python_workflow' => array_push($failures, ...self::crossLanguageEvidenceFailures($result, $scenarioResult, 'workflow-php-sdk', 'sdk-python')),
+                'php_schedule_surface' => array_push($failures, ...self::clientSurfaceEvidenceFailures($result, $scenarioResult, 'sdk-php')),
+                'python_created_php_workflow' => array_push($failures, ...self::crossLanguageEvidenceFailures($result, $scenarioResult, 'sdk-python', 'sdk-php')),
+                'php_created_python_workflow' => array_push($failures, ...self::crossLanguageEvidenceFailures($result, $scenarioResult, 'sdk-php', 'sdk-python')),
                 'invalid_cron_refusal' => array_push($failures, ...self::invalidCronEvidenceFailures($result, $scenarioResult)),
                 'nonexistent_workflow_type_outcome' => array_push($failures, ...self::nonexistentWorkflowEvidenceFailures($result, $contract, $scenarioResult)),
                 default => null,
@@ -1901,13 +1901,10 @@ final class SchedulesRuntimeResultGate
     {
         $normalized = self::normalizeToken($value);
         $aliases = [
-            'php' => 'workflowphp',
-            'phpworker' => 'workflowphp',
-            'phpruntime' => 'workflowphp',
-            'workflow' => 'workflowphp',
-            'workflowphp' => 'workflowphp',
-            'workflowphpworker' => 'workflowphp',
-            'workflowphpruntime' => 'workflowphp',
+            'php' => 'sdkphp',
+            'phpworker' => 'sdkphp',
+            'phpruntime' => 'sdkphp',
+            'sdkphp' => 'sdkphp',
             'python' => 'sdkpython',
             'pythonworker' => 'sdkpython',
             'pythonruntime' => 'sdkpython',
@@ -1928,10 +1925,9 @@ final class SchedulesRuntimeResultGate
             'pythonclient' => 'sdkpython',
             'pythonsdk' => 'sdkpython',
             'sdkpython' => 'sdkpython',
-            'phpclient' => 'workflowphpsdk',
-            'phpsdk' => 'workflowphpsdk',
-            'workflowphpclient' => 'workflowphpsdk',
-            'workflowphpsdk' => 'workflowphpsdk',
+            'phpclient' => 'sdkphp',
+            'phpsdk' => 'sdkphp',
+            'sdkphp' => 'sdkphp',
         ];
 
         return $aliases[$normalized] ?? $normalized;
@@ -1971,7 +1967,7 @@ final class SchedulesRuntimeResultGate
 
         return match ($normalized) {
             'python', 'python-sdk', 'durable-workflow' => 'sdk-python',
-            'workflow', 'php', 'workflow-php', 'php-worker' => 'workflow-php',
+            'sdk-php' => 'sdk-php',
             default => $normalized,
         };
     }

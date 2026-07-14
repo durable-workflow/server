@@ -38,11 +38,13 @@ Environment overrides:
   DW_SERVER_VERSION                Exact published server artifact version.
   DW_CLI_VERSION                   Exact published CLI version.
   DW_WORKFLOW_PHP_VERSION          Exact published Workflow PHP package version.
+  DW_PHP_SDK_VERSION               Exact published durable-workflow/sdk package version.
   DW_PYTHON_SDK_VERSION            Exact published Python SDK package version.
   DW_WATERLINE_VERSION             Exact published Waterline package version.
   DW_SERVER_ARTIFACT_SOURCE        Published server artifact source.
   DW_CLI_ARTIFACT_SOURCE           Published CLI artifact source.
   DW_WORKFLOW_ARTIFACT_SOURCE      Published Workflow PHP artifact source.
+  DW_PHP_SDK_ARTIFACT_SOURCE       Published PHP SDK artifact source.
   DW_PYTHON_SDK_ARTIFACT_SOURCE    Published Python SDK artifact source.
   DW_WATERLINE_ARTIFACT_SOURCE     Published Waterline artifact source.
 USAGE
@@ -146,7 +148,7 @@ const sharedServicePassRequirements = {
   php_caller_python_service: [
     {fields: ['caller_workflow_instance_id', 'callerWorkflowInstanceId', 'caller_workflow_id', 'callerWorkflowId'], kind: 'non_empty_string'},
     {fields: ['caller_workflow_run_id', 'callerWorkflowRunId', 'caller_run_id', 'callerRunId', 'run_id', 'runId'], kind: 'non_empty_string'},
-    {fields: ['caller_sdk_language', 'callerSdkLanguage', 'caller_runtime', 'callerRuntime'], kind: 'value_equals', value: 'workflow-php'},
+    {fields: ['caller_sdk_language', 'callerSdkLanguage', 'caller_runtime', 'callerRuntime'], kind: 'value_equals', value: 'sdk-php'},
     {fields: ['service_sdk_language', 'serviceSdkLanguage', 'service_runtime', 'serviceRuntime'], kind: 'value_equals', value: 'sdk-python'},
     {fields: ['operation_name', 'operationName'], kind: 'non_empty_string'},
     {fields: ['request_payload', 'requestPayload', 'request', 'requestEvidence', 'invocation_request', 'invocationRequest'], kind: 'non_empty_object'},
@@ -340,11 +342,12 @@ const {spawnSync} = require('child_process');
 const resultDir = process.argv[2];
 const evidencePath = process.argv[3];
 const suppliedEvidencePath = process.argv[4] || '';
-const requiredArtifacts = ['server', 'cli', 'workflow', 'sdk-python', 'waterline'];
+const requiredArtifacts = ['server', 'cli', 'workflow', 'sdk-php', 'sdk-python', 'waterline'];
 const artifactOwners = {
   server: 'server',
   cli: 'cli',
   workflow: 'workflow',
+  'sdk-php': 'sdk-php',
   'sdk-python': 'sdk-python',
   waterline: 'waterline',
 };
@@ -374,6 +377,7 @@ const artifactAliases = {
   server: ['server'],
   cli: ['cli'],
   workflow: ['workflow', 'workflow-php', 'workflow_php', 'workflowPhp'],
+  'sdk-php': ['sdk-php', 'sdk_php'],
   'sdk-python': ['sdk-python', 'sdk_python', 'python-sdk', 'pythonSdk'],
   waterline: ['waterline'],
 };
@@ -478,6 +482,7 @@ function artifactVersions(image) {
     server: env('DW_SERVER_VERSION') || suppliedArtifactVersion('server') || (image === null ? null : exactServerVersionFrom(image)),
     cli: env('DW_CLI_VERSION') || suppliedArtifactVersion('cli'),
     workflow: env('DW_WORKFLOW_PHP_VERSION') || env('DW_WORKFLOW_VERSION') || suppliedArtifactVersion('workflow'),
+    'sdk-php': env('DW_PHP_SDK_VERSION') || suppliedArtifactVersion('sdk-php'),
     'sdk-python': env('DW_PYTHON_SDK_VERSION') || env('DW_SDK_PYTHON_VERSION') || suppliedArtifactVersion('sdk-python'),
     waterline: env('DW_WATERLINE_VERSION') || suppliedArtifactVersion('waterline'),
   };
@@ -499,6 +504,9 @@ function artifactSources(versions, image) {
       || env('DW_WORKFLOW_PHP_ARTIFACT_SOURCE')
       || suppliedArtifactSource('workflow')
       || (versions.workflow ? `packagist://durable-workflow/workflow@${versions.workflow}` : null),
+    'sdk-php': env('DW_PHP_SDK_ARTIFACT_SOURCE')
+      || suppliedArtifactSource('sdk-php')
+      || (versions['sdk-php'] ? `packagist://durable-workflow/sdk@${versions['sdk-php']}` : null),
     'sdk-python': env('DW_PYTHON_SDK_ARTIFACT_SOURCE')
       || suppliedArtifactSource('sdk-python')
       || (versions['sdk-python'] ? `pypi://durable-workflow==${versions['sdk-python']}` : null),
@@ -619,6 +627,8 @@ async function verifyPublishedArtifactSource(artifact, version, source, serverDi
       return verifyGithubReleaseAsset(version, source);
     case 'workflow':
       return verifyPackagistPackage('durable-workflow/workflow', version, source);
+    case 'sdk-php':
+      return verifyPackagistPackage('durable-workflow/sdk', version, source);
     case 'sdk-python':
       return verifyPypiPackage(version, source);
     case 'waterline':
@@ -1595,7 +1605,7 @@ function publishedCrossLanguageWorkerExecution(versions, sources, verification, 
   return {
     local_product_source_checkouts_used: false,
     worker_execution_mode: 'published_php_python_service_call_shard',
-    source_integrity_statement: 'workflow-php and sdk-python were installed from published package channels inside disposable runtime containers; no local product checkout path was mounted as an artifact under test',
+    source_integrity_statement: 'workflow-php, sdk-php, and sdk-python were installed from published package channels inside disposable runtime containers; no local product checkout path was mounted as an artifact under test',
     service_health: {
       'workflow-php': phpServiceHealth,
       'sdk-python': pythonServiceHealth,
@@ -1608,6 +1618,18 @@ function publishedCrossLanguageWorkerExecution(versions, sources, verification, 
         status: runtimeEvidence.php?.package_imported === true ? 'pass' : 'fail',
         install_channel: 'packagist',
         source_verification: verification.workflow,
+        service_health_succeeded: phpServiceHealth.health_succeeded === true,
+        service_health: phpServiceHealth,
+        local_product_source_checkout_used_as_artifact: false,
+        local_product_source_checkouts_used: false,
+      },
+      {
+        artifact: 'sdk-php',
+        version: versions['sdk-php'],
+        source: sources['sdk-php'],
+        status: runtimeEvidence.php?.sdk_package_version === versions['sdk-php'] ? 'pass' : 'fail',
+        install_channel: 'packagist',
+        source_verification: verification['sdk-php'],
         service_health_succeeded: phpServiceHealth.health_succeeded === true,
         service_health: phpServiceHealth,
         local_product_source_checkout_used_as_artifact: false,
@@ -1627,6 +1649,15 @@ function publishedCrossLanguageWorkerExecution(versions, sources, verification, 
       },
     ],
     workers: [
+      {
+        role: 'sdk_php_remote_client',
+        sdk_language: 'sdk-php',
+        package_version: runtimeEvidence.php?.sdk_package_version || versions['sdk-php'],
+        container_image: runtimeEvidence.php?.container_image || 'composer:2',
+        service_started: phpServiceHealth.health_succeeded === true,
+        public_service_call_surface: reflectedPublicServiceCallSurface(runtimeEvidence.php),
+        caller_workflow_invocation: callerWorkflowInvocationEvidence('sdk-php', runtimeEvidence.php),
+      },
       {
         role: 'workflow_php_runtime_service',
         sdk_language: 'workflow-php',
@@ -1669,12 +1700,14 @@ require '/tmp/dw-php/vendor/autoload.php';
 $installedVersion = class_exists(InstalledVersions::class)
     ? (InstalledVersions::getPrettyVersion('durable-workflow/workflow') ?: InstalledVersions::getVersion('durable-workflow/workflow') ?: null)
     : null;
-$controlPlaneClass = 'Workflow\\\\V2\\\\Client\\\\ControlPlaneClient';
+$sdkVersion = class_exists(InstalledVersions::class)
+    ? (InstalledVersions::getPrettyVersion('durable-workflow/sdk') ?: InstalledVersions::getVersion('durable-workflow/sdk') ?: null)
+    : null;
+$sdkClientClass = 'DurableWorkflow\\\\Client';
 $workflowClass = 'Workflow\\\\V2\\\\Workflow';
 $invocableAdapterClass = 'Workflow\\\\V2\\\\Support\\\\InvocableHttpAdapter';
 $invocableHandlerClass = 'Workflow\\\\V2\\\\Support\\\\InvocableActivityHandler';
-$controlPlaneMethods = class_exists($controlPlaneClass) ? get_class_methods($controlPlaneClass) : [];
-$workflowMethods = class_exists($workflowClass) ? get_class_methods($workflowClass) : [];
+$sdkClientMethods = class_exists($sdkClientClass) ? get_class_methods($sdkClientClass) : [];
 $candidateMethods = [
     'startServiceOperation',
     'executeServiceOperation',
@@ -1686,7 +1719,7 @@ $candidateMethods = [
     'invokeNexusService',
     'serviceCall',
 ];
-$serviceCallMethods = array_values(array_intersect($candidateMethods, array_merge($controlPlaneMethods, $workflowMethods)));
+$serviceCallMethods = array_values(array_intersect($candidateMethods, $sdkClientMethods));
 
 function emit_json(array $payload, int $status = 200): void {
     http_response_code($status);
@@ -1754,9 +1787,10 @@ if (! is_array($decoded)) {
 
 $base = [
     'runtime' => 'workflow-php',
-    'package_imported' => class_exists($workflowClass) || class_exists($controlPlaneClass) || class_exists($invocableAdapterClass),
+    'package_imported' => class_exists($workflowClass) && class_exists($sdkClientClass) && class_exists($invocableAdapterClass),
     'package_version' => $installedVersion,
-    'control_plane_client_present' => class_exists($controlPlaneClass),
+    'sdk_package_version' => $sdkVersion,
+    'sdk_client_present' => class_exists($sdkClientClass),
     'workflow_authoring_class_present' => class_exists($workflowClass),
     'service_runtime_surface' => [
         'available' => class_exists($invocableAdapterClass) && class_exists($invocableHandlerClass),
@@ -1767,7 +1801,7 @@ $base = [
     'service_call_methods' => $serviceCallMethods,
     'public_service_call_surface' => [
         'available' => count($serviceCallMethods) > 0,
-        'checked_classes' => [$controlPlaneClass, $workflowClass],
+        'checked_classes' => [$sdkClientClass],
         'candidate_methods' => $candidateMethods,
         'matched_methods' => $serviceCallMethods,
     ],
@@ -2150,7 +2184,7 @@ async function startPhpWorkflowService(compose, versions) {
     'composer:2',
     'sh',
     '-lc',
-    `mkdir -p /tmp/dw-php && cd /tmp/dw-php && composer init --no-interaction --name=dw/nexus-conformance --require=durable-workflow/workflow:${JSON.stringify(versions.workflow).slice(1, -1)} >/tmp/dw-php-composer-init.log 2>&1 && composer update --no-interaction --prefer-dist --no-progress >/tmp/dw-php-composer-update.log 2>&1 && php -S 0.0.0.0:8092 /work/nexus-php-workflow-service.php`,
+    `mkdir -p /tmp/dw-php && cd /tmp/dw-php && composer init --no-interaction --name=dw/nexus-conformance --require=durable-workflow/workflow:${JSON.stringify(versions.workflow).slice(1, -1)} --require=durable-workflow/sdk:${JSON.stringify(versions['sdk-php']).slice(1, -1)} >/tmp/dw-php-composer-init.log 2>&1 && composer update --no-interaction --prefer-dist --no-progress >/tmp/dw-php-composer-update.log 2>&1 && php -S 0.0.0.0:8092 /work/nexus-php-workflow-service.php`,
   ], path.join(resultDir, 'nexus-php-workflow-service-start.log'));
 
   const health = await waitForJson(`http://127.0.0.1:${port}/health`, 180000);
@@ -2214,7 +2248,7 @@ function reflectPublishedPhpWorkflowSurface(containerName) {
 <?php
 require 'vendor/autoload.php';
 
-$controlPlaneClass = Workflow\\V2\\Client\\ControlPlaneClient::class;
+$sdkClientClass = DurableWorkflow\\Client::class;
 $workflowClass = Workflow\\V2\\Workflow::class;
 $invocableAdapterClass = Workflow\\V2\\Support\\InvocableHttpAdapter::class;
 $invocableHandlerClass = Workflow\\V2\\Support\\InvocableActivityHandler::class;
@@ -2229,17 +2263,20 @@ $candidateMethods = [
     'invokeNexusService',
     'serviceCall',
 ];
-$controlPlaneMethods = class_exists($controlPlaneClass) ? get_class_methods($controlPlaneClass) : [];
-$workflowMethods = class_exists($workflowClass) ? get_class_methods($workflowClass) : [];
-$serviceCallMethods = array_values(array_intersect($candidateMethods, array_merge($controlPlaneMethods, $workflowMethods)));
+$sdkClientMethods = class_exists($sdkClientClass) ? get_class_methods($sdkClientClass) : [];
+$serviceCallMethods = array_values(array_intersect($candidateMethods, $sdkClientMethods));
 $installedVersion = class_exists(Composer\\InstalledVersions::class)
     ? (Composer\\InstalledVersions::getPrettyVersion('durable-workflow/workflow') ?: null)
+    : null;
+$sdkVersion = class_exists(Composer\\InstalledVersions::class)
+    ? (Composer\\InstalledVersions::getPrettyVersion('durable-workflow/sdk') ?: null)
     : null;
 
 echo json_encode([
     'runtime' => 'workflow-php',
-    'package_imported' => class_exists($controlPlaneClass) || class_exists($workflowClass),
+    'package_imported' => class_exists($sdkClientClass) && class_exists($workflowClass),
     'package_version' => $installedVersion,
+    'sdk_package_version' => $sdkVersion,
     'service_call_methods' => $serviceCallMethods,
     'service_runtime_surface' => [
         'available' => class_exists($invocableAdapterClass) && class_exists($invocableHandlerClass),
@@ -2250,13 +2287,74 @@ echo json_encode([
     ],
     'public_service_call_surface' => [
         'available' => count($serviceCallMethods) > 0,
-        'checked_classes' => [$controlPlaneClass, $workflowClass],
+        'checked_classes' => [$sdkClientClass],
         'candidate_methods' => $candidateMethods,
         'matched_methods' => $serviceCallMethods,
         'source' => 'container_reflection',
     ],
 ], JSON_UNESCAPED_SLASHES | JSON_PRETTY_PRINT) . PHP_EOL;
 PHP`, path.join(resultDir, 'nexus-php-workflow-service-reflection.log'));
+}
+
+function executePublishedPhpSdkServiceOperation(
+  containerName,
+  token,
+  operation,
+  argumentsValue,
+  callerNamespace,
+  callerWorkflowId,
+  callerRunId,
+) {
+  const request = {
+    server_url: 'http://server:8080',
+    token,
+    namespace: callerNamespace,
+    endpoint_name: operation.endpointName,
+    service_name: operation.serviceName,
+    operation_name: operation.operationName,
+    arguments: argumentsValue,
+    caller_workflow_id: callerWorkflowId,
+    caller_run_id: callerRunId,
+    idempotency_key: `${callerWorkflowId}-nexus-${crypto.randomBytes(5).toString('hex')}`,
+  };
+  const encoded = Buffer.from(JSON.stringify(request), 'utf8').toString('base64');
+  const response = dockerExecJson(containerName, `cd /tmp/dw-php && php <<'PHP'
+<?php
+require 'vendor/autoload.php';
+
+use DurableWorkflow\\Client;
+use DurableWorkflow\\Model\\ServiceOperationOptions;
+
+$input = json_decode(base64_decode('${encoded}'), true, 512, JSON_THROW_ON_ERROR);
+$client = new Client(
+    (string) $input['server_url'],
+    namespace: (string) $input['namespace'],
+    token: (string) $input['token'],
+);
+$handle = $client->startServiceOperation(
+    (string) $input['endpoint_name'],
+    (string) $input['service_name'],
+    (string) $input['operation_name'],
+    $input['arguments'] ?? null,
+    new ServiceOperationOptions(
+        modeOverride: 'async',
+        waitFor: 'accepted',
+        idempotencyKey: (string) $input['idempotency_key'],
+        callerNamespace: (string) $input['namespace'],
+        callerWorkflowId: (string) $input['caller_workflow_id'],
+        callerRunId: (string) $input['caller_run_id'],
+    ),
+);
+echo json_encode($handle->started->raw + [
+    'service_call_id' => $handle->serviceCallId,
+    'sdk_version' => Composer\\InstalledVersions::getPrettyVersion('durable-workflow/sdk'),
+    'client_process_id' => getmypid(),
+], JSON_UNESCAPED_SLASHES | JSON_THROW_ON_ERROR), PHP_EOL;
+PHP`, path.join(resultDir, 'nexus-php-sdk-client-execute.log'));
+  response.status = response.ok ? 202 : 0;
+  response.request = request;
+
+  return response;
 }
 
 async function setupCrossLanguageService(baseUrl, token, target, serviceUrl) {
@@ -2590,6 +2688,7 @@ async function probePublishedPhpPythonServiceCalls(baseUrl, token, versions, sou
         container_image: 'composer:2',
         package_imported: crossLanguageRuntimeBool('package_imported', phpHealth, phpProbe, phpReflection),
         package_version: crossLanguageRuntimeString('package_version', versions.workflow || '', phpHealth, phpProbe, phpReflection),
+        sdk_package_version: crossLanguageRuntimeString('sdk_package_version', versions['sdk-php'] || '', phpHealth, phpProbe, phpReflection),
         service_started: phpHealth.ok === true || phpProbe.ok === true || crossLanguageRuntimeBool('service_started', phpHealth, phpProbe, phpReflection),
         service_health_succeeded: validServiceHealthResponse('workflow-php', phpHealth),
         health_response: responseSummary(phpHealth),
@@ -2621,25 +2720,17 @@ async function probePublishedPhpPythonServiceCalls(baseUrl, token, versions, sou
     const phpToPythonRequest = {
       name: 'world',
       scenario: 'php_caller_python_service',
-      caller_sdk_language: 'workflow-php',
+      caller_sdk_language: 'sdk-php',
       service_sdk_language: 'sdk-python',
     };
-    const phpToPythonExecute = await apiRequest(
-      baseUrl,
+    const phpToPythonExecute = executePublishedPhpSdkServiceOperation(
+      phpService.containerName,
       token,
-      'shared',
-      'POST',
-      `/service-endpoints/${pythonOperation.endpointName}/services/${pythonOperation.serviceName}/operations/${pythonOperation.operationName}/execute`,
-      {
-        arguments: phpToPythonRequest,
-        mode_override: 'async',
-        wait_for: 'accepted',
-        caller_namespace: 'tenant-a',
-        caller_workflow_instance_id: phpCallerWorkflowInstanceId,
-        caller_workflow_run_id: phpCallerWorkflowRunId,
-        idempotency_key: `${phpCallerWorkflowInstanceId}-nexus-${crypto.randomBytes(5).toString('hex')}`,
-        metadata: {conformance: 'php_caller_python_service'},
-      },
+      pythonOperation,
+      phpToPythonRequest,
+      'tenant-a',
+      phpCallerWorkflowInstanceId,
+      phpCallerWorkflowRunId,
     );
     const phpToPythonServiceCallId = serviceCallIdFrom(phpToPythonExecute);
     const phpToPythonDescribe = phpToPythonServiceCallId === ''
@@ -2706,7 +2797,7 @@ async function probePublishedPhpPythonServiceCalls(baseUrl, token, versions, sou
     const pythonPublicSurface = reflectedPublicServiceCallSurface(runtimeEvidence.python);
     const phpMissingSurface = publicSurfaceAvailable(phpPublicSurface)
       ? null
-      : 'published workflow-php lacks a public workflow-safe Nexus service-call caller API on Workflow\\V2\\Client\\ControlPlaneClient or Workflow\\V2\\Workflow';
+      : 'published sdk-php lacks the public DurableWorkflow\\Client Nexus service-operation API';
     const pythonMissingSurface = publicSurfaceAvailable(pythonPublicSurface)
       ? null
       : 'published sdk-python lacks a public workflow-safe Nexus service-call caller API on durable_workflow.client.Client or durable_workflow.workflow.WorkflowContext';
@@ -2721,14 +2812,14 @@ async function probePublishedPhpPythonServiceCalls(baseUrl, token, versions, sou
         ? null
         : 'published workflow-php lacks a public invocable service runtime surface on Workflow\\V2\\Support\\InvocableHttpAdapter');
     const phpToPythonMissing = phpMissingSurface || pythonServiceRuntimeMissing;
-    const phpToPythonOwner = phpMissingSurface !== null ? 'workflow' : 'sdk-python';
+    const phpToPythonOwner = phpMissingSurface !== null ? 'sdk-php' : 'sdk-python';
     const pythonToPhpMissing = pythonMissingSurface || phpServiceRuntimeMissing;
     const pythonToPhpOwner = pythonMissingSurface !== null ? 'sdk-python' : 'workflow';
 
     return [
       crossLanguageScenarioResult({
         scenarioId: 'php_caller_python_service',
-        callerLanguage: 'workflow-php',
+        callerLanguage: 'sdk-php',
         serviceLanguage: 'sdk-python',
         callerWorkflowInstanceId: phpCallerWorkflowInstanceId,
         callerWorkflowRunId: phpCallerWorkflowRunId,
@@ -4551,17 +4642,20 @@ const requiredArtifacts = [
   'server',
   'cli',
   'workflow',
+  'sdk-php',
   'sdk-python',
   'waterline',
 ];
 const artifactAliases = {
   workflow: ['workflow-php', 'workflow_php', 'workflowPhp'],
+  'sdk-php': ['sdk_php'],
   'sdk-python': ['sdk_python', 'python-sdk', 'pythonSdk'],
 };
 const artifactOwners = {
   server: 'server',
   cli: 'cli',
   workflow: 'workflow',
+  'sdk-php': 'sdk-php',
   'sdk-python': 'sdk-python',
   waterline: 'waterline',
 };
@@ -4686,14 +4780,14 @@ const scenarioEvidenceRequirements = {
   php_caller_python_service: [
     {fields: ['caller_workflow_instance_id', 'callerWorkflowInstanceId', 'caller_workflow_id', 'callerWorkflowId'], kind: 'non_empty_string', expected: 'caller workflow id for the PHP caller'},
     {fields: ['caller_workflow_run_id', 'callerWorkflowRunId', 'caller_run_id', 'callerRunId', 'run_id', 'runId'], kind: 'non_empty_string', expected: 'caller workflow run id for the PHP caller'},
-    {fields: ['caller_sdk_language', 'callerSdkLanguage', 'caller_runtime', 'callerRuntime'], kind: 'value_equals', value: 'workflow-php', expected: 'PHP workflow caller SDK language'},
+    {fields: ['caller_sdk_language', 'callerSdkLanguage', 'caller_runtime', 'callerRuntime'], kind: 'value_equals', value: 'sdk-php', expected: 'published PHP SDK caller language'},
     {fields: ['service_sdk_language', 'serviceSdkLanguage', 'service_runtime', 'serviceRuntime'], kind: 'value_equals', value: 'sdk-python', expected: 'Python service SDK language'},
     {fields: ['operation_name', 'operationName'], kind: 'non_empty_string', expected: 'operation name invoked across the PHP-to-Python service boundary'},
     {fields: ['request_payload', 'requestPayload', 'request', 'requestEvidence', 'invocation_request', 'invocationRequest'], kind: 'non_empty_object', expected: 'request payload sent by the PHP caller to the Python service'},
     {fields: ['response_or_failure_surface', 'responseOrFailureSurface', 'response', 'responseEvidence', 'invocation_response', 'invocationResponse', 'failure_surface', 'failureSurface', 'invocation_failure', 'invocationFailure'], kind: 'non_empty_object', expected: 'response or failure surface observed by the PHP caller from the Python service'},
     {fields: ['service_call_id', 'serviceCallId'], kind: 'non_empty_string', expected: 'durable service-call id for the cross-language call'},
     {fields: ['artifact_tuple', 'artifactTuple', 'artifact_versions', 'artifactVersions', 'published_artifact_versions', 'publishedArtifactVersions', 'resolved_artifact_versions', 'resolvedArtifactVersions'], kind: 'artifact_tuple', expected: 'published artifact tuple used for the PHP-to-Python service-call cell'},
-    {fields: ['published_artifact_worker_execution', 'publishedArtifactWorkerExecution', 'published_worker_execution', 'publishedWorkerExecution'], kind: 'published_cross_language_worker_execution', expected: 'published workflow-php and sdk-python worker execution evidence for the PHP-to-Python service-call cell'},
+    {fields: ['published_artifact_worker_execution', 'publishedArtifactWorkerExecution', 'published_worker_execution', 'publishedWorkerExecution'], kind: 'published_cross_language_worker_execution', expected: 'published sdk-php caller plus workflow-php and sdk-python service execution evidence for the PHP-to-Python service-call cell'},
     {
       fields: ['service_health', 'serviceHealth', 'published_service_health', 'publishedServiceHealth'],
       kind: 'published_service_health',
@@ -4716,7 +4810,7 @@ const scenarioEvidenceRequirements = {
     {fields: ['response_or_failure_surface', 'responseOrFailureSurface', 'response', 'responseEvidence', 'invocation_response', 'invocationResponse', 'failure_surface', 'failureSurface', 'invocation_failure', 'invocationFailure'], kind: 'non_empty_object', expected: 'response or failure surface observed by the Python caller from the PHP service'},
     {fields: ['service_call_id', 'serviceCallId'], kind: 'non_empty_string', expected: 'durable service-call id for the cross-language call'},
     {fields: ['artifact_tuple', 'artifactTuple', 'artifact_versions', 'artifactVersions', 'published_artifact_versions', 'publishedArtifactVersions', 'resolved_artifact_versions', 'resolvedArtifactVersions'], kind: 'artifact_tuple', expected: 'published artifact tuple used for the Python-to-PHP service-call cell'},
-    {fields: ['published_artifact_worker_execution', 'publishedArtifactWorkerExecution', 'published_worker_execution', 'publishedWorkerExecution'], kind: 'published_cross_language_worker_execution', expected: 'published workflow-php and sdk-python worker execution evidence for the Python-to-PHP service-call cell'},
+    {fields: ['published_artifact_worker_execution', 'publishedArtifactWorkerExecution', 'published_worker_execution', 'publishedWorkerExecution'], kind: 'published_cross_language_worker_execution', expected: 'published sdk-php caller plus workflow-php and sdk-python service execution evidence for the Python-to-PHP service-call cell'},
     {
       fields: ['service_health', 'serviceHealth', 'published_service_health', 'publishedServiceHealth'],
       kind: 'published_service_health',
@@ -4844,6 +4938,7 @@ function artifactVersionsFromEnv() {
     server: 'DW_SERVER_VERSION',
     cli: 'DW_CLI_VERSION',
     workflow: 'DW_WORKFLOW_PHP_VERSION',
+    'sdk-php': 'DW_PHP_SDK_VERSION',
     'sdk-python': 'DW_PYTHON_SDK_VERSION',
     waterline: 'DW_WATERLINE_VERSION',
   };
@@ -4864,6 +4959,7 @@ function artifactSourcesFromEnv() {
     server: 'DW_SERVER_ARTIFACT_SOURCE',
     cli: 'DW_CLI_ARTIFACT_SOURCE',
     workflow: 'DW_WORKFLOW_ARTIFACT_SOURCE',
+    'sdk-php': 'DW_PHP_SDK_ARTIFACT_SOURCE',
     'sdk-python': 'DW_PYTHON_SDK_ARTIFACT_SOURCE',
     waterline: 'DW_WATERLINE_ARTIFACT_SOURCE',
   };
@@ -5344,7 +5440,7 @@ function publishedWorkerExecutionSatisfied(value) {
     const source = stringValue(entry.source ?? entry.install_source ?? entry.installSource ?? entry.artifact_source ?? entry.artifactSource);
     const status = stringValue(entry.status ?? entry.result ?? entry.outcome).toLowerCase();
 
-    return ['server', 'workflow-php', 'sdk-python'].includes(artifact)
+    return ['server', 'workflow-php', 'sdk-php', 'sdk-python'].includes(artifact)
       && status === 'pass'
       && isExactPublishedArtifactVersion(version)
       && source !== ''
@@ -5364,7 +5460,7 @@ function publishedCrossLanguageWorkerExecutionSatisfied(value) {
     canonicalPublishedWorkerArtifact(entry.artifact ?? entry.name ?? entry.id)
   )));
 
-  return artifacts.has('workflow-php') && artifacts.has('sdk-python');
+  return artifacts.has('workflow-php') && artifacts.has('sdk-php') && artifacts.has('sdk-python');
 }
 
 function publishedServiceHealthSatisfied(value, runtime) {
@@ -5460,6 +5556,9 @@ function canonicalPublishedWorkerArtifact(value) {
   const artifact = stringValue(value).toLowerCase().replace(/_/g, '-');
   if (['workflow', 'workflow-php', 'php', 'durable-workflow/workflow'].includes(artifact)) {
     return 'workflow-php';
+  }
+  if (['sdk-php', 'durable-workflow/sdk'].includes(artifact)) {
+    return 'sdk-php';
   }
   if (['sdk-python', 'python-sdk', 'python', 'durable-workflow'].includes(artifact)) {
     return 'sdk-python';
@@ -6518,6 +6617,8 @@ function matchesPublishedArtifactSource(artifact, version, source) {
       return matchesCliArtifactSource(version, trimmed);
     case 'workflow':
       return matchesComposerArtifactSource('durable-workflow/workflow', version, trimmed);
+    case 'sdk-php':
+      return matchesComposerArtifactSource('durable-workflow/sdk', version, trimmed);
     case 'sdk-python':
       return matchesPythonArtifactSource(version, trimmed);
     case 'waterline':
@@ -7287,7 +7388,7 @@ const result = {
     operation: 'greet',
   },
   runtime_matrix: {
-    callers: ['workflow-php', 'sdk-python'],
+    callers: ['sdk-php', 'sdk-python'],
     services: ['workflow-php', 'sdk-python'],
     observers: ['caller_history', 'service_call_detail', 'waterline_operator_visibility'],
   },

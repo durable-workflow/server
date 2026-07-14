@@ -65,7 +65,7 @@ const DEFAULT_REQUIRED_SCENARIOS = [
   'invalid_cron_refusal',
   'nonexistent_workflow_type_outcome',
 ];
-const REQUIRED_PUBLISHED_ARTIFACTS = ['server', 'cli', 'sdk-python', 'workflow-php', 'waterline'];
+const REQUIRED_PUBLISHED_ARTIFACTS = ['server', 'cli', 'sdk-python', 'sdk-php', 'waterline'];
 const FORBIDDEN_ARTIFACT_SOURCE_TOKENS = [
   'local_product_source_checkout',
   'workspace_repo_as_artifact_under_test',
@@ -81,7 +81,7 @@ const PUBLISHED_ARTIFACT_SOURCE_LABELS = {
   server: new Set(['published_docker_image', 'existing_published_server_url']),
   cli: new Set(['official_install_script', 'published_cli_release', 'github_release']),
   'sdk-python': new Set(['pypi', 'pypi_release', 'published_pypi_release']),
-  'workflow-php': new Set(['composer_packagist', 'composer_release', 'packagist', 'published_packagist_release']),
+  'sdk-php': new Set(['composer_packagist', 'composer_release', 'packagist', 'published_packagist_release']),
   waterline: new Set([
     'published_waterline_artifact',
     'published_waterline_release',
@@ -278,11 +278,11 @@ async function main() {
     schedule_types: arrayValue(smokeEvidence.runtime_matrix?.schedule_types),
     cross_language_cells: arrayValue(smokeEvidence.runtime_matrix?.cross_language_cells),
     uncovered_required_runtimes: missingTokens(
-      scenarioManifest.required_matrix?.runtimes ?? ['workflow-php', 'sdk-python'],
+      scenarioManifest.required_matrix?.runtimes ?? ['sdk-php', 'sdk-python'],
       smokeEvidence.runtime_matrix?.runtimes,
     ),
     uncovered_required_client_paths: missingTokens(
-      scenarioManifest.required_matrix?.client_paths ?? ['cli', 'sdk-python', 'workflow-php-sdk'],
+      scenarioManifest.required_matrix?.client_paths ?? ['cli', 'sdk-python', 'sdk-php'],
       smokeEvidence.runtime_matrix?.client_paths,
     ),
     uncovered_required_schedule_types: missingTokens(
@@ -649,7 +649,7 @@ function artifactInstallEntriesByArtifact(installEvidence) {
 
 function artifactInstallEntry(entries, artifact) {
   const aliases = {
-    'workflow-php': ['workflow-php', 'workflow_php', 'workflow'],
+    'sdk-php': ['sdk-php', 'sdk_php'],
     'sdk-python': ['sdk-python', 'sdk_python', 'python'],
     waterline: ['waterline', 'waterline-ui', 'waterline_ui'],
   };
@@ -682,7 +682,7 @@ function artifactValue(values, artifact) {
   }
 
   const aliases = {
-    'workflow-php': ['workflow-php', 'workflow_php', 'workflow'],
+    'sdk-php': ['sdk-php', 'sdk_php'],
     'sdk-python': ['sdk-python', 'sdk_python', 'python'],
     waterline: ['waterline', 'waterline-ui', 'waterline_ui'],
   };
@@ -703,7 +703,7 @@ function artifactObjectValue(values, artifact) {
   }
 
   const aliases = {
-    'workflow-php': ['workflow-php', 'workflow_php', 'workflow'],
+    'sdk-php': ['sdk-php', 'sdk_php'],
     'sdk-python': ['sdk-python', 'sdk_python', 'python'],
     waterline: ['waterline', 'waterline-ui', 'waterline_ui'],
   };
@@ -755,8 +755,8 @@ function matchesPublishedArtifactSource(artifact, version, source) {
       return matchesCliArtifactSource(version, source);
     case 'sdk-python':
       return matchesPythonArtifactSource(version, source);
-    case 'workflow-php':
-      return matchesComposerArtifactSource('durable-workflow/workflow', version, source);
+    case 'sdk-php':
+      return matchesComposerArtifactSource('durable-workflow/sdk', version, source);
     case 'waterline':
       return matchesComposerArtifactSource('durable-workflow/waterline', version, source);
     default:
@@ -781,9 +781,6 @@ function normalizeArtifactSources(artifactSources, artifactVersions) {
     const version = artifactValue(artifactVersions, artifact);
     const normalizedSource = normalizePublishedArtifactSource(artifact, version, source);
     normalized[artifact] = normalizedSource;
-    if (artifact === 'workflow-php') {
-      normalized.workflow = normalizedSource;
-    }
   }
 
   return normalized;
@@ -814,8 +811,8 @@ function canonicalPublishedArtifactSource(artifact, version, source) {
       return cliReleaseAssetSource(version, 'install.sh');
     case 'sdk-python':
       return pythonPackageArtifactSource(version);
-    case 'workflow-php':
-      return composerPackageArtifactSource('durable-workflow/workflow', version);
+    case 'sdk-php':
+      return composerPackageArtifactSource('durable-workflow/sdk', version);
     case 'waterline':
       return composerPackageArtifactSource('durable-workflow/waterline', version);
     default:
@@ -1257,14 +1254,11 @@ function blockedResult(reason, startedAt, finishedAt, artifactVersions = {}, art
 }
 
 function artifactVersionsFromEnv() {
-  const workflow = envString('DW_WORKFLOW_PHP_VERSION', 'DW_WORKFLOW_VERSION');
-
   return {
     server: envString('DW_SERVER_VERSION'),
     cli: envString('DW_CLI_VERSION'),
     'sdk-python': envString('DW_PYTHON_SDK_VERSION'),
-    workflow,
-    'workflow-php': workflow,
+    'sdk-php': envString('DW_PHP_SDK_VERSION'),
     waterline: envString('DW_WATERLINE_VERSION'),
   };
 }
@@ -1274,15 +1268,9 @@ function artifactSourcesFromEnv(artifactVersions = artifactVersionsFromEnv()) {
     server: envString('DW_SCHEDULES_SERVER_ARTIFACT_SOURCE', 'DW_SERVER_ARTIFACT_SOURCE') || 'not_exercised',
     cli: envString('DW_SCHEDULES_CLI_ARTIFACT_SOURCE', 'DW_CLI_ARTIFACT_SOURCE') || 'not_exercised',
     'sdk-python': envString('DW_SCHEDULES_PYTHON_SDK_ARTIFACT_SOURCE', 'DW_PYTHON_SDK_ARTIFACT_SOURCE') || 'not_exercised',
-    workflow: envString(
-      'DW_SCHEDULES_WORKFLOW_PHP_ARTIFACT_SOURCE',
-      'DW_WORKFLOW_PHP_ARTIFACT_SOURCE',
-      'DW_WORKFLOW_ARTIFACT_SOURCE',
-    ) || 'not_exercised',
-    'workflow-php': envString(
-      'DW_SCHEDULES_WORKFLOW_PHP_ARTIFACT_SOURCE',
-      'DW_WORKFLOW_PHP_ARTIFACT_SOURCE',
-      'DW_WORKFLOW_ARTIFACT_SOURCE',
+    'sdk-php': envString(
+      'DW_SCHEDULES_PHP_SDK_ARTIFACT_SOURCE',
+      'DW_PHP_SDK_ARTIFACT_SOURCE',
     ) || 'not_exercised',
     waterline: envString('DW_SCHEDULES_WATERLINE_ARTIFACT_SOURCE', 'DW_WATERLINE_ARTIFACT_SOURCE') || 'not_exercised',
   }, artifactVersions);
@@ -1531,9 +1519,6 @@ function artifactSourcesWithInstallEvidence(artifactSources, artifacts) {
     }
 
     merged[name] = source;
-    if (name === 'workflow-php') {
-      merged.workflow = source;
-    }
   }
 
   return merged;
@@ -1544,7 +1529,7 @@ function installChannelFor(artifact) {
     server: 'durableworkflow/server docker image',
     cli: 'official dw install script',
     'sdk-python': 'PyPI durable-workflow package',
-    'workflow-php': 'Packagist durable-workflow/workflow package',
+    'sdk-php': 'Packagist durable-workflow/sdk package',
     waterline: 'Packagist durable-workflow/waterline package',
   }[artifact] ?? 'published release channel';
 }
@@ -1573,9 +1558,9 @@ function publishedArtifactInstallFinding(evidence, artifactVersions, smokeEviden
       ? `Published artifact install proof is incomplete: ${gaps.join(', ')}.`
       : 'Published artifact install proof is incomplete.',
     expected_behavior: stringValue(configured.expected_behavior)
-      || 'Server image, CLI, Python SDK, PHP workflow runtime, and Waterline are installed from published channels and recorded with concrete versions.',
+      || 'Server image, CLI, Python SDK, PHP SDK, and Waterline are installed from published channels and recorded with concrete versions.',
     next_acceptance_criterion: arrayValue(configured.acceptance).join('; ')
-      || 'record passing per-artifact install evidence, published versions, verified public artifact sources, and local_product_source_checkouts_used=false for server, cli, sdk-python, workflow-php, and waterline',
+      || 'record passing per-artifact install evidence, published versions, verified public artifact sources, and local_product_source_checkouts_used=false for server, cli, sdk-python, sdk-php, and waterline',
     current_positive_evidence: currentSmokeEvidence(smokeEvidence),
     observed_outputs: evidence,
   };
@@ -5873,7 +5858,7 @@ async function maybeRunCrossLanguageShard(startedAt, artifactVersions, artifactS
   const composeAvailable = dockerAvailable && await commandSucceeds('docker', ['compose', 'version']);
   const serverImage = resolveServerImage(artifactVersions);
   const pythonVersion = stringValue(artifactVersions['sdk-python']);
-  const workflowPhpVersion = stringValue(artifactVersions['workflow-php'] ?? artifactVersions.workflow);
+  const sdkPhpVersion = stringValue(artifactVersions['sdk-php']);
   const configuredCli = stringValue(process.env.DW_SCHEDULES_CLI_EXECUTABLE ?? process.env.DW_CLI_EXECUTABLE);
   const cliVersion = stringValue(artifactVersions.cli);
   const missing = [];
@@ -5887,8 +5872,8 @@ async function maybeRunCrossLanguageShard(startedAt, artifactVersions, artifactS
   if (!dockerAvailable) {
     missing.push('docker');
   }
-  if (workflowPhpVersion === '') {
-    missing.push('DW_WORKFLOW_PHP_VERSION');
+  if (sdkPhpVersion === '') {
+    missing.push('DW_PHP_SDK_VERSION');
   }
   if (configuredCli === '' && cliVersion === '') {
     missing.push('DW_CLI_VERSION or DW_SCHEDULES_CLI_EXECUTABLE');
@@ -6012,8 +5997,8 @@ async function runCrossLanguageShard({ startedAt, artifactVersions, artifactSour
           task_queue: taskQueue,
           worker_id: phpWorkerId,
           workflow_type: phpWorkflowType,
-          runtime: 'workflow-php',
-          sdk_version: artifactValue(artifactVersions, 'workflow-php'),
+          runtime: 'sdk-php',
+          sdk_version: artifactValue(artifactVersions, 'sdk-php'),
         })
       : null;
     const pythonRegistration = runPhpCreatedPython
@@ -6044,7 +6029,7 @@ async function runCrossLanguageShard({ startedAt, artifactVersions, artifactSour
           input: {
             scenario: 'python_created_php_workflow',
             schedule_creator: 'sdk-python',
-            workflow_runtime: 'workflow-php',
+            workflow_runtime: 'sdk-php',
           },
         })
       : null;
@@ -6061,7 +6046,7 @@ async function runCrossLanguageShard({ startedAt, artifactVersions, artifactSour
           schedule_max_runs: scheduleMaxRuns,
           input: {
             scenario: 'php_created_python_workflow',
-            schedule_creator: 'workflow-php-sdk',
+            schedule_creator: 'sdk-php',
             workflow_runtime: 'sdk-python',
           },
         })
@@ -6198,7 +6183,7 @@ async function installSchedulesPhpArtifact(
   logPrefix = 'schedules-cross-language',
 ) {
   const phpRoot = path.join(shardRoot, 'php');
-  const workflowPhpVersion = artifactValue(artifactVersions, 'workflow-php');
+  const sdkPhpVersion = artifactValue(artifactVersions, 'sdk-php');
   const scriptPath = path.join(phpRoot, 'schedules_worker.php');
   fs.mkdirSync(phpRoot, { recursive: true });
   writeText(scriptPath, schedulesPhpWorkerScript());
@@ -6217,14 +6202,14 @@ async function installSchedulesPhpArtifact(
       'require',
       '--no-interaction',
       '--no-progress',
-      `durable-workflow/workflow:${workflowPhpVersion}`,
+      `durable-workflow/sdk:${sdkPhpVersion}`,
     ],
     path.join(resultDir, `${logPrefix}-php-install.log`),
   );
   markArtifactSource(
     artifactSources,
-    'workflow-php',
-    composerPackageArtifactSource('durable-workflow/workflow', workflowPhpVersion),
+    'sdk-php',
+    composerPackageArtifactSource('durable-workflow/sdk', sdkPhpVersion),
     artifactVersions,
   );
 
@@ -6335,7 +6320,7 @@ async function runSchedulesPhpWorkerCapture(php, input) {
   }
   if (result.exit_code !== 0) {
     return workerActionFailure({
-      runtime: 'workflow-php',
+      runtime: 'sdk-php',
       action: input.action,
       logPath,
       result,
@@ -6346,7 +6331,7 @@ async function runSchedulesPhpWorkerCapture(php, input) {
 
   if (!output || typeof output !== 'object') {
     return workerActionFailure({
-      runtime: 'workflow-php',
+      runtime: 'sdk-php',
       action: input.action,
       logPath,
       result,
@@ -6357,7 +6342,7 @@ async function runSchedulesPhpWorkerCapture(php, input) {
 
   if (output.ok === false) {
     return workerActionFailure({
-      runtime: 'workflow-php',
+      runtime: 'sdk-php',
       action: input.action,
       logPath,
       result,
@@ -6368,7 +6353,7 @@ async function runSchedulesPhpWorkerCapture(php, input) {
 
   return {
     ok: true,
-    runtime: 'workflow-php',
+    runtime: 'sdk-php',
     action: input.action,
     output,
     log_path: path.basename(logPath),
@@ -6593,13 +6578,13 @@ async function waitForCrossLanguageCompletions({
         task_queue: taskQueue,
         worker_id: phpWorkerId,
         workflow_type: phpWorkflowType,
-        runtime: 'workflow-php',
+        runtime: 'sdk-php',
         schedule_id: pythonCreatedPhpScheduleId,
         timeout_ms: 15000,
         complete_result: {
           scenario: 'python_created_php_workflow',
           schedule_creator: 'sdk-python',
-          workflow_runtime: 'workflow-php',
+          workflow_runtime: 'sdk-php',
         },
       });
       lastPhpPoll = phpPollAction.output ?? workerPollFailureOutput(phpPollAction);
@@ -6611,7 +6596,7 @@ async function waitForCrossLanguageCompletions({
             namespace,
             scheduleId: pythonCreatedPhpScheduleId,
             scheduleCreator: 'sdk-python',
-            workflowRuntime: 'workflow-php',
+            workflowRuntime: 'sdk-php',
             scenario: 'python_created_php_workflow',
             workerId: phpWorkerId,
             attempts: phpAttempts,
@@ -6620,7 +6605,7 @@ async function waitForCrossLanguageCompletions({
             pollAction: phpPollAction,
             scheduleId: pythonCreatedPhpScheduleId,
             scheduleCreator: 'sdk-python',
-            workflowRuntime: 'workflow-php',
+            workflowRuntime: 'sdk-php',
             scenario: 'python_created_php_workflow',
             workerId: phpWorkerId,
             attempts: phpAttempts,
@@ -6643,7 +6628,7 @@ async function waitForCrossLanguageCompletions({
         timeout_ms: 15000,
         complete_result: {
           scenario: 'php_created_python_workflow',
-          schedule_creator: 'workflow-php-sdk',
+          schedule_creator: 'sdk-php',
           workflow_runtime: 'sdk-python',
         },
       });
@@ -6655,7 +6640,7 @@ async function waitForCrossLanguageCompletions({
             token,
             namespace,
             scheduleId: phpCreatedPythonScheduleId,
-            scheduleCreator: 'workflow-php-sdk',
+            scheduleCreator: 'sdk-php',
             workflowRuntime: 'sdk-python',
             scenario: 'php_created_python_workflow',
             workerId: pythonWorkerId,
@@ -6664,7 +6649,7 @@ async function waitForCrossLanguageCompletions({
         : workerPollFailureCompletion({
             pollAction: pythonPollAction,
             scheduleId: phpCreatedPythonScheduleId,
-            scheduleCreator: 'workflow-php-sdk',
+            scheduleCreator: 'sdk-php',
             workflowRuntime: 'sdk-python',
             scenario: 'php_created_python_workflow',
             workerId: pythonWorkerId,
@@ -6685,7 +6670,7 @@ async function waitForCrossLanguageCompletions({
         scenario: 'python_created_php_workflow',
         scheduleId: pythonCreatedPhpScheduleId,
         scheduleCreator: 'sdk-python',
-        workflowRuntime: 'workflow-php',
+        workflowRuntime: 'sdk-php',
         workerId: phpWorkerId,
         attempts: phpAttempts,
         lastPoll: lastPhpPoll,
@@ -6695,7 +6680,7 @@ async function waitForCrossLanguageCompletions({
     ? (pythonCompletion ?? missingCrossLanguageCompletion({
         scenario: 'php_created_python_workflow',
         scheduleId: phpCreatedPythonScheduleId,
-        scheduleCreator: 'workflow-php-sdk',
+        scheduleCreator: 'sdk-php',
         workflowRuntime: 'sdk-python',
         workerId: pythonWorkerId,
         attempts: pythonAttempts,
@@ -7036,8 +7021,8 @@ function crossLanguageEvidenceFromObservations({
       cli_executable: cliPath,
     },
     runtime_matrix: {
-      runtimes: ['workflow-php', 'sdk-python'],
-      client_paths: ['cli', 'sdk-python', 'workflow-php-sdk'],
+      runtimes: ['sdk-php', 'sdk-python'],
+      client_paths: ['cli', 'sdk-python', 'sdk-php'],
       schedule_types: ['fixed_rate_interval'],
       cross_language_cells: focusedCellList,
     },
@@ -7062,7 +7047,7 @@ function crossLanguageEvidenceFromObservations({
         },
       } : {}),
       ...(focusedScenarios.has('php_created_python_workflow') ? {
-        'workflow-php-sdk': {
+        'sdk-php': {
           create_or_observe: stringValue(phpCreate?.schedule_id) === schedules.phpCreatedPython,
           list_observed: phpCreatedVisible,
           control_observed: true,
@@ -7077,11 +7062,11 @@ function crossLanguageCellDescriptors(scenarios) {
     python_created_php_workflow: {
       scenario: 'python_created_php_workflow',
       schedule_creator: 'sdk-python',
-      workflow_runtime: 'workflow-php',
+      workflow_runtime: 'sdk-php',
     },
     php_created_python_workflow: {
       scenario: 'php_created_python_workflow',
-      schedule_creator: 'workflow-php-sdk',
+      schedule_creator: 'sdk-php',
       workflow_runtime: 'sdk-python',
     },
   };
@@ -7104,7 +7089,7 @@ async function maybeRunPhpSurfaceShard(startedAt, artifactVersions, artifactSour
   const dockerAvailable = await commandSucceeds('docker', ['--version']);
   const composeAvailable = dockerAvailable && await commandSucceeds('docker', ['compose', 'version']);
   const serverImage = resolveServerImage(artifactVersions);
-  const workflowPhpVersion = artifactValue(artifactVersions, 'workflow-php');
+  const sdkPhpVersion = artifactValue(artifactVersions, 'sdk-php');
   const configuredCli = stringValue(process.env.DW_SCHEDULES_CLI_EXECUTABLE ?? process.env.DW_CLI_EXECUTABLE);
   const cliVersion = artifactValue(artifactVersions, 'cli');
   const missing = [];
@@ -7112,8 +7097,8 @@ async function maybeRunPhpSurfaceShard(startedAt, artifactVersions, artifactSour
   if (!dockerAvailable) {
     missing.push('docker');
   }
-  if (workflowPhpVersion === '') {
-    missing.push('DW_WORKFLOW_PHP_VERSION');
+  if (sdkPhpVersion === '') {
+    missing.push('DW_PHP_SDK_VERSION');
   }
   if (configuredCli === '' && cliVersion === '') {
     missing.push('DW_CLI_VERSION or DW_SCHEDULES_CLI_EXECUTABLE');
@@ -7163,7 +7148,7 @@ async function runPhpSurfaceShard({ startedAt, artifactVersions, artifactSources
   const workflowType = stringValue(process.env.DW_SCHEDULES_PHP_SURFACE_WORKFLOW_TYPE)
     || 'SchedulesConformancePhpSurfaceWorkflow';
   const scheduleId = stringValue(process.env.DW_SCHEDULES_PHP_SURFACE_SCHEDULE_ID)
-    || `${runId}-workflow-php`;
+    || `${runId}-sdk-php`;
   const cronExpression = stringValue(process.env.DW_SCHEDULES_PHP_SURFACE_CRON) || '*/5 * * * *';
   const token = stringValue(process.env.DW_SCHEDULES_AUTH_TOKEN) || 'dev-token';
   const readinessTimeoutSeconds = positiveInt(process.env.DW_SCHEDULES_SERVER_READY_TIMEOUT_SECONDS, 120);
@@ -7418,17 +7403,17 @@ function phpSurfaceEvidenceFromObservations({
       namespace,
       task_queue: taskQueue,
       run_id: runId,
-      worker_execution_mode: 'published_workflow_php_control_plane_client',
+      worker_execution_mode: 'published_sdk_php_control_plane_client',
       schedules_created: [scheduleId],
       cli_executable: cliPath,
     },
     runtime_matrix: {
-      runtimes: ['workflow-php'],
-      client_paths: ['workflow-php-sdk', 'server-http-api', 'cli'],
+      runtimes: ['sdk-php'],
+      client_paths: ['sdk-php', 'server-http-api', 'cli'],
       schedule_types: ['cron_expression'],
     },
     client_surfaces: {
-      'workflow-php-sdk': {
+      'sdk-php': {
         create_or_observe: checks.create_or_observe,
         list_or_describe: checks.list_or_describe,
         list_observed: checks.php_list_observed,
@@ -7732,8 +7717,8 @@ function phpSurfaceFinding(status, checks, artifactVersions) {
       finding_id: 'schedules-php-surface-unsupported',
       scenario_id: 'php_schedule_surface',
       finding_type: 'unsupported_public_surface',
-      owning_surface: 'workflow-php',
-      execution_scope: 'workflow-php-schedule-surface-shard',
+      owning_surface: 'sdk-php',
+      execution_scope: 'sdk-php-schedule-surface-shard',
       artifact_versions: artifactVersions,
       observed_behavior: `The PHP-facing schedule client surface did not expose required operations: ${unsupported.join(', ')}.`,
       expected_behavior: 'The published workflow PHP package exposes create/list/describe and records any claimed pause, resume, trigger, or delete behavior.',
@@ -7746,8 +7731,8 @@ function phpSurfaceFinding(status, checks, artifactVersions) {
     finding_id: 'schedules-php-surface-behavior',
     scenario_id: 'php_schedule_surface',
     finding_type: 'schedule_php_surface_contract_gap',
-    owning_surface: 'workflow-php',
-    execution_scope: 'workflow-php-schedule-surface-shard',
+    owning_surface: 'sdk-php',
+    execution_scope: 'sdk-php-schedule-surface-shard',
     artifact_versions: artifactVersions,
     observed_behavior: checks.failures.join('; ') || 'The PHP-facing schedule client surface did not satisfy the schedule contract.',
     expected_behavior: 'The PHP-facing workflow SDK surface creates or observes schedules, lists/describes them, records claimed control behavior, and matches server and CLI state for exposed fields.',
@@ -7763,7 +7748,7 @@ function phpSurfaceBlockedEvidence(reason, startedAt, artifactVersions, artifact
     scenario_id: 'php_schedule_surface',
     finding_type: 'conformance_runner_blocked',
     owning_surface: 'conformance_harness',
-    execution_scope: 'workflow-php-schedule-surface-shard',
+    execution_scope: 'sdk-php-schedule-surface-shard',
     artifact_versions: artifactVersions,
     observed_behavior: reason,
     expected_behavior: 'The schedules conformance host can install the published workflow PHP package and execute its schedule client surface against published artifacts.',
@@ -7787,7 +7772,7 @@ function phpSurfaceBlockedEvidence(reason, startedAt, artifactVersions, artifact
     },
     findings: [finding],
     client_surfaces: {
-      'workflow-php-sdk': {
+      'sdk-php': {
         create_or_observe: false,
         list_or_describe: false,
         control_observed: false,
@@ -7981,7 +7966,7 @@ function crossLanguageBlockedEvidence(reason, startedAt, artifactVersions, artif
           scenario: 'python_created_php_workflow',
           blocked_reason: reason,
           schedule_creator: 'sdk-python',
-          workflow_runtime: 'workflow-php',
+          workflow_runtime: 'sdk-php',
           schedule_visible_in_cli: false,
           workflow_completed: false,
         },
@@ -7993,7 +7978,7 @@ function crossLanguageBlockedEvidence(reason, startedAt, artifactVersions, artif
         observed_outputs: {
           scenario: 'php_created_python_workflow',
           blocked_reason: reason,
-          schedule_creator: 'workflow-php-sdk',
+          schedule_creator: 'sdk-php',
           workflow_runtime: 'sdk-python',
           schedule_visible_in_cli: false,
           workflow_completed: false,
@@ -8003,18 +7988,18 @@ function crossLanguageBlockedEvidence(reason, startedAt, artifactVersions, artif
     },
     findings,
     runtime_matrix: {
-      runtimes: ['workflow-php', 'sdk-python'],
-      client_paths: ['cli', 'sdk-python', 'workflow-php-sdk'],
+      runtimes: ['sdk-php', 'sdk-python'],
+      client_paths: ['cli', 'sdk-python', 'sdk-php'],
       schedule_types: ['fixed_rate_interval'],
       cross_language_cells: [
         {
           scenario: 'python_created_php_workflow',
           schedule_creator: 'sdk-python',
-          workflow_runtime: 'workflow-php',
+          workflow_runtime: 'sdk-php',
         },
         {
           scenario: 'php_created_python_workflow',
-          schedule_creator: 'workflow-php-sdk',
+          schedule_creator: 'sdk-php',
           workflow_runtime: 'sdk-python',
         },
       ],
@@ -8024,14 +8009,14 @@ function crossLanguageBlockedEvidence(reason, startedAt, artifactVersions, artif
         {
           scenario: 'python_created_php_workflow',
           schedule_creator: 'sdk-python',
-          workflow_runtime: 'workflow-php',
+          workflow_runtime: 'sdk-php',
           schedule_visible_in_cli: false,
           workflow_completed: false,
           blocked_reason: reason,
         },
         {
           scenario: 'php_created_python_workflow',
-          schedule_creator: 'workflow-php-sdk',
+          schedule_creator: 'sdk-php',
           workflow_runtime: 'sdk-python',
           schedule_visible_in_cli: false,
           workflow_completed: false,
@@ -8578,63 +8563,47 @@ declare(strict_types=1);
 
 require __DIR__.'/vendor/autoload.php';
 
-use Illuminate\Http\Client\Factory as HttpFactory;
+use DurableWorkflow\Client;
+use DurableWorkflow\Model\ScheduleAction;
+use DurableWorkflow\Model\ScheduleSpec;
 use Throwable;
-use Workflow\V2\Client\ControlPlaneClient;
-use Workflow\V2\Worker\WorkerProtocolClient;
 
 $payload = json_decode((string) file_get_contents($argv[1]), true, 512, JSON_THROW_ON_ERROR);
 $outputPath = $argv[2];
-$http = new HttpFactory();
+$client = new Client(
+    (string) $payload['server_url'],
+    namespace: (string) $payload['namespace'],
+    token: (string) $payload['token'],
+);
 
 try {
 if ($payload['action'] === 'create_schedule') {
-    $client = new ControlPlaneClient(
-        $http,
-        $payload['server_url'],
-        $payload['token'],
-        $payload['namespace'],
-        defaultRequestTimeoutSeconds: 8,
+    $handle = $client->createSchedule(
+        new ScheduleSpec(
+            intervals: [['every' => (string) ($payload['interval'] ?? 'PT30S')]],
+            timezone: 'UTC',
+        ),
+        new ScheduleAction(
+            (string) $payload['workflow_type'],
+            (string) $payload['task_queue'],
+            [$payload['input'] ?? []],
+        ),
+        scheduleId: (string) $payload['schedule_id'],
+        overlapPolicy: 'allow_all',
+        jitterSeconds: 0,
+        maxRuns: max(2, (int) ($payload['schedule_max_runs'] ?? 2)),
     );
-    $response = $client->createSchedule(
-        (string) $payload['schedule_id'],
-        [
-            'intervals' => [['every' => (string) ($payload['interval'] ?? 'PT30S')]],
-            'timezone' => 'UTC',
-        ],
-        [
-            'workflow_type' => (string) $payload['workflow_type'],
-            'task_queue' => (string) $payload['task_queue'],
-            'input' => [$payload['input'] ?? []],
-        ],
-        [
-            'overlap_policy' => 'allow_all',
-            'jitter_seconds' => 0,
-            'max_runs' => max(2, (int) ($payload['schedule_max_runs'] ?? 2)),
-        ],
-    );
-    $result = ['action' => 'create_schedule', 'schedule_id' => $response['schedule_id'] ?? $payload['schedule_id'], 'response' => $response];
+    $result = ['action' => 'create_schedule', 'schedule_id' => $handle->scheduleId, 'response' => ['schedule_id' => $handle->scheduleId]];
 } else {
-    $client = new WorkerProtocolClient(
-        $http,
-        $payload['server_url'],
-        $payload['token'],
-        $payload['namespace'],
-        defaultRequestTimeoutSeconds: 8,
-    );
-
     if ($payload['action'] === 'register') {
         $response = $client->registerWorker(
-            workerId: (string) $payload['worker_id'],
-            taskQueue: (string) $payload['task_queue'],
-            supportedWorkflowTypes: [(string) $payload['workflow_type']],
-            supportedActivityTypes: $payload['supported_activity_types'] ?? [],
-            sdkVersion: (string) ($payload['sdk_version'] ?? 'published'),
+            (string) $payload['worker_id'],
+            (string) $payload['task_queue'],
+            [(string) $payload['workflow_type']],
+            $payload['supported_activity_types'] ?? [],
+            ['query_tasks', 'workflow_updates', 'durable_history_replay'],
             maxConcurrentWorkflowTasks: 10,
             maxConcurrentActivityTasks: 10,
-            workflowDefinitionFingerprints: [
-                (string) $payload['workflow_type'] => 'schedules-conformance:'.(string) $payload['workflow_type'].':php',
-            ],
         );
         $result = ['action' => 'register', 'response' => $response, 'task' => null];
     } elseif ($payload['action'] === 'poll_complete') {
@@ -8644,14 +8613,11 @@ if ($payload['action'] === 'create_schedule') {
             (string) $payload['worker_id'],
             ['workflow_available' => 10, 'activity_available' => 10],
         );
-        $tasks = $client->pollWorkflowTasks(
-            queue: (string) $payload['task_queue'],
-            timeoutSeconds: 3,
-            workerId: (string) $payload['worker_id'],
-            pollRequestId: (string) $payload['worker_id'].'-'.bin2hex(random_bytes(8)),
-            historyPageSize: 100,
+        $task = $client->pollWorkflowTask(
+            (string) $payload['worker_id'],
+            (string) $payload['task_queue'],
+            3,
         );
-        $task = $tasks[0] ?? null;
         $completeResponse = null;
 
         if (is_array($task)) {
@@ -8660,20 +8626,17 @@ if ($payload['action'] === 'create_schedule') {
                 [
                     'worker_id' => (string) $payload['worker_id'],
                     'workflow_type' => (string) $payload['workflow_type'],
-                    'runtime' => 'workflow-php',
+                    'runtime' => 'sdk-php',
                 ],
             );
             $completeResponse = $client->completeWorkflowTask(
                 (string) $task['task_id'],
+                (string) ($task['lease_owner'] ?? $payload['worker_id']),
+                (int) ($task['workflow_task_attempt'] ?? 1),
                 [[
                     'type' => 'complete_workflow',
-                    'result' => [
-                        'codec' => 'json',
-                        'blob' => json_encode($completeResult, JSON_THROW_ON_ERROR),
-                    ],
+                    'result' => $client->payloadCodec()->envelope($completeResult),
                 ]],
-                isset($task['lease_owner']) ? (string) $task['lease_owner'] : null,
-                isset($task['workflow_task_attempt']) ? (int) $task['workflow_task_attempt'] : null,
             );
         }
 
@@ -8711,21 +8674,31 @@ declare(strict_types=1);
 
 require __DIR__.'/vendor/autoload.php';
 
-use Illuminate\Http\Client\Factory as HttpFactory;
+use DurableWorkflow\Client;
+use DurableWorkflow\Exception\ServerException;
+use DurableWorkflow\Model\ScheduleAction;
+use DurableWorkflow\Model\ScheduleSpec;
 use Throwable;
-use Workflow\V2\Client\ControlPlaneClient;
-use Workflow\V2\Exceptions\ControlPlaneRequestException;
 
 $payload = json_decode((string) file_get_contents($argv[1]), true, 512, JSON_THROW_ON_ERROR);
 $outputPath = $argv[2];
-$http = new HttpFactory();
-$client = new ControlPlaneClient(
-    $http,
+$client = new Client(
     (string) $payload['server_url'],
-    isset($payload['token']) && $payload['token'] !== '' ? (string) $payload['token'] : null,
-    (string) $payload['namespace'],
-    defaultRequestTimeoutSeconds: 8,
+    namespace: (string) $payload['namespace'],
+    token: isset($payload['token']) && $payload['token'] !== '' ? (string) $payload['token'] : null,
 );
+
+function dw_schedule_public(mixed $value): mixed
+{
+    if (is_array($value)) {
+        return array_map('dw_schedule_public', $value);
+    }
+    if (is_object($value)) {
+        return array_map('dw_schedule_public', get_object_vars($value));
+    }
+
+    return $value;
+}
 
 function dw_schedule_error(Throwable $exception): array
 {
@@ -8734,16 +8707,16 @@ function dw_schedule_error(Throwable $exception): array
         'message' => $exception->getMessage(),
     ];
 
-    if ($exception instanceof ControlPlaneRequestException) {
-        $error['status'] = $exception->status();
-        $error['reason'] = $exception->reason();
-        $error['body'] = $exception->body();
+    if ($exception instanceof ServerException) {
+        $error['status'] = $exception->status;
+        $error['reason'] = $exception->reason;
+        $error['body'] = $exception->details;
     }
 
     return $error;
 }
 
-function dw_schedule_operation(ControlPlaneClient $client, string $operation, string $method, array $arguments): array
+function dw_schedule_operation(Client $client, string $operation, string $method, array $arguments): array
 {
     if (! method_exists($client, $method)) {
         return [
@@ -8751,7 +8724,7 @@ function dw_schedule_operation(ControlPlaneClient $client, string $operation, st
             'method' => $method,
             'ok' => false,
             'supported' => false,
-            'error' => ['message' => sprintf('%s is not exposed by ControlPlaneClient', $method)],
+            'error' => ['message' => sprintf('%s is not exposed by DurableWorkflow\\Client', $method)],
         ];
     }
 
@@ -8761,7 +8734,7 @@ function dw_schedule_operation(ControlPlaneClient $client, string $operation, st
             'method' => $method,
             'ok' => true,
             'supported' => true,
-            'response' => $client->{$method}(...$arguments),
+            'response' => dw_schedule_public($client->{$method}(...$arguments)),
         ];
     } catch (Throwable $exception) {
         return [
@@ -8774,7 +8747,7 @@ function dw_schedule_operation(ControlPlaneClient $client, string $operation, st
     }
 }
 
-function dw_schedule_create_or_observe(ControlPlaneClient $client, string $scheduleId, array $spec, array $action): array
+function dw_schedule_create_or_observe(Client $client, string $scheduleId, array $spec, array $action): array
 {
     if (! method_exists($client, 'createSchedule')) {
         return [
@@ -8782,17 +8755,29 @@ function dw_schedule_create_or_observe(ControlPlaneClient $client, string $sched
             'method' => 'createSchedule',
             'ok' => false,
             'supported' => false,
-            'error' => ['message' => 'createSchedule is not exposed by ControlPlaneClient'],
+            'error' => ['message' => 'createSchedule is not exposed by DurableWorkflow\\Client'],
         ];
     }
 
     try {
-        $response = $client->createSchedule($scheduleId, $spec, $action, [
-            'overlap_policy' => 'allow_all',
-            'jitter_seconds' => 0,
-            'memo' => ['conformance' => 'php_schedule_surface'],
-            'search_attributes' => ['ScheduleSurface' => 'workflow-php'],
-        ]);
+        $handle = $client->createSchedule(
+            new ScheduleSpec(
+                cronExpressions: $spec['cron_expressions'] ?? [],
+                intervals: $spec['intervals'] ?? [],
+                timezone: $spec['timezone'] ?? null,
+            ),
+            new ScheduleAction(
+                (string) $action['workflow_type'],
+                isset($action['task_queue']) ? (string) $action['task_queue'] : null,
+                is_array($action['input'] ?? null) ? $action['input'] : [],
+            ),
+            scheduleId: $scheduleId,
+            overlapPolicy: 'allow_all',
+            jitterSeconds: 0,
+            memo: ['conformance' => 'php_schedule_surface'],
+            searchAttributes: ['ScheduleSurface' => 'sdk-php'],
+        );
+        $response = ['schedule_id' => $handle->scheduleId];
         $response['observed_via'] = 'create';
 
         return [
@@ -8802,8 +8787,8 @@ function dw_schedule_create_or_observe(ControlPlaneClient $client, string $sched
             'supported' => true,
             'response' => $response,
         ];
-    } catch (ControlPlaneRequestException $exception) {
-        if (! in_array($exception->status(), [409, 422], true) || ! method_exists($client, 'describeSchedule')) {
+    } catch (ServerException $exception) {
+        if (! in_array($exception->status, [409, 422], true) || ! method_exists($client, 'describeSchedule')) {
             return [
                 'operation' => 'create_or_observe',
                 'method' => 'createSchedule',
@@ -8814,7 +8799,7 @@ function dw_schedule_create_or_observe(ControlPlaneClient $client, string $sched
         }
 
         try {
-            $response = $client->describeSchedule($scheduleId);
+            $response = dw_schedule_public($client->describeSchedule($scheduleId));
             $response['observed_via'] = 'describe_existing_after_create_rejection';
             $response['create_rejection'] = dw_schedule_error($exception);
 
@@ -8868,7 +8853,7 @@ if ($action === 'delete_schedule') {
         'workflow_type' => (string) $payload['workflow_type'],
         'task_queue' => (string) $payload['task_queue'],
         'input' => [[
-            'source' => 'workflow-php-schedule-surface',
+            'source' => 'sdk-php-schedule-surface',
             'run_id' => (string) ($payload['run_id'] ?? ''),
         ]],
     ];
@@ -9098,9 +9083,6 @@ function markArtifactSource(artifactSources, artifact, source, artifactVersions 
     const version = artifactValue(artifactVersions, artifact);
     const normalizedSource = normalizePublishedArtifactSource(artifact, version, source);
     artifactSources[artifact] = normalizedSource;
-    if (artifact === 'workflow-php') {
-      artifactSources.workflow = normalizedSource;
-    }
   }
 }
 

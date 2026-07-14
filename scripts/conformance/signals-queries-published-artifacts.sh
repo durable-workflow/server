@@ -25,6 +25,7 @@ Environment overrides:
   DW_CLI_VERSION                            Published CLI version under test.
   DW_PYTHON_SDK_VERSION                     Published Python SDK version under test.
   DW_RUST_SDK_VERSION                       Exact published Rust SDK version from the artifact tuple.
+  DW_PHP_SDK_VERSION                        Exact published durable-workflow/sdk version from Packagist.
   DW_WORKFLOW_PHP_VERSION                   Published PHP workflow version under test.
   DW_WATERLINE_VERSION                      Published Waterline version under test.
   DW_SIGNALS_QUERIES_RESULT_DIR             Result directory when --result-dir is omitted.
@@ -111,6 +112,7 @@ exec env \
   DW_CLI_VERSION="${DW_CLI_VERSION:-unresolved}" \
   DW_PYTHON_SDK_VERSION="${DW_PYTHON_SDK_VERSION:-unresolved}" \
   DW_RUST_SDK_VERSION="${DW_RUST_SDK_VERSION:-unresolved}" \
+  DW_PHP_SDK_VERSION="${DW_PHP_SDK_VERSION:-unresolved}" \
   DW_WORKFLOW_PHP_VERSION="${DW_WORKFLOW_PHP_VERSION:-unresolved}" \
   DW_WATERLINE_VERSION="${DW_WATERLINE_VERSION:-unresolved}" \
   DW_SIGNALS_QUERIES_EVIDENCE="${DW_SIGNALS_QUERIES_EVIDENCE:-${DW_SIGNALS_QUERIES_SMOKE_EVIDENCE:-}}" \
@@ -1382,7 +1384,7 @@ except PackageNotFoundError:
     return completed.stdout.strip()
 
 
-def workflow_php_docker_image() -> str:
+def sdk_php_docker_image() -> str:
     return env_text("DW_SIGNALS_QUERIES_PHP_DOCKER_IMAGE") or "composer:2"
 
 
@@ -1395,7 +1397,7 @@ def waterline_php_docker_image() -> str:
     if server_version and not is_placeholder_version(server_version):
         return f"durableworkflow/server:{server_version}"
 
-    return workflow_php_docker_image()
+    return sdk_php_docker_image()
 
 
 def docker_volume_spec(path: Path, container_path: str = "/app") -> str:
@@ -1457,440 +1459,40 @@ def php_docker_command(
     )
     for key, value in sorted((env or {}).items()):
         command.extend(["-e", f"{key}={value}"])
-    command.append(workflow_php_docker_image())
+    command.append(sdk_php_docker_image())
     command.extend(args)
     return command
 
 
-def write_workflow_php_project(project_dir: Path) -> None:
-    workflow_version = artifact_version_value(artifact_versions, "workflow-php")
+def write_sdk_php_project(project_dir: Path) -> None:
+    sdk_version = artifact_version_value(artifact_versions, "sdk-php")
     write_json(
         project_dir / "composer.json",
         {
-            "require": {
-                "durable-workflow/workflow": workflow_version,
-            },
-            "minimum-stability": "dev",
+            "require": {"durable-workflow/sdk": sdk_version},
+            "minimum-stability": "stable",
             "prefer-stable": True,
             "config": {
                 "preferred-install": "dist",
                 "sort-packages": True,
-                "allow-plugins": {
-                    "php-http/discovery": True,
-                },
+                "allow-plugins": {"php-http/discovery": True},
             },
         },
     )
+    fixture_root = repo_root / "scripts" / "conformance" / "fixtures" / "php-sdk"
+    shutil.copyfile(fixture_root / "signals-queries-worker.php", project_dir / "php-counter-worker.php")
+    shutil.copyfile(fixture_root / "signals-queries-client.php", project_dir / "php-workflow-client.php")
 
-    (project_dir / "php-counter-worker.php").write_text(
-        r'''<?php
-
-declare(strict_types=1);
-
-require __DIR__.'/vendor/autoload.php';
-
-use Composer\InstalledVersions;
-use Illuminate\Http\Client\Factory as HttpFactory;
-use ReflectionMethod;
-use Throwable;
-use Workflow\QueryMethod;
-use Workflow\V2\Attributes\Signal;
-use Workflow\V2\Attributes\Type;
-use Workflow\V2\Support\TypeRegistry;
-use Workflow\V2\Support\WorkflowDefinition;
-use Workflow\V2\Worker\StandaloneWorkflowWorker;
-use Workflow\V2\Worker\WorkerProtocolClient;
-use Workflow\V2\Worker\WorkflowFiberRunner;
-use Workflow\V2\Worker\WorkflowQueryTaskExecutor;
-use Workflow\V2\Workflow;
-use function Workflow\V2\signal;
-
-#[Type('conformance.counter.php')]
-#[Signal('increment', [[
-    'name' => 'amount',
-    'type' => 'int',
-]])]
-final class ConformanceCounterWorkflow extends Workflow
-{
-    private int $count = 0;
-
-    public function handle(): mixed
-    {
-        while (true) {
-            $amount = signal('increment');
-            $this->count += (int) $amount;
-        }
-    }
-
-    #[QueryMethod]
-    public function state(): int
-    {
-        return $this->count;
-    }
-
-    #[QueryMethod]
-    public function current(): int
-    {
-        return $this->count;
-    }
-}
-
-function sq_json_log(array $record): void
-{
-    fwrite(STDOUT, json_encode($record, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE).PHP_EOL);
-}
-
-function sq_task_string(array $task, array $keys): string
-{
-    foreach ($keys as $key) {
-        $value = $task[$key] ?? null;
-        if (is_string($value) && $value !== '') {
-            return $value;
-        }
-    }
-
-    return '';
-}
-
-function sq_workflow_arguments(array $task): array
-{
-    foreach (['workflow_arguments', 'arguments'] as $key) {
-        $value = $task[$key] ?? null;
-        if (is_array($value) && array_is_list($value)) {
-            return $value;
-        }
-    }
-
-    return [];
-}
-
-function sq_history_events(WorkerProtocolClient $client, array $task): array
-{
-    $events = $task['history_events'] ?? null;
-    if (is_array($events)) {
-        return $events;
-    }
-
-    $taskId = sq_task_string($task, ['task_id', 'workflow_task_id']);
-    if ($taskId === '') {
-        return [];
-    }
-
-    $history = $client->workflowTaskHistory($taskId);
-    $events = is_array($history) ? ($history['history_events'] ?? null) : null;
-
-    return is_array($events) ? $events : [];
-}
-
-function sq_workflow_type(): string
-{
-    return TypeRegistry::for(ConformanceCounterWorkflow::class);
-}
-
-function sq_workflow_command_contracts(): array
-{
-    return [
-        sq_workflow_type() => WorkflowDefinition::commandContract(ConformanceCounterWorkflow::class),
-    ];
-}
-
-function sq_workflow_fingerprints(): array
-{
-    $fingerprint = WorkflowDefinition::fingerprint(ConformanceCounterWorkflow::class);
-
-    return is_string($fingerprint) && $fingerprint !== ''
-        ? [sq_workflow_type() => $fingerprint]
-        : [];
-}
-
-function sq_register_worker(
-    WorkerProtocolClient $client,
-    string $workerId,
-    string $taskQueue,
-    string $sdkVersion
-): array {
-    $arguments = [
-        'workerId' => $workerId,
-        'taskQueue' => $taskQueue,
-        'supportedWorkflowTypes' => [sq_workflow_type()],
-        'sdkVersion' => $sdkVersion,
-        'workflowDefinitionFingerprints' => sq_workflow_fingerprints(),
-        'capabilities' => [WorkflowQueryTaskExecutor::CAPABILITY],
-    ];
-
-    $parameters = array_map(
-        static fn (\ReflectionParameter $parameter): string => $parameter->getName(),
-        (new ReflectionMethod($client, 'registerWorker'))->getParameters(),
-    );
-    if (in_array('workflowCommandContracts', $parameters, true)) {
-        $arguments['workflowCommandContracts'] = sq_workflow_command_contracts();
-    }
-
-    return $client->registerWorker(...$arguments) ?? [];
-}
-
-function sq_complete_workflow_task(
-    WorkerProtocolClient $client,
-    array $task,
-    string $namespace
-): void {
-    $taskId = sq_task_string($task, ['task_id', 'workflow_task_id']);
-    $workflowId = sq_task_string($task, ['workflow_id', 'workflow_instance_id', 'instance_id']);
-    $runId = sq_task_string($task, ['run_id', 'workflow_run_id']);
-    if ($taskId === '' || $workflowId === '' || $runId === '') {
-        throw new RuntimeException('workflow task is missing task, workflow, or run identity');
-    }
-
-    $runner = WorkflowFiberRunner::forClass(
-        ConformanceCounterWorkflow::class,
-        $workflowId,
-        $runId,
-        sq_workflow_arguments($task),
-        'avro',
-        sq_history_events($client, $task),
-        $namespace,
-    );
-    $step = $runner->step();
-    $complete = $client->completeWorkflowTask($taskId, $step->commands);
-    sq_json_log([
-        'event' => 'workflow_task_completed',
-        'task_id' => $taskId,
-        'workflow_id' => $workflowId,
-        'run_id' => $runId,
-        'command_types' => array_values(array_map(
-            static fn (array $command): ?string => is_string($command['type'] ?? null) ? $command['type'] : null,
-            $step->commands,
-        )),
-        'complete' => $complete,
-    ]);
-}
-
-function sq_complete_query_task(
-    WorkerProtocolClient $client,
-    WorkflowQueryTaskExecutor $executor,
-    array $task,
-    string $workerId,
-    string $taskQueue,
-    string $evidencePath
-): void {
-    $outcome = $executor->execute($task);
-    $taskId = is_string($outcome['query_task_id'] ?? null)
-        ? $outcome['query_task_id']
-        : sq_task_string($task, ['query_task_id']);
-    $status = $outcome['outcome'] ?? null;
-
-    if ($status === 'completed') {
-        $client->completeQueryTask(
-            $taskId,
-            $outcome['result'] ?? null,
-            is_array($outcome['result_envelope'] ?? null) ? $outcome['result_envelope'] : null,
-        );
-    } else {
-        $failure = is_array($outcome['failure'] ?? null) ? $outcome['failure'] : [];
-        $client->failQueryTask(
-            $taskId,
-            is_string($failure['message'] ?? null) ? $failure['message'] : 'Workflow query failed.',
-            is_string($failure['reason'] ?? null) ? $failure['reason'] : 'query_rejected',
-            is_string($failure['type'] ?? null) ? $failure['type'] : null,
-            is_string($failure['stack_trace'] ?? null) ? $failure['stack_trace'] : null,
-            validationErrors: is_array($failure['validation_errors'] ?? null) ? $failure['validation_errors'] : null,
-        );
-    }
-
-    $record = [
-        'schema' => 'durable-workflow.v2.signal-query-runtime.php-routed-query-task',
-        'status' => $status === 'completed' ? 'pass' : 'fail',
-        'worker_runtime' => 'workflow-php',
-        'worker_id' => $workerId,
-        'task_queue' => $taskQueue,
-        'query_task_id' => $taskId,
-        'query_task_attempt' => $outcome['query_task_attempt'] ?? ($task['query_task_attempt'] ?? null),
-        'workflow_id' => $task['workflow_id'] ?? null,
-        'run_id' => $task['run_id'] ?? ($task['workflow_run_id'] ?? null),
-        'workflow_type' => $task['workflow_type'] ?? null,
-        'query_name' => $task['query_name'] ?? null,
-        'lease_owner' => $task['lease_owner'] ?? null,
-        'server_route' => 'worker_query_task_poll',
-        'completion_route' => $status === 'completed' ? 'worker_query_task_complete' : 'worker_query_task_fail',
-        'observed_via' => 'workflow-php worker query task executor',
-        'observed_at' => gmdate('Y-m-d\TH:i:s\Z'),
-    ];
-    file_put_contents($evidencePath, json_encode($record, JSON_UNESCAPED_SLASHES).PHP_EOL, FILE_APPEND);
-    sq_json_log(['event' => 'query_task_completed', 'record' => $record]);
-}
-
-function sq_record_standalone_query_task(
-    array $result,
-    string $workerId,
-    string $taskQueue,
-    string $evidencePath
-): void {
-    if (($result['kind'] ?? null) !== 'query_task' || ($result['processed'] ?? false) !== true) {
-        return;
-    }
-
-    $task = is_array($result['query_task'] ?? null) ? $result['query_task'] : [];
-    $status = $result['outcome'] ?? null;
-    $record = [
-        'schema' => 'durable-workflow.v2.signal-query-runtime.php-routed-query-task',
-        'status' => $status === 'completed' ? 'pass' : 'fail',
-        'worker_runtime' => 'workflow-php',
-        'worker_id' => $workerId,
-        'task_queue' => is_string($task['task_queue'] ?? null) ? $task['task_queue'] : $taskQueue,
-        'query_task_id' => is_string($result['query_task_id'] ?? null)
-            ? $result['query_task_id']
-            : ($task['query_task_id'] ?? null),
-        'query_task_attempt' => $task['query_task_attempt'] ?? null,
-        'workflow_id' => $task['workflow_id'] ?? null,
-        'run_id' => $task['run_id'] ?? null,
-        'workflow_type' => $task['workflow_type'] ?? null,
-        'query_name' => $task['query_name'] ?? null,
-        'lease_owner' => $task['lease_owner'] ?? null,
-        'server_route' => 'worker_query_task_poll',
-        'completion_route' => $status === 'completed' ? 'worker_query_task_complete' : 'worker_query_task_fail',
-        'observed_via' => 'workflow-php standalone worker query task driver',
-        'observed_at' => gmdate('Y-m-d\TH:i:s\Z'),
-    ];
-    file_put_contents($evidencePath, json_encode($record, JSON_UNESCAPED_SLASHES).PHP_EOL, FILE_APPEND);
-    sq_json_log(['event' => 'query_task_completed', 'record' => $record]);
-}
-
-if ($argc < 7) {
-    fwrite(STDERR, "usage: php-counter-worker.php <base-url> <token> <namespace> <task-queue> <worker-id> <evidence-path> [seconds]\n");
-    exit(2);
-}
-
-[$script, $baseUrl, $token, $namespace, $taskQueue, $workerId, $evidencePath] = $argv;
-$deadline = time() + (int) ($argv[7] ?? 600);
-$sdkVersion = 'durable-workflow/workflow@'.(InstalledVersions::getPrettyVersion('durable-workflow/workflow') ?? 'unknown');
-$client = new WorkerProtocolClient(new HttpFactory(), $baseUrl, $token, $namespace, defaultRequestTimeoutSeconds: 10);
-$registration = sq_register_worker($client, $workerId, $taskQueue, $sdkVersion);
-sq_json_log([
-    'event' => 'worker_registered',
-    'worker_id' => $workerId,
-    'task_queue' => $taskQueue,
-    'workflow_type' => sq_workflow_type(),
-    'registration' => $registration,
-]);
-
-$executor = new WorkflowQueryTaskExecutor([
-    sq_workflow_type() => ConformanceCounterWorkflow::class,
-]);
-$standaloneWorker = new StandaloneWorkflowWorker($client, [
-    sq_workflow_type() => ConformanceCounterWorkflow::class,
-], $executor);
-
-while (time() < $deadline) {
-    try {
-        $client->heartbeatWorker($workerId, ['workflow_available' => 2, 'activity_available' => 0], heartbeatIntervalSeconds: 10);
-    } catch (Throwable $throwable) {
-        sq_json_log(['event' => 'heartbeat_failed', 'message' => $throwable->getMessage()]);
-    }
-
-    try {
-        $tickResult = $standaloneWorker->tick($taskQueue, $workerId, 1, 1);
-        sq_record_standalone_query_task($tickResult, $workerId, $taskQueue, $evidencePath);
-
-        $workflowResult = ($tickResult['kind'] ?? null) === 'workflow_task'
-            ? $tickResult
-            : ($tickResult['deferred_workflow_task'] ?? null);
-        if (is_array($workflowResult) && ($workflowResult['processed'] ?? false) === true) {
-            sq_json_log(['event' => 'workflow_task_processed', 'result' => $workflowResult]);
-        }
-    } catch (Throwable $throwable) {
-        sq_json_log(['event' => 'worker_tick_failed', 'message' => $throwable->getMessage()]);
-    }
-}
-''',
-        encoding="utf-8",
-    )
-
-    (project_dir / "php-workflow-client.php").write_text(
-        r'''<?php
-
-declare(strict_types=1);
-
-require __DIR__.'/vendor/autoload.php';
-
-use Composer\InstalledVersions;
-use Illuminate\Http\Client\Factory as HttpFactory;
-use Throwable;
-use Workflow\V2\Client\WorkflowClient;
-use Workflow\V2\Client\WorkflowClientException;
-
-if ($argc < 9) {
-    fwrite(STDERR, "usage: php-workflow-client.php <operation> <base-url> <token> <namespace> <workflow-type> <workflow-id> <task-queue> <name> [args-json]\n");
-    exit(2);
-}
-
-[$script, $operation, $baseUrl, $token, $namespace, $workflowType, $workflowId, $taskQueue, $name] = $argv;
-$args = [];
-if (($argv[9] ?? '') !== '') {
-    $decoded = json_decode($argv[9], true);
-    $args = is_array($decoded) && array_is_list($decoded) ? $decoded : [];
-}
-
-$client = new WorkflowClient(new HttpFactory(), $baseUrl, $token, $namespace, defaultRequestTimeoutSeconds: 30);
-$sample = [
-    'client' => 'workflow-php',
-    'operation' => $operation,
-    'operation_name' => $name,
-    'workflow_id' => $workflowId,
-    'workflow_type' => $workflowType,
-    'sdk_version' => InstalledVersions::getPrettyVersion('durable-workflow/workflow') ?? null,
-];
-
-try {
-    if ($operation === 'start') {
-        $sample['result'] = $client->startWorkflow(
-            $workflowType,
-            $workflowId,
-            [],
-            ['task_queue' => $taskQueue],
-        );
-    } elseif ($operation === 'signal') {
-        $sample['result'] = $client->signalWorkflow($workflowId, $name, $args);
-    } elseif ($operation === 'query') {
-        $sample['result'] = $client->queryWorkflow($workflowId, $name, $args);
-    } else {
-        throw new InvalidArgumentException(sprintf('unsupported operation [%s]', $operation));
-    }
-
-    $sample['ok'] = true;
-    echo json_encode($sample, JSON_UNESCAPED_SLASHES).PHP_EOL;
-    exit(0);
-} catch (WorkflowClientException $exception) {
-    $sample['ok'] = false;
-    $sample['exception'] = $exception::class;
-    $sample['status_code'] = $exception->statusCode();
-    $sample['body'] = $exception->body();
-    $sample['reason'] = is_string($exception->body()['reason'] ?? null)
-        ? $exception->body()['reason']
-        : null;
-    echo json_encode($sample, JSON_UNESCAPED_SLASHES).PHP_EOL;
-    exit(1);
-} catch (Throwable $throwable) {
-    $sample['ok'] = false;
-    $sample['exception'] = $throwable::class;
-    $sample['message'] = $throwable->getMessage();
-    echo json_encode($sample, JSON_UNESCAPED_SLASHES).PHP_EOL;
-    exit(1);
-}
-''',
-        encoding="utf-8",
-    )
-
-
-def ensure_workflow_php_sdk(run_root: Path, log_file: Path) -> tuple[Path, dict[str, Any]]:
-    workflow_version = artifact_version_value(artifact_versions, "workflow-php")
-    if is_placeholder_version(workflow_version):
-        raise RuntimeError("DW_WORKFLOW_PHP_VERSION must be concrete to install the public PHP workflow package")
+def ensure_sdk_php_sdk(run_root: Path, log_file: Path) -> tuple[Path, dict[str, Any]]:
+    sdk_version = artifact_version_value(artifact_versions, "sdk-php")
+    if is_placeholder_version(sdk_version):
+        raise RuntimeError("DW_PHP_SDK_VERSION must be concrete to install durable-workflow/sdk")
     if not command_available("docker"):
-        raise RuntimeError("docker is required to install and run the published PHP workflow package")
+        raise RuntimeError("docker is required to install and run the published PHP SDK")
 
-    project_dir = run_root / "workflow-php"
+    project_dir = run_root / "sdk-php"
     project_dir.mkdir(parents=True, exist_ok=True)
-    write_workflow_php_project(project_dir)
+    write_sdk_php_project(project_dir)
 
     install = run_command(
         php_docker_command(
@@ -1901,7 +1503,7 @@ def ensure_workflow_php_sdk(run_root: Path, log_file: Path) -> tuple[Path, dict[
         timeout=600,
     )
     if install.returncode != 0:
-        raise RuntimeError("could not install the public PHP workflow package")
+        raise RuntimeError("could not install the public durable-workflow/sdk package")
 
     check = run_command(
         php_docker_command(
@@ -1909,22 +1511,22 @@ def ensure_workflow_php_sdk(run_root: Path, log_file: Path) -> tuple[Path, dict[
             [
                 "php",
                 "-r",
-                "require 'vendor/autoload.php'; echo Composer\\InstalledVersions::getPrettyVersion('durable-workflow/workflow') ?: '';",
+                "require 'vendor/autoload.php'; echo Composer\\InstalledVersions::getPrettyVersion('durable-workflow/sdk') ?: '';",
             ],
         ),
         log_file=log_file,
         timeout=60,
     )
-    installed_version = check.stdout.strip() or workflow_version
+    installed_version = check.stdout.strip() or sdk_version
 
     entry = installed_public_artifact_entry(
-        "workflow-php",
-        workflow_version,
-        EXPECTED_ARTIFACT_SOURCES["workflow-php"],
+        "sdk-php",
+        sdk_version,
+        EXPECTED_ARTIFACT_SOURCES["sdk-php"],
         "composer_package_install",
     )
     entry["installed_version"] = installed_version
-    entry["runtime_image"] = workflow_php_docker_image()
+    entry["runtime_image"] = sdk_php_docker_image()
 
     return project_dir, entry
 
@@ -1961,13 +1563,13 @@ def php_workflow_client_sample(
     completed = run_command(command, log_file=log_file, timeout=120)
     output = completed.stdout.strip()
     sample = json_sample_from_stdout(output)
-    sample.setdefault("client", "workflow-php")
+    sample.setdefault("client", "sdk-php")
     sample.setdefault("operation", operation)
     sample.setdefault("operation_name", name)
     sample.setdefault("exit_code", completed.returncode)
     sample.setdefault("ok", completed.returncode == 0)
     sample.setdefault("api_sample", {
-        "client": "workflow-php",
+        "client": "sdk-php",
         "operation": operation,
         "workflow_type": workflow_type,
         "workflow_id": workflow_id,
@@ -4805,7 +4407,8 @@ def probe_artifact_versions() -> dict[str, str]:
         "cli": artifact_version_value(artifact_versions, "cli"),
         "sdk-python": artifact_version_value(artifact_versions, "sdk-python"),
         "sdk-rust": artifact_version_value(artifact_versions, "sdk-rust"),
-        "workflow-php": artifact_version_value(artifact_versions, "workflow-php"),
+        "sdk-php": artifact_version_value(artifact_versions, "sdk-php"),
+        "workflow": artifact_version_value(artifact_versions, "workflow"),
         "waterline": artifact_version_value(artifact_versions, "waterline"),
     }
 
@@ -5411,7 +5014,7 @@ def snapshot_count_unchanged(before: dict[str, Any], after: dict[str, Any], key:
 def query_all_published_clients(
     *,
     project_dir: Path,
-    workflow_php_project: Path,
+    sdk_php_project: Path,
     python_bin: str,
     base_url: str,
     token: str,
@@ -5439,11 +5042,11 @@ def query_all_published_clients(
         expected=expected,
         log_file=log_file,
         sample_factory=lambda: php_workflow_client_sample(
-            workflow_php_project, base_url, token, namespace,
+            sdk_php_project, base_url, token, namespace,
             "query", workflow_type, workflow_id, task_queue, "current", log_file,
         ),
         last_sample_holder=diagnostic_samples,
-        last_sample_key="workflow_php_sdk" if diagnostic_samples is not None else None,
+        last_sample_key="sdk_php_sdk" if diagnostic_samples is not None else None,
     )
     python = wait_for_query_result(
         label=f"Python query for Rust workflow {workflow_id}",
@@ -5458,9 +5061,9 @@ def query_all_published_clients(
     )
     return {
         "sdk_rust": rust_query_sample_value(rust),
-        "workflow_php_sdk": sample_result_value(php),
+        "sdk_php_sdk": sample_result_value(php),
         "sdk_python": sample_result_value(python),
-        "samples": {"sdk_rust": rust, "workflow_php_sdk": php, "sdk_python": python},
+        "samples": {"sdk_rust": rust, "sdk_php_sdk": php, "sdk_python": python},
     }
 
 
@@ -5632,7 +5235,7 @@ def run_rust_matrix_probe(
     token: str,
     namespace: str,
     python_bin: str,
-    workflow_php_project: Path,
+    sdk_php_project: Path,
     run_root: Path,
     log_file: Path,
 ) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any]]:
@@ -5796,7 +5399,7 @@ def run_rust_matrix_probe(
             )
             running = query_all_published_clients(
                 project_dir=project_dir,
-                workflow_php_project=workflow_php_project,
+                sdk_php_project=sdk_php_project,
                 python_bin=python_bin,
                 base_url=base_url,
                 token=token,
@@ -5812,7 +5415,7 @@ def run_rust_matrix_probe(
                 "rust_worker_rust_php_python_clients",
                 "running_queries_observed",
                 rust_query_results={"running": running["sdk_rust"]},
-                workflow_php_query_results={"running": running["workflow_php_sdk"]},
+                sdk_php_query_results={"running": running["sdk_php_sdk"]},
                 sdk_python_query_results={"running": running["sdk_python"]},
                 running_client_samples=running["samples"],
             )
@@ -5941,7 +5544,7 @@ def run_rust_matrix_probe(
             )
             completed = query_all_published_clients(
                 project_dir=project_dir,
-                workflow_php_project=workflow_php_project,
+                sdk_php_project=sdk_php_project,
                 python_bin=python_bin,
                 base_url=base_url,
                 token=token,
@@ -5957,9 +5560,9 @@ def run_rust_matrix_probe(
                 "rust_worker_rust_php_python_clients",
                 "completed_queries_observed",
                 rust_query_results={"running": running["sdk_rust"], "completed": completed["sdk_rust"]},
-                workflow_php_query_results={
-                    "running": running["workflow_php_sdk"],
-                    "completed": completed["workflow_php_sdk"],
+                sdk_php_query_results={
+                    "running": running["sdk_php_sdk"],
+                    "completed": completed["sdk_php_sdk"],
                 },
                 sdk_python_query_results={
                     "running": running["sdk_python"],
@@ -5981,7 +5584,7 @@ def run_rust_matrix_probe(
                 "query_state_model": "snapshot_derived_transport_state",
                 "ordered_signal_values": [3, 5],
                 "rust_query_results": {"running": running["sdk_rust"], "completed": completed["sdk_rust"]},
-                "workflow_php_query_results": {"running": running["workflow_php_sdk"], "completed": completed["workflow_php_sdk"]},
+                "sdk_php_query_results": {"running": running["sdk_php_sdk"], "completed": completed["sdk_php_sdk"]},
                 "sdk_python_query_results": {"running": running["sdk_python"], "completed": completed["sdk_python"]},
                 "valid_avro_signal_and_query": {
                     "default_codec": repeat.get("default_codec"),
@@ -6199,7 +5802,7 @@ def run_rust_matrix_probe(
         register_container(php_container, log_file)
         php_start = run_command(
             php_docker_command(
-                workflow_php_project,
+                sdk_php_project,
                 [
                     "php", "php-counter-worker.php", docker_host_base_url(base_url), token,
                     namespace, php_queue, php_worker_id, f"/app/{php_evidence.name}", "600",
@@ -6232,7 +5835,7 @@ def run_rust_matrix_probe(
             record_phase(
                 "php_worker_rust_client",
                 "worker_registered",
-                worker_runtime="workflow-php",
+                worker_runtime="sdk-php",
                 worker_id=php_worker_id,
                 worker_process_id=php_process_id,
                 worker_registration=registration,
@@ -6313,7 +5916,7 @@ def run_rust_matrix_probe(
             )
             outputs = {
                 **partial_outputs["php_worker_rust_client"],
-                "worker_runtime": "workflow-php",
+                "worker_runtime": "sdk-php",
                 "worker_id": php_worker_id,
                 "worker_process_id": php_process_id,
                 "worker_registration": registration,
@@ -6426,7 +6029,7 @@ def run_rust_matrix_probe(
                 },
             )
             running = query_all_published_clients(
-                project_dir=project_dir, workflow_php_project=workflow_php_project,
+                project_dir=project_dir, sdk_php_project=sdk_php_project,
                 python_bin=python_bin, base_url=base_url, token=token, namespace=namespace,
                 task_queue=replay_queue, workflow_type="conformance.counter.rust.replayed",
                 workflow_id=workflow_id, expected=5, log_file=log_file,
@@ -6441,7 +6044,7 @@ def run_rust_matrix_probe(
                 "running_queries_observed",
                 running_query_results={
                     key: running[key]
-                    for key in ("sdk_rust", "workflow_php_sdk", "sdk_python")
+                    for key in ("sdk_rust", "sdk_php_sdk", "sdk_python")
                 },
                 running_client_samples=running["samples"],
             )
@@ -6516,7 +6119,7 @@ def run_rust_matrix_probe(
         )
         try:
             restored = query_all_published_clients(
-                project_dir=project_dir, workflow_php_project=workflow_php_project,
+                project_dir=project_dir, sdk_php_project=sdk_php_project,
                 python_bin=python_bin, base_url=base_url, token=token, namespace=namespace,
                 task_queue=replay_queue, workflow_type="conformance.counter.rust.replayed",
                 workflow_id=workflow_id, expected=5, log_file=log_file,
@@ -6528,7 +6131,7 @@ def run_rust_matrix_probe(
                 "cold_restart_queries_observed",
                 restored_query_results={
                     key: restored[key]
-                    for key in ("sdk_rust", "workflow_php_sdk", "sdk_python")
+                    for key in ("sdk_rust", "sdk_php_sdk", "sdk_python")
                 },
                 restored_client_samples=restored["samples"],
                 cold_restart={
@@ -6598,7 +6201,7 @@ def run_rust_matrix_probe(
                 "completed_history_before_queries_observed",
             )
             completed = query_all_published_clients(
-                project_dir=project_dir, workflow_php_project=workflow_php_project,
+                project_dir=project_dir, sdk_php_project=sdk_php_project,
                 python_bin=python_bin, base_url=base_url, token=token, namespace=namespace,
                 task_queue=replay_queue, workflow_type="conformance.counter.rust.replayed",
                 workflow_id=workflow_id, expected=5, log_file=log_file,
@@ -6610,7 +6213,7 @@ def run_rust_matrix_probe(
                 "completed_queries_observed",
                 completed_query_results={
                     key: completed[key]
-                    for key in ("sdk_rust", "workflow_php_sdk", "sdk_python")
+                    for key in ("sdk_rust", "sdk_php_sdk", "sdk_python")
                 },
                 completed_client_samples=completed["samples"],
             )
@@ -6661,9 +6264,9 @@ def run_rust_matrix_probe(
                     "fresh_worker_process_id": fresh_worker["process_id"],
                     "durable_history_restored": restored["sdk_rust"] == running["sdk_rust"] == 5,
                 },
-                "running_query_results": {key: running[key] for key in ("sdk_rust", "workflow_php_sdk", "sdk_python")},
-                "restored_query_results": {key: restored[key] for key in ("sdk_rust", "workflow_php_sdk", "sdk_python")},
-                "completed_query_results": {key: completed[key] for key in ("sdk_rust", "workflow_php_sdk", "sdk_python")},
+                "running_query_results": {key: running[key] for key in ("sdk_rust", "sdk_php_sdk", "sdk_python")},
+                "restored_query_results": {key: restored[key] for key in ("sdk_rust", "sdk_php_sdk", "sdk_python")},
+                "completed_query_results": {key: completed[key] for key in ("sdk_rust", "sdk_php_sdk", "sdk_python")},
                 "failure_samples": {
                     "running": running_failure,
                     "cold_restarted": restored_failure,
@@ -6843,7 +6446,7 @@ def run_python_worker_php_facing_and_cli_clients(
     token: str,
     namespace: str,
     cli_bin: str,
-    workflow_php_project: Path,
+    sdk_php_project: Path,
     task_queue: str,
     worker_id: str,
     workflow_type: str,
@@ -6859,14 +6462,14 @@ def run_python_worker_php_facing_and_cli_clients(
         "task_queue": task_queue,
         "workflow_id": workflow_id,
         "workflow_type": workflow_type,
-        "public_clients": ["workflow-php-sdk", "cli"],
+        "public_clients": ["sdk-php", "cli"],
         "published_artifact_versions": versions,
         "artifact_sources": sources,
     }
 
     try:
         start_sample = php_workflow_client_sample(
-            workflow_php_project,
+            sdk_php_project,
             base_url,
             token,
             namespace,
@@ -6877,7 +6480,7 @@ def run_python_worker_php_facing_and_cli_clients(
             "start",
             log_file,
         )
-        outputs["workflow_php_start_sample"] = start_sample
+        outputs["sdk_php_start_sample"] = start_sample
         if not public_sample_ok(start_sample):
             raise RuntimeError(f"PHP client start against Python worker failed: {start_sample}")
 
@@ -6891,7 +6494,7 @@ def run_python_worker_php_facing_and_cli_clients(
             expected=0,
             log_file=log_file,
             sample_factory=lambda: php_workflow_client_sample(
-                workflow_php_project,
+                sdk_php_project,
                 base_url,
                 token,
                 namespace,
@@ -6903,10 +6506,10 @@ def run_python_worker_php_facing_and_cli_clients(
                 log_file,
             ),
         )
-        outputs["workflow_php_initial_query_sample"] = initial_php_query
+        outputs["sdk_php_initial_query_sample"] = initial_php_query
 
         php_signal = php_workflow_client_sample(
-            workflow_php_project,
+            sdk_php_project,
             base_url,
             token,
             namespace,
@@ -6918,7 +6521,7 @@ def run_python_worker_php_facing_and_cli_clients(
             log_file,
             args=[4],
         )
-        outputs["workflow_php_signal_sample"] = php_signal
+        outputs["sdk_php_signal_sample"] = php_signal
         if not public_sample_ok(php_signal):
             raise RuntimeError(f"PHP client signal against Python worker failed: {php_signal}")
 
@@ -6927,7 +6530,7 @@ def run_python_worker_php_facing_and_cli_clients(
             expected=4,
             log_file=log_file,
             sample_factory=lambda: php_workflow_client_sample(
-                workflow_php_project,
+                sdk_php_project,
                 base_url,
                 token,
                 namespace,
@@ -6939,7 +6542,7 @@ def run_python_worker_php_facing_and_cli_clients(
                 log_file,
             ),
         )
-        outputs["workflow_php_query_sample"] = php_query
+        outputs["sdk_php_query_sample"] = php_query
 
         cli_signal = cli_json_sample(
             cli_bin,
@@ -6985,7 +6588,7 @@ def run_python_worker_php_facing_and_cli_clients(
             expected=10,
             log_file=log_file,
             sample_factory=lambda: php_workflow_client_sample(
-                workflow_php_project,
+                sdk_php_project,
                 base_url,
                 token,
                 namespace,
@@ -6997,7 +6600,7 @@ def run_python_worker_php_facing_and_cli_clients(
                 log_file,
             ),
         )
-        outputs["workflow_php_repeat_query_sample"] = repeat_php_query
+        outputs["sdk_php_repeat_query_sample"] = repeat_php_query
 
         outputs["php_client_signal_and_query"] = (
             query_result_is(initial_php_query, 0)
@@ -7022,9 +6625,9 @@ def run_python_worker_php_facing_and_cli_clients(
             "after_cli_signal_php_repeat_query": sample_result_value(repeat_php_query),
         }
         outputs["commands_and_api_samples"] = {
-            "workflow_php_start": start_sample.get("api_sample"),
-            "workflow_php_signal": php_signal.get("api_sample"),
-            "workflow_php_query": php_query.get("api_sample"),
+            "sdk_php_start": start_sample.get("api_sample"),
+            "sdk_php_signal": php_signal.get("api_sample"),
+            "sdk_php_query": php_query.get("api_sample"),
             "cli_signal": cli_signal.get("command"),
             "cli_query": cli_query.get("command"),
         }
@@ -7056,7 +6659,7 @@ def run_php_worker_python_and_cli_clients(
     suffix = hashlib.sha1(f"{time.time()}-php-worker-python-clients".encode("utf-8")).hexdigest()[:10]
     workflow_id = f"wf-sq-php-python-clients-{suffix}"
     outputs: dict[str, Any] = {
-        "worker_runtime": "workflow-php",
+        "worker_runtime": "sdk-php",
         "worker_id": worker_id,
         "task_queue": task_queue,
         "workflow_id": workflow_id,
@@ -7258,7 +6861,7 @@ def run_python_sdk_baseline(
     sources: dict[str, str],
     run_root: Path,
     log_file: Path,
-    workflow_php_project: Path | None = None,
+    sdk_php_project: Path | None = None,
 ) -> tuple[dict[str, Any], dict[str, Any]]:
     suffix = hashlib.sha1(f"{time.time()}-python-sdk-baseline".encode("utf-8")).hexdigest()[:10]
     task_queue = f"signals-queries-python-sdk-{suffix}"
@@ -7505,13 +7108,13 @@ def run_python_sdk_baseline(
             sample_result_value(repeat_query) == sample_result_value(sdk_query)
         )
 
-        if workflow_php_project is not None:
+        if sdk_php_project is not None:
             cross_language_outputs = run_python_worker_php_facing_and_cli_clients(
                 base_url=base_url,
                 token=token,
                 namespace=namespace,
                 cli_bin=cli_bin,
-                workflow_php_project=workflow_php_project,
+                sdk_php_project=sdk_php_project,
                 task_queue=task_queue,
                 worker_id=worker_id,
                 workflow_type=workflow_type,
@@ -7561,55 +7164,55 @@ def baseline_scenario_result(scenario: str, observed: dict[str, Any]) -> dict[st
     }
 
 
-def run_workflow_php_baseline(
+def run_sdk_php_baseline(
     *,
     base_url: str,
     token: str,
     namespace: str,
     cli_bin: str,
     python_bin: str | None = None,
-    workflow_php_project: Path,
+    sdk_php_project: Path,
     versions: dict[str, str],
     sources: dict[str, str],
     install_entry: dict[str, Any],
     run_root: Path,
     log_file: Path,
 ) -> tuple[dict[str, Any], dict[str, Any]]:
-    suffix = hashlib.sha1(f"{time.time()}-workflow-php-baseline".encode("utf-8")).hexdigest()[:10]
-    task_queue = f"signals-queries-workflow-php-{suffix}"
-    worker_id = f"signals-queries-workflow-php-worker-{suffix}"
+    suffix = hashlib.sha1(f"{time.time()}-sdk-php-baseline".encode("utf-8")).hexdigest()[:10]
+    task_queue = f"signals-queries-sdk-php-{suffix}"
+    worker_id = f"signals-queries-sdk-php-worker-{suffix}"
     workflow_type = "conformance.counter.php"
-    workflow_id = f"wf-sq-workflow-php-{suffix}"
+    workflow_id = f"wf-sq-sdk-php-{suffix}"
     container_name = f"dw-sq-php-{suffix}"
-    query_route_evidence_path = workflow_php_project / f"{worker_id}-query-route-evidence.jsonl"
+    query_route_evidence_path = sdk_php_project / f"{worker_id}-query-route-evidence.jsonl"
     container_evidence_path = f"/app/{query_route_evidence_path.name}"
 
     outputs: dict[str, Any] = {
-        "worker_runtime": "workflow-php",
-        "workflow_php_artifact_source": sources["workflow-php"],
-        "workflow_php_sdk_version": versions["workflow-php"],
+        "worker_runtime": "sdk-php",
+        "sdk_php_artifact_source": sources["sdk-php"],
+        "sdk_php_sdk_version": versions["sdk-php"],
         "workflow_id": workflow_id,
         "task_queue": task_queue,
         "worker_id": worker_id,
         "published_artifact_versions": versions,
         "artifact_sources": sources,
-        "workflow_php_install_evidence": install_entry,
+        "sdk_php_install_evidence": install_entry,
     }
     descriptor: dict[str, Any] = {
         "worker_id": worker_id,
         "task_queue": task_queue,
         "workflow_id": workflow_id,
-        "worker_runtime": "workflow-php",
-        "worker_source": sources["workflow-php"],
-        "worker_sdk_version": outputs["workflow_php_sdk_version"],
-        "runtime_image": workflow_php_docker_image(),
+        "worker_runtime": "sdk-php",
+        "worker_source": sources["sdk-php"],
+        "worker_sdk_version": outputs["sdk_php_sdk_version"],
+        "runtime_image": sdk_php_docker_image(),
         "log_file": log_file.name,
     }
 
     register_container(container_name, log_file)
     start = run_command(
         php_docker_command(
-            workflow_php_project,
+            sdk_php_project,
             [
                 "php",
                 "php-counter-worker.php",
@@ -7647,7 +7250,7 @@ def run_workflow_php_baseline(
             outputs["registered_query_task_capability"] = True
 
         start_sample = php_workflow_client_sample(
-            workflow_php_project,
+            sdk_php_project,
             base_url,
             token,
             namespace,
@@ -7658,7 +7261,7 @@ def run_workflow_php_baseline(
             "start",
             log_file,
         )
-        outputs["workflow_php_start_sample"] = start_sample
+        outputs["sdk_php_start_sample"] = start_sample
         if not public_sample_ok(start_sample):
             raise RuntimeError(f"PHP baseline workflow start failed: {start_sample}")
 
@@ -7746,7 +7349,7 @@ def run_workflow_php_baseline(
         outputs["php_worker_query_task_routing"] = True
 
         php_signal = php_workflow_client_sample(
-            workflow_php_project,
+            sdk_php_project,
             base_url,
             token,
             namespace,
@@ -7760,14 +7363,14 @@ def run_workflow_php_baseline(
         )
         if not public_sample_ok(php_signal):
             raise RuntimeError(f"PHP SDK signal failed: {php_signal}")
-        outputs["workflow_php_signal_sample"] = php_signal
+        outputs["sdk_php_signal_sample"] = php_signal
 
         php_query = wait_for_query_result(
             label="PHP worker PHP SDK query after PHP SDK signal",
             expected=8,
             log_file=log_file,
             sample_factory=lambda: php_workflow_client_sample(
-                workflow_php_project,
+                sdk_php_project,
                 base_url,
                 token,
                 namespace,
@@ -7779,8 +7382,8 @@ def run_workflow_php_baseline(
                 log_file,
             ),
         )
-        outputs["workflow_php_query_sample"] = php_query
-        outputs["workflow_php_signal_and_query"] = (
+        outputs["sdk_php_query_sample"] = php_query
+        outputs["sdk_php_signal_and_query"] = (
             public_sample_ok(php_signal)
             and public_sample_ok(php_query)
             and sample_result_value(php_query) == 8
@@ -7791,7 +7394,7 @@ def run_workflow_php_baseline(
             expected=8,
             log_file=log_file,
             sample_factory=lambda: php_workflow_client_sample(
-                workflow_php_project,
+                sdk_php_project,
                 base_url,
                 token,
                 namespace,
@@ -7926,8 +7529,8 @@ def run_baseline_probe(result_dir: Path) -> tuple[dict[str, Any] | None, dict[st
         }
         cli_bin: str | None = None
         python_bin: str | None = None
-        workflow_php_project: Path | None = None
-        workflow_php_install_error: dict[str, str] | None = None
+        sdk_php_project: Path | None = None
+        sdk_php_install_error: dict[str, str] | None = None
         install_descriptors: dict[str, Any] = {}
         try:
             cli_bin, cli_install = install_cli(run_root, log_file)
@@ -7964,20 +7567,20 @@ def run_baseline_probe(result_dir: Path) -> tuple[dict[str, Any] | None, dict[st
                 "log_file": log_file.name,
             }
         try:
-            workflow_php_project, workflow_php_install = ensure_workflow_php_sdk(run_root, log_file)
-            install_entries["workflow-php"] = workflow_php_install
+            sdk_php_project, sdk_php_install = ensure_sdk_php_sdk(run_root, log_file)
+            install_entries["sdk-php"] = sdk_php_install
         except Exception as exc:  # noqa: BLE001 - PHP mirror evidence is reported as its own baseline cell.
-            workflow_php_install_error = probe_error_payload(exc)
-            log_line(log_file, f"PHP workflow package install probe failed: {type(exc).__name__}: {exc}")
-            workflow_php_install = configured_artifact_entry(
-                "workflow-php",
-                artifact_version_value(versions, "workflow-php"),
+            sdk_php_install_error = probe_error_payload(exc)
+            log_line(log_file, f"PHP SDK package install probe failed: {type(exc).__name__}: {exc}")
+            sdk_php_install = configured_artifact_entry(
+                "sdk-php",
+                artifact_version_value(versions, "sdk-php"),
                 "published_composer_package",
                 "composer_package_install",
             )
-            workflow_php_install["not_proved_reason"] = f"{type(exc).__name__}: {exc}"
-            install_entries["workflow-php"] = workflow_php_install
-            install_descriptors["workflow-php"] = {
+            sdk_php_install["not_proved_reason"] = f"{type(exc).__name__}: {exc}"
+            install_entries["sdk-php"] = sdk_php_install
+            install_descriptors["sdk-php"] = {
                 "error": f"{type(exc).__name__}: {exc}",
                 "log_file": log_file.name,
             }
@@ -7987,7 +7590,7 @@ def run_baseline_probe(result_dir: Path) -> tuple[dict[str, Any] | None, dict[st
         rust_install_error: dict[str, Any] | None = None
         if not env_flag("DW_SIGNALS_QUERIES_RUN_RUST_MATRIX_PROBE", True):
             rust_matrix_descriptor = {"skipped": "disabled_by_env", "log_file": log_file.name}
-        elif python_bin is None or workflow_php_project is None:
+        elif python_bin is None or sdk_php_project is None:
             rust_matrix_descriptor = {
                 "skipped": "python_or_php_published_client_unavailable",
                 "install_probes": install_descriptors,
@@ -8000,7 +7603,7 @@ def run_baseline_probe(result_dir: Path) -> tuple[dict[str, Any] | None, dict[st
                     token=token,
                     namespace=namespace,
                     python_bin=python_bin,
-                    workflow_php_project=workflow_php_project,
+                    sdk_php_project=sdk_php_project,
                     run_root=run_root,
                     log_file=log_file,
                 )
@@ -8088,7 +7691,7 @@ def run_baseline_probe(result_dir: Path) -> tuple[dict[str, Any] | None, dict[st
                     sources=sources,
                     run_root=run_root,
                     log_file=log_file,
-                    workflow_php_project=workflow_php_project,
+                    sdk_php_project=sdk_php_project,
                 )
                 if isinstance(python_sdk_descriptor, dict):
                     cross_results = python_sdk_descriptor.get("cross_language_scenario_results")
@@ -8124,72 +7727,72 @@ def run_baseline_probe(result_dir: Path) -> tuple[dict[str, Any] | None, dict[st
             generated_scenarios.append("python_worker_php_facing_and_cli_clients")
         checkpoint_baseline_cells()
 
-        workflow_php_outputs: dict[str, Any] | None = None
-        workflow_php_descriptor: dict[str, Any] | None = None
+        sdk_php_outputs: dict[str, Any] | None = None
+        sdk_php_descriptor: dict[str, Any] | None = None
         php_worker_python_cross_result: dict[str, Any] | None = None
-        workflow_php_status = "not_covered"
+        sdk_php_status = "not_covered"
         if not env_flag("DW_SIGNALS_QUERIES_RUN_PHP_BASELINE_PROBE", True):
-            workflow_php_descriptor = {
+            sdk_php_descriptor = {
                 "skipped": "disabled_by_env",
                 "log_file": log_file.name,
             }
-        elif cli_bin is not None and workflow_php_project is not None:
+        elif cli_bin is not None and sdk_php_project is not None:
             try:
-                workflow_php_outputs, workflow_php_descriptor = run_workflow_php_baseline(
+                sdk_php_outputs, sdk_php_descriptor = run_sdk_php_baseline(
                     base_url=base_url,
                     token=token,
                     namespace=namespace,
                     cli_bin=cli_bin,
                     python_bin=python_bin,
-                    workflow_php_project=workflow_php_project,
+                    sdk_php_project=sdk_php_project,
                     versions=versions,
                     sources=sources,
-                    install_entry=install_entries["workflow-php"],
+                    install_entry=install_entries["sdk-php"],
                     run_root=run_root,
                     log_file=log_file,
                 )
-                if isinstance(workflow_php_descriptor, dict):
-                    cross_results = workflow_php_descriptor.get("cross_language_scenario_results")
+                if isinstance(sdk_php_descriptor, dict):
+                    cross_results = sdk_php_descriptor.get("cross_language_scenario_results")
                     if isinstance(cross_results, dict):
                         candidate = cross_results.get("php_worker_python_and_cli_clients")
                         if isinstance(candidate, dict):
                             php_worker_python_cross_result = candidate
                 if (
                     install_status == "pass"
-                    and has_required_evidence("php_worker_cli_and_sdk_baseline", workflow_php_outputs)
+                    and has_required_evidence("php_worker_cli_and_sdk_baseline", sdk_php_outputs)
                 ):
-                    workflow_php_status = "pass"
+                    sdk_php_status = "pass"
             except Exception as exc:  # noqa: BLE001 - leave a focused mirror finding and preserve sibling cells.
                 log_line(log_file, f"PHP worker mirror probe failed: {type(exc).__name__}: {exc}")
-                workflow_php_descriptor = {
+                sdk_php_descriptor = {
                     "error": f"{type(exc).__name__}: {exc}",
                     "log_file": log_file.name,
                 }
-        elif workflow_php_install_error is not None:
-            workflow_php_outputs = {
-                "worker_runtime": "workflow-php",
-                "workflow_php_artifact_source": sources["workflow-php"],
-                "workflow_php_sdk_version": versions["workflow-php"],
+        elif sdk_php_install_error is not None:
+            sdk_php_outputs = {
+                "worker_runtime": "sdk-php",
+                "sdk_php_artifact_source": sources["sdk-php"],
+                "sdk_php_sdk_version": versions["sdk-php"],
                 "published_artifact_versions": versions,
                 "artifact_sources": sources,
-                "workflow_php_install_evidence": install_entries["workflow-php"],
-                "probe_error": workflow_php_install_error,
+                "sdk_php_install_evidence": install_entries["sdk-php"],
+                "probe_error": sdk_php_install_error,
             }
-            workflow_php_descriptor = {
-                "error": f"{workflow_php_install_error['type']}: {workflow_php_install_error['message']}",
+            sdk_php_descriptor = {
+                "error": f"{sdk_php_install_error['type']}: {sdk_php_install_error['message']}",
                 "install_probes": install_descriptors,
                 "log_file": log_file.name,
             }
         else:
-            workflow_php_descriptor = {
-                "skipped": "cli_or_php_workflow_install_unavailable",
+            sdk_php_descriptor = {
+                "skipped": "cli_or_php_sdk_install_unavailable",
                 "install_probes": install_descriptors,
                 "log_file": log_file.name,
             }
-        if workflow_php_outputs is not None:
+        if sdk_php_outputs is not None:
             scenario_results["php_worker_cli_and_sdk_baseline"] = {
-                "status": workflow_php_status,
-                "observed_outputs": workflow_php_outputs,
+                "status": sdk_php_status,
+                "observed_outputs": sdk_php_outputs,
             }
             generated_scenarios.append("php_worker_cli_and_sdk_baseline")
         if php_worker_python_cross_result is not None:
@@ -8930,7 +8533,7 @@ def run_baseline_probe(result_dir: Path) -> tuple[dict[str, Any] | None, dict[st
         not_claimed_as_pass = (
             ([] if install_status == "pass" else ["published_artifact_install_only"])
             + ([] if python_sdk_status == "pass" else ["python_worker_cli_and_sdk_baseline"])
-            + ([] if workflow_php_status == "pass" else ["php_worker_cli_and_sdk_baseline"])
+            + ([] if sdk_php_status == "pass" else ["php_worker_cli_and_sdk_baseline"])
             + (
                 []
                 if (
@@ -8988,7 +8591,7 @@ def run_baseline_probe(result_dir: Path) -> tuple[dict[str, Any] | None, dict[st
                     if python_worker_php_cross_result is not None
                     else {"skipped": "python_worker_or_php_client_unavailable"}
                 ),
-                "php_worker_cli_and_sdk_baseline": workflow_php_descriptor,
+                "php_worker_cli_and_sdk_baseline": sdk_php_descriptor,
                 "php_worker_python_and_cli_clients": (
                     php_worker_python_cross_result
                     if php_worker_python_cross_result is not None
@@ -9544,7 +9147,7 @@ def run_adversarial_probe(result_dir: Path, current_evidence: Any) -> tuple[dict
             "server": artifact_version_value(artifact_versions, "server"),
             "cli": artifact_version_value(artifact_versions, "cli"),
             "sdk-python": artifact_version_value(artifact_versions, "sdk-python"),
-            "workflow-php": artifact_version_value(artifact_versions, "workflow-php"),
+            "sdk-php": artifact_version_value(artifact_versions, "sdk-php"),
             "waterline": artifact_version_value(artifact_versions, "waterline"),
         }
         sources = probe_artifact_sources(cleanup_commands, install_entries)
@@ -10006,7 +9609,7 @@ def docker_run_for_project(
         docker_command.extend(["-e", f"{key}={value}"])
 
     docker_command.extend([
-        image or workflow_php_docker_image(),
+        image or sdk_php_docker_image(),
         *command,
     ])
     return docker_command
@@ -10086,13 +9689,13 @@ def _run_waterline_observer_probe(
             blocker_kind="docker_unavailable",
         ), {"error": "docker_unavailable"}
 
-    workflow_version = artifact_version_value(artifact_versions, "workflow-php")
+    workflow_version = artifact_version_value(artifact_versions, "workflow")
     waterline_version = artifact_version_value(artifact_versions, "waterline")
     if is_placeholder_version(workflow_version) or is_placeholder_version(waterline_version):
         return waterline_observer_setup_result(
             status="runner_blocked",
             reason=(
-                "Exact workflow-php and waterline versions are required before installing "
+                "Exact workflow and waterline versions are required before installing "
                 "the published Waterline observer shard."
             ),
             blocker_kind="missing_exact_artifact_version",
@@ -10263,12 +9866,12 @@ def _run_waterline_observer_probe(
                 f"--artifact-version=server={artifact_version_value(artifact_versions, 'server')}",
                 f"--artifact-version=cli={artifact_version_value(artifact_versions, 'cli')}",
                 f"--artifact-version=sdk-python={artifact_version_value(artifact_versions, 'sdk-python')}",
-                f"--artifact-version=workflow-php={workflow_version}",
+                f"--artifact-version=sdk-php={artifact_version_value(artifact_versions, 'sdk-php')}",
                 f"--artifact-version=waterline={waterline_version}",
                 "--artifact-source=server=docker_image",
                 "--artifact-source=cli=official_install_script",
                 "--artifact-source=sdk-python=pypi_package",
-                "--artifact-source=workflow-php=packagist_package",
+                "--artifact-source=sdk-php=packagist_package",
                 "--artifact-source=waterline=packagist_package",
             ],
             extra_env=waterline_env,
@@ -10515,19 +10118,20 @@ def artifact_versions_pinned() -> bool:
     return all(not is_placeholder_version(str(artifact_versions.get(artifact, ""))) for artifact in REQUIRED_INSTALL_ARTIFACTS)
 
 
-REQUIRED_INSTALL_ARTIFACTS = ("server", "cli", "sdk-python", "sdk-rust", "workflow-php", "waterline")
-REQUIRED_INSTALL_PROOF_ARTIFACTS = ("server", "cli", "sdk-python", "sdk-rust")
+REQUIRED_INSTALL_ARTIFACTS = ("server", "cli", "sdk-python", "sdk-rust", "sdk-php", "workflow", "waterline")
+REQUIRED_INSTALL_PROOF_ARTIFACTS = ("server", "cli", "sdk-php", "sdk-python", "sdk-rust")
 EXPECTED_ARTIFACT_SOURCES = {
     "server": "published_docker_image",
     "cli": "published_cli_release",
     "sdk-python": "published_pypi_package",
     "sdk-rust": "published_crates_io_package",
-    "workflow-php": "published_composer_package",
+    "sdk-php": "published_composer_package",
+    "workflow": "published_composer_package",
     "waterline": "published_waterline_artifact",
 }
 
 ARTIFACT_VERSION_ALIASES: dict[str, list[str]] = {
-    "workflow-php": ["workflow-php", "workflow_php", "workflow"],
+    "sdk-php": ["sdk-php", "sdk_php"],
     "sdk-python": ["sdk-python", "sdk_python", "python"],
     "sdk-rust": ["sdk-rust", "sdk_rust", "rust"],
     "waterline": ["waterline", "waterline-ui", "waterline_ui"],
@@ -10707,48 +10311,48 @@ def python_worker_claim_satisfied(observed: dict[str, Any]) -> bool:
     )
 
 
-def is_workflow_php_worker_runtime(value: Any) -> bool:
+def is_sdk_php_worker_runtime(value: Any) -> bool:
     if not isinstance(value, str):
         return False
     return value.strip().lower() in {
-        "workflow-php",
-        "workflow_php",
+        "sdk-php",
+        "sdk_php",
         "php",
         "php_worker",
     }
 
 
-def is_published_workflow_php_source(value: Any) -> bool:
+def is_published_sdk_php_source(value: Any) -> bool:
     if not isinstance(value, str):
         return False
-    return published_source_matches_artifact(value, "workflow-php")
+    return published_source_matches_artifact(value, "sdk-php")
 
 
-def workflow_php_version_matches_current(value: Any) -> bool:
+def sdk_php_version_matches_current(value: Any) -> bool:
     if value is MISSING or value is None:
         return False
     actual = str(value).strip()
-    expected = artifact_version_value(artifact_versions, "workflow-php")
+    expected = artifact_version_value(artifact_versions, "sdk-php")
     return actual != "" and not is_placeholder_version(actual) and (expected == "" or actual == expected)
 
 
-def workflow_php_worker_claim_satisfied(observed: dict[str, Any]) -> bool:
+def sdk_php_worker_claim_satisfied(observed: dict[str, Any]) -> bool:
     return (
-        is_workflow_php_worker_runtime(output_field(observed, "worker_runtime", "workerRuntime", "php_worker_runtime"))
-        and is_published_workflow_php_source(
+        is_sdk_php_worker_runtime(output_field(observed, "worker_runtime", "workerRuntime", "php_worker_runtime"))
+        and is_published_sdk_php_source(
             output_field(
                 observed,
-                "workflow_php_artifact_source",
-                "workflowPhpArtifactSource",
+                "sdk_php_artifact_source",
+                "sdkPhpArtifactSource",
                 "worker_artifact_source",
                 "workerArtifactSource",
             )
         )
-        and workflow_php_version_matches_current(
+        and sdk_php_version_matches_current(
             output_field(
                 observed,
-                "workflow_php_sdk_version",
-                "workflowPhpSdkVersion",
+                "sdk_php_sdk_version",
+                "sdkPhpSdkVersion",
                 "worker_sdk_version",
                 "workerSdkVersion",
             )
@@ -10815,12 +10419,12 @@ SCENARIO_REQUIRED_EVIDENCE: dict[str, list[str]] = {
     ],
     "php_worker_cli_and_sdk_baseline": [
         "worker_runtime",
-        "workflow_php_artifact_source",
-        "workflow_php_sdk_version",
+        "sdk_php_artifact_source",
+        "sdk_php_sdk_version",
         "php_worker_query_task_routing",
         "routed_current_query_task",
         "cli_signal_and_query",
-        "workflow_php_signal_and_query",
+        "sdk_php_signal_and_query",
         "immediate_repeat_query_consistency",
     ],
     "python_worker_php_facing_and_cli_clients": [
@@ -10847,10 +10451,10 @@ SCENARIO_REQUIRED_EVIDENCE: dict[str, list[str]] = {
         "query_state_model",
         "ordered_signal_values",
         "rust_query_results.running",
-        "workflow_php_query_results.running",
+        "sdk_php_query_results.running",
         "sdk_python_query_results.running",
         "rust_query_results.completed",
-        "workflow_php_query_results.completed",
+        "sdk_php_query_results.completed",
         "sdk_python_query_results.completed",
         "valid_avro_signal_and_query.default_codec",
         "valid_avro_signal_and_query.payload_codec",
@@ -10955,13 +10559,13 @@ SCENARIO_REQUIRED_EVIDENCE: dict[str, list[str]] = {
         "cold_restart.fresh_worker_process_id",
         "cold_restart.durable_history_restored",
         "running_query_results.sdk_rust",
-        "running_query_results.workflow_php_sdk",
+        "running_query_results.sdk_php_sdk",
         "running_query_results.sdk_python",
         "restored_query_results.sdk_rust",
-        "restored_query_results.workflow_php_sdk",
+        "restored_query_results.sdk_php_sdk",
         "restored_query_results.sdk_python",
         "completed_query_results.sdk_rust",
-        "completed_query_results.workflow_php_sdk",
+        "completed_query_results.sdk_php_sdk",
         "completed_query_results.sdk_python",
         "immutability_checkpoints.running.before_first_successful_query.history_event_count",
         "immutability_checkpoints.running.before_first_successful_query.workflow_command_count",
@@ -11075,7 +10679,7 @@ TRUTHY_REQUIRED_EVIDENCE = {
     "sdk_python_signal_and_query",
     "immediate_repeat_query_consistency",
     "php_worker_query_task_routing",
-    "workflow_php_signal_and_query",
+    "sdk_php_signal_and_query",
     "php_client_signal_and_query",
     "cross_language_query_consistency",
     "wire_envelope_compatibility",
@@ -11531,10 +11135,10 @@ def has_required_evidence(scenario: str, observed: dict[str, Any]) -> bool:
 
     if scenario == "php_worker_cli_and_sdk_baseline":
         return (
-            workflow_php_worker_claim_satisfied(observed)
+            sdk_php_worker_claim_satisfied(observed)
             and routed_current_query_task_satisfied(
                 evidence_lookup(observed, "routed_current_query_task"),
-                expected_runtime="workflow-php",
+                expected_runtime="sdk-php",
             )
             and all(
                 required_evidence_satisfied(evidence_key, evidence_lookup(observed, evidence_key))
@@ -11921,11 +11525,11 @@ BASELINE_CURRENT_EVIDENCE_FIELDS = {
     ],
     "php_worker_cli_and_sdk_baseline": [
         "worker_runtime",
-        "workflow_php_artifact_source",
-        "workflow_php_sdk_version",
+        "sdk_php_artifact_source",
+        "sdk_php_sdk_version",
         "php_worker_query_task_routing",
         "cli_signal_and_query",
-        "workflow_php_signal_and_query",
+        "sdk_php_signal_and_query",
         "immediate_repeat_query_consistency",
     ],
     "python_worker_php_facing_and_cli_clients": [
@@ -12239,33 +11843,33 @@ def missing_current_evidence_for(scenario: str, observed: dict[str, Any]) -> lis
             for evidence_key in SCENARIO_REQUIRED_EVIDENCE[scenario]
             if not required_evidence_satisfied(evidence_key, evidence_lookup(observed, evidence_key))
         ]
-        if not is_workflow_php_worker_runtime(
+        if not is_sdk_php_worker_runtime(
             output_field(observed, "worker_runtime", "workerRuntime", "php_worker_runtime")
         ):
             missing.append("worker_runtime")
-        if not is_published_workflow_php_source(
+        if not is_published_sdk_php_source(
             output_field(
                 observed,
-                "workflow_php_artifact_source",
-                "workflowPhpArtifactSource",
+                "sdk_php_artifact_source",
+                "sdkPhpArtifactSource",
                 "worker_artifact_source",
                 "workerArtifactSource",
             )
         ):
-            missing.append("workflow_php_artifact_source")
-        if not workflow_php_version_matches_current(
+            missing.append("sdk_php_artifact_source")
+        if not sdk_php_version_matches_current(
             output_field(
                 observed,
-                "workflow_php_sdk_version",
-                "workflowPhpSdkVersion",
+                "sdk_php_sdk_version",
+                "sdkPhpSdkVersion",
                 "worker_sdk_version",
                 "workerSdkVersion",
             )
         ):
-            missing.append("workflow_php_sdk_version")
+            missing.append("sdk_php_sdk_version")
         if not routed_current_query_task_satisfied(
             evidence_lookup(observed, "routed_current_query_task"),
-            expected_runtime="workflow-php",
+            expected_runtime="sdk-php",
         ):
             missing.append("routed_current_query_task")
         return unique_strings(missing)
@@ -12382,31 +11986,31 @@ def python_baseline_behavior_failures(observed: dict[str, Any]) -> list[dict[str
 
 def php_baseline_behavior_failures(observed: dict[str, Any]) -> list[dict[str, Any]]:
     failures: list[dict[str, Any]] = []
-    workflow_php_sdk_version = output_field(
+    sdk_php_sdk_version = output_field(
         observed,
-        "workflow_php_sdk_version",
-        "workflowPhpSdkVersion",
+        "sdk_php_sdk_version",
+        "sdkPhpSdkVersion",
         "worker_sdk_version",
         "workerSdkVersion",
     )
-    actual_workflow_php_version = (
-        str(workflow_php_sdk_version).strip()
-        if workflow_php_sdk_version is not MISSING
+    actual_sdk_php_version = (
+        str(sdk_php_sdk_version).strip()
+        if sdk_php_sdk_version is not MISSING
         else ""
     )
-    expected_workflow_php_version = artifact_version_value(artifact_versions, "workflow-php")
+    expected_sdk_php_version = artifact_version_value(artifact_versions, "sdk-php")
     if (
-        actual_workflow_php_version != ""
-        and not is_placeholder_version(actual_workflow_php_version)
-        and expected_workflow_php_version != ""
-        and not is_placeholder_version(expected_workflow_php_version)
-        and actual_workflow_php_version != expected_workflow_php_version
+        actual_sdk_php_version != ""
+        and not is_placeholder_version(actual_sdk_php_version)
+        and expected_sdk_php_version != ""
+        and not is_placeholder_version(expected_sdk_php_version)
+        and actual_sdk_php_version != expected_sdk_php_version
     ):
         failures.append(behavior_failure(
-            "workflow_php_sdk_version_mismatch",
-            "workflow_php_sdk_version",
-            expected_workflow_php_version,
-            actual_workflow_php_version,
+            "sdk_php_sdk_version_mismatch",
+            "sdk_php_sdk_version",
+            expected_sdk_php_version,
+            actual_sdk_php_version,
         ))
 
     cli_signal_and_query = evidence_lookup(observed, "cli_signal_and_query")
@@ -12422,16 +12026,16 @@ def php_baseline_behavior_failures(observed: dict[str, Any]) -> list[dict[str, A
             },
         ))
 
-    workflow_php_signal_and_query = evidence_lookup(observed, "workflow_php_signal_and_query")
-    if workflow_php_signal_and_query is not MISSING and not evidence_true(workflow_php_signal_and_query):
+    sdk_php_signal_and_query = evidence_lookup(observed, "sdk_php_signal_and_query")
+    if sdk_php_signal_and_query is not MISSING and not evidence_true(sdk_php_signal_and_query):
         failures.append(behavior_failure(
             "php_sdk_signal_query_mismatch",
-            "workflow_php_signal_and_query",
+            "sdk_php_signal_and_query",
             "PHP SDK signal increment(5) succeeds and PHP SDK query current returns 8 against the PHP worker",
             {
-                "workflow_php_signal": sample_readout(observed.get("workflow_php_signal_sample")),
-                "workflow_php_query": sample_readout(observed.get("workflow_php_query_sample")),
-                "error": observed.get("workflow_php_signal_and_query_error"),
+                "sdk_php_signal": sample_readout(observed.get("sdk_php_signal_sample")),
+                "sdk_php_query": sample_readout(observed.get("sdk_php_query_sample")),
+                "error": observed.get("sdk_php_signal_and_query_error"),
             },
         ))
 
@@ -12442,7 +12046,7 @@ def php_baseline_behavior_failures(observed: dict[str, Any]) -> list[dict[str, A
             "immediate_repeat_query_consistency",
             "immediate repeat query result equals the preceding PHP SDK query result",
             {
-                "workflow_php_query": sample_readout(observed.get("workflow_php_query_sample")),
+                "sdk_php_query": sample_readout(observed.get("sdk_php_query_sample")),
                 "repeat_query": sample_readout(observed.get("repeat_query_sample")),
                 "error": observed.get("immediate_repeat_query_consistency_error"),
             },
@@ -12457,12 +12061,12 @@ def php_baseline_behavior_failures(observed: dict[str, Any]) -> list[dict[str, A
             {
                 "probe_error": probe_error,
                 "worker_registration": observed.get("worker_registration"),
-                "workflow_php_start": sample_readout(observed.get("workflow_php_start_sample")),
+                "sdk_php_start": sample_readout(observed.get("sdk_php_start_sample")),
                 "initial_query": sample_readout(observed.get("initial_query_sample")),
                 "cli_signal": sample_readout(observed.get("cli_signal_sample")),
                 "cli_query": sample_readout(observed.get("cli_query_sample")),
-                "workflow_php_signal": sample_readout(observed.get("workflow_php_signal_sample")),
-                "workflow_php_query": sample_readout(observed.get("workflow_php_query_sample")),
+                "sdk_php_signal": sample_readout(observed.get("sdk_php_signal_sample")),
+                "sdk_php_query": sample_readout(observed.get("sdk_php_query_sample")),
                 "repeat_query": sample_readout(observed.get("repeat_query_sample")),
             },
         ))
@@ -12479,11 +12083,11 @@ def cross_language_client_behavior_failures(scenario: str, observed: dict[str, A
             "and queries current=4"
         )
         client_actual = {
-            "start": sample_readout(observed.get("workflow_php_start_sample")),
-            "initial_query": sample_readout(observed.get("workflow_php_initial_query_sample")),
-            "signal": sample_readout(observed.get("workflow_php_signal_sample")),
-            "query": sample_readout(observed.get("workflow_php_query_sample")),
-            "repeat_query": sample_readout(observed.get("workflow_php_repeat_query_sample")),
+            "start": sample_readout(observed.get("sdk_php_start_sample")),
+            "initial_query": sample_readout(observed.get("sdk_php_initial_query_sample")),
+            "signal": sample_readout(observed.get("sdk_php_signal_sample")),
+            "query": sample_readout(observed.get("sdk_php_query_sample")),
+            "repeat_query": sample_readout(observed.get("sdk_php_repeat_query_sample")),
             "observed_values": observed.get("observed_values"),
             "error": observed.get("probe_error"),
         }
@@ -12783,7 +12387,7 @@ artifact_versions = {
     "sdk-python": os.environ["DW_PYTHON_SDK_VERSION"],
     "sdk-rust": os.environ["DW_RUST_SDK_VERSION"],
     "workflow": os.environ["DW_WORKFLOW_PHP_VERSION"],
-    "workflow-php": os.environ["DW_WORKFLOW_PHP_VERSION"],
+    "sdk-php": os.environ["DW_PHP_SDK_VERSION"],
     "waterline": os.environ["DW_WATERLINE_VERSION"],
 }
 
@@ -13440,7 +13044,7 @@ result = {
     "artifactVersions": artifact_versions,
     "artifact_sources": pins["artifact_sources"],
     "runtime_matrix": {
-        "runtimes": ["workflow-php", "sdk-python", "sdk-rust"],
+        "runtimes": ["sdk-php", "sdk-python", "sdk-rust"],
         "same_language_cells": [
             {
                 "scenario": "python_worker_cli_and_sdk_baseline",
@@ -13449,24 +13053,24 @@ result = {
             },
             {
                 "scenario": "php_worker_cli_and_sdk_baseline",
-                "worker": "workflow-php",
-                "clients": ["cli", "workflow-php-sdk"],
+                "worker": "sdk-php",
+                "clients": ["cli", "sdk-php"],
             },
             {
                 "scenario": "rust_worker_rust_php_python_clients",
                 "worker": "sdk-rust",
-                "clients": ["sdk-rust", "workflow-php-sdk", "sdk-python"],
+                "clients": ["sdk-rust", "sdk-php", "sdk-python"],
             },
         ],
         "cross_language_cells": [
             {
                 "scenario": "python_worker_php_facing_and_cli_clients",
                 "worker": "sdk-python",
-                "clients": ["workflow-php-sdk", "cli"],
+                "clients": ["sdk-php", "cli"],
             },
             {
                 "scenario": "php_worker_python_and_cli_clients",
-                "worker": "workflow-php",
+                "worker": "sdk-php",
                 "clients": ["sdk-python", "cli"],
             },
             {
@@ -13476,7 +13080,7 @@ result = {
             },
             {
                 "scenario": "php_worker_rust_client",
-                "worker": "workflow-php",
+                "worker": "sdk-php",
                 "clients": ["sdk-rust"],
             },
         ],

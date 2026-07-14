@@ -55,7 +55,7 @@ class PrincipalAttributionContractTest extends TestCase
         );
         $this->assertSame([], $manifest['worker_terminal_event_policy']['documented_system_principals']);
 
-        foreach (['server', 'cli', 'workflow-php', 'sdk-python', 'waterline'] as $artifact) {
+        foreach (['server', 'cli', 'workflow', 'sdk-php', 'sdk-python', 'waterline'] as $artifact) {
             $this->assertArrayHasKey($artifact, $manifest['artifact_policy']['install_channels']);
         }
 
@@ -64,7 +64,7 @@ class PrincipalAttributionContractTest extends TestCase
             $manifest['finding_policy']['root_cause_owners']['python_sdk_visibility_failure'],
         );
         $this->assertSame(
-            'workflow',
+            'sdk-php',
             $manifest['finding_policy']['root_cause_owners']['php_client_visibility_failure'],
         );
         $this->assertSame(
@@ -454,7 +454,7 @@ class PrincipalAttributionContractTest extends TestCase
         ));
 
         $this->assertSame('non_passing', $evaluation['status']);
-        foreach (['cli', 'workflow-php', 'sdk-python', 'waterline'] as $artifact) {
+        foreach (['cli', 'workflow', 'sdk-php', 'sdk-python', 'waterline'] as $artifact) {
             $this->assertContains(
                 [
                     'code' => 'missing_published_artifact_install_source',
@@ -593,8 +593,8 @@ class PrincipalAttributionContractTest extends TestCase
         $this->assertStringContainsString('php_operation = run_php_client_operation(php_client_id)', $script);
         $this->assertStringContainsString('php_linked_findings: list[dict[str, Any]] = []', $script);
         $this->assertStringContainsString('linked_findings=php_linked_findings', $script);
-        $this->assertStringContainsString('"php_client_visibility", "workflow"', $script);
-        $this->assertStringContainsString('php_operation_outputs = sdk_operation_outputs(php_operation, php_client_id, "workflow-php")', $script);
+        $this->assertStringContainsString('"php_client_visibility", "sdk-php"', $script);
+        $this->assertStringContainsString('php_operation_outputs = sdk_operation_outputs(php_operation, php_client_id, "sdk-php")', $script);
         $this->assertStringContainsString('operation_outputs=php_operation_outputs', $script);
         $this->assertStringContainsString('sdk_principal_attribution_parity = {', $script);
         $this->assertStringContainsString('"sdk_principal_attribution_parity": sdk_principal_attribution_parity', $script);
@@ -1161,7 +1161,7 @@ class PrincipalAttributionContractTest extends TestCase
     {
         foreach ([
             'python_sdk_visibility' => 'sdk-python',
-            'php_client_visibility' => 'workflow',
+            'php_client_visibility' => 'sdk-php',
         ] as $scenarioId => $owningSurface) {
             $finding = $this->structuredPrincipalFinding(
                 $scenarioId,
@@ -1428,7 +1428,8 @@ class PrincipalAttributionContractTest extends TestCase
         $versions = [
             'server' => '0.2.228',
             'cli' => '0.1.75',
-            'workflow-php' => '2.0.0-alpha.187',
+            'workflow' => '2.0.0-alpha.187',
+            'sdk-php' => '0.1.1',
             'sdk-python' => '0.4.84',
             'waterline' => '2.0.0-alpha.69',
         ];
@@ -1456,7 +1457,8 @@ class PrincipalAttributionContractTest extends TestCase
             'artifact_sources' => [
                 'server' => 'docker image durableworkflow/server:0.2.228',
                 'cli' => 'official release install asset',
-                'workflow-php' => 'composer package durable-workflow/workflow',
+                'workflow' => 'composer package durable-workflow/workflow',
+                'sdk-php' => 'composer package durable-workflow/sdk',
                 'sdk-python' => 'PyPI durable-workflow',
                 'waterline' => 'published Waterline package',
             ],
@@ -1512,7 +1514,7 @@ class PrincipalAttributionContractTest extends TestCase
                     'artifact_sources' => [
                         'server' => 'docker image durableworkflow/server:0.2.228',
                         'cli' => 'official release install asset',
-                        'workflow-php' => 'composer package durable-workflow/workflow',
+                        'sdk-php' => 'composer package durable-workflow/sdk',
                         'sdk-python' => 'PyPI durable-workflow',
                         'waterline' => 'published Waterline package',
                     ],
@@ -1602,8 +1604,8 @@ class PrincipalAttributionContractTest extends TestCase
                 ],
                 'php_client_visibility' => [
                     'status' => 'pass',
-                    'client_operation' => ['status' => 'pass', 'client' => 'workflow-php'],
-                    'sdk_package_version' => $versions['workflow-php'],
+                    'client_operation' => ['status' => 'pass', 'client' => 'sdk-php'],
+                    'sdk_package_version' => $versions['sdk-php'],
                     'credential_used' => ['actor' => 'alice', 'credential_ref' => 'alice-token-v1'],
                     'expected_principal' => $alice,
                     'raw_http_reference_principal' => $alice,
@@ -1615,7 +1617,7 @@ class PrincipalAttributionContractTest extends TestCase
                         'start_workflow' => ['workflow_id' => 'pa-php', 'run_id' => 'run-php'],
                         'signal_workflow' => ['workflow_id' => 'pa-php', 'signal_name' => 'nudge'],
                     ],
-                    'operation_output_sample' => '{"workflow_id":"pa-php","operation":"WorkflowClient::startWorkflow+signalWorkflow"}',
+                    'operation_output_sample' => '{"workflow_id":"pa-php","operation":"DurableWorkflow\\Client::startWorkflow+signalWorkflow"}',
                     'recorded_principal' => $alice,
                     'shape_matches_http' => true,
                 ],
@@ -1654,7 +1656,8 @@ class PrincipalAttributionContractTest extends TestCase
             'artifact_versions' => [
                 'server' => '0.2.228',
                 'cli' => '0.1.75',
-                'workflow-php' => '2.0.0-alpha.187',
+                'workflow' => '2.0.0-alpha.187',
+                'sdk-php' => '0.1.1',
                 'sdk-python' => '0.4.84',
                 'waterline' => '2.0.0-alpha.69',
             ],
@@ -1731,7 +1734,8 @@ class PrincipalAttributionContractTest extends TestCase
             'artifact_sources' => [
                 'server' => 'docker-image',
                 'cli' => 'release-asset',
-                'workflow-php' => 'composer',
+                'workflow' => 'composer',
+                'sdk-php' => 'composer',
                 'sdk-python' => 'pypi',
                 'waterline' => 'npm',
             ],
@@ -1795,7 +1799,7 @@ class PrincipalAttributionContractTest extends TestCase
             'server' => '0.2.228',
             'cli' => '0.1.75',
             'workflow' => '2.0.0-alpha.187',
-            'workflow-php' => '2.0.0-alpha.187',
+            'sdk-php' => '0.1.1',
             'sdk-python' => '0.4.84',
             'waterline' => '2.0.0-alpha.69',
         ];
@@ -1809,7 +1813,8 @@ class PrincipalAttributionContractTest extends TestCase
         return [
             'server' => 'docker-image',
             'cli' => 'release-asset',
-            'workflow-php' => 'composer',
+            'workflow' => 'composer',
+            'sdk-php' => 'composer',
             'sdk-python' => 'pypi',
             'waterline' => 'npm',
         ];
@@ -1938,7 +1943,7 @@ class PrincipalAttributionContractTest extends TestCase
             ],
             'php_client_visibility' => [
                 'client_operation' => ['status' => 'pass'],
-                'sdk_package_version' => $versions['workflow-php'],
+                'sdk_package_version' => $versions['sdk-php'],
                 'credential_used' => ['actor' => 'alice', 'credential_ref' => 'alice-token-v1'],
                 'expected_principal' => $alice,
                 'raw_http_reference_principal' => $alice,
@@ -1950,7 +1955,7 @@ class PrincipalAttributionContractTest extends TestCase
                     'start_workflow' => ['workflow_id' => 'pa-php', 'run_id' => 'run-php'],
                     'signal_workflow' => ['workflow_id' => 'pa-php', 'signal_name' => 'nudge'],
                 ],
-                'operation_output_sample' => '{"workflow_id":"pa-php","operation":"WorkflowClient::startWorkflow+signalWorkflow"}',
+                'operation_output_sample' => '{"workflow_id":"pa-php","operation":"DurableWorkflow\\Client::startWorkflow+signalWorkflow"}',
                 'recorded_principal' => $alice,
                 'shape_matches_http' => true,
             ],

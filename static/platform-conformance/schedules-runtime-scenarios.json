@@ -46,13 +46,13 @@
   },
   "required_matrix": {
     "runtimes": [
-      "workflow-php",
+      "sdk-php",
       "sdk-python"
     ],
     "client_paths": [
       "cli",
       "sdk-python",
-      "workflow-php-sdk"
+      "sdk-php"
     ],
     "schedule_types": [
       "cron_expression",
@@ -61,11 +61,11 @@
     "cross_language_cells": [
       {
         "schedule_creator": "sdk-python",
-        "workflow_runtime": "workflow-php",
+        "workflow_runtime": "sdk-php",
         "scenario": "python_created_php_workflow"
       },
       {
-        "schedule_creator": "workflow-php-sdk",
+        "schedule_creator": "sdk-php",
         "workflow_runtime": "sdk-python",
         "scenario": "php_created_python_workflow"
       }
@@ -123,9 +123,9 @@
         "owner": "conformance_harness",
         "scope": "published-artifact-install",
         "current_evidence": "The schedules result must name concrete published versions for every actor and prove none came from a local product checkout.",
-        "expected_behavior": "Server image, CLI, Python SDK, PHP workflow runtime, and Waterline are installed from published channels and recorded with concrete versions.",
+        "expected_behavior": "Server image, CLI, Python SDK, PHP SDK, and Waterline are installed from published channels and recorded with concrete versions.",
         "acceptance": [
-          "record server, cli, sdk-python, workflow-php, and waterline artifact versions",
+          "record server, cli, sdk-python, sdk-php, and waterline artifact versions",
           "record artifact sources from published channels only",
           "prove local product source checkouts were not used as artifacts under test"
         ]
@@ -240,12 +240,12 @@
       },
       "php_schedule_surface": {
         "id": "schedules-php-surface-coverage",
-        "owner": "workflow-php",
-        "scope": "workflow-php-schedule-surface-shard",
+        "owner": "sdk-php",
+        "scope": "sdk-php-schedule-surface-shard",
         "current_evidence": "The current published-artifact evidence proves only the Python SDK schedule lifecycle smoke: create, list, describe, pause, resume, manual trigger, delete, triggered workflow completion, and invalid cron refusal. It does not exercise a PHP-facing schedule client path.",
         "expected_behavior": "The PHP-facing workflow SDK surface can create or observe schedules and report list or describe state consistently with server and CLI state.",
         "acceptance": [
-          "execute the PHP-facing schedule client path from the published workflow package",
+          "execute the PHP-facing schedule client path from the published PHP SDK package",
           "record create_or_observe and list_or_describe outputs",
           "record pause, resume, trigger, or delete behavior when the surface claims those controls"
         ]
@@ -255,10 +255,10 @@
         "owner": "conformance_harness",
         "scope": "cross-language-schedule-workflow-shard",
         "current_evidence": "The current published-artifact evidence proves only the Python SDK schedule lifecycle smoke: create, list, describe, pause, resume, manual trigger, delete, triggered workflow completion, and invalid cron refusal. It does not run a PHP worker for a schedule created by Python.",
-        "expected_behavior": "A schedule created by the Python SDK dispatches a scheduled fire to a PHP workflow worker from the published workflow package.",
+        "expected_behavior": "A schedule created by the Python SDK dispatches a scheduled fire to a worker from the published PHP SDK package.",
         "acceptance": [
           "create a schedule with sdk-python targeting a PHP workflow type",
-          "run the PHP worker from the published workflow package",
+          "run the PHP worker from the published PHP SDK package",
           "record CLI schedule visibility and PHP workflow completion"
         ]
       },
@@ -307,7 +307,7 @@
       "missed-fire-restart-shard",
       "cli-schedule-surface-shard",
       "sdk-python-schedule-surface-shard",
-      "workflow-php-schedule-surface-shard",
+      "sdk-php-schedule-surface-shard",
       "cross-language-schedule-workflow-shard",
       "adversarial-schedule-input-shard"
     ],
@@ -339,8 +339,8 @@
         "fallback_status_when_surface_missing": "unsupported",
         "fallback_finding_type": "unsupported_public_surface"
       },
-      "workflow-php-sdk": {
-        "scope": "workflow-php-schedule-surface-shard",
+      "sdk-php": {
+        "scope": "sdk-php-schedule-surface-shard",
         "must_cover_controls": [
           "create_or_observe",
           "list_or_describe",
@@ -352,7 +352,7 @@
         "fallback_status_when_surface_missing": "unsupported",
         "fallback_finding_type": "unsupported_public_surface"
       },
-      "workflow-php-worker": {
+      "sdk-php-worker": {
         "scope": "cross-language-schedule-workflow-shard",
         "must_register_workflows": [
           "SchedulesConformancePhpWorkflow"
@@ -378,19 +378,19 @@
         "missed-fire-restart-shard",
         "cli-schedule-surface-shard",
         "sdk-python-schedule-surface-shard",
-        "workflow-php-schedule-surface-shard",
+        "sdk-php-schedule-surface-shard",
         "cross-language-schedule-workflow-shard",
         "adversarial-schedule-input-shard"
       ],
       "output_schema": "durable-workflow.v2.schedules-runtime.result",
       "requires_required_runtimes": [
-        "workflow-php",
+        "sdk-php",
         "sdk-python"
       ],
       "requires_required_clients": [
         "cli",
         "sdk-python",
-        "workflow-php-sdk"
+        "sdk-php"
       ],
       "requires_required_scenarios": "schedules_runtime_contract.required_scenarios",
       "requires_sections": [
@@ -436,11 +436,11 @@
         "server",
         "cli",
         "python_sdk_runtime",
-        "workflow_php_runtime",
+        "sdk_php_runtime",
         "waterline"
       ],
       "operations": [
-        "install the server image, CLI, Python SDK, PHP workflow runtime, and Waterline from published channels",
+        "install the server image, CLI, Python SDK, PHP SDK, and Waterline from published channels",
         "record the resolved artifact name and version for every actor",
         "run no product code from a local checkout"
       ],
@@ -710,11 +710,11 @@
       ],
       "operations": [
         "create a schedule from the Python SDK targeting a PHP workflow type on the shared task queue",
-        "run the PHP worker from the published workflow package",
+        "run the PHP worker from the published PHP SDK package",
         "observe schedule visibility through CLI and workflow completion through public APIs"
       ],
       "pass_criteria": [
-        "schedule_creator is sdk-python and workflow_runtime is workflow-php",
+        "schedule_creator is sdk-python and workflow_runtime is sdk-php",
         "the PHP workflow completes from a scheduled fire",
         "CLI visibility confirms the schedule without requiring Python-only state"
       ]
@@ -740,7 +740,7 @@
         "observe schedule visibility through CLI and workflow completion through public APIs"
       ],
       "pass_criteria": [
-        "schedule_creator is workflow-php-sdk and workflow_runtime is sdk-python",
+        "schedule_creator is sdk-php and workflow_runtime is sdk-python",
         "the Python workflow completes from a scheduled fire",
         "CLI visibility confirms the schedule without requiring PHP-only state"
       ]

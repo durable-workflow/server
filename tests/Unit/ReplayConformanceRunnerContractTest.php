@@ -60,26 +60,20 @@ class ReplayConformanceRunnerContractTest extends TestCase
         $source = $this->read('scripts/conformance/replay-published-artifacts.sh');
 
         $this->assertStringContainsString('durable-workflow-replay-conformance --json', $source);
-        $this->assertStringContainsString('composer require "durable-workflow/workflow:${workflow_php_version}"', $source);
-        $this->assertStringContainsString('php artisan workflow:v2:replay-conformance --json', $source);
+        $this->assertStringContainsString('DW_PHP_SDK_VERSION="$php_sdk_version"', $source);
+        $this->assertStringContainsString('scripts/conformance/php-sdk-published-artifacts.sh --result-dir /result', $source);
+        $this->assertStringContainsString('"schema": "durable-workflow.v2.replay-conformance.sdk-php-shard"', $source);
         $this->assertStringContainsString('python-replay-shard.json', $source);
         $this->assertStringContainsString('php-replay-shard.json', $source);
         $this->assertStringContainsString('rust-replay-shard.json', $source);
-        $this->assertStringContainsString('workflow-php-runtime-shard', $source);
+        $this->assertStringContainsString('sdk-php-runtime-shard', $source);
         $this->assertStringContainsString('sdk-python-runtime-shard', $source);
         $this->assertStringContainsString('sdk-rust-runtime-shard', $source);
         $this->assertStringContainsString('cargo install durable-workflow --version "$rust_sdk_version"', $source);
         $this->assertStringContainsString('command -v durable-workflow-replay-conformance', $source);
-        $this->assertStringContainsString('php_artisan_command_available', $source);
-        $this->assertStringContainsString('NF > 0 && $1 == command', $source);
-        $this->assertStringContainsString(
-            "php_artisan_command_available 'workflow:v2:replay-conformance'",
-            $source,
-        );
-        $this->assertStringContainsString('artisan_command_available(raw_list: str, command: str)', $source);
-        $this->assertStringNotContainsString("grep -Fxq 'workflow:v2:replay-conformance'", $source);
-        $this->assertStringContainsString('unsupported_public_surface', $source);
-        $this->assertStringContainsString('Published durable-workflow/workflow:${workflow_php_version} does not expose workflow:v2:replay-conformance.', $source);
+        $this->assertStringContainsString('"artifact": "sdk-php"', $source);
+        $this->assertStringContainsString('"package": "durable-workflow/sdk"', $source);
+        $this->assertStringNotContainsString('workflow:v2:replay-conformance', $source);
     }
 
     public function test_runner_installs_and_probes_waterline_before_install_only_can_pass(): void
@@ -90,9 +84,7 @@ class ReplayConformanceRunnerContractTest extends TestCase
         $this->assertStringContainsString('COMPOSER_HOME=/tmp/composer', $source);
         $this->assertStringContainsString('COMPOSER_CACHE_DIR=/tmp/composer-cache', $source);
         $this->assertStringContainsString('docker run --rm "${composer_env_args[@]}" -v "$waterline_app:/app" -w /app composer:2', $source);
-        $this->assertStringContainsString('docker run --rm "${composer_env_args[@]}" -v "$php_app:/app" -w /app composer:2', $source);
         $this->assertStringNotContainsString('docker run --rm -v "$waterline_app:/app" -w /app composer:2', $source);
-        $this->assertStringNotContainsString('docker run --rm -v "$php_app:/app" -w /app composer:2', $source);
         $this->assertStringContainsString('"durable-workflow/waterline:${waterline_version}"', $source);
         $this->assertStringContainsString('waterline-probe.php', $source);
         $this->assertStringContainsString('\\Waterline\\Waterline::class', $source);
@@ -282,6 +274,7 @@ if [[ "${1:-}" == */resolve-pins.py ]]; then
 {
   "artifact_sources": {
     "cli": "github_release_asset",
+    "sdk-php": "packagist_package",
     "sdk-python": "pypi_package",
     "sdk-rust": "crates_io_package",
     "server": "published_docker_image",
@@ -290,6 +283,7 @@ if [[ "${1:-}" == */resolve-pins.py ]]; then
   },
   "artifact_versions": {
     "cli": "0.1.80",
+    "sdk-php": "0.1.1",
     "sdk-python": "0.4.88",
     "sdk-rust": "0.1.13",
     "server": "0.2.407",
@@ -598,6 +592,7 @@ if [[ "${1:-}" == */resolve-pins.py ]]; then
 {
   "artifact_sources": {
     "cli": "github_release_asset",
+    "sdk-php": "packagist_package",
     "sdk-python": "pypi_package",
     "sdk-rust": "crates_io_package",
     "server": "published_docker_image",
@@ -606,6 +601,7 @@ if [[ "${1:-}" == */resolve-pins.py ]]; then
   },
   "artifact_versions": {
     "cli": "0.1.81",
+    "sdk-php": "0.1.1",
     "sdk-python": "0.4.89",
     "sdk-rust": "0.1.13",
     "server": "0.2.449",
@@ -699,9 +695,23 @@ write_php_shard() {
   mkdir -p "$(dirname "$output")"
   cat > "$output" <<'JSON'
 {
+  "apache_avro_provenance": {"package": "apache/avro", "version": "1.12.0", "dist": {"url": "https://api.github.com/repos/apache/avro/zipball/example"}},
+  "artifact_versions": {"sdk-php": "0.1.1", "server": "0.2.449"},
+  "assertions": {
+    "activity_callback_once_for_replay": true,
+    "apache_avro_dependency": true,
+    "distinct_worker_restart_processes": true,
+    "durable_replay_history": true,
+    "durable_replay_result": true,
+    "exact_sdk_version": true,
+    "replay_checkpoint": true,
+    "sdk_dist_provenance": true
+  },
   "findings": [],
+  "local_product_source_checkouts_used": false,
   "outcome": "pass",
-  "scenario_results": {
+  "package_provenance": {"name": "durable-workflow/sdk", "version": "0.1.1", "dist": {"url": "https://api.github.com/repos/durable-workflow/sdk-php/zipball/example"}},
+  "replay_scenario_results": {
     "malformed_history_refusal": {"scenario_id": "malformed_history_refusal", "status": "pass"},
     "php_code_divergence_refusal": {"scenario_id": "php_code_divergence_refusal", "status": "pass"},
     "php_completed_history_activity_replay": {"scenario_id": "php_completed_history_activity_replay", "status": "pass"},
@@ -783,11 +793,7 @@ if [[ "${1:-}" == "run" ]]; then
     printf '%s\n' '{"classes_checked":[],"missing_classes":[],"package":"durable-workflow/waterline","status":"pass","workflow_package_api_floor_missing":[]}'
     exit 0
   fi
-  if [[ "$joined" == *" php artisan list --raw "* ]]; then
-    printf '%s\n' 'workflow:v2:replay-conformance Replay conformance'
-    exit 0
-  fi
-  if [[ "$joined" == *" workflow:v2:replay-conformance "* ]]; then
+  if [[ "$joined" == *" php-sdk-published-artifacts.sh "* ]]; then
     result_dir=""
     previous=""
     for arg in "$@"; do
@@ -799,8 +805,8 @@ if [[ "${1:-}" == "run" ]]; then
     if [[ -z "$result_dir" ]]; then
       exit 2
     fi
-    write_php_shard "$result_dir/php-replay-shard.json"
-    printf '%s\n' '{"runtime":"workflow-php","status":"pass"}'
+    write_php_shard "$result_dir/php-sdk-conformance-result.json"
+    printf '%s\n' '{"runtime":"sdk-php","status":"pass"}'
     exit 0
   fi
   exit 0

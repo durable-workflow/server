@@ -113,7 +113,7 @@ const refusalRequirements = {
     'explains_compatibility_window',
     'suggests_upgrade_or_pin_next_step',
   ],
-  'workflow-worker': [
+  'sdk-php': [
     'register_refused_or_register_and_serve_only',
     'names_worker_version',
     'names_server_version',
@@ -147,12 +147,11 @@ const surfaces = {
     operationGroups: ['cluster_info_probe', 'workflow_control_plane', 'worker_lifecycle', 'schedule_control_plane'],
     protocolKind: 'control-plane-and-worker',
   },
-  'workflow-worker': {
-    artifact: 'workflow',
-    component: 'PHP workflow worker',
-    versionEnv: 'DW_WORKFLOW_PHP_VERSION',
-    alternateVersionEnv: 'DW_WORKFLOW_VERSION',
-    versionField: 'workflow_version',
+  'sdk-php': {
+    artifact: 'sdk-php',
+    component: 'PHP SDK worker',
+    versionEnv: 'DW_PHP_SDK_VERSION',
+    versionField: 'sdk_php_version',
     operationGroups: ['cluster_info_probe', 'worker_lifecycle'],
     protocolKind: 'worker',
   },
@@ -616,9 +615,9 @@ async function probeOperation({
     artifact_invocation: invocation.artifact_invocation,
     proxy_captures: invocation.proxy_captures,
   };
-  if (surfaceName === 'workflow-worker') {
+  if (surfaceName === 'sdk-php') {
     capture.worker_version = surfaceVersion;
-    capture.workflow_package_version = surfaceVersion;
+    capture.sdk_php_package_version = surfaceVersion;
     capture.worker_protocol_version = pairing.workerProtocolVersion;
   }
 
@@ -747,9 +746,9 @@ async function probeOperation({
     evidence.coverage_gap_reason = coverageGapReason;
   }
 
-  if (surfaceName === 'workflow-worker') {
+  if (surfaceName === 'sdk-php') {
     evidence.worker_version = surfaceVersion;
-    evidence.workflow_package_version = surfaceVersion;
+    evidence.sdk_php_package_version = surfaceVersion;
     evidence.worker_protocol_version = pairing.workerProtocolVersion;
     evidence.worker_skew_classification = workerClassification(pairingClass, response, operationGroup);
   }
@@ -833,9 +832,9 @@ function notCoveredProbe({
     capture.coverage_requirement = 'optional';
     capture.coverage_gap_scope = coverageGapScope || defaultCompatibleCoverageGapScope(surfaceName);
   }
-  if (surfaceName === 'workflow-worker') {
+  if (surfaceName === 'sdk-php') {
     capture.worker_version = surfaceVersion;
-    capture.workflow_package_version = surfaceVersion;
+    capture.sdk_php_package_version = surfaceVersion;
     capture.worker_protocol_version = pairing.workerProtocolVersion;
   }
 
@@ -904,9 +903,9 @@ function notCoveredProbe({
     };
   }
 
-  if (surfaceName === 'workflow-worker') {
+  if (surfaceName === 'sdk-php') {
     evidence.worker_version = surfaceVersion;
-    evidence.workflow_package_version = surfaceVersion;
+    evidence.sdk_php_package_version = surfaceVersion;
     evidence.worker_protocol_version = pairing.workerProtocolVersion;
   }
 
@@ -1023,8 +1022,8 @@ function invocationAvailability(surfaceName) {
     };
   }
 
-  if (surfaceName === 'workflow-worker') {
-    const appDir = stringValue(record.app_dir) || envValue('DW_SKEW_WORKFLOW_APP_DIR');
+  if (surfaceName === 'sdk-php') {
+    const appDir = stringValue(record.app_dir) || envValue('DW_SKEW_PHP_SDK_APP_DIR');
     if (appDir && fs.existsSync(path.join(appDir, 'vendor/autoload.php'))) {
       if (executableOnPath('docker')) {
         return { available: true, appDir, phpImage: envValue('DW_SKEW_PHP_IMAGE') || 'composer:2' };
@@ -1033,14 +1032,14 @@ function invocationAvailability(surfaceName) {
       return {
         available: false,
         status: 'runner_blocked',
-        reason: 'Docker is required to run the published durable-workflow/workflow probe through its Composer-installed package.',
+        reason: 'Docker is required to run the published durable-workflow/sdk probe through its Composer-installed package.',
       };
     }
 
     return {
       available: false,
       status: 'runner_blocked',
-      reason: 'Workflow artifact install completed without vendor/autoload.php for the Composer-installed package.',
+      reason: 'PHP SDK artifact install completed without vendor/autoload.php for the Composer-installed package.',
     };
   }
 
@@ -1236,7 +1235,7 @@ async function prepareWorkerTaskFixture({
   if (
     !workerTaskFixtureRequests.has(requestTemplate)
     || !requiresPublishedWorkerTaskId(pairingClass)
-    || (surfaceName !== 'sdk-python' && surfaceName !== 'workflow-worker')
+    || (surfaceName !== 'sdk-python' && surfaceName !== 'sdk-php')
   ) {
     return null;
   }
@@ -1695,7 +1694,7 @@ async function invokeSurfaceOperation(options) {
     return invokePythonSdkOperation(options);
   }
 
-  if (options.surfaceName === 'workflow-worker') {
+  if (options.surfaceName === 'sdk-php') {
     return invokeWorkflowWorkerOperation(options);
   }
 
@@ -1869,7 +1868,7 @@ async function invokeWorkflowWorkerOperation({
   const availability = invocationAvailability(surfaceName);
   const script = ensureWorkflowWorkerProbeScript();
   const pairing = pairingClasses[pairingClass];
-  const state = pairingState(context, 'workflow-worker', pairingClass);
+  const state = pairingState(context, 'sdk-php', pairingClass);
   const payload = {
     operation: requestTemplate,
     base_url: '__DW_SKEW_PROXY_URL__',
@@ -2247,7 +2246,7 @@ if __name__ == "__main__":
 }
 
 function ensureWorkflowWorkerProbeScript() {
-  const scriptPath = path.join(runRoot, 'workflow-worker-skew-probe.php');
+  const scriptPath = path.join(runRoot, 'sdk-php-skew-probe.php');
   if (fs.existsSync(scriptPath)) {
     return scriptPath;
   }
@@ -2256,6 +2255,27 @@ function ensureWorkflowWorkerProbeScript() {
 declare(strict_types=1);
 
 require __DIR__.'/../app/vendor/autoload.php';
+
+final class SkewVersionTransport implements \DurableWorkflow\Transport\Transport
+{
+    public function __construct(
+        private readonly \DurableWorkflow\Transport\Transport $inner,
+        private readonly string $controlPlaneVersion,
+        private readonly string $workerProtocolVersion,
+    ) {
+    }
+
+    public function send(string $method, string $uri, array $headers, ?array $body = null): ?array
+    {
+        if (array_key_exists('X-Durable-Workflow-Protocol-Version', $headers)) {
+            $headers['X-Durable-Workflow-Protocol-Version'] = $this->workerProtocolVersion;
+        } else {
+            $headers['X-Durable-Workflow-Control-Plane-Version'] = $this->controlPlaneVersion;
+        }
+
+        return $this->inner->send($method, $uri, $headers, $body);
+    }
+}
 
 function skew_json(mixed $value): void
 {
@@ -2299,11 +2319,11 @@ function skew_call(callable $operation): array
             'result' => skew_public($operation()),
         ];
     } catch (\Throwable $exception) {
-        $status = method_exists($exception, 'status')
-            ? (int) $exception->status()
+        $status = property_exists($exception, 'status')
+            ? (int) $exception->status
             : (($exception->getCode() >= 100 && $exception->getCode() <= 599) ? (int) $exception->getCode() : 0);
-        $body = method_exists($exception, 'body') ? $exception->body() : null;
-        $reason = method_exists($exception, 'reason') ? $exception->reason() : null;
+        $body = property_exists($exception, 'details') ? $exception->details : null;
+        $reason = property_exists($exception, 'reason') ? $exception->reason : null;
 
         return [
             'ok' => false,
@@ -2321,34 +2341,28 @@ $operation = (string) ($payload['operation'] ?? '');
 $baseUrl = (string) ($payload['base_url'] ?? '');
 $namespace = (string) ($payload['namespace'] ?? 'default');
 $token = (string) (getenv('DW_SKEW_AUTH_TOKEN') ?: 'dev-token');
-$controlPlaneVersion = (string) ($payload['control_plane_version'] ?? \Workflow\V2\Client\ControlPlaneClient::CONTROL_PLANE_VERSION);
-$workerProtocolVersion = (string) ($payload['worker_protocol_version'] ?? \Workflow\V2\Support\WorkerProtocolVersion::VERSION);
+$controlPlaneVersion = (string) ($payload['control_plane_version'] ?? \DurableWorkflow\Version::CONTROL_PLANE_PROTOCOL);
+$workerProtocolVersion = (string) ($payload['worker_protocol_version'] ?? \DurableWorkflow\Version::WORKER_PROTOCOL);
 $workerId = (string) ($payload['worker_id'] ?? 'worker-skew-conformance');
 $taskQueue = (string) ($payload['task_queue'] ?? 'skew-conformance');
 $taskId = (string) ($payload['task_id'] ?? '');
 $workflowTaskAttempt = (int) ($payload['workflow_task_attempt'] ?? 1);
-$http = new \Illuminate\Http\Client\Factory();
+$transport = new SkewVersionTransport(
+    new \DurableWorkflow\Transport\Psr18Transport(),
+    $controlPlaneVersion,
+    $workerProtocolVersion,
+);
+$client = new \DurableWorkflow\Client(
+    $baseUrl,
+    namespace: $namespace,
+    transport: $transport,
+    token: $token,
+);
 
 if ($operation === 'GET /api/cluster/info') {
-    $client = new \Workflow\V2\Client\ControlPlaneClient(
-        $http,
-        $baseUrl,
-        $token,
-        $namespace,
-        $controlPlaneVersion,
-        12,
-    );
     $path = '/api/cluster/info';
-    $response = skew_call(static fn (): array => $client->clusterInfo());
+    $response = skew_call(static fn (): mixed => $client->clusterInfo());
 } else {
-    $client = new \Workflow\V2\Worker\WorkerProtocolClient(
-        $http,
-        $baseUrl,
-        $token,
-        $namespace,
-        $workerProtocolVersion,
-        12,
-    );
     $path = match ($operation) {
         'POST /api/worker/register' => '/api/worker/register',
         'POST /api/worker/heartbeat' => '/api/worker/heartbeat',
@@ -2358,46 +2372,41 @@ if ($operation === 'GET /api/cluster/info') {
         default => '/api/worker/register',
     };
     $response = match ($operation) {
-        'POST /api/worker/register' => skew_call(static fn (): ?array => $client->registerWorker(
+        'POST /api/worker/register' => skew_call(static fn (): array => $client->registerWorker(
             $workerId,
             $taskQueue,
             ['skew_conformance_workflow'],
             [],
-            'php',
-            'durable-workflow/workflow',
+            ['query_tasks', 'workflow_updates', 'durable_history_replay'],
         )),
-        'POST /api/worker/heartbeat' => skew_call(static fn (): ?array => $client->heartbeatWorker($workerId)),
-        'POST /api/worker/workflow-tasks/poll' => skew_call(static fn (): array => $client->pollWorkflowTasks(
-            null,
+        'POST /api/worker/heartbeat' => skew_call(static fn (): array => $client->heartbeatWorker($workerId)),
+        'POST /api/worker/workflow-tasks/poll' => skew_call(static fn (): ?array => $client->pollWorkflowTask(
+            $workerId,
             $taskQueue,
             1,
-            null,
-            1,
-            $workerId,
         )),
-        'POST /api/worker/workflow-tasks/{task}/complete' => skew_call(static fn (): ?array => $client->completeWorkflowTask(
+        'POST /api/worker/workflow-tasks/{task}/complete' => skew_call(static fn (): array => $client->completeWorkflowTask(
             $taskId,
+            $workerId,
+            $workflowTaskAttempt,
             [[
                 'type' => 'complete_workflow',
                 'result' => null,
             ]],
+        )),
+        'POST /api/worker/workflow-tasks/{task}/fail' => skew_call(static fn (): array => $client->failWorkflowTask(
+            $taskId,
             $workerId,
             $workflowTaskAttempt,
-        )),
-        'POST /api/worker/workflow-tasks/{task}/fail' => skew_call(static fn (): ?array => $client->failWorkflowTask(
-            $taskId,
             'skew conformance boundary probe',
             'SkewConformanceFailure',
-            null,
-            $workerId,
-            $workflowTaskAttempt,
         )),
-        default => skew_call(static fn (): ?array => $client->registerWorker($workerId, $taskQueue)),
+        default => skew_call(static fn (): array => $client->registerWorker($workerId, $taskQueue, [], [])),
     };
 }
 
 skew_json([
-    'artifact' => 'durable-workflow/workflow',
+    'artifact' => 'durable-workflow/sdk',
     'control_plane_version' => $controlPlaneVersion,
     'worker_protocol_version' => $workerProtocolVersion,
     'operation' => $operation,
@@ -3336,7 +3345,7 @@ function classifyEvidenceStatus({ surfaceName, pairingClass, operationGroup, res
     return 'silent_failure';
   }
 
-  if (surfaceName === 'workflow-worker') {
+  if (surfaceName === 'sdk-php') {
     if (pairingClass === 'compatible' || pairingClass === 'backward_skew') {
       return 'pass';
     }
@@ -3432,9 +3441,9 @@ export function summarizePairing(surfaceName, pairingClass, rows, context) {
   if (compatibleInteropEvidence) {
     result.compatible_interop_evidence = compatibleInteropEvidence;
   }
-  if (surfaceName === 'workflow-worker') {
+  if (surfaceName === 'sdk-php') {
     result.worker_version = context.artifactVersions[surface.artifact];
-    result.workflow_package_version = context.artifactVersions[surface.artifact];
+    result.sdk_php_package_version = context.artifactVersions[surface.artifact];
     result.worker_protocol_version = pairing.workerProtocolVersion;
   }
 
@@ -3449,7 +3458,7 @@ export function summarizePairing(surfaceName, pairingClass, rows, context) {
     );
   }
 
-  if (surfaceName === 'workflow-worker' && !['not_covered', 'runner_blocked'].includes(status)) {
+  if (surfaceName === 'sdk-php' && !['not_covered', 'runner_blocked'].includes(status)) {
     const classifications = rows.map((row) => row.worker_skew_classification).filter(Boolean);
     result.worker_skew_classification = classifications.includes('register_and_drop')
       ? 'register_and_drop'
@@ -3740,13 +3749,13 @@ function loudRefusalContext(surfaceName, surfaceVersion, context, pairing, respo
     surface_version: surfaceVersion,
     server_version: context.observedServerVersion,
     compatibility_window: pairing.compatibilityWindow,
-    protocol_or_manifest: surfaceName === 'workflow-worker' ? 'worker_protocol' : 'control_plane',
+    protocol_or_manifest: surfaceName === 'sdk-php' ? 'worker_protocol' : 'control_plane',
     next_step: compatibilityNextStep(surfaceName, 'outside_window'),
     response_reason: response?.body?.reason ?? response?.reason ?? null,
   };
-  if (surfaceName === 'workflow-worker') {
+  if (surfaceName === 'sdk-php') {
     result.worker_version = surfaceVersion;
-    result.workflow_package_version = surfaceVersion;
+    result.sdk_php_package_version = surfaceVersion;
     result.worker_protocol_version = pairing.workerProtocolVersion;
   }
 
@@ -3861,11 +3870,11 @@ function futureBoundaryReport(pairingResults, operationEvidence) {
       evidence_cells: Object.keys(operationEvidence.cli.forward_skew),
     },
     worker: {
-      surface: 'workflow-worker',
+      surface: 'sdk-php',
       pairing_class: 'forward_skew',
-      outcome: pairingResults['workflow-worker'].forward_skew.status,
-      classification: pairingResults['workflow-worker'].forward_skew.worker_skew_classification,
-      evidence_cells: Object.keys(operationEvidence['workflow-worker'].forward_skew),
+      outcome: pairingResults['sdk-php'].forward_skew.status,
+      classification: pairingResults['sdk-php'].forward_skew.worker_skew_classification,
+      evidence_cells: Object.keys(operationEvidence['sdk-php'].forward_skew),
     },
     observer: {
       surface: 'waterline',
@@ -3893,6 +3902,7 @@ function artifactVersionsFromEnv() {
     cli: stringValue(versions.cli) || envValue('DW_CLI_VERSION'),
     'sdk-python': stringValue(versions['sdk-python']) || envValue('DW_PYTHON_SDK_VERSION'),
     workflow: stringValue(versions.workflow) || envValue('DW_WORKFLOW_PHP_VERSION') || envValue('DW_WORKFLOW_VERSION'),
+    'sdk-php': stringValue(versions['sdk-php']) || envValue('DW_PHP_SDK_VERSION'),
     waterline: stringValue(versions.waterline) || envValue('DW_WATERLINE_VERSION'),
   };
 }
@@ -3907,6 +3917,7 @@ function artifactSources() {
     cli: stringValue(sources.cli) || 'not_installed',
     'sdk-python': stringValue(sources['sdk-python']) || 'not_installed',
     workflow: stringValue(sources.workflow) || 'not_installed',
+    'sdk-php': stringValue(sources['sdk-php']) || 'not_installed',
     waterline: stringValue(sources.waterline) || 'not_installed',
   };
 }
@@ -3918,6 +3929,7 @@ function writeBlockedResult(reason, startedAt, finishedAt, artifactVersions = ar
     cli: artifactVersions.cli || null,
     'sdk-python': artifactVersions['sdk-python'] || null,
     workflow: artifactVersions.workflow || null,
+    'sdk-php': artifactVersions['sdk-php'] || null,
     waterline: artifactVersions.waterline || null,
   };
   const finding = {

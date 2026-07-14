@@ -39,13 +39,13 @@
   ],
   "required_matrix": {
     "runtimes": [
-      "workflow-php",
+      "sdk-php",
       "sdk-python"
     ],
     "client_paths": [
       "raw-api",
       "cli",
-      "workflow-php-sdk",
+      "sdk-php",
       "sdk-python"
     ],
     "observer_paths": [
@@ -59,7 +59,7 @@
       "raw-http-token",
       "cli-token",
       "sdk-python-token",
-      "workflow-php-token"
+      "sdk-php-token"
     ]
   },
   "scenario_requirements": {
@@ -182,7 +182,7 @@
     },
     "php_client_worker_update_surface": {
       "required_fields": [
-        "workflow_php_artifact_version",
+        "sdk_php_artifact_version",
         "php_worker_update_handler",
         "php_client_update_request",
         "covered_cells",
@@ -220,7 +220,7 @@
     "must_execute_against_published_artifacts": true,
     "must_record_runner_blocked_false_for_product_evidence": true,
     "focused_evidence_file": "workflow-updates-focused-evidence.json",
-    "php_sidecar_evidence_file": "workflow-php-workflow-updates-evidence.json",
+    "php_sidecar_evidence_file": "sdk-php-workflow-updates-evidence.json",
     "python_sidecar_evidence_file": "python-sdk-workflow-updates-evidence.json",
     "operator_diagnostics_evidence_file": "workflow-updates-operator-diagnostics-evidence.json",
     "focused_probe_covers": [
@@ -250,7 +250,7 @@
     },
     "php_sidecar": {
       "status": "implemented",
-      "runner_scope": "published_packagist_workflow_php_artifact",
+      "runner_scope": "published_packagist_sdk_php_artifact",
       "covers_required_scenarios": [
         "php_client_worker_update_surface"
       ],
@@ -287,7 +287,7 @@
       ],
       "actors": [
         "server",
-        "workflow_php_sdk",
+    "sdk_php",
         "python_sdk",
         "cli",
         "waterline"
@@ -591,12 +591,12 @@
         "worker_protocol_implementation"
       ],
       "actors": [
-        "workflow_php_sdk",
+        "sdk_php",
         "php_worker",
         "server"
       ],
       "operations": [
-        "run a PHP-authored update-capable workflow from the published PHP package",
+        "run a PHP-authored update-capable workflow from the exact published durable-workflow/sdk package",
         "drive supported update cells through PHP client or worker surfaces",
         "record typed unsupported evidence for any missing first-class update API"
       ],

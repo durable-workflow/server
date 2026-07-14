@@ -36,7 +36,7 @@ class WorkerVersioningRuntimeContractTest extends TestCase
         );
         $this->assertTrue($manifest['artifact_policy']['placeholder_versions_rejected']);
 
-        foreach (['server', 'cli', 'workflow-php', 'sdk-python', 'waterline'] as $artifact) {
+        foreach (['server', 'cli', 'workflow', 'sdk-php', 'sdk-python', 'waterline'] as $artifact) {
             $this->assertArrayHasKey($artifact, $manifest['artifact_policy']['install_channels']);
         }
 
@@ -67,10 +67,10 @@ class WorkerVersioningRuntimeContractTest extends TestCase
     {
         $manifest = WorkerVersioningRuntimeContract::manifest();
 
-        $this->assertContains('workflow-php', $manifest['required_matrix']['runtimes']);
+        $this->assertContains('sdk-php', $manifest['required_matrix']['runtimes']);
         $this->assertContains('sdk-python', $manifest['required_matrix']['runtimes']);
         $this->assertContains('cli', $manifest['required_matrix']['client_paths']);
-        $this->assertContains('workflow-php-sdk', $manifest['required_matrix']['client_paths']);
+        $this->assertContains('sdk-php', $manifest['required_matrix']['client_paths']);
         $this->assertContains('Waterline worker and workflow views', $manifest['required_matrix']['operator_visibility_paths']);
         $this->assertContains('pin_on_start', $manifest['required_scenarios']);
         $this->assertContains('replay_only_by_compatible_workers', $manifest['required_scenarios']);
@@ -749,27 +749,22 @@ class WorkerVersioningRuntimeContractTest extends TestCase
         );
     }
 
-    public function test_result_gate_requires_worker_runtime_matrix_entries_to_match_runtime_surface(): void
+    public function test_result_gate_requires_the_php_sdk_worker_runtime(): void
     {
         $result = $this->completeWorkerVersioningResult();
         $result['runtime_matrix']['runtimes'] = [
-            'workflow-php-sdk',
             'sdk-python',
         ];
-        $result['topology']['workers'][] = 'workflow-php-v1';
 
         $evaluation = WorkerVersioningRuntimeResultGate::evaluate($result);
         $missingPhpRuntimeFailures = array_values(array_filter(
             $evaluation['gate_failures'],
             static fn (array $failure): bool => ($failure['code'] ?? null) === 'missing_required_runtime'
-                && ($failure['runtime'] ?? null) === 'workflow-php',
+                && ($failure['runtime'] ?? null) === 'sdk-php',
         ));
 
         $this->assertSame('non_passing', $evaluation['status']);
-        $this->assertNotEmpty(
-            $missingPhpRuntimeFailures,
-            'workflow-php-sdk client evidence must not satisfy the required workflow-php worker runtime',
-        );
+        $this->assertNotEmpty($missingPhpRuntimeFailures);
     }
 
     public function test_result_gate_rejects_forbidden_sources_reported_in_scenario_outputs(): void
@@ -1216,13 +1211,14 @@ class WorkerVersioningRuntimeContractTest extends TestCase
             'cli' => '0.1.59',
             'sdk-python' => '0.4.74',
             'workflow' => '2.0.0-alpha.176',
+            'sdk-php' => '0.1.176',
             'waterline' => '2.0.0-alpha.57',
         ];
         $artifactSources = [
             'server' => 'published_docker_image',
             'cli' => 'published_install_script',
             'sdk-python' => 'published_pypi',
-            'workflow-php' => 'published_composer',
+            'sdk-php' => 'published_composer',
             'waterline' => 'published_artifact',
         ];
         $pythonPublishedWorkerExecution = [
@@ -1241,11 +1237,11 @@ class WorkerVersioningRuntimeContractTest extends TestCase
             'local_product_source_checkouts_used' => false,
             'artifacts' => [
                 [
-                    'artifact' => 'workflow-php',
-                    'version' => '2.0.0-alpha.176',
+                    'artifact' => 'sdk-php',
+                    'version' => '0.1.176',
                     'source' => 'published_composer',
                     'status' => 'pass',
-                    'command' => 'composer require durable-workflow/workflow:2.0.0-alpha.176',
+                    'command' => 'composer require durable-workflow/sdk:0.1.176',
                 ],
                 [
                     'artifact' => 'sdk-python',
@@ -1267,20 +1263,20 @@ class WorkerVersioningRuntimeContractTest extends TestCase
                     ['artifact' => 'server', 'version' => '0.2.178', 'source' => 'published_docker_image', 'status' => 'pass'],
                     ['artifact' => 'cli', 'version' => '0.1.59', 'source' => 'published_install_script', 'status' => 'pass'],
                     ['artifact' => 'sdk-python', 'version' => '0.4.74', 'source' => 'published_pypi', 'status' => 'pass'],
-                    ['artifact' => 'workflow-php', 'version' => '2.0.0-alpha.176', 'source' => 'published_composer', 'status' => 'pass'],
+                    ['artifact' => 'sdk-php', 'version' => '0.1.176', 'source' => 'published_composer', 'status' => 'pass'],
                     ['artifact' => 'waterline', 'version' => '2.0.0-alpha.57', 'source' => 'published_artifact', 'status' => 'pass'],
                 ],
             ],
         ];
         $scenarioResults['worker_registration_build_ids']['observed_outputs'] += [
             'registered_build_ids' => [
-                'workflow-php-v1' => 'v1',
-                'workflow-php-v2' => 'v2',
+                'sdk-php-v1' => 'v1',
+                'sdk-php-v2' => 'v2',
                 'sdk-python-v2' => 'v2',
             ],
             'worker_registration_responses' => [
-                'workflow-php-v1' => ['build_id' => 'v1'],
-                'workflow-php-v2' => ['build_id' => 'v2'],
+                'sdk-php-v1' => ['build_id' => 'v1'],
+                'sdk-php-v2' => ['build_id' => 'v2'],
                 'sdk-python-v2' => ['build_id' => 'v2'],
             ],
             'worker_list_build_ids' => ['v1', 'v2'],
@@ -1392,7 +1388,7 @@ class WorkerVersioningRuntimeContractTest extends TestCase
                 'cells' => [
                     [
                         'scenario' => 'php_v1_not_delivered_to_python_v2',
-                        'started_by' => 'workflow-php-v1',
+                        'started_by' => 'sdk-php-v1',
                         'incompatible_worker' => 'sdk-python-v2',
                         'workflow_id' => 'php-sequence',
                         'run_id' => 'php-run-1',
@@ -1401,7 +1397,7 @@ class WorkerVersioningRuntimeContractTest extends TestCase
                     [
                         'scenario' => 'python_v1_not_delivered_to_php_v2',
                         'started_by' => 'sdk-python-v1',
-                        'incompatible_worker' => 'workflow-php-v2',
+                        'incompatible_worker' => 'sdk-php-v2',
                         'workflow_id' => 'python-sequence',
                         'run_id' => 'python-run-1',
                         'incompatible_delivery_count' => 0,
@@ -1451,12 +1447,12 @@ class WorkerVersioningRuntimeContractTest extends TestCase
             'finding_links' => ['none' => 'not-applicable'],
             'topology' => [
                 'task_queue' => 'worker-versioning-shared',
-                'workers' => ['workflow-php-v1', 'workflow-php-v2', 'sdk-python-v2'],
+                'workers' => ['sdk-php-v1', 'sdk-php-v2', 'sdk-python-v2'],
                 'operator_surfaces' => ['dw workers list', 'dw task-queue build-ids', 'Waterline worker and workflow views'],
             ],
             'runtime_matrix' => [
-                'runtimes' => ['workflow-php', 'sdk-python'],
-                'client_paths' => ['cli', 'sdk-python', 'workflow-php-sdk'],
+                'runtimes' => ['sdk-php', 'sdk-python'],
+                'client_paths' => ['cli', 'sdk-python', 'sdk-php'],
                 'operator_visibility_paths' => [
                     'dw workers list',
                     'dw task-queue build-ids',
@@ -1473,13 +1469,13 @@ class WorkerVersioningRuntimeContractTest extends TestCase
                 ],
                 'cross_language_cells' => [
                     [
-                        'started_by' => 'workflow-php-v1',
+                        'started_by' => 'sdk-php-v1',
                         'incompatible_worker' => 'sdk-python-v2',
                         'scenario' => 'php_v1_not_delivered_to_python_v2',
                     ],
                     [
                         'started_by' => 'sdk-python-v1',
-                        'incompatible_worker' => 'workflow-php-v2',
+                        'incompatible_worker' => 'sdk-php-v2',
                         'scenario' => 'python_v1_not_delivered_to_php_v2',
                     ],
                 ],

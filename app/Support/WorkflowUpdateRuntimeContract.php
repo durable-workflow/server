@@ -11,7 +11,7 @@ final class WorkflowUpdateRuntimeContract
 {
     public const SCHEMA = 'durable-workflow.v2.workflow-update-runtime.contract';
 
-    public const VERSION = 1;
+    public const VERSION = 2;
 
     public const RESULT_SCHEMA = 'durable-workflow.v2.workflow-update-runtime.result';
 
@@ -49,6 +49,7 @@ final class WorkflowUpdateRuntimeContract
                     'server' => 'docker image durableworkflow/server:<exact published version or digest>',
                     'cli' => 'official dw release install script pinned to its latest release tag',
                     'workflow-php' => 'Composer package durable-workflow/workflow:2.0.0-alpha.<latest>',
+                    'sdk-php' => 'Composer package durable-workflow/sdk:<latest>',
                     'sdk-python' => 'PyPI package durable-workflow==<latest>',
                     'waterline' => 'published Waterline observer artifact matching the release set',
                 ],
@@ -107,19 +108,19 @@ final class WorkflowUpdateRuntimeContract
                     'Waterline workflow run detail, update list, and history views',
                 ],
                 'required_workers' => [
-                    'workflow-php',
+                    'sdk-php',
                     'sdk-python',
                 ],
             ],
             'required_matrix' => [
                 'runtimes' => [
-                    'workflow-php',
+                    'sdk-php',
                     'sdk-python',
                 ],
                 'client_paths' => [
                     'raw-api',
                     'cli',
-                    'workflow-php-sdk',
+                    'sdk-php',
                     'sdk-python',
                 ],
                 'observer_paths' => [
@@ -134,7 +135,7 @@ final class WorkflowUpdateRuntimeContract
                     'raw-http-token',
                     'cli-token',
                     'sdk-python-token',
-                    'workflow-php-token',
+                    'sdk-php-token',
                 ],
             ],
             'required_scenarios' => array_keys($scenarioRequirements),
@@ -194,7 +195,7 @@ final class WorkflowUpdateRuntimeContract
                     'pins.json',
                     'run-metadata.json',
                     'workflow-updates-focused-evidence.json',
-                    'workflow-php-workflow-updates-evidence.json',
+                    'sdk-php-workflow-updates-evidence.json',
                     'python-sdk-workflow-updates-evidence.json',
                     'workflow-updates-operator-diagnostics-evidence.json',
                     'workflow-updates-result.json',
@@ -237,8 +238,8 @@ final class WorkflowUpdateRuntimeContract
                 ],
                 'php_sidecar' => [
                     'status' => 'implemented',
-                    'runner_scope' => 'published_packagist_workflow_php_artifact',
-                    'evidence_file' => 'workflow-php-workflow-updates-evidence.json',
+                    'runner_scope' => 'published_packagist_sdk_php_artifact',
+                    'evidence_file' => 'sdk-php-workflow-updates-evidence.json',
                     'covers_required_scenarios' => [
                         'php_client_worker_update_surface',
                     ],
@@ -476,7 +477,7 @@ final class WorkflowUpdateRuntimeContract
             ],
             'php_client_worker_update_surface' => [
                 'evidence' => [
-                    'workflow_php_artifact_version',
+                    'sdk_php_artifact_version',
                     'php_worker_update_handler',
                     'php_client_update_request',
                     'covered_cells',

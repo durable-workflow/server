@@ -11,12 +11,12 @@ final class HeartbeatConformanceRunnerContractTest extends TestCase
         $source = $this->runnerSource();
 
         foreach ([
-            "'durable-workflow/workflow': WORKFLOW_VERSION",
-            "'minimum-stability': 'dev'",
-            'use Workflow\\\\V2\\\\Worker\\\\WorkerProtocolClient;',
-            'use Workflow\\\\V2\\\\Worker\\\\StandaloneWorkflowWorker;',
-            '$worker->tickWithHeartbeat(',
-            '$worker->run(',
+            "'durable-workflow/sdk': SDK_PHP_VERSION",
+            "'minimum-stability': 'stable'",
+            'use DurableWorkflow\\\\Client;',
+            'use DurableWorkflow\\\\Worker;',
+            '$worker->tick(1)',
+            '$client->heartbeatWorker(',
             "'workflow:start'",
             "'--wait'",
             "'worker:list'",
@@ -434,7 +434,7 @@ JS;
 
         $this->assertStringContainsString('DW_SERVER_VERSION', $shell);
         $this->assertStringContainsString('DW_CLI_VERSION', $shell);
-        $this->assertStringContainsString('DW_WORKFLOW_PHP_VERSION', $shell);
+        $this->assertStringContainsString('DW_PHP_SDK_VERSION', $shell);
         $this->assertStringContainsString('pins.json', $shell);
         $this->assertStringContainsString('run-metadata.json', $shell);
         $this->assertStringContainsString('php-sdk-heartbeat-loop-evidence.json', $shell);
@@ -457,7 +457,7 @@ JS;
         $this->assertStringContainsString('DW_PYTHON_SDK_VERSION', $shell);
         $this->assertStringNotContainsString('DW_SDK_PYTHON_VERSION', $shell);
         $this->assertStringContainsString('python-sdk-heartbeat-loop-evidence.json', $shell);
-        $this->assertStringNotContainsString('DW_WORKFLOW_PHP_VERSION', $shell);
+        $this->assertStringNotContainsString('DW_PHP_SDK_VERSION', $shell);
         $this->assertStringNotContainsString('composer', strtolower($shell));
         $this->assertStringNotContainsString('waterline', strtolower($shell));
     }
@@ -473,7 +473,7 @@ JS;
         $this->assertStringContainsString('DW_CLI_VERSION', $shell);
         $this->assertStringContainsString('DW_RUST_SDK_VERSION', $shell);
         $this->assertStringContainsString('rust-sdk-heartbeat-loop-evidence.json', $shell);
-        $this->assertStringNotContainsString('DW_WORKFLOW_PHP_VERSION', $shell);
+        $this->assertStringNotContainsString('DW_PHP_SDK_VERSION', $shell);
         $this->assertStringNotContainsString('python', strtolower($shell));
         $this->assertStringNotContainsString('waterline', strtolower($shell));
     }

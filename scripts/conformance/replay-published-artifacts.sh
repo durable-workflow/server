@@ -23,7 +23,8 @@ Environment overrides:
   DW_REPLAY_KEEP_RUN_ROOT=1      Keep scratch directory after success.
   DW_SERVER_IMAGE                Exact server image/tag/digest to test.
   DW_SERVER_VERSION              Exact patch server Docker tag; required for digest-only DW_SERVER_IMAGE.
-  DW_WORKFLOW_PHP_VERSION        Composer version for durable-workflow/workflow.
+  DW_PHP_SDK_VERSION             Exact Packagist version for durable-workflow/sdk.
+  DW_WORKFLOW_PHP_VERSION        Composer version for the embedded durable-workflow/workflow engine.
   DW_PYTHON_SDK_VERSION          PyPI version for durable-workflow.
   DW_RUST_SDK_VERSION            crates.io version for durable-workflow.
   DW_CLI_VERSION                 GitHub release tag for the official CLI installer.
@@ -130,21 +131,6 @@ require_command() {
     fi
     exit 1
   fi
-}
-
-php_artisan_command_available() {
-  local command_name="$1"
-  local command_list="$2"
-
-  awk -v command="$command_name" '
-    NF > 0 && $1 == command { found = 1 }
-    END {
-      if (found) {
-        exit 0
-      }
-      exit 1
-    }
-  ' "$command_list"
 }
 
 tmp_parent="${DW_CONFORMANCE_TMPDIR:-${TMPDIR:-/tmp}}"
@@ -447,8 +433,8 @@ blocked_result_without_python() {
   "artifact_versions": {},
   "artifact_sources": {},
   "runtime_matrix": {
-    "runtimes": ["workflow-php", "sdk-python", "sdk-rust"],
-    "coverage_scopes": ["workflow-php-runtime-shard", "sdk-python-runtime-shard", "sdk-rust-runtime-shard"]
+    "runtimes": ["sdk-php", "sdk-python", "sdk-rust"],
+    "coverage_scopes": ["sdk-php-runtime-shard", "sdk-python-runtime-shard", "sdk-rust-runtime-shard"]
   },
   "source_policy": {
     "artifact_source": "published_artifacts",
@@ -567,8 +553,8 @@ result = {
         "local_product_source_checkouts_used": False,
     },
     "runtime_matrix": {
-        "runtimes": ["workflow-php", "sdk-python", "sdk-rust"],
-        "coverage_scopes": ["workflow-php-runtime-shard", "sdk-python-runtime-shard", "sdk-rust-runtime-shard"],
+        "runtimes": ["sdk-php", "sdk-python", "sdk-rust"],
+        "coverage_scopes": ["sdk-php-runtime-shard", "sdk-python-runtime-shard", "sdk-rust-runtime-shard"],
     },
     "scenario_results": scenario_results,
     "completed_history_replay": {"status": "runner_blocked", "scenarios": required[1:11]},
@@ -855,8 +841,8 @@ result = {
         "local_product_source_checkouts_used": False,
     },
     "runtime_matrix": {
-        "runtimes": ["workflow-php", "sdk-python", "sdk-rust"],
-        "coverage_scopes": ["workflow-php-runtime-shard", "sdk-python-runtime-shard", "sdk-rust-runtime-shard"],
+        "runtimes": ["sdk-php", "sdk-python", "sdk-rust"],
+        "coverage_scopes": ["sdk-php-runtime-shard", "sdk-python-runtime-shard", "sdk-rust-runtime-shard"],
     },
     "scenario_results": scenario_results,
     "completed_history_replay": section(REQUIRED[1:11]),
@@ -1231,6 +1217,10 @@ workflow_version = latest_packagist_version(
     "durable-workflow/workflow",
     env("DW_WORKFLOW_PHP_VERSION"),
 )
+php_sdk_version = latest_packagist_version(
+    "durable-workflow/sdk",
+    env("DW_PHP_SDK_VERSION"),
+)
 python_version = latest_pypi_version(
     "durable-workflow",
     env("DW_PYTHON_SDK_VERSION"),
@@ -1252,6 +1242,7 @@ result = {
         "server": server_version,
         "cli": cli_version,
         "workflow-php": workflow_version,
+        "sdk-php": php_sdk_version,
         "sdk-python": python_version,
         "sdk-rust": rust_version,
         "waterline": waterline_version,
@@ -1260,6 +1251,7 @@ result = {
         "server": "published_docker_image",
         "cli": "github_release_asset",
         "workflow-php": "packagist_package",
+        "sdk-php": "packagist_package",
         "sdk-python": "pypi_package",
         "sdk-rust": "crates_io_package",
         "waterline": "packagist_package",
@@ -1314,6 +1306,13 @@ import json
 import sys
 from pathlib import Path
 print(json.loads(Path(sys.argv[1]).read_text())["artifact_versions"]["workflow-php"])
+PY
+)"
+php_sdk_version="$(python3 - "$result_dir/pins.json" <<'PY'
+import json
+import sys
+from pathlib import Path
+print(json.loads(Path(sys.argv[1]).read_text())["artifact_versions"]["sdk-php"])
 PY
 )"
 python_sdk_version="$(python3 - "$result_dir/pins.json" <<'PY'
@@ -1544,7 +1543,7 @@ scenario_ids = {
         "python_code_divergence_refusal",
         "python_in_flight_signal_restart_timing",
     ],
-    "workflow-php": [
+    "sdk-php": [
         "php_completed_history_activity_replay",
         "php_completed_history_signal_update_replay",
         "php_completed_history_wait_condition_replay",
@@ -1566,7 +1565,7 @@ scenario_ids = {
 }[runtime]
 scope = {
     "sdk-python": "sdk-python-runtime-shard",
-    "workflow-php": "workflow-php-runtime-shard",
+    "sdk-php": "sdk-php-runtime-shard",
     "sdk-rust": "sdk-rust-runtime-shard",
 }[runtime]
 finding_type = "unsupported_public_surface" if status == "unsupported" else "replay_conformance_failure"
@@ -1779,96 +1778,137 @@ if [[ "$waterline_install_status" -ne 0 || "$waterline_probe_status" -ne 0 ]]; t
   exit 1
 fi
 
-php_app="$run_root/php-app"
-mkdir -p "$php_app"
+php_sdk_probe_dir="$result_dir/php-sdk-replay-probe"
+mkdir -p "$php_sdk_probe_dir"
 set +e
-docker run --rm "${composer_env_args[@]}" -v "$php_app:/app" -w /app composer:2 \
-  composer create-project laravel/laravel . --no-interaction --no-progress \
-  > "$result_dir/php-create-project.log" 2>&1
-php_create_status=$?
+docker run --rm --network host \
+  -e DW_PHP_SDK_VERSION="$php_sdk_version" \
+  -e DW_SERVER_VERSION="$server_version" \
+  -e DW_SERVER_IMAGE="$server_image" \
+  -e DW_PHP_SDK_CONFORMANCE_SERVER_URL="$server_base_url" \
+  -e DW_PHP_SDK_CONFORMANCE_TOKEN="$auth_token" \
+  -e DW_PHP_SDK_CONFORMANCE_NAMESPACE=replay-conformance \
+  -v "$php_sdk_probe_dir:/result" \
+  "$server_image" scripts/conformance/php-sdk-published-artifacts.sh --result-dir /result \
+  > "$result_dir/php-replay-shard.log" 2>&1
+php_sdk_cell_status=$?
 set -e
 
-if [[ "$php_create_status" -eq 0 ]]; then
+php_sdk_result="$php_sdk_probe_dir/php-sdk-conformance-result.json"
+php_shard_status=1
+if [[ -s "$php_sdk_result" ]]; then
   set +e
-  docker run --rm "${composer_env_args[@]}" -v "$php_app:/app" -w /app composer:2 \
-    composer require "durable-workflow/workflow:${workflow_php_version}" --no-interaction --no-progress \
-    > "$result_dir/php-require-workflow.log" 2>&1
-  php_require_status=$?
+  python3 - "$php_sdk_result" "$result_dir/php-replay-shard.json" "$result_dir/php-replay-surface.json" "$result_dir/pins.json" <<'PY'
+from __future__ import annotations
+
+import json
+import sys
+from pathlib import Path
+from typing import Any
+
+source_path = Path(sys.argv[1])
+shard_path = Path(sys.argv[2])
+surface_path = Path(sys.argv[3])
+pins = json.loads(Path(sys.argv[4]).read_text(encoding="utf-8"))
+source = json.loads(source_path.read_text(encoding="utf-8"))
+assertions = source.get("assertions") if isinstance(source.get("assertions"), dict) else {}
+
+install_pass = (
+    source.get("local_product_source_checkouts_used") is False
+    and (source.get("artifact_versions") or {}).get("sdk-php") == (pins.get("artifact_versions") or {}).get("sdk-php")
+    and bool(source.get("package_provenance"))
+    and bool(source.get("apache_avro_provenance"))
+)
+replay_assertions = [
+    "replay_checkpoint",
+    "durable_replay_history",
+    "durable_replay_result",
+    "activity_callback_once_for_replay",
+]
+replay_pass = all(assertions.get(name) is True for name in replay_assertions)
+restart_pass = replay_pass and assertions.get("distinct_worker_restart_processes") is True
+
+def scenario(scenario_id: str, passed: bool, required: list[str]) -> dict[str, Any]:
+    observed = {
+        "sdk_php_result": source,
+        "required_assertions": {name: assertions.get(name) for name in required},
+        "local_product_source_checkouts_used": False,
+    }
+    return {
+        "scenario_id": scenario_id,
+        "status": "pass" if passed else "fail",
+        "observed_outputs": observed,
+        "linked_findings": [] if passed else list(source.get("findings") or []),
+    }
+
+scenario_results = {
+    "published_artifact_install_only": scenario(
+        "published_artifact_install_only",
+        install_pass,
+        ["exact_sdk_version", "sdk_dist_provenance", "apache_avro_dependency"],
+    ),
+    "php_completed_history_activity_replay": scenario(
+        "php_completed_history_activity_replay",
+        replay_pass,
+        replay_assertions,
+    ),
+    "php_worker_restart_activity_state": scenario(
+        "php_worker_restart_activity_state",
+        restart_pass,
+        replay_assertions + ["distinct_worker_restart_processes"],
+    ),
+}
+extended = source.get("replay_scenario_results")
+if isinstance(extended, dict):
+    for scenario_id, evidence in extended.items():
+        if scenario_id.startswith("php_") and isinstance(evidence, dict):
+            copied = dict(evidence)
+            copied.setdefault("scenario_id", scenario_id)
+            scenario_results[scenario_id] = copied
+shard = {
+    "schema": "durable-workflow.v2.replay-conformance.sdk-php-shard",
+    "runtime": "sdk-php",
+    "outcome": "pass" if all(item["status"] == "pass" for item in scenario_results.values()) else "fail",
+    "runner_blocked": bool(source.get("runner_blocked")),
+    "artifact_versions": pins.get("artifact_versions") or {},
+    "artifact_sources": pins.get("artifact_sources") or {},
+    "source_policy": {
+        "artifact_source": "published_artifacts",
+        "local_product_source_checkouts_used": False,
+    },
+    "scenario_results": scenario_results,
+    "process_boundary": source.get("process_boundary") or {},
+    "package_provenance": source.get("package_provenance") or {},
+    "apache_avro_provenance": source.get("apache_avro_provenance") or {},
+    "callback_counts": source.get("callback_counts") or {},
+    "history_assertions": source.get("history_assertions") or {},
+    "findings": source.get("findings") or [],
+}
+surface = {
+    "runtime": "sdk-php",
+    "status": "available",
+    "command": "scripts/conformance/php-sdk-published-artifacts.sh",
+    "version": (pins.get("artifact_versions") or {}).get("sdk-php"),
+    "source_free": source.get("local_product_source_checkouts_used") is False,
+}
+shard_path.write_text(json.dumps(shard, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+surface_path.write_text(json.dumps(surface, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+PY
+  php_shard_status=$?
   set -e
-else
-  php_require_status=1
 fi
 
-php_artisan_list_status=1
-if [[ "$php_create_status" -eq 0 && "$php_require_status" -eq 0 ]]; then
-  php_args=()
-  for arg in "${artifact_args[@]}"; do
-    php_args+=("$arg")
-  done
-  set +e
-  docker run --rm "${composer_env_args[@]}" -v "$php_app:/app" -w /app composer:2 php artisan list --raw \
-    > "$result_dir/php-artisan-list.log" 2>&1
-  php_artisan_list_status=$?
-  set -e
-  if [[ "$php_artisan_list_status" -ne 0 ]]; then
-    php_shard_status=1
-    python3 "$run_root/write-runtime-surface-report.py" \
-      workflow-php \
-      fail \
-      "Published durable-workflow/workflow:${workflow_php_version} installed into Laravel, but php artisan list failed; see php-artisan-list.log." \
-      "$result_dir/php-replay-shard.json" \
-      "$result_dir/pins.json" \
-      > "$result_dir/php-replay-surface.json"
-  elif ! php_artisan_command_available 'workflow:v2:replay-conformance' "$result_dir/php-artisan-list.log"; then
-    php_shard_status=1
-    python3 "$run_root/write-runtime-surface-report.py" \
-      workflow-php \
-      unsupported \
-      "Published durable-workflow/workflow:${workflow_php_version} does not expose workflow:v2:replay-conformance." \
-      "$result_dir/php-replay-shard.json" \
-      "$result_dir/pins.json" \
-      > "$result_dir/php-replay-surface.json"
-  else
-    python3 - <<PY > "$result_dir/php-replay-surface.json"
-import json
-print(json.dumps({"runtime": "workflow-php", "status": "available", "command": "workflow:v2:replay-conformance", "version": "${workflow_php_version}"}, sort_keys=True))
-PY
-    set +e
-    docker run --rm \
-      "${composer_env_args[@]}" \
-      -v "$php_app:/app" \
-      -v "$result_dir:/result" \
-      -w /app \
-      composer:2 php artisan workflow:v2:replay-conformance --json \
-        "${php_args[@]}" \
-        --output /result/php-replay-shard.json \
-      > "$result_dir/php-replay-shard.log" 2>&1
-    php_shard_status=$?
-    set -e
-    if [[ ! -s "$result_dir/php-replay-shard.json" ]]; then
-      python3 "$run_root/write-runtime-surface-report.py" \
-        workflow-php \
-        fail \
-        "Published durable-workflow/workflow:${workflow_php_version} exposed workflow:v2:replay-conformance but it did not emit a shard report; see php-replay-shard.log." \
-        "$result_dir/php-replay-shard.json" \
-        "$result_dir/pins.json" \
-        > "$result_dir/php-replay-surface.json"
-      php_shard_status=1
-    fi
-  fi
-else
-  php_shard_status=1
-  printf '%s\n' 'PHP replay shard install failed; see php-create-project.log and php-require-workflow.log.' > "$result_dir/php-replay-shard.log"
+if [[ "$php_shard_status" -ne 0 ]]; then
   python3 "$run_root/write-runtime-surface-report.py" \
-    workflow-php \
+    sdk-php \
     fail \
-    "Published durable-workflow/workflow:${workflow_php_version} could not be installed into a scratch Laravel app by the replay runner." \
+    "The exact Packagist durable-workflow/sdk ${php_sdk_version} replay cell did not emit a reusable shard; see php-replay-shard.log." \
     "$result_dir/php-replay-shard.json" \
     "$result_dir/pins.json" \
     > "$result_dir/php-replay-surface.json"
 fi
 
-python3 - "$result_dir" "$result_dir/pins.json" "$server_image" "$server_base_url" "$auth_token" "$dw_bin" "$result_dir/server-image-digest.txt" "$python_pip_status" "$python_install_status" "$python_probe_status" "$php_create_status" "$php_require_status" "$php_artisan_list_status" "$rust_install_status" "$rust_shard_status" <<'PY'
+python3 - "$result_dir" "$result_dir/pins.json" "$server_image" "$server_base_url" "$auth_token" "$dw_bin" "$result_dir/server-image-digest.txt" "$python_pip_status" "$python_install_status" "$python_probe_status" "$php_sdk_cell_status" "$php_shard_status" "$rust_install_status" "$rust_shard_status" <<'PY'
 from __future__ import annotations
 
 import json
@@ -1885,11 +1925,10 @@ server_digest = Path(sys.argv[7]).read_text(encoding="utf-8").strip()
 python_pip_status = int(sys.argv[8])
 python_install_status = int(sys.argv[9])
 python_probe_status = int(sys.argv[10])
-php_create_status = int(sys.argv[11])
-php_require_status = int(sys.argv[12])
-php_artisan_list_status = int(sys.argv[13])
-rust_install_status = int(sys.argv[14])
-rust_shard_status = int(sys.argv[15])
+php_sdk_cell_status = int(sys.argv[11])
+php_shard_status = int(sys.argv[12])
+rust_install_status = int(sys.argv[13])
+rust_shard_status = int(sys.argv[14])
 
 def load(path: str) -> object:
     file = result_dir / path
@@ -1900,30 +1939,22 @@ def load(path: str) -> object:
     except json.JSONDecodeError:
         return file.read_text(encoding="utf-8", errors="replace")[-2000:]
 
-def text_file(path: str) -> str | None:
+def text_tail(path: str) -> str | None:
     file = result_dir / path
     if not file.exists():
         return None
-    return file.read_text(encoding="utf-8", errors="replace")
-
-def text_tail(path: str) -> str | None:
-    text = text_file(path)
-    if text is None:
-        return None
-    return text[-2000:]
-
-def artisan_command_available(raw_list: str, command: str) -> bool:
-    for line in raw_list.splitlines():
-        columns = line.split()
-        if columns and columns[0] == command:
-            return True
-    return False
+    return file.read_text(encoding="utf-8", errors="replace")[-2000:]
 
 versions = pins.get("artifact_versions") or {}
 sources = pins.get("artifact_sources") or {}
-php_artisan_list = text_tail("php-artisan-list.log") or ""
-php_artisan_list_full = text_file("php-artisan-list.log") or ""
-php_replay_command_available = artisan_command_available(php_artisan_list_full, "workflow:v2:replay-conformance")
+php_sdk_result = load("php-sdk-replay-probe/php-sdk-conformance-result.json")
+php_sdk_install_pass = (
+    isinstance(php_sdk_result, dict)
+    and php_sdk_result.get("local_product_source_checkouts_used") is False
+    and (php_sdk_result.get("artifact_versions") or {}).get("sdk-php") == versions.get("sdk-php")
+    and bool(php_sdk_result.get("package_provenance"))
+    and bool(php_sdk_result.get("apache_avro_provenance"))
+)
 artifacts = [
     {
         "artifact": "server",
@@ -1966,15 +1997,22 @@ artifacts = [
         "artifact": "workflow-php",
         "version": versions.get("workflow-php"),
         "source": sources.get("workflow-php"),
-        "status": "pass" if php_create_status == 0 and php_require_status == 0 and php_artisan_list_status == 0 else "fail",
+        "status": "pass",
         "probe": {
-            "composer_project": "php-app",
-            "create_project_exit_code": php_create_status,
-            "composer_require_exit_code": php_require_status,
-            "artisan_list_exit_code": php_artisan_list_status,
-            "artisan_list_available": php_artisan_list != "",
-            "preferred_command": "workflow:v2:replay-conformance",
-            "preferred_command_available": php_replay_command_available,
+            "role": "embedded_server_engine",
+            "verified_by": "waterline-composer-install",
+        },
+    },
+    {
+        "artifact": "sdk-php",
+        "version": versions.get("sdk-php"),
+        "source": sources.get("sdk-php"),
+        "status": "pass" if php_sdk_install_pass else "fail",
+        "probe": {
+            "package": "durable-workflow/sdk",
+            "cell_exit_code": php_sdk_cell_status,
+            "shard_exit_code": php_shard_status,
+            "result": php_sdk_result,
         },
     },
     {
@@ -2126,7 +2164,7 @@ def finding(scenario_id: str, status: str, summary: str, evidence: dict[str, Any
         owning_surface = "conformance_harness"
     elif status == "unsupported":
         finding_type = "unsupported_public_surface"
-        owning_surface = "workflow" if scenario_id.startswith("php_") else "sdk-python"
+        owning_surface = "sdk-php" if scenario_id.startswith("php_") else "sdk-python"
 
     return {
         "scenario_id": scenario_id,
@@ -2160,7 +2198,7 @@ artifact_install_statuses = {
     for item in artifact_install_artifacts or []
     if isinstance(item, dict) and item.get("artifact")
 }
-required_install_artifacts = ["server", "cli", "sdk-python", "sdk-rust", "workflow-php", "waterline"]
+required_install_artifacts = ["server", "cli", "sdk-php", "sdk-python", "sdk-rust", "workflow-php", "waterline"]
 artifact_install_pass = (
     isinstance(artifact_install_evidence, dict)
     and artifact_install_evidence != {}
@@ -2185,7 +2223,7 @@ results["published_artifact_install_only"] = {
         "php_shard_status": php_results.get("published_artifact_install_only", {}).get("status"),
         "rust_shard_status": rust_status,
     },
-    "runtime_matrix": {"runtimes": ["workflow-php", "sdk-python", "sdk-rust"]},
+    "runtime_matrix": {"runtimes": ["sdk-php", "sdk-python", "sdk-rust"]},
 }
 
 for scenario in REQUIRED:
@@ -2290,10 +2328,10 @@ result = {
         "local_product_source_checkouts_used": False,
     },
     "runtime_matrix": {
-        "runtimes": ["workflow-php", "sdk-python", "sdk-rust"],
-        "coverage_scopes": ["workflow-php-runtime-shard", "sdk-python-runtime-shard", "sdk-rust-runtime-shard"],
+        "runtimes": ["sdk-php", "sdk-python", "sdk-rust"],
+        "coverage_scopes": ["sdk-php-runtime-shard", "sdk-python-runtime-shard", "sdk-rust-runtime-shard"],
         "shards": {
-            "workflow-php": {
+            "sdk-php": {
                 "reported": php_report is not None,
                 "exit_code": php_status,
                 "outcome": (php_report or {}).get("outcome"),

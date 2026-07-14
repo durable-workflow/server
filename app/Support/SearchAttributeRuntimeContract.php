@@ -16,7 +16,7 @@ final class SearchAttributeRuntimeContract
 {
     public const SCHEMA = 'durable-workflow.v2.search-attribute-runtime.contract';
 
-    public const VERSION = 14;
+    public const VERSION = 15;
 
     public const RESULT_SCHEMA = 'durable-workflow.v2.search-attribute-runtime.result';
 
@@ -57,6 +57,7 @@ final class SearchAttributeRuntimeContract
                 'install_channels' => [
                     'server' => 'docker image durableworkflow/server:<latest>',
                     'cli' => 'official dw install script pinned to its latest release tag',
+                    'sdk-php' => 'Composer package durable-workflow/sdk:<latest>',
                     'workflow-php' => 'Composer package durable-workflow/workflow:2.0.0-alpha.<latest>',
                     'sdk-python' => 'PyPI package durable-workflow==<latest>',
                     'waterline' => 'published Waterline package or image matching the latest release tag',
@@ -105,7 +106,7 @@ final class SearchAttributeRuntimeContract
                     'tags' => 'keyword_list',
                 ],
                 'required_workers' => [
-                    'workflow-php',
+                    'sdk-php',
                     'sdk-python',
                 ],
                 'required_operator_surfaces' => [
@@ -117,12 +118,12 @@ final class SearchAttributeRuntimeContract
             ],
             'required_matrix' => [
                 'runtimes' => [
-                    'workflow-php',
+                    'sdk-php',
                     'sdk-python',
                 ],
                 'client_paths' => [
                     'cli',
-                    'workflow-php-sdk',
+                    'sdk-php',
                     'sdk-python',
                 ],
                 'observer_paths' => [
@@ -137,19 +138,19 @@ final class SearchAttributeRuntimeContract
                         'scenario' => 'python_worker_start_and_upsert_visibility',
                     ],
                     [
-                        'worker' => 'workflow-php',
-                        'clients' => ['cli', 'workflow-php-sdk'],
+                        'worker' => 'sdk-php',
+                        'clients' => ['cli', 'sdk-php'],
                         'scenario' => 'php_worker_start_and_upsert_visibility',
                     ],
                 ],
                 'cross_language_cells' => [
                     [
                         'writer' => 'sdk-python',
-                        'readers' => ['workflow-php-sdk', 'cli'],
+                        'readers' => ['sdk-php', 'cli'],
                         'scenario' => 'python_to_php_codec_round_trip',
                     ],
                     [
-                        'writer' => 'workflow-php',
+                        'writer' => 'sdk-php',
                         'readers' => ['sdk-python', 'cli'],
                         'scenario' => 'php_to_python_codec_round_trip',
                     ],
@@ -221,7 +222,7 @@ final class SearchAttributeRuntimeContract
                 'python_to_php_codec_round_trip' => [
                     'writer' => 'sdk-python',
                     'required_readers' => [
-                        'workflow-php-sdk',
+                        'sdk-php',
                         'cli',
                     ],
                     'required_value_types' => [
@@ -244,7 +245,7 @@ final class SearchAttributeRuntimeContract
                     ],
                 ],
                 'php_to_python_codec_round_trip' => [
-                    'writer' => 'workflow-php',
+                    'writer' => 'sdk-php',
                     'required_readers' => [
                         'sdk-python',
                         'cli',
@@ -432,7 +433,7 @@ final class SearchAttributeRuntimeContract
                     'pins.json',
                     'run-metadata.json',
                     'artifact-install-evidence.json',
-                    'workflow-php-search-attributes-shard.json',
+                    'sdk-php-search-attributes-shard.json',
                     'waterline-search-attributes-shard.json',
                     'codec-round-trip-shard.json',
                     'search-attributes-result.json',
@@ -448,7 +449,7 @@ final class SearchAttributeRuntimeContract
                 'required_execution_scopes' => [
                     'published-artifact-install',
                     'server-python-search-attribute-smoke',
-                    'workflow-php-search-attribute-shard',
+                    'sdk-php-search-attribute-shard',
                     'cli-search-attribute-surface-shard',
                     'waterline-operator-search-attribute-shard',
                     'cross-language-codec-shard',
@@ -488,7 +489,7 @@ final class SearchAttributeRuntimeContract
                     'codec' => [
                         'scope' => 'cross-language-codec-shard',
                         'artifacts' => [
-                            'durable-workflow/workflow',
+                            'durable-workflow/sdk',
                             'durable-workflow',
                             'dw',
                         ],
@@ -504,7 +505,7 @@ final class SearchAttributeRuntimeContract
                         'must_capture_fields' => [
                             'python_to_php.written_attributes',
                             'python_to_php.decoded_attributes',
-                            'python_to_php.reader_verifications.workflow-php-sdk',
+                            'python_to_php.reader_verifications.sdk-php',
                             'python_to_php.reader_verifications.cli',
                             'python_to_php.encoded_payload_or_wire_value_context',
                             'php_to_python.written_attributes',
@@ -525,9 +526,9 @@ final class SearchAttributeRuntimeContract
                         'fallback_status_when_surface_missing' => 'not_covered',
                         'fallback_finding_type' => 'conformance_runner_coverage_gap',
                     ],
-                    'workflow-php' => [
-                        'scope' => 'workflow-php-search-attribute-shard',
-                        'artifact' => 'durable-workflow/workflow',
+                    'sdk-php' => [
+                        'scope' => 'sdk-php-search-attribute-shard',
+                        'artifact' => 'durable-workflow/sdk',
                         'must_cover_scenarios' => [
                             'php_worker_start_and_upsert_visibility',
                             'python_to_php_codec_round_trip',

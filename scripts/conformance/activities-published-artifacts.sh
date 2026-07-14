@@ -278,7 +278,7 @@ use Workflow\V2\Models\WorkflowRun;
 use Workflow\V2\Models\WorkflowTask;
 use Workflow\V2\Support\ActivityOptions;
 use Workflow\V2\Support\RunActivityView;
-use Workflow\V2\Worker\WorkflowFiberRunner;
+use Workflow\V2\Support\WorkflowFiberRunner;
 use Workflow\V2\Workflow;
 
 const ACTIVITIES_NAMESPACE = 'activities-conformance';

@@ -21,6 +21,7 @@ use App\Support\PrincipalAttributionContract;
 use App\Support\PrincipalAttributionResultGate;
 use App\Support\PrereleaseReadinessContract;
 use App\Support\PrereleaseReadinessResultGate;
+use App\Support\PhpSdkConformanceContract;
 use App\Support\PythonSdkParityContract;
 use App\Support\SagaRuntimeContract;
 use App\Support\SagaRuntimeResultGate;
@@ -236,7 +237,7 @@ class ClusterInfoTest extends TestCase
 
         $contract = $response->json('signal_query_runtime_contract');
         $this->assertIsArray($contract);
-        $this->assertContains('workflow-php', $contract['required_matrix']['runtimes']);
+        $this->assertContains('sdk-php', $contract['required_matrix']['runtimes']);
         $this->assertContains('sdk-python', $contract['required_matrix']['runtimes']);
         $this->assertContains('sdk-rust', $contract['required_matrix']['runtimes']);
         foreach ([
@@ -276,6 +277,27 @@ class ClusterInfoTest extends TestCase
         $this->assertTrue($contract['result_gate']['artifact_version_policy']['rejects_placeholder_versions']);
     }
 
+    public function test_it_publishes_the_php_sdk_conformance_contract(): void
+    {
+        $response = $this->getJson('/api/cluster/info')
+            ->assertOk()
+            ->assertJsonPath('capabilities.php_sdk_conformance_contract', true)
+            ->assertJsonPath('php_sdk_conformance_contract.schema', PhpSdkConformanceContract::SCHEMA)
+            ->assertJsonPath('php_sdk_conformance_contract.version', PhpSdkConformanceContract::VERSION)
+            ->assertJsonPath(
+                'php_sdk_conformance_contract.product_boundary.remote_package',
+                'durable-workflow/sdk',
+            );
+
+        $contract = $response->json('php_sdk_conformance_contract');
+        $this->assertContains('durable_replay', $contract['required_scenarios']);
+        $this->assertContains('apache_avro_provenance', $contract['required_evidence']);
+        $this->assertSame(
+            'scripts/conformance/php-sdk-published-artifacts.sh',
+            $contract['host_runner_contract']['scenario_runner_path'],
+        );
+    }
+
     public function test_it_publishes_the_activity_runtime_conformance_contract(): void
     {
         $response = $this->getJson('/api/cluster/info')
@@ -305,7 +327,7 @@ class ClusterInfoTest extends TestCase
         $this->assertArrayHasKey('waterline', $contract['artifact_policy']['install_channels']);
         $this->assertContains('workflow-embedded', $contract['required_matrix']['execution_modes']);
         $this->assertContains('standalone', $contract['required_matrix']['execution_modes']);
-        $this->assertContains('workflow-php', $contract['required_matrix']['runtimes']);
+        $this->assertContains('sdk-php', $contract['required_matrix']['runtimes']);
         $this->assertContains('sdk-python', $contract['required_matrix']['runtimes']);
         foreach ([
             'workflow_embedded_activity_result',
@@ -493,10 +515,10 @@ class ClusterInfoTest extends TestCase
 
         $contract = $response->json('skew_refusal_matrix_contract');
         $this->assertIsArray($contract);
-        foreach (['server', 'cli', 'sdk-python', 'workflow', 'waterline'] as $artifact) {
+        foreach (['server', 'cli', 'sdk-python', 'workflow', 'sdk-php', 'waterline'] as $artifact) {
             $this->assertContains($artifact, $contract['artifact_policy']['required_artifacts']);
         }
-        foreach (['cli', 'sdk-python', 'workflow-worker', 'waterline'] as $surface) {
+        foreach (['cli', 'sdk-python', 'sdk-php', 'waterline'] as $surface) {
             $this->assertArrayHasKey($surface, $contract['required_surfaces']);
             $this->assertSame(
                 ['compatible', 'backward_skew', 'forward_skew', 'outside_window'],
@@ -525,12 +547,12 @@ class ClusterInfoTest extends TestCase
             $contract['host_runner_contract']['must_emit_result_for_every_required_surface_pairing_operation_group'],
         );
         $this->assertContains(
-            'workflow-worker-skew-surface-shard',
+            'sdk-php-skew-surface-shard',
             $contract['host_runner_contract']['required_execution_scopes'],
         );
         $this->assertSame(
             'register_and_drop',
-            $contract['host_runner_contract']['runtime_shards']['workflow-worker']['blocking_classification'],
+            $contract['host_runner_contract']['runtime_shards']['sdk-php']['blocking_classification'],
         );
         $this->assertSame(
             'stale_render',
@@ -584,7 +606,7 @@ class ClusterInfoTest extends TestCase
         $contract = $response->json('search_attribute_runtime_contract');
         $this->assertIsArray($contract);
         $this->assertArrayHasKey('waterline', $contract['artifact_policy']['install_channels']);
-        $this->assertContains('workflow-php', $contract['required_matrix']['runtimes']);
+        $this->assertContains('sdk-php', $contract['required_matrix']['runtimes']);
         $this->assertContains('sdk-python', $contract['required_matrix']['runtimes']);
         $this->assertContains('cli', $contract['required_matrix']['client_paths']);
         $this->assertContains('waterline-workflow-list-filter', $contract['required_matrix']['observer_paths']);
@@ -636,10 +658,10 @@ class ClusterInfoTest extends TestCase
             'fire_once_on_resume_then_skip_remaining_missed',
             $contract['schedule_policy']['missed_fire_policy'],
         );
-        $this->assertContains('workflow-php', $contract['required_matrix']['runtimes']);
+        $this->assertContains('sdk-php', $contract['required_matrix']['runtimes']);
         $this->assertContains('sdk-python', $contract['required_matrix']['runtimes']);
         $this->assertContains('cli', $contract['required_matrix']['client_paths']);
-        $this->assertContains('workflow-php-sdk', $contract['required_matrix']['client_paths']);
+        $this->assertContains('sdk-php', $contract['required_matrix']['client_paths']);
         $this->assertContains('cron_cadence', $contract['required_scenarios']);
         $this->assertContains('fixed_rate_cadence', $contract['required_scenarios']);
         $this->assertContains('pause_resume_no_fire_window', $contract['required_scenarios']);
@@ -734,7 +756,7 @@ class ClusterInfoTest extends TestCase
         $contract = $response->json('worker_versioning_runtime_contract');
         $this->assertIsArray($contract);
         $this->assertArrayHasKey('waterline', $contract['artifact_policy']['install_channels']);
-        $this->assertContains('workflow-php', $contract['required_matrix']['runtimes']);
+        $this->assertContains('sdk-php', $contract['required_matrix']['runtimes']);
         $this->assertContains('sdk-python', $contract['required_matrix']['runtimes']);
         $this->assertContains('cli', $contract['required_matrix']['client_paths']);
         $this->assertContains('Waterline worker and workflow views', $contract['required_matrix']['operator_visibility_paths']);
@@ -1024,10 +1046,10 @@ class ClusterInfoTest extends TestCase
 
         $contract = $response->json('heartbeat_runtime_contract');
         $this->assertIsArray($contract);
-        foreach (['server', 'cli', 'workflow-php', 'sdk-python', 'sdk-rust', 'waterline'] as $artifact) {
+        foreach (['server', 'cli', 'sdk-php', 'sdk-python', 'sdk-rust', 'waterline'] as $artifact) {
             $this->assertArrayHasKey($artifact, $contract['artifact_policy']['install_channels']);
         }
-        $this->assertContains('workflow-php', $contract['required_matrix']['runtimes']);
+        $this->assertContains('sdk-php', $contract['required_matrix']['runtimes']);
         $this->assertContains('sdk-python', $contract['required_matrix']['runtimes']);
         $this->assertContains('sdk-rust', $contract['required_matrix']['runtimes']);
         $this->assertContains('dw worker:list', $contract['required_matrix']['operator_visibility_paths']);
@@ -1203,7 +1225,7 @@ class ClusterInfoTest extends TestCase
         $this->assertContains('tenant-a', $contract['required_matrix']['namespaces']);
         $this->assertContains('tenant-b', $contract['required_matrix']['namespaces']);
         $this->assertContains('shared', $contract['required_matrix']['namespaces']);
-        $this->assertContains('workflow-php', $contract['required_matrix']['runtimes']);
+        $this->assertContains('sdk-php', $contract['required_matrix']['runtimes']);
         $this->assertContains('sdk-python', $contract['required_matrix']['runtimes']);
         $this->assertSame(
             'static/platform-conformance/namespace-runtime-scenarios.json',
@@ -1229,12 +1251,12 @@ class ClusterInfoTest extends TestCase
             $contract['host_runner_contract']['runner_command'],
         );
         $this->assertSame(
-            'workflow:v2:namespace-conformance',
-            $contract['host_runner_contract']['runtime_shards']['workflow-php']['preferred_command'],
+            'php-sdk-published-artifacts',
+            $contract['host_runner_contract']['runtime_shards']['sdk-php']['preferred_command'],
         );
         $this->assertSame(
-            'workflow:v2:namespace-conformance',
-            $contract['host_runner_contract']['runtime_shards']['workflow-php']['artisan_command'],
+            'scripts/conformance/php-sdk-published-artifacts.sh',
+            $contract['host_runner_contract']['runtime_shards']['sdk-php']['runner_path'],
         );
         $this->assertSame(
             [
@@ -1242,14 +1264,14 @@ class ClusterInfoTest extends TestCase
                 'sdk_namespace_selection_parity',
                 'php_worker_task_queue_namespace_isolation',
             ],
-            $contract['host_runner_contract']['runtime_shards']['workflow-php']['must_cover_scenarios'],
+            $contract['host_runner_contract']['runtime_shards']['sdk-php']['must_cover_scenarios'],
         );
         $this->assertSame(
             'waterline:namespace-conformance',
             $contract['host_runner_contract']['runtime_shards']['waterline']['artisan_command'],
         );
         $this->assertContains(
-            'workflow_php_namespace_shard_execution_recorded',
+            'sdk_php_namespace_shard_execution_recorded',
             $contract['coverage_gate']['passing_outcome_requires'],
         );
         $this->assertContains(
@@ -1338,7 +1360,7 @@ class ClusterInfoTest extends TestCase
         $this->assertContains('update_cell_outcomes', $contract['artifact_policy']['required_run_record_fields']);
         $this->assertContains('local_product_source_checkouts_used', $contract['artifact_policy']['required_run_record_fields']);
         $this->assertContains('source_policy', $contract['artifact_policy']['required_run_record_fields']);
-        $this->assertContains('workflow-php', $contract['required_matrix']['runtimes']);
+        $this->assertContains('sdk-php', $contract['required_matrix']['runtimes']);
         $this->assertContains('sdk-python', $contract['required_matrix']['runtimes']);
         $this->assertContains('accepted_update_control_plane_and_history', $contract['required_scenarios']);
         $this->assertContains('running_or_waiting_update_operator_visibility', $contract['required_scenarios']);
@@ -1363,7 +1385,7 @@ class ClusterInfoTest extends TestCase
             $contract['host_runner_contract']['result_files'],
         );
         $this->assertContains(
-            'workflow-php-workflow-updates-evidence.json',
+            'sdk-php-workflow-updates-evidence.json',
             $contract['host_runner_contract']['result_files'],
         );
         $this->assertContains(

@@ -60,7 +60,7 @@ final class SchedulesConformanceRunnerContractTest extends TestCase
         $this->assertIsInt($workerEnd);
         $workerShard = substr($runner, $workerStart, $workerEnd - $workerStart);
 
-        $this->assertStringContainsString("'codec' => 'json'", $workerShard);
+        $this->assertStringContainsString('$client->payloadCodec()->envelope($completeResult)', $workerShard);
         $this->assertStringContainsString("'blob' => json_encode(\$completeResult, JSON_THROW_ON_ERROR)", $workerShard);
         $this->assertStringNotContainsString("'result' => json_encode(\$completeResult, JSON_THROW_ON_ERROR)", $workerShard);
     }
@@ -170,7 +170,7 @@ final class SchedulesConformanceRunnerContractTest extends TestCase
                     'DW_SERVER_VERSION' => '0.2.244',
                     'DW_CLI_VERSION' => '0.1.75',
                     'DW_PYTHON_SDK_VERSION' => '0.4.84',
-                    'DW_WORKFLOW_PHP_VERSION' => '2.0.0-alpha.189',
+                    'DW_PHP_SDK_VERSION' => '0.1.189',
                     'DW_WATERLINE_VERSION' => '2.0.0-alpha.77',
                 ],
             );
@@ -204,7 +204,7 @@ final class SchedulesConformanceRunnerContractTest extends TestCase
             $this->assertSame('not_exercised', $result['artifact_sources']['server']);
             $this->assertSame('not_exercised', $result['artifact_sources']['cli']);
             $this->assertSame('not_exercised', $result['artifact_sources']['sdk-python']);
-            $this->assertSame('not_exercised', $result['artifact_sources']['workflow-php']);
+            $this->assertSame('not_exercised', $result['artifact_sources']['sdk-php']);
             $this->assertSame('not_exercised', $result['artifact_sources']['waterline']);
             $this->assertSame($result['artifact_sources'], $record['artifactSources']);
 
@@ -219,7 +219,7 @@ final class SchedulesConformanceRunnerContractTest extends TestCase
                 $result['scenario_results']['published_artifact_install_only']['observed_outputs']['local_product_source_checkouts_used'],
             );
             $this->assertSame(
-                ['server', 'cli', 'sdk-python', 'workflow-php', 'waterline'],
+                ['server', 'cli', 'sdk-python', 'sdk-php', 'waterline'],
                 array_column(
                     $result['scenario_results']['published_artifact_install_only']['observed_outputs']['artifacts'],
                     'artifact',
@@ -256,7 +256,7 @@ final class SchedulesConformanceRunnerContractTest extends TestCase
                 $result['scenario_results']['cli_schedule_surface']['linked_findings'][0]['owning_surface'],
             );
             $this->assertSame(
-                'workflow-php',
+                'sdk-php',
                 $result['scenario_results']['php_schedule_surface']['linked_findings'][0]['owning_surface'],
             );
             $this->assertSame(
@@ -286,7 +286,7 @@ final class SchedulesConformanceRunnerContractTest extends TestCase
                 ['artifact' => 'server', 'version' => '0.2.244', 'source' => 'docker://durableworkflow/server:0.2.244', 'status' => 'pass'],
                 ['artifact' => 'cli', 'version' => '0.1.75', 'source' => 'https://github.com/durable-workflow/cli/releases/download/0.1.75/dw.phar', 'status' => 'pass'],
                 ['artifact' => 'sdk-python', 'version' => '0.4.84', 'source' => 'pypi://durable-workflow==0.4.84', 'status' => 'pass'],
-                ['artifact' => 'workflow-php', 'version' => '2.0.0-alpha.189', 'source' => 'packagist://durable-workflow/workflow@2.0.0-alpha.189', 'status' => 'pass'],
+                ['artifact' => 'sdk-php', 'version' => '0.1.189', 'source' => 'packagist://durable-workflow/sdk@0.1.189', 'status' => 'pass'],
                 ['artifact' => 'waterline', 'version' => '2.0.0-alpha.77', 'source' => 'packagist://durable-workflow/waterline@2.0.0-alpha.77', 'status' => 'pass'],
             ],
         ], JSON_THROW_ON_ERROR));
@@ -308,7 +308,7 @@ final class SchedulesConformanceRunnerContractTest extends TestCase
                     'DW_SERVER_VERSION' => '0.2.244',
                     'DW_CLI_VERSION' => '0.1.75',
                     'DW_PYTHON_SDK_VERSION' => '0.4.84',
-                    'DW_WORKFLOW_PHP_VERSION' => '2.0.0-alpha.189',
+                    'DW_PHP_SDK_VERSION' => '0.1.189',
                     'DW_WATERLINE_VERSION' => '2.0.0-alpha.77',
                 ],
             );
@@ -347,8 +347,8 @@ final class SchedulesConformanceRunnerContractTest extends TestCase
             );
             $this->assertSame('docker://durableworkflow/server:0.2.244', $result['artifact_sources']['server']);
             $this->assertSame(
-                'packagist://durable-workflow/workflow@2.0.0-alpha.189',
-                $record['artifactSources']['workflow-php'],
+                'packagist://durable-workflow/sdk@0.1.189',
+                $record['artifactSources']['sdk-php'],
             );
             $this->assertSame(
                 $installScenario['observed_outputs'],
@@ -377,7 +377,7 @@ final class SchedulesConformanceRunnerContractTest extends TestCase
                 ['artifact' => 'server', 'version' => '0.2.323', 'source' => 'docker://durableworkflow/server:0.2.323', 'status' => 'pass'],
                 ['artifact' => 'cli', 'version' => '0.1.77', 'source' => 'https://github.com/durable-workflow/cli/releases/download/0.1.77/dw.phar', 'status' => 'fail'],
                 ['artifact' => 'sdk-python', 'version' => '0.4.85', 'source' => 'pypi://durable-workflow==0.4.85', 'status' => 'pass'],
-                ['artifact' => 'workflow-php', 'version' => '2.0.0-alpha.197', 'source' => 'packagist://durable-workflow/workflow@2.0.0-alpha.197', 'status' => 'pass'],
+                ['artifact' => 'sdk-php', 'version' => '0.1.197', 'source' => 'packagist://durable-workflow/sdk@0.1.197', 'status' => 'pass'],
                 ['artifact' => 'waterline', 'version' => '2.0.0-alpha.83', 'source' => 'packagist://durable-workflow/waterline@2.0.0-alpha.83', 'status' => 'pass'],
             ],
         ], JSON_THROW_ON_ERROR));
@@ -398,7 +398,7 @@ final class SchedulesConformanceRunnerContractTest extends TestCase
                     'DW_SERVER_VERSION' => '0.2.323',
                     'DW_CLI_VERSION' => '0.1.77',
                     'DW_PYTHON_SDK_VERSION' => '0.4.85',
-                    'DW_WORKFLOW_PHP_VERSION' => '2.0.0-alpha.197',
+                    'DW_PHP_SDK_VERSION' => '0.1.197',
                     'DW_WATERLINE_VERSION' => '2.0.0-alpha.83',
                 ],
             );
@@ -494,7 +494,7 @@ final class SchedulesConformanceRunnerContractTest extends TestCase
                     'DW_SERVER_VERSION' => '0.2.244',
                     'DW_CLI_VERSION' => '0.1.75',
                     'DW_PYTHON_SDK_VERSION' => '0.4.84',
-                    'DW_WORKFLOW_PHP_VERSION' => '2.0.0-alpha.189',
+                    'DW_PHP_SDK_VERSION' => '0.1.189',
                     'DW_WATERLINE_VERSION' => '2.0.0-alpha.77',
                 ],
             );
@@ -588,7 +588,7 @@ final class SchedulesConformanceRunnerContractTest extends TestCase
                     'DW_SERVER_VERSION' => '0.2.244',
                     'DW_CLI_VERSION' => '0.1.75',
                     'DW_PYTHON_SDK_VERSION' => '0.4.84',
-                    'DW_WORKFLOW_PHP_VERSION' => '2.0.0-alpha.189',
+                    'DW_PHP_SDK_VERSION' => '0.1.189',
                     'DW_WATERLINE_VERSION' => '2.0.0-alpha.77',
                 ],
             );
@@ -644,7 +644,7 @@ final class SchedulesConformanceRunnerContractTest extends TestCase
                 ['artifact' => 'server', 'version' => '0.2.307', 'source' => 'docker://durableworkflow/server:0.2.307', 'status' => 'pass'],
                 ['artifact' => 'cli', 'version' => '0.1.77', 'source' => 'https://github.com/durable-workflow/cli/releases/download/0.1.77/dw.phar', 'status' => 'pass'],
                 ['artifact' => 'sdk-python', 'version' => '0.4.85', 'source' => 'pypi://durable-workflow==0.4.85', 'status' => 'pass'],
-                ['artifact' => 'workflow-php', 'version' => '2.0.0-alpha.197', 'source' => 'packagist://durable-workflow/workflow@2.0.0-alpha.197', 'status' => 'pass'],
+                ['artifact' => 'sdk-php', 'version' => '0.1.197', 'source' => 'packagist://durable-workflow/sdk@0.1.197', 'status' => 'pass'],
                 ['artifact' => 'waterline', 'version' => '2.0.0-alpha.83', 'source' => 'packagist://durable-workflow/waterline@2.0.0-alpha.83', 'status' => 'pass'],
             ],
         ], JSON_THROW_ON_ERROR));
@@ -666,12 +666,12 @@ final class SchedulesConformanceRunnerContractTest extends TestCase
                     'DW_SERVER_VERSION' => '0.2.307',
                     'DW_CLI_VERSION' => '0.1.77',
                     'DW_PYTHON_SDK_VERSION' => '0.4.85',
-                    'DW_WORKFLOW_PHP_VERSION' => '2.0.0-alpha.197',
+                    'DW_PHP_SDK_VERSION' => '0.1.197',
                     'DW_WATERLINE_VERSION' => '2.0.0-alpha.83',
                     'DW_SERVER_ARTIFACT_SOURCE' => 'docker://durableworkflow/server:0.2.307',
                     'DW_CLI_ARTIFACT_SOURCE' => 'https://github.com/durable-workflow/cli/releases/download/0.1.77/dw.phar',
                     'DW_PYTHON_SDK_ARTIFACT_SOURCE' => 'pypi://durable-workflow==0.4.85',
-                    'DW_WORKFLOW_PHP_ARTIFACT_SOURCE' => 'packagist://durable-workflow/workflow@2.0.0-alpha.197',
+                    'DW_PHP_SDK_ARTIFACT_SOURCE' => 'packagist://durable-workflow/sdk@0.1.197',
                     'DW_WATERLINE_ARTIFACT_SOURCE' => 'packagist://durable-workflow/waterline@2.0.0-alpha.83',
                     'DW_SCHEDULES_LOCAL_PRODUCT_SOURCE_CHECKOUTS_USED' => 'false',
                 ],
@@ -703,8 +703,8 @@ final class SchedulesConformanceRunnerContractTest extends TestCase
                 $scenario['observed_outputs']['artifacts']['cli']['source'],
             );
             $this->assertSame(
-                'packagist://durable-workflow/workflow@2.0.0-alpha.197',
-                $scenario['observed_outputs']['artifacts']['workflow-php']['source'],
+                'packagist://durable-workflow/sdk@0.1.197',
+                $scenario['observed_outputs']['artifacts']['sdk-php']['source'],
             );
             $this->assertSame(
                 'packagist://durable-workflow/waterline@2.0.0-alpha.83',
@@ -764,12 +764,12 @@ final class SchedulesConformanceRunnerContractTest extends TestCase
                     'DW_SERVER_VERSION' => '0.2.312',
                     'DW_CLI_VERSION' => '0.1.77',
                     'DW_PYTHON_SDK_VERSION' => '0.4.85',
-                    'DW_WORKFLOW_PHP_VERSION' => '2.0.0-alpha.197',
+                    'DW_PHP_SDK_VERSION' => '0.1.197',
                     'DW_WATERLINE_VERSION' => '2.0.0-alpha.83',
                     'DW_SERVER_ARTIFACT_SOURCE' => 'published_docker_image',
                     'DW_CLI_ARTIFACT_SOURCE' => 'official_install_script',
                     'DW_PYTHON_SDK_ARTIFACT_SOURCE' => 'pypi',
-                    'DW_WORKFLOW_PHP_ARTIFACT_SOURCE' => 'composer_packagist',
+                    'DW_PHP_SDK_ARTIFACT_SOURCE' => 'composer_packagist',
                     'DW_WATERLINE_ARTIFACT_SOURCE' => 'published_waterline_artifact',
                 ],
             );
@@ -825,8 +825,8 @@ final class SchedulesConformanceRunnerContractTest extends TestCase
                 $publishedArtifacts['artifact_install_evidence']['artifact_sources']['sdk-python'],
             );
             $this->assertSame(
-                'packagist://durable-workflow/workflow@2.0.0-alpha.197',
-                $publishedArtifacts['artifact_install_evidence']['artifact_sources']['workflow-php'],
+                'packagist://durable-workflow/sdk@0.1.197',
+                $publishedArtifacts['artifact_install_evidence']['artifact_sources']['sdk-php'],
             );
             $this->assertSame(
                 'packagist://durable-workflow/waterline@2.0.0-alpha.83',
@@ -864,12 +864,12 @@ final class SchedulesConformanceRunnerContractTest extends TestCase
                     'DW_SERVER_VERSION' => '0.2.307',
                     'DW_CLI_VERSION' => '0.1.77',
                     'DW_PYTHON_SDK_VERSION' => '0.4.85',
-                    'DW_WORKFLOW_PHP_VERSION' => '2.0.0-alpha.197',
+                    'DW_PHP_SDK_VERSION' => '0.1.197',
                     'DW_WATERLINE_VERSION' => '2.0.0-alpha.83',
                     'DW_SERVER_ARTIFACT_SOURCE' => 'published_docker_image',
                     'DW_CLI_ARTIFACT_SOURCE' => 'official_install_script',
                     'DW_PYTHON_SDK_ARTIFACT_SOURCE' => 'pypi',
-                    'DW_WORKFLOW_PHP_ARTIFACT_SOURCE' => 'composer_packagist',
+                    'DW_PHP_SDK_ARTIFACT_SOURCE' => 'composer_packagist',
                     'DW_WATERLINE_ARTIFACT_SOURCE' => 'published_waterline_artifact',
                 ],
             );
@@ -940,7 +940,7 @@ final class SchedulesConformanceRunnerContractTest extends TestCase
                     'DW_SERVER_VERSION' => '0.2.332',
                     'DW_CLI_VERSION' => '0.1.77',
                     'DW_PYTHON_SDK_VERSION' => '0.4.85',
-                    'DW_WORKFLOW_PHP_VERSION' => '2.0.0-alpha.198',
+                    'DW_PHP_SDK_VERSION' => '0.1.198',
                     'DW_WATERLINE_VERSION' => '2.0.0-alpha.83',
                 ],
             );
@@ -1004,12 +1004,12 @@ final class SchedulesConformanceRunnerContractTest extends TestCase
                     'DW_SERVER_VERSION' => '0.2.323',
                     'DW_CLI_VERSION' => '0.1.77',
                     'DW_PYTHON_SDK_VERSION' => '0.4.85',
-                    'DW_WORKFLOW_PHP_VERSION' => '2.0.0-alpha.197',
+                    'DW_PHP_SDK_VERSION' => '0.1.197',
                     'DW_WATERLINE_VERSION' => '2.0.0-alpha.83',
                     'DW_SERVER_ARTIFACT_SOURCE' => 'published_docker_image',
                     'DW_CLI_ARTIFACT_SOURCE' => 'official_install_script',
                     'DW_PYTHON_SDK_ARTIFACT_SOURCE' => 'pypi',
-                    'DW_WORKFLOW_PHP_ARTIFACT_SOURCE' => 'composer_packagist',
+                    'DW_PHP_SDK_ARTIFACT_SOURCE' => 'composer_packagist',
                     'DW_WATERLINE_ARTIFACT_SOURCE' => 'published_waterline_artifact',
                     'DW_SCHEDULES_LOCAL_PRODUCT_SOURCE_CHECKOUTS_USED' => 'false',
                 ],
@@ -1078,8 +1078,8 @@ final class SchedulesConformanceRunnerContractTest extends TestCase
                 $publishedArtifacts['artifact_install_evidence']['artifact_sources']['sdk-python'],
             );
             $this->assertSame(
-                'packagist://durable-workflow/workflow@2.0.0-alpha.197',
-                $publishedArtifacts['artifact_install_evidence']['artifact_sources']['workflow-php'],
+                'packagist://durable-workflow/sdk@0.1.197',
+                $publishedArtifacts['artifact_install_evidence']['artifact_sources']['sdk-php'],
             );
             $this->assertSame(
                 'packagist://durable-workflow/waterline@2.0.0-alpha.83',
@@ -1120,7 +1120,7 @@ final class SchedulesConformanceRunnerContractTest extends TestCase
                     'DW_SERVER_VERSION' => '0.2.343',
                     'DW_CLI_VERSION' => '0.1.77',
                     'DW_PYTHON_SDK_VERSION' => '0.4.85',
-                    'DW_WORKFLOW_PHP_VERSION' => '2.0.0-alpha.200',
+                    'DW_PHP_SDK_VERSION' => '0.1.200',
                     'DW_WATERLINE_VERSION' => '2.0.0-alpha.83',
                 ],
             );
@@ -1183,12 +1183,12 @@ final class SchedulesConformanceRunnerContractTest extends TestCase
                     'DW_SERVER_VERSION' => '0.2.307',
                     'DW_CLI_VERSION' => '0.1.77',
                     'DW_PYTHON_SDK_VERSION' => '0.4.85',
-                    'DW_WORKFLOW_PHP_VERSION' => '2.0.0-alpha.197',
+                    'DW_PHP_SDK_VERSION' => '0.1.197',
                     'DW_WATERLINE_VERSION' => '2.0.0-alpha.83',
                     'DW_SERVER_ARTIFACT_SOURCE' => 'local_checkout/banana',
                     'DW_CLI_ARTIFACT_SOURCE' => 'official_install_script',
                     'DW_PYTHON_SDK_ARTIFACT_SOURCE' => 'pypi',
-                    'DW_WORKFLOW_PHP_ARTIFACT_SOURCE' => 'composer_packagist',
+                    'DW_PHP_SDK_ARTIFACT_SOURCE' => 'composer_packagist',
                     'DW_WATERLINE_ARTIFACT_SOURCE' => 'published_waterline_artifact',
                     'DW_SCHEDULES_LOCAL_PRODUCT_SOURCE_CHECKOUTS_USED' => 'false',
                 ],
@@ -1238,7 +1238,7 @@ final class SchedulesConformanceRunnerContractTest extends TestCase
                             'server' => 'local_checkout/banana',
                             'cli' => 'official_install_script',
                             'sdk-python' => 'pypi',
-                            'workflow' => 'composer_packagist',
+                            'sdk-php' => 'composer_packagist',
                             'waterline' => 'published_waterline_artifact',
                         ],
                         'local_product_source_checkouts_used' => false,
@@ -1264,12 +1264,12 @@ final class SchedulesConformanceRunnerContractTest extends TestCase
                     'DW_SERVER_VERSION' => '0.2.307',
                     'DW_CLI_VERSION' => '0.1.77',
                     'DW_PYTHON_SDK_VERSION' => '0.4.85',
-                    'DW_WORKFLOW_PHP_VERSION' => '2.0.0-alpha.197',
+                    'DW_PHP_SDK_VERSION' => '0.1.197',
                     'DW_WATERLINE_VERSION' => '2.0.0-alpha.83',
                     'DW_SERVER_ARTIFACT_SOURCE' => 'published_docker_image',
                     'DW_CLI_ARTIFACT_SOURCE' => 'official_install_script',
                     'DW_PYTHON_SDK_ARTIFACT_SOURCE' => 'pypi',
-                    'DW_WORKFLOW_PHP_ARTIFACT_SOURCE' => 'composer_packagist',
+                    'DW_PHP_SDK_ARTIFACT_SOURCE' => 'composer_packagist',
                     'DW_WATERLINE_ARTIFACT_SOURCE' => 'published_waterline_artifact',
                 ],
             );
@@ -1393,7 +1393,7 @@ final class SchedulesConformanceRunnerContractTest extends TestCase
                     'DW_SERVER_VERSION' => '0.2.283',
                     'DW_CLI_VERSION' => '0.1.76',
                     'DW_PYTHON_SDK_VERSION' => '0.4.85',
-                    'DW_WORKFLOW_PHP_VERSION' => '2.0.0-alpha.195',
+                    'DW_PHP_SDK_VERSION' => '0.1.195',
                     'DW_WATERLINE_VERSION' => '2.0.0-alpha.81',
                 ],
             );
@@ -1526,7 +1526,7 @@ final class SchedulesConformanceRunnerContractTest extends TestCase
                     'DW_SERVER_VERSION' => '0.2.305',
                     'DW_CLI_VERSION' => '0.1.77',
                     'DW_PYTHON_SDK_VERSION' => '0.4.85',
-                    'DW_WORKFLOW_PHP_VERSION' => '2.0.0-alpha.197',
+                    'DW_PHP_SDK_VERSION' => '0.1.197',
                     'DW_WATERLINE_VERSION' => '2.0.0-alpha.83',
                 ],
             );
@@ -1650,7 +1650,7 @@ final class SchedulesConformanceRunnerContractTest extends TestCase
                     'DW_SERVER_VERSION' => '0.2.307',
                     'DW_CLI_VERSION' => '0.1.77',
                     'DW_PYTHON_SDK_VERSION' => '0.4.85',
-                    'DW_WORKFLOW_PHP_VERSION' => '2.0.0-alpha.197',
+                    'DW_PHP_SDK_VERSION' => '0.1.197',
                     'DW_WATERLINE_VERSION' => '2.0.0-alpha.83',
                 ],
             );
@@ -1791,7 +1791,7 @@ final class SchedulesConformanceRunnerContractTest extends TestCase
                     'DW_SERVER_VERSION' => '0.2.288',
                     'DW_CLI_VERSION' => '0.1.77',
                     'DW_PYTHON_SDK_VERSION' => '0.4.85',
-                    'DW_WORKFLOW_PHP_VERSION' => '2.0.0-alpha.196',
+                    'DW_PHP_SDK_VERSION' => '0.1.196',
                     'DW_WATERLINE_VERSION' => '2.0.0-alpha.82',
                 ],
             );
@@ -1911,7 +1911,7 @@ final class SchedulesConformanceRunnerContractTest extends TestCase
                 ],
             ],
             'client_surfaces' => [
-                'workflow-php-sdk' => [
+                'sdk-php' => [
                     'create_or_observe' => true,
                     'list_or_describe' => true,
                     'control_observed' => true,
@@ -1921,8 +1921,8 @@ final class SchedulesConformanceRunnerContractTest extends TestCase
                 ],
             ],
             'runtime_matrix' => [
-                'runtimes' => ['workflow-php'],
-                'client_paths' => ['workflow-php-sdk', 'server-http-api', 'cli'],
+                'runtimes' => ['sdk-php'],
+                'client_paths' => ['sdk-php', 'server-http-api', 'cli'],
                 'schedule_types' => ['cron_expression'],
             ],
         ], JSON_THROW_ON_ERROR));
@@ -1944,7 +1944,7 @@ final class SchedulesConformanceRunnerContractTest extends TestCase
                     'DW_SERVER_VERSION' => '0.2.410',
                     'DW_CLI_VERSION' => '0.1.80',
                     'DW_PYTHON_SDK_VERSION' => '0.4.88',
-                    'DW_WORKFLOW_PHP_VERSION' => '2.0.0-alpha.204',
+                    'DW_PHP_SDK_VERSION' => '0.1.204',
                     'DW_WATERLINE_VERSION' => '2.0.0-alpha.96',
                 ],
             );
@@ -1980,9 +1980,9 @@ final class SchedulesConformanceRunnerContractTest extends TestCase
             $this->assertTrue($scenario['observed_outputs']['state_comparison']['cli_compared']);
             $this->assertSame(
                 $scheduleId,
-                $result['client_surfaces']['workflow-php-sdk']['schedule_id'],
+                $result['client_surfaces']['sdk-php']['schedule_id'],
             );
-            $this->assertContains('workflow-php-sdk', $result['runtime_matrix']['client_paths']);
+            $this->assertContains('sdk-php', $result['runtime_matrix']['client_paths']);
         } finally {
             $this->removeDirectory($resultDir);
         }
@@ -2002,7 +2002,7 @@ final class SchedulesConformanceRunnerContractTest extends TestCase
         $pythonCreatedPhp = [
             'scenario' => 'python_created_php_workflow',
             'schedule_creator' => 'sdk-python',
-            'workflow_runtime' => 'workflow-php',
+            'workflow_runtime' => 'sdk-php',
             'schedule_id' => 'python-created-php-schedule',
             'schedule_visible_in_cli' => true,
             'workflow_completed' => true,
@@ -2011,7 +2011,7 @@ final class SchedulesConformanceRunnerContractTest extends TestCase
         ];
         $phpCreatedPython = [
             'scenario' => 'php_created_python_workflow',
-            'schedule_creator' => 'workflow-php-sdk',
+            'schedule_creator' => 'sdk-php',
             'workflow_runtime' => 'sdk-python',
             'schedule_id' => 'php-created-python-schedule',
             'schedule_visible_in_cli' => true,
@@ -2040,18 +2040,18 @@ final class SchedulesConformanceRunnerContractTest extends TestCase
                 'cross_language_cells' => [$pythonCreatedPhp, $phpCreatedPython],
             ],
             'runtime_matrix' => [
-                'runtimes' => ['workflow-php', 'sdk-python'],
-                'client_paths' => ['cli', 'sdk-python', 'workflow-php-sdk'],
+                'runtimes' => ['sdk-php', 'sdk-python'],
+                'client_paths' => ['cli', 'sdk-python', 'sdk-php'],
                 'schedule_types' => ['fixed_rate_interval'],
                 'cross_language_cells' => [
                     [
                         'scenario' => 'python_created_php_workflow',
                         'schedule_creator' => 'sdk-python',
-                        'workflow_runtime' => 'workflow-php',
+                        'workflow_runtime' => 'sdk-php',
                     ],
                     [
                         'scenario' => 'php_created_python_workflow',
-                        'schedule_creator' => 'workflow-php-sdk',
+                        'schedule_creator' => 'sdk-php',
                         'workflow_runtime' => 'sdk-python',
                     ],
                 ],
@@ -2075,7 +2075,7 @@ final class SchedulesConformanceRunnerContractTest extends TestCase
                     'DW_SERVER_VERSION' => '0.2.312',
                     'DW_CLI_VERSION' => '0.1.77',
                     'DW_PYTHON_SDK_VERSION' => '0.4.85',
-                    'DW_WORKFLOW_PHP_VERSION' => '2.0.0-alpha.197',
+                    'DW_PHP_SDK_VERSION' => '0.1.197',
                     'DW_WATERLINE_VERSION' => '2.0.0-alpha.83',
                 ],
             );
@@ -2108,7 +2108,7 @@ final class SchedulesConformanceRunnerContractTest extends TestCase
                 [$pythonCreatedPhp, $phpCreatedPython],
                 $result['cross_language_matrix']['cross_language_cells'],
             );
-            $this->assertContains('workflow-php-sdk', $result['runtime_matrix']['client_paths']);
+            $this->assertContains('sdk-php', $result['runtime_matrix']['client_paths']);
             $this->assertContains('sdk-python', $result['runtime_matrix']['runtimes']);
         } finally {
             $this->removeDirectory($resultDir);
@@ -2129,7 +2129,7 @@ final class SchedulesConformanceRunnerContractTest extends TestCase
         $pythonCreatedPhp = [
             'scenario' => 'python_created_php_workflow',
             'schedule_creator' => 'sdk-python',
-            'workflow_runtime' => 'workflow-php',
+            'workflow_runtime' => 'sdk-php',
             'schedule_id' => 'python-created-php-schedule',
             'schedule_visible_in_cli' => true,
             'workflow_completed' => false,
@@ -2141,7 +2141,7 @@ final class SchedulesConformanceRunnerContractTest extends TestCase
         ];
         $phpCreatedPython = [
             'scenario' => 'php_created_python_workflow',
-            'schedule_creator' => 'workflow-php-sdk',
+            'schedule_creator' => 'sdk-php',
             'workflow_runtime' => 'sdk-python',
             'schedule_id' => 'php-created-python-schedule',
             'schedule_visible_in_cli' => true,
@@ -2195,18 +2195,18 @@ final class SchedulesConformanceRunnerContractTest extends TestCase
             ],
             'findings' => [$pythonFinding, $phpFinding],
             'runtime_matrix' => [
-                'runtimes' => ['workflow-php', 'sdk-python'],
-                'client_paths' => ['cli', 'sdk-python', 'workflow-php-sdk'],
+                'runtimes' => ['sdk-php', 'sdk-python'],
+                'client_paths' => ['cli', 'sdk-python', 'sdk-php'],
                 'schedule_types' => ['fixed_rate_interval'],
                 'cross_language_cells' => [
                     [
                         'scenario' => 'python_created_php_workflow',
                         'schedule_creator' => 'sdk-python',
-                        'workflow_runtime' => 'workflow-php',
+                        'workflow_runtime' => 'sdk-php',
                     ],
                     [
                         'scenario' => 'php_created_python_workflow',
-                        'schedule_creator' => 'workflow-php-sdk',
+                        'schedule_creator' => 'sdk-php',
                         'workflow_runtime' => 'sdk-python',
                     ],
                 ],
@@ -2233,7 +2233,7 @@ final class SchedulesConformanceRunnerContractTest extends TestCase
                     'DW_SERVER_VERSION' => '0.2.500',
                     'DW_CLI_VERSION' => '0.1.82',
                     'DW_PYTHON_SDK_VERSION' => '0.4.90',
-                    'DW_WORKFLOW_PHP_VERSION' => '2.0.0-alpha.223',
+                    'DW_PHP_SDK_VERSION' => '0.1.223',
                     'DW_WATERLINE_VERSION' => '2.0.0-alpha.111',
                 ],
             );
@@ -2319,7 +2319,7 @@ final class SchedulesConformanceRunnerContractTest extends TestCase
         ];
         $phpCreatedPython = [
             'scenario' => 'php_created_python_workflow',
-            'schedule_creator' => 'workflow-php-sdk',
+            'schedule_creator' => 'sdk-php',
             'workflow_runtime' => 'sdk-python',
             'schedule_id' => $scheduleId,
             'schedule_visible_in_cli' => true,
@@ -2424,12 +2424,12 @@ final class SchedulesConformanceRunnerContractTest extends TestCase
             ],
             'findings' => [$finding],
             'runtime_matrix' => [
-                'runtimes' => ['workflow-php', 'sdk-python'],
-                'client_paths' => ['cli', 'workflow-php-sdk'],
+                'runtimes' => ['sdk-php', 'sdk-python'],
+                'client_paths' => ['cli', 'sdk-php'],
                 'schedule_types' => ['fixed_rate_interval'],
                 'cross_language_cells' => [[
                     'scenario' => 'php_created_python_workflow',
-                    'schedule_creator' => 'workflow-php-sdk',
+                    'schedule_creator' => 'sdk-php',
                     'workflow_runtime' => 'sdk-python',
                 ]],
             ],
@@ -2460,7 +2460,7 @@ final class SchedulesConformanceRunnerContractTest extends TestCase
                     'DW_SERVER_VERSION' => '0.2.510',
                     'DW_CLI_VERSION' => '0.1.82',
                     'DW_PYTHON_SDK_VERSION' => '0.4.90',
-                    'DW_WORKFLOW_PHP_VERSION' => '2.0.0-alpha.224',
+                    'DW_PHP_SDK_VERSION' => '0.1.224',
                     'DW_WATERLINE_VERSION' => '2.0.0-alpha.111',
                 ],
             );
@@ -2555,7 +2555,7 @@ final class SchedulesConformanceRunnerContractTest extends TestCase
                         'scenario' => 'python_created_php_workflow',
                         'blocked_reason' => $blockedReason,
                         'schedule_creator' => 'sdk-python',
-                        'workflow_runtime' => 'workflow-php',
+                        'workflow_runtime' => 'sdk-php',
                         'schedule_visible_in_cli' => false,
                         'workflow_completed' => false,
                     ],
@@ -2567,7 +2567,7 @@ final class SchedulesConformanceRunnerContractTest extends TestCase
                     'observed_outputs' => [
                         'scenario' => 'php_created_python_workflow',
                         'blocked_reason' => $blockedReason,
-                        'schedule_creator' => 'workflow-php-sdk',
+                        'schedule_creator' => 'sdk-php',
                         'workflow_runtime' => 'sdk-python',
                         'schedule_visible_in_cli' => false,
                         'workflow_completed' => false,
@@ -2577,18 +2577,18 @@ final class SchedulesConformanceRunnerContractTest extends TestCase
             ],
             'findings' => [$pythonFinding, $phpFinding],
             'runtime_matrix' => [
-                'runtimes' => ['workflow-php', 'sdk-python'],
-                'client_paths' => ['cli', 'sdk-python', 'workflow-php-sdk'],
+                'runtimes' => ['sdk-php', 'sdk-python'],
+                'client_paths' => ['cli', 'sdk-python', 'sdk-php'],
                 'schedule_types' => ['fixed_rate_interval'],
                 'cross_language_cells' => [
                     [
                         'scenario' => 'python_created_php_workflow',
                         'schedule_creator' => 'sdk-python',
-                        'workflow_runtime' => 'workflow-php',
+                        'workflow_runtime' => 'sdk-php',
                     ],
                     [
                         'scenario' => 'php_created_python_workflow',
-                        'schedule_creator' => 'workflow-php-sdk',
+                        'schedule_creator' => 'sdk-php',
                         'workflow_runtime' => 'sdk-python',
                     ],
                 ],
@@ -2598,14 +2598,14 @@ final class SchedulesConformanceRunnerContractTest extends TestCase
                     [
                         'scenario' => 'python_created_php_workflow',
                         'schedule_creator' => 'sdk-python',
-                        'workflow_runtime' => 'workflow-php',
+                        'workflow_runtime' => 'sdk-php',
                         'schedule_visible_in_cli' => false,
                         'workflow_completed' => false,
                         'blocked_reason' => $blockedReason,
                     ],
                     [
                         'scenario' => 'php_created_python_workflow',
-                        'schedule_creator' => 'workflow-php-sdk',
+                        'schedule_creator' => 'sdk-php',
                         'workflow_runtime' => 'sdk-python',
                         'schedule_visible_in_cli' => false,
                         'workflow_completed' => false,
@@ -2632,7 +2632,7 @@ final class SchedulesConformanceRunnerContractTest extends TestCase
                     'DW_SERVER_VERSION' => '0.2.491',
                     'DW_CLI_VERSION' => '0.1.82',
                     'DW_PYTHON_SDK_VERSION' => '0.4.90',
-                    'DW_WORKFLOW_PHP_VERSION' => '2.0.0-alpha.223',
+                    'DW_PHP_SDK_VERSION' => '0.1.223',
                     'DW_WATERLINE_VERSION' => '2.0.0-alpha.111',
                 ],
             );
@@ -2741,7 +2741,7 @@ final class SchedulesConformanceRunnerContractTest extends TestCase
                     'DW_SERVER_VERSION' => '0.2.348',
                     'DW_CLI_VERSION' => '0.1.77',
                     'DW_PYTHON_SDK_VERSION' => '0.4.85',
-                    'DW_WORKFLOW_PHP_VERSION' => '2.0.0-alpha.200',
+                    'DW_PHP_SDK_VERSION' => '0.1.200',
                     'DW_WATERLINE_VERSION' => '2.0.0-alpha.83',
                 ],
             );

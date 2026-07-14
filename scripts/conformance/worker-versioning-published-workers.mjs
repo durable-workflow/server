@@ -21,7 +21,7 @@ const token = process.env.DW_WV_AUTH_TOKEN ?? 'dev-token';
 const namespace = process.env.DW_WV_NAMESPACE ?? 'worker-versioning-conformance';
 const bootstrapNamespace = process.env.DW_WV_BOOTSTRAP_NAMESPACE ?? 'default';
 const pythonVersion = trim(process.env.DW_PYTHON_SDK_VERSION);
-const workflowPhpVersion = trim(process.env.DW_WORKFLOW_PHP_VERSION ?? process.env.DW_WORKFLOW_VERSION);
+const sdkPhpVersion = trim(process.env.DW_PHP_SDK_VERSION);
 const serverVersion = trim(process.env.DW_SERVER_VERSION);
 const suffix = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
 const taskQueue = process.env.DW_WV_PUBLISHED_WORKER_TASK_QUEUE
@@ -69,7 +69,7 @@ async function main() {
   let pythonAdversarial = emptySupplementalShard();
 
   const crossLanguageMissing = [];
-  if (!workflowPhpVersion) crossLanguageMissing.push('DW_WORKFLOW_PHP_VERSION');
+  if (!sdkPhpVersion) crossLanguageMissing.push('DW_PHP_SDK_VERSION');
   if (!commandExists('docker')) crossLanguageMissing.push('docker');
 
   if (crossLanguageMissing.length > 0) {
@@ -193,25 +193,25 @@ async function main() {
         command: `python3 -m pip install durable-workflow==${pythonVersion}`,
       },
       {
-        artifact: 'workflow-php',
-        version: workflowPhpVersion,
+        artifact: 'sdk-php',
+        version: sdkPhpVersion,
         source: 'packagist_release',
         status: 'pass',
-        command: `composer require durable-workflow/workflow:${workflowPhpVersion}`,
+        command: `composer require durable-workflow/sdk:${sdkPhpVersion}`,
       },
     ],
   };
   const registrationOutputs = {
     task_queue: taskQueue,
     registered_build_ids: {
-      workflow_php: phpV1BuildId,
+      sdk_php: phpV1BuildId,
       sdk_python: pythonV2BuildId,
       [phpV1WorkerId]: phpV1BuildId,
       [pythonV2WorkerId]: pythonV2BuildId,
     },
     worker_registration_responses: {
-      workflow_php: {
-        artifact: 'workflow-php',
+      sdk_php: {
+        artifact: 'sdk-php',
         runtime: 'php',
         worker_id: phpV1WorkerId,
         task_queue: taskQueue,
@@ -231,7 +231,7 @@ async function main() {
     },
     published_worker_registration_entries: [
       {
-        artifact: 'workflow-php',
+        artifact: 'sdk-php',
         runtime: 'php',
         worker_id: phpV1WorkerId,
         task_queue: taskQueue,
@@ -275,7 +275,7 @@ async function main() {
     owning_surface: registrationOutputs.public_outcome.passed ? 'conformance_harness' : 'server',
     artifact_versions: artifactVersions(),
     observed_behavior: 'Published PHP/Python worker registration evidence did not prove both registered build-id cohorts through the public worker-list and task-queue build-id surfaces.',
-    expected_behavior: 'Published workflow-php and sdk-python worker artifacts register on the same task queue, echo the requested build IDs, and appear as active cohorts through public operator surfaces.',
+    expected_behavior: 'Published sdk-php and sdk-python worker artifacts register on the same task queue, echo the requested build IDs, and appear as active cohorts through public operator surfaces.',
     next_acceptance_criterion: 'rerun the published worker-versioning shard and record PHP and Python registration responses, worker-list build IDs, task-queue build IDs, and positive active worker counts for both cohorts on the same task queue',
     worker_list_build_ids: registrationWorkerListBuildIds,
     task_queue_build_ids: registrationBuildIdValues,
@@ -334,9 +334,9 @@ async function main() {
       cells: [
         {
           scenario: 'php_v1_not_delivered_to_python_v2',
-          started_by: 'workflow-php-v1',
+          started_by: 'sdk-php-v1',
           incompatible_worker: 'sdk-python-v2',
-          compatible_worker: 'workflow-php-v1',
+          compatible_worker: 'sdk-php-v1',
           compatible_delivery_count: phpCompatible,
           incompatible_delivery_count: phpToPythonIncompatible,
           workflow_id: phpStartedWorkflowId,
@@ -348,7 +348,7 @@ async function main() {
         {
           scenario: 'python_v1_not_delivered_to_php_v2',
           started_by: 'sdk-python-v1',
-          incompatible_worker: 'workflow-php-v2',
+          incompatible_worker: 'sdk-php-v2',
           compatible_worker: 'sdk-python-v1',
           compatible_delivery_count: pythonCompatible,
           incompatible_delivery_count: pythonToPhpIncompatible,
@@ -379,11 +379,11 @@ async function main() {
           command: `python3 -m pip install durable-workflow==${pythonVersion}`,
         },
         {
-          artifact: 'workflow-php',
-          version: workflowPhpVersion,
+          artifact: 'sdk-php',
+          version: sdkPhpVersion,
           source: 'packagist_release',
           status: 'pass',
-          command: `composer require durable-workflow/workflow:${workflowPhpVersion}`,
+          command: `composer require durable-workflow/sdk:${sdkPhpVersion}`,
         },
       ],
     },
@@ -1152,7 +1152,7 @@ function installPhpWorker(shardRoot) {
     'require',
     '--no-interaction',
     '--no-progress',
-    `durable-workflow/workflow:${workflowPhpVersion}`,
+    `durable-workflow/sdk:${sdkPhpVersion}`,
   ], { logPath: installLog });
 
   return { shardRoot, phpRoot, scriptPath, install_log: installLog };
@@ -1222,7 +1222,7 @@ function writeWorkerInput(input) {
     workflow_type: workflowType,
     supported_activity_types: ['activity_a', 'activity_b'],
     python_version: pythonVersion,
-    workflow_php_version: workflowPhpVersion,
+    sdk_php_version: sdkPhpVersion,
     complete: false,
     fail: false,
     failure_message: 'published worker task failed',
@@ -1499,7 +1499,7 @@ function notCoveredShard(reason, observedOutputs) {
     owning_surface: 'conformance_harness',
     artifact_versions: artifactVersions(),
     observed_behavior: reason,
-    expected_behavior: 'Published workflow-php and sdk-python worker artifacts execute the cross-language worker-versioning cell without local product checkouts.',
+    expected_behavior: 'Published sdk-php and sdk-python worker artifacts execute the cross-language worker-versioning cell without local product checkouts.',
     next_acceptance_criterion: 'restore the published PHP/Python worker shard prerequisites and rerun worker-versioning conformance',
   };
 
@@ -1544,8 +1544,7 @@ function artifactVersions() {
   return {
     server: serverVersion,
     'sdk-python': pythonVersion,
-    workflow: workflowPhpVersion,
-    'workflow-php': workflowPhpVersion,
+    'sdk-php': sdkPhpVersion,
   };
 }
 
@@ -1553,8 +1552,7 @@ function artifactSources() {
   return {
     server: process.env.DW_WV_SERVER_ARTIFACT_SOURCE ?? 'published_server_url',
     'sdk-python': pythonVersion ? 'pypi_release' : 'not_exercised',
-    workflow: workflowPhpVersion ? 'packagist_release' : 'not_exercised',
-    'workflow-php': workflowPhpVersion ? 'packagist_release' : 'not_exercised',
+    'sdk-php': sdkPhpVersion ? 'packagist_release' : 'not_exercised',
   };
 }
 
@@ -2068,54 +2066,46 @@ declare(strict_types=1);
 
 require __DIR__.'/vendor/autoload.php';
 
-use Illuminate\Http\Client\Factory as HttpFactory;
-use Workflow\V2\Worker\WorkerProtocolClient;
+use DurableWorkflow\Client;
 
 $payload = json_decode((string) file_get_contents($argv[1]), true, 512, JSON_THROW_ON_ERROR);
 $outputPath = $argv[2];
 
-$client = new WorkerProtocolClient(
-    new HttpFactory(),
+$client = new Client(
     $payload['server_url'],
-    $payload['token'],
-    $payload['namespace'],
-    defaultRequestTimeoutSeconds: 8,
+    namespace: $payload['namespace'],
+    token: $payload['token'],
 );
 
 if ($payload['action'] === 'register') {
     $response = $client->registerWorker(
-        workerId: $payload['worker_id'],
-        taskQueue: $payload['task_queue'],
-        supportedWorkflowTypes: [$payload['workflow_type']],
-        supportedActivityTypes: $payload['supported_activity_types'],
-        sdkVersion: $payload['workflow_php_version'],
-        buildId: $payload['build_id'],
+        $payload['worker_id'],
+        $payload['task_queue'],
+        [$payload['workflow_type']],
+        $payload['supported_activity_types'],
+        ['query_tasks', 'workflow_updates', 'durable_history_replay'],
         maxConcurrentWorkflowTasks: 10,
         maxConcurrentActivityTasks: 10,
-        workflowDefinitionFingerprints: [$payload['workflow_type'] => $payload['fingerprint']],
+        buildId: $payload['build_id'],
     );
 
     $result = ['action' => 'register', 'response' => $response, 'task' => null];
 } elseif ($payload['action'] === 'poll') {
-    $tasks = $client->pollWorkflowTasks(
-        queue: $payload['task_queue'],
-        timeoutSeconds: 2,
-        workerId: $payload['worker_id'],
-        buildId: $payload['build_id'],
-        pollRequestId: $payload['worker_id'].'-'.bin2hex(random_bytes(8)),
-        historyPageSize: 100,
+    $task = $client->pollWorkflowTask(
+        $payload['worker_id'],
+        $payload['task_queue'],
+        2,
     );
-    $task = $tasks[0] ?? null;
 
     if (is_array($task) && ($payload['complete'] ?? false)) {
         $client->completeWorkflowTask(
             (string) $task['task_id'],
+            (string) ($task['lease_owner'] ?? $payload['worker_id']),
+            (int) ($task['workflow_task_attempt'] ?? 1),
             [[
                 'type' => 'complete_workflow',
-                'result' => json_encode($payload['result'] ?? [], JSON_THROW_ON_ERROR),
+                'result' => $client->payloadCodec()->envelope($payload['result'] ?? []),
             ]],
-            isset($task['lease_owner']) ? (string) $task['lease_owner'] : null,
-            isset($task['workflow_task_attempt']) ? (int) $task['workflow_task_attempt'] : null,
         );
     }
 

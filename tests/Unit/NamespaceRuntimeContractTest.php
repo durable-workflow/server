@@ -34,7 +34,7 @@ class NamespaceRuntimeContractTest extends TestCase
             $manifest['scenario_manifest']['source_path'],
         );
 
-        foreach (['server', 'cli', 'workflow-php', 'sdk-python', 'waterline'] as $artifact) {
+        foreach (['server', 'cli', 'workflow-php', 'sdk-php', 'sdk-python', 'waterline'] as $artifact) {
             $this->assertArrayHasKey($artifact, $manifest['artifact_policy']['install_channels']);
         }
 
@@ -66,7 +66,7 @@ class NamespaceRuntimeContractTest extends TestCase
             'tenant-b',
             'shared',
         ], $manifest['required_matrix']['namespaces']);
-        $this->assertSame(['workflow-php', 'sdk-python'], $manifest['required_matrix']['runtimes']);
+        $this->assertSame(['sdk-php', 'sdk-python'], $manifest['required_matrix']['runtimes']);
         $this->assertContains('cli', $manifest['required_matrix']['client_paths']);
         $this->assertContains('waterline-operator-api', $manifest['required_matrix']['observer_paths']);
 
@@ -151,7 +151,7 @@ class NamespaceRuntimeContractTest extends TestCase
             'cli_namespace_behavior_reported',
             'sdk_namespace_selection_reported',
             'php_worker_behavior_reported',
-            'workflow_php_namespace_shard_execution_recorded',
+            'sdk_php_namespace_shard_execution_recorded',
             'schedule_namespace_isolation_reported',
             'waterline_operator_visibility_reported',
             'waterline_namespace_shard_execution_recorded',
@@ -167,7 +167,7 @@ class NamespaceRuntimeContractTest extends TestCase
         }
 
         $this->assertSame(
-            ['tenant_a_worker_registration', 'tenant_b_worker_registration', 'tenant_a_delivery', 'tenant_b_delivery', 'cross_delivery_absent', 'workflow_php_shard_execution'],
+            ['tenant_a_worker_registration', 'tenant_b_worker_registration', 'tenant_a_delivery', 'tenant_b_delivery', 'cross_delivery_absent', 'sdk_php_shard_execution'],
             $manifest['scenario_requirements']['php_worker_task_queue_namespace_isolation']['evidence'],
         );
         $this->assertSame(
@@ -208,16 +208,16 @@ class NamespaceRuntimeContractTest extends TestCase
             $this->assertContains($file, $manifest['host_runner_contract']['result_files']);
         }
         $this->assertSame(
-            'workflow:v2:namespace-conformance',
-            $manifest['host_runner_contract']['runtime_shards']['workflow-php']['preferred_command'],
+            'php-sdk-published-artifacts',
+            $manifest['host_runner_contract']['runtime_shards']['sdk-php']['preferred_command'],
         );
         $this->assertSame(
-            'workflow:v2:namespace-conformance',
-            $manifest['host_runner_contract']['runtime_shards']['workflow-php']['artisan_command'],
+            'scripts/conformance/php-sdk-published-artifacts.sh',
+            $manifest['host_runner_contract']['runtime_shards']['sdk-php']['runner_path'],
         );
         $this->assertSame(
-            'durable-workflow/workflow',
-            $manifest['host_runner_contract']['runtime_shards']['workflow-php']['artifact'],
+            'durable-workflow/sdk',
+            $manifest['host_runner_contract']['runtime_shards']['sdk-php']['artifact'],
         );
         $this->assertSame(
             [
@@ -225,7 +225,7 @@ class NamespaceRuntimeContractTest extends TestCase
                 'sdk_namespace_selection_parity',
                 'php_worker_task_queue_namespace_isolation',
             ],
-            $manifest['host_runner_contract']['runtime_shards']['workflow-php']['must_cover_scenarios'],
+            $manifest['host_runner_contract']['runtime_shards']['sdk-php']['must_cover_scenarios'],
         );
         $this->assertSame(
             [
@@ -233,7 +233,7 @@ class NamespaceRuntimeContractTest extends TestCase
                 'documented_default_namespace',
                 'cross_namespace_not_found',
             ],
-            $manifest['host_runner_contract']['runtime_shards']['workflow-php']['must_cover_client_behavior'],
+            $manifest['host_runner_contract']['runtime_shards']['sdk-php']['must_cover_client_behavior'],
         );
         $this->assertSame(
             [
@@ -241,16 +241,16 @@ class NamespaceRuntimeContractTest extends TestCase
                 'same_queue_tenant_b_delivery',
                 'cross_namespace_delivery_absent',
             ],
-            $manifest['host_runner_contract']['runtime_shards']['workflow-php']['must_cover_worker_behavior'],
+            $manifest['host_runner_contract']['runtime_shards']['sdk-php']['must_cover_worker_behavior'],
         );
         $this->assertSame(
             [
-                'workflow-php-sdk_namespace_selection',
-                'workflow-php-worker_registration',
+                'sdk-php-namespace-selection',
+                'sdk-php-worker-registration',
                 'same_queue_worker_delivery_isolation',
                 'cross_namespace_workflow_lookup_denied',
             ],
-            $manifest['host_runner_contract']['runtime_shards']['workflow-php']['must_cover_surfaces'],
+            $manifest['host_runner_contract']['runtime_shards']['sdk-php']['must_cover_surfaces'],
         );
         $this->assertSame(
             'waterline:namespace-conformance',
@@ -281,7 +281,7 @@ class NamespaceRuntimeContractTest extends TestCase
             $resultGate['pass_requires'],
         );
         $this->assertContains(
-            'workflow_php_worker_pass_requires_published_shard_execution',
+            'sdk_php_worker_pass_requires_published_shard_execution',
             $resultGate['pass_requires'],
         );
         $this->assertContains(
@@ -410,7 +410,7 @@ class NamespaceRuntimeContractTest extends TestCase
     {
         $result = $this->completeNamespaceResult();
         unset(
-            $result['php_worker_behavior']['workflow_php_shard_execution'],
+            $result['php_worker_behavior']['sdk_php_shard_execution'],
             $result['waterline_operator_visibility']['waterline_shard_execution'],
             $result['waterline_operator_visibility']['api_captures'],
             $result['sdk_namespace_selection']['cross_namespace_lookup_denied'],
@@ -426,7 +426,7 @@ class NamespaceRuntimeContractTest extends TestCase
 
         $this->assertSame('non_passing', $evaluation['status']);
         $this->assertContains(
-            ['php_worker_task_queue_namespace_isolation', 'workflow_php_shard_execution'],
+            ['php_worker_task_queue_namespace_isolation', 'sdk_php_shard_execution'],
             array_map(
                 static fn (array $failure): array => [$failure['scenario_id'] ?? null, $failure['field'] ?? null],
                 $missingEvidence,
@@ -479,11 +479,11 @@ class NamespaceRuntimeContractTest extends TestCase
             'tenant_b_delivery' => ['worker' => 'tenant-b-worker'],
             'cross_delivery_absent' => true,
         ];
-        $result['published_artifact_install']['workflow_php_package'] = [
-            'version' => '2.0.0-alpha.166',
+        $result['published_artifact_install']['sdk_php_package'] = [
+            'version' => '0.1.1',
             'source' => 'packagist_package',
             'status' => 'resolved',
-            'shard_command' => 'workflow:v2:namespace-conformance',
+            'shard_command' => 'php-sdk-published-artifacts',
         ];
 
         $evaluation = NamespaceRuntimeResultGate::evaluate($result);
@@ -491,61 +491,61 @@ class NamespaceRuntimeContractTest extends TestCase
 
         $this->assertSame('non_passing', $evaluation['status']);
         $this->assertContains('missing_scenario_specific_evidence', $failureCodes);
-        $this->assertContains('missing_workflow_php_shard_execution', $failureCodes);
-        $this->assertContains('workflow_php_artifact_not_marked_executed', $failureCodes);
-        $this->assertContains('missing_workflow_php_artifact_shard_execution_record', $failureCodes);
+        $this->assertContains('missing_sdk_php_shard_execution', $failureCodes);
+        $this->assertContains('sdk_php_artifact_not_marked_executed', $failureCodes);
+        $this->assertContains('missing_sdk_php_artifact_shard_execution_record', $failureCodes);
     }
 
     public function test_result_gate_rejects_php_worker_pass_with_missing_php_shard_status(): void
     {
         $result = $this->completeNamespaceResult();
-        $result['php_worker_behavior']['workflow_php_shard_execution']['status'] = 'missing';
-        $result['published_artifact_install']['workflow_php_package']['status'] = 'missing';
-        $result['published_artifact_install']['workflow_php_package']['namespace_shard_execution']['status'] = 'missing';
+        $result['php_worker_behavior']['sdk_php_shard_execution']['status'] = 'missing';
+        $result['published_artifact_install']['sdk_php_package']['status'] = 'missing';
+        $result['published_artifact_install']['sdk_php_package']['namespace_shard_execution']['status'] = 'missing';
 
         $evaluation = NamespaceRuntimeResultGate::evaluate($result);
         $failureCodes = array_column($evaluation['gate_failures'], 'code');
 
         $this->assertSame('non_passing', $evaluation['status']);
-        $this->assertContains('workflow_php_shard_not_executed', $failureCodes);
-        $this->assertContains('workflow_php_artifact_not_marked_executed', $failureCodes);
-        $this->assertContains('workflow_php_artifact_shard_not_executed', $failureCodes);
+        $this->assertContains('sdk_php_shard_not_executed', $failureCodes);
+        $this->assertContains('sdk_php_artifact_not_marked_executed', $failureCodes);
+        $this->assertContains('sdk_php_artifact_shard_not_executed', $failureCodes);
     }
 
     public function test_result_gate_rejects_php_worker_pass_with_stale_php_shard_artifact_versions(): void
     {
         $result = $this->completeNamespaceResult();
-        $result['php_worker_behavior']['workflow_php_shard_execution']['artifact_versions']['workflow-php'] =
-            '2.0.0-alpha.165';
-        $result['published_artifact_install']['workflow_php_package']['namespace_shard_execution']['artifact_versions']['workflow-php'] =
-            '2.0.0-alpha.165';
+        $result['php_worker_behavior']['sdk_php_shard_execution']['artifact_versions']['sdk-php'] =
+            '0.1.0';
+        $result['published_artifact_install']['sdk_php_package']['namespace_shard_execution']['artifact_versions']['sdk-php'] =
+            '0.1.0';
 
         $evaluation = NamespaceRuntimeResultGate::evaluate($result);
         $versionMismatches = array_values(array_filter(
             $evaluation['gate_failures'],
-            static fn (array $failure): bool => ($failure['code'] ?? null) === 'workflow_php_shard_artifact_version_mismatch',
+            static fn (array $failure): bool => ($failure['code'] ?? null) === 'sdk_php_shard_artifact_version_mismatch',
         ));
 
         $this->assertSame('non_passing', $evaluation['status']);
-        $this->assertSame('workflow-php', $versionMismatches[0]['artifact'] ?? null);
-        $this->assertSame('2.0.0-alpha.166', $versionMismatches[0]['expected_version'] ?? null);
-        $this->assertSame('2.0.0-alpha.165', $versionMismatches[0]['actual_version'] ?? null);
+        $this->assertSame('sdk-php', $versionMismatches[0]['artifact'] ?? null);
+        $this->assertSame('0.1.1', $versionMismatches[0]['expected_version'] ?? null);
+        $this->assertSame('0.1.0', $versionMismatches[0]['actual_version'] ?? null);
     }
 
     public function test_result_gate_rejects_php_worker_pass_when_php_shard_does_not_cover_required_scenarios(): void
     {
         $result = $this->completeNamespaceResult();
-        $execution = $result['php_worker_behavior']['workflow_php_shard_execution'];
+        $execution = $result['php_worker_behavior']['sdk_php_shard_execution'];
         $execution['covered_scenarios'] = ['php_worker_task_queue_namespace_isolation'];
         $execution['scenario_statuses'] = ['php_worker_task_queue_namespace_isolation' => 'pass'];
-        $result['php_worker_behavior']['workflow_php_shard_execution'] = $execution;
-        $result['published_artifact_install']['workflow_php_package']['namespace_shard_execution'] = $execution;
+        $result['php_worker_behavior']['sdk_php_shard_execution'] = $execution;
+        $result['published_artifact_install']['sdk_php_package']['namespace_shard_execution'] = $execution;
 
         $evaluation = NamespaceRuntimeResultGate::evaluate($result);
 
         $this->assertSame('non_passing', $evaluation['status']);
         $this->assertContains(
-            ['workflow_php_shard_missing_required_scenario', 'namespace_create_update_describe_and_list'],
+            ['sdk_php_shard_missing_required_scenario', 'namespace_create_update_describe_and_list'],
             array_map(
                 static fn (array $failure): array => [
                     $failure['code'] ?? null,
@@ -555,7 +555,7 @@ class NamespaceRuntimeContractTest extends TestCase
             ),
         );
         $this->assertContains(
-            ['workflow_php_shard_required_scenario_not_passed', 'sdk_namespace_selection_parity', ''],
+            ['sdk_php_shard_required_scenario_not_passed', 'sdk_namespace_selection_parity', ''],
             array_map(
                 static fn (array $failure): array => [
                     $failure['code'] ?? null,
@@ -676,6 +676,7 @@ class NamespaceRuntimeContractTest extends TestCase
             'cli' => 'latest',
             'sdk-python' => 'durable-workflow==<latest>',
             'workflow' => '2.0.0-alpha.<latest>',
+            'sdk-php' => '<latest>',
             'waterline' => '2.0.0-alpha.57',
         ];
 
@@ -687,7 +688,7 @@ class NamespaceRuntimeContractTest extends TestCase
 
         $this->assertSame('non_passing', $evaluation['status']);
         $this->assertSame(
-            ['server', 'cli', 'workflow-php', 'sdk-python'],
+            ['server', 'cli', 'workflow-php', 'sdk-php', 'sdk-python'],
             array_column($placeholderFailures, 'artifact'),
         );
     }
@@ -770,12 +771,14 @@ class NamespaceRuntimeContractTest extends TestCase
                 'cli' => '0.1.53',
                 'sdk-python' => '0.4.64',
                 'workflow' => '2.0.0-alpha.166',
+                'sdk-php' => '0.1.1',
                 'waterline' => '2.0.0-alpha.57',
             ],
             'artifact_sources' => [
                 'server' => 'published_docker_image',
                 'cli' => 'published_install_script',
                 'workflow' => 'published_composer_package',
+                'sdk-php' => 'published_composer_package',
                 'sdk-python' => 'published_pypi_package',
                 'waterline' => 'published_package',
             ],
@@ -784,19 +787,19 @@ class NamespaceRuntimeContractTest extends TestCase
                 'task_queues' => ['iso'],
             ],
             'runtime_matrix' => [
-                'runtimes' => ['workflow-php', 'sdk-python'],
-                'client_paths' => ['cli', 'sdk-python', 'workflow-php-sdk'],
+                'runtimes' => ['sdk-php', 'sdk-python'],
+                'client_paths' => ['cli', 'sdk-python', 'sdk-php'],
                 'observer_paths' => ['waterline-list', 'waterline-detail', 'waterline-operator-api'],
                 'worker_isolation_cells' => [
                     [
                         'scenario' => 'php_worker_task_queue_namespace_isolation',
-                        'runtime' => 'workflow-php',
+                        'runtime' => 'sdk-php',
                         'namespace' => 'tenant-a',
                         'task_queue' => 'iso',
                     ],
                     [
                         'scenario' => 'php_worker_task_queue_namespace_isolation',
-                        'runtime' => 'workflow-php',
+                        'runtime' => 'sdk-php',
                         'namespace' => 'tenant-b',
                         'task_queue' => 'iso',
                     ],
@@ -831,12 +834,12 @@ class NamespaceRuntimeContractTest extends TestCase
             'published_artifact_install' => [
                 'server_image' => 'durableworkflow/server:0.2.153',
                 'cli_release' => '0.1.53',
-                'workflow_php_package' => [
-                    'version' => '2.0.0-alpha.166',
+                'sdk_php_package' => [
+                    'version' => '0.1.1',
                     'source' => 'packagist_package',
                     'status' => 'executed',
-                    'shard_command' => 'workflow:v2:namespace-conformance',
-                    'namespace_shard_execution' => $this->workflowPhpShardExecution(),
+                    'shard_command' => 'php-sdk-published-artifacts',
+                    'namespace_shard_execution' => $this->sdkPhpShardExecution(),
                 ],
                 'sdk_python_package' => 'durable-workflow==0.4.64',
                 'waterline_artifact' => '2.0.0-alpha.57',
@@ -876,7 +879,7 @@ class NamespaceRuntimeContractTest extends TestCase
                 'tenant_a_delivery' => ['worker' => 'tenant-a-worker'],
                 'tenant_b_delivery' => ['worker' => 'tenant-b-worker'],
                 'cross_delivery_absent' => true,
-                'workflow_php_shard_execution' => $this->workflowPhpShardExecution(),
+                'sdk_php_shard_execution' => $this->sdkPhpShardExecution(),
             ],
             'waterline_operator_visibility' => [
                 'tenant_a_scoped_views' => ['tenant-a-run'],
@@ -980,6 +983,7 @@ class NamespaceRuntimeContractTest extends TestCase
                     'server',
                     'cli',
                     'workflow-php',
+                    'sdk-php',
                     'sdk-python',
                     'waterline',
                 ],
@@ -1026,20 +1030,21 @@ class NamespaceRuntimeContractTest extends TestCase
     /**
      * @return array<string, mixed>
      */
-    private function workflowPhpShardExecution(): array
+    private function sdkPhpShardExecution(): array
     {
         return [
             'status' => 'executed',
             'required' => true,
-            'shard_command' => 'workflow:v2:namespace-conformance',
-            'scope' => 'workflow-php-namespace-shard',
-            'coverage_scope' => 'workflow-php-namespace-shard',
-            'artifact' => 'durable-workflow/workflow',
-            'artifact_version' => '2.0.0-alpha.166',
+            'shard_command' => 'php-sdk-published-artifacts',
+            'scope' => 'sdk-php-namespace-shard',
+            'coverage_scope' => 'sdk-php-namespace-shard',
+            'artifact' => 'durable-workflow/sdk',
+            'artifact_version' => '0.1.1',
             'artifact_versions' => [
                 'server' => '0.2.153',
                 'cli' => '0.1.53',
                 'workflow-php' => '2.0.0-alpha.166',
+                'sdk-php' => '0.1.1',
                 'sdk-python' => '0.4.64',
                 'waterline' => '2.0.0-alpha.57',
             ],
@@ -1058,7 +1063,7 @@ class NamespaceRuntimeContractTest extends TestCase
                 'sdk_namespace_selection_parity' => 'pass',
                 'php_worker_task_queue_namespace_isolation' => 'pass',
             ],
-            'report_path' => 'artifacts/workflow-php-namespace-shard.json',
+            'report_path' => 'artifacts/sdk-php-namespace-shard.json',
             'scenario_status' => 'pass',
         ];
     }
@@ -1080,6 +1085,7 @@ class NamespaceRuntimeContractTest extends TestCase
                 'server' => '0.2.153',
                 'cli' => '0.1.53',
                 'workflow-php' => '2.0.0-alpha.166',
+                'sdk-php' => '0.1.1',
                 'sdk-python' => '0.4.64',
                 'waterline' => '2.0.0-alpha.57',
             ],

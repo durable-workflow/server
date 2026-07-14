@@ -1235,8 +1235,8 @@ use Workflow\Serializers\CodecRegistry;
 use Workflow\Serializers\Serializer;
 use Workflow\V2\Attributes\Type;
 use Workflow\V2\Support\ActivityOptions;
-use Workflow\V2\Worker\WorkflowFiberRunner;
-use Workflow\V2\Worker\WorkflowStep;
+use Workflow\V2\Support\WorkflowFiberRunner;
+use Workflow\V2\Support\WorkflowStep;
 use Workflow\V2\Workflow;
 
 require __DIR__.'/vendor/autoload.php';

@@ -16,7 +16,7 @@ final class NamespaceRuntimeContract
 {
     public const SCHEMA = 'durable-workflow.v2.namespace-runtime.contract';
 
-    public const VERSION = 2;
+    public const VERSION = 3;
 
     public const RESULT_SCHEMA = 'durable-workflow.v2.namespace-runtime.result';
 
@@ -48,6 +48,7 @@ final class NamespaceRuntimeContract
                     'server' => 'docker image durableworkflow/server:<latest>',
                     'cli' => 'official dw install script pinned to its latest release tag',
                     'workflow-php' => 'Composer package durable-workflow/workflow:2.0.0-alpha.<latest>',
+                    'sdk-php' => 'Composer package durable-workflow/sdk:<latest>',
                     'sdk-python' => 'PyPI package durable-workflow==<latest>',
                     'waterline' => 'published Waterline package or image matching the latest release tag',
                 ],
@@ -82,7 +83,7 @@ final class NamespaceRuntimeContract
                 'shared_task_queue' => 'iso',
                 'search_attribute_key' => 'customer_id',
                 'required_workers' => [
-                    'workflow-php',
+                    'sdk-php',
                     'sdk-python',
                 ],
                 'required_operator_surface' => [
@@ -97,13 +98,13 @@ final class NamespaceRuntimeContract
                     'shared',
                 ],
                 'runtimes' => [
-                    'workflow-php',
+                    'sdk-php',
                     'sdk-python',
                 ],
                 'client_paths' => [
                     'cli',
                     'sdk-python',
-                    'workflow-php-sdk',
+                    'sdk-php',
                 ],
                 'observer_paths' => [
                     'waterline-list',
@@ -112,13 +113,13 @@ final class NamespaceRuntimeContract
                 ],
                 'worker_isolation_cells' => [
                     [
-                        'runtime' => 'workflow-php',
+                        'runtime' => 'sdk-php',
                         'namespace' => 'tenant-a',
                         'task_queue' => 'iso',
                         'scenario' => 'php_worker_task_queue_namespace_isolation',
                     ],
                     [
-                        'runtime' => 'workflow-php',
+                        'runtime' => 'sdk-php',
                         'namespace' => 'tenant-b',
                         'task_queue' => 'iso',
                         'scenario' => 'php_worker_task_queue_namespace_isolation',
@@ -172,7 +173,7 @@ final class NamespaceRuntimeContract
                     'evidence' => [
                         'server_image',
                         'cli_release',
-                        'workflow_php_package',
+                        'sdk_php_package',
                         'sdk_python_package',
                         'waterline_artifact',
                     ],
@@ -249,7 +250,7 @@ final class NamespaceRuntimeContract
                         'tenant_a_delivery',
                         'tenant_b_delivery',
                         'cross_delivery_absent',
-                        'workflow_php_shard_execution',
+                        'sdk_php_shard_execution',
                     ],
                 ],
                 'waterline_operator_namespace_visibility' => [
@@ -309,7 +310,7 @@ final class NamespaceRuntimeContract
                     'cli_namespace_behavior_reported',
                     'sdk_namespace_selection_reported',
                     'php_worker_behavior_reported',
-                    'workflow_php_namespace_shard_execution_recorded',
+                    'sdk_php_namespace_shard_execution_recorded',
                     'schedule_namespace_isolation_reported',
                     'waterline_operator_visibility_reported',
                     'waterline_namespace_shard_execution_recorded',
@@ -354,7 +355,7 @@ final class NamespaceRuntimeContract
                 'required_execution_scopes' => [
                     'published-artifact-install',
                     'server-sdk-namespace-isolation-smoke',
-                    'workflow-php-namespace-shard',
+                    'sdk-php-namespace-shard',
                     'cli-namespace-surface-shard',
                     'waterline-operator-namespace-shard',
                     'namespace-lifecycle-cleanup-shard',
@@ -362,11 +363,11 @@ final class NamespaceRuntimeContract
                     'reserved-name-adversarial-shard',
                 ],
                 'runtime_shards' => [
-                    'workflow-php' => [
-                        'scope' => 'workflow-php-namespace-shard',
-                        'artifact' => 'durable-workflow/workflow',
-                        'preferred_command' => 'workflow:v2:namespace-conformance',
-                        'artisan_command' => 'workflow:v2:namespace-conformance',
+                    'sdk-php' => [
+                        'scope' => 'sdk-php-namespace-shard',
+                        'artifact' => 'durable-workflow/sdk',
+                        'preferred_command' => 'php-sdk-published-artifacts',
+                        'runner_path' => 'scripts/conformance/php-sdk-published-artifacts.sh',
                         'must_cover_scenarios' => [
                             'namespace_create_update_describe_and_list',
                             'sdk_namespace_selection_parity',
@@ -383,8 +384,8 @@ final class NamespaceRuntimeContract
                             'cross_namespace_delivery_absent',
                         ],
                         'must_cover_surfaces' => [
-                            'workflow-php-sdk_namespace_selection',
-                            'workflow-php-worker_registration',
+                            'sdk-php-namespace-selection',
+                            'sdk-php-worker-registration',
                             'same_queue_worker_delivery_isolation',
                             'cross_namespace_workflow_lookup_denied',
                         ],

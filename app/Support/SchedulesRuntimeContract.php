@@ -60,7 +60,7 @@ final class SchedulesRuntimeContract
                 'install_channels' => [
                     'server' => 'docker image durableworkflow/server:<latest>',
                     'cli' => 'official dw install script pinned to its latest release tag',
-                    'workflow-php' => 'Composer package durable-workflow/workflow:2.0.0-alpha.<latest>',
+                    'sdk-php' => 'Composer package durable-workflow/sdk:<exact released version>',
                     'sdk-python' => 'PyPI package durable-workflow==<latest>',
                     'waterline' => 'published Waterline observer artifact when claimed by the release set',
                 ],
@@ -105,13 +105,13 @@ final class SchedulesRuntimeContract
                 'namespace' => 'schedules-conformance',
                 'task_queue' => 'schedules-shared',
                 'required_workers' => [
-                    'workflow-php',
+                    'sdk-php',
                     'sdk-python',
                 ],
                 'required_clients' => [
                     'cli',
                     'sdk-python',
-                    'workflow-php-sdk',
+                    'sdk-php',
                 ],
                 'schedule_types' => [
                     'cron_expression',
@@ -126,13 +126,13 @@ final class SchedulesRuntimeContract
             ],
             'required_matrix' => [
                 'runtimes' => [
-                    'workflow-php',
+                    'sdk-php',
                     'sdk-python',
                 ],
                 'client_paths' => [
                     'cli',
                     'sdk-python',
-                    'workflow-php-sdk',
+                    'sdk-php',
                 ],
                 'schedule_types' => [
                     'cron_expression',
@@ -141,11 +141,11 @@ final class SchedulesRuntimeContract
                 'cross_language_cells' => [
                     [
                         'schedule_creator' => 'sdk-python',
-                        'workflow_runtime' => 'workflow-php',
+                        'workflow_runtime' => 'sdk-php',
                         'scenario' => 'python_created_php_workflow',
                     ],
                     [
-                        'schedule_creator' => 'workflow-php-sdk',
+                        'schedule_creator' => 'sdk-php',
                         'workflow_runtime' => 'sdk-python',
                         'scenario' => 'php_created_python_workflow',
                     ],
@@ -191,7 +191,7 @@ final class SchedulesRuntimeContract
                     'required_surfaces' => [
                         'dw schedules list',
                         'sdk-python list_schedules',
-                        'workflow-php schedule list or describe',
+                        'sdk-php schedule list or describe',
                     ],
                     'required_fields' => [
                         'cron_or_interval',
@@ -274,7 +274,7 @@ final class SchedulesRuntimeContract
                     'missed-fire-restart-shard',
                     'cli-schedule-surface-shard',
                     'sdk-python-schedule-surface-shard',
-                    'workflow-php-schedule-surface-shard',
+                    'sdk-php-schedule-surface-shard',
                     'cross-language-schedule-workflow-shard',
                     'adversarial-schedule-input-shard',
                 ],
@@ -306,8 +306,8 @@ final class SchedulesRuntimeContract
                         'fallback_status_when_surface_missing' => 'unsupported',
                         'fallback_finding_type' => 'unsupported_public_surface',
                     ],
-                    'workflow-php-sdk' => [
-                        'scope' => 'workflow-php-schedule-surface-shard',
+                    'sdk-php' => [
+                        'scope' => 'sdk-php-schedule-surface-shard',
                         'must_cover_controls' => [
                             'create_or_observe',
                             'list_or_describe',
@@ -319,7 +319,7 @@ final class SchedulesRuntimeContract
                         'fallback_status_when_surface_missing' => 'unsupported',
                         'fallback_finding_type' => 'unsupported_public_surface',
                     ],
-                    'workflow-php-worker' => [
+                    'sdk-php-worker' => [
                         'scope' => 'cross-language-schedule-workflow-shard',
                         'must_register_workflows' => [
                             'SchedulesConformancePhpWorkflow',
@@ -345,19 +345,19 @@ final class SchedulesRuntimeContract
                         'missed-fire-restart-shard',
                         'cli-schedule-surface-shard',
                         'sdk-python-schedule-surface-shard',
-                        'workflow-php-schedule-surface-shard',
+                        'sdk-php-schedule-surface-shard',
                         'cross-language-schedule-workflow-shard',
                         'adversarial-schedule-input-shard',
                     ],
                     'output_schema' => self::RESULT_SCHEMA,
                     'requires_required_runtimes' => [
-                        'workflow-php',
+                        'sdk-php',
                         'sdk-python',
                     ],
                     'requires_required_clients' => [
                         'cli',
                         'sdk-python',
-                        'workflow-php-sdk',
+                        'sdk-php',
                     ],
                     'requires_required_scenarios' => 'schedules_runtime_contract.required_scenarios',
                     'requires_sections' => [
@@ -398,7 +398,7 @@ final class SchedulesRuntimeContract
                 'invalid_cron_accepted' => 'link_root_cause_finding_against_server',
                 'cli_surface_gap' => 'link_root_cause_finding_against_cli',
                 'sdk_surface_gap' => 'link_root_cause_finding_against_sdk_owner',
-                'php_surface_gap' => 'link_root_cause_finding_against_workflow_php',
+                'php_surface_gap' => 'link_root_cause_finding_against_sdk_php',
                 'cross_language_dispatch_gap' => 'link_root_cause_finding_against_server_or_worker_protocol_owner',
                 'documentation_gap' => 'link_root_cause_finding_against_docs',
                 'unsupported_public_surface' => 'link_root_cause_finding_against_surface_owner',
@@ -420,9 +420,9 @@ final class SchedulesRuntimeContract
                 'owner' => 'conformance_harness',
                 'scope' => 'published-artifact-install',
                 'current_evidence' => 'The schedules result must name concrete published versions for every actor and prove none came from a local product checkout.',
-                'expected_behavior' => 'Server image, CLI, Python SDK, PHP workflow runtime, and Waterline are installed from published channels and recorded with concrete versions.',
+                'expected_behavior' => 'Server image, CLI, Python SDK, PHP SDK, and Waterline are installed from published channels and recorded with concrete versions.',
                 'acceptance' => [
-                    'record server, cli, sdk-python, workflow-php, and waterline artifact versions',
+                    'record server, cli, sdk-python, sdk-php, and waterline artifact versions',
                     'record artifact sources from published channels only',
                     'prove local product source checkouts were not used as artifacts under test',
                 ],
@@ -537,12 +537,12 @@ final class SchedulesRuntimeContract
             ],
             'php_schedule_surface' => [
                 'id' => 'schedules-php-surface-coverage',
-                'owner' => 'workflow-php',
-                'scope' => 'workflow-php-schedule-surface-shard',
+                'owner' => 'sdk-php',
+                'scope' => 'sdk-php-schedule-surface-shard',
                 'current_evidence' => $currentEvidence.' It does not exercise a PHP-facing schedule client path.',
                 'expected_behavior' => 'The PHP-facing workflow SDK surface can create or observe schedules and report list or describe state consistently with server and CLI state.',
                 'acceptance' => [
-                    'execute the PHP-facing schedule client path from the published workflow package',
+                    'execute the PHP-facing schedule client path from the published PHP SDK package',
                     'record create_or_observe and list_or_describe outputs',
                     'record pause, resume, trigger, or delete behavior when the surface claims those controls',
                 ],
@@ -552,10 +552,10 @@ final class SchedulesRuntimeContract
                 'owner' => 'conformance_harness',
                 'scope' => 'cross-language-schedule-workflow-shard',
                 'current_evidence' => $currentEvidence.' It does not run a PHP worker for a schedule created by Python.',
-                'expected_behavior' => 'A schedule created by the Python SDK dispatches a scheduled fire to a PHP workflow worker from the published workflow package.',
+                'expected_behavior' => 'A schedule created by the Python SDK dispatches a scheduled fire to a worker from the published PHP SDK package.',
                 'acceptance' => [
                     'create a schedule with sdk-python targeting a PHP workflow type',
-                    'run the PHP worker from the published workflow package',
+                    'run the PHP worker from the published PHP SDK package',
                     'record CLI schedule visibility and PHP workflow completion',
                 ],
             ],

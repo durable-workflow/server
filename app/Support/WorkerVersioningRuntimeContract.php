@@ -59,7 +59,8 @@ final class WorkerVersioningRuntimeContract
                 'install_channels' => [
                     'server' => 'docker image durableworkflow/server:<latest>',
                     'cli' => 'official dw install script pinned to its latest release tag',
-                    'workflow-php' => 'Composer package durable-workflow/workflow:2.0.0-alpha.<latest>',
+                    'workflow' => 'Composer package durable-workflow/workflow:2.0.0-alpha.<latest> for embedded Laravel and Waterline runtime support',
+                    'sdk-php' => 'exact Composer package durable-workflow/sdk release from Packagist',
                     'sdk-python' => 'PyPI package durable-workflow==<latest>',
                     'waterline' => 'published Waterline observer artifact when claimed by the release set',
                 ],
@@ -98,14 +99,14 @@ final class WorkerVersioningRuntimeContract
                 'namespace' => 'worker-versioning-conformance',
                 'task_queue' => 'worker-versioning-shared',
                 'required_workers' => [
-                    'workflow-php-v1',
-                    'workflow-php-v2',
+                    'sdk-php-v1',
+                    'sdk-php-v2',
                     'sdk-python-v1-or-v2',
                 ],
                 'required_clients' => [
                     'cli',
                     'sdk-python',
-                    'workflow-php-sdk',
+                    'sdk-php',
                     'waterline',
                 ],
                 'workflow_shape' => [
@@ -122,13 +123,13 @@ final class WorkerVersioningRuntimeContract
             ],
             'required_matrix' => [
                 'runtimes' => [
-                    'workflow-php',
+                    'sdk-php',
                     'sdk-python',
                 ],
                 'client_paths' => [
                     'cli',
                     'sdk-python',
-                    'workflow-php-sdk',
+                    'sdk-php',
                 ],
                 'operator_visibility_paths' => [
                     'dw workers list',
@@ -146,13 +147,13 @@ final class WorkerVersioningRuntimeContract
                 ],
                 'cross_language_cells' => [
                     [
-                        'started_by' => 'workflow-php-v1',
+                        'started_by' => 'sdk-php-v1',
                         'incompatible_worker' => 'sdk-python-v2',
                         'scenario' => 'php_v1_not_delivered_to_python_v2',
                     ],
                     [
                         'started_by' => 'sdk-python-v1',
-                        'incompatible_worker' => 'workflow-php-v2',
+                        'incompatible_worker' => 'sdk-php-v2',
                         'scenario' => 'python_v1_not_delivered_to_php_v2',
                     ],
                 ],

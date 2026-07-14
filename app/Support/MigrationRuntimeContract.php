@@ -251,7 +251,7 @@ final class MigrationRuntimeContract
                 'client_paths' => [
                     'cli-v1',
                     'cli-v2',
-                    'workflow-php-sdk',
+                    'sdk-php',
                     'sdk-python',
                 ],
                 'operator_visibility_paths' => [

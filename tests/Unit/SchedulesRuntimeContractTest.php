@@ -36,7 +36,7 @@ class SchedulesRuntimeContractTest extends TestCase
         );
         $this->assertTrue($manifest['artifact_policy']['placeholder_versions_rejected']);
 
-        foreach (['server', 'cli', 'workflow-php', 'sdk-python', 'waterline'] as $artifact) {
+        foreach (['server', 'cli', 'sdk-php', 'sdk-python', 'waterline'] as $artifact) {
             $this->assertArrayHasKey($artifact, $manifest['artifact_policy']['install_channels']);
         }
 
@@ -82,16 +82,16 @@ class SchedulesRuntimeContractTest extends TestCase
         $this->assertContains('invalid_cron_refusal', $manifest['required_scenarios']);
 
         $matrix = $manifest['required_matrix'];
-        $this->assertContains('workflow-php', $matrix['runtimes']);
+        $this->assertContains('sdk-php', $matrix['runtimes']);
         $this->assertContains('sdk-python', $matrix['runtimes']);
         $this->assertContains('cli', $matrix['client_paths']);
-        $this->assertContains('workflow-php-sdk', $matrix['client_paths']);
+        $this->assertContains('sdk-php', $matrix['client_paths']);
         $this->assertContains('cron_expression', $matrix['schedule_types']);
         $this->assertContains('fixed_rate_interval', $matrix['schedule_types']);
         $this->assertContains(
             [
                 'schedule_creator' => 'sdk-python',
-                'workflow_runtime' => 'workflow-php',
+                'workflow_runtime' => 'sdk-php',
                 'scenario' => 'python_created_php_workflow',
             ],
             $matrix['cross_language_cells'],
@@ -120,7 +120,7 @@ class SchedulesRuntimeContractTest extends TestCase
             'missed-fire-restart-shard',
             'cli-schedule-surface-shard',
             'sdk-python-schedule-surface-shard',
-            'workflow-php-schedule-surface-shard',
+            'sdk-php-schedule-surface-shard',
             'cross-language-schedule-workflow-shard',
             'adversarial-schedule-input-shard',
         ] as $scope) {
@@ -138,7 +138,7 @@ class SchedulesRuntimeContractTest extends TestCase
             );
             $this->assertContains(
                 $coverageGapFindings[$scenarioId]['owner'],
-                ['conformance_harness', 'cli', 'sdk-python', 'workflow-php', 'server'],
+                ['conformance_harness', 'cli', 'sdk-python', 'sdk-php', 'server'],
             );
             $this->assertNotEmpty($coverageGapFindings[$scenarioId]['id']);
             $this->assertNotEmpty($coverageGapFindings[$scenarioId]['scope']);
@@ -148,12 +148,12 @@ class SchedulesRuntimeContractTest extends TestCase
         }
         $this->assertSame('schedules-cron-cadence-coverage', $coverageGapFindings['cron_cadence']['id']);
         $this->assertSame('cli', $coverageGapFindings['cli_schedule_surface']['owner']);
-        $this->assertSame('workflow-php', $coverageGapFindings['php_schedule_surface']['owner']);
+        $this->assertSame('sdk-php', $coverageGapFindings['php_schedule_surface']['owner']);
         $this->assertSame('server', $coverageGapFindings['invalid_cron_refusal']['owner']);
 
         $this->assertSame(
             ['SchedulesConformancePhpWorkflow'],
-            $hostRunner['runtime_shards']['workflow-php-worker']['must_register_workflows'],
+            $hostRunner['runtime_shards']['sdk-php-worker']['must_register_workflows'],
         );
         $this->assertSame(
             ['SchedulesConformancePythonWorkflow'],
@@ -163,10 +163,10 @@ class SchedulesRuntimeContractTest extends TestCase
             'schedules_runtime_contract.required_scenarios',
             $hostRunner['merge_policy']['requires_required_scenarios'],
         );
-        foreach (['workflow-php', 'sdk-python'] as $runtime) {
+        foreach (['sdk-php', 'sdk-python'] as $runtime) {
             $this->assertContains($runtime, $hostRunner['merge_policy']['requires_required_runtimes']);
         }
-        foreach (['cli', 'sdk-python', 'workflow-php-sdk'] as $client) {
+        foreach (['cli', 'sdk-python', 'sdk-php'] as $client) {
             $this->assertContains($client, $hostRunner['merge_policy']['requires_required_clients']);
         }
         foreach ([
@@ -281,7 +281,7 @@ class SchedulesRuntimeContractTest extends TestCase
                 'server' => '0.2.174',
                 'cli' => '0.1.56',
                 'sdk-python' => '0.4.74',
-                'workflow' => '2.0.0-alpha.175',
+                'sdk-php' => '0.1.1',
                 'waterline' => '2.0.0-alpha.57',
             ],
             'scenario_results' => [
@@ -569,7 +569,7 @@ class SchedulesRuntimeContractTest extends TestCase
             'server' => 'durableworkflow/server:head',
             'cli' => 'durable-workflow-cli==current',
             'sdk-python' => 'durable-workflow==unresolved',
-            'workflow' => 'durable-workflow/workflow:placeholder',
+            'sdk-php' => 'durable-workflow/sdk:placeholder',
             'waterline' => 'durable-workflow/waterline:<latest>',
         ];
 
@@ -581,7 +581,7 @@ class SchedulesRuntimeContractTest extends TestCase
 
         $this->assertSame('non_passing', $evaluation['status']);
         $this->assertSame(
-            ['server', 'cli', 'workflow-php', 'sdk-python', 'waterline'],
+            ['server', 'cli', 'sdk-php', 'sdk-python', 'waterline'],
             array_column($placeholderFailures, 'artifact'),
         );
     }
@@ -620,32 +620,32 @@ class SchedulesRuntimeContractTest extends TestCase
         );
     }
 
-    public function test_result_gate_distinguishes_php_worker_runtime_from_php_sdk_client(): void
+    public function test_result_gate_requires_the_php_sdk_worker_runtime(): void
     {
         $result = $this->completeSchedulesResult();
-        $result['runtime_matrix']['runtimes'] = ['workflow-php-sdk', 'sdk-python'];
+        $result['runtime_matrix']['runtimes'] = ['sdk-python'];
 
         $evaluation = SchedulesRuntimeResultGate::evaluate($result);
         $runtimeFailures = array_values(array_filter(
             $evaluation['gate_failures'],
             static fn (array $failure): bool => ($failure['code'] ?? null) === 'missing_required_runtime'
-                && ($failure['runtime'] ?? null) === 'workflow-php',
+                && ($failure['runtime'] ?? null) === 'sdk-php',
         ));
 
         $this->assertSame('non_passing', $evaluation['status']);
         $this->assertNotEmpty($runtimeFailures);
     }
 
-    public function test_result_gate_distinguishes_php_sdk_client_from_php_worker_runtime(): void
+    public function test_result_gate_requires_the_php_sdk_client_path(): void
     {
         $result = $this->completeSchedulesResult();
-        $result['runtime_matrix']['client_paths'] = ['cli', 'sdk-python', 'workflow-php'];
+        $result['runtime_matrix']['client_paths'] = ['cli', 'sdk-python'];
 
         $evaluation = SchedulesRuntimeResultGate::evaluate($result);
         $clientFailures = array_values(array_filter(
             $evaluation['gate_failures'],
             static fn (array $failure): bool => ($failure['code'] ?? null) === 'missing_required_client_path'
-                && ($failure['client_path'] ?? null) === 'workflow-php-sdk',
+                && ($failure['client_path'] ?? null) === 'sdk-php',
         ));
 
         $this->assertSame('non_passing', $evaluation['status']);
@@ -705,8 +705,7 @@ class SchedulesRuntimeContractTest extends TestCase
             'server' => 'docker://durableworkflow/server:0.2.174',
             'cli' => 'https://github.com/durable-workflow/cli/releases/download/0.1.56/dw.phar',
             'sdk-python' => 'pypi://durable-workflow==0.4.74',
-            'workflow' => 'packagist://durable-workflow/workflow@2.0.0-alpha.175',
-            'workflow-php' => 'packagist://durable-workflow/workflow@2.0.0-alpha.175',
+            'sdk-php' => 'packagist://durable-workflow/sdk@0.1.1',
             'waterline' => 'packagist://durable-workflow/waterline@2.0.0-alpha.57',
         ];
         $cronCadence = [
@@ -809,7 +808,7 @@ class SchedulesRuntimeContractTest extends TestCase
                 'list_observed' => true,
                 'control_observed' => true,
             ],
-            'workflow-php-sdk' => [
+            'sdk-php' => [
                 'create_or_observe' => true,
                 'list_observed' => true,
                 'control_observed' => true,
@@ -817,12 +816,12 @@ class SchedulesRuntimeContractTest extends TestCase
         ];
         $pythonCreatedPhp = [
             'schedule_creator' => 'sdk-python',
-            'workflow_runtime' => 'workflow-php',
+            'workflow_runtime' => 'sdk-php',
             'schedule_visible_in_cli' => true,
             'workflow_completed' => true,
         ];
         $phpCreatedPython = [
-            'schedule_creator' => 'workflow-php-sdk',
+            'schedule_creator' => 'sdk-php',
             'workflow_runtime' => 'sdk-python',
             'schedule_visible_in_cli' => true,
             'workflow_completed' => true,
@@ -844,8 +843,7 @@ class SchedulesRuntimeContractTest extends TestCase
                         'server' => '0.2.174',
                         'cli' => '0.1.56',
                         'sdk-python' => '0.4.74',
-                        'workflow' => '2.0.0-alpha.175',
-                        'workflow-php' => '2.0.0-alpha.175',
+                        'sdk-php' => '0.1.1',
                         'waterline' => '2.0.0-alpha.57',
                     ],
                     'artifact_sources' => $artifactSources,
@@ -856,7 +854,7 @@ class SchedulesRuntimeContractTest extends TestCase
                             ['artifact' => 'server', 'version' => '0.2.174', 'source' => $artifactSources['server'], 'status' => 'pass'],
                             ['artifact' => 'cli', 'version' => '0.1.56', 'source' => $artifactSources['cli'], 'status' => 'pass'],
                             ['artifact' => 'sdk-python', 'version' => '0.4.74', 'source' => $artifactSources['sdk-python'], 'status' => 'pass'],
-                            ['artifact' => 'workflow-php', 'version' => '2.0.0-alpha.175', 'source' => $artifactSources['workflow-php'], 'status' => 'pass'],
+                            ['artifact' => 'sdk-php', 'version' => '0.1.1', 'source' => $artifactSources['sdk-php'], 'status' => 'pass'],
                             ['artifact' => 'waterline', 'version' => '2.0.0-alpha.57', 'source' => $artifactSources['waterline'], 'status' => 'pass'],
                         ],
                     ],
@@ -871,7 +869,7 @@ class SchedulesRuntimeContractTest extends TestCase
             'restart_survival' => ['status' => 'pass', 'observed_outputs' => $restartSurvival],
             'cli_schedule_surface' => ['status' => 'pass', 'observed_outputs' => $clientSurfaces['cli']],
             'python_sdk_schedule_surface' => ['status' => 'pass', 'observed_outputs' => $clientSurfaces['sdk-python']],
-            'php_schedule_surface' => ['status' => 'pass', 'observed_outputs' => $clientSurfaces['workflow-php-sdk']],
+            'php_schedule_surface' => ['status' => 'pass', 'observed_outputs' => $clientSurfaces['sdk-php']],
             'python_created_php_workflow' => ['status' => 'pass', 'observed_outputs' => $pythonCreatedPhp],
             'php_created_python_workflow' => ['status' => 'pass', 'observed_outputs' => $phpCreatedPython],
             'invalid_cron_refusal' => ['status' => 'pass', 'observed_outputs' => $invalidCron],
@@ -888,7 +886,7 @@ class SchedulesRuntimeContractTest extends TestCase
                 'server' => '0.2.174',
                 'cli' => '0.1.56',
                 'sdk-python' => '0.4.74',
-                'workflow' => '2.0.0-alpha.175',
+                'sdk-php' => '0.1.1',
                 'waterline' => '2.0.0-alpha.57',
             ],
             'artifact_sources' => $artifactSources,
@@ -899,18 +897,18 @@ class SchedulesRuntimeContractTest extends TestCase
                 'task_queue' => 'schedules-shared',
             ],
             'runtime_matrix' => [
-                'runtimes' => ['workflow-php', 'sdk-python'],
-                'client_paths' => ['cli', 'sdk-python', 'workflow-php-sdk'],
+                'runtimes' => ['sdk-php', 'sdk-python'],
+                'client_paths' => ['cli', 'sdk-python', 'sdk-php'],
                 'schedule_types' => ['cron_expression', 'fixed_rate_interval'],
                 'cross_language_cells' => [
                     [
                         'scenario' => 'python_created_php_workflow',
                         'schedule_creator' => 'sdk-python',
-                        'workflow_runtime' => 'workflow-php',
+                        'workflow_runtime' => 'sdk-php',
                     ],
                     [
                         'scenario' => 'php_created_python_workflow',
-                        'schedule_creator' => 'workflow-php-sdk',
+                        'schedule_creator' => 'sdk-php',
                         'workflow_runtime' => 'sdk-python',
                     ],
                 ],

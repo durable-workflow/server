@@ -35,7 +35,7 @@ final class SignalQueryRuntimeResultGate
         'sdk_python_signal_and_query',
         'immediate_repeat_query_consistency',
         'php_worker_query_task_routing',
-        'workflow_php_signal_and_query',
+        'sdk_php_signal_and_query',
         'php_client_signal_and_query',
         'cross_language_query_consistency',
         'wire_envelope_compatibility',
@@ -120,7 +120,7 @@ final class SignalQueryRuntimeResultGate
                 'rust_avro_cell_executes_a_valid_cross_language_round_trip',
                 'rust_query_immutability_baseline_precedes_the_first_successful_query',
                 'rust_snapshot_and_replayed_instance_state_models_are_distinct',
-                'php_worker_baseline_identifies_a_published_workflow_php_worker',
+                'php_worker_baseline_identifies_a_published_sdk_php_worker',
                 'php_worker_baseline_version_matches_run_tuple',
                 'php_worker_baseline_route_evidence_status_is_pass_or_completed',
                 'replay_timing_timestamps_are_ordered',
@@ -470,9 +470,9 @@ final class SignalQueryRuntimeResultGate
         $runtime = self::stringValue(
             self::evidenceValue($result, $scenarioResult, $scenarioId, 'worker_runtime'),
         );
-        if (! self::sameRuntime($runtime, 'workflow-php')) {
+        if (! self::sameRuntime($runtime, 'sdk-php')) {
             $failures[] = [
-                'code' => 'php_worker_baseline_runtime_not_workflow_php',
+                'code' => 'php_worker_baseline_runtime_not_sdk_php',
                 'scenario_id' => $scenarioId,
                 'field' => 'worker_runtime',
                 'runtime' => $runtime,
@@ -480,33 +480,33 @@ final class SignalQueryRuntimeResultGate
         }
 
         $source = self::stringValue(
-            self::evidenceValue($result, $scenarioResult, $scenarioId, 'workflow_php_artifact_source'),
+            self::evidenceValue($result, $scenarioResult, $scenarioId, 'sdk_php_artifact_source'),
         );
-        if (! self::publishedWorkflowPhpSource($source, self::expectedArtifactSources($contract))) {
+        if (! self::publishedSdkPhpSource($source, self::expectedArtifactSources($contract))) {
             $failures[] = [
-                'code' => 'php_worker_baseline_source_not_published_workflow_php',
+                'code' => 'php_worker_baseline_source_not_published_sdk_php',
                 'scenario_id' => $scenarioId,
-                'field' => 'workflow_php_artifact_source',
+                'field' => 'sdk_php_artifact_source',
                 'source' => $source,
             ];
         }
 
         $version = self::stringValue(
-            self::evidenceValue($result, $scenarioResult, $scenarioId, 'workflow_php_sdk_version'),
+            self::evidenceValue($result, $scenarioResult, $scenarioId, 'sdk_php_sdk_version'),
         );
-        $expectedVersion = self::artifactVersionValue(self::artifactVersions($result), 'workflow-php');
+        $expectedVersion = self::artifactVersionValue(self::artifactVersions($result), 'sdk-php');
         if ($version === '' || self::isPlaceholderVersion($version)) {
             $failures[] = [
                 'code' => 'php_worker_baseline_missing_sdk_version',
                 'scenario_id' => $scenarioId,
-                'field' => 'workflow_php_sdk_version',
+                'field' => 'sdk_php_sdk_version',
                 'version' => $version,
             ];
         } elseif ($expectedVersion !== '' && $version !== $expectedVersion) {
             $failures[] = [
                 'code' => 'php_worker_baseline_sdk_version_mismatch',
                 'scenario_id' => $scenarioId,
-                'field' => 'workflow_php_sdk_version',
+                'field' => 'sdk_php_sdk_version',
                 'version' => $version,
                 'expected_version' => $expectedVersion,
             ];
@@ -518,7 +518,7 @@ final class SignalQueryRuntimeResultGate
                 $result,
                 $scenarioResult,
                 $scenarioId,
-                expectedRuntime: 'workflow-php',
+                expectedRuntime: 'sdk-php',
                 failureCode: 'php_worker_baseline_current_query_not_routed',
                 mismatchCode: 'php_worker_baseline_current_query_route_mismatch',
             ),
@@ -825,7 +825,7 @@ final class SignalQueryRuntimeResultGate
     private static function artifactVersionValue(array $versions, string $artifact): string
     {
         $aliases = [
-            'workflow-php' => ['workflow-php', 'workflow_php', 'workflow'],
+            'sdk-php' => ['sdk-php', 'sdk_php'],
             'sdk-python' => ['sdk-python', 'sdk_python', 'python'],
             'sdk-rust' => ['sdk-rust', 'sdk_rust', 'rust'],
             'waterline' => ['waterline', 'waterline-ui', 'waterline_ui'],
@@ -846,7 +846,7 @@ final class SignalQueryRuntimeResultGate
     private static function artifactSourceValue(array $sources, string $artifact): string
     {
         $aliases = [
-            'workflow-php' => ['workflow-php', 'workflow_php', 'workflow'],
+            'sdk-php' => ['sdk-php', 'sdk_php'],
             'sdk-python' => ['sdk-python', 'sdk_python', 'python'],
             'sdk-rust' => ['sdk-rust', 'sdk_rust', 'rust'],
             'waterline' => ['waterline', 'waterline-ui', 'waterline_ui'],
@@ -975,7 +975,7 @@ final class SignalQueryRuntimeResultGate
         $fallback = [
             'server' => 'published_docker_image',
             'cli' => 'published_cli_release',
-            'workflow-php' => 'published_composer_package',
+            'sdk-php' => 'published_composer_package',
             'sdk-python' => 'published_pypi_package',
             'sdk-rust' => 'published_crates_io_package',
             'waterline' => 'published_waterline_artifact',
@@ -1250,9 +1250,9 @@ final class SignalQueryRuntimeResultGate
     /**
      * @param array<string, string> $expectedSources
      */
-    private static function publishedWorkflowPhpSource(string $source, array $expectedSources): bool
+    private static function publishedSdkPhpSource(string $source, array $expectedSources): bool
     {
-        return self::publishedSourceMatchesArtifact($source, 'workflow-php', $expectedSources);
+        return self::publishedSourceMatchesArtifact($source, 'sdk-php', $expectedSources);
     }
 
     /**
@@ -3010,7 +3010,7 @@ final class SignalQueryRuntimeResultGate
     {
         $reported = strtolower(trim($reported));
         $aliases = [
-            'workflow-php' => ['workflow-php', 'workflow_php', 'php', 'php_worker'],
+            'sdk-php' => ['sdk-php', 'sdk_php', 'php', 'php_worker'],
             'sdk-python' => ['sdk-python', 'sdk_python', 'python', 'python_worker'],
             'sdk-rust' => ['sdk-rust', 'sdk_rust', 'rust', 'rust_worker'],
         ];

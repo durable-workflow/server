@@ -190,6 +190,7 @@ final class NexusContract
                     'server',
                     'cli',
                     'workflow',
+                    'sdk-php',
                     'sdk-python',
                     'waterline',
                 ],
@@ -201,6 +202,7 @@ final class NexusContract
                     'server' => 'docker image durableworkflow/server:<exact tag or digest>',
                     'cli' => 'official dw GitHub release asset under durable-workflow/cli/releases/download/<exact tag>/',
                     'workflow' => 'Composer package durable-workflow/workflow:2.0.0-alpha.<exact>',
+                    'sdk-php' => 'exact Composer package durable-workflow/sdk from Packagist',
                     'sdk-python' => 'PyPI package durable-workflow==<exact>',
                     'waterline' => 'Composer package durable-workflow/waterline:2.0.0-alpha.<exact>',
                 ],
@@ -208,6 +210,7 @@ final class NexusContract
                     'server' => 'docker://durableworkflow/server:<exact tag> or durableworkflow/server@sha256:<digest>',
                     'cli' => 'https://github.com/durable-workflow/cli/releases/download/<exact tag>/<release asset>',
                     'workflow' => 'packagist://durable-workflow/workflow@<exact version>',
+                    'sdk-php' => 'packagist://durable-workflow/sdk@<exact version>',
                     'sdk-python' => 'pypi://durable-workflow==<exact version>',
                     'waterline' => 'packagist://durable-workflow/waterline@<exact version>',
                 ],
@@ -265,7 +268,7 @@ final class NexusContract
                     'denied',
                 ],
                 'caller_runtimes' => [
-                    'workflow-php',
+                    'sdk-php',
                     'sdk-python',
                 ],
                 'service_runtimes' => [
@@ -490,15 +493,22 @@ final class NexusContract
                     'DW_SERVER_VERSION' => 'Exact published server artifact version.',
                     'DW_CLI_VERSION' => 'Exact published CLI artifact version.',
                     'DW_WORKFLOW_PHP_VERSION' => 'Exact published Workflow PHP artifact version.',
+                    'DW_PHP_SDK_VERSION' => 'Exact published durable-workflow/sdk artifact version.',
                     'DW_PYTHON_SDK_VERSION' => 'Exact published Python SDK artifact version.',
                     'DW_WATERLINE_VERSION' => 'Exact published Waterline artifact version.',
                     'DW_NEXUS_CONFORMANCE_RUN_ID' => 'Optional host conformance run id to copy into the Nexus result and ledger record.',
                 ],
                 'runtime_shards' => [
+                    'sdk-php' => [
+                        'artifact' => 'durable-workflow/sdk',
+                        'must_cover_scenarios' => [
+                            'php_caller_python_service',
+                        ],
+                    ],
                     'workflow-php' => [
                         'artifact' => 'durable-workflow/workflow',
                         'must_cover_scenarios' => [
-                            'php_caller_python_service',
+                            'python_caller_php_service',
                             'caller_cancellation_propagates_to_service',
                             'worker_restart_replay_does_not_reissue_call',
                         ],
@@ -583,6 +593,7 @@ final class NexusContract
                         'server',
                         'cli',
                         'workflow',
+                        'sdk-php',
                         'sdk-python',
                         'waterline',
                     ],

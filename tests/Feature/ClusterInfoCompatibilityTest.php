@@ -57,7 +57,7 @@ class ClusterInfoCompatibilityTest extends TestCase
             ->assertJsonPath('client_compatibility.authority', 'protocol_manifests')
             ->assertJsonPath('capabilities.workflow_tasks', true)
             ->assertJsonPath('platform_protocol_specs.schema', PlatformProtocolSpecs::SCHEMA)
-            ->assertJsonPath('surface_stability_contract.version', 2)
+            ->assertJsonPath('surface_stability_contract.version', 3)
             ->assertJsonPath('activity_runtime_contract.version', 1)
             ->assertJsonPath('topology.schema', ServerTopology::SCHEMA)
             ->assertJsonMissingPath('worker_fleet')
@@ -666,7 +666,7 @@ class ClusterInfoCompatibilityTest extends TestCase
         $policy = $response->json('sdk_neutrality_contract.sdk_breadth_policy');
         $this->assertSame(
             SdkNeutralityContract::POSTURE_PRIORITY,
-            $policy['first_party']['php_workflow_package']['posture'],
+            $policy['first_party']['php_sdk']['posture'],
         );
         $this->assertSame(
             SdkNeutralityContract::POSTURE_PRIORITY,
@@ -691,7 +691,7 @@ class ClusterInfoCompatibilityTest extends TestCase
         $response = $this->getJson('/api/cluster/info')->assertOk();
 
         $response
-            ->assertJsonPath('surface_stability_contract.version', 2)
+            ->assertJsonPath('surface_stability_contract.version', 3)
             ->assertJsonPath(
                 'surface_stability_contract.surface_families.official_sdks.package_compatibility.rust_sdk.package',
                 'durable-workflow',

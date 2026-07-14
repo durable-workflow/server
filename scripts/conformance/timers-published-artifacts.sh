@@ -190,7 +190,7 @@ use Workflow\V2\Models\WorkflowHistoryEvent;
 use Workflow\V2\Models\WorkflowRun;
 use Workflow\V2\Models\WorkflowTask;
 use Workflow\V2\Models\WorkflowTimer;
-use Workflow\V2\Worker\WorkflowFiberRunner;
+use Workflow\V2\Support\WorkflowFiberRunner;
 use Workflow\V2\Workflow;
 use function Workflow\V2\timer;
 

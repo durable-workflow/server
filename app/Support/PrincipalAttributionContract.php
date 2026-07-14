@@ -67,13 +67,12 @@ final class PrincipalAttributionContract
                 'install_channels' => [
                     'server' => 'Docker image durableworkflow/server:<exact patch version or digest with DW_SERVER_VERSION>',
                     'cli' => 'official dw GitHub release install.sh asset after downloadability check',
-                    'workflow-php' => 'Composer package durable-workflow/workflow:2.0.0-alpha.<latest>',
+                    'workflow' => 'Composer package durable-workflow/workflow:2.0.0-alpha.<latest> for embedded Laravel and Waterline execution',
+                    'sdk-php' => 'exact Composer package durable-workflow/sdk release from Packagist',
                     'sdk-python' => 'PyPI package durable-workflow==<latest>',
                     'waterline' => 'published Waterline package matching the latest complete release set',
                 ],
-                'release_artifact_aliases' => [
-                    'workflow-php' => ['workflow'],
-                ],
+                'release_artifact_aliases' => [],
                 'forbidden_sources' => [
                     'local_product_source_checkout',
                     'workspace_repo_as_artifact_under_test',
@@ -251,7 +250,7 @@ final class PrincipalAttributionContract
                     'anonymous_principal_undefined' => 'server',
                     'cli_principal_hidden' => 'cli',
                     'python_sdk_visibility_failure' => 'sdk-python',
-                    'php_client_visibility_failure' => 'workflow',
+                    'php_client_visibility_failure' => 'sdk-php',
                     'shared_attribution_shape_failure' => 'server_or_protocol',
                     'waterline_principal_hidden' => 'waterline',
                     'runner_coverage_gap' => 'conformance_harness',

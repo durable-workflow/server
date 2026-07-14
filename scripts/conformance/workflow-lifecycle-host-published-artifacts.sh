@@ -15,6 +15,7 @@ Required environment:
   DW_RUST_SDK_VERSION     Exact durable-workflow crate version.
   DW_CLI_VERSION          Exact CLI version.
   DW_PYTHON_SDK_VERSION   Exact Python SDK version.
+  DW_PHP_SDK_VERSION      Exact durable-workflow/sdk Packagist version.
   DW_WORKFLOW_PHP_VERSION Exact PHP workflow package version.
   DW_WATERLINE_VERSION    Exact Waterline version.
 
@@ -59,7 +60,7 @@ done
 
 for variable in \
   DW_SERVER_VERSION DW_RUST_SDK_VERSION DW_CLI_VERSION \
-  DW_PYTHON_SDK_VERSION DW_WORKFLOW_PHP_VERSION DW_WATERLINE_VERSION; do
+  DW_PYTHON_SDK_VERSION DW_PHP_SDK_VERSION DW_WORKFLOW_PHP_VERSION DW_WATERLINE_VERSION; do
   if [[ -z "${!variable:-}" ]]; then
     printf 'required environment variable is empty: %s\n' "$variable" >&2
     exit 2
@@ -234,6 +235,7 @@ docker run --rm --network "$network_name" \
   -e DW_RUST_SDK_VERSION="$DW_RUST_SDK_VERSION" \
   -e DW_CLI_VERSION="$DW_CLI_VERSION" \
   -e DW_PYTHON_SDK_VERSION="$DW_PYTHON_SDK_VERSION" \
+  -e DW_PHP_SDK_VERSION="$DW_PHP_SDK_VERSION" \
   -e DW_WORKFLOW_PHP_VERSION="$DW_WORKFLOW_PHP_VERSION" \
   -e DW_WATERLINE_VERSION="$DW_WATERLINE_VERSION" \
   "$server_image" \

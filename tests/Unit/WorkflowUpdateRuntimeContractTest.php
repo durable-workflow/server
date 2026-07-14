@@ -14,7 +14,7 @@ class WorkflowUpdateRuntimeContractTest extends TestCase
         $manifest = WorkflowUpdateRuntimeContract::manifest();
 
         $this->assertSame('durable-workflow.v2.workflow-update-runtime.contract', $manifest['schema']);
-        $this->assertSame(1, WorkflowUpdateRuntimeContract::VERSION);
+        $this->assertSame(2, WorkflowUpdateRuntimeContract::VERSION);
         $this->assertSame('durable-workflow.v2.workflow-update-runtime.result', $manifest['result_schema']);
         $this->assertSame('workflow_update_runtime_contract', $manifest['fixture_category']);
         $this->assertSame(
@@ -26,7 +26,7 @@ class WorkflowUpdateRuntimeContractTest extends TestCase
             $manifest['scenario_manifest']['source_path'],
         );
 
-        foreach (['server', 'cli', 'workflow-php', 'sdk-python', 'waterline'] as $artifact) {
+        foreach (['server', 'cli', 'workflow-php', 'sdk-php', 'sdk-python', 'waterline'] as $artifact) {
             $this->assertArrayHasKey($artifact, $manifest['artifact_policy']['install_channels']);
         }
 
@@ -93,7 +93,7 @@ class WorkflowUpdateRuntimeContractTest extends TestCase
             $manifest['host_runner_contract']['result_files'],
         );
         $this->assertContains(
-            'workflow-php-workflow-updates-evidence.json',
+            'sdk-php-workflow-updates-evidence.json',
             $manifest['host_runner_contract']['result_files'],
         );
         $this->assertContains(
@@ -199,11 +199,12 @@ class WorkflowUpdateRuntimeContractTest extends TestCase
 
         try {
             $command = sprintf(
-                '%s %s %s %s %s %s %s --result-dir %s 2>&1',
+                '%s %s %s %s %s %s %s %s --result-dir %s 2>&1',
                 'DW_SERVER_IMAGE=' . escapeshellarg('durableworkflow/server:0.2.536'),
                 'DW_SERVER_VERSION=' . escapeshellarg('0.2.536'),
                 'DW_CLI_VERSION=' . escapeshellarg('0.1.82'),
                 'DW_PYTHON_SDK_VERSION=' . escapeshellarg('0.4.92'),
+                'DW_PHP_SDK_VERSION=' . escapeshellarg('0.1.1'),
                 'DW_WORKFLOW_PHP_VERSION=' . escapeshellarg('2.0.0-alpha.242'),
                 'DW_WATERLINE_VERSION=' . escapeshellarg('2.0.0-alpha.111'),
                 escapeshellarg($root . '/scripts/conformance/workflow-updates-published-artifacts.sh'),
@@ -225,6 +226,7 @@ class WorkflowUpdateRuntimeContractTest extends TestCase
             $this->assertFalse($result['focused_probe']['evidence_loaded']);
             $this->assertSame('0.2.536', $result['artifact_versions']['server']);
             $this->assertSame('0.1.82', $result['artifact_versions']['cli']);
+            $this->assertSame('0.1.1', $result['artifact_versions']['sdk-php']);
             $this->assertSame('0.4.92', $result['artifact_versions']['sdk-python']);
             $this->assertSame('2.0.0-alpha.242', $result['artifact_versions']['workflow']);
             $this->assertSame('2.0.0-alpha.111', $result['artifact_versions']['waterline']);
@@ -232,6 +234,10 @@ class WorkflowUpdateRuntimeContractTest extends TestCase
             $this->assertSame(
                 'https://github.com/durable-workflow/cli/releases/download/0.1.82/install.sh',
                 $result['artifact_sources']['cli'],
+            );
+            $this->assertSame(
+                'packagist://durable-workflow/sdk@0.1.1',
+                $result['artifact_sources']['sdk-php'],
             );
             $this->assertSame(
                 'pypi://durable-workflow==0.4.92',
@@ -357,11 +363,12 @@ class WorkflowUpdateRuntimeContractTest extends TestCase
             ], JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES));
 
             $command = sprintf(
-                '%s %s %s %s %s %s %s %s --result-dir %s 2>&1',
+                '%s %s %s %s %s %s %s %s %s --result-dir %s 2>&1',
                 'DW_SERVER_IMAGE=' . escapeshellarg('durableworkflow/server:0.2.536'),
                 'DW_SERVER_VERSION=' . escapeshellarg('0.2.536'),
                 'DW_CLI_VERSION=' . escapeshellarg('0.1.82'),
                 'DW_PYTHON_SDK_VERSION=' . escapeshellarg('0.4.92'),
+                'DW_PHP_SDK_VERSION=' . escapeshellarg('0.1.1'),
                 'DW_WORKFLOW_PHP_VERSION=' . escapeshellarg('2.0.0-alpha.242'),
                 'DW_WATERLINE_VERSION=' . escapeshellarg('2.0.0-alpha.111'),
                 'DW_WORKFLOW_UPDATES_EVIDENCE_PATH=' . escapeshellarg($evidencePath),
@@ -433,11 +440,12 @@ class WorkflowUpdateRuntimeContractTest extends TestCase
             ], JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES));
 
             $command = sprintf(
-                '%s %s %s %s %s %s %s %s --result-dir %s 2>&1',
+                '%s %s %s %s %s %s %s %s %s --result-dir %s 2>&1',
                 'DW_SERVER_IMAGE=' . escapeshellarg('durableworkflow/server:0.2.536'),
                 'DW_SERVER_VERSION=' . escapeshellarg('0.2.536'),
                 'DW_CLI_VERSION=' . escapeshellarg('0.1.82'),
                 'DW_PYTHON_SDK_VERSION=' . escapeshellarg('0.4.92'),
+                'DW_PHP_SDK_VERSION=' . escapeshellarg('0.1.1'),
                 'DW_WORKFLOW_PHP_VERSION=' . escapeshellarg('2.0.0-alpha.242'),
                 'DW_WATERLINE_VERSION=' . escapeshellarg('2.0.0-alpha.111'),
                 'DW_WORKFLOW_UPDATES_EVIDENCE_PATH=' . escapeshellarg($evidencePath),
@@ -522,11 +530,12 @@ class WorkflowUpdateRuntimeContractTest extends TestCase
             ], JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES));
 
             $command = sprintf(
-                '%s %s %s %s %s %s %s --result-dir %s 2>&1',
+                '%s %s %s %s %s %s %s %s --result-dir %s 2>&1',
                 'DW_SERVER_IMAGE=' . escapeshellarg('durableworkflow/server:0.2.536'),
                 'DW_SERVER_VERSION=' . escapeshellarg('0.2.536'),
                 'DW_CLI_VERSION=' . escapeshellarg('0.1.82'),
                 'DW_PYTHON_SDK_VERSION=' . escapeshellarg('0.4.92'),
+                'DW_PHP_SDK_VERSION=' . escapeshellarg('0.1.1'),
                 'DW_WORKFLOW_PHP_VERSION=' . escapeshellarg('2.0.0-alpha.242'),
                 'DW_WATERLINE_VERSION=' . escapeshellarg('2.0.0-alpha.111'),
                 escapeshellarg($root . '/scripts/conformance/workflow-updates-published-artifacts.sh'),
@@ -584,8 +593,8 @@ class WorkflowUpdateRuntimeContractTest extends TestCase
                     'linked_findings' => [],
                 ];
             }
-            $scenarioResults['php_client_worker_update_surface']['observed_outputs']['workflow_php_artifact_source'] = 'packagist://durable-workflow/workflow@2.0.0-alpha.242';
-            $scenarioResults['php_client_worker_update_surface']['observed_outputs']['composer_package'] = 'durable-workflow/workflow';
+            $scenarioResults['php_client_worker_update_surface']['observed_outputs']['sdk_php_artifact_source'] = 'packagist://durable-workflow/sdk@0.1.1';
+            $scenarioResults['php_client_worker_update_surface']['observed_outputs']['composer_package'] = 'durable-workflow/sdk';
             $scenarioResults['php_client_worker_update_surface']['observed_outputs']['cell_outcomes'] = [
                 'accepted' => ['status' => 'pass'],
                 'completed' => ['status' => 'pass'],
@@ -596,7 +605,7 @@ class WorkflowUpdateRuntimeContractTest extends TestCase
                 'payload_round_trip' => ['status' => 'pass'],
             ];
 
-            file_put_contents($resultDir . '/workflow-php-workflow-updates-evidence.json', json_encode([
+            file_put_contents($resultDir . '/sdk-php-workflow-updates-evidence.json', json_encode([
                 'schema' => 'durable-workflow.v2.workflow-updates.php-package-sidecar',
                 'runner_blocked' => false,
                 'artifact_sources' => self::workflowUpdateEvidenceValue('artifact_sources', 'php_client_worker_update_surface'),
@@ -610,11 +619,12 @@ class WorkflowUpdateRuntimeContractTest extends TestCase
             ], JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES));
 
             $command = sprintf(
-                '%s %s %s %s %s %s %s --result-dir %s 2>&1',
+                '%s %s %s %s %s %s %s %s --result-dir %s 2>&1',
                 'DW_SERVER_IMAGE=' . escapeshellarg('durableworkflow/server:0.2.536'),
                 'DW_SERVER_VERSION=' . escapeshellarg('0.2.536'),
                 'DW_CLI_VERSION=' . escapeshellarg('0.1.82'),
                 'DW_PYTHON_SDK_VERSION=' . escapeshellarg('0.4.92'),
+                'DW_PHP_SDK_VERSION=' . escapeshellarg('0.1.1'),
                 'DW_WORKFLOW_PHP_VERSION=' . escapeshellarg('2.0.0-alpha.242'),
                 'DW_WATERLINE_VERSION=' . escapeshellarg('2.0.0-alpha.111'),
                 escapeshellarg($root . '/scripts/conformance/workflow-updates-published-artifacts.sh'),
@@ -631,13 +641,13 @@ class WorkflowUpdateRuntimeContractTest extends TestCase
 
             $this->assertSame('fail', $result['outcome']);
             $this->assertTrue($result['php_sidecar']['evidence_loaded']);
-            $this->assertSame('2.0.0-alpha.242', $result['php_sidecar']['package_version']);
+            $this->assertSame('0.1.1', $result['php_sidecar']['package_version']);
             $this->assertSame(
-                'packagist://durable-workflow/workflow@2.0.0-alpha.242',
+                'packagist://durable-workflow/sdk@0.1.1',
                 $result['php_sidecar']['artifact_source'],
             );
-            $this->assertSame('workflow-php-workflow-updates-evidence.json', $metadata['php_sidecar_evidence_file']);
-            $this->assertSame('workflow-php-workflow-updates-evidence.json', $record['php_sidecar_evidence_file']);
+            $this->assertSame('sdk-php-workflow-updates-evidence.json', $metadata['php_sidecar_evidence_file']);
+            $this->assertSame('sdk-php-workflow-updates-evidence.json', $record['php_sidecar_evidence_file']);
             $this->assertSame('pass', $result['scenario_results']['php_client_worker_update_surface']['status']);
             $this->assertSame('not_covered', $result['scenario_results']['principal_attribution_with_auth']['status']);
             $this->assertSame('not_covered', $result['scenario_results']['python_client_worker_update_surface']['status']);
@@ -694,11 +704,12 @@ class WorkflowUpdateRuntimeContractTest extends TestCase
             ], JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES));
 
             $command = sprintf(
-                '%s %s %s %s %s %s %s --result-dir %s 2>&1',
+                '%s %s %s %s %s %s %s %s --result-dir %s 2>&1',
                 'DW_SERVER_IMAGE=' . escapeshellarg('durableworkflow/server:0.2.536'),
                 'DW_SERVER_VERSION=' . escapeshellarg('0.2.536'),
                 'DW_CLI_VERSION=' . escapeshellarg('0.1.82'),
                 'DW_PYTHON_SDK_VERSION=' . escapeshellarg('0.4.92'),
+                'DW_PHP_SDK_VERSION=' . escapeshellarg('0.1.1'),
                 'DW_WORKFLOW_PHP_VERSION=' . escapeshellarg('2.0.0-alpha.242'),
                 'DW_WATERLINE_VERSION=' . escapeshellarg('2.0.0-alpha.111'),
                 escapeshellarg($root . '/scripts/conformance/workflow-updates-published-artifacts.sh'),
@@ -770,11 +781,12 @@ class WorkflowUpdateRuntimeContractTest extends TestCase
             ], JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES));
 
             $command = sprintf(
-                '%s %s %s %s %s %s %s %s --result-dir %s 2>&1',
+                '%s %s %s %s %s %s %s %s %s --result-dir %s 2>&1',
                 'DW_SERVER_IMAGE=' . escapeshellarg('durableworkflow/server:0.2.536'),
                 'DW_SERVER_VERSION=' . escapeshellarg('0.2.536'),
                 'DW_CLI_VERSION=' . escapeshellarg('0.1.82'),
                 'DW_PYTHON_SDK_VERSION=' . escapeshellarg('0.4.92'),
+                'DW_PHP_SDK_VERSION=' . escapeshellarg('0.1.1'),
                 'DW_WORKFLOW_PHP_VERSION=' . escapeshellarg('2.0.0-alpha.242'),
                 'DW_WATERLINE_VERSION=' . escapeshellarg('2.0.0-alpha.111'),
                 'DW_WORKFLOW_UPDATES_EVIDENCE_PATH=' . escapeshellarg($evidencePath),
@@ -838,11 +850,12 @@ class WorkflowUpdateRuntimeContractTest extends TestCase
                 ], JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES));
 
                 $command = sprintf(
-                    '%s %s %s %s %s %s %s --result-dir %s 2>&1',
+                    '%s %s %s %s %s %s %s %s --result-dir %s 2>&1',
                     'DW_SERVER_IMAGE=' . escapeshellarg('durableworkflow/server:0.2.536'),
                     'DW_SERVER_VERSION=' . escapeshellarg('0.2.536'),
                     'DW_CLI_VERSION=' . escapeshellarg('0.1.82'),
                     'DW_PYTHON_SDK_VERSION=' . escapeshellarg('0.4.92'),
+                    'DW_PHP_SDK_VERSION=' . escapeshellarg('0.1.1'),
                     'DW_WORKFLOW_PHP_VERSION=' . escapeshellarg('2.0.0-alpha.242'),
                     'DW_WATERLINE_VERSION=' . escapeshellarg('2.0.0-alpha.111'),
                     escapeshellarg($root . '/scripts/conformance/workflow-updates-published-artifacts.sh'),
@@ -918,11 +931,12 @@ class WorkflowUpdateRuntimeContractTest extends TestCase
             ], JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES));
 
             $command = sprintf(
-                '%s %s %s %s %s %s %s --result-dir %s 2>&1',
+                '%s %s %s %s %s %s %s %s --result-dir %s 2>&1',
                 'DW_SERVER_IMAGE=' . escapeshellarg('durableworkflow/server:0.2.536'),
                 'DW_SERVER_VERSION=' . escapeshellarg('0.2.536'),
                 'DW_CLI_VERSION=' . escapeshellarg('0.1.82'),
                 'DW_PYTHON_SDK_VERSION=' . escapeshellarg('0.4.92'),
+                'DW_PHP_SDK_VERSION=' . escapeshellarg('0.1.1'),
                 'DW_WORKFLOW_PHP_VERSION=' . escapeshellarg('2.0.0-alpha.242'),
                 'DW_WATERLINE_VERSION=' . escapeshellarg('2.0.0-alpha.111'),
                 escapeshellarg($root . '/scripts/conformance/workflow-updates-published-artifacts.sh'),
@@ -993,11 +1007,12 @@ class WorkflowUpdateRuntimeContractTest extends TestCase
             ], JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES));
 
             $command = sprintf(
-                '%s %s %s %s %s %s %s --result-dir %s 2>&1',
+                '%s %s %s %s %s %s %s %s --result-dir %s 2>&1',
                 'DW_SERVER_IMAGE=' . escapeshellarg('durableworkflow/server:0.2.536'),
                 'DW_SERVER_VERSION=' . escapeshellarg('0.2.536'),
                 'DW_CLI_VERSION=' . escapeshellarg('0.1.82'),
                 'DW_PYTHON_SDK_VERSION=' . escapeshellarg('0.4.92'),
+                'DW_PHP_SDK_VERSION=' . escapeshellarg('0.1.1'),
                 'DW_WORKFLOW_PHP_VERSION=' . escapeshellarg('2.0.0-alpha.242'),
                 'DW_WATERLINE_VERSION=' . escapeshellarg('2.0.0-alpha.111'),
                 escapeshellarg($root . '/scripts/conformance/workflow-updates-published-artifacts.sh'),
@@ -1038,10 +1053,10 @@ class WorkflowUpdateRuntimeContractTest extends TestCase
 
         try {
             $observedOutputs = self::completeWorkflowUpdateObservedOutputs('php_client_worker_update_surface');
-            $observedOutputs['workflow_php_artifact_source'] = 'file:///workspace/repos/workflow';
+            $observedOutputs['sdk_php_artifact_source'] = 'file:///tmp/local-sdk-checkout';
             $observedOutputs['package_artifact_source'] = 'local_product_source_checkout';
 
-            file_put_contents($resultDir . '/workflow-php-workflow-updates-evidence.json', json_encode([
+            file_put_contents($resultDir . '/sdk-php-workflow-updates-evidence.json', json_encode([
                 'schema' => 'durable-workflow.v2.workflow-updates.php-package-sidecar',
                 'runner_blocked' => false,
                 'source_policy' => [
@@ -1064,11 +1079,12 @@ class WorkflowUpdateRuntimeContractTest extends TestCase
             ], JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES));
 
             $command = sprintf(
-                '%s %s %s %s %s %s %s --result-dir %s 2>&1',
+                '%s %s %s %s %s %s %s %s --result-dir %s 2>&1',
                 'DW_SERVER_IMAGE=' . escapeshellarg('durableworkflow/server:0.2.536'),
                 'DW_SERVER_VERSION=' . escapeshellarg('0.2.536'),
                 'DW_CLI_VERSION=' . escapeshellarg('0.1.82'),
                 'DW_PYTHON_SDK_VERSION=' . escapeshellarg('0.4.92'),
+                'DW_PHP_SDK_VERSION=' . escapeshellarg('0.1.1'),
                 'DW_WORKFLOW_PHP_VERSION=' . escapeshellarg('2.0.0-alpha.242'),
                 'DW_WATERLINE_VERSION=' . escapeshellarg('2.0.0-alpha.111'),
                 escapeshellarg($root . '/scripts/conformance/workflow-updates-published-artifacts.sh'),
@@ -1137,11 +1153,12 @@ class WorkflowUpdateRuntimeContractTest extends TestCase
                 ], JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES));
 
                 $command = sprintf(
-                    '%s %s %s %s %s %s %s %s --result-dir %s 2>&1',
+                    '%s %s %s %s %s %s %s %s %s --result-dir %s 2>&1',
                     'DW_SERVER_IMAGE=' . escapeshellarg('durableworkflow/server:0.2.536'),
                     'DW_SERVER_VERSION=' . escapeshellarg('0.2.536'),
                     'DW_CLI_VERSION=' . escapeshellarg('0.1.82'),
                     'DW_PYTHON_SDK_VERSION=' . escapeshellarg('0.4.92'),
+                    'DW_PHP_SDK_VERSION=' . escapeshellarg('0.1.1'),
                     'DW_WORKFLOW_PHP_VERSION=' . escapeshellarg('2.0.0-alpha.242'),
                     'DW_WATERLINE_VERSION=' . escapeshellarg('2.0.0-alpha.111'),
                     'DW_WORKFLOW_UPDATES_EVIDENCE_PATH=' . escapeshellarg($evidencePath),
@@ -1219,11 +1236,12 @@ class WorkflowUpdateRuntimeContractTest extends TestCase
             ], JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES));
 
             $command = sprintf(
-                '%s %s %s %s %s %s %s %s --result-dir %s 2>&1',
+                '%s %s %s %s %s %s %s %s %s --result-dir %s 2>&1',
                 'DW_SERVER_IMAGE=' . escapeshellarg('durableworkflow/server:0.2.536'),
                 'DW_SERVER_VERSION=' . escapeshellarg('0.2.536'),
                 'DW_CLI_VERSION=' . escapeshellarg('0.1.82'),
                 'DW_PYTHON_SDK_VERSION=' . escapeshellarg('0.4.92'),
+                'DW_PHP_SDK_VERSION=' . escapeshellarg('0.1.1'),
                 'DW_WORKFLOW_PHP_VERSION=' . escapeshellarg('2.0.0-alpha.242'),
                 'DW_WATERLINE_VERSION=' . escapeshellarg('2.0.0-alpha.111'),
                 'DW_WORKFLOW_UPDATES_EVIDENCE_PATH=' . escapeshellarg($evidencePath),
@@ -1287,11 +1305,12 @@ class WorkflowUpdateRuntimeContractTest extends TestCase
             ], JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES));
 
             $command = sprintf(
-                '%s %s %s %s %s %s %s %s --result-dir %s 2>&1',
+                '%s %s %s %s %s %s %s %s %s --result-dir %s 2>&1',
                 'DW_SERVER_IMAGE=' . escapeshellarg('durableworkflow/server:latest'),
                 'DW_SERVER_VERSION=' . escapeshellarg('latest'),
                 'DW_CLI_VERSION=' . escapeshellarg('0.1.82'),
                 'DW_PYTHON_SDK_VERSION=' . escapeshellarg('0.4.92'),
+                'DW_PHP_SDK_VERSION=' . escapeshellarg('0.1.1'),
                 'DW_WORKFLOW_PHP_VERSION=' . escapeshellarg('2.0.0-alpha.242'),
                 'DW_WATERLINE_VERSION=' . escapeshellarg('2.0.0-alpha.111'),
                 'DW_WORKFLOW_UPDATES_EVIDENCE_PATH=' . escapeshellarg($evidencePath),
@@ -1358,11 +1377,12 @@ class WorkflowUpdateRuntimeContractTest extends TestCase
             ], JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES));
 
             $command = sprintf(
-                '%s %s %s %s %s %s %s %s --result-dir %s 2>&1',
+                '%s %s %s %s %s %s %s %s %s --result-dir %s 2>&1',
                 'DW_SERVER_IMAGE=' . escapeshellarg('durableworkflow/server:0.2.536'),
                 'DW_SERVER_VERSION=' . escapeshellarg('0.2.536'),
                 'DW_CLI_VERSION=' . escapeshellarg('0.1.82'),
                 'DW_PYTHON_SDK_VERSION=' . escapeshellarg('0.4.92'),
+                'DW_PHP_SDK_VERSION=' . escapeshellarg('0.1.1'),
                 'DW_WORKFLOW_PHP_VERSION=' . escapeshellarg('2.0.0-alpha.242'),
                 'DW_WATERLINE_VERSION=' . escapeshellarg('2.0.0-alpha.111'),
                 'DW_WORKFLOW_UPDATES_EVIDENCE_PATH=' . escapeshellarg($evidencePath),
@@ -1408,7 +1428,7 @@ class WorkflowUpdateRuntimeContractTest extends TestCase
             $badSources['cli'] = 'branch_source';
             $badSources['sdk-python'] = 'workspace_repo';
             $badSources['workflow'] = 'file:///workspace/repos/workflow';
-            $badSources['workflow-php'] = 'file:///workspace/repos/workflow';
+            $badSources['workflow-php'] = 'file:///tmp/local-workflow-engine-checkout';
             $badSources['waterline'] = '/tmp/local-worktree/waterline';
 
             $scenarioResults = [];
@@ -1441,11 +1461,12 @@ class WorkflowUpdateRuntimeContractTest extends TestCase
             ], JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES));
 
             $command = sprintf(
-                '%s %s %s %s %s %s %s %s --result-dir %s 2>&1',
+                '%s %s %s %s %s %s %s %s %s --result-dir %s 2>&1',
                 'DW_SERVER_IMAGE=' . escapeshellarg('durableworkflow/server:0.2.536'),
                 'DW_SERVER_VERSION=' . escapeshellarg('0.2.536'),
                 'DW_CLI_VERSION=' . escapeshellarg('0.1.82'),
                 'DW_PYTHON_SDK_VERSION=' . escapeshellarg('0.4.92'),
+                'DW_PHP_SDK_VERSION=' . escapeshellarg('0.1.1'),
                 'DW_WORKFLOW_PHP_VERSION=' . escapeshellarg('2.0.0-alpha.242'),
                 'DW_WATERLINE_VERSION=' . escapeshellarg('2.0.0-alpha.111'),
                 'DW_WORKFLOW_UPDATES_EVIDENCE_PATH=' . escapeshellarg($evidencePath),
@@ -1563,42 +1584,44 @@ class WorkflowUpdateRuntimeContractTest extends TestCase
         );
     }
 
-    public function test_php_package_shard_installs_pinned_packagist_artifact_and_runs_package_command(): void
+    public function test_php_sdk_shard_installs_pinned_packagist_artifact_and_runs_separate_processes(): void
     {
         $source = (string) file_get_contents(
             dirname(__DIR__, 2) . '/scripts/conformance/workflow-updates-published-artifacts.sh',
         );
 
         $this->assertStringContainsString(
-            'workflow-php-workflow-updates-evidence.json',
+            'sdk-php-workflow-updates-evidence.json',
             $source,
         );
         $this->assertStringContainsString(
-            'COMPOSER_HOME="$composer_home" COMPOSER_CACHE_DIR="$composer_cache"',
+            'DW_PHP_SDK_VERSION="$sdk_php_version"',
             $source,
         );
         $this->assertStringContainsString(
-            'composer create-project laravel/laravel . --no-interaction --no-progress --prefer-dist',
+            '"${DW_SERVER_IMAGE}" scripts/conformance/php-sdk-published-artifacts.sh --result-dir /result',
+            $source,
+        );
+        $this->assertStringContainsString('docker compose -p "$compose_project"', $source);
+        $this->assertStringContainsString('docker run --rm --network host', $source);
+        $this->assertStringContainsString(
+            'php-sdk-conformance-result.json',
             $source,
         );
         $this->assertStringContainsString(
-            'composer require --no-interaction --no-progress --prefer-dist "durable-workflow/workflow:${workflow_php_version}"',
+            'php-sdk-lifecycle-evidence.json',
             $source,
         );
         $this->assertStringContainsString(
-            'php artisan workflow:v2:workflow-updates-conformance --json',
+            'sdk-php-workflow-updates-conformance.log',
             $source,
         );
         $this->assertStringContainsString(
-            'workflow-php-package-source-policy.log',
+            'install_provenance',
             $source,
         );
         $this->assertStringContainsString(
-            'installation-source',
-            $source,
-        );
-        $this->assertStringContainsString(
-            'workflow_php_artifact_source',
+            'sdk_php_artifact_source',
             $source,
         );
         $this->assertStringContainsString(
@@ -1606,9 +1629,9 @@ class WorkflowUpdateRuntimeContractTest extends TestCase
             $source,
         );
         $this->assertStringNotContainsString(
-            'composer require --no-interaction --no-progress "durable-workflow/workflow:${workflow_php_version:-',
+            'durable-workflow/workflow:${sdk_php_version}',
             $source,
-            'the PHP package shard must not fall back to floating Composer constraints',
+            'the PHP SDK shard must not depend on the removed Workflow package command',
         );
     }
 
@@ -1899,6 +1922,7 @@ class WorkflowUpdateRuntimeContractTest extends TestCase
                 'server' => '0.2.536',
                 'cli' => '0.1.82',
                 'sdk-python' => '0.4.92',
+                'sdk-php' => '0.1.1',
                 'workflow' => '2.0.0-alpha.242',
                 'workflow-php' => '2.0.0-alpha.242',
                 'waterline' => '2.0.0-alpha.111',
@@ -1907,6 +1931,7 @@ class WorkflowUpdateRuntimeContractTest extends TestCase
                 'server' => 'durableworkflow/server:0.2.536',
                 'cli' => 'https://github.com/durable-workflow/cli/releases/download/0.1.82/install.sh',
                 'sdk-python' => 'pypi://durable-workflow==0.4.92',
+                'sdk-php' => 'packagist://durable-workflow/sdk@0.1.1',
                 'workflow' => 'packagist://durable-workflow/workflow@2.0.0-alpha.242',
                 'workflow-php' => 'packagist://durable-workflow/workflow@2.0.0-alpha.242',
                 'waterline' => 'packagist://durable-workflow/waterline@2.0.0-alpha.111',

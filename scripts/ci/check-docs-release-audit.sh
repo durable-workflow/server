@@ -66,8 +66,8 @@ NODE
 }
 
 case "$artifact" in
-    cli|sdk-python|sdk-rust|server|workflow|waterline) ;;
-    *) fail "Docs release-audit artifact required" "DOCS_RELEASE_AUDIT_ARTIFACT must be one of cli, sdk-python, sdk-rust, server, workflow, or waterline." ;;
+    cli|sdk-php|sdk-python|sdk-rust|server|workflow|waterline) ;;
+    *) fail "Docs release-audit artifact required" "DOCS_RELEASE_AUDIT_ARTIFACT must be one of cli, sdk-php, sdk-python, sdk-rust, server, workflow, or waterline." ;;
 esac
 
 expected="${expected#v}"
@@ -101,9 +101,10 @@ const auditSchemaVersion = 3;
 const auditClassifier = 'route-and-build-inventory-v3';
 const auditGeneratedFrom = 'production sitemap and build artifact inventory';
 const artifactVersionSchema = 'durable-workflow.docs.public-artifact-versions';
-const expectedArtifacts = ['cli', 'sdk-python', 'sdk-rust', 'server', 'waterline', 'workflow'];
+const expectedArtifacts = ['cli', 'sdk-php', 'sdk-python', 'sdk-rust', 'server', 'waterline', 'workflow'];
 const expectedSynchronizedFields = [
   'artifact_versions',
+  'artifact_distribution_surfaces.sdk-php',
   'artifact_distribution_surfaces.server',
   'artifact_distribution_surfaces.sdk-rust',
 ];
@@ -133,6 +134,22 @@ const expectedRustSurfaces = [
   {
     surface: 'api_documentation',
     url: 'https://rust.durable-workflow.com/',
+  },
+];
+const expectedPhpSurfaces = [
+  {
+    surface: 'packagist_package',
+    package: 'durable-workflow/sdk',
+    url: 'https://packagist.org/packages/durable-workflow/sdk',
+  },
+  {
+    surface: 'source_repository',
+    repository: 'durable-workflow/sdk-php',
+    url: 'https://github.com/durable-workflow/sdk-php',
+  },
+  {
+    surface: 'api_documentation',
+    url: 'https://php.durable-workflow.com/',
   },
 ];
 const stableLlmPaths = [
@@ -507,6 +524,57 @@ if (!isRecord(currentServerArtifact)) {
 const distributionSurfaces = audit.artifact_distribution_surfaces;
 if (!isRecord(distributionSurfaces) || !Array.isArray(distributionSurfaces.server)) {
   malformed(`${auditUrl} must describe artifact_distribution_surfaces.server.`);
+}
+
+if (!Array.isArray(distributionSurfaces['sdk-php'])) {
+  malformed(`${auditUrl} must describe artifact_distribution_surfaces.sdk-php.`);
+}
+
+if (distributionSurfaces['sdk-php'].length !== expectedPhpSurfaces.length) {
+  publicSafetyFailure(
+    'mixed_artifact_tuple',
+    `${auditUrl} must describe the Packagist, source repository, and API documentation ` +
+      `surfaces for the PHP SDK; found ${distributionSurfaces['sdk-php'].length}.`,
+    {
+      observed_artifact_versions: versions,
+      observed_php_surfaces: distributionSurfaces['sdk-php'],
+    }
+  );
+}
+
+for (const expectedSurface of expectedPhpSurfaces) {
+  const surface = distributionSurfaces['sdk-php'].find(candidate => (
+    isRecord(candidate) && candidate.surface === expectedSurface.surface
+  ));
+
+  if (!surface) {
+    publicSafetyFailure(
+      'mixed_artifact_tuple',
+      `${auditUrl} is missing the ${expectedSurface.surface} PHP SDK surface.`,
+      {
+        observed_artifact_versions: versions,
+        observed_php_surfaces: distributionSurfaces['sdk-php'],
+      }
+    );
+  }
+
+  const expectedFields = expectedSurface.surface === 'packagist_package'
+    ? {...expectedSurface, version: versions['sdk-php']}
+    : expectedSurface;
+
+  for (const [field, expectedValue] of Object.entries(expectedFields)) {
+    if (surface[field] !== expectedValue) {
+      publicSafetyFailure(
+        'mixed_artifact_tuple',
+        `${auditUrl} mixes artifact_versions.sdk-php=${versions['sdk-php']} with ` +
+          `${expectedSurface.surface}.${field}=${surface[field] ?? '<missing>'}; expected ${expectedValue}.`,
+        {
+          observed_artifact_versions: versions,
+          observed_php_surfaces: distributionSurfaces['sdk-php'],
+        }
+      );
+    }
+  }
 }
 
 if (distributionSurfaces.server.length !== expectedServerSurfaces.length) {

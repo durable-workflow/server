@@ -69,6 +69,7 @@ final class SkewRefusalMatrixContract
                     'cli',
                     'sdk-python',
                     'workflow',
+                    'sdk-php',
                     'waterline',
                 ],
                 'install_channels' => [
@@ -76,6 +77,7 @@ final class SkewRefusalMatrixContract
                     'cli' => 'official dw install script pinned to <version>',
                     'sdk-python' => 'PyPI package durable-workflow==<version>',
                     'workflow' => 'Composer package durable-workflow/workflow:<version>',
+                    'sdk-php' => 'exact Composer package durable-workflow/sdk:<version> from Packagist',
                     'waterline' => 'published Waterline package or image matching <version>',
                 ],
                 'forbidden_sources' => [
@@ -166,10 +168,10 @@ final class SkewRefusalMatrixContract
                         'suggests_upgrade_or_pin_next_step',
                     ],
                 ],
-                'workflow-worker' => [
-                    'artifact' => 'workflow',
-                    'component' => 'PHP workflow worker',
-                    'owner' => 'durable-workflow/workflow',
+                'sdk-php' => [
+                    'artifact' => 'sdk-php',
+                    'component' => 'PHP SDK worker',
+                    'owner' => 'durable-workflow/sdk',
                     'pairing_axis' => 'worker_version_to_server_version',
                     'required_pairing_classes' => self::requiredPairingClasses(),
                     'operation_groups' => [
@@ -349,7 +351,7 @@ final class SkewRefusalMatrixContract
                     'published-artifact-install',
                     'cli-skew-surface-shard',
                     'sdk-python-skew-surface-shard',
-                    'workflow-worker-skew-surface-shard',
+                    'sdk-php-skew-surface-shard',
                     'waterline-skew-surface-shard',
                     'future-version-boundary-shard',
                     'request-response-evidence-shard',
@@ -382,10 +384,10 @@ final class SkewRefusalMatrixContract
                         'fallback_status_when_surface_missing' => 'not_covered',
                         'fallback_finding_type' => 'conformance_runner_coverage_gap',
                     ],
-                    'workflow-worker' => [
-                        'scope' => 'workflow-worker-skew-surface-shard',
-                        'artifact' => 'workflow',
-                        'owner' => 'durable-workflow/workflow',
+                    'sdk-php' => [
+                        'scope' => 'sdk-php-skew-surface-shard',
+                        'artifact' => 'sdk-php',
+                        'owner' => 'durable-workflow/sdk',
                         'must_cover_pairing_classes' => self::requiredPairingClasses(),
                         'must_cover_operation_groups' => [
                             'cluster_info_probe',

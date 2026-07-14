@@ -86,8 +86,9 @@
     },
     {
       "id": "php_sdk_lifecycle_surface",
-      "description": "The published PHP workflow package can exercise supported lifecycle cells, or unsupported cells produce documented typed errors.",
-      "required_evidence": ["sdk", "covered_cells", "unsupported_cells", "typed_errors", "artifact_version"],
+      "description": "The exact released durable-workflow/sdk package drives a real PHP client and a separate PHP worker process against the matching public server image.",
+      "actors": ["sdk-php"],
+      "required_evidence": ["sdk", "covered_cells", "unsupported_cells", "typed_errors", "artifact_version", "server_version", "install_provenance", "apache_avro_provenance", "client_processes", "worker_processes", "callback_counts", "history_assertions", "local_product_source_checkouts_used"],
       "required_behavior": "php_sdk_exercises_supported_lifecycle_cells_or_refuses_unsupported_cells_with_typed_errors"
     },
     {

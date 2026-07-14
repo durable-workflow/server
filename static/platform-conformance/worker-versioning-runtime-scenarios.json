@@ -42,13 +42,13 @@
   ],
   "required_matrix": {
     "runtimes": [
-      "workflow-php",
+      "sdk-php",
       "sdk-python"
     ],
     "client_paths": [
       "cli",
       "sdk-python",
-      "workflow-php-sdk"
+      "sdk-php"
     ],
     "operator_visibility_paths": [
       "dw workers list",
@@ -66,13 +66,13 @@
     ],
     "cross_language_cells": [
       {
-        "started_by": "workflow-php-v1",
+        "started_by": "sdk-php-v1",
         "incompatible_worker": "sdk-python-v2",
         "scenario": "php_v1_not_delivered_to_python_v2"
       },
       {
         "started_by": "sdk-python-v1",
-        "incompatible_worker": "workflow-php-v2",
+        "incompatible_worker": "sdk-php-v2",
         "scenario": "python_v1_not_delivered_to_php_v2"
       }
     ]
@@ -255,11 +255,11 @@
         "server",
         "cli",
         "python_sdk_runtime",
-        "workflow_php_runtime",
+        "sdk_php_runtime",
         "waterline"
       ],
       "operations": [
-        "install the server image, CLI, Python SDK, PHP workflow runtime, and Waterline from published channels",
+        "install the server image, CLI, Python SDK, PHP SDK, Workflow engine, and Waterline from published channels",
         "record the resolved artifact name and version for every actor",
         "run no product code from a local checkout"
       ],
@@ -275,7 +275,7 @@
       "actors": [
         "server",
         "cli",
-        "workflow_php_runtime",
+        "sdk_php_runtime",
         "python_sdk_runtime"
       ],
       "operations": [
@@ -348,7 +348,7 @@
       "title": "Replay only by compatible workers",
       "actors": [
         "server",
-        "workflow_php_runtime",
+        "sdk_php_runtime",
         "python_sdk_runtime"
       ],
       "operations": [
@@ -443,7 +443,7 @@
       "title": "Cross-language PHP/Python pinning",
       "actors": [
         "server",
-        "workflow_php_runtime",
+        "sdk_php_runtime",
         "python_sdk_runtime"
       ],
       "operations": [
@@ -460,7 +460,7 @@
         "workflow and run identity are recorded for both PHP-started and Python-started v1 workflows",
         "task-queue rollout state is recorded for the promoted PHP v1 and Python v1 cohorts",
         "the public outcome used to verify pinning names the poll and rollout surfaces",
-        "published workflow-php and sdk-python worker artifacts are identified with install source and version",
+        "published sdk-php and sdk-python worker artifacts are identified with install source and version",
         "the PHP/Python worker evidence records that no local product source checkout was used",
         "both runtimes agree on build-id compatibility semantics"
       ]

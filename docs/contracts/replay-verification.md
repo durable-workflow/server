@@ -222,17 +222,19 @@ by itself, and harnesses must probe runtime-published surfaces from the
 resolved package under test instead of assuming a command exists in every
 published Composer artifact.
 The host runner records the install and probe evidence for server, CLI,
-Python SDK, PHP workflow runtime, and Waterline in
+Python SDK, the exact Packagist PHP SDK, the embedded PHP workflow engine,
+and Waterline in
 `published-artifact-install.json`; the install-only scenario cannot pass
 from runtime shard metadata alone.
 
 The `host_runner_contract` block is the machine-readable harness contract
 for that merge step. A replay host runner must emit one
 `scenario_results` entry for every required scenario. The PHP runtime
-shard comes from `workflow:v2:replay-conformance` when the resolved
-Composer package exposes it; if a published runtime does not expose the
-claimed surface, the affected scenarios are `unsupported` with a linked
-root-cause finding. The Python shard covers the replay verifier plus live
+shard comes from `scripts/conformance/php-sdk-published-artifacts.sh` in the
+resolved public server image and installs only `durable-workflow/sdk` in its
+disposable Composer project; if that published runtime surface is missing,
+the affected scenarios are `unsupported` with a linked root-cause finding.
+The Python shard covers the replay verifier plus live
 worker restart query replay. A smoke summary without the PHP shard,
 adversarial refusal scenarios, and in-flight signal timing remains
 `non_passing`, even when the smoke path itself succeeds.

@@ -14,7 +14,7 @@ class SearchAttributeRuntimeContractTest extends TestCase
         $manifest = SearchAttributeRuntimeContract::manifest();
 
         $this->assertSame('durable-workflow.v2.search-attribute-runtime.contract', $manifest['schema']);
-        $this->assertSame(14, SearchAttributeRuntimeContract::VERSION);
+        $this->assertSame(15, SearchAttributeRuntimeContract::VERSION);
         $this->assertSame(SearchAttributeRuntimeContract::VERSION, $manifest['version']);
         $this->assertSame('durable-workflow.v2.search-attribute-runtime.result', $manifest['result_schema']);
         $this->assertSame('search_attribute_runtime_contract', $manifest['fixture_category']);
@@ -40,7 +40,7 @@ class SearchAttributeRuntimeContractTest extends TestCase
             $this->assertContains($example, $manifest['artifact_policy']['placeholder_version_examples']);
         }
 
-        foreach (['server', 'cli', 'workflow-php', 'sdk-python', 'waterline'] as $artifact) {
+        foreach (['server', 'cli', 'sdk-php', 'workflow-php', 'sdk-python', 'waterline'] as $artifact) {
             $this->assertArrayHasKey($artifact, $manifest['artifact_policy']['install_channels']);
         }
 
@@ -75,9 +75,9 @@ class SearchAttributeRuntimeContractTest extends TestCase
         $manifest = SearchAttributeRuntimeContract::manifest();
         $matrix = $manifest['required_matrix'];
 
-        $this->assertSame(['workflow-php', 'sdk-python'], $matrix['runtimes']);
+        $this->assertSame(['sdk-php', 'sdk-python'], $matrix['runtimes']);
         $this->assertContains('cli', $matrix['client_paths']);
-        $this->assertContains('workflow-php-sdk', $matrix['client_paths']);
+        $this->assertContains('sdk-php', $matrix['client_paths']);
         $this->assertContains('sdk-python', $matrix['client_paths']);
         $this->assertContains('waterline-workflow-list-filter', $matrix['observer_paths']);
         $this->assertContains('keyword_list', $matrix['type_cells']);
@@ -124,8 +124,8 @@ class SearchAttributeRuntimeContractTest extends TestCase
 
         $this->assertContains(
             [
-                'worker' => 'workflow-php',
-                'clients' => ['cli', 'workflow-php-sdk'],
+                'worker' => 'sdk-php',
+                'clients' => ['cli', 'sdk-php'],
                 'scenario' => 'php_worker_start_and_upsert_visibility',
             ],
             $matrix['runtime_cells'],
@@ -133,7 +133,7 @@ class SearchAttributeRuntimeContractTest extends TestCase
         $this->assertContains(
             [
                 'writer' => 'sdk-python',
-                'readers' => ['workflow-php-sdk', 'cli'],
+                'readers' => ['sdk-php', 'cli'],
                 'scenario' => 'python_to_php_codec_round_trip',
             ],
             $matrix['cross_language_cells'],
@@ -192,7 +192,7 @@ class SearchAttributeRuntimeContractTest extends TestCase
         $resultGate = SearchAttributeRuntimeContract::manifest()['result_gate'];
 
         $this->assertSame(SearchAttributeRuntimeResultGate::SCHEMA, $resultGate['schema']);
-        $this->assertSame(12, SearchAttributeRuntimeResultGate::VERSION);
+        $this->assertSame(13, SearchAttributeRuntimeResultGate::VERSION);
         $this->assertSame(SearchAttributeRuntimeResultGate::VERSION, $resultGate['version']);
         $this->assertSame(
             SearchAttributeRuntimeContract::RESULT_SCHEMA,
@@ -272,7 +272,7 @@ class SearchAttributeRuntimeContractTest extends TestCase
             'cluster info must not advertise a search-attributes host runner path that is missing from the release tree',
         );
         $this->assertTrue(is_executable($runnerPath), 'the advertised search-attributes host runner must be executable');
-        $this->assertContains('workflow-php-search-attributes-shard.json', $runner['result_files']);
+        $this->assertContains('sdk-php-search-attributes-shard.json', $runner['result_files']);
         $this->assertContains('waterline-search-attributes-shard.json', $runner['result_files']);
         $this->assertContains('codec-round-trip-shard.json', $runner['result_files']);
         $this->assertTrue($runner['must_execute_against_published_artifacts']);
@@ -304,7 +304,7 @@ class SearchAttributeRuntimeContractTest extends TestCase
         $this->assertSame('codec-round-trip-shard.json', $codec['result_file']);
         $this->assertContains('python_to_php_codec_round_trip', $codec['must_cover_scenarios']);
         $this->assertContains('php_to_python_codec_round_trip', $codec['must_cover_scenarios']);
-        $this->assertContains('python_to_php.reader_verifications.workflow-php-sdk', $codec['must_capture_fields']);
+        $this->assertContains('python_to_php.reader_verifications.sdk-php', $codec['must_capture_fields']);
         $this->assertContains('php_to_python.reader_verifications.sdk-python', $codec['must_capture_fields']);
         $this->assertContains('keyword_list', $codec['required_value_types']);
     }
@@ -325,6 +325,7 @@ class SearchAttributeRuntimeContractTest extends TestCase
                 'DW_SERVER_VERSION=0.2.224',
                 'DW_CLI_VERSION=0.1.74',
                 'DW_PYTHON_SDK_VERSION=0.4.84',
+                'DW_PHP_SDK_VERSION=0.1.1',
                 'DW_WORKFLOW_PHP_VERSION=2.0.0-alpha.187',
                 'DW_WATERLINE_VERSION=2.0.0-alpha.69',
                 escapeshellarg($repoRoot.'/'.$runner['runner_path']),
@@ -404,7 +405,7 @@ class SearchAttributeRuntimeContractTest extends TestCase
         }
     }
 
-    public function test_published_artifact_runner_writes_missing_workflow_php_command_as_unsupported_surface(): void
+    public function test_published_artifact_runner_writes_missing_sdk_php_runner_as_unsupported_surface(): void
     {
         if (trim((string) shell_exec('command -v node 2>/dev/null')) === '') {
             $this->markTestSkipped('node is required to exercise the search-attributes runner.');
@@ -414,13 +415,14 @@ class SearchAttributeRuntimeContractTest extends TestCase
         $runner = SearchAttributeRuntimeContract::manifest()['host_runner_contract'];
         $resultDir = sys_get_temp_dir().'/dw-search-attributes-'.bin2hex(random_bytes(6));
         mkdir($resultDir);
-        $missingCommandReason = 'The Composer-installed PHP package does not expose workflow:v2:search-attributes-conformance.';
+        $missingCommandReason = 'The public server image does not expose php-sdk-published-artifacts.sh.';
 
         try {
             $command = implode(' ', [
                 'DW_SERVER_VERSION=0.2.224',
                 'DW_CLI_VERSION=0.1.74',
                 'DW_PYTHON_SDK_VERSION=0.4.84',
+                'DW_PHP_SDK_VERSION=0.1.1',
                 'DW_WORKFLOW_PHP_VERSION=2.0.0-alpha.187',
                 'DW_WATERLINE_VERSION=2.0.0-alpha.69',
                 'DW_SEARCH_ATTRIBUTES_BLOCKED_REASON='.escapeshellarg($missingCommandReason),
@@ -435,24 +437,24 @@ class SearchAttributeRuntimeContractTest extends TestCase
 
             $this->assertSame(1, $exitCode, implode("\n", $output));
 
-            $workflowPhpShard = json_decode(
-                (string) file_get_contents($resultDir.'/workflow-php-search-attributes-shard.json'),
+            $sdkPhpShard = json_decode(
+                (string) file_get_contents($resultDir.'/sdk-php-search-attributes-shard.json'),
                 true,
                 512,
                 JSON_THROW_ON_ERROR,
             );
-            $scenario = $workflowPhpShard['scenario_results']['php_worker_start_and_upsert_visibility'];
+            $scenario = $sdkPhpShard['scenario_results']['php_worker_start_and_upsert_visibility'];
             $finding = $scenario['linked_findings'][0];
 
-            $this->assertSame('unsupported', $workflowPhpShard['status']);
-            $this->assertFalse($workflowPhpShard['runner_blocked']);
+            $this->assertSame('unsupported', $sdkPhpShard['status']);
+            $this->assertFalse($sdkPhpShard['runner_blocked']);
             $this->assertSame('unsupported', $scenario['status']);
-            $this->assertTrue($scenario['observed_outputs']['artisan_command_missing']);
-            $this->assertSame('workflow:v2:search-attributes-conformance', $finding['diagnostic']['command']);
+            $this->assertTrue($scenario['observed_outputs']['sdk_conformance_runner_missing']);
+            $this->assertSame('scripts/conformance/php-sdk-published-artifacts.sh', $finding['diagnostic']['command']);
             $this->assertSame('unsupported_public_surface', $finding['finding_type']);
-            $this->assertSame('workflow-php', $finding['owner']);
-            $this->assertSame('workflow-php', $finding['owning_surface']);
-            $this->assertSame('workflow-php-search-attribute-shard', $finding['required_execution_scope']);
+            $this->assertSame('sdk-php', $finding['owner']);
+            $this->assertSame('sdk-php', $finding['owning_surface']);
+            $this->assertSame('sdk-php-search-attribute-shard', $finding['required_execution_scope']);
         } finally {
             $this->removeDirectory($resultDir);
         }
@@ -480,6 +482,7 @@ class SearchAttributeRuntimeContractTest extends TestCase
                 'DW_SERVER_VERSION=0.2.398',
                 'DW_CLI_VERSION=0.1.80',
                 'DW_PYTHON_SDK_VERSION=0.4.88',
+                'DW_PHP_SDK_VERSION=0.1.1',
                 'DW_WORKFLOW_PHP_VERSION=2.0.0-alpha.203',
                 'DW_WATERLINE_VERSION=2.0.0-alpha.87',
                 'DW_SEARCH_ATTRIBUTES_CODEC_SHARD_FILE='.escapeshellarg($codecShardFile),
@@ -532,7 +535,7 @@ class SearchAttributeRuntimeContractTest extends TestCase
                 $result['codec_round_trips']['python_to_php']['decoded_attributes']['tags'],
             );
             $this->assertTrue(
-                $result['codec_round_trips']['python_to_php']['reader_verifications']['workflow-php-sdk'],
+                $result['codec_round_trips']['python_to_php']['reader_verifications']['sdk-php'],
             );
             $this->assertTrue(
                 $result['codec_round_trips']['php_to_python']['reader_verifications']['sdk-python'],
@@ -933,6 +936,7 @@ class SearchAttributeRuntimeContractTest extends TestCase
                 'server' => '0.2.154',
                 'cli' => '0.1.53',
                 'sdk-python' => '0.4.65',
+                'sdk-php' => '0.1.1',
                 'workflow' => '2.0.0-alpha.166',
                 'waterline' => '2.0.0-alpha.57',
             ],
@@ -1139,7 +1143,7 @@ class SearchAttributeRuntimeContractTest extends TestCase
             ],
         ];
         $result['codec_round_trips']['php_to_python']['wire_value_context'] = [
-            'writer' => 'workflow-php',
+            'writer' => 'sdk-php',
             'storage_surface' => 'workflow_search_attributes',
             'wire_values' => [
                 'customer_id' => ['value_string' => 'cust-7'],
@@ -1612,7 +1616,7 @@ class SearchAttributeRuntimeContractTest extends TestCase
                     ],
                     'decoded_attributes' => $decodedAttributes,
                     'reader_verifications' => [
-                        'workflow-php-sdk' => true,
+                        'sdk-php' => true,
                         'cli' => true,
                     ],
                 ],
@@ -1638,6 +1642,7 @@ class SearchAttributeRuntimeContractTest extends TestCase
             'server' => 'published_docker_image',
             'cli' => 'official_install_script',
             'sdk-python' => 'pypi_release',
+            'sdk-php' => 'composer_release',
             'workflow' => 'composer_release',
             'waterline' => 'published_waterline_release',
         ];
@@ -1764,7 +1769,7 @@ class SearchAttributeRuntimeContractTest extends TestCase
         ];
         $scenarioResults['php_worker_start_and_upsert_visibility']['observed_outputs'] += [
             'workflow_id' => 'sa-php-1',
-            'worker_runtime' => 'workflow-php',
+            'worker_runtime' => 'sdk-php',
             'start_search_attributes' => ['customer_id' => 'cust-8'],
             'upserted_search_attributes' => ['priority_tier' => 'platinum'],
             'visibility_query_match' => true,
@@ -1779,7 +1784,7 @@ class SearchAttributeRuntimeContractTest extends TestCase
             'written_attributes' => $decodedAttributes,
             'decoded_attributes' => $decodedAttributes,
             'reader_verifications' => [
-                'workflow-php-sdk' => true,
+                'sdk-php' => true,
                 'cli' => true,
             ],
         ];
@@ -1941,12 +1946,13 @@ class SearchAttributeRuntimeContractTest extends TestCase
                 'server' => '0.2.154',
                 'cli' => '0.1.53',
                 'sdk-python' => '0.4.65',
+                'sdk-php' => '0.1.1',
                 'workflow' => '2.0.0-alpha.166',
                 'waterline' => '2.0.0-alpha.57',
             ],
             'artifact_sources' => $artifactSources,
             'runtime_matrix' => [
-                'runtimes' => ['workflow-php', 'sdk-python'],
+                'runtimes' => ['sdk-php', 'sdk-python'],
                 'runtime_cells' => [
                     [
                         'scenario' => 'python_worker_start_and_upsert_visibility',
@@ -1955,19 +1961,19 @@ class SearchAttributeRuntimeContractTest extends TestCase
                     ],
                     [
                         'scenario' => 'php_worker_start_and_upsert_visibility',
-                        'worker' => 'workflow-php',
-                        'clients' => ['cli', 'workflow-php-sdk'],
+                        'worker' => 'sdk-php',
+                        'clients' => ['cli', 'sdk-php'],
                     ],
                 ],
                 'cross_language_cells' => [
                     [
                         'scenario' => 'python_to_php_codec_round_trip',
                         'writer' => 'sdk-python',
-                        'readers' => ['workflow-php-sdk', 'cli'],
+                        'readers' => ['sdk-php', 'cli'],
                     ],
                     [
                         'scenario' => 'php_to_python_codec_round_trip',
-                        'writer' => 'workflow-php',
+                        'writer' => 'sdk-php',
                         'readers' => ['sdk-python', 'cli'],
                     ],
                 ],
@@ -2103,7 +2109,7 @@ class SearchAttributeRuntimeContractTest extends TestCase
                     'written_attributes' => $decodedAttributes,
                     'decoded_attributes' => $decodedAttributes,
                     'reader_verifications' => [
-                        'workflow-php-sdk' => true,
+                        'sdk-php' => true,
                         'cli' => true,
                     ],
                 ],

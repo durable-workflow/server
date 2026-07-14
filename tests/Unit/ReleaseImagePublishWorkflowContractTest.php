@@ -101,8 +101,8 @@ class ReleaseImagePublishWorkflowContractTest extends TestCase
         $metadataScript = $this->read('scripts/ci/prepare-release-workflow-composer-metadata.php');
 
         foreach ([
-            'ARG WORKFLOW_PACKAGE_REF=2.0.0-alpha.279',
-            'ARG WORKFLOW_PACKAGE_COMMIT=f9a00e18fa21196bcb3505710489025ff93cf5e1',
+            'ARG WORKFLOW_PACKAGE_REF=2.0.0-alpha.280',
+            'ARG WORKFLOW_PACKAGE_COMMIT=3fa9bff54c8ccef5537a885b167e470a629661b9',
             'WORKFLOW_PACKAGE_COMMIT must be a full lowercase Git SHA',
             'if [ "${RESOLVED_COMMIT}" != "${WORKFLOW_PACKAGE_COMMIT}" ]',
             'git -C /workflow diff --quiet HEAD --',
@@ -262,8 +262,8 @@ class ReleaseImagePublishWorkflowContractTest extends TestCase
 
     public function test_docker_build_docs_compose_and_ci_defaults_match_workflow_package_fallback(): void
     {
-        $fallback = '2.0.0-alpha.279';
-        $commit = 'f9a00e18fa21196bcb3505710489025ff93cf5e1';
+        $fallback = '2.0.0-alpha.280';
+        $commit = '3fa9bff54c8ccef5537a885b167e470a629661b9';
 
         foreach ([
             'Dockerfile',
@@ -292,8 +292,8 @@ class ReleaseImagePublishWorkflowContractTest extends TestCase
 
         $readme = $this->read('README.md');
 
-        $this->assertStringContainsString('WORKFLOW_PACKAGE_REF=2.0.0-alpha.279', $readme);
-        $this->assertStringContainsString('The Dockerfile clones the `durable-workflow/workflow` `2.0.0-alpha.279` tag', $readme);
+        $this->assertStringContainsString('WORKFLOW_PACKAGE_REF=2.0.0-alpha.280', $readme);
+        $this->assertStringContainsString('The Dockerfile clones the `durable-workflow/workflow` `2.0.0-alpha.280` tag', $readme);
         $this->assertStringContainsString('Composer package metadata', $readme);
         $this->assertStringNotContainsString('The Dockerfile clones the `durable-workflow/workflow` `2.0.0-alpha.200` tag', $readme);
         $this->assertStringNotContainsString('The image build fetches the `durable-workflow/workflow` `2.0.0-alpha.200`', $readme);
@@ -304,9 +304,9 @@ class ReleaseImagePublishWorkflowContractTest extends TestCase
         $workflow = $this->read('.github/workflows/phpunit-feature.yml');
 
         foreach ([
-            'ref: 2.0.0-alpha.279',
-            'WORKFLOW_PACKAGE_REF: 2.0.0-alpha.279',
-            'WORKFLOW_PACKAGE_COMMIT: f9a00e18fa21196bcb3505710489025ff93cf5e1',
+            'ref: 2.0.0-alpha.280',
+            'WORKFLOW_PACKAGE_REF: 2.0.0-alpha.280',
+            'WORKFLOW_PACKAGE_COMMIT: 3fa9bff54c8ccef5537a885b167e470a629661b9',
             'git -C workflow-package rev-parse HEAD',
             'if [[ "$resolved_commit" != "$WORKFLOW_PACKAGE_COMMIT" ]]',
             '> workflow-package/.package-provenance',
@@ -330,9 +330,9 @@ class ReleaseImagePublishWorkflowContractTest extends TestCase
     {
         $workflow = $this->read('.github/workflows/release.yml');
 
-        $this->assertStringContainsString('WORKFLOW_PACKAGE_REF: 2.0.0-alpha.279', $workflow);
+        $this->assertStringContainsString('WORKFLOW_PACKAGE_REF: 2.0.0-alpha.280', $workflow);
         $this->assertStringContainsString(
-            'WORKFLOW_PACKAGE_COMMIT: f9a00e18fa21196bcb3505710489025ff93cf5e1',
+            'WORKFLOW_PACKAGE_COMMIT: 3fa9bff54c8ccef5537a885b167e470a629661b9',
             $workflow,
         );
         $this->assertStringContainsString('scripts/ci/select-compatible-workflow-package-ref.sh', $workflow);
@@ -340,8 +340,8 @@ class ReleaseImagePublishWorkflowContractTest extends TestCase
 
     public function test_composer_metadata_identifies_the_exact_workflow_source(): void
     {
-        $expectedVersion = '2.0.0-alpha.279';
-        $expectedCommit = 'f9a00e18fa21196bcb3505710489025ff93cf5e1';
+        $expectedVersion = '2.0.0-alpha.280';
+        $expectedCommit = '3fa9bff54c8ccef5537a885b167e470a629661b9';
         $composer = json_decode($this->read('composer.json'), true, flags: JSON_THROW_ON_ERROR);
         $lock = json_decode($this->read('composer.lock'), true, flags: JSON_THROW_ON_ERROR);
 
@@ -446,6 +446,8 @@ class ReleaseImagePublishWorkflowContractTest extends TestCase
         $this->assertStringContainsString('refresh_files: refreshFiles', $auditor);
         $this->assertStringContainsString("'static/quickstart-execution-contract.json'", $auditor);
         $this->assertStringContainsString('const refreshFileList = refreshFiles.join(\', \');', $auditor);
+        $this->assertStringContainsString("'artifact_distribution_surfaces.sdk-php'", $auditor);
+        $this->assertStringContainsString("package: 'durable-workflow/sdk'", $auditor);
         $this->assertStringNotContainsString('scripts/public-artifact-versions.json plus docs/compatibility.md', $auditor);
         $this->assertStringContainsString('docs_artifact_tuple_handoff: handoff', $auditor);
         $this->assertStringContainsString('observed_artifact_versions: versions', $auditor);
@@ -536,8 +538,8 @@ class ReleaseImagePublishWorkflowContractTest extends TestCase
         $catalog = \Workflow\V2\Support\PlatformProtocolSpecs::manifest();
         $provenance = [
             'source' => 'https://github.com/durable-workflow/workflow.git',
-            'ref' => '2.0.0-alpha.279',
-            'commit' => 'f9a00e18fa21196bcb3505710489025ff93cf5e1',
+            'ref' => '2.0.0-alpha.280',
+            'commit' => '3fa9bff54c8ccef5537a885b167e470a629661b9',
         ];
 
         $passing = $this->runProtocolCatalogComparator($catalog, [
@@ -1569,6 +1571,7 @@ SH;
     {
         $versions = [
             'cli' => '0.1.86',
+            'sdk-php' => '0.1.1',
             'sdk-python' => '0.4.98',
             'sdk-rust' => '0.1.0',
             'server' => $serverVersion,
@@ -1593,6 +1596,7 @@ SH;
                 'source_file' => 'scripts/public-artifact-versions.json',
                 'synchronized_fields' => [
                     'artifact_versions',
+                    'artifact_distribution_surfaces.sdk-php',
                     'artifact_distribution_surfaces.server',
                     'artifact_distribution_surfaces.sdk-rust',
                 ],
@@ -1602,6 +1606,23 @@ SH;
                 ],
             ],
             'artifact_distribution_surfaces' => [
+                'sdk-php' => [
+                    [
+                        'surface' => 'packagist_package',
+                        'package' => 'durable-workflow/sdk',
+                        'version' => '0.1.1',
+                        'url' => 'https://packagist.org/packages/durable-workflow/sdk',
+                    ],
+                    [
+                        'surface' => 'source_repository',
+                        'repository' => 'durable-workflow/sdk-php',
+                        'url' => 'https://github.com/durable-workflow/sdk-php',
+                    ],
+                    [
+                        'surface' => 'api_documentation',
+                        'url' => 'https://php.durable-workflow.com/',
+                    ],
+                ],
                 'server' => [
                     [
                         'surface' => 'docker_hub_container_image',
@@ -1756,8 +1777,8 @@ SH;
                 'PROTOCOL_CATALOG_CONFORMANCE_EVIDENCE' => $evidencePath,
                 'RELEASE_TAG' => '0.2.651',
                 'SERVER_IMAGE' => 'durableworkflow/server:0.2.651',
-                'WORKFLOW_PACKAGE_REF' => '2.0.0-alpha.279',
-                'WORKFLOW_PACKAGE_COMMIT' => 'f9a00e18fa21196bcb3505710489025ff93cf5e1',
+                'WORKFLOW_PACKAGE_REF' => '2.0.0-alpha.280',
+                'WORKFLOW_PACKAGE_COMMIT' => '3fa9bff54c8ccef5537a885b167e470a629661b9',
             ]);
 
             $this->assertFileExists($evidencePath);

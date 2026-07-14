@@ -53,7 +53,7 @@ final class WorkerVersioningConformanceRunnerContractTest extends TestCase
         $this->assertStringContainsString(
             'const workerExecuted = publishedWorkerScenarioPasses(
     outputs,
-    [\'sdk-python\', \'workflow-php\'],
+    [\'sdk-python\', \'sdk-php\'],
     true,
   );',
             $node,
@@ -275,7 +275,7 @@ final class WorkerVersioningConformanceRunnerContractTest extends TestCase
         );
         foreach ([
             'durable-workflow==${pythonVersion}',
-            'durable-workflow/workflow:${workflowPhpVersion}',
+            'durable-workflow/sdk:${sdkPhpVersion}',
             'pypi_release',
             'packagist_release',
             'published_php_python_worker_protocol_clients',
@@ -309,7 +309,7 @@ final class WorkerVersioningConformanceRunnerContractTest extends TestCase
             'const baseShard = writeShard(publishedPhpPythonShard);',
             'const supplementalShard = pythonScenarioShard(',
             'writeJson(outputPath, mergeShardValues(baseShard, supplementalShard));',
-            "if (!workflowPhpVersion) crossLanguageMissing.push('DW_WORKFLOW_PHP_VERSION');",
+            "if (!sdkPhpVersion) crossLanguageMissing.push('DW_PHP_SDK_VERSION');",
             "if (!commandExists('docker')) crossLanguageMissing.push('docker');",
             'published PHP/Python cross-language worker shard prerequisites are missing',
             'function emptySupplementalShard()',
@@ -370,12 +370,12 @@ final class WorkerVersioningConformanceRunnerContractTest extends TestCase
                 'artifact_versions' => [
                     'server' => '0.2.416',
                     'sdk-python' => '0.4.88',
-                    'workflow-php' => '2.0.0-alpha.204',
+                    'sdk-php' => '0.1.204',
                 ],
                 'artifact_sources' => [
                     'server' => 'published_server_url',
                     'sdk-python' => 'pypi_release',
-                    'workflow-php' => 'packagist_release',
+                    'sdk-php' => 'packagist_release',
                 ],
                 'topology' => [
                     'namespace' => 'worker-versioning-conformance',
@@ -392,8 +392,8 @@ final class WorkerVersioningConformanceRunnerContractTest extends TestCase
                         'observed_outputs' => [
                             'task_queue' => 'worker-versioning-shared',
                             'worker_registration_responses' => [
-                                'workflow_php' => [
-                                    'artifact' => 'workflow-php',
+                                'sdk_php' => [
+                                    'artifact' => 'sdk-php',
                                     'worker_id' => 'php-v1',
                                     'task_queue' => 'worker-versioning-shared',
                                     'build_id' => 'php-build-v1',
@@ -429,8 +429,8 @@ final class WorkerVersioningConformanceRunnerContractTest extends TestCase
                                 'local_product_source_checkouts_used' => false,
                                 'artifacts' => [
                                     [
-                                        'artifact' => 'workflow-php',
-                                        'version' => '2.0.0-alpha.204',
+                                        'artifact' => 'sdk-php',
+                                        'version' => '0.1.204',
                                         'source' => 'packagist_release',
                                         'status' => 'pass',
                                     ],
@@ -455,8 +455,8 @@ final class WorkerVersioningConformanceRunnerContractTest extends TestCase
                                 'local_product_source_checkouts_used' => false,
                                 'artifacts' => [
                                     [
-                                        'artifact' => 'workflow-php',
-                                        'version' => '2.0.0-alpha.204',
+                                        'artifact' => 'sdk-php',
+                                        'version' => '0.1.204',
                                         'source' => 'packagist_release',
                                         'status' => 'pass',
                                     ],
@@ -516,7 +516,7 @@ final class WorkerVersioningConformanceRunnerContractTest extends TestCase
         $this->assertSame(1, $registrationOutputs['active_worker_counts_per_cohort']['python-build-v2']);
         $this->assertSame(
             'php-build-v1',
-            $registrationOutputs['worker_registration_responses']['workflow_php']['response']['build_id'],
+            $registrationOutputs['worker_registration_responses']['sdk_php']['response']['build_id'],
         );
         $this->assertSame(
             'python-build-v2',
@@ -535,12 +535,12 @@ final class WorkerVersioningConformanceRunnerContractTest extends TestCase
             'artifact_versions' => [
                 'server' => '0.2.452',
                 'sdk-python' => '0.4.89',
-                'workflow-php' => '2.0.0-alpha.210',
+                'sdk-php' => '0.1.210',
             ],
             'artifact_sources' => [
                 'server' => 'docker',
                 'sdk-python' => 'pypi_release',
-                'workflow-php' => 'packagist_release',
+                'sdk-php' => 'packagist_release',
             ],
             'scenario_results' => [
                 'worker_registration_build_ids' => [
@@ -549,8 +549,8 @@ final class WorkerVersioningConformanceRunnerContractTest extends TestCase
                     'observed_outputs' => [
                         'task_queue' => 'worker-versioning-shared',
                         'worker_registration_responses' => [
-                            'workflow_php' => [
-                                'artifact' => 'workflow-php',
+                            'sdk_php' => [
+                                'artifact' => 'sdk-php',
                                 'worker_id' => 'php-v1',
                                 'task_queue' => 'worker-versioning-shared',
                                 'build_id' => 'php-build-v1',
@@ -761,7 +761,7 @@ SH;
                     'DW_SERVER_VERSION' => '0.2.452',
                     'DW_CLI_VERSION' => '0.1.81',
                     'DW_PYTHON_SDK_VERSION' => '0.4.89',
-                    'DW_WORKFLOW_PHP_VERSION' => '2.0.0-alpha.210',
+                    'DW_PHP_SDK_VERSION' => '0.1.210',
                     'DW_WATERLINE_VERSION' => '2.0.0-alpha.111',
                     'DW_WV_SERVER_ARTIFACT_SOURCE' => 'published_server_url',
                 ],
@@ -839,7 +839,7 @@ SH;
 
         $this->assertStringNotContainsString("cli: 'published_install_script'", $node);
         $this->assertStringNotContainsString("'sdk-python': 'published_pypi'", $node);
-        $this->assertStringNotContainsString("'workflow-php': 'published_composer'", $node);
+        $this->assertStringNotContainsString("'sdk-php': 'published_composer'", $node);
         $this->assertStringNotContainsString("waterline: 'published_artifact'", $node);
     }
 
@@ -1187,7 +1187,7 @@ JS;
                     'DW_SERVER_VERSION' => '0.2.419',
                     'DW_CLI_VERSION' => '0.1.80',
                     'DW_PYTHON_SDK_VERSION' => '0.4.88',
-                    'DW_WORKFLOW_PHP_VERSION' => '2.0.0-alpha.204',
+                    'DW_PHP_SDK_VERSION' => '0.1.204',
                     'DW_WATERLINE_VERSION' => '2.0.0-alpha.96',
                     'DW_WV_SERVER_ARTIFACT_SOURCE' => 'published_server_url',
                 ],
@@ -1276,7 +1276,7 @@ JS;
                     'DW_SERVER_VERSION' => '0.2.425',
                     'DW_CLI_VERSION' => '0.1.81',
                     'DW_PYTHON_SDK_VERSION' => '0.4.89',
-                    'DW_WORKFLOW_PHP_VERSION' => '2.0.0-alpha.206',
+                    'DW_PHP_SDK_VERSION' => '0.1.206',
                     'DW_WATERLINE_VERSION' => '2.0.0-alpha.97',
                     'DW_WV_SERVER_ARTIFACT_SOURCE' => 'published_server_url',
                 ],
@@ -1480,7 +1480,7 @@ SH);
                     'DW_SERVER_VERSION' => '0.2.427',
                     'DW_CLI_VERSION' => '0.1.81',
                     'DW_PYTHON_SDK_VERSION' => '0.4.89',
-                    'DW_WORKFLOW_PHP_VERSION' => '2.0.0-alpha.206',
+                    'DW_PHP_SDK_VERSION' => '0.1.206',
                     'DW_WATERLINE_VERSION' => '2.0.0-alpha.97',
                 ],
             );
@@ -1707,7 +1707,7 @@ SH);
                     'DW_SERVER_VERSION' => '0.2.428',
                     'DW_CLI_VERSION' => '0.1.81',
                     'DW_PYTHON_SDK_VERSION' => '0.4.89',
-                    'DW_WORKFLOW_PHP_VERSION' => '2.0.0-alpha.206',
+                    'DW_PHP_SDK_VERSION' => '0.1.206',
                     'DW_WATERLINE_VERSION' => '2.0.0-alpha.97',
                 ],
             );
@@ -1818,7 +1818,7 @@ SH);
                     'DW_SERVER_VERSION' => '0.2.422',
                     'DW_CLI_VERSION' => '0.1.80',
                     'DW_PYTHON_SDK_VERSION' => '0.4.88',
-                    'DW_WORKFLOW_PHP_VERSION' => '2.0.0-alpha.217',
+                    'DW_PHP_SDK_VERSION' => '0.1.217',
                     'DW_WATERLINE_VERSION' => '2.0.0-alpha.96',
                     'DW_WV_SERVER_ARTIFACT_SOURCE' => 'published_server_url',
                 ],
@@ -1922,7 +1922,7 @@ SH);
                     'DW_SERVER_VERSION' => '0.2.421',
                     'DW_CLI_VERSION' => '0.1.80',
                     'DW_PYTHON_SDK_VERSION' => '0.4.88',
-                    'DW_WORKFLOW_PHP_VERSION' => '2.0.0-alpha.217',
+                    'DW_PHP_SDK_VERSION' => '0.1.217',
                     'DW_WATERLINE_VERSION' => '2.0.0-alpha.96',
                     'DW_WV_SERVER_ARTIFACT_SOURCE' => 'published_server_url',
                 ],
@@ -2255,8 +2255,8 @@ SH);
                                     'status' => 'pass',
                                 ],
                                 [
-                                    'artifact' => 'workflow-php',
-                                    'version' => '2.0.0-alpha.189',
+                                    'artifact' => 'sdk-php',
+                                    'version' => '0.1.189',
                                     'source' => 'composer_release',
                                     'status' => 'pass',
                                 ],
@@ -2292,7 +2292,7 @@ SH);
                         'localProductSourceCheckoutsUsed' => false,
                     ],
                     [
-                        'id' => 'workflow-php',
+                        'id' => 'sdk-php',
                         'artifactVersion' => '2.0.0-alpha.203',
                         'artifactSource' => 'packagist_release',
                         'result' => 'pass',
@@ -2331,7 +2331,7 @@ SH);
                 'cells' => [
                     [
                         'scenario' => 'php_v1_not_delivered_to_python_v2',
-                        'startedBy' => 'workflow-php-v1',
+                        'startedBy' => 'sdk-php-v1',
                         'incompatibleWorker' => 'sdk-python-v2',
                         'compatibleDeliveryCount' => 2,
                         'incompatibleDeliveryCount' => 0,
@@ -2339,7 +2339,7 @@ SH);
                     [
                         'scenario' => 'python_v1_not_delivered_to_php_v2',
                         'startedBy' => 'sdk-python-v1',
-                        'incompatibleWorker' => 'workflow-php-v2',
+                        'incompatibleWorker' => 'sdk-php-v2',
                         'compatibleDeliveryCount' => 1,
                         'incompatibleDeliveryCount' => 0,
                     ],
@@ -2389,8 +2389,8 @@ SH);
                         'taskQueue' => 'worker-versioning-shared',
                         'localProductSourceCheckoutsUsed' => false,
                         'workerRegistrationResponses' => [
-                            'workflowPhp' => [
-                                'artifact' => 'workflow-php',
+                            'sdkPhp' => [
+                                'artifact' => 'sdk-php',
                                 'workerId' => 'php-v1',
                                 'taskQueue' => 'worker-versioning-shared',
                                 'buildId' => 'php-build-v1',
@@ -2435,8 +2435,8 @@ SH);
                                     'localProductSourceCheckoutsUsed' => false,
                                 ],
                                 [
-                                    'artifact' => 'workflow-php',
-                                    'version' => '2.0.0-alpha.203',
+                                    'artifact' => 'sdk-php',
+                                    'version' => '0.1.203',
                                     'source' => 'packagist_release',
                                     'status' => 'pass',
                                     'localProductSourceCheckoutsUsed' => false,
@@ -2462,7 +2462,7 @@ SH);
         $this->assertSame(1, $result['active_worker_counts_per_cohort']['php-build-v1']);
         $this->assertSame(1, $result['active_worker_counts_per_cohort']['python-build-v2']);
         $this->assertSame(
-            'workflow-php',
+            'sdk-php',
             $result['outputs']['published_worker_registration_entries'][0]['artifact'],
         );
         $this->assertSame(
@@ -2485,8 +2485,8 @@ SH);
                         'task_queue' => 'worker-versioning-shared',
                         'local_product_source_checkouts_used' => false,
                         'worker_registration_responses' => [
-                            'workflow_php' => [
-                                'artifact' => 'workflow-php',
+                            'sdk_php' => [
+                                'artifact' => 'sdk-php',
                                 'worker_id' => 'php-v1',
                                 'task_queue' => 'worker-versioning-shared',
                                 'build_id' => 'php-build-v1',
@@ -2511,8 +2511,8 @@ SH);
                                     'status' => 'pass',
                                 ],
                                 [
-                                    'artifact' => 'workflow-php',
-                                    'version' => '2.0.0-alpha.203',
+                                    'artifact' => 'sdk-php',
+                                    'version' => '0.1.203',
                                     'source' => 'packagist_release',
                                     'status' => 'pass',
                                 ],
@@ -2850,8 +2850,8 @@ SH);
                     'local_product_source_checkouts_used' => false,
                 ],
                 [
-                    'artifact' => 'workflow-php',
-                    'version' => '2.0.0-alpha.191',
+                    'artifact' => 'sdk-php',
+                    'version' => '0.1.191',
                     'source' => 'composer_release',
                     'status' => 'pass',
                     'local_product_source_checkouts_used' => false,
@@ -2999,7 +2999,7 @@ const evidence = publishedWorkerShardFallbackEvidence(
     cli: '0.1.80',
     'sdk-python': '0.4.88',
     workflow: '2.0.0-alpha.203',
-    'workflow-php': '2.0.0-alpha.203',
+    'sdk-php': '0.1.203',
     waterline: '2.0.0-alpha.86',
   },
   {
@@ -3007,7 +3007,7 @@ const evidence = publishedWorkerShardFallbackEvidence(
     cli: 'official_install_script',
     'sdk-python': 'pypi_release',
     workflow: 'packagist_release',
-    'workflow-php': 'packagist_release',
+    'sdk-php': 'packagist_release',
     waterline: 'published_waterline_release',
   },
 );
@@ -3046,7 +3046,7 @@ JS;
 
         $this->assertSame('published_docker_image', $evidence['artifact_sources']['server']);
         $this->assertSame('pypi_release', $evidence['artifact_sources']['sdk-python']);
-        $this->assertSame('packagist_release', $evidence['artifact_sources']['workflow-php']);
+        $this->assertSame('packagist_release', $evidence['artifact_sources']['sdk-php']);
         $this->assertSame(
             'not_covered',
             $evidence['scenario_results']['cross_language_php_python_pinning']['status'],
@@ -3099,8 +3099,8 @@ JS;
                         'status' => 'pass',
                     ],
                     [
-                        'artifact' => 'workflow-php',
-                        'version' => '2.0.0-alpha.203',
+                        'artifact' => 'sdk-php',
+                        'version' => '0.1.203',
                         'source' => 'packagist_release',
                         'status' => 'pass',
                     ],
@@ -3140,11 +3140,13 @@ JS;
                     'DW_CLI_VERSION' => '0.1.80',
                     'DW_PYTHON_SDK_VERSION' => '0.4.88',
                     'DW_WORKFLOW_PHP_VERSION' => '2.0.0-alpha.203',
+                    'DW_PHP_SDK_VERSION' => '0.1.1',
                     'DW_WATERLINE_VERSION' => '2.0.0-alpha.86',
                     'DW_WV_SERVER_ARTIFACT_SOURCE' => 'docker',
                     'DW_CLI_ARTIFACT_SOURCE' => 'official_install_script',
                     'DW_PYTHON_SDK_ARTIFACT_SOURCE' => 'pypi_release',
                     'DW_WORKFLOW_PHP_ARTIFACT_SOURCE' => 'packagist_release',
+                    'DW_PHP_SDK_ARTIFACT_SOURCE' => 'packagist_release',
                     'DW_WATERLINE_ARTIFACT_SOURCE' => 'published_waterline_release',
                 ],
             );
@@ -3172,7 +3174,7 @@ JS;
             $this->assertFalse($outputs['published_artifact_worker_execution']);
             $this->assertSame('docker', $evidence['artifact_sources']['server']);
             $this->assertSame('pypi_release', $evidence['artifact_sources']['sdk-python']);
-            $this->assertSame('packagist_release', $evidence['artifact_sources']['workflow-php']);
+            $this->assertSame('packagist_release', $evidence['artifact_sources']['sdk-php']);
             $this->assertStringContainsString(
                 'published worker shard did not complete during direct shell handoff',
                 (string) file_get_contents($resultDir.'/published-worker-shard-direct.log'),
@@ -3224,8 +3226,8 @@ JS;
             'local_product_source_checkouts_used' => false,
             'artifacts' => [
                 [
-                    'artifact' => 'workflow-php',
-                    'version' => '2.0.0-alpha.210',
+                    'artifact' => 'sdk-php',
+                    'version' => '0.1.210',
                     'source' => 'packagist_release',
                     'status' => 'pass',
                     'local_product_source_checkouts_used' => false,
@@ -3268,7 +3270,7 @@ console.log(JSON.stringify(publishedWorkerShardExitStatusEvidence(
     cli: '0.1.81',
     'sdk-python': '0.4.89',
     workflow: '2.0.0-alpha.210',
-    'workflow-php': '2.0.0-alpha.210',
+    'sdk-php': '0.1.210',
     waterline: '2.0.0-alpha.111',
   },
   {
@@ -3276,7 +3278,7 @@ console.log(JSON.stringify(publishedWorkerShardExitStatusEvidence(
     cli: 'github_release',
     'sdk-python': 'pypi_release',
     workflow: 'packagist_release',
-    'workflow-php': 'packagist_release',
+    'sdk-php': 'packagist_release',
     waterline: 'packagist_release',
   },
   evidence,
@@ -3347,7 +3349,7 @@ const artifactVersions = {
   cli: '0.1.75',
   'sdk-python': '0.4.84',
   workflow: '2.0.0-alpha.191',
-  'workflow-php': '2.0.0-alpha.191',
+  'sdk-php': '0.1.191',
   waterline: '2.0.0-alpha.77',
 };
 const artifactSources = {
@@ -3355,7 +3357,7 @@ const artifactSources = {
   cli: 'official_install_script',
   'sdk-python': 'pypi_release',
   workflow: 'composer_release',
-  'workflow-php': 'composer_release',
+  'sdk-php': 'composer_release',
   waterline: 'published_waterline_release',
 };
 const evidence = artifactInstallEvidence(artifactVersions, artifactSources);
@@ -3430,8 +3432,8 @@ const {
   publishedWorkerExecutionEvidence,
 } = await import(moduleUrl);
 const normalized = publishedWorkerExecutionEvidence(
-  { 'sdk-python': '0.4.84', 'workflow-php': '2.0.0-alpha.189' },
-  { 'sdk-python': 'pypi_release', 'workflow-php': 'composer_release' },
+  { 'sdk-python': '0.4.84', 'sdk-php': '0.1.189' },
+  { 'sdk-python': 'pypi_release', 'sdk-php': 'composer_release' },
 );
 
 console.log(JSON.stringify({

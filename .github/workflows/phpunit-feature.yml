@@ -24,7 +24,7 @@ jobs:
         uses: actions/checkout@v6
         with:
           repository: durable-workflow/workflow
-          ref: 2.0.0-alpha.279
+          ref: 2.0.0-alpha.280
           path: workflow-package
           persist-credentials: false
 
@@ -33,7 +33,7 @@ jobs:
         uses: actions/checkout@v6
         with:
           repository: ${{ github.repository_owner }}/workflow
-          ref: 2.0.0-alpha.279
+          ref: 2.0.0-alpha.280
           path: workflow-package
           token: ${{ secrets.CROSS_REPO_READ_TOKEN }}
           github-server-url: ${{ github.server_url }}
@@ -42,8 +42,8 @@ jobs:
       - name: Verify workflow package source provenance
         shell: bash
         env:
-          WORKFLOW_PACKAGE_REF: 2.0.0-alpha.279
-          WORKFLOW_PACKAGE_COMMIT: f9a00e18fa21196bcb3505710489025ff93cf5e1
+          WORKFLOW_PACKAGE_REF: 2.0.0-alpha.280
+          WORKFLOW_PACKAGE_COMMIT: 3fa9bff54c8ccef5537a885b167e470a629661b9
         run: |
           set -euo pipefail
           resolved_commit="$(git -C workflow-package rev-parse HEAD)"

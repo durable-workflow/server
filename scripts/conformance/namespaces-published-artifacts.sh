@@ -22,14 +22,15 @@ Environment overrides:
   DW_SERVER_VERSION                  Exact patch server Docker tag; required for digest-only DW_SERVER_IMAGE.
   DW_CLI_VERSION                     GitHub release tag for the official CLI installer.
   DW_PYTHON_SDK_VERSION              PyPI version for durable-workflow.
+  DW_PHP_SDK_VERSION                 Composer version for durable-workflow/sdk.
   DW_WORKFLOW_PHP_VERSION            Composer version for durable-workflow/workflow.
   DW_WATERLINE_VERSION               Composer version for durable-workflow/waterline.
   DW_NAMESPACES_SKIP_DOCKER_PULL=1   Reuse local server image instead of pulling.
   DW_NAMESPACES_SERVER_PORT          Host port for the published server. Defaults to a free 127.0.0.1 port.
   DW_NAMESPACES_WATERLINE_RESULT     Optional pre-generated JSON report from waterline:namespace-conformance.
                                       If unset, the runner installs the published Waterline artifact and runs this shard.
-  DW_NAMESPACES_WORKFLOW_PHP_RESULT  Optional pre-generated JSON report from workflow:v2:namespace-conformance.
-                                      If unset, the runner installs the published Workflow PHP artifact and runs this shard.
+  DW_NAMESPACES_SDK_PHP_RESULT  Optional pre-generated JSON report from php-sdk-published-artifacts.
+                                      If unset, the runner installs the published PHP SDK artifact and runs this shard.
 USAGE
 }
 
@@ -204,8 +205,8 @@ result = {
     "published_artifact_versions": {},
     "namespace_topology": {"namespaces": ["tenant-a", "tenant-b", "shared"]},
     "runtime_matrix": {
-        "runtimes": ["workflow-php", "sdk-python"],
-        "client_paths": ["cli", "sdk-python", "workflow-php-sdk"],
+        "runtimes": ["sdk-php", "sdk-python"],
+        "client_paths": ["cli", "sdk-python", "sdk-php"],
         "observer_paths": ["waterline-list", "waterline-detail", "waterline-operator-api"],
     },
     "scenario_results": [
@@ -421,6 +422,7 @@ def docker_server_image() -> tuple[str, str]:
 server_image, server_version = docker_server_image()
 cli_version, cli_installer_url = github_release_with_downloadable_asset("durable-workflow/cli", env("DW_CLI_VERSION"), "install.sh")
 python_version = env("DW_PYTHON_SDK_VERSION") or read_json("https://pypi.org/pypi/durable-workflow/json")["info"]["version"]
+sdk_php_version = packagist_version("durable-workflow/sdk", env("DW_PHP_SDK_VERSION"))
 workflow_version = packagist_version("durable-workflow/workflow", env("DW_WORKFLOW_PHP_VERSION"))
 waterline_version = packagist_version("durable-workflow/waterline", env("DW_WATERLINE_VERSION"))
 
@@ -432,6 +434,7 @@ json.dump(
         "cli_installer_url": cli_installer_url,
         "workflow": workflow_version,
         "workflow-php": workflow_version,
+        "sdk-php": sdk_php_version,
         "sdk-python": python_version,
         "waterline": waterline_version,
         "artifact_sources": {
@@ -439,6 +442,7 @@ json.dump(
             "cli": "github_release",
             "workflow": "packagist_package",
             "workflow-php": "packagist_package",
+            "sdk-php": "packagist_package",
             "sdk-python": "pypi_package",
             "waterline": "packagist_package",
         },
@@ -464,6 +468,7 @@ server_version="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1])
 cli_version="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["cli"])' "$run_root/pins.json")"
 cli_installer_url="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["cli_installer_url"])' "$run_root/pins.json")"
 python_sdk_version="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["sdk-python"])' "$run_root/pins.json")"
+sdk_php_version="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["sdk-php"])' "$run_root/pins.json")"
 workflow_php_version="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["workflow-php"])' "$run_root/pins.json")"
 waterline_version="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["waterline"])' "$run_root/pins.json")"
 
@@ -571,6 +576,7 @@ versions = {
     "cli": pins["cli"],
     "workflow": pins["workflow"],
     "workflow-php": pins["workflow-php"],
+    "sdk-php": pins["sdk-php"],
     "sdk-python": pins["sdk-python"],
     "waterline": pins["waterline"],
 }
@@ -634,7 +640,7 @@ python_version = importlib.metadata.version("durable-workflow")
 evidence = {
     "server_image": {"version": pins["server"], "source": pins["artifact_sources"]["server"], "digest": server_image_digest, "status": "installed"},
     "cli_release": {"version": pins["cli"], "source": pins["artifact_sources"]["cli"], "status": "installed" if cli_code == 0 else "failed", "output_sample": cli_output[-1000:]},
-    "workflow_php_package": {"version": pins["workflow-php"], "source": pins["artifact_sources"]["workflow-php"], "status": "pending_shard_execution", "shard_command": "workflow:v2:namespace-conformance", "execution_required": True},
+    "sdk_php_package": {"version": pins["sdk-php"], "source": pins["artifact_sources"]["sdk-php"], "status": "pending_shard_execution", "shard_command": "php-sdk-published-artifacts", "execution_required": True},
     "sdk_python_package": {"version": python_version, "source": pins["artifact_sources"]["sdk-python"], "status": "installed"},
     "waterline_artifact": {"version": pins["waterline"], "source": pins["artifact_sources"]["waterline"], "status": "resolved", "shard_command": "waterline:namespace-conformance"},
     "local_product_source_checkouts_used": False,
@@ -649,32 +655,14 @@ if ! "$run_root/.venv/bin/python" "$run_root/artifact-smoke.py" "$run_root/pins.
   exit 1
 fi
 
-workflow_php_result_path="${DW_NAMESPACES_WORKFLOW_PHP_RESULT:-}"
-if [[ -z "$workflow_php_result_path" ]]; then
-  workflow_php_result_path="$result_dir/workflow-php-namespace-result.json"
-  workflow_php_app="$run_root/workflow-php-namespace-app"
-  mkdir -p "$workflow_php_app"
+sdk_php_result_path="${DW_NAMESPACES_SDK_PHP_RESULT:-}"
+if [[ -z "$sdk_php_result_path" ]]; then
+  sdk_php_result_path="$result_dir/sdk-php-namespace-result.json"
 
-  mapfile -t workflow_php_artifact_args < <(python3 - "$run_root/pins.json" <<'PY'
-from __future__ import annotations
-
-import json
-import sys
-from pathlib import Path
-
-pins = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
-artifact_keys = ["server", "cli", "workflow-php", "sdk-python", "waterline"]
-for key in artifact_keys:
-    print(f"--artifact-version={key}={pins[key]}")
-for key in artifact_keys:
-    print(f"--artifact-source={key}={pins['artifact_sources'][key]}")
-PY
-)
-
-  write_workflow_php_setup_failure() {
+  write_sdk_php_setup_failure() {
     local reason="$1"
 
-    python3 - "$run_root/pins.json" "$workflow_php_result_path" "$started_at" "$namespace_suite_version" "$reason" <<'PY'
+    python3 - "$run_root/pins.json" "$sdk_php_result_path" "$started_at" "$namespace_suite_version" "$reason" <<'PY'
 from __future__ import annotations
 
 import json
@@ -693,6 +681,7 @@ versions = {
     "cli": pins["cli"],
     "workflow": pins["workflow"],
     "workflow-php": pins["workflow-php"],
+    "sdk-php": pins["sdk-php"],
     "sdk-python": pins["sdk-python"],
     "waterline": pins["waterline"],
 }
@@ -703,9 +692,9 @@ required_scenarios = [
 ]
 finding_template = {
     "owning_surface": "conformance_harness",
-    "observed_behavior": f"Workflow PHP namespace shard could not run in the published-artifact harness: {reason}",
-    "expected_behavior": "workflow:v2:namespace-conformance runs against the published Workflow PHP artifact and emits namespace client and worker evidence",
-    "next_acceptance_criterion": "restore the Workflow PHP shard execution path and rerun namespaces conformance",
+    "observed_behavior": f"PHP SDK namespace shard could not run in the published-artifact harness: {reason}",
+    "expected_behavior": "php-sdk-published-artifacts runs against the published PHP SDK artifact and emits namespace client and worker evidence",
+    "next_acceptance_criterion": "restore the PHP SDK shard execution path and rerun namespaces conformance",
     "priority": "P1",
 }
 scenario_results = [
@@ -728,7 +717,7 @@ for scenario_id in required_scenarios:
             "scenario_id": scenario_id,
             "status": "fail",
             "observed_outputs": {
-                "shard_command": "workflow:v2:namespace-conformance",
+                "shard_command": "php-sdk-published-artifacts",
                 "setup_failure": reason,
             },
             "linked_findings": [finding],
@@ -750,7 +739,7 @@ report = {
     "schema": "durable-workflow.v2.namespace-runtime.result",
     "schema_version": 1,
     "suite_version": suite_version,
-    "coverage_scope": "workflow-php-namespace-shard",
+    "coverage_scope": "sdk-php-namespace-shard",
     "outcome": "fail",
     "started_at": started_at,
     "finished_at": finished,
@@ -759,17 +748,17 @@ report = {
     "artifact_sources": pins.get("artifact_sources", {}),
     "namespace_topology": {"namespaces": ["tenant-a", "tenant-b", "shared"]},
     "runtime_matrix": {
-        "claimed_targets": ["workflow-php"],
+        "claimed_targets": ["sdk-php"],
         "covered_scenarios": required_scenarios,
-        "client_paths": ["workflow-php-sdk"],
+        "client_paths": ["sdk-php"],
         "worker_isolation_cells": [
-            {"runtime": "workflow-php", "namespace": "tenant-a", "scenario": "php_worker_task_queue_namespace_isolation"},
-            {"runtime": "workflow-php", "namespace": "tenant-b", "scenario": "php_worker_task_queue_namespace_isolation"},
+            {"runtime": "sdk-php", "namespace": "tenant-a", "scenario": "php_worker_task_queue_namespace_isolation"},
+            {"runtime": "sdk-php", "namespace": "tenant-b", "scenario": "php_worker_task_queue_namespace_isolation"},
         ],
     },
     "scenario_results": scenario_results,
-    "workflow_php_namespace_surface": {
-        "shard_command": "workflow:v2:namespace-conformance",
+    "sdk_php_namespace_surface": {
+        "shard_command": "php-sdk-published-artifacts",
         "setup_failure": reason,
     },
     "api_captures": {},
@@ -780,82 +769,121 @@ out_path.write_text(json.dumps(report, indent=2, sort_keys=True) + "\n", encodin
 PY
   }
 
-  set +e
-  docker run --rm -v "$workflow_php_app:/app" -w /app composer:2 \
-    composer create-project laravel/laravel . --no-interaction --no-progress \
-    > "$result_dir/workflow-php-create-project.log" 2>&1
-  workflow_php_create_status=$?
-  set -e
-
-  workflow_php_require_status=1
-  workflow_php_key_status=1
-  workflow_php_command_status=1
-  if [[ "$workflow_php_create_status" -eq 0 ]]; then
-    mkdir -p "$workflow_php_app/database"
-    : > "$workflow_php_app/database/database.sqlite"
-
-    set +e
-    docker run --rm -v "$workflow_php_app:/app" -w /app composer:2 \
-      composer require --no-interaction --no-progress \
-        "durable-workflow/workflow:${workflow_php_version}" \
-      > "$result_dir/workflow-php-composer-install.log" 2>&1
-    workflow_php_require_status=$?
-    set -e
-  fi
-
-  if [[ "$workflow_php_require_status" -eq 0 ]]; then
+  sdk_php_probe_dir="$result_dir/sdk-php-namespace-probe"
+  mkdir -p "$sdk_php_probe_dir"
+  server_container_id="$(docker compose -f "$run_root/compose.yml" ps -q server)"
+  sdk_php_command_status=125
+  if [[ -n "$server_container_id" ]]; then
     set +e
     docker run --rm \
-      -v "$workflow_php_app:/app" \
-      -w /app \
-      -e DB_CONNECTION=sqlite \
-      -e DB_DATABASE=/app/database/database.sqlite \
-      composer:2 php artisan key:generate --force \
-      > "$result_dir/workflow-php-key-generate.log" 2>&1
-    workflow_php_key_status=$?
+      --network "container:${server_container_id}" \
+      -v "$sdk_php_probe_dir:/result" \
+      -e DW_PHP_SDK_VERSION="$sdk_php_version" \
+      -e DW_SERVER_VERSION="$server_version" \
+      -e DW_SERVER_IMAGE="$server_image" \
+      -e DW_PHP_SDK_CONFORMANCE_SERVER_URL="http://127.0.0.1:8080" \
+      -e DW_PHP_SDK_CONFORMANCE_NAMESPACE=default \
+      -e DW_PHP_SDK_CONFORMANCE_CONTROL_TOKEN=admin-token \
+      -e DW_PHP_SDK_CONFORMANCE_WORKER_TOKEN=worker-token \
+      "$server_image" scripts/conformance/php-sdk-published-artifacts.sh --result-dir /result \
+      > "$result_dir/sdk-php-namespace-conformance.log" 2>&1
+    sdk_php_command_status=$?
     set -e
   fi
 
-  if [[ "$workflow_php_key_status" -eq 0 ]]; then
-    server_container_id="$(docker compose -f "$run_root/compose.yml" ps -q server)"
-    if [[ -n "$server_container_id" ]]; then
-      set +e
-      docker run --rm \
-        --network "container:${server_container_id}" \
-        -v "$workflow_php_app:/app" \
-        -v "$result_dir:/result" \
-        -w /app \
-        -e DB_CONNECTION=sqlite \
-        -e DB_DATABASE=/app/database/database.sqlite \
-        composer:2 php artisan workflow:v2:namespace-conformance \
-          --server-url "http://127.0.0.1:8080" \
-          --token "admin-token" \
-          --worker-token "worker-token" \
-          --run-id "published-namespaces-${RUN_ID:-workflow-php}" \
-          --task-queue "workflow-php-namespace-shard" \
-          "${workflow_php_artifact_args[@]}" \
-          --output /result/workflow-php-namespace-result.json \
-          --json \
-        > "$result_dir/workflow-php-namespace-conformance.log" 2>&1
-      workflow_php_command_status=$?
-      set -e
-    else
-      workflow_php_command_status=125
-    fi
-  fi
+  sdk_php_probe_result="$sdk_php_probe_dir/php-sdk-conformance-result.json"
+  sdk_php_probe_sidecar="$sdk_php_probe_dir/php-sdk-lifecycle-evidence.json"
+  if [[ -s "$sdk_php_probe_result" && -s "$sdk_php_probe_sidecar" ]]; then
+    python3 - "$run_root/pins.json" "$sdk_php_probe_result" "$sdk_php_probe_sidecar" "$sdk_php_result_path" "$started_at" "$namespace_suite_version" <<'PY'
+from __future__ import annotations
 
-  if [[ ! -s "$workflow_php_result_path" ]]; then
-    if [[ "$workflow_php_create_status" -ne 0 ]]; then
-      write_workflow_php_setup_failure "Laravel app creation failed; see workflow-php-create-project.log"
-    elif [[ "$workflow_php_require_status" -ne 0 ]]; then
-      write_workflow_php_setup_failure "Composer install failed for durable-workflow/workflow:${workflow_php_version}; see workflow-php-composer-install.log"
-    elif [[ "$workflow_php_key_status" -ne 0 ]]; then
-      write_workflow_php_setup_failure "Laravel key generation failed before Workflow PHP shard execution; see workflow-php-key-generate.log"
-    elif [[ "$workflow_php_command_status" -eq 125 ]]; then
-      write_workflow_php_setup_failure "server container id was unavailable before Workflow PHP shard execution"
-    else
-      write_workflow_php_setup_failure "workflow:v2:namespace-conformance exited with status ${workflow_php_command_status} without writing a report; see workflow-php-namespace-conformance.log"
-    fi
+import json
+import sys
+from datetime import datetime, timezone
+from pathlib import Path
+
+pins = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
+probe = json.loads(Path(sys.argv[2]).read_text(encoding="utf-8"))
+sidecar = json.loads(Path(sys.argv[3]).read_text(encoding="utf-8"))
+out_path = Path(sys.argv[4])
+started_at = sys.argv[5]
+suite_version = int(sys.argv[6])
+finished = datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+versions = {
+    key: pins[key]
+    for key in ["server", "cli", "workflow", "workflow-php", "sdk-php", "sdk-python", "waterline"]
+}
+observed = (
+    sidecar.get("scenario_results", {})
+    .get("php_sdk_lifecycle_surface", {})
+    .get("observed_outputs", {})
+)
+assertions = observed.get("scenario_assertions", probe.get("assertions", {}))
+runner_blocked = bool(probe.get("runner_blocked"))
+probe_findings = probe.get("findings", []) if isinstance(probe.get("findings"), list) else []
+
+scenario_requirements = {
+    "namespace_create_update_describe_and_list": ["namespace_lifecycle"],
+    "sdk_namespace_selection_parity": ["namespace_selection"],
+    "php_worker_task_queue_namespace_isolation": ["worker_registration", "distinct_client_worker_processes"],
+}
+scenario_results = []
+findings = []
+for scenario_id, required in scenario_requirements.items():
+    passed = all(assertions.get(name) is True for name in required)
+    status = "pass" if passed else ("runner_blocked" if runner_blocked else "fail")
+    linked = []
+    if status != "pass":
+        linked = probe_findings or [{
+            "scenario_id": scenario_id,
+            "owning_surface": "conformance_harness" if runner_blocked else "sdk-php",
+            "observed_behavior": f"The released PHP SDK namespace probe did not satisfy {', '.join(required)}.",
+            "expected_behavior": "The exact Packagist PHP SDK proves namespace client selection and worker registration against the exact server image.",
+            "next_acceptance_criterion": "Correct the classified PHP SDK, server, package publication, or runner failure and rerun namespaces conformance.",
+            "priority": "P1",
+        }]
+        findings.extend(linked)
+    scenario_results.append({
+        "scenario_id": scenario_id,
+        "status": status,
+        "observed_outputs": {
+            "required_assertions": {name: assertions.get(name) for name in required},
+            "artifact_version": observed.get("artifact_version"),
+            "artifact_source": observed.get("artifact_source"),
+            "client_processes": observed.get("client_processes", []),
+            "worker_processes": observed.get("worker_processes", []),
+            "namespace_evidence": observed.get("namespace_evidence", {}),
+            "local_product_source_checkouts_used": False,
+        },
+        "linked_findings": linked,
+    })
+
+report = {
+    "schema": "durable-workflow.v2.namespace-runtime.result",
+    "schema_version": 1,
+    "suite_version": suite_version,
+    "coverage_scope": "sdk-php-namespace-shard",
+    "outcome": "pass" if all(row["status"] == "pass" for row in scenario_results) else "fail",
+    "runner_blocked": runner_blocked,
+    "started_at": started_at,
+    "finished_at": finished,
+    "generated_at": finished,
+    "artifact_versions": versions,
+    "artifact_sources": pins.get("artifact_sources", {}),
+    "runtime_matrix": {
+        "claimed_targets": ["sdk-php"],
+        "covered_scenarios": list(scenario_requirements),
+        "client_paths": ["sdk-php"],
+    },
+    "scenario_results": scenario_results,
+    "sdk_php_namespace_surface": observed,
+    "findings": findings,
+    "finding_links": {row["scenario_id"]: row["linked_findings"] for row in scenario_results if row["linked_findings"]},
+}
+out_path.write_text(json.dumps(report, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+PY
+  else
+    write_sdk_php_setup_failure "The exact server image PHP SDK runner exited with status ${sdk_php_command_status} without writing complete evidence; see sdk-php-namespace-conformance.log"
   fi
 fi
 
@@ -873,7 +901,7 @@ import sys
 from pathlib import Path
 
 pins = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
-artifact_keys = ["server", "cli", "workflow-php", "sdk-python", "waterline"]
+artifact_keys = ["server", "cli", "workflow-php", "sdk-php", "sdk-python", "waterline"]
 for key in artifact_keys:
     print(f"--artifact-version={key}={pins[key]}")
 for key in artifact_keys:
@@ -903,6 +931,7 @@ versions = {
     "cli": pins["cli"],
     "workflow": pins["workflow"],
     "workflow-php": pins["workflow-php"],
+    "sdk-php": pins["sdk-php"],
     "sdk-python": pins["sdk-python"],
     "waterline": pins["waterline"],
 }
@@ -1107,14 +1136,15 @@ RUN_ID = os.environ.get("DW_NAMESPACES_RUN_ID", str(int(time.time())))
 TASK_QUEUE = f"control-{RUN_ID}"
 WORKER_TASK_QUEUE = "iso"
 NEXUS_TASK_QUEUE = f"nexus-{RUN_ID}"
-REQUIRED_SHARD_ARTIFACTS = ["server", "cli", "workflow-php", "sdk-python", "waterline"]
-WORKFLOW_PHP_REQUIRED_SCENARIOS = [
+REQUIRED_SHARD_ARTIFACTS = ["server", "cli", "workflow-php", "sdk-php", "sdk-python", "waterline"]
+SDK_PHP_REQUIRED_SCENARIOS = [
     "namespace_create_update_describe_and_list",
     "sdk_namespace_selection_parity",
     "php_worker_task_queue_namespace_isolation",
 ]
 ARTIFACT_VERSION_ALIASES = {
-    "workflow-php": ["workflow-php", "workflow_php", "workflow"],
+    "workflow-php": ["workflow-php", "workflow"],
+    "sdk-php": ["sdk-php", "sdk_php", "php", "php_worker"],
     "sdk-python": ["sdk-python", "sdk_python", "python"],
     "waterline": ["waterline", "waterline-ui", "waterline_ui"],
 }
@@ -1470,10 +1500,10 @@ def load_required_shard(path: str | None, scenario_id: str, command: str, scope:
     if not path:
         return None, None, finding(
             scenario_id,
-            "workflow",
-            f"required {scope} report was not supplied to this runner invocation; the server/CLI/Python probes still ran, but the Workflow PHP namespace mirror cell remains focused unsupported evidence",
+            "sdk-php",
+            f"required {scope} report was not supplied to this runner invocation; the server/CLI/Python probes still ran, but the PHP SDK namespace mirror cell remains focused unsupported evidence",
             f"{command} runs against the published artifact tuple and emits {scenario_id}",
-            f"run {command} from the published workflow PHP artifact and pass DW_NAMESPACES_WORKFLOW_PHP_RESULT",
+            f"run {command} from the published PHP SDK artifact and pass DW_NAMESPACES_SDK_PHP_RESULT",
             "P1",
             finding_type="unsupported_public_surface",
             scenario_status="unsupported",
@@ -1484,7 +1514,7 @@ def load_required_shard(path: str | None, scenario_id: str, command: str, scope:
             scenario_id,
             "conformance_harness",
             f"configured {scope} report does not exist: {path}",
-            "configured workflow PHP namespace shard report is readable JSON",
+            "configured PHP SDK namespace shard report is readable JSON",
             f"write the {command} report before invoking the namespace aggregator",
         )
     payload = json.loads(shard_path.read_text(encoding="utf-8"))
@@ -1499,21 +1529,21 @@ def load_required_shard(path: str | None, scenario_id: str, command: str, scope:
         scenario_id,
         "conformance_harness",
         f"configured {scope} report did not contain {scenario_id}",
-        f"{scenario_id} is present in the workflow PHP namespace shard report",
+        f"{scenario_id} is present in the PHP SDK namespace shard report",
         f"update {command} to emit the namespace scenario id",
     )
 
 
-def load_workflow_php_shard(path: str | None, pins: dict[str, Any]) -> tuple[dict[str, dict[str, Any]], dict[str, Any] | None, dict[str, dict[str, Any]]]:
+def load_sdk_php_shard(path: str | None, pins: dict[str, Any]) -> tuple[dict[str, dict[str, Any]], dict[str, Any] | None, dict[str, dict[str, Any]]]:
     items: dict[str, dict[str, Any]] = {}
     errors: dict[str, dict[str, Any]] = {}
     payload: dict[str, Any] | None = None
-    for scenario_id in WORKFLOW_PHP_REQUIRED_SCENARIOS:
+    for scenario_id in SDK_PHP_REQUIRED_SCENARIOS:
         item, current_payload, error = load_required_shard(
             path,
             scenario_id,
-            "workflow:v2:namespace-conformance",
-            "workflow-php-namespace-shard",
+            "php-sdk-published-artifacts",
+            "sdk-php-namespace-shard",
             pins,
             REQUIRED_SHARD_ARTIFACTS,
         )
@@ -1558,20 +1588,20 @@ def normalize_shard_finding(scenario_id: str, raw: dict[str, Any], default_owner
     return normalized
 
 
-def workflow_php_findings(scenario_id: str, item: dict[str, Any] | None, error: dict[str, Any] | None) -> list[dict[str, Any]]:
+def sdk_php_findings(scenario_id: str, item: dict[str, Any] | None, error: dict[str, Any] | None) -> list[dict[str, Any]]:
     if error is not None:
         return [error]
     linked = scenario_linked_findings(item)
     if linked:
-        return [normalize_shard_finding(scenario_id, entry, "workflow") for entry in linked]
+        return [normalize_shard_finding(scenario_id, entry, "sdk-php") for entry in linked]
     if item is None:
         return [
             finding(
                 scenario_id,
                 "conformance_harness",
-                f"workflow PHP namespace shard did not emit {scenario_id}",
-                f"workflow:v2:namespace-conformance emits {scenario_id} against the published artifact tuple",
-                "rerun the published Workflow PHP namespace shard and attach its full report",
+                f"PHP SDK namespace shard did not emit {scenario_id}",
+                f"php-sdk-published-artifacts emits {scenario_id} against the published artifact tuple",
+                "rerun the published PHP SDK namespace shard and attach its full report",
             )
         ]
     status = str(item.get("status") or "")
@@ -1579,10 +1609,10 @@ def workflow_php_findings(scenario_id: str, item: dict[str, Any] | None, error: 
         return [
             finding(
                 scenario_id,
-                "workflow",
-                f"workflow PHP namespace shard reported {scenario_id} status {status or 'missing'} without a linked finding",
-                f"workflow:v2:namespace-conformance reports pass or links a focused product finding for {scenario_id}",
-                "route a focused Workflow PHP namespace finding or repair the shard scenario",
+                "sdk-php",
+                f"PHP SDK namespace shard reported {scenario_id} status {status or 'missing'} without a linked finding",
+                f"php-sdk-published-artifacts reports pass or links a focused product finding for {scenario_id}",
+                "route a focused PHP SDK namespace finding or repair the shard scenario",
             )
         ]
     return []
@@ -1600,18 +1630,18 @@ def combined_status(local_failures: list[str], item: dict[str, Any] | None, erro
     return status if status in ALLOWED_SCENARIO_STATUSES else "fail"
 
 
-def workflow_php_execution_record(path: str | None, payload: dict[str, Any] | None, items: dict[str, dict[str, Any]], errors: dict[str, dict[str, Any]], pins: dict[str, Any]) -> dict[str, Any]:
-    missing = [scenario_id for scenario_id in WORKFLOW_PHP_REQUIRED_SCENARIOS if scenario_id not in items]
+def sdk_php_execution_record(path: str | None, payload: dict[str, Any] | None, items: dict[str, dict[str, Any]], errors: dict[str, dict[str, Any]], pins: dict[str, Any]) -> dict[str, Any]:
+    missing = [scenario_id for scenario_id in SDK_PHP_REQUIRED_SCENARIOS if scenario_id not in items]
     status = "executed" if payload is not None and not errors and not missing else "missing"
     record: dict[str, Any] = {
         "status": status,
         "required": True,
-        "shard_command": "workflow:v2:namespace-conformance",
-        "scope": "workflow-php-namespace-shard",
-        "artifact": "durable-workflow/workflow",
-        "artifact_version": pins["workflow-php"],
+        "shard_command": "php-sdk-published-artifacts",
+        "scope": "sdk-php-namespace-shard",
+        "artifact": "durable-workflow/sdk",
+        "artifact_version": pins["sdk-php"],
         "report_path": path,
-        "required_scenarios": WORKFLOW_PHP_REQUIRED_SCENARIOS,
+        "required_scenarios": SDK_PHP_REQUIRED_SCENARIOS,
         "covered_scenarios": sorted(items.keys()),
         "missing_required_scenarios": missing,
         "scenario_statuses": {
@@ -1670,30 +1700,31 @@ def main() -> int:
         "cli": pins["cli"],
         "workflow": pins["workflow"],
         "workflow-php": pins["workflow-php"],
+        "sdk-php": pins["sdk-php"],
         "sdk-python": pins["sdk-python"],
         "waterline": pins["waterline"],
     }
     artifact_install = json.loads((RESULT_DIR / "artifact-install-evidence.json").read_text(encoding="utf-8"))
-    workflow_php_result_path = os.environ.get("DW_NAMESPACES_WORKFLOW_PHP_RESULT")
-    workflow_php_items, workflow_php_payload, workflow_php_errors = load_workflow_php_shard(
-        workflow_php_result_path,
+    sdk_php_result_path = os.environ.get("DW_NAMESPACES_SDK_PHP_RESULT")
+    sdk_php_items, sdk_php_payload, sdk_php_errors = load_sdk_php_shard(
+        sdk_php_result_path,
         pins,
     )
-    workflow_php_execution = workflow_php_execution_record(
-        workflow_php_result_path,
-        workflow_php_payload,
-        workflow_php_items,
-        workflow_php_errors,
+    sdk_php_execution = sdk_php_execution_record(
+        sdk_php_result_path,
+        sdk_php_payload,
+        sdk_php_items,
+        sdk_php_errors,
         pins,
     )
-    artifact_install["workflow_php_package"] = {
-        **(artifact_install.get("workflow_php_package") if isinstance(artifact_install.get("workflow_php_package"), dict) else {}),
-        "version": pins["workflow-php"],
-        "source": pins["artifact_sources"]["workflow-php"],
-        "status": workflow_php_execution["status"],
-        "shard_command": "workflow:v2:namespace-conformance",
+    artifact_install["sdk_php_package"] = {
+        **(artifact_install.get("sdk_php_package") if isinstance(artifact_install.get("sdk_php_package"), dict) else {}),
+        "version": pins["sdk-php"],
+        "source": pins["artifact_sources"]["sdk-php"],
+        "status": sdk_php_execution["status"],
+        "shard_command": "php-sdk-published-artifacts",
         "execution_required": True,
-        "namespace_shard_execution": workflow_php_execution,
+        "namespace_shard_execution": sdk_php_execution,
     }
 
     findings: list[dict[str, Any]] = []
@@ -1717,17 +1748,17 @@ def main() -> int:
         "described_namespaces": described,
         "listed_namespaces": listed,
     }
-    crud_php_item = workflow_php_items.get("namespace_create_update_describe_and_list")
-    crud_php_error = workflow_php_errors.get("namespace_create_update_describe_and_list")
+    crud_php_item = sdk_php_items.get("namespace_create_update_describe_and_list")
+    crud_php_error = sdk_php_errors.get("namespace_create_update_describe_and_list")
     add(scenario(
         "namespace_create_update_describe_and_list",
         combined_status([], crud_php_item, crud_php_error),
         namespace_crud | {
             "server_http_namespace_crud": namespace_crud,
-            "workflow_php_namespace_crud": scenario_observed_outputs(crud_php_item),
-            "workflow_php_shard_execution": workflow_php_execution,
+            "sdk_php_namespace_crud": scenario_observed_outputs(crud_php_item),
+            "sdk_php_shard_execution": sdk_php_execution,
         },
-        workflow_php_findings("namespace_create_update_describe_and_list", crud_php_item, crud_php_error),
+        sdk_php_findings("namespace_create_update_describe_and_list", crud_php_item, crud_php_error),
     ))
 
     wf_a = workflow_ids("visibility-a")
@@ -1826,8 +1857,8 @@ def main() -> int:
             "make worker registration and workflow-task polling namespace-aware for matching",
         )
     ] if worker_failures else []
-    php_worker_item = workflow_php_items.get("php_worker_task_queue_namespace_isolation")
-    php_worker_error = workflow_php_errors.get("php_worker_task_queue_namespace_isolation")
+    php_worker_item = sdk_php_items.get("php_worker_task_queue_namespace_isolation")
+    php_worker_error = sdk_php_errors.get("php_worker_task_queue_namespace_isolation")
     direct_worker_outputs = {
         "tenant_a_worker_registration": reg_a,
         "tenant_b_worker_registration": reg_b,
@@ -1841,17 +1872,18 @@ def main() -> int:
         combined_status(worker_failures, php_worker_item, php_worker_error),
         direct_worker_outputs | scenario_observed_outputs(php_worker_item) | {
             "server_http_worker_probe": direct_worker_outputs,
-            "workflow_php_shard": "workflow:v2:namespace-conformance",
-            "workflow_php_shard_execution": workflow_php_execution,
+            "sdk_php_shard": "php-sdk-published-artifacts",
+            "sdk_php_shard_execution": sdk_php_execution,
         },
-        worker_findings + workflow_php_findings("php_worker_task_queue_namespace_isolation", php_worker_item, php_worker_error),
+        worker_findings + sdk_php_findings("php_worker_task_queue_namespace_isolation", php_worker_item, php_worker_error),
     ))
 
     request("POST", "/search-attributes", namespace=NAMESPACES["a"], body={"name": "customer_id", "type": "keyword"}, allowed={200, 201, 409})
     sa_workflow = workflow_ids("search-attribute")
     start_workflow(NAMESPACES["a"], sa_workflow, search_attributes={"customer_id": "tenant-a-value"})
     schema_b = request("GET", "/search-attributes", namespace=NAMESPACES["b"])["json"]
-    query_b_response = request("GET", f"/workflows?{urllib.parse.urlencode({'query': 'customer_id=\"tenant-a-value\"'})}", namespace=NAMESPACES["b"], allowed={200, 400, 422})
+    query_b_params = urllib.parse.urlencode({"query": 'customer_id="tenant-a-value"'})
+    query_b_response = request("GET", f"/workflows?{query_b_params}", namespace=NAMESPACES["b"], allowed={200, 400, 422})
     query_b_json = query_b_response["json"]
     query_b_text = json.dumps(query_b_json, sort_keys=True)
     sa_failures = []
@@ -2093,8 +2125,8 @@ def main() -> int:
             "make SDK clients send and preserve namespace context for all workflow reads",
         )
     ] if sdk_failures else []
-    sdk_php_item = workflow_php_items.get("sdk_namespace_selection_parity")
-    sdk_php_error = workflow_php_errors.get("sdk_namespace_selection_parity")
+    sdk_php_item = sdk_php_items.get("sdk_namespace_selection_parity")
+    sdk_php_error = sdk_php_errors.get("sdk_namespace_selection_parity")
     sdk_php_outputs = scenario_observed_outputs(sdk_php_item)
     python_default_namespace_behavior = {"listed_workflow_ids": [item.workflow_id for item in sdk_default_list.executions]}
     add(scenario(
@@ -2105,16 +2137,16 @@ def main() -> int:
             "php_client_namespace": sdk_php_outputs.get("php_client_namespace"),
             "default_namespace_behavior": {
                 "sdk_python": python_default_namespace_behavior,
-                "workflow_php": sdk_php_outputs.get("default_namespace_behavior"),
+                "sdk_php": sdk_php_outputs.get("default_namespace_behavior"),
             },
             "cross_namespace_lookup_denied": {
                 "sdk_python": sdk_cross,
-                "workflow_php": sdk_php_outputs.get("cross_namespace_lookup_denied"),
+                "sdk_php": sdk_php_outputs.get("cross_namespace_lookup_denied"),
             },
-            "workflow_php_sdk_namespace_selection": sdk_php_outputs,
-            "workflow_php_shard_execution": workflow_php_execution,
+            "sdk_php_sdk_namespace_selection": sdk_php_outputs,
+            "sdk_php_shard_execution": sdk_php_execution,
         },
-        sdk_findings + workflow_php_findings("sdk_namespace_selection_parity", sdk_php_item, sdk_php_error),
+        sdk_findings + sdk_php_findings("sdk_namespace_selection_parity", sdk_php_item, sdk_php_error),
     ))
     sdk_a.close()
     sdk_b.close()
@@ -2475,12 +2507,12 @@ def main() -> int:
             "nexus_task_queue": NEXUS_TASK_QUEUE,
         },
         "runtime_matrix": {
-            "runtimes": ["workflow-php", "sdk-python"],
-            "client_paths": ["cli", "sdk-python", "workflow-php-sdk"],
+            "runtimes": ["sdk-php", "sdk-python"],
+            "client_paths": ["cli", "sdk-python", "sdk-php"],
             "observer_paths": ["waterline-list", "waterline-detail", "waterline-operator-api"],
             "worker_isolation_cells": [
-                {"runtime": "workflow-php", "namespace": "tenant-a", "task_queue": WORKER_TASK_QUEUE, "scenario": "php_worker_task_queue_namespace_isolation"},
-                {"runtime": "workflow-php", "namespace": "tenant-b", "task_queue": WORKER_TASK_QUEUE, "scenario": "php_worker_task_queue_namespace_isolation"},
+                {"runtime": "sdk-php", "namespace": "tenant-a", "task_queue": WORKER_TASK_QUEUE, "scenario": "php_worker_task_queue_namespace_isolation"},
+                {"runtime": "sdk-php", "namespace": "tenant-b", "task_queue": WORKER_TASK_QUEUE, "scenario": "php_worker_task_queue_namespace_isolation"},
             ],
             "cross_namespace_cells": [
                 {"from": "tenant-a", "to": "tenant-b", "surface": "workflow-control-plane", "scenario": "workflow_cross_namespace_visibility_isolation"},
@@ -2536,7 +2568,7 @@ DW_NAMESPACES_SERVER_URL="$server_base_url" \
 DW_NAMESPACES_RESULT_DIR="$result_dir" \
 DW_NAMESPACES_RUN_ROOT="$run_root" \
 DW_NAMESPACES_DW_BIN="$run_root/cli/bin/dw" \
-DW_NAMESPACES_WORKFLOW_PHP_RESULT="$workflow_php_result_path" \
+DW_NAMESPACES_SDK_PHP_RESULT="$sdk_php_result_path" \
 DW_NAMESPACES_WATERLINE_RESULT="$waterline_result_path" \
 DW_NAMESPACES_STARTED_AT="$started_at" \
 DW_NAMESPACES_SUITE_VERSION="$namespace_suite_version" \
@@ -2592,7 +2624,7 @@ try:
     result_artifacts = result.get("artifact_versions") if isinstance(result.get("artifact_versions"), dict) else {}
     artifacts_match = all(
         str(record_artifacts.get(key) or "") == str(result_artifacts.get(key) or "")
-        for key in ["server", "cli", "workflow-php", "sdk-python", "waterline"]
+        for key in ["server", "cli", "workflow-php", "sdk-php", "sdk-python", "waterline"]
     )
     findings_empty = not record.get("findings") and not result.get("findings")
     is_pass = (

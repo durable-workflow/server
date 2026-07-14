@@ -48,7 +48,7 @@ final class SkewRefusalMatrixContractTest extends TestCase
             $manifest['required_scenarios'],
         );
 
-        foreach (['server', 'cli', 'sdk-python', 'workflow', 'waterline'] as $artifact) {
+        foreach (['server', 'cli', 'sdk-python', 'workflow', 'sdk-php', 'waterline'] as $artifact) {
             $this->assertContains($artifact, $manifest['artifact_policy']['required_artifacts']);
             $this->assertArrayHasKey($artifact, $manifest['artifact_policy']['install_channels']);
         }
@@ -161,7 +161,7 @@ final class SkewRefusalMatrixContractTest extends TestCase
         $manifest = SkewRefusalMatrixContract::manifest();
         $requiredClasses = ['compatible', 'backward_skew', 'forward_skew', 'outside_window'];
 
-        foreach (['cli', 'sdk-python', 'workflow-worker', 'waterline'] as $surface) {
+        foreach (['cli', 'sdk-python', 'sdk-php', 'waterline'] as $surface) {
             $this->assertArrayHasKey($surface, $manifest['required_surfaces']);
             $this->assertSame(
                 $requiredClasses,
@@ -182,7 +182,7 @@ final class SkewRefusalMatrixContractTest extends TestCase
 
         $this->assertContains(
             'worker_lifecycle',
-            $manifest['required_surfaces']['workflow-worker']['operation_groups'],
+            $manifest['required_surfaces']['sdk-php']['operation_groups'],
         );
         $this->assertContains(
             'waterline_render',
@@ -361,7 +361,7 @@ final class SkewRefusalMatrixContractTest extends TestCase
             'published-artifact-install',
             'cli-skew-surface-shard',
             'sdk-python-skew-surface-shard',
-            'workflow-worker-skew-surface-shard',
+            'sdk-php-skew-surface-shard',
             'waterline-skew-surface-shard',
             'future-version-boundary-shard',
             'request-response-evidence-shard',
@@ -369,7 +369,7 @@ final class SkewRefusalMatrixContractTest extends TestCase
             $this->assertContains($scope, $hostRunner['required_execution_scopes']);
         }
 
-        foreach (['cli', 'sdk-python', 'workflow-worker', 'waterline'] as $surface) {
+        foreach (['cli', 'sdk-python', 'sdk-php', 'waterline'] as $surface) {
             $this->assertArrayHasKey($surface, $hostRunner['runtime_shards']);
             $this->assertSame(
                 ['compatible', 'backward_skew', 'forward_skew', 'outside_window'],
@@ -388,11 +388,11 @@ final class SkewRefusalMatrixContractTest extends TestCase
         );
         $this->assertContains(
             'worker_lifecycle',
-            $hostRunner['runtime_shards']['workflow-worker']['must_cover_operation_groups'],
+            $hostRunner['runtime_shards']['sdk-php']['must_cover_operation_groups'],
         );
         $this->assertSame(
             'register_and_drop',
-            $hostRunner['runtime_shards']['workflow-worker']['blocking_classification'],
+            $hostRunner['runtime_shards']['sdk-php']['blocking_classification'],
         );
         $this->assertContains(
             'waterline_render',
@@ -543,9 +543,19 @@ final class SkewRefusalMatrixContractTest extends TestCase
             'the skew runner must pin the Python SDK to the published artifact version under test',
         );
         $this->assertStringContainsString(
+            'durable-workflow/sdk:${php_sdk_version}',
+            $shell,
+            'the skew runner must install the PHP SDK from Packagist before worker-shard evidence can pass',
+        );
+        $this->assertStringContainsString(
+            'PHP SDK install requires an exact durable-workflow/sdk version',
+            $shell,
+            'the skew runner must not install floating PHP SDK constraints as published-artifact evidence',
+        );
+        $this->assertStringContainsString(
             'durable-workflow/workflow:${workflow_version}',
             $shell,
-            'the skew runner must install the PHP workflow package from Packagist before worker-shard evidence can pass',
+            'the Waterline shard must retain its published Workflow engine dependency',
         );
         $this->assertStringContainsString(
             'Workflow install requires an exact durable-workflow/workflow version',
@@ -665,7 +675,7 @@ final class SkewRefusalMatrixContractTest extends TestCase
         $this->assertStringContainsString(
             'invokeWorkflowWorkerOperation',
             $runner,
-            'PHP worker matrix cells must execute the Composer-installed durable-workflow/workflow artifact instead of remaining installed-only evidence',
+            'PHP worker matrix cells must execute the Composer-installed durable-workflow/sdk artifact instead of remaining installed-only evidence',
         );
         $this->assertStringContainsString(
             'invokeWaterlineOperation',
@@ -673,7 +683,7 @@ final class SkewRefusalMatrixContractTest extends TestCase
             'Waterline matrix cells must execute the Composer-installed durable-workflow/waterline artifact instead of remaining installed-only evidence',
         );
         $this->assertStringContainsString(
-            'workflow-worker-skew-probe.php',
+            'sdk-php-skew-probe.php',
             $runner,
             'the workflow worker shard must generate a PHP probe that requires the published package autoload file',
         );
@@ -725,7 +735,7 @@ final class SkewRefusalMatrixContractTest extends TestCase
         $this->assertStringContainsString(
             'runPhpArtifactWithProxyFallback',
             $runner,
-            'Dockerized PHP probes must retry through an alternate host route before marking workflow-worker or Waterline rows uncovered',
+            'Dockerized PHP probes must retry through an alternate host route before marking sdk-php or Waterline rows uncovered',
         );
         $this->assertStringContainsString(
             'phpDockerNetworkStrategies',
@@ -960,22 +970,22 @@ final class SkewRefusalMatrixContractTest extends TestCase
         $this->assertStringContainsString(
             'evidence.worker_version = surfaceVersion',
             $runner,
-            'workflow-worker evidence rows must explicitly name the published workflow package version under test',
+            'sdk-php evidence rows must explicitly name the published SDK package version under test',
         );
         $this->assertStringContainsString(
             'evidence.worker_protocol_version = pairing.workerProtocolVersion',
             $runner,
-            'workflow-worker evidence rows must explicitly name the worker protocol version used for the pairing',
+            'sdk-php evidence rows must explicitly name the worker protocol version used for the pairing',
         );
         $this->assertStringContainsString(
             'capture.worker_version = surfaceVersion',
             $runner,
-            'workflow-worker request/response captures must carry the published workflow package version under test',
+            'sdk-php request/response captures must carry the published SDK package version under test',
         );
         $this->assertStringContainsString(
             'result.worker_protocol_version = pairing.workerProtocolVersion',
             $runner,
-            'workflow-worker pairing summaries must carry the pairing worker protocol version',
+            'sdk-php pairing summaries must carry the pairing worker protocol version',
         );
         $this->assertStringContainsString(
             "supported_workflow_types: ['skew_conformance_workflow']",
@@ -1136,7 +1146,7 @@ PHP,
         $this->assertStringContainsString(
             'up -d server worker',
             $shell,
-            'compose-backed skew runs must start the server queue worker so workflow-worker compatible rows can create and lease real workflow tasks',
+            'compose-backed skew runs must start the server queue worker so sdk-php compatible rows can create and lease real workflow tasks',
         );
         $this->assertStringContainsString(
             'server-queue-worker.log',
@@ -1146,12 +1156,12 @@ PHP,
         $this->assertStringContainsString(
             'published server queue worker failed to start',
             $shell,
-            'queue worker startup failures must be wrapped with write_blocked_result instead of becoming uncovered workflow-worker cells',
+            'queue worker startup failures must be wrapped with write_blocked_result instead of becoming uncovered sdk-php cells',
         );
         $this->assertStringContainsString(
-            'workflow-worker compatible skew evidence requires queue-backed workflow task fixture polling',
+            'sdk-php compatible skew evidence requires queue-backed workflow task fixture polling',
             $shell,
-            'the blocked-result reason must name the workflow-worker evidence that depends on the server queue worker',
+            'the blocked-result reason must name the sdk-php evidence that depends on the server queue worker',
         );
         $this->assertStringContainsString(
             'published server failed to start from ${server_image}',
@@ -1575,22 +1585,22 @@ SH
         $runner = $this->read('scripts/conformance/skew-published-artifacts.mjs');
 
         $this->assertStringContainsString(
-            'new \Workflow\V2\Client\ControlPlaneClient',
+            'new \\DurableWorkflow\\Client',
             $runner,
-            'workflow-worker cluster-info probes must use the Composer-installed control-plane client',
+            'sdk-php cluster-info probes must use the Composer-installed control-plane client',
         );
         $this->assertStringContainsString(
             '$controlPlaneVersion',
             $runner,
-            'workflow-worker cluster-info probes must send the row control-plane version from the artifact client',
+            'sdk-php cluster-info probes must send the row control-plane version from the artifact client',
         );
         $this->assertStringContainsString(
             '$client->clusterInfo()',
             $runner,
-            'workflow-worker cluster-info probes must execute the package API rather than a hand-written request',
+            'sdk-php cluster-info probes must execute the package API rather than a hand-written request',
         );
         $this->assertStringContainsString(
-            'new \Workflow\V2\Worker\WorkerProtocolClient',
+            'SkewVersionTransport',
             $runner,
             'worker lifecycle probes must use the Composer-installed worker protocol client',
         );
@@ -2053,9 +2063,9 @@ SH
     public function test_result_gate_rejects_operation_evidence_for_the_wrong_advertised_request_group(): void
     {
         $result = $this->completeSkewResult();
-        $result['operation_evidence']['workflow-worker']['outside_window']['worker_lifecycle'] = [
+        $result['operation_evidence']['sdk-php']['outside_window']['worker_lifecycle'] = [
             $this->operationEvidence(
-                'workflow-worker',
+                'sdk-php',
                 'outside_window',
                 'worker_lifecycle',
                 'loud_refuse',
@@ -2064,7 +2074,7 @@ SH
         ];
         $result['outcome'] = 'fail';
         $result['finding_links'] = [
-            'workflow-worker.outside_window.worker_lifecycle' => 'https://durable-workflow.github.io/conformance/findings/workflow-worker-skew',
+            'sdk-php.outside_window.worker_lifecycle' => 'https://durable-workflow.github.io/conformance/findings/sdk-php-skew',
         ];
 
         $evaluation = SkewRefusalMatrixResultGate::evaluate($result);
@@ -2176,10 +2186,10 @@ SH
         $result = $this->completeSkewResult();
         $result['outcome'] = 'fail';
         $result['finding_links'] = [
-            'workflow-worker.outside_window' => 'https://durable-workflow.github.io/conformance/findings/workflow-worker-skew',
+            'sdk-php.outside_window' => 'https://durable-workflow.github.io/conformance/findings/sdk-php-skew',
             'waterline.outside_window' => 'https://durable-workflow.github.io/conformance/findings/waterline-skew',
         ];
-        $result['pairing_results']['workflow-worker']['outside_window']['worker_skew_classification'] = 'register_and_drop';
+        $result['pairing_results']['sdk-php']['outside_window']['worker_skew_classification'] = 'register_and_drop';
         $result['pairing_results']['waterline']['outside_window']['waterline_skew_classification'] = 'stale_render';
 
         $evaluation = SkewRefusalMatrixResultGate::evaluate($result);
@@ -2495,7 +2505,7 @@ SH
             $result['refusal_requirements_met'] = $manifest['required_surfaces'][$surface]['refusal_requirements'];
         }
 
-        if ($surface === 'workflow-worker') {
+        if ($surface === 'sdk-php') {
             $result['worker_skew_classification'] = $pairingClass === 'compatible'
                 ? 'register_and_serve'
                 : 'register_refused';
@@ -2570,7 +2580,7 @@ SH
             $row['refusal_requirements_met'] = SkewRefusalMatrixContract::manifest()['required_surfaces'][$surface]['refusal_requirements'];
         }
 
-        if ($surface === 'workflow-worker') {
+        if ($surface === 'sdk-php') {
             $row['worker_skew_classification'] = $pairingClass === 'compatible'
                 ? 'register_and_serve'
                 : 'register_refused';

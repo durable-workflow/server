@@ -239,7 +239,7 @@ The long-running `server`, `worker`, and `scheduler` services each pin
 `DW_SERVER_TOPOLOGY_SHAPE` and `DW_SERVER_PROCESS_CLASS` so
 `GET /api/cluster/info` reports the role class you actually launched during
 local split-role testing.
-The local compose files pass `WORKFLOW_PACKAGE_REF=2.0.0-alpha.279`, matching
+The local compose files pass `WORKFLOW_PACKAGE_REF=2.0.0-alpha.280`, matching
 the Dockerfile fallback, so `docker compose up --build` works from a clean
 checkout with Composer metadata aligned to the embedded workflow package.
 Override `WORKFLOW_PACKAGE_SOURCE`, `WORKFLOW_PACKAGE_REF`, or
@@ -1137,7 +1137,7 @@ docker run --rm -p 8080:8080 \
   durable-workflow-server
 ```
 
-The Dockerfile clones the `durable-workflow/workflow` `2.0.0-alpha.279` tag
+The Dockerfile clones the `durable-workflow/workflow` `2.0.0-alpha.280` tag
 into the build by default and refreshes the Composer package metadata from that
 source before installing production dependencies. Use
 `--build-arg WORKFLOW_PACKAGE_SOURCE=...`,
@@ -1257,8 +1257,8 @@ The `Release` workflow publishes multi-arch images to
 Docker Hub (`durableworkflow/server`) and GitHub Container Registry
 (`ghcr.io/durable-workflow/server`) when a server semver tag is pushed. The
 workflow builds the server image with the public
-`durable-workflow/workflow:2.0.0-alpha.279` package and verifies that the tag
-resolves to commit `f9a00e18fa21196bcb3505710489025ff93cf5e1` before the
+`durable-workflow/workflow:2.0.0-alpha.280` package and verifies that the tag
+resolves to commit `3fa9bff54c8ccef5537a885b167e470a629661b9` before the
 image can be published.
 
 When a later server image needs a newer workflow package fix, publish the

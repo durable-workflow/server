@@ -24,7 +24,7 @@ const artifactInstallEvidencePath = process.env.DW_WV_ARTIFACT_INSTALL_EVIDENCE
   ?? path.join(resultDir, 'artifact-install-evidence.json');
 const publishedWorkerEvidencePath = process.env.DW_WV_PUBLISHED_WORKER_EVIDENCE
   ?? path.join(resultDir, 'published-worker-execution-evidence.json');
-const REQUIRED_INSTALL_ARTIFACTS = ['server', 'cli', 'sdk-python', 'workflow-php', 'waterline'];
+const REQUIRED_INSTALL_ARTIFACTS = ['server', 'cli', 'sdk-python', 'workflow', 'sdk-php', 'waterline'];
 const FORBIDDEN_INSTALL_SOURCE_TOKENS = [
   'not_exercised',
   'local_product_source_checkout',
@@ -199,18 +199,18 @@ async function main() {
     worker_cohorts: ['v1', 'v2', 'draining-v1', 'promoted-v2', 'no-compatible-worker'],
     cross_language_cells: [
       {
-        started_by: 'workflow-php-v1',
+        started_by: 'sdk-php-v1',
         incompatible_worker: 'sdk-python-v2',
         scenario: 'php_v1_not_delivered_to_python_v2',
       },
       {
         started_by: 'sdk-python-v1',
-        incompatible_worker: 'workflow-php-v2',
+        incompatible_worker: 'sdk-php-v2',
         scenario: 'python_v1_not_delivered_to_php_v2',
       },
     ],
-    uncovered_required_runtimes: ['workflow-php', 'sdk-python'],
-    uncovered_required_client_paths: ['cli', 'sdk-python', 'workflow-php-sdk'],
+    uncovered_required_runtimes: ['sdk-php', 'sdk-python'],
+    uncovered_required_client_paths: ['cli', 'sdk-python', 'sdk-php'],
     uncovered_required_operator_visibility_paths: [
       'dw workers list',
       'dw task-queue build-ids',
@@ -225,7 +225,7 @@ async function main() {
     worker_id: v1WorkerId,
     task_queue: taskQueue,
     runtime: 'php',
-    sdk_version: artifactVersions.workflow,
+    sdk_version: artifactVersions['sdk-php'],
     build_id: buildV1,
     supported_workflow_types: [workflowType],
     workflow_definition_fingerprints: { [workflowType]: `sequence-v1-${suffix}` },
@@ -251,7 +251,7 @@ async function main() {
     worker_id: v2WorkerId,
     task_queue: taskQueue,
     runtime: 'php',
-    sdk_version: artifactVersions.workflow,
+    sdk_version: artifactVersions['sdk-php'],
     build_id: buildV2,
     supported_workflow_types: [workflowType],
     workflow_definition_fingerprints: { [workflowType]: `sequence-v2-${suffix}` },
@@ -279,7 +279,7 @@ async function main() {
     worker_id: v1WorkerId,
     task_queue: taskQueue,
     runtime: 'php',
-    sdk_version: artifactVersions.workflow,
+    sdk_version: artifactVersions['sdk-php'],
     build_id: buildV1,
     supported_workflow_types: [workflowType],
     workflow_definition_fingerprints: { [workflowType]: `sequence-v1-${suffix}` },
@@ -397,7 +397,7 @@ async function main() {
     worker_id: phpV1WorkerId,
     task_queue: taskQueue,
     runtime: 'php',
-    sdk_version: artifactVersions.workflow,
+    sdk_version: artifactVersions['sdk-php'],
     build_id: `${buildV1}-php`,
     supported_workflow_types: [workflowType],
     workflow_definition_fingerprints: { [workflowType]: `sequence-php-v1-${suffix}` },
@@ -462,7 +462,7 @@ async function main() {
     worker_id: phpV2WorkerId,
     task_queue: taskQueue,
     runtime: 'php',
-    sdk_version: artifactVersions.workflow,
+    sdk_version: artifactVersions['sdk-php'],
     build_id: `${buildV2}-php`,
     supported_workflow_types: [workflowType],
     workflow_definition_fingerprints: { [workflowType]: `sequence-php-v2-${suffix}` },
@@ -528,7 +528,7 @@ async function main() {
     worker_id: v1WorkerId,
     task_queue: taskQueue,
     runtime: 'php',
-    sdk_version: artifactVersions.workflow,
+    sdk_version: artifactVersions['sdk-php'],
     build_id: buildV1,
     supported_workflow_types: [workflowType],
     workflow_definition_fingerprints: { [workflowType]: `sequence-v1-${suffix}` },
@@ -621,7 +621,7 @@ async function main() {
     worker_id: v1WorkerId,
     task_queue: taskQueue,
     runtime: 'php',
-    sdk_version: artifactVersions.workflow,
+    sdk_version: artifactVersions['sdk-php'],
     build_id: buildV1,
     supported_workflow_types: [workflowType],
     workflow_definition_fingerprints: { [workflowType]: `sequence-divergent-under-same-build-${suffix}` },
@@ -679,8 +679,8 @@ async function main() {
       owning_surface: 'conformance_harness',
       artifact_versions: artifactVersions,
       observed_behavior: `The worker-versioning runner did not install and smoke-execute every required published artifact: ${installGaps.join(', ')}`,
-      expected_behavior: 'Install-only coverage passes only after the server image, official CLI, PyPI Python SDK, Packagist PHP workflow runtime, and Waterline artifact are installed from published channels and smoke-executed.',
-      next_acceptance_criterion: 'run the worker-versioning host topology with artifact-install evidence showing pass for server, cli, sdk-python, workflow-php, and waterline',
+      expected_behavior: 'Install-only coverage passes only after the server image, official CLI, PyPI Python SDK, Packagist PHP SDK, embedded Workflow engine, and Waterline artifact are installed from published channels and smoke-executed.',
+      next_acceptance_criterion: 'run the worker-versioning host topology with artifact-install evidence showing pass for server, cli, sdk-python, sdk-php, and waterline',
     });
   }
   const workerRegistrationOutputs = {
@@ -735,9 +735,9 @@ async function main() {
       scenario_id: 'worker_registration_build_ids',
       owning_surface: 'conformance_harness',
       artifact_versions: artifactVersions,
-      observed_behavior: 'The runner registered worker records through the server HTTP protocol but did not execute published workflow-php, sdk-python, or CLI worker artifacts for registration evidence.',
+      observed_behavior: 'The runner registered worker records through the server HTTP protocol but did not execute published sdk-php, sdk-python, or CLI worker artifacts for registration evidence.',
       expected_behavior: 'Worker registration build-id coverage is produced by live published worker artifacts on the same task queue and verified through public worker-list and task-queue build-id surfaces.',
-      next_acceptance_criterion: 'run published workflow-php and sdk-python worker processes and record their registration responses plus active build-id cohorts before marking this scenario pass',
+      next_acceptance_criterion: 'run published sdk-php and sdk-python worker processes and record their registration responses plus active build-id cohorts before marking this scenario pass',
     });
   }
   if (publishedRegistrationEvidence.worker_executed) {
@@ -747,13 +747,13 @@ async function main() {
     ]);
     runtimeMatrix.client_paths = unique([
       ...runtimeMatrix.client_paths,
-      'published workflow-php worker registration client',
+      'published sdk-php worker registration client',
       'published sdk-python worker registration client',
     ]);
     runtimeMatrix.uncovered_required_runtimes = runtimeMatrix.uncovered_required_runtimes
-      .filter((runtime) => !['workflow-php', 'sdk-python'].includes(runtime));
+      .filter((runtime) => !['sdk-php', 'sdk-python'].includes(runtime));
     runtimeMatrix.uncovered_required_client_paths = runtimeMatrix.uncovered_required_client_paths
-      .filter((clientPath) => !['sdk-python', 'workflow-php-sdk'].includes(clientPath));
+      .filter((clientPath) => !['sdk-python', 'sdk-php'].includes(clientPath));
   }
   const cliRolloutVisibility = objectValue(cliOperatorEvidence.rollout_visibility);
   const cliDrainResumeControls = objectValue(cliOperatorEvidence.drain_resume_controls);
@@ -882,7 +882,7 @@ async function main() {
     || stringValue(publishedReplayOutputs.run_id);
   const publishedReplayWorkerExecuted = publishedWorkerScenarioPasses(
     publishedReplayOutputs,
-    ['sdk-python', 'workflow-php'],
+    ['sdk-python', 'sdk-php'],
     false,
   );
   const publishedReplayPasses = publishedReplayWorkerExecuted
@@ -911,7 +911,7 @@ async function main() {
       artifact_versions: artifactVersions,
       observed_behavior: 'The server HTTP protocol probe recorded zero incompatible delivery, but no published workflow runtime executed divergent v1/v2 Sequence code for this run.',
       expected_behavior: 'A published PHP or Python v1 workflow with divergent v2 code is replayed only by a v1-compatible worker while v2 workers poll the same task queue.',
-      next_acceptance_criterion: 'rerun with published workflow-php or sdk-python workers executing divergent Sequence implementations and record positive v1 delivery with zero v2 delivery for the same v1-pinned run',
+      next_acceptance_criterion: 'rerun with published sdk-php or sdk-python workers executing divergent Sequence implementations and record positive v1 delivery with zero v2 delivery for the same v1-pinned run',
       v1_worker_task_count: v1TaskCount,
       v2_worker_task_count_for_v1_run: v2TaskCountForV1Run,
     });
@@ -976,7 +976,7 @@ async function main() {
     || stringValue(publishedCacheEvictionOutputs.run_id);
   const publishedCacheEvictionWorkerExecuted = publishedWorkerScenarioPasses(
     publishedCacheEvictionOutputs,
-    ['sdk-python', 'workflow-php'],
+    ['sdk-python', 'sdk-php'],
     false,
   );
   const cacheEvictionPasses = publishedCacheEvictionWorkerExecuted
@@ -1193,9 +1193,9 @@ async function main() {
       cells: [
         {
           scenario: 'php_v1_not_delivered_to_python_v2',
-          started_by: 'workflow-php-v1',
+          started_by: 'sdk-php-v1',
           incompatible_worker: 'sdk-python-v2',
-          compatible_worker: 'workflow-php-v1',
+          compatible_worker: 'sdk-php-v1',
           compatible_delivery_count: phpV1CompatibleCount,
           incompatible_delivery_count: phpToPythonIncompatibleCount,
           workflow_id: phpStartedWorkflowId,
@@ -1205,7 +1205,7 @@ async function main() {
         {
           scenario: 'python_v1_not_delivered_to_php_v2',
           started_by: 'sdk-python-v1',
-          incompatible_worker: 'workflow-php-v2',
+          incompatible_worker: 'sdk-php-v2',
           compatible_worker: 'sdk-python-v1',
           compatible_delivery_count: pythonV1CompatibleCount,
           incompatible_delivery_count: pythonToPhpIncompatibleCount,
@@ -1257,7 +1257,7 @@ async function main() {
       artifact_versions: artifactVersions,
       observed_behavior: 'Published PHP/Python worker evidence did not prove zero incompatible cross-language delivery with positive compatible delivery in both directions.',
       expected_behavior: 'PHP v1-pinned runs are never delivered to Python v2, Python v1-pinned runs are never delivered to PHP v2, and both directions are exercised by actual published worker artifacts.',
-      next_acceptance_criterion: 'rerun the cross-language cells with installed workflow-php and sdk-python artifacts and record both incompatible delivery counts as zero with positive compatible delivery counts',
+      next_acceptance_criterion: 'rerun the cross-language cells with installed sdk-php and sdk-python artifacts and record both incompatible delivery counts as zero with positive compatible delivery counts',
       php_v1_to_python_v2_incompatible_delivery_count: publishedPhpToPythonIncompatibleCount,
       python_v1_to_php_v2_incompatible_delivery_count: publishedPythonToPhpIncompatibleCount,
       php_v1_compatible_delivery_count: publishedPhpCompatibleCount,
@@ -1308,7 +1308,7 @@ async function main() {
   );
   const publishedAdversarialWorkerExecuted = publishedWorkerScenarioPasses(
     publishedAdversarialOutputs,
-    ['sdk-python', 'workflow-php'],
+    ['sdk-python', 'sdk-php'],
     false,
   );
   const adversarialBehavior = stringValue(publishedAdversarialOutputs.observed_behavior)
@@ -1333,7 +1333,7 @@ async function main() {
       artifact_versions: artifactVersions,
       observed_behavior: 'The server HTTP protocol probe captured the registration response for divergent code under the same build id, but no published worker artifact executed the adversarial no-version-bump cell.',
       expected_behavior: 'A published worker artifact ships divergent workflow code under an existing build id and records whether the server accepts, rejects, warns, or exposes an audit signal.',
-      next_acceptance_criterion: 'execute the adversarial no-version-bump cell with a published workflow-php or sdk-python worker artifact before marking this scenario pass',
+      next_acceptance_criterion: 'execute the adversarial no-version-bump cell with a published sdk-php or sdk-python worker artifact before marking this scenario pass',
     });
   }
   addPass('history_api_version_pin', {
@@ -1946,7 +1946,7 @@ async function capturePublishedCliOperatorEvidence({
     worker_id: drainingWorkerId,
     task_queue: taskQueue,
     runtime: 'php',
-    sdk_version: artifactVersions.workflow,
+    sdk_version: artifactVersions['sdk-php'],
     build_id: buildV1,
     supported_workflow_types: [workflowType],
     workflow_definition_fingerprints: { [workflowType]: `drain-probe-${drainingWorkerId}` },
@@ -2985,13 +2985,14 @@ function noCompatibleServerProtocolProbePasses(outputs, artifactVersions, artifa
 
 export function artifactVersionsFromEnv() {
   const workflow = trim(process.env.DW_WORKFLOW_PHP_VERSION ?? process.env.DW_WORKFLOW_VERSION);
+  const sdkPhp = trim(process.env.DW_PHP_SDK_VERSION);
 
   return {
     server: trim(process.env.DW_SERVER_VERSION),
     cli: trim(process.env.DW_CLI_VERSION),
     'sdk-python': trim(process.env.DW_PYTHON_SDK_VERSION),
     workflow,
-    'workflow-php': workflow,
+    'sdk-php': sdkPhp,
     waterline: trim(process.env.DW_WATERLINE_VERSION),
   };
 }
@@ -3002,7 +3003,7 @@ export function artifactSourcesFromEnv() {
     cli: trim(process.env.DW_CLI_ARTIFACT_SOURCE) || 'not_exercised',
     'sdk-python': trim(process.env.DW_PYTHON_SDK_ARTIFACT_SOURCE) || 'not_exercised',
     workflow: trim(process.env.DW_WORKFLOW_PHP_ARTIFACT_SOURCE) || 'not_exercised',
-    'workflow-php': trim(process.env.DW_WORKFLOW_PHP_ARTIFACT_SOURCE) || 'not_exercised',
+    'sdk-php': trim(process.env.DW_PHP_SDK_ARTIFACT_SOURCE) || 'not_exercised',
     waterline: trim(process.env.DW_WATERLINE_ARTIFACT_SOURCE) || 'not_exercised',
   };
 }
@@ -3138,9 +3139,6 @@ export function mergeArtifactSources(artifactSources, installEvidence) {
     }
 
     merged[artifact] = source;
-    if (artifact === 'workflow-php') {
-      merged.workflow = source;
-    }
   }
 
   return merged;
@@ -3222,10 +3220,8 @@ function maybeGeneratePublishedWorkerEvidence(serverUrl, artifactVersions, artif
     DW_SERVER_VERSION: stringValue(artifactVersions.server) || process.env.DW_SERVER_VERSION || '',
     DW_CLI_VERSION: stringValue(artifactVersions.cli) || process.env.DW_CLI_VERSION || '',
     DW_PYTHON_SDK_VERSION: stringValue(artifactVersions['sdk-python']) || process.env.DW_PYTHON_SDK_VERSION || '',
-    DW_WORKFLOW_PHP_VERSION: stringValue(artifactVersions['workflow-php'])
-      || stringValue(artifactVersions.workflow)
-      || process.env.DW_WORKFLOW_PHP_VERSION
-      || process.env.DW_WORKFLOW_VERSION
+    DW_PHP_SDK_VERSION: stringValue(artifactVersions['sdk-php'])
+      || process.env.DW_PHP_SDK_VERSION
       || '',
     DW_WATERLINE_VERSION: stringValue(artifactVersions.waterline) || process.env.DW_WATERLINE_VERSION || '',
   };
@@ -3260,7 +3256,7 @@ export function publishedWorkerShardFallbackEvidence(generated, artifactVersions
     owning_surface: 'conformance_harness',
     artifact_versions: artifactVersions,
     observed_behavior: detail,
-    expected_behavior: 'Published workflow-php and sdk-python worker artifacts execute the cross-language worker-versioning cell and emit delivery counts before the aggregate result is written.',
+    expected_behavior: 'Published sdk-php and sdk-python worker artifacts execute the cross-language worker-versioning cell and emit delivery counts before the aggregate result is written.',
     next_acceptance_criterion: 'rerun the worker-versioning host topology with published-worker shard evidence present, including PHP/Python worker build IDs, runtime identities, workflow/run IDs, rollout state, and cross-language delivery counts',
   };
 
@@ -3514,13 +3510,13 @@ function focusedCrossLanguageNotCoveredFinding(publishedFindings, artifactVersio
     },
     observed_behavior: stringValue(supplied.observed_behavior)
       || stringValue(supplied.observedBehavior)
-      || 'The cross-language counts came from synthetic server HTTP worker registrations; no published workflow-php or sdk-python worker process executed the PHP/Python pinning cells.',
+      || 'The cross-language counts came from synthetic server HTTP worker registrations; no published sdk-php or sdk-python worker process executed the PHP/Python pinning cells.',
     expected_behavior: stringValue(supplied.expected_behavior)
       || stringValue(supplied.expectedBehavior)
       || 'PHP v1-pinned runs are never delivered to Python v2, Python v1-pinned runs are never delivered to PHP v2, and both directions are exercised by actual published worker artifacts.',
     next_acceptance_criterion: stringValue(supplied.next_acceptance_criterion)
       || stringValue(supplied.nextAcceptanceCriterion)
-      || 'run the cross-language cells with installed workflow-php and sdk-python artifacts and record both incompatible delivery counts as zero with positive compatible delivery counts',
+      || 'run the cross-language cells with installed sdk-php and sdk-python artifacts and record both incompatible delivery counts as zero with positive compatible delivery counts',
     ...counts,
   };
 }
@@ -3531,7 +3527,7 @@ export function workerRegistrationPublishedWorkerEvidenceResult(publishedWorkerE
     'worker_registration_build_ids',
   );
   const entries = normalizedWorkerRegistrationEntries(outputs);
-  const phpEntry = entries.find((entry) => entry.artifact === 'workflow-php') ?? null;
+  const phpEntry = entries.find((entry) => entry.artifact === 'sdk-php') ?? null;
   const pythonEntry = entries.find((entry) => entry.artifact === 'sdk-python') ?? null;
   const requiredEntries = [phpEntry, pythonEntry].filter(Boolean);
   const requiredBuildIds = unique(requiredEntries.map((entry) => entry.build_id).filter(Boolean));
@@ -3541,12 +3537,12 @@ export function workerRegistrationPublishedWorkerEvidenceResult(publishedWorkerE
   const activeWorkerCounts = activeWorkerCountsFromOutputs(outputs);
   const workerExecuted = publishedWorkerArtifactsExecuted(
     outputs,
-    ['sdk-python', 'workflow-php'],
+    ['sdk-python', 'sdk-php'],
     true,
   );
   const scenarioStatusPasses = publishedWorkerScenarioPasses(
     outputs,
-    ['sdk-python', 'workflow-php'],
+    ['sdk-python', 'sdk-php'],
     true,
   );
   const responsesRetainBuildIds = requiredEntries.length === 2
@@ -3571,7 +3567,7 @@ export function workerRegistrationPublishedWorkerEvidenceResult(publishedWorkerE
     missing.push('published_artifact_worker_execution');
   }
   if (!phpEntry) {
-    missing.push('workflow_php_registration_response');
+    missing.push('sdk_php_registration_response');
   }
   if (!pythonEntry) {
     missing.push('sdk_python_registration_response');
@@ -3697,7 +3693,7 @@ function normalizedWorkerRegistrationEntries(outputs) {
     });
   }
 
-  return entries.filter((entry) => ['workflow-php', 'sdk-python'].includes(entry.artifact));
+  return entries.filter((entry) => ['sdk-php', 'sdk-python'].includes(entry.artifact));
 }
 
 function registrationResponseObject(entry) {
@@ -3890,7 +3886,7 @@ export function noCompatiblePublishedWorkerEvidenceResult(publishedWorkerEvidenc
   const pendingOrTypedError = stringValue(rawPendingOrTypedError);
   const workerExecuted = publishedWorkerScenarioPasses(
     outputs,
-    ['sdk-python', 'workflow-php'],
+    ['sdk-python', 'sdk-php'],
     false,
   );
   const normalizedOutputs = { ...outputs };
@@ -3948,14 +3944,14 @@ export function crossLanguagePublishedWorkerEvidenceResult(publishedWorkerEviden
   const phpToPythonCell = crossLanguageDeliveryCell(
     outputs,
     'php_v1_not_delivered_to_python_v2',
-    'workflow-php-v1',
+    'sdk-php-v1',
     'sdk-python-v2',
   );
   const pythonToPhpCell = crossLanguageDeliveryCell(
     outputs,
     'python_v1_not_delivered_to_php_v2',
     'sdk-python-v1',
-    'workflow-php-v2',
+    'sdk-php-v2',
   );
   const phpToPythonIncompatibleCount = numberValue(firstDefined(
     outputs.php_v1_to_python_v2_incompatible_delivery_count,
@@ -4007,7 +4003,7 @@ export function crossLanguagePublishedWorkerEvidenceResult(publishedWorkerEviden
   ));
   const workerExecuted = publishedWorkerScenarioPasses(
     outputs,
-    ['sdk-python', 'workflow-php'],
+    ['sdk-python', 'sdk-php'],
     true,
   );
   const passes = workerExecuted
@@ -4703,8 +4699,8 @@ function runtimeSurfaceToken(value) {
   if (normalized.includes('python')) {
     return 'sdk-python';
   }
-  if (normalized.includes('php') || normalized.includes('workflow')) {
-    return 'workflow-php';
+  if (normalized.includes('php')) {
+    return 'sdk-php';
   }
 
   return normalized;
@@ -4758,8 +4754,8 @@ function canonicalArtifactName(value) {
   if (['python', 'python-sdk', 'durable-workflow'].includes(normalized)) {
     return 'sdk-python';
   }
-  if (['workflow', 'php', 'workflow-php', 'php-worker'].includes(normalized)) {
-    return 'workflow-php';
+  if (['php', 'sdk-php', 'php-worker'].includes(normalized)) {
+    return 'sdk-php';
   }
 
   return normalized;
@@ -4800,8 +4796,8 @@ function artifactSourceIsForbidden(source) {
 }
 
 function artifactVersionFor(artifactVersions, artifact) {
-  if (artifact === 'workflow-php') {
-    return stringValue(artifactVersions['workflow-php']) || stringValue(artifactVersions.workflow);
+  if (artifact === 'sdk-php') {
+    return stringValue(artifactVersions['sdk-php']);
   }
 
   return stringValue(artifactVersions[artifact]);
@@ -4823,6 +4819,7 @@ function artifactVersionFailures(artifactVersions) {
     cli: artifactVersions.cli,
     'sdk-python': artifactVersions['sdk-python'],
     workflow: artifactVersions.workflow,
+    'sdk-php': artifactVersions['sdk-php'],
     waterline: artifactVersions.waterline,
   })
     .filter(([, value]) => !isExactSemverVersion(value) || isPlaceholderVersion(value))

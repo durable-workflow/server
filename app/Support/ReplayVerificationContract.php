@@ -294,6 +294,7 @@ final class ReplayVerificationContract
                     'install_channels' => [
                         'server' => 'docker image durableworkflow/server:<latest>',
                         'cli' => 'official dw install script pinned to its latest release tag',
+                        'sdk-php' => 'Composer package durable-workflow/sdk:<latest>',
                         'workflow-php' => 'Composer package durable-workflow/workflow:2.0.0-alpha.<latest>',
                         'sdk-python' => 'PyPI package durable-workflow==<latest>',
                         'sdk-rust' => 'crates.io package durable-workflow@<latest>',
@@ -301,6 +302,7 @@ final class ReplayVerificationContract
                     'required_artifact_versions' => [
                         'server',
                         'cli',
+                        'sdk-php',
                         'workflow-php',
                         'sdk-python',
                         'sdk-rust',
@@ -321,7 +323,7 @@ final class ReplayVerificationContract
                     ],
                 ],
                 'required_runtimes' => [
-                    'workflow-php',
+                    'sdk-php',
                     'sdk-python',
                     'sdk-rust',
                 ],
@@ -384,16 +386,16 @@ final class ReplayVerificationContract
                     'must_probe_runtime_published_surfaces' => true,
                     'must_emit_result_for_every_required_scenario' => true,
                     'must_compose_runtime_shards' => [
-                        'workflow-php-runtime-shard',
+                        'sdk-php-runtime-shard',
                         'sdk-python-runtime-shard',
                         'sdk-rust-runtime-shard',
                     ],
                     'smoke_summary_only_outcome' => 'non_passing',
                     'unexecuted_required_scenario_status' => 'not_covered',
                     'runtime_shards' => [
-                        'workflow-php' => [
-                            'scope' => 'workflow-php-runtime-shard',
-                            'preferred_command' => 'workflow:v2:replay-conformance',
+                        'sdk-php' => [
+                            'scope' => 'sdk-php-runtime-shard',
+                            'preferred_command' => 'scripts/conformance/php-sdk-published-artifacts.sh',
                             'fallback_status_when_command_missing' => 'unsupported',
                             'fallback_finding_type' => 'unsupported_public_surface',
                         ],
@@ -414,14 +416,14 @@ final class ReplayVerificationContract
                     ],
                     'merge_policy' => [
                         'input_scopes' => [
-                            'workflow-php-runtime-shard',
+                            'sdk-php-runtime-shard',
                             'sdk-python-runtime-shard',
                             'sdk-rust-runtime-shard',
                             'live-server-replay-smoke',
                         ],
                         'output_schema' => self::REPLAY_CONFORMANCE_RESULT_SCHEMA,
                         'requires_required_runtimes' => [
-                            'workflow-php',
+                            'sdk-php',
                             'sdk-python',
                             'sdk-rust',
                         ],
@@ -434,7 +436,7 @@ final class ReplayVerificationContract
                     ],
                     'required_execution_scopes' => [
                         'published-artifact-install',
-                        'workflow-php-runtime-shard',
+                        'sdk-php-runtime-shard',
                         'sdk-python-runtime-shard',
                         'sdk-rust-runtime-shard',
                         'completed-history-replay',

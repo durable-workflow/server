@@ -11,7 +11,7 @@ The runner writes these files to the result directory:
   pins.json
   run-metadata.json
   workflow-updates-focused-evidence.json (when the published-image probe runs)
-  workflow-php-workflow-updates-evidence.json (when the PHP package shard runs)
+  sdk-php-workflow-updates-evidence.json (when the PHP SDK shard runs)
   python-sdk-workflow-updates-evidence.json (when the Python SDK shard runs)
   workflow-updates-operator-diagnostics-evidence.json (when CLI and Waterline diagnostics run)
   workflow-updates-result.json
@@ -23,10 +23,10 @@ Environment overrides:
   DW_WORKFLOW_UPDATES_EVIDENCE       Optional inline JSON evidence from a real host run.
   DW_WORKFLOW_UPDATES_EVIDENCE_PATH  Optional JSON evidence path. Defaults to
                                      workflow-updates-focused-evidence.json in the result dir.
-  DW_WORKFLOW_UPDATES_PHP_EVIDENCE   Optional inline JSON evidence from the PHP package shard.
+  DW_WORKFLOW_UPDATES_PHP_EVIDENCE   Optional inline JSON evidence from the PHP SDK shard.
   DW_WORKFLOW_UPDATES_PHP_EVIDENCE_PATH
-                                     Optional PHP package shard evidence path. Defaults to
-                                     workflow-php-workflow-updates-evidence.json in the result dir.
+                                     Optional PHP SDK shard evidence path. Defaults to
+                                     sdk-php-workflow-updates-evidence.json in the result dir.
   DW_WORKFLOW_UPDATES_PYTHON_EVIDENCE
                                      Optional inline JSON evidence from the Python SDK shard.
   DW_WORKFLOW_UPDATES_PYTHON_EVIDENCE_PATH
@@ -42,7 +42,7 @@ Environment overrides:
                                      Skip the published server image's focused
                                      workflow update runtime probe.
   DW_WORKFLOW_UPDATES_SKIP_PHP_PACKAGE_SHARD=1
-                                     Skip the PHP package client/worker shard.
+                                     Skip the PHP SDK client/worker shard.
   DW_WORKFLOW_UPDATES_SKIP_PYTHON_SDK_SHARD=1
                                      Skip the Python SDK client/worker shard.
   DW_WORKFLOW_UPDATES_SKIP_OPERATOR_DIAGNOSTICS_SHARD=1
@@ -52,6 +52,7 @@ Environment overrides:
   DW_SERVER_VERSION                  Exact server version under test.
   DW_CLI_VERSION                     Exact CLI release version.
   DW_PYTHON_SDK_VERSION              Exact PyPI durable-workflow version.
+  DW_PHP_SDK_VERSION                 Exact Packagist durable-workflow/sdk version.
   DW_WORKFLOW_UPDATES_PYTHON_BIN     Python executable used to create the
                                      disposable PyPI install environment.
   DW_WORKFLOW_PHP_VERSION            Exact Composer durable-workflow/workflow version.
@@ -102,14 +103,19 @@ started_at="$(timestamp)"
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 repo_root="$(cd "$script_dir/../.." && pwd)"
 cleanup_pids=()
+cleanup_compose_projects=()
 
 cleanup_background_processes() {
   local pid
-  for pid in "${cleanup_pids[@]:-}"; do
+  for pid in "${cleanup_pids[@]}"; do
     if kill -0 "$pid" >/dev/null 2>&1; then
       kill "$pid" >/dev/null 2>&1 || true
       wait "$pid" >/dev/null 2>&1 || true
     fi
+  done
+  local project
+  for project in "${cleanup_compose_projects[@]}"; do
+    docker compose -p "$project" -f "$repo_root/docker-compose.published.yml" down -v >/dev/null 2>&1 || true
   done
 }
 trap cleanup_background_processes EXIT
@@ -1552,17 +1558,10 @@ should_run_php_package_shard() {
   if [[ -n "${DW_WORKFLOW_UPDATES_PHP_EVIDENCE_PATH:-}" && -s "${DW_WORKFLOW_UPDATES_PHP_EVIDENCE_PATH:-}" ]]; then
     return 1
   fi
-  if [[ -s "$result_dir/workflow-php-workflow-updates-evidence.json" ]]; then
+  if [[ -s "$result_dir/sdk-php-workflow-updates-evidence.json" ]]; then
     return 1
   fi
-  if [[ "$repo_root" != "/app" || -d "$repo_root/.git" ]]; then
-    return 1
-  fi
-  if [[ ! -f "$repo_root/artisan" || ! -f "$repo_root/vendor/autoload.php" ]]; then
-    return 1
-  fi
-
-  command -v php >/dev/null 2>&1
+  command -v node >/dev/null 2>&1
 }
 
 is_exact_package_version() {
@@ -1570,7 +1569,7 @@ is_exact_package_version() {
 }
 
 choose_tcp_port() {
-  php -r '$s = stream_socket_server("tcp://127.0.0.1:0", $errno, $errstr); if (!$s) { exit(1); } $name = stream_socket_get_name($s, false); fclose($s); $parts = explode(":", (string) $name); echo end($parts), PHP_EOL;'
+  node -e 'const net=require("node:net");const server=net.createServer();server.listen(0,"127.0.0.1",()=>{console.log(server.address().port);server.close();});'
 }
 
 wait_for_http() {
@@ -1597,17 +1596,16 @@ write_php_package_shard_status() {
   DW_SERVER_VERSION="${DW_SERVER_VERSION:-}" \
   DW_CLI_VERSION="${DW_CLI_VERSION:-}" \
   DW_PYTHON_SDK_VERSION="${DW_PYTHON_SDK_VERSION:-}" \
+  DW_PHP_SDK_VERSION="${DW_PHP_SDK_VERSION:-}" \
   DW_WORKFLOW_PHP_VERSION="${DW_WORKFLOW_PHP_VERSION:-}" \
-  DW_WORKFLOW_VERSION="${DW_WORKFLOW_VERSION:-}" \
   DW_WATERLINE_VERSION="${DW_WATERLINE_VERSION:-}" \
   node <<'NODE'
 const fs = require('node:fs');
 const path = require('node:path');
 
 const resultDir = process.env.RESULT_DIR;
-const workflowVersion = (process.env.DW_WORKFLOW_PHP_VERSION || '').trim()
-  || (process.env.DW_WORKFLOW_VERSION || '').trim()
-  || 'unresolved';
+const sdkVersion = (process.env.DW_PHP_SDK_VERSION || '').trim() || 'unresolved';
+const workflowVersion = (process.env.DW_WORKFLOW_PHP_VERSION || '').trim() || 'unresolved';
 const serverImage = (process.env.DW_SERVER_IMAGE || '').trim();
 const serverVersion = (process.env.DW_SERVER_VERSION || '').trim() || (serverImage.match(/:([^/:]+)$/)?.[1] ?? 'unresolved');
 const cliVersion = (process.env.DW_CLI_VERSION || '').trim() || 'unresolved';
@@ -1616,6 +1614,7 @@ const waterlineVersion = (process.env.DW_WATERLINE_VERSION || '').trim() || 'unr
 const artifactVersions = {
   server: serverVersion,
   cli: cliVersion,
+  'sdk-php': sdkVersion,
   'sdk-python': pythonVersion,
   workflow: workflowVersion,
   'workflow-php': workflowVersion,
@@ -1624,6 +1623,7 @@ const artifactVersions = {
 const artifactSources = {
   server: serverImage || `docker://durableworkflow/server:${serverVersion}`,
   cli: `https://github.com/durable-workflow/cli/releases/download/${cliVersion}/install.sh`,
+  'sdk-php': `packagist://durable-workflow/sdk@${sdkVersion}`,
   'sdk-python': `pypi://durable-workflow==${pythonVersion}`,
   workflow: `packagist://durable-workflow/workflow@${workflowVersion}`,
   'workflow-php': `packagist://durable-workflow/workflow@${workflowVersion}`,
@@ -1631,24 +1631,47 @@ const artifactSources = {
 };
 const runnerBlocked = ['1', 'true', 'yes'].includes((process.env.PHP_PACKAGE_SHARD_RUNNER_BLOCKED || '').toLowerCase());
 const status = process.env.PHP_PACKAGE_SHARD_STATUS || (runnerBlocked ? 'runner_blocked' : 'fail');
-const classification = runnerBlocked ? 'runner-blocked' : (['not_covered', 'unsupported'].includes(status) ? 'coverage-gap' : 'product-gap');
-const summary = process.env.PHP_PACKAGE_SHARD_SUMMARY || 'The PHP workflow package update shard did not complete.';
-const step = process.env.PHP_PACKAGE_SHARD_STEP || 'php_package_shard';
+const summary = process.env.PHP_PACKAGE_SHARD_SUMMARY || 'The PHP SDK update shard did not complete.';
+const step = process.env.PHP_PACKAGE_SHARD_STEP || 'sdk_php_shard';
 const generatedAt = new Date().toISOString().replace(/\.\d{3}Z$/, 'Z');
 const finding = {
-  finding_id: `workflow-updates-php-client-worker-update-surface-${runnerBlocked ? 'runner-blocked' : (classification === 'coverage-gap' ? 'coverage-gap' : 'product-gap')}`,
-  finding_type: runnerBlocked ? 'conformance_runner_blocked' : (classification === 'coverage-gap' ? 'conformance_runner_coverage_gap' : 'product_behavior_failure'),
-  classification,
+  finding_id: `workflow-updates-php-client-worker-update-surface-${runnerBlocked ? 'runner-blocked' : 'product-gap'}`,
+  finding_type: runnerBlocked ? 'conformance_runner_blocked' : 'product_behavior_failure',
+  classification: runnerBlocked ? 'runner-blocked' : 'product-gap',
   scenario_id: 'php_client_worker_update_surface',
-  owning_surface: runnerBlocked ? 'conformance_harness' : 'workflow-php',
+  owning_surface: runnerBlocked ? 'conformance_harness' : 'sdk-php',
   summary,
-  next_acceptance_criterion: 'Install the pinned Packagist durable-workflow/workflow artifact and run its workflow update client/worker conformance command against the published server API.',
-  diagnostic: { step },
+  next_acceptance_criterion: 'Install the exact Packagist durable-workflow/sdk artifact and rerun its real PHP client and worker update cell against the exact server image.',
+  diagnostic: {step},
+};
+const scenario = {
+  scenario_id: 'php_client_worker_update_surface',
+  status,
+  classification: finding.classification,
+  published_artifact_cell_executed: false,
+  local_product_source_checkouts_used: false,
+  observed_outputs: {
+    sdk_php_artifact_version: sdkVersion,
+    sdk_php_artifact_source: artifactSources['sdk-php'],
+    composer_package: 'durable-workflow/sdk',
+    package_install_step: step,
+    php_worker_update_handler: {},
+    php_client_update_request: {},
+    covered_cells: [],
+    unsupported_cells: [],
+    typed_errors: [{cell: 'php_client_worker_update_surface', reason: step, message: summary}],
+    published_artifact_cell_executed: false,
+    local_product_source_checkouts_used: false,
+    artifact_versions: artifactVersions,
+    published_artifact_versions: artifactVersions,
+    artifact_sources: artifactSources,
+  },
+  linked_findings: [finding],
 };
 const payload = {
   schema: 'durable-workflow.v2.workflow-updates.php-package-sidecar',
   generated_at: generatedAt,
-  runner: 'published-packagist-workflow-php-workflow-updates-shard',
+  runner: 'published-packagist-sdk-php-workflow-updates-shard',
   runner_blocked: runnerBlocked,
   source_policy: {
     pass_requires_published_artifacts_only: true,
@@ -1659,76 +1682,42 @@ const payload = {
   artifact_versions: artifactVersions,
   published_artifact_versions: artifactVersions,
   artifact_sources: artifactSources,
-  scenario_results: {
-    php_client_worker_update_surface: {
-      scenario_id: 'php_client_worker_update_surface',
-      status,
-      classification,
-      published_artifact_cell_executed: false,
-      local_product_source_checkouts_used: false,
-      observed_outputs: {
-        workflow_php_artifact_version: workflowVersion,
-        workflow_php_artifact_source: artifactSources['workflow-php'],
-        composer_package: 'durable-workflow/workflow',
-        package_install_step: step,
-        php_worker_update_handler: {},
-        php_client_update_request: {},
-        covered_cells: [],
-        unsupported_cells: [],
-        typed_errors: [{
-          cell: 'php_client_worker_update_surface',
-          reason: step,
-          message: summary,
-        }],
-        published_artifact_cell_executed: false,
-        local_product_source_checkouts_used: false,
-        artifact_versions: artifactVersions,
-        published_artifact_versions: artifactVersions,
-        artifact_sources: artifactSources,
-        source_policy: {
-          pass_requires_published_artifacts_only: true,
-          local_product_source_checkouts_used: false,
-          local_checkout_execution_counts_as_pass: false,
-        },
-      },
-      linked_findings: [finding],
-    },
-  },
+  scenario_results: {php_client_worker_update_surface: scenario},
   findings: [finding],
 };
-
-fs.writeFileSync(path.join(resultDir, 'workflow-php-workflow-updates-evidence.json'), `${JSON.stringify(payload, null, 2)}\n`);
+fs.writeFileSync(path.join(resultDir, 'sdk-php-workflow-updates-evidence.json'), `${JSON.stringify(payload, null, 2)}\n`);
 NODE
 }
 
 materialize_php_package_shard_report() {
   PHP_PACKAGE_REPORT_PATH="${1:?report path required}" \
+  PHP_PACKAGE_SIDECAR_PATH="${2:?sidecar path required}" \
   RESULT_DIR="$result_dir" \
   DW_SERVER_IMAGE="${DW_SERVER_IMAGE:-}" \
   DW_SERVER_VERSION="${DW_SERVER_VERSION:-}" \
   DW_CLI_VERSION="${DW_CLI_VERSION:-}" \
   DW_PYTHON_SDK_VERSION="${DW_PYTHON_SDK_VERSION:-}" \
+  DW_PHP_SDK_VERSION="${DW_PHP_SDK_VERSION:-}" \
   DW_WORKFLOW_PHP_VERSION="${DW_WORKFLOW_PHP_VERSION:-}" \
-  DW_WORKFLOW_VERSION="${DW_WORKFLOW_VERSION:-}" \
   DW_WATERLINE_VERSION="${DW_WATERLINE_VERSION:-}" \
   node <<'NODE'
 const fs = require('node:fs');
 const path = require('node:path');
 
-const resultDir = process.env.RESULT_DIR;
 const report = JSON.parse(fs.readFileSync(process.env.PHP_PACKAGE_REPORT_PATH, 'utf8'));
-const workflowVersion = (process.env.DW_WORKFLOW_PHP_VERSION || '').trim()
-  || (process.env.DW_WORKFLOW_VERSION || '').trim()
-  || report?.artifact_versions?.['workflow-php']
-  || 'unresolved';
+const sourceSidecar = JSON.parse(fs.readFileSync(process.env.PHP_PACKAGE_SIDECAR_PATH, 'utf8'));
+const observed = sourceSidecar?.scenario_results?.php_sdk_lifecycle_surface?.observed_outputs ?? {};
+const sdkVersion = (process.env.DW_PHP_SDK_VERSION || '').trim() || report?.artifact_versions?.['sdk-php'] || 'unresolved';
+const workflowVersion = (process.env.DW_WORKFLOW_PHP_VERSION || '').trim() || 'unresolved';
 const serverImage = (process.env.DW_SERVER_IMAGE || '').trim();
-const serverVersion = (process.env.DW_SERVER_VERSION || '').trim() || (serverImage.match(/:([^/:]+)$/)?.[1] ?? report?.artifact_versions?.server ?? 'unresolved');
-const cliVersion = (process.env.DW_CLI_VERSION || '').trim() || report?.artifact_versions?.cli || 'unresolved';
-const pythonVersion = (process.env.DW_PYTHON_SDK_VERSION || '').trim() || report?.artifact_versions?.['sdk-python'] || 'unresolved';
-const waterlineVersion = (process.env.DW_WATERLINE_VERSION || '').trim() || report?.artifact_versions?.waterline || 'unresolved';
+const serverVersion = (process.env.DW_SERVER_VERSION || '').trim() || report?.artifact_versions?.server || 'unresolved';
+const cliVersion = (process.env.DW_CLI_VERSION || '').trim() || 'unresolved';
+const pythonVersion = (process.env.DW_PYTHON_SDK_VERSION || '').trim() || 'unresolved';
+const waterlineVersion = (process.env.DW_WATERLINE_VERSION || '').trim() || 'unresolved';
 const artifactVersions = {
   server: serverVersion,
   cli: cliVersion,
+  'sdk-php': sdkVersion,
   'sdk-python': pythonVersion,
   workflow: workflowVersion,
   'workflow-php': workflowVersion,
@@ -1737,74 +1726,47 @@ const artifactVersions = {
 const artifactSources = {
   server: serverImage || `docker://durableworkflow/server:${serverVersion}`,
   cli: `https://github.com/durable-workflow/cli/releases/download/${cliVersion}/install.sh`,
+  'sdk-php': `packagist://durable-workflow/sdk@${sdkVersion}`,
   'sdk-python': `pypi://durable-workflow==${pythonVersion}`,
   workflow: `packagist://durable-workflow/workflow@${workflowVersion}`,
   'workflow-php': `packagist://durable-workflow/workflow@${workflowVersion}`,
   waterline: `packagist://durable-workflow/waterline@${waterlineVersion}`,
 };
-
-function scenarioRows(value) {
-  if (Array.isArray(value?.scenario_results)) {
-    return value.scenario_results;
-  }
-  if (value?.scenario_results && typeof value.scenario_results === 'object') {
-    return Object.values(value.scenario_results);
-  }
-
-  return [];
-}
-
-function packageFindingToPublicFinding(finding, index) {
-  if (!finding || typeof finding !== 'object') {
-    return null;
-  }
-
-  return {
-    finding_id: `workflow-updates-php-client-worker-update-surface-${index + 1}`,
-    finding_type: 'product_behavior_failure',
-    classification: 'product-gap',
-    scenario_id: 'php_client_worker_update_surface',
-    owning_surface: 'workflow-php',
-    summary: finding.message || finding.summary || 'The published PHP workflow package update shard reported a product failure.',
-    next_acceptance_criterion: 'Make the published PHP workflow package client/worker update shard satisfy the workflow update conformance cells.',
-    evidence: finding.evidence || finding,
-  };
-}
-
-const packageRow = scenarioRows(report).find((row) => row?.scenario_id === 'php_client_worker_update_surface') ?? {
+const updatePassed = observed?.scenario_assertions?.update === true || report?.assertions?.update === true;
+const runnerBlocked = report.runner_blocked === true;
+const status = updatePassed ? 'pass' : (runnerBlocked ? 'runner_blocked' : 'fail');
+const probeFindings = Array.isArray(report.findings) ? report.findings : [];
+const linkedFindings = status === 'pass' ? [] : probeFindings.map((finding, index) => ({
+  ...finding,
+  finding_id: finding.finding_id || `workflow-updates-sdk-php-${index + 1}`,
   scenario_id: 'php_client_worker_update_surface',
-  status: 'fail',
-  observed_outputs: {},
-  linked_findings: [],
-};
-const status = typeof packageRow.status === 'string' ? packageRow.status : 'fail';
-const scenarioClassification = status === 'pass'
-  ? 'product-evidence'
-  : (status === 'runner_blocked' ? 'runner-blocked' : (['not_covered', 'unsupported'].includes(status) ? 'coverage-gap' : 'product-gap'));
-const packageFindings = Array.isArray(packageRow.linked_findings)
-  ? packageRow.linked_findings.map(packageFindingToPublicFinding).filter(Boolean)
-  : [];
-const observedOutputs = packageRow.observed_outputs && typeof packageRow.observed_outputs === 'object'
-  ? packageRow.observed_outputs
-  : {};
+}));
 const generatedAt = new Date().toISOString().replace(/\.\d{3}Z$/, 'Z');
 const scenario = {
   scenario_id: 'php_client_worker_update_surface',
   status,
-  classification: scenarioClassification,
-  published_artifact_cell_executed: true,
+  classification: status === 'pass' ? 'product-evidence' : (runnerBlocked ? 'runner-blocked' : 'product-gap'),
+  published_artifact_cell_executed: observed.published_artifact_cell_executed === true,
   local_product_source_checkouts_used: false,
   observed_outputs: {
-    ...observedOutputs,
-    package_report_workflow_php_artifact_version: observedOutputs.workflow_php_artifact_version || null,
-    package_report_workflow_php_artifact_source: observedOutputs.workflow_php_artifact_source || null,
-    workflow_php_artifact_version: workflowVersion,
-    workflow_php_artifact_source: artifactSources['workflow-php'],
-    composer_package: 'durable-workflow/workflow',
-    composer_constraint: `durable-workflow/workflow:${workflowVersion}`,
-    package_artifact_source: artifactSources['workflow-php'],
-    package_report_schema: report.schema || null,
-    php_package_conformance_command: 'workflow:v2:workflow-updates-conformance',
+    sdk_php_artifact_version: sdkVersion,
+    sdk_php_artifact_source: artifactSources['sdk-php'],
+    composer_package: 'durable-workflow/sdk',
+    composer_constraint: `durable-workflow/sdk:${sdkVersion}`,
+    package_artifact_source: artifactSources['sdk-php'],
+    install_provenance: observed.install_provenance ?? report.package_provenance ?? {},
+    apache_avro_provenance: observed.apache_avro_provenance ?? report.apache_avro_provenance ?? {},
+    php_worker_update_handler: {
+      callback_count: observed?.callback_counts?.update ?? 0,
+      worker_processes: observed.worker_processes ?? [],
+    },
+    php_client_update_request: {
+      assertion_passed: updatePassed,
+      client_processes: observed.client_processes ?? [],
+    },
+    covered_cells: updatePassed ? ['php_client_worker_update_surface'] : [],
+    unsupported_cells: [],
+    typed_errors: observed.typed_errors ?? [],
     artifact_versions: artifactVersions,
     published_artifact_versions: artifactVersions,
     artifact_sources: artifactSources,
@@ -1813,63 +1775,54 @@ const scenario = {
       local_product_source_checkouts_used: false,
       local_checkout_execution_counts_as_pass: false,
     },
-    published_artifact_cell_executed: true,
+    published_artifact_cell_executed: observed.published_artifact_cell_executed === true,
     local_product_source_checkouts_used: false,
   },
-  linked_findings: status === 'pass' ? [] : packageFindings,
+  linked_findings: linkedFindings,
 };
 const payload = {
   schema: 'durable-workflow.v2.workflow-updates.php-package-sidecar',
   generated_at: generatedAt,
-  runner: 'published-packagist-workflow-php-workflow-updates-shard',
-  runner_blocked: report.runner_blocked === true || report.runnerBlocked === true,
-  source_policy: {
-    pass_requires_published_artifacts_only: true,
-    local_product_source_checkouts_used: false,
-    local_checkout_execution_counts_as_pass: false,
-    artifact_sources: artifactSources,
-  },
+  runner: 'published-packagist-sdk-php-workflow-updates-shard',
+  runner_blocked: runnerBlocked,
+  source_policy: scenario.observed_outputs.source_policy,
   artifact_versions: artifactVersions,
   published_artifact_versions: artifactVersions,
   artifact_sources: artifactSources,
   package_report: {
     schema: report.schema || null,
-    coverage_scope: report.coverage_scope || null,
     outcome: report.outcome || null,
-    runtime_matrix: report.runtime_matrix || null,
+    process_boundary: report.process_boundary || null,
   },
-  scenario_results: {
-    php_client_worker_update_surface: scenario,
-  },
-  findings: packageFindings,
+  scenario_results: {php_client_worker_update_surface: scenario},
+  findings: linkedFindings,
 };
-
-fs.writeFileSync(path.join(resultDir, 'workflow-php-workflow-updates-evidence.json'), `${JSON.stringify(payload, null, 2)}\n`);
+fs.writeFileSync(path.join(process.env.RESULT_DIR, 'sdk-php-workflow-updates-evidence.json'), `${JSON.stringify(payload, null, 2)}\n`);
 NODE
 }
 
 run_php_package_shard() {
-  local workflow_php_version="${DW_WORKFLOW_PHP_VERSION:-${DW_WORKFLOW_VERSION:-}}"
-  local php_app="$result_dir/workflow-php-package-app"
-  local php_report="$result_dir/workflow-php-package-report.json"
-  local composer_home="$result_dir/workflow-php-composer-home"
-  local composer_cache="$result_dir/workflow-php-composer-cache"
-  local server_db="$result_dir/workflow-updates-php-server.sqlite"
+  local sdk_php_version="${DW_PHP_SDK_VERSION:-}"
   local server_port="${DW_WORKFLOW_UPDATES_PHP_SERVER_PORT:-}"
   local server_url
-  local auth_token="${DW_WORKFLOW_UPDATES_PHP_TOKEN:-workflow-updates-php-token}"
-  local run_id
+  local probe_dir="$result_dir/sdk-php-workflow-updates-probe"
+  local compose_suffix
+  compose_suffix="$(printf '%s' "$(basename "$result_dir")" | tr -c 'a-zA-Z0-9_-' '-')"
+  local compose_project="dw-updates-sdk-php-${compose_suffix}"
+  local auth_token="workflow-updates-sdk-php-token"
 
-  if [[ -z "$workflow_php_version" ]] || ! is_exact_package_version "$workflow_php_version"; then
-    write_php_package_shard_status not_covered "DW_WORKFLOW_PHP_VERSION must be an exact durable-workflow/workflow version before the PHP package shard can install from Packagist." version_resolution false
+  if [[ -z "$sdk_php_version" ]] || ! is_exact_package_version "$sdk_php_version"; then
+    write_php_package_shard_status not_covered "DW_PHP_SDK_VERSION must be an exact durable-workflow/sdk version before the PHP SDK update shard can install from Packagist." version_resolution false
     return 0
   fi
-  if ! command -v composer >/dev/null 2>&1; then
-    write_php_package_shard_status runner_blocked "Composer is required to install the pinned Packagist durable-workflow/workflow package for the PHP update shard." composer_unavailable true
-    return 0
-  fi
-  if ! command -v curl >/dev/null 2>&1; then
-    write_php_package_shard_status runner_blocked "curl is required to wait for the published server HTTP surface before the PHP package shard runs." curl_unavailable true
+  for command in docker curl node; do
+    if ! command -v "$command" >/dev/null 2>&1; then
+      write_php_package_shard_status runner_blocked "$command is required to run the exact Packagist PHP SDK update shard." "${command}_unavailable" true
+      return 0
+    fi
+  done
+  if [[ -z "${DW_SERVER_VERSION:-}" || -z "${DW_SERVER_IMAGE:-}" ]]; then
+    write_php_package_shard_status runner_blocked "DW_SERVER_VERSION and DW_SERVER_IMAGE must identify the exact published server under test." server_pin_unavailable true
     return 0
   fi
 
@@ -1877,192 +1830,50 @@ run_php_package_shard() {
     server_port="$(choose_tcp_port)"
   fi
   server_url="http://127.0.0.1:${server_port}"
-  run_id="php-updates-$(date -u '+%Y%m%d%H%M%S')-${RANDOM}"
-
-  : > "$server_db"
-  if ! APP_ENV=production \
-    APP_DEBUG=false \
-    APP_KEY="${APP_KEY:-base64:V09SS0ZMT1ctVVBEQVRFUy1QSFAtU0hBUkQtU0VSVkVS}" \
-    DB_CONNECTION=sqlite \
-    DB_DATABASE="$server_db" \
-    QUEUE_CONNECTION=database \
-    CACHE_STORE=array \
-    SESSION_DRIVER=array \
-    DW_AUTH_DRIVER=none \
-    DW_TASK_DISPATCH_MODE=poll \
-    DW_V2_TASK_DISPATCH_MODE=poll \
-    php "$repo_root/artisan" server:bootstrap --force \
-      > "$result_dir/workflow-php-server-bootstrap.log" 2>&1; then
-    write_php_package_shard_status fail "The published server API could not bootstrap the temporary PHP update shard database; see workflow-php-server-bootstrap.log." server_bootstrap false
+  cleanup_compose_projects+=("$compose_project")
+  if ! SERVER_PORT="$server_port" DW_SERVER_IMAGE="${DW_SERVER_IMAGE}" DW_SERVER_TAG="${DW_SERVER_VERSION}" DW_AUTH_TOKEN="$auth_token" \
+    docker compose -p "$compose_project" -f "$repo_root/docker-compose.published.yml" up -d mysql redis \
+      > "$result_dir/sdk-php-compose-dependencies.log" 2>&1; then
+    write_php_package_shard_status runner_blocked "The published server dependencies could not start for the PHP SDK update shard." server_dependencies true
     return 0
   fi
-
-  APP_ENV=production \
-  APP_DEBUG=false \
-  APP_KEY="${APP_KEY:-base64:V09SS0ZMT1ctVVBEQVRFUy1QSFAtU0hBUkQtU0VSVkVS}" \
-  DB_CONNECTION=sqlite \
-  DB_DATABASE="$server_db" \
-  QUEUE_CONNECTION=database \
-  CACHE_STORE=array \
-  SESSION_DRIVER=array \
-  DW_AUTH_DRIVER=none \
-  DW_TASK_DISPATCH_MODE=poll \
-  DW_V2_TASK_DISPATCH_MODE=poll \
-  PHP_CLI_SERVER_WORKERS="${PHP_CLI_SERVER_WORKERS:-8}" \
-  php "$repo_root/artisan" serve --host=127.0.0.1 --port="$server_port" --no-reload \
-    > "$result_dir/workflow-php-server.log" 2>&1 &
-  cleanup_pids+=("$!")
+  if ! SERVER_PORT="$server_port" DW_SERVER_IMAGE="${DW_SERVER_IMAGE}" DW_SERVER_TAG="${DW_SERVER_VERSION}" DW_AUTH_TOKEN="$auth_token" \
+    docker compose -p "$compose_project" -f "$repo_root/docker-compose.published.yml" run --rm bootstrap \
+      > "$result_dir/sdk-php-server-bootstrap.log" 2>&1; then
+    write_php_package_shard_status fail "The exact public server image could not bootstrap for the PHP SDK update shard." server_bootstrap false
+    return 0
+  fi
+  if ! SERVER_PORT="$server_port" DW_SERVER_IMAGE="${DW_SERVER_IMAGE}" DW_SERVER_TAG="${DW_SERVER_VERSION}" DW_AUTH_TOKEN="$auth_token" \
+    docker compose -p "$compose_project" -f "$repo_root/docker-compose.published.yml" up -d --no-deps server scheduler \
+      > "$result_dir/sdk-php-server.log" 2>&1; then
+    write_php_package_shard_status runner_blocked "The exact public server image could not start for the PHP SDK update shard." server_start true
+    return 0
+  fi
 
   if ! wait_for_http "$server_url/api/health"; then
-    write_php_package_shard_status runner_blocked "The temporary published server HTTP surface did not become ready for the PHP package shard; see workflow-php-server.log." server_http_unavailable true
+    write_php_package_shard_status runner_blocked "The exact server HTTP surface did not become ready for the PHP SDK update shard." server_http_unavailable true
     return 0
   fi
 
-  mkdir -p "$php_app" "$composer_home" "$composer_cache"
-  if ! (
-    cd "$php_app" &&
-    COMPOSER_HOME="$composer_home" COMPOSER_CACHE_DIR="$composer_cache" \
-      composer create-project laravel/laravel . --no-interaction --no-progress --prefer-dist
-  ) > "$result_dir/workflow-php-create-project.log" 2>&1; then
-    write_php_package_shard_status runner_blocked "The PHP package shard could not create a disposable Laravel app; see workflow-php-create-project.log." composer_create_project true
+  mkdir -p "$probe_dir"
+  docker run --rm --network host \
+    -e DW_PHP_SDK_VERSION="$sdk_php_version" \
+    -e DW_SERVER_VERSION="${DW_SERVER_VERSION}" \
+    -e DW_SERVER_IMAGE="${DW_SERVER_IMAGE}" \
+    -e DW_PHP_SDK_CONFORMANCE_SERVER_URL="$server_url" \
+    -e DW_PHP_SDK_CONFORMANCE_NAMESPACE=default \
+    -e DW_PHP_SDK_CONFORMANCE_TOKEN="$auth_token" \
+    -v "$probe_dir:/result" \
+    "${DW_SERVER_IMAGE}" scripts/conformance/php-sdk-published-artifacts.sh --result-dir /result \
+    > "$result_dir/sdk-php-workflow-updates-conformance.log" 2>&1
+
+  if [[ ! -s "$probe_dir/php-sdk-conformance-result.json" || ! -s "$probe_dir/php-sdk-lifecycle-evidence.json" ]]; then
+    write_php_package_shard_status fail "The PHP SDK process-boundary runner did not emit complete update evidence." sdk_php_probe false
     return 0
   fi
-
-  if ! (
-    cd "$php_app" &&
-    COMPOSER_HOME="$composer_home" COMPOSER_CACHE_DIR="$composer_cache" \
-      composer require --no-interaction --no-progress --prefer-dist "durable-workflow/workflow:${workflow_php_version}"
-  ) > "$result_dir/workflow-php-composer-require.log" 2>&1; then
-    write_php_package_shard_status fail "Composer could not install pinned Packagist package durable-workflow/workflow:${workflow_php_version}; see workflow-php-composer-require.log." composer_require false
-    return 0
-  fi
-
-  if ! PHP_APP="$php_app" WORKFLOW_PHP_VERSION="$workflow_php_version" node <<'NODE' > "$result_dir/workflow-php-package-source-policy.log" 2>&1; then
-const fs = require('node:fs');
-const path = require('node:path');
-
-const appDir = process.env.PHP_APP;
-const expectedVersion = process.env.WORKFLOW_PHP_VERSION;
-const installedPath = path.join(appDir, 'vendor/composer/installed.json');
-const lockPath = path.join(appDir, 'composer.lock');
-const localSourcePattern = /(^file:\/\/|^\/|^\.\.?\/|\/workspace\/repos|local[_ -]?(product[_ -]?)?(source|checkout|artifact)|workspace[_ -]?repo|local[_ -]?vendor[_ -]?tree)/i;
-
-function fail(message) {
-  console.error(message);
-  process.exit(1);
-}
-
-function readJson(file) {
-  try {
-    return JSON.parse(fs.readFileSync(file, 'utf8'));
-  } catch (error) {
-    fail(`Unable to read ${path.basename(file)}: ${error.message}`);
-  }
-}
-
-function packagesFromInstalledJson(value) {
-  if (Array.isArray(value)) {
-    return value;
-  }
-  if (Array.isArray(value?.packages)) {
-    return value.packages;
-  }
-
-  return [];
-}
-
-function packagesFromLockJson(value) {
-  return [
-    ...(Array.isArray(value?.packages) ? value.packages : []),
-    ...(Array.isArray(value?.['packages-dev']) ? value['packages-dev'] : []),
-  ];
-}
-
-const installedPackage = packagesFromInstalledJson(readJson(installedPath))
-  .find((entry) => entry?.name === 'durable-workflow/workflow');
-const lockedPackage = packagesFromLockJson(readJson(lockPath))
-  .find((entry) => entry?.name === 'durable-workflow/workflow');
-
-if (!installedPackage || !lockedPackage) {
-  fail('durable-workflow/workflow was not installed by Composer.');
-}
-
-if (String(installedPackage.version || '') !== expectedVersion && String(lockedPackage.version || '') !== expectedVersion) {
-  fail(`durable-workflow/workflow installed version did not match ${expectedVersion}.`);
-}
-
-const installSource = String(installedPackage['installation-source'] || '').toLowerCase();
-if (installSource && installSource !== 'dist') {
-  fail(`durable-workflow/workflow was installed from ${installSource}, not a Packagist dist artifact.`);
-}
-
-const distUrl = String(lockedPackage.dist?.url || '');
-if (distUrl === '') {
-  fail('durable-workflow/workflow composer.lock metadata did not include a dist URL.');
-}
-
-for (const candidate of [
-  lockedPackage.dist?.url,
-  lockedPackage.source?.url,
-]) {
-  const value = String(candidate || '');
-  if (localSourcePattern.test(value)) {
-    fail(`durable-workflow/workflow resolved from a local artifact source: ${value}`);
-  }
-}
-NODE
-    write_php_package_shard_status fail "The PHP package shard resolved durable-workflow/workflow from a non-published artifact source; see workflow-php-package-source-policy.log." package_source_policy false
-    return 0
-  fi
-
-  if ! (
-    cd "$php_app" &&
-    php artisan key:generate --force &&
-    php artisan list --raw
-  ) > "$result_dir/workflow-php-artisan-list.log" 2>&1; then
-    write_php_package_shard_status fail "The Composer-installed PHP package could not boot its Laravel command surface; see workflow-php-artisan-list.log." artisan_list false
-    return 0
-  fi
-
-  if ! grep -q '^workflow:v2:workflow-updates-conformance' "$result_dir/workflow-php-artisan-list.log"; then
-    write_php_package_shard_status fail "The Composer-installed PHP package does not expose workflow:v2:workflow-updates-conformance." artisan_command_missing false
-    return 0
-  fi
-
-  set +e
-  (
-    cd "$php_app" &&
-    php artisan workflow:v2:workflow-updates-conformance --json \
-      --server-url="$server_url" \
-      --token="$auth_token" \
-      --namespace=default \
-      --task-queue="workflow-updates-php-${run_id}" \
-      --run-id="$run_id" \
-      --poll-timeout=2 \
-      --artifact-version="server=${DW_SERVER_VERSION:-}" \
-      --artifact-version="cli=${DW_CLI_VERSION:-}" \
-      --artifact-version="workflow-php=${workflow_php_version}" \
-      --artifact-version="sdk-python=${DW_PYTHON_SDK_VERSION:-}" \
-      --artifact-version="waterline=${DW_WATERLINE_VERSION:-}" \
-      --artifact-source=server=docker_image \
-      --artifact-source=cli=official_install_script \
-      --artifact-source=workflow-php=packagist_package \
-      --artifact-source=sdk-python=pypi_package \
-      --artifact-source=waterline=packagist_package \
-      --output="$php_report"
-  ) > "$result_dir/workflow-php-conformance-command.log" 2>&1
-  local command_status=$?
-  set -e
-
-  if [[ ! -s "$php_report" ]]; then
-    write_php_package_shard_status fail "The Composer-installed PHP package workflow update command did not emit a report; see workflow-php-conformance-command.log." php_package_command false
-    return 0
-  fi
-
-  materialize_php_package_shard_report "$php_report"
-  if [[ "$command_status" -ne 0 ]]; then
-    printf 'PHP package workflow update shard exited with status %s; imported its emitted report.\n' "$command_status" >> "$result_dir/workflow-php-conformance-command.log"
-  fi
+  materialize_php_package_shard_report \
+    "$probe_dir/php-sdk-conformance-result.json" \
+    "$probe_dir/php-sdk-lifecycle-evidence.json"
 }
 
 if ! command -v node >/dev/null 2>&1; then
@@ -3904,7 +3715,7 @@ const repoRoot = process.env.REPO_ROOT || '';
 const generatedAt = new Date().toISOString().replace(/\.\d{3}Z$/, 'Z');
 const finishedAt = generatedAt;
 const focusedEvidenceFile = 'workflow-updates-focused-evidence.json';
-const phpSidecarEvidenceFile = 'workflow-php-workflow-updates-evidence.json';
+const phpSidecarEvidenceFile = 'sdk-php-workflow-updates-evidence.json';
 const pythonSidecarEvidenceFile = 'python-sdk-workflow-updates-evidence.json';
 const operatorDiagnosticsEvidenceFile = 'workflow-updates-operator-diagnostics-evidence.json';
 const focusedEvidencePath = path.join(resultDir, focusedEvidenceFile);
@@ -4191,7 +4002,7 @@ function localSourceFieldValues(value) {
   const fields = [
     value?.artifact_source,
     value?.artifactSource,
-    value?.workflow_php_artifact_source,
+    value?.sdk_php_artifact_source,
     value?.workflowPhpArtifactSource,
     value?.package_artifact_source,
     value?.packageArtifactSource,
@@ -4203,7 +4014,7 @@ function localSourceFieldValues(value) {
     value?.waterlineArtifactSource,
     observedOutputs.artifact_source,
     observedOutputs.artifactSource,
-    observedOutputs.workflow_php_artifact_source,
+    observedOutputs.sdk_php_artifact_source,
     observedOutputs.workflowPhpArtifactSource,
     observedOutputs.package_artifact_source,
     observedOutputs.packageArtifactSource,
@@ -4219,7 +4030,7 @@ function localSourceFieldValues(value) {
     observedOutputs.waterline_fields?.waterlineArtifactSource,
     sourcePolicy.artifact_source,
     sourcePolicy.artifactSource,
-    sourcePolicy.workflow_php_artifact_source,
+    sourcePolicy.sdk_php_artifact_source,
     sourcePolicy.workflowPhpArtifactSource,
     sourcePolicy.package_artifact_source,
     sourcePolicy.packageArtifactSource,
@@ -4313,7 +4124,7 @@ function artifactPrerequisiteFinding(scenarioId, failures) {
     `workflow-updates-${scenarioId.replace(/_/g, '-')}-artifact-prerequisite-gap`,
     scenarioId,
     `The host evidence for ${scenarioId} claimed pass with unresolved published artifact prerequisites: ${failures.map((failure) => `${failure.artifact}:${failure.code}`).join(', ')}.`,
-    'Record concrete published artifact versions and non-placeholder artifact sources for the server, CLI, Python SDK, PHP workflow package, and Waterline before recording workflow update cells as passing.',
+    'Record concrete published artifact versions and non-placeholder artifact sources for the server, CLI, Python SDK, PHP SDK package, and Waterline before recording workflow update cells as passing.',
   );
   finding.artifact_prerequisite_failures = failures;
 
@@ -4796,12 +4607,14 @@ const serverImage = env('DW_SERVER_IMAGE') || '';
 const serverVersion = unresolved(env('DW_SERVER_VERSION') || versionFromImage(serverImage));
 const cliVersion = unresolved(env('DW_CLI_VERSION'));
 const pythonVersion = unresolved(env('DW_PYTHON_SDK_VERSION'));
+const phpSdkVersion = unresolved(env('DW_PHP_SDK_VERSION'));
 const workflowPhpVersion = unresolved(env('DW_WORKFLOW_PHP_VERSION') || env('DW_WORKFLOW_VERSION'));
 const waterlineVersion = unresolved(env('DW_WATERLINE_VERSION'));
 
 const artifactVersions = {
   server: serverVersion,
   cli: cliVersion,
+  'sdk-php': phpSdkVersion,
   'sdk-python': pythonVersion,
   workflow: workflowPhpVersion,
   waterline: waterlineVersion,
@@ -4815,6 +4628,7 @@ const publishedArtifactVersions = {
 const artifactSources = {
   server: serverImage || `docker://durableworkflow/server:${serverVersion}`,
   cli: `https://github.com/durable-workflow/cli/releases/download/${cliVersion}/install.sh`,
+  'sdk-php': `packagist://durable-workflow/sdk@${phpSdkVersion}`,
   'sdk-python': `pypi://durable-workflow==${pythonVersion}`,
   workflow: `packagist://durable-workflow/workflow@${workflowPhpVersion}`,
   'workflow-php': `packagist://durable-workflow/workflow@${workflowPhpVersion}`,
@@ -4857,10 +4671,11 @@ const focusedProbeScenarioIds = new Set([
 const scenarioManifest = readJsonIfExists(path.join(repoRoot, 'static/platform-conformance/workflow-update-runtime-scenarios.json')) ?? {};
 const scenarioRequirements = objectValue(scenarioManifest.scenario_requirements);
 const forbiddenArtifactSourceTokens = arrayOfStrings(scenarioManifest?.artifact_policy?.forbidden_sources);
-const requiredArtifacts = ['server', 'cli', 'sdk-python', 'workflow-php', 'waterline'];
+const requiredArtifacts = ['server', 'cli', 'sdk-php', 'sdk-python', 'workflow-php', 'waterline'];
 const artifactAliases = {
   server: ['server'],
   cli: ['cli'],
+  'sdk-php': ['sdk-php'],
   'sdk-python': ['sdk-python', 'python'],
   'workflow-php': ['workflow-php', 'workflow'],
   waterline: ['waterline'],
@@ -4876,9 +4691,9 @@ const focusedProbeMissingFinding = coverageFinding(
 const phpSidecarMissingFinding = coverageFinding(
   'workflow-updates-php-package-shard-coverage-gap',
   phpSidecarScenarioId,
-  'The PHP workflow package update shard did not run against the pinned Packagist artifact in this environment.',
-  'Run the workflow update conformance handoff where Composer can install durable-workflow/workflow from Packagist and the package client/worker command can reach the published server API.',
-  'workflow-php',
+  'The PHP SDK package update shard did not run against the pinned Packagist artifact in this environment.',
+  'Run the workflow update conformance handoff where Composer can install durable-workflow/sdk from Packagist and separate PHP client and worker processes can reach the published server API.',
+  'sdk-php',
 );
 
 const pythonSidecarMissingFinding = coverageFinding(
@@ -5191,8 +5006,8 @@ const result = {
     evidence_loaded: phpSidecarEvidence !== null,
     evidence_file: phpSidecarEvidence ? phpSidecarEvidenceFile : null,
     evidence_schema: phpSidecarEvidence?.schema || null,
-    package_version: workflowPhpVersion,
-    artifact_source: artifactSources['workflow-php'],
+    package_version: phpSdkVersion,
+    artifact_source: artifactSources['sdk-php'],
     local_product_source_checkouts_used: sidecarLocalProductSourceCheckoutsUsed(phpSidecarEvidence, phpSidecarScenarioId),
   },
   python_sidecar: {
@@ -5271,7 +5086,7 @@ const record = {
   findingLinks: result.finding_links,
   notes: [
     'Focused published-server workflow update runtime cells execute when the handoff runs inside the pinned server image.',
-    'The PHP package shard installs the pinned Packagist durable-workflow/workflow package before importing PHP client/worker update evidence.',
+    'The PHP SDK shard installs the pinned Packagist durable-workflow/sdk package before importing separate PHP client/worker update evidence.',
     'The Python SDK shard installs the pinned PyPI durable-workflow package before importing Python client/worker update evidence.',
     'The operator diagnostics shard installs the pinned CLI release and Packagist Waterline package before importing workflow:update JSON plus selected-run update/history evidence.',
     sourcePolicyNote,
