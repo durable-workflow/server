@@ -16,6 +16,8 @@ The first public clustered shape should be:
   a clustered persistence backend.
 - Shared Redis for cache, long-poll wake signals, query-task queue locks,
   task-queue admission locks, and Laravel queue state.
+- At least one queue worker consuming the configured Redis queue for
+  server-dispatched work such as durable timers.
 - One scheduler or maintenance process for `schedule:evaluate`,
   `activity:timeout-enforce`, and `history:prune`.
 - External SDK workers scaled independently from API nodes.
@@ -66,6 +68,7 @@ PostgreSQL. Each run starts:
 
 - 2 API nodes behind an nginx load balancer;
 - one bootstrap or migration job;
+- one Redis queue worker;
 - one scheduler or maintenance runner;
 - shared Redis for cache and queue state;
 - either MySQL or PostgreSQL as the shared durable database.
@@ -122,5 +125,7 @@ When the next phase publishes the harness, the corresponding docs should state:
   database shared by all nodes;
 - route only HTTP traffic through the load balancer;
 - keep database and Redis services private to the deployment;
+- run at least one `php artisan queue:work redis` process with the same
+  database, Redis, and server configuration as the API nodes;
 - run exactly one scheduler or maintenance loop;
 - use stop-the-world upgrades until a rolling-upgrade contract lands.

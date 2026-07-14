@@ -587,6 +587,11 @@ volumes:
   server-db:
 YAML
 
+if ! docker compose -p "$compose_project" -f "$run_root/compose.yml" run --rm server server-bootstrap \
+  > "$result_dir/server-bootstrap.log" 2>&1; then
+  fail_blocked "published server image failed to bootstrap the SQLite database queue; see server-bootstrap.log"
+fi
+
 docker compose -p "$compose_project" -f "$run_root/compose.yml" up -d > "$result_dir/docker-compose-up.log" 2>&1 \
   || fail_blocked "published server image failed to start; see docker-compose-up.log"
 

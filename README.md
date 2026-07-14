@@ -30,6 +30,13 @@ docker run --rm --name durable-workflow-server \
   -e DW_AUTH_DRIVER=token \
   -e DW_AUTH_TOKEN="$DW_AUTH_TOKEN" \
   "$DW_SERVER_IMAGE"
+
+# In a separate terminal, run the database queue worker that fires timers.
+docker run --rm --name durable-workflow-queue-worker \
+  -v durable-workflow-sqlite:/app/database \
+  -e DW_AUTH_DRIVER=token \
+  -e DW_AUTH_TOKEN="$DW_AUTH_TOKEN" \
+  "$DW_SERVER_IMAGE" php artisan queue:work database --sleep=1 --tries=3
 ```
 
 In another terminal:
@@ -188,17 +195,18 @@ worker/admin tokens with backward-compatible auth disabled.
 Small clustered deployments without Kubernetes are validated as a narrow public
 support boundary, not as a general HA promise. The current supported shape uses
 external MySQL or PostgreSQL plus 2 or 3 API nodes behind a stateless load
-balancer, shared Redis, and independently scaled external workers. The first
-contract requires exactly one scheduler or maintenance runner. SQLite,
-Redis-less multi-node mode, duplicate schedulers, rolling upgrades,
-active/active multi-region, Helm-based Kubernetes deployments, and provider-specific failover
-semantics are not part of that first contract.
+balancer, shared Redis, at least one server queue worker, and independently
+scaled external workers. The first contract requires exactly one scheduler or
+maintenance runner. SQLite, Redis-less multi-node mode, duplicate schedulers,
+rolling upgrades, active/active multi-region, Helm-based Kubernetes deployments,
+and provider-specific failover semantics are not part of that first contract.
 
 The CI harness in `docker-compose.small-cluster.yml` runs the MySQL and
-PostgreSQL variants with two API nodes, one bootstrap job, one scheduler, shared
-Redis, load-balanced health/readiness/cluster-info checks, external worker
-registration, and a workflow-task poll on one API node followed by completion
-on the other. The Phase 0 rationale and harness details live in
+PostgreSQL variants with two API nodes, one bootstrap job, one Redis queue
+worker, one scheduler, shared Redis, load-balanced health/readiness/cluster-info
+checks, external worker registration, and a workflow-task poll on one API node
+followed by completion on the other. The Phase 0 rationale and harness details
+live in
 [`docs/small-cluster-validation.md`](docs/small-cluster-validation.md).
 
 ### Multi-Region Status
@@ -515,7 +523,7 @@ workflow-task command payload.
 
 ### System
 - `GET /api/health` — Health check plus a machine-readable topology summary for the current node
-- `GET /api/ready` — Bounded readiness check for migrations, default namespace, cache, auth config, fail-closed backend/fleet admission, and the current node topology summary
+- `GET /api/ready` — Bounded readiness check for migrations, configured queue storage, default namespace, cache, auth config, fail-closed backend/fleet admission, and the current node topology summary
 - `GET /api/cluster/info` — Bounded server compatibility and capability discovery used by SDK and CLI preflight
 - `GET /api/cluster/info?include=diagnostics` — Compatibility discovery plus explicit coordination health, fleet detail, task-repair diagnostics, and operator metrics
 - `GET /api/system/health` — Full rollout-safety health snapshot for the requested namespace, including check status, categories, routing-drain state, operator metrics, and structural limits
@@ -1153,6 +1161,13 @@ docker run --rm -p 8080:8080 \
   -e DW_AUTH_DRIVER=token \
   -e DW_AUTH_TOKEN="$DW_AUTH_TOKEN" \
   durable-workflow-server
+
+# In a separate terminal, run the database queue worker that fires timers
+docker run --rm \
+  -v durable-workflow-sqlite:/app/database \
+  -e DW_AUTH_DRIVER=token \
+  -e DW_AUTH_TOKEN="$DW_AUTH_TOKEN" \
+  durable-workflow-server php artisan queue:work database --sleep=1 --tries=3
 ```
 
 The Dockerfile clones the `durable-workflow/workflow` `2.0.0-alpha.280` tag
@@ -1168,6 +1183,8 @@ The production image defaults to `DB_CONNECTION=sqlite`,
 `DB_DATABASE=/app/database/database.sqlite`, `QUEUE_CONNECTION=database`, and
 `CACHE_STORE=file` so the plain Docker quickstart works without external
 services. The entrypoint creates the SQLite file when a fresh volume is mounted.
+`server-bootstrap` creates the database queue schema, and the queue-worker
+process shown above consumes the persisted timer jobs.
 SQLite uses WAL journal mode and a 5000 ms busy timeout by default. The server
 also serializes SQLite worker poll claim probes through the polling cache so
 concurrent PHP/Python workers in the single-container quickstart do not race the

@@ -93,6 +93,8 @@ The HA shape that fits within these properties is:
 - one shared external Redis endpoint, optionally fronted by Sentinel,
   Elasticache replication-group, or Memorystore HA for cache-level
   failover;
+- at least one queue worker consuming the configured Redis queue for
+  server-dispatched work such as durable timers;
 - one scheduler/maintenance runner under an orchestrator that handles
   restart;
 - external SDK workers that talk to the load-balanced API endpoint.
@@ -129,12 +131,14 @@ Per-node configuration continues to follow the small-cluster contract:
 - set a unique `DW_SERVER_ID` for each API node;
 - use the same auth tokens or signature keys, `APP_VERSION`, workflow
   package version, payload codec configuration, and Redis configuration
-  shape on every node and on the scheduler runner;
+  shape on every node, queue worker, and scheduler runner;
 - set `CACHE_STORE=redis` and `QUEUE_CONNECTION=redis` and the same
   Redis connection settings everywhere;
 - set `DB_CONNECTION=mysql` or `DB_CONNECTION=pgsql` with one external
   database endpoint shared by all nodes;
 - keep database and Redis services private to the deployment;
+- run at least one `php artisan queue:work redis` process and monitor it as a
+  required server process;
 - run exactly one scheduler/maintenance runner.
 
 The HA contract does not introduce a new env-var contract; it is the
@@ -206,9 +210,10 @@ restored:
    small-cluster contract already pins).
 3. Issue `POST /api/worker/register` for a probe worker through the
    load-balanced endpoint and confirm 2xx.
-4. Verify the singleton scheduler/maintenance runner is reachable
+4. Verify the queue worker is running and consuming the configured Redis queue.
+5. Verify the singleton scheduler/maintenance runner is reachable
    in its orchestrator and that no second runner has been started.
-5. Resume external traffic and watch task throughput resume from the
+6. Resume external traffic and watch task throughput resume from the
    metrics surface in
    [Multi-Node Requirements](https://github.com/durable-workflow/workflow/blob/v2/docs/deployment/multi-node-requirements.md).
 
@@ -348,7 +353,7 @@ records, for the operator's recovery packet:
   bounded discovery latency on Redis failover, bounded traffic
   removal interval on API node loss, bounded resume latency on
   scheduler restart);
-- the configuration of the database, Redis, load balancer, and
+- the configuration of the database, Redis, queue worker, load balancer, and
   scheduler orchestrator at the time of the rehearsal so the
   evidence is reproducible;
 - the requested image references, resolved repository digests, runtime image

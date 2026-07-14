@@ -102,6 +102,37 @@ class PythonSdkParityContractTest extends TestCase
         $this->assertStringContainsString('local_product_source_checkouts_used', $script);
     }
 
+    public function test_runner_bootstraps_the_shared_sqlite_database_queue_before_starting_server_processes(): void
+    {
+        $script = (string) file_get_contents(dirname(__DIR__, 2).'/scripts/conformance/python-published-artifacts.sh');
+        $bootstrapCommand = 'docker compose -p "$compose_project" -f "$run_root/compose.yml" run --rm server server-bootstrap';
+        $startCommand = 'docker compose -p "$compose_project" -f "$run_root/compose.yml" up -d';
+
+        foreach ([
+            'DB_CONNECTION: sqlite',
+            'DB_DATABASE: /app/database/database.sqlite',
+            'QUEUE_CONNECTION: database',
+            'server-queue-worker:',
+            'command: ["php", "artisan", "queue:work"',
+            'server-db:/app/database',
+            'server-bootstrap.log',
+        ] as $needle) {
+            $this->assertStringContainsString($needle, $script);
+        }
+
+        $this->assertGreaterThanOrEqual(2, substr_count($script, 'server-db:/app/database'));
+
+        $bootstrapPosition = strpos($script, $bootstrapCommand);
+        $startPosition = strpos($script, $startCommand);
+
+        $this->assertIsInt($bootstrapPosition);
+        $this->assertIsInt($startPosition);
+        $this->assertTrue(
+            $bootstrapPosition < $startPosition,
+            'The shared SQLite volume must be bootstrapped before the HTTP server and queue worker start.',
+        );
+    }
+
     public function test_runner_resolves_cli_from_github_release_asset(): void
     {
         $script = (string) file_get_contents(dirname(__DIR__, 2).'/scripts/conformance/python-published-artifacts.sh');

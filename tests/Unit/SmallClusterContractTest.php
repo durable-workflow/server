@@ -55,6 +55,7 @@ class SmallClusterContractTest extends TestCase
             'server-b:',
             'load-balancer:',
             'bootstrap:',
+            'queue-worker:',
             'scheduler:',
             'redis:',
             'mysql:',
@@ -63,9 +64,13 @@ class SmallClusterContractTest extends TestCase
             'DW_SERVER_ID: server-b',
             'DW_SERVER_TOPOLOGY_SHAPE: standalone_server',
             'DW_SERVER_PROCESS_CLASS: server_http_node',
+            'DW_SERVER_PROCESS_CLASS: worker_node',
             'DW_SERVER_PROCESS_CLASS: scheduler_node',
             'CACHE_STORE: redis',
             'QUEUE_CONNECTION: redis',
+            'command: ["php", "artisan", "queue:work", "redis"',
+            'condition: service_completed_successfully',
+            'condition: service_healthy',
         ] as $needle) {
             $this->assertStringContainsString($needle, $compose);
         }
@@ -81,6 +86,7 @@ class SmallClusterContractTest extends TestCase
             '/api/worker/workflow-tasks/${task_id}/complete',
             'server_a_port',
             'server_b_port',
+            "grep -Fxq 'queue-worker'",
             'Small cluster smoke passed',
         ] as $needle) {
             $this->assertStringContainsString($needle, $script);

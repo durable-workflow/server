@@ -694,6 +694,7 @@ RESULT: dict[str, Any] = {
         "published_ports": PUBLISHED_PORTS,
         "database": {"engine": "mysql", "instances": 1, "durability": "named_volume"},
         "redis": {"instances": 1, "role": "acceleration_layer"},
+        "queue_workers": ["queue-worker"],
         "scheduler_maintenance_runners": ["scheduler"],
         "sticky_sessions": False,
     },
@@ -759,7 +760,7 @@ def provenance_phase() -> dict[str, Any]:
     raw = compose("config", "--format", "json").stdout
     config = json.loads(raw)
     services = config.get("services", {})
-    require(set(services) == {"bootstrap", "server-a", "server-b", "scheduler", "load-balancer", "mysql", "redis"}, "unexpected Compose topology")
+    require(set(services) == {"bootstrap", "server-a", "server-b", "queue-worker", "scheduler", "load-balancer", "mysql", "redis"}, "unexpected Compose topology")
     require(all("build" not in service for service in services.values()), "Compose build sections are forbidden")
     for service_name, service in services.items():
         image = str(service.get("image", ""))
@@ -768,6 +769,7 @@ def provenance_phase() -> dict[str, Any]:
             volume_type = volume.get("type") if isinstance(volume, dict) else "volume"
             require(volume_type != "bind", f"bind mount is forbidden for {service_name}: {volume}")
     require(sum(1 for name in services if name == "scheduler") == 1, "exactly one scheduler service is required")
+    require(sum(1 for name in services if name == "queue-worker") == 1, "exactly one queue worker service is required")
     package_script = r'''
 $lock = json_decode(file_get_contents('/app/composer.lock'), true);
 $package = null;
@@ -832,9 +834,10 @@ def start_topology() -> dict[str, Any]:
     wait_for_topology_readiness(30)
 
     running = compose("ps", "--status", "running", "--services").stdout.splitlines()
+    require(running.count("queue-worker") == 1, f"expected one running queue worker, got: {running}")
     require(running.count("scheduler") == 1, f"expected one running scheduler, got: {running}")
     image_ids: dict[str, str] = {}
-    for service in ("server-a", "server-b", "scheduler", "load-balancer", "mysql", "redis"):
+    for service in ("server-a", "server-b", "queue-worker", "scheduler", "load-balancer", "mysql", "redis"):
         container_id = compose("ps", "-q", service).stdout.strip()
         require(bool(container_id), f"missing container for {service}")
         image_ids[service] = command(["docker", "inspect", "--format", "{{.Image}}", container_id]).stdout.strip()

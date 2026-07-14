@@ -26,6 +26,10 @@ class SingleRegionFailoverRehearsalTest extends TestCase
         $this->assertSame(PlatformConformanceSuite::SCHEMA, $manifest['scenario_manifest']['suite_schema']);
         $this->assertSame($manifest['scenario_manifest']['suite_schema'], $scenarioDocument['suite_schema']);
         $this->assertSame(SingleRegionFailoverContract::RESULT_SCHEMA, $scenarioDocument['result_contract']['schema']);
+        $this->assertSame(
+            $manifest['required_topology']['queue_workers'],
+            $scenarioDocument['result_contract']['required_topology']['queue_workers'],
+        );
         $this->assertSame([
             'pending' => ['status_bucket' => 'running', 'is_terminal' => false],
             'running' => ['status_bucket' => 'running', 'is_terminal' => false],
@@ -94,9 +98,24 @@ class SingleRegionFailoverRehearsalTest extends TestCase
         $this->assertStringNotContainsString('context:', $compose);
         $this->assertStringNotContainsString('../workflow', $compose);
         $this->assertSame(1, substr_count($compose, "\n  scheduler:\n"));
+        $this->assertSame(1, substr_count($compose, "\n  queue-worker:\n"));
         $this->assertSame(1, substr_count($compose, "\n  mysql:\n"));
         $this->assertSame(1, substr_count($compose, "\n  redis:\n"));
         $this->assertStringContainsString('DW_FAILOVER_SERVER_IMAGE:?', $compose);
+        $this->assertStringContainsString('command: ["php", "artisan", "queue:work", "redis"', $compose);
+        $this->assertStringContainsString('DW_SERVER_ID: failover-queue-worker', $compose);
+        $this->assertStringContainsString('DW_SERVER_PROCESS_CLASS: worker_node', $compose);
+        $this->assertStringContainsString('condition: service_completed_successfully', $compose);
+        $this->assertStringContainsString('condition: service_healthy', $compose);
+    }
+
+    public function test_rehearsal_runner_requires_the_queue_worker_to_remain_in_the_published_topology(): void
+    {
+        $runner = (string) file_get_contents(base_path('scripts/conformance/single-region-failover-published-artifacts.py'));
+
+        $this->assertStringContainsString('"queue_workers": ["queue-worker"]', $runner);
+        $this->assertStringContainsString('running.count("queue-worker") == 1', $runner);
+        $this->assertStringContainsString('"server-a", "server-b", "queue-worker", "scheduler"', $runner);
     }
 
     public function test_shell_handoff_requires_and_resolves_a_public_server_image(): void

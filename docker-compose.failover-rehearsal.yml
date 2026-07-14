@@ -78,6 +78,20 @@ services:
       timeout: 2s
       retries: 30
 
+  queue-worker:
+    image: *server-image
+    command: ["php", "artisan", "queue:work", "redis", "--sleep=1", "--tries=3", "--max-time=3600"]
+    restart: unless-stopped
+    environment:
+      <<: *server-environment
+      DW_SERVER_ID: failover-queue-worker
+      DW_SERVER_PROCESS_CLASS: worker_node
+    depends_on:
+      bootstrap:
+        condition: service_completed_successfully
+      redis:
+        condition: service_healthy
+
   scheduler:
     image: *server-image
     init: true

@@ -9,6 +9,7 @@ use App\Support\ControlPlaneProtocol;
 use App\Support\WorkerProtocol;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Schema;
 use Illuminate\Testing\TestResponse;
 use Tests\TestCase;
 use Workflow\V2\Models\WorkflowSchedule;
@@ -55,7 +56,7 @@ class WorkflowBootstrapRouteGatingTest extends TestCase
             ->assertJsonPath('blocked_by.0', 'migrations')
             ->assertJsonPath(
                 'remediation',
-                'Restore database connectivity and migrate the workflow tables before relying on workflow v2 rollout-safety health.',
+                'Restore database connectivity and run server-bootstrap to migrate workflow and configured queue storage before serving workflow v2 traffic.',
             );
     }
 
@@ -74,6 +75,27 @@ class WorkflowBootstrapRouteGatingTest extends TestCase
             ->assertHeader(WorkerProtocol::HEADER, WorkerProtocol::VERSION)
             ->assertJsonPath('reason', 'workflow_v2_blocked')
             ->assertJsonPath('blocked_by.0', 'migrations');
+    }
+
+    public function test_missing_database_queue_storage_blocks_runtime_routes(): void
+    {
+        Schema::drop('jobs');
+
+        $this->withHeaders($this->workerHeaders('worker-token'))
+            ->postJson('/api/worker/register', [
+                'worker_id' => 'queue-bootstrap-blocked-worker',
+                'task_queue' => 'default',
+                'runtime' => 'python',
+                'build_id' => 'build-a',
+            ])
+            ->assertStatus(503)
+            ->assertHeader(WorkerProtocol::HEADER, WorkerProtocol::VERSION)
+            ->assertJsonPath('reason', 'workflow_v2_blocked')
+            ->assertJsonPath('blocked_by.0', 'queue')
+            ->assertJsonPath(
+                'remediation',
+                'Restore database connectivity and run server-bootstrap to migrate workflow and configured queue storage before serving workflow v2 traffic.',
+            );
     }
 
     public function test_bootstrap_gate_runs_before_namespace_resolution_on_hosted_routes(): void

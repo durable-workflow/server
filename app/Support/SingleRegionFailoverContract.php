@@ -14,7 +14,7 @@ final class SingleRegionFailoverContract
 {
     public const SCHEMA = 'durable-workflow.v2.single-region-failover.contract';
 
-    public const VERSION = 6;
+    public const VERSION = 7;
 
     public const RESULT_SCHEMA = 'durable-workflow.v2.single-region-failover.result';
 
@@ -68,6 +68,7 @@ final class SingleRegionFailoverContract
                 'shared_endpoint' => 1,
                 'durable_database' => 1,
                 'shared_redis' => 1,
+                'queue_workers' => 1,
                 'scheduler_maintenance_runners' => 1,
                 'sticky_sessions' => false,
                 'database_engines' => ['mysql'],

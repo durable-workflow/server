@@ -1,6 +1,6 @@
 {
   "schema": "durable-workflow.v2.platform-conformance.runtime-scenarios",
-  "version": 5,
+  "version": 6,
   "category": "single_region_failover_contract",
   "suite_schema": "durable-workflow.v2.platform-conformance.suite",
   "artifact_policy": {
@@ -56,6 +56,7 @@
       "shared_endpoint": 1,
       "durable_database": 1,
       "shared_redis": 1,
+      "queue_workers": 1,
       "scheduler_maintenance_runners": 1
     }
   }

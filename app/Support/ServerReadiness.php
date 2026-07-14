@@ -31,6 +31,7 @@ final class ServerReadiness
         $checks = [
             'database' => $this->databaseCheck(),
             'migrations' => $this->migrationCheck(),
+            'queue' => $this->queueCheck(),
             'default_namespace' => $this->defaultNamespaceCheck(),
             'cache' => $this->cacheCheck(),
             'auth' => $this->authCheck(),
@@ -59,6 +60,7 @@ final class ServerReadiness
         $checks ??= [
             'database' => $this->databaseCheck(),
             'migrations' => $this->migrationCheck(),
+            'queue' => $this->queueCheck(),
         ];
 
         return $this->normalizeWorkflowCheck($this->workflowCheck($checks));
@@ -76,6 +78,7 @@ final class ServerReadiness
         return $this->normalizeWorkflowCheck($this->bootstrapCheck([
             'database' => $this->databaseCheck(),
             'migrations' => $this->migrationCheck(),
+            'queue' => $this->queueCheck(),
         ]));
     }
 
@@ -165,6 +168,83 @@ final class ServerReadiness
         }
 
         return $check + ['status' => 'ok'];
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    private function queueCheck(): array
+    {
+        $connection = config('queue.default');
+
+        if (! is_string($connection) || trim($connection) === '') {
+            return [
+                'status' => 'invalid',
+                'message' => 'The default queue connection is not configured.',
+                'remediation' => 'Set QUEUE_CONNECTION to a configured Laravel queue connection.',
+            ];
+        }
+
+        $connection = trim($connection);
+        $driver = config("queue.connections.{$connection}.driver");
+
+        if (! is_string($driver) || trim($driver) === '') {
+            return [
+                'status' => 'invalid',
+                'connection' => $connection,
+                'message' => 'The default queue connection does not resolve to a configured driver.',
+                'remediation' => 'Set QUEUE_CONNECTION to a configured Laravel queue connection.',
+            ];
+        }
+
+        $driver = trim($driver);
+        if ($driver !== 'database') {
+            return [
+                'status' => 'ok',
+                'connection' => $connection,
+                'driver' => $driver,
+            ];
+        }
+
+        $table = config("queue.connections.{$connection}.table", 'jobs');
+        $databaseConnection = config("queue.connections.{$connection}.connection");
+        $databaseConnection = is_string($databaseConnection) && trim($databaseConnection) !== ''
+            ? trim($databaseConnection)
+            : null;
+
+        if (! is_string($table) || trim($table) === '') {
+            return [
+                'status' => 'invalid',
+                'connection' => $connection,
+                'driver' => $driver,
+                'message' => 'The database queue table is not configured.',
+                'remediation' => 'Configure a database queue table and run server-bootstrap before serving workflow traffic.',
+            ];
+        }
+
+        $table = trim($table);
+        $check = [
+            'connection' => $connection,
+            'driver' => $driver,
+            'database_connection' => $databaseConnection ?? (string) config('database.default'),
+            'table' => $table,
+        ];
+
+        try {
+            if (! Schema::connection($databaseConnection)->hasTable($table)) {
+                return $check + [
+                    'status' => 'missing',
+                    'remediation' => 'Run server-bootstrap to create the configured database queue table.',
+                ];
+            }
+
+            return $check + ['status' => 'ok'];
+        } catch (\Throwable $exception) {
+            return $check + [
+                'status' => 'unavailable',
+                'message' => $exception->getMessage(),
+            ];
+        }
     }
 
     /**
@@ -451,7 +531,7 @@ final class ServerReadiness
     {
         $blockedBy = [];
 
-        foreach (['database', 'migrations'] as $key) {
+        foreach (['database', 'migrations', 'queue'] as $key) {
             if (! self::statusAllowsReady($checks[$key]['status'] ?? null)) {
                 $blockedBy[] = $key;
             }
@@ -461,7 +541,7 @@ final class ServerReadiness
             return [
                 'status' => 'blocked',
                 'blocked_by' => $blockedBy,
-                'remediation' => 'Restore database connectivity and migrate the workflow tables before relying on workflow v2 rollout-safety health.',
+                'remediation' => 'Restore database connectivity and run server-bootstrap to migrate workflow and configured queue storage before serving workflow v2 traffic.',
             ];
         }
 

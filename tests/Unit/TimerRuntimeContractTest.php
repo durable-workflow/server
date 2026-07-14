@@ -90,6 +90,27 @@ final class TimerRuntimeContractTest extends TestCase
         );
     }
 
+    public function test_focused_published_image_probe_exercises_the_database_queue_transport(): void
+    {
+        $source = file_get_contents(
+            dirname(__DIR__, 2).'/scripts/conformance/timers-published-artifacts.sh',
+        );
+
+        $this->assertIsString($source);
+        $this->assertStringContainsString("Artisan::call('server:bootstrap'", $source);
+        $this->assertStringContainsString("Schema::hasTable('jobs')", $source);
+        $this->assertStringContainsString('function run_timer_through_database_queue(WorkflowTask $timerTask): array', $source);
+        $this->assertStringContainsString("Artisan::call('queue:work'", $source);
+        $this->assertStringContainsString("'queued_job_observed' => true", $source);
+        $this->assertStringContainsString("'queued_job_consumed' => \$jobRemoved", $source);
+        $this->assertGreaterThanOrEqual(3, substr_count($source, 'run_timer_through_database_queue($timerTask)'));
+        $this->assertSame(
+            1,
+            substr_count($source, '(new RunTimerTask($timerTask->id))->handle();'),
+            'Only the cancelled-before-deadline no-op check may invoke the timer job directly.',
+        );
+    }
+
     public function test_published_artifact_handoff_emits_source_free_non_passing_timer_record(): void
     {
         $repoRoot = dirname(__DIR__, 2);

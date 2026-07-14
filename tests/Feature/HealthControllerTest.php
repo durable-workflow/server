@@ -123,6 +123,10 @@ class HealthControllerTest extends TestCase
             ->assertJsonPath('checks.migrations.status', 'ok')
             ->assertJsonPath('checks.migrations.operator_surface.available', true)
             ->assertJsonPath('checks.migrations.readiness_contract.version', 1)
+            ->assertJsonPath('checks.queue.status', 'ok')
+            ->assertJsonPath('checks.queue.connection', 'database')
+            ->assertJsonPath('checks.queue.driver', 'database')
+            ->assertJsonPath('checks.queue.table', 'jobs')
             ->assertJsonPath('checks.default_namespace.status', 'ok')
             ->assertJsonPath('checks.default_namespace.namespace', 'default')
             ->assertJsonPath('checks.cache.status', 'ok')
@@ -239,6 +243,56 @@ class HealthControllerTest extends TestCase
             ->assertJsonPath('checks.migrations.operator_surface.available', false)
             ->assertJsonPath('checks.migrations.missing_tables.0', 'workflow_run_summaries')
             ->assertJsonPath('checks.workflow_v2.status', 'blocked');
+    }
+
+    public function test_readiness_blocks_when_database_queue_storage_is_missing(): void
+    {
+        WorkflowNamespace::query()->create([
+            'name' => 'default',
+            'description' => 'Default namespace',
+            'retention_days' => 30,
+            'status' => 'active',
+        ]);
+
+        Schema::drop('jobs');
+
+        $response = $this->getJson('/api/ready');
+
+        $response->assertStatus(503)
+            ->assertJsonPath('status', 'not_ready')
+            ->assertJsonPath('checks.migrations.status', 'ok')
+            ->assertJsonPath('checks.queue.status', 'missing')
+            ->assertJsonPath('checks.queue.connection', 'database')
+            ->assertJsonPath('checks.queue.driver', 'database')
+            ->assertJsonPath('checks.queue.table', 'jobs')
+            ->assertJsonPath('checks.queue.remediation', 'Run server-bootstrap to create the configured database queue table.')
+            ->assertJsonPath('checks.workflow_v2.status', 'blocked')
+            ->assertJsonPath('checks.workflow_v2.blocked_by.0', 'queue');
+    }
+
+    public function test_readiness_does_not_require_database_queue_storage_for_redis_queue(): void
+    {
+        WorkflowNamespace::query()->create([
+            'name' => 'default',
+            'description' => 'Default namespace',
+            'retention_days' => 30,
+            'status' => 'active',
+        ]);
+
+        config([
+            'queue.default' => 'redis',
+            'queue.connections.redis.driver' => 'redis',
+        ]);
+        Schema::drop('jobs');
+
+        $this->getJson('/api/ready')
+            ->assertOk()
+            ->assertJsonPath('status', 'ready')
+            ->assertJsonPath('checks.migrations.status', 'ok')
+            ->assertJsonPath('checks.queue.status', 'ok')
+            ->assertJsonPath('checks.queue.connection', 'redis')
+            ->assertJsonPath('checks.queue.driver', 'redis')
+            ->assertJsonPath('checks.workflow_v2.status', 'ok');
     }
 
     public function test_readiness_check_reports_missing_default_namespace_before_bootstrap_seed(): void

@@ -145,6 +145,13 @@ run_database_smoke() {
 
   compose up -d --build --wait
 
+  if ! compose ps --status running --services | grep -Fxq 'queue-worker'; then
+    echo "The Redis queue worker did not remain running." >&2
+    compose ps >&2 || true
+    compose logs queue-worker bootstrap redis >&2 || true
+    return 1
+  fi
+
   curl_json_with_retry "/tmp/dw-small-cluster-${database}-health.json" \
     "${lb_url}/api/health"
   curl_json_with_retry "/tmp/dw-small-cluster-${database}-ready.json" \
@@ -186,7 +193,7 @@ run_database_smoke() {
   if [ -z "$task_id" ] || [ -z "$lease_owner" ] || [ -z "$attempt" ]; then
     echo "Poll through server-a did not return a workflow task." >&2
     compose ps >&2 || true
-    compose logs server-a server-b bootstrap scheduler >&2 || true
+    compose logs server-a server-b bootstrap queue-worker scheduler >&2 || true
     return 1
   fi
 

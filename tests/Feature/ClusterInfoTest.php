@@ -717,8 +717,9 @@ class ClusterInfoTest extends TestCase
             );
 
         $contract = $response->json('single_region_failover_contract');
-        $this->assertSame(6, $contract['version']);
+        $this->assertSame(7, $contract['version']);
         $this->assertSame(2, $contract['required_topology']['api_nodes']);
+        $this->assertSame(1, $contract['required_topology']['queue_workers']);
         $this->assertSame(1, $contract['required_topology']['scheduler_maintenance_runners']);
         $this->assertFalse($contract['required_topology']['sticky_sessions']);
         $this->assertContains('database_interruption', $contract['required_scenarios']);
@@ -1734,7 +1735,7 @@ class ClusterInfoTest extends TestCase
             ->assertJsonPath('coordination_health.blocked_by.0', 'migrations')
             ->assertJsonPath(
                 'coordination_health.remediation',
-                'Restore database connectivity and migrate the workflow tables before relying on workflow v2 rollout-safety health.',
+                'Restore database connectivity and run server-bootstrap to migrate workflow and configured queue storage before serving workflow v2 traffic.',
             );
     }
 

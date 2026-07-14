@@ -177,6 +177,7 @@ use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Artisan;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Facade;
+use Illuminate\Support\Facades\Schema;
 use Workflow\Serializers\CodecRegistry;
 use Workflow\Serializers\Serializer;
 use Workflow\V2\Attributes\Type;
@@ -375,7 +376,17 @@ function bootstrap_application(string $repoRoot, bool $runMigrations = true): vo
     ]);
 
     if ($runMigrations) {
-        Artisan::call('migrate', ['--force' => true]);
+        $bootstrapExitCode = Artisan::call('server:bootstrap', ['--force' => true]);
+        if ($bootstrapExitCode !== 0) {
+            throw new RuntimeException(sprintf(
+                'published image server-bootstrap failed with exit code %d: %s',
+                $bootstrapExitCode,
+                trim(Artisan::output()),
+            ));
+        }
+        if (! Schema::hasTable('jobs')) {
+            throw new RuntimeException('published image server-bootstrap did not create the database queue jobs table');
+        }
     }
 
     WorkflowNamespace::query()->updateOrCreate(
@@ -665,6 +676,77 @@ function wait_until_timestamp(DateTimeInterface $timestamp): void
     }
 }
 
+function run_timer_through_database_queue(WorkflowTask $timerTask): array
+{
+    $connection = config('queue.default');
+    if ($connection !== 'database') {
+        throw new RuntimeException('focused timer queue proof requires queue.default=database');
+    }
+
+    $table = config('queue.connections.database.table', 'jobs');
+    $queue = config('queue.connections.database.queue', 'default');
+    if (! is_string($table) || trim($table) === '') {
+        throw new RuntimeException('database queue table is not configured');
+    }
+    if (! is_string($queue) || trim($queue) === '') {
+        $queue = 'default';
+    }
+
+    $table = trim($table);
+    $queue = trim($queue);
+    $taskId = (string) $timerTask->id;
+    $queuedJob = DB::table($table)
+        ->where('payload', 'like', '%'.$taskId.'%')
+        ->orderBy('id')
+        ->first();
+
+    if ($queuedJob === null) {
+        throw new RuntimeException('ServiceModeTimerDispatcher did not persist timer task '.$taskId.' in the configured database queue');
+    }
+
+    $jobId = $queuedJob->id ?? null;
+    $availableAt = $queuedJob->available_at ?? null;
+    $exitCode = Artisan::call('queue:work', [
+        'connection' => $connection,
+        '--once' => true,
+        '--queue' => $queue,
+        '--sleep' => 0,
+        '--tries' => 1,
+    ]);
+
+    if ($exitCode !== 0) {
+        throw new RuntimeException(sprintf(
+            'published image queue worker failed for timer task %s with exit code %d: %s',
+            $taskId,
+            $exitCode,
+            trim(Artisan::output()),
+        ));
+    }
+
+    $jobRemoved = $jobId !== null && ! DB::table($table)->where('id', $jobId)->exists();
+    if (! $jobRemoved) {
+        throw new RuntimeException('published image queue worker did not consume database queue job for timer task '.$taskId);
+    }
+
+    $timerTask->refresh();
+
+    return [
+        'connection' => $connection,
+        'driver' => 'database',
+        'table' => $table,
+        'queue' => $queue,
+        'queued_job_observed' => true,
+        'queued_job_id' => $jobId,
+        'queued_job_available_at' => $availableAt,
+        'queue_worker_command' => 'php artisan queue:work database --once --queue='.$queue.' --sleep=0 --tries=1',
+        'queue_worker_exit_code' => $exitCode,
+        'queued_job_consumed' => $jobRemoved,
+        'timer_task_status_after_worker' => $timerTask->status instanceof BackedEnum
+            ? $timerTask->status->value
+            : (string) $timerTask->status,
+    ];
+}
+
 function history_event_time(string $runId, HistoryEventType $type): ?string
 {
     $event = WorkflowHistoryEvent::query()
@@ -827,7 +909,7 @@ function run_sleep_probe(
     }
 
     wait_until_timestamp($timer->fire_at);
-    (new RunTimerTask($timerTask->id))->handle();
+    $queueTransport = run_timer_through_database_queue($timerTask);
 
     $resumeTask = poll_workflow_task($resumeWorkerId);
     complete_workflow_task_from_runtime($resumeTask);
@@ -895,6 +977,7 @@ function run_sleep_probe(
         'completion_after_wake_up' => $completionAfterWakeUp,
         'timer_fired_at' => $timerFiredAt,
         'timer_fire_count' => $timerFireCount,
+        'queue_transport' => $queueTransport,
         'execution_source' => HOST_EVIDENCE_SOURCE,
         'no_local_product_source_checkout_pass_evidence' => true,
     ];
@@ -1015,7 +1098,7 @@ function run_replay_after_timer_fire_probe(): array
     }
 
     wait_until_timestamp($timer->fire_at);
-    (new RunTimerTask($timerTask->id))->handle();
+    $queueTransport = run_timer_through_database_queue($timerTask);
 
     $timerFireEvents = timer_fire_events($runId, (string) $timer->id);
     $lastTimerFireEvent = $timerFireEvents === [] ? null : $timerFireEvents[array_key_last($timerFireEvents)];
@@ -1091,6 +1174,7 @@ function run_replay_after_timer_fire_probe(): array
         'timer_scheduled_event_count_after_replay' => $timerScheduledEventsAfterReplay,
         'duplicate_timer_scheduled_events' => $duplicateTimerScheduledEvents,
         'timer_fire_count' => $timerFireCount,
+        'queue_transport' => $queueTransport,
         'workflow_status' => $runStatus,
         'workflow_result' => $workflowResult,
         'execution_source' => HOST_EVIDENCE_SOURCE,
@@ -1248,6 +1332,7 @@ function run_concurrent_timers_probe(): array
     $observedResumeOrder = [];
     $firedAtTimes = [];
     $fireCounts = [];
+    $queueTransports = [];
     $resumeTaskIds = [];
     $resumeTaskTimerIds = [];
 
@@ -1259,7 +1344,7 @@ function run_concurrent_timers_probe(): array
         $timerId = (string) $record['timer_id'];
 
         wait_until_timestamp($timer->fire_at);
-        (new RunTimerTask($timerTask->id))->handle();
+        $queueTransports[$timerId] = run_timer_through_database_queue($timerTask);
 
         $timerFireEvents = timer_fire_events($runId, $timerId);
         $fireCounts[$timerId] = count($timerFireEvents);
@@ -1352,6 +1437,7 @@ function run_concurrent_timers_probe(): array
         'resume_task_timer_ids' => $resumeTaskTimerIds,
         'fired_at_times' => $firedAtTimes,
         'fire_counts' => $fireCounts,
+        'queue_transports' => $queueTransports,
         'pre_wake_observation_at' => $preWakeObservedAt,
         'pre_wake_workflow_task_count' => $preWakeWorkflowTaskCount,
         'pre_wake_timer_fire_count' => $preWakeTimerFireCount,

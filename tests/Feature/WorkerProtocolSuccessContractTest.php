@@ -6,10 +6,14 @@ use App\Models\WorkerRegistration;
 use App\Support\ControlPlaneProtocol;
 use App\Support\LongPoller;
 use App\Support\NamespaceWorkflowScope;
+use App\Support\ServiceModeTimerDispatcher;
 use App\Support\WorkerProtocol;
+use Illuminate\Database\QueryException;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Carbon;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Queue;
+use Illuminate\Support\Facades\Schema;
 use Illuminate\Testing\TestResponse;
 use Mockery\MockInterface;
 use PHPUnit\Framework\Attributes\DataProvider;
@@ -2106,6 +2110,153 @@ class WorkerProtocolSuccessContractTest extends TestCase
             static fn (RunTimerTask $job): bool => $job->taskId === $timerTaskId
                 && $job->queue === null,
         );
+    }
+
+    public function test_database_queue_worker_fires_a_service_mode_timer_and_resumes_the_workflow(): void
+    {
+        config([
+            'queue.default' => 'database',
+            'server.mode' => 'service',
+            'workflows.v2.compatibility.current' => null,
+            'workflows.v2.compatibility.supported' => [],
+            'workflows.v2.task_dispatch_mode' => 'poll',
+        ]);
+
+        $this->configureWorkflowTypes([
+            'tests.external-greeting-workflow' => ExternalGreetingWorkflow::class,
+        ]);
+
+        $start = $this->postJson('/api/workflows', [
+            'workflow_id' => 'wf-worker-database-queue-timer-contract',
+            'workflow_type' => 'tests.external-greeting-workflow',
+            'task_queue' => 'contract-queue',
+            'input' => ['Ada'],
+        ], $this->apiHeaders());
+
+        $start->assertCreated();
+
+        $this->registerWorker(
+            workerId: 'worker-database-queue-timer-contract',
+            taskQueue: 'contract-queue',
+            supportedWorkflowTypes: ['tests.external-greeting-workflow'],
+        );
+
+        $poll = $this->postJson('/api/worker/workflow-tasks/poll', [
+            'worker_id' => 'worker-database-queue-timer-contract',
+            'task_queue' => 'contract-queue',
+        ], $this->workerProtocolHeaders());
+
+        $this->assertWorkerProtocolSuccess($poll);
+
+        $taskId = (string) $poll->json('task.task_id');
+        $attempt = (int) $poll->json('task.workflow_task_attempt');
+        $complete = $this->postJson("/api/worker/workflow-tasks/{$taskId}/complete", [
+            'lease_owner' => 'worker-database-queue-timer-contract',
+            'workflow_task_attempt' => $attempt,
+            'commands' => [
+                [
+                    'type' => 'start_timer',
+                    'delay_seconds' => 0,
+                ],
+            ],
+        ], $this->workerProtocolHeaders());
+
+        $this->assertWorkerProtocolSuccess($complete)
+            ->assertJsonPath('run_status', 'waiting')
+            ->assertJsonStructure(['created_task_ids']);
+
+        $timerTaskId = (string) $complete->json('created_task_ids.0');
+        $queuedJob = DB::table('jobs')->sole();
+        $queuedPayload = json_decode($queuedJob->payload, true, flags: JSON_THROW_ON_ERROR);
+
+        $this->assertSame('default', $queuedJob->queue);
+        $this->assertSame(RunTimerTask::class, $queuedPayload['displayName'] ?? null);
+        $this->assertStringContainsString($timerTaskId, (string) ($queuedPayload['data']['command'] ?? ''));
+
+        $this->artisan('queue:work', [
+            'connection' => 'database',
+            '--once' => true,
+            '--sleep' => 0,
+            '--tries' => 1,
+        ])->assertExitCode(0);
+
+        $this->assertFalse(DB::table('jobs')->where('id', $queuedJob->id)->exists());
+
+        /** @var WorkflowTask $timerTask */
+        $timerTask = WorkflowTask::query()->findOrFail($timerTaskId);
+        $this->assertSame(TaskStatus::Completed, $timerTask->status);
+
+        $resumePoll = $this->postJson('/api/worker/workflow-tasks/poll', [
+            'worker_id' => 'worker-database-queue-timer-contract',
+            'task_queue' => 'contract-queue',
+        ], $this->workerProtocolHeaders());
+
+        $this->assertWorkerProtocolSuccess($resumePoll)
+            ->assertJsonPath('poll_status', 'leased')
+            ->assertJsonPath('task.workflow_wait_kind', 'timer')
+            ->assertJsonPath('task.resume_source_kind', 'timer')
+            ->assertJsonPath('task.workflow_event_type', 'TimerFired');
+    }
+
+    public function test_service_mode_timer_dispatch_does_not_swallow_database_queue_failure(): void
+    {
+        config([
+            'queue.default' => 'database',
+            'server.mode' => 'embedded',
+            'workflows.v2.compatibility.current' => null,
+            'workflows.v2.compatibility.supported' => [],
+            'workflows.v2.task_dispatch_mode' => 'poll',
+        ]);
+
+        $this->configureWorkflowTypes([
+            'tests.external-greeting-workflow' => ExternalGreetingWorkflow::class,
+        ]);
+
+        $start = $this->postJson('/api/workflows', [
+            'workflow_id' => 'wf-worker-database-queue-failure-contract',
+            'workflow_type' => 'tests.external-greeting-workflow',
+            'task_queue' => 'contract-queue',
+            'input' => ['Ada'],
+        ], $this->apiHeaders());
+
+        $start->assertCreated();
+
+        $this->registerWorker(
+            workerId: 'worker-database-queue-failure-contract',
+            taskQueue: 'contract-queue',
+            supportedWorkflowTypes: ['tests.external-greeting-workflow'],
+        );
+
+        $poll = $this->postJson('/api/worker/workflow-tasks/poll', [
+            'worker_id' => 'worker-database-queue-failure-contract',
+            'task_queue' => 'contract-queue',
+        ], $this->workerProtocolHeaders());
+
+        $this->assertWorkerProtocolSuccess($poll);
+
+        $taskId = (string) $poll->json('task.task_id');
+        $complete = $this->postJson("/api/worker/workflow-tasks/{$taskId}/complete", [
+            'lease_owner' => 'worker-database-queue-failure-contract',
+            'workflow_task_attempt' => (int) $poll->json('task.workflow_task_attempt'),
+            'commands' => [
+                [
+                    'type' => 'start_timer',
+                    'delay_seconds' => 0,
+                ],
+            ],
+        ], $this->workerProtocolHeaders());
+
+        $this->assertWorkerProtocolSuccess($complete);
+        $timerTaskId = (string) $complete->json('created_task_ids.0');
+        $this->assertNotSame('', $timerTaskId);
+        $this->assertSame(0, DB::table('jobs')->count());
+
+        Schema::drop('jobs');
+        config(['server.mode' => 'service']);
+
+        $this->expectException(QueryException::class);
+
+        app(ServiceModeTimerDispatcher::class)->dispatchCreatedTaskIds([$timerTaskId]);
     }
 
     public function test_worker_completion_dispatches_service_mode_timer_when_task_observer_is_suppressed(): void

@@ -86,6 +86,8 @@ class ServiceModeTimerDispatcher
             $this->rememberPublishedInCurrentRequest($taskId);
         } catch (Throwable $throwable) {
             report($throwable);
+
+            throw $throwable;
         }
     }
 
