@@ -785,7 +785,7 @@ PY
       -e DW_PHP_SDK_CONFORMANCE_NAMESPACE=default \
       -e DW_PHP_SDK_CONFORMANCE_CONTROL_TOKEN=admin-token \
       -e DW_PHP_SDK_CONFORMANCE_WORKER_TOKEN=worker-token \
-      "$server_image" scripts/conformance/php-sdk-published-artifacts.sh --result-dir /result \
+      "$server_image" scripts/conformance/php-sdk-published-artifacts.sh --scope namespace --result-dir /result \
       > "$result_dir/sdk-php-namespace-conformance.log" 2>&1
     sdk_php_command_status=$?
     set -e
@@ -794,94 +794,9 @@ PY
   sdk_php_probe_result="$sdk_php_probe_dir/php-sdk-conformance-result.json"
   sdk_php_probe_sidecar="$sdk_php_probe_dir/php-sdk-lifecycle-evidence.json"
   if [[ -s "$sdk_php_probe_result" && -s "$sdk_php_probe_sidecar" ]]; then
-    python3 - "$run_root/pins.json" "$sdk_php_probe_result" "$sdk_php_probe_sidecar" "$sdk_php_result_path" "$started_at" "$namespace_suite_version" <<'PY'
-from __future__ import annotations
-
-import json
-import sys
-from datetime import datetime, timezone
-from pathlib import Path
-
-pins = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
-probe = json.loads(Path(sys.argv[2]).read_text(encoding="utf-8"))
-sidecar = json.loads(Path(sys.argv[3]).read_text(encoding="utf-8"))
-out_path = Path(sys.argv[4])
-started_at = sys.argv[5]
-suite_version = int(sys.argv[6])
-finished = datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
-versions = {
-    key: pins[key]
-    for key in ["server", "cli", "workflow", "workflow-php", "sdk-php", "sdk-python", "waterline"]
-}
-observed = (
-    sidecar.get("scenario_results", {})
-    .get("php_sdk_lifecycle_surface", {})
-    .get("observed_outputs", {})
-)
-assertions = observed.get("scenario_assertions", probe.get("assertions", {}))
-runner_blocked = bool(probe.get("runner_blocked"))
-probe_findings = probe.get("findings", []) if isinstance(probe.get("findings"), list) else []
-
-scenario_requirements = {
-    "namespace_create_update_describe_and_list": ["namespace_lifecycle"],
-    "sdk_namespace_selection_parity": ["namespace_selection"],
-    "php_worker_task_queue_namespace_isolation": ["worker_registration", "distinct_client_worker_processes"],
-}
-scenario_results = []
-findings = []
-for scenario_id, required in scenario_requirements.items():
-    passed = all(assertions.get(name) is True for name in required)
-    status = "pass" if passed else ("runner_blocked" if runner_blocked else "fail")
-    linked = []
-    if status != "pass":
-        linked = probe_findings or [{
-            "scenario_id": scenario_id,
-            "owning_surface": "conformance_harness" if runner_blocked else "sdk-php",
-            "observed_behavior": f"The released PHP SDK namespace probe did not satisfy {', '.join(required)}.",
-            "expected_behavior": "The exact Packagist PHP SDK proves namespace client selection and worker registration against the exact server image.",
-            "next_acceptance_criterion": "Correct the classified PHP SDK, server, package publication, or runner failure and rerun namespaces conformance.",
-            "priority": "P1",
-        }]
-        findings.extend(linked)
-    scenario_results.append({
-        "scenario_id": scenario_id,
-        "status": status,
-        "observed_outputs": {
-            "required_assertions": {name: assertions.get(name) for name in required},
-            "artifact_version": observed.get("artifact_version"),
-            "artifact_source": observed.get("artifact_source"),
-            "client_processes": observed.get("client_processes", []),
-            "worker_processes": observed.get("worker_processes", []),
-            "namespace_evidence": observed.get("namespace_evidence", {}),
-            "local_product_source_checkouts_used": False,
-        },
-        "linked_findings": linked,
-    })
-
-report = {
-    "schema": "durable-workflow.v2.namespace-runtime.result",
-    "schema_version": 1,
-    "suite_version": suite_version,
-    "coverage_scope": "sdk-php-namespace-shard",
-    "outcome": "pass" if all(row["status"] == "pass" for row in scenario_results) else "fail",
-    "runner_blocked": runner_blocked,
-    "started_at": started_at,
-    "finished_at": finished,
-    "generated_at": finished,
-    "artifact_versions": versions,
-    "artifact_sources": pins.get("artifact_sources", {}),
-    "runtime_matrix": {
-        "claimed_targets": ["sdk-php"],
-        "covered_scenarios": list(scenario_requirements),
-        "client_paths": ["sdk-php"],
-    },
-    "scenario_results": scenario_results,
-    "sdk_php_namespace_surface": observed,
-    "findings": findings,
-    "finding_links": {row["scenario_id"]: row["linked_findings"] for row in scenario_results if row["linked_findings"]},
-}
-out_path.write_text(json.dumps(report, indent=2, sort_keys=True) + "\n", encoding="utf-8")
-PY
+    python3 "$script_dir/php-sdk-namespace-shard-report.py" \
+      "$run_root/pins.json" "$sdk_php_probe_result" "$sdk_php_probe_sidecar" \
+      "$sdk_php_result_path" "$started_at" "$namespace_suite_version"
   else
     write_sdk_php_setup_failure "The exact server image PHP SDK runner exited with status ${sdk_php_command_status} without writing complete evidence; see sdk-php-namespace-conformance.log"
   fi
@@ -1576,7 +1491,14 @@ def normalize_shard_finding(scenario_id: str, raw: dict[str, Any], default_owner
     if str(raw.get("observed_behavior") or ""):
         return raw
     owner = str(raw.get("owning_surface") or raw.get("owner") or default_owner)
-    title = str(raw.get("title") or raw.get("message") or raw.get("observed") or "namespace shard reported a non-pass finding")
+    stage = str(raw.get("failure_stage") or "namespace assertions")
+    title = str(
+        raw.get("summary")
+        or raw.get("title")
+        or raw.get("message")
+        or raw.get("observed")
+        or f"{scenario_id} failed during {stage}"
+    )
     normalized = finding(
         scenario_id,
         owner,

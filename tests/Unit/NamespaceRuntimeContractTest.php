@@ -216,6 +216,14 @@ class NamespaceRuntimeContractTest extends TestCase
             $manifest['host_runner_contract']['runtime_shards']['sdk-php']['runner_path'],
         );
         $this->assertSame(
+            'scripts/conformance/php-sdk-published-artifacts.sh --scope namespace --result-dir <result-dir>',
+            $manifest['host_runner_contract']['runtime_shards']['sdk-php']['runner_command'],
+        );
+        $this->assertSame(
+            'namespace',
+            $manifest['host_runner_contract']['runtime_shards']['sdk-php']['runner_scope'],
+        );
+        $this->assertSame(
             'durable-workflow/sdk',
             $manifest['host_runner_contract']['runtime_shards']['sdk-php']['artifact'],
         );

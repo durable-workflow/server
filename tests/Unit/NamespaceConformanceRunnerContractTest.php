@@ -148,6 +148,7 @@ class NamespaceConformanceRunnerContractTest extends TestCase
     public function test_runner_executes_published_sdk_php_namespace_shard_when_not_pre_supplied(): void
     {
         $source = $this->read('scripts/conformance/namespaces-published-artifacts.sh');
+        $reportSource = $this->read('scripts/conformance/php-sdk-namespace-shard-report.py');
 
         $this->assertStringContainsString('sdk_php_result_path="${DW_NAMESPACES_SDK_PHP_RESULT:-}"', $source);
         $this->assertStringContainsString('sdk_php_result_path="$result_dir/sdk-php-namespace-result.json"', $source);
@@ -155,11 +156,83 @@ class NamespaceConformanceRunnerContractTest extends TestCase
         $this->assertStringContainsString('-e DW_PHP_SDK_VERSION="$sdk_php_version"', $source);
         $this->assertStringContainsString('-e DW_PHP_SDK_CONFORMANCE_SERVER_URL="http://127.0.0.1:8080"', $source);
         $this->assertStringContainsString('-e DW_PHP_SDK_CONFORMANCE_WORKER_TOKEN=worker-token', $source);
-        $this->assertStringContainsString('scripts/conformance/php-sdk-published-artifacts.sh --result-dir /result', $source);
-        $this->assertStringContainsString('"namespace_selection"', $source);
+        $this->assertStringContainsString('scripts/conformance/php-sdk-published-artifacts.sh --scope namespace --result-dir /result', $source);
+        $this->assertStringContainsString('"namespace_selection"', $reportSource);
+        $this->assertStringContainsString('php-sdk-namespace-shard-report.py', $source);
         $this->assertStringContainsString('DW_NAMESPACES_SDK_PHP_RESULT="$sdk_php_result_path"', $source);
         $this->assertStringContainsString('write_sdk_php_setup_failure', $source);
         $this->assertStringContainsString('PHP SDK namespace shard could not run in the published-artifact harness', $source);
+    }
+
+    public function test_php_namespace_shard_preserves_completed_rows_after_an_unrelated_failure(): void
+    {
+        $report = $this->renderPhpNamespaceShardReport(
+            [
+                'runner_blocked' => false,
+                'outcome' => 'fail',
+                'findings' => [[
+                    'owning_surface' => 'server',
+                    'failure_stage' => 'signal_query',
+                    'summary' => 'An unrelated signal/query operation failed after namespace evidence was complete.',
+                ]],
+            ],
+            [
+                'namespace_lifecycle' => true,
+                'namespace_selection' => true,
+                'worker_namespace_registration' => true,
+                'namespace_worker_execution' => true,
+                'distinct_client_worker_processes' => true,
+            ],
+        );
+
+        $this->assertSame('pass', $report['outcome']);
+        $this->assertSame([], $report['findings']);
+        $this->assertSame(
+            ['pass', 'pass', 'pass'],
+            array_column($report['scenario_results'], 'status'),
+        );
+    }
+
+    public function test_php_namespace_shard_keeps_specific_server_diagnostics(): void
+    {
+        $summary = 'The released PHP SDK probe received a server HTTP failure during namespace_client.';
+        $report = $this->renderPhpNamespaceShardReport(
+            [
+                'runner_blocked' => false,
+                'outcome' => 'fail',
+                'findings' => [[
+                    'owning_surface' => 'server',
+                    'classification' => 'server',
+                    'failure_stage' => 'namespace_client',
+                    'summary' => $summary,
+                    'diagnostic' => [
+                        'path' => 'php-sdk-client-namespace.diagnostic.log',
+                        'excerpt' => 'HTTP/1.1 500 Internal Server Error',
+                    ],
+                ]],
+            ],
+            [
+                'namespace_lifecycle' => false,
+                'namespace_selection' => true,
+                'worker_namespace_registration' => true,
+                'namespace_worker_execution' => true,
+                'distinct_client_worker_processes' => true,
+            ],
+        );
+
+        $rows = array_column($report['scenario_results'], null, 'scenario_id');
+        $this->assertSame('fail', $rows['namespace_create_update_describe_and_list']['status']);
+        $this->assertSame('pass', $rows['sdk_namespace_selection_parity']['status']);
+        $this->assertSame('server', $rows['namespace_create_update_describe_and_list']['linked_findings'][0]['owning_surface']);
+        $this->assertSame($summary, $rows['namespace_create_update_describe_and_list']['linked_findings'][0]['observed_behavior']);
+        $this->assertSame(
+            'HTTP/1.1 500 Internal Server Error',
+            $rows['namespace_create_update_describe_and_list']['linked_findings'][0]['diagnostic']['excerpt'],
+        );
+        $this->assertSame(
+            'sdk-php-namespace-probe/php-sdk-client-namespace.diagnostic.log',
+            $rows['namespace_create_update_describe_and_list']['linked_findings'][0]['diagnostic']['path'],
+        );
     }
 
     public function test_runner_reports_suite_version_from_namespace_scenario_manifest(): void
@@ -459,6 +532,91 @@ class NamespaceConformanceRunnerContractTest extends TestCase
 
             $evaluation = NamespaceRuntimeResultGate::evaluate($result);
             $this->assertNotContains('invalid_declared_outcome', array_column($evaluation['gate_failures'], 'code'));
+        } finally {
+            $this->removeTree($tempRoot);
+        }
+    }
+
+    /**
+     * @param array<string, mixed> $probe
+     * @param array<string, bool> $assertions
+     * @return array<string, mixed>
+     */
+    private function renderPhpNamespaceShardReport(array $probe, array $assertions): array
+    {
+        $python = trim((string) shell_exec('command -v python3 2>/dev/null'));
+        if ($python === '') {
+            $this->markTestSkipped('python3 is required to exercise the PHP namespace shard report.');
+        }
+
+        $repoRoot = dirname(__DIR__, 2);
+        $script = $repoRoot.'/scripts/conformance/php-sdk-namespace-shard-report.py';
+        $tempRoot = sys_get_temp_dir().'/dw-php-namespace-report-'.bin2hex(random_bytes(6));
+        mkdir($tempRoot, 0777, true);
+        $pinsPath = $tempRoot.'/pins.json';
+        $probePath = $tempRoot.'/probe.json';
+        $sidecarPath = $tempRoot.'/sidecar.json';
+        $outputPath = $tempRoot.'/result.json';
+        $versions = [
+            'server' => '0.2.653',
+            'cli' => '0.1.1',
+            'workflow' => '2.0.0-alpha.1',
+            'workflow-php' => '2.0.0-alpha.1',
+            'sdk-php' => '0.1.2',
+            'sdk-python' => '0.4.1',
+            'waterline' => '2.0.0-alpha.1',
+        ];
+        $artifactSources = [];
+        foreach ($versions as $name => $version) {
+            $artifactSources[$name] = "artifact://{$name}@{$version}";
+        }
+        $pins = $versions + ['artifact_sources' => $artifactSources];
+        $sidecar = [
+            'scenario_results' => [
+                'php_sdk_lifecycle_surface' => [
+                    'observed_outputs' => [
+                        'artifact_version' => '0.1.2',
+                        'artifact_source' => 'packagist://durable-workflow/sdk@0.1.2',
+                        'client_processes' => [['process_id' => 100]],
+                        'worker_processes' => [['process_id' => 200, 'namespace' => 'default']],
+                        'namespace_evidence' => ['created_namespace' => 'php-sdk-test'],
+                        'scenario_assertions' => $assertions,
+                    ],
+                ],
+            ],
+        ];
+
+        try {
+            file_put_contents($pinsPath, json_encode($pins, JSON_THROW_ON_ERROR));
+            file_put_contents($probePath, json_encode($probe, JSON_THROW_ON_ERROR));
+            file_put_contents($sidecarPath, json_encode($sidecar, JSON_THROW_ON_ERROR));
+            $process = proc_open(
+                [
+                    $python,
+                    $script,
+                    $pinsPath,
+                    $probePath,
+                    $sidecarPath,
+                    $outputPath,
+                    '2026-07-14T10:00:00Z',
+                    (string) PlatformConformanceSuite::VERSION,
+                ],
+                [
+                    1 => ['pipe', 'w'],
+                    2 => ['pipe', 'w'],
+                ],
+                $pipes,
+                $repoRoot,
+            );
+            $this->assertIsResource($process);
+            $stdout = stream_get_contents($pipes[1]);
+            $stderr = stream_get_contents($pipes[2]);
+            fclose($pipes[1]);
+            fclose($pipes[2]);
+            $exitCode = proc_close($process);
+            $this->assertSame(0, $exitCode, (string) $stdout.(string) $stderr);
+
+            return json_decode((string) file_get_contents($outputPath), true, 512, JSON_THROW_ON_ERROR);
         } finally {
             $this->removeTree($tempRoot);
         }

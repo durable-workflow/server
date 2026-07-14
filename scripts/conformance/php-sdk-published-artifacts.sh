@@ -3,7 +3,7 @@ set -euo pipefail
 
 usage() {
   cat <<'USAGE'
-Usage: php-sdk-published-artifacts.sh [--result-dir DIR|--result-dir=DIR]
+Usage: php-sdk-published-artifacts.sh [--result-dir DIR|--result-dir=DIR] [--scope lifecycle|namespace]
 
 Runs the released durable-workflow/sdk package against an already-running,
 exact public server image. The runner creates a disposable Composer project,
@@ -24,10 +24,12 @@ Optional environment:
   DW_PHP_SDK_CONFORMANCE_WORKER_TOKEN Optional worker-plane token; defaults to TOKEN.
   DW_PHP_SDK_CONFORMANCE_PHP_BIN      PHP binary override.
   DW_PHP_SDK_CONFORMANCE_COMPOSER_BIN Composer binary override.
+  DW_PHP_SDK_CONFORMANCE_SCOPE        lifecycle (default) or namespace.
 USAGE
 }
 
 result_dir="${DW_PHP_SDK_CONFORMANCE_RESULT_DIR:-}"
+scope="${DW_PHP_SDK_CONFORMANCE_SCOPE:-lifecycle}"
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --result-dir)
@@ -36,6 +38,14 @@ while [[ $# -gt 0 ]]; do
       ;;
     --result-dir=*)
       result_dir="${1#--result-dir=}"
+      shift
+      ;;
+    --scope)
+      scope="${2:?--scope requires a value}"
+      shift 2
+      ;;
+    --scope=*)
+      scope="${1#--scope=}"
       shift
       ;;
     -h|--help)
@@ -49,6 +59,15 @@ while [[ $# -gt 0 ]]; do
       ;;
   esac
 done
+
+if [[ "$scope" != lifecycle && "$scope" != namespace ]]; then
+  printf 'unsupported PHP SDK conformance scope: %s\n' "$scope" >&2
+  usage >&2
+  exit 2
+fi
+
+script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+source "$script_dir/php-sdk-runtime-failure-evidence.sh"
 
 if [[ -z "$result_dir" ]]; then
   result_dir="$(mktemp -d "${TMPDIR:-/tmp}/dw-php-sdk-conformance.XXXXXX")"
@@ -77,6 +96,7 @@ write_failure() {
   local owning_surface="${2:?owning surface is required}"
   local stage="${3:?stage is required}"
   local summary="${4:?summary is required}"
+  local diagnostic_file="${5:-}"
   local runner_blocked=false
   if [[ "$classification" == "runner" ]]; then
     runner_blocked=true
@@ -93,6 +113,7 @@ write_failure() {
   FAILURE_OWNER="$owning_surface" \
   FAILURE_STAGE="$stage" \
   FAILURE_SUMMARY="$summary" \
+  FAILURE_DIAGNOSTIC_FILE="$diagnostic_file" \
   RUNNER_BLOCKED="$runner_blocked" \
   node <<'NODE'
 const fs = require('node:fs');
@@ -103,6 +124,20 @@ const runnerBlocked = process.env.RUNNER_BLOCKED === 'true';
 const version = process.env.SDK_VERSION || '';
 const summary = process.env.FAILURE_SUMMARY || 'PHP SDK conformance failed.';
 const classification = process.env.FAILURE_CLASSIFICATION || 'sdk';
+const diagnosticFile = process.env.FAILURE_DIAGNOSTIC_FILE || '';
+const readJson = (file) => {
+  try {
+    const value = JSON.parse(fs.readFileSync(file, 'utf8'));
+    return value && typeof value === 'object' && !Array.isArray(value) ? value : null;
+  } catch {
+    return null;
+  }
+};
+let diagnostic = null;
+if (diagnosticFile && fs.existsSync(diagnosticFile)) {
+  const excerpt = fs.readFileSync(diagnosticFile, 'utf8');
+  diagnostic = {path: path.basename(diagnosticFile), excerpt};
+}
 const finding = {
   finding_id: `php-sdk-${process.env.FAILURE_STAGE || 'unknown'}-failure`,
   finding_type: runnerBlocked
@@ -112,8 +147,12 @@ const finding = {
   owning_surface: process.env.FAILURE_OWNER,
   failure_stage: process.env.FAILURE_STAGE,
   summary,
+  observed_behavior: summary,
   next_acceptance_criterion: 'Correct the named failure surface and rerun the exact Packagist SDK against the exact public server image.',
 };
+if (diagnostic) {
+  finding.diagnostic = diagnostic;
+}
 const observed = {
   sdk: 'sdk-php',
   artifact_version: version,
@@ -130,6 +169,38 @@ const observed = {
   failure_owner: process.env.FAILURE_OWNER,
   failure_summary: summary,
 };
+if (diagnostic) {
+  observed.failure_diagnostic = diagnostic;
+}
+const namespaceEvidence = readJson(path.join(resultDir, 'php-sdk-namespace-evidence.json'));
+const namespaceWorker = readJson(path.join(resultDir, 'php-sdk-worker-php-sdk-worker-1.json'));
+if (namespaceEvidence) {
+  const lifecycle = namespaceEvidence.namespace_lifecycle || {};
+  const simple = namespaceEvidence.simple_workflow || {};
+  const identity = namespaceEvidence.identity || {};
+  observed.namespace_evidence = lifecycle;
+  observed.client_processes = [identity];
+  observed.worker_processes = namespaceWorker ? [namespaceWorker] : [];
+  observed.scenario_assertions = {
+    namespace_lifecycle: lifecycle.created === true
+      && lifecycle.described === true
+      && lifecycle.updated === true
+      && lifecycle.listed === true
+      && lifecycle.deleted === true,
+    namespace_selection: Boolean(lifecycle.selected_namespace)
+      && lifecycle.selected_namespace === lifecycle.created_namespace
+      && lifecycle.selected_namespace_workflow_count === 0,
+    worker_namespace_registration: Boolean(namespaceWorker)
+      && namespaceWorker.namespace === process.env.NAMESPACE
+      && namespaceWorker.registration_ack
+      && typeof namespaceWorker.registration_ack === 'object',
+    namespace_worker_execution: simple.namespace === process.env.NAMESPACE
+      && simple.status === 'completed'
+      && Object.prototype.hasOwnProperty.call(simple, 'result'),
+    distinct_client_worker_processes: Boolean(namespaceWorker)
+      && identity.process_id !== namespaceWorker.process_id,
+  };
+}
 const result = {
   schema: 'durable-workflow.v2.php-sdk-published-artifact-conformance',
   version: 1,
@@ -169,17 +240,175 @@ fs.writeFileSync(path.join(resultDir, 'php-sdk-lifecycle-evidence.json'), `${JSO
 NODE
 }
 
-classify_runtime_failure() {
-  local log_file="${1:?log file is required}"
-  if [[ -f "$log_file" ]] && grep -Eqi 'ServerException|status[_ ]?code|HTTP/[0-9.]+ [45][0-9][0-9]|server[_ -]error' "$log_file"; then
-    printf '%s\n' server
-    return
-  fi
-  if [[ -f "$log_file" ]] && grep -Eqi 'TransportException|connection refused|could not resolve|name or service not known|network is unreachable|connection timed out|curl error' "$log_file"; then
-    printf '%s\n' runner
-    return
-  fi
-  printf '%s\n' sdk
+write_namespace_result() {
+  RESULT_DIR="$result_dir" \
+  SDK_VERSION="$sdk_version" \
+  SERVER_VERSION="$server_version" \
+  SERVER_IMAGE="$server_image" \
+  SERVER_URL="$server_url" \
+  NAMESPACE="$namespace" \
+  STARTED_AT="$started_at" \
+  node <<'NODE'
+const fs = require('node:fs');
+const path = require('node:path');
+
+const resultDir = process.env.RESULT_DIR;
+const readJson = (name) => JSON.parse(fs.readFileSync(path.join(resultDir, name), 'utf8'));
+const evidence = readJson('php-sdk-namespace-evidence.json');
+const worker = readJson('php-sdk-worker-php-sdk-worker-1.json');
+const lock = readJson('php-sdk-project/composer.lock');
+const packages = [...(lock.packages || []), ...(lock['packages-dev'] || [])];
+const sdk = packages.find((item) => item && item.name === 'durable-workflow/sdk') || {};
+const normalizeVersion = (value) => String(value || '').replace(/^v/, '');
+const cluster = evidence.cluster_info || {};
+const clusterVersion = cluster.version || cluster.server_version || '';
+const lifecycle = evidence.namespace_lifecycle || {};
+const simple = evidence.simple_workflow || {};
+const assertions = {
+  exact_sdk_version: normalizeVersion(sdk.version) === normalizeVersion(process.env.SDK_VERSION),
+  exact_server_version: Boolean(clusterVersion)
+    && normalizeVersion(clusterVersion) === normalizeVersion(process.env.SERVER_VERSION),
+  sdk_dist_provenance: Boolean(sdk.dist && sdk.dist.type && sdk.dist.url && sdk.dist.type !== 'path'),
+  distinct_client_worker_processes: evidence.identity?.process_id !== worker.process_id,
+  namespace_lifecycle: lifecycle.created === true
+    && lifecycle.described === true
+    && lifecycle.updated === true
+    && lifecycle.listed === true
+    && lifecycle.deleted === true,
+  namespace_selection: Boolean(lifecycle.selected_namespace)
+    && lifecycle.selected_namespace === lifecycle.created_namespace
+    && lifecycle.selected_namespace_workflow_count === 0,
+  worker_namespace_registration: worker.namespace === process.env.NAMESPACE
+    && worker.scope === 'namespace'
+    && worker.registration_ack
+    && typeof worker.registration_ack === 'object',
+  namespace_worker_execution: simple.namespace === process.env.NAMESPACE
+    && simple.status === 'completed'
+    && Object.prototype.hasOwnProperty.call(simple, 'result'),
+  local_product_source_checkouts_used_false: true,
+};
+const domains = {
+  exact_sdk_version: 'package-publication',
+  exact_server_version: 'server',
+  sdk_dist_provenance: 'package-publication',
+  distinct_client_worker_processes: 'runner',
+  namespace_lifecycle: 'server',
+  namespace_selection: 'sdk',
+  worker_namespace_registration: 'sdk',
+  namespace_worker_execution: 'server',
+  local_product_source_checkouts_used_false: 'runner',
+};
+const failures = {};
+for (const [assertion, passed] of Object.entries(assertions)) {
+  if (!passed) {
+    const domain = domains[assertion] || 'sdk';
+    (failures[domain] ||= []).push(assertion);
+  }
+}
+const policies = {
+  sdk: {owner: 'sdk-php', type: 'product_behavior_gap'},
+  server: {owner: 'server', type: 'product_behavior_gap'},
+  'package-publication': {owner: 'sdk-php-release', type: 'package_publication_gap'},
+  runner: {owner: 'conformance_harness', type: 'conformance_runner_blocked'},
+};
+const runnerBlocked = Object.keys(failures).length === 1 && Boolean(failures.runner);
+const status = Object.keys(failures).length === 0 ? 'pass' : (runnerBlocked ? 'runner_blocked' : 'fail');
+const findings = Object.entries(failures).map(([domain, failedAssertions]) => {
+  const policy = policies[domain];
+  const observed = `The focused PHP namespace probe failed ${domain} assertions: ${failedAssertions.join(', ')}.`;
+  return {
+    finding_id: `php-sdk-namespace-${domain.replaceAll('_', '-')}-failure`,
+    finding_type: policy.type,
+    classification: domain,
+    owning_surface: policy.owner,
+    failure_stage: 'namespace_assertions',
+    failed_assertions: failedAssertions,
+    summary: observed,
+    observed_behavior: observed,
+    next_acceptance_criterion: 'Correct the named namespace failure and rerun the exact Packagist SDK against the exact public server image.',
+  };
+});
+const observed = {
+  sdk: 'sdk-php',
+  coverage_scope: 'sdk-php-namespace-shard',
+  artifact_version: sdk.version || null,
+  server_version: process.env.SERVER_VERSION || '',
+  server_image: process.env.SERVER_IMAGE || '',
+  server_cluster_info: cluster,
+  artifact_source: `packagist://durable-workflow/sdk@${process.env.SDK_VERSION}`,
+  composer_package: 'durable-workflow/sdk',
+  client_processes: [evidence.identity || {}],
+  worker_processes: [worker],
+  worker_identities: [worker.worker_id || null],
+  namespace_evidence: lifecycle,
+  namespace_worker_execution: simple,
+  scenario_assertions: assertions,
+  failure_domains: failures,
+  published_artifact_cell_executed: true,
+  client_worker_distinct_processes: assertions.distinct_client_worker_processes,
+  local_product_source_checkouts_used: false,
+};
+const generatedAt = new Date().toISOString().replace(/\.\d{3}Z$/, 'Z');
+const result = {
+  schema: 'durable-workflow.v2.php-sdk-published-artifact-conformance',
+  version: 1,
+  coverage_scope: 'sdk-php-namespace-shard',
+  generated_at: generatedAt,
+  started_at: process.env.STARTED_AT,
+  finished_at: generatedAt,
+  outcome: status,
+  runner_blocked: runnerBlocked,
+  artifact_versions: {'sdk-php': process.env.SDK_VERSION || '', server: process.env.SERVER_VERSION || ''},
+  artifact_sources: {
+    'sdk-php': observed.artifact_source,
+    server: `docker://${String(process.env.SERVER_IMAGE || '').replace(/^docker:\/\//, '')}`,
+  },
+  namespace: process.env.NAMESPACE || '',
+  process_boundary: {
+    client_worker_distinct_processes: assertions.distinct_client_worker_processes,
+    client_processes: observed.client_processes,
+    worker_processes: observed.worker_processes,
+  },
+  scenario_results: {
+    namespace_create_update_describe_and_list: {status},
+    sdk_namespace_selection_parity: {status},
+    php_worker_task_queue_namespace_isolation: {status},
+  },
+  assertions,
+  local_product_source_checkouts_used: false,
+  failure_domains: failures,
+  findings,
+};
+const sidecar = {
+  schema: 'durable-workflow.v2.workflow-lifecycle.php-sdk-sidecar',
+  generated_at: generatedAt,
+  runner: 'published-php-sdk-namespace-conformance',
+  runner_blocked: runnerBlocked,
+  scenario_results: {
+    php_sdk_lifecycle_surface: {
+      scenario_id: 'php_sdk_lifecycle_surface',
+      status,
+      classification: status === 'pass' ? 'passed' : Object.keys(failures).join('+'),
+      published_artifact_cell_executed: true,
+      observed_outputs: observed,
+      linked_findings: findings,
+    },
+  },
+};
+fs.writeFileSync(path.join(resultDir, 'php-sdk-conformance-result.json'), `${JSON.stringify(result, null, 2)}\n`);
+fs.writeFileSync(path.join(resultDir, 'php-sdk-lifecycle-evidence.json'), `${JSON.stringify(sidecar, null, 2)}\n`);
+NODE
+}
+
+runtime_failure_summary() {
+  local classification="${1:?classification is required}"
+  local stage="${2:?stage is required}"
+  local diagnostic_file="${3:?diagnostic file is required}"
+  case "$classification" in
+    server) printf 'The released PHP SDK probe received a server HTTP failure during %s; inspect %s.\n' "$stage" "${diagnostic_file##*/}" ;;
+    runner) printf 'The released PHP SDK probe encountered a transport failure during %s; inspect %s.\n' "$stage" "${diagnostic_file##*/}" ;;
+    *) printf 'The released PHP SDK process failed during %s; inspect %s.\n' "$stage" "${diagnostic_file##*/}" ;;
+  esac
 }
 
 failure_owner_for() {
@@ -289,14 +518,15 @@ use DurableWorkflow\Worker\ActivityContext;
 use DurableWorkflow\Worker\QueryContext;
 use DurableWorkflow\Worker\WorkflowContext;
 
-if ($argc < 8) {
-    fwrite(STDERR, "usage: worker.php <server> <namespace> <control-token> <worker-token> <queue> <worker-id> <result-dir>\n");
+if ($argc < 9) {
+    fwrite(STDERR, "usage: worker.php <server> <namespace> <control-token> <worker-token> <queue> <worker-id> <result-dir> <scope>\n");
     exit(2);
 }
 
-[$script, $server, $namespace, $controlToken, $workerToken, $queue, $workerId, $resultDir] = $argv;
+[$script, $server, $namespace, $controlToken, $workerToken, $queue, $workerId, $resultDir, $scope] = $argv;
 $client = new Client($server, namespace: $namespace, controlToken: $controlToken, workerToken: $workerToken);
 $callbackFile = $resultDir.'/php-sdk-callback-counts.json';
+$namespaceScope = $scope === 'namespace';
 
 function increment_callback(string $file, string $name): int
 {
@@ -346,9 +576,13 @@ function decoded_signal_total(QueryContext $context, Client $client): int
 $registration = $client->registerWorker(
     $workerId,
     $queue,
-    ['php.sdk.simple', 'php.sdk.replay', 'php.sdk.waiting', 'php.sdk.failure', 'php.sdk.search'],
+    $namespaceScope
+        ? ['php.sdk.simple']
+        : ['php.sdk.simple', 'php.sdk.replay', 'php.sdk.waiting', 'php.sdk.failure', 'php.sdk.search'],
     ['php.sdk.echo'],
-    ['query_tasks', 'workflow_updates', 'durable_history_replay', 'graceful_shutdown'],
+    $namespaceScope
+        ? ['graceful_shutdown']
+        : ['query_tasks', 'workflow_updates', 'durable_history_replay', 'graceful_shutdown'],
 );
 $heartbeatAck = $client->heartbeatWorker($workerId, ['workflow_available' => 1, 'activity_available' => 1]);
 file_put_contents($resultDir.'/php-sdk-worker-'.$workerId.'.json', json_encode([
@@ -358,6 +592,8 @@ file_put_contents($resultDir.'/php-sdk-worker-'.$workerId.'.json', json_encode([
     'php_version' => PHP_VERSION,
     'sdk_version' => InstalledVersions::getPrettyVersion('durable-workflow/sdk')
         ?: InstalledVersions::getVersion('durable-workflow/sdk'),
+    'namespace' => $client->namespace,
+    'scope' => $scope,
     'registration_ack' => $registration,
     'heartbeat_ack' => $heartbeatAck,
 ], JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES)."\n");
@@ -382,60 +618,62 @@ $worker->registerWorkflow(
         return ['result' => $activity, 'workflow_process_id' => getmypid()];
     },
 );
-$worker->registerWorkflow(
-    'php.sdk.replay',
-    static function (WorkflowContext $context, mixed $value) use ($callbackFile): Generator {
-        increment_callback($callbackFile, 'replay_workflow_replays');
-        $activity = yield $context->activity('php.sdk.echo', [$value]);
-        yield $context->sleep(10);
+if (! $namespaceScope) {
+    $worker->registerWorkflow(
+        'php.sdk.replay',
+        static function (WorkflowContext $context, mixed $value) use ($callbackFile): Generator {
+            increment_callback($callbackFile, 'replay_workflow_replays');
+            $activity = yield $context->activity('php.sdk.echo', [$value]);
+            yield $context->sleep(10);
 
-        return ['replayed_result' => $activity, 'workflow_process_id' => getmypid()];
-    },
-);
-$worker->registerWorkflow(
-    'php.sdk.waiting',
-    static function (WorkflowContext $context) use ($callbackFile): Generator {
-        increment_callback($callbackFile, 'waiting_workflow_replays');
-        $context->throwIfCancellationRequested();
-        yield $context->sleep(300);
+            return ['replayed_result' => $activity, 'workflow_process_id' => getmypid()];
+        },
+    );
+    $worker->registerWorkflow(
+        'php.sdk.waiting',
+        static function (WorkflowContext $context) use ($callbackFile): Generator {
+            increment_callback($callbackFile, 'waiting_workflow_replays');
+            $context->throwIfCancellationRequested();
+            yield $context->sleep(300);
 
-        return ['unexpected' => 'timer-fired'];
-    },
-);
-$worker->registerWorkflow(
-    'php.sdk.failure',
-    static function () use ($callbackFile): never {
-        increment_callback($callbackFile, 'failure_workflow');
-        throw new DomainException('php-sdk-conformance-failure');
-    },
-);
-$worker->registerWorkflow(
-    'php.sdk.search',
-    static function (WorkflowContext $context, string $name, string $value) use ($callbackFile): Generator {
-        increment_callback($callbackFile, 'search_workflow_replays');
-        yield $context->upsertSearchAttributes([$name => $value]);
+            return ['unexpected' => 'timer-fired'];
+        },
+    );
+    $worker->registerWorkflow(
+        'php.sdk.failure',
+        static function () use ($callbackFile): never {
+            increment_callback($callbackFile, 'failure_workflow');
+            throw new DomainException('php-sdk-conformance-failure');
+        },
+    );
+    $worker->registerWorkflow(
+        'php.sdk.search',
+        static function (WorkflowContext $context, string $name, string $value) use ($callbackFile): Generator {
+            increment_callback($callbackFile, 'search_workflow_replays');
+            yield $context->upsertSearchAttributes([$name => $value]);
 
-        return ['search_attribute' => $name, 'value' => $value, 'workflow_process_id' => getmypid()];
-    },
-);
-$worker->registerQuery(
-    'php.sdk.waiting',
-    'current',
-    static function (QueryContext $context) use ($client, $callbackFile): array {
-        increment_callback($callbackFile, 'query');
+            return ['search_attribute' => $name, 'value' => $value, 'workflow_process_id' => getmypid()];
+        },
+    );
+    $worker->registerQuery(
+        'php.sdk.waiting',
+        'current',
+        static function (QueryContext $context) use ($client, $callbackFile): array {
+            increment_callback($callbackFile, 'query');
 
-        return ['total' => decoded_signal_total($context, $client), 'query_process_id' => getmypid()];
-    },
-);
-$worker->registerUpdate(
-    'php.sdk.waiting',
-    'set',
-    static function (QueryContext $context, int $value) use ($callbackFile): array {
-        increment_callback($callbackFile, 'update');
+            return ['total' => decoded_signal_total($context, $client), 'query_process_id' => getmypid()];
+        },
+    );
+    $worker->registerUpdate(
+        'php.sdk.waiting',
+        'set',
+        static function (QueryContext $context, int $value) use ($callbackFile): array {
+            increment_callback($callbackFile, 'update');
 
-        return ['accepted' => true, 'value' => $value, 'run_id' => $context->runId];
-    },
-);
+            return ['accepted' => true, 'value' => $value, 'run_id' => $context->runId];
+        },
+    );
+}
 $worker->run(1);
 PHP
 
@@ -489,24 +727,30 @@ function event_types(array $history): array
     ));
 }
 
-$identity = [
-    'process_id' => getmypid(),
-    'host' => gethostname(),
-    'php_version' => PHP_VERSION,
-    'sdk_version' => InstalledVersions::getPrettyVersion('durable-workflow/sdk')
-        ?: InstalledVersions::getVersion('durable-workflow/sdk'),
-];
-
-if ($phase === 'baseline') {
+function run_namespace_probe(
+    Client $client,
+    string $namespace,
+    string $queue,
+    string $resultDir,
+    string $suffix,
+    array $identity,
+): array {
     $cluster = $client->clusterInfo(includeDiagnostics: true);
-    $namespaces = $client->listNamespaces();
+    $namespacesBefore = $client->listNamespaces();
     $temporaryNamespace = 'php-sdk-'.$suffix;
-    $client->createNamespace($temporaryNamespace, 'PHP SDK published-artifact conformance', 1);
-    $client->describeNamespace($temporaryNamespace);
-    $client->updateNamespace($temporaryNamespace, 'updated by PHP SDK conformance', 2);
+    $created = $client->createNamespace($temporaryNamespace, 'PHP SDK published-artifact conformance', 1);
+    $described = $client->describeNamespace($temporaryNamespace);
+    $updated = $client->updateNamespace($temporaryNamespace, 'updated by PHP SDK conformance', 2);
+    $describedAfterUpdate = $client->describeNamespace($temporaryNamespace);
+    $namespacesAfterCreate = $client->listNamespaces();
+    $listedNamesAfterCreate = array_map(static fn ($item): string => $item->name, $namespacesAfterCreate);
     $scopedClient = $client->withNamespace($temporaryNamespace);
     $scopedWorkflows = $scopedClient->listWorkflows();
-    $client->deleteNamespace($temporaryNamespace);
+    $deleted = $client->deleteNamespace($temporaryNamespace);
+    $listedNamesAfterDelete = array_map(
+        static fn ($item): string => $item->name,
+        $client->listNamespaces(),
+    );
 
     $simple = $client->startWorkflow(
         'php.sdk.simple',
@@ -517,6 +761,55 @@ if ($phase === 'baseline') {
     $simpleResult = $simple->result(timeoutSeconds: 30, pollIntervalSeconds: 0.2);
     $simpleDescription = $simple->describeSelectedRun();
     $simpleHistory = $client->workflowHistory($simple->workflowId, (string) $simple->selectedRunId);
+
+    $evidence = [
+        'identity' => $identity,
+        'cluster_info' => $cluster->raw,
+        'namespace_count' => count($namespacesBefore),
+        'namespace_lifecycle' => [
+            'created' => $created->name === $temporaryNamespace,
+            'described' => $described->name === $temporaryNamespace,
+            'updated' => $updated->name === $temporaryNamespace
+                && $describedAfterUpdate->description === 'updated by PHP SDK conformance'
+                && $describedAfterUpdate->retentionDays === 2,
+            'listed' => in_array($temporaryNamespace, $listedNamesAfterCreate, true),
+            'deleted' => $deleted->name === $temporaryNamespace
+                && ! in_array($temporaryNamespace, $listedNamesAfterDelete, true),
+            'created_namespace' => $temporaryNamespace,
+            'selected_namespace' => $scopedClient->namespace,
+            'selected_namespace_workflow_count' => $scopedWorkflows->workflowCount,
+            'worker_namespace' => $namespace,
+        ],
+        'simple_workflow' => [
+            'namespace' => $namespace,
+            'workflow_id' => $simple->workflowId,
+            'run_id' => $simple->selectedRunId,
+            'status' => $simpleDescription->status,
+            'result' => $simpleResult,
+            'history_event_types' => event_types($simpleHistory),
+        ],
+    ];
+    file_put_contents(
+        $resultDir.'/php-sdk-namespace-evidence.json',
+        json_encode($evidence, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES)."\n",
+    );
+
+    return $evidence;
+}
+
+$identity = [
+    'process_id' => getmypid(),
+    'host' => gethostname(),
+    'php_version' => PHP_VERSION,
+    'sdk_version' => InstalledVersions::getPrettyVersion('durable-workflow/sdk')
+        ?: InstalledVersions::getVersion('durable-workflow/sdk'),
+];
+
+if ($phase === 'baseline' || $phase === 'namespace') {
+    $namespaceProbe = run_namespace_probe($client, $namespace, $queue, $resultDir, $suffix, $identity);
+    if ($phase === 'namespace') {
+        emit(['phase' => $phase] + $namespaceProbe);
+    }
 
     $searchAttributeName = 'php_sdk_'.str_replace('-', '_', $suffix);
     $searchAttributeValue = 'published-sdk';
@@ -561,25 +854,7 @@ if ($phase === 'baseline') {
     $schedule->resume('conformance resume');
     $schedule->delete();
 
-    emit([
-        'phase' => $phase,
-        'identity' => $identity,
-        'cluster_info' => $cluster->raw,
-        'namespace_count' => count($namespaces),
-        'namespace_lifecycle' => [
-            'created' => true,
-            'updated' => true,
-            'deleted' => true,
-            'selected_namespace' => $scopedClient->namespace,
-            'selected_namespace_workflow_count' => $scopedWorkflows->workflowCount,
-        ],
-        'simple_workflow' => [
-            'workflow_id' => $simple->workflowId,
-            'run_id' => $simple->selectedRunId,
-            'status' => $simpleDescription->status,
-            'result' => $simpleResult,
-            'history_event_types' => event_types($simpleHistory),
-        ],
+    emit(['phase' => $phase] + $namespaceProbe + [
         'search_attributes' => [
             'name' => $searchAttributeName,
             'value' => $searchAttributeValue,
@@ -942,7 +1217,7 @@ queue="php-sdk-conformance-$suffix"
 start_worker() {
   local worker_id="${1:?worker id is required}"
   "$php_bin" "$project_dir/worker.php" \
-    "$server_url" "$namespace" "$control_token" "$worker_token" "$queue" "$worker_id" "$result_dir" \
+    "$server_url" "$namespace" "$control_token" "$worker_token" "$queue" "$worker_id" "$result_dir" "$scope" \
     >"$result_dir/${worker_id}.log" 2>&1 &
   worker_pid=$!
   local metadata="$result_dir/php-sdk-worker-${worker_id}.json"
@@ -958,6 +1233,19 @@ start_worker() {
   return 1
 }
 
+write_runtime_failure() {
+  local stdout_file="${1:-}"
+  local stderr_file="${2:-}"
+  local stage="${3:?failure stage is required}"
+  local diagnostic_file="${4:?diagnostic file is required}"
+  local classification
+  classification="$(classify_runtime_failure "$stdout_file" "$stderr_file")"
+  capture_runtime_diagnostic "$stdout_file" "$stderr_file" "$diagnostic_file" "$classification"
+  local summary
+  summary="$(runtime_failure_summary "$classification" "$stage" "$diagnostic_file")"
+  write_failure "$classification" "$(failure_owner_for "$classification")" "$stage" "$summary" "$diagnostic_file"
+}
+
 run_client_phase() {
   local phase="${1:?phase is required}"
   local output="${2:?output path is required}"
@@ -967,23 +1255,51 @@ run_client_phase() {
 }
 
 if ! start_worker php-sdk-worker-1; then
-  worker_classification="$(classify_runtime_failure "$result_dir/php-sdk-worker-1.log")"
-  write_failure "$worker_classification" "$(failure_owner_for "$worker_classification")" worker_start 'The first released PHP SDK worker process exited before registration.'
+  write_runtime_failure \
+    "$result_dir/php-sdk-worker-1.log" '' worker_start \
+    "$result_dir/php-sdk-worker-1.diagnostic.log"
   exit 0
 fi
 
-if ! run_client_phase baseline "$result_dir/php-sdk-client-baseline.json"; then
-  client_classification="$(classify_runtime_failure "$result_dir/php-sdk-client-baseline.json.log")"
-  write_failure "$client_classification" "$(failure_owner_for "$client_classification")" baseline_client 'The released PHP SDK baseline client process failed; inspect php-sdk-client-baseline.json.log.'
+initial_client_phase=baseline
+initial_client_output="$result_dir/php-sdk-client-baseline.json"
+initial_client_stage=baseline_client
+if [[ "$scope" == namespace ]]; then
+  initial_client_phase=namespace
+  initial_client_output="$result_dir/php-sdk-client-namespace.json"
+  initial_client_stage=namespace_client
+fi
+if ! run_client_phase "$initial_client_phase" "$initial_client_output"; then
+  write_runtime_failure \
+    "$initial_client_output" "$initial_client_output.log" "$initial_client_stage" \
+    "${initial_client_output%.json}.diagnostic.log"
   exit 0
 fi
+
+if [[ "$scope" == namespace ]]; then
+  kill -TERM "$worker_pid" >/dev/null 2>&1 || true
+  wait "$worker_pid" >/dev/null 2>&1 || true
+  worker_pid=""
+  write_namespace_result
+  exit 0
+fi
+
 if ! run_client_phase start-replay "$result_dir/php-sdk-client-start-replay.json"; then
-  client_classification="$(classify_runtime_failure "$result_dir/php-sdk-client-start-replay.json.log")"
-  write_failure "$client_classification" "$(failure_owner_for "$client_classification")" replay_start 'The released PHP SDK replay client could not start its workflow.'
+  write_runtime_failure \
+    "$result_dir/php-sdk-client-start-replay.json" "$result_dir/php-sdk-client-start-replay.json.log" replay_start \
+    "$result_dir/php-sdk-client-start-replay.diagnostic.log"
   exit 0
 fi
 if ! run_client_phase wait-replay-checkpoint "$result_dir/php-sdk-client-replay-checkpoint.json"; then
-  write_failure server server replay_checkpoint 'The server history did not expose the durable pre-restart activity and timer checkpoint.'
+  replay_checkpoint_diagnostic="$result_dir/php-sdk-client-replay-checkpoint.diagnostic.log"
+  capture_runtime_diagnostic \
+    "$result_dir/php-sdk-client-replay-checkpoint.json" \
+    "$result_dir/php-sdk-client-replay-checkpoint.json.log" \
+    "$replay_checkpoint_diagnostic" \
+    server
+  write_failure server server replay_checkpoint \
+    "$(runtime_failure_summary server replay_checkpoint "$replay_checkpoint_diagnostic")" \
+    "$replay_checkpoint_diagnostic"
   exit 0
 fi
 
@@ -992,13 +1308,15 @@ wait "$worker_pid" >/dev/null 2>&1 || true
 worker_pid=""
 
 if ! start_worker php-sdk-worker-2; then
-  worker_classification="$(classify_runtime_failure "$result_dir/php-sdk-worker-2.log")"
-  write_failure "$worker_classification" "$(failure_owner_for "$worker_classification")" worker_restart 'The replacement released PHP SDK worker process exited before registration.'
+  write_runtime_failure \
+    "$result_dir/php-sdk-worker-2.log" '' worker_restart \
+    "$result_dir/php-sdk-worker-2.diagnostic.log"
   exit 0
 fi
 if ! run_client_phase finish-replay "$result_dir/php-sdk-client-finish-replay.json"; then
-  client_classification="$(classify_runtime_failure "$result_dir/php-sdk-client-finish-replay.json.log")"
-  write_failure "$client_classification" "$(failure_owner_for "$client_classification")" replay_finish 'The replacement PHP SDK worker did not complete durable replay.'
+  write_runtime_failure \
+    "$result_dir/php-sdk-client-finish-replay.json" "$result_dir/php-sdk-client-finish-replay.json.log" replay_finish \
+    "$result_dir/php-sdk-client-finish-replay.diagnostic.log"
   exit 0
 fi
 
@@ -1010,8 +1328,9 @@ if ! "$php_bin" "$project_dir/aggregate.php" \
   "$result_dir" "$sdk_version" "$server_version" "$server_image" "$server_url" "$namespace" "$started_at" \
   >"$result_dir/php-sdk-aggregate.log" 2>&1; then
   if [[ ! -s "$result_file" || ! -s "$sidecar_file" ]]; then
-    aggregate_classification="$(classify_runtime_failure "$result_dir/php-sdk-aggregate.log")"
-    write_failure "$aggregate_classification" "$(failure_owner_for "$aggregate_classification")" aggregate 'PHP SDK conformance completed without valid aggregate evidence.'
+    write_runtime_failure \
+      "$result_dir/php-sdk-aggregate.log" '' aggregate \
+      "$result_dir/php-sdk-aggregate.diagnostic.log"
   fi
 fi
 

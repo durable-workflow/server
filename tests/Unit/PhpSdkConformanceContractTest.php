@@ -68,4 +68,95 @@ final class PhpSdkConformanceContractTest extends TestCase
         $this->assertStringNotContainsString('durable-workflow/workflow:', $runner);
         $this->assertStringNotContainsString('"type": "path"', $runner);
     }
+
+    public function test_runner_has_a_focused_namespace_scope_with_incremental_evidence(): void
+    {
+        $runner = (string) file_get_contents(
+            dirname(__DIR__, 2).'/scripts/conformance/php-sdk-published-artifacts.sh',
+        );
+
+        $this->assertStringContainsString('[--scope lifecycle|namespace]', $runner);
+        $this->assertStringContainsString('if [[ "$scope" == namespace ]]; then', $runner);
+        $this->assertStringContainsString('initial_client_phase=namespace', $runner);
+        $this->assertStringContainsString('run_namespace_probe', $runner);
+        $this->assertStringContainsString('php-sdk-namespace-evidence.json', $runner);
+        $this->assertStringContainsString('worker_namespace_registration', $runner);
+        $this->assertStringContainsString('namespace_worker_execution', $runner);
+        $this->assertStringContainsString('write_namespace_result', $runner);
+    }
+
+    public function test_runtime_failure_uses_full_stdout_and_retains_early_php_display_errors(): void
+    {
+        if (! is_file('/bin/bash')) {
+            $this->markTestSkipped('bash is required to exercise runtime failure evidence.');
+        }
+
+        $repoRoot = dirname(__DIR__, 2);
+        $helper = $repoRoot.'/scripts/conformance/php-sdk-runtime-failure-evidence.sh';
+        $runner = (string) file_get_contents(
+            $repoRoot.'/scripts/conformance/php-sdk-published-artifacts.sh',
+        );
+        $this->assertStringContainsString(
+            'classification="$(classify_runtime_failure "$stdout_file" "$stderr_file")"',
+            $runner,
+        );
+        $this->assertStringContainsString(
+            'capture_runtime_diagnostic "$stdout_file" "$stderr_file" "$diagnostic_file" "$classification"',
+            $runner,
+        );
+        $this->assertStringContainsString(
+            "const excerpt = fs.readFileSync(diagnosticFile, 'utf8');",
+            $runner,
+        );
+        $tempRoot = sys_get_temp_dir().'/dw-php-sdk-diagnostic-'.bin2hex(random_bytes(6));
+        mkdir($tempRoot, 0777, true);
+        $stdoutFile = $tempRoot.'/client.stdout';
+        $stderrFile = $tempRoot.'/client.stderr';
+        $diagnosticFile = $tempRoot.'/client.diagnostic.log';
+        file_put_contents(
+            $stdoutFile,
+            "PHP Fatal error: Uncaught ServerException: HTTP/1.1 500 Internal Server Error\n"
+                .str_repeat("# trailing stack frame\n", 1000),
+        );
+        file_put_contents($stderrFile, '');
+
+        try {
+            $process = proc_open(
+                [
+                    '/bin/bash',
+                    '-c',
+                    'source "$1"; classification="$(classify_runtime_failure "$2" "$3")"; capture_runtime_diagnostic "$2" "$3" "$4" "$classification"; printf "%s\\n" "$classification"',
+                    'php-sdk-runtime-failure-test',
+                    $helper,
+                    $stdoutFile,
+                    $stderrFile,
+                    $diagnosticFile,
+                ],
+                [
+                    1 => ['pipe', 'w'],
+                    2 => ['pipe', 'w'],
+                ],
+                $pipes,
+                $repoRoot,
+            );
+
+            $this->assertIsResource($process);
+            $stdout = stream_get_contents($pipes[1]);
+            $stderr = stream_get_contents($pipes[2]);
+            fclose($pipes[1]);
+            fclose($pipes[2]);
+            $exitCode = proc_close($process);
+
+            $this->assertSame(0, $exitCode, (string) $stderr);
+            $this->assertSame('server', trim((string) $stdout));
+            $this->assertGreaterThan(4096, filesize($stdoutFile));
+            $this->assertStringContainsString('HTTP/1.1 500 Internal Server Error', (string) file_get_contents($diagnosticFile));
+            $this->assertLessThanOrEqual(8192, filesize($diagnosticFile));
+        } finally {
+            foreach (glob($tempRoot.'/*') ?: [] as $file) {
+                unlink($file);
+            }
+            rmdir($tempRoot);
+        }
+    }
 }

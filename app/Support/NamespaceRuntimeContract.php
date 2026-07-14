@@ -368,6 +368,8 @@ final class NamespaceRuntimeContract
                         'artifact' => 'durable-workflow/sdk',
                         'preferred_command' => 'php-sdk-published-artifacts',
                         'runner_path' => 'scripts/conformance/php-sdk-published-artifacts.sh',
+                        'runner_command' => 'scripts/conformance/php-sdk-published-artifacts.sh --scope namespace --result-dir <result-dir>',
+                        'runner_scope' => 'namespace',
                         'must_cover_scenarios' => [
                             'namespace_create_update_describe_and_list',
                             'sdk_namespace_selection_parity',
