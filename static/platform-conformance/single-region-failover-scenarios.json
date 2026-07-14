@@ -1,6 +1,6 @@
 {
   "schema": "durable-workflow.v2.platform-conformance.runtime-scenarios",
-  "version": 4,
+  "version": 5,
   "category": "single_region_failover_contract",
   "suite_schema": "durable-workflow.v2.platform-conformance.suite",
   "artifact_policy": {
@@ -38,8 +38,8 @@
     },
     {
       "id": "worker_lease_loss",
-      "requirement": "Abandon a leased workflow task, preserve the run, reclaim only after lease expiry, and complete without changing workflow input or history.",
-      "required_evidence": ["workflow_id", "run_id", "task_id", "initial_lease_owner", "recovery_lease_owner", "lease_expires_at", "recovery_ms", "final_status"]
+      "requirement": "Abandon a leased workflow task, preserve an identity-matching canonical nonterminal run description, reclaim under a different worker only after lease expiry, and complete exactly once without changing workflow input or history.",
+      "required_evidence": ["workflow_id", "run_id", "task_id", "initial_lease_owner", "recovery_lease_owner", "lease_expires_at", "pre_recovery_description", "recovery_ms", "completion", "duplicate_completion_refused", "final_description", "final_status"]
     },
     {
       "id": "singleton_scheduler_restart",

@@ -178,7 +178,7 @@ class SingleRegionFailoverRehearsalTest extends TestCase
         $this->assertSame([$requested], $result['output']);
     }
 
-    public function test_python_rehearsal_contract_suite_covers_result_and_database_run_state_gates(): void
+    public function test_python_rehearsal_contract_suite_covers_result_and_nonterminal_run_state_gates(): void
     {
         if (trim((string) shell_exec('command -v python3 2>/dev/null')) === '') {
             $this->markTestSkipped('python3 is required to exercise the failover result gate.');
@@ -203,6 +203,42 @@ class SingleRegionFailoverRehearsalTest extends TestCase
             'test_database_interruption_fails_closed_for_invalid_post_recovery_descriptions',
             $transcript,
         );
+        $this->assertStringContainsString(
+            'test_worker_lease_loss_accepts_every_public_running_raw_status',
+            $transcript,
+        );
+        $this->assertStringContainsString(
+            'test_worker_lease_loss_fails_closed_for_invalid_pre_recovery_descriptions',
+            $transcript,
+        );
+    }
+
+    public function test_worker_lease_loss_contract_requires_canonical_run_state_and_exactly_once_evidence(): void
+    {
+        $manifest = SingleRegionFailoverContract::manifest();
+        $scenarioDocument = json_decode(
+            (string) file_get_contents(base_path('static/platform-conformance/single-region-failover-scenarios.json')),
+            true,
+            512,
+            JSON_THROW_ON_ERROR,
+        );
+        $scenario = current(array_filter(
+            $scenarioDocument['scenarios'],
+            static fn (array $candidate): bool => $candidate['id'] === 'worker_lease_loss',
+        ));
+
+        $this->assertSame([
+            'acknowledged_task',
+            'pre_recovery_description',
+            'recovered_lease',
+            'completion',
+            'duplicate_completion',
+            'final_description',
+        ], $manifest['host_runner_contract']['worker_lease_loss_evidence']);
+        $this->assertIsArray($scenario);
+        $this->assertContains('pre_recovery_description', $scenario['required_evidence']);
+        $this->assertContains('duplicate_completion_refused', $scenario['required_evidence']);
+        $this->assertContains('final_description', $scenario['required_evidence']);
     }
 
     public function test_redis_cell_uses_request_id_polling_and_rejects_duplicate_leases(): void

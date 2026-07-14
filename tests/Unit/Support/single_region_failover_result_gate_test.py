@@ -564,6 +564,226 @@ class ResultGateTest(unittest.TestCase):
         ):
             return runner.database_interruption_phase(), trace
 
+    def test_worker_lease_loss_accepts_every_public_running_raw_status(self) -> None:
+        for raw_status in ("pending", "running", "waiting"):
+            with self.subTest(raw_status=raw_status):
+                result, trace = self.run_worker_lease_loss({
+                    "workflow_id": "workflow-1",
+                    "run_id": "run-1",
+                    "status": raw_status,
+                    "status_bucket": "running",
+                    "is_terminal": False,
+                    "input": {"secret": "must not enter evidence"},
+                })
+
+                pre_recovery = result["pre_recovery_description"]
+                self.assertTrue(pre_recovery["accepted"])
+                self.assertEqual(raw_status, pre_recovery["response_summary"]["raw_status"])
+                self.assertNotIn("input", pre_recovery["response_summary"])
+                self.assertEqual(
+                    pre_recovery,
+                    runner.RESULT["phase_evidence"]["worker_lease_loss"]["pre_recovery_description"],
+                )
+                self.assertEqual(8500, result["recovery_ms"])
+                self.assertNotEqual(result["initial_lease_owner"], result["recovery_lease_owner"])
+                self.assertEqual([runner.SERVER_A, runner.SERVER_B], trace["completion_bases"])
+                self.assertEqual([202, 409], trace["completion_statuses"])
+                self.assertTrue(result["duplicate_completion_refused"])
+                self.assertEqual("completed", result["final_status"])
+                self.assertTrue(result["final_description"]["response_summary"]["is_terminal"])
+                self.assertEqual(
+                    409,
+                    runner.RESULT["duplicate_assertions"][-1]["duplicate_completion_http_status"],
+                )
+                self.assertTrue(
+                    runner.RESULT["loss_assertions"][-1]["run_state_preserved_while_leased"],
+                )
+                self.assertTrue(
+                    runner.RESULT["recovery_bounds"]["workflow_task_lease_seconds"]["passed"],
+                )
+                self.assertTrue(
+                    runner.RESULT["recovery_bounds"]["worker_repair_after_lease_seconds"]["passed"],
+                )
+
+    def test_worker_lease_loss_fails_closed_for_invalid_pre_recovery_descriptions(self) -> None:
+        valid = {
+            "workflow_id": "workflow-1",
+            "run_id": "run-1",
+            "status": "pending",
+            "status_bucket": "running",
+            "is_terminal": False,
+        }
+        cases = (
+            (
+                "missing state",
+                200,
+                {key: value for key, value in valid.items() if key != "status"},
+                "missing_or_unknown_raw_status",
+                "status",
+            ),
+            (
+                "terminal state",
+                200,
+                {
+                    **valid,
+                    "status": "completed",
+                    "status_bucket": "completed",
+                    "is_terminal": True,
+                },
+                "terminal_run",
+                "is_terminal",
+            ),
+            (
+                "workflow mismatch",
+                200,
+                {**valid, "workflow_id": "wrong-workflow"},
+                "workflow_identity_mismatch",
+                "workflow_id",
+            ),
+            (
+                "run mismatch",
+                200,
+                {**valid, "run_id": "wrong-run"},
+                "run_identity_mismatch",
+                "run_id",
+            ),
+            (
+                "contradictory bucket",
+                200,
+                {**valid, "status_bucket": "completed"},
+                "status_bucket_contract_mismatch",
+                "status_bucket",
+            ),
+            (
+                "contradictory terminal flag",
+                200,
+                {**valid, "is_terminal": True},
+                "terminal_flag_contract_mismatch",
+                "is_terminal",
+            ),
+            ("non-200 response", 503, valid, "http_status_not_ok", "http_status"),
+        )
+
+        for label, http_status, body, reason, field in cases:
+            with self.subTest(case=label), self.assertRaisesRegex(AssertionError, reason):
+                self.run_worker_lease_loss(body, http_status=http_status)
+
+            evidence = runner.RESULT["phase_evidence"]["worker_lease_loss"]["pre_recovery_description"]
+            self.assertFalse(evidence["accepted"])
+            self.assertEqual(reason, evidence["rejection_reason"])
+            self.assertEqual(field, evidence["rejection_field"])
+
+    def test_worker_lease_loss_failure_output_retains_the_last_canonical_observation(self) -> None:
+        observation = {
+            "http_status": 200,
+            "response_summary": {
+                "workflow_id": "workflow-1",
+                "run_id": "run-1",
+                "raw_status": "pending",
+                "status_bucket": "completed",
+                "is_terminal": False,
+            },
+            "accepted": False,
+            "rejection_reason": "status_bucket_contract_mismatch",
+            "rejection_field": "status_bucket",
+        }
+
+        def run_phase(name, _callback):
+            if name == "worker_lease_loss":
+                runner.RESULT["phase_evidence"][name] = {
+                    "pre_recovery_description": observation,
+                }
+                raise AssertionError("status_bucket_contract_mismatch")
+            runner.RESULT["phase_outcomes"][name] = {"status": "pass"}
+
+        runner.RESULT["phase_outcomes"] = {}
+        runner.RESULT["phase_evidence"] = {}
+        with mock.patch.multiple(
+            runner,
+            run_phase=run_phase,
+            write_result=lambda: None,
+            KEEP_STACK=True,
+        ):
+            self.assertEqual(1, runner.main())
+
+        failure = runner.RESULT["phase_outcomes"]["worker_lease_loss"]
+        self.assertIn("status_bucket_contract_mismatch", failure["reason"])
+        self.assertEqual(
+            observation,
+            failure["phase_evidence"]["pre_recovery_description"],
+        )
+
+    def run_worker_lease_loss(
+        self,
+        pre_recovery_body: dict,
+        *,
+        http_status: int = 200,
+    ) -> tuple[dict, dict]:
+        trace = {
+            "completion_bases": [],
+            "completion_statuses": [],
+            "poll_workers": [],
+        }
+        completion_recorded = False
+
+        def fake_poll(worker_id, _base, _timeout=15, _poll_request_id=None):
+            trace["poll_workers"].append(worker_id)
+            return {
+                "workflow_id": "workflow-1",
+                "run_id": "run-1",
+                "task_id": "task-1",
+                "lease_owner": worker_id,
+                "workflow_task_attempt": len(trace["poll_workers"]),
+                "lease_expires_at": "2026-07-14T00:00:08Z",
+            }
+
+        def fake_describe(workflow_id, run_id, _base=runner.LB):
+            if not completion_recorded:
+                return http_status, pre_recovery_body, 3
+            return 200, {
+                "workflow_id": workflow_id,
+                "run_id": run_id,
+                "status": "completed",
+                "status_bucket": "completed",
+                "is_terminal": True,
+                "output": {"secret": "must not enter evidence"},
+            }, 4
+
+        def fake_complete(_task, base):
+            nonlocal completion_recorded
+            trace["completion_bases"].append(base)
+            if completion_recorded:
+                trace["completion_statuses"].append(409)
+                return 409, {"recorded": False}, 2
+            completion_recorded = True
+            trace["completion_statuses"].append(202)
+            return 202, {"recorded": True}, 2
+
+        runner.RESULT["phase_evidence"] = {}
+        runner.RESULT["recovery_timings_ms"] = {}
+        runner.RESULT["identities"] = {}
+        runner.RESULT["duplicate_assertions"] = []
+        runner.RESULT["loss_assertions"] = []
+        runner.RESULT["recovery_bounds"] = {
+            name: {"seconds": seconds, "passed": None}
+            for name, seconds in runner.BOUNDS.items()
+        }
+        with mock.patch.multiple(
+            runner,
+            register_worker=lambda *_args, **_kwargs: {},
+            start_workflow=lambda *_args, **_kwargs: {
+                "workflow_id": "workflow-1",
+                "run_id": "run-1",
+                "status": 201,
+                "ack_ms": 1,
+            },
+            poll_task=fake_poll,
+            describe=fake_describe,
+            complete_task=fake_complete,
+            monotonic_ms=lambda _started: 8500,
+        ):
+            return runner.worker_lease_loss_phase(), trace
+
     def test_final_result_rejects_false_or_unset_bound(self) -> None:
         bound = "scheduler_fire_after_restart_seconds"
 

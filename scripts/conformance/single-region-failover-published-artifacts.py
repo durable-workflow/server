@@ -322,27 +322,36 @@ def nonterminal_run_observation(
     raw_status = summary["raw_status"]
     expected_status = PUBLIC_RUN_STATUS_CONTRACT.get(raw_status)
     rejection_reason: str | None = None
+    rejection_field: str | None = None
 
     if http_status != 200:
         rejection_reason = "http_status_not_ok"
+        rejection_field = "http_status"
     elif summary["workflow_id"] != expected_workflow_id:
         rejection_reason = "workflow_identity_mismatch"
+        rejection_field = "workflow_id"
     elif summary["run_id"] != expected_run_id:
         rejection_reason = "run_identity_mismatch"
+        rejection_field = "run_id"
     elif expected_status is None:
         rejection_reason = "missing_or_unknown_raw_status"
+        rejection_field = "status"
     elif summary["status_bucket"] != expected_status["status_bucket"]:
         rejection_reason = "status_bucket_contract_mismatch"
+        rejection_field = "status_bucket"
     elif summary["is_terminal"] is not expected_status["is_terminal"]:
         rejection_reason = "terminal_flag_contract_mismatch"
+        rejection_field = "is_terminal"
     elif expected_status["is_terminal"] or expected_status["status_bucket"] != "running":
         rejection_reason = "terminal_run"
+        rejection_field = "is_terminal"
 
     return {
         "http_status": http_status,
         "response_summary": summary,
         "accepted": rejection_reason is None,
         "rejection_reason": rejection_reason,
+        "rejection_field": rejection_field,
     }
 
 
@@ -1184,30 +1193,131 @@ def worker_lease_loss_phase() -> dict[str, Any]:
     register_worker(recovery_worker)
     started = start_workflow(unique("worker-loss"))
     task = poll_task(lost_worker, SERVER_A)
+    require(
+        task.get("workflow_id") == started["workflow_id"]
+        and task.get("run_id") == started["run_id"],
+        f"wrong task claimed before worker loss: {task}",
+    )
+    phase_evidence = RESULT["phase_evidence"].setdefault("worker_lease_loss", {})
+    phase_evidence["acknowledged_task"] = {
+        "workflow_id": task.get("workflow_id"),
+        "run_id": task.get("run_id"),
+        "task_id": task.get("task_id"),
+        "lease_owner": task.get("lease_owner"),
+        "lease_expires_at": task.get("lease_expires_at"),
+    }
     lease_lost_at = time.monotonic()
-    status, open_run, _ = describe(started["workflow_id"], started["run_id"], SERVER_B)
-    require(status == 200 and open_run.get("status") == "running", f"leased run state changed after worker loss: {open_run}")
+    status, open_run, describe_ms = describe(
+        started["workflow_id"],
+        started["run_id"],
+        SERVER_B,
+    )
+    pre_recovery_description = {
+        **nonterminal_run_observation(
+            status,
+            open_run,
+            started["workflow_id"],
+            started["run_id"],
+        ),
+        "request_ms": describe_ms,
+        "observed_at": now(),
+    }
+    phase_evidence["pre_recovery_description"] = pre_recovery_description
+    require(
+        pre_recovery_description["accepted"],
+        "leased run description did not satisfy the public nonterminal contract: "
+        f"{pre_recovery_description}",
+    )
     recovered_task = poll_task(
         recovery_worker,
         SERVER_B,
         BOUNDS["workflow_task_lease_seconds"] + BOUNDS["worker_repair_after_lease_seconds"],
     )
     recovery_ms = monotonic_ms(lease_lost_at)
-    require(recovered_task.get("workflow_id") == started["workflow_id"], f"wrong task recovered: {recovered_task}")
-    require(recovered_task.get("lease_owner") != task.get("lease_owner"), "worker-loss task retained the lost lease owner")
+    phase_evidence["recovered_lease"] = {
+        "workflow_id": recovered_task.get("workflow_id"),
+        "run_id": recovered_task.get("run_id"),
+        "task_id": recovered_task.get("task_id"),
+        "lease_owner": recovered_task.get("lease_owner"),
+        "workflow_task_attempt": recovered_task.get("workflow_task_attempt"),
+        "recovery_ms": recovery_ms,
+    }
+    RESULT["recovery_timings_ms"]["worker_after_lease"] = recovery_ms
+    lease_expiry_respected = (
+        recovery_ms >= (BOUNDS["workflow_task_lease_seconds"] * 1000) - 500
+    )
+    bound_ms = (
+        BOUNDS["workflow_task_lease_seconds"]
+        + BOUNDS["worker_repair_after_lease_seconds"]
+    ) * 1000
+    repair_bound_met = recovery_ms <= bound_ms
+    RESULT["recovery_bounds"]["workflow_task_lease_seconds"]["passed"] = (
+        lease_expiry_respected
+    )
+    RESULT["recovery_bounds"]["worker_repair_after_lease_seconds"]["passed"] = (
+        repair_bound_met
+    )
     require(
-        recovery_ms >= (BOUNDS["workflow_task_lease_seconds"] * 1000) - 500,
+        recovered_task.get("workflow_id") == started["workflow_id"]
+        and recovered_task.get("run_id") == started["run_id"],
+        f"wrong task recovered: {recovered_task}",
+    )
+    require(
+        task.get("lease_owner") == lost_worker,
+        "initial worker-loss lease owner did not match the polling worker: "
+        f"{task.get('lease_owner')}",
+    )
+    require(
+        recovered_task.get("lease_owner") == recovery_worker
+        and recovered_task.get("lease_owner") != task.get("lease_owner"),
+        "worker-loss task was not reclaimed by the recovery worker: "
+        f"initial={task.get('lease_owner')!r} "
+        f"recovered={recovered_task.get('lease_owner')!r}",
+    )
+    require(
+        lease_expiry_respected,
         f"worker-loss task was reclaimed before lease expiry: {recovery_ms}ms",
     )
     status, completed, _ = complete_task(recovered_task, SERVER_A)
-    require(status in (200, 202) and completed.get("recorded") is True, f"recovered task completion failed: {status} {completed}")
-    _, final, _ = describe(started["workflow_id"], started["run_id"], LB)
-    require(final.get("status") == "completed", f"worker-loss run not completed: {final}")
-    bound_ms = (BOUNDS["workflow_task_lease_seconds"] + BOUNDS["worker_repair_after_lease_seconds"]) * 1000
-    require(recovery_ms <= bound_ms, f"worker recovery exceeded lease/repair bound: {recovery_ms}ms")
-    RESULT["recovery_timings_ms"]["worker_after_lease"] = recovery_ms
-    RESULT["recovery_bounds"]["workflow_task_lease_seconds"]["passed"] = True
-    RESULT["recovery_bounds"]["worker_repair_after_lease_seconds"]["passed"] = True
+    completion = {
+        "http_status": status,
+        "recorded": completed.get("recorded") is True,
+        "completion_node": "server-a",
+    }
+    phase_evidence["completion"] = completion
+    require(
+        status in (200, 202) and completed.get("recorded") is True,
+        f"recovered task completion failed: {status} {completed}",
+    )
+    duplicate_status, duplicate_body, _ = complete_task(recovered_task, SERVER_B)
+    duplicate_completion = {
+        "http_status": duplicate_status,
+        "rejected": duplicate_status == 409,
+        "completion_node": "server-b",
+    }
+    phase_evidence["duplicate_completion"] = duplicate_completion
+    require(
+        duplicate_status == 409,
+        "duplicate recovered-task completion was not refused: "
+        f"{duplicate_status} {duplicate_body}",
+    )
+    final_status, final, _ = describe(started["workflow_id"], started["run_id"], LB)
+    final_description = {
+        "http_status": final_status,
+        "response_summary": redacted_run_summary(final),
+    }
+    phase_evidence["final_description"] = final_description
+    final_summary = final_description["response_summary"]
+    require(
+        final_status == 200
+        and final_summary["workflow_id"] == started["workflow_id"]
+        and final_summary["run_id"] == started["run_id"]
+        and final_summary["raw_status"] == "completed"
+        and final_summary["status_bucket"] == "completed"
+        and final_summary["is_terminal"] is True,
+        f"worker-loss run did not complete exactly once: {final_description}",
+    )
+    require(repair_bound_met, f"worker recovery exceeded lease/repair bound: {recovery_ms}ms")
     RESULT["identities"]["worker_lease_loss"] = {
         **started,
         "task_id": task["task_id"],
@@ -1216,9 +1326,34 @@ def worker_lease_loss_phase() -> dict[str, Any]:
         "recovery_lease_owner": recovered_task["lease_owner"],
         "lease_expires_at": task.get("lease_expires_at"),
     }
-    RESULT["duplicate_assertions"].append({"phase": "worker_lease_loss", "logical_completion_count": 1, "passed": True})
-    RESULT["loss_assertions"].append({"phase": "worker_lease_loss", "run_state_preserved_while_leased": True, "workflow_mutated_for_recovery": False, "passed": True})
-    return {"recovery_ms": recovery_ms, "initial_task_id": task["task_id"], "recovery_task_id": recovered_task["task_id"], "final_status": final["status"]}
+    RESULT["duplicate_assertions"].append({
+        "phase": "worker_lease_loss",
+        "logical_completion_count": 1,
+        "duplicate_completion_http_status": duplicate_status,
+        "passed": True,
+    })
+    RESULT["loss_assertions"].append({
+        "phase": "worker_lease_loss",
+        "run_state_preserved_while_leased": True,
+        "workflow_mutated_for_recovery": False,
+        "passed": True,
+    })
+    return {
+        "workflow_id": started["workflow_id"],
+        "run_id": started["run_id"],
+        "task_id": task["task_id"],
+        "initial_lease_owner": task["lease_owner"],
+        "recovery_lease_owner": recovered_task["lease_owner"],
+        "lease_expires_at": task.get("lease_expires_at"),
+        "recovery_ms": recovery_ms,
+        "initial_task_id": task["task_id"],
+        "recovery_task_id": recovered_task["task_id"],
+        "pre_recovery_description": pre_recovery_description,
+        "completion": completion,
+        "duplicate_completion_refused": True,
+        "final_description": final_description,
+        "final_status": final_summary["raw_status"],
+    }
 
 
 def schedule_history(schedule_id: str) -> list[dict[str, Any]] | None:
@@ -1321,6 +1456,8 @@ def main() -> int:
             failure["phase_evidence"] = RESULT["phase_evidence"].get("api_node_loss", {})
         elif active_phase == "database_interruption":
             failure["phase_evidence"] = RESULT["phase_evidence"].get("database_interruption", {})
+        elif active_phase == "worker_lease_loss":
+            failure["phase_evidence"] = RESULT["phase_evidence"].get("worker_lease_loss", {})
         RESULT["phase_outcomes"][active_phase] = failure
         RESULT["outcome"] = "fail"
         return 1
