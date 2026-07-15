@@ -24,6 +24,11 @@ final class PhpSdkConformanceContractTest extends TestCase
         $this->assertContains('server_image', $manifest['required_evidence']);
         $this->assertContains('worker_readiness', $manifest['required_evidence']);
         $this->assertContains('server_visible_workflow_command_contracts', $manifest['required_evidence']);
+        $this->assertContains('workflow_started_command_contract', $manifest['required_evidence']);
+        $this->assertContains(
+            'addressable_started_contract_snapshotted_before_client_commands',
+            $manifest['history_requirements'],
+        );
         $this->assertSame('sdk-php', $manifest['failure_routing']['sdk']);
         $this->assertSame('server', $manifest['failure_routing']['server']);
         $this->assertSame('sdk-php-release', $manifest['failure_routing']['package-publication']);
@@ -59,6 +64,7 @@ final class PhpSdkConformanceContractTest extends TestCase
         $this->assertSame($manifest['purpose'], $mirror['purpose']);
         $this->assertSame($manifest['required_scenarios'], $mirror['required_scenarios']);
         $this->assertSame($manifest['required_evidence'], $mirror['required_evidence']);
+        $this->assertSame($manifest['history_requirements'], $mirror['history_requirements']);
         $this->assertSame($manifest['runtime_failure_evidence'], $mirror['runtime_failure_evidence']);
         $this->assertSame(
             $manifest['host_runner_contract']['scenario_runner_path'],
@@ -81,6 +87,7 @@ final class PhpSdkConformanceContractTest extends TestCase
         $this->assertStringContainsString('php-sdk-worker-readiness.php', $runner);
         $this->assertStringContainsString('server_visible_workflow_command_contracts', $runner);
         $this->assertStringContainsString('worker_command_contract_readiness', $runner);
+        $this->assertStringContainsString('workflow_started_command_contract', $runner);
         $this->assertStringContainsString('DW_PHP_SDK_CONFORMANCE_WORKER_RUN_DELAY_MS', $runner);
         $this->assertStringNotContainsString('$client->registerWorker(', $runner);
         $this->assertStringNotContainsString('durable-workflow/workflow:', $runner);
@@ -90,6 +97,18 @@ final class PhpSdkConformanceContractTest extends TestCase
         $this->assertIsInt($delayPosition);
         $this->assertIsInt($managedRunPosition);
         $this->assertLessThan($managedRunPosition, $delayPosition);
+
+        $addressableStartPosition = strpos($runner, "startWorkflow('php.sdk.waiting', \$addressableWorkflowId");
+        $startedHistoryPosition = strpos($runner, '$addressableStartedHistory = $client->workflowHistory(');
+        $startedContractPosition = strpos($runner, '$addressableStartedContract = php_sdk_waiting_started_contract_evidence(');
+        $firstSignalPosition = strpos($runner, "\$addressable->signal('increment', [3]);");
+        $this->assertIsInt($addressableStartPosition);
+        $this->assertIsInt($startedHistoryPosition);
+        $this->assertIsInt($startedContractPosition);
+        $this->assertIsInt($firstSignalPosition);
+        $this->assertLessThan($startedHistoryPosition, $addressableStartPosition);
+        $this->assertLessThan($startedContractPosition, $startedHistoryPosition);
+        $this->assertLessThan($firstSignalPosition, $startedContractPosition);
     }
 
     public function test_worker_readiness_waits_for_the_authoritative_handler_contract(): void
@@ -107,6 +126,9 @@ final class PhpSdkConformanceContractTest extends TestCase
         $registrationStateFile = $resultDir.'/registration-state';
         $serverLog = $resultDir.'/server.log';
         $metadataFile = $resultDir.'/worker.json';
+        require_once $repoRoot.'/scripts/conformance/php-sdk-started-contract.php';
+        $completeContract = php_sdk_waiting_command_contract();
+        unset($completeContract['workflow_type']);
         file_put_contents($autoload, <<<'PHP'
 <?php
 namespace Composer {
@@ -114,12 +136,12 @@ namespace Composer {
     {
         public static function getPrettyVersion(string $package): ?string
         {
-            return '0.1.5';
+            return '0.1.6';
         }
 
         public static function getVersion(string $package): ?string
         {
-            return '0.1.5.0';
+            return '0.1.6.0';
         }
     }
 }
@@ -166,7 +188,9 @@ PHP);
             .'file_put_contents($stateFile, (string) $observation, LOCK_EX);'."\n"
             .'if ($observation >= 4) {'."\n"
             .'    usleep(300000);'."\n"
-            .'    $contracts = [\'php.sdk.waiting\' => [\'queries\' => [\'current\'], \'updates\' => [\'set\']]];'."\n"
+            .'    $contracts = [\'php.sdk.waiting\' => '.var_export($completeContract, true).'];'."\n"
+            .'} elseif ($observation >= 2) {'."\n"
+            .'    $contracts = [\'php.sdk.waiting\' => [\'queries\' => [\'current\'], \'query_contracts\' => [], \'updates\' => [\'set\'], \'update_contracts\' => []]];'."\n"
             .'} else {'."\n"
             .'    $contracts = [];'."\n"
             .'}'."\n"
@@ -270,11 +294,9 @@ PHP);
             $this->assertSame(4, $metadata['readiness']['attempts']);
             $this->assertGreaterThanOrEqual(250, $metadata['readiness']['wait_ms']);
             $this->assertTrue($metadata['readiness']['contract_free_registration_observed']);
+            $this->assertTrue($metadata['readiness']['name_only_registration_observed']);
             $this->assertTrue($metadata['readiness']['client_release_after_authoritative_registration']);
-            $this->assertSame(
-                ['queries' => ['current'], 'updates' => ['set']],
-                $metadata['server_visible_registration']['workflow_command_contracts']['php.sdk.waiting'],
-            );
+            $this->assertSame($completeContract, $metadata['server_visible_registration']['workflow_command_contracts']['php.sdk.waiting']);
         } finally {
             proc_terminate($process);
             proc_close($process);
@@ -285,6 +307,69 @@ PHP);
             }
             rmdir($resultDir);
         }
+    }
+
+    public function test_started_contract_gate_rejects_one_immutable_name_only_event(): void
+    {
+        require_once dirname(__DIR__, 2).'/scripts/conformance/php-sdk-started-contract.php';
+
+        $history = [
+            'events' => [[
+                'sequence' => 1,
+                'event_type' => 'WorkflowStarted',
+                'payload' => [
+                    'declared_queries' => ['current'],
+                    'declared_query_contracts' => [],
+                    'declared_updates' => ['set'],
+                    'declared_update_contracts' => [],
+                ],
+            ]],
+        ];
+
+        $this->expectException(\RuntimeException::class);
+        $this->expectExceptionMessage('declared_query_contracts');
+
+        php_sdk_waiting_started_contract_evidence(
+            $history,
+            'php-sdk-addressable-fixture',
+            'run-fixture',
+            '2026-07-15T23:00:00Z',
+            microtime(true),
+        );
+    }
+
+    public function test_started_contract_gate_accepts_one_complete_immutable_event_before_commands(): void
+    {
+        require_once dirname(__DIR__, 2).'/scripts/conformance/php-sdk-started-contract.php';
+
+        $required = php_sdk_waiting_command_contract();
+        $started = [
+            'sequence' => 1,
+            'event_type' => 'WorkflowStarted',
+            'timestamp' => '2026-07-15T23:00:00Z',
+            'payload' => [
+                'declared_queries' => $required['queries'],
+                'declared_query_contracts' => $required['query_contracts'],
+                'declared_updates' => $required['updates'],
+                'declared_update_contracts' => $required['update_contracts'],
+            ],
+        ];
+
+        $evidence = php_sdk_waiting_started_contract_evidence(
+            ['events' => [$started]],
+            'php-sdk-addressable-fixture',
+            'run-fixture',
+            '2026-07-15T23:00:00Z',
+            microtime(true) - 0.05,
+        );
+
+        $this->assertSame('durable_history', $evidence['command_contract_source']);
+        $this->assertSame(1, $evidence['history_reads']);
+        $this->assertTrue($evidence['validated_before_client_commands']);
+        $this->assertSame($required, $evidence['required_workflow_command_contract']);
+        $this->assertSame($started, $evidence['workflow_started_event']);
+        $this->assertMatchesRegularExpression('/^[a-f0-9]{64}$/', $evidence['workflow_started_event_fingerprint']);
+        $this->assertGreaterThanOrEqual(40, $evidence['snapshot_wait_after_start_ms']);
     }
 
     public function test_runner_has_a_focused_namespace_scope_with_incremental_evidence(): void

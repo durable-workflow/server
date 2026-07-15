@@ -32,6 +32,7 @@ if ($argc < 13) {
 ] = $argv;
 
 require $autoload;
+require __DIR__.'/php-sdk-started-contract.php';
 
 /** @return array{status: int, payload: array<string, mixed>|null} */
 function describe_worker(string $server, string $namespace, string $controlToken, string $workerId): array
@@ -79,16 +80,22 @@ function command_names(mixed $names): array
 }
 
 /** @param array<string, mixed> $registration
- * @param  array{workflow_type: string, queries: list<string>, updates: list<string>}  $required
+ * @param  array<string, mixed>  $required
  */
 function registration_has_contract(array $registration, array $required): bool
 {
+    if ($required['query_contracts'] === [] && $required['update_contracts'] === []) {
+        return in_array(
+            $required['workflow_type'],
+            command_names($registration['supported_workflow_types'] ?? null),
+            true,
+        );
+    }
+
     $contracts = $registration['workflow_command_contracts'] ?? null;
     $contract = is_array($contracts) ? ($contracts[$required['workflow_type']] ?? null) : null;
 
-    return is_array($contract)
-        && command_names($contract['queries'] ?? null) === $required['queries']
-        && command_names($contract['updates'] ?? null) === $required['updates'];
+    return php_sdk_command_contract_matches($contract, $required);
 }
 
 /** @param array<string, mixed> $payload */
@@ -103,8 +110,14 @@ function write_json_atomically(string $path, array $payload): void
 }
 
 $required = $scope === 'namespace'
-    ? ['workflow_type' => 'php.sdk.simple', 'queries' => [], 'updates' => []]
-    : ['workflow_type' => 'php.sdk.waiting', 'queries' => ['current'], 'updates' => ['set']];
+    ? [
+        'workflow_type' => 'php.sdk.simple',
+        'queries' => [],
+        'query_contracts' => [],
+        'updates' => [],
+        'update_contracts' => [],
+    ]
+    : php_sdk_waiting_command_contract();
 $response = describe_worker($server, $namespace, $controlToken, $workerId);
 if ($response['status'] === 404) {
     exit(1);
@@ -126,11 +139,20 @@ $contracts = is_array($registration['workflow_command_contracts'] ?? null)
     ? $registration['workflow_command_contracts']
     : [];
 $contractFree = $contracts === [];
+$workflowContract = is_array($contracts[$required['workflow_type']] ?? null)
+    ? $contracts[$required['workflow_type']]
+    : [];
+$nameOnly = command_names($workflowContract['queries'] ?? null) === $required['queries']
+    && command_names($workflowContract['updates'] ?? null) === $required['updates']
+    && (($required['query_contracts'] !== [] && ($workflowContract['query_contracts'] ?? []) === [])
+        || ($required['update_contracts'] !== [] && ($workflowContract['update_contracts'] ?? []) === []));
 $observation = [
     'first_server_registration_observed_at' => $previousObservation['first_server_registration_observed_at'] ?? $observedAt,
     'last_server_registration_observed_at' => $observedAt,
     'contract_free_registration_observed' => ($previousObservation['contract_free_registration_observed'] ?? false)
         || $contractFree,
+    'name_only_registration_observed' => ($previousObservation['name_only_registration_observed'] ?? false)
+        || $nameOnly,
     'first_observed_workflow_command_contracts' => $previousObservation['first_observed_workflow_command_contracts']
         ?? $contracts,
     'last_observed_workflow_command_contracts' => $contracts,
@@ -151,6 +173,7 @@ $readiness = [
     'required_workflow_command_contract' => $required,
     'server_visible_workflow_command_contracts' => $contracts,
     'contract_free_registration_observed' => $observation['contract_free_registration_observed'],
+    'name_only_registration_observed' => $observation['name_only_registration_observed'],
     'client_release_after_authoritative_registration' => true,
 ];
 $metadata = [

@@ -196,6 +196,18 @@ if (runtimeFailure) {
 if (diagnostic) {
   observed.failure_diagnostic = diagnostic;
 }
+const startedContractEvidence = readJson(path.join(resultDir, 'php-sdk-addressable-start-contract.json'));
+const startedHistoryEvidence = readJson(path.join(resultDir, 'php-sdk-addressable-start-history.json'));
+if (startedContractEvidence) {
+  observed.workflow_started_command_contract = startedContractEvidence;
+} else if (startedHistoryEvidence) {
+  observed.workflow_started_command_contract = {
+    command_contract_source: 'durable_history',
+    history_reads: 1,
+    validation_status: 'rejected_incomplete_snapshot',
+    history_response: startedHistoryEvidence,
+  };
+}
 const namespaceEvidence = readJson(path.join(resultDir, 'php-sdk-namespace-evidence.json'));
 const namespaceWorker = readJson(path.join(resultDir, 'php-sdk-worker-php-sdk-worker-1.json'));
 if (namespaceEvidence) {
@@ -241,6 +253,7 @@ const result = {
   },
   local_product_source_checkouts_used: false,
   process_boundary: {client_worker_distinct_processes: false},
+  workflow_started_command_contract: observed.workflow_started_command_contract || null,
   scenario_results: {},
   findings: [finding],
 };
@@ -531,6 +544,7 @@ if ! (
 fi
 
 cp "$script_dir/php-sdk-runtime-failure.php" "$project_dir/runtime-failure.php"
+cp "$script_dir/php-sdk-started-contract.php" "$project_dir/started-contract.php"
 
 cat > "$project_dir/worker.php" <<'PHP'
 <?php
@@ -697,6 +711,7 @@ declare(strict_types=1);
 
 require __DIR__.'/vendor/autoload.php';
 require __DIR__.'/runtime-failure.php';
+require __DIR__.'/started-contract.php';
 
 use Composer\InstalledVersions;
 use DurableWorkflow\Client;
@@ -856,6 +871,30 @@ if ($phase === 'baseline' || $phase === 'namespace') {
     $addressableWorkflowId = 'php-sdk-addressable-'.$suffix;
     set_runtime_failure_context('workflow.start:addressable', 'POST', '/api/workflows', $addressableWorkflowId);
     $addressable = $client->startWorkflow('php.sdk.waiting', $addressableWorkflowId, $queue);
+    $addressableStartObservedAt = gmdate('Y-m-d\TH:i:s\Z');
+    $addressableStartObservedEpoch = microtime(true);
+    set_runtime_failure_context('workflow.history:addressable_started_contract', 'GET', '/api/workflows/{workflow_id}/runs/{run_id}/history', $addressable->workflowId, $addressable->selectedRunId);
+    $addressableStartedHistory = $client->workflowHistory(
+        $addressable->workflowId,
+        (string) $addressable->selectedRunId,
+    );
+    file_put_contents(
+        $resultDir.'/php-sdk-addressable-start-history.json',
+        json_encode($addressableStartedHistory, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES)."\n",
+    );
+    $addressableStartedContract = php_sdk_waiting_started_contract_evidence(
+        $addressableStartedHistory,
+        $addressable->workflowId,
+        (string) $addressable->selectedRunId,
+        $addressableStartObservedAt,
+        $addressableStartObservedEpoch,
+    );
+    $addressableStartedContract['client_commands_released_at'] = gmdate('Y-m-d\TH:i:s\Z');
+    $addressableStartedContract['client_commands_released_after_snapshot_validation'] = true;
+    file_put_contents(
+        $resultDir.'/php-sdk-addressable-start-contract.json',
+        json_encode($addressableStartedContract, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES)."\n",
+    );
     set_runtime_failure_context('workflow.signal:increment', 'POST', '/api/workflows/{workflow_id}/signal/increment', $addressable->workflowId, $addressable->selectedRunId);
     $addressable->signal('increment', [3]);
     set_runtime_failure_context('workflow.signal:increment', 'POST', '/api/workflows/{workflow_id}/signal/increment', $addressable->workflowId, $addressable->selectedRunId);
@@ -929,6 +968,7 @@ if ($phase === 'baseline' || $phase === 'namespace') {
         ],
         'signal_query' => ['signals_sent' => 2, 'expected_total' => 8, 'query_result' => $queryResult],
         'update' => ['request_id' => 'php-sdk-update-'.$suffix, 'result' => $updateResult],
+        'workflow_started_command_contract' => $addressableStartedContract,
         'cancellation' => $cancelException + ['expected_type' => WorkflowCancelled::class],
         'termination' => $terminateException + ['expected_type' => WorkflowTerminated::class],
         'failure_envelope' => $failureException + ['expected_type' => WorkflowFailed::class],
@@ -1003,6 +1043,8 @@ cat > "$project_dir/aggregate.php" <<'PHP'
 
 declare(strict_types=1);
 
+require __DIR__.'/started-contract.php';
+
 if ($argc < 8) {
     fwrite(STDERR, "usage: aggregate.php <result-dir> <sdk-version> <server-version> <server-image> <server-url> <namespace> <started-at>\n");
     exit(2);
@@ -1048,6 +1090,13 @@ $sdk = package_from_lock($lock, 'durable-workflow/sdk');
 $avro = package_from_lock($lock, 'apache/avro');
 $history = $replayFinish['history_event_types'] ?? [];
 $clusterVersion = (string) ($baseline['cluster_info']['version'] ?? $baseline['cluster_info']['server_version'] ?? '');
+$requiredWaitingContract = php_sdk_waiting_command_contract();
+$startedContractEvidence = is_array($baseline['workflow_started_command_contract'] ?? null)
+    ? $baseline['workflow_started_command_contract']
+    : [];
+$startedEvent = is_array($startedContractEvidence['workflow_started_event'] ?? null)
+    ? $startedContractEvidence['workflow_started_event']
+    : [];
 
 $assertions = [
     'exact_sdk_version' => normalized_version($sdk['version'] ?? null) === normalized_version($expectedSdkVersion),
@@ -1075,24 +1124,23 @@ $assertions = [
         && isset($workerTwo['server_visible_registration']['last_heartbeat_at']),
     'worker_command_contract_readiness' => ($workerOne['readiness']['client_release_after_authoritative_registration'] ?? false)
         && ($workerTwo['readiness']['client_release_after_authoritative_registration'] ?? false)
-        && ($workerOne['readiness']['required_workflow_command_contract'] ?? null) === [
-            'workflow_type' => 'php.sdk.waiting',
-            'queries' => ['current'],
-            'updates' => ['set'],
-        ]
-        && ($workerTwo['readiness']['required_workflow_command_contract'] ?? null) === [
-            'workflow_type' => 'php.sdk.waiting',
-            'queries' => ['current'],
-            'updates' => ['set'],
-        ]
-        && ($workerOne['server_visible_registration']['workflow_command_contracts']['php.sdk.waiting'] ?? null) === [
-            'queries' => ['current'],
-            'updates' => ['set'],
-        ]
-        && ($workerTwo['server_visible_registration']['workflow_command_contracts']['php.sdk.waiting'] ?? null) === [
-            'queries' => ['current'],
-            'updates' => ['set'],
-        ],
+        && ($workerOne['readiness']['required_workflow_command_contract'] ?? null) === $requiredWaitingContract
+        && ($workerTwo['readiness']['required_workflow_command_contract'] ?? null) === $requiredWaitingContract
+        && php_sdk_command_contract_matches(
+            $workerOne['server_visible_registration']['workflow_command_contracts']['php.sdk.waiting'] ?? null,
+            $requiredWaitingContract,
+        )
+        && php_sdk_command_contract_matches(
+            $workerTwo['server_visible_registration']['workflow_command_contracts']['php.sdk.waiting'] ?? null,
+            $requiredWaitingContract,
+        ),
+    'workflow_started_command_contract' => ($startedContractEvidence['command_contract_source'] ?? null) === 'durable_history'
+        && ($startedContractEvidence['history_reads'] ?? null) === 1
+        && ($startedContractEvidence['validated_before_client_commands'] ?? false)
+        && ($startedContractEvidence['client_commands_released_after_snapshot_validation'] ?? false)
+        && ($startedContractEvidence['required_workflow_command_contract'] ?? null) === $requiredWaitingContract
+        && ($startedEvent['event_type'] ?? $startedEvent['type'] ?? null) === 'WorkflowStarted'
+        && php_sdk_started_payload_matches($startedEvent['payload'] ?? null, $requiredWaitingContract),
     'start_result' => ($baseline['simple_workflow']['status'] ?? null) === 'completed' && isset($baseline['simple_workflow']['result']),
     'signal_query' => ($baseline['signal_query']['query_result']['total'] ?? null) === 8,
     'update' => ($baseline['update']['result']['accepted'] ?? null) === true && ($baseline['update']['result']['value'] ?? null) === 13,
@@ -1134,6 +1182,7 @@ $assertionDomains = [
     'worker_registration' => 'sdk',
     'worker_heartbeat' => 'sdk',
     'worker_command_contract_readiness' => 'runner',
+    'workflow_started_command_contract' => 'server',
     'start_result' => 'server',
     'signal_query' => 'server',
     'update' => 'sdk',
@@ -1229,6 +1278,7 @@ $observed = [
         'php-sdk-worker-1' => $workerOne['server_visible_registration']['workflow_command_contracts'] ?? [],
         'php-sdk-worker-2' => $workerTwo['server_visible_registration']['workflow_command_contracts'] ?? [],
     ],
+    'workflow_started_command_contract' => $startedContractEvidence,
     'callback_counts' => $callbacks,
     'namespace_evidence' => $baseline['namespace_lifecycle'] ?? [],
     'search_attribute_evidence' => $baseline['search_attributes'] ?? [],
@@ -1238,6 +1288,7 @@ $observed = [
         'activity_completed_before_restart' => $assertions['replay_checkpoint'],
         'timer_fired_after_restart' => in_array('TimerFired', $history, true),
         'activity_callbacks_total_expected_two' => $assertions['activity_callback_once_for_replay'],
+        'addressable_workflow_started_contract' => $startedContractEvidence,
     ],
     'scenario_assertions' => $assertions,
     'failure_domains' => $failedByDomain,
@@ -1271,6 +1322,7 @@ $result = [
     ],
     'worker_readiness' => $observed['worker_readiness'],
     'server_visible_workflow_command_contracts' => $observed['server_visible_workflow_command_contracts'],
+    'workflow_started_command_contract' => $observed['workflow_started_command_contract'],
     'callback_counts' => $callbacks,
     'history_assertions' => $observed['history_assertions'],
     'scenario_results' => array_fill_keys($coveredCells, ['status' => $status]),

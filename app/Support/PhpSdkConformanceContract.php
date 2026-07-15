@@ -65,6 +65,7 @@ final class PhpSdkConformanceContract
                 'worker_identities',
                 'worker_readiness',
                 'server_visible_workflow_command_contracts',
+                'workflow_started_command_contract',
                 'artifact_version',
                 'server_version',
                 'server_image',
@@ -82,6 +83,7 @@ final class PhpSdkConformanceContract
                 'timer_scheduled_before_worker_restart',
                 'timer_fired_after_worker_restart',
                 'activity_callback_not_repeated_during_replay',
+                'addressable_started_contract_snapshotted_before_client_commands',
             ],
             'failure_routing' => [
                 'sdk' => 'sdk-php',
