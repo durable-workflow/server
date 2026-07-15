@@ -455,8 +455,10 @@ class ReleaseImagePublishWorkflowContractTest extends TestCase
         $this->assertStringContainsString("writeEvidence('downstream_pending'", $auditor);
         $this->assertStringContainsString("release_readiness: 'docs_tuple_refresh_required'", $auditor);
         $this->assertStringContainsString("failure_kind: 'unreachable_audit'", $auditor);
-        $this->assertStringContainsString('const auditSchemaVersion = 3;', $auditor);
-        $this->assertStringContainsString("const auditClassifier = 'route-and-build-inventory-v3';", $auditor);
+        $this->assertStringContainsString('const minimumAuditSchemaVersion = 4;', $auditor);
+        $this->assertStringContainsString('route-and-public-artifact-inventory-v', $auditor);
+        $this->assertStringContainsString('artifact_version_source.source_url must resolve', $auditor);
+        $this->assertStringContainsString('entry.artifact_route !== entry.path', $auditor);
         $this->assertStringContainsString("classification: 'ready'", $auditor);
         $this->assertStringContainsString("classification: 'handoff'", $auditor);
         $this->assertStringContainsString("'mixed_artifact_tuple'", $auditor);
@@ -821,9 +823,9 @@ SH);
         $this->assertSame('handoff', $result['evidence']['classification']);
         $this->assertSame('docs_tuple_refresh_required', $result['evidence']['release_readiness']);
         $this->assertSame('pass', $result['evidence']['public_safety']['outcome']);
-        $this->assertSame(3, $result['evidence']['public_safety']['route_inventory']['schema_version']);
+        $this->assertSame(4, $result['evidence']['public_safety']['route_inventory']['schema_version']);
         $this->assertSame(
-            'route-and-build-inventory-v3',
+            'route-and-public-artifact-inventory-v4',
             $result['evidence']['public_safety']['route_inventory']['classifier'],
         );
         $this->assertSame(6, $result['evidence']['public_safety']['route_inventory']['inventoried_routes']);
@@ -833,7 +835,7 @@ SH);
         $this->assertStringContainsString('Public images published; docs tuple refresh pending', $result['summary']);
     }
 
-    public function test_docs_audit_accepts_valid_current_tuple(): void
+    public function test_docs_audit_accepts_current_schema_v4_tuple(): void
     {
         $result = $this->runDocsReleaseAudit(
             json_encode($this->validDocsReleaseAudit('0.2.620'), JSON_THROW_ON_ERROR),
@@ -846,6 +848,46 @@ SH);
         $this->assertSame('fully_surfaced', $result['evidence']['release_readiness']);
         $this->assertSame('pass', $result['evidence']['public_safety']['outcome']);
         $this->assertNull($result['handoff']);
+    }
+
+    public function test_docs_audit_accepts_compatible_additive_contract_revision(): void
+    {
+        $audit = $this->validDocsReleaseAudit('0.2.620');
+        $audit['schema_version'] = 5;
+        $audit['compatible_extension'] = [
+            'description' => 'additional producer metadata',
+            'public_reference' => '/docs-page-release-audit.json',
+        ];
+        $audit['artifact_versions']['future-artifact'] = 'release-train-next';
+        $audit['artifact_version_source']['synchronized_fields'][] = 'compatible_extension';
+
+        $result = $this->runDocsReleaseAudit(
+            json_encode($audit, JSON_THROW_ON_ERROR),
+            '0.2.620',
+        );
+
+        $this->assertSame(0, $result['exitCode']);
+        $this->assertSame('pass', $result['evidence']['outcome']);
+        $this->assertSame('ready', $result['evidence']['classification']);
+        $this->assertSame(5, $result['evidence']['public_safety']['route_inventory']['schema_version']);
+        $this->assertSame(
+            'route-and-public-artifact-inventory-v4',
+            $result['evidence']['public_safety']['route_inventory']['classifier'],
+        );
+        $this->assertSame(
+            ['cli', 'sdk-php', 'sdk-python', 'sdk-rust', 'server', 'waterline', 'workflow'],
+            $result['evidence']['public_safety']['validated_artifacts'],
+        );
+
+        $versionedClassifierAudit = $audit;
+        $versionedClassifierAudit['classifier'] = 'route-and-public-artifact-inventory-v5';
+        $versionedClassifierResult = $this->runDocsReleaseAudit(
+            json_encode($versionedClassifierAudit, JSON_THROW_ON_ERROR),
+            '0.2.620',
+        );
+
+        $this->assertSame(0, $versionedClassifierResult['exitCode']);
+        $this->assertSame('ready', $versionedClassifierResult['evidence']['classification']);
     }
 
     public function test_docs_audit_does_not_treat_a_newer_live_tuple_as_expected_lag(): void
@@ -865,7 +907,7 @@ SH);
     public function test_docs_audit_rejects_incompatible_schema_with_actionable_evidence(): void
     {
         $audit = $this->validDocsReleaseAudit('0.2.619');
-        $audit['schema_version'] = 2;
+        $audit['schema_version'] = 3;
 
         $result = $this->runDocsReleaseAudit(
             json_encode($audit, JSON_THROW_ON_ERROR),
@@ -876,9 +918,55 @@ SH);
         $this->assertSame('malformed', $result['evidence']['outcome']);
         $this->assertSame('incompatible', $result['evidence']['classification']);
         $this->assertSame('malformed_audit', $result['evidence']['failure_kind']);
-        $this->assertSame(2, $result['evidence']['observed_schema_version']);
-        $this->assertSame(3, $result['evidence']['supported_schema_version']);
-        $this->assertStringContainsString('not the supported public contract version 3', $result['stderr']);
+        $this->assertSame(3, $result['evidence']['observed_schema_version']);
+        $this->assertSame(4, $result['evidence']['minimum_schema_version']);
+        $this->assertStringContainsString('not a compatible public contract revision (minimum 4)', $result['stderr']);
+    }
+
+    public function test_docs_audit_rejects_removed_required_public_references(): void
+    {
+        $missingSource = $this->validDocsReleaseAudit('0.2.620');
+        unset($missingSource['artifact_version_source']['source_url']);
+
+        $sourceResult = $this->runDocsReleaseAudit(
+            json_encode($missingSource, JSON_THROW_ON_ERROR),
+            '0.2.620',
+        );
+
+        $this->assertSame(1, $sourceResult['exitCode']);
+        $this->assertSame('malformed', $sourceResult['evidence']['outcome']);
+        $this->assertStringContainsString('artifact_version_source.source_url must resolve', $sourceResult['stderr']);
+
+        $missingRoute = $this->validDocsReleaseAudit('0.2.620');
+        unset($missingRoute['page_inventory'][0]['artifact_route']);
+
+        $routeResult = $this->runDocsReleaseAudit(
+            json_encode($missingRoute, JSON_THROW_ON_ERROR),
+            '0.2.620',
+        );
+
+        $this->assertSame(1, $routeResult['exitCode']);
+        $this->assertSame('malformed', $routeResult['evidence']['outcome']);
+        $this->assertStringContainsString('artifact_route <missing>', $routeResult['stderr']);
+    }
+
+    public function test_docs_audit_rejects_repo_local_reference_leaks(): void
+    {
+        $audit = $this->validDocsReleaseAudit('0.2.620');
+        $audit['page_inventory'][0]['build_artifact'] = 'build/index.html';
+
+        $result = $this->runDocsReleaseAudit(
+            json_encode($audit, JSON_THROW_ON_ERROR),
+            '0.2.620',
+        );
+
+        $this->assertSame(1, $result['exitCode']);
+        $this->assertSame('malformed', $result['evidence']['outcome']);
+        $this->assertSame(
+            '$.page_inventory[0].build_artifact',
+            $result['evidence']['observed_repo_local_reference']['path'],
+        );
+        $this->assertStringContainsString('exposes repo-local reference "build/index.html"', $result['stderr']);
     }
 
     public function test_docs_audit_rejects_structurally_malformed_route_inventory(): void
@@ -991,6 +1079,23 @@ SH);
         $this->assertSame('default_version_policy', $result['evidence']['failure_kind']);
         $this->assertStringContainsString('/docs/category/configuration/', $result['stderr']);
         $this->assertStringContainsString('docusaurus_version=2.0; expected 1.x', $result['stderr']);
+    }
+
+    public function test_docs_audit_rejects_prerelease_content_route_version_drift(): void
+    {
+        $audit = $this->validDocsReleaseAudit('0.2.620');
+        $audit['page_inventory'][4]['docusaurus_version'] = '1.x';
+
+        $result = $this->runDocsReleaseAudit(
+            json_encode($audit, JSON_THROW_ON_ERROR),
+            '0.2.620',
+        );
+
+        $this->assertSame(1, $result['exitCode']);
+        $this->assertSame('public_safety_failure', $result['evidence']['outcome']);
+        $this->assertSame('default_version_policy', $result['evidence']['failure_kind']);
+        $this->assertStringContainsString('/docs/2.0/introduction/', $result['stderr']);
+        $this->assertStringContainsString('docusaurus_version=1.x', $result['stderr']);
     }
 
     public function test_docs_audit_rejects_null_version_for_ordinary_stable_content_route(): void
@@ -1776,6 +1881,7 @@ SH;
      */
     private function validDocsReleaseAudit(string $serverVersion): array
     {
+        $docsRevision = str_repeat('a', 40);
         $versions = [
             'cli' => '0.1.86',
             'sdk-php' => '0.1.1',
@@ -1792,15 +1898,16 @@ SH;
 
         return [
             'schema' => 'durable-workflow.docs.page-release-audit',
-            'schema_version' => 3,
+            'schema_version' => 4,
             'generated_at' => '2026-07-13T18:30:00.000Z',
             'generated_from' => 'production sitemap and build artifact inventory',
-            'classifier' => 'route-and-build-inventory-v3',
-            'docs_revision' => str_repeat('a', 40),
+            'classifier' => 'route-and-public-artifact-inventory-v4',
+            'docs_revision' => $docsRevision,
             'artifact_versions' => $versions,
             'artifact_version_source' => [
                 'schema' => 'durable-workflow.docs.public-artifact-versions',
-                'source_file' => 'scripts/public-artifact-versions.json',
+                'source_url' => 'https://github.com/durable-workflow/durable-workflow.github.io/blob/'
+                    .$docsRevision.'/scripts/public-artifact-versions.json',
                 'synchronized_fields' => [
                     'artifact_versions',
                     'artifact_distribution_surfaces.sdk-php',
@@ -1877,37 +1984,37 @@ SH;
                 [
                     'path' => '/',
                     'route_kind' => 'homepage',
-                    'build_artifact' => 'build/index.html',
+                    'artifact_route' => '/',
                     'docusaurus_version' => null,
                 ],
                 [
                     'path' => '/docs/',
                     'route_kind' => 'stable_default_docs',
-                    'build_artifact' => 'build/docs/index.html',
+                    'artifact_route' => '/docs/',
                     'docusaurus_version' => null,
                 ],
                 [
                     'path' => '/docs/category/configuration/',
                     'route_kind' => 'stable_default_docs',
-                    'build_artifact' => 'build/docs/category/configuration/index.html',
+                    'artifact_route' => '/docs/category/configuration/',
                     'docusaurus_version' => '1.x',
                 ],
                 [
                     'path' => '/docs/platform-conformance/',
                     'route_kind' => 'stable_default_docs',
-                    'build_artifact' => 'build/docs/platform-conformance/index.html',
+                    'artifact_route' => '/docs/platform-conformance/',
                     'docusaurus_version' => null,
                 ],
                 [
                     'path' => '/docs/2.0/introduction/',
                     'route_kind' => 'explicit_prerelease_2_0_docs',
-                    'build_artifact' => 'build/docs/2.0/introduction/index.html',
+                    'artifact_route' => '/docs/2.0/introduction/',
                     'docusaurus_version' => 'current',
                 ],
                 [
                     'path' => '/docs/2.0/tags/reference/',
                     'route_kind' => 'explicit_prerelease_2_0_docs',
-                    'build_artifact' => 'build/docs/2.0/tags/reference/index.html',
+                    'artifact_route' => '/docs/2.0/tags/reference/',
                     'docusaurus_version' => null,
                 ],
             ],

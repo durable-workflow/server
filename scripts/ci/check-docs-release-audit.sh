@@ -97,10 +97,13 @@ const fs = require('fs');
 
 const [auditPath, artifact, expected, auditUrl, evidencePath, handoffPath] = process.argv.slice(2);
 const auditSchema = 'durable-workflow.docs.page-release-audit';
-const auditSchemaVersion = 3;
-const auditClassifier = 'route-and-build-inventory-v3';
+const minimumAuditSchemaVersion = 4;
+const minimumAuditClassifierVersion = 4;
+const auditClassifierPattern = /^route-and-public-artifact-inventory-v([1-9]\d*)$/;
 const auditGeneratedFrom = 'production sitemap and build artifact inventory';
 const artifactVersionSchema = 'durable-workflow.docs.public-artifact-versions';
+const artifactVersionSourcePath = 'scripts/public-artifact-versions.json';
+const publicDocsRepositoryUrl = 'https://github.com/durable-workflow/durable-workflow.github.io';
 const expectedArtifacts = ['cli', 'sdk-php', 'sdk-python', 'sdk-rust', 'server', 'waterline', 'workflow'];
 const expectedSynchronizedFields = [
   'artifact_versions',
@@ -175,19 +178,73 @@ const refreshFiles = [
 ];
 const refreshFileList = refreshFiles.join(', ');
 const releaseAuditAssertions = [
-  'schema version 3',
-  'route-and-build-inventory-v3',
+  'compatible public route inventory contract',
   'internally consistent artifact tuple',
   'stable default 1.x',
   'explicit prerelease 2.0',
+  'public-reference cleanliness',
 ];
+const forbiddenInventoryFields = ['source_sha256', 'content_sha256', 'verdict', 'findings'];
+const repoLocalReferencePattern = new RegExp([
+  String.raw`^\.{1,2}[\\/]`,
+  String.raw`^[A-Za-z]:[\\/]`,
+  String.raw`^(?:\.github|blog|build|docs|generated|scripts|src|static)[\\/]`,
+  String.raw`^(?:[^:\/]+[\\/])+[^\\/]+\.(?:cjs|js|json|jsx|md|mdx|mjs|ps1|sh|ts|tsx|ya?ml)(?:$|[?#])`,
+  String.raw`^[^\\/]+\.(?:cjs|js|json|jsx|md|mdx|mjs|ps1|sh|ts|tsx|ya?ml)(?:$|[?#])`,
+].join('|'), 'i');
 
 function isRecord(value) {
   return value !== null && typeof value === 'object' && !Array.isArray(value);
 }
 
-function sameValues(actual, expectedValues) {
-  return JSON.stringify(actual) === JSON.stringify(expectedValues);
+function containsRequiredUniqueValues(actual, requiredValues) {
+  return Array.isArray(actual) &&
+    actual.every(value => typeof value === 'string' && value.trim() !== '') &&
+    new Set(actual).size === actual.length &&
+    requiredValues.every(value => actual.includes(value));
+}
+
+function isPublicRoute(value) {
+  return /^\/(?!\/)/.test(value) && !value.includes('\\');
+}
+
+function isPublicUrl(value) {
+  try {
+    const parsed = new URL(value);
+    return parsed.protocol === 'https:' && !parsed.username && !parsed.password;
+  } catch (err) {
+    return false;
+  }
+}
+
+function findRepoLocalReference(value, valuePath = '$') {
+  if (typeof value === 'string') {
+    if (!isPublicRoute(value) && !isPublicUrl(value) && repoLocalReferencePattern.test(value)) {
+      return {path: valuePath, value};
+    }
+    return null;
+  }
+
+  if (Array.isArray(value)) {
+    for (const [index, item] of value.entries()) {
+      const found = findRepoLocalReference(item, `${valuePath}[${index}]`);
+      if (found) {
+        return found;
+      }
+    }
+    return null;
+  }
+
+  if (isRecord(value)) {
+    for (const [key, item] of Object.entries(value)) {
+      const found = findRepoLocalReference(item, `${valuePath}.${key}`);
+      if (found) {
+        return found;
+      }
+    }
+  }
+
+  return null;
 }
 
 function routeKind(routePath) {
@@ -207,17 +264,6 @@ function routeKind(routePath) {
     return 'homepage';
   }
   return 'public_artifact';
-}
-
-function buildArtifactForRoute(routePath) {
-  if (routePath === '/') {
-    return 'build/index.html';
-  }
-
-  const cleanPath = routePath.replace(/^\/+/, '');
-  return routePath.endsWith('/')
-    ? `build/${cleanPath}index.html`
-    : `build/${cleanPath}`;
 }
 
 function parseArtifactVersion(version) {
@@ -314,7 +360,7 @@ function docsRefreshHandoff(message, actualVersion, observedVersions) {
       acceptance: [
         'The public docs release-audit JSON reports the current published artifact tuple.',
         'Stable 1.x remains the default public docs line.',
-        'The live schema-v3 release audit reports a consistent route inventory and release-status guardrail.',
+        'The live release audit reports a compatible, clean public route inventory and release-status guardrail.',
         'The refresh lands through the docs merge gate, not from a public release workflow.',
       ],
     },
@@ -425,22 +471,25 @@ if (audit.schema !== auditSchema) {
   malformed(`${auditUrl} returned schema ${audit.schema || '<missing>'}, not ${auditSchema}.`);
 }
 
-if (audit.schema_version !== auditSchemaVersion) {
+if (!Number.isInteger(audit.schema_version) || audit.schema_version < minimumAuditSchemaVersion) {
   malformed(
     `${auditUrl} returned schema_version ${audit.schema_version ?? '<missing>'}, ` +
-      `not the supported public contract version ${auditSchemaVersion}.`,
+      `which is not a compatible public contract revision (minimum ${minimumAuditSchemaVersion}).`,
     {
       observed_schema: audit.schema,
       observed_schema_version: audit.schema_version ?? null,
-      supported_schema_version: auditSchemaVersion,
+      minimum_schema_version: minimumAuditSchemaVersion,
     }
   );
 }
 
-if (audit.classifier !== auditClassifier) {
+const classifierMatch = typeof audit.classifier === 'string'
+  ? auditClassifierPattern.exec(audit.classifier)
+  : null;
+if (!classifierMatch || Number(classifierMatch[1]) < minimumAuditClassifierVersion) {
   malformed(
     `${auditUrl} returned classifier ${audit.classifier || '<missing>'}, ` +
-      `not ${auditClassifier}.`
+      `not a compatible route-and-public-artifact-inventory classifier.`
   );
 }
 
@@ -463,15 +512,25 @@ if (typeof audit.docs_revision !== 'string' || !/^[a-f0-9]{40}$/.test(audit.docs
   malformed(`${auditUrl} docs_revision must be a 40-character lowercase Git SHA.`);
 }
 
+const repoLocalReference = findRepoLocalReference(audit);
+if (repoLocalReference) {
+  malformed(
+    `${auditUrl} exposes repo-local reference ${JSON.stringify(repoLocalReference.value)} ` +
+      `at ${repoLocalReference.path}; public audit references must be root-relative routes or HTTPS URLs.`,
+    {observed_repo_local_reference: repoLocalReference}
+  );
+}
+
 const versions = audit.artifact_versions;
 if (!isRecord(versions)) {
   malformed(`${auditUrl} must contain an artifact_versions object.`);
 }
 
 const artifactKeys = Object.keys(versions).sort();
-if (!sameValues(artifactKeys, expectedArtifacts)) {
+const missingArtifactKeys = expectedArtifacts.filter(name => !Object.prototype.hasOwnProperty.call(versions, name));
+if (missingArtifactKeys.length > 0) {
   malformed(
-    `${auditUrl} artifact_versions keys must be ${expectedArtifacts.join(', ')}; ` +
+    `${auditUrl} artifact_versions is missing required entries: ${missingArtifactKeys.join(', ')}; ` +
       `got ${artifactKeys.join(', ') || '<none>'}.`,
     {observed_artifact_versions: versions}
   );
@@ -505,13 +564,19 @@ if (versionSource.schema !== artifactVersionSchema) {
   );
 }
 
-if (versionSource.source_file !== 'scripts/public-artifact-versions.json') {
-  malformed(`${auditUrl} artifact_version_source.source_file must identify scripts/public-artifact-versions.json.`);
+const expectedArtifactVersionSourceUrl =
+  `${publicDocsRepositoryUrl}/blob/${audit.docs_revision}/${artifactVersionSourcePath}`;
+if (versionSource.source_url !== expectedArtifactVersionSourceUrl) {
+  malformed(
+    `${auditUrl} artifact_version_source.source_url must resolve ${artifactVersionSourcePath} ` +
+      `at docs_revision ${audit.docs_revision}; got ${versionSource.source_url || '<missing>'}.`,
+    {expected_source_url: expectedArtifactVersionSourceUrl}
+  );
 }
 
-if (!sameValues(versionSource.synchronized_fields, expectedSynchronizedFields)) {
+if (!containsRequiredUniqueValues(versionSource.synchronized_fields, expectedSynchronizedFields)) {
   malformed(
-    `${auditUrl} artifact_version_source.synchronized_fields must be ` +
+    `${auditUrl} artifact_version_source.synchronized_fields must contain the unique required fields ` +
       `${expectedSynchronizedFields.join(', ')}.`
   );
 }
@@ -530,33 +595,23 @@ if (!Array.isArray(distributionSurfaces['sdk-php'])) {
   malformed(`${auditUrl} must describe artifact_distribution_surfaces.sdk-php.`);
 }
 
-if (distributionSurfaces['sdk-php'].length !== expectedPhpSurfaces.length) {
-  publicSafetyFailure(
-    'mixed_artifact_tuple',
-    `${auditUrl} must describe the Packagist, source repository, and API documentation ` +
-      `surfaces for the PHP SDK; found ${distributionSurfaces['sdk-php'].length}.`,
-    {
-      observed_artifact_versions: versions,
-      observed_php_surfaces: distributionSurfaces['sdk-php'],
-    }
-  );
-}
-
 for (const expectedSurface of expectedPhpSurfaces) {
-  const surface = distributionSurfaces['sdk-php'].find(candidate => (
+  const matchingSurfaces = distributionSurfaces['sdk-php'].filter(candidate => (
     isRecord(candidate) && candidate.surface === expectedSurface.surface
   ));
 
-  if (!surface) {
+  if (matchingSurfaces.length !== 1) {
     publicSafetyFailure(
       'mixed_artifact_tuple',
-      `${auditUrl} is missing the ${expectedSurface.surface} PHP SDK surface.`,
+      `${auditUrl} must contain exactly one ${expectedSurface.surface} PHP SDK surface; ` +
+        `found ${matchingSurfaces.length}.`,
       {
         observed_artifact_versions: versions,
         observed_php_surfaces: distributionSurfaces['sdk-php'],
       }
     );
   }
+  const [surface] = matchingSurfaces;
 
   const expectedFields = expectedSurface.surface === 'packagist_package'
     ? {...expectedSurface, version: versions['sdk-php']}
@@ -577,34 +632,24 @@ for (const expectedSurface of expectedPhpSurfaces) {
   }
 }
 
-if (distributionSurfaces.server.length !== expectedServerSurfaces.length) {
-  publicSafetyFailure(
-    'mixed_artifact_tuple',
-    `${auditUrl} must describe both synchronized public server image surfaces; ` +
-      `found ${distributionSurfaces.server.length}.`,
-    {
-      observed_artifact_versions: versions,
-      observed_server_surfaces: distributionSurfaces.server,
-    }
-  );
-}
-
 const expectedServerReferences = [];
 for (const expectedSurface of expectedServerSurfaces) {
-  const surface = distributionSurfaces.server.find(candidate => (
+  const matchingSurfaces = distributionSurfaces.server.filter(candidate => (
     isRecord(candidate) && candidate.surface === expectedSurface.surface
   ));
 
-  if (!surface) {
+  if (matchingSurfaces.length !== 1) {
     publicSafetyFailure(
       'mixed_artifact_tuple',
-      `${auditUrl} is missing the ${expectedSurface.surface} server image surface.`,
+      `${auditUrl} must contain exactly one ${expectedSurface.surface} server image surface; ` +
+        `found ${matchingSurfaces.length}.`,
       {
         observed_artifact_versions: versions,
         observed_server_surfaces: distributionSurfaces.server,
       }
     );
   }
+  const [surface] = matchingSurfaces;
 
   const expectedReference = `${expectedSurface.image}:${versions.server}`;
   expectedServerReferences.push(expectedReference);
@@ -631,7 +676,7 @@ for (const expectedSurface of expectedServerSurfaces) {
 
 if (
   currentServerArtifact.version !== versions.server ||
-  !sameValues(currentServerArtifact.references, expectedServerReferences)
+  !containsRequiredUniqueValues(currentServerArtifact.references, expectedServerReferences)
 ) {
   publicSafetyFailure(
     'mixed_artifact_tuple',
@@ -649,33 +694,23 @@ if (!Array.isArray(distributionSurfaces['sdk-rust'])) {
   malformed(`${auditUrl} must describe artifact_distribution_surfaces.sdk-rust.`);
 }
 
-if (distributionSurfaces['sdk-rust'].length !== expectedRustSurfaces.length) {
-  publicSafetyFailure(
-    'mixed_artifact_tuple',
-    `${auditUrl} must describe the crates.io, source repository, and API documentation ` +
-      `surfaces for the Rust SDK; found ${distributionSurfaces['sdk-rust'].length}.`,
-    {
-      observed_artifact_versions: versions,
-      observed_rust_surfaces: distributionSurfaces['sdk-rust'],
-    }
-  );
-}
-
 for (const expectedSurface of expectedRustSurfaces) {
-  const surface = distributionSurfaces['sdk-rust'].find(candidate => (
+  const matchingSurfaces = distributionSurfaces['sdk-rust'].filter(candidate => (
     isRecord(candidate) && candidate.surface === expectedSurface.surface
   ));
 
-  if (!surface) {
+  if (matchingSurfaces.length !== 1) {
     publicSafetyFailure(
       'mixed_artifact_tuple',
-      `${auditUrl} is missing the ${expectedSurface.surface} Rust SDK surface.`,
+      `${auditUrl} must contain exactly one ${expectedSurface.surface} Rust SDK surface; ` +
+        `found ${matchingSurfaces.length}.`,
       {
         observed_artifact_versions: versions,
         observed_rust_surfaces: distributionSurfaces['sdk-rust'],
       }
     );
   }
+  const [surface] = matchingSurfaces;
 
   const expectedFields = expectedSurface.surface === 'crates_io_package'
     ? {...expectedSurface, version: versions['sdk-rust']}
@@ -756,11 +791,20 @@ for (const [index, entry] of audit.page_inventory.entries()) {
     );
   }
 
-  const expectedBuildArtifact = buildArtifactForRoute(entry.path);
-  if (entry.build_artifact !== expectedBuildArtifact) {
+  if (entry.artifact_route !== entry.path) {
     malformed(
-      `${auditUrl} page_inventory entry ${entry.path} has build_artifact ` +
-        `${entry.build_artifact ?? '<missing>'}; expected ${expectedBuildArtifact}.`
+      `${auditUrl} page_inventory entry ${entry.path} has artifact_route ` +
+        `${entry.artifact_route ?? '<missing>'}; expected the same public route.`
+    );
+  }
+
+  const forbiddenFields = forbiddenInventoryFields.filter(field => (
+    Object.prototype.hasOwnProperty.call(entry, field)
+  ));
+  if (forbiddenFields.length > 0) {
+    malformed(
+      `${auditUrl} page_inventory entry ${entry.path} publishes forbidden self-attested fields: ` +
+        `${forbiddenFields.join(', ')}.`
     );
   }
 
@@ -862,6 +906,7 @@ const publicSafety = {
     inventoried_routes: audit.page_inventory.length,
   },
   artifact_tuple_internal_consistency: 'pass',
+  validated_artifacts: expectedArtifacts,
   stable_default_docs_version: guardrail.stable_default_docs_version,
   explicit_prerelease_docs_version: guardrail.explicit_prerelease_docs_version,
 };
@@ -921,8 +966,9 @@ if (actual !== expected) {
   });
   appendSummary(
     'Public images published; docs tuple refresh pending',
-    `${pendingMessage}\n\nPublic-safety checks: schema version 3 route inventory, internally consistent ` +
-      `artifact tuple, stable default 1.x, explicit prerelease 2.0.`
+    `${pendingMessage}\n\nPublic-safety checks: compatible schema version ${audit.schema_version} public route ` +
+      `inventory, internally consistent artifact tuple, stable default 1.x, explicit prerelease 2.0, ` +
+      `and public-reference cleanliness.`
   );
   console.error(`::warning title=Docs release readiness pending::${pendingMessage}`);
   console.log(pendingMessage);
