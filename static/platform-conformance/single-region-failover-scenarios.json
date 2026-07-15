@@ -1,6 +1,6 @@
 {
   "schema": "durable-workflow.v2.platform-conformance.runtime-scenarios",
-  "version": 7,
+  "version": 8,
   "category": "single_region_failover_contract",
   "suite_schema": "durable-workflow.v2.platform-conformance.suite",
   "artifact_policy": {
@@ -28,8 +28,8 @@
     },
     {
       "id": "database_interruption",
-      "requirement": "Readiness and writes fail during database loss; after recovery, an identity-matching nonterminal run description remains and the acknowledged task completes exactly once.",
-      "required_evidence": ["readiness_down", "readiness_recovered", "failed_write_status", "recovery_ms", "workflow_id", "run_id", "task_id", "post_recovery_description", "completion", "duplicate_completion_refused", "final_description", "final_status", "acknowledged_state_present"]
+      "requirement": "Readiness and writes fail during database loss; after bounded recovery, an identity-matching nonterminal run description remains and the workflow completes exactly once through either the live claimant or a bounded replacement reclaim after proving the expired owner is fenced.",
+      "required_evidence": ["readiness_down", "readiness_recovered", "failed_write_status", "recovery_ms", "workflow_id", "run_id", "task_id", "lease_expires_at", "lease_timing", "post_recovery_description", "completion", "completion_before_lease_expiry", "stale_owner_fence", "replacement_reclaim", "duplicate_completion_refused", "final_description", "final_status", "acknowledged_state_present"]
     },
     {
       "id": "redis_interruption",

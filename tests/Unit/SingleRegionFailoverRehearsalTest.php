@@ -76,16 +76,23 @@ class SingleRegionFailoverRehearsalTest extends TestCase
 
         $this->assertSame([
             'acknowledged_task',
+            'lease_timing',
             'readiness_down',
             'database_down_write',
             'readiness_recovered',
             'post_recovery_description',
+            'stale_owner_fence',
+            'replacement_reclaim',
             'completion',
             'duplicate_completion',
             'final_description',
         ], $manifest['host_runner_contract']['database_interruption_evidence']);
         $this->assertIsArray($scenario);
         $this->assertContains('post_recovery_description', $scenario['required_evidence']);
+        $this->assertContains('lease_timing', $scenario['required_evidence']);
+        $this->assertContains('completion_before_lease_expiry', $scenario['required_evidence']);
+        $this->assertContains('stale_owner_fence', $scenario['required_evidence']);
+        $this->assertContains('replacement_reclaim', $scenario['required_evidence']);
         $this->assertContains('final_description', $scenario['required_evidence']);
         $this->assertContains('duplicate_completion_refused', $scenario['required_evidence']);
     }
@@ -248,11 +255,15 @@ class SingleRegionFailoverRehearsalTest extends TestCase
         $this->assertSame(0, $status, implode("\n", $output));
         $transcript = implode("\n", $output);
         $this->assertStringContainsString(
-            'test_database_interruption_accepts_every_public_running_raw_status',
+            'test_database_interruption_completes_within_live_lease_for_every_public_running_status',
             $transcript,
         );
         $this->assertStringContainsString(
             'test_database_interruption_fails_closed_for_invalid_post_recovery_descriptions',
+            $transcript,
+        );
+        $this->assertStringContainsString(
+            'test_database_interruption_reclaims_after_outage_crosses_lease_expiry',
             $transcript,
         );
         $this->assertStringContainsString(

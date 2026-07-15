@@ -15,7 +15,7 @@ final class SingleRegionFailoverContract
 {
     public const SCHEMA = 'durable-workflow.v2.single-region-failover.contract';
 
-    public const VERSION = 9;
+    public const VERSION = 10;
 
     public const RESULT_SCHEMA = 'durable-workflow.v2.single-region-failover.result';
 
@@ -86,6 +86,7 @@ final class SingleRegionFailoverContract
             'recovery_bounds' => [
                 'api_node_useful_traffic_seconds' => 15,
                 'database_ready_after_return_seconds' => 30,
+                'database_reclaim_after_lease_seconds' => 10,
                 'redis_poll_discovery_seconds' => 10,
                 'redis_recovered_poll_discovery_seconds' => 3,
                 'redis_ready_after_return_seconds' => 15,
@@ -170,10 +171,13 @@ final class SingleRegionFailoverContract
                 ],
                 'database_interruption_evidence' => [
                     'acknowledged_task',
+                    'lease_timing',
                     'readiness_down',
                     'database_down_write',
                     'readiness_recovered',
                     'post_recovery_description',
+                    'stale_owner_fence',
+                    'replacement_reclaim',
                     'completion',
                     'duplicate_completion',
                     'final_description',

@@ -317,7 +317,11 @@ The rehearsal:
   triggers the database failover, and asserts the workflow resumes
   from the last committed history record after promotion. Any
   acknowledged write before the failover must be present after
-  promotion.
+  promotion. The runner completes under the original workflow-task lease when
+  it remains live. If database recovery crosses the advertised expiry, it
+  verifies the original owner receives the typed `lease_expired` fence, then
+  measures a separately bounded replacement-worker reclaim and exactly-once
+  completion.
 - proves a Redis interruption does not cause any
   acknowledged-work loss and surfaces `checks.cache.status=warning` with
   `long_poll_wake_acceleration` as the degraded capability, not as an

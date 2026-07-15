@@ -49,7 +49,7 @@ PORT_ENVIRONMENT = {
 READINESS_OBSERVATION_LIMIT = 12
 TOPOLOGY_START_FAILURE_READINESS_TIMEOUT = 5
 DIAGNOSTIC_OUTPUT_LIMIT = 12000
-API_NODE_LEASE_GUARD_SECONDS = 0.1
+LEASE_GUARD_SECONDS = 0.1
 
 # Loaded from the released image's public failover contract during topology
 # startup so new lifecycle states inherit their published bucket semantics.
@@ -143,6 +143,7 @@ SERVER_B = PROBE_ENDPOINTS["server_b"]
 BOUNDS = {
     "api_node_useful_traffic_seconds": 15,
     "database_ready_after_return_seconds": 30,
+    "database_reclaim_after_lease_seconds": 10,
     "redis_poll_discovery_seconds": 10,
     "redis_recovered_poll_discovery_seconds": 3,
     "redis_ready_after_return_seconds": 15,
@@ -153,7 +154,10 @@ BOUNDS = {
 
 PHASE_RECOVERY_BOUNDS = {
     "api_node_loss": ("api_node_useful_traffic_seconds",),
-    "database_interruption": ("database_ready_after_return_seconds",),
+    "database_interruption": (
+        "database_ready_after_return_seconds",
+        "database_reclaim_after_lease_seconds",
+    ),
     "redis_interruption": (
         "redis_poll_discovery_seconds",
         "redis_recovered_poll_discovery_seconds",
@@ -189,9 +193,10 @@ def monotonic_ms(started: float) -> int:
     return round((time.monotonic() - started) * 1000)
 
 
-def begin_api_node_lease_timing(
+def begin_claim_lease_timing(
     task: dict[str, Any],
     evidence: dict[str, Any],
+    phase: str,
 ) -> tuple[float, float]:
     observed_at = utc_now()
     observed_monotonic = time.monotonic()
@@ -200,6 +205,7 @@ def begin_api_node_lease_timing(
         "lease_expires_at": raw_expiry,
         "lease_observed_at": observed_at.isoformat().replace("+00:00", "Z"),
         "advertised_lease_seconds": BOUNDS["workflow_task_lease_seconds"],
+        "lease_expiry_deadline_ms": None,
         "milestones_ms": {"task_claim_observed": 0},
         "lease_remaining_ms": {},
         "completion_before_lease_expiry": False,
@@ -213,19 +219,29 @@ def begin_api_node_lease_timing(
         lease_expires_at = lease_expires_at.astimezone(dt.timezone.utc)
     except (AssertionError, TypeError, ValueError):
         evidence["failure_classification"] = "harness_timing"
-        raise AssertionError("api_node_loss harness_timing: task lease_expires_at is missing or invalid") from None
+        raise AssertionError(
+            f"{phase} harness_timing: task lease_expires_at is missing or invalid"
+        ) from None
 
     remaining_seconds = (lease_expires_at - observed_at).total_seconds()
     lease_deadline = observed_monotonic + remaining_seconds
+    evidence["lease_expiry_deadline_ms"] = round(remaining_seconds * 1000)
     evidence["lease_remaining_ms"]["task_claim_observed"] = round(remaining_seconds * 1000)
-    if remaining_seconds <= API_NODE_LEASE_GUARD_SECONDS:
+    if remaining_seconds <= LEASE_GUARD_SECONDS:
         evidence["failure_classification"] = "harness_timing"
-        raise AssertionError("api_node_loss harness_timing: claimed task lease was not live when observed")
+        raise AssertionError(f"{phase} harness_timing: claimed task lease was not live when observed")
 
     return observed_monotonic, lease_deadline
 
 
-def record_api_node_lease_milestone(
+def begin_api_node_lease_timing(
+    task: dict[str, Any],
+    evidence: dict[str, Any],
+) -> tuple[float, float]:
+    return begin_claim_lease_timing(task, evidence, "api_node_loss")
+
+
+def record_lease_milestone(
     evidence: dict[str, Any],
     phase_started: float,
     lease_deadline: float,
@@ -237,6 +253,23 @@ def record_api_node_lease_milestone(
     evidence["milestones_ms"][name] = round((observed - phase_started) * 1000)
     evidence["lease_remaining_ms"][name] = round((lease_deadline - observed) * 1000)
     return observed
+
+
+def record_api_node_lease_milestone(
+    evidence: dict[str, Any],
+    phase_started: float,
+    lease_deadline: float,
+    name: str,
+    *,
+    current: float | None = None,
+) -> float:
+    return record_lease_milestone(
+        evidence,
+        phase_started,
+        lease_deadline,
+        name,
+        current=current,
+    )
 
 
 def api_node_lease_timeout(
@@ -252,7 +285,7 @@ def api_node_lease_timeout(
         lease_deadline,
         checkpoint,
     )
-    available = lease_deadline - observed - API_NODE_LEASE_GUARD_SECONDS
+    available = lease_deadline - observed - LEASE_GUARD_SECONDS
     if available <= 0:
         evidence["failure_classification"] = "harness_timing"
         raise AssertionError(
@@ -285,7 +318,7 @@ def classify_api_node_lease_if_consumed(
     lease_deadline: float,
     checkpoint: str,
 ) -> None:
-    if time.monotonic() >= lease_deadline - API_NODE_LEASE_GUARD_SECONDS:
+    if time.monotonic() >= lease_deadline - LEASE_GUARD_SECONDS:
         classify_api_node_lease_consumption(
             evidence,
             phase_started,
@@ -1188,7 +1221,7 @@ def api_node_loss_phase() -> dict[str, Any]:
         "reason": completed.get("reason"),
         "completion_node": "server-b",
     }
-    if completion_finished >= lease_deadline - API_NODE_LEASE_GUARD_SECONDS:
+    if completion_finished >= lease_deadline - LEASE_GUARD_SECONDS:
         classify_api_node_lease_consumption(
             lease_timing,
             phase_started,
@@ -1249,7 +1282,9 @@ def api_node_loss_phase() -> dict[str, Any]:
 
 def database_interruption_phase() -> dict[str, Any]:
     worker = unique("database-worker")
+    recovery_worker = unique("database-recovery-worker")
     register_worker(worker)
+    register_worker(recovery_worker)
     started = start_workflow(unique("database-interruption"))
     task = poll_task(worker, SERVER_A)
     require(
@@ -1257,14 +1292,40 @@ def database_interruption_phase() -> dict[str, Any]:
         and task.get("run_id") == started["run_id"],
         f"wrong task claimed before database interruption: {task}",
     )
+    require(
+        task.get("lease_owner") == worker,
+        "database-interruption lease owner did not match the polling worker: "
+        f"{task.get('lease_owner')!r}",
+    )
     phase_evidence = RESULT["phase_evidence"].setdefault("database_interruption", {})
     phase_evidence["acknowledged_task"] = {
         "workflow_id": task.get("workflow_id"),
         "run_id": task.get("run_id"),
         "task_id": task.get("task_id"),
         "claim_node": "server-a",
+        "lease_owner": task.get("lease_owner"),
+        "lease_expires_at": task.get("lease_expires_at"),
     }
+    lease_timing: dict[str, Any] = {}
+    phase_evidence["lease_timing"] = lease_timing
+    phase_started, lease_deadline = begin_claim_lease_timing(
+        task,
+        lease_timing,
+        "database_interruption",
+    )
+    record_lease_milestone(
+        lease_timing,
+        phase_started,
+        lease_deadline,
+        "outage_started",
+    )
     compose("stop", "mysql", timeout=60)
+    record_lease_milestone(
+        lease_timing,
+        phase_started,
+        lease_deadline,
+        "database_stopped",
+    )
     down_transitions = []
     phase_evidence["readiness_down"] = down_transitions
     for node, base in (("server-a", SERVER_A), ("server-b", SERVER_B)):
@@ -1277,6 +1338,12 @@ def database_interruption_phase() -> dict[str, Any]:
         transition = {"phase": "database_interruption", "node": node, "state": "not_ready", **observation}
         RESULT["readiness_transitions"].append(transition)
         down_transitions.append(transition)
+        record_lease_milestone(
+            lease_timing,
+            phase_started,
+            lease_deadline,
+            f"{node}_not_ready",
+        )
 
     failed_id = unique("database-unacknowledged")
     failed_status, failed_body, _ = request(
@@ -1290,12 +1357,32 @@ def database_interruption_phase() -> dict[str, Any]:
         "http_status": failed_status,
         "acknowledged": 200 <= failed_status < 300,
     }
+    record_lease_milestone(
+        lease_timing,
+        phase_started,
+        lease_deadline,
+        "database_down_write_finished",
+    )
     require(failed_status == 0 or failed_status >= 500, f"database-down write was unexpectedly acknowledged: {failed_status} {failed_body}")
 
     recovery_started = time.monotonic()
+    record_lease_milestone(
+        lease_timing,
+        phase_started,
+        lease_deadline,
+        "database_return_started",
+        current=recovery_started,
+    )
     compose("start", "mysql")
+    record_lease_milestone(
+        lease_timing,
+        phase_started,
+        lease_deadline,
+        "database_started",
+    )
     recovered = []
     phase_evidence["readiness_recovered"] = recovered
+    recovered_at = recovery_started
     for node, base in (("server-a", SERVER_A), ("server-b", SERVER_B)):
         observation = wait_for(f"database recovery readiness on {node}", lambda base=base: ready(base), BOUNDS["database_ready_after_return_seconds"])
         require(
@@ -1306,7 +1393,37 @@ def database_interruption_phase() -> dict[str, Any]:
         transition = {"phase": "database_interruption", "node": node, "state": "ready", **observation}
         RESULT["readiness_transitions"].append(transition)
         recovered.append(transition)
+        recovered_at = record_lease_milestone(
+            lease_timing,
+            phase_started,
+            lease_deadline,
+            f"{node}_ready",
+        )
     recovery_ms = monotonic_ms(recovery_started)
+    database_bound_passed = recovery_ms <= BOUNDS["database_ready_after_return_seconds"] * 1000
+    RESULT["recovery_timings_ms"]["database_ready_after_return"] = recovery_ms
+    RESULT["recovery_bounds"]["database_ready_after_return_seconds"]["passed"] = database_bound_passed
+    lease_timing["outage_duration_ms"] = (
+        lease_timing["milestones_ms"]["server-b_ready"]
+        - lease_timing["milestones_ms"]["outage_started"]
+    )
+    lease_timing["bound_classification"] = {
+        "database_readiness": {
+            "bound": "database_ready_after_return_seconds",
+            "consumed": True,
+            "elapsed_ms": recovery_ms,
+            "passed": database_bound_passed,
+        },
+        "database_reclaim": {
+            "bound": "database_reclaim_after_lease_seconds",
+            "consumed": False,
+            "elapsed_ms": None,
+            "passed": True,
+        },
+        "worker_lease_loss": {
+            "consumed": False,
+        },
+    }
     show_status, shown, _ = describe(started["workflow_id"], started["run_id"], SERVER_B)
     post_recovery_description = nonterminal_run_observation(
         show_status,
@@ -1320,19 +1437,211 @@ def database_interruption_phase() -> dict[str, Any]:
         "post-recovery run description did not satisfy the public nonterminal contract: "
         f"{post_recovery_description}",
     )
-    status, completed, _ = complete_task(task, SERVER_B)
+    record_lease_milestone(
+        lease_timing,
+        phase_started,
+        lease_deadline,
+        "durable_state_verified",
+    )
+
+    completion_task = task
+    completion_strategy = "original_claimant_live_lease"
+    completion_before_lease_expiry = False
+    stale_owner_fence = {
+        "required": False,
+        "observed": False,
+        "http_status": None,
+        "reason": None,
+    }
+    replacement_reclaim = {
+        "required": False,
+        "observed": False,
+        "task_id": None,
+        "lease_owner": None,
+        "workflow_task_attempt": None,
+        "eligible_at_ms": None,
+        "started_after_eligible_ms": None,
+        "reclaim_after_eligible_ms": None,
+    }
+    phase_evidence["stale_owner_fence"] = stale_owner_fence
+    phase_evidence["replacement_reclaim"] = replacement_reclaim
+
+    observed = time.monotonic()
+    original_status: int | None = None
+    original_body: dict[str, Any] = {}
+    if observed < lease_deadline - LEASE_GUARD_SECONDS:
+        record_lease_milestone(
+            lease_timing,
+            phase_started,
+            lease_deadline,
+            "original_completion_started",
+            current=observed,
+        )
+        original_status, original_body, _ = complete_task(
+            task,
+            SERVER_B,
+            timeout=max(0.001, lease_deadline - observed - LEASE_GUARD_SECONDS),
+        )
+        completion_finished = record_lease_milestone(
+            lease_timing,
+            phase_started,
+            lease_deadline,
+            "original_completion_finished",
+        )
+        if original_status in (200, 202) and original_body.get("recorded") is True:
+            if completion_finished >= lease_deadline:
+                lease_timing["failure_classification"] = "database_lease_timing"
+            require(
+                completion_finished < lease_deadline,
+                "database_interruption harness_timing: original completion crossed lease expiry",
+            )
+            completion_before_lease_expiry = True
+            lease_timing["completion_before_lease_expiry"] = True
+            lease_timing["completion_strategy"] = completion_strategy
+            lease_timing["outcome_classification"] = "database_recovered_with_live_lease"
+        else:
+            require(
+                original_status == 409 and original_body.get("reason") == "lease_expired",
+                f"post-database completion failed before lease expiry: {original_status} {original_body}",
+            )
+            stale_owner_fence.update({
+                "required": True,
+                "observed": True,
+                "http_status": original_status,
+                "reason": original_body.get("reason"),
+                "completion_node": "server-b",
+            })
+
+    if not completion_before_lease_expiry:
+        completion_strategy = "replacement_worker_after_lease_expiry"
+        lease_timing["completion_strategy"] = completion_strategy
+        lease_timing["outcome_classification"] = "database_recovered_after_lease_expiry"
+        if original_status is None:
+            record_lease_milestone(
+                lease_timing,
+                phase_started,
+                lease_deadline,
+                "stale_owner_fence_started",
+            )
+            original_status, original_body, _ = complete_task(task, SERVER_B)
+            record_lease_milestone(
+                lease_timing,
+                phase_started,
+                lease_deadline,
+                "stale_owner_fence_finished",
+            )
+            stale_owner_fence.update({
+                "required": True,
+                "observed": original_status == 409 and original_body.get("reason") == "lease_expired",
+                "http_status": original_status,
+                "reason": original_body.get("reason"),
+                "completion_node": "server-b",
+            })
+        require(
+            stale_owner_fence["observed"],
+            "expired database-interruption owner did not receive the typed lease_expired fence: "
+            f"{original_status} {original_body}",
+        )
+
+        replacement_reclaim["required"] = True
+        reclaim_eligible_at = max(lease_deadline, recovered_at)
+        reclaim_started = time.monotonic()
+        reclaim_started_ms = max(0, round((reclaim_started - reclaim_eligible_at) * 1000))
+        reclaim_timeout = (
+            BOUNDS["database_reclaim_after_lease_seconds"]
+            - (reclaim_started_ms / 1000)
+        )
+        lease_timing["bound_classification"]["database_reclaim"].update({
+            "consumed": True,
+            "elapsed_ms": reclaim_started_ms,
+            "passed": None,
+        })
+        require(
+            reclaim_timeout > 0,
+            "database task reclaim bound was exhausted before replacement polling began: "
+            f"{reclaim_started_ms}ms",
+        )
+        record_lease_milestone(
+            lease_timing,
+            phase_started,
+            lease_deadline,
+            "replacement_reclaim_started",
+            current=reclaim_started,
+        )
+        completion_task = poll_task(
+            recovery_worker,
+            SERVER_A,
+            reclaim_timeout,
+        )
+        reclaimed_at = record_lease_milestone(
+            lease_timing,
+            phase_started,
+            lease_deadline,
+            "replacement_reclaim_finished",
+        )
+        reclaim_ms = max(0, round((reclaimed_at - reclaim_eligible_at) * 1000))
+        reclaim_bound_passed = reclaim_ms <= BOUNDS["database_reclaim_after_lease_seconds"] * 1000
+        replacement_reclaim.update({
+            "observed": True,
+            "task_id": completion_task.get("task_id"),
+            "lease_owner": completion_task.get("lease_owner"),
+            "workflow_task_attempt": completion_task.get("workflow_task_attempt"),
+            "eligible_at_ms": round((reclaim_eligible_at - phase_started) * 1000),
+            "started_after_eligible_ms": reclaim_started_ms,
+            "reclaim_after_eligible_ms": reclaim_ms,
+        })
+        lease_timing["bound_classification"]["database_reclaim"].update({
+            "consumed": True,
+            "elapsed_ms": reclaim_ms,
+            "passed": reclaim_bound_passed,
+        })
+        RESULT["recovery_timings_ms"]["database_reclaim_after_lease"] = reclaim_ms
+        RESULT["recovery_bounds"]["database_reclaim_after_lease_seconds"]["passed"] = reclaim_bound_passed
+        require(
+            completion_task.get("workflow_id") == started["workflow_id"]
+            and completion_task.get("run_id") == started["run_id"],
+            f"database-interruption replacement worker reclaimed the wrong task: {completion_task}",
+        )
+        require(
+            completion_task.get("lease_owner") == recovery_worker
+            and completion_task.get("lease_owner") != task.get("lease_owner"),
+            "database-interruption task was not reclaimed by the replacement worker: "
+            f"initial={task.get('lease_owner')!r} replacement={completion_task.get('lease_owner')!r}",
+        )
+        require(reclaim_bound_passed, f"database task reclaim exceeded its recovery bound: {reclaim_ms}ms")
+        record_lease_milestone(
+            lease_timing,
+            phase_started,
+            lease_deadline,
+            "replacement_completion_started",
+        )
+        status, completed, _ = complete_task(completion_task, SERVER_A)
+        record_lease_milestone(
+            lease_timing,
+            phase_started,
+            lease_deadline,
+            "replacement_completion_finished",
+        )
+    else:
+        RESULT["recovery_bounds"]["database_reclaim_after_lease_seconds"]["passed"] = True
+        status, completed = original_status, original_body
+
     completion = {
         "http_status": status,
         "recorded": completed.get("recorded") is True,
-        "completion_node": "server-b",
+        "completion_node": "server-b" if completion_before_lease_expiry else "server-a",
+        "strategy": completion_strategy,
+        "task_id": completion_task.get("task_id"),
+        "lease_owner": completion_task.get("lease_owner"),
     }
     phase_evidence["completion"] = completion
     require(status in (200, 202) and completed.get("recorded") is True, f"post-database completion failed: {status} {completed}")
-    duplicate_status, duplicate_body, _ = complete_task(task, SERVER_A)
+    duplicate_status, duplicate_body, _ = complete_task(completion_task, SERVER_B)
     phase_evidence["duplicate_completion"] = {
         "http_status": duplicate_status,
         "rejected": duplicate_status == 409,
-        "completion_node": "server-a",
+        "reason": duplicate_body.get("reason"),
+        "completion_node": "server-b",
     }
     require(duplicate_status == 409, f"duplicate completion was not refused: {duplicate_status} {duplicate_body}")
     final_status, final, _ = describe(started["workflow_id"], started["run_id"], SERVER_A)
@@ -1351,11 +1660,27 @@ def database_interruption_phase() -> dict[str, Any]:
         and final_summary["is_terminal"] is True,
         f"database workflow did not complete exactly once: {final_description}",
     )
-    RESULT["recovery_timings_ms"]["database_ready_after_return"] = recovery_ms
-    RESULT["recovery_bounds"]["database_ready_after_return_seconds"]["passed"] = recovery_ms <= BOUNDS["database_ready_after_return_seconds"] * 1000
-    RESULT["identities"]["database_interruption"] = {**started, "task_id": task["task_id"]}
-    RESULT["duplicate_assertions"].append({"phase": "database_interruption", "duplicate_completion_http_status": duplicate_status, "passed": True})
-    RESULT["loss_assertions"].append({"phase": "database_interruption", "acknowledged_state_present": True, "unacknowledged_write_present": False, "passed": True})
+    RESULT["identities"]["database_interruption"] = {
+        **started,
+        "task_id": task["task_id"],
+        "initial_lease_owner": task.get("lease_owner"),
+        "completion_task_id": completion_task.get("task_id"),
+        "completion_lease_owner": completion_task.get("lease_owner"),
+    }
+    RESULT["duplicate_assertions"].append({
+        "phase": "database_interruption",
+        "logical_completion_count": 1,
+        "duplicate_completion_http_status": duplicate_status,
+        "passed": True,
+    })
+    RESULT["loss_assertions"].append({
+        "phase": "database_interruption",
+        "acknowledged_state_present": True,
+        "unacknowledged_write_present": False,
+        "database_recovery_bound_consumed": True,
+        "worker_lease_loss_bound_consumed": False,
+        "passed": True,
+    })
     return {
         "readiness_down": down_transitions,
         "readiness_recovered": recovered,
@@ -1364,8 +1689,13 @@ def database_interruption_phase() -> dict[str, Any]:
         "workflow_id": started["workflow_id"],
         "run_id": started["run_id"],
         "task_id": task["task_id"],
+        "lease_expires_at": task.get("lease_expires_at"),
+        "lease_timing": lease_timing,
         "post_recovery_description": post_recovery_description,
         "completion": completion,
+        "completion_before_lease_expiry": completion_before_lease_expiry,
+        "stale_owner_fence": stale_owner_fence,
+        "replacement_reclaim": replacement_reclaim,
         "duplicate_completion_refused": True,
         "final_description": final_description,
         "final_status": final_summary["raw_status"],

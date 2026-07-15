@@ -549,7 +549,7 @@ class ResultGateTest(unittest.TestCase):
         self.assertEqual([("kill", "server-a")], compose_calls)
         completion.assert_not_called()
 
-    def test_database_interruption_accepts_every_public_running_raw_status(self) -> None:
+    def test_database_interruption_completes_within_live_lease_for_every_public_running_status(self) -> None:
         for raw_status in ("pending", "running", "waiting"):
             with self.subTest(raw_status=raw_status):
                 result, trace = self.run_database_interruption({
@@ -566,7 +566,7 @@ class ResultGateTest(unittest.TestCase):
                 self.assertEqual(raw_status, post_recovery["response_summary"]["raw_status"])
                 self.assertNotIn("input", post_recovery["response_summary"])
                 self.assertEqual([("stop", "mysql"), ("start", "mysql")], trace["compose_calls"])
-                self.assertEqual([runner.SERVER_B, runner.SERVER_A], trace["completion_bases"])
+                self.assertEqual([runner.SERVER_B, runner.SERVER_B], trace["completion_bases"])
                 self.assertEqual(["task-1", "task-1"], trace["completion_task_ids"])
                 self.assertEqual(503, result["failed_write_status"])
                 self.assertEqual(2, len(result["readiness_down"]))
@@ -575,10 +575,75 @@ class ResultGateTest(unittest.TestCase):
                 self.assertEqual("completed", result["final_status"])
                 self.assertTrue(result["final_description"]["response_summary"]["is_terminal"])
                 self.assertNotIn("output", result["final_description"]["response_summary"])
+                self.assertTrue(result["completion_before_lease_expiry"])
+                self.assertEqual("original_claimant_live_lease", result["completion"]["strategy"])
+                self.assertFalse(result["replacement_reclaim"]["required"])
+                self.assertGreater(
+                    result["lease_timing"]["lease_remaining_ms"]["original_completion_finished"],
+                    0,
+                )
+                self.assertFalse(
+                    result["lease_timing"]["bound_classification"]["worker_lease_loss"]["consumed"],
+                )
                 self.assertEqual(
                     post_recovery,
                     runner.RESULT["phase_evidence"]["database_interruption"]["post_recovery_description"],
                 )
+
+    def test_database_interruption_reclaims_after_outage_crosses_lease_expiry(self) -> None:
+        result, trace = self.run_database_interruption(
+            {
+                "workflow_id": "workflow-1",
+                "run_id": "run-1",
+                "status": "waiting",
+                "status_bucket": "running",
+                "is_terminal": False,
+            },
+            cross_lease_expiry=True,
+        )
+
+        self.assertFalse(result["completion_before_lease_expiry"])
+        self.assertEqual("replacement_worker_after_lease_expiry", result["completion"]["strategy"])
+        self.assertEqual("task-2", result["completion"]["task_id"])
+        self.assertEqual([runner.SERVER_B, runner.SERVER_A, runner.SERVER_B], trace["completion_bases"])
+        self.assertEqual(["task-1", "task-2", "task-2"], trace["completion_task_ids"])
+        self.assertEqual([409, 202, 409], trace["completion_statuses"])
+        self.assertTrue(result["stale_owner_fence"]["observed"])
+        self.assertEqual("lease_expired", result["stale_owner_fence"]["reason"])
+        self.assertTrue(result["replacement_reclaim"]["observed"])
+        self.assertEqual("task-2", result["replacement_reclaim"]["task_id"])
+        self.assertEqual(
+            "database_recovered_after_lease_expiry",
+            result["lease_timing"]["outcome_classification"],
+        )
+        self.assertEqual(8000, result["lease_timing"]["lease_expiry_deadline_ms"])
+        self.assertEqual(9000, result["lease_timing"]["outage_duration_ms"])
+        self.assertTrue({
+            "outage_started",
+            "server-a_not_ready",
+            "server-b_not_ready",
+            "database_return_started",
+            "server-a_ready",
+            "server-b_ready",
+            "durable_state_verified",
+            "stale_owner_fence_finished",
+            "replacement_reclaim_finished",
+            "replacement_completion_finished",
+        }.issubset(result["lease_timing"]["milestones_ms"]))
+        self.assertLess(
+            result["lease_timing"]["lease_remaining_ms"]["stale_owner_fence_finished"],
+            0,
+        )
+        self.assertTrue(
+            result["lease_timing"]["bound_classification"]["database_reclaim"]["consumed"],
+        )
+        self.assertFalse(
+            result["lease_timing"]["bound_classification"]["worker_lease_loss"]["consumed"],
+        )
+        self.assertTrue(
+            runner.RESULT["recovery_bounds"]["database_reclaim_after_lease_seconds"]["passed"],
+        )
+        self.assertEqual(1, runner.RESULT["duplicate_assertions"][-1]["logical_completion_count"])
 
     def test_database_interruption_fails_closed_for_invalid_post_recovery_descriptions(self) -> None:
         valid = {
@@ -607,16 +672,33 @@ class ResultGateTest(unittest.TestCase):
         post_recovery_body: dict,
         *,
         http_status: int = 200,
+        cross_lease_expiry: bool = False,
     ) -> tuple[dict, dict]:
         trace = {
             "compose_calls": [],
             "completion_bases": [],
             "completion_task_ids": [],
+            "completion_statuses": [],
+            "poll_workers": [],
         }
         completion_recorded = False
+        claimed_at = runner.dt.datetime(2026, 7, 15, 20, 0, tzinfo=runner.dt.timezone.utc)
+        lease_expires_at = (
+            claimed_at + runner.dt.timedelta(seconds=runner.BOUNDS["workflow_task_lease_seconds"])
+        ).isoformat().replace("+00:00", "Z")
+
+        class Clock:
+            value = 100.0
+
+            def monotonic(self) -> float:
+                return self.value
+
+        clock = Clock()
 
         def fake_compose(*args, **_kwargs):
             trace["compose_calls"].append(args)
+            if cross_lease_expiry and args == ("start", "mysql"):
+                clock.value += runner.BOUNDS["workflow_task_lease_seconds"] + 1
             return subprocess.CompletedProcess(args, 0, "", "")
 
         def fake_ready(base, expected_status=200):
@@ -643,13 +725,40 @@ class ResultGateTest(unittest.TestCase):
                 "output": {"secret": "must not enter evidence"},
             }, 4
 
-        def fake_complete(task, base):
+        def fake_poll(worker_id, *_args, **_kwargs):
+            trace["poll_workers"].append(worker_id)
+            if len(trace["poll_workers"]) == 1:
+                return {
+                    "workflow_id": "workflow-1",
+                    "run_id": "run-1",
+                    "task_id": "task-1",
+                    "lease_owner": worker_id,
+                    "workflow_task_attempt": 1,
+                    "lease_expires_at": lease_expires_at,
+                }
+            return {
+                "workflow_id": "workflow-1",
+                "run_id": "run-1",
+                "task_id": "task-2",
+                "lease_owner": worker_id,
+                "workflow_task_attempt": 2,
+                "lease_expires_at": (
+                    claimed_at + runner.dt.timedelta(seconds=30)
+                ).isoformat().replace("+00:00", "Z"),
+            }
+
+        def fake_complete(task, base, **_kwargs):
             nonlocal completion_recorded
             trace["completion_bases"].append(base)
             trace["completion_task_ids"].append(task["task_id"])
+            if cross_lease_expiry and task["task_id"] == "task-1":
+                trace["completion_statuses"].append(409)
+                return 409, {"recorded": False, "reason": "lease_expired"}, 2
             if completion_recorded:
-                return 409, {"recorded": False}, 2
+                trace["completion_statuses"].append(409)
+                return 409, {"recorded": False, "reason": "already_completed"}, 2
             completion_recorded = True
+            trace["completion_statuses"].append(202)
             return 202, {"recorded": True, "run_id": task["run_id"]}, 2
 
         runner.RESULT["phase_evidence"] = {}
@@ -658,28 +767,30 @@ class ResultGateTest(unittest.TestCase):
         runner.RESULT["identities"] = {}
         runner.RESULT["duplicate_assertions"] = []
         runner.RESULT["loss_assertions"] = []
-        with mock.patch.multiple(
-            runner,
-            register_worker=lambda *_args, **_kwargs: {},
-            start_workflow=lambda *_args, **_kwargs: {
-                "workflow_id": "workflow-1",
-                "run_id": "run-1",
-                "status": 201,
-                "ack_ms": 1,
-            },
-            poll_task=lambda *_args, **_kwargs: {
-                "workflow_id": "workflow-1",
-                "run_id": "run-1",
-                "task_id": "task-1",
-                "lease_owner": "worker-1",
-                "workflow_task_attempt": 1,
-            },
-            compose=fake_compose,
-            ready=fake_ready,
-            request=lambda *_args, **_kwargs: (503, {"error": "database unavailable"}, 1),
-            describe=fake_describe,
-            complete_task=fake_complete,
-            wait_for=lambda _label, callback, *_args, **_kwargs: callback(),
+        runner.RESULT["recovery_bounds"] = {
+            name: {"seconds": seconds, "passed": None}
+            for name, seconds in runner.BOUNDS.items()
+        }
+        with (
+            mock.patch.object(runner.time, "monotonic", clock.monotonic),
+            mock.patch.multiple(
+                runner,
+                utc_now=lambda: claimed_at,
+                register_worker=lambda *_args, **_kwargs: {},
+                start_workflow=lambda *_args, **_kwargs: {
+                    "workflow_id": "workflow-1",
+                    "run_id": "run-1",
+                    "status": 201,
+                    "ack_ms": 1,
+                },
+                poll_task=fake_poll,
+                compose=fake_compose,
+                ready=fake_ready,
+                request=lambda *_args, **_kwargs: (503, {"error": "database unavailable"}, 1),
+                describe=fake_describe,
+                complete_task=fake_complete,
+                wait_for=lambda _label, callback, *_args, **_kwargs: callback(),
+            ),
         ):
             return runner.database_interruption_phase(), trace
 
