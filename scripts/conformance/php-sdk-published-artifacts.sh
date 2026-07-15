@@ -25,6 +25,7 @@ Optional environment:
   DW_PHP_SDK_CONFORMANCE_PHP_BIN      PHP binary override.
   DW_PHP_SDK_CONFORMANCE_COMPOSER_BIN Composer binary override.
   DW_PHP_SDK_CONFORMANCE_SCOPE        lifecycle (default) or namespace.
+  DW_PHP_SDK_CONFORMANCE_WORKER_RUN_DELAY_MS Delay managed registration for readiness regression probes.
 USAGE
 }
 
@@ -215,8 +216,9 @@ if (namespaceEvidence) {
       && lifecycle.selected_namespace_workflow_count === 0,
     worker_namespace_registration: Boolean(namespaceWorker)
       && namespaceWorker.namespace === process.env.NAMESPACE
-      && namespaceWorker.registration_ack
-      && typeof namespaceWorker.registration_ack === 'object',
+      && namespaceWorker.server_visible_registration
+      && typeof namespaceWorker.server_visible_registration === 'object'
+      && namespaceWorker.readiness?.client_release_after_authoritative_registration === true,
     namespace_worker_execution: simple.namespace === process.env.NAMESPACE
       && simple.status === 'completed'
       && Object.prototype.hasOwnProperty.call(simple, 'result'),
@@ -303,8 +305,9 @@ const assertions = {
     && lifecycle.selected_namespace_workflow_count === 0,
   worker_namespace_registration: worker.namespace === process.env.NAMESPACE
     && worker.scope === 'namespace'
-    && worker.registration_ack
-    && typeof worker.registration_ack === 'object',
+    && worker.server_visible_registration
+    && typeof worker.server_visible_registration === 'object'
+    && worker.readiness?.client_release_after_authoritative_registration === true,
   namespace_worker_execution: simple.namespace === process.env.NAMESPACE
     && simple.status === 'completed'
     && Object.prototype.hasOwnProperty.call(simple, 'result'),
@@ -537,7 +540,6 @@ declare(strict_types=1);
 require __DIR__.'/vendor/autoload.php';
 require __DIR__.'/runtime-failure.php';
 
-use Composer\InstalledVersions;
 use DurableWorkflow\Client;
 use DurableWorkflow\Worker;
 use DurableWorkflow\Worker\ActivityContext;
@@ -599,33 +601,6 @@ function decoded_signal_total(QueryContext $context, Client $client): int
 
     return $total;
 }
-
-set_runtime_failure_context('worker.register', 'POST', '/api/workers/register');
-$registration = $client->registerWorker(
-    $workerId,
-    $queue,
-    $namespaceScope
-        ? ['php.sdk.simple']
-        : ['php.sdk.simple', 'php.sdk.replay', 'php.sdk.waiting', 'php.sdk.failure', 'php.sdk.search'],
-    ['php.sdk.echo'],
-    $namespaceScope
-        ? ['graceful_shutdown']
-        : ['query_tasks', 'workflow_updates', 'durable_history_replay', 'graceful_shutdown'],
-);
-set_runtime_failure_context('worker.heartbeat', 'POST', '/api/workers/{worker_id}/heartbeat');
-$heartbeatAck = $client->heartbeatWorker($workerId, ['workflow_available' => 1, 'activity_available' => 1]);
-file_put_contents($resultDir.'/php-sdk-worker-'.$workerId.'.json', json_encode([
-    'worker_id' => $workerId,
-    'process_id' => getmypid(),
-    'host' => gethostname(),
-    'php_version' => PHP_VERSION,
-    'sdk_version' => InstalledVersions::getPrettyVersion('durable-workflow/sdk')
-        ?: InstalledVersions::getVersion('durable-workflow/sdk'),
-    'namespace' => $client->namespace,
-    'scope' => $scope,
-    'registration_ack' => $registration,
-    'heartbeat_ack' => $heartbeatAck,
-], JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES)."\n");
 
 $worker = new Worker($client, $queue, workerId: $workerId, heartbeatIntervalSeconds: 1);
 $worker->registerActivity(
@@ -702,6 +677,14 @@ if (! $namespaceScope) {
             return ['accepted' => true, 'value' => $value, 'run_id' => $context->runId];
         },
     );
+}
+$workerRunDelayMs = filter_var(
+    getenv('DW_PHP_SDK_CONFORMANCE_WORKER_RUN_DELAY_MS') ?: 0,
+    FILTER_VALIDATE_INT,
+    ['options' => ['min_range' => 0, 'default' => 0]],
+);
+if ($workerRunDelayMs > 0) {
+    usleep($workerRunDelayMs * 1000);
 }
 set_runtime_failure_context('worker.run', 'MULTIPLE', '/api/worker-protocol/*');
 $worker->run(1);
@@ -1086,10 +1069,30 @@ $assertions = [
     'distinct_worker_restart_processes' => ($workerOne['process_id'] ?? null) !== ($workerTwo['process_id'] ?? null),
     'worker_registration' => ($workerOne['worker_id'] ?? null) === 'php-sdk-worker-1'
         && ($workerTwo['worker_id'] ?? null) === 'php-sdk-worker-2'
-        && is_array($workerOne['registration_ack'] ?? null)
-        && is_array($workerTwo['registration_ack'] ?? null),
-    'worker_heartbeat' => is_array($workerOne['heartbeat_ack'] ?? null)
-        && is_array($workerTwo['heartbeat_ack'] ?? null),
+        && is_array($workerOne['server_visible_registration'] ?? null)
+        && is_array($workerTwo['server_visible_registration'] ?? null),
+    'worker_heartbeat' => isset($workerOne['server_visible_registration']['last_heartbeat_at'])
+        && isset($workerTwo['server_visible_registration']['last_heartbeat_at']),
+    'worker_command_contract_readiness' => ($workerOne['readiness']['client_release_after_authoritative_registration'] ?? false)
+        && ($workerTwo['readiness']['client_release_after_authoritative_registration'] ?? false)
+        && ($workerOne['readiness']['required_workflow_command_contract'] ?? null) === [
+            'workflow_type' => 'php.sdk.waiting',
+            'queries' => ['current'],
+            'updates' => ['set'],
+        ]
+        && ($workerTwo['readiness']['required_workflow_command_contract'] ?? null) === [
+            'workflow_type' => 'php.sdk.waiting',
+            'queries' => ['current'],
+            'updates' => ['set'],
+        ]
+        && ($workerOne['server_visible_registration']['workflow_command_contracts']['php.sdk.waiting'] ?? null) === [
+            'queries' => ['current'],
+            'updates' => ['set'],
+        ]
+        && ($workerTwo['server_visible_registration']['workflow_command_contracts']['php.sdk.waiting'] ?? null) === [
+            'queries' => ['current'],
+            'updates' => ['set'],
+        ],
     'start_result' => ($baseline['simple_workflow']['status'] ?? null) === 'completed' && isset($baseline['simple_workflow']['result']),
     'signal_query' => ($baseline['signal_query']['query_result']['total'] ?? null) === 8,
     'update' => ($baseline['update']['result']['accepted'] ?? null) === true && ($baseline['update']['result']['value'] ?? null) === 13,
@@ -1130,6 +1133,7 @@ $assertionDomains = [
     'distinct_worker_restart_processes' => 'runner',
     'worker_registration' => 'sdk',
     'worker_heartbeat' => 'sdk',
+    'worker_command_contract_readiness' => 'runner',
     'start_result' => 'server',
     'signal_query' => 'server',
     'update' => 'sdk',
@@ -1220,6 +1224,11 @@ $observed = [
     ],
     'worker_processes' => [$workerOne, $workerTwo],
     'worker_identities' => [$workerOne['worker_id'] ?? null, $workerTwo['worker_id'] ?? null],
+    'worker_readiness' => [$workerOne['readiness'] ?? [], $workerTwo['readiness'] ?? []],
+    'server_visible_workflow_command_contracts' => [
+        'php-sdk-worker-1' => $workerOne['server_visible_registration']['workflow_command_contracts'] ?? [],
+        'php-sdk-worker-2' => $workerTwo['server_visible_registration']['workflow_command_contracts'] ?? [],
+    ],
     'callback_counts' => $callbacks,
     'namespace_evidence' => $baseline['namespace_lifecycle'] ?? [],
     'search_attribute_evidence' => $baseline['search_attributes'] ?? [],
@@ -1260,6 +1269,8 @@ $result = [
         'client_processes' => $observed['client_processes'],
         'worker_processes' => $observed['worker_processes'],
     ],
+    'worker_readiness' => $observed['worker_readiness'],
+    'server_visible_workflow_command_contracts' => $observed['server_visible_workflow_command_contracts'],
     'callback_counts' => $callbacks,
     'history_assertions' => $observed['history_assertions'],
     'scenario_results' => array_fill_keys($coveredCells, ['status' => $status]),
@@ -1295,16 +1306,30 @@ queue="php-sdk-conformance-$suffix"
 
 start_worker() {
   local worker_id="${1:?worker id is required}"
+  local metadata="$result_dir/php-sdk-worker-${worker_id}.json"
+  local readiness_log="$result_dir/php-sdk-worker-${worker_id}.readiness.log"
+  local readiness_started_at
+  local readiness_started_epoch
+  readiness_started_at="$(date -u '+%Y-%m-%dT%H:%M:%SZ')"
+  readiness_started_epoch="$("$php_bin" -r 'printf("%.6F", microtime(true));')"
   "$php_bin" "$project_dir/worker.php" \
     "$server_url" "$namespace" "$control_token" "$worker_token" "$queue" "$worker_id" "$result_dir" "$scope" \
     >"$result_dir/${worker_id}.log" 2>&1 &
   worker_pid=$!
-  local metadata="$result_dir/php-sdk-worker-${worker_id}.json"
   for attempt in $(seq 1 100); do
-    if [[ -s "$metadata" ]] && kill -0 "$worker_pid" >/dev/null 2>&1; then
+    if ! kill -0 "$worker_pid" >/dev/null 2>&1; then
+      return 1
+    fi
+    readiness_status=0
+    "$php_bin" "$script_dir/php-sdk-worker-readiness.php" \
+      "$project_dir/vendor/autoload.php" "$server_url" "$namespace" "$control_token" \
+      "$worker_id" "$worker_pid" "$result_dir" "$scope" "$readiness_started_at" \
+      "$readiness_started_epoch" "$attempt" "$metadata" \
+      >>"$readiness_log" 2>&1 || readiness_status=$?
+    if [[ "$readiness_status" -eq 0 ]]; then
       return 0
     fi
-    if ! kill -0 "$worker_pid" >/dev/null 2>&1; then
+    if [[ "$readiness_status" -ne 1 ]]; then
       return 1
     fi
     sleep 0.1
@@ -1335,7 +1360,7 @@ run_client_phase() {
 
 if ! start_worker php-sdk-worker-1; then
   write_runtime_failure \
-    "$result_dir/php-sdk-worker-1.log" '' worker_start \
+    "$result_dir/php-sdk-worker-1.log" "$result_dir/php-sdk-worker-php-sdk-worker-1.readiness.log" worker_start \
     "$result_dir/php-sdk-worker-1.diagnostic.log"
   exit 0
 fi
@@ -1388,7 +1413,7 @@ worker_pid=""
 
 if ! start_worker php-sdk-worker-2; then
   write_runtime_failure \
-    "$result_dir/php-sdk-worker-2.log" '' worker_restart \
+    "$result_dir/php-sdk-worker-2.log" "$result_dir/php-sdk-worker-php-sdk-worker-2.readiness.log" worker_restart \
     "$result_dir/php-sdk-worker-2.diagnostic.log"
   exit 0
 fi

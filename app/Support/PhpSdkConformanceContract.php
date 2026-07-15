@@ -63,6 +63,8 @@ final class PhpSdkConformanceContract
                 'client_processes',
                 'worker_processes',
                 'worker_identities',
+                'worker_readiness',
+                'server_visible_workflow_command_contracts',
                 'artifact_version',
                 'server_version',
                 'server_image',

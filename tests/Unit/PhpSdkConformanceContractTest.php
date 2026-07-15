@@ -22,6 +22,8 @@ final class PhpSdkConformanceContractTest extends TestCase
         $this->assertContains('search_attributes', $manifest['required_scenarios']);
         $this->assertContains('apache_avro_provenance', $manifest['required_evidence']);
         $this->assertContains('server_image', $manifest['required_evidence']);
+        $this->assertContains('worker_readiness', $manifest['required_evidence']);
+        $this->assertContains('server_visible_workflow_command_contracts', $manifest['required_evidence']);
         $this->assertSame('sdk-php', $manifest['failure_routing']['sdk']);
         $this->assertSame('server', $manifest['failure_routing']['server']);
         $this->assertSame('sdk-php-release', $manifest['failure_routing']['package-publication']);
@@ -76,8 +78,213 @@ final class PhpSdkConformanceContractTest extends TestCase
         $this->assertStringContainsString("'client_worker_distinct_processes'", $runner);
         $this->assertStringContainsString("'callback_counts'", $runner);
         $this->assertStringContainsString("'history_assertions'", $runner);
+        $this->assertStringContainsString('php-sdk-worker-readiness.php', $runner);
+        $this->assertStringContainsString('server_visible_workflow_command_contracts', $runner);
+        $this->assertStringContainsString('worker_command_contract_readiness', $runner);
+        $this->assertStringContainsString('DW_PHP_SDK_CONFORMANCE_WORKER_RUN_DELAY_MS', $runner);
+        $this->assertStringNotContainsString('$client->registerWorker(', $runner);
         $this->assertStringNotContainsString('durable-workflow/workflow:', $runner);
         $this->assertStringNotContainsString('"type": "path"', $runner);
+        $delayPosition = strpos($runner, "getenv('DW_PHP_SDK_CONFORMANCE_WORKER_RUN_DELAY_MS')");
+        $managedRunPosition = strpos($runner, '$worker->run(1);');
+        $this->assertIsInt($delayPosition);
+        $this->assertIsInt($managedRunPosition);
+        $this->assertLessThan($managedRunPosition, $delayPosition);
+    }
+
+    public function test_worker_readiness_waits_for_the_authoritative_handler_contract(): void
+    {
+        if (! filter_var(ini_get('allow_url_fopen'), FILTER_VALIDATE_BOOL)) {
+            $this->markTestSkipped('allow_url_fopen is required to exercise worker readiness.');
+        }
+
+        $repoRoot = dirname(__DIR__, 2);
+        $helper = $repoRoot.'/scripts/conformance/php-sdk-worker-readiness.php';
+        $resultDir = sys_get_temp_dir().'/dw-php-sdk-worker-readiness-'.bin2hex(random_bytes(6));
+        mkdir($resultDir, 0777, true);
+        $autoload = $resultDir.'/autoload.php';
+        $router = $resultDir.'/router.php';
+        $registrationStateFile = $resultDir.'/registration-state';
+        $serverLog = $resultDir.'/server.log';
+        $metadataFile = $resultDir.'/worker.json';
+        file_put_contents($autoload, <<<'PHP'
+<?php
+namespace Composer {
+    final class InstalledVersions
+    {
+        public static function getPrettyVersion(string $package): ?string
+        {
+            return '0.1.5';
+        }
+
+        public static function getVersion(string $package): ?string
+        {
+            return '0.1.5.0';
+        }
+    }
+}
+namespace DurableWorkflow {
+    final class Version
+    {
+        public const CONTROL_PLANE_PROTOCOL = '2';
+    }
+}
+namespace DurableWorkflow\Transport {
+    final class Psr18Transport
+    {
+        public function send(string $method, string $uri, array $headers, ?array $body = null): ?array
+        {
+            $formattedHeaders = [];
+            foreach ($headers as $name => $value) {
+                $formattedHeaders[] = $name.': '.$value;
+            }
+            $context = stream_context_create([
+                'http' => [
+                    'method' => $method,
+                    'header' => implode("\r\n", $formattedHeaders),
+                    'ignore_errors' => true,
+                ],
+            ]);
+            $response = file_get_contents($uri, false, $context);
+
+            return json_decode((string) $response, true, flags: JSON_THROW_ON_ERROR);
+        }
+    }
+}
+PHP);
+        file_put_contents($router, '<?php'."\n"
+            .'$headers = getallheaders();'."\n"
+            .'if (($headers[\'Authorization\'] ?? null) !== \'Bearer control-token\''
+            .' || ($headers[\'X-Namespace\'] ?? null) !== \'workflow-lifecycle-conformance\''
+            .' || ($headers[\'X-Durable-Workflow-Control-Plane-Version\'] ?? null) !== \'2\') {'."\n"
+            .'    http_response_code(401);'."\n"
+            .'    echo json_encode([\'reason\' => \'unauthorized\']);'."\n"
+            .'    return;'."\n"
+            .'}'."\n"
+            .'$stateFile = '.var_export($registrationStateFile, true).';'."\n"
+            .'$observation = (int) file_get_contents($stateFile) + 1;'."\n"
+            .'file_put_contents($stateFile, (string) $observation, LOCK_EX);'."\n"
+            .'if ($observation >= 4) {'."\n"
+            .'    usleep(300000);'."\n"
+            .'    $contracts = [\'php.sdk.waiting\' => [\'queries\' => [\'current\'], \'updates\' => [\'set\']]];'."\n"
+            .'} else {'."\n"
+            .'    $contracts = [];'."\n"
+            .'}'."\n"
+            .'header(\'Content-Type: application/json\');'."\n"
+            .'echo json_encode(['."\n"
+            .'    \'worker_id\' => \'php-sdk-worker-1\','."\n"
+            .'    \'status\' => \'active\','."\n"
+            .'    \'last_heartbeat_at\' => \'2026-07-15T20:00:00Z\','."\n"
+            .'    \'workflow_command_contracts\' => $contracts,'."\n"
+            .']);'."\n");
+
+        $socket = stream_socket_server('tcp://127.0.0.1:0', $socketError, $socketErrorMessage);
+        $this->assertIsResource($socket, $socketErrorMessage);
+        $address = (string) stream_socket_get_name($socket, false);
+        fclose($socket);
+        $process = proc_open(
+            [PHP_BINARY, '-S', $address, $router],
+            [
+                1 => ['file', $serverLog, 'a'],
+                2 => ['file', $serverLog, 'a'],
+            ],
+            $pipes,
+            $resultDir,
+        );
+        $this->assertIsResource($process);
+
+        try {
+            $serverReady = false;
+            for ($attempt = 0; $attempt < 50; $attempt++) {
+                $connection = @stream_socket_client('tcp://'.$address, $errorCode, $errorMessage, 0.05);
+                if (is_resource($connection)) {
+                    fclose($connection);
+                    $serverReady = true;
+                    break;
+                }
+                usleep(20000);
+            }
+            $this->assertTrue($serverReady, (string) @file_get_contents($serverLog));
+
+            $startedEpoch = microtime(true);
+            file_put_contents($registrationStateFile, '0');
+            $invoke = function (int $attempt) use (
+                $helper,
+                $autoload,
+                $address,
+                $resultDir,
+                $startedEpoch,
+                $metadataFile,
+            ): int {
+                $command = [
+                    PHP_BINARY,
+                    $helper,
+                    $autoload,
+                    'http://'.$address,
+                    'workflow-lifecycle-conformance',
+                    'control-token',
+                    'php-sdk-worker-1',
+                    '4321',
+                    $resultDir,
+                    'lifecycle',
+                    '2026-07-15T20:00:00Z',
+                    (string) $startedEpoch,
+                    (string) $attempt,
+                    $metadataFile,
+                ];
+                $probe = proc_open(
+                    $command,
+                    [
+                        1 => ['pipe', 'w'],
+                        2 => ['pipe', 'w'],
+                    ],
+                    $probePipes,
+                    $resultDir,
+                );
+                self::assertIsResource($probe);
+                stream_get_contents($probePipes[1]);
+                $stderr = stream_get_contents($probePipes[2]);
+                fclose($probePipes[1]);
+                fclose($probePipes[2]);
+                $exitCode = proc_close($probe);
+                self::assertContains($exitCode, [0, 1], (string) $stderr);
+
+                return $exitCode;
+            };
+
+            $this->assertSame(1, $invoke(1));
+            $this->assertFileDoesNotExist($metadataFile);
+            $exitCode = 1;
+            $attempt = 1;
+            while ($exitCode === 1 && $attempt < 40) {
+                usleep(25000);
+                $exitCode = $invoke(++$attempt);
+            }
+
+            $this->assertSame(0, $exitCode);
+            $metadata = json_decode(
+                (string) file_get_contents($metadataFile),
+                true,
+                flags: JSON_THROW_ON_ERROR,
+            );
+            $this->assertSame(4, $metadata['readiness']['attempts']);
+            $this->assertGreaterThanOrEqual(250, $metadata['readiness']['wait_ms']);
+            $this->assertTrue($metadata['readiness']['contract_free_registration_observed']);
+            $this->assertTrue($metadata['readiness']['client_release_after_authoritative_registration']);
+            $this->assertSame(
+                ['queries' => ['current'], 'updates' => ['set']],
+                $metadata['server_visible_registration']['workflow_command_contracts']['php.sdk.waiting'],
+            );
+        } finally {
+            proc_terminate($process);
+            proc_close($process);
+            foreach (glob($resultDir.'/*') ?: [] as $file) {
+                if (is_file($file)) {
+                    unlink($file);
+                }
+            }
+            rmdir($resultDir);
+        }
     }
 
     public function test_runner_has_a_focused_namespace_scope_with_incremental_evidence(): void
@@ -613,10 +820,6 @@ JS;
     }
 }
 
-final class SyntheticTerminalException extends \RuntimeException
-{
-}
+final class SyntheticTerminalException extends \RuntimeException {}
 
-final class SyntheticServerException extends \RuntimeException
-{
-}
+final class SyntheticServerException extends \RuntimeException {}
