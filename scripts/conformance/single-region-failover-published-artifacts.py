@@ -49,6 +49,7 @@ PORT_ENVIRONMENT = {
 READINESS_OBSERVATION_LIMIT = 12
 TOPOLOGY_START_FAILURE_READINESS_TIMEOUT = 5
 DIAGNOSTIC_OUTPUT_LIMIT = 12000
+API_NODE_LEASE_GUARD_SECONDS = 0.1
 
 # Loaded from the released image's public failover contract during topology
 # startup so new lifecycle states inherit their published bucket semantics.
@@ -176,19 +177,128 @@ REQUIRED_PHASES = {
 }
 
 
+def utc_now() -> dt.datetime:
+    return dt.datetime.now(dt.timezone.utc)
+
+
 def now() -> str:
-    return dt.datetime.now(dt.timezone.utc).isoformat().replace("+00:00", "Z")
+    return utc_now().isoformat().replace("+00:00", "Z")
 
 
 def monotonic_ms(started: float) -> int:
     return round((time.monotonic() - started) * 1000)
 
 
-def command(args: list[str], *, check: bool = True, timeout: int = 240) -> subprocess.CompletedProcess[str]:
+def begin_api_node_lease_timing(
+    task: dict[str, Any],
+    evidence: dict[str, Any],
+) -> tuple[float, float]:
+    observed_at = utc_now()
+    observed_monotonic = time.monotonic()
+    raw_expiry = task.get("lease_expires_at")
+    evidence.update({
+        "lease_expires_at": raw_expiry,
+        "lease_observed_at": observed_at.isoformat().replace("+00:00", "Z"),
+        "advertised_lease_seconds": BOUNDS["workflow_task_lease_seconds"],
+        "milestones_ms": {"task_claim_observed": 0},
+        "lease_remaining_ms": {},
+        "completion_before_lease_expiry": False,
+        "failure_classification": None,
+    })
+
+    try:
+        require(isinstance(raw_expiry, str) and bool(raw_expiry), "missing lease expiry")
+        lease_expires_at = dt.datetime.fromisoformat(raw_expiry.replace("Z", "+00:00"))
+        require(lease_expires_at.tzinfo is not None, "lease expiry has no timezone")
+        lease_expires_at = lease_expires_at.astimezone(dt.timezone.utc)
+    except (AssertionError, TypeError, ValueError):
+        evidence["failure_classification"] = "harness_timing"
+        raise AssertionError("api_node_loss harness_timing: task lease_expires_at is missing or invalid") from None
+
+    remaining_seconds = (lease_expires_at - observed_at).total_seconds()
+    lease_deadline = observed_monotonic + remaining_seconds
+    evidence["lease_remaining_ms"]["task_claim_observed"] = round(remaining_seconds * 1000)
+    if remaining_seconds <= API_NODE_LEASE_GUARD_SECONDS:
+        evidence["failure_classification"] = "harness_timing"
+        raise AssertionError("api_node_loss harness_timing: claimed task lease was not live when observed")
+
+    return observed_monotonic, lease_deadline
+
+
+def record_api_node_lease_milestone(
+    evidence: dict[str, Any],
+    phase_started: float,
+    lease_deadline: float,
+    name: str,
+    *,
+    current: float | None = None,
+) -> float:
+    observed = time.monotonic() if current is None else current
+    evidence["milestones_ms"][name] = round((observed - phase_started) * 1000)
+    evidence["lease_remaining_ms"][name] = round((lease_deadline - observed) * 1000)
+    return observed
+
+
+def api_node_lease_timeout(
+    evidence: dict[str, Any],
+    phase_started: float,
+    lease_deadline: float,
+    checkpoint: str,
+    maximum_seconds: float,
+) -> float:
+    observed = record_api_node_lease_milestone(
+        evidence,
+        phase_started,
+        lease_deadline,
+        checkpoint,
+    )
+    available = lease_deadline - observed - API_NODE_LEASE_GUARD_SECONDS
+    if available <= 0:
+        evidence["failure_classification"] = "harness_timing"
+        raise AssertionError(
+            f"api_node_loss harness_timing: lease budget exhausted before {checkpoint}"
+        )
+    return min(maximum_seconds, available)
+
+
+def classify_api_node_lease_consumption(
+    evidence: dict[str, Any],
+    phase_started: float,
+    lease_deadline: float,
+    checkpoint: str,
+) -> None:
+    record_api_node_lease_milestone(
+        evidence,
+        phase_started,
+        lease_deadline,
+        checkpoint,
+    )
+    evidence["failure_classification"] = "harness_timing"
+    raise AssertionError(
+        f"api_node_loss harness_timing: lease budget exhausted before {checkpoint}"
+    )
+
+
+def classify_api_node_lease_if_consumed(
+    evidence: dict[str, Any],
+    phase_started: float,
+    lease_deadline: float,
+    checkpoint: str,
+) -> None:
+    if time.monotonic() >= lease_deadline - API_NODE_LEASE_GUARD_SECONDS:
+        classify_api_node_lease_consumption(
+            evidence,
+            phase_started,
+            lease_deadline,
+            checkpoint,
+        )
+
+
+def command(args: list[str], *, check: bool = True, timeout: float = 240) -> subprocess.CompletedProcess[str]:
     return subprocess.run(args, check=check, text=True, capture_output=True, timeout=timeout)
 
 
-def compose(*args: str, check: bool = True, timeout: int = 240) -> subprocess.CompletedProcess[str]:
+def compose(*args: str, check: bool = True, timeout: float = 240) -> subprocess.CompletedProcess[str]:
     return command(
         ["docker", "compose", "-p", PROJECT, "-f", str(COMPOSE_FILE), *args],
         check=check,
@@ -407,8 +517,8 @@ def wait_for_survivor_traffic(
     )
 
 
-def ready(base: str, expected_status: int = 200) -> ProbeObservation:
-    status, body, elapsed = request(base, "/api/ready", authenticated=False, timeout=3)
+def ready(base: str, expected_status: int = 200, timeout: float = 3) -> ProbeObservation:
+    status, body, elapsed = request(base, "/api/ready", authenticated=False, timeout=timeout)
     accepted = status == expected_status
 
     return ProbeObservation({
@@ -680,7 +790,12 @@ def poll_task(
     return task
 
 
-def complete_task(task: dict[str, Any], base: str) -> tuple[int, dict[str, Any], int]:
+def complete_task(
+    task: dict[str, Any],
+    base: str,
+    *,
+    timeout: float = 10,
+) -> tuple[int, dict[str, Any], int]:
     return request(
         base,
         f"/api/worker/workflow-tasks/{task['task_id']}/complete",
@@ -691,6 +806,7 @@ def complete_task(task: dict[str, Any], base: str) -> tuple[int, dict[str, Any],
             "commands": [{"type": "complete_workflow", "result": None}],
         },
         worker=True,
+        timeout=timeout,
     )
 
 
@@ -931,41 +1047,156 @@ def api_node_loss_phase() -> dict[str, Any]:
         "run_id": task.get("run_id"),
         "task_id": task.get("task_id"),
         "claim_node": "server-a",
+        "lease_owner": task.get("lease_owner"),
+        "lease_expires_at": task.get("lease_expires_at"),
     }
-    loss_started = time.monotonic()
-    compose("stop", "server-a", timeout=60)
-    running_result = compose("ps", "--status", "running", "--services", check=False, timeout=30)
+    lease_timing: dict[str, Any] = {}
+    phase_evidence["lease_timing"] = lease_timing
+    phase_started, lease_deadline = begin_api_node_lease_timing(task, lease_timing)
+    kill_timeout = api_node_lease_timeout(
+        lease_timing,
+        phase_started,
+        lease_deadline,
+        "node_loss_started",
+        5,
+    )
+    try:
+        compose("kill", "server-a", timeout=kill_timeout)
+    except subprocess.TimeoutExpired:
+        classify_api_node_lease_if_consumed(
+            lease_timing,
+            phase_started,
+            lease_deadline,
+            "node_loss_completed",
+        )
+        raise
+    topology_timeout = api_node_lease_timeout(
+        lease_timing,
+        phase_started,
+        lease_deadline,
+        "node_loss_completed",
+        5,
+    )
+    try:
+        running_result = compose(
+            "ps",
+            "--status",
+            "running",
+            "--services",
+            check=False,
+            timeout=topology_timeout,
+        )
+    except subprocess.TimeoutExpired:
+        classify_api_node_lease_if_consumed(
+            lease_timing,
+            phase_started,
+            lease_deadline,
+            "topology_after_loss",
+        )
+        raise
     running_services = running_result.stdout.splitlines()
-    phase_evidence["topology_after_stop"] = {
+    phase_evidence["topology_after_loss"] = {
+        "node_loss_mode": "sigkill",
         "running_services": running_services,
         "server_a_stopped": "server-a" not in running_services,
         "server_b_running": "server-b" in running_services,
         "load_balancer_running": "load-balancer" in running_services,
         "compose_ps": command_diagnostic(running_result),
     }
-    require("server-a" not in running_services, f"server-a remained running after stop: {running_services}")
-    require("server-b" in running_services, f"server-b was not running after server-a stop: {running_services}")
-    require("load-balancer" in running_services, f"shared endpoint was not running after server-a stop: {running_services}")
+    classify_api_node_lease_if_consumed(
+        lease_timing,
+        phase_started,
+        lease_deadline,
+        "topology_after_loss",
+    )
+    require("server-a" not in running_services, f"server-a remained running after kill: {running_services}")
+    require("server-b" in running_services, f"server-b was not running after server-a kill: {running_services}")
+    require("load-balancer" in running_services, f"shared endpoint was not running after server-a kill: {running_services}")
 
-    surviving_readiness = ready(SERVER_B)
+    readiness_timeout = api_node_lease_timeout(
+        lease_timing,
+        phase_started,
+        lease_deadline,
+        "survivor_readiness_started",
+        3,
+    )
+    surviving_readiness = ready(SERVER_B, timeout=readiness_timeout)
     phase_evidence["surviving_node_readiness"] = surviving_readiness
-    require(bool(surviving_readiness), f"server-b was not ready after server-a stop: {surviving_readiness}")
+    classify_api_node_lease_if_consumed(
+        lease_timing,
+        phase_started,
+        lease_deadline,
+        "survivor_readiness_confirmed",
+    )
+    require(bool(surviving_readiness), f"server-b was not ready after server-a kill: {surviving_readiness}")
+    api_node_lease_timeout(
+        lease_timing,
+        phase_started,
+        lease_deadline,
+        "survivor_readiness_confirmed",
+        3,
+    )
     survivor_evidence: dict[str, Any] = {}
     phase_evidence["survivor_traffic"] = survivor_evidence
-    survivor = wait_for_survivor_traffic(
-        started["workflow_id"],
-        started["run_id"],
+    traffic_timeout = api_node_lease_timeout(
+        lease_timing,
+        phase_started,
+        lease_deadline,
+        "shared_traffic_started",
         BOUNDS["api_node_useful_traffic_seconds"],
-        survivor_evidence,
     )
-    recovery_ms = monotonic_ms(loss_started)
-    status, completed, _ = complete_task(task, SERVER_B)
+    try:
+        survivor = wait_for_survivor_traffic(
+            started["workflow_id"],
+            started["run_id"],
+            traffic_timeout,
+            survivor_evidence,
+        )
+    except AssertionError:
+        classify_api_node_lease_if_consumed(
+            lease_timing,
+            phase_started,
+            lease_deadline,
+            "shared_traffic_confirmed",
+        )
+        raise
+    api_node_lease_timeout(
+        lease_timing,
+        phase_started,
+        lease_deadline,
+        "shared_traffic_confirmed",
+        5,
+    )
+    recovery_ms = lease_timing["milestones_ms"]["shared_traffic_confirmed"]
+    completion_timeout = api_node_lease_timeout(
+        lease_timing,
+        phase_started,
+        lease_deadline,
+        "completion_started",
+        5,
+    )
+    status, completed, _ = complete_task(task, SERVER_B, timeout=completion_timeout)
+    completion_finished = record_api_node_lease_milestone(
+        lease_timing,
+        phase_started,
+        lease_deadline,
+        "completion_finished",
+    )
     phase_evidence["survivor_completion"] = {
         "http_status": status,
         "recorded": completed.get("recorded") is True,
+        "reason": completed.get("reason"),
         "completion_node": "server-b",
     }
+    if completion_finished >= lease_deadline - API_NODE_LEASE_GUARD_SECONDS:
+        classify_api_node_lease_consumption(
+            lease_timing,
+            phase_started,
+            lease_deadline,
+            "survivor_completion",
+        )
     require(status in (200, 202) and completed.get("recorded") is True, f"survivor completion failed: {status} {completed}")
+    lease_timing["completion_before_lease_expiry"] = True
     show_status, shown, _ = describe(started["workflow_id"], started["run_id"], SERVER_B)
     final_observation = nonterminal_run_observation(
         show_status,
@@ -1003,9 +1234,13 @@ def api_node_loss_phase() -> dict[str, Any]:
     return {
         "recovery_ms": recovery_ms,
         "lost_node_stopped": True,
+        "node_loss_mode": "sigkill",
         "shared_endpoint_reached_surviving_node": True,
         "survivor_response": survivor,
         "completion_node": "server-b",
+        "lease_expires_at": task["lease_expires_at"],
+        "lease_timing": lease_timing,
+        "completion_before_lease_expiry": True,
         "final_description": final_description,
         "final_status": final_summary["raw_status"],
         "acknowledged_state_present": True,

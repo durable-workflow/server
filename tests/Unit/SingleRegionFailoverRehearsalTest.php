@@ -90,6 +90,39 @@ class SingleRegionFailoverRehearsalTest extends TestCase
         $this->assertContains('duplicate_completion_refused', $scenario['required_evidence']);
     }
 
+    public function test_api_node_loss_contract_requires_live_lease_timing_evidence(): void
+    {
+        $manifest = SingleRegionFailoverContract::manifest();
+        $scenarioDocument = json_decode(
+            (string) file_get_contents(base_path('static/platform-conformance/single-region-failover-scenarios.json')),
+            true,
+            512,
+            JSON_THROW_ON_ERROR,
+        );
+        $scenario = current(array_filter(
+            $scenarioDocument['scenarios'],
+            static fn (array $candidate): bool => $candidate['id'] === 'api_node_loss',
+        ));
+
+        $this->assertSame([
+            'acknowledged_task',
+            'lease_timing',
+            'topology_after_loss',
+            'surviving_node_readiness',
+            'survivor_traffic',
+            'survivor_completion',
+            'final_description',
+            'compose_ps',
+            'load_balancer_logs',
+            'surviving_node_logs',
+        ], $manifest['host_runner_contract']['api_node_loss_evidence']);
+        $this->assertIsArray($scenario);
+        $this->assertContains('node_loss_mode', $scenario['required_evidence']);
+        $this->assertContains('lease_expires_at', $scenario['required_evidence']);
+        $this->assertContains('lease_timing', $scenario['required_evidence']);
+        $this->assertContains('completion_before_lease_expiry', $scenario['required_evidence']);
+    }
+
     public function test_compose_rehearsal_has_no_product_build_or_source_mount(): void
     {
         $compose = (string) file_get_contents(base_path('docker-compose.failover-rehearsal.yml'));

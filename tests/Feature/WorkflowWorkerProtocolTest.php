@@ -6,6 +6,7 @@ use App\Models\WorkerRegistration;
 use App\Models\WorkflowNamespace;
 use App\Support\LongPoller;
 use App\Support\LongPollSignalStore;
+use App\Support\SingleRegionFailoverContract;
 use App\Support\WorkerProtocol;
 use App\Support\WorkflowTaskLeaseConfiguration;
 use Illuminate\Foundation\Testing\RefreshDatabase;
@@ -3471,6 +3472,118 @@ class WorkflowWorkerProtocolTest extends TestCase
             ->assertJsonPath('lease_owner', 'lease-worker-two');
 
         $this->assertSame((string) $start->json('run_id'), WorkflowTask::query()->findOrFail($taskId)->workflow_run_id);
+    }
+
+    public function test_released_eight_second_failover_lease_accepts_completion_before_expiry(): void
+    {
+        Queue::fake();
+
+        config(['server.lease.workflow_task_timeout' => 8]);
+        $this->assertSame(8, WorkflowTaskLeaseConfiguration::apply());
+        $this->assertSame(
+            8,
+            SingleRegionFailoverContract::manifest()['recovery_bounds']['workflow_task_lease_seconds'],
+        );
+
+        $claimedAt = Carbon::parse('2026-07-15T20:10:00Z');
+        $this->travelTo($claimedAt);
+        $this->configureWorkflowTypes();
+        $this->createNamespace('default', 'Default namespace');
+
+        $this->withHeaders($this->apiHeaders())
+            ->postJson('/api/workflows', [
+                'workflow_id' => 'wf-api-node-live-lease',
+                'workflow_type' => 'tests.external-greeting-workflow',
+                'task_queue' => 'external-workflows',
+                'input' => ['Ada'],
+            ])
+            ->assertCreated();
+
+        $this->registerWorker('api-node-loss-worker', 'external-workflows');
+        $poll = $this->withHeaders($this->workerHeaders())
+            ->postJson('/api/worker/workflow-tasks/poll', [
+                'worker_id' => 'api-node-loss-worker',
+                'task_queue' => 'external-workflows',
+            ])
+            ->assertOk();
+
+        $taskId = (string) $poll->json('task.task_id');
+        $attempt = (int) $poll->json('task.workflow_task_attempt');
+        $leaseExpiresAt = Carbon::parse((string) $poll->json('task.lease_expires_at'));
+        $this->assertTrue($leaseExpiresAt->equalTo($claimedAt->copy()->addSeconds(8)));
+
+        $completionAt = $claimedAt->copy()->addSeconds(7);
+        $this->travelTo($completionAt);
+        $this->withHeaders($this->workerHeaders())
+            ->postJson("/api/worker/workflow-tasks/{$taskId}/complete", [
+                'lease_owner' => 'api-node-loss-worker',
+                'workflow_task_attempt' => $attempt,
+                'commands' => [
+                    [
+                        'type' => 'complete_workflow',
+                        'result' => Serializer::serializeWithCodec('avro', ['survivor' => true]),
+                    ],
+                ],
+            ])
+            ->assertOk()
+            ->assertJsonPath('run_status', 'completed');
+
+        $this->assertTrue($completionAt->lessThan($leaseExpiresAt));
+        $this->assertSame(TaskStatus::Completed, WorkflowTask::query()->findOrFail($taskId)->status);
+    }
+
+    public function test_released_eight_second_failover_lease_rejects_stale_completion_with_typed_error(): void
+    {
+        Queue::fake();
+
+        config(['server.lease.workflow_task_timeout' => 8]);
+        $this->assertSame(8, WorkflowTaskLeaseConfiguration::apply());
+
+        $claimedAt = Carbon::parse('2026-07-15T20:20:00Z');
+        $this->travelTo($claimedAt);
+        $this->configureWorkflowTypes();
+        $this->createNamespace('default', 'Default namespace');
+
+        $this->withHeaders($this->apiHeaders())
+            ->postJson('/api/workflows', [
+                'workflow_id' => 'wf-api-node-expired-lease',
+                'workflow_type' => 'tests.external-greeting-workflow',
+                'task_queue' => 'external-workflows',
+                'input' => ['Ada'],
+            ])
+            ->assertCreated();
+
+        $this->registerWorker('expired-api-node-loss-worker', 'external-workflows');
+        $poll = $this->withHeaders($this->workerHeaders())
+            ->postJson('/api/worker/workflow-tasks/poll', [
+                'worker_id' => 'expired-api-node-loss-worker',
+                'task_queue' => 'external-workflows',
+            ])
+            ->assertOk();
+
+        $taskId = (string) $poll->json('task.task_id');
+        $attempt = (int) $poll->json('task.workflow_task_attempt');
+        $leaseExpiresAt = Carbon::parse((string) $poll->json('task.lease_expires_at'));
+        $this->assertTrue($leaseExpiresAt->equalTo($claimedAt->copy()->addSeconds(8)));
+
+        $this->travelTo($claimedAt->copy()->addSeconds(9));
+        $this->withHeaders($this->workerHeaders())
+            ->postJson("/api/worker/workflow-tasks/{$taskId}/complete", [
+                'lease_owner' => 'expired-api-node-loss-worker',
+                'workflow_task_attempt' => $attempt,
+                'commands' => [
+                    [
+                        'type' => 'complete_workflow',
+                        'result' => Serializer::serializeWithCodec('avro', ['stale' => true]),
+                    ],
+                ],
+            ])
+            ->assertConflict()
+            ->assertJsonPath('reason', 'lease_expired')
+            ->assertJsonPath('lease_owner', 'expired-api-node-loss-worker')
+            ->assertJsonPath('lease_expires_at', $leaseExpiresAt->toJSON());
+
+        $this->assertNotSame(TaskStatus::Completed, WorkflowTask::query()->findOrFail($taskId)->status);
     }
 
     public function test_it_proactively_repairs_expired_workflow_task_leases_when_a_new_worker_polls(): void

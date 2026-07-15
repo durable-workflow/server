@@ -397,6 +397,9 @@ class ResultGateTest(unittest.TestCase):
         }
         compose_calls = []
         completion_bases = []
+        lease_expires_at = (
+            runner.utc_now() + runner.dt.timedelta(seconds=runner.BOUNDS["workflow_task_lease_seconds"])
+        ).isoformat().replace("+00:00", "Z")
 
         def fake_compose(*args, **_kwargs):
             compose_calls.append(args)
@@ -419,7 +422,7 @@ class ResultGateTest(unittest.TestCase):
                 "is_terminal": True,
             }, 4
 
-        def fake_complete(task, base):
+        def fake_complete(task, base, **_kwargs):
             completion_bases.append(base)
             return 202, {"recorded": True, "run_id": task["run_id"]}, 2
 
@@ -437,6 +440,7 @@ class ResultGateTest(unittest.TestCase):
                 "task_id": "task-1",
                 "lease_owner": "worker-1",
                 "workflow_task_attempt": 1,
+                "lease_expires_at": lease_expires_at,
             }
             runner.compose = fake_compose
             runner.ready = lambda base, *_args, **_kwargs: {
@@ -450,10 +454,33 @@ class ResultGateTest(unittest.TestCase):
             result = runner.api_node_loss_phase()
 
             self.assertEqual([runner.SERVER_B], completion_bases)
-            self.assertIn(("stop", "server-a"), compose_calls)
+            self.assertIn(("kill", "server-a"), compose_calls)
+            self.assertNotIn(("stop", "server-a"), compose_calls)
             self.assertIn(("start", "server-a"), compose_calls)
             self.assertTrue(result["lost_node_stopped"])
+            self.assertEqual("sigkill", result["node_loss_mode"])
             self.assertTrue(result["shared_endpoint_reached_surviving_node"])
+            self.assertEqual(lease_expires_at, result["lease_expires_at"])
+            self.assertTrue(result["completion_before_lease_expiry"])
+            self.assertEqual(8, result["lease_timing"]["advertised_lease_seconds"])
+            self.assertGreater(
+                result["lease_timing"]["lease_remaining_ms"]["completion_finished"],
+                0,
+            )
+            self.assertEqual(
+                [
+                    "completion_finished",
+                    "completion_started",
+                    "node_loss_completed",
+                    "node_loss_started",
+                    "shared_traffic_confirmed",
+                    "shared_traffic_started",
+                    "survivor_readiness_confirmed",
+                    "survivor_readiness_started",
+                    "task_claim_observed",
+                ],
+                sorted(result["lease_timing"]["milestones_ms"]),
+            )
             self.assertEqual("pending", result["survivor_response"]["response_summary"]["raw_status"])
             self.assertEqual("completed", result["final_description"]["response_summary"]["raw_status"])
             self.assertEqual("workflow-1", result["final_description"]["response_summary"]["workflow_id"])
@@ -461,6 +488,66 @@ class ResultGateTest(unittest.TestCase):
         finally:
             for name, value in originals.items():
                 setattr(runner, name, value)
+
+    def test_api_node_loss_fails_as_harness_timing_when_node_loss_consumes_the_eight_second_lease(self) -> None:
+        claimed_at = runner.dt.datetime(2026, 7, 15, 20, 0, tzinfo=runner.dt.timezone.utc)
+        lease_expires_at = (
+            claimed_at + runner.dt.timedelta(seconds=runner.BOUNDS["workflow_task_lease_seconds"])
+        ).isoformat().replace("+00:00", "Z")
+        compose_calls = []
+        completion = mock.Mock(side_effect=AssertionError("completion must not be attempted"))
+
+        class Clock:
+            value = 100.0
+
+            def monotonic(self) -> float:
+                return self.value
+
+        clock = Clock()
+
+        def fake_compose(*args, **_kwargs):
+            compose_calls.append(args)
+            if args == ("kill", "server-a"):
+                clock.value += 9
+            return subprocess.CompletedProcess(args, 0, "", "")
+
+        with (
+            mock.patch.object(runner.time, "monotonic", clock.monotonic),
+            mock.patch.multiple(
+                runner,
+                utc_now=lambda: claimed_at,
+                register_worker=lambda *_args, **_kwargs: {},
+                start_workflow=lambda *_args, **_kwargs: {
+                    "workflow_id": "workflow-1",
+                    "run_id": "run-1",
+                    "status": 201,
+                    "ack_ms": 1,
+                },
+                poll_task=lambda *_args, **_kwargs: {
+                    "workflow_id": "workflow-1",
+                    "run_id": "run-1",
+                    "task_id": "task-1",
+                    "lease_owner": "worker-1",
+                    "workflow_task_attempt": 1,
+                    "lease_expires_at": lease_expires_at,
+                },
+                compose=fake_compose,
+                complete_task=completion,
+            ),
+            self.assertRaisesRegex(
+                AssertionError,
+                "api_node_loss harness_timing: lease budget exhausted before node_loss_completed",
+            ),
+        ):
+            runner.api_node_loss_phase()
+
+        timing = runner.RESULT["phase_evidence"]["api_node_loss"]["lease_timing"]
+        self.assertEqual("harness_timing", timing["failure_classification"])
+        self.assertEqual(8, timing["advertised_lease_seconds"])
+        self.assertEqual(9000, timing["milestones_ms"]["node_loss_completed"])
+        self.assertLess(timing["lease_remaining_ms"]["node_loss_completed"], 0)
+        self.assertEqual([("kill", "server-a")], compose_calls)
+        completion.assert_not_called()
 
     def test_database_interruption_accepts_every_public_running_raw_status(self) -> None:
         for raw_status in ("pending", "running", "waiting"):
