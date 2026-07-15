@@ -4,8 +4,8 @@
 declare(strict_types=1);
 
 $packageName = 'durable-workflow/workflow';
-$workflowRef = getenv('WORKFLOW_PACKAGE_REF') ?: '2.0.0-alpha.280';
-$workflowCommit = getenv('WORKFLOW_PACKAGE_COMMIT') ?: '3fa9bff54c8ccef5537a885b167e470a629661b9';
+$workflowRef = getenv('WORKFLOW_PACKAGE_REF') ?: '2.0.0-alpha.284';
+$workflowCommit = getenv('WORKFLOW_PACKAGE_COMMIT') ?: '80bef5d9bf01f3282c088b59c433e46b8b146617';
 $workflowPath = getenv('WORKFLOW_PACKAGE_PATH') ?: '/workflow';
 $composerPath = getenv('COMPOSER_JSON_PATH') ?: getcwd().'/composer.json';
 $provenancePath = $workflowPath.'/.package-provenance';
@@ -40,7 +40,7 @@ function readJsonObject(string $path): array
 }
 
 /**
- * @param array<string, mixed> $contents
+ * @param  array<string, mixed>  $contents
  */
 function writeJsonObject(string $path, array $contents): void
 {

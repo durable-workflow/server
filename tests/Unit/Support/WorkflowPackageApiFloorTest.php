@@ -37,6 +37,7 @@ use Workflow\V2\Support\WorkerProtocolVersion;
 use Workflow\V2\Support\WorkflowCommandNormalizer;
 use Workflow\V2\Support\WorkflowDefinition;
 use Workflow\V2\Support\WorkflowQueryContract;
+use Workflow\V2\Support\WorkflowTaskLease;
 
 /**
  * Pins the API floor contract the server relies on from
@@ -87,6 +88,27 @@ class WorkflowPackageApiFloorTest extends TestCase
 
         $this->assertTrue($method->isPublic());
         $this->assertTrue($method->isStatic());
+    }
+
+    public function test_workflow_task_lease_authority_is_public_package_api(): void
+    {
+        $reflection = new ReflectionClass(WorkflowTaskLease::class);
+
+        foreach (['seconds', 'expiresAt'] as $methodName) {
+            $method = $reflection->getMethod($methodName);
+
+            $this->assertTrue($method->isPublic());
+            $this->assertTrue($method->isStatic());
+        }
+
+        foreach (['CONFIG_KEY', 'DEFAULT_SECONDS'] as $constantName) {
+            $constant = $reflection->getReflectionConstant($constantName);
+
+            $this->assertNotFalse($constant);
+            $this->assertTrue($constant->isPublic());
+        }
+
+        $this->assertSame('workflows.v2.workflow_task_lease_seconds', WorkflowTaskLease::CONFIG_KEY);
     }
 
     public function test_backend_capabilities_class_exists(): void
@@ -361,6 +383,7 @@ class WorkflowPackageApiFloorTest extends TestCase
             'continue_as_new' => ['arguments'],
             'complete_update' => ['result'],
             'record_side_effect' => ['result'],
+            'start_service_operation' => ['request_payload'],
         ], WorkflowCommandNormalizer::payloadEnvelopeFields());
 
         $this->assertTrue($this->invokeConfirmsWorkflowCommandNormalizerPayloadEnvelopeContract());

@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Tests\Unit;
 
 use PHPUnit\Framework\TestCase;
+use Workflow\V2\Support\PlatformProtocolSpecs;
 
 class ReleaseImagePublishWorkflowContractTest extends TestCase
 {
@@ -101,8 +102,8 @@ class ReleaseImagePublishWorkflowContractTest extends TestCase
         $metadataScript = $this->read('scripts/ci/prepare-release-workflow-composer-metadata.php');
 
         foreach ([
-            'ARG WORKFLOW_PACKAGE_REF=2.0.0-alpha.280',
-            'ARG WORKFLOW_PACKAGE_COMMIT=3fa9bff54c8ccef5537a885b167e470a629661b9',
+            'ARG WORKFLOW_PACKAGE_REF=2.0.0-alpha.284',
+            'ARG WORKFLOW_PACKAGE_COMMIT=80bef5d9bf01f3282c088b59c433e46b8b146617',
             'WORKFLOW_PACKAGE_COMMIT must be a full lowercase Git SHA',
             'if [ "${RESOLVED_COMMIT}" != "${WORKFLOW_PACKAGE_COMMIT}" ]',
             'git -C /workflow diff --quiet HEAD --',
@@ -222,7 +223,7 @@ class ReleaseImagePublishWorkflowContractTest extends TestCase
         $this->assertStringContainsString('FROM php:8.3-cli AS base', $dockerfile);
         $this->assertStringContainsString('nodejs', $dockerfile);
         $this->assertStringContainsString('if ! require_command node; then', $activitiesRunner);
-        $this->assertStringContainsString("required command not found: node", $activitiesRunner);
+        $this->assertStringContainsString('required command not found: node', $activitiesRunner);
 
         $baseOffset = strpos($dockerfile, 'FROM php:8.3-cli AS base');
         $nodeOffset = strpos($dockerfile, 'nodejs');
@@ -262,8 +263,8 @@ class ReleaseImagePublishWorkflowContractTest extends TestCase
 
     public function test_docker_build_docs_compose_and_ci_defaults_match_workflow_package_fallback(): void
     {
-        $fallback = '2.0.0-alpha.280';
-        $commit = '3fa9bff54c8ccef5537a885b167e470a629661b9';
+        $fallback = '2.0.0-alpha.284';
+        $commit = '80bef5d9bf01f3282c088b59c433e46b8b146617';
 
         foreach ([
             'Dockerfile',
@@ -292,8 +293,8 @@ class ReleaseImagePublishWorkflowContractTest extends TestCase
 
         $readme = $this->read('README.md');
 
-        $this->assertStringContainsString('WORKFLOW_PACKAGE_REF=2.0.0-alpha.280', $readme);
-        $this->assertStringContainsString('The Dockerfile clones the `durable-workflow/workflow` `2.0.0-alpha.280` tag', $readme);
+        $this->assertStringContainsString('WORKFLOW_PACKAGE_REF=2.0.0-alpha.284', $readme);
+        $this->assertStringContainsString('The Dockerfile clones the `durable-workflow/workflow` `2.0.0-alpha.284` tag', $readme);
         $this->assertStringContainsString('Composer package metadata', $readme);
         $this->assertStringNotContainsString('The Dockerfile clones the `durable-workflow/workflow` `2.0.0-alpha.200` tag', $readme);
         $this->assertStringNotContainsString('The image build fetches the `durable-workflow/workflow` `2.0.0-alpha.200`', $readme);
@@ -304,9 +305,9 @@ class ReleaseImagePublishWorkflowContractTest extends TestCase
         $workflow = $this->read('.github/workflows/phpunit-feature.yml');
 
         foreach ([
-            'ref: 2.0.0-alpha.280',
-            'WORKFLOW_PACKAGE_REF: 2.0.0-alpha.280',
-            'WORKFLOW_PACKAGE_COMMIT: 3fa9bff54c8ccef5537a885b167e470a629661b9',
+            'ref: 2.0.0-alpha.284',
+            'WORKFLOW_PACKAGE_REF: 2.0.0-alpha.284',
+            'WORKFLOW_PACKAGE_COMMIT: 80bef5d9bf01f3282c088b59c433e46b8b146617',
             'git -C workflow-package rev-parse HEAD',
             'if [[ "$resolved_commit" != "$WORKFLOW_PACKAGE_COMMIT" ]]',
             '> workflow-package/.package-provenance',
@@ -330,9 +331,9 @@ class ReleaseImagePublishWorkflowContractTest extends TestCase
     {
         $workflow = $this->read('.github/workflows/release.yml');
 
-        $this->assertStringContainsString('WORKFLOW_PACKAGE_REF: 2.0.0-alpha.280', $workflow);
+        $this->assertStringContainsString('WORKFLOW_PACKAGE_REF: 2.0.0-alpha.284', $workflow);
         $this->assertStringContainsString(
-            'WORKFLOW_PACKAGE_COMMIT: 3fa9bff54c8ccef5537a885b167e470a629661b9',
+            'WORKFLOW_PACKAGE_COMMIT: 80bef5d9bf01f3282c088b59c433e46b8b146617',
             $workflow,
         );
         $this->assertStringContainsString('scripts/ci/select-compatible-workflow-package-ref.sh', $workflow);
@@ -340,8 +341,8 @@ class ReleaseImagePublishWorkflowContractTest extends TestCase
 
     public function test_composer_metadata_identifies_the_exact_workflow_source(): void
     {
-        $expectedVersion = '2.0.0-alpha.280';
-        $expectedCommit = '3fa9bff54c8ccef5537a885b167e470a629661b9';
+        $expectedVersion = '2.0.0-alpha.284';
+        $expectedCommit = '80bef5d9bf01f3282c088b59c433e46b8b146617';
         $composer = json_decode($this->read('composer.json'), true, flags: JSON_THROW_ON_ERROR);
         $lock = json_decode($this->read('composer.lock'), true, flags: JSON_THROW_ON_ERROR);
 
@@ -610,8 +611,8 @@ SH);
             $result = $this->runScript('scripts/ci/verify-release-protocol-catalog.sh', [
                 'RELEASE_TAG' => '0.2.653',
                 'SERVER_IMAGE' => 'durableworkflow/server:0.2.653',
-                'WORKFLOW_PACKAGE_REF' => '2.0.0-alpha.280',
-                'WORKFLOW_PACKAGE_COMMIT' => '3fa9bff54c8ccef5537a885b167e470a629661b9',
+                'WORKFLOW_PACKAGE_REF' => '2.0.0-alpha.284',
+                'WORKFLOW_PACKAGE_COMMIT' => '80bef5d9bf01f3282c088b59c433e46b8b146617',
                 'DOCKER' => $dockerBin,
                 'CURL' => $curlBin,
                 'NODE' => $nodeBin,
@@ -706,8 +707,8 @@ SH);
             $result = $this->runScript('scripts/ci/verify-release-protocol-catalog.sh', [
                 'RELEASE_TAG' => '0.2.653',
                 'SERVER_IMAGE' => 'durableworkflow/server:0.2.653',
-                'WORKFLOW_PACKAGE_REF' => '2.0.0-alpha.280',
-                'WORKFLOW_PACKAGE_COMMIT' => '3fa9bff54c8ccef5537a885b167e470a629661b9',
+                'WORKFLOW_PACKAGE_REF' => '2.0.0-alpha.284',
+                'WORKFLOW_PACKAGE_COMMIT' => '80bef5d9bf01f3282c088b59c433e46b8b146617',
                 'DOCKER' => $dockerBin,
                 'DW_FAKE_EVENT_LOG' => $eventLog,
                 'RUNNER_TEMP' => $tmpDir,
@@ -741,11 +742,11 @@ SH);
 
     public function test_release_protocol_catalog_comparator_reports_version_and_field_set_drift(): void
     {
-        $catalog = \Workflow\V2\Support\PlatformProtocolSpecs::manifest();
+        $catalog = PlatformProtocolSpecs::manifest();
         $provenance = [
             'source' => 'https://github.com/durable-workflow/workflow.git',
-            'ref' => '2.0.0-alpha.280',
-            'commit' => '3fa9bff54c8ccef5537a885b167e470a629661b9',
+            'ref' => '2.0.0-alpha.284',
+            'commit' => '80bef5d9bf01f3282c088b59c433e46b8b146617',
         ];
 
         $passing = $this->runProtocolCatalogComparator($catalog, [
@@ -1962,8 +1963,8 @@ SH;
     }
 
     /**
-     * @param array<string, mixed> $publicCatalog
-     * @param array<string, mixed> $serverDiscovery
+     * @param  array<string, mixed>  $publicCatalog
+     * @param  array<string, mixed>  $serverDiscovery
      * @return array{exitCode:int, stdout:string, stderr:string, evidence:array<string, mixed>}
      */
     private function runProtocolCatalogComparator(array $publicCatalog, array $serverDiscovery): array
@@ -1983,8 +1984,8 @@ SH;
                 'PROTOCOL_CATALOG_CONFORMANCE_EVIDENCE' => $evidencePath,
                 'RELEASE_TAG' => '0.2.651',
                 'SERVER_IMAGE' => 'durableworkflow/server:0.2.651',
-                'WORKFLOW_PACKAGE_REF' => '2.0.0-alpha.280',
-                'WORKFLOW_PACKAGE_COMMIT' => '3fa9bff54c8ccef5537a885b167e470a629661b9',
+                'WORKFLOW_PACKAGE_REF' => '2.0.0-alpha.284',
+                'WORKFLOW_PACKAGE_COMMIT' => '80bef5d9bf01f3282c088b59c433e46b8b146617',
             ]);
 
             $this->assertFileExists($evidencePath);
@@ -2005,7 +2006,7 @@ SH;
     }
 
     /**
-     * @param array<string, string> $env
+     * @param  array<string, string>  $env
      * @return array{exitCode:int, stdout:string, stderr:string}
      */
     private function runGuard(array $env): array
@@ -2014,7 +2015,7 @@ SH;
     }
 
     /**
-     * @param array<string, string> $env
+     * @param  array<string, string>  $env
      * @return array{exitCode:int, stdout:string, stderr:string}
      */
     private function runScript(string $path, array $env): array

@@ -2,6 +2,7 @@
 
 namespace App\Support;
 
+use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\DB;
 use Throwable;
 use Workflow\Serializers\CodecRegistry;
@@ -151,6 +152,8 @@ final class ExternalWorkflowUpdateAdmission
                 'accepted_at' => $command->accepted_at,
             ]);
 
+            $predecessor = UpdateCommandGate::blockingSignal($run, $command->command_sequence);
+
             $accepted = WorkflowHistoryEvent::record($run, HistoryEventType::UpdateAccepted, [
                 'workflow_command_id' => $command->id,
                 'update_id' => $update->id,
@@ -158,6 +161,10 @@ final class ExternalWorkflowUpdateAdmission
                 'workflow_run_id' => $run->id,
                 'update_name' => $updateName,
                 'arguments' => $serializedArguments,
+                'ordering_state' => $predecessor instanceof WorkflowCommand ? 'queued' : 'ready',
+                'queued_behind_command_id' => $predecessor?->id,
+                'queued_behind_command_sequence' => $predecessor?->command_sequence,
+                'queued_behind_command_type' => $predecessor?->command_type?->value,
             ], null, $command);
 
             if ($requestId !== null) {
@@ -166,7 +173,9 @@ final class ExternalWorkflowUpdateAdmission
                 $accepted->forceFill(['payload' => $payload])->save();
             }
 
-            $this->wakeWorkflowTask($run, $update);
+            if (! $predecessor instanceof WorkflowCommand) {
+                $this->wakeWorkflowTask($run, $update);
+            }
             $this->projectRun($run);
 
             return $this->resultPayload($command, $update, $waitFor, false, $waitTimeoutSeconds);
@@ -184,10 +193,6 @@ final class ExternalWorkflowUpdateAdmission
     private function shouldHandle(WorkflowRun $run, string $updateName): bool
     {
         if (! in_array($run->status, [RunStatus::Pending, RunStatus::Running, RunStatus::Waiting], true)) {
-            return false;
-        }
-
-        if (UpdateCommandGate::blockedReason($run) !== null) {
             return false;
         }
 
@@ -210,7 +215,7 @@ final class ExternalWorkflowUpdateAdmission
             return null;
         }
 
-        /** @var \Illuminate\Support\Collection<int, WorkflowCommand> $commands */
+        /** @var Collection<int, WorkflowCommand> $commands */
         $commands = WorkflowCommand::query()
             ->where('workflow_run_id', $run->id)
             ->where('command_type', CommandType::Update->value)

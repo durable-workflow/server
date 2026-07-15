@@ -9,27 +9,27 @@ use App\Support\ActivityRuntimeContract;
 use App\Support\ActivityRuntimeResultGate;
 use App\Support\ChildWorkflowRuntimeContract;
 use App\Support\ChildWorkflowRuntimeResultGate;
-use App\Support\CoordinationHealthContract;
 use App\Support\ControlPlaneProtocol;
+use App\Support\CoordinationHealthContract;
 use App\Support\HeartbeatRuntimeContract;
 use App\Support\HeartbeatRuntimeResultGate;
 use App\Support\MigrationRuntimeContract;
 use App\Support\MigrationRuntimeResultGate;
 use App\Support\NamespaceRuntimeContract;
 use App\Support\NamespaceRuntimeResultGate;
-use App\Support\PrincipalAttributionContract;
-use App\Support\PrincipalAttributionResultGate;
+use App\Support\PhpSdkConformanceContract;
 use App\Support\PrereleaseReadinessContract;
 use App\Support\PrereleaseReadinessResultGate;
-use App\Support\PhpSdkConformanceContract;
+use App\Support\PrincipalAttributionContract;
+use App\Support\PrincipalAttributionResultGate;
 use App\Support\PythonSdkParityContract;
 use App\Support\SagaRuntimeContract;
 use App\Support\SagaRuntimeResultGate;
+use App\Support\SchedulesRuntimeContract;
+use App\Support\SchedulesRuntimeResultGate;
 use App\Support\SearchAttributeRuntimeContract;
 use App\Support\SearchAttributeRuntimeResultGate;
 use App\Support\ServerTopology;
-use App\Support\SchedulesRuntimeContract;
-use App\Support\SchedulesRuntimeResultGate;
 use App\Support\SignalQueryRuntimeContract;
 use App\Support\SignalQueryRuntimeResultGate;
 use App\Support\SingleRegionFailoverContract;
@@ -41,6 +41,7 @@ use App\Support\WorkerVersioningRuntimeContract;
 use App\Support\WorkerVersioningRuntimeResultGate;
 use App\Support\WorkflowLifecycleContract;
 use App\Support\WorkflowLifecycleResultGate;
+use App\Support\WorkflowTaskLeaseConfiguration;
 use App\Support\WorkflowUpdateRuntimeContract;
 use App\Support\WorkflowUpdateRuntimeResultGate;
 use Illuminate\Foundation\Testing\RefreshDatabase;
@@ -717,7 +718,7 @@ class ClusterInfoTest extends TestCase
             );
 
         $contract = $response->json('single_region_failover_contract');
-        $this->assertSame(7, $contract['version']);
+        $this->assertSame(8, $contract['version']);
         $this->assertSame(2, $contract['required_topology']['api_nodes']);
         $this->assertSame(1, $contract['required_topology']['queue_workers']);
         $this->assertSame(1, $contract['required_topology']['scheduler_maintenance_runners']);
@@ -1899,7 +1900,22 @@ class ClusterInfoTest extends TestCase
             ->assertJsonPath('topology.matching_role.wake_owner', 'dedicated_repair_pass')
             ->assertJsonPath('topology.matching_role.task_dispatch_mode', 'queue')
             ->assertJsonPath('topology.matching_role.partition_primitives.1', 'queue')
-            ->assertJsonPath('topology.matching_role.backpressure_model', 'lease_ownership');
+            ->assertJsonPath('topology.matching_role.backpressure_model', 'lease_ownership')
+            ->assertJsonPath(
+                'topology.matching_role.discovery_limits.workflow_task_lease_seconds',
+                (int) config('server.lease.workflow_task_timeout'),
+            );
+    }
+
+    public function test_cluster_discovery_and_failover_contract_publish_the_effective_workflow_task_lease(): void
+    {
+        config(['server.lease.workflow_task_timeout' => 8]);
+        WorkflowTaskLeaseConfiguration::apply();
+
+        $this->getJson('/api/cluster/info')
+            ->assertOk()
+            ->assertJsonPath('topology.matching_role.discovery_limits.workflow_task_lease_seconds', 8)
+            ->assertJsonPath('single_region_failover_contract.recovery_bounds.workflow_task_lease_seconds', 8);
     }
 
     public function test_it_publishes_external_execution_surface_contract_manifest(): void

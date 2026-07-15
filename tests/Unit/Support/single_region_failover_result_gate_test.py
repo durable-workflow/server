@@ -89,6 +89,38 @@ class ResultGateTest(unittest.TestCase):
                 with self.assertRaisesRegex(AssertionError, "non-canonical"):
                     runner.parse_public_suite_schema(contract)
 
+    def test_released_lease_discovery_must_match_the_runner_configuration(self) -> None:
+        contract = {
+            "recovery_bounds": {
+                "workflow_task_lease_seconds": 8,
+            },
+        }
+        cluster = {
+            "topology": {
+                "matching_role": {
+                    "discovery_limits": {
+                        "workflow_task_lease_seconds": 8,
+                    },
+                },
+            },
+        }
+
+        self.assertEqual(8, runner.require_effective_workflow_task_lease(cluster, contract, 8))
+
+        with self.assertRaisesRegex(AssertionError, "failover contract disagrees"):
+            runner.require_effective_workflow_task_lease(
+                cluster,
+                {"recovery_bounds": {"workflow_task_lease_seconds": 300}},
+                8,
+            )
+
+        with self.assertRaisesRegex(AssertionError, "cluster discovery disagrees"):
+            runner.require_effective_workflow_task_lease(
+                {"topology": {"matching_role": {"discovery_limits": {}}}},
+                contract,
+                8,
+            )
+
     def test_cache_readiness_requires_the_cache_check_to_recover(self) -> None:
         original_ready = runner.ready
 

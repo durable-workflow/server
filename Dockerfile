@@ -37,8 +37,8 @@ WORKDIR /app
 FROM base AS production
 
 ARG WORKFLOW_PACKAGE_SOURCE=https://github.com/durable-workflow/workflow.git
-ARG WORKFLOW_PACKAGE_REF=2.0.0-alpha.280
-ARG WORKFLOW_PACKAGE_COMMIT=3fa9bff54c8ccef5537a885b167e470a629661b9
+ARG WORKFLOW_PACKAGE_REF=2.0.0-alpha.284
+ARG WORKFLOW_PACKAGE_COMMIT=80bef5d9bf01f3282c088b59c433e46b8b146617
 
 RUN apt-get update \
     && apt-get install -y --no-install-recommends git \

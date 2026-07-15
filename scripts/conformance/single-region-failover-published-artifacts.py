@@ -312,6 +312,31 @@ def parse_public_suite_schema(contract: Any) -> str:
     return suite_schema
 
 
+def require_effective_workflow_task_lease(
+    cluster: dict[str, Any],
+    contract: dict[str, Any],
+    expected_seconds: int,
+) -> int:
+    contract_lease_seconds = contract.get("recovery_bounds", {}).get("workflow_task_lease_seconds")
+    discovery_lease_seconds = (
+        cluster.get("topology", {})
+        .get("matching_role", {})
+        .get("discovery_limits", {})
+        .get("workflow_task_lease_seconds")
+    )
+    require(
+        contract_lease_seconds == expected_seconds,
+        "released image failover contract disagrees with the configured workflow-task lease: "
+        f"contract={contract_lease_seconds!r} configured={expected_seconds!r}",
+    )
+    require(
+        discovery_lease_seconds == expected_seconds,
+        "released image cluster discovery disagrees with the configured workflow-task lease: "
+        f"discovery={discovery_lease_seconds!r} configured={expected_seconds!r}",
+    )
+    return discovery_lease_seconds
+
+
 def nonterminal_run_observation(
     http_status: int,
     body: Any,
@@ -847,6 +872,11 @@ def start_topology() -> dict[str, Any]:
     contract = cluster.get("single_region_failover_contract", {})
     require(contract.get("schema") == "durable-workflow.v2.single-region-failover.contract", "released image does not expose the single-region failover contract")
     require(contract.get("host_runner_contract", {}).get("runner_key") == "single-region-failover", "released image exposes an incompatible runner contract")
+    discovery_lease_seconds = require_effective_workflow_task_lease(
+        cluster,
+        contract,
+        BOUNDS["workflow_task_lease_seconds"],
+    )
     suite_schema = parse_public_suite_schema(contract)
     run_status_contract = parse_public_run_status_contract(contract.get("run_status_contract"))
     PUBLIC_RUN_STATUS_CONTRACT.clear()
@@ -854,6 +884,7 @@ def start_topology() -> dict[str, Any]:
     RESULT["artifacts"]["server_reported_version"] = cluster.get("version")
     RESULT["artifacts"]["suite_schema"] = suite_schema
     RESULT["artifacts"]["run_status_contract"] = run_status_contract
+    RESULT["artifacts"]["workflow_task_lease_seconds"] = discovery_lease_seconds
     return {
         "running_services": sorted(running),
         "cluster_info_contract_version": contract.get("version"),

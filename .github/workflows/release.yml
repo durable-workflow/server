@@ -18,8 +18,8 @@ permissions:
 env:
   DOCKERHUB_IMAGE: durableworkflow/server
   GHCR_IMAGE: ghcr.io/durable-workflow/server
-  WORKFLOW_PACKAGE_REF: 2.0.0-alpha.280
-  WORKFLOW_PACKAGE_COMMIT: 3fa9bff54c8ccef5537a885b167e470a629661b9
+  WORKFLOW_PACKAGE_REF: 2.0.0-alpha.284
+  WORKFLOW_PACKAGE_COMMIT: 80bef5d9bf01f3282c088b59c433e46b8b146617
 
 jobs:
   publish:

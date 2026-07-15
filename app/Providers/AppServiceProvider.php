@@ -12,6 +12,7 @@ use App\Support\ServerWorkflowControlPlane;
 use App\Support\ServiceCallBoundary;
 use App\Support\ServiceModeBusDispatcher;
 use App\Support\WorkflowPackageApiFloor;
+use App\Support\WorkflowTaskLeaseConfiguration;
 use Illuminate\Contracts\Bus\Dispatcher as BusDispatcher;
 use Illuminate\Support\ServiceProvider;
 use Workflow\V2\Contracts\ExternalPayloadStoragePolicy;
@@ -108,6 +109,8 @@ class AppServiceProvider extends ServiceProvider
         // hard-to-diagnose fatals on /api/cluster/info or queue capability
         // failures in service mode.
         WorkflowPackageApiFloor::assert();
+
+        WorkflowTaskLeaseConfiguration::apply();
 
         config([
             'workflows.v2.fleet.validation_mode' => config('server.fleet_validation_mode', 'warn'),

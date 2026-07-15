@@ -15,8 +15,8 @@ use Workflow\V2\Contracts\ServiceControlPlane;
 use Workflow\V2\Contracts\WorkflowTaskBridge;
 use Workflow\V2\Exceptions\ExternalPayloadIntegrityException;
 use Workflow\V2\Exceptions\WorkflowOutputCodecUnavailableException;
-use Workflow\V2\Models\WorkflowSearchAttribute;
 use Workflow\V2\Models\WorkflowRun;
+use Workflow\V2\Models\WorkflowSearchAttribute;
 use Workflow\V2\Support\BackendCapabilities;
 use Workflow\V2\Support\ChildWorkflowNamespaceProjection;
 use Workflow\V2\Support\DefaultMatchingRole;
@@ -33,6 +33,7 @@ use Workflow\V2\Support\WorkerProtocolVersion;
 use Workflow\V2\Support\WorkflowCommandNormalizer;
 use Workflow\V2\Support\WorkflowDefinition;
 use Workflow\V2\Support\WorkflowQueryContract;
+use Workflow\V2\Support\WorkflowTaskLease;
 
 /**
  * Enforces the minimum `durable-workflow/workflow` API surface the server
@@ -68,6 +69,10 @@ final class WorkflowPackageApiFloor
         // Cluster discovery now reuses the package-owned matching-role
         // contract instead of duplicating the routing fields in server code.
         [MatchingRoleSnapshot::class, 'current'],
+        // WorkflowTaskLease is the package-owned authority for every
+        // workflow-task claim and renewal duration in standalone mode.
+        [WorkflowTaskLease::class, 'seconds'],
+        [WorkflowTaskLease::class, 'expiresAt'],
         // ServiceExecutionContract::manifest() publishes the service-layer
         // execution contract that /api/cluster/info re-exports.
         [ServiceExecutionContract::class, 'manifest'],
@@ -121,6 +126,8 @@ final class WorkflowPackageApiFloor
         [WorkflowSearchAttribute::class, 'TYPE_STRING'],
         [WorkflowSearchAttribute::class, 'TYPE_FLOAT'],
         [WorkflowSearchAttribute::class, 'TYPE_KEYWORD_LIST'],
+        [WorkflowTaskLease::class, 'CONFIG_KEY'],
+        [WorkflowTaskLease::class, 'DEFAULT_SECONDS'],
     ];
 
     /**
@@ -320,6 +327,7 @@ final class WorkflowPackageApiFloor
             .'against a v2 snapshot that '
             .'advertises worker protocol %s and '
             .'includes CodecRegistry::universal(), CodecRegistry::engineSpecific(), MatchingRoleSnapshot::current(), '
+            .'WorkflowTaskLease::seconds(), WorkflowTaskLease::expiresAt(), '
             .'the filtered WorkflowTaskBridge::poll() and ActivityTaskBridge::poll() contracts, '
             .'the poll-mode queue capability demotion, the matching-role repair-pass contract, '
             .'the service execution control-plane contract, the worker-session protocol contract, '

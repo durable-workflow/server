@@ -7,7 +7,9 @@ use App\Models\WorkflowNamespace;
 use App\Support\LongPoller;
 use App\Support\LongPollSignalStore;
 use App\Support\WorkerProtocol;
+use App\Support\WorkflowTaskLeaseConfiguration;
 use Illuminate\Foundation\Testing\RefreshDatabase;
+use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\Queue;
 use Mockery\MockInterface;
 use Tests\Fixtures\ExternalGreetingWorkflow;
@@ -30,6 +32,7 @@ use Workflow\V2\Support\DefaultWorkflowTaskBridge;
 use Workflow\V2\Support\WorkerCompatibilityFleet;
 use Workflow\V2\Support\WorkerHistoryPayloadContract;
 use Workflow\V2\Support\WorkerProtocolVersion;
+use Workflow\V2\Support\WorkflowTaskLease;
 
 class WorkflowWorkerProtocolTest extends TestCase
 {
@@ -3381,6 +3384,93 @@ class WorkflowWorkerProtocolTest extends TestCase
             ->assertJsonPath('task.lease_owner', 'php-worker-process-unidentified-activity');
 
         $this->assertNotSame($staleActivityAttemptId, $reclaimed->json('task.activity_attempt_id'));
+    }
+
+    public function test_standalone_timeout_drives_real_claim_expiry_reclaim_and_stale_owner_fencing(): void
+    {
+        Queue::fake();
+
+        config(['server.lease.workflow_task_timeout' => 1]);
+        $this->assertSame(1, WorkflowTaskLeaseConfiguration::apply());
+        $this->assertSame(1, config(WorkflowTaskLease::CONFIG_KEY));
+
+        $this->configureWorkflowTypes();
+        $this->createNamespace('default', 'Default namespace');
+
+        $start = $this->withHeaders($this->apiHeaders())
+            ->postJson('/api/workflows', [
+                'workflow_id' => 'wf-standalone-workflow-task-lease',
+                'workflow_type' => 'tests.external-greeting-workflow',
+                'task_queue' => 'external-workflows',
+                'input' => ['Ada'],
+            ])
+            ->assertCreated();
+
+        $this->registerWorker('lease-worker-one', 'external-workflows');
+        $this->registerWorker('lease-worker-two', 'external-workflows');
+
+        $claimStartedAt = now();
+        $firstPoll = $this->withHeaders($this->workerHeaders())
+            ->postJson('/api/worker/workflow-tasks/poll', [
+                'worker_id' => 'lease-worker-one',
+                'task_queue' => 'external-workflows',
+            ]);
+        $claimReturnedAt = now();
+
+        $firstPoll->assertOk()
+            ->assertJsonPath('task.workflow_id', 'wf-standalone-workflow-task-lease')
+            ->assertJsonPath('task.lease_owner', 'lease-worker-one')
+            ->assertJsonPath('task.workflow_task_attempt', 1);
+
+        $taskId = (string) $firstPoll->json('task.task_id');
+        $firstAttempt = (int) $firstPoll->json('task.workflow_task_attempt');
+        $returnedExpiry = Carbon::parse((string) $firstPoll->json('task.lease_expires_at'));
+        $persistedExpiry = WorkflowTask::query()->findOrFail($taskId)->lease_expires_at;
+
+        $this->assertNotNull($persistedExpiry);
+        $this->assertLessThanOrEqual(1, $persistedExpiry->diffInMilliseconds($returnedExpiry));
+        $this->assertTrue($returnedExpiry->betweenIncluded(
+            $claimStartedAt->copy()->addSecond()->subMilliseconds(10),
+            $claimReturnedAt->copy()->addSecond()->addMilliseconds(10),
+        ));
+
+        $waitDeadline = microtime(true) + 3;
+        while (now()->lessThanOrEqualTo($persistedExpiry) && microtime(true) < $waitDeadline) {
+            usleep(25_000);
+        }
+
+        $this->assertTrue(now()->greaterThan($persistedExpiry));
+        // Cross the next whole-second tick so SQLite's timestamp comparison
+        // observes the same expired boundary as microsecond-capable backends.
+        usleep(1_100_000);
+
+        $secondPoll = $this->withHeaders($this->workerHeaders())
+            ->postJson('/api/worker/workflow-tasks/poll', [
+                'worker_id' => 'lease-worker-two',
+                'task_queue' => 'external-workflows',
+            ]);
+
+        $secondPoll->assertOk()
+            ->assertJsonPath('task.task_id', $taskId)
+            ->assertJsonPath('task.lease_owner', 'lease-worker-two')
+            ->assertJsonPath('task.workflow_task_attempt', $firstAttempt + 1);
+
+        $this->withHeaders($this->workerHeaders())
+            ->postJson("/api/worker/workflow-tasks/{$taskId}/complete", [
+                'lease_owner' => 'lease-worker-one',
+                'workflow_task_attempt' => $firstAttempt,
+                'commands' => [
+                    [
+                        'type' => 'complete_workflow',
+                        'result' => Serializer::serializeWithCodec('avro', ['stale' => true]),
+                    ],
+                ],
+            ])
+            ->assertConflict()
+            ->assertJsonPath('reason', 'lease_owner_mismatch')
+            ->assertJsonPath('lease_owner', 'lease-worker-two');
+
+        $this->assertSame((string) $start->json('run_id'), WorkflowTask::query()->findOrFail($taskId)->workflow_run_id);
     }
 
     public function test_it_proactively_repairs_expired_workflow_task_leases_when_a_new_worker_polls(): void

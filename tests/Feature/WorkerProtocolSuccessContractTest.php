@@ -737,7 +737,7 @@ class WorkerProtocolSuccessContractTest extends TestCase
         $this->assertContains('UpdateAccepted', $eventTypes);
     }
 
-    public function test_external_worker_declared_update_contract_accepts_update_tasks_without_local_definition(): void
+    public function test_external_worker_declared_update_queues_behind_earlier_signal_without_local_definition(): void
     {
         Queue::fake();
 
@@ -826,6 +826,16 @@ class WorkerProtocolSuccessContractTest extends TestCase
             ],
         ], $this->workerProtocolHeaders()));
 
+        $signal = $this->postJson('/api/workflows/wf-external-update-contract/signal/advance', [
+            'request_id' => 'external-signal-before-update-1',
+        ], $this->apiHeaders());
+
+        $signal->assertAccepted()
+            ->assertJsonPath('signal_name', 'advance')
+            ->assertJsonPath('command_status', 'accepted');
+
+        $signalCommandId = (string) $signal->json('command_id');
+
         $update = $this->postJson('/api/workflows/wf-external-update-contract/update/approve', [
             'input' => [true, 'external-worker'],
             'request_id' => 'external-update-request-1',
@@ -848,6 +858,36 @@ class WorkerProtocolSuccessContractTest extends TestCase
             ->firstOrFail();
 
         $this->assertSame('external-update-request-1', $accepted->payload['request_id'] ?? null);
+        $this->assertSame('queued', $accepted->payload['ordering_state'] ?? null);
+        $this->assertSame($signalCommandId, $accepted->payload['queued_behind_command_id'] ?? null);
+        $this->assertSame('signal', $accepted->payload['queued_behind_command_type'] ?? null);
+
+        $signalPoll = $this->postJson('/api/worker/workflow-tasks/poll', [
+            'worker_id' => $workerId,
+            'task_queue' => $taskQueue,
+        ], $this->workerProtocolHeaders());
+
+        $this->assertWorkerProtocolSuccess($signalPoll)
+            ->assertJsonPath('task.workflow_id', 'wf-external-update-contract')
+            ->assertJsonPath('task.run_id', $runId)
+            ->assertJsonPath('task.workflow_wait_kind', 'signal')
+            ->assertJsonPath('task.workflow_command_id', $signalCommandId)
+            ->assertJsonPath('task.workflow_update_id', null);
+
+        $signalTaskId = (string) $signalPoll->json('task.task_id');
+        $signalAttempt = (int) $signalPoll->json('task.workflow_task_attempt');
+
+        $this->assertWorkerProtocolSuccess($this->postJson("/api/worker/workflow-tasks/{$signalTaskId}/complete", [
+            'lease_owner' => $workerId,
+            'workflow_task_attempt' => $signalAttempt,
+            'commands' => [
+                [
+                    'type' => 'open_signal_wait',
+                    'signal_name' => 'advance',
+                    'timeout_seconds' => 300,
+                ],
+            ],
+        ], $this->workerProtocolHeaders()));
 
         $updatePoll = $this->postJson('/api/worker/workflow-tasks/poll', [
             'worker_id' => $workerId,

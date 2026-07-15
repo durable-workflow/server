@@ -112,7 +112,8 @@ final class ServerTopology
      *     wake_owner: string,
      *     task_dispatch_mode: string,
      *     partition_primitives: list<string>,
-     *     backpressure_model: string
+     *     backpressure_model: string,
+     *     discovery_limits: array<string, int>
      * }
      */
     private static function matchingRole(): array
@@ -132,6 +133,10 @@ final class ServerTopology
         $backpressureModel = is_string($snapshot['backpressure_model'] ?? null) && $snapshot['backpressure_model'] !== ''
             ? $snapshot['backpressure_model']
             : 'lease_ownership';
+        $discoveryLimits = array_map(
+            static fn (mixed $value): int => (int) $value,
+            is_array($snapshot['discovery_limits'] ?? null) ? $snapshot['discovery_limits'] : [],
+        );
 
         return [
             'queue_wake_enabled' => $queueWakeEnabled,
@@ -140,6 +145,7 @@ final class ServerTopology
             'task_dispatch_mode' => $taskDispatchMode,
             'partition_primitives' => $partitionPrimitives,
             'backpressure_model' => $backpressureModel,
+            'discovery_limits' => $discoveryLimits,
         ];
     }
 

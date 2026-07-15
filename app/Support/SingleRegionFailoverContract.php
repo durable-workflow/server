@@ -4,6 +4,7 @@ namespace App\Support;
 
 use Workflow\V2\Enums\RunStatus;
 use Workflow\V2\Support\PlatformConformanceSuite;
+use Workflow\V2\Support\WorkflowTaskLease;
 
 /**
  * Published-artifact handoff for the self-serve single-region operating
@@ -14,7 +15,7 @@ final class SingleRegionFailoverContract
 {
     public const SCHEMA = 'durable-workflow.v2.single-region-failover.contract';
 
-    public const VERSION = 7;
+    public const VERSION = 8;
 
     public const RESULT_SCHEMA = 'durable-workflow.v2.single-region-failover.result';
 
@@ -88,7 +89,7 @@ final class SingleRegionFailoverContract
                 'redis_poll_discovery_seconds' => 10,
                 'redis_recovered_poll_discovery_seconds' => 3,
                 'redis_ready_after_return_seconds' => 15,
-                'workflow_task_lease_seconds' => 8,
+                'workflow_task_lease_seconds' => WorkflowTaskLease::seconds(),
                 'worker_repair_after_lease_seconds' => 10,
                 'scheduler_fire_after_restart_seconds' => 15,
             ],

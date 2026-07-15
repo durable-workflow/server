@@ -5,7 +5,10 @@ declare(strict_types=1);
 namespace Tests\Feature;
 
 use App\Providers\AppServiceProvider;
+use App\Support\WorkflowTaskLeaseConfiguration;
+use RuntimeException;
 use Tests\TestCase;
+use Workflow\V2\Support\WorkflowTaskLease;
 
 /**
  * Regression coverage for TD-S042.
@@ -98,6 +101,40 @@ class ServiceModeTaskDispatchDefaultTest extends TestCase
         $config = require __DIR__.'/../../config/server.php';
 
         $this->assertNull($config['task_dispatch_mode_override']);
+    }
+
+    public function test_cached_standalone_lease_config_maps_to_the_package_authority(): void
+    {
+        config(['server.lease.workflow_task_timeout' => 8]);
+
+        $this->assertSame(8, WorkflowTaskLeaseConfiguration::apply());
+        $this->assertSame(8, config(WorkflowTaskLease::CONFIG_KEY));
+        $this->assertSame(8, WorkflowTaskLease::seconds());
+    }
+
+    public function test_unusable_standalone_lease_config_fails_closed(): void
+    {
+        config(['server.lease.workflow_task_timeout' => 0]);
+
+        $this->expectException(RuntimeException::class);
+        $this->expectExceptionMessage('does not resolve to the Workflow package lease');
+
+        WorkflowTaskLeaseConfiguration::apply();
+    }
+
+    public function test_workflow_task_timeout_config_reflects_the_dw_environment_at_load_time(): void
+    {
+        putenv('DW_WORKFLOW_TASK_TIMEOUT=8');
+        $_ENV['DW_WORKFLOW_TASK_TIMEOUT'] = '8';
+
+        try {
+            $config = require __DIR__.'/../../config/server.php';
+
+            $this->assertSame(8, $config['lease']['workflow_task_timeout']);
+        } finally {
+            putenv('DW_WORKFLOW_TASK_TIMEOUT');
+            unset($_ENV['DW_WORKFLOW_TASK_TIMEOUT']);
+        }
     }
 
     private function rebootAppServiceProvider(): void
