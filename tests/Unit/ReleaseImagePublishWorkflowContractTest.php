@@ -339,6 +339,130 @@ class ReleaseImagePublishWorkflowContractTest extends TestCase
         $this->assertStringContainsString('scripts/ci/select-compatible-workflow-package-ref.sh', $workflow);
     }
 
+    public function test_release_recovery_retains_the_planned_commit_at_each_publication_boundary(): void
+    {
+        $workflow = $this->read('.github/workflows/release.yml');
+        $recovery = $this->read('.github/workflows/release-plan-recovery.yml');
+
+        foreach ([
+            'release_commit:',
+            "description: 'Exact source commit declared by the immutable release plan'",
+            'REQUESTED_COMMIT: ${{ github.event_name == \'workflow_dispatch\' && inputs.release_commit || \'\' }}',
+            'Verify immutable release tag at publication boundary',
+            '&& inputs.release_commit || steps.release_source.outputs.commit }}',
+            'scripts/ci/verify-release-tag-source.sh',
+            'Create the source GitHub Release',
+        ] as $needle) {
+            $this->assertStringContainsString($needle, $workflow);
+        }
+
+        $tagGuardOffset = strpos($workflow, 'Verify immutable release tag at publication boundary');
+        $buildOffset = strpos($workflow, 'Build and push exact image tags');
+        $releaseOffset = strpos($workflow, 'Create the source GitHub Release');
+
+        $this->assertIsInt($tagGuardOffset);
+        $this->assertIsInt($buildOffset);
+        $this->assertIsInt($releaseOffset);
+        $this->assertLessThan($buildOffset, $tagGuardOffset);
+        $this->assertLessThan($releaseOffset, $buildOffset);
+
+        $this->assertSame(2, substr_count($recovery, 'scripts/ci/verify-release-tag-source.sh'));
+        $this->assertStringContainsString('-f release_commit="$RELEASE_COMMIT"', $recovery);
+
+        $createOffset = strpos($recovery, 'Create the exact source tag');
+        $firstGuardOffset = strpos($recovery, 'scripts/ci/verify-release-tag-source.sh', $createOffset);
+        $startOffset = strpos($recovery, 'Start or resume repository-owned publication');
+        $secondGuardOffset = strpos($recovery, 'scripts/ci/verify-release-tag-source.sh', $startOffset);
+        $dispatchOffset = strpos($recovery, 'gh workflow run release.yml');
+
+        $this->assertIsInt($createOffset);
+        $this->assertIsInt($firstGuardOffset);
+        $this->assertIsInt($startOffset);
+        $this->assertIsInt($secondGuardOffset);
+        $this->assertIsInt($dispatchOffset);
+        $this->assertLessThan($firstGuardOffset, $createOffset);
+        $this->assertLessThan($startOffset, $firstGuardOffset);
+        $this->assertLessThan($secondGuardOffset, $startOffset);
+        $this->assertLessThan($dispatchOffset, $secondGuardOffset);
+    }
+
+    public function test_release_tag_source_guard_rejects_missing_wrong_and_moved_refs(): void
+    {
+        $plannedCommit = str_repeat('a', 40);
+        $wrongCommit = str_repeat('b', 40);
+        $movedCommit = str_repeat('c', 40);
+        $tagObject = str_repeat('d', 40);
+        $tmpDir = sys_get_temp_dir().'/release-tag-source-'.bin2hex(random_bytes(4));
+        $this->assertTrue(mkdir($tmpDir));
+        $fakeGh = $tmpDir.'/gh';
+        file_put_contents($fakeGh, <<<'SH'
+#!/usr/bin/env sh
+set -eu
+case "${FAKE_TAG_MODE:-commit}" in
+    missing)
+        exit 1
+        ;;
+    annotated)
+        case "$2" in
+            */git/ref/tags/*) printf 'tag %s\n' "$FAKE_TAG_OBJECT" ;;
+            */git/tags/*) printf 'commit %s\n' "$FAKE_TAG_SHA" ;;
+        esac
+        ;;
+    commit)
+        printf 'commit %s\n' "$FAKE_TAG_SHA"
+        ;;
+esac
+SH);
+        $this->assertTrue(chmod($fakeGh, 0755));
+        $baseEnvironment = [
+            'GH_CLI' => $fakeGh,
+            'GITHUB_REPOSITORY' => 'durable-workflow/server',
+            'RELEASE_TAG' => '1.2.3-alpha.4',
+            'RELEASE_COMMIT' => $plannedCommit,
+            'FAKE_TAG_OBJECT' => $tagObject,
+        ];
+
+        try {
+            $exact = $this->runScript('scripts/ci/verify-release-tag-source.sh', $baseEnvironment + [
+                'FAKE_TAG_MODE' => 'commit',
+                'FAKE_TAG_SHA' => $plannedCommit,
+            ]);
+            $this->assertSame(0, $exact['exitCode'], $exact['stderr']);
+
+            $annotated = $this->runScript('scripts/ci/verify-release-tag-source.sh', $baseEnvironment + [
+                'FAKE_TAG_MODE' => 'annotated',
+                'FAKE_TAG_SHA' => $plannedCommit,
+            ]);
+            $this->assertSame(0, $annotated['exitCode'], $annotated['stderr']);
+
+            $missing = $this->runScript('scripts/ci/verify-release-tag-source.sh', $baseEnvironment + [
+                'FAKE_TAG_MODE' => 'missing',
+                'FAKE_TAG_SHA' => $plannedCommit,
+            ]);
+            $this->assertSame(1, $missing['exitCode']);
+            $this->assertStringContainsString('does not exist', $missing['stderr']);
+
+            $wrong = $this->runScript('scripts/ci/verify-release-tag-source.sh', $baseEnvironment + [
+                'FAKE_TAG_MODE' => 'commit',
+                'FAKE_TAG_SHA' => $wrongCommit,
+            ]);
+            $this->assertSame(1, $wrong['exitCode']);
+            $this->assertStringContainsString('not planned commit', $wrong['stderr']);
+
+            // The same immutable identity is checked again at dispatch/publication time.
+            $moved = $this->runScript('scripts/ci/verify-release-tag-source.sh', $baseEnvironment + [
+                'FAKE_TAG_MODE' => 'commit',
+                'FAKE_TAG_SHA' => $movedCommit,
+            ]);
+            $this->assertSame(1, $moved['exitCode']);
+            $this->assertStringContainsString($movedCommit, $moved['stderr']);
+            $this->assertStringContainsString($plannedCommit, $moved['stderr']);
+        } finally {
+            @unlink($fakeGh);
+            @rmdir($tmpDir);
+        }
+    }
+
     public function test_composer_metadata_identifies_the_exact_workflow_source(): void
     {
         $expectedVersion = '2.0.0-alpha.284';
@@ -380,7 +504,7 @@ class ReleaseImagePublishWorkflowContractTest extends TestCase
         $this->assertStringContainsString('Verify exact image publication', $workflow);
         $this->assertStringContainsString('BUILT_IMAGE_DIGEST: ${{ steps.build.outputs.digest }}', $workflow);
         $this->assertStringContainsString('BUILT_IMAGE_METADATA: ${{ steps.build.outputs.metadata }}', $workflow);
-        $this->assertStringContainsString('RELEASE_COMMIT: ${{ github.sha }}', $workflow);
+        $this->assertStringContainsString('RELEASE_COMMIT: ${{ steps.release_source.outputs.commit }}', $workflow);
         $this->assertStringContainsString('RELEASE_RUN_ID: ${{ github.run_id }}', $workflow);
         $this->assertStringContainsString('RELEASE_RUN_ATTEMPT: ${{ github.run_attempt }}', $workflow);
         $this->assertStringContainsString('WORKFLOW_PACKAGE_REF: ${{ steps.workflow.outputs.tag }}', $workflow);
@@ -424,7 +548,8 @@ class ReleaseImagePublishWorkflowContractTest extends TestCase
 
         foreach ([
             'Classify live docs release readiness after public images',
-            "if: \${{ steps.exact.outputs.exact_publish_outcome == 'success' && steps.protocol_catalog.outputs.protocol_catalog_conformance_outcome == 'success' }}",
+            "steps.exact.outputs.exact_publish_outcome == 'success'",
+            "steps.protocol_catalog.outputs.protocol_catalog_conformance_outcome == 'success'",
             'DOCS_RELEASE_AUDIT_ARTIFACT: server',
             'DOCS_RELEASE_AUDIT_VERSION: ${{ steps.release_publish.outputs.tag || github.event.inputs.tag || github.ref_name }}',
             'DOCS_RELEASE_AUDIT_EVIDENCE: docs-release-audit-evidence.json',
@@ -436,8 +561,8 @@ class ReleaseImagePublishWorkflowContractTest extends TestCase
             $this->assertStringContainsString($needle, $workflow);
         }
 
-        $this->assertStringContainsString('contents: read', $workflow);
-        $this->assertStringNotContainsString('contents: write', $workflow);
+        $this->assertStringContainsString('contents: write', $workflow);
+        $this->assertStringNotContainsString('contents: read', $workflow);
         $this->assertStringContainsString('durable-workflow.release.docs-release-audit-evidence', $auditor);
         $this->assertStringContainsString('durable-workflow.release.docs-artifact-tuple-handoff', $auditor);
         $this->assertStringContainsString('DOCS_RELEASE_AUDIT_HANDOFF', $auditor);
