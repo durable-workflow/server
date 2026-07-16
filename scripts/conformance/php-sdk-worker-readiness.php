@@ -84,7 +84,10 @@ function command_names(mixed $names): array
  */
 function registration_has_contract(array $registration, array $required): bool
 {
-    if ($required['query_contracts'] === [] && $required['update_contracts'] === []) {
+    if ($required['query_contracts'] === []
+        && $required['signal_contracts'] === []
+        && $required['update_contracts'] === []
+    ) {
         return in_array(
             $required['workflow_type'],
             command_names($registration['supported_workflow_types'] ?? null),
@@ -114,6 +117,8 @@ $required = $scope === 'namespace'
         'workflow_type' => 'php.sdk.simple',
         'queries' => [],
         'query_contracts' => [],
+        'signals' => [],
+        'signal_contracts' => [],
         'updates' => [],
         'update_contracts' => [],
     ]
@@ -167,8 +172,10 @@ $workflowContract = is_array($contracts[$required['workflow_type']] ?? null)
     ? $contracts[$required['workflow_type']]
     : [];
 $nameOnly = command_names($workflowContract['queries'] ?? null) === $required['queries']
+    && command_names($workflowContract['signals'] ?? null) === $required['signals']
     && command_names($workflowContract['updates'] ?? null) === $required['updates']
     && (($required['query_contracts'] !== [] && ($workflowContract['query_contracts'] ?? []) === [])
+        || ($required['signal_contracts'] !== [] && ($workflowContract['signal_contracts'] ?? []) === [])
         || ($required['update_contracts'] !== [] && ($workflowContract['update_contracts'] ?? []) === []));
 $contractMatches = registration_has_contract($registration, $required);
 $observation = [

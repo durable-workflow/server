@@ -7,6 +7,8 @@ declare(strict_types=1);
  *     workflow_type: string,
  *     queries: list<string>,
  *     query_contracts: list<array{name: string, parameters: list<array<string, mixed>>}>,
+ *     signals: list<string>,
+ *     signal_contracts: list<array{name: string, parameters: list<array<string, mixed>>}>,
  *     updates: list<string>,
  *     update_contracts: list<array{name: string, parameters: list<array<string, mixed>>}>
  * }
@@ -19,6 +21,20 @@ function php_sdk_waiting_command_contract(): array
         'query_contracts' => [[
             'name' => 'current',
             'parameters' => [],
+        ]],
+        'signals' => ['increment'],
+        'signal_contracts' => [[
+            'name' => 'increment',
+            'parameters' => [[
+                'name' => 'amount',
+                'position' => 0,
+                'required' => true,
+                'variadic' => false,
+                'default_available' => false,
+                'default' => null,
+                'type' => 'int',
+                'allows_null' => false,
+            ]],
         ]],
         'updates' => ['set'],
         'update_contracts' => [[
@@ -78,6 +94,11 @@ function php_sdk_command_contract_matches(mixed $contract, array $required): boo
             $contract['query_contracts'] ?? null,
             $required['query_contracts'],
         )
+        && php_sdk_json_semantically_equal($contract['signals'] ?? null, $required['signals'])
+        && php_sdk_json_semantically_equal(
+            $contract['signal_contracts'] ?? null,
+            $required['signal_contracts'],
+        )
         && php_sdk_json_semantically_equal($contract['updates'] ?? null, $required['updates'])
         && php_sdk_json_semantically_equal(
             $contract['update_contracts'] ?? null,
@@ -93,6 +114,11 @@ function php_sdk_started_payload_matches(mixed $payload, array $required): bool
         && php_sdk_json_semantically_equal(
             $payload['declared_query_contracts'] ?? null,
             $required['query_contracts'],
+        )
+        && php_sdk_json_semantically_equal($payload['declared_signals'] ?? null, $required['signals'])
+        && php_sdk_json_semantically_equal(
+            $payload['declared_signal_contracts'] ?? null,
+            $required['signal_contracts'],
         )
         && php_sdk_json_semantically_equal($payload['declared_updates'] ?? null, $required['updates'])
         && php_sdk_json_semantically_equal(
@@ -140,6 +166,8 @@ function php_sdk_waiting_started_contract_evidence(
     $requiredPayload = [
         'declared_queries' => $required['queries'],
         'declared_query_contracts' => $required['query_contracts'],
+        'declared_signals' => $required['signals'],
+        'declared_signal_contracts' => $required['signal_contracts'],
         'declared_updates' => $required['updates'],
         'declared_update_contracts' => $required['update_contracts'],
     ];

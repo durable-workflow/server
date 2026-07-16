@@ -634,6 +634,7 @@ if ($argc < 9) {
 install_runtime_failure_handler('worker', $scope, [$controlToken, $workerToken]);
 $client = new Client($server, namespace: $namespace, controlToken: $controlToken, workerToken: $workerToken);
 $callbackFile = $resultDir.'/php-sdk-callback-counts.json';
+$signalReplayFile = $resultDir.'/php-sdk-waiting-signal-replay.json';
 $namespaceScope = $scope === 'namespace';
 
 function increment_callback(string $file, string $name): int
@@ -664,9 +665,10 @@ function increment_callback(string $file, string $name): int
     }
 }
 
-function decoded_signal_total(QueryContext $context, Client $client): int
+/** @return list<int> */
+function decoded_signal_inputs(QueryContext $context, Client $client): array
 {
-    $total = 0;
+    $inputs = [];
     foreach ($context->events('SignalReceived') as $event) {
         $payload = is_array($event['payload'] ?? null) ? $event['payload'] : [];
         if (($payload['signal_name'] ?? null) !== 'increment') {
@@ -675,10 +677,45 @@ function decoded_signal_total(QueryContext $context, Client $client): int
         $raw = $payload['value'] ?? $payload['input'] ?? $payload['arguments'] ?? null;
         $decoded = is_array($raw) || is_string($raw) ? $client->payloadCodec()->decodeEnvelope($raw) : [];
         $arguments = is_array($decoded) && array_is_list($decoded) ? $decoded : [$decoded];
-        $total += (int) ($arguments[0] ?? 0);
+        $inputs[] = (int) ($arguments[0] ?? 0);
     }
 
-    return $total;
+    return $inputs;
+}
+
+/** @param list<list<mixed>> $signals */
+function record_replay_signals(string $file, array $signals): void
+{
+    $inputs = array_map(
+        static fn (array $arguments): int => (int) ($arguments[0] ?? 0),
+        $signals,
+    );
+    $handle = fopen($file, 'c+');
+    if ($handle === false) {
+        throw new RuntimeException("Unable to open signal replay evidence {$file}.");
+    }
+    try {
+        if (! flock($handle, LOCK_EX)) {
+            throw new RuntimeException('Unable to lock signal replay evidence.');
+        }
+        $raw = stream_get_contents($handle);
+        $previous = is_string($raw) && trim($raw) !== '' ? json_decode($raw, true) : [];
+        $previousInputs = is_array($previous['inputs'] ?? null) ? $previous['inputs'] : [];
+        if (count($inputs) >= count($previousInputs)) {
+            ftruncate($handle, 0);
+            rewind($handle);
+            fwrite($handle, json_encode([
+                'signal_name' => 'increment',
+                'inputs' => $inputs,
+                'total' => array_sum($inputs),
+                'observed_during_workflow_replay' => true,
+            ], JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES)."\n");
+            fflush($handle);
+        }
+        flock($handle, LOCK_UN);
+    } finally {
+        fclose($handle);
+    }
 }
 
 $worker = new Worker($client, $queue, workerId: $workerId, heartbeatIntervalSeconds: 1);
@@ -714,13 +751,19 @@ if (! $namespaceScope) {
     );
     $worker->registerWorkflow(
         'php.sdk.waiting',
-        static function (WorkflowContext $context) use ($callbackFile): Generator {
+        static function (WorkflowContext $context) use ($callbackFile, $signalReplayFile): Generator {
             increment_callback($callbackFile, 'waiting_workflow_replays');
+            record_replay_signals($signalReplayFile, $context->signals('increment'));
             $context->throwIfCancellationRequested();
             yield $context->sleep(300);
 
             return ['unexpected' => 'timer-fired'];
         },
+    );
+    $worker->declareSignal(
+        'php.sdk.waiting',
+        'increment',
+        static fn (int $amount): mixed => null,
     );
     $worker->registerWorkflow(
         'php.sdk.failure',
@@ -743,8 +786,13 @@ if (! $namespaceScope) {
         'current',
         static function (QueryContext $context) use ($client, $callbackFile): array {
             increment_callback($callbackFile, 'query');
+            $inputs = decoded_signal_inputs($context, $client);
 
-            return ['total' => decoded_signal_total($context, $client), 'query_process_id' => getmypid()];
+            return [
+                'inputs' => $inputs,
+                'total' => array_sum($inputs),
+                'query_process_id' => getmypid(),
+            ];
         },
     );
     $worker->registerUpdate(
@@ -780,6 +828,7 @@ require __DIR__.'/started-contract.php';
 
 use Composer\InstalledVersions;
 use DurableWorkflow\Client;
+use DurableWorkflow\Exception\ServerException;
 use DurableWorkflow\Exception\WorkflowCancelled;
 use DurableWorkflow\Exception\WorkflowFailed;
 use DurableWorkflow\Exception\WorkflowTerminated;
@@ -808,6 +857,56 @@ function event_types(array $history): array
         static fn (array $event): string => (string) ($event['event_type'] ?? $event['type'] ?? ''),
         array_values(array_filter($history['events'] ?? $history['history'] ?? [], 'is_array')),
     ));
+}
+
+/** @return array{exception_type: string, status_code: int, reason: string|null, details: array<mixed>|null} */
+function capture_signal_refusal(callable $operation, int $expectedStatus, string $expectedReason): array
+{
+    try {
+        $operation();
+    } catch (ServerException $exception) {
+        if ($exception->status !== $expectedStatus || $exception->reason !== $expectedReason) {
+            throw new RuntimeException(sprintf(
+                'Signal refusal was HTTP %d reason=%s; expected HTTP %d reason=%s.',
+                $exception->status,
+                $exception->reason ?? 'null',
+                $expectedStatus,
+                $expectedReason,
+            ), previous: $exception);
+        }
+
+        return [
+            'exception_type' => $exception::class,
+            'status_code' => $exception->status,
+            'reason' => $exception->reason,
+            'details' => $exception->details,
+        ];
+    }
+
+    throw new RuntimeException("Signal command unexpectedly succeeded; expected {$expectedReason}.");
+}
+
+/** @return list<int> */
+function history_signal_inputs(array $history, Client $client, string $signalName): array
+{
+    $inputs = [];
+    foreach (array_filter($history['events'] ?? $history['history'] ?? [], 'is_array') as $event) {
+        if (($event['event_type'] ?? $event['type'] ?? null) !== 'SignalReceived') {
+            continue;
+        }
+        $payload = is_array($event['payload'] ?? null) ? $event['payload'] : [];
+        if (($payload['signal_name'] ?? null) !== $signalName) {
+            continue;
+        }
+        $raw = $payload['value'] ?? $payload['input'] ?? $payload['arguments'] ?? null;
+        $decoded = is_array($raw) || is_string($raw)
+            ? $client->payloadCodec()->decodeEnvelope($raw)
+            : [];
+        $arguments = is_array($decoded) && array_is_list($decoded) ? $decoded : [$decoded];
+        $inputs[] = (int) ($arguments[0] ?? 0);
+    }
+
+    return $inputs;
 }
 
 function run_namespace_probe(
@@ -964,8 +1063,26 @@ if ($phase === 'baseline' || $phase === 'namespace') {
     $addressable->signal('increment', [3]);
     set_runtime_failure_context('workflow.signal:increment', 'POST', '/api/workflows/{workflow_id}/signal/increment', $addressable->workflowId, $addressable->selectedRunId);
     $addressable->signal('increment', [5]);
+    set_runtime_failure_context('workflow.signal:undeclared', 'POST', '/api/workflows/{workflow_id}/signal/undeclared', $addressable->workflowId, $addressable->selectedRunId);
+    $unknownSignal = capture_signal_refusal(
+        static fn () => $addressable->signal('undeclared', [1]),
+        404,
+        'unknown_signal',
+    );
+    set_runtime_failure_context('workflow.signal:increment_invalid_arguments', 'POST', '/api/workflows/{workflow_id}/signal/increment', $addressable->workflowId, $addressable->selectedRunId);
+    $invalidSignalArguments = capture_signal_refusal(
+        static fn () => $addressable->signal('increment', ['not-an-integer']),
+        422,
+        'invalid_signal_arguments',
+    );
     set_runtime_failure_context('workflow.query:current', 'POST', '/api/workflows/{workflow_id}/query/current', $addressable->workflowId, $addressable->selectedRunId);
     $queryResult = $addressable->query('current');
+    set_runtime_failure_context('workflow.history:addressable_signals', 'GET', '/api/workflows/{workflow_id}/runs/{run_id}/history', $addressable->workflowId, $addressable->selectedRunId);
+    $addressableSignalHistory = $client->workflowHistory(
+        $addressable->workflowId,
+        (string) $addressable->selectedRunId,
+    );
+    $historySignalInputs = history_signal_inputs($addressableSignalHistory, $client, 'increment');
     set_runtime_failure_context('workflow.update:set', 'POST', '/api/workflows/{workflow_id}/update/set', $addressable->workflowId, $addressable->selectedRunId);
     $updateResult = $addressable->update('set', [13], waitTimeoutSeconds: 20, requestId: 'php-sdk-update-'.$suffix);
     set_runtime_failure_context('workflow.cancel', 'POST', '/api/workflows/{workflow_id}/cancel', $addressable->workflowId, $addressable->selectedRunId);
@@ -1031,7 +1148,16 @@ if ($phase === 'baseline' || $phase === 'namespace') {
             ),
             'deleted' => true,
         ],
-        'signal_query' => ['signals_sent' => 2, 'expected_total' => 8, 'query_result' => $queryResult],
+        'signal_query' => [
+            'signals_sent' => 2,
+            'accepted_inputs' => [3, 5],
+            'expected_total' => 8,
+            'query_result' => $queryResult,
+            'history_inputs' => $historySignalInputs,
+            'history_event_types' => event_types($addressableSignalHistory),
+            'unknown_signal' => $unknownSignal,
+            'invalid_signal_arguments' => $invalidSignalArguments,
+        ],
         'update' => ['request_id' => 'php-sdk-update-'.$suffix, 'result' => $updateResult],
         'workflow_started_command_contract' => $addressableStartedContract,
         'cancellation' => $cancelException + ['expected_type' => WorkflowCancelled::class],
@@ -1147,6 +1273,7 @@ $replayStart = read_json($resultDir.'/php-sdk-client-start-replay.json');
 $checkpoint = read_json($resultDir.'/php-sdk-client-replay-checkpoint.json');
 $replayFinish = read_json($resultDir.'/php-sdk-client-finish-replay.json');
 $callbacks = read_json($resultDir.'/php-sdk-callback-counts.json');
+$signalReplay = read_json($resultDir.'/php-sdk-waiting-signal-replay.json');
 $workerOne = read_json($resultDir.'/php-sdk-worker-php-sdk-worker-1.json');
 $workerTwo = read_json($resultDir.'/php-sdk-worker-php-sdk-worker-2.json');
 $lock = read_json($resultDir.'/php-sdk-project/composer.lock');
@@ -1207,7 +1334,20 @@ $assertions = [
         && ($startedEvent['event_type'] ?? $startedEvent['type'] ?? null) === 'WorkflowStarted'
         && php_sdk_started_payload_matches($startedEvent['payload'] ?? null, $requiredWaitingContract),
     'start_result' => ($baseline['simple_workflow']['status'] ?? null) === 'completed' && isset($baseline['simple_workflow']['result']),
-    'signal_query' => ($baseline['signal_query']['query_result']['total'] ?? null) === 8,
+    'signal_query' => ($baseline['signal_query']['signals_sent'] ?? null) === 2
+        && ($baseline['signal_query']['accepted_inputs'] ?? null) === [3, 5]
+        && ($baseline['signal_query']['query_result']['inputs'] ?? null) === [3, 5]
+        && ($baseline['signal_query']['query_result']['total'] ?? null) === 8
+        && ($baseline['signal_query']['history_inputs'] ?? null) === [3, 5],
+    'signal_replay_visibility' => ($signalReplay['signal_name'] ?? null) === 'increment'
+        && ($signalReplay['inputs'] ?? null) === [3, 5]
+        && ($signalReplay['total'] ?? null) === 8
+        && ($signalReplay['observed_during_workflow_replay'] ?? false),
+    'signal_negative_contracts' => ($baseline['signal_query']['unknown_signal']['status_code'] ?? null) === 404
+        && ($baseline['signal_query']['unknown_signal']['reason'] ?? null) === 'unknown_signal'
+        && ($baseline['signal_query']['invalid_signal_arguments']['status_code'] ?? null) === 422
+        && ($baseline['signal_query']['invalid_signal_arguments']['reason'] ?? null) === 'invalid_signal_arguments'
+        && ($baseline['signal_query']['history_inputs'] ?? null) === [3, 5],
     'update' => ($baseline['update']['result']['accepted'] ?? null) === true && ($baseline['update']['result']['value'] ?? null) === 13,
     'cancellation' => ($baseline['cancellation']['type'] ?? null) === ($baseline['cancellation']['expected_type'] ?? null),
     'termination' => ($baseline['termination']['type'] ?? null) === ($baseline['termination']['expected_type'] ?? null),
@@ -1250,6 +1390,8 @@ $assertionDomains = [
     'workflow_started_command_contract' => 'server',
     'start_result' => 'server',
     'signal_query' => 'server',
+    'signal_replay_visibility' => 'sdk',
+    'signal_negative_contracts' => 'server',
     'update' => 'sdk',
     'cancellation' => 'sdk',
     'termination' => 'sdk',
@@ -1317,6 +1459,8 @@ $observed = [
     'covered_cells' => $coveredCells,
     'unsupported_cells' => [],
     'typed_errors' => [
+        $baseline['signal_query']['unknown_signal'] ?? [],
+        $baseline['signal_query']['invalid_signal_arguments'] ?? [],
         $baseline['cancellation'] ?? [],
         $baseline['termination'] ?? [],
         $baseline['failure_envelope'] ?? [],
@@ -1354,6 +1498,8 @@ $observed = [
         'timer_fired_after_restart' => in_array('TimerFired', $history, true),
         'activity_callbacks_total_expected_two' => $assertions['activity_callback_once_for_replay'],
         'addressable_workflow_started_contract' => $startedContractEvidence,
+        'addressable_signal_inputs' => $baseline['signal_query']['history_inputs'] ?? [],
+        'workflow_replay_signal_evidence' => $signalReplay,
     ],
     'scenario_assertions' => $assertions,
     'failure_domains' => $failedByDomain,

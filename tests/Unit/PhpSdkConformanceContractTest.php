@@ -92,6 +92,10 @@ final class PhpSdkConformanceContractTest extends TestCase
         $this->assertStringContainsString('server_visible_workflow_command_contracts', $runner);
         $this->assertStringContainsString('worker_command_contract_readiness', $runner);
         $this->assertStringContainsString('workflow_started_command_contract', $runner);
+        $this->assertStringContainsString('$worker->declareSignal(', $runner);
+        $this->assertStringContainsString("'invalid_signal_arguments'", $runner);
+        $this->assertStringContainsString("'unknown_signal'", $runner);
+        $this->assertStringContainsString('php-sdk-waiting-signal-replay.json', $runner);
         $this->assertStringContainsString('worker_process_exit', $runner);
         $this->assertStringContainsString('worker_readiness_timeout', $runner);
         $this->assertStringContainsString('last_server_observation', $runner);
@@ -210,7 +214,7 @@ PHP);
             .'    usleep(300000);'."\n"
             .'    $contracts = [\'php.sdk.waiting\' => '.var_export($completeContract, true).'];'."\n"
             .'} elseif ($observation >= 2) {'."\n"
-            .'    $contracts = [\'php.sdk.waiting\' => [\'queries\' => [\'current\'], \'query_contracts\' => [], \'updates\' => [\'set\'], \'update_contracts\' => []]];'."\n"
+            .'    $contracts = [\'php.sdk.waiting\' => [\'queries\' => [\'current\'], \'query_contracts\' => [], \'signals\' => [\'increment\'], \'signal_contracts\' => [], \'updates\' => [\'set\'], \'update_contracts\' => []]];'."\n"
             .'} else {'."\n"
             .'    $contracts = [];'."\n"
             .'}'."\n"
@@ -366,6 +370,8 @@ PHP);
         $this->assertTrue(php_sdk_started_payload_matches([
             'declared_update_contracts' => $serverContract['update_contracts'],
             'declared_updates' => $serverContract['updates'],
+            'declared_signal_contracts' => $serverContract['signal_contracts'],
+            'declared_signals' => $serverContract['signals'],
             'declared_query_contracts' => $serverContract['query_contracts'],
             'declared_queries' => $serverContract['queries'],
         ], $required));
@@ -375,6 +381,10 @@ PHP);
         $invalidContracts['query name']['queries'][0] = 'changed';
         $invalidContracts['query contract name'] = $serverContract;
         $invalidContracts['query contract name']['query_contracts'][0]['name'] = 'changed';
+        $invalidContracts['signal name'] = $serverContract;
+        $invalidContracts['signal name']['signals'][0] = 'changed';
+        $invalidContracts['signal contract name'] = $serverContract;
+        $invalidContracts['signal contract name']['signal_contracts'][0]['name'] = 'changed';
         $invalidContracts['update name'] = $serverContract;
         $invalidContracts['update name']['updates'][0] = 'changed';
         $invalidContracts['update contract name'] = $serverContract;
@@ -391,6 +401,10 @@ PHP);
         ] as $label => [$field, $value]) {
             $invalidContracts[$label] = $serverContract;
             $invalidContracts[$label]['update_contracts'][0]['parameters'][0][$field] = $value;
+
+            $signalLabel = 'signal '.$label;
+            $invalidContracts[$signalLabel] = $serverContract;
+            $invalidContracts[$signalLabel]['signal_contracts'][0]['parameters'][0][$field] = $value;
         }
 
         foreach ($invalidContracts as $label => $invalidContract) {
@@ -435,6 +449,8 @@ PHP);
                 'payload' => [
                     'declared_queries' => ['current'],
                     'declared_query_contracts' => [],
+                    'declared_signals' => ['increment'],
+                    'declared_signal_contracts' => [],
                     'declared_updates' => ['set'],
                     'declared_update_contracts' => [],
                 ],
@@ -466,6 +482,12 @@ PHP);
             true,
         );
         $serverUpdateContracts[0] = array_reverse($serverUpdateContracts[0], true);
+        $serverSignalContracts = $required['signal_contracts'];
+        $serverSignalContracts[0]['parameters'][0] = array_reverse(
+            $serverSignalContracts[0]['parameters'][0],
+            true,
+        );
+        $serverSignalContracts[0] = array_reverse($serverSignalContracts[0], true);
         $started = [
             'sequence' => 1,
             'event_type' => 'WorkflowStarted',
@@ -473,6 +495,8 @@ PHP);
             'payload' => [
                 'declared_queries' => $required['queries'],
                 'declared_query_contracts' => $serverQueryContracts,
+                'declared_signals' => $required['signals'],
+                'declared_signal_contracts' => $serverSignalContracts,
                 'declared_updates' => $required['updates'],
                 'declared_update_contracts' => $serverUpdateContracts,
             ],
@@ -536,7 +560,7 @@ PHP);
         );
         $this->assertStringContainsString('finding.observed_evidence = runtimeFailure;', $runner);
         $this->assertStringContainsString('observed.runtime_failure_evidence = runtimeFailure;', $runner);
-        $this->assertStringContainsString('assertCompleteHttpFailureEvidence(runtimeFailure, requestedClassification);', $runner);
+        $this->assertStringContainsString('assertCompleteHttpFailureEvidence(runtimeFailure, classification);', $runner);
         $this->assertStringContainsString(
             'capture_expected_terminal_exception(',
             $runner,
