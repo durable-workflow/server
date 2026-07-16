@@ -22,6 +22,13 @@ jobs:
         with:
           persist-credentials: false
 
+      - name: Validate release recovery tooling
+        run: |
+          python -m py_compile \
+            scripts/ci/component-release-recovery.py \
+            scripts/ci/test-component-release-recovery.py
+          python scripts/ci/test-component-release-recovery.py
+
       - name: Checkout workflow package from GitHub
         if: github.server_url == 'https://github.com'
         uses: actions/checkout@v6
