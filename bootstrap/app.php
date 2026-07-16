@@ -4,6 +4,8 @@ use App\Http\Middleware\CompressResponse;
 use App\Http\Middleware\EnforcePayloadLimits;
 use App\Http\Middleware\RemoveServerHeader;
 use App\Support\BackendLockPressure;
+use App\Support\ControlPlaneFailureDiagnostics;
+use App\Support\ControlPlaneOperation;
 use App\Support\ControlPlaneProtocol;
 use App\Support\WorkerProtocol;
 use Illuminate\Foundation\Application;
@@ -100,15 +102,19 @@ return Application::configure(basePath: dirname(__DIR__))
             return ControlPlaneProtocol::jsonForRequest($request, $payload, $status);
         });
 
-        $exceptions->render(function (\Throwable $exception, Request $request) {
+        $exceptions->render(function (Throwable $exception, Request $request) {
             if (! BackendLockPressure::is($exception)) {
                 return null;
             }
 
+            $controlPlaneOperation = ControlPlaneOperation::fromRequest($request);
+
             if (ControlPlaneProtocol::requestVersion($request) === ControlPlaneProtocol::VERSION
-                && BackendLockPressure::isSqliteBackend()
+                && (BackendLockPressure::isSqliteBackend() || $controlPlaneOperation?->operation === 'signal')
             ) {
-                return BackendLockPressure::controlPlaneResponse($request);
+                $errorId = app(ControlPlaneFailureDiagnostics::class)->reportLockPressure($exception, $request);
+
+                return BackendLockPressure::controlPlaneResponse($request, $errorId);
             }
 
             $requestedVersion = WorkerProtocol::requestVersion($request);
@@ -140,5 +146,30 @@ return Application::configure(basePath: dirname(__DIR__))
                 is_string($namespace) && trim($namespace) !== '' ? trim($namespace) : 'default',
                 is_string($taskQueue) ? $taskQueue : '',
             );
+        });
+
+        $exceptions->render(function (Throwable $exception, Request $request) {
+            $operation = ControlPlaneOperation::fromRequest($request);
+
+            if (ControlPlaneProtocol::requestVersion($request) !== ControlPlaneProtocol::VERSION
+                || ! $operation instanceof ControlPlaneOperation
+                || $operation->operation !== 'signal'
+            ) {
+                return null;
+            }
+
+            $errorId = app(ControlPlaneFailureDiagnostics::class)->reportUnhandled($exception, $request);
+            $payload = [
+                'message' => 'The control-plane operation could not be completed.',
+                'reason' => 'control_plane_internal_error',
+                'command_status' => 'indeterminate',
+                'outcome' => 'operation_failed',
+                'rejection_category' => 'internal',
+                'retryable' => false,
+                'error_id' => $errorId,
+                'signal_name' => $operation->operationName,
+            ];
+
+            return ControlPlaneProtocol::jsonForRequest($request, $payload, 500);
         });
     })->create();

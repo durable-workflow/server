@@ -4,23 +4,23 @@ namespace App\Support;
 
 use Throwable;
 
-final class SqliteControlPlaneMutationRetrier
+final class ControlPlaneMutationRetrier
 {
     private const RETRY_DELAY_MILLISECONDS = 25;
 
     /**
-     * Retry a control-plane mutation only when SQLite reports transient write
-     * contention. The workflow mutation transactions are atomic, so a failed
-     * attempt is rolled back before the whole operation is invoked again.
+     * Retry a control-plane mutation only when the storage backend reports
+     * transient write contention. Callers must recover any already-committed
+     * result before an exception reaches this boundary.
      *
      * @template TResult
      *
      * @param  callable(): TResult  $mutation
      * @return TResult
      */
-    public function run(callable $mutation): mixed
+    public function run(callable $mutation, bool $allBackends = false): mixed
     {
-        if (! BackendLockPressure::isSqliteBackend()) {
+        if (! $allBackends && ! BackendLockPressure::isSqliteBackend()) {
             return $mutation();
         }
 

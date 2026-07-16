@@ -117,6 +117,8 @@ final class ControlPlaneResponseContract
                 'command_contract_backfill_available',
                 'declared_signals',
                 'signal_admission',
+                'retryable',
+                'error_id',
             ],
             'rejection_reasons' => [
                 'instance_not_found',
@@ -128,6 +130,8 @@ final class ControlPlaneResponseContract
                 'selected_run_not_current',
                 'configured_workflow_type_invalid',
                 'v1_projection_read_only',
+                'backend_lock_pressure',
+                'control_plane_internal_error',
             ],
         ],
         'query' => [
@@ -256,6 +260,8 @@ final class ControlPlaneResponseContract
         'declared_signals',
         'signal_admission',
         'diagnostic_status',
+        'retryable',
+        'error_id',
     ];
 
     /**

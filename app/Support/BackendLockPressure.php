@@ -44,7 +44,7 @@ final class BackendLockPressure
             if ($current instanceof QueryException || $current instanceof PDOException) {
                 $errorInfo = $current->errorInfo ?? null;
 
-                if (is_array($errorInfo) && self::hasSqliteBusyCode($errorInfo)) {
+                if (is_array($errorInfo) && self::hasConcurrencyErrorCode($errorInfo)) {
                     return true;
                 }
             }
@@ -78,13 +78,14 @@ final class BackendLockPressure
         ], 503)->header('Retry-After', (string) self::RETRY_AFTER_SECONDS);
     }
 
-    public static function controlPlaneResponse(Request $request): JsonResponse
+    public static function controlPlaneResponse(Request $request, ?string $errorId = null): JsonResponse
     {
         return ControlPlaneProtocol::jsonForRequest($request, [
             'message' => 'The database backend is temporarily locked while applying the control-plane operation. Retry with backoff.',
             'reason' => 'backend_lock_pressure',
             'retryable' => true,
             'retry_after_seconds' => self::RETRY_AFTER_SECONDS,
+            'error_id' => $errorId,
             'backend' => [
                 'driver' => self::workflowDriverName(),
                 'lock_pressure' => true,
@@ -100,14 +101,14 @@ final class BackendLockPressure
     /**
      * @param  array<int, mixed>  $errorInfo
      */
-    private static function hasSqliteBusyCode(array $errorInfo): bool
+    private static function hasConcurrencyErrorCode(array $errorInfo): bool
     {
         foreach ($errorInfo as $part) {
-            if ($part === 5 || $part === 6) {
+            if (in_array($part, [5, 6, 1205, 1213, '40001', '40P01', '55P03'], true)) {
                 return true;
             }
 
-            if (is_string($part) && in_array((int) $part, [5, 6], true)) {
+            if (is_string($part) && in_array((int) $part, [5, 6, 1205, 1213], true)) {
                 return true;
             }
         }

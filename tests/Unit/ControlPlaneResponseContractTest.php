@@ -37,6 +37,8 @@ class ControlPlaneResponseContractTest extends TestCase
         $this->assertContains('reason', ControlPlaneResponseContract::manifest()['projected_fields']);
         $this->assertContains('message', ControlPlaneResponseContract::manifest()['projected_fields']);
         $this->assertContains('principal', ControlPlaneResponseContract::manifest()['projected_fields']);
+        $this->assertContains('retryable', ControlPlaneResponseContract::manifest()['projected_fields']);
+        $this->assertContains('error_id', ControlPlaneResponseContract::manifest()['projected_fields']);
     }
 
     public function test_manifest_publishes_signal_rejection_contract_diagnostics(): void
@@ -48,6 +50,8 @@ class ControlPlaneResponseContractTest extends TestCase
             'historical_run_command_rejected',
             'unknown_signal',
             'configured_workflow_type_invalid',
+            'backend_lock_pressure',
+            'control_plane_internal_error',
         ] as $reason) {
             $this->assertContains($reason, $signal['rejection_reasons']);
         }
@@ -61,6 +65,8 @@ class ControlPlaneResponseContractTest extends TestCase
             'command_contract_backfill_available',
             'declared_signals',
             'signal_admission',
+            'retryable',
+            'error_id',
         ] as $field) {
             $this->assertContains($field, $signal['rejection_fields']);
             $this->assertContains($field, ControlPlaneResponseContract::manifest()['projected_fields']);

@@ -34,7 +34,7 @@ use Workflow\V2\Support\WorkflowTaskPayload;
 final class ExternalWorkflowUpdateAdmission
 {
     public function __construct(
-        private readonly SqliteControlPlaneMutationRetrier $mutations,
+        private readonly ControlPlaneMutationRetrier $mutations,
     ) {}
 
     /**

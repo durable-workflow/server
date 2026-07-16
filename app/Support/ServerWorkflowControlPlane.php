@@ -2,12 +2,18 @@
 
 namespace App\Support;
 
+use Throwable;
 use Workflow\Serializers\CodecRegistry;
 use Workflow\Serializers\Serializer;
 use Workflow\V2\CommandContext;
+use Workflow\V2\CommandResult;
 use Workflow\V2\Contracts\WorkflowControlPlane;
+use Workflow\V2\Enums\CommandStatus;
+use Workflow\V2\Enums\HistoryEventType;
 use Workflow\V2\Enums\RunStatus;
+use Workflow\V2\Models\WorkflowCommand;
 use Workflow\V2\Models\WorkflowRun;
+use Workflow\V2\Support\CommandResponse;
 use Workflow\V2\Support\DefaultWorkflowControlPlane;
 use Workflow\V2\Workflow;
 
@@ -16,7 +22,8 @@ final class ServerWorkflowControlPlane implements WorkflowControlPlane
     public function __construct(
         private readonly DefaultWorkflowControlPlane $inner,
         private readonly WorkflowQueryTaskBroker $queryTasks,
-        private readonly SqliteControlPlaneMutationRetrier $mutations,
+        private readonly ControlPlaneMutationRetrier $mutations,
+        private readonly ControlPlaneFailureDiagnostics $failureDiagnostics,
     ) {}
 
     public function start(string $workflowType, ?string $instanceId = null, array $options = []): array
@@ -27,7 +34,22 @@ final class ServerWorkflowControlPlane implements WorkflowControlPlane
     public function signal(string $instanceId, string $name, array $options = []): array
     {
         return $this->mutations->run(
-            fn (): array => $this->inner->signal($instanceId, $name, $options),
+            function () use ($instanceId, $name, $options): array {
+                try {
+                    return $this->inner->signal($instanceId, $name, $options);
+                } catch (Throwable $exception) {
+                    $command = $this->committedSignalForRequest($instanceId, $name, $options);
+
+                    if (! $command instanceof WorkflowCommand) {
+                        throw $exception;
+                    }
+
+                    $this->failureDiagnostics->reportRecoveredSignal($exception, $command, $name);
+
+                    return $this->signalResult($command, $instanceId, $name);
+                }
+            },
+            allBackends: true,
         );
     }
 
@@ -98,7 +120,7 @@ final class ServerWorkflowControlPlane implements WorkflowControlPlane
     }
 
     /**
-     * @param array<string, mixed> $options
+     * @param  array<string, mixed>  $options
      */
     private function namespace(array $options): ?string
     {
@@ -131,7 +153,7 @@ final class ServerWorkflowControlPlane implements WorkflowControlPlane
     }
 
     /**
-     * @param array<string, mixed> $options
+     * @param  array<string, mixed>  $options
      * @return array<string, mixed>
      */
     private function queryArgumentsEnvelope(array $options, WorkflowRun $run): array
@@ -161,7 +183,7 @@ final class ServerWorkflowControlPlane implements WorkflowControlPlane
     }
 
     /**
-     * @param array<string, mixed> $options
+     * @param  array<string, mixed>  $options
      */
     private function commandContext(array $options): ?CommandContext
     {
@@ -175,6 +197,73 @@ final class ServerWorkflowControlPlane implements WorkflowControlPlane
         return is_string($value) && trim($value) !== ''
             ? trim($value)
             : null;
+    }
+
+    /**
+     * @param  array<string, mixed>  $options
+     */
+    private function committedSignalForRequest(
+        string $instanceId,
+        string $signalName,
+        array $options,
+    ): ?WorkflowCommand {
+        $context = $options['command_context'] ?? null;
+
+        if (! $context instanceof CommandContext) {
+            return null;
+        }
+
+        $attributes = $context->attributes();
+        $operationId = data_get($attributes, 'context.server.operation_id');
+        $requestId = data_get($attributes, 'context.request.request_id');
+        $fingerprint = data_get($attributes, 'context.request.fingerprint');
+
+        if (! is_string($operationId) || trim($operationId) === ''
+            || ! is_string($fingerprint) || trim($fingerprint) === '') {
+            return null;
+        }
+
+        return WorkflowCommand::query()
+            ->where('workflow_instance_id', $instanceId)
+            ->where('command_type', 'signal')
+            ->where('status', CommandStatus::Accepted->value)
+            ->orderByDesc('command_sequence')
+            ->limit(20)
+            ->get()
+            ->first(function (WorkflowCommand $command) use ($operationId, $requestId, $fingerprint, $signalName): bool {
+                $context = $command->commandContext();
+                $storedRequestId = data_get($context, 'request.request_id');
+
+                return data_get($context, 'server.operation_id') === $operationId
+                    && data_get($context, 'request.fingerprint') === $fingerprint
+                    && (! is_string($requestId) || trim($requestId) === '' || $storedRequestId === $requestId)
+                    && $command->targetName() === $signalName
+                    && $command->signalRecord()->exists()
+                    && $command->historyEvents()
+                        ->where('event_type', HistoryEventType::SignalReceived->value)
+                        ->exists();
+            });
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    private function signalResult(
+        WorkflowCommand $command,
+        string $instanceId,
+        string $signalName,
+    ): array {
+        $result = new CommandResult($command);
+
+        return array_merge(CommandResponse::payload($result), [
+            'accepted' => true,
+            'workflow_instance_id' => $instanceId,
+            'workflow_command_id' => $command->id,
+            'signal_name' => $signalName,
+            'command_reason' => $result->reason(),
+            'reason' => null,
+            'status' => 202,
+        ]);
     }
 
     /**

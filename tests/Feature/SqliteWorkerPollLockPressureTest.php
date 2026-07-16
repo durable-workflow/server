@@ -263,6 +263,7 @@ class SqliteWorkerPollLockPressureTest extends TestCase
             ->assertHeader('Retry-After', '1')
             ->assertJsonPath('reason', 'backend_lock_pressure')
             ->assertJsonPath('retryable', true)
+            ->assertJsonPath('error_id', static fn (mixed $value): bool => is_string($value) && $value !== '')
             ->assertJsonPath('backend.driver', 'sqlite')
             ->assertJsonPath('backend.lock_pressure', true)
             ->assertJsonPath('control_plane.operation', 'signal');
@@ -298,7 +299,7 @@ class SqliteWorkerPollLockPressureTest extends TestCase
         $pdo->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
         $pdo->exec('PRAGMA busy_timeout = 1');
         $pdo->exec('BEGIN IMMEDIATE');
-        $pdo->exec("UPDATE workflow_tasks SET updated_at = updated_at WHERE id = ".$pdo->quote($taskId));
+        $pdo->exec('UPDATE workflow_tasks SET updated_at = updated_at WHERE id = '.$pdo->quote($taskId));
 
         $this->lockConnection = $pdo;
     }

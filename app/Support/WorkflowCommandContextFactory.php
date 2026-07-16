@@ -5,6 +5,7 @@ namespace App\Support;
 use App\Auth\Principal;
 use App\Http\Middleware\Authenticate;
 use Illuminate\Http\Request;
+use Illuminate\Support\Str;
 use Workflow\V2\CommandContext;
 
 final class WorkflowCommandContextFactory
@@ -27,6 +28,7 @@ final class WorkflowCommandContextFactory
             'auth' => $this->authMetadata($principal, $request, $defaultAuthStatus, $defaultAuthMethod),
             'request' => $this->requestMetadata($request),
             'server' => [
+                'operation_id' => (string) Str::ulid(),
                 'namespace' => $request->attributes->get('namespace'),
                 'workflow_id' => $workflowId,
                 'command' => $commandName,
