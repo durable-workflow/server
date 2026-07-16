@@ -28,6 +28,11 @@ $worker->registerWorkflow(
         return ['signals' => count($context->signals('increment'))];
     },
 );
+$worker->declareSignal(
+    $workflowType,
+    'increment',
+    static fn (int $amount): mixed => null,
+);
 
 $counterQuery = static function (QueryContext $context) use ($client, $evidencePath, $workerId, $taskQueue): int {
     $count = 0;

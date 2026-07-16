@@ -1848,6 +1848,34 @@ PY);
         $this->assertSame('scripts/conformance/fixtures/php-sdk', $result['fixture_root']);
     }
 
+    public function test_packaged_php_fixture_declares_every_replay_consumed_signal(): void
+    {
+        $source = (string) file_get_contents(
+            dirname(__DIR__, 2).'/scripts/conformance/fixtures/php-sdk/signals-queries-worker.php',
+        );
+
+        preg_match_all(
+            '/\$context->signals\(\s*[\'\"]([^\'\"]+)[\'\"]\s*\)/',
+            $source,
+            $consumedMatches,
+        );
+        preg_match_all(
+            '/\$worker->declareSignal\(\s*\$workflowType\s*,\s*[\'\"]([^\'\"]+)[\'\"]\s*,/s',
+            $source,
+            $declaredMatches,
+        );
+
+        $consumedSignals = array_values(array_unique($consumedMatches[1]));
+        $declaredSignals = array_values(array_unique($declaredMatches[1]));
+
+        $this->assertSame(['increment'], $consumedSignals);
+        $this->assertSame([], array_values(array_diff($consumedSignals, $declaredSignals)));
+        $this->assertMatchesRegularExpression(
+            '/\$worker->declareSignal\(\s*\$workflowType\s*,\s*[\'\"]increment[\'\"]\s*,\s*static fn \(int \$amount\): mixed => null,?\s*\)/s',
+            $source,
+        );
+    }
+
     public function test_host_runner_records_exact_php_sdk_packagist_distribution_provenance(): void
     {
         $result = $this->runSignalQueryRunnerPythonSnippet(<<<'PY'
