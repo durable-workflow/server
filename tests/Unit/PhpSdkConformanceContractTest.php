@@ -35,6 +35,10 @@ final class PhpSdkConformanceContractTest extends TestCase
         $this->assertSame('conformance_harness', $manifest['failure_routing']['runner']);
         $this->assertTrue($manifest['runtime_failure_evidence']['durable_observed_evidence_required']);
         $this->assertTrue($manifest['runtime_failure_evidence']['diagnostic_file_reference_alone_forbidden']);
+        $this->assertSame(4096, $manifest['runtime_failure_evidence']['retained_diagnostic_excerpt_max_bytes']);
+        $this->assertTrue(
+            $manifest['runtime_failure_evidence']['readiness_failure_retains_expected_and_observed_contracts'],
+        );
         $this->assertContains(
             'public_error_envelope',
             $manifest['runtime_failure_evidence']['required_http_failure_fields'],
@@ -983,6 +987,25 @@ JS;
         file_put_contents($observationFile, json_encode([
             'first_server_registration_observed_at' => '2026-07-16T00:00:00Z',
             'last_server_registration_observed_at' => '2026-07-16T00:00:10Z',
+            'required_workflow_command_contract' => [
+                'workflow_type' => 'php.sdk.waiting',
+                'queries' => ['current'],
+                'updates' => ['set'],
+            ],
+            'readiness_mismatch' => [
+                'reason' => 'authoritative_workflow_command_contract_mismatch',
+                'workflow_type' => 'php.sdk.waiting',
+                'expected_contract' => [
+                    'queries' => ['current'],
+                    'updates' => ['set'],
+                    'update_contracts' => [['name' => 'set']],
+                ],
+                'observed_contract' => [
+                    'queries' => ['current'],
+                    'updates' => ['set'],
+                    'update_contracts' => [],
+                ],
+            ],
             'last_server_registration' => $lastServerRegistration,
             'last_server_observation' => [
                 'observed_at' => '2026-07-16T00:00:10Z',
@@ -1051,6 +1074,10 @@ JS;
             $this->assertNull($timeout['process_exit_code']);
             $this->assertSame(100, $timeout['attempts']);
             $this->assertSame($lastServerRegistration, $timeout['last_server_observation']['payload']);
+            $this->assertSame(
+                'authoritative_workflow_command_contract_mismatch',
+                $timeout['readiness_observation']['readiness_mismatch']['reason'],
+            );
 
             $exitEnvironment = array_merge($environment, [
                 'FAILURE_STAGE' => 'worker_process_exit',

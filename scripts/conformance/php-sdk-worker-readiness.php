@@ -132,11 +132,26 @@ $lastServerObservation = [
     'payload' => $response['payload'],
 ];
 if ($response['status'] === 404) {
+    $previousObservation['required_workflow_command_contract'] = $required;
+    $previousObservation['readiness_mismatch'] = [
+        'reason' => 'worker_registration_not_visible',
+        'expected_http_status' => '2xx',
+        'observed_http_status' => 404,
+    ];
     $previousObservation['last_server_observation'] = $lastServerObservation;
     write_json_atomically($observationFile, $previousObservation);
     exit(1);
 }
 if ($response['status'] < 200 || $response['status'] >= 300 || ! is_array($response['payload'])) {
+    $previousObservation['required_workflow_command_contract'] = $required;
+    $previousObservation['readiness_mismatch'] = [
+        'reason' => 'worker_readiness_http_response',
+        'expected_http_status' => '2xx',
+        'observed_http_status' => $response['status'],
+        'public_reason' => is_array($response['payload'])
+            ? ($response['payload']['reason'] ?? $response['payload']['error'] ?? $response['payload']['message'] ?? null)
+            : null,
+    ];
     $previousObservation['last_server_observation'] = $lastServerObservation;
     write_json_atomically($observationFile, $previousObservation);
     fwrite(STDERR, sprintf("Worker readiness lookup failed with HTTP %d.\n", $response['status']));
@@ -155,6 +170,7 @@ $nameOnly = command_names($workflowContract['queries'] ?? null) === $required['q
     && command_names($workflowContract['updates'] ?? null) === $required['updates']
     && (($required['query_contracts'] !== [] && ($workflowContract['query_contracts'] ?? []) === [])
         || ($required['update_contracts'] !== [] && ($workflowContract['update_contracts'] ?? []) === []));
+$contractMatches = registration_has_contract($registration, $required);
 $observation = [
     'first_server_registration_observed_at' => $previousObservation['first_server_registration_observed_at'] ?? $observedAt,
     'last_server_registration_observed_at' => $observedAt,
@@ -165,12 +181,19 @@ $observation = [
     'first_observed_workflow_command_contracts' => $previousObservation['first_observed_workflow_command_contracts']
         ?? $contracts,
     'last_observed_workflow_command_contracts' => $contracts,
+    'required_workflow_command_contract' => $required,
+    'readiness_mismatch' => $contractMatches ? null : [
+        'reason' => 'authoritative_workflow_command_contract_mismatch',
+        'workflow_type' => $required['workflow_type'],
+        'expected_contract' => $required,
+        'observed_contract' => $workflowContract,
+    ],
     'last_server_registration' => $registration,
     'last_server_observation' => $lastServerObservation,
 ];
 write_json_atomically($observationFile, $observation);
 
-if (! registration_has_contract($registration, $required)) {
+if (! $contractMatches) {
     exit(1);
 }
 

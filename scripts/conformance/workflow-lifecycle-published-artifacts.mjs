@@ -31,7 +31,16 @@ const RUST_SIDECAR_RUNNER = 'published-rust-sdk-lifecycle-surface-probe';
 const RUST_SCENARIO_ID = 'rust_sdk_lifecycle_surface';
 const STABLE_REASON_RE = /^[a-z0-9][a-z0-9_]{0,95}$/;
 const FAILURE_MESSAGE_LIMIT = 512;
+const SHARD_DIAGNOSTIC_SCHEMA = 'durable-workflow.v2.workflow-lifecycle.shard-diagnostic';
+const SHARD_DIAGNOSTIC_MAX_BYTES = 8192;
+const SHARD_DIAGNOSTIC_EXCERPT_BYTES = 2048;
+const LIFECYCLE_SHARD_IDS = new Set([
+  'php_sdk_lifecycle_surface',
+  'python_sdk_lifecycle_surface',
+  'rust_sdk_lifecycle_surface',
+]);
 const FORBIDDEN_FAILURE_FIELD_RE = /(authorization|credential|password|passwd|secret|token|api[_-]?key|std(?:out|err)|process[_-]?output|command[_-]?output|logs?)/i;
+const SENSITIVE_DIAGNOSTIC_FIELD_RE = /(authorization|credential|password|passwd|secret|token|api[_-]?key)/i;
 const RUST_RUNNER_REASONS = new Set([
   'rust_executor_unavailable',
   'rust_sdk_probe_launch_failed',
@@ -181,9 +190,37 @@ function redactSensitiveText(value, limit = FAILURE_MESSAGE_LIMIT) {
   }
   text = text
     .replace(/(authorization\s*[:=]\s*(?:bearer\s+)?)[^\s,;]+/ig, '$1[REDACTED]')
-    .replace(/((?:credential|password|passwd|secret|token|api[_-]?key)\s*[:=]\s*)[^\s,;]+/ig, '$1[REDACTED]')
+    .replace(/((?:credential|password|passwd|secret|token|api[_-]?key)["']?\s*[:=]\s*["']?)[^"'\s,;}]+/ig, '$1[REDACTED]')
     .replace(/(https?:\/\/)[^\s/@:]+:[^\s/@]+@/ig, '$1[REDACTED]@');
-  return text.slice(0, limit);
+  return truncateUtf8(text, limit);
+}
+
+function serializedBytes(value) {
+  return Buffer.byteLength(JSON.stringify(value), 'utf8');
+}
+
+function truncateUtf8(value, limit) {
+  const source = String(value ?? '');
+  if (Buffer.byteLength(source, 'utf8') <= limit) {
+    return source;
+  }
+
+  const characters = [...source];
+  let low = 0;
+  let high = characters.length;
+  let accepted = '';
+  while (low <= high) {
+    const middle = Math.floor((low + high) / 2);
+    const candidate = characters.slice(0, middle).join('');
+    if (Buffer.byteLength(candidate, 'utf8') <= limit) {
+      accepted = candidate;
+      low = middle + 1;
+    } else {
+      high = middle - 1;
+    }
+  }
+
+  return accepted;
 }
 
 function boundedRustValue(value, depth = 0) {
@@ -210,6 +247,373 @@ function boundedRustValue(value, depth = 0) {
     }
   }
   return result;
+}
+
+function diagnosticValue(value, depth = 0, stringLimit = 512) {
+  if (value === null || value === undefined) {
+    return null;
+  }
+  if (typeof value === 'string') {
+    return redactSensitiveText(value, stringLimit);
+  }
+  if (typeof value === 'number' || typeof value === 'boolean') {
+    return value;
+  }
+  if (depth >= 10) {
+    return '[depth limit reached]';
+  }
+  if (Array.isArray(value)) {
+    return value.slice(0, 24).map((entry) => diagnosticValue(entry, depth + 1, stringLimit));
+  }
+  if (typeof value !== 'object') {
+    return redactSensitiveText(value, stringLimit);
+  }
+
+  const bounded = {};
+  for (const [key, entry] of Object.entries(value).slice(0, 48)) {
+    const safeKey = redactSensitiveText(key, 128);
+    bounded[safeKey] = SENSITIVE_DIAGNOSTIC_FIELD_RE.test(safeKey)
+      ? '[REDACTED]'
+      : diagnosticValue(entry, depth + 1, stringLimit);
+  }
+
+  return bounded;
+}
+
+function boundedDiagnosticObject(value, limit = 3072) {
+  if (!value || typeof value !== 'object') {
+    return null;
+  }
+
+  const sourceOversized = serializedBytes(value) > limit;
+  const bounded = diagnosticValue(value);
+  if (serializedBytes(bounded) <= limit) {
+    const retained = sourceOversized ? { ...bounded, _truncated: true } : bounded;
+    if (serializedBytes(retained) <= limit) {
+      return retained;
+    }
+  }
+
+  const retained = { _truncated: true };
+  const structuredBudget = Math.max(64, Math.floor(limit / 2));
+  for (const [key, entry] of Object.entries(bounded)) {
+    const candidate = { ...retained, [key]: entry };
+    if (serializedBytes(candidate) <= structuredBudget) {
+      retained[key] = entry;
+    }
+  }
+
+  const excerpt = redactSensitiveText(JSON.stringify(bounded), limit);
+  const characters = [...excerpt];
+  let low = 0;
+  let high = characters.length;
+  let accepted = retained;
+  while (low <= high) {
+    const middle = Math.floor((low + high) / 2);
+    const candidate = {
+      ...retained,
+      bounded_json_excerpt: characters.slice(0, middle).join(''),
+    };
+    if (serializedBytes(candidate) <= limit) {
+      accepted = candidate;
+      low = middle + 1;
+    } else {
+      high = middle - 1;
+    }
+  }
+
+  return accepted;
+}
+
+function firstObject(...values) {
+  return values.find((value) => value && typeof value === 'object' && !Array.isArray(value)) ?? {};
+}
+
+function firstInteger(...values) {
+  for (const value of values) {
+    if (Number.isInteger(value)) {
+      return value;
+    }
+    if (typeof value === 'string' && /^-?\d+$/.test(value.trim())) {
+      return Number(value);
+    }
+  }
+
+  return null;
+}
+
+function diagnosticProcessState(status, outputs, runtimeFailure, workerStartup) {
+  const supplied = firstObject(outputs.process_state, outputs.processState);
+  const exitCode = firstInteger(
+    workerStartup.process_exit_code,
+    supplied.exit_code,
+    supplied.exitCode,
+    outputs.shard_exit_status,
+  );
+  const alive = typeof workerStartup.process_alive_at_failure === 'boolean'
+    ? workerStartup.process_alive_at_failure
+    : (typeof supplied.alive === 'boolean' ? supplied.alive : null);
+  const outcome = stringValue(workerStartup.outcome)
+    || stringValue(supplied.outcome)
+    || stringValue(outputs.stable_reason)
+    || (status === 'runner_blocked' ? 'runner_blocked' : 'failed');
+  let state = stringValue(supplied.state);
+  if (!state) {
+    if (alive === true) {
+      state = 'alive';
+    } else if (alive === false || exitCode !== null) {
+      state = 'exited';
+    } else if (status === 'runner_blocked' && !truthyFlag(outputs.published_artifact_cell_executed)) {
+      state = 'not_started_or_unknown';
+    } else {
+      state = 'failed';
+    }
+  }
+
+  return {
+    process: redactSensitiveText(
+      stringValue(runtimeFailure.process)
+        || stringValue(supplied.process)
+        || stringValue(outputs.sdk)
+        || 'lifecycle_shard',
+      SHARD_DIAGNOSTIC_MAX_BYTES * 2,
+    ),
+    state: redactSensitiveText(state, 64),
+    outcome: redactSensitiveText(outcome, 128),
+    alive,
+    exit_code: exitCode,
+  };
+}
+
+function diagnosticHttp(runtimeFailure, lastServerObservation) {
+  const status = firstInteger(runtimeFailure.status_code, lastServerObservation.http_status);
+  if (status === null) {
+    return null;
+  }
+
+  const envelope = firstObject(runtimeFailure.public_error_envelope);
+  const payload = firstObject(lastServerObservation.payload);
+  const reason = envelope.reason
+    ?? envelope.error
+    ?? envelope.message
+    ?? payload.reason
+    ?? payload.error
+    ?? payload.message
+    ?? runtimeFailure.message
+    ?? null;
+
+  return {
+    status,
+    reason: reason === null ? null : redactSensitiveText(reason, 512),
+  };
+}
+
+function diagnosticReadiness(workerStartup) {
+  const observation = firstObject(workerStartup.readiness_observation, workerStartup.readinessObservation);
+  const lastServerObservation = firstObject(
+    workerStartup.last_server_observation,
+    workerStartup.lastServerObservation,
+    observation.last_server_observation,
+    observation.lastServerObservation,
+  );
+  const outcome = stringValue(workerStartup.outcome);
+  if (!outcome && Object.keys(observation).length === 0 && Object.keys(lastServerObservation).length === 0) {
+    return null;
+  }
+
+  let mismatch = firstObject(observation.readiness_mismatch, observation.readinessMismatch);
+  if (Object.keys(mismatch).length === 0 && outcome === 'readiness_timeout') {
+    mismatch = {
+      reason: 'authoritative_worker_readiness_not_satisfied',
+      required_workflow_command_contract: observation.required_workflow_command_contract ?? null,
+      observed_workflow_command_contracts: observation.last_observed_workflow_command_contracts ?? null,
+    };
+  }
+
+  return {
+    outcome: redactSensitiveText(outcome || 'readiness_probe_failed', 128),
+    attempts: firstInteger(workerStartup.attempts),
+    mismatch: boundedDiagnosticObject(mismatch, 2560),
+    last_server_observation: boundedDiagnosticObject(lastServerObservation, 3072),
+  };
+}
+
+function diagnosticExcerptSource(outputs, findings, fallbackSummary) {
+  const captured = firstObject(outputs.failure_diagnostic, outputs.failureDiagnostic);
+  const failures = Array.isArray(outputs.failures) ? outputs.failures.join('; ') : '';
+  return stringValue(captured.excerpt)
+    || stringValue(outputs.failure_message)
+    || stringValue(outputs.failure_summary)
+    || failures
+    || findings.map((finding) => stringValue(finding.summary)).filter(Boolean).join('; ')
+    || fallbackSummary;
+}
+
+function fitShardDiagnostic(diagnostic) {
+  if (serializedBytes(diagnostic) <= SHARD_DIAGNOSTIC_MAX_BYTES) {
+    return diagnostic;
+  }
+
+  const compact = {
+    ...diagnostic,
+    excerpt: redactSensitiveText(diagnostic.excerpt, 512),
+    readiness: diagnostic.readiness
+      ? {
+        outcome: diagnostic.readiness.outcome,
+        attempts: diagnostic.readiness.attempts,
+        mismatch: boundedDiagnosticObject(diagnostic.readiness.mismatch, 1024),
+        last_server_observation: boundedDiagnosticObject(
+          diagnostic.readiness.last_server_observation,
+          1024,
+        ),
+      }
+      : null,
+    truncated: true,
+  };
+  if (serializedBytes(compact) <= SHARD_DIAGNOSTIC_MAX_BYTES) {
+    return compact;
+  }
+
+  const fallback = {
+    schema: SHARD_DIAGNOSTIC_SCHEMA,
+    version: 1,
+    shard: diagnostic.shard,
+    retention: 'inline_result_and_record',
+    max_bytes: SHARD_DIAGNOSTIC_MAX_BYTES,
+    status: diagnostic.status,
+    classification: diagnostic.classification,
+    owning_surface: diagnostic.owning_surface,
+    operation: diagnostic.operation,
+    failure_stage: diagnostic.failure_stage,
+    process_state: diagnostic.process_state,
+    http: diagnostic.http,
+    readiness: diagnostic.readiness
+      ? {
+        outcome: diagnostic.readiness.outcome,
+        attempts: diagnostic.readiness.attempts,
+        mismatch: boundedDiagnosticObject(diagnostic.readiness.mismatch, 512),
+        last_server_observation: boundedDiagnosticObject(
+          diagnostic.readiness.last_server_observation,
+          512,
+        ),
+      }
+      : null,
+    excerpt: redactSensitiveText(diagnostic.excerpt, 256),
+    truncated: true,
+  };
+  if (serializedBytes(fallback) <= SHARD_DIAGNOSTIC_MAX_BYTES) {
+    return fallback;
+  }
+
+  const boundedFallback = {
+    schema: SHARD_DIAGNOSTIC_SCHEMA,
+    version: 1,
+    shard: redactSensitiveText(diagnostic.shard, 96),
+    retention: 'inline_result_and_record',
+    max_bytes: SHARD_DIAGNOSTIC_MAX_BYTES,
+    status: redactSensitiveText(diagnostic.status, 64),
+    classification: redactSensitiveText(diagnostic.classification, 96),
+    owning_surface: redactSensitiveText(diagnostic.owning_surface, 128),
+    operation: redactSensitiveText(diagnostic.operation, 128),
+    failure_stage: redactSensitiveText(diagnostic.failure_stage, 128),
+    process_state: {
+      process: redactSensitiveText(diagnostic.process_state?.process, 128),
+      state: redactSensitiveText(diagnostic.process_state?.state, 64),
+      outcome: redactSensitiveText(diagnostic.process_state?.outcome, 96),
+      alive: typeof diagnostic.process_state?.alive === 'boolean'
+        ? diagnostic.process_state.alive
+        : null,
+      exit_code: firstInteger(diagnostic.process_state?.exit_code),
+    },
+    http: diagnostic.http
+      ? {
+        status: firstInteger(diagnostic.http.status),
+        reason: redactSensitiveText(diagnostic.http.reason, 192),
+      }
+      : null,
+    readiness: diagnostic.readiness
+      ? {
+        outcome: redactSensitiveText(diagnostic.readiness.outcome, 96),
+        attempts: firstInteger(diagnostic.readiness.attempts),
+        mismatch: boundedDiagnosticObject(diagnostic.readiness.mismatch, 2048),
+        last_server_observation: boundedDiagnosticObject(
+          diagnostic.readiness.last_server_observation,
+          2048,
+        ),
+      }
+      : null,
+    excerpt: redactSensitiveText(diagnostic.excerpt, 192),
+    truncated: true,
+  };
+  if (serializedBytes(boundedFallback) > SHARD_DIAGNOSTIC_MAX_BYTES) {
+    throw new Error('Unable to retain a lifecycle shard diagnostic within the byte limit.');
+  }
+
+  return boundedFallback;
+}
+
+function shardDiagnostic(scenarioId, status, classification, outputs, findings, fallbackSummary) {
+  const runtimeFailure = firstObject(outputs.runtime_failure_evidence, outputs.runtimeFailureEvidence);
+  const workerStartup = firstObject(outputs.worker_startup, outputs.workerStartup);
+  const readiness = diagnosticReadiness(workerStartup);
+  const lastServerObservation = firstObject(
+    workerStartup.last_server_observation,
+    workerStartup.lastServerObservation,
+    readiness?.last_server_observation,
+  );
+  const failureStage = stringValue(outputs.failure_stage)
+    || stringValue(runtimeFailure.failure_stage)
+    || stringValue(outputs.failing_lifecycle_cell)
+    || scenarioId;
+  const workerStartOutcome = stringValue(workerStartup.outcome);
+  const operation = stringValue(runtimeFailure.operation)
+    || (workerStartOutcome === 'process_exit' ? failureStage : '')
+    || (readiness ? 'worker_registration_readiness' : '')
+    || stringValue(outputs.failing_lifecycle_cell)
+    || failureStage;
+  const owningSurface = redactSensitiveText(
+    stringValue(outputs.failure_owner)
+      || stringValue(runtimeFailure.owning_surface)
+      || stringValue(findings[0]?.owning_surface)
+      || owningSurfaceForDiagnostic(scenarioId, classification),
+    SHARD_DIAGNOSTIC_MAX_BYTES * 2,
+  );
+  const captured = firstObject(outputs.failure_diagnostic, outputs.failureDiagnostic);
+  const rawExcerpt = diagnosticExcerptSource(outputs, findings, fallbackSummary);
+  const excerpt = redactSensitiveText(rawExcerpt, SHARD_DIAGNOSTIC_EXCERPT_BYTES);
+  const diagnostic = {
+    schema: SHARD_DIAGNOSTIC_SCHEMA,
+    version: 1,
+    shard: scenarioId,
+    retention: 'inline_result_and_record',
+    max_bytes: SHARD_DIAGNOSTIC_MAX_BYTES,
+    status,
+    classification,
+    owning_surface: owningSurface,
+    operation: redactSensitiveText(operation, 160),
+    failure_stage: redactSensitiveText(failureStage, 160),
+    process_state: diagnosticProcessState(status, outputs, runtimeFailure, workerStartup),
+    http: diagnosticHttp(runtimeFailure, lastServerObservation),
+    readiness,
+    excerpt,
+    truncated: truthyFlag(captured.truncated)
+      || Buffer.byteLength(String(rawExcerpt ?? ''), 'utf8') > Buffer.byteLength(excerpt, 'utf8'),
+  };
+
+  return fitShardDiagnostic(
+    diagnosticValue(diagnostic, 0, SHARD_DIAGNOSTIC_MAX_BYTES * 2),
+  );
+}
+
+function owningSurfaceForDiagnostic(scenarioId, classification) {
+  if (classification === 'runner-gap') {
+    return 'conformance_harness';
+  }
+  return {
+    php_sdk_lifecycle_surface: 'sdk-php',
+    python_sdk_lifecycle_surface: 'sdk-python',
+    rust_sdk_lifecycle_surface: 'sdk-rust-and-server',
+  }[scenarioId] ?? 'conformance_harness';
 }
 
 function rustArtifactMismatch(outputs) {
@@ -829,7 +1233,7 @@ function normalizedText(value) {
 function textIncludesAny(value, fragments) {
   const text = normalizedText(value);
 
-  return text !== '' && fragments.some((fragment) => text.includes(fragment));
+  return text !== '' && fragments.some((fragment) => text.includes(normalizedText(fragment)));
 }
 
 function numberValue(value) {
@@ -1573,21 +1977,81 @@ function normalizeScenario(scenario, entry, policy) {
   outputs.local_product_source_checkout_used_as_pass_evidence = policy.local_product_source_checkout_used_as_pass_evidence;
 
   const defaultSummary = summaries[0]
-    ?? stringValue(supplied.summary)
-    ?? (status === 'pass'
+    || stringValue(supplied.summary)
+    || (status === 'pass'
       ? `${scenario.id} passed against the published artifact tuple.`
       : `${scenario.id} did not pass against the published artifact tuple.`);
   const suppliedFindings = status === 'pass'
     ? []
     : normalizeSuppliedFindings(supplied, scenario, status, classification, defaultSummary);
-  const linkedFindings = status === 'pass'
+  let linkedFindings = status === 'pass'
     ? []
     : (suppliedFindings.length > 0 ? suppliedFindings : [generatedFinding(scenario, status, classification, defaultSummary)]);
+
+  if (status !== 'pass' && LIFECYCLE_SHARD_IDS.has(scenario.id)) {
+    const diagnostic = shardDiagnostic(
+      scenario.id,
+      status,
+      classification,
+      outputs,
+      linkedFindings,
+      defaultSummary,
+    );
+    outputs.shard_diagnostic = diagnostic;
+    for (const field of [
+      'failure_owner',
+      'failureOwner',
+      'failure_stage',
+      'failureStage',
+      'failure_message',
+      'failureMessage',
+      'failure_summary',
+      'failureSummary',
+      'runner_blocked_reason',
+      'runnerBlockedReason',
+      'process_state',
+      'processState',
+      'readiness_observation',
+      'readinessObservation',
+      'last_server_observation',
+      'lastServerObservation',
+    ]) {
+      if (Object.prototype.hasOwnProperty.call(outputs, field)) {
+        outputs[field] = diagnosticValue(outputs[field]);
+      }
+    }
+    if (Array.isArray(outputs.failures)) {
+      outputs.failures = diagnosticValue(outputs.failures);
+    }
+    for (const field of ['runtime_failure_evidence', 'runtimeFailureEvidence']) {
+      if (nonEmptyObject(outputs[field])) {
+        outputs[field] = boundedDiagnosticObject(outputs[field], 4096);
+      }
+    }
+    for (const field of ['worker_startup', 'workerStartup']) {
+      if (nonEmptyObject(outputs[field])) {
+        outputs[field] = boundedDiagnosticObject(outputs[field], 4096);
+      }
+    }
+    delete outputs.failure_diagnostic;
+    delete outputs.failureDiagnostic;
+    linkedFindings = linkedFindings.map((finding) => {
+      const boundedFinding = diagnosticValue(finding);
+      return {
+        ...boundedFinding,
+        observed_evidence: {
+          ...diagnosticValue(firstObject(finding.observed_evidence, finding.observedEvidence)),
+          shard_diagnostic: diagnostic,
+        },
+      };
+    });
+  }
 
   return {
     scenario_id: scenario.id,
     status,
     classification: status === 'pass' ? 'passed' : classification,
+    published_artifact_cell_executed: executed,
     observed_outputs: outputs,
     missing_required_evidence: missingEvidence,
     linked_findings: linkedFindings,
@@ -1682,6 +2146,11 @@ const allRequiredPassed = scenarios.length > 0
 const finishedAt = now();
 const outcome = allRequiredPassed ? 'pass' : 'non_passing';
 const lifecycleCellOutcomes = cellOutcomes(scenarioResults);
+const shardDiagnostics = Object.fromEntries(
+  Object.entries(scenarioResults)
+    .filter(([scenarioId, scenario]) => LIFECYCLE_SHARD_IDS.has(scenarioId) && scenario.status !== 'pass')
+    .map(([scenarioId, scenario]) => [scenarioId, scenario.observed_outputs.shard_diagnostic]),
+);
 const evidenceSource = evidenceRecord.source;
 
 const result = {
@@ -1709,6 +2178,7 @@ const result = {
   lifecycle_cell_outcomes: lifecycleCellOutcomes,
   per_cell_outcomes: lifecycleCellOutcomes,
   scenario_results: scenarioResults,
+  shard_diagnostics: shardDiagnostics,
   findings,
   finding_links: findingLinks,
   public_docs_statement: 'Passing workflow lifecycle conformance requires every required lifecycle cell to pass against pinned published artifacts. Unsupported cells are non-passing unless the product later defines them as supported behavior.',
@@ -1728,6 +2198,7 @@ const record = {
   finishedAt,
   generatedAt: finishedAt,
   scenarioResults,
+  shardDiagnostics,
   lifecycleCellOutcomes,
   findings,
   findingLinks,

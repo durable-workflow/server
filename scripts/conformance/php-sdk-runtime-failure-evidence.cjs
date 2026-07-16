@@ -3,13 +3,38 @@
 const MARKER = 'DW_PHP_SDK_RUNTIME_FAILURE=';
 const TEXT_LIMIT = 512;
 const ENVELOPE_LIMIT = 2048;
+const DIAGNOSTIC_EXCERPT_LIMIT = 4096;
 const SENSITIVE_KEY = /(authorization|credential|password|passwd|secret|token|api[_-]?key)/i;
 
 function serializedBytes(value) {
   return Buffer.byteLength(JSON.stringify(value), 'utf8');
 }
 
-function text(value, secrets = [], limit = TEXT_LIMIT) {
+function truncateUtf8(value, limit) {
+  const source = String(value ?? '');
+  if (Buffer.byteLength(source, 'utf8') <= limit) {
+    return source;
+  }
+
+  const characters = [...source];
+  let low = 0;
+  let high = characters.length;
+  let accepted = '';
+  while (low <= high) {
+    const middle = Math.floor((low + high) / 2);
+    const candidate = characters.slice(0, middle).join('');
+    if (Buffer.byteLength(candidate, 'utf8') <= limit) {
+      accepted = candidate;
+      low = middle + 1;
+    } else {
+      high = middle - 1;
+    }
+  }
+
+  return accepted;
+}
+
+function redactedText(value, secrets = []) {
   let result = String(value ?? '')
     .replace(/[\u0000-\u001f\u007f]+/g, ' ')
     .replace(/\s+/g, ' ')
@@ -21,10 +46,26 @@ function text(value, secrets = [], limit = TEXT_LIMIT) {
   }
   result = result
     .replace(/(authorization\s*[:=]\s*(?:bearer\s+)?)[^\s,;]+/ig, '$1[REDACTED]')
-    .replace(/((?:credential|password|passwd|secret|token|api[_-]?key)\s*[:=]\s*)[^\s,;]+/ig, '$1[REDACTED]')
+    .replace(/((?:credential|password|passwd|secret|token|api[_-]?key)["']?\s*[:=]\s*["']?)[^"'\s,;}]+/ig, '$1[REDACTED]')
     .replace(/(https?:\/\/)[^\s/@:]+:[^\s/@]+@/ig, '$1[REDACTED]@');
 
-  return result.slice(0, limit);
+  return result;
+}
+
+function text(value, secrets = [], limit = TEXT_LIMIT) {
+  return truncateUtf8(redactedText(value, secrets), limit);
+}
+
+function diagnosticExcerpt(value, secrets = [], limit = DIAGNOSTIC_EXCERPT_LIMIT) {
+  const redacted = redactedText(value, secrets);
+
+  return {
+    schema: 'durable-workflow.v2.retained-diagnostic-excerpt',
+    source: 'captured_process_output',
+    excerpt: truncateUtf8(redacted, limit),
+    truncated: Buffer.byteLength(redacted, 'utf8') > limit,
+    max_excerpt_bytes: limit,
+  };
 }
 
 function boundedValue(value, secrets, depth = 0) {
@@ -37,7 +78,7 @@ function boundedValue(value, secrets, depth = 0) {
   if (typeof value === 'number' || typeof value === 'boolean') {
     return value;
   }
-  if (depth >= 5) {
+  if (depth >= 7) {
     return '[depth limit reached]';
   }
   if (Array.isArray(value)) {
@@ -63,9 +104,10 @@ function boundedEnvelope(value, secrets) {
     return null;
   }
 
+  const originalBytes = serializedBytes(value);
   const bounded = boundedValue(value, secrets);
   const serialized = JSON.stringify(bounded);
-  if (Buffer.byteLength(serialized, 'utf8') <= ENVELOPE_LIMIT) {
+  if (originalBytes <= ENVELOPE_LIMIT && Buffer.byteLength(serialized, 'utf8') <= ENVELOPE_LIMIT) {
     return bounded;
   }
 
@@ -97,7 +139,7 @@ function boundedEnvelope(value, secrets) {
   return serializedBytes(summary) <= ENVELOPE_LIMIT ? summary : {_truncated: true};
 }
 
-function addBoundedText(target, key, value, secrets, limit) {
+function addBoundedText(target, key, value, secrets, limit, envelopeLimit = ENVELOPE_LIMIT) {
   const characters = [...text(value, secrets, limit)];
   let low = 0;
   let high = characters.length;
@@ -105,7 +147,7 @@ function addBoundedText(target, key, value, secrets, limit) {
   while (low <= high) {
     const middle = Math.floor((low + high) / 2);
     const candidate = {...target, [key]: characters.slice(0, middle).join('')};
-    if (serializedBytes(candidate) <= ENVELOPE_LIMIT) {
+    if (serializedBytes(candidate) <= envelopeLimit) {
       accepted = candidate;
       low = middle + 1;
     } else {
@@ -114,6 +156,68 @@ function addBoundedText(target, key, value, secrets, limit) {
   }
 
   return accepted;
+}
+
+function boundedEvidence(value, secrets, limit = DIAGNOSTIC_EXCERPT_LIMIT) {
+  if (!value || typeof value !== 'object') {
+    return null;
+  }
+
+  const originalBytes = serializedBytes(value);
+  const bounded = boundedValue(value, secrets);
+  const serialized = JSON.stringify(bounded);
+  if (originalBytes <= limit && Buffer.byteLength(serialized, 'utf8') <= limit) {
+    return bounded;
+  }
+
+  let summary = {_truncated: true};
+  for (const key of [
+    'outcome',
+    'worker_id',
+    'attempts',
+    'process_id',
+    'process_alive_at_failure',
+    'process_exit_code',
+    'readiness_mismatch',
+    'last_server_observation',
+  ]) {
+    if (!Object.prototype.hasOwnProperty.call(bounded, key)) {
+      continue;
+    }
+    const entry = bounded[key];
+    if (typeof entry === 'number' || typeof entry === 'boolean' || entry === null) {
+      const candidate = {...summary, [key]: entry};
+      if (serializedBytes(candidate) <= limit) {
+        summary = candidate;
+      }
+      continue;
+    }
+    if (entry && typeof entry === 'object') {
+      const nestedLimit = Math.min(2048, Math.max(512, limit - serializedBytes(summary) - 128));
+      const nested = serializedBytes(entry) <= nestedLimit
+        ? entry
+        : {
+          _truncated: true,
+          bounded_json_excerpt: text(JSON.stringify(entry), secrets, nestedLimit - 96),
+        };
+      const candidate = {...summary, [key]: nested};
+      if (serializedBytes(candidate) <= limit) {
+        summary = candidate;
+        continue;
+      }
+    }
+    summary = addBoundedText(
+      summary,
+      key,
+      typeof entry === 'string' ? entry : JSON.stringify(entry),
+      secrets,
+      1024,
+      limit,
+    );
+  }
+  summary = addBoundedText(summary, '_bounded_json_excerpt', serialized, secrets, 1024, limit);
+
+  return serializedBytes(summary) <= limit ? summary : {_truncated: true};
 }
 
 function lastMarkerPayload(source) {
@@ -175,6 +279,68 @@ function extractRuntimeFailureEvidence(source, options = {}) {
   };
 }
 
+function extractReadinessHttpFailureEvidence(observation, options = {}) {
+  if (!observation || typeof observation !== 'object' || Array.isArray(observation)) {
+    return null;
+  }
+
+  const secrets = Array.isArray(options.secrets) ? options.secrets.filter(Boolean) : [];
+  const mismatch = observation.readiness_mismatch ?? observation.readinessMismatch ?? {};
+  const lastServerObservation = observation.last_server_observation
+    ?? observation.lastServerObservation
+    ?? {};
+  const numericStatus = Number(
+    lastServerObservation.http_status
+      ?? lastServerObservation.httpStatus
+      ?? mismatch.observed_http_status
+      ?? mismatch.observedHttpStatus,
+  );
+  const statusCode = Number.isInteger(numericStatus) && numericStatus >= 400 && numericStatus <= 599
+    ? numericStatus
+    : null;
+  if (statusCode === null) {
+    return null;
+  }
+
+  const payload = lastServerObservation.payload;
+  const publicReason = text(
+    mismatch.public_reason
+      ?? mismatch.publicReason
+      ?? payload?.reason
+      ?? payload?.error
+      ?? payload?.message
+      ?? mismatch.reason
+      ?? 'worker_readiness_http_response',
+    secrets,
+  );
+  const envelopeSource = payload && typeof payload === 'object' && !Array.isArray(payload)
+    ? {...payload}
+    : {};
+  if (Object.keys(envelopeSource).length === 0) {
+    envelopeSource.error = text(mismatch.reason, secrets, 160) || 'worker_readiness_http_response';
+  }
+  if (publicReason && !envelopeSource.reason) {
+    envelopeSource.reason = publicReason;
+  }
+  const publicErrorEnvelope = boundedEnvelope(envelopeSource, secrets);
+
+  return {
+    schema: 'durable-workflow.v2.php-sdk-runtime-failure',
+    classification: 'server',
+    owning_surface: 'server',
+    process: 'worker_readiness_probe',
+    operation: 'worker.registration.readiness',
+    http_method: 'GET',
+    endpoint: '/api/workers/{worker_id}',
+    status_code: statusCode,
+    public_error_envelope: publicErrorEnvelope,
+    workflow_id: null,
+    run_id: null,
+    exception_type: null,
+    message: publicReason || null,
+  };
+}
+
 function isCompleteHttpFailureEvidence(evidence) {
   return Boolean(
     evidence
@@ -222,9 +388,13 @@ function failureSummary(evidence, stage, fallback) {
 }
 
 module.exports = {
+  DIAGNOSTIC_EXCERPT_LIMIT,
   ENVELOPE_LIMIT,
   MARKER,
   assertCompleteHttpFailureEvidence,
+  boundedEvidence,
+  diagnosticExcerpt,
+  extractReadinessHttpFailureEvidence,
   extractRuntimeFailureEvidence,
   failureSummary,
   isCompleteHttpFailureEvidence,

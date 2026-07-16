@@ -88,6 +88,7 @@ final class WorkflowLifecycleResultGate
                 'rust_sdk_continue_as_new_redelivery_preserves_predecessor_decisions_across_process_replacement',
                 'rust_sdk_machine_readable_outcomes_are_semantically_validated',
                 'cli_api_history_and_waterline_surfaces_are_operator_diagnostic_enough',
+                'non_passing_lifecycle_shards_retain_bounded_portable_diagnostics',
                 'each_unsupported_scenario_reports_documented_typed_refusal',
                 'each_non_pass_cell_has_focused_findings',
                 'overall_outcome_matches_gate_status',
@@ -97,9 +98,8 @@ final class WorkflowLifecycleResultGate
     }
 
     /**
-     * @param array<string, mixed> $result
-     * @param array<string, mixed>|null $contract
-     *
+     * @param  array<string, mixed>  $result
+     * @param  array<string, mixed>|null  $contract
      * @return array<string, mixed>
      */
     public static function evaluate(array $result, ?array $contract = null): array
@@ -130,6 +130,7 @@ final class WorkflowLifecycleResultGate
                     'code' => 'missing_required_lifecycle_cell',
                     'scenario_id' => $scenarioId,
                 ];
+
                 continue;
             }
 
@@ -144,6 +145,7 @@ final class WorkflowLifecycleResultGate
                     'status' => $status,
                     'allowed_statuses' => $allowedStatuses,
                 ];
+
                 continue;
             }
 
@@ -228,6 +230,13 @@ final class WorkflowLifecycleResultGate
                     ];
                 }
             }
+
+            if ($status !== 'pass') {
+                array_push(
+                    $failures,
+                    ...self::lifecycleShardDiagnosticFailures($contract, $scenarioId, $scenarioResult),
+                );
+            }
         }
 
         $reportedScenarioIds = array_keys($scenarioResults);
@@ -275,9 +284,8 @@ final class WorkflowLifecycleResultGate
     }
 
     /**
-     * @param array<string, mixed> $result
-     * @param array<string, int> $duplicateScenarioCounts
-     *
+     * @param  array<string, mixed>  $result
+     * @param  array<string, int>  $duplicateScenarioCounts
      * @return array<string, array<string, mixed>>
      */
     private static function scenarioResultsById(array $result, array &$duplicateScenarioCounts): array
@@ -310,8 +318,97 @@ final class WorkflowLifecycleResultGate
     }
 
     /**
-     * @param array<string, mixed> $contract
-     *
+     * @param  array<string, mixed>  $contract
+     * @param  array<string, mixed>  $scenarioResult
+     * @return list<array<string, mixed>>
+     */
+    private static function lifecycleShardDiagnosticFailures(
+        array $contract,
+        string $scenarioId,
+        array $scenarioResult,
+    ): array {
+        $diagnosticContract = $contract['host_runner_contract']['lifecycle_shard_diagnostics'] ?? [];
+        if (! is_array($diagnosticContract)
+            || ! in_array($scenarioId, self::stringList($diagnosticContract['non_pass_shards'] ?? []), true)) {
+            return [];
+        }
+
+        $outputs = self::arrayField($scenarioResult, ['observed_outputs', 'observedOutputs']) ?? [];
+        $diagnostic = self::arrayField($outputs, ['shard_diagnostic', 'shardDiagnostic']);
+        if ($diagnostic === null) {
+            return [[
+                'code' => 'missing_lifecycle_shard_diagnostic',
+                'scenario_id' => $scenarioId,
+            ]];
+        }
+
+        $failures = [];
+        if (self::stringValue($diagnostic['schema'] ?? null)
+            !== self::stringValue($diagnosticContract['schema'] ?? null)) {
+            $failures[] = [
+                'code' => 'invalid_lifecycle_shard_diagnostic_schema',
+                'scenario_id' => $scenarioId,
+            ];
+        }
+        if (self::stringValue($diagnostic['retention'] ?? null) !== 'inline_result_and_record') {
+            $failures[] = [
+                'code' => 'non_portable_lifecycle_shard_diagnostic',
+                'scenario_id' => $scenarioId,
+            ];
+        }
+        foreach (self::stringList($diagnosticContract['required_fields'] ?? []) as $field) {
+            if (! self::isEmptyEvidence(self::fieldValue($diagnostic, $field))) {
+                continue;
+            }
+            $failures[] = [
+                'code' => 'incomplete_lifecycle_shard_diagnostic',
+                'scenario_id' => $scenarioId,
+                'field' => $field,
+            ];
+        }
+        if (array_key_exists('path', $diagnostic)
+            || self::arrayHasKeyRecursively($diagnostic, 'workspace_path')
+            || self::arrayHasKeyRecursively($diagnostic, 'diagnostic_file')) {
+            $failures[] = [
+                'code' => 'workspace_path_used_as_lifecycle_shard_diagnostic',
+                'scenario_id' => $scenarioId,
+            ];
+        }
+
+        $encoded = json_encode(
+            $diagnostic,
+            JSON_UNESCAPED_SLASHES | JSON_INVALID_UTF8_SUBSTITUTE,
+        );
+        $maxBytes = (int) ($diagnosticContract['max_bytes_per_shard'] ?? 0);
+        if (! is_string($encoded) || $maxBytes <= 0 || strlen($encoded) > $maxBytes) {
+            $failures[] = [
+                'code' => 'oversized_lifecycle_shard_diagnostic',
+                'scenario_id' => $scenarioId,
+                'max_bytes' => $maxBytes,
+                'observed_bytes' => is_string($encoded) ? strlen($encoded) : null,
+            ];
+        }
+
+        return $failures;
+    }
+
+    /** @param array<string, mixed> $value */
+    private static function arrayHasKeyRecursively(array $value, string $expected): bool
+    {
+        foreach ($value as $key => $entry) {
+            if (is_string($key) && strtolower($key) === strtolower($expected)) {
+                return true;
+            }
+            if (is_array($entry) && self::arrayHasKeyRecursively($entry, $expected)) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /**
+     * @param  array<string, mixed>  $contract
      * @return list<string>
      */
     private static function requiredScenarioFields(array $contract, string $scenarioId): array
@@ -322,8 +419,8 @@ final class WorkflowLifecycleResultGate
     }
 
     /**
-     * @param array<string, mixed> $result
-     * @param array<string, mixed> $scenarioResult
+     * @param  array<string, mixed>  $result
+     * @param  array<string, mixed>  $scenarioResult
      */
     private static function hasScenarioEvidenceField(
         array $result,
@@ -360,9 +457,8 @@ final class WorkflowLifecycleResultGate
     }
 
     /**
-     * @param array<string, mixed> $result
-     * @param array<string, mixed> $contract
-     *
+     * @param  array<string, mixed>  $result
+     * @param  array<string, mixed>  $contract
      * @return list<array<string, mixed>>
      */
     private static function runRecordFailures(array $result, array $contract): array
@@ -392,7 +488,7 @@ final class WorkflowLifecycleResultGate
     }
 
     /**
-     * @param array<string, mixed> $result
+     * @param  array<string, mixed>  $result
      */
     private static function hasRunRecordField(array $result, string $field): bool
     {
@@ -427,8 +523,7 @@ final class WorkflowLifecycleResultGate
     }
 
     /**
-     * @param array<string, mixed> $result
-     *
+     * @param  array<string, mixed>  $result
      * @return list<array<string, mixed>>
      */
     private static function declaredOutcomeFailures(array $result): array
@@ -456,8 +551,7 @@ final class WorkflowLifecycleResultGate
     }
 
     /**
-     * @param array<string, mixed> $result
-     *
+     * @param  array<string, mixed>  $result
      * @return list<array<string, mixed>>
      */
     private static function declaredOutcomeStatusFailures(array $result, string $evaluatedStatus): array
@@ -480,8 +574,7 @@ final class WorkflowLifecycleResultGate
     }
 
     /**
-     * @param array<string, mixed> $result
-     *
+     * @param  array<string, mixed>  $result
      * @return array<string, string>
      */
     private static function declaredOutcomeTokens(array $result): array
@@ -506,9 +599,8 @@ final class WorkflowLifecycleResultGate
     }
 
     /**
-     * @param array<string, mixed> $result
-     * @param array<string, mixed> $contract
-     *
+     * @param  array<string, mixed>  $result
+     * @param  array<string, mixed>  $contract
      * @return list<array<string, mixed>>
      */
     private static function artifactVersionFailures(array $result, array $contract): array
@@ -533,6 +625,7 @@ final class WorkflowLifecycleResultGate
                         'field' => $field,
                         'artifact' => $artifact,
                     ];
+
                     continue;
                 }
 
@@ -551,10 +644,9 @@ final class WorkflowLifecycleResultGate
     }
 
     /**
-     * @param array<string, mixed> $result
-     * @param array<string, mixed> $contract
-     * @param array<string, array<string, mixed>> $scenarioResults
-     *
+     * @param  array<string, mixed>  $result
+     * @param  array<string, mixed>  $contract
+     * @param  array<string, array<string, mixed>>  $scenarioResults
      * @return list<array<string, mixed>>
      */
     private static function sourcePolicyFailures(array $result, array $contract, array $scenarioResults): array
@@ -705,9 +797,8 @@ final class WorkflowLifecycleResultGate
     }
 
     /**
-     * @param array<string, mixed> $result
-     * @param array<string, array<string, mixed>> $scenarioResults
-     *
+     * @param  array<string, mixed>  $result
+     * @param  array<string, array<string, mixed>>  $scenarioResults
      * @return list<array{field: string, scenario_id: string|null, value: mixed}>
      */
     private static function localProductSourceFlagReports(array $result, array $scenarioResults): array
@@ -746,8 +837,8 @@ final class WorkflowLifecycleResultGate
     }
 
     /**
-     * @param list<array{field: string, scenario_id: string|null, value: mixed}> $reports
-     * @param array<string, mixed> $container
+     * @param  list<array{field: string, scenario_id: string|null, value: mixed}>  $reports
+     * @param  array<string, mixed>  $container
      */
     private static function appendLocalProductSourceFlagReports(
         array &$reports,
@@ -761,7 +852,7 @@ final class WorkflowLifecycleResultGate
             }
 
             $reports[] = [
-                'field' => $fieldPrefix . $field,
+                'field' => $fieldPrefix.$field,
                 'scenario_id' => $scenarioId,
                 'value' => $container[$field],
             ];
@@ -769,9 +860,8 @@ final class WorkflowLifecycleResultGate
     }
 
     /**
-     * @param array<string, mixed> $result
-     * @param array<string, array<string, mixed>> $scenarioResults
-     *
+     * @param  array<string, mixed>  $result
+     * @param  array<string, array<string, mixed>>  $scenarioResults
      * @return list<array{sources: array<mixed>, field: string, scenario_id: string|null, counts_for_required_sources: bool}>
      */
     private static function reportedArtifactSourceSets(array $result, array $scenarioResults): array
@@ -827,7 +917,7 @@ final class WorkflowLifecycleResultGate
 
                 $sourceSets[] = [
                     'sources' => $sources,
-                    'field' => $entry['field_prefix'] . $field,
+                    'field' => $entry['field_prefix'].$field,
                     'scenario_id' => is_string($entry['scenario_id']) ? $entry['scenario_id'] : null,
                     'counts_for_required_sources' => $countsForRequiredSources,
                 ];
@@ -838,8 +928,8 @@ final class WorkflowLifecycleResultGate
     }
 
     /**
-     * @param array<string, mixed> $result
-     * @param array<string, mixed> $scenarioResult
+     * @param  array<string, mixed>  $result
+     * @param  array<string, mixed>  $scenarioResult
      */
     private static function lifecycleCellOutcomeStatus(array $result, array $scenarioResult, string $scenarioId): string
     {
@@ -880,7 +970,7 @@ final class WorkflowLifecycleResultGate
     }
 
     /**
-     * @param array<string, mixed> $scenarioResult
+     * @param  array<string, mixed>  $scenarioResult
      */
     private static function hasObservedOutputs(array $scenarioResult): bool
     {
@@ -888,7 +978,7 @@ final class WorkflowLifecycleResultGate
     }
 
     /**
-     * @param array<string, mixed> $scenarioResult
+     * @param  array<string, mixed>  $scenarioResult
      */
     private static function hasPublishedArtifactCellExecution(array $scenarioResult): bool
     {
@@ -901,7 +991,7 @@ final class WorkflowLifecycleResultGate
     }
 
     /**
-     * @param array<string, mixed> $scenarioResult
+     * @param  array<string, mixed>  $scenarioResult
      */
     private static function hasDocumentedTypedRefusal(array $scenarioResult): bool
     {
@@ -944,9 +1034,8 @@ final class WorkflowLifecycleResultGate
     }
 
     /**
-     * @param array<string, mixed> $contract
-     * @param array<string, mixed> $scenarioResult
-     *
+     * @param  array<string, mixed>  $contract
+     * @param  array<string, mixed>  $scenarioResult
      * @return list<string>
      */
     private static function missingScenarioEvidence(array $contract, string $scenarioId, array $scenarioResult): array
@@ -966,8 +1055,7 @@ final class WorkflowLifecycleResultGate
     }
 
     /**
-     * @param array<string, mixed> $contract
-     *
+     * @param  array<string, mixed>  $contract
      * @return list<string>
      */
     private static function scenarioEvidenceFields(array $contract, string $scenarioId): array
@@ -981,8 +1069,7 @@ final class WorkflowLifecycleResultGate
     }
 
     /**
-     * @param array<string, mixed> $scenarioResult
-     *
+     * @param  array<string, mixed>  $scenarioResult
      * @return list<array{code: string, reason: string}>
      */
     private static function semanticScenarioFailures(string $scenarioId, array $scenarioResult, array $result): array
@@ -1034,8 +1121,7 @@ final class WorkflowLifecycleResultGate
     }
 
     /**
-     * @param array<string, mixed> $scenarioResult
-     *
+     * @param  array<string, mixed>  $scenarioResult
      * @return array<string, mixed>
      */
     private static function observedOutputs(array $scenarioResult): array
@@ -1044,8 +1130,7 @@ final class WorkflowLifecycleResultGate
     }
 
     /**
-     * @param list<array{code: string, reason: string}> $failures
-     *
+     * @param  list<array{code: string, reason: string}>  $failures
      * @return list<array{code: string, reason: string}>
      */
     private static function addSemanticFailure(array $failures, string $code, string $reason): array
@@ -1059,8 +1144,7 @@ final class WorkflowLifecycleResultGate
     }
 
     /**
-     * @param array<string, mixed> $outputs
-     *
+     * @param  array<string, mixed>  $outputs
      * @return list<array{code: string, reason: string}>
      */
     private static function validateContinueAsNewRunChain(array $outputs): array
@@ -1126,8 +1210,7 @@ final class WorkflowLifecycleResultGate
     }
 
     /**
-     * @param array<string, mixed> $outputs
-     *
+     * @param  array<string, mixed>  $outputs
      * @return list<array{code: string, reason: string}>
      */
     private static function validateContinueAsNewHistory(array $outputs): array
@@ -1171,8 +1254,7 @@ final class WorkflowLifecycleResultGate
     }
 
     /**
-     * @param array<string, mixed> $outputs
-     *
+     * @param  array<string, mixed>  $outputs
      * @return list<array{code: string, reason: string}>
      */
     private static function validateContinueAsNewSideEffects(array $outputs): array
@@ -1221,9 +1303,8 @@ final class WorkflowLifecycleResultGate
     }
 
     /**
-     * @param array<string, mixed> $outputs
-     * @param list<string> $errorFragments
-     *
+     * @param  array<string, mixed>  $outputs
+     * @param  list<string>  $errorFragments
      * @return list<array{code: string, reason: string}>
      */
     private static function validateTerminalLifecycleSurface(
@@ -1238,21 +1319,21 @@ final class WorkflowLifecycleResultGate
             $failures = self::addSemanticFailure(
                 $failures,
                 $terminalFailureCode,
-                'terminal_status must be ' . $terminalStatus,
+                'terminal_status must be '.$terminalStatus,
             );
         }
         if (! self::textIncludesAny($outputs['worker_error_type'] ?? null, $errorFragments)) {
             $failures = self::addSemanticFailure(
                 $failures,
                 $errorFailureCode,
-                'worker_error_type must be a typed ' . $terminalStatus . ' error',
+                'worker_error_type must be a typed '.$terminalStatus.' error',
             );
         }
         if (! self::textIncludesAny($outputs['caller_error_type'] ?? null, $errorFragments)) {
             $failures = self::addSemanticFailure(
                 $failures,
                 $errorFailureCode,
-                'caller_error_type must be a typed ' . $terminalStatus . ' error',
+                'caller_error_type must be a typed '.$terminalStatus.' error',
             );
         }
 
@@ -1260,8 +1341,7 @@ final class WorkflowLifecycleResultGate
     }
 
     /**
-     * @param array<string, mixed> $outputs
-     *
+     * @param  array<string, mixed>  $outputs
      * @return list<array{code: string, reason: string}>
      */
     private static function validateDuplicateStartPolicy(array $outputs): array
@@ -1319,8 +1399,7 @@ final class WorkflowLifecycleResultGate
     }
 
     /**
-     * @param array<string, mixed> $outputs
-     *
+     * @param  array<string, mixed>  $outputs
      * @return list<array{code: string, reason: string}>
      */
     private static function validateWorkflowTimeout(array $outputs): array
@@ -1394,8 +1473,7 @@ final class WorkflowLifecycleResultGate
     }
 
     /**
-     * @param array<string, mixed> $outputs
-     *
+     * @param  array<string, mixed>  $outputs
      * @return list<array{code: string, reason: string}>
      */
     private static function validateWorkflowRetry(array $outputs): array
@@ -1443,9 +1521,8 @@ final class WorkflowLifecycleResultGate
     }
 
     /**
-     * @param array<string, mixed> $outputs
-     * @param list<string> $expectedSdkFragments
-     *
+     * @param  array<string, mixed>  $outputs
+     * @param  list<string>  $expectedSdkFragments
      * @return list<array{code: string, reason: string}>
      */
     private static function validateSdkLifecycleSurface(array $outputs, array $expectedSdkFragments): array
@@ -1484,16 +1561,14 @@ final class WorkflowLifecycleResultGate
     }
 
     /**
-     * @param array<string, mixed> $outputs
-     *
+     * @param  array<string, mixed>  $outputs
      * @return list<array{code: string, reason: string}>
      */
     private static function validateRustSdkLifecycleSurface(
         array $outputs,
         string $expectedVersion,
         string $expectedServerVersion,
-    ): array
-    {
+    ): array {
         $failures = [];
         if ($expectedVersion === '' || ($outputs['artifact_version'] ?? null) !== $expectedVersion) {
             $failures = self::addSemanticFailure(
@@ -1908,8 +1983,7 @@ final class WorkflowLifecycleResultGate
     }
 
     /**
-     * @param array<string, mixed> $outputs
-     *
+     * @param  array<string, mixed>  $outputs
      * @return list<array{code: string, reason: string}>
      */
     private static function validateOperatorDiagnostics(array $outputs): array
@@ -1920,7 +1994,7 @@ final class WorkflowLifecycleResultGate
                 $failures = self::addSemanticFailure(
                     $failures,
                     'operator_diagnostic_surface_missing',
-                    'operator diagnostics must include ' . $field,
+                    'operator diagnostics must include '.$field,
                 );
             }
         }
@@ -1936,8 +2010,8 @@ final class WorkflowLifecycleResultGate
     }
 
     /**
-     * @param array<string, mixed> $result
-     * @param array<string, mixed> $scenarioResult
+     * @param  array<string, mixed>  $result
+     * @param  array<string, mixed>  $scenarioResult
      */
     private static function hasFocusedFinding(array $result, array $scenarioResult, string $scenarioId): bool
     {
@@ -1978,8 +2052,7 @@ final class WorkflowLifecycleResultGate
     }
 
     /**
-     * @param array<string, mixed> $contract
-     *
+     * @param  array<string, mixed>  $contract
      * @return list<string>
      */
     private static function requiredArtifacts(array $contract): array
@@ -1993,8 +2066,8 @@ final class WorkflowLifecycleResultGate
     }
 
     /**
-     * @param array<mixed> $values
-     * @param array<string, mixed> $contract
+     * @param  array<mixed>  $values
+     * @param  array<string, mixed>  $contract
      */
     private static function artifactValue(array $values, string $artifact, array $contract): string
     {
@@ -2009,8 +2082,7 @@ final class WorkflowLifecycleResultGate
     }
 
     /**
-     * @param array<string, mixed> $contract
-     *
+     * @param  array<string, mixed>  $contract
      * @return list<string>
      */
     private static function artifactAliases(string $artifact, array $contract): array
@@ -2036,7 +2108,7 @@ final class WorkflowLifecycleResultGate
     }
 
     /**
-     * @param array<string, mixed> ...$containers
+     * @param  array<string, mixed>  ...$containers
      */
     private static function hasExplicitFalseLocalProductSourceFlag(array ...$containers): bool
     {
@@ -2083,8 +2155,8 @@ final class WorkflowLifecycleResultGate
     }
 
     /**
-     * @param array<string, mixed> $array
-     * @param list<string> $fields
+     * @param  array<string, mixed>  $array
+     * @param  list<string>  $fields
      */
     private static function truthyField(array $array, array $fields): bool
     {
@@ -2124,8 +2196,8 @@ final class WorkflowLifecycleResultGate
     }
 
     /**
-     * @param array<string, mixed> $array
-     * @param list<string> $keys
+     * @param  array<string, mixed>  $array
+     * @param  list<string>  $keys
      */
     private static function hasScalarField(array $array, array $keys): bool
     {
@@ -2144,9 +2216,8 @@ final class WorkflowLifecycleResultGate
     }
 
     /**
-     * @param array<string, mixed> $array
-     * @param list<string> $keys
-     *
+     * @param  array<string, mixed>  $array
+     * @param  list<string>  $keys
      * @return array<string, mixed>|null
      */
     private static function arrayField(array $array, array $keys): ?array
@@ -2162,8 +2233,8 @@ final class WorkflowLifecycleResultGate
     }
 
     /**
-     * @param array<string, mixed> $array
-     * @param list<string> $keys
+     * @param  array<string, mixed>  $array
+     * @param  list<string>  $keys
      */
     private static function hasAnyField(array $array, array $keys): bool
     {
@@ -2177,8 +2248,8 @@ final class WorkflowLifecycleResultGate
     }
 
     /**
-     * @param array<string, mixed> $array
-     * @param list<string> $keys
+     * @param  array<string, mixed>  $array
+     * @param  list<string>  $keys
      */
     private static function firstFieldValue(array $array, array $keys): mixed
     {
@@ -2192,7 +2263,7 @@ final class WorkflowLifecycleResultGate
     }
 
     /**
-     * @param array<string, mixed> $array
+     * @param  array<string, mixed>  $array
      */
     private static function fieldValue(array $array, string $field): mixed
     {
@@ -2220,9 +2291,6 @@ final class WorkflowLifecycleResultGate
         return strtolower(str_replace('-', '_', self::stringValue($value)));
     }
 
-    /**
-     * @param mixed $value
-     */
     private static function isEmptyEvidence(mixed $value): bool
     {
         if ($value === null) {
@@ -2269,7 +2337,7 @@ final class WorkflowLifecycleResultGate
     }
 
     /**
-     * @param list<string> $fragments
+     * @param  list<string>  $fragments
      */
     private static function textIncludesAny(mixed $value, array $fragments): bool
     {
@@ -2279,7 +2347,7 @@ final class WorkflowLifecycleResultGate
         }
 
         foreach ($fragments as $fragment) {
-            if (str_contains($text, $fragment)) {
+            if (str_contains($text, self::normalizedText($fragment))) {
                 return true;
             }
         }
@@ -2313,7 +2381,7 @@ final class WorkflowLifecycleResultGate
     }
 
     /**
-     * @param list<mixed> $values
+     * @param  list<mixed>  $values
      */
     private static function listContainsValue(array $values, string $expected): bool
     {
@@ -2370,8 +2438,6 @@ final class WorkflowLifecycleResultGate
     }
 
     /**
-     * @param mixed $value
-     *
      * @return list<string>
      */
     private static function stringList(mixed $value): array

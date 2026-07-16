@@ -81,6 +81,10 @@
   "runtime_failure_evidence": {
     "durable_observed_evidence_required": true,
     "diagnostic_file_reference_alone_forbidden": true,
+    "retained_diagnostic_excerpt_max_bytes": 4096,
+    "retained_diagnostic_credential_redaction_required": true,
+    "worker_startup_outcome_and_process_state_required_on_start_failure": true,
+    "readiness_failure_retains_expected_and_observed_contracts": true,
     "public_error_envelope_max_bytes": 2048,
     "required_http_failure_fields": [
       "status_code",

@@ -133,6 +133,9 @@ const fs = require('node:fs');
 const path = require('node:path');
 const {
   assertCompleteHttpFailureEvidence,
+  boundedEvidence,
+  diagnosticExcerpt,
+  extractReadinessHttpFailureEvidence,
   extractRuntimeFailureEvidence,
   failureSummary,
 } = require(process.env.FAILURE_EVIDENCE_HELPER);
@@ -152,13 +155,22 @@ const readJson = (file) => {
     return null;
   }
 };
+const secrets = [process.env.CONTROL_TOKEN, process.env.WORKER_TOKEN];
+const workerStartOutcome = process.env.WORKER_START_OUTCOME || '';
+const workerProcessAlive = process.env.WORKER_START_PROCESS_ALIVE === 'true';
+const processExitCode = process.env.WORKER_START_PROCESS_EXIT_CODE === ''
+  ? null
+  : Number(process.env.WORKER_START_PROCESS_EXIT_CODE);
+const workerExitedDuringStartup = workerStartOutcome === 'process_exit' && !workerProcessAlive;
+const workerStartObservation = readJson(process.env.WORKER_START_OBSERVATION_FILE || '');
+const boundedWorkerStartObservation = boundedEvidence(workerStartObservation, secrets);
 let diagnostic = null;
 let runtimeFailure = null;
 if (diagnosticFile && fs.existsSync(diagnosticFile)) {
   const excerpt = fs.readFileSync(diagnosticFile, 'utf8');
-  diagnostic = {path: path.basename(diagnosticFile), excerpt};
+  diagnostic = diagnosticExcerpt(excerpt, secrets);
   runtimeFailure = extractRuntimeFailureEvidence(excerpt, {
-    secrets: [process.env.CONTROL_TOKEN, process.env.WORKER_TOKEN],
+    secrets,
   });
   if (runtimeFailure) {
     runtimeFailure.failure_stage = process.env.FAILURE_STAGE || 'unknown';
@@ -166,9 +178,33 @@ if (diagnosticFile && fs.existsSync(diagnosticFile)) {
     owningSurface = runtimeFailure.owning_surface;
   }
 }
-assertCompleteHttpFailureEvidence(runtimeFailure, requestedClassification);
+const liveReadinessProbeFailed = workerStartOutcome === 'readiness_probe_failure'
+  && workerProcessAlive;
+if (!runtimeFailure && requestedClassification === 'server' && liveReadinessProbeFailed) {
+  runtimeFailure = extractReadinessHttpFailureEvidence(workerStartObservation, {secrets});
+  if (runtimeFailure) {
+    runtimeFailure.failure_stage = process.env.FAILURE_STAGE || 'unknown';
+    classification = runtimeFailure.classification;
+    owningSurface = runtimeFailure.owning_surface;
+  }
+}
+if (workerExitedDuringStartup && !runtimeFailure) {
+  classification = 'sdk';
+  owningSurface = 'sdk-php';
+}
+assertCompleteHttpFailureEvidence(runtimeFailure, classification);
 const runnerBlocked = classification === 'runner';
-const summary = failureSummary(runtimeFailure, process.env.FAILURE_STAGE || 'unknown', fallbackSummary);
+const renderedProcessExitCode = Number.isInteger(processExitCode) ? ` with code ${processExitCode}` : '';
+const processExitSummary = [
+  `The released PHP SDK worker process exited${renderedProcessExitCode}`,
+  `during ${process.env.FAILURE_STAGE || 'worker startup'};`,
+  'the bounded crash diagnostic is retained in structured evidence.',
+].join(' ');
+const summary = failureSummary(
+  runtimeFailure,
+  process.env.FAILURE_STAGE || 'unknown',
+  workerExitedDuringStartup ? processExitSummary : fallbackSummary,
+);
 const finding = {
   finding_id: `php-sdk-${process.env.FAILURE_STAGE || 'unknown'}-failure`,
   finding_type: runnerBlocked
@@ -210,18 +246,14 @@ if (runtimeFailure) {
 if (diagnostic) {
   observed.failure_diagnostic = diagnostic;
 }
-const workerStartOutcome = process.env.WORKER_START_OUTCOME || '';
 if (workerStartOutcome) {
-  const processExitCode = process.env.WORKER_START_PROCESS_EXIT_CODE === ''
-    ? null
-    : Number(process.env.WORKER_START_PROCESS_EXIT_CODE);
-  const observation = readJson(process.env.WORKER_START_OBSERVATION_FILE || '');
+  const observation = boundedWorkerStartObservation;
   observed.worker_startup = {
     outcome: workerStartOutcome,
     worker_id: process.env.WORKER_START_WORKER_ID || null,
     attempts: Number(process.env.WORKER_START_ATTEMPTS || 0),
     process_id: Number(process.env.WORKER_START_PROCESS_ID || 0) || null,
-    process_alive_at_failure: process.env.WORKER_START_PROCESS_ALIVE === 'true',
+    process_alive_at_failure: workerProcessAlive,
     process_exit_code: Number.isInteger(processExitCode) ? processExitCode : null,
     last_server_observation: observation?.last_server_observation ?? null,
     readiness_observation: observation,
@@ -477,9 +509,9 @@ runtime_failure_summary() {
   local stage="${2:?stage is required}"
   local diagnostic_file="${3:?diagnostic file is required}"
   case "$classification" in
-    server) printf 'The released PHP SDK probe received a server HTTP failure during %s; inspect %s.\n' "$stage" "${diagnostic_file##*/}" ;;
-    runner) printf 'The released PHP SDK probe encountered a transport failure during %s; inspect %s.\n' "$stage" "${diagnostic_file##*/}" ;;
-    *) printf 'The released PHP SDK process failed during %s; inspect %s.\n' "$stage" "${diagnostic_file##*/}" ;;
+    server) printf 'The released PHP SDK probe received a server HTTP failure during %s; the bounded diagnostic is retained in structured evidence.\n' "$stage" ;;
+    runner) printf 'The released PHP SDK probe encountered a transport failure during %s; the bounded diagnostic is retained in structured evidence.\n' "$stage" ;;
+    *) printf 'The released PHP SDK process failed during %s; the bounded diagnostic is retained in structured evidence.\n' "$stage" ;;
   esac
 }
 
@@ -1487,7 +1519,10 @@ write_worker_start_failure() {
 
   case "$worker_start_outcome" in
     process_exit)
-      write_runtime_failure "$stdout_file" "$stderr_file" worker_process_exit "$diagnostic_file"
+      capture_runtime_diagnostic "$stdout_file" "$stderr_file" "$diagnostic_file" sdk
+      write_failure sdk sdk-php worker_process_exit \
+        "$(runtime_failure_summary sdk worker_process_exit "$diagnostic_file")" \
+        "$diagnostic_file"
       ;;
     readiness_timeout)
       capture_runtime_diagnostic "$stdout_file" "$stderr_file" "$diagnostic_file" sdk
