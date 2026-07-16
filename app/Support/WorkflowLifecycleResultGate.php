@@ -678,20 +678,16 @@ final class WorkflowLifecycleResultGate
                 ];
             }
 
-            if (! self::truthyField($sourcePolicy, [
+            $publishedArtifactOnlyFields = [
                 'published_artifacts_only',
                 'publishedArtifactsOnly',
                 'published_artifact_evidence_only',
                 'publishedArtifactEvidenceOnly',
-            ])) {
+            ];
+            if (! self::allReportedFieldsTruthy($sourcePolicy, $publishedArtifactOnlyFields)) {
                 $failures[] = [
                     'code' => 'source_policy_must_require_published_artifacts',
-                    'value' => self::firstFieldValue($sourcePolicy, [
-                        'published_artifacts_only',
-                        'publishedArtifactsOnly',
-                        'published_artifact_evidence_only',
-                        'publishedArtifactEvidenceOnly',
-                    ]),
+                    'value' => self::firstFieldValue($sourcePolicy, $publishedArtifactOnlyFields),
                 ];
             }
 
@@ -2167,6 +2163,28 @@ final class WorkflowLifecycleResultGate
         }
 
         return false;
+    }
+
+    /**
+     * @param  array<string, mixed>  $array
+     * @param  list<string>  $fields
+     */
+    private static function allReportedFieldsTruthy(array $array, array $fields): bool
+    {
+        $reported = false;
+
+        foreach ($fields as $field) {
+            if (! array_key_exists($field, $array)) {
+                continue;
+            }
+
+            $reported = true;
+            if (! self::truthy($array[$field])) {
+                return false;
+            }
+        }
+
+        return $reported;
     }
 
     private static function truthy(mixed $value): bool

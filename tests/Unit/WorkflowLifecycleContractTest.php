@@ -1557,7 +1557,8 @@ class WorkflowLifecycleContractTest extends TestCase
         $this->assertStringContainsString('durable-workflow/sdk', $runner);
         $this->assertStringContainsString('start_worker php-sdk-worker-1', $runner);
         $this->assertStringContainsString('start_worker php-sdk-worker-2', $runner);
-        $this->assertStringContainsString('run_client_phase baseline', $runner);
+        $this->assertStringContainsString('initial_client_phase=baseline', $runner);
+        $this->assertStringContainsString('run_client_phase "$initial_client_phase" "$initial_client_output"', $runner);
         $this->assertStringContainsString('wait-replay-checkpoint', $runner);
         $this->assertStringContainsString('apache_avro_provenance', $runner);
         $this->assertStringContainsString('local_product_source_checkouts_used', $runner);
@@ -1949,7 +1950,11 @@ SH);
         $failureCodes = array_column($evaluation['gate_failures'], 'code');
 
         $this->assertSame('non_passing', $evaluation['status']);
-        $this->assertContains('missing_required_evidence', $failureCodes);
+        $this->assertContains([
+            'code' => 'missing_scenario_required_field',
+            'scenario_id' => 'workflow_timeout_terminal_state',
+            'field' => 'unsupported_timeout_shape_refusals',
+        ], $evaluation['gate_failures']);
         $this->assertContains('workflow_timeout_refusals_missing', $failureCodes);
         $this->assertContains('declared_outcome_mismatch', $failureCodes);
     }
