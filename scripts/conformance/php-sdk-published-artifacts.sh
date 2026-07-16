@@ -91,6 +91,13 @@ result_file="$result_dir/php-sdk-conformance-result.json"
 sidecar_file="$result_dir/php-sdk-lifecycle-evidence.json"
 started_at="$(date -u '+%Y-%m-%dT%H:%M:%SZ')"
 worker_pid=""
+worker_start_outcome=""
+worker_start_worker_id=""
+worker_start_attempts=""
+worker_start_process_id=""
+worker_start_process_alive=""
+worker_start_process_exit_code=""
+worker_start_observation_file=""
 
 write_failure() {
   local classification="${1:?classification is required}"
@@ -112,6 +119,13 @@ write_failure() {
   FAILURE_SUMMARY="$summary" \
   FAILURE_DIAGNOSTIC_FILE="$diagnostic_file" \
   FAILURE_EVIDENCE_HELPER="$script_dir/php-sdk-runtime-failure-evidence.cjs" \
+  WORKER_START_OUTCOME="$worker_start_outcome" \
+  WORKER_START_WORKER_ID="$worker_start_worker_id" \
+  WORKER_START_ATTEMPTS="$worker_start_attempts" \
+  WORKER_START_PROCESS_ID="$worker_start_process_id" \
+  WORKER_START_PROCESS_ALIVE="$worker_start_process_alive" \
+  WORKER_START_PROCESS_EXIT_CODE="$worker_start_process_exit_code" \
+  WORKER_START_OBSERVATION_FILE="$worker_start_observation_file" \
   CONTROL_TOKEN="$control_token" \
   WORKER_TOKEN="$worker_token" \
   node <<'NODE'
@@ -196,6 +210,24 @@ if (runtimeFailure) {
 if (diagnostic) {
   observed.failure_diagnostic = diagnostic;
 }
+const workerStartOutcome = process.env.WORKER_START_OUTCOME || '';
+if (workerStartOutcome) {
+  const processExitCode = process.env.WORKER_START_PROCESS_EXIT_CODE === ''
+    ? null
+    : Number(process.env.WORKER_START_PROCESS_EXIT_CODE);
+  const observation = readJson(process.env.WORKER_START_OBSERVATION_FILE || '');
+  observed.worker_startup = {
+    outcome: workerStartOutcome,
+    worker_id: process.env.WORKER_START_WORKER_ID || null,
+    attempts: Number(process.env.WORKER_START_ATTEMPTS || 0),
+    process_id: Number(process.env.WORKER_START_PROCESS_ID || 0) || null,
+    process_alive_at_failure: process.env.WORKER_START_PROCESS_ALIVE === 'true',
+    process_exit_code: Number.isInteger(processExitCode) ? processExitCode : null,
+    last_server_observation: observation?.last_server_observation ?? null,
+    readiness_observation: observation,
+  };
+  finding.worker_startup_evidence = observed.worker_startup;
+}
 const startedContractEvidence = readJson(path.join(resultDir, 'php-sdk-addressable-start-contract.json'));
 const startedHistoryEvidence = readJson(path.join(resultDir, 'php-sdk-addressable-start-history.json'));
 if (startedContractEvidence) {
@@ -253,6 +285,7 @@ const result = {
   },
   local_product_source_checkouts_used: false,
   process_boundary: {client_worker_distinct_processes: false},
+  worker_startup: observed.worker_startup || null,
   workflow_started_command_contract: observed.workflow_started_command_contract || null,
   scenario_results: {},
   findings: [finding],
@@ -1362,14 +1395,33 @@ start_worker() {
   local readiness_log="$result_dir/php-sdk-worker-${worker_id}.readiness.log"
   local readiness_started_at
   local readiness_started_epoch
+  local attempt
+  local readiness_status
+  worker_start_outcome=""
+  worker_start_worker_id="$worker_id"
+  worker_start_attempts=0
+  worker_start_process_id=""
+  worker_start_process_alive=""
+  worker_start_process_exit_code=""
+  worker_start_observation_file="$result_dir/php-sdk-worker-${worker_id}.readiness-observation.json"
   readiness_started_at="$(date -u '+%Y-%m-%dT%H:%M:%SZ')"
   readiness_started_epoch="$("$php_bin" -r 'printf("%.6F", microtime(true));')"
   "$php_bin" "$project_dir/worker.php" \
     "$server_url" "$namespace" "$control_token" "$worker_token" "$queue" "$worker_id" "$result_dir" "$scope" \
     >"$result_dir/${worker_id}.log" 2>&1 &
   worker_pid=$!
+  worker_start_process_id="$worker_pid"
   for attempt in $(seq 1 100); do
+    worker_start_attempts="$attempt"
     if ! kill -0 "$worker_pid" >/dev/null 2>&1; then
+      worker_start_outcome=process_exit
+      worker_start_process_alive=false
+      if wait "$worker_pid"; then
+        worker_start_process_exit_code=0
+      else
+        worker_start_process_exit_code=$?
+      fi
+      worker_pid=""
       return 1
     fi
     readiness_status=0
@@ -1382,10 +1434,36 @@ start_worker() {
       return 0
     fi
     if [[ "$readiness_status" -ne 1 ]]; then
+      if ! kill -0 "$worker_pid" >/dev/null 2>&1; then
+        worker_start_outcome=process_exit
+        worker_start_process_alive=false
+        if wait "$worker_pid"; then
+          worker_start_process_exit_code=0
+        else
+          worker_start_process_exit_code=$?
+        fi
+        worker_pid=""
+        return 1
+      fi
+      worker_start_outcome=readiness_probe_failure
+      worker_start_process_alive=true
       return 1
     fi
     sleep 0.1
   done
+  if ! kill -0 "$worker_pid" >/dev/null 2>&1; then
+    worker_start_outcome=process_exit
+    worker_start_process_alive=false
+    if wait "$worker_pid"; then
+      worker_start_process_exit_code=0
+    else
+      worker_start_process_exit_code=$?
+    fi
+    worker_pid=""
+    return 1
+  fi
+  worker_start_outcome=readiness_timeout
+  worker_start_process_alive=true
   return 1
 }
 
@@ -1402,6 +1480,27 @@ write_runtime_failure() {
   write_failure "$classification" "$(failure_owner_for "$classification")" "$stage" "$summary" "$diagnostic_file"
 }
 
+write_worker_start_failure() {
+  local stdout_file="${1:?worker stdout is required}"
+  local stderr_file="${2:?worker readiness log is required}"
+  local diagnostic_file="${3:?diagnostic file is required}"
+
+  case "$worker_start_outcome" in
+    process_exit)
+      write_runtime_failure "$stdout_file" "$stderr_file" worker_process_exit "$diagnostic_file"
+      ;;
+    readiness_timeout)
+      capture_runtime_diagnostic "$stdout_file" "$stderr_file" "$diagnostic_file" sdk
+      write_failure sdk sdk-php worker_readiness_timeout \
+        "The released PHP SDK worker remained alive but authoritative command-contract readiness timed out after ${worker_start_attempts} attempts; the last server observation is retained in structured evidence." \
+        "$diagnostic_file"
+      ;;
+    *)
+      write_runtime_failure "$stdout_file" "$stderr_file" worker_readiness_probe "$diagnostic_file"
+      ;;
+  esac
+}
+
 run_client_phase() {
   local phase="${1:?phase is required}"
   local output="${2:?output path is required}"
@@ -1411,8 +1510,8 @@ run_client_phase() {
 }
 
 if ! start_worker php-sdk-worker-1; then
-  write_runtime_failure \
-    "$result_dir/php-sdk-worker-1.log" "$result_dir/php-sdk-worker-php-sdk-worker-1.readiness.log" worker_start \
+  write_worker_start_failure \
+    "$result_dir/php-sdk-worker-1.log" "$result_dir/php-sdk-worker-php-sdk-worker-1.readiness.log" \
     "$result_dir/php-sdk-worker-1.diagnostic.log"
   exit 0
 fi
@@ -1464,8 +1563,8 @@ wait "$worker_pid" >/dev/null 2>&1 || true
 worker_pid=""
 
 if ! start_worker php-sdk-worker-2; then
-  write_runtime_failure \
-    "$result_dir/php-sdk-worker-2.log" "$result_dir/php-sdk-worker-php-sdk-worker-2.readiness.log" worker_restart \
+  write_worker_start_failure \
+    "$result_dir/php-sdk-worker-2.log" "$result_dir/php-sdk-worker-php-sdk-worker-2.readiness.log" \
     "$result_dir/php-sdk-worker-2.diagnostic.log"
   exit 0
 fi

@@ -88,6 +88,9 @@ final class PhpSdkConformanceContractTest extends TestCase
         $this->assertStringContainsString('server_visible_workflow_command_contracts', $runner);
         $this->assertStringContainsString('worker_command_contract_readiness', $runner);
         $this->assertStringContainsString('workflow_started_command_contract', $runner);
+        $this->assertStringContainsString('worker_process_exit', $runner);
+        $this->assertStringContainsString('worker_readiness_timeout', $runner);
+        $this->assertStringContainsString('last_server_observation', $runner);
         $this->assertStringContainsString('DW_PHP_SDK_CONFORMANCE_WORKER_RUN_DELAY_MS', $runner);
         $this->assertStringNotContainsString('$client->registerWorker(', $runner);
         $this->assertStringNotContainsString('durable-workflow/workflow:', $runner);
@@ -129,6 +132,19 @@ final class PhpSdkConformanceContractTest extends TestCase
         require_once $repoRoot.'/scripts/conformance/php-sdk-started-contract.php';
         $completeContract = php_sdk_waiting_command_contract();
         unset($completeContract['workflow_type']);
+        $completeContract['query_contracts'][0] = array_reverse(
+            $completeContract['query_contracts'][0],
+            true,
+        );
+        $completeContract['update_contracts'][0]['parameters'][0] = array_reverse(
+            $completeContract['update_contracts'][0]['parameters'][0],
+            true,
+        );
+        $completeContract['update_contracts'][0] = array_reverse(
+            $completeContract['update_contracts'][0],
+            true,
+        );
+        $completeContract = array_reverse($completeContract, true);
         file_put_contents($autoload, <<<'PHP'
 <?php
 namespace Composer {
@@ -297,6 +313,18 @@ PHP);
             $this->assertTrue($metadata['readiness']['name_only_registration_observed']);
             $this->assertTrue($metadata['readiness']['client_release_after_authoritative_registration']);
             $this->assertSame($completeContract, $metadata['server_visible_registration']['workflow_command_contracts']['php.sdk.waiting']);
+            $readinessObservation = json_decode(
+                (string) file_get_contents(
+                    $resultDir.'/php-sdk-worker-php-sdk-worker-1.readiness-observation.json',
+                ),
+                true,
+                flags: JSON_THROW_ON_ERROR,
+            );
+            $this->assertSame(200, $readinessObservation['last_server_observation']['http_status']);
+            $this->assertSame(
+                $completeContract,
+                $readinessObservation['last_server_observation']['payload']['workflow_command_contracts']['php.sdk.waiting'],
+            );
         } finally {
             proc_terminate($process);
             proc_close($process);
@@ -307,6 +335,89 @@ PHP);
             }
             rmdir($resultDir);
         }
+    }
+
+    public function test_command_contract_matcher_ignores_only_json_object_key_order(): void
+    {
+        require_once dirname(__DIR__, 2).'/scripts/conformance/php-sdk-started-contract.php';
+
+        $required = php_sdk_waiting_command_contract();
+        $serverContract = $required;
+        unset($serverContract['workflow_type']);
+        $serverContract['query_contracts'][0] = array_reverse(
+            $serverContract['query_contracts'][0],
+            true,
+        );
+        $serverContract['update_contracts'][0]['parameters'][0] = array_reverse(
+            $serverContract['update_contracts'][0]['parameters'][0],
+            true,
+        );
+        $serverContract['update_contracts'][0] = array_reverse(
+            $serverContract['update_contracts'][0],
+            true,
+        );
+        $serverContract = array_reverse($serverContract, true);
+
+        $this->assertTrue(php_sdk_command_contract_matches($serverContract, $required));
+        $this->assertTrue(php_sdk_started_payload_matches([
+            'declared_update_contracts' => $serverContract['update_contracts'],
+            'declared_updates' => $serverContract['updates'],
+            'declared_query_contracts' => $serverContract['query_contracts'],
+            'declared_queries' => $serverContract['queries'],
+        ], $required));
+
+        $invalidContracts = [];
+        $invalidContracts['query name'] = $serverContract;
+        $invalidContracts['query name']['queries'][0] = 'changed';
+        $invalidContracts['query contract name'] = $serverContract;
+        $invalidContracts['query contract name']['query_contracts'][0]['name'] = 'changed';
+        $invalidContracts['update name'] = $serverContract;
+        $invalidContracts['update name']['updates'][0] = 'changed';
+        $invalidContracts['update contract name'] = $serverContract;
+        $invalidContracts['update contract name']['update_contracts'][0]['name'] = 'changed';
+        foreach ([
+            'parameter name' => ['name', 'changed'],
+            'parameter position' => ['position', 1],
+            'parameter required' => ['required', false],
+            'parameter variadic' => ['variadic', true],
+            'parameter default availability' => ['default_available', true],
+            'parameter default' => ['default', 0],
+            'parameter type' => ['type', 'string'],
+            'parameter nullability' => ['allows_null', true],
+        ] as $label => [$field, $value]) {
+            $invalidContracts[$label] = $serverContract;
+            $invalidContracts[$label]['update_contracts'][0]['parameters'][0][$field] = $value;
+        }
+
+        foreach ($invalidContracts as $label => $invalidContract) {
+            $this->assertFalse(
+                php_sdk_command_contract_matches($invalidContract, $required),
+                $label.' must remain contract-significant.',
+            );
+        }
+
+        $orderedParametersRequired = $required;
+        $secondParameter = $required['update_contracts'][0]['parameters'][0];
+        $secondParameter['name'] = 'second';
+        $secondParameter['position'] = 1;
+        $orderedParametersRequired['update_contracts'][0]['parameters'][] = $secondParameter;
+        $reorderedParameters = $orderedParametersRequired;
+        unset($reorderedParameters['workflow_type']);
+        $reorderedParameters['update_contracts'][0]['parameters'] = array_reverse(
+            $reorderedParameters['update_contracts'][0]['parameters'],
+        );
+        $this->assertFalse(php_sdk_command_contract_matches(
+            $reorderedParameters,
+            $orderedParametersRequired,
+        ));
+
+        $orderedNamesRequired = $required;
+        $orderedNamesRequired['queries'][] = 'second';
+        $orderedNamesRequired['query_contracts'][] = ['name' => 'second', 'parameters' => []];
+        $reorderedNames = $orderedNamesRequired;
+        unset($reorderedNames['workflow_type']);
+        $reorderedNames['queries'] = array_reverse($reorderedNames['queries']);
+        $this->assertFalse(php_sdk_command_contract_matches($reorderedNames, $orderedNamesRequired));
     }
 
     public function test_started_contract_gate_rejects_one_immutable_name_only_event(): void
@@ -343,15 +454,23 @@ PHP);
         require_once dirname(__DIR__, 2).'/scripts/conformance/php-sdk-started-contract.php';
 
         $required = php_sdk_waiting_command_contract();
+        $serverQueryContracts = $required['query_contracts'];
+        $serverQueryContracts[0] = array_reverse($serverQueryContracts[0], true);
+        $serverUpdateContracts = $required['update_contracts'];
+        $serverUpdateContracts[0]['parameters'][0] = array_reverse(
+            $serverUpdateContracts[0]['parameters'][0],
+            true,
+        );
+        $serverUpdateContracts[0] = array_reverse($serverUpdateContracts[0], true);
         $started = [
             'sequence' => 1,
             'event_type' => 'WorkflowStarted',
             'timestamp' => '2026-07-15T23:00:00Z',
             'payload' => [
                 'declared_queries' => $required['queries'],
-                'declared_query_contracts' => $required['query_contracts'],
+                'declared_query_contracts' => $serverQueryContracts,
                 'declared_updates' => $required['updates'],
-                'declared_update_contracts' => $required['update_contracts'],
+                'declared_update_contracts' => $serverUpdateContracts,
             ],
         ];
 
@@ -824,6 +943,135 @@ JS;
             $this->assertSame('workflow-123', $evidence['workflow_id']);
             $this->assertSame('run-456', $evidence['run_id']);
             $this->assertSame('server', $result['findings'][0]['owning_surface']);
+        } finally {
+            foreach (glob($resultDir.'/*') ?: [] as $file) {
+                if (is_file($file)) {
+                    unlink($file);
+                }
+            }
+            rmdir($resultDir);
+        }
+    }
+
+    public function test_worker_startup_failure_evidence_distinguishes_timeout_from_process_exit(): void
+    {
+        $nodeBinary = trim((string) shell_exec('command -v node 2>/dev/null'));
+        if ($nodeBinary === '') {
+            $this->markTestSkipped('node is required to exercise the failure writer.');
+        }
+
+        $repoRoot = dirname(__DIR__, 2);
+        $runner = (string) file_get_contents($repoRoot.'/scripts/conformance/php-sdk-published-artifacts.sh');
+        $matched = preg_match(
+            "~write_failure\\(\\) \\{.*?node <<'NODE'\n(.*?)\nNODE\n\\}~s",
+            $runner,
+            $matches,
+        );
+        $this->assertSame(1, $matched);
+        $writer = $matches[1];
+        $resultDir = sys_get_temp_dir().'/dw-php-sdk-startup-evidence-'.bin2hex(random_bytes(6));
+        mkdir($resultDir, 0777, true);
+        $observationFile = $resultDir.'/readiness-observation.json';
+        $lastServerRegistration = [
+            'worker_id' => 'php-sdk-worker-1',
+            'status' => 'active',
+            'last_heartbeat_at' => '2026-07-16T00:00:00Z',
+            'workflow_command_contracts' => [
+                'php.sdk.waiting' => ['queries' => ['current'], 'updates' => ['set']],
+            ],
+        ];
+        file_put_contents($observationFile, json_encode([
+            'first_server_registration_observed_at' => '2026-07-16T00:00:00Z',
+            'last_server_registration_observed_at' => '2026-07-16T00:00:10Z',
+            'last_server_registration' => $lastServerRegistration,
+            'last_server_observation' => [
+                'observed_at' => '2026-07-16T00:00:10Z',
+                'http_status' => 200,
+                'payload' => $lastServerRegistration,
+            ],
+        ], JSON_THROW_ON_ERROR));
+        $environment = array_merge($_ENV, [
+            'RESULT_DIR' => $resultDir,
+            'SDK_VERSION' => '0.1.6',
+            'SERVER_VERSION' => '0.2.662',
+            'SERVER_IMAGE' => 'durableworkflow/server:0.2.662',
+            'SERVER_URL' => 'http://server.test',
+            'NAMESPACE' => 'workflow-lifecycle-conformance',
+            'STARTED_AT' => '2026-07-16T00:00:00Z',
+            'FAILURE_CLASSIFICATION' => 'sdk',
+            'FAILURE_OWNER' => 'sdk-php',
+            'FAILURE_STAGE' => 'worker_readiness_timeout',
+            'FAILURE_SUMMARY' => 'worker readiness timed out',
+            'FAILURE_DIAGNOSTIC_FILE' => '',
+            'FAILURE_EVIDENCE_HELPER' => $repoRoot.'/scripts/conformance/php-sdk-runtime-failure-evidence.cjs',
+            'WORKER_START_OUTCOME' => 'readiness_timeout',
+            'WORKER_START_WORKER_ID' => 'php-sdk-worker-1',
+            'WORKER_START_ATTEMPTS' => '100',
+            'WORKER_START_PROCESS_ID' => '4321',
+            'WORKER_START_PROCESS_ALIVE' => 'true',
+            'WORKER_START_PROCESS_EXIT_CODE' => '',
+            'WORKER_START_OBSERVATION_FILE' => $observationFile,
+            'CONTROL_TOKEN' => 'control-secret',
+            'WORKER_TOKEN' => 'worker-secret',
+        ]);
+
+        try {
+            $runWriter = static function (array $writerEnvironment) use (
+                $nodeBinary,
+                $writer,
+                $repoRoot,
+            ): void {
+                $process = proc_open(
+                    [$nodeBinary, '-e', $writer],
+                    [
+                        1 => ['pipe', 'w'],
+                        2 => ['pipe', 'w'],
+                    ],
+                    $pipes,
+                    $repoRoot,
+                    $writerEnvironment,
+                );
+                self::assertIsResource($process);
+                stream_get_contents($pipes[1]);
+                $stderr = stream_get_contents($pipes[2]);
+                fclose($pipes[1]);
+                fclose($pipes[2]);
+                self::assertSame(0, proc_close($process), (string) $stderr);
+            };
+
+            $runWriter($environment);
+            $sidecar = json_decode(
+                (string) file_get_contents($resultDir.'/php-sdk-lifecycle-evidence.json'),
+                true,
+                flags: JSON_THROW_ON_ERROR,
+            );
+            $timeout = $sidecar['scenario_results']['php_sdk_lifecycle_surface']['observed_outputs']['worker_startup'];
+            $this->assertSame('readiness_timeout', $timeout['outcome']);
+            $this->assertTrue($timeout['process_alive_at_failure']);
+            $this->assertNull($timeout['process_exit_code']);
+            $this->assertSame(100, $timeout['attempts']);
+            $this->assertSame($lastServerRegistration, $timeout['last_server_observation']['payload']);
+
+            $exitEnvironment = array_merge($environment, [
+                'FAILURE_STAGE' => 'worker_process_exit',
+                'FAILURE_SUMMARY' => 'worker process exited',
+                'WORKER_START_OUTCOME' => 'process_exit',
+                'WORKER_START_ATTEMPTS' => '3',
+                'WORKER_START_PROCESS_ALIVE' => 'false',
+                'WORKER_START_PROCESS_EXIT_CODE' => '17',
+            ]);
+            $runWriter($exitEnvironment);
+            $sidecar = json_decode(
+                (string) file_get_contents($resultDir.'/php-sdk-lifecycle-evidence.json'),
+                true,
+                flags: JSON_THROW_ON_ERROR,
+            );
+            $processExit = $sidecar['scenario_results']['php_sdk_lifecycle_surface']['observed_outputs']['worker_startup'];
+            $this->assertSame('process_exit', $processExit['outcome']);
+            $this->assertFalse($processExit['process_alive_at_failure']);
+            $this->assertSame(17, $processExit['process_exit_code']);
+            $this->assertSame(3, $processExit['attempts']);
+            $this->assertSame($lastServerRegistration, $processExit['last_server_observation']['payload']);
         } finally {
             foreach (glob($resultDir.'/*') ?: [] as $file) {
                 if (is_file($file)) {

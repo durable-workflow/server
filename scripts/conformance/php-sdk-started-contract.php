@@ -37,6 +37,35 @@ function php_sdk_waiting_command_contract(): array
     ];
 }
 
+/**
+ * Normalize only JSON object member order. JSON array order and scalar types
+ * remain part of the command contract.
+ */
+function php_sdk_normalize_json_object_order(mixed $value): mixed
+{
+    if (! is_array($value)) {
+        return $value;
+    }
+
+    if (array_is_list($value)) {
+        return array_map('php_sdk_normalize_json_object_order', $value);
+    }
+
+    $normalized = [];
+    foreach ($value as $key => $entry) {
+        $normalized[$key] = php_sdk_normalize_json_object_order($entry);
+    }
+    ksort($normalized, SORT_STRING);
+
+    return $normalized;
+}
+
+function php_sdk_json_semantically_equal(mixed $actual, mixed $expected): bool
+{
+    return php_sdk_normalize_json_object_order($actual)
+        === php_sdk_normalize_json_object_order($expected);
+}
+
 /** @param  array<string, mixed>  $required */
 function php_sdk_command_contract_matches(mixed $contract, array $required): bool
 {
@@ -44,31 +73,32 @@ function php_sdk_command_contract_matches(mixed $contract, array $required): boo
         return false;
     }
 
-    $names = static function (mixed $value): array {
-        if (! is_array($value)) {
-            return [];
-        }
-
-        $normalized = array_values(array_unique(array_map('strval', $value)));
-        sort($normalized, SORT_STRING);
-
-        return $normalized;
-    };
-
-    return $names($contract['queries'] ?? null) === $required['queries']
-        && ($contract['query_contracts'] ?? null) === $required['query_contracts']
-        && $names($contract['updates'] ?? null) === $required['updates']
-        && ($contract['update_contracts'] ?? null) === $required['update_contracts'];
+    return php_sdk_json_semantically_equal($contract['queries'] ?? null, $required['queries'])
+        && php_sdk_json_semantically_equal(
+            $contract['query_contracts'] ?? null,
+            $required['query_contracts'],
+        )
+        && php_sdk_json_semantically_equal($contract['updates'] ?? null, $required['updates'])
+        && php_sdk_json_semantically_equal(
+            $contract['update_contracts'] ?? null,
+            $required['update_contracts'],
+        );
 }
 
 /** @param  array<string, mixed>  $required */
 function php_sdk_started_payload_matches(mixed $payload, array $required): bool
 {
     return is_array($payload)
-        && ($payload['declared_queries'] ?? null) === $required['queries']
-        && ($payload['declared_query_contracts'] ?? null) === $required['query_contracts']
-        && ($payload['declared_updates'] ?? null) === $required['updates']
-        && ($payload['declared_update_contracts'] ?? null) === $required['update_contracts'];
+        && php_sdk_json_semantically_equal($payload['declared_queries'] ?? null, $required['queries'])
+        && php_sdk_json_semantically_equal(
+            $payload['declared_query_contracts'] ?? null,
+            $required['query_contracts'],
+        )
+        && php_sdk_json_semantically_equal($payload['declared_updates'] ?? null, $required['updates'])
+        && php_sdk_json_semantically_equal(
+            $payload['declared_update_contracts'] ?? null,
+            $required['update_contracts'],
+        );
 }
 
 /**
@@ -116,7 +146,7 @@ function php_sdk_waiting_started_contract_evidence(
 
     if (! php_sdk_started_payload_matches($payload, $required)) {
         foreach ($requiredPayload as $field => $expected) {
-            if (($payload[$field] ?? null) !== $expected) {
+            if (! php_sdk_json_semantically_equal($payload[$field] ?? null, $expected)) {
                 throw new RuntimeException(sprintf(
                     'Immutable WorkflowStarted field [%s] did not contain the complete normalized PHP handler contract.',
                     $field,

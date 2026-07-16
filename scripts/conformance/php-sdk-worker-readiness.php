@@ -119,15 +119,6 @@ $required = $scope === 'namespace'
     ]
     : php_sdk_waiting_command_contract();
 $response = describe_worker($server, $namespace, $controlToken, $workerId);
-if ($response['status'] === 404) {
-    exit(1);
-}
-if ($response['status'] < 200 || $response['status'] >= 300 || ! is_array($response['payload'])) {
-    fwrite(STDERR, sprintf("Worker readiness lookup failed with HTTP %d.\n", $response['status']));
-    exit(2);
-}
-
-$registration = $response['payload'];
 $observedAt = gmdate('Y-m-d\TH:i:s\Z');
 $observationFile = $resultDir.'/php-sdk-worker-'.$workerId.'.readiness-observation.json';
 $previousObservation = [];
@@ -135,6 +126,24 @@ if (is_file($observationFile)) {
     $decoded = json_decode((string) file_get_contents($observationFile), true);
     $previousObservation = is_array($decoded) ? $decoded : [];
 }
+$lastServerObservation = [
+    'observed_at' => $observedAt,
+    'http_status' => $response['status'],
+    'payload' => $response['payload'],
+];
+if ($response['status'] === 404) {
+    $previousObservation['last_server_observation'] = $lastServerObservation;
+    write_json_atomically($observationFile, $previousObservation);
+    exit(1);
+}
+if ($response['status'] < 200 || $response['status'] >= 300 || ! is_array($response['payload'])) {
+    $previousObservation['last_server_observation'] = $lastServerObservation;
+    write_json_atomically($observationFile, $previousObservation);
+    fwrite(STDERR, sprintf("Worker readiness lookup failed with HTTP %d.\n", $response['status']));
+    exit(2);
+}
+
+$registration = $response['payload'];
 $contracts = is_array($registration['workflow_command_contracts'] ?? null)
     ? $registration['workflow_command_contracts']
     : [];
@@ -156,6 +165,8 @@ $observation = [
     'first_observed_workflow_command_contracts' => $previousObservation['first_observed_workflow_command_contracts']
         ?? $contracts,
     'last_observed_workflow_command_contracts' => $contracts,
+    'last_server_registration' => $registration,
+    'last_server_observation' => $lastServerObservation,
 ];
 write_json_atomically($observationFile, $observation);
 
