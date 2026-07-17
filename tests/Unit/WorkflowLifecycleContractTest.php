@@ -65,6 +65,12 @@ class WorkflowLifecycleContractTest extends TestCase
         $this->assertTrue(
             $hostRunner['lifecycle_shard_diagnostics']['readiness_mismatch_and_last_server_observation_retained_when_observed'],
         );
+        $this->assertTrue(
+            $hostRunner['lifecycle_shard_diagnostics']['assertion_expected_and_observed_per_failed_operation_retained'],
+        );
+        $this->assertTrue(
+            $hostRunner['lifecycle_shard_diagnostics']['assertion_worker_and_sdk_response_layers_retained_when_observed'],
+        );
     }
 
     public function test_result_gate_accepts_complete_published_artifact_lifecycle_pass(): void
@@ -73,6 +79,33 @@ class WorkflowLifecycleContractTest extends TestCase
 
         $this->assertSame('pass', $evaluation['status']);
         $this->assertSame([], $evaluation['gate_failures']);
+    }
+
+    public function test_result_gate_rejects_assertion_failure_diagnostics_without_operation_evidence(): void
+    {
+        $result = $this->completeLifecycleResult();
+        $result['outcome'] = 'non_passing';
+        $result['scenario_results']['php_sdk_lifecycle_surface']['status'] = 'fail';
+        $result['scenario_results']['php_sdk_lifecycle_surface']['observed_outputs']['shard_diagnostic'] = [
+            'schema' => 'durable-workflow.v2.workflow-lifecycle.shard-diagnostic',
+            'version' => 1,
+            'retention' => 'inline_result_and_record',
+            'operation' => 'multiple_lifecycle_operations',
+            'failure_stage' => 'runtime_assertions',
+            'process_state' => ['state' => 'exited'],
+            'classification' => 'product-gap',
+            'owning_surface' => 'multiple_product_surfaces',
+            'excerpt' => 'Failed assertions: signal_query, update.',
+        ];
+        $result['lifecycle_cell_outcomes']['php_sdk_lifecycle_surface']['status'] = 'fail';
+
+        $evaluation = WorkflowLifecycleResultGate::evaluate($result);
+
+        $this->assertSame('non_passing', $evaluation['status']);
+        $this->assertContains(
+            'missing_lifecycle_assertion_failure_evidence',
+            array_column($evaluation['gate_failures'], 'code'),
+        );
     }
 
     public function test_published_artifact_runner_handoff_emits_non_passing_matrix_without_evidence(): void
@@ -137,6 +170,10 @@ class WorkflowLifecycleContractTest extends TestCase
             $this->assertSame([], $result['shard_diagnostics']);
             $this->assertArrayNotHasKey(
                 'shard_diagnostic',
+                $result['scenario_results']['php_sdk_lifecycle_surface']['observed_outputs'],
+            );
+            $this->assertArrayNotHasKey(
+                'assertion_failures',
                 $result['scenario_results']['php_sdk_lifecycle_surface']['observed_outputs'],
             );
         } finally {
@@ -409,6 +446,232 @@ class WorkflowLifecycleContractTest extends TestCase
             $this->assertStringNotContainsString($privateToken, (string) file_get_contents($retainedRecord));
             $this->assertStringNotContainsString('/ephemeral/runtime', (string) file_get_contents($retainedRecord));
             $this->assertFileDoesNotExist($sidecarPath);
+        } finally {
+            $this->removeDirectory($resultDir);
+            @unlink($retainedRecord);
+        }
+    }
+
+    public function test_php_assertion_failures_capture_worker_server_and_sdk_observations(): void
+    {
+        require_once dirname(__DIR__, 2).'/scripts/conformance/php-sdk-assertion-failure-evidence.php';
+
+        $failures = php_sdk_assertion_failure_evidence(
+            ['signal_query', 'signal_negative_contracts', 'update'],
+            [
+                'signal_query' => 'server',
+                'signal_negative_contracts' => 'server',
+                'update' => 'sdk',
+            ],
+            [
+                'signal_query' => [
+                    'signals_sent' => 2,
+                    'accepted_inputs' => [3, 5],
+                    'query_result' => ['inputs' => [3, 5], 'total' => 7],
+                    'history_inputs' => [3, 5],
+                    'unknown_signal' => ['status_code' => 500, 'reason' => 'internal_error'],
+                    'invalid_signal_arguments' => ['status_code' => 400, 'reason' => 'invalid_request'],
+                ],
+                'update' => ['result' => ['accepted' => false, 'value' => null]],
+                'worker_operation_responses' => [
+                    'workflow.query:current' => ['inputs' => [3, 5], 'total' => 8],
+                    'workflow.update:set' => ['accepted' => true, 'value' => 13],
+                ],
+            ],
+        );
+        $byOperation = array_column($failures, null, 'operation');
+
+        $this->assertCount(5, $failures);
+        $this->assertSame(
+            8,
+            $byOperation['workflow.query:current']['observed']['worker_callback_response']['total'],
+        );
+        $this->assertSame(
+            7,
+            $byOperation['workflow.query:current']['observed']['sdk_decoded_response']['total'],
+        );
+        $this->assertSame(
+            ['http_status' => 404, 'reason' => 'unknown_signal'],
+            $byOperation['workflow.signal:undeclared']['expected'],
+        );
+        $this->assertSame(
+            ['status_code' => 400, 'reason' => 'invalid_request'],
+            $byOperation['workflow.signal:increment_invalid_arguments']['observed'],
+        );
+        $this->assertSame(
+            ['accepted_signal_inputs' => [3, 5]],
+            $byOperation['workflow.history:addressable_signals']['observed'],
+        );
+        $this->assertSame('server', $byOperation['workflow.query:current']['owning_surface']);
+        $this->assertSame('sdk-php', $byOperation['workflow.update:set']['owning_surface']);
+        $this->assertTrue(
+            $byOperation['workflow.update:set']['observed']['worker_callback_response']['accepted'],
+        );
+        $this->assertFalse(
+            $byOperation['workflow.update:set']['observed']['sdk_decoded_response']['accepted'],
+        );
+    }
+
+    public function test_assertion_failure_evidence_remains_actionable_after_runtime_cleanup(): void
+    {
+        require_once dirname(__DIR__, 2).'/scripts/conformance/php-sdk-assertion-failure-evidence.php';
+
+        $resultDir = sys_get_temp_dir().'/dw-workflow-lifecycle-'.bin2hex(random_bytes(6));
+        $retainedRecord = sys_get_temp_dir().'/dw-workflow-lifecycle-retained-'.bin2hex(random_bytes(6)).'.json';
+        $privateToken = 'private-assertion-evidence-token';
+        mkdir($resultDir, 0777, true);
+        $evidencePath = $resultDir.'/workflow-lifecycle-evidence.json';
+        $sidecarPath = $resultDir.'/php-sdk-lifecycle-evidence.json';
+
+        $hostEvidence = $this->hostEvidence();
+        unset($hostEvidence['scenario_results']['php_sdk_lifecycle_surface']);
+        file_put_contents($evidencePath, json_encode($hostEvidence, JSON_THROW_ON_ERROR));
+        $this->writeRustSidecar($resultDir);
+
+        $assertionFailures = php_sdk_assertion_failure_evidence(
+            ['signal_query', 'signal_negative_contracts', 'update'],
+            [
+                'signal_query' => 'server',
+                'signal_negative_contracts' => 'server',
+                'update' => 'sdk',
+            ],
+            [
+                'signal_query' => [
+                    'signals_sent' => 2,
+                    'accepted_inputs' => [3, 5],
+                    'query_result' => [
+                        'inputs' => [3, 5],
+                        'total' => 7,
+                        'decoder_message' => 'token='.$privateToken,
+                    ],
+                    'history_inputs' => [3, 5],
+                    'unknown_signal' => [
+                        'exception_type' => 'DurableWorkflow\\Exception\\ServerException',
+                        'status_code' => 500,
+                        'reason' => 'internal_error',
+                    ],
+                    'invalid_signal_arguments' => [
+                        'exception_type' => 'DurableWorkflow\\Exception\\ServerException',
+                        'status_code' => 400,
+                        'reason' => 'invalid_request',
+                    ],
+                ],
+                'update' => [
+                    'result' => [
+                        'accepted' => false,
+                        'value' => null,
+                        'decoder_message' => 'Authorization: Bearer '.$privateToken,
+                    ],
+                ],
+                'worker_operation_responses' => [
+                    'workflow.query:current' => ['inputs' => [3, 5], 'total' => 8],
+                    'workflow.update:set' => ['accepted' => true, 'value' => 13],
+                ],
+            ],
+        );
+        file_put_contents($sidecarPath, json_encode([
+            'schema' => 'durable-workflow.v2.workflow-lifecycle.php-sdk-sidecar',
+            'runner_blocked' => false,
+            'scenario_results' => [
+                'php_sdk_lifecycle_surface' => [
+                    'status' => 'fail',
+                    'classification' => 'product-gap',
+                    'published_artifact_cell_executed' => true,
+                    'observed_outputs' => $this->outputsForScenario('php_sdk_lifecycle_surface') + [
+                        'failure_stage' => 'runtime_assertions',
+                        'failure_owner' => 'multiple_product_surfaces',
+                        'failure_summary' => 'Failed lifecycle assertions: signal_query, signal_negative_contracts, update',
+                        'operation' => 'multiple_lifecycle_operations',
+                        'process_state' => [
+                            'process' => 'php-sdk-aggregate',
+                            'state' => 'exited',
+                            'outcome' => 'assertion_failure',
+                            'alive' => false,
+                            'exit_code' => 1,
+                        ],
+                        'failures' => ['signal_query', 'signal_negative_contracts', 'update'],
+                        'assertion_failures' => $assertionFailures,
+                    ],
+                    'linked_findings' => [
+                        [
+                            'finding_id' => 'php-sdk-published-artifact-server-failure',
+                            'finding_type' => 'product_behavior_gap',
+                            'classification' => 'server',
+                            'owning_surface' => 'server',
+                            'summary' => 'Failed server assertions: signal_query, signal_negative_contracts',
+                            'observed_evidence' => [
+                                'assertion_failures' => array_slice($assertionFailures, 0, 4),
+                            ],
+                        ],
+                        [
+                            'finding_id' => 'php-sdk-published-artifact-sdk-failure',
+                            'finding_type' => 'product_behavior_gap',
+                            'classification' => 'sdk',
+                            'owning_surface' => 'sdk-php',
+                            'summary' => 'Failed SDK assertions: update',
+                            'observed_evidence' => [
+                                'assertion_failures' => array_slice($assertionFailures, 4),
+                            ],
+                        ],
+                    ],
+                ],
+            ],
+        ], JSON_THROW_ON_ERROR));
+
+        try {
+            exec($this->runnerCommand($resultDir, [
+                'DW_WORKFLOW_LIFECYCLE_EVIDENCE_PATH' => $evidencePath,
+                'DW_WORKFLOW_LIFECYCLE_AUTH_TOKEN' => $privateToken,
+                'DW_WORKFLOW_LIFECYCLE_SKIP_PHP_SDK_PROBE' => '1',
+            ]), $output, $exitCode);
+
+            $this->assertSame(0, $exitCode, implode("\n", $output));
+            file_put_contents(
+                $retainedRecord,
+                (string) file_get_contents($resultDir.'/workflow-lifecycle-record.json'),
+            );
+            $this->removeDirectory($resultDir);
+
+            $record = $this->readJson($retainedRecord);
+            $diagnostic = $record['shardDiagnostics']['php_sdk_lifecycle_surface'];
+            $php = $record['scenarioResults']['php_sdk_lifecycle_surface'];
+            $byOperation = array_column($diagnostic['assertion_failures']['operations'], null, 'operation');
+            $encodedDiagnostic = json_encode($diagnostic, JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES);
+
+            $this->assertSame('non_passing', $record['outcome']);
+            $this->assertFalse($record['runnerBlocked']);
+            $this->assertSame('multiple_lifecycle_operations', $diagnostic['operation']);
+            $this->assertSame('exited', $diagnostic['process_state']['state']);
+            $this->assertSame('assertion_failure', $diagnostic['process_state']['outcome']);
+            $this->assertSame(1, $diagnostic['process_state']['exit_code']);
+            $this->assertSame(5, $diagnostic['assertion_failures']['count']);
+            $this->assertSame(
+                8,
+                $byOperation['workflow.query:current']['observed']['worker_callback_response']['total'],
+            );
+            $this->assertSame(
+                7,
+                $byOperation['workflow.query:current']['observed']['sdk_decoded_response']['total'],
+            );
+            $this->assertSame(
+                500,
+                $byOperation['workflow.signal:undeclared']['observed']['status_code'],
+            );
+            $this->assertSame(
+                'invalid_request',
+                $byOperation['workflow.signal:increment_invalid_arguments']['observed']['reason'],
+            );
+            $this->assertTrue(
+                $byOperation['workflow.update:set']['observed']['worker_callback_response']['accepted'],
+            );
+            $this->assertFalse(
+                $byOperation['workflow.update:set']['observed']['sdk_decoded_response']['accepted'],
+            );
+            $this->assertSame(['server', 'sdk-php'], array_column($php['linked_findings'], 'owning_surface'));
+            $this->assertLessThanOrEqual(8192, strlen($encodedDiagnostic));
+            $this->assertStringNotContainsString($privateToken, (string) file_get_contents($retainedRecord));
+            $this->assertFileDoesNotExist($sidecarPath);
+            $this->assertSame([], WorkflowLifecycleResultGate::evaluate($record['result'])['gate_failures']);
         } finally {
             $this->removeDirectory($resultDir);
             @unlink($retainedRecord);
@@ -1561,6 +1824,10 @@ class WorkflowLifecycleContractTest extends TestCase
         $this->assertStringContainsString('run_client_phase "$initial_client_phase" "$initial_client_output"', $runner);
         $this->assertStringContainsString('wait-replay-checkpoint', $runner);
         $this->assertStringContainsString('apache_avro_provenance', $runner);
+        $this->assertStringContainsString('php-sdk-assertion-failure-evidence.php', $runner);
+        $this->assertStringContainsString('record_operation_response(', $runner);
+        $this->assertStringContainsString('php_sdk_assertion_failure_evidence(', $runner);
+        $this->assertStringContainsString("'assertion_failures' => \$assertionFailures", $runner);
         $this->assertStringContainsString('local_product_source_checkouts_used', $runner);
         $this->assertStringNotContainsString('durable-workflow/workflow:', $runner);
     }

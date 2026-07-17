@@ -258,6 +258,8 @@ final class WorkflowLifecycleContract
                     ],
                     'http_status_and_reason_retained_when_observed' => true,
                     'readiness_mismatch_and_last_server_observation_retained_when_observed' => true,
+                    'assertion_expected_and_observed_per_failed_operation_retained' => true,
+                    'assertion_worker_and_sdk_response_layers_retained_when_observed' => true,
                     'credential_redaction_required' => true,
                     'workspace_path_reference_is_not_retained_evidence' => true,
                     'passing_shards_remain_without_failure_diagnostics' => true,

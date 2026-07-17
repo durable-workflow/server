@@ -39,6 +39,12 @@ final class PhpSdkConformanceContractTest extends TestCase
         $this->assertTrue(
             $manifest['runtime_failure_evidence']['readiness_failure_retains_expected_and_observed_contracts'],
         );
+        $this->assertTrue(
+            $manifest['runtime_failure_evidence']['assertion_failure_retains_expected_and_observed_per_operation'],
+        );
+        $this->assertTrue(
+            $manifest['runtime_failure_evidence']['assertion_failure_retains_worker_and_sdk_response_layers_when_observed'],
+        );
         $this->assertContains(
             'public_error_envelope',
             $manifest['runtime_failure_evidence']['required_http_failure_fields'],

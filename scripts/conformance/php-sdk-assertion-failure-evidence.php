@@ -1,0 +1,128 @@
+<?php
+
+declare(strict_types=1);
+
+/**
+ * @param  list<string>  $failedAssertions
+ * @param  array<string, string>  $assertionDomains
+ * @param  array<string, mixed>  $baseline
+ * @return list<array<string, mixed>>
+ */
+function php_sdk_assertion_failure_evidence(
+    array $failedAssertions,
+    array $assertionDomains,
+    array $baseline,
+): array {
+    $surfaceByDomain = [
+        'sdk' => 'sdk-php',
+        'server' => 'server',
+        'package-publication' => 'sdk-php-release',
+        'runner' => 'conformance_harness',
+    ];
+    $operationByAssertion = [
+        'exact_sdk_version' => 'artifact.install:durable-workflow/sdk',
+        'exact_server_version' => 'cluster.info',
+        'sdk_dist_provenance' => 'artifact.provenance:durable-workflow/sdk',
+        'official_apache_avro_dependency' => 'artifact.provenance:apache/avro',
+        'source_free_composer_project' => 'composer.install',
+        'distinct_client_worker_processes' => 'process.boundary:client-worker',
+        'distinct_worker_restart_processes' => 'process.boundary:worker-restart',
+        'worker_registration' => 'worker.registration',
+        'worker_heartbeat' => 'worker.heartbeat',
+        'worker_command_contract_readiness' => 'worker.registration.readiness',
+        'workflow_started_command_contract' => 'workflow.history:started-contract',
+        'start_result' => 'workflow.result:simple',
+        'signal_query' => 'workflow.query:current',
+        'signal_replay_visibility' => 'workflow.replay:signal-visibility',
+        'signal_negative_contracts' => 'workflow.signal:negative-contracts',
+        'update' => 'workflow.update:set',
+        'cancellation' => 'workflow.result:cancelled',
+        'termination' => 'workflow.result:terminated',
+        'failure_envelope' => 'workflow.result:failed',
+        'activity_callback_once_for_replay' => 'activity.callback:replay',
+        'activity_heartbeat_callback' => 'activity.heartbeat',
+        'namespace_lifecycle' => 'namespace.lifecycle',
+        'namespace_selection' => 'namespace.selection',
+        'search_attributes' => 'search-attribute.lifecycle',
+        'schedule_lifecycle' => 'schedule.lifecycle',
+        'replay_checkpoint' => 'workflow.replay:checkpoint',
+        'durable_replay_history' => 'workflow.replay:history',
+        'durable_replay_result' => 'workflow.replay:result',
+        'local_product_source_checkouts_used_false' => 'artifact.source-policy',
+    ];
+    $signalQuery = is_array($baseline['signal_query'] ?? null) ? $baseline['signal_query'] : [];
+    $workerResponses = is_array($baseline['worker_operation_responses'] ?? null)
+        ? $baseline['worker_operation_responses']
+        : [];
+    $specialized = [
+        'signal_query' => [[
+            'operation' => 'workflow.query:current',
+            'expected' => [
+                'client_signal_commands' => ['signals_sent' => 2, 'accepted_inputs' => [3, 5]],
+                'worker_callback_response' => ['inputs' => [3, 5], 'total' => 8],
+                'sdk_decoded_response' => ['inputs' => [3, 5], 'total' => 8],
+                'server_history_inputs' => [3, 5],
+            ],
+            'observed' => [
+                'client_signal_commands' => [
+                    'signals_sent' => $signalQuery['signals_sent'] ?? null,
+                    'accepted_inputs' => $signalQuery['accepted_inputs'] ?? null,
+                ],
+                'worker_callback_response' => $workerResponses['workflow.query:current'] ?? null,
+                'sdk_decoded_response' => $signalQuery['query_result'] ?? null,
+                'server_history_inputs' => $signalQuery['history_inputs'] ?? null,
+            ],
+        ]],
+        'signal_negative_contracts' => [
+            [
+                'operation' => 'workflow.signal:undeclared',
+                'expected' => ['http_status' => 404, 'reason' => 'unknown_signal'],
+                'observed' => $signalQuery['unknown_signal'] ?? null,
+            ],
+            [
+                'operation' => 'workflow.signal:increment_invalid_arguments',
+                'expected' => ['http_status' => 422, 'reason' => 'invalid_signal_arguments'],
+                'observed' => $signalQuery['invalid_signal_arguments'] ?? null,
+            ],
+            [
+                'operation' => 'workflow.history:addressable_signals',
+                'expected' => ['accepted_signal_inputs' => [3, 5]],
+                'observed' => ['accepted_signal_inputs' => $signalQuery['history_inputs'] ?? null],
+            ],
+        ],
+        'update' => [[
+            'operation' => 'workflow.update:set',
+            'expected' => [
+                'worker_callback_response' => ['accepted' => true, 'value' => 13],
+                'sdk_decoded_response' => ['accepted' => true, 'value' => 13],
+            ],
+            'observed' => [
+                'worker_callback_response' => $workerResponses['workflow.update:set'] ?? null,
+                'sdk_decoded_response' => $baseline['update']['result'] ?? null,
+            ],
+        ]],
+    ];
+
+    $evidence = [];
+    foreach ($failedAssertions as $assertion) {
+        $domain = $assertionDomains[$assertion] ?? 'sdk';
+        $entries = $specialized[$assertion] ?? [[
+            'operation' => $operationByAssertion[$assertion] ?? 'conformance.assertion:'.$assertion,
+            'expected' => ['assertion_passed' => true],
+            'observed' => ['assertion_passed' => false],
+        ]];
+
+        foreach ($entries as $entry) {
+            $evidence[] = [
+                'assertion' => $assertion,
+                'operation' => $entry['operation'],
+                'classification' => $domain,
+                'owning_surface' => $surfaceByDomain[$domain] ?? 'sdk-php',
+                'expected' => $entry['expected'],
+                'observed' => $entry['observed'],
+            ];
+        }
+    }
+
+    return $evidence;
+}

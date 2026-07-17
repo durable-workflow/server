@@ -325,6 +325,63 @@ function boundedDiagnosticObject(value, limit = 3072) {
   return accepted;
 }
 
+function boundedAssertionFailures(value, limit = 5632) {
+  const source = Array.isArray(value)
+    ? value
+    : (Array.isArray(value?.operations) ? value.operations : []);
+  if (source.length === 0) {
+    return null;
+  }
+
+  const build = (detailLimit, truncated = false) => {
+    const retained = {
+      count: source.length,
+      operations: source.map((entry) => {
+        const failure = firstObject(entry);
+        return {
+          assertion: redactSensitiveText(failure.assertion, 96),
+          operation: redactSensitiveText(failure.operation, 160),
+          classification: redactSensitiveText(failure.classification, 64),
+          owning_surface: redactSensitiveText(failure.owning_surface, 128),
+          expected: boundedDiagnosticObject(firstObject(failure.expected), detailLimit),
+          observed: boundedDiagnosticObject(firstObject(failure.observed), detailLimit),
+        };
+      }),
+    };
+    if (truncated) {
+      retained._truncated = true;
+    }
+    return retained;
+  };
+
+  for (const detailLimit of [1024, 768, 512, 384, 256, 128, 64]) {
+    const retained = build(detailLimit, detailLimit < 1024 || truthyFlag(value?._truncated));
+    if (serializedBytes(retained) <= limit) {
+      return retained;
+    }
+  }
+
+  const labelsOnly = {
+    count: source.length,
+    operations: source.map((entry) => {
+      const failure = firstObject(entry);
+      return {
+        assertion: redactSensitiveText(failure.assertion, 64),
+        operation: redactSensitiveText(failure.operation, 96),
+        owning_surface: redactSensitiveText(failure.owning_surface, 64),
+        expected: { _truncated: true },
+        observed: { _truncated: true },
+      };
+    }),
+    _truncated: true,
+  };
+  if (serializedBytes(labelsOnly) > limit) {
+    throw new Error('Unable to retain lifecycle assertion operation labels within the byte limit.');
+  }
+
+  return labelsOnly;
+}
+
 function firstObject(...values) {
   return values.find((value) => value && typeof value === 'object' && !Array.isArray(value)) ?? {};
 }
@@ -457,6 +514,7 @@ function fitShardDiagnostic(diagnostic) {
   const compact = {
     ...diagnostic,
     excerpt: redactSensitiveText(diagnostic.excerpt, 512),
+    assertion_failures: boundedAssertionFailures(diagnostic.assertion_failures, 4608),
     readiness: diagnostic.readiness
       ? {
         outcome: diagnostic.readiness.outcome,
@@ -487,6 +545,7 @@ function fitShardDiagnostic(diagnostic) {
     failure_stage: diagnostic.failure_stage,
     process_state: diagnostic.process_state,
     http: diagnostic.http,
+    assertion_failures: boundedAssertionFailures(diagnostic.assertion_failures, 4096),
     readiness: diagnostic.readiness
       ? {
         outcome: diagnostic.readiness.outcome,
@@ -531,6 +590,7 @@ function fitShardDiagnostic(diagnostic) {
         reason: redactSensitiveText(diagnostic.http.reason, 192),
       }
       : null,
+    assertion_failures: boundedAssertionFailures(diagnostic.assertion_failures, 4096),
     readiness: diagnostic.readiness
       ? {
         outcome: redactSensitiveText(diagnostic.readiness.outcome, 96),
@@ -569,6 +629,7 @@ function shardDiagnostic(scenarioId, status, classification, outputs, findings, 
   const operation = stringValue(runtimeFailure.operation)
     || (workerStartOutcome === 'process_exit' ? failureStage : '')
     || (readiness ? 'worker_registration_readiness' : '')
+    || stringValue(outputs.operation)
     || stringValue(outputs.failing_lifecycle_cell)
     || failureStage;
   const owningSurface = redactSensitiveText(
@@ -579,6 +640,9 @@ function shardDiagnostic(scenarioId, status, classification, outputs, findings, 
     SHARD_DIAGNOSTIC_MAX_BYTES * 2,
   );
   const captured = firstObject(outputs.failure_diagnostic, outputs.failureDiagnostic);
+  const assertionFailures = boundedAssertionFailures(
+    outputs.assertion_failures ?? outputs.assertionFailures,
+  );
   const rawExcerpt = diagnosticExcerptSource(outputs, findings, fallbackSummary);
   const excerpt = redactSensitiveText(rawExcerpt, SHARD_DIAGNOSTIC_EXCERPT_BYTES);
   const diagnostic = {
@@ -594,15 +658,22 @@ function shardDiagnostic(scenarioId, status, classification, outputs, findings, 
     failure_stage: redactSensitiveText(failureStage, 160),
     process_state: diagnosticProcessState(status, outputs, runtimeFailure, workerStartup),
     http: diagnosticHttp(runtimeFailure, lastServerObservation),
+    assertion_failures: assertionFailures,
     readiness,
     excerpt,
     truncated: truthyFlag(captured.truncated)
+      || truthyFlag(assertionFailures?._truncated)
       || Buffer.byteLength(String(rawExcerpt ?? ''), 'utf8') > Buffer.byteLength(excerpt, 'utf8'),
   };
 
-  return fitShardDiagnostic(
-    diagnosticValue(diagnostic, 0, SHARD_DIAGNOSTIC_MAX_BYTES * 2),
+  const bounded = diagnosticValue(
+    { ...diagnostic, assertion_failures: null },
+    0,
+    SHARD_DIAGNOSTIC_MAX_BYTES * 2,
   );
+  bounded.assertion_failures = assertionFailures;
+
+  return fitShardDiagnostic(bounded);
 }
 
 function owningSurfaceForDiagnostic(scenarioId, classification) {
@@ -2031,6 +2102,11 @@ function normalizeScenario(scenario, entry, policy) {
     for (const field of ['worker_startup', 'workerStartup']) {
       if (nonEmptyObject(outputs[field])) {
         outputs[field] = boundedDiagnosticObject(outputs[field], 4096);
+      }
+    }
+    for (const field of ['assertion_failures', 'assertionFailures']) {
+      if (Array.isArray(outputs[field]) || nonEmptyObject(outputs[field])) {
+        outputs[field] = boundedAssertionFailures(outputs[field]);
       }
     }
     delete outputs.failure_diagnostic;

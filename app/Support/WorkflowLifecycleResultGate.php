@@ -374,6 +374,55 @@ final class WorkflowLifecycleResultGate
                 'scenario_id' => $scenarioId,
             ];
         }
+        if (self::stringValue($diagnostic['failure_stage'] ?? null) === 'runtime_assertions'
+            && ($diagnosticContract['assertion_expected_and_observed_per_failed_operation_retained'] ?? false) === true) {
+            $assertionFailures = self::arrayField($diagnostic, ['assertion_failures', 'assertionFailures']) ?? [];
+            $operations = is_array($assertionFailures['operations'] ?? null)
+                ? array_values($assertionFailures['operations'])
+                : [];
+            if ($operations === []) {
+                $failures[] = [
+                    'code' => 'missing_lifecycle_assertion_failure_evidence',
+                    'scenario_id' => $scenarioId,
+                ];
+            }
+            foreach ($operations as $index => $operation) {
+                if (! is_array($operation)) {
+                    $failures[] = [
+                        'code' => 'incomplete_lifecycle_assertion_failure_evidence',
+                        'scenario_id' => $scenarioId,
+                        'operation_index' => $index,
+                    ];
+
+                    continue;
+                }
+                foreach (['assertion', 'operation', 'owning_surface', 'expected'] as $field) {
+                    if (! self::isEmptyEvidence($operation[$field] ?? null)) {
+                        continue;
+                    }
+                    $failures[] = [
+                        'code' => 'incomplete_lifecycle_assertion_failure_evidence',
+                        'scenario_id' => $scenarioId,
+                        'operation_index' => $index,
+                        'field' => $field,
+                    ];
+                }
+                if (! array_key_exists('observed', $operation)) {
+                    $failures[] = [
+                        'code' => 'incomplete_lifecycle_assertion_failure_evidence',
+                        'scenario_id' => $scenarioId,
+                        'operation_index' => $index,
+                        'field' => 'observed',
+                    ];
+                }
+            }
+            if (($assertionFailures['count'] ?? null) !== count($operations)) {
+                $failures[] = [
+                    'code' => 'invalid_lifecycle_assertion_failure_count',
+                    'scenario_id' => $scenarioId,
+                ];
+            }
+        }
 
         $encoded = json_encode(
             $diagnostic,

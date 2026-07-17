@@ -610,6 +610,7 @@ fi
 
 cp "$script_dir/php-sdk-runtime-failure.php" "$project_dir/runtime-failure.php"
 cp "$script_dir/php-sdk-started-contract.php" "$project_dir/started-contract.php"
+cp "$script_dir/php-sdk-assertion-failure-evidence.php" "$project_dir/assertion-failure-evidence.php"
 
 cat > "$project_dir/worker.php" <<'PHP'
 <?php
@@ -635,6 +636,7 @@ install_runtime_failure_handler('worker', $scope, [$controlToken, $workerToken])
 $client = new Client($server, namespace: $namespace, controlToken: $controlToken, workerToken: $workerToken);
 $callbackFile = $resultDir.'/php-sdk-callback-counts.json';
 $signalReplayFile = $resultDir.'/php-sdk-waiting-signal-replay.json';
+$operationEvidenceFile = $resultDir.'/php-sdk-worker-operation-responses.json';
 $namespaceScope = $scope === 'namespace';
 
 function increment_callback(string $file, string $name): int
@@ -660,6 +662,33 @@ function increment_callback(string $file, string $name): int
         flock($handle, LOCK_UN);
 
         return $counts[$name];
+    } finally {
+        fclose($handle);
+    }
+}
+
+/** @param array<string, mixed> $response */
+function record_operation_response(string $file, string $operation, array $response): void
+{
+    $handle = fopen($file, 'c+');
+    if ($handle === false) {
+        throw new RuntimeException("Unable to open operation response evidence {$file}.");
+    }
+    try {
+        if (! flock($handle, LOCK_EX)) {
+            throw new RuntimeException('Unable to lock operation response evidence.');
+        }
+        $raw = stream_get_contents($handle);
+        $responses = is_string($raw) && trim($raw) !== '' ? json_decode($raw, true) : [];
+        if (! is_array($responses)) {
+            $responses = [];
+        }
+        $responses[$operation] = $response;
+        ftruncate($handle, 0);
+        rewind($handle);
+        fwrite($handle, json_encode($responses, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES)."\n");
+        fflush($handle);
+        flock($handle, LOCK_UN);
     } finally {
         fclose($handle);
     }
@@ -784,24 +813,28 @@ if (! $namespaceScope) {
     $worker->registerQuery(
         'php.sdk.waiting',
         'current',
-        static function (QueryContext $context) use ($client, $callbackFile): array {
+        static function (QueryContext $context) use ($client, $callbackFile, $operationEvidenceFile): array {
             increment_callback($callbackFile, 'query');
             $inputs = decoded_signal_inputs($context, $client);
-
-            return [
+            $response = [
                 'inputs' => $inputs,
                 'total' => array_sum($inputs),
                 'query_process_id' => getmypid(),
             ];
+            record_operation_response($operationEvidenceFile, 'workflow.query:current', $response);
+
+            return $response;
         },
     );
     $worker->registerUpdate(
         'php.sdk.waiting',
         'set',
-        static function (QueryContext $context, int $value) use ($callbackFile): array {
+        static function (QueryContext $context, int $value) use ($callbackFile, $operationEvidenceFile): array {
             increment_callback($callbackFile, 'update');
+            $response = ['accepted' => true, 'value' => $value, 'run_id' => $context->runId];
+            record_operation_response($operationEvidenceFile, 'workflow.update:set', $response);
 
-            return ['accepted' => true, 'value' => $value, 'run_id' => $context->runId];
+            return $response;
         },
     );
 }
@@ -857,6 +890,18 @@ function event_types(array $history): array
         static fn (array $event): string => (string) ($event['event_type'] ?? $event['type'] ?? ''),
         array_values(array_filter($history['events'] ?? $history['history'] ?? [], 'is_array')),
     ));
+}
+
+/** @return array<string, array<string, mixed>> */
+function worker_operation_responses(string $resultDir): array
+{
+    $path = $resultDir.'/php-sdk-worker-operation-responses.json';
+    if (! is_file($path)) {
+        return [];
+    }
+    $responses = json_decode((string) file_get_contents($path), true);
+
+    return is_array($responses) ? $responses : [];
 }
 
 /** @return array{exception_type: string, status_code: int, reason: string|null, details: array<mixed>|null} */
@@ -1159,6 +1204,7 @@ if ($phase === 'baseline' || $phase === 'namespace') {
             'invalid_signal_arguments' => $invalidSignalArguments,
         ],
         'update' => ['request_id' => 'php-sdk-update-'.$suffix, 'result' => $updateResult],
+        'worker_operation_responses' => worker_operation_responses($resultDir),
         'workflow_started_command_contract' => $addressableStartedContract,
         'cancellation' => $cancelException + ['expected_type' => WorkflowCancelled::class],
         'termination' => $terminateException + ['expected_type' => WorkflowTerminated::class],
@@ -1235,6 +1281,7 @@ cat > "$project_dir/aggregate.php" <<'PHP'
 declare(strict_types=1);
 
 require __DIR__.'/started-contract.php';
+require __DIR__.'/assertion-failure-evidence.php';
 
 if ($argc < 8) {
     fwrite(STDERR, "usage: aggregate.php <result-dir> <sdk-version> <server-version> <server-image> <server-url> <namespace> <started-at>\n");
@@ -1412,6 +1459,11 @@ foreach ($failedAssertions as $assertion) {
     $domain = $assertionDomains[$assertion] ?? 'sdk';
     $failedByDomain[$domain][] = $assertion;
 }
+$assertionFailures = php_sdk_assertion_failure_evidence(
+    $failedAssertions,
+    $assertionDomains,
+    $baseline,
+);
 $runnerBlocked = $failedAssertions !== [] && array_keys($failedByDomain) === ['runner'];
 $status = $failedAssertions === [] ? 'pass' : ($runnerBlocked ? 'runner_blocked' : 'fail');
 $coveredCells = [
@@ -1428,6 +1480,10 @@ $domainPolicy = [
 $findings = [];
 foreach ($failedByDomain as $domain => $domainAssertions) {
     $policy = $domainPolicy[$domain];
+    $domainAssertionFailures = array_values(array_filter(
+        $assertionFailures,
+        static fn (array $failure): bool => ($failure['classification'] ?? null) === $domain,
+    ));
     $findings[] = [
         'finding_id' => 'php-sdk-published-artifact-'.str_replace('_', '-', $domain).'-failure',
         'finding_type' => $policy['type'],
@@ -1436,6 +1492,7 @@ foreach ($failedByDomain as $domain => $domainAssertions) {
         'failure_stage' => 'runtime_assertions',
         'failed_assertions' => $domainAssertions,
         'summary' => sprintf('Failed %s assertions: %s', $domain, implode(', ', $domainAssertions)),
+        'observed_evidence' => ['assertion_failures' => $domainAssertionFailures],
         'next_acceptance_criterion' => 'Correct the named failure surface and rerun the exact Packagist SDK against the exact public server image.',
     ];
 }
@@ -1508,6 +1565,25 @@ $observed = [
     'worker_restart_distinct_processes' => $assertions['distinct_worker_restart_processes'],
     'local_product_source_checkouts_used' => false,
 ];
+if ($assertionFailures !== []) {
+    $failedOperations = array_values(array_unique(array_column($assertionFailures, 'operation')));
+    $failedSurfaces = array_values(array_unique(array_column($assertionFailures, 'owning_surface')));
+    $observed += [
+        'failure_stage' => 'runtime_assertions',
+        'failure_owner' => count($failedSurfaces) === 1 ? $failedSurfaces[0] : 'multiple_product_surfaces',
+        'failure_summary' => sprintf('Failed lifecycle assertions: %s', implode(', ', $failedAssertions)),
+        'operation' => count($failedOperations) === 1 ? $failedOperations[0] : 'multiple_lifecycle_operations',
+        'process_state' => [
+            'process' => 'php-sdk-aggregate',
+            'state' => 'exited',
+            'outcome' => 'assertion_failure',
+            'alive' => false,
+            'exit_code' => 1,
+        ],
+        'failures' => $failedAssertions,
+        'assertion_failures' => $assertionFailures,
+    ];
+}
 $result = [
     'schema' => 'durable-workflow.v2.php-sdk-published-artifact-conformance',
     'version' => 1,

@@ -98,6 +98,8 @@ final class PhpSdkConformanceContract
                 'retained_diagnostic_credential_redaction_required' => true,
                 'worker_startup_outcome_and_process_state_required_on_start_failure' => true,
                 'readiness_failure_retains_expected_and_observed_contracts' => true,
+                'assertion_failure_retains_expected_and_observed_per_operation' => true,
+                'assertion_failure_retains_worker_and_sdk_response_layers_when_observed' => true,
                 'public_error_envelope_max_bytes' => 2048,
                 'required_http_failure_fields' => [
                     'status_code',
