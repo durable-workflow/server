@@ -89,15 +89,13 @@ class KubernetesManifestContractTest extends TestCase
         $source = $this->read('.github/workflows/kubernetes-validation.yml');
 
         foreach ([
-            'app/**',
-            'config/**',
+            'workflow_dispatch:',
             'ghcr.io/yannh/kubeconform:v0.6.7',
-            'routes/**',
             'scripts/k8s-kind-smoke.sh',
             'kind.sigs.k8s.io/dl/v0.23.0/kind-linux-amd64',
             'K8S_SMOKE_KIND_NODE_IMAGE',
             'K8S_SMOKE_ARTIFACT_DIR',
-            'actions/upload-artifact@v4',
+            'actions/upload-artifact@v7',
         ] as $needle) {
             $this->assertStringContainsString($needle, $source);
         }

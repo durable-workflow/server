@@ -485,8 +485,8 @@ YAML,
         $this->assertNotFalse($soakWorkflow, '.github/workflows/server-perf-soak.yml must be readable');
         $workflows = $workflow."\n".$soakWorkflow;
 
-        $this->assertSame(2, substr_count($workflows, 'uses: actions/upload-artifact@v4'));
-        $this->assertSame(0, substr_count($workflows, 'uses: actions/upload-artifact@v3'));
+        $this->assertSame(2, substr_count($workflows, 'uses: actions/upload-artifact@v7'));
+        $this->assertSame(0, substr_count($workflows, 'uses: actions/upload-artifact@v4'));
         $this->assertSame(2, substr_count($workflows, "github.server_url == 'https://github.com'"));
         $this->assertSame(0, substr_count($workflows, "github.server_url != 'https://github.com'"));
     }
