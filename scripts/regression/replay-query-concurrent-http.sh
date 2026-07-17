@@ -9,6 +9,7 @@ PROJECT="$(printf '%s' "$PROJECT_RAW" | tr -c '[:alnum:]_-' '-')"
 SERVER_PORT="${SERVER_PORT:-18082}"
 TOKEN="${DW_AUTH_TOKEN:-dev-token}"
 BASE_URL=""
+NONROOT_CONTAINER=""
 
 export SERVER_PORT
 export APP_ENV="${APP_ENV:-local}"
@@ -101,10 +102,16 @@ wait_for_server_ready() {
 }
 
 cleanup() {
+  if [ -n "$NONROOT_CONTAINER" ]; then
+    docker rm -f "$NONROOT_CONTAINER" >/dev/null 2>&1 || true
+  fi
   compose down -v --remove-orphans >/dev/null 2>&1 || true
 }
 
 failure_logs() {
+  if [ -n "$NONROOT_CONTAINER" ]; then
+    docker logs "$NONROOT_CONTAINER" >&2 || true
+  fi
   compose ps >&2 || true
   compose logs server mysql redis >&2 || true
 }
@@ -118,12 +125,83 @@ build_server_url_candidates
 BASE_URL="$(wait_for_server_ready)"
 printf 'Running concurrent replay/query regression against %s\n' "$BASE_URL"
 
-opcache_enabled="$(compose exec -T server php -r 'echo extension_loaded("Zend OPcache") && ini_get("opcache.enable_cli") ? "1" : "0";')"
-if [ "$opcache_enabled" != "1" ]; then
-  printf 'Standalone CLI HTTP workers do not have shared OPcache enabled.\n' >&2
+http_runtime="$(compose exec -T server sh -c "tr '\\000' ' ' </proc/1/cmdline")"
+case "$http_runtime" in
+  *apache2*'-DFOREGROUND'*) ;;
+  *)
+    printf 'Standalone HTTP runtime is not foreground Apache: %s\n' "$http_runtime" >&2
+    exit 1
+    ;;
+esac
+if ! compose exec -T server apache2ctl -M 2>/dev/null | grep -q 'php_module'; then
+  printf 'Standalone Apache runtime did not load mod_php.\n' >&2
   exit 1
 fi
-printf 'Standalone CLI HTTP worker OPcache is enabled.\n'
+printf 'Standalone HTTP runtime is foreground Apache with mod_php.\n'
+if ! compose exec -T --user 1000:1000 server sh -c \
+  'test -w storage/logs && test -w bootstrap/cache'; then
+  printf 'Root-run Docker did not give Apache request workers writable Laravel state.\n' >&2
+  exit 1
+fi
+
+server_image="$(compose images -q server)"
+if [ -z "$server_image" ]; then
+  printf 'Unable to resolve the built standalone server image.\n' >&2
+  exit 1
+fi
+NONROOT_CONTAINER="${PROJECT}-nonroot-http"
+docker run --detach \
+  --name "$NONROOT_CONTAINER" \
+  --user 1000:1000 \
+  --cap-drop ALL \
+  --env APP_ENV=local \
+  --env APP_DEBUG=false \
+  --env DW_AUTH_DRIVER=token \
+  --env DW_AUTH_TOKEN="$TOKEN" \
+  "$server_image" \
+  sh -c 'server-bootstrap && exec apache2-foreground' >/dev/null
+
+nonroot_ready=0
+for _ in $(seq 1 60); do
+  if docker exec "$NONROOT_CONTAINER" curl -fsS http://127.0.0.1:8080/api/ready >/dev/null 2>&1; then
+    nonroot_ready=1
+    break
+  fi
+  if [ "$(docker inspect --format '{{.State.Running}}' "$NONROOT_CONTAINER" 2>/dev/null || true)" != "true" ]; then
+    break
+  fi
+  sleep 1
+done
+if [ "$nonroot_ready" != "1" ]; then
+  printf 'Standalone Apache did not become ready as UID/GID 1000 with capabilities dropped.\n' >&2
+  docker logs "$NONROOT_CONTAINER" >&2 || true
+  exit 1
+fi
+if ! docker exec "$NONROOT_CONTAINER" curl -fsS \
+  -X POST http://127.0.0.1:8080/api/namespaces \
+  -H "Authorization: Bearer $TOKEN" \
+  -H 'Content-Type: application/json' \
+  -H 'X-Durable-Workflow-Control-Plane-Version: 2' \
+  -d '{"name":"nonroot-runtime-smoke","description":"Non-root image write probe","retention_days":1}' \
+  >/dev/null; then
+  printf 'Non-root standalone Apache could not write through the default SQLite database.\n' >&2
+  exit 1
+fi
+if ! docker exec "$NONROOT_CONTAINER" sh -c \
+  'test "$(id -u)" = 1000 && test "$(id -g)" = 1000 && test -w database/database.sqlite && test -w storage/logs && test -w bootstrap/cache'; then
+  printf 'Non-root standalone Apache identity or Laravel write access is invalid.\n' >&2
+  exit 1
+fi
+printf 'Standalone Apache serves readiness and writes SQLite as UID/GID 1000 with capabilities dropped.\n'
+docker rm -f "$NONROOT_CONTAINER" >/dev/null
+NONROOT_CONTAINER=""
+
+opcache_enabled="$(compose exec -T server php -r 'echo extension_loaded("Zend OPcache") && ini_get("opcache.enable_cli") ? "1" : "0";')"
+if [ "$opcache_enabled" != "1" ]; then
+  printf 'Standalone image PHP CLI processes do not have OPcache enabled.\n' >&2
+  exit 1
+fi
+printf 'Standalone image PHP OPcache is enabled.\n'
 
 python3 - "$BASE_URL" "$TOKEN" <<'PY'
 from __future__ import annotations

@@ -11,7 +11,7 @@ RUN git clone --depth 1 --branch "${PHPREDIS_VERSION}" https://github.com/phpred
          exit 1; \
        fi
 
-FROM php:8.3-cli AS base
+FROM php:8.3-apache AS base
 
 COPY --from=phpredis-source /phpredis /usr/src/php/ext/redis
 
@@ -24,6 +24,8 @@ RUN apt-get update && apt-get install -y \
     python3-venv \
     unzip \
     && docker-php-ext-install opcache redis pdo pdo_mysql pdo_pgsql pcntl zip bcmath \
+    && groupmod --gid 1000 www-data \
+    && usermod --uid 1000 --gid 1000 www-data \
     && rm -rf /var/lib/apt/lists/*
 
 COPY --from=composer:2 /usr/bin/composer /usr/bin/composer
@@ -79,22 +81,41 @@ RUN cp /tmp/release-composer.json composer.json \
 COPY docker/bootstrap.sh /usr/local/bin/server-bootstrap
 COPY docker/ensure-sqlite-database.sh /usr/local/bin/server-ensure-sqlite
 COPY docker/entrypoint.sh /usr/local/bin/server-entrypoint
+COPY docker/apache-mpm-prefork.conf /etc/apache2/mods-available/mpm_prefork.conf
+COPY docker/apache-vhost.conf /etc/apache2/sites-available/000-default.conf
 COPY docker/php-custom.ini /usr/local/etc/php/conf.d/99-custom.ini
 
-RUN chmod +x /usr/local/bin/server-bootstrap /usr/local/bin/server-ensure-sqlite /usr/local/bin/server-entrypoint
+RUN chmod +x /usr/local/bin/server-bootstrap /usr/local/bin/server-ensure-sqlite /usr/local/bin/server-entrypoint \
+    && sed -ri 's!^Listen 80$!Listen 8080!' /etc/apache2/ports.conf
 
 # Route cache is safe at build time (no env dependency).
 # Config cache is deferred to the entrypoint so runtime env vars take effect.
 RUN php artisan route:cache \
     && mkdir -p \
+        database \
         storage/logs \
         storage/framework/cache/data \
         storage/framework/sessions \
         storage/framework/views \
         storage/framework/testing \
         bootstrap/cache \
-    && chown -R 1000:1000 storage bootstrap/cache \
-    && chmod -R ug+rwX storage bootstrap/cache
+        /var/run/apache2 \
+        /var/lock/apache2 \
+        /var/log/apache2 \
+    && chown -R www-data:www-data \
+        database \
+        storage \
+        bootstrap/cache \
+        /var/run/apache2 \
+        /var/lock/apache2 \
+        /var/log/apache2 \
+    && chmod -R ug+rwX \
+        database \
+        storage \
+        bootstrap/cache \
+        /var/run/apache2 \
+        /var/lock/apache2 \
+        /var/log/apache2
 
 LABEL org.opencontainers.image.title="Durable Workflow Server" \
       org.opencontainers.image.description="Standalone Durable Workflow server" \
@@ -104,15 +125,11 @@ LABEL org.opencontainers.image.title="Durable Workflow Server" \
 
 EXPOSE 8080
 
-# Default to 24 CLI server worker processes so concurrent workflow starts,
-# bounded worker polls, and control-plane requests cannot consume every
-# request worker ahead of liveness probes. `php artisan serve` only honours
-# PHP_CLI_SERVER_WORKERS when `--no-reload` is set (otherwise it warns and
-# falls back to a single
-# server thread), so both must be present together. The runtime long-poll
-# wait gate derives a smaller idle-wait budget from this count and keeps
-# the rest for health, workflow start/list, and worker completion traffic.
-ENV PHP_CLI_SERVER_WORKERS=24 \
+# Apache owns concurrent HTTP admission. Keep idle workflow/activity polls and
+# query-task polls below the prefork request capacity so synchronous queries,
+# completions, control-plane requests, and health checks always have workers.
+ENV DW_WORKER_LONG_POLL_MAX_CONCURRENT=2 \
+    DW_QUERY_TASK_POLL_MAX_CONCURRENT=1 \
     DB_CONNECTION=sqlite \
     DB_DATABASE=/app/database/database.sqlite \
     QUEUE_CONNECTION=database \
@@ -120,5 +137,6 @@ ENV PHP_CLI_SERVER_WORKERS=24 \
 
 ENTRYPOINT ["server-entrypoint"]
 
-# Default: run the API server. Override CMD for workers.
-CMD ["php", "artisan", "serve", "--host=0.0.0.0", "--port=8080", "--no-reload"]
+# Default: run the concurrent API server. Compose and Kubernetes override this
+# command with PHP CLI processes for bootstrap, queue workers, and schedulers.
+CMD ["apache2-foreground"]

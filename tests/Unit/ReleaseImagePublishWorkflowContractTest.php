@@ -215,14 +215,53 @@ class ReleaseImagePublishWorkflowContractTest extends TestCase
         $this->assertStringNotContainsString('pecl.php.net/redis', $dockerfile);
     }
 
-    public function test_standalone_cli_http_workers_share_compiled_application_bytecode(): void
+    public function test_standalone_apache_and_cli_processes_share_compiled_application_bytecode(): void
     {
         $dockerfile = $this->read('Dockerfile');
         $phpConfig = $this->read('docker/php-custom.ini');
 
+        $this->assertStringContainsString('FROM php:8.3-apache AS base', $dockerfile);
         $this->assertStringContainsString('docker-php-ext-install opcache', $dockerfile);
+        $this->assertStringContainsString('opcache.enable = 1', $phpConfig);
         $this->assertStringContainsString('opcache.enable_cli = 1', $phpConfig);
         $this->assertStringContainsString('opcache.max_accelerated_files = 20000', $phpConfig);
+    }
+
+    public function test_standalone_image_uses_a_bounded_concurrent_apache_runtime(): void
+    {
+        $dockerfile = $this->read('Dockerfile');
+        $apacheMpm = $this->read('docker/apache-mpm-prefork.conf');
+        $apacheVhost = $this->read('docker/apache-vhost.conf');
+        $regression = $this->read('scripts/regression/replay-query-concurrent-http.sh');
+
+        $this->assertStringContainsString('CMD ["apache2-foreground"]', $dockerfile);
+        $this->assertStringNotContainsString('CMD ["php", "artisan", "serve"', $dockerfile);
+        $this->assertStringNotContainsString('php -S', $dockerfile);
+        $this->assertStringContainsString('DW_WORKER_LONG_POLL_MAX_CONCURRENT=2', $dockerfile);
+        $this->assertStringContainsString('DW_QUERY_TASK_POLL_MAX_CONCURRENT=1', $dockerfile);
+        $this->assertStringContainsString('groupmod --gid 1000 www-data', $dockerfile);
+        $this->assertStringContainsString('usermod --uid 1000 --gid 1000 www-data', $dockerfile);
+        $this->assertStringContainsString('chown -R www-data:www-data', $dockerfile);
+        $this->assertStringContainsString('database \\', $dockerfile);
+        $this->assertStringContainsString('/var/run/apache2', $dockerfile);
+        $this->assertStringContainsString('StartServers             8', $apacheMpm);
+        $this->assertStringContainsString('MaxRequestWorkers       24', $apacheMpm);
+        $this->assertStringContainsString('<VirtualHost *:8080>', $apacheVhost);
+        $this->assertStringContainsString('DocumentRoot /app/public', $apacheVhost);
+        $this->assertStringContainsString('FallbackResource /index.php', $apacheVhost);
+        $this->assertStringContainsString('query-tasks)/poll$" dontlog', $apacheVhost);
+        $this->assertStringContainsString('combined env=!dontlog', $apacheVhost);
+        $this->assertStringContainsString('</proc/1/cmdline', $regression);
+        $this->assertStringContainsString("*apache2*'-DFOREGROUND'*", $regression);
+        $this->assertStringContainsString("apache2ctl -M 2>/dev/null | grep -q 'php_module'", $regression);
+        $this->assertStringContainsString('compose exec -T --user 1000:1000 server', $regression);
+        $this->assertStringContainsString('--user 1000:1000', $regression);
+        $this->assertStringContainsString('--cap-drop ALL', $regression);
+        $this->assertStringContainsString('curl -fsS http://127.0.0.1:8080/api/ready', $regression);
+        $this->assertStringContainsString('-X POST http://127.0.0.1:8080/api/namespaces', $regression);
+        $this->assertStringContainsString('test -w database/database.sqlite', $regression);
+        $this->assertStringContainsString('test "$(id -u)" = 1000', $regression);
+        $this->assertStringContainsString('test "$(id -g)" = 1000', $regression);
     }
 
     public function test_dockerfile_installs_node_for_published_conformance_handoffs(): void
@@ -230,12 +269,12 @@ class ReleaseImagePublishWorkflowContractTest extends TestCase
         $dockerfile = $this->read('Dockerfile');
         $activitiesRunner = $this->read('scripts/conformance/activities-published-artifacts.sh');
 
-        $this->assertStringContainsString('FROM php:8.3-cli AS base', $dockerfile);
+        $this->assertStringContainsString('FROM php:8.3-apache AS base', $dockerfile);
         $this->assertStringContainsString('nodejs', $dockerfile);
         $this->assertStringContainsString('if ! require_command node; then', $activitiesRunner);
         $this->assertStringContainsString('required command not found: node', $activitiesRunner);
 
-        $baseOffset = strpos($dockerfile, 'FROM php:8.3-cli AS base');
+        $baseOffset = strpos($dockerfile, 'FROM php:8.3-apache AS base');
         $nodeOffset = strpos($dockerfile, 'nodejs');
         $productionOffset = strpos($dockerfile, 'FROM base AS production');
 
@@ -251,7 +290,7 @@ class ReleaseImagePublishWorkflowContractTest extends TestCase
         $dockerfile = $this->read('Dockerfile');
         $activitiesRunner = $this->read('scripts/conformance/activities-published-artifacts.sh');
 
-        $this->assertStringContainsString('FROM php:8.3-cli AS base', $dockerfile);
+        $this->assertStringContainsString('FROM php:8.3-apache AS base', $dockerfile);
         $this->assertStringContainsString('python3', $dockerfile);
         $this->assertStringContainsString('python3-venv', $dockerfile);
         $this->assertStringContainsString('prepare_focused_python_sdk', $activitiesRunner);
@@ -260,7 +299,7 @@ class ReleaseImagePublishWorkflowContractTest extends TestCase
         $this->assertStringContainsString('run_python_activity_executor', $activitiesRunner);
         $this->assertStringContainsString('activity_host_evidence missing passing ${requiredMode}/${runtime} cell', $activitiesRunner);
 
-        $baseOffset = strpos($dockerfile, 'FROM php:8.3-cli AS base');
+        $baseOffset = strpos($dockerfile, 'FROM php:8.3-apache AS base');
         $pythonOffset = strpos($dockerfile, 'python3');
         $productionOffset = strpos($dockerfile, 'FROM base AS production');
 

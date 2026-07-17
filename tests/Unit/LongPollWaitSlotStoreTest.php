@@ -215,67 +215,57 @@ class LongPollWaitSlotStoreTest extends TestCase
         }
     }
 
-    public function test_published_image_default_preserves_api_workers_for_load_profiles(): void
+    public function test_published_apache_image_default_preserves_api_workers_for_load_profiles(): void
     {
-        $previous = getenv('PHP_CLI_SERVER_WORKERS');
-        $workerCount = $this->dockerfilePhpCliServerWorkers();
-        putenv('PHP_CLI_SERVER_WORKERS='.$workerCount);
+        $workerCount = $this->apacheMaxRequestWorkers();
 
         config([
-            'server.polling.max_concurrent_waits' => null,
+            'server.polling.max_concurrent_waits' => 2,
             'server.polling.reserved_http_workers' => null,
-            'server.query_tasks.max_concurrent_poll_waits' => null,
+            'server.query_tasks.max_concurrent_poll_waits' => 1,
         ]);
 
-        try {
-            /** @var LongPollWaitSlotStore $slots */
-            $slots = app(LongPollWaitSlotStore::class);
+        /** @var LongPollWaitSlotStore $slots */
+        $slots = app(LongPollWaitSlotStore::class);
 
-            $this->assertGreaterThanOrEqual(
-                24,
-                $workerCount,
-                'The published request pool must keep liveness capacity during the mixed-load profile.',
-            );
-            $this->assertSame(2, $slots->maxConcurrentWaits());
-            $this->assertSame(1, $slots->maxConcurrentQueryTaskPollWaits());
-            $this->assertGreaterThanOrEqual(
-                21,
-                $workerCount - $slots->maxConcurrentWaits() - $slots->maxConcurrentQueryTaskPollWaits(),
-                'Idle long polls must leave enough request workers for starts, control-plane traffic, and liveness.',
-            );
+        $this->assertGreaterThanOrEqual(
+            24,
+            $workerCount,
+            'The published request pool must keep liveness capacity during the mixed-load profile.',
+        );
+        $this->assertSame(2, $slots->maxConcurrentWaits());
+        $this->assertSame(1, $slots->maxConcurrentQueryTaskPollWaits());
+        $this->assertGreaterThanOrEqual(
+            21,
+            $workerCount - $slots->maxConcurrentWaits() - $slots->maxConcurrentQueryTaskPollWaits(),
+            'Idle long polls must leave enough request workers for starts, control-plane traffic, and liveness.',
+        );
 
-            $firstWorker = $slots->tryAcquire(30);
-            $secondWorker = $slots->tryAcquire(30);
-            $thirdWorker = $slots->tryAcquire(30);
-            $query = $slots->tryAcquireQueryTaskPoll(30);
-            $extraQuery = $slots->tryAcquireQueryTaskPoll(30);
+        $firstWorker = $slots->tryAcquire(30);
+        $secondWorker = $slots->tryAcquire(30);
+        $thirdWorker = $slots->tryAcquire(30);
+        $query = $slots->tryAcquireQueryTaskPoll(30);
+        $extraQuery = $slots->tryAcquireQueryTaskPoll(30);
 
-            $this->assertNotNull($firstWorker);
-            $this->assertNotNull($secondWorker);
-            $this->assertNull($thirdWorker);
-            $this->assertNotNull($query);
-            $this->assertNull($extraQuery);
+        $this->assertNotNull($firstWorker);
+        $this->assertNotNull($secondWorker);
+        $this->assertNull($thirdWorker);
+        $this->assertNotNull($query);
+        $this->assertNull($extraQuery);
 
-            $firstWorker->release();
-            $secondWorker->release();
-            $query->release();
-        } finally {
-            if ($previous === false) {
-                putenv('PHP_CLI_SERVER_WORKERS');
-            } else {
-                putenv('PHP_CLI_SERVER_WORKERS='.$previous);
-            }
-        }
+        $firstWorker->release();
+        $secondWorker->release();
+        $query->release();
     }
 
-    private function dockerfilePhpCliServerWorkers(): int
+    private function apacheMaxRequestWorkers(): int
     {
-        $dockerfile = file_get_contents(base_path('Dockerfile'));
+        $apacheMpm = file_get_contents(base_path('docker/apache-mpm-prefork.conf'));
 
-        $this->assertIsString($dockerfile);
-        $this->assertMatchesRegularExpression('/ENV\s+PHP_CLI_SERVER_WORKERS=(\d+)\b/', $dockerfile);
+        $this->assertIsString($apacheMpm);
+        $this->assertMatchesRegularExpression('/^\s*MaxRequestWorkers\s+(\d+)\s*$/m', $apacheMpm);
 
-        preg_match('/ENV\s+PHP_CLI_SERVER_WORKERS=(\d+)\b/', $dockerfile, $matches);
+        preg_match('/^\s*MaxRequestWorkers\s+(\d+)\s*$/m', $apacheMpm, $matches);
 
         return (int) $matches[1];
     }

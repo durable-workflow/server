@@ -1192,7 +1192,7 @@ same file-backed writer lock. If worker poll endpoints still return
 `reason: backend_lock_pressure`, workers should retry with backoff; sustained
 multi-worker deployments should use MySQL/PostgreSQL with Redis.
 
-The standalone server image also reserves PHP request-worker capacity for
+The standalone server image also reserves Apache request-worker capacity for
 health and control-plane routes. Empty workflow and activity worker long-polls
 acquire a short-lived wait slot before sleeping; once the node-local slot cap
 is reached, additional idle polls receive `Retry-After: 1` instead of entering
@@ -1204,16 +1204,16 @@ compatibility response for the advertised one-second cooldown because existing
 worker poll APIs do not all expose retry headers to their loops. This keeps
 workers alive and bounds immediate empty repolling without admitting another
 full long-poll wait. Idle query-task
-polls use a separate wait-slot budget, derived to one slot on the default
+polls use a separate wait-slot budget, set to one slot on the default
 standalone image, so workflow/activity polls cannot starve live workflow queries
 across the PHP and Python worker queues, and query-task polls cannot consume the
 request workers needed by the waiting query request and the worker's completion
 callback. A
 poll that arrives after a query task is pending still claims it immediately
 before any wait slot or backpressure response is required. Size
-`PHP_CLI_SERVER_WORKERS` for expected
-concurrent workflow, activity, and query workers when using the standalone
-server.
+the Apache request pool and the two explicit long-poll caps for expected
+concurrent workflow, activity, and query workers when building a larger
+standalone deployment.
 
 Across Compose, plain Docker, and Kubernetes, the supported bootstrap contract
 is the same: run the image's `server-bootstrap` command once before starting the
@@ -1533,31 +1533,23 @@ honored as fallbacks during the deprecation window so existing
 deployments keep working — `env:audit` logs a rename hint at boot for
 each one it sees.
 
-### HTTP concurrency (PHP_CLI_SERVER_WORKERS)
+### HTTP concurrency (Apache)
 
-The image's default CMD runs `php artisan serve --no-reload` with
-`PHP_CLI_SERVER_WORKERS=24`. The `--no-reload` flag is required for
-Laravel's built-in server to honour the worker count — without it the
-server logs `Unable to respect the PHP_CLI_SERVER_WORKERS environment
-variable without the --no-reload flag` and falls back to a single
-thread, which will block every other request while one worker holds a
-long-poll connection open.
+The image's default command runs Apache with mod_php, eight prefork request
+processes ready at startup, and a maximum of 24 concurrent request processes.
+A workflow query may hold one process while it waits for a worker response;
+worker heartbeats, query-task polls, completions, and control-plane requests
+continue to enter Laravel through other processes.
 
-The server derives a conservative idle long-poll budget from the worker
-count. The published default also leaves request capacity for recurring
-liveness probes while eight workflow starts, eight worker polls, workflow
-listing, readiness, and compatibility discovery are concurrent. Raise the
-worker count further for larger polyglot or multi-worker deployments:
-
-```bash
-docker run --rm -p 8080:8080 -e PHP_CLI_SERVER_WORKERS=32 \
-  --env-file .env durable-workflow-server
-```
-
-For production workloads the `php artisan serve` built-in server is a
-reasonable default but not the ceiling — FrankenPHP, RoadRunner, or an
-nginx/php-fpm pair are all valid replacements and only require
-overriding the container's `CMD`.
+The published image explicitly caps held workflow/activity long polls at two
+and held query-task long polls at one. This leaves request capacity for query
+result waits, completions, recurring liveness probes, workflow starts, listing,
+readiness, and compatibility discovery. Larger deployments can build a tuned
+Apache prefork configuration and set `DW_WORKER_LONG_POLL_MAX_CONCURRENT` and
+`DW_QUERY_TASK_POLL_MAX_CONCURRENT` to matching bounded values. An alternative
+container command remains supported, but it must provide production-grade
+concurrent request admission; the PHP built-in server is not a supported
+production HTTP runtime.
 
 ## Writing Workers
 
