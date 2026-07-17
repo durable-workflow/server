@@ -29,7 +29,8 @@ Environment overrides:
   DW_WORKFLOW_PHP_VERSION                   Published PHP workflow version under test.
   DW_WATERLINE_VERSION                      Published Waterline version under test.
   DW_SIGNALS_QUERIES_RESULT_DIR             Result directory when --result-dir is omitted.
-  DW_SIGNALS_QUERIES_EVIDENCE               Optional JSON evidence from a real matrix run.
+  DW_SIGNALS_QUERIES_EVIDENCE               Optional JSON evidence from a real matrix run, including
+                                             executed_distribution_identities captured from consumed bytes.
   DW_SIGNALS_QUERIES_SMOKE_EVIDENCE         Deprecated alias for DW_SIGNALS_QUERIES_EVIDENCE.
   DW_SIGNALS_QUERIES_RUN_BASELINE_PROBE     Set to 0 to skip the live order/dedup/unknown shard.
   DW_SIGNALS_QUERIES_RUN_PHP_BASELINE_PROBE Set to 0 to skip the live PHP worker mirror shard.
@@ -158,6 +159,246 @@ RUST_DEPENDENCY_CACHE_SCHEMA = "durable-workflow.v1.signals-queries-rust-depende
 RUST_DEPENDENCY_CACHE_DEFAULT_MAX_ENTRIES = 4
 RUST_DEPENDENCY_CACHE_DEFAULT_MAX_BYTES = 8 * 1024 * 1024 * 1024
 RUST_DEPENDENCY_CACHE_DEFAULT_MAX_AGE_SECONDS = 14 * 24 * 60 * 60
+EXECUTED_DISTRIBUTION_IDENTITIES_PATH = (
+    Path(os.environ["RESULT_DIR"]) / "executed-distribution-identities.json"
+    if os.environ.get("RESULT_DIR")
+    else None
+)
+DISTRIBUTION_COMPONENTS = {
+    "workflow": ("composer", "durable-workflow/workflow"),
+    "waterline": ("composer", "durable-workflow/waterline"),
+    "server": ("oci", "docker.io/durableworkflow/server"),
+    "cli": ("github-release", "durable-workflow/cli"),
+    "sdk-php": ("composer", "durable-workflow/sdk"),
+    "sdk-python": ("pypi", "durable-workflow"),
+    "sdk-rust": ("crates.io", "durable-workflow"),
+}
+REQUIRED_DISTRIBUTION_IDENTITIES = tuple(DISTRIBUTION_COMPONENTS)
+DIST_VERSION_PATTERN = re.compile(r"^[0-9]+\.[0-9]+\.[0-9]+(?:[-+][0-9A-Za-z][0-9A-Za-z.-]*)?$")
+DIST_DIGEST_PATTERN = re.compile(r"^[0-9a-f]{64}$")
+
+
+def normalize_distribution_identity(
+    component: str,
+    observed: Any,
+    expected_version: str | None = None,
+) -> dict[str, Any]:
+    if component not in DISTRIBUTION_COMPONENTS:
+        raise RuntimeError(f"unknown executed distribution component: {component}")
+    if not isinstance(observed, dict) or set(observed) != {"kind", "locator", "artifacts"}:
+        raise RuntimeError(f"invalid executed distribution identity for {component}")
+
+    kind, package = DISTRIBUTION_COMPONENTS[component]
+    version = str(expected_version or "").strip()
+    if version:
+        if not DIST_VERSION_PATTERN.fullmatch(version):
+            raise RuntimeError(f"invalid exact distribution version for {component}: {version}")
+        expected_locator = f"{kind}:{package}@{version}"
+        if observed.get("kind") != kind or observed.get("locator") != expected_locator:
+            raise RuntimeError(
+                f"executed distribution locator for {component} does not match {expected_locator}"
+            )
+    else:
+        locator_pattern = re.compile(
+            rf"^{re.escape(kind)}:{re.escape(package)}@{DIST_VERSION_PATTERN.pattern[1:-1]}$"
+        )
+        if observed.get("kind") != kind or not locator_pattern.fullmatch(str(observed.get("locator", ""))):
+            raise RuntimeError(f"invalid executed distribution locator for {component}")
+
+    raw_artifacts = observed.get("artifacts")
+    if not isinstance(raw_artifacts, list) or not raw_artifacts:
+        raise RuntimeError(f"executed distribution identity has no artifacts for {component}")
+    artifacts: list[dict[str, str]] = []
+    for artifact in raw_artifacts:
+        if not isinstance(artifact, dict) or set(artifact) != {"name", "sha256"}:
+            raise RuntimeError(f"invalid executed distribution artifact for {component}")
+        name = artifact.get("name")
+        digest = artifact.get("sha256")
+        if (
+            not isinstance(name, str)
+            or not name
+            or len(name) > 256
+            or ("/" in name and component not in {"workflow", "waterline", "sdk-php"})
+            or not isinstance(digest, str)
+            or not DIST_DIGEST_PATTERN.fullmatch(digest)
+        ):
+            raise RuntimeError(f"invalid executed distribution artifact for {component}")
+        artifacts.append({"name": name, "sha256": digest})
+    artifacts.sort(key=lambda artifact: artifact["name"])
+    names = [artifact["name"] for artifact in artifacts]
+    if len(names) != len(set(names)):
+        raise RuntimeError(f"duplicate executed distribution artifact for {component}")
+    return {
+        "kind": kind,
+        "locator": str(observed["locator"]),
+        "artifacts": artifacts,
+    }
+
+
+def load_distribution_identities(path: Path) -> dict[str, Any]:
+    if not path.is_file():
+        return {}
+    value = json.loads(path.read_text(encoding="utf-8"))
+    if not isinstance(value, dict):
+        raise RuntimeError("executed distribution identities must be an object")
+    return {
+        component: normalize_distribution_identity(component, observed)
+        for component, observed in value.items()
+    }
+
+
+def executed_distribution_identities_path() -> Path:
+    if EXECUTED_DISTRIBUTION_IDENTITIES_PATH is None:
+        raise RuntimeError("RESULT_DIR is required to record executed distribution identities")
+    return EXECUTED_DISTRIBUTION_IDENTITIES_PATH
+
+
+def write_distribution_identities(path: Path, identities: dict[str, Any]) -> None:
+    temporary = path.with_name(f".{path.name}.{os.getpid()}.tmp")
+    write_json(temporary, identities)
+    temporary.replace(path)
+
+
+def distribution_identity(
+    component: str,
+    version: str,
+    artifact_name: str,
+    digest: str,
+) -> dict[str, Any]:
+    if component not in DISTRIBUTION_COMPONENTS:
+        raise RuntimeError(f"unknown executed distribution component: {component}")
+    kind, package = DISTRIBUTION_COMPONENTS[component]
+    observed = {
+        "kind": kind,
+        "locator": f"{kind}:{package}@{version}",
+        "artifacts": [{"name": artifact_name, "sha256": digest}],
+    }
+    return normalize_distribution_identity(component, observed, version)
+
+
+def record_distribution_identity(path: Path, component: str, observed: dict[str, Any]) -> None:
+    identities = load_distribution_identities(path)
+    normalized = normalize_distribution_identity(component, observed)
+    current = identities.get(component)
+    if current is not None:
+        if current["kind"] != normalized["kind"] or current["locator"] != normalized["locator"]:
+            raise RuntimeError(f"conflicting executed distribution locator for {component}")
+        artifacts = {artifact["name"]: artifact["sha256"] for artifact in current["artifacts"]}
+        for artifact in normalized["artifacts"]:
+            previous = artifacts.get(artifact["name"])
+            if previous is not None and previous != artifact["sha256"]:
+                raise RuntimeError(f"conflicting consumed bytes for {component}:{artifact['name']}")
+            artifacts[artifact["name"]] = artifact["sha256"]
+        normalized["artifacts"] = [
+            {"name": name, "sha256": artifacts[name]}
+            for name in sorted(artifacts)
+        ]
+    identities[component] = normalized
+    write_distribution_identities(path, identities)
+
+
+def merge_distribution_identity_handoff(
+    evidence: Any,
+    path: Path,
+    artifact_versions: dict[str, str],
+) -> None:
+    if not isinstance(evidence, dict):
+        raise RuntimeError("executed distribution identity handoff must be a component map")
+    for component, observed in evidence.items():
+        expected_version = str(artifact_versions.get(component, ""))
+        normalized = normalize_distribution_identity(component, observed, expected_version)
+        record_distribution_identity(path, component, normalized)
+
+
+def validate_required_distribution_identities(
+    path: Path,
+    artifact_versions: dict[str, str],
+) -> tuple[dict[str, Any], list[str]]:
+    try:
+        identities = load_distribution_identities(path)
+    except Exception as exc:  # noqa: BLE001 - malformed identity evidence is a product failure.
+        return {}, [f"executed distribution identity evidence is invalid: {type(exc).__name__}: {exc}"]
+
+    failures: list[str] = []
+    for component in REQUIRED_DISTRIBUTION_IDENTITIES:
+        observed = identities.get(component)
+        if observed is None:
+            failures.append(f"missing executed distribution evidence for {component}")
+            continue
+        try:
+            identities[component] = normalize_distribution_identity(
+                component,
+                observed,
+                str(artifact_versions.get(component, "")),
+            )
+        except Exception as exc:  # noqa: BLE001 - report every malformed required identity.
+            failures.append(f"invalid executed distribution evidence for {component}: {exc}")
+    return identities, failures
+
+
+def distribution_sha256_file(path: Path) -> str:
+    if not path.is_file():
+        raise RuntimeError(f"executed distribution artifact is missing: {path}")
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def unique_distribution_file(root: Path, pattern: str) -> Path:
+    matches = sorted(path for path in root.glob(pattern) if path.is_file())
+    if len(matches) != 1:
+        raise RuntimeError(
+            f"expected one executed distribution artifact matching {pattern} under {root}, found {len(matches)}"
+        )
+    return matches[0]
+
+
+def record_distribution_file(
+    component: str,
+    version: str,
+    artifact: Path,
+    artifact_name: str | None = None,
+) -> None:
+    record_distribution_identity(
+        executed_distribution_identities_path(),
+        component,
+        distribution_identity(
+            component,
+            version,
+            artifact_name or artifact.name,
+            distribution_sha256_file(artifact),
+        ),
+    )
+
+
+def record_unique_distribution_file(
+    component: str,
+    version: str,
+    root: Path,
+    pattern: str,
+    artifact_name: str | None = None,
+) -> None:
+    record_distribution_file(
+        component,
+        version,
+        unique_distribution_file(root, pattern),
+        artifact_name,
+    )
+
+
+def record_distribution_digest(
+    component: str,
+    version: str,
+    artifact_name: str,
+    digest: str,
+) -> None:
+    record_distribution_identity(
+        executed_distribution_identities_path(),
+        component,
+        distribution_identity(component, version, artifact_name, digest.removeprefix("sha256:").lower()),
+    )
 
 
 def now() -> str:
@@ -1124,6 +1365,32 @@ def start_published_server(run_root: Path, log_file: Path) -> tuple[str, list[li
     if up.returncode != 0:
         raise RuntimeError("docker compose failed to start the published server")
 
+    inspection = run_command(
+        ["docker", "image", "inspect", "--format", "{{json .RepoDigests}}", image],
+        log_file=log_file,
+        timeout=60,
+    )
+    try:
+        repo_digests = json.loads(inspection.stdout)
+    except json.JSONDecodeError as exc:
+        raise RuntimeError("pulled server image repository digests were not valid JSON") from exc
+    executed_digest = next(
+        (
+            str(candidate).rsplit("@", 1)[1]
+            for candidate in repo_digests
+            if isinstance(candidate, str)
+            and re.fullmatch(
+                r"(?:(?:docker\.io|index\.docker\.io)/)?durableworkflow/server@sha256:[0-9a-f]{64}",
+                candidate,
+                re.IGNORECASE,
+            )
+        ),
+        None,
+    )
+    if executed_digest is None:
+        raise RuntimeError("pulled server image has no durableworkflow/server manifest digest")
+    record_distribution_digest("server", server_version, "manifest", executed_digest)
+
     base_url = f"http://127.0.0.1:{port}"
     compose_diagnostics = compose_published_server_diagnostics(
         project=project,
@@ -1269,6 +1536,7 @@ def install_cli(run_root: Path, log_file: Path) -> tuple[str, dict[str, Any]]:
     else:
         raise RuntimeError("official CLI installer is not downloadable: " + "; ".join(errors))
 
+    record_distribution_file("cli", cli_version, installer, "install.sh")
     installer.chmod(0o755)
     env = os.environ.copy()
     env.update(
@@ -1356,8 +1624,28 @@ def ensure_python_sdk(run_root: Path, log_file: Path) -> tuple[str, dict[str, An
     if pip.returncode != 0:
         raise RuntimeError("could not upgrade pip in Python SDK virtual environment")
 
+    distribution_dir = venv_dir / "distributions"
+    distribution_dir.mkdir(parents=True, exist_ok=True)
+    download = run_command(
+        [
+            str(python_bin),
+            "-m",
+            "pip",
+            "download",
+            "--no-deps",
+            "--dest",
+            str(distribution_dir),
+            f"durable-workflow=={sdk_version}",
+        ],
+        log_file=log_file,
+        timeout=240,
+    )
+    if download.returncode != 0:
+        raise RuntimeError("could not download the public Python SDK distribution")
+    distribution = unique_distribution_file(distribution_dir, "*")
+    record_distribution_file("sdk-python", sdk_version, distribution)
     install = run_command(
-        [str(python_bin), "-m", "pip", "install", f"durable-workflow=={sdk_version}"],
+        [str(python_bin), "-m", "pip", "install", str(distribution)],
         log_file=log_file,
         timeout=240,
     )
@@ -1626,6 +1914,8 @@ def php_docker_command(
             *docker_run_resource_options(),
             "--add-host",
             "host.docker.internal:host-gateway",
+            "--env",
+            "COMPOSER_CACHE_DIR=/app/.composer-cache",
             "-v",
             docker_volume_spec(project_dir),
             "-w",
@@ -1700,6 +1990,13 @@ def ensure_sdk_php_sdk(run_root: Path, log_file: Path) -> tuple[Path, dict[str, 
         )
 
     provenance = sdk_php_package_provenance(project_dir, sdk_version)
+    record_unique_distribution_file(
+        "sdk-php",
+        sdk_version,
+        project_dir / ".composer-cache" / "files" / "durable-workflow" / "sdk",
+        "**/*",
+        "durable-workflow/sdk",
+    )
 
     version_command = php_docker_command(
         project_dir,
@@ -5553,6 +5850,12 @@ def prepare_rust_probe(run_root: Path, log_file: Path) -> tuple[Path, dict[str, 
                 built_binary = build_target / "release" / "signals-queries-published-probe"
                 if not built_binary.is_file():
                     raise RuntimeError("Cargo completed without producing the Rust conformance probe binary")
+                record_unique_distribution_file(
+                    "sdk-rust",
+                    version,
+                    cache_session["cargo_home"] / "registry" / "cache",
+                    f"**/durable-workflow-{version}.crate",
+                )
                 isolated_binary = project_dir / "target" / "release" / "signals-queries-published-probe"
                 isolated_binary.parent.mkdir(parents=True, exist_ok=True)
                 shutil.copy2(built_binary, isolated_binary)
@@ -10619,6 +10922,8 @@ def docker_run_for_project(
         docker_volume_spec(project_dir),
         "-w",
         "/app",
+        "-e",
+        "COMPOSER_CACHE_DIR=/app/.composer-cache",
     ])
     if include_app_env:
         docker_command.extend([
@@ -10820,6 +11125,28 @@ def _run_waterline_observer_probe(
             ),
             blocker_kind="waterline_composer_require",
         ), {"error": "waterline_composer_require", "log_file": log_file.name}
+
+    try:
+        record_unique_distribution_file(
+            "workflow",
+            workflow_version,
+            waterline_root / ".composer-cache" / "files" / "durable-workflow" / "workflow",
+            "**/*",
+            "durable-workflow/workflow",
+        )
+        record_unique_distribution_file(
+            "waterline",
+            waterline_version,
+            waterline_root / ".composer-cache" / "files" / "durable-workflow" / "waterline",
+            "**/*",
+            "durable-workflow/waterline",
+        )
+    except Exception as exc:  # noqa: BLE001 - missing byte evidence is a focused product failure.
+        return waterline_observer_setup_result(
+            status="fail",
+            reason=f"Composer-installed Waterline distribution identity is unavailable: {type(exc).__name__}: {exc}",
+            blocker_kind="waterline_distribution_identity",
+        ), {"error": "waterline_distribution_identity", "log_file": log_file.name}
 
     key = run_command(
         docker_run_for_project(
@@ -13434,6 +13761,7 @@ smoke_path = os.environ.get("DW_SIGNALS_QUERIES_EVIDENCE", "") or os.environ.get
 smoke_evidence: Any = None
 external_smoke_evidence: Any = None
 smoke_descriptor: dict[str, Any] | None = None
+distribution_identity_handoff_failures: list[str] = []
 if smoke_path:
     candidate = Path(smoke_path)
     if candidate.is_file():
@@ -13447,6 +13775,23 @@ if smoke_path:
             external_smoke_evidence = smoke_evidence
         except Exception as exc:
             smoke_descriptor["decode_error"] = f"{type(exc).__name__}: {exc}"
+
+if isinstance(external_smoke_evidence, dict):
+    identity_handoff = external_smoke_evidence.get(
+        "executed_distribution_identities",
+        external_smoke_evidence.get("executedDistributionIdentities"),
+    )
+    if identity_handoff is not None:
+        try:
+            merge_distribution_identity_handoff(
+                identity_handoff,
+                executed_distribution_identities_path(),
+                artifact_versions,
+            )
+        except Exception as exc:  # noqa: BLE001 - conflicting staged bytes are a product failure.
+            distribution_identity_handoff_failures.append(
+                f"executed distribution identity handoff was rejected: {type(exc).__name__}: {exc}"
+            )
 
 baseline_evidence, baseline_descriptor = run_baseline_probe(result_dir)
 if baseline_evidence is not None:
@@ -13917,6 +14262,40 @@ for scenario in required_scenarios:
 
     scenario_results[scenario] = result
 
+executed_distribution_identities, distribution_identity_validation_failures = (
+    validate_required_distribution_identities(
+        executed_distribution_identities_path(),
+        artifact_versions,
+    )
+)
+distribution_identity_failures = list(dict.fromkeys([
+    *distribution_identity_handoff_failures,
+    *distribution_identity_validation_failures,
+]))
+if distribution_identity_failures:
+    identity_finding = {
+        "id": "executed_distribution_identity_missing_or_conflicting",
+        "type": "executed_distribution_identity_missing_or_conflicting",
+        "scenario_id": "executed_distribution_identities",
+        "owner": "conformance_harness",
+        "title": "Signals/queries execution did not retain a complete, conflict-free distribution identity set",
+        "current_evidence": {
+            "failures": distribution_identity_failures,
+            "observed_components": sorted(executed_distribution_identities),
+        },
+        "observed_behavior": "consumed distribution identity evidence was missing, malformed, or conflicting",
+        "acceptance": [
+            "retain the package, crate, release asset, and OCI manifest identities consumed by every passing shard",
+            "reject a repeated component when the same artifact name has different consumed bytes",
+        ],
+    }
+    findings.append(identity_finding)
+    finding_links["executed_distribution_identities"] = [identity_finding["id"]]
+write_distribution_identities(
+    executed_distribution_identities_path(),
+    executed_distribution_identities,
+)
+
 pins = {
     "artifact_versions": artifact_versions,
     "artifact_sources": dict(EXPECTED_ARTIFACT_SOURCES),
@@ -13967,6 +14346,7 @@ run_metadata = {
     "runner": "scripts/conformance/signals-queries-published-artifacts.sh",
     "local_product_source_checkouts_used": False,
     "smoke_evidence": smoke_descriptor,
+    "executed_distribution_identity_failures": distribution_identity_failures,
 }
 if runner_blocked and baseline_readiness_blocker is not None:
     run_metadata["runner_blocker"] = baseline_readiness_blocker
@@ -14102,7 +14482,11 @@ def retained_behavior_failure_diagnostics(
 
 if runner_blocked:
     outcome = "non_passing_runner_blocked"
-elif not findings and all(item["status"] == "pass" for item in scenario_results.values()):
+elif (
+    not findings
+    and not distribution_identity_failures
+    and all(item["status"] == "pass" for item in scenario_results.values())
+):
     outcome = "pass"
 else:
     outcome = "non_passing"
@@ -14115,6 +14499,7 @@ result = {
     "outcome": outcome,
     "runner_blocked": runner_blocked,
     "artifactVersions": artifact_versions,
+    "executed_distribution_identities": executed_distribution_identities,
     "artifact_sources": pins["artifact_sources"],
     "runtime_matrix": {
         "runtimes": ["sdk-php", "sdk-python", "sdk-rust"],

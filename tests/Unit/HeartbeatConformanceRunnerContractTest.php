@@ -307,7 +307,7 @@ SH);
         $this->assertStringContainsString("new URL('/api/ready', serverBaseUrl)", $source);
         $this->assertStringContainsString('DURABLE_WORKFLOW_SERVER_URL: serverBaseUrl', $source);
         $this->assertStringContainsString("parsed.hostname = 'host.docker.internal';", $source);
-        $this->assertSame(2, substr_count($source, 'workerBaseUrl(serverBaseUrl)'));
+        $this->assertSame(4, substr_count($source, 'workerBaseUrl(serverBaseUrl)'));
         $this->assertStringNotContainsString(
             "if (['127.0.0.1', 'localhost'].includes(parsed.hostname))",
             $source,

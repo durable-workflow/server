@@ -468,6 +468,10 @@ SH);
 
             copy($repoRoot . '/scripts/conformance/replay-published-artifacts.sh', $stagedScript);
             chmod($stagedScript, 0755);
+            copy(
+                $repoRoot . '/scripts/conformance/distribution_identities.py',
+                dirname($stagedScript) . '/distribution_identities.py',
+            );
             copy($repoRoot . '/docker-compose.published.yml', $serverCheckout . '/docker-compose.published.yml');
 
             $realPython = trim((string) shell_exec('command -v python3 2>/dev/null'));
@@ -521,6 +525,21 @@ ACT
 set -euo pipefail
 real_python=$real_python
 if [[ "\${1:-}" == "-m" && "\${2:-}" == "pip" ]]; then
+  if [[ "\${3:-}" == "download" ]]; then
+    destination=""
+    previous=""
+    for argument in "\$@"; do
+      if [[ "\$previous" == "--dest" ]]; then
+        destination="\$argument"
+      fi
+      previous="\$argument"
+    done
+    if [[ -n "\$destination" ]]; then
+      mkdir -p "\$destination"
+      printf '%s\n' 'fake published wheel bytes' \
+        > "\$destination/durable_workflow-0.4.89-py3-none-any.whl"
+    fi
+  fi
   exit 0
 fi
 if [[ "\${1:-}" == "-" ]]; then
@@ -756,22 +775,41 @@ fi
 
 if [[ "${1:-}" == "image" && "${2:-}" == "inspect" ]]; then
   if [[ "${3:-}" == "--format" ]]; then
-    echo "durableworkflow/server@sha256:fake"
+    echo "durableworkflow/server@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
   else
-    echo '[{"RepoDigests":["durableworkflow/server@sha256:fake"]}]'
+    echo '[{"RepoDigests":["durableworkflow/server@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"]}]'
   fi
   exit 0
 fi
 
 if [[ "${1:-}" == "run" ]]; then
   joined=" $* "
+  if [[ "$joined" == *" composer require "* ]]; then
+    previous=""
+    for arg in "$@"; do
+      if [[ "$previous" == "-v" && "$arg" == *":/tmp/composer-cache" ]]; then
+        composer_cache="${arg%:/tmp/composer-cache}"
+        mkdir -p \
+          "$composer_cache/files/durable-workflow/workflow" \
+          "$composer_cache/files/durable-workflow/waterline"
+        printf '%s\n' 'fake workflow archive bytes' \
+          > "$composer_cache/files/durable-workflow/workflow/workflow.zip"
+        printf '%s\n' 'fake waterline archive bytes' \
+          > "$composer_cache/files/durable-workflow/waterline/waterline.zip"
+      fi
+      previous="$arg"
+    done
+    exit 0
+  fi
   if [[ "$joined" == *" cargo install durable-workflow "* ]]; then
     previous=""
     for arg in "$@"; do
       if [[ "$previous" == "-v" && "$arg" == *":/cargo" ]]; then
         rust_root="${arg%:/cargo}"
-        mkdir -p "$rust_root/bin"
+        mkdir -p "$rust_root/bin" "$rust_root/registry/cache/fake-registry"
         printf '#!/usr/bin/env sh\nexit 0\n' > "$rust_root/bin/durable-workflow-replay-conformance"
+        printf '%s\n' 'fake Rust crate bytes' \
+          > "$rust_root/registry/cache/fake-registry/durable-workflow-0.1.13.crate"
         chmod +x "$rust_root/bin/durable-workflow-replay-conformance"
       fi
       previous="$arg"
@@ -793,7 +831,7 @@ if [[ "${1:-}" == "run" ]]; then
     printf '%s\n' '{"classes_checked":[],"missing_classes":[],"package":"durable-workflow/waterline","status":"pass","workflow_package_api_floor_missing":[]}'
     exit 0
   fi
-  if [[ "$joined" == *" php-sdk-published-artifacts.sh "* ]]; then
+  if [[ "$joined" == *"php-sdk-published-artifacts.sh "* ]]; then
     result_dir=""
     previous=""
     for arg in "$@"; do
@@ -805,6 +843,9 @@ if [[ "${1:-}" == "run" ]]; then
     if [[ -z "$result_dir" ]]; then
       exit 2
     fi
+    mkdir -p "$result_dir/composer-cache/files/durable-workflow/sdk"
+    printf '%s\n' 'fake PHP SDK archive bytes' \
+      > "$result_dir/composer-cache/files/durable-workflow/sdk/sdk.zip"
     write_php_shard "$result_dir/php-sdk-conformance-result.json"
     printf '%s\n' '{"runtime":"sdk-php","status":"pass"}'
     exit 0
@@ -860,6 +901,10 @@ SH);
             $result = json_decode((string) file_get_contents($resultDir . '/replay-conformance-result.json'), true, flags: JSON_THROW_ON_ERROR);
             $record = json_decode((string) file_get_contents($resultDir . '/replay-conformance-record.json'), true, flags: JSON_THROW_ON_ERROR);
 
+            $expectedIdentities = ['cli', 'sdk-php', 'sdk-python', 'sdk-rust', 'server', 'waterline', 'workflow'];
+            $executedIdentities = array_keys($result['executed_distribution_identities'] ?? []);
+            sort($executedIdentities);
+            $this->assertSame($expectedIdentities, $executedIdentities);
             $this->assertSame('fail', $result['outcome']);
             $this->assertSame('fail', $record['outcome']);
             $this->assertTrue($result['runner_blocked']);

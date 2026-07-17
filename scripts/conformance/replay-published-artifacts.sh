@@ -208,6 +208,7 @@ if [[ -z "$result_dir" ]]; then
 fi
 mkdir -p "$result_dir"
 result_dir="$(cd "$result_dir" && pwd)"
+distribution_identity_file="$result_dir/executed-distribution-identities.json"
 
 started_at="$(timestamp)"
 
@@ -431,6 +432,7 @@ blocked_result_without_python() {
   "outcome": "fail",
   "runner_blocked": true,
   "artifact_versions": {},
+  "executed_distribution_identities": {},
   "artifact_sources": {},
   "runtime_matrix": {
     "runtimes": ["sdk-php", "sdk-python", "sdk-rust"],
@@ -547,6 +549,7 @@ result = {
     "outcome": "fail",
     "runner_blocked": True,
     "artifact_versions": {},
+    "executed_distribution_identities": {},
     "artifact_sources": {},
     "source_policy": {
         "artifact_source": "published_artifacts",
@@ -790,6 +793,9 @@ def section(scenarios: list[str]) -> dict[str, Any]:
 
 pins = load_json(result_dir / "pins.json")
 versions = dict(pins.get("artifact_versions") or {})
+native_versions = dict(versions)
+if "workflow-php" in native_versions:
+    native_versions["workflow"] = native_versions.pop("workflow-php")
 sources = dict(pins.get("artifact_sources") or {})
 diagnostics = load_json(result_dir / "compose-startup-diagnostics.json")
 finished_at = now()
@@ -834,7 +840,8 @@ result = {
     "generated_at": finished_at,
     "outcome": "fail",
     "runner_blocked": False,
-    "artifact_versions": versions,
+    "artifact_versions": native_versions,
+    "executed_distribution_identities": {},
     "artifact_sources": sources,
     "source_policy": {
         "artifact_source": "published_artifacts",
@@ -914,7 +921,7 @@ cleanup_failure_result() {
   local reason="$1"
   local previous_exit_code="${2:-0}"
 
-  python3 - "$result_dir" "$started_at" "$reason" "$previous_exit_code" "$run_root" "$compose_project" <<'PY'
+  python3 - "$result_dir" "$started_at" "$reason" "$previous_exit_code" "$run_root" "$compose_project" "${REPLAY_REQUIRED_SCENARIOS[*]}" <<'PY'
 from __future__ import annotations
 
 import json
@@ -929,6 +936,7 @@ reason = sys.argv[3]
 previous_exit_code = int(sys.argv[4])
 run_root = sys.argv[5]
 compose_project = sys.argv[6]
+required_scenarios = sys.argv[7].split()
 
 
 def now() -> str:
@@ -990,17 +998,30 @@ finding = {
 }
 
 if not result:
+    scenario_results = {
+        scenario: {
+            "scenario_id": scenario,
+            "status": "runner_blocked",
+            "observed_outputs": {
+                "host_environment_failure": True,
+                "runner_blocked_reason": reason,
+            },
+            "linked_findings": [finding],
+        }
+        for scenario in required_scenarios
+    }
     result = {
         "schema": "durable-workflow.v2.replay-conformance.result",
         "schema_version": 1,
         "started_at": started_at,
         "artifact_versions": versions,
+        "executed_distribution_identities": {},
         "artifact_sources": sources,
         "source_policy": {
             "artifact_source": "published_artifacts",
             "local_product_source_checkouts_used": False,
         },
-        "scenario_results": {},
+        "scenario_results": scenario_results,
     }
 
 findings = list_value(result.get("findings"))
@@ -1346,17 +1367,33 @@ PY
 
 # Keep scratch Composer apps removable by the host after containers exit.
 container_user="$(id -u):$(id -g)"
+waterline_composer_cache="$run_root/waterline-composer-cache"
+mkdir -p "$waterline_composer_cache"
 composer_env_args=(
   --user "$container_user"
   -e COMPOSER_HOME=/tmp/composer
   -e COMPOSER_CACHE_DIR=/tmp/composer-cache
   -e HOME=/tmp
+  -v "$waterline_composer_cache:/tmp/composer-cache"
 )
+
+server_executed_digest="$(<"$result_dir/server-image-digest.txt")"
+if ! python3 "$script_dir/distribution_identities.py" record-digest \
+  "$distribution_identity_file" server "$server_version" manifest "${server_executed_digest##*@}"; then
+  printf '%s\n' 'Replay conformance could not derive the pulled server manifest identity.' \
+    > "$result_dir/server-distribution-identity.log"
+fi
 
 mkdir -p "$run_root/cli/bin"
 if ! curl -fsSL "$cli_install_url" -o "$run_root/cli/install.sh"; then
   blocked_result "Replay conformance runner could not download the official CLI install asset"
   exit 1
+fi
+if ! python3 "$script_dir/distribution_identities.py" record-file \
+  "$distribution_identity_file" cli "$cli_version" "$run_root/cli/install.sh" \
+  --artifact-name install.sh; then
+  printf '%s\n' 'Replay conformance could not identify the executed CLI installer bytes.' \
+    > "$result_dir/cli-distribution-identity.log"
 fi
 cp "$run_root/cli/install.sh" "$result_dir/dw-install.sh"
 chmod +x "$run_root/cli/install.sh" "$result_dir/dw-install.sh"
@@ -1465,8 +1502,23 @@ fi
 set +e
 python -m pip install --upgrade pip > "$result_dir/python-pip-upgrade.log" 2>&1
 python_pip_status=$?
-python -m pip install "durable-workflow==${python_sdk_version}" > "$result_dir/python-install.log" 2>&1
-python_install_status=$?
+mkdir -p "$run_root/python-distributions"
+python -m pip download --no-deps --dest "$run_root/python-distributions" \
+  "durable-workflow==${python_sdk_version}" > "$result_dir/python-download.log" 2>&1
+python_download_status=$?
+if [[ "$python_download_status" -eq 0 ]]; then
+  python3 "$script_dir/distribution_identities.py" record-unique \
+    "$distribution_identity_file" sdk-python "$python_sdk_version" \
+    "$run_root/python-distributions" '*' || python_download_status=1
+fi
+python_distribution="$(find "$run_root/python-distributions" -maxdepth 1 -type f -print -quit)"
+if [[ "$python_download_status" -eq 0 && -n "$python_distribution" ]]; then
+  python -m pip install "$python_distribution" > "$result_dir/python-install.log" 2>&1
+  python_install_status=$?
+else
+  printf '%s\n' 'Python SDK distribution download or identity capture failed.' > "$result_dir/python-install.log"
+  python_install_status=1
+fi
 python - <<'PY' > "$result_dir/python-import-probe.json" 2> "$result_dir/python-import-probe.log"
 from __future__ import annotations
 
@@ -1680,6 +1732,13 @@ docker run --rm \
   > "$result_dir/rust-cargo-install.log" 2>&1
 rust_install_status=$?
 set -e
+if [[ "$rust_install_status" -eq 0 ]]; then
+  python3 "$script_dir/distribution_identities.py" record-unique \
+    "$distribution_identity_file" sdk-rust "$rust_sdk_version" \
+    "$rust_root/registry/cache" "**/durable-workflow-${rust_sdk_version}.crate" \
+    || printf '%s\n' 'Rust SDK crate bytes could not be identified.' \
+      > "$result_dir/rust-distribution-identity.log"
+fi
 if [[ "$rust_install_status" -eq 0 && -x "$rust_root/bin/durable-workflow-replay-conformance" ]]; then
   set +e
   docker run --rm --network host \
@@ -1777,6 +1836,20 @@ if [[ "$waterline_install_status" -ne 0 || "$waterline_probe_status" -ne 0 ]]; t
   blocked_result "Replay conformance runner could not install and probe published Waterline ${waterline_version}; see waterline-composer-install.log and waterline-probe.log"
   exit 1
 fi
+if ! python3 "$script_dir/distribution_identities.py" record-unique \
+  "$distribution_identity_file" workflow "$workflow_php_version" \
+  "$waterline_composer_cache/files/durable-workflow/workflow" '**/*' \
+  --artifact-name durable-workflow/workflow; then
+  printf '%s\n' 'Workflow Composer archive bytes could not be identified.' \
+    > "$result_dir/workflow-distribution-identity.log"
+fi
+if ! python3 "$script_dir/distribution_identities.py" record-unique \
+  "$distribution_identity_file" waterline "$waterline_version" \
+  "$waterline_composer_cache/files/durable-workflow/waterline" '**/*' \
+  --artifact-name durable-workflow/waterline; then
+  printf '%s\n' 'Waterline Composer archive bytes could not be identified.' \
+    > "$result_dir/waterline-distribution-identity.log"
+fi
 
 php_sdk_probe_dir="$result_dir/php-sdk-replay-probe"
 mkdir -p "$php_sdk_probe_dir"
@@ -1793,6 +1866,14 @@ docker run --rm --network host \
   > "$result_dir/php-replay-shard.log" 2>&1
 php_sdk_cell_status=$?
 set -e
+if [[ -d "$php_sdk_probe_dir/composer-cache/files/durable-workflow/sdk" ]]; then
+  python3 "$script_dir/distribution_identities.py" record-unique \
+    "$distribution_identity_file" sdk-php "$php_sdk_version" \
+    "$php_sdk_probe_dir/composer-cache/files/durable-workflow/sdk" '**/*' \
+    --artifact-name durable-workflow/sdk \
+    || printf '%s\n' 'PHP SDK Composer archive bytes could not be identified.' \
+      > "$result_dir/php-sdk-distribution-identity.log"
+fi
 
 php_sdk_result="$php_sdk_probe_dir/php-sdk-conformance-result.json"
 php_shard_status=1
@@ -2061,6 +2142,7 @@ started_at = sys.argv[2]
 python_status = int(sys.argv[3])
 php_status = int(sys.argv[4])
 rust_status = int(sys.argv[5])
+identity_status = int(sys.argv[6])
 
 REQUIRED = [
     "published_artifact_install_only",
@@ -2179,8 +2261,12 @@ def finding(scenario_id: str, status: str, summary: str, evidence: dict[str, Any
 
 pins = load_json(result_dir / "pins.json") or {}
 versions = dict(pins.get("artifact_versions") or {})
+native_versions = dict(versions)
+if "workflow-php" in native_versions:
+    native_versions["workflow"] = native_versions.pop("workflow-php")
 sources = dict(pins.get("artifact_sources") or {})
 artifact_install_evidence = load_json(result_dir / "published-artifact-install.json") or {}
+executed_distribution_identities = load_json(result_dir / "executed-distribution-identities.json") or {}
 python_report = load_json(result_dir / "python-replay-shard.json")
 php_report = load_json(result_dir / "php-replay-shard.json")
 rust_report = load_json(result_dir / "rust-replay-shard.json")
@@ -2310,8 +2396,25 @@ for report in (python_report, php_report, rust_report):
         findings.extend(item for item in raw_findings if isinstance(item, dict))
 
 finished_at = now()
-outcome = "pass" if all(results[scenario].get("status") == "pass" for scenario in REQUIRED) else "fail"
+outcome = (
+    "pass"
+    if identity_status == 0 and all(results[scenario].get("status") == "pass" for scenario in REQUIRED)
+    else "fail"
+)
 runner_blocked = any(results[scenario].get("status") == "runner_blocked" for scenario in REQUIRED)
+if identity_status != 0:
+    identity_finding = {
+        "type": "executed_distribution_identity_missing",
+        "owning_surface": "conformance_harness",
+        "summary": "Replay execution did not retain normalized identities for every consumed distribution.",
+        "observed_behavior": {
+            "validation_log": "executed-distribution-identities-validation.log",
+        },
+        "expected_behavior": "passing replay evidence identifies every package, crate, release asset, and OCI manifest actually executed",
+        "next_acceptance_criterion": "retain the consumed distribution bytes and rerun replay conformance",
+    }
+    findings.append(identity_finding)
+    finding_links["executed_distribution_identities"] = [identity_finding]
 
 result = {
     "schema": "durable-workflow.v2.replay-conformance.result",
@@ -2321,7 +2424,8 @@ result = {
     "generated_at": finished_at,
     "outcome": outcome,
     "runner_blocked": runner_blocked,
-    "artifact_versions": versions,
+    "artifact_versions": native_versions,
+    "executed_distribution_identities": executed_distribution_identities,
     "artifact_sources": sources,
     "source_policy": {
         "artifact_source": "published_artifacts",
@@ -2374,6 +2478,7 @@ metadata = {
     "python_shard_exit_code": python_status,
     "php_shard_exit_code": php_status,
     "rust_shard_exit_code": rust_status,
+    "executed_distribution_identities_status": identity_status,
     "result_files": [
         "pins.json",
         "run-metadata.json",
@@ -2403,12 +2508,17 @@ raise SystemExit(0 if outcome == "pass" and not runner_blocked else 1)
 PY
 
 set +e
+python3 "$script_dir/distribution_identities.py" validate \
+  "$distribution_identity_file" workflow waterline server cli sdk-php sdk-python sdk-rust \
+  > "$result_dir/executed-distribution-identities-validation.log" 2>&1
+identity_status=$?
 python3 "$run_root/merge-replay-shards.py" \
   "$result_dir" \
   "$started_at" \
   "$python_shard_status" \
   "$php_shard_status" \
   "$rust_shard_status" \
+  "$identity_status" \
   > "$result_dir/replay-conformance-merge.log" 2>&1
 merge_status=$?
 set -e

@@ -48,6 +48,8 @@ const PROJECT_DIR = path.join(
 );
 const COMPOSE_OVERRIDE = path.join(RUN_ROOT, 'docker-compose.heartbeat.yml');
 const COMPOSE_FILE = path.join(REPO_ROOT, 'docker-compose.published.yml');
+const DISTRIBUTION_IDENTITY_HELPER = path.join(REPO_ROOT, 'scripts/conformance/distribution_identities.py');
+const DISTRIBUTION_IDENTITY_FILE = path.join(RESULT_DIR, 'executed-distribution-identities.json');
 const SDK_ARTIFACT = IS_PYTHON_CELL ? 'sdk-python' : (IS_RUST_CELL ? 'sdk-rust' : 'sdk-php');
 const SDK_ARTIFACT_VERSION = IS_PYTHON_CELL ? SDK_PYTHON_VERSION : (IS_RUST_CELL ? SDK_RUST_VERSION : SDK_PHP_VERSION);
 const ARTIFACT_VERSIONS = {
@@ -87,6 +89,7 @@ const evidence = {
   outcome: 'runner_blocked',
   runner_blocked: true,
   artifact_versions: ARTIFACT_VERSIONS,
+  executed_distribution_identities: {},
   artifact_sources: ARTIFACT_SOURCES,
   local_product_source_checkouts_used: false,
   separate_uncovered_cells: SEPARATE_UNCOVERED_CELLS,
@@ -200,6 +203,65 @@ function parseCliVersionOutput(output) {
   const raw = String(output ?? '').trim();
   const match = raw.match(/(?:^|\s)v?(\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?)(?=$|\s|\))/);
   return match ? normalizeVersion(match[1]) : '';
+}
+
+function recordDistributionFile(component, version, artifact, artifactName = '') {
+  const args = [
+    DISTRIBUTION_IDENTITY_HELPER,
+    'record-file',
+    DISTRIBUTION_IDENTITY_FILE,
+    component,
+    version,
+    artifact,
+  ];
+  if (artifactName) args.push('--artifact-name', artifactName);
+  run('python3', args, { timeout: 60_000 });
+  evidence.executed_distribution_identities = loadDistributionIdentities();
+}
+
+function recordUniqueDistributionFile(component, version, root, pattern, artifactName = '') {
+  const args = [
+    DISTRIBUTION_IDENTITY_HELPER,
+    'record-unique',
+    DISTRIBUTION_IDENTITY_FILE,
+    component,
+    version,
+    root,
+    pattern,
+  ];
+  if (artifactName) args.push('--artifact-name', artifactName);
+  run('python3', args, { timeout: 60_000 });
+  evidence.executed_distribution_identities = loadDistributionIdentities();
+}
+
+function recordDistributionDigest(component, version, artifactName, digest) {
+  run('python3', [
+    DISTRIBUTION_IDENTITY_HELPER,
+    'record-digest',
+    DISTRIBUTION_IDENTITY_FILE,
+    component,
+    version,
+    artifactName,
+    digest,
+  ], { timeout: 60_000 });
+  evidence.executed_distribution_identities = loadDistributionIdentities();
+}
+
+function loadDistributionIdentities() {
+  if (!fs.existsSync(DISTRIBUTION_IDENTITY_FILE)) return {};
+  return JSON.parse(fs.readFileSync(DISTRIBUTION_IDENTITY_FILE, 'utf8'));
+}
+
+function requireDistributionIdentities() {
+  run('python3', [
+    DISTRIBUTION_IDENTITY_HELPER,
+    'validate',
+    DISTRIBUTION_IDENTITY_FILE,
+    'server',
+    'cli',
+    SDK_ARTIFACT,
+  ], { timeout: 60_000 });
+  evidence.executed_distribution_identities = loadDistributionIdentities();
 }
 
 function dockerObjectMissing(result) {
@@ -858,6 +920,12 @@ async function startServer() {
     throw new Error(`pulled server image ${SERVER_IMAGE} has no durableworkflow/server repository digest`);
   }
   const canonicalPublicDigest = String(publicDigest).replace(/^(?:docker\.io|index\.docker\.io)\//i, '');
+  recordDistributionDigest(
+    'server',
+    SERVER_VERSION,
+    'manifest',
+    canonicalPublicDigest.slice(canonicalPublicDigest.indexOf('@') + 1),
+  );
   const versionTagReference = `durableworkflow/server:${SERVER_VERSION}`;
   if (SERVER_IMAGE.includes('@sha256:')) {
     run('docker', ['pull', versionTagReference], {
@@ -936,6 +1004,7 @@ function installCli() {
     }
   }
   if (!sourceUrl) throw new Error(`could not download the official dw ${CLI_VERSION} installer`);
+  recordDistributionFile('cli', CLI_VERSION, installer, 'install.sh');
   fs.chmodSync(installer, 0o755);
   run('sh', [installer], {
     env: {
@@ -970,6 +1039,7 @@ function installPhpPackage() {
   run('docker', [
     'run', '--rm',
     '--user', CONTAINER_USER,
+    '--env', 'COMPOSER_CACHE_DIR=/app/.composer-cache',
     '-v', `${PROJECT_DIR}:/app`,
     '-w', '/app',
     PHP_IMAGE,
@@ -988,6 +1058,13 @@ function installPhpPackage() {
   if (normalizeVersion(installed) !== SDK_PHP_VERSION) {
     throw new Error(`pinned PHP package mismatch: expected ${SDK_PHP_VERSION}, got ${installed || 'empty'}`);
   }
+  recordUniqueDistributionFile(
+    'sdk-php',
+    SDK_PHP_VERSION,
+    path.join(PROJECT_DIR, '.composer-cache', 'files', 'durable-workflow', 'sdk'),
+    '**/*',
+    'durable-workflow/sdk',
+  );
   evidence.php_package_install = {
     package: 'durable-workflow/sdk',
     requested_version: SDK_PHP_VERSION,
@@ -1022,13 +1099,29 @@ function installPythonPackage() {
   run('docker', [
     'pull', PYTHON_IMAGE,
   ], { timeout: 300_000 });
+  const distributionDir = path.join(PROJECT_DIR, 'distributions');
+  fs.mkdirSync(distributionDir, { recursive: true });
+  run('docker', [
+    'run', '--rm',
+    ...pythonRuntimeArgs(),
+    PYTHON_IMAGE,
+    'python', '-m', 'pip', 'download', '--disable-pip-version-check', '--no-deps',
+    '--dest', '/app/distributions',
+    `durable-workflow==${SDK_PYTHON_VERSION}`,
+  ], { timeout: 600_000 });
+  const distributions = fs.readdirSync(distributionDir).filter((name) => fs.statSync(path.join(distributionDir, name)).isFile());
+  if (distributions.length !== 1) {
+    throw new Error(`expected one downloaded Python SDK distribution, found ${distributions.length}`);
+  }
+  const distribution = distributions[0];
+  recordDistributionFile('sdk-python', SDK_PYTHON_VERSION, path.join(distributionDir, distribution));
   run('docker', [
     'run', '--rm',
     ...pythonRuntimeArgs(),
     PYTHON_IMAGE,
     'python', '-m', 'pip', 'install', '--disable-pip-version-check', '--no-cache-dir',
     '--target', '/app/site-packages',
-    `durable-workflow==${SDK_PYTHON_VERSION}`,
+    `/app/distributions/${distribution}`,
   ], { timeout: 600_000 });
   const version = run('docker', [
     'run', '--rm',
@@ -1109,6 +1202,12 @@ function installRustPackage() {
     RUST_IMAGE,
     'cargo', 'build', '--release', '--locked',
   ], { timeout: 900_000 });
+  recordUniqueDistributionFile(
+    'sdk-rust',
+    SDK_RUST_VERSION,
+    path.join(PROJECT_DIR, '.cargo-home', 'registry', 'cache'),
+    `**/durable-workflow-${SDK_RUST_VERSION}.crate`,
+  );
 
   const cargoLock = fs.readFileSync(path.join(PROJECT_DIR, 'Cargo.lock'), 'utf8');
   const packageBlock = cargoLock.split('[[package]]').find((block) =>
@@ -1571,6 +1670,7 @@ function writeResultFiles(context = null) {
   evidence.finished_at = finishedAt;
   evidence.generated_at = finishedAt;
   evidence.artifact_sources = ARTIFACT_SOURCES;
+  evidence.executed_distribution_identities = loadDistributionIdentities();
 
   const pins = {
     schema: `durable-workflow.v2.heartbeat-runtime.${CELL}-sdk-loop-pins`,
@@ -1689,6 +1789,7 @@ async function main() {
   await ensureNamespace();
   installCli();
   installSdkPackage();
+  requireDistributionIdentities();
   publishedExecutionStarted = true;
 
   const staleWorker = startWorker(STALE_WORKER_ID);

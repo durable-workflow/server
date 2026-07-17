@@ -60,6 +60,8 @@ if [[ -z "$result_dir" ]]; then
 fi
 mkdir -p "$result_dir"
 result_dir="$(cd "$result_dir" && pwd)"
+script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+distribution_identity_file="$result_dir/executed-distribution-identities.json"
 
 server_bind_host="${DW_PYTHON_CONFORMANCE_BIND_HOST:-127.0.0.1}"
 server_port="${DW_PYTHON_CONFORMANCE_SERVER_PORT:-}"
@@ -141,6 +143,7 @@ result = {
     "outcome": "fail",
     "runner_blocked": True,
     "artifact_versions": {},
+    "executed_distribution_identities": {},
     "source_policy": {
         "artifact_source": "published_artifacts",
         "local_product_sources_used": False,
@@ -460,17 +463,34 @@ if [[ -z "$server_image_digest" || "$server_image_digest" == "<no value>" ]]; th
   server_image_digest="$server_image"
 fi
 printf '%s\n' "$server_image_digest" > "$result_dir/server-image-digest.txt"
+if ! python3 "$script_dir/distribution_identities.py" record-digest \
+  "$distribution_identity_file" server "$server_version" manifest "${server_image_digest##*@}"; then
+  fail_blocked "pulled server image did not expose an executed OCI manifest digest"
+fi
 
 python3 -m venv "$run_root/.venv"
 # shellcheck disable=SC1091
 . "$run_root/.venv/bin/activate"
 python -m pip install --upgrade pip > "$result_dir/pip-upgrade.log" 2>&1
-python -m pip install "durable-workflow==$python_version" > "$result_dir/python-sdk-install.log" 2>&1 \
+mkdir -p "$run_root/python-distributions"
+python -m pip download --no-deps --dest "$run_root/python-distributions" \
+  "durable-workflow==$python_version" > "$result_dir/python-sdk-download.log" 2>&1 \
+  || fail_blocked "PyPI durable-workflow==$python_version download failed"
+python3 "$script_dir/distribution_identities.py" record-unique \
+  "$distribution_identity_file" sdk-python "$python_version" \
+  "$run_root/python-distributions" '*' \
+  || fail_blocked "PyPI durable-workflow==$python_version did not retain one consumed distribution file"
+python_distribution="$(find "$run_root/python-distributions" -maxdepth 1 -type f -print -quit)"
+python -m pip install "$python_distribution" > "$result_dir/python-sdk-install.log" 2>&1 \
   || fail_blocked "PyPI durable-workflow==$python_version install failed"
 
 if ! curl -fsSL --retry 3 -o "$run_root/cli/install.sh" "$cli_installer_url"; then
   fail_blocked "official CLI installer is not downloadable for release $cli_version"
 fi
+python3 "$script_dir/distribution_identities.py" record-file \
+  "$distribution_identity_file" cli "$cli_version" "$run_root/cli/install.sh" \
+  --artifact-name install.sh \
+  || fail_blocked "official CLI installer bytes could not be identified"
 if ! VERSION="$cli_version" \
   DURABLE_WORKFLOW_INSTALL_DIR="$run_root/cli/bin" \
   DURABLE_WORKFLOW_BIN_NAME=dw \
@@ -498,20 +518,30 @@ JSON
 write_prerelease_composer_manifest "$run_root/artifacts/workflow" "python-conformance-workflow-probe"
 docker run --rm --user "$(id -u):$(id -g)" \
   -e COMPOSER_HOME=/tmp/composer-home \
-  -e COMPOSER_CACHE_DIR=/tmp/composer-cache \
+  -e COMPOSER_CACHE_DIR=/app/.composer-cache \
   -v "$run_root/artifacts/workflow:/app" composer:2 \
   composer require --no-interaction --no-progress --prefer-dist --no-scripts \
     "durable-workflow/workflow:$workflow_version" > "$result_dir/workflow-artifact-install.log" 2>&1 \
   || fail_blocked "published workflow artifact install failed for durable-workflow/workflow:$workflow_version"
+python3 "$script_dir/distribution_identities.py" record-unique \
+  "$distribution_identity_file" workflow "$workflow_version" \
+  "$run_root/artifacts/workflow/.composer-cache/files/durable-workflow/workflow" '**/*' \
+  --artifact-name durable-workflow/workflow \
+  || fail_blocked "published workflow install did not retain its consumed Composer archive"
 write_prerelease_composer_manifest "$run_root/artifacts/waterline" "python-conformance-waterline-probe"
 docker run --rm --user "$(id -u):$(id -g)" \
   -e COMPOSER_HOME=/tmp/composer-home \
-  -e COMPOSER_CACHE_DIR=/tmp/composer-cache \
+  -e COMPOSER_CACHE_DIR=/app/.composer-cache \
   -v "$run_root/artifacts/waterline:/app" composer:2 \
   composer require --no-interaction --no-progress --prefer-dist --no-scripts \
     "durable-workflow/workflow:$workflow_version" \
     "durable-workflow/waterline:$waterline_version" > "$result_dir/waterline-artifact-install.log" 2>&1 \
   || fail_blocked "published Waterline artifact install failed for durable-workflow/waterline:$waterline_version with durable-workflow/workflow:$workflow_version"
+python3 "$script_dir/distribution_identities.py" record-unique \
+  "$distribution_identity_file" waterline "$waterline_version" \
+  "$run_root/artifacts/waterline/.composer-cache/files/durable-workflow/waterline" '**/*' \
+  --artifact-name durable-workflow/waterline \
+  || fail_blocked "published Waterline install did not retain its consumed Composer archive"
 
 python3 - "$run_root/pins.json" "$result_dir/server-image-digest.txt" "$result_dir/run-metadata.json" "$server_base_url" <<'PY'
 from __future__ import annotations
@@ -1185,6 +1215,21 @@ if ! durable-workflow-python-conformance --compose "$result_dir/python-host-evid
   > "$result_dir/python-conformance-result.json"; then
   fail_blocked "installed SDK conformance composer rejected python-host-evidence.json"
 fi
+
+if ! python3 "$script_dir/distribution_identities.py" validate \
+  "$distribution_identity_file" server cli sdk-python workflow waterline >/dev/null; then
+  fail_blocked "published Python parity execution is missing consumed distribution identities"
+fi
+python3 - "$result_dir/python-conformance-result.json" "$distribution_identity_file" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+result_path = Path(sys.argv[1])
+result = json.loads(result_path.read_text(encoding="utf-8"))
+result["executed_distribution_identities"] = json.loads(Path(sys.argv[2]).read_text(encoding="utf-8"))
+result_path.write_text(json.dumps(result, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+PY
 
 set +e
 durable-workflow-python-conformance --evaluate "$result_dir/python-conformance-result.json" --pretty \

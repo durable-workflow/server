@@ -295,6 +295,7 @@ class ActivityConformanceRunnerContractTest extends TestCase
             $activityEvidence = [
                 'schema' => 'durable-workflow.v2.activity-runtime.host-evidence',
                 'execution_source' => 'published_server_container',
+                'executed_distribution_identities' => $this->executedDistributionIdentities($version),
                 'scenario_results' => $scenarioResults,
                 'published_artifact_worker_execution' => $this->publishedServerExecutionEvidence($version, $serverImage),
                 'published_artifact_install' => [
@@ -303,7 +304,7 @@ class ActivityConformanceRunnerContractTest extends TestCase
                 ],
                 'runtime_matrix' => [
                     'execution_modes' => ['workflow-embedded', 'standalone'],
-                    'runtimes' => ['workflow-php', 'sdk-python'],
+                    'runtimes' => ['workflow-php', 'sdk-php', 'sdk-python'],
                 ],
                 'durable_result_recording' => ['status' => 'pass'],
                 'retry_backoff' => ['status' => 'pass'],
@@ -353,11 +354,14 @@ class ActivityConformanceRunnerContractTest extends TestCase
                 JSON_THROW_ON_ERROR,
             );
 
-            $this->assertSame('pass', $result['outcome']);
+            $this->assertSame('pass', $result['outcome'], json_encode($result, JSON_PRETTY_PRINT));
             $this->assertSame($version, $result['published_artifact_versions']['server']);
             $this->assertSame($serverImage, $result['artifact_sources']['server']);
             $this->assertSame([], $result['published_artifact_install']['pin_failures'] ?? []);
             $this->assertSame([], $result['published_artifact_install']['install_failures'] ?? []);
+            $identityComponents = array_keys($result['executed_distribution_identities']);
+            sort($identityComponents);
+            $this->assertSame(['cli', 'sdk-python', 'server', 'waterline', 'workflow'], $identityComponents);
             $this->assertSame(
                 'pass',
                 ActivityRuntimeResultGate::evaluate($result, ActivityRuntimeContract::manifest())['status'],
@@ -372,6 +376,42 @@ class ActivityConformanceRunnerContractTest extends TestCase
                 rmdir($resultDir);
             }
         }
+    }
+
+    public function test_runner_rejects_complete_staged_evidence_without_required_distribution_identity(): void
+    {
+        $evidence = $this->completeRunnerActivityEvidence();
+        unset($evidence['executed_distribution_identities']['waterline']);
+
+        $run = $this->runActivityRunnerWithEvidence($evidence);
+
+        $this->assertSame(1, $run['exit'], $run['output']);
+        $this->assertSame('non_passing', $run['result']['outcome']);
+        $this->assertStringContainsString(
+            'missing executed distribution evidence for: waterline',
+            implode("\n", $run['result']['executed_distribution_identity_failures']),
+        );
+        $this->assertArrayNotHasKey('waterline', $run['result']['executed_distribution_identities']);
+    }
+
+    public function test_runner_rejects_conflicting_same_version_distribution_bytes(): void
+    {
+        $evidence = $this->completeRunnerActivityEvidence();
+        $recorded = $this->executedDistributionIdentities('9.9.9');
+        $recorded['cli']['artifacts'][0]['sha256'] = str_repeat('f', 64);
+
+        $run = $this->runActivityRunnerWithEvidence($evidence, $recorded);
+
+        $this->assertSame(1, $run['exit'], $run['output']);
+        $this->assertSame('non_passing', $run['result']['outcome']);
+        $this->assertStringContainsString(
+            'conflicting consumed bytes for cli:install.sh',
+            implode("\n", $run['result']['executed_distribution_identity_failures']),
+        );
+        $this->assertSame(
+            str_repeat('f', 64),
+            $run['result']['executed_distribution_identities']['cli']['artifacts'][0]['sha256'],
+        );
     }
 
     public function test_runner_does_not_remove_externally_supplied_run_root_after_pass(): void
@@ -2414,6 +2454,69 @@ SH);
     }
 
     /**
+     * @param  array<string, mixed>  $activityEvidence
+     * @param  array<string, mixed>|null  $recordedIdentities
+     * @return array{exit: int, output: string, result: array<string, mixed>}
+     */
+    private function runActivityRunnerWithEvidence(
+        array $activityEvidence,
+        ?array $recordedIdentities = null,
+    ): array {
+        if (trim((string) shell_exec('command -v bash 2>/dev/null')) === ''
+            || trim((string) shell_exec('command -v node 2>/dev/null')) === '') {
+            $this->markTestSkipped('bash and node are required to exercise the activities runner.');
+        }
+
+        $repoRoot = dirname(__DIR__, 2);
+        $resultDir = sys_get_temp_dir().'/dw-activities-identities-'.bin2hex(random_bytes(6));
+        mkdir($resultDir);
+        try {
+            file_put_contents(
+                $resultDir.'/artifact-install-evidence.json',
+                json_encode($this->completeRunnerInstallEvidence('9.9.9'), JSON_THROW_ON_ERROR),
+            );
+            file_put_contents(
+                $resultDir.'/activity-evidence.json',
+                json_encode($activityEvidence, JSON_THROW_ON_ERROR),
+            );
+            if ($recordedIdentities !== null) {
+                file_put_contents(
+                    $resultDir.'/executed-distribution-identities.json',
+                    json_encode($recordedIdentities, JSON_THROW_ON_ERROR),
+                );
+            }
+
+            $command = implode(' ', [
+                'DW_ACTIVITIES_SKIP_FOCUSED_HOST_PROBE=1',
+                'DW_SERVER_IMAGE=durableworkflow/server:9.9.9',
+                'DW_SERVER_VERSION=9.9.9',
+                'DW_CLI_VERSION=9.9.9',
+                'DW_PYTHON_SDK_VERSION=9.9.9',
+                'DW_WORKFLOW_PHP_VERSION=9.9.9',
+                'DW_WATERLINE_VERSION=9.9.9',
+                escapeshellarg($repoRoot.'/scripts/conformance/activities-published-artifacts.sh'),
+                '--result-dir',
+                escapeshellarg($resultDir),
+            ]);
+            $output = [];
+            exec($command.' 2>&1', $output, $exitCode);
+
+            return [
+                'exit' => $exitCode,
+                'output' => implode("\n", $output),
+                'result' => json_decode(
+                    (string) file_get_contents($resultDir.'/activities-result.json'),
+                    true,
+                    512,
+                    JSON_THROW_ON_ERROR,
+                ),
+            ];
+        } finally {
+            $this->removeDirectory($resultDir);
+        }
+    }
+
+    /**
      * @return array<string, mixed>
      */
     private function completeRunnerInstallEvidence(string $version): array
@@ -2462,6 +2565,43 @@ SH);
     }
 
     /**
+     * @return array<string, array{kind: string, locator: string, artifacts: list<array{name: string, sha256: string}>}>
+     */
+    private function executedDistributionIdentities(string $version): array
+    {
+        return [
+            'workflow' => [
+                'kind' => 'composer',
+                'locator' => 'composer:durable-workflow/workflow@'.$version,
+                'artifacts' => [['name' => 'durable-workflow/workflow', 'sha256' => str_repeat('d', 64)]],
+            ],
+            'waterline' => [
+                'kind' => 'composer',
+                'locator' => 'composer:durable-workflow/waterline@'.$version,
+                'artifacts' => [['name' => 'durable-workflow/waterline', 'sha256' => str_repeat('e', 64)]],
+            ],
+            'server' => [
+                'kind' => 'oci',
+                'locator' => 'oci:docker.io/durableworkflow/server@'.$version,
+                'artifacts' => [['name' => 'manifest', 'sha256' => str_repeat('a', 64)]],
+            ],
+            'cli' => [
+                'kind' => 'github-release',
+                'locator' => 'github-release:durable-workflow/cli@'.$version,
+                'artifacts' => [['name' => 'install.sh', 'sha256' => str_repeat('b', 64)]],
+            ],
+            'sdk-python' => [
+                'kind' => 'pypi',
+                'locator' => 'pypi:durable-workflow@'.$version,
+                'artifacts' => [[
+                    'name' => 'durable_workflow-'.$version.'-py3-none-any.whl',
+                    'sha256' => str_repeat('c', 64),
+                ]],
+            ],
+        ];
+    }
+
+    /**
      * @return array<string, mixed>
      */
     private function completeRunnerActivityEvidence(string $version = '9.9.9', ?string $serverImage = null): array
@@ -2486,6 +2626,7 @@ SH);
         return [
             'schema' => 'durable-workflow.v2.activity-runtime.host-evidence',
             'execution_source' => 'published_server_container',
+            'executed_distribution_identities' => $this->executedDistributionIdentities($version),
             'scenario_results' => $scenarioResults,
             'published_artifact_worker_execution' => $this->publishedServerExecutionEvidence(
                 $version,
@@ -2569,7 +2710,7 @@ SH);
             ],
             'runtime_matrix' => [
                 'execution_modes' => ['workflow-embedded', 'standalone'],
-                'runtimes' => ['workflow-php', 'sdk-python'],
+                'runtimes' => ['workflow-php', 'sdk-php', 'sdk-python'],
             ],
             'published_artifact_install' => ['status' => 'pass'],
             'durable_result_recording' => ['status' => 'pass'],
@@ -2673,7 +2814,6 @@ SH);
 
     /**
      * @param  array<string, mixed>  $evaluation
-     *
      * @return list<string>
      */
     private function missingRunRecordFields(array $evaluation): array

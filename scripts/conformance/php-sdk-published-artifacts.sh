@@ -89,6 +89,7 @@ composer_bin="${DW_PHP_SDK_CONFORMANCE_COMPOSER_BIN:-${COMPOSER_BIN:-composer}}"
 project_dir="$result_dir/php-sdk-project"
 result_file="$result_dir/php-sdk-conformance-result.json"
 sidecar_file="$result_dir/php-sdk-lifecycle-evidence.json"
+distribution_identity_file="$result_dir/executed-distribution-identities.json"
 started_at="$(date -u '+%Y-%m-%dT%H:%M:%SZ')"
 worker_pid=""
 worker_start_outcome=""
@@ -119,6 +120,7 @@ write_failure() {
   FAILURE_SUMMARY="$summary" \
   FAILURE_DIAGNOSTIC_FILE="$diagnostic_file" \
   FAILURE_EVIDENCE_HELPER="$script_dir/php-sdk-runtime-failure-evidence.cjs" \
+  DISTRIBUTION_IDENTITY_FILE="$distribution_identity_file" \
   WORKER_START_OUTCOME="$worker_start_outcome" \
   WORKER_START_WORKER_ID="$worker_start_worker_id" \
   WORKER_START_ATTEMPTS="$worker_start_attempts" \
@@ -311,6 +313,7 @@ const result = {
   outcome: runnerBlocked ? 'runner_blocked' : 'fail',
   runner_blocked: runnerBlocked,
   artifact_versions: {'sdk-php': version, server: process.env.SERVER_VERSION || ''},
+  executed_distribution_identities: readJson(process.env.DISTRIBUTION_IDENTITY_FILE || '') || {},
   artifact_sources: {
     'sdk-php': observed.artifact_source,
     server: observed.server_image ? `docker://${observed.server_image.replace(/^docker:\/\//, '')}` : '',
@@ -351,6 +354,7 @@ write_namespace_result() {
   SERVER_URL="$server_url" \
   NAMESPACE="$namespace" \
   STARTED_AT="$started_at" \
+  DISTRIBUTION_IDENTITY_FILE="$distribution_identity_file" \
   node <<'NODE'
 const fs = require('node:fs');
 const path = require('node:path');
@@ -463,6 +467,7 @@ const result = {
   outcome: status,
   runner_blocked: runnerBlocked,
   artifact_versions: {'sdk-php': process.env.SDK_VERSION || '', server: process.env.SERVER_VERSION || ''},
+  executed_distribution_identities: readJson('executed-distribution-identities.json'),
   artifact_sources: {
     'sdk-php': observed.artifact_source,
     server: `docker://${String(process.env.SERVER_IMAGE || '').replace(/^docker:\/\//, '')}`,
@@ -605,6 +610,15 @@ if ! (
 ) >"$result_dir/php-sdk-composer-install.log" 2>&1; then
   composer_classification="$(classify_composer_failure "$result_dir/php-sdk-composer-install.log")"
   write_failure "$composer_classification" "$(failure_owner_for "$composer_classification")" composer_install "Composer could not install durable-workflow/sdk:$sdk_version from Packagist."
+  exit 0
+fi
+
+if ! python3 "$script_dir/distribution_identities.py" record-unique \
+  "$distribution_identity_file" sdk-php "$sdk_version" \
+  "$result_dir/composer-cache/files/durable-workflow/sdk" '**/*' \
+  --artifact-name durable-workflow/sdk; then
+  write_failure package-publication sdk-php-release composer_identity \
+    "Composer installed durable-workflow/sdk:$sdk_version without retaining its consumed distribution bytes."
   exit 0
 fi
 
@@ -1593,6 +1607,7 @@ $result = [
     'outcome' => $status,
     'runner_blocked' => $runnerBlocked,
     'artifact_versions' => ['sdk-php' => $expectedSdkVersion, 'server' => $serverVersion],
+    'executed_distribution_identities' => read_json($resultDir.'/executed-distribution-identities.json'),
     'artifact_sources' => [
         'sdk-php' => 'packagist://durable-workflow/sdk@'.$expectedSdkVersion,
         'server' => 'docker://'.preg_replace('/^docker:\/\//', '', $serverImage),

@@ -22,7 +22,8 @@ Environment overrides:
   DW_ACTIVITIES_ARTIFACT_INSTALL_EVIDENCE
                                          JSON proof that each published artifact was downloaded/installed.
                                          Defaults to artifact-install-evidence.json in the result directory.
-  DW_ACTIVITIES_EVIDENCE                Optional JSON activity evidence from a real host matrix run.
+  DW_ACTIVITIES_EVIDENCE                Optional JSON activity evidence from a real host matrix run, including
+                                         executed_distribution_identities captured from consumed bytes.
   DW_ACTIVITIES_EVIDENCE_PATH           Optional path to JSON activity evidence from a real host matrix run.
   DW_ACTIVITIES_SKIP_FOCUSED_HOST_PROBE=1
                                          Skip the published server container's focused activity host probe.
@@ -112,6 +113,7 @@ if [[ -z "$result_dir" ]]; then
   result_dir="$run_root"
 fi
 mkdir -p "$result_dir"
+distribution_identity_file="$result_dir/executed-distribution-identities.json"
 
 cleanup() {
   local code=$?
@@ -157,8 +159,17 @@ prepare_focused_python_sdk() {
 
   local venv="$run_root/sdk-python-venv"
   local install_log="$result_dir/sdk-python-focused-install.log"
+  local distribution_dir="$run_root/sdk-python-distributions"
+  local distribution
+  mkdir -p "$distribution_dir"
   if python3 -m venv "$venv" >/dev/null 2>"$install_log" \
-    && "$venv/bin/python" -m pip install --disable-pip-version-check --no-input "durable-workflow==${DW_PYTHON_SDK_VERSION}" >>"$install_log" 2>&1; then
+    && "$venv/bin/python" -m pip download --disable-pip-version-check --no-deps \
+      --dest "$distribution_dir" "durable-workflow==${DW_PYTHON_SDK_VERSION}" >>"$install_log" 2>&1 \
+    && python3 "$script_dir/distribution_identities.py" record-unique \
+      "$distribution_identity_file" sdk-python "$DW_PYTHON_SDK_VERSION" "$distribution_dir" '*' \
+      >>"$install_log" 2>&1 \
+    && distribution="$(find "$distribution_dir" -maxdepth 1 -type f -print -quit)" \
+    && "$venv/bin/python" -m pip install --disable-pip-version-check --no-input "$distribution" >>"$install_log" 2>&1; then
     export DW_ACTIVITIES_PYTHON_BIN="$venv/bin/python"
   fi
 }
@@ -210,6 +221,13 @@ prepare_published_activity_cli() {
 
   if [[ -z "$installer_url" ]]; then
     export DW_ACTIVITIES_CLI_UNAVAILABLE_REASON="official CLI installer is not downloadable for release ${DW_CLI_VERSION}"
+    return 0
+  fi
+
+  if ! python3 "$script_dir/distribution_identities.py" record-file \
+    "$distribution_identity_file" cli "$normalized" "$installer" \
+    --artifact-name install.sh; then
+    export DW_ACTIVITIES_CLI_UNAVAILABLE_REASON="official CLI installer bytes could not be identified"
     return 0
   fi
 
@@ -4473,6 +4491,25 @@ const REQUIRED_INSTALL_ARTIFACTS = [
   'waterline',
 ];
 
+const REQUIRED_DISTRIBUTION_IDENTITIES = [
+  'workflow',
+  'waterline',
+  'server',
+  'cli',
+  'sdk-python',
+];
+
+const DISTRIBUTION_COMPONENTS = {
+  workflow: { kind: 'composer', package: 'durable-workflow/workflow', versionKey: 'workflow' },
+  waterline: { kind: 'composer', package: 'durable-workflow/waterline', versionKey: 'waterline' },
+  server: { kind: 'oci', package: 'docker.io/durableworkflow/server', versionKey: 'server' },
+  cli: { kind: 'github-release', package: 'durable-workflow/cli', versionKey: 'cli' },
+  'sdk-python': { kind: 'pypi', package: 'durable-workflow', versionKey: 'sdk-python' },
+};
+
+const DISTRIBUTION_VERSION_PATTERN = /^[0-9]+\.[0-9]+\.[0-9]+(?:[-+][0-9A-Za-z][0-9A-Za-z.-]*)?$/;
+const DISTRIBUTION_DIGEST_PATTERN = /^[0-9a-f]{64}$/;
+
 const DEFAULT_EXPECTED_BEHAVIOR = {
   published_artifact_install_only:
     'all artifacts are resolved from published channels and no local product checkout is used as an artifact under test',
@@ -4547,6 +4584,123 @@ function writeJson(file, value) {
 
 function readJsonFile(file) {
   return JSON.parse(fs.readFileSync(file, 'utf8'));
+}
+
+function normalizeDistributionIdentity(component, value, artifactVersions) {
+  const definition = DISTRIBUTION_COMPONENTS[component];
+  if (!definition) {
+    throw new Error(`unknown executed distribution component: ${component}`);
+  }
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    throw new Error(`executed distribution identity for ${component} must be an object`);
+  }
+  const keys = Object.keys(value).sort();
+  if (JSON.stringify(keys) !== JSON.stringify(['artifacts', 'kind', 'locator'])) {
+    throw new Error(`executed distribution identity for ${component} has an invalid shape`);
+  }
+
+  const version = stringValue(artifactVersions[definition.versionKey]);
+  if (!DISTRIBUTION_VERSION_PATTERN.test(version)) {
+    throw new Error(`exact distribution version is unavailable for ${component}`);
+  }
+  const expectedLocator = `${definition.kind}:${definition.package}@${version}`;
+  if (value.kind !== definition.kind || value.locator !== expectedLocator) {
+    throw new Error(`executed distribution locator for ${component} does not match ${expectedLocator}`);
+  }
+  if (!Array.isArray(value.artifacts) || value.artifacts.length === 0) {
+    throw new Error(`executed distribution identity for ${component} has no artifacts`);
+  }
+
+  const artifacts = value.artifacts.map((artifact) => {
+    if (!artifact || typeof artifact !== 'object' || Array.isArray(artifact)) {
+      throw new Error(`executed distribution artifact for ${component} must be an object`);
+    }
+    if (JSON.stringify(Object.keys(artifact).sort()) !== JSON.stringify(['name', 'sha256'])) {
+      throw new Error(`executed distribution artifact for ${component} has an invalid shape`);
+    }
+    const name = stringValue(artifact.name);
+    const digest = stringValue(artifact.sha256);
+    if (!name || name.length > 256 || (!['workflow', 'waterline'].includes(component) && name.includes('/'))) {
+      throw new Error(`executed distribution artifact name for ${component} is invalid`);
+    }
+    if (!DISTRIBUTION_DIGEST_PATTERN.test(digest)) {
+      throw new Error(`executed distribution SHA-256 for ${component}:${name} is invalid`);
+    }
+    return { name, sha256: digest };
+  }).sort((left, right) => left.name.localeCompare(right.name));
+
+  if (new Set(artifacts.map((artifact) => artifact.name)).size !== artifacts.length) {
+    throw new Error(`executed distribution artifacts for ${component} contain duplicate names`);
+  }
+  return { kind: definition.kind, locator: expectedLocator, artifacts };
+}
+
+function mergeDistributionIdentityMaps(target, supplied, artifactVersions) {
+  if (!supplied || typeof supplied !== 'object' || Array.isArray(supplied)) {
+    throw new Error('executed distribution identities must be a component map');
+  }
+
+  for (const [component, rawIdentity] of Object.entries(supplied)) {
+    const observed = normalizeDistributionIdentity(component, rawIdentity, artifactVersions);
+    const current = target[component];
+    if (!current) {
+      target[component] = observed;
+      continue;
+    }
+
+    const normalizedCurrent = normalizeDistributionIdentity(component, current, artifactVersions);
+    if (normalizedCurrent.kind !== observed.kind || normalizedCurrent.locator !== observed.locator) {
+      throw new Error(`conflicting executed distribution locator for ${component}`);
+    }
+    const artifacts = new Map(normalizedCurrent.artifacts.map((artifact) => [artifact.name, artifact.sha256]));
+    for (const artifact of observed.artifacts) {
+      const previous = artifacts.get(artifact.name);
+      if (previous && previous !== artifact.sha256) {
+        throw new Error(`conflicting consumed bytes for ${component}:${artifact.name}`);
+      }
+      artifacts.set(artifact.name, artifact.sha256);
+    }
+    target[component] = {
+      kind: observed.kind,
+      locator: observed.locator,
+      artifacts: [...artifacts.entries()]
+        .sort(([left], [right]) => left.localeCompare(right))
+        .map(([name, sha256]) => ({ name, sha256 })),
+    };
+  }
+}
+
+function resolveExecutedDistributionIdentities(activityEvidence, artifactVersions) {
+  const identityPath = path.join(RESULT_DIR, 'executed-distribution-identities.json');
+  const identities = {};
+  const failures = [];
+
+  if (fs.existsSync(identityPath)) {
+    try {
+      mergeDistributionIdentityMaps(identities, readJsonFile(identityPath), artifactVersions);
+    } catch (error) {
+      failures.push(`recorded executed distribution identities are invalid: ${String(error.message || error)}`);
+    }
+  }
+
+  const handoff = activityEvidence.executed_distribution_identities
+    ?? activityEvidence.executedDistributionIdentities;
+  if (handoff !== undefined) {
+    try {
+      mergeDistributionIdentityMaps(identities, handoff, artifactVersions);
+    } catch (error) {
+      failures.push(`activity evidence distribution identity handoff is invalid: ${String(error.message || error)}`);
+    }
+  }
+
+  const missing = REQUIRED_DISTRIBUTION_IDENTITIES.filter((component) => !identities[component]);
+  if (missing.length > 0) {
+    failures.push(`missing executed distribution evidence for: ${missing.join(', ')}`);
+  }
+
+  fs.mkdirSync(RESULT_DIR, { recursive: true });
+  writeJson(identityPath, identities);
+  return { identities, failures };
 }
 
 function loadJsonFromStringOrPath(raw, file) {
@@ -4960,7 +5114,7 @@ function requiredMatrix(manifest) {
   }
   return {
     execution_modes: ['workflow-embedded', 'standalone'],
-    runtimes: ['workflow-php', 'sdk-python'],
+    runtimes: ['workflow-php', 'sdk-php', 'sdk-python'],
     activity_cells: [
       { mode: 'workflow-embedded', runtime: 'workflow-php', scenario: 'workflow_embedded_activity_result' },
       { mode: 'workflow-embedded', runtime: 'sdk-python', scenario: 'workflow_embedded_activity_result' },
@@ -5553,7 +5707,7 @@ function sdkPythonCellArtifactFailures(cell, artifactVersions) {
   const failures = [];
   const artifact = cellWorkerArtifact(cell);
   if (!nonEmptyObject(artifact)) {
-    return ['sdk-python worker_artifact evidence missing'];
+    return ['sdk_python_activity_worker_artifact_missing: sdk-python worker_artifact evidence missing'];
   }
 
   const packageVersion = artifactVersionFor(artifactVersions, 'sdk-python');
@@ -5729,6 +5883,12 @@ function main() {
   const activityEvidence = activityEvidenceLoad.value && typeof activityEvidenceLoad.value === 'object'
     ? activityEvidenceLoad.value
     : {};
+  const distributionIdentityEvidence = resolveExecutedDistributionIdentities(
+    activityEvidence,
+    artifactVersions,
+  );
+  const executedDistributionIdentities = distributionIdentityEvidence.identities;
+  const distributionIdentityFailures = distributionIdentityEvidence.failures;
   const activityEvidenceById = scenarioEvidenceById(activityEvidence);
   const runtimeExecutionLoad = resolvePublishedRuntimeExecutionEvidence(
     activityEvidence,
@@ -5941,6 +6101,22 @@ function main() {
     });
   }
 
+  if (distributionIdentityFailures.length > 0) {
+    findings.push({
+      id: 'executed_distribution_identity_missing_or_conflicting',
+      type: 'executed_distribution_identity_missing_or_conflicting',
+      scenario_id: 'executed_distribution_identities',
+      owning_surface: 'conformance_harness',
+      summary: 'Activity execution did not retain a complete, conflict-free consumed distribution identity set.',
+      observed_behavior: {
+        failures: distributionIdentityFailures,
+        observed_components: Object.keys(executedDistributionIdentities).sort(),
+      },
+      expected_behavior: 'passing activity evidence identifies every package, release asset, and OCI manifest consumed by the runner',
+      next_acceptance_criterion: 'retain faithful consumed-byte identities for the complete activity distribution set and rerun conformance',
+    });
+  }
+
   const nonPassScenarios = scenarioResults.filter((result) => result.status !== 'pass');
   const allRequiredReported = REQUIRED_SCENARIOS.every((id) => scenarioResults.some((result) => result.scenario_id === id));
   const outcome = !runnerBlocked
@@ -5948,6 +6124,7 @@ function main() {
     && nonPassScenarios.length === 0
     && installEvidencePass
     && activityEvidenceLoad.supplied
+    && distributionIdentityFailures.length === 0
     ? 'pass'
     : (runnerBlocked ? 'non_passing_runner_blocked' : 'non_passing');
   const recordOutcome = outcome === 'pass' ? 'pass' : (runnerBlocked ? 'error' : 'fail');
@@ -5956,7 +6133,7 @@ function main() {
   const sections = evidenceStatusSections(sectionStatus, defaultReason);
   const runtimeMatrix = {
     execution_modes: Array.isArray(matrix.execution_modes) ? matrix.execution_modes : ['workflow-embedded', 'standalone'],
-    runtimes: Array.isArray(matrix.runtimes) ? matrix.runtimes : ['workflow-php', 'sdk-python'],
+    runtimes: Array.isArray(matrix.runtimes) ? matrix.runtimes : ['workflow-php', 'sdk-php', 'sdk-python'],
     activity_cells: withCellStatus(matrix.activity_cells, sectionStatus),
     behavior_cells: Array.isArray(matrix.behavior_cells)
       ? matrix.behavior_cells.map((scenario) => ({ scenario, status: sectionStatus }))
@@ -5995,6 +6172,8 @@ function main() {
     finished_at: finishedAt,
     generated_at: finishedAt,
     artifact_versions: artifactVersions,
+    executed_distribution_identities: executedDistributionIdentities,
+    executed_distribution_identity_failures: distributionIdentityFailures,
     published_artifact_versions: publishedArtifactVersions,
     artifact_sources: artifactSources,
     execution_source: runtimeExecutionLoad.execution_source,
@@ -6048,6 +6227,7 @@ function main() {
     published_artifact_worker_execution_derivation_reason: runtimeExecutionLoad.derivation_reason,
     published_artifact_worker_execution_pass: runtimeExecutionPass,
     published_artifact_worker_execution_failures: runtimeExecutionFailureList,
+    executed_distribution_identity_failures: distributionIdentityFailures,
     scenario_manifest: MANIFEST_PATH,
   };
 

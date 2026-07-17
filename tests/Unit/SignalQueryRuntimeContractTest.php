@@ -4357,6 +4357,60 @@ PY);
         $this->assertSame([], $result['findings']);
         $this->assertSame('pass', $evaluation['status']);
         $this->assertSame([], $evaluation['gate_failures']);
+        $identityComponents = array_keys($result['executed_distribution_identities']);
+        sort($identityComponents);
+        $this->assertSame(
+            ['cli', 'sdk-php', 'sdk-python', 'sdk-rust', 'server', 'waterline', 'workflow'],
+            $identityComponents,
+        );
+    }
+
+    public function test_host_runner_rejects_complete_matrix_without_required_distribution_identity(): void
+    {
+        $evidence = $this->completeSignalQueryResultForCurrentHostRunner();
+        unset($evidence['executed_distribution_identities']['sdk-rust']);
+
+        $result = $this->runSignalQueryHostRunner($evidence);
+
+        $this->assertSame('non_passing', $result['outcome']);
+        $this->assertArrayNotHasKey('sdk-rust', $result['executed_distribution_identities']);
+        $identityFindings = array_values(array_filter(
+            $result['findings'],
+            static fn (array $finding): bool => ($finding['type'] ?? null)
+                === 'executed_distribution_identity_missing_or_conflicting',
+        ));
+        $this->assertCount(1, $identityFindings);
+        $this->assertContains(
+            'missing executed distribution evidence for sdk-rust',
+            $identityFindings[0]['current_evidence']['failures'],
+        );
+    }
+
+    public function test_host_runner_distribution_recorder_rejects_same_version_different_bytes(): void
+    {
+        $result = $this->runSignalQueryRunnerPythonSnippet(<<<'PY'
+root = Path(tempfile.mkdtemp(prefix="dw-signals-identity-recorder-"))
+store = root / "identities.json"
+first = distribution_identity("cli", "0.1.74", "install.sh", "a" * 64)
+same = distribution_identity("cli", "0.1.74", "install.sh", "a" * 64)
+conflicting = distribution_identity("cli", "0.1.74", "install.sh", "b" * 64)
+record_distribution_identity(store, "cli", first)
+record_distribution_identity(store, "cli", same)
+error = None
+try:
+    record_distribution_identity(store, "cli", conflicting)
+except RuntimeError as exc:
+    error = str(exc)
+retained = load_distribution_identities(store)
+shutil.rmtree(root)
+print(json.dumps({"error": error, "retained": retained}, sort_keys=True))
+PY);
+
+        $this->assertSame('conflicting consumed bytes for cli:install.sh', $result['error']);
+        $this->assertSame(
+            str_repeat('a', 64),
+            $result['retained']['cli']['artifacts'][0]['sha256'],
+        );
     }
 
     public function test_host_runner_retains_rust_setup_diagnostics_in_result_and_record(): void
@@ -7842,6 +7896,7 @@ PY);
         $this->replaceDeclaredArtifactVersions($result, $versions);
         $result['artifactVersions'] = $versions;
         $result['artifact_versions'] = $versions;
+        $result['executed_distribution_identities'] = $this->executedDistributionIdentitiesForVersions($versions);
         $result['scenario_results']['published_artifact_install_only']['observed_outputs'][
             'published_artifact_versions'
         ] = $versions;
@@ -7859,6 +7914,57 @@ PY);
         ] = $versions['sdk-php'];
 
         return $result;
+    }
+
+    /**
+     * @param  array<string, string>  $versions
+     * @return array<string, array{kind: string, locator: string, artifacts: list<array{name: string, sha256: string}>}>
+     */
+    private function executedDistributionIdentitiesForVersions(array $versions): array
+    {
+        return [
+            'workflow' => [
+                'kind' => 'composer',
+                'locator' => 'composer:durable-workflow/workflow@'.$versions['workflow'],
+                'artifacts' => [['name' => 'durable-workflow/workflow', 'sha256' => str_repeat('a', 64)]],
+            ],
+            'waterline' => [
+                'kind' => 'composer',
+                'locator' => 'composer:durable-workflow/waterline@'.$versions['waterline'],
+                'artifacts' => [['name' => 'durable-workflow/waterline', 'sha256' => str_repeat('b', 64)]],
+            ],
+            'server' => [
+                'kind' => 'oci',
+                'locator' => 'oci:docker.io/durableworkflow/server@'.$versions['server'],
+                'artifacts' => [['name' => 'manifest', 'sha256' => str_repeat('c', 64)]],
+            ],
+            'cli' => [
+                'kind' => 'github-release',
+                'locator' => 'github-release:durable-workflow/cli@'.$versions['cli'],
+                'artifacts' => [['name' => 'install.sh', 'sha256' => str_repeat('d', 64)]],
+            ],
+            'sdk-php' => [
+                'kind' => 'composer',
+                'locator' => 'composer:durable-workflow/sdk@'.$versions['sdk-php'],
+                'artifacts' => [['name' => 'durable-workflow/sdk', 'sha256' => str_repeat('e', 64)]],
+            ],
+            'sdk-python' => [
+                'kind' => 'pypi',
+                'locator' => 'pypi:durable-workflow@'.$versions['sdk-python'],
+                'artifacts' => [[
+                    'name' => 'durable_workflow-'.$versions['sdk-python'].'-py3-none-any.whl',
+                    'sha256' => str_repeat('f', 64),
+                ]],
+            ],
+            'sdk-rust' => [
+                'kind' => 'crates.io',
+                'locator' => 'crates.io:durable-workflow@'.$versions['sdk-rust'],
+                'artifacts' => [[
+                    'name' => 'durable-workflow-'.$versions['sdk-rust'].'.crate',
+                    'sha256' => str_repeat('1', 64),
+                ]],
+            ],
+        ];
     }
 
     /**
