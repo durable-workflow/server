@@ -41,7 +41,8 @@ Environment overrides:
   DW_SIGNALS_QUERIES_RUN_RUST_MATRIX_PROBE   Set to 0 to skip the mandatory crates.io Rust matrix.
   DW_SIGNALS_QUERIES_RUST_DOCKER_IMAGE       Rust build/runtime image. Defaults to rust:1.86-slim-bookworm.
   DW_SIGNALS_QUERIES_RUST_CACHE_DIR          Host-owned Rust dependency cache. Defaults to a private,
-                                             user-specific directory under XDG_CACHE_HOME, HOME, or TMPDIR.
+                                             user-specific directory under DW_CONFORMANCE_TMPDIR,
+                                             or a sibling of the result directory when it is unset.
   DW_SIGNALS_QUERIES_RUST_CACHE_MAX_ENTRIES  Maximum compatible dependency graphs retained. Defaults to 4.
   DW_SIGNALS_QUERIES_RUST_CACHE_MAX_BYTES    Maximum cache size in bytes. Defaults to 8589934592 (8 GiB).
   DW_SIGNALS_QUERIES_RUST_CACHE_MAX_AGE_SECONDS
@@ -1570,6 +1571,12 @@ def waterline_php_docker_image() -> str:
 
 def docker_volume_spec(path: Path, container_path: str = "/app") -> str:
     return f"{path}:{container_path}"
+
+
+def docker_bind_mount_spec(path: Path, container_path: str) -> str:
+    if "," in str(path) or "," in container_path:
+        raise RuntimeError("Docker bind mount paths must not contain commas")
+    return f"type=bind,src={path},dst={container_path}"
 
 
 def docker_host_base_url(base_url: str) -> str:
@@ -4873,21 +4880,19 @@ def rust_dependency_cache_root(run_root: Path) -> Path:
     if configured is not None:
         cache_root = Path(configured).expanduser()
     else:
-        cache_base = env_text("XDG_CACHE_HOME")
-        if cache_base is None:
-            home = env_text("HOME")
-            home_path = Path(home).expanduser() if home is not None else None
-            if (
-                home_path is not None
-                and home_path.is_dir()
-                and not home_path.is_symlink()
-                and home_path.stat().st_uid == os.getuid()
-                and os.access(home_path, os.W_OK | os.X_OK)
-            ):
-                cache_base = str(home_path / ".cache" / "durable-workflow-conformance")
-            else:
-                cache_base = str(Path(tempfile.gettempdir()) / f"durable-workflow-conformance-{os.getuid()}")
-        cache_root = Path(cache_base).expanduser() / "signals-queries" / "rust-dependencies"
+        result_root = Path(os.environ["RESULT_DIR"]).expanduser().resolve(strict=True)
+        shared_tmp = env_text("DW_CONFORMANCE_TMPDIR")
+        cache_base = (
+            Path(shared_tmp).expanduser().resolve(strict=True)
+            if shared_tmp is not None
+            else result_root.parent
+        )
+        cache_root = (
+            cache_base
+            / f".durable-workflow-conformance-cache-{os.getuid()}"
+            / "signals-queries"
+            / "rust-dependencies"
+        )
 
     cache_root = cache_root.absolute()
     if cache_root.is_symlink():
@@ -5301,10 +5306,10 @@ def rust_probe_docker_command(
         raise RuntimeError("Rust dependency cache requires both Cargo home and target directories")
     if cargo_home is not None and cargo_target is not None:
         command.extend([
-            "-v",
-            docker_volume_spec(cargo_home, "/cache/cargo-home"),
-            "-v",
-            docker_volume_spec(cargo_target, "/cache/target"),
+            "--mount",
+            docker_bind_mount_spec(cargo_home, "/cache/cargo-home"),
+            "--mount",
+            docker_bind_mount_spec(cargo_target, "/cache/target"),
             "-e",
             "CARGO_HOME=/cache/cargo-home",
             "-e",

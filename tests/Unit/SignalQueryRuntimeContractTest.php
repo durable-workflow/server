@@ -1252,6 +1252,20 @@ try:
         protected_cache_rejected = False
     except RuntimeError:
         protected_cache_rejected = True
+    del os.environ["DW_SIGNALS_QUERIES_RUST_CACHE_DIR"]
+    shared_result = scratch / "shared-results" / "run-123"
+    shared_result.mkdir(parents=True)
+    container_home = scratch / "container-only-home"
+    container_home.mkdir()
+    os.environ["RESULT_DIR"] = str(shared_result)
+    os.environ["HOME"] = str(container_home)
+    os.environ["XDG_CACHE_HOME"] = str(container_home / ".cache")
+    shared_tmp = scratch / "host-visible-tmp"
+    shared_tmp.mkdir()
+    os.environ["DW_CONFORMANCE_TMPDIR"] = str(shared_tmp)
+    shared_tmp_cache_root = rust_dependency_cache_root(run_root)
+    del os.environ["DW_CONFORMANCE_TMPDIR"]
+    result_sibling_cache_root = rust_dependency_cache_root(run_root)
     print(json.dumps({
         "cold_state": cold_evidence["state_before_build"],
         "warm_state": warm_evidence["state_before_build"],
@@ -1266,17 +1280,34 @@ try:
         "cache_owned": cache_root.stat().st_uid == os.getuid(),
         "stale_pruned": not stale.exists(),
         "protected_cache_rejected": protected_cache_rejected,
+        "default_cache_uses_shared_tmp": shared_tmp_cache_root == (
+            shared_tmp
+            / f".durable-workflow-conformance-cache-{os.getuid()}"
+            / "signals-queries"
+            / "rust-dependencies"
+        ),
+        "fallback_cache_uses_result_parent": result_sibling_cache_root == (
+            shared_result.parent
+            / f".durable-workflow-conformance-cache-{os.getuid()}"
+            / "signals-queries"
+            / "rust-dependencies"
+        ),
+        "default_cache_uses_container_home": any(
+            path_contains(container_home, candidate)
+            for candidate in (shared_tmp_cache_root, result_sibling_cache_root)
+        ),
         "user": command[command.index("--user") + 1],
         "identity": f"{os.getuid()}:{os.getgid()}",
-        "cargo_home_mounted": docker_volume_spec(
+        "cargo_home_mounted": docker_bind_mount_spec(
             cache_root / identity["key"] / "cargo-home", "/cache/cargo-home"
         ) in command,
-        "cargo_target_mounted": docker_volume_spec(
+        "cargo_target_mounted": docker_bind_mount_spec(
             run_root / "isolated-build-target", "/cache/target"
         ) in command,
-        "shared_target_mounted": docker_volume_spec(
+        "shared_target_mounted": docker_bind_mount_spec(
             cache_root / identity["key"] / "target", "/cache/target"
         ) in command,
+        "cache_uses_required_bind_mounts": command.count("--mount") == 2,
     }, sort_keys=True))
 finally:
     shutil.rmtree(scratch)
@@ -1304,10 +1335,14 @@ PY);
         $this->assertTrue($result['cache_owned']);
         $this->assertTrue($result['stale_pruned']);
         $this->assertTrue($result['protected_cache_rejected']);
+        $this->assertTrue($result['default_cache_uses_shared_tmp']);
+        $this->assertTrue($result['fallback_cache_uses_result_parent']);
+        $this->assertFalse($result['default_cache_uses_container_home']);
         $this->assertSame($result['identity'], $result['user']);
         $this->assertTrue($result['cargo_home_mounted']);
         $this->assertTrue($result['cargo_target_mounted']);
         $this->assertFalse($result['shared_target_mounted']);
+        $this->assertTrue($result['cache_uses_required_bind_mounts']);
     }
 
     public function test_rust_matrix_preserves_completed_cells_and_continues_after_a_later_failure(): void
