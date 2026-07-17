@@ -5,6 +5,7 @@ namespace App\Http\Controllers\Api;
 use App\Models\WorkerBuildIdRollout;
 use App\Models\WorkerRegistration;
 use App\Support\BackendLockPressure;
+use App\Support\ControlPlaneMutationRetrier;
 use App\Support\ExternalPayloadStorageUnavailable;
 use App\Support\HistoryRetentionEnforcer;
 use App\Support\LongPollCapacityExhaustedException;
@@ -55,6 +56,7 @@ class WorkerController
         private readonly SearchAttributeValueValidator $searchAttributeValues,
         private readonly WorkerTerminalEventAttribution $terminalEventAttribution,
         private readonly WorkerCompatibilityHeartbeatRecorder $compatibilityHeartbeats,
+        private readonly ControlPlaneMutationRetrier $storageMutations,
     ) {}
 
     /**
@@ -1738,7 +1740,22 @@ class WorkerController
 
         /** @var WorkflowTaskBridge $bridge */
         $bridge = app(WorkflowTaskBridge::class);
-        $status = $bridge->heartbeat($taskId);
+
+        try {
+            $status = $this->storageMutations->run(
+                static fn (): array => $bridge->heartbeat($taskId),
+            );
+        } catch (\Throwable $exception) {
+            if (! BackendLockPressure::isSqliteBackend() || ! BackendLockPressure::is($exception)) {
+                throw $exception;
+            }
+
+            return BackendLockPressure::workflowTaskHeartbeatResponse(
+                $taskId,
+                (int) $validated['workflow_task_attempt'],
+                $validated['lease_owner'],
+            );
+        }
 
         return WorkerProtocol::json([
             'task_id' => $taskId,

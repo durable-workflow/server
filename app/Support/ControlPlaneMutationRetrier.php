@@ -9,9 +9,9 @@ final class ControlPlaneMutationRetrier
     private const RETRY_DELAY_MILLISECONDS = 25;
 
     /**
-     * Retry a control-plane mutation only when the storage backend reports
-     * transient write contention. Callers must recover any already-committed
-     * result before an exception reaches this boundary.
+     * Retry a storage mutation only when the backend reports transient write
+     * contention. Callers must recover any already-committed result before an
+     * exception reaches this boundary.
      *
      * @template TResult
      *

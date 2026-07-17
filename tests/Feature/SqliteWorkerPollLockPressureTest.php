@@ -34,7 +34,10 @@ class SqliteWorkerPollLockPressureTest extends TestCase
     {
         parent::setUp();
 
-        $path = tempnam(sys_get_temp_dir(), 'dw-server-sqlite-poll-');
+        $databaseDirectory = is_dir('/dev/shm') && is_writable('/dev/shm')
+            ? '/dev/shm'
+            : sys_get_temp_dir();
+        $path = tempnam($databaseDirectory, 'dw-server-sqlite-poll-');
 
         if ($path === false) {
             $this->fail('Could not allocate a SQLite database file for the lock-pressure test.');
@@ -226,6 +229,166 @@ class SqliteWorkerPollLockPressureTest extends TestCase
         );
     }
 
+    public function test_workflow_task_heartbeat_retries_signal_side_write_pressure_and_preserves_the_lease(): void
+    {
+        Queue::fake();
+
+        WorkflowNamespace::query()->updateOrCreate(
+            ['name' => 'default'],
+            ['description' => 'Default namespace', 'retention_days' => 30, 'status' => 'active'],
+        );
+
+        $workflow = WorkflowStub::make(
+            InteractiveCommandWorkflow::class,
+            'wf-sqlite-heartbeat-lock-pressure',
+        );
+        $start = $workflow->start();
+
+        NamespaceWorkflowScope::bind('default', $workflow->id(), InteractiveCommandWorkflow::class);
+        $this->runReadyWorkflowTask($start->runId());
+
+        $signal = $this->withHeaders($this->controlPlaneHeaders())
+            ->postJson('/api/workflows/wf-sqlite-heartbeat-lock-pressure/signal/advance', [
+                'input' => ['Ada'],
+                'request_id' => 'sqlite-heartbeat-signal-advance',
+            ]);
+
+        $signal->assertAccepted()
+            ->assertJsonPath('reason', null)
+            ->assertJsonPath('signal_name', 'advance');
+
+        /** @var WorkflowTask|null $leasedTask */
+        $leasedTask = WorkflowTask::query()
+            ->where('workflow_run_id', $start->runId())
+            ->where('task_type', TaskType::Workflow->value)
+            ->where('status', TaskStatus::Ready->value)
+            ->first();
+
+        $this->assertInstanceOf(WorkflowTask::class, $leasedTask);
+
+        $initialLeaseExpiresAt = now()->addSeconds(15);
+
+        $leasedTask->forceFill([
+            'status' => TaskStatus::Leased->value,
+            'lease_owner' => 'php-sqlite-heartbeat-worker',
+            'leased_at' => now(),
+            'lease_expires_at' => $initialLeaseExpiresAt,
+            'attempt_count' => 1,
+        ])->save();
+
+        $this->registerWorker('php-sqlite-heartbeat-worker', 'php');
+
+        $signalWriter = $this->startTransientControlPlaneUpdate($start->runId());
+
+        try {
+            $heartbeat = $this->withHeaders($this->workerHeaders())
+                ->postJson("/api/worker/workflow-tasks/{$leasedTask->id}/heartbeat", [
+                    'lease_owner' => 'php-sqlite-heartbeat-worker',
+                    'workflow_task_attempt' => 1,
+                ]);
+
+            $heartbeat->assertOk()
+                ->assertJsonPath('task_id', $leasedTask->id)
+                ->assertJsonPath('workflow_task_attempt', 1)
+                ->assertJsonPath('lease_owner', 'php-sqlite-heartbeat-worker')
+                ->assertJsonPath('renewed', true)
+                ->assertJsonPath('reason', null);
+        } finally {
+            $this->finishTransientLeaseUpdate($signalWriter);
+        }
+
+        $renewedTask = WorkflowTask::query()->findOrFail($leasedTask->id);
+
+        $this->assertSame(TaskStatus::Leased, $renewedTask->status);
+        $this->assertSame('php-sqlite-heartbeat-worker', $renewedTask->lease_owner);
+        $this->assertSame(1, $renewedTask->attempt_count);
+        $this->assertTrue($renewedTask->lease_expires_at->greaterThan($initialLeaseExpiresAt));
+
+        $this->assertSame(
+            1,
+            WorkflowSignal::query()
+                ->where('workflow_run_id', $start->runId())
+                ->where('signal_name', 'advance')
+                ->count(),
+        );
+        $this->assertSame(
+            1,
+            WorkflowCommand::query()
+                ->where('workflow_run_id', $start->runId())
+                ->where('command_type', CommandType::Signal->value)
+                ->count(),
+        );
+    }
+
+    public function test_exhausted_workflow_task_heartbeat_lock_pressure_is_non_fatal_and_retryable(): void
+    {
+        Queue::fake();
+
+        WorkflowNamespace::query()->updateOrCreate(
+            ['name' => 'default'],
+            ['description' => 'Default namespace', 'retention_days' => 30, 'status' => 'active'],
+        );
+
+        $workflow = WorkflowStub::make(
+            InteractiveCommandWorkflow::class,
+            'wf-sqlite-heartbeat-lock-response',
+        );
+        $start = $workflow->start();
+
+        NamespaceWorkflowScope::bind('default', $workflow->id(), InteractiveCommandWorkflow::class);
+        $this->runReadyWorkflowTask($start->runId());
+
+        $this->withHeaders($this->controlPlaneHeaders())
+            ->postJson('/api/workflows/wf-sqlite-heartbeat-lock-response/signal/advance', [
+                'input' => ['Ada'],
+                'request_id' => 'sqlite-heartbeat-lock-response-signal',
+            ])
+            ->assertAccepted();
+
+        /** @var WorkflowTask|null $leasedTask */
+        $leasedTask = WorkflowTask::query()
+            ->where('workflow_run_id', $start->runId())
+            ->where('task_type', TaskType::Workflow->value)
+            ->where('status', TaskStatus::Ready->value)
+            ->first();
+
+        $this->assertInstanceOf(WorkflowTask::class, $leasedTask);
+
+        $leaseExpiresAt = now()->addSeconds(30);
+
+        $leasedTask->forceFill([
+            'status' => TaskStatus::Leased->value,
+            'lease_owner' => 'php-sqlite-heartbeat-worker',
+            'leased_at' => now(),
+            'lease_expires_at' => $leaseExpiresAt,
+            'attempt_count' => 1,
+        ])->save();
+
+        $this->registerWorker('php-sqlite-heartbeat-worker', 'php');
+        $this->holdSqliteWriteLock($leasedTask->id);
+
+        $this->withHeaders($this->workerHeaders())
+            ->postJson("/api/worker/workflow-tasks/{$leasedTask->id}/heartbeat", [
+                'lease_owner' => 'php-sqlite-heartbeat-worker',
+                'workflow_task_attempt' => 1,
+            ])
+            ->assertOk()
+            ->assertHeader(WorkerProtocol::HEADER, WorkerProtocol::VERSION)
+            ->assertJsonPath('task_id', $leasedTask->id)
+            ->assertJsonPath('workflow_task_attempt', 1)
+            ->assertJsonPath('lease_owner', 'php-sqlite-heartbeat-worker')
+            ->assertJsonPath('renewed', false)
+            ->assertJsonPath('reason', 'backend_lock_pressure')
+            ->assertJsonPath('retryable', true)
+            ->assertJsonPath('retry_after_seconds', 1)
+            ->assertJsonPath('backend.driver', 'sqlite')
+            ->assertJsonPath('backend.lock_pressure', true);
+
+        $this->assertTrue(
+            WorkflowTask::query()->findOrFail($leasedTask->id)->lease_expires_at->equalTo($leaseExpiresAt),
+        );
+    }
+
     public function test_exhausted_control_plane_lock_pressure_returns_a_typed_retryable_response(): void
     {
         Queue::fake();
@@ -309,6 +472,28 @@ class SqliteWorkerPollLockPressureTest extends TestCase
      */
     private function startTransientLeaseUpdate(string $taskId): array
     {
+        return $this->startTransientSqliteWrite(
+            "UPDATE workflow_tasks SET lease_expires_at = datetime('now', '+30 seconds'), updated_at = updated_at WHERE id = ?",
+            $taskId,
+        );
+    }
+
+    /**
+     * @return array{process: resource, pipes: array<int, resource>, marker: string}
+     */
+    private function startTransientControlPlaneUpdate(string $runId): array
+    {
+        return $this->startTransientSqliteWrite(
+            'UPDATE workflow_runs SET last_command_sequence = last_command_sequence, updated_at = updated_at WHERE id = ?',
+            $runId,
+        );
+    }
+
+    /**
+     * @return array{process: resource, pipes: array<int, resource>, marker: string}
+     */
+    private function startTransientSqliteWrite(string $sql, string $id): array
+    {
         $this->assertIsString($this->databasePath);
 
         $marker = tempnam(sys_get_temp_dir(), 'dw-server-sqlite-lease-lock-');
@@ -326,7 +511,7 @@ $pdo->exec('PRAGMA busy_timeout = 1000');
 $pdo->beginTransaction();
 
 try {
-    $statement = $pdo->prepare("UPDATE workflow_tasks SET lease_expires_at = datetime('now', '+30 seconds'), updated_at = updated_at WHERE id = ?");
+    $statement = $pdo->prepare($argv[4]);
     $statement->execute([$argv[2]]);
     file_put_contents($argv[3], 'locked');
     usleep(125000);
@@ -344,7 +529,7 @@ try {
 PHP;
 
         $process = proc_open(
-            [PHP_BINARY, '-r', $script, $this->databasePath, $taskId, $marker],
+            [PHP_BINARY, '-r', $script, $this->databasePath, $id, $marker, $sql],
             [
                 0 => ['pipe', 'r'],
                 1 => ['pipe', 'w'],

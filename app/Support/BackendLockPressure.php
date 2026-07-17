@@ -93,6 +93,37 @@ final class BackendLockPressure
         ], 503)->header('Retry-After', (string) self::RETRY_AFTER_SECONDS);
     }
 
+    /**
+     * Keep exhausted heartbeat pressure in the worker protocol's operation
+     * outcome instead of turning it into a transport failure. Released workers
+     * treat non-2xx acknowledgement failures as fatal, while renewed=false and
+     * retryable=true let retry-aware callers back off without losing the lease
+     * fencing fields that identify the attempted renewal.
+     */
+    public static function workflowTaskHeartbeatResponse(
+        string $taskId,
+        int $workflowTaskAttempt,
+        string $leaseOwner,
+    ): JsonResponse {
+        return WorkerProtocol::json([
+            'task_id' => $taskId,
+            'workflow_task_attempt' => $workflowTaskAttempt,
+            'lease_owner' => $leaseOwner,
+            'renewed' => false,
+            'lease_expires_at' => null,
+            'run_status' => null,
+            'task_status' => null,
+            'reason' => 'backend_lock_pressure',
+            'message' => 'The database backend is temporarily locked while renewing the workflow task lease. Retry the heartbeat with backoff.',
+            'retryable' => true,
+            'retry_after_seconds' => self::RETRY_AFTER_SECONDS,
+            'backend' => [
+                'driver' => self::workflowDriverName(),
+                'lock_pressure' => true,
+            ],
+        ]);
+    }
+
     public static function isSqliteBackend(): bool
     {
         return self::workflowDriverName() === 'sqlite';
