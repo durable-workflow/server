@@ -1140,6 +1140,166 @@ PY);
         }
     }
 
+    public function test_rust_dependency_cache_identity_separates_every_compatibility_boundary(): void
+    {
+        $result = $this->runSignalQueryRunnerPythonSnippet(<<<'PY'
+os.environ["DW_SIGNALS_QUERIES_RUST_DOCKER_IMAGE"] = "rust:1.86-slim-bookworm"
+base = {
+    "toolchain": {
+        "rustc": "rustc 1.86.0\nhost: x86_64-unknown-linux-gnu",
+        "cargo": "cargo 1.86.0",
+        "target": "x86_64-unknown-linux-gnu",
+    },
+    "sdk_version": "0.1.3",
+    "cargo_lock": b"lock-v1",
+    "dependency_manifest": b"manifest-v1",
+}
+
+def key(**changes):
+    values = dict(base)
+    values.update(changes)
+    return rust_dependency_cache_identity(**values)["key"]
+
+keys = {
+    "base": key(),
+    "toolchain": key(toolchain={**base["toolchain"], "rustc": "rustc 1.87.0"}),
+    "target": key(toolchain={**base["toolchain"], "target": "aarch64-unknown-linux-gnu"}),
+    "sdk": key(sdk_version="0.1.4"),
+    "lock": key(cargo_lock=b"lock-v2"),
+    "manifest": key(dependency_manifest=b"manifest-v2"),
+}
+print(json.dumps(keys, sort_keys=True))
+PY);
+
+        $this->assertCount(6, array_unique($result));
+        foreach ($result as $key) {
+            $this->assertMatchesRegularExpression('/^[0-9a-f]{64}$/', $key);
+        }
+    }
+
+    public function test_rust_dependency_cache_reuses_only_dependencies_and_records_cold_and_warm_timings(): void
+    {
+        $result = $this->runSignalQueryRunnerPythonSnippet(<<<'PY'
+scratch = Path(tempfile.mkdtemp(prefix="signals-queries-rust-cache-test."))
+try:
+    result_dir = scratch / "result"
+    run_root = scratch / "run"
+    cache_root = scratch / "cache"
+    result_dir.mkdir()
+    run_root.mkdir()
+    os.environ["RESULT_DIR"] = str(result_dir)
+    os.environ["DW_SIGNALS_QUERIES_RUST_CACHE_DIR"] = str(cache_root)
+    os.environ["DW_SIGNALS_QUERIES_RUST_CACHE_MAX_ENTRIES"] = "1"
+    identity = rust_dependency_cache_identity(
+        toolchain={
+            "rustc": "rustc 1.86.0\nhost: x86_64-unknown-linux-gnu",
+            "cargo": "cargo 1.86.0",
+            "target": "x86_64-unknown-linux-gnu",
+        },
+        sdk_version="0.1.3",
+        cargo_lock=b"same-lock",
+        dependency_manifest=b"same-manifest",
+    )
+
+    with rust_dependency_cache_session(run_root, identity) as cold:
+        deps = cold["cargo_target"] / "release" / "deps"
+        fingerprint = cold["cargo_target"] / "release" / ".fingerprint" / "signals-queries-published-probe-a"
+        deps.mkdir(parents=True)
+        fingerprint.mkdir(parents=True)
+        (deps / "libdependency.rlib").write_text("dependency", encoding="utf-8")
+        (deps / "signals_queries_published_probe-a").write_text("probe", encoding="utf-8")
+        binary = cold["cargo_target"] / "release" / "signals-queries-published-probe"
+        binary.write_text("probe", encoding="utf-8")
+        purge_cached_rust_probe_outputs(cold["cargo_target"])
+        cold_evidence = complete_rust_dependency_cache_session(cold, {
+            "captured_at": now(),
+            "elapsed_seconds": 240.0,
+            "compiled_package_count": 178,
+            "compiled_dependency_package_count": 177,
+            "resolved_registry_package_count": 177,
+        })
+
+    with rust_dependency_cache_session(run_root, identity) as warm:
+        dependency_survived = (warm["cargo_target"] / "release" / "deps" / "libdependency.rlib").is_file()
+        probe_survived = any(
+            warm["cargo_target"].glob("release/**/signals_queries_published_probe-*")
+        ) or (warm["cargo_target"] / "release" / "signals-queries-published-probe").exists()
+        warm_evidence = complete_rust_dependency_cache_session(warm, {
+            "captured_at": now(),
+            "elapsed_seconds": 1.25,
+            "compiled_package_count": 1,
+            "compiled_dependency_package_count": 0,
+            "resolved_registry_package_count": 177,
+        })
+
+    stale = cache_root / ("f" * 64)
+    stale.mkdir()
+    os.utime(stale, (1, 1))
+    prune_rust_dependency_cache(cache_root, keep_key=identity["key"])
+    command = rust_probe_docker_command(
+        run_root,
+        ["cargo", "build"],
+        cargo_home=cache_root / identity["key"] / "cargo-home",
+        cargo_target=cache_root / identity["key"] / "target",
+    )
+    os.environ["DW_SIGNALS_QUERIES_RUST_CACHE_DIR"] = str(run_root / "cache")
+    try:
+        rust_dependency_cache_root(run_root)
+        protected_cache_rejected = False
+    except RuntimeError:
+        protected_cache_rejected = True
+    print(json.dumps({
+        "cold_state": cold_evidence["state_before_build"],
+        "warm_state": warm_evidence["state_before_build"],
+        "reused": warm_evidence["dependency_artifacts_reused"],
+        "timings": warm_evidence["timings"],
+        "dependency_survived": dependency_survived,
+        "probe_survived": probe_survived,
+        "probe_binary_shared": warm_evidence["probe_binary_shared"],
+        "runtime_state_shared": warm_evidence["source_and_runtime_state_shared"],
+        "shared_content": warm_evidence["shared_content"],
+        "isolated_content": warm_evidence["isolated_content"],
+        "cache_owned": cache_root.stat().st_uid == os.getuid(),
+        "stale_pruned": not stale.exists(),
+        "protected_cache_rejected": protected_cache_rejected,
+        "user": command[command.index("--user") + 1],
+        "identity": f"{os.getuid()}:{os.getgid()}",
+        "cargo_home_mounted": docker_volume_spec(
+            cache_root / identity["key"] / "cargo-home", "/cache/cargo-home"
+        ) in command,
+        "cargo_target_mounted": docker_volume_spec(
+            cache_root / identity["key"] / "target", "/cache/target"
+        ) in command,
+    }, sort_keys=True))
+finally:
+    shutil.rmtree(scratch)
+PY);
+
+        $this->assertSame('cold', $result['cold_state']);
+        $this->assertSame('warm', $result['warm_state']);
+        $this->assertTrue($result['reused']);
+        $this->assertSame(177, $result['timings']['cold']['compiled_dependency_package_count']);
+        $this->assertSame(0, $result['timings']['warm']['compiled_dependency_package_count']);
+        $this->assertTrue($result['dependency_survived']);
+        $this->assertFalse($result['probe_survived']);
+        $this->assertFalse($result['probe_binary_shared']);
+        $this->assertFalse($result['runtime_state_shared']);
+        $this->assertSame(
+            ['official_crates_io_registry_downloads', 'compiled_dependency_artifacts'],
+            $result['shared_content'],
+        );
+        $this->assertSame(
+            ['generated_probe_source', 'probe_binary', 'conformance_results', 'credentials', 'runtime_state'],
+            $result['isolated_content'],
+        );
+        $this->assertTrue($result['cache_owned']);
+        $this->assertTrue($result['stale_pruned']);
+        $this->assertTrue($result['protected_cache_rejected']);
+        $this->assertSame($result['identity'], $result['user']);
+        $this->assertTrue($result['cargo_home_mounted']);
+        $this->assertTrue($result['cargo_target_mounted']);
+    }
+
     public function test_rust_matrix_preserves_completed_cells_and_continues_after_a_later_failure(): void
     {
         $result = $this->runSignalQueryRunnerPythonSnippet(<<<'PY'

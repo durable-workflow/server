@@ -40,6 +40,12 @@ Environment overrides:
                                              Set to 0 to skip the published Waterline observer shard.
   DW_SIGNALS_QUERIES_RUN_RUST_MATRIX_PROBE   Set to 0 to skip the mandatory crates.io Rust matrix.
   DW_SIGNALS_QUERIES_RUST_DOCKER_IMAGE       Rust build/runtime image. Defaults to rust:1.86-slim-bookworm.
+  DW_SIGNALS_QUERIES_RUST_CACHE_DIR          Host-owned Rust dependency cache. Defaults to a private,
+                                             user-specific directory under XDG_CACHE_HOME or TMPDIR.
+  DW_SIGNALS_QUERIES_RUST_CACHE_MAX_ENTRIES  Maximum compatible dependency graphs retained. Defaults to 4.
+  DW_SIGNALS_QUERIES_RUST_CACHE_MAX_BYTES    Maximum cache size in bytes. Defaults to 8589934592 (8 GiB).
+  DW_SIGNALS_QUERIES_RUST_CACHE_MAX_AGE_SECONDS
+                                             Maximum unused cache-entry age. Defaults to 1209600 (14 days).
   DW_SIGNALS_QUERIES_SERVER_URL             Reuse an already-running published server for the adversarial shard.
   DW_SIGNALS_QUERIES_SERVER_CONNECT_HOST    Preferred host/address to probe for a self-started published server.
   DW_SIGNALS_QUERIES_SERVER_READY_TIMEOUT_SECONDS
@@ -122,6 +128,7 @@ from __future__ import annotations
 
 import atexit
 import base64
+import fcntl
 import hashlib
 import io
 import json
@@ -146,6 +153,10 @@ from typing import Any
 
 
 DIAGNOSTIC_OUTPUT_LIMIT = 8192
+RUST_DEPENDENCY_CACHE_SCHEMA = "durable-workflow.v1.signals-queries-rust-dependency-cache"
+RUST_DEPENDENCY_CACHE_DEFAULT_MAX_ENTRIES = 4
+RUST_DEPENDENCY_CACHE_DEFAULT_MAX_BYTES = 8 * 1024 * 1024 * 1024
+RUST_DEPENDENCY_CACHE_DEFAULT_MAX_AGE_SECONDS = 14 * 24 * 60 * 60
 
 
 def now() -> str:
@@ -4781,8 +4792,339 @@ def stop_python_sdk_counter_worker(process: subprocess.Popen[str], log_file: Pat
             process.wait(timeout=10)
 
 
+def rust_dependency_cache_limit(name: str, default: int) -> int:
+    value = env_text(name)
+    if value is None:
+        return default
+    try:
+        parsed = int(value)
+    except ValueError:
+        return default
+    return parsed if parsed > 0 else default
+
+
+def path_contains(parent: Path, child: Path) -> bool:
+    try:
+        child.relative_to(parent)
+    except ValueError:
+        return False
+    return True
+
+
+def rust_dependency_cache_root(run_root: Path) -> Path:
+    configured = env_text("DW_SIGNALS_QUERIES_RUST_CACHE_DIR")
+    if configured is not None:
+        cache_root = Path(configured).expanduser()
+    else:
+        cache_base = env_text("XDG_CACHE_HOME")
+        if cache_base is None:
+            cache_base = str(Path(tempfile.gettempdir()) / f"durable-workflow-conformance-{os.getuid()}")
+        cache_root = Path(cache_base).expanduser() / "signals-queries" / "rust-dependencies"
+
+    cache_root = cache_root.absolute()
+    if cache_root.is_symlink():
+        raise RuntimeError("Rust dependency cache must not be a symlink")
+    cache_root = cache_root.resolve(strict=False)
+    protected_paths = [
+        Path(os.environ["REPO_ROOT"]).resolve(strict=False),
+        Path(os.environ["RESULT_DIR"]).resolve(strict=False),
+        run_root.resolve(strict=False),
+    ]
+    for protected in protected_paths:
+        if path_contains(protected, cache_root) or path_contains(cache_root, protected):
+            raise RuntimeError(
+                "DW_SIGNALS_QUERIES_RUST_CACHE_DIR must be separate from source, result, and run roots"
+            )
+
+    cache_root.mkdir(mode=0o700, parents=True, exist_ok=True)
+    if cache_root.is_symlink() or cache_root.stat().st_uid != os.getuid():
+        raise RuntimeError("Rust dependency cache must be a host-owned directory, not a symlink")
+    cache_root.chmod(0o700)
+    return cache_root
+
+
+@contextmanager
+def rust_dependency_cache_lock(path: Path, *, shared: bool) -> Any:
+    with path.open("a+", encoding="utf-8") as handle:
+        if os.fstat(handle.fileno()).st_uid != os.getuid():
+            raise RuntimeError(f"Rust dependency cache lock is not owned by uid {os.getuid()}")
+        fcntl.flock(handle.fileno(), fcntl.LOCK_SH if shared else fcntl.LOCK_EX)
+        try:
+            yield
+        finally:
+            fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+
+
+def rust_dependency_cache_directory_size(path: Path) -> int:
+    total = 0
+    for root, _directories, files in os.walk(path, followlinks=False):
+        for filename in files:
+            candidate = Path(root) / filename
+            try:
+                total += candidate.lstat().st_size
+            except FileNotFoundError:
+                continue
+    return total
+
+
+def prune_rust_dependency_cache(cache_root: Path, *, keep_key: str | None = None) -> None:
+    max_entries = rust_dependency_cache_limit(
+        "DW_SIGNALS_QUERIES_RUST_CACHE_MAX_ENTRIES",
+        RUST_DEPENDENCY_CACHE_DEFAULT_MAX_ENTRIES,
+    )
+    max_bytes = rust_dependency_cache_limit(
+        "DW_SIGNALS_QUERIES_RUST_CACHE_MAX_BYTES",
+        RUST_DEPENDENCY_CACHE_DEFAULT_MAX_BYTES,
+    )
+    max_age = rust_dependency_cache_limit(
+        "DW_SIGNALS_QUERIES_RUST_CACHE_MAX_AGE_SECONDS",
+        RUST_DEPENDENCY_CACHE_DEFAULT_MAX_AGE_SECONDS,
+    )
+    with rust_dependency_cache_lock(cache_root / ".cache.lock", shared=False):
+        entries: list[dict[str, Any]] = []
+        for candidate in cache_root.iterdir():
+            if candidate.name.startswith(".") or re.fullmatch(r"[0-9a-f]{64}", candidate.name) is None:
+                continue
+            if candidate.is_symlink():
+                candidate.unlink()
+                continue
+            if not candidate.is_dir() or candidate.stat().st_uid != os.getuid():
+                raise RuntimeError(f"Rust dependency cache entry is not host-owned: {candidate.name}")
+            entries.append({
+                "path": candidate,
+                "key": candidate.name,
+                "last_used": candidate.stat().st_mtime,
+                "size": rust_dependency_cache_directory_size(candidate),
+            })
+
+        entries.sort(key=lambda entry: (entry["last_used"], entry["key"]))
+        total_size = sum(entry["size"] for entry in entries)
+        now_epoch = time.time()
+        for entry in list(entries):
+            over_age = now_epoch - entry["last_used"] > max_age
+            over_count = len(entries) > max_entries
+            over_size = total_size > max_bytes
+            if not (over_age or over_count or over_size) or entry["key"] == keep_key:
+                continue
+            shutil.rmtree(entry["path"])
+            total_size -= entry["size"]
+            entries.remove(entry)
+
+        if len(entries) > max_entries or total_size > max_bytes:
+            raise RuntimeError(
+                "active Rust dependency cache entry exceeds the configured cache retention bounds"
+            )
+
+
+def clear_rust_dependency_cache_entry(entry: Path) -> None:
+    for candidate in entry.iterdir():
+        if candidate.name == ".entry.lock":
+            continue
+        if candidate.is_dir() and not candidate.is_symlink():
+            shutil.rmtree(candidate)
+        else:
+            candidate.unlink()
+
+
+def rust_dependency_cache_identity(
+    *,
+    toolchain: dict[str, str],
+    sdk_version: str,
+    cargo_lock: bytes,
+    dependency_manifest: bytes,
+) -> dict[str, Any]:
+    identity = {
+        "schema": RUST_DEPENDENCY_CACHE_SCHEMA,
+        "runtime_image": rust_probe_image(),
+        "runtime_image_id": toolchain.get("runtime_image_id", rust_probe_image()),
+        "rustc": toolchain["rustc"],
+        "cargo": toolchain["cargo"],
+        "target": toolchain["target"],
+        "sdk_version": sdk_version,
+        "cargo_lock_sha256": hashlib.sha256(cargo_lock).hexdigest(),
+        "dependency_manifest_sha256": hashlib.sha256(dependency_manifest).hexdigest(),
+        "profile": "release",
+    }
+    encoded = json.dumps(identity, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    return {"key": hashlib.sha256(encoded).hexdigest(), "identity": identity}
+
+
+def rust_dependency_cache_marker(entry: Path) -> dict[str, Any] | None:
+    marker_path = entry / "complete.json"
+    if not marker_path.is_file() or marker_path.is_symlink():
+        return None
+    try:
+        marker = json.loads(marker_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    return marker if isinstance(marker, dict) else None
+
+
+@contextmanager
+def rust_dependency_cache_session(run_root: Path, cache_identity: dict[str, Any]) -> Any:
+    cache_root = rust_dependency_cache_root(run_root)
+    cache_key = str(cache_identity["key"])
+    prune_rust_dependency_cache(cache_root)
+    try:
+        with rust_dependency_cache_lock(cache_root / ".cache.lock", shared=True):
+            entry = cache_root / cache_key
+            entry.mkdir(mode=0o700, exist_ok=True)
+            if entry.is_symlink() or entry.stat().st_uid != os.getuid():
+                raise RuntimeError("Rust dependency cache entry must be host-owned and must not be a symlink")
+            entry.chmod(0o700)
+            with rust_dependency_cache_lock(entry / ".entry.lock", shared=False):
+                marker = rust_dependency_cache_marker(entry)
+                warm = (
+                    isinstance(marker, dict)
+                    and marker.get("cache_identity") == cache_identity["identity"]
+                    and (entry / "cargo-home").is_dir()
+                    and not (entry / "cargo-home").is_symlink()
+                    and (entry / "target" / "release" / "deps").is_dir()
+                    and not (entry / "target").is_symlink()
+                )
+                if not warm:
+                    clear_rust_dependency_cache_entry(entry)
+                    marker = None
+                cargo_home = entry / "cargo-home"
+                cargo_target = entry / "target"
+                cargo_home.mkdir(mode=0o700, exist_ok=True)
+                cargo_target.mkdir(mode=0o700, exist_ok=True)
+                for cache_directory in (cargo_home, cargo_target):
+                    if cache_directory.is_symlink() or cache_directory.stat().st_uid != os.getuid():
+                        raise RuntimeError("Rust dependency cache content must remain in host-owned directories")
+                    cache_directory.chmod(0o700)
+                (entry / "complete.json").unlink(missing_ok=True)
+                session = {
+                    "cache_root": cache_root,
+                    "entry": entry,
+                    "key": cache_key,
+                    "identity": cache_identity["identity"],
+                    "state_before_build": "warm" if warm else "cold",
+                    "previous_timings": dict(marker.get("timings", {})) if marker is not None else {},
+                    "cargo_home": cargo_home,
+                    "cargo_target": cargo_target,
+                }
+                try:
+                    yield session
+                finally:
+                    if not (entry / "complete.json").is_file():
+                        clear_rust_dependency_cache_entry(entry)
+    finally:
+        prune_rust_dependency_cache(cache_root, keep_key=cache_key)
+
+
+def complete_rust_dependency_cache_session(
+    session: dict[str, Any],
+    timing: dict[str, Any],
+) -> dict[str, Any]:
+    timings = dict(session["previous_timings"])
+    timings[session["state_before_build"]] = timing
+    marker = {
+        "schema": RUST_DEPENDENCY_CACHE_SCHEMA,
+        "cache_identity": session["identity"],
+        "timings": timings,
+        "last_used_at": now(),
+    }
+    atomic_write_json(session["entry"] / "complete.json", marker)
+    os.utime(session["entry"], None)
+    return {
+        "schema": RUST_DEPENDENCY_CACHE_SCHEMA,
+        "cache_key": session["key"],
+        "cache_identity": session["identity"],
+        "state_before_build": session["state_before_build"],
+        "dependency_artifacts_reused": (
+            session["state_before_build"] == "warm"
+            and timing["compiled_dependency_package_count"] == 0
+        ),
+        "probe_binary_shared": False,
+        "source_and_runtime_state_shared": False,
+        "shared_content": [
+            "official_crates_io_registry_downloads",
+            "compiled_dependency_artifacts",
+        ],
+        "isolated_content": [
+            "generated_probe_source",
+            "probe_binary",
+            "conformance_results",
+            "credentials",
+            "runtime_state",
+        ],
+        "host_uid": os.getuid(),
+        "retention": {
+            "max_entries": rust_dependency_cache_limit(
+                "DW_SIGNALS_QUERIES_RUST_CACHE_MAX_ENTRIES",
+                RUST_DEPENDENCY_CACHE_DEFAULT_MAX_ENTRIES,
+            ),
+            "max_bytes": rust_dependency_cache_limit(
+                "DW_SIGNALS_QUERIES_RUST_CACHE_MAX_BYTES",
+                RUST_DEPENDENCY_CACHE_DEFAULT_MAX_BYTES,
+            ),
+            "max_age_seconds": rust_dependency_cache_limit(
+                "DW_SIGNALS_QUERIES_RUST_CACHE_MAX_AGE_SECONDS",
+                RUST_DEPENDENCY_CACHE_DEFAULT_MAX_AGE_SECONDS,
+            ),
+        },
+        "timings": timings,
+    }
+
+
+def purge_cached_rust_probe_outputs(cargo_target: Path) -> None:
+    release = cargo_target / "release"
+    for candidate in (
+        release / "signals-queries-published-probe",
+        release / "signals-queries-published-probe.d",
+    ):
+        candidate.unlink(missing_ok=True)
+    for pattern in (
+        "deps/signals_queries_published_probe-*",
+        ".fingerprint/signals-queries-published-probe-*",
+        "incremental/signals_queries_published_probe-*",
+    ):
+        for candidate in release.glob(pattern):
+            if candidate.is_dir() and not candidate.is_symlink():
+                shutil.rmtree(candidate)
+            else:
+                candidate.unlink(missing_ok=True)
+
+
 def rust_probe_image() -> str:
     return env_text("DW_SIGNALS_QUERIES_RUST_DOCKER_IMAGE") or "rust:1.86-slim-bookworm"
+
+
+def rust_probe_toolchain_identity(log_file: Path) -> dict[str, str]:
+    command = [
+        "docker",
+        "run",
+        "--rm",
+        *docker_run_resource_options(),
+        rust_probe_image(),
+        "sh",
+        "-c",
+        "rustc -Vv && cargo -V",
+    ]
+    completed = run_command(command, log_file=log_file, timeout=120)
+    if completed.returncode != 0:
+        raise RuntimeError("could not identify the Rust toolchain used by the published probe")
+    rustc_lines = [line.strip() for line in completed.stdout.splitlines() if line.strip()]
+    cargo_line = next((line for line in rustc_lines if line.startswith("cargo ")), "")
+    host_line = next((line for line in rustc_lines if line.startswith("host: ")), "")
+    rustc_identity = "\n".join(line for line in rustc_lines if not line.startswith("cargo "))
+    if not rustc_identity.startswith("rustc ") or not cargo_line or not host_line:
+        raise RuntimeError("Rust toolchain identity output did not include rustc, cargo, and host target")
+    inspect = run_command(
+        ["docker", "image", "inspect", "--format", "{{.Id}}", rust_probe_image()],
+        log_file=log_file,
+        timeout=30,
+    )
+    image_id = inspect.stdout.strip()
+    if inspect.returncode != 0 or re.fullmatch(r"sha256:[0-9a-f]{64}", image_id) is None:
+        raise RuntimeError("could not resolve the immutable Rust runtime image identity")
+    return {
+        "rustc": rustc_identity,
+        "cargo": cargo_line,
+        "target": host_line.removeprefix("host: "),
+        "runtime_image_id": image_id,
+    }
 
 
 def rust_probe_docker_command(
@@ -4792,6 +5134,8 @@ def rust_probe_docker_command(
     env: dict[str, str] | None = None,
     name: str | None = None,
     detach: bool = False,
+    cargo_home: Path | None = None,
+    cargo_target: Path | None = None,
 ) -> list[str]:
     command = ["docker", "run"]
     if detach:
@@ -4809,6 +5153,19 @@ def rust_probe_docker_command(
         "-w",
         "/app",
     ])
+    if (cargo_home is None) != (cargo_target is None):
+        raise RuntimeError("Rust dependency cache requires both Cargo home and target directories")
+    if cargo_home is not None and cargo_target is not None:
+        command.extend([
+            "-v",
+            docker_volume_spec(cargo_home, "/cache/cargo-home"),
+            "-v",
+            docker_volume_spec(cargo_target, "/cache/target"),
+            "-e",
+            "CARGO_HOME=/cache/cargo-home",
+            "-e",
+            "CARGO_TARGET_DIR=/cache/target",
+        ])
     for key, value in sorted((env or {}).items()):
         command.extend(["-e", f"{key}={value}"])
     command.append(rust_probe_image())
@@ -4906,25 +5263,41 @@ def prepare_rust_probe(run_root: Path, log_file: Path) -> tuple[Path, dict[str, 
             phase="cargo_generate_lockfile",
             command_result=generate,
         )
-    build = run_command(
-        rust_probe_docker_command(project_dir, ["cargo", "build", "--locked", "--release"]),
-        log_file=log_file,
-        timeout=1200,
-    )
-    if build.returncode != 0:
-        raise RustCrateArtifactError(
-            "rust_crate_build_failed",
-            "the artifact-tuple Rust SDK could not build in the published conformance probe",
-            version=version,
-            phase="cargo_build_locked_release",
-            command_result=build,
-        )
 
-    with (project_dir / "Cargo.lock").open("rb") as handle:
-        lock = __import__("tomllib").load(handle)
+    cargo_lock_path = project_dir / "Cargo.lock"
+    cargo_lock_bytes = cargo_lock_path.read_bytes()
+    lock = __import__("tomllib").loads(cargo_lock_bytes.decode("utf-8"))
     packages = lock.get("package") if isinstance(lock, dict) else None
     if not isinstance(packages, list):
         raise RuntimeError("Cargo.lock did not contain resolved package provenance")
+
+    registry_package_count = 0
+    for package in packages:
+        if not isinstance(package, dict):
+            raise RustCrateArtifactError(
+                "rust_dependency_registry_provenance_invalid",
+                "Cargo.lock contained a dependency without structured registry provenance",
+                version=version,
+                phase="inspect_cargo_lock",
+            )
+        package_name = str(package.get("name") or "")
+        source = str(package.get("source") or "")
+        checksum = str(package.get("checksum") or "")
+        if package_name == "signals-queries-published-probe" and source == "":
+            continue
+        if not official_crates_io_registry_source(source) or re.fullmatch(r"[0-9a-f]{64}", checksum) is None:
+            raise RustCrateArtifactError(
+                "rust_dependency_registry_provenance_invalid",
+                "Cargo.lock resolved a dependency outside the official crates.io registry",
+                version=version,
+                phase="inspect_cargo_lock",
+                package=package_name or "unknown",
+                details={
+                    "registry_source": source,
+                    "checksum": checksum,
+                },
+            )
+        registry_package_count += 1
 
     def package_provenance(name: str, expected_version: str | None = None) -> dict[str, Any]:
         for package in packages:
@@ -4966,6 +5339,72 @@ def prepare_rust_probe(run_root: Path, log_file: Path) -> tuple[Path, dict[str, 
 
     rust_provenance = package_provenance("durable-workflow", version)
     avro_provenance = package_provenance("apache-avro")
+    dependency_manifest = (project_dir / "Cargo.toml").read_bytes()
+    toolchain = rust_probe_toolchain_identity(log_file)
+    cache_identity = rust_dependency_cache_identity(
+        toolchain=toolchain,
+        sdk_version=version,
+        cargo_lock=cargo_lock_bytes,
+        dependency_manifest=dependency_manifest,
+    )
+    cache_evidence: dict[str, Any]
+    with rust_dependency_cache_session(run_root, cache_identity) as cache_session:
+        build_started = time.monotonic()
+        try:
+            build = run_command(
+                rust_probe_docker_command(
+                    project_dir,
+                    ["cargo", "build", "--locked", "--release"],
+                    cargo_home=cache_session["cargo_home"],
+                    cargo_target=cache_session["cargo_target"],
+                ),
+                log_file=log_file,
+                timeout=1200,
+            )
+            elapsed_seconds = round(time.monotonic() - build_started, 3)
+            compiled_packages = re.findall(
+                r"^\s*Compiling\s+([^\s]+)(?:\s+v[^\s]+)?",
+                build.stderr,
+                re.MULTILINE,
+            )
+            compiled_dependencies = [
+                package for package in compiled_packages if package != "signals-queries-published-probe"
+            ]
+            timing = {
+                "captured_at": now(),
+                "elapsed_seconds": elapsed_seconds,
+                "compiled_package_count": len(compiled_packages),
+                "compiled_dependency_package_count": len(compiled_dependencies),
+                "resolved_registry_package_count": registry_package_count,
+            }
+            if build.returncode != 0:
+                raise RustCrateArtifactError(
+                    "rust_crate_build_failed",
+                    "the artifact-tuple Rust SDK could not build in the published conformance probe",
+                    version=version,
+                    phase="cargo_build_locked_release",
+                    command_result=build,
+                )
+            cached_binary = cache_session["cargo_target"] / "release" / "signals-queries-published-probe"
+            if not cached_binary.is_file():
+                raise RuntimeError("Cargo completed without producing the Rust conformance probe binary")
+            isolated_binary = project_dir / "target" / "release" / "signals-queries-published-probe"
+            isolated_binary.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(cached_binary, isolated_binary)
+            isolated_binary.chmod(0o700)
+        finally:
+            purge_cached_rust_probe_outputs(cache_session["cargo_target"])
+        cache_evidence = complete_rust_dependency_cache_session(cache_session, timing)
+        cache_evidence["resolved_registry_package_count"] = registry_package_count
+        log_line(
+            log_file,
+            "Rust dependency cache "
+            f"state={cache_evidence['state_before_build']} "
+            f"elapsed_seconds={timing['elapsed_seconds']} "
+            f"compiled_dependencies={timing['compiled_dependency_package_count']} "
+            f"resolved_registry_packages={registry_package_count}",
+        )
+
     install_entry = installed_public_artifact_entry(
         "sdk-rust",
         version,
@@ -4977,8 +5416,14 @@ def prepare_rust_probe(run_root: Path, log_file: Path) -> tuple[Path, dict[str, 
         "registry_source": rust_provenance["source"],
         "registry_checksum": rust_provenance["checksum"],
         "runtime_image": rust_probe_image(),
+        "cargo_lock_sha256": cache_identity["identity"]["cargo_lock_sha256"],
+        "dependency_cache": cache_evidence,
     })
-    return project_dir, rust_provenance, {"package": avro_provenance, "install_entry": install_entry}
+    return project_dir, rust_provenance, {
+        "package": avro_provenance,
+        "install_entry": install_entry,
+        "dependency_cache": cache_evidence,
+    }
 
 
 def rust_probe_env(base_url: str, token: str, namespace: str, task_queue: str = "") -> dict[str, str]:
@@ -5426,6 +5871,7 @@ def run_rust_matrix_probe(
     project_dir, rust_provenance, rust_install = prepare_rust_probe(run_root, log_file)
     rust_version = artifact_version_value(artifact_versions, "sdk-rust")
     avro_provenance = rust_install["package"]
+    rust_dependency_cache = rust_install.get("dependency_cache")
     suffix = hashlib.sha1(f"{time.time()}-rust-signals-queries".encode()).hexdigest()[:10]
     snapshot_queue = f"signals-queries-rust-snapshot-{suffix}"
     snapshot_worker_id = f"signals-queries-rust-snapshot-worker-{suffix}"
@@ -5437,6 +5883,8 @@ def run_rust_matrix_probe(
         **rust_provenance_outputs(rust_version, rust_provenance),
         "apache_avro_provenance": avro_provenance,
     }
+    if isinstance(rust_dependency_cache, dict):
+        provenance["rust_dependency_cache"] = rust_dependency_cache
     scenarios: dict[str, dict[str, Any]] = {}
     partial_outputs: dict[str, dict[str, Any]] = {
         scenario_id: dict(provenance)
@@ -5461,6 +5909,8 @@ def run_rust_matrix_probe(
             "rust_replayed_instance_state_query_after_cold_restart",
         ],
     }
+    if isinstance(rust_dependency_cache, dict):
+        descriptor["rust_dependency_cache"] = rust_dependency_cache
     checkpoint_path = log_file.parent / "signals-queries-rust-cell-results.json"
     descriptor["cell_checkpoint_file"] = checkpoint_path.name
 
