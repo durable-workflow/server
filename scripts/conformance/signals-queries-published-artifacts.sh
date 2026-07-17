@@ -41,7 +41,7 @@ Environment overrides:
   DW_SIGNALS_QUERIES_RUN_RUST_MATRIX_PROBE   Set to 0 to skip the mandatory crates.io Rust matrix.
   DW_SIGNALS_QUERIES_RUST_DOCKER_IMAGE       Rust build/runtime image. Defaults to rust:1.86-slim-bookworm.
   DW_SIGNALS_QUERIES_RUST_CACHE_DIR          Host-owned Rust dependency cache. Defaults to a private,
-                                             user-specific directory under XDG_CACHE_HOME or TMPDIR.
+                                             user-specific directory under XDG_CACHE_HOME, HOME, or TMPDIR.
   DW_SIGNALS_QUERIES_RUST_CACHE_MAX_ENTRIES  Maximum compatible dependency graphs retained. Defaults to 4.
   DW_SIGNALS_QUERIES_RUST_CACHE_MAX_BYTES    Maximum cache size in bytes. Defaults to 8589934592 (8 GiB).
   DW_SIGNALS_QUERIES_RUST_CACHE_MAX_AGE_SECONDS
@@ -608,8 +608,14 @@ def command_summary(command: list[str], completed: subprocess.CompletedProcess[s
         if len(value) <= DIAGNOSTIC_OUTPUT_LIMIT:
             return value
 
-        omitted = len(value) - DIAGNOSTIC_OUTPUT_LIMIT
-        return value[:DIAGNOSTIC_OUTPUT_LIMIT] + f"\n... {omitted} characters omitted"
+        head_size = DIAGNOSTIC_OUTPUT_LIMIT // 4
+        tail_size = DIAGNOSTIC_OUTPUT_LIMIT - head_size - 80
+        omitted = len(value) - head_size - tail_size
+        return (
+            value[:head_size]
+            + f"\n... {omitted} characters omitted ...\n"
+            + value[-tail_size:]
+        )
 
     return {
         "command": diagnostic_command(command),
@@ -4869,7 +4875,18 @@ def rust_dependency_cache_root(run_root: Path) -> Path:
     else:
         cache_base = env_text("XDG_CACHE_HOME")
         if cache_base is None:
-            cache_base = str(Path(tempfile.gettempdir()) / f"durable-workflow-conformance-{os.getuid()}")
+            home = env_text("HOME")
+            home_path = Path(home).expanduser() if home is not None else None
+            if (
+                home_path is not None
+                and home_path.is_dir()
+                and not home_path.is_symlink()
+                and home_path.stat().st_uid == os.getuid()
+                and os.access(home_path, os.W_OK | os.X_OK)
+            ):
+                cache_base = str(home_path / ".cache" / "durable-workflow-conformance")
+            else:
+                cache_base = str(Path(tempfile.gettempdir()) / f"durable-workflow-conformance-{os.getuid()}")
         cache_root = Path(cache_base).expanduser() / "signals-queries" / "rust-dependencies"
 
     cache_root = cache_root.absolute()
@@ -5138,6 +5155,82 @@ def purge_cached_rust_probe_outputs(cargo_target: Path) -> None:
                 candidate.unlink(missing_ok=True)
 
 
+def rust_dependency_build_target(
+    run_root: Path,
+    session: dict[str, Any],
+) -> tuple[Path, dict[str, Any]]:
+    build_target = run_root / f"rust-dependency-target-{session['key'][:12]}"
+    if build_target.exists() or build_target.is_symlink():
+        if build_target.is_dir() and not build_target.is_symlink():
+            shutil.rmtree(build_target)
+        else:
+            build_target.unlink()
+
+    restore_started = time.monotonic()
+    restored = session["state_before_build"] == "warm"
+    if restored:
+        shutil.copytree(session["cargo_target"], build_target)
+    else:
+        build_target.mkdir(mode=0o700, parents=True)
+    if build_target.is_symlink() or build_target.stat().st_uid != os.getuid():
+        raise RuntimeError("per-run Rust dependency build target must remain host-owned")
+    build_target.chmod(0o700)
+    return build_target, {
+        "dependency_artifacts_restored": restored,
+        "restore_elapsed_seconds": round(time.monotonic() - restore_started, 3),
+    }
+
+
+def persist_rust_dependency_build_target(
+    build_target: Path,
+    session: dict[str, Any],
+) -> float:
+    persist_started = time.monotonic()
+    cached_target = session["cargo_target"]
+    if cached_target.exists() or cached_target.is_symlink():
+        if cached_target.is_dir() and not cached_target.is_symlink():
+            shutil.rmtree(cached_target)
+        else:
+            cached_target.unlink()
+    shutil.copytree(build_target, cached_target)
+    if cached_target.is_symlink() or cached_target.stat().st_uid != os.getuid():
+        raise RuntimeError("persisted Rust dependency target must remain host-owned")
+    cached_target.chmod(0o700)
+    return round(time.monotonic() - persist_started, 3)
+
+
+def rust_cache_filesystem_diagnostics(path: Path) -> dict[str, Any]:
+    usage = shutil.disk_usage(path)
+    stat = path.stat()
+    return {
+        "owner_uid": stat.st_uid,
+        "mode": oct(stat.st_mode & 0o777),
+        "total_bytes": usage.total,
+        "used_bytes": usage.used,
+        "free_bytes": usage.free,
+    }
+
+
+def rust_build_failure_diagnostics(
+    *,
+    build: subprocess.CompletedProcess[str],
+    session: dict[str, Any],
+    build_target: Path,
+    run_root: Path,
+    elapsed_seconds: float,
+    compiled_packages: list[str],
+) -> dict[str, Any]:
+    return {
+        "cache_state_before_build": session["state_before_build"],
+        "elapsed_seconds": elapsed_seconds,
+        "compiled_package_count": len(compiled_packages),
+        "cache_filesystem": rust_cache_filesystem_diagnostics(session["cache_root"]),
+        "build_target_filesystem": rust_cache_filesystem_diagnostics(build_target),
+        "run_filesystem": rust_cache_filesystem_diagnostics(run_root),
+        "process_return_code": build.returncode,
+    }
+
+
 def rust_probe_image() -> str:
     return env_text("DW_SIGNALS_QUERIES_RUST_DOCKER_IMAGE") or "rust:1.86-slim-bookworm"
 
@@ -5399,62 +5492,105 @@ def prepare_rust_probe(run_root: Path, log_file: Path) -> tuple[Path, dict[str, 
         dependency_manifest=dependency_manifest,
     )
     cache_evidence: dict[str, Any]
-    with rust_dependency_cache_session(run_root, cache_identity) as cache_session:
-        build_started = time.monotonic()
-        try:
-            build = run_command(
-                rust_probe_docker_command(
-                    project_dir,
-                    ["cargo", "build", "--locked", "--release"],
-                    cargo_home=cache_session["cargo_home"],
-                    cargo_target=cache_session["cargo_target"],
-                ),
-                log_file=log_file,
-                timeout=1200,
-            )
-            elapsed_seconds = round(time.monotonic() - build_started, 3)
-            compiled_packages = re.findall(
-                r"^\s*Compiling\s+([^\s]+)(?:\s+v[^\s]+)?",
-                build.stderr,
-                re.MULTILINE,
-            )
-            compiled_dependencies = [
-                package for package in compiled_packages if package != "signals-queries-published-probe"
-            ]
-            timing = {
-                "captured_at": now(),
-                "elapsed_seconds": elapsed_seconds,
-                "compiled_package_count": len(compiled_packages),
-                "compiled_dependency_package_count": len(compiled_dependencies),
-                "resolved_registry_package_count": registry_package_count,
-            }
-            if build.returncode != 0:
-                raise RustCrateArtifactError(
-                    "rust_crate_build_failed",
-                    "the artifact-tuple Rust SDK could not build in the published conformance probe",
-                    version=version,
-                    phase="cargo_build_locked_release",
-                    command_result=build,
+    cache_operation = "open_cache_session"
+    try:
+        with rust_dependency_cache_session(run_root, cache_identity) as cache_session:
+            cache_operation = "restore_dependency_artifacts"
+            build_target, restore_timing = rust_dependency_build_target(run_root, cache_session)
+            build_started = time.monotonic()
+            try:
+                cache_operation = "build_in_isolated_target"
+                build = run_command(
+                    rust_probe_docker_command(
+                        project_dir,
+                        ["cargo", "build", "--locked", "--release"],
+                        cargo_home=cache_session["cargo_home"],
+                        cargo_target=build_target,
+                    ),
+                    log_file=log_file,
+                    timeout=1200,
                 )
-            cached_binary = cache_session["cargo_target"] / "release" / "signals-queries-published-probe"
-            if not cached_binary.is_file():
-                raise RuntimeError("Cargo completed without producing the Rust conformance probe binary")
-            isolated_binary = project_dir / "target" / "release" / "signals-queries-published-probe"
-            isolated_binary.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copy2(cached_binary, isolated_binary)
-            isolated_binary.chmod(0o700)
-        finally:
-            purge_cached_rust_probe_outputs(cache_session["cargo_target"])
-        cache_evidence = complete_rust_dependency_cache_session(cache_session, timing)
-        cache_evidence["resolved_registry_package_count"] = registry_package_count
-        log_line(
-            log_file,
-            "Rust dependency cache "
-            f"state={cache_evidence['state_before_build']} "
-            f"elapsed_seconds={timing['elapsed_seconds']} "
-            f"compiled_dependencies={timing['compiled_dependency_package_count']} "
-            f"resolved_registry_packages={registry_package_count}",
-        )
+                elapsed_seconds = round(time.monotonic() - build_started, 3)
+                compiled_packages = re.findall(
+                    r"^\s*Compiling\s+([^\s]+)(?:\s+v[^\s]+)?",
+                    build.stderr,
+                    re.MULTILINE,
+                )
+                compiled_dependencies = [
+                    package for package in compiled_packages if package != "signals-queries-published-probe"
+                ]
+                timing = {
+                    "captured_at": now(),
+                    "elapsed_seconds": elapsed_seconds,
+                    "compiled_package_count": len(compiled_packages),
+                    "compiled_dependency_package_count": len(compiled_dependencies),
+                    "resolved_registry_package_count": registry_package_count,
+                    **restore_timing,
+                }
+                if build.returncode != 0:
+                    raise RustCrateArtifactError(
+                        "rust_crate_build_failed",
+                        "the artifact-tuple Rust SDK could not build in the published conformance probe",
+                        version=version,
+                        phase="cargo_build_locked_release",
+                        command_result=build,
+                        details={
+                            "build_diagnostics": rust_build_failure_diagnostics(
+                                build=build,
+                                session=cache_session,
+                                build_target=build_target,
+                                run_root=run_root,
+                                elapsed_seconds=elapsed_seconds,
+                                compiled_packages=compiled_packages,
+                            ),
+                        },
+                    )
+                built_binary = build_target / "release" / "signals-queries-published-probe"
+                if not built_binary.is_file():
+                    raise RuntimeError("Cargo completed without producing the Rust conformance probe binary")
+                isolated_binary = project_dir / "target" / "release" / "signals-queries-published-probe"
+                isolated_binary.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(built_binary, isolated_binary)
+                isolated_binary.chmod(0o700)
+                purge_cached_rust_probe_outputs(build_target)
+                cache_operation = "persist_dependency_artifacts"
+                timing["persist_elapsed_seconds"] = persist_rust_dependency_build_target(
+                    build_target,
+                    cache_session,
+                )
+            finally:
+                if build_target.exists() and build_target.is_dir() and not build_target.is_symlink():
+                    shutil.rmtree(build_target)
+                elif build_target.exists() or build_target.is_symlink():
+                    build_target.unlink()
+            cache_evidence = complete_rust_dependency_cache_session(cache_session, timing)
+            cache_evidence["resolved_registry_package_count"] = registry_package_count
+            log_line(
+                log_file,
+                "Rust dependency cache "
+                f"state={cache_evidence['state_before_build']} "
+                f"restore_seconds={timing['restore_elapsed_seconds']} "
+                f"build_seconds={timing['elapsed_seconds']} "
+                f"persist_seconds={timing['persist_elapsed_seconds']} "
+                f"compiled_dependencies={timing['compiled_dependency_package_count']} "
+                f"resolved_registry_packages={registry_package_count}",
+            )
+    except RustCrateArtifactError:
+        raise
+    except Exception as exc:
+        raise RustCrateArtifactError(
+            "rust_dependency_cache_failed",
+            "the isolated Rust dependency cache could not prepare or retain build artifacts",
+            version=version,
+            phase="rust_dependency_cache",
+            details={
+                "cache_operation": cache_operation,
+                "cache_error": {
+                    "type": type(exc).__name__,
+                    "message": str(exc),
+                },
+            },
+        ) from exc
 
     install_entry = installed_public_artifact_entry(
         "sdk-rust",
@@ -8218,6 +8354,151 @@ def probe_error_payload(exc: Exception) -> dict[str, Any]:
     return payload
 
 
+RUST_MATRIX_SCENARIOS = (
+    "rust_worker_rust_php_python_clients",
+    "python_worker_rust_client",
+    "php_worker_rust_client",
+    "rust_query_error_and_immutability",
+    "rust_replayed_instance_state_query_after_cold_restart",
+)
+
+
+def classify_rust_setup_failure(error: dict[str, Any]) -> dict[str, Any]:
+    command = error.get("command")
+    command_output = ""
+    return_code: int | None = None
+    if isinstance(command, dict):
+        command_output = "\n".join([
+            str(command.get("stdout") or ""),
+            str(command.get("stderr") or ""),
+        ]).lower()
+        candidate_return_code = command.get("exit_code")
+        if isinstance(candidate_return_code, int):
+            return_code = candidate_return_code
+
+    code = str(error.get("code") or "")
+    phase = str(error.get("phase") or "")
+    runner_patterns = {
+        "rust_cache_storage_unavailable": (
+            "no space left on device",
+            "disk quota exceeded",
+            "read-only file system",
+            "permission denied",
+        ),
+        "rust_registry_transport_unavailable": (
+            "failed to download",
+            "failed to get successful http response",
+            "spurious network error",
+            "could not resolve host",
+            "connection timed out",
+            "connection reset",
+            "network is unreachable",
+        ),
+    }
+    for blocker_kind, patterns in runner_patterns.items():
+        if any(pattern in command_output for pattern in patterns):
+            return {
+                "runner_blocked": True,
+                "blocker_kind": blocker_kind,
+                "owner": "conformance_harness",
+                "failure_scope": "rust_setup",
+            }
+
+    if return_code in {137, 143} or "signal: 9, sigkill" in command_output:
+        return {
+            "runner_blocked": True,
+            "blocker_kind": "rust_build_runner_resource_exhausted",
+            "owner": "conformance_harness",
+            "failure_scope": "rust_setup",
+        }
+
+    failed_package_match = re.search(r"could not compile [`']([^`']+)[`']", command_output)
+    if failed_package_match is not None or "error[" in command_output:
+        failed_package = failed_package_match.group(1) if failed_package_match is not None else "unknown"
+        owner = "conformance_harness" if failed_package == "signals-queries-published-probe" else "sdk-rust"
+        return {
+            "runner_blocked": False,
+            "blocker_kind": "rust_crate_or_probe_compilation_failed",
+            "owner": owner,
+            "failure_scope": "published_artifact_compilation",
+            "failed_package": failed_package,
+        }
+
+    if code == "rust_crate_resolution_failed" and "no matching package" in command_output:
+        return {
+            "runner_blocked": False,
+            "blocker_kind": "rust_published_crate_unavailable",
+            "owner": "sdk-rust",
+            "failure_scope": "published_artifact_resolution",
+        }
+
+    if code == "rust_dependency_cache_failed" or phase == "rust_dependency_cache":
+        return {
+            "runner_blocked": True,
+            "blocker_kind": "rust_dependency_cache_unavailable",
+            "owner": "conformance_harness",
+            "failure_scope": "rust_setup",
+        }
+
+    return {
+        "runner_blocked": True,
+        "blocker_kind": "rust_setup_failure_unclassified",
+        "owner": "conformance_harness",
+        "failure_scope": "rust_setup",
+    }
+
+
+def rust_setup_failure_evidence(
+    error: dict[str, Any],
+    versions: dict[str, Any],
+) -> dict[str, Any]:
+    classification = classify_rust_setup_failure(error)
+    retained_error = dict(error)
+    retained_error["classification"] = classification
+    finding_id = "signal_query_rust_published_artifact_setup_failed"
+    status = "runner_blocked" if classification["runner_blocked"] else "fail"
+    finding = {
+        "id": finding_id,
+        "type": finding_id,
+        "scenario_id": RUST_MATRIX_SCENARIOS[0],
+        "owner": classification["owner"],
+        "title": "Rust published-artifact matrix could not start",
+        "current_evidence": {
+            "published_artifact_evidence_present": True,
+            "setup_failure": retained_error,
+        },
+        "acceptance": [
+            "build the exact published Rust SDK and generated conformance probe",
+            "retain bounded Cargo diagnostics and cache filesystem diagnostics on failure",
+            "run the Rust same-language, cross-language, error, and replay cells",
+        ],
+    }
+    if status == "runner_blocked":
+        finding["blocker_kind"] = classification["blocker_kind"]
+    else:
+        finding["observed_behavior"] = (
+            "the exact published Rust artifact or generated probe did not compile"
+        )
+
+    scenario_results: dict[str, dict[str, Any]] = {}
+    for index, scenario in enumerate(RUST_MATRIX_SCENARIOS):
+        scenario_results[scenario] = {
+            "scenario_id": scenario,
+            "status": status,
+            "observed_outputs": {
+                "published_artifact_versions": dict(versions),
+                "artifact_sources": dict(EXPECTED_ARTIFACT_SOURCES),
+                "setup_failure": retained_error,
+            },
+            "linked_findings": [finding if index == 0 else finding_id],
+        }
+    return {
+        "artifact_versions": dict(versions),
+        "scenario_results": scenario_results,
+        "setup_failure": retained_error,
+    }
+
+
 def run_baseline_probe(result_dir: Path) -> tuple[dict[str, Any] | None, dict[str, Any] | None]:
     if not env_flag("DW_SIGNALS_QUERIES_RUN_BASELINE_PROBE", True):
         return None, {"skipped": "disabled_by_env"}
@@ -8349,18 +8630,14 @@ def run_baseline_probe(result_dir: Path) -> tuple[dict[str, Any] | None, dict[st
                 install_entries["sdk-rust"] = rust_install
             except Exception as exc:  # noqa: BLE001 - preserve the non-Rust shards and focused Rust finding.
                 rust_install_error = probe_error_payload(exc)
+                rust_matrix_evidence = rust_setup_failure_evidence(rust_install_error, versions)
+                rust_install_error = dict(rust_matrix_evidence["setup_failure"])
                 log_line(log_file, f"Rust published-artifact matrix failed: {type(exc).__name__}: {exc}")
                 rust_matrix_descriptor = {
                     "error": f"{type(exc).__name__}: {exc}",
                     "artifact_error": rust_install_error,
                     "log_file": log_file.name,
-                    "generated_scenarios": [
-                        "rust_worker_rust_php_python_clients",
-                        "python_worker_rust_client",
-                        "php_worker_rust_client",
-                        "rust_query_error_and_immutability",
-                        "rust_replayed_instance_state_query_after_cold_restart",
-                    ],
+                    "generated_scenarios": list(RUST_MATRIX_SCENARIOS),
                 }
         if "sdk-rust" not in install_entries:
             rust_install = configured_artifact_entry(
@@ -8388,13 +8665,34 @@ def run_baseline_probe(result_dir: Path) -> tuple[dict[str, Any] | None, dict[st
             ),
             "local_product_source_checkouts_used": False,
         }
-        install_status = "pass" if install_outputs_cover_required_artifacts(install_outputs) else "not_covered"
+        rust_setup_classification = (
+            rust_install_error.get("classification")
+            if isinstance(rust_install_error, dict)
+            else None
+        )
+        if isinstance(rust_install_error, dict):
+            install_outputs["rust_setup_failure"] = rust_install_error
+        if install_outputs_cover_required_artifacts(install_outputs):
+            install_status = "pass"
+        elif (
+            isinstance(rust_setup_classification, dict)
+            and rust_setup_classification.get("runner_blocked") is True
+        ):
+            install_status = "runner_blocked"
+        elif isinstance(rust_install_error, dict):
+            install_status = "fail"
+        else:
+            install_status = "not_covered"
         scenario_results: dict[str, dict[str, Any]] = {
             "published_artifact_install_only": {
                 "status": install_status,
                 "observed_outputs": install_outputs,
             },
         }
+        if isinstance(rust_install_error, dict):
+            scenario_results["published_artifact_install_only"]["linked_findings"] = [
+                "signal_query_rust_published_artifact_setup_failed"
+            ]
         generated_scenarios.append("published_artifact_install_only")
         if isinstance(rust_matrix_evidence, dict):
             rust_scenarios = rust_matrix_evidence.get("scenario_results")
@@ -8438,10 +8736,7 @@ def run_baseline_probe(result_dir: Path) -> tuple[dict[str, Any] | None, dict[st
                         candidate = cross_results.get("python_worker_php_facing_and_cli_clients")
                         if isinstance(candidate, dict):
                             python_worker_php_cross_result = candidate
-                if (
-                    install_status == "pass"
-                    and has_required_evidence("python_worker_cli_and_sdk_baseline", python_sdk_outputs)
-                ):
+                if has_required_evidence("python_worker_cli_and_sdk_baseline", python_sdk_outputs):
                     python_sdk_status = "pass"
             except Exception as exc:  # noqa: BLE001 - keep the older shards routed when the SDK baseline is missing.
                 log_line(log_file, f"Python SDK baseline probe failed: {type(exc).__name__}: {exc}")
@@ -8496,10 +8791,7 @@ def run_baseline_probe(result_dir: Path) -> tuple[dict[str, Any] | None, dict[st
                         candidate = cross_results.get("php_worker_python_and_cli_clients")
                         if isinstance(candidate, dict):
                             php_worker_python_cross_result = candidate
-                if (
-                    install_status == "pass"
-                    and has_required_evidence("php_worker_cli_and_sdk_baseline", sdk_php_outputs)
-                ):
+                if has_required_evidence("php_worker_cli_and_sdk_baseline", sdk_php_outputs):
                     sdk_php_status = "pass"
             except Exception as exc:  # noqa: BLE001 - leave a focused mirror finding and preserve sibling cells.
                 log_line(log_file, f"PHP worker mirror probe failed: {type(exc).__name__}: {exc}")
@@ -13626,7 +13918,42 @@ pins = {
 }
 write_json(result_dir / "pins.json", pins)
 
+
+def retained_runner_blockers(
+    results: dict[str, dict[str, Any]],
+) -> list[dict[str, Any]]:
+    blockers: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for scenario_id, scenario_result in results.items():
+        if scenario_result.get("status") != "runner_blocked":
+            continue
+        observed = scenario_result.get("observed_outputs")
+        if not isinstance(observed, dict):
+            continue
+        setup_failure = observed.get("setup_failure") or observed.get("rust_setup_failure")
+        if not isinstance(setup_failure, dict):
+            continue
+        classification = setup_failure.get("classification")
+        blocker_kind = (
+            str(classification.get("blocker_kind") or "runner_setup_failure")
+            if isinstance(classification, dict)
+            else "runner_setup_failure"
+        )
+        identity = json.dumps(setup_failure, sort_keys=True, separators=(",", ":"))
+        digest = hashlib.sha256(identity.encode("utf-8")).hexdigest()
+        if digest in seen:
+            continue
+        seen.add(digest)
+        blockers.append({
+            "scenario_id": scenario_id,
+            "blocker_kind": blocker_kind,
+            "setup_failure": setup_failure,
+        })
+    return blockers
+
+
 runner_blocked = any(item["status"] == "runner_blocked" for item in scenario_results.values())
+runner_blockers = retained_runner_blockers(scenario_results)
 
 run_metadata = {
     "schema": "durable-workflow.v2.signal-query-runtime.run-metadata",
@@ -13638,6 +13965,8 @@ run_metadata = {
 }
 if runner_blocked and baseline_readiness_blocker is not None:
     run_metadata["runner_blocker"] = baseline_readiness_blocker
+if runner_blockers:
+    run_metadata["runner_blockers"] = runner_blockers
 write_json(result_dir / "run-metadata.json", run_metadata)
 write_json(result_dir / "signals-queries-findings.json", findings)
 
@@ -13839,6 +14168,8 @@ if behavior_failure_diagnostics:
     result["behavior_failure_diagnostics"] = behavior_failure_diagnostics
 if runner_blocked and baseline_readiness_blocker is not None:
     result["runner_blocker"] = baseline_readiness_blocker
+if runner_blockers:
+    result["runner_blockers"] = runner_blockers
 write_json(result_dir / "signals-queries-result.json", result)
 
 ordered_record_outputs = scenario_results.get("ordered_signal_delivery", {}).get("observed_outputs", {})
@@ -13864,6 +14195,8 @@ if behavior_failure_diagnostics:
     record["behavior_failure_diagnostics"] = behavior_failure_diagnostics
 if runner_blocked and baseline_readiness_blocker is not None:
     record["runner_blocker"] = baseline_readiness_blocker
+if runner_blockers:
+    record["runner_blockers"] = runner_blockers
 write_json(result_dir / "signals-queries-record.json", record)
 
 stdout_record = {"outcome": outcome, "result_dir": str(result_dir)}

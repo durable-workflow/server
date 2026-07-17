@@ -457,10 +457,8 @@ PY);
     public function test_result_gate_rejects_probe_package_version_as_rust_sdk_provenance(): void
     {
         $result = $this->completeSignalQueryResult();
-        $result['scenario_results']['rust_worker_rust_php_python_clients']['observed_outputs']
-            ['rust_sdk_version'] = '0.0.0';
-        $result['scenario_results']['rust_worker_rust_php_python_clients']['observed_outputs']
-            ['rust_worker_registration']['sdk_version'] = 'signals-queries-published-probe/0.0.0';
+        $result['scenario_results']['rust_worker_rust_php_python_clients']['observed_outputs']['rust_sdk_version'] = '0.0.0';
+        $result['scenario_results']['rust_worker_rust_php_python_clients']['observed_outputs']['rust_worker_registration']['sdk_version'] = 'signals-queries-published-probe/0.0.0';
 
         $evaluation = SignalQueryRuntimeResultGate::evaluate($result);
         $failureCodes = array_column($evaluation['gate_failures'], 'code');
@@ -488,9 +486,7 @@ PY);
     public function test_result_gate_rejects_replay_query_command_mutation(): void
     {
         $result = $this->completeSignalQueryResult();
-        $result['scenario_results']['rust_replayed_instance_state_query_after_cold_restart']
-            ['observed_outputs']['immutability_checkpoints']['cold_restarted']
-            ['after_successful_and_failed_queries']['workflow_command_count'] = 2;
+        $result['scenario_results']['rust_replayed_instance_state_query_after_cold_restart']['observed_outputs']['immutability_checkpoints']['cold_restarted']['after_successful_and_failed_queries']['workflow_command_count'] = 2;
 
         $evaluation = SignalQueryRuntimeResultGate::evaluate($result);
         $failureCodes = array_column($evaluation['gate_failures'], 'code');
@@ -502,8 +498,7 @@ PY);
     public function test_result_gate_rejects_undocumented_rust_stable_outcome_reason(): void
     {
         $result = $this->completeSignalQueryResult();
-        $result['scenario_results']['rust_query_error_and_immutability']['observed_outputs']
-            ['malformed_query_payload']['reason'] = 'server_error';
+        $result['scenario_results']['rust_query_error_and_immutability']['observed_outputs']['malformed_query_payload']['reason'] = 'server_error';
 
         $evaluation = SignalQueryRuntimeResultGate::evaluate($result);
         $failureCodes = array_column($evaluation['gate_failures'], 'code');
@@ -516,8 +511,7 @@ PY);
     {
         foreach (['missing', 'changed'] as $mutation) {
             $result = $this->completeSignalQueryResult();
-            $terminalSignal = &$result['scenario_results']['rust_query_error_and_immutability']
-                ['observed_outputs']['terminal_signal'];
+            $terminalSignal = &$result['scenario_results']['rust_query_error_and_immutability']['observed_outputs']['terminal_signal'];
 
             if ($mutation === 'missing') {
                 unset($terminalSignal['rejection_reason']);
@@ -547,9 +541,7 @@ PY);
     public function test_result_gate_recomputes_completed_replay_failed_query_immutability(): void
     {
         $result = $this->completeSignalQueryResult();
-        $result['scenario_results']['rust_replayed_instance_state_query_after_cold_restart']
-            ['observed_outputs']['immutability_checkpoints']['completed']
-            ['answer_after_failed_query'] = 6;
+        $result['scenario_results']['rust_replayed_instance_state_query_after_cold_restart']['observed_outputs']['immutability_checkpoints']['completed']['answer_after_failed_query'] = 6;
 
         $evaluation = SignalQueryRuntimeResultGate::evaluate($result);
         $failureCodes = array_column($evaluation['gate_failures'], 'code');
@@ -892,7 +884,7 @@ PY);
     public function test_host_runner_script_names_every_remaining_parity_split_out(): void
     {
         $source = (string) file_get_contents(
-            dirname(__DIR__, 2) . '/scripts/conformance/signals-queries-published-artifacts.sh',
+            dirname(__DIR__, 2).'/scripts/conformance/signals-queries-published-artifacts.sh',
         );
 
         foreach ([
@@ -965,11 +957,11 @@ PY);
         );
 
         foreach ([
-            'build_waterline_observer_' . 'captures(',
-            'waterline-selected-run-' . 'detail.json',
-            'waterline-selected-run-' . 'query.json',
-            '--selected-run-detail-capture=' . '/app/conformance',
-            '--selected-run-query-capture=' . '/app/conformance',
+            'build_waterline_observer_'.'captures(',
+            'waterline-selected-run-'.'detail.json',
+            'waterline-selected-run-'.'query.json',
+            '--selected-run-detail-capture='.'/app/conformance',
+            '--selected-run-query-capture='.'/app/conformance',
         ] as $forbiddenNeedle) {
             $this->assertStringNotContainsString($forbiddenNeedle, $source);
         }
@@ -978,7 +970,7 @@ PY);
     public function test_host_runner_keeps_bind_mounts_host_owned_and_registers_cleanup_before_startup(): void
     {
         $source = (string) file_get_contents(
-            dirname(__DIR__, 2) . '/scripts/conformance/signals-queries-published-artifacts.sh',
+            dirname(__DIR__, 2).'/scripts/conformance/signals-queries-published-artifacts.sh',
         );
 
         foreach ([
@@ -1007,7 +999,7 @@ PY);
 
     public function test_cleanup_regression_terminates_a_populated_isolated_run_and_checks_exact_resources(): void
     {
-        $script = dirname(__DIR__, 2) . '/scripts/conformance/signals-queries-cleanup-regression.sh';
+        $script = dirname(__DIR__, 2).'/scripts/conformance/signals-queries-cleanup-regression.sh';
         $source = (string) file_get_contents($script);
 
         $this->assertFileIsExecutable($script);
@@ -1060,10 +1052,10 @@ PY);
     public function test_host_runner_executes_the_exact_published_rust_matrix(): void
     {
         $runner = (string) file_get_contents(
-            dirname(__DIR__, 2) . '/scripts/conformance/signals-queries-published-artifacts.sh',
+            dirname(__DIR__, 2).'/scripts/conformance/signals-queries-published-artifacts.sh',
         );
         $probe = (string) file_get_contents(
-            dirname(__DIR__, 2) . '/scripts/conformance/signals-queries-rust-probe.rs',
+            dirname(__DIR__, 2).'/scripts/conformance/signals-queries-rust-probe.rs',
         );
 
         foreach ([
@@ -1202,35 +1194,47 @@ try:
     )
 
     with rust_dependency_cache_session(run_root, identity) as cold:
-        deps = cold["cargo_target"] / "release" / "deps"
-        fingerprint = cold["cargo_target"] / "release" / ".fingerprint" / "signals-queries-published-probe-a"
+        cold_build_target, cold_restore = rust_dependency_build_target(run_root, cold)
+        deps = cold_build_target / "release" / "deps"
+        fingerprint = cold_build_target / "release" / ".fingerprint" / "signals-queries-published-probe-a"
         deps.mkdir(parents=True)
         fingerprint.mkdir(parents=True)
         (deps / "libdependency.rlib").write_text("dependency", encoding="utf-8")
         (deps / "signals_queries_published_probe-a").write_text("probe", encoding="utf-8")
-        binary = cold["cargo_target"] / "release" / "signals-queries-published-probe"
+        binary = cold_build_target / "release" / "signals-queries-published-probe"
         binary.write_text("probe", encoding="utf-8")
-        purge_cached_rust_probe_outputs(cold["cargo_target"])
+        purge_cached_rust_probe_outputs(cold_build_target)
+        cold_persist_seconds = persist_rust_dependency_build_target(cold_build_target, cold)
         cold_evidence = complete_rust_dependency_cache_session(cold, {
             "captured_at": now(),
             "elapsed_seconds": 240.0,
             "compiled_package_count": 178,
             "compiled_dependency_package_count": 177,
             "resolved_registry_package_count": 177,
+            **cold_restore,
+            "persist_elapsed_seconds": cold_persist_seconds,
         })
+        shutil.rmtree(cold_build_target)
 
     with rust_dependency_cache_session(run_root, identity) as warm:
-        dependency_survived = (warm["cargo_target"] / "release" / "deps" / "libdependency.rlib").is_file()
+        warm_build_target, warm_restore = rust_dependency_build_target(run_root, warm)
+        dependency_survived = (
+            warm_build_target / "release" / "deps" / "libdependency.rlib"
+        ).is_file()
         probe_survived = any(
-            warm["cargo_target"].glob("release/**/signals_queries_published_probe-*")
-        ) or (warm["cargo_target"] / "release" / "signals-queries-published-probe").exists()
+            warm_build_target.glob("release/**/signals_queries_published_probe-*")
+        ) or (warm_build_target / "release" / "signals-queries-published-probe").exists()
+        warm_persist_seconds = persist_rust_dependency_build_target(warm_build_target, warm)
         warm_evidence = complete_rust_dependency_cache_session(warm, {
             "captured_at": now(),
             "elapsed_seconds": 1.25,
             "compiled_package_count": 1,
             "compiled_dependency_package_count": 0,
             "resolved_registry_package_count": 177,
+            **warm_restore,
+            "persist_elapsed_seconds": warm_persist_seconds,
         })
+        shutil.rmtree(warm_build_target)
 
     stale = cache_root / ("f" * 64)
     stale.mkdir()
@@ -1240,7 +1244,7 @@ try:
         run_root,
         ["cargo", "build"],
         cargo_home=cache_root / identity["key"] / "cargo-home",
-        cargo_target=cache_root / identity["key"] / "target",
+        cargo_target=run_root / "isolated-build-target",
     )
     os.environ["DW_SIGNALS_QUERIES_RUST_CACHE_DIR"] = str(run_root / "cache")
     try:
@@ -1268,6 +1272,9 @@ try:
             cache_root / identity["key"] / "cargo-home", "/cache/cargo-home"
         ) in command,
         "cargo_target_mounted": docker_volume_spec(
+            run_root / "isolated-build-target", "/cache/target"
+        ) in command,
+        "shared_target_mounted": docker_volume_spec(
             cache_root / identity["key"] / "target", "/cache/target"
         ) in command,
     }, sort_keys=True))
@@ -1280,6 +1287,8 @@ PY);
         $this->assertTrue($result['reused']);
         $this->assertSame(177, $result['timings']['cold']['compiled_dependency_package_count']);
         $this->assertSame(0, $result['timings']['warm']['compiled_dependency_package_count']);
+        $this->assertFalse($result['timings']['cold']['dependency_artifacts_restored']);
+        $this->assertTrue($result['timings']['warm']['dependency_artifacts_restored']);
         $this->assertTrue($result['dependency_survived']);
         $this->assertFalse($result['probe_survived']);
         $this->assertFalse($result['probe_binary_shared']);
@@ -1298,6 +1307,7 @@ PY);
         $this->assertSame($result['identity'], $result['user']);
         $this->assertTrue($result['cargo_home_mounted']);
         $this->assertTrue($result['cargo_target_mounted']);
+        $this->assertFalse($result['shared_target_mounted']);
     }
 
     public function test_rust_matrix_preserves_completed_cells_and_continues_after_a_later_failure(): void
@@ -1798,6 +1808,77 @@ PY);
         }
     }
 
+    public function test_rust_setup_failure_retains_cargo_tail_and_routes_infrastructure_separately(): void
+    {
+        $result = $this->runSignalQueryRunnerPythonSnippet(<<<'PY'
+versions = {
+    "server": "0.2.669",
+    "cli": "0.1.92",
+    "sdk-python": "0.4.101",
+    "sdk-rust": "0.1.16",
+    "sdk-php": "0.1.9",
+    "workflow": "2.0.0-alpha.289",
+    "waterline": "2.0.0-alpha.136",
+}
+
+def artifact_error(stderr, returncode=101):
+    return probe_error_payload(RustCrateArtifactError(
+        "rust_crate_build_failed",
+        "build failed",
+        version=versions["sdk-rust"],
+        phase="cargo_build_locked_release",
+        command_result=subprocess.CompletedProcess(
+            args=["cargo", "build", "--locked", "--release"],
+            returncode=returncode,
+            stdout="",
+            stderr=stderr,
+        ),
+    ))
+
+long_error = artifact_error(
+    ("   Compiling dependency v1.0.0\n" * 1000)
+    + "error[E0425]: cannot find value `missing`\n"
+    + "error: could not compile `signals-queries-published-probe` (bin) due to 1 previous error"
+)
+compile_evidence = rust_setup_failure_evidence(long_error, versions)
+storage_error = artifact_error("error: No space left on device")
+storage_evidence = rust_setup_failure_evidence(storage_error, versions)
+print(json.dumps({
+    "stderr": long_error["command"]["stderr"],
+    "stderr_length": len(long_error["command"]["stderr"]),
+    "compile_classification": compile_evidence["setup_failure"]["classification"],
+    "compile_statuses": sorted({
+        item["status"] for item in compile_evidence["scenario_results"].values()
+    }),
+    "compile_finding_dict_count": sum(
+        isinstance(item["linked_findings"][0], dict)
+        for item in compile_evidence["scenario_results"].values()
+    ),
+    "storage_classification": storage_evidence["setup_failure"]["classification"],
+    "storage_statuses": sorted({
+        item["status"] for item in storage_evidence["scenario_results"].values()
+    }),
+}, sort_keys=True))
+PY);
+
+        $this->assertLessThanOrEqual(8192, $result['stderr_length']);
+        $this->assertStringContainsString('characters omitted', $result['stderr']);
+        $this->assertStringContainsString(
+            'could not compile `signals-queries-published-probe`',
+            $result['stderr'],
+        );
+        $this->assertFalse($result['compile_classification']['runner_blocked']);
+        $this->assertSame('conformance_harness', $result['compile_classification']['owner']);
+        $this->assertSame(['fail'], $result['compile_statuses']);
+        $this->assertSame(1, $result['compile_finding_dict_count']);
+        $this->assertTrue($result['storage_classification']['runner_blocked']);
+        $this->assertSame(
+            'rust_cache_storage_unavailable',
+            $result['storage_classification']['blocker_kind'],
+        );
+        $this->assertSame(['runner_blocked'], $result['storage_statuses']);
+    }
+
     public function test_host_runner_rejects_missing_or_changed_rust_terminal_rejection_reason(): void
     {
         $result = $this->runSignalQueryRunnerPythonSnippet(<<<'PY'
@@ -1860,7 +1941,7 @@ PY);
     public function test_waterline_observer_scaffolds_laravel_app_before_runtime_environment_is_applied(): void
     {
         $source = (string) file_get_contents(
-            dirname(__DIR__, 2) . '/scripts/conformance/signals-queries-published-artifacts.sh',
+            dirname(__DIR__, 2).'/scripts/conformance/signals-queries-published-artifacts.sh',
         );
         $anchor = 'log_file = result_dir / "waterline-signals-queries-observer.log"';
         $anchorPosition = strpos($source, $anchor);
@@ -1883,7 +1964,7 @@ PY);
     public function test_waterline_observer_uses_mysql_capable_published_server_image(): void
     {
         $source = (string) file_get_contents(
-            dirname(__DIR__, 2) . '/scripts/conformance/signals-queries-published-artifacts.sh',
+            dirname(__DIR__, 2).'/scripts/conformance/signals-queries-published-artifacts.sh',
         );
         $anchor = 'def waterline_php_docker_image() -> str:';
         $anchorPosition = strpos($source, $anchor);
@@ -1906,7 +1987,7 @@ PY);
     public function test_adversarial_probe_does_not_reuse_prior_probe_server_urls(): void
     {
         $source = (string) file_get_contents(
-            dirname(__DIR__, 2) . '/scripts/conformance/signals-queries-published-artifacts.sh',
+            dirname(__DIR__, 2).'/scripts/conformance/signals-queries-published-artifacts.sh',
         );
         $start = strpos($source, "\ndef run_adversarial_probe(");
         $end = $start === false ? false : strpos($source, "\n\ndef merge_probe_evidence(", $start);
@@ -1929,7 +2010,7 @@ PY);
     public function test_host_runner_records_configured_baseline_overrides_as_non_published_sources(): void
     {
         $source = (string) file_get_contents(
-            dirname(__DIR__, 2) . '/scripts/conformance/signals-queries-published-artifacts.sh',
+            dirname(__DIR__, 2).'/scripts/conformance/signals-queries-published-artifacts.sh',
         );
 
         foreach ([
@@ -1947,10 +2028,10 @@ PY);
             '"durableworkflow_server_exact_tag_or_digest"',
             'status="not_proved"',
             'installed_from_public_artifact=False',
-            'install_status = "pass" if install_outputs_cover_required_artifacts(install_outputs) else "not_covered"',
-            'install_status == "pass"',
-            'and has_required_evidence("python_worker_cli_and_sdk_baseline", python_sdk_outputs)',
-            'and has_required_evidence("php_worker_cli_and_sdk_baseline", sdk_php_outputs)',
+            'if install_outputs_cover_required_artifacts(install_outputs):',
+            'install_status = "runner_blocked"',
+            'if has_required_evidence("python_worker_cli_and_sdk_baseline", python_sdk_outputs):',
+            'if has_required_evidence("php_worker_cli_and_sdk_baseline", sdk_php_outputs):',
             '"status": install_status',
             '"status": python_sdk_status',
             '"status": sdk_php_status',
@@ -2349,7 +2430,7 @@ PY);
     public function test_host_runner_uses_the_official_python_avro_runtime(): void
     {
         $source = (string) file_get_contents(
-            dirname(__DIR__, 2) . '/scripts/conformance/signals-queries-published-artifacts.sh',
+            dirname(__DIR__, 2).'/scripts/conformance/signals-queries-published-artifacts.sh',
         );
 
         foreach ([
@@ -2363,7 +2444,7 @@ PY);
             $this->assertStringContainsString($needle, $source);
         }
 
-        $this->assertStringNotContainsString('def decode_' . 'avro_long(', $source);
+        $this->assertStringNotContainsString('def decode_'.'avro_long(', $source);
     }
 
     public function test_host_runner_public_snapshot_reads_control_plane_history_events(): void
@@ -2997,7 +3078,7 @@ PY);
     public function test_adversarial_recovery_query_is_synchronized_directly_after_server_errors(): void
     {
         $body = file_get_contents(
-            dirname(__DIR__, 2) . '/scripts/conformance/signals-queries-published-artifacts.sh',
+            dirname(__DIR__, 2).'/scripts/conformance/signals-queries-published-artifacts.sh',
         );
         $this->assertIsString($body);
 
@@ -4243,6 +4324,55 @@ PY);
         $this->assertSame([], $evaluation['gate_failures']);
     }
 
+    public function test_host_runner_retains_rust_setup_diagnostics_in_result_and_record(): void
+    {
+        $evidence = $this->completeSignalQueryResultForCurrentHostRunner();
+        $scenario = &$evidence['scenario_results']['rust_worker_rust_php_python_clients'];
+        $setupFailure = [
+            'type' => 'RustCrateArtifactError',
+            'code' => 'rust_crate_build_failed',
+            'phase' => 'cargo_build_locked_release',
+            'command' => [
+                'command' => ['cargo', 'build', '--locked', '--release'],
+                'exit_code' => 101,
+                'stdout' => '',
+                'stderr' => 'error: No space left on device',
+            ],
+            'classification' => [
+                'runner_blocked' => true,
+                'blocker_kind' => 'rust_cache_storage_unavailable',
+                'owner' => 'conformance_harness',
+                'failure_scope' => 'rust_setup',
+            ],
+        ];
+        $scenario['status'] = 'runner_blocked';
+        $scenario['observed_outputs']['setup_failure'] = $setupFailure;
+        $scenario['linked_findings'] = [[
+            'id' => 'signal_query_rust_published_artifact_setup_failed',
+            'type' => 'signal_query_rust_published_artifact_setup_failed',
+            'scenario_id' => 'rust_worker_rust_php_python_clients',
+            'owner' => 'conformance_harness',
+            'title' => 'Rust published-artifact matrix could not start',
+            'blocker_kind' => 'rust_cache_storage_unavailable',
+            'current_evidence' => ['setup_failure' => $setupFailure],
+            'acceptance' => ['make the Rust cache filesystem writable'],
+        ]];
+
+        $artifacts = $this->runSignalQueryHostRunnerArtifacts($evidence);
+
+        $this->assertSame('non_passing_runner_blocked', $artifacts['result']['outcome']);
+        $this->assertTrue($artifacts['result']['runner_blocked']);
+        $this->assertCount(1, $artifacts['result']['runner_blockers']);
+        $this->assertSame(
+            'error: No space left on device',
+            $artifacts['result']['runner_blockers'][0]['setup_failure']['command']['stderr'],
+        );
+        $this->assertSame(
+            $artifacts['result']['runner_blockers'],
+            $artifacts['record']['runner_blockers'],
+        );
+    }
+
     public function test_host_runner_does_not_promote_probe_only_adversarial_evidence_to_install_pass(): void
     {
         $complete = $this->completeSignalQueryResultForCurrentHostRunner();
@@ -4856,8 +4986,7 @@ PY);
         $this->assertSame(
             ['server', 'cli', 'sdk-php', 'sdk-python', 'sdk-rust'],
             array_column(
-                $result['scenario_results']['published_artifact_install_only']['observed_outputs']
-                    ['artifact_install_evidence']['artifacts'],
+                $result['scenario_results']['published_artifact_install_only']['observed_outputs']['artifact_install_evidence']['artifacts'],
                 'artifact',
             ),
         );
@@ -5543,8 +5672,7 @@ PY);
     {
         $evidence = $this->completeSignalQueryResultForCurrentHostRunner();
         unset(
-            $evidence['scenario_results']['malformed_signal_and_query_payloads']['observed_outputs']
-                ['cli_invalid_signal_arguments_sample']
+            $evidence['scenario_results']['malformed_signal_and_query_payloads']['observed_outputs']['cli_invalid_signal_arguments_sample']
         );
 
         $result = $this->runSignalQueryHostRunner($evidence);
@@ -6052,7 +6180,7 @@ PY);
             $this->assertNotContains(
                 'invalid_declared_outcome',
                 array_column($evaluation['gate_failures'], 'code'),
-                'Outcome ' . $outcome . ' must remain valid because coverage_gate advertises it.',
+                'Outcome '.$outcome.' must remain valid because coverage_gate advertises it.',
             );
         }
     }
@@ -6141,7 +6269,7 @@ PY);
     {
         foreach (['latest', 'current', 'head', 'unresolved', 'placeholder'] as $placeholder) {
             $result = $this->completeSignalQueryResult();
-            $result['artifactVersions']['server'] = 'durableworkflow/server:' . $placeholder;
+            $result['artifactVersions']['server'] = 'durableworkflow/server:'.$placeholder;
 
             $evaluation = SignalQueryRuntimeResultGate::evaluate($result);
             $serverPlaceholderFailures = array_values(array_filter(
@@ -6152,7 +6280,7 @@ PY);
 
             $this->assertSame('non_passing', $evaluation['status']);
             $this->assertCount(1, $serverPlaceholderFailures);
-            $this->assertSame('durableworkflow/server:' . $placeholder, $serverPlaceholderFailures[0]['version']);
+            $this->assertSame('durableworkflow/server:'.$placeholder, $serverPlaceholderFailures[0]['version']);
         }
     }
 
@@ -6305,69 +6433,53 @@ PY);
         unset($result['scenario_results']['completed_run_signal_and_query']['observed_outputs']['run_status_after_operations']);
         unset($result['terminal_run_behavior']['completed_run_signal_and_query']['run_status_after_operations']);
         unset(
-            $result['scenario_results']['completed_run_signal_and_query']['observed_outputs']
-                ['terminal_state_after_operations']['history_event_count']
+            $result['scenario_results']['completed_run_signal_and_query']['observed_outputs']['terminal_state_after_operations']['history_event_count']
         );
         unset(
-            $result['terminal_run_behavior']['completed_run_signal_and_query']
-                ['terminal_state_after_operations']['history_event_count']
+            $result['terminal_run_behavior']['completed_run_signal_and_query']['terminal_state_after_operations']['history_event_count']
         );
         unset($result['scenario_results']['unknown_signal_and_query_errors']['observed_outputs']['missing_workflow_query']);
         unset($result['adversarial_errors']['unknown_signal_and_query_errors']['missing_workflow_query']);
         unset($result['scenario_results']['malformed_signal_and_query_payloads']['observed_outputs']['invalid_query_arguments']);
         unset($result['adversarial_errors']['malformed_signal_and_query_payloads']['invalid_query_arguments']);
         unset(
-            $result['scenario_results']['malformed_signal_and_query_payloads']['observed_outputs']
-                ['invalid_query_arguments_context']
+            $result['scenario_results']['malformed_signal_and_query_payloads']['observed_outputs']['invalid_query_arguments_context']
         );
         unset(
-            $result['adversarial_errors']['malformed_signal_and_query_payloads']
-                ['invalid_query_arguments_context']
+            $result['adversarial_errors']['malformed_signal_and_query_payloads']['invalid_query_arguments_context']
         );
         unset(
-            $result['scenario_results']['malformed_signal_and_query_payloads']['observed_outputs']
-                ['signal_handler_invocation_count_after_invalid_payload']
+            $result['scenario_results']['malformed_signal_and_query_payloads']['observed_outputs']['signal_handler_invocation_count_after_invalid_payload']
         );
         unset(
-            $result['adversarial_errors']['malformed_signal_and_query_payloads']
-                ['signal_handler_invocation_count_after_invalid_payload']
+            $result['adversarial_errors']['malformed_signal_and_query_payloads']['signal_handler_invocation_count_after_invalid_payload']
         );
         unset(
-            $result['scenario_results']['malformed_signal_and_query_payloads']['observed_outputs']
-                ['sdk_python_invalid_query_arguments_sample']
+            $result['scenario_results']['malformed_signal_and_query_payloads']['observed_outputs']['sdk_python_invalid_query_arguments_sample']
         );
         unset(
-            $result['adversarial_errors']['malformed_signal_and_query_payloads']
-                ['sdk_python_invalid_query_arguments_sample']
+            $result['adversarial_errors']['malformed_signal_and_query_payloads']['sdk_python_invalid_query_arguments_sample']
         );
         unset(
-            $result['scenario_results']['waterline_operator_visibility']['observed_outputs']
-                ['observer_state']['paths']['selected_run_query_template']
+            $result['scenario_results']['waterline_operator_visibility']['observed_outputs']['observer_state']['paths']['selected_run_query_template']
         );
         unset(
-            $result['waterline_observer_comparison']['waterline_operator_visibility']
-                ['observer_state']['paths']['selected_run_query_template']
+            $result['waterline_observer_comparison']['waterline_operator_visibility']['observer_state']['paths']['selected_run_query_template']
         );
         unset(
-            $result['scenario_results']['waterline_operator_visibility']['observed_outputs']
-                ['comparison']['sdk_observation']
+            $result['scenario_results']['waterline_operator_visibility']['observed_outputs']['comparison']['sdk_observation']
         );
         unset(
-            $result['waterline_observer_comparison']['waterline_operator_visibility']
-                ['comparison']['sdk_observation']
+            $result['waterline_observer_comparison']['waterline_operator_visibility']['comparison']['sdk_observation']
         );
         unset(
-            $result['scenario_results']['waterline_operator_visibility']['observed_outputs']
-                ['api_captures']['selected_run_query_action']
+            $result['scenario_results']['waterline_operator_visibility']['observed_outputs']['api_captures']['selected_run_query_action']
         );
         unset(
-            $result['waterline_observer_comparison']['waterline_operator_visibility']
-                ['api_captures']['selected_run_query_action']
+            $result['waterline_observer_comparison']['waterline_operator_visibility']['api_captures']['selected_run_query_action']
         );
-        $result['scenario_results']['waterline_operator_visibility']['observed_outputs']
-            ['comparison']['counter_state_matches_public_clients'] = false;
-        $result['waterline_observer_comparison']['waterline_operator_visibility']
-            ['comparison']['counter_state_matches_public_clients'] = false;
+        $result['scenario_results']['waterline_operator_visibility']['observed_outputs']['comparison']['counter_state_matches_public_clients'] = false;
+        $result['waterline_observer_comparison']['waterline_operator_visibility']['comparison']['counter_state_matches_public_clients'] = false;
 
         $evaluation = SignalQueryRuntimeResultGate::evaluate($result);
         $missingEvidence = array_values(array_filter(
@@ -7172,8 +7284,7 @@ PY);
     }
 
     /**
-     * @param array<string, mixed> $evaluation
-     *
+     * @param  array<string, mixed>  $evaluation
      * @return list<string>
      */
     private function missingRunRecordFields(array $evaluation): array
@@ -7194,8 +7305,7 @@ PY);
     }
 
     /**
-     * @param array<string, mixed> $smokeEvidence
-     *
+     * @param  array<string, mixed>  $smokeEvidence
      * @return array<string, mixed>
      */
     private function runSignalQueryHostRunner(array $smokeEvidence): array
@@ -7204,18 +7314,17 @@ PY);
     }
 
     /**
-     * @param array<string, mixed> $smokeEvidence
-     *
+     * @param  array<string, mixed>  $smokeEvidence
      * @return array{result: array<string, mixed>, record: array<string, mixed>, stdout: array<string, mixed>}
      */
     private function runSignalQueryHostRunnerArtifacts(array $smokeEvidence): array
     {
         $root = dirname(__DIR__, 2);
-        $resultDir = sys_get_temp_dir() . '/dw-signals-queries-test-' . bin2hex(random_bytes(6));
+        $resultDir = sys_get_temp_dir().'/dw-signals-queries-test-'.bin2hex(random_bytes(6));
         mkdir($resultDir);
 
         try {
-            $smokePath = $resultDir . '/smoke.json';
+            $smokePath = $resultDir.'/smoke.json';
             file_put_contents($smokePath, json_encode($smokeEvidence, JSON_THROW_ON_ERROR));
 
             $command = implode(' ', [
@@ -7230,15 +7339,15 @@ PY);
                 'DW_SIGNALS_QUERIES_RUN_ADVERSARIAL_PROBE=0',
                 'DW_SIGNALS_QUERIES_RUN_WATERLINE_OBSERVER_PROBE=0',
                 'DW_SIGNALS_QUERIES_RUN_RUST_MATRIX_PROBE=0',
-                'DW_SIGNALS_QUERIES_SMOKE_EVIDENCE=' . escapeshellarg($smokePath),
-                escapeshellarg($root . '/scripts/conformance/signals-queries-published-artifacts.sh'),
+                'DW_SIGNALS_QUERIES_SMOKE_EVIDENCE='.escapeshellarg($smokePath),
+                escapeshellarg($root.'/scripts/conformance/signals-queries-published-artifacts.sh'),
                 '--result-dir',
                 escapeshellarg($resultDir),
             ]);
 
             $output = [];
             $exitCode = 0;
-            exec($command . ' 2>&1', $output, $exitCode);
+            exec($command.' 2>&1', $output, $exitCode);
 
             $this->assertSame(0, $exitCode, implode("\n", $output));
 
@@ -7256,10 +7365,10 @@ PY);
             }
             $this->assertIsArray($stdoutRecord, implode("\n", $output));
 
-            $resultPath = $resultDir . '/signals-queries-result.json';
+            $resultPath = $resultDir.'/signals-queries-result.json';
             $this->assertFileExists($resultPath);
 
-            $recordPath = $resultDir . '/signals-queries-record.json';
+            $recordPath = $resultDir.'/signals-queries-record.json';
             $this->assertFileExists($recordPath);
 
             return [
@@ -7273,14 +7382,13 @@ PY);
     }
 
     /**
-     * @param array<string, string> $environment
-     *
+     * @param  array<string, string>  $environment
      * @return array{result: array<string, mixed>, record: array<string, mixed>, metadata: array<string, mixed>}
      */
     private function runSignalQueryHostRunnerWithEnvironment(array $environment): array
     {
         $root = dirname(__DIR__, 2);
-        $resultDir = sys_get_temp_dir() . '/dw-signals-queries-test-' . bin2hex(random_bytes(6));
+        $resultDir = sys_get_temp_dir().'/dw-signals-queries-test-'.bin2hex(random_bytes(6));
         mkdir($resultDir);
 
         try {
@@ -7300,37 +7408,37 @@ PY);
             }
 
             $command = implode(' ', array_map(
-                static fn (string $key, string $value): string => $key . '=' . escapeshellarg($value),
+                static fn (string $key, string $value): string => $key.'='.escapeshellarg($value),
                 array_keys($assignments),
                 array_values($assignments),
             ));
-            $command .= ' ' . implode(' ', [
-                escapeshellarg($root . '/scripts/conformance/signals-queries-published-artifacts.sh'),
+            $command .= ' '.implode(' ', [
+                escapeshellarg($root.'/scripts/conformance/signals-queries-published-artifacts.sh'),
                 '--result-dir',
                 escapeshellarg($resultDir),
             ]);
 
             $output = [];
             $exitCode = 0;
-            exec($command . ' 2>&1', $output, $exitCode);
+            exec($command.' 2>&1', $output, $exitCode);
 
             $this->assertSame(0, $exitCode, implode("\n", $output));
 
             return [
                 'result' => json_decode(
-                    (string) file_get_contents($resultDir . '/signals-queries-result.json'),
+                    (string) file_get_contents($resultDir.'/signals-queries-result.json'),
                     true,
                     512,
                     JSON_THROW_ON_ERROR,
                 ),
                 'record' => json_decode(
-                    (string) file_get_contents($resultDir . '/signals-queries-record.json'),
+                    (string) file_get_contents($resultDir.'/signals-queries-record.json'),
                     true,
                     512,
                     JSON_THROW_ON_ERROR,
                 ),
                 'metadata' => json_decode(
-                    (string) file_get_contents($resultDir . '/run-metadata.json'),
+                    (string) file_get_contents($resultDir.'/run-metadata.json'),
                     true,
                     512,
                     JSON_THROW_ON_ERROR,
@@ -7342,8 +7450,7 @@ PY);
     }
 
     /**
-     * @param array<string, mixed> $result
-     *
+     * @param  array<string, mixed>  $result
      * @return array<int, array<string, mixed>>
      */
     private function findingsForScenario(array $result, string $scenarioId): array
@@ -7370,7 +7477,7 @@ PY);
                 continue;
             }
 
-            $path = $directory . DIRECTORY_SEPARATOR . $item;
+            $path = $directory.DIRECTORY_SEPARATOR.$item;
             if (is_dir($path) && ! is_link($path)) {
                 $this->removeDirectory($path);
             } else {
@@ -7382,9 +7489,8 @@ PY);
     }
 
     /**
-     * @param array<string, mixed> $base
-     * @param array<string, mixed> $probe
-     *
+     * @param  array<string, mixed>  $base
+     * @param  array<string, mixed>  $probe
      * @return array<string, mixed>
      */
     private function runProbeEvidenceMerge(array $base, array $probe): array
@@ -7426,7 +7532,7 @@ PY);
     private function probeEvidenceMergeScript(): string
     {
         $source = (string) file_get_contents(
-            dirname(__DIR__, 2) . '/scripts/conformance/signals-queries-published-artifacts.sh',
+            dirname(__DIR__, 2).'/scripts/conformance/signals-queries-published-artifacts.sh',
         );
         $start = strpos($source, "\ndef merge_probe_evidence(");
         $end = $start === false ? false : strpos($source, "\n\nMISSING = object()", $start);
@@ -7458,8 +7564,8 @@ PY);
     {
         $repoRoot = dirname(__DIR__, 2);
         $script = $this->signalQueryRunnerPythonDefinitions()
-            . "\nos.environ[\"REPO_ROOT\"] = " . json_encode($repoRoot, JSON_THROW_ON_ERROR)
-            . "\n" . $snippet;
+            ."\nos.environ[\"REPO_ROOT\"] = ".json_encode($repoRoot, JSON_THROW_ON_ERROR)
+            ."\n".$snippet;
         $process = proc_open(
             ['python3', '-'],
             [
@@ -7490,7 +7596,7 @@ PY);
     private function signalQueryRunnerPythonDefinitions(): string
     {
         $source = (string) file_get_contents(
-            dirname(__DIR__, 2) . '/scripts/conformance/signals-queries-published-artifacts.sh',
+            dirname(__DIR__, 2).'/scripts/conformance/signals-queries-published-artifacts.sh',
         );
         $marker = "python3 - <<'PY'\n";
         $start = strpos($source, $marker);
@@ -7504,9 +7610,8 @@ PY);
     }
 
     /**
-     * @param array<string, string> $versions
-     * @param array<string, string> $sources
-     *
+     * @param  array<string, string>  $versions
+     * @param  array<string, string>  $sources
      * @return array<string, mixed>
      */
     private function installEvidenceForVersions(array $versions, array $sources): array
@@ -7562,8 +7667,7 @@ PY);
     }
 
     /**
-     * @param array<string, mixed> $overrides
-     *
+     * @param  array<string, mixed>  $overrides
      * @return array<string, mixed>
      */
     private function routedCurrentQueryTaskEvidence(array $overrides = []): array
@@ -7660,8 +7764,7 @@ PY);
     }
 
     /**
-     * @param array<string, mixed> $result
-     *
+     * @param  array<string, mixed>  $result
      * @return array<string, mixed>
      */
     private function withFractionalSecondReplayTiming(array $result): array
@@ -7724,8 +7827,8 @@ PY);
     }
 
     /**
-     * @param array<string, mixed> $value
-     * @param array<string, string> $versions
+     * @param  array<string, mixed>  $value
+     * @param  array<string, string>  $versions
      */
     private function replaceDeclaredArtifactVersions(array &$value, array $versions): void
     {
