@@ -11,6 +11,10 @@ exact_publish_outcome="${EXACT_PUBLISH_OUTCOME:-skipped}"
 exact_publish_reason="${EXACT_PUBLISH_REASON:-}"
 exact_verify_outcome="${EXACT_VERIFY_OUTCOME:-skipped}"
 docker_build_outcome="${DOCKER_BUILD_OUTCOME:-skipped}"
+build_cache_identity="${BUILD_CACHE_IDENTITY:-}"
+build_cache_ref="${BUILD_CACHE_REF:-}"
+build_duration_seconds="${BUILD_DURATION_SECONDS:-}"
+warm_cache_target_seconds="${WARM_CACHE_TARGET_SECONDS:-600}"
 protocol_catalog_conformance_outcome="${PROTOCOL_CATALOG_CONFORMANCE_OUTCOME:-skipped}"
 rolling_guard_outcome="${ROLLING_GUARD_OUTCOME:-skipped}"
 rolling_promote_outcome="${ROLLING_PROMOTE_OUTCOME:-skipped}"
@@ -42,6 +46,33 @@ json_string_or_null() {
         json_string "$1"
     else
         printf 'null'
+    fi
+}
+
+json_unsigned_integer_or_null() {
+    value="$1"
+    if [ -z "$value" ]; then
+        printf 'null'
+        return
+    fi
+
+    case "$value" in
+        *[!0-9]*)
+            printf 'Expected an unsigned integer, got %s.\n' "$value" >&2
+            exit 1
+            ;;
+    esac
+
+    printf '%s' "$value"
+}
+
+write_warm_cache_target_met() {
+    if [ -z "$build_duration_seconds" ]; then
+        printf 'null'
+    elif [ "$build_duration_seconds" -le "$warm_cache_target_seconds" ]; then
+        printf 'true'
+    else
+        printf 'false'
     fi
 }
 
@@ -201,7 +232,16 @@ fi
     printf '    "reason": '; json_string_or_null "$exact_publish_reason"; printf ',\n'
     printf '    "build_step_outcome": '; json_string "$docker_build_outcome"; printf ',\n'
     printf '    "verification_outcome": '; json_string "$exact_verify_outcome"; printf ',\n'
-    printf '    "required_platforms": '; write_platform_array; printf '\n'
+    printf '    "required_platforms": '; write_platform_array; printf ',\n'
+    printf '    "cache": {\n'
+    printf '      "identity": '; json_string_or_null "$build_cache_identity"; printf ',\n'
+    printf '      "ref": '; json_string_or_null "$build_cache_ref"; printf '\n'
+    printf '    },\n'
+    printf '    "timing": {\n'
+    printf '      "duration_seconds": '; json_unsigned_integer_or_null "$build_duration_seconds"; printf ',\n'
+    printf '      "warm_cache_target_seconds": '; json_unsigned_integer_or_null "$warm_cache_target_seconds"; printf ',\n'
+    printf '      "warm_cache_target_met": '; write_warm_cache_target_met; printf '\n'
+    printf '    }\n'
     printf '  },\n'
     printf '  "protocol_catalog_conformance": {\n'
     printf '    "outcome": '; json_string "$protocol_catalog_conformance_outcome"; printf ',\n'

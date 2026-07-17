@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Tests\Unit;
 
 use PHPUnit\Framework\TestCase;
+use Symfony\Component\Yaml\Yaml;
 use Workflow\V2\Support\PlatformProtocolSpecs;
 
 class ReleaseImagePublishWorkflowContractTest extends TestCase
@@ -544,7 +545,6 @@ SH);
         $this->assertStringContainsString('Extract exact image metadata', $workflow);
         $this->assertStringContainsString('Build and push exact image tags', $workflow);
         $this->assertStringContainsString('continue-on-error: true', $workflow);
-        $this->assertStringContainsString('cache-to: type=gha,mode=max,ignore-error=true', $workflow);
         $this->assertStringContainsString('Verify exact image publication', $workflow);
         $this->assertStringContainsString('BUILT_IMAGE_DIGEST: ${{ steps.build.outputs.digest }}', $workflow);
         $this->assertStringContainsString('BUILT_IMAGE_METADATA: ${{ steps.build.outputs.metadata }}', $workflow);
@@ -583,6 +583,186 @@ SH);
         $this->assertLessThan($resolveOffset, $exactOffset);
         $this->assertLessThan($promoteOffset, $resolveOffset);
         $this->assertLessThan($evidenceOffset, $promoteOffset);
+    }
+
+    public function test_release_image_cache_is_shared_across_tags_and_invalidates_behavior_inputs(): void
+    {
+        $tmpDir = sys_get_temp_dir().'/release-image-cache-'.bin2hex(random_bytes(4));
+        $this->assertTrue(mkdir($tmpDir.'/scripts/ci', recursive: true));
+
+        $dockerfile = <<<'DOCKERFILE'
+FROM composer:2 AS source
+ARG PHPREDIS_VERSION=6.3.0
+ARG PHPREDIS_COMMIT=df4fab2de7fc327c54c94a13af2b9542e4fbd720
+FROM php:8.3-apache AS base
+ARG WORKFLOW_PACKAGE_SOURCE=https://github.com/durable-workflow/workflow.git
+ARG WORKFLOW_PACKAGE_REF=2.0.0-alpha.291
+ARG WORKFLOW_PACKAGE_COMMIT=518a27492d38bd92bca3e2bb91b9ccf82da9589b
+RUN printf '%s' "$WORKFLOW_PACKAGE_REF"
+FROM base AS production
+DOCKERFILE;
+        $dependencyFiles = [
+            'composer.json' => '{"require":{"php":"^8.2"}}',
+            'composer.lock' => '{"packages":[]}',
+            'scripts/ci/prepare-release-workflow-composer-metadata.php' => '<?php echo "metadata";',
+        ];
+        file_put_contents($tmpDir.'/Dockerfile', $dockerfile);
+        foreach ($dependencyFiles as $path => $contents) {
+            file_put_contents($tmpDir.'/'.$path, $contents);
+        }
+
+        $dockerBin = $tmpDir.'/docker';
+        $dockerScript = <<<'SH'
+#!/usr/bin/env sh
+set -eu
+image="$4"
+case "$image" in
+    composer:2) prefix="1" ;;
+    php:8.3-apache) prefix="2" ;;
+    *) exit 1 ;;
+esac
+manifest_change="${MOCK_MANIFEST_CHANGE:-0}"
+amd64_change="${MOCK_AMD64_CHANGE:-0}"
+arm64_change="${MOCK_ARM64_CHANGE:-0}"
+printf '{"digest":"sha256:%s","manifests":[{"digest":"sha256:%s","platform":{"os":"linux","architecture":"amd64"}},{"digest":"sha256:%s","platform":{"os":"linux","architecture":"arm64"}}]}\n' \
+    "${prefix}${manifest_change}$(printf 'a%.0s' $(seq 1 62))" \
+    "${prefix}${amd64_change}$(printf 'b%.0s' $(seq 1 62))" \
+    "${prefix}${arm64_change}$(printf 'c%.0s' $(seq 1 62))"
+SH;
+        file_put_contents($dockerBin, $dockerScript);
+        chmod($dockerBin, 0755);
+
+        $baseEnv = [
+            'RELEASE_IMAGE_CACHE_ROOT' => $tmpDir,
+            'RELEASE_IMAGE_PLATFORMS' => 'linux/amd64,linux/arm64',
+            'RELEASE_IMAGE_CACHE_IMAGE' => 'ghcr.io/durable-workflow/server',
+            'DOCKER' => $dockerBin,
+            'RELEASE_SOURCE_COMMIT' => str_repeat('a', 40),
+            'PHPREDIS_VERSION' => '6.3.0',
+            'PHPREDIS_COMMIT' => 'df4fab2de7fc327c54c94a13af2b9542e4fbd720',
+            'WORKFLOW_PACKAGE_SOURCE' => 'https://github.com/durable-workflow/workflow.git',
+            'WORKFLOW_PACKAGE_REF' => '2.0.0-alpha.291',
+            'WORKFLOW_PACKAGE_COMMIT' => '518a27492d38bd92bca3e2bb91b9ccf82da9589b',
+        ];
+
+        try {
+            $first = $this->resolveReleaseImageCache($baseEnv + ['RELEASE_TAG' => '0.2.676']);
+            $sibling = $this->resolveReleaseImageCache($baseEnv + ['RELEASE_TAG' => '0.2.677']);
+
+            $this->assertSame($first['identity'], $sibling['identity']);
+            $this->assertSame($first['ref'], $sibling['ref']);
+            $this->assertSame($first['cache_from'], $sibling['cache_from']);
+            $this->assertSame($first['cache_to'], $sibling['cache_to']);
+            $this->assertSame('linux/amd64,linux/arm64', $first['platforms']);
+            $this->assertSame('type=registry,ref='.$first['ref'], $first['cache_from']);
+            $this->assertSame(
+                'type=registry,ref='.$first['ref'].',mode=max,ignore-error=true',
+                $first['cache_to'],
+            );
+
+            $applicationSibling = $this->resolveReleaseImageCache([
+                'RELEASE_TAG' => '0.2.678',
+                'RELEASE_SOURCE_COMMIT' => str_repeat('d', 40),
+            ] + $baseEnv);
+            $this->assertNotSame($first['identity'], $applicationSibling['identity']);
+            $this->assertSame($first['ref'], $applicationSibling['ref']);
+            $this->assertSame($first['cache_from'], $applicationSibling['cache_from']);
+            $this->assertSame($first['cache_to'], $applicationSibling['cache_to']);
+
+            $platformChange = $this->resolveReleaseImageCache(
+                ['RELEASE_IMAGE_PLATFORMS' => 'linux/amd64'] + $baseEnv,
+            );
+            $this->assertNotSame($first['identity'], $platformChange['identity']);
+            $this->assertNotSame($first['ref'], $platformChange['ref']);
+
+            foreach ([
+                ['MOCK_MANIFEST_CHANGE' => '9'],
+                ['MOCK_AMD64_CHANGE' => '8'],
+                ['MOCK_ARM64_CHANGE' => '7'],
+                ['WORKFLOW_PACKAGE_SOURCE' => 'https://example.invalid/workflow.git'],
+                ['WORKFLOW_PACKAGE_REF' => '2.0.0-alpha.292'],
+                ['WORKFLOW_PACKAGE_COMMIT' => str_repeat('9', 40)],
+                ['PHPREDIS_VERSION' => '6.3.1'],
+                ['PHPREDIS_COMMIT' => str_repeat('8', 40)],
+            ] as $change) {
+                $changed = $this->resolveReleaseImageCache($change + $baseEnv);
+                $this->assertNotSame($first['identity'], $changed['identity']);
+                $this->assertSame($first['ref'], $changed['ref']);
+                $this->assertSame($first['cache_from'], $changed['cache_from']);
+                $this->assertSame($first['cache_to'], $changed['cache_to']);
+            }
+
+            file_put_contents($tmpDir.'/Dockerfile', str_replace(
+                'RUN printf',
+                'RUN echo cache-contract && printf',
+                $dockerfile,
+            ));
+            $dockerfileChange = $this->resolveReleaseImageCache($baseEnv);
+            $this->assertNotSame($first['identity'], $dockerfileChange['identity']);
+            $this->assertSame($first['ref'], $dockerfileChange['ref']);
+            file_put_contents($tmpDir.'/Dockerfile', $dockerfile);
+
+            foreach ($dependencyFiles as $path => $contents) {
+                file_put_contents($tmpDir.'/'.$path, $contents."\nchanged");
+                $dependencyChange = $this->resolveReleaseImageCache($baseEnv);
+                $this->assertNotSame($first['identity'], $dependencyChange['identity'], $path);
+                $this->assertSame($first['ref'], $dependencyChange['ref'], $path);
+                $this->assertSame($first['cache_from'], $dependencyChange['cache_from'], $path);
+                $this->assertSame($first['cache_to'], $dependencyChange['cache_to'], $path);
+                file_put_contents($tmpDir.'/'.$path, $contents);
+            }
+        } finally {
+            foreach (array_keys($dependencyFiles) as $path) {
+                @unlink($tmpDir.'/'.$path);
+            }
+            @unlink($tmpDir.'/Dockerfile');
+            @unlink($dockerBin);
+            @rmdir($tmpDir.'/scripts/ci');
+            @rmdir($tmpDir.'/scripts');
+            @rmdir($tmpDir);
+        }
+    }
+
+    public function test_release_workflow_consumes_the_shared_cache_contract(): void
+    {
+        $workflow = Yaml::parseFile($this->repoRoot.'/.github/workflows/release.yml');
+        $publish = $workflow['jobs']['publish'];
+        $steps = [];
+        foreach ($publish['steps'] as $offset => $step) {
+            if (isset($step['id'])) {
+                $steps[$step['id']] = $step + ['offset' => $offset];
+            }
+        }
+
+        $this->assertSame(
+            ['linux/amd64', 'linux/arm64'],
+            explode(',', $workflow['env']['RELEASE_IMAGE_PLATFORMS']),
+        );
+        $this->assertSame('node scripts/ci/resolve-release-image-cache.mjs', $steps['cache']['run']);
+        $this->assertSame(
+            '${{ steps.release_source.outputs.commit }}',
+            $steps['cache']['env']['RELEASE_SOURCE_COMMIT'],
+        );
+        $this->assertLessThan($steps['build']['offset'], $steps['cache']['offset']);
+        $this->assertSame('${{ env.RELEASE_IMAGE_PLATFORMS }}', $steps['build']['with']['platforms']);
+        $this->assertTrue($steps['build']['with']['pull']);
+        $this->assertSame('${{ steps.cache.outputs.cache_from }}', $steps['build']['with']['cache-from']);
+        $this->assertSame('${{ steps.cache.outputs.cache_to }}', $steps['build']['with']['cache-to']);
+
+        preg_match_all(
+            '/^ARG\s+([A-Za-z_][A-Za-z0-9_]*)/m',
+            $this->read('Dockerfile'),
+            $dockerfileArgs,
+        );
+        preg_match_all(
+            '/^([A-Za-z_][A-Za-z0-9_]*)=/m',
+            $steps['build']['with']['build-args'],
+            $workflowArgs,
+        );
+        sort($dockerfileArgs[1]);
+        sort($workflowArgs[1]);
+
+        $this->assertSame($dockerfileArgs[1], $workflowArgs[1]);
     }
 
     public function test_release_workflow_records_docs_audit_evidence_after_image_publish(): void
@@ -1883,6 +2063,10 @@ SH;
                 'RELEASE_COMMIT' => str_repeat('b', 40),
                 'RELEASE_RUN_ID' => '27420890537',
                 'RELEASE_RUN_ATTEMPT' => '2',
+                'BUILD_CACHE_IDENTITY' => 'sha256:'.str_repeat('f', 64),
+                'BUILD_CACHE_REF' => 'ghcr.io/durable-workflow/server:buildcache-'.str_repeat('f', 64),
+                'BUILD_DURATION_SECONDS' => '432',
+                'WARM_CACHE_TARGET_SECONDS' => '600',
             ]);
 
             $this->assertSame(0, $result['exitCode']);
@@ -1896,6 +2080,14 @@ SH;
             $this->assertSame('success', $decoded['exact_publish']['verification_outcome']);
             $this->assertSame('exact_manifests_verified_after_build_step_failure', $decoded['exact_publish']['reason']);
             $this->assertSame(['linux/amd64', 'linux/arm64'], $decoded['exact_publish']['required_platforms']);
+            $this->assertSame('sha256:'.str_repeat('f', 64), $decoded['exact_publish']['cache']['identity']);
+            $this->assertSame(
+                'ghcr.io/durable-workflow/server:buildcache-'.str_repeat('f', 64),
+                $decoded['exact_publish']['cache']['ref'],
+            );
+            $this->assertSame(432, $decoded['exact_publish']['timing']['duration_seconds']);
+            $this->assertSame(600, $decoded['exact_publish']['timing']['warm_cache_target_seconds']);
+            $this->assertTrue($decoded['exact_publish']['timing']['warm_cache_target_met']);
             $this->assertContains('durableworkflow/server:0.2.396', $decoded['exact_refs']);
             $this->assertContains('ghcr.io/durable-workflow/server:0.2.396', $decoded['exact_refs']);
             $this->assertNull($decoded['rolling']['reason']);
@@ -2288,6 +2480,47 @@ SH;
     private function runGuard(array $env): array
     {
         return $this->runScript('scripts/ci/validate-release-image-publish.sh', $env);
+    }
+
+    /**
+     * @param  array<string, string>  $env
+     * @return array{identity:string, transport_scope:string, ref:string, platforms:string, cache_from:string, cache_to:string}
+     */
+    private function resolveReleaseImageCache(array $env): array
+    {
+        $outputFile = tempnam(sys_get_temp_dir(), 'release-image-cache-output-');
+        $this->assertIsString($outputFile);
+
+        try {
+            $result = $this->runScript('scripts/ci/resolve-release-image-cache.mjs', [
+                'GITHUB_OUTPUT' => $outputFile,
+            ] + $env);
+
+            $this->assertSame(0, $result['exitCode'], $result['stderr']);
+            $outputs = [];
+            foreach (file($outputFile, FILE_IGNORE_NEW_LINES | FILE_SKIP_EMPTY_LINES) ?: [] as $line) {
+                [$name, $value] = explode('=', $line, 2);
+                $outputs[$name] = $value;
+            }
+
+            $this->assertArrayHasKey('identity', $outputs);
+            $this->assertArrayHasKey('transport_scope', $outputs);
+            $this->assertArrayHasKey('ref', $outputs);
+            $this->assertArrayHasKey('platforms', $outputs);
+            $this->assertArrayHasKey('cache_from', $outputs);
+            $this->assertArrayHasKey('cache_to', $outputs);
+
+            return [
+                'identity' => $outputs['identity'],
+                'transport_scope' => $outputs['transport_scope'],
+                'ref' => $outputs['ref'],
+                'platforms' => $outputs['platforms'],
+                'cache_from' => $outputs['cache_from'],
+                'cache_to' => $outputs['cache_to'],
+            ];
+        } finally {
+            @unlink($outputFile);
+        }
     }
 
     /**

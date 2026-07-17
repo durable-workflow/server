@@ -30,6 +30,10 @@ concurrency:
 env:
   DOCKERHUB_IMAGE: durableworkflow/server
   GHCR_IMAGE: ghcr.io/durable-workflow/server
+  RELEASE_IMAGE_PLATFORMS: linux/amd64,linux/arm64
+  PHPREDIS_VERSION: 6.3.0
+  PHPREDIS_COMMIT: df4fab2de7fc327c54c94a13af2b9542e4fbd720
+  WORKFLOW_PACKAGE_SOURCE: https://github.com/durable-workflow/workflow.git
   WORKFLOW_PACKAGE_REF: 2.0.0-alpha.291
   WORKFLOW_PACKAGE_COMMIT: 518a27492d38bd92bca3e2bb91b9ccf82da9589b
 
@@ -138,6 +142,18 @@ jobs:
             && inputs.release_commit || steps.release_source.outputs.commit }}
         run: scripts/ci/verify-release-tag-source.sh
 
+      - name: Resolve shared release image cache
+        id: cache
+        env:
+          RELEASE_SOURCE_COMMIT: ${{ steps.release_source.outputs.commit }}
+          WORKFLOW_PACKAGE_REF: ${{ steps.workflow.outputs.tag }}
+          WORKFLOW_PACKAGE_COMMIT: ${{ steps.workflow.outputs.commit }}
+        run: node scripts/ci/resolve-release-image-cache.mjs
+
+      - name: Start exact image build timer
+        id: build_started
+        run: printf 'epoch_seconds=%s\n' "$(date +%s)" >> "$GITHUB_OUTPUT"
+
       - name: Build and push exact image tags
         id: build
         timeout-minutes: 45
@@ -145,16 +161,31 @@ jobs:
         uses: docker/build-push-action@v7
         with:
           context: .
-          platforms: linux/amd64,linux/arm64
+          platforms: ${{ env.RELEASE_IMAGE_PLATFORMS }}
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max,ignore-error=true
+          pull: true
+          cache-from: ${{ steps.cache.outputs.cache_from }}
+          cache-to: ${{ steps.cache.outputs.cache_to }}
           provenance: false
           build-args: |
+            PHPREDIS_VERSION=${{ env.PHPREDIS_VERSION }}
+            PHPREDIS_COMMIT=${{ env.PHPREDIS_COMMIT }}
+            WORKFLOW_PACKAGE_SOURCE=${{ env.WORKFLOW_PACKAGE_SOURCE }}
             WORKFLOW_PACKAGE_REF=${{ steps.workflow.outputs.tag }}
             WORKFLOW_PACKAGE_COMMIT=${{ steps.workflow.outputs.commit }}
+
+      - name: Record exact image build timing
+        id: build_timing
+        if: ${{ always() && steps.build_started.outputs.epoch_seconds != '' }}
+        env:
+          BUILD_STARTED_AT: ${{ steps.build_started.outputs.epoch_seconds }}
+        run: |
+          finished_at="$(date +%s)"
+          duration_seconds="$((finished_at - BUILD_STARTED_AT))"
+          printf 'duration_seconds=%s\n' "$duration_seconds" >> "$GITHUB_OUTPUT"
+          printf 'Exact multi-platform image build took %s seconds.\n' "$duration_seconds" >> "$GITHUB_STEP_SUMMARY"
 
       - name: Verify exact image publication
         id: exact
@@ -219,6 +250,10 @@ jobs:
           EXACT_PUBLISH_REASON: ${{ steps.exact.outputs.exact_publish_reason }}
           EXACT_VERIFY_OUTCOME: ${{ steps.exact.outcome || 'skipped' }}
           DOCKER_BUILD_OUTCOME: ${{ steps.build.outcome || 'skipped' }}
+          BUILD_CACHE_IDENTITY: ${{ steps.cache.outputs.identity }}
+          BUILD_CACHE_REF: ${{ steps.cache.outputs.ref }}
+          BUILD_DURATION_SECONDS: ${{ steps.build_timing.outputs.duration_seconds }}
+          WARM_CACHE_TARGET_SECONDS: 600
           PROTOCOL_CATALOG_CONFORMANCE_OUTCOME: >-
             ${{ steps.protocol_catalog.outputs.protocol_catalog_conformance_outcome
             || steps.protocol_catalog.outcome || 'skipped' }}
