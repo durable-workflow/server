@@ -4347,7 +4347,7 @@ PY);
         }
     }
 
-    public function test_host_runner_imports_complete_matrix_evidence_as_passing_conformance(): void
+    public function test_host_runner_retains_all_staged_identities_and_passing_waterline_evidence(): void
     {
         $result = $this->runSignalQueryHostRunner($this->completeSignalQueryResultForCurrentHostRunner());
         $evaluation = SignalQueryRuntimeResultGate::evaluate($result);
@@ -4357,11 +4357,17 @@ PY);
         $this->assertSame([], $result['findings']);
         $this->assertSame('pass', $evaluation['status']);
         $this->assertSame([], $evaluation['gate_failures']);
+        $this->assertSame('pass', $result['scenario_results']['waterline_operator_visibility']['status']);
+        $this->assertSame([], $result['executed_distribution_identity_failures']);
         $identityComponents = array_keys($result['executed_distribution_identities']);
         sort($identityComponents);
         $this->assertSame(
             ['cli', 'sdk-php', 'sdk-python', 'sdk-rust', 'server', 'waterline', 'workflow'],
             $identityComponents,
+        );
+        $this->assertSame(
+            $identityComponents,
+            $result['executed_distribution_identity_observed_components'],
         );
     }
 
@@ -4383,6 +4389,14 @@ PY);
         $this->assertContains(
             'missing executed distribution evidence for sdk-rust',
             $identityFindings[0]['current_evidence']['failures'],
+        );
+        $this->assertSame(
+            $identityFindings[0]['current_evidence']['failures'],
+            $result['executed_distribution_identity_failures'],
+        );
+        $this->assertSame(
+            ['cli', 'sdk-php', 'sdk-python', 'server', 'waterline', 'workflow'],
+            $result['executed_distribution_identity_observed_components'],
         );
     }
 
@@ -4410,6 +4424,61 @@ PY);
         $this->assertSame(
             str_repeat('a', 64),
             $result['retained']['cli']['artifacts'][0]['sha256'],
+        );
+    }
+
+    public function test_host_runner_distribution_recorder_serializes_concurrent_component_updates(): void
+    {
+        $result = $this->runSignalQueryRunnerPythonSnippet(<<<'PY'
+root = Path(tempfile.mkdtemp(prefix="dw-signals-identity-concurrent-"))
+store = root / "identities.json"
+versions = {
+    "workflow": "2.0.0-alpha.187",
+    "waterline": "2.0.0-alpha.69",
+    "server": "0.2.224",
+    "cli": "0.1.74",
+    "sdk-php": "0.1.1",
+    "sdk-python": "0.4.84",
+    "sdk-rust": "0.1.2",
+}
+barrier = threading.Barrier(len(versions))
+errors = []
+
+def record_component(component, version, index):
+    barrier.wait()
+    try:
+        record_distribution_identity(
+            store,
+            component,
+            distribution_identity(component, version, f"artifact-{index}", f"{index + 1:064x}"),
+        )
+    except Exception as exc:
+        errors.append(f"{type(exc).__name__}: {exc}")
+
+threads = [
+    threading.Thread(target=record_component, args=(component, version, index))
+    for index, (component, version) in enumerate(versions.items())
+]
+for thread in threads:
+    thread.start()
+for thread in threads:
+    thread.join()
+
+retained = load_distribution_identities(store)
+temporary_files = sorted(path.name for path in root.glob("*.tmp"))
+shutil.rmtree(root)
+print(json.dumps({
+    "components": sorted(retained),
+    "errors": errors,
+    "temporary_files": temporary_files,
+}, sort_keys=True))
+PY);
+
+        $this->assertSame([], $result['errors']);
+        $this->assertSame([], $result['temporary_files']);
+        $this->assertSame(
+            ['cli', 'sdk-php', 'sdk-python', 'sdk-rust', 'server', 'waterline', 'workflow'],
+            $result['components'],
         );
     }
 

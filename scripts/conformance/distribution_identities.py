@@ -4,11 +4,14 @@
 from __future__ import annotations
 
 import argparse
+import fcntl
 import hashlib
 import json
 import os
 import re
 import sys
+import tempfile
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
 
@@ -98,33 +101,58 @@ def load(path: Path) -> dict[str, dict[str, Any]]:
     return value
 
 
+@contextmanager
+def store_lock(path: Path) -> Any:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    lock_path = path.with_name(f".{path.name}.lock")
+    with lock_path.open("a+b") as handle:
+        fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+        try:
+            yield
+        finally:
+            fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+
+
 def write(path: Path, identities: dict[str, dict[str, Any]]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    temporary = path.with_name(f".{path.name}.{os.getpid()}.tmp")
-    temporary.write_text(json.dumps(identities, indent=2, sort_keys=True) + "\n", encoding="utf-8")
-    temporary.replace(path)
+    descriptor, temporary_name = tempfile.mkstemp(
+        dir=path.parent,
+        prefix=f".{path.name}.",
+        suffix=".tmp",
+    )
+    os.close(descriptor)
+    temporary = Path(temporary_name)
+    try:
+        temporary.write_text(
+            json.dumps(identities, indent=2, sort_keys=True) + "\n",
+            encoding="utf-8",
+        )
+        temporary.replace(path)
+    finally:
+        temporary.unlink(missing_ok=True)
 
 
 def record(path: Path, component: str, observed: dict[str, Any]) -> None:
-    identities = load(path)
-    current = identities.get(component)
-    if current is not None:
-        if current["kind"] != observed["kind"] or current["locator"] != observed["locator"]:
-            raise IdentityEvidenceError(f"conflicting executed distribution locator for {component}")
-        artifacts = {artifact["name"]: artifact["sha256"] for artifact in current["artifacts"]}
-        for artifact in observed["artifacts"]:
-            previous = artifacts.get(artifact["name"])
-            if previous is not None and previous != artifact["sha256"]:
-                raise IdentityEvidenceError(
-                    f"conflicting consumed bytes for {component}:{artifact['name']}"
-                )
-            artifacts[artifact["name"]] = artifact["sha256"]
-        observed["artifacts"] = [
-            {"name": name, "sha256": artifacts[name]}
-            for name in sorted(artifacts)
-        ]
-    identities[component] = observed
-    write(path, identities)
+    with store_lock(path):
+        identities = load(path)
+        current = identities.get(component)
+        if current is not None:
+            if current["kind"] != observed["kind"] or current["locator"] != observed["locator"]:
+                raise IdentityEvidenceError(f"conflicting executed distribution locator for {component}")
+            artifacts = {artifact["name"]: artifact["sha256"] for artifact in current["artifacts"]}
+            for artifact in observed["artifacts"]:
+                previous = artifacts.get(artifact["name"])
+                if previous is not None and previous != artifact["sha256"]:
+                    raise IdentityEvidenceError(
+                        f"conflicting consumed bytes for {component}:{artifact['name']}"
+                    )
+                artifacts[artifact["name"]] = artifact["sha256"]
+            observed["artifacts"] = [
+                {"name": name, "sha256": artifacts[name]}
+                for name in sorted(artifacts)
+            ]
+        identities[component] = observed
+        write(path, identities)
 
 
 def unique_file(root: Path, pattern: str) -> Path:

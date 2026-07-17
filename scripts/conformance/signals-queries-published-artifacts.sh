@@ -253,10 +253,32 @@ def executed_distribution_identities_path() -> Path:
     return EXECUTED_DISTRIBUTION_IDENTITIES_PATH
 
 
+@contextmanager
+def distribution_identity_store_lock(path: Path) -> Any:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    lock_path = path.with_name(f".{path.name}.lock")
+    with lock_path.open("a+b") as handle:
+        fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+        try:
+            yield
+        finally:
+            fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+
+
 def write_distribution_identities(path: Path, identities: dict[str, Any]) -> None:
-    temporary = path.with_name(f".{path.name}.{os.getpid()}.tmp")
-    write_json(temporary, identities)
-    temporary.replace(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    descriptor, temporary_name = tempfile.mkstemp(
+        dir=path.parent,
+        prefix=f".{path.name}.",
+        suffix=".tmp",
+    )
+    os.close(descriptor)
+    temporary = Path(temporary_name)
+    try:
+        write_json(temporary, identities)
+        temporary.replace(path)
+    finally:
+        temporary.unlink(missing_ok=True)
 
 
 def distribution_identity(
@@ -277,24 +299,25 @@ def distribution_identity(
 
 
 def record_distribution_identity(path: Path, component: str, observed: dict[str, Any]) -> None:
-    identities = load_distribution_identities(path)
     normalized = normalize_distribution_identity(component, observed)
-    current = identities.get(component)
-    if current is not None:
-        if current["kind"] != normalized["kind"] or current["locator"] != normalized["locator"]:
-            raise RuntimeError(f"conflicting executed distribution locator for {component}")
-        artifacts = {artifact["name"]: artifact["sha256"] for artifact in current["artifacts"]}
-        for artifact in normalized["artifacts"]:
-            previous = artifacts.get(artifact["name"])
-            if previous is not None and previous != artifact["sha256"]:
-                raise RuntimeError(f"conflicting consumed bytes for {component}:{artifact['name']}")
-            artifacts[artifact["name"]] = artifact["sha256"]
-        normalized["artifacts"] = [
-            {"name": name, "sha256": artifacts[name]}
-            for name in sorted(artifacts)
-        ]
-    identities[component] = normalized
-    write_distribution_identities(path, identities)
+    with distribution_identity_store_lock(path):
+        identities = load_distribution_identities(path)
+        current = identities.get(component)
+        if current is not None:
+            if current["kind"] != normalized["kind"] or current["locator"] != normalized["locator"]:
+                raise RuntimeError(f"conflicting executed distribution locator for {component}")
+            artifacts = {artifact["name"]: artifact["sha256"] for artifact in current["artifacts"]}
+            for artifact in normalized["artifacts"]:
+                previous = artifacts.get(artifact["name"])
+                if previous is not None and previous != artifact["sha256"]:
+                    raise RuntimeError(f"conflicting consumed bytes for {component}:{artifact['name']}")
+                artifacts[artifact["name"]] = artifact["sha256"]
+            normalized["artifacts"] = [
+                {"name": name, "sha256": artifacts[name]}
+                for name in sorted(artifacts)
+            ]
+        identities[component] = normalized
+        write_distribution_identities(path, identities)
 
 
 def merge_distribution_identity_handoff(
@@ -14291,10 +14314,6 @@ if distribution_identity_failures:
     }
     findings.append(identity_finding)
     finding_links["executed_distribution_identities"] = [identity_finding["id"]]
-write_distribution_identities(
-    executed_distribution_identities_path(),
-    executed_distribution_identities,
-)
 
 pins = {
     "artifact_versions": artifact_versions,
@@ -14347,6 +14366,9 @@ run_metadata = {
     "local_product_source_checkouts_used": False,
     "smoke_evidence": smoke_descriptor,
     "executed_distribution_identity_failures": distribution_identity_failures,
+    "executed_distribution_identity_observed_components": sorted(
+        executed_distribution_identities
+    ),
 }
 if runner_blocked and baseline_readiness_blocker is not None:
     run_metadata["runner_blocker"] = baseline_readiness_blocker
@@ -14500,6 +14522,10 @@ result = {
     "runner_blocked": runner_blocked,
     "artifactVersions": artifact_versions,
     "executed_distribution_identities": executed_distribution_identities,
+    "executed_distribution_identity_failures": distribution_identity_failures,
+    "executed_distribution_identity_observed_components": sorted(
+        executed_distribution_identities
+    ),
     "artifact_sources": pins["artifact_sources"],
     "runtime_matrix": {
         "runtimes": ["sdk-php", "sdk-python", "sdk-rust"],
