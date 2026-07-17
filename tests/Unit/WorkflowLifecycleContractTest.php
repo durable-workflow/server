@@ -512,6 +512,39 @@ class WorkflowLifecycleContractTest extends TestCase
         );
     }
 
+    public function test_accepted_update_without_worker_dispatch_is_owned_by_the_server_protocol(): void
+    {
+        require_once dirname(__DIR__, 2).'/scripts/conformance/php-sdk-assertion-failure-evidence.php';
+
+        $baseline = [
+            'update' => [
+                'result' => [
+                    'update_status' => 'accepted',
+                    'wait_timed_out' => true,
+                    'applied_at' => null,
+                    'value' => null,
+                ],
+            ],
+            'worker_operation_responses' => [],
+        ];
+
+        $this->assertSame('server', php_sdk_update_assertion_domain($baseline));
+
+        $failures = php_sdk_assertion_failure_evidence(
+            ['update'],
+            ['update' => php_sdk_update_assertion_domain($baseline)],
+            $baseline,
+        );
+
+        $this->assertSame('server', $failures[0]['classification']);
+        $this->assertSame('server', $failures[0]['owning_surface']);
+        $this->assertFalse($failures[0]['observed']['worker_callback_dispatched']);
+        $this->assertSame('accepted', $failures[0]['observed']['sdk_decoded_response']['update_status']);
+
+        $baseline['worker_operation_responses']['workflow.update:set'] = ['accepted' => true, 'value' => 13];
+        $this->assertSame('sdk', php_sdk_update_assertion_domain($baseline));
+    }
+
     public function test_assertion_failure_evidence_remains_actionable_after_runtime_cleanup(): void
     {
         require_once dirname(__DIR__, 2).'/scripts/conformance/php-sdk-assertion-failure-evidence.php';

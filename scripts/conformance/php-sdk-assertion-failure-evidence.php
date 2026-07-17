@@ -3,6 +3,31 @@
 declare(strict_types=1);
 
 /**
+ * @param  array<string, mixed>  $baseline
+ */
+function php_sdk_update_assertion_domain(array $baseline): string
+{
+    $result = is_array($baseline['update']['result'] ?? null)
+        ? $baseline['update']['result']
+        : [];
+    $workerResponses = is_array($baseline['worker_operation_responses'] ?? null)
+        ? $baseline['worker_operation_responses']
+        : [];
+    $workerCallback = $workerResponses['workflow.update:set'] ?? null;
+    $updateStatus = strtolower(trim((string) ($result['update_status'] ?? $result['status'] ?? '')));
+    $accepted = $updateStatus === 'accepted' || ($result['accepted'] ?? null) === true;
+    $waitingForDispatch = ($result['wait_timed_out'] ?? false) === true
+        && array_key_exists('applied_at', $result)
+        && $result['applied_at'] === null;
+
+    if ($accepted && $waitingForDispatch && ! is_array($workerCallback)) {
+        return 'server';
+    }
+
+    return 'sdk';
+}
+
+/**
  * @param  list<string>  $failedAssertions
  * @param  array<string, string>  $assertionDomains
  * @param  array<string, mixed>  $baseline
@@ -93,10 +118,12 @@ function php_sdk_assertion_failure_evidence(
         'update' => [[
             'operation' => 'workflow.update:set',
             'expected' => [
+                'worker_callback_dispatched' => true,
                 'worker_callback_response' => ['accepted' => true, 'value' => 13],
                 'sdk_decoded_response' => ['accepted' => true, 'value' => 13],
             ],
             'observed' => [
+                'worker_callback_dispatched' => is_array($workerResponses['workflow.update:set'] ?? null),
                 'worker_callback_response' => $workerResponses['workflow.update:set'] ?? null,
                 'sdk_decoded_response' => $baseline['update']['result'] ?? null,
             ],

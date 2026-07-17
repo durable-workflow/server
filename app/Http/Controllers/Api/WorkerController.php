@@ -1791,7 +1791,7 @@ class WorkerController
                 'outcome' => 'waiting_for_history',
                 'recorded' => $outcome['recorded'],
                 'reason' => $outcome['reason'],
-                'next_task_id' => null,
+                'next_task_id' => $outcome['next_task_id'],
             ], $this->workflowOutcomeStatus($outcome['reason']));
         }
 
@@ -1882,11 +1882,25 @@ class WorkerController
 
     /**
      * @param  array<string, mixed>  $failure
-     * @return array{recorded: bool, reason: string|null}
+     * @return array{recorded: bool, reason: string|null, next_task_id: string|null}
      */
     private function acknowledgeWorkflowTaskWaitingForHistory(string $namespace, string $taskId, array $failure): array
     {
-        return DB::transaction(function () use ($namespace, $taskId, $failure): array {
+        /** @var WorkflowTaskBridge $bridge */
+        $bridge = app(WorkflowTaskBridge::class);
+        $bridgeCompleted = false;
+        $workflowTaskQueue = null;
+        $createdTaskIds = [];
+
+        $outcome = DB::transaction(function () use (
+            $namespace,
+            $taskId,
+            $failure,
+            $bridge,
+            &$bridgeCompleted,
+            &$workflowTaskQueue,
+            &$createdTaskIds,
+        ): array {
             /** @var WorkflowTask|null $task */
             $task = WorkflowTask::query()
                 ->lockForUpdate()
@@ -1895,16 +1909,18 @@ class WorkerController
                 ->first();
 
             if (! $task instanceof WorkflowTask) {
-                return ['recorded' => false, 'reason' => 'task_not_found'];
+                return ['recorded' => false, 'reason' => 'task_not_found', 'next_task_id' => null];
             }
 
             if ($task->task_type !== TaskType::Workflow) {
-                return ['recorded' => false, 'reason' => 'task_not_workflow'];
+                return ['recorded' => false, 'reason' => 'task_not_workflow', 'next_task_id' => null];
             }
 
             if ($task->status !== TaskStatus::Leased) {
-                return ['recorded' => false, 'reason' => 'task_not_leased'];
+                return ['recorded' => false, 'reason' => 'task_not_leased', 'next_task_id' => null];
             }
+
+            $workflowTaskQueue = $task->queue;
 
             /** @var WorkflowRun|null $run */
             $run = WorkflowRun::query()
@@ -1912,7 +1928,7 @@ class WorkerController
                 ->find($task->workflow_run_id);
 
             if (! $run instanceof WorkflowRun) {
-                return ['recorded' => false, 'reason' => 'run_not_found'];
+                return ['recorded' => false, 'reason' => 'run_not_found', 'next_task_id' => null];
             }
 
             if ($run->status->isTerminal()) {
@@ -1921,7 +1937,30 @@ class WorkerController
                     'lease_expires_at' => null,
                 ])->save();
 
-                return ['recorded' => false, 'reason' => 'run_already_closed'];
+                return ['recorded' => false, 'reason' => 'run_already_closed', 'next_task_id' => null];
+            }
+
+            if ($this->workflowTaskResumesSignal($task)) {
+                $bridgeOutcome = $bridge->complete($taskId, []);
+
+                if (($bridgeOutcome['completed'] ?? false) !== true) {
+                    return [
+                        'recorded' => false,
+                        'reason' => is_string($bridgeOutcome['reason'] ?? null)
+                            ? $bridgeOutcome['reason']
+                            : 'workflow_bridge_completion_failed',
+                        'next_task_id' => null,
+                    ];
+                }
+
+                $bridgeCompleted = true;
+                $createdTaskIds = array_values(array_filter(
+                    $bridgeOutcome['created_task_ids'] ?? [],
+                    static fn (mixed $createdTaskId): bool => is_string($createdTaskId)
+                        && trim($createdTaskId) !== '',
+                ));
+
+                $task->refresh();
             }
 
             $payload = is_array($task->payload) ? $task->payload : [];
@@ -1932,21 +1971,48 @@ class WorkerController
                 $payload['waiting_for_history_failure_type'] = trim($failure['type']);
             }
 
-            $task->forceFill([
-                'status' => TaskStatus::Completed,
-                'lease_expires_at' => null,
-                'payload' => $payload,
-            ])->save();
+            if ($bridgeCompleted) {
+                $task->forceFill(['payload' => $payload])->save();
+            } else {
+                $task->forceFill([
+                    'status' => TaskStatus::Completed,
+                    'lease_expires_at' => null,
+                    'payload' => $payload,
+                ])->save();
 
-            $run->forceFill([
-                'status' => RunStatus::Waiting,
-                'last_progress_at' => now(),
-            ])->save();
+                $run->forceFill([
+                    'status' => RunStatus::Waiting,
+                    'last_progress_at' => now(),
+                ])->save();
+            }
 
             $this->projectWorkflowRun($run->id);
 
-            return ['recorded' => true, 'reason' => null];
+            return [
+                'recorded' => true,
+                'reason' => null,
+                'next_task_id' => $createdTaskIds[0] ?? null,
+            ];
         });
+
+        if ($bridgeCompleted) {
+            app(ServiceModeTimerDispatcher::class)->dispatchCreatedTaskIds($createdTaskIds);
+            $this->wakeQueryTaskPollersForWorkflowTaskQueue($namespace, $workflowTaskQueue);
+        }
+
+        return $outcome;
+    }
+
+    private function workflowTaskResumesSignal(WorkflowTask $task): bool
+    {
+        $payload = is_array($task->payload) ? $task->payload : [];
+        $signalId = $payload['workflow_signal_id'] ?? $payload['resume_source_id'] ?? null;
+
+        return ($payload['resume_source_kind'] ?? null) === 'workflow_signal'
+            && is_string($signalId)
+            && trim($signalId) !== ''
+            && is_string($payload['signal_name'] ?? null)
+            && trim($payload['signal_name']) !== '';
     }
 
     /**

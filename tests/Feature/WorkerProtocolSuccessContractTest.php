@@ -954,6 +954,249 @@ class WorkerProtocolSuccessContractTest extends TestCase
         $this->assertSame(1, $duplicateAcceptedCount);
     }
 
+    public function test_waiting_for_history_acknowledgments_advance_declared_signals_then_an_update(): void
+    {
+        Queue::fake();
+
+        $workflowType = 'tests.external-waiting-message-workflow';
+        $taskQueue = 'external-waiting-message-queue';
+        $workerId = 'worker-external-waiting-message';
+        $workflowId = 'wf-external-waiting-message';
+
+        $this->postJson('/api/worker/register', [
+            'worker_id' => $workerId,
+            'task_queue' => $taskQueue,
+            'runtime' => 'php',
+            'supported_workflow_types' => [$workflowType],
+            'capabilities' => ['workflow_tasks'],
+            'workflow_command_contracts' => [
+                $workflowType => [
+                    'queries' => [],
+                    'query_contracts' => [],
+                    'signals' => ['increment'],
+                    'signal_contracts' => [[
+                        'name' => 'increment',
+                        'parameters' => [[
+                            'name' => 'amount',
+                            'position' => 0,
+                            'required' => true,
+                            'variadic' => false,
+                            'default_available' => false,
+                            'type' => 'int',
+                            'allows_null' => false,
+                        ]],
+                    ]],
+                    'updates' => ['set'],
+                    'update_contracts' => [[
+                        'name' => 'set',
+                        'parameters' => [[
+                            'name' => 'value',
+                            'position' => 0,
+                            'required' => true,
+                            'variadic' => false,
+                            'default_available' => false,
+                            'type' => 'int',
+                            'allows_null' => false,
+                        ]],
+                    ]],
+                ],
+            ],
+        ], $this->workerProtocolHeaders())->assertCreated();
+
+        $start = $this->postJson('/api/workflows', [
+            'workflow_id' => $workflowId,
+            'workflow_type' => $workflowType,
+            'task_queue' => $taskQueue,
+        ], $this->apiHeaders());
+
+        $start->assertCreated();
+        $runId = (string) $start->json('run_id');
+
+        $startPoll = $this->postJson('/api/worker/workflow-tasks/poll', [
+            'worker_id' => $workerId,
+            'task_queue' => $taskQueue,
+        ], $this->workerProtocolHeaders());
+
+        $this->assertWorkerProtocolSuccess($startPoll)
+            ->assertJsonPath('task.workflow_id', $workflowId)
+            ->assertJsonPath('task.run_id', $runId);
+
+        $startTaskId = (string) $startPoll->json('task.task_id');
+        $startAttempt = (int) $startPoll->json('task.workflow_task_attempt');
+
+        $startComplete = $this->postJson("/api/worker/workflow-tasks/{$startTaskId}/complete", [
+            'lease_owner' => $workerId,
+            'workflow_task_attempt' => $startAttempt,
+            'commands' => [[
+                'type' => 'start_timer',
+                'delay_seconds' => 300,
+            ]],
+        ], $this->workerProtocolHeaders());
+
+        $this->assertWorkerProtocolSuccess($startComplete)
+            ->assertJsonPath('run_status', 'waiting');
+
+        $timer = WorkflowTimer::query()
+            ->where('workflow_run_id', $runId)
+            ->sole();
+        $timerTask = WorkflowTask::query()
+            ->where('workflow_run_id', $runId)
+            ->where('task_type', 'timer')
+            ->sole();
+
+        foreach ([3, 5] as $index => $amount) {
+            $this->postJson("/api/workflows/{$workflowId}/signal/increment", [
+                'input' => [$amount],
+                'request_id' => 'waiting-message-signal-'.($index + 1),
+            ], $this->apiHeaders())
+                ->assertAccepted()
+                ->assertJsonPath('signal_name', 'increment')
+                ->assertJsonPath('command_status', 'accepted');
+        }
+
+        $signals = WorkflowSignal::query()
+            ->where('workflow_run_id', $runId)
+            ->orderBy('command_sequence')
+            ->get();
+
+        $this->assertCount(2, $signals);
+
+        $firstSignalPoll = $this->postJson('/api/worker/workflow-tasks/poll', [
+            'worker_id' => $workerId,
+            'task_queue' => $taskQueue,
+        ], $this->workerProtocolHeaders());
+
+        $this->assertWorkerProtocolSuccess($firstSignalPoll)
+            ->assertJsonPath('task.resume_source_kind', 'workflow_signal')
+            ->assertJsonPath('task.workflow_signal_id', $signals[0]->id);
+
+        $firstSignalTaskId = (string) $firstSignalPoll->json('task.task_id');
+        $firstSignalAttempt = (int) $firstSignalPoll->json('task.workflow_task_attempt');
+        $firstSignalAcknowledgment = $this->postJson(
+            "/api/worker/workflow-tasks/{$firstSignalTaskId}/fail",
+            [
+                'lease_owner' => $workerId,
+                'workflow_task_attempt' => $firstSignalAttempt,
+                'failure' => [
+                    'message' => 'workflow task waiting for scheduled history: unresolved timer',
+                    'type' => 'WorkflowTaskWaitingForHistory',
+                ],
+            ],
+            $this->workerProtocolHeaders(),
+        );
+
+        $this->assertWorkerProtocolSuccess($firstSignalAcknowledgment)
+            ->assertJsonPath('outcome', 'waiting_for_history')
+            ->assertJsonPath('recorded', true)
+            ->assertJsonPath('reason', null);
+
+        $secondSignalTaskId = $firstSignalAcknowledgment->json('next_task_id');
+        $this->assertIsString($secondSignalTaskId);
+
+        $update = $this->postJson("/api/workflows/{$workflowId}/update/set", [
+            'input' => [13],
+            'request_id' => 'waiting-message-update-1',
+            'wait_for' => 'accepted',
+        ], $this->apiHeaders());
+
+        $update->assertAccepted()
+            ->assertJsonPath('update_name', 'set')
+            ->assertJsonPath('update_status', 'accepted')
+            ->assertJsonPath('command_status', 'accepted');
+
+        $updateId = (string) $update->json('update_id');
+        $secondSignalPoll = $this->postJson('/api/worker/workflow-tasks/poll', [
+            'worker_id' => $workerId,
+            'task_queue' => $taskQueue,
+        ], $this->workerProtocolHeaders());
+
+        $this->assertWorkerProtocolSuccess($secondSignalPoll)
+            ->assertJsonPath('task.task_id', $secondSignalTaskId)
+            ->assertJsonPath('task.resume_source_kind', 'workflow_signal')
+            ->assertJsonPath('task.workflow_signal_id', $signals[1]->id);
+
+        $secondSignalAttempt = (int) $secondSignalPoll->json('task.workflow_task_attempt');
+        $secondSignalAcknowledgment = $this->postJson(
+            "/api/worker/workflow-tasks/{$secondSignalTaskId}/fail",
+            [
+                'lease_owner' => $workerId,
+                'workflow_task_attempt' => $secondSignalAttempt,
+                'failure' => [
+                    'message' => 'workflow task waiting for scheduled history: unresolved timer',
+                    'type' => 'WorkflowTaskWaitingForHistory',
+                ],
+            ],
+            $this->workerProtocolHeaders(),
+        );
+
+        $this->assertWorkerProtocolSuccess($secondSignalAcknowledgment)
+            ->assertJsonPath('outcome', 'waiting_for_history')
+            ->assertJsonPath('recorded', true)
+            ->assertJsonPath('reason', null);
+
+        $updateTaskId = $secondSignalAcknowledgment->json('next_task_id');
+        $this->assertIsString($updateTaskId);
+
+        $signals = WorkflowSignal::query()
+            ->where('workflow_run_id', $runId)
+            ->orderBy('command_sequence')
+            ->get();
+
+        $this->assertSame(['applied', 'applied'], $signals->pluck('status')->map->value->all());
+        $this->assertNotNull($signals[0]->applied_at);
+        $this->assertNotNull($signals[1]->applied_at);
+        $this->assertSame(
+            2,
+            WorkflowHistoryEvent::query()
+                ->where('workflow_run_id', $runId)
+                ->where('event_type', 'SignalApplied')
+                ->count(),
+        );
+
+        $timer->refresh();
+        $timerTask->refresh();
+        $this->assertSame('pending', $timer->status->value);
+        $this->assertSame('ready', $timerTask->status->value);
+        $this->assertFalse(
+            WorkflowHistoryEvent::query()
+                ->where('workflow_run_id', $runId)
+                ->where('event_type', 'TimerFired')
+                ->exists(),
+        );
+
+        $updatePoll = $this->postJson('/api/worker/workflow-tasks/poll', [
+            'worker_id' => $workerId,
+            'task_queue' => $taskQueue,
+        ], $this->workerProtocolHeaders());
+
+        $this->assertWorkerProtocolSuccess($updatePoll)
+            ->assertJsonPath('task.task_id', $updateTaskId)
+            ->assertJsonPath('task.resume_source_kind', 'workflow_update')
+            ->assertJsonPath('task.workflow_update_id', $updateId);
+
+        $updateAttempt = (int) $updatePoll->json('task.workflow_task_attempt');
+        $resultBlob = Serializer::serializeWithCodec('avro', ['accepted' => true, 'value' => 13]);
+        $updateComplete = $this->postJson("/api/worker/workflow-tasks/{$updateTaskId}/complete", [
+            'lease_owner' => $workerId,
+            'workflow_task_attempt' => $updateAttempt,
+            'commands' => [[
+                'type' => 'complete_update',
+                'update_id' => $updateId,
+                'result' => [
+                    'codec' => 'avro',
+                    'blob' => $resultBlob,
+                ],
+            ]],
+        ], $this->workerProtocolHeaders());
+
+        $this->assertWorkerProtocolSuccess($updateComplete)
+            ->assertJsonPath('run_status', 'waiting');
+
+        $closedUpdate = WorkflowUpdate::query()->findOrFail($updateId);
+        $this->assertSame('completed', $closedUpdate->status->value);
+        $this->assertSame($resultBlob, $closedUpdate->result);
+    }
+
     public function test_signal_backed_workflow_task_poll_exposes_resume_context(): void
     {
         Queue::fake();
