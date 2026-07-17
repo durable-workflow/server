@@ -93,6 +93,7 @@ on:
       - "tests/Feature/SystemMetricsTest.php"
       - "tests/Feature/HealthControllerTest.php"
       - "tests/Feature/WorkerPollBackpressureTest.php"
+  workflow_dispatch:
 permissions:
   contents: read
 
@@ -104,7 +105,7 @@ jobs:
   contract:
     name: Bounded-growth contract
     runs-on: ubuntu-latest
-    if: github.event_name == 'pull_request' || github.event_name == 'push'
+    if: github.event_name == 'pull_request' || github.event_name == 'push' || github.event_name == 'workflow_dispatch'
     timeout-minutes: 20
 
     steps:
@@ -131,7 +132,7 @@ jobs:
   smoke:
     name: Polling cache bounded-growth smoke
     runs-on: ubuntu-latest
-    if: github.event_name == 'pull_request' || github.event_name == 'push'
+    if: ${{ github.server_url == 'https://github.com' }}
     timeout-minutes: 45
 
     steps:
@@ -171,3 +172,27 @@ jobs:
           name: server-perf-smoke
           path: build/perf/
           if-no-files-found: warn
+
+  qualification:
+    name: Performance source qualification
+    needs: [contract, smoke]
+    if: ${{ always() }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+
+    steps:
+      - name: Require the intended qualification route
+        env:
+          ACTIONS_SERVER_URL: ${{ github.server_url }}
+          CONTRACT_RESULT: ${{ needs.contract.result }}
+          SMOKE_RESULT: ${{ needs.smoke.result }}
+        run: |
+          set -euo pipefail
+          test "$CONTRACT_RESULT" = success
+          if [[ "$ACTIONS_SERVER_URL" == "https://github.com" ]]; then
+            test "$SMOKE_RESULT" = success
+            echo "Complete GitHub polling-cache qualification succeeded."
+          else
+            test "$SMOKE_RESULT" = skipped
+            echo "Focused bounded-growth contract qualification succeeded."
+          fi

@@ -11,10 +11,10 @@ permissions:
   contents: read
 
 jobs:
-  feature:
-    name: PHPUnit feature suite
+  structural:
+    name: Candidate structure
     runs-on: ubuntu-latest
-    timeout-minutes: 25
+    timeout-minutes: 5
 
     steps:
       - name: Checkout server
@@ -29,24 +29,24 @@ jobs:
             scripts/ci/test-component-release-recovery.py
           python scripts/ci/test-component-release-recovery.py
 
+  feature:
+    name: PHPUnit feature suite
+    if: ${{ github.server_url == 'https://github.com' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+
+    steps:
+      - name: Checkout server
+        uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+
       - name: Checkout workflow package from GitHub
-        if: github.server_url == 'https://github.com'
         uses: actions/checkout@v6
         with:
           repository: durable-workflow/workflow
           ref: 2.0.0-alpha.291
           path: workflow-package
-          persist-credentials: false
-
-      - name: Checkout workflow package from current Actions server
-        if: github.server_url != 'https://github.com'
-        uses: actions/checkout@v6
-        with:
-          repository: ${{ github.repository_owner }}/workflow
-          ref: 2.0.0-alpha.291
-          path: workflow-package
-          token: ${{ secrets.CROSS_REPO_READ_TOKEN }}
-          github-server-url: ${{ github.server_url }}
           persist-credentials: false
 
       - name: Verify workflow package source provenance
@@ -83,3 +83,27 @@ jobs:
             -cf - . \
             | docker run --rm -i -w /app --entrypoint sh durable-workflow-server-phpunit-base \
                 -lc 'tar -xf - -C /app && cp -a /app/workflow-package /workflow && composer install --no-interaction --no-progress --prefer-dist && vendor/bin/phpunit tests/Feature --no-progress --colors=never'
+
+  qualification:
+    name: Feature source qualification
+    needs: [structural, feature]
+    if: ${{ always() }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+
+    steps:
+      - name: Require the intended qualification route
+        env:
+          ACTIONS_SERVER_URL: ${{ github.server_url }}
+          STRUCTURAL_RESULT: ${{ needs.structural.result }}
+          FEATURE_RESULT: ${{ needs.feature.result }}
+        run: |
+          set -euo pipefail
+          test "$STRUCTURAL_RESULT" = success
+          if [[ "$ACTIONS_SERVER_URL" == "https://github.com" ]]; then
+            test "$FEATURE_RESULT" = success
+            echo "Complete GitHub feature qualification succeeded."
+          else
+            test "$FEATURE_RESULT" = skipped
+            echo "Focused candidate structure qualification succeeded."
+          fi

@@ -393,7 +393,7 @@ class ServerPerfHarnessContractTest extends TestCase
         );
     }
 
-    public function test_server_perf_jobs_keep_event_split_guards(): void
+    public function test_server_perf_jobs_keep_authoritative_execution_split(): void
     {
         $workflow = file_get_contents(dirname(__DIR__, 2).'/.github/workflows/server-perf.yml');
         $this->assertNotFalse($workflow, '.github/workflows/server-perf.yml must be readable');
@@ -401,15 +401,15 @@ class ServerPerfHarnessContractTest extends TestCase
         $this->assertNotFalse($soakWorkflow, '.github/workflows/server-perf-soak.yml must be readable');
 
         $this->assertMatchesRegularExpression(
-            "/contract:\\s+name:\\s+Bounded-growth contract\\s+runs-on:\\s+ubuntu-latest\\s+if:\\s+github\\.event_name == 'pull_request' \\|\\| github\\.event_name == 'push'/s",
+            "/contract:\\s+name:\\s+Bounded-growth contract\\s+runs-on:\\s+ubuntu-latest\\s+if:\\s+github\\.event_name == 'pull_request' \\|\\| github\\.event_name == 'push' \\|\\| github\\.event_name == 'workflow_dispatch'/s",
             $workflow,
-            'Contract checks should only run for pull_request/push events, with runs-on before if for runner compatibility.',
+            'Focused contract checks should run for every supported event, with runs-on before if for runner compatibility.',
         );
 
         $this->assertMatchesRegularExpression(
-            "/smoke:\\s+name:\\s+Polling cache bounded-growth smoke\\s+runs-on:\\s+ubuntu-latest\\s+if:\\s+github\\.event_name == 'pull_request' \\|\\| github\\.event_name == 'push'/s",
+            "/smoke:\\s+name:\\s+Polling cache bounded-growth smoke\\s+runs-on:\\s+ubuntu-latest\\s+if:\\s+\\$\\{\\{ github\\.server_url == 'https:\\/\\/github\\.com' \\}\\}/s",
             $workflow,
-            'Short perf smokes should only run for pull_request/push events.',
+            'The topology-backed smoke must only run on the authoritative GitHub service.',
         );
 
         $this->assertStringNotContainsString(
@@ -417,6 +417,19 @@ class ServerPerfHarnessContractTest extends TestCase
             $workflow,
             'Compatible Actions servers can leave dependent smoke jobs pending after contract success, so the smoke must be scheduled directly.',
         );
+        $this->assertStringContainsString('workflow_dispatch:', $workflow);
+        foreach ([
+            'qualification:',
+            'name: Performance source qualification',
+            'needs: [contract, smoke]',
+            'if: ${{ always() }}',
+            'test "$CONTRACT_RESULT" = success',
+            '[[ "$ACTIONS_SERVER_URL" == "https://github.com" ]]',
+            'test "$SMOKE_RESULT" = success',
+            'test "$SMOKE_RESULT" = skipped',
+        ] as $needle) {
+            $this->assertStringContainsString($needle, $workflow);
+        }
         $this->assertStringContainsString(
             'group: server-perf-${{ github.event_name }}-${{ github.ref }}-${{ github.sha }}',
             $workflow,
@@ -494,7 +507,7 @@ YAML,
 
         $this->assertSame(2, substr_count($workflows, 'uses: actions/upload-artifact@v7'));
         $this->assertSame(0, substr_count($workflows, 'uses: actions/upload-artifact@v4'));
-        $this->assertSame(2, substr_count($workflows, "github.server_url == 'https://github.com'"));
+        $this->assertSame(3, substr_count($workflows, "github.server_url == 'https://github.com'"));
         $this->assertSame(0, substr_count($workflows, "github.server_url != 'https://github.com'"));
     }
 
