@@ -253,7 +253,9 @@ class ReleaseImagePublishWorkflowContractTest extends TestCase
         $this->assertStringContainsString('combined env=!dontlog', $apacheVhost);
         $this->assertStringContainsString('</proc/1/cmdline', $regression);
         $this->assertStringContainsString("*apache2*'-DFOREGROUND'*", $regression);
-        $this->assertStringContainsString("apache2ctl -M 2>/dev/null | grep -q 'php_module'", $regression);
+        $this->assertStringContainsString('source "$ROOT_DIR/scripts/regression/apache-module-preflight.sh"', $regression);
+        $this->assertStringContainsString('verify_apache_mod_php compose exec -T server apache2ctl -M', $regression);
+        $this->assertStringNotContainsString("apache2ctl -M 2>/dev/null | grep -q 'php_module'", $regression);
         $this->assertStringContainsString('compose exec -T --user 1000:1000 server', $regression);
         $this->assertStringContainsString('--user 1000:1000', $regression);
         $this->assertStringContainsString('--cap-drop ALL', $regression);

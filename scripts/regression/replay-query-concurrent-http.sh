@@ -11,6 +11,8 @@ TOKEN="${DW_AUTH_TOKEN:-dev-token}"
 BASE_URL=""
 NONROOT_CONTAINER=""
 
+source "$ROOT_DIR/scripts/regression/apache-module-preflight.sh"
+
 export SERVER_PORT
 export APP_ENV="${APP_ENV:-local}"
 export APP_DEBUG="${APP_DEBUG:-true}"
@@ -133,10 +135,7 @@ case "$http_runtime" in
     exit 1
     ;;
 esac
-if ! compose exec -T server apache2ctl -M 2>/dev/null | grep -q 'php_module'; then
-  printf 'Standalone Apache runtime did not load mod_php.\n' >&2
-  exit 1
-fi
+verify_apache_mod_php compose exec -T server apache2ctl -M
 printf 'Standalone HTTP runtime is foreground Apache with mod_php.\n'
 if ! compose exec -T --user 1000:1000 server sh -c \
   'test -w storage/logs && test -w bootstrap/cache'; then

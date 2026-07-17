@@ -16,7 +16,9 @@ on:
       - 'docker/**'
       - 'docker-compose.published.yml'
       - 'Dockerfile'
+      - 'scripts/regression/apache-module-preflight.sh'
       - 'scripts/regression/replay-query-concurrent-http.sh'
+      - 'tests/Unit/Support/apache_module_preflight_test.sh'
   pull_request:
     paths:
       - '.github/workflows/replay-query-concurrent-http.yml'
@@ -30,7 +32,9 @@ on:
       - 'docker/**'
       - 'docker-compose.published.yml'
       - 'Dockerfile'
+      - 'scripts/regression/apache-module-preflight.sh'
       - 'scripts/regression/replay-query-concurrent-http.sh'
+      - 'tests/Unit/Support/apache_module_preflight_test.sh'
   workflow_dispatch:
 
 permissions:
@@ -47,6 +51,9 @@ jobs:
         uses: actions/checkout@v6
         with:
           persist-credentials: false
+
+      - name: Validate Apache module preflight behavior
+        run: tests/Unit/Support/apache_module_preflight_test.sh
 
       - name: Build current server image
         run: docker build -t durable-workflow-server-replay-query .
