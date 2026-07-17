@@ -4,7 +4,7 @@
         "Read more about it at https://getcomposer.org/doc/01-basic-usage.md#installing-dependencies",
         "This file is @generated automatically"
     ],
-    "content-hash": "6097cdbd16e0d6efbbbb4cceb32ef53e",
+    "content-hash": "64830f37c802a9ee9fd443f80f29c2b8",
     "packages": [
         {
             "name": "apache/avro",
@@ -505,11 +505,11 @@
         },
         {
             "name": "durable-workflow/workflow",
-            "version": "2.0.0-alpha.284",
+            "version": "2.0.0-alpha.291",
             "dist": {
                 "type": "path",
                 "url": "/workflow",
-                "reference": "80bef5d9bf01f3282c088b59c433e46b8b146617"
+                "reference": "518a27492d38bd92bca3e2bb91b9ccf82da9589b"
             },
             "require": {
                 "apache/avro": "^1.12",
@@ -521,6 +521,7 @@
                 "laravel-workflow/laravel-workflow": "self.version"
             },
             "require-dev": {
+                "doctrine/dbal": "^3.7",
                 "orchestra/testbench": "^8.0|^11.0",
                 "phpstan/phpstan": "^2.0",
                 "symplify/easy-coding-standard": "^11.0"

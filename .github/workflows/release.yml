@@ -30,8 +30,8 @@ concurrency:
 env:
   DOCKERHUB_IMAGE: durableworkflow/server
   GHCR_IMAGE: ghcr.io/durable-workflow/server
-  WORKFLOW_PACKAGE_REF: 2.0.0-alpha.284
-  WORKFLOW_PACKAGE_COMMIT: 80bef5d9bf01f3282c088b59c433e46b8b146617
+  WORKFLOW_PACKAGE_REF: 2.0.0-alpha.291
+  WORKFLOW_PACKAGE_COMMIT: 518a27492d38bd92bca3e2bb91b9ccf82da9589b
 
 jobs:
   publish:

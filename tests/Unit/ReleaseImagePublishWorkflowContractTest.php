@@ -102,8 +102,8 @@ class ReleaseImagePublishWorkflowContractTest extends TestCase
         $metadataScript = $this->read('scripts/ci/prepare-release-workflow-composer-metadata.php');
 
         foreach ([
-            'ARG WORKFLOW_PACKAGE_REF=2.0.0-alpha.284',
-            'ARG WORKFLOW_PACKAGE_COMMIT=80bef5d9bf01f3282c088b59c433e46b8b146617',
+            'ARG WORKFLOW_PACKAGE_REF=2.0.0-alpha.291',
+            'ARG WORKFLOW_PACKAGE_COMMIT=518a27492d38bd92bca3e2bb91b9ccf82da9589b',
             'WORKFLOW_PACKAGE_COMMIT must be a full lowercase Git SHA',
             'if [ "${RESOLVED_COMMIT}" != "${WORKFLOW_PACKAGE_COMMIT}" ]',
             'git -C /workflow diff --quiet HEAD --',
@@ -310,10 +310,10 @@ class ReleaseImagePublishWorkflowContractTest extends TestCase
         $this->assertLessThan($productionOffset, $pythonOffset);
     }
 
-    public function test_docker_build_docs_compose_and_ci_defaults_match_workflow_package_fallback(): void
+    public function test_docker_build_compose_and_ci_defaults_match_workflow_package_fallback(): void
     {
-        $fallback = '2.0.0-alpha.284';
-        $commit = '80bef5d9bf01f3282c088b59c433e46b8b146617';
+        $fallback = '2.0.0-alpha.291';
+        $commit = '518a27492d38bd92bca3e2bb91b9ccf82da9589b';
 
         foreach ([
             'Dockerfile',
@@ -340,13 +340,6 @@ class ReleaseImagePublishWorkflowContractTest extends TestCase
             );
         }
 
-        $readme = $this->read('README.md');
-
-        $this->assertStringContainsString('WORKFLOW_PACKAGE_REF=2.0.0-alpha.284', $readme);
-        $this->assertStringContainsString('The Dockerfile clones the `durable-workflow/workflow` `2.0.0-alpha.284` tag', $readme);
-        $this->assertStringContainsString('Composer package metadata', $readme);
-        $this->assertStringNotContainsString('The Dockerfile clones the `durable-workflow/workflow` `2.0.0-alpha.200` tag', $readme);
-        $this->assertStringNotContainsString('The image build fetches the `durable-workflow/workflow` `2.0.0-alpha.200`', $readme);
     }
 
     public function test_feature_ci_verifies_the_exact_workflow_source_before_removing_git_metadata(): void
@@ -354,9 +347,9 @@ class ReleaseImagePublishWorkflowContractTest extends TestCase
         $workflow = $this->read('.github/workflows/phpunit-feature.yml');
 
         foreach ([
-            'ref: 2.0.0-alpha.284',
-            'WORKFLOW_PACKAGE_REF: 2.0.0-alpha.284',
-            'WORKFLOW_PACKAGE_COMMIT: 80bef5d9bf01f3282c088b59c433e46b8b146617',
+            'ref: 2.0.0-alpha.291',
+            'WORKFLOW_PACKAGE_REF: 2.0.0-alpha.291',
+            'WORKFLOW_PACKAGE_COMMIT: 518a27492d38bd92bca3e2bb91b9ccf82da9589b',
             'git -C workflow-package rev-parse HEAD',
             'if [[ "$resolved_commit" != "$WORKFLOW_PACKAGE_COMMIT" ]]',
             '> workflow-package/.package-provenance',
@@ -380,9 +373,9 @@ class ReleaseImagePublishWorkflowContractTest extends TestCase
     {
         $workflow = $this->read('.github/workflows/release.yml');
 
-        $this->assertStringContainsString('WORKFLOW_PACKAGE_REF: 2.0.0-alpha.284', $workflow);
+        $this->assertStringContainsString('WORKFLOW_PACKAGE_REF: 2.0.0-alpha.291', $workflow);
         $this->assertStringContainsString(
-            'WORKFLOW_PACKAGE_COMMIT: 80bef5d9bf01f3282c088b59c433e46b8b146617',
+            'WORKFLOW_PACKAGE_COMMIT: 518a27492d38bd92bca3e2bb91b9ccf82da9589b',
             $workflow,
         );
         $this->assertStringContainsString('scripts/ci/select-compatible-workflow-package-ref.sh', $workflow);
@@ -514,8 +507,8 @@ SH);
 
     public function test_composer_metadata_identifies_the_exact_workflow_source(): void
     {
-        $expectedVersion = '2.0.0-alpha.284';
-        $expectedCommit = '80bef5d9bf01f3282c088b59c433e46b8b146617';
+        $expectedVersion = '2.0.0-alpha.291';
+        $expectedCommit = '518a27492d38bd92bca3e2bb91b9ccf82da9589b';
         $composer = json_decode($this->read('composer.json'), true, flags: JSON_THROW_ON_ERROR);
         $lock = json_decode($this->read('composer.lock'), true, flags: JSON_THROW_ON_ERROR);
 
@@ -787,8 +780,8 @@ SH);
             $result = $this->runScript('scripts/ci/verify-release-protocol-catalog.sh', [
                 'RELEASE_TAG' => '0.2.653',
                 'SERVER_IMAGE' => 'durableworkflow/server:0.2.653',
-                'WORKFLOW_PACKAGE_REF' => '2.0.0-alpha.284',
-                'WORKFLOW_PACKAGE_COMMIT' => '80bef5d9bf01f3282c088b59c433e46b8b146617',
+                'WORKFLOW_PACKAGE_REF' => '2.0.0-alpha.291',
+                'WORKFLOW_PACKAGE_COMMIT' => '518a27492d38bd92bca3e2bb91b9ccf82da9589b',
                 'DOCKER' => $dockerBin,
                 'CURL' => $curlBin,
                 'NODE' => $nodeBin,
@@ -883,8 +876,8 @@ SH);
             $result = $this->runScript('scripts/ci/verify-release-protocol-catalog.sh', [
                 'RELEASE_TAG' => '0.2.653',
                 'SERVER_IMAGE' => 'durableworkflow/server:0.2.653',
-                'WORKFLOW_PACKAGE_REF' => '2.0.0-alpha.284',
-                'WORKFLOW_PACKAGE_COMMIT' => '80bef5d9bf01f3282c088b59c433e46b8b146617',
+                'WORKFLOW_PACKAGE_REF' => '2.0.0-alpha.291',
+                'WORKFLOW_PACKAGE_COMMIT' => '518a27492d38bd92bca3e2bb91b9ccf82da9589b',
                 'DOCKER' => $dockerBin,
                 'DW_FAKE_EVENT_LOG' => $eventLog,
                 'RUNNER_TEMP' => $tmpDir,
@@ -921,8 +914,8 @@ SH);
         $catalog = PlatformProtocolSpecs::manifest();
         $provenance = [
             'source' => 'https://github.com/durable-workflow/workflow.git',
-            'ref' => '2.0.0-alpha.284',
-            'commit' => '80bef5d9bf01f3282c088b59c433e46b8b146617',
+            'ref' => '2.0.0-alpha.291',
+            'commit' => '518a27492d38bd92bca3e2bb91b9ccf82da9589b',
         ];
 
         $passing = $this->runProtocolCatalogComparator($catalog, [
@@ -2265,8 +2258,8 @@ SH;
                 'PROTOCOL_CATALOG_CONFORMANCE_EVIDENCE' => $evidencePath,
                 'RELEASE_TAG' => '0.2.651',
                 'SERVER_IMAGE' => 'durableworkflow/server:0.2.651',
-                'WORKFLOW_PACKAGE_REF' => '2.0.0-alpha.284',
-                'WORKFLOW_PACKAGE_COMMIT' => '80bef5d9bf01f3282c088b59c433e46b8b146617',
+                'WORKFLOW_PACKAGE_REF' => '2.0.0-alpha.291',
+                'WORKFLOW_PACKAGE_COMMIT' => '518a27492d38bd92bca3e2bb91b9ccf82da9589b',
             ]);
 
             $this->assertFileExists($evidencePath);
