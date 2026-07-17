@@ -43,6 +43,7 @@ on:
       - "tests/Unit/BoundedGrowthPolicyTest.php"
       - "tests/Unit/BoundedMetricPolicyTest.php"
       - "tests/Unit/ServerPerfHarnessContractTest.php"
+      - "tests/Unit/Support/server_soak_test.py"
       - "tests/Feature/SystemMetricsTest.php"
       - "tests/Feature/HealthControllerTest.php"
       - "tests/Feature/WorkerPollBackpressureTest.php"
@@ -88,6 +89,7 @@ on:
       - "tests/Unit/BoundedGrowthPolicyTest.php"
       - "tests/Unit/BoundedMetricPolicyTest.php"
       - "tests/Unit/ServerPerfHarnessContractTest.php"
+      - "tests/Unit/Support/server_soak_test.py"
       - "tests/Feature/SystemMetricsTest.php"
       - "tests/Feature/HealthControllerTest.php"
       - "tests/Feature/WorkerPollBackpressureTest.php"
@@ -113,6 +115,11 @@ jobs:
         run: |
           git clone --depth=1 --branch 2.0.0-alpha.291 https://github.com/durable-workflow/workflow.git workflow-package
           test "$(git -C workflow-package rev-parse HEAD)" = "518a27492d38bd92bca3e2bb91b9ccf82da9589b"
+
+      - name: Run perf harness result-gate tests
+        run: |
+          python3 -m py_compile scripts/perf/server_soak.py tests/Unit/Support/server_soak_test.py
+          python3 -m unittest tests/Unit/Support/server_soak_test.py
 
       - name: Run bounded-growth contract tests
         run: |
@@ -142,6 +149,7 @@ jobs:
           DW_PERF_TASK_QUEUES: "8"
           DW_PERF_WORKFLOW_RUNS: "1000"
           DW_PERF_START_CONCURRENCY: "8"
+          DW_PERF_MIN_WORKFLOW_COMPLETION_RATIO: "0.98"
           DW_PERF_HEALTH_INTERVAL_SECONDS: "0.5"
           DW_PERF_MAX_HEALTH_LATENCY_SECONDS: "3"
           DW_PERF_CONTROL_PLANE_INTERVAL_SECONDS: "5"

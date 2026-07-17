@@ -249,6 +249,16 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--workflow-runs", type=int, default=int(os.environ.get("DW_PERF_WORKFLOW_RUNS", "0")))
     parser.add_argument("--start-concurrency", type=int, default=int(os.environ.get("DW_PERF_START_CONCURRENCY", "8")))
     parser.add_argument(
+        "--min-workflow-completion-ratio",
+        type=float,
+        default=float(os.environ.get("DW_PERF_MIN_WORKFLOW_COMPLETION_RATIO", "0.98")),
+        help=(
+            "Minimum successful workflow starts as a fraction of --workflow-runs. "
+            "This keeps cache-growth coverage independent of shared-runner throughput; "
+            "request errors and availability loss still fail the run."
+        ),
+    )
+    parser.add_argument(
         "--health-interval-seconds",
         type=float,
         default=float(os.environ.get("DW_PERF_HEALTH_INTERVAL_SECONDS", "0.5")),
@@ -329,6 +339,8 @@ def parse_args() -> argparse.Namespace:
         "DW_PERF_MAX_FINAL_SERVER_CACHE_KEYS_BY_POLICY",
         parser,
     )
+    if not 0 < args.min_workflow_completion_ratio <= 1:
+        parser.error("DW_PERF_MIN_WORKFLOW_COMPLETION_RATIO must be greater than 0 and at most 1.")
 
     return args
 
@@ -829,6 +841,63 @@ def workflow_start_loop(
                 errors_path,
                 {"endpoint": "workflow_start", "exception": repr(exc), "run_index": index},
             )
+
+
+def evaluate_workflow_growth(
+    target_runs: int,
+    minimum_completion_ratio: float,
+    start_results: dict[str, Any],
+    final_workflow_runs: int,
+    compose_backed: bool,
+) -> tuple[dict[str, Any], list[str]]:
+    if not 0 < minimum_completion_ratio <= 1:
+        raise ValueError("minimum_completion_ratio must be greater than 0 and at most 1")
+
+    target_runs = max(0, target_runs)
+    attempted_starts = int(start_results.get("requests") or 0)
+    successful_starts = int(start_results.get("successful") or 0)
+    available_starts = int(start_results.get("available") or 0)
+    request_errors = int(start_results.get("errors") or 0)
+    minimum_successful_starts = math.ceil(target_runs * minimum_completion_ratio)
+    completion_ratio = 1.0 if target_runs == 0 else min(1.0, successful_starts / target_runs)
+    availability = 0.0 if attempted_starts == 0 else available_starts / attempted_starts
+
+    result = {
+        "target_runs": target_runs,
+        "minimum_completion_ratio": minimum_completion_ratio,
+        "minimum_successful_starts": minimum_successful_starts,
+        "attempted_starts": attempted_starts,
+        "successful_starts": successful_starts,
+        "completion_ratio": round(completion_ratio, 6),
+        "final_workflow_runs": final_workflow_runs,
+    }
+    failures: list[str] = []
+
+    if target_runs == 0:
+        return result, failures
+
+    if successful_starts < minimum_successful_starts:
+        failures.append(
+            "workflow growth target incomplete: required at least "
+            f"{minimum_successful_starts} of {target_runs} successful starts "
+            f"({minimum_completion_ratio:.1%}) but observed {successful_starts}"
+        )
+    if compose_backed and final_workflow_runs < minimum_successful_starts:
+        failures.append(
+            "workflow run cardinality below completion floor: required at least "
+            f"{minimum_successful_starts} of {target_runs} rows but sampled {final_workflow_runs}"
+        )
+    if request_errors > 0:
+        failures.append(f"workflow_start recorded {request_errors} request errors")
+    if attempted_starts == 0:
+        failures.append("workflow_start availability was not sampled during workflow growth")
+    elif available_starts < attempted_starts:
+        failures.append(
+            "workflow_start availability fell below 1.0 "
+            f"(observed {availability:.6f})"
+        )
+
+    return result, failures
 
 
 def workflow_list_loop(
@@ -1341,6 +1410,13 @@ def main() -> int:
         observed_sample_coverage = periodic_sample_count / expected_samples
         sampling_health = sample_health(samples, args.compose_project)
         request_availability = endpoint_metrics.snapshot()
+        workflow_growth, workflow_growth_failures = evaluate_workflow_growth(
+            target_runs=args.workflow_runs,
+            minimum_completion_ratio=args.min_workflow_completion_ratio,
+            start_results=request_availability.get("workflow_start", {}),
+            final_workflow_runs=final_workflow_runs,
+            compose_backed=bool(args.compose_project),
+        )
 
         provenance = evidence_provenance(base_url, args.compose_project)
 
@@ -1384,6 +1460,7 @@ def main() -> int:
             "final_redis_db_keys": final_redis_db_keys,
             "final_workflow_runs": final_workflow_runs,
             "final_ready_tasks": final_ready_tasks,
+            "workflow_growth": workflow_growth,
             "polling_observation_status": polling_observation_status,
             "server_memory_slope_mb_hour": None if slope is None else round(slope, 2),
             "sampling_health": sampling_health,
@@ -1400,6 +1477,7 @@ def main() -> int:
                 "min_sample_coverage": args.min_sample_coverage,
                 "max_health_latency_seconds": args.max_health_latency_seconds,
                 "max_control_plane_latency_seconds": args.max_control_plane_latency_seconds,
+                "min_workflow_completion_ratio": args.min_workflow_completion_ratio,
                 "require_trusted_evidence": args.require_trusted_evidence,
             },
             "evidence": {
@@ -1410,22 +1488,10 @@ def main() -> int:
             },
         }
 
-        failures = []
+        failures = list(workflow_growth_failures)
         if metrics.errors > 0:
             failures.append(f"{metrics.errors} load-generator errors")
         if args.workflow_runs > 0:
-            start_results = request_availability.get("workflow_start", {})
-            if int(start_results.get("successful") or 0) < args.workflow_runs:
-                failures.append(
-                    f"workflow growth target incomplete: expected {args.workflow_runs} successful starts "
-                    f"but observed {start_results.get('successful', 0)}"
-                )
-            if args.compose_project and final_workflow_runs < args.workflow_runs:
-                failures.append(
-                    f"workflow run cardinality below target: expected at least {args.workflow_runs} "
-                    f"but sampled {final_workflow_runs}"
-                )
-
             for endpoint in ("health", "ready", "cluster_info", "workflow_list", "worker_poll"):
                 result = request_availability.get(endpoint, {})
                 if int(result.get("requests") or 0) == 0:

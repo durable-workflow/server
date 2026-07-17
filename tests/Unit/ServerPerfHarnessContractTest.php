@@ -140,6 +140,7 @@ class ServerPerfHarnessContractTest extends TestCase
         foreach ([
             'DW_PERF_WORKFLOW_RUNS: "1000"',
             'DW_PERF_START_CONCURRENCY: "8"',
+            'DW_PERF_MIN_WORKFLOW_COMPLETION_RATIO: "0.98"',
             'DW_PERF_HEALTH_INTERVAL_SECONDS: "0.5"',
             'DW_PERF_MAX_HEALTH_LATENCY_SECONDS: "3"',
             'DW_PERF_CONTROL_PLANE_INTERVAL_SECONDS: "5"',
@@ -152,6 +153,12 @@ class ServerPerfHarnessContractTest extends TestCase
                 "Short perf smoke must retain the health-growth setting {$needle}.",
             );
         }
+
+        $this->assertStringContainsString(
+            'python3 -m unittest tests/Unit/Support/server_soak_test.py',
+            $workflow,
+            'The required perf contract check must execute the focused workflow-growth result gate tests.',
+        );
     }
 
     public function test_polling_assertions_are_decoupled_from_redis_dbsize(): void

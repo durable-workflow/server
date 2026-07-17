@@ -60,6 +60,16 @@ cache-key drain path. The long soak runs on the labeled self-hosted runner and
 enforces the memory slope budget after the run is long enough to make that
 signal meaningful.
 
+Workflow-growth coverage is rate-independent. `DW_PERF_WORKFLOW_RUNS` sets the
+nominal cardinality and `DW_PERF_MIN_WORKFLOW_COMPLETION_RATIO` sets the minimum
+successful fraction, defaulting to 98%. This lets a healthy shared runner finish
+slightly below the nominal target without weakening the bounded cache, memory,
+resource-sampling, or drain assertions. Request errors, non-100% endpoint
+availability, completion below the configured floor, and the wrapper's bounded
+load timeout still fail the run. `summary.json` records the target, minimum
+successful starts, attempted and successful starts, observed completion ratio,
+and final workflow-row count under `workflow_growth`.
+
 Both workflow modes pass explicit runner provenance into the artifact. Short
 smokes set `RUNNER_ENVIRONMENT=github-hosted`; long soaks set
 `RUNNER_ENVIRONMENT=self-hosted`, which is required before `summary.json` can be
