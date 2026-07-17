@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Tests\Unit;
 
+use App\Support\WorkerCompatibilityHeartbeatRecorder;
 use FilesystemIterator;
 use PHPUnit\Framework\TestCase;
 use RecursiveDirectoryIterator;
@@ -121,6 +122,20 @@ class BoundedGrowthPolicyTest extends TestCase
         foreach ($this->policyMetrics() as $metric => $entry) {
             $this->assertPolicyOwnerExists((string) ($entry['owner'] ?? ''), $metric);
         }
+    }
+
+    public function test_worker_compatibility_heartbeat_throttle_has_a_draining_per_worker_bound(): void
+    {
+        $policy = $this->policyCacheKeys()['worker_compatibility_heartbeat'] ?? null;
+
+        $this->assertIsArray($policy);
+        $this->assertSame(WorkerCompatibilityHeartbeatRecorder::class, $policy['owner'] ?? null);
+        $this->assertSame('server:worker-compatibility-heartbeat:', $policy['prefix'] ?? null);
+        $this->assertSame(['namespace_hash', 'worker_id_hash'], $policy['dimensions'] ?? null);
+        $this->assertSame('workflows.v2.compatibility.heartbeat_ttl_seconds', $policy['ttl_config'] ?? null);
+        $this->assertSame(3, $policy['ttl_divisor'] ?? null);
+        $this->assertSame(1, $policy['active_keys_per_scope'] ?? null);
+        $this->assertTrue($policy['drains_to_zero'] ?? false);
     }
 
     public function test_metric_policy_entries_have_cardinality_fields(): void

@@ -13,6 +13,7 @@ use App\Support\NamespaceWorkflowScope;
 use App\Support\QueryTaskQueueUnavailableException;
 use App\Support\SearchAttributeValueValidator;
 use App\Support\ServiceModeTimerDispatcher;
+use App\Support\WorkerCompatibilityHeartbeatRecorder;
 use App\Support\WorkerPollBackpressure;
 use App\Support\WorkerPollFence;
 use App\Support\WorkerProtocol;
@@ -23,6 +24,7 @@ use App\Support\WorkflowTaskPoller;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Str;
 use Illuminate\Validation\ValidationException;
 use Workflow\V2\Contracts\HistoryProjectionRole;
@@ -38,7 +40,6 @@ use Workflow\V2\Models\ActivityExecution;
 use Workflow\V2\Models\WorkflowRun;
 use Workflow\V2\Models\WorkflowTask;
 use Workflow\V2\Support\PayloadEnvelopeResolver;
-use Workflow\V2\Support\StandaloneWorkerVisibility;
 use Workflow\V2\Support\WorkerProtocolVersion;
 use Workflow\V2\Support\WorkflowCommandNormalizer;
 use Workflow\V2\Support\WorkflowTaskOwnership;
@@ -53,6 +54,7 @@ class WorkerController
         private readonly NamespaceExternalPayloadStorage $externalPayloadStorage,
         private readonly SearchAttributeValueValidator $searchAttributeValues,
         private readonly WorkerTerminalEventAttribution $terminalEventAttribution,
+        private readonly WorkerCompatibilityHeartbeatRecorder $compatibilityHeartbeats,
     ) {}
 
     /**
@@ -207,11 +209,12 @@ class WorkerController
             $this->releaseLeasedActivityTasksForReplacedWorker($namespace, $workerId);
         }
 
-        StandaloneWorkerVisibility::recordCompatibility(
+        $this->compatibilityHeartbeats->record(
             namespace: $namespace,
             workerId: $workerId,
             taskQueue: $validated['task_queue'],
             buildId: $validated['build_id'] ?? null,
+            force: true,
         );
 
         if (is_string($namespace)) {
@@ -336,7 +339,6 @@ class WorkerController
     }
 
     /**
-     * @param  mixed  $contracts
      * @return list<array{name: string, parameters: list<array<string, mixed>>}>
      */
     private function commandHandlerContracts(mixed $contracts): array
@@ -370,7 +372,6 @@ class WorkerController
     }
 
     /**
-     * @param  mixed  $parameters
      * @return list<array<string, mixed>>
      */
     private function commandHandlerParameters(mixed $parameters): array
@@ -603,7 +604,7 @@ class WorkerController
 
         $worker->update($update);
 
-        StandaloneWorkerVisibility::recordCompatibility(
+        $this->compatibilityHeartbeats->record(
             namespace: $worker->namespace,
             workerId: $worker->worker_id,
             taskQueue: $worker->task_queue,
@@ -2073,6 +2074,15 @@ class WorkerController
 
         $namespace = $request->attributes->get('namespace');
 
+        if (config('app.debug')) {
+            Log::debug('worker_query_poll_request_admitted', [
+                'namespace' => $namespace,
+                'worker_id' => $request->input('worker_id'),
+                'task_queue' => $request->input('task_queue'),
+                'poll_request_id' => $request->input('poll_request_id'),
+            ]);
+        }
+
         $validated = $request->validate([
             'worker_id' => ['required', 'string'],
             'task_queue' => ['required', 'string'],
@@ -2141,6 +2151,23 @@ class WorkerController
             }
 
             throw $exception;
+        }
+
+        $pollContext = [
+            'namespace' => $namespace,
+            'worker_id' => $worker->worker_id,
+            'task_queue' => $worker->task_queue,
+            'poll_request_id' => $validated['poll_request_id'] ?? null,
+            'poll_status' => $poll['poll_status'],
+            'query_task_id' => $poll['task']['query_task_id'] ?? null,
+        ];
+
+        if ($poll['poll_status'] === 'empty') {
+            if (config('app.debug')) {
+                Log::debug('worker_query_poll_response_ready', $pollContext);
+            }
+        } else {
+            Log::info('worker_query_poll_response_ready', $pollContext);
         }
 
         return WorkerProtocol::json([

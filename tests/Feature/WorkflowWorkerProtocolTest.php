@@ -428,6 +428,10 @@ class WorkflowWorkerProtocolTest extends TestCase
 
         WorkerCompatibilityFleet::clear();
 
+        // A shared cross-process throttle suppresses duplicate compatibility
+        // row replacement until the next bounded fleet refresh interval.
+        $this->travel(11)->seconds();
+
         $heartbeat = $this->withHeaders($this->workerHeaders())
             ->postJson('/api/worker/heartbeat', [
                 'worker_id' => 'php-worker-register',

@@ -6,8 +6,12 @@ namespace Tests\Feature;
 
 use App\Models\WorkerRegistration;
 use App\Models\WorkflowNamespace;
+use App\Support\ServerPollingCache;
+use App\Support\WorkerCompatibilityHeartbeatRecorder;
 use App\Support\WorkerProtocol;
 use Illuminate\Foundation\Testing\RefreshDatabase;
+use Illuminate\Support\Carbon;
+use Illuminate\Support\Facades\DB;
 use Tests\TestCase;
 
 class WorkerControllerTest extends TestCase
@@ -476,6 +480,85 @@ class WorkerControllerTest extends TestCase
             ->assertJsonPath('worker_id', 'heartbeat-worker')
             ->assertJsonPath('acknowledged', true)
             ->assertJsonPath('heartbeat_interval_seconds', 10);
+    }
+
+    public function test_concurrent_request_processes_share_worker_compatibility_refresh_throttle(): void
+    {
+        config(['workflows.v2.compatibility.heartbeat_ttl_seconds' => 30]);
+        Carbon::setTestNow(Carbon::parse('2026-07-17 02:00:00'));
+
+        try {
+            $this->withHeaders($this->workerHeaders())
+                ->postJson('/api/worker/register', [
+                    'worker_id' => 'compatibility-throttle-worker',
+                    'task_queue' => 'replay-query',
+                    'runtime' => 'external',
+                    'build_id' => 'build-replay-query',
+                ])
+                ->assertCreated();
+
+            $initialRecordedAt = DB::table('workflow_worker_compatibility_heartbeats')
+                ->where('worker_id', 'compatibility-throttle-worker')
+                ->value('recorded_at');
+
+            Carbon::setTestNow(now()->addSecond());
+
+            $separateRequestRecorder = new WorkerCompatibilityHeartbeatRecorder(
+                app(ServerPollingCache::class),
+            );
+            $this->assertFalse($separateRequestRecorder->record(
+                namespace: 'default',
+                workerId: 'compatibility-throttle-worker',
+                taskQueue: 'replay-query',
+                buildId: 'build-replay-query',
+            ));
+
+            for ($request = 0; $request < 6; $request++) {
+                $this->withHeaders($this->workerHeaders())
+                    ->postJson('/api/worker/heartbeat', [
+                        'worker_id' => 'compatibility-throttle-worker',
+                    ])
+                    ->assertOk();
+            }
+
+            $this->assertSame(
+                (string) $initialRecordedAt,
+                (string) DB::table('workflow_worker_compatibility_heartbeats')
+                    ->where('worker_id', 'compatibility-throttle-worker')
+                    ->value('recorded_at'),
+            );
+
+            Carbon::setTestNow(now()->addSeconds(10));
+
+            $this->withHeaders($this->workerHeaders())
+                ->postJson('/api/worker/heartbeat', [
+                    'worker_id' => 'compatibility-throttle-worker',
+                ])
+                ->assertOk();
+
+            $this->assertNotSame(
+                (string) $initialRecordedAt,
+                (string) DB::table('workflow_worker_compatibility_heartbeats')
+                    ->where('worker_id', 'compatibility-throttle-worker')
+                    ->value('recorded_at'),
+            );
+            $this->assertFalse((new WorkerCompatibilityHeartbeatRecorder(
+                app(ServerPollingCache::class),
+            ))->record(
+                namespace: 'default',
+                workerId: 'compatibility-throttle-worker',
+                taskQueue: 'replay-query',
+                buildId: 'build-replay-query',
+            ));
+            $this->assertSame(
+                1,
+                DB::table('workflow_worker_compatibility_heartbeats')
+                    ->where('worker_id', 'compatibility-throttle-worker')
+                    ->count(),
+            );
+        } finally {
+            Carbon::setTestNow();
+        }
     }
 
     public function test_heartbeat_records_task_slots_and_process_metrics(): void

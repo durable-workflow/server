@@ -12,7 +12,8 @@ BASE_URL=""
 
 export SERVER_PORT
 export APP_ENV="${APP_ENV:-local}"
-export APP_DEBUG="${APP_DEBUG:-false}"
+export APP_DEBUG="${APP_DEBUG:-true}"
+export LOG_LEVEL="${LOG_LEVEL:-debug}"
 export DW_AUTH_DRIVER="${DW_AUTH_DRIVER:-token}"
 export DW_AUTH_TOKEN="$TOKEN"
 export DW_AUTH_BACKWARD_COMPATIBLE="${DW_AUTH_BACKWARD_COMPATIBLE:-true}"
@@ -117,6 +118,13 @@ build_server_url_candidates
 BASE_URL="$(wait_for_server_ready)"
 printf 'Running concurrent replay/query regression against %s\n' "$BASE_URL"
 
+opcache_enabled="$(compose exec -T server php -r 'echo extension_loaded("Zend OPcache") && ini_get("opcache.enable_cli") ? "1" : "0";')"
+if [ "$opcache_enabled" != "1" ]; then
+  printf 'Standalone CLI HTTP workers do not have shared OPcache enabled.\n' >&2
+  exit 1
+fi
+printf 'Standalone CLI HTTP worker OPcache is enabled.\n'
+
 python3 - "$BASE_URL" "$TOKEN" <<'PY'
 from __future__ import annotations
 
@@ -138,6 +146,16 @@ suffix = uuid.uuid4().hex[:10]
 WORKER_ID = f"replay-query-worker-{suffix}"
 TASK_QUEUE = f"replay-query-queue-{suffix}"
 WORKFLOW_ID = f"replay-query-workflow-{suffix}"
+stage_lock = threading.Lock()
+
+
+def stage(name: str, **details: Any) -> None:
+    with stage_lock:
+        print(json.dumps({
+            "stage": name,
+            "observed_at": time.time(),
+            **details,
+        }, sort_keys=True), flush=True)
 
 
 def request_json(
@@ -288,17 +306,20 @@ if heartbeat_latency >= 5:
     raise AssertionError(f"pre-replay heartbeat took {heartbeat_latency:.3f}s")
 
 replay_task = poll_workflow_task()
+stage("replay_task_leased", task_id=replay_task.get("task_id"))
 
 query_holder: dict[str, Any] = {}
 responder_holder: dict[str, Any] = {}
 query_started = threading.Event()
-responder_ready = threading.Event()
+query_blocked_during_replay = threading.Event()
+replay_completed = threading.Event()
 
 
 def call_query() -> None:
     try:
         query_holder["sent_at"] = time.monotonic()
         query_started.set()
+        stage("public_query_sent")
         query_holder["response"] = request_json(
             f"/api/workflows/{urllib.parse.quote(WORKFLOW_ID)}/query/state",
             body={},
@@ -312,14 +333,6 @@ def call_query() -> None:
 def answer_query() -> None:
     try:
         responder_holder["poll_started_at"] = time.monotonic()
-        response, latency = heartbeat()
-        responder_holder["heartbeat_latency"] = latency
-        require_success(response, "query responder heartbeat")
-        if latency >= 5:
-            raise AssertionError(f"query responder heartbeat took {latency:.3f}s")
-        responder_holder["heartbeat_acknowledged_at"] = time.monotonic()
-        responder_ready.set()
-
         deadline = time.monotonic() + 20
         task = None
         while time.monotonic() < deadline and task is None:
@@ -337,13 +350,28 @@ def answer_query() -> None:
             poll_body = require_success(poll, "query task poll")
             candidate = poll_body.get("task")
             if isinstance(candidate, dict):
+                if not query_blocked_during_replay.is_set():
+                    raise AssertionError("query task was claimed before its replay blocker was observed")
                 task = candidate
+                continue
+
+            poll_status = poll_body.get("poll_status")
+            if poll_status == "workflow_task_leased":
+                responder_holder["blocked_at"] = time.monotonic()
+                responder_holder["blocked_status"] = poll_status
+                query_blocked_during_replay.set()
+                stage("query_enqueued_behind_replay", poll_status=poll_status)
+                if not replay_completed.wait(timeout=20):
+                    raise AssertionError("replay did not complete after the pending query was observed")
+            elif poll_status == "workflow_task_pending":
+                raise AssertionError("signal-resume work blocked the query before replay completion")
 
         if task is None:
             raise AssertionError("query task was not claimable after replay completion")
 
         responder_holder["claimed_at"] = time.monotonic()
         responder_holder["task"] = task
+        stage("query_task_claimed", query_task_id=task.get("query_task_id"))
         complete = request_json(
             f"/api/worker/query-tasks/{task['query_task_id']}/complete",
             body={
@@ -357,7 +385,7 @@ def answer_query() -> None:
         require_success(complete, "query task completion")
     except BaseException as error:  # noqa: BLE001 - propagate through the main test thread.
         responder_holder["error"] = error
-        responder_ready.set()
+        query_blocked_during_replay.set()
 
 
 query_thread = threading.Thread(target=call_query, daemon=True)
@@ -366,10 +394,16 @@ query_thread.start()
 if not query_started.wait(2):
     raise AssertionError("public query did not start while replay task was leased")
 responder_thread.start()
-if not responder_ready.wait(10):
-    raise AssertionError("query responder heartbeat did not remain responsive")
+if not query_blocked_during_replay.wait(10):
+    raise AssertionError("query polling did not expose the query queued behind replay")
 if responder_holder.get("error"):
     raise responder_holder["error"]
+
+overlap_heartbeat_response, overlap_heartbeat_latency = heartbeat()
+require_success(overlap_heartbeat_response, "replay/query overlap heartbeat")
+if overlap_heartbeat_latency >= 5:
+    raise AssertionError(f"replay/query overlap heartbeat took {overlap_heartbeat_latency:.3f}s")
+stage("replay_query_heartbeat_acknowledged", latency_seconds=overlap_heartbeat_latency)
 
 # Exercise the same worker registration through several standalone HTTP
 # processes while the public query and replay task are both in flight.
@@ -404,6 +438,7 @@ signal = request_json(
 )
 if int(signal.get("status") or 0) != 202:
     raise AssertionError(f"signal was not accepted during replay: {signal}")
+stage("signal_accepted_during_replay")
 
 time.sleep(0.3)
 complete_workflow_task(replay_task, [{
@@ -412,6 +447,8 @@ complete_workflow_task(replay_task, [{
     "timeout_seconds": 60,
 }])
 replay_completed_at = time.monotonic()
+replay_completed.set()
+stage("replay_task_completed")
 
 responder_thread.join(timeout=25)
 query_thread.join(timeout=25)
@@ -453,6 +490,7 @@ complete_workflow_task(signal_task, [{
 signal_applied_at = time.monotonic()
 if not signal_sent_at < replay_completed_at <= signal_applied_at:
     raise AssertionError("accepted replay-time signal was not applied after replay completion")
+stage("signal_applied_after_replay", task_id=signal_task.get("task_id"))
 
 for thread in heartbeat_threads:
     thread.join(timeout=12)
@@ -471,7 +509,7 @@ print(json.dumps({
     "query_task_id": responder_holder.get("task", {}).get("query_task_id"),
     "signal_task_id": signal_task.get("task_id"),
     "query_result": query_body.get("result"),
-    "query_responder_heartbeat_seconds": responder_holder.get("heartbeat_latency"),
+    "replay_query_heartbeat_seconds": overlap_heartbeat_latency,
     "max_concurrent_heartbeat_seconds": max(latency for _, latency in heartbeat_results),
     "ordering": "query_enqueued_during_replay_then_claimed_before_signal_resume",
 }, sort_keys=True))

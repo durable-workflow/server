@@ -2,6 +2,7 @@
 
 use App\Services\PrometheusMetricsSummary;
 use App\Support\ActivityRuntimeResultGate;
+use App\Support\ActivityTaskPollRequestStore;
 use App\Support\HistoryRetentionEnforcer;
 use App\Support\LongPollSignalStore;
 use App\Support\LongPollWaitSlotStore;
@@ -9,8 +10,8 @@ use App\Support\ProjectionDriftMetrics;
 use App\Support\QueryTaskPollRequestStore;
 use App\Support\ServerPollingCache;
 use App\Support\ServerReadiness;
-use App\Support\ActivityTaskPollRequestStore;
 use App\Support\TaskQueueAdmission;
+use App\Support\WorkerCompatibilityHeartbeatRecorder;
 use App\Support\WorkerPollClaimGate;
 use App\Support\WorkflowQueryTaskBroker;
 use App\Support\WorkflowTaskFailureMetrics;
@@ -225,6 +226,23 @@ return [
             'bound' => 'One short-lived throttle key per namespace receiving worker heartbeats during the TTL window.',
             'admission' => 'Cache add elects at most one worker heartbeat per namespace per minute to run a one-run retention pass.',
             'eviction' => 'Cache TTL only. Expired run discovery stays in SQL and no cache index is retained.',
+        ],
+
+        'worker_compatibility_heartbeat' => [
+            'owner' => WorkerCompatibilityHeartbeatRecorder::class,
+            'prefix' => 'server:worker-compatibility-heartbeat:',
+            'dimensions' => [
+                'namespace_hash',
+                'worker_id_hash',
+            ],
+            'ttl' => 'One third of workflows.v2.compatibility.heartbeat_ttl_seconds, with a runtime minimum of 1 second.',
+            'bound' => 'At most one expiring throttle key per namespace/worker that registered or heartbeated during the write interval.',
+            'admission' => 'Registration seeds the key and heartbeat cache-add elects one request process to refresh compatibility fleet visibility during each write interval.',
+            'eviction' => 'Cache TTL only. No index is retained, so all keys drain to zero after recently heartbeating workers become idle.',
+            'ttl_config' => 'workflows.v2.compatibility.heartbeat_ttl_seconds',
+            'ttl_divisor' => 3,
+            'active_keys_per_scope' => 1,
+            'drains_to_zero' => true,
         ],
 
         'readiness_probe' => [

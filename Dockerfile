@@ -23,7 +23,7 @@ RUN apt-get update && apt-get install -y \
     python3 \
     python3-venv \
     unzip \
-    && docker-php-ext-install redis pdo pdo_mysql pdo_pgsql pcntl zip bcmath \
+    && docker-php-ext-install opcache redis pdo pdo_mysql pdo_pgsql pcntl zip bcmath \
     && rm -rf /var/lib/apt/lists/*
 
 COPY --from=composer:2 /usr/bin/composer /usr/bin/composer

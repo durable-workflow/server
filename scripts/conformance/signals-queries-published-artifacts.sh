@@ -2658,6 +2658,7 @@ def answer_next_query_task(
     poll_timeout: float = 45.0,
     ready_event: threading.Event | None = None,
     capture_claim_eligibility: bool = False,
+    replay_blocked_event: threading.Event | None = None,
 ) -> None:
     try:
         deadline = time.time() + poll_timeout
@@ -2675,17 +2676,20 @@ def answer_next_query_task(
             claim_poll_seconds = max(1, min(2, int(math.ceil(remaining))))
             if "query_poll_started_at" not in holder:
                 holder["query_poll_started_at"] = now()
-            holder["heartbeat"] = heartbeat_worker(
-                base_url,
-                token,
-                namespace,
-                worker_id,
-            )
-            heartbeat_status = holder["heartbeat"].get("status_code")
-            if not isinstance(heartbeat_status, int) or heartbeat_status >= 400:
-                holder["error"] = f"query responder heartbeat failed: {holder['heartbeat']}"
-                return
-            holder["heartbeat_acknowledged_at"] = now()
+            if replay_blocked_event is None or replay_blocked_event.is_set():
+                holder["heartbeat"] = heartbeat_worker(
+                    base_url,
+                    token,
+                    namespace,
+                    worker_id,
+                )
+                heartbeat_status = holder["heartbeat"].get("status_code")
+                if not isinstance(heartbeat_status, int) or heartbeat_status >= 400:
+                    holder["error"] = f"query responder heartbeat failed: {holder['heartbeat']}"
+                    return
+                holder["heartbeat_acknowledged_at"] = now()
+                if replay_blocked_event is not None:
+                    holder["replay_blocked_heartbeat_acknowledged_at"] = holder["heartbeat_acknowledged_at"]
             holder["query_poll_ready_at"] = now()
             if ready_event is not None:
                 ready_event.set()
@@ -2725,6 +2729,17 @@ def answer_next_query_task(
             if isinstance(task_candidate, dict):
                 task = task_candidate
                 break
+
+            if isinstance(poll_body, dict) and poll_body.get("poll_status") == "workflow_task_leased":
+                leased_count = int(holder.get("workflow_task_leased_count") or 0) + 1
+                holder["workflow_task_leased_count"] = leased_count
+                holder["workflow_task_leased_at"] = now()
+                holder["workflow_task_leased_poll"] = {
+                    "status_code": poll.get("status_code"),
+                    "poll_status": poll_body.get("poll_status"),
+                }
+                if replay_blocked_event is not None:
+                    replay_blocked_event.set()
 
             if (
                 isinstance(poll_body, dict)
@@ -4022,9 +4037,11 @@ def run_replay_terminal_probe(
         probe_context["query_sent_at"] = query_holder.get("query_sent_at")
 
         query_task_holder: dict[str, Any] = {}
+        query_blocked_by_replay = threading.Event()
         query_responder = threading.Thread(
             target=answer_next_query_task,
             args=(base_url, token, namespace, probe_worker_id, probe_task_queue, 0, log_file, query_task_holder),
+            kwargs={"replay_blocked_event": query_blocked_by_replay},
             daemon=True,
         )
         query_responder.start()
@@ -4037,7 +4054,36 @@ def run_replay_terminal_probe(
                 phase="query_during_replay_worker_poll_start",
             )
         probe_context["query_poll_started_at"] = query_task_holder.get("query_poll_started_at")
-        time.sleep(env_float("DW_SIGNALS_QUERIES_REPLAY_QUERY_ENQUEUE_GRACE_SECONDS", 0.75))
+        if not query_blocked_by_replay.wait(timeout=10):
+            raise ReplayTimingProbeFailure(
+                "query during replay was not observed queued behind the active replay lease: "
+                f"{query_task_holder.get('error', 'no workflow_task_leased poll status')}",
+                phase="query_during_replay_enqueue_barrier",
+                status="fail",
+                owner="server",
+                blocker_kind="query_during_replay_enqueue_barrier_failed",
+            )
+        probe_context["query_blocked_by_replay_at"] = query_task_holder.get("workflow_task_leased_at")
+        probe_context["query_blocked_poll_status"] = "workflow_task_leased"
+        replay_heartbeat_deadline = time.time() + 10
+        while (
+            "replay_blocked_heartbeat_acknowledged_at" not in query_task_holder
+            and "error" not in query_task_holder
+            and time.time() < replay_heartbeat_deadline
+        ):
+            time.sleep(0.01)
+        if "replay_blocked_heartbeat_acknowledged_at" not in query_task_holder:
+            raise ReplayTimingProbeFailure(
+                "query responder heartbeat was not acknowledged after the query was queued behind replay: "
+                f"{query_task_holder.get('error', 'heartbeat admission timed out')}",
+                phase="query_during_replay_heartbeat_admission",
+                status="fail",
+                owner="server",
+                blocker_kind="query_during_replay_heartbeat_admission_failed",
+            )
+        probe_context["replay_blocked_heartbeat_acknowledged_at"] = query_task_holder.get(
+            "replay_blocked_heartbeat_acknowledged_at"
+        )
 
         probe_context["phase"] = "signal_during_replay_api_call"
         signal_sent_at = now()
@@ -4403,6 +4449,11 @@ def run_replay_terminal_probe(
             "worker_restart_at": worker_restart_at,
             "query_sent_at": query_holder.get("query_sent_at"),
             "query_poll_started_at": query_task_holder.get("query_poll_started_at"),
+            "query_blocked_by_replay_at": query_task_holder.get("workflow_task_leased_at"),
+            "query_blocked_poll_status": "workflow_task_leased",
+            "replay_blocked_heartbeat_acknowledged_at": query_task_holder.get(
+                "replay_blocked_heartbeat_acknowledged_at"
+            ),
             "replay_completed_at": replay_completed_at,
             "query_handler_invoked_at": query_task_holder.get("query_handler_invoked_at"),
             "query_completed_at": query_holder.get("query_completed_at") or query_task_holder.get("query_completed_at"),

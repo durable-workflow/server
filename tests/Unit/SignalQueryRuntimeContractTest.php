@@ -3184,6 +3184,73 @@ PY);
         $this->assertSame(55, $result['complete_bodies'][0]['result']);
     }
 
+    public function test_host_runner_query_responder_observes_a_query_blocked_by_replay(): void
+    {
+        $result = $this->runSignalQueryRunnerPythonSnippet(<<<'PY'
+poll_count = 0
+
+def fake_http_json(base_url, path, **kwargs):
+    global poll_count
+    if path.endswith("/worker/heartbeat"):
+        return {"status_code": 200, "body": {"acknowledged": True}}
+
+    if path.endswith("/worker/query-tasks/poll"):
+        poll_count += 1
+        if poll_count == 1:
+            return {
+                "status_code": 200,
+                "body": {"task": None, "poll_status": "workflow_task_leased"},
+            }
+        return {
+            "status_code": 200,
+            "body": {
+                "task": {
+                    "query_task_id": "query-task-after-replay",
+                    "query_task_attempt": 1,
+                    "lease_owner": "leased-worker",
+                },
+            },
+        }
+
+    if path.endswith("/worker/query-tasks/query-task-after-replay/complete"):
+        return {"status_code": 200, "body": {"outcome": "completed"}}
+
+    raise AssertionError(f"unexpected path {path}")
+
+globals()["http_json"] = fake_http_json
+holder = {}
+blocked = threading.Event()
+answer_next_query_task(
+    "http://unused",
+    "token",
+    "default",
+    "polling-worker",
+    "queue-1",
+    0,
+    Path("/tmp/signals-queries-query-replay-block-test.log"),
+    holder,
+    poll_timeout=12,
+    replay_blocked_event=blocked,
+)
+
+print(json.dumps({
+    "blocked": blocked.is_set(),
+    "blocked_count": holder.get("workflow_task_leased_count"),
+    "blocked_poll_status": holder.get("workflow_task_leased_poll", {}).get("poll_status"),
+    "poll_attempt_count": holder.get("query_poll_attempt_count"),
+    "query_task_id": holder.get("query_task", {}).get("query_task_id"),
+    "error": holder.get("error"),
+}, sort_keys=True))
+PY);
+
+        $this->assertNull($result['error']);
+        $this->assertTrue($result['blocked']);
+        $this->assertSame(1, $result['blocked_count']);
+        $this->assertSame('workflow_task_leased', $result['blocked_poll_status']);
+        $this->assertSame(2, $result['poll_attempt_count']);
+        $this->assertSame('query-task-after-replay', $result['query_task_id']);
+    }
+
     public function test_host_runner_query_responder_retries_a_timed_out_claim_poll(): void
     {
         $result = $this->runSignalQueryRunnerPythonSnippet(<<<'PY'
@@ -5013,7 +5080,7 @@ def complete_workflow_task(base_url, token, namespace, task, commands, timeout=3
         events.append("terminal_complete")
     return {"status_code": 200, "body": {}}
 
-def answer_next_query_task(base_url, token, namespace, worker_id, task_queue, result, log_file, holder, poll_timeout=45.0):
+def answer_next_query_task(base_url, token, namespace, worker_id, task_queue, result, log_file, holder, poll_timeout=45.0, replay_blocked_event=None):
     holder["query_poll_started_at"] = now()
     if isinstance(result, dict):
         events.append("terminal_query_answer_started")
@@ -5022,6 +5089,10 @@ def answer_next_query_task(base_url, token, namespace, worker_id, task_queue, re
     else:
         replay_query_poll_started_before_barrier.append("replay_complete" not in events)
         events.append("replay_query_poll_started")
+        holder["workflow_task_leased_at"] = now()
+        if replay_blocked_event is not None:
+            replay_blocked_event.set()
+        holder["replay_blocked_heartbeat_acknowledged_at"] = now()
         replay_completed.wait(5)
         events.append("replay_query_answer_started")
         event = replay_query_ready
@@ -5183,9 +5254,13 @@ def complete_workflow_task(base_url, token, namespace, task, commands, timeout=3
         }
     raise RuntimeError(f"unexpected task {task}")
 
-def answer_next_query_task(base_url, token, namespace, worker_id, task_queue, result, log_file, holder, poll_timeout=45.0):
+def answer_next_query_task(base_url, token, namespace, worker_id, task_queue, result, log_file, holder, poll_timeout=45.0, replay_blocked_event=None):
     holder["query_poll_started_at"] = now()
     events.append("replay_query_poll_started")
+    holder["workflow_task_leased_at"] = now()
+    if replay_blocked_event is not None:
+        replay_blocked_event.set()
+    holder["replay_blocked_heartbeat_acknowledged_at"] = now()
     replay_completed.wait(5)
     events.append("replay_query_answer_started")
     holder["poll"] = {"status_code": 200}
@@ -5302,9 +5377,13 @@ def complete_workflow_task(base_url, token, namespace, task, commands, timeout=3
     replay_completed.set()
     return {"status_code": 200, "body": {}}
 
-def answer_next_query_task(base_url, token, namespace, worker_id, task_queue, result, log_file, holder, poll_timeout=45.0):
+def answer_next_query_task(base_url, token, namespace, worker_id, task_queue, result, log_file, holder, poll_timeout=45.0, replay_blocked_event=None):
     holder["query_poll_started_at"] = now()
     events.append("replay_query_poll_started")
+    holder["workflow_task_leased_at"] = now()
+    if replay_blocked_event is not None:
+        replay_blocked_event.set()
+    holder["replay_blocked_heartbeat_acknowledged_at"] = now()
     replay_completed.wait(5)
     holder["poll"] = {"status_code": 200, "body": {"task": None, "poll_status": "empty"}}
     holder["empty_polls"] = [holder["poll"]]

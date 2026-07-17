@@ -206,13 +206,23 @@ class ReleaseImagePublishWorkflowContractTest extends TestCase
             'git clone --depth 1 --branch "${PHPREDIS_VERSION}" https://github.com/phpredis/phpredis.git /phpredis',
             'RESOLVED_COMMIT="$(git rev-parse HEAD)"',
             'COPY --from=phpredis-source /phpredis /usr/src/php/ext/redis',
-            'docker-php-ext-install redis pdo pdo_mysql pdo_pgsql pcntl zip bcmath',
+            'docker-php-ext-install opcache redis pdo pdo_mysql pdo_pgsql pcntl zip bcmath',
         ] as $needle) {
             $this->assertStringContainsString($needle, $dockerfile);
         }
 
         $this->assertStringNotContainsString('pecl install redis', $dockerfile);
         $this->assertStringNotContainsString('pecl.php.net/redis', $dockerfile);
+    }
+
+    public function test_standalone_cli_http_workers_share_compiled_application_bytecode(): void
+    {
+        $dockerfile = $this->read('Dockerfile');
+        $phpConfig = $this->read('docker/php-custom.ini');
+
+        $this->assertStringContainsString('docker-php-ext-install opcache', $dockerfile);
+        $this->assertStringContainsString('opcache.enable_cli = 1', $phpConfig);
+        $this->assertStringContainsString('opcache.max_accelerated_files = 20000', $phpConfig);
     }
 
     public function test_dockerfile_installs_node_for_published_conformance_handoffs(): void

@@ -8,6 +8,8 @@ x-server-environment: &server-environment
   DW_SERVER_KEY: ${DW_SERVER_KEY:-}
   APP_VERSION: ${APP_VERSION:-${DW_SERVER_TAG:-0.2}}
   APP_DEBUG: ${APP_DEBUG:-false}
+  LOG_CHANNEL: ${LOG_CHANNEL:-stderr}
+  LOG_LEVEL: ${LOG_LEVEL:-info}
   DB_CONNECTION: mysql
   DB_HOST: mysql
   DB_PORT: 3306

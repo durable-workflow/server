@@ -22,6 +22,8 @@ use App\Support\WorkflowStartService;
 use App\Support\WorkflowVisibilityQuery;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
+use Illuminate\Support\Collection;
+use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Validator;
 use Illuminate\Validation\ValidationException;
 use LogicException;
@@ -31,8 +33,8 @@ use Workflow\V2\Contracts\WorkflowControlPlane;
 use Workflow\V2\Enums\HistoryEventType;
 use Workflow\V2\Enums\RunStatus;
 use Workflow\V2\Models\WorkflowCommand;
-use Workflow\V2\Models\WorkflowInstance;
 use Workflow\V2\Models\WorkflowHistoryEvent;
+use Workflow\V2\Models\WorkflowInstance;
 use Workflow\V2\Models\WorkflowRun;
 use Workflow\V2\Models\WorkflowUpdate;
 use Workflow\V2\Support\FailureSnapshots;
@@ -578,6 +580,12 @@ class WorkflowController
         $this->validateOperationName($queryName, 'query');
 
         $namespace = $request->attributes->get('namespace');
+
+        Log::info('workflow_query_request_admitted', [
+            'namespace' => $namespace,
+            'workflow_id' => $workflowId,
+            'query_name' => $queryName,
+        ]);
 
         if (! NamespaceWorkflowScope::workflowBound($namespace, $workflowId)) {
             return ControlPlaneProtocol::jsonForRequest($request, [
@@ -1220,7 +1228,7 @@ class WorkflowController
      */
     private function runCommandDiagnostics(WorkflowRun $run): array
     {
-        /** @var \Illuminate\Support\Collection<string, WorkflowUpdate> $updatesByCommandId */
+        /** @var Collection<string, WorkflowUpdate> $updatesByCommandId */
         $updatesByCommandId = WorkflowUpdate::query()
             ->where('workflow_run_id', $run->id)
             ->get()
@@ -1285,7 +1293,7 @@ class WorkflowController
      */
     private function runUpdateDiagnostics(WorkflowRun $run): array
     {
-        /** @var \Illuminate\Support\Collection<string, WorkflowCommand> $commandsById */
+        /** @var Collection<string, WorkflowCommand> $commandsById */
         $commandsById = WorkflowCommand::query()
             ->where('workflow_run_id', $run->id)
             ->get()
@@ -2654,5 +2662,4 @@ class WorkflowController
             ]);
         }
     }
-
 }

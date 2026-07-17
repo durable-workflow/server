@@ -293,7 +293,7 @@ class WorkflowQueryTaskBrokerTest extends TestCase
         ], $this->workerHeaders());
 
         $queryPoll->assertOk()
-            ->assertJsonPath('poll_status', 'empty')
+            ->assertJsonPath('poll_status', 'workflow_task_leased')
             ->assertJsonPath('task', null);
 
         $this->assertSame('pending', $broker->task((string) $task['query_task_id'])['status'] ?? null);
@@ -356,7 +356,7 @@ class WorkflowQueryTaskBrokerTest extends TestCase
         ], $this->workerHeaders());
 
         $duringReplay->assertOk()
-            ->assertJsonPath('poll_status', 'empty')
+            ->assertJsonPath('poll_status', 'workflow_task_leased')
             ->assertJsonPath('task', null);
 
         $this->assertSame('pending', $broker->task((string) $task['query_task_id'])['status'] ?? null);
@@ -2905,15 +2905,22 @@ class WorkflowQueryTaskBrokerTest extends TestCase
                 ->assertAccepted()
                 ->assertJsonPath('command_status', 'accepted');
 
+            $blockedPollStartedAt = microtime(true);
             $duringReplay = $this->postJson('/api/worker/query-tasks/poll', [
                 'worker_id' => $workerId,
                 'task_queue' => 'python-queries',
-                'timeout_seconds' => 0,
+                'timeout_seconds' => 1,
             ], $this->workerHeaders());
+            $blockedPollDuration = microtime(true) - $blockedPollStartedAt;
 
             $duringReplay->assertOk()
                 ->assertJsonPath('task', null)
-                ->assertJsonPath('poll_status', 'empty');
+                ->assertJsonPath('poll_status', 'workflow_task_leased');
+            $this->assertGreaterThanOrEqual(
+                0.75,
+                $blockedPollDuration,
+                'A replay-blocked long poll must not return an immediate hot-loop status.',
+            );
 
             Carbon::setTestNow(Carbon::parse('2026-05-20 00:00:02.000000'));
             $this->postJson("/api/worker/workflow-tasks/{$replayPoll->json('task.task_id')}/complete", [
@@ -3778,7 +3785,7 @@ class WorkflowQueryTaskBrokerTest extends TestCase
 
         $queryPoll->assertOk()
             ->assertJsonPath('task', null)
-            ->assertJsonPath('poll_status', 'empty');
+            ->assertJsonPath('poll_status', 'workflow_task_leased');
 
         $this->assertSame(
             'pending',
@@ -3821,7 +3828,7 @@ class WorkflowQueryTaskBrokerTest extends TestCase
 
         $queryPoll->assertOk()
             ->assertJsonPath('task', null)
-            ->assertJsonPath('poll_status', 'empty');
+            ->assertJsonPath('poll_status', 'workflow_task_leased');
 
         $secondPoll = $this->postJson('/api/worker/workflow-tasks/poll', [
             'worker_id' => $workerId,

@@ -9,6 +9,7 @@ use Illuminate\Contracts\Cache\LockTimeoutException;
 use Illuminate\Contracts\Cache\Repository as CacheRepository;
 use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Schema;
 use Illuminate\Support\Str;
 use Illuminate\Validation\ValidationException;
@@ -134,8 +135,26 @@ final class WorkflowQueryTaskBroker
             );
         }
 
+        Log::info('workflow_query_task_enqueued', [
+            'namespace' => $namespace,
+            'workflow_id' => $run->workflow_instance_id,
+            'run_id' => $run->id,
+            'query_name' => $queryName,
+            'query_task_id' => $task['query_task_id'] ?? null,
+            'task_queue' => $task['task_queue'] ?? null,
+        ]);
+
         $this->releaseDatabaseConnectionBeforeResultWait($run);
         $result = $this->waitForResult((string) $task['query_task_id']);
+
+        Log::info('workflow_query_result_wait_finished', [
+            'namespace' => $namespace,
+            'workflow_id' => $run->workflow_instance_id,
+            'run_id' => $run->id,
+            'query_name' => $queryName,
+            'query_task_id' => $task['query_task_id'] ?? null,
+            'query_task_status' => $result['status'] ?? null,
+        ]);
 
         if (($result['status'] ?? null) === 'completed') {
             $resultEnvelope = is_array($result['result_envelope'] ?? null)
@@ -828,8 +847,10 @@ final class WorkflowQueryTaskBroker
         ?int $timeoutSeconds = null,
         array $workerPollFence = [],
     ): ?array {
+        $workflowBlockStatus = null;
+
         $result = $this->longPoller->until(
-            function () use ($namespace, $taskQueue, $leaseOwner, $supportedWorkflowTypes, $workflowDefinitionFingerprints, $buildId, $pollRequestId, $workerPollFence): ?array {
+            function () use ($namespace, $taskQueue, $leaseOwner, $supportedWorkflowTypes, $workflowDefinitionFingerprints, $buildId, $pollRequestId, $workerPollFence, &$workflowBlockStatus): ?array {
                 if ($workerPollFence !== [] && ! WorkerPollFence::isCurrent($workerPollFence)) {
                     return ['poll_status' => 'stale_worker_registration'];
                 }
@@ -856,15 +877,21 @@ final class WorkflowQueryTaskBroker
                     }
                 }
 
-                if ($this->hasPendingTaskBlockedByReadyWorkflowResumeTask(
+                $workflowBlockStatus = $this->pendingTaskWorkflowBlockStatus(
                     $namespace,
                     $taskQueue,
                     $leaseOwner,
                     $supportedWorkflowTypes,
                     $workflowDefinitionFingerprints,
                     $buildId,
-                )) {
-                    return ['poll_status' => 'workflow_task_pending'];
+                );
+
+                if ($workflowBlockStatus === 'workflow_task_pending') {
+                    return ['poll_status' => $workflowBlockStatus];
+                }
+
+                if ($workflowBlockStatus === 'workflow_task_leased') {
+                    return null;
                 }
 
                 return $this->claimNext(
@@ -884,6 +911,10 @@ final class WorkflowQueryTaskBroker
             reserveWorkerWaitSlot: true,
             waitSlotPool: 'query-task',
         );
+
+        if ($result === null && $workflowBlockStatus === 'workflow_task_leased') {
+            return ['poll_status' => $workflowBlockStatus];
+        }
 
         return in_array(
             $result['poll_status'] ?? null,
@@ -1771,15 +1802,16 @@ final class WorkflowQueryTaskBroker
      * @param  list<string>  $supportedWorkflowTypes
      * @param  array<string, string>  $workflowDefinitionFingerprints
      */
-    private function hasPendingTaskBlockedByReadyWorkflowResumeTask(
+    private function pendingTaskWorkflowBlockStatus(
         string $namespace,
         string $taskQueue,
         string $leaseOwner,
         array $supportedWorkflowTypes,
         array $workflowDefinitionFingerprints,
         ?string $buildId,
-    ): bool {
-        $blocked = false;
+    ): ?string {
+        $blockedByActiveLease = false;
+        $blockedByReadyResume = false;
 
         foreach ($this->pendingTaskIds($namespace, $taskQueue) as $queryTaskId) {
             $task = $this->task($queryTaskId);
@@ -1798,19 +1830,25 @@ final class WorkflowQueryTaskBroker
             }
 
             if ($this->hasActiveWorkflowTaskLease($task)) {
+                $blockedByActiveLease = true;
+
                 continue;
             }
 
             if ($this->hasReadyWorkflowResumeTask($task, $buildId)) {
-                $blocked = true;
+                $blockedByReadyResume = true;
 
                 continue;
             }
 
-            return false;
+            return null;
         }
 
-        return $blocked;
+        if ($blockedByActiveLease) {
+            return 'workflow_task_leased';
+        }
+
+        return $blockedByReadyResume ? 'workflow_task_pending' : null;
     }
 
     /**

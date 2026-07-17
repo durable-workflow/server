@@ -55,6 +55,7 @@ added without a TTL, admission, scan, or cardinality contract.
 | `task_queue_dispatch_counters` | `server:task-queue-dispatch:` | `App\Support\TaskQueueAdmission` | One expiring counter per capped `(namespace, task_queue, task_kind, minute)` bucket that actually dispatches work. |
 | `workflow_task_expired_lease_recovery` | `server:workflow-task-expired-lease-recovery:` | `App\Support\WorkflowTaskPoller` | Expired-task recovery scans are capped by `server.polling.expired_workflow_task_recovery_scan_limit`, default 5, and duplicate recovery attempts are TTL-suppressed per task. |
 | `history_retention_inline` | `server:history-retention-inline:` | `App\Support\HistoryRetentionEnforcer` | One short-lived throttle key per namespace receiving worker heartbeats; the elected heartbeat prunes at most one expired run. |
+| `worker_compatibility_heartbeat` | `server:worker-compatibility-heartbeat:` | `App\Support\WorkerCompatibilityHeartbeatRecorder` | One expiring throttle key per recently heartbeating namespace/worker elects a single compatibility-fleet refresh across standalone HTTP processes during each TTL/3 write interval, then drains without an index. |
 | `readiness_probe` | `server:readiness:` | `App\Support\ServerReadiness` | One temporary probe key per readiness check; deleted immediately and also protected by a 10-second TTL. |
 
 `workflow_query_tasks` covers the query task, queue, lease, queue-lock,
