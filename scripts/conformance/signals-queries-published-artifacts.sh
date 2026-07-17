@@ -865,7 +865,15 @@ def diagnostic_path(value: str) -> str:
 
 
 def diagnostic_command(command: list[str]) -> list[str]:
-    return [diagnostic_path(part) for part in command]
+    diagnostic: list[str] = []
+    for index, part in enumerate(command):
+        value = diagnostic_path(part)
+        if index > 0 and command[index - 1] in {"-e", "--env"} and "=" in value:
+            key, _ = value.split("=", 1)
+            if "PASSWORD" in key or "TOKEN" in key or "SECRET" in key:
+                value = f"{key}=<redacted>"
+        diagnostic.append(value)
+    return diagnostic
 
 
 def command_summary(command: list[str], completed: subprocess.CompletedProcess[str]) -> dict[str, Any]:
@@ -10777,18 +10785,31 @@ def waterline_observer_setup_result(
     status: str,
     reason: str,
     blocker_kind: str,
+    failed_command: list[str] | None = None,
+    command_result: subprocess.CompletedProcess[str] | None = None,
 ) -> dict[str, Any]:
+    setup_failure: dict[str, Any] = {
+        "blocker_kind": blocker_kind,
+        "reason": reason,
+    }
+    if failed_command is not None and command_result is not None:
+        setup_failure["command"] = command_summary(failed_command, command_result)
+
+    current_evidence: dict[str, Any] = {
+        "published_artifact_evidence_present": True,
+        "blocker_kind": blocker_kind,
+        "reason": reason,
+    }
+    if "command" in setup_failure:
+        current_evidence["command"] = setup_failure["command"]
+
     finding = {
         "id": "signal_query_waterline_observer_probe_unavailable",
         "type": "signal_query_waterline_observer_probe_unavailable",
         "scenario_id": "waterline_operator_visibility",
         "owner": "conformance_harness" if status == "runner_blocked" else "waterline",
         "title": "Signals/queries Waterline observer probe could not produce comparison evidence",
-        "current_evidence": {
-            "published_artifact_evidence_present": True,
-            "blocker_kind": blocker_kind,
-            "reason": reason,
-        },
+        "current_evidence": current_evidence,
         "acceptance": [
             "install the pinned published Waterline artifact",
             "run waterline:signals-queries-conformance against the selected signal/query run",
@@ -10807,10 +10828,7 @@ def waterline_observer_setup_result(
                 "observed_outputs": {
                     "artifact_versions": dict(artifact_versions),
                     "artifact_sources": dict(EXPECTED_ARTIFACT_SOURCES),
-                    "setup_failure": {
-                        "blocker_kind": blocker_kind,
-                        "reason": reason,
-                    },
+                    "setup_failure": setup_failure,
                 },
                 "linked_findings": [finding],
             },
@@ -10919,6 +10937,7 @@ def waterline_storage_from_topology(server_topology: dict[str, Any] | None) -> d
 
 def docker_run_for_project(
     project_dir: Path,
+    composer_cache_dir: Path,
     command: list[str],
     *,
     extra_env: dict[str, str] | None = None,
@@ -10943,10 +10962,12 @@ def docker_run_for_project(
     docker_command.extend([
         "-v",
         docker_volume_spec(project_dir),
+        "-v",
+        docker_volume_spec(composer_cache_dir, "/tmp/dw-composer-cache"),
         "-w",
         "/app",
         "-e",
-        "COMPOSER_CACHE_DIR=/app/.composer-cache",
+        "COMPOSER_CACHE_DIR=/tmp/dw-composer-cache",
     ])
     if include_app_env:
         docker_command.extend([
@@ -10977,6 +10998,22 @@ def docker_run_for_project(
         *command,
     ])
     return docker_command
+
+
+def waterline_create_project_command(
+    project_dir: Path,
+    composer_cache_dir: Path,
+    network: str | None = None,
+) -> list[str]:
+    return docker_run_for_project(
+        project_dir,
+        composer_cache_dir,
+        ["composer", "create-project", "laravel/laravel", ".", "--no-interaction", "--no-progress", "--prefer-dist"],
+        network=network,
+        include_app_env=False,
+        image=waterline_php_docker_image(),
+        entrypoint="",
+    )
 
 
 def waterline_observer_already_reported(current_evidence: Any) -> bool:
@@ -11026,6 +11063,7 @@ def waterline_query_responder_inputs(public_evidence: dict[str, Any]) -> dict[st
 
 def _run_waterline_observer_probe(
     result_dir: Path,
+    composer_cache_dir: Path,
     current_evidence: Any,
     server_topology: dict[str, Any] | None = None,
 ) -> tuple[dict[str, Any] | None, dict[str, Any] | None]:
@@ -11081,16 +11119,15 @@ def _run_waterline_observer_probe(
 
     waterline_root = result_dir / "waterline-signals-queries-observer"
     waterline_root.mkdir(parents=True, exist_ok=True)
+    composer_cache_dir.mkdir(parents=True, exist_ok=True)
     log_file = result_dir / "waterline-signals-queries-observer.log"
+    create_command = waterline_create_project_command(
+        waterline_root,
+        composer_cache_dir,
+        waterline_network,
+    )
     create = run_command(
-        docker_run_for_project(
-            waterline_root,
-            ["composer", "create-project", "laravel/laravel", ".", "--no-interaction", "--no-progress", "--prefer-dist"],
-            network=waterline_network,
-            include_app_env=False,
-            image=waterline_php_docker_image(),
-            entrypoint="",
-        ),
+        create_command,
         log_file=log_file,
         timeout=300,
     )
@@ -11099,6 +11136,8 @@ def _run_waterline_observer_probe(
             status="runner_blocked",
             reason="Laravel app creation failed before Waterline observer shard execution.",
             blocker_kind="waterline_create_project",
+            failed_command=create_command,
+            command_result=create,
         ), {"error": "waterline_create_project", "log_file": log_file.name}
 
     termination_ready_file = env_text("DW_SIGNALS_QUERIES_CLEANUP_TERMINATION_READY_FILE")
@@ -11119,23 +11158,25 @@ def _run_waterline_observer_probe(
     waterline_report_path = conformance_dir / "waterline-signals-queries-result.json"
     write_json(public_evidence_path, public_evidence)
 
+    require_command = docker_run_for_project(
+        waterline_root,
+        composer_cache_dir,
+        [
+            "composer",
+            "require",
+            "--no-interaction",
+            "--no-progress",
+            "--prefer-dist",
+            f"durable-workflow/workflow:{workflow_version}",
+            f"durable-workflow/waterline:{waterline_version}",
+        ],
+        extra_env=waterline_env,
+        network=waterline_network,
+        image=waterline_php_docker_image(),
+        entrypoint="",
+    )
     require = run_command(
-        docker_run_for_project(
-            waterline_root,
-            [
-                "composer",
-                "require",
-                "--no-interaction",
-                "--no-progress",
-                "--prefer-dist",
-                f"durable-workflow/workflow:{workflow_version}",
-                f"durable-workflow/waterline:{waterline_version}",
-            ],
-            extra_env=waterline_env,
-            network=waterline_network,
-            image=waterline_php_docker_image(),
-            entrypoint="",
-        ),
+        require_command,
         log_file=log_file,
         timeout=420,
     )
@@ -11147,20 +11188,22 @@ def _run_waterline_observer_probe(
                 f"durable-workflow/workflow:{workflow_version} and durable-workflow/waterline:{waterline_version}."
             ),
             blocker_kind="waterline_composer_require",
+            failed_command=require_command,
+            command_result=require,
         ), {"error": "waterline_composer_require", "log_file": log_file.name}
 
     try:
         record_unique_distribution_file(
             "workflow",
             workflow_version,
-            waterline_root / ".composer-cache" / "files" / "durable-workflow" / "workflow",
+            composer_cache_dir / "files" / "durable-workflow" / "workflow",
             "**/*",
             "durable-workflow/workflow",
         )
         record_unique_distribution_file(
             "waterline",
             waterline_version,
-            waterline_root / ".composer-cache" / "files" / "durable-workflow" / "waterline",
+            composer_cache_dir / "files" / "durable-workflow" / "waterline",
             "**/*",
             "durable-workflow/waterline",
         )
@@ -11171,27 +11214,31 @@ def _run_waterline_observer_probe(
             blocker_kind="waterline_distribution_identity",
         ), {"error": "waterline_distribution_identity", "log_file": log_file.name}
 
+    key_command = docker_run_for_project(
+        waterline_root,
+        composer_cache_dir,
+        ["php", "artisan", "key:generate", "--force"],
+        extra_env=waterline_env,
+        network=waterline_network,
+        image=waterline_php_docker_image(),
+        entrypoint="",
+    )
     key = run_command(
-        docker_run_for_project(
-            waterline_root,
-            ["php", "artisan", "key:generate", "--force"],
-            extra_env=waterline_env,
-            network=waterline_network,
-            image=waterline_php_docker_image(),
-            entrypoint="",
-        ),
+        key_command,
         log_file=log_file,
         timeout=120,
     )
+    artisan_list_command = docker_run_for_project(
+        waterline_root,
+        composer_cache_dir,
+        ["php", "artisan", "list", "--raw"],
+        extra_env=waterline_env,
+        network=waterline_network,
+        image=waterline_php_docker_image(),
+        entrypoint="",
+    )
     artisan_list = run_command(
-        docker_run_for_project(
-            waterline_root,
-            ["php", "artisan", "list", "--raw"],
-            extra_env=waterline_env,
-            network=waterline_network,
-            image=waterline_php_docker_image(),
-            entrypoint="",
-        ),
+        artisan_list_command,
         log_file=log_file,
         timeout=120,
     )
@@ -11200,6 +11247,8 @@ def _run_waterline_observer_probe(
             status="fail",
             reason="The Composer-installed Waterline package could not boot its Laravel command surface.",
             blocker_kind="waterline_artisan_list",
+            failed_command=key_command if key.returncode != 0 else artisan_list_command,
+            command_result=key if key.returncode != 0 else artisan_list,
         ), {"error": "waterline_artisan_list", "log_file": log_file.name}
 
     if "waterline:signals-queries-conformance" not in artisan_list.stdout:
@@ -11235,36 +11284,38 @@ def _run_waterline_observer_probe(
         )
         responder.start()
 
+    waterline_command = docker_run_for_project(
+        waterline_root,
+        composer_cache_dir,
+        [
+            "php",
+            "artisan",
+            "waterline:signals-queries-conformance",
+            "--input=/app/conformance/public-evidence.json",
+            "--output=/app/conformance/waterline-signals-queries-result.json",
+            f"--run-id=signals-queries-{run_id}",
+            f"--instance-id={workflow_id}",
+            f"--workflow-run-id={run_id}",
+            f"--run-status={run_status_value}",
+            f"--query={query_name}",
+            f"--artifact-version=server={artifact_version_value(artifact_versions, 'server')}",
+            f"--artifact-version=cli={artifact_version_value(artifact_versions, 'cli')}",
+            f"--artifact-version=sdk-python={artifact_version_value(artifact_versions, 'sdk-python')}",
+            f"--artifact-version=sdk-php={artifact_version_value(artifact_versions, 'sdk-php')}",
+            f"--artifact-version=waterline={waterline_version}",
+            "--artifact-source=server=docker_image",
+            "--artifact-source=cli=official_install_script",
+            "--artifact-source=sdk-python=pypi_package",
+            "--artifact-source=sdk-php=packagist_package",
+            "--artifact-source=waterline=packagist_package",
+        ],
+        extra_env=waterline_env,
+        network=waterline_network,
+        image=waterline_php_docker_image(),
+        entrypoint="",
+    )
     command = run_command(
-        docker_run_for_project(
-            waterline_root,
-            [
-                "php",
-                "artisan",
-                "waterline:signals-queries-conformance",
-                "--input=/app/conformance/public-evidence.json",
-                "--output=/app/conformance/waterline-signals-queries-result.json",
-                f"--run-id=signals-queries-{run_id}",
-                f"--instance-id={workflow_id}",
-                f"--workflow-run-id={run_id}",
-                f"--run-status={run_status_value}",
-                f"--query={query_name}",
-                f"--artifact-version=server={artifact_version_value(artifact_versions, 'server')}",
-                f"--artifact-version=cli={artifact_version_value(artifact_versions, 'cli')}",
-                f"--artifact-version=sdk-python={artifact_version_value(artifact_versions, 'sdk-python')}",
-                f"--artifact-version=sdk-php={artifact_version_value(artifact_versions, 'sdk-php')}",
-                f"--artifact-version=waterline={waterline_version}",
-                "--artifact-source=server=docker_image",
-                "--artifact-source=cli=official_install_script",
-                "--artifact-source=sdk-python=pypi_package",
-                "--artifact-source=sdk-php=packagist_package",
-                "--artifact-source=waterline=packagist_package",
-            ],
-            extra_env=waterline_env,
-            network=waterline_network,
-            image=waterline_php_docker_image(),
-            entrypoint="",
-        ),
+        waterline_command,
         log_file=log_file,
         timeout=240,
     )
@@ -11278,6 +11329,8 @@ def _run_waterline_observer_probe(
                 f"(status {command.returncode})."
             ),
             blocker_kind="waterline_conformance_command",
+            failed_command=waterline_command,
+            command_result=command,
         ), {"error": "waterline_conformance_command", "log_file": log_file.name}
 
     try:
@@ -11353,14 +11406,22 @@ def run_waterline_observer_probe(
     server_topology: dict[str, Any] | None = None,
 ) -> tuple[dict[str, Any] | None, dict[str, Any] | None]:
     waterline_root = result_dir / "waterline-signals-queries-observer"
+    composer_cache_dir = result_dir / "waterline-signals-queries-composer-cache"
     log_file = result_dir / "waterline-signals-queries-observer.log"
     register_scratch_root(waterline_root, log_file)
+    register_scratch_root(composer_cache_dir, log_file)
     try:
-        return _run_waterline_observer_probe(result_dir, current_evidence, server_topology)
+        return _run_waterline_observer_probe(
+            result_dir,
+            composer_cache_dir,
+            current_evidence,
+            server_topology,
+        )
     finally:
         cleanup_labeled_docker_runs(log_file)
         if not env_flag("DW_SIGNALS_QUERIES_KEEP_RUN_ROOT", False):
             remove_scratch_root(waterline_root)
+            remove_scratch_root(composer_cache_dir)
 
 
 MISSING = object()

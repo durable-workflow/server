@@ -985,6 +985,7 @@ PY);
             'cleanup_labeled_docker_runs(log_file)',
             'remove_scratch_root(run_root)',
             'remove_scratch_root(waterline_root)',
+            'remove_scratch_root(composer_cache_dir)',
         ] as $needle) {
             $this->assertStringContainsString($needle, $source);
         }
@@ -1002,12 +1003,13 @@ PY);
         $script = dirname(__DIR__, 2).'/scripts/conformance/signals-queries-cleanup-regression.sh';
         $source = (string) file_get_contents($script);
 
-        $this->assertFileIsExecutable($script);
+        $this->assertTrue(is_executable($script));
         foreach ([
             'DW_SIGNALS_QUERIES_CLEANUP_TERMINATION_READY_FILE="$ready_file"',
-            '"$run_root/sdk-php/vendor"',
+            '"$run_root/workflow-php/vendor"',
             '"$run_root/sdk-rust/target"',
             '"$result_dir/waterline-signals-queries-observer/vendor"',
+            '"$result_dir/waterline-signals-queries-composer-cache/files"',
             'kill -TERM "$runner_pid"',
             'docker "$kind" "${list_args[@]}"',
             'docker container ls -a -q --filter "label=$resource_label"',
@@ -1027,10 +1029,11 @@ artifact_versions = {
     "sdk-php": "0.1.213",
 }
 project = Path("/tmp/signals-queries-host-ownership-contract")
+composer_cache = Path("/tmp/signals-queries-host-ownership-contract-cache")
 commands = {
     "php": php_docker_command(project, ["install"]),
     "rust": rust_probe_docker_command(project, ["cargo", "build"]),
-    "waterline": docker_run_for_project(project, ["php", "artisan", "list"]),
+    "waterline": docker_run_for_project(project, composer_cache, ["php", "artisan", "list"]),
 }
 identity = f"{os.getuid()}:{os.getgid()}"
 print(json.dumps({
@@ -1973,27 +1976,113 @@ PY);
         }
     }
 
-    public function test_waterline_observer_scaffolds_laravel_app_before_runtime_environment_is_applied(): void
+    public function test_waterline_observer_scaffold_command_keeps_runner_state_outside_project_root(): void
     {
-        $source = (string) file_get_contents(
-            dirname(__DIR__, 2).'/scripts/conformance/signals-queries-published-artifacts.sh',
+        $result = $this->runSignalQueryRunnerPythonSnippet(<<<'PY'
+artifact_versions = {"server": "0.2.676", "sdk-php": "0.1.9"}
+project = Path("/tmp/waterline-scaffold/project")
+composer_cache = Path("/tmp/waterline-scaffold/composer-cache")
+command = waterline_create_project_command(project, composer_cache)
+mounts = [command[index + 1] for index, value in enumerate(command) if value == "-v"]
+environment = [command[index + 1] for index, value in enumerate(command) if value == "-e"]
+state_paths = {
+    value.split("=", 1)[0]: value.split("=", 1)[1]
+    for value in environment
+    if "=" in value and value.split("=", 1)[0] in {"HOME", "COMPOSER_HOME", "COMPOSER_CACHE_DIR"}
+}
+print(json.dumps({
+    "project_mount": docker_volume_spec(project) in mounts,
+    "cache_mount": docker_volume_spec(composer_cache, "/tmp/dw-composer-cache") in mounts,
+    "cache_outside_project": project not in composer_cache.parents,
+    "state_paths": state_paths,
+    "app_environment_present": "APP_ENV=production" in environment,
+    "published_image": "durableworkflow/server:0.2.676" in command,
+    "host_user": command[command.index("--user") + 1],
+    "expected_user": f"{os.getuid()}:{os.getgid()}",
+    "command_tail": command[command.index("durableworkflow/server:0.2.676") + 1:],
+}, sort_keys=True))
+PY);
+
+        $this->assertTrue($result['project_mount']);
+        $this->assertTrue($result['cache_mount']);
+        $this->assertTrue($result['cache_outside_project']);
+        $this->assertSame([
+            'COMPOSER_CACHE_DIR' => '/tmp/dw-composer-cache',
+            'COMPOSER_HOME' => '/tmp/dw-composer',
+            'HOME' => '/tmp/dw-home',
+        ], $result['state_paths']);
+        $this->assertFalse($result['app_environment_present']);
+        $this->assertTrue($result['published_image']);
+        $this->assertSame($result['expected_user'], $result['host_user']);
+        $this->assertSame([
+            'composer',
+            'create-project',
+            'laravel/laravel',
+            '.',
+            '--no-interaction',
+            '--no-progress',
+            '--prefer-dist',
+        ], $result['command_tail']);
+    }
+
+    public function test_waterline_setup_failure_retains_command_status_and_stderr(): void
+    {
+        $result = $this->runSignalQueryRunnerPythonSnippet(<<<'PY'
+artifact_versions = {
+    "server": "0.2.676",
+    "cli": "0.1.92",
+    "sdk-python": "0.4.101",
+    "sdk-rust": "0.1.16",
+    "workflow": "2.0.0-alpha.291",
+    "sdk-php": "0.1.9",
+    "waterline": "2.0.0-alpha.137",
+}
+EXPECTED_ARTIFACT_SOURCES = {
+    "server": "docker_image",
+    "cli": "official_install_script",
+    "sdk-python": "pypi_package",
+    "sdk-rust": "crates_io_package",
+    "workflow": "packagist_package",
+    "sdk-php": "packagist_package",
+    "waterline": "packagist_package",
+}
+failed_command = [
+    "docker", "run", "-e", "DB_PASSWORD=do-not-retain", "server-image",
+    "composer", "create-project", "laravel/laravel", ".",
+]
+completed = subprocess.CompletedProcess(
+    args=failed_command,
+    returncode=1,
+    stdout="Creating a laravel/laravel project at ./",
+    stderr="Project directory /app/. is not empty.",
+)
+evidence = waterline_observer_setup_result(
+    status="runner_blocked",
+    reason="Laravel app creation failed before Waterline observer shard execution.",
+    blocker_kind="waterline_create_project",
+    failed_command=failed_command,
+    command_result=completed,
+)
+scenario = evidence["scenario_results"]["waterline_operator_visibility"]
+print(json.dumps({
+    "status": scenario["status"],
+    "setup_failure": scenario["observed_outputs"]["setup_failure"],
+    "finding_command": scenario["linked_findings"][0]["current_evidence"]["command"],
+}, sort_keys=True))
+PY);
+
+        $this->assertSame('runner_blocked', $result['status']);
+        $this->assertSame('waterline_create_project', $result['setup_failure']['blocker_kind']);
+        $this->assertSame(1, $result['setup_failure']['command']['exit_code']);
+        $this->assertSame(
+            'Project directory /app/. is not empty.',
+            $result['setup_failure']['command']['stderr'],
         );
-        $anchor = 'log_file = result_dir / "waterline-signals-queries-observer.log"';
-        $anchorPosition = strpos($source, $anchor);
-        $start = $anchorPosition === false ? false : strpos($source, "\n    create = run_command(", $anchorPosition);
-        $end = $start === false ? false : strpos($source, "\n    if create.returncode != 0:", $start);
-
-        if ($start === false || $end === false) {
-            $this->fail('Unable to extract Waterline observer create-project command from host runner.');
-        }
-
-        $body = substr($source, $start + 1, $end - $start - 1);
-
-        $this->assertStringContainsString('include_app_env: bool = True', $source);
-        $this->assertStringContainsString('["composer", "create-project", "laravel/laravel"', $body);
-        $this->assertStringContainsString('include_app_env=False', $body);
-        $this->assertStringContainsString('image=waterline_php_docker_image()', $body);
-        $this->assertStringNotContainsString('extra_env=waterline_env', $body);
+        $this->assertSame(
+            'DB_PASSWORD=<redacted>',
+            $result['setup_failure']['command']['command'][3],
+        );
+        $this->assertSame($result['setup_failure']['command'], $result['finding_command']);
     }
 
     public function test_waterline_observer_uses_mysql_capable_published_server_image(): void

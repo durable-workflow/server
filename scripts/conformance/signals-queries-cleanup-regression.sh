@@ -104,7 +104,8 @@ fi
 for mounted_path in \
   "$run_root/workflow-php/vendor" \
   "$run_root/sdk-rust/target" \
-  "$result_dir/waterline-signals-queries-observer/vendor"
+  "$result_dir/waterline-signals-queries-observer/vendor" \
+  "$result_dir/waterline-signals-queries-composer-cache/files"
 do
   if [[ ! -d "$mounted_path" ]]; then
     printf 'mounted runtime path was not populated: %s\n' "$mounted_path" >&2
@@ -141,7 +142,11 @@ if [[ -n "$labeled_containers" ]]; then
   exit 1
 fi
 
-if [[ -e "$run_root" || -e "$result_dir/waterline-signals-queries-observer" ]]; then
+if [[ \
+  -e "$run_root" \
+  || -e "$result_dir/waterline-signals-queries-observer" \
+  || -e "$result_dir/waterline-signals-queries-composer-cache" \
+]]; then
   printf 'runner-created scratch trees remain after termination\n' >&2
   exit 1
 fi
