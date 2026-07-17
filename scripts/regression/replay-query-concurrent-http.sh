@@ -1,0 +1,478 @@
+#!/usr/bin/env bash
+
+set -euo pipefail
+
+ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+COMPOSE_FILE="${DW_REPLAY_QUERY_COMPOSE_FILE:-$ROOT_DIR/docker-compose.published.yml}"
+PROJECT_RAW="${DW_REPLAY_QUERY_COMPOSE_PROJECT:-dw-replay-query-${GITHUB_RUN_ID:-local}-${GITHUB_RUN_ATTEMPT:-1}}"
+PROJECT="$(printf '%s' "$PROJECT_RAW" | tr -c '[:alnum:]_-' '-')"
+SERVER_PORT="${SERVER_PORT:-18082}"
+TOKEN="${DW_AUTH_TOKEN:-dev-token}"
+BASE_URL=""
+
+export SERVER_PORT
+export APP_ENV="${APP_ENV:-local}"
+export APP_DEBUG="${APP_DEBUG:-false}"
+export DW_AUTH_DRIVER="${DW_AUTH_DRIVER:-token}"
+export DW_AUTH_TOKEN="$TOKEN"
+export DW_AUTH_BACKWARD_COMPATIBLE="${DW_AUTH_BACKWARD_COMPATIBLE:-true}"
+
+compose() {
+  docker compose -p "$PROJECT" -f "$COMPOSE_FILE" "$@"
+}
+
+server_url_candidates=()
+
+add_server_url_candidate() {
+  local candidate="${1%/}"
+  local existing
+
+  if [ -z "$candidate" ]; then
+    return 0
+  fi
+  for existing in "${server_url_candidates[@]}"; do
+    if [ "$candidate" = "$existing" ]; then
+      return 0
+    fi
+  done
+  server_url_candidates+=("$candidate")
+}
+
+default_route_gateway() {
+  python3 <<'PY'
+from __future__ import annotations
+
+import socket
+
+try:
+    with open("/proc/net/route", encoding="utf-8") as routes:
+        next(routes, None)
+        for line in routes:
+            fields = line.split()
+            if len(fields) >= 3 and fields[1] == "00000000" and fields[2] != "00000000":
+                print(socket.inet_ntoa(bytes.fromhex(fields[2])[::-1]))
+                break
+except OSError:
+    pass
+PY
+}
+
+build_server_url_candidates() {
+  local gateway
+
+  add_server_url_candidate "${DW_REPLAY_QUERY_SERVER_URL:-}"
+  add_server_url_candidate "http://127.0.0.1:${SERVER_PORT}"
+  add_server_url_candidate "http://localhost:${SERVER_PORT}"
+
+  # A containerized Actions job controls a sibling Docker daemon through its
+  # socket. In that topology loopback belongs to the job container, while its
+  # default gateway is the Docker host that owns the published server port.
+  gateway="$(default_route_gateway)"
+  if [ -n "$gateway" ]; then
+    add_server_url_candidate "http://${gateway}:${SERVER_PORT}"
+  fi
+
+  gateway="$(docker network inspect bridge --format '{{(index .IPAM.Config 0).Gateway}}' 2>/dev/null || true)"
+  if [ -n "$gateway" ] && [ "$gateway" != "<no value>" ]; then
+    add_server_url_candidate "http://${gateway}:${SERVER_PORT}"
+  fi
+
+  add_server_url_candidate "http://host.docker.internal:${SERVER_PORT}"
+}
+
+wait_for_server_ready() {
+  local attempt
+  local candidate
+
+  for attempt in $(seq 1 90); do
+    for candidate in "${server_url_candidates[@]}"; do
+      if curl --noproxy '*' -fsS --max-time 2 "${candidate}/api/ready" >/dev/null 2>&1; then
+        printf '%s\n' "$candidate"
+        return 0
+      fi
+    done
+    sleep 1
+  done
+
+  printf 'Server was not reachable through any published-port candidate: %s\n' \
+    "${server_url_candidates[*]}" >&2
+  return 1
+}
+
+cleanup() {
+  compose down -v --remove-orphans >/dev/null 2>&1 || true
+}
+
+failure_logs() {
+  compose ps >&2 || true
+  compose logs server mysql redis >&2 || true
+}
+
+trap cleanup EXIT
+trap failure_logs ERR
+
+compose up -d --wait
+
+build_server_url_candidates
+BASE_URL="$(wait_for_server_ready)"
+printf 'Running concurrent replay/query regression against %s\n' "$BASE_URL"
+
+python3 - "$BASE_URL" "$TOKEN" <<'PY'
+from __future__ import annotations
+
+import json
+import sys
+import threading
+import time
+import urllib.error
+import urllib.parse
+import urllib.request
+import uuid
+from typing import Any
+
+
+BASE_URL, TOKEN = sys.argv[1:3]
+NAMESPACE = "default"
+WORKFLOW_TYPE = "ReplayQueryCounter"
+suffix = uuid.uuid4().hex[:10]
+WORKER_ID = f"replay-query-worker-{suffix}"
+TASK_QUEUE = f"replay-query-queue-{suffix}"
+WORKFLOW_ID = f"replay-query-workflow-{suffix}"
+
+
+def request_json(
+    path: str,
+    *,
+    body: Any = None,
+    worker: bool = False,
+    timeout: float = 15.0,
+) -> dict[str, Any]:
+    headers = {
+        "Accept": "application/json",
+        "Authorization": f"Bearer {TOKEN}",
+        "Content-Type": "application/json",
+        "X-Namespace": NAMESPACE,
+        "X-Durable-Workflow-Protocol-Version" if worker else "X-Durable-Workflow-Control-Plane-Version":
+            "1.13" if worker else "2",
+    }
+    request = urllib.request.Request(
+        BASE_URL.rstrip("/") + path,
+        data=json.dumps(body).encode() if body is not None else None,
+        headers=headers,
+        method="POST" if body is not None else "GET",
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=timeout) as response:
+            raw = response.read().decode()
+            return {
+                "status": response.status,
+                "body": json.loads(raw) if raw.strip() else {},
+            }
+    except urllib.error.HTTPError as error:
+        raw = error.read().decode(errors="replace")
+        try:
+            response_body = json.loads(raw) if raw.strip() else {}
+        except json.JSONDecodeError:
+            response_body = {"raw": raw}
+        return {"status": error.code, "body": response_body}
+
+
+def require_success(response: dict[str, Any], label: str) -> dict[str, Any]:
+    if not 200 <= int(response.get("status") or 0) < 300:
+        raise AssertionError(f"{label} failed: {response}")
+    body = response.get("body")
+    return body if isinstance(body, dict) else {}
+
+
+def heartbeat() -> tuple[dict[str, Any], float]:
+    started = time.monotonic()
+    response = request_json(
+        "/api/worker/heartbeat",
+        body={
+            "worker_id": WORKER_ID,
+            "task_slots": {"workflow_available": 2, "activity_available": 0},
+            "heartbeat_interval_seconds": 10,
+        },
+        worker=True,
+        timeout=10,
+    )
+    return response, time.monotonic() - started
+
+
+def poll_workflow_task() -> dict[str, Any]:
+    response = request_json(
+        "/api/worker/workflow-tasks/poll",
+        body={
+            "worker_id": WORKER_ID,
+            "task_queue": TASK_QUEUE,
+            "poll_request_id": f"workflow-{uuid.uuid4().hex}",
+        },
+        worker=True,
+        timeout=15,
+    )
+    body = require_success(response, "workflow task poll")
+    task = body.get("task")
+    if not isinstance(task, dict):
+        raise AssertionError(f"workflow task poll returned no task: {response}")
+    return task
+
+
+def complete_workflow_task(task: dict[str, Any], commands: list[dict[str, Any]]) -> None:
+    response = request_json(
+        f"/api/worker/workflow-tasks/{task['task_id']}/complete",
+        body={
+            "lease_owner": task["lease_owner"],
+            "workflow_task_attempt": task["workflow_task_attempt"],
+            "commands": commands,
+        },
+        worker=True,
+        timeout=15,
+    )
+    require_success(response, "workflow task completion")
+
+
+contract = {
+    "queries": ["state"],
+    "query_contracts": [{"name": "state", "parameters": []}],
+    "signals": ["increment"],
+    "signal_contracts": [{
+        "name": "increment",
+        "parameters": [{
+            "name": "amount",
+            "position": 0,
+            "required": True,
+            "variadic": False,
+            "default_available": False,
+            "default": None,
+            "type": "int",
+            "allows_null": False,
+        }],
+    }],
+    "updates": [],
+    "update_contracts": [],
+}
+
+register = request_json(
+    "/api/worker/register",
+    body={
+        "worker_id": WORKER_ID,
+        "task_queue": TASK_QUEUE,
+        "runtime": "external",
+        "sdk_version": "replay-query-concurrent-http-regression",
+        "supported_workflow_types": [WORKFLOW_TYPE],
+        "capabilities": ["query_tasks"],
+        "workflow_command_contracts": {WORKFLOW_TYPE: contract},
+    },
+    worker=True,
+    timeout=20,
+)
+require_success(register, "worker registration")
+
+start = request_json(
+    "/api/workflows",
+    body={
+        "workflow_id": WORKFLOW_ID,
+        "workflow_type": WORKFLOW_TYPE,
+        "task_queue": TASK_QUEUE,
+    },
+    timeout=20,
+)
+start_body = require_success(start, "workflow start")
+run_id = start_body.get("run_id")
+if not isinstance(run_id, str) or not run_id:
+    raise AssertionError(f"workflow start did not return run_id: {start}")
+
+heartbeat_response, heartbeat_latency = heartbeat()
+require_success(heartbeat_response, "pre-replay heartbeat")
+if heartbeat_latency >= 5:
+    raise AssertionError(f"pre-replay heartbeat took {heartbeat_latency:.3f}s")
+
+replay_task = poll_workflow_task()
+
+query_holder: dict[str, Any] = {}
+responder_holder: dict[str, Any] = {}
+query_started = threading.Event()
+responder_ready = threading.Event()
+
+
+def call_query() -> None:
+    try:
+        query_holder["sent_at"] = time.monotonic()
+        query_started.set()
+        query_holder["response"] = request_json(
+            f"/api/workflows/{urllib.parse.quote(WORKFLOW_ID)}/query/state",
+            body={},
+            timeout=45,
+        )
+        query_holder["completed_at"] = time.monotonic()
+    except BaseException as error:  # noqa: BLE001 - propagate through the main test thread.
+        query_holder["error"] = error
+
+
+def answer_query() -> None:
+    try:
+        responder_holder["poll_started_at"] = time.monotonic()
+        response, latency = heartbeat()
+        responder_holder["heartbeat_latency"] = latency
+        require_success(response, "query responder heartbeat")
+        if latency >= 5:
+            raise AssertionError(f"query responder heartbeat took {latency:.3f}s")
+        responder_holder["heartbeat_acknowledged_at"] = time.monotonic()
+        responder_ready.set()
+
+        deadline = time.monotonic() + 20
+        task = None
+        while time.monotonic() < deadline and task is None:
+            poll = request_json(
+                "/api/worker/query-tasks/poll",
+                body={
+                    "worker_id": WORKER_ID,
+                    "task_queue": TASK_QUEUE,
+                    "poll_request_id": f"query-{uuid.uuid4().hex}",
+                    "timeout_seconds": 2,
+                },
+                worker=True,
+                timeout=7,
+            )
+            poll_body = require_success(poll, "query task poll")
+            candidate = poll_body.get("task")
+            if isinstance(candidate, dict):
+                task = candidate
+
+        if task is None:
+            raise AssertionError("query task was not claimable after replay completion")
+
+        responder_holder["claimed_at"] = time.monotonic()
+        responder_holder["task"] = task
+        complete = request_json(
+            f"/api/worker/query-tasks/{task['query_task_id']}/complete",
+            body={
+                "lease_owner": task.get("lease_owner") or WORKER_ID,
+                "query_task_attempt": task["query_task_attempt"],
+                "result": 0,
+            },
+            worker=True,
+            timeout=10,
+        )
+        require_success(complete, "query task completion")
+    except BaseException as error:  # noqa: BLE001 - propagate through the main test thread.
+        responder_holder["error"] = error
+        responder_ready.set()
+
+
+query_thread = threading.Thread(target=call_query, daemon=True)
+responder_thread = threading.Thread(target=answer_query, daemon=True)
+query_thread.start()
+if not query_started.wait(2):
+    raise AssertionError("public query did not start while replay task was leased")
+responder_thread.start()
+if not responder_ready.wait(10):
+    raise AssertionError("query responder heartbeat did not remain responsive")
+if responder_holder.get("error"):
+    raise responder_holder["error"]
+
+# Exercise the same worker registration through several standalone HTTP
+# processes while the public query and replay task are both in flight.
+heartbeat_barrier = threading.Barrier(7)
+heartbeat_results: list[tuple[dict[str, Any], float]] = []
+heartbeat_errors: list[BaseException] = []
+heartbeat_lock = threading.Lock()
+
+
+def concurrent_heartbeat() -> None:
+    try:
+        heartbeat_barrier.wait(timeout=3)
+        sample = heartbeat()
+        with heartbeat_lock:
+            heartbeat_results.append(sample)
+    except BaseException as error:  # noqa: BLE001 - propagate through the main test thread.
+        with heartbeat_lock:
+            heartbeat_errors.append(error)
+
+
+heartbeat_threads = [threading.Thread(target=concurrent_heartbeat, daemon=True) for _ in range(6)]
+for thread in heartbeat_threads:
+    thread.start()
+heartbeat_barrier.wait(timeout=3)
+
+time.sleep(0.75)
+signal_sent_at = time.monotonic()
+signal = request_json(
+    f"/api/workflows/{urllib.parse.quote(WORKFLOW_ID)}/signal/increment",
+    body={"input": {"amount": 5}},
+    timeout=20,
+)
+if int(signal.get("status") or 0) != 202:
+    raise AssertionError(f"signal was not accepted during replay: {signal}")
+
+time.sleep(0.3)
+complete_workflow_task(replay_task, [{
+    "type": "open_condition_wait",
+    "condition_key": "replay-query-regression-barrier",
+    "timeout_seconds": 60,
+}])
+replay_completed_at = time.monotonic()
+
+responder_thread.join(timeout=25)
+query_thread.join(timeout=25)
+if responder_thread.is_alive() or query_thread.is_alive():
+    raise AssertionError("query responder or public query transport timed out")
+if responder_holder.get("error"):
+    raise responder_holder["error"]
+if query_holder.get("error"):
+    raise query_holder["error"]
+
+query_response = query_holder.get("response")
+query_body = require_success(query_response, "public replay-time query")
+if query_body.get("result") != 0:
+    raise AssertionError(f"public replay-time query returned an untyped or stale result: {query_response}")
+if not replay_completed_at <= float(responder_holder["claimed_at"]):
+    raise AssertionError("query task was claimed before the replay lease completed")
+if not float(responder_holder["claimed_at"]) <= float(query_holder["completed_at"]):
+    raise AssertionError("public query completed before its query task was claimed")
+
+signal_task = poll_workflow_task()
+signal_claimed_at = time.monotonic()
+signal_name = signal_task.get("signal_name")
+if signal_name != "increment":
+    event_names = [
+        event.get("payload", {}).get("signal_name")
+        for event in signal_task.get("history_events", [])
+        if isinstance(event, dict) and event.get("event_type") == "SignalReceived"
+    ]
+    if "increment" not in event_names:
+        raise AssertionError(f"signal resume task did not expose the accepted signal: {signal_task}")
+if not float(query_holder["completed_at"]) <= signal_claimed_at:
+    raise AssertionError("signal resume task was leased before the replay-time query completed")
+
+complete_workflow_task(signal_task, [{
+    "type": "open_condition_wait",
+    "condition_key": "replay-query-regression-after-signal",
+    "timeout_seconds": 60,
+}])
+signal_applied_at = time.monotonic()
+if not signal_sent_at < replay_completed_at <= signal_applied_at:
+    raise AssertionError("accepted replay-time signal was not applied after replay completion")
+
+for thread in heartbeat_threads:
+    thread.join(timeout=12)
+if heartbeat_errors or len(heartbeat_results) != len(heartbeat_threads):
+    raise AssertionError(f"concurrent heartbeat transport failed: {heartbeat_errors}")
+for response, latency in heartbeat_results:
+    require_success(response, "concurrent heartbeat")
+    if latency >= 5:
+        raise AssertionError(f"concurrent heartbeat took {latency:.3f}s")
+
+print(json.dumps({
+    "status": "pass",
+    "workflow_id": WORKFLOW_ID,
+    "run_id": run_id,
+    "replay_task_id": replay_task.get("task_id"),
+    "query_task_id": responder_holder.get("task", {}).get("query_task_id"),
+    "signal_task_id": signal_task.get("task_id"),
+    "query_result": query_body.get("result"),
+    "query_responder_heartbeat_seconds": responder_holder.get("heartbeat_latency"),
+    "max_concurrent_heartbeat_seconds": max(latency for _, latency in heartbeat_results),
+    "ordering": "query_enqueued_during_replay_then_claimed_before_signal_resume",
+}, sort_keys=True))
+PY

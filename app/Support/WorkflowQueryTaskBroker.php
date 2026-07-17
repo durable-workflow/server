@@ -8,6 +8,7 @@ use Illuminate\Contracts\Cache\LockProvider;
 use Illuminate\Contracts\Cache\LockTimeoutException;
 use Illuminate\Contracts\Cache\Repository as CacheRepository;
 use Illuminate\Support\Carbon;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Schema;
 use Illuminate\Support\Str;
 use Illuminate\Validation\ValidationException;
@@ -133,6 +134,7 @@ final class WorkflowQueryTaskBroker
             );
         }
 
+        $this->releaseDatabaseConnectionBeforeResultWait($run);
         $result = $this->waitForResult((string) $task['query_task_id']);
 
         if (($result['status'] ?? null) === 'completed') {
@@ -1017,6 +1019,22 @@ final class WorkflowQueryTaskBroker
             null,
             [$this->signals->queryTaskResultChannel($queryTaskId)],
         );
+    }
+
+    /**
+     * A public query waits on shared cache state after its task is enqueued.
+     * Keeping the request's database session attached during that wait can
+     * retain a backend read lock and make the query responder's mandatory
+     * heartbeat wait on the very query it is meant to answer.
+     */
+    private function releaseDatabaseConnectionBeforeResultWait(WorkflowRun $run): void
+    {
+        $connectionName = $run->getConnectionName();
+        $connection = DB::connection($connectionName);
+
+        if ($connection->transactionLevel() === 0) {
+            DB::disconnect($connectionName);
+        }
     }
 
     /**

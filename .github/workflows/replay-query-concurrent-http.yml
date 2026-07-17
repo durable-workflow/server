@@ -1,0 +1,55 @@
+name: Replay Query Concurrent HTTP
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - '.github/workflows/replay-query-concurrent-http.yml'
+      - 'app/Http/Controllers/Api/WorkerController.php'
+      - 'app/Support/WorkflowQueryTaskBroker.php'
+      - 'composer.json'
+      - 'composer.lock'
+      - 'config/dw-bounded-growth.php'
+      - 'docker/**'
+      - 'docker-compose.published.yml'
+      - 'Dockerfile'
+      - 'scripts/regression/replay-query-concurrent-http.sh'
+  pull_request:
+    paths:
+      - '.github/workflows/replay-query-concurrent-http.yml'
+      - 'app/Http/Controllers/Api/WorkerController.php'
+      - 'app/Support/WorkflowQueryTaskBroker.php'
+      - 'composer.json'
+      - 'composer.lock'
+      - 'config/dw-bounded-growth.php'
+      - 'docker/**'
+      - 'docker-compose.published.yml'
+      - 'Dockerfile'
+      - 'scripts/regression/replay-query-concurrent-http.sh'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  replay-query-concurrent-http:
+    name: MySQL replay/query HTTP topology
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+
+    steps:
+      - name: Checkout server
+        uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+
+      - name: Build current server image
+        run: docker build -t durable-workflow-server-replay-query .
+
+      - name: Run concurrent replay/query regression
+        env:
+          DW_SERVER_IMAGE: durable-workflow-server-replay-query
+          DW_REPLAY_QUERY_COMPOSE_PROJECT: replay-query-${{ github.run_id }}-${{ github.run_attempt }}
+          SERVER_PORT: '18082'
+        run: scripts/regression/replay-query-concurrent-http.sh
