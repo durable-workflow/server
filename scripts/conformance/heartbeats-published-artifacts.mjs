@@ -10,6 +10,15 @@ import {
   safeContainerInspectCommandRecord,
 } from './heartbeat-container-inspect-evidence.mjs';
 import { heartbeatCadenceObservation } from './heartbeat-cadence-observation.mjs';
+import {
+  cliControlPlaneTransportError,
+  ControlPlaneTransportError,
+  FinalVisibilityInvariantError,
+  PersistentFinalVisibilityTransportError,
+  persistentTransportEvidence,
+  recoverFinalVisibility,
+  transportErrorDetails,
+} from './heartbeat-final-visibility.mjs';
 
 const RESULT_DIR = mustEnv('RESULT_DIR');
 const REPO_ROOT = mustEnv('REPO_ROOT');
@@ -37,6 +46,8 @@ const SERVER_IMAGE = env('DW_SERVER_IMAGE') || `durableworkflow/server:${SERVER_
 const SERVER_HOST = env('DW_HEARTBEATS_SERVER_HOST') || '127.0.0.1';
 const HEARTBEAT_SECONDS = positiveInt(env('DW_HEARTBEATS_HEARTBEAT_SECONDS'), 2);
 const CONFIGURED_STALE_AFTER_SECONDS = positiveInt(env('DW_HEARTBEATS_STALE_AFTER_SECONDS'), 7);
+const FINAL_VISIBILITY_ATTEMPTS = positiveInt(env('DW_HEARTBEATS_FINAL_VISIBILITY_ATTEMPTS'), 3);
+const FINAL_VISIBILITY_RETRY_MS = positiveInt(env('DW_HEARTBEATS_FINAL_VISIBILITY_RETRY_MS'), 1_000);
 const KEEP_RUN_ROOT = truthy(env('DW_HEARTBEATS_KEEP_RUN_ROOT'));
 const HOST_UID = typeof process.getuid === 'function' ? process.getuid() : null;
 const HOST_GID = typeof process.getgid === 'function' ? process.getgid() : null;
@@ -107,6 +118,9 @@ const evidence = {
 let publishedExecutionStarted = false;
 let serverBaseUrl = '';
 let cliBin = '';
+let serverTopology = null;
+let completedBehavior = null;
+let executionPhase = 'prerequisites';
 
 function env(name) {
   return (process.env[name] ?? '').trim();
@@ -419,8 +433,22 @@ function controlPlaneHeaders() {
 async function api(pathName, query = {}) {
   const url = new URL(`/api${pathName}`, serverBaseUrl);
   for (const [key, value] of Object.entries(query)) url.searchParams.set(key, String(value));
-  const response = await fetch(url, { headers: controlPlaneHeaders() });
-  const raw = await response.text();
+  let response;
+  let raw;
+  try {
+    response = await fetch(url, { headers: controlPlaneHeaders() });
+    raw = await response.text();
+  } catch (error) {
+    const transportFailure = new ControlPlaneTransportError('GET', url, error, now());
+    requestCaptures.push({
+      timestamp: now(),
+      method: 'GET',
+      url: url.toString(),
+      status: response?.status ?? null,
+      transport_error: transportFailure.transport,
+    });
+    throw transportFailure;
+  }
   const body = parseJsonOutput(raw);
   const capture = { timestamp: now(), method: 'GET', url: url.toString(), status: response.status, body };
   requestCaptures.push(capture);
@@ -979,6 +1007,12 @@ async function startServer() {
   };
   serverBaseUrl = `http://${SERVER_HOST}:${port}`;
   evidence.server_endpoint = serverBaseUrl;
+  serverTopology = {
+    project,
+    compose_args: composeArgs,
+    compose_env: composeEnv,
+    container_id: containerId,
+  };
   await waitFor('published server readiness', async () => {
     const response = await fetch(new URL('/api/ready', serverBaseUrl), { headers: controlPlaneHeaders() });
     return response.ok;
@@ -1419,6 +1453,33 @@ function cli(command, options = {}) {
   };
 }
 
+function controlPlaneUrl(pathName, query = {}) {
+  const url = new URL(`/api${pathName}`, serverBaseUrl);
+  for (const [key, value] of Object.entries(query)) url.searchParams.set(key, String(value));
+  return url;
+}
+
+function visibilityCli(command, pathName, query = {}, options = {}) {
+  const sample = cli(command, options);
+  const url = controlPlaneUrl(pathName, query);
+  const transportFailure = cliControlPlaneTransportError({
+    sample,
+    method: 'GET',
+    url,
+    observedAt: now(),
+  });
+  if (transportFailure) {
+    requestCaptures.push({
+      timestamp: now(),
+      ...transportFailure.request,
+      status: null,
+      transport_error: transportFailure.transport,
+    });
+    throw transportFailure;
+  }
+  return sample;
+}
+
 function startWorkflow(label) {
   const workflowId = `hb-${CELL}-${label}-${SUFFIX}`;
   const sample = cli([
@@ -1436,7 +1497,7 @@ function completedWorkflow(sample) {
   return sample.exit_code === 0 && status === 'completed';
 }
 
-async function captureOperatorVisibility(staleWorkerStatus = null) {
+async function captureOperatorVisibility(staleWorkerStatus = null, options = {}) {
   const apiList = await api('/workers', { task_queue: TASK_QUEUE });
   const apiStaleList = staleWorkerStatus ? await api('/workers', { task_queue: TASK_QUEUE, status: 'stale' }) : null;
   const apiStaleDetail = staleWorkerStatus ? await api(`/workers/${encodeURIComponent(STALE_WORKER_ID)}`) : null;
@@ -1448,10 +1509,30 @@ async function captureOperatorVisibility(staleWorkerStatus = null) {
       fresh_worker_detail: await api(`/workers/${encodeURIComponent(FRESH_WORKER_ID)}`),
     },
     cli: {
-      worker_list: cli(['worker:list', `--task-queue=${TASK_QUEUE}`]),
-      fresh_worker_describe: cli(['worker:describe', FRESH_WORKER_ID]),
-      stale_worker_list: staleWorkerStatus ? cli(['worker:list', `--task-queue=${TASK_QUEUE}`, '--status=stale']) : null,
-      stale_worker_describe: staleWorkerStatus ? cli(['worker:describe', STALE_WORKER_ID]) : null,
+      worker_list: visibilityCli(
+        ['worker:list', `--task-queue=${TASK_QUEUE}`],
+        '/workers',
+        { task_queue: TASK_QUEUE },
+        options,
+      ),
+      fresh_worker_describe: visibilityCli(
+        ['worker:describe', FRESH_WORKER_ID],
+        `/workers/${encodeURIComponent(FRESH_WORKER_ID)}`,
+        {},
+        options,
+      ),
+      stale_worker_list: staleWorkerStatus ? visibilityCli(
+        ['worker:list', `--task-queue=${TASK_QUEUE}`, '--status=stale'],
+        '/workers',
+        { task_queue: TASK_QUEUE, status: 'stale' },
+        options,
+      ) : null,
+      stale_worker_describe: staleWorkerStatus ? visibilityCli(
+        ['worker:describe', STALE_WORKER_ID],
+        `/workers/${encodeURIComponent(STALE_WORKER_ID)}`,
+        {},
+        options,
+      ) : null,
     },
   };
 }
@@ -1665,6 +1746,231 @@ function buildChecks(context) {
   };
 }
 
+function buildFinalVisibilityChecks(context) {
+  const checks = buildChecks(context);
+  return Object.fromEntries([
+    'task_queue_association_visible',
+    'heartbeat_freshness_visible',
+    'task_slots_visible',
+    'process_metrics_visible',
+    'api_cli_worker_state_consistent',
+    'stale_worker_excluded_from_default_list',
+    'fresh_worker_remains_eligible',
+    'cli_fresh_and_stale_visible',
+  ].map((name) => [name, checks[name]]));
+}
+
+function buildCompletedBehaviorCheckpoint(context) {
+  const stalePollStatus = String(context.stalePoll.poll?.poll_status ?? '');
+  const checks = {
+    stale_worker_registered: Boolean(context.staleRegistration.registration.registration),
+    fresh_worker_registered: Boolean(context.freshRegistration.registration.registration),
+    stale_worker_successive_heartbeats: context.staleCadence.sdk_heartbeat_acknowledgement_count >= 2
+      && context.staleCadence.server_last_heartbeat_timestamps.length >= 2
+      && context.staleCadence.bounded_advertised_cadence === true,
+    fresh_worker_successive_heartbeats: context.freshCadence.sdk_heartbeat_acknowledgement_count >= 2
+      && context.freshCadence.server_last_heartbeat_timestamps.length >= 2
+      && context.freshCadence.bounded_advertised_cadence === true,
+    workflows_completed_by_real_workers: completedWorkflow(context.initialWorkflow)
+      && completedWorkflow(context.freshWorkflow)
+      && context.staleWorkerLog.work_processed_records.length >= 1
+      && context.freshWorkerLog.work_processed_records.length >= 1,
+    stale_transition_observed: context.staleTransition.within_bounded_window === true
+      && context.staleTransition.stale_worker_detail?.status === 'stale',
+    stale_worker_excluded_from_routing: !apiHasWorker(
+      context.staleTransition.default_active_worker_list,
+      STALE_WORKER_ID,
+    ) && apiHasWorker(context.staleTransition.stale_worker_list, STALE_WORKER_ID, 'stale')
+      && Array.isArray(context.stalePoll.tasks)
+      && context.stalePoll.tasks.length === 0
+      && ['stale_worker_registration', 'worker_heartbeat_stale'].includes(stalePollStatus),
+    fresh_peer_completed_work_after_stale: completedWorkflow(context.freshWorkflow)
+      && context.freshWorkerLog.work_processed_records.length >= 1,
+  };
+
+  return {
+    observed_at: now(),
+    all_checks_passed: Object.values(checks).every((value) => value === true),
+    checks,
+    registrations: {
+      stale: context.staleRegistration,
+      fresh: context.freshRegistration,
+    },
+    cadence: {
+      stale: context.staleCadence,
+      fresh: context.freshCadence,
+    },
+    workflows: {
+      before_stale: context.initialWorkflow,
+      after_stale: context.freshWorkflow,
+    },
+    stale_transition: context.staleTransition,
+    stale_poll: context.stalePoll,
+    visibility_before_stale: context.beforeVisibility,
+    worker_logs: {
+      stale: context.staleWorkerLog,
+      fresh: context.freshWorkerLog,
+    },
+  };
+}
+
+function redactDiagnosticText(value) {
+  let redacted = String(value ?? '').replace(/(authorization:\s*bearer\s+)\S+/gi, '$1[REDACTED]');
+  for (const secret of [TOKEN, env('DB_PASSWORD'), env('DW_DATABASE_PASSWORD')]) {
+    if (secret.length >= 4) redacted = redacted.split(secret).join('[REDACTED]');
+  }
+  return redacted;
+}
+
+function parseJsonLines(value) {
+  const raw = String(value ?? '').trim();
+  if (!raw) return [];
+  try {
+    const parsed = JSON.parse(raw);
+    return Array.isArray(parsed) ? parsed : [parsed];
+  } catch {
+    return raw.split(/\r?\n/).flatMap((line) => {
+      try {
+        return [JSON.parse(line)];
+      } catch {
+        return [];
+      }
+    });
+  }
+}
+
+function normalizedServerState(inspect) {
+  const state = inspect?.State ?? {};
+  const health = state?.Health ?? {};
+  return {
+    status: state?.Status ?? null,
+    running: typeof state?.Running === 'boolean' ? state.Running : null,
+    paused: typeof state?.Paused === 'boolean' ? state.Paused : null,
+    restarting: typeof state?.Restarting === 'boolean' ? state.Restarting : null,
+    oom_killed: typeof state?.OOMKilled === 'boolean' ? state.OOMKilled : null,
+    dead: typeof state?.Dead === 'boolean' ? state.Dead : null,
+    exit_code: Number.isInteger(state?.ExitCode) ? state.ExitCode : null,
+    error: redactDiagnosticText(state?.Error),
+    started_at: state?.StartedAt ?? null,
+    finished_at: state?.FinishedAt ?? null,
+    health: {
+      status: health?.Status ?? null,
+      failing_streak: Number.isInteger(health?.FailingStreak) ? health.FailingStreak : null,
+      recent_checks: Array.isArray(health?.Log) ? health.Log.slice(-5).map((entry) => ({
+        start: entry?.Start ?? null,
+        end: entry?.End ?? null,
+        exit_code: Number.isInteger(entry?.ExitCode) ? entry.ExitCode : null,
+        output: redactDiagnosticText(entry?.Output),
+      })) : [],
+    },
+  };
+}
+
+async function captureServerTransportDiagnostics() {
+  const diagnostics = {
+    observed_at: now(),
+    endpoint: serverBaseUrl,
+    topology: {
+      compose_project: serverTopology?.project ?? null,
+      server_container_id: serverTopology?.container_id ?? null,
+    },
+    container: {
+      present: false,
+      inspect_exit_code: null,
+      inspect_error: null,
+      state: {},
+      restart_count: null,
+    },
+    compose_state: [],
+    readiness_probe: null,
+    logs: null,
+  };
+
+  if (!serverTopology?.container_id) return diagnostics;
+
+  const inspectResult = run('docker', [
+    'container',
+    'inspect',
+    '--format',
+    '{"State":{{json .State}},"RestartCount":{{json .RestartCount}}}',
+    serverTopology.container_id,
+  ], { allowFailure: true, timeout: 30_000 });
+  const inspected = inspectResult.status === 0 ? parseJsonOutput(inspectResult.stdout) : null;
+  diagnostics.container = {
+    present: inspectResult.status === 0 && Boolean(inspected?.State),
+    inspect_exit_code: inspectResult.status,
+    inspect_error: inspectResult.status === 0
+      ? null
+      : redactDiagnosticText(inspectResult.stderr || inspectResult.stdout),
+    state: normalizedServerState(inspected),
+    restart_count: Number.isInteger(inspected?.RestartCount) ? inspected.RestartCount : null,
+  };
+
+  const composeResult = run('docker', [
+    ...serverTopology.compose_args,
+    'ps',
+    '--all',
+    '--format',
+    'json',
+  ], {
+    env: serverTopology.compose_env,
+    allowFailure: true,
+    timeout: 30_000,
+  });
+  diagnostics.compose_state = parseJsonLines(composeResult.stdout).map((entry) => ({
+    name: entry?.Name ?? null,
+    service: entry?.Service ?? null,
+    state: entry?.State ?? null,
+    health: entry?.Health ?? null,
+    exit_code: Number.isInteger(entry?.ExitCode) ? entry.ExitCode : null,
+  }));
+  if (composeResult.status !== 0) {
+    diagnostics.compose_state_error = redactDiagnosticText(composeResult.stderr || composeResult.stdout);
+  }
+
+  const logsResult = run('docker', [
+    'logs',
+    '--timestamps',
+    '--tail',
+    '400',
+    serverTopology.container_id,
+  ], { allowFailure: true, timeout: 30_000 });
+  const retainedLogs = redactDiagnosticText(`${logsResult.stdout}${logsResult.stderr}`);
+  const serverLogFile = 'server-container.log';
+  fs.writeFileSync(path.join(RESULT_DIR, serverLogFile), retainedLogs, 'utf8');
+  diagnostics.logs = {
+    artifact: serverLogFile,
+    docker_exit_code: logsResult.status,
+    line_count: retainedLogs ? retainedLogs.split(/\r?\n/).length : 0,
+    tail: retainedLogs,
+  };
+
+  const readinessUrl = new URL('/api/ready', serverBaseUrl);
+  try {
+    const response = await fetch(readinessUrl, { headers: controlPlaneHeaders() });
+    const raw = await response.text();
+    diagnostics.readiness_probe = {
+      observed_at: now(),
+      method: 'GET',
+      url: readinessUrl.toString(),
+      status: response.status,
+      ok: response.ok,
+      body: redactDiagnosticText(raw).slice(0, 4_000),
+    };
+  } catch (error) {
+    diagnostics.readiness_probe = {
+      observed_at: now(),
+      method: 'GET',
+      url: readinessUrl.toString(),
+      status: null,
+      ok: false,
+      transport_error: transportErrorDetails(error),
+    };
+  }
+
+  return diagnostics;
+}
+
 function writeResultFiles(context = null) {
   const finishedAt = now();
   evidence.finished_at = finishedAt;
@@ -1754,6 +2060,98 @@ function recordFailure(error) {
   });
 }
 
+function recordPersistentFinalVisibilityFailure(error, serverDiagnostics) {
+  const failure = persistentTransportEvidence({
+    error,
+    serverDiagnostics,
+    completedBehavior,
+  });
+  evidence.outcome = failure.runner_blocked ? 'runner_blocked' : 'fail';
+  evidence.runner_blocked = failure.runner_blocked;
+  evidence.classification = failure.classification;
+  evidence.completed_behavior_before_final_visibility = completedBehavior;
+  evidence.final_visibility_transport = failure.final_visibility_transport;
+  evidence.server_transport_diagnostics = failure.server_diagnostics;
+  evidence.scenario_results[SCENARIO_ID] = {
+    scenario_id: SCENARIO_ID,
+    status: failure.runner_blocked ? 'runner_blocked' : 'fail',
+    classification: failure.classification,
+    observed_outputs: {
+      runtime: RUNTIME,
+      worker_id: STALE_WORKER_ID,
+      peer_worker_id: FRESH_WORKER_ID,
+      task_queue: TASK_QUEUE,
+      published_artifact_worker_execution: true,
+      sdk_behavior_completed: completedBehavior?.all_checks_passed === true,
+      completed_behavior_before_final_visibility: completedBehavior,
+      final_visibility_transport: failure.final_visibility_transport,
+      server_diagnostics: failure.server_diagnostics,
+      operator_visibility_invariants_observed: false,
+      local_product_source_checkouts_used: false,
+    },
+  };
+  evidence.findings = [{
+    finding_id: `${CELL}-final-visibility-transport-${SUFFIX}`,
+    finding_type: failure.finding_type,
+    classification: failure.classification,
+    scenario_id: SCENARIO_ID,
+    owning_surface: failure.owning_surface,
+    artifact_versions: ARTIFACT_VERSIONS,
+    observed_behavior: `${error.message} ${failure.reason}`,
+    expected_behavior: 'The final API and CLI worker views remain reachable after heartbeat cadence, workflow execution, stale exclusion, and fresh-peer work have succeeded.',
+    next_acceptance_criterion: failure.runner_blocked
+      ? 'Restore reliable host-to-container control-plane transport and rerun the focused published-artifact heartbeat shard.'
+      : 'Restore standalone server availability and rerun the focused published-artifact heartbeat shard against the next server image.',
+  }];
+}
+
+function recordFinalVisibilityInvariantFailure(error) {
+  const cliFailures = Object.values(error.observedVisibility?.cli ?? {})
+    .filter((sample) => sample && sample.exit_code !== 0)
+    .map((sample) => ({ command: sample.command, exit_code: sample.exit_code, stderr: sample.stderr }));
+  const owningSurface = cliFailures.length > 0 ? 'cli' : 'server';
+  const findingType = cliFailures.length > 0 ? 'cli_operator_visibility_gap' : 'api_operator_visibility_gap';
+  evidence.outcome = 'fail';
+  evidence.runner_blocked = false;
+  evidence.classification = `${owningSurface}-operator-visibility-gap`;
+  evidence.completed_behavior_before_final_visibility = completedBehavior;
+  evidence.operator_visibility = error.observedVisibility;
+  evidence.final_visibility_recovery = {
+    outcome: 'invariants_failed',
+    failed_invariants: error.failedInvariants,
+    invariants_observed: false,
+  };
+  evidence.scenario_results[SCENARIO_ID] = {
+    scenario_id: SCENARIO_ID,
+    status: 'fail',
+    classification: evidence.classification,
+    observed_outputs: {
+      runtime: RUNTIME,
+      worker_id: STALE_WORKER_ID,
+      peer_worker_id: FRESH_WORKER_ID,
+      task_queue: TASK_QUEUE,
+      published_artifact_worker_execution: true,
+      sdk_behavior_completed: completedBehavior?.all_checks_passed === true,
+      completed_behavior_before_final_visibility: completedBehavior,
+      failed_operator_visibility_invariants: error.failedInvariants,
+      failed_cli_commands: cliFailures,
+      operator_visibility: error.observedVisibility,
+      local_product_source_checkouts_used: false,
+    },
+  };
+  evidence.findings = [{
+    finding_id: `${CELL}-final-visibility-invariants-${SUFFIX}`,
+    finding_type: findingType,
+    classification: evidence.classification,
+    scenario_id: SCENARIO_ID,
+    owning_surface: owningSurface,
+    artifact_versions: ARTIFACT_VERSIONS,
+    observed_behavior: error.message,
+    expected_behavior: 'The exact final API and CLI views show the stale worker excluded and the fresh worker active after real workflow work completes.',
+    next_acceptance_criterion: `Restore the ${owningSurface} operator-visibility invariants and rerun this focused published-artifact heartbeat shard.`,
+  }];
+}
+
 function recordCleanupFailure(cleanupFailures) {
   const summary = cleanupFailures.map((failure) => `${failure.resource}: ${failure.error}`).join('; ');
   evidence.execution_outcome_before_cleanup = evidence.outcome;
@@ -1811,9 +2209,6 @@ async function main() {
   const stalePoll = stalePollProbe();
   const freshWorkflow = startWorkflow('fresh-after-stale');
   if (!completedWorkflow(freshWorkflow)) throw new Error(`the fresh ${CELL} worker did not complete work after its peer became stale`);
-  const afterVisibility = await captureOperatorVisibility('stale');
-  stopWorker(freshWorker);
-
   const context = {
     staleWorker,
     freshWorker,
@@ -1824,13 +2219,36 @@ async function main() {
     initialWorkflow,
     freshWorkflow,
     beforeVisibility,
-    afterVisibility,
     staleTransition,
     stalePoll,
     staleWorkerLog: workerLogEvidence(staleWorker),
     freshWorkerLog: workerLogEvidence(freshWorker),
   };
   completedContext = context;
+  completedBehavior = buildCompletedBehaviorCheckpoint(context);
+  evidence.completed_behavior_before_final_visibility = completedBehavior;
+  if (!completedBehavior.all_checks_passed) {
+    const failedChecks = Object.entries(completedBehavior.checks)
+      .filter(([, value]) => value !== true)
+      .map(([key]) => key);
+    throw new Error(`${CELL} SDK behavior checkpoint failed before final visibility: ${failedChecks.join(', ')}`);
+  }
+
+  executionPhase = 'final_operator_visibility';
+  const recoveredVisibility = await recoverFinalVisibility({
+    capture: () => captureOperatorVisibility('stale', { allowFailure: true }),
+    validate: (afterVisibility) => Object.entries(buildFinalVisibilityChecks({ ...context, afterVisibility }))
+      .filter(([, value]) => value !== true)
+      .map(([key]) => key),
+    maxAttempts: FINAL_VISIBILITY_ATTEMPTS,
+    retryDelayMs: FINAL_VISIBILITY_RETRY_MS,
+  });
+  const afterVisibility = recoveredVisibility.visibility;
+  context.afterVisibility = afterVisibility;
+  evidence.final_visibility_recovery = recoveredVisibility.recovery;
+  stopWorker(freshWorker);
+  context.freshWorkerLog = workerLogEvidence(freshWorker);
+  executionPhase = 'final_assertions';
   const checks = buildChecks(context);
   const failedChecks = Object.entries(checks).filter(([, value]) => value !== true).map(([key]) => key);
   if (failedChecks.length > 0) throw new Error(`${CELL} SDK heartbeat-loop assertions failed: ${failedChecks.join(', ')}`);
@@ -1935,7 +2353,19 @@ try {
   await main();
 } catch (error) {
   log(`failure: ${error instanceof Error ? error.stack ?? error.message : String(error)}`);
-  recordFailure(error);
+  if (error instanceof PersistentFinalVisibilityTransportError
+    && executionPhase === 'final_operator_visibility'
+    && completedBehavior?.all_checks_passed === true) {
+    const serverDiagnostics = await captureServerTransportDiagnostics();
+    recordPersistentFinalVisibilityFailure(error, serverDiagnostics);
+  } else if (error instanceof FinalVisibilityInvariantError
+    && executionPhase === 'final_operator_visibility'
+    && completedBehavior?.all_checks_passed === true) {
+    if (completedContext) completedContext.afterVisibility = error.observedVisibility;
+    recordFinalVisibilityInvariantFailure(error);
+  } else {
+    recordFailure(error);
+  }
   process.exitCode = 1;
 } finally {
   const cleanupResults = [];

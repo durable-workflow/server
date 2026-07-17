@@ -91,7 +91,7 @@ final class HeartbeatConformanceRunnerContractTest extends TestCase
         );
         $this->assertStringContainsString('scenario_id: SCENARIO_ID', $source);
         $this->assertStringContainsString('writeJson(EVIDENCE_FILE, evidence)', $source);
-        $this->assertStringContainsString("const SCENARIO_ID = `\${CELL}_sdk_heartbeat_loop`;", $source);
+        $this->assertStringContainsString('const SCENARIO_ID = `${CELL}_sdk_heartbeat_loop`;', $source);
         $this->assertStringContainsString(
             "? ['php_sdk_heartbeat_loop', 'python_sdk_heartbeat_loop', 'waterline_worker_status_visibility']",
             $source,
@@ -251,7 +251,7 @@ SH);
             '.poll_workflow_task_response(&arguments[4], &arguments[3]',
             "'/app/target/release/heartbeat-worker'",
             "'/app/target/release/stale-poll'",
-            "evidence.rust_package_install?.installed_version === SDK_RUST_VERSION",
+            'evidence.rust_package_install?.installed_version === SDK_RUST_VERSION',
         ] as $needle) {
             $this->assertStringContainsString($needle, $source);
         }
@@ -290,7 +290,7 @@ SH);
     {
         $source = $this->runnerSource();
 
-        $this->assertStringContainsString("const CONTAINER_USER = `\${HOST_UID}:\${HOST_GID}`;", $source);
+        $this->assertStringContainsString('const CONTAINER_USER = `${HOST_UID}:${HOST_GID}`;', $source);
         $this->assertGreaterThanOrEqual(4, substr_count($source, "'-v', `\${PROJECT_DIR}:/app`"));
         $this->assertGreaterThanOrEqual(4, substr_count($source, "'--user', CONTAINER_USER"));
     }
@@ -486,6 +486,57 @@ JS;
         $this->assertStringNotContainsString('DW_PHP_SDK_VERSION', $shell);
         $this->assertStringNotContainsString('python', strtolower($shell));
         $this->assertStringNotContainsString('waterline', strtolower($shell));
+    }
+
+    public function test_final_visibility_recovery_and_persistent_outage_diagnostics_are_executable(): void
+    {
+        $source = $this->runnerSource();
+        $visibilityHelper = (string) file_get_contents(
+            dirname(__DIR__, 2).'/scripts/conformance/heartbeat-final-visibility.mjs',
+        );
+
+        $this->assertStringContainsString('recoverFinalVisibility({', $source);
+        $this->assertStringContainsString('cliControlPlaneTransportError({', $source);
+        $this->assertStringContainsString("channel: 'cli'", $visibilityHelper);
+        $this->assertStringContainsString('actual_request_source', $visibilityHelper);
+        $this->assertStringContainsString('intended_command', $visibilityHelper);
+        $this->assertStringContainsString('intended_request', $visibilityHelper);
+        $this->assertStringContainsString('completed_behavior_before_final_visibility', $source);
+        $this->assertStringContainsString('captureServerTransportDiagnostics()', $source);
+        $this->assertStringContainsString("'logs',\n    '--timestamps',\n    '--tail',", $source);
+        $this->assertStringContainsString('underlying_connection_cause', $visibilityHelper);
+        $this->assertLessThan(
+            strpos($source, 'for (const containerName of workerContainers)', strpos($source, '} finally {')),
+            strpos($source, 'captureServerTransportDiagnostics();'),
+        );
+
+        $nodeBinary = trim((string) shell_exec('command -v node 2>/dev/null'));
+        if ($nodeBinary === '') {
+            $this->markTestSkipped('node is required to exercise heartbeat visibility recovery.');
+        }
+
+        $process = proc_open(
+            [
+                $nodeBinary,
+                '--test',
+                __DIR__.'/HeartbeatFinalVisibilityRegression.mjs',
+            ],
+            [
+                1 => ['pipe', 'w'],
+                2 => ['pipe', 'w'],
+            ],
+            $pipes,
+            dirname(__DIR__, 2),
+        );
+
+        $this->assertIsResource($process);
+        $stdout = stream_get_contents($pipes[1]);
+        $stderr = stream_get_contents($pipes[2]);
+        fclose($pipes[1]);
+        fclose($pipes[2]);
+        $exitCode = proc_close($process);
+
+        $this->assertSame(0, $exitCode, $stderr ?: $stdout);
     }
 
     private function runnerSource(): string
