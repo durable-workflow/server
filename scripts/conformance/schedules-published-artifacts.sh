@@ -22,7 +22,9 @@ Environment overrides:
   DW_SERVER_VERSION                 Published server version under test.
   DW_CLI_VERSION                    Published CLI version under test.
   DW_PYTHON_SDK_VERSION             Published PyPI durable-workflow version.
-  DW_PHP_SDK_VERSION                Published durable-workflow/sdk version.
+  DW_PHP_SDK_VERSION                Exact published durable-workflow/sdk version.
+                                    When empty, Composer resolves the latest
+                                    stable Packagist version before shards run.
   DW_WATERLINE_VERSION              Published Waterline version under test.
   DW_SCHEDULES_SMOKE_EVIDENCE       Optional JSON from a published-artifact
                                     smoke or shard run. Scenario results in
@@ -39,7 +41,7 @@ Environment overrides:
                                     Scenario results in this file are merged
                                     into the output.
   DW_SCHEDULES_PHP_SURFACE_EVIDENCE Optional JSON from a focused published
-                                    workflow PHP schedule client shard.
+                                    standalone PHP SDK schedule client shard.
                                     Scenario results in this file are merged
                                     into the output.
   DW_SCHEDULES_OPERATOR_CONTROLS_EVIDENCE
@@ -83,7 +85,7 @@ Environment overrides:
                                     Defaults to auto.
   DW_SCHEDULES_RUN_PHP_SURFACE_SHARD
                                     Set to 0 to skip the automatic published
-                                    workflow PHP schedule client shard.
+                                    standalone PHP SDK schedule client shard.
                                     Defaults to auto.
   DW_SCHEDULES_RUN_CROSS_LANGUAGE_SHARD
                                     Set to 0 to skip the automatic published

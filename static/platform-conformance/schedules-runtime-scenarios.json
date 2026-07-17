@@ -1,6 +1,6 @@
 {
   "schema": "durable-workflow.v2.platform-conformance.runtime-scenarios",
-  "version": 3,
+  "version": 4,
   "category": "schedules_runtime_contract",
   "suite_schema": "durable-workflow.v2.platform-conformance.suite",
   "suite_version": 15,
@@ -17,7 +17,13 @@
     "published_artifacts_only": true,
     "requires_resolved_versions": true,
     "rejects_placeholder_versions": true,
-    "implementation_tests_are_not_sources": true
+    "implementation_tests_are_not_sources": true,
+    "standalone_php_sdk": {
+      "package": "durable-workflow/sdk",
+      "fallback_version_source": "Composer Packagist metadata",
+      "installed_version_source": "Composer\\InstalledVersions",
+      "installed_version_must_match_resolved_version": true
+    }
   },
   "common_result_evidence": [
     "suite_version",
@@ -27,6 +33,9 @@
     "finished_at",
     "generated_at",
     "published_artifact_versions",
+    "published_artifact_sources",
+    "artifact_install_evidence",
+    "artifact_version_resolution",
     "implementation_identity",
     "runtime_matrix",
     "topology",
@@ -163,7 +172,7 @@
         "acceptance": [
           "list and describe cron and interval schedules through CLI JSON output",
           "list and describe the same schedules through the Python SDK",
-          "list or describe the same schedules through the PHP-facing workflow SDK surface"
+          "list or describe the same schedules through the standalone PHP SDK surface"
         ]
       },
       "pause_resume_no_fire_window": {
@@ -245,11 +254,11 @@
         "owner": "sdk-php",
         "scope": "sdk-php-schedule-surface-shard",
         "current_evidence": "The current published-artifact evidence proves only the Python SDK schedule lifecycle smoke: create, list, describe, pause, resume, manual trigger, delete, triggered workflow completion, and invalid cron refusal. It does not exercise a PHP-facing schedule client path.",
-        "expected_behavior": "The PHP-facing workflow SDK surface can create or observe schedules and report list or describe state consistently with server and CLI state.",
+        "expected_behavior": "The standalone PHP SDK can create or observe schedules and report list or describe state consistently with server and CLI state.",
         "acceptance": [
           "execute the PHP-facing schedule client path from the published PHP SDK package",
           "record create_or_observe and list_or_describe outputs",
-          "record pause, resume, trigger, or delete behavior when the surface claims those controls"
+          "record update, pause, resume, trigger, backfill, history, and delete behavior when the standalone SDK claims those controls"
         ]
       },
       "python_created_php_workflow": {
@@ -343,13 +352,16 @@
       },
       "sdk-php": {
         "scope": "sdk-php-schedule-surface-shard",
-        "must_cover_controls": [
-          "create_or_observe",
-          "list_or_describe",
-          "pause",
-          "resume",
-          "trigger",
-          "delete"
+          "must_cover_controls": [
+            "create_or_observe",
+            "list_or_describe",
+            "update",
+            "pause",
+            "resume",
+            "trigger",
+            "backfill",
+            "history",
+            "delete"
         ],
         "fallback_status_when_surface_missing": "unsupported",
         "fallback_finding_type": "unsupported_public_surface"
@@ -685,9 +697,9 @@
         "php_sdk_client"
       ],
       "operations": [
-        "create or observe schedules through the PHP-facing workflow SDK surface",
-        "list or describe schedules through the PHP-facing client path",
-        "pause, resume, trigger, or delete a schedule through PHP-facing APIs when claimed"
+        "create or observe schedules through the standalone PHP SDK surface",
+        "list or describe schedules through the standalone PHP SDK",
+        "update, pause, resume, trigger, backfill, read history, and delete through every schedule API claimed by the standalone PHP SDK"
       ],
       "pass_criteria": [
         "PHP SDK evidence covers create_or_observe, list_observed, and control_observed for claimed operations",

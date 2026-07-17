@@ -117,6 +117,8 @@ const requiredScenarios = Array.isArray(scenarioManifest.scenarios)
   : DEFAULT_REQUIRED_SCENARIOS;
 const coverageGapFindings = scenarioManifest.host_runner_contract?.coverage_gap_findings ?? {};
 let publishedCliInstallPromise = null;
+let phpSdkVersionResolution = null;
+const executedArtifactInstalls = new Map();
 
 if (isMainModule()) {
   Promise.resolve().then(main).catch((error) => {
@@ -131,7 +133,7 @@ async function main() {
   fs.mkdirSync(resultDir, { recursive: true });
 
   const startedAt = process.env.DW_SCHEDULES_STARTED_AT ?? timestamp();
-  const artifactVersions = artifactVersionsFromEnv();
+  const artifactVersions = await resolveArtifactVersions(artifactVersionsFromEnv());
   let artifactSources = artifactSourcesFromEnv(artifactVersions);
   const evidenceInputs = readEvidenceInputs();
   const shardEvidence = await runEvidenceShardTasks([
@@ -309,6 +311,9 @@ async function main() {
     artifact_sources: artifactSources,
     local_product_source_checkouts_used: localProductSourceCheckoutsResultValue(smokeEvidence, artifactInstallEvidence),
     artifact_install_evidence: artifactInstallEvidence,
+    artifact_version_resolution: {
+      'sdk-php': phpSdkVersionResolution,
+    },
     scenario_results: scenarioResults,
     findings,
     finding_links: findingLinks,
@@ -1263,6 +1268,121 @@ function artifactVersionsFromEnv() {
   };
 }
 
+async function resolveArtifactVersions(configuredVersions) {
+  const versions = { ...configuredVersions };
+  const configuredPhpSdkVersion = artifactValue(versions, 'sdk-php');
+
+  if (isConcretePublishedVersion(configuredPhpSdkVersion)) {
+    phpSdkVersionResolution = {
+      status: 'pass',
+      package: 'durable-workflow/sdk',
+      version: configuredPhpSdkVersion,
+      source: composerPackageArtifactSource('durable-workflow/sdk', configuredPhpSdkVersion),
+      version_source: 'configured_exact_version',
+    };
+
+    return versions;
+  }
+
+  phpSdkVersionResolution = await resolveLatestPublishedPhpSdkVersion();
+  if (configuredPhpSdkVersion !== '') {
+    phpSdkVersionResolution.configured_version = configuredPhpSdkVersion;
+    phpSdkVersionResolution.configured_version_rejected = true;
+  }
+  const resolvedVersion = stringValue(phpSdkVersionResolution?.version);
+  if (resolvedVersion !== '') {
+    versions['sdk-php'] = resolvedVersion;
+    process.env.DW_PHP_SDK_VERSION = resolvedVersion;
+  }
+
+  return versions;
+}
+
+async function resolveLatestPublishedPhpSdkVersion() {
+  const logPath = path.join(resultDir, 'schedules-php-sdk-version-resolve.log');
+  const packageName = 'durable-workflow/sdk';
+  const command = [
+    'run',
+    '--rm',
+    'composer:2',
+    'show',
+    '--all',
+    '--format=json',
+    packageName,
+  ];
+  const transcript = await execCommandCapture('docker', command, {
+    timeout: 180000,
+    maxBuffer: 1024 * 1024 * 8,
+  });
+  writeText(logPath, workerActionTranscriptLog(transcript));
+
+  if (transcript.exit_code !== 0) {
+    return {
+      status: 'fail',
+      package: packageName,
+      version: '',
+      source: 'https://repo.packagist.org/p2/durable-workflow/sdk.json',
+      version_source: 'composer_packagist_metadata',
+      failure: 'Composer could not resolve published durable-workflow/sdk versions.',
+      log: path.basename(logPath),
+    };
+  }
+
+  const parsed = parseJsonOutput(transcript.stdout);
+  const version = latestStableComposerVersion(parsed.value?.versions);
+  if (version === '') {
+    return {
+      status: 'fail',
+      package: packageName,
+      version: '',
+      source: 'https://repo.packagist.org/p2/durable-workflow/sdk.json',
+      version_source: 'composer_packagist_metadata',
+      failure: parsed.error === null
+        ? 'Composer returned no stable semantic version for durable-workflow/sdk.'
+        : `Composer version metadata was not valid JSON: ${parsed.error}`,
+      log: path.basename(logPath),
+    };
+  }
+
+  return {
+    status: 'pass',
+    package: packageName,
+    version,
+    source: composerPackageArtifactSource(packageName, version),
+    metadata_source: 'https://repo.packagist.org/p2/durable-workflow/sdk.json',
+    version_source: 'composer_packagist_metadata',
+    log: path.basename(logPath),
+  };
+}
+
+function latestStableComposerVersion(versions) {
+  return arrayValue(versions)
+    .map(normalizeComposerVersion)
+    .filter((version) => /^\d+\.\d+\.\d+$/.test(version))
+    .sort(compareStableVersions)
+    .at(-1) ?? '';
+}
+
+function normalizeComposerVersion(version) {
+  return stringValue(version)
+    .replace(/^\*\s*/, '')
+    .replace(/^v(?=\d)/i, '');
+}
+
+function compareStableVersions(left, right) {
+  const leftParts = left.split('.').map((part) => Number.parseInt(part, 10));
+  const rightParts = right.split('.').map((part) => Number.parseInt(part, 10));
+
+  for (let index = 0; index < 3; index += 1) {
+    const difference = leftParts[index] - rightParts[index];
+    if (difference !== 0) {
+      return difference;
+    }
+  }
+
+  return 0;
+}
+
 function artifactSourcesFromEnv(artifactVersions = artifactVersionsFromEnv()) {
   return normalizeArtifactSources({
     server: envString('DW_SCHEDULES_SERVER_ARTIFACT_SOURCE', 'DW_SERVER_ARTIFACT_SOURCE') || 'not_exercised',
@@ -1312,7 +1432,10 @@ function buildArtifactInstallEvidence(artifactVersions, artifactSources, evidenc
       ));
   const derivedEvidencePresent = Object.keys(derivedEvidence).length > 0;
   const supplied = suppliedEvidencePresent ? suppliedEvidence : derivedEvidence;
-  const suppliedEntries = artifactInstallEntriesByArtifact(supplied);
+  const suppliedEntries = {
+    ...artifactInstallEntriesByArtifact(supplied),
+    ...Object.fromEntries(executedArtifactInstalls),
+  };
   const localProductSourceUsed = localProductSourceCheckoutsUsed(evidence, outputs, supplied);
   const installEvidenceLocalProductSourceUsed = truthyEvidenceFlag(supplied.local_product_source_checkouts_used)
     || truthyEvidenceFlag(supplied.localProductSourceCheckoutsUsed);
@@ -1320,7 +1443,9 @@ function buildArtifactInstallEvidence(artifactVersions, artifactSources, evidenc
     || explicitFalse(supplied.localProductSourceCheckoutsUsed);
   const installLayerLocalProductSourceExplicitFalse = installEvidenceLocalProductSourceExplicitFalse
     || localProductSourceCheckoutsExplicitlyFalse(evidence, outputs);
-  const evidenceSupplied = suppliedEvidencePresent || derivedEvidencePresent;
+  const evidenceSupplied = suppliedEvidencePresent
+    || derivedEvidencePresent
+    || executedArtifactInstalls.size > 0;
   const policyFailures = [];
   const missingArtifactVersions = [];
   const missingArtifactSources = [];
@@ -1450,6 +1575,7 @@ function buildArtifactInstallEvidence(artifactVersions, artifactSources, evidenc
       : (installLayerLocalProductSourceExplicitFalse ? false : null),
     local_product_source_checkouts_explicitly_false: installLayerLocalProductSourceExplicitFalse,
     artifacts,
+    executed_artifact_installs: Array.from(executedArtifactInstalls.values()),
     missing_artifact_install_evidence: !evidenceSupplied,
     missing_artifact_install_evidence_artifacts: missingArtifacts,
     missing_artifact_versions: missingArtifactVersions,
@@ -6216,14 +6342,66 @@ async function installSchedulesPhpArtifact(
     ],
     path.join(resultDir, `${logPrefix}-php-install.log`),
   );
+  const installedVersionResult = await execLogged(
+    'docker',
+    [
+      'run',
+      '--rm',
+      '--network',
+      'host',
+      '-v',
+      `${phpRoot}:/app`,
+      '-w',
+      '/app',
+      '--entrypoint',
+      'php',
+      'composer:2',
+      '-r',
+      "require 'vendor/autoload.php'; echo Composer\\InstalledVersions::getPrettyVersion('durable-workflow/sdk') ?: '';",
+    ],
+    path.join(resultDir, `${logPrefix}-php-installed-version.log`),
+  );
+  const installedVersion = normalizeComposerVersion(installedVersionResult.stdout);
+  if (installedVersion !== sdkPhpVersion) {
+    throw new Error(
+      `pinned durable-workflow/sdk version mismatch: expected ${sdkPhpVersion}, got ${installedVersion || 'empty'}`,
+    );
+  }
+  const source = composerPackageArtifactSource('durable-workflow/sdk', installedVersion);
+  recordExecutedArtifactInstall({
+    artifact: 'sdk-php',
+    package: 'durable-workflow/sdk',
+    requested_version: sdkPhpVersion,
+    installed_version: installedVersion,
+    version: installedVersion,
+    source,
+    status: 'pass',
+    install_channel: 'Packagist via Composer',
+    local_product_source_checkouts_used: false,
+  });
   markArtifactSource(
     artifactSources,
     'sdk-php',
-    composerPackageArtifactSource('durable-workflow/sdk', sdkPhpVersion),
+    source,
     artifactVersions,
   );
 
   return { phpRoot, scriptPath };
+}
+
+function recordExecutedArtifactInstall(install) {
+  const artifact = stringValue(install?.artifact);
+  if (artifact === '') {
+    return;
+  }
+
+  const previous = objectValue(executedArtifactInstalls.get(artifact));
+  executedArtifactInstalls.set(artifact, {
+    ...previous,
+    ...install,
+    executions: positiveInt(previous.executions, 0) + 1,
+    verified_at: timestamp(),
+  });
 }
 
 async function runSchedulesPythonWorker(python, input) {
@@ -7565,9 +7743,12 @@ function phpControlBehavior({
   deleteOperation,
   listAfterDeleteOperation,
 }) {
+  const updateOperation = objectValue(phpReport.control_behavior?.update);
   const pauseOperation = objectValue(phpReport.control_behavior?.pause);
   const resumeOperation = objectValue(phpReport.control_behavior?.resume);
   const triggerOperation = objectValue(phpReport.control_behavior?.trigger);
+  const backfillOperation = objectValue(phpReport.control_behavior?.backfill);
+  const historyOperation = objectValue(phpReport.control_behavior?.history);
   const pauseState = scheduleStateSnapshot(scheduleRecordFromPayload(objectValue(phpReport.control_behavior?.describe_after_pause?.response)));
   const resumeState = scheduleStateSnapshot(scheduleRecordFromPayload(objectValue(phpReport.control_behavior?.describe_after_resume?.response)));
   const triggerScheduleId = scheduleIdFromOperation(triggerOperation);
@@ -7588,6 +7769,9 @@ function phpControlBehavior({
   const listAfterDelete = objectValue(listAfterDeleteOperation.response);
   const failures = [];
 
+  if (!operationOk(updateOperation)) {
+    failures.push('PHP-facing update did not complete through the standalone SDK');
+  }
   if (!operationOk(pauseOperation) || pauseState.pause_state !== 'paused') {
     failures.push('PHP-facing pause did not produce paused schedule state');
   }
@@ -7597,6 +7781,12 @@ function phpControlBehavior({
   if (!operationOk(triggerOperation) || (triggerScheduleId !== scheduleId && triggerWorkflowId === '')) {
     failures.push('PHP-facing trigger did not identify the requested schedule or a triggered workflow');
   }
+  if (!operationOk(backfillOperation)) {
+    failures.push('PHP-facing backfill did not complete through the standalone SDK');
+  }
+  if (!operationOk(historyOperation)) {
+    failures.push('PHP-facing history did not complete through the standalone SDK');
+  }
   if (!operationOk(deleteOperation) || scheduleListContains(listAfterDelete, scheduleId)) {
     failures.push('PHP-facing delete did not remove the schedule from PHP list output');
   }
@@ -7604,6 +7794,10 @@ function phpControlBehavior({
   return {
     passed: failures.length === 0,
     failures,
+    update: {
+      ok: operationOk(updateOperation),
+      operation: updateOperation,
+    },
     pause: {
       ok: operationOk(pauseOperation),
       state_after_pause: pauseState,
@@ -7617,6 +7811,14 @@ function phpControlBehavior({
       schedule_id: triggerScheduleId,
       workflow_id: triggerWorkflowId,
       identified_requested_schedule_or_workflow: triggerScheduleId === scheduleId || triggerWorkflowId !== '',
+    },
+    backfill: {
+      ok: operationOk(backfillOperation),
+      operation: backfillOperation,
+    },
+    history: {
+      ok: operationOk(historyOperation),
+      operation: historyOperation,
     },
     delete: {
       ok: operationOk(deleteOperation),
@@ -7731,7 +7933,7 @@ function phpSurfaceFinding(status, checks, artifactVersions) {
       execution_scope: 'sdk-php-schedule-surface-shard',
       artifact_versions: artifactVersions,
       observed_behavior: `The PHP-facing schedule client surface did not expose required operations: ${unsupported.join(', ')}.`,
-      expected_behavior: 'The published workflow PHP package exposes create/list/describe and records any claimed pause, resume, trigger, or delete behavior.',
+      expected_behavior: 'The published standalone PHP SDK exposes create/list/describe and records every claimed update, pause, resume, trigger, backfill, history, and delete behavior.',
       next_acceptance_criterion: 'publish the PHP-facing schedule client operation or update the public contract to mark it unsupported, then rerun the PHP schedule surface shard',
       observed_outputs: checks,
     };
@@ -7745,7 +7947,7 @@ function phpSurfaceFinding(status, checks, artifactVersions) {
     execution_scope: 'sdk-php-schedule-surface-shard',
     artifact_versions: artifactVersions,
     observed_behavior: checks.failures.join('; ') || 'The PHP-facing schedule client surface did not satisfy the schedule contract.',
-    expected_behavior: 'The PHP-facing workflow SDK surface creates or observes schedules, lists/describes them, records claimed control behavior, and matches server and CLI state for exposed fields.',
+    expected_behavior: 'The standalone PHP SDK creates or observes schedules, lists/describes them, records claimed control behavior, and matches server and CLI state for exposed fields.',
     next_acceptance_criterion: 'rerun schedules conformance and record passing PHP create_or_observe, list_or_describe, control behavior, and server/CLI state comparison',
     observed_outputs: checks,
   };
@@ -7761,7 +7963,7 @@ function phpSurfaceBlockedEvidence(reason, startedAt, artifactVersions, artifact
     execution_scope: 'sdk-php-schedule-surface-shard',
     artifact_versions: artifactVersions,
     observed_behavior: reason,
-    expected_behavior: 'The schedules conformance host can install the published workflow PHP package and execute its schedule client surface against published artifacts.',
+    expected_behavior: 'The schedules conformance host can install the published standalone PHP SDK and execute its schedule client surface against published artifacts.',
     next_acceptance_criterion: 'restore the missing host capability and rerun schedules conformance',
   };
 
@@ -8826,7 +9028,6 @@ require __DIR__.'/vendor/autoload.php';
 use DurableWorkflow\Client;
 use DurableWorkflow\Model\ScheduleAction;
 use DurableWorkflow\Model\ScheduleSpec;
-use Throwable;
 
 $payload = json_decode((string) file_get_contents($argv[1]), true, 512, JSON_THROW_ON_ERROR);
 $outputPath = $argv[2];
@@ -8938,7 +9139,6 @@ use DurableWorkflow\Client;
 use DurableWorkflow\Exception\ServerException;
 use DurableWorkflow\Model\ScheduleAction;
 use DurableWorkflow\Model\ScheduleSpec;
-use Throwable;
 
 $payload = json_decode((string) file_get_contents($argv[1]), true, 512, JSON_THROW_ON_ERROR);
 $outputPath = $argv[2];
@@ -9102,7 +9302,7 @@ if ($action === 'delete_schedule') {
             'delete' => method_exists($client, 'deleteSchedule'),
         ],
         'delete' => dw_schedule_operation($client, 'delete', 'deleteSchedule', [$scheduleId]),
-        'list_after_delete' => dw_schedule_operation($client, 'list_after_delete', 'listSchedules', [['page_size' => 100]]),
+        'list_after_delete' => dw_schedule_operation($client, 'list_after_delete', 'listSchedules', [null, null, null, 100]),
     ];
 } else {
     $spec = [
@@ -9124,22 +9324,34 @@ if ($action === 'delete_schedule') {
         'spec' => $spec,
         'workflow_action' => $workflowAction,
         'claimed_controls' => [
+            'update' => method_exists($client, 'updateSchedule'),
             'pause' => method_exists($client, 'pauseSchedule'),
             'resume' => method_exists($client, 'resumeSchedule'),
             'trigger' => method_exists($client, 'triggerSchedule'),
+            'backfill' => method_exists($client, 'backfillSchedule'),
+            'history' => method_exists($client, 'scheduleHistory'),
             'delete' => method_exists($client, 'deleteSchedule'),
         ],
         'create_or_observe' => dw_schedule_create_or_observe($client, $scheduleId, $spec, $workflowAction),
         'list_or_describe' => [
-            'list' => dw_schedule_operation($client, 'list', 'listSchedules', [['page_size' => 100]]),
+            'list' => dw_schedule_operation($client, 'list', 'listSchedules', [null, null, null, 100]),
             'describe' => dw_schedule_operation($client, 'describe', 'describeSchedule', [$scheduleId]),
         ],
         'control_behavior' => [
+            'update' => dw_schedule_operation($client, 'update', 'updateSchedule', [$scheduleId, ['note' => 'php schedule surface conformance update']]),
+            'describe_after_update' => dw_schedule_operation($client, 'describe_after_update', 'describeSchedule', [$scheduleId]),
             'pause' => dw_schedule_operation($client, 'pause', 'pauseSchedule', [$scheduleId, 'php schedule surface conformance pause']),
             'describe_after_pause' => dw_schedule_operation($client, 'describe_after_pause', 'describeSchedule', [$scheduleId]),
             'resume' => dw_schedule_operation($client, 'resume', 'resumeSchedule', [$scheduleId, 'php schedule surface conformance resume']),
             'describe_after_resume' => dw_schedule_operation($client, 'describe_after_resume', 'describeSchedule', [$scheduleId]),
             'trigger' => dw_schedule_operation($client, 'trigger', 'triggerSchedule', [$scheduleId, 'allow_all']),
+            'backfill' => dw_schedule_operation($client, 'backfill', 'backfillSchedule', [
+                $scheduleId,
+                '2000-01-01T00:01:01Z',
+                '2000-01-01T00:01:02Z',
+                'allow_all',
+            ]),
+            'history' => dw_schedule_operation($client, 'history', 'scheduleHistory', [$scheduleId, 100]),
         ],
     ];
 }
@@ -9799,6 +10011,9 @@ function writePublishedArtifacts(artifactVersions, artifactSources, smokeEvidenc
     artifact_versions: artifactVersions,
     artifact_sources: artifactSources,
     artifact_install_evidence: artifactInstallEvidence,
+    artifact_version_resolution: {
+      'sdk-php': phpSdkVersionResolution,
+    },
     local_product_source_checkouts_used: localProductSourceCheckoutsResultValue(smokeEvidence, artifactInstallEvidence),
     smoke_evidence_supplied: Object.keys(smokeEvidence).length > 0,
   });
@@ -9817,6 +10032,7 @@ function writeResult(result) {
     artifactSources: result.artifact_sources ?? {},
     localProductSourceCheckoutsUsed: result.local_product_source_checkouts_used === true,
     artifactInstallEvidence: result.artifact_install_evidence ?? null,
+    artifactVersionResolution: result.artifact_version_resolution ?? {},
     resultPath,
     generated_at: result.generated_at ?? timestamp(),
     findings: result.findings ?? [],
@@ -9872,3 +10088,5 @@ function timestamp() {
 function isMainModule() {
   return process.argv[1] && path.resolve(process.argv[1]) === modulePath;
 }
+
+export { latestStableComposerVersion, schedulesPhpSurfaceProbeScript, schedulesPhpWorkerScript };

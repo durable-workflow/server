@@ -14,7 +14,7 @@ class SchedulesRuntimeContractTest extends TestCase
         $manifest = SchedulesRuntimeContract::manifest();
 
         $this->assertSame('durable-workflow.v2.schedules-runtime.contract', $manifest['schema']);
-        $this->assertSame(3, SchedulesRuntimeContract::VERSION);
+        $this->assertSame(4, SchedulesRuntimeContract::VERSION);
         $this->assertSame(SchedulesRuntimeContract::VERSION, $manifest['version']);
         $this->assertSame('durable-workflow.v2.schedules-runtime.result', $manifest['result_schema']);
         $this->assertSame('schedules_runtime_contract', $manifest['fixture_category']);
@@ -39,9 +39,23 @@ class SchedulesRuntimeContractTest extends TestCase
         foreach (['server', 'cli', 'sdk-php', 'sdk-python', 'waterline'] as $artifact) {
             $this->assertArrayHasKey($artifact, $manifest['artifact_policy']['install_channels']);
         }
+        $this->assertSame(
+            'durable-workflow/sdk',
+            $manifest['artifact_policy']['standalone_php_sdk_resolution']['package'],
+        );
+        $this->assertSame(
+            'Composer\\InstalledVersions',
+            $manifest['artifact_policy']['standalone_php_sdk_resolution']['installed_version_source'],
+        );
+        $this->assertTrue(
+            $manifest['artifact_policy']['standalone_php_sdk_resolution']['installed_version_must_match_resolved_version'],
+        );
 
         foreach ([
             'artifact_versions',
+            'artifact_sources',
+            'artifact_install_evidence',
+            'artifact_version_resolution',
             'started_at',
             'finished_at',
             'generated_at',
@@ -156,6 +170,10 @@ class SchedulesRuntimeContractTest extends TestCase
             $hostRunner['runtime_shards']['sdk-php-worker']['must_register_workflows'],
         );
         $this->assertSame(
+            ['create_or_observe', 'list_or_describe', 'update', 'pause', 'resume', 'trigger', 'backfill', 'history', 'delete'],
+            $hostRunner['runtime_shards']['sdk-php']['must_cover_controls'],
+        );
+        $this->assertSame(
             ['SchedulesConformancePythonWorkflow'],
             $hostRunner['runtime_shards']['sdk-python-worker']['must_register_workflows'],
         );
@@ -235,7 +253,7 @@ class SchedulesRuntimeContractTest extends TestCase
     public function test_scenario_manifest_source_path_is_published_and_matches_contract(): void
     {
         $manifest = SchedulesRuntimeContract::manifest();
-        $scenarioManifestPath = dirname(__DIR__, 2) . '/' . $manifest['scenario_manifest']['source_path'];
+        $scenarioManifestPath = dirname(__DIR__, 2).'/'.$manifest['scenario_manifest']['source_path'];
 
         $this->assertFileExists(
             $scenarioManifestPath,
@@ -590,7 +608,7 @@ class SchedulesRuntimeContractTest extends TestCase
     {
         foreach (['latest', 'current', 'head', 'unresolved', 'placeholder'] as $placeholder) {
             $result = $this->completeSchedulesResult();
-            $result['artifactVersions']['server'] = 'durableworkflow/server:' . $placeholder;
+            $result['artifactVersions']['server'] = 'durableworkflow/server:'.$placeholder;
 
             $evaluation = SchedulesRuntimeResultGate::evaluate($result);
             $serverPlaceholderFailures = array_values(array_filter(
@@ -601,7 +619,7 @@ class SchedulesRuntimeContractTest extends TestCase
 
             $this->assertSame('non_passing', $evaluation['status']);
             $this->assertCount(1, $serverPlaceholderFailures);
-            $this->assertSame('durableworkflow/server:' . $placeholder, $serverPlaceholderFailures[0]['version']);
+            $this->assertSame('durableworkflow/server:'.$placeholder, $serverPlaceholderFailures[0]['version']);
         }
     }
 

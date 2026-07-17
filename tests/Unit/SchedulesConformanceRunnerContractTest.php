@@ -143,6 +143,116 @@ final class SchedulesConformanceRunnerContractTest extends TestCase
         $this->assertStringContainsString('DW_SCHEDULES_CROSS_LANGUAGE_FOCUS', $runner);
     }
 
+    public function test_runner_resolves_missing_php_sdk_version_from_packagist_and_stays_fail_closed_until_install(): void
+    {
+        $nodeBinary = trim((string) shell_exec('command -v node 2>/dev/null'));
+        if ($nodeBinary === '') {
+            $this->markTestSkipped('node is required to exercise the schedules runner result builder.');
+        }
+
+        $repoRoot = dirname(__DIR__, 2);
+        $resultDir = sys_get_temp_dir().'/dw-schedules-runner-'.bin2hex(random_bytes(4));
+        $fakeBin = $resultDir.'/bin';
+        mkdir($fakeBin, 0777, true);
+        file_put_contents(
+            $fakeBin.'/docker',
+            "#!/bin/sh\nprintf '%s\\n' '{\"versions\":[\"dev-main\",\"0.1.9\",\"* v0.1.10\",\"0.2.0-beta.1\"]}'\n",
+        );
+        chmod($fakeBin.'/docker', 0755);
+
+        try {
+            $process = proc_open(
+                [$nodeBinary, $repoRoot.'/scripts/conformance/schedules-published-artifacts.mjs'],
+                [
+                    1 => ['pipe', 'w'],
+                    2 => ['pipe', 'w'],
+                ],
+                $pipes,
+                $repoRoot,
+                [
+                    'PATH' => $fakeBin.':'.(getenv('PATH') ?: '/usr/bin:/bin'),
+                    'DW_SCHEDULES_RESULT_DIR' => $resultDir,
+                    'DW_SCHEDULES_REPO_ROOT' => $repoRoot,
+                    'DW_SERVER_VERSION' => '0.2.673',
+                    'DW_CLI_VERSION' => '0.1.92',
+                    'DW_PYTHON_SDK_VERSION' => '0.4.102',
+                    'DW_WATERLINE_VERSION' => '2.0.0-alpha.137',
+                    'DW_SERVER_ARTIFACT_SOURCE' => 'docker://durableworkflow/server:0.2.673',
+                    'DW_CLI_ARTIFACT_SOURCE' => 'https://github.com/durable-workflow/cli/releases/download/0.1.92/dw.phar',
+                    'DW_PYTHON_SDK_ARTIFACT_SOURCE' => 'pypi://durable-workflow==0.4.102',
+                    'DW_WATERLINE_ARTIFACT_SOURCE' => 'packagist://durable-workflow/waterline@2.0.0-alpha.137',
+                    'DW_SCHEDULES_LOCAL_PRODUCT_SOURCE_CHECKOUTS_USED' => 'false',
+                ],
+            );
+
+            $this->assertIsResource($process);
+            $stdout = stream_get_contents($pipes[1]);
+            $stderr = stream_get_contents($pipes[2]);
+            fclose($pipes[1]);
+            fclose($pipes[2]);
+            $exitCode = proc_close($process);
+
+            $this->assertSame(0, $exitCode, $stderr."\n".$stdout);
+
+            $result = json_decode(
+                (string) file_get_contents($resultDir.'/schedules-runtime-result.json'),
+                true,
+                512,
+                JSON_THROW_ON_ERROR,
+            );
+            $record = json_decode(
+                (string) file_get_contents($resultDir.'/schedules-runtime-record.json'),
+                true,
+                512,
+                JSON_THROW_ON_ERROR,
+            );
+
+            $this->assertSame('0.1.10', $result['artifact_versions']['sdk-php']);
+            $this->assertSame(
+                'packagist://durable-workflow/sdk@0.1.10',
+                $result['artifact_version_resolution']['sdk-php']['source'],
+            );
+            $this->assertSame(
+                'composer_packagist_metadata',
+                $record['artifactVersionResolution']['sdk-php']['version_source'],
+            );
+            $this->assertSame('not_exercised', $result['artifact_sources']['sdk-php']);
+            $this->assertSame(
+                'not_covered',
+                $result['scenario_results']['published_artifact_install_only']['status'],
+                'Resolving a Packagist version is not proof that the package was installed.',
+            );
+        } finally {
+            $this->removeDirectory($resultDir);
+        }
+    }
+
+    public function test_php_schedule_shards_pin_and_verify_the_standalone_sdk_distribution(): void
+    {
+        $repoRoot = dirname(__DIR__, 2);
+        $runner = (string) file_get_contents($repoRoot.'/scripts/conformance/schedules-published-artifacts.mjs');
+
+        $this->assertStringContainsString("packageName = 'durable-workflow/sdk'", $runner);
+        $this->assertStringContainsString('latestStableComposerVersion(parsed.value?.versions)', $runner);
+        $this->assertStringContainsString('`durable-workflow/sdk:${sdkPhpVersion}`', $runner);
+        $this->assertStringContainsString(
+            "Composer\\\\InstalledVersions::getPrettyVersion('durable-workflow/sdk')",
+            $runner,
+        );
+        $this->assertStringContainsString('recordExecutedArtifactInstall({', $runner);
+        $this->assertStringContainsString('...Object.fromEntries(executedArtifactInstalls)', $runner);
+        $this->assertStringContainsString("'pause' => method_exists(\$client, 'pauseSchedule')", $runner);
+        $this->assertStringContainsString("'resume' => method_exists(\$client, 'resumeSchedule')", $runner);
+        $this->assertStringContainsString("'trigger' => method_exists(\$client, 'triggerSchedule')", $runner);
+        $this->assertStringContainsString("'update' => method_exists(\$client, 'updateSchedule')", $runner);
+        $this->assertStringContainsString("'backfill' => method_exists(\$client, 'backfillSchedule')", $runner);
+        $this->assertStringContainsString("'history' => method_exists(\$client, 'scheduleHistory')", $runner);
+        $this->assertStringContainsString("'delete' => method_exists(\$client, 'deleteSchedule')", $runner);
+        $this->assertStringContainsString("'listSchedules', [null, null, null, 100]", $runner);
+        $this->assertStringNotContainsString("'listSchedules', [['page_size' => 100]]", $runner);
+        $this->assertStringNotContainsString('durable-workflow/workflow', $runner);
+    }
+
     public function test_published_artifact_runner_requires_supplied_install_evidence_for_install_cell_pass(): void
     {
         $nodeBinary = trim((string) shell_exec('command -v node 2>/dev/null'));
@@ -2839,9 +2949,8 @@ final class SchedulesConformanceRunnerContractTest extends TestCase
     }
 
     /**
-     * @param list<string> $command
-     * @param array<string, mixed> $payload
-     *
+     * @param  list<string>  $command
+     * @param  array<string, mixed>  $payload
      * @return array<string, mixed>
      */
     private function cliTranscript(array $command, array $payload): array

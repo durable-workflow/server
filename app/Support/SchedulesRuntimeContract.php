@@ -17,7 +17,7 @@ final class SchedulesRuntimeContract
 {
     public const SCHEMA = 'durable-workflow.v2.schedules-runtime.contract';
 
-    public const VERSION = 3;
+    public const VERSION = 4;
 
     public const RESULT_SCHEMA = 'durable-workflow.v2.schedules-runtime.result';
 
@@ -64,12 +64,23 @@ final class SchedulesRuntimeContract
                     'sdk-python' => 'PyPI package durable-workflow==<latest>',
                     'waterline' => 'published Waterline observer artifact when claimed by the release set',
                 ],
+                'standalone_php_sdk_resolution' => [
+                    'package' => 'durable-workflow/sdk',
+                    'configured_version_env' => 'DW_PHP_SDK_VERSION',
+                    'fallback_version_source' => 'Composer Packagist metadata',
+                    'installed_version_source' => 'Composer\\InstalledVersions',
+                    'installed_version_must_match_resolved_version' => true,
+                    'canonical_source' => 'packagist://durable-workflow/sdk@<exact released version>',
+                ],
                 'forbidden_sources' => [
                     'local_product_source_checkout',
                     'workspace_repo_as_artifact_under_test',
                 ],
                 'required_run_record_fields' => [
                     'artifact_versions',
+                    'artifact_sources',
+                    'artifact_install_evidence',
+                    'artifact_version_resolution',
                     'started_at',
                     'finished_at',
                     'generated_at',
@@ -311,9 +322,12 @@ final class SchedulesRuntimeContract
                         'must_cover_controls' => [
                             'create_or_observe',
                             'list_or_describe',
+                            'update',
                             'pause',
                             'resume',
                             'trigger',
+                            'backfill',
+                            'history',
                             'delete',
                         ],
                         'fallback_status_when_surface_missing' => 'unsupported',
@@ -460,7 +474,7 @@ final class SchedulesRuntimeContract
                 'acceptance' => [
                     'list and describe cron and interval schedules through CLI JSON output',
                     'list and describe the same schedules through the Python SDK',
-                    'list or describe the same schedules through the PHP-facing workflow SDK surface',
+                    'list or describe the same schedules through the standalone PHP SDK surface',
                 ],
             ],
             'pause_resume_no_fire_window' => [
@@ -542,11 +556,11 @@ final class SchedulesRuntimeContract
                 'owner' => 'sdk-php',
                 'scope' => 'sdk-php-schedule-surface-shard',
                 'current_evidence' => $currentEvidence.' It does not exercise a PHP-facing schedule client path.',
-                'expected_behavior' => 'The PHP-facing workflow SDK surface can create or observe schedules and report list or describe state consistently with server and CLI state.',
+                'expected_behavior' => 'The standalone PHP SDK can create or observe schedules and report list or describe state consistently with server and CLI state.',
                 'acceptance' => [
                     'execute the PHP-facing schedule client path from the published PHP SDK package',
                     'record create_or_observe and list_or_describe outputs',
-                    'record pause, resume, trigger, or delete behavior when the surface claims those controls',
+                    'record update, pause, resume, trigger, backfill, history, and delete behavior when the standalone SDK claims those controls',
                 ],
             ],
             'python_created_php_workflow' => [
