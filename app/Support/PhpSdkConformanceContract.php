@@ -100,6 +100,10 @@ final class PhpSdkConformanceContract
                 'readiness_failure_retains_expected_and_observed_contracts' => true,
                 'assertion_failure_retains_expected_and_observed_per_operation' => true,
                 'assertion_failure_retains_worker_and_sdk_response_layers_when_observed' => true,
+                'client_timeout_and_unavailable_worker_retain_companion_process_and_server_state' => true,
+                'companion_diagnostic_schema' => 'durable-workflow.v2.php-sdk-companion-failure',
+                'companion_diagnostic_max_bytes' => 6144,
+                'companion_evidence_led_ownership_required' => true,
                 'public_error_envelope_max_bytes' => 2048,
                 'required_http_failure_fields' => [
                     'status_code',

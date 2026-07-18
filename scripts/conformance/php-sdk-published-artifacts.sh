@@ -99,6 +99,7 @@ worker_start_process_id=""
 worker_start_process_alive=""
 worker_start_process_exit_code=""
 worker_start_observation_file=""
+failure_companion_file=""
 
 write_failure() {
   local classification="${1:?classification is required}"
@@ -119,6 +120,7 @@ write_failure() {
   FAILURE_STAGE="$stage" \
   FAILURE_SUMMARY="$summary" \
   FAILURE_DIAGNOSTIC_FILE="$diagnostic_file" \
+  FAILURE_COMPANION_FILE="$failure_companion_file" \
   FAILURE_EVIDENCE_HELPER="$script_dir/php-sdk-runtime-failure-evidence.cjs" \
   DISTRIBUTION_IDENTITY_FILE="$distribution_identity_file" \
   WORKER_START_OUTCOME="$worker_start_outcome" \
@@ -158,6 +160,7 @@ const readJson = (file) => {
   }
 };
 const secrets = [process.env.CONTROL_TOKEN, process.env.WORKER_TOKEN];
+const companion = boundedEvidence(readJson(process.env.FAILURE_COMPANION_FILE || ''), secrets, 6144);
 const workerStartOutcome = process.env.WORKER_START_OUTCOME || '';
 const workerProcessAlive = process.env.WORKER_START_PROCESS_ALIVE === 'true';
 const processExitCode = process.env.WORKER_START_PROCESS_EXIT_CODE === ''
@@ -195,6 +198,10 @@ if (workerExitedDuringStartup && !runtimeFailure) {
   owningSurface = 'sdk-php';
 }
 assertCompleteHttpFailureEvidence(runtimeFailure, classification);
+if (companion) {
+  classification = companion.classification || classification;
+  owningSurface = companion.owning_surface || owningSurface;
+}
 const runnerBlocked = classification === 'runner';
 const renderedProcessExitCode = Number.isInteger(processExitCode) ? ` with code ${processExitCode}` : '';
 const processExitSummary = [
@@ -202,7 +209,12 @@ const processExitSummary = [
   `during ${process.env.FAILURE_STAGE || 'worker startup'};`,
   'the bounded crash diagnostic is retained in structured evidence.',
 ].join(' ');
-const summary = failureSummary(
+const companionState = companion?.worker?.process_state?.state || 'unknown';
+const companionBasis = companion?.classification_basis || '';
+const companionSummary = companion
+  ? `The released PHP SDK client failed during ${process.env.FAILURE_STAGE || 'unknown'}; companion worker state=${companionState} and retained server/run evidence assign ownership to ${owningSurface} (${companionBasis}).`
+  : '';
+const summary = companionSummary || failureSummary(
   runtimeFailure,
   process.env.FAILURE_STAGE || 'unknown',
   workerExitedDuringStartup ? processExitSummary : fallbackSummary,
@@ -222,6 +234,13 @@ const finding = {
 if (runtimeFailure) {
   finding.owning_surface = runtimeFailure.owning_surface;
   finding.observed_evidence = runtimeFailure;
+}
+if (companion) {
+  finding.owning_surface = owningSurface;
+  finding.observed_evidence = {
+    ...(finding.observed_evidence || {}),
+    companion_failure_evidence: companion,
+  };
 }
 if (diagnostic) {
   finding.diagnostic = diagnostic;
@@ -247,6 +266,12 @@ if (runtimeFailure) {
 }
 if (diagnostic) {
   observed.failure_diagnostic = diagnostic;
+}
+if (companion) {
+  observed.failure_kind = companion.failure_kind;
+  observed.operation = companion.operation;
+  observed.process_state = companion.worker?.process_state || null;
+  observed.companion_failure_evidence = companion;
 }
 if (workerStartOutcome) {
   const observation = boundedWorkerStartObservation;
@@ -1749,6 +1774,60 @@ write_runtime_failure() {
   write_failure "$classification" "$(failure_owner_for "$classification")" "$stage" "$summary" "$diagnostic_file"
 }
 
+capture_client_companion() {
+  local client_diagnostic_file="${1:?client diagnostic is required}"
+  local worker_id="${worker_start_worker_id:-unknown-worker}"
+  local worker_log="$result_dir/${worker_id}.log"
+  local companion_file="$result_dir/php-sdk-${worker_id}-companion-failure.json"
+  local process_alive=""
+  local process_exit_code=""
+
+  failure_companion_file=""
+  if [[ -n "$worker_pid" ]] && kill -0 "$worker_pid" >/dev/null 2>&1; then
+    process_alive=true
+  elif [[ -n "$worker_pid" ]]; then
+    process_alive=false
+    if wait "$worker_pid"; then
+      process_exit_code=0
+    else
+      process_exit_code=$?
+    fi
+    worker_pid=""
+  fi
+
+  if CLIENT_DIAGNOSTIC_FILE="$client_diagnostic_file" \
+    COMPANION_OUTPUT_FILE="$companion_file" \
+    COMPANION_WORKER_ID="$worker_id" \
+    COMPANION_WORKER_LOG="$worker_log" \
+    COMPANION_WORKER_ALIVE="$process_alive" \
+    COMPANION_WORKER_EXIT_CODE="$process_exit_code" \
+    COMPANION_TASK_QUEUE="$queue" \
+    COMPANION_SERVER_LOG="${DW_PHP_SDK_CONFORMANCE_SERVER_LOG:-}" \
+    COMPANION_SCHEDULER_LOG="${DW_PHP_SDK_CONFORMANCE_SCHEDULER_LOG:-}" \
+    SERVER_URL="$server_url" \
+    NAMESPACE="$namespace" \
+    CONTROL_TOKEN="$control_token" \
+    WORKER_TOKEN="$worker_token" \
+    node "$script_dir/php-sdk-companion-failure-evidence.cjs"; then
+    failure_companion_file="$companion_file"
+  fi
+}
+
+write_client_runtime_failure() {
+  local stdout_file="${1:-}"
+  local stderr_file="${2:-}"
+  local stage="${3:?failure stage is required}"
+  local diagnostic_file="${4:?diagnostic file is required}"
+  local requested_classification="${5:-}"
+  local classification
+  classification="${requested_classification:-$(classify_runtime_failure "$stdout_file" "$stderr_file")}"
+  capture_runtime_diagnostic "$stdout_file" "$stderr_file" "$diagnostic_file" "$classification"
+  capture_client_companion "$diagnostic_file"
+  local summary
+  summary="$(runtime_failure_summary "$classification" "$stage" "$diagnostic_file")"
+  write_failure "$classification" "$(failure_owner_for "$classification")" "$stage" "$summary" "$diagnostic_file"
+}
+
 write_worker_start_failure() {
   local stdout_file="${1:?worker stdout is required}"
   local stderr_file="${2:?worker readiness log is required}"
@@ -1797,7 +1876,7 @@ if [[ "$scope" == namespace ]]; then
   initial_client_stage=namespace_client
 fi
 if ! run_client_phase "$initial_client_phase" "$initial_client_output"; then
-  write_runtime_failure \
+  write_client_runtime_failure \
     "$initial_client_output" "$initial_client_output.log" "$initial_client_stage" \
     "${initial_client_output%.json}.diagnostic.log"
   exit 0
@@ -1812,21 +1891,19 @@ if [[ "$scope" == namespace ]]; then
 fi
 
 if ! run_client_phase start-replay "$result_dir/php-sdk-client-start-replay.json"; then
-  write_runtime_failure \
+  write_client_runtime_failure \
     "$result_dir/php-sdk-client-start-replay.json" "$result_dir/php-sdk-client-start-replay.json.log" replay_start \
     "$result_dir/php-sdk-client-start-replay.diagnostic.log"
   exit 0
 fi
 if ! run_client_phase wait-replay-checkpoint "$result_dir/php-sdk-client-replay-checkpoint.json"; then
   replay_checkpoint_diagnostic="$result_dir/php-sdk-client-replay-checkpoint.diagnostic.log"
-  capture_runtime_diagnostic \
+  write_client_runtime_failure \
     "$result_dir/php-sdk-client-replay-checkpoint.json" \
     "$result_dir/php-sdk-client-replay-checkpoint.json.log" \
+    replay_checkpoint \
     "$replay_checkpoint_diagnostic" \
     server
-  write_failure server server replay_checkpoint \
-    "$(runtime_failure_summary server replay_checkpoint "$replay_checkpoint_diagnostic")" \
-    "$replay_checkpoint_diagnostic"
   exit 0
 fi
 
@@ -1841,7 +1918,7 @@ if ! start_worker php-sdk-worker-2; then
   exit 0
 fi
 if ! run_client_phase finish-replay "$result_dir/php-sdk-client-finish-replay.json"; then
-  write_runtime_failure \
+  write_client_runtime_failure \
     "$result_dir/php-sdk-client-finish-replay.json" "$result_dir/php-sdk-client-finish-replay.json.log" replay_finish \
     "$result_dir/php-sdk-client-finish-replay.diagnostic.log"
   exit 0

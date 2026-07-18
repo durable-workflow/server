@@ -37,6 +37,14 @@ final class PhpSdkConformanceContractTest extends TestCase
         $this->assertTrue($manifest['runtime_failure_evidence']['diagnostic_file_reference_alone_forbidden']);
         $this->assertSame(4096, $manifest['runtime_failure_evidence']['retained_diagnostic_excerpt_max_bytes']);
         $this->assertTrue(
+            $manifest['runtime_failure_evidence']['client_timeout_and_unavailable_worker_retain_companion_process_and_server_state'],
+        );
+        $this->assertSame(
+            'durable-workflow.v2.php-sdk-companion-failure',
+            $manifest['runtime_failure_evidence']['companion_diagnostic_schema'],
+        );
+        $this->assertSame(6144, $manifest['runtime_failure_evidence']['companion_diagnostic_max_bytes']);
+        $this->assertTrue(
             $manifest['runtime_failure_evidence']['readiness_failure_retains_expected_and_observed_contracts'],
         );
         $this->assertTrue(

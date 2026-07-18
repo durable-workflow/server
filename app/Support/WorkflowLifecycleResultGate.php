@@ -424,6 +424,187 @@ final class WorkflowLifecycleResultGate
             }
         }
 
+        $diagnosticCompanion = self::arrayField($diagnostic, ['companion_failure', 'companionFailure']) ?? [];
+        $failureKind = self::stringValue(
+            $outputs['failure_kind']
+                ?? $outputs['failureKind']
+                ?? $diagnosticCompanion['failure_kind']
+                ?? $diagnosticCompanion['failureKind']
+                ?? null,
+        );
+        $runtimeFailure = self::arrayField($outputs, ['runtime_failure_evidence', 'runtimeFailureEvidence']) ?? [];
+        $runtimeText = strtolower((string) json_encode(
+            [
+                $runtimeFailure['exception_type'] ?? null,
+                $runtimeFailure['message'] ?? null,
+                $runtimeFailure['public_error_envelope'] ?? null,
+            ],
+            JSON_UNESCAPED_SLASHES | JSON_INVALID_UTF8_SUBSTITUTE,
+        ));
+        $requiresCompanion = $scenarioId === 'php_sdk_lifecycle_surface'
+            && ($diagnosticContract['client_timeout_and_unavailable_worker_companion_retained'] ?? false) === true
+            && (in_array($failureKind, ['client_timeout', 'worker_unavailable'], true)
+                || preg_match('/workflowtimedout|worker.{0,24}unavailable|no[_ -](?:active|compatible)[_ -]workers?/', $runtimeText) === 1);
+        if ($requiresCompanion) {
+            $companion = self::arrayField($diagnostic, ['companion_failure', 'companionFailure']);
+            if ($companion === null) {
+                $failures[] = [
+                    'code' => 'missing_lifecycle_timeout_companion_evidence',
+                    'scenario_id' => $scenarioId,
+                ];
+            } else {
+                if (self::stringValue($companion['schema'] ?? null)
+                    !== self::stringValue($diagnosticContract['companion_diagnostic_schema'] ?? null)) {
+                    $failures[] = [
+                        'code' => 'invalid_lifecycle_timeout_companion_schema',
+                        'scenario_id' => $scenarioId,
+                    ];
+                }
+                foreach (['classification_basis', 'owning_surface'] as $field) {
+                    if (! self::isEmptyEvidence($companion[$field] ?? null)) {
+                        continue;
+                    }
+                    $failures[] = [
+                        'code' => 'incomplete_lifecycle_timeout_companion_evidence',
+                        'scenario_id' => $scenarioId,
+                        'field' => $field,
+                    ];
+                }
+                if (($companion['retained_after_cleanup'] ?? null) !== true) {
+                    $failures[] = [
+                        'code' => 'non_portable_lifecycle_timeout_companion_evidence',
+                        'scenario_id' => $scenarioId,
+                    ];
+                }
+                $worker = self::arrayField($companion, ['worker']) ?? [];
+                $processState = self::arrayField($worker, ['process_state', 'processState']) ?? [];
+                $structuredStderr = self::arrayField($worker, ['structured_stderr', 'structuredStderr']) ?? [];
+                foreach (['state', 'alive', 'exit_code'] as $field) {
+                    if (array_key_exists($field, $processState)) {
+                        continue;
+                    }
+                    $failures[] = [
+                        'code' => 'incomplete_lifecycle_timeout_worker_state',
+                        'scenario_id' => $scenarioId,
+                        'field' => $field,
+                    ];
+                }
+                if (self::isEmptyEvidence($structuredStderr['excerpt'] ?? null)) {
+                    $failures[] = [
+                        'code' => 'missing_lifecycle_timeout_worker_stderr',
+                        'scenario_id' => $scenarioId,
+                    ];
+                }
+                if (! array_key_exists('last_protocol_failure', $worker)
+                    && ! array_key_exists('lastProtocolFailure', $worker)) {
+                    $failures[] = [
+                        'code' => 'missing_lifecycle_timeout_worker_protocol_state',
+                        'scenario_id' => $scenarioId,
+                    ];
+                }
+
+                $server = self::arrayField($companion, ['server']) ?? [];
+                $health = self::arrayField($server, ['health']) ?? [];
+                $healthStatus = $health['http_status'] ?? $health['httpStatus'] ?? null;
+                if (! array_key_exists('http_status', $health) && ! array_key_exists('httpStatus', $health)) {
+                    $failures[] = [
+                        'code' => 'missing_lifecycle_timeout_server_health',
+                        'scenario_id' => $scenarioId,
+                    ];
+                }
+                if (($processState['alive'] ?? null) === true
+                    && is_int($healthStatus)
+                    && $healthStatus >= 200
+                    && $healthStatus < 300) {
+                    foreach (['run_state', 'history'] as $field) {
+                        $probe = self::arrayField($server, [$field]) ?? [];
+                        $status = $probe['http_status'] ?? $probe['httpStatus'] ?? null;
+                        if (is_int($status) && $status >= 200 && $status < 300
+                            && ! self::isEmptyEvidence($probe['payload'] ?? null)) {
+                            continue;
+                        }
+                        $failures[] = [
+                            'code' => 'incomplete_lifecycle_timeout_server_run_state',
+                            'scenario_id' => $scenarioId,
+                            'field' => $field,
+                        ];
+                    }
+                    $taskQueue = self::arrayField($server, ['task_queue', 'taskQueue']) ?? [];
+                    $taskQueueStatus = $taskQueue['http_status'] ?? $taskQueue['httpStatus'] ?? null;
+                    $taskQueuePayload = self::arrayField($taskQueue, ['payload']) ?? [];
+                    if (! is_int($taskQueueStatus)
+                        || $taskQueueStatus < 200
+                        || $taskQueueStatus >= 300) {
+                        $failures[] = [
+                            'code' => 'incomplete_lifecycle_timeout_server_task_queue',
+                            'scenario_id' => $scenarioId,
+                            'field' => 'http_status',
+                        ];
+                    }
+                    foreach (['name', 'stats', 'pollers', 'current_leases', 'admission'] as $field) {
+                        if (array_key_exists($field, $taskQueuePayload)) {
+                            continue;
+                        }
+                        $failures[] = [
+                            'code' => 'incomplete_lifecycle_timeout_server_task_queue',
+                            'scenario_id' => $scenarioId,
+                            'field' => $field,
+                        ];
+                    }
+                }
+                $protocolFailure = self::arrayField($worker, ['last_protocol_failure', 'lastProtocolFailure']);
+                if (($processState['alive'] ?? null) === false
+                    && self::stringValue($protocolFailure['classification'] ?? null) === 'server') {
+                    $processLog = self::arrayField($server, ['process_log', 'processLog']) ?? [];
+                    if (self::isEmptyEvidence($processLog['excerpt'] ?? null)) {
+                        $failures[] = [
+                            'code' => 'missing_lifecycle_timeout_server_process_log',
+                            'scenario_id' => $scenarioId,
+                        ];
+                    }
+                }
+                if (($diagnosticContract['companion_evidence_led_ownership_required'] ?? false) === true
+                    && self::stringValue($diagnostic['owning_surface'] ?? null)
+                        !== self::stringValue($companion['owning_surface'] ?? null)) {
+                    $failures[] = [
+                        'code' => 'lifecycle_timeout_ownership_ignores_companion_evidence',
+                        'scenario_id' => $scenarioId,
+                    ];
+                }
+                if (($diagnosticContract['companion_evidence_led_ownership_required'] ?? false) === true
+                    && ($processState['alive'] ?? null) === true
+                    && $protocolFailure === null) {
+                    $runTerminal = self::companionRunTerminal($server);
+                    $expectedSurface = $runTerminal === true
+                        ? 'sdk-php'
+                        : ($runTerminal === false ? 'server' : null);
+                    if ($expectedSurface !== null
+                        && self::stringValue($companion['owning_surface'] ?? null) !== $expectedSurface) {
+                        $failures[] = [
+                            'code' => 'lifecycle_timeout_ownership_ignores_terminal_run_state',
+                            'scenario_id' => $scenarioId,
+                            'run_terminal' => $runTerminal,
+                            'expected_owning_surface' => $expectedSurface,
+                        ];
+                    }
+                }
+                $encodedCompanion = json_encode(
+                    $companion,
+                    JSON_UNESCAPED_SLASHES | JSON_INVALID_UTF8_SUBSTITUTE,
+                );
+                $companionMaxBytes = (int) ($diagnosticContract['companion_diagnostic_max_bytes'] ?? 0);
+                if (! is_string($encodedCompanion)
+                    || $companionMaxBytes <= 0
+                    || strlen($encodedCompanion) > $companionMaxBytes) {
+                    $failures[] = [
+                        'code' => 'oversized_lifecycle_timeout_companion_evidence',
+                        'scenario_id' => $scenarioId,
+                        'max_bytes' => $companionMaxBytes,
+                    ];
+                }
+            }
+        }
+
         $encoded = json_encode(
             $diagnostic,
             JSON_UNESCAPED_SLASHES | JSON_INVALID_UTF8_SUBSTITUTE,
@@ -439,6 +620,58 @@ final class WorkflowLifecycleResultGate
         }
 
         return $failures;
+    }
+
+    /** @param array<string, mixed> $server */
+    private static function companionRunTerminal(array $server): ?bool
+    {
+        $runProbe = self::arrayField($server, ['run_state', 'runState']) ?? [];
+        $runStatus = $runProbe['http_status'] ?? $runProbe['httpStatus'] ?? null;
+        if (! is_int($runStatus) || $runStatus < 200 || $runStatus >= 300) {
+            return null;
+        }
+
+        $run = self::arrayField($runProbe, ['payload']) ?? [];
+        if (($run['is_terminal'] ?? $run['isTerminal'] ?? null) === true) {
+            return true;
+        }
+        $status = self::normalizedStatus($run['status'] ?? null);
+        if (in_array($status, ['cancelled', 'completed', 'failed', 'terminated', 'timed_out'], true)) {
+            return true;
+        }
+
+        $historyProbe = self::arrayField($server, ['history']) ?? [];
+        $historyStatus = $historyProbe['http_status'] ?? $historyProbe['httpStatus'] ?? null;
+        $history = self::arrayField($historyProbe, ['payload']) ?? [];
+        if (is_int($historyStatus) && $historyStatus >= 200 && $historyStatus < 300) {
+            $eventTypes = is_array($history['last_event_types'] ?? null)
+                ? $history['last_event_types']
+                : [];
+            foreach (is_array($history['last_events'] ?? null) ? $history['last_events'] : [] as $event) {
+                if (is_array($event)) {
+                    $eventTypes[] = $event['event_type'] ?? $event['type'] ?? null;
+                }
+            }
+            foreach ($eventTypes as $eventType) {
+                if (in_array(self::stringValue($eventType), [
+                    'WorkflowCancelled',
+                    'WorkflowCompleted',
+                    'WorkflowContinuedAsNew',
+                    'WorkflowFailed',
+                    'WorkflowTerminated',
+                    'WorkflowTimedOut',
+                ], true)) {
+                    return true;
+                }
+            }
+        }
+
+        if (($run['is_terminal'] ?? $run['isTerminal'] ?? null) === false
+            || in_array($status, ['pending', 'running', 'waiting'], true)) {
+            return false;
+        }
+
+        return null;
     }
 
     /** @param array<string, mixed> $value */

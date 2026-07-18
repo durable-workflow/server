@@ -71,6 +71,14 @@ class WorkflowLifecycleContractTest extends TestCase
         $this->assertTrue(
             $hostRunner['lifecycle_shard_diagnostics']['assertion_worker_and_sdk_response_layers_retained_when_observed'],
         );
+        $this->assertTrue(
+            $hostRunner['lifecycle_shard_diagnostics']['client_timeout_and_unavailable_worker_companion_retained'],
+        );
+        $this->assertSame(
+            'durable-workflow.v2.php-sdk-companion-failure',
+            $hostRunner['lifecycle_shard_diagnostics']['companion_diagnostic_schema'],
+        );
+        $this->assertSame(6144, $hostRunner['lifecycle_shard_diagnostics']['companion_diagnostic_max_bytes']);
     }
 
     public function test_result_gate_accepts_complete_published_artifact_lifecycle_pass(): void
@@ -104,6 +112,104 @@ class WorkflowLifecycleContractTest extends TestCase
         $this->assertSame('non_passing', $evaluation['status']);
         $this->assertContains(
             'missing_lifecycle_assertion_failure_evidence',
+            array_column($evaluation['gate_failures'], 'code'),
+        );
+    }
+
+    public function test_result_gate_rejects_client_timeout_without_companion_evidence(): void
+    {
+        $result = $this->completeLifecycleResult();
+        $result['outcome'] = 'non_passing';
+        $php = &$result['scenario_results']['php_sdk_lifecycle_surface'];
+        $php['status'] = 'fail';
+        $php['observed_outputs']['failure_kind'] = 'client_timeout';
+        $php['observed_outputs']['runtime_failure_evidence'] = [
+            'exception_type' => 'DurableWorkflow\\Exception\\WorkflowTimedOut',
+            'message' => 'Timed out waiting for a terminal result.',
+        ];
+        $php['observed_outputs']['shard_diagnostic'] = [
+            'schema' => 'durable-workflow.v2.workflow-lifecycle.shard-diagnostic',
+            'version' => 1,
+            'retention' => 'inline_result_and_record',
+            'operation' => 'workflow.result:failed',
+            'failure_stage' => 'baseline_client',
+            'process_state' => ['state' => 'failed'],
+            'classification' => 'product-gap',
+            'owning_surface' => 'sdk-php',
+            'excerpt' => 'The client timed out.',
+        ];
+        $result['lifecycle_cell_outcomes']['php_sdk_lifecycle_surface']['status'] = 'fail';
+
+        $evaluation = WorkflowLifecycleResultGate::evaluate($result);
+
+        $this->assertContains(
+            'missing_lifecycle_timeout_companion_evidence',
+            array_column($evaluation['gate_failures'], 'code'),
+        );
+    }
+
+    public function test_result_gate_rejects_server_ownership_when_retained_run_is_terminal(): void
+    {
+        $result = $this->completeLifecycleResult();
+        $result['outcome'] = 'non_passing';
+        $php = &$result['scenario_results']['php_sdk_lifecycle_surface'];
+        $php['status'] = 'fail';
+        $php['lifecycle_cell_outcome'] = 'fail';
+        $php['observed_outputs']['failure_kind'] = 'client_timeout';
+        $php['observed_outputs']['runtime_failure_evidence'] = [
+            'exception_type' => 'DurableWorkflow\\Exception\\WorkflowTimedOut',
+            'message' => 'Timed out waiting for the terminal result.',
+        ];
+        $companion = [
+            'schema' => 'durable-workflow.v2.php-sdk-companion-failure',
+            'failure_kind' => 'client_timeout',
+            'operation' => 'workflow.result:failed',
+            'classification' => 'server',
+            'owning_surface' => 'server',
+            'classification_basis' => 'worker_alive_run_not_terminal',
+            'worker' => [
+                'process_state' => ['state' => 'alive', 'alive' => true, 'exit_code' => null],
+                'last_protocol_failure' => null,
+                'structured_stderr' => ['excerpt' => 'Worker remained alive.'],
+            ],
+            'server' => [
+                'health' => ['http_status' => 200, 'payload' => ['status' => 'serving']],
+                'run_state' => ['http_status' => 200, 'payload' => [
+                    'status' => 'failed',
+                    'is_terminal' => true,
+                ]],
+                'history' => ['http_status' => 200, 'payload' => [
+                    'last_event_types' => ['WorkflowStarted', 'WorkflowFailed'],
+                ]],
+                'task_queue' => ['http_status' => 200, 'payload' => [
+                    'name' => 'php-sdk-conformance',
+                    'stats' => ['workflow_tasks' => ['ready_count' => 0]],
+                    'pollers' => [['worker_id' => 'php-sdk-worker-1', 'status' => 'active']],
+                    'current_leases' => [],
+                    'admission' => ['workflow_tasks' => ['status' => 'accepting']],
+                ]],
+            ],
+            'retained_after_cleanup' => true,
+            'max_bytes' => 6144,
+        ];
+        $php['observed_outputs']['shard_diagnostic'] = [
+            'schema' => 'durable-workflow.v2.workflow-lifecycle.shard-diagnostic',
+            'version' => 1,
+            'retention' => 'inline_result_and_record',
+            'operation' => 'workflow.result:failed',
+            'failure_stage' => 'baseline_client',
+            'process_state' => ['state' => 'alive'],
+            'classification' => 'server',
+            'owning_surface' => 'server',
+            'companion_failure' => $companion,
+            'excerpt' => 'Client timed out after the run failed.',
+        ];
+        $result['lifecycle_cell_outcomes']['php_sdk_lifecycle_surface']['status'] = 'fail';
+
+        $evaluation = WorkflowLifecycleResultGate::evaluate($result);
+
+        $this->assertContains(
+            'lifecycle_timeout_ownership_ignores_terminal_run_state',
             array_column($evaluation['gate_failures'], 'code'),
         );
     }
@@ -1007,6 +1113,413 @@ class WorkflowLifecycleContractTest extends TestCase
         }
     }
 
+    public function test_client_timeout_retains_no_poller_queue_and_current_lease_evidence_after_cleanup(): void
+    {
+        $nodeBinary = trim((string) shell_exec('command -v node 2>/dev/null'));
+        if ($nodeBinary === '') {
+            $this->markTestSkipped('node is required to exercise PHP companion diagnostics.');
+        }
+
+        $repoRoot = dirname(__DIR__, 2);
+        $runner = (string) file_get_contents($repoRoot.'/scripts/conformance/php-sdk-published-artifacts.sh');
+        $matched = preg_match(
+            "~write_failure\\(\\) \\{.*?node <<'NODE'\n(.*?)\nNODE\n\\}~s",
+            $runner,
+            $matches,
+        );
+        $this->assertSame(1, $matched);
+
+        $resultDir = sys_get_temp_dir().'/dw-workflow-lifecycle-'.bin2hex(random_bytes(6));
+        $retainedRecord = sys_get_temp_dir().'/dw-workflow-lifecycle-retained-'.bin2hex(random_bytes(6)).'.json';
+        mkdir($resultDir, 0777, true);
+        $evidencePath = $resultDir.'/workflow-lifecycle-evidence.json';
+        $clientDiagnosticPath = $resultDir.'/php-sdk-client-baseline.diagnostic.log';
+        $workerLogPath = $resultDir.'/php-sdk-worker-1.log';
+        $serverLogPath = $resultDir.'/workflow-lifecycle-server-process.log';
+        $probeFixturePath = $resultDir.'/companion-probes.json';
+        $companionPath = $resultDir.'/php-sdk-worker-1-companion-failure.json';
+        $privateToken = 'private-timeout-companion-token';
+        $workflowId = 'php-sdk-failed-retained';
+        $runId = '01retainedtimeoutdiagnostic';
+
+        $hostEvidence = $this->hostEvidence();
+        unset($hostEvidence['scenario_results']['php_sdk_lifecycle_surface']);
+        file_put_contents($evidencePath, json_encode($hostEvidence, JSON_THROW_ON_ERROR));
+        $this->writeRustSidecar($resultDir);
+        $clientFailure = [
+            'classification' => 'sdk',
+            'owning_surface' => 'sdk-php',
+            'process' => 'client',
+            'operation' => 'workflow.result:failed',
+            'http_method' => 'GET',
+            'endpoint' => '/api/workflows/{workflow_id}/runs/{run_id}/result',
+            'status_code' => null,
+            'public_error_envelope' => null,
+            'workflow_id' => $workflowId,
+            'run_id' => $runId,
+            'exception_type' => 'DurableWorkflow\\Exception\\WorkflowTimedOut',
+            'message' => 'Timed out waiting for the intentional failure workflow; token='.$privateToken,
+        ];
+        file_put_contents(
+            $clientDiagnosticPath,
+            'DW_PHP_SDK_RUNTIME_FAILURE='.json_encode($clientFailure, JSON_THROW_ON_ERROR)."\n",
+        );
+        file_put_contents($workerLogPath, 'Worker remains active; Authorization: Bearer '.$privateToken."\n");
+        file_put_contents($serverLogPath, 'Dispatch scan left the run pending; token='.$privateToken."\n");
+        file_put_contents($probeFixturePath, json_encode([
+            'health' => ['http_status' => 200, 'payload' => ['status' => 'serving', 'checks' => ['database' => 'ok']]],
+            'worker' => ['http_status' => 200, 'payload' => [
+                'worker_id' => 'php-sdk-worker-1',
+                'task_queue' => 'php-sdk-conformance-retained',
+                'status' => 'active',
+                'last_heartbeat_at' => '2026-07-17T23:50:00Z',
+            ]],
+            'run' => ['http_status' => 200, 'payload' => [
+                'workflow_id' => $workflowId,
+                'run_id' => $runId,
+                'status' => 'running',
+                'is_terminal' => false,
+                'task_queue' => 'php-sdk-conformance-retained',
+            ]],
+            'history' => ['http_status' => 200, 'payload' => [
+                'workflow_id' => $workflowId,
+                'run_id' => $runId,
+                'events' => [
+                    ['sequence' => 1, 'event_type' => 'WorkflowStarted'],
+                    ['sequence' => 2, 'event_type' => 'WorkflowTaskScheduled'],
+                ],
+            ]],
+            'task_queue' => ['http_status' => 200, 'payload' => [
+                'name' => 'php-sdk-conformance-retained',
+                'stats' => [
+                    'approximate_backlog_count' => 1,
+                    'tasks_added_last_minute' => 12,
+                    'tasks_dispatched_last_minute' => 11,
+                    'workflow_tasks' => [
+                        'ready_count' => 0,
+                        'leased_count' => 1,
+                        'expired_lease_count' => 0,
+                    ],
+                    'activity_tasks' => [
+                        'ready_count' => 0,
+                        'leased_count' => 0,
+                        'expired_lease_count' => 0,
+                    ],
+                    'pollers' => ['active_count' => 0, 'stale_count' => 0],
+                ],
+                'pollers' => [],
+                'current_leases' => [[
+                    'task_id' => 'workflow-task-retained',
+                    'task_type' => 'workflow',
+                    'workflow_id' => $workflowId,
+                    'run_id' => $runId,
+                    'lease_owner' => 'php-sdk-worker-1',
+                    'lease_expires_at' => '2026-07-17T23:50:30Z',
+                    'is_expired' => false,
+                    'workflow_task_attempt' => 1,
+                    'activity_attempt_id' => null,
+                    'attempt_number' => 1,
+                ]],
+                'admission' => [
+                    'workflow_tasks' => [
+                        'status' => 'worker_unavailable',
+                        'budget_source' => 'worker_registration.max_concurrent_workflow_tasks',
+                        'active_worker_count' => 0,
+                        'configured_slot_count' => 10,
+                        'leased_count' => 1,
+                        'ready_count' => 0,
+                        'available_slot_count' => 9,
+                        'server_active_lease_count' => 1,
+                        'server_remaining_active_lease_capacity' => 9,
+                        'approximate_pending_count' => 0,
+                        'remaining_pending_capacity' => 1024,
+                    ],
+                    'activity_tasks' => [
+                        'status' => 'worker_unavailable',
+                        'budget_source' => 'worker_registration.max_concurrent_activity_tasks',
+                        'ready_count' => 0,
+                    ],
+                    'query_tasks' => ['status' => 'worker_unavailable'],
+                ],
+                'reason' => 'no_active_workers',
+                'message' => 'No active poller is currently available while a workflow task lease remains observable.',
+            ]],
+        ], JSON_THROW_ON_ERROR));
+
+        $runNode = static function (array $command, array $environment) use ($repoRoot): array {
+            $process = proc_open(
+                $command,
+                [1 => ['pipe', 'w'], 2 => ['pipe', 'w']],
+                $pipes,
+                $repoRoot,
+                array_merge($_ENV, $environment),
+            );
+            if (! is_resource($process)) {
+                return [1, '', 'Unable to start node.'];
+            }
+            $stdout = stream_get_contents($pipes[1]);
+            $stderr = stream_get_contents($pipes[2]);
+            fclose($pipes[1]);
+            fclose($pipes[2]);
+
+            return [proc_close($process), (string) $stdout, (string) $stderr];
+        };
+
+        try {
+            [$companionExit, , $companionStderr] = $runNode(
+                [$nodeBinary, $repoRoot.'/scripts/conformance/php-sdk-companion-failure-evidence.cjs'],
+                [
+                    'CLIENT_DIAGNOSTIC_FILE' => $clientDiagnosticPath,
+                    'COMPANION_OUTPUT_FILE' => $companionPath,
+                    'COMPANION_WORKER_ID' => 'php-sdk-worker-1',
+                    'COMPANION_WORKER_LOG' => $workerLogPath,
+                    'COMPANION_WORKER_ALIVE' => 'true',
+                    'COMPANION_WORKER_EXIT_CODE' => '',
+                    'COMPANION_TASK_QUEUE' => 'php-sdk-conformance-retained',
+                    'COMPANION_SERVER_LOG' => $serverLogPath,
+                    'COMPANION_PROBE_FIXTURE' => $probeFixturePath,
+                    'SERVER_URL' => 'http://server.test',
+                    'NAMESPACE' => 'workflow-lifecycle-conformance',
+                    'CONTROL_TOKEN' => $privateToken,
+                    'WORKER_TOKEN' => 'private-worker-token',
+                ],
+            );
+            $this->assertSame(0, $companionExit, $companionStderr);
+            $generatedCompanion = $this->readJson($companionPath);
+            $generatedTaskQueueBytes = strlen(json_encode(
+                $generatedCompanion['server']['task_queue'],
+                JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES,
+            ));
+            $this->assertGreaterThan(1280, $generatedTaskQueueBytes);
+            $this->assertLessThanOrEqual(1536, $generatedTaskQueueBytes);
+
+            [$writerExit, , $writerStderr] = $runNode(
+                [$nodeBinary, '-e', $matches[1]],
+                [
+                    'RESULT_DIR' => $resultDir,
+                    'SDK_VERSION' => '0.1.10',
+                    'SERVER_VERSION' => '0.2.678',
+                    'SERVER_IMAGE' => 'durableworkflow/server:0.2.678',
+                    'SERVER_URL' => 'http://server.test',
+                    'NAMESPACE' => 'workflow-lifecycle-conformance',
+                    'STARTED_AT' => '2026-07-17T23:49:00Z',
+                    'FAILURE_CLASSIFICATION' => 'sdk',
+                    'FAILURE_OWNER' => 'sdk-php',
+                    'FAILURE_STAGE' => 'baseline_client',
+                    'FAILURE_SUMMARY' => 'The released PHP SDK client timed out.',
+                    'FAILURE_DIAGNOSTIC_FILE' => $clientDiagnosticPath,
+                    'FAILURE_COMPANION_FILE' => $companionPath,
+                    'FAILURE_EVIDENCE_HELPER' => $repoRoot.'/scripts/conformance/php-sdk-runtime-failure-evidence.cjs',
+                    'DISTRIBUTION_IDENTITY_FILE' => '',
+                    'WORKER_START_OUTCOME' => '',
+                    'WORKER_START_WORKER_ID' => '',
+                    'WORKER_START_ATTEMPTS' => '',
+                    'WORKER_START_PROCESS_ID' => '',
+                    'WORKER_START_PROCESS_ALIVE' => '',
+                    'WORKER_START_PROCESS_EXIT_CODE' => '',
+                    'WORKER_START_OBSERVATION_FILE' => '',
+                    'CONTROL_TOKEN' => $privateToken,
+                    'WORKER_TOKEN' => 'private-worker-token',
+                ],
+            );
+            $this->assertSame(0, $writerExit, $writerStderr);
+
+            unlink($clientDiagnosticPath);
+            unlink($workerLogPath);
+            unlink($serverLogPath);
+            unlink($probeFixturePath);
+            unlink($companionPath);
+            exec($this->runnerCommand($resultDir, [
+                'DW_WORKFLOW_LIFECYCLE_EVIDENCE_PATH' => $evidencePath,
+                'DW_WORKFLOW_LIFECYCLE_AUTH_TOKEN' => $privateToken,
+                'DW_WORKFLOW_LIFECYCLE_SKIP_PHP_SDK_PROBE' => '1',
+            ]), $output, $exitCode);
+            $this->assertSame(0, $exitCode, implode("\n", $output));
+
+            file_put_contents(
+                $retainedRecord,
+                (string) file_get_contents($resultDir.'/workflow-lifecycle-record.json'),
+            );
+            $this->removeDirectory($resultDir);
+
+            $retainedJson = (string) file_get_contents($retainedRecord);
+            $record = $this->readJson($retainedRecord);
+            $php = $record['scenarioResults']['php_sdk_lifecycle_surface'];
+            $rust = $record['scenarioResults']['rust_sdk_lifecycle_surface'];
+            $diagnostic = $record['shardDiagnostics']['php_sdk_lifecycle_surface'];
+            $companion = $diagnostic['companion_failure'];
+
+            $this->assertSame('non_passing', $record['outcome']);
+            $this->assertFalse($record['runnerBlocked']);
+            $this->assertSame('fail', $php['status']);
+            $this->assertSame('pass', $rust['status']);
+            $this->assertArrayNotHasKey('rust_sdk_lifecycle_surface', $record['shardDiagnostics']);
+            $this->assertSame('server', $diagnostic['owning_surface']);
+            $this->assertSame('alive', $diagnostic['process_state']['state']);
+            $this->assertTrue($diagnostic['process_state']['alive']);
+            $this->assertSame('client_timeout', $companion['failure_kind']);
+            $this->assertSame('worker_alive_run_not_terminal', $companion['classification_basis']);
+            $this->assertSame(200, $companion['server']['health']['http_status']);
+            $this->assertSame('running', $companion['server']['run_state']['payload']['status']);
+            $this->assertContains(
+                'WorkflowTaskScheduled',
+                $companion['server']['history']['payload']['last_event_types'],
+            );
+            $this->assertSame('active', $companion['worker']['server_registration']['payload']['status']);
+            $this->assertSame(
+                'php-sdk-conformance-retained',
+                $companion['server']['task_queue']['payload']['name'],
+            );
+            $this->assertSame(
+                0,
+                $companion['server']['task_queue']['payload']['stats']['workflow_tasks']['ready_count'],
+            );
+            $this->assertSame([], $companion['server']['task_queue']['payload']['pollers']);
+            $this->assertSame(
+                'workflow-task-retained',
+                $companion['server']['task_queue']['payload']['current_leases'][0]['task_id'],
+            );
+            $this->assertSame(
+                'worker_unavailable',
+                $companion['server']['task_queue']['payload']['admission']['workflow_tasks']['status'],
+            );
+            $this->assertArrayNotHasKey(
+                'bounded_json_excerpt',
+                $companion['server']['task_queue'],
+            );
+            $this->assertLessThanOrEqual(
+                1280,
+                strlen(json_encode(
+                    $companion['server']['task_queue'],
+                    JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES,
+                )),
+            );
+            $this->assertStringContainsString('[REDACTED]', $companion['worker']['structured_stderr']['excerpt']);
+            $this->assertStringContainsString('[REDACTED]', $companion['server']['process_log']['excerpt']);
+            $this->assertLessThanOrEqual(
+                8192,
+                strlen(json_encode($diagnostic, JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES)),
+            );
+            $this->assertStringNotContainsString($privateToken, $retainedJson);
+            $this->assertSame([], WorkflowLifecycleResultGate::evaluate($record['result'])['gate_failures']);
+            $this->assertFileDoesNotExist($resultDir);
+        } finally {
+            $this->removeDirectory($resultDir);
+            @unlink($retainedRecord);
+        }
+    }
+
+    public function test_alive_worker_terminal_failed_run_is_not_classified_as_a_server_stall(): void
+    {
+        $nodeBinary = trim((string) shell_exec('command -v node 2>/dev/null'));
+        if ($nodeBinary === '') {
+            $this->markTestSkipped('node is required to exercise PHP companion diagnostics.');
+        }
+
+        $helper = dirname(__DIR__, 2).'/scripts/conformance/php-sdk-companion-failure-evidence.cjs';
+        $input = [
+            'clientDiagnostic' => 'DW_PHP_SDK_RUNTIME_FAILURE='.json_encode([
+                'classification' => 'sdk',
+                'owning_surface' => 'sdk-php',
+                'process' => 'client',
+                'operation' => 'workflow.result:failed',
+                'workflow_id' => 'php-sdk-intentional-failure',
+                'run_id' => '01terminalfailure',
+                'exception_type' => 'DurableWorkflow\\Exception\\WorkflowTimedOut',
+                'message' => 'Timed out after the server had closed the run.',
+            ], JSON_THROW_ON_ERROR)."\n",
+            'workerDiagnostic' => 'The companion worker remained alive without a protocol exception.',
+            'serverLog' => 'The intentional failure committed a terminal event.',
+            'workerId' => 'php-sdk-worker-1',
+            'processAlive' => true,
+            'processExitCode' => null,
+            'probes' => [
+                'health' => ['http_status' => 200, 'payload' => ['status' => 'serving']],
+                'worker' => ['http_status' => 200, 'payload' => [
+                    'worker_id' => 'php-sdk-worker-1',
+                    'status' => 'active',
+                ]],
+                'run' => ['http_status' => 200, 'payload' => [
+                    'workflow_id' => 'php-sdk-intentional-failure',
+                    'run_id' => '01terminalfailure',
+                    'status' => 'failed',
+                    'status_bucket' => 'failed',
+                    'is_terminal' => true,
+                    'closed_reason' => 'workflow_failed',
+                ]],
+                'history' => ['http_status' => 200, 'payload' => [
+                    'workflow_id' => 'php-sdk-intentional-failure',
+                    'run_id' => '01terminalfailure',
+                    'events' => [
+                        ['sequence' => 1, 'event_type' => 'WorkflowStarted'],
+                        ['sequence' => 2, 'event_type' => 'WorkflowTaskScheduled'],
+                        ['sequence' => 3, 'event_type' => 'WorkflowFailed', 'payload' => [
+                            'exception_type' => 'RuntimeException',
+                            'message' => 'intentional failure',
+                        ]],
+                    ],
+                ]],
+                'task_queue' => ['http_status' => 200, 'payload' => [
+                    'name' => 'php-sdk-conformance-retained',
+                    'stats' => [
+                        'approximate_backlog_count' => 0,
+                        'workflow_tasks' => ['ready_count' => 0, 'leased_count' => 0],
+                        'pollers' => ['active_count' => 1, 'stale_count' => 0],
+                    ],
+                    'pollers' => [[
+                        'worker_id' => 'php-sdk-worker-1',
+                        'status' => 'active',
+                        'is_stale' => false,
+                    ]],
+                    'current_leases' => [],
+                    'admission' => [
+                        'workflow_tasks' => ['status' => 'accepting'],
+                        'activity_tasks' => ['status' => 'no_slots'],
+                        'query_tasks' => ['status' => 'accepting'],
+                    ],
+                ]],
+            ],
+        ];
+        $program = <<<'NODE'
+const fs = require('node:fs');
+const {createCompanionFailureEvidence} = require(process.argv[1]);
+const input = JSON.parse(fs.readFileSync(0, 'utf8'));
+process.stdout.write(JSON.stringify(createCompanionFailureEvidence(input)));
+NODE;
+        $process = proc_open(
+            [$nodeBinary, '-e', $program, $helper],
+            [0 => ['pipe', 'r'], 1 => ['pipe', 'w'], 2 => ['pipe', 'w']],
+            $pipes,
+        );
+        $this->assertIsResource($process);
+        fwrite($pipes[0], json_encode($input, JSON_THROW_ON_ERROR));
+        fclose($pipes[0]);
+        $stdout = stream_get_contents($pipes[1]);
+        $stderr = stream_get_contents($pipes[2]);
+        fclose($pipes[1]);
+        fclose($pipes[2]);
+        $this->assertSame(0, proc_close($process), (string) $stderr);
+
+        $evidence = json_decode((string) $stdout, true, flags: JSON_THROW_ON_ERROR);
+        $this->assertSame('sdk', $evidence['classification']);
+        $this->assertSame('sdk-php', $evidence['owning_surface']);
+        $this->assertSame('worker_alive_run_terminal_client_failure', $evidence['classification_basis']);
+        $this->assertSame('failed', $evidence['server']['run_state']['payload']['status']);
+        $this->assertTrue($evidence['server']['run_state']['payload']['is_terminal']);
+        $this->assertContains(
+            'WorkflowFailed',
+            $evidence['server']['history']['payload']['last_event_types'],
+        );
+        $this->assertSame(
+            'php-sdk-conformance-retained',
+            $evidence['server']['task_queue']['payload']['name'],
+        );
+        $this->assertLessThanOrEqual(
+            6144,
+            strlen(json_encode($evidence, JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES)),
+        );
+    }
+
     public function test_php_worker_exit_after_transient_readiness_response_retains_sdk_crash_evidence(): void
     {
         $nodeBinary = trim((string) shell_exec('command -v node 2>/dev/null'));
@@ -1169,6 +1682,93 @@ class WorkflowLifecycleContractTest extends TestCase
             $this->removeDirectory($resultDir);
             @unlink($retainedRecord);
         }
+    }
+
+    public function test_timeout_companion_ownership_follows_worker_protocol_http_failure(): void
+    {
+        $nodeBinary = trim((string) shell_exec('command -v node 2>/dev/null'));
+        if ($nodeBinary === '') {
+            $this->markTestSkipped('node is required to exercise PHP companion diagnostics.');
+        }
+
+        $helper = dirname(__DIR__, 2).'/scripts/conformance/php-sdk-companion-failure-evidence.cjs';
+        $privateToken = 'private-worker-protocol-token';
+        $runtimeFailure = static fn (array $payload): string => 'DW_PHP_SDK_RUNTIME_FAILURE='.
+            json_encode($payload, JSON_THROW_ON_ERROR)."\n";
+        $clientDiagnostic = $runtimeFailure([
+            'classification' => 'sdk',
+            'owning_surface' => 'sdk-php',
+            'process' => 'client',
+            'operation' => 'workflow.result:failed',
+            'workflow_id' => 'php-sdk-failed-worker-exit',
+            'run_id' => '01workerexit',
+            'exception_type' => 'DurableWorkflow\\Exception\\WorkflowTimedOut',
+            'message' => 'Timed out waiting for terminal state.',
+        ]);
+        $workerDiagnostic = $runtimeFailure([
+            'classification' => 'server',
+            'owning_surface' => 'server',
+            'process' => 'worker',
+            'operation' => 'worker.heartbeat',
+            'http_method' => 'POST',
+            'endpoint' => '/api/worker-protocol/workflow-tasks/{task_id}/heartbeat',
+            'status_code' => 500,
+            'public_error_envelope' => [
+                'reason' => 'control_plane_write_failed',
+                'message' => 'Heartbeat persistence failed.',
+            ],
+            'exception_type' => 'DurableWorkflow\\Exception\\ServerException',
+            'message' => 'Server returned token='.$privateToken,
+        ]);
+        $input = [
+            'clientDiagnostic' => $clientDiagnostic,
+            'workerDiagnostic' => $workerDiagnostic,
+            'serverLog' => 'Worker heartbeat returned HTTP 500 reason=control_plane_write_failed token='.$privateToken,
+            'workerId' => 'php-sdk-worker-1',
+            'processAlive' => false,
+            'processExitCode' => 1,
+            'secrets' => [$privateToken],
+            'probes' => [
+                'health' => ['http_status' => 200, 'payload' => ['status' => 'serving']],
+                'worker' => ['http_status' => 200, 'payload' => ['worker_id' => 'php-sdk-worker-1', 'status' => 'stale']],
+            ],
+        ];
+        $program = <<<'NODE'
+const fs = require('node:fs');
+const {createCompanionFailureEvidence} = require(process.argv[1]);
+const input = JSON.parse(fs.readFileSync(0, 'utf8'));
+process.stdout.write(JSON.stringify(createCompanionFailureEvidence(input)));
+NODE;
+        $process = proc_open(
+            [$nodeBinary, '-e', $program, $helper],
+            [0 => ['pipe', 'r'], 1 => ['pipe', 'w'], 2 => ['pipe', 'w']],
+            $pipes,
+        );
+        $this->assertIsResource($process);
+        fwrite($pipes[0], json_encode($input, JSON_THROW_ON_ERROR));
+        fclose($pipes[0]);
+        $stdout = stream_get_contents($pipes[1]);
+        $stderr = stream_get_contents($pipes[2]);
+        fclose($pipes[1]);
+        fclose($pipes[2]);
+        $this->assertSame(0, proc_close($process), (string) $stderr);
+
+        $evidence = json_decode((string) $stdout, true, flags: JSON_THROW_ON_ERROR);
+        $encoded = json_encode($evidence, JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES);
+        $this->assertSame('server', $evidence['classification']);
+        $this->assertSame('server', $evidence['owning_surface']);
+        $this->assertSame('worker_protocol_server_failure', $evidence['classification_basis']);
+        $this->assertSame('exited', $evidence['worker']['process_state']['state']);
+        $this->assertSame(1, $evidence['worker']['process_state']['exit_code']);
+        $this->assertSame('worker.heartbeat', $evidence['worker']['last_protocol_failure']['operation']);
+        $this->assertSame(500, $evidence['worker']['last_protocol_failure']['status_code']);
+        $this->assertSame(
+            'control_plane_write_failed',
+            $evidence['worker']['last_protocol_failure']['public_error_envelope']['reason'],
+        );
+        $this->assertStringContainsString('[REDACTED]', $evidence['server']['process_log']['excerpt']);
+        $this->assertStringNotContainsString($privateToken, $encoded);
+        $this->assertLessThanOrEqual(6144, strlen($encoded));
     }
 
     public function test_published_artifact_runner_merges_python_sdk_lifecycle_sidecar(): void
@@ -2066,6 +2666,8 @@ SH);
             'client_worker_distinct_processes',
             'apache_avro_provenance',
             'local_product_source_checkouts_used',
+            'php-sdk-companion-failure-evidence.cjs',
+            'capture_client_companion',
         ] as $token) {
             $this->assertStringContainsString($token, $phpSource);
         }
@@ -2082,6 +2684,9 @@ SH);
             'DW_WORKFLOW_LIFECYCLE_SCHEDULER_PROCESS=exact_published_image',
             'DW_WORKFLOW_LIFECYCLE_RUST_EXECUTOR=host_rust_container',
             'DW_WORKFLOW_LIFECYCLE_SKIP_RUST_SDK_PROBE=1',
+            'docker logs --follow "$server_name"',
+            'DW_PHP_SDK_CONFORMANCE_SERVER_LOG=/result/workflow-lifecycle-server-process.log',
+            'DW_PHP_SDK_CONFORMANCE_SCHEDULER_LOG=/result/workflow-lifecycle-scheduler-process.log',
             'workflow-lifecycle-result.json',
         ] as $token) {
             $this->assertStringContainsString($token, $hostSource);

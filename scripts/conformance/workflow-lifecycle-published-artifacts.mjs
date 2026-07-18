@@ -382,6 +382,209 @@ function boundedAssertionFailures(value, limit = 5632) {
   return labelsOnly;
 }
 
+function selectedDiagnosticObject(value, fields, stringLimit = 256) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    return {};
+  }
+
+  return Object.fromEntries(fields
+    .filter((field) => Object.prototype.hasOwnProperty.call(value, field))
+    .map((field) => [field, diagnosticValue(value[field], 0, stringLimit)]));
+}
+
+function selectedDiagnosticList(value, fields, limit) {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+
+  return value.slice(0, limit).map((entry) => selectedDiagnosticObject(entry, fields));
+}
+
+function compactTaskQueuePayload(value, sampleLimit, minimal = false) {
+  const payload = firstObject(value);
+  const statsSource = firstObject(payload.stats);
+  const admissionSource = firstObject(payload.admission);
+  const stats = selectedDiagnosticObject(statsSource, [
+    'approximate_backlog_count',
+    'tasks_added_last_minute',
+    'tasks_dispatched_last_minute',
+  ]);
+  const taskStatsFields = minimal
+    ? ['ready_count', 'leased_count']
+    : ['ready_count', 'leased_count', 'expired_lease_count'];
+  for (const field of ['workflow_tasks', 'activity_tasks']) {
+    if (Object.prototype.hasOwnProperty.call(statsSource, field)) {
+      stats[field] = selectedDiagnosticObject(statsSource[field], taskStatsFields);
+    }
+  }
+  if (Object.prototype.hasOwnProperty.call(statsSource, 'pollers')) {
+    stats.pollers = selectedDiagnosticObject(statsSource.pollers, ['active_count', 'stale_count']);
+  }
+  if (!minimal && Object.prototype.hasOwnProperty.call(statsSource, 'oldest_ready_task')) {
+    stats.oldest_ready_task = selectedDiagnosticObject(statsSource.oldest_ready_task, [
+      'task_id',
+      'task_type',
+      'workflow_id',
+      'run_id',
+      'created_at',
+    ]);
+  }
+
+  const admissionFields = minimal
+    ? ['status']
+    : [
+      'status',
+      'budget_source',
+      'active_worker_count',
+      'configured_slot_count',
+      'leased_count',
+      'ready_count',
+      'available_slot_count',
+      'server_active_lease_count',
+      'server_remaining_active_lease_capacity',
+      'approximate_pending_count',
+      'remaining_pending_capacity',
+    ];
+  const admission = Object.fromEntries(
+    ['workflow_tasks', 'activity_tasks', 'query_tasks']
+      .filter((field) => Object.prototype.hasOwnProperty.call(admissionSource, field))
+      .map((field) => [field, selectedDiagnosticObject(admissionSource[field], admissionFields)]),
+  );
+
+  const retained = {};
+  if (Object.prototype.hasOwnProperty.call(payload, 'name')
+    || Object.prototype.hasOwnProperty.call(payload, 'task_queue')) {
+    retained.name = redactSensitiveText(payload.name ?? payload.task_queue, 128);
+  }
+  if (Object.prototype.hasOwnProperty.call(payload, 'stats')) {
+    retained.stats = stats;
+  }
+  if (Object.prototype.hasOwnProperty.call(payload, 'pollers')) {
+    retained.pollers = selectedDiagnosticList(payload.pollers, [
+      'worker_id',
+      'status',
+      'is_stale',
+      'last_heartbeat_at',
+      'max_concurrent_workflow_tasks',
+      'max_concurrent_activity_tasks',
+    ], sampleLimit);
+  }
+  if (Object.prototype.hasOwnProperty.call(payload, 'current_leases')) {
+    retained.current_leases = selectedDiagnosticList(payload.current_leases, [
+      'task_id',
+      'task_type',
+      'workflow_id',
+      'run_id',
+      'lease_owner',
+      'lease_expires_at',
+      'is_expired',
+      'workflow_task_attempt',
+      'activity_attempt_id',
+      'attempt_number',
+    ], sampleLimit);
+  }
+  if (Object.prototype.hasOwnProperty.call(payload, 'admission')) {
+    retained.admission = admission;
+  }
+  for (const field of ['reason', 'message']) {
+    if (Object.prototype.hasOwnProperty.call(payload, field)) {
+      retained[field] = redactSensitiveText(payload[field], 256);
+    }
+  }
+
+  return retained;
+}
+
+function boundedTaskQueueDiagnostic(value, limit = 1280) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    return null;
+  }
+
+  const bounded = diagnosticValue(value);
+  if (serializedBytes(bounded) <= limit) {
+    return bounded;
+  }
+
+  const payload = firstObject(value.payload);
+  const build = (sampleLimit, minimal = false) => {
+    const retained = {
+      payload: compactTaskQueuePayload(payload, sampleLimit, minimal),
+      truncated: true,
+    };
+    if (Object.prototype.hasOwnProperty.call(value, 'http_status')
+      || Object.prototype.hasOwnProperty.call(value, 'httpStatus')) {
+      retained.http_status = firstInteger(value.http_status, value.httpStatus);
+    }
+    if (Object.prototype.hasOwnProperty.call(value, 'probe_error')
+      || Object.prototype.hasOwnProperty.call(value, 'probeError')) {
+      retained.probe_error = diagnosticValue(value.probe_error ?? value.probeError, 0, 256);
+    }
+
+    return retained;
+  };
+
+  for (const [sampleLimit, minimal] of [[4, false], [2, false], [1, false], [1, true]]) {
+    const retained = build(sampleLimit, minimal);
+    if (serializedBytes(retained) <= limit) {
+      return retained;
+    }
+  }
+
+  throw new Error('Unable to retain structured task-queue diagnostics within the shard byte limit.');
+}
+
+function boundedCompanionFailure(value, limit = 4608) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    return null;
+  }
+  const worker = firstObject(value.worker);
+  const server = firstObject(value.server);
+  const build = (detailLimit, logLimit, truncated = false) => {
+    const retained = {
+      schema: redactSensitiveText(value.schema, 128),
+      failure_kind: redactSensitiveText(value.failure_kind, 96),
+      operation: redactSensitiveText(value.operation, 160),
+      classification: redactSensitiveText(value.classification, 64),
+      owning_surface: redactSensitiveText(value.owning_surface, 128),
+      classification_basis: redactSensitiveText(value.classification_basis, 128),
+      client_failure: boundedDiagnosticObject(value.client_failure, detailLimit),
+      worker: {
+        worker_id: redactSensitiveText(worker.worker_id, 128),
+        process_state: boundedDiagnosticObject(worker.process_state, detailLimit),
+        last_protocol_failure: boundedDiagnosticObject(worker.last_protocol_failure, detailLimit),
+        structured_stderr: boundedDiagnosticObject(worker.structured_stderr, logLimit),
+        server_registration: boundedDiagnosticObject(worker.server_registration, detailLimit),
+      },
+      server: {
+        health: boundedDiagnosticObject(server.health, detailLimit),
+        run_state: boundedDiagnosticObject(server.run_state, detailLimit),
+        history: boundedDiagnosticObject(server.history, detailLimit),
+        task_queue: boundedTaskQueueDiagnostic(server.task_queue, Math.max(1280, detailLimit)),
+        process_log: boundedDiagnosticObject(server.process_log, logLimit),
+      },
+      retained_after_cleanup: value.retained_after_cleanup === true,
+      max_bytes: firstInteger(value.max_bytes),
+    };
+    if (truncated || truthyFlag(value.truncated)) {
+      retained.truncated = true;
+    }
+    return retained;
+  };
+
+  for (const [detailLimit, logLimit] of [[640, 640], [512, 512], [384, 384], [256, 320], [192, 256]]) {
+    const retained = build(detailLimit, logLimit, detailLimit < 640);
+    if (serializedBytes(retained) <= limit) {
+      return retained;
+    }
+  }
+
+  const labelsOnly = build(128, 128, true);
+  if (serializedBytes(labelsOnly) > limit) {
+    throw new Error('Unable to retain PHP SDK companion diagnostics within the shard byte limit.');
+  }
+  return labelsOnly;
+}
+
 function firstObject(...values) {
   return values.find((value) => value && typeof value === 'object' && !Array.isArray(value)) ?? {};
 }
@@ -399,8 +602,14 @@ function firstInteger(...values) {
   return null;
 }
 
-function diagnosticProcessState(status, outputs, runtimeFailure, workerStartup) {
-  const supplied = firstObject(outputs.process_state, outputs.processState);
+function diagnosticProcessState(status, outputs, runtimeFailure, workerStartup, companion) {
+  const companionWorker = firstObject(companion.worker);
+  const supplied = firstObject(
+    companionWorker.process_state,
+    companionWorker.processState,
+    outputs.process_state,
+    outputs.processState,
+  );
   const exitCode = firstInteger(
     workerStartup.process_exit_code,
     supplied.exit_code,
@@ -429,8 +638,8 @@ function diagnosticProcessState(status, outputs, runtimeFailure, workerStartup) 
 
   return {
     process: redactSensitiveText(
-      stringValue(runtimeFailure.process)
-        || stringValue(supplied.process)
+      stringValue(supplied.process)
+        || stringValue(runtimeFailure.process)
         || stringValue(outputs.sdk)
         || 'lifecycle_shard',
       SHARD_DIAGNOSTIC_MAX_BYTES * 2,
@@ -515,6 +724,7 @@ function fitShardDiagnostic(diagnostic) {
     ...diagnostic,
     excerpt: redactSensitiveText(diagnostic.excerpt, 512),
     assertion_failures: boundedAssertionFailures(diagnostic.assertion_failures, 4608),
+    companion_failure: boundedCompanionFailure(diagnostic.companion_failure, 4608),
     readiness: diagnostic.readiness
       ? {
         outcome: diagnostic.readiness.outcome,
@@ -546,6 +756,7 @@ function fitShardDiagnostic(diagnostic) {
     process_state: diagnostic.process_state,
     http: diagnostic.http,
     assertion_failures: boundedAssertionFailures(diagnostic.assertion_failures, 4096),
+    companion_failure: boundedCompanionFailure(diagnostic.companion_failure, 4096),
     readiness: diagnostic.readiness
       ? {
         outcome: diagnostic.readiness.outcome,
@@ -591,6 +802,7 @@ function fitShardDiagnostic(diagnostic) {
       }
       : null,
     assertion_failures: boundedAssertionFailures(diagnostic.assertion_failures, 4096),
+    companion_failure: boundedCompanionFailure(diagnostic.companion_failure, 3584),
     readiness: diagnostic.readiness
       ? {
         outcome: redactSensitiveText(diagnostic.readiness.outcome, 96),
@@ -614,6 +826,18 @@ function fitShardDiagnostic(diagnostic) {
 
 function shardDiagnostic(scenarioId, status, classification, outputs, findings, fallbackSummary) {
   const runtimeFailure = firstObject(outputs.runtime_failure_evidence, outputs.runtimeFailureEvidence);
+  const companion = firstObject(
+    outputs.companion_failure_evidence,
+    outputs.companionFailureEvidence,
+  );
+  const companionWorker = firstObject(companion.worker);
+  const companionProtocolFailure = firstObject(
+    companionWorker.last_protocol_failure,
+    companionWorker.lastProtocolFailure,
+  );
+  const decisiveRuntimeFailure = Object.keys(companionProtocolFailure).length > 0
+    ? companionProtocolFailure
+    : runtimeFailure;
   const workerStartup = firstObject(outputs.worker_startup, outputs.workerStartup);
   const readiness = diagnosticReadiness(workerStartup);
   const lastServerObservation = firstObject(
@@ -626,7 +850,8 @@ function shardDiagnostic(scenarioId, status, classification, outputs, findings, 
     || stringValue(outputs.failing_lifecycle_cell)
     || scenarioId;
   const workerStartOutcome = stringValue(workerStartup.outcome);
-  const operation = stringValue(runtimeFailure.operation)
+  const operation = stringValue(companion.operation)
+    || stringValue(decisiveRuntimeFailure.operation)
     || (workerStartOutcome === 'process_exit' ? failureStage : '')
     || (readiness ? 'worker_registration_readiness' : '')
     || stringValue(outputs.operation)
@@ -656,9 +881,10 @@ function shardDiagnostic(scenarioId, status, classification, outputs, findings, 
     owning_surface: owningSurface,
     operation: redactSensitiveText(operation, 160),
     failure_stage: redactSensitiveText(failureStage, 160),
-    process_state: diagnosticProcessState(status, outputs, runtimeFailure, workerStartup),
-    http: diagnosticHttp(runtimeFailure, lastServerObservation),
+    process_state: diagnosticProcessState(status, outputs, decisiveRuntimeFailure, workerStartup, companion),
+    http: diagnosticHttp(decisiveRuntimeFailure, lastServerObservation),
     assertion_failures: assertionFailures,
+    companion_failure: boundedCompanionFailure(companion),
     readiness,
     excerpt,
     truncated: truthyFlag(captured.truncated)
@@ -667,11 +893,12 @@ function shardDiagnostic(scenarioId, status, classification, outputs, findings, 
   };
 
   const bounded = diagnosticValue(
-    { ...diagnostic, assertion_failures: null },
+    { ...diagnostic, assertion_failures: null, companion_failure: null },
     0,
     SHARD_DIAGNOSTIC_MAX_BYTES * 2,
   );
   bounded.assertion_failures = assertionFailures;
+  bounded.companion_failure = diagnostic.companion_failure;
 
   return fitShardDiagnostic(bounded);
 }
@@ -2107,6 +2334,11 @@ function normalizeScenario(scenario, entry, policy) {
     for (const field of ['assertion_failures', 'assertionFailures']) {
       if (Array.isArray(outputs[field]) || nonEmptyObject(outputs[field])) {
         outputs[field] = boundedAssertionFailures(outputs[field]);
+      }
+    }
+    for (const field of ['companion_failure_evidence', 'companionFailureEvidence']) {
+      if (nonEmptyObject(outputs[field])) {
+        outputs[field] = boundedCompanionFailure(outputs[field], 6144);
       }
     }
     delete outputs.failure_diagnostic;

@@ -93,9 +93,19 @@ server_name="dw-lifecycle-server-${run_id}"
 scheduler_name="dw-lifecycle-scheduler-${run_id}"
 extractor_name="dw-lifecycle-extract-${run_id}"
 artifact_root="$result_dir/published-runner-artifact"
+server_follow_log="$result_dir/workflow-lifecycle-server-process.log"
+scheduler_follow_log="$result_dir/workflow-lifecycle-scheduler-process.log"
+server_log_pid=""
+scheduler_log_pid=""
 
 cleanup() {
   local exit_code=$?
+  for log_pid in "$server_log_pid" "$scheduler_log_pid"; do
+    if [[ -n "$log_pid" ]] && kill -0 "$log_pid" >/dev/null 2>&1; then
+      kill "$log_pid" >/dev/null 2>&1 || true
+      wait "$log_pid" >/dev/null 2>&1 || true
+    fi
+  done
   for container in "$server_name" "$scheduler_name" "$mysql_name" "$redis_name"; do
     if docker inspect "$container" >/dev/null 2>&1; then
       docker logs "$container" >"$result_dir/${container}.log" 2>&1 || true
@@ -173,6 +183,11 @@ docker run -d --name "$scheduler_name" --network "$network_name" \
   'while true; do php artisan schedule:evaluate --limit=100 --json; php artisan activity:timeout-enforce --limit=100; sleep 1; done' \
   >/dev/null
 
+docker logs --follow "$server_name" >"$server_follow_log" 2>&1 &
+server_log_pid=$!
+docker logs --follow "$scheduler_name" >"$scheduler_follow_log" 2>&1 &
+scheduler_log_pid=$!
+
 for attempt in $(seq 1 60); do
   if docker exec "$server_name" curl -fsS http://127.0.0.1:8080/api/ready >/dev/null 2>&1; then
     break
@@ -236,6 +251,8 @@ docker run --rm --network "$network_name" \
   -e DW_CLI_VERSION="$DW_CLI_VERSION" \
   -e DW_PYTHON_SDK_VERSION="$DW_PYTHON_SDK_VERSION" \
   -e DW_PHP_SDK_VERSION="$DW_PHP_SDK_VERSION" \
+  -e DW_PHP_SDK_CONFORMANCE_SERVER_LOG=/result/workflow-lifecycle-server-process.log \
+  -e DW_PHP_SDK_CONFORMANCE_SCHEDULER_LOG=/result/workflow-lifecycle-scheduler-process.log \
   -e DW_WORKFLOW_PHP_VERSION="$DW_WORKFLOW_PHP_VERSION" \
   -e DW_WATERLINE_VERSION="$DW_WATERLINE_VERSION" \
   "$server_image" \
