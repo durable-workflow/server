@@ -124,6 +124,62 @@ final class BackendLockPressure
         ]);
     }
 
+    /**
+     * Worker liveness heartbeats are safe to acknowledge as deferred under
+     * exhausted SQLite pressure. Existing managed workers treat a non-2xx
+     * response as fatal, while the next scheduled heartbeat retries the same
+     * idempotent registration refresh.
+     */
+    public static function workerHeartbeatResponse(Request $request): JsonResponse
+    {
+        return WorkerProtocol::json([
+            'worker_id' => $request->input('worker_id'),
+            'acknowledged' => false,
+            'heartbeat_interval_seconds' => max(
+                1,
+                min(3600, (int) config('server.workers.heartbeat_interval_seconds', 10)),
+            ),
+            'reason' => 'backend_lock_pressure',
+            'message' => 'The database backend is temporarily locked while refreshing worker liveness. Retry the heartbeat with backoff.',
+            'retryable' => true,
+            'retry_after_seconds' => self::RETRY_AFTER_SECONDS,
+            'backend' => [
+                'driver' => self::workflowDriverName(),
+                'lock_pressure' => true,
+            ],
+        ]);
+    }
+
+    /**
+     * Keep an unhandled SQLite write conflict inside the worker protocol.
+     * Mutation endpoints remain fenced by their task/attempt identifiers, so
+     * retry-aware clients can reconcile or repeat the request without
+     * recording a second task outcome.
+     */
+    public static function workerOperationResponse(Request $request, ?bool $recorded = null): JsonResponse
+    {
+        return WorkerProtocol::json(array_filter([
+            'message' => 'The database backend is temporarily locked while applying the worker operation. Retry with backoff.',
+            'reason' => 'backend_lock_pressure',
+            'operation' => self::workerOperation($request),
+            'task_id' => $request->route('taskId'),
+            'query_task_id' => $request->route('queryTaskId'),
+            'workflow_task_attempt' => $request->input('workflow_task_attempt'),
+            'query_task_attempt' => $request->input('query_task_attempt'),
+            'activity_attempt_id' => $request->input('activity_attempt_id'),
+            'lease_owner' => $request->input('lease_owner'),
+            'outcome' => 'deferred',
+            'recorded' => $recorded,
+            'retryable' => true,
+            'retry_after_seconds' => self::RETRY_AFTER_SECONDS,
+            'backend' => [
+                'driver' => self::workflowDriverName(),
+                'lock_pressure' => true,
+            ],
+        ], static fn (mixed $value): bool => $value !== null), 503)
+            ->header('Retry-After', (string) self::RETRY_AFTER_SECONDS);
+    }
+
     public static function isSqliteBackend(): bool
     {
         return self::workflowDriverName() === 'sqlite';
@@ -166,5 +222,16 @@ final class BackendLockPressure
         } catch (Throwable) {
             return null;
         }
+    }
+
+    private static function workerOperation(Request $request): string
+    {
+        $action = $request->route()?->getActionMethod();
+
+        if (is_string($action) && $action !== '') {
+            return strtolower((string) preg_replace('/(?<!^)[A-Z]/', '_$0', $action));
+        }
+
+        return 'worker_request';
     }
 }

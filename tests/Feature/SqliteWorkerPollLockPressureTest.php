@@ -389,6 +389,184 @@ class SqliteWorkerPollLockPressureTest extends TestCase
         );
     }
 
+    public function test_workflow_task_completion_retries_signal_side_write_pressure_without_duplicate_state(): void
+    {
+        Queue::fake();
+
+        [$runId, $leasedTask] = $this->createLeasedInteractiveSignalTask(
+            'wf-sqlite-completion-lock-pressure',
+            'php-sqlite-completion-worker',
+            'sqlite-completion-signal-advance',
+        );
+
+        $signalWriter = $this->startTransientControlPlaneUpdate($runId);
+
+        try {
+            $completion = $this->withHeaders($this->workerHeaders())
+                ->postJson("/api/worker/workflow-tasks/{$leasedTask->id}/complete", [
+                    'lease_owner' => 'php-sqlite-completion-worker',
+                    'workflow_task_attempt' => 1,
+                    'commands' => [[
+                        'type' => 'open_signal_wait',
+                        'signal_name' => 'finish',
+                        'timeout_seconds' => 300,
+                    ]],
+                ]);
+
+            $completion->assertOk()
+                ->assertHeader(WorkerProtocol::HEADER, WorkerProtocol::VERSION)
+                ->assertJsonPath('task_id', $leasedTask->id)
+                ->assertJsonPath('workflow_task_attempt', 1)
+                ->assertJsonPath('outcome', 'completed')
+                ->assertJsonPath('recorded', true)
+                ->assertJsonPath('reason', null);
+        } finally {
+            $this->finishTransientLeaseUpdate($signalWriter);
+        }
+
+        $this->assertSame(TaskStatus::Completed, WorkflowTask::query()->findOrFail($leasedTask->id)->status);
+        $this->assertSame(
+            1,
+            WorkflowSignal::query()
+                ->where('workflow_run_id', $runId)
+                ->where('signal_name', 'advance')
+                ->count(),
+        );
+        $this->assertSame(
+            1,
+            WorkflowCommand::query()
+                ->where('workflow_run_id', $runId)
+                ->where('command_type', CommandType::Signal->value)
+                ->count(),
+        );
+    }
+
+    public function test_exhausted_workflow_task_completion_lock_pressure_is_typed_and_fenced(): void
+    {
+        Queue::fake();
+
+        [$runId, $leasedTask] = $this->createLeasedInteractiveSignalTask(
+            'wf-sqlite-completion-lock-response',
+            'php-sqlite-completion-worker',
+            'sqlite-completion-lock-response-signal',
+        );
+
+        $this->holdSqliteWriteLock($leasedTask->id);
+
+        $this->withHeaders($this->workerHeaders())
+            ->postJson("/api/worker/workflow-tasks/{$leasedTask->id}/complete", [
+                'lease_owner' => 'php-sqlite-completion-worker',
+                'workflow_task_attempt' => 1,
+                'commands' => [[
+                    'type' => 'open_signal_wait',
+                    'signal_name' => 'finish',
+                    'timeout_seconds' => 300,
+                ]],
+            ])
+            ->assertStatus(503)
+            ->assertHeader(WorkerProtocol::HEADER, WorkerProtocol::VERSION)
+            ->assertHeaderMissing(ControlPlaneProtocol::HEADER)
+            ->assertHeader('Retry-After', '1')
+            ->assertJsonPath('reason', 'backend_lock_pressure')
+            ->assertJsonPath('operation', 'complete_workflow_task')
+            ->assertJsonPath('task_id', $leasedTask->id)
+            ->assertJsonPath('workflow_task_attempt', 1)
+            ->assertJsonPath('lease_owner', 'php-sqlite-completion-worker')
+            ->assertJsonPath('outcome', 'deferred')
+            ->assertJsonPath('recorded', false)
+            ->assertJsonPath('retryable', true)
+            ->assertJsonPath('retry_after_seconds', 1)
+            ->assertJsonPath('backend.driver', 'sqlite')
+            ->assertJsonPath('backend.lock_pressure', true)
+            ->assertJsonMissing(['message' => 'Server Error']);
+
+        $this->assertSame(TaskStatus::Leased, WorkflowTask::query()->findOrFail($leasedTask->id)->status);
+        $this->assertSame(
+            1,
+            WorkflowSignal::query()
+                ->where('workflow_run_id', $runId)
+                ->where('signal_name', 'advance')
+                ->count(),
+        );
+    }
+
+    public function test_worker_liveness_heartbeat_retries_normal_sqlite_write_contention(): void
+    {
+        Queue::fake();
+
+        [$runId] = $this->createLeasedInteractiveSignalTask(
+            'wf-sqlite-worker-heartbeat-lock-pressure',
+            'php-sqlite-liveness-worker',
+            'sqlite-worker-heartbeat-signal',
+        );
+
+        /** @var WorkerRegistration $worker */
+        $worker = WorkerRegistration::query()
+            ->where('worker_id', 'php-sqlite-liveness-worker')
+            ->firstOrFail();
+        $worker->forceFill(['last_heartbeat_at' => now()->subMinute()])->save();
+        $previousHeartbeat = $worker->last_heartbeat_at;
+
+        $signalWriter = $this->startTransientControlPlaneUpdate($runId);
+
+        try {
+            $this->withHeaders($this->workerHeaders())
+                ->postJson('/api/worker/heartbeat', [
+                    'worker_id' => 'php-sqlite-liveness-worker',
+                    'task_slots' => [
+                        'workflow_available' => 1,
+                        'activity_available' => 1,
+                    ],
+                ])
+                ->assertOk()
+                ->assertJsonPath('worker_id', 'php-sqlite-liveness-worker')
+                ->assertJsonPath('acknowledged', true)
+                ->assertJsonPath('reason', null);
+        } finally {
+            $this->finishTransientLeaseUpdate($signalWriter);
+        }
+
+        $this->assertTrue(
+            WorkerRegistration::query()
+                ->where('worker_id', 'php-sqlite-liveness-worker')
+                ->firstOrFail()
+                ->last_heartbeat_at
+                ->greaterThan($previousHeartbeat),
+        );
+    }
+
+    public function test_exhausted_worker_liveness_heartbeat_is_non_fatal_and_retryable(): void
+    {
+        Queue::fake();
+
+        [, $leasedTask] = $this->createLeasedInteractiveSignalTask(
+            'wf-sqlite-worker-heartbeat-lock-response',
+            'php-sqlite-liveness-worker',
+            'sqlite-worker-heartbeat-lock-response-signal',
+        );
+
+        $this->holdSqliteWriteLock($leasedTask->id);
+
+        $this->withHeaders($this->workerHeaders())
+            ->postJson('/api/worker/heartbeat', [
+                'worker_id' => 'php-sqlite-liveness-worker',
+                'task_slots' => [
+                    'workflow_available' => 1,
+                    'activity_available' => 1,
+                ],
+            ])
+            ->assertOk()
+            ->assertHeader(WorkerProtocol::HEADER, WorkerProtocol::VERSION)
+            ->assertJsonPath('worker_id', 'php-sqlite-liveness-worker')
+            ->assertJsonPath('acknowledged', false)
+            ->assertJsonPath('reason', 'backend_lock_pressure')
+            ->assertJsonPath('retryable', true)
+            ->assertJsonPath('retry_after_seconds', 1)
+            ->assertJsonPath('backend.driver', 'sqlite')
+            ->assertJsonPath('backend.lock_pressure', true)
+            ->assertJsonMissing(['message' => 'Server Error']);
+    }
+
     public function test_exhausted_control_plane_lock_pressure_returns_a_typed_retryable_response(): void
     {
         Queue::fake();
@@ -452,6 +630,54 @@ class SqliteWorkerPollLockPressureTest extends TestCase
             'last_heartbeat_at' => now(),
             'status' => 'active',
         ]);
+    }
+
+    /**
+     * @return array{string, WorkflowTask}
+     */
+    private function createLeasedInteractiveSignalTask(
+        string $workflowId,
+        string $workerId,
+        string $requestId,
+    ): array {
+        WorkflowNamespace::query()->updateOrCreate(
+            ['name' => 'default'],
+            ['description' => 'Default namespace', 'retention_days' => 30, 'status' => 'active'],
+        );
+
+        $workflow = WorkflowStub::make(InteractiveCommandWorkflow::class, $workflowId);
+        $start = $workflow->start();
+
+        NamespaceWorkflowScope::bind('default', $workflow->id(), InteractiveCommandWorkflow::class);
+        $this->runReadyWorkflowTask($start->runId());
+
+        $this->withHeaders($this->controlPlaneHeaders())
+            ->postJson("/api/workflows/{$workflowId}/signal/advance", [
+                'input' => ['Ada'],
+                'request_id' => $requestId,
+            ])
+            ->assertAccepted();
+
+        /** @var WorkflowTask|null $leasedTask */
+        $leasedTask = WorkflowTask::query()
+            ->where('workflow_run_id', $start->runId())
+            ->where('task_type', TaskType::Workflow->value)
+            ->where('status', TaskStatus::Ready->value)
+            ->first();
+
+        $this->assertInstanceOf(WorkflowTask::class, $leasedTask);
+
+        $leasedTask->forceFill([
+            'status' => TaskStatus::Leased->value,
+            'lease_owner' => $workerId,
+            'leased_at' => now(),
+            'lease_expires_at' => now()->addSeconds(30),
+            'attempt_count' => 1,
+        ])->save();
+
+        $this->registerWorker($workerId, 'php');
+
+        return [$start->runId(), $leasedTask];
     }
 
     private function holdSqliteWriteLock(string $taskId): void

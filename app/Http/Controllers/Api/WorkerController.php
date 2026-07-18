@@ -169,59 +169,76 @@ class WorkerController
         $processMetrics = $this->normalizeProcessMetrics($validated['process_metrics'] ?? null);
         $releaseLeasesForRegistration = $this->shouldReleaseLeasesForWorkerRegistration($existing, $processMetrics);
 
-        $registration = WorkerRegistration::updateOrCreate(
-            [
-                'worker_id' => $workerId,
-                'namespace' => $namespace,
-            ],
-            [
-                'task_queue' => $validated['task_queue'],
-                'runtime' => $validated['runtime'],
-                'sdk_version' => $validated['sdk_version'] ?? null,
-                'build_id' => $validated['build_id'] ?? null,
-                'supported_workflow_types' => $validated['supported_workflow_types'] ?? [],
-                'workflow_definition_fingerprints' => $workflowDefinitionFingerprints,
-                'workflow_command_contracts' => $workflowCommandContracts,
-                'supported_activity_types' => $validated['supported_activity_types'] ?? [],
-                'capabilities' => $this->nonEmptyStringArray($validated['capabilities'] ?? []),
-                'max_concurrent_workflow_tasks' => $maxWorkflowTasks,
-                'max_concurrent_activity_tasks' => $maxActivityTasks,
-                'max_concurrent_worker_sessions' => $maxWorkerSessions,
-                'available_workflow_slots' => $this->boundedSlotCount(
-                    $taskSlots['workflow_available'] ?? null,
-                    $maxWorkflowTasks,
-                ),
-                'available_activity_slots' => $this->boundedSlotCount(
-                    $taskSlots['activity_available'] ?? null,
-                    $maxActivityTasks,
-                ),
-                'available_session_slots' => $this->boundedSlotCount(
-                    $taskSlots['session_available'] ?? null,
-                    $maxWorkerSessions,
-                ),
-                'process_metrics' => $processMetrics,
-                'heartbeat_interval_seconds' => $validated['heartbeat_interval_seconds'] ?? null,
-                'last_heartbeat_at' => now(),
-                'status' => $registrationStatus,
-            ]
-        );
+        $registration = $this->storageMutations->run(function () use (
+            $namespace,
+            $workerId,
+            $validated,
+            $workflowDefinitionFingerprints,
+            $workflowCommandContracts,
+            $maxWorkflowTasks,
+            $maxActivityTasks,
+            $maxWorkerSessions,
+            $taskSlots,
+            $processMetrics,
+            $registrationStatus,
+            $releaseLeasesForRegistration,
+        ): WorkerRegistration {
+            $registration = WorkerRegistration::updateOrCreate(
+                [
+                    'worker_id' => $workerId,
+                    'namespace' => $namespace,
+                ],
+                [
+                    'task_queue' => $validated['task_queue'],
+                    'runtime' => $validated['runtime'],
+                    'sdk_version' => $validated['sdk_version'] ?? null,
+                    'build_id' => $validated['build_id'] ?? null,
+                    'supported_workflow_types' => $validated['supported_workflow_types'] ?? [],
+                    'workflow_definition_fingerprints' => $workflowDefinitionFingerprints,
+                    'workflow_command_contracts' => $workflowCommandContracts,
+                    'supported_activity_types' => $validated['supported_activity_types'] ?? [],
+                    'capabilities' => $this->nonEmptyStringArray($validated['capabilities'] ?? []),
+                    'max_concurrent_workflow_tasks' => $maxWorkflowTasks,
+                    'max_concurrent_activity_tasks' => $maxActivityTasks,
+                    'max_concurrent_worker_sessions' => $maxWorkerSessions,
+                    'available_workflow_slots' => $this->boundedSlotCount(
+                        $taskSlots['workflow_available'] ?? null,
+                        $maxWorkflowTasks,
+                    ),
+                    'available_activity_slots' => $this->boundedSlotCount(
+                        $taskSlots['activity_available'] ?? null,
+                        $maxActivityTasks,
+                    ),
+                    'available_session_slots' => $this->boundedSlotCount(
+                        $taskSlots['session_available'] ?? null,
+                        $maxWorkerSessions,
+                    ),
+                    'process_metrics' => $processMetrics,
+                    'heartbeat_interval_seconds' => $validated['heartbeat_interval_seconds'] ?? null,
+                    'last_heartbeat_at' => now(),
+                    'status' => $registrationStatus,
+                ]
+            );
 
-        if ($releaseLeasesForRegistration) {
-            $this->releaseLeasedWorkflowTasksForReplacedWorker($namespace, $workerId);
-            $this->releaseLeasedActivityTasksForReplacedWorker($namespace, $workerId);
-        }
+            if ($releaseLeasesForRegistration) {
+                $this->releaseLeasedWorkflowTasksForReplacedWorker($namespace, $workerId);
+                $this->releaseLeasedActivityTasksForReplacedWorker($namespace, $workerId);
+            }
 
-        $this->compatibilityHeartbeats->record(
-            namespace: $namespace,
-            workerId: $workerId,
-            taskQueue: $validated['task_queue'],
-            buildId: $validated['build_id'] ?? null,
-            force: true,
-        );
+            $this->compatibilityHeartbeats->record(
+                namespace: $namespace,
+                workerId: $workerId,
+                taskQueue: $validated['task_queue'],
+                buildId: $validated['build_id'] ?? null,
+                force: true,
+            );
 
-        if (is_string($namespace)) {
-            $this->queryTasks->wakeTaskQueue($namespace, $registration->task_queue);
-        }
+            if (is_string($namespace)) {
+                $this->queryTasks->wakeTaskQueue($namespace, $registration->task_queue);
+            }
+
+            return $registration;
+        });
 
         return WorkerProtocol::json([
             'worker_id' => $workerId,
@@ -604,16 +621,26 @@ class WorkerController
             $update['heartbeat_interval_seconds'] = $validated['heartbeat_interval_seconds'];
         }
 
-        $worker->update($update);
+        try {
+            $retention = $this->storageMutations->run(function () use ($worker, $update, $namespace): array {
+                $worker->update($update);
 
-        $this->compatibilityHeartbeats->record(
-            namespace: $worker->namespace,
-            workerId: $worker->worker_id,
-            taskQueue: $worker->task_queue,
-            buildId: is_string($worker->build_id) ? $worker->build_id : null,
-        );
+                $this->compatibilityHeartbeats->record(
+                    namespace: $worker->namespace,
+                    workerId: $worker->worker_id,
+                    taskQueue: $worker->task_queue,
+                    buildId: is_string($worker->build_id) ? $worker->build_id : null,
+                );
 
-        $retention = HistoryRetentionEnforcer::runInlinePass($namespace);
+                return HistoryRetentionEnforcer::runInlinePass($namespace);
+            });
+        } catch (\Throwable $exception) {
+            if (! BackendLockPressure::isSqliteBackend() || ! BackendLockPressure::is($exception)) {
+                throw $exception;
+            }
+
+            return BackendLockPressure::workerHeartbeatResponse($request);
+        }
 
         return WorkerProtocol::json([
             'worker_id' => $worker->worker_id,
@@ -1240,12 +1267,16 @@ class WorkerController
             ->value('queue');
 
         try {
-            $outcome = DB::transaction(function () use ($bridge, $commands, $request, $taskId): array {
-                $outcome = $bridge->complete($taskId, $commands);
-                $this->terminalEventAttribution->record($request, $taskId, $outcome);
+            $outcome = $this->storageMutations->run(
+                function () use ($bridge, $commands, $request, $taskId): array {
+                    return DB::transaction(function () use ($bridge, $commands, $request, $taskId): array {
+                        $outcome = $bridge->complete($taskId, $commands);
+                        $this->terminalEventAttribution->record($request, $taskId, $outcome);
 
-                return $outcome;
-            });
+                        return $outcome;
+                    });
+                },
+            );
         } catch (StructuralLimitExceededException $e) {
             return WorkerProtocol::json([
                 'task_id' => $taskId,
@@ -1259,10 +1290,29 @@ class WorkerController
             ], 422);
         } catch (ExternalPayloadStorageUnavailable $exception) {
             return $this->externalPayloadFailure($taskId, (int) $validated['workflow_task_attempt'], $exception, 503);
+        } catch (\Throwable $exception) {
+            if (! BackendLockPressure::isSqliteBackend() || ! BackendLockPressure::is($exception)) {
+                throw $exception;
+            }
+
+            return BackendLockPressure::workerOperationResponse($request, false);
         }
 
-        app(ServiceModeTimerDispatcher::class)->dispatchCreatedTaskIds($outcome['created_task_ids'] ?? []);
-        $this->wakeQueryTaskPollersForWorkflowTaskQueue($namespace, $workflowTaskQueue);
+        try {
+            $this->storageMutations->run(
+                static fn () => app(ServiceModeTimerDispatcher::class)
+                    ->dispatchCreatedTaskIds($outcome['created_task_ids'] ?? []),
+            );
+            $this->storageMutations->run(
+                fn () => $this->wakeQueryTaskPollersForWorkflowTaskQueue($namespace, $workflowTaskQueue),
+            );
+        } catch (\Throwable $exception) {
+            if (! BackendLockPressure::isSqliteBackend() || ! BackendLockPressure::is($exception)) {
+                throw $exception;
+            }
+
+            return BackendLockPressure::workerOperationResponse($request, true);
+        }
 
         return WorkerProtocol::json([
             'task_id' => $taskId,

@@ -135,7 +135,15 @@ return Application::configure(basePath: dirname(__DIR__))
             };
 
             if ($taskKind === null) {
-                return null;
+                if (! BackendLockPressure::isSqliteBackend()) {
+                    return null;
+                }
+
+                if ($request->is('api/worker/heartbeat')) {
+                    return BackendLockPressure::workerHeartbeatResponse($request);
+                }
+
+                return BackendLockPressure::workerOperationResponse($request);
             }
 
             $namespace = $request->attributes->get('namespace', $request->header('X-Namespace', 'default'));
