@@ -146,11 +146,14 @@ run_in_published_server_container() {
   done
 
   local runner_args=(--result-dir /result)
+  local host_user
+  host_user="$(id -u):$(id -g)"
   if [[ "$keep_run_root" == "1" ]]; then
     runner_args+=(--keep-run-root)
   fi
 
   docker run --rm \
+    --user "$host_user" \
     --entrypoint bash \
     -v "$result_dir:/result" \
     "${docker_env[@]}" \
@@ -368,18 +371,10 @@ prepare_published_php_activity_artifacts() {
     return 1
   fi
 
-  if ! python3 "$script_dir/distribution_identities.py" record-unique \
-    "$distribution_identity_file" workflow "$DW_WORKFLOW_PHP_VERSION" \
-    "$composer_cache/files/durable-workflow/workflow" '**/*' \
-    --artifact-name durable-workflow/workflow; then
-    fail_activity_prerequisite 'The exact consumed workflow Composer archive could not be identified'
-    return 1
-  fi
   local published_workflow="$project_dir/vendor/durable-workflow/workflow"
-  local bundled_workflow="$repo_root/vendor/durable-workflow/workflow"
   local published_waterline="$project_dir/vendor/durable-workflow/waterline"
   local published_autoload="$project_dir/vendor/autoload.php"
-  if [[ ! -d "$published_workflow" || ! -d "$bundled_workflow" ]]; then
+  if [[ ! -d "$published_workflow" ]]; then
     fail_activity_prerequisite 'The published workflow package could not be bound into the server activity runtime'
     return 1
   fi
@@ -387,49 +382,79 @@ prepare_published_php_activity_artifacts() {
     fail_activity_prerequisite 'The exact published Waterline package does not expose a loadable Composer runtime'
     return 1
   fi
-  if ! mv "$bundled_workflow" "$run_root/server-bundled-workflow" \
-    || ! cp -a "$published_workflow" "$bundled_workflow"; then
-    fail_activity_prerequisite 'The exact published workflow package could not replace the server image build-time copy'
-    return 1
-  fi
-
-  export DW_ACTIVITIES_WATERLINE_AUTOLOAD="$published_autoload"
+  export DW_ACTIVITIES_PUBLISHED_PHP_AUTOLOAD="$published_autoload"
+  export DW_ACTIVITIES_WORKFLOW_PACKAGE_ROOT="$published_workflow"
   export DW_ACTIVITIES_WATERLINE_PACKAGE_ROOT="$published_waterline"
+  export DW_ACTIVITIES_WORKFLOW_EXECUTION_OBSERVATION="$result_dir/workflow-execution-observation.json"
   export DW_ACTIVITIES_WATERLINE_EXECUTION_OBSERVATION="$result_dir/waterline-execution-observation.json"
-  rm -f "$DW_ACTIVITIES_WATERLINE_EXECUTION_OBSERVATION"
+  rm -f \
+    "$DW_ACTIVITIES_WORKFLOW_EXECUTION_OBSERVATION" \
+    "$DW_ACTIVITIES_WATERLINE_EXECUTION_OBSERVATION"
 }
 
-record_executed_waterline_distribution() {
-  local observation="${DW_ACTIVITIES_WATERLINE_EXECUTION_OBSERVATION:-}"
-  if [[ -z "$observation" || ! -s "$observation" ]]; then
+record_executed_php_activity_distributions() {
+  local workflow_observation="${DW_ACTIVITIES_WORKFLOW_EXECUTION_OBSERVATION:-}"
+  local waterline_observation="${DW_ACTIVITIES_WATERLINE_EXECUTION_OBSERVATION:-}"
+  if [[ -z "$workflow_observation" || ! -s "$workflow_observation" ]]; then
+    fail_activity_prerequisite 'The focused activity probe did not retain a Workflow runtime execution observation'
+    return 1
+  fi
+  if [[ -z "$waterline_observation" || ! -s "$waterline_observation" ]]; then
     fail_activity_prerequisite 'The focused activity probe did not retain a Waterline runtime execution observation'
     return 1
   fi
-  if ! WATERLINE_EXECUTION_OBSERVATION="$observation" \
+  if ! WORKFLOW_EXECUTION_OBSERVATION="$workflow_observation" \
+    WATERLINE_EXECUTION_OBSERVATION="$waterline_observation" \
+    WORKFLOW_VERSION="$DW_WORKFLOW_PHP_VERSION" \
     WATERLINE_VERSION="$DW_WATERLINE_VERSION" \
     python3 <<'PY'
 import json
 import os
 from pathlib import Path
 
-observation = json.loads(Path(os.environ["WATERLINE_EXECUTION_OBSERVATION"]).read_text(encoding="utf-8"))
-expected = {
-    "schema": "durable-workflow.v2.activity-runtime.distribution-execution-observation",
-    "component": "waterline",
-    "package": "durable-workflow/waterline",
-    "version": os.environ["WATERLINE_VERSION"],
-    "class": "Waterline\\Support\\CompensationVisibility",
-    "method": "activitiesForRun",
+observations = {
+    "Workflow": json.loads(Path(os.environ["WORKFLOW_EXECUTION_OBSERVATION"]).read_text(encoding="utf-8")),
+    "Waterline": json.loads(Path(os.environ["WATERLINE_EXECUTION_OBSERVATION"]).read_text(encoding="utf-8")),
 }
-for field, value in expected.items():
-    if observation.get(field) != value:
-        raise SystemExit(f"Waterline execution observation {field} did not match the exact package runtime")
-activity_count = observation.get("observed_activity_count")
+expected = {
+    "Workflow": {
+        "schema": "durable-workflow.v2.activity-runtime.distribution-execution-observation",
+        "component": "workflow",
+        "package": "durable-workflow/workflow",
+        "version": os.environ["WORKFLOW_VERSION"],
+        "class": "Workflow\\V2\\Support\\WorkflowFiberRunner",
+        "method": "step",
+    },
+    "Waterline": {
+        "schema": "durable-workflow.v2.activity-runtime.distribution-execution-observation",
+        "component": "waterline",
+        "package": "durable-workflow/waterline",
+        "version": os.environ["WATERLINE_VERSION"],
+        "class": "Waterline\\Support\\CompensationVisibility",
+        "method": "activitiesForRun",
+    },
+}
+for component, fields in expected.items():
+    for field, value in fields.items():
+        if observations[component].get(field) != value:
+            raise SystemExit(f"{component} execution observation {field} did not match the exact package runtime")
+command_count = observations["Workflow"].get("observed_command_count")
+if type(command_count) is not int or not 1 <= command_count <= 100:
+    raise SystemExit("Workflow execution observation did not retain a bounded command count")
+activity_count = observations["Waterline"].get("observed_activity_count")
 if type(activity_count) is not int or not 0 <= activity_count <= 1000:
     raise SystemExit("Waterline execution observation did not retain a bounded activity count")
 PY
   then
-    fail_activity_prerequisite 'The focused activity probe emitted invalid Waterline runtime execution evidence'
+    fail_activity_prerequisite 'The focused activity probe emitted invalid Workflow or Waterline runtime execution evidence'
+    return 1
+  fi
+
+  if ! python3 "$script_dir/distribution_identities.py" record-unique \
+    "$distribution_identity_file" workflow "$DW_WORKFLOW_PHP_VERSION" \
+    "$run_root/published-php-composer-cache/files/durable-workflow/workflow" '**/*' \
+    --artifact-name durable-workflow/workflow; then
+    fail_activity_prerequisite 'The executed Workflow Composer archive could not be identified'
     return 1
   fi
 
@@ -529,7 +554,7 @@ prepare_published_activity_artifacts() {
     return 1
   fi
   if ! python3 "$script_dir/distribution_identities.py" validate \
-    "$distribution_identity_file" workflow server cli sdk-python \
+    "$distribution_identity_file" server cli sdk-python \
     > "$result_dir/executed-distribution-identities-validation.log" 2>&1; then
     fail_activity_prerequisite 'The activity runner did not retain the complete exact prepared distribution set'
     return 1
@@ -543,8 +568,15 @@ prepare_published_activity_artifacts() {
 
 run_focused_activity_host_probe() {
   local probe_db="$run_root/activities-focused-host-probe.sqlite"
+  local probe_storage="$run_root/activities-focused-host-storage"
 
   : > "$probe_db"
+  mkdir -p \
+    "$probe_storage/logs" \
+    "$probe_storage/framework/cache/data" \
+    "$probe_storage/framework/sessions" \
+    "$probe_storage/framework/testing" \
+    "$probe_storage/framework/views"
 
   APP_ENV=production \
   APP_DEBUG=false \
@@ -554,14 +586,18 @@ run_focused_activity_host_probe() {
   QUEUE_CONNECTION=database \
   CACHE_STORE=array \
   SESSION_DRIVER=array \
+  LARAVEL_STORAGE_PATH="$probe_storage" \
+  VIEW_COMPILED_PATH="$probe_storage/framework/views" \
   DW_AUTH_DRIVER=none \
   DW_TASK_DISPATCH_MODE=poll \
   DW_V2_TASK_DISPATCH_MODE=poll \
   DW_ACTIVITIES_CLI_BIN="${DW_ACTIVITIES_CLI_BIN:-}" \
   DW_ACTIVITIES_CLI_SOURCE="${DW_ACTIVITIES_CLI_SOURCE:-}" \
   DW_ACTIVITIES_CLI_UNAVAILABLE_REASON="${DW_ACTIVITIES_CLI_UNAVAILABLE_REASON:-}" \
-  DW_ACTIVITIES_WATERLINE_AUTOLOAD="${DW_ACTIVITIES_WATERLINE_AUTOLOAD:-}" \
+  DW_ACTIVITIES_PUBLISHED_PHP_AUTOLOAD="${DW_ACTIVITIES_PUBLISHED_PHP_AUTOLOAD:-}" \
+  DW_ACTIVITIES_WORKFLOW_PACKAGE_ROOT="${DW_ACTIVITIES_WORKFLOW_PACKAGE_ROOT:-}" \
   DW_ACTIVITIES_WATERLINE_PACKAGE_ROOT="${DW_ACTIVITIES_WATERLINE_PACKAGE_ROOT:-}" \
+  DW_ACTIVITIES_WORKFLOW_EXECUTION_OBSERVATION="${DW_ACTIVITIES_WORKFLOW_EXECUTION_OBSERVATION:-}" \
   DW_ACTIVITIES_WATERLINE_EXECUTION_OBSERVATION="${DW_ACTIVITIES_WATERLINE_EXECUTION_OBSERVATION:-}" \
   RUNNER_REPO_ROOT="$repo_root" \
   RESULT_DIR="$result_dir" \
@@ -607,12 +643,35 @@ if (! is_dir($repoRoot)) {
 }
 chdir($repoRoot);
 
-require $repoRoot.'/vendor/autoload.php';
-$waterlineAutoload = getenv('DW_ACTIVITIES_WATERLINE_AUTOLOAD') ?: '';
-if ($waterlineAutoload === '' || ! is_file($waterlineAutoload)) {
-    throw new RuntimeException('exact published Waterline Composer autoloader is not available');
+$publishedPhpAutoload = getenv('DW_ACTIVITIES_PUBLISHED_PHP_AUTOLOAD') ?: '';
+if ($publishedPhpAutoload === '' || ! is_file($publishedPhpAutoload)) {
+    throw new RuntimeException('exact published Workflow and Waterline Composer autoloader is not available');
 }
-require $waterlineAutoload;
+$publishedPhpLoader = require $publishedPhpAutoload;
+$publishedPhpLoader->unregister();
+require $repoRoot.'/vendor/autoload.php';
+spl_autoload_register(
+    static function (string $class) use ($publishedPhpLoader): void {
+        if (! str_starts_with($class, 'Workflow\\') && ! str_starts_with($class, 'Waterline\\')) {
+            return;
+        }
+
+        $file = $publishedPhpLoader->findFile($class);
+        if (is_string($file)) {
+            require $file;
+        }
+    },
+    true,
+    true,
+);
+
+$workflowPackageRoot = realpath(getenv('DW_ACTIVITIES_WORKFLOW_PACKAGE_ROOT') ?: '');
+$workflowClassFile = realpath((new ReflectionClass(WorkflowFiberRunner::class))->getFileName() ?: '');
+if ($workflowPackageRoot === false
+    || $workflowClassFile === false
+    || ! str_starts_with($workflowClassFile, rtrim($workflowPackageRoot, DIRECTORY_SEPARATOR).DIRECTORY_SEPARATOR)) {
+    throw new RuntimeException('Workflow activity runtime did not load from the exact installed package');
+}
 
 #[Type(EMBEDDED_WORKFLOW_TYPE)]
 final class PublishedActivitiesEmbeddedWorkflow extends Workflow
@@ -1379,6 +1438,21 @@ function complete_workflow_task_from_runtime(array $task): array
     if ($step->commands === []) {
         throw new RuntimeException('workflow runtime produced no commands for the leased task');
     }
+    $observationPath = getenv('DW_ACTIVITIES_WORKFLOW_EXECUTION_OBSERVATION') ?: '';
+    if ($observationPath === '') {
+        throw new RuntimeException('Workflow execution observation path is not configured');
+    }
+    write_json_file($observationPath, [
+        'schema' => 'durable-workflow.v2.activity-runtime.distribution-execution-observation',
+        'component' => 'workflow',
+        'package' => 'durable-workflow/workflow',
+        'version' => getenv('DW_WORKFLOW_PHP_VERSION') ?: 'unknown',
+        'class' => WorkflowFiberRunner::class,
+        'method' => 'step',
+        'source_file' => 'src/V2/Support/WorkflowFiberRunner.php',
+        'workflow_task_id' => $task['task_id'] ?? null,
+        'observed_command_count' => count($step->commands),
+    ]);
 
     return request_json('POST', '/worker/workflow-tasks/'.rawurlencode((string) $task['task_id']).'/complete', [
         'lease_owner' => $task['lease_owner'],
@@ -4774,7 +4848,7 @@ PHP
 if should_run_focused_activity_host_probe; then
   if prepare_published_activity_artifacts; then
     run_focused_activity_host_probe
-    if ! record_executed_waterline_distribution; then
+    if ! record_executed_php_activity_distributions; then
       export DW_ACTIVITIES_PREREQUISITE_FAILURE="$activity_prerequisite_failure"
     fi
   else

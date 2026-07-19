@@ -54,6 +54,11 @@ class ActivityConformanceRunnerContractTest extends TestCase
             $this->assertIsArray($arguments);
             $this->assertContains('--entrypoint', $arguments);
             $this->assertContains('bash', $arguments);
+            $this->assertContains('--user', $arguments);
+            $this->assertContains(
+                trim((string) shell_exec('id -u')).':'.trim((string) shell_exec('id -g')),
+                $arguments,
+            );
             $this->assertContains($resultDir.':/result', $arguments);
             $this->assertContains('DW_ACTIVITIES_CONTAINER_HANDOFF=1', $arguments);
             $this->assertContains('DW_ACTIVITIES_RUNNER_SOURCE='.$serverImage, $arguments);
@@ -83,6 +88,8 @@ class ActivityConformanceRunnerContractTest extends TestCase
         $this->assertStringContainsString('DW_ACTIVITIES_PYTHON_BIN', $source);
         $this->assertStringContainsString('DW_ACTIVITIES_SKIP_FOCUSED_HOST_PROBE', $source);
         $this->assertStringContainsString('RUNNER_REPO_ROOT', $source);
+        $this->assertStringContainsString('LARAVEL_STORAGE_PATH', $source);
+        $this->assertStringContainsString('VIEW_COMPILED_PATH', $source);
 
         foreach ([
             'DW_SERVER_VERSION',
@@ -183,7 +190,7 @@ class ActivityConformanceRunnerContractTest extends TestCase
             'Waterline\\Support\\CompensationVisibility',
             'CompensationVisibility::activitiesForRun',
             'distribution-execution-observation',
-            'record_executed_waterline_distribution',
+            'record_executed_php_activity_distributions',
             'waterline_activity_attempt_view',
             'operator_visible_activity_attempt_state',
             'activity_host_evidence',
@@ -212,7 +219,7 @@ class ActivityConformanceRunnerContractTest extends TestCase
     {
         $source = $this->read('scripts/conformance/activities-published-artifacts.sh');
         $prepareStart = strpos($source, 'prepare_published_php_activity_artifacts() {');
-        $recordStart = strpos($source, 'record_executed_waterline_distribution() {');
+        $recordStart = strpos($source, 'record_executed_php_activity_distributions() {');
         $installEvidenceStart = strpos($source, 'write_published_activity_install_evidence() {');
 
         $this->assertNotFalse($prepareStart);
@@ -221,9 +228,15 @@ class ActivityConformanceRunnerContractTest extends TestCase
 
         $prepare = substr($source, $prepareStart, $recordStart - $prepareStart);
         $record = substr($source, $recordStart, $installEvidenceStart - $recordStart);
+        $this->assertStringNotContainsString('mv "$bundled_workflow"', $prepare);
+        $this->assertStringNotContainsString('cp -a "$published_workflow"', $prepare);
+        $this->assertStringNotContainsString('"$distribution_identity_file" workflow', $prepare);
         $this->assertStringNotContainsString('"$distribution_identity_file" waterline', $prepare);
+        $this->assertStringContainsString('DW_ACTIVITIES_WORKFLOW_EXECUTION_OBSERVATION', $record);
         $this->assertStringContainsString('DW_ACTIVITIES_WATERLINE_EXECUTION_OBSERVATION', $record);
+        $this->assertStringContainsString('"$distribution_identity_file" workflow', $record);
         $this->assertStringContainsString('"$distribution_identity_file" waterline', $record);
+        $this->assertStringContainsString('WorkflowFiberRunner::class', $source);
         $this->assertStringContainsString('$activities = CompensationVisibility::activitiesForRun($run);', $source);
         $this->assertStringContainsString('ReflectionClass(CompensationVisibility::class)', $source);
     }
