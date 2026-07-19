@@ -24,7 +24,7 @@ final class ReplayVerificationContract
 {
     public const SCHEMA = 'durable-workflow.v2.replay-verification.contract';
 
-    public const VERSION = 1;
+    public const VERSION = 2;
 
     public const BUNDLE_SCHEMA = 'durable-workflow.v2.history-export';
 
@@ -371,6 +371,35 @@ final class ReplayVerificationContract
                     'runner_path' => 'scripts/conformance/replay-published-artifacts.sh',
                     'runner_command' => 'scripts/conformance/replay-published-artifacts.sh --result-dir <result-dir>',
                     'result_schema' => self::REPLAY_CONFORMANCE_RESULT_SCHEMA,
+                    'portable_result_contract' => [
+                        'schema' => 'durable-workflow.v1.portable-native-evidence',
+                        'runner_max_bytes' => 4 * 1024 * 1024,
+                        'projection_target_bytes' => 3 * 1024 * 1024,
+                        'host_consumer_max_bytes' => 4 * 1024 * 1024,
+                        'required_top_level_fields' => [
+                            'schema',
+                            'started_at',
+                            'finished_at',
+                            'outcome',
+                            'runner_blocked',
+                            'artifact_versions',
+                            'executed_distribution_identities',
+                            'runtime_matrix',
+                            'scenario_results',
+                            'findings',
+                            'finding_links',
+                        ],
+                        'required_scenario_status_source' => 'required_scenarios',
+                        'exact_distribution_identity_field' => 'executed_distribution_identities',
+                        'native_evidence_failure_classification' => [
+                            'oversized' => 'runner_infrastructure_failure',
+                            'malformed' => 'runner_infrastructure_failure',
+                            'incomplete' => 'runner_infrastructure_failure',
+                        ],
+                        'product_assertions' => 'fail_closed_before_projection',
+                        'sensitive_values' => 'omitted',
+                        'unbounded_payloads' => 'sha256_summary_without_payload_bytes',
+                    ],
                     'result_files' => [
                         'pins.json',
                         'run-metadata.json',

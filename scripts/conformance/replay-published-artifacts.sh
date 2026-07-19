@@ -2012,6 +2012,7 @@ if [[ -s "$php_sdk_result" ]]; then
   python3 - "$php_sdk_result" "$result_dir/php-replay-shard.json" "$result_dir/php-replay-surface.json" "$result_dir/pins.json" <<'PY'
 from __future__ import annotations
 
+import hashlib
 import json
 import sys
 from pathlib import Path
@@ -2021,8 +2022,13 @@ source_path = Path(sys.argv[1])
 shard_path = Path(sys.argv[2])
 surface_path = Path(sys.argv[3])
 pins = json.loads(Path(sys.argv[4]).read_text(encoding="utf-8"))
-source = json.loads(source_path.read_text(encoding="utf-8"))
+source_bytes = source_path.read_bytes()
+source = json.loads(source_bytes)
 assertions = source.get("assertions") if isinstance(source.get("assertions"), dict) else {}
+source_document = {
+    "bytes": len(source_bytes),
+    "sha256": hashlib.sha256(source_bytes).hexdigest(),
+}
 
 install_pass = (
     source.get("local_product_source_checkouts_used") is False
@@ -2041,7 +2047,16 @@ restart_pass = replay_pass and assertions.get("distinct_worker_restart_processes
 
 def scenario(scenario_id: str, passed: bool, required: list[str]) -> dict[str, Any]:
     observed = {
-        "sdk_php_result": source,
+        "sdk_php_result_summary": {
+            "schema": source.get("schema"),
+            "outcome": source.get("outcome"),
+            "runner_blocked": source.get("runner_blocked"),
+            "artifact_versions": source.get("artifact_versions") or {},
+            "package_provenance": source.get("package_provenance") or {},
+            "apache_avro_provenance": source.get("apache_avro_provenance") or {},
+            "assertions": assertions,
+            "source_document": source_document,
+        },
         "required_assertions": {name: assertions.get(name) for name in required},
         "local_product_source_checkouts_used": False,
     }
@@ -2122,6 +2137,7 @@ fi
 python3 - "$result_dir" "$result_dir/pins.json" "$server_image" "$server_base_url" "$auth_token" "$dw_bin" "$result_dir/server-image-digest.txt" "$python_pip_status" "$python_install_status" "$python_probe_status" "$php_sdk_cell_status" "$php_shard_status" "$rust_install_status" "$rust_shard_status" <<'PY'
 from __future__ import annotations
 
+import hashlib
 import json
 import sys
 from pathlib import Path
@@ -2156,10 +2172,22 @@ def text_tail(path: str) -> str | None:
         return None
     return file.read_text(encoding="utf-8", errors="replace")[-2000:]
 
+
+def file_identity(path: str) -> dict[str, object]:
+    file = result_dir / path
+    if not file.exists() or file.stat().st_size == 0:
+        return {}
+    contents = file.read_bytes()
+    return {
+        "bytes": len(contents),
+        "sha256": hashlib.sha256(contents).hexdigest(),
+    }
+
 versions = pins.get("artifact_versions") or {}
 sources = pins.get("artifact_sources") or {}
 namespace_setup = load("replay-namespace-setup.json")
 php_sdk_result = load("php-sdk-replay-probe/php-sdk-conformance-result.json")
+php_sdk_result_identity = file_identity("php-sdk-replay-probe/php-sdk-conformance-result.json")
 php_sdk_install_pass = (
     isinstance(php_sdk_result, dict)
     and php_sdk_result.get("local_product_source_checkouts_used") is False
@@ -2167,6 +2195,37 @@ php_sdk_install_pass = (
     and bool(php_sdk_result.get("package_provenance"))
     and bool(php_sdk_result.get("apache_avro_provenance"))
 )
+php_sdk_result_summary = {
+    "schema": php_sdk_result.get("schema") if isinstance(php_sdk_result, dict) else None,
+    "outcome": php_sdk_result.get("outcome") if isinstance(php_sdk_result, dict) else None,
+    "runner_blocked": php_sdk_result.get("runner_blocked") if isinstance(php_sdk_result, dict) else None,
+    "local_product_source_checkouts_used": (
+        php_sdk_result.get("local_product_source_checkouts_used")
+        if isinstance(php_sdk_result, dict)
+        else None
+    ),
+    "artifact_versions": (
+        php_sdk_result.get("artifact_versions") or {}
+        if isinstance(php_sdk_result, dict)
+        else {}
+    ),
+    "package_provenance": (
+        php_sdk_result.get("package_provenance") or {}
+        if isinstance(php_sdk_result, dict)
+        else {}
+    ),
+    "apache_avro_provenance": (
+        php_sdk_result.get("apache_avro_provenance") or {}
+        if isinstance(php_sdk_result, dict)
+        else {}
+    ),
+    "assertions": (
+        php_sdk_result.get("assertions") or {}
+        if isinstance(php_sdk_result, dict)
+        else {}
+    ),
+    "source_document": php_sdk_result_identity,
+}
 artifacts = [
     {
         "artifact": "server",
@@ -2225,7 +2284,7 @@ artifacts = [
             "package": "durable-workflow/sdk",
             "cell_exit_code": php_sdk_cell_status,
             "shard_exit_code": php_shard_status,
-            "result": php_sdk_result,
+            "result": php_sdk_result_summary,
         },
     },
     {
@@ -2264,7 +2323,9 @@ PY
 cat > "$run_root/merge-replay-shards.py" <<'PY'
 from __future__ import annotations
 
+import hashlib
 import json
+import re
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
@@ -2276,6 +2337,62 @@ python_status = int(sys.argv[3])
 php_status = int(sys.argv[4])
 rust_status = int(sys.argv[5])
 identity_status = int(sys.argv[6])
+
+PORTABLE_RESULT_LIMIT_BYTES = 4 * 1024 * 1024
+PORTABLE_RESULT_TARGET_BYTES = 3 * 1024 * 1024
+PORTABLE_EVIDENCE_CELL_LIMIT_BYTES = 64 * 1024
+PORTABLE_EVIDENCE_STRING_LIMIT_BYTES = 4096
+PORTABLE_EVIDENCE_COLLECTION_LIMIT = 64
+PORTABLE_FINDING_LIMIT = 64
+PORTABLE_FINDING_LINK_LIMIT = 16
+PORTABLE_SENSITIVE_KEY_PARTS = (
+    "authorization",
+    "cookie",
+    "credential",
+    "password",
+    "privatekey",
+    "secret",
+)
+PORTABLE_SENSITIVE_KEY_SUFFIXES = (
+    "apikey",
+    "passphrase",
+    "token",
+)
+PORTABLE_UNBOUNDED_VALUE_KEYS = {
+    "customerpayload",
+    "debuglog",
+    "ephemeraldiagnosticpayload",
+    "eventhistory",
+    "historyevents",
+    "rawpayload",
+    "stacktrace",
+    "workflowpayload",
+}
+PORTABLE_PRIORITY_KEYS = {
+    "artifact",
+    "artifactversions",
+    "code",
+    "exceptionclass",
+    "expectedbehavior",
+    "message",
+    "nextacceptancecriterion",
+    "observedoutcome",
+    "outcome",
+    "owningsurface",
+    "reason",
+    "rejectionreason",
+    "requiredassertions",
+    "runtime",
+    "scenarioid",
+    "sha256",
+    "source",
+    "status",
+    "statuscode",
+    "summary",
+    "title",
+    "type",
+    "version",
+}
 
 REQUIRED = [
     "published_artifact_install_only",
@@ -2328,6 +2445,213 @@ def load_json(path: Path) -> dict[str, Any] | None:
     if not path.exists():
         return None
     return json.loads(path.read_text(encoding="utf-8"))
+
+
+def portable_key_token(value: Any) -> str:
+    return re.sub(r"[^a-z0-9]", "", str(value).lower())
+
+
+def portable_sensitive_key(value: Any) -> bool:
+    token = portable_key_token(value)
+    return any(part in token for part in PORTABLE_SENSITIVE_KEY_PARTS) or any(
+        token.endswith(suffix) for suffix in PORTABLE_SENSITIVE_KEY_SUFFIXES
+    )
+
+
+def portable_unbounded_value_key(value: Any) -> bool:
+    token = portable_key_token(value)
+    return token in PORTABLE_UNBOUNDED_VALUE_KEYS or (
+        token.endswith("payload") and token != "payloadcodec"
+    )
+
+
+def portable_json_bytes(value: Any) -> bytes:
+    return json.dumps(
+        value,
+        default=str,
+        separators=(",", ":"),
+        sort_keys=True,
+    ).encode("utf-8")
+
+
+def portable_value_summary(value: Any, reason: str) -> dict[str, Any]:
+    encoded = portable_json_bytes(value)
+    summary: dict[str, Any] = {
+        "retained": False,
+        "reason": reason,
+        "original_bytes": len(encoded),
+        "sha256": hashlib.sha256(encoded).hexdigest(),
+    }
+    if isinstance(value, str) and reason == "string_limit":
+        summary["head"] = value[:1024]
+        summary["tail"] = value[-2048:]
+    return summary
+
+
+def portable_value(value: Any, *, depth: int = 0) -> Any:
+    if value is None or isinstance(value, (bool, int, float)):
+        return value
+    if isinstance(value, str):
+        if len(value.encode("utf-8")) <= PORTABLE_EVIDENCE_STRING_LIMIT_BYTES:
+            return value
+        return portable_value_summary(value, "string_limit")
+    if depth >= 8:
+        return portable_value_summary(value, "depth_limit")
+    if isinstance(value, list):
+        retained = [
+            portable_value(item, depth=depth + 1)
+            for item in value[:PORTABLE_EVIDENCE_COLLECTION_LIMIT]
+        ]
+        if len(value) > PORTABLE_EVIDENCE_COLLECTION_LIMIT:
+            retained.append({
+                "retained": False,
+                "reason": "collection_limit",
+                "omitted_items": len(value) - PORTABLE_EVIDENCE_COLLECTION_LIMIT,
+                "sha256": hashlib.sha256(portable_json_bytes(value)).hexdigest(),
+            })
+        return retained
+    if isinstance(value, dict):
+        keys = sorted(
+            value,
+            key=lambda key: (
+                portable_key_token(key) not in PORTABLE_PRIORITY_KEYS,
+                str(key),
+            ),
+        )
+        retained: dict[str, Any] = {}
+        omitted_keys = 0
+        sensitive_keys = 0
+        for key in keys:
+            key_text = str(key)
+            if portable_sensitive_key(key_text):
+                sensitive_keys += 1
+                continue
+            if len(retained) >= PORTABLE_EVIDENCE_COLLECTION_LIMIT:
+                omitted_keys += 1
+                continue
+            if portable_unbounded_value_key(key_text):
+                retained[key_text] = portable_value_summary(value[key], "unbounded_payload")
+                continue
+            retained[key_text] = portable_value(value[key], depth=depth + 1)
+        if omitted_keys or sensitive_keys:
+            retained["_portable_evidence_omitted"] = {
+                "reason": "collection_or_sensitive_key_limit",
+                "omitted_keys": omitted_keys,
+                "sensitive_keys": sensitive_keys,
+                "sha256": hashlib.sha256(portable_json_bytes(value)).hexdigest(),
+            }
+        return retained
+    return portable_value(str(value), depth=depth)
+
+
+def bounded_portable_cell(value: Any) -> Any:
+    retained = portable_value(value)
+    if len(portable_json_bytes(retained)) <= PORTABLE_EVIDENCE_CELL_LIMIT_BYTES:
+        return retained
+    return portable_value_summary(value, "evidence_cell_limit")
+
+
+def portable_finding_ref(value: Any) -> Any:
+    if not isinstance(value, dict):
+        return bounded_portable_cell(value)
+    return {
+        key: bounded_portable_cell(value[key])
+        for key in (
+            "id",
+            "type",
+            "scenario_id",
+            "owner",
+            "owning_contract",
+            "owning_surface",
+            "title",
+            "summary",
+            "reason",
+            "message",
+            "blocker_kind",
+        )
+        if key in value
+    }
+
+
+def portable_scenario_result(scenario_id: str, value: dict[str, Any]) -> dict[str, Any]:
+    retained: dict[str, Any] = {
+        "scenario_id": scenario_id,
+        "status": value.get("status"),
+    }
+    for key in (
+        "published_artifact_versions",
+        "artifact_versions",
+        "artifact_sources",
+        "implementation_identity",
+        "runtime_matrix",
+    ):
+        if key in value:
+            retained[key] = bounded_portable_cell(value[key])
+
+    observed = value.get("observed_outputs")
+    if observed is not None:
+        retained["observed_outputs"] = bounded_portable_cell(observed)
+    diagnostics = value.get("replay_diagnostics")
+    if diagnostics is not None and diagnostics != observed:
+        retained["replay_diagnostics"] = bounded_portable_cell(diagnostics)
+
+    linked = value.get("linked_findings") or value.get("finding_links")
+    if isinstance(linked, list) and linked:
+        retained["linked_findings"] = [
+            portable_finding_ref(finding)
+            for finding in linked[:PORTABLE_FINDING_LINK_LIMIT]
+        ]
+
+    copied = set(retained) | {
+        "observed_outputs",
+        "replay_diagnostics",
+        "linked_findings",
+        "finding_links",
+    }
+    for key in sorted(value):
+        if key in copied or portable_sensitive_key(key):
+            continue
+        retained[key] = bounded_portable_cell(value[key])
+    return retained
+
+
+def portable_finding(value: dict[str, Any]) -> dict[str, Any]:
+    return {
+        key: bounded_portable_cell(value[key])
+        for key in (
+            "id",
+            "type",
+            "scenario_id",
+            "owner",
+            "owning_contract",
+            "owning_surface",
+            "title",
+            "summary",
+            "reason",
+            "message",
+            "blocker_kind",
+            "observed_behavior",
+            "evidence",
+            "expected_behavior",
+            "next_acceptance_criterion",
+        )
+        if key in value
+    }
+
+
+def portable_finding_links(values: dict[str, list[dict[str, Any]]]) -> dict[str, list[Any]]:
+    return {
+        str(scenario_id): [
+            portable_finding_ref(finding)
+            for finding in linked[:PORTABLE_FINDING_LINK_LIMIT]
+        ]
+        for scenario_id, linked in list(sorted(values.items()))[:PORTABLE_EVIDENCE_COLLECTION_LIMIT]
+        if isinstance(linked, list)
+    }
+
+
+def encoded_result_bytes(value: dict[str, Any]) -> bytes:
+    return (json.dumps(value, indent=2, sort_keys=True) + "\n").encode("utf-8")
 
 
 def scenario_map(report: dict[str, Any] | None) -> dict[str, dict[str, Any]]:
@@ -2550,6 +2874,25 @@ if identity_status != 0:
     findings.append(identity_finding)
     finding_links["executed_distribution_identities"] = [identity_finding]
 
+retained_results = {
+    scenario: portable_scenario_result(scenario, results[scenario])
+    for scenario in REQUIRED
+}
+retained_findings = [
+    portable_finding(value)
+    for value in findings[:PORTABLE_FINDING_LIMIT]
+]
+retained_finding_links = portable_finding_links(finding_links)
+portable_evidence_contract = {
+    "schema": "durable-workflow.v1.portable-native-evidence",
+    "max_result_bytes": PORTABLE_RESULT_LIMIT_BYTES,
+    "projection_target_bytes": PORTABLE_RESULT_TARGET_BYTES,
+    "max_evidence_cell_bytes": PORTABLE_EVIDENCE_CELL_LIMIT_BYTES,
+    "max_string_bytes": PORTABLE_EVIDENCE_STRING_LIMIT_BYTES,
+    "scenario_evidence": "complete_required_statuses_and_bounded_diagnostics",
+    "sensitive_values": "omitted",
+    "unbounded_values": "sha256_summary",
+}
 result = {
     "schema": "durable-workflow.v2.replay-conformance.result",
     "schema_version": 1,
@@ -2587,14 +2930,57 @@ result = {
             },
         },
     },
-    "scenario_results": {scenario: results[scenario] for scenario in REQUIRED},
+    "scenario_results": retained_results,
     "completed_history_replay": section_summary(results, REQUIRED[1:11] + ["rust_side_effect_replay_after_worker_restart"]),
     "worker_restart_replay": section_summary(results, REQUIRED[11:23] + ["rust_version_marker_replay_after_code_upgrade"]),
     "adversarial_replay": section_summary(results, REQUIRED[23:27]),
     "in_flight_timing": section_summary(results, REQUIRED[27:29]),
-    "findings": findings,
-    "finding_links": finding_links,
+    "findings": retained_findings,
+    "finding_links": retained_finding_links,
+    "portable_evidence_contract": portable_evidence_contract,
 }
+projected_result_bytes = len(encoded_result_bytes(result))
+if projected_result_bytes > PORTABLE_RESULT_TARGET_BYTES:
+    result = {
+        "schema": result["schema"],
+        "schema_version": result["schema_version"],
+        "started_at": result["started_at"],
+        "finished_at": result["finished_at"],
+        "generated_at": result["generated_at"],
+        "outcome": result["outcome"],
+        "runner_blocked": result["runner_blocked"],
+        "artifact_versions": result["artifact_versions"],
+        "executed_distribution_identities": result["executed_distribution_identities"],
+        "artifact_sources": result["artifact_sources"],
+        "source_policy": result["source_policy"],
+        "runtime_matrix": result["runtime_matrix"],
+        "scenario_results": {
+            scenario: {
+                "scenario_id": scenario,
+                "status": retained_results[scenario].get("status"),
+                **(
+                    {"linked_findings": retained_results[scenario]["linked_findings"]}
+                    if retained_results[scenario].get("linked_findings")
+                    else {}
+                ),
+            }
+            for scenario in REQUIRED
+        },
+        "completed_history_replay": result["completed_history_replay"],
+        "worker_restart_replay": result["worker_restart_replay"],
+        "adversarial_replay": result["adversarial_replay"],
+        "in_flight_timing": result["in_flight_timing"],
+        "findings": [portable_finding_ref(value) for value in retained_findings],
+        "finding_links": retained_finding_links,
+        "portable_evidence_contract": portable_evidence_contract,
+        "portable_projection": {
+            "reason": "projection_target",
+            "projected_bytes": projected_result_bytes,
+            "projection_target_bytes": PORTABLE_RESULT_TARGET_BYTES,
+        },
+    }
+if len(encoded_result_bytes(result)) > PORTABLE_RESULT_LIMIT_BYTES:
+    raise RuntimeError("portable replay result exceeded its result budget after projection")
 record = {
     "schema": "durable-workflow.v2.replay-conformance.record",
     "outcome": outcome,

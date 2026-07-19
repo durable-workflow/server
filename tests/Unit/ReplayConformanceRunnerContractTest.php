@@ -885,6 +885,15 @@ write_php_shard() {
   }
 }
 JSON
+
+  local oversized="$output.oversized"
+  {
+    head -n -1 "$output"
+    printf ',\n  "ephemeral_diagnostic_payload": "'
+    head -c 4300000 /dev/zero | tr '\000' x
+    printf '"\n}\n'
+  } > "$oversized"
+  mv "$oversized" "$output"
 }
 
 write_rust_shard() {
@@ -1099,6 +1108,10 @@ SH);
                 $status,
                 "the fake cleanup failure should make an otherwise passing replay run non-passing\nstdout:\n$stdout\nstderr:\n$stderr",
             );
+            $this->assertFileExists(
+                $resultDir.'/replay-conformance-result.json',
+                "the replay runner must retain its portable result\nstdout:\n$stdout\nstderr:\n$stderr",
+            );
 
             $result = json_decode((string) file_get_contents($resultDir.'/replay-conformance-result.json'), true, flags: JSON_THROW_ON_ERROR);
             $record = json_decode((string) file_get_contents($resultDir.'/replay-conformance-record.json'), true, flags: JSON_THROW_ON_ERROR);
@@ -1108,6 +1121,52 @@ SH);
             $executedIdentities = array_keys($result['executed_distribution_identities'] ?? []);
             sort($executedIdentities);
             $this->assertSame($expectedIdentities, $executedIdentities);
+            $this->assertSame([
+                'cli' => '0.1.81',
+                'sdk-php' => '0.1.1',
+                'sdk-python' => '0.4.89',
+                'sdk-rust' => '0.1.13',
+                'server' => '0.2.449',
+                'waterline' => '2.0.0-alpha.111',
+                'workflow' => '2.0.0-alpha.210',
+            ], $result['artifact_versions']);
+            foreach ($result['executed_distribution_identities'] as $identity) {
+                $this->assertNotEmpty($identity['artifacts']);
+                $this->assertMatchesRegularExpression('/^[0-9a-f]{64}$/', $identity['artifacts'][0]['sha256']);
+            }
+            $this->assertFalse($result['source_policy']['local_product_source_checkouts_used']);
+            $this->assertLessThanOrEqual(
+                4 * 1024 * 1024,
+                filesize($resultDir.'/replay-conformance-result.json'),
+                'hosted replay evidence must remain within the portable consumer limit',
+            );
+            $this->assertSame(4 * 1024 * 1024, $result['portable_evidence_contract']['max_result_bytes']);
+            $this->assertSame(
+                ['sdk-php', 'sdk-python', 'sdk-rust'],
+                $result['runtime_matrix']['runtimes'],
+            );
+            $this->assertCount(31, $result['scenario_results']);
+            $installArtifacts = $result['scenario_results']['published_artifact_install_only']['observed_outputs']['artifact_install_evidence']['artifacts'];
+            $sdkPhpInstall = array_values(array_filter(
+                $installArtifacts,
+                static fn (array $artifact): bool => $artifact['artifact'] === 'sdk-php',
+            ))[0];
+            $this->assertSame(
+                true,
+                $sdkPhpInstall['probe']['result']['assertions']['durable_replay_history'],
+            );
+            $this->assertGreaterThan(
+                4 * 1024 * 1024,
+                $sdkPhpInstall['probe']['result']['source_document']['bytes'],
+            );
+            $this->assertMatchesRegularExpression(
+                '/^[0-9a-f]{64}$/',
+                $sdkPhpInstall['probe']['result']['source_document']['sha256'],
+            );
+            $this->assertStringNotContainsString(
+                str_repeat('x', 4096),
+                (string) file_get_contents($resultDir.'/replay-conformance-result.json'),
+            );
             $this->assertSame('fail', $result['outcome']);
             $this->assertSame('fail', $record['outcome']);
             $this->assertTrue($result['runner_blocked']);

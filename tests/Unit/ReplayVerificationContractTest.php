@@ -13,7 +13,7 @@ class ReplayVerificationContractTest extends TestCase
         $manifest = ReplayVerificationContract::manifest();
 
         $this->assertSame('durable-workflow.v2.replay-verification.contract', $manifest['schema']);
-        $this->assertSame(1, $manifest['version']);
+        $this->assertSame(2, $manifest['version']);
 
         $this->assertSame('durable-workflow.v2.history-export', $manifest['bundle']['schema']);
         $this->assertSame(1, $manifest['bundle']['schema_version']);
@@ -404,6 +404,40 @@ class ReplayVerificationContractTest extends TestCase
             ReplayVerificationContract::REPLAY_CONFORMANCE_RESULT_SCHEMA,
             $hostRunner['result_schema'],
         );
+        $portableResult = $hostRunner['portable_result_contract'];
+        $this->assertSame(4 * 1024 * 1024, $portableResult['runner_max_bytes']);
+        $this->assertSame(3 * 1024 * 1024, $portableResult['projection_target_bytes']);
+        $this->assertSame(4 * 1024 * 1024, $portableResult['host_consumer_max_bytes']);
+        $this->assertSame('required_scenarios', $portableResult['required_scenario_status_source']);
+        $this->assertSame(
+            'executed_distribution_identities',
+            $portableResult['exact_distribution_identity_field'],
+        );
+        $this->assertSame(
+            [
+                'oversized' => 'runner_infrastructure_failure',
+                'malformed' => 'runner_infrastructure_failure',
+                'incomplete' => 'runner_infrastructure_failure',
+            ],
+            $portableResult['native_evidence_failure_classification'],
+        );
+        $this->assertSame('fail_closed_before_projection', $portableResult['product_assertions']);
+        $this->assertSame('omitted', $portableResult['sensitive_values']);
+        foreach ([
+            'schema',
+            'started_at',
+            'finished_at',
+            'outcome',
+            'runner_blocked',
+            'artifact_versions',
+            'executed_distribution_identities',
+            'runtime_matrix',
+            'scenario_results',
+            'findings',
+            'finding_links',
+        ] as $field) {
+            $this->assertContains($field, $portableResult['required_top_level_fields']);
+        }
         foreach ([
             'pins.json',
             'run-metadata.json',
@@ -513,7 +547,7 @@ class ReplayVerificationContractTest extends TestCase
             $this->assertContains($example, $resultGate['artifact_version_policy']['placeholder_version_examples']);
         }
         $this->assertContains('every_required_scenario_has_one_result', $resultGate['pass_requires']);
-        $this->assertContains('required_php_and_python_runtimes_are_reported', $resultGate['pass_requires']);
+        $this->assertContains('required_php_python_and_rust_runtimes_are_reported', $resultGate['pass_requires']);
         $this->assertContains('adversarial_refusals_have_actionable_diagnostics', $resultGate['pass_requires']);
         $this->assertContains('adversarial_refusals_match_required_outcomes', $resultGate['pass_requires']);
         $this->assertContains('in_flight_signal_timing_matches_required_outcome', $resultGate['pass_requires']);
@@ -670,7 +704,7 @@ class ReplayVerificationContractTest extends TestCase
                     $evaluation['gate_failures'],
                     static fn (array $failure): bool => ($failure['code'] ?? null) === 'declared_outcome_status_mismatch',
                 ));
-                $case = $alias . ':' . $outcome;
+                $case = $alias.':'.$outcome;
 
                 $this->assertSame('non_passing', $evaluation['status'], $case);
                 $this->assertNotContains('outcome', $this->missingReplayRunRecordFields($evaluation), $case);
@@ -817,7 +851,7 @@ class ReplayVerificationContractTest extends TestCase
     {
         foreach (['latest', 'current', 'head', 'unresolved', 'placeholder'] as $placeholder) {
             $result = $this->completeReplayConformanceResult();
-            $result['artifactVersions']['server'] = 'durableworkflow/server:' . $placeholder;
+            $result['artifactVersions']['server'] = 'durableworkflow/server:'.$placeholder;
 
             $evaluation = ReplayConformanceResultGate::evaluate($result);
             $serverPlaceholderFailures = array_values(array_filter(
@@ -828,7 +862,7 @@ class ReplayVerificationContractTest extends TestCase
 
             $this->assertSame('non_passing', $evaluation['status']);
             $this->assertCount(1, $serverPlaceholderFailures);
-            $this->assertSame('durableworkflow/server:' . $placeholder, $serverPlaceholderFailures[0]['version']);
+            $this->assertSame('durableworkflow/server:'.$placeholder, $serverPlaceholderFailures[0]['version']);
         }
     }
 
@@ -884,8 +918,7 @@ class ReplayVerificationContractTest extends TestCase
     }
 
     /**
-     * @param array<string, mixed> $evaluation
-     *
+     * @param  array<string, mixed>  $evaluation
      * @return list<string>
      */
     private function missingReplayRunRecordFields(array $evaluation): array
