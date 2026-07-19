@@ -891,6 +891,7 @@ write_php_shard() {
   "artifact_versions": {"sdk-php": "0.1.1", "server": "0.2.449"},
   "assertions": {
     "activity_callback_once_for_replay": true,
+    "activity_callback_cardinality_by_phase": true,
     "apache_avro_dependency": true,
     "distinct_worker_restart_processes": true,
     "durable_replay_history": true,

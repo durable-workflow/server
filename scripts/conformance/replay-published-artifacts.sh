@@ -2042,6 +2042,7 @@ replay_assertions = [
     "durable_replay_history",
     "durable_replay_result",
     "activity_callback_once_for_replay",
+    "activity_callback_cardinality_by_phase",
 ]
 replay_pass = all(assertions.get(name) is True for name in replay_assertions)
 restart_pass = replay_pass and assertions.get("distinct_worker_restart_processes") is True
@@ -2135,6 +2136,7 @@ shard = {
     "package_provenance": source.get("package_provenance") or {},
     "apache_avro_provenance": source.get("apache_avro_provenance") or {},
     "callback_counts": source.get("callback_counts") or {},
+    "activity_callback_cardinality": source.get("activity_callback_cardinality") or {},
     "history_assertions": source.get("history_assertions") or {},
     "findings": source.get("findings") or [],
 }

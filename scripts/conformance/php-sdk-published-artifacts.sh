@@ -688,6 +688,8 @@ fi
 cp "$script_dir/php-sdk-runtime-failure.php" "$project_dir/runtime-failure.php"
 cp "$script_dir/php-sdk-started-contract.php" "$project_dir/started-contract.php"
 cp "$script_dir/php-sdk-assertion-failure-evidence.php" "$project_dir/assertion-failure-evidence.php"
+cp "$script_dir/php-sdk-activity-callback-cardinality.php" "$project_dir/activity-callback-cardinality.php"
+cp "$script_dir/php-sdk-signal-input-decoder.php" "$project_dir/signal-input-decoder.php"
 
 cat > "$project_dir/worker.php" <<'PHP'
 <?php
@@ -696,6 +698,8 @@ declare(strict_types=1);
 
 require __DIR__.'/vendor/autoload.php';
 require __DIR__.'/runtime-failure.php';
+require __DIR__.'/activity-callback-cardinality.php';
+require __DIR__.'/signal-input-decoder.php';
 
 use DurableWorkflow\Client;
 use DurableWorkflow\Exception\ActivityFailed;
@@ -713,6 +717,7 @@ if ($argc < 9) {
 install_runtime_failure_handler('worker', $scope, [$controlToken, $workerToken]);
 $client = new Client($server, namespace: $namespace, controlToken: $controlToken, workerToken: $workerToken);
 $callbackFile = $resultDir.'/php-sdk-callback-counts.json';
+$activityCallbackFile = $resultDir.'/php-sdk-activity-callbacks.json';
 $signalReplayFile = $resultDir.'/php-sdk-waiting-signal-replay.json';
 $operationEvidenceFile = $resultDir.'/php-sdk-worker-operation-responses.json';
 $namespaceScope = $scope === 'namespace';
@@ -773,21 +778,13 @@ function record_operation_response(string $file, string $operation, array $respo
 }
 
 /** @return list<int> */
-function decoded_signal_inputs(QueryContext $context, Client $client): array
+function decoded_signal_inputs(QueryContext $context, Client $client, string $signalName): array
 {
-    $inputs = [];
-    foreach ($context->events('SignalReceived') as $event) {
-        $payload = is_array($event['payload'] ?? null) ? $event['payload'] : [];
-        if (($payload['signal_name'] ?? null) !== 'increment') {
-            continue;
-        }
-        $raw = $payload['value'] ?? $payload['input'] ?? $payload['arguments'] ?? null;
-        $decoded = is_array($raw) || is_string($raw) ? $client->payloadCodec()->decodeEnvelope($raw) : [];
-        $arguments = is_array($decoded) && array_is_list($decoded) ? $decoded : [$decoded];
-        $inputs[] = (int) ($arguments[0] ?? 0);
-    }
-
-    return $inputs;
+    return php_sdk_decoded_signal_inputs(
+        $context->events('SignalReceived'),
+        $signalName,
+        static fn (array|string $raw): mixed => $client->payloadCodec()->decodeEnvelope($raw),
+    );
 }
 
 /** @return list<int> */
@@ -916,10 +913,24 @@ function record_replay_signals(string $file, array $signals): void
 $worker = new Worker($client, $queue, workerId: $workerId, heartbeatIntervalSeconds: 1);
 $worker->registerActivity(
     'php.sdk.echo',
-    static function (ActivityContext $context, mixed $value) use ($callbackFile): array {
-        increment_callback($callbackFile, 'activity');
+    static function (ActivityContext $context, mixed $value) use ($activityCallbackFile, $callbackFile, $workerId): array {
+        $callbackCount = increment_callback($callbackFile, 'activity');
         increment_callback($callbackFile, 'activity_heartbeat');
         $context->heartbeat(['phase' => 'activity', 'callback_count' => 1]);
+        php_sdk_record_activity_callback(
+            $activityCallbackFile,
+            php_sdk_activity_callback_phase($value),
+            [
+                'worker_id' => $workerId,
+                'worker_process_id' => getmypid(),
+                'task_id' => $context->taskId,
+                'activity_attempt_id' => $context->activityAttemptId,
+                'activity_type' => $context->activityType,
+                'attempt_number' => $context->attemptNumber,
+                'global_callback_count' => $callbackCount,
+                'heartbeat_recorded' => true,
+            ],
+        );
 
         return ['echo' => $value, 'activity_process_id' => getmypid()];
     },
@@ -981,7 +992,7 @@ if (! $namespaceScope) {
         'current',
         static function (QueryContext $context) use ($client, $callbackFile, $operationEvidenceFile): array {
             increment_callback($callbackFile, 'query');
-            $inputs = decoded_signal_inputs($context, $client);
+            $inputs = decoded_signal_inputs($context, $client, 'increment');
             $response = [
                 'inputs' => $inputs,
                 'total' => array_sum($inputs),
@@ -1076,7 +1087,7 @@ if (! $namespaceScope) {
             static fn (QueryContext $context): array => [
                 'event_counts' => history_event_counts($context),
                 'activity_types' => history_activity_types($context),
-                'signals' => decoded_signal_inputs($context, $client),
+                'signals' => decoded_signal_inputs($context, $client, 'release'),
                 'updates' => decoded_update_inputs($context, $client),
                 'query_process_id' => getmypid(),
             ],
@@ -1340,6 +1351,7 @@ function run_namespace_probe(
             'status' => $simpleDescription->status,
             'result' => $simpleResult,
             'history_event_types' => event_types($simpleHistory),
+            'history_event_counts' => event_counts($simpleHistory),
         ],
     ];
     file_put_contents(
@@ -1700,6 +1712,7 @@ if ($phase === 'wait-replay-checkpoint') {
                 'workflow_id' => $state['workflow_id'],
                 'run_id' => $state['run_id'],
                 'history_event_types' => $types,
+                'history_event_counts' => event_counts($history),
                 'activity_completed_before_restart' => true,
                 'timer_scheduled_before_restart' => true,
             ]);
@@ -1723,6 +1736,7 @@ if ($phase === 'finish-replay') {
         'run_id' => $state['run_id'],
         'result' => $result,
         'history_event_types' => event_types($history),
+        'history_event_counts' => event_counts($history),
     ]);
 }
 
@@ -1736,6 +1750,7 @@ declare(strict_types=1);
 
 require __DIR__.'/started-contract.php';
 require __DIR__.'/assertion-failure-evidence.php';
+require __DIR__.'/activity-callback-cardinality.php';
 
 if ($argc < 8) {
     fwrite(STDERR, "usage: aggregate.php <result-dir> <sdk-version> <server-version> <server-image> <server-url> <namespace> <started-at>\n");
@@ -1808,6 +1823,7 @@ $replayStart = read_json($resultDir.'/php-sdk-client-start-replay.json');
 $checkpoint = read_json($resultDir.'/php-sdk-client-replay-checkpoint.json');
 $replayFinish = read_json($resultDir.'/php-sdk-client-finish-replay.json');
 $callbacks = read_json($resultDir.'/php-sdk-callback-counts.json');
+$activityCallbacks = read_json($resultDir.'/php-sdk-activity-callbacks.json');
 $signalReplay = read_json($resultDir.'/php-sdk-waiting-signal-replay.json');
 $workerOne = read_json($resultDir.'/php-sdk-worker-php-sdk-worker-1.json');
 $workerTwo = read_json($resultDir.'/php-sdk-worker-php-sdk-worker-2.json');
@@ -1837,6 +1853,40 @@ $matrixQuery = is_array($matrixRestart['completed_query'] ?? null) ? $matrixRest
 $matrixQueryCounts = is_array($matrixQuery['event_counts'] ?? null) ? $matrixQuery['event_counts'] : [];
 $divergence = is_array($matrixStart['divergence'] ?? null) ? $matrixStart['divergence'] : [];
 $inFlight = is_array($matrixRestart['in_flight'] ?? null) ? $matrixRestart['in_flight'] : [];
+$activityHistoryEventCounts = [
+    'initial_execution' => [
+        'completed' => is_array($baseline['simple_workflow']['history_event_counts'] ?? null)
+            ? $baseline['simple_workflow']['history_event_counts']
+            : [],
+    ],
+    'durable_replay' => [
+        'before_worker_restart' => is_array($checkpoint['history_event_counts'] ?? null)
+            ? $checkpoint['history_event_counts']
+            : [],
+        'after_worker_restart' => is_array($replayFinish['history_event_counts'] ?? null)
+            ? $replayFinish['history_event_counts']
+            : [],
+    ],
+];
+if ($replayMatrixEnabled) {
+    $activityHistoryEventCounts += [
+        'replay_matrix' => [
+            'completed' => $matrixCounts,
+            'after_worker_restart' => $matrixQueryCounts,
+        ],
+        'in_flight_replay' => [
+            'after_worker_restart' => is_array($inFlight['history_event_counts'] ?? null)
+                ? $inFlight['history_event_counts']
+                : [],
+        ],
+    ];
+}
+$activityCallbackCardinality = php_sdk_activity_callback_cardinality(
+    $activityCallbacks,
+    $activityHistoryEventCounts,
+    $replayMatrixEnabled,
+);
+$expectedActivityCallbackTotal = array_sum($activityCallbackCardinality['expected_callback_counts_by_phase']);
 
 $assertions = [
     'exact_sdk_version' => normalized_version($sdk['version'] ?? null) === normalized_version($expectedSdkVersion),
@@ -1900,8 +1950,10 @@ $assertions = [
     'cancellation' => ($baseline['cancellation']['type'] ?? null) === ($baseline['cancellation']['expected_type'] ?? null),
     'termination' => ($baseline['termination']['type'] ?? null) === ($baseline['termination']['expected_type'] ?? null),
     'failure_envelope' => ($baseline['failure_envelope']['type'] ?? null) === ($baseline['failure_envelope']['expected_type'] ?? null),
-    'activity_callback_once_for_replay' => (int) ($callbacks['activity'] ?? 0) === 2,
-    'activity_heartbeat_callback' => (int) ($callbacks['activity_heartbeat'] ?? 0) === 2,
+    'activity_callback_once_for_replay' => ($activityCallbackCardinality['phase_results']['durable_replay']['passed'] ?? false),
+    'activity_callback_cardinality_by_phase' => ($activityCallbackCardinality['passed'] ?? false),
+    'activity_heartbeat_callback' => (int) ($callbacks['activity_heartbeat'] ?? 0) === $expectedActivityCallbackTotal
+        && (int) ($callbacks['activity'] ?? 0) === $expectedActivityCallbackTotal,
     'namespace_lifecycle' => ($baseline['namespace_lifecycle']['created'] ?? false)
         && ($baseline['namespace_lifecycle']['updated'] ?? false)
         && ($baseline['namespace_lifecycle']['deleted'] ?? false),
@@ -2007,6 +2059,7 @@ $assertionDomains = [
     'termination' => 'sdk',
     'failure_envelope' => 'sdk',
     'activity_callback_once_for_replay' => 'server',
+    'activity_callback_cardinality_by_phase' => 'server',
     'activity_heartbeat_callback' => 'sdk',
     'namespace_lifecycle' => 'server',
     'namespace_selection' => 'sdk',
@@ -2040,6 +2093,7 @@ $assertionFailures = php_sdk_assertion_failure_evidence(
     $failedAssertions,
     $assertionDomains,
     $baseline,
+    $activityCallbackCardinality,
 );
 $runnerBlocked = $failedAssertions !== [] && array_keys($failedByDomain) === ['runner'];
 $status = $failedAssertions === [] ? 'pass' : ($runnerBlocked ? 'runner_blocked' : 'fail');
@@ -2091,11 +2145,15 @@ if ($replayMatrixEnabled) {
     ];
     $replayScenarioResults['php_completed_history_activity_replay'] = replay_runtime_scenario(
         'php_completed_history_activity_replay',
-        $assertions['replay_matrix_completed_history'] && $assertions['replay_matrix_activity_history'],
+        $assertions['replay_matrix_completed_history']
+            && $assertions['replay_matrix_activity_history']
+            && $assertions['activity_callback_once_for_replay']
+            && $assertions['activity_callback_cardinality_by_phase'],
         'php-completed-history-replay-matrix',
         $completedIdentity + [
             'activity_result' => $matrixResult['activity'] ?? null,
             'activity_completed_events' => $matrixCounts['ActivityCompleted'] ?? 0,
+            'activity_callback_cardinality' => $activityCallbackCardinality,
         ],
         $findings,
     );
@@ -2156,12 +2214,15 @@ if ($replayMatrixEnabled) {
     );
     $replayScenarioResults['php_worker_restart_activity_state'] = replay_runtime_scenario(
         'php_worker_restart_activity_state',
-        $assertions['replay_matrix_activity_state_after_restart'],
+        $assertions['replay_matrix_activity_state_after_restart']
+            && $assertions['activity_callback_once_for_replay']
+            && $assertions['activity_callback_cardinality_by_phase'],
         'php-completed-query-after-worker-restart',
         $restartIdentity + [
             'activity_result' => $matrixResult['activity'] ?? null,
             'activity_types_from_reloaded_history' => $matrixQuery['activity_types'] ?? [],
             'activity_completed_events' => $matrixQueryCounts['ActivityCompleted'] ?? 0,
+            'activity_callback_cardinality' => $activityCallbackCardinality,
         ],
         $findings,
     );
@@ -2284,6 +2345,7 @@ $observed = [
     ],
     'workflow_started_command_contract' => $startedContractEvidence,
     'callback_counts' => $callbacks,
+    'activity_callback_cardinality' => $activityCallbackCardinality,
     'namespace_evidence' => $baseline['namespace_lifecycle'] ?? [],
     'search_attribute_evidence' => $baseline['search_attributes'] ?? [],
     'history_assertions' => [
@@ -2291,7 +2353,8 @@ $observed = [
         'final_event_types' => $history,
         'activity_completed_before_restart' => $assertions['replay_checkpoint'],
         'timer_fired_after_restart' => in_array('TimerFired', $history, true),
-        'activity_callbacks_total_expected_two' => $assertions['activity_callback_once_for_replay'],
+        'activity_callback_once_during_durable_replay' => $assertions['activity_callback_once_for_replay'],
+        'activity_callback_cardinality_by_phase' => $assertions['activity_callback_cardinality_by_phase'],
         'addressable_workflow_started_contract' => $startedContractEvidence,
         'addressable_signal_inputs' => $baseline['signal_query']['history_inputs'] ?? [],
         'workflow_replay_signal_evidence' => $signalReplay,
@@ -2350,6 +2413,7 @@ $result = [
     'server_visible_workflow_command_contracts' => $observed['server_visible_workflow_command_contracts'],
     'workflow_started_command_contract' => $observed['workflow_started_command_contract'],
     'callback_counts' => $callbacks,
+    'activity_callback_cardinality' => $activityCallbackCardinality,
     'history_assertions' => $observed['history_assertions'],
     'scenario_results' => array_fill_keys($coveredCells, ['status' => $status]),
     'assertions' => $assertions,

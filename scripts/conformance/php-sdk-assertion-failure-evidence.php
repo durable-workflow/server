@@ -31,12 +31,14 @@ function php_sdk_update_assertion_domain(array $baseline): string
  * @param  list<string>  $failedAssertions
  * @param  array<string, string>  $assertionDomains
  * @param  array<string, mixed>  $baseline
+ * @param  array<string, mixed>  $activityCallbackCardinality
  * @return list<array<string, mixed>>
  */
 function php_sdk_assertion_failure_evidence(
     array $failedAssertions,
     array $assertionDomains,
     array $baseline,
+    array $activityCallbackCardinality = [],
 ): array {
     $surfaceByDomain = [
         'sdk' => 'sdk-php',
@@ -65,6 +67,7 @@ function php_sdk_assertion_failure_evidence(
         'termination' => 'workflow.result:terminated',
         'failure_envelope' => 'workflow.result:failed',
         'activity_callback_once_for_replay' => 'activity.callback:replay',
+        'activity_callback_cardinality_by_phase' => 'activity.callback:phase-cardinality',
         'activity_heartbeat_callback' => 'activity.heartbeat',
         'namespace_lifecycle' => 'namespace.lifecycle',
         'namespace_selection' => 'namespace.selection',
@@ -79,6 +82,21 @@ function php_sdk_assertion_failure_evidence(
     $workerResponses = is_array($baseline['worker_operation_responses'] ?? null)
         ? $baseline['worker_operation_responses']
         : [];
+    $replayCallbackPhase = is_array($activityCallbackCardinality['phase_results']['durable_replay'] ?? null)
+        ? $activityCallbackCardinality['phase_results']['durable_replay']
+        : [];
+    $replayHistoryCheckpoints = is_array($replayCallbackPhase['history_checkpoints'] ?? null)
+        ? $replayCallbackPhase['history_checkpoints']
+        : [];
+    $expectedReplayHistory = [];
+    $observedReplayHistory = [];
+    foreach ($replayHistoryCheckpoints as $checkpoint => $history) {
+        if (! is_array($history)) {
+            continue;
+        }
+        $expectedReplayHistory[$checkpoint] = $history['expected_event_counts'] ?? [];
+        $observedReplayHistory[$checkpoint] = $history['observed_event_counts'] ?? [];
+    }
     $specialized = [
         'signal_query' => [[
             'operation' => 'workflow.query:current',
@@ -126,6 +144,33 @@ function php_sdk_assertion_failure_evidence(
                 'worker_callback_dispatched' => is_array($workerResponses['workflow.update:set'] ?? null),
                 'worker_callback_response' => $workerResponses['workflow.update:set'] ?? null,
                 'sdk_decoded_response' => $baseline['update']['result'] ?? null,
+            ],
+        ]],
+        'activity_callback_once_for_replay' => [[
+            'operation' => 'activity.callback:replay',
+            'expected' => [
+                'callback_count' => $replayCallbackPhase['expected_callback_count'] ?? 1,
+                'distinct_task_ids' => 1,
+                'distinct_activity_attempt_ids' => 1,
+                'history_event_counts' => $expectedReplayHistory,
+            ],
+            'observed' => [
+                'callback_count' => $replayCallbackPhase['observed_callback_count'] ?? 0,
+                'distinct_task_ids' => $replayCallbackPhase['distinct_task_ids'] ?? [],
+                'distinct_activity_attempt_ids' => $replayCallbackPhase['distinct_activity_attempt_ids'] ?? [],
+                'history_event_counts' => $observedReplayHistory,
+            ],
+        ]],
+        'activity_callback_cardinality_by_phase' => [[
+            'operation' => 'activity.callback:phase-cardinality',
+            'expected' => [
+                'callback_counts_by_phase' => $activityCallbackCardinality['expected_callback_counts_by_phase'] ?? [],
+                'all_phases_passed' => true,
+            ],
+            'observed' => [
+                'callback_counts_by_phase' => $activityCallbackCardinality['observed_callback_counts_by_phase'] ?? [],
+                'phase_results' => $activityCallbackCardinality['phase_results'] ?? [],
+                'all_phases_passed' => $activityCallbackCardinality['passed'] ?? false,
             ],
         ]],
     ];
