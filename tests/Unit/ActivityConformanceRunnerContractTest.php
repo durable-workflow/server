@@ -8,6 +8,62 @@ use PHPUnit\Framework\TestCase;
 
 class ActivityConformanceRunnerContractTest extends TestCase
 {
+    public function test_extracted_runner_hands_execution_back_to_the_exact_published_server_image(): void
+    {
+        if (trim((string) shell_exec('command -v bash 2>/dev/null')) === '') {
+            $this->markTestSkipped('bash is required to exercise the activities container handoff.');
+        }
+
+        $repoRoot = dirname(__DIR__, 2);
+        $workspace = sys_get_temp_dir().'/dw-activities-handoff-'.bin2hex(random_bytes(6));
+        $runnerDir = $workspace.'/published-server/scripts/conformance';
+        $resultDir = $workspace.'/result';
+        $binDir = $workspace.'/bin';
+        $dockerLog = $workspace.'/docker.log';
+        mkdir($runnerDir, 0777, true);
+        mkdir($resultDir, 0777, true);
+        mkdir($binDir, 0777, true);
+        copy($repoRoot.'/scripts/conformance/activities-published-artifacts.sh', $runnerDir.'/activities-published-artifacts.sh');
+        file_put_contents(
+            $binDir.'/docker',
+            "#!/usr/bin/env bash\nprintf '%s\\n' \"\$@\" > \"\$FAKE_DOCKER_LOG\"\n",
+        );
+        chmod($binDir.'/docker', 0755);
+
+        try {
+            $digest = str_repeat('a', 64);
+            $serverImage = 'docker.io/durableworkflow/server@sha256:'.$digest;
+            $command = implode(' ', [
+                'PATH='.escapeshellarg($binDir.':'.getenv('PATH')),
+                'FAKE_DOCKER_LOG='.escapeshellarg($dockerLog),
+                'DW_SERVER_IMAGE='.escapeshellarg($serverImage),
+                'DW_SERVER_VERSION=9.9.9',
+                'DW_CLI_VERSION=9.9.9',
+                'DW_PYTHON_SDK_VERSION=9.9.9',
+                'DW_WORKFLOW_PHP_VERSION=9.9.9',
+                'DW_WATERLINE_VERSION=9.9.9',
+                'bash',
+                escapeshellarg($runnerDir.'/activities-published-artifacts.sh'),
+                '--result-dir',
+                escapeshellarg($resultDir),
+            ]);
+            exec($command.' 2>&1', $output, $exitCode);
+
+            $this->assertSame(0, $exitCode, implode("\n", $output));
+            $arguments = file($dockerLog, FILE_IGNORE_NEW_LINES);
+            $this->assertIsArray($arguments);
+            $this->assertContains('--entrypoint', $arguments);
+            $this->assertContains('bash', $arguments);
+            $this->assertContains($resultDir.':/result', $arguments);
+            $this->assertContains('DW_ACTIVITIES_CONTAINER_HANDOFF=1', $arguments);
+            $this->assertContains('DW_ACTIVITIES_RUNNER_SOURCE='.$serverImage, $arguments);
+            $this->assertContains($serverImage, $arguments);
+            $this->assertContains('/app/scripts/conformance/activities-published-artifacts.sh', $arguments);
+        } finally {
+            $this->removeDirectory($workspace);
+        }
+    }
+
     public function test_runner_script_routes_every_required_activity_scenario(): void
     {
         $source = $this->read('scripts/conformance/activities-published-artifacts.sh');
@@ -124,7 +180,10 @@ class ActivityConformanceRunnerContractTest extends TestCase
             'retrying',
             'timed_out',
             'cancelled',
-            'RunActivityView::activitiesForRun',
+            'Waterline\\Support\\CompensationVisibility',
+            'CompensationVisibility::activitiesForRun',
+            'distribution-execution-observation',
+            'record_executed_waterline_distribution',
             'waterline_activity_attempt_view',
             'operator_visible_activity_attempt_state',
             'activity_host_evidence',
@@ -143,6 +202,30 @@ class ActivityConformanceRunnerContractTest extends TestCase
             "'json_contract_source' => 'GET /activities and GET /activities/{activity_id}'",
             $source,
         );
+        $this->assertStringNotContainsString(
+            "'projection_source' => 'Workflow\\\\V2\\\\Support\\\\RunActivityView::activitiesForRun'",
+            $source,
+        );
+    }
+
+    public function test_runner_claims_waterline_identity_only_after_the_installed_package_executes(): void
+    {
+        $source = $this->read('scripts/conformance/activities-published-artifacts.sh');
+        $prepareStart = strpos($source, 'prepare_published_php_activity_artifacts() {');
+        $recordStart = strpos($source, 'record_executed_waterline_distribution() {');
+        $installEvidenceStart = strpos($source, 'write_published_activity_install_evidence() {');
+
+        $this->assertNotFalse($prepareStart);
+        $this->assertNotFalse($recordStart);
+        $this->assertNotFalse($installEvidenceStart);
+
+        $prepare = substr($source, $prepareStart, $recordStart - $prepareStart);
+        $record = substr($source, $recordStart, $installEvidenceStart - $recordStart);
+        $this->assertStringNotContainsString('"$distribution_identity_file" waterline', $prepare);
+        $this->assertStringContainsString('DW_ACTIVITIES_WATERLINE_EXECUTION_OBSERVATION', $record);
+        $this->assertStringContainsString('"$distribution_identity_file" waterline', $record);
+        $this->assertStringContainsString('$activities = CompensationVisibility::activitiesForRun($run);', $source);
+        $this->assertStringContainsString('ReflectionClass(CompensationVisibility::class)', $source);
     }
 
     public function test_runner_does_not_pass_without_activity_product_evidence(): void
@@ -359,6 +442,14 @@ class ActivityConformanceRunnerContractTest extends TestCase
             $this->assertSame($serverImage, $result['artifact_sources']['server']);
             $this->assertSame([], $result['published_artifact_install']['pin_failures'] ?? []);
             $this->assertSame([], $result['published_artifact_install']['install_failures'] ?? []);
+            $artifactVersionComponents = array_keys($result['artifact_versions']);
+            sort($artifactVersionComponents);
+            $this->assertSame(['cli', 'sdk-python', 'server', 'waterline', 'workflow'], $artifactVersionComponents);
+            $this->assertArrayNotHasKey('workflow-php', $result['artifact_versions']);
+            $artifactSourceComponents = array_keys($result['artifact_sources']);
+            sort($artifactSourceComponents);
+            $this->assertSame(['cli', 'sdk-python', 'server', 'waterline', 'workflow'], $artifactSourceComponents);
+            $this->assertArrayNotHasKey('workflow-php', $result['artifact_sources']);
             $identityComponents = array_keys($result['executed_distribution_identities']);
             sort($identityComponents);
             $this->assertSame(['cli', 'sdk-python', 'server', 'waterline', 'workflow'], $identityComponents);
@@ -411,6 +502,27 @@ class ActivityConformanceRunnerContractTest extends TestCase
         $this->assertSame(
             str_repeat('f', 64),
             $run['result']['executed_distribution_identities']['cli']['artifacts'][0]['sha256'],
+        );
+    }
+
+    public function test_runner_reports_missing_published_prerequisites_as_an_explicit_runner_failure(): void
+    {
+        $run = $this->runActivityRunnerWithEvidence(
+            $this->completeRunnerActivityEvidence(),
+            null,
+            ['DW_ACTIVITIES_PREREQUISITE_FAILURE' => 'Composer could not install the exact candidate packages'],
+        );
+
+        $this->assertSame(1, $run['exit'], $run['output']);
+        $this->assertSame('non_passing_runner_blocked', $run['result']['outcome']);
+        $this->assertTrue($run['result']['runner_blocked']);
+        $this->assertSame(
+            ['runner_blocked'],
+            array_values(array_unique(array_column($run['result']['scenario_results'], 'status'))),
+        );
+        $this->assertStringContainsString(
+            'Composer could not install the exact candidate packages',
+            $run['result']['scenario_results'][0]['linked_findings'][0]['observed_behavior'] ?? '',
         );
     }
 
@@ -2456,11 +2568,13 @@ SH);
     /**
      * @param  array<string, mixed>  $activityEvidence
      * @param  array<string, mixed>|null  $recordedIdentities
+     * @param  array<string, string>  $extraEnvironment
      * @return array{exit: int, output: string, result: array<string, mixed>}
      */
     private function runActivityRunnerWithEvidence(
         array $activityEvidence,
         ?array $recordedIdentities = null,
+        array $extraEnvironment = [],
     ): array {
         if (trim((string) shell_exec('command -v bash 2>/dev/null')) === ''
             || trim((string) shell_exec('command -v node 2>/dev/null')) === '') {
@@ -2486,14 +2600,23 @@ SH);
                 );
             }
 
+            $environment = [
+                'DW_ACTIVITIES_SKIP_FOCUSED_HOST_PROBE' => '1',
+                'DW_SERVER_IMAGE' => 'durableworkflow/server:9.9.9',
+                'DW_SERVER_VERSION' => '9.9.9',
+                'DW_CLI_VERSION' => '9.9.9',
+                'DW_PYTHON_SDK_VERSION' => '9.9.9',
+                'DW_WORKFLOW_PHP_VERSION' => '9.9.9',
+                'DW_WATERLINE_VERSION' => '9.9.9',
+                ...$extraEnvironment,
+            ];
+            $environmentPrefix = array_map(
+                static fn (string $name, string $value): string => $name.'='.escapeshellarg($value),
+                array_keys($environment),
+                array_values($environment),
+            );
             $command = implode(' ', [
-                'DW_ACTIVITIES_SKIP_FOCUSED_HOST_PROBE=1',
-                'DW_SERVER_IMAGE=durableworkflow/server:9.9.9',
-                'DW_SERVER_VERSION=9.9.9',
-                'DW_CLI_VERSION=9.9.9',
-                'DW_PYTHON_SDK_VERSION=9.9.9',
-                'DW_WORKFLOW_PHP_VERSION=9.9.9',
-                'DW_WATERLINE_VERSION=9.9.9',
+                ...$environmentPrefix,
                 escapeshellarg($repoRoot.'/scripts/conformance/activities-published-artifacts.sh'),
                 '--result-dir',
                 escapeshellarg($resultDir),
