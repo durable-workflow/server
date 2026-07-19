@@ -4,6 +4,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const {
   boundedEvidence,
+  compactRuntimeFailure,
   diagnosticExcerpt,
   extractRuntimeFailureEvidence,
   serializedBytes,
@@ -21,6 +22,7 @@ const TERMINAL_RUN_STATUSES = new Set([
   'timed_out',
 ]);
 const NON_TERMINAL_RUN_STATUSES = new Set(['pending', 'running', 'waiting']);
+const SERVER_ERROR_LEVELS = new Set(['ERROR', 'CRITICAL', 'ALERT', 'EMERGENCY']);
 const TERMINAL_HISTORY_EVENTS = new Set([
   'WorkflowCancelled',
   'WorkflowCompleted',
@@ -36,6 +38,10 @@ function readText(file) {
   } catch {
     return '';
   }
+}
+
+function retainedText(value, secrets, limit) {
+  return diagnosticExcerpt(value ?? '', secrets, limit).excerpt;
 }
 
 function readTail(file, maxBytes = 65536) {
@@ -359,6 +365,128 @@ function terminalRunObservation(probes) {
   return {terminal: null, run_status: status, terminal_event: null};
 }
 
+function genericPublicResponse(failure) {
+  const status = Number(failure?.status_code);
+  if (!Number.isInteger(status) || status < 500) {
+    return false;
+  }
+  const response = failure?.public_error_envelope;
+  const reason = String(
+    failure?.reason
+      ?? response?.reason
+      ?? response?.error
+      ?? response?.code
+      ?? '',
+  ).trim().toLowerCase().replace(/[\s-]+/g, '_');
+
+  return reason === ''
+    || /^(?:error|server_error|internal_error|internal_server_error|request_failed|unknown_error)$/.test(reason);
+}
+
+function protocolFailure(failure) {
+  const status = Number(failure?.status_code);
+
+  return Number.isInteger(status) && status >= 400 && status <= 599;
+}
+
+function serverErrorRecord(source, failure, secrets, maxBytes = 896) {
+  const lines = String(source ?? '')
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .slice(-240);
+  if (lines.length === 0) {
+    return null;
+  }
+  const identifiers = [failure?.task_id, failure?.workflow_id, failure?.run_id]
+    .filter((value) => typeof value === 'string' && value !== '');
+  let selected = null;
+  for (const [index, line] of lines.entries()) {
+    let decoded = null;
+    try {
+      const candidate = JSON.parse(line);
+      decoded = candidate && typeof candidate === 'object' && !Array.isArray(candidate) ? candidate : null;
+    } catch {
+      decoded = null;
+    }
+    const context = decoded?.context && typeof decoded.context === 'object' && !Array.isArray(decoded.context)
+      ? decoded.context
+      : {};
+    const sourceField = (...fields) => fields
+      .map((field) => decoded?.[field] ?? context[field])
+      .find((value) => value !== null && value !== undefined && value !== '');
+    const explicitLevel = String(sourceField('level', 'level_name', 'severity') ?? '').trim().toUpperCase();
+    const textualLevel = line.match(/\b(ERROR|CRITICAL|ALERT|EMERGENCY)\b/i)?.[1]?.toUpperCase() ?? '';
+    const errorLevel = SERVER_ERROR_LEVELS.has(explicitLevel)
+      ? explicitLevel
+      : (SERVER_ERROR_LEVELS.has(textualLevel) ? textualLevel : null);
+    if (errorLevel === null) {
+      continue;
+    }
+    const identifierMatches = identifiers.filter((identifier) => line.includes(identifier));
+    const statusMatch = line.match(/(?:http[_ -]?status|status[_ -]?code|\bHTTP)\D{0,12}([45]\d\d)\b/i);
+    const recordedStatus = Number(sourceField('status_code', 'http_status') ?? statusMatch?.[1]) || null;
+    const failureStatus = Number(failure?.status_code) || null;
+    if (identifiers.length > 0 && identifierMatches.length === 0) {
+      continue;
+    }
+    if (identifiers.length === 0 && (recordedStatus === null || recordedStatus !== failureStatus)) {
+      continue;
+    }
+    const score = (identifierMatches.length * 100) + (recordedStatus === failureStatus ? 10 : 0) + (index / lines.length);
+    if (selected === null || score >= selected.score) {
+      selected = {
+        line,
+        decoded,
+        context,
+        errorLevel,
+        identifierMatches,
+        recordedStatus,
+        score,
+        sourceField,
+      };
+    }
+  }
+  if (selected === null) {
+    return null;
+  }
+  const reasonMatch = selected.line.match(/\breason["'\s:=]+([a-z0-9_.-]{1,128})/i);
+  const exceptionMatch = selected.line.match(/(?:[A-Z][A-Za-z0-9_]*\\)*[A-Z][A-Za-z0-9_]*Exception\b/);
+  const timestampMatch = selected.line.match(/\d{4}-\d{2}-\d{2}[T ][0-9:.+-]+Z?/);
+  const excerpt = diagnosticExcerpt(selected.line, secrets, Math.max(96, maxBytes - 480));
+  const matchedIdentifier = (field) => selected.identifierMatches.includes(failure?.[field])
+    ? failure[field]
+    : null;
+  const record = {
+    schema: 'durable-workflow.v2.retained-server-error-record',
+    source: 'server_process_stderr',
+    matched_by: selected.identifierMatches.length > 0
+      ? 'failure_identifier_and_error_severity'
+      : 'http_status_and_error_severity',
+    timestamp: retainedText(selected.sourceField('timestamp', 'datetime') ?? timestampMatch?.[0], secrets, 64) || null,
+    level: selected.errorLevel,
+    status_code: selected.recordedStatus,
+    reason: retainedText(selected.sourceField('reason', 'error', 'code') ?? reasonMatch?.[1], secrets, 128) || null,
+    exception_type: retainedText(selected.sourceField('exception_type', 'exception') ?? exceptionMatch?.[0], secrets, 160) || null,
+    task_id: retainedText(selected.sourceField('task_id') ?? matchedIdentifier('task_id'), secrets, 128) || null,
+    workflow_id: retainedText(selected.sourceField('workflow_id') ?? matchedIdentifier('workflow_id'), secrets, 128) || null,
+    run_id: retainedText(selected.sourceField('run_id') ?? matchedIdentifier('run_id'), secrets, 128) || null,
+    excerpt: excerpt.excerpt,
+    truncated: excerpt.truncated,
+    max_bytes: maxBytes,
+  };
+  if (serializedBytes(record) <= maxBytes) {
+    return record;
+  }
+  record.excerpt = diagnosticExcerpt(selected.line, secrets, 96).excerpt;
+  record.truncated = true;
+  if (serializedBytes(record) > maxBytes) {
+    throw new Error('Unable to retain the server error record within its byte limit.');
+  }
+
+  return record;
+}
+
 function classify(clientFailure, workerFailure, processState, probes) {
   if (workerFailure) {
     return {
@@ -423,6 +551,12 @@ function createCompanionFailureEvidence(options) {
   }
 
   const workerFailure = extractRuntimeFailureEvidence(options.workerDiagnostic, {secrets});
+  const retainedClientFailure = compactRuntimeFailure(clientFailure, secrets, 1280);
+  const workerProtocolFailure = protocolFailure(workerFailure) ? workerFailure : null;
+  const workerRuntimeException = workerFailure && !workerProtocolFailure ? workerFailure : null;
+  const retainedProtocolFailure = compactRuntimeFailure(workerProtocolFailure, secrets, 1280);
+  const retainedRuntimeException = compactRuntimeFailure(workerRuntimeException, secrets, 1280);
+  const workerHasServerFailure = retainedProtocolFailure?.classification === 'server';
   const processState = {
     process: 'php-sdk-worker',
     state: options.processAlive === true ? 'alive' : (options.processAlive === false ? 'exited' : 'unknown'),
@@ -439,11 +573,12 @@ function createCompanionFailureEvidence(options) {
     classification: ownership.classification,
     owning_surface: ownership.owning_surface,
     classification_basis: ownership.classification_basis,
-    client_failure: boundedEvidence(clientFailure, secrets, 1280),
+    client_failure: retainedClientFailure,
     worker: {
       worker_id: options.workerId || null,
       process_state: processState,
-      last_protocol_failure: boundedEvidence(workerFailure, secrets, 1280),
+      last_protocol_failure: retainedProtocolFailure,
+      last_runtime_exception: retainedRuntimeException,
       structured_stderr: diagnosticExcerpt(
         options.workerDiagnostic || 'The companion worker produced no structured stderr before the client failure.',
         secrets,
@@ -456,6 +591,10 @@ function createCompanionFailureEvidence(options) {
       run_state: compactProbe('run', probes.run, secrets),
       history: compactProbe('history', probes.history, secrets),
       task_queue: compactProbe('task_queue', probes.task_queue, secrets),
+      error_record_required: genericPublicResponse(retainedProtocolFailure),
+      error_record: workerHasServerFailure
+        ? serverErrorRecord(options.serverLog, retainedProtocolFailure, secrets)
+        : null,
       process_log: diagnosticExcerpt(
         options.serverLog || 'The server process log stream contained no entries before the client failure.',
         secrets,
@@ -472,6 +611,9 @@ function createCompanionFailureEvidence(options) {
 
   evidence.worker.structured_stderr = diagnosticExcerpt(options.workerDiagnostic, secrets, 384);
   evidence.server.process_log = diagnosticExcerpt(options.serverLog, secrets, 384);
+  evidence.server.error_record = workerHasServerFailure
+    ? serverErrorRecord(options.serverLog, retainedProtocolFailure, secrets, 640)
+    : null;
   evidence.server.history = compactProbe('history', probes.history, secrets, 640);
   evidence.server.task_queue = compactProbe('task_queue', probes.task_queue, secrets, 1024);
   evidence.truncated = true;
@@ -488,6 +630,9 @@ function createCompanionFailureEvidence(options) {
   if (serializedBytes(evidence) > MAX_BYTES) {
     evidence.worker.structured_stderr = diagnosticExcerpt(options.workerDiagnostic, secrets, 256);
     evidence.server.process_log = diagnosticExcerpt(options.serverLog, secrets, 256);
+    evidence.server.error_record = workerHasServerFailure
+      ? serverErrorRecord(options.serverLog, retainedProtocolFailure, secrets, 480)
+      : null;
   }
   if (serializedBytes(evidence) > MAX_BYTES) {
     throw new Error('Unable to retain PHP SDK companion evidence within its byte limit.');

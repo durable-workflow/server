@@ -1,6 +1,8 @@
 <?php
 
 declare(strict_types=1);
+use DurableWorkflow\Exception\ServerException;
+use DurableWorkflow\Exception\TransportException;
 
 const PHP_SDK_RUNTIME_FAILURE_ENVELOPE_MAX_BYTES = 2048;
 
@@ -109,7 +111,25 @@ function bounded_runtime_failure_envelope(
     }
 
     $summary = ['_truncated' => true];
-    foreach (['error', 'message', 'reason', 'code', 'status', 'status_code', 'workflow_id', 'run_id'] as $key) {
+    foreach ([
+        'error',
+        'reason',
+        'code',
+        'status',
+        'status_code',
+        'retryable',
+        'non_retryable',
+        'operation',
+        'http_method',
+        'endpoint',
+        'task_id',
+        'workflow_task_id',
+        'activity_task_id',
+        'query_task_id',
+        'workflow_id',
+        'run_id',
+        'message',
+    ] as $key) {
         if (! array_key_exists($key, $bounded)) {
             continue;
         }
@@ -121,6 +141,7 @@ function bounded_runtime_failure_envelope(
             if (runtime_failure_json_bytes($candidate) <= $maxBytes) {
                 $summary = $candidate;
             }
+
             continue;
         }
 
@@ -148,6 +169,40 @@ function bounded_runtime_failure_envelope(
         : ['_truncated' => true];
 }
 
+function runtime_failure_endpoint_class(string $endpoint): string
+{
+    $path = parse_url($endpoint, PHP_URL_PATH);
+    $path = is_string($path) && $path !== '' ? $path : $endpoint;
+    $normalized = strtolower(trim($path));
+
+    $knownClass = match (true) {
+        preg_match('#/(?:api/)?worker(?:-protocol)?(?:/|$)#', $normalized) === 1 => 'worker_protocol',
+        preg_match('#/(?:api/)?workflows?(?:/|$)#', $normalized) === 1 => 'workflow_control',
+        preg_match('#/(?:api/)?task-queues?(?:/|$)#', $normalized) === 1 => 'task_queue_diagnostics',
+        preg_match('#/(?:api/)?workers?(?:/|$)#', $normalized) === 1 => 'worker_registration',
+        default => null,
+    };
+    if ($knownClass !== null) {
+        return $knownClass;
+    }
+    if (preg_match('#^/?(?:api/)?([^/*{?]+)#', $normalized, $matches) === 1) {
+        return substr(str_replace('-', '_', $matches[1]), 0, 96);
+    }
+
+    return 'unknown';
+}
+
+function runtime_failure_public_field(array $details, array $fields): mixed
+{
+    foreach ($fields as $field) {
+        if (array_key_exists($field, $details)) {
+            return $details[$field];
+        }
+    }
+
+    return null;
+}
+
 function set_runtime_failure_context(
     string $operation,
     string $httpMethod,
@@ -168,8 +223,8 @@ function runtime_failure_http_status(Throwable $exception): ?int
 {
     $current = $exception;
     while ($current !== null) {
-        if ($current instanceof DurableWorkflow\Exception\ServerException
-            || $current instanceof DurableWorkflow\Exception\TransportException) {
+        if ($current instanceof ServerException
+            || $current instanceof TransportException) {
             $status = $current->status;
             if (is_int($status) && $status >= 400 && $status <= 599) {
                 return $status;
@@ -206,13 +261,13 @@ function install_runtime_failure_handler(string $process, string $phase, array $
         $transportFailure = false;
         $current = $exception;
         while ($current !== null) {
-            if ($current instanceof DurableWorkflow\Exception\ServerException) {
+            if ($current instanceof ServerException) {
                 $status = $current->status;
                 $details = $current->details;
                 $reason = $current->reason;
                 break;
             }
-            if ($current instanceof DurableWorkflow\Exception\TransportException) {
+            if ($current instanceof TransportException) {
                 $transportFailure = true;
                 if (is_int($current->status) && $current->status >= 400 && $current->status <= 599) {
                     $status = $current->status;
@@ -241,17 +296,57 @@ function install_runtime_failure_handler(string $process, string $phase, array $
             $publicDetails['message'] = $exception->getMessage();
         }
         $envelope = bounded_runtime_failure_envelope($httpFailure ? $publicDetails : null, $secrets);
+        $operation = bounded_runtime_failure_text(
+            runtime_failure_public_field($publicDetails, ['operation'])
+                ?? ($context['operation'] ?? 'unknown'),
+            $secrets,
+            160,
+        );
+        $httpMethod = bounded_runtime_failure_text(
+            runtime_failure_public_field($publicDetails, ['http_method', 'method'])
+                ?? ($context['http_method'] ?? ''),
+            $secrets,
+            16,
+        );
+        $endpoint = bounded_runtime_failure_text(
+            runtime_failure_public_field($publicDetails, ['endpoint', 'path'])
+                ?? ($context['endpoint'] ?? ''),
+            $secrets,
+            256,
+        );
+        $publicReason = runtime_failure_public_field($publicDetails, ['reason', 'error', 'code']);
+        $taskId = runtime_failure_public_field(
+            $publicDetails,
+            ['task_id', 'workflow_task_id', 'activity_task_id', 'query_task_id'],
+        );
+        $retryable = runtime_failure_public_field($publicDetails, ['retryable']);
         $payload = [
             'classification' => $classification,
             'owning_surface' => $owningSurface,
             'process' => $process,
-            'operation' => bounded_runtime_failure_text($context['operation'] ?? 'unknown', $secrets, 160),
-            'http_method' => bounded_runtime_failure_text($context['http_method'] ?? '', $secrets, 16),
-            'endpoint' => bounded_runtime_failure_text($context['endpoint'] ?? '', $secrets, 256),
+            'operation' => $operation,
+            'http_method' => $httpMethod,
+            'endpoint_class' => runtime_failure_endpoint_class($endpoint),
+            'endpoint' => $endpoint,
             'status_code' => $httpFailure ? $status : null,
+            'reason' => bounded_runtime_failure_text($publicReason ?? $reason ?? '', $secrets, 192) ?: null,
+            'retryable' => is_bool($retryable) ? $retryable : null,
+            'task_id' => bounded_runtime_failure_text($taskId ?? '', $secrets, 256) ?: null,
             'public_error_envelope' => $envelope,
-            'workflow_id' => bounded_runtime_failure_text($context['workflow_id'] ?? ($envelope['workflow_id'] ?? ''), $secrets, 256) ?: null,
-            'run_id' => bounded_runtime_failure_text($context['run_id'] ?? ($envelope['run_id'] ?? ''), $secrets, 256) ?: null,
+            'workflow_id' => bounded_runtime_failure_text(
+                $context['workflow_id']
+                    ?? runtime_failure_public_field($publicDetails, ['workflow_id'])
+                    ?? ($envelope['workflow_id'] ?? ''),
+                $secrets,
+                256,
+            ) ?: null,
+            'run_id' => bounded_runtime_failure_text(
+                $context['run_id']
+                    ?? runtime_failure_public_field($publicDetails, ['run_id'])
+                    ?? ($envelope['run_id'] ?? ''),
+                $secrets,
+                256,
+            ) ?: null,
             'exception_type' => $exception::class,
             'message' => bounded_runtime_failure_text($exception->getMessage(), $secrets),
         ];

@@ -125,6 +125,7 @@ common_server_env=(
   -e APP_DEBUG=false
   -e APP_KEY=base64:ZHVyYWJsZS13b3JrZmxvdy1saWZlY3ljbGUta2V5ISE=
   -e APP_VERSION="$DW_SERVER_VERSION"
+  -e LOG_CHANNEL=stderr
   -e DB_CONNECTION=mysql
   -e DB_HOST="$mysql_name"
   -e DB_PORT=3306

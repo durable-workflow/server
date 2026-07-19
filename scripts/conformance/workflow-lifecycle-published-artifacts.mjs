@@ -533,13 +533,232 @@ function boundedTaskQueueDiagnostic(value, limit = 1280) {
   throw new Error('Unable to retain structured task-queue diagnostics within the shard byte limit.');
 }
 
+function boundedPublicResponse(value, limit = 384) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    return null;
+  }
+  const bounded = diagnosticValue(value, 0, 192);
+  const priorities = [
+    'error',
+    'reason',
+    'code',
+    'status',
+    'status_code',
+    'retryable',
+    'non_retryable',
+    'operation',
+    'http_method',
+    'endpoint',
+    'task_id',
+    'workflow_task_id',
+    'activity_task_id',
+    'query_task_id',
+    'workflow_id',
+    'run_id',
+    'message',
+  ];
+  const orderedKeys = [
+    ...priorities.filter((field) => Object.prototype.hasOwnProperty.call(bounded, field)),
+    ...Object.keys(bounded).filter((field) => !priorities.includes(field)),
+  ];
+  const retained = {};
+  for (const field of orderedKeys) {
+    const candidate = {...retained, [field]: bounded[field]};
+    if (serializedBytes(candidate) <= limit - 20) {
+      retained[field] = bounded[field];
+    }
+  }
+  if (Object.keys(retained).length < Object.keys(bounded).length) {
+    retained._truncated = true;
+  }
+
+  return serializedBytes(retained) <= limit ? retained : {_truncated: true};
+}
+
+function boundedProtocolFailure(value, limit = 1280) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    return null;
+  }
+  const publicResponse = firstObject(value.public_error_envelope, value.publicErrorEnvelope);
+  const reason = value.reason
+    ?? publicResponse.reason
+    ?? publicResponse.error
+    ?? publicResponse.code
+    ?? publicResponse.message
+    ?? null;
+  const retryable = typeof value.retryable === 'boolean'
+    ? value.retryable
+    : (typeof publicResponse.retryable === 'boolean'
+      ? publicResponse.retryable
+      : (typeof publicResponse.non_retryable === 'boolean' ? !publicResponse.non_retryable : null));
+  const build = (responseLimit, terse = false) => ({
+    schema: redactSensitiveText(value.schema, 96),
+    classification: redactSensitiveText(value.classification, 32),
+    owning_surface: redactSensitiveText(value.owning_surface, 64),
+    process: redactSensitiveText(value.process, 48),
+    operation: redactSensitiveText(value.operation, terse ? 96 : 160),
+    http_method: redactSensitiveText(value.http_method ?? value.httpMethod, 16),
+    endpoint_class: redactSensitiveText(value.endpoint_class ?? value.endpointClass, 64),
+    endpoint: terse ? null : redactSensitiveText(value.endpoint, 192),
+    status_code: firstInteger(value.status_code, value.statusCode),
+    reason: redactSensitiveText(reason, terse ? 96 : 192) || null,
+    retryable,
+    task_id: redactSensitiveText(
+      value.task_id
+        ?? publicResponse.task_id
+        ?? publicResponse.workflow_task_id
+        ?? publicResponse.activity_task_id
+        ?? publicResponse.query_task_id,
+      terse ? 96 : 160,
+    ) || null,
+    workflow_id: redactSensitiveText(value.workflow_id ?? publicResponse.workflow_id, terse ? 96 : 160) || null,
+    run_id: redactSensitiveText(value.run_id ?? publicResponse.run_id, terse ? 96 : 160) || null,
+    public_error_envelope: boundedPublicResponse(publicResponse, responseLimit),
+    _truncated: truthyFlag(value._truncated) || serializedBytes(value) > limit,
+  });
+
+  for (const [responseLimit, terse] of [[512, false], [384, false], [256, false], [160, true], [96, true]]) {
+    const retained = build(responseLimit, terse);
+    if (serializedBytes(retained) <= limit) {
+      return retained;
+    }
+  }
+
+  throw new Error('Unable to retain structured worker-protocol failure diagnostics within the shard byte limit.');
+}
+
+function boundedRuntimeException(value, limit = 896) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    return null;
+  }
+  const build = (messageLimit, terse = false) => ({
+    schema: redactSensitiveText(value.schema, 96),
+    classification: redactSensitiveText(value.classification, 32),
+    owning_surface: redactSensitiveText(value.owning_surface, 64),
+    process: redactSensitiveText(value.process, 48),
+    operation: redactSensitiveText(value.operation, terse ? 96 : 160),
+    exception_type: redactSensitiveText(value.exception_type ?? value.exceptionType, terse ? 96 : 160) || null,
+    message: redactSensitiveText(value.message, messageLimit) || null,
+    task_id: redactSensitiveText(value.task_id, terse ? 64 : 128) || null,
+    workflow_id: redactSensitiveText(value.workflow_id, terse ? 64 : 128) || null,
+    run_id: redactSensitiveText(value.run_id, terse ? 64 : 128) || null,
+    _truncated: truthyFlag(value._truncated) || serializedBytes(value) > limit,
+  });
+
+  for (const [messageLimit, terse] of [[256, false], [160, false], [96, true], [48, true]]) {
+    const retained = build(messageLimit, terse);
+    if (serializedBytes(retained) <= limit) {
+      return retained;
+    }
+  }
+
+  throw new Error('Unable to retain structured worker runtime exception diagnostics within the shard byte limit.');
+}
+
+function boundedServerErrorRecord(value, limit = 768) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    return null;
+  }
+  const build = (excerptLimit) => ({
+    schema: redactSensitiveText(value.schema, 96),
+    source: redactSensitiveText(value.source, 64),
+    matched_by: redactSensitiveText(value.matched_by ?? value.matchedBy, 64),
+    timestamp: redactSensitiveText(value.timestamp, 64) || null,
+    level: redactSensitiveText(value.level, 32) || null,
+    status_code: firstInteger(value.status_code, value.statusCode),
+    reason: redactSensitiveText(value.reason, 128) || null,
+    exception_type: redactSensitiveText(value.exception_type ?? value.exceptionType, 160) || null,
+    task_id: redactSensitiveText(value.task_id, 128) || null,
+    workflow_id: redactSensitiveText(value.workflow_id, 128) || null,
+    run_id: redactSensitiveText(value.run_id, 128) || null,
+    excerpt: redactSensitiveText(value.excerpt, excerptLimit),
+    truncated: truthyFlag(value.truncated) || Buffer.byteLength(stringValue(value.excerpt), 'utf8') > excerptLimit,
+    max_bytes: firstInteger(value.max_bytes, value.maxBytes),
+  });
+
+  for (const excerptLimit of [384, 256, 160, 96, 48]) {
+    const retained = build(excerptLimit);
+    if (serializedBytes(retained) <= limit) {
+      return retained;
+    }
+  }
+
+  const compact = {
+    schema: redactSensitiveText(value.schema, 64),
+    source: redactSensitiveText(value.source, 48),
+    matched_by: redactSensitiveText(value.matched_by ?? value.matchedBy, 48),
+    level: redactSensitiveText(value.level, 32) || null,
+    status_code: firstInteger(value.status_code, value.statusCode),
+    reason: redactSensitiveText(value.reason, 96) || null,
+    exception_type: redactSensitiveText(value.exception_type ?? value.exceptionType, 96) || null,
+    task_id: redactSensitiveText(value.task_id, 96) || null,
+    workflow_id: redactSensitiveText(value.workflow_id, 96) || null,
+    run_id: redactSensitiveText(value.run_id, 96) || null,
+    excerpt: redactSensitiveText(value.excerpt, 48),
+    truncated: true,
+  };
+  if (serializedBytes(compact) <= limit) {
+    return compact;
+  }
+
+  const essential = {
+    source: redactSensitiveText(value.source, 48),
+    matched_by: redactSensitiveText(value.matched_by ?? value.matchedBy, 48),
+    level: redactSensitiveText(value.level, 32) || null,
+    status_code: firstInteger(value.status_code, value.statusCode),
+    reason: redactSensitiveText(value.reason, 64) || null,
+    exception_type: redactSensitiveText(value.exception_type ?? value.exceptionType, 64) || null,
+    task_id: redactSensitiveText(value.task_id, 64) || null,
+    excerpt: redactSensitiveText(value.excerpt, 32),
+    truncated: true,
+  };
+  if (serializedBytes(essential) <= limit) {
+    return essential;
+  }
+
+  throw new Error('Unable to retain the structured server error record within the shard byte limit.');
+}
+
+function boundedCapturedExcerpt(value, limit = 384) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    return null;
+  }
+  const build = (excerptLimit, includeMetadata = true) => {
+    const retained = {
+      excerpt: redactSensitiveText(value.excerpt, excerptLimit),
+      truncated: truthyFlag(value.truncated)
+        || Buffer.byteLength(stringValue(value.excerpt), 'utf8') > excerptLimit,
+    };
+    if (includeMetadata) {
+      retained.schema = redactSensitiveText(value.schema, 96);
+      retained.source = redactSensitiveText(value.source, 64);
+      retained.max_excerpt_bytes = firstInteger(value.max_excerpt_bytes, value.maxExcerptBytes);
+    }
+
+    return retained;
+  };
+
+  for (const excerptLimit of [256, 160, 96, 48, 24]) {
+    const retained = build(excerptLimit, true);
+    if (serializedBytes(retained) <= limit) {
+      return retained;
+    }
+  }
+  const essential = build(Math.max(8, limit - 48), false);
+  if (serializedBytes(essential) <= limit) {
+    return essential;
+  }
+
+  throw new Error('Unable to retain captured process output within the shard byte limit.');
+}
+
 function boundedCompanionFailure(value, limit = 4608) {
   if (!value || typeof value !== 'object' || Array.isArray(value)) {
     return null;
   }
   const worker = firstObject(value.worker);
   const server = firstObject(value.server);
-  const build = (detailLimit, logLimit, truncated = false) => {
+  const build = (detailLimit, logLimit, protocolLimit, errorLimit, truncated = false) => {
     const retained = {
       schema: redactSensitiveText(value.schema, 128),
       failure_kind: redactSensitiveText(value.failure_kind, 96),
@@ -551,8 +770,18 @@ function boundedCompanionFailure(value, limit = 4608) {
       worker: {
         worker_id: redactSensitiveText(worker.worker_id, 128),
         process_state: boundedDiagnosticObject(worker.process_state, detailLimit),
-        last_protocol_failure: boundedDiagnosticObject(worker.last_protocol_failure, detailLimit),
-        structured_stderr: boundedDiagnosticObject(worker.structured_stderr, logLimit),
+        last_protocol_failure: boundedProtocolFailure(
+          worker.last_protocol_failure ?? worker.lastProtocolFailure,
+          protocolLimit,
+        ),
+        last_runtime_exception: boundedRuntimeException(
+          worker.last_runtime_exception ?? worker.lastRuntimeException,
+          Math.min(protocolLimit, 896),
+        ),
+        structured_stderr: boundedCapturedExcerpt(
+          worker.structured_stderr ?? worker.structuredStderr,
+          logLimit,
+        ),
         server_registration: boundedDiagnosticObject(worker.server_registration, detailLimit),
       },
       server: {
@@ -560,7 +789,12 @@ function boundedCompanionFailure(value, limit = 4608) {
         run_state: boundedDiagnosticObject(server.run_state, detailLimit),
         history: boundedDiagnosticObject(server.history, detailLimit),
         task_queue: boundedTaskQueueDiagnostic(server.task_queue, Math.max(1280, detailLimit)),
-        process_log: boundedDiagnosticObject(server.process_log, logLimit),
+        error_record_required: server.error_record_required === true,
+        error_record: boundedServerErrorRecord(
+          server.error_record ?? server.errorRecord,
+          errorLimit,
+        ),
+        process_log: boundedCapturedExcerpt(server.process_log ?? server.processLog, logLimit),
       },
       retained_after_cleanup: value.retained_after_cleanup === true,
       max_bytes: firstInteger(value.max_bytes),
@@ -571,14 +805,20 @@ function boundedCompanionFailure(value, limit = 4608) {
     return retained;
   };
 
-  for (const [detailLimit, logLimit] of [[640, 640], [512, 512], [384, 384], [256, 320], [192, 256]]) {
-    const retained = build(detailLimit, logLimit, detailLimit < 640);
+  for (const [detailLimit, logLimit, protocolLimit, errorLimit] of [
+    [640, 640, 1280, 768],
+    [512, 512, 1152, 640],
+    [384, 384, 1024, 512],
+    [256, 320, 896, 448],
+    [192, 256, 768, 384],
+  ]) {
+    const retained = build(detailLimit, logLimit, protocolLimit, errorLimit, detailLimit < 640);
     if (serializedBytes(retained) <= limit) {
       return retained;
     }
   }
 
-  const labelsOnly = build(128, 128, true);
+  const labelsOnly = build(128, 128, 704, 320, true);
   if (serializedBytes(labelsOnly) > limit) {
     throw new Error('Unable to retain PHP SDK companion diagnostics within the shard byte limit.');
   }
@@ -835,9 +1075,13 @@ function shardDiagnostic(scenarioId, status, classification, outputs, findings, 
     companionWorker.last_protocol_failure,
     companionWorker.lastProtocolFailure,
   );
+  const companionRuntimeException = firstObject(
+    companionWorker.last_runtime_exception,
+    companionWorker.lastRuntimeException,
+  );
   const decisiveRuntimeFailure = Object.keys(companionProtocolFailure).length > 0
     ? companionProtocolFailure
-    : runtimeFailure;
+    : (Object.keys(companionRuntimeException).length > 0 ? companionRuntimeException : runtimeFailure);
   const workerStartup = firstObject(outputs.worker_startup, outputs.workerStartup);
   const readiness = diagnosticReadiness(workerStartup);
   const lastServerObservation = firstObject(

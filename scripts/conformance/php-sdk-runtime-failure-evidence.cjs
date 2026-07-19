@@ -112,7 +112,25 @@ function boundedEnvelope(value, secrets) {
   }
 
   let summary = {_truncated: true};
-  for (const key of ['error', 'message', 'reason', 'code', 'status', 'status_code', 'workflow_id', 'run_id']) {
+  for (const key of [
+    'error',
+    'reason',
+    'code',
+    'status',
+    'status_code',
+    'retryable',
+    'non_retryable',
+    'operation',
+    'http_method',
+    'endpoint',
+    'task_id',
+    'workflow_task_id',
+    'activity_task_id',
+    'query_task_id',
+    'workflow_id',
+    'run_id',
+    'message',
+  ]) {
     if (!Object.prototype.hasOwnProperty.call(bounded, key)) {
       continue;
     }
@@ -220,6 +238,180 @@ function boundedEvidence(value, secrets, limit = DIAGNOSTIC_EXCERPT_LIMIT) {
   return serializedBytes(summary) <= limit ? summary : {_truncated: true};
 }
 
+function booleanValue(...values) {
+  return values.find((value) => typeof value === 'boolean') ?? null;
+}
+
+function endpointClass(value, endpoint) {
+  const supplied = text(value, [], 96);
+  if (supplied) {
+    return supplied;
+  }
+  const normalized = String(endpoint ?? '').split('?', 1)[0].toLowerCase();
+  if (/\/(?:api\/)?worker(?:-protocol)?(?:\/|$)/.test(normalized)) {
+    return 'worker_protocol';
+  }
+  if (/\/(?:api\/)?workflows?(?:\/|$)/.test(normalized)) {
+    return 'workflow_control';
+  }
+  if (/\/(?:api\/)?task-queues?(?:\/|$)/.test(normalized)) {
+    return 'task_queue_diagnostics';
+  }
+  if (/\/(?:api\/)?workers?(?:\/|$)/.test(normalized)) {
+    return 'worker_registration';
+  }
+
+  const firstSegment = normalized.match(/^\/?(?:api\/)?([^/*{?]+)/)?.[1] ?? '';
+  if (firstSegment) {
+    return text(firstSegment.replace(/-/g, '_'), [], 96);
+  }
+
+  return 'unknown';
+}
+
+function firstPublicField(value, fields) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    return null;
+  }
+  for (const field of fields) {
+    if (Object.prototype.hasOwnProperty.call(value, field)) {
+      return value[field];
+    }
+  }
+
+  return null;
+}
+
+function compactPublicResponse(value, secrets, limit = 512) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    return null;
+  }
+  const bounded = boundedValue(value, secrets);
+  const priorities = [
+    'error',
+    'reason',
+    'code',
+    'status',
+    'status_code',
+    'retryable',
+    'non_retryable',
+    'operation',
+    'http_method',
+    'endpoint',
+    'task_id',
+    'workflow_task_id',
+    'activity_task_id',
+    'query_task_id',
+    'workflow_id',
+    'run_id',
+    'message',
+  ];
+  const retained = {};
+  const entries = [
+    ...priorities.filter((key) => Object.prototype.hasOwnProperty.call(bounded, key)),
+    ...Object.keys(bounded).filter((key) => !priorities.includes(key)),
+  ];
+  for (const key of entries) {
+    const entry = bounded[key];
+    const compact = entry && typeof entry === 'object'
+      ? boundedValue(entry, secrets, 2)
+      : entry;
+    const candidate = {...retained, [key]: compact};
+    if (serializedBytes(candidate) <= limit - 20) {
+      retained[key] = compact;
+    }
+  }
+  if (Object.keys(retained).length < Object.keys(bounded).length) {
+    retained._truncated = true;
+  }
+
+  return serializedBytes(retained) <= limit ? retained : {_truncated: true};
+}
+
+function compactRuntimeFailure(value, secrets, limit = 1280) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    return null;
+  }
+  const publicResponse = value.public_error_envelope && typeof value.public_error_envelope === 'object'
+    ? value.public_error_envelope
+    : {};
+  const rawStatusCode = value.status_code ?? publicResponse.status_code ?? publicResponse.status;
+  const statusCode = rawStatusCode === null || rawStatusCode === undefined || rawStatusCode === ''
+    ? null
+    : Number(rawStatusCode);
+  const retryable = booleanValue(
+    value.retryable,
+    publicResponse.retryable,
+    typeof publicResponse.non_retryable === 'boolean' ? !publicResponse.non_retryable : null,
+  );
+  const endpoint = text(value.endpoint ?? publicResponse.endpoint, secrets, 256) || null;
+  const reason = text(
+    value.reason
+      ?? firstPublicField(publicResponse, ['reason', 'error', 'code', 'message']),
+    secrets,
+    192,
+  ) || null;
+  const taskId = text(
+    value.task_id
+      ?? firstPublicField(publicResponse, [
+        'task_id',
+        'workflow_task_id',
+        'activity_task_id',
+        'query_task_id',
+      ]),
+    secrets,
+    256,
+  ) || null;
+
+  const build = (responseLimit, includeSecondary, terse) => {
+    const retained = {
+      schema: text(value.schema, secrets, 96) || 'durable-workflow.v2.php-sdk-runtime-failure',
+      classification: text(value.classification, secrets, 32) || null,
+      owning_surface: text(value.owning_surface, secrets, 64) || null,
+      process: text(value.process, secrets, 48) || null,
+      operation: text(value.operation, secrets, terse ? 96 : 160) || 'unknown',
+      http_method: text(value.http_method ?? publicResponse.http_method, secrets, 16) || null,
+      endpoint_class: endpointClass(value.endpoint_class, endpoint),
+      endpoint: terse ? null : endpoint,
+      status_code: Number.isInteger(statusCode) ? statusCode : null,
+      reason: text(reason, secrets, terse ? 96 : 192) || null,
+      retryable,
+      task_id: text(taskId, secrets, terse ? 96 : 192) || null,
+      workflow_id: text(
+        value.workflow_id ?? publicResponse.workflow_id,
+        secrets,
+        terse ? 96 : 192,
+      ) || null,
+      run_id: text(value.run_id ?? publicResponse.run_id, secrets, terse ? 96 : 192) || null,
+      public_error_envelope: compactPublicResponse(publicResponse, secrets, responseLimit),
+    };
+    if (includeSecondary) {
+      retained.exception_type = text(value.exception_type, secrets, 160) || null;
+      retained.message = text(value.message, secrets, 256) || null;
+    }
+    if (serializedBytes(value) > limit) {
+      retained._truncated = true;
+    }
+
+    return retained;
+  };
+
+  for (const [responseLimit, includeSecondary, terse] of [
+    [512, true, false],
+    [384, false, false],
+    [256, false, false],
+    [160, false, true],
+    [96, false, true],
+  ]) {
+    const retained = build(responseLimit, includeSecondary, terse);
+    if (serializedBytes(retained) <= limit) {
+      return retained;
+    }
+  }
+
+  throw new Error('Unable to retain structured PHP SDK runtime failure fields within the byte limit.');
+}
+
 function lastMarkerPayload(source) {
   let payload = null;
   for (const line of String(source ?? '').split(/\r?\n/)) {
@@ -252,8 +444,30 @@ function extractRuntimeFailureEvidence(source, options = {}) {
     ? numericStatus
     : null;
   const envelope = boundedEnvelope(payload.public_error_envelope, secrets);
+  const endpoint = text(payload.endpoint ?? envelope?.endpoint, secrets, 512) || null;
   const workflowId = text(payload.workflow_id ?? envelope?.workflow_id, secrets, 256) || null;
   const runId = text(payload.run_id ?? envelope?.run_id, secrets, 256) || null;
+  const taskId = text(
+    payload.task_id
+      ?? firstPublicField(envelope, [
+        'task_id',
+        'workflow_task_id',
+        'activity_task_id',
+        'query_task_id',
+      ]),
+    secrets,
+    256,
+  ) || null;
+  const retryable = booleanValue(
+    payload.retryable,
+    envelope?.retryable,
+    typeof envelope?.non_retryable === 'boolean' ? !envelope.non_retryable : null,
+  );
+  const reason = text(
+    payload.reason ?? firstPublicField(envelope, ['reason', 'error', 'code', 'message']),
+    secrets,
+    192,
+  ) || null;
   const classification = statusCode !== null
     ? 'server'
     : (['server', 'sdk', 'runner'].includes(payload.classification) ? payload.classification : 'sdk');
@@ -269,8 +483,12 @@ function extractRuntimeFailureEvidence(source, options = {}) {
     process: text(payload.process, secrets, 64) || 'unknown',
     operation: text(payload.operation, secrets, 160) || 'unknown',
     http_method: text(payload.http_method, secrets, 16) || null,
-    endpoint: text(payload.endpoint, secrets, 512) || null,
+    endpoint_class: endpointClass(payload.endpoint_class, endpoint),
+    endpoint,
     status_code: statusCode,
+    reason,
+    retryable,
+    task_id: taskId,
     public_error_envelope: envelope,
     workflow_id: workflowId,
     run_id: runId,
@@ -331,8 +549,12 @@ function extractReadinessHttpFailureEvidence(observation, options = {}) {
     process: 'worker_readiness_probe',
     operation: 'worker.registration.readiness',
     http_method: 'GET',
+    endpoint_class: 'worker_registration',
     endpoint: '/api/workers/{worker_id}',
     status_code: statusCode,
+    reason: publicReason || null,
+    retryable: booleanValue(publicErrorEnvelope?.retryable),
+    task_id: null,
     public_error_envelope: publicErrorEnvelope,
     workflow_id: null,
     run_id: null,
@@ -356,6 +578,16 @@ function isCompleteHttpFailureEvidence(evidence) {
       && typeof evidence.operation === 'string'
       && evidence.operation !== ''
       && evidence.operation !== 'unknown'
+      && typeof evidence.http_method === 'string'
+      && evidence.http_method !== ''
+      && typeof evidence.endpoint_class === 'string'
+      && evidence.endpoint_class !== ''
+      && evidence.endpoint_class !== 'unknown'
+      && Object.prototype.hasOwnProperty.call(evidence, 'reason')
+      && Object.prototype.hasOwnProperty.call(evidence, 'retryable')
+      && Object.prototype.hasOwnProperty.call(evidence, 'task_id')
+      && Object.prototype.hasOwnProperty.call(evidence, 'workflow_id')
+      && Object.prototype.hasOwnProperty.call(evidence, 'run_id')
       && typeof evidence.owning_surface === 'string'
       && evidence.owning_surface !== ''
   );
@@ -367,7 +599,7 @@ function assertCompleteHttpFailureEvidence(evidence, classification) {
   }
   if (!isCompleteHttpFailureEvidence(evidence)) {
     throw new Error(
-      'Server-classified PHP SDK failure is missing a valid status, public envelope, operation, owning surface, or byte bound.',
+      'Server-classified PHP SDK failure is missing a valid status, public response, protocol operation, endpoint class, identifiers, retryability, owning surface, or byte bound.',
     );
   }
 }
@@ -393,6 +625,7 @@ module.exports = {
   MARKER,
   assertCompleteHttpFailureEvidence,
   boundedEvidence,
+  compactRuntimeFailure,
   diagnosticExcerpt,
   extractReadinessHttpFailureEvidence,
   extractRuntimeFailureEvidence,

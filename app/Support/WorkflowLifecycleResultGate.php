@@ -502,6 +502,14 @@ final class WorkflowLifecycleResultGate
                         'scenario_id' => $scenarioId,
                     ];
                 }
+                if (($diagnosticContract['worker_runtime_exception_separate_from_protocol_failure'] ?? false) === true
+                    && ! array_key_exists('last_runtime_exception', $worker)
+                    && ! array_key_exists('lastRuntimeException', $worker)) {
+                    $failures[] = [
+                        'code' => 'missing_lifecycle_timeout_worker_runtime_exception_state',
+                        'scenario_id' => $scenarioId,
+                    ];
+                }
 
                 $server = self::arrayField($companion, ['server']) ?? [];
                 $health = self::arrayField($server, ['health']) ?? [];
@@ -553,6 +561,177 @@ final class WorkflowLifecycleResultGate
                     }
                 }
                 $protocolFailure = self::arrayField($worker, ['last_protocol_failure', 'lastProtocolFailure']);
+                $runtimeException = self::arrayField($worker, ['last_runtime_exception', 'lastRuntimeException']);
+                if (($diagnosticContract['worker_runtime_exception_separate_from_protocol_failure'] ?? false) === true
+                    && $runtimeException !== null) {
+                    if ($protocolFailure !== null) {
+                        $failures[] = [
+                            'code' => 'conflicting_lifecycle_worker_failure_kinds',
+                            'scenario_id' => $scenarioId,
+                        ];
+                    }
+                    $requiredRuntimeFields = $diagnosticContract['worker_runtime_exception_required_fields'] ?? [];
+                    foreach (is_array($requiredRuntimeFields) ? $requiredRuntimeFields : [] as $field) {
+                        if (is_string($field) && ! self::isEmptyEvidence($runtimeException[$field] ?? null)) {
+                            continue;
+                        }
+                        $failures[] = [
+                            'code' => 'incomplete_lifecycle_worker_runtime_exception',
+                            'scenario_id' => $scenarioId,
+                            'field' => $field,
+                        ];
+                    }
+                    $runtimeStatus = $runtimeException['status_code'] ?? $runtimeException['statusCode'] ?? null;
+                    if (is_int($runtimeStatus) && $runtimeStatus >= 400 && $runtimeStatus <= 599) {
+                        $failures[] = [
+                            'code' => 'http_failure_stored_as_lifecycle_worker_runtime_exception',
+                            'scenario_id' => $scenarioId,
+                        ];
+                    }
+                }
+                if (($diagnosticContract['structured_worker_protocol_failure_required'] ?? false) === true
+                    && $protocolFailure !== null) {
+                    $requiredProtocolFields = $diagnosticContract['worker_protocol_failure_required_fields'] ?? [];
+                    foreach (is_array($requiredProtocolFields) ? $requiredProtocolFields : [] as $field) {
+                        if (is_string($field) && array_key_exists($field, $protocolFailure)) {
+                            continue;
+                        }
+                        $failures[] = [
+                            'code' => 'incomplete_lifecycle_worker_protocol_failure',
+                            'scenario_id' => $scenarioId,
+                            'field' => $field,
+                        ];
+                    }
+                    foreach (['operation', 'http_method', 'endpoint_class'] as $field) {
+                        if (! self::isEmptyEvidence($protocolFailure[$field] ?? null)
+                            && ($field !== 'endpoint_class'
+                                || self::stringValue($protocolFailure[$field] ?? null) !== 'unknown')) {
+                            continue;
+                        }
+                        $failures[] = [
+                            'code' => 'incomplete_lifecycle_worker_protocol_failure',
+                            'scenario_id' => $scenarioId,
+                            'field' => $field,
+                        ];
+                    }
+                    $protocolStatus = $protocolFailure['status_code'] ?? $protocolFailure['statusCode'] ?? null;
+                    if (! is_int($protocolStatus) || $protocolStatus < 400 || $protocolStatus > 599) {
+                        $failures[] = [
+                            'code' => 'incomplete_lifecycle_worker_protocol_failure',
+                            'scenario_id' => $scenarioId,
+                            'field' => 'status_code',
+                        ];
+                    }
+                    $publicResponse = self::arrayField(
+                        $protocolFailure,
+                        ['public_error_envelope', 'publicErrorEnvelope'],
+                    ) ?? [];
+                    $publicFields = array_diff(
+                        array_keys($publicResponse),
+                        ['_truncated', '_bounded_json_excerpt', 'bounded_json_excerpt'],
+                    );
+                    if ($publicFields === []) {
+                        $failures[] = [
+                            'code' => 'opaque_lifecycle_worker_protocol_response',
+                            'scenario_id' => $scenarioId,
+                        ];
+                    }
+                    if (array_key_exists('bounded_json_excerpt', $protocolFailure)
+                        || array_key_exists('_bounded_json_excerpt', $protocolFailure)) {
+                        $failures[] = [
+                            'code' => 'opaque_lifecycle_worker_protocol_failure',
+                            'scenario_id' => $scenarioId,
+                        ];
+                    }
+                    $diagnosticHttp = self::arrayField($diagnostic, ['http']) ?? [];
+                    if (is_int($protocolStatus)
+                        && ($diagnosticHttp['status'] ?? null) !== $protocolStatus) {
+                        $failures[] = [
+                            'code' => 'lifecycle_worker_protocol_status_not_promoted',
+                            'scenario_id' => $scenarioId,
+                        ];
+                    }
+                    $genericReason = str_replace(
+                        ' ',
+                        '_',
+                        self::normalizedStatus(
+                            $protocolFailure['reason']
+                                ?? $publicResponse['reason']
+                                ?? $publicResponse['error']
+                                ?? $publicResponse['code']
+                                ?? null,
+                        ),
+                    );
+                    $genericServerResponse = is_int($protocolStatus)
+                        && $protocolStatus >= 500
+                        && ($genericReason === ''
+                            || in_array($genericReason, [
+                                'error',
+                                'server_error',
+                                'internal_error',
+                                'internal_server_error',
+                                'request_failed',
+                                'unknown_error',
+                            ], true));
+                    if (($diagnosticContract['generic_protocol_failure_server_error_record_required'] ?? false) === true
+                        && $genericServerResponse) {
+                        $errorRecord = self::arrayField($server, ['error_record', 'errorRecord']) ?? [];
+                        if (($server['error_record_required'] ?? $server['errorRecordRequired'] ?? null) !== true) {
+                            $failures[] = [
+                                'code' => 'missing_lifecycle_server_error_record_requirement',
+                                'scenario_id' => $scenarioId,
+                            ];
+                        }
+                        foreach (['source', 'matched_by', 'level', 'excerpt'] as $field) {
+                            if (! self::isEmptyEvidence($errorRecord[$field] ?? null)) {
+                                continue;
+                            }
+                            $failures[] = [
+                                'code' => 'missing_lifecycle_server_error_record',
+                                'scenario_id' => $scenarioId,
+                                'field' => $field,
+                            ];
+                        }
+                        if (($diagnosticContract['generic_protocol_failure_correlated_error_severity_required'] ?? false) === true) {
+                            $errorLevel = strtoupper(self::stringValue($errorRecord['level'] ?? null));
+                            if (! in_array($errorLevel, ['ERROR', 'CRITICAL', 'ALERT', 'EMERGENCY'], true)) {
+                                $failures[] = [
+                                    'code' => 'invalid_lifecycle_server_error_record_severity',
+                                    'scenario_id' => $scenarioId,
+                                    'level' => $errorLevel,
+                                ];
+                            }
+                            $matchedBy = self::stringValue($errorRecord['matched_by'] ?? $errorRecord['matchedBy'] ?? null);
+                            if (! str_contains($matchedBy, 'error_severity')) {
+                                $failures[] = [
+                                    'code' => 'invalid_lifecycle_server_error_record_match',
+                                    'scenario_id' => $scenarioId,
+                                    'matched_by' => $matchedBy,
+                                ];
+                            }
+                            $protocolIdentifiers = array_values(array_filter([
+                                self::stringValue($protocolFailure['task_id'] ?? null),
+                                self::stringValue($protocolFailure['workflow_id'] ?? null),
+                                self::stringValue($protocolFailure['run_id'] ?? null),
+                            ], static fn (string $value): bool => $value !== ''));
+                            $recordIdentifiers = array_values(array_filter([
+                                self::stringValue($errorRecord['task_id'] ?? null),
+                                self::stringValue($errorRecord['workflow_id'] ?? null),
+                                self::stringValue($errorRecord['run_id'] ?? null),
+                            ], static fn (string $value): bool => $value !== ''));
+                            $identifierCorrelated = array_intersect($protocolIdentifiers, $recordIdentifiers) !== [];
+                            $statusCorrelated = $protocolIdentifiers === []
+                                && is_int($errorRecord['status_code'] ?? null)
+                                && ($errorRecord['status_code'] ?? null) === $protocolStatus;
+                            if (! $identifierCorrelated && ! $statusCorrelated) {
+                                $failures[] = [
+                                    'code' => 'uncorrelated_lifecycle_server_error_record',
+                                    'scenario_id' => $scenarioId,
+                                ];
+                            }
+                        }
+                    }
+                }
                 if (($processState['alive'] ?? null) === false
                     && self::stringValue($protocolFailure['classification'] ?? null) === 'server') {
                     $processLog = self::arrayField($server, ['process_log', 'processLog']) ?? [];
