@@ -16,7 +16,7 @@ final class SignalQueryRuntimeContract
 {
     public const SCHEMA = 'durable-workflow.v2.signal-query-runtime.contract';
 
-    public const VERSION = 35;
+    public const VERSION = 36;
 
     public const RESULT_SCHEMA = 'durable-workflow.v2.signal-query-runtime.result';
 
@@ -597,6 +597,35 @@ final class SignalQueryRuntimeContract
                 'runner_path' => 'scripts/conformance/signals-queries-published-artifacts.sh',
                 'runner_command' => 'scripts/conformance/signals-queries-published-artifacts.sh --result-dir <result-dir>',
                 'result_schema' => self::RESULT_SCHEMA,
+                'portable_result_contract' => [
+                    'schema' => 'durable-workflow.v1.portable-native-evidence',
+                    'runner_max_bytes' => 1024 * 1024,
+                    'host_consumer_max_bytes' => 4 * 1024 * 1024,
+                    'required_top_level_fields' => [
+                        'schema',
+                        'started_at',
+                        'finished_at',
+                        'outcome',
+                        'runner_blocked',
+                        'artifactVersions',
+                        'executed_distribution_identities',
+                        'runtime_matrix',
+                        'scenario_results',
+                        'findings',
+                        'finding_links',
+                    ],
+                    'scenario_evidence_source' => 'scenario_requirements.*.evidence',
+                    'required_scenario_status_source' => 'required_scenarios',
+                    'exact_distribution_identity_field' => 'executed_distribution_identities',
+                    'native_evidence_failure_classification' => [
+                        'oversized' => 'runner_infrastructure_failure',
+                        'malformed' => 'runner_infrastructure_failure',
+                        'incomplete' => 'runner_infrastructure_failure',
+                    ],
+                    'product_assertions' => 'fail_closed_before_projection',
+                    'sensitive_values' => 'omitted',
+                    'unbounded_payloads' => 'sha256_summary_without_payload_bytes',
+                ],
                 'result_files' => [
                     'pins.json',
                     'run-metadata.json',

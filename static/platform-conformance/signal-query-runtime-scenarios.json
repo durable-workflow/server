@@ -94,6 +94,35 @@
     "runner_path": "scripts/conformance/signals-queries-published-artifacts.sh",
     "php_worker_fixture": "scripts/conformance/fixtures/php-sdk/signals-queries-worker.php",
     "php_client_fixture": "scripts/conformance/fixtures/php-sdk/signals-queries-client.php",
-    "source_free_php_sdk_project_required": true
+    "source_free_php_sdk_project_required": true,
+    "portable_result_contract": {
+      "schema": "durable-workflow.v1.portable-native-evidence",
+      "runner_max_bytes": 1048576,
+      "host_consumer_max_bytes": 4194304,
+      "required_top_level_fields": [
+        "schema",
+        "started_at",
+        "finished_at",
+        "outcome",
+        "runner_blocked",
+        "artifactVersions",
+        "executed_distribution_identities",
+        "runtime_matrix",
+        "scenario_results",
+        "findings",
+        "finding_links"
+      ],
+      "scenario_evidence_source": "signal_query_runtime_contract.scenario_requirements.*.evidence",
+      "required_scenario_status_source": "signal_query_runtime_contract.scenarios",
+      "exact_distribution_identity_field": "executed_distribution_identities",
+      "native_evidence_failure_classification": {
+        "oversized": "runner_infrastructure_failure",
+        "malformed": "runner_infrastructure_failure",
+        "incomplete": "runner_infrastructure_failure"
+      },
+      "product_assertions": "fail_closed_before_projection",
+      "sensitive_values": "omitted",
+      "unbounded_payloads": "sha256_summary_without_payload_bytes"
+    }
   }
 }

@@ -14,7 +14,7 @@ class SignalQueryRuntimeContractTest extends TestCase
         $manifest = SignalQueryRuntimeContract::manifest();
 
         $this->assertSame('durable-workflow.v2.signal-query-runtime.contract', $manifest['schema']);
-        $this->assertSame(35, SignalQueryRuntimeContract::VERSION);
+        $this->assertSame(36, SignalQueryRuntimeContract::VERSION);
         $this->assertSame(SignalQueryRuntimeContract::VERSION, $manifest['version']);
         $this->assertSame('durable-workflow.v2.signal-query-runtime.result', $manifest['result_schema']);
         $this->assertSame('signal_query_runtime_contract', $manifest['fixture_category']);
@@ -569,6 +569,56 @@ PY);
         $this->assertTrue($hostRunner['must_execute_against_published_artifacts']);
         $this->assertTrue($hostRunner['must_record_runner_blocked_false_for_product_evidence']);
         $this->assertTrue($hostRunner['must_emit_focused_findings_for_uncovered_cells']);
+        $portableResult = $hostRunner['portable_result_contract'];
+        $this->assertSame(1024 * 1024, $portableResult['runner_max_bytes']);
+        $this->assertSame(4 * 1024 * 1024, $portableResult['host_consumer_max_bytes']);
+        $this->assertSame(
+            [
+                'schema',
+                'started_at',
+                'finished_at',
+                'outcome',
+                'runner_blocked',
+                'artifactVersions',
+                'executed_distribution_identities',
+                'runtime_matrix',
+                'scenario_results',
+                'findings',
+                'finding_links',
+            ],
+            $portableResult['required_top_level_fields'],
+        );
+        $this->assertSame('required_scenarios', $portableResult['required_scenario_status_source']);
+        $this->assertSame(
+            'executed_distribution_identities',
+            $portableResult['exact_distribution_identity_field'],
+        );
+        $this->assertSame(
+            [
+                'oversized' => 'runner_infrastructure_failure',
+                'malformed' => 'runner_infrastructure_failure',
+                'incomplete' => 'runner_infrastructure_failure',
+            ],
+            $portableResult['native_evidence_failure_classification'],
+        );
+        $this->assertSame('fail_closed_before_projection', $portableResult['product_assertions']);
+        $this->assertSame('omitted', $portableResult['sensitive_values']);
+
+        $publicManifest = json_decode(
+            (string) file_get_contents(
+                dirname(__DIR__, 2).'/static/platform-conformance/signal-query-runtime-scenarios.json',
+            ),
+            true,
+            512,
+            JSON_THROW_ON_ERROR,
+        );
+        $publicPortableResult = $publicManifest['host_runner_contract']['portable_result_contract'];
+        $this->assertSame($portableResult['required_top_level_fields'], $publicPortableResult['required_top_level_fields']);
+        $this->assertSame(
+            'signal_query_runtime_contract.scenarios',
+            $publicPortableResult['required_scenario_status_source'],
+        );
+        $this->assertSame(SignalQueryRuntimeContract::manifest()['required_scenarios'], $publicManifest['scenarios']);
         $this->assertSame(['bash', 'python3', 'docker', 'sh'], $hostRunner['required_host_commands']);
         $this->assertContains(
             'DW_SIGNALS_QUERIES_RUN_BASELINE_PROBE',
@@ -4460,6 +4510,71 @@ PY);
         );
     }
 
+    public function test_host_runner_emits_bounded_portable_pass_evidence(): void
+    {
+        $evidence = $this->completeSignalQueryResultForCurrentHostRunner();
+        $evidence['scenario_results']['waterline_operator_visibility']['observed_outputs']['api_captures'][
+            'selected_run_detail'
+        ]['response_json'] = [
+            'workflow_payload' => 'customer-payload-'.str_repeat('x', 5 * 1024 * 1024),
+            'access_token' => 'portable-result-secret',
+            'headers_and_parameters' => [
+                'auth_token' => 'portable-auth-token-value',
+                'bearer_token' => 'portable-bearer-token-value',
+                'api_key' => 'portable-api-key-value',
+            ],
+        ];
+
+        $artifacts = $this->runSignalQueryHostRunnerArtifacts($evidence);
+        $result = $artifacts['result'];
+        $encoded = json_encode($result, JSON_THROW_ON_ERROR);
+
+        $this->assertLessThan(4 * 1024 * 1024, $artifacts['result_bytes']);
+        $this->assertSame('pass', $result['outcome']);
+        $this->assertFalse($result['runner_blocked']);
+        $this->assertEquals(
+            $evidence['executed_distribution_identities'],
+            $result['executed_distribution_identities'],
+        );
+        $this->assertEquals(
+            array_fill_keys(SignalQueryRuntimeContract::manifest()['required_scenarios'], 'pass'),
+            array_map(
+                static fn (array $scenario): string => (string) $scenario['status'],
+                $result['scenario_results'],
+            ),
+        );
+        $this->assertStringNotContainsString('customer-payload-', $encoded);
+        $this->assertStringNotContainsString('portable-result-secret', $encoded);
+        $this->assertStringNotContainsString('auth_token', $encoded);
+        $this->assertStringNotContainsString('portable-auth-token-value', $encoded);
+        $this->assertStringNotContainsString('bearer_token', $encoded);
+        $this->assertStringNotContainsString('portable-bearer-token-value', $encoded);
+        $this->assertStringNotContainsString('api_key', $encoded);
+        $this->assertStringNotContainsString('portable-api-key-value', $encoded);
+        $this->assertSame('pass', SignalQueryRuntimeResultGate::evaluate($result)['status']);
+    }
+
+    public function test_host_runner_keeps_product_failures_fail_closed_while_bounding_evidence(): void
+    {
+        $evidence = $this->completeSignalQueryResultForCurrentHostRunner();
+        $evidence['scenario_results']['php_worker_cli_and_sdk_baseline']['observed_outputs'][
+            'sdk_php_signal_and_query'
+        ] = false;
+        $evidence['scenario_results']['php_worker_cli_and_sdk_baseline']['observed_outputs'][
+            'debug_log'
+        ] = str_repeat('unbounded-product-diagnostic', 256 * 1024);
+
+        $artifacts = $this->runSignalQueryHostRunnerArtifacts($evidence);
+
+        $this->assertLessThan(4 * 1024 * 1024, $artifacts['result_bytes']);
+        $this->assertSame('non_passing', $artifacts['result']['outcome']);
+        $this->assertFalse($artifacts['result']['runner_blocked']);
+        $this->assertSame(
+            'fail',
+            $artifacts['result']['scenario_results']['php_worker_cli_and_sdk_baseline']['status'],
+        );
+    }
+
     public function test_host_runner_rejects_complete_matrix_without_required_distribution_identity(): void
     {
         $evidence = $this->completeSignalQueryResultForCurrentHostRunner();
@@ -7562,7 +7677,7 @@ PY);
 
     /**
      * @param  array<string, mixed>  $smokeEvidence
-     * @return array{result: array<string, mixed>, record: array<string, mixed>, stdout: array<string, mixed>}
+     * @return array{result: array<string, mixed>, record: array<string, mixed>, stdout: array<string, mixed>, result_bytes: int}
      */
     private function runSignalQueryHostRunnerArtifacts(array $smokeEvidence): array
     {
@@ -7614,14 +7729,16 @@ PY);
 
             $resultPath = $resultDir.'/signals-queries-result.json';
             $this->assertFileExists($resultPath);
+            $resultContents = (string) file_get_contents($resultPath);
 
             $recordPath = $resultDir.'/signals-queries-record.json';
             $this->assertFileExists($recordPath);
 
             return [
-                'result' => json_decode((string) file_get_contents($resultPath), true, 512, JSON_THROW_ON_ERROR),
+                'result' => json_decode($resultContents, true, 512, JSON_THROW_ON_ERROR),
                 'record' => json_decode((string) file_get_contents($recordPath), true, 512, JSON_THROW_ON_ERROR),
                 'stdout' => $stdoutRecord,
+                'result_bytes' => strlen($resultContents),
             ];
         } finally {
             $this->removeDirectory($resultDir);

@@ -155,6 +155,12 @@ from typing import Any
 
 
 DIAGNOSTIC_OUTPUT_LIMIT = 8192
+PORTABLE_RESULT_LIMIT_BYTES = 1024 * 1024
+PORTABLE_EVIDENCE_CELL_LIMIT_BYTES = 64 * 1024
+PORTABLE_EVIDENCE_STRING_LIMIT = 2048
+PORTABLE_EVIDENCE_COLLECTION_LIMIT = 64
+PORTABLE_FINDING_LIMIT = 64
+PORTABLE_DISTRIBUTION_ARTIFACT_LIMIT = 64
 RUST_DEPENDENCY_CACHE_SCHEMA = "durable-workflow.v1.signals-queries-rust-dependency-cache"
 RUST_DEPENDENCY_CACHE_DEFAULT_MAX_ENTRIES = 4
 RUST_DEPENDENCY_CACHE_DEFAULT_MAX_BYTES = 8 * 1024 * 1024 * 1024
@@ -208,6 +214,11 @@ def normalize_distribution_identity(
     raw_artifacts = observed.get("artifacts")
     if not isinstance(raw_artifacts, list) or not raw_artifacts:
         raise RuntimeError(f"executed distribution identity has no artifacts for {component}")
+    if len(raw_artifacts) > PORTABLE_DISTRIBUTION_ARTIFACT_LIMIT:
+        raise RuntimeError(
+            f"executed distribution identity has too many artifacts for {component}: "
+            f"{len(raw_artifacts)} > {PORTABLE_DISTRIBUTION_ARTIFACT_LIMIT}"
+        )
     artifacts: list[dict[str, str]] = []
     for artifact in raw_artifacts:
         if not isinstance(artifact, dict) or set(artifact) != {"name", "sha256"}:
@@ -14438,15 +14449,371 @@ if runner_blockers:
 write_json(result_dir / "run-metadata.json", run_metadata)
 write_json(result_dir / "signals-queries-findings.json", findings)
 
-def section_for(*scenario_ids: str) -> dict[str, dict[str, Any]]:
+PORTABLE_COMMON_SCENARIO_EVIDENCE = (
+    "published_artifact_versions",
+    "artifact_versions",
+    "artifactVersions",
+    "artifact_sources",
+    "local_product_source_checkouts_used",
+)
+PORTABLE_OPTIONAL_SCENARIO_EVIDENCE = {
+    "python_worker_cli_and_sdk_baseline": (
+        "workflow_id",
+        "run_id",
+        "task_queue",
+        "worker_id",
+    ),
+    "php_worker_cli_and_sdk_baseline": (
+        "workflow_id",
+        "run_id",
+        "task_queue",
+        "worker_id",
+    ),
+    "unknown_signal_and_query_errors": (
+        "cli_unknown_signal_sample",
+        "cli_unknown_query_sample",
+        "cli_missing_workflow_signal_sample",
+        "cli_missing_workflow_query_sample",
+        "sdk_python_unknown_signal_sample",
+        "sdk_python_unknown_query_sample",
+        "sdk_python_missing_workflow_signal_sample",
+        "sdk_python_missing_workflow_query_sample",
+    ),
+}
+PORTABLE_SENSITIVE_KEY_PARTS = (
+    "authorization",
+    "cookie",
+    "credential",
+    "password",
+    "privatekey",
+    "secret",
+)
+PORTABLE_SENSITIVE_KEY_SUFFIXES = (
+    "apikey",
+    "passphrase",
+    "token",
+)
+PORTABLE_UNBOUNDED_VALUE_KEYS = {
+    "customerpayload",
+    "debuglog",
+    "eventhistory",
+    "historyevents",
+    "rawpayload",
+    "stacktrace",
+    "workflowpayload",
+}
+PORTABLE_PRIORITY_KEYS = {
+    "artifact",
+    "status",
+    "status_code",
+    "outcome",
+    "reason",
+    "rejection_reason",
+    "version",
+    "resolved_version",
+    "source",
+    "worker_runtime",
+    "worker_id",
+    "task_queue",
+    "workflow_id",
+    "run_id",
+    "query_name",
+    "signal_name",
+    "sha256",
+}
+
+
+def portable_key_token(value: Any) -> str:
+    return re.sub(r"[^a-z0-9]", "", str(value).lower())
+
+
+def portable_sensitive_key(value: Any) -> bool:
+    token = portable_key_token(value)
+    return any(part in token for part in PORTABLE_SENSITIVE_KEY_PARTS) or any(
+        token.endswith(suffix) for suffix in PORTABLE_SENSITIVE_KEY_SUFFIXES
+    )
+
+
+def portable_unbounded_value_key(value: Any) -> bool:
+    token = portable_key_token(value)
+    return token in PORTABLE_UNBOUNDED_VALUE_KEYS or (
+        token.endswith("payload") and token != "payloadcodec"
+    )
+
+
+def portable_json_bytes(value: Any) -> bytes:
+    return json.dumps(
+        value,
+        default=str,
+        separators=(",", ":"),
+        sort_keys=True,
+    ).encode("utf-8")
+
+
+def portable_value_summary(value: Any, reason: str) -> dict[str, Any]:
+    encoded = portable_json_bytes(value)
+    return {
+        "retained": False,
+        "reason": reason,
+        "original_bytes": len(encoded),
+        "sha256": hashlib.sha256(encoded).hexdigest(),
+    }
+
+
+def portable_value(value: Any, *, depth: int = 0) -> Any:
+    if value is None or isinstance(value, (bool, int, float)):
+        return value
+    if isinstance(value, str):
+        if len(value.encode("utf-8")) <= PORTABLE_EVIDENCE_STRING_LIMIT:
+            return value
+        return portable_value_summary(value, "string_limit")
+    if depth >= 8:
+        return portable_value_summary(value, "depth_limit")
+    if isinstance(value, list):
+        retained = [
+            portable_value(item, depth=depth + 1)
+            for item in value[:PORTABLE_EVIDENCE_COLLECTION_LIMIT]
+        ]
+        if len(value) > PORTABLE_EVIDENCE_COLLECTION_LIMIT:
+            retained.append({
+                "retained": False,
+                "reason": "collection_limit",
+                "omitted_items": len(value) - PORTABLE_EVIDENCE_COLLECTION_LIMIT,
+                "sha256": hashlib.sha256(portable_json_bytes(value)).hexdigest(),
+            })
+        return retained
+    if isinstance(value, dict):
+        keys = sorted(
+            value,
+            key=lambda key: (
+                portable_key_token(key) not in {
+                    portable_key_token(priority) for priority in PORTABLE_PRIORITY_KEYS
+                },
+                str(key),
+            ),
+        )
+        retained: dict[str, Any] = {}
+        omitted_keys = 0
+        for key in keys:
+            key_text = str(key)
+            if portable_sensitive_key(key_text):
+                continue
+            if len(retained) >= PORTABLE_EVIDENCE_COLLECTION_LIMIT:
+                omitted_keys += 1
+                continue
+            if portable_unbounded_value_key(key_text):
+                retained[key_text] = portable_value_summary(value[key], "unbounded_payload")
+                continue
+            retained[key_text] = portable_value(value[key], depth=depth + 1)
+        if omitted_keys:
+            retained["_portable_evidence_omitted"] = {
+                "reason": "collection_limit",
+                "omitted_keys": omitted_keys,
+                "sha256": hashlib.sha256(portable_json_bytes(value)).hexdigest(),
+            }
+        return retained
+    return portable_value(str(value), depth=depth)
+
+
+def bounded_portable_cell(value: Any) -> Any:
+    retained = portable_value(value)
+    if len(portable_json_bytes(retained)) <= PORTABLE_EVIDENCE_CELL_LIMIT_BYTES:
+        return retained
+    return portable_value_summary(value, "evidence_cell_limit")
+
+
+def set_portable_evidence_path(target: dict[str, Any], path: str, value: Any) -> None:
+    segments = path.split(".")
+    current = target
+    for segment in segments[:-1]:
+        child = current.get(segment)
+        if not isinstance(child, dict):
+            child = {}
+            current[segment] = child
+        current = child
+    current[segments[-1]] = bounded_portable_cell(value)
+
+
+def portable_finding_ref(value: Any) -> Any:
+    if not isinstance(value, dict):
+        return bounded_portable_cell(value)
+    return {
+        key: bounded_portable_cell(value[key])
+        for key in (
+            "id",
+            "type",
+            "scenario_id",
+            "owner",
+            "owning_contract",
+            "title",
+            "blocker_kind",
+        )
+        if key in value
+    }
+
+
+def portable_scenario_result(scenario_id: str, value: dict[str, Any]) -> dict[str, Any]:
+    retained: dict[str, Any] = {
+        "scenario_id": scenario_id,
+        "status": value.get("status"),
+    }
+    linked_findings = value.get("linked_findings")
+    if isinstance(linked_findings, list) and linked_findings:
+        retained["linked_findings"] = [
+            portable_finding_ref(finding)
+            for finding in linked_findings[:PORTABLE_FINDING_LIMIT]
+        ]
+
+    observed = value.get("observed_outputs")
+    if not isinstance(observed, dict):
+        return retained
+
+    retained_observed: dict[str, Any] = {}
+    evidence_keys = unique_strings(
+        list(SCENARIO_REQUIRED_EVIDENCE.get(scenario_id, ()))
+        + required_current_evidence_for(scenario_id)
+        + list(PORTABLE_COMMON_SCENARIO_EVIDENCE)
+        + list(PORTABLE_OPTIONAL_SCENARIO_EVIDENCE.get(scenario_id, ()))
+    )
+    for evidence_key in evidence_keys:
+        evidence = evidence_lookup(observed, evidence_key)
+        if evidence is MISSING:
+            continue
+        set_portable_evidence_path(retained_observed, evidence_key, evidence)
+    if retained_observed:
+        retained["observed_outputs"] = retained_observed
+    return retained
+
+
+def portable_scenario_results(
+    values: dict[str, dict[str, Any]],
+) -> dict[str, dict[str, Any]]:
+    return {
+        scenario_id: portable_scenario_result(scenario_id, value)
+        for scenario_id, value in values.items()
+    }
+
+
+def portable_finding(value: dict[str, Any]) -> dict[str, Any]:
+    return {
+        key: bounded_portable_cell(value[key])
+        for key in (
+            "id",
+            "type",
+            "scenario_id",
+            "owner",
+            "owning_contract",
+            "title",
+            "summary",
+            "reason",
+            "message",
+            "blocker_kind",
+            "current_evidence",
+            "acceptance",
+        )
+        if key in value
+    }
+
+
+def portable_findings(values: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    return [portable_finding(value) for value in values[:PORTABLE_FINDING_LIMIT]]
+
+
+def section_for(
+    retained_scenario_results: dict[str, dict[str, Any]],
+    *scenario_ids: str,
+) -> dict[str, dict[str, Any]]:
     return {
         scenario_id: {
-            "status": scenario_results[scenario_id]["status"],
-            "linked_findings": scenario_results[scenario_id].get("linked_findings", []),
-            "observed_outputs": scenario_results[scenario_id].get("observed_outputs", {}),
+            "status": retained_scenario_results[scenario_id]["status"],
+            "scenario_result_ref": f"$.scenario_results.{scenario_id}",
         }
         for scenario_id in scenario_ids
     }
+
+
+def encoded_result_bytes(value: dict[str, Any]) -> bytes:
+    return (json.dumps(value, indent=2, sort_keys=True) + "\n").encode("utf-8")
+
+
+def portable_result_limit_fallback(
+    value: dict[str, Any],
+    original_bytes: int,
+) -> dict[str, Any]:
+    finding_id = "signal_query_portable_result_limit_exceeded"
+    retained_scenarios = {
+        scenario_id: {
+            "scenario_id": scenario_id,
+            "status": "runner_blocked",
+            "linked_findings": [finding_id],
+        }
+        for scenario_id in required_scenarios
+    }
+    blocker = {
+        "scenario_id": "portable_evidence",
+        "blocker_kind": "portable_result_limit_exceeded",
+        "setup_failure": {
+            "code": "portable_result_limit_exceeded",
+            "original_bytes": original_bytes,
+            "limit_bytes": PORTABLE_RESULT_LIMIT_BYTES,
+        },
+    }
+    fallback = {
+        "schema": value["schema"],
+        "started_at": value["started_at"],
+        "finished_at": value["finished_at"],
+        "outcome": "non_passing_runner_blocked",
+        "runner_blocked": True,
+        "artifactVersions": value["artifactVersions"],
+        "executed_distribution_identities": value["executed_distribution_identities"],
+        "executed_distribution_identity_failures": value[
+            "executed_distribution_identity_failures"
+        ],
+        "executed_distribution_identity_observed_components": value[
+            "executed_distribution_identity_observed_components"
+        ],
+        "artifact_sources": value["artifact_sources"],
+        "runtime_matrix": value["runtime_matrix"],
+        "replay_timing": section_for(
+            retained_scenarios,
+            "signal_during_replay",
+            "query_during_replay",
+        ),
+        "terminal_run_behavior": section_for(
+            retained_scenarios,
+            "completed_run_signal_and_query",
+        ),
+        "adversarial_errors": section_for(
+            retained_scenarios,
+            "unknown_signal_and_query_errors",
+            "malformed_signal_and_query_payloads",
+        ),
+        "waterline_observer_comparison": section_for(
+            retained_scenarios,
+            "waterline_operator_visibility",
+        ),
+        "scenario_results": retained_scenarios,
+        "findings": [{
+            "id": finding_id,
+            "type": finding_id,
+            "scenario_id": "portable_evidence",
+            "owner": "conformance_harness",
+            "title": "Signals/queries native evidence exceeded its portable result budget",
+            "summary": (
+                f"The projected native result required {original_bytes} bytes; "
+                f"the portable contract allows {PORTABLE_RESULT_LIMIT_BYTES} bytes."
+            ),
+        }],
+        "finding_links": {
+            scenario_id: [finding_id]
+            for scenario_id in required_scenarios
+        },
+        "runner_blockers": [blocker],
+        "portable_evidence_contract": value["portable_evidence_contract"],
+    }
+    if len(encoded_result_bytes(fallback)) > PORTABLE_RESULT_LIMIT_BYTES:
+        raise RuntimeError("portable signals/queries infrastructure fallback exceeded its result budget")
+    return fallback
 
 
 def retainable_php_worker_mirror_failures(behavior_failures: Any) -> list[dict[str, Any]]:
@@ -14575,6 +14942,8 @@ else:
     outcome = "non_passing"
 
 behavior_failure_diagnostics = retained_behavior_failure_diagnostics(findings, scenario_results)
+retained_scenario_results = portable_scenario_results(scenario_results)
+retained_findings = portable_findings(findings)
 result = {
     "schema": "durable-workflow.v2.signal-query-runtime.result",
     "started_at": started_at,
@@ -14630,26 +14999,59 @@ result = {
             },
         ],
     },
-    "replay_timing": section_for("signal_during_replay", "query_during_replay"),
-    "terminal_run_behavior": section_for("completed_run_signal_and_query"),
+    "replay_timing": section_for(
+        retained_scenario_results,
+        "signal_during_replay",
+        "query_during_replay",
+    ),
+    "terminal_run_behavior": section_for(
+        retained_scenario_results,
+        "completed_run_signal_and_query",
+    ),
     "adversarial_errors": section_for(
+        retained_scenario_results,
         "unknown_signal_and_query_errors",
         "malformed_signal_and_query_payloads",
     ),
-    "waterline_observer_comparison": section_for("waterline_operator_visibility"),
-    "scenario_results": scenario_results,
-    "findings": findings,
-    "finding_links": finding_links,
+    "waterline_observer_comparison": section_for(
+        retained_scenario_results,
+        "waterline_operator_visibility",
+    ),
+    "scenario_results": retained_scenario_results,
+    "findings": retained_findings,
+    "finding_links": bounded_portable_cell(finding_links),
+    "portable_evidence_contract": {
+        "schema": "durable-workflow.v1.portable-native-evidence",
+        "max_result_bytes": PORTABLE_RESULT_LIMIT_BYTES,
+        "max_evidence_cell_bytes": PORTABLE_EVIDENCE_CELL_LIMIT_BYTES,
+        "max_string_bytes": PORTABLE_EVIDENCE_STRING_LIMIT,
+        "scenario_evidence": "required_behavior_cells_and_bounded_diagnostics",
+        "sensitive_values": "omitted",
+        "unbounded_values": "sha256_summary",
+    },
 }
 if behavior_failure_diagnostics:
-    result["behavior_failure_diagnostics"] = behavior_failure_diagnostics
+    result["behavior_failure_diagnostics"] = bounded_portable_cell(
+        behavior_failure_diagnostics
+    )
 if runner_blocked and baseline_readiness_blocker is not None:
-    result["runner_blocker"] = baseline_readiness_blocker
+    result["runner_blocker"] = bounded_portable_cell(baseline_readiness_blocker)
 if runner_blockers:
-    result["runner_blockers"] = runner_blockers
+    result["runner_blockers"] = bounded_portable_cell(runner_blockers)
+
+projected_result_bytes = len(encoded_result_bytes(result))
+if projected_result_bytes > PORTABLE_RESULT_LIMIT_BYTES:
+    result = portable_result_limit_fallback(result, projected_result_bytes)
+outcome = str(result["outcome"])
+runner_blocked = result["runner_blocked"] is True
+behavior_failure_diagnostics = result.get("behavior_failure_diagnostics", {})
+runner_blockers = result.get("runner_blockers", [])
 write_json(result_dir / "signals-queries-result.json", result)
 
-ordered_record_outputs = scenario_results.get("ordered_signal_delivery", {}).get("observed_outputs", {})
+ordered_record_outputs = result.get("scenario_results", {}).get(
+    "ordered_signal_delivery",
+    {},
+).get("observed_outputs", {})
 ordered_signal_delivery_evidence: dict[str, Any] = {}
 if isinstance(ordered_record_outputs, dict):
     ordered_signal_delivery_evidence = {
@@ -14670,8 +15072,8 @@ if ordered_signal_delivery_evidence:
     record["ordered_signal_delivery_evidence"] = ordered_signal_delivery_evidence
 if behavior_failure_diagnostics:
     record["behavior_failure_diagnostics"] = behavior_failure_diagnostics
-if runner_blocked and baseline_readiness_blocker is not None:
-    record["runner_blocker"] = baseline_readiness_blocker
+if runner_blocked and result.get("runner_blocker") is not None:
+    record["runner_blocker"] = result["runner_blocker"]
 if runner_blockers:
     record["runner_blockers"] = runner_blockers
 write_json(result_dir / "signals-queries-record.json", record)
