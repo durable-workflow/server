@@ -32,6 +32,7 @@ Environment overrides:
   DW_REPLAY_SKIP_DOCKER_PULL=1   Reuse a local server image instead of pulling.
   DW_REPLAY_SERVER_PORT          Host port for the published server. Defaults to a free port.
   DW_REPLAY_AUTH_TOKEN           Token used against the published server. Defaults to replay-token.
+  DW_REPLAY_NAMESPACE            Namespace used by replay runtime cells. Defaults to replay-conformance.
 USAGE
 }
 
@@ -482,7 +483,7 @@ JSON
 
 blocked_result() {
   local reason="$1"
-  python3 - "$result_dir" "$reason" "$started_at" <<'PY'
+  python3 - "$result_dir" "$reason" "$started_at" "${REPLAY_REQUIRED_SCENARIOS[@]}" <<'PY'
 from __future__ import annotations
 
 import json
@@ -493,49 +494,42 @@ from pathlib import Path
 result_dir = Path(sys.argv[1])
 reason = sys.argv[2]
 started_at = sys.argv[3]
+required = sys.argv[4:]
 now = datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
-required = [
-    "published_artifact_install_only",
-    "python_completed_history_activity_replay",
-    "python_completed_history_signal_update_replay",
-    "python_completed_history_wait_condition_replay",
-    "python_completed_history_version_marker_replay",
-    "python_completed_history_saga_compensation_replay",
-    "php_completed_history_activity_replay",
-    "php_completed_history_signal_update_replay",
-    "php_completed_history_wait_condition_replay",
-    "php_completed_history_version_marker_replay",
-    "php_completed_history_saga_compensation_replay",
-    "python_worker_restart_completed_query",
-    "python_worker_restart_activity_state",
-    "python_worker_restart_signal_update_state",
-    "python_worker_restart_wait_condition_state",
-    "python_worker_restart_version_marker_state",
-    "python_worker_restart_saga_compensation_state",
-    "php_worker_restart_completed_query",
-    "php_worker_restart_activity_state",
-    "php_worker_restart_signal_update_state",
-    "php_worker_restart_wait_condition_state",
-    "php_worker_restart_version_marker_state",
-    "php_worker_restart_saga_compensation_state",
-    "python_code_divergence_refusal",
-    "php_code_divergence_refusal",
-    "server_history_mutation_refusal",
-    "malformed_history_refusal",
-    "python_in_flight_signal_restart_timing",
-    "php_in_flight_signal_restart_timing",
-]
+
+
+def load_json(path: Path) -> dict[str, object]:
+    if not path.exists() or path.stat().st_size == 0:
+        return {}
+    try:
+        value = json.loads(path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError):
+        return {}
+    return value if isinstance(value, dict) else {}
+
+
+pins = load_json(result_dir / "pins.json")
+versions = dict(pins.get("artifact_versions") or {})
+sources = dict(pins.get("artifact_sources") or {})
+executed_distribution_identities = load_json(result_dir / "executed-distribution-identities.json")
+namespace_setup = load_json(result_dir / "replay-namespace-setup.json")
+observed_behavior: dict[str, object] = {"runner_blocked_reason": reason}
+if namespace_setup:
+    observed_behavior["namespace_setup"] = namespace_setup
 finding = {
     "type": "runner_gap",
     "owning_surface": "conformance_harness",
     "summary": reason,
+    "observed_behavior": observed_behavior,
     "next_acceptance_criterion": "rerun replay conformance on a host with the missing command or runtime available",
 }
 scenario_results = {
     scenario: {
         "scenario_id": scenario,
         "status": "runner_blocked",
-        "observed_outputs": {"runner_blocked_reason": reason},
+        "published_artifact_versions": versions,
+        "artifact_sources": sources,
+        "observed_outputs": observed_behavior,
         "linked_findings": [finding],
     }
     for scenario in required
@@ -548,9 +542,10 @@ result = {
     "generated_at": now,
     "outcome": "fail",
     "runner_blocked": True,
-    "artifact_versions": {},
-    "executed_distribution_identities": {},
-    "artifact_sources": {},
+    "artifact_versions": versions,
+    "executed_distribution_identities": executed_distribution_identities,
+    "artifact_sources": sources,
+    "namespace_setup": namespace_setup,
     "source_policy": {
         "artifact_source": "published_artifacts",
         "local_product_source_checkouts_used": False,
@@ -560,10 +555,10 @@ result = {
         "coverage_scopes": ["sdk-php-runtime-shard", "sdk-python-runtime-shard", "sdk-rust-runtime-shard"],
     },
     "scenario_results": scenario_results,
-    "completed_history_replay": {"status": "runner_blocked", "scenarios": required[1:11]},
-    "worker_restart_replay": {"status": "runner_blocked", "scenarios": required[11:23]},
+    "completed_history_replay": {"status": "runner_blocked", "scenarios": required[1:11] + required[-2:-1]},
+    "worker_restart_replay": {"status": "runner_blocked", "scenarios": required[11:23] + required[-1:]},
     "adversarial_replay": {"status": "runner_blocked", "scenarios": required[23:27]},
-    "in_flight_timing": {"status": "runner_blocked", "scenarios": required[27:]},
+    "in_flight_timing": {"status": "runner_blocked", "scenarios": required[27:29]},
     "findings": [finding],
     "finding_links": {scenario: [finding] for scenario in required},
 }
@@ -572,7 +567,7 @@ record = {
     "outcome": "fail",
     "runnerBlocked": True,
     "reason": reason,
-    "artifactVersions": {},
+    "artifactVersions": versions,
     "generated_at": now,
 }
 result_dir.mkdir(parents=True, exist_ok=True)
@@ -592,6 +587,18 @@ result_dir.mkdir(parents=True, exist_ok=True)
             "finished_at": now,
             "runner_blocked": True,
             "runner_blocked_reason": reason,
+            "namespace_setup": namespace_setup,
+            "result_files": [
+                name
+                for name in [
+                    "pins.json",
+                    "executed-distribution-identities.json",
+                    "replay-namespace-setup.json",
+                    "replay-conformance-result.json",
+                    "replay-conformance-record.json",
+                ]
+                if (result_dir / name).exists() or name.startswith("replay-conformance-")
+            ],
         },
         indent=2,
         sort_keys=True,
@@ -1415,6 +1422,7 @@ if ! "$dw_bin" --version > "$result_dir/cli-version.log" 2>&1; then
 fi
 
 auth_token="${DW_REPLAY_AUTH_TOKEN:-replay-token}"
+replay_namespace="${DW_REPLAY_NAMESPACE:-replay-conformance}"
 server_port="${DW_REPLAY_SERVER_PORT:-$(free_port)}"
 server_base_url="http://127.0.0.1:${server_port}"
 compose_cleanup_needed=1
@@ -1454,6 +1462,128 @@ fi
 if ! wait_for_server "$server_base_url" > "$result_dir/server-ready.log" 2>&1; then
   capture_compose_diagnostics docker-compose
   published_server_topology_failure_result "Replay conformance runner started $server_image but it did not become ready; see server-ready.log, docker-compose-ps.log, compose-startup-diagnostics.json, and service logs." "server_ready_probe"
+  exit 1
+fi
+if ! python3 - "$server_base_url" "$auth_token" "$replay_namespace" "$result_dir/replay-namespace-setup.json" "$compose_project" <<'PY' > "$result_dir/replay-namespace-setup.log" 2>&1
+from __future__ import annotations
+
+import json
+import sys
+import urllib.error
+import urllib.request
+from pathlib import Path
+from typing import Any
+
+base_url = sys.argv[1].rstrip("/")
+token = sys.argv[2]
+replay_namespace = sys.argv[3]
+output = Path(sys.argv[4])
+compose_project = sys.argv[5]
+selected_namespaces = list(dict.fromkeys(["default", replay_namespace]))
+
+
+def bounded_response(response: Any) -> tuple[dict[str, Any] | None, str, bool]:
+    raw = response.read(4097)
+    truncated = len(raw) > 4096
+    text = raw[:4096].decode("utf-8", errors="replace")
+    if token:
+        text = text.replace(token, "[REDACTED]")
+    payload = None
+    if not truncated:
+        try:
+            decoded = json.loads(text)
+            payload = decoded if isinstance(decoded, dict) else None
+        except json.JSONDecodeError:
+            pass
+    return payload, text, truncated
+
+
+def provision(namespace: str) -> dict[str, Any]:
+    request = urllib.request.Request(
+        base_url + "/api/namespaces",
+        method="POST",
+        data=json.dumps({
+            "name": namespace,
+            "description": "Published replay conformance namespace",
+            "retention_days": 1,
+        }).encode("utf-8"),
+        headers={
+            "Accept": "application/json",
+            "Authorization": f"Bearer {token}",
+            "Content-Type": "application/json",
+            "X-Durable-Workflow-Control-Plane-Version": "2",
+            "X-Namespace": "default",
+        },
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=15) as response:
+            status_code = response.status
+            payload, excerpt, truncated = bounded_response(response)
+    except urllib.error.HTTPError as exc:
+        status_code = exc.code
+        payload, excerpt, truncated = bounded_response(exc)
+    except (OSError, TimeoutError, urllib.error.URLError) as exc:
+        excerpt = str(exc)
+        if token:
+            excerpt = excerpt.replace(token, "[REDACTED]")
+        return {
+            "namespace": namespace,
+            "status": "fail",
+            "server_response": {
+                "status_code": None,
+                "exception_type": type(exc).__name__,
+                "body_excerpt": excerpt[:4096],
+                "truncated": len(excerpt) > 4096,
+            },
+        }
+
+    reason = payload.get("reason") if payload else None
+    response_namespace = payload.get("namespace") if payload else None
+    created = status_code == 201 and payload is not None and payload.get("name") == namespace
+    already_exists = (
+        status_code == 409
+        and reason == "namespace_already_exists"
+        and response_namespace == namespace
+    )
+    return {
+        "namespace": namespace,
+        "status": "pass" if created or already_exists else "fail",
+        "establishment": "created" if created else "already_exists" if already_exists else "rejected",
+        "server_response": {
+            "status_code": status_code,
+            "reason": reason,
+            "payload": payload,
+            "body_excerpt": excerpt,
+            "truncated": truncated,
+        },
+    }
+
+
+requests = [provision(namespace) for namespace in selected_namespaces]
+passed = all(item["status"] == "pass" for item in requests)
+evidence = {
+    "schema": "durable-workflow.v2.replay-conformance.namespace-setup",
+    "outcome": "pass" if passed else "fail",
+    "selected_namespace": replay_namespace,
+    "selected_namespaces": selected_namespaces,
+    "runtime_namespaces": {
+        "sdk-php": replay_namespace,
+        "sdk-python": None,
+        "sdk-rust": "default",
+    },
+    "server_url": base_url,
+    "isolation": {
+        "compose_project": compose_project,
+        "fresh_published_server_topology": True,
+    },
+    "requests": requests,
+}
+output.write_text(json.dumps(evidence, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+print(json.dumps(evidence, sort_keys=True))
+raise SystemExit(0 if passed else 1)
+PY
+then
+  blocked_result "Replay conformance runner could not establish selected namespace [$replay_namespace]; see replay-namespace-setup.json and replay-namespace-setup.log"
   exit 1
 fi
 if ! python3 - "$server_base_url" "$auth_token" "$result_dir/server-cluster-info.json" <<'PY' > "$result_dir/server-cluster-info.log" 2>&1
@@ -1860,7 +1990,7 @@ docker run --rm --network host \
   -e DW_SERVER_IMAGE="$server_image" \
   -e DW_PHP_SDK_CONFORMANCE_SERVER_URL="$server_base_url" \
   -e DW_PHP_SDK_CONFORMANCE_TOKEN="$auth_token" \
-  -e DW_PHP_SDK_CONFORMANCE_NAMESPACE=replay-conformance \
+  -e DW_PHP_SDK_CONFORMANCE_NAMESPACE="$replay_namespace" \
   -v "$php_sdk_probe_dir:/result" \
   "$server_image" scripts/conformance/php-sdk-published-artifacts.sh --result-dir /result \
   > "$result_dir/php-replay-shard.log" 2>&1
@@ -2028,6 +2158,7 @@ def text_tail(path: str) -> str | None:
 
 versions = pins.get("artifact_versions") or {}
 sources = pins.get("artifact_sources") or {}
+namespace_setup = load("replay-namespace-setup.json")
 php_sdk_result = load("php-sdk-replay-probe/php-sdk-conformance-result.json")
 php_sdk_install_pass = (
     isinstance(php_sdk_result, dict)
@@ -2048,6 +2179,7 @@ artifacts = [
             "server_url": server_base_url,
             "ready_log": "server-ready.log",
             "cluster_info": load("server-cluster-info.json"),
+            "namespace_setup": namespace_setup,
         },
     },
     {
@@ -2120,6 +2252,7 @@ evidence = {
     "local_product_source_checkouts_used": False,
     "server_url": server_base_url,
     "auth_token_configured": auth_token != "",
+    "namespace_setup": namespace_setup,
     "artifacts": artifacts,
 }
 (result_dir / "published-artifact-install.json").write_text(
@@ -2267,6 +2400,7 @@ if "workflow-php" in native_versions:
 sources = dict(pins.get("artifact_sources") or {})
 artifact_install_evidence = load_json(result_dir / "published-artifact-install.json") or {}
 executed_distribution_identities = load_json(result_dir / "executed-distribution-identities.json") or {}
+namespace_setup = load_json(result_dir / "replay-namespace-setup.json") or {}
 python_report = load_json(result_dir / "python-replay-shard.json")
 php_report = load_json(result_dir / "php-replay-shard.json")
 rust_report = load_json(result_dir / "rust-replay-shard.json")
@@ -2427,6 +2561,7 @@ result = {
     "artifact_versions": native_versions,
     "executed_distribution_identities": executed_distribution_identities,
     "artifact_sources": sources,
+    "namespace_setup": namespace_setup,
     "source_policy": {
         "artifact_source": "published_artifacts",
         "local_product_source_checkouts_used": False,
@@ -2475,6 +2610,7 @@ metadata = {
     "finished_at": finished_at,
     "runner_blocked": runner_blocked,
     "published_artifact_install": artifact_install_evidence,
+    "namespace_setup": namespace_setup,
     "python_shard_exit_code": python_status,
     "php_shard_exit_code": php_status,
     "rust_shard_exit_code": rust_status,
@@ -2483,6 +2619,7 @@ metadata = {
         "pins.json",
         "run-metadata.json",
         "published-artifact-install.json",
+        "replay-namespace-setup.json",
         "python-replay-shard.json",
         "php-replay-shard.json",
         "rust-replay-shard.json",
