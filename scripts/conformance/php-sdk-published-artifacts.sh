@@ -25,6 +25,7 @@ Optional environment:
   DW_PHP_SDK_CONFORMANCE_PHP_BIN      PHP binary override.
   DW_PHP_SDK_CONFORMANCE_COMPOSER_BIN Composer binary override.
   DW_PHP_SDK_CONFORMANCE_SCOPE        lifecycle (default) or namespace.
+  DW_PHP_SDK_CONFORMANCE_REPLAY_MATRIX=1 Exercise the full deterministic replay matrix.
   DW_PHP_SDK_CONFORMANCE_WORKER_RUN_DELAY_MS Delay managed registration for readiness regression probes.
 USAGE
 }
@@ -100,6 +101,7 @@ worker_start_process_alive=""
 worker_start_process_exit_code=""
 worker_start_observation_file=""
 failure_companion_file=""
+replay_matrix_enabled="${DW_PHP_SDK_CONFORMANCE_REPLAY_MATRIX:-0}"
 
 write_failure() {
   local classification="${1:?classification is required}"
@@ -350,6 +352,42 @@ const result = {
   scenario_results: {},
   findings: [finding],
 };
+const replayFailureScenario = {
+  replay_matrix_completed_history: 'php_completed_history_activity_replay',
+  replay_matrix_in_flight_start: 'php_in_flight_signal_restart_timing',
+  replay_matrix_worker_restart: 'php_worker_restart_completed_query',
+}[process.env.FAILURE_STAGE || ''];
+if (process.env.DW_PHP_SDK_CONFORMANCE_REPLAY_MATRIX === '1' && replayFailureScenario && !runnerBlocked) {
+  const cellId = `php-${String(process.env.FAILURE_STAGE).replaceAll('_', '-')}`;
+  result.replay_matrix = {
+    enabled: true,
+    executed: true,
+    failed_cell: cellId,
+  };
+  result.replay_scenario_results = {
+    [replayFailureScenario]: {
+      scenario_id: replayFailureScenario,
+      status: 'fail',
+      executed_runtime_cell: true,
+      runtime_cell: {
+        cell_id: cellId,
+        executed: true,
+        artifact_source: 'packagist',
+        server_source: 'public_image',
+      },
+      observed_outputs: {
+        runtime_cell_executed: true,
+        cell_id: cellId,
+        failure_stage: process.env.FAILURE_STAGE,
+        failure_classification: classification,
+        failure_owner: owningSurface,
+        failure_summary: summary,
+        runtime_failure_evidence: runtimeFailure,
+      },
+      linked_findings: [finding],
+    },
+  };
+}
 const sidecar = {
   schema: 'durable-workflow.v2.workflow-lifecycle.php-sdk-sidecar',
   generated_at: result.generated_at,
@@ -660,6 +698,7 @@ require __DIR__.'/vendor/autoload.php';
 require __DIR__.'/runtime-failure.php';
 
 use DurableWorkflow\Client;
+use DurableWorkflow\Exception\ActivityFailed;
 use DurableWorkflow\Worker;
 use DurableWorkflow\Worker\ActivityContext;
 use DurableWorkflow\Worker\QueryContext;
@@ -749,6 +788,94 @@ function decoded_signal_inputs(QueryContext $context, Client $client): array
     }
 
     return $inputs;
+}
+
+/** @return list<int> */
+function decoded_update_inputs(QueryContext $context, Client $client): array
+{
+    $inputs = [];
+    $seen = [];
+    foreach ($context->events('UpdateAccepted') as $event) {
+        $payload = is_array($event['payload'] ?? null) ? $event['payload'] : [];
+        if (($payload['update_name'] ?? null) !== 'set') {
+            continue;
+        }
+        $updateId = (string) ($payload['update_id'] ?? '');
+        if ($updateId !== '' && isset($seen[$updateId])) {
+            continue;
+        }
+        if ($updateId !== '') {
+            $seen[$updateId] = true;
+        }
+        $raw = $payload['arguments'] ?? null;
+        $decoded = is_array($raw) || is_string($raw) ? $client->payloadCodec()->decodeEnvelope($raw) : [];
+        $arguments = is_array($decoded) && array_is_list($decoded) ? $decoded : [$decoded];
+        $inputs[] = (int) ($arguments[0] ?? 0);
+    }
+
+    return $inputs;
+}
+
+/** @return array<string, int> */
+function history_event_counts(QueryContext $context): array
+{
+    $counts = [];
+    foreach ($context->history as $event) {
+        $type = (string) ($event['event_type'] ?? $event['type'] ?? '');
+        if ($type !== '') {
+            $counts[$type] = (int) ($counts[$type] ?? 0) + 1;
+        }
+    }
+    ksort($counts);
+
+    return $counts;
+}
+
+/** @return list<string> */
+function history_activity_types(QueryContext $context): array
+{
+    $types = [];
+    foreach ($context->history as $event) {
+        if (($event['event_type'] ?? $event['type'] ?? null) !== 'ActivityScheduled') {
+            continue;
+        }
+        $payload = is_array($event['payload'] ?? null) ? $event['payload'] : [];
+        $activityType = (string) ($payload['activity_type'] ?? $payload['activity_name'] ?? '');
+        if ($activityType !== '') {
+            $types[] = $activityType;
+        }
+    }
+
+    return $types;
+}
+
+function replay_timestamp(): string
+{
+    return (new DateTimeImmutable('now', new DateTimeZone('UTC')))->format('Y-m-d\TH:i:s.u\Z');
+}
+
+/** @param array<string, mixed> $evidence */
+function record_first_timing(string $file, array $evidence): void
+{
+    $handle = fopen($file, 'c+');
+    if ($handle === false) {
+        throw new RuntimeException("Unable to open replay timing evidence {$file}.");
+    }
+    try {
+        if (! flock($handle, LOCK_EX)) {
+            throw new RuntimeException('Unable to lock replay timing evidence.');
+        }
+        $raw = stream_get_contents($handle);
+        if (! is_string($raw) || trim($raw) === '') {
+            ftruncate($handle, 0);
+            rewind($handle);
+            fwrite($handle, json_encode($evidence, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES)."\n");
+            fflush($handle);
+        }
+        flock($handle, LOCK_UN);
+    } finally {
+        fclose($handle);
+    }
 }
 
 /** @param list<list<mixed>> $signals */
@@ -876,6 +1003,120 @@ if (! $namespaceScope) {
             return $response;
         },
     );
+    if (getenv('DW_PHP_SDK_CONFORMANCE_REPLAY_MATRIX') === '1') {
+        $worker->registerActivity(
+            'php.sdk.replay-matrix-fail',
+            static function () use ($callbackFile): never {
+                increment_callback($callbackFile, 'replay_matrix_failed_activity');
+                throw new DomainException('php-sdk-replay-matrix-intentional-failure');
+            },
+        );
+        $worker->registerWorkflow(
+            'php.sdk.replay-matrix',
+            static function (WorkflowContext $context) use ($callbackFile): Generator {
+                increment_callback($callbackFile, 'replay_matrix_workflow_replays');
+                $activity = yield $context->activity('php.sdk.echo', [['matrix' => 'activity']]);
+                $versionMarker = yield $context->sideEffect(
+                    static function () use ($callbackFile): array {
+                        increment_callback($callbackFile, 'replay_matrix_version_marker_callbacks');
+
+                        return ['change_id' => 'php-replay-matrix', 'version' => 1];
+                    },
+                );
+                $waitCycles = 0;
+                do {
+                    yield $context->sleep(1);
+                    ++$waitCycles;
+                    $signals = $context->signals('release');
+                    $updates = $context->updates('set');
+                } while ($signals === [] || $updates === []);
+
+                try {
+                    yield $context->activity('php.sdk.replay-matrix-fail', [], [
+                        'retry_policy' => ['max_attempts' => 1, 'backoff_seconds' => [0]],
+                    ]);
+                    throw new LogicException('The replay matrix failure activity unexpectedly completed.');
+                } catch (ActivityFailed $failure) {
+                    $compensation = yield $context->activity('php.sdk.echo', [[
+                        'matrix' => 'compensation',
+                        'failure_type' => $failure->failureType,
+                    ]]);
+                }
+                $afterSignal = yield $context->activity('php.sdk.echo', [['matrix' => 'after-signal']]);
+
+                return [
+                    'activity' => $activity,
+                    'signals' => array_map(static fn (array $arguments): int => (int) ($arguments[0] ?? 0), $signals),
+                    'updates' => array_map(static fn (array $arguments): int => (int) ($arguments[0] ?? 0), $updates),
+                    'wait_cycles' => $waitCycles,
+                    'version_marker' => $versionMarker,
+                    'compensation' => $compensation,
+                    'after_signal' => $afterSignal,
+                    'workflow_process_id' => getmypid(),
+                ];
+            },
+        );
+        $worker->declareSignal(
+            'php.sdk.replay-matrix',
+            'release',
+            static fn (int $value): mixed => null,
+        );
+        $worker->registerUpdate(
+            'php.sdk.replay-matrix',
+            'set',
+            static fn (QueryContext $context, int $value): array => [
+                'accepted' => true,
+                'value' => $value,
+                'run_id' => $context->runId,
+            ],
+        );
+        $worker->registerQuery(
+            'php.sdk.replay-matrix',
+            'state',
+            static fn (QueryContext $context): array => [
+                'event_counts' => history_event_counts($context),
+                'activity_types' => history_activity_types($context),
+                'signals' => decoded_signal_inputs($context, $client),
+                'updates' => decoded_update_inputs($context, $client),
+                'query_process_id' => getmypid(),
+            ],
+        );
+        $worker->registerWorkflow(
+            'php.sdk.replay-in-flight-signal',
+            static function (WorkflowContext $context) use ($resultDir, $workerId): Generator {
+                $cycles = 0;
+                do {
+                    yield $context->sleep(3);
+                    ++$cycles;
+                    $signals = $context->signals('advance');
+                } while ($signals === []);
+                record_first_timing($resultDir.'/php-sdk-in-flight-worker-timing.json', [
+                    'history_reloaded_at' => replay_timestamp(),
+                    'replayed_next_decision' => 'schedule_activity:php.sdk.echo',
+                    'worker_id' => $workerId,
+                    'worker_process_id' => getmypid(),
+                    'signal_inputs' => array_map(
+                        static fn (array $arguments): int => (int) ($arguments[0] ?? 0),
+                        $signals,
+                    ),
+                    'wait_cycles' => $cycles,
+                ]);
+                $next = yield $context->activity('php.sdk.echo', [['matrix' => 'in-flight-after-signal']]);
+
+                return [
+                    'signals' => array_map(static fn (array $arguments): int => (int) ($arguments[0] ?? 0), $signals),
+                    'next_decision_result' => $next,
+                    'wait_cycles' => $cycles,
+                    'workflow_process_id' => getmypid(),
+                ];
+            },
+        );
+        $worker->declareSignal(
+            'php.sdk.replay-in-flight-signal',
+            'advance',
+            static fn (int $value): mixed => null,
+        );
+    }
 }
 $workerRunDelayMs = filter_var(
     getenv('DW_PHP_SDK_CONFORMANCE_WORKER_RUN_DELAY_MS') ?: 0,
@@ -900,12 +1141,15 @@ require __DIR__.'/started-contract.php';
 
 use Composer\InstalledVersions;
 use DurableWorkflow\Client;
+use DurableWorkflow\Exception\NonDeterministicWorkflow;
 use DurableWorkflow\Exception\ServerException;
 use DurableWorkflow\Exception\WorkflowCancelled;
 use DurableWorkflow\Exception\WorkflowFailed;
 use DurableWorkflow\Exception\WorkflowTerminated;
 use DurableWorkflow\Model\ScheduleAction;
 use DurableWorkflow\Model\ScheduleSpec;
+use DurableWorkflow\Worker\Replayer;
+use DurableWorkflow\Worker\WorkflowContext;
 
 if ($argc < 8) {
     fwrite(STDERR, "usage: client.php <phase> <server> <namespace> <token> <queue> <result-dir> <suffix>\n");
@@ -916,6 +1160,8 @@ if ($argc < 8) {
 install_runtime_failure_handler('client', $phase, [$token]);
 $client = new Client($server, token: $token, namespace: $namespace);
 $stateFile = $resultDir.'/php-sdk-replay-state.json';
+$matrixStateFile = $resultDir.'/php-sdk-replay-matrix-state.json';
+$inFlightStateFile = $resultDir.'/php-sdk-in-flight-state.json';
 
 function emit(array $payload): never
 {
@@ -929,6 +1175,31 @@ function event_types(array $history): array
         static fn (array $event): string => (string) ($event['event_type'] ?? $event['type'] ?? ''),
         array_values(array_filter($history['events'] ?? $history['history'] ?? [], 'is_array')),
     ));
+}
+
+/** @return list<array<string, mixed>> */
+function history_events(array $history): array
+{
+    return array_values(array_filter($history['events'] ?? $history['history'] ?? [], 'is_array'));
+}
+
+/** @return array<string, int> */
+function event_counts(array $history): array
+{
+    $counts = [];
+    foreach (event_types($history) as $type) {
+        if ($type !== '') {
+            $counts[$type] = (int) ($counts[$type] ?? 0) + 1;
+        }
+    }
+    ksort($counts);
+
+    return $counts;
+}
+
+function replay_timestamp(): string
+{
+    return (new DateTimeImmutable('now', new DateTimeZone('UTC')))->format('Y-m-d\TH:i:s.u\Z');
 }
 
 /** @return array<string, array<string, mixed>> */
@@ -1257,6 +1528,150 @@ if ($phase === 'baseline' || $phase === 'namespace') {
     ]);
 }
 
+if ($phase === 'run-replay-matrix') {
+    $workflowId = 'php-sdk-replay-matrix-'.$suffix;
+    set_runtime_failure_context('workflow.start:replay_matrix', 'POST', '/api/workflows', $workflowId);
+    $handle = $client->startWorkflow('php.sdk.replay-matrix', $workflowId, $queue);
+    set_runtime_failure_context('workflow.update:replay_matrix', 'POST', '/api/workflows/{workflow_id}/update/set', $handle->workflowId, $handle->selectedRunId);
+    $update = $handle->updateSelectedRun(
+        'set',
+        [19],
+        waitTimeoutSeconds: 30,
+        requestId: 'php-sdk-replay-matrix-'.$suffix,
+    );
+    set_runtime_failure_context('workflow.signal:replay_matrix', 'POST', '/api/workflows/{workflow_id}/signal/release', $handle->workflowId, $handle->selectedRunId);
+    $handle->signalSelectedRun('release', [7]);
+    set_runtime_failure_context('workflow.result:replay_matrix', 'GET', '/api/workflows/{workflow_id}/runs/{run_id}/result', $handle->workflowId, $handle->selectedRunId);
+    $result = $handle->resultOfSelectedRun(timeoutSeconds: 60, pollIntervalSeconds: 0.2);
+    set_runtime_failure_context('workflow.history:replay_matrix', 'GET', '/api/workflows/{workflow_id}/runs/{run_id}/history', $handle->workflowId, $handle->selectedRunId);
+    $history = $client->workflowHistory($handle->workflowId, (string) $handle->selectedRunId);
+    $divergence = [
+        'observed_outcome' => 'accepted',
+        'workflow_sequence' => null,
+        'expected_shape' => null,
+        'actual_shape' => null,
+        'recorded_event_types' => event_types($history),
+        'message' => 'Published PHP SDK replay unexpectedly accepted divergent workflow code.',
+    ];
+    try {
+        (new Replayer($client->payloadCodec()))->replay(
+            static function (WorkflowContext $context): Generator {
+                yield $context->activity('php.sdk.divergent-activity', [['matrix' => 'activity']]);
+
+                return ['unexpected' => 'divergence-accepted'];
+            },
+            history_events($history),
+            [],
+            $queue,
+            ['workflow_id' => $handle->workflowId, 'run_id' => $handle->selectedRunId],
+        );
+    } catch (NonDeterministicWorkflow $exception) {
+        $divergence = [
+            'observed_outcome' => 'non_determinism_error',
+            'exception_type' => $exception::class,
+            'workflow_sequence' => $exception->sequence,
+            'expected_shape' => $exception->expected,
+            'actual_shape' => $exception->actual,
+            'recorded_event_types' => event_types($history),
+            'message' => $exception->getMessage(),
+        ];
+    }
+    $state = [
+        'workflow_id' => $handle->workflowId,
+        'run_id' => $handle->selectedRunId,
+        'completed_at' => replay_timestamp(),
+        'result' => $result,
+        'update_result' => $update,
+        'history_event_types' => event_types($history),
+        'history_event_counts' => event_counts($history),
+        'divergence' => $divergence,
+        'identity' => $identity,
+    ];
+    file_put_contents($matrixStateFile, json_encode($state, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES)."\n");
+    emit(['phase' => $phase] + $state);
+}
+
+if ($phase === 'start-in-flight') {
+    $workflowId = 'php-sdk-in-flight-'.$suffix;
+    set_runtime_failure_context('workflow.start:in_flight_signal', 'POST', '/api/workflows', $workflowId);
+    $handle = $client->startWorkflow('php.sdk.replay-in-flight-signal', $workflowId, $queue);
+    $deadline = microtime(true) + 30;
+    $history = [];
+    do {
+        set_runtime_failure_context('workflow.history:in_flight_checkpoint', 'GET', '/api/workflows/{workflow_id}/runs/{run_id}/history', $handle->workflowId, $handle->selectedRunId);
+        $history = $client->workflowHistory($handle->workflowId, (string) $handle->selectedRunId);
+        $counts = event_counts($history);
+        if (($counts['TimerScheduled'] ?? 0) > ($counts['TimerFired'] ?? 0)) {
+            break;
+        }
+        usleep(100000);
+    } while (microtime(true) < $deadline);
+    $counts = event_counts($history);
+    if (($counts['TimerScheduled'] ?? 0) <= ($counts['TimerFired'] ?? 0)) {
+        throw new RuntimeException('In-flight signal replay did not reach an unresolved timer checkpoint within 30 seconds.');
+    }
+    $signalSentAt = replay_timestamp();
+    set_runtime_failure_context('workflow.signal:in_flight_advance', 'POST', '/api/workflows/{workflow_id}/signal/advance', $handle->workflowId, $handle->selectedRunId);
+    $handle->signalSelectedRun('advance', [23]);
+    set_runtime_failure_context('workflow.history:in_flight_signal', 'GET', '/api/workflows/{workflow_id}/runs/{run_id}/history', $handle->workflowId, $handle->selectedRunId);
+    $historyAfterSignal = $client->workflowHistory($handle->workflowId, (string) $handle->selectedRunId);
+    $state = [
+        'workflow_id' => $handle->workflowId,
+        'run_id' => $handle->selectedRunId,
+        'signal_sent_at' => $signalSentAt,
+        'signal_inputs' => [23],
+        'checkpoint_event_counts' => $counts,
+        'history_after_signal_event_counts' => event_counts($historyAfterSignal),
+        'identity' => $identity,
+    ];
+    file_put_contents($inFlightStateFile, json_encode($state, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES)."\n");
+    emit(['phase' => $phase] + $state);
+}
+
+if ($phase === 'finish-replay-matrix') {
+    $matrix = json_decode((string) file_get_contents($matrixStateFile), true, flags: JSON_THROW_ON_ERROR);
+    $inFlight = json_decode((string) file_get_contents($inFlightStateFile), true, flags: JSON_THROW_ON_ERROR);
+    $matrixHandle = $client->workflowHandle((string) $matrix['workflow_id'], (string) $matrix['run_id']);
+    set_runtime_failure_context('workflow.query:completed_replay_matrix', 'POST', '/api/workflows/{workflow_id}/query/state', (string) $matrix['workflow_id'], (string) $matrix['run_id']);
+    $completedQuery = $matrixHandle->querySelectedRun('state');
+    $inFlightHandle = $client->workflowHandle((string) $inFlight['workflow_id'], (string) $inFlight['run_id']);
+    set_runtime_failure_context('workflow.result:in_flight_signal', 'GET', '/api/workflows/{workflow_id}/runs/{run_id}/result', (string) $inFlight['workflow_id'], (string) $inFlight['run_id']);
+    $inFlightResult = $inFlightHandle->resultOfSelectedRun(timeoutSeconds: 60, pollIntervalSeconds: 0.2);
+    set_runtime_failure_context('workflow.history:in_flight_complete', 'GET', '/api/workflows/{workflow_id}/runs/{run_id}/history', (string) $inFlight['workflow_id'], (string) $inFlight['run_id']);
+    $inFlightHistory = $client->workflowHistory((string) $inFlight['workflow_id'], (string) $inFlight['run_id']);
+    $workerTiming = json_decode(
+        (string) file_get_contents($resultDir.'/php-sdk-in-flight-worker-timing.json'),
+        true,
+        flags: JSON_THROW_ON_ERROR,
+    );
+    $restartTiming = json_decode(
+        (string) file_get_contents($resultDir.'/php-sdk-worker-restart-timing.json'),
+        true,
+        flags: JSON_THROW_ON_ERROR,
+    );
+    emit([
+        'phase' => $phase,
+        'identity' => $identity,
+        'completed_query' => $completedQuery,
+        'matrix_result' => $matrix['result'] ?? null,
+        'matrix_history_event_counts' => $matrix['history_event_counts'] ?? [],
+        'in_flight' => [
+            'workflow_id' => $inFlight['workflow_id'],
+            'run_id' => $inFlight['run_id'],
+            'signal_sent_at' => $inFlight['signal_sent_at'],
+            'worker_restart_at' => $restartTiming['worker_restart_at'] ?? null,
+            'history_reloaded_at' => $workerTiming['history_reloaded_at'] ?? null,
+            'replayed_next_decision' => $workerTiming['replayed_next_decision'] ?? null,
+            'replay_worker_id' => $workerTiming['worker_id'] ?? null,
+            'replay_worker_process_id' => $workerTiming['worker_process_id'] ?? null,
+            'signal_inputs' => $workerTiming['signal_inputs'] ?? [],
+            'result' => $inFlightResult,
+            'history_event_counts' => event_counts($inFlightHistory),
+            'observed_outcome' => 'same_next_decision_after_replay',
+        ],
+    ]);
+}
+
 if ($phase === 'start-replay') {
     $replayWorkflowId = 'php-sdk-replay-'.$suffix;
     set_runtime_failure_context('workflow.start:replay', 'POST', '/api/workflows', $replayWorkflowId);
@@ -1354,6 +1769,40 @@ function normalized_version(?string $version): string
     return ltrim((string) $version, 'v');
 }
 
+/**
+ * @param array<string, mixed> $observed
+ * @param list<array<string, mixed>> $findings
+ * @param array<string, mixed> $diagnostics
+ * @return array<string, mixed>
+ */
+function replay_runtime_scenario(
+    string $scenarioId,
+    bool $passed,
+    string $cellId,
+    array $observed,
+    array $findings,
+    array $diagnostics = [],
+): array {
+    $scenario = [
+        'scenario_id' => $scenarioId,
+        'status' => $passed ? 'pass' : 'fail',
+        'executed_runtime_cell' => true,
+        'runtime_cell' => [
+            'cell_id' => $cellId,
+            'executed' => true,
+            'artifact_source' => 'packagist',
+            'server_source' => 'public_image',
+        ],
+        'observed_outputs' => ['runtime_cell_executed' => true, 'cell_id' => $cellId] + $observed,
+        'linked_findings' => $passed ? [] : $findings,
+    ];
+    if ($diagnostics !== []) {
+        $scenario['replay_diagnostics'] = $diagnostics;
+    }
+
+    return $scenario;
+}
+
 $baseline = read_json($resultDir.'/php-sdk-client-baseline.json');
 $replayStart = read_json($resultDir.'/php-sdk-client-start-replay.json');
 $checkpoint = read_json($resultDir.'/php-sdk-client-replay-checkpoint.json');
@@ -1375,6 +1824,19 @@ $startedContractEvidence = is_array($baseline['workflow_started_command_contract
 $startedEvent = is_array($startedContractEvidence['workflow_started_event'] ?? null)
     ? $startedContractEvidence['workflow_started_event']
     : [];
+$replayMatrixEnabled = getenv('DW_PHP_SDK_CONFORMANCE_REPLAY_MATRIX') === '1';
+$matrixStart = $replayMatrixEnabled
+    ? read_json($resultDir.'/php-sdk-client-replay-matrix.json')
+    : [];
+$matrixRestart = $replayMatrixEnabled
+    ? read_json($resultDir.'/php-sdk-client-replay-matrix-restart.json')
+    : [];
+$matrixResult = is_array($matrixStart['result'] ?? null) ? $matrixStart['result'] : [];
+$matrixCounts = is_array($matrixStart['history_event_counts'] ?? null) ? $matrixStart['history_event_counts'] : [];
+$matrixQuery = is_array($matrixRestart['completed_query'] ?? null) ? $matrixRestart['completed_query'] : [];
+$matrixQueryCounts = is_array($matrixQuery['event_counts'] ?? null) ? $matrixQuery['event_counts'] : [];
+$divergence = is_array($matrixStart['divergence'] ?? null) ? $matrixStart['divergence'] : [];
+$inFlight = is_array($matrixRestart['in_flight'] ?? null) ? $matrixRestart['in_flight'] : [];
 
 $assertions = [
     'exact_sdk_version' => normalized_version($sdk['version'] ?? null) === normalized_version($expectedSdkVersion),
@@ -1461,6 +1923,68 @@ $assertions = [
     'durable_replay_result' => isset($replayFinish['result']['replayed_result']),
     'local_product_source_checkouts_used_false' => true,
 ];
+if ($replayMatrixEnabled) {
+    $assertions += [
+        'replay_matrix_completed_history' => ($matrixResult['activity']['echo']['matrix'] ?? null) === 'activity'
+            && ($matrixResult['signals'] ?? null) === [7]
+            && ($matrixResult['updates'] ?? null) === [19]
+            && (int) ($matrixResult['wait_cycles'] ?? 0) >= 1
+            && ($matrixResult['version_marker'] ?? null) === ['change_id' => 'php-replay-matrix', 'version' => 1]
+            && ($matrixResult['compensation']['echo']['matrix'] ?? null) === 'compensation'
+            && ($matrixResult['after_signal']['echo']['matrix'] ?? null) === 'after-signal',
+        'replay_matrix_activity_history' => (int) ($matrixCounts['ActivityCompleted'] ?? 0) === 3,
+        'replay_matrix_signal_update_history' => (int) ($matrixCounts['SignalReceived'] ?? 0) >= 1
+            && (int) ($matrixCounts['UpdateAccepted'] ?? 0) >= 1
+            && (int) ($matrixCounts['UpdateApplied'] ?? 0) >= 1,
+        'replay_matrix_wait_condition_history' => (int) ($matrixCounts['TimerScheduled'] ?? 0) >= 1
+            && (int) ($matrixCounts['TimerFired'] ?? 0) >= 1,
+        'replay_matrix_version_marker_history' => (int) ($matrixCounts['SideEffectRecorded'] ?? 0) === 1
+            && (int) ($callbacks['replay_matrix_version_marker_callbacks'] ?? 0) === 1,
+        'replay_matrix_saga_compensation_history' => (int) ($matrixCounts['ActivityFailed'] ?? 0) === 1
+            && (int) ($callbacks['replay_matrix_failed_activity'] ?? 0) === 1,
+        'replay_matrix_completed_query_after_restart' => ($matrixRestart['matrix_result'] ?? null) === $matrixResult
+            && ($matrixRestart['identity']['process_id'] ?? null) !== ($matrixStart['identity']['process_id'] ?? null)
+            && ($matrixQuery['query_process_id'] ?? null) === ($workerTwo['process_id'] ?? null)
+            && ($matrixQuery['query_process_id'] ?? null) !== ($workerOne['process_id'] ?? null),
+        'replay_matrix_activity_state_after_restart' => (int) ($matrixQueryCounts['ActivityCompleted'] ?? 0) === 3
+            && ($matrixQuery['activity_types'] ?? null) === [
+                'php.sdk.echo',
+                'php.sdk.replay-matrix-fail',
+                'php.sdk.echo',
+                'php.sdk.echo',
+            ],
+        'replay_matrix_signal_update_state_after_restart' => ($matrixQuery['signals'] ?? null) === [7]
+            && ($matrixQuery['updates'] ?? null) === [19],
+        'replay_matrix_wait_condition_state_after_restart' => (int) ($matrixQueryCounts['TimerScheduled'] ?? 0) >= 1
+            && (int) ($matrixQueryCounts['TimerFired'] ?? 0) >= 1,
+        'replay_matrix_version_marker_state_after_restart' => (int) ($matrixQueryCounts['SideEffectRecorded'] ?? 0) === 1
+            && (int) ($callbacks['replay_matrix_version_marker_callbacks'] ?? 0) === 1,
+        'replay_matrix_saga_compensation_state_after_restart' => (int) ($matrixQueryCounts['ActivityFailed'] ?? 0) === 1
+            && (int) ($matrixQueryCounts['ActivityCompleted'] ?? 0) === 3,
+        'replay_matrix_code_divergence_refusal' => ($divergence['observed_outcome'] ?? null) === 'non_determinism_error'
+            && is_int($divergence['workflow_sequence'] ?? null)
+            && is_string($divergence['expected_shape'] ?? null)
+            && ($divergence['expected_shape'] ?? '') !== ''
+            && is_array($divergence['recorded_event_types'] ?? null)
+            && ($divergence['recorded_event_types'] ?? []) !== []
+            && is_string($divergence['message'] ?? null)
+            && ($divergence['message'] ?? '') !== '',
+        'replay_matrix_in_flight_signal_restart' => ($inFlight['observed_outcome'] ?? null) === 'same_next_decision_after_replay'
+            && ($inFlight['signal_inputs'] ?? null) === [23]
+            && ($inFlight['result']['signals'] ?? null) === [23]
+            && ($inFlight['result']['next_decision_result']['echo']['matrix'] ?? null) === 'in-flight-after-signal'
+            && ($inFlight['replayed_next_decision'] ?? null) === 'schedule_activity:php.sdk.echo'
+            && ($inFlight['replay_worker_id'] ?? null) === 'php-sdk-worker-2'
+            && ($inFlight['replay_worker_process_id'] ?? null) === ($workerTwo['process_id'] ?? null)
+            && is_string($inFlight['signal_sent_at'] ?? null)
+            && is_string($inFlight['worker_restart_at'] ?? null)
+            && is_string($inFlight['history_reloaded_at'] ?? null)
+            && $inFlight['signal_sent_at'] <= $inFlight['worker_restart_at']
+            && $inFlight['worker_restart_at'] <= $inFlight['history_reloaded_at']
+            && (int) ($inFlight['history_event_counts']['SignalReceived'] ?? 0) >= 1
+            && (int) ($inFlight['history_event_counts']['ActivityCompleted'] ?? 0) >= 1,
+    ];
+}
 $failedAssertions = array_keys(array_filter($assertions, static fn (bool $value): bool => ! $value));
 $assertionDomains = [
     'exact_sdk_version' => 'package-publication',
@@ -1491,6 +2015,20 @@ $assertionDomains = [
     'replay_checkpoint' => 'server',
     'durable_replay_history' => 'server',
     'durable_replay_result' => 'sdk',
+    'replay_matrix_completed_history' => 'sdk',
+    'replay_matrix_activity_history' => 'sdk',
+    'replay_matrix_signal_update_history' => 'sdk',
+    'replay_matrix_wait_condition_history' => 'sdk',
+    'replay_matrix_version_marker_history' => 'sdk',
+    'replay_matrix_saga_compensation_history' => 'sdk',
+    'replay_matrix_completed_query_after_restart' => 'sdk',
+    'replay_matrix_activity_state_after_restart' => 'sdk',
+    'replay_matrix_signal_update_state_after_restart' => 'sdk',
+    'replay_matrix_wait_condition_state_after_restart' => 'sdk',
+    'replay_matrix_version_marker_state_after_restart' => 'sdk',
+    'replay_matrix_saga_compensation_state_after_restart' => 'sdk',
+    'replay_matrix_code_divergence_refusal' => 'sdk',
+    'replay_matrix_in_flight_signal_restart' => 'sdk',
     'local_product_source_checkouts_used_false' => 'runner',
 ];
 $failedByDomain = [];
@@ -1534,6 +2072,167 @@ foreach ($failedByDomain as $domain => $domainAssertions) {
         'observed_evidence' => ['assertion_failures' => $domainAssertionFailures],
         'next_acceptance_criterion' => 'Correct the named failure surface and rerun the exact Packagist SDK against the exact public server image.',
     ];
+}
+$replayScenarioResults = [];
+if ($replayMatrixEnabled) {
+    $completedIdentity = [
+        'workflow_id' => $matrixStart['workflow_id'] ?? null,
+        'run_id' => $matrixStart['run_id'] ?? null,
+        'worker_id' => 'php-sdk-worker-1',
+        'worker_process_id' => $workerOne['process_id'] ?? null,
+        'evidence_file' => 'php-sdk-client-replay-matrix.json',
+    ];
+    $restartIdentity = [
+        'workflow_id' => $matrixStart['workflow_id'] ?? null,
+        'run_id' => $matrixStart['run_id'] ?? null,
+        'worker_id' => 'php-sdk-worker-2',
+        'worker_process_id' => $workerTwo['process_id'] ?? null,
+        'evidence_file' => 'php-sdk-client-replay-matrix-restart.json',
+    ];
+    $replayScenarioResults['php_completed_history_activity_replay'] = replay_runtime_scenario(
+        'php_completed_history_activity_replay',
+        $assertions['replay_matrix_completed_history'] && $assertions['replay_matrix_activity_history'],
+        'php-completed-history-replay-matrix',
+        $completedIdentity + [
+            'activity_result' => $matrixResult['activity'] ?? null,
+            'activity_completed_events' => $matrixCounts['ActivityCompleted'] ?? 0,
+        ],
+        $findings,
+    );
+    $replayScenarioResults['php_completed_history_signal_update_replay'] = replay_runtime_scenario(
+        'php_completed_history_signal_update_replay',
+        $assertions['replay_matrix_completed_history'] && $assertions['replay_matrix_signal_update_history'],
+        'php-completed-history-replay-matrix',
+        $completedIdentity + [
+            'signals' => $matrixResult['signals'] ?? null,
+            'updates' => $matrixResult['updates'] ?? null,
+            'history_event_counts' => $matrixCounts,
+        ],
+        $findings,
+    );
+    $replayScenarioResults['php_completed_history_wait_condition_replay'] = replay_runtime_scenario(
+        'php_completed_history_wait_condition_replay',
+        $assertions['replay_matrix_completed_history'] && $assertions['replay_matrix_wait_condition_history'],
+        'php-completed-history-replay-matrix',
+        $completedIdentity + [
+            'wait_cycles' => $matrixResult['wait_cycles'] ?? null,
+            'timer_scheduled_events' => $matrixCounts['TimerScheduled'] ?? 0,
+            'timer_fired_events' => $matrixCounts['TimerFired'] ?? 0,
+        ],
+        $findings,
+    );
+    $replayScenarioResults['php_completed_history_version_marker_replay'] = replay_runtime_scenario(
+        'php_completed_history_version_marker_replay',
+        $assertions['replay_matrix_completed_history'] && $assertions['replay_matrix_version_marker_history'],
+        'php-completed-history-replay-matrix',
+        $completedIdentity + [
+            'version_marker' => $matrixResult['version_marker'] ?? null,
+            'side_effect_recorded_events' => $matrixCounts['SideEffectRecorded'] ?? 0,
+            'version_marker_callback_count' => $callbacks['replay_matrix_version_marker_callbacks'] ?? 0,
+        ],
+        $findings,
+    );
+    $replayScenarioResults['php_completed_history_saga_compensation_replay'] = replay_runtime_scenario(
+        'php_completed_history_saga_compensation_replay',
+        $assertions['replay_matrix_completed_history'] && $assertions['replay_matrix_saga_compensation_history'],
+        'php-completed-history-replay-matrix',
+        $completedIdentity + [
+            'compensation_result' => $matrixResult['compensation'] ?? null,
+            'activity_failed_events' => $matrixCounts['ActivityFailed'] ?? 0,
+            'failed_activity_callback_count' => $callbacks['replay_matrix_failed_activity'] ?? 0,
+        ],
+        $findings,
+    );
+    $replayScenarioResults['php_worker_restart_completed_query'] = replay_runtime_scenario(
+        'php_worker_restart_completed_query',
+        $assertions['replay_matrix_completed_query_after_restart'],
+        'php-completed-query-after-worker-restart',
+        $restartIdentity + [
+            'original_result' => $matrixResult,
+            'completed_query' => $matrixQuery,
+            'query_process_matches_restarted_worker' => ($matrixQuery['query_process_id'] ?? null) === ($workerTwo['process_id'] ?? null),
+        ],
+        $findings,
+    );
+    $replayScenarioResults['php_worker_restart_activity_state'] = replay_runtime_scenario(
+        'php_worker_restart_activity_state',
+        $assertions['replay_matrix_activity_state_after_restart'],
+        'php-completed-query-after-worker-restart',
+        $restartIdentity + [
+            'activity_result' => $matrixResult['activity'] ?? null,
+            'activity_types_from_reloaded_history' => $matrixQuery['activity_types'] ?? [],
+            'activity_completed_events' => $matrixQueryCounts['ActivityCompleted'] ?? 0,
+        ],
+        $findings,
+    );
+    $replayScenarioResults['php_worker_restart_signal_update_state'] = replay_runtime_scenario(
+        'php_worker_restart_signal_update_state',
+        $assertions['replay_matrix_signal_update_state_after_restart'],
+        'php-completed-query-after-worker-restart',
+        $restartIdentity + [
+            'signals_from_reloaded_history' => $matrixQuery['signals'] ?? [],
+            'updates_from_reloaded_history' => $matrixQuery['updates'] ?? [],
+        ],
+        $findings,
+    );
+    $replayScenarioResults['php_worker_restart_wait_condition_state'] = replay_runtime_scenario(
+        'php_worker_restart_wait_condition_state',
+        $assertions['replay_matrix_wait_condition_state_after_restart'],
+        'php-completed-query-after-worker-restart',
+        $restartIdentity + [
+            'wait_cycles' => $matrixResult['wait_cycles'] ?? null,
+            'timer_scheduled_events' => $matrixQueryCounts['TimerScheduled'] ?? 0,
+            'timer_fired_events' => $matrixQueryCounts['TimerFired'] ?? 0,
+        ],
+        $findings,
+    );
+    $replayScenarioResults['php_worker_restart_version_marker_state'] = replay_runtime_scenario(
+        'php_worker_restart_version_marker_state',
+        $assertions['replay_matrix_version_marker_state_after_restart'],
+        'php-completed-query-after-worker-restart',
+        $restartIdentity + [
+            'version_marker' => $matrixResult['version_marker'] ?? null,
+            'side_effect_recorded_events' => $matrixQueryCounts['SideEffectRecorded'] ?? 0,
+            'version_marker_callback_count' => $callbacks['replay_matrix_version_marker_callbacks'] ?? 0,
+        ],
+        $findings,
+    );
+    $replayScenarioResults['php_worker_restart_saga_compensation_state'] = replay_runtime_scenario(
+        'php_worker_restart_saga_compensation_state',
+        $assertions['replay_matrix_saga_compensation_state_after_restart'],
+        'php-completed-query-after-worker-restart',
+        $restartIdentity + [
+            'compensation_result' => $matrixResult['compensation'] ?? null,
+            'activity_failed_events' => $matrixQueryCounts['ActivityFailed'] ?? 0,
+            'activity_completed_events' => $matrixQueryCounts['ActivityCompleted'] ?? 0,
+        ],
+        $findings,
+    );
+    $replayScenarioResults['php_code_divergence_refusal'] = replay_runtime_scenario(
+        'php_code_divergence_refusal',
+        $assertions['replay_matrix_code_divergence_refusal'],
+        'php-published-sdk-code-divergence',
+        $completedIdentity + [
+            'observed_outcome' => $divergence['observed_outcome'] ?? null,
+            'exception_type' => $divergence['exception_type'] ?? null,
+        ],
+        $findings,
+        $divergence,
+    );
+    $replayScenarioResults['php_in_flight_signal_restart_timing'] = replay_runtime_scenario(
+        'php_in_flight_signal_restart_timing',
+        $assertions['replay_matrix_in_flight_signal_restart'],
+        'php-in-flight-signal-worker-restart',
+        $inFlight,
+        $findings,
+        [
+            'observed_outcome' => $inFlight['observed_outcome'] ?? null,
+            'worker_restart_at' => $inFlight['worker_restart_at'] ?? null,
+            'signal_sent_at' => $inFlight['signal_sent_at'] ?? null,
+            'history_reloaded_at' => $inFlight['history_reloaded_at'] ?? null,
+            'replayed_next_decision' => $inFlight['replayed_next_decision'] ?? null,
+        ],
+    );
 }
 $provenance = [
     'package' => 'durable-workflow/sdk',
@@ -1658,6 +2357,26 @@ $result = [
     'failure_domains' => $failedByDomain,
     'findings' => $findings,
 ];
+if ($replayMatrixEnabled) {
+    $result['replay_matrix'] = [
+        'enabled' => true,
+        'executed' => true,
+        'runtime_cells' => [
+            'php-completed-history-replay-matrix',
+            'php-completed-query-after-worker-restart',
+            'php-published-sdk-code-divergence',
+            'php-in-flight-signal-worker-restart',
+        ],
+        'evidence_files' => [
+            'php-sdk-client-replay-matrix.json',
+            'php-sdk-client-replay-matrix-restart.json',
+            'php-sdk-client-in-flight-start.json',
+            'php-sdk-in-flight-worker-timing.json',
+            'php-sdk-worker-restart-timing.json',
+        ],
+    ];
+    $result['replay_scenario_results'] = $replayScenarioResults;
+}
 $sidecar = [
     'schema' => 'durable-workflow.v2.workflow-lifecycle.php-sdk-sidecar',
     'generated_at' => $result['generated_at'],
@@ -1890,6 +2609,17 @@ if [[ "$scope" == namespace ]]; then
   exit 0
 fi
 
+if [[ "$replay_matrix_enabled" == "1" ]]; then
+  if ! run_client_phase run-replay-matrix "$result_dir/php-sdk-client-replay-matrix.json"; then
+    write_client_runtime_failure \
+      "$result_dir/php-sdk-client-replay-matrix.json" \
+      "$result_dir/php-sdk-client-replay-matrix.json.log" \
+      replay_matrix_completed_history \
+      "$result_dir/php-sdk-client-replay-matrix.diagnostic.log"
+    exit 0
+  fi
+fi
+
 if ! run_client_phase start-replay "$result_dir/php-sdk-client-start-replay.json"; then
   write_client_runtime_failure \
     "$result_dir/php-sdk-client-start-replay.json" "$result_dir/php-sdk-client-start-replay.json.log" replay_start \
@@ -1907,9 +2637,29 @@ if ! run_client_phase wait-replay-checkpoint "$result_dir/php-sdk-client-replay-
   exit 0
 fi
 
+if [[ "$replay_matrix_enabled" == "1" ]]; then
+  if ! run_client_phase start-in-flight "$result_dir/php-sdk-client-in-flight-start.json"; then
+    write_client_runtime_failure \
+      "$result_dir/php-sdk-client-in-flight-start.json" \
+      "$result_dir/php-sdk-client-in-flight-start.json.log" \
+      replay_matrix_in_flight_start \
+      "$result_dir/php-sdk-client-in-flight-start.diagnostic.log"
+    exit 0
+  fi
+fi
+
 kill -TERM "$worker_pid" >/dev/null 2>&1 || true
 wait "$worker_pid" >/dev/null 2>&1 || true
 worker_pid=""
+
+if [[ "$replay_matrix_enabled" == "1" ]]; then
+  RESTART_TIMING_FILE="$result_dir/php-sdk-worker-restart-timing.json" \
+    "$php_bin" -r '
+$path = getenv("RESTART_TIMING_FILE");
+$now = (new DateTimeImmutable("now", new DateTimeZone("UTC")))->format("Y-m-d\\TH:i:s.u\\Z");
+file_put_contents($path, json_encode(["worker_restart_at" => $now], JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES)."\n");
+'
+fi
 
 if ! start_worker php-sdk-worker-2; then
   write_worker_start_failure \
@@ -1922,6 +2672,17 @@ if ! run_client_phase finish-replay "$result_dir/php-sdk-client-finish-replay.js
     "$result_dir/php-sdk-client-finish-replay.json" "$result_dir/php-sdk-client-finish-replay.json.log" replay_finish \
     "$result_dir/php-sdk-client-finish-replay.diagnostic.log"
   exit 0
+fi
+
+if [[ "$replay_matrix_enabled" == "1" ]]; then
+  if ! run_client_phase finish-replay-matrix "$result_dir/php-sdk-client-replay-matrix-restart.json"; then
+    write_client_runtime_failure \
+      "$result_dir/php-sdk-client-replay-matrix-restart.json" \
+      "$result_dir/php-sdk-client-replay-matrix-restart.json.log" \
+      replay_matrix_worker_restart \
+      "$result_dir/php-sdk-client-replay-matrix-restart.diagnostic.log"
+    exit 0
+  fi
 fi
 
 kill -TERM "$worker_pid" >/dev/null 2>&1 || true

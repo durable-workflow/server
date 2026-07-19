@@ -76,6 +76,43 @@ class ReplayConformanceRunnerContractTest extends TestCase
         $this->assertStringNotContainsString('workflow:v2:replay-conformance', $source);
     }
 
+    public function test_php_shard_executes_every_required_replay_scenario_in_real_runtime_cells(): void
+    {
+        $runner = $this->read('scripts/conformance/replay-published-artifacts.sh');
+        $phpCell = $this->read('scripts/conformance/php-sdk-published-artifacts.sh');
+
+        $this->assertStringContainsString('DW_PHP_SDK_CONFORMANCE_REPLAY_MATRIX=1', $runner);
+        $this->assertStringContainsString('evidence.get("executed_runtime_cell") is not True', $runner);
+        $this->assertStringContainsString('runtime_cell.get("executed") is not True', $runner);
+        $this->assertStringContainsString('observed.get("runtime_cell_executed") is not True', $runner);
+
+        foreach ([
+            'php_completed_history_activity_replay',
+            'php_completed_history_signal_update_replay',
+            'php_completed_history_wait_condition_replay',
+            'php_completed_history_version_marker_replay',
+            'php_completed_history_saga_compensation_replay',
+            'php_worker_restart_completed_query',
+            'php_worker_restart_activity_state',
+            'php_worker_restart_signal_update_state',
+            'php_worker_restart_wait_condition_state',
+            'php_worker_restart_version_marker_state',
+            'php_worker_restart_saga_compensation_state',
+            'php_code_divergence_refusal',
+            'php_in_flight_signal_restart_timing',
+        ] as $scenario) {
+            $this->assertStringContainsString("\$replayScenarioResults['{$scenario}']", $phpCell);
+        }
+
+        $this->assertStringContainsString("if (\$phase === 'run-replay-matrix')", $phpCell);
+        $this->assertStringContainsString("if (\$phase === 'start-in-flight')", $phpCell);
+        $this->assertStringContainsString("if (\$phase === 'finish-replay-matrix')", $phpCell);
+        $this->assertStringContainsString("'executed_runtime_cell' => true", $phpCell);
+        $this->assertStringContainsString("'observed_outcome' => 'non_determinism_error'", $phpCell);
+        $this->assertStringContainsString("'observed_outcome' => 'same_next_decision_after_replay'", $phpCell);
+        $this->assertStringContainsString("'evidence_files' => [", $phpCell);
+    }
+
     public function test_runner_establishes_runtime_namespaces_before_starting_any_replay_shard(): void
     {
         $source = $this->read('scripts/conformance/replay-published-artifacts.sh');
@@ -867,21 +904,19 @@ write_php_shard() {
   "outcome": "pass",
   "package_provenance": {"name": "durable-workflow/sdk", "version": "0.1.1", "dist": {"url": "https://api.github.com/repos/durable-workflow/sdk-php/zipball/example"}},
   "replay_scenario_results": {
-    "malformed_history_refusal": {"scenario_id": "malformed_history_refusal", "status": "pass"},
-    "php_code_divergence_refusal": {"scenario_id": "php_code_divergence_refusal", "status": "pass"},
-    "php_completed_history_activity_replay": {"scenario_id": "php_completed_history_activity_replay", "status": "pass"},
-    "php_completed_history_saga_compensation_replay": {"scenario_id": "php_completed_history_saga_compensation_replay", "status": "pass"},
-    "php_completed_history_signal_update_replay": {"scenario_id": "php_completed_history_signal_update_replay", "status": "pass"},
-    "php_completed_history_version_marker_replay": {"scenario_id": "php_completed_history_version_marker_replay", "status": "pass"},
-    "php_completed_history_wait_condition_replay": {"scenario_id": "php_completed_history_wait_condition_replay", "status": "pass"},
-    "php_in_flight_signal_restart_timing": {"scenario_id": "php_in_flight_signal_restart_timing", "status": "pass"},
-    "php_worker_restart_activity_state": {"scenario_id": "php_worker_restart_activity_state", "status": "pass"},
-    "php_worker_restart_completed_query": {"scenario_id": "php_worker_restart_completed_query", "status": "pass"},
-    "php_worker_restart_saga_compensation_state": {"scenario_id": "php_worker_restart_saga_compensation_state", "status": "pass"},
-    "php_worker_restart_signal_update_state": {"scenario_id": "php_worker_restart_signal_update_state", "status": "pass"},
-    "php_worker_restart_version_marker_state": {"scenario_id": "php_worker_restart_version_marker_state", "status": "pass"},
-    "php_worker_restart_wait_condition_state": {"scenario_id": "php_worker_restart_wait_condition_state", "status": "pass"},
-    "server_history_mutation_refusal": {"scenario_id": "server_history_mutation_refusal", "status": "pass"}
+    "php_code_divergence_refusal": {"scenario_id": "php_code_divergence_refusal", "status": "pass", "executed_runtime_cell": true, "runtime_cell": {"cell_id": "php-code-divergence", "executed": true}, "observed_outputs": {"runtime_cell_executed": true}, "replay_diagnostics": {"observed_outcome": "non_determinism_error", "workflow_sequence": 1, "expected_shape": "php.sdk.echo", "recorded_event_types": ["ActivityScheduled"], "message": "Recorded activity detail changed."}},
+    "php_completed_history_activity_replay": {"scenario_id": "php_completed_history_activity_replay", "status": "pass", "executed_runtime_cell": true, "runtime_cell": {"cell_id": "php-completed-history", "executed": true}, "observed_outputs": {"runtime_cell_executed": true, "activity_completed_events": 3}},
+    "php_completed_history_saga_compensation_replay": {"scenario_id": "php_completed_history_saga_compensation_replay", "status": "pass", "executed_runtime_cell": true, "runtime_cell": {"cell_id": "php-completed-history", "executed": true}, "observed_outputs": {"runtime_cell_executed": true, "activity_failed_events": 1}},
+    "php_completed_history_signal_update_replay": {"scenario_id": "php_completed_history_signal_update_replay", "status": "pass", "executed_runtime_cell": true, "runtime_cell": {"cell_id": "php-completed-history", "executed": true}, "observed_outputs": {"runtime_cell_executed": true, "signals": [7], "updates": [19]}},
+    "php_completed_history_version_marker_replay": {"scenario_id": "php_completed_history_version_marker_replay", "status": "pass", "executed_runtime_cell": true, "runtime_cell": {"cell_id": "php-completed-history", "executed": true}, "observed_outputs": {"runtime_cell_executed": true, "side_effect_recorded_events": 1}},
+    "php_completed_history_wait_condition_replay": {"scenario_id": "php_completed_history_wait_condition_replay", "status": "pass", "executed_runtime_cell": true, "runtime_cell": {"cell_id": "php-completed-history", "executed": true}, "observed_outputs": {"runtime_cell_executed": true, "timer_fired_events": 1}},
+    "php_in_flight_signal_restart_timing": {"scenario_id": "php_in_flight_signal_restart_timing", "status": "pass", "executed_runtime_cell": true, "runtime_cell": {"cell_id": "php-in-flight-signal", "executed": true}, "observed_outputs": {"runtime_cell_executed": true, "observed_outcome": "same_next_decision_after_replay", "worker_restart_at": "2026-01-01T00:00:01.000000Z", "signal_sent_at": "2026-01-01T00:00:00.000000Z", "history_reloaded_at": "2026-01-01T00:00:02.000000Z", "replayed_next_decision": "schedule_activity:php.sdk.echo"}},
+    "php_worker_restart_activity_state": {"scenario_id": "php_worker_restart_activity_state", "status": "pass", "executed_runtime_cell": true, "runtime_cell": {"cell_id": "php-completed-query", "executed": true}, "observed_outputs": {"runtime_cell_executed": true, "activity_completed_events": 3}},
+    "php_worker_restart_completed_query": {"scenario_id": "php_worker_restart_completed_query", "status": "pass", "executed_runtime_cell": true, "runtime_cell": {"cell_id": "php-completed-query", "executed": true}, "observed_outputs": {"runtime_cell_executed": true, "query_process_matches_restarted_worker": true}},
+    "php_worker_restart_saga_compensation_state": {"scenario_id": "php_worker_restart_saga_compensation_state", "status": "pass", "executed_runtime_cell": true, "runtime_cell": {"cell_id": "php-completed-query", "executed": true}, "observed_outputs": {"runtime_cell_executed": true, "activity_failed_events": 1}},
+    "php_worker_restart_signal_update_state": {"scenario_id": "php_worker_restart_signal_update_state", "status": "pass", "executed_runtime_cell": true, "runtime_cell": {"cell_id": "php-completed-query", "executed": true}, "observed_outputs": {"runtime_cell_executed": true, "signals": [7], "updates": [19]}},
+    "php_worker_restart_version_marker_state": {"scenario_id": "php_worker_restart_version_marker_state", "status": "pass", "executed_runtime_cell": true, "runtime_cell": {"cell_id": "php-completed-query", "executed": true}, "observed_outputs": {"runtime_cell_executed": true, "side_effect_recorded_events": 1}},
+    "php_worker_restart_wait_condition_state": {"scenario_id": "php_worker_restart_wait_condition_state", "status": "pass", "executed_runtime_cell": true, "runtime_cell": {"cell_id": "php-completed-query", "executed": true}, "observed_outputs": {"runtime_cell_executed": true, "timer_fired_events": 1}}
   }
 }
 JSON
@@ -984,6 +1019,10 @@ if [[ "${1:-}" == "run" ]]; then
     if [[ "$joined" != *" DW_PHP_SDK_CONFORMANCE_NAMESPACE=replay-cleanup-contract "* ]]; then
       echo "PHP replay cell did not receive the established namespace" >&2
       exit 71
+    fi
+    if [[ "$joined" != *" DW_PHP_SDK_CONFORMANCE_REPLAY_MATRIX=1 "* ]]; then
+      echo "PHP replay cell did not enable executed replay matrix cells" >&2
+      exit 72
     fi
     result_dir=""
     previous=""

@@ -1991,6 +1991,7 @@ docker run --rm --network host \
   -e DW_PHP_SDK_CONFORMANCE_SERVER_URL="$server_base_url" \
   -e DW_PHP_SDK_CONFORMANCE_TOKEN="$auth_token" \
   -e DW_PHP_SDK_CONFORMANCE_NAMESPACE="$replay_namespace" \
+  -e DW_PHP_SDK_CONFORMANCE_REPLAY_MATRIX=1 \
   -v "$php_sdk_probe_dir:/result" \
   "$server_image" scripts/conformance/php-sdk-published-artifacts.sh --result-dir /result \
   > "$result_dir/php-replay-shard.log" 2>&1
@@ -2044,6 +2045,21 @@ replay_assertions = [
 ]
 replay_pass = all(assertions.get(name) is True for name in replay_assertions)
 restart_pass = replay_pass and assertions.get("distinct_worker_restart_processes") is True
+php_replay_scenarios = {
+    "php_completed_history_activity_replay",
+    "php_completed_history_signal_update_replay",
+    "php_completed_history_wait_condition_replay",
+    "php_completed_history_version_marker_replay",
+    "php_completed_history_saga_compensation_replay",
+    "php_worker_restart_completed_query",
+    "php_worker_restart_activity_state",
+    "php_worker_restart_signal_update_state",
+    "php_worker_restart_wait_condition_state",
+    "php_worker_restart_version_marker_state",
+    "php_worker_restart_saga_compensation_state",
+    "php_code_divergence_refusal",
+    "php_in_flight_signal_restart_timing",
+}
 
 def scenario(scenario_id: str, passed: bool, required: list[str]) -> dict[str, Any]:
     observed = {
@@ -2087,10 +2103,22 @@ scenario_results = {
 extended = source.get("replay_scenario_results")
 if isinstance(extended, dict):
     for scenario_id, evidence in extended.items():
-        if scenario_id.startswith("php_") and isinstance(evidence, dict):
-            copied = dict(evidence)
-            copied.setdefault("scenario_id", scenario_id)
-            scenario_results[scenario_id] = copied
+        if scenario_id not in php_replay_scenarios or not isinstance(evidence, dict):
+            continue
+        runtime_cell = evidence.get("runtime_cell")
+        observed = evidence.get("observed_outputs")
+        if (
+            evidence.get("scenario_id") != scenario_id
+            or evidence.get("status") not in {"pass", "fail"}
+            or evidence.get("executed_runtime_cell") is not True
+            or not isinstance(runtime_cell, dict)
+            or runtime_cell.get("executed") is not True
+            or not runtime_cell.get("cell_id")
+            or not isinstance(observed, dict)
+            or observed.get("runtime_cell_executed") is not True
+        ):
+            continue
+        scenario_results[scenario_id] = dict(evidence)
 shard = {
     "schema": "durable-workflow.v2.replay-conformance.sdk-php-shard",
     "runtime": "sdk-php",
