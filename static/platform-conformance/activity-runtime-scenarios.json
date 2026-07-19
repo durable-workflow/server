@@ -128,6 +128,37 @@
   "host_runner_contract": {
     "runner_id": "activities",
     "result_schema": "durable-workflow.v2.activity-runtime.result",
+    "portable_result_contract": {
+      "schema": "durable-workflow.v1.portable-native-evidence",
+      "runner_max_bytes": 4194304,
+      "projection_target_bytes": 3145728,
+      "host_consumer_max_bytes": 4194304,
+      "required_top_level_fields": [
+        "schema",
+        "started_at",
+        "finished_at",
+        "outcome",
+        "runner_blocked",
+        "artifact_versions",
+        "published_artifact_versions",
+        "executed_distribution_identities",
+        "runtime_matrix",
+        "scenario_results",
+        "findings",
+        "finding_links"
+      ],
+      "scenario_evidence_source": "scenario_requirements.*.required_fields",
+      "required_scenario_status_source": "scenarios",
+      "exact_distribution_identity_field": "executed_distribution_identities",
+      "native_evidence_failure_classification": {
+        "oversized": "runner_infrastructure_failure",
+        "malformed": "runner_infrastructure_failure",
+        "incomplete": "runner_infrastructure_failure"
+      },
+      "product_assertions": "fail_closed_before_projection",
+      "sensitive_values": "omitted",
+      "unbounded_payloads": "sha256_summary_without_payload_bytes"
+    },
     "must_execute_against_published_artifacts": true,
     "must_emit_result_for_every_required_scenario": true,
     "non_pass_classifications": [

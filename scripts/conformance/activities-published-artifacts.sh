@@ -4870,10 +4870,19 @@ RUNNER_REPO_ROOT="$repo_root" \
 node <<'JS'
 const fs = require('fs');
 const path = require('path');
+const crypto = require('crypto');
 
 const RESULT_DIR = process.env.RESULT_DIR;
 const STARTED_AT = process.env.STARTED_AT;
 const MANIFEST_PATH = process.env.SCENARIO_MANIFEST;
+
+const PORTABLE_RESULT_LIMIT_BYTES = 4 * 1024 * 1024;
+const PORTABLE_RESULT_TARGET_BYTES = 3 * 1024 * 1024;
+const PORTABLE_EVIDENCE_CELL_LIMIT_BYTES = 64 * 1024;
+const PORTABLE_EVIDENCE_STRING_LIMIT_BYTES = 4 * 1024;
+const PORTABLE_EVIDENCE_COLLECTION_LIMIT = 32;
+const PORTABLE_EVIDENCE_DEPTH_LIMIT = 8;
+const PORTABLE_FINDING_LIMIT = 64;
 
 const REQUIRED_SCENARIOS = [
   'published_artifact_install_only',
@@ -4986,6 +4995,361 @@ function env(name) {
 
 function writeJson(file, value) {
   fs.writeFileSync(file, `${JSON.stringify(value, null, 2)}\n`, 'utf8');
+}
+
+function encodedResultBytes(value) {
+  return Buffer.from(`${JSON.stringify(value, null, 2)}\n`, 'utf8');
+}
+
+function portableJsonBytes(value) {
+  const encoded = JSON.stringify(value);
+  return Buffer.from(encoded === undefined ? String(value) : encoded, 'utf8');
+}
+
+function portableValueSummary(value, reason) {
+  const encoded = portableJsonBytes(value);
+  return {
+    retained: false,
+    reason,
+    original_type: Array.isArray(value) ? 'array' : typeof value,
+    original_bytes: encoded.length,
+    sha256: crypto.createHash('sha256').update(encoded).digest('hex'),
+  };
+}
+
+function portableSensitiveKey(key) {
+  const normalized = String(key).toLowerCase().replace(/[^a-z0-9]+/g, '_');
+  return /(^|_)(access_token|authorization|cookie|password|private_key|secret|token)($|_)/.test(normalized);
+}
+
+function portablePriorityKey(key) {
+  return new Set([
+    'scenario_id',
+    'status',
+    'classification',
+    'execution_source',
+    'local_product_source_checkouts_used',
+    'activity_host_evidence',
+    'published_artifact_worker_execution',
+    'worker_artifact',
+    'mode',
+    'runtime',
+    'artifact',
+    'version',
+    'source',
+  ]).has(String(key));
+}
+
+function portableValue(value, depth = 0) {
+  if (value === null || typeof value === 'boolean' || typeof value === 'number') {
+    return value;
+  }
+  if (typeof value === 'string') {
+    return Buffer.byteLength(value, 'utf8') <= PORTABLE_EVIDENCE_STRING_LIMIT_BYTES
+      ? value
+      : portableValueSummary(value, 'string_limit');
+  }
+  if (depth >= PORTABLE_EVIDENCE_DEPTH_LIMIT) {
+    return portableValueSummary(value, 'depth_limit');
+  }
+  if (Array.isArray(value)) {
+    const retained = value
+      .slice(0, PORTABLE_EVIDENCE_COLLECTION_LIMIT)
+      .map((item) => portableValue(item, depth + 1));
+    if (value.length > PORTABLE_EVIDENCE_COLLECTION_LIMIT) {
+      retained.push({
+        ...portableValueSummary(value, 'collection_limit'),
+        omitted_items: value.length - PORTABLE_EVIDENCE_COLLECTION_LIMIT,
+      });
+    }
+    return retained;
+  }
+  if (value && typeof value === 'object') {
+    const keys = Object.keys(value).sort((left, right) => {
+      const priority = Number(portablePriorityKey(right)) - Number(portablePriorityKey(left));
+      return priority || left.localeCompare(right);
+    });
+    const retained = {};
+    let omittedKeys = 0;
+    let sensitiveKeys = 0;
+    for (const key of keys) {
+      if (portableSensitiveKey(key)) {
+        sensitiveKeys += 1;
+        continue;
+      }
+      if (Object.keys(retained).length >= PORTABLE_EVIDENCE_COLLECTION_LIMIT) {
+        omittedKeys += 1;
+        continue;
+      }
+      retained[key] = portableValue(value[key], depth + 1);
+    }
+    if (omittedKeys > 0 || sensitiveKeys > 0) {
+      retained._portable_evidence_omitted = {
+        ...portableValueSummary(value, 'collection_or_sensitive_key_limit'),
+        omitted_keys: omittedKeys,
+        sensitive_keys: sensitiveKeys,
+      };
+    }
+    return retained;
+  }
+  return portableValue(String(value), depth);
+}
+
+function boundedPortableCell(value) {
+  const retained = portableValue(value);
+  return portableJsonBytes(retained).length <= PORTABLE_EVIDENCE_CELL_LIMIT_BYTES
+    ? retained
+    : portableValueSummary(value, 'evidence_cell_limit');
+}
+
+function portableOmission(value, retainedKeys) {
+  const omittedKeys = Object.keys(value || {}).filter((key) => !retainedKeys.includes(key));
+  return omittedKeys.length === 0
+    ? null
+    : {
+      ...portableValueSummary(value, 'non_decisive_fields_omitted'),
+      omitted_keys: omittedKeys.length,
+    };
+}
+
+function portableWorkerArtifact(value) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    return boundedPortableCell(value);
+  }
+  const keys = [
+    'artifact',
+    'package',
+    'version',
+    'source',
+    'status',
+    'runtime',
+    'language',
+    'execution_source',
+    'execution_method',
+    'local_product_source_checkouts_used',
+  ];
+  const retained = Object.fromEntries(keys.filter((key) => key in value).map((key) => [key, boundedPortableCell(value[key])]));
+  const omitted = portableOmission(value, keys);
+  if (omitted) {
+    retained._portable_evidence_omitted = omitted;
+  }
+  return retained;
+}
+
+function portableActivityHostCell(value) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    return boundedPortableCell(value);
+  }
+  const keys = [
+    'mode',
+    'runtime',
+    'status',
+    'execution_source',
+    'local_product_source_checkouts_used',
+    'worker_protocol',
+    'worker_artifact',
+  ];
+  const retained = {};
+  for (const key of keys) {
+    if (!(key in value)) {
+      continue;
+    }
+    retained[key] = key === 'worker_artifact'
+      ? portableWorkerArtifact(value[key])
+      : boundedPortableCell(value[key]);
+  }
+  const omitted = portableOmission(value, keys);
+  if (omitted) {
+    retained._portable_evidence_omitted = omitted;
+  }
+  return retained;
+}
+
+function portableActivityHostEvidence(value) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    return boundedPortableCell(value);
+  }
+  const keys = [
+    'schema',
+    'status',
+    'scenario_id',
+    'execution_source',
+    'local_product_source_checkouts_used',
+    'activity_cells',
+  ];
+  const retained = Object.fromEntries(keys
+    .filter((key) => key in value && key !== 'activity_cells')
+    .map((key) => [key, boundedPortableCell(value[key])]));
+  retained.activity_cells = Array.isArray(value.activity_cells)
+    ? value.activity_cells.map(portableActivityHostCell)
+    : [];
+  const omitted = portableOmission(value, keys);
+  if (omitted) {
+    retained._portable_evidence_omitted = omitted;
+  }
+  return retained;
+}
+
+function portablePublishedExecution(value) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    return boundedPortableCell(value);
+  }
+  const keys = [
+    'schema',
+    'status',
+    'execution_source',
+    'execution_environment',
+    'worker_execution_mode',
+    'executed_in_pinned_server_artifact',
+    'local_product_source_checkouts_used',
+    'source_integrity_statement',
+    'image_identity',
+    'artifacts',
+  ];
+  const retained = Object.fromEntries(keys
+    .filter((key) => key in value && key !== 'artifacts')
+    .map((key) => [key, boundedPortableCell(value[key])]));
+  retained.artifacts = Array.isArray(value.artifacts)
+    ? value.artifacts.map(portableWorkerArtifact)
+    : [];
+  const omitted = portableOmission(value, keys);
+  if (omitted) {
+    retained._portable_evidence_omitted = omitted;
+  }
+  return retained;
+}
+
+function portableFindingRef(value) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    return boundedPortableCell(value);
+  }
+  const keys = [
+    'id',
+    'finding_type',
+    'type',
+    'scenario_id',
+    'classification',
+    'owning_surface',
+    'summary',
+    'observed_behavior',
+    'next_acceptance_criterion',
+  ];
+  return Object.fromEntries(keys.filter((key) => key in value).map((key) => [key, boundedPortableCell(value[key])]));
+}
+
+function portableFinding(value) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    return boundedPortableCell(value);
+  }
+  const keys = [
+    'id',
+    'finding_type',
+    'type',
+    'scenario_id',
+    'classification',
+    'root_cause_classification',
+    'owning_surface',
+    'summary',
+    'artifact_versions',
+    'expected_behavior',
+    'observed_behavior',
+    'next_acceptance_criterion',
+  ];
+  return Object.fromEntries(keys.filter((key) => key in value).map((key) => [key, boundedPortableCell(value[key])]));
+}
+
+function portableObservedOutputs(value) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    return { portable_diagnostic: boundedPortableCell(value) };
+  }
+  const keys = Object.keys(value).sort((left, right) => {
+    const priority = Number(portablePriorityKey(right)) - Number(portablePriorityKey(left));
+    return priority || left.localeCompare(right);
+  });
+  const retained = {};
+  let omittedKeys = 0;
+  for (const key of keys) {
+    if (portableSensitiveKey(key)) {
+      omittedKeys += 1;
+      continue;
+    }
+    if (key === 'published_artifact_worker_execution') {
+      continue;
+    }
+    if (Object.keys(retained).length >= PORTABLE_EVIDENCE_COLLECTION_LIMIT) {
+      omittedKeys += 1;
+      continue;
+    }
+    retained[key] = key === 'activity_host_evidence'
+      ? portableActivityHostEvidence(value[key])
+      : boundedPortableCell(value[key]);
+  }
+  if (omittedKeys > 0) {
+    retained._portable_evidence_omitted = {
+      ...portableValueSummary(value, 'collection_or_sensitive_key_limit'),
+      omitted_keys: omittedKeys,
+    };
+  }
+  return Object.keys(retained).length > 0
+    ? retained
+    : { portable_diagnostic: portableValueSummary(value, 'empty_portable_projection') };
+}
+
+function portableScenarioResult(value) {
+  const retained = {
+    scenario_id: value.scenario_id,
+    status: value.status,
+  };
+  for (const key of ['expected_behavior', 'classification']) {
+    if (key in value) {
+      retained[key] = boundedPortableCell(value[key]);
+    }
+  }
+  retained.observed_outputs = portableObservedOutputs(value.observed_outputs);
+  if (Array.isArray(value.linked_findings) && value.linked_findings.length > 0) {
+    retained.linked_findings = value.linked_findings
+      .slice(0, PORTABLE_FINDING_LIMIT)
+      .map(portableFindingRef);
+  }
+  return retained;
+}
+
+function minimalPortableScenarioResult(value) {
+  const retained = {
+    scenario_id: value.scenario_id,
+    status: value.status,
+    observed_outputs: {
+      portable_diagnostic: portableValueSummary(value.observed_outputs, 'projection_target'),
+    },
+  };
+  if (value.classification !== undefined) {
+    retained.classification = value.classification;
+  }
+  const hostEvidence = activityHostEvidenceFor(value, value.observed_outputs || {});
+  if (hostEvidence && typeof hostEvidence === 'object') {
+    retained.observed_outputs.activity_host_evidence = portableActivityHostEvidence(hostEvidence);
+  }
+  if (Array.isArray(value.linked_findings) && value.linked_findings.length > 0) {
+    retained.linked_findings = value.linked_findings
+      .slice(0, PORTABLE_FINDING_LIMIT)
+      .map(portableFindingRef);
+  }
+  return retained;
+}
+
+function portableEvidenceContract() {
+  return {
+    schema: 'durable-workflow.v1.portable-native-evidence',
+    max_result_bytes: PORTABLE_RESULT_LIMIT_BYTES,
+    projection_target_bytes: PORTABLE_RESULT_TARGET_BYTES,
+    max_evidence_cell_bytes: PORTABLE_EVIDENCE_CELL_LIMIT_BYTES,
+    max_string_bytes: PORTABLE_EVIDENCE_STRING_LIMIT_BYTES,
+    scenario_evidence: 'complete_required_statuses_and_bounded_diagnostics',
+    exact_distribution_identity_field: 'executed_distribution_identities',
+    product_assertions: 'fail_closed_before_projection',
+    sensitive_values: 'omitted',
+    unbounded_values: 'sha256_summary_without_payload_bytes',
+  };
 }
 
 function readJsonFile(file) {
@@ -6533,7 +6897,6 @@ function main() {
     && distributionIdentityFailures.length === 0
     ? 'pass'
     : (runnerBlocked ? 'non_passing_runner_blocked' : 'non_passing');
-  const recordOutcome = outcome === 'pass' ? 'pass' : (runnerBlocked ? 'error' : 'fail');
   const finishedAt = now();
   const sectionStatus = runnerBlocked ? 'runner_blocked' : 'not_covered';
   const sections = evidenceStatusSections(sectionStatus, defaultReason);
@@ -6566,7 +6929,7 @@ function main() {
     install_failures: installFailures,
   };
 
-  const result = {
+  const nativeResult = {
     schema: 'durable-workflow.v2.activity-runtime.result',
     schema_version: 1,
     suite_schema: 'durable-workflow.v2.platform-conformance.suite',
@@ -6615,6 +6978,165 @@ function main() {
     finding_links: Object.fromEntries(findings.map((item) => [item.scenario_id, [item]])),
   };
 
+  const portableContract = portableEvidenceContract();
+  const portableRuntimeMatrix = {
+    execution_modes: Array.isArray(nativeResult.runtime_matrix?.execution_modes)
+      ? nativeResult.runtime_matrix.execution_modes
+      : [],
+    runtimes: Array.isArray(nativeResult.runtime_matrix?.runtimes)
+      ? nativeResult.runtime_matrix.runtimes
+      : [],
+    activity_cells: boundedPortableCell(nativeResult.runtime_matrix?.activity_cells || []),
+    behavior_cells: boundedPortableCell(nativeResult.runtime_matrix?.behavior_cells || []),
+  };
+  let result = {
+    schema: nativeResult.schema,
+    schema_version: nativeResult.schema_version,
+    suite_schema: nativeResult.suite_schema,
+    suite_version: nativeResult.suite_version,
+    category: nativeResult.category,
+    outcome: nativeResult.outcome,
+    runner_blocked: nativeResult.runner_blocked,
+    started_at: nativeResult.started_at,
+    finished_at: nativeResult.finished_at,
+    generated_at: nativeResult.generated_at,
+    artifact_versions: nativeResult.artifact_versions,
+    executed_distribution_identities: nativeResult.executed_distribution_identities,
+    executed_distribution_identity_failures: boundedPortableCell(nativeResult.executed_distribution_identity_failures),
+    published_artifact_versions: nativeResult.published_artifact_versions,
+    artifact_sources: nativeResult.artifact_sources,
+    execution_source: nativeResult.execution_source,
+    local_product_source_checkouts_used: nativeResult.local_product_source_checkouts_used,
+    activity_evidence_source: nativeResult.activity_evidence_source,
+    activity_evidence_supplied: nativeResult.activity_evidence_supplied,
+    published_artifact_worker_execution: nativeResult.published_artifact_worker_execution
+      ? portablePublishedExecution(nativeResult.published_artifact_worker_execution)
+      : null,
+    published_artifact_worker_execution_source: nativeResult.published_artifact_worker_execution_source,
+    published_artifact_worker_execution_derived: nativeResult.published_artifact_worker_execution_derived,
+    published_artifact_worker_execution_derivation_reason: boundedPortableCell(
+      nativeResult.published_artifact_worker_execution_derivation_reason,
+    ),
+    published_artifact_worker_execution_failures: boundedPortableCell(
+      nativeResult.published_artifact_worker_execution_failures,
+    ),
+    published_artifact_install: boundedPortableCell(nativeResult.published_artifact_install),
+    runtime_matrix: portableRuntimeMatrix,
+    topology: nativeResult.topology,
+    durable_result_recording: boundedPortableCell(nativeResult.durable_result_recording),
+    retry_backoff: boundedPortableCell(nativeResult.retry_backoff),
+    timeout_behavior: boundedPortableCell(nativeResult.timeout_behavior),
+    typed_failure_propagation: boundedPortableCell(nativeResult.typed_failure_propagation),
+    heartbeat_cancellation: boundedPortableCell(nativeResult.heartbeat_cancellation),
+    idempotent_completion: boundedPortableCell(nativeResult.idempotent_completion),
+    operator_visibility: boundedPortableCell(nativeResult.operator_visibility),
+    scenario_results: nativeResult.scenario_results.map(portableScenarioResult),
+    findings: nativeResult.findings.slice(0, PORTABLE_FINDING_LIMIT).map(portableFinding),
+    finding_links: Object.fromEntries(Object.entries(nativeResult.finding_links).map(
+      ([scenarioId, linked]) => [
+        scenarioId,
+        Array.isArray(linked) ? linked.slice(0, PORTABLE_FINDING_LIMIT).map(portableFindingRef) : [],
+      ],
+    )),
+    portable_evidence_contract: portableContract,
+  };
+
+  const projectedResultBytes = encodedResultBytes(result).length;
+  if (projectedResultBytes > PORTABLE_RESULT_TARGET_BYTES) {
+    result = {
+      ...result,
+      scenario_results: nativeResult.scenario_results.map(minimalPortableScenarioResult),
+      findings: result.findings.map(portableFindingRef),
+      durable_result_recording: boundedPortableCell({ status: nativeResult.durable_result_recording?.status }),
+      retry_backoff: boundedPortableCell({ status: nativeResult.retry_backoff?.status }),
+      timeout_behavior: boundedPortableCell({ status: nativeResult.timeout_behavior?.status }),
+      typed_failure_propagation: boundedPortableCell({ status: nativeResult.typed_failure_propagation?.status }),
+      heartbeat_cancellation: boundedPortableCell({ status: nativeResult.heartbeat_cancellation?.status }),
+      idempotent_completion: boundedPortableCell({ status: nativeResult.idempotent_completion?.status }),
+      operator_visibility: boundedPortableCell({ status: nativeResult.operator_visibility?.status }),
+      portable_projection: {
+        reason: 'projection_target',
+        projected_bytes: projectedResultBytes,
+        projection_target_bytes: PORTABLE_RESULT_TARGET_BYTES,
+      },
+    };
+  }
+
+  if (encodedResultBytes(result).length > PORTABLE_RESULT_LIMIT_BYTES) {
+    const originalBytes = encodedResultBytes(result).length;
+    const findingId = 'activity_portable_result_limit_exceeded';
+    const infrastructureFinding = {
+      id: findingId,
+      finding_type: findingId,
+      scenario_id: 'portable_evidence',
+      classification: 'runner-gap',
+      owning_surface: 'conformance_harness',
+      summary: `The projected activity result required ${originalBytes} bytes; the portable contract allows ${PORTABLE_RESULT_LIMIT_BYTES} bytes.`,
+    };
+    const blockedScenarios = REQUIRED_SCENARIOS.map((scenarioId) => ({
+      scenario_id: scenarioId,
+      status: 'runner_blocked',
+      classification: 'runner-gap',
+      observed_outputs: {
+        portable_diagnostic: {
+          code: 'portable_result_limit_exceeded',
+          original_bytes: originalBytes,
+          limit_bytes: PORTABLE_RESULT_LIMIT_BYTES,
+        },
+      },
+      linked_findings: [portableFindingRef(infrastructureFinding)],
+    }));
+    const blockedSection = { status: 'runner_blocked', reason: 'portable_result_limit_exceeded' };
+    result = {
+      schema: nativeResult.schema,
+      schema_version: nativeResult.schema_version,
+      suite_schema: nativeResult.suite_schema,
+      suite_version: nativeResult.suite_version,
+      category: nativeResult.category,
+      outcome: 'non_passing_runner_blocked',
+      runner_blocked: true,
+      started_at: nativeResult.started_at,
+      finished_at: nativeResult.finished_at,
+      generated_at: nativeResult.generated_at,
+      artifact_versions: nativeResult.artifact_versions,
+      executed_distribution_identities: nativeResult.executed_distribution_identities,
+      executed_distribution_identity_failures: boundedPortableCell(nativeResult.executed_distribution_identity_failures),
+      published_artifact_versions: nativeResult.published_artifact_versions,
+      artifact_sources: nativeResult.artifact_sources,
+      execution_source: nativeResult.execution_source,
+      local_product_source_checkouts_used: nativeResult.local_product_source_checkouts_used,
+      published_artifact_worker_execution: nativeResult.published_artifact_worker_execution
+        ? portablePublishedExecution(nativeResult.published_artifact_worker_execution)
+        : null,
+      published_artifact_install: blockedSection,
+      runtime_matrix: portableRuntimeMatrix,
+      topology: nativeResult.topology,
+      durable_result_recording: blockedSection,
+      retry_backoff: blockedSection,
+      timeout_behavior: blockedSection,
+      typed_failure_propagation: blockedSection,
+      heartbeat_cancellation: blockedSection,
+      idempotent_completion: blockedSection,
+      operator_visibility: blockedSection,
+      scenario_results: blockedScenarios,
+      findings: [infrastructureFinding],
+      finding_links: Object.fromEntries(REQUIRED_SCENARIOS.map((scenarioId) => [
+        scenarioId,
+        [portableFindingRef(infrastructureFinding)],
+      ])),
+      portable_evidence_contract: portableContract,
+      portable_projection: {
+        reason: 'portable_result_limit_exceeded',
+        projected_bytes: originalBytes,
+        max_result_bytes: PORTABLE_RESULT_LIMIT_BYTES,
+      },
+    };
+  }
+
+  if (encodedResultBytes(result).length > PORTABLE_RESULT_LIMIT_BYTES) {
+    throw new Error('portable activity result exceeded its result budget after infrastructure fallback');
+  }
+
   const metadata = {
     started_at: STARTED_AT,
     finished_at: finishedAt,
@@ -6639,8 +7161,8 @@ function main() {
 
   const record = {
     experiment: 'activities',
-    outcome: recordOutcome,
-    runnerBlocked: runnerBlocked,
+    outcome: result.outcome === 'pass' ? 'pass' : (result.runner_blocked ? 'error' : 'fail'),
+    runnerBlocked: result.runner_blocked,
     artifactVersions: publishedArtifactVersions,
     executionSource: runtimeExecutionLoad.execution_source,
     findings: findings.map((item) => `${item.scenario_id}: ${item.observed_behavior}`),
@@ -6652,10 +7174,10 @@ function main() {
   writeJson(path.join(RESULT_DIR, 'run-metadata.json'), metadata);
   writeJson(path.join(RESULT_DIR, 'activities-result.json'), result);
   writeJson(path.join(RESULT_DIR, 'activities-record.json'), record);
-  writeJson(path.join(RESULT_DIR, 'activities-findings.json'), findings);
+  writeJson(path.join(RESULT_DIR, 'activities-findings.json'), result.findings);
   console.log(JSON.stringify(result, null, 2));
 
-  return outcome === 'pass' ? 0 : 1;
+  return result.outcome === 'pass' ? 0 : 1;
 }
 
 process.exitCode = main();

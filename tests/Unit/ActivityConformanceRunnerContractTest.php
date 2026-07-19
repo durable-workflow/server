@@ -241,6 +241,43 @@ class ActivityConformanceRunnerContractTest extends TestCase
         $this->assertStringContainsString('ReflectionClass(CompensationVisibility::class)', $source);
     }
 
+    public function test_manifest_publishes_the_bounded_portable_activity_result_contract(): void
+    {
+        $portableResult = ActivityRuntimeContract::manifest()['host_runner_contract']['portable_result_contract'];
+
+        $this->assertSame(4 * 1024 * 1024, $portableResult['runner_max_bytes']);
+        $this->assertSame(3 * 1024 * 1024, $portableResult['projection_target_bytes']);
+        $this->assertSame(4 * 1024 * 1024, $portableResult['host_consumer_max_bytes']);
+        $this->assertSame('required_scenarios', $portableResult['required_scenario_status_source']);
+        $this->assertSame(
+            'executed_distribution_identities',
+            $portableResult['exact_distribution_identity_field'],
+        );
+        $this->assertSame(
+            [
+                'oversized' => 'runner_infrastructure_failure',
+                'malformed' => 'runner_infrastructure_failure',
+                'incomplete' => 'runner_infrastructure_failure',
+            ],
+            $portableResult['native_evidence_failure_classification'],
+        );
+        $this->assertSame('fail_closed_before_projection', $portableResult['product_assertions']);
+        $this->assertSame('omitted', $portableResult['sensitive_values']);
+
+        $publicManifest = json_decode(
+            (string) file_get_contents(
+                dirname(__DIR__, 2).'/static/platform-conformance/activity-runtime-scenarios.json',
+            ),
+            true,
+            512,
+            JSON_THROW_ON_ERROR,
+        );
+        $publicPortableResult = $publicManifest['host_runner_contract']['portable_result_contract'];
+        $this->assertSame($portableResult['required_top_level_fields'], $publicPortableResult['required_top_level_fields']);
+        $this->assertSame('scenarios', $publicPortableResult['required_scenario_status_source']);
+        $this->assertSame(4 * 1024 * 1024, $publicPortableResult['runner_max_bytes']);
+    }
+
     public function test_runner_does_not_pass_without_activity_product_evidence(): void
     {
         if (trim((string) shell_exec('command -v bash 2>/dev/null')) === ''
@@ -480,6 +517,83 @@ class ActivityConformanceRunnerContractTest extends TestCase
                 rmdir($resultDir);
             }
         }
+    }
+
+    public function test_runner_compacts_repeated_native_activity_evidence_without_omitting_required_cells(): void
+    {
+        $evidence = $this->completeRunnerActivityEvidence();
+        $repeatedPayload = str_repeat('portable-activity-evidence-', 700);
+        $repeatedCatalog = array_fill(0, 24, $repeatedPayload);
+
+        foreach ($evidence['scenario_results'] as &$scenario) {
+            $scenario['observed_outputs']['repeated_catalog'] = $repeatedCatalog;
+            $scenario['observed_outputs']['runner_logs'] = $repeatedCatalog;
+            $scenario['scenario_evidence']['repeated_catalog'] = $repeatedCatalog;
+            $scenario['scenario_evidence']['runner_logs'] = $repeatedCatalog;
+        }
+        unset($scenario);
+        $evidence['operator_visibility']['repeated_catalog'] = $repeatedCatalog;
+        $evidence['runtime_matrix']['runtimes'][] = 'sdk-php';
+
+        $nativeBytes = strlen((string) json_encode($evidence, JSON_THROW_ON_ERROR));
+        $this->assertGreaterThan(4 * 1024 * 1024, $nativeBytes);
+
+        $run = $this->runActivityRunnerWithEvidence($evidence);
+
+        $this->assertSame(0, $run['exit'], $run['output']);
+        $this->assertSame('pass', $run['result']['outcome']);
+        $this->assertFalse($run['result']['runner_blocked']);
+        $this->assertLessThanOrEqual(
+            4 * 1024 * 1024,
+            strlen((string) json_encode(
+                $run['result'],
+                JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES | JSON_THROW_ON_ERROR,
+            )."\n"),
+        );
+        $this->assertSame(
+            ActivityRuntimeContract::manifest()['required_scenarios'],
+            array_column($run['result']['scenario_results'], 'scenario_id'),
+        );
+        $this->assertSame(
+            $this->executedDistributionIdentities('9.9.9'),
+            $run['result']['executed_distribution_identities'],
+        );
+        $this->assertStringContainsString(
+            'sha256',
+            (string) json_encode($run['result']['scenario_results'], JSON_THROW_ON_ERROR),
+        );
+        $evaluation = ActivityRuntimeResultGate::evaluate($run['result'], ActivityRuntimeContract::manifest());
+        $this->assertSame('pass', $evaluation['status'], json_encode($evaluation, JSON_PRETTY_PRINT));
+    }
+
+    public function test_runner_does_not_turn_a_large_activity_behavior_failure_into_a_pass(): void
+    {
+        $evidence = $this->completeRunnerActivityEvidence();
+        foreach ($evidence['scenario_results'] as &$scenario) {
+            if (($scenario['scenario_id'] ?? null) !== 'timeout_behavior') {
+                continue;
+            }
+            $scenario['status'] = 'fail';
+            $scenario['classification'] = 'product-gap';
+            $scenario['observed_behavior'] = 'the timeout behavior cell failed';
+            $scenario['observed_outputs']['runner_logs'] = array_fill(0, 300, str_repeat('failure-log-', 2000));
+        }
+        unset($scenario);
+
+        $run = $this->runActivityRunnerWithEvidence($evidence);
+        $byScenario = array_column($run['result']['scenario_results'], null, 'scenario_id');
+
+        $this->assertSame(1, $run['exit']);
+        $this->assertSame('non_passing', $run['result']['outcome']);
+        $this->assertSame('fail', $byScenario['timeout_behavior']['status']);
+        $this->assertNotEmpty($byScenario['timeout_behavior']['linked_findings'] ?? []);
+        $this->assertLessThanOrEqual(
+            4 * 1024 * 1024,
+            strlen((string) json_encode(
+                $run['result'],
+                JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES | JSON_THROW_ON_ERROR,
+            )."\n"),
+        );
     }
 
     public function test_runner_rejects_complete_staged_evidence_without_required_distribution_identity(): void
