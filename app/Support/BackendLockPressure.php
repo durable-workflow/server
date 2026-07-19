@@ -93,6 +93,24 @@ final class BackendLockPressure
         ], 503)->header('Retry-After', (string) self::RETRY_AFTER_SECONDS);
     }
 
+    public static function workerRegistrationResponse(Request $request, string $workerId): JsonResponse
+    {
+        return WorkerProtocol::json([
+            'message' => 'The database backend is temporarily locked while registering the worker. Retry with backoff.',
+            'reason' => 'backend_lock_pressure',
+            'operation' => 'register_worker',
+            'worker_id' => $workerId,
+            'task_queue' => $request->input('task_queue'),
+            'registered' => false,
+            'retryable' => true,
+            'retry_after_seconds' => self::RETRY_AFTER_SECONDS,
+            'backend' => [
+                'driver' => self::workflowDriverName(),
+                'lock_pressure' => true,
+            ],
+        ], 503)->header('Retry-After', (string) self::RETRY_AFTER_SECONDS);
+    }
+
     /**
      * Keep exhausted heartbeat pressure in the worker protocol's operation
      * outcome instead of turning it into a transport failure. Released workers
@@ -182,7 +200,7 @@ final class BackendLockPressure
     }
 
     /**
-     * Keep an unhandled SQLite write conflict inside the worker protocol.
+     * Keep an unhandled backend write conflict inside the worker protocol.
      * Mutation endpoints remain fenced by their task/attempt identifiers, so
      * retry-aware clients can reconcile or repeat the request without
      * recording a second task outcome.

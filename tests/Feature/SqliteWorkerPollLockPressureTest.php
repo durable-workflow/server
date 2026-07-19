@@ -147,6 +147,44 @@ class SqliteWorkerPollLockPressureTest extends TestCase
         }
     }
 
+    public function test_exhausted_worker_registration_pressure_exposes_the_managed_retry_contract(): void
+    {
+        Queue::fake();
+
+        [, $leasedTask] = $this->createLeasedInteractiveSignalTask(
+            'wf-sqlite-worker-registration-lock-response',
+            'php-sqlite-existing-worker',
+            'sqlite-worker-registration-lock-response-signal',
+        );
+
+        $this->holdSqliteWriteLock($leasedTask->id);
+
+        $this->withHeaders($this->workerHeaders())
+            ->postJson('/api/worker/register', [
+                'worker_id' => 'php-sqlite-registration-retry-worker',
+                'task_queue' => 'polyglot-shared',
+                'runtime' => 'php',
+            ])
+            ->assertStatus(503)
+            ->assertHeader(WorkerProtocol::HEADER, WorkerProtocol::VERSION)
+            ->assertHeaderMissing(ControlPlaneProtocol::HEADER)
+            ->assertHeader('Retry-After', '1')
+            ->assertJsonPath('reason', 'backend_lock_pressure')
+            ->assertJsonPath('operation', 'register_worker')
+            ->assertJsonPath('worker_id', 'php-sqlite-registration-retry-worker')
+            ->assertJsonPath('task_queue', 'polyglot-shared')
+            ->assertJsonPath('registered', false)
+            ->assertJsonPath('retryable', true)
+            ->assertJsonPath('retry_after_seconds', 1)
+            ->assertJsonPath('backend.driver', 'sqlite')
+            ->assertJsonPath('backend.lock_pressure', true)
+            ->assertJsonMissing(['message' => 'Server Error']);
+
+        $this->assertFalse(WorkerRegistration::query()
+            ->where('worker_id', 'php-sqlite-registration-retry-worker')
+            ->exists());
+    }
+
     public function test_php_startup_activity_heartbeat_and_completion_retry_transient_sqlite_pressure(): void
     {
         Queue::fake();

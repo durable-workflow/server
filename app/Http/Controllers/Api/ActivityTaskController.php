@@ -6,7 +6,6 @@ use App\Models\WorkerBuildIdRollout;
 use App\Models\WorkerRegistration;
 use App\Support\ActivityTaskPoller;
 use App\Support\BackendLockPressure;
-use App\Support\ControlPlaneMutationRetrier;
 use App\Support\ExternalExecutorConfigContract;
 use App\Support\ExternalPayloadEnvelopeService;
 use App\Support\ExternalPayloadStorageUnavailable;
@@ -16,6 +15,7 @@ use App\Support\NamespaceExternalPayloadStorage;
 use App\Support\NamespaceWorkflowScope;
 use App\Support\WorkerPollBackpressure;
 use App\Support\WorkerProtocol;
+use App\Support\WorkerProtocolMutationRetrier;
 use App\Support\WorkerSessionRegistry;
 use Carbon\CarbonInterface;
 use Illuminate\Http\JsonResponse;
@@ -40,7 +40,7 @@ class ActivityTaskController
         private readonly NamespaceExternalPayloadStorage $externalPayloadStorage,
         private readonly ExternalPayloadEnvelopeService $payloadEnvelopes,
         private readonly WorkerSessionRegistry $workerSessions,
-        private readonly ControlPlaneMutationRetrier $storageMutations,
+        private readonly WorkerProtocolMutationRetrier $storageMutations,
     ) {}
 
     /**
@@ -238,6 +238,12 @@ class ActivityTaskController
             );
         } catch (ExternalPayloadStorageUnavailable $exception) {
             return $this->externalPayloadFailure($taskId, $validated['activity_attempt_id'], $exception, 503);
+        } catch (\Throwable $exception) {
+            if (! BackendLockPressure::is($exception)) {
+                throw $exception;
+            }
+
+            return BackendLockPressure::workerOperationResponse($request, false);
         }
         $stopStatus = $this->activityStopStatus($bridge, $validated['activity_attempt_id'], $outcome['reason']);
 
@@ -368,6 +374,12 @@ class ActivityTaskController
             });
         } catch (ExternalPayloadStorageUnavailable $exception) {
             return $this->externalPayloadFailure($taskId, $validated['activity_attempt_id'], $exception, 503);
+        } catch (\Throwable $exception) {
+            if (! BackendLockPressure::is($exception)) {
+                throw $exception;
+            }
+
+            return BackendLockPressure::workerOperationResponse($request, false);
         }
         $stopStatus = $this->activityStopStatus($bridge, $validated['activity_attempt_id'], $outcome['reason']);
 
@@ -482,7 +494,7 @@ class ActivityTaskController
                 ),
             );
         } catch (\Throwable $exception) {
-            if (! BackendLockPressure::isSqliteBackend() || ! BackendLockPressure::is($exception)) {
+            if (! BackendLockPressure::is($exception)) {
                 throw $exception;
             }
 
@@ -522,7 +534,7 @@ class ActivityTaskController
                 ),
             );
         } catch (\Throwable $exception) {
-            if (! BackendLockPressure::isSqliteBackend() || ! BackendLockPressure::is($exception)) {
+            if (! BackendLockPressure::is($exception)) {
                 throw $exception;
             }
 
