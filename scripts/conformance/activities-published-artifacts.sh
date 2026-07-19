@@ -5356,6 +5356,18 @@ function readJsonFile(file) {
   return JSON.parse(fs.readFileSync(file, 'utf8'));
 }
 
+function compareCodePointStrings(left, right) {
+  const leftCodePoints = Array.from(left, (character) => character.codePointAt(0));
+  const rightCodePoints = Array.from(right, (character) => character.codePointAt(0));
+  const sharedLength = Math.min(leftCodePoints.length, rightCodePoints.length);
+  for (let index = 0; index < sharedLength; index += 1) {
+    if (leftCodePoints[index] !== rightCodePoints[index]) {
+      return leftCodePoints[index] - rightCodePoints[index];
+    }
+  }
+  return leftCodePoints.length - rightCodePoints.length;
+}
+
 function normalizeDistributionIdentity(component, value, artifactVersions) {
   const definition = DISTRIBUTION_COMPONENTS[component];
   if (!definition) {
@@ -5388,16 +5400,20 @@ function normalizeDistributionIdentity(component, value, artifactVersions) {
     if (JSON.stringify(Object.keys(artifact).sort()) !== JSON.stringify(['name', 'sha256'])) {
       throw new Error(`executed distribution artifact for ${component} has an invalid shape`);
     }
-    const name = stringValue(artifact.name);
-    const digest = stringValue(artifact.sha256);
-    if (!name || name.length > 256 || (!['workflow', 'waterline'].includes(component) && name.includes('/'))) {
+    const name = artifact.name;
+    const digest = artifact.sha256;
+    if (typeof name !== 'string'
+      || name.trim() !== name
+      || !name
+      || name.length > 256
+      || (!['workflow', 'waterline'].includes(component) && name.includes('/'))) {
       throw new Error(`executed distribution artifact name for ${component} is invalid`);
     }
-    if (!DISTRIBUTION_DIGEST_PATTERN.test(digest)) {
+    if (typeof digest !== 'string' || !DISTRIBUTION_DIGEST_PATTERN.test(digest)) {
       throw new Error(`executed distribution SHA-256 for ${component}:${name} is invalid`);
     }
     return { name, sha256: digest };
-  }).sort((left, right) => left.name.localeCompare(right.name));
+  }).sort((left, right) => compareCodePointStrings(left.name, right.name));
 
   if (new Set(artifacts.map((artifact) => artifact.name)).size !== artifacts.length) {
     throw new Error(`executed distribution artifacts for ${component} contain duplicate names`);
@@ -5434,7 +5450,7 @@ function mergeDistributionIdentityMaps(target, supplied, artifactVersions) {
       kind: observed.kind,
       locator: observed.locator,
       artifacts: [...artifacts.entries()]
-        .sort(([left], [right]) => left.localeCompare(right))
+        .sort(([left], [right]) => compareCodePointStrings(left, right))
         .map(([name, sha256]) => ({ name, sha256 })),
     };
   }

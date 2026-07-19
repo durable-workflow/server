@@ -612,6 +612,75 @@ class ActivityConformanceRunnerContractTest extends TestCase
         $this->assertArrayNotHasKey('waterline', $run['result']['executed_distribution_identities']);
     }
 
+    public function test_runner_emits_distribution_artifacts_in_canonical_code_point_order(): void
+    {
+        $evidence = $this->completeRunnerActivityEvidence();
+        $evidence['executed_distribution_identities']['cli']['artifacts'] = [
+            ['name' => 'install.sh', 'sha256' => str_repeat('1', 64)],
+            ['name' => 'dw_cli_linux_x86_64.tar.gz', 'sha256' => str_repeat('2', 64)],
+        ];
+        $recorded = [
+            'cli' => [
+                'kind' => 'github-release',
+                'locator' => 'github-release:durable-workflow/cli@9.9.9',
+                'artifacts' => [
+                    ['name' => 'checksums.txt', 'sha256' => str_repeat('3', 64)],
+                    ['name' => 'DW_CLI_Linux_x86_64.tar.gz', 'sha256' => str_repeat('4', 64)],
+                ],
+            ],
+        ];
+
+        $run = $this->runActivityRunnerWithEvidence($evidence, $recorded);
+
+        $this->assertSame(0, $run['exit'], $run['output']);
+        $this->assertSame('pass', $run['result']['outcome']);
+        $this->assertSame(
+            [
+                ['name' => 'DW_CLI_Linux_x86_64.tar.gz', 'sha256' => str_repeat('4', 64)],
+                ['name' => 'checksums.txt', 'sha256' => str_repeat('3', 64)],
+                ['name' => 'dw_cli_linux_x86_64.tar.gz', 'sha256' => str_repeat('2', 64)],
+                ['name' => 'install.sh', 'sha256' => str_repeat('1', 64)],
+            ],
+            $run['result']['executed_distribution_identities']['cli']['artifacts'],
+        );
+    }
+
+    public function test_runner_rejects_malformed_distribution_artifact_fields_without_normalizing_them(): void
+    {
+        $cases = [
+            'whitespace-padded name' => [
+                'field' => 'name',
+                'value' => ' install.sh ',
+                'failure' => 'executed distribution artifact name for cli is invalid',
+            ],
+            'non-string name' => [
+                'field' => 'name',
+                'value' => 123,
+                'failure' => 'executed distribution artifact name for cli is invalid',
+            ],
+            'whitespace-padded digest' => [
+                'field' => 'sha256',
+                'value' => str_repeat('b', 64).' ',
+                'failure' => 'executed distribution SHA-256 for cli:install.sh is invalid',
+            ],
+        ];
+
+        foreach ($cases as $case => $malformed) {
+            $recorded = $this->executedDistributionIdentities('9.9.9');
+            $recorded['cli']['artifacts'][0][$malformed['field']] = $malformed['value'];
+
+            $run = $this->runActivityRunnerWithEvidence($this->completeRunnerActivityEvidence(), $recorded);
+
+            $this->assertSame(1, $run['exit'], $case."\n".$run['output']);
+            $this->assertSame('non_passing', $run['result']['outcome'], $case);
+            $this->assertStringContainsString(
+                $malformed['failure'],
+                implode("\n", $run['result']['executed_distribution_identity_failures']),
+                $case,
+            );
+        }
+    }
+
     public function test_runner_rejects_conflicting_same_version_distribution_bytes(): void
     {
         $evidence = $this->completeRunnerActivityEvidence();
