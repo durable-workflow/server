@@ -17,6 +17,7 @@ use Workflow\V2\Enums\CommandType;
 use Workflow\V2\Enums\TaskStatus;
 use Workflow\V2\Enums\TaskType;
 use Workflow\V2\Jobs\RunWorkflowTask;
+use Workflow\V2\Models\ActivityAttempt;
 use Workflow\V2\Models\ActivityExecution;
 use Workflow\V2\Models\WorkflowCommand;
 use Workflow\V2\Models\WorkflowSignal;
@@ -144,6 +145,93 @@ class SqliteWorkerPollLockPressureTest extends TestCase
 
             DB::disconnect('sqlite');
         }
+    }
+
+    public function test_php_startup_activity_heartbeat_and_completion_retry_transient_sqlite_pressure(): void
+    {
+        Queue::fake();
+
+        [$runId, $taskId, $attemptId, $leaseOwner] = $this->leaseExternalActivity(
+            'wf-sqlite-php-startup-activity',
+            'php-sqlite-startup-worker',
+        );
+
+        $heartbeatWriter = $this->startTransientControlPlaneUpdate($runId);
+
+        try {
+            $this->withHeaders($this->workerHeaders())
+                ->postJson("/api/worker/activity-tasks/{$taskId}/heartbeat", [
+                    'activity_attempt_id' => $attemptId,
+                    'lease_owner' => $leaseOwner,
+                    'details' => ['phase' => 'startup'],
+                ])
+                ->assertOk()
+                ->assertJsonPath('task_id', $taskId)
+                ->assertJsonPath('activity_attempt_id', $attemptId)
+                ->assertJsonPath('lease_owner', $leaseOwner)
+                ->assertJsonPath('can_continue', true)
+                ->assertJsonPath('heartbeat_recorded', true)
+                ->assertJsonPath('reason', null);
+        } finally {
+            $this->finishTransientLeaseUpdate($heartbeatWriter);
+        }
+
+        $completionWriter = $this->startTransientControlPlaneUpdate($runId);
+
+        try {
+            $this->withHeaders($this->workerHeaders())
+                ->postJson("/api/worker/activity-tasks/{$taskId}/complete", [
+                    'activity_attempt_id' => $attemptId,
+                    'lease_owner' => $leaseOwner,
+                    'result' => 'Hello, startup!',
+                ])
+                ->assertOk()
+                ->assertJsonPath('task_id', $taskId)
+                ->assertJsonPath('activity_attempt_id', $attemptId)
+                ->assertJsonPath('outcome', 'completed')
+                ->assertJsonPath('recorded', true)
+                ->assertJsonPath('reason', null);
+        } finally {
+            $this->finishTransientLeaseUpdate($completionWriter);
+        }
+
+        $attempt = ActivityAttempt::query()->findOrFail($attemptId);
+
+        $this->assertSame('completed', $attempt->status->value);
+        $this->assertNotNull($attempt->last_heartbeat_at);
+        $this->assertSame(1, ActivityAttempt::query()->whereKey($attemptId)->count());
+    }
+
+    public function test_exhausted_activity_heartbeat_pressure_is_non_fatal_to_released_workers(): void
+    {
+        Queue::fake();
+
+        [, $taskId, $attemptId, $leaseOwner] = $this->leaseExternalActivity(
+            'wf-sqlite-php-startup-heartbeat-pressure',
+            'php-sqlite-startup-worker',
+        );
+
+        $this->holdSqliteWriteLock($taskId);
+
+        $this->withHeaders($this->workerHeaders())
+            ->postJson("/api/worker/activity-tasks/{$taskId}/heartbeat", [
+                'activity_attempt_id' => $attemptId,
+                'lease_owner' => $leaseOwner,
+                'details' => ['phase' => 'startup'],
+            ])
+            ->assertOk()
+            ->assertHeader(WorkerProtocol::HEADER, WorkerProtocol::VERSION)
+            ->assertJsonPath('task_id', $taskId)
+            ->assertJsonPath('activity_attempt_id', $attemptId)
+            ->assertJsonPath('lease_owner', $leaseOwner)
+            ->assertJsonPath('cancel_requested', false)
+            ->assertJsonPath('can_continue', true)
+            ->assertJsonPath('heartbeat_recorded', false)
+            ->assertJsonPath('reason', 'backend_lock_pressure')
+            ->assertJsonPath('retryable', true)
+            ->assertJsonPath('retry_after_seconds', 1)
+            ->assertJsonPath('backend.driver', 'sqlite')
+            ->assertJsonPath('backend.lock_pressure', true);
     }
 
     public function test_consecutive_signals_retry_a_worker_lease_write_without_recording_a_duplicate(): void
@@ -630,6 +718,57 @@ class SqliteWorkerPollLockPressureTest extends TestCase
             'last_heartbeat_at' => now(),
             'status' => 'active',
         ]);
+    }
+
+    /**
+     * @return array{string, string, string, string}
+     */
+    private function leaseExternalActivity(string $workflowId, string $workerId): array
+    {
+        WorkflowNamespace::query()->updateOrCreate(
+            ['name' => 'default'],
+            ['description' => 'Default namespace', 'retention_days' => 30, 'status' => 'active'],
+        );
+
+        $workflow = WorkflowStub::make(ExternalGreetingWorkflow::class, $workflowId);
+        $start = $workflow->start('startup');
+
+        NamespaceWorkflowScope::bind('default', $workflow->id(), ExternalGreetingWorkflow::class);
+        $this->runReadyWorkflowTask($start->runId());
+
+        /** @var WorkflowTask|null $task */
+        $task = WorkflowTask::query()
+            ->where('workflow_run_id', $start->runId())
+            ->where('task_type', TaskType::Activity->value)
+            ->first();
+
+        $this->assertInstanceOf(WorkflowTask::class, $task);
+
+        $task->forceFill(['queue' => 'polyglot-shared'])->save();
+        ActivityExecution::query()
+            ->where('workflow_run_id', $start->runId())
+            ->update(['queue' => 'polyglot-shared']);
+
+        $this->registerWorker($workerId, 'php');
+
+        $poll = $this->withHeaders($this->workerHeaders())
+            ->postJson('/api/worker/activity-tasks/poll', [
+                'worker_id' => $workerId,
+                'task_queue' => 'polyglot-shared',
+                'timeout_seconds' => 0,
+            ]);
+
+        $poll->assertOk()
+            ->assertJsonPath('task.task_id', $task->id)
+            ->assertJsonPath('task.lease_owner', $workerId)
+            ->assertJsonPath('poll_status', 'leased');
+
+        return [
+            $start->runId(),
+            (string) $poll->json('task.task_id'),
+            (string) $poll->json('task.activity_attempt_id'),
+            (string) $poll->json('task.lease_owner'),
+        ];
     }
 
     /**

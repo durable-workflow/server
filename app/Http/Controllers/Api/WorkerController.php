@@ -1850,7 +1850,13 @@ class WorkerController
         }
 
         if ($this->workflowTaskFailureWaitsForHistory($validated['failure'])) {
-            $outcome = $this->acknowledgeWorkflowTaskWaitingForHistory($namespace, $taskId, $validated['failure']);
+            $outcome = $this->storageMutations->run(
+                fn (): array => $this->acknowledgeWorkflowTaskWaitingForHistory(
+                    $namespace,
+                    $taskId,
+                    $validated['failure'],
+                ),
+            );
 
             return WorkerProtocol::json([
                 'task_id' => $taskId,
@@ -1865,7 +1871,9 @@ class WorkerController
         /** @var WorkflowTaskBridge $bridge */
         $bridge = app(WorkflowTaskBridge::class);
         try {
-            $outcome = $bridge->fail($taskId, $validated['failure']);
+            $outcome = $this->storageMutations->run(
+                static fn (): array => $bridge->fail($taskId, $validated['failure']),
+            );
         } catch (ExternalPayloadStorageUnavailable $exception) {
             return $this->externalPayloadFailure($taskId, (int) $validated['workflow_task_attempt'], $exception, 503);
         }
@@ -2387,13 +2395,15 @@ class WorkerController
             }
         }
 
-        $outcome = $this->queryTasks->complete(
-            $namespace,
-            $queryTaskId,
-            $validated['lease_owner'],
-            (int) $validated['query_task_attempt'],
-            $validated['result'] ?? null,
-            $resultEnvelope,
+        $outcome = $this->storageMutations->run(
+            fn (): array => $this->queryTasks->complete(
+                $namespace,
+                $queryTaskId,
+                $validated['lease_owner'],
+                (int) $validated['query_task_attempt'],
+                $validated['result'] ?? null,
+                $resultEnvelope,
+            ),
         );
 
         return WorkerProtocol::json(
@@ -2423,12 +2433,14 @@ class WorkerController
             'failure.validation_errors.*.*' => ['string'],
         ]);
 
-        $outcome = $this->queryTasks->fail(
-            $namespace,
-            $queryTaskId,
-            $validated['lease_owner'],
-            (int) $validated['query_task_attempt'],
-            $validated['failure'],
+        $outcome = $this->storageMutations->run(
+            fn (): array => $this->queryTasks->fail(
+                $namespace,
+                $queryTaskId,
+                $validated['lease_owner'],
+                (int) $validated['query_task_attempt'],
+                $validated['failure'],
+            ),
         );
 
         return WorkerProtocol::json(

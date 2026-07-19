@@ -125,6 +125,37 @@ final class BackendLockPressure
     }
 
     /**
+     * Activity heartbeat progress is advisory and safe to defer while SQLite
+     * is locked. Returning the task fence in a successful worker-protocol
+     * envelope keeps released synchronous workers alive so their subsequent
+     * completion can retry after the writer clears.
+     */
+    public static function activityTaskHeartbeatResponse(
+        string $taskId,
+        string $activityAttemptId,
+        string $leaseOwner,
+    ): JsonResponse {
+        return WorkerProtocol::json([
+            'task_id' => $taskId,
+            'activity_attempt_id' => $activityAttemptId,
+            'lease_owner' => $leaseOwner,
+            'cancel_requested' => false,
+            'can_continue' => true,
+            'heartbeat_recorded' => false,
+            'lease_expires_at' => null,
+            'last_heartbeat_at' => null,
+            'reason' => 'backend_lock_pressure',
+            'message' => 'The database backend is temporarily locked while recording activity progress. Retry the heartbeat with backoff.',
+            'retryable' => true,
+            'retry_after_seconds' => self::RETRY_AFTER_SECONDS,
+            'backend' => [
+                'driver' => self::workflowDriverName(),
+                'lock_pressure' => true,
+            ],
+        ]);
+    }
+
+    /**
      * Worker liveness heartbeats are safe to acknowledge as deferred under
      * exhausted SQLite pressure. Existing managed workers treat a non-2xx
      * response as fatal, while the next scheduled heartbeat retries the same

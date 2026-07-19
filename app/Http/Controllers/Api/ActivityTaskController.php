@@ -6,9 +6,10 @@ use App\Models\WorkerBuildIdRollout;
 use App\Models\WorkerRegistration;
 use App\Support\ActivityTaskPoller;
 use App\Support\BackendLockPressure;
+use App\Support\ControlPlaneMutationRetrier;
+use App\Support\ExternalExecutorConfigContract;
 use App\Support\ExternalPayloadEnvelopeService;
 use App\Support\ExternalPayloadStorageUnavailable;
-use App\Support\ExternalExecutorConfigContract;
 use App\Support\InvocableCarrierContract;
 use App\Support\LongPollCapacityExhaustedException;
 use App\Support\NamespaceExternalPayloadStorage;
@@ -39,6 +40,7 @@ class ActivityTaskController
         private readonly NamespaceExternalPayloadStorage $externalPayloadStorage,
         private readonly ExternalPayloadEnvelopeService $payloadEnvelopes,
         private readonly WorkerSessionRegistry $workerSessions,
+        private readonly ControlPlaneMutationRetrier $storageMutations,
     ) {}
 
     /**
@@ -227,10 +229,12 @@ class ActivityTaskController
             return $this->externalPayloadFailure($taskId, $validated['activity_attempt_id'], $exception, 503);
         }
         try {
-            $outcome = $bridge->complete(
-                $validated['activity_attempt_id'],
-                $resolved['payload'],
-                $resolved['codec'],
+            $outcome = $this->storageMutations->run(
+                static fn (): array => $bridge->complete(
+                    $validated['activity_attempt_id'],
+                    $resolved['payload'],
+                    $resolved['codec'],
+                ),
             );
         } catch (ExternalPayloadStorageUnavailable $exception) {
             return $this->externalPayloadFailure($taskId, $validated['activity_attempt_id'], $exception, 503);
@@ -335,27 +339,33 @@ class ActivityTaskController
         }
 
         try {
-            try {
-                $outcome = $bridge->fail($validated['activity_attempt_id'], $failure, $resolved['codec']);
-            } catch (InvalidArgumentException $exception) {
-                if (! str_contains($exception->getMessage(), 'Unknown payload codec')) {
-                    throw $exception;
-                }
-
+            $outcome = $this->storageMutations->run(function () use ($bridge, $validated, $failure, $resolved): array {
                 try {
-                    $outcome = $bridge->fail($validated['activity_attempt_id'], $failure, CodecRegistry::defaultCodec());
-                } catch (InvalidArgumentException $retryException) {
-                    if (! str_contains($retryException->getMessage(), 'Unknown payload codec')) {
-                        throw $retryException;
+                    return $bridge->fail($validated['activity_attempt_id'], $failure, $resolved['codec']);
+                } catch (InvalidArgumentException $exception) {
+                    if (! str_contains($exception->getMessage(), 'Unknown payload codec')) {
+                        throw $exception;
                     }
 
-                    $outcome = $this->recordUnsupportedCodecActivityFailure(
-                        $validated['activity_attempt_id'],
-                        $failure,
-                        $bridge,
-                    );
+                    try {
+                        return $bridge->fail(
+                            $validated['activity_attempt_id'],
+                            $failure,
+                            CodecRegistry::defaultCodec(),
+                        );
+                    } catch (InvalidArgumentException $retryException) {
+                        if (! str_contains($retryException->getMessage(), 'Unknown payload codec')) {
+                            throw $retryException;
+                        }
+
+                        return $this->recordUnsupportedCodecActivityFailure(
+                            $validated['activity_attempt_id'],
+                            $failure,
+                            $bridge,
+                        );
+                    }
                 }
-            }
+            });
         } catch (ExternalPayloadStorageUnavailable $exception) {
             return $this->externalPayloadFailure($taskId, $validated['activity_attempt_id'], $exception, 503);
         }
@@ -463,11 +473,25 @@ class ActivityTaskController
         /** @var ActivityTaskBridgeContract $bridge */
         $bridge = app(ActivityTaskBridgeContract::class);
 
-        $workerSession = $this->workerSessions->heartbeatForAttempt(
-            $namespace,
-            $validated['activity_attempt_id'],
-            $validated['lease_owner'],
-        );
+        try {
+            $workerSession = $this->storageMutations->run(
+                fn (): ?array => $this->workerSessions->heartbeatForAttempt(
+                    $namespace,
+                    $validated['activity_attempt_id'],
+                    $validated['lease_owner'],
+                ),
+            );
+        } catch (\Throwable $exception) {
+            if (! BackendLockPressure::isSqliteBackend() || ! BackendLockPressure::is($exception)) {
+                throw $exception;
+            }
+
+            return BackendLockPressure::activityTaskHeartbeatResponse(
+                $taskId,
+                $validated['activity_attempt_id'],
+                $validated['lease_owner'],
+            );
+        }
 
         if ($workerSession !== null && ($workerSession['admitted'] ?? false) !== true) {
             $status = $bridge->status($validated['activity_attempt_id']);
@@ -490,10 +514,24 @@ class ActivityTaskController
             ], $this->workerSessionRenewalHttpStatus($workerSession));
         }
 
-        $status = $bridge->heartbeat(
-            $validated['activity_attempt_id'],
-            $this->heartbeatProgress($validated),
-        );
+        try {
+            $status = $this->storageMutations->run(
+                fn (): array => $bridge->heartbeat(
+                    $validated['activity_attempt_id'],
+                    $this->heartbeatProgress($validated),
+                ),
+            );
+        } catch (\Throwable $exception) {
+            if (! BackendLockPressure::isSqliteBackend() || ! BackendLockPressure::is($exception)) {
+                throw $exception;
+            }
+
+            return BackendLockPressure::activityTaskHeartbeatResponse(
+                $taskId,
+                $validated['activity_attempt_id'],
+                $validated['lease_owner'],
+            );
+        }
 
         return WorkerProtocol::json([
             'task_id' => $taskId,
