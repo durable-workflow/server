@@ -53,6 +53,15 @@ Environment overrides:
   DW_CLI_VERSION                     Exact CLI release version.
   DW_PYTHON_SDK_VERSION              Exact PyPI durable-workflow version.
   DW_PHP_SDK_VERSION                 Exact Packagist durable-workflow/sdk version.
+  DW_WORKFLOW_UPDATES_PHP_SERVER_PORT
+                                     Published host port for the PHP SDK shard's
+                                     temporary server. Defaults to a free port.
+  DW_WORKFLOW_UPDATES_PHP_SERVER_BIND_HOST
+                                     Docker host interface for the published port.
+                                     Defaults to 0.0.0.0.
+  DW_WORKFLOW_UPDATES_PHP_SERVER_CONNECT_HOST
+                                     Hostname or address used by readiness and the
+                                     PHP SDK probe. Defaults to 127.0.0.1.
   DW_WORKFLOW_UPDATES_PYTHON_BIN     Python executable used to create the
                                      disposable PyPI install environment.
   DW_WORKFLOW_PHP_VERSION            Exact Composer durable-workflow/workflow version.
@@ -740,6 +749,7 @@ function artifact_versions(): array
     $serverImage = env_text('DW_SERVER_IMAGE');
     $serverVersion = env_text('DW_SERVER_VERSION') ?: server_version_from_image($serverImage) ?: 'unresolved';
     $cliVersion = env_text('DW_CLI_VERSION') ?: 'unresolved';
+    $phpSdkVersion = env_text('DW_PHP_SDK_VERSION') ?: 'unresolved';
     $pythonVersion = env_text('DW_PYTHON_SDK_VERSION') ?: 'unresolved';
     $workflowVersion = env_text('DW_WORKFLOW_PHP_VERSION') ?: 'unresolved';
     $waterlineVersion = env_text('DW_WATERLINE_VERSION') ?: 'unresolved';
@@ -747,6 +757,7 @@ function artifact_versions(): array
     return [
         'server' => $serverVersion,
         'cli' => $cliVersion,
+        'sdk-php' => $phpSdkVersion,
         'sdk-python' => $pythonVersion,
         'workflow' => $workflowVersion,
         'workflow-php' => $workflowVersion,
@@ -762,6 +773,7 @@ function artifact_sources(): array
     return [
         'server' => $serverImage !== '' ? $serverImage : 'docker://durableworkflow/server:'.$versions['server'],
         'cli' => 'https://github.com/durable-workflow/cli/releases/download/'.$versions['cli'].'/install.sh',
+        'sdk-php' => 'packagist://durable-workflow/sdk@'.$versions['sdk-php'],
         'sdk-python' => 'pypi://durable-workflow=='.$versions['sdk-python'],
         'workflow' => 'packagist://durable-workflow/workflow@'.$versions['workflow'],
         'workflow-php' => 'packagist://durable-workflow/workflow@'.$versions['workflow-php'],
@@ -1574,16 +1586,96 @@ choose_tcp_port() {
 
 wait_for_http() {
   local url="$1"
+  local diagnostics_prefix="${2:-}"
   local attempt
+  local body_file
+  local body_tmp
+  local curl_error_file
+  local curl_status
+  local http_status
+  local readiness_file
 
   for attempt in $(seq 1 80); do
-    if curl -fsS --max-time 2 "$url" >/dev/null 2>&1; then
+    if [[ -z "$diagnostics_prefix" ]]; then
+      if curl -fsS --max-time 2 "$url" >/dev/null 2>&1; then
+        return 0
+      fi
+      sleep 0.25
+      continue
+    fi
+
+    body_file="${diagnostics_prefix}-http-response-body.log"
+    body_tmp="${body_file}.tmp"
+    curl_error_file="${diagnostics_prefix}-curl-error.log"
+    readiness_file="${diagnostics_prefix}-readiness.log"
+    curl_status=0
+    http_status="$(
+      curl --silent --show-error --max-time 2 \
+        --output "$body_tmp" \
+        --write-out '%{http_code}' \
+        "$url" 2>"$curl_error_file"
+    )" || curl_status=$?
+    if [[ -f "$body_tmp" ]]; then
+      head -c 32768 "$body_tmp" > "$body_file"
+      rm -f "$body_tmp"
+    else
+      : > "$body_file"
+    fi
+    {
+      printf 'url=%s\n' "$url"
+      printf 'attempt=%s\n' "$attempt"
+      printf 'curl_exit=%s\n' "$curl_status"
+      printf 'http_status=%s\n' "${http_status:-000}"
+    } > "$readiness_file"
+
+    if [[ "$curl_status" -eq 0 && "$http_status" =~ ^2[0-9][0-9]$ ]]; then
       return 0
     fi
     sleep 0.25
   done
 
   return 1
+}
+
+capture_php_server_startup_diagnostics() {
+  local compose_project="${1:?compose project required}"
+  local compose_server_port="${2:?compose server port required}"
+  local auth_token="${3:?auth token required}"
+  local server_container_id
+
+  {
+    SERVER_PORT="$compose_server_port" \
+      DW_SERVER_IMAGE="${DW_SERVER_IMAGE}" \
+      DW_SERVER_TAG="${DW_SERVER_VERSION}" \
+      DW_AUTH_TOKEN="$auth_token" \
+      docker compose -p "$compose_project" -f "$repo_root/docker-compose.published.yml" ps --all 2>&1 || true
+  } | head -c 32768 > "$result_dir/sdk-php-compose-ps.log"
+
+  server_container_id="$(
+    {
+      SERVER_PORT="$compose_server_port" \
+        DW_SERVER_IMAGE="${DW_SERVER_IMAGE}" \
+        DW_SERVER_TAG="${DW_SERVER_VERSION}" \
+        DW_AUTH_TOKEN="$auth_token" \
+        docker compose -p "$compose_project" -f "$repo_root/docker-compose.published.yml" ps -q server 2>/dev/null || true
+    } | head -n 1
+  )"
+  if [[ -n "$server_container_id" ]]; then
+    {
+      docker inspect --format '{{json .State}}' "$server_container_id" 2>&1 || true
+    } | head -c 32768 > "$result_dir/sdk-php-server-health.json"
+  else
+    printf '%s\n' '{"status":"container_not_created"}' > "$result_dir/sdk-php-server-health.json"
+  fi
+
+  {
+    SERVER_PORT="$compose_server_port" \
+      DW_SERVER_IMAGE="${DW_SERVER_IMAGE}" \
+      DW_SERVER_TAG="${DW_SERVER_VERSION}" \
+      DW_AUTH_TOKEN="$auth_token" \
+      docker compose -p "$compose_project" -f "$repo_root/docker-compose.published.yml" \
+        logs --no-color --tail 200 server 2>&1 || true
+  } | tail -c 65536 > "$result_dir/sdk-php-server-container.log"
 }
 
 write_php_package_shard_status() {
@@ -1633,6 +1725,14 @@ const runnerBlocked = ['1', 'true', 'yes'].includes((process.env.PHP_PACKAGE_SHA
 const status = process.env.PHP_PACKAGE_SHARD_STATUS || (runnerBlocked ? 'runner_blocked' : 'fail');
 const summary = process.env.PHP_PACKAGE_SHARD_SUMMARY || 'The PHP SDK update shard did not complete.';
 const step = process.env.PHP_PACKAGE_SHARD_STEP || 'sdk_php_shard';
+const startupDiagnosticArtifacts = [
+  'sdk-php-compose-ps.log',
+  'sdk-php-server-health.json',
+  'sdk-php-server-container.log',
+  'sdk-php-server-readiness.log',
+  'sdk-php-server-http-response-body.log',
+  'sdk-php-server-curl-error.log',
+].filter((name) => fs.existsSync(path.join(resultDir, name)));
 const generatedAt = new Date().toISOString().replace(/\.\d{3}Z$/, 'Z');
 const finding = {
   finding_id: `workflow-updates-php-client-worker-update-surface-${runnerBlocked ? 'runner-blocked' : 'product-gap'}`,
@@ -1642,7 +1742,7 @@ const finding = {
   owning_surface: runnerBlocked ? 'conformance_harness' : 'sdk-php',
   summary,
   next_acceptance_criterion: 'Install the exact Packagist durable-workflow/sdk artifact and rerun its real PHP client and worker update cell against the exact server image.',
-  diagnostic: {step},
+  diagnostic: {step, startup_diagnostic_artifacts: startupDiagnosticArtifacts},
 };
 const scenario = {
   scenario_id: 'php_client_worker_update_surface',
@@ -1655,6 +1755,7 @@ const scenario = {
     sdk_php_artifact_source: artifactSources['sdk-php'],
     composer_package: 'durable-workflow/sdk',
     package_install_step: step,
+    startup_diagnostic_artifacts: startupDiagnosticArtifacts,
     php_worker_update_handler: {},
     php_client_update_request: {},
     covered_cells: [],
@@ -1803,7 +1904,10 @@ NODE
 
 run_php_package_shard() {
   local sdk_php_version="${DW_PHP_SDK_VERSION:-}"
+  local server_bind_host="${DW_WORKFLOW_UPDATES_PHP_SERVER_BIND_HOST:-0.0.0.0}"
+  local server_connect_host="${DW_WORKFLOW_UPDATES_PHP_SERVER_CONNECT_HOST:-127.0.0.1}"
   local server_port="${DW_WORKFLOW_UPDATES_PHP_SERVER_PORT:-}"
+  local compose_server_port
   local server_url
   local probe_dir="$result_dir/sdk-php-workflow-updates-probe"
   local compose_suffix
@@ -1829,28 +1933,36 @@ run_php_package_shard() {
   if [[ -z "$server_port" ]]; then
     server_port="$(choose_tcp_port)"
   fi
-  server_url="http://127.0.0.1:${server_port}"
+  compose_server_port="$server_port"
+  if [[ -n "$server_bind_host" ]]; then
+    compose_server_port="${server_bind_host}:${server_port}"
+  fi
+  server_url="http://${server_connect_host}:${server_port}"
   cleanup_compose_projects+=("$compose_project")
-  if ! SERVER_PORT="$server_port" DW_SERVER_IMAGE="${DW_SERVER_IMAGE}" DW_SERVER_TAG="${DW_SERVER_VERSION}" DW_AUTH_TOKEN="$auth_token" \
+  if ! SERVER_PORT="$compose_server_port" DW_SERVER_IMAGE="${DW_SERVER_IMAGE}" DW_SERVER_TAG="${DW_SERVER_VERSION}" DW_AUTH_TOKEN="$auth_token" \
     docker compose -p "$compose_project" -f "$repo_root/docker-compose.published.yml" up -d mysql redis \
       > "$result_dir/sdk-php-compose-dependencies.log" 2>&1; then
+    capture_php_server_startup_diagnostics "$compose_project" "$compose_server_port" "$auth_token"
     write_php_package_shard_status runner_blocked "The published server dependencies could not start for the PHP SDK update shard." server_dependencies true
     return 0
   fi
-  if ! SERVER_PORT="$server_port" DW_SERVER_IMAGE="${DW_SERVER_IMAGE}" DW_SERVER_TAG="${DW_SERVER_VERSION}" DW_AUTH_TOKEN="$auth_token" \
+  if ! SERVER_PORT="$compose_server_port" DW_SERVER_IMAGE="${DW_SERVER_IMAGE}" DW_SERVER_TAG="${DW_SERVER_VERSION}" DW_AUTH_TOKEN="$auth_token" \
     docker compose -p "$compose_project" -f "$repo_root/docker-compose.published.yml" run --rm bootstrap \
       > "$result_dir/sdk-php-server-bootstrap.log" 2>&1; then
+    capture_php_server_startup_diagnostics "$compose_project" "$compose_server_port" "$auth_token"
     write_php_package_shard_status fail "The exact public server image could not bootstrap for the PHP SDK update shard." server_bootstrap false
     return 0
   fi
-  if ! SERVER_PORT="$server_port" DW_SERVER_IMAGE="${DW_SERVER_IMAGE}" DW_SERVER_TAG="${DW_SERVER_VERSION}" DW_AUTH_TOKEN="$auth_token" \
+  if ! SERVER_PORT="$compose_server_port" DW_SERVER_IMAGE="${DW_SERVER_IMAGE}" DW_SERVER_TAG="${DW_SERVER_VERSION}" DW_AUTH_TOKEN="$auth_token" \
     docker compose -p "$compose_project" -f "$repo_root/docker-compose.published.yml" up -d --no-deps server scheduler \
       > "$result_dir/sdk-php-server.log" 2>&1; then
+    capture_php_server_startup_diagnostics "$compose_project" "$compose_server_port" "$auth_token"
     write_php_package_shard_status runner_blocked "The exact public server image could not start for the PHP SDK update shard." server_start true
     return 0
   fi
 
-  if ! wait_for_http "$server_url/api/health"; then
+  if ! wait_for_http "$server_url/api/health" "$result_dir/sdk-php-server"; then
+    capture_php_server_startup_diagnostics "$compose_project" "$compose_server_port" "$auth_token"
     write_php_package_shard_status runner_blocked "The exact server HTTP surface did not become ready for the PHP SDK update shard." server_http_unavailable true
     return 0
   fi
