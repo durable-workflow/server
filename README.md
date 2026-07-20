@@ -1535,8 +1535,10 @@ each one it sees.
 
 ### HTTP concurrency (Apache)
 
-The image's default command runs Apache with mod_php, eight prefork request
-processes ready at startup, and a maximum of 24 concurrent request processes.
+The image's default command runs Apache with mod_php, two prefork request
+processes ready at startup, up to four idle spare processes, and a maximum of
+24 concurrent request processes. Keeping the eager and idle pools small leaves
+memory for Laravel requests while retaining burst capacity.
 A workflow query may hold one process while it waits for a worker response;
 worker heartbeats, query-task polls, completions, and control-plane requests
 continue to enter Laravel through other processes.

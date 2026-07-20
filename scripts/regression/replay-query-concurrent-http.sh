@@ -15,8 +15,8 @@ source "$ROOT_DIR/scripts/regression/apache-module-preflight.sh"
 
 export SERVER_PORT
 export APP_ENV="${APP_ENV:-local}"
-export APP_DEBUG="${APP_DEBUG:-true}"
-export LOG_LEVEL="${LOG_LEVEL:-debug}"
+export APP_DEBUG="${APP_DEBUG:-false}"
+export LOG_LEVEL="${LOG_LEVEL:-info}"
 export DW_AUTH_DRIVER="${DW_AUTH_DRIVER:-token}"
 export DW_AUTH_TOKEN="$TOKEN"
 export DW_AUTH_BACKWARD_COMPATIBLE="${DW_AUTH_BACKWARD_COMPATIBLE:-true}"
@@ -112,10 +112,25 @@ cleanup() {
 
 failure_logs() {
   if [ -n "$NONROOT_CONTAINER" ]; then
-    docker logs "$NONROOT_CONTAINER" >&2 || true
+    docker logs --tail 160 "$NONROOT_CONTAINER" 2>&1 \
+      | tail -c 32768 \
+      | redact_diagnostics >&2 || true
   fi
-  compose ps >&2 || true
-  compose logs server mysql redis >&2 || true
+  compose ps --all >&2 || true
+  compose logs --no-color --tail 160 server 2>&1 \
+    | tail -c 32768 \
+    | redact_diagnostics >&2 || true
+  compose exec -T server sh -c \
+    'test ! -f storage/logs/laravel.log || tail -c 16384 storage/logs/laravel.log' \
+    2>&1 | redact_diagnostics >&2 || true
+}
+
+redact_diagnostics() {
+  sed -E \
+    -e 's/(Bearer[[:space:]]+)[A-Za-z0-9._~+\/=:-]+/\1[REDACTED]/Ig' \
+    -e 's/("(password|token|secret|app_key)"[[:space:]]*:[[:space:]]*")[^"]*/\1[REDACTED]/Ig' \
+    -e "s/((password|token|secret|app_key|authorization)[\"']?[[:space:]]*(=>|=|:)[[:space:]]*[\"']?)[^\"'[:space:],}]+/\\1[REDACTED]/Ig" \
+    -e 's/((DB_PASSWORD|DW_AUTH_TOKEN|APP_KEY)=)[^[:space:]]+/\1[REDACTED]/Ig'
 }
 
 trap cleanup EXIT
@@ -173,7 +188,6 @@ for _ in $(seq 1 60); do
 done
 if [ "$nonroot_ready" != "1" ]; then
   printf 'Standalone Apache did not become ready as UID/GID 1000 with capabilities dropped.\n' >&2
-  docker logs "$NONROOT_CONTAINER" >&2 || true
   exit 1
 fi
 if ! docker exec "$NONROOT_CONTAINER" curl -fsS \
@@ -240,13 +254,14 @@ def request_json(
     *,
     body: Any = None,
     worker: bool = False,
+    namespace: str = NAMESPACE,
     timeout: float = 15.0,
 ) -> dict[str, Any]:
     headers = {
         "Accept": "application/json",
         "Authorization": f"Bearer {TOKEN}",
         "Content-Type": "application/json",
-        "X-Namespace": NAMESPACE,
+        "X-Namespace": namespace,
         "X-Durable-Workflow-Protocol-Version" if worker else "X-Durable-Workflow-Control-Plane-Version":
             "1.13" if worker else "2",
     }
@@ -277,6 +292,85 @@ def require_success(response: dict[str, Any], label: str) -> dict[str, Any]:
         raise AssertionError(f"{label} failed: {response}")
     body = response.get("body")
     return body if isinstance(body, dict) else {}
+
+
+def require_created(response: dict[str, Any], label: str) -> dict[str, Any]:
+    if int(response.get("status") or 0) != 201:
+        raise AssertionError(f"{label} did not return structured HTTP 201: {response}")
+    body = response.get("body")
+    if not isinstance(body, dict) or not body:
+        raise AssertionError(f"{label} did not return a JSON object: {response}")
+    return body
+
+
+namespace_responses = []
+for namespace_name in ["tenant-a", "tenant-b", "tenant-c", "shared"]:
+    namespace_response = request_json(
+        "/api/namespaces",
+        body={
+            "name": namespace_name,
+            "description": f"Apache registration regression namespace {namespace_name}",
+        },
+        namespace="default",
+        timeout=20,
+    )
+    require_created(namespace_response, f"namespace {namespace_name} registration")
+    namespace_responses.append(namespace_response["status"])
+
+endpoint_response = request_json(
+    "/api/service-endpoints",
+    body={
+        "endpoint_name": "shared-greeter",
+        "description": "Apache registration regression endpoint",
+        "metadata": {"regression": "apache-service-registration"},
+    },
+    namespace="shared",
+    timeout=20,
+)
+endpoint_body = require_created(endpoint_response, "service endpoint registration")
+if endpoint_body.get("endpoint_name") != "shared-greeter":
+    raise AssertionError(f"service endpoint response has the wrong identity: {endpoint_response}")
+
+service_response = request_json(
+    "/api/service-endpoints/shared-greeter/services",
+    body={
+        "service_name": "Greeter",
+        "description": "Apache registration regression service",
+        "metadata": {"regression": "apache-service-registration"},
+    },
+    namespace="shared",
+    timeout=20,
+)
+service_body = require_created(service_response, "service registration")
+if service_body.get("service_name") != "greeter":
+    raise AssertionError(f"service response has the wrong identity: {service_response}")
+
+operation_response = request_json(
+    "/api/service-endpoints/shared-greeter/services/Greeter/operations",
+    body={
+        "operation_name": "greet",
+        "description": "Apache registration regression operation",
+        "operation_mode": "async",
+        "handler_binding_kind": "activity_execution",
+        "handler_target_reference": "Greeter.greet",
+        "handler_binding": {"activity_type": "Greeter.greet"},
+        "retry_policy": {"maximum_attempts": 3, "initial_interval_seconds": 1},
+        "metadata": {"regression": "apache-service-registration"},
+    },
+    namespace="shared",
+    timeout=20,
+)
+operation_body = require_created(operation_response, "operation registration")
+if operation_body.get("operation_name") != "greet":
+    raise AssertionError(f"operation response has the wrong identity: {operation_response}")
+
+stage(
+    "apache_service_registration_completed",
+    namespace_statuses=namespace_responses,
+    endpoint_status=endpoint_response["status"],
+    service_status=service_response["status"],
+    operation_status=operation_response["status"],
+)
 
 
 def heartbeat() -> tuple[dict[str, Any], float]:

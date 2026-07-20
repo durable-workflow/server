@@ -245,7 +245,9 @@ class ReleaseImagePublishWorkflowContractTest extends TestCase
         $this->assertStringContainsString('chown -R www-data:www-data', $dockerfile);
         $this->assertStringContainsString('database \\', $dockerfile);
         $this->assertStringContainsString('/var/run/apache2', $dockerfile);
-        $this->assertStringContainsString('StartServers             8', $apacheMpm);
+        $this->assertStringContainsString('StartServers             2', $apacheMpm);
+        $this->assertStringContainsString('MinSpareServers          2', $apacheMpm);
+        $this->assertStringContainsString('MaxSpareServers          4', $apacheMpm);
         $this->assertStringContainsString('MaxRequestWorkers       24', $apacheMpm);
         $this->assertStringContainsString('<VirtualHost *:8080>', $apacheVhost);
         $this->assertStringContainsString('DocumentRoot /app/public', $apacheVhost);
@@ -262,6 +264,12 @@ class ReleaseImagePublishWorkflowContractTest extends TestCase
         $this->assertStringContainsString('--cap-drop ALL', $regression);
         $this->assertStringContainsString('curl -fsS http://127.0.0.1:8080/api/ready', $regression);
         $this->assertStringContainsString('-X POST http://127.0.0.1:8080/api/namespaces', $regression);
+        $this->assertStringContainsString('"/api/service-endpoints"', $regression);
+        $this->assertStringContainsString('"/api/service-endpoints/shared-greeter/services"', $regression);
+        $this->assertStringContainsString('"/api/service-endpoints/shared-greeter/services/Greeter/operations"', $regression);
+        $this->assertStringContainsString('apache_service_registration_completed', $regression);
+        $this->assertStringContainsString('compose logs --no-color --tail 160 server', $regression);
+        $this->assertStringContainsString('redact_diagnostics', $regression);
         $this->assertStringContainsString('test -w database/database.sqlite', $regression);
         $this->assertStringContainsString('test "$(id -u)" = 1000', $regression);
         $this->assertStringContainsString('test "$(id -g)" = 1000', $regression);

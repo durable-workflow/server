@@ -2,10 +2,13 @@
 
 namespace Tests\Feature;
 
+use App\Support\SearchAttributeValueValidator;
+use App\Support\ServiceCallBoundary;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Str;
 use Tests\Feature\Concerns\ServerTestHelpers;
 use Tests\TestCase;
+use Workflow\V2\Contracts\ServiceControlPlane;
 use Workflow\V2\Models\WorkflowService;
 use Workflow\V2\Models\WorkflowServiceCall;
 use Workflow\V2\Models\WorkflowServiceEndpoint;
@@ -59,6 +62,62 @@ class ServiceCatalogControllerTest extends TestCase
         $showResponse->assertOk()
             ->assertJsonPath('endpoint_name', 'billing.api')
             ->assertJsonPath('metadata.owner', 'payments');
+    }
+
+    public function test_catalog_registration_does_not_initialize_execution_services(): void
+    {
+        $failOnResolution = static fn (): never => throw new \RuntimeException(
+            'Catalog registration must not initialize service execution dependencies.',
+        );
+
+        $this->app->bind(ServiceControlPlane::class, $failOnResolution);
+        $this->app->bind(ServiceCallBoundary::class, $failOnResolution);
+        $this->app->bind(SearchAttributeValueValidator::class, $failOnResolution);
+
+        foreach (['tenant-a', 'tenant-b', 'tenant-c', 'shared'] as $namespace) {
+            $this->withHeaders($this->apiHeaders())
+                ->postJson('/api/namespaces', [
+                    'name' => $namespace,
+                    'description' => "Apache registration regression namespace {$namespace}",
+                ])
+                ->assertCreated()
+                ->assertJsonPath('name', $namespace);
+        }
+
+        $this->withHeaders($this->apiHeaders('shared'))
+            ->postJson('/api/service-endpoints', [
+                'endpoint_name' => 'shared-greeter',
+                'description' => 'Apache registration regression endpoint',
+                'metadata' => ['regression' => 'apache-service-registration'],
+            ])
+            ->assertCreated()
+            ->assertJsonPath('endpoint_name', 'shared-greeter');
+
+        $this->withHeaders($this->apiHeaders('shared'))
+            ->postJson('/api/service-endpoints/shared-greeter/services', [
+                'service_name' => 'Greeter',
+                'description' => 'Apache registration regression service',
+                'metadata' => ['regression' => 'apache-service-registration'],
+            ])
+            ->assertCreated()
+            ->assertJsonPath('service_name', 'greeter');
+
+        $this->withHeaders($this->apiHeaders('shared'))
+            ->postJson('/api/service-endpoints/shared-greeter/services/Greeter/operations', [
+                'operation_name' => 'greet',
+                'description' => 'Apache registration regression operation',
+                'operation_mode' => 'async',
+                'handler_binding_kind' => 'activity_execution',
+                'handler_target_reference' => 'Greeter.greet',
+                'handler_binding' => ['activity_type' => 'Greeter.greet'],
+                'retry_policy' => [
+                    'maximum_attempts' => 3,
+                    'initial_interval_seconds' => 1,
+                ],
+                'metadata' => ['regression' => 'apache-service-registration'],
+            ])
+            ->assertCreated()
+            ->assertJsonPath('operation_name', 'greet');
     }
 
     public function test_it_scopes_service_endpoints_to_the_current_namespace(): void

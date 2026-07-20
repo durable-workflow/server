@@ -32,12 +32,6 @@ class ServiceCatalogController
         'invocable_http',
     ];
 
-    public function __construct(
-        private readonly ServiceControlPlane $serviceControlPlane,
-        private readonly ServiceCallBoundary $serviceCallBoundary,
-        private readonly SearchAttributeValueValidator $searchAttributeValues,
-    ) {}
-
     public function endpointIndex(Request $request): JsonResponse
     {
         if ($response = ControlPlaneProtocol::rejectUnsupported($request)) {
@@ -659,7 +653,7 @@ class ServiceCatalogController
         ]);
 
         if (isset($validated['search_attributes'])) {
-            $validated['search_attribute_types'] = $this->searchAttributeValues->validateForNamespace(
+            $validated['search_attribute_types'] = $this->searchAttributeValues()->validateForNamespace(
                 $this->namespace($request),
                 $validated['search_attributes'],
             );
@@ -700,7 +694,7 @@ class ServiceCatalogController
             $callerNamespace,
         );
         if ($idempotentCall) {
-            $replayRejection = $this->serviceCallBoundary->replayRejectionFor(
+            $replayRejection = $this->serviceCallBoundary()->replayRejectionFor(
                 principal: $this->principal($request),
                 callerNamespace: $callerNamespace,
                 operation: $operation,
@@ -732,7 +726,7 @@ class ServiceCatalogController
                 $options['service_call_id'] = $idempotentCall->id;
                 $options['boundary_policy_outcome'] = 'accepted';
 
-                $result = $this->serviceControlPlane->execute(
+                $result = $this->serviceControlPlane()->execute(
                     $endpoint->endpoint_name,
                     $service->service_name,
                     $operation->operation_name,
@@ -746,7 +740,7 @@ class ServiceCatalogController
                         'idempotent_replay' => true,
                         'reason' => null,
                     ],
-                    $this->serviceControlPlane->describeCall($idempotentCall->id, [
+                    $this->serviceControlPlane()->describeCall($idempotentCall->id, [
                         'namespace' => $this->namespace($request),
                     ]),
                 );
@@ -755,7 +749,7 @@ class ServiceCatalogController
             return ControlPlaneProtocol::json($result, ($result['accepted'] ?? false) === true ? 200 : 409);
         }
 
-        $admission = $this->serviceCallBoundary->admitFor(
+        $admission = $this->serviceCallBoundary()->admitFor(
             principal: $this->principal($request),
             callerNamespace: $callerNamespace,
             operation: $operation,
@@ -786,7 +780,7 @@ class ServiceCatalogController
         $options['boundary_policy_outcome'] = $admission->decision->outcome->value;
 
         try {
-            $result = $this->serviceControlPlane->execute(
+            $result = $this->serviceControlPlane()->execute(
                 $endpoint->endpoint_name,
                 $service->service_name,
                 $operation->operation_name,
@@ -794,7 +788,7 @@ class ServiceCatalogController
             );
         } finally {
             if ($admission->request->operationMode->value === 'sync') {
-                $this->serviceCallBoundary->release($admission->request);
+                $this->serviceCallBoundary()->release($admission->request);
             }
         }
 
@@ -850,7 +844,7 @@ class ServiceCatalogController
             'reason' => ['nullable', 'string', 'max:1000'],
         ]);
 
-        $result = $this->serviceControlPlane->cancelCall(
+        $result = $this->serviceControlPlane()->cancelCall(
             $serviceCall->id,
             array_filter([
                 'namespace' => $this->namespace($request),
@@ -906,7 +900,7 @@ class ServiceCatalogController
             return $this->serviceCallNotFound($endpoint, $service, $operation, $serviceCallId);
         }
 
-        $result = $this->serviceControlPlane->describeCall($serviceCall->id, [
+        $result = $this->serviceControlPlane()->describeCall($serviceCall->id, [
             'namespace' => $this->namespace($request),
         ]);
 
@@ -1301,6 +1295,24 @@ class ServiceCatalogController
                 'Provide handler_target_reference or a non-empty handler_binding.',
             ],
         ]);
+    }
+
+    private function serviceControlPlane(): ServiceControlPlane
+    {
+        // Catalog registration shares this controller with execution routes.
+        // Avoid building the execution graph in Apache children that only
+        // create or inspect endpoint, service, and operation records.
+        return app(ServiceControlPlane::class);
+    }
+
+    private function serviceCallBoundary(): ServiceCallBoundary
+    {
+        return app(ServiceCallBoundary::class);
+    }
+
+    private function searchAttributeValues(): SearchAttributeValueValidator
+    {
+        return app(SearchAttributeValueValidator::class);
     }
 
     private function findEndpoint(Request $request, string $endpointName): ?WorkflowServiceEndpoint
