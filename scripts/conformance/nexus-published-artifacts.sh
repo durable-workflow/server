@@ -2311,7 +2311,8 @@ function executePublishedPhpSdkServiceOperation(
   const request = {
     server_url: 'http://server:8080',
     token,
-    namespace: callerNamespace,
+    namespace: operation.targetNamespace,
+    caller_namespace: callerNamespace,
     endpoint_name: operation.endpointName,
     service_name: operation.serviceName,
     operation_name: operation.operationName,
@@ -2343,7 +2344,7 @@ $handle = $client->startServiceOperation(
         modeOverride: 'async',
         waitFor: 'accepted',
         idempotencyKey: (string) $input['idempotency_key'],
-        callerNamespace: (string) $input['namespace'],
+        callerNamespace: (string) $input['caller_namespace'],
         callerWorkflowId: (string) $input['caller_workflow_id'],
         callerRunId: (string) $input['caller_run_id'],
     ),
@@ -2361,22 +2362,23 @@ PHP`, path.join(resultDir, 'nexus-php-sdk-client-execute.log'));
 }
 
 async function setupCrossLanguageService(baseUrl, token, target, serviceUrl) {
+  const targetNamespace = 'shared';
   const endpointName = `${target}-published-service`;
   const serviceName = 'PublishedGreeter';
   const operationName = target === 'python' ? 'greet-python' : 'greet-php';
   const serviceLanguage = target === 'python' ? 'sdk-python' : 'workflow-php';
 
-  const endpoint = await apiRequest(baseUrl, token, 'shared', 'POST', '/service-endpoints', {
+  const endpoint = await apiRequest(baseUrl, token, targetNamespace, 'POST', '/service-endpoints', {
     endpoint_name: endpointName,
     description: `Published ${serviceLanguage} Nexus conformance endpoint`,
     metadata: {conformance: 'nexus-published-php-python-service-shard'},
   });
-  const service = await apiRequest(baseUrl, token, 'shared', 'POST', `/service-endpoints/${endpointName}/services`, {
+  const service = await apiRequest(baseUrl, token, targetNamespace, 'POST', `/service-endpoints/${endpointName}/services`, {
     service_name: serviceName,
     description: `Published ${serviceLanguage} Greeter service for Nexus conformance`,
     metadata: {conformance: 'nexus-published-php-python-service-shard', service_sdk_language: serviceLanguage},
   });
-  const operation = await apiRequest(baseUrl, token, 'shared', 'POST', `/service-endpoints/${endpointName}/services/${serviceName}/operations`, {
+  const operation = await apiRequest(baseUrl, token, targetNamespace, 'POST', `/service-endpoints/${endpointName}/services/${serviceName}/operations`, {
     operation_name: operationName,
     description: `Invoke the published ${serviceLanguage} Greeter service`,
     operation_mode: 'async',
@@ -2397,7 +2399,7 @@ async function setupCrossLanguageService(baseUrl, token, target, serviceUrl) {
     metadata: {conformance: 'nexus-published-php-python-service-shard'},
   });
 
-  return {endpointName, serviceName, operationName, endpoint, service, operation};
+  return {targetNamespace, endpointName, serviceName, operationName, endpoint, service, operation};
 }
 
 function publicSurfaceAvailable(surface) {
