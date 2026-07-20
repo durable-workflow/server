@@ -68,7 +68,7 @@ jobs:
             > workflow-package/.package-provenance
           rm -rf workflow-package/.git
 
-      - name: Run feature suite
+      - name: Run feature and Nexus contract suites
         shell: bash
         run: |
           set -euo pipefail
@@ -82,7 +82,7 @@ jobs:
             --exclude='*/build' \
             -cf - . \
             | docker run --rm -i -w /app --entrypoint sh durable-workflow-server-phpunit-base \
-                -lc 'tar -xf - -C /app && cp -a /app/workflow-package /workflow && composer install --no-interaction --no-progress --prefer-dist && vendor/bin/phpunit tests/Feature --no-progress --colors=never'
+                -lc 'tar -xf - -C /app && cp -a /app/workflow-package /workflow && composer install --no-interaction --no-progress --prefer-dist && vendor/bin/phpunit tests/Feature tests/Unit/NexusContractTest.php --no-progress --colors=never'
 
   qualification:
     name: Feature source qualification
@@ -102,7 +102,7 @@ jobs:
           test "$STRUCTURAL_RESULT" = success
           if [[ "$ACTIONS_SERVER_URL" == "https://github.com" ]]; then
             test "$FEATURE_RESULT" = success
-            echo "Complete GitHub feature qualification succeeded."
+            echo "Complete GitHub feature and Nexus contract qualification succeeded."
           else
             test "$FEATURE_RESULT" = skipped
             echo "Focused candidate structure qualification succeeded."

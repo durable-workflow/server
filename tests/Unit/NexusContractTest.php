@@ -336,7 +336,7 @@ class NexusContractTest extends TestCase
             $manifest['coverage_gate']['passing_outcome_requires'],
         );
         $this->assertSame(
-            ['server', 'cli', 'workflow', 'sdk-python', 'waterline'],
+            ['server', 'cli', 'workflow', 'sdk-php', 'sdk-python', 'waterline'],
             $manifest['artifact_policy']['required_artifacts'],
         );
         $this->assertContains(
@@ -499,18 +499,18 @@ class NexusContractTest extends TestCase
         $this->assertStringContainsString('InvocableHttpAdapter', $contents);
         $this->assertStringContainsString('InvocableActivityHandler', $contents);
         $this->assertStringContainsString("'headers' => (object) [],", $contents);
-        $this->assertStringContainsString('const serviceRuntimeAvailable = serviceProbeSucceeded', $contents);
+        $this->assertStringContainsString('const serviceRuntimeAvailable = serviceHealthSucceeded', $contents);
         $this->assertStringContainsString('durableServiceResponseObserved = serviceRuntimeAvailable', $contents);
         $this->assertStringContainsString('service_probe_succeeded: serviceProbeSucceeded', $contents);
         $this->assertStringContainsString('service_runtime_available: serviceRuntimeAvailable', $contents);
         $this->assertStringContainsString('nexus_unsupported_surface', $contents);
 
         $this->assertMatchesRegularExpression(
-            "/if node - \\\"\\\$result_dir\\\" \\\"\\\$generated_evidence_path\\\" \\\"\\\$supplied_evidence_path\\\" <<'NODE'\\n(?P<block>.*?)\\nNODE/s",
+            "/if node - \\\"\\\$result_dir\\\" \\\"\\\$generated_evidence_path\\\" \\\"\\\$supplied_evidence_path\\\" \\\"\\\$script_dir\/nexus-replay-transport\.cjs\\\" <<'NODE'\\n(?P<block>.*?)\\nNODE/s",
             $contents,
         );
         preg_match(
-            "/if node - \\\"\\\$result_dir\\\" \\\"\\\$generated_evidence_path\\\" \\\"\\\$supplied_evidence_path\\\" <<'NODE'\\n(?P<block>.*?)\\nNODE/s",
+            "/if node - \\\"\\\$result_dir\\\" \\\"\\\$generated_evidence_path\\\" \\\"\\\$supplied_evidence_path\\\" \\\"\\\$script_dir\/nexus-replay-transport\.cjs\\\" <<'NODE'\\n(?P<block>.*?)\\nNODE/s",
             $contents,
             $sharedServiceBlock,
         );
@@ -541,6 +541,15 @@ class NexusContractTest extends TestCase
         $this->assertFalse($result['local_product_source_checkouts_used']);
         $this->assertSame([], $result['artifact_policy_failures']);
         $this->assertSame('pass', $result['scenario_results'][0]['status']);
+        $installChannels = array_column(
+            $result['artifact_install_evidence']['artifacts'],
+            'install_channel',
+            'artifact',
+        );
+        $this->assertSame(
+            'packagist',
+            $installChannels['sdk-php'],
+        );
     }
 
     public function test_host_runner_derives_caller_history_attempt_visibility_from_retry_evidence(): void
@@ -637,6 +646,7 @@ class NexusContractTest extends TestCase
             null,
             $record,
             $resultFiles,
+            false,
         );
 
         $this->assertSame('pass', $result['outcome']);
@@ -1199,6 +1209,7 @@ class NexusContractTest extends TestCase
             'server' => '99.99.99',
             'cli' => '99.99.99',
             'workflow' => '99.99.99',
+            'sdk-php' => '99.99.99',
             'sdk-python' => '99.99.99',
             'waterline' => '99.99.99',
         ];
@@ -1206,6 +1217,7 @@ class NexusContractTest extends TestCase
             'server' => 'docker://durableworkflow/server:99.99.99',
             'cli' => 'https://github.com/durable-workflow/cli/releases/download/99.99.99/dw-linux-x86_64',
             'workflow' => 'packagist://durable-workflow/workflow@99.99.99',
+            'sdk-php' => 'packagist://durable-workflow/sdk@99.99.99',
             'sdk-python' => 'pypi://durable-workflow==99.99.99',
             'waterline' => 'packagist://durable-workflow/waterline@99.99.99',
         ];
@@ -1246,8 +1258,12 @@ class NexusContractTest extends TestCase
             'artifact_source_verification',
             'missing_published_artifact_resolution_evidence',
         ));
-        $this->assertSame('fail', $result['scenario_results'][0]['status']);
+        $this->assertSame('not_covered', $result['scenario_results'][0]['status']);
         $this->assertTrue($result['scenario_results'][0]['observed_outputs']['result_gate_failed']);
+        $this->assertContains(
+            'conformance_runner_coverage_gap',
+            array_column($result['scenario_results'][0]['linked_findings'], 'finding_type'),
+        );
     }
 
     public function test_host_runner_rejects_mismatched_source_resolution_evidence(): void
@@ -1661,6 +1677,12 @@ class NexusContractTest extends TestCase
         $this->assertSame('published_artifact_tuple', $result['artifact_install_evidence']['derived_install_evidence_source']);
         $this->assertArrayNotHasKey('supplied_install_evidence_source', $result['artifact_install_evidence']);
         $this->assertCount(6, $installScenario['observed_outputs']['artifact_install_evidence']['artifacts']);
+        $installChannels = array_column(
+            $result['artifact_install_evidence']['artifacts'],
+            'install_channel',
+            'artifact',
+        );
+        $this->assertSame('packagist', $installChannels['sdk-php']);
         $this->assertFalse(
             $installScenario['observed_outputs']['artifact_install_evidence']['supplied_install_evidence'],
         );
@@ -2470,6 +2492,7 @@ class NexusContractTest extends TestCase
         ?array $staleResultInstallEvidence = null,
         ?array &$record = null,
         ?array &$resultFiles = null,
+        bool $skipSharedServiceProbe = true,
     ): array
     {
         $repoRoot = dirname(__DIR__, 2);
@@ -2494,6 +2517,9 @@ class NexusContractTest extends TestCase
                 'PATH' => getenv('PATH') ?: '/usr/bin:/bin',
                 'DW_NEXUS_EVIDENCE_JSON' => $evidencePath,
             ];
+            if ($skipSharedServiceProbe) {
+                $environment['DW_NEXUS_SKIP_SHARED_SERVICE_PROBE'] = '1';
+            }
             if ($installEvidence !== null) {
                 file_put_contents(
                     $installEvidencePath,

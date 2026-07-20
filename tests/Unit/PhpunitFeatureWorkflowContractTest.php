@@ -30,6 +30,7 @@ class PhpunitFeatureWorkflowContractTest extends TestCase
             'name: PHPUnit feature suite',
             "if: \${{ github.server_url == 'https://github.com' }}",
             'vendor/bin/phpunit tests/Feature',
+            'tests/Unit/NexusContractTest.php',
         ] as $needle) {
             $this->assertStringContainsString($needle, $this->workflow);
         }

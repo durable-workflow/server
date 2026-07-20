@@ -4200,6 +4200,7 @@ function installChannelForArtifact(artifact) {
     case 'cli':
       return 'github_release_asset';
     case 'workflow':
+    case 'sdk-php':
     case 'waterline':
       return 'packagist';
     case 'sdk-python':
@@ -5747,7 +5748,9 @@ function mergeMaps(...maps) {
     }
 
     for (const [key, value] of Object.entries(map)) {
-      if (stringValue(value) !== '' || !Object.hasOwn(merged, key)) {
+      const existing = merged[key];
+      const existingIsPopulated = hasNonEmptyObjectValue(existing) || stringValue(existing) !== '';
+      if (!Object.hasOwn(merged, key) || !existingIsPopulated) {
         merged[key] = value;
       }
     }
@@ -6205,6 +6208,7 @@ function installChannelForArtifact(artifact) {
     case 'cli':
       return 'github_release_asset';
     case 'workflow':
+    case 'sdk-php':
     case 'waterline':
       return 'packagist';
     case 'sdk-python':
@@ -6221,10 +6225,6 @@ function applyResultGateFailures(
   localProductSourceCheckoutsUsed,
   localProductSourceCheckoutsExplicitlyFalse,
 ) {
-  if (scenario.status !== 'pass') {
-    return scenario;
-  }
-
   const linkedFindings = Array.isArray(scenario.linked_findings) ? [...scenario.linked_findings] : [];
   const resultGateFindings = [];
 
@@ -6244,6 +6244,24 @@ function applyResultGateFailures(
 
   if (resultGateFindings.length === 0) {
     return scenario;
+  }
+
+  if (scenario.status !== 'pass') {
+    return {
+      ...scenario,
+      observed_outputs: {
+        ...(scenario.observed_outputs && typeof scenario.observed_outputs === 'object'
+          ? scenario.observed_outputs
+          : {}),
+        result_gate_failed: true,
+        artifact_policy_failures: artifactPolicyFailures,
+        local_product_source_checkouts_used: localProductSourceCheckoutsUsed,
+      },
+      linked_findings: [
+        ...linkedFindings,
+        ...resultGateFindings,
+      ],
+    };
   }
 
   return {
@@ -6761,10 +6779,6 @@ function localProductSourceCheckoutsUsedIn(...containers) {
   return localProductSourceFlagValues(...containers).some((value) => truthy(value));
 }
 
-function localProductSourceCheckoutsExplicitlyFalseIn(...containers) {
-  return localProductSourceCheckoutsUsedFlagValues(...containers).some((value) => explicitFalse(value));
-}
-
 function localProductSourceFlagValues(...containers) {
   const values = [];
   for (const container of containers) {
@@ -6812,40 +6826,6 @@ function hasExplicitFalseLocalProductSourceFlag(container) {
 
   return explicitFalse(container.local_product_source_checkouts_used)
     || explicitFalse(container.localProductSourceCheckoutsUsed);
-}
-
-function localProductSourceCheckoutsUsedFlagValues(...containers) {
-  const values = [];
-  for (const container of containers) {
-    collectLocalProductSourceCheckoutsUsedFlagValues(container, values);
-  }
-  return values;
-}
-
-function collectLocalProductSourceCheckoutsUsedFlagValues(value, values) {
-  if (!value || typeof value !== 'object') {
-    return;
-  }
-
-  if (Array.isArray(value)) {
-    for (const entry of value) {
-      collectLocalProductSourceCheckoutsUsedFlagValues(entry, values);
-    }
-    return;
-  }
-
-  if (Object.hasOwn(value, 'local_product_source_checkouts_used')) {
-    values.push(value.local_product_source_checkouts_used);
-  }
-  if (Object.hasOwn(value, 'localProductSourceCheckoutsUsed')) {
-    values.push(value.localProductSourceCheckoutsUsed);
-  }
-
-  for (const entry of Object.values(value)) {
-    if (entry && typeof entry === 'object') {
-      collectLocalProductSourceCheckoutsUsedFlagValues(entry, values);
-    }
-  }
 }
 
 function installEvidenceFrom(container) {
@@ -7260,12 +7240,10 @@ const synthesizedInstallEvidence = canSynthesizeInstallOnlyFromPublishedTuple
     artifactSourceVerification,
   )
   : null;
-const localProductSourceCheckoutsExplicitlyFalse = canSynthesizeInstallOnlyFromPublishedTuple
-  || localProductSourceCheckoutsExplicitlyFalseIn(
-  evidence,
-  scenarioResults,
-  dedicatedInstallEvidenceResult.installEvidence,
-);
+const localProductSourceCheckoutsExplicitlyFalse = hasExplicitFalseLocalProductSourceFlag(evidence)
+  || hasExplicitFalseLocalProductSourceFlag(dedicatedInstallEvidenceResult.installEvidence)
+  || hasExplicitFalseLocalProductSourceFlag(topLevelInstallEvidence)
+  || hasExplicitFalseLocalProductSourceFlag(scenarioInputInstallEvidence);
 const topLevelArtifactPolicyFailures = runnerBlocked
   ? []
   : artifactPolicyFailuresFor(
