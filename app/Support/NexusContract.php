@@ -359,6 +359,7 @@ final class NexusContract
                     'call_completed_at',
                     'worker_restart_observed',
                     'history_replay_recovered_call',
+                    'replay_transport',
                     'service_invocation_count',
                     'duplicate_call_assertion',
                     'duplicate_call_issue_count',

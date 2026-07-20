@@ -2113,6 +2113,7 @@ class NexusContractTest extends TestCase
                 'caller_history_rows',
                 'service_logs',
                 'caller_worker_restarted_at',
+                'replay_transport',
                 'duplicate_call_assertion',
             ],
             'caller_cancellation_propagates_to_service' => [
@@ -2258,6 +2259,50 @@ class NexusContractTest extends TestCase
         $this->assertContains(
             'nexus_scenario_evidence_mismatch',
             array_column($scenario['linked_findings'], 'finding_type'),
+        );
+    }
+
+    public function test_host_runner_rejects_more_than_one_replay_transport_retry(): void
+    {
+        $nodeBinary = trim((string) shell_exec('command -v node 2>/dev/null'));
+        if ($nodeBinary === '') {
+            $this->markTestSkipped('node is required to exercise the Nexus runner result gate.');
+        }
+
+        $evidence = $this->completeRunnerEvidence();
+        foreach ($evidence['scenario_results'] as &$scenario) {
+            if ($scenario['scenario_id'] !== 'worker_restart_replay_does_not_reissue_call') {
+                continue;
+            }
+
+            $scenario['observed_outputs']['replay_transport']['retry_count'] = 2;
+            $scenario['observed_outputs']['replay_transport']['attempts'][] = [
+                'attempt' => 2,
+                'connection' => 'fresh',
+                'outcome' => 'http_success',
+                'http_status' => 200,
+                'request_body_sha256' => str_repeat('a', 64),
+                'idempotency_key_sha256' => str_repeat('b', 64),
+            ];
+            $scenario['observed_outputs']['replay_transport']['attempts'][] = [
+                'attempt' => 3,
+                'connection' => 'fresh',
+                'outcome' => 'http_success',
+                'http_status' => 200,
+                'request_body_sha256' => str_repeat('a', 64),
+                'idempotency_key_sha256' => str_repeat('b', 64),
+            ];
+        }
+        unset($scenario);
+
+        $result = $this->runNexusEvidence($evidence, 'dw-nexus-replay-transport-retries-');
+        $scenario = $this->scenarioResult($result, 'worker_restart_replay_does_not_reissue_call');
+
+        $this->assertSame('fail', $result['outcome']);
+        $this->assertSame('fail', $scenario['status']);
+        $this->assertSame(
+            'replay_transport',
+            $scenario['observed_outputs']['scenario_evidence_failures'][0]['field'],
         );
     }
 
@@ -2741,6 +2786,30 @@ class NexusContractTest extends TestCase
                 'call_completed_at' => '2026-06-02T12:00:35Z',
                 'worker_restart_observed' => true,
                 'history_replay_recovered_call' => true,
+                'replay_transport' => [
+                    'strategy' => 'retry_once_on_stale_socket',
+                    'max_retries' => 1,
+                    'retry_count' => 0,
+                    'recovery_needed' => false,
+                    'recovery_attempted' => false,
+                    'fresh_connection_used' => false,
+                    'transport_recovered' => false,
+                    'request' => [
+                        'method' => 'POST',
+                        'path' => '/api/service-endpoints/shared-greeter/services/Greeter/operations/greet/execute',
+                        'namespace' => 'shared',
+                        'request_body_sha256' => str_repeat('a', 64),
+                        'idempotency_key_sha256' => str_repeat('b', 64),
+                    ],
+                    'attempts' => [[
+                        'attempt' => 1,
+                        'connection' => 'pooled',
+                        'outcome' => 'http_success',
+                        'http_status' => 200,
+                        'request_body_sha256' => str_repeat('a', 64),
+                        'idempotency_key_sha256' => str_repeat('b', 64),
+                    ]],
+                ],
                 'service_invocation_count' => 1,
                 'duplicate_call_assertion' => [
                     'expected_service_invocations' => 1,

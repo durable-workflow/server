@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+
 usage() {
   cat <<'USAGE'
 Usage: nexus-published-artifacts.sh [--result-dir DIR|--result-dir=DIR]
@@ -331,13 +333,14 @@ if should_probe_shared_service; then
   supplied_evidence_path="${DW_NEXUS_EVIDENCE_JSON:-}"
   generated_evidence_path="$result_dir/shared-service-evidence.json"
 
-  if node - "$result_dir" "$generated_evidence_path" "$supplied_evidence_path" <<'NODE'
+  if node - "$result_dir" "$generated_evidence_path" "$supplied_evidence_path" "$script_dir/nexus-replay-transport.cjs" <<'NODE'
 const fs = require('fs');
 const os = require('os');
 const net = require('net');
 const path = require('path');
 const crypto = require('crypto');
 const {spawnSync} = require('child_process');
+const {replayPostWithStaleSocketRecovery} = require(process.argv[5]);
 
 const resultDir = process.argv[2];
 const evidencePath = process.argv[3];
@@ -3834,14 +3837,15 @@ async function probeWorkerRestartReplay(baseUrl, token, versions, sources, image
   );
   const workerRestartedAt = timestamp();
 
-  const replay = await apiRequest(
+  const replayRequest = await replayPostWithStaleSocketRecovery({
     baseUrl,
     token,
-    'shared',
-    'POST',
-    '/service-endpoints/shared-greeter/services/Greeter/operations/greet/execute',
-    requestBody,
-  );
+    namespace: 'shared',
+    apiPath: '/service-endpoints/shared-greeter/services/Greeter/operations/greet/execute',
+    body: requestBody,
+    pooledRequest: apiRequest,
+  });
+  const replay = replayRequest.response;
   const replayObservedAt = timestamp();
   const replayCallId = serviceCallIdFrom(replay);
   const replayTarget = resolvedTargetFrom(replay);
@@ -3922,6 +3926,7 @@ async function probeWorkerRestartReplay(baseUrl, token, versions, sources, image
     duplicate_call_assertion: duplicateCallAssertion,
     duplicate_call_issue_count: duplicateCallIssueCount,
     replay_response: responseSummary(replay),
+    replay_transport: replayRequest.transport,
     service_call_record: describe.body,
     caller_history_evidence: history.body,
   };
@@ -4761,6 +4766,7 @@ const scenarioEvidenceRequirements = {
     {fields: ['call_completed_at', 'callCompletedAt'], kind: 'non_empty_string', expected: 'timestamp when the recovered Nexus call completed'},
     {fields: ['worker_restart_observed', 'workerRestartObserved'], kind: 'boolean_true', expected: 'caller worker restart was exercised mid-call'},
     {fields: ['history_replay_recovered_call', 'historyReplayRecoveredCall'], kind: 'boolean_true', expected: 'replay recovered the in-flight Nexus call from history'},
+    {fields: ['replay_transport', 'replayTransport'], kind: 'replay_transport', expected: 'bounded replay-only transport attempts with at most one fresh-connection stale-socket recovery'},
     {fields: ['service_invocation_count', 'serviceInvocationCount', 'target_service_invocation_count', 'targetServiceInvocationCount'], kind: 'number_equals', value: 1, expected: 'target service was invoked exactly once across restart replay'},
     {fields: ['duplicate_call_assertion', 'duplicateCallAssertion'], kind: 'non_empty_object', expected: 'explicit duplicate-call assertion evidence for the replay cell'},
     {fields: ['duplicate_call_issue_count', 'duplicateCallIssueCount'], kind: 'number_equals', value: 0, expected: 'replay did not issue a duplicate network call'},
@@ -5332,6 +5338,9 @@ function isMissingEvidenceValue(value, kind) {
   if (kind === 'published_service_health') {
     return !hasNonEmptyObjectValue(value);
   }
+  if (kind === 'replay_transport') {
+    return !hasNonEmptyObjectValue(value);
+  }
   if (kind === 'array_length_at_least') {
     return !Array.isArray(value) || value.length === 0;
   }
@@ -5376,9 +5385,56 @@ function evidenceRequirementSatisfied(requirement, value) {
       return publishedCrossLanguageWorkerExecutionSatisfied(value);
     case 'published_service_health':
       return publishedServiceHealthSatisfied(value, requirement.runtime);
+    case 'replay_transport':
+      return replayTransportSatisfied(value);
     default:
       return false;
   }
+}
+
+function replayTransportSatisfied(value) {
+  if (!hasNonEmptyObjectValue(value)
+    || value.strategy !== 'retry_once_on_stale_socket'
+    || numberValue(value.max_retries) !== 1
+    || !Array.isArray(value.attempts)
+    || value.attempts.length < 1
+    || value.attempts.length > 2) {
+    return false;
+  }
+
+  const retryCount = numberValue(value.retry_count);
+  const first = value.attempts[0];
+  const second = value.attempts[1];
+  if (retryCount === null
+    || retryCount !== value.attempts.length - 1
+    || first?.attempt !== 1
+    || first?.connection !== 'pooled') {
+    return false;
+  }
+
+  const requestBodyHashes = new Set(value.attempts.map((attempt) => attempt?.request_body_sha256));
+  const idempotencyKeyHashes = new Set(value.attempts.map((attempt) => attempt?.idempotency_key_sha256));
+  if (requestBodyHashes.size !== 1
+    || idempotencyKeyHashes.size !== 1
+    || !/^[a-f0-9]{64}$/.test(String(first.request_body_sha256 || ''))
+    || !/^[a-f0-9]{64}$/.test(String(first.idempotency_key_sha256 || ''))) {
+    return false;
+  }
+
+  if (second === undefined) {
+    return retryCount === 0
+      && value.recovery_attempted === false
+      && value.fresh_connection_used === false;
+  }
+
+  return retryCount === 1
+    && value.recovery_needed === true
+    && value.recovery_attempted === true
+    && value.fresh_connection_used === true
+    && first.outcome === 'transport_error'
+    && first.recognized_stale_socket === true
+    && second.attempt === 2
+    && second.connection === 'fresh';
 }
 
 function artifactTupleSatisfied(value) {
