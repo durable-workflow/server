@@ -50,7 +50,7 @@ added without a TTL, admission, scan, or cardinality contract.
 | `query_task_poll_requests` | `server:query-task-poll-request:` | `App\Support\QueryTaskPollRequestStore` | One pending key and one short replay-result key per idempotent query worker poll request, plus one expiring current-marker key per worker/queue scope. |
 | `long_poll_wait_slots` | `server:long-poll-wait-slot:` | `App\Support\LongPollWaitSlotStore` | One held-wait slot per admitted empty workflow/activity or query-task worker long-poll, capped per server node and pool so health, control-plane, and query completion request workers stay available. Pending query tasks are claimed before a query-task poll needs an idle wait slot. |
 | `sqlite_worker_poll_claim_gate` | `server:sqlite-worker-poll-claim:` | `App\Support\WorkerPollClaimGate` | One short-lived singleton lock key guards SQLite worker poll claim probes when the polling cache store supports locks. |
-| `workflow_query_tasks` | `server:workflow-query-task:` | `App\Support\WorkflowQueryTaskBroker` | Pending query tasks are capped per `(namespace, task_queue)` by `server.query_tasks.max_pending_per_queue`, default 1024 and hard-clamped to 10000. Query-poller markers add at most one expiring key per `(namespace, task_queue, worker_id)` that has polled the query-task endpoint during the marker TTL window. Same-worker leased-task indexes add at most one expiring list key per `(namespace, task_queue, lease_owner)` and redeliver an active lease before that owner can accept another query-task lease. |
+| `workflow_query_tasks` | `server:workflow-query-task:` | `App\Support\WorkflowQueryTaskBroker` | Pending query tasks are capped per `(namespace, task_queue)` by `server.query_tasks.max_pending_per_queue`, default 1024 and hard-clamped to 10000. Query-poller markers add at most one expiring key per `(namespace, task_queue, worker_id)` that has polled the query-task endpoint during the marker TTL window. Same-worker leased-task indexes add at most one expiring list key per `(namespace, task_queue, lease_owner)`; an active lease is replayed only to its original poll request. |
 | `task_queue_admission_locks` | `server:task-queue-admission:` | `App\Support\TaskQueueAdmission` | One short-lived lock key per capped `(namespace, task_queue, task_kind)` under concurrent workflow/activity poll admission. |
 | `task_queue_dispatch_counters` | `server:task-queue-dispatch:` | `App\Support\TaskQueueAdmission` | One expiring counter per capped `(namespace, task_queue, task_kind, minute)` bucket that actually dispatches work. |
 | `workflow_task_expired_lease_recovery` | `server:workflow-task-expired-lease-recovery:` | `App\Support\WorkflowTaskPoller` | Expired-task recovery scans are capped by `server.polling.expired_workflow_task_recovery_scan_limit`, default 5, and duplicate recovery attempts are TTL-suppressed per task. |
@@ -76,6 +76,11 @@ prune stale pending task IDs by checking the referenced task records. Query
 completion, failure, and timeout paths remove IDs from the same-worker
 leased-task index, repeat same-worker polls prune expired or non-leased IDs,
 and the index key also has TTL eviction.
+
+Workflow and activity poll request bindings reuse the existing durable task
+payload row. A claim overwrites the single reserved binding value on that task,
+so the binding adds no rows or keys beyond the task collection's existing
+retention bound.
 
 ## Polling Scan Limits
 

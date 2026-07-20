@@ -5,6 +5,7 @@ namespace Tests\Unit;
 use App\Support\ExternalPayloadEnvelopeService;
 use App\Support\LongPoller;
 use App\Support\LongPollSignalStore;
+use App\Support\PollRequestLeaseBinding;
 use App\Support\ServerPollingCache;
 use App\Support\TaskQueueAdmission;
 use App\Support\WorkerPollClaimGate;
@@ -42,6 +43,7 @@ class WorkflowTaskPollerTest extends TestCase
             app(ExternalPayloadEnvelopeService::class),
             app(WorkerPollClaimGate::class),
             app(WorkflowQueryTaskBroker::class),
+            app(PollRequestLeaseBinding::class),
         );
 
         $result = $this->invokeClaimReadyTask(
@@ -85,6 +87,7 @@ class WorkflowTaskPollerTest extends TestCase
             $leaseOwner,
             $buildId,
             $limit,
+            null,
             $historyPageSize,
             $acceptHistoryEncoding,
             $supportedWorkflowTypes,

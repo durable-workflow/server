@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Tests\Feature;
 
+use App\Models\WorkerRegistration;
 use App\Support\ServerPollingCache;
 use App\Support\ServiceModeBusDispatcher;
 use Illuminate\Contracts\Bus\Dispatcher as BusDispatcher;
@@ -153,5 +154,121 @@ class ServiceModeDispatchTest extends TestCase
             ->getJson('/api/workflows/wf-redis-loss-poll/runs/'.$start->json('run_id'))
             ->assertOk()
             ->assertJsonPath('status', 'completed');
+    }
+
+    public function test_build_worker_replays_its_unversioned_workflow_lease_while_redis_is_unavailable(): void
+    {
+        config([
+            'cache.default' => 'redis',
+            'cache.stores.redis' => ['driver' => 'redis', 'connection' => 'missing-polling-connection'],
+        ]);
+        app('cache')->forgetDriver('redis');
+        app()->forgetInstance(ServerPollingCache::class);
+
+        $this->configureWorkflowTypes([
+            'tests.external-greeting-workflow' => ExternalGreetingWorkflow::class,
+        ]);
+        $this->createNamespace('default');
+
+        foreach (['first', 'second'] as $workflow) {
+            $this->withHeaders($this->apiHeaders())
+                ->postJson('/api/workflows', [
+                    'workflow_id' => "wf-redis-loss-unversioned-{$workflow}",
+                    'workflow_type' => 'tests.external-greeting-workflow',
+                    'task_queue' => 'default',
+                    'input' => ['Durable'],
+                ])
+                ->assertCreated();
+        }
+
+        $this->assertSame(2, WorkflowTask::query()
+            ->where('task_type', TaskType::Workflow->value)
+            ->where('status', TaskStatus::Ready->value)
+            ->whereNull('compatibility')
+            ->count());
+
+        $this->registerWorker('redis-loss-build-worker', 'default');
+        WorkerRegistration::query()
+            ->where('namespace', 'default')
+            ->where('worker_id', 'redis-loss-build-worker')
+            ->update(['build_id' => 'build-a']);
+
+        $pollPayload = [
+            'worker_id' => 'redis-loss-build-worker',
+            'task_queue' => 'default',
+            'poll_request_id' => 'redis-loss-build-poll',
+        ];
+
+        $firstPoll = $this->withHeaders($this->workerHeaders())
+            ->postJson('/api/worker/workflow-tasks/poll', $pollPayload)
+            ->assertOk()
+            ->assertJsonPath('poll_status', 'leased');
+
+        $firstTaskId = (string) $firstPoll->json('task.task_id');
+
+        $this->withHeaders($this->workerHeaders())
+            ->postJson('/api/worker/workflow-tasks/poll', $pollPayload)
+            ->assertOk()
+            ->assertJsonPath('task.task_id', $firstTaskId)
+            ->assertJsonPath('task.workflow_task_attempt', 1);
+
+        $this->assertSame(1, WorkflowTask::query()
+            ->where('task_type', TaskType::Workflow->value)
+            ->where('status', TaskStatus::Leased->value)
+            ->where('lease_owner', 'redis-loss-build-worker')
+            ->whereNull('compatibility')
+            ->count());
+        $this->assertSame(1, WorkflowTask::query()
+            ->where('task_type', TaskType::Workflow->value)
+            ->where('status', TaskStatus::Ready->value)
+            ->whereNull('compatibility')
+            ->count());
+    }
+
+    public function test_idless_workflow_poll_does_not_replay_an_active_lease_while_redis_is_unavailable(): void
+    {
+        config([
+            'cache.default' => 'redis',
+            'cache.stores.redis' => ['driver' => 'redis', 'connection' => 'missing-polling-connection'],
+        ]);
+        app('cache')->forgetDriver('redis');
+        app()->forgetInstance(ServerPollingCache::class);
+
+        $this->configureWorkflowTypes([
+            'tests.external-greeting-workflow' => ExternalGreetingWorkflow::class,
+        ]);
+        $this->createNamespace('default');
+        $this->registerWorker('redis-loss-idless-worker', 'default');
+
+        $this->withHeaders($this->apiHeaders())
+            ->postJson('/api/workflows', [
+                'workflow_id' => 'wf-redis-loss-idless-poll',
+                'workflow_type' => 'tests.external-greeting-workflow',
+                'task_queue' => 'default',
+                'input' => ['Durable'],
+            ])
+            ->assertCreated();
+
+        $firstSlot = $this->withHeaders($this->workerHeaders())
+            ->postJson('/api/worker/workflow-tasks/poll', [
+                'worker_id' => 'redis-loss-idless-worker',
+                'task_queue' => 'default',
+            ])
+            ->assertOk()
+            ->assertJsonPath('task.workflow_id', 'wf-redis-loss-idless-poll');
+
+        $taskId = (string) $firstSlot->json('task.task_id');
+
+        $this->withHeaders($this->workerHeaders())
+            ->postJson('/api/worker/workflow-tasks/poll', [
+                'worker_id' => 'redis-loss-idless-worker',
+                'task_queue' => 'default',
+                'timeout_seconds' => 0,
+            ])
+            ->assertOk()
+            ->assertJsonPath('task', null)
+            ->assertJsonPath('poll_status', 'empty');
+
+        $this->assertSame(1, WorkflowTask::query()->whereKey($taskId)->where('attempt_count', 1)->count());
     }
 }

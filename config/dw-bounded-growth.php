@@ -95,7 +95,7 @@ return [
             ],
             'ttl' => 'Pending keys live max(server.polling.timeout + 5, 5) seconds. Empty result keys live at most 60 seconds; task result keys live through the active task lease, capped at 3600 seconds.',
             'bound' => 'At most one pending key and one short replay-result key per idempotent worker poll request in the TTL window.',
-            'admission' => 'Cache add elects a single poll leader for each idempotent request. Followers wait for the leader result and retry only while the pending marker exists.',
+            'admission' => 'Cache add elects a single poll leader for each idempotent request. The claimed task payload also stores that request id, so a lost response can be rebuilt outside admission without replaying the lease into another poll slot.',
             'eviction' => 'Pending keys are removed when a leader publishes a result; all pending and result keys also expire by TTL.',
         ],
 
@@ -112,7 +112,7 @@ return [
             ],
             'ttl' => 'Pending keys live max(server.polling.timeout + 5, 5) seconds. Empty result keys live at most 60 seconds; task result keys live through the active activity-attempt lease, capped at 3600 seconds.',
             'bound' => 'At most one pending key and one short replay-result key per idempotent activity worker poll request in the TTL window.',
-            'admission' => 'Cache add elects a single activity poll leader for each idempotent request. Followers wait for the leader result and retry only while the pending marker exists.',
+            'admission' => 'Cache add elects a single activity poll leader for each idempotent request. The claimed task payload also stores that request id, so a lost response can be rebuilt outside admission without replaying the activity attempt into another poll slot.',
             'eviction' => 'Pending keys are removed when a leader publishes a result; all pending and result keys also expire by TTL.',
         ],
 
@@ -129,7 +129,7 @@ return [
             ],
             'ttl' => 'Pending and current-marker keys live max(server.polling.timeout + 5, 5) seconds. Empty result keys live at most 60 seconds; task result keys live through the active query-task lease, capped at 3600 seconds.',
             'bound' => 'At most one pending key and one short replay-result key per idempotent query worker poll request in the TTL window, plus one current-marker key per namespace/task_queue/build_id/worker.',
-            'admission' => 'Cache add elects a single query poll leader for each idempotent request. Followers wait for the leader result and retry only while the pending marker exists. Newer poll ids supersede older leaders before they can lease query work.',
+            'admission' => 'Cache add elects a single query poll leader for each idempotent request. Leased query-task records retain the claiming request id; concurrent poll ids cannot replay that attempt and newer poll ids supersede older leaders before they can lease query work.',
             'eviction' => 'Pending keys are removed when a leader publishes a result; all pending, current-marker, and result keys also expire by TTL.',
         ],
 

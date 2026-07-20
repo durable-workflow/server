@@ -25,8 +25,8 @@ use Workflow\V2\Support\StandaloneWorkerVisibility;
 use Workflow\V2\Support\TaskFairnessKey;
 use Workflow\V2\Support\TaskFairnessScheduler;
 use Workflow\V2\Support\TaskFairnessState;
-use Workflow\V2\Support\WorkerHistoryPayloadContract;
 use Workflow\V2\Support\WorkerCompatibilityFleet;
+use Workflow\V2\Support\WorkerHistoryPayloadContract;
 use Workflow\V2\Support\WorkerProtocolVersion;
 
 final class WorkflowTaskPoller
@@ -43,6 +43,7 @@ final class WorkflowTaskPoller
         private readonly ExternalPayloadEnvelopeService $payloadEnvelopes,
         private readonly WorkerPollClaimGate $claimGate,
         private readonly WorkflowQueryTaskBroker $queryTasks,
+        private readonly PollRequestLeaseBinding $pollLeaseBindings,
     ) {}
 
     /**
@@ -74,6 +75,26 @@ final class WorkflowTaskPoller
             ];
         }
 
+        if ($pollRequestId !== null) {
+            $task = $this->activeLeasedTaskForWorker(
+                namespace: $namespace,
+                taskQueue: $taskQueue,
+                leaseOwner: $leaseOwner,
+                buildId: $buildId,
+                historyPageSize: $historyPageSize,
+                acceptHistoryEncoding: $acceptHistoryEncoding,
+                pollRequestId: $pollRequestId,
+                supportedWorkflowTypes: $supportedWorkflowTypes,
+            );
+
+            if (is_array($task)) {
+                return [
+                    'task' => $task,
+                    'poll_status' => 'leased',
+                ];
+            }
+        }
+
         if ($pollRequestId === null || ! $this->cache->available()) {
             return $this->performPoll(
                 request: $request,
@@ -82,7 +103,7 @@ final class WorkflowTaskPoller
                 leaseOwner: $leaseOwner,
                 buildId: $buildId,
                 worker: $worker,
-                pollRequestId: null,
+                pollRequestId: $pollRequestId,
                 historyPageSize: $historyPageSize,
                 acceptHistoryEncoding: $acceptHistoryEncoding,
                 supportedWorkflowTypes: $supportedWorkflowTypes,
@@ -389,6 +410,7 @@ final class WorkflowTaskPoller
                 $taskQueue,
                 $leaseOwner,
                 $buildId,
+                $pollRequestId,
                 $historyPageSize,
                 $acceptHistoryEncoding,
                 $supportedWorkflowTypes,
@@ -417,6 +439,7 @@ final class WorkflowTaskPoller
                     $leaseOwner,
                     $buildId,
                     $limit,
+                    $pollRequestId,
                     $historyPageSize,
                     $acceptHistoryEncoding,
                     $supportedWorkflowTypes,
@@ -478,6 +501,7 @@ final class WorkflowTaskPoller
         string $leaseOwner,
         ?string $buildId,
         int $limit,
+        ?string $pollRequestId = null,
         ?int $historyPageSize = null,
         ?string $acceptHistoryEncoding = null,
         array $supportedWorkflowTypes = [],
@@ -496,6 +520,7 @@ final class WorkflowTaskPoller
                 $leaseOwner,
                 $buildId,
                 $limit,
+                $pollRequestId,
                 $historyPageSize,
                 $acceptHistoryEncoding,
                 $supportedWorkflowTypes,
@@ -506,37 +531,7 @@ final class WorkflowTaskPoller
             ): array {
                 $this->runDueServiceModeTimers($namespace, $taskQueue, $buildId);
 
-                $task = $this->admission->withLeaseAdmission(
-                    $namespace,
-                    $taskQueue,
-                    TaskQueueAdmission::WORKFLOW_TASKS,
-                    fn (): ?array => $this->claimGate->forSqliteClaim(
-                        $namespace,
-                        $taskQueue,
-                        TaskQueueAdmission::WORKFLOW_TASKS,
-                        fn (): ?array => $this->claimReadyTask(
-                            namespace: $namespace,
-                            taskQueue: $taskQueue,
-                            leaseOwner: $leaseOwner,
-                            buildId: $buildId,
-                            limit: $limit,
-                            historyPageSize: $historyPageSize,
-                            acceptHistoryEncoding: $acceptHistoryEncoding,
-                            supportedWorkflowTypes: $supportedWorkflowTypes,
-                            workerPollFence: $workerPollFence,
-                        ),
-                    ),
-                );
-
-                if (is_array($task)) {
-                    return [
-                        'task' => $task,
-                        'poll_status' => 'leased',
-                        'next_probe_at' => null,
-                    ];
-                }
-
-                if (! $this->cache->available()) {
+                if ($pollRequestId !== null) {
                     $task = $this->activeLeasedTaskForWorker(
                         namespace: $namespace,
                         taskQueue: $taskQueue,
@@ -544,6 +539,7 @@ final class WorkflowTaskPoller
                         buildId: $buildId,
                         historyPageSize: $historyPageSize,
                         acceptHistoryEncoding: $acceptHistoryEncoding,
+                        pollRequestId: $pollRequestId,
                         supportedWorkflowTypes: $supportedWorkflowTypes,
                     );
 
@@ -556,7 +552,7 @@ final class WorkflowTaskPoller
                     }
                 }
 
-                if ($this->recoverUnavailableLeases($request, $namespace, $taskQueue)) {
+                try {
                     $task = $this->admission->withLeaseAdmission(
                         $namespace,
                         $taskQueue,
@@ -571,6 +567,7 @@ final class WorkflowTaskPoller
                                 leaseOwner: $leaseOwner,
                                 buildId: $buildId,
                                 limit: $limit,
+                                pollRequestId: $pollRequestId,
                                 historyPageSize: $historyPageSize,
                                 acceptHistoryEncoding: $acceptHistoryEncoding,
                                 supportedWorkflowTypes: $supportedWorkflowTypes,
@@ -578,6 +575,67 @@ final class WorkflowTaskPoller
                             ),
                         ),
                     );
+                } catch (PollRequestAlreadyBound) {
+                    $task = $pollRequestId === null
+                        ? null
+                        : $this->activeLeasedTaskForWorker(
+                            namespace: $namespace,
+                            taskQueue: $taskQueue,
+                            leaseOwner: $leaseOwner,
+                            buildId: $buildId,
+                            historyPageSize: $historyPageSize,
+                            acceptHistoryEncoding: $acceptHistoryEncoding,
+                            pollRequestId: $pollRequestId,
+                            supportedWorkflowTypes: $supportedWorkflowTypes,
+                        );
+                }
+
+                if (is_array($task)) {
+                    return [
+                        'task' => $task,
+                        'poll_status' => 'leased',
+                        'next_probe_at' => null,
+                    ];
+                }
+
+                if ($this->recoverUnavailableLeases($request, $namespace, $taskQueue)) {
+                    try {
+                        $task = $this->admission->withLeaseAdmission(
+                            $namespace,
+                            $taskQueue,
+                            TaskQueueAdmission::WORKFLOW_TASKS,
+                            fn (): ?array => $this->claimGate->forSqliteClaim(
+                                $namespace,
+                                $taskQueue,
+                                TaskQueueAdmission::WORKFLOW_TASKS,
+                                fn (): ?array => $this->claimReadyTask(
+                                    namespace: $namespace,
+                                    taskQueue: $taskQueue,
+                                    leaseOwner: $leaseOwner,
+                                    buildId: $buildId,
+                                    limit: $limit,
+                                    pollRequestId: $pollRequestId,
+                                    historyPageSize: $historyPageSize,
+                                    acceptHistoryEncoding: $acceptHistoryEncoding,
+                                    supportedWorkflowTypes: $supportedWorkflowTypes,
+                                    workerPollFence: $workerPollFence,
+                                ),
+                            ),
+                        );
+                    } catch (PollRequestAlreadyBound) {
+                        $task = $pollRequestId === null
+                            ? null
+                            : $this->activeLeasedTaskForWorker(
+                                namespace: $namespace,
+                                taskQueue: $taskQueue,
+                                leaseOwner: $leaseOwner,
+                                buildId: $buildId,
+                                historyPageSize: $historyPageSize,
+                                acceptHistoryEncoding: $acceptHistoryEncoding,
+                                pollRequestId: $pollRequestId,
+                                supportedWorkflowTypes: $supportedWorkflowTypes,
+                            );
+                    }
 
                     if (is_array($task)) {
                         return [
@@ -724,6 +782,7 @@ final class WorkflowTaskPoller
         string $leaseOwner,
         ?string $buildId,
         int $limit,
+        ?string $pollRequestId = null,
         ?int $historyPageSize = null,
         ?string $acceptHistoryEncoding = null,
         array $supportedWorkflowTypes = [],
@@ -789,12 +848,40 @@ final class WorkflowTaskPoller
                 continue;
             }
 
-            $claim = DB::transaction(function () use ($taskId, $leaseOwner, $workerPollFence): array {
+            $claim = DB::transaction(function () use (
+                $namespace,
+                $taskQueue,
+                $taskId,
+                $leaseOwner,
+                $buildId,
+                $pollRequestId,
+                $workerPollFence,
+            ): array {
                 if ($workerPollFence !== [] && ! WorkerPollFence::isCurrentForUpdate($workerPollFence)) {
                     return ['claimed' => false, 'reason' => 'stale_worker_registration'];
                 }
 
-                return $this->bridge->claimStatus($taskId, $leaseOwner);
+                $this->pollLeaseBindings->ensureUnbound(
+                    $namespace,
+                    TaskType::Workflow,
+                    $taskQueue,
+                    $leaseOwner,
+                    $buildId,
+                    $pollRequestId,
+                );
+
+                $claim = $this->bridge->claimStatus($taskId, $leaseOwner);
+
+                if (($claim['claimed'] ?? false) === true) {
+                    $this->pollLeaseBindings->bindClaimedTask(
+                        $namespace,
+                        $taskId,
+                        $leaseOwner,
+                        $pollRequestId,
+                    );
+                }
+
+                return $claim;
             });
 
             if (($claim['claimed'] ?? false) !== true) {
@@ -856,9 +943,7 @@ final class WorkflowTaskPoller
     }
 
     /**
-     * Rebuild the worker's live lease from durable rows when the optional
-     * poll-result mirror is unavailable. This preserves request-ID replay
-     * without granting a second lease or depending on sticky routing.
+     * Rebuild the live workflow lease assigned to this logical poll.
      *
      * @param  list<string>  $supportedWorkflowTypes
      * @return array<string, mixed>|null
@@ -870,19 +955,19 @@ final class WorkflowTaskPoller
         ?string $buildId,
         ?int $historyPageSize,
         ?string $acceptHistoryEncoding,
+        string $pollRequestId,
         array $supportedWorkflowTypes = [],
     ): ?array {
-        $tasks = NamespaceWorkflowScope::taskQuery($namespace)
-            ->where('workflow_tasks.task_type', TaskType::Workflow->value)
-            ->where('workflow_tasks.status', TaskStatus::Leased->value)
-            ->where('workflow_tasks.queue', $taskQueue)
-            ->where('workflow_tasks.lease_owner', $leaseOwner)
-            ->whereNotNull('workflow_tasks.lease_expires_at')
-            ->where('workflow_tasks.lease_expires_at', '>', now())
-            ->orderBy('workflow_tasks.leased_at')
-            ->orderBy('workflow_tasks.id')
-            ->limit(10)
-            ->get();
+        $tasks = collect(array_filter([
+            $this->pollLeaseBindings->activeTask(
+                $namespace,
+                TaskType::Workflow,
+                $taskQueue,
+                $leaseOwner,
+                $buildId,
+                $pollRequestId,
+            ),
+        ]));
 
         foreach ($tasks as $task) {
             if (! $task instanceof WorkflowTask || ! $this->matchesCompatibility($buildId, $task->compatibility)) {
@@ -1533,8 +1618,7 @@ final class WorkflowTaskPoller
         string $taskId,
         ?int $historyPageSize,
         int $afterSequence = 0,
-    ): ?array
-    {
+    ): ?array {
         /** @var WorkflowTask|null $task */
         $task = WorkflowTask::query()->find($taskId);
 

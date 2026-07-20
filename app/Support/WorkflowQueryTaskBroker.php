@@ -870,6 +870,7 @@ final class WorkflowQueryTaskBroker
                         $supportedWorkflowTypes,
                         $workflowDefinitionFingerprints,
                         $buildId,
+                        $pollRequestId,
                     );
 
                     if (is_array($activeLease)) {
@@ -1615,6 +1616,9 @@ final class WorkflowQueryTaskBroker
     }
 
     /**
+     * Return only the live query lease assigned to this logical poll. A fresh
+     * concurrent request from the same worker must remain an independent slot.
+     *
      * @param  list<string>  $supportedWorkflowTypes
      * @param  array<string, string>  $workflowDefinitionFingerprints
      * @return array<string, mixed>|null
@@ -1626,6 +1630,7 @@ final class WorkflowQueryTaskBroker
         array $supportedWorkflowTypes,
         array $workflowDefinitionFingerprints,
         ?string $buildId = null,
+        ?string $pollRequestId = null,
     ): ?array {
         $ids = $this->leasedTaskIds($namespace, $taskQueue, $leaseOwner);
         $activeIds = [];
@@ -1651,13 +1656,16 @@ final class WorkflowQueryTaskBroker
 
             $activeIds[] = $queryTaskId;
 
-            if ($this->queryTaskMatchesPoller(
-                $task,
-                $supportedWorkflowTypes,
-                $workflowDefinitionFingerprints,
-                $buildId,
-                acceptsQueryTasks: true,
-            )) {
+            if (
+                ($task['poll_request_id'] ?? null) === $pollRequestId
+                && $this->queryTaskMatchesPoller(
+                    $task,
+                    $supportedWorkflowTypes,
+                    $workflowDefinitionFingerprints,
+                    $buildId,
+                    acceptsQueryTasks: true,
+                )
+            ) {
                 return $task;
             }
         }
@@ -1729,6 +1737,7 @@ final class WorkflowQueryTaskBroker
             $task['lease_expires_at'] = now()->addSeconds($this->leaseTtlSeconds())->toJSON();
             $task['attempt_count'] = $attempt;
             $task['leased_at'] = now()->toJSON();
+            $task['poll_request_id'] = $pollRequestId;
 
             $this->putTask($task);
             $this->appendLeasedTask($namespace, $taskQueue, $leaseOwner, $queryTaskId);

@@ -1133,7 +1133,7 @@ class WorkflowQueryTaskBrokerTest extends TestCase
         $this->assertSame($run->id, $polledTask['run_id'] ?? null);
     }
 
-    public function test_duplicate_query_poll_request_ids_replay_the_same_query_task(): void
+    public function test_query_poll_replays_same_task_after_fresh_slot_and_result_cache_loss(): void
     {
         Queue::fake();
 
@@ -1156,6 +1156,27 @@ class WorkflowQueryTaskBrokerTest extends TestCase
             ->assertJsonPath('task.query_task_attempt', 1)
             ->assertJsonPath('task.lease_owner', 'python-query-duplicate-worker');
 
+        app(QueryTaskPollRequestStore::class)->forgetResult(
+            'default',
+            'python-queries',
+            null,
+            'python-query-duplicate-worker',
+            'query-poll-request-1',
+        );
+
+        // A fresh concurrent slot is independent from the logical poll that
+        // received the lease and must not execute the same query attempt.
+        $freshPoll = $this->postJson('/api/worker/query-tasks/poll', [
+            'worker_id' => 'python-query-duplicate-worker',
+            'task_queue' => 'python-queries',
+            'poll_request_id' => 'query-poll-request-2',
+            'timeout_seconds' => 0,
+        ], $this->workerHeaders());
+
+        $freshPoll->assertOk()
+            ->assertJsonPath('task', null)
+            ->assertJsonPath('poll_status', 'empty');
+
         $duplicatePoll = $this->postJson('/api/worker/query-tasks/poll', [
             'worker_id' => 'python-query-duplicate-worker',
             'task_queue' => 'python-queries',
@@ -1163,19 +1184,6 @@ class WorkflowQueryTaskBrokerTest extends TestCase
         ], $this->workerHeaders());
 
         $duplicatePoll->assertOk()
-            ->assertJsonPath('task.query_task_id', $task['query_task_id'])
-            ->assertJsonPath('task.query_task_attempt', 1)
-            ->assertJsonPath('task.lease_owner', 'python-query-duplicate-worker');
-
-        // A fresh poll request models a client timeout or disconnect after
-        // the first lease was assigned but before the worker observed it.
-        $freshPoll = $this->postJson('/api/worker/query-tasks/poll', [
-            'worker_id' => 'python-query-duplicate-worker',
-            'task_queue' => 'python-queries',
-            'poll_request_id' => 'query-poll-request-2',
-        ], $this->workerHeaders());
-
-        $freshPoll->assertOk()
             ->assertJsonPath('task.query_task_id', $task['query_task_id'])
             ->assertJsonPath('task.query_task_attempt', 1)
             ->assertJsonPath('task.lease_owner', 'python-query-duplicate-worker');

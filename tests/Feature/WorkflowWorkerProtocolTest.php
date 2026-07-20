@@ -4,16 +4,19 @@ namespace Tests\Feature;
 
 use App\Models\WorkerRegistration;
 use App\Models\WorkflowNamespace;
+use App\Support\ActivityTaskPollRequestStore;
 use App\Support\LongPoller;
 use App\Support\LongPollSignalStore;
 use App\Support\SingleRegionFailoverContract;
 use App\Support\WorkerProtocol;
 use App\Support\WorkflowTaskLeaseConfiguration;
+use App\Support\WorkflowTaskPollRequestStore;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\Queue;
 use Mockery\MockInterface;
 use Tests\Fixtures\ExternalGreetingWorkflow;
+use Tests\Fixtures\InteractiveCommandWorkflow;
 use Tests\TestCase;
 use Workflow\Serializers\Serializer;
 use Workflow\V2\Contracts\WorkflowTaskBridge;
@@ -890,7 +893,11 @@ class WorkflowWorkerProtocolTest extends TestCase
 
         $secondStart->assertCreated();
 
-        $this->registerWorker('php-worker-duplicate-poll', 'external-workflows');
+        $this->registerWorker(
+            'php-worker-duplicate-poll',
+            'external-workflows',
+            maxConcurrentWorkflowTasks: 3,
+        );
         $this->registerWorker('php-worker-other', 'external-workflows');
 
         $firstPoll = $this->withHeaders($this->workerHeaders())
@@ -912,6 +919,14 @@ class WorkflowWorkerProtocolTest extends TestCase
             'wf-duplicate-poll-request-a',
             'wf-duplicate-poll-request-b',
         ]);
+
+        app(WorkflowTaskPollRequestStore::class)->forgetResult(
+            'default',
+            'external-workflows',
+            null,
+            'php-worker-duplicate-poll',
+            'poll-request-1',
+        );
 
         $duplicatePoll = $this->withHeaders($this->workerHeaders())
             ->postJson('/api/worker/workflow-tasks/poll', [
@@ -945,6 +960,18 @@ class WorkflowWorkerProtocolTest extends TestCase
             'wf-duplicate-poll-request-a',
             'wf-duplicate-poll-request-b',
         ]);
+
+        $nextConcurrentSlot = $this->withHeaders($this->workerHeaders())
+            ->postJson('/api/worker/workflow-tasks/poll', [
+                'worker_id' => 'php-worker-duplicate-poll',
+                'task_queue' => 'external-workflows',
+                'poll_request_id' => 'poll-request-3',
+                'timeout_seconds' => 0,
+            ]);
+
+        $nextConcurrentSlot->assertOk()
+            ->assertJsonPath('task', null)
+            ->assertJsonPath('poll_status', 'empty');
 
         $this->withHeaders($this->workerHeaders())
             ->postJson('/api/worker/workflow-tasks/poll', [
@@ -1048,6 +1075,140 @@ class WorkflowWorkerProtocolTest extends TestCase
             ->assertJsonPath('task.workflow_id', 'wf-duplicate-poll-request-queue-b')
             ->assertJsonPath('task.task_queue', 'external-workflows-b')
             ->assertJsonPath('task.workflow_task_attempt', 1);
+    }
+
+    public function test_restarted_worker_completes_signaled_workflow_without_replaying_the_observed_lease_to_another_slot(): void
+    {
+        Queue::fake();
+
+        $this->configureWorkflowTypes();
+        config()->set('workflows.v2.types.workflows', [
+            'tests.external-greeting-workflow' => ExternalGreetingWorkflow::class,
+            'tests.interactive-command-workflow' => InteractiveCommandWorkflow::class,
+        ]);
+        $this->createNamespace('default', 'Default namespace');
+
+        $start = $this->withHeaders($this->apiHeaders())
+            ->postJson('/api/workflows', [
+                'workflow_id' => 'wf-restarted-worker-signal-slot',
+                'workflow_type' => 'tests.interactive-command-workflow',
+                'task_queue' => 'external-workflows',
+            ])
+            ->assertCreated();
+
+        $registration = [
+            'worker_id' => 'php-worker-restarted-signal-slot',
+            'task_queue' => 'external-workflows',
+            'runtime' => 'php',
+            'supported_workflow_types' => ['tests.interactive-command-workflow'],
+            'supported_activity_types' => [],
+            'max_concurrent_workflow_tasks' => 3,
+            'max_concurrent_activity_tasks' => 0,
+            'process_metrics' => [
+                'host' => 'worker-host',
+                'process_id' => 101,
+                'process_started_at' => '2026-07-20T00:00:00Z',
+            ],
+        ];
+
+        $this->withHeaders($this->workerHeaders())
+            ->postJson('/api/worker/register', $registration)
+            ->assertCreated();
+
+        $initialPoll = $this->withHeaders($this->workerHeaders())
+            ->postJson('/api/worker/workflow-tasks/poll', [
+                'worker_id' => $registration['worker_id'],
+                'task_queue' => $registration['task_queue'],
+                'poll_request_id' => 'restarted-signal-initial-poll',
+            ])
+            ->assertOk()
+            ->assertJsonPath('task.workflow_id', 'wf-restarted-worker-signal-slot');
+
+        $this->withHeaders($this->workerHeaders())
+            ->postJson('/api/worker/workflow-tasks/'.$initialPoll->json('task.task_id').'/complete', [
+                'lease_owner' => $registration['worker_id'],
+                'workflow_task_attempt' => $initialPoll->json('task.workflow_task_attempt'),
+                'commands' => [[
+                    'type' => 'open_signal_wait',
+                    'signal_name' => 'advance',
+                    'timeout_seconds' => 45,
+                ]],
+            ])
+            ->assertOk()
+            ->assertJsonPath('run_status', 'waiting');
+
+        $registration['process_metrics'] = [
+            'host' => 'worker-host',
+            'process_id' => 202,
+            'process_started_at' => '2026-07-20T00:01:00Z',
+        ];
+
+        $this->withHeaders($this->workerHeaders())
+            ->postJson('/api/worker/register', $registration)
+            ->assertCreated();
+
+        $this->withHeaders($this->apiHeaders())
+            ->postJson('/api/workflows/wf-restarted-worker-signal-slot/signal/advance', [
+                'input' => ['continue'],
+                'request_id' => 'restarted-worker-signal',
+            ])
+            ->assertAccepted();
+
+        $signalPoll = $this->withHeaders($this->workerHeaders())
+            ->postJson('/api/worker/workflow-tasks/poll', [
+                'worker_id' => $registration['worker_id'],
+                'task_queue' => $registration['task_queue'],
+                'poll_request_id' => 'restarted-signal-poll-1',
+            ])
+            ->assertOk()
+            ->assertJsonPath('task.workflow_id', 'wf-restarted-worker-signal-slot');
+
+        app(WorkflowTaskPollRequestStore::class)->forgetResult(
+            'default',
+            'external-workflows',
+            null,
+            'php-worker-restarted-signal-slot',
+            'restarted-signal-poll-1',
+        );
+
+        $this->withHeaders($this->workerHeaders())
+            ->postJson('/api/worker/workflow-tasks/poll', [
+                'worker_id' => $registration['worker_id'],
+                'task_queue' => $registration['task_queue'],
+                'poll_request_id' => 'restarted-signal-poll-1',
+            ])
+            ->assertOk()
+            ->assertJsonPath('task.task_id', $signalPoll->json('task.task_id'));
+
+        $this->withHeaders($this->workerHeaders())
+            ->postJson('/api/worker/workflow-tasks/poll', [
+                'worker_id' => $registration['worker_id'],
+                'task_queue' => $registration['task_queue'],
+                'poll_request_id' => 'restarted-signal-poll-2',
+                'timeout_seconds' => 0,
+            ])
+            ->assertOk()
+            ->assertJsonPath('task', null)
+            ->assertJsonPath('poll_status', 'empty');
+
+        $this->withHeaders($this->workerHeaders())
+            ->postJson('/api/worker/workflow-tasks/'.$signalPoll->json('task.task_id').'/complete', [
+                'lease_owner' => $registration['worker_id'],
+                'workflow_task_attempt' => $signalPoll->json('task.workflow_task_attempt'),
+                'commands' => [[
+                    'type' => 'complete_workflow',
+                    'result' => Serializer::serializeWithCodec('avro', ['completed' => true]),
+                ]],
+            ])
+            ->assertOk()
+            ->assertJsonPath('recorded', true)
+            ->assertJsonPath('run_status', 'completed');
+
+        $this->withHeaders($this->apiHeaders())
+            ->getJson('/api/workflows/wf-restarted-worker-signal-slot')
+            ->assertOk()
+            ->assertJsonPath('run_id', $start->json('run_id'))
+            ->assertJsonPath('status', 'completed');
     }
 
     public function test_it_replays_cached_duplicate_poll_request_results_even_if_the_lease_row_is_missing(): void
@@ -1170,6 +1331,7 @@ class WorkflowWorkerProtocolTest extends TestCase
             'php-worker-duplicate-activity-poll',
             'external-activities',
             supportedActivityTypes: ['tests.external-greeting-activity'],
+            maxConcurrentActivityTasks: 3,
         );
 
         $workflowPoll = $this->withHeaders($this->workerHeaders())
@@ -1196,12 +1358,6 @@ class WorkflowWorkerProtocolTest extends TestCase
                         'arguments' => Serializer::serializeWithCodec((string) config('workflows.serializer'), ['Ada']),
                         'queue' => 'external-activities',
                     ],
-                    [
-                        'type' => 'schedule_activity',
-                        'activity_type' => 'tests.external-greeting-activity',
-                        'arguments' => Serializer::serializeWithCodec((string) config('workflows.serializer'), ['Grace']),
-                        'queue' => 'external-activities',
-                    ],
                 ],
             ])
             ->assertOk()
@@ -1223,6 +1379,14 @@ class WorkflowWorkerProtocolTest extends TestCase
         $activityTaskId = (string) $firstPoll->json('task.task_id');
         $activityAttemptId = (string) $firstPoll->json('task.activity_attempt_id');
 
+        app(ActivityTaskPollRequestStore::class)->forgetResult(
+            'default',
+            'external-activities',
+            null,
+            'php-worker-duplicate-activity-poll',
+            'activity-poll-request-1',
+        );
+
         $duplicatePoll = $this->withHeaders($this->workerHeaders())
             ->postJson('/api/worker/activity-tasks/poll', [
                 'worker_id' => 'php-worker-duplicate-activity-poll',
@@ -1240,15 +1404,95 @@ class WorkflowWorkerProtocolTest extends TestCase
                 'worker_id' => 'php-worker-duplicate-activity-poll',
                 'task_queue' => 'external-activities',
                 'poll_request_id' => 'activity-poll-request-2',
+                'timeout_seconds' => 0,
             ]);
 
         $freshPoll->assertOk()
-            ->assertJsonPath('poll_status', 'leased')
-            ->assertJsonPath('task.activity_type', 'tests.external-greeting-activity')
-            ->assertJsonPath('task.lease_owner', 'php-worker-duplicate-activity-poll');
+            ->assertJsonPath('task', null)
+            ->assertJsonPath('poll_status', 'empty');
 
-        $this->assertNotSame($activityTaskId, (string) $freshPoll->json('task.task_id'));
-        $this->assertNotSame($activityAttemptId, (string) $freshPoll->json('task.activity_attempt_id'));
+        $this->withHeaders($this->workerHeaders())
+            ->postJson("/api/worker/activity-tasks/{$activityTaskId}/complete", [
+                'activity_attempt_id' => $activityAttemptId,
+                'lease_owner' => 'php-worker-duplicate-activity-poll',
+                'result' => 'Hello, Ada!',
+            ])
+            ->assertOk()
+            ->assertJsonPath('outcome', 'completed')
+            ->assertJsonPath('recorded', true);
+
+        $this->assertSame(1, ActivityAttempt::query()->whereKey($activityAttemptId)->count());
+    }
+
+    public function test_idless_activity_polls_from_concurrent_slots_do_not_share_an_active_lease(): void
+    {
+        Queue::fake();
+
+        $this->configureWorkflowTypes();
+        $this->createNamespace('default', 'Default namespace');
+
+        $this->withHeaders($this->apiHeaders())
+            ->postJson('/api/workflows', [
+                'workflow_id' => 'wf-idless-activity-poll-slots',
+                'workflow_type' => 'tests.external-greeting-workflow',
+                'task_queue' => 'external-workflows',
+                'input' => ['Ada'],
+            ])
+            ->assertCreated();
+
+        $this->registerWorker('php-worker-idless-activity-scheduler', 'external-workflows');
+        $this->registerWorker(
+            'php-worker-idless-activity-slots',
+            'external-activities',
+            supportedActivityTypes: ['tests.external-greeting-activity'],
+            maxConcurrentActivityTasks: 3,
+        );
+
+        $workflowPoll = $this->withHeaders($this->workerHeaders())
+            ->postJson('/api/worker/workflow-tasks/poll', [
+                'worker_id' => 'php-worker-idless-activity-scheduler',
+                'task_queue' => 'external-workflows',
+            ])
+            ->assertOk()
+            ->assertJsonPath('task.workflow_id', 'wf-idless-activity-poll-slots');
+
+        $this->withHeaders($this->workerHeaders())
+            ->postJson('/api/worker/workflow-tasks/'.$workflowPoll->json('task.task_id').'/complete', [
+                'lease_owner' => 'php-worker-idless-activity-scheduler',
+                'workflow_task_attempt' => $workflowPoll->json('task.workflow_task_attempt'),
+                'commands' => [[
+                    'type' => 'schedule_activity',
+                    'activity_type' => 'tests.external-greeting-activity',
+                    'arguments' => Serializer::serializeWithCodec((string) config('workflows.serializer'), ['Ada']),
+                    'queue' => 'external-activities',
+                ]],
+            ])
+            ->assertOk()
+            ->assertJsonPath('recorded', true);
+
+        $firstSlot = $this->withHeaders($this->workerHeaders())
+            ->postJson('/api/worker/activity-tasks/poll', [
+                'worker_id' => 'php-worker-idless-activity-slots',
+                'task_queue' => 'external-activities',
+            ])
+            ->assertOk()
+            ->assertJsonPath('task.workflow_id', 'wf-idless-activity-poll-slots');
+
+        $taskId = (string) $firstSlot->json('task.task_id');
+        $activityAttemptId = (string) $firstSlot->json('task.activity_attempt_id');
+
+        $this->withHeaders($this->workerHeaders())
+            ->postJson('/api/worker/activity-tasks/poll', [
+                'worker_id' => 'php-worker-idless-activity-slots',
+                'task_queue' => 'external-activities',
+                'timeout_seconds' => 0,
+            ])
+            ->assertOk()
+            ->assertJsonPath('task', null)
+            ->assertJsonPath('poll_status', 'empty');
+
+        $this->assertSame(1, ActivityAttempt::query()->whereKey($activityAttemptId)->count());
+        $this->assertSame(1, WorkflowTask::query()->whereKey($taskId)->where('attempt_count', 1)->count());
     }
 
     public function test_it_does_not_replay_cached_duplicate_poll_results_after_the_task_is_completed(): void
@@ -6157,6 +6401,8 @@ class WorkflowWorkerProtocolTest extends TestCase
         ?array $supportedWorkflowTypes = null,
         ?array $supportedActivityTypes = null,
         ?string $buildId = null,
+        int $maxConcurrentWorkflowTasks = 1,
+        int $maxConcurrentActivityTasks = 1,
     ): void {
         // Default to declaring the workflow types this test suite drives so
         // tests that don't care about capability filtering still receive
@@ -6174,6 +6420,8 @@ class WorkflowWorkerProtocolTest extends TestCase
                 'build_id' => $buildId,
                 'supported_workflow_types' => $supportedWorkflowTypes,
                 'supported_activity_types' => $supportedActivityTypes,
+                'max_concurrent_workflow_tasks' => $maxConcurrentWorkflowTasks,
+                'max_concurrent_activity_tasks' => $maxConcurrentActivityTasks,
                 'last_heartbeat_at' => now(),
                 'status' => 'active',
             ], static fn (mixed $v): bool => $v !== null),

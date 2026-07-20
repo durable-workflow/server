@@ -30,6 +30,7 @@ final class ActivityTaskPoller
         private readonly WorkerPollClaimGate $claimGate,
         private readonly WorkflowQueryTaskBroker $queryTasks,
         private readonly ServerPollingCache $cache,
+        private readonly PollRequestLeaseBinding $pollLeaseBindings,
     ) {}
 
     /**
@@ -56,6 +57,26 @@ final class ActivityTaskPoller
             ];
         }
 
+        if ($pollRequestId !== null) {
+            $task = $this->activeLeasedTaskForWorker(
+                namespace: $namespace,
+                taskQueue: $taskQueue,
+                leaseOwner: $leaseOwner,
+                buildId: $buildId,
+                worker: $worker,
+                pollRequestId: $pollRequestId,
+                supportedActivityTypes: $supportedActivityTypes,
+                workerSessionsAvailable: $workerSessionsAvailable,
+            );
+
+            if (is_array($task)) {
+                return [
+                    'task' => $task,
+                    'poll_status' => 'leased',
+                ];
+            }
+        }
+
         if ($pollRequestId === null || ! $this->cache->available()) {
             return $this->performPoll(
                 namespace: $namespace,
@@ -63,6 +84,7 @@ final class ActivityTaskPoller
                 leaseOwner: $leaseOwner,
                 buildId: $buildId,
                 worker: $worker,
+                pollRequestId: $pollRequestId,
                 supportedActivityTypes: $supportedActivityTypes,
                 workerSessionsAvailable: $workerSessionsAvailable,
                 timeoutSeconds: $timeoutSeconds,
@@ -367,6 +389,7 @@ final class ActivityTaskPoller
                 leaseOwner: $leaseOwner,
                 buildId: $buildId,
                 worker: $worker,
+                pollRequestId: $pollRequestId,
                 supportedActivityTypes: $supportedActivityTypes,
                 workerSessionsAvailable: $workerSessionsAvailable,
                 timeoutSeconds: $timeoutSeconds,
@@ -406,6 +429,7 @@ final class ActivityTaskPoller
         string $leaseOwner,
         ?string $buildId,
         WorkerRegistration $worker,
+        ?string $pollRequestId = null,
         array $supportedActivityTypes = [],
         bool $workerSessionsAvailable = true,
         ?int $timeoutSeconds = null,
@@ -426,6 +450,7 @@ final class ActivityTaskPoller
                 $leaseOwner,
                 $buildId,
                 $worker,
+                $pollRequestId,
                 $supportedActivityTypes,
                 $workerSessionsAvailable,
                 $limit,
@@ -450,6 +475,7 @@ final class ActivityTaskPoller
                     $buildId,
                     $worker,
                     $limit,
+                    $pollRequestId,
                     $supportedActivityTypes,
                     $workerSessionsAvailable,
                     $workerPollFence,
@@ -646,6 +672,7 @@ final class ActivityTaskPoller
         ?string $buildId,
         WorkerRegistration $worker,
         int $limit,
+        ?string $pollRequestId = null,
         array $supportedActivityTypes = [],
         bool $workerSessionsAvailable = true,
         array $workerPollFence = [],
@@ -660,42 +687,68 @@ final class ActivityTaskPoller
                 $buildId,
                 $worker,
                 $limit,
+                $pollRequestId,
                 $supportedActivityTypes,
                 $workerSessionsAvailable,
                 $workerPollFence,
             ): array {
-                $task = $this->admission->withLeaseAdmission(
-                    $namespace,
-                    $taskQueue,
-                    TaskQueueAdmission::ACTIVITY_TASKS,
-                    fn (): ?array => $this->claimGate->forSqliteClaim(
-                        $namespace,
-                        $taskQueue,
-                        TaskQueueAdmission::ACTIVITY_TASKS,
-                        fn (): ?array => $this->claimReadyTask(
-                            $namespace,
-                            $taskQueue,
-                            $leaseOwner,
-                            $buildId,
-                            $worker,
-                            $limit,
-                            $supportedActivityTypes,
-                            $workerSessionsAvailable,
-                            $workerPollFence,
-                        ),
-                    ),
-                );
-
-                if ($task === null) {
+                if ($pollRequestId !== null) {
                     $task = $this->activeLeasedTaskForWorker(
                         namespace: $namespace,
                         taskQueue: $taskQueue,
                         leaseOwner: $leaseOwner,
                         buildId: $buildId,
                         worker: $worker,
+                        pollRequestId: $pollRequestId,
                         supportedActivityTypes: $supportedActivityTypes,
                         workerSessionsAvailable: $workerSessionsAvailable,
                     );
+
+                    if (is_array($task)) {
+                        return [
+                            'task' => $task,
+                            'poll_status' => 'leased',
+                            'next_probe_at' => null,
+                        ];
+                    }
+                }
+
+                try {
+                    $task = $this->admission->withLeaseAdmission(
+                        $namespace,
+                        $taskQueue,
+                        TaskQueueAdmission::ACTIVITY_TASKS,
+                        fn (): ?array => $this->claimGate->forSqliteClaim(
+                            $namespace,
+                            $taskQueue,
+                            TaskQueueAdmission::ACTIVITY_TASKS,
+                            fn (): ?array => $this->claimReadyTask(
+                                $namespace,
+                                $taskQueue,
+                                $leaseOwner,
+                                $buildId,
+                                $worker,
+                                $limit,
+                                $pollRequestId,
+                                $supportedActivityTypes,
+                                $workerSessionsAvailable,
+                                $workerPollFence,
+                            ),
+                        ),
+                    );
+                } catch (PollRequestAlreadyBound) {
+                    $task = $pollRequestId === null
+                        ? null
+                        : $this->activeLeasedTaskForWorker(
+                            namespace: $namespace,
+                            taskQueue: $taskQueue,
+                            leaseOwner: $leaseOwner,
+                            buildId: $buildId,
+                            worker: $worker,
+                            pollRequestId: $pollRequestId,
+                            supportedActivityTypes: $supportedActivityTypes,
+                            workerSessionsAvailable: $workerSessionsAvailable,
+                        );
                 }
 
                 if (
@@ -746,6 +799,7 @@ final class ActivityTaskPoller
         ?string $buildId,
         WorkerRegistration $worker,
         int $limit,
+        ?string $pollRequestId = null,
         array $supportedActivityTypes = [],
         bool $workerSessionsAvailable = true,
         array $workerPollFence = [],
@@ -817,10 +871,22 @@ final class ActivityTaskPoller
                     $leaseOwner,
                     $workerSessionsAvailable,
                     $workerPollFence,
+                    $pollRequestId,
+                    $taskQueue,
+                    $buildId,
                 ): ?array {
                     if ($workerPollFence !== [] && ! WorkerPollFence::isCurrentForUpdate($workerPollFence)) {
                         throw new ActivityTaskClaimRolledBack;
                     }
+
+                    $this->pollLeaseBindings->ensureUnbound(
+                        $namespace,
+                        TaskType::Activity,
+                        $taskQueue,
+                        $leaseOwner,
+                        $buildId,
+                        $pollRequestId,
+                    );
 
                     $claim = $this->claimStatus($taskId, $leaseOwner);
 
@@ -850,6 +916,13 @@ final class ActivityTaskPoller
                             throw new ActivityTaskClaimRolledBack;
                         }
                     }
+
+                    $this->pollLeaseBindings->bindClaimedTask(
+                        $namespace,
+                        $taskId,
+                        $leaseOwner,
+                        $pollRequestId,
+                    );
 
                     return $claim;
                 });
@@ -929,9 +1002,7 @@ final class ActivityTaskPoller
     }
 
     /**
-     * Return the worker's existing live activity lease when a fresh claim is
-     * unavailable. This lets a worker recover a lost poll response without
-     * creating another activity attempt or spending dispatch budget.
+     * Rebuild the live activity lease assigned to this logical poll.
      *
      * @param  list<string>  $supportedActivityTypes
      * @return array<string, mixed>|null
@@ -942,20 +1013,20 @@ final class ActivityTaskPoller
         string $leaseOwner,
         ?string $buildId,
         WorkerRegistration $worker,
+        string $pollRequestId,
         array $supportedActivityTypes = [],
         bool $workerSessionsAvailable = true,
     ): ?array {
-        $tasks = NamespaceWorkflowScope::taskQuery($namespace)
-            ->where('workflow_tasks.task_type', TaskType::Activity->value)
-            ->where('workflow_tasks.status', TaskStatus::Leased->value)
-            ->where('workflow_tasks.queue', $taskQueue)
-            ->where('workflow_tasks.lease_owner', $leaseOwner)
-            ->whereNotNull('workflow_tasks.lease_expires_at')
-            ->where('workflow_tasks.lease_expires_at', '>', now())
-            ->orderBy('workflow_tasks.leased_at')
-            ->orderBy('workflow_tasks.id')
-            ->limit(10)
-            ->get();
+        $tasks = collect(array_filter([
+            $this->pollLeaseBindings->activeTask(
+                $namespace,
+                TaskType::Activity,
+                $taskQueue,
+                $leaseOwner,
+                $buildId,
+                $pollRequestId,
+            ),
+        ]));
 
         foreach ($tasks as $task) {
             if (! $task instanceof WorkflowTask || ! $this->matchesCompatibility($buildId, $task->compatibility)) {

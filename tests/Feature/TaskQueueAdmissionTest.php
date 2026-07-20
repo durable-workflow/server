@@ -112,18 +112,32 @@ class TaskQueueAdmissionTest extends TestCase
             ]);
         $secondStart->assertCreated();
 
+        $firstPoll = $this->withHeaders($this->workerHeaders())
+            ->postJson('/api/worker/workflow-tasks/poll', [
+                'worker_id' => 'php-workflow-admission',
+                'task_queue' => 'external-workflows',
+                'poll_request_id' => 'workflow-admission-poll-1',
+            ])
+            ->assertOk()
+            ->assertJsonPath('task.workflow_id', 'wf-workflow-admission-1');
+
+        $workflowTaskId = (string) $firstPoll->json('task.task_id');
+
         $this->withHeaders($this->workerHeaders())
             ->postJson('/api/worker/workflow-tasks/poll', [
                 'worker_id' => 'php-workflow-admission',
                 'task_queue' => 'external-workflows',
+                'poll_request_id' => 'workflow-admission-poll-1',
             ])
             ->assertOk()
+            ->assertJsonPath('task.task_id', $workflowTaskId)
             ->assertJsonPath('task.workflow_id', 'wf-workflow-admission-1');
 
         $this->withHeaders($this->workerHeaders())
             ->postJson('/api/worker/workflow-tasks/poll', [
                 'worker_id' => 'php-workflow-admission',
                 'task_queue' => 'external-workflows',
+                'poll_request_id' => 'workflow-admission-poll-2',
             ])
             ->assertOk()
             ->assertJsonPath('task', null)
@@ -438,6 +452,7 @@ class TaskQueueAdmissionTest extends TestCase
             ->postJson('/api/worker/activity-tasks/poll', [
                 'worker_id' => 'php-activity-admission',
                 'task_queue' => 'external-activities',
+                'poll_request_id' => 'activity-admission-poll-1',
             ]);
 
         $firstPoll->assertOk()
@@ -449,10 +464,21 @@ class TaskQueueAdmissionTest extends TestCase
             ->postJson('/api/worker/activity-tasks/poll', [
                 'worker_id' => 'php-activity-admission',
                 'task_queue' => 'external-activities',
+                'poll_request_id' => 'activity-admission-poll-1',
             ])
             ->assertOk()
             ->assertJsonPath('task.task_id', $activityTaskId)
             ->assertJsonPath('task.lease_owner', 'php-activity-admission');
+
+        $this->withHeaders($this->workerHeaders())
+            ->postJson('/api/worker/activity-tasks/poll', [
+                'worker_id' => 'php-activity-admission',
+                'task_queue' => 'external-activities',
+                'poll_request_id' => 'activity-admission-poll-2',
+            ])
+            ->assertOk()
+            ->assertJsonPath('task', null)
+            ->assertJsonPath('poll_status', 'throttled');
 
         $this->withHeaders($this->workerHeaders())
             ->postJson('/api/worker/activity-tasks/poll', [
