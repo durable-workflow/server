@@ -1254,13 +1254,120 @@ final class SchedulesConformanceRunnerContractTest extends TestCase
             $cronOutputs = $result['scenario_results']['cron_cadence']['observed_outputs'];
             $fixedOutputs = $result['scenario_results']['fixed_rate_cadence']['observed_outputs'];
 
-            $this->assertSame('fail', $result['scenario_results']['cron_cadence']['status']);
-            $this->assertSame('fail', $result['scenario_results']['fixed_rate_cadence']['status']);
+            $this->assertSame('non_passing_runner_blocked', $result['outcome']);
+            $this->assertTrue($result['runner_blocked']);
+            $this->assertSame('runner_blocked', $result['scenario_results']['cron_cadence']['status']);
+            $this->assertSame('runner_blocked', $result['scenario_results']['fixed_rate_cadence']['status']);
+            $this->assertSame(
+                'conformance_runner_blocked',
+                $result['scenario_results']['cron_cadence']['linked_findings'][0]['finding_type'],
+            );
             $this->assertStringContainsString(
                 'published server did not become ready; tried http://127.0.0.1:1/api/ready',
                 $cronOutputs['failure_reason'],
             );
             $this->assertSame($cronOutputs['failure_reason'], $fixedOutputs['failure_reason']);
+        } finally {
+            $this->removeDirectory($resultDir);
+        }
+    }
+
+    public function test_compose_startup_failure_is_runner_blocked_and_removes_every_project(): void
+    {
+        $nodeBinary = trim((string) shell_exec('command -v node 2>/dev/null'));
+        if ($nodeBinary === '') {
+            $this->markTestSkipped('node is required to exercise the schedules runner result builder.');
+        }
+
+        $repoRoot = dirname(__DIR__, 2);
+        $resultDir = sys_get_temp_dir().'/dw-schedules-runner-'.bin2hex(random_bytes(4));
+        $fakeBin = $resultDir.'/bin';
+        $dockerLog = $resultDir.'/docker-calls.log';
+        mkdir($fakeBin, 0777, true);
+        file_put_contents(
+            $fakeBin.'/docker',
+            <<<'SH'
+#!/bin/sh
+printf '%s\n' "$*" >> "$DW_FAKE_DOCKER_LOG"
+case "$*" in
+  "--version"|"compose version"|"image pull "*)
+    exit 0
+    ;;
+  *" up -d --wait --wait-timeout "*)
+    printf '%s\n' 'published stack startup timed out' >&2
+    exit 1
+    ;;
+  *)
+    exit 0
+    ;;
+esac
+SH,
+        );
+        chmod($fakeBin.'/docker', 0755);
+
+        try {
+            $process = proc_open(
+                [$nodeBinary, $repoRoot.'/scripts/conformance/schedules-published-artifacts.mjs'],
+                [
+                    1 => ['pipe', 'w'],
+                    2 => ['pipe', 'w'],
+                ],
+                $pipes,
+                $repoRoot,
+                [
+                    'PATH' => $fakeBin.':'.(getenv('PATH') ?: '/usr/bin:/bin'),
+                    'DW_FAKE_DOCKER_LOG' => $dockerLog,
+                    'DW_SCHEDULES_RESULT_DIR' => $resultDir,
+                    'DW_SCHEDULES_REPO_ROOT' => $repoRoot,
+                    'DW_SCHEDULES_RUN_CADENCE_SHARD' => '1',
+                    'DW_SCHEDULES_RUN_OPERATOR_CONTROLS_SHARD' => '1',
+                    'DW_SCHEDULES_RUN_MISSED_RESTART_SHARD' => '1',
+                    'DW_SCHEDULES_RUN_ADVERSARIAL_SHARD' => '1',
+                    'DW_SERVER_VERSION' => '0.2.693',
+                    'DW_CLI_VERSION' => '0.1.93',
+                    'DW_PYTHON_SDK_VERSION' => '0.4.104',
+                    'DW_PHP_SDK_VERSION' => '0.1.14',
+                    'DW_WATERLINE_VERSION' => '2.0.0-alpha.137',
+                ],
+            );
+
+            $this->assertIsResource($process);
+            $stdout = stream_get_contents($pipes[1]);
+            $stderr = stream_get_contents($pipes[2]);
+            fclose($pipes[1]);
+            fclose($pipes[2]);
+            $exitCode = proc_close($process);
+
+            $this->assertSame(0, $exitCode, $stderr."\n".$stdout);
+
+            $result = json_decode(
+                (string) file_get_contents($resultDir.'/schedules-runtime-result.json'),
+                true,
+                512,
+                JSON_THROW_ON_ERROR,
+            );
+            $dockerCalls = (string) file_get_contents($dockerLog);
+
+            $this->assertSame('non_passing_runner_blocked', $result['outcome']);
+            $this->assertTrue($result['runner_blocked']);
+            foreach ([
+                'cron_cadence',
+                'fixed_rate_cadence',
+                'list_describe_visibility',
+                'pause_resume_no_fire_window',
+                'delete_stops_future_fires',
+                'missed_fire_policy',
+                'restart_survival',
+                'nonexistent_workflow_type_outcome',
+            ] as $scenarioId) {
+                $scenario = $result['scenario_results'][$scenarioId];
+                $this->assertSame('runner_blocked', $scenario['status']);
+                $this->assertSame('conformance_runner_blocked', $scenario['linked_findings'][0]['finding_type']);
+                $this->assertSame('conformance_harness', $scenario['linked_findings'][0]['owning_surface']);
+            }
+            $this->assertStringContainsString('up -d --wait --wait-timeout 600', $dockerCalls);
+            $this->assertStringContainsString('down -v --remove-orphans', $dockerCalls);
+            $this->assertSame(4, substr_count($dockerCalls, 'down -v --remove-orphans'));
         } finally {
             $this->removeDirectory($resultDir);
         }
@@ -2896,7 +3003,7 @@ final class SchedulesConformanceRunnerContractTest extends TestCase
         $this->assertStringContainsString('async function runEvidenceShardTasks', $source);
         $this->assertStringContainsString('Promise.all(Array.from({ length: workerCount }, runWorker))', $source);
         $this->assertStringContainsString('DW_SCHEDULES_SHARD_CONCURRENCY', $source);
-        $this->assertStringContainsString('fixedServerPort > 0', $source);
+        $this->assertStringContainsString("return existingServerUrl === '' || fixedServerPort > 0", $source);
         $this->assertStringContainsString('publishedCliInstallPromise', $source);
         $this->assertStringContainsString('async function installPublishedCliArtifact', $source);
         $this->assertStringContainsString('maybeRunPythonLifecycleShard', $source);
@@ -2920,6 +3027,9 @@ final class SchedulesConformanceRunnerContractTest extends TestCase
 
         $this->assertStringContainsString('async function startPublishedComposeServices', $source);
         $this->assertStringContainsString("'up', '-d', '--wait', '--wait-timeout'", $source);
+        $this->assertStringContainsString('DW_SCHEDULES_COMPOSE_WAIT_TIMEOUT_SECONDS, 600', $source);
+        $this->assertStringContainsString('async function removePublishedComposeProject', $source);
+        $this->assertStringContainsString("'down', '-v', '--remove-orphans'", $source);
         $this->assertStringNotContainsString("'up', '-d', ...services", $source);
         $this->assertStringNotContainsString("'run', '--rm', 'bootstrap'", $source);
         $this->assertStringNotContainsString("'--no-deps'", $source);

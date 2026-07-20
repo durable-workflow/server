@@ -96,8 +96,8 @@ Environment overrides:
                                     unregistered workflow-type schedule shard.
                                     Defaults to auto.
   DW_SCHEDULES_SHARD_CONCURRENCY    Maximum automatic shard concurrency.
-                                    Defaults to 2, or 1 when using a fixed
-                                    Docker-published server port.
+                                    Defaults to 1 for local published Compose
+                                    stacks and 2 for an existing server URL.
   DW_SCHEDULES_ADVERSARIAL_INTERVAL Fixed-rate interval for the unregistered
                                     workflow-type probe. Defaults to PT10S.
   DW_SCHEDULES_ADVERSARIAL_FIRE_TIMEOUT_SECONDS
@@ -119,7 +119,7 @@ Environment overrides:
                                     to 120.
   DW_SCHEDULES_COMPOSE_WAIT_TIMEOUT_SECONDS
                                     Docker Compose --wait timeout for published
-                                    stack startup. Defaults to 180.
+                                    stack startup. Defaults to 600.
   DW_SCHEDULES_CADENCE_TIMEOUT_SECONDS
                                     Overall wait for cadence fires. Defaults to 420.
   DW_SCHEDULES_OPERATOR_PAUSE_SECONDS

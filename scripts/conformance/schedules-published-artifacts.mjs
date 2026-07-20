@@ -13,6 +13,25 @@ const PUBLISHED_ARTIFACTS_SCHEMA = 'durable-workflow.v2.schedules-runtime.publis
 const ARTIFACT_INSTALL_SCHEMA = 'durable-workflow.v2.schedules-runtime.artifact-install-evidence';
 const execFile = promisify(execFileCallback);
 
+class PublishedStackInfrastructureError extends Error {
+  constructor(message, name = 'PublishedStackInfrastructureError') {
+    super(message);
+    this.name = name;
+  }
+}
+
+class PublishedStackStartupError extends PublishedStackInfrastructureError {
+  constructor(message) {
+    super(message, 'PublishedStackStartupError');
+  }
+}
+
+class PublishedStackCleanupError extends PublishedStackInfrastructureError {
+  constructor(message) {
+    super(message, 'PublishedStackCleanupError');
+  }
+}
+
 const modulePath = fileURLToPath(import.meta.url);
 const repoRoot = process.env.DW_SCHEDULES_REPO_ROOT
   ?? path.resolve(path.dirname(modulePath), '../..');
@@ -364,7 +383,7 @@ function shardConcurrencyLimit(shardCount) {
   const existingServerUrl = stringValue(process.env.DW_SCHEDULES_SERVER_URL);
   const fixedServerPort = positiveInt(process.env.DW_SCHEDULES_SERVER_PORT, 0);
 
-  return existingServerUrl === '' && fixedServerPort > 0
+  return existingServerUrl === '' || fixedServerPort > 0
     ? 1
     : Math.min(2, shardCount);
 }
@@ -1988,10 +2007,11 @@ async function runPythonLifecycleShard({ startedAt, artifactVersions, artifactSo
 
     if (composeStarted) {
       await collectPythonLifecycleComposeLogs(composeProject, composeFiles);
-      await execFile('docker', ['compose', '-p', composeProject, ...composeFiles, 'down', '-v'], {
-        env: composeEnv(serverPort, serverImage, token, artifactVersions),
-        maxBuffer: 1024 * 1024 * 8,
-      }).catch(() => {});
+      await removePublishedComposeProject(
+        composeProject,
+        composeFiles,
+        composeEnv(serverPort, serverImage, token, artifactVersions),
+      );
     }
   }
 }
@@ -2358,7 +2378,7 @@ async function maybeRunCadenceShard(startedAt, artifactVersions, artifactSources
       serverImage === '' ? 'DW_SERVER_VERSION or DW_SERVER_IMAGE' : null,
     ].filter(Boolean).join(', ');
 
-    return cadenceFailureEvidence(
+    return cadenceBlockedEvidence(
       `Cadence shard could not start because ${missing} is unavailable.`,
       startedAt,
       artifactVersions,
@@ -2376,7 +2396,9 @@ async function maybeRunCadenceShard(startedAt, artifactVersions, artifactSources
     });
   } catch (error) {
     const reason = failureReasonWithShardLogs(error, 'schedules-cadence');
-    return cadenceFailureEvidence(reason, startedAt, artifactVersions, artifactSources);
+    return error instanceof PublishedStackInfrastructureError
+      ? cadenceBlockedEvidence(reason, startedAt, artifactVersions, artifactSources)
+      : cadenceFailureEvidence(reason, startedAt, artifactVersions, artifactSources);
   }
 }
 
@@ -2508,10 +2530,11 @@ async function runCadenceShard({ startedAt, artifactVersions, artifactSources, s
   } finally {
     if (composeStarted) {
       await collectComposeLogs(composeProject, composeFiles);
-      await execFile('docker', ['compose', '-p', composeProject, ...composeFiles, 'down', '-v'], {
-        env: composeEnv(serverPort, serverImage, token, artifactVersions),
-        maxBuffer: 1024 * 1024 * 8,
-      }).catch(() => {});
+      await removePublishedComposeProject(
+        composeProject,
+        composeFiles,
+        composeEnv(serverPort, serverImage, token, artifactVersions),
+      );
     }
 
     const finishedAt = timestamp();
@@ -2720,7 +2743,9 @@ function cadenceEvidenceFromObservations({
   const findings = [];
 
   for (const [scenarioId, observation] of Object.entries(observations)) {
-    const status = observation.verdict === 'pass' ? 'pass' : 'fail';
+    const status = observation.verdict === 'pass'
+      ? 'pass'
+      : (observation.verdict === 'runner_blocked' ? 'runner_blocked' : 'fail');
     const linkedFindings = status === 'pass'
       ? []
       : [cadenceFinding(scenarioId, observation)];
@@ -2780,6 +2805,25 @@ function cadenceFailureEvidence(reason, startedAt, artifactVersions, artifactSou
   });
 }
 
+function cadenceBlockedEvidence(reason, startedAt, artifactVersions, artifactSources) {
+  const finishedAt = timestamp();
+  const observations = {
+    cron_cadence: blockedCadenceObservation('cron_cadence', 'cron', reason, artifactVersions, artifactSources),
+    fixed_rate_cadence: blockedCadenceObservation('fixed_rate_cadence', 'fixed_rate', reason, artifactVersions, artifactSources),
+  };
+
+  return cadenceEvidenceFromObservations({
+    observations,
+    startedAt,
+    finishedAt,
+    artifactVersions,
+    artifactSources,
+    namespace: stringValue(process.env.DW_SCHEDULES_NAMESPACE) || 'schedules-conformance',
+    taskQueue: stringValue(process.env.DW_SCHEDULES_TASK_QUEUE) || 'schedules-cadence',
+    schedulesCreated: [],
+  });
+}
+
 function failedCadenceObservation(scenarioId, kind, reason, artifactVersions, artifactSources) {
   return {
     scenario_id: scenarioId,
@@ -2801,8 +2845,17 @@ function failedCadenceObservation(scenarioId, kind, reason, artifactVersions, ar
   };
 }
 
+function blockedCadenceObservation(scenarioId, kind, reason, artifactVersions, artifactSources) {
+  return {
+    ...failedCadenceObservation(scenarioId, kind, reason, artifactVersions, artifactSources),
+    blocked_reason: reason,
+    verdict: 'runner_blocked',
+  };
+}
+
 function cadenceFinding(scenarioId, observation) {
   const kindLabel = scenarioId === 'fixed_rate_cadence' ? 'fixed-rate' : 'cron';
+  const runnerBlocked = observation.verdict === 'runner_blocked';
   const reasons = [];
   if (observation.failure_reason) {
     reasons.push(observation.failure_reason);
@@ -2824,19 +2877,25 @@ function cadenceFinding(scenarioId, observation) {
   }
 
   return {
-    finding_id: `schedules-${kindLabel.replace(/[^a-z0-9]+/g, '-')}-cadence-finding`,
+    finding_id: runnerBlocked
+      ? `schedules-${kindLabel.replace(/[^a-z0-9]+/g, '-')}-cadence-runner-blocked`
+      : `schedules-${kindLabel.replace(/[^a-z0-9]+/g, '-')}-cadence-finding`,
     scenario_id: scenarioId,
-    finding_type: 'schedule_cadence_contract_gap',
-    owning_surface: 'server',
+    finding_type: runnerBlocked ? 'conformance_runner_blocked' : 'schedule_cadence_contract_gap',
+    owning_surface: runnerBlocked ? 'conformance_harness' : 'server',
     execution_scope: `${kindLabel}-cadence-shard`,
     artifact_versions: observation.artifact_versions ?? {},
     observed_behavior: reasons.join('; ') || `${kindLabel} cadence did not satisfy the published-artifact contract.`,
-    expected_behavior: scenarioId === 'fixed_rate_cadence'
-      ? 'A PT30S fixed-rate schedule fires at every documented interval without duplicate or skipped intervals.'
-      : 'A * * * * * cron schedule fires on documented minute cadence without duplicate or skipped intervals.',
-    next_acceptance_criterion: scenarioId === 'fixed_rate_cadence'
-      ? 'observe at least eight PT30S fixed-rate fires with nominal timestamps, actual timestamps, and drift milliseconds'
-      : 'observe at least four cron fires with nominal timestamps, actual timestamps, and drift milliseconds',
+    expected_behavior: runnerBlocked
+      ? 'The schedules conformance host starts the published server and scheduler before recording cadence behavior.'
+      : (scenarioId === 'fixed_rate_cadence'
+        ? 'A PT30S fixed-rate schedule fires at every documented interval without duplicate or skipped intervals.'
+        : 'A * * * * * cron schedule fires on documented minute cadence without duplicate or skipped intervals.'),
+    next_acceptance_criterion: runnerBlocked
+      ? 'restore published-stack startup and rerun schedules conformance'
+      : (scenarioId === 'fixed_rate_cadence'
+        ? 'observe at least eight PT30S fixed-rate fires with nominal timestamps, actual timestamps, and drift milliseconds'
+        : 'observe at least four cron fires with nominal timestamps, actual timestamps, and drift milliseconds'),
   };
 }
 
@@ -2885,7 +2944,9 @@ async function maybeRunOperatorControlsShard(startedAt, artifactVersions, artifa
     });
   } catch (error) {
     const reason = failureReasonWithShardLogs(error, 'schedules-operator-controls');
-    return operatorControlsFailureEvidence(reason, startedAt, artifactVersions, artifactSources);
+    return error instanceof PublishedStackInfrastructureError
+      ? operatorControlsBlockedEvidence(reason, startedAt, artifactVersions, artifactSources)
+      : operatorControlsFailureEvidence(reason, startedAt, artifactVersions, artifactSources);
   }
 }
 
@@ -3074,10 +3135,11 @@ async function runOperatorControlsShard({ startedAt, artifactVersions, artifactS
   } finally {
     if (composeStarted) {
       await collectOperatorControlsComposeLogs(composeProject, composeFiles);
-      await execFile('docker', ['compose', '-p', composeProject, ...composeFiles, 'down', '-v'], {
-        env: composeEnv(serverPort, serverImage, token, artifactVersions),
-        maxBuffer: 1024 * 1024 * 8,
-      }).catch(() => {});
+      await removePublishedComposeProject(
+        composeProject,
+        composeFiles,
+        composeEnv(serverPort, serverImage, token, artifactVersions),
+      );
     }
 
     writeJson(path.join(resultDir, 'schedules-operator-controls-run-metadata.json'), {
@@ -3879,7 +3941,9 @@ async function maybeRunMissedRestartShard(startedAt, artifactVersions, artifactS
     });
   } catch (error) {
     const reason = failureReasonWithShardLogs(error, 'schedules-missed-restart');
-    return missedRestartFailureEvidence(reason, startedAt, artifactVersions, artifactSources);
+    return error instanceof PublishedStackInfrastructureError
+      ? missedRestartBlockedEvidence(reason, startedAt, artifactVersions, artifactSources)
+      : missedRestartFailureEvidence(reason, startedAt, artifactVersions, artifactSources);
   }
 }
 
@@ -3918,23 +3982,15 @@ async function runMissedRestartShard({ startedAt, artifactVersions, artifactSour
     path.join(resultDir, 'schedules-missed-restart-docker-pull.log'),
   );
   composeStarted = true;
-  await execLogged(
-    'docker',
-    [
-      'compose',
-      '-p',
-      composeProject,
-      ...composeFiles,
-      'up',
-      '-d',
-      '--wait',
-      '--wait-timeout',
-      String(positiveInt(process.env.DW_SCHEDULES_COMPOSE_WAIT_TIMEOUT_SECONDS, 180)),
-      'server',
-    ],
-    path.join(resultDir, 'schedules-missed-restart-compose-up.log'),
-    env,
-  );
+  await startPublishedComposeServices({
+    composeProject,
+    composeFiles,
+    serverPort,
+    serverImage,
+    token,
+    artifactVersions,
+    logPrefix: 'schedules-missed-restart',
+  });
 
   try {
     serverUrl = await waitForReachableServerUrl({
@@ -4068,10 +4124,7 @@ async function runMissedRestartShard({ startedAt, artifactVersions, artifactSour
   } finally {
     if (composeStarted) {
       await collectMissedRestartComposeLogs(composeProject, composeFiles);
-      await execFile('docker', ['compose', '-p', composeProject, ...composeFiles, 'down', '-v'], {
-        env,
-        maxBuffer: 1024 * 1024 * 8,
-      }).catch(() => {});
+      await removePublishedComposeProject(composeProject, composeFiles, env);
     }
 
     writeJson(path.join(resultDir, 'schedules-missed-restart-run-metadata.json'), {
@@ -4477,7 +4530,9 @@ async function maybeRunAdversarialShard(startedAt, artifactVersions, artifactSou
     });
   } catch (error) {
     const reason = failureReasonWithShardLogs(error, 'schedules-adversarial');
-    return adversarialFailureEvidence(reason, startedAt, artifactVersions, artifactSources);
+    return error instanceof PublishedStackInfrastructureError
+      ? adversarialBlockedEvidence(reason, startedAt, artifactVersions, artifactSources)
+      : adversarialFailureEvidence(reason, startedAt, artifactVersions, artifactSources);
   }
 }
 
@@ -4625,10 +4680,11 @@ async function runAdversarialShard({ startedAt, artifactVersions, artifactSource
   } finally {
     if (composeStarted) {
       await collectAdversarialComposeLogs(composeProject, composeFiles);
-      await execFile('docker', ['compose', '-p', composeProject, ...composeFiles, 'down', '-v'], {
-        env: composeEnv(serverPort, serverImage, token, artifactVersions),
-        maxBuffer: 1024 * 1024 * 8,
-      }).catch(() => {});
+      await removePublishedComposeProject(
+        composeProject,
+        composeFiles,
+        composeEnv(serverPort, serverImage, token, artifactVersions),
+      );
     }
 
     writeJson(path.join(resultDir, 'schedules-adversarial-run-metadata.json'), {
@@ -5560,10 +5616,11 @@ async function runCliSurfaceShard({ startedAt, artifactVersions, artifactSources
 
     if (composeStarted) {
       await collectCliComposeLogs(composeProject, composeFiles);
-      await execFile('docker', ['compose', '-p', composeProject, ...composeFiles, 'down', '-v'], {
-        env: composeEnv(serverPort, serverImage, token, artifactVersions),
-        maxBuffer: 1024 * 1024 * 8,
-      }).catch(() => {});
+      await removePublishedComposeProject(
+        composeProject,
+        composeFiles,
+        composeEnv(serverPort, serverImage, token, artifactVersions),
+      );
     }
   }
 }
@@ -5675,13 +5732,52 @@ async function startPublishedComposeServices({
 }) {
   const env = composeEnv(serverPort, serverImage, token, artifactVersions);
   const baseArgs = ['compose', '-p', composeProject, ...composeFiles];
-  const waitTimeoutSeconds = positiveInt(process.env.DW_SCHEDULES_COMPOSE_WAIT_TIMEOUT_SECONDS, 180);
+  const waitTimeoutSeconds = positiveInt(process.env.DW_SCHEDULES_COMPOSE_WAIT_TIMEOUT_SECONDS, 600);
 
-  await execLogged(
-    'docker',
-    [...baseArgs, 'up', '-d', '--wait', '--wait-timeout', String(waitTimeoutSeconds)],
-    path.join(resultDir, `${logPrefix}-compose-up.log`),
-    env,
+  try {
+    await execLogged(
+      'docker',
+      [...baseArgs, 'up', '-d', '--wait', '--wait-timeout', String(waitTimeoutSeconds)],
+      path.join(resultDir, `${logPrefix}-compose-up.log`),
+      env,
+    );
+  } catch (error) {
+    await collectPublishedComposeStartupLogs(composeProject, composeFiles, logPrefix, env);
+    await removePublishedComposeProject(composeProject, composeFiles, env);
+    throw new PublishedStackStartupError(error instanceof Error ? error.message : String(error));
+  }
+}
+
+async function collectPublishedComposeStartupLogs(composeProject, composeFiles, logPrefix, env) {
+  for (const service of ['server', 'scheduler', 'worker', 'bootstrap', 'mysql', 'redis']) {
+    await execLogged(
+      'docker',
+      ['compose', '-p', composeProject, ...composeFiles, 'logs', service],
+      path.join(resultDir, `${logPrefix}-${service}.log`),
+      env,
+    ).catch(() => {});
+  }
+}
+
+async function removePublishedComposeProject(composeProject, composeFiles, env) {
+  const args = ['compose', '-p', composeProject, ...composeFiles, 'down', '-v', '--remove-orphans'];
+  let lastError = null;
+
+  for (let attempt = 1; attempt <= 2; attempt += 1) {
+    try {
+      await execFile('docker', args, {
+        env,
+        maxBuffer: 1024 * 1024 * 8,
+      });
+      return;
+    } catch (error) {
+      lastError = error;
+    }
+  }
+
+  const detail = compactLogText(lastError?.stderr || lastError?.message || lastError);
+  throw new PublishedStackCleanupError(
+    `docker compose cleanup failed for project ${composeProject} after 2 attempts: ${detail}`,
   );
 }
 
@@ -6265,10 +6361,11 @@ async function runCrossLanguageShard({ startedAt, artifactVersions, artifactSour
 
     if (composeStarted) {
       await collectCrossLanguageComposeLogs(composeProject, composeFiles);
-      await execFile('docker', ['compose', '-p', composeProject, ...composeFiles, 'down', '-v'], {
-        env: composeEnv(serverPort, serverImage, token, artifactVersions),
-        maxBuffer: 1024 * 1024 * 8,
-      }).catch(() => {});
+      await removePublishedComposeProject(
+        composeProject,
+        composeFiles,
+        composeEnv(serverPort, serverImage, token, artifactVersions),
+      );
     }
   }
 }
@@ -7471,10 +7568,11 @@ async function runPhpSurfaceShard({ startedAt, artifactVersions, artifactSources
 
     if (composeStarted) {
       await collectPhpSurfaceComposeLogs(composeProject, composeFiles);
-      await execFile('docker', ['compose', '-p', composeProject, ...composeFiles, 'down', '-v'], {
-        env: composeEnv(serverPort, serverImage, token, artifactVersions),
-        maxBuffer: 1024 * 1024 * 8,
-      }).catch(() => {});
+      await removePublishedComposeProject(
+        composeProject,
+        composeFiles,
+        composeEnv(serverPort, serverImage, token, artifactVersions),
+      );
     }
   }
 }
@@ -9630,6 +9728,7 @@ async function waitForReachableServerUrl({
   serverImage = '',
   token = '',
   artifactVersions = {},
+  startupPhase = true,
 }) {
   const candidates = await serverUrlCandidates({
     preferredUrl,
@@ -9659,13 +9758,19 @@ async function waitForReachableServerUrl({
     .map((candidate) => `${candidate}/api/ready => ${observations.get(candidate) ?? 'not probed'}`)
     .join('; ');
 
-  throw new Error(`published server did not become ready; tried ${details}`);
+  const reason = `published server did not become ready; tried ${details}`;
+  if (startupPhase) {
+    throw new PublishedStackStartupError(reason);
+  }
+
+  throw new Error(reason);
 }
 
 async function waitForServerReady(serverUrl, timeoutSeconds) {
   await waitForReachableServerUrl({
     preferredUrl: serverUrl,
     timeoutSeconds,
+    startupPhase: false,
   });
 }
 
