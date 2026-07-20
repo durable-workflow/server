@@ -294,8 +294,8 @@ function artifactSources() {
     server: 'published_docker_image',
     cli: 'official_install_script',
     'sdk-php': 'composer_release',
-    'workflow-php': 'composer_release',
-    workflow: 'composer_release',
+    'workflow-php': 'server_embedded_composer_release',
+    workflow: 'server_embedded_composer_release',
     'sdk-python': 'pypi_release',
     waterline: 'published_waterline_release',
   };
@@ -2534,6 +2534,7 @@ if (isObject(waterlineShard)) {
 
 if (isObject(sdkPhpShard)) {
   mergeSdkPhpShard(result, sdkPhpShard, versions, reason);
+  mergeCodecShard(result, sdkPhpShard, versions);
 }
 
 if (isObject(codecShard)) {

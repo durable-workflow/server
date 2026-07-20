@@ -6,7 +6,7 @@ final class PhpSdkConformanceContract
 {
     public const SCHEMA = 'durable-workflow.v2.php-sdk-conformance-contract';
 
-    public const VERSION = 1;
+    public const VERSION = 2;
 
     /** @return array<string, mixed> */
     public static function manifest(): array
@@ -131,6 +131,31 @@ final class PhpSdkConformanceContract
                 'published_server_image_required' => true,
                 'published_packagist_sdk_required' => true,
                 'host_runner_implemented' => true,
+                'focused_scopes' => [
+                    'search-attributes' => [
+                        'command' => 'scripts/conformance/php-sdk-published-artifacts.sh --scope search-attributes --result-dir <result-dir>',
+                        'result_file' => 'sdk-php-search-attributes-shard.json',
+                        'aggregate_handoff' => 'scripts/conformance/search-attributes-published-artifacts.sh',
+                        'standalone_connectivity_package' => 'durable-workflow/sdk',
+                        'workflow_standalone_client_or_worker_loaded' => false,
+                        'required_environment' => [
+                            'DW_PHP_SDK_VERSION',
+                            'DW_SERVER_VERSION',
+                            'DW_SERVER_IMAGE',
+                            'DW_PHP_SDK_CONFORMANCE_SERVER_URL',
+                            'DW_PHP_SDK_CONFORMANCE_NAMESPACE',
+                        ],
+                        'required_evidence' => [
+                            'worker_start_and_upsert_visibility',
+                            'typed_values',
+                            'query_visibility',
+                            'namespace_isolation',
+                            'python_to_php_codec_reader',
+                            'php_to_python_codec_writer_handoff',
+                            'bounded_failure_attribution',
+                        ],
+                    ],
+                ],
             ],
         ];
     }

@@ -16,7 +16,7 @@ final class SearchAttributeRuntimeContract
 {
     public const SCHEMA = 'durable-workflow.v2.search-attribute-runtime.contract';
 
-    public const VERSION = 15;
+    public const VERSION = 16;
 
     public const RESULT_SCHEMA = 'durable-workflow.v2.search-attribute-runtime.result';
 
@@ -58,7 +58,7 @@ final class SearchAttributeRuntimeContract
                     'server' => 'docker image durableworkflow/server:<latest>',
                     'cli' => 'official dw install script pinned to its latest release tag',
                     'sdk-php' => 'Composer package durable-workflow/sdk:<latest>',
-                    'workflow-php' => 'Composer package durable-workflow/workflow:2.0.0-alpha.<latest>',
+                    'workflow-php' => 'Embedded engine package in the exact published server image; never the standalone PHP client or worker',
                     'sdk-python' => 'PyPI package durable-workflow==<latest>',
                     'waterline' => 'published Waterline package or image matching the latest release tag',
                 ],
@@ -529,10 +529,52 @@ final class SearchAttributeRuntimeContract
                     'sdk-php' => [
                         'scope' => 'sdk-php-search-attribute-shard',
                         'artifact' => 'durable-workflow/sdk',
+                        'runner_path' => 'scripts/conformance/php-sdk-published-artifacts.sh',
+                        'runner_command' => 'scripts/conformance/php-sdk-published-artifacts.sh --scope search-attributes --result-dir <result-dir>',
+                        'result_file' => 'sdk-php-search-attributes-shard.json',
+                        'required_environment' => [
+                            'DW_PHP_SDK_VERSION',
+                            'DW_SERVER_VERSION',
+                            'DW_SERVER_IMAGE',
+                            'DW_PHP_SDK_CONFORMANCE_SERVER_URL',
+                            'DW_PHP_SDK_CONFORMANCE_NAMESPACE',
+                        ],
+                        'package_ownership' => [
+                            'standalone_connectivity' => 'durable-workflow/sdk',
+                            'embedded_engine' => 'durable-workflow/workflow',
+                            'workflow_standalone_client_or_worker_loaded' => false,
+                        ],
                         'must_cover_scenarios' => [
                             'php_worker_start_and_upsert_visibility',
                             'python_to_php_codec_round_trip',
                             'php_to_python_codec_round_trip',
+                        ],
+                        'must_capture_fields' => [
+                            'workflow_id',
+                            'run_id',
+                            'worker_runtime',
+                            'start_search_attributes',
+                            'upserted_search_attributes',
+                            'expected_search_attributes',
+                            'actual_search_attributes',
+                            'typed_values',
+                            'visibility_query_match',
+                            'query_visibility',
+                            'namespace_isolation',
+                            'codec_round_trips.python_to_php',
+                            'codec_round_trips.php_to_python',
+                            'package_ownership',
+                        ],
+                        'python_writer_fixture_environment' => 'DW_PHP_SDK_SEARCH_ATTRIBUTES_PYTHON_FIXTURE_JSON',
+                        'php_writer_handoff_fields' => [
+                            'codec_round_trips.php_to_python.namespace',
+                            'codec_round_trips.php_to_python.workflow_id',
+                            'codec_round_trips.php_to_python.written_attributes',
+                            'codec_round_trips.php_to_python.query',
+                        ],
+                        'bounded_evidence' => [
+                            'matched_workflow_ids_max_items' => 20,
+                            'retained_diagnostic_excerpt_max_bytes' => 4096,
                         ],
                         'fallback_status_when_command_missing' => 'unsupported',
                         'fallback_finding_type' => 'unsupported_public_surface',
@@ -584,6 +626,16 @@ final class SearchAttributeRuntimeContract
                         'scenario_status' => 'runner_blocked',
                         'finding_type' => 'runner_gap',
                         'owner' => 'conformance_harness',
+                    ],
+                    'sdk_php_shard_not_invoked' => [
+                        'scenario_status' => 'not_covered',
+                        'finding_type' => 'conformance_runner_coverage_gap',
+                        'owner' => 'conformance_harness',
+                    ],
+                    'sdk_php_product_mismatch' => [
+                        'scenario_status' => 'fail',
+                        'finding_owner_from_shard' => true,
+                        'allowed_owners' => ['sdk-php', 'sdk-php-release', 'server'],
                     ],
                 ],
             ],

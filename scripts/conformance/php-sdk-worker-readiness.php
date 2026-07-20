@@ -112,8 +112,8 @@ function write_json_atomically(string $path, array $payload): void
     }
 }
 
-$required = $scope === 'namespace'
-    ? [
+$required = match ($scope) {
+    'namespace' => [
         'workflow_type' => 'php.sdk.simple',
         'queries' => [],
         'query_contracts' => [],
@@ -121,8 +121,18 @@ $required = $scope === 'namespace'
         'signal_contracts' => [],
         'updates' => [],
         'update_contracts' => [],
-    ]
-    : php_sdk_waiting_command_contract();
+    ],
+    'search-attributes' => [
+        'workflow_type' => 'php.sdk.search-attributes',
+        'queries' => [],
+        'query_contracts' => [],
+        'signals' => [],
+        'signal_contracts' => [],
+        'updates' => [],
+        'update_contracts' => [],
+    ],
+    default => php_sdk_waiting_command_contract(),
+};
 $response = describe_worker($server, $namespace, $controlToken, $workerId);
 $observedAt = gmdate('Y-m-d\TH:i:s\Z');
 $observationFile = $resultDir.'/php-sdk-worker-'.$workerId.'.readiness-observation.json';

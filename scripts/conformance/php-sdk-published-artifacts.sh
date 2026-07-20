@@ -3,7 +3,7 @@ set -euo pipefail
 
 usage() {
   cat <<'USAGE'
-Usage: php-sdk-published-artifacts.sh [--result-dir DIR|--result-dir=DIR] [--scope lifecycle|namespace]
+Usage: php-sdk-published-artifacts.sh [--result-dir DIR|--result-dir=DIR] [--scope lifecycle|namespace|search-attributes]
 
 Runs the released durable-workflow/sdk package against an already-running,
 exact public server image. The runner creates a disposable Composer project,
@@ -24,7 +24,9 @@ Optional environment:
   DW_PHP_SDK_CONFORMANCE_WORKER_TOKEN Optional worker-plane token; defaults to TOKEN.
   DW_PHP_SDK_CONFORMANCE_PHP_BIN      PHP binary override.
   DW_PHP_SDK_CONFORMANCE_COMPOSER_BIN Composer binary override.
-  DW_PHP_SDK_CONFORMANCE_SCOPE        lifecycle (default) or namespace.
+  DW_PHP_SDK_CONFORMANCE_SCOPE        lifecycle (default), namespace, or search-attributes.
+  DW_PHP_SDK_SEARCH_ATTRIBUTES_PYTHON_FIXTURE_JSON
+                                        Optional Python-writer fixture for the PHP reader codec cell.
   DW_PHP_SDK_CONFORMANCE_REPLAY_MATRIX=1 Exercise the full deterministic replay matrix.
   DW_PHP_SDK_CONFORMANCE_WORKER_RUN_DELAY_MS Delay managed registration for readiness regression probes.
 USAGE
@@ -62,7 +64,7 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
-if [[ "$scope" != lifecycle && "$scope" != namespace ]]; then
+if [[ "$scope" != lifecycle && "$scope" != namespace && "$scope" != search-attributes ]]; then
   printf 'unsupported PHP SDK conformance scope: %s\n' "$scope" >&2
   usage >&2
   exit 2
@@ -116,6 +118,7 @@ write_failure() {
   SERVER_IMAGE="$server_image" \
   SERVER_URL="$server_url" \
   NAMESPACE="$namespace" \
+  CONFORMANCE_SCOPE="$scope" \
   STARTED_AT="$started_at" \
   FAILURE_CLASSIFICATION="$classification" \
   FAILURE_OWNER="$owning_surface" \
@@ -352,6 +355,53 @@ const result = {
   scenario_results: {},
   findings: [finding],
 };
+if (process.env.CONFORMANCE_SCOPE === 'search-attributes') {
+  const searchEvidence = readJson(path.join(resultDir, 'php-sdk-search-attributes-evidence.json')) || {};
+  const scenarioId = 'php_worker_start_and_upsert_visibility';
+  const scenarioStatus = runnerBlocked ? 'runner_blocked' : 'fail';
+  const searchShard = {
+    schema: 'durable-workflow.v2.search-attribute-runtime.sdk-php-shard',
+    version: 1,
+    generated_at: result.generated_at,
+    status: scenarioStatus,
+    runner_blocked: runnerBlocked,
+    artifact_versions: result.artifact_versions,
+    artifact_sources: result.artifact_sources,
+    package_ownership: {
+      standalone_connectivity: 'durable-workflow/sdk',
+      embedded_engine: 'durable-workflow/workflow',
+      workflow_standalone_client_or_worker_loaded: false,
+    },
+    observed_outputs: {
+      published_artifact_cell_executed: observed.published_artifact_cell_executed,
+      failure_stage: process.env.FAILURE_STAGE,
+      failure_classification: classification,
+      failure_owner: owningSurface,
+      worker_startup: observed.worker_startup || null,
+      partial_evidence: searchEvidence,
+    },
+    scenario_results: {
+      [scenarioId]: {
+        scenario_id: scenarioId,
+        status: scenarioStatus,
+        observed_outputs: {
+          published_artifact_cell_executed: observed.published_artifact_cell_executed,
+          failure_stage: process.env.FAILURE_STAGE,
+          failure_classification: classification,
+          failure_owner: owningSurface,
+          partial_evidence: searchEvidence,
+        },
+        linked_findings: [finding],
+      },
+    },
+    findings: [finding],
+    linked_findings: [finding],
+  };
+  fs.writeFileSync(
+    path.join(resultDir, 'sdk-php-search-attributes-shard.json'),
+    `${JSON.stringify(searchShard, null, 2)}\n`,
+  );
+}
 const replayFailureScenario = {
   replay_matrix_completed_history: 'php_completed_history_activity_replay',
   replay_matrix_in_flight_start: 'php_in_flight_signal_restart_timing',
@@ -572,6 +622,237 @@ fs.writeFileSync(path.join(resultDir, 'php-sdk-lifecycle-evidence.json'), `${JSO
 NODE
 }
 
+write_search_attribute_result() {
+  RESULT_DIR="$result_dir" \
+  SDK_VERSION="$sdk_version" \
+  SERVER_VERSION="$server_version" \
+  SERVER_IMAGE="$server_image" \
+  NAMESPACE="$namespace" \
+  STARTED_AT="$started_at" \
+  node <<'NODE'
+const fs = require('node:fs');
+const path = require('node:path');
+
+const resultDir = process.env.RESULT_DIR;
+const readJson = (name) => JSON.parse(fs.readFileSync(path.join(resultDir, name), 'utf8'));
+const evidence = readJson('php-sdk-search-attributes-evidence.json');
+const worker = readJson('php-sdk-worker-php-sdk-worker-1.json');
+const lock = readJson('php-sdk-project/composer.lock');
+const packages = [...(lock.packages || []), ...(lock['packages-dev'] || [])];
+const sdk = packages.find((item) => item && item.name === 'durable-workflow/sdk') || {};
+const normalizeVersion = (value) => String(value || '').replace(/^v/, '');
+const expectedTypes = {
+  customer_id: 'string',
+  order_total_cents: 'int',
+  discount_ratio: 'double',
+  priority_tier: 'keyword',
+  is_vip: 'bool',
+  created_at: 'datetime',
+  tags: 'keyword_list',
+};
+const normalizeValue = (name, value) => {
+  if (name === 'created_at' && typeof value === 'string') {
+    const parsed = Date.parse(value);
+    return Number.isNaN(parsed) ? value : new Date(parsed).toISOString();
+  }
+  return value;
+};
+const mapsMatch = (expected, actual) => Object.entries(expected || {}).every(
+  ([name, value]) => Object.hasOwn(actual || {}, name)
+    && JSON.stringify(normalizeValue(name, value)) === JSON.stringify(normalizeValue(name, actual[name])),
+);
+const definitionTypesMatch = Object.entries(expectedTypes).every(
+  ([name, type]) => evidence.schema_definitions?.[name] === type,
+);
+const actualAttributes = evidence.actual_search_attributes || {};
+const expectedAttributes = evidence.expected_search_attributes || {};
+const queryVisibility = evidence.query_visibility || {};
+const namespaceIsolation = evidence.namespace_isolation || {};
+const cluster = evidence.cluster_info || {};
+const clusterVersion = cluster.version || cluster.server_version || '';
+const workflowPackageAbsent = !packages.some((item) => item && item.name === 'durable-workflow/workflow');
+const assertions = {
+  exact_sdk_version: normalizeVersion(sdk.version) === normalizeVersion(process.env.SDK_VERSION),
+  exact_server_version: Boolean(clusterVersion)
+    && normalizeVersion(clusterVersion) === normalizeVersion(process.env.SERVER_VERSION),
+  sdk_dist_provenance: Boolean(sdk.dist?.type && sdk.dist?.url && sdk.dist.type !== 'path'),
+  standalone_workflow_package_absent: workflowPackageAbsent,
+  distinct_client_worker_processes: evidence.identity?.process_id !== worker.process_id,
+  worker_runtime_is_sdk_php: evidence.worker_runtime === 'sdk-php',
+  worker_started_and_upserted_typed_values: mapsMatch(expectedAttributes, actualAttributes)
+    && mapsMatch(evidence.upserted_search_attributes || {}, evidence.workflow_result?.upserted_search_attributes || {}),
+  schema_definitions_are_typed: definitionTypesMatch,
+  query_visibility: evidence.visibility_query_match === true
+    && queryVisibility.attribute_source === 'upserted_search_attributes'
+    && queryVisibility.attribute_name === 'priority_tier'
+    && queryVisibility.attribute_value === evidence.upserted_search_attributes?.priority_tier,
+  namespace_isolation: namespaceIsolation.cross_namespace_leak_detected === false
+    && namespaceIsolation.attribute_source === 'start_search_attributes'
+    && namespaceIsolation.attribute_name === 'customer_id'
+    && namespaceIsolation.attribute_value === evidence.start_search_attributes?.customer_id
+    && namespaceIsolation.peer_execution_required === false
+    && namespaceIsolation.primary_visibility_match === true
+    && namespaceIsolation.peer_visibility_match === true
+    && Number(namespaceIsolation.primary_query_count) >= 1
+    && Number(namespaceIsolation.peer_query_count) >= 1,
+  local_product_source_checkouts_used_false: true,
+};
+const assertionOwners = {
+  exact_sdk_version: ['sdk-php-release', 'package_publication_gap'],
+  exact_server_version: ['server', 'product_behavior_gap'],
+  sdk_dist_provenance: ['sdk-php-release', 'package_publication_gap'],
+  standalone_workflow_package_absent: ['sdk-php-release', 'package_boundary_gap'],
+  distinct_client_worker_processes: ['conformance_harness', 'conformance_runner_gap'],
+  worker_runtime_is_sdk_php: ['sdk-php', 'product_behavior_gap'],
+  worker_started_and_upserted_typed_values: ['sdk-php', 'product_behavior_gap'],
+  schema_definitions_are_typed: ['server', 'product_behavior_gap'],
+  query_visibility: ['server', 'product_behavior_gap'],
+  namespace_isolation: ['server', 'product_behavior_gap'],
+  local_product_source_checkouts_used_false: ['conformance_harness', 'conformance_runner_gap'],
+};
+const failedAssertions = Object.keys(assertions).filter((name) => assertions[name] !== true);
+const findings = failedAssertions.map((name) => {
+  const [owner, findingType] = assertionOwners[name];
+  return {
+    finding_id: `php-sdk-search-attributes-${name.replaceAll('_', '-')}`,
+    scenario_id: 'php_worker_start_and_upsert_visibility',
+    finding_type: findingType,
+    classification: owner === 'conformance_harness' ? 'runner' : 'product',
+    owning_surface: owner,
+    failure_stage: 'search_attribute_assertions',
+    failed_assertions: [name],
+    observed_behavior: `Published PHP SDK search-attribute assertion failed: ${name}.`,
+    next_acceptance_criterion: 'Correct the named public surface and rerun the exact Packagist SDK against the exact public server image.',
+  };
+});
+const onlyRunnerFailures = findings.length > 0
+  && findings.every((finding) => finding.owning_surface === 'conformance_harness');
+const runtimeStatus = failedAssertions.length === 0 ? 'pass' : (onlyRunnerFailures ? 'runner_blocked' : 'fail');
+
+const codecRoundTrips = evidence.codec_round_trips || {};
+const pythonToPhp = codecRoundTrips.python_to_php;
+const pythonToPhpStatus = pythonToPhp?.status === 'pass' ? 'pass' : 'not_covered';
+const pythonToPhpFindings = pythonToPhpStatus === 'pass' ? [] : [{
+  finding_id: 'php-sdk-search-attributes-python-to-php-observer-required',
+  scenario_id: 'python_to_php_codec_round_trip',
+  finding_type: 'conformance_runner_coverage_gap',
+  classification: 'runner',
+  owning_surface: 'conformance_harness',
+  observed_behavior: 'The PHP SDK cell did not receive a published Python-writer fixture with CLI verification.',
+  next_acceptance_criterion: 'Provide the Python-writer fixture to the PHP SDK search-attributes scope and retain both PHP SDK and CLI reader evidence.',
+}];
+const phpToPythonFindings = [{
+  finding_id: 'php-sdk-search-attributes-php-to-python-observer-required',
+  scenario_id: 'php_to_python_codec_round_trip',
+  finding_type: 'conformance_runner_coverage_gap',
+  classification: 'runner',
+  owning_surface: 'conformance_harness',
+  observed_behavior: 'The PHP SDK writer fixture is ready for the published Python SDK observer.',
+  next_acceptance_criterion: 'Run the published Python SDK observer against the emitted namespace and workflow identity, then attach its decoded typed values.',
+}];
+const scenarioResults = {
+  php_worker_start_and_upsert_visibility: {
+    scenario_id: 'php_worker_start_and_upsert_visibility',
+    status: runtimeStatus,
+    observed_outputs: {
+      workflow_id: evidence.workflow_id,
+      run_id: evidence.run_id,
+      worker_runtime: evidence.worker_runtime,
+      start_search_attributes: evidence.start_search_attributes,
+      upserted_search_attributes: evidence.upserted_search_attributes,
+      expected_search_attributes: expectedAttributes,
+      actual_search_attributes: actualAttributes,
+      typed_values: evidence.typed_values,
+      visibility_query_match: evidence.visibility_query_match,
+      query_visibility: evidence.query_visibility,
+      namespace_isolation: evidence.namespace_isolation,
+      worker_process: worker,
+      package_ownership: evidence.package_ownership,
+    },
+    linked_findings: findings,
+  },
+  python_to_php_codec_round_trip: {
+    scenario_id: 'python_to_php_codec_round_trip',
+    status: pythonToPhpStatus,
+    observed_outputs: pythonToPhp ? {python_to_php: pythonToPhp} : {},
+    linked_findings: pythonToPhpFindings,
+  },
+  php_to_python_codec_round_trip: {
+    scenario_id: 'php_to_python_codec_round_trip',
+    status: 'not_covered',
+    observed_outputs: {php_to_python: codecRoundTrips.php_to_python_writer || {}},
+    linked_findings: phpToPythonFindings,
+  },
+};
+const generatedAt = new Date().toISOString().replace(/\.\d{3}Z$/, 'Z');
+const artifactVersions = {'sdk-php': process.env.SDK_VERSION || '', server: process.env.SERVER_VERSION || ''};
+const artifactSources = {
+  'sdk-php': `packagist://durable-workflow/sdk@${process.env.SDK_VERSION || ''}`,
+  server: `docker://${String(process.env.SERVER_IMAGE || '').replace(/^docker:\/\//, '')}`,
+};
+const shard = {
+  schema: 'durable-workflow.v2.search-attribute-runtime.sdk-php-shard',
+  version: 1,
+  coverage_scope: 'sdk-php-search-attribute-shard',
+  generated_at: generatedAt,
+  started_at: process.env.STARTED_AT,
+  finished_at: generatedAt,
+  status: runtimeStatus,
+  runner_blocked: runtimeStatus === 'runner_blocked',
+  artifact_versions: artifactVersions,
+  artifact_sources: artifactSources,
+  package_provenance: {
+    package: 'durable-workflow/sdk',
+    version: sdk.version || null,
+    source: 'packagist',
+    dist: sdk.dist || null,
+  },
+  package_ownership: evidence.package_ownership,
+  process_boundary: {
+    client_worker_distinct_processes: assertions.distinct_client_worker_processes,
+    client_processes: [evidence.identity || {}],
+    worker_processes: [worker],
+  },
+  assertions,
+  observed_outputs: scenarioResults.php_worker_start_and_upsert_visibility.observed_outputs,
+  codec_round_trips: {
+    python_to_php: pythonToPhp || null,
+    php_to_python: codecRoundTrips.php_to_python_writer
+      ? {status: 'not_covered', ...codecRoundTrips.php_to_python_writer}
+      : null,
+  },
+  scenario_results: scenarioResults,
+  evidence_bounds: {
+    matched_workflow_ids_max_items: 20,
+    retained_diagnostic_excerpt_max_bytes: 4096,
+  },
+  local_product_source_checkouts_used: false,
+  findings: [...findings, ...pythonToPhpFindings, ...phpToPythonFindings],
+  linked_findings: findings,
+};
+const result = {
+  schema: 'durable-workflow.v2.php-sdk-published-artifact-conformance',
+  version: 1,
+  coverage_scope: 'sdk-php-search-attribute-shard',
+  generated_at: generatedAt,
+  started_at: process.env.STARTED_AT,
+  finished_at: generatedAt,
+  outcome: runtimeStatus,
+  runner_blocked: runtimeStatus === 'runner_blocked',
+  artifact_versions: artifactVersions,
+  artifact_sources: artifactSources,
+  process_boundary: shard.process_boundary,
+  scenario_results: scenarioResults,
+  assertions,
+  local_product_source_checkouts_used: false,
+  findings: shard.findings,
+  search_attribute_shard: shard,
+};
+fs.writeFileSync(path.join(resultDir, 'sdk-php-search-attributes-shard.json'), `${JSON.stringify(shard, null, 2)}\n`);
+fs.writeFileSync(path.join(resultDir, 'php-sdk-conformance-result.json'), `${JSON.stringify(result, null, 2)}\n`);
+NODE
+}
+
 runtime_failure_summary() {
   local classification="${1:?classification is required}"
   local stage="${2:?stage is required}"
@@ -687,6 +968,7 @@ fi
 
 cp "$script_dir/php-sdk-runtime-failure.php" "$project_dir/runtime-failure.php"
 cp "$script_dir/php-sdk-started-contract.php" "$project_dir/started-contract.php"
+cp "$script_dir/php-sdk-search-attribute-probe.php" "$project_dir/search-attribute-probe.php"
 cp "$script_dir/php-sdk-assertion-failure-evidence.php" "$project_dir/assertion-failure-evidence.php"
 cp "$script_dir/php-sdk-activity-callback-cardinality.php" "$project_dir/activity-callback-cardinality.php"
 cp "$script_dir/php-sdk-signal-input-decoder.php" "$project_dir/signal-input-decoder.php"
@@ -944,6 +1226,18 @@ $worker->registerWorkflow(
         return ['result' => $activity, 'workflow_process_id' => getmypid()];
     },
 );
+$worker->registerWorkflow(
+    'php.sdk.search-attributes',
+    static function (WorkflowContext $context, array $upsertedAttributes) use ($callbackFile): Generator {
+        increment_callback($callbackFile, 'search_attribute_workflow_replays');
+        yield $context->upsertSearchAttributes($upsertedAttributes);
+
+        return [
+            'upserted_search_attributes' => $upsertedAttributes,
+            'workflow_process_id' => getmypid(),
+        ];
+    },
+);
 if (! $namespaceScope) {
     $worker->registerWorkflow(
         'php.sdk.replay',
@@ -1149,6 +1443,7 @@ declare(strict_types=1);
 require __DIR__.'/vendor/autoload.php';
 require __DIR__.'/runtime-failure.php';
 require __DIR__.'/started-contract.php';
+require __DIR__.'/search-attribute-probe.php';
 
 use Composer\InstalledVersions;
 use DurableWorkflow\Client;
@@ -1362,6 +1657,309 @@ function run_namespace_probe(
     return $evidence;
 }
 
+/** @param array<string, mixed> $expected @param array<string, mixed> $actual */
+function search_attribute_maps_match(array $expected, array $actual): bool
+{
+    foreach ($expected as $name => $value) {
+        if (! array_key_exists($name, $actual)) {
+            return false;
+        }
+        $observed = $actual[$name];
+        if (is_array($value)) {
+            if (! is_array($observed) || array_values($value) !== array_values($observed)) {
+                return false;
+            }
+            continue;
+        }
+        if (is_string($value) && is_string($observed) && str_contains($name, 'created_at')) {
+            try {
+                if ((new DateTimeImmutable($value))->getTimestamp() !== (new DateTimeImmutable($observed))->getTimestamp()) {
+                    return false;
+                }
+                continue;
+            } catch (Throwable) {
+                return false;
+            }
+        }
+        if ($value !== $observed) {
+            return false;
+        }
+    }
+
+    return true;
+}
+
+/** @return array{page: DurableWorkflow\Model\WorkflowPage, elapsed_ms: float} */
+function wait_for_search_attribute_query(
+    Client $client,
+    string $query,
+    string $workflowId,
+    float $timeoutSeconds = 5.0,
+): array {
+    $started = microtime(true);
+    do {
+        $page = $client->listWorkflows(query: $query);
+        $workflowIds = array_map(
+            static fn ($execution): string => $execution->workflowId,
+            $page->executions,
+        );
+        if (in_array($workflowId, $workflowIds, true)) {
+            return ['page' => $page, 'elapsed_ms' => round((microtime(true) - $started) * 1000, 3)];
+        }
+        usleep(100000);
+    } while (microtime(true) - $started < $timeoutSeconds);
+
+    return ['page' => $page, 'elapsed_ms' => round((microtime(true) - $started) * 1000, 3)];
+}
+
+/** @param array<string, mixed> $identity @return array<string, mixed> */
+function run_search_attribute_probe(
+    Client $client,
+    string $namespace,
+    string $queue,
+    string $resultDir,
+    string $suffix,
+    array $identity,
+): array {
+    set_runtime_failure_context('cluster.info', 'GET', '/api/cluster/info');
+    $cluster = $client->clusterInfo(includeDiagnostics: true);
+    $probeValues = php_sdk_search_attribute_probe_values($suffix);
+    $definitions = $probeValues['definitions'];
+    $listDefinitions = static function () use ($client): array {
+        set_runtime_failure_context('search_attribute.list', 'GET', '/api/search-attributes');
+
+        return $client->listSearchAttributes()->customAttributes;
+    };
+    $createDefinition = static function (string $name, string $type) use ($client): array {
+        set_runtime_failure_context('search_attribute.create', 'POST', '/api/search-attributes');
+        try {
+            $created = $client->createSearchAttribute($name, $type);
+
+            return [
+                'outcome' => 'created',
+                'name' => $created->name,
+                'type' => $created->type,
+            ];
+        } catch (ServerException $exception) {
+            if ($exception->status !== 409 || $exception->reason !== 'attribute_already_exists') {
+                throw $exception;
+            }
+
+            return [
+                'outcome' => 'already_exists',
+                'name' => is_string($exception->details['name'] ?? null)
+                    ? $exception->details['name']
+                    : $name,
+                'type' => is_string($exception->details['type'] ?? null)
+                    ? $exception->details['type']
+                    : null,
+            ];
+        }
+    };
+    $listedDefinitions = php_sdk_ensure_search_attribute_definitions(
+        $definitions,
+        $listDefinitions,
+        $createDefinition,
+    );
+
+    $startAttributes = $probeValues['start_search_attributes'];
+    $upsertedAttributes = $probeValues['upserted_search_attributes'];
+    $expectedAttributes = $probeValues['expected_search_attributes'];
+    $workflowId = 'php-sdk-search-attributes-'.$suffix;
+    set_runtime_failure_context('workflow.start:search_attributes', 'POST', '/api/workflows', $workflowId);
+    $handle = $client->startWorkflow(
+        'php.sdk.search-attributes',
+        $workflowId,
+        $queue,
+        [$upsertedAttributes],
+        searchAttributes: $startAttributes,
+    );
+    set_runtime_failure_context('workflow.result:search_attributes', 'GET', '/api/workflows/{workflow_id}/runs/{run_id}/result', $handle->workflowId, $handle->selectedRunId);
+    $workflowResult = $handle->resultOfSelectedRun(timeoutSeconds: 30, pollIntervalSeconds: 0.2);
+    set_runtime_failure_context('workflow.describe:search_attributes', 'GET', '/api/workflows/{workflow_id}/runs/{run_id}', $handle->workflowId, $handle->selectedRunId);
+    $description = $handle->describeSelectedRun();
+    $observedAttributes = is_array($description->searchAttributes) ? $description->searchAttributes : [];
+    $query = $probeValues['visibility_query']['query'];
+    set_runtime_failure_context('workflow.list_by_search_attribute', 'GET', '/api/workflows?query={query}');
+    $primaryQuery = wait_for_search_attribute_query($client, $query, $workflowId);
+    $upsertWorkflowIds = array_map(
+        static fn ($execution): string => $execution->workflowId,
+        $primaryQuery['page']->executions,
+    );
+
+    $peerNamespace = 'php-sdk-search-peer-'.$suffix;
+    set_runtime_failure_context('namespace.create:search_attribute_peer', 'POST', '/api/namespaces');
+    $client->createNamespace($peerNamespace, 'PHP SDK search-attribute namespace-isolation probe', 1);
+    $peerClient = $client->withNamespace($peerNamespace);
+    php_sdk_ensure_search_attribute_definitions(
+        $definitions,
+        static function () use ($peerClient): array {
+            set_runtime_failure_context('search_attribute.list:peer', 'GET', '/api/search-attributes');
+
+            return $peerClient->listSearchAttributes()->customAttributes;
+        },
+        static function (string $name, string $type) use ($peerClient): array {
+            set_runtime_failure_context('search_attribute.create:peer', 'POST', '/api/search-attributes');
+            try {
+                $created = $peerClient->createSearchAttribute($name, $type);
+
+                return [
+                    'outcome' => 'created',
+                    'name' => $created->name,
+                    'type' => $created->type,
+                ];
+            } catch (ServerException $exception) {
+                if ($exception->status !== 409 || $exception->reason !== 'attribute_already_exists') {
+                    throw $exception;
+                }
+
+                return [
+                    'outcome' => 'already_exists',
+                    'name' => is_string($exception->details['name'] ?? null)
+                        ? $exception->details['name']
+                        : $name,
+                    'type' => is_string($exception->details['type'] ?? null)
+                        ? $exception->details['type']
+                        : null,
+                ];
+            }
+        },
+    );
+    $peerWorkflowId = 'php-sdk-search-attributes-peer-'.$suffix;
+    set_runtime_failure_context('workflow.start:search_attribute_peer', 'POST', '/api/workflows', $peerWorkflowId);
+    $peerClient->startWorkflow(
+        'php.sdk.search-attributes',
+        $peerWorkflowId,
+        $queue,
+        [$upsertedAttributes],
+        searchAttributes: $startAttributes,
+    );
+    $isolationQuery = $probeValues['namespace_isolation_query']['query'];
+    set_runtime_failure_context('workflow.list_by_start_search_attribute:primary', 'GET', '/api/workflows?query={query}');
+    $primaryIsolationQuery = wait_for_search_attribute_query($client, $isolationQuery, $workflowId);
+    $primaryIsolationWorkflowIds = array_map(
+        static fn ($execution): string => $execution->workflowId,
+        $primaryIsolationQuery['page']->executions,
+    );
+    set_runtime_failure_context('workflow.list_by_start_search_attribute:peer', 'GET', '/api/workflows?query={query}');
+    $peerQuery = wait_for_search_attribute_query($peerClient, $isolationQuery, $peerWorkflowId);
+    $peerWorkflowIds = array_map(
+        static fn ($execution): string => $execution->workflowId,
+        $peerQuery['page']->executions,
+    );
+
+    $pythonToPhp = null;
+    $pythonFixtureJson = trim((string) getenv('DW_PHP_SDK_SEARCH_ATTRIBUTES_PYTHON_FIXTURE_JSON'));
+    if ($pythonFixtureJson !== '') {
+        $pythonFixture = json_decode($pythonFixtureJson, true, flags: JSON_THROW_ON_ERROR);
+        if (! is_array($pythonFixture)) {
+            throw new RuntimeException('Python search-attribute fixture must be a JSON object.');
+        }
+        $pythonNamespace = (string) ($pythonFixture['namespace'] ?? '');
+        $pythonWorkflowId = (string) ($pythonFixture['workflow_id'] ?? '');
+        $pythonExpected = is_array($pythonFixture['expected_search_attributes'] ?? null)
+            ? $pythonFixture['expected_search_attributes']
+            : [];
+        if ($pythonNamespace === '' || $pythonWorkflowId === '' || $pythonExpected === []) {
+            throw new RuntimeException('Python search-attribute fixture requires namespace, workflow_id, and expected_search_attributes.');
+        }
+        $pythonClient = $client->withNamespace($pythonNamespace);
+        set_runtime_failure_context('workflow.describe:python_writer', 'GET', '/api/workflows/{workflow_id}');
+        $pythonDescription = $pythonClient->describeWorkflow($pythonWorkflowId);
+        $pythonObserved = is_array($pythonDescription->searchAttributes) ? $pythonDescription->searchAttributes : [];
+        $pythonQueryKey = (string) ($pythonFixture['query_key'] ?? array_key_first($pythonExpected));
+        $pythonQueryValue = (string) ($pythonFixture['query_value'] ?? ($pythonExpected[$pythonQueryKey] ?? ''));
+        $pythonQuery = sprintf('%s = "%s"', $pythonQueryKey, addcslashes($pythonQueryValue, "\\\""));
+        set_runtime_failure_context('workflow.list_by_search_attribute:python_writer', 'GET', '/api/workflows?query={query}');
+        $pythonPage = wait_for_search_attribute_query($pythonClient, $pythonQuery, $pythonWorkflowId);
+        $pythonWorkflowIds = array_map(
+            static fn ($execution): string => $execution->workflowId,
+            $pythonPage['page']->executions,
+        );
+        $sdkReaderMatched = search_attribute_maps_match($pythonExpected, $pythonObserved)
+            && in_array($pythonWorkflowId, $pythonWorkflowIds, true);
+        $cliReaderMatched = ($pythonFixture['cli_reader_verified'] ?? false) === true;
+        $pythonToPhp = [
+            'status' => $sdkReaderMatched && $cliReaderMatched ? 'pass' : 'not_covered',
+            'wire_value_context' => [
+                'writer' => 'sdk-python',
+                'reader' => 'sdk-php',
+                'public_surface' => '/api/workflows/{workflow_id}',
+            ],
+            'written_attributes' => $pythonExpected,
+            'decoded_attributes' => $pythonObserved,
+            'reader_verifications' => [
+                'sdk-php' => $sdkReaderMatched,
+                'cli' => $cliReaderMatched,
+            ],
+            'namespace' => $pythonNamespace,
+            'workflow_id' => $pythonWorkflowId,
+            'query' => $pythonQuery,
+            'matched_workflow_ids' => array_slice($pythonWorkflowIds, 0, 20),
+        ];
+    }
+
+    $evidence = [
+        'identity' => $identity,
+        'cluster_info' => $cluster->raw,
+        'schema_definitions' => $listedDefinitions,
+        'workflow_id' => $workflowId,
+        'run_id' => $handle->selectedRunId,
+        'worker_runtime' => 'sdk-php',
+        'start_search_attributes' => $startAttributes,
+        'upserted_search_attributes' => $upsertedAttributes,
+        'expected_search_attributes' => $expectedAttributes,
+        'actual_search_attributes' => $observedAttributes,
+        'workflow_result' => $workflowResult,
+        'typed_values' => array_map('get_debug_type', $observedAttributes),
+        'visibility_query_match' => in_array($workflowId, $upsertWorkflowIds, true),
+        'query_visibility' => [
+            'attribute_source' => $probeValues['visibility_query']['attribute_source'],
+            'attribute_name' => $probeValues['visibility_query']['name'],
+            'attribute_value' => $probeValues['visibility_query']['value'],
+            'query' => $query,
+            'matched_workflow_ids' => array_slice($upsertWorkflowIds, 0, 20),
+            'elapsed_ms' => $primaryQuery['elapsed_ms'],
+        ],
+        'namespace_isolation' => php_sdk_search_attribute_namespace_isolation_evidence(
+            $namespace,
+            $peerNamespace,
+            $workflowId,
+            $peerWorkflowId,
+            $probeValues['namespace_isolation_query'],
+            $primaryIsolationWorkflowIds,
+            $peerWorkflowIds,
+        ) + [
+            'primary_query_elapsed_ms' => $primaryIsolationQuery['elapsed_ms'],
+            'peer_query_elapsed_ms' => $peerQuery['elapsed_ms'],
+        ],
+        'codec_round_trips' => [
+            'python_to_php' => $pythonToPhp,
+            'php_to_python_writer' => [
+                'wire_value_context' => [
+                    'writer' => 'sdk-php',
+                    'public_surface' => '/api/workflows/{workflow_id}',
+                ],
+                'written_attributes' => $expectedAttributes,
+                'namespace' => $namespace,
+                'workflow_id' => $workflowId,
+                'query' => $query,
+            ],
+        ],
+        'package_ownership' => [
+            'standalone_connectivity' => 'durable-workflow/sdk',
+            'embedded_engine' => 'durable-workflow/workflow',
+            'workflow_standalone_client_or_worker_loaded' => false,
+        ],
+    ];
+    file_put_contents(
+        $resultDir.'/php-sdk-search-attributes-evidence.json',
+        json_encode($evidence, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES)."\n",
+    );
+
+    return $evidence;
+}
+
 $identity = [
     'process_id' => getmypid(),
     'host' => gethostname(),
@@ -1369,6 +1967,20 @@ $identity = [
     'sdk_version' => InstalledVersions::getPrettyVersion('durable-workflow/sdk')
         ?: InstalledVersions::getVersion('durable-workflow/sdk'),
 ];
+
+if ($phase === 'search-attributes') {
+    emit([
+        'phase' => $phase,
+        'search_attributes' => run_search_attribute_probe(
+            $client,
+            $namespace,
+            $queue,
+            $resultDir,
+            $suffix,
+            $identity,
+        ),
+    ]);
+}
 
 if ($phase === 'baseline' || $phase === 'namespace') {
     $namespaceProbe = run_namespace_probe($client, $namespace, $queue, $resultDir, $suffix, $identity);
@@ -2657,6 +3269,10 @@ if [[ "$scope" == namespace ]]; then
   initial_client_phase=namespace
   initial_client_output="$result_dir/php-sdk-client-namespace.json"
   initial_client_stage=namespace_client
+elif [[ "$scope" == search-attributes ]]; then
+  initial_client_phase=search-attributes
+  initial_client_output="$result_dir/php-sdk-client-search-attributes.json"
+  initial_client_stage=search_attributes_client
 fi
 if ! run_client_phase "$initial_client_phase" "$initial_client_output"; then
   write_client_runtime_failure \
@@ -2670,6 +3286,14 @@ if [[ "$scope" == namespace ]]; then
   wait "$worker_pid" >/dev/null 2>&1 || true
   worker_pid=""
   write_namespace_result
+  exit 0
+fi
+
+if [[ "$scope" == search-attributes ]]; then
+  kill -TERM "$worker_pid" >/dev/null 2>&1 || true
+  wait "$worker_pid" >/dev/null 2>&1 || true
+  worker_pid=""
+  write_search_attribute_result
   exit 0
 fi
 

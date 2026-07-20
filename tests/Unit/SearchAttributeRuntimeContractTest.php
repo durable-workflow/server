@@ -14,7 +14,7 @@ class SearchAttributeRuntimeContractTest extends TestCase
         $manifest = SearchAttributeRuntimeContract::manifest();
 
         $this->assertSame('durable-workflow.v2.search-attribute-runtime.contract', $manifest['schema']);
-        $this->assertSame(15, SearchAttributeRuntimeContract::VERSION);
+        $this->assertSame(16, SearchAttributeRuntimeContract::VERSION);
         $this->assertSame(SearchAttributeRuntimeContract::VERSION, $manifest['version']);
         $this->assertSame('durable-workflow.v2.search-attribute-runtime.result', $manifest['result_schema']);
         $this->assertSame('search_attribute_runtime_contract', $manifest['fixture_category']);
@@ -307,6 +307,26 @@ class SearchAttributeRuntimeContractTest extends TestCase
         $this->assertContains('python_to_php.reader_verifications.sdk-php', $codec['must_capture_fields']);
         $this->assertContains('php_to_python.reader_verifications.sdk-python', $codec['must_capture_fields']);
         $this->assertContains('keyword_list', $codec['required_value_types']);
+
+        $sdkPhp = $runner['runtime_shards']['sdk-php'];
+        $this->assertSame('durable-workflow/sdk', $sdkPhp['artifact']);
+        $this->assertSame(
+            'scripts/conformance/php-sdk-published-artifacts.sh --scope search-attributes --result-dir <result-dir>',
+            $sdkPhp['runner_command'],
+        );
+        $this->assertSame('sdk-php-search-attributes-shard.json', $sdkPhp['result_file']);
+        $this->assertSame('durable-workflow/sdk', $sdkPhp['package_ownership']['standalone_connectivity']);
+        $this->assertFalse($sdkPhp['package_ownership']['workflow_standalone_client_or_worker_loaded']);
+        $this->assertContains('typed_values', $sdkPhp['must_capture_fields']);
+        $this->assertContains('query_visibility', $sdkPhp['must_capture_fields']);
+        $this->assertContains('namespace_isolation', $sdkPhp['must_capture_fields']);
+        $this->assertContains('codec_round_trips.python_to_php', $sdkPhp['must_capture_fields']);
+        $this->assertContains('codec_round_trips.php_to_python', $sdkPhp['must_capture_fields']);
+        $this->assertSame(20, $sdkPhp['bounded_evidence']['matched_workflow_ids_max_items']);
+        $this->assertSame(
+            'conformance_harness',
+            $runner['routing_policy']['sdk_php_shard_not_invoked']['owner'],
+        );
     }
 
     public function test_published_artifact_runner_writes_gate_consumable_runner_blocked_record(): void
@@ -553,6 +573,86 @@ class SearchAttributeRuntimeContractTest extends TestCase
                 'code',
             );
             $this->assertSame([], $codecFailureCodes);
+        } finally {
+            $this->removeDirectory($resultDir);
+        }
+    }
+
+    public function test_published_artifact_runner_consumes_runtime_and_codec_cells_from_sdk_php_shard(): void
+    {
+        if (trim((string) shell_exec('command -v node 2>/dev/null')) === '') {
+            $this->markTestSkipped('node is required to exercise the search-attributes runner.');
+        }
+
+        $repoRoot = dirname(__DIR__, 2);
+        $runner = SearchAttributeRuntimeContract::manifest()['host_runner_contract'];
+        $resultDir = sys_get_temp_dir().'/dw-search-attributes-'.bin2hex(random_bytes(6));
+        mkdir($resultDir);
+        $sdkPhpShardFile = $resultDir.'/sdk-php-focused.json';
+        $sdkPhpShard = $this->completeCodecRoundTripShard();
+        $sdkPhpShard['schema'] = 'durable-workflow.v2.search-attribute-runtime.sdk-php-shard';
+        $sdkPhpShard['package_ownership'] = [
+            'standalone_connectivity' => 'durable-workflow/sdk',
+            'embedded_engine' => 'durable-workflow/workflow',
+            'workflow_standalone_client_or_worker_loaded' => false,
+        ];
+        $sdkPhpShard['scenario_results']['php_worker_start_and_upsert_visibility'] = [
+            'scenario_id' => 'php_worker_start_and_upsert_visibility',
+            'status' => 'pass',
+            'observed_outputs' => [
+                'workflow_id' => 'php-sdk-search-1',
+                'worker_runtime' => 'sdk-php',
+                'start_search_attributes' => ['customer_id' => 'cust-7'],
+                'upserted_search_attributes' => ['priority_tier' => 'gold'],
+                'visibility_query_match' => true,
+            ],
+            'linked_findings' => [],
+        ];
+
+        try {
+            file_put_contents(
+                $sdkPhpShardFile,
+                json_encode($sdkPhpShard, JSON_PRETTY_PRINT | JSON_THROW_ON_ERROR)."\n",
+            );
+            $command = implode(' ', [
+                'DW_SERVER_VERSION=0.2.693',
+                'DW_CLI_VERSION=0.1.93',
+                'DW_PYTHON_SDK_VERSION=0.4.103',
+                'DW_PHP_SDK_VERSION=0.1.13',
+                'DW_WORKFLOW_PHP_VERSION=2.0.0-alpha.291',
+                'DW_WATERLINE_VERSION=2.0.0-alpha.137',
+                'DW_SEARCH_ATTRIBUTES_SDK_PHP_SHARD_FILE='.escapeshellarg($sdkPhpShardFile),
+                escapeshellarg($repoRoot.'/'.$runner['runner_path']),
+                '--result-dir',
+                escapeshellarg($resultDir),
+            ]);
+            $output = [];
+            $exitCode = 0;
+            exec($command.' 2>&1', $output, $exitCode);
+
+            $this->assertSame(1, $exitCode, implode("\n", $output));
+            $result = json_decode(
+                (string) file_get_contents($resultDir.'/search-attributes-result.json'),
+                true,
+                flags: JSON_THROW_ON_ERROR,
+            );
+            $writtenShard = json_decode(
+                (string) file_get_contents($resultDir.'/sdk-php-search-attributes-shard.json'),
+                true,
+                flags: JSON_THROW_ON_ERROR,
+            );
+            $scenarios = array_column($result['scenario_results'], null, 'scenario_id');
+
+            $this->assertSame('pass', $scenarios['php_worker_start_and_upsert_visibility']['status']);
+            $this->assertSame('pass', $scenarios['python_to_php_codec_round_trip']['status']);
+            $this->assertSame('pass', $scenarios['php_to_python_codec_round_trip']['status']);
+            $this->assertSame(
+                'durable-workflow/sdk',
+                $writtenShard['package_ownership']['standalone_connectivity'],
+            );
+            $this->assertFalse(
+                $writtenShard['package_ownership']['workflow_standalone_client_or_worker_loaded'],
+            );
         } finally {
             $this->removeDirectory($resultDir);
         }
@@ -1503,8 +1603,7 @@ class SearchAttributeRuntimeContractTest extends TestCase
     }
 
     /**
-     * @param array<string, mixed> $evaluation
-     *
+     * @param  array<string, mixed>  $evaluation
      * @return list<string>
      */
     private function missingRunRecordFields(array $evaluation): array
@@ -1518,8 +1617,7 @@ class SearchAttributeRuntimeContractTest extends TestCase
     }
 
     /**
-     * @param list<string> $arguments
-     *
+     * @param  list<string>  $arguments
      * @return array<string, mixed>
      */
     private function cliTranscript(
@@ -1573,6 +1671,7 @@ class SearchAttributeRuntimeContractTest extends TestCase
             $path = $directory.'/'.$item;
             if (is_dir($path) && ! is_link($path)) {
                 $this->removeDirectory($path);
+
                 continue;
             }
 

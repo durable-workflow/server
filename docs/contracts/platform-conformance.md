@@ -398,10 +398,17 @@ category emits a warning and does not block.
   load profile,
   namespace isolation, query-injection hardening, run-record fields, the
   coverage gate that keeps smoke-only search-attribute evidence non-passing,
-  a source-free host-runner contract that requires the published Waterline
-  `waterline:search-attributes-conformance` shard, and a result-gate evaluator
-  that rejects incomplete, placeholder, or finding-free non-pass scenario
-  records.
+  and source-free host-runner shards for Waterline and PHP. The PHP cell runs
+  `php-sdk-published-artifacts.sh --scope search-attributes` from the exact
+  server image, installs the exact Packagist `durable-workflow/sdk` release,
+  and starts separate SDK client and worker processes. It does not load the
+  embedded `durable-workflow/workflow` package as a standalone client or
+  worker. Its bounded shard records typed start/upsert values, query and
+  namespace visibility, the PHP reader result for a Python-written fixture,
+  and a PHP writer handoff for the published Python SDK observer. The aggregate
+  remains non-passing until both codec directions and the CLI readers are
+  verified. The result-gate evaluator rejects incomplete, placeholder, or
+  finding-free non-pass scenario records.
 - Schedules runtime contract: `GET /api/cluster/info` re-exports
   `schedules_runtime_contract`, schema
   `durable-workflow.v2.schedules-runtime.contract`. It names the required

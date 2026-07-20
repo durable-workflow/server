@@ -66,6 +66,13 @@ final class PhpSdkConformanceContractTest extends TestCase
             $manifest['host_runner_contract']['scenario_runner_path'],
         );
         $this->assertTrue($manifest['host_runner_contract']['host_runner_implemented']);
+        $searchAttributes = $manifest['host_runner_contract']['focused_scopes']['search-attributes'];
+        $this->assertSame('sdk-php-search-attributes-shard.json', $searchAttributes['result_file']);
+        $this->assertSame('durable-workflow/sdk', $searchAttributes['standalone_connectivity_package']);
+        $this->assertFalse($searchAttributes['workflow_standalone_client_or_worker_loaded']);
+        $this->assertContains('typed_values', $searchAttributes['required_evidence']);
+        $this->assertContains('python_to_php_codec_reader', $searchAttributes['required_evidence']);
+        $this->assertContains('php_to_python_codec_writer_handoff', $searchAttributes['required_evidence']);
     }
 
     public function test_static_mirror_preserves_required_scenarios_and_evidence(): void
@@ -87,6 +94,10 @@ final class PhpSdkConformanceContractTest extends TestCase
         $this->assertSame(
             $manifest['host_runner_contract']['scenario_runner_path'],
             $mirror['host_runner_contract']['scenario_runner_path'],
+        );
+        $this->assertSame(
+            $manifest['host_runner_contract']['focused_scopes'],
+            $mirror['host_runner_contract']['focused_scopes'],
         );
     }
 
@@ -114,6 +125,12 @@ final class PhpSdkConformanceContractTest extends TestCase
         $this->assertStringContainsString('worker_readiness_timeout', $runner);
         $this->assertStringContainsString('last_server_observation', $runner);
         $this->assertStringContainsString('DW_PHP_SDK_CONFORMANCE_WORKER_RUN_DELAY_MS', $runner);
+        $this->assertStringContainsString("'php.sdk.search-attributes'", $runner);
+        $this->assertStringContainsString('sdk-php-search-attributes-shard.json', $runner);
+        $this->assertStringContainsString('DW_PHP_SDK_SEARCH_ATTRIBUTES_PYTHON_FIXTURE_JSON', $runner);
+        $this->assertStringContainsString('php-sdk-search-attribute-probe.php', $runner);
+        $this->assertStringContainsString('php_sdk_ensure_search_attribute_definitions(', $runner);
+        $this->assertStringContainsString('standalone_workflow_package_absent', $runner);
         $this->assertStringNotContainsString('$client->registerWorker(', $runner);
         $this->assertStringNotContainsString('durable-workflow/workflow:', $runner);
         $this->assertStringNotContainsString('"type": "path"', $runner);
@@ -134,6 +151,55 @@ final class PhpSdkConformanceContractTest extends TestCase
         $this->assertLessThan($startedHistoryPosition, $addressableStartPosition);
         $this->assertLessThan($startedContractPosition, $startedHistoryPosition);
         $this->assertLessThan($firstSignalPosition, $startedContractPosition);
+    }
+
+    public function test_search_attribute_scope_emits_a_focused_bounded_preflight_result(): void
+    {
+        if (trim((string) shell_exec('command -v node 2>/dev/null')) === '') {
+            $this->markTestSkipped('node is required to exercise structured PHP SDK evidence.');
+        }
+
+        $repoRoot = dirname(__DIR__, 2);
+        $resultDir = sys_get_temp_dir().'/dw-php-sdk-search-attributes-'.bin2hex(random_bytes(6));
+        mkdir($resultDir, 0777, true);
+
+        try {
+            $command = implode(' ', [
+                'DW_PHP_SDK_VERSION=0.1.13',
+                'DW_SERVER_VERSION=0.2.693',
+                'DW_SERVER_IMAGE=durableworkflow/server:0.2.693',
+                escapeshellarg($repoRoot.'/scripts/conformance/php-sdk-published-artifacts.sh'),
+                '--scope',
+                'search-attributes',
+                '--result-dir',
+                escapeshellarg($resultDir),
+            ]);
+            $output = [];
+            $exitCode = 0;
+            exec($command.' 2>&1', $output, $exitCode);
+
+            $this->assertSame(0, $exitCode, implode("\n", $output));
+            $shard = json_decode(
+                (string) file_get_contents($resultDir.'/sdk-php-search-attributes-shard.json'),
+                true,
+                flags: JSON_THROW_ON_ERROR,
+            );
+            $scenario = $shard['scenario_results']['php_worker_start_and_upsert_visibility'];
+
+            $this->assertSame('durable-workflow.v2.search-attribute-runtime.sdk-php-shard', $shard['schema']);
+            $this->assertTrue($shard['runner_blocked']);
+            $this->assertSame('runner_blocked', $scenario['status']);
+            $this->assertSame('conformance_harness', $scenario['linked_findings'][0]['owning_surface']);
+            $this->assertSame('durable-workflow/sdk', $shard['package_ownership']['standalone_connectivity']);
+            $this->assertFalse($shard['package_ownership']['workflow_standalone_client_or_worker_loaded']);
+        } finally {
+            foreach (scandir($resultDir) ?: [] as $entry) {
+                if ($entry !== '.' && $entry !== '..') {
+                    unlink($resultDir.'/'.$entry);
+                }
+            }
+            rmdir($resultDir);
+        }
     }
 
     public function test_worker_readiness_waits_for_the_authoritative_handler_contract(): void
@@ -539,7 +605,7 @@ PHP);
             dirname(__DIR__, 2).'/scripts/conformance/php-sdk-published-artifacts.sh',
         );
 
-        $this->assertStringContainsString('[--scope lifecycle|namespace]', $runner);
+        $this->assertStringContainsString('[--scope lifecycle|namespace|search-attributes]', $runner);
         $this->assertStringContainsString('if [[ "$scope" == namespace ]]; then', $runner);
         $this->assertStringContainsString('initial_client_phase=namespace', $runner);
         $this->assertStringContainsString('run_namespace_probe', $runner);
@@ -1162,6 +1228,8 @@ JS;
                 'owning_surface' => 'server',
                 'process' => 'client',
                 'operation' => 'workflow.result:cancelled',
+                'http_method' => 'GET',
+                'endpoint' => '/api/workflows/{workflow_id}/runs/{run_id}/result',
                 'status_code' => 503,
                 'public_error_envelope' => [
                     'error' => $adversarial,
