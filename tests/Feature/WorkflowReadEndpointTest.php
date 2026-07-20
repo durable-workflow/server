@@ -3,14 +3,20 @@
 namespace Tests\Feature;
 
 use Illuminate\Foundation\Testing\RefreshDatabase;
+use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Queue;
+use Mockery\MockInterface;
+use RuntimeException;
 use Tests\Feature\Concerns\ServerTestHelpers;
 use Tests\Fixtures\AwaitApprovalWorkflow;
 use Tests\Fixtures\InteractiveCommandWorkflow;
 use Tests\TestCase;
+use Workflow\V2\Contracts\WorkflowControlPlane;
 use Workflow\V2\Enums\HistoryEventType;
+use Workflow\V2\Enums\TaskStatus;
 use Workflow\V2\Models\WorkflowHistoryEvent;
 use Workflow\V2\Models\WorkflowRun;
+use Workflow\V2\Models\WorkflowTask;
 
 class WorkflowReadEndpointTest extends TestCase
 {
@@ -300,6 +306,214 @@ class WorkflowReadEndpointTest extends TestCase
                 'actions',
                 'control_plane',
             ]);
+    }
+
+    public function test_build_pinned_run_detail_survives_worker_task_failure_and_replay_completion(): void
+    {
+        config(['server.polling.timeout' => 0]);
+
+        $taskQueue = 'versioned-replay-detail';
+        $workflowType = 'external.versioned-replay';
+        $workflowId = 'wf-versioned-replay-detail';
+        $buildV1 = 'build-v1';
+        $buildV2 = 'build-v2';
+
+        $registration = [
+            'worker_id' => 'versioned-worker-v1',
+            'task_queue' => $taskQueue,
+            'runtime' => 'php',
+            'sdk_version' => '1.0.0',
+            'build_id' => $buildV1,
+            'supported_workflow_types' => [$workflowType],
+            'workflow_definition_fingerprints' => [$workflowType => 'versioned-replay-v1'],
+        ];
+
+        $this->withHeaders($this->workerHeaders())
+            ->postJson('/api/worker/register', $registration)
+            ->assertCreated();
+
+        $this->withHeaders($this->apiHeaders())
+            ->postJson("/api/task-queues/{$taskQueue}/build-ids/promote", [
+                'build_id' => $buildV1,
+            ])
+            ->assertSuccessful();
+
+        $start = $this->withHeaders($this->apiHeaders())
+            ->postJson('/api/workflows', [
+                'workflow_id' => $workflowId,
+                'workflow_type' => $workflowType,
+                'task_queue' => $taskQueue,
+                'input' => ['v1'],
+            ])
+            ->assertCreated();
+        $runId = (string) $start->json('run_id');
+
+        $this->withHeaders($this->workerHeaders())
+            ->postJson('/api/worker/register', array_replace($registration, [
+                'worker_id' => 'versioned-worker-v2',
+                'build_id' => $buildV2,
+                'workflow_definition_fingerprints' => [$workflowType => 'versioned-replay-v2'],
+            ]))
+            ->assertCreated();
+
+        $this->withHeaders($this->workerHeaders())
+            ->postJson('/api/worker/workflow-tasks/poll', [
+                'worker_id' => 'versioned-worker-v2',
+                'task_queue' => $taskQueue,
+                'build_id' => $buildV2,
+                'timeout_seconds' => 0,
+            ])
+            ->assertOk()
+            ->assertJsonPath('task', null);
+
+        $firstPoll = $this->withHeaders($this->workerHeaders())
+            ->postJson('/api/worker/workflow-tasks/poll', [
+                'worker_id' => 'versioned-worker-v1',
+                'task_queue' => $taskQueue,
+                'build_id' => $buildV1,
+                'timeout_seconds' => 0,
+            ])
+            ->assertOk()
+            ->assertJsonPath('task.run_id', $runId)
+            ->assertJsonPath('task.compatibility', $buildV1);
+
+        $this->withHeaders($this->workerHeaders())
+            ->postJson("/api/worker/workflow-tasks/{$firstPoll->json('task.task_id')}/fail", [
+                'lease_owner' => $firstPoll->json('task.lease_owner'),
+                'workflow_task_attempt' => $firstPoll->json('task.workflow_task_attempt'),
+                'failure' => [
+                    'message' => 'worker process restarted before workflow task completion',
+                    'type' => 'RuntimeError',
+                ],
+            ])
+            ->assertOk()
+            ->assertJsonPath('recorded', true);
+
+        $this->withHeaders($this->workerHeaders())
+            ->postJson('/api/worker/register', $registration + [
+                'process_metrics' => ['process_id' => 1002],
+            ])
+            ->assertCreated();
+
+        $this->withHeaders($this->workerHeaders())
+            ->postJson('/api/worker/workflow-tasks/poll', [
+                'worker_id' => 'versioned-worker-v2',
+                'task_queue' => $taskQueue,
+                'build_id' => $buildV2,
+                'timeout_seconds' => 0,
+            ])
+            ->assertOk()
+            ->assertJsonPath('task', null);
+
+        $replayPoll = $this->withHeaders($this->workerHeaders())
+            ->postJson('/api/worker/workflow-tasks/poll', [
+                'worker_id' => 'versioned-worker-v1',
+                'task_queue' => $taskQueue,
+                'build_id' => $buildV1,
+                'timeout_seconds' => 0,
+            ])
+            ->assertOk()
+            ->assertJsonPath('task.run_id', $runId)
+            ->assertJsonPath('task.compatibility', $buildV1)
+            ->assertJsonPath('task.workflow_task_attempt', 2);
+
+        $expectedResult = ['activity_a', 'activity_b'];
+        $this->withHeaders($this->workerHeaders())
+            ->postJson("/api/worker/workflow-tasks/{$replayPoll->json('task.task_id')}/complete", [
+                'lease_owner' => $replayPoll->json('task.lease_owner'),
+                'workflow_task_attempt' => $replayPoll->json('task.workflow_task_attempt'),
+                'commands' => [[
+                    'type' => 'complete_workflow',
+                    'result' => json_encode($expectedResult, JSON_THROW_ON_ERROR),
+                ]],
+            ])
+            ->assertOk()
+            ->assertJsonPath('recorded', true)
+            ->assertJsonPath('run_status', 'completed');
+
+        $this->withHeaders($this->apiHeaders())
+            ->getJson("/api/workflows/{$workflowId}/runs/{$runId}")
+            ->assertOk()
+            ->assertJsonPath('workflow_id', $workflowId)
+            ->assertJsonPath('run_id', $runId)
+            ->assertJsonPath('compatibility', $buildV1)
+            ->assertJsonPath('status', 'completed')
+            ->assertJsonPath('output', $expectedResult)
+            ->assertJsonPath('output_envelope.codec', 'json');
+
+        $history = $this->withHeaders($this->apiHeaders())
+            ->getJson("/api/workflows/{$workflowId}/runs/{$runId}/history")
+            ->assertOk()
+            ->assertJsonPath('compatibility', $buildV1);
+
+        $eventTypes = array_column($history->json('events'), 'event_type');
+        $this->assertContains('WorkflowStarted', $eventTypes);
+        $this->assertContains('WorkflowCompleted', $eventTypes);
+        $this->assertSame(1, count(array_keys($eventTypes, 'WorkflowCompleted', true)));
+        $this->assertSame(1, WorkflowTask::query()
+            ->where('workflow_run_id', $runId)
+            ->where('status', TaskStatus::Failed->value)
+            ->count());
+        $this->assertSame(1, WorkflowTask::query()
+            ->where('workflow_run_id', $runId)
+            ->where('status', TaskStatus::Completed->value)
+            ->count());
+        $this->assertSame([$buildV1], WorkflowTask::query()
+            ->where('workflow_run_id', $runId)
+            ->pluck('compatibility')
+            ->unique()
+            ->values()
+            ->all());
+    }
+
+    public function test_unexpected_selected_run_read_failure_is_correlated_and_bounded(): void
+    {
+        $start = $this->withHeaders($this->apiHeaders())
+            ->postJson('/api/workflows', [
+                'workflow_id' => 'wf-read-correlated-failure',
+                'workflow_type' => 'tests.await-approval-workflow',
+            ])
+            ->assertCreated();
+        $runId = (string) $start->json('run_id');
+        $serverMessage = str_repeat('unexpected read failure ', 200);
+
+        $this->mock(WorkflowControlPlane::class, function (MockInterface $mock) use ($serverMessage): void {
+            $mock->shouldReceive('describe')
+                ->once()
+                ->andThrow(new RuntimeException($serverMessage));
+        });
+        Log::spy();
+
+        $this->withHeaders($this->apiHeaders())
+            ->getJson("/api/workflows/wf-read-correlated-failure/runs/{$runId}")
+            ->assertStatus(500)
+            ->assertJsonPath('reason', 'control_plane_internal_error')
+            ->assertJsonPath('retryable', false)
+            ->assertJsonPath('workflow_id', 'wf-read-correlated-failure')
+            ->assertJsonPath('run_id', $runId)
+            ->assertJsonPath('control_plane.operation', 'describe_run')
+            ->assertJsonPath('control_plane.reason', 'control_plane_internal_error')
+            ->assertJsonPath('error_id', static fn (mixed $value): bool => is_string($value) && $value !== '')
+            ->assertJsonPath('exception.type', RuntimeException::class)
+            ->assertJsonPath('exception.message', static fn (mixed $value): bool => is_string($value)
+                && strlen($value) <= 512
+                && str_starts_with($serverMessage, $value));
+
+        Log::shouldHaveReceived('error')
+            ->withArgs(function (string $message, array $context) use ($runId, $serverMessage): bool {
+                $exceptionMessage = $context['exception_chain'][0]['message'] ?? null;
+
+                return $message === 'Unhandled control-plane operation exception.'
+                    && ($context['operation']['name'] ?? null) === 'describe_run'
+                    && ($context['operation']['workflow_id'] ?? null) === 'wf-read-correlated-failure'
+                    && ($context['operation']['requested_run_id'] ?? null) === $runId
+                    && ($context['workflow']['run_id'] ?? null) === $runId
+                    && ($context['workflow']['workflow_id'] ?? null) === 'wf-read-correlated-failure'
+                    && is_string($exceptionMessage)
+                    && strlen($exceptionMessage) <= 2048
+                    && str_starts_with($serverMessage, $exceptionMessage);
+            })
+            ->once();
     }
 
     public function test_current_and_selected_run_surface_unknown_legacy_output_codec(): void

@@ -161,12 +161,24 @@ return Application::configure(basePath: dirname(__DIR__))
 
             if (ControlPlaneProtocol::requestVersion($request) !== ControlPlaneProtocol::VERSION
                 || ! $operation instanceof ControlPlaneOperation
-                || $operation->operation !== 'signal'
+                || ! in_array($operation->operation, ['signal', 'describe_run', 'history'], true)
             ) {
                 return null;
             }
 
-            $errorId = app(ControlPlaneFailureDiagnostics::class)->reportUnhandled($exception, $request);
+            $diagnostics = app(ControlPlaneFailureDiagnostics::class);
+            $errorId = $diagnostics->reportUnhandled($exception, $request);
+
+            if ($operation->operation !== 'signal') {
+                return ControlPlaneProtocol::jsonForRequest($request, [
+                    'message' => 'The control-plane read could not be completed.',
+                    'reason' => 'control_plane_internal_error',
+                    'retryable' => false,
+                    'error_id' => $errorId,
+                    'exception' => $diagnostics->publicException($exception),
+                ], 500);
+            }
+
             $payload = [
                 'message' => 'The control-plane operation could not be completed.',
                 'reason' => 'control_plane_internal_error',

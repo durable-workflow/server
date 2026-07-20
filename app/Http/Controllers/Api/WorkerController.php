@@ -28,6 +28,8 @@ use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Str;
 use Illuminate\Validation\ValidationException;
+use Workflow\Serializers\CodecRegistry;
+use Workflow\Serializers\Serializer;
 use Workflow\V2\Contracts\HistoryProjectionRole;
 use Workflow\V2\Contracts\WorkflowTaskBridge;
 use Workflow\V2\Enums\ActivityAttemptStatus;
@@ -1266,6 +1268,7 @@ class WorkerController
         );
 
         $commands = $this->promoteWorkflowFailureExceptionPayload($commands);
+        $commands = $this->normalizeImplicitWorkflowCompletionPayloadCodec($commands, $taskId);
         $commands = WorkflowCommandNormalizer::normalize($commands);
 
         /** @var WorkflowTaskBridge $bridge */
@@ -1665,6 +1668,64 @@ class WorkerController
         }
 
         return $commands;
+    }
+
+    /**
+     * Raw string results predate codec-tagged command envelopes. Preserve a
+     * result that decodes with the run codec, but recognize JSON when a worker
+     * omitted payload_codec instead of persisting JSON bytes under the default
+     * Avro tag and making every later terminal read fail.
+     *
+     * @param  list<array<string, mixed>>  $commands
+     * @return list<array<string, mixed>>
+     */
+    private function normalizeImplicitWorkflowCompletionPayloadCodec(array $commands, string $taskId): array
+    {
+        $hasUntaggedCompletion = collect($commands)->contains(
+            static fn (mixed $command): bool => is_array($command)
+                && ($command['type'] ?? null) === 'complete_workflow'
+                && is_string($command['result'] ?? null)
+                && ! is_string($command['payload_codec'] ?? null),
+        );
+
+        if (! $hasUntaggedCompletion) {
+            return $commands;
+        }
+
+        $task = WorkflowTask::query()->with('run')->find($taskId);
+        $runCodec = $task?->run instanceof WorkflowRun
+            && is_string($task->run->payload_codec)
+            && trim($task->run->payload_codec) !== ''
+                ? trim($task->run->payload_codec)
+                : CodecRegistry::defaultCodec();
+
+        foreach ($commands as $index => $command) {
+            $result = $command['result'] ?? null;
+
+            if (($command['type'] ?? null) !== 'complete_workflow'
+                || ! is_string($result)
+                || is_string($command['payload_codec'] ?? null)
+                || $this->payloadDecodesWithCodec($result, $runCodec)
+                || ! $this->payloadDecodesWithCodec($result, 'json')
+            ) {
+                continue;
+            }
+
+            $commands[$index]['payload_codec'] = 'json';
+        }
+
+        return $commands;
+    }
+
+    private function payloadDecodesWithCodec(string $payload, string $codec): bool
+    {
+        try {
+            Serializer::unserializeWithCodec($codec, $payload);
+
+            return true;
+        } catch (\Throwable) {
+            return false;
+        }
     }
 
     private function externalPayloadFailure(

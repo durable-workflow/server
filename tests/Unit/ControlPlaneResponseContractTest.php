@@ -118,6 +118,21 @@ class ControlPlaneResponseContractTest extends TestCase
         }
     }
 
+    public function test_manifest_publishes_correlated_read_failure_contracts(): void
+    {
+        $operations = ControlPlaneResponseContract::manifest()['operations'];
+
+        foreach (['describe_run', 'history'] as $operation) {
+            $this->assertContains('control_plane_internal_error', $operations[$operation]['rejection_reasons']);
+
+            foreach (['workflow_id', 'run_id', 'reason', 'message', 'retryable', 'error_id', 'exception'] as $field) {
+                $this->assertContains($field, $operations[$operation]['rejection_fields']);
+            }
+
+            $this->assertContains('exception', ControlPlaneResponseContract::manifest()['projected_fields']);
+        }
+    }
+
     public function test_attach_propagates_start_rejection_fields_into_the_control_plane_block(): void
     {
         $payload = ControlPlaneResponseContract::attach('start', null, [

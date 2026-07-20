@@ -13,6 +13,28 @@ use Workflow\V2\Models\WorkflowTask;
 
 final class ControlPlaneFailureDiagnostics
 {
+    private const EXCEPTION_MESSAGE_LIMIT_BYTES = 2048;
+
+    private const PUBLIC_EXCEPTION_MESSAGE_LIMIT_BYTES = 512;
+
+    /**
+     * @return array{type: string, message?: string}
+     */
+    public function publicException(Throwable $exception): array
+    {
+        $message = mb_strcut(
+            Str::squish($exception->getMessage()),
+            0,
+            self::PUBLIC_EXCEPTION_MESSAGE_LIMIT_BYTES,
+            'UTF-8',
+        );
+
+        return array_filter([
+            'type' => $exception::class,
+            'message' => $message !== '' ? $message : null,
+        ], static fn (mixed $value): bool => $value !== null);
+    }
+
     public function reportUnhandled(Throwable $exception, Request $request): string
     {
         $errorId = (string) Str::ulid();
@@ -124,7 +146,7 @@ final class ControlPlaneFailureDiagnostics
         for ($current = $exception; $current instanceof Throwable && count($chain) < 8; $current = $current->getPrevious()) {
             $chain[] = [
                 'class' => $current::class,
-                'message' => $current->getMessage(),
+                'message' => mb_strcut($current->getMessage(), 0, self::EXCEPTION_MESSAGE_LIMIT_BYTES, 'UTF-8'),
                 'code' => $current->getCode(),
                 'file' => $current->getFile(),
                 'line' => $current->getLine(),

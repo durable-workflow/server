@@ -85,6 +85,8 @@ final class ControlPlaneResponseContract
             'operation_name_field' => null,
             'required_fields' => ['workflow_id'],
             'success_fields' => ['run_id'],
+            'rejection_fields' => ['workflow_id', 'run_id', 'reason', 'message', 'retryable', 'error_id', 'exception'],
+            'rejection_reasons' => ['control_plane_internal_error'],
         ],
         'debug_workflow' => [
             'operation_name_field' => null,
@@ -95,6 +97,8 @@ final class ControlPlaneResponseContract
             'operation_name_field' => null,
             'required_fields' => ['workflow_id', 'run_id'],
             'success_fields' => ['next_page_token'],
+            'rejection_fields' => ['workflow_id', 'run_id', 'reason', 'message', 'retryable', 'error_id', 'exception'],
+            'rejection_reasons' => ['control_plane_internal_error'],
         ],
         'signal' => [
             'operation_name_field' => 'signal_name',
@@ -262,6 +266,7 @@ final class ControlPlaneResponseContract
         'diagnostic_status',
         'retryable',
         'error_id',
+        'exception',
     ];
 
     /**
