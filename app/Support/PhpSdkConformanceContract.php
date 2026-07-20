@@ -6,7 +6,7 @@ final class PhpSdkConformanceContract
 {
     public const SCHEMA = 'durable-workflow.v2.php-sdk-conformance-contract';
 
-    public const VERSION = 2;
+    public const VERSION = 3;
 
     /** @return array<string, mixed> */
     public static function manifest(): array
@@ -104,6 +104,22 @@ final class PhpSdkConformanceContract
                 'companion_diagnostic_schema' => 'durable-workflow.v2.php-sdk-companion-failure',
                 'companion_diagnostic_max_bytes' => 6144,
                 'companion_evidence_led_ownership_required' => true,
+                'early_exit_scenario_result_required' => true,
+                'early_exit_scenario_result_must_be_keyed' => true,
+                'early_exit_scenario_ids_by_scope' => [
+                    'lifecycle' => 'php_sdk_lifecycle_surface',
+                    'namespace' => 'php_worker_task_queue_namespace_isolation',
+                    'search-attributes' => 'php_worker_start_and_upsert_visibility',
+                ],
+                'early_exit_required_observed_fields' => [
+                    'failure_stage',
+                    'failure_classification',
+                    'failure_owner',
+                    'worker_evidence',
+                    'server_evidence',
+                ],
+                'failure_scenario_max_bytes' => 24576,
+                'failure_evidence_component_max_bytes' => 3072,
                 'public_error_envelope_max_bytes' => 2048,
                 'required_http_failure_fields' => [
                     'status_code',

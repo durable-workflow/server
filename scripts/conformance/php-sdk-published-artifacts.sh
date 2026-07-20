@@ -147,10 +147,19 @@ const {
   extractReadinessHttpFailureEvidence,
   extractRuntimeFailureEvidence,
   failureSummary,
+  serializedBytes,
 } = require(process.env.FAILURE_EVIDENCE_HELPER);
 
 const resultDir = process.env.RESULT_DIR;
 const version = process.env.SDK_VERSION || '';
+const scope = process.env.CONFORMANCE_SCOPE || 'lifecycle';
+const failureScenarioId = {
+  lifecycle: 'php_sdk_lifecycle_surface',
+  namespace: 'php_worker_task_queue_namespace_isolation',
+  'search-attributes': 'php_worker_start_and_upsert_visibility',
+}[scope] || 'php_sdk_lifecycle_surface';
+const failureScenarioMaxBytes = 24576;
+const failureEvidenceComponentMaxBytes = 3072;
 const fallbackSummary = process.env.FAILURE_SUMMARY || 'PHP SDK conformance failed.';
 const requestedClassification = process.env.FAILURE_CLASSIFICATION || 'sdk';
 let classification = requestedClassification;
@@ -226,6 +235,7 @@ const summary = companionSummary || failureSummary(
 );
 const finding = {
   finding_id: `php-sdk-${process.env.FAILURE_STAGE || 'unknown'}-failure`,
+  scenario_id: failureScenarioId,
   finding_type: runnerBlocked
     ? 'conformance_runner_blocked'
     : (classification === 'package-publication' ? 'package_publication_gap' : 'product_behavior_gap'),
@@ -355,15 +365,91 @@ const result = {
   scenario_results: {},
   findings: [finding],
 };
+const partialScopeEvidence = scope === 'namespace'
+  ? readJson(path.join(resultDir, 'php-sdk-namespace-evidence.json'))
+  : (scope === 'search-attributes'
+    ? readJson(path.join(resultDir, 'php-sdk-search-attributes-evidence.json'))
+    : null);
+const workerProcessState = companion?.worker?.process_state || (workerStartOutcome
+  ? {
+    state: workerProcessAlive ? 'alive' : (workerExitedDuringStartup ? 'exited' : 'unknown'),
+    alive: workerProcessAlive,
+    exit_code: Number.isInteger(processExitCode) ? processExitCode : null,
+  }
+  : {state: 'not_started', alive: null, exit_code: null});
+const failureScenarioObserved = {
+  published_artifact_cell_executed: observed.published_artifact_cell_executed,
+  failure_stage: process.env.FAILURE_STAGE,
+  failure_classification: classification,
+  failure_owner: owningSurface,
+  failure_summary: summary,
+  artifact_evidence: {
+    sdk: observed.sdk,
+    sdk_version: version,
+    sdk_source: observed.artifact_source,
+    server_version: observed.server_version,
+    server_image: observed.server_image,
+    server_url: observed.server_url,
+    namespace: observed.namespace,
+    local_product_source_checkouts_used: false,
+  },
+  worker_evidence: {
+    process_state: workerProcessState,
+    startup: boundedEvidence(observed.worker_startup, secrets, failureEvidenceComponentMaxBytes),
+    companion: boundedEvidence(companion?.worker, secrets, failureEvidenceComponentMaxBytes),
+  },
+  server_evidence: {
+    version: observed.server_version,
+    image: observed.server_image,
+    url: observed.server_url,
+    namespace: observed.namespace,
+    runtime_failure: boundedEvidence(runtimeFailure, secrets, failureEvidenceComponentMaxBytes),
+    companion: boundedEvidence(companion?.server, secrets, failureEvidenceComponentMaxBytes),
+  },
+  partial_scope_evidence: boundedEvidence(
+    partialScopeEvidence,
+    secrets,
+    failureEvidenceComponentMaxBytes,
+  ),
+  evidence_bounds: {
+    scenario_max_bytes: failureScenarioMaxBytes,
+    component_max_bytes: failureEvidenceComponentMaxBytes,
+    retained_diagnostic_excerpt_max_bytes: 4096,
+    companion_diagnostic_max_bytes: 6144,
+    public_error_envelope_max_bytes: 2048,
+  },
+};
+const scenarioFinding = {
+  finding_id: finding.finding_id,
+  scenario_id: finding.scenario_id,
+  finding_type: finding.finding_type,
+  classification: finding.classification,
+  owning_surface: finding.owning_surface,
+  failure_stage: finding.failure_stage,
+  summary: finding.summary,
+};
+const failureScenario = {
+  scenario_id: failureScenarioId,
+  status: runnerBlocked ? 'runner_blocked' : 'fail',
+  observed_outputs: failureScenarioObserved,
+  linked_findings: [scenarioFinding],
+};
+if (serializedBytes(failureScenario) > failureScenarioMaxBytes) {
+  throw new Error(`PHP SDK failure scenario exceeds ${failureScenarioMaxBytes} bytes.`);
+}
+result.scenario_results[failureScenarioId] = failureScenario;
+result.evidence_bounds = failureScenarioObserved.evidence_bounds;
 if (process.env.CONFORMANCE_SCOPE === 'search-attributes') {
-  const searchEvidence = readJson(path.join(resultDir, 'php-sdk-search-attributes-evidence.json')) || {};
-  const scenarioId = 'php_worker_start_and_upsert_visibility';
-  const scenarioStatus = runnerBlocked ? 'runner_blocked' : 'fail';
+  const searchEvidence = boundedEvidence(
+    partialScopeEvidence,
+    secrets,
+    failureEvidenceComponentMaxBytes,
+  ) || {};
   const searchShard = {
     schema: 'durable-workflow.v2.search-attribute-runtime.sdk-php-shard',
     version: 1,
     generated_at: result.generated_at,
-    status: scenarioStatus,
+    status: failureScenario.status,
     runner_blocked: runnerBlocked,
     artifact_versions: result.artifact_versions,
     artifact_sources: result.artifact_sources,
@@ -381,9 +467,9 @@ if (process.env.CONFORMANCE_SCOPE === 'search-attributes') {
       partial_evidence: searchEvidence,
     },
     scenario_results: {
-      [scenarioId]: {
-        scenario_id: scenarioId,
-        status: scenarioStatus,
+      [failureScenarioId]: {
+        scenario_id: failureScenarioId,
+        status: failureScenario.status,
         observed_outputs: {
           published_artifact_cell_executed: observed.published_artifact_cell_executed,
           failure_stage: process.env.FAILURE_STAGE,
@@ -396,6 +482,7 @@ if (process.env.CONFORMANCE_SCOPE === 'search-attributes') {
     },
     findings: [finding],
     linked_findings: [finding],
+    evidence_bounds: failureScenarioObserved.evidence_bounds,
   };
   fs.writeFileSync(
     path.join(resultDir, 'sdk-php-search-attributes-shard.json'),
@@ -453,6 +540,7 @@ const sidecar = {
       linked_findings: [finding],
     },
   },
+  evidence_bounds: failureScenarioObserved.evidence_bounds,
 };
 fs.writeFileSync(path.join(resultDir, 'php-sdk-conformance-result.json'), `${JSON.stringify(result, null, 2)}\n`);
 fs.writeFileSync(path.join(resultDir, 'php-sdk-lifecycle-evidence.json'), `${JSON.stringify(sidecar, null, 2)}\n`);

@@ -44,6 +44,18 @@ final class PhpSdkConformanceContractTest extends TestCase
             $manifest['runtime_failure_evidence']['companion_diagnostic_schema'],
         );
         $this->assertSame(6144, $manifest['runtime_failure_evidence']['companion_diagnostic_max_bytes']);
+        $this->assertTrue($manifest['runtime_failure_evidence']['early_exit_scenario_result_required']);
+        $this->assertTrue($manifest['runtime_failure_evidence']['early_exit_scenario_result_must_be_keyed']);
+        $this->assertSame(
+            [
+                'lifecycle' => 'php_sdk_lifecycle_surface',
+                'namespace' => 'php_worker_task_queue_namespace_isolation',
+                'search-attributes' => 'php_worker_start_and_upsert_visibility',
+            ],
+            $manifest['runtime_failure_evidence']['early_exit_scenario_ids_by_scope'],
+        );
+        $this->assertSame(24576, $manifest['runtime_failure_evidence']['failure_scenario_max_bytes']);
+        $this->assertSame(3072, $manifest['runtime_failure_evidence']['failure_evidence_component_max_bytes']);
         $this->assertTrue(
             $manifest['runtime_failure_evidence']['readiness_failure_retains_expected_and_observed_contracts'],
         );
@@ -199,6 +211,69 @@ final class PhpSdkConformanceContractTest extends TestCase
                 }
             }
             rmdir($resultDir);
+        }
+    }
+
+    public function test_every_scope_retains_a_keyed_bounded_scenario_on_preflight_exit(): void
+    {
+        if (trim((string) shell_exec('command -v node 2>/dev/null')) === '') {
+            $this->markTestSkipped('node is required to exercise structured PHP SDK evidence.');
+        }
+
+        $repoRoot = dirname(__DIR__, 2);
+        $manifest = PhpSdkConformanceContract::manifest();
+        $scenarioIds = $manifest['runtime_failure_evidence']['early_exit_scenario_ids_by_scope'];
+        $scenarioMaxBytes = $manifest['runtime_failure_evidence']['failure_scenario_max_bytes'];
+
+        foreach ($scenarioIds as $scope => $scenarioId) {
+            $resultDir = sys_get_temp_dir().'/dw-php-sdk-early-exit-'.$scope.'-'.bin2hex(random_bytes(6));
+            mkdir($resultDir, 0777, true);
+
+            try {
+                $command = implode(' ', [
+                    'env -u DW_PHP_SDK_CONFORMANCE_SERVER_URL',
+                    'DW_PHP_SDK_VERSION=0.1.15',
+                    'DW_SERVER_VERSION=0.2.694',
+                    'DW_SERVER_IMAGE=durableworkflow/server:0.2.694',
+                    escapeshellarg($repoRoot.'/scripts/conformance/php-sdk-published-artifacts.sh'),
+                    '--scope',
+                    escapeshellarg($scope),
+                    '--result-dir',
+                    escapeshellarg($resultDir),
+                ]);
+                $output = [];
+                $exitCode = 0;
+                exec($command.' 2>&1', $output, $exitCode);
+
+                $this->assertSame(0, $exitCode, implode("\n", $output));
+                $result = json_decode(
+                    (string) file_get_contents($resultDir.'/php-sdk-conformance-result.json'),
+                    true,
+                    flags: JSON_THROW_ON_ERROR,
+                );
+
+                $this->assertSame([$scenarioId], array_keys($result['scenario_results']));
+                $scenario = $result['scenario_results'][$scenarioId];
+                $observed = $scenario['observed_outputs'];
+                $this->assertSame($scenarioId, $scenario['scenario_id']);
+                $this->assertSame('runner_blocked', $scenario['status']);
+                $this->assertSame('preflight', $observed['failure_stage']);
+                $this->assertSame('runner', $observed['failure_classification']);
+                $this->assertSame('conformance_harness', $observed['failure_owner']);
+                $this->assertSame('not_started', $observed['worker_evidence']['process_state']['state']);
+                $this->assertSame('durableworkflow/server:0.2.694', $observed['server_evidence']['image']);
+                $this->assertLessThanOrEqual(
+                    $scenarioMaxBytes,
+                    strlen(json_encode($scenario, JSON_THROW_ON_ERROR)),
+                );
+            } finally {
+                foreach (glob($resultDir.'/*') ?: [] as $file) {
+                    if (is_file($file)) {
+                        unlink($file);
+                    }
+                }
+                rmdir($resultDir);
+            }
         }
     }
 
@@ -966,6 +1041,27 @@ JS;
         $resultDir = sys_get_temp_dir().'/dw-php-sdk-failure-writer-'.bin2hex(random_bytes(6));
         mkdir($resultDir, 0777, true);
         $diagnosticFile = $resultDir.'/baseline.diagnostic.log';
+        $companionFile = $resultDir.'/baseline-companion.json';
+        file_put_contents($companionFile, json_encode([
+            'schema' => 'durable-workflow.v2.php-sdk-companion-failure',
+            'version' => 1,
+            'failure_kind' => 'client_timeout',
+            'operation' => 'worker.run',
+            'classification' => 'server',
+            'owning_surface' => 'server',
+            'classification_basis' => 'worker_protocol_server_failure',
+            'worker' => [
+                'worker_id' => 'php-sdk-worker-1',
+                'process_state' => ['state' => 'exited', 'alive' => false, 'exit_code' => 1],
+                'last_protocol_failure' => ['status_code' => 500, 'operation' => 'worker.run'],
+            ],
+            'server' => [
+                'health' => ['http_status' => 200, 'payload' => ['status' => 'serving']],
+                'run_state' => ['http_status' => 200, 'payload' => ['status' => 'running']],
+            ],
+            'retained_after_cleanup' => true,
+            'max_bytes' => 6144,
+        ], JSON_THROW_ON_ERROR));
         $environment = array_merge($_ENV, [
             'RESULT_DIR' => $resultDir,
             'SDK_VERSION' => '0.1.5',
@@ -979,6 +1075,7 @@ JS;
             'FAILURE_STAGE' => 'baseline_client',
             'FAILURE_SUMMARY' => 'generic fallback',
             'FAILURE_DIAGNOSTIC_FILE' => $diagnosticFile,
+            'FAILURE_COMPANION_FILE' => $companionFile,
             'FAILURE_EVIDENCE_HELPER' => $repoRoot.'/scripts/conformance/php-sdk-runtime-failure-evidence.cjs',
             'CONTROL_TOKEN' => 'control-secret',
             'WORKER_TOKEN' => 'worker-secret',
@@ -1051,6 +1148,24 @@ JS;
             $this->assertSame('workflow-123', $evidence['workflow_id']);
             $this->assertSame('run-456', $evidence['run_id']);
             $this->assertSame('server', $result['findings'][0]['owning_surface']);
+            $this->assertSame(['php_sdk_lifecycle_surface'], array_keys($result['scenario_results']));
+            $scenario = $result['scenario_results']['php_sdk_lifecycle_surface'];
+            $observed = $scenario['observed_outputs'];
+            $this->assertSame('fail', $scenario['status']);
+            $this->assertSame('baseline_client', $observed['failure_stage']);
+            $this->assertSame('server', $observed['failure_classification']);
+            $this->assertSame('server', $observed['failure_owner']);
+            $this->assertSame(503, $observed['server_evidence']['runtime_failure']['status_code']);
+            $this->assertSame('exited', $observed['worker_evidence']['process_state']['state']);
+            $this->assertSame(
+                'worker_protocol_server_failure',
+                $result['findings'][0]['observed_evidence']['companion_failure_evidence']['classification_basis'],
+            );
+            $this->assertSame(200, $observed['server_evidence']['companion']['health']['http_status']);
+            $this->assertLessThanOrEqual(
+                24576,
+                strlen(json_encode($scenario, JSON_THROW_ON_ERROR)),
+            );
         } finally {
             foreach (glob($resultDir.'/*') ?: [] as $file) {
                 if (is_file($file)) {
@@ -1167,12 +1282,12 @@ JS;
             };
 
             $runWriter($environment);
-            $sidecar = json_decode(
-                (string) file_get_contents($resultDir.'/php-sdk-lifecycle-evidence.json'),
+            $result = json_decode(
+                (string) file_get_contents($resultDir.'/php-sdk-conformance-result.json'),
                 true,
                 flags: JSON_THROW_ON_ERROR,
             );
-            $timeout = $sidecar['scenario_results']['php_sdk_lifecycle_surface']['observed_outputs']['worker_startup'];
+            $timeout = $result['scenario_results']['php_sdk_lifecycle_surface']['observed_outputs']['worker_evidence']['startup'];
             $this->assertSame('readiness_timeout', $timeout['outcome']);
             $this->assertTrue($timeout['process_alive_at_failure']);
             $this->assertNull($timeout['process_exit_code']);
@@ -1192,12 +1307,12 @@ JS;
                 'WORKER_START_PROCESS_EXIT_CODE' => '17',
             ]);
             $runWriter($exitEnvironment);
-            $sidecar = json_decode(
-                (string) file_get_contents($resultDir.'/php-sdk-lifecycle-evidence.json'),
+            $result = json_decode(
+                (string) file_get_contents($resultDir.'/php-sdk-conformance-result.json'),
                 true,
                 flags: JSON_THROW_ON_ERROR,
             );
-            $processExit = $sidecar['scenario_results']['php_sdk_lifecycle_surface']['observed_outputs']['worker_startup'];
+            $processExit = $result['scenario_results']['php_sdk_lifecycle_surface']['observed_outputs']['worker_evidence']['startup'];
             $this->assertSame('process_exit', $processExit['outcome']);
             $this->assertFalse($processExit['process_alive_at_failure']);
             $this->assertSame(17, $processExit['process_exit_code']);
