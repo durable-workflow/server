@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Tests\Feature;
 
 use App\Models\WorkerRegistration;
+use App\Support\ActivityTaskPollRequestStore;
 use App\Support\NamespaceWorkflowScope;
 use App\Support\WorkerProtocol;
 use Illuminate\Foundation\Testing\RefreshDatabase;
@@ -256,6 +257,7 @@ class ActivityTimeoutTest extends TestCase
             ->postJson('/api/worker/activity-tasks/poll', [
                 'worker_id' => 'deadline-redelivery-worker',
                 'task_queue' => 'external-activities',
+                'poll_request_id' => 'deadline-redelivery-poll',
             ]);
 
         $firstPoll->assertOk()
@@ -280,10 +282,19 @@ class ActivityTimeoutTest extends TestCase
 
         $this->assertSame(1, $attemptCount);
 
+        app(ActivityTaskPollRequestStore::class)->forgetResult(
+            'default',
+            'external-activities',
+            null,
+            'deadline-redelivery-worker',
+            'deadline-redelivery-poll',
+        );
+
         $redelivery = $this->withHeaders($this->workerHeaders())
             ->postJson('/api/worker/activity-tasks/poll', [
                 'worker_id' => 'deadline-redelivery-worker',
                 'task_queue' => 'external-activities',
+                'poll_request_id' => 'deadline-redelivery-poll',
             ]);
 
         $redelivery->assertOk()

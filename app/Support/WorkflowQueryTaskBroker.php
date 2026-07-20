@@ -1634,6 +1634,7 @@ final class WorkflowQueryTaskBroker
     ): ?array {
         $ids = $this->leasedTaskIds($namespace, $taskQueue, $leaseOwner);
         $activeIds = [];
+        $matchingTask = null;
 
         foreach ($ids as $queryTaskId) {
             $task = $this->task($queryTaskId);
@@ -1657,7 +1658,8 @@ final class WorkflowQueryTaskBroker
             $activeIds[] = $queryTaskId;
 
             if (
-                ($task['poll_request_id'] ?? null) === $pollRequestId
+                $matchingTask === null
+                && ($task['poll_request_id'] ?? null) === $pollRequestId
                 && $this->queryTaskMatchesPoller(
                     $task,
                     $supportedWorkflowTypes,
@@ -1666,7 +1668,7 @@ final class WorkflowQueryTaskBroker
                     acceptsQueryTasks: true,
                 )
             ) {
-                return $task;
+                $matchingTask = $task;
             }
         }
 
@@ -1674,7 +1676,7 @@ final class WorkflowQueryTaskBroker
             $this->storeLeasedTaskIds($namespace, $taskQueue, $leaseOwner, $activeIds);
         }
 
-        return null;
+        return $matchingTask;
     }
 
     /**
