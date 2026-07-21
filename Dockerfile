@@ -39,8 +39,8 @@ WORKDIR /app
 FROM base AS production
 
 ARG WORKFLOW_PACKAGE_SOURCE=https://github.com/durable-workflow/workflow.git
-ARG WORKFLOW_PACKAGE_REF=2.0.0-alpha.291
-ARG WORKFLOW_PACKAGE_COMMIT=518a27492d38bd92bca3e2bb91b9ccf82da9589b
+ARG WORKFLOW_PACKAGE_REF=2.0.0-beta.1
+ARG WORKFLOW_PACKAGE_COMMIT=22bbf2a1469f4a38b1a6e1006ca8e46835c2fea4
 
 RUN apt-get update \
     && apt-get install -y --no-install-recommends git \
@@ -75,7 +75,8 @@ RUN cp /tmp/release-composer.json composer.json \
     && cp /tmp/release-composer.lock composer.lock \
     && rm -f /tmp/release-composer.json /tmp/release-composer.lock \
     && composer dump-autoload --optimize \
-    && cp /workflow/.package-provenance /app/.package-provenance
+    && cmp /workflow/.package-provenance vendor/durable-workflow/workflow/.package-provenance \
+    && cp vendor/durable-workflow/workflow/.package-provenance /app/.package-provenance
 
 # ── Production image ─────────────────────────────────────────────────
 COPY docker/bootstrap.sh /usr/local/bin/server-bootstrap

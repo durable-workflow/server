@@ -114,8 +114,8 @@ jobs:
 
       - name: Checkout workflow package
         run: |
-          git clone --depth=1 --branch 2.0.0-alpha.291 https://github.com/durable-workflow/workflow.git workflow-package
-          test "$(git -C workflow-package rev-parse HEAD)" = "518a27492d38bd92bca3e2bb91b9ccf82da9589b"
+          git clone --depth=1 --branch 2.0.0-beta.1 https://github.com/durable-workflow/workflow.git workflow-package
+          test "$(git -C workflow-package rev-parse HEAD)" = "22bbf2a1469f4a38b1a6e1006ca8e46835c2fea4"
 
       - name: Run perf harness result-gate tests
         run: |
@@ -155,7 +155,7 @@ jobs:
           DW_PERF_MAX_HEALTH_LATENCY_SECONDS: "3"
           DW_PERF_CONTROL_PLANE_INTERVAL_SECONDS: "5"
           DW_PERF_MAX_CONTROL_PLANE_LATENCY_SECONDS: "5"
-          DW_PERF_WORKFLOW_VERSION: "2.0.0-alpha.291"
+          DW_PERF_WORKFLOW_VERSION: "2.0.0-beta.1"
           DW_PERF_MAX_SERVER_MEMORY_MB: "768"
           DW_PERF_MAX_POLLING_KEYS: "512"
           DW_PERF_MAX_FINAL_POLLING_KEYS: "0"
