@@ -388,7 +388,10 @@ final class NexusContract
                     'artifact_tuple',
                     'published_artifact_worker_execution',
                     'service_health',
+                    'service_probe_succeeded',
+                    'service_response_payload',
                     'payload_round_trip',
+                    'typed_error_probe_succeeded',
                     'typed_error_round_trip',
                 ],
                 'python_caller_php_service' => [
@@ -403,7 +406,10 @@ final class NexusContract
                     'artifact_tuple',
                     'published_artifact_worker_execution',
                     'service_health',
+                    'service_probe_succeeded',
+                    'service_response_payload',
                     'payload_round_trip',
+                    'typed_error_probe_succeeded',
                     'typed_error_round_trip',
                 ],
                 'endpoint_permission_denied_without_information_leak' => [
@@ -565,7 +571,7 @@ final class NexusContract
                 ],
             ],
             'result_gate' => [
-                'schema' => self::RESULT_SCHEMA . '.gate',
+                'schema' => self::RESULT_SCHEMA.'.gate',
                 'version' => self::RESULT_VERSION,
                 'pass_requires' => [
                     'runner_blocked_false_for_product_evidence',

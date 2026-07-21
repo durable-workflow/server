@@ -159,7 +159,10 @@ const sharedServicePassRequirements = {
     {fields: ['artifact_tuple', 'artifactTuple', 'artifact_versions', 'artifactVersions', 'published_artifact_versions', 'publishedArtifactVersions', 'resolved_artifact_versions', 'resolvedArtifactVersions'], kind: 'non_empty_object'},
     {fields: ['published_artifact_worker_execution', 'publishedArtifactWorkerExecution', 'published_worker_execution', 'publishedWorkerExecution'], kind: 'non_empty_object'},
     {fields: ['service_health', 'serviceHealth', 'published_service_health', 'publishedServiceHealth'], kind: 'non_empty_object'},
+    {fields: ['service_probe_succeeded', 'serviceProbeSucceeded'], kind: 'boolean_true'},
+    {fields: ['service_response_payload', 'serviceResponsePayload'], kind: 'non_empty_object'},
     {fields: ['payload_round_trip', 'payloadRoundTrip'], kind: 'boolean_true'},
+    {fields: ['typed_error_probe_succeeded', 'typedErrorProbeSucceeded'], kind: 'boolean_true'},
     {fields: ['typed_error_round_trip', 'typedErrorRoundTrip'], kind: 'boolean_true'},
   ],
   python_caller_php_service: [
@@ -174,7 +177,10 @@ const sharedServicePassRequirements = {
     {fields: ['artifact_tuple', 'artifactTuple', 'artifact_versions', 'artifactVersions', 'published_artifact_versions', 'publishedArtifactVersions', 'resolved_artifact_versions', 'resolvedArtifactVersions'], kind: 'non_empty_object'},
     {fields: ['published_artifact_worker_execution', 'publishedArtifactWorkerExecution', 'published_worker_execution', 'publishedWorkerExecution'], kind: 'non_empty_object'},
     {fields: ['service_health', 'serviceHealth', 'published_service_health', 'publishedServiceHealth'], kind: 'non_empty_object'},
+    {fields: ['service_probe_succeeded', 'serviceProbeSucceeded'], kind: 'boolean_true'},
+    {fields: ['service_response_payload', 'serviceResponsePayload'], kind: 'non_empty_object'},
     {fields: ['payload_round_trip', 'payloadRoundTrip'], kind: 'boolean_true'},
+    {fields: ['typed_error_probe_succeeded', 'typedErrorProbeSucceeded'], kind: 'boolean_true'},
     {fields: ['typed_error_round_trip', 'typedErrorRoundTrip'], kind: 'boolean_true'},
   ],
 };
@@ -339,6 +345,7 @@ const os = require('os');
 const net = require('net');
 const path = require('path');
 const crypto = require('crypto');
+const {isDeepStrictEqual} = require('util');
 const {spawnSync} = require('child_process');
 const {replayPostWithStaleSocketRecovery} = require(process.argv[5]);
 
@@ -1700,6 +1707,8 @@ use Composer\\InstalledVersions;
 
 require '/tmp/dw-php/vendor/autoload.php';
 
+final class NexusPublishedServiceError extends RuntimeException {}
+
 $installedVersion = class_exists(InstalledVersions::class)
     ? (InstalledVersions::getPrettyVersion('durable-workflow/workflow') ?: InstalledVersions::getVersion('durable-workflow/workflow') ?: null)
     : null;
@@ -1827,6 +1836,10 @@ if ($path === '/greeter') {
 
     $adapter = new InvocableHttpAdapter([
         'nexus.greeter' => function (string $name = 'world', string $scenario = 'nexus') use ($decoded): array {
+            if (str_ends_with($scenario, '_typed_error')) {
+                throw new NexusPublishedServiceError('published workflow-php typed error');
+            }
+
             return [
                 'message' => 'hello from workflow-php, ' . $name,
                 'scenario' => $scenario,
@@ -1871,6 +1884,12 @@ from durable_workflow.invocable import InvocableActivityHandler
 from durable_workflow.workflow import WorkflowContext
 
 PACKAGE_VERSION = version("durable-workflow")
+
+
+class NexusPublishedServiceError(Exception):
+    pass
+
+
 CANDIDATE_CLIENT_METHODS = [
     "execute_service_call",
     "call_service",
@@ -1907,6 +1926,9 @@ def public_surface() -> dict:
 
 async def run_invocable(payload: dict) -> dict:
     async def greet(name: str = "world", scenario: str = "nexus") -> dict:
+        if scenario.endswith("_typed_error"):
+            raise NexusPublishedServiceError("published sdk-python typed error")
+
         return {
             "message": f"hello from sdk-python, {name}",
             "scenario": scenario,
@@ -2458,6 +2480,57 @@ function crossLanguageFinding(scenarioId, versions, owningSurface, observed, exp
   };
 }
 
+function serviceProbeResultEnvelope(serviceProbe) {
+  const body = serviceProbe?.body;
+  if (!body || typeof body !== 'object' || Array.isArray(body)) {
+    return null;
+  }
+
+  for (const candidate of [body.invocable_result, body.invocable_http_response?.body]) {
+    if (candidate && typeof candidate === 'object' && !Array.isArray(candidate)) {
+      return candidate;
+    }
+  }
+
+  return null;
+}
+
+function serviceResponsePayload(serviceProbe) {
+  const envelope = serviceProbeResultEnvelope(serviceProbe);
+  const payload = envelope?.result?.payload;
+  if (envelope?.schema !== 'durable-workflow.v2.external-task-result'
+    || envelope?.outcome?.status !== 'succeeded'
+    || payload?.codec !== 'json'
+    || typeof payload?.blob !== 'string') {
+    return null;
+  }
+
+  try {
+    const decoded = JSON.parse(payload.blob);
+    return decoded && typeof decoded === 'object' && !Array.isArray(decoded) ? decoded : null;
+  } catch {
+    return null;
+  }
+}
+
+function observedPayloadRoundTrip(serviceProbe, requestPayload) {
+  const responsePayload = serviceResponsePayload(serviceProbe);
+  return responsePayload !== null
+    && isDeepStrictEqual(responsePayload.request_payload, requestPayload);
+}
+
+function observedTypedErrorRoundTrip(serviceProbe, expectedType) {
+  const envelope = serviceProbeResultEnvelope(serviceProbe);
+  return serviceProbe?.ok === true
+    && Number(serviceProbe?.status ?? 0) >= 200
+    && Number(serviceProbe?.status ?? 0) < 300
+    && envelope?.schema === 'durable-workflow.v2.external-task-result'
+    && envelope?.outcome?.status === 'failed'
+    && envelope?.outcome?.recorded === true
+    && stringValue(envelope?.failure?.type) === expectedType
+    && stringValue(envelope?.failure?.message) !== '';
+}
+
 function crossLanguageScenarioResult({
   scenarioId,
   callerLanguage,
@@ -2470,6 +2543,8 @@ function crossLanguageScenarioResult({
   describe,
   history,
   serviceProbe,
+  typedErrorProbe,
+  expectedTypedError,
   artifactTupleEvidence,
   workerExecution,
   missingSurface,
@@ -2477,18 +2552,17 @@ function crossLanguageScenarioResult({
   versions,
 }) {
   const serviceCallId = serviceCallIdFrom(execute) || serviceCallIdFrom(describe);
-  const responseSurface = {
-    status: missingSurface === null && execute.ok ? 'completed' : 'unsupported',
-    execute_response: responseSummary(execute),
-    describe_response: responseSummary(describe),
-    caller_history_response: responseSummary(history),
-    service_probe_response: serviceProbe,
-    missing_public_surface: missingSurface,
-  };
   const historyRows = historyRowsFrom(history);
   const callerHistoryRecorded = serviceCallId !== ''
     && historyRows.some((row) => String(row.service_call_id || '') === serviceCallId);
-  const serviceProbeSucceeded = serviceProbe?.ok === true;
+  const serviceProbeSucceeded = serviceProbe?.ok === true
+    && Number(serviceProbe?.status ?? 0) >= 200
+    && Number(serviceProbe?.status ?? 0) < 300;
+  const responsePayload = serviceResponsePayload(serviceProbe);
+  const payloadRoundTrip = serviceProbeSucceeded
+    && observedPayloadRoundTrip(serviceProbe, requestPayload);
+  const typedErrorRoundTrip = observedTypedErrorRoundTrip(typedErrorProbe, expectedTypedError);
+  const typedErrorProbeSucceeded = typedErrorRoundTrip;
   const callerWorker = workerExecution.workers?.find((worker) => worker.sdk_language === callerLanguage);
   const serviceWorker = workerExecution.workers?.find((worker) => worker.sdk_language === serviceLanguage);
   const callerWorkerInvocation = callerWorker?.caller_workflow_invocation || null;
@@ -2502,28 +2576,24 @@ function crossLanguageScenarioResult({
   const serviceRuntimeAvailable = serviceHealthSucceeded
     && publicSurfaceAvailable(serviceWorker?.service_runtime_surface);
   const durableServiceResponseObserved = serviceRuntimeAvailable
-    && execute.ok
-    && serviceCallId !== ''
-    && (
-      execute.body?.id !== undefined
-      || execute.body?.accepted === true
-      || ['accepted', 'started', 'completed'].includes(String(execute.body?.status || '').toLowerCase())
-      || execute.body?.result !== undefined
-      || execute.body?.workflow_result !== undefined
-      || execute.body?.response !== undefined
-      || execute.body?.output !== undefined
-    );
-  const missing = missingSurface !== null
-    ? missingSurface
-    : (!callerPublicSurfaceAvailable
-      ? `published ${callerLanguage} caller workflow did not expose a public SDK service-call API during the reflected package probe`
-      : (!serviceHealthSucceeded
-        ? `published ${serviceLanguage} service shard did not return a valid /health response: ${serviceHealthFailureSummary(serviceHealth.health_response)}`
-        : (!publicSurfaceAvailable(serviceWorker?.service_runtime_surface)
-          ? `published ${serviceLanguage} service shard health passed but did not expose an invocable service runtime surface`
-          : (!durableServiceResponseObserved
-            ? 'durable service-call response from the published service runtime was not observed'
-            : (execute.ok ? null : 'service endpoint execute did not accept the published cross-language call')))));
+    && serviceProbeSucceeded
+    && responsePayload !== null;
+  let missing = missingSurface;
+  if (missing === null && !callerPublicSurfaceAvailable) {
+    missing = `published ${callerLanguage} caller workflow did not expose a public SDK service-call API during the reflected package probe`;
+  } else if (missing === null && !serviceHealthSucceeded) {
+    missing = `published ${serviceLanguage} service shard did not return a valid /health response: ${serviceHealthFailureSummary(serviceHealth.health_response)}`;
+  } else if (missing === null && !publicSurfaceAvailable(serviceWorker?.service_runtime_surface)) {
+    missing = `published ${serviceLanguage} service shard health passed but did not expose an invocable service runtime surface`;
+  } else if (missing === null && !serviceProbeSucceeded) {
+    missing = `published ${serviceLanguage} service invocation failed: ${serviceHealthFailureSummary(serviceProbe)}`;
+  } else if (missing === null && !payloadRoundTrip) {
+    missing = `published ${serviceLanguage} service invocation did not return the request payload`;
+  } else if (missing === null && !typedErrorRoundTrip) {
+    missing = `published ${serviceLanguage} service invocation did not preserve the observed typed error`;
+  } else if (missing === null && !execute.ok) {
+    missing = 'service endpoint execute did not accept the published cross-language call';
+  }
   const pass = missing === null
     && serviceHealthSucceeded
     && serviceRuntimeAvailable
@@ -2532,7 +2602,28 @@ function crossLanguageScenarioResult({
     && callerHistoryRecorded
     && callerPublicSurfaceAvailable
     && durableServiceResponseObserved
+    && payloadRoundTrip
+    && typedErrorRoundTrip
     && publicSurfaceAvailable(callerWorker?.public_service_call_surface);
+  const serviceInvocationFailed = callerPublicSurfaceAvailable
+    && serviceHealthSucceeded
+    && serviceRuntimeAvailable
+    && !serviceProbeSucceeded;
+  const serviceResponseMismatch = callerPublicSurfaceAvailable
+    && serviceHealthSucceeded
+    && serviceRuntimeAvailable
+    && serviceProbeSucceeded
+    && (!payloadRoundTrip || !typedErrorRoundTrip);
+  const responseSurface = {
+    status: pass ? 'completed' : (serviceInvocationFailed || serviceResponseMismatch ? 'failed' : 'unsupported'),
+    execute_response: responseSummary(execute),
+    describe_response: responseSummary(describe),
+    caller_history_response: responseSummary(history),
+    service_probe_response: serviceProbe,
+    typed_error_probe_response: typedErrorProbe,
+    service_response_payload: responsePayload,
+    missing_public_surface: missingSurface,
+  };
 
   if (pass) {
     return scenarioResult('pass', scenarioId, {
@@ -2548,9 +2639,11 @@ function crossLanguageScenarioResult({
       published_artifact_worker_execution: workerExecution,
       service_health: serviceHealth,
       service_health_succeeded: serviceHealthSucceeded,
-      payload_round_trip: true,
-      typed_error_round_trip: true,
       service_probe_succeeded: serviceProbeSucceeded,
+      service_response_payload: responsePayload,
+      payload_round_trip: payloadRoundTrip,
+      typed_error_probe_succeeded: typedErrorProbeSucceeded,
+      typed_error_round_trip: typedErrorRoundTrip,
       service_runtime_available: serviceRuntimeAvailable,
       caller_history_recorded: callerHistoryRecorded,
       caller_worker_invocation: callerWorkerInvocation,
@@ -2564,6 +2657,8 @@ function crossLanguageScenarioResult({
     describe_response: responseSummary(describe),
     caller_history_response: responseSummary(history),
     service_probe_response: serviceProbe,
+    typed_error_probe_response: typedErrorProbe,
+    service_response_payload: responsePayload,
     service_health: serviceHealth,
     service_health_succeeded: serviceHealthSucceeded,
     durable_service_call_id_observed: serviceCallId !== '',
@@ -2574,15 +2669,21 @@ function crossLanguageScenarioResult({
   const healthFailureObserved = callerPublicSurfaceAvailable && serviceHealthSucceeded !== true;
   const findingType = healthFailureObserved
     ? 'nexus_published_service_health_failed'
-    : 'nexus_unsupported_surface';
+    : (serviceInvocationFailed
+      ? 'nexus_published_service_invocation_failed'
+      : (serviceResponseMismatch ? 'nexus_published_service_response_mismatch' : 'nexus_unsupported_surface'));
   const expectedBehavior = healthFailureObserved
     ? `The published ${serviceLanguage} service shard serves /health with runtime, package import, and package version evidence before the Nexus run can pass.`
-    : `The published ${callerLanguage} caller SDK exposes a workflow-safe Nexus service-call API and the published ${serviceLanguage} service runtime executes the call through the durable service-call path.`;
+    : (serviceInvocationFailed || serviceResponseMismatch
+      ? `The published ${serviceLanguage} service returns a successful external-task response with the request payload and preserves a concrete typed failure response.`
+      : `The published ${callerLanguage} caller SDK exposes a workflow-safe Nexus service-call API and the published ${serviceLanguage} service runtime executes the call through the durable service-call path.`);
   const nextAcceptanceCriterion = healthFailureObserved
     ? `fix published ${serviceLanguage} service startup, serve valid /health evidence, and rerun the published PHP/Python Nexus shard`
-    : `publish the missing ${callerLanguage} Nexus service-call surface, wire it to the ${serviceLanguage} runtime service, and rerun the published PHP/Python Nexus shard`;
+    : (serviceInvocationFailed || serviceResponseMismatch
+      ? `fix the published ${serviceLanguage} invocation response and rerun the published PHP/Python Nexus shard`
+      : `publish the missing ${callerLanguage} Nexus service-call surface, wire it to the ${serviceLanguage} runtime service, and rerun the published PHP/Python Nexus shard`);
 
-  return scenarioResult('unsupported', scenarioId, {
+  return scenarioResult(serviceInvocationFailed || serviceResponseMismatch ? 'fail' : 'unsupported', scenarioId, {
     caller_workflow_instance_id: callerWorkflowInstanceId,
     caller_workflow_run_id: callerWorkflowRunId,
     caller_sdk_language: callerLanguage,
@@ -2595,8 +2696,11 @@ function crossLanguageScenarioResult({
     published_artifact_worker_execution: workerExecution,
     service_health: serviceHealth,
     service_health_succeeded: serviceHealthSucceeded,
-    payload_round_trip: serviceProbeSucceeded,
-    typed_error_round_trip: serviceProbeSucceeded,
+    service_probe_succeeded: serviceProbeSucceeded,
+    service_response_payload: responsePayload,
+    payload_round_trip: payloadRoundTrip,
+    typed_error_probe_succeeded: typedErrorProbeSucceeded,
+    typed_error_round_trip: typedErrorRoundTrip,
     attempted_call_evidence: attemptedCallEvidence,
   }, [
     crossLanguageFinding(
@@ -2664,13 +2768,33 @@ async function probePublishedPhpPythonServiceCalls(baseUrl, token, versions, sou
 
     const pythonHealth = pythonService.health;
     const phpHealth = phpService.health;
-    const pythonProbe = await postJson(`http://127.0.0.1:${pythonService.port}/greeter`, {
+    const phpToPythonRequest = {
       name: 'world',
       scenario: 'php_caller_python_service',
-    });
-    const phpProbe = await postJson(`http://127.0.0.1:${phpService.port}/greeter`, {
+      caller_sdk_language: 'sdk-php',
+      service_sdk_language: 'sdk-python',
+    };
+    const pythonToPhpRequest = {
       name: 'world',
       scenario: 'python_caller_php_service',
+      caller_sdk_language: 'sdk-python',
+      service_sdk_language: 'workflow-php',
+    };
+    const pythonProbe = await postJson(
+      `http://127.0.0.1:${pythonService.port}/greeter`,
+      phpToPythonRequest,
+    );
+    const pythonTypedErrorProbe = await postJson(`http://127.0.0.1:${pythonService.port}/greeter`, {
+      ...phpToPythonRequest,
+      scenario: 'php_caller_python_service_typed_error',
+    });
+    const phpProbe = await postJson(
+      `http://127.0.0.1:${phpService.port}/greeter`,
+      pythonToPhpRequest,
+    );
+    const phpTypedErrorProbe = await postJson(`http://127.0.0.1:${phpService.port}/greeter`, {
+      ...pythonToPhpRequest,
+      scenario: 'python_caller_php_service_typed_error',
     });
     const pythonReflection = reflectPublishedPythonSdkSurface(pythonService.containerName);
     const phpReflection = reflectPublishedPhpWorkflowSurface(phpService.containerName);
@@ -2722,12 +2846,6 @@ async function probePublishedPhpPythonServiceCalls(baseUrl, token, versions, sou
 
     const phpCallerWorkflowInstanceId = `php-caller-python-service-${crypto.randomBytes(5).toString('hex')}`;
     const phpCallerWorkflowRunId = ulidLike();
-    const phpToPythonRequest = {
-      name: 'world',
-      scenario: 'php_caller_python_service',
-      caller_sdk_language: 'sdk-php',
-      service_sdk_language: 'sdk-python',
-    };
     const phpToPythonExecute = executePublishedPhpSdkServiceOperation(
       phpService.containerName,
       token,
@@ -2757,12 +2875,6 @@ async function probePublishedPhpPythonServiceCalls(baseUrl, token, versions, sou
 
     const pythonCallerWorkflowInstanceId = `python-caller-php-service-${crypto.randomBytes(5).toString('hex')}`;
     const pythonCallerWorkflowRunId = ulidLike();
-    const pythonToPhpRequest = {
-      name: 'world',
-      scenario: 'python_caller_php_service',
-      caller_sdk_language: 'sdk-python',
-      service_sdk_language: 'workflow-php',
-    };
     const pythonToPhpExecute = await apiRequest(
       baseUrl,
       token,
@@ -2834,6 +2946,8 @@ async function probePublishedPhpPythonServiceCalls(baseUrl, token, versions, sou
         describe: phpToPythonDescribe,
         history: phpToPythonHistory,
         serviceProbe: responseSummary(pythonProbe),
+        typedErrorProbe: responseSummary(pythonTypedErrorProbe),
+        expectedTypedError: 'NexusPublishedServiceError',
         artifactTupleEvidence: tuple,
         workerExecution,
         missingSurface: phpToPythonMissing,
@@ -2852,6 +2966,8 @@ async function probePublishedPhpPythonServiceCalls(baseUrl, token, versions, sou
         describe: pythonToPhpDescribe,
         history: pythonToPhpHistory,
         serviceProbe: responseSummary(phpProbe),
+        typedErrorProbe: responseSummary(phpTypedErrorProbe),
+        expectedTypedError: 'NexusPublishedServiceError',
         artifactTupleEvidence: tuple,
         workerExecution,
         missingSurface: pythonToPhpMissing,
@@ -4806,7 +4922,17 @@ const scenarioEvidenceRequirements = {
       finding_type: 'nexus_published_service_health_failed',
       owning_surface: 'sdk-python',
     },
+    {
+      fields: ['service_probe_succeeded', 'serviceProbeSucceeded'],
+      kind: 'boolean_true',
+      expected: 'successful 2xx invocation of the published Python service shard',
+      invalid_code: 'nexus_published_service_invocation_failed',
+      finding_type: 'nexus_published_service_invocation_failed',
+      owning_surface: 'sdk-python',
+    },
+    {fields: ['service_response_payload', 'serviceResponsePayload'], kind: 'non_empty_object', expected: 'concrete payload returned by the published Python service invocation'},
     {fields: ['payload_round_trip', 'payloadRoundTrip'], kind: 'boolean_true', expected: 'payload round-tripped between PHP and Python'},
+    {fields: ['typed_error_probe_succeeded', 'typedErrorProbeSucceeded'], kind: 'boolean_true', expected: 'published Python service returned an observed typed failure envelope'},
     {fields: ['typed_error_round_trip', 'typedErrorRoundTrip'], kind: 'boolean_true', expected: 'typed error round-tripped between PHP and Python'},
   ],
   python_caller_php_service: [
@@ -4829,7 +4955,17 @@ const scenarioEvidenceRequirements = {
       finding_type: 'nexus_published_service_health_failed',
       owning_surface: 'workflow',
     },
+    {
+      fields: ['service_probe_succeeded', 'serviceProbeSucceeded'],
+      kind: 'boolean_true',
+      expected: 'successful 2xx invocation of the published PHP service shard',
+      invalid_code: 'nexus_published_service_invocation_failed',
+      finding_type: 'nexus_published_service_invocation_failed',
+      owning_surface: 'workflow',
+    },
+    {fields: ['service_response_payload', 'serviceResponsePayload'], kind: 'non_empty_object', expected: 'concrete payload returned by the published PHP service invocation'},
     {fields: ['payload_round_trip', 'payloadRoundTrip'], kind: 'boolean_true', expected: 'payload round-tripped between Python and PHP'},
+    {fields: ['typed_error_probe_succeeded', 'typedErrorProbeSucceeded'], kind: 'boolean_true', expected: 'published PHP service returned an observed typed failure envelope'},
     {fields: ['typed_error_round_trip', 'typedErrorRoundTrip'], kind: 'boolean_true', expected: 'typed error round-tripped between Python and PHP'},
   ],
   endpoint_permission_denied_without_information_leak: [

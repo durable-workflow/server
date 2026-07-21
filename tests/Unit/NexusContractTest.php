@@ -278,6 +278,11 @@ class NexusContractTest extends TestCase
                 'artifact_tuple',
                 'published_artifact_worker_execution',
                 'service_health',
+                'service_probe_succeeded',
+                'service_response_payload',
+                'payload_round_trip',
+                'typed_error_probe_succeeded',
+                'typed_error_round_trip',
             ] as $requiredField) {
                 $this->assertContains(
                     $requiredField,
@@ -502,6 +507,11 @@ class NexusContractTest extends TestCase
         $this->assertStringContainsString('const serviceRuntimeAvailable = serviceHealthSucceeded', $contents);
         $this->assertStringContainsString('durableServiceResponseObserved = serviceRuntimeAvailable', $contents);
         $this->assertStringContainsString('service_probe_succeeded: serviceProbeSucceeded', $contents);
+        $this->assertStringContainsString('service_response_payload: responsePayload', $contents);
+        $this->assertStringContainsString('typed_error_probe_succeeded: typedErrorProbeSucceeded', $contents);
+        $this->assertStringContainsString('nexus_published_service_invocation_failed', $contents);
+        $this->assertStringNotContainsString('payload_round_trip: true', $contents);
+        $this->assertStringNotContainsString('typed_error_round_trip: true', $contents);
         $this->assertStringContainsString('service_runtime_available: serviceRuntimeAvailable', $contents);
         $this->assertStringContainsString('nexus_unsupported_surface', $contents);
 
@@ -824,6 +834,49 @@ class NexusContractTest extends TestCase
             'nexus_published_service_health_failed',
             array_column($scenario['linked_findings'], 'finding_type'),
         );
+    }
+
+    public function test_host_runner_rejects_non_successful_published_php_service_invocation(): void
+    {
+        $nodeBinary = trim((string) shell_exec('command -v node 2>/dev/null'));
+        if ($nodeBinary === '') {
+            $this->markTestSkipped('node is required to exercise the Nexus runner result gate.');
+        }
+
+        $evidence = $this->completeRunnerEvidence();
+        foreach ($evidence['scenario_results'] as &$scenario) {
+            if (($scenario['scenario_id'] ?? null) !== 'python_caller_php_service') {
+                continue;
+            }
+
+            $failedProbe = [
+                'ok' => false,
+                'status' => 400,
+                'body' => [
+                    'error' => 'invalid_invocable_request',
+                    'message' => 'External task input field [headers] must be an object.',
+                ],
+            ];
+            $scenario['observed_outputs']['service_probe_succeeded'] = false;
+            $scenario['observed_outputs']['response_or_failure_surface']['status'] = 'failed';
+            $scenario['observed_outputs']['response_or_failure_surface']['service_probe_response'] = $failedProbe;
+        }
+        unset($scenario);
+
+        $result = $this->runNexusEvidence($evidence, 'dw-nexus-php-service-invocation-failed-');
+        $scenario = $this->scenarioResult($result, 'python_caller_php_service');
+
+        $this->assertSame('fail', $result['outcome']);
+        $this->assertSame('fail', $scenario['status']);
+        $this->assertContains(
+            'service_probe_succeeded',
+            array_column($scenario['observed_outputs']['scenario_evidence_failures'], 'field'),
+        );
+        $this->assertContains(
+            'nexus_published_service_invocation_failed',
+            array_column($scenario['linked_findings'], 'finding_type'),
+        );
+        $this->assertContains('workflow', array_column($scenario['linked_findings'], 'owning_surface'));
     }
 
     public function test_host_runner_preserves_cross_language_attempted_call_unsupported_findings(): void
@@ -2478,11 +2531,10 @@ class NexusContractTest extends TestCase
     }
 
     /**
-     * @param array<string, mixed> $evidence
-     * @param array<string, mixed>|null $installEvidence
-     * @param array<string, mixed>|null $staleResultInstallEvidence
-     * @param array<string, mixed>|null $record
-     *
+     * @param  array<string, mixed>  $evidence
+     * @param  array<string, mixed>|null  $installEvidence
+     * @param  array<string, mixed>|null  $staleResultInstallEvidence
+     * @param  array<string, mixed>|null  $record
      * @return array<string, mixed>
      */
     private function runNexusEvidence(
@@ -2493,8 +2545,7 @@ class NexusContractTest extends TestCase
         ?array &$record = null,
         ?array &$resultFiles = null,
         bool $skipSharedServiceProbe = true,
-    ): array
-    {
+    ): array {
         $repoRoot = dirname(__DIR__, 2);
         $tempRoot = sys_get_temp_dir().'/'.$tempPrefix.bin2hex(random_bytes(6));
         $resultDir = $tempRoot.'/result';
@@ -2710,9 +2761,8 @@ class NexusContractTest extends TestCase
     }
 
     /**
-     * @param array<string, string> $artifactVersions
-     * @param array<string, string> $artifactSources
-     *
+     * @param  array<string, string>  $artifactVersions
+     * @param  array<string, string>  $artifactSources
      * @return array<string, mixed>
      */
     private function completeScenarioOutputs(
@@ -2720,8 +2770,7 @@ class NexusContractTest extends TestCase
         array $artifactVersions,
         array $artifactSources,
         array $artifactSourceVerification,
-    ): array
-    {
+    ): array {
         $base = [
             'service_call_id' => 'svc-'.$scenarioId,
         ];
@@ -2891,7 +2940,19 @@ class NexusContractTest extends TestCase
                     'sdk-python',
                     $artifactVersions['sdk-python'],
                 ),
+                'service_probe_succeeded' => true,
+                'service_response_payload' => [
+                    'message' => 'hello from sdk-python, world',
+                    'scenario' => $scenarioId,
+                    'request_payload' => [
+                        'name' => 'world',
+                        'scenario' => $scenarioId,
+                        'caller_sdk_language' => 'sdk-php',
+                        'service_sdk_language' => 'sdk-python',
+                    ],
+                ],
                 'payload_round_trip' => true,
+                'typed_error_probe_succeeded' => true,
                 'typed_error_round_trip' => true,
             ],
             'python_caller_php_service' => $base + [
@@ -2919,7 +2980,19 @@ class NexusContractTest extends TestCase
                     'workflow-php',
                     $artifactVersions['workflow'],
                 ),
+                'service_probe_succeeded' => true,
+                'service_response_payload' => [
+                    'message' => 'hello from workflow-php, world',
+                    'scenario' => $scenarioId,
+                    'request_payload' => [
+                        'name' => 'world',
+                        'scenario' => $scenarioId,
+                        'caller_sdk_language' => 'sdk-python',
+                        'service_sdk_language' => 'workflow-php',
+                    ],
+                ],
                 'payload_round_trip' => true,
+                'typed_error_probe_succeeded' => true,
                 'typed_error_round_trip' => true,
             ],
             'endpoint_permission_denied_without_information_leak' => [
@@ -3155,9 +3228,8 @@ class NexusContractTest extends TestCase
     }
 
     /**
-     * @param array<string, string> $artifactVersions
-     * @param array<string, string> $artifactSources
-     *
+     * @param  array<string, string>  $artifactVersions
+     * @param  array<string, string>  $artifactSources
      * @return array<string, mixed>
      */
     private function publishedWorkerExecution(array $artifactVersions, array $artifactSources): array
@@ -3178,9 +3250,8 @@ class NexusContractTest extends TestCase
     }
 
     /**
-     * @param array<string, string> $artifactVersions
-     * @param array<string, string> $artifactSources
-     *
+     * @param  array<string, string>  $artifactVersions
+     * @param  array<string, string>  $artifactSources
      * @return array<string, mixed>
      */
     private function publishedCrossLanguageWorkerExecution(array $artifactVersions, array $artifactSources): array
@@ -3272,9 +3343,8 @@ class NexusContractTest extends TestCase
     }
 
     /**
-     * @param array<string, string> $artifactVersions
-     * @param array<string, string> $artifactSources
-     *
+     * @param  array<string, string>  $artifactVersions
+     * @param  array<string, string>  $artifactSources
      * @return array<string, array<string, mixed>>
      */
     private function artifactSourceVerification(array $artifactVersions, array $artifactSources): array
@@ -3294,10 +3364,9 @@ class NexusContractTest extends TestCase
     }
 
     /**
-     * @param array<string, string> $artifactVersions
-     * @param array<string, string> $artifactSources
-     * @param array<string, array<string, mixed>> $artifactSourceVerification
-     *
+     * @param  array<string, string>  $artifactVersions
+     * @param  array<string, string>  $artifactSources
+     * @param  array<string, array<string, mixed>>  $artifactSourceVerification
      * @return array<string, mixed>
      */
     private function artifactInstallEvidence(
@@ -3334,8 +3403,7 @@ class NexusContractTest extends TestCase
     }
 
     /**
-     * @param array<string, mixed> $result
-     *
+     * @param  array<string, mixed>  $result
      * @return array<string, mixed>
      */
     private function scenarioResult(array $result, string $scenarioId): array
@@ -3350,7 +3418,7 @@ class NexusContractTest extends TestCase
     }
 
     /**
-     * @param array<string, mixed> $result
+     * @param  array<string, mixed>  $result
      */
     private function hasArtifactPolicyFailure(
         array $result,
