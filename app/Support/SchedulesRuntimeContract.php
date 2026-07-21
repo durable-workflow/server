@@ -224,6 +224,9 @@ final class SchedulesRuntimeContract
                         'observed_policy',
                         'catchup_fire_count',
                         'post_resume_normal_fire_observed',
+                        'scheduler_stop_confirmed',
+                        'fires_during_scheduler_outage_count',
+                        'stored_overdue_occurrence_elapsed_during_outage',
                     ],
                 ],
                 'restart_survival' => [
@@ -510,6 +513,7 @@ final class SchedulesRuntimeContract
                 'acceptance' => [
                     'create an active one-minute schedule',
                     'stop scheduler evaluation through one or more nominal fire times',
+                    'prove the scheduler stop completed and no fires were recorded before evaluation resumed',
                     'record documented_policy, observed_policy, catchup_fire_count, and post_resume_normal_fire_observed',
                 ],
             ],

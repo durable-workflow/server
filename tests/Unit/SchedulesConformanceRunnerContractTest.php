@@ -1797,6 +1797,9 @@ SH,
             'observed_policy' => 'fire_once_on_resume_then_skip_remaining_missed',
             'catchup_fire_count' => 1,
             'post_resume_normal_fire_observed' => true,
+            'scheduler_stop_confirmed' => true,
+            'fires_during_scheduler_outage_count' => 0,
+            'stored_overdue_occurrence_elapsed_during_outage' => true,
             'scheduler_stopped_at' => '2026-06-04T10:00:00Z',
             'scheduler_resume_requested_at' => '2026-06-04T10:02:10Z',
             'catchup_fires' => [[
@@ -3018,6 +3021,35 @@ SH,
         $this->assertStringContainsString('DW_SCHEDULES_PYTHON_LIFECYCLE_EVIDENCE', $shell);
         $this->assertStringContainsString('DW_SCHEDULES_RUN_PHP_SURFACE_SHARD', $shell);
         $this->assertStringContainsString('DW_SCHEDULES_PHP_SURFACE_EVIDENCE', $shell);
+    }
+
+    public function test_missed_fire_shard_stops_scheduler_and_proves_the_pre_resume_window(): void
+    {
+        $repoRoot = dirname(__DIR__, 2);
+        $source = (string) file_get_contents($repoRoot.'/scripts/conformance/schedules-published-artifacts.mjs');
+        $shardStart = strpos($source, 'async function runMissedRestartShard(');
+        $shardEnd = strpos($source, 'async function createMissedRestartSchedule(', $shardStart ?: 0);
+
+        $this->assertIsInt($shardStart);
+        $this->assertIsInt($shardEnd);
+        $shard = substr($source, $shardStart, $shardEnd - $shardStart);
+        $schedulerStop = strpos($shard, "'stop', 'scheduler'");
+        $outageWait = strpos($shard, 'await sleep(missedDowntimeSeconds * 1000)');
+        $preResumeHistory = strpos($shard, 'const preResumeHistory = await scheduleHistory(');
+        $schedulerResume = strpos($shard, "'up', '-d', 'scheduler'");
+
+        $this->assertIsInt($schedulerStop);
+        $this->assertIsInt($outageWait);
+        $this->assertIsInt($preResumeHistory);
+        $this->assertIsInt($schedulerResume);
+        $this->assertTrue($schedulerStop < $outageWait);
+        $this->assertTrue($outageWait < $preResumeHistory);
+        $this->assertTrue($preResumeHistory < $schedulerResume);
+        $this->assertStringContainsString("'ps', '--status', 'running', '--services', 'scheduler'", $shard);
+        $this->assertStringContainsString('schedulerStopConfirmed: true', $shard);
+        $this->assertStringContainsString('preResumeHistory,', $shard);
+        $this->assertStringContainsString('fires_during_scheduler_outage_count:', $source);
+        $this->assertStringContainsString('stored_overdue_occurrence_elapsed_during_outage:', $source);
     }
 
     public function test_runner_uses_published_compose_dependency_graph_for_schedule_shards(): void

@@ -4017,8 +4017,32 @@ async function runMissedRestartShard({ startedAt, artifactVersions, artifactSour
     });
 
     const missedCreatedDescription = await describeSchedule(serverUrl, token, namespace, missedScheduleId);
+    const schedulerStopRequestedAt = timestamp();
+    await execLogged(
+      'docker',
+      ['compose', '-p', composeProject, ...composeFiles, 'stop', 'scheduler'],
+      path.join(resultDir, 'schedules-missed-restart-scheduler-outage-stop.log'),
+      env,
+    );
+    const schedulerState = await execLogged(
+      'docker',
+      ['compose', '-p', composeProject, ...composeFiles, 'ps', '--status', 'running', '--services', 'scheduler'],
+      path.join(resultDir, 'schedules-missed-restart-scheduler-outage-state.log'),
+      env,
+    );
+    const runningSchedulerServices = String(schedulerState.stdout ?? '')
+      .split(/\r?\n/)
+      .map((service) => service.trim())
+      .filter(Boolean);
+    if (runningSchedulerServices.includes('scheduler')) {
+      throw new PublishedStackInfrastructureError(
+        'scheduler service remained running after the missed-fire outage stop completed',
+      );
+    }
     const schedulerStoppedAt = timestamp();
     await sleep(missedDowntimeSeconds * 1000);
+    const preResumeHistory = await scheduleHistory(serverUrl, token, namespace, missedScheduleId);
+    const schedulerOutageObservedAt = timestamp();
     const schedulerResumeRequestedAt = timestamp();
     await execLogged(
       'docker',
@@ -4026,6 +4050,7 @@ async function runMissedRestartShard({ startedAt, artifactVersions, artifactSour
       path.join(resultDir, 'schedules-missed-restart-scheduler-resume.log'),
       env,
     );
+    const schedulerResumeConfirmedAt = timestamp();
 
     const missedFire = await observeMissedFirePolicy({
       serverUrl,
@@ -4033,8 +4058,13 @@ async function runMissedRestartShard({ startedAt, artifactVersions, artifactSour
       namespace,
       scheduleId: missedScheduleId,
       documentedPolicy: documentedMissedFirePolicy(),
+      schedulerStopRequestedAt,
+      schedulerStopConfirmed: true,
       schedulerStoppedAt,
+      schedulerOutageObservedAt,
       schedulerResumeRequestedAt,
+      schedulerResumeConfirmedAt,
+      preResumeHistory,
       preResumeDescription: missedCreatedDescription,
       downtimeSeconds: missedDowntimeSeconds,
       resumeTimeoutSeconds: missedResumeTimeoutSeconds,
@@ -4172,8 +4202,13 @@ async function observeMissedFirePolicy({
   namespace,
   scheduleId,
   documentedPolicy,
+  schedulerStopRequestedAt,
+  schedulerStopConfirmed,
   schedulerStoppedAt,
+  schedulerOutageObservedAt,
   schedulerResumeRequestedAt,
+  schedulerResumeConfirmedAt,
+  preResumeHistory,
   preResumeDescription,
   downtimeSeconds,
   resumeTimeoutSeconds,
@@ -4181,7 +4216,21 @@ async function observeMissedFirePolicy({
   artifactVersions,
   artifactSources,
 }) {
+  const stoppedMs = Date.parse(schedulerStoppedAt);
   const resumeRequestedMs = Date.parse(schedulerResumeRequestedAt);
+  const storedOverdueOccurrenceTime = scheduleTimeField(
+    preResumeDescription,
+    ['next_fire_at', 'nextFireAt', 'next_fire', 'nextFire'],
+  );
+  const storedOverdueOccurrenceMs = Date.parse(storedOverdueOccurrenceTime);
+  const storedOverdueOccurrenceElapsedDuringOutage = Number.isFinite(storedOverdueOccurrenceMs)
+    && storedOverdueOccurrenceMs >= stoppedMs
+    && storedOverdueOccurrenceMs < resumeRequestedMs;
+  const firesDuringSchedulerOutage = scheduleTriggeredEvents(preResumeHistory?.events ?? [])
+    .filter((event) => eventRecordedMs(event) >= stoppedMs);
+  const outageContinuityProven = schedulerStopConfirmed === true
+    && firesDuringSchedulerOutage.length === 0
+    && storedOverdueOccurrenceElapsedDuringOutage;
   const deadlineMs = Date.now() + resumeTimeoutSeconds * 1000;
   let latestHistory = { events: [] };
   let postResumeTriggers = [];
@@ -4210,20 +4259,36 @@ async function observeMissedFirePolicy({
 
   const catchupFireCount = catchupTriggers.length;
   const postResumeNormalFireObserved = normalTriggers.length > 0;
-  const observedPolicy = inferMissedFirePolicy(catchupFireCount, postResumeNormalFireObserved);
+  const observedPolicy = outageContinuityProven
+    ? inferMissedFirePolicy(catchupFireCount, postResumeNormalFireObserved)
+    : 'not_observed';
   const failures = [];
 
-  if (documentedPolicy !== 'fire_once_on_resume_then_skip_remaining_missed') {
-    failures.push(`documented policy was ${documentedPolicy || '<missing>'}`);
+  if (!schedulerStopConfirmed) {
+    failures.push('scheduler stop was not confirmed before the missed-fire outage window');
   }
-  if (observedPolicy !== 'fire_once_on_resume_then_skip_remaining_missed') {
-    failures.push(`observed policy was ${observedPolicy}`);
+  if (firesDuringSchedulerOutage.length > 0) {
+    failures.push(
+      `observed ${firesDuringSchedulerOutage.length} fire(s) while scheduler evaluation was claimed unavailable`,
+    );
   }
-  if (catchupFireCount !== 1) {
-    failures.push(`observed ${catchupFireCount} catch-up fire(s); expected exactly 1`);
+  if (!storedOverdueOccurrenceElapsedDuringOutage) {
+    failures.push('the stored next fire did not elapse inside the confirmed scheduler outage window');
   }
-  if (!postResumeNormalFireObserved) {
-    failures.push('no later normal fire was observed after scheduler evaluation resumed');
+
+  if (outageContinuityProven) {
+    if (documentedPolicy !== 'fire_once_on_resume_then_skip_remaining_missed') {
+      failures.push(`documented policy was ${documentedPolicy || '<missing>'}`);
+    }
+    if (observedPolicy !== 'fire_once_on_resume_then_skip_remaining_missed') {
+      failures.push(`observed policy was ${observedPolicy}`);
+    }
+    if (catchupFireCount !== 1) {
+      failures.push(`observed ${catchupFireCount} catch-up fire(s); expected exactly 1`);
+    }
+    if (!postResumeNormalFireObserved) {
+      failures.push('no later normal fire was observed after scheduler evaluation resumed');
+    }
   }
 
   return {
@@ -4233,11 +4298,19 @@ async function observeMissedFirePolicy({
     observed_policy: observedPolicy,
     catchup_fire_count: catchupFireCount,
     post_resume_normal_fire_observed: postResumeNormalFireObserved,
+    scheduler_stop_requested_at: schedulerStopRequestedAt,
+    scheduler_stop_confirmed: schedulerStopConfirmed === true,
     scheduler_stopped_at: schedulerStoppedAt,
+    scheduler_outage_observed_at: schedulerOutageObservedAt,
     scheduler_resume_requested_at: schedulerResumeRequestedAt,
+    scheduler_resume_confirmed_at: schedulerResumeConfirmedAt,
     downtime_seconds: downtimeSeconds,
     resume_timeout_seconds: resumeTimeoutSeconds,
-    stored_overdue_occurrence_time: scheduleTimeField(preResumeDescription, ['next_fire_at', 'nextFireAt', 'next_fire', 'nextFire']),
+    stored_overdue_occurrence_time: storedOverdueOccurrenceTime,
+    stored_overdue_occurrence_elapsed_during_outage: storedOverdueOccurrenceElapsedDuringOutage,
+    fires_during_scheduler_outage_count: firesDuringSchedulerOutage.length,
+    fires_during_scheduler_outage: firesDuringSchedulerOutage.map(normalizeScheduleEvent).filter(Boolean),
+    pre_resume_history: preResumeHistory,
     catchup_fires: catchupTriggers.map(normalizeScheduleEvent).filter(Boolean),
     normal_fires_after_resume: normalTriggers.map(normalizeScheduleEvent).filter(Boolean),
     post_resume_trigger_count: postResumeTriggers.length,
@@ -4245,7 +4318,9 @@ async function observeMissedFirePolicy({
     artifact_versions: artifactVersions,
     artifact_sources: artifactSources,
     failures,
-    verdict: failures.length === 0 ? 'pass' : 'fail',
+    verdict: !outageContinuityProven
+      ? 'runner_blocked'
+      : (failures.length === 0 ? 'pass' : 'fail'),
   };
 }
 

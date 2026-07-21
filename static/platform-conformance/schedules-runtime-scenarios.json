@@ -113,7 +113,10 @@
         "documented_policy",
         "observed_policy",
         "catchup_fire_count",
-        "post_resume_normal_fire_observed"
+        "post_resume_normal_fire_observed",
+        "scheduler_stop_confirmed",
+        "fires_during_scheduler_outage_count",
+        "stored_overdue_occurrence_elapsed_during_outage"
       ]
     }
   },
@@ -208,6 +211,7 @@
         "acceptance": [
           "create an active one-minute schedule",
           "stop scheduler evaluation through one or more nominal fire times",
+          "prove the scheduler stop completed and no fires were recorded before evaluation resumed",
           "record documented_policy, observed_policy, catchup_fire_count, and post_resume_normal_fire_observed"
         ]
       },
@@ -607,10 +611,13 @@
       ],
       "operations": [
         "store an active schedule and stop scheduler evaluation through one or more nominal fire times",
+        "confirm the scheduler is stopped and record zero fires before evaluation resumes",
         "restart evaluation and observe catch-up behavior",
         "record documented_policy, observed_policy, catchup_fire_count, and post_resume_normal_fire_observed"
       ],
       "pass_criteria": [
+        "scheduler_stop_confirmed is true and fires_during_scheduler_outage_count is zero",
+        "the stored overdue occurrence elapsed during the confirmed scheduler outage",
         "observed_policy equals fire_once_on_resume_then_skip_remaining_missed",
         "catchup_fire_count is exactly one for the overdue occurrence",
         "a later normal fire is observed after catch-up without replaying every missed occurrence"

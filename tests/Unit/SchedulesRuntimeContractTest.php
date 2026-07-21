@@ -369,6 +369,23 @@ class SchedulesRuntimeContractTest extends TestCase
         $this->assertContains('missing_restart_survival_evidence', $failureCodes);
     }
 
+    public function test_result_gate_rejects_missed_fire_policy_without_a_confirmed_scheduler_outage(): void
+    {
+        $result = $this->completeSchedulesResult();
+        $result['missed_fire_policy']['scheduler_stop_confirmed'] = false;
+        $result['missed_fire_policy']['fires_during_scheduler_outage_count'] = 2;
+        $result['scenario_results']['missed_fire_policy']['observed_outputs']['scheduler_stop_confirmed'] = false;
+        $result['scenario_results']['missed_fire_policy']['observed_outputs']['fires_during_scheduler_outage_count'] = 2;
+
+        $evaluation = SchedulesRuntimeResultGate::evaluate($result);
+
+        $this->assertSame('non_passing', $evaluation['status']);
+        $this->assertContains(
+            'scheduler_outage_not_proven',
+            array_column($evaluation['gate_failures'], 'code'),
+        );
+    }
+
     public function test_result_gate_requires_cadence_counts_from_the_manifest(): void
     {
         $result = $this->completeSchedulesResult();
@@ -784,6 +801,9 @@ class SchedulesRuntimeContractTest extends TestCase
             'observed_policy' => 'fire_once_on_resume_then_skip_remaining_missed',
             'catchup_fire_count' => 1,
             'post_resume_normal_fire_observed' => true,
+            'scheduler_stop_confirmed' => true,
+            'fires_during_scheduler_outage_count' => 0,
+            'stored_overdue_occurrence_elapsed_during_outage' => true,
         ];
         $restartSurvival = [
             'schedule_listed_after_restart' => true,

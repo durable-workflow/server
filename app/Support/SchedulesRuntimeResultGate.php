@@ -1566,6 +1566,32 @@ final class SchedulesRuntimeResultGate
             ];
         }
 
+        if (! self::hasTruthyField($evidence, ['scheduler_stop_confirmed', 'schedulerStopConfirmed'])
+            || self::intField($evidence, ['fires_during_scheduler_outage_count', 'firesDuringSchedulerOutageCount']) !== 0
+            || ! self::hasTruthyField($evidence, [
+                'stored_overdue_occurrence_elapsed_during_outage',
+                'storedOverdueOccurrenceElapsedDuringOutage',
+            ])) {
+            $failures[] = [
+                'code' => 'scheduler_outage_not_proven',
+                'scheduler_stop_confirmed' => self::hasTruthyField(
+                    $evidence,
+                    ['scheduler_stop_confirmed', 'schedulerStopConfirmed'],
+                ),
+                'fires_during_scheduler_outage_count' => self::intField(
+                    $evidence,
+                    ['fires_during_scheduler_outage_count', 'firesDuringSchedulerOutageCount'],
+                ),
+                'stored_overdue_occurrence_elapsed_during_outage' => self::hasTruthyField(
+                    $evidence,
+                    [
+                        'stored_overdue_occurrence_elapsed_during_outage',
+                        'storedOverdueOccurrenceElapsedDuringOutage',
+                    ],
+                ),
+            ];
+        }
+
         return $failures;
     }
 
