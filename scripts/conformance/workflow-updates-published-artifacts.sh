@@ -2056,6 +2056,7 @@ write_python_sdk_shard_status() {
   DW_SERVER_VERSION="${DW_SERVER_VERSION:-}" \
   DW_CLI_VERSION="${DW_CLI_VERSION:-}" \
   DW_PYTHON_SDK_VERSION="${DW_PYTHON_SDK_VERSION:-}" \
+  DW_PHP_SDK_VERSION="${DW_PHP_SDK_VERSION:-}" \
   DW_WORKFLOW_PHP_VERSION="${DW_WORKFLOW_PHP_VERSION:-}" \
   DW_WORKFLOW_VERSION="${DW_WORKFLOW_VERSION:-}" \
   DW_WATERLINE_VERSION="${DW_WATERLINE_VERSION:-}" \
@@ -2071,10 +2072,12 @@ const serverImage = (process.env.DW_SERVER_IMAGE || '').trim();
 const serverVersion = (process.env.DW_SERVER_VERSION || '').trim() || (serverImage.match(/:([^/:]+)$/)?.[1] ?? 'unresolved');
 const cliVersion = (process.env.DW_CLI_VERSION || '').trim() || 'unresolved';
 const pythonVersion = (process.env.DW_PYTHON_SDK_VERSION || '').trim() || 'unresolved';
+const phpSdkVersion = (process.env.DW_PHP_SDK_VERSION || '').trim() || 'unresolved';
 const waterlineVersion = (process.env.DW_WATERLINE_VERSION || '').trim() || 'unresolved';
 const artifactVersions = {
   server: serverVersion,
   cli: cliVersion,
+  'sdk-php': phpSdkVersion,
   'sdk-python': pythonVersion,
   workflow: workflowVersion,
   'workflow-php': workflowVersion,
@@ -2083,6 +2086,7 @@ const artifactVersions = {
 const artifactSources = {
   server: serverImage || `docker://durableworkflow/server:${serverVersion}`,
   cli: `https://github.com/durable-workflow/cli/releases/download/${cliVersion}/install.sh`,
+  'sdk-php': `packagist://durable-workflow/sdk@${phpSdkVersion}`,
   'sdk-python': `pypi://durable-workflow==${pythonVersion}`,
   workflow: `packagist://durable-workflow/workflow@${workflowVersion}`,
   'workflow-php': `packagist://durable-workflow/workflow@${workflowVersion}`,
@@ -2168,6 +2172,7 @@ materialize_python_sdk_shard_report() {
   DW_SERVER_VERSION="${DW_SERVER_VERSION:-}" \
   DW_CLI_VERSION="${DW_CLI_VERSION:-}" \
   DW_PYTHON_SDK_VERSION="${DW_PYTHON_SDK_VERSION:-}" \
+  DW_PHP_SDK_VERSION="${DW_PHP_SDK_VERSION:-}" \
   DW_WORKFLOW_PHP_VERSION="${DW_WORKFLOW_PHP_VERSION:-}" \
   DW_WORKFLOW_VERSION="${DW_WORKFLOW_VERSION:-}" \
   DW_WATERLINE_VERSION="${DW_WATERLINE_VERSION:-}" \
@@ -2185,10 +2190,12 @@ const serverImage = (process.env.DW_SERVER_IMAGE || '').trim();
 const serverVersion = (process.env.DW_SERVER_VERSION || '').trim() || (serverImage.match(/:([^/:]+)$/)?.[1] ?? report?.artifact_versions?.server ?? 'unresolved');
 const cliVersion = (process.env.DW_CLI_VERSION || '').trim() || report?.artifact_versions?.cli || 'unresolved';
 const pythonVersion = (process.env.DW_PYTHON_SDK_VERSION || '').trim() || report?.artifact_versions?.['sdk-python'] || report?.artifact_versions?.python || 'unresolved';
+const phpSdkVersion = (process.env.DW_PHP_SDK_VERSION || '').trim() || report?.artifact_versions?.['sdk-php'] || 'unresolved';
 const waterlineVersion = (process.env.DW_WATERLINE_VERSION || '').trim() || report?.artifact_versions?.waterline || 'unresolved';
 const artifactVersions = {
   server: serverVersion,
   cli: cliVersion,
+  'sdk-php': phpSdkVersion,
   'sdk-python': pythonVersion,
   workflow: workflowVersion,
   'workflow-php': workflowVersion,
@@ -2197,6 +2204,7 @@ const artifactVersions = {
 const artifactSources = {
   server: serverImage || `docker://durableworkflow/server:${serverVersion}`,
   cli: `https://github.com/durable-workflow/cli/releases/download/${cliVersion}/install.sh`,
+  'sdk-php': `packagist://durable-workflow/sdk@${phpSdkVersion}`,
   'sdk-python': `pypi://durable-workflow==${pythonVersion}`,
   workflow: `packagist://durable-workflow/workflow@${workflowVersion}`,
   'workflow-php': `packagist://durable-workflow/workflow@${workflowVersion}`,
@@ -2491,6 +2499,7 @@ write_operator_diagnostics_shard_status() {
   DW_SERVER_VERSION="${DW_SERVER_VERSION:-}" \
   DW_CLI_VERSION="${DW_CLI_VERSION:-}" \
   DW_PYTHON_SDK_VERSION="${DW_PYTHON_SDK_VERSION:-}" \
+  DW_PHP_SDK_VERSION="${DW_PHP_SDK_VERSION:-}" \
   DW_WORKFLOW_PHP_VERSION="${DW_WORKFLOW_PHP_VERSION:-}" \
   DW_WORKFLOW_VERSION="${DW_WORKFLOW_VERSION:-}" \
   DW_WATERLINE_VERSION="${DW_WATERLINE_VERSION:-}" \
@@ -2506,10 +2515,12 @@ const serverImage = (process.env.DW_SERVER_IMAGE || '').trim();
 const serverVersion = (process.env.DW_SERVER_VERSION || '').trim() || (serverImage.match(/:([^/:]+)$/)?.[1] ?? 'unresolved');
 const cliVersion = (process.env.DW_CLI_VERSION || '').trim() || 'unresolved';
 const pythonVersion = (process.env.DW_PYTHON_SDK_VERSION || '').trim() || 'unresolved';
+const phpSdkVersion = (process.env.DW_PHP_SDK_VERSION || '').trim() || 'unresolved';
 const waterlineVersion = (process.env.DW_WATERLINE_VERSION || '').trim() || 'unresolved';
 const artifactVersions = {
   server: serverVersion,
   cli: cliVersion,
+  'sdk-php': phpSdkVersion,
   'sdk-python': pythonVersion,
   workflow: workflowVersion,
   'workflow-php': workflowVersion,
@@ -2518,6 +2529,7 @@ const artifactVersions = {
 const artifactSources = {
   server: serverImage || `docker://durableworkflow/server:${serverVersion}`,
   cli: `https://github.com/durable-workflow/cli/releases/download/${cliVersion}/install.sh`,
+  'sdk-php': `packagist://durable-workflow/sdk@${phpSdkVersion}`,
   'sdk-python': `pypi://durable-workflow==${pythonVersion}`,
   workflow: `packagist://durable-workflow/workflow@${workflowVersion}`,
   'workflow-php': `packagist://durable-workflow/workflow@${workflowVersion}`,
@@ -3057,6 +3069,7 @@ materialize_operator_diagnostics_report() {
   DW_SERVER_VERSION="${DW_SERVER_VERSION:-}" \
   DW_CLI_VERSION="${DW_CLI_VERSION:-}" \
   DW_PYTHON_SDK_VERSION="${DW_PYTHON_SDK_VERSION:-}" \
+  DW_PHP_SDK_VERSION="${DW_PHP_SDK_VERSION:-}" \
   DW_WORKFLOW_PHP_VERSION="${DW_WORKFLOW_PHP_VERSION:-}" \
   DW_WORKFLOW_VERSION="${DW_WORKFLOW_VERSION:-}" \
   DW_WATERLINE_VERSION="${DW_WATERLINE_VERSION:-}" \
@@ -3072,6 +3085,7 @@ const serverImage = (process.env.DW_SERVER_IMAGE || '').trim();
 const serverVersion = (process.env.DW_SERVER_VERSION || '').trim() || (serverImage.match(/:([^/:]+)$/)?.[1] ?? 'unresolved');
 const cliVersion = (process.env.DW_CLI_VERSION || '').trim() || 'unresolved';
 const pythonVersion = (process.env.DW_PYTHON_SDK_VERSION || '').trim() || 'unresolved';
+const phpSdkVersion = (process.env.DW_PHP_SDK_VERSION || '').trim() || 'unresolved';
 const waterlineVersion = (process.env.DW_WATERLINE_VERSION || '').trim() || 'unresolved';
 function readText(file) {
   try {
@@ -3085,6 +3099,7 @@ const cliInstallerSource = readText(process.env.OPERATOR_CLI_INSTALLER_SOURCE_PA
 const artifactVersions = {
   server: serverVersion,
   cli: cliVersion,
+  'sdk-php': phpSdkVersion,
   'sdk-python': pythonVersion,
   workflow: workflowVersion,
   'workflow-php': workflowVersion,
@@ -3093,6 +3108,7 @@ const artifactVersions = {
 const artifactSources = {
   server: serverImage || `docker://durableworkflow/server:${serverVersion}`,
   cli: cliInstallerSource,
+  'sdk-php': `packagist://durable-workflow/sdk@${phpSdkVersion}`,
   'sdk-python': `pypi://durable-workflow==${pythonVersion}`,
   workflow: `packagist://durable-workflow/workflow@${workflowVersion}`,
   'workflow-php': `packagist://durable-workflow/workflow@${workflowVersion}`,
