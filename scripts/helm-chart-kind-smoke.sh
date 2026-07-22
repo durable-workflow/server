@@ -295,7 +295,12 @@ rm -rf "${artifact_dir}"
 mkdir -p "${artifact_dir}"
 
 # 1. Build the server image.
-"${docker_bin}" build -t "${image}" "${repo_root}"
+docker_build_args=()
+if [ -n "${WORKFLOW_PACKAGE_QUALIFICATION_REF:-}" ]; then
+  docker_build_args+=(--build-arg "WORKFLOW_PACKAGE_QUALIFICATION_REF=${WORKFLOW_PACKAGE_QUALIFICATION_REF}")
+fi
+
+"${docker_bin}" build "${docker_build_args[@]}" -t "${image}" "${repo_root}"
 
 # 2. Provision the kind cluster (or reuse one provided by the runner).
 if "${kind_bin}" get clusters | grep -Fxq "${cluster}"; then

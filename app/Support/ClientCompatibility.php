@@ -9,10 +9,10 @@ final class ClientCompatibility
     public const VERSION = 2;
 
     private const SUPPORTED_SDK_VERSIONS = [
-        'php' => '>=2.0.0-beta.3,<2.0.0-beta.4',
-        'python' => '>=2.0.0-beta.3,<2.0.0-beta.4',
-        'rust' => '>=2.0.0-beta.3,<2.0.0-beta.4',
-        'cli' => '>=2.0.0-beta.3,<2.0.0-beta.4',
+        'php' => '>=2.0.0-beta.4,<2.0.0-beta.5',
+        'python' => '>=2.0.0-beta.4,<2.0.0-beta.5',
+        'rust' => '>=2.0.0-beta.4,<2.0.0-beta.5',
+        'cli' => '>=2.0.0-beta.4,<2.0.0-beta.5',
     ];
 
     /**

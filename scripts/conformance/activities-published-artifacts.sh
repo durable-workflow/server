@@ -33,7 +33,7 @@ Environment overrides:
   DW_ACTIVITIES_RUNNER_SOURCE           Optional exact image source for the runner process. Defaults to
                                          DW_SERVER_IMAGE when the handoff runs from the release image root.
   DW_SERVER_IMAGE                       Exact server image tag or digest to test.
-  DW_SERVER_VERSION                     Exact patch server Docker tag; required for digest-only DW_SERVER_IMAGE.
+  DW_SERVER_VERSION                     Exact server SemVer tag; required for digest-only DW_SERVER_IMAGE.
   DW_CLI_VERSION                        Exact CLI release version.
   DW_ACTIVITIES_CLI_BIN                 Optional executable official CLI binary to use for CLI observations.
   DW_CLI_BIN / DW_CLI_EXECUTABLE         Fallback executable official CLI binary names.
@@ -1498,11 +1498,36 @@ function python_activity_executor_script(): string
 import importlib.metadata as metadata
 import json
 import os
+import re
 import sys
 import time
 
 import durable_workflow
 from durable_workflow import serializer
+
+
+def python_release_identity(version):
+    stable = re.fullmatch(r"(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)", version)
+    if stable:
+        return version
+    semver = re.fullmatch(
+        r"(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)-(alpha|beta|rc)\.(0|[1-9]\d*)",
+        version,
+        re.IGNORECASE,
+    )
+    if semver:
+        major, minor, patch, prerelease, ordinal = semver.groups()
+        phase = {"alpha": "a", "beta": "b", "rc": "rc"}[prerelease.lower()]
+        return f"{major}.{minor}.{patch}{phase}{ordinal}"
+    pep440 = re.fullmatch(
+        r"(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(a|b|rc)(0|[1-9]\d*)",
+        version,
+        re.IGNORECASE,
+    )
+    if not pep440:
+        return None
+    major, minor, patch, prerelease, ordinal = pep440.groups()
+    return f"{major}.{minor}.{patch}{prerelease.lower()}{ordinal}"
 
 
 def decode_activity_input(task):
@@ -1524,7 +1549,7 @@ task = payload["task"]
 mode = payload["mode"]
 expected_version = str(payload.get("expected_version") or "").strip()
 package_version = metadata.version("durable-workflow")
-if expected_version and package_version != expected_version:
+if expected_version and python_release_identity(package_version) != python_release_identity(expected_version):
     raise RuntimeError(
         f"installed durable-workflow package version {package_version} does not match expected {expected_version}"
     )
@@ -4922,7 +4947,7 @@ const DISTRIBUTION_COMPONENTS = {
   'sdk-python': { kind: 'pypi', package: 'durable-workflow', versionKey: 'sdk-python' },
 };
 
-const DISTRIBUTION_VERSION_PATTERN = /^[0-9]+\.[0-9]+\.[0-9]+(?:[-+][0-9A-Za-z][0-9A-Za-z.-]*)?$/;
+const DISTRIBUTION_VERSION_PATTERN = /^(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)(?:-(?:0|[1-9]\d*|[0-9A-Za-z-]*[A-Za-z-][0-9A-Za-z-]*)(?:\.(?:0|[1-9]\d*|[0-9A-Za-z-]*[A-Za-z-][0-9A-Za-z-]*))*)?$/;
 const DISTRIBUTION_DIGEST_PATTERN = /^[0-9a-f]{64}$/;
 
 const DEFAULT_EXPECTED_BEHAVIOR = {
@@ -4950,8 +4975,9 @@ const DEFAULT_EXPECTED_BEHAVIOR = {
     'operators can see current and historical activity attempt state through API metrics and Waterline',
 };
 
-const SEMVER_RE = /^\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?$/;
-const SERVER_TAG_RE = /(?::|\/)(\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?)$/;
+const SEMVER_RE = /^(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)(?:-(?:0|[1-9]\d*|[0-9A-Za-z-]*[A-Za-z-][0-9A-Za-z-]*)(?:\.(?:0|[1-9]\d*|[0-9A-Za-z-]*[A-Za-z-][0-9A-Za-z-]*))*)?$/;
+const PYTHON_RELEASE_RE = /^(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)(?:(?:a|b|rc)(?:0|[1-9]\d*)|-(?:alpha|beta|rc)\.(?:0|[1-9]\d*))?$/i;
+const SERVER_TAG_RE = /(?::|\/)((?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)(?:-(?:0|[1-9]\d*|[0-9A-Za-z-]*[A-Za-z-][0-9A-Za-z-]*)(?:\.(?:0|[1-9]\d*|[0-9A-Za-z-]*[A-Za-z-][0-9A-Za-z-]*))*)?)$/;
 const PLACEHOLDER_RE = /(<[^>]+>|\$\{[^}]+}|{{[^}]+}}|(^|[^a-z0-9])latest([^a-z0-9]|$)|current|head|unresolved|placeholder)/i;
 const ALLOWED_STATUSES = new Set(['pass', 'fail', 'unsupported', 'not_covered', 'runner_blocked']);
 const NON_PASS_CLASSIFICATIONS = new Set([
@@ -5382,10 +5408,14 @@ function normalizeDistributionIdentity(component, value, artifactVersions) {
   }
 
   const version = stringValue(artifactVersions[definition.versionKey]);
-  if (!DISTRIBUTION_VERSION_PATTERN.test(version)) {
+  const exactVersion = component === 'sdk-python'
+    ? pythonReleaseIdentity(version) !== null
+    : DISTRIBUTION_VERSION_PATTERN.test(version);
+  if (!exactVersion) {
     throw new Error(`exact distribution version is unavailable for ${component}`);
   }
-  const expectedLocator = `${definition.kind}:${definition.package}@${version}`;
+  const locatorVersion = component === 'sdk-python' ? pythonReleaseIdentity(version) : version;
+  const expectedLocator = `${definition.kind}:${definition.package}@${locatorVersion}`;
   if (value.kind !== definition.kind || value.locator !== expectedLocator) {
     throw new Error(`executed distribution locator for ${component} does not match ${expectedLocator}`);
   }
@@ -5594,7 +5624,8 @@ function exactVersionFailures(versions, serverImage) {
       failures.push(`missing ${label}`);
       continue;
     }
-    if (isPlaceholder(version) || !SEMVER_RE.test(version)) {
+    const exactVersion = key === 'sdk-python' ? PYTHON_RELEASE_RE.test(version) : SEMVER_RE.test(version);
+    if (isPlaceholder(version) || !exactVersion) {
       failures.push(`${label} must be an exact semver artifact version; got ${JSON.stringify(version)}`);
     }
   }
@@ -5815,6 +5846,25 @@ function matchesPythonArtifactSource(version, source) {
         || source.includes(`/durable-workflow-${version}`)
       )
     );
+}
+
+function pythonReleaseIdentity(version) {
+  const stable = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/.exec(version);
+  if (stable) return version;
+  const semver = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)-(alpha|beta|rc)\.(0|[1-9]\d*)$/i.exec(version);
+  if (semver) {
+    const phase = semver[4].toLowerCase() === 'alpha' ? 'a' : (semver[4].toLowerCase() === 'beta' ? 'b' : 'rc');
+    return `${semver[1]}.${semver[2]}.${semver[3]}${phase}${semver[5]}`;
+  }
+  const pep440 = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(a|b|rc)(0|[1-9]\d*)$/i.exec(version);
+  return pep440
+    ? `${pep440[1]}.${pep440[2]}.${pep440[3]}${pep440[4].toLowerCase()}${pep440[5]}`
+    : null;
+}
+
+function samePythonRelease(expected, observed) {
+  const expectedIdentity = pythonReleaseIdentity(expected);
+  return expectedIdentity !== null && expectedIdentity === pythonReleaseIdentity(observed);
 }
 
 function matchesComposerArtifactSource(packageName, version, source) {
@@ -6523,10 +6573,11 @@ function sdkPythonCellArtifactFailures(cell, artifactVersions) {
   if (status !== 'pass') {
     failures.push(`sdk-python worker_artifact.status=${status || 'missing'}`);
   }
-  if (version !== packageVersion) {
+  if (!samePythonRelease(packageVersion, version)) {
     failures.push(`sdk-python worker_artifact.version=${version || 'missing'} does not match ${packageVersion || 'missing'}`);
   }
-  if (!source || installSourceIsForbidden(source) || !matchesPythonArtifactSource(version, source)) {
+  if (!source || installSourceIsForbidden(source)
+    || (!matchesPythonArtifactSource(version, source) && !matchesPythonArtifactSource(packageVersion, source))) {
     failures.push(`sdk-python worker_artifact.source=${source || 'missing'}`);
   }
   if (execution !== PUBLISHED_SERVER_CONTAINER_EXECUTION_SOURCE) {

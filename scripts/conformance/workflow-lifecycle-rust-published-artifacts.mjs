@@ -2,6 +2,7 @@ import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
+import { isExactSemverRelease } from './version-identities.mjs';
 
 const RESULT_DIR = required('RESULT_DIR');
 const REPO_ROOT = required('REPO_ROOT');
@@ -11,7 +12,6 @@ const SERVER_IMAGE = process.env.DW_SERVER_IMAGE || `durableworkflow/server:${SE
 const RUST_IMAGE = process.env.DW_WORKFLOW_LIFECYCLE_RUST_IMAGE || 'rust:1.86.0-slim-bookworm';
 const PROJECT_DIR = path.join(RESULT_DIR, 'rust-sdk-lifecycle-probe');
 const SIDECAR = path.join(RESULT_DIR, 'rust-sdk-lifecycle-evidence.json');
-const SEMVER = /^\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?$/;
 const MINIMUM_LIFECYCLE_SDK = [0, 1, 15];
 const FAILURE_MESSAGE_LIMIT = 512;
 
@@ -239,11 +239,11 @@ function dockerArgs(extra) {
 
 let installProvenance = null;
 try {
-  if (!SEMVER.test(SDK_VERSION)) throw new Error('DW_RUST_SDK_VERSION must be exact semver');
+  if (!isExactSemverRelease(SDK_VERSION)) throw new Error('DW_RUST_SDK_VERSION must be exact semver');
   if (!versionAtLeast(SDK_VERSION, MINIMUM_LIFECYCLE_SDK)) {
     throw new Error('DW_RUST_SDK_VERSION does not expose deterministic continue-as-new replay');
   }
-  if (!/^\d+\.\d+\.\d+$/.test(SERVER_VERSION)) throw new Error('DW_SERVER_VERSION must be an exact patch tag');
+  if (!isExactSemverRelease(SERVER_VERSION)) throw new Error('DW_SERVER_VERSION must be an exact SemVer tag');
   const exactServerTag = SERVER_IMAGE === `durableworkflow/server:${SERVER_VERSION}`
     || SERVER_IMAGE === `docker.io/durableworkflow/server:${SERVER_VERSION}`;
   const exactServerDigest = /^(?:docker\.io\/)?durableworkflow\/server@sha256:[0-9a-f]{64}$/i.test(SERVER_IMAGE);

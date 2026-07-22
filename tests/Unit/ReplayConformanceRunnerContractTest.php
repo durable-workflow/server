@@ -55,6 +55,19 @@ class ReplayConformanceRunnerContractTest extends TestCase
         );
     }
 
+    public function test_server_resolution_rejects_non_release_and_mismatched_image_pins(): void
+    {
+        $source = $this->read('scripts/conformance/replay-published-artifacts.sh');
+
+        $this->assertStringContainsString('if not exact_server_tag(override):', $source);
+        $this->assertStringContainsString('DW_SERVER_VERSION must be an exact SemVer release', $source);
+        $this->assertStringContainsString('DW_SERVER_VERSION does not match DW_SERVER_IMAGE tag', $source);
+        $this->assertStringContainsString(
+            'DW_SERVER_VERSION must name the exact release for a digest-pinned server image',
+            $source,
+        );
+    }
+
     public function test_runner_composes_python_and_php_runtime_shards(): void
     {
         $source = $this->read('scripts/conformance/replay-published-artifacts.sh');
@@ -146,7 +159,9 @@ class ReplayConformanceRunnerContractTest extends TestCase
         $this->assertStringContainsString('COMPOSER_CACHE_DIR=/tmp/composer-cache', $source);
         $this->assertStringContainsString('docker run --rm "${composer_env_args[@]}" -v "$waterline_app:/app" -w /app composer:2', $source);
         $this->assertStringNotContainsString('docker run --rm -v "$waterline_app:/app" -w /app composer:2', $source);
-        $this->assertStringContainsString('"durable-workflow/waterline:${waterline_version}"', $source);
+        $this->assertStringContainsString('"durable-workflow/waterline:${waterline_version}@beta"', $source);
+        $this->assertStringContainsString('"durable-workflow/workflow:${workflow_php_version}@beta"', $source);
+        $this->assertStringContainsString('"durable-workflow/sdk:${php_sdk_version}@beta"', $source);
         $this->assertStringContainsString('waterline-probe.php', $source);
         $this->assertStringContainsString('\\Waterline\\Waterline::class', $source);
         $this->assertStringContainsString('\\Waterline\\WaterlineServiceProvider::class', $source);

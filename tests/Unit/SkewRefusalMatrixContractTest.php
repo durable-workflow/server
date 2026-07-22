@@ -428,7 +428,7 @@ final class SkewRefusalMatrixContractTest extends TestCase
             'host runners must be able to attach the skew matrix to an already running published server',
         );
         $this->assertStringContainsString(
-            'DW_SERVER_IMAGE must use an exact patch semver tag or an image digest',
+            'DW_SERVER_IMAGE must use an exact SemVer tag or an image digest',
             $shell,
             'the skew runner must not record rolling server image tags as published-artifact evidence',
         );
@@ -558,7 +558,7 @@ final class SkewRefusalMatrixContractTest extends TestCase
             'the Waterline shard must retain its published Workflow engine dependency',
         );
         $this->assertStringContainsString(
-            'Workflow install requires an exact durable-workflow/workflow version',
+            'Waterline install requires an exact durable-workflow/workflow version',
             $shell,
             'the skew runner must not install floating workflow package constraints as published-artifact evidence',
         );

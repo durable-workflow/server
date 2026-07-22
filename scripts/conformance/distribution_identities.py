@@ -15,9 +15,41 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
 
-
-VERSION_PATTERN = re.compile(r"^[0-9]+\.[0-9]+\.[0-9]+(?:[-+][0-9A-Za-z][0-9A-Za-z.-]*)?$")
+VERSION_PATTERN = re.compile(
+    r"^(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)"
+    r"(?:-(?:0|[1-9]\d*|[0-9A-Za-z-]*[A-Za-z-][0-9A-Za-z-]*)"
+    r"(?:\.(?:0|[1-9]\d*|[0-9A-Za-z-]*[A-Za-z-][0-9A-Za-z-]*))*)?$",
+)
+PYTHON_VERSION_PATTERN = re.compile(
+    r"^(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)"
+    r"(?:(?:a|b|rc)(?:0|[1-9]\d*)|-(?:alpha|beta|rc)\.(?:0|[1-9]\d*))?$",
+    re.IGNORECASE,
+)
 DIGEST_PATTERN = re.compile(r"^[0-9a-f]{64}$")
+
+
+def python_release_identity(version: str) -> str | None:
+    stable = re.fullmatch(r"(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)", version)
+    if stable:
+        return version
+    semver = re.fullmatch(
+        r"(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)-(alpha|beta|rc)\.(0|[1-9]\d*)",
+        version,
+        re.IGNORECASE,
+    )
+    if semver:
+        major, minor, patch, prerelease, ordinal = semver.groups()
+        phase = {"alpha": "a", "beta": "b", "rc": "rc"}[prerelease.lower()]
+        return f"{major}.{minor}.{patch}{phase}{ordinal}"
+    pep440 = re.fullmatch(
+        r"(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(a|b|rc)(0|[1-9]\d*)",
+        version,
+        re.IGNORECASE,
+    )
+    if not pep440:
+        return None
+    major, minor, patch, prerelease, ordinal = pep440.groups()
+    return f"{major}.{minor}.{patch}{prerelease.lower()}{ordinal}"
 COMPONENTS = {
     "workflow": ("composer", "durable-workflow/workflow"),
     "waterline": ("composer", "durable-workflow/waterline"),
@@ -46,7 +78,8 @@ def sha256_file(path: Path) -> str:
 def identity(component: str, version: str, artifact_name: str, digest: str) -> dict[str, Any]:
     if component not in COMPONENTS:
         raise IdentityEvidenceError(f"unknown distribution component: {component}")
-    if not VERSION_PATTERN.fullmatch(version):
+    valid_version = python_release_identity(version) is not None if component == "sdk-python" else bool(VERSION_PATTERN.fullmatch(version))
+    if not valid_version:
         raise IdentityEvidenceError(f"invalid exact distribution version for {component}: {version}")
     if not artifact_name or len(artifact_name) > 256:
         raise IdentityEvidenceError(f"invalid distribution artifact name for {component}: {artifact_name}")
@@ -56,9 +89,10 @@ def identity(component: str, version: str, artifact_name: str, digest: str) -> d
     if not DIGEST_PATTERN.fullmatch(digest):
         raise IdentityEvidenceError(f"invalid SHA-256 evidence for {component}:{artifact_name}")
     kind, package = COMPONENTS[component]
+    locator_version = python_release_identity(version) if component == "sdk-python" else version
     return {
         "kind": kind,
-        "locator": f"{kind}:{package}@{version}",
+        "locator": f"{kind}:{package}@{locator_version}",
         "artifacts": [{"name": artifact_name, "sha256": digest}],
     }
 
@@ -76,8 +110,10 @@ def load(path: Path) -> dict[str, dict[str, Any]]:
         if not isinstance(observed, dict) or set(observed) != {"kind", "locator", "artifacts"}:
             raise IdentityEvidenceError(f"invalid executed distribution identity for {component}")
         kind, package = COMPONENTS[component]
+        component_version_pattern = PYTHON_VERSION_PATTERN if component == "sdk-python" else VERSION_PATTERN
         locator_pattern = re.compile(
-            rf"^{re.escape(kind)}:{re.escape(package)}@{VERSION_PATTERN.pattern[1:-1]}$"
+            rf"^{re.escape(kind)}:{re.escape(package)}@{component_version_pattern.pattern[1:-1]}$",
+            component_version_pattern.flags,
         )
         if observed["kind"] != kind or not locator_pattern.fullmatch(str(observed["locator"])):
             raise IdentityEvidenceError(f"invalid executed distribution locator for {component}")

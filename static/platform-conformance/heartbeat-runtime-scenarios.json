@@ -2,7 +2,7 @@
   "schema": "durable-workflow.v2.platform-conformance.runtime-scenarios",
   "category": "heartbeat_runtime_contract",
   "suite_schema": "durable-workflow.v2.platform-conformance.suite",
-  "suite_version": 18,
+  "suite_version": 32,
   "result_schema": "durable-workflow.v2.heartbeat-runtime.result",
   "result_version": 2,
   "result_statuses": [

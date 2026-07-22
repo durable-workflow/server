@@ -2,7 +2,7 @@
   "schema": "durable-workflow.v2.platform-conformance.runtime-scenarios",
   "category": "workflow_lifecycle_contract",
   "suite_schema": "durable-workflow.v2.platform-conformance.suite",
-  "suite_version": 18,
+  "suite_version": 32,
   "result_schema": "durable-workflow.v2.workflow-lifecycle.result",
   "required_run_record_fields": [
     "artifact_versions",

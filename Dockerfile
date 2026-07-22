@@ -39,8 +39,11 @@ WORKDIR /app
 FROM base AS production
 
 ARG WORKFLOW_PACKAGE_SOURCE=https://github.com/durable-workflow/workflow.git
-ARG WORKFLOW_PACKAGE_REF=2.0.0-beta.3
-ARG WORKFLOW_PACKAGE_COMMIT=4275fd11d80e88d4414383e4338144c228eb5a78
+ARG WORKFLOW_PACKAGE_REF=2.0.0-beta.4
+ARG WORKFLOW_PACKAGE_COMMIT=187746bb19615a8cbb25dfbe1e4e27dbbd933472
+# Source admission may qualify an already-landed commit before its release tag
+# exists. Public release builds leave this empty and resolve the exact tag.
+ARG WORKFLOW_PACKAGE_QUALIFICATION_REF
 
 RUN apt-get update \
     && apt-get install -y --no-install-recommends git \
@@ -49,7 +52,22 @@ RUN apt-get update \
          echo "ERROR: WORKFLOW_PACKAGE_COMMIT must be a full lowercase Git SHA" >&2; \
          exit 1; \
        fi \
-    && git clone --depth 1 --branch "${WORKFLOW_PACKAGE_REF}" "${WORKFLOW_PACKAGE_SOURCE}" /workflow \
+    && if [ -n "${WORKFLOW_PACKAGE_QUALIFICATION_REF}" ]; then \
+         if ! printf '%s' "${WORKFLOW_PACKAGE_QUALIFICATION_REF}" | grep -Eq '^[0-9a-f]{40}$'; then \
+           echo "ERROR: WORKFLOW_PACKAGE_QUALIFICATION_REF must be a full lowercase Git SHA" >&2; \
+           exit 1; \
+         fi; \
+         if [ "${WORKFLOW_PACKAGE_QUALIFICATION_REF}" != "${WORKFLOW_PACKAGE_COMMIT}" ]; then \
+           echo "ERROR: WORKFLOW_PACKAGE_QUALIFICATION_REF must equal WORKFLOW_PACKAGE_COMMIT" >&2; \
+           exit 1; \
+         fi; \
+         git init /workflow; \
+         git -C /workflow remote add origin "${WORKFLOW_PACKAGE_SOURCE}"; \
+         git -C /workflow fetch --depth 1 origin "${WORKFLOW_PACKAGE_QUALIFICATION_REF}"; \
+         git -C /workflow checkout --detach FETCH_HEAD; \
+       else \
+         git clone --depth 1 --branch "${WORKFLOW_PACKAGE_REF}" "${WORKFLOW_PACKAGE_SOURCE}" /workflow; \
+       fi \
     && RESOLVED_COMMIT="$(git -C /workflow rev-parse HEAD)" \
     && if [ "${RESOLVED_COMMIT}" != "${WORKFLOW_PACKAGE_COMMIT}" ]; then \
          echo "ERROR: Resolved commit ${RESOLVED_COMMIT} does not match pinned WORKFLOW_PACKAGE_COMMIT=${WORKFLOW_PACKAGE_COMMIT}" >&2; \

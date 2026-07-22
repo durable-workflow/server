@@ -4,6 +4,7 @@ import childProcess from 'node:child_process';
 import crypto from 'node:crypto';
 import path from 'node:path';
 import process from 'node:process';
+import { isExactSemverRelease } from './version-identities.mjs';
 
 const RESULT_SCHEMA = 'durable-workflow.v2.migration-runtime.result';
 const RECORD_SCHEMA = 'durable-workflow.v2.migration-runtime.record';
@@ -940,6 +941,13 @@ function artifactPrerequisiteFailuresFor(publishedArtifactVersions, resolvedArti
         code: 'placeholder_published_artifact_version',
         value: publishedVersion,
       });
+    } else if (artifact === 'server' && !isExactSemverRelease(publishedVersion)) {
+      failures.push({
+        artifact,
+        field: 'published_artifact_versions',
+        code: 'invalid_published_server_version',
+        value: publishedVersion,
+      });
     }
 
     if (resolvedVersion === '') {
@@ -953,6 +961,13 @@ function artifactPrerequisiteFailuresFor(publishedArtifactVersions, resolvedArti
         artifact,
         field: 'resolved_artifact_versions',
         code: 'placeholder_resolved_artifact_version',
+        value: resolvedVersion,
+      });
+    } else if (artifact === 'server' && !isExactSemverRelease(resolvedVersion)) {
+      failures.push({
+        artifact,
+        field: 'resolved_artifact_versions',
+        code: 'invalid_resolved_server_version',
         value: resolvedVersion,
       });
     }

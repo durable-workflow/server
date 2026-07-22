@@ -2,6 +2,7 @@
 
 import fs from 'node:fs';
 import path from 'node:path';
+import { isExactPythonRelease, isExactSemverRelease } from './version-identities.mjs';
 
 const [resultDirArg, startedAtArg, manifestPathArg, repoRootArg] = process.argv.slice(2);
 
@@ -20,8 +21,6 @@ const RECORD_SCHEMA = 'durable-workflow.v2.timer-runtime.published-artifacts';
 const RUNNER_PATH = 'scripts/conformance/timers-published-artifacts.sh';
 const SCENARIO_MANIFEST = 'static/platform-conformance/timer-runtime-scenarios.json';
 
-const SEMVER_RE = /^\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?$/;
-const SERVER_PATCH_TAG_RE = /^\d+\.\d+\.\d+$/;
 const SHA256_DIGEST_RE = /^sha256:[0-9a-fA-F]{64}$/;
 const PLACEHOLDER_RE = /(<[^>]+>|\$\{[^}]+}|{{[^}]+}}|(^|[^a-z0-9])latest([^a-z0-9]|$))/i;
 const PUBLISHED_SERVER_IMAGE_REPOSITORIES = new Set([
@@ -158,7 +157,7 @@ function deriveServerVersion(serverImage, explicitVersion) {
   }
 
   const tag = serverTagFromImage(serverImage);
-  return tag && SERVER_PATCH_TAG_RE.test(tag) ? tag : '';
+  return tag && isExactSemverRelease(tag) ? tag : '';
 }
 
 function isPlaceholder(value) {
@@ -196,7 +195,10 @@ function exactPinFailures(versions, serverImage) {
       failures.push(`${label} must not be a placeholder value (${version})`);
       continue;
     }
-    if (artifact !== 'server' && !SEMVER_RE.test(version)) {
+    const exactVersion = artifact === 'sdk-python'
+      ? isExactPythonRelease(version)
+      : isExactSemverRelease(version);
+    if (!exactVersion) {
       failures.push(`${label} must be an exact semver release (${version})`);
     }
   }
@@ -215,8 +217,8 @@ function serverPinRefusalFailures(serverImage, serverVersion) {
   const tag = serverTagFromImage(normalizedImage);
   const digestPinned = isDigestPinnedServerImage(normalizedImage);
 
-  if (!serverVersion || !SERVER_PATCH_TAG_RE.test(serverVersion) || isPlaceholder(serverVersion)) {
-    failures.push(`DW_SERVER_VERSION must be an exact patch semver Docker tag; got ${JSON.stringify(serverVersion)}`);
+  if (!serverVersion || !isExactSemverRelease(serverVersion) || isPlaceholder(serverVersion)) {
+    failures.push(`DW_SERVER_VERSION must be an exact SemVer Docker tag; got ${JSON.stringify(serverVersion)}`);
   }
 
   if (isPlaceholder(normalizedImage) && !digestPinned) {
@@ -232,12 +234,12 @@ function serverPinRefusalFailures(serverImage, serverVersion) {
   }
 
   if (!digestPinned) {
-    if (!tag || !SERVER_PATCH_TAG_RE.test(tag)) {
-      failures.push(`DW_SERVER_IMAGE must use an exact patch semver tag or an image digest; got ${JSON.stringify(serverImage)}`);
+    if (!tag || !isExactSemverRelease(tag)) {
+      failures.push(`DW_SERVER_IMAGE must use an exact SemVer tag or an image digest; got ${JSON.stringify(serverImage)}`);
     } else if (serverVersion && tag !== serverVersion) {
       failures.push(`DW_SERVER_VERSION ${JSON.stringify(serverVersion)} does not match DW_SERVER_IMAGE tag ${JSON.stringify(tag)}`);
     }
-  } else if (tag && SERVER_PATCH_TAG_RE.test(tag) && serverVersion && tag !== serverVersion) {
+  } else if (tag && isExactSemverRelease(tag) && serverVersion && tag !== serverVersion) {
     failures.push(`DW_SERVER_VERSION ${JSON.stringify(serverVersion)} does not match DW_SERVER_IMAGE tag ${JSON.stringify(tag)}`);
   }
 

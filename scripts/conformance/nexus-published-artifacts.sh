@@ -469,7 +469,7 @@ function exactServerVersionFrom(image) {
   const withoutDigest = image.split('@', 1)[0];
   const last = withoutDigest.split('/').pop() || '';
   const tag = last.includes(':') ? last.split(':').pop() : '';
-  return /^\d+\.\d+\.\d+$/.test(tag) ? tag : null;
+  return isExactSemverRelease(tag) ? tag : null;
 }
 
 function serverImage() {
@@ -5606,7 +5606,7 @@ function artifactTupleSatisfied(value) {
   }
 
   return requiredArtifacts.every((artifact) => (
-    isExactPublishedArtifactVersion(stringValue(versions[artifact]))
+    isExactPublishedArtifactVersion(stringValue(versions[artifact]), artifact)
   ));
 }
 
@@ -5637,7 +5637,7 @@ function publishedWorkerExecutionSatisfied(value) {
 
     return ['server', 'workflow-php', 'sdk-php', 'sdk-python'].includes(artifact)
       && status === 'pass'
-      && isExactPublishedArtifactVersion(version)
+      && isExactPublishedArtifactVersion(version, artifactSourceKey)
       && source !== ''
       && !containsForbiddenSourceToken(source)
       && matchesPublishedArtifactSource(artifactSourceKey, version, source)
@@ -5690,7 +5690,7 @@ function publishedServiceHealthSatisfied(value, runtime) {
     && stringValue(body?.runtime ?? entry.runtime ?? entry.sdk_language ?? entry.sdkLanguage) === runtime
     && truthy(body?.service_started ?? body?.serviceStarted ?? entry.service_started ?? entry.serviceStarted)
     && truthy(body?.package_imported ?? body?.packageImported ?? entry.package_imported ?? entry.packageImported)
-    && isExactPublishedArtifactVersion(version);
+    && isExactPublishedArtifactVersion(version, runtime === 'python' ? 'sdk-python' : 'workflow');
 }
 
 function publishedServiceHealthEntry(value, runtime) {
@@ -5991,7 +5991,7 @@ function artifactMapPolicyFailuresFor(artifactVersions, artifactSources, artifac
         value: version,
         ...(versionPath !== '' ? {path: versionPath} : {}),
       });
-    } else if (!isExactPublishedArtifactVersion(version)) {
+    } else if (!isExactPublishedArtifactVersion(version, artifact)) {
       failures.push({
         artifact,
         field: 'artifact_versions',
@@ -6800,8 +6800,34 @@ function isPlaceholderArtifactVersion(version) {
     || /(^|[^a-z0-9])v?\d+(?:\.\d+)*\.x([^a-z0-9]|$)/i.test(normalized);
 }
 
-function isExactPublishedArtifactVersion(version) {
-  return /^[0-9]+\.[0-9]+\.[0-9]+(?:[.-][0-9A-Za-z.-]+)?$/.test(version.trim());
+function isExactSemverRelease(version) {
+  return /^(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)(?:-(?:0|[1-9]\d*|[0-9A-Za-z-]*[A-Za-z-][0-9A-Za-z-]*)(?:\.(?:0|[1-9]\d*|[0-9A-Za-z-]*[A-Za-z-][0-9A-Za-z-]*))*)?$/.test(version.trim());
+}
+
+function pythonReleaseIdentity(version) {
+  const normalized = version.trim();
+  if (isExactSemverRelease(normalized) && !normalized.includes('-')) return normalized;
+  const semver = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)-(alpha|beta|rc)\.(0|[1-9]\d*)$/i.exec(normalized);
+  if (semver) {
+    const phase = semver[4].toLowerCase() === 'alpha' ? 'a' : (semver[4].toLowerCase() === 'beta' ? 'b' : 'rc');
+    return `${semver[1]}.${semver[2]}.${semver[3]}${phase}${semver[5]}`;
+  }
+  const pep440 = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(a|b|rc)(0|[1-9]\d*)$/i.exec(normalized);
+  return pep440
+    ? `${pep440[1]}.${pep440[2]}.${pep440[3]}${pep440[4].toLowerCase()}${pep440[5]}`
+    : null;
+}
+
+function isExactPublishedArtifactVersion(version, artifact = '') {
+  return artifact === 'sdk-python'
+    ? pythonReleaseIdentity(version) !== null
+    : isExactSemverRelease(version);
+}
+
+function samePublishedArtifactVersion(artifact, expected, observed) {
+  if (artifact !== 'sdk-python') return expected === observed;
+  const expectedIdentity = pythonReleaseIdentity(expected);
+  return expectedIdentity !== null && expectedIdentity === pythonReleaseIdentity(observed);
 }
 
 function containsForbiddenSourceToken(source) {
@@ -7163,7 +7189,7 @@ function artifactInstallEvidencePolicyFailuresFor(
         value: version,
         path: `${pathPrefix}.artifacts`,
       });
-    } else if (!isExactPublishedArtifactVersion(version)) {
+    } else if (!isExactPublishedArtifactVersion(version, artifact)) {
       failures.push({
         artifact,
         field: 'artifact_install_evidence.artifacts.version',
@@ -7171,7 +7197,7 @@ function artifactInstallEvidencePolicyFailuresFor(
         value: version,
         path: `${pathPrefix}.artifacts`,
       });
-    } else if (expectedVersion !== '' && version !== expectedVersion) {
+    } else if (expectedVersion !== '' && !samePublishedArtifactVersion(artifact, expectedVersion, version)) {
       failures.push({
         artifact,
         field: 'artifact_install_evidence.artifacts.version',

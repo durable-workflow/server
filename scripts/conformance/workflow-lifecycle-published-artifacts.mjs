@@ -1,5 +1,6 @@
 import fs from 'node:fs';
 import path from 'node:path';
+import { isExactPythonRelease, isExactSemverRelease } from './version-identities.mjs';
 
 const RESULT_DIR = mustEnv('RESULT_DIR');
 const STARTED_AT = mustEnv('STARTED_AT');
@@ -7,8 +8,6 @@ const MANIFEST_PATH = mustEnv('MANIFEST_PATH');
 
 const RESULT_SCHEMA = 'durable-workflow.v2.workflow-lifecycle.result';
 const RECORD_SCHEMA = 'durable-workflow.v2.workflow-lifecycle.published-artifacts';
-const SEMVER_RE = /^\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?$/;
-const SERVER_PATCH_TAG_RE = /^\d+\.\d+\.\d+$/;
 const SHA256_DIGEST_RE = /^sha256:[0-9a-fA-F]{64}$/;
 const PLACEHOLDER_RE = /(<[^>]+>|\$\{[^}]+}|{{[^}]+}}|(^|[^a-z0-9])(latest|current|head|main|master|unresolved|placeholder)([^a-z0-9]|$))/i;
 const ALLOWED_STATUSES = new Set(['pass', 'fail', 'unsupported', 'not_covered', 'runner_blocked']);
@@ -1464,7 +1463,7 @@ function artifactVersions(evidence) {
   return {
     server: env('DW_SERVER_VERSION')
       || fromEvidence.server
-      || (SERVER_PATCH_TAG_RE.test(serverFromImage) ? serverFromImage : '')
+      || (isExactSemverRelease(serverFromImage) ? serverFromImage : '')
       || 'unresolved',
     cli: normalizeCliVersion(env('DW_CLI_VERSION') || fromEvidence.cli || 'unresolved'),
     workflow: env('DW_WORKFLOW_PHP_VERSION') || fromEvidence.workflow || 'unresolved',
@@ -1517,10 +1516,13 @@ function exactPinFailures(versions, sources) {
       failures.push(`${artifact} must be pinned to a concrete published version`);
       continue;
     }
-    if (artifact === 'server' && !SERVER_PATCH_TAG_RE.test(version)) {
-      failures.push(`server version must be an exact patch tag; got ${JSON.stringify(version)}`);
+    if (artifact === 'server' && !isExactSemverRelease(version)) {
+      failures.push(`server version must be an exact SemVer tag; got ${JSON.stringify(version)}`);
     }
-    if (artifact !== 'server' && !SEMVER_RE.test(version)) {
+    const exactArtifactVersion = artifact === 'sdk-python'
+      ? isExactPythonRelease(version)
+      : isExactSemverRelease(version);
+    if (artifact !== 'server' && !exactArtifactVersion) {
       failures.push(`${artifact} version must be exact semver; got ${JSON.stringify(version)}`);
     }
   }
@@ -1528,9 +1530,9 @@ function exactPinFailures(versions, sources) {
   const serverSource = String(sources.server ?? '');
   if (serverSource && !isPlaceholder(serverSource)) {
     const tag = serverTagFromImage(serverSource);
-    if (!isDigestPinnedServerImage(serverSource) && (!tag || !SERVER_PATCH_TAG_RE.test(tag))) {
-      failures.push(`server source must use an exact patch tag or sha256 digest; got ${JSON.stringify(serverSource)}`);
-    } else if (tag && SERVER_PATCH_TAG_RE.test(tag) && versions.server !== 'unresolved' && tag !== versions.server) {
+    if (!isDigestPinnedServerImage(serverSource) && (!tag || !isExactSemverRelease(tag))) {
+      failures.push(`server source must use an exact SemVer tag or sha256 digest; got ${JSON.stringify(serverSource)}`);
+    } else if (tag && isExactSemverRelease(tag) && versions.server !== 'unresolved' && tag !== versions.server) {
       failures.push(`server version ${JSON.stringify(versions.server)} does not match server source tag ${JSON.stringify(tag)}`);
     }
   }

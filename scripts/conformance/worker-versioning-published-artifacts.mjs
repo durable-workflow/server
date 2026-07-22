@@ -4,6 +4,7 @@ import path from 'node:path';
 import process from 'node:process';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
+import { isExactPythonRelease, isExactSemverRelease } from './version-identities.mjs';
 
 const RESULT_SCHEMA = 'durable-workflow.v2.worker-versioning-runtime.result';
 const RECORD_SCHEMA = 'durable-workflow.v2.worker-versioning-runtime.record';
@@ -4336,7 +4337,10 @@ function publishedWorkerArtifactsExecuted(outputs, requiredArtifacts, requireAll
       continue;
     }
     const version = artifactVersionForWorkerExecutionEntry(entry);
-    if (!isExactSemverVersion(version) || isPlaceholderVersion(version)) {
+    const exactVersion = artifact === 'sdk-python'
+      ? isExactPythonRelease(version)
+      : isExactSemverVersion(version);
+    if (!exactVersion || isPlaceholderVersion(version)) {
       continue;
     }
     if (truthyEvidenceFlag(entry.local_product_source_checkouts_used)
@@ -4822,13 +4826,15 @@ function artifactVersionFailures(artifactVersions) {
     'sdk-php': artifactVersions['sdk-php'],
     waterline: artifactVersions.waterline,
   })
-    .filter(([, value]) => !isExactSemverVersion(value) || isPlaceholderVersion(value))
+    .filter(([name, value]) => (
+      name === 'sdk-python' ? !isExactPythonRelease(value) : !isExactSemverVersion(value)
+    ) || isPlaceholderVersion(value))
     .map(([name, value]) => `${name}${value ? `=${value}` : ''}`);
 }
 
 function isExactSemverVersion(value) {
   return typeof value === 'string'
-    && /^[0-9]+\.[0-9]+\.[0-9]+(?:[.-][0-9A-Za-z.-]+)?$/.test(value.trim());
+    && isExactSemverRelease(value.trim());
 }
 
 function isPlaceholderVersion(value) {

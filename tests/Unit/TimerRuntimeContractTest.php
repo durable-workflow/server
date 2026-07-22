@@ -1110,7 +1110,7 @@ final class TimerRuntimeContractTest extends TestCase
             'floating image tag' => [
                 'image' => 'durableworkflow/server:latest',
                 'version' => '0.2.494',
-                'message' => 'DW_SERVER_IMAGE must use an exact patch semver tag or an image digest',
+                'message' => 'DW_SERVER_IMAGE must use an exact SemVer tag or an image digest',
             ],
         ] as $case => $config) {
             $resultDir = sys_get_temp_dir().'/dw-timers-conformance-'.bin2hex(random_bytes(6));

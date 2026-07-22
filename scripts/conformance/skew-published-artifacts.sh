@@ -106,7 +106,8 @@ require_command() {
 is_exact_semver() {
   local version="$1"
 
-  [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+([.-][0-9A-Za-z.-]+)?$ ]]
+  [[ ! "$version" =~ (^|[-.])(latest|current|head|main|master|dev|snapshot|unresolved|placeholder)([-.]|$) ]] \
+    && [[ "$version" =~ ^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-((0|[1-9][0-9]*|[0-9A-Za-z-]*[A-Za-z-][0-9A-Za-z-]*)(\.(0|[1-9][0-9]*|[0-9A-Za-z-]*[A-Za-z-][0-9A-Za-z-]*))*))?$ ]]
 }
 
 free_port() {
@@ -374,7 +375,7 @@ if [[ -z "$server_url" ]]; then
   if [[ "$server_image" != *@sha256:* ]]; then
     image_tag="${server_image##*:}"
     if [[ "$image_tag" == "$server_image" ]] || ! is_exact_semver "$image_tag"; then
-      write_blocked_result "DW_SERVER_IMAGE must use an exact patch semver tag or an image digest; got ${server_image}"
+      write_blocked_result "DW_SERVER_IMAGE must use an exact SemVer tag or an image digest; got ${server_image}"
       exit 0
     fi
     if [[ -n "${DW_SERVER_VERSION:-}" && "${DW_SERVER_VERSION}" != "$image_tag" ]]; then
@@ -533,6 +534,12 @@ if [[ -n "${DW_WATERLINE_VERSION:-}" ]]; then
   elif ! is_exact_semver "$workflow_version"; then
     waterline_status="runner_blocked"
     waterline_reason="Waterline install requires an exact durable-workflow/workflow version; got ${workflow_version}"
+  elif [[ -z "$php_sdk_version" ]]; then
+    waterline_status="runner_blocked"
+    waterline_reason="DW_PHP_SDK_VERSION is required as an exact PHP SDK pin before installing Waterline"
+  elif ! is_exact_semver "$php_sdk_version"; then
+    waterline_status="runner_blocked"
+    waterline_reason="Waterline install requires an exact durable-workflow/sdk version; got ${php_sdk_version}"
   elif require_command docker; then
     waterline_create_status=0
     waterline_require_status=1
@@ -556,8 +563,9 @@ if [[ -n "${DW_WATERLINE_VERSION:-}" ]]; then
 
       if docker run --rm -v "$run_root/waterline:/app" -w /app composer:2 \
         composer require --no-interaction --no-progress \
-          "durable-workflow/workflow:${workflow_version}" \
-          "durable-workflow/waterline:${DW_WATERLINE_VERSION}" >"$result_dir/waterline-composer-install.log" 2>&1; then
+          "durable-workflow/waterline:${DW_WATERLINE_VERSION}@beta" \
+          "durable-workflow/workflow:${workflow_version}@beta" \
+          "durable-workflow/sdk:${php_sdk_version}@beta" >"$result_dir/waterline-composer-install.log" 2>&1; then
         waterline_require_status=0
       else
         waterline_require_status=1

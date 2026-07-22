@@ -180,8 +180,44 @@ DISTRIBUTION_COMPONENTS = {
     "sdk-rust": ("crates.io", "durable-workflow"),
 }
 REQUIRED_DISTRIBUTION_IDENTITIES = tuple(DISTRIBUTION_COMPONENTS)
-DIST_VERSION_PATTERN = re.compile(r"^[0-9]+\.[0-9]+\.[0-9]+(?:[-+][0-9A-Za-z][0-9A-Za-z.-]*)?$")
+DIST_VERSION_PATTERN = re.compile(
+    r"^(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)"
+    r"(?:-(?:0|[1-9]\d*|[0-9A-Za-z-]*[A-Za-z-][0-9A-Za-z-]*)"
+    r"(?:\.(?:0|[1-9]\d*|[0-9A-Za-z-]*[A-Za-z-][0-9A-Za-z-]*))*)?$",
+)
+PYTHON_DIST_VERSION_PATTERN = re.compile(
+    r"^(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)"
+    r"(?:(?:a|b|rc)(?:0|[1-9]\d*)|-(?:alpha|beta|rc)\.(?:0|[1-9]\d*))?$",
+    re.IGNORECASE,
+)
 DIST_DIGEST_PATTERN = re.compile(r"^[0-9a-f]{64}$")
+
+
+def python_release_identity(version: str) -> str | None:
+    stable = re.fullmatch(r"(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)", version)
+    if stable:
+        return version
+    semver = re.fullmatch(
+        r"(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)-(alpha|beta|rc)\.(0|[1-9]\d*)",
+        version,
+        re.IGNORECASE,
+    )
+    if semver:
+        major, minor, patch, prerelease, ordinal = semver.groups()
+        phase = {"alpha": "a", "beta": "b", "rc": "rc"}[prerelease.lower()]
+        return f"{major}.{minor}.{patch}{phase}{ordinal}"
+    pep440 = PYTHON_DIST_VERSION_PATTERN.fullmatch(version)
+    if not pep440:
+        return None
+    pep440_match = re.fullmatch(
+        r"(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(a|b|rc)(0|[1-9]\d*)",
+        version,
+        re.IGNORECASE,
+    )
+    if not pep440_match:
+        return version
+    major, minor, patch, prerelease, ordinal = pep440_match.groups()
+    return f"{major}.{minor}.{patch}{prerelease.lower()}{ordinal}"
 
 
 def normalize_distribution_identity(
@@ -195,18 +231,21 @@ def normalize_distribution_identity(
         raise RuntimeError(f"invalid executed distribution identity for {component}")
 
     kind, package = DISTRIBUTION_COMPONENTS[component]
+    version_pattern = PYTHON_DIST_VERSION_PATTERN if component == "sdk-python" else DIST_VERSION_PATTERN
     version = str(expected_version or "").strip()
     if version:
-        if not DIST_VERSION_PATTERN.fullmatch(version):
+        if not version_pattern.fullmatch(version):
             raise RuntimeError(f"invalid exact distribution version for {component}: {version}")
-        expected_locator = f"{kind}:{package}@{version}"
+        locator_version = python_release_identity(version) if component == "sdk-python" else version
+        expected_locator = f"{kind}:{package}@{locator_version}"
         if observed.get("kind") != kind or observed.get("locator") != expected_locator:
             raise RuntimeError(
                 f"executed distribution locator for {component} does not match {expected_locator}"
             )
     else:
         locator_pattern = re.compile(
-            rf"^{re.escape(kind)}:{re.escape(package)}@{DIST_VERSION_PATTERN.pattern[1:-1]}$"
+            rf"^{re.escape(kind)}:{re.escape(package)}@{version_pattern.pattern[1:-1]}$",
+            version_pattern.flags,
         )
         if observed.get("kind") != kind or not locator_pattern.fullmatch(str(observed.get("locator", ""))):
             raise RuntimeError(f"invalid executed distribution locator for {component}")
@@ -303,7 +342,7 @@ def distribution_identity(
     kind, package = DISTRIBUTION_COMPONENTS[component]
     observed = {
         "kind": kind,
-        "locator": f"{kind}:{package}@{version}",
+        "locator": f"{kind}:{package}@{python_release_identity(version) if component == 'sdk-python' else version}",
         "artifacts": [{"name": artifact_name, "sha256": digest}],
     }
     return normalize_distribution_identity(component, observed, version)
@@ -1189,7 +1228,11 @@ def wait_for_ready(
     )
 
 
-SERVER_PATCH_TAG_RE = re.compile(r"^\d+\.\d+\.\d+$")
+SERVER_PATCH_TAG_RE = re.compile(
+    r"^(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)"
+    r"(?:-(?:0|[1-9]\d*|[0-9A-Za-z-]*[A-Za-z-][0-9A-Za-z-]*)"
+    r"(?:\.(?:0|[1-9]\d*|[0-9A-Za-z-]*[A-Za-z-][0-9A-Za-z-]*))*)?$",
+)
 PUBLISHED_SERVER_IMAGE_REPOSITORIES = {
     "durableworkflow/server",
     "docker.io/durableworkflow/server",
@@ -1221,7 +1264,12 @@ def server_tag_from_image(image: str) -> str | None:
 
 
 def is_exact_server_patch_tag(version: str) -> bool:
-    return SERVER_PATCH_TAG_RE.match(version.strip()) is not None
+    normalized = version.strip()
+    prerelease = normalized.partition("-")[2]
+    rolling = {"latest", "current", "head", "main", "master", "dev", "snapshot", "unresolved", "placeholder"}
+    return SERVER_PATCH_TAG_RE.match(normalized) is not None and not any(
+        identifier.lower() in rolling for identifier in prerelease.split(".") if identifier
+    )
 
 
 def is_digest_pinned_server_image(image: str) -> bool:
@@ -1256,7 +1304,7 @@ def server_image_not_proved_reason(image: str, version: str) -> str:
     image = normalize_docker_image_reference(image)
     version = version.strip()
     if not is_exact_server_patch_tag(version):
-        return "DW_SERVER_VERSION must be an exact patch semver Docker tag"
+        return "DW_SERVER_VERSION must be an exact SemVer Docker tag"
     if server_repository_from_image(image) not in PUBLISHED_SERVER_IMAGE_REPOSITORIES:
         return "DW_SERVER_IMAGE is not a durableworkflow/server published image reference"
 
@@ -1265,11 +1313,11 @@ def server_image_not_proved_reason(image: str, version: str) -> str:
         return "DW_SERVER_IMAGE digest must be a sha256 digest-pinned reference"
 
     if tag is None:
-        return "DW_SERVER_IMAGE must use an exact patch semver tag or an image digest"
+        return "DW_SERVER_IMAGE must use an exact SemVer tag or an image digest"
 
     if tag is not None:
         if not is_exact_server_patch_tag(tag) and not is_digest_pinned_server_image(image):
-            return "DW_SERVER_IMAGE must use an exact patch semver tag or an image digest"
+            return "DW_SERVER_IMAGE must use an exact SemVer tag or an image digest"
         if tag != version:
             return f"DW_SERVER_VERSION {version!r} does not match DW_SERVER_IMAGE tag {tag!r}"
 
@@ -11102,14 +11150,19 @@ def _run_waterline_observer_probe(
             blocker_kind="docker_unavailable",
         ), {"error": "docker_unavailable"}
 
+    sdk_php_version = artifact_version_value(artifact_versions, "sdk-php")
     workflow_version = artifact_version_value(artifact_versions, "workflow")
     waterline_version = artifact_version_value(artifact_versions, "waterline")
-    if is_placeholder_version(workflow_version) or is_placeholder_version(waterline_version):
+    if (
+        is_placeholder_version(sdk_php_version)
+        or is_placeholder_version(workflow_version)
+        or is_placeholder_version(waterline_version)
+    ):
         return waterline_observer_setup_result(
             status="runner_blocked",
             reason=(
-                "Exact workflow and waterline versions are required before installing "
-                "the published Waterline observer shard."
+                "Exact PHP SDK, workflow, and waterline versions are required before "
+                "installing the published Waterline observer shard."
             ),
             blocker_kind="missing_exact_artifact_version",
         ), {"error": "missing_exact_artifact_version"}
@@ -11178,8 +11231,9 @@ def _run_waterline_observer_probe(
             "--no-interaction",
             "--no-progress",
             "--prefer-dist",
-            f"durable-workflow/workflow:{workflow_version}",
-            f"durable-workflow/waterline:{waterline_version}",
+            f"durable-workflow/waterline:{waterline_version}@beta",
+            f"durable-workflow/workflow:{workflow_version}@beta",
+            f"durable-workflow/sdk:{sdk_php_version}@beta",
         ],
         extra_env=waterline_env,
         network=waterline_network,
@@ -11196,7 +11250,9 @@ def _run_waterline_observer_probe(
             status="fail",
             reason=(
                 "Composer could not install pinned Packagist packages "
-                f"durable-workflow/workflow:{workflow_version} and durable-workflow/waterline:{waterline_version}."
+                f"durable-workflow/waterline:{waterline_version}, "
+                f"durable-workflow/workflow:{workflow_version}, and "
+                f"durable-workflow/sdk:{sdk_php_version}."
             ),
             blocker_kind="waterline_composer_require",
             failed_command=require_command,

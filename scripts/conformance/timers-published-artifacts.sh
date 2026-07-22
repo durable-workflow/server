@@ -34,7 +34,7 @@ Environment overrides:
                                      Skip the published server image's focused timer shards.
   DW_TIMERS_RUNNER_SOURCE           Exact source for the runner process. Defaults to DW_SERVER_IMAGE.
   DW_SERVER_IMAGE                   Exact server image tag or digest to test.
-  DW_SERVER_VERSION                 Exact patch server Docker tag; required for digest-only DW_SERVER_IMAGE.
+  DW_SERVER_VERSION                 Exact server SemVer tag; required for digest-only DW_SERVER_IMAGE.
   DW_CLI_VERSION                    Exact CLI release version.
   DW_PYTHON_SDK_VERSION             Exact PyPI durable-workflow version.
   DW_WORKFLOW_PHP_VERSION           Exact Composer durable-workflow/workflow version.

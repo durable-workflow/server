@@ -250,15 +250,25 @@ def read_json(url: str) -> Any:
         return json.loads(response.read().decode("utf-8"))
 
 
-def semver_key(version: str) -> tuple[int, int, int, int]:
-    match = re.fullmatch(r"v?(\d+)\.(\d+)\.(\d+)(?:-alpha\.(\d+))?", version)
+def semver_key(version: str) -> tuple[int, int, int, int, int]:
+    match = re.fullmatch(r"v?(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-(alpha|beta|rc)\.(0|[1-9]\d*))?", version)
     if not match:
-        return (-1, -1, -1, -1)
-    return tuple(int(part or 0) for part in match.groups())  # type: ignore[return-value]
+        return (-1, -1, -1, -1, -1)
+    major, minor, patch, prerelease, ordinal = match.groups()
+    phase = {"alpha": 0, "beta": 1, "rc": 2, None: 3}[prerelease]
+    return int(major), int(minor), int(patch), phase, int(ordinal or 0)
 
 
 def exact_server_tag(value: str) -> bool:
-    return re.fullmatch(r"\d+\.\d+\.\d+", value) is not None
+    exact = re.fullmatch(
+        r"(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)"
+        r"(?:-(?:0|[1-9]\d*|[0-9A-Za-z-]*[A-Za-z-][0-9A-Za-z-]*)"
+        r"(?:\.(?:0|[1-9]\d*|[0-9A-Za-z-]*[A-Za-z-][0-9A-Za-z-]*))*)?",
+        value,
+    ) is not None
+    prerelease = value.partition("-")[2]
+    rolling = {"latest", "current", "head", "main", "master", "dev", "snapshot", "unresolved", "placeholder"}
+    return exact and not any(identifier.lower() in rolling for identifier in prerelease.split(".") if identifier)
 
 
 def server_tag_from_image(image: str) -> str | None:
@@ -276,17 +286,17 @@ def resolve_server() -> tuple[str, str]:
     if explicit_image:
         tag = server_tag_from_image(explicit_image)
         if "@" not in explicit_image and (tag is None or not exact_server_tag(tag)):
-            raise RuntimeError("DW_SERVER_IMAGE must use an exact patch tag or an image digest")
+            raise RuntimeError("DW_SERVER_IMAGE must use an exact SemVer tag or an image digest")
         version = explicit_version or tag
         if version is None or not exact_server_tag(version):
-            raise RuntimeError("DW_SERVER_VERSION must name the exact patch for digest-pinned server images")
+            raise RuntimeError("DW_SERVER_VERSION must name the exact SemVer release for digest-pinned server images")
         if tag is not None and exact_server_tag(tag) and tag != version:
             raise RuntimeError("DW_SERVER_VERSION does not match DW_SERVER_IMAGE tag")
         return explicit_image, version
 
     if explicit_version:
         if not exact_server_tag(explicit_version):
-            raise RuntimeError("DW_SERVER_VERSION must be an exact patch version")
+            raise RuntimeError("DW_SERVER_VERSION must be an exact SemVer release")
         return f"durableworkflow/server:{explicit_version}", explicit_version
 
     tags: list[str] = []
@@ -297,7 +307,7 @@ def resolve_server() -> tuple[str, str]:
         url = payload.get("next")
     exact = [tag for tag in tags if exact_server_tag(tag)]
     if not exact:
-        raise RuntimeError("no exact durableworkflow/server patch tag found")
+        raise RuntimeError("no exact durableworkflow/server SemVer tag found")
     version = sorted(exact, key=semver_key, reverse=True)[0]
     return f"durableworkflow/server:{version}", version
 

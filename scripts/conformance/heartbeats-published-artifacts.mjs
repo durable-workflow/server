@@ -19,6 +19,7 @@ import {
   recoverFinalVisibility,
   transportErrorDetails,
 } from './heartbeat-final-visibility.mjs';
+import { isExactSemverRelease, samePythonRelease } from './version-identities.mjs';
 
 const RESULT_DIR = mustEnv('RESULT_DIR');
 const REPO_ROOT = mustEnv('REPO_ROOT');
@@ -370,13 +371,16 @@ function cleanupComposeProject(project, composeArgs, composeEnv) {
 function ensureExactPins() {
   const failures = [];
   if (!['php', 'python', 'rust'].includes(CELL)) failures.push('DW_HEARTBEATS_CELL must be php, python, or rust');
-  if (!/^\d+\.\d+\.\d+$/.test(SERVER_VERSION)) failures.push('DW_SERVER_VERSION must be an exact patch release');
+  if (!isExactSemverRelease(SERVER_VERSION)) failures.push('DW_SERVER_VERSION must be an exact SemVer release');
   if (!/^\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?$/.test(CLI_VERSION)) failures.push('DW_CLI_VERSION must be an exact release');
   if (IS_PYTHON_CELL && !/^\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?$/.test(SDK_PYTHON_VERSION)) {
     failures.push('DW_PYTHON_SDK_VERSION must be an exact release');
   }
   if (IS_RUST_CELL && !/^\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?$/.test(SDK_RUST_VERSION)) {
     failures.push('DW_RUST_SDK_VERSION must be an exact release');
+  }
+  if (IS_RUST_CELL && SDK_RUST_VERSION !== SERVER_VERSION) {
+    failures.push('DW_RUST_SDK_VERSION and DW_SERVER_VERSION must select one exact product train');
   }
   if (!IS_PYTHON_CELL && !IS_RUST_CELL && !/^\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?$/.test(SDK_PHP_VERSION)) {
     failures.push('DW_PHP_SDK_VERSION must be an exact released PHP SDK version');
@@ -1164,7 +1168,7 @@ function installPythonPackage() {
     'python', '-c', "from importlib.metadata import version; print(version('durable-workflow'))",
   ], { timeout: 60_000 });
   const installed = normalizeVersion(String(version.stdout).trim());
-  if (installed !== SDK_PYTHON_VERSION) {
+  if (!samePythonRelease(SDK_PYTHON_VERSION, installed)) {
     throw new Error(`pinned Python package mismatch: expected ${SDK_PYTHON_VERSION}, got ${installed || 'empty'}`);
   }
   evidence.python_package_install = {
@@ -1227,8 +1231,11 @@ function installRustPackage() {
     throw new Error(`pinned Rust package repository provenance mismatch: ${installedPackage.repository ?? 'missing repository'}`);
   }
   const releaseMetadata = installedPackage.metadata?.['durable-workflow'] ?? {};
-  if (releaseMetadata['supported-server-versions'] !== '>=0.2,<0.3') {
-    throw new Error('pinned Rust package is missing the supported Durable Workflow server range');
+  if (releaseMetadata['supported-server-versions'] !== SERVER_VERSION) {
+    throw new Error(
+      `pinned Rust package supports server ${releaseMetadata['supported-server-versions'] ?? 'missing'},`
+      + ` expected the selected ${SERVER_VERSION} product train`,
+    );
   }
   run('docker', [
     'run', '--rm',
@@ -1685,7 +1692,7 @@ function buildChecks(context) {
   return {
     exact_published_artifacts_installed: evidence.server_image_install?.exact_published_image_verified === true
       && (IS_PYTHON_CELL
-        ? evidence.python_package_install?.installed_version === SDK_PYTHON_VERSION
+        ? samePythonRelease(SDK_PYTHON_VERSION, evidence.python_package_install?.installed_version)
         : (IS_RUST_CELL
           ? evidence.rust_package_install?.installed_version === SDK_RUST_VERSION
             && evidence.rust_package_install?.resolved_registry_source?.startsWith('registry+')

@@ -990,7 +990,9 @@ if [[ -z "$sdk_version" || ! "$sdk_version" =~ ^[0-9]+\.[0-9]+\.[0-9]+([.-][0-9A
   write_failure package-publication sdk-php-release preflight 'DW_PHP_SDK_VERSION must be an exact published Composer version.'
   exit 0
 fi
-if [[ -z "$server_version" || ! "$server_version" =~ ^[0-9]+\.[0-9]+\.[0-9]+([.-][0-9A-Za-z.-]+)?$ ]]; then
+if [[ -z "$server_version" \
+  || "$server_version" =~ (^|[-.])(latest|current|head|main|master|dev|snapshot|unresolved|placeholder)([-.]|$) \
+  || ! "$server_version" =~ ^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-((0|[1-9][0-9]*|[0-9A-Za-z-]*[A-Za-z-][0-9A-Za-z-]*)(\.(0|[1-9][0-9]*|[0-9A-Za-z-]*[A-Za-z-][0-9A-Za-z-]*))*))?$ ]]; then
   write_failure runner conformance_harness preflight 'DW_SERVER_VERSION must be an exact published server version.'
   exit 0
 fi

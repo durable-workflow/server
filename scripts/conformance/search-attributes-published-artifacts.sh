@@ -630,6 +630,10 @@ function isPlaceholderVersion(version) {
     || ['latest', 'current', 'head', 'unresolved', 'placeholder'].includes(normalized);
 }
 
+function isExactSemverRelease(version) {
+  return /^(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)(?:-(?:0|[1-9]\d*|[0-9A-Za-z-]*[A-Za-z-][0-9A-Za-z-]*)(?:\.(?:0|[1-9]\d*|[0-9A-Za-z-]*[A-Za-z-][0-9A-Za-z-]*))*)?$/.test(stringValue(version));
+}
+
 function isPlaceholderEvidence(value) {
   const normalized = stringValue(value).toLowerCase();
   if (normalized === '') {
@@ -1799,6 +1803,8 @@ function evaluateResultGate(result) {
     }
     if (isPlaceholderVersion(version)) {
       failures.push({ code: 'placeholder_artifact_version', artifact, version });
+    } else if (artifact === 'server' && !isExactSemverRelease(version)) {
+      failures.push({ code: 'invalid_server_artifact_version', artifact, version });
     }
   }
 

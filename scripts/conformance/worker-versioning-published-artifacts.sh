@@ -148,7 +148,8 @@ require_command() {
 is_exact_semver() {
   local version="$1"
 
-  [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+([.-][0-9A-Za-z.-]+)?$ ]]
+  [[ ! "$version" =~ (^|[-.])(latest|current|head|main|master|dev|snapshot|unresolved|placeholder)([-.]|$) ]] \
+    && [[ "$version" =~ ^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-((0|[1-9][0-9]*|[0-9A-Za-z-]*[A-Za-z-][0-9A-Za-z-]*)(\.(0|[1-9][0-9]*|[0-9A-Za-z-]*[A-Za-z-][0-9A-Za-z-]*))*))?$ ]]
 }
 
 php_version_at_least() {
@@ -1162,7 +1163,7 @@ if [[ -z "$server_url" ]]; then
   if [[ "$server_image" != *@sha256:* ]]; then
     image_tag="${server_image##*:}"
     if [[ "$image_tag" == "$server_image" ]] || ! is_exact_semver "$image_tag"; then
-      write_blocked_result "DW_SERVER_IMAGE must use an exact patch semver tag or an image digest; got ${server_image}"
+      write_blocked_result "DW_SERVER_IMAGE must use an exact SemVer tag or an image digest; got ${server_image}"
       exit 0
     fi
     if [[ -n "${DW_SERVER_VERSION:-}" && "${DW_SERVER_VERSION}" != "$image_tag" ]]; then
@@ -1216,8 +1217,9 @@ if [[ -z "${DW_WV_WATERLINE_URL:-}" ]]; then
   fi
 
   workflow_php_version="${DW_WORKFLOW_PHP_VERSION:-${DW_WORKFLOW_VERSION:-}}"
-  if [[ -z "${DW_WATERLINE_VERSION:-}" || -z "$workflow_php_version" ]]; then
-    write_blocked_result 'DW_WATERLINE_VERSION and DW_WORKFLOW_PHP_VERSION are required to boot the published Waterline visibility shard'
+  php_sdk_version="${DW_PHP_SDK_VERSION:-}"
+  if [[ -z "${DW_WATERLINE_VERSION:-}" || -z "$workflow_php_version" || -z "$php_sdk_version" ]]; then
+    write_blocked_result 'DW_WATERLINE_VERSION, DW_WORKFLOW_PHP_VERSION, and DW_PHP_SDK_VERSION are required to boot the published Waterline visibility shard'
     exit 0
   fi
 
@@ -1280,10 +1282,11 @@ DOCKERFILE
   if ! docker run --rm -v "$run_root/waterline-app:/app" composer:2 sh -lc "
     composer create-project --no-interaction --no-progress laravel/laravel . &&
     composer require --no-interaction --no-progress \
-      'durable-workflow/workflow:$workflow_php_version' \
-      'durable-workflow/waterline:${DW_WATERLINE_VERSION}'
+      'durable-workflow/waterline:${DW_WATERLINE_VERSION}@beta' \
+      'durable-workflow/workflow:${workflow_php_version}@beta' \
+      'durable-workflow/sdk:${php_sdk_version}@beta'
   " > "$result_dir/waterline-install.log" 2>&1; then
-    write_blocked_result "published Waterline app install failed for durable-workflow/waterline ${DW_WATERLINE_VERSION} with workflow ${workflow_php_version}; see waterline-install.log"
+    write_blocked_result "published Waterline app install failed for durable-workflow/waterline ${DW_WATERLINE_VERSION} with workflow ${workflow_php_version} and PHP SDK ${php_sdk_version}; see waterline-install.log"
     exit 0
   fi
 

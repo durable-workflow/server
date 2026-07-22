@@ -108,6 +108,13 @@ if [[ "$server_image" =~ (^|[:/@._-])(latest|current|head|local|dev|snapshot)([:
   emit_preflight_failure "rolling or local server image references are forbidden: $server_image"
 fi
 
+if [[ "$server_image" != *@sha256:* ]]; then
+  server_tag="${server_image##*:}"
+  if [[ ! "$server_tag" =~ ^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-((0|[1-9][0-9]*|[0-9A-Za-z-]*[A-Za-z-][0-9A-Za-z-]*)(\.(0|[1-9][0-9]*|[0-9A-Za-z-]*[A-Za-z-][0-9A-Za-z-]*))*))?$ ]]; then
+    emit_preflight_failure "server image tag must be an exact SemVer release: $server_image"
+  fi
+fi
+
 command -v docker >/dev/null 2>&1 || emit_preflight_failure 'required command not found: docker'
 docker compose version >/dev/null 2>&1 || emit_preflight_failure 'Docker Compose v2 is required'
 

@@ -18,7 +18,8 @@ Environment overrides:
   DW_SAGAS_RESULT_DIR           Result directory. Defaults to run root.
   DW_SAGAS_KEEP_RUN_ROOT=1      Keep scratch directory after success.
   DW_SERVER_IMAGE               Exact server image/tag/digest to test.
-  DW_SERVER_VERSION             Exact patch server Docker tag; required for digest-only DW_SERVER_IMAGE.
+  DW_SERVER_VERSION             Exact server SemVer tag; required for digest-only DW_SERVER_IMAGE.
+  DW_PHP_SDK_VERSION            Composer version for durable-workflow/sdk.
   DW_WORKFLOW_PHP_VERSION       Composer version for durable-workflow/workflow.
   DW_PYTHON_SDK_VERSION         PyPI version for durable-workflow.
   DW_CLI_VERSION                GitHub release tag for the official CLI installer.
@@ -515,7 +516,7 @@ blocked_result() {
     artifact_versions_json="$(python3 -c 'import json,sys; print(json.dumps(json.load(open(sys.argv[1])).get("published_artifact_versions", {}), sort_keys=True))' "$result_dir/run-metadata.json" 2>/dev/null || printf '{}')"
     artifact_sources_json="$(python3 -c 'import json,sys; print(json.dumps(json.load(open(sys.argv[1])).get("artifact_sources", {}), sort_keys=True))' "$result_dir/run-metadata.json" 2>/dev/null || printf '{}')"
   elif command -v python3 >/dev/null 2>&1 && [[ -f "$result_dir/pins.json" ]]; then
-    artifact_versions_json="$(python3 -c 'import json,sys; pins=json.load(open(sys.argv[1])); print(json.dumps({k:pins[k] for k in ("server","cli","workflow","workflow-php","sdk-python","waterline") if k in pins}, sort_keys=True))' "$result_dir/pins.json" 2>/dev/null || printf '{}')"
+    artifact_versions_json="$(python3 -c 'import json,sys; pins=json.load(open(sys.argv[1])); print(json.dumps({k:pins[k] for k in ("server","cli","workflow","workflow-php","sdk-php","sdk-python","waterline") if k in pins}, sort_keys=True))' "$result_dir/pins.json" 2>/dev/null || printf '{}')"
     artifact_sources_json="$(python3 -c 'import json,sys; print(json.dumps(json.load(open(sys.argv[1])).get("artifact_sources", {}), sort_keys=True))' "$result_dir/pins.json" 2>/dev/null || printf '{}')"
   fi
 
@@ -839,7 +840,11 @@ import urllib.request
 from typing import Any
 
 
-SERVER_PATCH_TAG_RE = re.compile(r"^\d+\.\d+\.\d+(?:-[0-9A-Za-z][0-9A-Za-z.-]*)?$")
+SERVER_PATCH_TAG_RE = re.compile(
+    r"^(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)"
+    r"(?:-(?:0|[1-9]\d*|[0-9A-Za-z-]*[A-Za-z-][0-9A-Za-z-]*)"
+    r"(?:\.(?:0|[1-9]\d*|[0-9A-Za-z-]*[A-Za-z-][0-9A-Za-z-]*))*)?$",
+)
 SEMVER_TAG_RE = re.compile(r"^v?\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.]+)?$")
 
 
@@ -960,7 +965,11 @@ def github_release_with_downloadable_asset(
 
 
 def is_exact_server_patch_tag(version: str) -> bool:
-    return bool(SERVER_PATCH_TAG_RE.match(version))
+    prerelease = version.partition("-")[2]
+    rolling = {"latest", "current", "head", "main", "master", "dev", "snapshot", "unresolved", "placeholder"}
+    return bool(SERVER_PATCH_TAG_RE.match(version)) and not any(
+        identifier.lower() in rolling for identifier in prerelease.split(".") if identifier
+    )
 
 
 def server_tag_from_image(image: str) -> str | None:
@@ -973,7 +982,7 @@ def server_tag_from_image(image: str) -> str | None:
 
 def validate_server_version(version: str, source: str) -> str:
     if not is_exact_server_patch_tag(version):
-        raise RuntimeError(f"{source} must be an exact patch semver Docker tag, not {version!r}")
+        raise RuntimeError(f"{source} must be an exact SemVer Docker tag, not {version!r}")
     return version
 
 
@@ -997,13 +1006,13 @@ def docker_server_image() -> tuple[str, str]:
         image_tag = server_tag_from_image(image_name)
         exact_image_tag = image_tag if image_tag and is_exact_server_patch_tag(image_tag) else None
         if "@" not in explicit and exact_image_tag is None:
-            raise RuntimeError("DW_SERVER_IMAGE must use an exact patch semver tag or an image digest")
+            raise RuntimeError("DW_SERVER_IMAGE must use an exact SemVer tag or an image digest")
         if version is None and exact_image_tag is not None:
             version = exact_image_tag
         if version is None:
             raise RuntimeError(
-                "DW_SERVER_IMAGE must include an exact patch semver tag, "
-                "or DW_SERVER_VERSION must name the exact patch version for digest-pinned images"
+                "DW_SERVER_IMAGE must include an exact SemVer tag, "
+                "or DW_SERVER_VERSION must name the exact release for digest-pinned images"
             )
         version = validate_server_version(version, "DW_SERVER_VERSION")
         if exact_image_tag is not None and version != exact_image_tag:
@@ -1020,12 +1029,13 @@ def docker_server_image() -> tuple[str, str]:
                 version = name
                 break
         else:
-            raise RuntimeError("no durableworkflow/server exact patch semver tag found")
+            raise RuntimeError("no durableworkflow/server exact SemVer tag found")
     return f"durableworkflow/server:{version}", version
 
 
 server_image, server_version = docker_server_image()
 python_version = env("DW_PYTHON_SDK_VERSION") or read_json("https://pypi.org/pypi/durable-workflow/json")["info"]["version"]
+php_sdk_version = packagist_version("durable-workflow/sdk", env("DW_PHP_SDK_VERSION"))
 workflow_version = packagist_version("durable-workflow/workflow", env("DW_WORKFLOW_PHP_VERSION"))
 cli_version, cli_installer_url = github_release_with_downloadable_asset(
     "durable-workflow/cli",
@@ -1041,6 +1051,7 @@ pins = {
     "cli_installer_url": cli_installer_url,
     "workflow": workflow_version,
     "workflow-php": workflow_version,
+    "sdk-php": php_sdk_version,
     "sdk-python": python_version,
     "waterline": waterline_version,
     "artifact_sources": {
@@ -1048,6 +1059,7 @@ pins = {
         "cli": "github-release",
         "workflow": "packagist",
         "workflow-php": "packagist",
+        "sdk-php": "packagist",
         "sdk-python": "pypi",
         "waterline": "packagist",
     },
@@ -1070,6 +1082,7 @@ cp "$result_dir/pins.json" "$run_root/pins.json"
 
 server_image="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["server_image"])' "$run_root/pins.json")"
 workflow_version="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["workflow-php"])' "$run_root/pins.json")"
+php_sdk_version="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["sdk-php"])' "$run_root/pins.json")"
 python_version="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["sdk-python"])' "$run_root/pins.json")"
 cli_version="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["cli"])' "$run_root/pins.json")"
 cli_installer_url="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["cli_installer_url"])' "$run_root/pins.json")"
@@ -1094,7 +1107,9 @@ python -m pip install "durable-workflow==$python_version" httpx
 
 mkdir -p "$run_root/php-worker" "$run_root/cli/bin" "$run_root/waterline-app" "$run_root/logs"
 docker run --rm -v "$run_root/php-worker:/app" composer:2 \
-  composer require --no-interaction --no-progress "durable-workflow/workflow:$workflow_version"
+  composer require --no-interaction --no-progress \
+    "durable-workflow/workflow:${workflow_version}@beta" \
+    "durable-workflow/sdk:${php_sdk_version}@beta"
 if ! curl -fsSL --retry 3 -o "$run_root/cli/install.sh" "$cli_installer_url"; then
   blocked_result "official CLI installer is not downloadable for release $cli_version at $cli_installer_url" "$started_at"
   exit 1
@@ -1113,10 +1128,11 @@ fi
 if ! docker run --rm -v "$run_root/waterline-app:/app" composer:2 sh -lc "
   composer create-project --no-interaction --no-progress laravel/laravel . &&
   composer require --no-interaction --no-progress \
-    'durable-workflow/workflow:$workflow_version' \
-    'durable-workflow/waterline:$waterline_version'
+    'durable-workflow/waterline:${waterline_version}@beta' \
+    'durable-workflow/workflow:${workflow_version}@beta' \
+    'durable-workflow/sdk:${php_sdk_version}@beta'
 " > "$result_dir/waterline-install.log" 2>&1; then
-  blocked_result "published Waterline app install failed for durable-workflow/waterline $waterline_version with workflow $workflow_version; see waterline-install.log" "$started_at"
+  blocked_result "published Waterline app install failed for durable-workflow/waterline $waterline_version with workflow $workflow_version and PHP SDK $php_sdk_version; see waterline-install.log" "$started_at"
   exit 1
 fi
 
@@ -1141,6 +1157,7 @@ metadata = {
         "cli": pins["cli"],
         "workflow": pins["workflow"],
         "workflow-php": pins["workflow-php"],
+        "sdk-php": pins["sdk-php"],
         "sdk-python": pins["sdk-python"],
         "waterline": pins["waterline"],
     },

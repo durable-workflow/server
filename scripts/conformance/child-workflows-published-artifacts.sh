@@ -21,7 +21,7 @@ Environment overrides:
   DW_CHILD_WORKFLOWS_PYTHON_BIN       Optional Python executable with durable-workflow installed.
                                       Set internally to the run-root venv installed from the pinned PyPI artifact.
   DW_SERVER_IMAGE                       Exact server image tag or digest to test.
-  DW_SERVER_VERSION                     Exact patch server Docker tag; required for digest-only DW_SERVER_IMAGE.
+  DW_SERVER_VERSION                     Exact server SemVer tag; required for digest-only DW_SERVER_IMAGE.
   DW_CLI_VERSION                        Exact CLI release version.
   DW_PYTHON_SDK_VERSION                 Exact PyPI durable-workflow version.
   DW_RUST_SDK_VERSION                   Exact crates.io durable-workflow version.
@@ -717,9 +717,21 @@ RESULT_DIR = Path(sys.argv[1])
 STARTED_AT = sys.argv[2]
 MANIFEST_PATH = Path(sys.argv[3])
 
-SEMVER_RE = re.compile(r"^\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?$")
-SERVER_TAG_RE = re.compile(r"(?::|/)(\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?)$")
-PLACEHOLDER_RE = re.compile(r"(<[^>]+>|\$\{[^}]+}|{{[^}]+}}|(^|[^a-z0-9])latest([^a-z0-9]|$))", re.I)
+SEMVER_RE = re.compile(
+    r"^(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)"
+    r"(?:-(?:0|[1-9]\d*|[0-9A-Za-z-]*[A-Za-z-][0-9A-Za-z-]*)"
+    r"(?:\.(?:0|[1-9]\d*|[0-9A-Za-z-]*[A-Za-z-][0-9A-Za-z-]*))*)?$",
+)
+SERVER_TAG_RE = re.compile(
+    r"(?::|/)((?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)"
+    r"(?:-(?:0|[1-9]\d*|[0-9A-Za-z-]*[A-Za-z-][0-9A-Za-z-]*)"
+    r"(?:\.(?:0|[1-9]\d*|[0-9A-Za-z-]*[A-Za-z-][0-9A-Za-z-]*))*)?)$",
+)
+PLACEHOLDER_RE = re.compile(
+    r"(<[^>]+>|\$\{[^}]+}|{{[^}]+}}|(^|[^a-z0-9])"
+    r"(latest|current|head|main|master|dev|snapshot|unresolved|placeholder)([^a-z0-9]|$))",
+    re.I,
+)
 
 REQUIRED_INSTALL_ARTIFACTS = [
     "server",
@@ -796,6 +808,15 @@ def is_placeholder(value: str) -> bool:
     return bool(value and PLACEHOLDER_RE.search(value.lower()))
 
 
+def is_exact_python_release(value: str) -> bool:
+    return re.fullmatch(
+        r"(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)"
+        r"(?:(?:a|b|rc)(?:0|[1-9]\d*)|-(?:alpha|beta|rc)\.(?:0|[1-9]\d*))?",
+        value,
+        re.IGNORECASE,
+    ) is not None
+
+
 def exact_version_failures(versions: dict[str, str], server_image: str) -> list[str]:
     failures: list[str] = []
     required = {
@@ -811,7 +832,8 @@ def exact_version_failures(versions: dict[str, str], server_image: str) -> list[
         if not version:
             failures.append(f"missing {label}")
             continue
-        if is_placeholder(version) or not SEMVER_RE.match(version):
+        exact_version = is_exact_python_release(version) if key == "sdk-python" else bool(SEMVER_RE.match(version))
+        if is_placeholder(version) or not exact_version:
             failures.append(f"{label} must be an exact semver artifact version; got {version!r}")
 
     if server_image:

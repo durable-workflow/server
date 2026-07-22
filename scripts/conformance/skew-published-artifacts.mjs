@@ -5,6 +5,7 @@ import path from 'node:path';
 import process from 'node:process';
 import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
+import { isExactPythonRelease, isExactSemverRelease } from './version-identities.mjs';
 
 const RESULT_SCHEMA = 'durable-workflow.v2.skew-refusal-matrix.result';
 const METADATA_SCHEMA = 'durable-workflow.v2.skew-refusal-matrix.metadata';
@@ -251,7 +252,9 @@ async function main() {
   }
 
   const inexactVersions = Object.entries(artifactVersions)
-    .filter(([, value]) => value && !isExactSemverVersion(value))
+    .filter(([name, value]) => value && (
+      name === 'sdk-python' ? !isExactPythonRelease(value) : !isExactSemverVersion(value)
+    ))
     .map(([name, value]) => `${name}=${value}`);
 
   if (inexactVersions.length > 0) {
@@ -4077,7 +4080,7 @@ function isPlaceholderVersion(value) {
 }
 
 function isExactSemverVersion(value) {
-  return /^[0-9]+\.[0-9]+\.[0-9]+(?:[.-][0-9A-Za-z.-]+)?$/.test(String(value).trim());
+  return isExactSemverRelease(String(value).trim());
 }
 
 function stringValue(value) {

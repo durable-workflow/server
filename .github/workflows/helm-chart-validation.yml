@@ -150,12 +150,18 @@ jobs:
 
       - name: Run kind smoke script
         env:
+          ACTIONS_SERVER_URL: ${{ github.server_url }}
+          WORKFLOW_PACKAGE_COMMIT: 187746bb19615a8cbb25dfbe1e4e27dbbd933472
           K8S_HELM_SMOKE_KIND_NODE_IMAGE: kindest/node:v1.29.4
           K8S_HELM_SMOKE_CLUSTER: ${{ env.HELM_CT_CLUSTER_NAME }}
           K8S_HELM_SMOKE_REUSE_CLUSTER: "1"
           K8S_HELM_SMOKE_IMAGE: durableworkflow/server:helm-smoke-${{ github.run_id }}-${{ github.run_attempt }}
           K8S_HELM_SMOKE_ARTIFACT_DIR: ${{ runner.temp }}/helm-smoke
-        run: scripts/helm-chart-kind-smoke.sh
+        run: |
+          if [[ "$ACTIONS_SERVER_URL" != "https://github.com" ]]; then
+            export WORKFLOW_PACKAGE_QUALIFICATION_REF="$WORKFLOW_PACKAGE_COMMIT"
+          fi
+          scripts/helm-chart-kind-smoke.sh
 
       - name: Print smoke diagnostics
         if: failure()

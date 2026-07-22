@@ -14,12 +14,12 @@ class SagaConformanceRunnerContractTest extends TestCase
         $source = $this->read('scripts/conformance/sagas-published-artifacts.sh');
 
         $this->assertStringContainsString(
-            'SERVER_PATCH_TAG_RE = re.compile(r"^\d+\.\d+\.\d+',
+            'SERVER_PATCH_TAG_RE = re.compile(',
             $source,
-            'saga conformance must only record exact patch server tags as artifact versions',
+            'saga conformance must validate exact server release tags before recording artifact versions',
         );
         $this->assertStringContainsString(
-            'DW_SERVER_IMAGE must use an exact patch semver tag or an image digest',
+            'DW_SERVER_IMAGE must use an exact SemVer tag or an image digest',
             $source,
             'explicit saga server images must be exact tags or digest-pinned references',
         );
@@ -193,10 +193,11 @@ class SagaConformanceRunnerContractTest extends TestCase
             'run metadata must also emit workflow in published_artifact_versions for release coverage',
         );
         $this->assertStringContainsString(
-            '("server","cli","workflow","workflow-php","sdk-python","waterline")',
+            '("server","cli","workflow","workflow-php","sdk-php","sdk-python","waterline")',
             $source,
-            'blocked results must preserve both the platform release key and saga runtime key for the PHP package',
+            'blocked results must preserve the complete Composer artifact tuple',
         );
+        $this->assertStringContainsString('"sdk-php": pins["sdk-php"]', $source);
     }
 
     public function test_runner_reports_suite_version_from_saga_scenario_manifest(): void
@@ -235,7 +236,7 @@ class SagaConformanceRunnerContractTest extends TestCase
             'completed saga results must carry the manifest suite version through run metadata',
         );
         $this->assertStringNotContainsString(
-            '"suite_version": ' . PlatformConformanceSuite::VERSION,
+            '"suite_version": '.PlatformConformanceSuite::VERSION,
             $source,
             'the saga runner must not hardcode a suite version that can drift from the public manifest',
         );
@@ -296,7 +297,7 @@ class SagaConformanceRunnerContractTest extends TestCase
             'the mid-compensation Python restart must require a post-restart registration heartbeat before later scenarios run',
         );
         $this->assertStringContainsString(
-            "os.kill(ACTIVE_PYTHON_WORKER_PID, signal.SIGTERM)",
+            'os.kill(ACTIVE_PYTHON_WORKER_PID, signal.SIGTERM)',
             $source,
             'an alive but unregistered Python worker must be replaced instead of leaving later scenarios pending',
         );
@@ -362,7 +363,7 @@ class SagaConformanceRunnerContractTest extends TestCase
             'PHP worker readiness must include the control-plane version required by worker-management routes',
         );
         $this->assertStringContainsString(
-            "function send_worker_heartbeat(): array",
+            'function send_worker_heartbeat(): array',
             $source,
             'the generated PHP worker must refresh its worker-management liveness after registration',
         );
@@ -524,7 +525,7 @@ class SagaConformanceRunnerContractTest extends TestCase
             'the saga runner must create a real Laravel host app for the published Waterline package',
         );
         $this->assertStringContainsString(
-            'durable-workflow/waterline:$waterline_version',
+            'durable-workflow/waterline:${waterline_version}@beta',
             $source,
             'the Waterline host app must install the published Waterline package version under test',
         );
@@ -600,12 +601,12 @@ class SagaConformanceRunnerContractTest extends TestCase
         $source = $this->read('scripts/conformance/sagas-published-artifacts.sh');
 
         $this->assertStringContainsString(
-            "'durable-workflow/workflow:\$workflow_version' \\\n    'durable-workflow/waterline:\$waterline_version'",
+            "'durable-workflow/waterline:\${waterline_version}@beta' \\\n    'durable-workflow/workflow:\${workflow_version}@beta' \\\n    'durable-workflow/sdk:\${php_sdk_version}@beta'",
             $source,
-            'the Waterline host app install must root-pin the matching alpha workflow artifact instead of leaving it as a transitive unstable dependency',
+            'the Waterline host app install must root-pin the complete matching prerelease tuple',
         );
         $this->assertStringNotContainsString(
-            "composer require --no-interaction --no-progress \"durable-workflow/waterline:\$waterline_version\"",
+            'composer require --no-interaction --no-progress "durable-workflow/waterline:$waterline_version"',
             $source,
             'the Waterline host app install must not require Waterline alone in a fresh Composer root',
         );
@@ -1030,12 +1031,12 @@ class SagaConformanceRunnerContractTest extends TestCase
         $source = $this->read('scripts/conformance/sagas-published-artifacts.sh');
 
         $this->assertStringContainsString(
-            "saga_planned_failure = define_activity(\"saga_planned_failure\")",
+            'saga_planned_failure = define_activity("saga_planned_failure")',
             $source,
             'Python planned failures must be registered as activities rather than child workflows',
         );
         $this->assertStringContainsString(
-            "except ActivityFailed:",
+            'except ActivityFailed:',
             $source,
             'Python saga workflows must compensate planned activity failures without replaying through child failure paths',
         );

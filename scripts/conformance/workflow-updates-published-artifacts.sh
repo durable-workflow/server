@@ -1577,7 +1577,12 @@ should_run_php_package_shard() {
 }
 
 is_exact_package_version() {
-  [[ "$1" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z][0-9A-Za-z.-]*)?(\+[0-9A-Za-z.-]+)?$ ]]
+  [[ "$1" =~ ^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-((0|[1-9][0-9]*|[0-9A-Za-z-]*[A-Za-z-][0-9A-Za-z-]*)(\.(0|[1-9][0-9]*|[0-9A-Za-z-]*[A-Za-z-][0-9A-Za-z-]*))*))?$ ]]
+}
+
+is_exact_python_package_version() {
+  is_exact_package_version "$1" \
+    || [[ "$1" =~ ^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(a|b|rc)(0|[1-9][0-9]*)$ ]]
 }
 
 choose_tcp_port() {
@@ -2328,7 +2333,7 @@ run_python_sdk_shard() {
   local venv_python
   local workflow_updates_script
 
-  if [[ -z "$python_version" ]] || ! is_exact_package_version "$python_version"; then
+  if [[ -z "$python_version" ]] || ! is_exact_python_package_version "$python_version"; then
     write_python_sdk_shard_status not_covered "DW_PYTHON_SDK_VERSION must be an exact durable-workflow PyPI version before the Python SDK shard can install from PyPI." version_resolution false
     return 0
   fi
@@ -2371,11 +2376,36 @@ import importlib
 import importlib.metadata as metadata
 import json
 import os
+import re
 from pathlib import Path
 import sys
 from urllib.parse import urlparse
 
 expected = os.environ["PYTHON_EXPECTED_VERSION"]
+
+
+def release_identity(value: str) -> str | None:
+    stable = re.fullmatch(r"(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)", value)
+    if stable:
+        return value
+    semver = re.fullmatch(
+        r"(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)-(alpha|beta|rc)\.(0|[1-9]\d*)",
+        value,
+        re.IGNORECASE,
+    )
+    if semver:
+        major, minor, patch, prerelease, ordinal = semver.groups()
+        phase = {"alpha": "a", "beta": "b", "rc": "rc"}[prerelease.lower()]
+        return f"{major}.{minor}.{patch}{phase}{ordinal}"
+    pep440 = re.fullmatch(
+        r"(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(a|b|rc)(0|[1-9]\d*)",
+        value,
+        re.IGNORECASE,
+    )
+    if not pep440:
+        return None
+    major, minor, patch, prerelease, ordinal = pep440.groups()
+    return f"{major}.{minor}.{patch}{prerelease.lower()}{ordinal}"
 
 def fail(message: str) -> None:
     print(message, file=sys.stderr)
@@ -2387,7 +2417,7 @@ except metadata.PackageNotFoundError:
     fail("durable-workflow was not installed by pip.")
 
 version = dist.version
-if version.lstrip("v") != expected.lstrip("v"):
+if release_identity(version) != release_identity(expected):
     fail(f"durable-workflow installed version {version!r} did not match {expected!r}.")
 
 package = importlib.import_module("durable_workflow")
@@ -2432,6 +2462,10 @@ PY
     write_python_sdk_shard_status fail "The Python SDK shard resolved durable-workflow from a non-published artifact source; see python-sdk-package-source-policy.log." package_source_policy false
     return 0
   fi
+
+  local python_runtime_version
+  python_runtime_version="$("$venv_python" -c 'import importlib.metadata as metadata; print(metadata.version("durable-workflow"))')"
+  python_version="$python_runtime_version"
 
   workflow_updates_script="$python_venv/bin/durable-workflow-workflow-updates-conformance"
   if [[ ! -x "$workflow_updates_script" ]]; then
@@ -3462,6 +3496,7 @@ run_operator_diagnostics_shard() {
   local cli_version="${DW_CLI_VERSION:-}"
   local waterline_version="${DW_WATERLINE_VERSION:-}"
   local workflow_php_version="${DW_WORKFLOW_PHP_VERSION:-${DW_WORKFLOW_VERSION:-}}"
+  local sdk_php_version="${DW_PHP_SDK_VERSION:-}"
   local operator_db="$result_dir/operator-diagnostics-server.sqlite"
   local operator_port="${DW_WORKFLOW_UPDATES_OPERATOR_SERVER_PORT:-}"
   local operator_url
@@ -3493,6 +3528,10 @@ run_operator_diagnostics_shard() {
   fi
   if [[ -z "$workflow_php_version" ]] || ! is_exact_package_version "$workflow_php_version"; then
     write_operator_diagnostics_shard_status not_covered "DW_WORKFLOW_PHP_VERSION must be an exact durable-workflow/workflow version before the Waterline diagnostics app can install from Packagist." workflow_php_version_resolution false
+    return 0
+  fi
+  if [[ -z "$sdk_php_version" ]] || ! is_exact_package_version "$sdk_php_version"; then
+    write_operator_diagnostics_shard_status not_covered "DW_PHP_SDK_VERSION must be an exact durable-workflow/sdk version before the Waterline diagnostics app can install from Packagist." sdk_php_version_resolution false
     return 0
   fi
   if ! command -v curl >/dev/null 2>&1; then
@@ -3677,20 +3716,22 @@ run_operator_diagnostics_shard() {
     cd "$operator_waterline_app" &&
     COMPOSER_HOME="$composer_home" COMPOSER_CACHE_DIR="$composer_cache" \
       composer require --no-interaction --no-progress --prefer-dist \
-        "durable-workflow/workflow:${workflow_php_version}" \
-        "durable-workflow/waterline:${waterline_version}"
+        "durable-workflow/waterline:${waterline_version}@beta" \
+        "durable-workflow/workflow:${workflow_php_version}@beta" \
+        "durable-workflow/sdk:${sdk_php_version}@beta"
   ) > "$result_dir/operator-waterline-composer-require.log" 2>&1; then
-    write_operator_diagnostics_shard_status fail "Composer could not install pinned Packagist packages durable-workflow/workflow:${workflow_php_version} and durable-workflow/waterline:${waterline_version}; see operator-waterline-composer-require.log." waterline_composer_require false
+    write_operator_diagnostics_shard_status fail "Composer could not install pinned Packagist packages durable-workflow/waterline:${waterline_version}, durable-workflow/workflow:${workflow_php_version}, and durable-workflow/sdk:${sdk_php_version}; see operator-waterline-composer-require.log." waterline_composer_require false
     return 0
   fi
 
-  if ! WATERLINE_APP="$operator_waterline_app" WATERLINE_VERSION="$waterline_version" WORKFLOW_PHP_VERSION="$workflow_php_version" node <<'NODE' > "$result_dir/operator-waterline-source-policy.log" 2>&1; then
+  if ! WATERLINE_APP="$operator_waterline_app" WATERLINE_VERSION="$waterline_version" WORKFLOW_PHP_VERSION="$workflow_php_version" SDK_PHP_VERSION="$sdk_php_version" node <<'NODE' > "$result_dir/operator-waterline-source-policy.log" 2>&1; then
 const fs = require('node:fs');
 const path = require('node:path');
 
 const appDir = process.env.WATERLINE_APP;
 const expectedWaterline = process.env.WATERLINE_VERSION;
 const expectedWorkflow = process.env.WORKFLOW_PHP_VERSION;
+const expectedSdk = process.env.SDK_PHP_VERSION;
 const installedPath = path.join(appDir, 'vendor/composer/installed.json');
 const lockPath = path.join(appDir, 'composer.lock');
 const localSourcePattern = /(^file:\/\/|^\/|^\.\.?\/|\/workspace\/repos|local[_ -]?(product[_ -]?)?(source|checkout|artifact)|workspace[_ -]?repo|local[_ -]?vendor[_ -]?tree)/i;
@@ -3731,6 +3772,7 @@ const lockedPackages = packagesFromLockJson(readJson(lockPath));
 for (const [name, expected] of [
   ['durable-workflow/waterline', expectedWaterline],
   ['durable-workflow/workflow', expectedWorkflow],
+  ['durable-workflow/sdk', expectedSdk],
 ]) {
   const installedPackage = installedPackages.find((entry) => entry?.name === name);
   const lockedPackage = lockedPackages.find((entry) => entry?.name === name);
@@ -4517,7 +4559,11 @@ function localArtifactSourceReported(value) {
     || sourceUsesForbiddenToken(sourcePolicy.artifactSource);
 }
 
-function artifactFailureCode(value, field, codePrefix) {
+function isExactSemverRelease(value) {
+  return /^(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)(?:-(?:0|[1-9]\d*|[0-9A-Za-z-]*[A-Za-z-][0-9A-Za-z-]*)(?:\.(?:0|[1-9]\d*|[0-9A-Za-z-]*[A-Za-z-][0-9A-Za-z-]*))*)?$/.test(stringValue(value));
+}
+
+function artifactFailureCode(value, field, codePrefix, artifact) {
   const string = stringValue(value);
   if (field === 'artifact_sources') {
     if (string === '') {
@@ -4530,7 +4576,13 @@ function artifactFailureCode(value, field, codePrefix) {
     return PLACEHOLDER_ARTIFACT_PATTERN.test(string) ? `${codePrefix}_artifact_source` : null;
   }
 
-  return placeholderArtifactValue(string) ? `${codePrefix}_artifact_version` : null;
+  if (placeholderArtifactValue(string)) {
+    return `${codePrefix}_artifact_version`;
+  }
+  if (artifact === 'server' && !isExactSemverRelease(string)) {
+    return `${codePrefix}_server_artifact_version`;
+  }
+  return null;
 }
 
 function artifactEntries(map, artifact) {
@@ -4562,7 +4614,7 @@ function artifactMapFailures(map, field, codePrefix) {
     }
 
     for (const entry of entries) {
-      const code = artifactFailureCode(entry.value, field, codePrefix);
+      const code = artifactFailureCode(entry.value, field, codePrefix, artifact);
       if (code) {
         failures.push({
           artifact,

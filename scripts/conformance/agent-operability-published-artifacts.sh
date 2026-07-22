@@ -118,6 +118,11 @@ PLACEHOLDER_VERSION_PATTERN = re.compile(
     r"<[^>]+>|\$\{[^}]+}|{{[^}]+}}|(^|[^a-z0-9])(latest|current|head|main|master|unresolved|placeholder)([^a-z0-9]|$)",
     re.IGNORECASE,
 )
+EXACT_SEMVER_RELEASE_PATTERN = re.compile(
+    r"^(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)"
+    r"(?:-(?:0|[1-9]\d*|[0-9A-Za-z-]*[A-Za-z-][0-9A-Za-z-]*)"
+    r"(?:\.(?:0|[1-9]\d*|[0-9A-Za-z-]*[A-Za-z-][0-9A-Za-z-]*))*)?$",
+)
 
 
 def now() -> str:
@@ -165,6 +170,8 @@ def artifact_version_failures(versions: dict[str, str]) -> list[str]:
             failures.append(f"{artifact}=missing")
             continue
         if PLACEHOLDER_VERSION_PATTERN.search(value.strip()):
+            failures.append(f"{artifact}={value.strip()}")
+        elif artifact == "server" and not EXACT_SEMVER_RELEASE_PATTERN.fullmatch(value.strip()):
             failures.append(f"{artifact}={value.strip()}")
     return failures
 

@@ -2193,11 +2193,11 @@ PY);
             '"configured_cli_binary"',
             '"configured_python_environment"',
             '"docker_compose_configured_image_override"',
-            'SERVER_PATCH_TAG_RE = re.compile(r"^\d+\.\d+\.\d+$")',
+            'SERVER_PATCH_TAG_RE = re.compile(',
             'PUBLISHED_SERVER_IMAGE_REPOSITORIES',
             'published_server_image_install_proven(image, version)',
             'server_image_not_proved_reason(image, version)',
-            'DW_SERVER_IMAGE must use an exact patch semver tag or an image digest',
+            'DW_SERVER_IMAGE must use an exact SemVer tag or an image digest',
             'DW_SERVER_VERSION {version!r} does not match DW_SERVER_IMAGE tag {tag!r}',
             '"durableworkflow_server_exact_tag_or_digest"',
             'status="not_proved"',
@@ -2456,7 +2456,7 @@ PY);
             $entries['mismatched']['not_proved_reason'],
         );
         $this->assertSame(
-            'DW_SERVER_IMAGE must use an exact patch semver tag or an image digest',
+            'DW_SERVER_IMAGE must use an exact SemVer tag or an image digest',
             $entries['rolling']['not_proved_reason'],
         );
     }

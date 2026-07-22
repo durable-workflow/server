@@ -22,7 +22,7 @@ Environment overrides:
   DW_REPLAY_RESULT_DIR           Result directory. Defaults to run root.
   DW_REPLAY_KEEP_RUN_ROOT=1      Keep scratch directory after success.
   DW_SERVER_IMAGE                Exact server image/tag/digest to test.
-  DW_SERVER_VERSION              Exact patch server Docker tag; required for digest-only DW_SERVER_IMAGE.
+  DW_SERVER_VERSION              Exact server SemVer tag; required for digest-only DW_SERVER_IMAGE.
   DW_PHP_SDK_VERSION             Exact Packagist version for durable-workflow/sdk.
   DW_WORKFLOW_PHP_VERSION        Composer version for the embedded durable-workflow/workflow engine.
   DW_PYTHON_SDK_VERSION          PyPI version for durable-workflow.
@@ -1126,33 +1126,53 @@ def read_json(url: str) -> Any:
         return json.loads(response.read().decode("utf-8"))
 
 
-def semver_key(version: str) -> tuple[int, int, int, int]:
-    match = re.fullmatch(r"v?(\d+)\.(\d+)\.(\d+)(?:-alpha\.(\d+))?", version)
+def semver_key(version: str) -> tuple[int, int, int, int, int]:
+    match = re.fullmatch(r"v?(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-(alpha|beta|rc)\.(0|[1-9]\d*))?", version)
     if not match:
-        return (-1, -1, -1, -1)
-    return tuple(int(part or 0) for part in match.groups())  # type: ignore[return-value]
+        return (-1, -1, -1, -1, -1)
+    major, minor, patch, prerelease, ordinal = match.groups()
+    phase = {"alpha": 0, "beta": 1, "rc": 2, None: 3}[prerelease]
+    return int(major), int(minor), int(patch), phase, int(ordinal or 0)
 
 
 def exact_server_tag(value: str) -> bool:
-    return re.fullmatch(r"\d+\.\d+\.\d+", value) is not None
+    exact = re.fullmatch(
+        r"(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)"
+        r"(?:-(?:0|[1-9]\d*|[0-9A-Za-z-]*[A-Za-z-][0-9A-Za-z-]*)"
+        r"(?:\.(?:0|[1-9]\d*|[0-9A-Za-z-]*[A-Za-z-][0-9A-Za-z-]*))*)?",
+        value,
+    ) is not None
+    prerelease = value.partition("-")[2]
+    rolling = {"latest", "current", "head", "main", "master", "dev", "snapshot", "unresolved", "placeholder"}
+    return exact and not any(identifier.lower() in rolling for identifier in prerelease.split(".") if identifier)
 
 
 def server_version_from_image(image: str) -> str | None:
-    if "@" in image:
-        return None
-    tag = image.rsplit(":", 1)[-1] if ":" in image else ""
+    without_digest = image.split("@", 1)[0]
+    last_path_part = without_digest.rsplit("/", 1)[-1]
+    tag = last_path_part.rsplit(":", 1)[-1] if ":" in last_path_part else ""
     return tag if exact_server_tag(tag) else None
 
 
-def latest_docker_tag() -> str:
+def selected_docker_tag() -> str:
     override = env("DW_SERVER_VERSION")
-    if override:
-        return override
     image = env("DW_SERVER_IMAGE")
+    if override:
+        if not exact_server_tag(override):
+            raise RuntimeError("DW_SERVER_VERSION must be an exact SemVer release")
+        inferred = server_version_from_image(image) if image else None
+        if inferred is not None and inferred != override:
+            raise RuntimeError("DW_SERVER_VERSION does not match DW_SERVER_IMAGE tag")
+        if image and "@" not in image and inferred is None:
+            raise RuntimeError("DW_SERVER_IMAGE must use an exact SemVer tag or an image digest")
+        return override
     if image:
         inferred = server_version_from_image(image)
         if inferred:
             return inferred
+        if "@" in image:
+            raise RuntimeError("DW_SERVER_VERSION must name the exact release for a digest-pinned server image")
+        raise RuntimeError("DW_SERVER_IMAGE must use an exact SemVer tag or an image digest")
     payload = read_json("https://registry.hub.docker.com/v2/repositories/durableworkflow/server/tags?page_size=100")
     tags = [
         str(item.get("name", ""))
@@ -1217,7 +1237,7 @@ def latest_packagist_version(package: str, override: str | None) -> str:
     versions = [
         str(item.get("version", ""))
         for item in payload.get("packages", {}).get(package, [])
-        if semver_key(str(item.get("version", ""))) != (-1, -1, -1, -1)
+        if semver_key(str(item.get("version", ""))) != (-1, -1, -1, -1, -1)
     ]
     if not versions:
         raise RuntimeError(f"could not resolve Packagist version for {package}")
@@ -1234,7 +1254,7 @@ def latest_crates_io_version(package: str, override: str | None) -> str:
     return version
 
 
-server_version = latest_docker_tag()
+server_version = selected_docker_tag()
 server_image = env("DW_SERVER_IMAGE") or f"durableworkflow/server:{server_version}"
 cli_version, cli_install_url = github_release(
     "durable-workflow/cli",
@@ -1909,8 +1929,9 @@ mkdir -p "$waterline_app"
 set +e
 docker run --rm "${composer_env_args[@]}" -v "$waterline_app:/app" -w /app composer:2 \
   composer require --no-interaction --no-progress \
-    "durable-workflow/workflow:${workflow_php_version}" \
-    "durable-workflow/waterline:${waterline_version}" \
+    "durable-workflow/waterline:${waterline_version}@beta" \
+    "durable-workflow/workflow:${workflow_php_version}@beta" \
+    "durable-workflow/sdk:${php_sdk_version}@beta" \
   > "$result_dir/waterline-composer-install.log" 2>&1
 waterline_install_status=$?
 set -e

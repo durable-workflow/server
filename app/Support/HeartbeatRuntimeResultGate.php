@@ -145,9 +145,8 @@ final class HeartbeatRuntimeResultGate
     }
 
     /**
-     * @param array<string, mixed> $result
-     * @param array<string, mixed>|null $contract
-     *
+     * @param  array<string, mixed>  $result
+     * @param  array<string, mixed>|null  $contract
      * @return array<string, mixed>
      */
     public static function evaluate(array $result, ?array $contract = null): array
@@ -200,6 +199,7 @@ final class HeartbeatRuntimeResultGate
                     'status' => $status,
                     'allowed_statuses' => $allowedStatuses,
                 ];
+
                 continue;
             }
 
@@ -279,9 +279,8 @@ final class HeartbeatRuntimeResultGate
     }
 
     /**
-     * @param array<string, mixed> $result
-     * @param array<string, int> $duplicateScenarioCounts
-     *
+     * @param  array<string, mixed>  $result
+     * @param  array<string, int>  $duplicateScenarioCounts
      * @return array<string, array<string, mixed>>
      */
     private static function scenarioResultsById(array $result, array &$duplicateScenarioCounts): array
@@ -314,8 +313,7 @@ final class HeartbeatRuntimeResultGate
     }
 
     /**
-     * @param array<string, mixed> $contract
-     *
+     * @param  array<string, mixed>  $contract
      * @return list<string>
      */
     private static function requiredScenarioFields(array $contract, string $scenarioId): array
@@ -326,10 +324,19 @@ final class HeartbeatRuntimeResultGate
     }
 
     /**
-     * @param array<string, mixed> $scenarioResult
+     * @param  array<string, mixed>  $scenarioResult
      */
     private static function hasScenarioField(array $scenarioResult, string $field): bool
     {
+        if ($field === 'language_specific_field_diff') {
+            $outputs = self::arrayField($scenarioResult, ['observed_outputs', 'observedOutputs']) ?? [];
+
+            return array_key_exists($field, $scenarioResult)
+                || array_key_exists(self::camelize($field), $scenarioResult)
+                || array_key_exists($field, $outputs)
+                || array_key_exists(self::camelize($field), $outputs);
+        }
+
         if (self::hasPath($scenarioResult, $field)) {
             return true;
         }
@@ -340,9 +347,8 @@ final class HeartbeatRuntimeResultGate
     }
 
     /**
-     * @param array<string, mixed> $result
-     * @param array<string, mixed> $contract
-     *
+     * @param  array<string, mixed>  $result
+     * @param  array<string, mixed>  $contract
      * @return list<array<string, mixed>>
      */
     private static function runRecordFailures(array $result, array $contract): array
@@ -371,7 +377,7 @@ final class HeartbeatRuntimeResultGate
     }
 
     /**
-     * @param array<string, mixed> $result
+     * @param  array<string, mixed>  $result
      */
     private static function hasRunRecordField(array $result, string $field): bool
     {
@@ -402,9 +408,8 @@ final class HeartbeatRuntimeResultGate
     }
 
     /**
-     * @param array<string, mixed> $result
-     * @param array<string, mixed> $contract
-     *
+     * @param  array<string, mixed>  $result
+     * @param  array<string, mixed>  $contract
      * @return list<array<string, mixed>>
      */
     private static function artifactVersionFailures(array $result, array $contract): array
@@ -431,6 +436,7 @@ final class HeartbeatRuntimeResultGate
                         'field' => $field,
                         'artifact' => $artifact,
                     ];
+
                     continue;
                 }
 
@@ -449,10 +455,9 @@ final class HeartbeatRuntimeResultGate
     }
 
     /**
-     * @param array<string, mixed> $result
-     * @param array<string, mixed> $contract
-     * @param array<string, array<string, mixed>> $scenarioResults
-     *
+     * @param  array<string, mixed>  $result
+     * @param  array<string, mixed>  $contract
+     * @param  array<string, array<string, mixed>>  $scenarioResults
      * @return list<array<string, mixed>>
      */
     private static function sourcePolicyFailures(array $result, array $contract, array $scenarioResults): array
@@ -688,10 +693,9 @@ final class HeartbeatRuntimeResultGate
     }
 
     /**
-     * @param array<string, mixed> $scenarioResult
-     * @param array<string, mixed> $outputs
-     * @param list<string> $forbiddenSources
-     *
+     * @param  array<string, mixed>  $scenarioResult
+     * @param  array<string, mixed>  $outputs
+     * @param  list<string>  $forbiddenSources
      * @return list<array<string, mixed>>
      */
     private static function publishedArtifactWorkerExecutionFailures(
@@ -881,8 +885,7 @@ final class HeartbeatRuntimeResultGate
     }
 
     /**
-     * @param array<string, mixed> $execution
-     *
+     * @param  array<string, mixed>  $execution
      * @return list<array<string, mixed>>
      */
     private static function publishedWorkerExecutionEntries(array $execution): array
@@ -921,7 +924,7 @@ final class HeartbeatRuntimeResultGate
     }
 
     /**
-     * @param array<string, mixed> $entry
+     * @param  array<string, mixed>  $entry
      */
     private static function workerExecutionArtifact(array $entry, string $requiredArtifact): string
     {
@@ -972,8 +975,7 @@ final class HeartbeatRuntimeResultGate
     }
 
     /**
-     * @param array<mixed> $sources
-     *
+     * @param  array<mixed>  $sources
      * @return list<array{artifact: mixed, source: string}>
      */
     private static function sourceSetEntries(array $sources): array
@@ -996,6 +998,7 @@ final class HeartbeatRuntimeResultGate
                         'value',
                     ]),
                 ];
+
                 continue;
             }
 
@@ -1106,9 +1109,8 @@ final class HeartbeatRuntimeResultGate
     }
 
     /**
-     * @param array<string, mixed> $result
-     * @param array<string, mixed> $contract
-     *
+     * @param  array<string, mixed>  $result
+     * @param  array<string, mixed>  $contract
      * @return list<array<string, mixed>>
      */
     private static function matrixFailures(array $result, array $contract): array
@@ -1159,8 +1161,7 @@ final class HeartbeatRuntimeResultGate
     }
 
     /**
-     * @param array<string, mixed> $result
-     *
+     * @param  array<string, mixed>  $result
      * @return list<array<string, mixed>>
      */
     private static function requiredSectionFailures(array $result): array
@@ -1192,8 +1193,7 @@ final class HeartbeatRuntimeResultGate
     }
 
     /**
-     * @param array<string, array<string, mixed>> $scenarioResults
-     *
+     * @param  array<string, array<string, mixed>>  $scenarioResults
      * @return list<array<string, mixed>>
      */
     private static function semanticEvidenceFailures(array $scenarioResults): array
@@ -1281,7 +1281,7 @@ final class HeartbeatRuntimeResultGate
     }
 
     /**
-     * @param array<string, array<string, mixed>> $scenarioResults
+     * @param  array<string, array<string, mixed>>  $scenarioResults
      */
     private static function isPassScenario(array $scenarioResults, string $scenarioId): bool
     {
@@ -1289,8 +1289,7 @@ final class HeartbeatRuntimeResultGate
     }
 
     /**
-     * @param array<string, array<string, mixed>> $scenarioResults
-     *
+     * @param  array<string, array<string, mixed>>  $scenarioResults
      * @return array<string, mixed>
      */
     private static function scenarioOutputs(array $scenarioResults, string $scenarioId): array
@@ -1299,8 +1298,7 @@ final class HeartbeatRuntimeResultGate
     }
 
     /**
-     * @param array<string, mixed> $outputs
-     *
+     * @param  array<string, mixed>  $outputs
      * @return list<array<string, mixed>>
      */
     private static function sdkLoopSemanticFailures(string $scenarioId, array $outputs): array
@@ -1343,8 +1341,7 @@ final class HeartbeatRuntimeResultGate
     }
 
     /**
-     * @param array<string, mixed> $outputs
-     *
+     * @param  array<string, mixed>  $outputs
      * @return list<array<string, mixed>>
      */
     private static function wireShapeSemanticFailures(array $outputs): array
@@ -1383,8 +1380,7 @@ final class HeartbeatRuntimeResultGate
     }
 
     /**
-     * @param array<string, mixed> $outputs
-     *
+     * @param  array<string, mixed>  $outputs
      * @return list<array<string, mixed>>
      */
     private static function cadenceSemanticFailures(array $outputs): array
@@ -1441,8 +1437,7 @@ final class HeartbeatRuntimeResultGate
     }
 
     /**
-     * @param array<string, mixed> $outputs
-     *
+     * @param  array<string, mixed>  $outputs
      * @return list<array<string, mixed>>
      */
     private static function staleTransitionSemanticFailures(array $outputs): array
@@ -1495,8 +1490,7 @@ final class HeartbeatRuntimeResultGate
     }
 
     /**
-     * @param array<string, mixed> $outputs
-     *
+     * @param  array<string, mixed>  $outputs
      * @return list<array<string, mixed>>
      */
     private static function staleRoutingSemanticFailures(array $outputs): array
@@ -1797,8 +1791,7 @@ final class HeartbeatRuntimeResultGate
     }
 
     /**
-     * @param list<string> $workerListFields
-     *
+     * @param  list<string>  $workerListFields
      * @return list<string>
      */
     private static function routingWorkerIds(mixed $value, array $workerListFields, bool $positive): array
@@ -1813,6 +1806,7 @@ final class HeartbeatRuntimeResultGate
         foreach ($value as $key => $item) {
             if (is_string($key) && in_array($key, $workerListFields, true)) {
                 array_push($workerIds, ...self::evidenceWorkerIds($item));
+
                 continue;
             }
 
@@ -1881,6 +1875,7 @@ final class HeartbeatRuntimeResultGate
 
             if (is_int($key) && is_string($item) && trim($item) !== '') {
                 $workerIds[] = trim($item);
+
                 continue;
             }
 
@@ -1998,8 +1993,7 @@ final class HeartbeatRuntimeResultGate
     }
 
     /**
-     * @param array<string, mixed> $outputs
-     *
+     * @param  array<string, mixed>  $outputs
      * @return list<array<string, mixed>>
      */
     private static function waterlineSemanticFailures(array $outputs): array
@@ -2027,8 +2021,7 @@ final class HeartbeatRuntimeResultGate
     }
 
     /**
-     * @param array<string, mixed> $outputs
-     *
+     * @param  array<string, mixed>  $outputs
      * @return list<array<string, mixed>>
      */
     private static function heartbeatRejectionSemanticFailures(string $scenarioId, array $outputs): array
@@ -2066,8 +2059,7 @@ final class HeartbeatRuntimeResultGate
     }
 
     /**
-     * @param array<string, mixed> $outputs
-     *
+     * @param  array<string, mixed>  $outputs
      * @return list<array<string, mixed>>
      */
     private static function crossNamespaceSemanticFailures(array $outputs): array
@@ -2183,6 +2175,7 @@ final class HeartbeatRuntimeResultGate
         foreach ($value as $item) {
             if (is_array($item)) {
                 array_push($samples, ...self::numericSamples($item));
+
                 continue;
             }
 
@@ -2254,6 +2247,7 @@ final class HeartbeatRuntimeResultGate
         foreach ($value as $key => $item) {
             if (is_string($item) && trim($item) !== '') {
                 $workerIds[] = trim($item);
+
                 continue;
             }
 
@@ -2262,6 +2256,7 @@ final class HeartbeatRuntimeResultGate
                 if ($workerId !== '') {
                     $workerIds[] = $workerId;
                 }
+
                 continue;
             }
 
@@ -2290,6 +2285,7 @@ final class HeartbeatRuntimeResultGate
         foreach ($value as $item) {
             if (is_string($item) && trim($item) !== '') {
                 $surfaces[] = trim($item);
+
                 continue;
             }
 
@@ -2302,7 +2298,7 @@ final class HeartbeatRuntimeResultGate
     }
 
     /**
-     * @param list<string> $surfaces
+     * @param  list<string>  $surfaces
      */
     private static function hasWorkerStatusSurface(array $surfaces): bool
     {
@@ -2322,7 +2318,7 @@ final class HeartbeatRuntimeResultGate
     }
 
     /**
-     * @param list<string> $surfaces
+     * @param  list<string>  $surfaces
      */
     private static function hasRoutingSurface(array $surfaces): bool
     {
@@ -2342,7 +2338,7 @@ final class HeartbeatRuntimeResultGate
     }
 
     /**
-     * @param array<mixed> $value
+     * @param  array<mixed>  $value
      */
     private static function onlyEmptyNestedValues(array $value): bool
     {
@@ -2364,8 +2360,8 @@ final class HeartbeatRuntimeResultGate
     }
 
     /**
-     * @param array<string, string> $scenarioStatuses
-     * @param array<string, mixed> $contract
+     * @param  array<string, string>  $scenarioStatuses
+     * @param  array<string, mixed>  $contract
      */
     private static function isSmokeSubset(array $scenarioStatuses, array $contract): bool
     {
@@ -2380,9 +2376,8 @@ final class HeartbeatRuntimeResultGate
     }
 
     /**
-     * @param array<string, mixed> $result
-     * @param array<string, mixed> $contract
-     *
+     * @param  array<string, mixed>  $result
+     * @param  array<string, mixed>  $contract
      * @return list<array<string, mixed>>
      */
     private static function declaredOutcomeFailures(array $result, array $contract): array
@@ -2411,9 +2406,8 @@ final class HeartbeatRuntimeResultGate
     }
 
     /**
-     * @param array<string, mixed> $result
-     * @param array<string, mixed> $contract
-     *
+     * @param  array<string, mixed>  $result
+     * @param  array<string, mixed>  $contract
      * @return list<array<string, mixed>>
      */
     private static function declaredOutcomeStatusFailures(
@@ -2461,10 +2455,9 @@ final class HeartbeatRuntimeResultGate
     }
 
     /**
-     * @param array<string, mixed> $scenarioResult
-     * @param array<string, mixed> $result
-     * @param array<string, mixed> $contract
-     *
+     * @param  array<string, mixed>  $scenarioResult
+     * @param  array<string, mixed>  $result
+     * @param  array<string, mixed>  $contract
      * @return list<array<string, mixed>>
      */
     private static function nonPassFindingFailures(
@@ -2494,6 +2487,7 @@ final class HeartbeatRuntimeResultGate
                     'finding_index' => $index,
                     'expected_fields' => $requiredFields,
                 ];
+
                 continue;
             }
 
@@ -2529,9 +2523,8 @@ final class HeartbeatRuntimeResultGate
     }
 
     /**
-     * @param array<string, mixed> $scenarioResult
-     * @param array<string, mixed> $result
-     *
+     * @param  array<string, mixed>  $scenarioResult
+     * @param  array<string, mixed>  $result
      * @return list<mixed>
      */
     private static function nonPassFindings(array $scenarioResult, array $result, string $scenarioId): array
@@ -2570,7 +2563,7 @@ final class HeartbeatRuntimeResultGate
     }
 
     /**
-     * @param array<string, mixed> $result
+     * @param  array<string, mixed>  $result
      */
     private static function hasLinkedFindingsForScenario(array $result, string $scenarioId): bool
     {
@@ -2578,7 +2571,7 @@ final class HeartbeatRuntimeResultGate
     }
 
     /**
-     * @param array<string, mixed> $result
+     * @param  array<string, mixed>  $result
      */
     private static function hasFindingList(array $result): bool
     {
@@ -2596,8 +2589,7 @@ final class HeartbeatRuntimeResultGate
     }
 
     /**
-     * @param array<string, mixed> ...$containers
-     *
+     * @param  array<string, mixed>  ...$containers
      * @return list<array{field: string, value: mixed}>
      */
     private static function localProductSourceCheckoutValues(array ...$containers): array
@@ -2618,7 +2610,7 @@ final class HeartbeatRuntimeResultGate
     }
 
     /**
-     * @param array<string, mixed> ...$containers
+     * @param  array<string, mixed>  ...$containers
      */
     private static function hasExplicitFalseLocalProductSourceFlag(array ...$containers): bool
     {
@@ -2632,7 +2624,7 @@ final class HeartbeatRuntimeResultGate
     }
 
     /**
-     * @param array<string, mixed> ...$containers
+     * @param  array<string, mixed>  ...$containers
      */
     private static function firstLocalProductSourceFlagValue(array ...$containers): mixed
     {
@@ -2642,7 +2634,7 @@ final class HeartbeatRuntimeResultGate
     }
 
     /**
-     * @param list<string> $forbiddenSources
+     * @param  list<string>  $forbiddenSources
      */
     private static function isForbiddenArtifactSource(string $source, array $forbiddenSources): bool
     {
@@ -2662,7 +2654,7 @@ final class HeartbeatRuntimeResultGate
     }
 
     /**
-     * @param array<mixed> $versions
+     * @param  array<mixed>  $versions
      */
     private static function artifactVersionValue(array $versions, string $artifact): string
     {
@@ -2684,8 +2676,7 @@ final class HeartbeatRuntimeResultGate
     }
 
     /**
-     * @param array<string, mixed> $result
-     *
+     * @param  array<string, mixed>  $result
      * @return array<mixed>
      */
     private static function artifactVersions(array $result): array
@@ -2787,7 +2778,7 @@ final class HeartbeatRuntimeResultGate
     }
 
     /**
-     * @param array<mixed> $values
+     * @param  array<mixed>  $values
      */
     private static function containsCell(array $values, string $expected): bool
     {
@@ -2811,8 +2802,7 @@ final class HeartbeatRuntimeResultGate
     }
 
     /**
-     * @param array<string, mixed> $result
-     *
+     * @param  array<string, mixed>  $result
      * @return array<string, string>
      */
     private static function declaredOutcomeTokens(array $result): array
@@ -2829,8 +2819,7 @@ final class HeartbeatRuntimeResultGate
     }
 
     /**
-     * @param array<string, mixed> $contract
-     *
+     * @param  array<string, mixed>  $contract
      * @return list<string>
      */
     private static function declaredOutcomes(array $contract): array
@@ -2870,7 +2859,7 @@ final class HeartbeatRuntimeResultGate
     }
 
     /**
-     * @param array<string, mixed> $result
+     * @param  array<string, mixed>  $result
      */
     private static function runnerBlockedValue(array $result): ?bool
     {
@@ -2886,7 +2875,7 @@ final class HeartbeatRuntimeResultGate
     }
 
     /**
-     * @param array<string, mixed> $finding
+     * @param  array<string, mixed>  $finding
      */
     private static function hasFindingField(array $finding, string $field): bool
     {
@@ -2894,7 +2883,7 @@ final class HeartbeatRuntimeResultGate
     }
 
     /**
-     * @param array<string, mixed> $finding
+     * @param  array<string, mixed>  $finding
      */
     private static function findingFieldValue(array $finding, string $field): mixed
     {
@@ -2908,8 +2897,8 @@ final class HeartbeatRuntimeResultGate
     }
 
     /**
-     * @param array<string, mixed> $value
-     * @param list<string> $aliases
+     * @param  array<string, mixed>  $value
+     * @param  list<string>  $aliases
      */
     private static function arrayField(array $value, array $aliases): ?array
     {
@@ -2924,7 +2913,7 @@ final class HeartbeatRuntimeResultGate
     }
 
     /**
-     * @param array<string, mixed> $value
+     * @param  array<string, mixed>  $value
      */
     private static function fieldValue(array $value, string $field): mixed
     {
@@ -2941,7 +2930,7 @@ final class HeartbeatRuntimeResultGate
     }
 
     /**
-     * @param array<string, mixed> $value
+     * @param  array<string, mixed>  $value
      */
     private static function hasPath(array $value, string $path): bool
     {
@@ -2963,8 +2952,8 @@ final class HeartbeatRuntimeResultGate
     }
 
     /**
-     * @param array<string, mixed> $value
-     * @param list<string> $fields
+     * @param  array<string, mixed>  $value
+     * @param  list<string>  $fields
      */
     private static function hasScalarField(array $value, array $fields): bool
     {
@@ -2979,8 +2968,6 @@ final class HeartbeatRuntimeResultGate
     }
 
     /**
-     * @param mixed $value
-     *
      * @return list<string>
      */
     private static function stringList(mixed $value): array
@@ -3013,8 +3000,8 @@ final class HeartbeatRuntimeResultGate
     }
 
     /**
-     * @param array<string, mixed> $value
-     * @param list<string> $fields
+     * @param  array<string, mixed>  $value
+     * @param  list<string>  $fields
      */
     private static function stringField(array $value, array $fields): string
     {

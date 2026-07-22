@@ -130,8 +130,9 @@ class NamespaceConformanceRunnerContractTest extends TestCase
         $this->assertStringContainsString('waterline_result_path="${DW_NAMESPACES_WATERLINE_RESULT:-}"', $source);
         $this->assertStringContainsString('waterline_result_path="$result_dir/waterline-namespace-result.json"', $source);
         $this->assertStringContainsString('composer create-project laravel/laravel . --no-interaction --no-progress', $source);
-        $this->assertStringContainsString('"durable-workflow/workflow:${workflow_php_version}"', $source);
-        $this->assertStringContainsString('"durable-workflow/waterline:${waterline_version}"', $source);
+        $this->assertStringContainsString('"durable-workflow/waterline:${waterline_version}@beta"', $source);
+        $this->assertStringContainsString('"durable-workflow/workflow:${workflow_php_version}@beta"', $source);
+        $this->assertStringContainsString('"durable-workflow/sdk:${sdk_php_version}@beta"', $source);
         $this->assertStringContainsString('composer:2 php artisan migrate --force', $source);
         $this->assertStringContainsString('composer:2 php artisan waterline:namespace-conformance', $source);
         $this->assertStringContainsString('--output /result/waterline-namespace-result.json', $source);
@@ -429,8 +430,7 @@ class NamespaceConformanceRunnerContractTest extends TestCase
             'scenario_results' => $scenarioResults,
             'findings' => $scenarioResults['waterline_operator_namespace_visibility']['linked_findings'],
             'finding_links' => [
-                'waterline_operator_namespace_visibility' =>
-                    $scenarioResults['waterline_operator_namespace_visibility']['linked_findings'],
+                'waterline_operator_namespace_visibility' => $scenarioResults['waterline_operator_namespace_visibility']['linked_findings'],
             ],
         ];
 
@@ -538,8 +538,8 @@ class NamespaceConformanceRunnerContractTest extends TestCase
     }
 
     /**
-     * @param array<string, mixed> $probe
-     * @param array<string, bool> $assertions
+     * @param  array<string, mixed>  $probe
+     * @param  array<string, bool>  $assertions
      * @return array<string, mixed>
      */
     private function renderPhpNamespaceShardReport(array $probe, array $assertions): array

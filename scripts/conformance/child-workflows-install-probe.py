@@ -21,6 +21,7 @@ from child_workflows_artifact_resolver import (
     resolve_cli_release,
     resolve_rust_crate,
 )
+from version_identities import same_python_release
 
 
 RESULT_DIR = Path(sys.argv[1])
@@ -150,7 +151,7 @@ try:
     install_code, install_output = run(install_command) if create_code == 0 else (1, create_output)
     probe_command = [str(python_bin), "-c", "import importlib.metadata as m; print(m.version('durable-workflow'))"]
     probe_code, probe_output = run(probe_command) if install_code == 0 else (1, install_output)
-    status = "pass" if probe_code == 0 and probe_output.strip() == python_version else "fail"
+    status = "pass" if probe_code == 0 and same_python_release(python_version, probe_output.strip()) else "fail"
     artifacts.append(entry(
         "sdk-python",
         python_version,

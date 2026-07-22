@@ -6,6 +6,11 @@ import path from 'node:path';
 import process from 'node:process';
 import { promisify } from 'node:util';
 import { fileURLToPath } from 'node:url';
+import {
+  isExactPythonRelease,
+  isExactSemverRelease,
+  samePythonRelease,
+} from './version-identities.mjs';
 
 const RESULT_SCHEMA = 'durable-workflow.v2.schedules-runtime.result';
 const RECORD_SCHEMA = 'durable-workflow.v2.schedules-runtime.record';
@@ -595,7 +600,7 @@ function publishedArtifactInstallPolicy(artifactVersions, artifactSources, evide
     const source = artifactValue(installArtifactSources, artifact);
     const sourceVerification = artifactObjectValue(artifactSourceVerification, artifact);
 
-    if (!isConcretePublishedVersion(version)) {
+    if (!isConcretePublishedVersion(version, artifact)) {
       failures.push(`${artifact}.artifact_versions missing or not exact published version`);
     }
     if (!isConcretePublishedSource(artifact, version, source, sourceVerification)) {
@@ -744,10 +749,16 @@ function artifactObjectValue(values, artifact) {
   return {};
 }
 
-function isConcretePublishedVersion(version) {
+function isConcretePublishedVersion(version, artifact = '') {
   return version !== ''
-    && /^[0-9]+\.[0-9]+\.[0-9]+(?:[.-][0-9A-Za-z.-]+)?$/.test(version)
+    && (artifact === 'sdk-python' ? isExactPythonRelease(version) : isExactSemverRelease(version))
     && !PLACEHOLDER_VERSION_PATTERN.test(version.toLowerCase());
+}
+
+function samePublishedVersion(artifact, expected, observed) {
+  return artifact === 'sdk-python'
+    ? samePythonRelease(expected, observed)
+    : expected === observed;
 }
 
 function isConcretePublishedSource(artifact, version, source, sourceVerification = {}) {
@@ -816,7 +827,7 @@ function normalizePublishedArtifactSource(artifact, version, source) {
     return sourceValue;
   }
 
-  if (!isConcretePublishedVersion(version) || !publishedSourceLabelAllowed(artifact, sourceValue)) {
+  if (!isConcretePublishedVersion(version, artifact) || !publishedSourceLabelAllowed(artifact, sourceValue)) {
     return sourceValue;
   }
 
@@ -1527,14 +1538,14 @@ function buildArtifactInstallEvidence(artifactVersions, artifactSources, evidenc
       nonPassingArtifacts[artifact] = entryStatus || 'missing';
     }
 
-    if (!isConcretePublishedVersion(version)) {
+    if (!isConcretePublishedVersion(version, artifact)) {
       failures.push('artifact_install_evidence.version missing or not exact published version');
       if (version === '') {
         missingArtifactVersions.push(artifact);
       } else {
         rejectedVersions[artifact] = version;
       }
-    } else if (fallbackVersion !== '' && version !== fallbackVersion) {
+    } else if (fallbackVersion !== '' && !samePublishedVersion(artifact, fallbackVersion, version)) {
       failures.push(`artifact_install_evidence.version ${version} does not match resolved artifact version ${fallbackVersion}`);
       rejectedVersions[artifact] = version;
     }
@@ -1624,7 +1635,7 @@ function derivedArtifactInstallEvidence(
     const source = artifactValue(artifactSources, artifact);
     const sourceVerification = artifactObjectValue(artifactSourceVerification, artifact);
 
-    if (!isConcretePublishedVersion(version)
+    if (!isConcretePublishedVersion(version, artifact)
       || !isConcretePublishedSource(artifact, version, source, sourceVerification)) {
       return {};
     }

@@ -11,7 +11,7 @@ builds the Rust probe from the exact crates.io dependency in a pinned Rust
 image, and then executes the published-image lifecycle result runner.
 
 Required environment:
-  DW_SERVER_VERSION       Exact server patch version.
+  DW_SERVER_VERSION       Exact server SemVer release.
   DW_RUST_SDK_VERSION     Exact durable-workflow crate version.
   DW_CLI_VERSION          Exact CLI version.
   DW_PYTHON_SDK_VERSION   Exact Python SDK version.

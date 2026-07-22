@@ -67,6 +67,26 @@ final class DistributionIdentityEvidenceTest extends TestCase
         $this->assertStringContainsString('conflicting consumed bytes', $conflict['stderr']);
     }
 
+    public function test_python_semver_and_pep440_spellings_share_one_byte_identity(): void
+    {
+        $wheel = $this->root.'/durable_workflow-2.0.0b4-py3-none-any.whl';
+        file_put_contents($wheel, 'beta four wheel bytes');
+        $store = $this->root.'/python-prerelease.json';
+
+        $semver = $this->runCommand('record-file', $store, 'sdk-python', '2.0.0-beta.4', $wheel);
+        $pep440 = $this->runCommand('record-file', $store, 'sdk-python', '2.0.0b4', $wheel);
+
+        $this->assertSame(0, $semver['exit'], $semver['stderr']);
+        $this->assertSame(0, $pep440['exit'], $pep440['stderr']);
+        $identities = json_decode((string) file_get_contents($store), true, 512, JSON_THROW_ON_ERROR);
+        $this->assertSame('pypi:durable-workflow@2.0.0b4', $identities['sdk-python']['locator']);
+        $this->assertSame(hash_file('sha256', $wheel), $identities['sdk-python']['artifacts'][0]['sha256']);
+
+        $differentPrerelease = $this->runCommand('record-file', $store, 'sdk-python', '2.0.0b3', $wheel);
+        $this->assertSame(1, $differentPrerelease['exit']);
+        $this->assertStringContainsString('conflicting executed distribution locator', $differentPrerelease['stderr']);
+    }
+
     public function test_missing_consumed_bytes_are_rejected_without_writing_evidence(): void
     {
         $store = $this->root.'/missing.json';

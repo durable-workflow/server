@@ -20,7 +20,7 @@ Environment overrides:
   DW_PRINCIPAL_ATTRIBUTION_RESULT_DIR      Result directory. Defaults to run root.
   DW_PRINCIPAL_ATTRIBUTION_KEEP_RUN_ROOT=1 Keep scratch directory after success.
   DW_SERVER_IMAGE                          Exact server image/tag/digest to test.
-  DW_SERVER_VERSION                        Exact patch server Docker tag; required for digest-only DW_SERVER_IMAGE.
+  DW_SERVER_VERSION                        Exact server SemVer tag; required for digest-only DW_SERVER_IMAGE.
   DW_CLI_VERSION                           GitHub release tag for the official CLI installer.
   DW_PYTHON_SDK_VERSION                    PyPI version for durable-workflow.
   DW_PHP_SDK_VERSION                       Composer version for durable-workflow/sdk.
@@ -524,7 +524,11 @@ import urllib.error
 import urllib.request
 from typing import Any
 
-SERVER_PATCH_TAG_RE = re.compile(r"^\d+\.\d+\.\d+(?:-[0-9A-Za-z][0-9A-Za-z.-]*)?$")
+SERVER_PATCH_TAG_RE = re.compile(
+    r"^(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)"
+    r"(?:-(?:0|[1-9]\d*|[0-9A-Za-z-]*[A-Za-z-][0-9A-Za-z-]*)"
+    r"(?:\.(?:0|[1-9]\d*|[0-9A-Za-z-]*[A-Za-z-][0-9A-Za-z-]*))*)?$",
+)
 SEMVER_TAG_RE = re.compile(r"^v?\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.]+)?$")
 
 
@@ -617,7 +621,11 @@ def github_release_with_downloadable_asset(repo: str, override: str | None, requ
 
 
 def is_exact_server_patch_tag(version: str) -> bool:
-    return bool(SERVER_PATCH_TAG_RE.match(version))
+    prerelease = version.partition("-")[2]
+    rolling = {"latest", "current", "head", "main", "master", "dev", "snapshot", "unresolved", "placeholder"}
+    return bool(SERVER_PATCH_TAG_RE.match(version)) and not any(
+        identifier.lower() in rolling for identifier in prerelease.split(".") if identifier
+    )
 
 
 def server_tag_from_image(image: str) -> str | None:
@@ -629,7 +637,7 @@ def server_tag_from_image(image: str) -> str | None:
 
 def validate_server_version(version: str, source: str) -> str:
     if not is_exact_server_patch_tag(version):
-        raise RuntimeError(f"{source} must be an exact patch semver Docker tag, not {version!r}")
+        raise RuntimeError(f"{source} must be an exact SemVer Docker tag, not {version!r}")
     return version
 
 
@@ -653,11 +661,11 @@ def docker_server_image() -> tuple[str, str]:
         image_tag = server_tag_from_image(image_name)
         exact_image_tag = image_tag if image_tag and is_exact_server_patch_tag(image_tag) else None
         if "@" not in explicit and exact_image_tag is None:
-            raise RuntimeError("DW_SERVER_IMAGE must use an exact patch semver tag or an image digest")
+            raise RuntimeError("DW_SERVER_IMAGE must use an exact SemVer tag or an image digest")
         if version is None and exact_image_tag is not None:
             version = exact_image_tag
         if version is None:
-            raise RuntimeError("DW_SERVER_IMAGE must include an exact patch semver tag, or DW_SERVER_VERSION must name the exact patch version")
+            raise RuntimeError("DW_SERVER_IMAGE must include an exact SemVer tag, or DW_SERVER_VERSION must name the exact release")
         version = validate_server_version(version, "DW_SERVER_VERSION")
         if exact_image_tag is not None and version != exact_image_tag:
             raise RuntimeError(f"DW_SERVER_VERSION {version!r} does not match DW_SERVER_IMAGE tag {exact_image_tag!r}")
@@ -672,7 +680,7 @@ def docker_server_image() -> tuple[str, str]:
                 version = name
                 break
         else:
-            raise RuntimeError("no durableworkflow/server exact patch semver tag found")
+            raise RuntimeError("no durableworkflow/server exact SemVer tag found")
     return f"durableworkflow/server:{version}", version
 
 
@@ -722,6 +730,7 @@ server_image="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))[
 cli_version="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["cli"])' "$run_root/pins.json")"
 cli_installer_url="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["cli_installer_url"])' "$run_root/pins.json")"
 workflow_php_version="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["workflow"])' "$run_root/pins.json")"
+php_sdk_version="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["sdk-php"])' "$run_root/pins.json")"
 waterline_version="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["waterline"])' "$run_root/pins.json")"
 
 if [[ "${DW_PRINCIPAL_ATTRIBUTION_SKIP_DOCKER_PULL:-0}" != "1" ]]; then
@@ -1408,8 +1417,9 @@ if [[ "$waterline_create_status" == 0 ]]; then
 
   if docker run --rm -v "$waterline_app:/app" -w /app composer:2 \
     composer require --no-interaction --no-progress \
-      "durable-workflow/workflow:${workflow_php_version}" \
-      "durable-workflow/waterline:${waterline_version}" \
+      "durable-workflow/waterline:${waterline_version}@beta" \
+      "durable-workflow/workflow:${workflow_php_version}@beta" \
+      "durable-workflow/sdk:${php_sdk_version}@beta" \
     > "$result_dir/waterline-composer-install.log" 2>&1; then
     waterline_require_status=0
   else

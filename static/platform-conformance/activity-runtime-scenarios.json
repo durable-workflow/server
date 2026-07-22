@@ -3,7 +3,7 @@
   "version": 1,
   "category": "activity_runtime_contract",
   "suite_schema": "durable-workflow.v2.platform-conformance.suite",
-  "suite_version": 18,
+  "suite_version": 32,
   "description": "Public scenario manifest for first-class activity conformance. Harnesses use these scenario ids and criteria when evaluating published Durable Workflow artifacts across workflow-embedded and standalone activity execution.",
   "fixture_type": "published_artifact_runtime_scenario_manifest",
   "result_schema": "durable-workflow.v2.activity-runtime.result",
