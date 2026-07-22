@@ -24,7 +24,6 @@ class ReleaseImagePublishWorkflowContractTest extends TestCase
         $workflow = $this->read('.github/workflows/release.yml');
 
         foreach ([
-            "if: github.event_name == 'workflow_dispatch' || startsWith(github.ref, 'refs/tags/')",
             'scripts/ci/validate-release-image-publish.sh',
             'scripts/ci/select-compatible-workflow-package-ref.sh',
             'DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}',
@@ -34,6 +33,16 @@ class ReleaseImagePublishWorkflowContractTest extends TestCase
         ] as $needle) {
             $this->assertStringContainsString($needle, $workflow);
         }
+
+        $parsedWorkflow = Yaml::parse($workflow);
+        $this->assertIsArray($parsedWorkflow);
+        $publishCondition = $parsedWorkflow['jobs']['publish']['if'] ?? null;
+        $this->assertIsString($publishCondition);
+        $this->assertSame(
+            "(github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main') "
+            ."|| (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/'))",
+            preg_replace('/\s+/', ' ', trim($publishCondition)),
+        );
 
         $guardOffset = strpos($workflow, 'Validate release publish context and credentials');
         $dockerHubLoginOffset = strpos($workflow, 'Log in to Docker Hub');
@@ -431,6 +440,9 @@ class ReleaseImagePublishWorkflowContractTest extends TestCase
         $this->assertLessThan($releaseOffset, $buildOffset);
 
         $this->assertSame(2, substr_count($recovery, 'scripts/ci/verify-release-tag-source.sh'));
+        $this->assertStringContainsString('gh workflow run release.yml --ref main', $recovery);
+        $this->assertStringNotContainsString('gh workflow run release.yml --ref "$RELEASE_TAG"', $recovery);
+        $this->assertStringContainsString('-f tag="$RELEASE_TAG"', $recovery);
         $this->assertStringContainsString('-f release_commit="$RELEASE_COMMIT"', $recovery);
 
         $createOffset = strpos($recovery, 'Create the exact source tag');
@@ -804,8 +816,15 @@ SH;
             $this->assertStringContainsString($needle, $workflow);
         }
 
+        $jobsPosition = strpos($workflow, "jobs:\n");
+        $readPosition = strpos($workflow, 'contents: read');
+        $writePosition = strpos($workflow, 'contents: write');
+        $this->assertIsInt($jobsPosition);
+        $this->assertIsInt($readPosition);
+        $this->assertIsInt($writePosition);
+        $this->assertLessThan($jobsPosition, $readPosition);
+        $this->assertGreaterThan($jobsPosition, $writePosition);
         $this->assertStringContainsString('contents: write', $workflow);
-        $this->assertStringNotContainsString('contents: read', $workflow);
         $this->assertStringContainsString('durable-workflow.release.docs-release-audit-evidence', $auditor);
         $this->assertStringContainsString('durable-workflow.release.docs-artifact-tuple-handoff', $auditor);
         $this->assertStringContainsString('DOCS_RELEASE_AUDIT_HANDOFF', $auditor);

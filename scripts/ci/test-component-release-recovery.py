@@ -31,10 +31,14 @@ jobs:
           python recovery.py resolve --preparation-output release-preparation.json
           gh api --method POST "repos/$GITHUB_REPOSITORY/git/refs" \
             -f ref="refs/tags/$RELEASE_TAG" -f sha="$RELEASE_COMMIT"
+          publication_title="Release ${RELEASE_TAG} for ${PLAN_TAG}"
           select-publication-run \
-            --release-tag "$RELEASE_TAG" --release-commit "$RELEASE_COMMIT"
-          gh run list --json databaseId,displayTitle,headBranch,headSha,status,conclusion
-          gh workflow run release.yml --ref "$RELEASE_TAG" -f tag="$RELEASE_TAG"
+            --release-tag "$RELEASE_TAG" --release-commit "$RELEASE_COMMIT" \
+            --release-plan "$PLAN_TAG" --required-display-title "$publication_title"
+          gh run list --workflow release.yml --event workflow_dispatch --branch main \
+            --json databaseId,event,displayTitle,headBranch,headSha,status,conclusion
+          gh workflow run release.yml --ref main \
+            -f tag="$RELEASE_TAG" -f release_commit="$RELEASE_COMMIT"
 """
 
 
@@ -430,8 +434,8 @@ class RecoveryWorkflowSourceTest(unittest.TestCase):
                 1,
             ),
             "run identity includes an unapproved field": source.replace(
-                "databaseId,displayTitle,headBranch,headSha,status,conclusion",
-                "databaseId,displayTitle,headBranch,headSha,status,conclusion,event",
+                "databaseId,event,displayTitle,headBranch,headSha,status,conclusion",
+                "databaseId,event,displayTitle,headBranch,headSha,status,conclusion,runAttempt",
                 1,
             ),
         }
@@ -540,15 +544,79 @@ class RecoveryWorkflowSourceTest(unittest.TestCase):
                 self.assertNotEqual(variant, source)
                 self.assert_rejected(variant)
 
-    def test_other_components_keep_the_contents_api_contract(self) -> None:
+    def test_generic_recovery_pairs_protected_main_with_immutable_release_inputs(self) -> None:
         self.recovery.verify_recovery_workflow_source("server", GENERIC_RECOVERY_WORKFLOW)
 
-        protected_only = GENERIC_RECOVERY_WORKFLOW.replace(
-            '-f ref="refs/tags/$RELEASE_TAG" -f sha="$RELEASE_COMMIT"',
-            'python scripts/ci/publish-planned-tag.py --tag "$RELEASE_TAG" --commit "$RELEASE_COMMIT"',
+        invalid_sources = {
+            "tag creation replaced": GENERIC_RECOVERY_WORKFLOW.replace(
+                '-f ref="refs/tags/$RELEASE_TAG" -f sha="$RELEASE_COMMIT"',
+                'python scripts/ci/publish-planned-tag.py --tag "$RELEASE_TAG" --commit "$RELEASE_COMMIT"',
+            ),
+            "tag ref dispatch": GENERIC_RECOVERY_WORKFLOW.replace('--ref main', '--ref "$RELEASE_TAG"'),
+            "tag ref selection": GENERIC_RECOVERY_WORKFLOW.replace('--branch main', '--branch "$RELEASE_TAG"'),
+            "mutable tag input": GENERIC_RECOVERY_WORKFLOW.replace(
+                '-f tag="$RELEASE_TAG"', '-f tag="$GITHUB_REF_NAME"'
+            ),
+            "mutable commit input": GENERIC_RECOVERY_WORKFLOW.replace(
+                '-f release_commit="$RELEASE_COMMIT"', '-f release_commit="$GITHUB_SHA"'
+            ),
+        }
+        for label, invalid_source in invalid_sources.items():
+            with self.subTest(label):
+                self.assertNotEqual(GENERIC_RECOVERY_WORKFLOW, invalid_source)
+                with self.assertRaises(self.recovery.RecoveryError):
+                    self.recovery.verify_recovery_workflow_source("server", invalid_source)
+
+
+class PublicationRunSelectionTest(unittest.TestCase):
+    RELEASE_TAG = "1.2.3"
+    RELEASE_COMMIT = "1" * 40
+    RELEASE_PLAN = "release-plan/recovery-test"
+    DISPLAY_TITLE = "Release 1.2.3 for release-plan/recovery-test"
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.recovery = load_recovery_module()
+
+    def test_selects_only_the_exact_protected_main_dispatch(self) -> None:
+        run = {
+            "databaseId": 123,
+            "event": "workflow_dispatch",
+            "displayTitle": self.DISPLAY_TITLE,
+            "headBranch": "main",
+            "headSha": "2" * 40,
+            "status": "in_progress",
+            "conclusion": None,
+        }
+
+        selected = self.recovery.select_publication_run(
+            self.RELEASE_TAG,
+            self.RELEASE_COMMIT,
+            self.RELEASE_PLAN,
+            self.DISPLAY_TITLE,
+            [run],
         )
-        with self.assertRaises(self.recovery.RecoveryError):
-            self.recovery.verify_recovery_workflow_source("server", protected_only)
+        self.assertEqual("wait", selected["action"])
+        self.assertEqual(123, selected["run_id"])
+
+        for field, value in (
+            ("event", "push"),
+            ("displayTitle", "Release 1.2.3 for direct"),
+            ("headBranch", self.RELEASE_TAG),
+        ):
+            with self.subTest(field):
+                mutated = dict(run)
+                mutated[field] = value
+                self.assertEqual(
+                    "dispatch",
+                    self.recovery.select_publication_run(
+                        self.RELEASE_TAG,
+                        self.RELEASE_COMMIT,
+                        self.RELEASE_PLAN,
+                        self.DISPLAY_TITLE,
+                        [mutated],
+                    )["action"],
+                )
 
 
 if __name__ == "__main__":

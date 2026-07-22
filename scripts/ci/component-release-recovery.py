@@ -55,14 +55,14 @@ SOURCE_CHANGELOGS = {"workflow", "waterline", "sdk-php", "sdk-python"}
 # SHA-256 of durable-workflow/cli's protected release recovery workflow.
 # Exact source identity is required because source-pattern matching cannot
 # prove that tag creation remains inside the protected repository authority.
-CLI_RELEASE_RECOVERY_SHA256 = "ecbc3ca73416b6960aef4eea0198b8f5b437376c66794793111f9cc15fc41a38"
+CLI_RELEASE_RECOVERY_SHA256 = "de1e7f37bcbadf3644b53d127abcae11ec823fd6602a682a58617c6b257dae11"
 
 # SHA-256 of durable-workflow/sdk-rust's prepared-plan recovery workflow. The
 # verifier normalizes only
 # CRLF line endings to LF before hashing. Exact source identity is the bounded
 # security contract because arbitrary shell execution cannot be proven safe by
 # source-pattern matching.
-SDK_RUST_RELEASE_RECOVERY_SHA256 = "58b452f99b60fc272afe1833352906659e3836457a844b285a13e9fc7b24dcbb"
+SDK_RUST_RELEASE_RECOVERY_SHA256 = "d6bca15d3f09aa3e7ecf6fc796b81a008e3e4cba2fdea10391f8ede0cab3548c"
 
 
 @dataclass(frozen=True)
@@ -74,17 +74,23 @@ class Component:
     dependencies: tuple[str, ...]
     release_workflow: str | None
     release_tag_input: str | None
+    release_commit_input: str | None
 
 
 COMPONENTS = {
-    "workflow": Component("durable-workflow/workflow", "v2", "composer", "durable-workflow/workflow", (), None, None),
-    "sdk-php": Component("durable-workflow/sdk-php", "main", "composer", "durable-workflow/sdk", (), None, None),
+    "workflow": Component(
+        "durable-workflow/workflow", "v2", "composer", "durable-workflow/workflow", (), None, None, None
+    ),
+    "sdk-php": Component(
+        "durable-workflow/sdk-php", "main", "composer", "durable-workflow/sdk", (), None, None, None
+    ),
     "waterline": Component(
         "durable-workflow/waterline",
         "v2",
         "composer",
         "durable-workflow/waterline",
         ("workflow", "sdk-php"),
+        None,
         None,
         None,
     ),
@@ -96,9 +102,17 @@ COMPONENTS = {
         ("workflow",),
         "release.yml",
         "tag",
+        "release_commit",
     ),
     "cli": Component(
-        "durable-workflow/cli", "main", "github-release", "durable-workflow/cli", ("server",), "release.yml", "tag"
+        "durable-workflow/cli",
+        "main",
+        "github-release",
+        "durable-workflow/cli",
+        ("server",),
+        "release.yml",
+        "tag",
+        "release_commit",
     ),
     "sdk-python": Component(
         "durable-workflow/sdk-python",
@@ -108,6 +122,7 @@ COMPONENTS = {
         ("server",),
         "publish.yml",
         "release_tag",
+        None,
     ),
     "sdk-rust": Component(
         "durable-workflow/sdk-rust",
@@ -117,6 +132,7 @@ COMPONENTS = {
         ("server",),
         "release.yml",
         "release_tag",
+        "release_commit",
     ),
 }
 
@@ -688,8 +704,15 @@ def verify_recovery_workflow_source(name: str, source: str) -> None:
     if component.release_workflow is None:
         return
 
+    protected_ref = re.escape(component.default_branch)
     dispatch = re.search(
-        rf'gh\s+workflow\s+run\s+{re.escape(component.release_workflow)}\s+--ref\s+"\$RELEASE_TAG"',
+        rf"gh\s+workflow\s+run\s+{re.escape(component.release_workflow)}\s+--ref\s+"
+        rf'["\']?{protected_ref}["\']?(?=\s|$)',
+        source,
+    )
+    run_selection = re.search(
+        rf"gh\s+run\s+list\s+--workflow\s+{re.escape(component.release_workflow)}\s+"
+        rf"--event\s+workflow_dispatch\s+--branch\s+[\"']?{protected_ref}[\"']?(?=\s|$)",
         source,
     )
     tag_ref_at = source.find('-f ref="refs/tags/$RELEASE_TAG"')
@@ -697,17 +720,21 @@ def verify_recovery_workflow_source(name: str, source: str) -> None:
     selector_at = source.find("select-publication-run")
     if (
         dispatch is None
+        or run_selection is None
         or tag_ref_at < 0
         or tag_commit_at < 0
         or selector_at < tag_commit_at
         or selector_at > dispatch.start()
-        or "databaseId,displayTitle,headBranch,headSha,status,conclusion" not in source
+        or not re.search(
+            r"databaseId,(?:event,)?displayTitle,headBranch,headSha,status,conclusion",
+            source,
+        )
         or '--release-tag "$RELEASE_TAG"' not in source
         or '--release-commit "$RELEASE_COMMIT"' not in source
     ):
         raise RecoveryError(
             f"{component.repository} publication must create or verify the declared source tag "
-            "before dispatching in its exact tag context",
+            "before dispatching its immutable release inputs from the protected branch",
             "default-branch-preflight",
         )
     release_input = f'-f {component.release_tag_input}="$RELEASE_TAG"'
@@ -716,28 +743,51 @@ def verify_recovery_workflow_source(name: str, source: str) -> None:
             f"{component.repository} publication must retain the declared release tag input",
             "default-branch-preflight",
         )
+    if component.release_commit_input is not None:
+        commit_input = f'-f {component.release_commit_input}="$RELEASE_COMMIT"'
+        if source.find(commit_input, dispatch.start()) < 0:
+            raise RecoveryError(
+                f"{component.repository} publication must retain the declared release commit input",
+                "default-branch-preflight",
+            )
 
 
 def select_publication_run(
     release_tag: str,
     release_commit: str,
+    release_plan: str,
+    required_display_title: str,
     runs: Any,
 ) -> dict[str, Any]:
     if not VERSION_PATTERN.fullmatch(release_tag) or not COMMIT_PATTERN.fullmatch(release_commit):
         raise RecoveryError("publication run selection requires an exact release identity", "publication")
+    if (
+        not release_plan.startswith(PLAN_TAG_PREFIX)
+        or not PLAN_PATTERN.fullmatch(release_plan.removeprefix(PLAN_TAG_PREFIX))
+        or required_display_title != f"Release {release_tag} for {release_plan}"
+    ):
+        raise RecoveryError("publication run selection requires the immutable release plan identity", "publication")
     if not isinstance(runs, list):
         raise RecoveryError("publication run metadata must be a JSON array", "publication")
 
     exact_runs: list[dict[str, Any]] = []
     for run in runs:
-        if not isinstance(run, dict) or run.get("headBranch") != release_tag:
+        # A protected-main dispatch reports the workflow source SHA. The exact
+        # release commit is instead bound by the required dispatch input and
+        # verified against the immutable tag inside release.yml.
+        if (
+            not isinstance(run, dict)
+            or run.get("event") != "workflow_dispatch"
+            or run.get("headBranch") != COMPONENTS["server"].default_branch
+            or run.get("displayTitle") != required_display_title
+        ):
             continue
-        if run.get("headSha") != release_commit:
-            raise RecoveryError(
-                f"publication run {run.get('databaseId')} for {release_tag} is bound to a different source commit",
-                "publication",
-            )
-        if not isinstance(run.get("databaseId"), int) or not isinstance(run.get("status"), str):
+        if (
+            not isinstance(run.get("databaseId"), int)
+            or not isinstance(run.get("headSha"), str)
+            or not COMMIT_PATTERN.fullmatch(run["headSha"])
+            or not isinstance(run.get("status"), str)
+        ):
             raise RecoveryError("publication run metadata is incomplete", "publication")
         exact_runs.append(run)
 
@@ -1358,6 +1408,8 @@ def main() -> int:
     select_run = subparsers.add_parser("select-publication-run")
     select_run.add_argument("--release-tag", required=True)
     select_run.add_argument("--release-commit", required=True)
+    select_run.add_argument("--release-plan", required=True)
+    select_run.add_argument("--required-display-title", required=True)
     select_run.add_argument("--runs", required=True, type=Path)
 
     args = parser.parse_args()
@@ -1369,7 +1421,13 @@ def main() -> int:
                 runs = json.loads(args.runs.read_bytes())
             except (OSError, json.JSONDecodeError) as error:
                 raise RecoveryError(f"cannot read publication run metadata: {error}", "publication") from error
-            selection = select_publication_run(args.release_tag, args.release_commit, runs)
+            selection = select_publication_run(
+                args.release_tag,
+                args.release_commit,
+                args.release_plan,
+                args.required_display_title,
+                runs,
+            )
             print(
                 "\t".join(
                     str(selection.get(field) or "")

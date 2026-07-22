@@ -33,13 +33,13 @@ jobs:
     # Keep the scheduled long soak opt-in because it is intentionally
     # resource-heavy. Manual dispatch remains available to maintainers.
     if: |
-      github.event_name == 'workflow_dispatch'
+      (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main')
       || (github.event_name == 'schedule' && vars.DW_PERF_SOAK_ENABLED == 'true')
     timeout-minutes: 390
 
     steps:
       - name: Checkout server
-        uses: actions/checkout@v6
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803  # v6
 
       - name: Run long perf soak
         env:
@@ -62,7 +62,7 @@ jobs:
 
       - name: Upload perf artifacts
         if: always() && github.server_url == 'https://github.com'
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7
         with:
           name: server-perf-soak
           path: build/perf/

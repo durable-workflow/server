@@ -14,7 +14,6 @@ on:
         default: ''
 
 permissions:
-  actions: write
   attestations: read
   contents: read
 
@@ -34,7 +33,7 @@ jobs:
       version: ${{ steps.recovery.outputs.version }}
       commit: ${{ steps.recovery.outputs.commit }}
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803  # v6
 
       - name: Discover plan and verify upstream public artifacts
         id: recovery
@@ -59,7 +58,7 @@ jobs:
 
       - name: Retain recovery evidence
         if: always()
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7
         with:
           name: sdk-rust-release-recovery-${{ steps.recovery.outputs.plan || github.run_id }}
           path: |
@@ -71,7 +70,10 @@ jobs:
   publish:
     name: Publish exact Rust SDK release
     needs: discover
-    if: needs.discover.outputs.action == 'publish'
+    if: >-
+      github.repository == 'durable-workflow/sdk-rust' &&
+      github.ref == 'refs/heads/main' &&
+      needs.discover.outputs.action == 'publish'
     runs-on: ubuntu-latest
     timeout-minutes: 30
     environment: release-plan-publication
@@ -79,13 +81,13 @@ jobs:
       actions: write
       contents: read
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803  # v6
         with:
           fetch-depth: 0
           ssh-key: ${{ secrets.RELEASE_PLAN_DEPLOY_KEY }}
 
       - name: Restore the immutable release plan
-        uses: actions/download-artifact@v8
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c  # v8
         with:
           name: sdk-rust-release-recovery-${{ needs.discover.outputs.plan }}
           path: recovery-input
@@ -110,19 +112,21 @@ jobs:
           set -euo pipefail
 
           select_publication_run() {
-            gh run list --workflow release.yml --limit 100 \
-              --json databaseId,displayTitle,headBranch,headSha,status,conclusion \
+            gh run list --workflow release.yml --event workflow_dispatch --branch main --limit 100 \
+              --json databaseId,event,displayTitle,headBranch,headSha,status,conclusion \
               > publication-runs.json
             python scripts/ci/component-release-recovery.py select-publication-run \
               --release-tag "$RELEASE_TAG" --release-commit "$RELEASE_COMMIT" \
+              --release-plan "$PLAN_TAG" \
               --runs publication-runs.json
           }
 
           decision="$(select_publication_run)"
           IFS=$'\t' read -r publication_action run_id status conclusion <<< "$decision"
           if [ "$publication_action" = dispatch ]; then
-            gh workflow run release.yml --ref "$RELEASE_TAG" \
-              -f release_tag="$RELEASE_TAG" -f release_plan="$PLAN_TAG"
+            gh workflow run release.yml --ref main \
+              -f release_tag="$RELEASE_TAG" -f release_commit="$RELEASE_COMMIT" \
+              -f release_plan="$PLAN_TAG"
             for attempt in {1..12}; do
               decision="$(select_publication_run)"
               IFS=$'\t' read -r publication_action run_id status conclusion <<< "$decision"
@@ -157,7 +161,7 @@ jobs:
 
       - name: Retain publication evidence
         if: always()
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7
         with:
           name: sdk-rust-release-publication-${{ needs.discover.outputs.plan }}
           path: |

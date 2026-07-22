@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Tests\Unit;
 
 use PHPUnit\Framework\TestCase;
+use Symfony\Component\Yaml\Yaml;
 
 class ServerPerfHarnessContractTest extends TestCase
 {
@@ -447,22 +448,20 @@ class ServerPerfHarnessContractTest extends TestCase
             'Public GitHub Actions workflows must not request self-hosted runners.',
         );
 
-        // The scheduled soak is gated behind a repository variable because it
-        // is intentionally resource-heavy. Manual dispatch remains available
-        // to maintainers, while no pull-request event can spawn the job.
-        $this->assertStringContainsString(
-            <<<'YAML'
-  soak:
-    name: GitHub-hosted polling cache soak
-    runs-on: ubuntu-latest
-    # Keep the scheduled long soak opt-in because it is intentionally
-    # resource-heavy. Manual dispatch remains available to maintainers.
-    if: |
-      github.event_name == 'workflow_dispatch'
-      || (github.event_name == 'schedule' && vars.DW_PERF_SOAK_ENABLED == 'true')
-YAML,
-            $soakWorkflow,
-            'Long soaks should only run for workflow_dispatch, or for scheduled events when DW_PERF_SOAK_ENABLED is set.',
+        $parsedSoakWorkflow = Yaml::parse($soakWorkflow);
+        $this->assertIsArray($parsedSoakWorkflow);
+        $soakCondition = $parsedSoakWorkflow['jobs']['soak']['if'] ?? null;
+        $this->assertIsString($soakCondition);
+
+        // Scheduled runs remain explicitly enabled by a repository variable,
+        // while manual runs must originate from the protected default branch.
+        // Normalize YAML whitespace so this contract checks the predicate
+        // rather than coupling the test to its multiline source rendering.
+        $this->assertSame(
+            "(github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main') "
+            ."|| (github.event_name == 'schedule' && vars.DW_PERF_SOAK_ENABLED == 'true')",
+            preg_replace('/\s+/', ' ', trim($soakCondition)),
+            'Long soaks should only run for protected-main workflow_dispatch, or for explicitly enabled schedules.',
         );
     }
 
@@ -505,7 +504,7 @@ YAML,
         $this->assertNotFalse($soakWorkflow, '.github/workflows/server-perf-soak.yml must be readable');
         $workflows = $workflow."\n".$soakWorkflow;
 
-        $this->assertSame(2, substr_count($workflows, 'uses: actions/upload-artifact@v7'));
+        $this->assertSame(2, substr_count($workflows, 'uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a'));
         $this->assertSame(0, substr_count($workflows, 'uses: actions/upload-artifact@v4'));
         $this->assertSame(3, substr_count($workflows, "github.server_url == 'https://github.com'"));
         $this->assertSame(0, substr_count($workflows, "github.server_url != 'https://github.com'"));

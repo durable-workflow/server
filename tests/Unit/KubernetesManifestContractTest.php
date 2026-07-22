@@ -95,7 +95,7 @@ class KubernetesManifestContractTest extends TestCase
             'kind.sigs.k8s.io/dl/v0.23.0/kind-linux-amd64',
             'K8S_SMOKE_KIND_NODE_IMAGE',
             'K8S_SMOKE_ARTIFACT_DIR',
-            'actions/upload-artifact@v7',
+            'actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a',
         ] as $needle) {
             $this->assertStringContainsString($needle, $source);
         }

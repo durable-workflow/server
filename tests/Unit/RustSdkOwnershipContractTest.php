@@ -28,7 +28,7 @@ final class RustSdkOwnershipContractTest extends TestCase
 
         foreach ([
             'name: Build and push Docker image',
-            'docker/build-push-action@v7',
+            'docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a',
             'scripts/ci/verify-release-exact-images.sh',
             'name: release-image-publish-evidence',
         ] as $imageReleaseContract) {
