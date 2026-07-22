@@ -497,6 +497,45 @@ class ReleaseImagePublishWorkflowContractTest extends TestCase
         $this->assertLessThan($dispatchOffset, $secondGuardOffset);
     }
 
+    public function test_release_recovery_uses_protected_tooling_with_the_immutable_source_tree(): void
+    {
+        $workflow = Yaml::parseFile($this->repoRoot.'/.github/workflows/release.yml');
+        $steps = [];
+        foreach ($workflow['jobs']['publish']['steps'] as $step) {
+            if (isset($step['name'])) {
+                $steps[$step['name']] = $step;
+            }
+        }
+
+        $tooling = $steps['Check out trusted release tooling'];
+        $source = $steps['Check out immutable release source'];
+        $identity = $steps['Resolve exact source identity'];
+        $selector = $steps['Select compatible workflow package version'];
+        $cache = $steps['Resolve shared release image cache'];
+        $build = $steps['Build and push exact image tags'];
+        $metadata = $steps['Extract exact image metadata'];
+
+        $this->assertSame('${{ github.sha }}', $tooling['with']['ref']);
+        $this->assertArrayNotHasKey('path', $tooling['with']);
+        $this->assertSame('release-source', $source['with']['path']);
+        $this->assertSame(
+            '${{ github.event_name == \'workflow_dispatch\' && format(\'refs/tags/{0}\', inputs.tag) || github.ref }}',
+            $source['with']['ref'],
+        );
+        $this->assertStringContainsString('git -C release-source rev-parse HEAD', $identity['run']);
+        $this->assertStringContainsString('git -C release-source rev-list', $identity['run']);
+        $this->assertSame(
+            'release-source/app/Support/WorkerProtocol.php',
+            $selector['env']['SERVER_WORKER_PROTOCOL_FILE'],
+        );
+        $this->assertSame('release-source', $cache['env']['RELEASE_IMAGE_CACHE_ROOT']);
+        $this->assertSame('release-source', $build['with']['context']);
+        $this->assertStringContainsString(
+            'org.opencontainers.image.revision=${{ steps.release_source.outputs.commit }}',
+            $metadata['with']['labels'],
+        );
+    }
+
     public function test_release_tag_source_guard_rejects_missing_wrong_and_moved_refs(): void
     {
         $plannedCommit = str_repeat('a', 40);
@@ -785,6 +824,89 @@ SH;
             @unlink($dockerBin);
             @rmdir($tmpDir.'/scripts/ci');
             @rmdir($tmpDir.'/scripts');
+            @rmdir($tmpDir);
+        }
+    }
+
+    public function test_release_image_cache_preserves_the_real_optional_qualification_argument(): void
+    {
+        $tmpDir = sys_get_temp_dir().'/release-image-cache-real-dockerfile-'.bin2hex(random_bytes(4));
+        $this->assertTrue(mkdir($tmpDir));
+        $dockerBin = $tmpDir.'/docker';
+        file_put_contents($dockerBin, <<<'SH'
+#!/usr/bin/env sh
+set -eu
+image="$4"
+case "$image" in
+    composer:2) prefix="1" ;;
+    php:8.3-apache) prefix="2" ;;
+    *) exit 1 ;;
+esac
+printf '{"digest":"sha256:%s","manifests":[{"digest":"sha256:%s","platform":{"os":"linux","architecture":"amd64"}},{"digest":"sha256:%s","platform":{"os":"linux","architecture":"arm64"}}]}\n' \
+    "${prefix}0$(printf 'a%.0s' $(seq 1 62))" \
+    "${prefix}0$(printf 'b%.0s' $(seq 1 62))" \
+    "${prefix}0$(printf 'c%.0s' $(seq 1 62))"
+SH);
+        chmod($dockerBin, 0755);
+
+        $baseEnv = [
+            'RELEASE_IMAGE_CACHE_ROOT' => $this->repoRoot,
+            'RELEASE_IMAGE_PLATFORMS' => 'linux/amd64,linux/arm64',
+            'RELEASE_IMAGE_CACHE_IMAGE' => 'ghcr.io/durable-workflow/server',
+            'DOCKER' => $dockerBin,
+            'RELEASE_SOURCE_COMMIT' => str_repeat('a', 40),
+            'PHPREDIS_VERSION' => '6.3.0',
+            'PHPREDIS_COMMIT' => 'df4fab2de7fc327c54c94a13af2b9542e4fbd720',
+            'WORKFLOW_PACKAGE_SOURCE' => 'https://github.com/durable-workflow/workflow.git',
+            'WORKFLOW_PACKAGE_REF' => '2.0.0-beta.4',
+            'WORKFLOW_PACKAGE_COMMIT' => '187746bb19615a8cbb25dfbe1e4e27dbbd933472',
+        ];
+
+        try {
+            $omitted = $this->resolveReleaseImageCache($baseEnv);
+            $explicitlyEmpty = $this->resolveReleaseImageCache([
+                'WORKFLOW_PACKAGE_QUALIFICATION_REF' => '',
+            ] + $baseEnv);
+            $qualified = $this->resolveReleaseImageCache([
+                'WORKFLOW_PACKAGE_QUALIFICATION_REF' => str_repeat('b', 40),
+            ] + $baseEnv);
+
+            $this->assertSame($omitted['identity'], $explicitlyEmpty['identity']);
+            $this->assertSame($omitted['ref'], $explicitlyEmpty['ref']);
+            $this->assertNotSame($omitted['identity'], $qualified['identity']);
+
+            foreach ([
+                'PHPREDIS_VERSION',
+                'PHPREDIS_COMMIT',
+                'WORKFLOW_PACKAGE_SOURCE',
+                'WORKFLOW_PACKAGE_REF',
+                'WORKFLOW_PACKAGE_COMMIT',
+            ] as $requiredArgument) {
+                $dockerfilePath = $tmpDir.'/Dockerfile-'.$requiredArgument;
+                $dockerfile = preg_replace(
+                    '/^ARG '.preg_quote($requiredArgument, '/').'=.*$/m',
+                    'ARG '.$requiredArgument,
+                    $this->read('Dockerfile'),
+                );
+                $this->assertIsString($dockerfile);
+                file_put_contents($dockerfilePath, $dockerfile);
+                $requiredEnv = $baseEnv;
+                unset($requiredEnv[$requiredArgument]);
+                $failed = $this->runScript('scripts/ci/resolve-release-image-cache.mjs', [
+                    'RELEASE_IMAGE_DOCKERFILE' => $dockerfilePath,
+                ] + $requiredEnv);
+                $this->assertNotSame(0, $failed['exitCode'], $requiredArgument);
+                $this->assertStringContainsString(
+                    "Docker build argument {$requiredArgument} must have an effective value.",
+                    $failed['stderr'],
+                    $requiredArgument,
+                );
+            }
+        } finally {
+            foreach (glob($tmpDir.'/Dockerfile-*') ?: [] as $dockerfilePath) {
+                @unlink($dockerfilePath);
+            }
+            @unlink($dockerBin);
             @rmdir($tmpDir);
         }
     }

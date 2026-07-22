@@ -12,6 +12,9 @@ const dependencyPaths = [
   'composer.lock',
   'scripts/ci/prepare-release-workflow-composer-metadata.php',
 ];
+const optionalEmptyBuildArgs = new Set([
+  'WORKFLOW_PACKAGE_QUALIFICATION_REF',
+]);
 const platforms = [...new Set(
   (process.env.RELEASE_IMAGE_PLATFORMS ?? 'linux/amd64,linux/arm64')
     .split(',')
@@ -92,10 +95,10 @@ function effectiveBuildArgs(source) {
 
     const [, name, defaultValue = ''] = match;
     const value = Object.hasOwn(process.env, name) ? process.env[name] : defaultValue;
-    if (value === undefined || value === '') {
+    if ((value === undefined || value === '') && !optionalEmptyBuildArgs.has(name)) {
       throw new Error(`Docker build argument ${name} must have an effective value.`);
     }
-    args.set(name, value);
+    args.set(name, value ?? '');
   }
 
   for (const name of ['WORKFLOW_PACKAGE_REF', 'WORKFLOW_PACKAGE_COMMIT']) {
