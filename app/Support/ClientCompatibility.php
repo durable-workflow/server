@@ -6,13 +6,13 @@ final class ClientCompatibility
 {
     public const SCHEMA = 'durable-workflow.v2.client-compatibility';
 
-    public const VERSION = 1;
+    public const VERSION = 2;
 
     private const SUPPORTED_SDK_VERSIONS = [
-        'php' => '>=1.0',
-        'python' => '>=0.2,<1.0',
-        'rust' => '>=0.1,<1.0',
-        'cli' => '>=0.1,<1.0',
+        'php' => '>=2.0.0-beta.3,<2.0.0-beta.4',
+        'python' => '>=2.0.0-beta.3,<2.0.0-beta.4',
+        'rust' => '>=2.0.0-beta.3,<2.0.0-beta.4',
+        'cli' => '>=2.0.0-beta.3,<2.0.0-beta.4',
     ];
 
     /**
@@ -78,6 +78,15 @@ final class ClientCompatibility
                 ],
             ],
             'clients' => [
+                'sdk-php' => [
+                    'supported_versions' => self::SUPPORTED_SDK_VERSIONS['php'],
+                    'requires' => [
+                        'auth_composition.version',
+                        'control_plane.version',
+                        'control_plane.request_contract',
+                        'worker_protocol.version',
+                    ],
+                ],
                 'cli' => [
                     'supported_versions' => self::SUPPORTED_SDK_VERSIONS['cli'],
                     'requires' => [

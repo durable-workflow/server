@@ -5,6 +5,7 @@ repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 namespace="${K8S_SMOKE_NAMESPACE:-durable-workflow}"
 cluster="${K8S_SMOKE_CLUSTER:-durable-workflow-server-smoke}"
 image="${K8S_SMOKE_IMAGE:-durableworkflow/server:k8s-smoke}"
+manifest_image="durableworkflow/server:2.0.0-beta.3"
 kind_node_image="${K8S_SMOKE_KIND_NODE_IMAGE:-kindest/node:v1.29.4}"
 artifact_dir="${K8S_SMOKE_ARTIFACT_DIR:-/tmp/durable-workflow-k8s-kind-smoke-artifacts}"
 rendered_dir="${artifact_dir}/rendered-manifests"
@@ -63,7 +64,17 @@ render_manifests() {
   cp "${repo_root}"/k8s/*.yaml "${rendered_dir}/"
 
   find "${rendered_dir}" -name '*.yaml' -print0 \
-    | xargs -0 sed -i "s#durableworkflow/server:0.2#${image}#g"
+    | xargs -0 sed -i "s#${manifest_image}#${image}#g"
+
+  if grep -R -Fq "${manifest_image}" "${rendered_dir}"; then
+    echo "Failed to replace manifest image ${manifest_image}" >&2
+    exit 1
+  fi
+
+  if ! grep -R -Fq "${image}" "${rendered_dir}"; then
+    echo "Rendered manifests do not reference local smoke image ${image}" >&2
+    exit 1
+  fi
 }
 
 apply_smoke_dependencies() {

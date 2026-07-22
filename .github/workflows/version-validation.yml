@@ -10,6 +10,10 @@ jobs:
   version-validation:
     name: Test CLI and SDK version validation
     runs-on: ubuntu-latest
+    env:
+      SERVER_VERSION: 2.0.0-beta.3
+      CLI_VERSION: 2.0.0-beta.3
+      PYTHON_SDK_VERSION: 2.0.0b3
 
     steps:
       - name: Checkout server
@@ -25,12 +29,12 @@ jobs:
           KEY=$(openssl rand -base64 32)
           echo "key=base64:$KEY" >> $GITHUB_OUTPUT
 
-      # Test 1: Compatible version (2.0.0) - CLI success
-      - name: Start server (version 2.0.0)
+      # Test 1: Compatible beta.3 product train - CLI success
+      - name: Start beta.3 server
         env:
           APP_KEY: ${{ steps.app-key.outputs.key }}
           DW_AUTH_TOKEN: test-token-123
-          APP_VERSION: 2.0.0
+          APP_VERSION: ${{ env.SERVER_VERSION }}
         run: |
           docker compose up -d --wait
           sleep 5
@@ -38,11 +42,11 @@ jobs:
           # Verify server is healthy
           curl -f http://localhost:8080/api/health || exit 1
 
-          # Verify version endpoint returns 2.0.0
+          # Verify the version endpoint returns the pinned server identity.
           VERSION=$(curl -fsS -H "Authorization: Bearer ${DW_AUTH_TOKEN}" http://localhost:8080/api/cluster/info | jq -r '.version')
           echo "Server version: $VERSION"
-          if [ "$VERSION" != "2.0.0" ]; then
-            echo "ERROR: Expected version 2.0.0, got $VERSION"
+          if [ "$VERSION" != "${SERVER_VERSION}" ]; then
+            echo "ERROR: Expected version ${SERVER_VERSION}, got $VERSION"
             exit 1
           fi
 
@@ -50,7 +54,7 @@ jobs:
         run: |
           install_dir="/tmp/dw-bin"
           curl -fsSL https://durable-workflow.com/install.sh -o /tmp/dw-install.sh
-          VERSION=0.1.80 DURABLE_WORKFLOW_INSTALL_DIR="$install_dir" sh /tmp/dw-install.sh
+          VERSION="${CLI_VERSION}" DURABLE_WORKFLOW_INSTALL_DIR="$install_dir" sh /tmp/dw-install.sh
           "$install_dir/dw" --version
           echo "$install_dir" >> $GITHUB_PATH
 
@@ -60,7 +64,7 @@ jobs:
           DURABLE_WORKFLOW_AUTH_TOKEN: test-token-123
           DURABLE_WORKFLOW_NAMESPACE: default
         run: |
-          # CLI should connect successfully to version 2.0.0
+          # CLI should connect successfully to the beta.3 server.
           dw server:info || exit 1
           echo "✅ CLI successfully connected to compatible server"
 
@@ -71,10 +75,16 @@ jobs:
 
       - name: Install Python SDK
         run: |
-          # Version-manifest validation tracks the source contract shared by
-          # server main and sdk-python main. Published PyPI artifacts may lag
-          # this compatibility behavior.
-          pip install "durable-workflow @ git+https://github.com/durable-workflow/sdk-python.git@main"
+          pip install "durable-workflow==${PYTHON_SDK_VERSION}"
+          python - <<'PY'
+          import os
+          from importlib.metadata import version
+
+          expected = os.environ["PYTHON_SDK_VERSION"]
+          installed = version("durable-workflow")
+          if installed != expected:
+              raise SystemExit(f"Expected durable-workflow {expected}, got {installed}")
+          PY
 
       - name: Test Python SDK with compatible server (should succeed)
         run: |
@@ -282,11 +292,15 @@ jobs:
                   error_msg = str(e)
                   print(f"Worker registration error: {error_msg}")
 
-                  if "unsupported worker_protocol.version" in error_msg and "sdk-python 0.2.x" in error_msg:
+                  if (
+                      "incompatible worker_protocol.version" in error_msg
+                      and "sdk-python requires major-equal" in error_msg
+                      and "minor>='1.1'" in error_msg
+                  ):
                       print("✅ Python SDK failed with correct worker protocol error message")
                   else:
                       print("❌ ERROR: Python SDK error message doesn't match expected format")
-                      print("Expected: 'unsupported worker_protocol.version' and 'sdk-python 0.2.x'")
+                      print("Expected beta.3 SDK worker-protocol incompatibility details")
                       print(f"Got: {error_msg}")
                       await client.aclose()
                       exit(1)

@@ -4,7 +4,7 @@
         "Read more about it at https://getcomposer.org/doc/01-basic-usage.md#installing-dependencies",
         "This file is @generated automatically"
     ],
-    "content-hash": "bf9120e35592c92ba5b032e9ffa3773a",
+    "content-hash": "410b2b3b96cc9c4963a38716f3936678",
     "packages": [
         {
             "name": "apache/avro",
@@ -505,11 +505,17 @@
         },
         {
             "name": "durable-workflow/workflow",
-            "version": "2.0.0-beta.1",
+            "version": "2.0.0-beta.3",
+            "source": {
+                "type": "git",
+                "url": "https://github.com/durable-workflow/workflow.git",
+                "reference": "4275fd11d80e88d4414383e4338144c228eb5a78"
+            },
             "dist": {
-                "type": "path",
-                "url": "/workflow",
-                "reference": "22bbf2a1469f4a38b1a6e1006ca8e46835c2fea4"
+                "type": "zip",
+                "url": "https://api.github.com/repos/durable-workflow/workflow/zipball/4275fd11d80e88d4414383e4338144c228eb5a78",
+                "reference": "4275fd11d80e88d4414383e4338144c228eb5a78",
+                "shasum": ""
             },
             "require": {
                 "apache/avro": "^1.12",
@@ -535,67 +541,21 @@
                     "providers": [
                         "Workflow\\Providers\\WorkflowServiceProvider"
                     ]
+                },
+                "durable-workflow": {
+                    "product-train": "2.0.0-beta.3"
                 }
             },
             "autoload": {
-                "psr-4": {
-                    "Workflow\\": "src/"
-                },
                 "files": [
                     "src/functions.php",
                     "src/V2/functions.php"
-                ]
-            },
-            "autoload-dev": {
+                ],
                 "psr-4": {
-                    "Tests\\": "tests/",
-                    "Workbench\\App\\": "workbench/app/",
-                    "Workbench\\Database\\Factories\\": "workbench/database/factories/",
-                    "Workbench\\Database\\Seeders\\": "workbench/database/seeders/"
+                    "Workflow\\": "src/"
                 }
             },
-            "scripts": {
-                "ecs": [
-                    "vendor/bin/ecs check --fix"
-                ],
-                "stan": [
-                    "vendor/bin/phpstan analyse src tests"
-                ],
-                "feature": [
-                    "Composer\\Config::disableProcessTimeout",
-                    "phpunit --testdox --testsuite feature"
-                ],
-                "unit": [
-                    "phpunit --testdox --testsuite unit"
-                ],
-                "test": [
-                    "phpunit --testdox"
-                ],
-                "coverage": [
-                    "XDEBUG_MODE=coverage phpunit --testdox --testsuite unit --coverage-clover coverage.xml"
-                ],
-                "post-autoload-dump": [
-                    "@clear",
-                    "@prepare"
-                ],
-                "clear": [
-                    "@php vendor/bin/testbench package:purge-skeleton --ansi"
-                ],
-                "prepare": [
-                    "@php vendor/bin/testbench package:discover --ansi"
-                ],
-                "build": [
-                    "@php vendor/bin/testbench workbench:build --ansi"
-                ],
-                "serve": [
-                    "Composer\\Config::disableProcessTimeout",
-                    "@build",
-                    "@php vendor/bin/testbench serve --ansi"
-                ],
-                "lint": [
-                    "@php vendor/bin/phpstan analyse --verbose --ansi"
-                ]
-            },
+            "notification-url": "https://packagist.org/downloads/",
             "license": [
                 "MIT"
             ],
@@ -606,10 +566,11 @@
                 }
             ],
             "description": "Embedded durable workflow runtime and orchestration engine for Laravel applications.",
-            "transport-options": {
-                "symlink": false,
-                "relative": false
-            }
+            "support": {
+                "issues": "https://github.com/durable-workflow/workflow/issues",
+                "source": "https://github.com/durable-workflow/workflow/tree/2.0.0-beta.3"
+            },
+            "time": "2026-07-22T00:33:21+00:00"
         },
         {
             "name": "egulias/email-validator",

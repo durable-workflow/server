@@ -8,7 +8,7 @@ use PHPUnit\Framework\TestCase;
 
 class KubernetesManifestContractTest extends TestCase
 {
-    private const SERVER_IMAGE = 'durableworkflow/server:0.2';
+    private const SERVER_IMAGE = 'durableworkflow/server:2.0.0-beta.3';
 
     public function test_public_manifests_use_pinned_published_server_images(): void
     {
@@ -59,8 +59,8 @@ class KubernetesManifestContractTest extends TestCase
         $source = $this->read('k8s/README.md');
 
         foreach ([
-            'durableworkflow/server:0.2',
-            'ghcr.io/durable-workflow/server:0.2',
+            'durableworkflow/server:2.0.0-beta.3',
+            'ghcr.io/durable-workflow/server:2.0.0-beta.3',
             'Digest pinning is preferred',
             'Helm charts',
             'managed-Kubernetes provider validation',
@@ -118,6 +118,19 @@ class KubernetesManifestContractTest extends TestCase
         ] as $needle) {
             $this->assertStringContainsString($needle, $source);
         }
+    }
+
+    public function test_kind_smoke_replaces_the_pinned_manifest_image_with_the_local_image(): void
+    {
+        $source = $this->read('scripts/k8s-kind-smoke.sh');
+
+        preg_match('/^manifest_image="([^"]+)"$/m', $source, $matches);
+
+        $this->assertSame(self::SERVER_IMAGE, $matches[1] ?? null);
+        $this->assertStringContainsString('sed -i "s#${manifest_image}#${image}#g"', $source);
+        $this->assertStringContainsString('grep -R -Fq "${manifest_image}" "${rendered_dir}"', $source);
+        $this->assertStringContainsString('grep -R -Fq "${image}" "${rendered_dir}"', $source);
+        $this->assertStringNotContainsString('durableworkflow/server:0.2', $source);
     }
 
     /**

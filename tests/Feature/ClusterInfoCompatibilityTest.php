@@ -3,28 +3,28 @@
 namespace Tests\Feature;
 
 use App\Support\AuthCompositionContract;
-use App\Support\ClientCompatibility;
 use App\Support\ChildWorkflowRuntimeContract;
+use App\Support\ClientCompatibility;
 use App\Support\ControlPlaneProtocol;
 use App\Support\ControlPlaneRequestContract;
 use App\Support\CoordinationHealthContract;
 use App\Support\HeartbeatRuntimeContract;
 use App\Support\MigrationRuntimeContract;
 use App\Support\NamespaceRuntimeContract;
-use App\Support\PrincipalAttributionContract;
-use App\Support\PrincipalAttributionResultGate;
 use App\Support\PrereleaseReadinessContract;
 use App\Support\PrereleaseReadinessResultGate;
+use App\Support\PrincipalAttributionContract;
+use App\Support\PrincipalAttributionResultGate;
 use App\Support\SagaRuntimeContract;
 use App\Support\SearchAttributeRuntimeContract;
 use App\Support\ServerTopology;
 use App\Support\SignalQueryRuntimeContract;
 use App\Support\SkewRefusalMatrixContract;
 use App\Support\TimerRuntimeContract;
+use App\Support\WorkerProtocol;
+use App\Support\WorkerVersioningRuntimeContract;
 use App\Support\WorkflowLifecycleContract;
 use App\Support\WorkflowUpdateRuntimeContract;
-use App\Support\WorkerVersioningRuntimeContract;
-use App\Support\WorkerProtocol;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Tests\TestCase;
 use Workflow\Serializers\CodecRegistry;
@@ -57,7 +57,7 @@ class ClusterInfoCompatibilityTest extends TestCase
             ->assertJsonPath('client_compatibility.authority', 'protocol_manifests')
             ->assertJsonPath('capabilities.workflow_tasks', true)
             ->assertJsonPath('platform_protocol_specs.schema', PlatformProtocolSpecs::SCHEMA)
-            ->assertJsonPath('surface_stability_contract.version', 3)
+            ->assertJsonPath('surface_stability_contract.version', 4)
             ->assertJsonPath('activity_runtime_contract.version', 1)
             ->assertJsonPath('topology.schema', ServerTopology::SCHEMA)
             ->assertJsonMissingPath('worker_fleet')
@@ -691,7 +691,7 @@ class ClusterInfoCompatibilityTest extends TestCase
         $response = $this->getJson('/api/cluster/info')->assertOk();
 
         $response
-            ->assertJsonPath('surface_stability_contract.version', 3)
+            ->assertJsonPath('surface_stability_contract.version', 4)
             ->assertJsonPath(
                 'surface_stability_contract.surface_families.official_sdks.package_compatibility.rust_sdk.package',
                 'durable-workflow',
@@ -742,7 +742,7 @@ class ClusterInfoCompatibilityTest extends TestCase
             $this->assertContains(
                 $families[$expectedFamily]['stability_level'],
                 SurfaceStabilityContract::stabilityLevelValues(),
-                "$expectedFamily stability_level must be one of " .
+                "$expectedFamily stability_level must be one of ".
                     implode(', ', SurfaceStabilityContract::stabilityLevelValues()),
             );
         }
@@ -800,17 +800,17 @@ class ClusterInfoCompatibilityTest extends TestCase
             $this->assertContains(
                 $specs[$expectedSpec]['format'],
                 PlatformProtocolSpecs::formatValues(),
-                "$expectedSpec format must be one of " . implode(', ', PlatformProtocolSpecs::formatValues()),
+                "$expectedSpec format must be one of ".implode(', ', PlatformProtocolSpecs::formatValues()),
             );
             $this->assertContains(
                 $specs[$expectedSpec]['owner_repo'],
                 PlatformProtocolSpecs::ownerRepoValues(),
-                "$expectedSpec owner_repo must be one of " . implode(', ', PlatformProtocolSpecs::ownerRepoValues()),
+                "$expectedSpec owner_repo must be one of ".implode(', ', PlatformProtocolSpecs::ownerRepoValues()),
             );
             $this->assertContains(
                 $specs[$expectedSpec]['status'],
                 PlatformProtocolSpecs::statusValues(),
-                "$expectedSpec status must be one of " . implode(', ', PlatformProtocolSpecs::statusValues()),
+                "$expectedSpec status must be one of ".implode(', ', PlatformProtocolSpecs::statusValues()),
             );
             $this->assertStringStartsWith(
                 'https://durable-workflow.github.io/platform-protocol-specs/',
@@ -1021,9 +1021,10 @@ class ClusterInfoCompatibilityTest extends TestCase
                 'client_compatibility.required_protocols.worker_protocol.external_task_result_contract.version',
                 1,
             )
-            ->assertJsonPath('client_compatibility.clients.cli.supported_versions', '>=0.1,<1.0')
-            ->assertJsonPath('client_compatibility.clients.sdk-python.supported_versions', '>=0.2,<1.0')
-            ->assertJsonPath('client_compatibility.clients.sdk-rust.supported_versions', '>=0.1,<1.0');
+            ->assertJsonPath('client_compatibility.clients.cli.supported_versions', '>=2.0.0-beta.3,<2.0.0-beta.4')
+            ->assertJsonPath('client_compatibility.clients.sdk-php.supported_versions', '>=2.0.0-beta.3,<2.0.0-beta.4')
+            ->assertJsonPath('client_compatibility.clients.sdk-python.supported_versions', '>=2.0.0-beta.3,<2.0.0-beta.4')
+            ->assertJsonPath('client_compatibility.clients.sdk-rust.supported_versions', '>=2.0.0-beta.3,<2.0.0-beta.4');
 
         $this->assertSame(
             $response->json('supported_sdk_versions.cli'),
@@ -1032,6 +1033,10 @@ class ClusterInfoCompatibilityTest extends TestCase
         $this->assertSame(
             $response->json('supported_sdk_versions.python'),
             $response->json('client_compatibility.clients.sdk-python.supported_versions'),
+        );
+        $this->assertSame(
+            $response->json('supported_sdk_versions.php'),
+            $response->json('client_compatibility.clients.sdk-php.supported_versions'),
         );
         $this->assertSame(
             $response->json('supported_sdk_versions.rust'),
