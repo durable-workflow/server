@@ -310,16 +310,20 @@ class RecoveryWorkflowSourceTest(unittest.TestCase):
 
     def assert_rejected(self, source: str) -> None:
         with self.assertRaises(self.recovery.RecoveryError) as caught:
-            self.recovery.verify_recovery_workflow_source("sdk-rust", source)
+            self.recovery.verify_recovery_workflow_source(
+                "sdk-rust",
+                source,
+                hashlib.sha256(CURRENT_RUST_RECOVERY_WORKFLOW.encode("utf-8")).hexdigest(),
+            )
         self.assertEqual(caught.exception.phase, "default-branch-preflight")
 
     def test_accepts_only_the_current_protected_rust_workflow_identity(self) -> None:
         digest = hashlib.sha256(CURRENT_RUST_RECOVERY_WORKFLOW.encode("utf-8")).hexdigest()
-        self.assertEqual(digest, self.recovery.SDK_RUST_RELEASE_RECOVERY_SHA256)
-        self.recovery.verify_recovery_workflow_source("sdk-rust", CURRENT_RUST_RECOVERY_WORKFLOW)
+        self.recovery.verify_recovery_workflow_source("sdk-rust", CURRENT_RUST_RECOVERY_WORKFLOW, digest)
         self.recovery.verify_recovery_workflow_source(
             "sdk-rust",
             CURRENT_RUST_RECOVERY_WORKFLOW.replace("\n", "\r\n"),
+            digest,
         )
 
     def test_rejects_shell_semantic_bypasses_and_any_source_mutation(self) -> None:
@@ -548,7 +552,10 @@ class RecoveryWorkflowSourceTest(unittest.TestCase):
                 self.assert_rejected(variant)
 
     def test_generic_recovery_pairs_protected_main_with_immutable_release_inputs(self) -> None:
-        self.recovery.verify_recovery_workflow_source("server", GENERIC_RECOVERY_WORKFLOW)
+        expected_sha256 = hashlib.sha256(GENERIC_RECOVERY_WORKFLOW.encode("utf-8")).hexdigest()
+        self.recovery.verify_recovery_workflow_source(
+            "server", GENERIC_RECOVERY_WORKFLOW, expected_sha256
+        )
 
         invalid_sources = {
             "tag creation replaced": GENERIC_RECOVERY_WORKFLOW.replace(
@@ -568,7 +575,9 @@ class RecoveryWorkflowSourceTest(unittest.TestCase):
             with self.subTest(label):
                 self.assertNotEqual(GENERIC_RECOVERY_WORKFLOW, invalid_source)
                 with self.assertRaises(self.recovery.RecoveryError):
-                    self.recovery.verify_recovery_workflow_source("server", invalid_source)
+                    self.recovery.verify_recovery_workflow_source(
+                        "server", invalid_source, expected_sha256
+                    )
 
 
 class PublicationRunSelectionTest(unittest.TestCase):
