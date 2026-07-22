@@ -72,7 +72,7 @@ class WorkflowController
 
         $query = $request->validate([
             'workflow_type' => ['nullable', 'string'],
-            'status' => ['nullable', 'string', 'in:running,completed,failed'],
+            'status' => ['nullable', 'string', 'in:running,completed,failed,cancelled,terminated'],
             'query' => ['nullable', 'string'],
             'page_size' => ['nullable', 'integer', 'min:1', 'max:200'],
             'next_page_token' => ['nullable', 'string'],
@@ -86,10 +86,13 @@ class WorkflowController
                 isset($query['workflow_type']),
                 static fn ($builder) => $builder->where('workflow_run_summaries.workflow_type', $query['workflow_type']),
             )
-            ->when(
-                isset($query['status']),
-                static fn ($builder) => $builder->where('workflow_run_summaries.status_bucket', $query['status']),
-            )
+            ->when(isset($query['status']), static function ($builder) use ($query) {
+                $status = (string) $query['status'];
+
+                return in_array($status, ['cancelled', 'terminated'], true)
+                    ? $builder->where('workflow_run_summaries.status', $status)
+                    : $builder->where('workflow_run_summaries.status_bucket', $status);
+            })
             ->when(isset($query['query']), function ($builder) use ($query, $namespace) {
                 $term = trim((string) $query['query']);
 
@@ -381,6 +384,7 @@ class WorkflowController
             ], 404);
         }
 
+        $currentRunId = NamespaceWorkflowScope::currentRun($namespace, $workflowId)?->id;
         $runs = NamespaceWorkflowScope::runQuery($namespace, $workflowId)
             ->orderBy('workflow_runs.run_number')
             ->get();
@@ -394,6 +398,9 @@ class WorkflowController
                 'workflow_type' => $run->workflow_type,
                 'business_key' => $run->business_key,
                 'status' => $run->status->value,
+                'status_bucket' => $run->status->statusBucket()->value,
+                'is_terminal' => $run->status->isTerminal(),
+                'is_current_run' => (string) $run->id === (string) $currentRunId,
                 'task_queue' => $run->queue,
                 'compatibility' => $run->compatibility,
                 'compatibility_status' => $this->compatibilityStatus((string) $namespace, $run),

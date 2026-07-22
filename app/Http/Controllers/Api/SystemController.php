@@ -2,6 +2,7 @@
 
 namespace App\Http\Controllers\Api;
 
+use App\Services\PrometheusMetricsSummary;
 use App\Support\ActivityTimeoutScanner;
 use App\Support\ControlPlaneProtocol;
 use App\Support\HistoryRetentionEnforcer;
@@ -9,12 +10,12 @@ use App\Support\ProjectionDriftMetrics;
 use App\Support\TaskQueueBuildIdRolloutSnapshot;
 use App\Support\WorkerSessionRegistry;
 use App\Support\WorkflowTaskFailureMetrics;
-use App\Services\PrometheusMetricsSummary;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Workflow\V2\Contracts\MatchingRole;
 use Workflow\V2\Support\ActivityTimeoutEnforcer;
 use Workflow\V2\Support\HealthCheck;
+use Workflow\V2\Support\OperatorDashboardSummary;
 use Workflow\V2\Support\OperatorMetrics;
 use Workflow\V2\Support\TaskRepairCandidates;
 use Workflow\V2\Support\TaskRepairPolicy;
@@ -147,6 +148,22 @@ class SystemController
         return ControlPlaneProtocol::json([
             'namespace' => $namespace,
             'operator_metrics' => $snapshot,
+        ]);
+    }
+
+    public function operatorDashboard(Request $request): JsonResponse
+    {
+        if ($response = ControlPlaneProtocol::rejectUnsupported($request)) {
+            return $response;
+        }
+
+        $namespace = (string) $request->attributes->get('namespace');
+        $dashboard = OperatorDashboardSummary::snapshot(null, $namespace);
+        $dashboard['operator_metrics']['worker_sessions'] = $this->workerSessions->metrics($namespace);
+
+        return ControlPlaneProtocol::json([
+            'namespace' => $namespace,
+            'dashboard' => $dashboard,
         ]);
     }
 

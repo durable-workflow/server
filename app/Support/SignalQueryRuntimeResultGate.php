@@ -10,7 +10,7 @@ final class SignalQueryRuntimeResultGate
 {
     public const SCHEMA = 'durable-workflow.v2.signal-query-runtime.result-gate';
 
-    public const VERSION = 28;
+    public const VERSION = 29;
 
     private const EVIDENCE_SECTION_SCENARIOS = [
         'replay_timing' => [
@@ -26,6 +26,7 @@ final class SignalQueryRuntimeResultGate
         ],
         'waterline_observer_comparison' => [
             'waterline_operator_visibility',
+            'waterline_service_operator_visibility',
         ],
     ];
 
@@ -40,7 +41,10 @@ final class SignalQueryRuntimeResultGate
         'cross_language_query_consistency',
         'wire_envelope_compatibility',
         'comparison.run_status_matches_public_clients',
+        'comparison.run_identity_matches_public_clients',
         'comparison.counter_state_matches_public_clients',
+        'comparison.service_mode_uses_public_php_sdk',
+        'api_captures.running_runs.selected_run_present',
         'prefix_consistent_query_results',
         'query_result_rollback_free',
         'repeat_query_consistency',
@@ -131,6 +135,7 @@ final class SignalQueryRuntimeResultGate
                 'run_timestamps_outcome_and_finding_links_are_recorded',
                 'overall_outcome_matches_gate_status',
                 'published_artifact_versions_are_recorded_and_pinned',
+                'required_distribution_identities_are_recorded',
                 'published_artifact_sources_match_expected_channels',
                 'scenario_artifact_versions_match_run_tuple',
                 'no_local_product_source_artifacts_are_reported',
@@ -140,9 +145,8 @@ final class SignalQueryRuntimeResultGate
     }
 
     /**
-     * @param array<string, mixed> $result
-     * @param array<string, mixed>|null $contract
-     *
+     * @param  array<string, mixed>  $result
+     * @param  array<string, mixed>|null  $contract
      * @return array<string, mixed>
      */
     public static function evaluate(array $result, ?array $contract = null): array
@@ -173,6 +177,7 @@ final class SignalQueryRuntimeResultGate
                     'code' => 'missing_required_scenario',
                     'scenario_id' => $scenarioId,
                 ];
+
                 continue;
             }
 
@@ -187,6 +192,7 @@ final class SignalQueryRuntimeResultGate
                     'status' => $status,
                     'allowed_statuses' => $allowedStatuses,
                 ];
+
                 continue;
             }
 
@@ -232,6 +238,9 @@ final class SignalQueryRuntimeResultGate
 
         $artifactFailures = self::artifactVersionFailures($result, $contract);
         array_push($failures, ...$artifactFailures);
+
+        $distributionIdentityFailures = self::distributionIdentityFailures($result, $contract);
+        array_push($failures, ...$distributionIdentityFailures);
 
         $scenarioArtifactFailures = self::scenarioArtifactVersionFailures($result, $scenarioResults, $contract);
         array_push($failures, ...$scenarioArtifactFailures);
@@ -289,10 +298,8 @@ final class SignalQueryRuntimeResultGate
     }
 
     /**
-     * @param array<string, mixed> $result
-     *
-     * @param array<string, int> $duplicateScenarioCounts
-     *
+     * @param  array<string, mixed>  $result
+     * @param  array<string, int>  $duplicateScenarioCounts
      * @return array<string, array<string, mixed>>
      */
     private static function scenarioResultsById(array $result, array &$duplicateScenarioCounts): array
@@ -327,7 +334,7 @@ final class SignalQueryRuntimeResultGate
     }
 
     /**
-     * @param array<string, mixed> $scenarioResult
+     * @param  array<string, mixed>  $scenarioResult
      */
     private static function hasObservedOutputs(array $scenarioResult): bool
     {
@@ -342,8 +349,8 @@ final class SignalQueryRuntimeResultGate
     }
 
     /**
-     * @param array<string, mixed> $scenarioResult
-     * @param array<string, mixed> $result
+     * @param  array<string, mixed>  $scenarioResult
+     * @param  array<string, mixed>  $result
      */
     private static function hasLinkedFindings(array $scenarioResult, array $result): bool
     {
@@ -381,9 +388,8 @@ final class SignalQueryRuntimeResultGate
     }
 
     /**
-     * @param array<string, mixed> $result
-     * @param array<string, mixed> $contract
-     *
+     * @param  array<string, mixed>  $result
+     * @param  array<string, mixed>  $contract
      * @return array<int, array<string, mixed>>
      */
     private static function runRecordFailures(array $result, array $contract): array
@@ -405,7 +411,7 @@ final class SignalQueryRuntimeResultGate
     }
 
     /**
-     * @param array<string, mixed> $result
+     * @param  array<string, mixed>  $result
      */
     private static function hasRunRecordField(array $result, string $field): bool
     {
@@ -423,9 +429,8 @@ final class SignalQueryRuntimeResultGate
     }
 
     /**
-     * @param array<string, mixed> $result
-     * @param array<string, mixed> $contract
-     *
+     * @param  array<string, mixed>  $result
+     * @param  array<string, mixed>  $contract
      * @return array<int, array<string, mixed>>
      */
     private static function declaredOutcomeFailures(array $result, array $contract): array
@@ -454,10 +459,9 @@ final class SignalQueryRuntimeResultGate
     }
 
     /**
-     * @param array<string, mixed> $result
-     * @param array<string, mixed> $contract
-     * @param array<string, mixed> $scenarioResult
-     *
+     * @param  array<string, mixed>  $result
+     * @param  array<string, mixed>  $contract
+     * @param  array<string, mixed>  $scenarioResult
      * @return array<int, array<string, mixed>>
      */
     private static function phpWorkerBaselineFailures(
@@ -528,17 +532,15 @@ final class SignalQueryRuntimeResultGate
     }
 
     /**
-     * @param array<string, mixed> $result
-     * @param array<string, mixed> $contract
-     *
+     * @param  array<string, mixed>  $result
+     * @param  array<string, mixed>  $contract
      * @return array<int, array<string, mixed>>
      */
     private static function declaredOutcomeStatusFailures(
         array $result,
         array $contract,
         string $evaluatedStatus,
-    ): array
-    {
+    ): array {
         $declaredOutcomes = self::declaredOutcomeTokens($result);
         if ($declaredOutcomes === []) {
             return [];
@@ -586,8 +588,7 @@ final class SignalQueryRuntimeResultGate
     }
 
     /**
-     * @param array<string, mixed> $result
-     *
+     * @param  array<string, mixed>  $result
      * @return array<string, string>
      */
     private static function declaredOutcomeTokens(array $result): array
@@ -604,8 +605,7 @@ final class SignalQueryRuntimeResultGate
     }
 
     /**
-     * @param array<string, mixed> $contract
-     *
+     * @param  array<string, mixed>  $contract
      * @return list<string>
      */
     private static function declaredOutcomes(array $contract): array
@@ -632,9 +632,8 @@ final class SignalQueryRuntimeResultGate
     }
 
     /**
-     * @param array<string, mixed> $result
-     * @param array<string, mixed> $contract
-     *
+     * @param  array<string, mixed>  $result
+     * @param  array<string, mixed>  $contract
      * @return array<int, array<string, mixed>>
      */
     private static function artifactVersionFailures(array $result, array $contract): array
@@ -650,6 +649,7 @@ final class SignalQueryRuntimeResultGate
                     'code' => 'missing_artifact_version',
                     'artifact' => $artifact,
                 ];
+
                 continue;
             }
 
@@ -666,10 +666,114 @@ final class SignalQueryRuntimeResultGate
     }
 
     /**
-     * @param array<string, mixed> $result
-     * @param array<string, array<string, mixed>> $scenarioResults
-     * @param array<string, mixed> $contract
-     *
+     * @param  array<string, mixed>  $result
+     * @param  array<string, mixed>  $contract
+     * @return array<int, array<string, mixed>>
+     */
+    private static function distributionIdentityFailures(array $result, array $contract): array
+    {
+        $artifactPolicy = self::arrayValue($contract, 'artifact_policy') ?? [];
+        $required = self::arrayValue($artifactPolicy, 'required_distribution_identities') ?? [];
+        if ($required === []) {
+            return [];
+        }
+
+        $identities = self::arrayValue($result, 'executed_distribution_identities')
+            ?? self::arrayValue($result, 'executedDistributionIdentities')
+            ?? [];
+        $versions = self::artifactVersions($result);
+        $failures = [];
+
+        foreach ($required as $distribution => $definition) {
+            if (! is_string($distribution) || ! is_array($definition)) {
+                continue;
+            }
+
+            $identity = self::arrayValue($identities, $distribution);
+            if ($identity === null) {
+                $failures[] = [
+                    'code' => 'missing_executed_distribution_identity',
+                    'distribution' => $distribution,
+                ];
+
+                continue;
+            }
+
+            $versionComponent = self::stringValue($definition['version_component'] ?? null);
+            $kind = self::stringValue($definition['kind'] ?? null);
+            $package = self::stringValue($definition['package'] ?? null);
+            $version = self::artifactVersionValue($versions, $versionComponent);
+            $locatorVersion = self::distributionLocatorVersion($versionComponent, $version);
+            $expectedLocator = $kind.':'.$package.'@'.$locatorVersion;
+            $observedKind = self::stringValue($identity['kind'] ?? null);
+            $observedLocator = self::stringValue($identity['locator'] ?? null);
+
+            if ($observedKind !== $kind || $observedLocator !== $expectedLocator) {
+                $failures[] = [
+                    'code' => 'executed_distribution_locator_mismatch',
+                    'distribution' => $distribution,
+                    'expected_kind' => $kind,
+                    'actual_kind' => $observedKind,
+                    'expected_locator' => $expectedLocator,
+                    'actual_locator' => $observedLocator,
+                ];
+            }
+
+            $artifacts = self::arrayValue($identity, 'artifacts');
+            if ($artifacts === null || $artifacts === []) {
+                $failures[] = [
+                    'code' => 'missing_executed_distribution_artifact',
+                    'distribution' => $distribution,
+                ];
+
+                continue;
+            }
+
+            foreach ($artifacts as $artifact) {
+                $name = is_array($artifact) ? self::stringValue($artifact['name'] ?? null) : '';
+                $sha256 = is_array($artifact) ? self::stringValue($artifact['sha256'] ?? null) : '';
+                if ($name !== '' && preg_match('/^[0-9a-f]{64}$/', $sha256) === 1) {
+                    continue;
+                }
+
+                $failures[] = [
+                    'code' => 'invalid_executed_distribution_artifact',
+                    'distribution' => $distribution,
+                    'artifact_name' => $name,
+                ];
+            }
+        }
+
+        return $failures;
+    }
+
+    private static function distributionLocatorVersion(string $component, string $version): string
+    {
+        if ($component !== 'sdk-python') {
+            return $version;
+        }
+
+        if (preg_match(
+            '/^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)-(alpha|beta|rc)\.(0|[1-9]\d*)$/i',
+            $version,
+            $matches,
+        ) !== 1) {
+            return $version;
+        }
+
+        $phase = match (strtolower($matches[4])) {
+            'alpha' => 'a',
+            'beta' => 'b',
+            default => 'rc',
+        };
+
+        return $matches[1].'.'.$matches[2].'.'.$matches[3].$phase.$matches[5];
+    }
+
+    /**
+     * @param  array<string, mixed>  $result
+     * @param  array<string, array<string, mixed>>  $scenarioResults
+     * @param  array<string, mixed>  $contract
      * @return array<int, array<string, mixed>>
      */
     private static function scenarioArtifactVersionFailures(
@@ -736,9 +840,8 @@ final class SignalQueryRuntimeResultGate
     }
 
     /**
-     * @param array<string, mixed> $result
-     * @param array<string, mixed> $scenarioResult
-     *
+     * @param  array<string, mixed>  $result
+     * @param  array<string, mixed>  $scenarioResult
      * @return array<int, array{versions: array<mixed>, field: string, path: string}>
      */
     private static function scenarioArtifactVersionContainers(
@@ -762,8 +865,7 @@ final class SignalQueryRuntimeResultGate
     }
 
     /**
-     * @param array<mixed> $container
-     *
+     * @param  array<mixed>  $container
      * @return array<int, array{versions: array<mixed>, field: string, path: string}>
      */
     private static function artifactVersionSets(array $container, string $path, bool $recursive): array
@@ -806,8 +908,7 @@ final class SignalQueryRuntimeResultGate
     }
 
     /**
-     * @param array<string, mixed> $result
-     *
+     * @param  array<string, mixed>  $result
      * @return array<mixed>
      */
     private static function artifactVersions(array $result): array
@@ -820,7 +921,7 @@ final class SignalQueryRuntimeResultGate
     }
 
     /**
-     * @param array<mixed> $versions
+     * @param  array<mixed>  $versions
      */
     private static function artifactVersionValue(array $versions, string $artifact): string
     {
@@ -841,7 +942,7 @@ final class SignalQueryRuntimeResultGate
     }
 
     /**
-     * @param array<mixed> $sources
+     * @param  array<mixed>  $sources
      */
     private static function artifactSourceValue(array $sources, string $artifact): string
     {
@@ -879,11 +980,9 @@ final class SignalQueryRuntimeResultGate
     }
 
     /**
-     * @param array<string, mixed> $result
-     * @param array<string, mixed> $contract
-     *
-     * @param array<string, array<string, mixed>> $scenarioResults
-     *
+     * @param  array<string, mixed>  $result
+     * @param  array<string, mixed>  $contract
+     * @param  array<string, array<string, mixed>>  $scenarioResults
      * @return array<int, array<string, mixed>>
      */
     private static function sourcePolicyFailures(array $result, array $contract, array $scenarioResults): array
@@ -964,8 +1063,7 @@ final class SignalQueryRuntimeResultGate
     }
 
     /**
-     * @param array<string, mixed> $contract
-     *
+     * @param  array<string, mixed>  $contract
      * @return array<string, string>
      */
     private static function expectedArtifactSources(array $contract): array
@@ -995,7 +1093,7 @@ final class SignalQueryRuntimeResultGate
     }
 
     /**
-     * @param array<string, mixed> $sourceSet
+     * @param  array<string, mixed>  $sourceSet
      */
     private static function sourceSetRequiresExpectedPublishedSources(array $sourceSet): bool
     {
@@ -1007,9 +1105,8 @@ final class SignalQueryRuntimeResultGate
     }
 
     /**
-     * @param array{sources: array<mixed>, field: string, path: string, scenario_id?: string|null} $sourceSet
-     * @param array<string, string> $expectedSources
-     *
+     * @param  array{sources: array<mixed>, field: string, path: string, scenario_id?: string|null}  $sourceSet
+     * @param  array<string, string>  $expectedSources
      * @return array<int, array<string, mixed>>
      */
     private static function expectedPublishedArtifactSourceFailures(array $sourceSet, array $expectedSources): array
@@ -1049,10 +1146,9 @@ final class SignalQueryRuntimeResultGate
     }
 
     /**
-     * @param array<string, mixed> $result
-     * @param array<string, mixed> $contract
-     * @param array<string, array<string, mixed>> $scenarioResults
-     *
+     * @param  array<string, mixed>  $result
+     * @param  array<string, mixed>  $contract
+     * @param  array<string, array<string, mixed>>  $scenarioResults
      * @return array<int, array<string, mixed>>
      */
     private static function publishedArtifactInstallEvidenceFailures(
@@ -1111,6 +1207,7 @@ final class SignalQueryRuntimeResultGate
                     'artifact' => $artifact,
                     'field' => 'artifact_install_evidence.artifacts',
                 ];
+
                 continue;
             }
 
@@ -1213,9 +1310,8 @@ final class SignalQueryRuntimeResultGate
     }
 
     /**
-     * @param array<string, mixed> $artifactPolicy
-     * @param array<mixed> $installChannels
-     *
+     * @param  array<string, mixed>  $artifactPolicy
+     * @param  array<mixed>  $installChannels
      * @return list<string>
      */
     private static function installProofArtifacts(array $artifactPolicy, array $installChannels): array
@@ -1229,7 +1325,7 @@ final class SignalQueryRuntimeResultGate
     }
 
     /**
-     * @param array<string, string> $expectedSources
+     * @param  array<string, string>  $expectedSources
      */
     private static function publishedSourceMatchesArtifact(
         string $source,
@@ -1240,7 +1336,7 @@ final class SignalQueryRuntimeResultGate
     }
 
     /**
-     * @param array<string, string> $expectedSources
+     * @param  array<string, string>  $expectedSources
      */
     private static function publishedPythonSdkSource(string $source, array $expectedSources): bool
     {
@@ -1248,7 +1344,7 @@ final class SignalQueryRuntimeResultGate
     }
 
     /**
-     * @param array<string, string> $expectedSources
+     * @param  array<string, string>  $expectedSources
      */
     private static function publishedSdkPhpSource(string $source, array $expectedSources): bool
     {
@@ -1256,8 +1352,7 @@ final class SignalQueryRuntimeResultGate
     }
 
     /**
-     * @param array<mixed> $container
-     *
+     * @param  array<mixed>  $container
      * @return array<int, array{sources: array<mixed>, field: string, path: string}>
      */
     private static function artifactSourceSets(array $container, string $path, bool $recursive): array
@@ -1295,7 +1390,7 @@ final class SignalQueryRuntimeResultGate
     }
 
     /**
-     * @param list<string> $forbiddenSources
+     * @param  list<string>  $forbiddenSources
      */
     private static function isForbiddenArtifactSource(string $source, array $forbiddenSources): bool
     {
@@ -1319,9 +1414,8 @@ final class SignalQueryRuntimeResultGate
     }
 
     /**
-     * @param array<string, mixed> $result
-     * @param array<string, mixed> $contract
-     *
+     * @param  array<string, mixed>  $result
+     * @param  array<string, mixed>  $contract
      * @return array<int, array<string, mixed>>
      */
     private static function matrixFailures(array $result, array $contract): array
@@ -1361,7 +1455,7 @@ final class SignalQueryRuntimeResultGate
     }
 
     /**
-     * @param array<mixed> $matrix
+     * @param  array<mixed>  $matrix
      */
     private static function matrixHasRuntime(array $matrix, string $runtime): bool
     {
@@ -1377,8 +1471,8 @@ final class SignalQueryRuntimeResultGate
     }
 
     /**
-     * @param array<mixed> $matrix
-     * @param array<string, mixed> $requiredCell
+     * @param  array<mixed>  $matrix
+     * @param  array<string, mixed>  $requiredCell
      */
     private static function matrixHasCell(array $matrix, string $cellGroup, array $requiredCell): bool
     {
@@ -1418,9 +1512,8 @@ final class SignalQueryRuntimeResultGate
     }
 
     /**
-     * @param array<string, mixed> $result
-     * @param array<string, array<string, mixed>> $scenarioResults
-     *
+     * @param  array<string, mixed>  $result
+     * @param  array<string, array<string, mixed>>  $scenarioResults
      * @return array<int, array<string, mixed>>
      */
     private static function requiredSectionFailures(array $result, array $scenarioResults): array
@@ -1452,10 +1545,9 @@ final class SignalQueryRuntimeResultGate
     }
 
     /**
-     * @param array<string, mixed> $result
-     * @param array<string, array<string, mixed>> $scenarioResults
-     * @param array<string, mixed> $contract
-     *
+     * @param  array<string, mixed>  $result
+     * @param  array<string, array<string, mixed>>  $scenarioResults
+     * @param  array<string, mixed>  $contract
      * @return array<int, array<string, mixed>>
      */
     private static function scenarioEvidenceFailures(
@@ -1730,10 +1822,9 @@ final class SignalQueryRuntimeResultGate
     }
 
     /**
-     * @param array<string, mixed> $result
-     * @param array<string, mixed> $contract
-     * @param array<string, mixed> $scenarioResult
-     *
+     * @param  array<string, mixed>  $result
+     * @param  array<string, mixed>  $contract
+     * @param  array<string, mixed>  $scenarioResult
      * @return array<int, array<string, mixed>>
      */
     private static function rustScenarioFailures(
@@ -2073,10 +2164,9 @@ final class SignalQueryRuntimeResultGate
     }
 
     /**
-     * @param array<string, mixed> $result
-     * @param array<string, mixed> $contract
-     * @param array<string, mixed> $scenarioResult
-     *
+     * @param  array<string, mixed>  $result
+     * @param  array<string, mixed>  $contract
+     * @param  array<string, mixed>  $scenarioResult
      * @return array<int, array<string, mixed>>
      */
     private static function pythonWorkerBaselineFailures(
@@ -2147,9 +2237,8 @@ final class SignalQueryRuntimeResultGate
     }
 
     /**
-     * @param array<string, mixed> $result
-     * @param array<string, mixed> $scenarioResult
-     *
+     * @param  array<string, mixed>  $result
+     * @param  array<string, mixed>  $scenarioResult
      * @return array<int, array<string, mixed>>
      */
     private static function routedCurrentQueryTaskFailures(
@@ -2271,9 +2360,8 @@ final class SignalQueryRuntimeResultGate
     }
 
     /**
-     * @param array<string, mixed> $result
-     * @param array<string, mixed> $scenarioResult
-     *
+     * @param  array<string, mixed>  $result
+     * @param  array<string, mixed>  $scenarioResult
      * @return array<int, array<string, mixed>>
      */
     private static function unknownHandlerReasonFailures(
@@ -2354,10 +2442,9 @@ final class SignalQueryRuntimeResultGate
     }
 
     /**
-     * @param array<string, mixed> $result
-     * @param array<string, mixed> $scenarioResult
-     * @param list<array{0: string, 1: string, 2: string}> $orders
-     *
+     * @param  array<string, mixed>  $result
+     * @param  array<string, mixed>  $scenarioResult
+     * @param  list<array{0: string, 1: string, 2: string}>  $orders
      * @return array<int, array<string, mixed>>
      */
     private static function timestampOrderFailures(
@@ -2384,6 +2471,7 @@ final class SignalQueryRuntimeResultGate
                     'left_key' => $leftKey,
                     'right_key' => $rightKey,
                 ];
+
                 continue;
             }
 
@@ -2410,10 +2498,9 @@ final class SignalQueryRuntimeResultGate
     }
 
     /**
-     * @param array<string, mixed> $result
-     * @param array<string, mixed> $scenarioResult
-     * @param array<string, array{0: int, 1: int}> $ranges
-     *
+     * @param  array<string, mixed>  $result
+     * @param  array<string, mixed>  $scenarioResult
+     * @param  array<string, array{0: int, 1: int}>  $ranges
      * @return array<int, array<string, mixed>>
      */
     private static function statusCodeFailures(
@@ -2446,9 +2533,8 @@ final class SignalQueryRuntimeResultGate
     }
 
     /**
-     * @param array<string, mixed> $result
-     * @param array<string, mixed> $scenarioResult
-     *
+     * @param  array<string, mixed>  $result
+     * @param  array<string, mixed>  $scenarioResult
      * @return array<int, array<string, mixed>>
      */
     private static function terminalRunReasonFailures(
@@ -2491,9 +2577,8 @@ final class SignalQueryRuntimeResultGate
     }
 
     /**
-     * @param array<string, mixed> $result
-     * @param array<string, mixed> $scenarioResult
-     *
+     * @param  array<string, mixed>  $result
+     * @param  array<string, mixed>  $scenarioResult
      * @return array<int, array<string, mixed>>
      */
     private static function terminalRunImmutabilityFailures(
@@ -2538,9 +2623,8 @@ final class SignalQueryRuntimeResultGate
     }
 
     /**
-     * @param array<string, mixed> $result
-     * @param array<string, mixed> $scenarioResult
-     *
+     * @param  array<string, mixed>  $result
+     * @param  array<string, mixed>  $scenarioResult
      * @return array<int, array<string, mixed>>
      */
     private static function malformedPayloadReasonFailures(
@@ -2596,9 +2680,8 @@ final class SignalQueryRuntimeResultGate
     }
 
     /**
-     * @param list<string> $missingScenarios
-     * @param array<string, mixed> $result
-     *
+     * @param  list<string>  $missingScenarios
+     * @param  array<string, mixed>  $result
      * @return array<int, array<string, mixed>>
      */
     private static function missingScenarioFindingFailures(array $missingScenarios, array $result): array
@@ -2620,8 +2703,7 @@ final class SignalQueryRuntimeResultGate
     }
 
     /**
-     * @param array<string, mixed> $requirement
-     *
+     * @param  array<string, mixed>  $requirement
      * @return list<string>
      */
     private static function requiredEvidenceKeys(array $requirement): array
@@ -2634,8 +2716,8 @@ final class SignalQueryRuntimeResultGate
     }
 
     /**
-     * @param array<string, mixed> $result
-     * @param array<string, mixed> $scenarioResult
+     * @param  array<string, mixed>  $result
+     * @param  array<string, mixed>  $scenarioResult
      */
     private static function hasEvidence(
         array $result,
@@ -2667,8 +2749,8 @@ final class SignalQueryRuntimeResultGate
     }
 
     /**
-     * @param array<string, mixed> $result
-     * @param array<string, mixed> $scenarioResult
+     * @param  array<string, mixed>  $result
+     * @param  array<string, mixed>  $scenarioResult
      */
     private static function evidenceValue(
         array $result,
@@ -2690,9 +2772,8 @@ final class SignalQueryRuntimeResultGate
     }
 
     /**
-     * @param array<string, mixed> $result
-     * @param array<string, mixed> $scenarioResult
-     *
+     * @param  array<string, mixed>  $result
+     * @param  array<string, mixed>  $scenarioResult
      * @return array<int, array<mixed>>
      */
     private static function evidenceContainers(array $result, array $scenarioResult, string $scenarioId): array
@@ -2719,8 +2800,7 @@ final class SignalQueryRuntimeResultGate
     }
 
     /**
-     * @param array<string, mixed> $result
-     *
+     * @param  array<string, mixed>  $result
      * @return array<int, array{value: array<mixed>, path: string}>
      */
     private static function sectionPolicyContainers(array $result): array
@@ -2740,9 +2820,8 @@ final class SignalQueryRuntimeResultGate
     }
 
     /**
-     * @param array<string, mixed> $result
-     * @param array<string, mixed> $scenarioResult
-     *
+     * @param  array<string, mixed>  $result
+     * @param  array<string, mixed>  $scenarioResult
      * @return array<int, array{value: array<mixed>, path: string, recursive: bool}>
      */
     private static function scenarioPolicyContainers(array $result, array $scenarioResult, string $scenarioId): array
@@ -2787,8 +2866,7 @@ final class SignalQueryRuntimeResultGate
     }
 
     /**
-     * @param array<mixed> $section
-     *
+     * @param  array<mixed>  $section
      * @return array<int, array<mixed>>
      */
     private static function scenarioSectionContainers(array $section, string $scenarioId): array
@@ -2816,8 +2894,8 @@ final class SignalQueryRuntimeResultGate
     }
 
     /**
-     * @param array<mixed> $value
-     * @param list<string> $path
+     * @param  array<mixed>  $value
+     * @param  list<string>  $path
      */
     private static function pathValue(array $value, array $path): mixed
     {
@@ -2834,7 +2912,7 @@ final class SignalQueryRuntimeResultGate
     }
 
     /**
-     * @param array<mixed> $value
+     * @param  array<mixed>  $value
      */
     private static function recursiveKeyValue(array $value, string $key): mixed
     {
@@ -2874,8 +2952,8 @@ final class SignalQueryRuntimeResultGate
     }
 
     /**
-     * @param array<string, mixed> $result
-     * @param array<string, mixed> $scenarioResult
+     * @param  array<string, mixed>  $result
+     * @param  array<string, mixed>  $scenarioResult
      */
     private static function arrayEvidenceValue(
         array $result,
@@ -2894,8 +2972,7 @@ final class SignalQueryRuntimeResultGate
     }
 
     /**
-     * @param array<string, mixed> $installEvidence
-     *
+     * @param  array<string, mixed>  $installEvidence
      * @return array<string, mixed>|null
      */
     private static function artifactInstallEvidenceEntry(array $installEvidence, string $artifact): ?array
@@ -2922,7 +2999,7 @@ final class SignalQueryRuntimeResultGate
     }
 
     /**
-     * @param array<string, mixed> $value
+     * @param  array<string, mixed>  $value
      */
     private static function firstString(array $value, string ...$fields): string
     {
@@ -2937,7 +3014,7 @@ final class SignalQueryRuntimeResultGate
     }
 
     /**
-     * @param array<string, mixed> $value
+     * @param  array<string, mixed>  $value
      */
     private static function explicitFalseField(array $value, string ...$fields): bool
     {
@@ -2951,7 +3028,7 @@ final class SignalQueryRuntimeResultGate
     }
 
     /**
-     * @param array<string, mixed> $value
+     * @param  array<string, mixed>  $value
      */
     private static function truthyField(array $value, string ...$fields): bool
     {
@@ -2976,19 +3053,19 @@ final class SignalQueryRuntimeResultGate
     private static function pathFor(string $base, int|string $field): string
     {
         if (is_int($field)) {
-            return $base . '[' . $field . ']';
+            return $base.'['.$field.']';
         }
 
         if ($field === '') {
             return $base;
         }
 
-        return $base . '.' . $field;
+        return $base.'.'.$field;
     }
 
     /**
-     * @param array<string, string> $scenarioStatuses
-     * @param array<string, mixed> $contract
+     * @param  array<string, string>  $scenarioStatuses
+     * @param  array<string, mixed>  $contract
      */
     private static function isSmokeSubset(array $scenarioStatuses, array $contract): bool
     {
@@ -3019,8 +3096,6 @@ final class SignalQueryRuntimeResultGate
     }
 
     /**
-     * @param mixed $value
-     *
      * @return array<int, string>
      */
     private static function stringList(mixed $value): array
@@ -3098,8 +3173,8 @@ final class SignalQueryRuntimeResultGate
     }
 
     /**
-     * @param array<mixed> $value
-     * @param list<string> $fields
+     * @param  array<mixed>  $value
+     * @param  list<string>  $fields
      */
     private static function hasScalarField(array $value, array $fields): bool
     {
@@ -3113,8 +3188,8 @@ final class SignalQueryRuntimeResultGate
     }
 
     /**
-     * @param array<mixed> $value
-     * @param list<string> $fields
+     * @param  array<mixed>  $value
+     * @param  list<string>  $fields
      */
     private static function hasArrayField(array $value, array $fields): bool
     {
@@ -3128,8 +3203,7 @@ final class SignalQueryRuntimeResultGate
     }
 
     /**
-     * @param array<mixed> $value
-     *
+     * @param  array<mixed>  $value
      * @return array<mixed>|null
      */
     private static function arrayValue(array $value, string $key): ?array

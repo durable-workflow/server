@@ -5,9 +5,9 @@ use App\Http\Controllers\Api\ActivityTaskController;
 use App\Http\Controllers\Api\BridgeAdapterController;
 use App\Http\Controllers\Api\DeploymentController;
 use App\Http\Controllers\Api\EmbeddedV2ImportController;
-use App\Http\Controllers\Api\LegacyV1ProjectionController;
 use App\Http\Controllers\Api\HealthController;
 use App\Http\Controllers\Api\HistoryController;
+use App\Http\Controllers\Api\LegacyV1ProjectionController;
 use App\Http\Controllers\Api\NamespaceController;
 use App\Http\Controllers\Api\ScheduleController;
 use App\Http\Controllers\Api\SearchAttributeController;
@@ -344,6 +344,7 @@ Route::middleware([Authenticate::class])->group(function () {
     Route::prefix('system')->middleware([$admin, $cpv, $httpControl, $ns])->group(function () {
         Route::get('/health', [SystemController::class, 'health']);
         Route::match(['get', 'post'], '/metrics', [SystemController::class, 'metrics']);
+        Route::get('/operator-dashboard', [SystemController::class, 'operatorDashboard']);
         Route::get('/operator-metrics', [SystemController::class, 'operatorMetrics']);
         Route::get('/prometheus-metrics', [SystemController::class, 'prometheusMetrics']);
         Route::get('/repair', [SystemController::class, 'repairStatus']);

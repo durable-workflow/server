@@ -28,6 +28,9 @@ Environment overrides:
   DW_PHP_SDK_VERSION                        Exact published durable-workflow/sdk version from Packagist.
   DW_WORKFLOW_PHP_VERSION                   Published PHP workflow version under test.
   DW_WATERLINE_VERSION                      Published Waterline version under test.
+  DW_WATERLINE_SERVICE_IMAGE                Exact published Waterline service image. Must be
+                                             docker.io/durableworkflow/waterline@sha256:<digest>;
+                                             tags and local images are rejected.
   DW_SIGNALS_QUERIES_RESULT_DIR             Result directory when --result-dir is omitted.
   DW_SIGNALS_QUERIES_EVIDENCE               Optional JSON evidence from a real matrix run, including
                                              executed_distribution_identities captured from consumed bytes.
@@ -39,6 +42,8 @@ Environment overrides:
                                              Set to 0 to skip the live replay/terminal shard.
   DW_SIGNALS_QUERIES_RUN_WATERLINE_OBSERVER_PROBE
                                              Set to 0 to skip the published Waterline observer shard.
+  DW_SIGNALS_QUERIES_RUN_WATERLINE_SERVICE_PROBE
+                                             Set to 0 to skip the published Waterline service-image shard.
   DW_SIGNALS_QUERIES_RUN_RUST_MATRIX_PROBE   Set to 0 to skip the mandatory crates.io Rust matrix.
   DW_SIGNALS_QUERIES_RUST_DOCKER_IMAGE       Rust build/runtime image. Defaults to rust:1.86-slim-bookworm.
   DW_SIGNALS_QUERIES_RUST_CACHE_DIR          Host-owned Rust dependency cache. Defaults to a private,
@@ -123,6 +128,7 @@ exec env \
   DW_PHP_SDK_VERSION="${DW_PHP_SDK_VERSION:-unresolved}" \
   DW_WORKFLOW_PHP_VERSION="${DW_WORKFLOW_PHP_VERSION:-unresolved}" \
   DW_WATERLINE_VERSION="${DW_WATERLINE_VERSION:-unresolved}" \
+  DW_WATERLINE_SERVICE_IMAGE="${DW_WATERLINE_SERVICE_IMAGE:-}" \
   DW_SIGNALS_QUERIES_EVIDENCE="${DW_SIGNALS_QUERIES_EVIDENCE:-${DW_SIGNALS_QUERIES_SMOKE_EVIDENCE:-}}" \
   DW_SIGNALS_QUERIES_SMOKE_EVIDENCE="${DW_SIGNALS_QUERIES_SMOKE_EVIDENCE:-}" \
   python3 - <<'PY'
@@ -173,11 +179,15 @@ EXECUTED_DISTRIBUTION_IDENTITIES_PATH = (
 DISTRIBUTION_COMPONENTS = {
     "workflow": ("composer", "durable-workflow/workflow"),
     "waterline": ("composer", "durable-workflow/waterline"),
+    "waterline-service": ("oci", "docker.io/durableworkflow/waterline"),
     "server": ("oci", "docker.io/durableworkflow/server"),
     "cli": ("github-release", "durable-workflow/cli"),
     "sdk-php": ("composer", "durable-workflow/sdk"),
     "sdk-python": ("pypi", "durable-workflow"),
     "sdk-rust": ("crates.io", "durable-workflow"),
+}
+DISTRIBUTION_VERSION_COMPONENTS = {
+    "waterline-service": "waterline",
 }
 REQUIRED_DISTRIBUTION_IDENTITIES = tuple(DISTRIBUTION_COMPONENTS)
 DIST_VERSION_PATTERN = re.compile(
@@ -218,6 +228,14 @@ def python_release_identity(version: str) -> str | None:
         return version
     major, minor, patch, prerelease, ordinal = pep440_match.groups()
     return f"{major}.{minor}.{patch}{prerelease.lower()}{ordinal}"
+
+
+def distribution_version(
+    artifact_versions: dict[str, str],
+    distribution: str,
+) -> str:
+    component = DISTRIBUTION_VERSION_COMPONENTS.get(distribution, distribution)
+    return str(artifact_versions.get(component, ""))
 
 
 def normalize_distribution_identity(
@@ -378,7 +396,7 @@ def merge_distribution_identity_handoff(
     if not isinstance(evidence, dict):
         raise RuntimeError("executed distribution identity handoff must be a component map")
     for component, observed in evidence.items():
-        expected_version = str(artifact_versions.get(component, ""))
+        expected_version = distribution_version(artifact_versions, component)
         normalized = normalize_distribution_identity(component, observed, expected_version)
         record_distribution_identity(path, component, normalized)
 
@@ -402,7 +420,7 @@ def validate_required_distribution_identities(
             identities[component] = normalize_distribution_identity(
                 component,
                 observed,
-                str(artifact_versions.get(component, "")),
+                distribution_version(artifact_versions, component),
             )
         except Exception as exc:  # noqa: BLE001 - report every malformed required identity.
             failures.append(f"invalid executed distribution evidence for {component}: {exc}")
@@ -10052,8 +10070,35 @@ def run_baseline_probe(result_dir: Path) -> tuple[dict[str, Any] | None, dict[st
             }
         if waterline_evidence is not None:
             evidence = merge_probe_evidence(evidence, waterline_evidence)
+            generated_scenarios.append("waterline_operator_visibility")
         if waterline_descriptor is not None:
             descriptor["waterline_observer_probe"] = waterline_descriptor
+        try:
+            service_evidence, service_descriptor = run_waterline_service_probe(
+                result_dir,
+                evidence,
+                server_topology=readiness_probe,
+            )
+        except Exception as exc:  # noqa: BLE001 - retain the embedded observer and sibling evidence.
+            service_evidence = waterline_service_setup_result(
+                status="fail",
+                reason=f"Waterline service shard failed before producing evidence: {type(exc).__name__}: {exc}",
+                blocker_kind="waterline_service_probe_exception",
+            )
+            service_descriptor = {
+                "error": f"{type(exc).__name__}: {exc}",
+                "generated_scenarios": [WATERLINE_SERVICE_SCENARIO],
+            }
+        if service_evidence is not None:
+            evidence = merge_probe_evidence(evidence, service_evidence)
+            generated_scenarios.append(WATERLINE_SERVICE_SCENARIO)
+        if service_descriptor is not None:
+            descriptor["waterline_service_probe"] = service_descriptor
+        for waterline_scenario in ("waterline_operator_visibility", WATERLINE_SERVICE_SCENARIO):
+            if evidence.get("scenario_results", {}).get(waterline_scenario, {}).get("status") != "pass":
+                descriptor["partial_baseline_observations"]["not_claimed_as_pass"].append(
+                    waterline_scenario
+                )
         return evidence, descriptor
     except ServerReadinessTopologyError as exc:
         details = dict(exc.details)
@@ -10893,6 +10938,642 @@ def waterline_observer_setup_result(
             },
         },
     }
+
+
+WATERLINE_SERVICE_SCENARIO = "waterline_service_operator_visibility"
+WATERLINE_SERVICE_IMAGE_PATTERN = (
+    r"^docker\.io/durableworkflow/waterline@sha256:[0-9a-f]{64}$"
+)
+WATERLINE_SERVICE_SOURCE_LABELS = (
+    "org.opencontainers.image.revision",
+    "dev.durable-workflow.release.tag",
+)
+
+
+class WaterlineServiceProbeError(RuntimeError):
+    def __init__(self, message: str, *, blocker_kind: str, details: dict[str, Any] | None = None) -> None:
+        super().__init__(message)
+        self.blocker_kind = blocker_kind
+        self.details = details or {}
+
+
+def waterline_service_image_reference() -> str:
+    image = env_text("DW_WATERLINE_SERVICE_IMAGE")
+    if image is None:
+        raise WaterlineServiceProbeError(
+            "DW_WATERLINE_SERVICE_IMAGE is required and must identify the published Waterline manifest by digest.",
+            blocker_kind="waterline_service_image_missing",
+        )
+    if re.fullmatch(WATERLINE_SERVICE_IMAGE_PATTERN, image) is None:
+        raise WaterlineServiceProbeError(
+            "DW_WATERLINE_SERVICE_IMAGE must be "
+            "docker.io/durableworkflow/waterline@sha256:<64 lowercase hex characters>; "
+            "tag-only and local image references are not conformance artifacts.",
+            blocker_kind="waterline_service_image_not_immutable",
+            details={"image_reference": image},
+        )
+    return image
+
+
+def waterline_service_manifest_digest(image: str) -> str:
+    if re.fullmatch(WATERLINE_SERVICE_IMAGE_PATTERN, image) is None:
+        raise WaterlineServiceProbeError(
+            "Waterline service manifest digest requested for a non-published image reference.",
+            blocker_kind="waterline_service_image_not_immutable",
+            details={"image_reference": image},
+        )
+    return image.rsplit("@", 1)[1]
+
+
+def waterline_service_repo_digest_matches(candidate: Any, expected_digest: str) -> bool:
+    if not isinstance(candidate, str) or "@" not in candidate:
+        return False
+    repository, digest = candidate.rsplit("@", 1)
+    repository = repository.removeprefix("docker.io/").removeprefix("index.docker.io/")
+    return repository == "durableworkflow/waterline" and digest.lower() == expected_digest
+
+
+def inspect_waterline_service_image(
+    image: str,
+    waterline_version: str,
+    log_file: Path,
+) -> dict[str, Any]:
+    pull_command = ["docker", "pull", image]
+    pull = run_command(pull_command, log_file=log_file, timeout=300)
+    if pull.returncode != 0:
+        raise WaterlineServiceProbeError(
+            "Docker could not pull the exact published Waterline service manifest.",
+            blocker_kind="waterline_service_image_pull_failed",
+            details={"command": command_summary(pull_command, pull)},
+        )
+
+    labels_command = ["docker", "image", "inspect", "--format", "{{json .Config.Labels}}", image]
+    labels_result = run_command(labels_command, log_file=log_file, timeout=60)
+    digests_command = ["docker", "image", "inspect", "--format", "{{json .RepoDigests}}", image]
+    digests_result = run_command(digests_command, log_file=log_file, timeout=60)
+    if labels_result.returncode != 0 or digests_result.returncode != 0:
+        failed_command = labels_command if labels_result.returncode != 0 else digests_command
+        failed_result = labels_result if labels_result.returncode != 0 else digests_result
+        raise WaterlineServiceProbeError(
+            "Docker could not inspect the pulled Waterline service image.",
+            blocker_kind="waterline_service_image_inspect_failed",
+            details={"command": command_summary(failed_command, failed_result)},
+        )
+
+    try:
+        labels = json.loads(labels_result.stdout) if labels_result.stdout.strip() else {}
+        repo_digests = json.loads(digests_result.stdout) if digests_result.stdout.strip() else []
+    except json.JSONDecodeError as exc:
+        raise WaterlineServiceProbeError(
+            "Docker returned malformed Waterline image metadata.",
+            blocker_kind="waterline_service_image_metadata_invalid",
+        ) from exc
+    if not isinstance(labels, dict) or not isinstance(repo_digests, list):
+        raise WaterlineServiceProbeError(
+            "Docker returned an unexpected Waterline image metadata shape.",
+            blocker_kind="waterline_service_image_metadata_invalid",
+        )
+
+    expected_digest = waterline_service_manifest_digest(image)
+    if not any(waterline_service_repo_digest_matches(candidate, expected_digest) for candidate in repo_digests):
+        raise WaterlineServiceProbeError(
+            "The pulled Waterline image does not retain the requested top-level manifest digest.",
+            blocker_kind="waterline_service_manifest_digest_mismatch",
+            details={"expected_manifest_digest": expected_digest},
+        )
+
+    revision = labels.get("org.opencontainers.image.revision")
+    release_tag = labels.get("dev.durable-workflow.release.tag")
+    if not isinstance(revision, str) or re.fullmatch(r"[0-9a-fA-F]{7,64}", revision.strip()) is None:
+        raise WaterlineServiceProbeError(
+            "The Waterline service image is missing a valid org.opencontainers.image.revision label.",
+            blocker_kind="waterline_service_source_revision_missing",
+        )
+    if not isinstance(release_tag, str) or release_tag.strip() != waterline_version:
+        raise WaterlineServiceProbeError(
+            "The Waterline service image release label does not match DW_WATERLINE_VERSION.",
+            blocker_kind="waterline_service_release_tag_mismatch",
+            details={
+                "expected_release_tag": waterline_version,
+                "observed_release_tag": release_tag,
+            },
+        )
+
+    return {
+        "image_reference": image,
+        "manifest_digest": expected_digest,
+        "source_revision_labels": {
+            "oci_revision": revision.strip(),
+            "release_tag": release_tag.strip(),
+            "labels": {
+                label: str(labels[label])
+                for label in WATERLINE_SERVICE_SOURCE_LABELS
+            },
+        },
+    }
+
+
+def waterline_service_container_command(
+    *,
+    image: str,
+    container_name: str,
+    network: str,
+    server_endpoint: str,
+    namespace: str,
+) -> list[str]:
+    global DOCKER_RUN_COMMAND_BUILT
+    DOCKER_RUN_COMMAND_BUILT = True
+    return [
+        "docker",
+        "run",
+        "--rm",
+        "--detach",
+        "--name",
+        container_name,
+        "--label",
+        DOCKER_RUN_RESOURCE_LABEL,
+        "--network",
+        network,
+        "--publish",
+        "127.0.0.1::8080",
+        "--env",
+        "WATERLINE_SERVER_TOKEN",
+        "--env",
+        f"WATERLINE_SERVER_ENDPOINT={server_endpoint}",
+        "--env",
+        f"WATERLINE_NAMESPACE={namespace}",
+        "--env",
+        "WATERLINE_ACCESS_MODE=operator",
+        "--env",
+        "WATERLINE_ALLOW_UNAUTHENTICATED=true",
+        image,
+    ]
+
+
+def waterline_service_host_url(container_name: str, log_file: Path) -> str:
+    command = ["docker", "port", container_name, "8080/tcp"]
+    completed = run_command(command, log_file=log_file, timeout=30)
+    if completed.returncode != 0:
+        raise WaterlineServiceProbeError(
+            "Docker did not publish the Waterline service HTTP port.",
+            blocker_kind="waterline_service_port_unavailable",
+            details={"command": command_summary(command, completed)},
+        )
+    for line in completed.stdout.splitlines():
+        match = re.search(r":([0-9]{1,5})\s*$", line.strip())
+        if match is not None and 0 < int(match.group(1)) <= 65535:
+            return f"http://127.0.0.1:{int(match.group(1))}"
+    raise WaterlineServiceProbeError(
+        "Docker returned no usable Waterline service HTTP port.",
+        blocker_kind="waterline_service_port_unavailable",
+    )
+
+
+def waterline_service_http_json(
+    base_url: str,
+    path: str,
+    *,
+    method: str = "GET",
+    body: Any = None,
+    timeout: float = 30.0,
+) -> dict[str, Any]:
+    data = json.dumps(body).encode("utf-8") if body is not None else None
+    request = urllib.request.Request(
+        url_join(base_url, path),
+        data=data,
+        headers={"Accept": "application/json", "Content-Type": "application/json"},
+        method=method,
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=timeout) as response:
+            raw = response.read().decode("utf-8")
+            return {
+                "status_code": response.status,
+                "body": json.loads(raw) if raw.strip() else {},
+            }
+    except urllib.error.HTTPError as exc:
+        raw = exc.read().decode("utf-8", errors="replace")
+        try:
+            response_body = json.loads(raw) if raw.strip() else {}
+        except json.JSONDecodeError:
+            response_body = {"raw": raw[:DIAGNOSTIC_OUTPUT_LIMIT]}
+        return {"status_code": exc.code, "body": response_body}
+
+
+def wait_for_waterline_service(
+    base_url: str,
+    container_name: str,
+    log_file: Path,
+    timeout_seconds: float = 90.0,
+) -> dict[str, Any]:
+    deadline = time.time() + timeout_seconds
+    attempts = 0
+    last_error: str | None = None
+    while time.time() < deadline:
+        attempts += 1
+        if not docker_container_running(container_name, log_file):
+            diagnostics = capture_command_summary(
+                ["docker", "logs", container_name],
+                log_file=log_file,
+                timeout=30,
+            )
+            raise WaterlineServiceProbeError(
+                "The Waterline service container exited before /up became ready.",
+                blocker_kind="waterline_service_container_exited",
+                details={"container_logs": diagnostics},
+            )
+        try:
+            with urllib.request.urlopen(url_join(base_url, "/up"), timeout=2) as response:
+                if 200 <= response.status < 300:
+                    return {
+                        "path": "/up",
+                        "status_code": response.status,
+                        "attempts": attempts,
+                        "ready_at": now(),
+                    }
+                last_error = f"HTTPStatus: {response.status}"
+        except Exception as exc:  # noqa: BLE001 - retain the final bounded readiness error.
+            last_error = f"{type(exc).__name__}: {exc}"
+        time.sleep(min(1, max(0, deadline - time.time())))
+    raise WaterlineServiceProbeError(
+        "The Waterline service /up endpoint did not become ready.",
+        blocker_kind="waterline_service_readiness_timeout",
+        details={"attempts": attempts, "last_error": last_error},
+    )
+
+
+def waterline_service_setup_result(
+    *,
+    status: str,
+    reason: str,
+    blocker_kind: str,
+    details: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    setup_failure = {
+        "blocker_kind": blocker_kind,
+        "reason": reason,
+        **(details or {}),
+    }
+    finding = {
+        "id": "signal_query_waterline_service_probe_unavailable",
+        "type": "signal_query_waterline_service_probe_unavailable",
+        "scenario_id": WATERLINE_SERVICE_SCENARIO,
+        "owner": (
+            "conformance_harness"
+            if status == "runner_blocked" or blocker_kind in {
+                "waterline_service_image_missing",
+                "waterline_service_image_not_immutable",
+                "waterline_service_topology_unavailable",
+            }
+            else "waterline"
+        ),
+        "title": "Published Waterline service image did not complete the signals/queries operator shard",
+        "current_evidence": setup_failure,
+        "acceptance": [
+            "supply the immutable published Waterline service manifest reference",
+            "start it on the exact published server network in service mode",
+            "exercise selected-run reads, query, and signal actions through its PHP SDK backend",
+        ],
+    }
+    if status == "runner_blocked":
+        finding["blocker_kind"] = blocker_kind
+    return {
+        "artifact_versions": dict(artifact_versions),
+        "scenario_results": {
+            WATERLINE_SERVICE_SCENARIO: {
+                "scenario_id": WATERLINE_SERVICE_SCENARIO,
+                "status": status,
+                "observed_outputs": {
+                    "artifact_versions": dict(artifact_versions),
+                    "artifact_sources": dict(EXPECTED_ARTIFACT_SOURCES),
+                    "setup_failure": setup_failure,
+                },
+                "linked_findings": [finding],
+            },
+        },
+    }
+
+
+def run_waterline_service_probe(
+    result_dir: Path,
+    current_evidence: Any,
+    server_topology: dict[str, Any] | None,
+) -> tuple[dict[str, Any] | None, dict[str, Any] | None]:
+    if not env_flag("DW_SIGNALS_QUERIES_RUN_WATERLINE_SERVICE_PROBE", True):
+        return None, {"skipped": "disabled_by_env"}
+    if not command_available("docker"):
+        return waterline_service_setup_result(
+            status="runner_blocked",
+            reason="Docker is required to execute the published Waterline service image.",
+            blocker_kind="docker_unavailable",
+        ), {"error": "docker_unavailable"}
+
+    public_evidence = waterline_observer_public_evidence(current_evidence)
+    responder_inputs = (
+        waterline_query_responder_inputs(public_evidence)
+        if isinstance(public_evidence, dict)
+        else None
+    )
+    if public_evidence is None or responder_inputs is None:
+        return waterline_service_setup_result(
+            status="fail",
+            reason="The Waterline service shard requires the selected ordered signal/query run and responder identity.",
+            blocker_kind="ordered_signal_delivery_evidence_unavailable",
+        ), {"error": "ordered_signal_delivery_evidence_unavailable"}
+
+    storage = waterline_storage_from_topology(server_topology)
+    network = storage.get("docker_network") if isinstance(storage.get("docker_network"), str) else None
+    if network is None or not isinstance(server_topology, dict) or not server_topology.get("compose_project"):
+        return waterline_service_setup_result(
+            status="fail",
+            reason="The Waterline service image requires the published server Compose network.",
+            blocker_kind="waterline_service_topology_unavailable",
+        ), {"error": "waterline_service_topology_unavailable"}
+
+    waterline_version = artifact_version_value(artifact_versions, "waterline")
+    if is_placeholder_version(waterline_version):
+        return waterline_service_setup_result(
+            status="fail",
+            reason="DW_WATERLINE_VERSION must be an exact published version for the service image shard.",
+            blocker_kind="missing_exact_artifact_version",
+        ), {"error": "missing_exact_artifact_version"}
+
+    log_file = result_dir / "waterline-signals-queries-service.log"
+    container_name = f"dw-waterline-service-{os.getpid()}-{time.time_ns()}"
+    container_registered = False
+    try:
+        image = waterline_service_image_reference()
+        image_metadata = inspect_waterline_service_image(image, waterline_version, log_file)
+        service_env = os.environ.copy()
+        service_env["WATERLINE_SERVER_TOKEN"] = responder_inputs["token"]
+        run_command_value = waterline_service_container_command(
+            image=image,
+            container_name=container_name,
+            network=network,
+            server_endpoint="http://server:8080",
+            namespace=responder_inputs["namespace"],
+        )
+        register_container(container_name, log_file)
+        container_registered = True
+        started = run_command(run_command_value, log_file=log_file, env=service_env, timeout=120)
+        if started.returncode != 0:
+            raise WaterlineServiceProbeError(
+                "Docker could not start the exact Waterline service image.",
+                blocker_kind="waterline_service_container_start_failed",
+                details={"command": command_summary(run_command_value, started)},
+            )
+
+        service_url = waterline_service_host_url(container_name, log_file)
+        readiness = wait_for_waterline_service(service_url, container_name, log_file)
+        record_distribution_digest(
+            "waterline-service",
+            waterline_version,
+            "manifest",
+            str(image_metadata["manifest_digest"]),
+        )
+
+        workflow_id = str(public_evidence["workflow_instance_id"])
+        run_id = str(public_evidence["workflow_run_id"])
+        query_name = str(public_evidence["query_name"])
+        expected_counter = int(public_evidence["current_counter"])
+        detail_path = api_path("instances", workflow_id, "runs", run_id).replace("/api/", "/waterline/api/")
+        query_path = detail_path + "/queries/" + urllib.parse.quote(query_name, safe="._:-")
+        signal_path = detail_path + "/signals/increment"
+        list_path = "/waterline/api/flows/running"
+
+        running_list = waterline_service_http_json(service_url, list_path, timeout=30)
+        detail = waterline_service_http_json(service_url, detail_path, timeout=30)
+        list_body = running_list.get("body") if isinstance(running_list.get("body"), dict) else {}
+        detail_body = detail.get("body") if isinstance(detail.get("body"), dict) else {}
+        backend = detail_body.get("backend") if isinstance(detail_body.get("backend"), dict) else {}
+        running_items = list_body.get("data") if isinstance(list_body.get("data"), list) else []
+        selected_in_list = any(
+            isinstance(item, dict)
+            and item.get("instance_id") == workflow_id
+            and item.get("run_id") == run_id
+            for item in running_items
+        )
+        detail_valid = (
+            detail.get("status_code") == 200
+            and detail_body.get("instance_id") == workflow_id
+            and detail_body.get("run_id") == run_id
+            and detail_body.get("engine_source") == "service"
+            and detail_body.get("can_query") is True
+            and detail_body.get("can_signal") is True
+            and backend.get("mode") == "service"
+            and backend.get("transport") == "durable-workflow/sdk"
+            and backend.get("namespace") == responder_inputs["namespace"]
+            and backend.get("access_mode") == "operator"
+        )
+        if running_list.get("status_code") != 200 or not selected_in_list or not detail_valid:
+            raise WaterlineServiceProbeError(
+                "Waterline service-mode list or selected-run detail did not expose the candidate run through the PHP SDK backend.",
+                blocker_kind="waterline_service_reads_failed",
+                details={
+                    "running_list_status_code": running_list.get("status_code"),
+                    "selected_run_in_list": selected_in_list,
+                    "selected_run_detail_status_code": detail.get("status_code"),
+                    "selected_run_detail_valid": detail_valid,
+                },
+            )
+
+        responder_holder: dict[str, Any] = {}
+        responder_ready = threading.Event()
+        responder = threading.Thread(
+            target=answer_next_query_task,
+            args=(
+                responder_inputs["base_url"],
+                responder_inputs["token"],
+                responder_inputs["namespace"],
+                responder_inputs["worker_id"],
+                responder_inputs["task_queue"],
+                expected_counter,
+                log_file,
+                responder_holder,
+            ),
+            kwargs={"poll_timeout": 90.0, "ready_event": responder_ready},
+            daemon=True,
+        )
+        responder.start()
+        if not responder_ready.wait(timeout=15):
+            raise WaterlineServiceProbeError(
+                "The service-mode query responder did not become eligible before the Waterline query action.",
+                blocker_kind="waterline_service_query_responder_unavailable",
+            )
+        query = waterline_service_http_json(
+            service_url,
+            query_path,
+            method="POST",
+            body={"arguments": []},
+            timeout=90,
+        )
+        responder.join(timeout=10)
+        query_body = query.get("body") if isinstance(query.get("body"), dict) else {}
+        query_valid = (
+            query.get("status_code") == 200
+            and query_body.get("query") == query_name
+            and query_body.get("result") == expected_counter
+            and responder_holder.get("error") is None
+            and isinstance(responder_holder.get("complete"), dict)
+            and int(responder_holder["complete"].get("status_code") or 0) < 400
+        )
+        if not query_valid:
+            raise WaterlineServiceProbeError(
+                "Waterline service-mode query action did not match the public client observation.",
+                blocker_kind="waterline_service_query_action_failed",
+                details={
+                    "query_status_code": query.get("status_code"),
+                    "query_result": query_body.get("result"),
+                    "query_responder_error": responder_holder.get("error"),
+                },
+            )
+
+        signal = waterline_service_http_json(
+            service_url,
+            signal_path,
+            method="POST",
+            body={"arguments": [0]},
+            timeout=30,
+        )
+        signal_body = signal.get("body") if isinstance(signal.get("body"), dict) else {}
+        if (
+            not isinstance(signal.get("status_code"), int)
+            or int(signal["status_code"]) >= 300
+            or str(signal_body.get("command_status") or "").lower() not in {"accepted", "completed"}
+        ):
+            raise WaterlineServiceProbeError(
+                "Waterline service-mode signal action was not accepted through the PHP SDK backend.",
+                blocker_kind="waterline_service_signal_action_failed",
+                details={
+                    "signal_status_code": signal.get("status_code"),
+                    "signal_reason": signal_body.get("reason"),
+                    "signal_command_status": signal_body.get("command_status"),
+                },
+            )
+
+        observed = {
+            "artifact_versions": dict(artifact_versions),
+            "artifact_sources": dict(EXPECTED_ARTIFACT_SOURCES),
+            "captured_at": now(),
+            "distribution_identity": "waterline-service",
+            "image_reference": image_metadata["image_reference"],
+            "manifest_digest": image_metadata["manifest_digest"],
+            "source_revision_labels": image_metadata["source_revision_labels"],
+            "service_mode": {
+                "backend": "service",
+                "transport": "durable-workflow/sdk",
+                "server_endpoint": "http://server:8080",
+                "namespace": responder_inputs["namespace"],
+                "access_mode": "operator",
+                "docker_network": network,
+            },
+            "api_paths": {
+                "up": "/up",
+                "running_runs": list_path,
+                "selected_run_detail": detail_path,
+                "selected_run_query_action": query_path,
+                "selected_run_signal_action": signal_path,
+            },
+            "api_captures": {
+                "up": readiness,
+                "running_runs": {
+                    "status_code": running_list.get("status_code"),
+                    "selected_run_present": selected_in_list,
+                },
+                "selected_run_detail": {
+                    "status_code": detail.get("status_code"),
+                    "workflow_id": detail_body.get("instance_id"),
+                    "run_id": detail_body.get("run_id"),
+                    "status": detail_body.get("status"),
+                    "engine_source": detail_body.get("engine_source"),
+                    "backend": backend,
+                    "can_query": detail_body.get("can_query"),
+                    "can_signal": detail_body.get("can_signal"),
+                },
+                "selected_run_query_action": {
+                    "status_code": query.get("status_code"),
+                    "query": query_body.get("query"),
+                    "result": query_body.get("result"),
+                    "target_scope": query_body.get("target_scope"),
+                },
+                "selected_run_signal_action": {
+                    "status_code": signal.get("status_code"),
+                    "signal": "increment",
+                    "arguments": [0],
+                    "command_status": signal_body.get("command_status"),
+                },
+            },
+            "comparison": {
+                "run_identity_matches_public_clients": True,
+                "counter_state_matches_public_clients": True,
+                "service_mode_uses_public_php_sdk": True,
+                "server_observation": {
+                    "workflow_id": workflow_id,
+                    "run_id": run_id,
+                    "status": public_evidence["run_status"],
+                    "counter": expected_counter,
+                },
+                "waterline_service_observation": {
+                    "workflow_id": detail_body.get("instance_id"),
+                    "run_id": detail_body.get("run_id"),
+                    "status": detail_body.get("status"),
+                    "counter": query_body.get("result"),
+                },
+            },
+            "query_responder": {
+                "worker_id": responder_inputs["worker_id"],
+                "task_queue": responder_inputs["task_queue"],
+                "poll_status_code": (
+                    responder_holder.get("poll", {}).get("status_code")
+                    if isinstance(responder_holder.get("poll"), dict)
+                    else None
+                ),
+                "complete_status_code": (
+                    responder_holder.get("complete", {}).get("status_code")
+                    if isinstance(responder_holder.get("complete"), dict)
+                    else None
+                ),
+                "error": responder_holder.get("error"),
+            },
+        }
+        return {
+            "artifact_versions": dict(artifact_versions),
+            "scenario_results": {
+                WATERLINE_SERVICE_SCENARIO: {
+                    "scenario_id": WATERLINE_SERVICE_SCENARIO,
+                    "status": "pass",
+                    "observed_outputs": observed,
+                },
+            },
+        }, {
+            "log_file": log_file.name,
+            "generated_scenarios": [WATERLINE_SERVICE_SCENARIO],
+            "distribution_identity": "waterline-service",
+            "image_reference": image_metadata["image_reference"],
+            "manifest_digest": image_metadata["manifest_digest"],
+            "source_revision_labels": image_metadata["source_revision_labels"],
+            "workflow_id": workflow_id,
+            "run_id": run_id,
+            "docker_network": network,
+        }
+    except WaterlineServiceProbeError as exc:
+        log_line(log_file, f"Waterline service probe failed: {exc.blocker_kind}: {exc}")
+        return waterline_service_setup_result(
+            status="fail",
+            reason=str(exc),
+            blocker_kind=exc.blocker_kind,
+            details=exc.details,
+        ), {
+            "error": exc.blocker_kind,
+            "reason": str(exc),
+            "details": exc.details,
+            "log_file": log_file.name,
+            "generated_scenarios": [WATERLINE_SERVICE_SCENARIO],
+        }
+    finally:
+        if container_registered:
+            cleanup_container(container_name, log_file)
+        cleanup_labeled_docker_runs(log_file)
 
 
 WATERLINE_WORKFLOW_STORAGE_ENV_KEYS = (
@@ -12185,6 +12866,37 @@ SCENARIO_REQUIRED_EVIDENCE: dict[str, list[str]] = {
         "comparison.cli_observation",
         "comparison.sdk_observation",
     ],
+    "waterline_service_operator_visibility": [
+        "artifact_versions",
+        "artifact_sources",
+        "captured_at",
+        "distribution_identity",
+        "image_reference",
+        "manifest_digest",
+        "source_revision_labels.oci_revision",
+        "source_revision_labels.release_tag",
+        "source_revision_labels.labels",
+        "service_mode.backend",
+        "service_mode.transport",
+        "service_mode.namespace",
+        "service_mode.access_mode",
+        "api_paths.up",
+        "api_paths.running_runs",
+        "api_paths.selected_run_detail",
+        "api_paths.selected_run_query_action",
+        "api_paths.selected_run_signal_action",
+        "api_captures.up.status_code",
+        "api_captures.running_runs.selected_run_present",
+        "api_captures.selected_run_detail",
+        "api_captures.selected_run_query_action",
+        "api_captures.selected_run_signal_action",
+        "comparison.run_identity_matches_public_clients",
+        "comparison.counter_state_matches_public_clients",
+        "comparison.service_mode_uses_public_php_sdk",
+        "comparison.server_observation",
+        "comparison.waterline_service_observation",
+        "query_responder",
+    ],
 }
 
 TRUTHY_REQUIRED_EVIDENCE = {
@@ -12198,7 +12910,10 @@ TRUTHY_REQUIRED_EVIDENCE = {
     "cross_language_query_consistency",
     "wire_envelope_compatibility",
     "comparison.run_status_matches_public_clients",
+    "comparison.run_identity_matches_public_clients",
     "comparison.counter_state_matches_public_clients",
+    "comparison.service_mode_uses_public_php_sdk",
+    "api_captures.running_runs.selected_run_present",
     "prefix_consistent_query_results",
     "query_result_rollback_free",
     "repeat_query_consistency",
@@ -14009,6 +14724,7 @@ required_scenarios = [
     "unknown_signal_and_query_errors",
     "malformed_signal_and_query_payloads",
     "waterline_operator_visibility",
+    "waterline_service_operator_visibility",
 ]
 
 scenario_routes = {
@@ -14193,6 +14909,16 @@ scenario_routes = {
             "compare Waterline selected-run detail against server, CLI, and SDK observations",
             "show applied, rejected, and terminal-run signal/query outcomes",
             "record any unsupported Waterline query-result materialization as an explicit finding",
+        ],
+    },
+    "waterline_service_operator_visibility": {
+        "type": "signal_query_waterline_service_observer_uncovered",
+        "owner": "waterline",
+        "title": "Signals/queries published Waterline service-image coverage remains unproved",
+        "acceptance": [
+            "execute the immutable published Waterline service manifest on the candidate server network",
+            "retain its source revision and release labels plus top-level manifest digest",
+            "exercise selected-run reads, query, and signal actions through the public PHP SDK backend",
         ],
     },
 }
@@ -14847,6 +15573,7 @@ def portable_result_limit_fallback(
         "waterline_observer_comparison": section_for(
             retained_scenarios,
             "waterline_operator_visibility",
+            "waterline_service_operator_visibility",
         ),
         "scenario_results": retained_scenarios,
         "findings": [{
@@ -15072,6 +15799,7 @@ result = {
     "waterline_observer_comparison": section_for(
         retained_scenario_results,
         "waterline_operator_visibility",
+        "waterline_service_operator_visibility",
     ),
     "scenario_results": retained_scenario_results,
     "findings": retained_findings,

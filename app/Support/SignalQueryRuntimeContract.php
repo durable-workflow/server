@@ -16,7 +16,7 @@ final class SignalQueryRuntimeContract
 {
     public const SCHEMA = 'durable-workflow.v2.signal-query-runtime.contract';
 
-    public const VERSION = 36;
+    public const VERSION = 37;
 
     public const RESULT_SCHEMA = 'durable-workflow.v2.signal-query-runtime.result';
 
@@ -62,7 +62,49 @@ final class SignalQueryRuntimeContract
                     'sdk-python' => 'PyPI package durable-workflow==<latest>',
                     'sdk-rust' => 'crates.io package durable-workflow pinned with an exact Cargo requirement',
                     'workflow' => 'Composer package durable-workflow/workflow:2.0.0-alpha.<latest> for the embedded Laravel engine used by Waterline',
-                    'waterline' => 'published Waterline package or image matching the latest release tag',
+                    'waterline' => 'published Waterline Composer package and digest-pinned service image matching the latest release tag',
+                ],
+                'required_distribution_identities' => [
+                    'workflow' => [
+                        'version_component' => 'workflow',
+                        'kind' => 'composer',
+                        'package' => 'durable-workflow/workflow',
+                    ],
+                    'waterline' => [
+                        'version_component' => 'waterline',
+                        'kind' => 'composer',
+                        'package' => 'durable-workflow/waterline',
+                    ],
+                    'waterline-service' => [
+                        'version_component' => 'waterline',
+                        'kind' => 'oci',
+                        'package' => 'docker.io/durableworkflow/waterline',
+                    ],
+                    'server' => [
+                        'version_component' => 'server',
+                        'kind' => 'oci',
+                        'package' => 'docker.io/durableworkflow/server',
+                    ],
+                    'cli' => [
+                        'version_component' => 'cli',
+                        'kind' => 'github-release',
+                        'package' => 'durable-workflow/cli',
+                    ],
+                    'sdk-php' => [
+                        'version_component' => 'sdk-php',
+                        'kind' => 'composer',
+                        'package' => 'durable-workflow/sdk',
+                    ],
+                    'sdk-python' => [
+                        'version_component' => 'sdk-python',
+                        'kind' => 'pypi',
+                        'package' => 'durable-workflow',
+                    ],
+                    'sdk-rust' => [
+                        'version_component' => 'sdk-rust',
+                        'kind' => 'crates.io',
+                        'package' => 'durable-workflow',
+                    ],
                 ],
                 'install_proof_artifacts' => [
                     'server',
@@ -92,6 +134,7 @@ final class SignalQueryRuntimeContract
                     'scenario_results',
                     'findings',
                     'finding_links',
+                    'executed_distribution_identities',
                 ],
             ],
             'scenario_statuses' => [
@@ -142,6 +185,9 @@ final class SignalQueryRuntimeContract
                 'observer_paths' => [
                     'waterline-selected-run-detail',
                     'waterline-query-action',
+                    'waterline-service-selected-run-detail',
+                    'waterline-service-query-action',
+                    'waterline-service-signal-action',
                 ],
                 'same_language_cells' => [
                     [
@@ -202,6 +248,7 @@ final class SignalQueryRuntimeContract
                 'unknown_signal_and_query_errors',
                 'malformed_signal_and_query_payloads',
                 'waterline_operator_visibility',
+                'waterline_service_operator_visibility',
             ],
             'scenario_requirements' => [
                 'published_artifact_install_only' => [
@@ -562,6 +609,48 @@ final class SignalQueryRuntimeContract
                     ],
                     'allowed_live_query_detail_limitation' => 'query_results_not_materialized_in_selected_run_detail',
                 ],
+                'waterline_service_operator_visibility' => [
+                    'required_surfaces' => [
+                        'artifact_versions',
+                        'artifact_sources',
+                        'captured_at',
+                        'distribution_identity',
+                        'image_reference',
+                        'manifest_digest',
+                        'source_revision_labels.oci_revision',
+                        'source_revision_labels.release_tag',
+                        'source_revision_labels.labels',
+                        'service_mode.backend',
+                        'service_mode.transport',
+                        'service_mode.namespace',
+                        'service_mode.access_mode',
+                        'api_paths.up',
+                        'api_paths.running_runs',
+                        'api_paths.selected_run_detail',
+                        'api_paths.selected_run_query_action',
+                        'api_paths.selected_run_signal_action',
+                        'api_captures.up.status_code',
+                        'api_captures.running_runs.selected_run_present',
+                        'api_captures.selected_run_detail',
+                        'api_captures.selected_run_query_action',
+                        'api_captures.selected_run_signal_action',
+                        'comparison.run_identity_matches_public_clients',
+                        'comparison.counter_state_matches_public_clients',
+                        'comparison.service_mode_uses_public_php_sdk',
+                        'comparison.server_observation',
+                        'comparison.waterline_service_observation',
+                        'query_responder',
+                    ],
+                    'image_policy' => [
+                        'environment_variable' => 'DW_WATERLINE_SERVICE_IMAGE',
+                        'repository' => 'docker.io/durableworkflow/waterline',
+                        'reference_requirement' => 'sha256_digest_only',
+                        'tag_only_rejected' => true,
+                        'local_source_rejected' => true,
+                        'version_source' => 'artifactVersions.waterline',
+                        'distribution_identity' => 'waterline-service',
+                    ],
+                ],
             ],
             'coverage_gate' => [
                 'passing_outcome_requires' => [
@@ -574,6 +663,7 @@ final class SignalQueryRuntimeContract
                     'terminal_run_behavior_reported',
                     'adversarial_errors_typed',
                     'waterline_observer_comparison_reported',
+                    'both_waterline_distributions_executed',
                     'artifact_versions_match_latest_published_set',
                     'published_artifact_sources_match_expected_channels',
                     'published_artifact_install_only_includes_per_artifact_install_proof',
@@ -654,6 +744,8 @@ final class SignalQueryRuntimeContract
                     'DW_RUST_SDK_VERSION',
                     'DW_SIGNALS_QUERIES_RUST_DOCKER_IMAGE',
                     'DW_SIGNALS_QUERIES_RUN_RUST_MATRIX_PROBE',
+                    'DW_WATERLINE_SERVICE_IMAGE',
+                    'DW_SIGNALS_QUERIES_RUN_WATERLINE_SERVICE_PROBE',
                     'DW_SIGNALS_QUERIES_KEEP_RUN_ROOT',
                 ],
                 'required_execution_scopes' => [
@@ -669,6 +761,7 @@ final class SignalQueryRuntimeContract
                     'unknown_handler_errors',
                     'malformed_payload_errors',
                     'waterline_observer_comparison',
+                    'waterline_service_observer_comparison',
                 ],
                 'baseline_probe_not_claimed_as_pass' => [],
                 'evidence_shards' => [
@@ -969,6 +1062,48 @@ final class SignalQueryRuntimeContract
                             'comparison.sdk_observation',
                         ],
                         'finding_type_when_missing' => 'signal_query_waterline_observer_comparison_uncovered',
+                        'owning_surface' => 'waterline',
+                    ],
+                    'waterline_service_observer_comparison' => [
+                        'must_cover_scenarios' => [
+                            'waterline_service_operator_visibility',
+                        ],
+                        'required_evidence_fields' => [
+                            'artifact_versions',
+                            'artifact_sources',
+                            'captured_at',
+                            'distribution_identity',
+                            'image_reference',
+                            'manifest_digest',
+                            'source_revision_labels.oci_revision',
+                            'source_revision_labels.release_tag',
+                            'source_revision_labels.labels',
+                            'service_mode.backend',
+                            'service_mode.transport',
+                            'service_mode.namespace',
+                            'service_mode.access_mode',
+                            'api_paths.up',
+                            'api_paths.running_runs',
+                            'api_paths.selected_run_detail',
+                            'api_paths.selected_run_query_action',
+                            'api_paths.selected_run_signal_action',
+                            'api_captures.up.status_code',
+                            'api_captures.running_runs.selected_run_present',
+                            'api_captures.selected_run_detail',
+                            'api_captures.selected_run_query_action',
+                            'api_captures.selected_run_signal_action',
+                            'comparison.run_identity_matches_public_clients',
+                            'comparison.counter_state_matches_public_clients',
+                            'comparison.service_mode_uses_public_php_sdk',
+                            'comparison.server_observation',
+                            'comparison.waterline_service_observation',
+                            'query_responder',
+                        ],
+                        'image_reference_source' => 'DW_WATERLINE_SERVICE_IMAGE',
+                        'requires_digest_reference' => true,
+                        'required_distribution_identity' => 'waterline-service',
+                        'version_source' => 'artifactVersions.waterline',
+                        'finding_type_when_missing' => 'signal_query_waterline_service_observer_uncovered',
                         'owning_surface' => 'waterline',
                     ],
                 ],

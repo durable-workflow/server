@@ -203,7 +203,10 @@ class WorkflowControlPlaneTest extends TestCase
             ->assertJsonPath('control_plane.operation', 'list_runs')
             ->assertJsonPath('control_plane.workflow_id', 'wf-control-plane-interactive')
             ->assertJsonPath('run_count', 1)
-            ->assertJsonPath('runs.0.run_id', $runId);
+            ->assertJsonPath('runs.0.run_id', $runId)
+            ->assertJsonPath('runs.0.status_bucket', 'running')
+            ->assertJsonPath('runs.0.is_terminal', false)
+            ->assertJsonPath('runs.0.is_current_run', true);
 
         $list = $this->withHeaders($this->apiHeaders())
             ->getJson('/api/workflows');
@@ -1784,14 +1787,40 @@ class WorkflowControlPlaneTest extends TestCase
         $failedList->assertOk()
             ->assertJsonPath('workflow_count', 0);
 
-        // Raw status values like "cancelled" or "terminated" are no longer accepted
         $this->withHeaders($this->apiHeaders())
-            ->getJson('/api/workflows?status=cancelled')
-            ->assertStatus(422);
+            ->postJson('/api/workflows/wf-status-bucket-filter/cancel', [
+                'reason' => 'operator request',
+            ])
+            ->assertOk();
+
+        $cancelledList = $this->withHeaders($this->apiHeaders())
+            ->getJson('/api/workflows?status=cancelled');
+
+        $cancelledList->assertOk()
+            ->assertJsonPath('workflow_count', 1)
+            ->assertJsonPath('workflows.0.workflow_id', 'wf-status-bucket-filter')
+            ->assertJsonPath('workflows.0.status', 'cancelled');
+
+        $terminatedStart = $this->withHeaders($this->apiHeaders())
+            ->postJson('/api/workflows', [
+                'workflow_id' => 'wf-terminated-status-filter',
+                'workflow_type' => 'tests.await-approval-workflow',
+            ]);
+        $terminatedStart->assertCreated();
 
         $this->withHeaders($this->apiHeaders())
-            ->getJson('/api/workflows?status=terminated')
-            ->assertStatus(422);
+            ->postJson('/api/workflows/wf-terminated-status-filter/terminate', [
+                'reason' => 'operator request',
+            ])
+            ->assertOk();
+
+        $terminatedList = $this->withHeaders($this->apiHeaders())
+            ->getJson('/api/workflows?status=terminated');
+
+        $terminatedList->assertOk()
+            ->assertJsonPath('workflow_count', 1)
+            ->assertJsonPath('workflows.0.workflow_id', 'wf-terminated-status-filter')
+            ->assertJsonPath('workflows.0.status', 'terminated');
 
         $this->withHeaders($this->apiHeaders())
             ->getJson('/api/workflows?status=pending')

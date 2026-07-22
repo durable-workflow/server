@@ -45,15 +45,15 @@ jobs:
         uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803  # v6
         with:
           repository: durable-workflow/workflow
-          ref: 187746bb19615a8cbb25dfbe1e4e27dbbd933472
+          ref: 08fab5ff5c51fd31ce8306b39edb10996d5a8531
           path: workflow-package
           persist-credentials: false
 
       - name: Verify workflow package source provenance
         shell: bash
         env:
-          WORKFLOW_PACKAGE_REF: 2.0.0-beta.4
-          WORKFLOW_PACKAGE_COMMIT: 187746bb19615a8cbb25dfbe1e4e27dbbd933472
+          WORKFLOW_PACKAGE_REF: 2.0.0-beta.5
+          WORKFLOW_PACKAGE_COMMIT: 08fab5ff5c51fd31ce8306b39edb10996d5a8531
         run: |
           set -euo pipefail
           resolved_commit="$(git -C workflow-package rev-parse HEAD)"

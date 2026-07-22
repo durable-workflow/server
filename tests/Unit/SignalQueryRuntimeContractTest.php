@@ -14,7 +14,7 @@ class SignalQueryRuntimeContractTest extends TestCase
         $manifest = SignalQueryRuntimeContract::manifest();
 
         $this->assertSame('durable-workflow.v2.signal-query-runtime.contract', $manifest['schema']);
-        $this->assertSame(36, SignalQueryRuntimeContract::VERSION);
+        $this->assertSame(37, SignalQueryRuntimeContract::VERSION);
         $this->assertSame(SignalQueryRuntimeContract::VERSION, $manifest['version']);
         $this->assertSame('durable-workflow.v2.signal-query-runtime.result', $manifest['result_schema']);
         $this->assertSame('signal_query_runtime_contract', $manifest['fixture_category']);
@@ -77,6 +77,22 @@ class SignalQueryRuntimeContractTest extends TestCase
             ],
             $manifest['artifact_policy']['expected_sources'],
         );
+        $this->assertSame(
+            [
+                'version_component' => 'waterline',
+                'kind' => 'composer',
+                'package' => 'durable-workflow/waterline',
+            ],
+            $manifest['artifact_policy']['required_distribution_identities']['waterline'],
+        );
+        $this->assertSame(
+            [
+                'version_component' => 'waterline',
+                'kind' => 'oci',
+                'package' => 'docker.io/durableworkflow/waterline',
+            ],
+            $manifest['artifact_policy']['required_distribution_identities']['waterline-service'],
+        );
 
         $this->assertContains(
             'local_product_source_checkout',
@@ -91,6 +107,7 @@ class SignalQueryRuntimeContractTest extends TestCase
             'scenario_results',
             'findings',
             'finding_links',
+            'executed_distribution_identities',
         ] as $field) {
             $this->assertContains($field, $manifest['artifact_policy']['required_run_record_fields']);
         }
@@ -107,6 +124,9 @@ class SignalQueryRuntimeContractTest extends TestCase
         $this->assertContains('sdk-rust', $matrix['client_paths']);
         $this->assertContains('waterline-selected-run-detail', $matrix['observer_paths']);
         $this->assertContains('waterline-query-action', $matrix['observer_paths']);
+        $this->assertContains('waterline-service-selected-run-detail', $matrix['observer_paths']);
+        $this->assertContains('waterline-service-query-action', $matrix['observer_paths']);
+        $this->assertContains('waterline-service-signal-action', $matrix['observer_paths']);
 
         $this->assertContains(
             [
@@ -233,6 +253,7 @@ PY);
             'unknown_signal_and_query_errors',
             'malformed_signal_and_query_payloads',
             'waterline_operator_visibility',
+            'waterline_service_operator_visibility',
         ] as $scenario) {
             $this->assertContains($scenario, $manifest['required_scenarios']);
         }
@@ -364,6 +385,35 @@ PY);
             'query_results_not_materialized_in_selected_run_detail',
             $requirements['waterline_operator_visibility']['allowed_live_query_detail_limitation'],
         );
+        foreach ([
+            'distribution_identity',
+            'image_reference',
+            'manifest_digest',
+            'source_revision_labels.oci_revision',
+            'source_revision_labels.release_tag',
+            'source_revision_labels.labels',
+            'api_captures.up.status_code',
+            'api_captures.running_runs.selected_run_present',
+            'api_captures.selected_run_detail',
+            'api_captures.selected_run_query_action',
+            'api_captures.selected_run_signal_action',
+            'comparison.run_identity_matches_public_clients',
+            'comparison.counter_state_matches_public_clients',
+            'comparison.service_mode_uses_public_php_sdk',
+        ] as $surface) {
+            $this->assertContains(
+                $surface,
+                $requirements['waterline_service_operator_visibility']['required_surfaces'],
+            );
+        }
+        $this->assertSame(
+            'DW_WATERLINE_SERVICE_IMAGE',
+            $requirements['waterline_service_operator_visibility']['image_policy']['environment_variable'],
+        );
+        $this->assertSame(
+            'waterline-service',
+            $requirements['waterline_service_operator_visibility']['image_policy']['distribution_identity'],
+        );
 
         $findingPolicy = SignalQueryRuntimeContract::manifest()['finding_policy'];
         $this->assertSame('link_root_cause_finding_against_server', $findingPolicy['ordering_drift']);
@@ -379,7 +429,7 @@ PY);
         $resultGate = SignalQueryRuntimeContract::manifest()['result_gate'];
 
         $this->assertSame(SignalQueryRuntimeResultGate::SCHEMA, $resultGate['schema']);
-        $this->assertSame(28, SignalQueryRuntimeResultGate::VERSION);
+        $this->assertSame(29, SignalQueryRuntimeResultGate::VERSION);
         $this->assertSame(SignalQueryRuntimeResultGate::VERSION, $resultGate['version']);
         $this->assertSame(
             SignalQueryRuntimeContract::RESULT_SCHEMA,
@@ -916,6 +966,15 @@ PY);
             ],
             $hostRunner['evidence_shards']['waterline_observer_comparison']['required_evidence_fields'],
         );
+        $serviceShard = $hostRunner['evidence_shards']['waterline_service_observer_comparison'];
+        $this->assertSame(
+            ['waterline_service_operator_visibility'],
+            $serviceShard['must_cover_scenarios'],
+        );
+        $this->assertSame('DW_WATERLINE_SERVICE_IMAGE', $serviceShard['image_reference_source']);
+        $this->assertTrue($serviceShard['requires_digest_reference']);
+        $this->assertSame('waterline-service', $serviceShard['required_distribution_identity']);
+        $this->assertSame('artifactVersions.waterline', $serviceShard['version_source']);
 
         $this->assertSame(
             'conformance_runner_coverage_gap',
@@ -982,7 +1041,7 @@ PY);
             'ordered delivery baseline probe failed',
             'body={"input": [amount], "request_id": f"{ordered_workflow_id}-{amount}"}',
             'body={"input": [7], "request_id": duplicate_request_id}',
-            'timeout=remaining + 5.0',
+            'timeout=min(remaining + 1.0, claim_poll_seconds + 5.0)',
             '"command_contract_source"',
             '"signal_admission"',
             '"documented_contract_source"',
@@ -1761,6 +1820,8 @@ def fake_http_json(base_url, path, **kwargs):
 
 
 def fake_run_command(command, **kwargs):
+    if command[:2] == ["docker", "inspect"]:
+        return subprocess.CompletedProcess(command, 1, stdout="", stderr="not found")
     if "php-counter-worker.php" in command:
         events.append("start:php-worker-rust-client")
     return subprocess.CompletedProcess(
@@ -1812,7 +1873,7 @@ PY);
 
         $scenarioResults = $result['scenario_results'];
         $this->assertSame('pass', $scenarioResults['rust_worker_rust_php_python_clients']['status']);
-        $this->assertSame(
+        $this->assertEquals(
             ['running' => 8, 'completed' => 8],
             $scenarioResults['rust_worker_rust_php_python_clients']['observed_outputs']['rust_query_results'],
         );
@@ -2016,10 +2077,8 @@ print(json.dumps({
 }, sort_keys=True))
 PY);
 
-        $this->assertSame(
-            ['scenario_status' => 'pass', 'outcome' => 'pass'],
-            $result['complete'],
-        );
+        $this->assertSame('pass', $result['complete']['scenario_status']);
+        $this->assertSame('pass', $result['complete']['outcome']);
         foreach (['missing', 'changed'] as $mutation) {
             $this->assertSame('fail', $result[$mutation]['scenario_status'], $mutation);
             $this->assertSame('non_passing', $result[$mutation]['outcome'], $mutation);
@@ -4501,7 +4560,7 @@ PY);
         $identityComponents = array_keys($result['executed_distribution_identities']);
         sort($identityComponents);
         $this->assertSame(
-            ['cli', 'sdk-php', 'sdk-python', 'sdk-rust', 'server', 'waterline', 'workflow'],
+            ['cli', 'sdk-php', 'sdk-python', 'sdk-rust', 'server', 'waterline', 'waterline-service', 'workflow'],
             $identityComponents,
         );
         $this->assertSame(
@@ -4599,9 +4658,153 @@ PY);
             $result['executed_distribution_identity_failures'],
         );
         $this->assertSame(
-            ['cli', 'sdk-php', 'sdk-python', 'server', 'waterline', 'workflow'],
+            ['cli', 'sdk-php', 'sdk-python', 'server', 'waterline', 'waterline-service', 'workflow'],
             $result['executed_distribution_identity_observed_components'],
         );
+    }
+
+    public function test_waterline_service_image_requires_the_exact_published_digest_reference(): void
+    {
+        $result = $this->runSignalQueryRunnerPythonSnippet(<<<'PY'
+cases = {
+    "missing": None,
+    "tag_only": "docker.io/durableworkflow/waterline:2.0.0-beta.5",
+    "local": "waterline-service:local",
+    "digest": "docker.io/durableworkflow/waterline@sha256:" + "a" * 64,
+}
+observed = {}
+for name, value in cases.items():
+    if value is None:
+        os.environ.pop("DW_WATERLINE_SERVICE_IMAGE", None)
+    else:
+        os.environ["DW_WATERLINE_SERVICE_IMAGE"] = value
+    try:
+        observed[name] = {"reference": waterline_service_image_reference(), "error": None}
+    except WaterlineServiceProbeError as exc:
+        observed[name] = {"reference": None, "error": exc.blocker_kind}
+print(json.dumps(observed, sort_keys=True))
+PY);
+
+        $this->assertSame('waterline_service_image_missing', $result['missing']['error']);
+        $this->assertSame('waterline_service_image_not_immutable', $result['tag_only']['error']);
+        $this->assertSame('waterline_service_image_not_immutable', $result['local']['error']);
+        $this->assertSame(
+            'docker.io/durableworkflow/waterline@sha256:'.str_repeat('a', 64),
+            $result['digest']['reference'],
+        );
+        $this->assertNull($result['digest']['error']);
+    }
+
+    public function test_waterline_service_container_executes_the_digest_and_maps_identity_to_waterline_version(): void
+    {
+        $result = $this->runSignalQueryRunnerPythonSnippet(<<<'PY'
+image = "docker.io/durableworkflow/waterline@sha256:" + "b" * 64
+command = waterline_service_container_command(
+    image=image,
+    container_name="waterline-service-test",
+    network="candidate_default",
+    server_endpoint="http://server:8080",
+    namespace="conformance",
+)
+identity = distribution_identity(
+    "waterline-service",
+    "2.0.0-beta.5",
+    "manifest",
+    "b" * 64,
+)
+print(json.dumps({
+    "command": command,
+    "identity": identity,
+    "mapped_version": distribution_version(
+        {"waterline": "2.0.0-beta.5"},
+        "waterline-service",
+    ),
+}, sort_keys=True))
+PY);
+
+        $this->assertSame(
+            'docker.io/durableworkflow/waterline@sha256:'.str_repeat('b', 64),
+            $result['command'][count($result['command']) - 1],
+        );
+        $this->assertContains('candidate_default', $result['command']);
+        $this->assertContains('WATERLINE_SERVER_TOKEN', $result['command']);
+        $this->assertNotContains('WATERLINE_SERVER_TOKEN=test-token', $result['command']);
+        $this->assertSame('2.0.0-beta.5', $result['mapped_version']);
+        $this->assertSame('oci', $result['identity']['kind']);
+        $this->assertSame(
+            'oci:docker.io/durableworkflow/waterline@2.0.0-beta.5',
+            $result['identity']['locator'],
+        );
+        $this->assertSame('manifest', $result['identity']['artifacts'][0]['name']);
+        $this->assertSame(str_repeat('b', 64), $result['identity']['artifacts'][0]['sha256']);
+    }
+
+    public function test_waterline_service_image_metadata_retains_manifest_and_source_revision_labels(): void
+    {
+        $result = $this->runSignalQueryRunnerPythonSnippet(<<<'PY'
+image = "docker.io/durableworkflow/waterline@sha256:" + "c" * 64
+revision = "d" * 40
+
+def fake_run_command(command, **kwargs):
+    if command[:2] == ["docker", "pull"]:
+        return subprocess.CompletedProcess(command, 0, "pulled", "")
+    if command[-1] != image:
+        raise AssertionError(f"unexpected image command: {command}")
+    if command[-2] == "{{json .Config.Labels}}":
+        return subprocess.CompletedProcess(command, 0, json.dumps({
+            "org.opencontainers.image.revision": revision,
+            "dev.durable-workflow.release.tag": "2.0.0-beta.5",
+        }), "")
+    if command[-2] == "{{json .RepoDigests}}":
+        return subprocess.CompletedProcess(
+            command,
+            0,
+            json.dumps(["durableworkflow/waterline@sha256:" + "c" * 64]),
+            "",
+        )
+    raise AssertionError(f"unexpected docker command: {command}")
+
+globals()["run_command"] = fake_run_command
+metadata = inspect_waterline_service_image(
+    image,
+    "2.0.0-beta.5",
+    Path("/tmp/waterline-service-metadata-test.log"),
+)
+print(json.dumps(metadata, sort_keys=True))
+PY);
+
+        $this->assertSame(
+            'docker.io/durableworkflow/waterline@sha256:'.str_repeat('c', 64),
+            $result['image_reference'],
+        );
+        $this->assertSame('sha256:'.str_repeat('c', 64), $result['manifest_digest']);
+        $this->assertSame(str_repeat('d', 40), $result['source_revision_labels']['oci_revision']);
+        $this->assertSame('2.0.0-beta.5', $result['source_revision_labels']['release_tag']);
+        $this->assertSame(
+            str_repeat('d', 40),
+            $result['source_revision_labels']['labels']['org.opencontainers.image.revision'],
+        );
+        $this->assertSame(
+            '2.0.0-beta.5',
+            $result['source_revision_labels']['labels']['dev.durable-workflow.release.tag'],
+        );
+    }
+
+    public function test_result_gate_requires_the_retained_waterline_service_distribution_identity(): void
+    {
+        $result = $this->completeSignalQueryResult();
+        unset($result['executed_distribution_identities']['waterline-service']);
+
+        $evaluation = SignalQueryRuntimeResultGate::evaluate($result);
+        $failures = array_values(array_filter(
+            $evaluation['gate_failures'],
+            static fn (array $failure): bool => ($failure['code'] ?? null)
+                === 'missing_executed_distribution_identity',
+        ));
+
+        $this->assertSame('non_passing', $evaluation['status']);
+        $this->assertCount(1, $failures);
+        $this->assertSame('waterline-service', $failures[0]['distribution']);
     }
 
     public function test_host_runner_distribution_recorder_rejects_same_version_different_bytes(): void
@@ -4639,6 +4842,7 @@ store = root / "identities.json"
 versions = {
     "workflow": "2.0.0-alpha.187",
     "waterline": "2.0.0-alpha.69",
+    "waterline-service": "2.0.0-alpha.69",
     "server": "0.2.224",
     "cli": "0.1.74",
     "sdk-php": "0.1.1",
@@ -4681,7 +4885,7 @@ PY);
         $this->assertSame([], $result['errors']);
         $this->assertSame([], $result['temporary_files']);
         $this->assertSame(
-            ['cli', 'sdk-php', 'sdk-python', 'sdk-rust', 'server', 'waterline', 'workflow'],
+            ['cli', 'sdk-php', 'sdk-python', 'sdk-rust', 'server', 'waterline', 'waterline-service', 'workflow'],
             $result['components'],
         );
     }
@@ -5345,7 +5549,7 @@ PY);
         ]);
 
         $this->assertSame('pass', $result['scenario_results']['published_artifact_install_only']['status']);
-        $this->assertSame(
+        $this->assertEqualsCanonicalizing(
             ['server', 'cli', 'sdk-php', 'sdk-python', 'sdk-rust'],
             array_column(
                 $result['scenario_results']['published_artifact_install_only']['observed_outputs']['artifact_install_evidence']['artifacts'],
@@ -6622,7 +6826,7 @@ PY);
 
         $this->assertSame('non_passing', $evaluation['status']);
         $this->assertSame(
-            ['server', 'cli', 'sdk-php', 'sdk-python', 'waterline'],
+            ['server', 'cli', 'sdk-python', 'workflow', 'waterline'],
             array_column($placeholderFailures, 'artifact'),
         );
     }
@@ -7928,7 +8132,10 @@ PY);
     {
         $repoRoot = dirname(__DIR__, 2);
         $script = $this->signalQueryRunnerPythonDefinitions()
-            ."\nos.environ[\"REPO_ROOT\"] = ".json_encode($repoRoot, JSON_THROW_ON_ERROR)
+            ."\nos.environ[\"REPO_ROOT\"] = ".json_encode(
+                $repoRoot,
+                JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES,
+            )
             ."\n".$snippet;
         $process = proc_open(
             ['python3', '-'],
@@ -8208,6 +8415,11 @@ PY);
                 'locator' => 'composer:durable-workflow/waterline@'.$versions['waterline'],
                 'artifacts' => [['name' => 'durable-workflow/waterline', 'sha256' => str_repeat('b', 64)]],
             ],
+            'waterline-service' => [
+                'kind' => 'oci',
+                'locator' => 'oci:docker.io/durableworkflow/waterline@'.$versions['waterline'],
+                'artifacts' => [['name' => 'manifest', 'sha256' => str_repeat('2', 64)]],
+            ],
             'server' => [
                 'kind' => 'oci',
                 'locator' => 'oci:docker.io/durableworkflow/server@'.$versions['server'],
@@ -8324,7 +8536,7 @@ PY);
         $scenarioResults['php_worker_cli_and_sdk_baseline']['observed_outputs'] = [
             'worker_runtime' => 'sdk-php',
             'sdk_php_artifact_source' => 'published_composer_package',
-            'sdk_php_sdk_version' => '2.0.0-alpha.161',
+            'sdk_php_sdk_version' => '0.1.161',
             'php_worker_query_task_routing' => true,
             'routed_current_query_task' => $this->routedCurrentQueryTaskEvidence([
                 'worker_runtime' => 'sdk-php',
@@ -8754,6 +8966,80 @@ PY);
                 'sdk_observation' => ['run_id' => 'run-1', 'counter' => 8],
             ],
         ];
+        $scenarioResults['waterline_service_operator_visibility']['observed_outputs'] = [
+            'artifact_versions' => $publishedVersions,
+            'artifact_sources' => $artifactSources,
+            'captured_at' => '2026-05-20T00:04:30Z',
+            'distribution_identity' => 'waterline-service',
+            'image_reference' => 'docker.io/durableworkflow/waterline@sha256:'.str_repeat('2', 64),
+            'manifest_digest' => 'sha256:'.str_repeat('2', 64),
+            'source_revision_labels' => [
+                'oci_revision' => str_repeat('a', 40),
+                'release_tag' => $publishedVersions['waterline'],
+                'labels' => [
+                    'org.opencontainers.image.revision' => str_repeat('a', 40),
+                    'dev.durable-workflow.release.tag' => $publishedVersions['waterline'],
+                ],
+            ],
+            'service_mode' => [
+                'backend' => 'service',
+                'transport' => 'durable-workflow/sdk',
+                'server_endpoint' => 'http://server:8080',
+                'namespace' => 'default',
+                'access_mode' => 'operator',
+                'docker_network' => 'candidate_default',
+            ],
+            'api_paths' => [
+                'up' => '/up',
+                'running_runs' => '/waterline/api/flows/running',
+                'selected_run_detail' => '/waterline/api/instances/wf-1/runs/run-1',
+                'selected_run_query_action' => '/waterline/api/instances/wf-1/runs/run-1/queries/current',
+                'selected_run_signal_action' => '/waterline/api/instances/wf-1/runs/run-1/signals/increment',
+            ],
+            'api_captures' => [
+                'up' => ['status_code' => 200],
+                'running_runs' => ['status_code' => 200, 'selected_run_present' => true],
+                'selected_run_detail' => [
+                    'status_code' => 200,
+                    'workflow_id' => 'wf-1',
+                    'run_id' => 'run-1',
+                    'engine_source' => 'service',
+                ],
+                'selected_run_query_action' => [
+                    'status_code' => 200,
+                    'query' => 'current',
+                    'result' => 8,
+                ],
+                'selected_run_signal_action' => [
+                    'status_code' => 200,
+                    'signal' => 'increment',
+                    'arguments' => [0],
+                    'command_status' => 'accepted',
+                ],
+            ],
+            'comparison' => [
+                'run_identity_matches_public_clients' => true,
+                'counter_state_matches_public_clients' => true,
+                'service_mode_uses_public_php_sdk' => true,
+                'server_observation' => [
+                    'workflow_id' => 'wf-1',
+                    'run_id' => 'run-1',
+                    'counter' => 8,
+                ],
+                'waterline_service_observation' => [
+                    'workflow_id' => 'wf-1',
+                    'run_id' => 'run-1',
+                    'counter' => 8,
+                ],
+            ],
+            'query_responder' => [
+                'worker_id' => 'worker-1',
+                'task_queue' => 'counter',
+                'poll_status_code' => 200,
+                'complete_status_code' => 200,
+                'error' => null,
+            ],
+        ];
 
         return [
             'schema' => SignalQueryRuntimeContract::RESULT_SCHEMA,
@@ -8769,6 +9055,9 @@ PY);
                 'sdk-php' => '0.1.161',
                 'waterline' => '2.0.0-alpha.54',
             ],
+            'executed_distribution_identities' => $this->executedDistributionIdentitiesForVersions(
+                $publishedVersions,
+            ),
             'runtime_matrix' => [
                 'runtimes' => ['sdk-php', 'sdk-python', 'sdk-rust'],
                 'same_language_cells' => [
@@ -8824,6 +9113,7 @@ PY);
             ],
             'waterline_observer_comparison' => [
                 'waterline_operator_visibility' => $scenarioResults['waterline_operator_visibility']['observed_outputs'],
+                'waterline_service_operator_visibility' => $scenarioResults['waterline_service_operator_visibility']['observed_outputs'],
             ],
             'findings' => [],
             'finding_links' => [],

@@ -11,9 +11,9 @@ jobs:
     name: Test CLI and SDK version validation
     runs-on: ubuntu-latest
     env:
-      SERVER_VERSION: 2.0.0-beta.4
-      CLI_VERSION: 2.0.0-beta.4
-      PYTHON_SDK_VERSION: 2.0.0b4
+      SERVER_VERSION: 2.0.0-beta.5
+      CLI_VERSION: 2.0.0-beta.5
+      PYTHON_SDK_VERSION: 2.0.0b5
 
     steps:
       - name: Checkout server
@@ -29,8 +29,8 @@ jobs:
           KEY=$(openssl rand -base64 32)
           echo "key=base64:$KEY" >> $GITHUB_OUTPUT
 
-      # Test 1: Compatible beta.4 product train - CLI success
-      - name: Start beta.4 server
+      # Test 1: Compatible beta.5 product train - CLI success
+      - name: Start beta.5 server
         env:
           APP_KEY: ${{ steps.app-key.outputs.key }}
           DW_AUTH_TOKEN: test-token-123
@@ -64,7 +64,7 @@ jobs:
           DURABLE_WORKFLOW_AUTH_TOKEN: test-token-123
           DURABLE_WORKFLOW_NAMESPACE: default
         run: |
-          # CLI should connect successfully to the beta.4 server.
+          # CLI should connect successfully to the beta.5 server.
           dw server:info || exit 1
           echo "✅ CLI successfully connected to compatible server"
 
@@ -300,7 +300,7 @@ jobs:
                       print("✅ Python SDK failed with correct worker protocol error message")
                   else:
                       print("❌ ERROR: Python SDK error message doesn't match expected format")
-                      print("Expected beta.4 SDK worker-protocol incompatibility details")
+                      print("Expected beta.5 SDK worker-protocol incompatibility details")
                       print(f"Got: {error_msg}")
                       await client.aclose()
                       exit(1)

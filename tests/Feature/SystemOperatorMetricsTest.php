@@ -164,9 +164,45 @@ class SystemOperatorMetricsTest extends TestCase
             ->assertJsonPath('operator_metrics.runs.total', 0);
     }
 
+    public function test_operator_dashboard_exposes_the_shared_workflow_summary(): void
+    {
+        $response = $this->getJson(
+            '/api/system/operator-dashboard',
+            $this->controlPlaneHeadersWithWorkerProtocol(),
+        );
+
+        $response->assertOk()
+            ->assertHeader(ControlPlaneProtocol::HEADER, ControlPlaneProtocol::VERSION)
+            ->assertJsonPath('namespace', 'default')
+            ->assertJsonPath('dashboard.flows', 0)
+            ->assertJsonStructure([
+                'dashboard' => [
+                    'flows',
+                    'flows_per_minute',
+                    'flows_past_hour',
+                    'exceptions_past_hour',
+                    'failed_flows_past_week',
+                    'fleet_overview',
+                    'workflow_type_health',
+                    'needs_attention',
+                    'fleet_trends_series',
+                    'operator_metrics',
+                ],
+            ]);
+    }
+
     public function test_operator_metrics_requires_control_plane_version_header(): void
     {
         $this->getJson('/api/system/operator-metrics', [
+            'X-Namespace' => 'default',
+        ])
+            ->assertStatus(400)
+            ->assertJsonPath('reason', 'missing_control_plane_version');
+    }
+
+    public function test_operator_dashboard_requires_control_plane_version_header(): void
+    {
+        $this->getJson('/api/system/operator-dashboard', [
             'X-Namespace' => 'default',
         ])
             ->assertStatus(400)

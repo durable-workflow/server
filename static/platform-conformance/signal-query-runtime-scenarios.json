@@ -33,6 +33,30 @@
       "sdk-python",
       "sdk-rust"
     ],
+    "required_distribution_identities": [
+      "workflow",
+      "waterline",
+      "waterline-service",
+      "server",
+      "cli",
+      "sdk-php",
+      "sdk-python",
+      "sdk-rust"
+    ],
+    "waterline_distributions": {
+      "waterline": {
+        "kind": "composer",
+        "package": "durable-workflow/waterline",
+        "version_source": "artifactVersions.waterline"
+      },
+      "waterline-service": {
+        "kind": "oci",
+        "package": "docker.io/durableworkflow/waterline",
+        "version_source": "artifactVersions.waterline",
+        "image_reference_source": "DW_WATERLINE_SERVICE_IMAGE",
+        "reference_requirement": "sha256_digest_only"
+      }
+    },
     "sdk_php_package": "durable-workflow/sdk"
   },
   "topology": {
@@ -66,7 +90,10 @@
     ],
     "observer_paths": [
       "waterline-selected-run-detail",
-      "waterline-query-action"
+      "waterline-query-action",
+      "waterline-service-selected-run-detail",
+      "waterline-service-query-action",
+      "waterline-service-signal-action"
     ]
   },
   "scenarios": [
@@ -87,7 +114,8 @@
     "completed_run_signal_and_query",
     "unknown_signal_and_query_errors",
     "malformed_signal_and_query_payloads",
-    "waterline_operator_visibility"
+    "waterline_operator_visibility",
+    "waterline_service_operator_visibility"
   ],
   "host_runner_contract": {
     "runner_id": "signals-queries",

@@ -1021,10 +1021,10 @@ class ClusterInfoCompatibilityTest extends TestCase
                 'client_compatibility.required_protocols.worker_protocol.external_task_result_contract.version',
                 1,
             )
-            ->assertJsonPath('client_compatibility.clients.cli.supported_versions', '>=2.0.0-beta.4,<2.0.0-beta.5')
-            ->assertJsonPath('client_compatibility.clients.sdk-php.supported_versions', '>=2.0.0-beta.4,<2.0.0-beta.5')
-            ->assertJsonPath('client_compatibility.clients.sdk-python.supported_versions', '>=2.0.0-beta.4,<2.0.0-beta.5')
-            ->assertJsonPath('client_compatibility.clients.sdk-rust.supported_versions', '>=2.0.0-beta.4,<2.0.0-beta.5');
+            ->assertJsonPath('client_compatibility.clients.cli.supported_versions', '>=2.0.0-beta.5,<2.0.0-beta.6')
+            ->assertJsonPath('client_compatibility.clients.sdk-php.supported_versions', '>=2.0.0-beta.5,<2.0.0-beta.6')
+            ->assertJsonPath('client_compatibility.clients.sdk-python.supported_versions', '>=2.0.0-beta.5,<2.0.0-beta.6')
+            ->assertJsonPath('client_compatibility.clients.sdk-rust.supported_versions', '>=2.0.0-beta.5,<2.0.0-beta.6');
 
         $this->assertSame(
             $response->json('supported_sdk_versions.cli'),

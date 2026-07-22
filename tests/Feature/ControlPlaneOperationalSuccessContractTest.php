@@ -243,6 +243,22 @@ class ControlPlaneOperationalSuccessContractTest extends TestCase
                     ],
                 ],
             ],
+            'system.operator_dashboard_empty' => [
+                'method' => 'get',
+                'path' => '/api/system/operator-dashboard',
+                'body' => [],
+                'structure' => [
+                    'namespace',
+                    'dashboard' => [
+                        'flows',
+                        'fleet_overview',
+                        'workflow_type_health',
+                        'needs_attention',
+                        'fleet_trends_series',
+                        'operator_metrics',
+                    ],
+                ],
+            ],
             'system.repair_status' => [
                 'method' => 'get',
                 'path' => '/api/system/repair',
