@@ -12,9 +12,13 @@ import urllib.error
 from pathlib import Path
 from unittest import mock
 
-from cli_release_verifier_contract import CliRecoveryWorkflowSourceTest, CliReleaseAuthorityTest
+from cli_release_verifier_contract import (  # noqa: F401
+    CliRecoveryWorkflowSourceTest,
+    CliReleaseAuthorityTest,
+)
 
 RECOVERY_SCRIPT = Path(__file__).with_name("component-release-recovery.py")
+REPOSITORY_ROOT = RECOVERY_SCRIPT.parents[2]
 RUST_WORKFLOW_FIXTURE = Path(__file__).with_name("sdk-rust-release-plan-recovery.fixture.yml")
 
 # This is the complete public sdk-rust workflow identified by the verifier's
@@ -31,10 +35,9 @@ jobs:
           python recovery.py resolve --preparation-output release-preparation.json
           gh api --method POST "repos/$GITHUB_REPOSITORY/git/refs" \
             -f ref="refs/tags/$RELEASE_TAG" -f sha="$RELEASE_COMMIT"
-          publication_title="Release ${RELEASE_TAG} for ${PLAN_TAG}"
           select-publication-run \
             --release-tag "$RELEASE_TAG" --release-commit "$RELEASE_COMMIT" \
-            --release-plan "$PLAN_TAG" --required-display-title "$publication_title"
+            --release-plan "$PLAN_TAG"
           gh run list --workflow release.yml --event workflow_dispatch --branch main \
             --json databaseId,event,displayTitle,headBranch,headSha,status,conclusion
           gh workflow run release.yml --ref main \
@@ -572,14 +575,14 @@ class PublicationRunSelectionTest(unittest.TestCase):
     RELEASE_TAG = "1.2.3"
     RELEASE_COMMIT = "1" * 40
     RELEASE_PLAN = "release-plan/recovery-test"
-    DISPLAY_TITLE = "Release 1.2.3 for release-plan/recovery-test"
+    DISPLAY_TITLE = f"Release {RELEASE_TAG} at {RELEASE_COMMIT} for {RELEASE_PLAN}"
 
     @classmethod
     def setUpClass(cls) -> None:
         cls.recovery = load_recovery_module()
 
-    def test_selects_only_the_exact_protected_main_dispatch(self) -> None:
-        run = {
+    def run_record(self, **overrides: object) -> dict[str, object]:
+        record: dict[str, object] = {
             "databaseId": 123,
             "event": "workflow_dispatch",
             "displayTitle": self.DISPLAY_TITLE,
@@ -588,14 +591,28 @@ class PublicationRunSelectionTest(unittest.TestCase):
             "status": "in_progress",
             "conclusion": None,
         }
+        record.update(overrides)
+        return record
 
-        selected = self.recovery.select_publication_run(
+    def select(self, runs: object) -> dict[str, object]:
+        return self.recovery.select_publication_run(
             self.RELEASE_TAG,
             self.RELEASE_COMMIT,
             self.RELEASE_PLAN,
-            self.DISPLAY_TITLE,
-            [run],
+            runs,
         )
+
+    def test_release_display_title_binds_every_planned_input(self) -> None:
+        release_workflow = (REPOSITORY_ROOT / ".github/workflows/release.yml").read_text()
+
+        self.assertIn("github.ref == 'refs/heads/main'", release_workflow)
+        self.assertIn("inputs.tag || github.ref_name", release_workflow)
+        self.assertIn("inputs.release_commit || github.sha", release_workflow)
+        self.assertIn("inputs.release_plan || 'direct'", release_workflow)
+
+    def test_selects_only_the_exact_protected_main_dispatch(self) -> None:
+        run = self.run_record()
+        selected = self.select([run])
         self.assertEqual("wait", selected["action"])
         self.assertEqual(123, selected["run_id"])
 
@@ -609,14 +626,59 @@ class PublicationRunSelectionTest(unittest.TestCase):
                 mutated[field] = value
                 self.assertEqual(
                     "dispatch",
-                    self.recovery.select_publication_run(
-                        self.RELEASE_TAG,
-                        self.RELEASE_COMMIT,
-                        self.RELEASE_PLAN,
-                        self.DISPLAY_TITLE,
-                        [mutated],
-                    )["action"],
+                    self.select([mutated])["action"],
                 )
+
+    def test_wrong_commit_never_blocks_reruns_or_satisfies_recovery(self) -> None:
+        wrong_title = self.DISPLAY_TITLE.replace(self.RELEASE_COMMIT, "3" * 40)
+        for label, status, conclusion in (
+            ("in progress", "in_progress", None),
+            ("failed", "completed", "failure"),
+            ("successful", "completed", "success"),
+        ):
+            with self.subTest(label):
+                mismatched = self.run_record(
+                    displayTitle=wrong_title,
+                    status=status,
+                    conclusion=conclusion,
+                )
+                self.assertEqual("dispatch", self.select([mismatched])["action"])
+
+    def test_exact_match_wins_when_a_wrong_commit_run_is_also_present(self) -> None:
+        mismatched = self.run_record(
+            databaseId=122,
+            displayTitle=self.DISPLAY_TITLE.replace(self.RELEASE_COMMIT, "3" * 40),
+        )
+        exact = self.run_record(status="completed", conclusion="success")
+
+        self.assertEqual(
+            {"action": "complete", "run_id": 123, "status": "completed", "conclusion": "success"},
+            self.select([mismatched, exact]),
+        )
+
+    def test_multiple_exact_runs_select_newest_active_success_or_failure(self) -> None:
+        older_failure = self.run_record(
+            databaseId=122,
+            status="completed",
+            conclusion="failure",
+        )
+        for label, newest, expected_action in (
+            ("active", self.run_record(databaseId=125), "wait"),
+            (
+                "successful",
+                self.run_record(databaseId=125, status="completed", conclusion="success"),
+                "complete",
+            ),
+            (
+                "failed",
+                self.run_record(databaseId=125, status="completed", conclusion="failure"),
+                "rerun",
+            ),
+        ):
+            with self.subTest(label):
+                selected = self.select([newest, older_failure])
+                self.assertEqual(expected_action, selected["action"])
+                self.assertEqual(125, selected["run_id"])
 
 
 if __name__ == "__main__":

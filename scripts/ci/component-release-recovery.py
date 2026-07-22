@@ -756,37 +756,38 @@ def select_publication_run(
     release_tag: str,
     release_commit: str,
     release_plan: str,
-    required_display_title: str,
     runs: Any,
 ) -> dict[str, Any]:
-    if not VERSION_PATTERN.fullmatch(release_tag) or not COMMIT_PATTERN.fullmatch(release_commit):
-        raise RecoveryError("publication run selection requires an exact release identity", "publication")
     if (
-        not release_plan.startswith(PLAN_TAG_PREFIX)
+        not VERSION_PATTERN.fullmatch(release_tag)
+        or not COMMIT_PATTERN.fullmatch(release_commit)
+        or not release_plan.startswith(PLAN_TAG_PREFIX)
         or not PLAN_PATTERN.fullmatch(release_plan.removeprefix(PLAN_TAG_PREFIX))
-        or required_display_title != f"Release {release_tag} for {release_plan}"
     ):
-        raise RecoveryError("publication run selection requires the immutable release plan identity", "publication")
+        raise RecoveryError("publication run selection requires an exact release identity", "publication")
     if not isinstance(runs, list):
         raise RecoveryError("publication run metadata must be a JSON array", "publication")
 
+    expected_title = f"Release {release_tag} at {release_commit} for {release_plan}"
     exact_runs: list[dict[str, Any]] = []
     for run in runs:
         # A protected-main dispatch reports the workflow source SHA. The exact
-        # release commit is instead bound by the required dispatch input and
-        # verified against the immutable tag inside release.yml.
+        # release commit is instead bound into the title by the required
+        # dispatch input and verified against the immutable tag in release.yml.
         if (
             not isinstance(run, dict)
             or run.get("event") != "workflow_dispatch"
             or run.get("headBranch") != COMPONENTS["server"].default_branch
-            or run.get("displayTitle") != required_display_title
+            or run.get("displayTitle") != expected_title
         ):
             continue
         if (
             not isinstance(run.get("databaseId"), int)
+            or run["databaseId"] < 1
             or not isinstance(run.get("headSha"), str)
             or not COMMIT_PATTERN.fullmatch(run["headSha"])
             or not isinstance(run.get("status"), str)
+            or not run["status"]
         ):
             raise RecoveryError("publication run metadata is incomplete", "publication")
         exact_runs.append(run)
@@ -1409,7 +1410,6 @@ def main() -> int:
     select_run.add_argument("--release-tag", required=True)
     select_run.add_argument("--release-commit", required=True)
     select_run.add_argument("--release-plan", required=True)
-    select_run.add_argument("--required-display-title", required=True)
     select_run.add_argument("--runs", required=True, type=Path)
 
     args = parser.parse_args()
@@ -1425,7 +1425,6 @@ def main() -> int:
                 args.release_tag,
                 args.release_commit,
                 args.release_plan,
-                args.required_display_title,
                 runs,
             )
             print(

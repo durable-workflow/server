@@ -1,6 +1,6 @@
 name: Release
 
-run-name: Release ${{ inputs.tag || github.ref_name }} for ${{ inputs.release_plan || 'direct' }}
+run-name: Release ${{ inputs.tag || github.ref_name }} at ${{ inputs.release_commit || github.sha }} for ${{ inputs.release_plan || 'direct' }}
 
 on:
   push:

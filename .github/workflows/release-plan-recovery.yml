@@ -78,7 +78,6 @@ jobs:
           RELEASE_COMMIT: ${{ steps.recovery.outputs.commit }}
         run: |
           set -euo pipefail
-          publication_title="Release ${RELEASE_TAG} for ${PLAN_TAG}"
           scripts/ci/verify-release-tag-source.sh
           decision=
           for attempt in 1 2 3 4 5 6; do
@@ -87,8 +86,7 @@ jobs:
               > publication-runs.json
             decision="$(python scripts/ci/component-release-recovery.py select-publication-run \
               --release-tag "$RELEASE_TAG" --release-commit "$RELEASE_COMMIT" \
-              --release-plan "$PLAN_TAG" --required-display-title "$publication_title" \
-              --runs publication-runs.json)"
+              --release-plan "$PLAN_TAG" --runs publication-runs.json)"
             IFS=$'\t' read -r publication_action run_id status conclusion <<< "$decision"
             if [ "$publication_action" != dispatch ]; then
               break
