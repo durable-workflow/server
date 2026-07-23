@@ -204,6 +204,91 @@ def supersession_record(module, failed, successor, failed_commit: str) -> dict[s
     }
 
 
+def captured_github_user(login: str, user_id: int, node_id: str) -> dict[str, object]:
+    return {
+        "login": login,
+        "id": user_id,
+        "node_id": node_id,
+        "avatar_url": f"https://avatars.githubusercontent.com/u/{user_id}?v=4",
+        "gravatar_id": "",
+        "url": f"https://api.github.com/users/{login}",
+        "html_url": f"https://github.com/{login}",
+        "followers_url": f"https://api.github.com/users/{login}/followers",
+        "following_url": f"https://api.github.com/users/{login}/following{{/other_user}}",
+        "gists_url": f"https://api.github.com/users/{login}/gists{{/gist_id}}",
+        "starred_url": f"https://api.github.com/users/{login}/starred{{/owner}}{{/repo}}",
+        "subscriptions_url": f"https://api.github.com/users/{login}/subscriptions",
+        "organizations_url": f"https://api.github.com/users/{login}/orgs",
+        "repos_url": f"https://api.github.com/users/{login}/repos",
+        "events_url": f"https://api.github.com/users/{login}/events{{/privacy}}",
+        "received_events_url": f"https://api.github.com/users/{login}/received_events",
+        "type": "User",
+        "user_view_type": "public",
+        "site_admin": False,
+    }
+
+
+def captured_github_authority(module, record: dict[str, object]) -> list[object]:
+    authorization = record["authorization"]
+    protection = authorization["environment_protection"]
+    approval = authorization["environment_approval"]
+    reviewer = captured_github_user(
+        approval["user"]["login"],
+        approval["user"]["id"],
+        approval["user"]["node_id"],
+    )
+    return [
+        {
+            "id": protection["environment_id"],
+            "html_url": protection["environment_url"],
+            "protection_rules": [
+                {
+                    "id": protection["required_reviewer_rule_ids"][0],
+                    "type": "required_reviewers",
+                    "reviewers": [{"type": "User", "reviewer": reviewer}],
+                }
+            ],
+            "deployment_branch_policy": protection["deployment_branch_policy"],
+        },
+        {
+            "total_count": 1,
+            "branch_policies": [
+                {**protection["custom_branch_policies"][0], "type": "branch"}
+            ],
+        },
+        {
+            "actor": {"login": authorization["actor"]},
+            "conclusion": "success",
+            "event": "workflow_dispatch",
+            "head_branch": "main",
+            "head_sha": authorization["workflow_commit"],
+            "html_url": authorization["run_url"],
+            "id": authorization["run_id"],
+            "path": f"{module.SUPERSESSION_WORKFLOW}@main",
+            "repository": {"full_name": module.CONTROL_REPOSITORY},
+            "run_attempt": authorization["run_attempt"],
+            "status": "completed",
+        },
+        [
+            {
+                "comment": approval["comment"],
+                "environments": [
+                    {
+                        **approval["environments"][0],
+                        "can_admins_bypass": True,
+                        "created_at": "2026-07-23T00:00:00Z",
+                        "updated_at": "2026-07-23T00:00:00Z",
+                    }
+                ],
+                "state": approval["state"],
+                "user": {
+                    **reviewer,
+                },
+            }
+        ],
+    ]
+
+
 def qualification_run(
     status: str = "completed",
     conclusion: str | None = "success",
@@ -362,6 +447,30 @@ class PublicClientRetryTest(unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:
         cls.recovery = load_recovery_for_retry_tests()
+
+    def test_authenticated_requests_preserve_endpoint_api_versions(self) -> None:
+        cases = (
+            ({"X-GitHub-Api-Version": self.recovery.SUPERSESSION_API_VERSION}, self.recovery.SUPERSESSION_API_VERSION),
+            ({}, "2022-11-28"),
+        )
+        for headers, expected_version in cases:
+            with self.subTest(expected_version=expected_version):
+                client = self.recovery.PublicClient(token="test-token")
+                response = mock.Mock()
+                with mock.patch.object(
+                    self.recovery.urllib.request, "urlopen", return_value=response
+                ) as open_url:
+                    self.assertIs(
+                        response,
+                        client.request(
+                            "https://api.github.com/repos/durable-workflow/.github/actions/runs/456",
+                            headers=headers,
+                        ),
+                    )
+                request = open_url.call_args.args[0]
+                request_headers = {key.lower(): value for key, value in request.header_items()}
+                self.assertEqual("Bearer test-token", request_headers["authorization"])
+                self.assertEqual(expected_version, request_headers["x-github-api-version"])
 
     def test_retries_service_failures_connection_resets_and_timeouts(self) -> None:
         failures = (
@@ -634,6 +743,7 @@ class ImmutablePlanDiscoveryTest(unittest.TestCase):
                 "read_record",
                 side_effect=[failure, authorized_successor],
             ),
+            mock.patch.object(self.recovery, "revalidate_supersession_authority"),
         ):
             lifecycle, successor_identity = self.recovery.direct_plan_lifecycle(
                 mock.Mock(),
@@ -698,6 +808,83 @@ class ImmutablePlanDiscoveryTest(unittest.TestCase):
             ),
         ):
             self.recovery.select_implicit_plan_authority(mock.Mock())
+
+    def test_terminal_failure_normalizes_captured_github_approval_shape(self) -> None:
+        failed = lifecycle_plan(self.recovery)
+        successor = json.loads(json.dumps(failed))
+        successor["plan"] = "successor-plan"
+        successor["components"]["workflow"]["version"] = "2.0.0-alpha.2"
+        record = supersession_record(self.recovery, failed, successor, "a" * 40)
+        client = mock.Mock()
+        client.json.side_effect = captured_github_authority(self.recovery, record)
+
+        self.recovery.revalidate_supersession_authority(record, client)
+
+        self.assertEqual(4, client.json.call_count)
+        mutations = (
+            ("run", "id", 999),
+            ("run", "run_attempt", 2),
+            ("environment", "id", 999),
+            ("history", "state", "rejected"),
+            ("reviewer", "id", 999),
+        )
+        for target, field, value in mutations:
+            with self.subTest(target=target, field=field):
+                responses = captured_github_authority(self.recovery, record)
+                if target == "run":
+                    responses[2][field] = value
+                elif target == "environment":
+                    responses[0][field] = value
+                elif target == "history":
+                    responses[3][0][field] = value
+                else:
+                    responses[3][0]["user"][field] = value
+                client = mock.Mock()
+                client.json.side_effect = responses
+                with self.assertRaises(self.recovery.RecoveryError):
+                    self.recovery.revalidate_supersession_authority(record, client)
+
+    def test_terminal_failure_rejects_attempt_one_approval_claimed_for_attempt_two(
+        self,
+    ) -> None:
+        failed = lifecycle_plan(self.recovery)
+        successor = json.loads(json.dumps(failed))
+        successor["plan"] = "successor-plan"
+        successor["components"]["workflow"]["version"] = "2.0.0-alpha.2"
+        record = supersession_record(self.recovery, failed, successor, "a" * 40)
+        authorization = record["authorization"]
+        authorization["run_attempt"] = 2
+        authorization["environment_approval"]["run_attempt"] = 2
+        responses = captured_github_authority(self.recovery, record)
+        client = mock.Mock()
+        client.json.side_effect = responses
+
+        with self.assertRaisesRegex(
+            self.recovery.RecoveryError,
+            "rerun attempts cannot use run-wide approval history",
+        ):
+            self.recovery.revalidate_supersession_authority(record, client)
+
+        self.assertEqual(3, client.json.call_count)
+
+    def test_terminal_failure_rejects_approver_removed_from_current_policy(self) -> None:
+        failed = lifecycle_plan(self.recovery)
+        successor = json.loads(json.dumps(failed))
+        successor["plan"] = "successor-plan"
+        successor["components"]["workflow"]["version"] = "2.0.0-alpha.2"
+        record = supersession_record(self.recovery, failed, successor, "a" * 40)
+        responses = captured_github_authority(self.recovery, record)
+        responses[0]["protection_rules"][0]["reviewers"][0]["reviewer"] = (
+            captured_github_user("replacement-reviewer", 56, "replacement-node")
+        )
+        client = mock.Mock()
+        client.json.side_effect = responses
+
+        with self.assertRaisesRegex(
+            self.recovery.RecoveryError,
+            "approver is not in the current required-reviewer policy",
+        ):
+            self.recovery.revalidate_supersession_authority(record, client)
 
     def test_terminal_failure_rejects_malformed_authorization_json_types(self) -> None:
         failed = lifecycle_plan(self.recovery)
