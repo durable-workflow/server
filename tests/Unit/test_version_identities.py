@@ -11,7 +11,7 @@ from version_identities import is_exact_semver_release, python_release_identity,
 
 class PublishedVersionIdentitiesTest(unittest.TestCase):
     def test_exact_server_release_identities(self) -> None:
-        for version in ("2.0.0-alpha.1", "2.0.0-beta.5", "2.0.0-rc.2", "2.0.0"):
+        for version in ("2.0.0-alpha.1", "2.0.0-beta.6", "2.0.0-rc.2", "2.0.0"):
             with self.subTest(version=version):
                 self.assertTrue(is_exact_semver_release(version))
 
@@ -26,19 +26,19 @@ class PublishedVersionIdentitiesTest(unittest.TestCase):
             "2.0.x",
             "2.0.0-beta.01",
             "2.0.0-beta..3",
-            "v2.0.0-beta.5",
-            "2.0.0-beta.5 || 2.0.0",
+            "v2.0.0-beta.6",
+            "2.0.0-beta.6 || 2.0.0",
         ):
             with self.subTest(version=version):
                 self.assertFalse(is_exact_semver_release(version))
 
     def test_pep440_and_semver_python_release_identity(self) -> None:
         self.assertEqual("2.0.0a4", python_release_identity("2.0.0-alpha.4"))
-        self.assertEqual("2.0.0b5", python_release_identity("2.0.0-beta.5"))
+        self.assertEqual("2.0.0b6", python_release_identity("2.0.0-beta.6"))
         self.assertEqual("2.0.0rc2", python_release_identity("2.0.0-rc.2"))
-        self.assertTrue(same_python_release("2.0.0-beta.5", "2.0.0b5"))
-        self.assertFalse(same_python_release("2.0.0-beta.5", "2.0.0b3"))
-        self.assertFalse(same_python_release("2.0.0-rc.4", "2.0.0b5"))
+        self.assertTrue(same_python_release("2.0.0-beta.6", "2.0.0b6"))
+        self.assertFalse(same_python_release("2.0.0-beta.6", "2.0.0b3"))
+        self.assertFalse(same_python_release("2.0.0-rc.4", "2.0.0b6"))
 
 
 if __name__ == "__main__":

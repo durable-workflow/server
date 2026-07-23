@@ -4668,7 +4668,7 @@ PY);
         $result = $this->runSignalQueryRunnerPythonSnippet(<<<'PY'
 cases = {
     "missing": None,
-    "tag_only": "docker.io/durableworkflow/waterline:2.0.0-beta.5",
+    "tag_only": "docker.io/durableworkflow/waterline:2.0.0-beta.6",
     "local": "waterline-service:local",
     "digest": "docker.io/durableworkflow/waterline@sha256:" + "a" * 64,
 }
@@ -4708,7 +4708,7 @@ command = waterline_service_container_command(
 )
 identity = distribution_identity(
     "waterline-service",
-    "2.0.0-beta.5",
+    "2.0.0-beta.6",
     "manifest",
     "b" * 64,
 )
@@ -4716,7 +4716,7 @@ print(json.dumps({
     "command": command,
     "identity": identity,
     "mapped_version": distribution_version(
-        {"waterline": "2.0.0-beta.5"},
+        {"waterline": "2.0.0-beta.6"},
         "waterline-service",
     ),
 }, sort_keys=True))
@@ -4729,10 +4729,10 @@ PY);
         $this->assertContains('candidate_default', $result['command']);
         $this->assertContains('WATERLINE_SERVER_TOKEN', $result['command']);
         $this->assertNotContains('WATERLINE_SERVER_TOKEN=test-token', $result['command']);
-        $this->assertSame('2.0.0-beta.5', $result['mapped_version']);
+        $this->assertSame('2.0.0-beta.6', $result['mapped_version']);
         $this->assertSame('oci', $result['identity']['kind']);
         $this->assertSame(
-            'oci:docker.io/durableworkflow/waterline@2.0.0-beta.5',
+            'oci:docker.io/durableworkflow/waterline@2.0.0-beta.6',
             $result['identity']['locator'],
         );
         $this->assertSame('manifest', $result['identity']['artifacts'][0]['name']);
@@ -4753,7 +4753,7 @@ def fake_run_command(command, **kwargs):
     if command[-2] == "{{json .Config.Labels}}":
         return subprocess.CompletedProcess(command, 0, json.dumps({
             "org.opencontainers.image.revision": revision,
-            "dev.durable-workflow.release.tag": "2.0.0-beta.5",
+            "dev.durable-workflow.release.tag": "2.0.0-beta.6",
         }), "")
     if command[-2] == "{{json .RepoDigests}}":
         return subprocess.CompletedProcess(
@@ -4767,7 +4767,7 @@ def fake_run_command(command, **kwargs):
 globals()["run_command"] = fake_run_command
 metadata = inspect_waterline_service_image(
     image,
-    "2.0.0-beta.5",
+    "2.0.0-beta.6",
     Path("/tmp/waterline-service-metadata-test.log"),
 )
 print(json.dumps(metadata, sort_keys=True))
@@ -4779,13 +4779,13 @@ PY);
         );
         $this->assertSame('sha256:'.str_repeat('c', 64), $result['manifest_digest']);
         $this->assertSame(str_repeat('d', 40), $result['source_revision_labels']['oci_revision']);
-        $this->assertSame('2.0.0-beta.5', $result['source_revision_labels']['release_tag']);
+        $this->assertSame('2.0.0-beta.6', $result['source_revision_labels']['release_tag']);
         $this->assertSame(
             str_repeat('d', 40),
             $result['source_revision_labels']['labels']['org.opencontainers.image.revision'],
         );
         $this->assertSame(
-            '2.0.0-beta.5',
+            '2.0.0-beta.6',
             $result['source_revision_labels']['labels']['dev.durable-workflow.release.tag'],
         );
     }
