@@ -501,7 +501,11 @@ class ImmutablePlanDiscoveryTest(unittest.TestCase):
             mock.patch.object(
                 self.recovery,
                 "direct_plan_lifecycle",
-                side_effect=[("completed", None), ("completed", None)],
+                side_effect=[
+                    ("completed", None),
+                    ("completed", None),
+                    ("completed", None),
+                ],
             ),
             mock.patch.object(
                 self.recovery,
@@ -518,6 +522,86 @@ class ImmutablePlanDiscoveryTest(unittest.TestCase):
 
         self.assertEqual(tags[1], selected["tag"])
         self.assertEqual("completed", selected["lifecycle"])
+
+    def test_concurrent_terminal_supersession_retries_before_returning_action(self) -> None:
+        older = {"plan": "older-plan"}
+        successor = {"plan": "successor-plan"}
+        older_tag = "release-plan/older-plan"
+        successor_tag = "release-plan/successor-plan"
+        commits = {older_tag: "a" * 40, successor_tag: "b" * 40}
+        plans = {older_tag: older, successor_tag: successor}
+        recorded = {
+            commits[older_tag]: dt.datetime(2026, 7, 20, tzinfo=dt.UTC),
+            commits[successor_tag]: dt.datetime(2026, 7, 21, tzinfo=dt.UTC),
+        }
+        terminal_failure: dict[str, object] = {}
+        registry_reads = 0
+
+        def list_tags(_client: mock.Mock) -> list[str]:
+            nonlocal registry_reads
+            registry_reads += 1
+            if registry_reads == 2:
+                terminal_failure.update(
+                    {"outcome": "terminal-failure", "successor": successor_tag}
+                )
+            return (
+                [older_tag, successor_tag]
+                if terminal_failure
+                else [older_tag]
+            )
+
+        def lifecycle(
+            _client: mock.Mock,
+            tag: str,
+            _commit: str,
+            _plan: dict[str, object],
+            _preparation: None,
+        ) -> tuple[str, object | None]:
+            if tag == older_tag and terminal_failure:
+                return "superseded", {
+                    "tag": successor_tag,
+                    "sha256": self.recovery.manifest_digest(successor),
+                    "plan": successor,
+                }
+            return "actionable", None
+
+        with (
+            mock.patch.object(
+                self.recovery,
+                "list_release_plan_tags",
+                side_effect=list_tags,
+            ),
+            mock.patch.object(
+                self.recovery,
+                "resolve_tag",
+                side_effect=lambda _client, _repository, tag: commits[tag],
+            ),
+            mock.patch.object(
+                self.recovery,
+                "read_plan_authority",
+                side_effect=lambda _client, tag, _commit: (plans[tag], None),
+            ),
+            mock.patch.object(
+                self.recovery,
+                "direct_plan_lifecycle",
+                side_effect=lifecycle,
+            ),
+            mock.patch.object(
+                self.recovery,
+                "immutable_plan_recorded_at",
+                side_effect=lambda _client, commit: recorded[commit],
+            ),
+            mock.patch.object(
+                self.recovery,
+                "accepted_continuity_supersession",
+                return_value=None,
+            ),
+        ):
+            selected = self.recovery.select_implicit_plan_authority(mock.Mock())
+
+        self.assertEqual(successor_tag, selected["tag"])
+        self.assertEqual("actionable", selected["lifecycle"])
+        self.assertEqual(4, registry_reads)
 
     def test_terminal_failure_successor_requires_exact_authorized_plan_identity(self) -> None:
         failed = lifecycle_plan(self.recovery)

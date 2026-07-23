@@ -62,6 +62,7 @@ GITHUB_READ_RETRY_BASE_SECONDS = 2.0
 GITHUB_READ_RETRY_MAX_SECONDS = 120.0
 GITHUB_READ_REQUEST_TIMEOUT_SECONDS = 30.0
 GITHUB_READ_DEADLINE_SECONDS = 600.0
+IMPLICIT_AUTHORITY_MAX_ATTEMPTS = 3
 INFRASTRUCTURE_EXIT_CODE = 75
 
 SOURCE_CHANGELOGS = {"workflow", "waterline", "sdk-php", "sdk-python"}
@@ -1467,9 +1468,12 @@ def accepted_continuity_supersession(
     return dict(superseded)
 
 
-def select_implicit_plan_authority(client: PublicClient) -> dict[str, Any]:
+def classify_implicit_plan_authority(
+    client: PublicClient,
+) -> tuple[dict[str, Any], list[str]]:
     authorities: list[dict[str, Any]] = []
-    for tag in list_release_plan_tags(client):
+    tags = list_release_plan_tags(client)
+    for tag in tags:
         commit = resolve_tag(client, CONTROL_REPOSITORY, tag)
         if commit is None:
             raise RecoveryError(f"release plan tag {tag} is absent", "plan-discovery")
@@ -1592,7 +1596,38 @@ def select_implicit_plan_authority(client: PublicClient) -> dict[str, Any]:
             f"latest release plan {selected['tag']} is superseded and cannot be recovered",
             "plan-discovery",
         )
-    return selected
+    return selected, tags
+
+
+def implicit_plan_authority_converged(
+    client: PublicClient,
+    tags: list[str],
+    selected: dict[str, Any],
+) -> bool:
+    if set(list_release_plan_tags(client)) != set(tags):
+        return False
+    if resolve_tag(client, CONTROL_REPOSITORY, selected["tag"]) != selected["commit"]:
+        return False
+    lifecycle, successor = direct_plan_lifecycle(
+        client,
+        selected["tag"],
+        selected["commit"],
+        selected["plan"],
+        selected["preparation"],
+    )
+    return lifecycle == selected["lifecycle"] and successor == selected["successor"]
+
+
+def select_implicit_plan_authority(client: PublicClient) -> dict[str, Any]:
+    for _attempt in range(IMPLICIT_AUTHORITY_MAX_ATTEMPTS):
+        selected, tags = classify_implicit_plan_authority(client)
+        if implicit_plan_authority_converged(client, tags, selected):
+            return selected
+    raise RecoveryError(
+        "release plan registry or selected lifecycle authority did not converge "
+        f"after {IMPLICIT_AUTHORITY_MAX_ATTEMPTS} attempts",
+        "plan-discovery",
+    )
 
 
 def discover_plan(
