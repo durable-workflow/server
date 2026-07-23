@@ -639,7 +639,12 @@ def validate_environment_protection_evidence(protection: Any) -> None:
             "release plan failure lacks protected-environment reviewer evidence",
             "plan-discovery",
         )
-    if branch_policy != {"custom_branch_policies": True, "protected_branches": False}:
+    if (
+        not isinstance(branch_policy, dict)
+        or set(branch_policy) != {"custom_branch_policies", "protected_branches"}
+        or branch_policy["custom_branch_policies"] is not True
+        or branch_policy["protected_branches"] is not False
+    ):
         raise RecoveryError(
             "release plan failure lacks the protected environment custom-branch policy",
             "plan-discovery",
@@ -672,7 +677,11 @@ def validate_environment_approval_evidence(approval: Any, authorization: dict[st
     if (
         approval["state"] != "approved"
         or not isinstance(approval["comment"], str)
+        or type(approval["run_id"]) is not int
+        or approval["run_id"] < 1
         or approval["run_id"] != authorization["run_id"]
+        or type(approval["run_attempt"]) is not int
+        or approval["run_attempt"] < 1
         or approval["run_attempt"] != authorization["run_attempt"]
         or not isinstance(environments, list)
         or len(environments) != 1
@@ -1097,12 +1106,16 @@ def validate_supersession_record(
     protection = authorization["environment_protection"]
     validate_environment_protection_evidence(protection)
     workflow_ref = f"{CONTROL_REPOSITORY}/{SUPERSESSION_WORKFLOW}@refs/heads/main"
+    workflow_commit = authorization["workflow_commit"]
+    actor = authorization["actor"]
     if (
         authorization.get("repository") != CONTROL_REPOSITORY
         or authorization.get("environment") != SUPERSESSION_ENVIRONMENT
         or authorization.get("workflow_ref") != workflow_ref
-        or not COMMIT_PATTERN.fullmatch(str(authorization.get("workflow_commit", "")))
-        or not re.fullmatch(r"[A-Za-z0-9-]{1,39}", str(authorization.get("actor", "")))
+        or not isinstance(workflow_commit, str)
+        or not COMMIT_PATTERN.fullmatch(workflow_commit)
+        or not isinstance(actor, str)
+        or not re.fullmatch(r"[A-Za-z0-9-]{1,39}", actor)
         or type(authorization.get("run_id")) is not int
         or authorization["run_id"] < 1
         or type(authorization.get("run_attempt")) is not int

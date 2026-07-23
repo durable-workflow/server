@@ -615,6 +615,71 @@ class ImmutablePlanDiscoveryTest(unittest.TestCase):
         ):
             self.recovery.select_implicit_plan_authority(mock.Mock())
 
+    def test_terminal_failure_rejects_malformed_authorization_json_types(self) -> None:
+        failed = lifecycle_plan(self.recovery)
+        failed["plan"] = "failed-plan"
+        successor = json.loads(json.dumps(failed))
+        successor["plan"] = "successor-plan"
+        successor["components"]["workflow"]["version"] = "2.0.0-alpha.2"
+        failed_commit = "a" * 40
+        valid_failure = supersession_record(
+            self.recovery,
+            failed,
+            successor,
+            failed_commit,
+        )
+        valid_failure["authorization"]["run_id"] = 1
+        valid_failure["authorization"]["run_url"] = (
+            "https://github.com/durable-workflow/.github/actions/runs/1"
+        )
+        valid_failure["authorization"]["environment_approval"]["run_id"] = 1
+        self.recovery.validate_supersession_record(
+            valid_failure,
+            failed,
+            failed_commit,
+            successor,
+        )
+        mutations = (
+            (("authorization", "actor"), True),
+            (("authorization", "workflow_commit"), int("1" * 40)),
+            (("authorization", "environment_approval", "run_id"), True),
+            (("authorization", "environment_approval", "run_attempt"), True),
+            (
+                (
+                    "authorization",
+                    "environment_protection",
+                    "deployment_branch_policy",
+                    "custom_branch_policies",
+                ),
+                1,
+            ),
+            (
+                (
+                    "authorization",
+                    "environment_protection",
+                    "deployment_branch_policy",
+                    "protected_branches",
+                ),
+                0,
+            ),
+        )
+
+        for path, value in mutations:
+            with self.subTest(field=".".join(path)):
+                malformed = json.loads(json.dumps(valid_failure))
+                target = malformed
+                for key in path[:-1]:
+                    target = target[key]
+                target[path[-1]] = value
+
+                with self.assertRaises(self.recovery.RecoveryError):
+                    self.recovery.validate_supersession_record(
+                        malformed,
+                        failed,
+                        failed_commit,
+                        successor,
+                    )
+
     def test_terminal_failure_rejects_incomplete_lifecycle_authority(self) -> None:
         failed = lifecycle_plan(self.recovery)
         failed["plan"] = "failed-plan"
