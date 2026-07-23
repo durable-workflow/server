@@ -4705,6 +4705,7 @@ command = waterline_service_container_command(
     network="candidate_default",
     server_endpoint="http://server:8080",
     namespace="conformance",
+    bind_host="172.24.0.1",
 )
 identity = distribution_identity(
     "waterline-service",
@@ -4727,6 +4728,7 @@ PY);
             $result['command'][count($result['command']) - 1],
         );
         $this->assertContains('candidate_default', $result['command']);
+        $this->assertContains('172.24.0.1::8080', $result['command']);
         $this->assertContains('WATERLINE_SERVER_TOKEN', $result['command']);
         $this->assertNotContains('WATERLINE_SERVER_TOKEN=test-token', $result['command']);
         $this->assertSame('2.0.0-beta.6', $result['mapped_version']);
@@ -4737,6 +4739,131 @@ PY);
         );
         $this->assertSame('manifest', $result['identity']['artifacts'][0]['name']);
         $this->assertSame(str_repeat('b', 64), $result['identity']['artifacts'][0]['sha256']);
+    }
+
+    public function test_waterline_service_selects_a_reachable_gateway_when_docker_reports_runner_loopback(): void
+    {
+        $result = $this->runSignalQueryRunnerPythonSnippet(<<<'PY'
+os.environ.pop("DW_SIGNALS_QUERIES_WATERLINE_SERVICE_BIND_HOST", None)
+os.environ["DW_SIGNALS_QUERIES_WATERLINE_SERVICE_CONNECT_HOST"] = "127.0.0.1"
+os.environ["DW_SIGNALS_QUERIES_DOCKER_HOST_GATEWAY"] = "172.24.0.1"
+opened = []
+
+def fake_run_command(command, **kwargs):
+    if command[:3] == ["docker", "port", "waterline-service-test"]:
+        return subprocess.CompletedProcess(command, 0, "127.0.0.1:49152\n", "")
+    if command[:3] == ["docker", "network", "inspect"]:
+        return subprocess.CompletedProcess(command, 0, "", "")
+    if command[:3] == ["docker", "inspect", "-f"]:
+        return subprocess.CompletedProcess(command, 0, "true\n", "")
+    raise AssertionError(f"unexpected docker command: {command}")
+
+class ReadyResponse:
+    status = 200
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc, traceback):
+        return False
+
+def fake_urlopen(request, **kwargs):
+    url = request if isinstance(request, str) else request.full_url
+    opened.append(url)
+    if url.startswith("http://172.24.0.1:"):
+        return ReadyResponse()
+    raise urllib.error.URLError("runner loopback cannot reach the Docker daemon host")
+
+globals()["run_command"] = fake_run_command
+globals()["default_route_gateway"] = lambda: None
+urllib.request.urlopen = fake_urlopen
+log_file = Path("/tmp/waterline-service-gateway-test.log")
+candidates = waterline_service_host_urls(
+    "waterline-service-test",
+    log_file,
+    env=os.environ.copy(),
+)
+readiness = wait_for_waterline_service(
+    candidates,
+    "waterline-service-test",
+    log_file,
+    timeout_seconds=1,
+)
+command = waterline_service_container_command(
+    image="docker.io/durableworkflow/waterline@sha256:" + "a" * 64,
+    container_name="waterline-service-test",
+    network="candidate_default",
+    server_endpoint="http://server:8080",
+    namespace="conformance",
+    bind_host=waterline_service_bind_host(),
+)
+print(json.dumps({
+    "candidates": candidates,
+    "opened": opened,
+    "readiness": readiness,
+    "publish": command[command.index("--publish") + 1],
+}, sort_keys=True))
+PY);
+
+        $this->assertSame('172.24.0.1::8080', $result['publish']);
+        $this->assertSame('http://127.0.0.1:49152', $result['candidates'][0]);
+        $this->assertContains('http://172.24.0.1:49152', $result['candidates']);
+        $this->assertContains('http://127.0.0.1:49152/up', $result['opened']);
+        $this->assertContains('http://172.24.0.1:49152/up', $result['opened']);
+        $this->assertSame(
+            'http://172.24.0.1:49152',
+            $result['readiness']['base_url'],
+        );
+    }
+
+    public function test_waterline_service_refuses_wildcard_probe_publication(): void
+    {
+        $result = $this->runSignalQueryRunnerPythonSnippet(<<<'PY'
+wildcard_hosts = [
+    "0.0.0.0",
+    "::",
+    "::0",
+    "0:0:0:0:0:0:0:0",
+    "[::0]",
+    "[0:0:0:0:0:0:0:0]",
+]
+observed = {}
+for bind_host in wildcard_hosts:
+    try:
+        waterline_service_container_command(
+            image="docker.io/durableworkflow/waterline@sha256:" + "a" * 64,
+            container_name="waterline-service-test",
+            network="candidate_default",
+            server_endpoint="http://server:8080",
+            namespace="conformance",
+            bind_host=bind_host,
+        )
+        observed[bind_host] = {"error": None}
+    except WaterlineServiceProbeError as exc:
+        observed[bind_host] = {
+            "error": exc.blocker_kind,
+            "details": exc.details,
+        }
+
+safe_command = waterline_service_container_command(
+    image="docker.io/durableworkflow/waterline@sha256:" + "a" * 64,
+    container_name="waterline-service-test",
+    network="candidate_default",
+    server_endpoint="http://server:8080",
+    namespace="conformance",
+    bind_host="2001:0db8:0:0:0:0:0:1",
+)
+print(json.dumps({
+    "observed": observed,
+    "safe_publish": safe_command[safe_command.index("--publish") + 1],
+}))
+PY);
+
+        foreach (['0.0.0.0', '::', '::0', '0:0:0:0:0:0:0:0', '[::0]', '[0:0:0:0:0:0:0:0]'] as $host) {
+            $this->assertSame('waterline_service_bind_host_insecure', $result['observed'][$host]['error']);
+            $this->assertSame($host, $result['observed'][$host]['details']['bind_host']);
+        }
+        $this->assertSame('[2001:db8::1]::8080', $result['safe_publish']);
     }
 
     public function test_waterline_service_image_metadata_retains_manifest_and_source_revision_labels(): void

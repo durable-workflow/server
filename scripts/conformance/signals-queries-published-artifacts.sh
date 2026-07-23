@@ -44,6 +44,15 @@ Environment overrides:
                                              Set to 0 to skip the published Waterline observer shard.
   DW_SIGNALS_QUERIES_RUN_WATERLINE_SERVICE_PROBE
                                              Set to 0 to skip the published Waterline service-image shard.
+  DW_SIGNALS_QUERIES_WATERLINE_SERVICE_BIND_HOST
+                                             Docker host interface for the Waterline service port. Defaults
+                                             to DW_SIGNALS_QUERIES_DOCKER_HOST_GATEWAY when configured,
+                                             otherwise 127.0.0.1; wildcard interfaces are rejected.
+  DW_SIGNALS_QUERIES_WATERLINE_SERVICE_CONNECT_HOST
+                                             Preferred host/address to probe for the Waterline service port.
+                                             Defaults to 127.0.0.1; gateway candidates remain fallbacks.
+  DW_SIGNALS_QUERIES_DOCKER_HOST_GATEWAY     Explicit Docker daemon host gateway for containerized runners.
+                                             Used as an ordered probe fallback and safe Waterline bind default.
   DW_SIGNALS_QUERIES_RUN_RUST_MATRIX_PROBE   Set to 0 to skip the mandatory crates.io Rust matrix.
   DW_SIGNALS_QUERIES_RUST_DOCKER_IMAGE       Rust build/runtime image. Defaults to rust:1.86-slim-bookworm.
   DW_SIGNALS_QUERIES_RUST_CACHE_DIR          Host-owned Rust dependency cache. Defaults to a private,
@@ -138,6 +147,7 @@ import atexit
 import base64
 import fcntl
 import hashlib
+import ipaddress
 import io
 import json
 import math
@@ -999,15 +1009,24 @@ def ordered_unique(values: list[str]) -> list[str]:
     return seen
 
 
-def is_wildcard_host(host: str | None) -> bool:
+def normalize_host(host: str | None) -> str:
     if host is None:
-        return True
+        return ""
     normalized = host.strip().strip("[]")
-    return normalized in {"", "0.0.0.0", "::", "*"}
+    if not normalized or normalized == "*":
+        return normalized
+    try:
+        return str(ipaddress.ip_address(normalized))
+    except ValueError:
+        return normalized
+
+
+def is_wildcard_host(host: str | None) -> bool:
+    return normalize_host(host) in {"", "0.0.0.0", "::", "*"}
 
 
 def host_port_url(host: str, port: int) -> str | None:
-    host = host.strip().strip("[]")
+    host = normalize_host(host)
     if not host or port <= 0:
         return None
     if ":" in host:
@@ -1066,11 +1085,16 @@ def server_url_candidates_for_port(
     port: int,
     *,
     bind_host: str | None = None,
+    preferred_host: str | None = None,
     log_file: Path | None = None,
     env: dict[str, str] | None = None,
 ) -> list[str]:
     candidates: list[str] = []
-    preferred_host = env_text("DW_SIGNALS_QUERIES_SERVER_CONNECT_HOST") or "127.0.0.1"
+    preferred_host = (
+        preferred_host
+        or env_text("DW_SIGNALS_QUERIES_SERVER_CONNECT_HOST")
+        or "127.0.0.1"
+    )
 
     for host in (preferred_host, "127.0.0.1", "localhost"):
         candidate = host_port_url(host, port)
@@ -1131,6 +1155,7 @@ def server_url_candidates_from_published_port(
     published_port_output: str,
     *,
     fallback_port: int,
+    preferred_host: str | None = None,
     log_file: Path,
     env: dict[str, str],
 ) -> list[str]:
@@ -1144,13 +1169,21 @@ def server_url_candidates_from_published_port(
             server_url_candidates_for_port(
                 mapped_port,
                 bind_host=bind_host,
+                preferred_host=preferred_host,
                 log_file=log_file,
                 env=env,
             )
         )
 
     if not candidates:
-        candidates.extend(server_url_candidates_for_port(fallback_port, log_file=log_file, env=env))
+        candidates.extend(
+            server_url_candidates_for_port(
+                fallback_port,
+                preferred_host=preferred_host,
+                log_file=log_file,
+                env=env,
+            )
+        )
 
     return ordered_unique(candidates)
 
@@ -11080,9 +11113,22 @@ def waterline_service_container_command(
     network: str,
     server_endpoint: str,
     namespace: str,
+    bind_host: str,
 ) -> list[str]:
     global DOCKER_RUN_COMMAND_BUILT
     DOCKER_RUN_COMMAND_BUILT = True
+    normalized_bind_host = normalize_host(bind_host)
+    if is_wildcard_host(normalized_bind_host):
+        raise WaterlineServiceProbeError(
+            "The Waterline service probe cannot publish its unauthenticated HTTP port on a wildcard interface.",
+            blocker_kind="waterline_service_bind_host_insecure",
+            details={"bind_host": bind_host},
+        )
+    publish_binding = (
+        f"[{normalized_bind_host}]::8080"
+        if ":" in normalized_bind_host
+        else f"{normalized_bind_host}::8080"
+    )
     return [
         "docker",
         "run",
@@ -11095,7 +11141,7 @@ def waterline_service_container_command(
         "--network",
         network,
         "--publish",
-        "127.0.0.1::8080",
+        publish_binding,
         "--env",
         "WATERLINE_SERVER_TOKEN",
         "--env",
@@ -11110,7 +11156,24 @@ def waterline_service_container_command(
     ]
 
 
-def waterline_service_host_url(container_name: str, log_file: Path) -> str:
+def waterline_service_bind_host() -> str:
+    return (
+        env_text("DW_SIGNALS_QUERIES_WATERLINE_SERVICE_BIND_HOST")
+        or env_text("DW_SIGNALS_QUERIES_DOCKER_HOST_GATEWAY")
+        or "127.0.0.1"
+    )
+
+
+def waterline_service_connect_host() -> str:
+    return env_text("DW_SIGNALS_QUERIES_WATERLINE_SERVICE_CONNECT_HOST") or "127.0.0.1"
+
+
+def waterline_service_host_urls(
+    container_name: str,
+    log_file: Path,
+    *,
+    env: dict[str, str],
+) -> list[str]:
     command = ["docker", "port", container_name, "8080/tcp"]
     completed = run_command(command, log_file=log_file, timeout=30)
     if completed.returncode != 0:
@@ -11119,13 +11182,19 @@ def waterline_service_host_url(container_name: str, log_file: Path) -> str:
             blocker_kind="waterline_service_port_unavailable",
             details={"command": command_summary(command, completed)},
         )
-    for line in completed.stdout.splitlines():
-        match = re.search(r":([0-9]{1,5})\s*$", line.strip())
-        if match is not None and 0 < int(match.group(1)) <= 65535:
-            return f"http://127.0.0.1:{int(match.group(1))}"
+    candidates = server_url_candidates_from_published_port(
+        completed.stdout,
+        fallback_port=0,
+        preferred_host=waterline_service_connect_host(),
+        log_file=log_file,
+        env=env,
+    )
+    if candidates:
+        return candidates
     raise WaterlineServiceProbeError(
         "Docker returned no usable Waterline service HTTP port.",
         blocker_kind="waterline_service_port_unavailable",
+        details={"published_port_output": completed.stdout[:DIAGNOSTIC_OUTPUT_LIMIT]},
     )
 
 
@@ -11161,16 +11230,22 @@ def waterline_service_http_json(
 
 
 def wait_for_waterline_service(
-    base_url: str,
+    base_url: str | list[str],
     container_name: str,
     log_file: Path,
     timeout_seconds: float = 90.0,
 ) -> dict[str, Any]:
+    candidates = ordered_unique([base_url] if isinstance(base_url, str) else base_url)
+    if not candidates:
+        raise WaterlineServiceProbeError(
+            "The Waterline service probe has no runner-reachable endpoint candidates.",
+            blocker_kind="waterline_service_port_unavailable",
+        )
     deadline = time.time() + timeout_seconds
     attempts = 0
     last_error: str | None = None
+    candidate_errors: dict[str, str] = {}
     while time.time() < deadline:
-        attempts += 1
         if not docker_container_running(container_name, log_file):
             diagnostics = capture_command_summary(
                 ["docker", "logs", container_name],
@@ -11180,25 +11255,43 @@ def wait_for_waterline_service(
             raise WaterlineServiceProbeError(
                 "The Waterline service container exited before /up became ready.",
                 blocker_kind="waterline_service_container_exited",
-                details={"container_logs": diagnostics},
+                details={
+                    "container_logs": diagnostics,
+                    "service_url_candidates": candidates,
+                    "candidate_readiness_errors": candidate_errors,
+                },
             )
-        try:
-            with urllib.request.urlopen(url_join(base_url, "/up"), timeout=2) as response:
-                if 200 <= response.status < 300:
-                    return {
-                        "path": "/up",
-                        "status_code": response.status,
-                        "attempts": attempts,
-                        "ready_at": now(),
-                    }
-                last_error = f"HTTPStatus: {response.status}"
-        except Exception as exc:  # noqa: BLE001 - retain the final bounded readiness error.
-            last_error = f"{type(exc).__name__}: {exc}"
+        for candidate in candidates:
+            if time.time() >= deadline:
+                break
+            attempts += 1
+            try:
+                request_timeout = min(2, max(0.2, deadline - time.time()))
+                with urllib.request.urlopen(url_join(candidate, "/up"), timeout=request_timeout) as response:
+                    if 200 <= response.status < 300:
+                        return {
+                            "path": "/up",
+                            "status_code": response.status,
+                            "attempts": attempts,
+                            "ready_at": now(),
+                            "base_url": candidate,
+                            "service_url_candidates": candidates,
+                            "candidate_readiness_errors": candidate_errors,
+                        }
+                    last_error = f"HTTPStatus: {response.status}"
+            except Exception as exc:  # noqa: BLE001 - retain bounded errors for every topology candidate.
+                last_error = f"{type(exc).__name__}: {exc}"
+            candidate_errors[candidate] = last_error
         time.sleep(min(1, max(0, deadline - time.time())))
     raise WaterlineServiceProbeError(
         "The Waterline service /up endpoint did not become ready.",
         blocker_kind="waterline_service_readiness_timeout",
-        details={"attempts": attempts, "last_error": last_error},
+        details={
+            "attempts": attempts,
+            "last_error": last_error,
+            "service_url_candidates": candidates,
+            "candidate_readiness_errors": candidate_errors,
+        },
     )
 
 
@@ -11306,12 +11399,15 @@ def run_waterline_service_probe(
         image_metadata = inspect_waterline_service_image(image, waterline_version, log_file)
         service_env = os.environ.copy()
         service_env["WATERLINE_SERVER_TOKEN"] = responder_inputs["token"]
+        service_bind_host = waterline_service_bind_host()
+        service_connect_host = waterline_service_connect_host()
         run_command_value = waterline_service_container_command(
             image=image,
             container_name=container_name,
             network=network,
             server_endpoint="http://server:8080",
             namespace=responder_inputs["namespace"],
+            bind_host=service_bind_host,
         )
         register_container(container_name, log_file)
         container_registered = True
@@ -11323,8 +11419,17 @@ def run_waterline_service_probe(
                 details={"command": command_summary(run_command_value, started)},
             )
 
-        service_url = waterline_service_host_url(container_name, log_file)
-        readiness = wait_for_waterline_service(service_url, container_name, log_file)
+        service_url_candidates = waterline_service_host_urls(
+            container_name,
+            log_file,
+            env=service_env,
+        )
+        readiness = wait_for_waterline_service(
+            service_url_candidates,
+            container_name,
+            log_file,
+        )
+        service_url = str(readiness["base_url"])
         record_distribution_digest(
             "waterline-service",
             waterline_version,
@@ -11467,6 +11572,12 @@ def run_waterline_service_probe(
                 "access_mode": "operator",
                 "docker_network": network,
             },
+            "host_topology": {
+                "bind_host": service_bind_host,
+                "connect_host": service_connect_host,
+                "service_url_candidates": service_url_candidates,
+                "effective_host_endpoint": service_url,
+            },
             "api_paths": {
                 "up": "/up",
                 "running_runs": list_path,
@@ -11555,6 +11666,10 @@ def run_waterline_service_probe(
             "workflow_id": workflow_id,
             "run_id": run_id,
             "docker_network": network,
+            "bind_host": service_bind_host,
+            "connect_host": service_connect_host,
+            "service_url_candidates": service_url_candidates,
+            "effective_host_endpoint": service_url,
         }
     except WaterlineServiceProbeError as exc:
         log_line(log_file, f"Waterline service probe failed: {exc.blocker_kind}: {exc}")
