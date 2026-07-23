@@ -3034,22 +3034,206 @@ SH,
         $this->assertIsInt($shardEnd);
         $shard = substr($source, $shardStart, $shardEnd - $shardStart);
         $schedulerStop = strpos($shard, "'stop', 'scheduler'");
-        $outageWait = strpos($shard, 'await sleep(missedDowntimeSeconds * 1000)');
+        $outageWait = strpos($shard, 'await sleep(missedOutageWaitMilliseconds)');
         $preResumeHistory = strpos($shard, 'const preResumeHistory = await scheduleHistory(');
+        $outageFinalState = strpos(
+            $shard,
+            "'schedules-missed-restart-scheduler-outage-final-state.log'",
+        );
         $schedulerResume = strpos($shard, "'up', '-d', 'scheduler'");
 
         $this->assertIsInt($schedulerStop);
         $this->assertIsInt($outageWait);
         $this->assertIsInt($preResumeHistory);
+        $this->assertIsInt($outageFinalState);
         $this->assertIsInt($schedulerResume);
         $this->assertTrue($schedulerStop < $outageWait);
         $this->assertTrue($outageWait < $preResumeHistory);
-        $this->assertTrue($preResumeHistory < $schedulerResume);
-        $this->assertStringContainsString("'ps', '--status', 'running', '--services', 'scheduler'", $shard);
+        $this->assertTrue($preResumeHistory < $outageFinalState);
+        $this->assertTrue($outageFinalState < $schedulerResume);
+        $this->assertStringContainsString("'ps', '--status', 'running', '--services', service", $shard);
+        $this->assertGreaterThanOrEqual(2, substr_count($shard, "service: 'scheduler'"));
         $this->assertStringContainsString('schedulerStopConfirmed: true', $shard);
         $this->assertStringContainsString('preResumeHistory,', $shard);
         $this->assertStringContainsString('fires_during_scheduler_outage_count:', $source);
         $this->assertStringContainsString('stored_overdue_occurrence_elapsed_during_outage:', $source);
+    }
+
+    public function test_missed_fire_probe_is_created_only_after_in_flight_scheduler_work_is_quiescent(): void
+    {
+        $repoRoot = dirname(__DIR__, 2);
+        $source = (string) file_get_contents($repoRoot.'/scripts/conformance/schedules-published-artifacts.mjs');
+        $shardStart = strpos($source, 'async function runMissedRestartShard(');
+        $shardEnd = strpos($source, 'async function confirmComposeServiceStopped(', $shardStart ?: 0);
+
+        $this->assertIsInt($shardStart);
+        $this->assertIsInt($shardEnd);
+        $shard = substr($source, $shardStart, $shardEnd - $shardStart);
+        $schedulerStop = strpos($shard, "'stop', 'scheduler'");
+        $schedulerStopConfirmed = strpos(
+            $shard,
+            'const schedulerStoppedAt = await confirmComposeServiceStopped({',
+        );
+        $probeCreate = strpos($shard, 'await createMissedRestartSchedule({');
+        $probeDescribe = strpos($shard, 'const missedCreatedDescription = await describeSchedule(');
+
+        $this->assertIsInt($schedulerStop);
+        $this->assertIsInt($schedulerStopConfirmed);
+        $this->assertIsInt($probeCreate);
+        $this->assertIsInt($probeDescribe);
+        $this->assertTrue($schedulerStop < $schedulerStopConfirmed);
+        $this->assertTrue($schedulerStopConfirmed < $probeCreate);
+        $this->assertTrue($probeCreate < $probeDescribe);
+        $this->assertStringContainsString(
+            'probe_created_during_confirmed_outage: probeCreatedDuringConfirmedOutage',
+            $source,
+        );
+        $this->assertStringContainsString(
+            'probe_described_during_confirmed_outage: probeDescribedDuringConfirmedOutage',
+            $source,
+        );
+        $this->assertStringContainsString(
+            'const firesDuringSchedulerOutage = scheduleTriggeredEvents(preResumeHistory?.events ?? []);',
+            $source,
+        );
+        $this->assertStringNotContainsString(
+            '.filter((event) => eventRecordedMs(event) >= stoppedMs)',
+            $source,
+        );
+    }
+
+    public function test_missed_fire_outage_wait_crosses_a_stored_minute_boundary(): void
+    {
+        $nodeBinary = trim((string) shell_exec('command -v node 2>/dev/null'));
+        if ($nodeBinary === '') {
+            $this->markTestSkipped('node is required to exercise the missed-fire outage deadline.');
+        }
+
+        $repoRoot = dirname(__DIR__, 2);
+        $script = <<<'JS'
+import { pathToFileURL } from 'node:url';
+
+const moduleUrl = pathToFileURL(process.argv[2]).href;
+const { missedFireOutageWaitMilliseconds } = await import(moduleUrl);
+const nowMs = Date.parse('2026-07-23T12:00:59.750Z');
+const waitMilliseconds = missedFireOutageWaitMilliseconds({
+  storedNextFireTime: '2026-07-23T12:01:00.000Z',
+  minimumWaitSeconds: 0,
+  nowMs,
+});
+
+process.stdout.write(JSON.stringify({
+  waitMilliseconds,
+  observedAt: new Date(nowMs + waitMilliseconds).toISOString(),
+}));
+JS;
+
+        $process = proc_open(
+            [
+                $nodeBinary,
+                '--input-type=module',
+                '-e',
+                $script,
+                'schedules-missed-fire-outage-wait-test',
+                $repoRoot.'/scripts/conformance/schedules-published-artifacts.mjs',
+            ],
+            [
+                1 => ['pipe', 'w'],
+                2 => ['pipe', 'w'],
+            ],
+            $pipes,
+            $repoRoot,
+            ['PATH' => getenv('PATH') ?: '/usr/bin:/bin'],
+        );
+
+        $this->assertIsResource($process);
+        $stdout = stream_get_contents($pipes[1]);
+        $stderr = stream_get_contents($pipes[2]);
+        fclose($pipes[1]);
+        fclose($pipes[2]);
+        $exitCode = proc_close($process);
+
+        $this->assertSame(0, $exitCode, $stderr."\n".$stdout);
+        $result = json_decode($stdout, true, 512, JSON_THROW_ON_ERROR);
+        $this->assertSame(1250, $result['waitMilliseconds']);
+        $this->assertSame('2026-07-23T12:01:01.000Z', $result['observedAt']);
+    }
+
+    public function test_missed_fire_outage_accepts_equal_observed_and_resume_milliseconds(): void
+    {
+        $nodeBinary = trim((string) shell_exec('command -v node 2>/dev/null'));
+        if ($nodeBinary === '') {
+            $this->markTestSkipped('node is required to exercise the missed-fire outage evidence.');
+        }
+
+        $repoRoot = dirname(__DIR__, 2);
+        $script = <<<'JS'
+import { pathToFileURL } from 'node:url';
+
+const moduleUrl = pathToFileURL(process.argv[2]).href;
+const { observeMissedFirePolicy } = await import(moduleUrl);
+const sharedBoundary = '2026-07-23T12:01:00.125Z';
+const result = await observeMissedFirePolicy({
+  serverUrl: 'http://127.0.0.1:1',
+  token: 'unused',
+  namespace: 'equal-millisecond-outage',
+  scheduleId: 'equal-millisecond-outage',
+  documentedPolicy: 'fire_once_on_resume_then_skip_remaining_missed',
+  schedulerStopRequestedAt: '2026-07-23T12:00:00.000Z',
+  schedulerStopConfirmed: true,
+  schedulerStoppedAt: '2026-07-23T12:00:01.000Z',
+  probeCreatedAt: '2026-07-23T12:00:02.000Z',
+  probeDescribedAt: '2026-07-23T12:00:03.000Z',
+  schedulerOutageObservedAt: sharedBoundary,
+  schedulerResumeRequestedAt: sharedBoundary,
+  schedulerResumeConfirmedAt: '2026-07-23T12:01:01.000Z',
+  preResumeHistory: { events: [] },
+  preResumeDescription: { next_fire_at: '2026-07-23T12:00:30.000Z' },
+  downtimeSeconds: 60,
+  outageWaitMilliseconds: 60000,
+  resumeTimeoutSeconds: 0,
+  pollSeconds: 0,
+  artifactVersions: { server: 'test' },
+  artifactSources: { server: 'published_docker_image' },
+});
+
+process.stdout.write(JSON.stringify(result));
+JS;
+
+        $process = proc_open(
+            [
+                $nodeBinary,
+                '--input-type=module',
+                '-e',
+                $script,
+                'schedules-missed-fire-equal-millisecond-test',
+                $repoRoot.'/scripts/conformance/schedules-published-artifacts.mjs',
+            ],
+            [
+                1 => ['pipe', 'w'],
+                2 => ['pipe', 'w'],
+            ],
+            $pipes,
+            $repoRoot,
+            ['PATH' => getenv('PATH') ?: '/usr/bin:/bin'],
+        );
+
+        $this->assertIsResource($process);
+        $stdout = stream_get_contents($pipes[1]);
+        $stderr = stream_get_contents($pipes[2]);
+        fclose($pipes[1]);
+        fclose($pipes[2]);
+        $exitCode = proc_close($process);
+
+        $this->assertSame(0, $exitCode, $stderr."\n".$stdout);
+        $result = json_decode($stdout, true, 512, JSON_THROW_ON_ERROR);
+        $this->assertSame('2026-07-23T12:01:00.125Z', $result['scheduler_outage_observed_at']);
+        $this->assertSame('2026-07-23T12:01:00.125Z', $result['scheduler_resume_requested_at']);
+        $this->assertTrue($result['probe_created_during_confirmed_outage']);
+        $this->assertTrue($result['probe_described_during_confirmed_outage']);
+        $this->assertTrue($result['stored_overdue_occurrence_elapsed_during_outage']);
+        $this->assertSame(0, $result['fires_during_scheduler_outage_count']);
+        $this->assertSame('fail', $result['verdict']);
     }
 
     public function test_runner_uses_published_compose_dependency_graph_for_schedule_shards(): void

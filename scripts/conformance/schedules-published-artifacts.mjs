@@ -4016,6 +4016,21 @@ async function runMissedRestartShard({ startedAt, artifactVersions, artifactSour
     });
     await ensureNamespace(serverUrl, token, namespace);
 
+    const schedulerStopRequestedAt = timestamp();
+    await execLogged(
+      'docker',
+      ['compose', '-p', composeProject, ...composeFiles, 'stop', 'scheduler'],
+      path.join(resultDir, 'schedules-missed-restart-scheduler-outage-stop.log'),
+      env,
+    );
+    const schedulerStoppedAt = await confirmComposeServiceStopped({
+      composeProject,
+      composeFiles,
+      service: 'scheduler',
+      logPath: path.join(resultDir, 'schedules-missed-restart-scheduler-outage-state.log'),
+      env,
+    });
+
     const missedScheduleId = `${runId}-missed`;
     schedulesCreated.push(missedScheduleId);
     await createMissedRestartSchedule({
@@ -4026,34 +4041,25 @@ async function runMissedRestartShard({ startedAt, artifactVersions, artifactSour
       taskQueue,
       probeName: 'MissedFireProbe',
     });
-
+    const missedProbeCreatedAt = timestamp();
     const missedCreatedDescription = await describeSchedule(serverUrl, token, namespace, missedScheduleId);
-    const schedulerStopRequestedAt = timestamp();
-    await execLogged(
-      'docker',
-      ['compose', '-p', composeProject, ...composeFiles, 'stop', 'scheduler'],
-      path.join(resultDir, 'schedules-missed-restart-scheduler-outage-stop.log'),
-      env,
-    );
-    const schedulerState = await execLogged(
-      'docker',
-      ['compose', '-p', composeProject, ...composeFiles, 'ps', '--status', 'running', '--services', 'scheduler'],
-      path.join(resultDir, 'schedules-missed-restart-scheduler-outage-state.log'),
-      env,
-    );
-    const runningSchedulerServices = String(schedulerState.stdout ?? '')
-      .split(/\r?\n/)
-      .map((service) => service.trim())
-      .filter(Boolean);
-    if (runningSchedulerServices.includes('scheduler')) {
-      throw new PublishedStackInfrastructureError(
-        'scheduler service remained running after the missed-fire outage stop completed',
-      );
-    }
-    const schedulerStoppedAt = timestamp();
-    await sleep(missedDowntimeSeconds * 1000);
+    const missedProbeDescribedAt = timestamp();
+    const missedOutageWaitMilliseconds = missedFireOutageWaitMilliseconds({
+      storedNextFireTime: scheduleTimeField(
+        missedCreatedDescription,
+        ['next_fire_at', 'nextFireAt', 'next_fire', 'nextFire'],
+      ),
+      minimumWaitSeconds: missedDowntimeSeconds,
+    });
+    await sleep(missedOutageWaitMilliseconds);
     const preResumeHistory = await scheduleHistory(serverUrl, token, namespace, missedScheduleId);
-    const schedulerOutageObservedAt = timestamp();
+    const schedulerOutageObservedAt = await confirmComposeServiceStopped({
+      composeProject,
+      composeFiles,
+      service: 'scheduler',
+      logPath: path.join(resultDir, 'schedules-missed-restart-scheduler-outage-final-state.log'),
+      env,
+    });
     const schedulerResumeRequestedAt = timestamp();
     await execLogged(
       'docker',
@@ -4072,12 +4078,15 @@ async function runMissedRestartShard({ startedAt, artifactVersions, artifactSour
       schedulerStopRequestedAt,
       schedulerStopConfirmed: true,
       schedulerStoppedAt,
+      probeCreatedAt: missedProbeCreatedAt,
+      probeDescribedAt: missedProbeDescribedAt,
       schedulerOutageObservedAt,
       schedulerResumeRequestedAt,
       schedulerResumeConfirmedAt,
       preResumeHistory,
       preResumeDescription: missedCreatedDescription,
       downtimeSeconds: missedDowntimeSeconds,
+      outageWaitMilliseconds: missedOutageWaitMilliseconds,
       resumeTimeoutSeconds: missedResumeTimeoutSeconds,
       pollSeconds,
       artifactVersions,
@@ -4186,6 +4195,33 @@ async function runMissedRestartShard({ startedAt, artifactVersions, artifactSour
   }
 }
 
+async function confirmComposeServiceStopped({
+  composeProject,
+  composeFiles,
+  service,
+  logPath,
+  env,
+}) {
+  const serviceState = await execLogged(
+    'docker',
+    ['compose', '-p', composeProject, ...composeFiles, 'ps', '--status', 'running', '--services', service],
+    logPath,
+    env,
+  );
+  const runningServices = String(serviceState.stdout ?? '')
+    .split(/\r?\n/)
+    .map((candidate) => candidate.trim())
+    .filter(Boolean);
+
+  if (runningServices.includes(service)) {
+    throw new PublishedStackInfrastructureError(
+      `${service} service remained running during its confirmed outage window`,
+    );
+  }
+
+  return timestamp();
+}
+
 async function createMissedRestartSchedule({
   serverUrl,
   token,
@@ -4207,6 +4243,20 @@ async function createMissedRestartSchedule({
   });
 }
 
+function missedFireOutageWaitMilliseconds({
+  storedNextFireTime,
+  minimumWaitSeconds,
+  nowMs = Date.now(),
+}) {
+  const minimumWaitMilliseconds = Math.max(0, minimumWaitSeconds * 1000);
+  const storedNextFireMs = Date.parse(storedNextFireTime);
+  const waitUntilStoredNextFireElapsed = Number.isFinite(storedNextFireMs)
+    ? storedNextFireMs + 1000 - nowMs
+    : 0;
+
+  return Math.max(minimumWaitMilliseconds, waitUntilStoredNextFireElapsed, 0);
+}
+
 async function observeMissedFirePolicy({
   serverUrl,
   token,
@@ -4216,12 +4266,15 @@ async function observeMissedFirePolicy({
   schedulerStopRequestedAt,
   schedulerStopConfirmed,
   schedulerStoppedAt,
+  probeCreatedAt,
+  probeDescribedAt,
   schedulerOutageObservedAt,
   schedulerResumeRequestedAt,
   schedulerResumeConfirmedAt,
   preResumeHistory,
   preResumeDescription,
   downtimeSeconds,
+  outageWaitMilliseconds,
   resumeTimeoutSeconds,
   pollSeconds,
   artifactVersions,
@@ -4229,6 +4282,19 @@ async function observeMissedFirePolicy({
 }) {
   const stoppedMs = Date.parse(schedulerStoppedAt);
   const resumeRequestedMs = Date.parse(schedulerResumeRequestedAt);
+  const outageObservedMs = Date.parse(schedulerOutageObservedAt);
+  const probeCreatedMs = Date.parse(probeCreatedAt);
+  const probeDescribedMs = Date.parse(probeDescribedAt);
+  const probeCreatedDuringConfirmedOutage = schedulerStopConfirmed === true
+    && Number.isFinite(probeCreatedMs)
+    && probeCreatedMs >= stoppedMs
+    && probeCreatedMs < resumeRequestedMs;
+  const probeDescribedDuringConfirmedOutage = schedulerStopConfirmed === true
+    && Number.isFinite(probeDescribedMs)
+    && Number.isFinite(outageObservedMs)
+    && probeDescribedMs >= probeCreatedMs
+    && probeDescribedMs <= outageObservedMs
+    && outageObservedMs <= resumeRequestedMs;
   const storedOverdueOccurrenceTime = scheduleTimeField(
     preResumeDescription,
     ['next_fire_at', 'nextFireAt', 'next_fire', 'nextFire'],
@@ -4237,9 +4303,10 @@ async function observeMissedFirePolicy({
   const storedOverdueOccurrenceElapsedDuringOutage = Number.isFinite(storedOverdueOccurrenceMs)
     && storedOverdueOccurrenceMs >= stoppedMs
     && storedOverdueOccurrenceMs < resumeRequestedMs;
-  const firesDuringSchedulerOutage = scheduleTriggeredEvents(preResumeHistory?.events ?? [])
-    .filter((event) => eventRecordedMs(event) >= stoppedMs);
+  const firesDuringSchedulerOutage = scheduleTriggeredEvents(preResumeHistory?.events ?? []);
   const outageContinuityProven = schedulerStopConfirmed === true
+    && probeCreatedDuringConfirmedOutage
+    && probeDescribedDuringConfirmedOutage
     && firesDuringSchedulerOutage.length === 0
     && storedOverdueOccurrenceElapsedDuringOutage;
   const deadlineMs = Date.now() + resumeTimeoutSeconds * 1000;
@@ -4278,6 +4345,12 @@ async function observeMissedFirePolicy({
   if (!schedulerStopConfirmed) {
     failures.push('scheduler stop was not confirmed before the missed-fire outage window');
   }
+  if (!probeCreatedDuringConfirmedOutage) {
+    failures.push('missed-fire probe was not created inside the confirmed scheduler outage window');
+  }
+  if (!probeDescribedDuringConfirmedOutage) {
+    failures.push('missed-fire probe was not described inside the confirmed scheduler outage window');
+  }
   if (firesDuringSchedulerOutage.length > 0) {
     failures.push(
       `observed ${firesDuringSchedulerOutage.length} fire(s) while scheduler evaluation was claimed unavailable`,
@@ -4312,10 +4385,15 @@ async function observeMissedFirePolicy({
     scheduler_stop_requested_at: schedulerStopRequestedAt,
     scheduler_stop_confirmed: schedulerStopConfirmed === true,
     scheduler_stopped_at: schedulerStoppedAt,
+    probe_created_at: probeCreatedAt,
+    probe_described_at: probeDescribedAt,
+    probe_created_during_confirmed_outage: probeCreatedDuringConfirmedOutage,
+    probe_described_during_confirmed_outage: probeDescribedDuringConfirmedOutage,
     scheduler_outage_observed_at: schedulerOutageObservedAt,
     scheduler_resume_requested_at: schedulerResumeRequestedAt,
     scheduler_resume_confirmed_at: schedulerResumeConfirmedAt,
     downtime_seconds: downtimeSeconds,
+    outage_wait_seconds: outageWaitMilliseconds / 1000,
     resume_timeout_seconds: resumeTimeoutSeconds,
     stored_overdue_occurrence_time: storedOverdueOccurrenceTime,
     stored_overdue_occurrence_elapsed_during_outage: storedOverdueOccurrenceElapsedDuringOutage,
@@ -10280,4 +10358,10 @@ function isMainModule() {
   return process.argv[1] && path.resolve(process.argv[1]) === modulePath;
 }
 
-export { latestStableComposerVersion, schedulesPhpSurfaceProbeScript, schedulesPhpWorkerScript };
+export {
+  latestStableComposerVersion,
+  missedFireOutageWaitMilliseconds,
+  observeMissedFirePolicy,
+  schedulesPhpSurfaceProbeScript,
+  schedulesPhpWorkerScript,
+};
