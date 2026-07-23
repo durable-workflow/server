@@ -69,17 +69,17 @@ final class DistributionIdentityEvidenceTest extends TestCase
 
     public function test_python_semver_and_pep440_spellings_share_one_byte_identity(): void
     {
-        $wheel = $this->root.'/durable_workflow-2.0.0b6-py3-none-any.whl';
+        $wheel = $this->root.'/durable_workflow-2.0.0b10-py3-none-any.whl';
         file_put_contents($wheel, 'beta four wheel bytes');
         $store = $this->root.'/python-prerelease.json';
 
-        $semver = $this->runCommand('record-file', $store, 'sdk-python', '2.0.0-beta.6', $wheel);
-        $pep440 = $this->runCommand('record-file', $store, 'sdk-python', '2.0.0b6', $wheel);
+        $semver = $this->runCommand('record-file', $store, 'sdk-python', '2.0.0-beta.10', $wheel);
+        $pep440 = $this->runCommand('record-file', $store, 'sdk-python', '2.0.0b10', $wheel);
 
         $this->assertSame(0, $semver['exit'], $semver['stderr']);
         $this->assertSame(0, $pep440['exit'], $pep440['stderr']);
         $identities = json_decode((string) file_get_contents($store), true, 512, JSON_THROW_ON_ERROR);
-        $this->assertSame('pypi:durable-workflow@2.0.0b6', $identities['sdk-python']['locator']);
+        $this->assertSame('pypi:durable-workflow@2.0.0b10', $identities['sdk-python']['locator']);
         $this->assertSame(hash_file('sha256', $wheel), $identities['sdk-python']['artifacts'][0]['sha256']);
 
         $differentPrerelease = $this->runCommand('record-file', $store, 'sdk-python', '2.0.0b3', $wheel);

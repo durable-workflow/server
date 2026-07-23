@@ -10,7 +10,7 @@ import {
 test('exact server release identities include prerelease and stable tags', () => {
   for (const version of [
     '2.0.0-alpha.1',
-    '2.0.0-beta.9',
+    '2.0.0-beta.10',
     '2.0.0-rc.2',
     '2.0.0',
   ]) {
@@ -29,8 +29,8 @@ test('malformed and rolling server release inputs are rejected', () => {
     '2.0.x',
     '2.0.0-beta.01',
     '2.0.0-beta..3',
-    'v2.0.0-beta.9',
-    '2.0.0-beta.9 || 2.0.0',
+    'v2.0.0-beta.10',
+    '2.0.0-beta.10 || 2.0.0',
   ]) {
     assert.equal(isExactSemverRelease(version), false, version);
   }
@@ -38,9 +38,9 @@ test('malformed and rolling server release inputs are rejected', () => {
 
 test('PEP 440 and product SemVer spellings preserve one Python release identity', () => {
   assert.equal(pythonReleaseIdentity('2.0.0-alpha.4'), '2.0.0a4');
-  assert.equal(pythonReleaseIdentity('2.0.0-beta.9'), '2.0.0b9');
+  assert.equal(pythonReleaseIdentity('2.0.0-beta.10'), '2.0.0b10');
   assert.equal(pythonReleaseIdentity('2.0.0-rc.2'), '2.0.0rc2');
-  assert.equal(samePythonRelease('2.0.0-beta.9', '2.0.0b9'), true);
-  assert.equal(samePythonRelease('2.0.0-beta.9', '2.0.0b3'), false);
+  assert.equal(samePythonRelease('2.0.0-beta.10', '2.0.0b10'), true);
+  assert.equal(samePythonRelease('2.0.0-beta.10', '2.0.0b3'), false);
   assert.equal(samePythonRelease('2.0.0-rc.4', '2.0.0b8'), false);
 });
