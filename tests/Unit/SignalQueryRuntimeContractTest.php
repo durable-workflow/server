@@ -392,6 +392,7 @@ PY);
             'source_revision_labels.oci_revision',
             'source_revision_labels.release_tag',
             'source_revision_labels.labels',
+            'probe_started_at',
             'api_captures.up.status_code',
             'api_captures.running_runs.selected_run_present',
             'api_captures.selected_run_detail',
@@ -400,6 +401,34 @@ PY);
             'comparison.run_identity_matches_public_clients',
             'comparison.counter_state_matches_public_clients',
             'comparison.service_mode_uses_public_php_sdk',
+            'query_responder.expected_query_identity',
+            'query_responder.designated_target',
+            'query_responder.designated_target.responder_liveness.eligible',
+            'query_responder.query_identity.workflow_id',
+            'query_responder.query_identity.run_id',
+            'query_responder.query_identity.query_name',
+            'query_responder.query_identity.task_queue',
+            'query_responder.query_identity.worker_id',
+            'query_responder.query_identity.query_task_id',
+            'query_responder.query_identity.query_task_attempt',
+            'query_responder.claim_binding.matches_expected',
+            'query_responder.completion_binding.request.query_task_id',
+            'query_responder.completion_binding.request.query_task_attempt',
+            'query_responder.completion_binding.request.lease_owner',
+            'query_responder.completion_binding.response.query_task_id',
+            'query_responder.completion_binding.response.query_task_attempt',
+            'query_responder.completion_binding.response.outcome',
+            'query_responder.completion_binding.authoritative',
+            'query_responder.authoritative_completion',
+            'query_responder.responder_liveness_at_claim.eligible',
+            'query_responder.query_started_at',
+            'query_responder.query_finished_at',
+            'query_responder.responder_started_at',
+            'query_responder.query_claimed_at',
+            'query_responder.completion_request_started_at',
+            'query_responder.completion_recorded_at',
+            'query_responder.responder_finished_at',
+            'query_responder.wait_finished_at',
         ] as $surface) {
             $this->assertContains(
                 $surface,
@@ -4933,7 +4962,13 @@ observed = {}
 
 globals()["heartbeat_worker"] = lambda *args, **kwargs: {"status_code": 200}
 
-for case in ("delayed_success", "timeout", "transport_failure", "non_success_response"):
+for case in (
+    "delayed_success",
+    "unbound_success",
+    "timeout",
+    "transport_failure",
+    "non_success_response",
+):
     request_timeouts = []
 
     def fake_http_json(base_url, path, **kwargs):
@@ -4944,7 +4979,23 @@ for case in ("delayed_success", "timeout", "transport_failure", "non_success_res
         request_timeouts.append(kwargs["timeout"])
         if case == "delayed_success":
             time.sleep(0.05)
-            return {"status_code": 200, "body": {"status": "completed"}}
+            return {
+                "status_code": 200,
+                "body": {
+                    "query_task_id": task["query_task_id"],
+                    "query_task_attempt": task["query_task_attempt"],
+                    "outcome": "completed",
+                },
+            }
+        if case == "unbound_success":
+            return {
+                "status_code": 200,
+                "body": {
+                    "query_task_id": "query-task-from-another-claim",
+                    "query_task_attempt": task["query_task_attempt"],
+                    "outcome": "completed",
+                },
+            }
         if case == "timeout":
             raise TimeoutError("completion response timed out")
         if case == "transport_failure":
@@ -4973,6 +5024,13 @@ for case in ("delayed_success", "timeout", "transport_failure", "non_success_res
             "completion_request_timeout": 0.2,
             "completion_settle_seconds": 0.02,
             "completion_done_event": done,
+            "expected_query_identity": {
+                "workflow_id": "wf-ordered",
+                "run_id": "run-ordered",
+                "query_name": "state",
+                "task_queue": "ordered-queue",
+                "worker_id": "ordered-worker",
+            },
         },
         daemon=True,
     )
@@ -5029,6 +5087,33 @@ PY);
         $this->assertSame(200, $result['delayed_success']['completion']['completion_status_code']);
         $this->assertFalse($result['delayed_success']['completion']['responder_alive_after_wait']);
         $this->assertLessThanOrEqual(0.2, $result['delayed_success']['request_timeouts'][0]);
+        $this->assertTrue(
+            $result['delayed_success']['completion']['authoritative_completion'],
+        );
+        $this->assertSame(
+            'query-task-current-1',
+            $result['delayed_success']['completion']['completion_binding']['response']['query_task_id'],
+        );
+        $this->assertSame(
+            1,
+            $result['delayed_success']['completion']['completion_binding']['response']['query_task_attempt'],
+        );
+        $this->assertSame(
+            'completed',
+            $result['delayed_success']['completion']['completion_binding']['response']['outcome'],
+        );
+
+        $this->assertSame(
+            'responder_failure',
+            $result['unbound_success']['completion']['completion_state'],
+        );
+        $this->assertFalse(
+            $result['unbound_success']['completion']['authoritative_completion'],
+        );
+        $this->assertStringContainsString(
+            'did not bind to the claimed task',
+            $result['unbound_success']['completion']['responder_error'],
+        );
 
         $this->assertSame('timeout', $result['timeout']['completion']['completion_state']);
         $this->assertStringContainsString(
@@ -5058,7 +5143,13 @@ PY);
         $this->assertFalse($result['incomplete']['completion']['finished_within_budget']);
         $this->assertTrue($result['incomplete']['completion']['responder_alive_after_wait']);
 
-        foreach (['delayed_success', 'timeout', 'transport_failure', 'non_success_response'] as $case) {
+        foreach ([
+            'delayed_success',
+            'unbound_success',
+            'timeout',
+            'transport_failure',
+            'non_success_response',
+        ] as $case) {
             $evidence = $result[$case]['query_evidence'];
             $this->assertSame('wf-ordered', $evidence['query_identity']['workflow_id']);
             $this->assertSame('run-ordered', $evidence['query_identity']['run_id']);
@@ -5072,7 +5163,157 @@ PY);
             $this->assertArrayHasKey('captured_at', $evidence);
             $this->assertArrayHasKey('responder_started_at', $evidence);
             $this->assertArrayHasKey('wait_finished_at', $evidence);
+            $this->assertArrayHasKey('claim_binding', $evidence);
+            $this->assertArrayHasKey('authoritative_completion', $evidence);
         }
+    }
+
+    public function test_waterline_service_query_target_isolated_from_baseline_responders(): void
+    {
+        $result = $this->runSignalQueryRunnerPythonSnippet(<<<'PY'
+events = {}
+
+class FakeHeartbeatGuard:
+    def __init__(self, base_url, token, namespace, worker_id, log_file):
+        self.worker_id = worker_id
+        self.started = False
+        self.stopped = False
+
+    def start(self):
+        self.started = True
+
+    def wait_until_eligible(self, timeout=15.0):
+        return self.started
+
+    def stop(self):
+        self.stopped = True
+
+    def snapshot(self):
+        return {
+            "worker_id": self.worker_id,
+            "eligible": self.started and not self.stopped,
+        }
+
+def fake_http_json(base_url, path, **kwargs):
+    events["registration"] = kwargs["body"]
+    return {
+        "status_code": 200,
+        "body": {
+            "worker_id": kwargs["body"]["worker_id"],
+            "task_queue": kwargs["body"]["task_queue"],
+            "status": "active",
+        },
+    }
+
+def fake_start_waiting_workflow(
+    base_url,
+    token,
+    namespace,
+    worker_id,
+    task_queue,
+    workflow_id,
+    workflow_type,
+    condition_key,
+):
+    events["workflow"] = {
+        "worker_id": worker_id,
+        "task_queue": task_queue,
+        "workflow_id": workflow_id,
+        "workflow_type": workflow_type,
+        "condition_key": condition_key,
+    }
+    return "run-waterline-service-isolated"
+
+globals()["WorkerHeartbeatGuard"] = FakeHeartbeatGuard
+globals()["http_json"] = fake_http_json
+globals()["start_waiting_workflow"] = fake_start_waiting_workflow
+
+baseline = {
+    "base_url": "http://server.test",
+    "token": "token",
+    "namespace": "default",
+    "worker_id": "signals-queries-baseline-worker-existing",
+    "task_queue": "signals-queries-baseline-existing",
+}
+target = create_waterline_service_query_target(
+    baseline,
+    Path("/tmp/waterline-service-isolation-test.log"),
+    suffix="isolated",
+)
+evidence = waterline_service_query_target_evidence(target)
+expected = {
+    "workflow_id": target["workflow_id"],
+    "run_id": target["run_id"],
+    "query_name": "state",
+    "task_queue": target["responder_inputs"]["task_queue"],
+    "worker_id": target["responder_inputs"]["worker_id"],
+}
+baseline_claim = query_task_claim_binding(
+    {
+        "workflow_id": target["workflow_id"],
+        "run_id": target["run_id"],
+        "query_name": "state",
+        "task_queue": baseline["task_queue"],
+        "lease_owner": baseline["worker_id"],
+        "query_task_id": "query-task-baseline",
+        "query_task_attempt": 1,
+    },
+    expected,
+)
+target["heartbeat_guard"].stop()
+
+print(json.dumps({
+    "baseline": baseline,
+    "registration": events["registration"],
+    "workflow": events["workflow"],
+    "target": {
+        key: value
+        for key, value in target["responder_inputs"].items()
+        if key != "token"
+    },
+    "target_evidence": evidence,
+    "baseline_claim": baseline_claim,
+}, sort_keys=True))
+PY);
+
+        $this->assertSame(
+            'signals-queries-waterline-service-worker-isolated',
+            $result['target']['worker_id'],
+        );
+        $this->assertSame(
+            'signals-queries-waterline-service-isolated',
+            $result['target']['task_queue'],
+        );
+        $this->assertNotSame(
+            $result['baseline']['worker_id'],
+            $result['target']['worker_id'],
+        );
+        $this->assertNotSame(
+            $result['baseline']['task_queue'],
+            $result['target']['task_queue'],
+        );
+        $this->assertSame(
+            $result['target']['worker_id'],
+            $result['registration']['worker_id'],
+        );
+        $this->assertSame(
+            $result['target']['task_queue'],
+            $result['workflow']['task_queue'],
+        );
+        $this->assertSame(
+            'wf-sq-waterline-service-isolated',
+            $result['workflow']['workflow_id'],
+        );
+        $this->assertSame(
+            'run-waterline-service-isolated',
+            $result['target_evidence']['run_id'],
+        );
+        $this->assertTrue(
+            $result['target_evidence']['responder_liveness']['eligible'],
+        );
+        $this->assertFalse($result['baseline_claim']['matches_expected']);
+        $this->assertContains('task_queue', $result['baseline_claim']['mismatches']);
+        $this->assertContains('worker_id', $result['baseline_claim']['mismatches']);
     }
 
     public function test_waterline_service_probe_resets_prior_run_state_and_requires_fresh_evidence(): void
@@ -9440,6 +9681,13 @@ PY);
             ],
             'query_responder' => [
                 'captured_at' => '2026-05-20T00:04:29Z',
+                'expected_query_identity' => [
+                    'workflow_id' => 'wf-1',
+                    'run_id' => 'run-1',
+                    'query_name' => 'current',
+                    'worker_id' => 'worker-1',
+                    'task_queue' => 'counter',
+                ],
                 'query_identity' => [
                     'workflow_id' => 'wf-1',
                     'run_id' => 'run-1',
@@ -9449,16 +9697,59 @@ PY);
                     'worker_id' => 'worker-1',
                     'task_queue' => 'counter',
                 ],
+                'designated_target' => [
+                    'workflow_id' => 'wf-1',
+                    'run_id' => 'run-1',
+                    'workflow_type' => 'conformance.counter',
+                    'worker_id' => 'worker-1',
+                    'task_queue' => 'counter',
+                    'process_started_at' => '2026-05-20T00:04:18Z',
+                    'worker_registration_started_at' => '2026-05-20T00:04:18Z',
+                    'worker_registration_finished_at' => '2026-05-20T00:04:19Z',
+                    'workflow_started_at' => '2026-05-20T00:04:19Z',
+                    'workflow_ready_at' => '2026-05-20T00:04:20Z',
+                    'responder_liveness' => [
+                        'worker_id' => 'worker-1',
+                        'eligible' => true,
+                    ],
+                    'captured_at' => '2026-05-20T00:04:20Z',
+                ],
                 'query_status_code' => 200,
                 'query_result' => 8,
                 'expected_result' => 8,
+                'query_started_at' => '2026-05-20T00:04:21Z',
+                'query_finished_at' => '2026-05-20T00:04:28Z',
                 'poll_status_code' => 200,
                 'completion_state' => 'successful',
                 'completion_response' => [
                     'status_code' => 200,
                     'reason' => null,
+                    'query_task_id' => 'query-task-1',
+                    'query_task_attempt' => 1,
+                    'outcome' => 'completed',
                 ],
                 'completion_status_code' => 200,
+                'claim_binding' => [
+                    'matches_expected' => true,
+                ],
+                'completion_binding' => [
+                    'request' => [
+                        'query_task_id' => 'query-task-1',
+                        'query_task_attempt' => 1,
+                        'lease_owner' => 'worker-1',
+                    ],
+                    'response' => [
+                        'status_code' => 200,
+                        'query_task_id' => 'query-task-1',
+                        'query_task_attempt' => 1,
+                        'outcome' => 'completed',
+                    ],
+                    'authoritative' => true,
+                ],
+                'authoritative_completion' => true,
+                'responder_liveness_at_claim' => [
+                    'eligible' => true,
+                ],
                 'responder_error' => null,
                 'responder_alive_before_wait' => true,
                 'responder_alive_after_wait' => false,

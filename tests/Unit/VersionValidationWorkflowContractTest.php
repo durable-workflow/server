@@ -18,7 +18,7 @@ class VersionValidationWorkflowContractTest extends TestCase
         $job = $workflow['jobs']['version-validation'] ?? null;
         $this->assertIsArray($job);
         $this->assertSame([
-            'SERVER_VERSION' => '2.0.0-beta.8',
+            'SERVER_VERSION' => '2.0.0-beta.9',
             'CLI_VERSION' => '2.0.0-beta.6',
             'PYTHON_SDK_VERSION' => '2.0.0b6',
         ], $job['env'] ?? null);

@@ -617,6 +617,8 @@ def response_sample(response: dict[str, Any]) -> dict[str, Any]:
         "run_id",
         "signal_name",
         "query_name",
+        "query_task_id",
+        "query_task_attempt",
         "command_contract_source",
         "command_contract_backfill_needed",
         "command_contract_backfill_available",
@@ -3096,6 +3098,79 @@ def count_signal_received(events_response: dict[str, Any], signal_name: str) -> 
     return count
 
 
+def query_task_claim_binding(
+    task: dict[str, Any],
+    expected: dict[str, str],
+) -> dict[str, Any]:
+    claimed = {
+        "workflow_id": task.get("workflow_id"),
+        "run_id": task.get("run_id"),
+        "query_name": task.get("query_name"),
+        "task_queue": task.get("task_queue"),
+        "worker_id": task.get("lease_owner"),
+        "query_task_id": task.get("query_task_id"),
+        "query_task_attempt": task.get("query_task_attempt"),
+    }
+    expected_identity = {
+        field: expected[field]
+        for field in ("workflow_id", "run_id", "query_name", "task_queue", "worker_id")
+    }
+    mismatches = [
+        field
+        for field, expected_value in expected_identity.items()
+        if claimed.get(field) != expected_value
+    ]
+    if not isinstance(claimed["query_task_id"], str) or not claimed["query_task_id"]:
+        mismatches.append("query_task_id")
+    if (
+        isinstance(claimed["query_task_attempt"], bool)
+        or not isinstance(claimed["query_task_attempt"], int)
+        or claimed["query_task_attempt"] < 1
+    ):
+        mismatches.append("query_task_attempt")
+
+    return {
+        "expected": expected_identity,
+        "claimed": claimed,
+        "mismatches": mismatches,
+        "matches_expected": mismatches == [],
+        "verified_at": now(),
+    }
+
+
+def query_task_completion_binding(
+    task: dict[str, Any],
+    request_body: dict[str, Any],
+    response: dict[str, Any],
+) -> dict[str, Any]:
+    response_body = response.get("body") if isinstance(response.get("body"), dict) else {}
+    status_code = response.get("status_code")
+    request_matches_claim = (
+        request_body.get("lease_owner") == task.get("lease_owner")
+        and request_body.get("query_task_attempt") == task.get("query_task_attempt")
+    )
+    response_matches_claim = (
+        isinstance(status_code, int)
+        and 200 <= status_code < 300
+        and response_body.get("query_task_id") == task.get("query_task_id")
+        and response_body.get("query_task_attempt") == task.get("query_task_attempt")
+        and response_body.get("outcome") == "completed"
+    )
+
+    return {
+        "request": {
+            "query_task_id": task.get("query_task_id"),
+            "query_task_attempt": request_body.get("query_task_attempt"),
+            "lease_owner": request_body.get("lease_owner"),
+        },
+        "response": response_sample(response),
+        "request_matches_claim": request_matches_claim,
+        "response_matches_claim": response_matches_claim,
+        "authoritative": request_matches_claim and response_matches_claim,
+        "verified_at": now(),
+    }
+
+
 def answer_next_query_task(
     base_url: str,
     token: str,
@@ -3114,6 +3189,7 @@ def answer_next_query_task(
     completion_request_timeout: float = 15.0,
     completion_settle_seconds: float = 1.0,
     completion_done_event: threading.Event | None = None,
+    expected_query_identity: dict[str, str] | None = None,
 ) -> None:
     holder["responder_started_at"] = now()
     responder_started_monotonic = time.monotonic()
@@ -3276,6 +3352,18 @@ def answer_next_query_task(
 
         holder["query_handler_invoked_at"] = now()
         holder["query_task"] = task
+        if expected_query_identity is not None:
+            holder["query_claim_binding"] = query_task_claim_binding(
+                task,
+                expected_query_identity,
+            )
+            if holder["query_claim_binding"]["matches_expected"] is not True:
+                holder["completion_state"] = "responder_failure"
+                holder["error"] = (
+                    "query responder claimed a task outside its designated identity: "
+                    f"{holder['query_claim_binding']}"
+                )
+                return
         if capture_claim_eligibility:
             try:
                 holder["worker_eligibility_when_claimed"] = worker_eligibility_sample(
@@ -3318,16 +3406,18 @@ def answer_next_query_task(
 
         holder["completion_request_started_at"] = now()
         holder["completion_state"] = "in_flight"
+        completion_request_body = {
+            "lease_owner": task.get("lease_owner") or worker_id,
+            "query_task_attempt": task["query_task_attempt"],
+            "result": resolved_result,
+        }
+        holder["completion_request"] = dict(completion_request_body)
         try:
             complete = http_json(
                 base_url,
                 api_path("worker", "query-tasks", str(task["query_task_id"]), "complete"),
                 method="POST",
-                body={
-                    "lease_owner": task.get("lease_owner") or worker_id,
-                    "query_task_attempt": task["query_task_attempt"],
-                    "result": resolved_result,
-                },
+                body=completion_request_body,
                 token=token,
                 namespace=namespace,
                 worker=True,
@@ -3344,9 +3434,27 @@ def answer_next_query_task(
 
         holder["complete"] = complete
         holder["query_completed_at"] = now()
+        holder["query_completion_binding"] = query_task_completion_binding(
+            task,
+            completion_request_body,
+            complete,
+        )
         complete_status = complete.get("status_code")
-        if isinstance(complete_status, int) and 200 <= complete_status < 300:
+        if (
+            isinstance(complete_status, int)
+            and 200 <= complete_status < 300
+            and (
+                expected_query_identity is None
+                or holder["query_completion_binding"]["authoritative"] is True
+            )
+        ):
             holder["completion_state"] = "successful"
+        elif isinstance(complete_status, int) and 200 <= complete_status < 300:
+            holder["completion_state"] = "responder_failure"
+            holder["error"] = (
+                "query task completion response did not bind to the claimed task: "
+                f"{holder['query_completion_binding']}"
+            )
         else:
             holder["completion_state"] = "non_success_response"
             holder["error"] = f"query task completion returned a non-successful response: {complete}"
@@ -11154,6 +11262,175 @@ class WaterlineServiceProbeError(RuntimeError):
         self.details = details or {}
 
 
+def create_waterline_service_query_target(
+    responder_inputs: dict[str, str],
+    log_file: Path,
+    *,
+    suffix: str | None = None,
+) -> dict[str, Any]:
+    identity_suffix = suffix or hashlib.sha1(
+        f"{os.getpid()}-{time.time_ns()}-waterline-service".encode("utf-8")
+    ).hexdigest()[:10]
+    worker_id = f"signals-queries-waterline-service-worker-{identity_suffix}"
+    task_queue = f"signals-queries-waterline-service-{identity_suffix}"
+    workflow_id = f"wf-sq-waterline-service-{identity_suffix}"
+    workflow_type = "conformance.counter"
+    process_started_at = now()
+    worker_registration_started_at = now()
+    try:
+        registration = http_json(
+            responder_inputs["base_url"],
+            api_path("worker", "register"),
+            method="POST",
+            body={
+                "worker_id": worker_id,
+                "task_queue": task_queue,
+                "runtime": "external",
+                "sdk_version": "signals-queries-waterline-service-probe",
+                "supported_workflow_types": [workflow_type],
+                "capabilities": ["query_tasks"],
+                "process_metrics": {
+                    "process_started_at": process_started_at,
+                },
+                "workflow_command_contracts": {
+                    workflow_type: command_contract(),
+                },
+            },
+            token=responder_inputs["token"],
+            namespace=responder_inputs["namespace"],
+            worker=True,
+            timeout=30,
+        )
+    except (TimeoutError, socket.timeout) as exc:
+        raise WaterlineServiceProbeError(
+            "The designated Waterline service query responder registration timed out.",
+            blocker_kind="waterline_service_query_worker_registration_timeout",
+            details={
+                "worker_id": worker_id,
+                "task_queue": task_queue,
+                "worker_registration_started_at": worker_registration_started_at,
+                "worker_registration_failed_at": now(),
+                "registration_error": f"{type(exc).__name__}: {exc}",
+            },
+        ) from exc
+    except (urllib.error.URLError, OSError) as exc:
+        raise WaterlineServiceProbeError(
+            "The designated Waterline service query responder registration transport failed.",
+            blocker_kind="waterline_service_query_worker_registration_transport_failed",
+            details={
+                "worker_id": worker_id,
+                "task_queue": task_queue,
+                "worker_registration_started_at": worker_registration_started_at,
+                "worker_registration_failed_at": now(),
+                "registration_error": f"{type(exc).__name__}: {exc}",
+            },
+        ) from exc
+    worker_registration_finished_at = now()
+    registration_status = registration.get("status_code")
+    if (
+        not isinstance(registration_status, int)
+        or not 200 <= registration_status < 300
+    ):
+        raise WaterlineServiceProbeError(
+            "The designated Waterline service query responder could not register.",
+            blocker_kind="waterline_service_query_worker_registration_failed",
+            details={
+                "worker_id": worker_id,
+                "task_queue": task_queue,
+                "worker_registration": response_sample(registration),
+                "worker_registration_started_at": worker_registration_started_at,
+                "worker_registration_finished_at": worker_registration_finished_at,
+            },
+        )
+
+    heartbeat_guard = WorkerHeartbeatGuard(
+        responder_inputs["base_url"],
+        responder_inputs["token"],
+        responder_inputs["namespace"],
+        worker_id,
+        log_file,
+    )
+    heartbeat_guard.start()
+    if not heartbeat_guard.wait_until_eligible():
+        liveness = heartbeat_guard.snapshot()
+        heartbeat_guard.stop()
+        raise WaterlineServiceProbeError(
+            "The designated Waterline service query responder did not become live.",
+            blocker_kind="waterline_service_query_worker_unavailable",
+            details={
+                "worker_id": worker_id,
+                "task_queue": task_queue,
+                "responder_liveness": liveness,
+            },
+        )
+
+    workflow_started_at = now()
+    try:
+        run_id = start_waiting_workflow(
+            responder_inputs["base_url"],
+            responder_inputs["token"],
+            responder_inputs["namespace"],
+            worker_id,
+            task_queue,
+            workflow_id,
+            workflow_type,
+            f"{workflow_id}-initial",
+        )
+    except Exception as exc:  # noqa: BLE001 - target setup failure becomes bounded runner evidence.
+        liveness = heartbeat_guard.snapshot()
+        heartbeat_guard.stop()
+        raise WaterlineServiceProbeError(
+            "The isolated Waterline service query workflow could not start.",
+            blocker_kind="waterline_service_query_workflow_start_failed",
+            details={
+                "worker_id": worker_id,
+                "task_queue": task_queue,
+                "workflow_id": workflow_id,
+                "responder_liveness": liveness,
+                "workflow_started_at": workflow_started_at,
+                "workflow_start_error": f"{type(exc).__name__}: {exc}",
+            },
+        ) from exc
+
+    return {
+        "responder_inputs": {
+            **responder_inputs,
+            "worker_id": worker_id,
+            "task_queue": task_queue,
+        },
+        "workflow_id": workflow_id,
+        "run_id": run_id,
+        "workflow_type": workflow_type,
+        "process_started_at": process_started_at,
+        "worker_registration": response_sample(registration),
+        "worker_registration_started_at": worker_registration_started_at,
+        "worker_registration_finished_at": worker_registration_finished_at,
+        "workflow_started_at": workflow_started_at,
+        "workflow_ready_at": now(),
+        "heartbeat_guard": heartbeat_guard,
+    }
+
+
+def waterline_service_query_target_evidence(target: dict[str, Any]) -> dict[str, Any]:
+    responder_inputs = target["responder_inputs"]
+    heartbeat_guard = target["heartbeat_guard"]
+    return {
+        "workflow_id": target["workflow_id"],
+        "run_id": target["run_id"],
+        "workflow_type": target["workflow_type"],
+        "worker_id": responder_inputs["worker_id"],
+        "task_queue": responder_inputs["task_queue"],
+        "process_started_at": target["process_started_at"],
+        "worker_registration": target["worker_registration"],
+        "worker_registration_started_at": target["worker_registration_started_at"],
+        "worker_registration_finished_at": target["worker_registration_finished_at"],
+        "workflow_started_at": target["workflow_started_at"],
+        "workflow_ready_at": target["workflow_ready_at"],
+        "responder_liveness": heartbeat_guard.snapshot(),
+        "captured_at": now(),
+    }
+
+
 def await_query_responder_completion(
     responder: threading.Thread,
     holder: dict[str, Any],
@@ -11195,6 +11472,15 @@ def await_query_responder_completion(
     responder_error = holder.get("error")
     if not finished_within_budget and not responder_error:
         responder_error = "query responder did not finish within its completion budget"
+    claim_binding = holder.get("query_claim_binding")
+    completion_binding = holder.get("query_completion_binding")
+    authoritative_completion = (
+        completion_state == "successful"
+        and isinstance(claim_binding, dict)
+        and claim_binding.get("matches_expected") is True
+        and isinstance(completion_binding, dict)
+        and completion_binding.get("authoritative") is True
+    )
 
     return {
         "completion_state": completion_state,
@@ -11222,6 +11508,10 @@ def await_query_responder_completion(
         "responder_finished_at": holder.get("responder_finished_at"),
         "completion_budget_seconds": holder.get("completion_budget_seconds"),
         "completion_budget_deadline_at": holder.get("completion_budget_deadline_at"),
+        "claim_binding": claim_binding,
+        "completion_binding": completion_binding,
+        "authoritative_completion": authoritative_completion,
+        "responder_liveness_at_claim": holder.get("worker_eligibility_when_claimed"),
         "wait_started_at": wait_started_at,
         "wait_finished_at": now(),
     }
@@ -11239,6 +11529,7 @@ def waterline_service_query_evidence(
     responder_inputs: dict[str, str],
     holder: dict[str, Any],
     responder_wait: dict[str, Any],
+    designated_target: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     query_body = (
         query.get("body")
@@ -11246,30 +11537,59 @@ def waterline_service_query_evidence(
         else {}
     )
     claimed_task = holder.get("query_task")
+    claimed_identity = {
+        "workflow_id": (
+            claimed_task.get("workflow_id")
+            if isinstance(claimed_task, dict)
+            else None
+        ),
+        "run_id": (
+            claimed_task.get("run_id")
+            if isinstance(claimed_task, dict)
+            else None
+        ),
+        "query_name": (
+            claimed_task.get("query_name")
+            if isinstance(claimed_task, dict)
+            else None
+        ),
+        "query_task_id": (
+            claimed_task.get("query_task_id")
+            if isinstance(claimed_task, dict)
+            else None
+        ),
+        "query_task_attempt": (
+            claimed_task.get("query_task_attempt")
+            if isinstance(claimed_task, dict)
+            else None
+        ),
+        "worker_id": (
+            claimed_task.get("lease_owner")
+            if isinstance(claimed_task, dict)
+            else None
+        ),
+        "task_queue": (
+            claimed_task.get("task_queue")
+            if isinstance(claimed_task, dict)
+            else None
+        ),
+    }
     return {
         "captured_at": now(),
-        "query_identity": {
+        "expected_query_identity": {
             "workflow_id": workflow_id,
             "run_id": run_id,
             "query_name": query_name,
-            "query_task_id": (
-                claimed_task.get("query_task_id")
-                if isinstance(claimed_task, dict)
-                else None
-            ),
-            "query_task_attempt": (
-                claimed_task.get("query_task_attempt")
-                if isinstance(claimed_task, dict)
-                else None
-            ),
             "worker_id": responder_inputs["worker_id"],
             "task_queue": responder_inputs["task_queue"],
         },
+        "query_identity": claimed_identity,
         "query_status_code": query.get("status_code") if isinstance(query, dict) else None,
         "query_result": query_body.get("result"),
         "expected_result": expected_result,
         "query_started_at": query_started_at,
         "query_finished_at": query_finished_at,
+        "designated_target": designated_target,
         "poll_status_code": (
             holder.get("poll", {}).get("status_code")
             if isinstance(holder.get("poll"), dict)
@@ -11687,6 +12007,8 @@ def run_waterline_service_probe(
     log_file = result_dir / "waterline-signals-queries-service.log"
     container_name = f"dw-waterline-service-{os.getpid()}-{time.time_ns()}"
     container_registered = False
+    image_metadata: dict[str, Any] | None = None
+    query_target: dict[str, Any] | None = None
     try:
         image = waterline_service_image_reference()
         image_metadata = inspect_waterline_service_image(image, waterline_version, log_file)
@@ -11730,10 +12052,22 @@ def run_waterline_service_probe(
             str(image_metadata["manifest_digest"]),
         )
 
-        workflow_id = str(public_evidence["workflow_instance_id"])
-        run_id = str(public_evidence["workflow_run_id"])
+        query_target = create_waterline_service_query_target(
+            responder_inputs,
+            log_file,
+        )
+        responder_inputs = query_target["responder_inputs"]
+        designated_target = waterline_service_query_target_evidence(query_target)
+        workflow_id = str(query_target["workflow_id"])
+        run_id = str(query_target["run_id"])
         query_name = str(public_evidence["query_name"])
-        expected_counter = int(public_evidence["current_counter"])
+        expected_counter = 0
+        service_run_status = run_status(
+            responder_inputs["base_url"],
+            responder_inputs["token"],
+            responder_inputs["namespace"],
+            workflow_id,
+        )
         detail_path = api_path("instances", workflow_id, "runs", run_id).replace("/api/", "/waterline/api/")
         query_path = detail_path + "/queries/" + urllib.parse.quote(query_name, safe="._:-")
         signal_path = detail_path + "/signals/increment"
@@ -11804,6 +12138,14 @@ def run_waterline_service_probe(
                     WATERLINE_SERVICE_QUERY_COMPLETION_SETTLE_SECONDS
                 ),
                 "completion_done_event": responder_done,
+                "capture_claim_eligibility": True,
+                "expected_query_identity": {
+                    "workflow_id": workflow_id,
+                    "run_id": run_id,
+                    "query_name": query_name,
+                    "task_queue": responder_inputs["task_queue"],
+                    "worker_id": responder_inputs["worker_id"],
+                },
             },
             daemon=True,
         )
@@ -11836,6 +12178,7 @@ def run_waterline_service_probe(
                         responder_inputs=responder_inputs,
                         holder=responder_holder,
                         responder_wait=responder_wait,
+                        designated_target=designated_target,
                     ),
                 },
             )
@@ -11876,6 +12219,7 @@ def run_waterline_service_probe(
                             responder_inputs=responder_inputs,
                             holder=responder_holder,
                             responder_wait=responder_wait,
+                            designated_target=designated_target,
                         ),
                         "query_transport_error": f"{type(exc).__name__}: {exc}",
                     },
@@ -11901,6 +12245,7 @@ def run_waterline_service_probe(
             responder_inputs=responder_inputs,
             holder=responder_holder,
             responder_wait=responder_wait,
+            designated_target=designated_target,
         )
         query_valid = (
             query.get("status_code") == 200
@@ -11910,6 +12255,9 @@ def run_waterline_service_probe(
             and responder_wait["finished_within_budget"] is True
             and responder_wait["completion_status_code"] is not None
             and 200 <= int(responder_wait["completion_status_code"]) < 300
+            and responder_wait["authoritative_completion"] is True
+            and isinstance(responder_wait["responder_liveness_at_claim"], dict)
+            and responder_wait["responder_liveness_at_claim"].get("eligible") is True
         )
         if not query_valid:
             raise WaterlineServiceProbeError(
@@ -12009,7 +12357,7 @@ def run_waterline_service_probe(
                 "server_observation": {
                     "workflow_id": workflow_id,
                     "run_id": run_id,
-                    "status": public_evidence["run_status"],
+                    "status": service_run_status,
                     "counter": expected_counter,
                 },
                 "waterline_service_observation": {
@@ -12017,6 +12365,12 @@ def run_waterline_service_probe(
                     "run_id": detail_body.get("run_id"),
                     "status": detail_body.get("status"),
                     "counter": query_body.get("result"),
+                },
+                "baseline_reference": {
+                    "workflow_id": public_evidence["workflow_instance_id"],
+                    "run_id": public_evidence["workflow_run_id"],
+                    "status": public_evidence["run_status"],
+                    "counter": public_evidence["current_counter"],
                 },
             },
             "query_responder": service_query_evidence,
@@ -12039,6 +12393,8 @@ def run_waterline_service_probe(
             "source_revision_labels": image_metadata["source_revision_labels"],
             "workflow_id": workflow_id,
             "run_id": run_id,
+            "worker_id": responder_inputs["worker_id"],
+            "task_queue": responder_inputs["task_queue"],
             "docker_network": network,
             "bind_host": service_bind_host,
             "connect_host": service_connect_host,
@@ -12050,6 +12406,18 @@ def run_waterline_service_probe(
         failure_details = dict(exc.details)
         failure_details.setdefault("probe_started_at", probe_started_at)
         failure_details["failure_captured_at"] = now()
+        if image_metadata is not None:
+            failure_details.setdefault("image_reference", image_metadata["image_reference"])
+            failure_details.setdefault("manifest_digest", image_metadata["manifest_digest"])
+            failure_details.setdefault(
+                "source_revision_labels",
+                image_metadata["source_revision_labels"],
+            )
+        if query_target is not None:
+            failure_details.setdefault(
+                "designated_query_target",
+                waterline_service_query_target_evidence(query_target),
+            )
         return waterline_service_setup_result(
             status="fail",
             reason=str(exc),
@@ -12062,7 +12430,39 @@ def run_waterline_service_probe(
             "log_file": log_file.name,
             "generated_scenarios": [WATERLINE_SERVICE_SCENARIO],
         }
+    except Exception as exc:  # noqa: BLE001 - preserve immutable evidence for unexpected shard failures.
+        blocker_kind = "waterline_service_probe_exception"
+        log_line(log_file, f"Waterline service probe failed: {blocker_kind}: {type(exc).__name__}: {exc}")
+        failure_details = {
+            "probe_started_at": probe_started_at,
+            "failure_captured_at": now(),
+            "probe_error": f"{type(exc).__name__}: {exc}",
+        }
+        if image_metadata is not None:
+            failure_details.update({
+                "image_reference": image_metadata["image_reference"],
+                "manifest_digest": image_metadata["manifest_digest"],
+                "source_revision_labels": image_metadata["source_revision_labels"],
+            })
+        if query_target is not None:
+            failure_details["designated_query_target"] = (
+                waterline_service_query_target_evidence(query_target)
+            )
+        return waterline_service_setup_result(
+            status="fail",
+            reason="The Waterline service shard failed before producing complete evidence.",
+            blocker_kind=blocker_kind,
+            details=failure_details,
+        ), {
+            "error": blocker_kind,
+            "reason": failure_details["probe_error"],
+            "details": failure_details,
+            "log_file": log_file.name,
+            "generated_scenarios": [WATERLINE_SERVICE_SCENARIO],
+        }
     finally:
+        if query_target is not None:
+            query_target["heartbeat_guard"].stop()
         if container_registered:
             cleanup_container(container_name, log_file)
         cleanup_labeled_docker_runs(log_file)
@@ -13394,11 +13794,37 @@ SCENARIO_REQUIRED_EVIDENCE: dict[str, list[str]] = {
         "query_responder.query_identity",
         "query_responder.query_status_code",
         "query_responder.query_result",
+        "query_responder.expected_query_identity",
+        "query_responder.designated_target",
+        "query_responder.designated_target.responder_liveness.eligible",
+        "query_responder.query_identity.workflow_id",
+        "query_responder.query_identity.run_id",
+        "query_responder.query_identity.query_name",
+        "query_responder.query_identity.task_queue",
+        "query_responder.query_identity.worker_id",
+        "query_responder.query_identity.query_task_id",
+        "query_responder.query_identity.query_task_attempt",
+        "query_responder.claim_binding.matches_expected",
+        "query_responder.completion_binding.request.query_task_id",
+        "query_responder.completion_binding.request.query_task_attempt",
+        "query_responder.completion_binding.request.lease_owner",
+        "query_responder.completion_binding.response.query_task_id",
+        "query_responder.completion_binding.response.query_task_attempt",
+        "query_responder.completion_binding.response.outcome",
+        "query_responder.completion_binding.authoritative",
+        "query_responder.authoritative_completion",
+        "query_responder.responder_liveness_at_claim.eligible",
         "query_responder.completion_state",
         "query_responder.completion_response",
         "query_responder.responder_alive_after_wait",
         "query_responder.finished_within_budget",
+        "query_responder.query_started_at",
+        "query_responder.query_finished_at",
         "query_responder.responder_started_at",
+        "query_responder.query_claimed_at",
+        "query_responder.completion_request_started_at",
+        "query_responder.completion_recorded_at",
+        "query_responder.responder_finished_at",
         "query_responder.wait_finished_at",
     ],
 }
@@ -13419,6 +13845,11 @@ TRUTHY_REQUIRED_EVIDENCE = {
     "comparison.service_mode_uses_public_php_sdk",
     "api_captures.running_runs.selected_run_present",
     "query_responder.finished_within_budget",
+    "query_responder.designated_target.responder_liveness.eligible",
+    "query_responder.claim_binding.matches_expected",
+    "query_responder.completion_binding.authoritative",
+    "query_responder.authoritative_completion",
+    "query_responder.responder_liveness_at_claim.eligible",
     "prefix_consistent_query_results",
     "query_result_rollback_free",
     "repeat_query_consistency",

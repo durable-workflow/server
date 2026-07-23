@@ -11,7 +11,7 @@ jobs:
     name: Test CLI and SDK version validation
     runs-on: ubuntu-latest
     env:
-      SERVER_VERSION: 2.0.0-beta.8
+      SERVER_VERSION: 2.0.0-beta.9
       CLI_VERSION: 2.0.0-beta.6
       PYTHON_SDK_VERSION: 2.0.0b6
 
