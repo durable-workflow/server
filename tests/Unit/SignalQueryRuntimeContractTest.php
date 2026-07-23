@@ -1041,7 +1041,7 @@ PY);
             'ordered delivery baseline probe failed',
             'body={"input": [amount], "request_id": f"{ordered_workflow_id}-{amount}"}',
             'body={"input": [7], "request_id": duplicate_request_id}',
-            'timeout=min(remaining + 1.0, claim_poll_seconds + 5.0)',
+            'timeout=max(0.2, min(remaining, claim_poll_seconds + 5.0))',
             '"command_contract_source"',
             '"signal_admission"',
             '"documented_contract_source"',
@@ -4917,6 +4917,280 @@ PY);
         );
     }
 
+    public function test_waterline_service_query_responder_uses_one_budget_and_classifies_completion(): void
+    {
+        $result = $this->runSignalQueryRunnerPythonSnippet(<<<'PY'
+task = {
+    "query_task_id": "query-task-current-1",
+    "query_task_attempt": 1,
+    "workflow_id": "wf-ordered",
+    "run_id": "run-ordered",
+    "query_name": "state",
+    "task_queue": "ordered-queue",
+    "lease_owner": "ordered-worker",
+}
+observed = {}
+
+globals()["heartbeat_worker"] = lambda *args, **kwargs: {"status_code": 200}
+
+for case in ("delayed_success", "timeout", "transport_failure", "non_success_response"):
+    request_timeouts = []
+
+    def fake_http_json(base_url, path, **kwargs):
+        if path.endswith("/poll"):
+            return {"status_code": 200, "body": {"task": dict(task)}}
+        if not path.endswith("/complete"):
+            raise AssertionError(f"unexpected path: {path}")
+        request_timeouts.append(kwargs["timeout"])
+        if case == "delayed_success":
+            time.sleep(0.05)
+            return {"status_code": 200, "body": {"status": "completed"}}
+        if case == "timeout":
+            raise TimeoutError("completion response timed out")
+        if case == "transport_failure":
+            raise urllib.error.URLError("connection reset")
+        return {"status_code": 503, "body": {"reason": "temporarily_unavailable"}}
+
+    globals()["http_json"] = fake_http_json
+    holder = {}
+    done = threading.Event()
+    deadline = time.monotonic() + 0.5
+    responder = threading.Thread(
+        target=answer_next_query_task,
+        args=(
+            "http://server.test",
+            "token",
+            "default",
+            "ordered-worker",
+            "ordered-queue",
+            55,
+            Path("/tmp/waterline-service-query-responder-test.log"),
+            holder,
+        ),
+        kwargs={
+            "poll_timeout": 0.2,
+            "completion_deadline_monotonic": deadline,
+            "completion_request_timeout": 0.2,
+            "completion_settle_seconds": 0.02,
+            "completion_done_event": done,
+        },
+        daemon=True,
+    )
+    responder.start()
+    completion = await_query_responder_completion(responder, holder, done, deadline)
+    responder.join(timeout=1)
+    query_evidence = waterline_service_query_evidence(
+        workflow_id="wf-ordered",
+        run_id="run-ordered",
+        query_name="state",
+        expected_result=55,
+        query={
+            "status_code": 200,
+            "body": {"query": "state", "result": 55},
+        },
+        query_started_at="2026-07-23T12:00:00.000000Z",
+        query_finished_at="2026-07-23T12:00:00.100000Z",
+        responder_inputs={
+            "worker_id": "ordered-worker",
+            "task_queue": "ordered-queue",
+        },
+        holder=holder,
+        responder_wait=completion,
+    )
+    observed[case] = {
+        "completion": completion,
+        "query_evidence": query_evidence,
+        "request_timeouts": request_timeouts,
+    }
+
+late_done = threading.Event()
+late_holder = {}
+
+def finish_too_late():
+    time.sleep(0.1)
+    late_done.set()
+
+late_responder = threading.Thread(target=finish_too_late, daemon=True)
+late_responder.start()
+late_completion = await_query_responder_completion(
+    late_responder,
+    late_holder,
+    late_done,
+    time.monotonic() + 0.02,
+)
+late_responder.join(timeout=1)
+observed["incomplete"] = {"completion": late_completion}
+
+print(json.dumps(observed, sort_keys=True))
+PY);
+
+        $this->assertSame('successful', $result['delayed_success']['completion']['completion_state']);
+        $this->assertTrue($result['delayed_success']['completion']['finished_within_budget']);
+        $this->assertSame(200, $result['delayed_success']['completion']['completion_status_code']);
+        $this->assertFalse($result['delayed_success']['completion']['responder_alive_after_wait']);
+        $this->assertLessThanOrEqual(0.2, $result['delayed_success']['request_timeouts'][0]);
+
+        $this->assertSame('timeout', $result['timeout']['completion']['completion_state']);
+        $this->assertStringContainsString(
+            'completion response timed out',
+            $result['timeout']['completion']['responder_error'],
+        );
+
+        $this->assertSame(
+            'transport_failure',
+            $result['transport_failure']['completion']['completion_state'],
+        );
+        $this->assertStringContainsString(
+            'connection reset',
+            $result['transport_failure']['completion']['responder_error'],
+        );
+
+        $this->assertSame(
+            'non_success_response',
+            $result['non_success_response']['completion']['completion_state'],
+        );
+        $this->assertSame(
+            503,
+            $result['non_success_response']['completion']['completion_status_code'],
+        );
+
+        $this->assertSame('timeout', $result['incomplete']['completion']['completion_state']);
+        $this->assertFalse($result['incomplete']['completion']['finished_within_budget']);
+        $this->assertTrue($result['incomplete']['completion']['responder_alive_after_wait']);
+
+        foreach (['delayed_success', 'timeout', 'transport_failure', 'non_success_response'] as $case) {
+            $evidence = $result[$case]['query_evidence'];
+            $this->assertSame('wf-ordered', $evidence['query_identity']['workflow_id']);
+            $this->assertSame('run-ordered', $evidence['query_identity']['run_id']);
+            $this->assertSame('state', $evidence['query_identity']['query_name']);
+            $this->assertSame('query-task-current-1', $evidence['query_identity']['query_task_id']);
+            $this->assertSame(200, $evidence['query_status_code']);
+            $this->assertSame(55, $evidence['query_result']);
+            $this->assertArrayHasKey('responder_alive_after_wait', $evidence);
+            $this->assertArrayHasKey('completion_response', $evidence);
+            $this->assertArrayHasKey('responder_error', $evidence);
+            $this->assertArrayHasKey('captured_at', $evidence);
+            $this->assertArrayHasKey('responder_started_at', $evidence);
+            $this->assertArrayHasKey('wait_finished_at', $evidence);
+        }
+    }
+
+    public function test_waterline_service_probe_resets_prior_run_state_and_requires_fresh_evidence(): void
+    {
+        $result = $this->runSignalQueryRunnerPythonSnippet(<<<'PY'
+scenario = WATERLINE_SERVICE_SCENARIO
+prior = {
+    "scenario_results": {
+        scenario: {
+            "status": "pass",
+            "observed_outputs": {
+                "captured_at": "2026-07-23T10:33:37.180159Z",
+                "query_responder": {"completion_state": "successful"},
+            },
+        },
+        "ordered_signal_delivery": {"status": "pass"},
+    },
+    "waterline_observer_comparison": {
+        scenario: {
+            "status": "pass",
+            "captured_at": "2026-07-23T10:33:37.180159Z",
+        },
+    },
+}
+retained, discarded = without_scenario_evidence(prior, scenario)
+
+list_prior = {
+    "scenario_results": [
+        {"scenario_id": scenario, "status": "pass"},
+        {"scenario_id": "ordered_signal_delivery", "status": "pass"},
+    ],
+}
+list_retained, list_discarded = without_scenario_evidence(list_prior, scenario)
+
+run_root = Path(tempfile.mkdtemp(prefix="waterline-service-fresh-evidence-test."))
+for filename in (
+    "executed-distribution-identities.json",
+    "signals-queries-result.json",
+    "waterline-signals-queries-service.log",
+    "keep.json",
+):
+    (run_root / filename).write_text("stale", encoding="utf-8")
+removed = reset_current_run_files(run_root)
+remaining = sorted(path.name for path in run_root.iterdir())
+shutil.rmtree(run_root)
+
+os.environ.pop("DW_SIGNALS_QUERIES_RUN_BASELINE_PROBE", None)
+os.environ.pop("DW_SIGNALS_QUERIES_RUN_WATERLINE_SERVICE_PROBE", None)
+required_by_default = waterline_service_probe_requires_fresh_evidence()
+os.environ["DW_SIGNALS_QUERIES_RUN_WATERLINE_SERVICE_PROBE"] = "0"
+required_when_service_disabled = waterline_service_probe_requires_fresh_evidence()
+
+print(json.dumps({
+    "discarded": discarded,
+    "retained_scenarios": sorted(retained["scenario_results"]),
+    "retained_waterline_comparison": sorted(retained["waterline_observer_comparison"]),
+    "original_scenarios": sorted(prior["scenario_results"]),
+    "list_discarded": list_discarded,
+    "list_retained_scenarios": [
+        item["scenario_id"] for item in list_retained["scenario_results"]
+    ],
+    "removed": sorted(removed),
+    "remaining": remaining,
+    "required_by_default": required_by_default,
+    "required_when_service_disabled": required_when_service_disabled,
+}, sort_keys=True))
+PY);
+
+        $this->assertTrue($result['discarded']);
+        $this->assertSame(['ordered_signal_delivery'], $result['retained_scenarios']);
+        $this->assertSame([], $result['retained_waterline_comparison']);
+        $this->assertSame(
+            ['ordered_signal_delivery', 'waterline_service_operator_visibility'],
+            $result['original_scenarios'],
+        );
+        $this->assertTrue($result['list_discarded']);
+        $this->assertSame(['ordered_signal_delivery'], $result['list_retained_scenarios']);
+        $this->assertSame(
+            [
+                'executed-distribution-identities.json',
+                'signals-queries-result.json',
+                'waterline-signals-queries-service.log',
+            ],
+            $result['removed'],
+        );
+        $this->assertSame(['keep.json'], $result['remaining']);
+        $this->assertTrue($result['required_by_default']);
+        $this->assertFalse($result['required_when_service_disabled']);
+    }
+
+    public function test_host_runner_cannot_inherit_a_prior_service_observation_when_live_probe_is_enabled(): void
+    {
+        $prior = $this->completeSignalQueryResultForCurrentHostRunner();
+        $priorCapturedAt = $prior['scenario_results']['waterline_service_operator_visibility'][
+            'observed_outputs'
+        ]['captured_at'];
+
+        $result = $this->runSignalQueryHostRunnerArtifacts($prior, true)['result'];
+        $service = $result['scenario_results']['waterline_service_operator_visibility'];
+
+        $this->assertSame('not_covered', $service['status']);
+        $this->assertArrayNotHasKey('observed_outputs', $service);
+        $this->assertStringNotContainsString(
+            $priorCapturedAt,
+            json_encode($service, JSON_THROW_ON_ERROR),
+        );
+        $findings = $this->findingsForScenario(
+            $result,
+            'waterline_service_operator_visibility',
+        );
+        $this->assertCount(1, $findings);
+        $this->assertTrue(
+            $findings[0]['current_evidence']['evidence'][
+                'prior_waterline_service_evidence_discarded'
+            ],
+        );
+    }
+
     public function test_result_gate_requires_the_retained_waterline_service_distribution_identity(): void
     {
         $result = $this->completeSignalQueryResult();
@@ -8010,8 +8284,10 @@ PY);
      * @param  array<string, mixed>  $smokeEvidence
      * @return array{result: array<string, mixed>, record: array<string, mixed>, stdout: array<string, mixed>, result_bytes: int}
      */
-    private function runSignalQueryHostRunnerArtifacts(array $smokeEvidence): array
-    {
+    private function runSignalQueryHostRunnerArtifacts(
+        array $smokeEvidence,
+        bool $enableWaterlineServiceProbe = false,
+    ): array {
         $root = dirname(__DIR__, 2);
         $resultDir = sys_get_temp_dir().'/dw-signals-queries-test-'.bin2hex(random_bytes(6));
         mkdir($resultDir);
@@ -8031,6 +8307,8 @@ PY);
                 'DW_SIGNALS_QUERIES_RUN_BASELINE_PROBE=0',
                 'DW_SIGNALS_QUERIES_RUN_ADVERSARIAL_PROBE=0',
                 'DW_SIGNALS_QUERIES_RUN_WATERLINE_OBSERVER_PROBE=0',
+                'DW_SIGNALS_QUERIES_RUN_WATERLINE_SERVICE_PROBE='
+                    .($enableWaterlineServiceProbe ? '1' : '0'),
                 'DW_SIGNALS_QUERIES_RUN_RUST_MATRIX_PROBE=0',
                 'DW_SIGNALS_QUERIES_SMOKE_EVIDENCE='.escapeshellarg($smokePath),
                 escapeshellarg($root.'/scripts/conformance/signals-queries-published-artifacts.sh'),
@@ -9097,6 +9375,7 @@ PY);
             'artifact_versions' => $publishedVersions,
             'artifact_sources' => $artifactSources,
             'captured_at' => '2026-05-20T00:04:30Z',
+            'probe_started_at' => '2026-05-20T00:04:20Z',
             'distribution_identity' => 'waterline-service',
             'image_reference' => 'docker.io/durableworkflow/waterline@sha256:'.str_repeat('2', 64),
             'manifest_digest' => 'sha256:'.str_repeat('2', 64),
@@ -9160,11 +9439,42 @@ PY);
                 ],
             ],
             'query_responder' => [
-                'worker_id' => 'worker-1',
-                'task_queue' => 'counter',
+                'captured_at' => '2026-05-20T00:04:29Z',
+                'query_identity' => [
+                    'workflow_id' => 'wf-1',
+                    'run_id' => 'run-1',
+                    'query_name' => 'current',
+                    'query_task_id' => 'query-task-1',
+                    'query_task_attempt' => 1,
+                    'worker_id' => 'worker-1',
+                    'task_queue' => 'counter',
+                ],
+                'query_status_code' => 200,
+                'query_result' => 8,
+                'expected_result' => 8,
                 'poll_status_code' => 200,
-                'complete_status_code' => 200,
-                'error' => null,
+                'completion_state' => 'successful',
+                'completion_response' => [
+                    'status_code' => 200,
+                    'reason' => null,
+                ],
+                'completion_status_code' => 200,
+                'responder_error' => null,
+                'responder_alive_before_wait' => true,
+                'responder_alive_after_wait' => false,
+                'finished_within_budget' => true,
+                'heartbeat_status_code' => 200,
+                'heartbeat_acknowledged_at' => '2026-05-20T00:04:21Z',
+                'responder_started_at' => '2026-05-20T00:04:20Z',
+                'responder_ready_at' => '2026-05-20T00:04:21Z',
+                'query_claimed_at' => '2026-05-20T00:04:22Z',
+                'completion_request_started_at' => '2026-05-20T00:04:23Z',
+                'completion_recorded_at' => '2026-05-20T00:04:28Z',
+                'responder_finished_at' => '2026-05-20T00:04:28Z',
+                'completion_budget_seconds' => 110,
+                'completion_budget_deadline_at' => '2026-05-20T00:06:10Z',
+                'wait_started_at' => '2026-05-20T00:04:23Z',
+                'wait_finished_at' => '2026-05-20T00:04:29Z',
             ],
         ];
 

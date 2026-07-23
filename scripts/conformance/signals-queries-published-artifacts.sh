@@ -3110,17 +3110,45 @@ def answer_next_query_task(
     ready_event: threading.Event | None = None,
     capture_claim_eligibility: bool = False,
     replay_blocked_event: threading.Event | None = None,
+    completion_deadline_monotonic: float | None = None,
+    completion_request_timeout: float = 15.0,
+    completion_settle_seconds: float = 1.0,
+    completion_done_event: threading.Event | None = None,
 ) -> None:
+    holder["responder_started_at"] = now()
+    responder_started_monotonic = time.monotonic()
+    if completion_deadline_monotonic is not None:
+        completion_budget_seconds = max(
+            0.0,
+            completion_deadline_monotonic - responder_started_monotonic,
+        )
+        holder["completion_budget_seconds"] = completion_budget_seconds
+        holder["completion_budget_deadline_at"] = (
+            datetime.fromtimestamp(
+                time.time() + completion_budget_seconds,
+                timezone.utc,
+            )
+            .isoformat(timespec="microseconds")
+            .replace("+00:00", "Z")
+        )
+
     try:
-        deadline = time.time() + poll_timeout
+        deadline = time.monotonic() + poll_timeout
+        if completion_deadline_monotonic is not None:
+            deadline = min(
+                deadline,
+                completion_deadline_monotonic
+                - max(0.0, completion_request_timeout)
+                - max(0.0, completion_settle_seconds),
+            )
         poll_attempt = 0
         empty_polls: list[dict[str, Any]] = []
         poll_transport_errors: list[dict[str, Any]] = []
         task: dict[str, Any] | None = None
 
-        while time.time() < deadline:
+        while time.monotonic() < deadline:
             poll_attempt += 1
-            remaining = max(0.2, deadline - time.time())
+            remaining = max(0.2, deadline - time.monotonic())
             # A synthetic responder must retain more than one opportunity to
             # claim. Under host load a single delayed transport request must
             # not consume the control-plane query's entire claim window.
@@ -3133,14 +3161,19 @@ def answer_next_query_task(
                     token,
                     namespace,
                     worker_id,
+                    timeout=min(10.0, remaining),
                 )
                 heartbeat_status = holder["heartbeat"].get("status_code")
                 if not isinstance(heartbeat_status, int) or heartbeat_status >= 400:
                     holder["error"] = f"query responder heartbeat failed: {holder['heartbeat']}"
+                    holder["completion_state"] = "transport_failure"
                     return
                 holder["heartbeat_acknowledged_at"] = now()
                 if replay_blocked_event is not None:
                     holder["replay_blocked_heartbeat_acknowledged_at"] = holder["heartbeat_acknowledged_at"]
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                break
             holder["query_poll_ready_at"] = now()
             if ready_event is not None:
                 ready_event.set()
@@ -3158,7 +3191,7 @@ def answer_next_query_task(
                     token=token,
                     namespace=namespace,
                     worker=True,
-                    timeout=min(remaining + 1.0, claim_poll_seconds + 5.0),
+                    timeout=max(0.2, min(remaining, claim_poll_seconds + 5.0)),
                 )
             except TimeoutError as exc:
                 # The server may still finish the abandoned poll and lease the
@@ -3222,6 +3255,7 @@ def answer_next_query_task(
                 holder["workflow_task_pending_complete"] = complete_pending
                 if int(complete_pending.get("status_code") or 0) >= 400:
                     holder["error"] = f"workflow task pending completion failed: {complete_pending}"
+                    holder["completion_state"] = "non_success_response"
                     return
                 continue
 
@@ -3230,12 +3264,14 @@ def answer_next_query_task(
 
             if int(poll.get("status_code") or 0) >= 400:
                 holder["error"] = f"query task poll failed: {poll}"
+                holder["completion_state"] = "non_success_response"
                 return
 
-            time.sleep(min(0.1, max(0.0, deadline - time.time())))
+            time.sleep(min(0.1, max(0.0, deadline - time.monotonic())))
 
         if task is None:
             holder["error"] = "query task poll returned no task before timeout"
+            holder["completion_state"] = "timeout"
             return
 
         holder["query_handler_invoked_at"] = now()
@@ -3264,24 +3300,69 @@ def answer_next_query_task(
             holder["history_signal_order"] = task_history_signal_order
         resolved_result = result(task, holder) if callable(result) else result
         holder["result"] = resolved_result
-        complete = http_json(
-            base_url,
-            api_path("worker", "query-tasks", str(task["query_task_id"]), "complete"),
-            method="POST",
-            body={
-                "lease_owner": task.get("lease_owner") or worker_id,
-                "query_task_attempt": task["query_task_attempt"],
-                "result": resolved_result,
-            },
-            token=token,
-            namespace=namespace,
-            worker=True,
-            timeout=15,
-        )
+        request_timeout = max(0.0, completion_request_timeout)
+        if completion_deadline_monotonic is not None:
+            request_timeout = min(
+                request_timeout,
+                max(
+                    0.0,
+                    completion_deadline_monotonic
+                    - time.monotonic()
+                    - max(0.0, completion_settle_seconds),
+                ),
+            )
+        if request_timeout <= 0:
+            holder["completion_state"] = "timeout"
+            holder["error"] = "query task completion had no time remaining in its responder budget"
+            return
+
+        holder["completion_request_started_at"] = now()
+        holder["completion_state"] = "in_flight"
+        try:
+            complete = http_json(
+                base_url,
+                api_path("worker", "query-tasks", str(task["query_task_id"]), "complete"),
+                method="POST",
+                body={
+                    "lease_owner": task.get("lease_owner") or worker_id,
+                    "query_task_attempt": task["query_task_attempt"],
+                    "result": resolved_result,
+                },
+                token=token,
+                namespace=namespace,
+                worker=True,
+                timeout=request_timeout,
+            )
+        except (TimeoutError, socket.timeout) as exc:
+            holder["completion_state"] = "timeout"
+            holder["error"] = f"{type(exc).__name__}: {exc}"
+            return
+        except (urllib.error.URLError, OSError) as exc:
+            holder["completion_state"] = "transport_failure"
+            holder["error"] = f"{type(exc).__name__}: {exc}"
+            return
+
         holder["complete"] = complete
         holder["query_completed_at"] = now()
-    except Exception as exc:  # noqa: BLE001 - captured into conformance evidence.
+        complete_status = complete.get("status_code")
+        if isinstance(complete_status, int) and 200 <= complete_status < 300:
+            holder["completion_state"] = "successful"
+        else:
+            holder["completion_state"] = "non_success_response"
+            holder["error"] = f"query task completion returned a non-successful response: {complete}"
+    except (TimeoutError, socket.timeout) as exc:
+        holder["completion_state"] = "timeout"
         holder["error"] = f"{type(exc).__name__}: {exc}"
+    except (urllib.error.URLError, OSError) as exc:
+        holder["completion_state"] = "transport_failure"
+        holder["error"] = f"{type(exc).__name__}: {exc}"
+    except Exception as exc:  # noqa: BLE001 - captured into conformance evidence.
+        holder["completion_state"] = "responder_failure"
+        holder["error"] = f"{type(exc).__name__}: {exc}"
+    finally:
+        holder["responder_finished_at"] = now()
+        if completion_done_event is not None:
+            completion_done_event.set()
 
 
 def poll_workflow_task(
@@ -3315,6 +3396,7 @@ def heartbeat_worker(
     token: str,
     namespace: str,
     worker_id: str,
+    timeout: float = 10.0,
 ) -> dict[str, Any]:
     return http_json(
         base_url,
@@ -3331,7 +3413,7 @@ def heartbeat_worker(
         token=token,
         namespace=namespace,
         worker=True,
-        timeout=10,
+        timeout=timeout,
     )
 
 
@@ -10844,6 +10926,84 @@ def merge_probe_evidence(base: Any, probe: dict[str, Any]) -> dict[str, Any]:
     return merged
 
 
+def without_scenario_evidence(evidence: Any, scenario_id: str) -> tuple[Any, bool]:
+    if not isinstance(evidence, dict):
+        return evidence, False
+
+    retained = dict(evidence)
+    removed = retained.pop(scenario_id, None) is not None
+    for field in ("scenario_results", "scenarioResults"):
+        scenario_results = retained.get(field)
+        if isinstance(scenario_results, dict):
+            retained_results = dict(scenario_results)
+            if retained_results.pop(scenario_id, None) is not None:
+                removed = True
+            retained[field] = retained_results
+            continue
+
+        if isinstance(scenario_results, list):
+            retained_results = []
+            for item in scenario_results:
+                item_scenario = None
+                if isinstance(item, dict):
+                    item_scenario = (
+                        item.get("scenario_id")
+                        or item.get("scenario")
+                        or item.get("id")
+                    )
+                if item_scenario == scenario_id:
+                    removed = True
+                    continue
+                retained_results.append(item)
+            retained[field] = retained_results
+
+    for section in (
+        "replay_timing",
+        "terminal_run_behavior",
+        "adversarial_errors",
+        "waterline_observer_comparison",
+    ):
+        section_value = retained.get(section)
+        if not isinstance(section_value, dict):
+            continue
+        retained_section = dict(section_value)
+        if retained_section.pop(scenario_id, None) is not None:
+            removed = True
+        retained[section] = retained_section
+
+    return retained, removed
+
+
+def waterline_service_probe_requires_fresh_evidence() -> bool:
+    return env_flag("DW_SIGNALS_QUERIES_RUN_WATERLINE_SERVICE_PROBE", True)
+
+
+def reset_current_run_files(result_dir: Path) -> list[str]:
+    generated_files = (
+        "executed-distribution-identities.json",
+        "pins.json",
+        "run-metadata.json",
+        "signals-queries-result.json",
+        "signals-queries-record.json",
+        "signals-queries-findings.json",
+        "signals-queries-rust-cell-results.json",
+        "signals-queries-baseline-cell-results.json",
+        "signals-queries-baseline-probe.log",
+        "signals-queries-adversarial-probe.log",
+        "signals-queries-replay-terminal-probe.log",
+        "waterline-signals-queries-service.log",
+        "waterline-signals-queries-observer.log",
+    )
+    removed: list[str] = []
+    for filename in generated_files:
+        path = result_dir / filename
+        if not path.is_file() and not path.is_symlink():
+            continue
+        path.unlink()
+        removed.append(filename)
+    return removed
+
+
 def string_from_evidence(value: Any, keys: tuple[str, ...]) -> str | None:
     for key in keys:
         found = evidence_value(value, key)
@@ -10981,6 +11141,10 @@ WATERLINE_SERVICE_SOURCE_LABELS = (
     "org.opencontainers.image.revision",
     "dev.durable-workflow.release.tag",
 )
+WATERLINE_SERVICE_QUERY_COMPLETION_BUDGET_SECONDS = 110.0
+WATERLINE_SERVICE_QUERY_POLL_TIMEOUT_SECONDS = 90.0
+WATERLINE_SERVICE_QUERY_COMPLETION_REQUEST_TIMEOUT_SECONDS = 15.0
+WATERLINE_SERVICE_QUERY_COMPLETION_SETTLE_SECONDS = 1.0
 
 
 class WaterlineServiceProbeError(RuntimeError):
@@ -10988,6 +11152,131 @@ class WaterlineServiceProbeError(RuntimeError):
         super().__init__(message)
         self.blocker_kind = blocker_kind
         self.details = details or {}
+
+
+def await_query_responder_completion(
+    responder: threading.Thread,
+    holder: dict[str, Any],
+    done_event: threading.Event,
+    completion_deadline_monotonic: float,
+) -> dict[str, Any]:
+    wait_started_at = now()
+    alive_before_wait = responder.is_alive()
+    remaining = max(0.0, completion_deadline_monotonic - time.monotonic())
+    finished_within_budget = done_event.wait(timeout=remaining)
+    responder.join(timeout=0)
+    alive_after_wait = responder.is_alive()
+
+    completion = holder.get("complete")
+    completion_status_code = (
+        completion.get("status_code")
+        if isinstance(completion, dict)
+        else None
+    )
+    completion_state = holder.get("completion_state")
+    if not finished_within_budget:
+        completion_state = "timeout"
+    elif completion_state not in {
+        "successful",
+        "timeout",
+        "transport_failure",
+        "non_success_response",
+        "responder_failure",
+    }:
+        if isinstance(completion_status_code, int) and 200 <= completion_status_code < 300:
+            completion_state = "successful"
+        elif isinstance(completion_status_code, int):
+            completion_state = "non_success_response"
+        elif holder.get("error"):
+            completion_state = "responder_failure"
+        else:
+            completion_state = "incomplete"
+
+    responder_error = holder.get("error")
+    if not finished_within_budget and not responder_error:
+        responder_error = "query responder did not finish within its completion budget"
+
+    return {
+        "completion_state": completion_state,
+        "completion_response": (
+            response_sample(completion)
+            if isinstance(completion, dict)
+            else None
+        ),
+        "completion_status_code": completion_status_code,
+        "responder_error": responder_error,
+        "responder_alive_before_wait": alive_before_wait,
+        "responder_alive_after_wait": alive_after_wait,
+        "finished_within_budget": finished_within_budget,
+        "heartbeat_status_code": (
+            holder.get("heartbeat", {}).get("status_code")
+            if isinstance(holder.get("heartbeat"), dict)
+            else None
+        ),
+        "heartbeat_acknowledged_at": holder.get("heartbeat_acknowledged_at"),
+        "responder_started_at": holder.get("responder_started_at"),
+        "responder_ready_at": holder.get("query_poll_ready_at"),
+        "query_claimed_at": holder.get("query_handler_invoked_at"),
+        "completion_request_started_at": holder.get("completion_request_started_at"),
+        "completion_recorded_at": holder.get("query_completed_at"),
+        "responder_finished_at": holder.get("responder_finished_at"),
+        "completion_budget_seconds": holder.get("completion_budget_seconds"),
+        "completion_budget_deadline_at": holder.get("completion_budget_deadline_at"),
+        "wait_started_at": wait_started_at,
+        "wait_finished_at": now(),
+    }
+
+
+def waterline_service_query_evidence(
+    *,
+    workflow_id: str,
+    run_id: str,
+    query_name: str,
+    expected_result: int,
+    query: dict[str, Any] | None,
+    query_started_at: str,
+    query_finished_at: str,
+    responder_inputs: dict[str, str],
+    holder: dict[str, Any],
+    responder_wait: dict[str, Any],
+) -> dict[str, Any]:
+    query_body = (
+        query.get("body")
+        if isinstance(query, dict) and isinstance(query.get("body"), dict)
+        else {}
+    )
+    claimed_task = holder.get("query_task")
+    return {
+        "captured_at": now(),
+        "query_identity": {
+            "workflow_id": workflow_id,
+            "run_id": run_id,
+            "query_name": query_name,
+            "query_task_id": (
+                claimed_task.get("query_task_id")
+                if isinstance(claimed_task, dict)
+                else None
+            ),
+            "query_task_attempt": (
+                claimed_task.get("query_task_attempt")
+                if isinstance(claimed_task, dict)
+                else None
+            ),
+            "worker_id": responder_inputs["worker_id"],
+            "task_queue": responder_inputs["task_queue"],
+        },
+        "query_status_code": query.get("status_code") if isinstance(query, dict) else None,
+        "query_result": query_body.get("result"),
+        "expected_result": expected_result,
+        "query_started_at": query_started_at,
+        "query_finished_at": query_finished_at,
+        "poll_status_code": (
+            holder.get("poll", {}).get("status_code")
+            if isinstance(holder.get("poll"), dict)
+            else None
+        ),
+        **responder_wait,
+    }
 
 
 def waterline_service_image_reference() -> str:
@@ -11302,10 +11591,12 @@ def waterline_service_setup_result(
     blocker_kind: str,
     details: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
+    failure_captured_at = now()
     setup_failure = {
         "blocker_kind": blocker_kind,
         "reason": reason,
         **(details or {}),
+        "captured_at": failure_captured_at,
     }
     finding = {
         "id": "signal_query_waterline_service_probe_unavailable",
@@ -11339,6 +11630,7 @@ def waterline_service_setup_result(
                 "observed_outputs": {
                     "artifact_versions": dict(artifact_versions),
                     "artifact_sources": dict(EXPECTED_ARTIFACT_SOURCES),
+                    "captured_at": setup_failure.get("captured_at", failure_captured_at),
                     "setup_failure": setup_failure,
                 },
                 "linked_findings": [finding],
@@ -11352,6 +11644,7 @@ def run_waterline_service_probe(
     current_evidence: Any,
     server_topology: dict[str, Any] | None,
 ) -> tuple[dict[str, Any] | None, dict[str, Any] | None]:
+    probe_started_at = now()
     if not env_flag("DW_SIGNALS_QUERIES_RUN_WATERLINE_SERVICE_PROBE", True):
         return None, {"skipped": "disabled_by_env"}
     if not command_available("docker"):
@@ -11484,6 +11777,10 @@ def run_waterline_service_probe(
 
         responder_holder: dict[str, Any] = {}
         responder_ready = threading.Event()
+        responder_done = threading.Event()
+        completion_deadline_monotonic = (
+            time.monotonic() + WATERLINE_SERVICE_QUERY_COMPLETION_BUDGET_SECONDS
+        )
         responder = threading.Thread(
             target=answer_next_query_task,
             args=(
@@ -11496,40 +11793,130 @@ def run_waterline_service_probe(
                 log_file,
                 responder_holder,
             ),
-            kwargs={"poll_timeout": 90.0, "ready_event": responder_ready},
+            kwargs={
+                "poll_timeout": WATERLINE_SERVICE_QUERY_POLL_TIMEOUT_SECONDS,
+                "ready_event": responder_ready,
+                "completion_deadline_monotonic": completion_deadline_monotonic,
+                "completion_request_timeout": (
+                    WATERLINE_SERVICE_QUERY_COMPLETION_REQUEST_TIMEOUT_SECONDS
+                ),
+                "completion_settle_seconds": (
+                    WATERLINE_SERVICE_QUERY_COMPLETION_SETTLE_SECONDS
+                ),
+                "completion_done_event": responder_done,
+            },
             daemon=True,
         )
         responder.start()
-        if not responder_ready.wait(timeout=15):
+        if not responder_ready.wait(
+            timeout=min(
+                15.0,
+                max(0.0, completion_deadline_monotonic - time.monotonic()),
+            )
+        ):
+            responder_wait = await_query_responder_completion(
+                responder,
+                responder_holder,
+                responder_done,
+                completion_deadline_monotonic,
+            )
+            unavailable_at = now()
             raise WaterlineServiceProbeError(
                 "The service-mode query responder did not become eligible before the Waterline query action.",
                 blocker_kind="waterline_service_query_responder_unavailable",
+                details={
+                    "service_query_evidence": waterline_service_query_evidence(
+                        workflow_id=workflow_id,
+                        run_id=run_id,
+                        query_name=query_name,
+                        expected_result=expected_counter,
+                        query=None,
+                        query_started_at=unavailable_at,
+                        query_finished_at=unavailable_at,
+                        responder_inputs=responder_inputs,
+                        holder=responder_holder,
+                        responder_wait=responder_wait,
+                    ),
+                },
             )
-        query = waterline_service_http_json(
-            service_url,
-            query_path,
-            method="POST",
-            body={"arguments": []},
-            timeout=90,
+
+        query_started_at = now()
+        try:
+            query = waterline_service_http_json(
+                service_url,
+                query_path,
+                method="POST",
+                body={"arguments": []},
+                timeout=min(
+                    90.0,
+                    max(0.2, completion_deadline_monotonic - time.monotonic()),
+                ),
+            )
+        except Exception as exc:
+            query_finished_at = now()
+            responder_wait = await_query_responder_completion(
+                responder,
+                responder_holder,
+                responder_done,
+                completion_deadline_monotonic,
+            )
+            raise WaterlineServiceProbeError(
+                "Waterline service-mode query action transport failed.",
+                blocker_kind="waterline_service_query_transport_failed",
+                details={
+                    "service_query_evidence": {
+                        **waterline_service_query_evidence(
+                            workflow_id=workflow_id,
+                            run_id=run_id,
+                            query_name=query_name,
+                            expected_result=expected_counter,
+                            query=None,
+                            query_started_at=query_started_at,
+                            query_finished_at=query_finished_at,
+                            responder_inputs=responder_inputs,
+                            holder=responder_holder,
+                            responder_wait=responder_wait,
+                        ),
+                        "query_transport_error": f"{type(exc).__name__}: {exc}",
+                    },
+                },
+            ) from exc
+
+        query_finished_at = now()
+        responder_wait = await_query_responder_completion(
+            responder,
+            responder_holder,
+            responder_done,
+            completion_deadline_monotonic,
         )
-        responder.join(timeout=10)
         query_body = query.get("body") if isinstance(query.get("body"), dict) else {}
+        service_query_evidence = waterline_service_query_evidence(
+            workflow_id=workflow_id,
+            run_id=run_id,
+            query_name=query_name,
+            expected_result=expected_counter,
+            query=query,
+            query_started_at=query_started_at,
+            query_finished_at=query_finished_at,
+            responder_inputs=responder_inputs,
+            holder=responder_holder,
+            responder_wait=responder_wait,
+        )
         query_valid = (
             query.get("status_code") == 200
             and query_body.get("query") == query_name
             and query_body.get("result") == expected_counter
-            and responder_holder.get("error") is None
-            and isinstance(responder_holder.get("complete"), dict)
-            and int(responder_holder["complete"].get("status_code") or 0) < 400
+            and responder_wait["completion_state"] == "successful"
+            and responder_wait["finished_within_budget"] is True
+            and responder_wait["completion_status_code"] is not None
+            and 200 <= int(responder_wait["completion_status_code"]) < 300
         )
         if not query_valid:
             raise WaterlineServiceProbeError(
                 "Waterline service-mode query action did not match the public client observation.",
                 blocker_kind="waterline_service_query_action_failed",
                 details={
-                    "query_status_code": query.get("status_code"),
-                    "query_result": query_body.get("result"),
-                    "query_responder_error": responder_holder.get("error"),
+                    "service_query_evidence": service_query_evidence,
                 },
             )
 
@@ -11560,6 +11947,7 @@ def run_waterline_service_probe(
             "artifact_versions": dict(artifact_versions),
             "artifact_sources": dict(EXPECTED_ARTIFACT_SOURCES),
             "captured_at": now(),
+            "probe_started_at": probe_started_at,
             "distribution_identity": "waterline-service",
             "image_reference": image_metadata["image_reference"],
             "manifest_digest": image_metadata["manifest_digest"],
@@ -11631,21 +12019,7 @@ def run_waterline_service_probe(
                     "counter": query_body.get("result"),
                 },
             },
-            "query_responder": {
-                "worker_id": responder_inputs["worker_id"],
-                "task_queue": responder_inputs["task_queue"],
-                "poll_status_code": (
-                    responder_holder.get("poll", {}).get("status_code")
-                    if isinstance(responder_holder.get("poll"), dict)
-                    else None
-                ),
-                "complete_status_code": (
-                    responder_holder.get("complete", {}).get("status_code")
-                    if isinstance(responder_holder.get("complete"), dict)
-                    else None
-                ),
-                "error": responder_holder.get("error"),
-            },
+            "query_responder": service_query_evidence,
         }
         return {
             "artifact_versions": dict(artifact_versions),
@@ -11673,15 +12047,18 @@ def run_waterline_service_probe(
         }
     except WaterlineServiceProbeError as exc:
         log_line(log_file, f"Waterline service probe failed: {exc.blocker_kind}: {exc}")
+        failure_details = dict(exc.details)
+        failure_details.setdefault("probe_started_at", probe_started_at)
+        failure_details["failure_captured_at"] = now()
         return waterline_service_setup_result(
             status="fail",
             reason=str(exc),
             blocker_kind=exc.blocker_kind,
-            details=exc.details,
+            details=failure_details,
         ), {
             "error": exc.blocker_kind,
             "reason": str(exc),
-            "details": exc.details,
+            "details": failure_details,
             "log_file": log_file.name,
             "generated_scenarios": [WATERLINE_SERVICE_SCENARIO],
         }
@@ -12177,6 +12554,7 @@ def _run_waterline_observer_probe(
         image=waterline_php_docker_image(),
         entrypoint="",
     )
+    waterline_report_path.unlink(missing_ok=True)
     command = run_command(
         waterline_command,
         log_file=log_file,
@@ -12985,6 +13363,7 @@ SCENARIO_REQUIRED_EVIDENCE: dict[str, list[str]] = {
         "artifact_versions",
         "artifact_sources",
         "captured_at",
+        "probe_started_at",
         "distribution_identity",
         "image_reference",
         "manifest_digest",
@@ -13011,6 +13390,16 @@ SCENARIO_REQUIRED_EVIDENCE: dict[str, list[str]] = {
         "comparison.server_observation",
         "comparison.waterline_service_observation",
         "query_responder",
+        "query_responder.captured_at",
+        "query_responder.query_identity",
+        "query_responder.query_status_code",
+        "query_responder.query_result",
+        "query_responder.completion_state",
+        "query_responder.completion_response",
+        "query_responder.responder_alive_after_wait",
+        "query_responder.finished_within_budget",
+        "query_responder.responder_started_at",
+        "query_responder.wait_finished_at",
     ],
 }
 
@@ -13029,6 +13418,7 @@ TRUTHY_REQUIRED_EVIDENCE = {
     "comparison.counter_state_matches_public_clients",
     "comparison.service_mode_uses_public_php_sdk",
     "api_captures.running_runs.selected_run_present",
+    "query_responder.finished_within_budget",
     "prefix_consistent_query_results",
     "query_result_rollback_free",
     "repeat_query_consistency",
@@ -14757,6 +15147,21 @@ if smoke_path:
         except Exception as exc:
             smoke_descriptor["decode_error"] = f"{type(exc).__name__}: {exc}"
 
+reset_files = reset_current_run_files(result_dir)
+if smoke_descriptor is not None and reset_files:
+    smoke_descriptor["reset_current_run_files"] = reset_files
+
+fresh_service_probe_required = waterline_service_probe_requires_fresh_evidence()
+if fresh_service_probe_required:
+    smoke_evidence, prior_service_evidence_discarded = without_scenario_evidence(
+        smoke_evidence,
+        WATERLINE_SERVICE_SCENARIO,
+    )
+    if smoke_descriptor is not None:
+        smoke_descriptor["prior_waterline_service_evidence_discarded"] = (
+            prior_service_evidence_discarded
+        )
+
 if isinstance(external_smoke_evidence, dict):
     identity_handoff = external_smoke_evidence.get(
         "executed_distribution_identities",
@@ -15375,6 +15780,10 @@ PORTABLE_OPTIONAL_SCENARIO_EVIDENCE = {
         "sdk_python_unknown_query_sample",
         "sdk_python_missing_workflow_signal_sample",
         "sdk_python_missing_workflow_query_sample",
+    ),
+    "waterline_service_operator_visibility": (
+        "setup_failure",
+        "service_query_evidence",
     ),
 }
 PORTABLE_SENSITIVE_KEY_PARTS = (

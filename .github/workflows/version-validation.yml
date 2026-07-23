@@ -11,7 +11,7 @@ jobs:
     name: Test CLI and SDK version validation
     runs-on: ubuntu-latest
     env:
-      SERVER_VERSION: 2.0.0-beta.7
+      SERVER_VERSION: 2.0.0-beta.8
       CLI_VERSION: 2.0.0-beta.6
       PYTHON_SDK_VERSION: 2.0.0b6
 
@@ -29,8 +29,8 @@ jobs:
           KEY=$(openssl rand -base64 32)
           echo "key=base64:$KEY" >> $GITHUB_OUTPUT
 
-      # Test 1: Beta.7 server with compatible beta.6 clients - CLI success
-      - name: Start beta.7 server
+      # Test 1: Beta.8 server with compatible beta.6 clients - CLI success
+      - name: Start beta.8 server
         env:
           APP_KEY: ${{ steps.app-key.outputs.key }}
           DW_AUTH_TOKEN: test-token-123
@@ -64,7 +64,7 @@ jobs:
           DURABLE_WORKFLOW_AUTH_TOKEN: test-token-123
           DURABLE_WORKFLOW_NAMESPACE: default
         run: |
-          # CLI should connect successfully to the beta.7 server.
+          # CLI should connect successfully to the beta.8 server.
           dw server:info || exit 1
           echo "✅ CLI successfully connected to compatible server"
 
