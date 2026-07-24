@@ -497,6 +497,62 @@ class ReleaseImagePublishWorkflowContractTest extends TestCase
         $this->assertLessThan($dispatchOffset, $secondGuardOffset);
     }
 
+    public function test_release_recovery_only_grants_write_credentials_after_discovery_selects_publish(): void
+    {
+        $workflow = Yaml::parseFile($this->repoRoot.'/.github/workflows/release-plan-recovery.yml');
+        $this->assertIsArray($workflow);
+        $this->assertSame(['discover', 'publish'], array_keys($workflow['jobs']));
+
+        $discover = $workflow['jobs']['discover'];
+        $publish = $workflow['jobs']['publish'];
+
+        $this->assertSame(
+            ['attestations' => 'read', 'contents' => 'read'],
+            $discover['permissions'],
+        );
+        $this->assertSame(
+            [
+                'action' => '${{ steps.recovery.outputs.action }}',
+                'plan' => '${{ steps.recovery.outputs.plan }}',
+                'plan_tag' => '${{ steps.recovery.outputs.plan_tag }}',
+                'version' => '${{ steps.recovery.outputs.version }}',
+                'commit' => '${{ steps.recovery.outputs.commit }}',
+            ],
+            $discover['outputs'],
+        );
+        $this->assertSame('discover', $publish['needs']);
+        $this->assertSame(
+            "github.ref == 'refs/heads/main' && needs.discover.outputs.action == 'publish'",
+            preg_replace('/\s+/', ' ', trim($publish['if'])),
+        );
+        $this->assertSame(
+            ['actions' => 'write', 'contents' => 'write'],
+            $publish['permissions'],
+        );
+
+        $discoverCommands = implode(
+            "\n",
+            array_column($discover['steps'], 'run'),
+        );
+        $this->assertStringNotContainsString('gh api --method POST', $discoverCommands);
+        $this->assertStringNotContainsString('gh workflow run', $discoverCommands);
+        $this->assertStringNotContainsString('gh run rerun', $discoverCommands);
+
+        $discoverCheckout = $discover['steps'][0];
+        $this->assertSame(false, $discoverCheckout['with']['persist-credentials']);
+
+        $publicationTokenSteps = 0;
+        foreach ($publish['steps'] as $step) {
+            if (! isset($step['env']['GH_TOKEN'])) {
+                continue;
+            }
+
+            $publicationTokenSteps++;
+            $this->assertSame('${{ github.token }}', $step['env']['GH_TOKEN']);
+        }
+        $this->assertSame(2, $publicationTokenSteps);
+    }
+
     public function test_release_recovery_uses_protected_tooling_with_the_immutable_source_tree(): void
     {
         $workflow = Yaml::parseFile($this->repoRoot.'/.github/workflows/release.yml');

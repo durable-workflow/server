@@ -22,17 +22,24 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  recover:
-    name: Recover exact server release
+  discover:
+    name: Discover exact server release
     if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
-      actions: write
       attestations: read
-      contents: write
+      contents: read
+    outputs:
+      action: ${{ steps.recovery.outputs.action }}
+      plan: ${{ steps.recovery.outputs.plan }}
+      plan_tag: ${{ steps.recovery.outputs.plan_tag }}
+      version: ${{ steps.recovery.outputs.version }}
+      commit: ${{ steps.recovery.outputs.commit }}
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803  # v6
+        with:
+          persist-credentials: false
 
       - name: Discover plan and verify upstream public artifacts
         id: recovery
@@ -55,12 +62,38 @@ jobs:
           fi
           python scripts/ci/component-release-recovery.py "${arguments[@]}"
 
+      - name: Retain recovery evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7
+        with:
+          name: server-release-recovery-${{ steps.recovery.outputs.plan || github.run_id }}
+          path: |
+            release-plan.json
+            release-preparation.json
+            release-recovery-evidence.json
+          if-no-files-found: warn
+
+  publish:
+    name: Publish exact server release
+    needs: discover
+    if: >-
+      github.ref == 'refs/heads/main' &&
+      needs.discover.outputs.action == 'publish'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      actions: write
+      contents: write
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803  # v6
+        with:
+          persist-credentials: false
+
       - name: Create the exact source tag
-        if: steps.recovery.outputs.action == 'publish'
         env:
           GH_TOKEN: ${{ github.token }}
-          RELEASE_TAG: ${{ steps.recovery.outputs.version }}
-          RELEASE_COMMIT: ${{ steps.recovery.outputs.commit }}
+          RELEASE_TAG: ${{ needs.discover.outputs.version }}
+          RELEASE_COMMIT: ${{ needs.discover.outputs.commit }}
         run: |
           set -euo pipefail
           if ! gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$RELEASE_TAG" >/dev/null 2>&1; then
@@ -70,12 +103,11 @@ jobs:
           scripts/ci/verify-release-tag-source.sh
 
       - name: Start or resume repository-owned publication
-        if: steps.recovery.outputs.action == 'publish'
         env:
           GH_TOKEN: ${{ github.token }}
-          PLAN_TAG: ${{ steps.recovery.outputs.plan_tag }}
-          RELEASE_TAG: ${{ steps.recovery.outputs.version }}
-          RELEASE_COMMIT: ${{ steps.recovery.outputs.commit }}
+          PLAN_TAG: ${{ needs.discover.outputs.plan_tag }}
+          RELEASE_TAG: ${{ needs.discover.outputs.version }}
+          RELEASE_COMMIT: ${{ needs.discover.outputs.commit }}
         run: |
           set -euo pipefail
           scripts/ci/verify-release-tag-source.sh
@@ -110,10 +142,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7
         with:
-          name: server-release-recovery-${{ steps.recovery.outputs.plan || github.run_id }}
+          name: server-release-publication-${{ needs.discover.outputs.plan }}
           path: |
-            release-plan.json
-            release-preparation.json
-            release-recovery-evidence.json
             publication-runs.json
           if-no-files-found: warn
