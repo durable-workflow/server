@@ -66,6 +66,22 @@ class ClusterInfoCompatibilityTest extends TestCase
             ->assertJsonMissingPath('coordination_health');
     }
 
+    public function test_cluster_info_does_not_advertise_managed_runtime_targets(): void
+    {
+        $response = $this->getJson('/api/cluster/info')->assertOk();
+        $serialized = json_encode($response->json(), JSON_THROW_ON_ERROR);
+
+        foreach ([
+            'hosted_control_plane_'.'contract',
+            'runtime_target_'.'id',
+            'runtime_target_'.'base_url',
+            'worker_connectivity_'.'modes',
+        ] as $removedSurface) {
+            $response->assertJsonMissingPath($removedSurface);
+            $this->assertStringNotContainsString($removedSurface, $serialized);
+        }
+    }
+
     public function test_cluster_info_is_a_versionless_protocol_discovery_contract(): void
     {
         $response = $this->getJson('/api/cluster/info?include=diagnostics', [
