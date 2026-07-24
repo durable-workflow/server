@@ -600,15 +600,32 @@ async function verifyPackagistPackage(packageName, version, source) {
   };
 }
 
+function pythonReleaseIdentity(version) {
+  const normalized = stringValue(version);
+  const stable = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/.exec(normalized);
+  if (stable) return normalized;
+  const semver = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)-(alpha|beta|rc)\.(0|[1-9]\d*)$/i.exec(normalized);
+  if (semver) {
+    const phase = semver[4].toLowerCase() === 'alpha' ? 'a' : (semver[4].toLowerCase() === 'beta' ? 'b' : 'rc');
+    return `${semver[1]}.${semver[2]}.${semver[3]}${phase}${semver[5]}`;
+  }
+  const pep440 = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(a|b|rc)(0|[1-9]\d*)$/i.exec(normalized);
+  return pep440
+    ? `${pep440[1]}.${pep440[2]}.${pep440[3]}${pep440[4].toLowerCase()}${pep440[5]}`
+    : null;
+}
+
 async function verifyPypiPackage(version, source) {
   const metadataUrl = `https://pypi.org/pypi/durable-workflow/${encodeURIComponent(version)}/json`;
   const payload = await fetchJson(metadataUrl);
-  if (String(payload.info?.version || '') !== version) {
-    throw new Error(`PyPI durable-workflow metadata resolved ${payload.info?.version || '<missing>'}, expected ${version}`);
+  const resolvedVersion = String(payload.info?.version || '').trim();
+  const expectedIdentity = pythonReleaseIdentity(version);
+  if (expectedIdentity === null || pythonReleaseIdentity(resolvedVersion) !== expectedIdentity) {
+    throw new Error(`PyPI durable-workflow metadata resolved ${resolvedVersion || '<missing>'}, expected ${version}`);
   }
 
   return {
-    version,
+    version: resolvedVersion,
     source,
     status: 'package_resolved',
     package_exists: true,
@@ -5213,7 +5230,11 @@ function normalizeScenarioResult(scenarioId, input, artifactVersions, installEvi
   }
 
   if (status === 'pass') {
-    const evidenceFailures = scenarioEvidenceFailures(scenarioId, normalized.observed_outputs);
+    const evidenceFailures = scenarioEvidenceFailures(
+      scenarioId,
+      normalized.observed_outputs,
+      artifactVersions,
+    );
     if (evidenceFailures.length > 0) {
       normalized.status = evidenceFailures.some((failure) => failure.result_status === 'fail')
         ? 'fail'
@@ -5270,7 +5291,7 @@ function withPromotedInstallEvidence(outputs, installEvidence) {
   return promoted;
 }
 
-function scenarioEvidenceFailures(scenarioId, observedOutputs) {
+function scenarioEvidenceFailures(scenarioId, observedOutputs, artifactVersions = {}) {
   const requirements = scenarioEvidenceRequirements[scenarioId] || [];
   const failures = [];
 
@@ -5289,7 +5310,7 @@ function scenarioEvidenceFailures(scenarioId, observedOutputs) {
       continue;
     }
 
-    if (! evidenceRequirementSatisfied(requirement, lookup.value)) {
+    if (! evidenceRequirementSatisfied(requirement, lookup.value, artifactVersions)) {
       failures.push({
         code: requirement.invalid_code || 'invalid_scenario_specific_evidence',
         field: requirement.fields[0],
@@ -5494,7 +5515,7 @@ function isMissingEvidenceValue(value, kind) {
   return stringValue(value) === '';
 }
 
-function evidenceRequirementSatisfied(requirement, value) {
+function evidenceRequirementSatisfied(requirement, value, artifactVersions = {}) {
   switch (requirement.kind) {
     case 'non_empty_string':
       return stringValue(value) !== '';
@@ -5523,7 +5544,11 @@ function evidenceRequirementSatisfied(requirement, value) {
     case 'published_cross_language_worker_execution':
       return publishedCrossLanguageWorkerExecutionSatisfied(value);
     case 'published_service_health':
-      return publishedServiceHealthSatisfied(value, requirement.runtime);
+      return publishedServiceHealthSatisfied(
+        value,
+        requirement.runtime,
+        stringValue(artifactVersions[requirement.runtime === 'sdk-python' ? 'sdk-python' : 'workflow']),
+      );
     case 'replay_transport':
       return replayTransportSatisfied(value);
     default:
@@ -5658,7 +5683,7 @@ function publishedCrossLanguageWorkerExecutionSatisfied(value) {
   return artifacts.has('workflow-php') && artifacts.has('sdk-php') && artifacts.has('sdk-python');
 }
 
-function publishedServiceHealthSatisfied(value, runtime) {
+function publishedServiceHealthSatisfied(value, runtime, expectedVersion) {
   const entry = publishedServiceHealthEntry(value, runtime);
   if (!hasNonEmptyObjectValue(entry)) {
     return false;
@@ -5682,6 +5707,8 @@ function publishedServiceHealthSatisfied(value, runtime) {
       ?? body?.packageVersion,
   );
 
+  const artifact = runtime === 'sdk-python' ? 'sdk-python' : 'workflow';
+
   return truthy(entry.health_succeeded ?? entry.healthSucceeded ?? entry.service_health_succeeded ?? entry.serviceHealthSucceeded)
     && status !== null
     && status >= 200
@@ -5690,7 +5717,8 @@ function publishedServiceHealthSatisfied(value, runtime) {
     && stringValue(body?.runtime ?? entry.runtime ?? entry.sdk_language ?? entry.sdkLanguage) === runtime
     && truthy(body?.service_started ?? body?.serviceStarted ?? entry.service_started ?? entry.serviceStarted)
     && truthy(body?.package_imported ?? body?.packageImported ?? entry.package_imported ?? entry.packageImported)
-    && isExactPublishedArtifactVersion(version, runtime === 'sdk-python' ? 'sdk-python' : 'workflow');
+    && isExactPublishedArtifactVersion(version, artifact)
+    && samePublishedArtifactVersion(artifact, expectedVersion, version);
 }
 
 function publishedServiceHealthEntry(value, runtime) {
@@ -6098,7 +6126,7 @@ function artifactSourceVerificationFailureFor(artifact, version, source, verific
       code: 'missing_published_artifact_resolution_version',
     };
   }
-  if (verifiedVersion !== version) {
+  if (!samePublishedArtifactVersion(artifact, version, verifiedVersion)) {
     return {
       ...base,
       code: 'published_artifact_resolution_version_mismatch',
@@ -6238,7 +6266,9 @@ function artifactTupleMismatchFailuresFor(
   for (const artifact of requiredArtifacts) {
     const observedVersion = stringValue(observedArtifactVersions[artifact]);
     const expectedVersion = stringValue(expectedArtifactVersions[artifact]);
-    if (observedVersion !== '' && expectedVersion !== '' && observedVersion !== expectedVersion) {
+    if (observedVersion !== ''
+      && expectedVersion !== ''
+      && !samePublishedArtifactVersion(artifact, expectedVersion, observedVersion)) {
       failures.push({
         artifact,
         field: 'artifact_versions',
@@ -6274,7 +6304,9 @@ function artifactTupleMismatchFailuresFor(
       'resolved_version',
       'resolvedVersion',
     ]).value);
-    if (verifiedVersion !== '' && expectedVersion !== '' && verifiedVersion !== expectedVersion) {
+    if (verifiedVersion !== ''
+      && expectedVersion !== ''
+      && !samePublishedArtifactVersion(artifact, expectedVersion, verifiedVersion)) {
       failures.push({
         artifact,
         field: 'artifact_source_verification',
@@ -6448,6 +6480,7 @@ function withSyntheticInstallScenarioEvidence(
     const evidenceFailures = scenarioEvidenceFailures(
       'published_artifact_install_only',
       observedOutputs,
+      artifactVersions,
     );
 
     if (evidenceFailures.length > 0) {
@@ -6547,6 +6580,7 @@ function withDerivedCallerHistoryAttemptVisibility(scenarioResults, artifactVers
   const evidenceFailures = scenarioEvidenceFailures(
     'caller_history_attempt_visibility',
     observedOutputs,
+    artifactVersions,
   );
   const status = evidenceFailures.length === 0
     ? 'pass'
@@ -6920,18 +6954,19 @@ function matchesPythonArtifactSource(version, source) {
     return false;
   }
 
-  for (let end = distribution.length; end > 0; end -= 1) {
-    if (end < distribution.length && !['.', '-'].includes(distribution[end])) {
-      continue;
-    }
+  const sourceVersion = pythonDistributionVersion(distribution);
+  return sourceVersion !== null
+    && pythonReleaseIdentity(sourceVersion) === expectedIdentity;
+}
 
-    const sourceIdentity = pythonReleaseIdentity(distribution.slice(0, end));
-    if (sourceIdentity !== null) {
-      return sourceIdentity === expectedIdentity;
-    }
+function pythonDistributionVersion(distribution) {
+  const wheel = /^(?<version>.+?)(?:-\d[0-9A-Za-z_]*)?-[0-9A-Za-z_.]+-[0-9A-Za-z_.]+-[0-9A-Za-z_.]+\.whl$/.exec(distribution);
+  if (wheel?.groups?.version !== undefined) {
+    return wheel.groups.version;
   }
 
-  return false;
+  const sdist = /^(?<version>.+)\.(?:tar\.gz|tar\.bz2|tar\.xz|zip)$/.exec(distribution);
+  return sdist?.groups?.version ?? null;
 }
 
 function isRollingArtifactSourceRef(source) {

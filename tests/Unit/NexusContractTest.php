@@ -605,7 +605,136 @@ class NexusContractTest extends TestCase
         }
     }
 
-    public function test_host_runner_rejects_mismatched_or_unrelated_python_artifact_sources(): void
+    public function test_host_runner_accepts_equivalent_python_identity_across_resolution_install_and_runtime_evidence(): void
+    {
+        $nodeBinary = trim((string) shell_exec('command -v node 2>/dev/null'));
+        if ($nodeBinary === '') {
+            $this->markTestSkipped('node is required to exercise the Nexus runner result gate.');
+        }
+
+        $declaredVersion = '2.0.0-beta.10';
+        $observedVersion = '2.0.0b10';
+        $pythonSource = 'https://files.pythonhosted.org/packages/ab/cd/durable_workflow-2.0.0b10-py3-none-any.whl';
+        $evidence = $this->withObservedPythonArtifactVersion(
+            $this->completeRunnerEvidence($declaredVersion, $pythonSource),
+            $observedVersion,
+        );
+
+        $result = $this->runNexusEvidence($evidence, 'dw-nexus-python-cross-layer-identity-');
+
+        $this->assertSame(
+            'pass',
+            $result['outcome'],
+            json_encode([
+                'artifact_policy_failures' => $result['artifact_policy_failures'],
+                'non_pass_scenarios' => array_values(array_filter(
+                    $result['scenario_results'],
+                    static fn (array $scenario): bool => $scenario['status'] !== 'pass',
+                )),
+            ], JSON_THROW_ON_ERROR),
+        );
+        $this->assertSame([], $result['artifact_policy_failures']);
+        $this->assertSame(
+            'pass',
+            $this->scenarioResult($result, 'published_artifact_install_only')['status'],
+        );
+        $this->assertSame(
+            'pass',
+            $this->scenarioResult($result, 'php_caller_python_service')['status'],
+        );
+    }
+
+    public function test_host_runner_rejects_distinct_python_identities_across_resolution_install_and_runtime_evidence(): void
+    {
+        $nodeBinary = trim((string) shell_exec('command -v node 2>/dev/null'));
+        if ($nodeBinary === '') {
+            $this->markTestSkipped('node is required to exercise the Nexus runner result gate.');
+        }
+
+        $declaredVersion = '2.0.0-beta.10';
+        $pythonSource = 'https://files.pythonhosted.org/packages/ab/cd/durable_workflow-2.0.0b10-py3-none-any.whl';
+        $cases = [
+            'different beta number' => ['2.0.0b11', 'published_artifact_install_evidence_version_mismatch'],
+            'post release' => ['2.0.0b10.post1', 'invalid_published_artifact_install_evidence_version'],
+            'development release' => ['2.0.0b10.dev1', 'invalid_published_artifact_install_evidence_version'],
+            'local release' => ['2.0.0b10+local', 'invalid_published_artifact_install_evidence_version'],
+        ];
+
+        foreach ($cases as $case => [$observedVersion, $installFailureCode]) {
+            $evidence = $this->withObservedPythonArtifactVersion(
+                $this->completeRunnerEvidence($declaredVersion, $pythonSource),
+                $observedVersion,
+            );
+
+            $result = $this->runNexusEvidence(
+                $evidence,
+                'dw-nexus-invalid-python-cross-layer-',
+            );
+            $pythonServiceScenario = $this->scenarioResult($result, 'php_caller_python_service');
+
+            $this->assertSame('fail', $result['outcome'], $case);
+            $this->assertTrue($this->hasArtifactPolicyFailure(
+                $result,
+                'sdk-python',
+                'artifact_source_verification',
+                'published_artifact_resolution_version_mismatch',
+                $observedVersion,
+            ), $case);
+            $this->assertTrue($this->hasArtifactPolicyFailure(
+                $result,
+                'sdk-python',
+                'artifact_install_evidence.artifacts.version',
+                $installFailureCode,
+                $observedVersion,
+            ), $case);
+            $this->assertTrue($this->hasArtifactPolicyFailure(
+                $result,
+                'sdk-python',
+                'artifact_versions',
+                'install_artifact_version_mismatch',
+                $observedVersion,
+                '$.scenario_results.published_artifact_install_only.observed_outputs.artifact_versions',
+            ), $case);
+            $this->assertTrue($this->hasArtifactPolicyFailure(
+                $result,
+                'sdk-python',
+                'artifact_source_verification',
+                'install_artifact_source_verification_version_mismatch',
+                $observedVersion,
+                '$.scenario_results.published_artifact_install_only.observed_outputs.artifact_source_verification',
+            ), $case);
+            $this->assertSame('fail', $pythonServiceScenario['status'], $case);
+            $this->assertContains(
+                'service_health',
+                array_column($pythonServiceScenario['observed_outputs']['scenario_evidence_failures'], 'field'),
+                $case,
+            );
+        }
+    }
+
+    public function test_host_runner_preserves_literal_version_identity_for_non_python_resolution_evidence(): void
+    {
+        $nodeBinary = trim((string) shell_exec('command -v node 2>/dev/null'));
+        if ($nodeBinary === '') {
+            $this->markTestSkipped('node is required to exercise the Nexus runner result gate.');
+        }
+
+        $evidence = $this->completeRunnerEvidence();
+        $evidence['artifact_source_verification']['workflow']['version'] = '2.0.0a190';
+
+        $result = $this->runNexusEvidence($evidence, 'dw-nexus-non-python-literal-identity-');
+
+        $this->assertSame('fail', $result['outcome']);
+        $this->assertTrue($this->hasArtifactPolicyFailure(
+            $result,
+            'workflow',
+            'artifact_source_verification',
+            'published_artifact_resolution_version_mismatch',
+            '2.0.0a190',
+        ));
+    }
+
+    public function test_host_runner_rejects_distinct_or_unrelated_python_artifact_sources(): void
     {
         $nodeBinary = trim((string) shell_exec('command -v node 2>/dev/null'));
         if ($nodeBinary === '') {
@@ -616,6 +745,18 @@ class NexusContractTest extends TestCase
             'mismatched prerelease number' => [
                 '2.0.0-beta.10',
                 'https://files.pythonhosted.org/packages/ab/cd/durable_workflow-2.0.0b11-py3-none-any.whl',
+            ],
+            'post release wheel' => [
+                '2.0.0-beta.10',
+                'https://files.pythonhosted.org/packages/ab/cd/durable_workflow-2.0.0b10.post1-py3-none-any.whl',
+            ],
+            'development release sdist' => [
+                '2.0.0-beta.10',
+                'https://files.pythonhosted.org/packages/ab/cd/durable_workflow-2.0.0b10.dev1.tar.gz',
+            ],
+            'local release wheel' => [
+                '2.0.0-beta.10',
+                'https://files.pythonhosted.org/packages/ab/cd/durable_workflow-2.0.0b10+local-py3-none-any.whl',
             ],
             'unrelated package source' => [
                 '2.0.0-beta.10',
@@ -3481,6 +3622,69 @@ class NexusContractTest extends TestCase
                 array_keys($installChannels),
             ),
         ];
+    }
+
+    /**
+     * @param  array<string, mixed>  $evidence
+     * @return array<string, mixed>
+     */
+    private function withObservedPythonArtifactVersion(array $evidence, string $observedVersion): array
+    {
+        $evidence['artifact_source_verification']['sdk-python']['version'] = $observedVersion;
+
+        foreach ($evidence['artifact_install_evidence']['artifacts'] as &$artifact) {
+            if (($artifact['artifact'] ?? null) === 'sdk-python') {
+                $artifact['version'] = $observedVersion;
+                $artifact['source_verification']['version'] = $observedVersion;
+            }
+        }
+        unset($artifact);
+
+        foreach ($evidence['scenario_results'] as &$scenario) {
+            $outputs = &$scenario['observed_outputs'];
+            if (($scenario['scenario_id'] ?? null) === 'published_artifact_install_only') {
+                $outputs['artifact_versions']['sdk-python'] = $observedVersion;
+                $outputs['artifact_source_verification']['sdk-python']['version'] = $observedVersion;
+                foreach ($outputs['artifact_install_evidence']['artifacts'] as &$artifact) {
+                    if (($artifact['artifact'] ?? null) === 'sdk-python') {
+                        $artifact['version'] = $observedVersion;
+                        $artifact['source_verification']['version'] = $observedVersion;
+                    }
+                }
+                unset($artifact);
+            }
+
+            if (($scenario['scenario_id'] ?? null) !== 'php_caller_python_service') {
+                unset($outputs);
+
+                continue;
+            }
+
+            $outputs['service_health']['package_version'] = $observedVersion;
+            $outputs['service_health']['health_response']['body']['package_version'] = $observedVersion;
+            $workerExecution = &$outputs['published_artifact_worker_execution'];
+            $workerExecution['service_health']['sdk-python']['package_version'] = $observedVersion;
+            $workerExecution['service_health']['sdk-python']['health_response']['body']['package_version'] = $observedVersion;
+            foreach ($workerExecution['artifacts'] as &$artifact) {
+                if (($artifact['artifact'] ?? null) === 'sdk-python') {
+                    $artifact['version'] = $observedVersion;
+                    $artifact['service_health']['package_version'] = $observedVersion;
+                    $artifact['service_health']['health_response']['body']['package_version'] = $observedVersion;
+                }
+            }
+            unset($artifact);
+            foreach ($workerExecution['workers'] as &$worker) {
+                if (($worker['sdk_language'] ?? null) === 'sdk-python') {
+                    $worker['package_version'] = $observedVersion;
+                    $worker['service_health']['package_version'] = $observedVersion;
+                    $worker['service_health']['health_response']['body']['package_version'] = $observedVersion;
+                }
+            }
+            unset($worker, $workerExecution, $outputs);
+        }
+        unset($scenario);
+
+        return $evidence;
     }
 
     /**
