@@ -240,6 +240,17 @@ def python_release_identity(version: str) -> str | None:
     return f"{major}.{minor}.{patch}{prerelease.lower()}{ordinal}"
 
 
+def same_python_release(expected: str, observed: str) -> bool:
+    expected_identity = python_release_identity(expected)
+    return expected_identity is not None and expected_identity == python_release_identity(observed)
+
+
+def python_registration_release_version(value: Any) -> str:
+    registered = str(value or "").strip()
+    prefix = "durable-workflow-python/"
+    return registered[len(prefix):] if registered.startswith(prefix) else registered
+
+
 def distribution_version(
     artifact_versions: dict[str, str],
     distribution: str,
@@ -2828,6 +2839,7 @@ def wait_for_routed_current_query_task(
     worker_id: str,
     public_query_surface: str,
     log_file: Path,
+    expected_sdk_version: str | None = None,
     timeout_seconds: float = 15.0,
 ) -> dict[str, Any]:
     deadline = time.time() + timeout_seconds
@@ -2842,6 +2854,11 @@ def wait_for_routed_current_query_task(
                 workflow_type=workflow_type,
                 task_queue=task_queue,
                 worker_id=worker_id,
+            ):
+                continue
+            if expected_sdk_version is not None and not same_python_release(
+                expected_sdk_version,
+                str(record.get("worker_sdk_version") or ""),
             ):
                 continue
 
@@ -5321,6 +5338,7 @@ def write_python_sdk_counter_worker(run_root: Path) -> Path:
 from __future__ import annotations
 
 import asyncio
+from importlib.metadata import version
 import json
 import logging
 from datetime import datetime, timezone
@@ -5357,8 +5375,9 @@ class CounterWorkflow:
 
 
 class QueryRouteEvidenceInterceptor(PassthroughWorkerInterceptor):
-    def __init__(self, evidence_path: Path) -> None:
+    def __init__(self, evidence_path: Path, sdk_version: str) -> None:
         self.evidence_path = evidence_path
+        self.sdk_version = sdk_version
 
     async def execute_query_task(self, context, next):  # type: ignore[no-untyped-def]
         task = context.task
@@ -5367,6 +5386,7 @@ class QueryRouteEvidenceInterceptor(PassthroughWorkerInterceptor):
             "schema": "durable-workflow.v2.signal-query-runtime.routed-current-query-task",
             "status": "pass" if outcome == "completed" else outcome,
             "worker_runtime": "sdk-python",
+            "worker_sdk_version": self.sdk_version,
             "worker_id": context.worker_id,
             "task_queue": context.task_queue,
             "query_task_id": task.get("query_task_id"),
@@ -5391,6 +5411,7 @@ class QueryRouteEvidenceInterceptor(PassthroughWorkerInterceptor):
 async def main() -> int:
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s %(levelname)s %(message)s")
     base_url, token, namespace, task_queue, worker_id, evidence_path = sys.argv[1:7]
+    sdk_version = version("durable-workflow")
 
     async with Client(base_url, token=token, namespace=namespace, timeout=30.0) as client:
         worker = Worker(
@@ -5398,7 +5419,7 @@ async def main() -> int:
             task_queue=task_queue,
             workflows=[CounterWorkflow],
             worker_id=worker_id,
-            interceptors=[QueryRouteEvidenceInterceptor(Path(evidence_path))],
+            interceptors=[QueryRouteEvidenceInterceptor(Path(evidence_path), sdk_version)],
             poll_timeout=5.0,
             max_concurrent_workflow_tasks=2,
             max_concurrent_activity_tasks=1,
@@ -7788,6 +7809,8 @@ def wait_for_worker_registered(
     worker_id: str,
     process: subprocess.Popen[str],
     log_file: Path,
+    task_queue: str | None = None,
+    expected_sdk_version: str | None = None,
     timeout_seconds: float = 45.0,
 ) -> dict[str, Any]:
     deadline = time.time() + timeout_seconds
@@ -7809,7 +7832,25 @@ def wait_for_worker_registered(
         )
         last_response = response
         if int(response.get("status_code") or 0) == 200 and isinstance(response.get("body"), dict):
-            return response["body"]
+            registration = response["body"]
+            if task_queue is not None and registration.get("task_queue") != task_queue:
+                time.sleep(0.5)
+                continue
+            capabilities = registration.get("capabilities")
+            if not isinstance(capabilities, list) or "query_tasks" not in capabilities:
+                time.sleep(0.5)
+                continue
+            registered_sdk_version = python_registration_release_version(
+                registration.get("sdk_version")
+            )
+            if (
+                expected_sdk_version is not None
+                and registered_sdk_version != ""
+                and not same_python_release(expected_sdk_version, registered_sdk_version)
+            ):
+                time.sleep(0.5)
+                continue
+            return registration
         time.sleep(0.5)
 
     log_line(log_file, f"last worker registration probe response: {last_response}")
@@ -8327,6 +8368,26 @@ def run_php_worker_python_and_cli_clients(
     return outputs
 
 
+def python_baseline_failure_scope(phase: str) -> str:
+    if phase in {
+        "installed_package_version",
+        "worker_start",
+        "restart_worker_stop",
+        "restart_worker_start",
+    }:
+        return "runner_setup"
+    if phase in {
+        "worker_registration",
+        "routed_current_query",
+        "restart_worker_registration",
+        "restart_routed_current_query",
+    }:
+        return "server_routing"
+    if phase in {"sdk_signal", "sdk_query"}:
+        return "sdk_execution"
+    return "workflow_state"
+
+
 def run_python_sdk_baseline(
     *,
     base_url: str,
@@ -8346,26 +8407,17 @@ def run_python_sdk_baseline(
     workflow_type = "conformance.counter"
     workflow_id = f"wf-sq-python-sdk-{suffix}"
     query_route_evidence_path = run_root / f"{worker_id}-query-route-evidence.jsonl"
-    worker_process = start_python_sdk_counter_worker(
-        python_bin=python_bin,
-        base_url=base_url,
-        token=token,
-        namespace=namespace,
-        task_queue=task_queue,
-        worker_id=worker_id,
-        query_route_evidence_path=query_route_evidence_path,
-        run_root=run_root,
-        log_file=log_file,
-    )
+    expected_sdk_version = versions["sdk-python"]
     outputs: dict[str, Any] = {
         "worker_runtime": "sdk-python",
         "python_worker_artifact_source": sources["sdk-python"],
-        "python_worker_sdk_version": versions["sdk-python"],
+        "python_worker_expected_sdk_version": expected_sdk_version,
         "workflow_id": workflow_id,
         "task_queue": task_queue,
         "worker_id": worker_id,
         "published_artifact_versions": versions,
         "artifact_sources": sources,
+        "probe_phase": "installed_package_version",
     }
     descriptor: dict[str, Any] = {
         "worker_id": worker_id,
@@ -8373,15 +8425,51 @@ def run_python_sdk_baseline(
         "workflow_id": workflow_id,
         "worker_runtime": "sdk-python",
         "worker_source": sources["sdk-python"],
-        "worker_sdk_version": outputs["python_worker_sdk_version"],
+        "expected_worker_sdk_version": expected_sdk_version,
         "log_file": log_file.name,
     }
+    phase = "installed_package_version"
+    worker_process: subprocess.Popen[str] | None = None
+    readiness_boundary: dict[str, Any] = {
+        "status": "pending",
+        "worker_id": worker_id,
+        "task_queue": task_queue,
+        "expected_sdk_version": expected_sdk_version,
+    }
+    outputs["readiness_boundary"] = readiness_boundary
 
     try:
         installed_sdk_version = python_sdk_distribution_version(python_bin, log_file)
-        outputs["python_worker_sdk_version"] = installed_sdk_version or versions["sdk-python"]
-        descriptor["worker_sdk_version"] = outputs["python_worker_sdk_version"]
+        if installed_sdk_version == "":
+            raise RuntimeError("Python SDK worker environment did not report an installed durable-workflow version")
+        if not same_python_release(expected_sdk_version, installed_sdk_version):
+            raise RuntimeError(
+                "Python SDK worker installed package version "
+                f"{installed_sdk_version!r} does not match exact candidate {expected_sdk_version!r}"
+            )
+        outputs["python_worker_sdk_version"] = installed_sdk_version
+        outputs["python_worker_sdk_release_identity"] = python_release_identity(installed_sdk_version)
+        descriptor["worker_sdk_version"] = installed_sdk_version
+        readiness_boundary["installed_package_version"] = installed_sdk_version
+        readiness_boundary["installed_package_version_verified_at"] = now()
 
+        phase = "worker_start"
+        outputs["probe_phase"] = phase
+        worker_process = start_python_sdk_counter_worker(
+            python_bin=python_bin,
+            base_url=base_url,
+            token=token,
+            namespace=namespace,
+            task_queue=task_queue,
+            worker_id=worker_id,
+            query_route_evidence_path=query_route_evidence_path,
+            run_root=run_root,
+            log_file=log_file,
+        )
+        readiness_boundary["worker_started_at"] = now()
+
+        phase = "worker_registration"
+        outputs["probe_phase"] = phase
         worker_registration = wait_for_worker_registered(
             base_url=base_url,
             token=token,
@@ -8389,12 +8477,18 @@ def run_python_sdk_baseline(
             worker_id=worker_id,
             process=worker_process,
             log_file=log_file,
+            task_queue=task_queue,
+            expected_sdk_version=expected_sdk_version,
         )
         outputs["worker_registration"] = worker_registration
         capabilities = worker_registration.get("capabilities") if isinstance(worker_registration, dict) else None
         if isinstance(capabilities, list) and "query_tasks" in capabilities:
             outputs["python_worker_query_task_routing"] = True
+            readiness_boundary["registered_query_task_capability"] = True
+        readiness_boundary["worker_registered_at"] = now()
 
+        phase = "workflow_start"
+        outputs["probe_phase"] = phase
         start = http_json(
             base_url,
             api_path("workflows"),
@@ -8414,6 +8508,10 @@ def run_python_sdk_baseline(
         run_id = str(start["body"].get("run_id", ""))
         outputs["run_id"] = run_id
         descriptor["run_id"] = run_id
+        readiness_boundary["run_id"] = run_id
+
+        phase = "initial_state_restoration"
+        outputs["probe_phase"] = phase
         initial_query = wait_for_query_result(
             label="initial Python SDK worker CLI query",
             expected=0,
@@ -8433,7 +8531,15 @@ def run_python_sdk_baseline(
             ),
         )
         outputs["initial_query_sample"] = initial_query
+        readiness_boundary["initial_state_restored"] = sample_result_value(initial_query) == 0
+        readiness_boundary["initial_state_restored_at"] = now()
+        readiness_boundary["query_handler_ready"] = True
+        readiness_boundary["query_handler_ready_at"] = readiness_boundary[
+            "initial_state_restored_at"
+        ]
 
+        phase = "cli_signal"
+        outputs["probe_phase"] = phase
         cli_signal = cli_json_sample(
             cli_bin,
             base_url,
@@ -8453,6 +8559,8 @@ def run_python_sdk_baseline(
             raise RuntimeError(f"Python SDK baseline CLI signal failed: {cli_signal}")
         outputs["cli_signal_sample"] = cli_signal
 
+        phase = "cli_current_query"
+        outputs["probe_phase"] = phase
         cli_query = wait_for_query_result(
             label="Python SDK worker CLI query after CLI signal",
             expected=3,
@@ -8479,6 +8587,8 @@ def run_python_sdk_baseline(
         )
         routed_current_query_task: dict[str, Any] | None = None
         routed_current_query_task_error: dict[str, str] | None = None
+        phase = "routed_current_query"
+        outputs["probe_phase"] = phase
         try:
             routed_current_query_task = wait_for_routed_current_query_task(
                 evidence_path=query_route_evidence_path,
@@ -8489,9 +8599,15 @@ def run_python_sdk_baseline(
                 worker_id=worker_id,
                 public_query_surface="cli",
                 log_file=log_file,
+                expected_sdk_version=expected_sdk_version,
             )
         except Exception as exc:  # noqa: BLE001 - retain public client proof for focused missing-route evidence.
             routed_current_query_task_error = probe_error_payload(exc)
+            routed_current_query_task_error.setdefault("phase", phase)
+            routed_current_query_task_error.setdefault(
+                "failure_scope",
+                python_baseline_failure_scope(phase),
+            )
             outputs["routed_current_query_task_error"] = routed_current_query_task_error
             descriptor["routed_current_query_task_error"] = routed_current_query_task_error
             log_line(
@@ -8502,6 +8618,8 @@ def run_python_sdk_baseline(
         if routed_current_query_task is not None:
             outputs["routed_current_query_task"] = routed_current_query_task
 
+        phase = "sdk_signal"
+        outputs["probe_phase"] = phase
         try:
             sdk_signal = sdk_success_sample(
                 python_bin,
@@ -8526,6 +8644,8 @@ def run_python_sdk_baseline(
             )
             raise RuntimeError(f"Python SDK baseline SDK signal failed: {sdk_signal}")
 
+        phase = "sdk_query"
+        outputs["probe_phase"] = phase
         try:
             sdk_query = wait_for_query_result(
                 label="Python SDK worker SDK query after SDK signal",
@@ -8555,6 +8675,8 @@ def run_python_sdk_baseline(
             and sample_result_value(sdk_query) == 8
         )
 
+        phase = "immediate_repeat_query"
+        outputs["probe_phase"] = phase
         try:
             repeat_query = wait_for_query_result(
                 label="Python SDK worker repeat CLI query",
@@ -8586,6 +8708,8 @@ def run_python_sdk_baseline(
         )
 
         if sdk_php_project is not None:
+            phase = "cross_language_clients"
+            outputs["probe_phase"] = phase
             cross_language_outputs = run_python_worker_php_facing_and_cli_clients(
                 base_url=base_url,
                 token=token,
@@ -8616,15 +8740,158 @@ def run_python_sdk_baseline(
                 cross_language_outputs,
             )
 
+        phase = "restart_worker_stop"
+        outputs["probe_phase"] = phase
+        original_worker_stopped_at = now()
+        stop_python_sdk_counter_worker(worker_process, log_file)
+        worker_process = None
+
+        restart_worker_id = f"{worker_id}-restart"
+        restart_query_route_evidence_path = (
+            run_root / f"{restart_worker_id}-query-route-evidence.jsonl"
+        )
+        restart_started_at = now()
+        phase = "restart_worker_start"
+        outputs["probe_phase"] = phase
+        worker_process = start_python_sdk_counter_worker(
+            python_bin=python_bin,
+            base_url=base_url,
+            token=token,
+            namespace=namespace,
+            task_queue=task_queue,
+            worker_id=restart_worker_id,
+            query_route_evidence_path=restart_query_route_evidence_path,
+            run_root=run_root,
+            log_file=log_file,
+        )
+
+        phase = "restart_worker_registration"
+        outputs["probe_phase"] = phase
+        restart_registration = wait_for_worker_registered(
+            base_url=base_url,
+            token=token,
+            namespace=namespace,
+            worker_id=restart_worker_id,
+            process=worker_process,
+            log_file=log_file,
+            task_queue=task_queue,
+            expected_sdk_version=expected_sdk_version,
+        )
+        restart_registered_at = now()
+
+        phase = "restart_state_restoration"
+        outputs["probe_phase"] = phase
+        restart_query_sent_at = now()
+        restart_query = wait_for_query_result(
+            label="Python SDK worker CLI query after controlled restart",
+            expected=8,
+            log_file=log_file,
+            sample_factory=lambda: cli_json_sample(
+                cli_bin,
+                base_url,
+                token,
+                namespace,
+                [
+                    "workflow:query",
+                    workflow_id,
+                    "current",
+                    "--output=json",
+                ],
+                log_file,
+            ),
+        )
+        restart_query_completed_at = now()
+        restart_repeat_query = wait_for_query_result(
+            label="Python SDK worker immediate repeat CLI query after controlled restart",
+            expected=8,
+            log_file=log_file,
+            sample_factory=lambda: cli_json_sample(
+                cli_bin,
+                base_url,
+                token,
+                namespace,
+                [
+                    "workflow:query",
+                    workflow_id,
+                    "current",
+                    "--output=json",
+                ],
+                log_file,
+            ),
+        )
+
+        phase = "restart_routed_current_query"
+        outputs["probe_phase"] = phase
+        restart_routed_query = wait_for_routed_current_query_task(
+            evidence_path=restart_query_route_evidence_path,
+            workflow_id=workflow_id,
+            run_id=run_id,
+            workflow_type=workflow_type,
+            task_queue=task_queue,
+            worker_id=restart_worker_id,
+            public_query_surface="cli",
+            log_file=log_file,
+            expected_sdk_version=expected_sdk_version,
+        )
+        restart_repeat_query_completed_at = now()
+        controlled_restart = {
+            "status": "pass",
+            "previous_worker_id": worker_id,
+            "worker_id": restart_worker_id,
+            "task_queue": task_queue,
+            "run_id": run_id,
+            "worker_stopped_at": original_worker_stopped_at,
+            "worker_restart_at": restart_started_at,
+            "worker_registered_at": restart_registered_at,
+            "query_sent_at": restart_query_sent_at,
+            "query_completed_at": restart_query_completed_at,
+            "repeat_query_completed_at": restart_repeat_query_completed_at,
+            "expected_replayed_state": 8,
+            "query_result": sample_result_value(restart_query),
+            "repeat_query_result": sample_result_value(restart_repeat_query),
+            "repeat_query_consistency": (
+                sample_result_value(restart_query)
+                == sample_result_value(restart_repeat_query)
+                == 8
+            ),
+            "worker_registration": restart_registration,
+            "routed_current_query_task": restart_routed_query,
+        }
+        outputs["controlled_restart"] = controlled_restart
+        readiness_boundary.setdefault("query_handler_ready", True)
+        readiness_boundary.setdefault(
+            "query_handler_ready_at",
+            restart_routed_query.get("observed_at") or now(),
+        )
+        readiness_boundary["restart_worker_id"] = restart_worker_id
+        readiness_boundary["restart_worker_registered_at"] = restart_registered_at
+        readiness_boundary["restart_state_restored"] = controlled_restart[
+            "repeat_query_consistency"
+        ]
+        readiness_boundary["evidence_captured_at"] = now()
+        readiness_boundary["status"] = "pass"
+        descriptor["controlled_restart"] = {
+            "worker_id": restart_worker_id,
+            "task_queue": task_queue,
+            "run_id": run_id,
+            "status": "pass",
+        }
+        outputs["probe_phase"] = "complete"
         return outputs, descriptor
     except Exception as exc:  # noqa: BLE001 - retain any public evidence collected before the probe stopped.
         error = probe_error_payload(exc)
+        error.setdefault("phase", phase)
+        error.setdefault("failure_scope", python_baseline_failure_scope(phase))
         outputs["probe_error"] = error
+        outputs["probe_phase"] = phase
         descriptor["error"] = f"{type(exc).__name__}: {exc}"
+        descriptor["failure_phase"] = phase
+        descriptor["failure_scope"] = error["failure_scope"]
         log_line(log_file, f"Python SDK baseline probe stopped after partial evidence: {type(exc).__name__}: {exc}")
         return outputs, descriptor
     finally:
-        stop_python_sdk_counter_worker(worker_process, log_file)
+        if worker_process is not None:
+            stop_python_sdk_counter_worker(worker_process, log_file)
 
 
 def baseline_scenario_result(scenario: str, observed: dict[str, Any]) -> dict[str, Any]:
@@ -9190,12 +9457,20 @@ def run_baseline_probe(result_dir: Path) -> tuple[dict[str, Any] | None, dict[st
         python_bin: str | None = None
         sdk_php_project: Path | None = None
         sdk_php_install_error: dict[str, Any] | None = None
+        cli_install_error: dict[str, Any] | None = None
+        python_install_error: dict[str, Any] | None = None
         install_descriptors: dict[str, Any] = {}
         try:
             cli_bin, cli_install = install_cli(run_root, log_file)
             install_entries["cli"] = cli_install
         except Exception as exc:  # noqa: BLE001 - install proof is reported separately from server baseline cells.
             log_line(log_file, f"CLI install probe failed: {type(exc).__name__}: {exc}")
+            cli_install_error = {
+                **probe_error_payload(exc),
+                "phase": "cli_install",
+                "failure_scope": "runner_setup",
+                "artifact": "cli",
+            }
             cli_install = configured_artifact_entry(
                 "cli",
                 artifact_version_value(versions, "cli"),
@@ -9206,6 +9481,7 @@ def run_baseline_probe(result_dir: Path) -> tuple[dict[str, Any] | None, dict[st
             install_entries["cli"] = cli_install
             install_descriptors["cli"] = {
                 "error": f"{type(exc).__name__}: {exc}",
+                "probe_error": cli_install_error,
                 "log_file": log_file.name,
             }
         try:
@@ -9213,6 +9489,12 @@ def run_baseline_probe(result_dir: Path) -> tuple[dict[str, Any] | None, dict[st
             install_entries["sdk-python"] = python_install
         except Exception as exc:  # noqa: BLE001 - install proof is reported separately from server baseline cells.
             log_line(log_file, f"Python SDK install probe failed: {type(exc).__name__}: {exc}")
+            python_install_error = {
+                **probe_error_payload(exc),
+                "phase": "python_sdk_install",
+                "failure_scope": "runner_setup",
+                "artifact": "sdk-python",
+            }
             python_install = configured_artifact_entry(
                 "sdk-python",
                 artifact_version_value(versions, "sdk-python"),
@@ -9223,6 +9505,7 @@ def run_baseline_probe(result_dir: Path) -> tuple[dict[str, Any] | None, dict[st
             install_entries["sdk-python"] = python_install
             install_descriptors["sdk-python"] = {
                 "error": f"{type(exc).__name__}: {exc}",
+                "probe_error": python_install_error,
                 "log_file": log_file.name,
             }
         try:
@@ -9375,8 +9658,10 @@ def run_baseline_probe(result_dir: Path) -> tuple[dict[str, Any] | None, dict[st
                         candidate = cross_results.get("python_worker_php_facing_and_cli_clients")
                         if isinstance(candidate, dict):
                             python_worker_php_cross_result = candidate
-                if has_required_evidence("python_worker_cli_and_sdk_baseline", python_sdk_outputs):
-                    python_sdk_status = "pass"
+                python_sdk_status = baseline_scenario_result(
+                    "python_worker_cli_and_sdk_baseline",
+                    python_sdk_outputs,
+                )["status"]
             except Exception as exc:  # noqa: BLE001 - keep the older shards routed when the SDK baseline is missing.
                 log_line(log_file, f"Python SDK baseline probe failed: {type(exc).__name__}: {exc}")
                 python_sdk_descriptor = {
@@ -9384,11 +9669,48 @@ def run_baseline_probe(result_dir: Path) -> tuple[dict[str, Any] | None, dict[st
                     "log_file": log_file.name,
                 }
         else:
+            setup_error = python_install_error or cli_install_error or {
+                "type": "RuntimeError",
+                "message": "CLI or Python SDK install was unavailable",
+                "phase": "runner_setup",
+                "failure_scope": "runner_setup",
+            }
+            python_sdk_outputs = {
+                "worker_runtime": "sdk-python",
+                "python_worker_artifact_source": sources["sdk-python"],
+                "python_worker_expected_sdk_version": versions["sdk-python"],
+                "published_artifact_versions": versions,
+                "artifact_sources": sources,
+                "probe_phase": setup_error["phase"],
+                "probe_error": setup_error,
+                "readiness_boundary": {
+                    "status": "failed",
+                    "failed_phase": setup_error["phase"],
+                    "failure_scope": setup_error["failure_scope"],
+                },
+            }
+            if python_bin is not None:
+                try:
+                    observed_python_version = python_sdk_distribution_version(python_bin, log_file)
+                    if observed_python_version != "":
+                        python_sdk_outputs["python_worker_sdk_version"] = observed_python_version
+                except Exception as exc:  # noqa: BLE001 - the retained setup failure remains authoritative.
+                    log_line(
+                        log_file,
+                        "Python SDK setup failure version capture also failed: "
+                        f"{type(exc).__name__}: {exc}",
+                    )
             python_sdk_descriptor = {
                 "skipped": "cli_or_python_sdk_install_unavailable",
                 "install_probes": install_descriptors,
+                "failure_phase": setup_error["phase"],
+                "failure_scope": setup_error["failure_scope"],
                 "log_file": log_file.name,
             }
+            python_sdk_status = baseline_scenario_result(
+                "python_worker_cli_and_sdk_baseline",
+                python_sdk_outputs,
+            )["status"]
         if python_sdk_outputs is not None:
             scenario_results["python_worker_cli_and_sdk_baseline"] = {
                 "status": python_sdk_status,
@@ -13372,7 +13694,91 @@ def python_sdk_version_matches_current(value: Any) -> bool:
         return False
     actual = str(value).strip()
     expected = artifact_version_value(artifact_versions, "sdk-python")
-    return actual != "" and not is_placeholder_version(actual) and (expected == "" or actual == expected)
+    return (
+        actual != ""
+        and not is_placeholder_version(actual)
+        and (expected == "" or same_python_release(expected, actual))
+    )
+
+
+def python_readiness_boundary_satisfied(value: Any) -> bool:
+    if not isinstance(value, dict) or value.get("status") != "pass":
+        return False
+    if value.get("registered_query_task_capability") is not True:
+        return False
+    if value.get("initial_state_restored") is not True:
+        return False
+    if value.get("query_handler_ready") is not True:
+        return False
+    if value.get("restart_state_restored") is not True:
+        return False
+    if not python_sdk_version_matches_current(value.get("installed_package_version")):
+        return False
+    fields_present = all(
+        isinstance(value.get(field), str) and str(value[field]).strip() != ""
+        for field in (
+            "worker_id",
+            "restart_worker_id",
+            "task_queue",
+            "run_id",
+            "installed_package_version",
+            "installed_package_version_verified_at",
+            "worker_started_at",
+            "worker_registered_at",
+            "initial_state_restored_at",
+            "query_handler_ready_at",
+            "restart_worker_registered_at",
+            "evidence_captured_at",
+        )
+    )
+    return fields_present and timestamps_in_order(value, [
+        ("installed_package_version_verified_at", "<=", "worker_started_at"),
+        ("worker_started_at", "<=", "worker_registered_at"),
+        ("worker_registered_at", "<=", "initial_state_restored_at"),
+        ("initial_state_restored_at", "<=", "query_handler_ready_at"),
+        ("query_handler_ready_at", "<=", "restart_worker_registered_at"),
+        ("restart_worker_registered_at", "<=", "evidence_captured_at"),
+    ])
+
+
+def python_controlled_restart_satisfied(value: Any) -> bool:
+    if not isinstance(value, dict) or value.get("status") != "pass":
+        return False
+    previous_worker_id = str(value.get("previous_worker_id") or "").strip()
+    worker_id = str(value.get("worker_id") or "").strip()
+    if previous_worker_id == "" or worker_id == "" or previous_worker_id == worker_id:
+        return False
+    if value.get("expected_replayed_state") != value.get("query_result"):
+        return False
+    if value.get("query_result") != value.get("repeat_query_result"):
+        return False
+    if value.get("repeat_query_consistency") is not True:
+        return False
+    route = value.get("routed_current_query_task")
+    if not routed_current_query_task_satisfied(route):
+        return False
+    if not isinstance(route, dict) or route.get("worker_id") != worker_id:
+        return False
+    registration = value.get("worker_registration")
+    if not isinstance(registration, dict):
+        return False
+    if registration.get("worker_id") != worker_id:
+        return False
+    if registration.get("task_queue") != value.get("task_queue"):
+        return False
+    capabilities = registration.get("capabilities")
+    if not isinstance(capabilities, list) or "query_tasks" not in capabilities:
+        return False
+    return (
+        python_sdk_version_matches_current(route.get("worker_sdk_version"))
+        and timestamps_in_order(value, [
+            ("worker_stopped_at", "<=", "worker_restart_at"),
+            ("worker_restart_at", "<=", "worker_registered_at"),
+            ("worker_registered_at", "<=", "query_sent_at"),
+            ("query_sent_at", "<=", "query_completed_at"),
+            ("query_completed_at", "<=", "repeat_query_completed_at"),
+        ])
+    )
 
 
 def python_worker_claim_satisfied(observed: dict[str, Any]) -> bool:
@@ -13504,6 +13910,8 @@ SCENARIO_REQUIRED_EVIDENCE: dict[str, list[str]] = {
         "cli_signal_and_query",
         "sdk_python_signal_and_query",
         "immediate_repeat_query_consistency",
+        "readiness_boundary",
+        "controlled_restart",
     ],
     "php_worker_cli_and_sdk_baseline": [
         "worker_runtime",
@@ -14290,7 +14698,7 @@ def has_required_evidence(scenario: str, observed: dict[str, Any]) -> bool:
         return (
             python_worker_claim_satisfied(observed)
             and routed_current_query_task_satisfied(
-                evidence_lookup(observed, "routed_current_query_task")
+                observed.get("routed_current_query_task", MISSING)
             )
             and all(
                 required_evidence_satisfied(evidence_key, evidence_lookup(observed, evidence_key))
@@ -14687,6 +15095,8 @@ BASELINE_CURRENT_EVIDENCE_FIELDS = {
         "cli_signal_and_query",
         "sdk_python_signal_and_query",
         "immediate_repeat_query_consistency",
+        "readiness_boundary",
+        "controlled_restart",
     ],
     "php_worker_cli_and_sdk_baseline": [
         "worker_runtime",
@@ -14998,8 +15408,18 @@ def missing_current_evidence_for(scenario: str, observed: dict[str, Any]) -> lis
             )
         ):
             missing.append("python_worker_sdk_version")
-        if not routed_current_query_task_satisfied(evidence_lookup(observed, "routed_current_query_task")):
+        if not routed_current_query_task_satisfied(
+            observed.get("routed_current_query_task", MISSING)
+        ):
             missing.append("routed_current_query_task")
+        if not python_readiness_boundary_satisfied(
+            evidence_lookup(observed, "readiness_boundary")
+        ):
+            missing.append("readiness_boundary")
+        if not python_controlled_restart_satisfied(
+            evidence_lookup(observed, "controlled_restart")
+        ):
+            missing.append("controlled_restart")
         return unique_strings(missing)
 
     if scenario == "php_worker_cli_and_sdk_baseline":
@@ -15120,6 +15540,24 @@ def sample_readout(sample: Any) -> dict[str, Any] | None:
 
 def python_baseline_behavior_failures(observed: dict[str, Any]) -> list[dict[str, Any]]:
     failures: list[dict[str, Any]] = []
+    installed_version = output_field(
+        observed,
+        "python_worker_sdk_version",
+        "pythonWorkerSdkVersion",
+        "worker_sdk_version",
+        "workerSdkVersion",
+    )
+    if (
+        installed_version is not MISSING
+        and not python_sdk_version_matches_current(installed_version)
+    ):
+        failures.append(behavior_failure(
+            "python_worker_sdk_version_mismatch",
+            "python_worker_sdk_version",
+            artifact_version_value(artifact_versions, "sdk-python"),
+            installed_version,
+        ))
+
     sdk_signal_and_query = evidence_lookup(observed, "sdk_python_signal_and_query")
     if sdk_signal_and_query is not MISSING and not evidence_true(sdk_signal_and_query):
         failures.append(behavior_failure(
@@ -15144,6 +15582,16 @@ def python_baseline_behavior_failures(observed: dict[str, Any]) -> list[dict[str
                 "repeat_query": sample_readout(observed.get("repeat_query_sample")),
                 "error": observed.get("immediate_repeat_query_consistency_error"),
             },
+        ))
+
+    probe_error = observed.get("probe_error")
+    if isinstance(probe_error, dict) and probe_error:
+        failure_scope = str(probe_error.get("failure_scope") or "workflow_state")
+        failures.append(behavior_failure(
+            f"python_baseline_{failure_scope}_failed",
+            "probe_error",
+            "the focused Python baseline completes every deterministic readiness phase",
+            probe_error,
         ))
 
     return failures
@@ -16195,6 +16643,10 @@ PORTABLE_OPTIONAL_SCENARIO_EVIDENCE = {
         "run_id",
         "task_queue",
         "worker_id",
+        "python_worker_expected_sdk_version",
+        "probe_phase",
+        "probe_error",
+        "routed_current_query_task_error",
     ),
     "php_worker_cli_and_sdk_baseline": (
         "workflow_id",
@@ -16413,7 +16865,16 @@ def portable_scenario_result(scenario_id: str, value: dict[str, Any]) -> dict[st
         + list(PORTABLE_OPTIONAL_SCENARIO_EVIDENCE.get(scenario_id, ()))
     )
     for evidence_key in evidence_keys:
-        evidence = evidence_lookup(observed, evidence_key)
+        if (
+            evidence_key == "routed_current_query_task"
+            and scenario_id in {
+                "python_worker_cli_and_sdk_baseline",
+                "php_worker_cli_and_sdk_baseline",
+            }
+        ):
+            evidence = observed.get(evidence_key, MISSING)
+        else:
+            evidence = evidence_lookup(observed, evidence_key)
         if evidence is MISSING:
             continue
         set_portable_evidence_path(retained_observed, evidence_key, evidence)

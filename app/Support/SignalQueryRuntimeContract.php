@@ -268,6 +268,8 @@ final class SignalQueryRuntimeContract
                         'cli_signal_and_query',
                         'sdk_python_signal_and_query',
                         'immediate_repeat_query_consistency',
+                        'readiness_boundary',
+                        'controlled_restart',
                     ],
                 ],
                 'php_worker_cli_and_sdk_baseline' => [
@@ -839,6 +841,8 @@ final class SignalQueryRuntimeContract
                             'cli_signal_and_query',
                             'sdk_python_signal_and_query',
                             'immediate_repeat_query_consistency',
+                            'readiness_boundary',
+                            'controlled_restart',
                         ],
                         'baseline_probe_claims_pass' => true,
                         'pass_claim_source' => 'published_python_sdk_worker_baseline_probe',

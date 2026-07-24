@@ -823,6 +823,8 @@ PY);
                 'cli_signal_and_query',
                 'sdk_python_signal_and_query',
                 'immediate_repeat_query_consistency',
+                'readiness_boundary',
+                'controlled_restart',
             ],
             $hostRunner['evidence_shards']['python_worker_cli_and_sdk_smoke']['current_evidence_fields'],
         );
@@ -2292,7 +2294,7 @@ PY);
             'installed_from_public_artifact=False',
             'if install_outputs_cover_required_artifacts(install_outputs):',
             'install_status = "runner_blocked"',
-            'if has_required_evidence("python_worker_cli_and_sdk_baseline", python_sdk_outputs):',
+            'python_sdk_status = baseline_scenario_result(',
             'if has_required_evidence("php_worker_cli_and_sdk_baseline", sdk_php_outputs):',
             '"status": install_status',
             '"status": python_sdk_status',
@@ -3856,6 +3858,8 @@ PY);
             'cli_signal_and_query' => true,
             'sdk_python_signal_and_query' => true,
             'immediate_repeat_query_consistency' => true,
+            'readiness_boundary' => $this->pythonReadinessBoundaryEvidence(),
+            'controlled_restart' => $this->pythonControlledRestartEvidence(),
             'workflow_id' => 'wf-ordered',
             'run_id' => 'run-ordered',
             'rapid_increment_inputs' => [1, 2, 3, 4, 5, 6, 7, 8, 9, 10],
@@ -3896,6 +3900,8 @@ PY);
             'cli_signal_and_query' => true,
             'sdk_python_signal_and_query' => true,
             'immediate_repeat_query_consistency' => true,
+            'readiness_boundary' => $this->pythonReadinessBoundaryEvidence(),
+            'controlled_restart' => $this->pythonControlledRestartEvidence(),
             'workflow_id' => 'wf-ordered',
             'run_id' => 'run-ordered',
             'rapid_increment_inputs' => [1, 2, 3, 4, 5, 6, 7, 8, 9, 10],
@@ -4007,7 +4013,8 @@ sources = {
 }
 globals()["artifact_versions"] = versions
 
-query_calls = {"current": 0}
+query_calls = {}
+missing_route_worker_id = {"value": None}
 stopped = {"value": False}
 
 class FakeProcess:
@@ -4020,7 +4027,12 @@ def fake_stop_python_sdk_counter_worker(process, log_file):
     stopped["value"] = True
 
 def fake_wait_for_worker_registered(**kwargs):
-    return {"worker_id": kwargs["worker_id"], "capabilities": ["query_tasks"]}
+    return {
+        "worker_id": kwargs["worker_id"],
+        "task_queue": kwargs["task_queue"],
+        "sdk_version": versions["sdk-python"],
+        "capabilities": ["query_tasks"],
+    }
 
 def fake_http_json(base_url, path, **kwargs):
     if path.endswith("/workflows"):
@@ -4033,8 +4045,9 @@ def fake_cli_json_sample(cli_bin, base_url, token, namespace, args, log_file):
     if args[0] == "workflow:query" and args[2] == "state":
         return {"ok": True, "result": 0}
     if args[0] == "workflow:query" and args[2] == "current":
-        query_calls["current"] += 1
-        return {"ok": True, "result": 3 if query_calls["current"] == 1 else 8}
+        workflow_id = args[1]
+        query_calls[workflow_id] = query_calls.get(workflow_id, 0) + 1
+        return {"ok": True, "result": 3 if query_calls[workflow_id] == 1 else 8}
     raise AssertionError(f"unexpected cli args {args}")
 
 def fake_sdk_success_sample(python_bin, base_url, token, namespace, workflow_id, operation, name, log_file, args=None):
@@ -4045,7 +4058,30 @@ def fake_sdk_success_sample(python_bin, base_url, token, namespace, workflow_id,
     raise AssertionError(f"unexpected sdk operation {operation}")
 
 def fake_wait_for_routed_current_query_task(**kwargs):
-    raise RuntimeError("route evidence not recorded")
+    if (
+        not kwargs["worker_id"].endswith("-restart")
+        and missing_route_worker_id["value"] is None
+    ):
+        missing_route_worker_id["value"] = kwargs["worker_id"]
+        raise RuntimeError("route evidence not recorded")
+    return {
+        "status": "pass",
+        "worker_runtime": "sdk-python",
+        "worker_sdk_version": versions["sdk-python"],
+        "public_query_surface": "cli",
+        "query_task_id": "query-task-current",
+        "query_task_attempt": 1,
+        "workflow_id": kwargs["workflow_id"],
+        "run_id": kwargs["run_id"],
+        "workflow_type": kwargs["workflow_type"],
+        "task_queue": kwargs["task_queue"],
+        "worker_id": kwargs["worker_id"],
+        "lease_owner": kwargs["worker_id"],
+        "query_name": "current",
+        "server_route": "worker_query_task_poll",
+        "completion_route": "worker_query_task_complete",
+        "observed_at": now(),
+    }
 
 def fake_python_sdk_distribution_version(python_bin, log_file):
     return versions["sdk-python"]
@@ -4072,6 +4108,21 @@ outputs, descriptor = run_python_sdk_baseline(
     log_file=run_root / "probe.log",
 )
 scenario = baseline_scenario_result("python_worker_cli_and_sdk_baseline", outputs)
+repeat_outputs, repeat_descriptor = run_python_sdk_baseline(
+    base_url="http://server.test",
+    token="token",
+    namespace="default",
+    cli_bin="/tmp/dw",
+    python_bin=sys.executable,
+    versions=versions,
+    sources=sources,
+    run_root=run_root,
+    log_file=run_root / "repeat-probe.log",
+)
+repeat_scenario = baseline_scenario_result(
+    "python_worker_cli_and_sdk_baseline",
+    repeat_outputs,
+)
 
 print(json.dumps({
     "status": scenario["status"],
@@ -4083,6 +4134,20 @@ print(json.dumps({
     "sdk_python_signal_and_query": outputs["sdk_python_signal_and_query"],
     "immediate_repeat_query_consistency": outputs["immediate_repeat_query_consistency"],
     "query_task_routing": outputs["python_worker_query_task_routing"],
+    "restart_status": outputs["controlled_restart"]["status"],
+    "restart_previous_worker_id": outputs["controlled_restart"]["previous_worker_id"],
+    "restart_worker_id": outputs["controlled_restart"]["worker_id"],
+    "restart_query_result": outputs["controlled_restart"]["query_result"],
+    "restart_repeat_query_result": outputs["controlled_restart"]["repeat_query_result"],
+    "restart_route_worker_id": outputs["controlled_restart"]["routed_current_query_task"]["worker_id"],
+    "readiness_status": outputs["readiness_boundary"]["status"],
+    "repeat_status": repeat_scenario["status"],
+    "repeat_missing": missing_current_evidence_for(
+        "python_worker_cli_and_sdk_baseline",
+        repeat_outputs,
+    ),
+    "clean_run_worker_ids_are_distinct": outputs["worker_id"] != repeat_outputs["worker_id"],
+    "repeat_restart_status": repeat_outputs["controlled_restart"]["status"],
     "stopped": stopped["value"],
 }, sort_keys=True))
 PY);
@@ -4096,6 +4161,16 @@ PY);
         $this->assertTrue($result['sdk_python_signal_and_query']);
         $this->assertTrue($result['immediate_repeat_query_consistency']);
         $this->assertTrue($result['query_task_routing']);
+        $this->assertSame('pass', $result['restart_status']);
+        $this->assertNotSame($result['restart_previous_worker_id'], $result['restart_worker_id']);
+        $this->assertSame(8, $result['restart_query_result']);
+        $this->assertSame(8, $result['restart_repeat_query_result']);
+        $this->assertSame($result['restart_worker_id'], $result['restart_route_worker_id']);
+        $this->assertSame('pass', $result['readiness_status']);
+        $this->assertSame('pass', $result['repeat_status']);
+        $this->assertSame([], $result['repeat_missing']);
+        $this->assertTrue($result['clean_run_worker_ids_are_distinct']);
+        $this->assertSame('pass', $result['repeat_restart_status']);
         $this->assertTrue($result['stopped']);
     }
 
@@ -4132,7 +4207,12 @@ def fake_stop_python_sdk_counter_worker(process, log_file):
     stopped["value"] = True
 
 def fake_wait_for_worker_registered(**kwargs):
-    return {"worker_id": kwargs["worker_id"], "capabilities": ["query_tasks"]}
+    return {
+        "worker_id": kwargs["worker_id"],
+        "task_queue": kwargs["task_queue"],
+        "sdk_version": versions["sdk-python"],
+        "capabilities": ["query_tasks"],
+    }
 
 def fake_http_json(base_url, path, **kwargs):
     if path.endswith("/workflows"):
@@ -4197,6 +4277,8 @@ print(json.dumps({
     "has_routed_task": "routed_current_query_task" in outputs,
     "route_error_type": outputs["routed_current_query_task_error"]["type"],
     "probe_error_type": outputs["probe_error"]["type"],
+    "probe_error_phase": outputs["probe_error"]["phase"],
+    "probe_error_scope": outputs["probe_error"]["failure_scope"],
     "descriptor_error": descriptor["error"],
     "stopped": stopped["value"],
 }, sort_keys=True))
@@ -4218,8 +4300,101 @@ PY);
         $this->assertFalse($result['has_routed_task']);
         $this->assertSame('RuntimeError', $result['route_error_type']);
         $this->assertSame('RuntimeError', $result['probe_error_type']);
+        $this->assertSame('sdk_query', $result['probe_error_phase']);
+        $this->assertSame('sdk_execution', $result['probe_error_scope']);
         $this->assertStringContainsString('SDK query did not complete', $result['descriptor_error']);
         $this->assertTrue($result['stopped']);
+    }
+
+    public function test_python_baseline_retains_version_and_phase_when_worker_start_fails(): void
+    {
+        $result = $this->runSignalQueryRunnerPythonSnippet(<<<'PY'
+versions = {
+    "server": "2.0.0-beta.11",
+    "cli": "2.0.0-beta.10",
+    "sdk-python": "2.0.0-beta.10",
+    "workflow": "2.0.0-beta.10",
+    "sdk-php": "2.0.0-beta.10",
+    "waterline": "2.0.0-beta.10",
+}
+sources = {
+    "server": "published_docker_image",
+    "cli": "published_cli_release",
+    "sdk-python": "published_pypi_package",
+    "sdk-php": "published_composer_package",
+    "waterline": "published_waterline_artifact",
+}
+globals()["artifact_versions"] = versions
+
+def fake_python_sdk_distribution_version(python_bin, log_file):
+    return "2.0.0b10"
+
+def fake_start_python_sdk_counter_worker(**kwargs):
+    raise OSError("clean runner could not start worker process")
+
+globals()["python_sdk_distribution_version"] = fake_python_sdk_distribution_version
+globals()["start_python_sdk_counter_worker"] = fake_start_python_sdk_counter_worker
+
+run_root = Path(tempfile.mkdtemp(prefix="dw-signals-python-start-failure-test."))
+outputs, descriptor = run_python_sdk_baseline(
+    base_url="http://server.test",
+    token="token",
+    namespace="default",
+    cli_bin="/tmp/dw",
+    python_bin=sys.executable,
+    versions=versions,
+    sources=sources,
+    run_root=run_root,
+    log_file=run_root / "probe.log",
+)
+
+print(json.dumps({
+    "status": baseline_scenario_result("python_worker_cli_and_sdk_baseline", outputs)["status"],
+    "sdk_version": outputs["python_worker_sdk_version"],
+    "release_identity": outputs["python_worker_sdk_release_identity"],
+    "missing": missing_current_evidence_for("python_worker_cli_and_sdk_baseline", outputs),
+    "probe_phase": outputs["probe_phase"],
+    "failure_phase": outputs["probe_error"]["phase"],
+    "failure_scope": outputs["probe_error"]["failure_scope"],
+    "descriptor_phase": descriptor["failure_phase"],
+    "descriptor_scope": descriptor["failure_scope"],
+}, sort_keys=True))
+PY);
+
+        $this->assertSame('fail', $result['status']);
+        $this->assertSame('2.0.0b10', $result['sdk_version']);
+        $this->assertSame('2.0.0b10', $result['release_identity']);
+        $this->assertNotContains('python_worker_sdk_version', $result['missing']);
+        $this->assertSame('worker_start', $result['probe_phase']);
+        $this->assertSame('worker_start', $result['failure_phase']);
+        $this->assertSame('runner_setup', $result['failure_scope']);
+        $this->assertSame('worker_start', $result['descriptor_phase']);
+        $this->assertSame('runner_setup', $result['descriptor_scope']);
+    }
+
+    public function test_python_prerelease_version_spellings_share_current_baseline_identity(): void
+    {
+        $result = $this->runSignalQueryRunnerPythonSnippet(<<<'PY'
+globals()["artifact_versions"] = {"sdk-python": "2.0.0-beta.10"}
+
+print(json.dumps({
+    "semver": python_sdk_version_matches_current("2.0.0-beta.10"),
+    "pep440": python_sdk_version_matches_current("2.0.0b10"),
+    "registration_pep440": python_sdk_version_matches_current(
+        python_registration_release_version("durable-workflow-python/2.0.0b10"),
+    ),
+    "different_beta": python_sdk_version_matches_current("2.0.0b9"),
+    "post_release": python_sdk_version_matches_current("2.0.0b10.post1"),
+    "restart_start_scope": python_baseline_failure_scope("restart_worker_start"),
+}, sort_keys=True))
+PY);
+
+        $this->assertTrue($result['semver']);
+        $this->assertTrue($result['pep440']);
+        $this->assertTrue($result['registration_pep440']);
+        $this->assertFalse($result['different_beta']);
+        $this->assertFalse($result['post_release']);
+        $this->assertSame('runner_setup', $result['restart_start_scope']);
     }
 
     public function test_python_baseline_reads_nested_sdk_query_result_samples(): void
@@ -8307,6 +8482,28 @@ PY);
         );
     }
 
+    public function test_result_gate_accepts_pep440_python_worker_version_for_semver_candidate(): void
+    {
+        $result = $this->completeSignalQueryResult();
+        $result['artifactVersions']['sdk-python'] = '2.0.0-beta.10';
+        $python = &$result['scenario_results']['python_worker_cli_and_sdk_baseline']['observed_outputs'];
+        $python['python_worker_sdk_version'] = '2.0.0b10';
+        $python['routed_current_query_task']['worker_sdk_version'] = '2.0.0b10';
+        $python['readiness_boundary'] = $this->pythonReadinessBoundaryEvidence('2.0.0b10');
+        $python['controlled_restart'] = $this->pythonControlledRestartEvidence('2.0.0b10');
+
+        $evaluation = SignalQueryRuntimeResultGate::evaluate($result);
+        $failureCodes = array_column($evaluation['gate_failures'], 'code');
+
+        $this->assertNotContains('python_worker_baseline_missing_sdk_version', $failureCodes);
+        $this->assertNotContains('python_worker_baseline_sdk_version_mismatch', $failureCodes);
+        $this->assertNotContains(
+            'python_worker_baseline_routed_query_sdk_version_mismatch',
+            $failureCodes,
+        );
+        $this->assertNotContains('python_worker_baseline_controlled_restart_mismatch', $failureCodes);
+    }
+
     public function test_result_gate_rejects_php_baseline_pass_with_external_worker_identity(): void
     {
         $result = $this->completeSignalQueryResult();
@@ -8893,6 +9090,7 @@ PY);
             'schema' => 'durable-workflow.v2.signal-query-runtime.routed-current-query-task',
             'status' => 'pass',
             'worker_runtime' => 'sdk-python',
+            'worker_sdk_version' => '0.4.84',
             'public_query_surface' => 'cli',
             'server_route' => 'worker_query_task_poll',
             'completion_route' => 'worker_query_task_complete',
@@ -8907,6 +9105,68 @@ PY);
             'lease_owner' => 'signals-queries-python-sdk-worker',
             'query_name' => 'current',
         ], $overrides);
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    private function pythonReadinessBoundaryEvidence(string $version = '0.4.84'): array
+    {
+        return [
+            'status' => 'pass',
+            'worker_id' => 'signals-queries-python-sdk-worker',
+            'restart_worker_id' => 'signals-queries-python-sdk-worker-restart',
+            'task_queue' => 'signals-queries-python-sdk',
+            'run_id' => 'run-python-baseline',
+            'expected_sdk_version' => $version,
+            'installed_package_version' => $version,
+            'installed_package_version_verified_at' => '2026-07-24T12:00:00Z',
+            'worker_started_at' => '2026-07-24T12:00:01Z',
+            'worker_registered_at' => '2026-07-24T12:00:02Z',
+            'registered_query_task_capability' => true,
+            'initial_state_restored' => true,
+            'initial_state_restored_at' => '2026-07-24T12:00:03Z',
+            'query_handler_ready' => true,
+            'query_handler_ready_at' => '2026-07-24T12:00:04Z',
+            'restart_worker_registered_at' => '2026-07-24T12:00:06Z',
+            'restart_state_restored' => true,
+            'evidence_captured_at' => '2026-07-24T12:00:08Z',
+        ];
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    private function pythonControlledRestartEvidence(string $version = '0.4.84'): array
+    {
+        return [
+            'status' => 'pass',
+            'previous_worker_id' => 'signals-queries-python-sdk-worker',
+            'worker_id' => 'signals-queries-python-sdk-worker-restart',
+            'task_queue' => 'signals-queries-python-sdk',
+            'run_id' => 'run-python-baseline',
+            'worker_stopped_at' => '2026-07-24T12:00:05Z',
+            'worker_restart_at' => '2026-07-24T12:00:05Z',
+            'worker_registered_at' => '2026-07-24T12:00:06Z',
+            'query_sent_at' => '2026-07-24T12:00:07Z',
+            'query_completed_at' => '2026-07-24T12:00:07Z',
+            'repeat_query_completed_at' => '2026-07-24T12:00:08Z',
+            'expected_replayed_state' => 8,
+            'query_result' => 8,
+            'repeat_query_result' => 8,
+            'repeat_query_consistency' => true,
+            'worker_registration' => [
+                'worker_id' => 'signals-queries-python-sdk-worker-restart',
+                'task_queue' => 'signals-queries-python-sdk',
+                'sdk_version' => $version,
+                'capabilities' => ['query_tasks'],
+            ],
+            'routed_current_query_task' => $this->routedCurrentQueryTaskEvidence([
+                'worker_sdk_version' => $version,
+                'worker_id' => 'signals-queries-python-sdk-worker-restart',
+                'lease_owner' => 'signals-queries-python-sdk-worker-restart',
+            ]),
+        ];
     }
 
     /**
@@ -9037,6 +9297,15 @@ PY);
         $result['scenario_results']['python_worker_cli_and_sdk_baseline']['observed_outputs'][
             'python_worker_sdk_version'
         ] = $versions['sdk-python'];
+        $result['scenario_results']['python_worker_cli_and_sdk_baseline']['observed_outputs'][
+            'routed_current_query_task'
+        ]['worker_sdk_version'] = $versions['sdk-python'];
+        $result['scenario_results']['python_worker_cli_and_sdk_baseline']['observed_outputs'][
+            'readiness_boundary'
+        ] = $this->pythonReadinessBoundaryEvidence($versions['sdk-python']);
+        $result['scenario_results']['python_worker_cli_and_sdk_baseline']['observed_outputs'][
+            'controlled_restart'
+        ] = $this->pythonControlledRestartEvidence($versions['sdk-python']);
         $result['scenario_results']['php_worker_cli_and_sdk_baseline']['observed_outputs'][
             'sdk_php_sdk_version'
         ] = $versions['sdk-php'];
@@ -9165,6 +9434,7 @@ PY);
             'python_worker_sdk_version' => '0.4.58',
             'python_worker_query_task_routing' => true,
             'routed_current_query_task' => $this->routedCurrentQueryTaskEvidence([
+                'worker_sdk_version' => '0.4.58',
                 'workflow_id' => 'wf-python-baseline',
                 'run_id' => 'run-python-baseline',
                 'task_queue' => 'signals-queries-python-sdk',
@@ -9174,6 +9444,8 @@ PY);
             'cli_signal_and_query' => true,
             'sdk_python_signal_and_query' => true,
             'immediate_repeat_query_consistency' => true,
+            'readiness_boundary' => $this->pythonReadinessBoundaryEvidence('0.4.58'),
+            'controlled_restart' => $this->pythonControlledRestartEvidence('0.4.58'),
             'workflow_id' => 'wf-python-baseline',
             'run_id' => 'run-python-baseline',
             'task_queue' => 'signals-queries-python-sdk',

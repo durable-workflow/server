@@ -2211,7 +2211,7 @@ final class SignalQueryRuntimeResultGate
                 'field' => 'python_worker_sdk_version',
                 'version' => $version,
             ];
-        } elseif ($expectedVersion !== '' && $version !== $expectedVersion) {
+        } elseif ($expectedVersion !== '' && ! self::samePythonRelease($expectedVersion, $version)) {
             $failures[] = [
                 'code' => 'python_worker_baseline_sdk_version_mismatch',
                 'scenario_id' => $scenarioId,
@@ -2233,7 +2233,267 @@ final class SignalQueryRuntimeResultGate
             ),
         );
 
+        $directRoute = self::directObservedOutput(
+            $scenarioResult,
+            'routed_current_query_task',
+            'routedCurrentQueryTask',
+        );
+        $routeSdkVersion = self::stringValue(
+            is_array($directRoute) ? ($directRoute['worker_sdk_version'] ?? null) : null,
+        );
+        if (
+            $routeSdkVersion === ''
+            || ($expectedVersion !== '' && ! self::samePythonRelease($expectedVersion, $routeSdkVersion))
+        ) {
+            $failures[] = [
+                'code' => 'python_worker_baseline_routed_query_sdk_version_mismatch',
+                'scenario_id' => $scenarioId,
+                'field' => 'routed_current_query_task.worker_sdk_version',
+                'version' => $routeSdkVersion,
+                'expected_version' => $expectedVersion,
+            ];
+        }
+
+        $readiness = self::arrayEvidenceValue(
+            $result,
+            $scenarioResult,
+            $scenarioId,
+            'readiness_boundary',
+        );
+        if ($readiness === null || ($readiness['status'] ?? null) !== 'pass') {
+            $failures[] = [
+                'code' => 'python_worker_baseline_readiness_boundary_missing',
+                'scenario_id' => $scenarioId,
+                'field' => 'readiness_boundary',
+            ];
+        } else {
+            foreach ([
+                'registered_query_task_capability',
+                'initial_state_restored',
+                'query_handler_ready',
+                'restart_state_restored',
+            ] as $field) {
+                if (($readiness[$field] ?? null) !== true) {
+                    $failures[] = [
+                        'code' => 'python_worker_baseline_readiness_boundary_incomplete',
+                        'scenario_id' => $scenarioId,
+                        'field' => 'readiness_boundary.'.$field,
+                    ];
+                }
+            }
+            foreach ([
+                'worker_id',
+                'restart_worker_id',
+                'task_queue',
+                'run_id',
+                'installed_package_version',
+                'installed_package_version_verified_at',
+                'worker_started_at',
+                'worker_registered_at',
+                'initial_state_restored_at',
+                'query_handler_ready_at',
+                'restart_worker_registered_at',
+                'evidence_captured_at',
+            ] as $field) {
+                if (self::stringValue($readiness[$field] ?? null) === '') {
+                    $failures[] = [
+                        'code' => 'python_worker_baseline_readiness_boundary_incomplete',
+                        'scenario_id' => $scenarioId,
+                        'field' => 'readiness_boundary.'.$field,
+                    ];
+                }
+            }
+            if (! self::timestampSequenceIsOrdered($readiness, [
+                'installed_package_version_verified_at',
+                'worker_started_at',
+                'worker_registered_at',
+                'initial_state_restored_at',
+                'query_handler_ready_at',
+                'restart_worker_registered_at',
+                'evidence_captured_at',
+            ])) {
+                $failures[] = [
+                    'code' => 'python_worker_baseline_readiness_timestamps_invalid',
+                    'scenario_id' => $scenarioId,
+                    'field' => 'readiness_boundary',
+                ];
+            }
+            $observedWorkerId = self::stringValue(self::directObservedOutput(
+                $scenarioResult,
+                'worker_id',
+            ));
+            $observedTaskQueue = self::stringValue(self::directObservedOutput(
+                $scenarioResult,
+                'task_queue',
+            ));
+            $observedRunId = self::stringValue(self::directObservedOutput(
+                $scenarioResult,
+                'run_id',
+            ));
+            $readinessInstalledVersion = self::stringValue(
+                $readiness['installed_package_version'] ?? null,
+            );
+            if (
+                self::stringValue($readiness['worker_id'] ?? null) !== $observedWorkerId
+                || self::stringValue($readiness['task_queue'] ?? null) !== $observedTaskQueue
+                || self::stringValue($readiness['run_id'] ?? null) !== $observedRunId
+                || (
+                    $expectedVersion !== ''
+                    && ! self::samePythonRelease($expectedVersion, $readinessInstalledVersion)
+                )
+            ) {
+                $failures[] = [
+                    'code' => 'python_worker_baseline_readiness_identity_mismatch',
+                    'scenario_id' => $scenarioId,
+                    'field' => 'readiness_boundary',
+                ];
+            }
+        }
+
+        $restart = self::arrayEvidenceValue(
+            $result,
+            $scenarioResult,
+            $scenarioId,
+            'controlled_restart',
+        );
+        if ($restart === null || ($restart['status'] ?? null) !== 'pass') {
+            $failures[] = [
+                'code' => 'python_worker_baseline_controlled_restart_missing',
+                'scenario_id' => $scenarioId,
+                'field' => 'controlled_restart',
+            ];
+        } else {
+            $previousWorkerId = self::stringValue($restart['previous_worker_id'] ?? null);
+            $restartWorkerId = self::stringValue($restart['worker_id'] ?? null);
+            $restartRoute = is_array($restart['routed_current_query_task'] ?? null)
+                ? $restart['routed_current_query_task']
+                : null;
+            $restartRouteSdkVersion = self::stringValue(
+                is_array($restartRoute) ? ($restartRoute['worker_sdk_version'] ?? null) : null,
+            );
+            $restartRegistration = is_array($restart['worker_registration'] ?? null)
+                ? $restart['worker_registration']
+                : null;
+            $observedWorkerId = self::stringValue(self::directObservedOutput(
+                $scenarioResult,
+                'worker_id',
+            ));
+            $observedTaskQueue = self::stringValue(self::directObservedOutput(
+                $scenarioResult,
+                'task_queue',
+            ));
+            $observedRunId = self::stringValue(self::directObservedOutput(
+                $scenarioResult,
+                'run_id',
+            ));
+            if (
+                $previousWorkerId === ''
+                || $restartWorkerId === ''
+                || $previousWorkerId === $restartWorkerId
+                || $previousWorkerId !== $observedWorkerId
+                || self::stringValue($restart['task_queue'] ?? null) !== $observedTaskQueue
+                || self::stringValue($restart['run_id'] ?? null) !== $observedRunId
+                || ($restart['repeat_query_consistency'] ?? null) !== true
+                || ($restart['expected_replayed_state'] ?? null) !== ($restart['query_result'] ?? null)
+                || ($restart['query_result'] ?? null) !== ($restart['repeat_query_result'] ?? null)
+                || ! is_array($restartRoute)
+                || ! is_array($restartRegistration)
+                || self::stringValue($restartRegistration['worker_id'] ?? null) !== $restartWorkerId
+                || self::stringValue($restartRegistration['task_queue'] ?? null) !== $observedTaskQueue
+                || ! is_array($restartRegistration['capabilities'] ?? null)
+                || ! in_array('query_tasks', $restartRegistration['capabilities'], true)
+                || self::stringValue($restartRoute['worker_id'] ?? null) !== $restartWorkerId
+                || self::stringValue($restartRoute['query_name'] ?? null) !== 'current'
+                || ! in_array(self::stringValue($restartRoute['status'] ?? null), ['pass', 'completed'], true)
+                || (
+                    $expectedVersion !== ''
+                    && ! self::samePythonRelease($expectedVersion, $restartRouteSdkVersion)
+                )
+                || ! self::timestampSequenceIsOrdered($restart, [
+                    'worker_stopped_at',
+                    'worker_restart_at',
+                    'worker_registered_at',
+                    'query_sent_at',
+                    'query_completed_at',
+                    'repeat_query_completed_at',
+                ])
+            ) {
+                $failures[] = [
+                    'code' => 'python_worker_baseline_controlled_restart_mismatch',
+                    'scenario_id' => $scenarioId,
+                    'field' => 'controlled_restart',
+                ];
+            }
+        }
+
         return $failures;
+    }
+
+    private static function samePythonRelease(string $expected, string $observed): bool
+    {
+        $expectedIdentity = self::pythonReleaseIdentity($expected);
+
+        return $expectedIdentity !== null && $expectedIdentity === self::pythonReleaseIdentity($observed);
+    }
+
+    private static function pythonReleaseIdentity(string $version): ?string
+    {
+        $version = trim($version);
+        if (preg_match('/^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/', $version) === 1) {
+            return $version;
+        }
+
+        if (preg_match(
+            '/^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)-(alpha|beta|rc)\.(0|[1-9]\d*)$/i',
+            $version,
+            $matches,
+        ) === 1) {
+            $phase = match (strtolower($matches[4])) {
+                'alpha' => 'a',
+                'beta' => 'b',
+                'rc' => 'rc',
+            };
+
+            return $matches[1].'.'.$matches[2].'.'.$matches[3].$phase.$matches[5];
+        }
+
+        if (preg_match(
+            '/^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(a|b|rc)(0|[1-9]\d*)$/i',
+            $version,
+            $matches,
+        ) === 1) {
+            return $matches[1].'.'.$matches[2].'.'.$matches[3].strtolower($matches[4]).$matches[5];
+        }
+
+        return null;
+    }
+
+    /**
+     * @param  array<string, mixed>  $evidence
+     * @param  list<string>  $fields
+     */
+    private static function timestampSequenceIsOrdered(array $evidence, array $fields): bool
+    {
+        $previous = null;
+        foreach ($fields as $field) {
+            $value = self::stringValue($evidence[$field] ?? null);
+            if ($value === '') {
+                return false;
+            }
+
+            try {
+                $timestamp = new \DateTimeImmutable($value);
+            } catch (\Exception) {
+                return false;
+            }
+
+            if ($previous !== null && $timestamp < $previous) {
+                return false;
+            }
+            $previous = $timestamp;
+        }
+
+        return true;
     }
 
     /**
@@ -2249,13 +2509,12 @@ final class SignalQueryRuntimeResultGate
         string $failureCode,
         string $mismatchCode,
     ): array {
-        $route = self::arrayEvidenceValue(
-            $result,
+        $routeValue = self::directObservedOutput(
             $scenarioResult,
-            $scenarioId,
             'routed_current_query_task',
             'routedCurrentQueryTask',
         );
+        $route = is_array($routeValue) ? $routeValue : null;
         if ($route === null) {
             return [
                 [
@@ -2725,10 +2984,47 @@ final class SignalQueryRuntimeResultGate
         string $scenarioId,
         string $evidenceKey,
     ): bool {
+        if (
+            $evidenceKey === 'routed_current_query_task'
+            && in_array($scenarioId, [
+                'python_worker_cli_and_sdk_baseline',
+                'php_worker_cli_and_sdk_baseline',
+            ], true)
+        ) {
+            return self::requiredEvidencePresent(
+                $evidenceKey,
+                self::directObservedOutput($scenarioResult, $evidenceKey, 'routedCurrentQueryTask'),
+            );
+        }
+
         return self::requiredEvidencePresent(
             $evidenceKey,
             self::evidenceValue($result, $scenarioResult, $scenarioId, $evidenceKey),
         );
+    }
+
+    /**
+     * @param  array<string, mixed>  $scenarioResult
+     */
+    private static function directObservedOutput(
+        array $scenarioResult,
+        string ...$fields,
+    ): mixed {
+        $observed = self::arrayValue($scenarioResult, 'observed_outputs')
+            ?? self::arrayValue($scenarioResult, 'observedOutputs')
+            ?? self::arrayValue($scenarioResult, 'runtime_matrix')
+            ?? self::arrayValue($scenarioResult, 'runtimeMatrix');
+        if ($observed === null) {
+            return null;
+        }
+
+        foreach ($fields as $field) {
+            if (array_key_exists($field, $observed)) {
+                return $observed[$field];
+            }
+        }
+
+        return null;
     }
 
     private static function requiredEvidencePresent(string $evidenceKey, mixed $value): bool

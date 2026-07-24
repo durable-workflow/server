@@ -1,12 +1,12 @@
 name: durable-workflow-server
 
-x-server-image: &server-image ${DW_SERVER_IMAGE:-durableworkflow/server:${DW_SERVER_TAG:-2.0.0-beta.10}}
+x-server-image: &server-image ${DW_SERVER_IMAGE:-durableworkflow/server:${DW_SERVER_TAG:-2.0.0-beta.11}}
 
 x-server-environment: &server-environment
   APP_NAME: "Durable Workflow Server"
   APP_ENV: ${APP_ENV:-local}
   DW_SERVER_KEY: ${DW_SERVER_KEY:-}
-  APP_VERSION: ${APP_VERSION:-${DW_SERVER_TAG:-2.0.0-beta.10}}
+  APP_VERSION: ${APP_VERSION:-${DW_SERVER_TAG:-2.0.0-beta.11}}
   APP_DEBUG: ${APP_DEBUG:-false}
   LOG_CHANNEL: ${LOG_CHANNEL:-stderr}
   LOG_LEVEL: ${LOG_LEVEL:-info}
