@@ -562,6 +562,84 @@ class NexusContractTest extends TestCase
         );
     }
 
+    public function test_host_runner_accepts_equivalent_python_release_identities_in_pypi_sources(): void
+    {
+        $nodeBinary = trim((string) shell_exec('command -v node 2>/dev/null'));
+        if ($nodeBinary === '') {
+            $this->markTestSkipped('node is required to exercise the Nexus runner result gate.');
+        }
+
+        $cases = [
+            'semver expected with PEP 440 distribution URL' => [
+                '2.0.0-beta.10',
+                'https://files.pythonhosted.org/packages/ab/cd/durable_workflow-2.0.0b10-py3-none-any.whl',
+            ],
+            'PEP 440 expected with semver project URL' => [
+                '2.0.0b10',
+                'https://pypi.org/project/durable-workflow/2.0.0-beta.10/',
+            ],
+            'exact stable identity' => [
+                '2.0.0',
+                'https://pypi.io/packages/ab/cd/durable-workflow-2.0.0.tar.gz',
+            ],
+        ];
+
+        foreach ($cases as $case => [$pythonVersion, $pythonSource]) {
+            $result = $this->runNexusEvidence(
+                $this->completeRunnerEvidence($pythonVersion, $pythonSource),
+                'dw-nexus-python-source-identity-',
+            );
+
+            $this->assertSame(
+                'pass',
+                $result['outcome'],
+                $case.': '.json_encode([
+                    'artifact_policy_failures' => $result['artifact_policy_failures'],
+                    'non_pass_scenarios' => array_values(array_filter(
+                        $result['scenario_results'],
+                        static fn (array $scenario): bool => $scenario['status'] !== 'pass',
+                    )),
+                ], JSON_THROW_ON_ERROR),
+            );
+            $this->assertSame([], $result['artifact_policy_failures'], $case);
+        }
+    }
+
+    public function test_host_runner_rejects_mismatched_or_unrelated_python_artifact_sources(): void
+    {
+        $nodeBinary = trim((string) shell_exec('command -v node 2>/dev/null'));
+        if ($nodeBinary === '') {
+            $this->markTestSkipped('node is required to exercise the Nexus runner result gate.');
+        }
+
+        $cases = [
+            'mismatched prerelease number' => [
+                '2.0.0-beta.10',
+                'https://files.pythonhosted.org/packages/ab/cd/durable_workflow-2.0.0b11-py3-none-any.whl',
+            ],
+            'unrelated package source' => [
+                '2.0.0-beta.10',
+                'https://files.pythonhosted.org/packages/ab/cd/unrelated-2.0.0b10-py3-none-any.whl',
+            ],
+        ];
+
+        foreach ($cases as $case => [$pythonVersion, $pythonSource]) {
+            $result = $this->runNexusEvidence(
+                $this->completeRunnerEvidence($pythonVersion, $pythonSource),
+                'dw-nexus-invalid-python-source-',
+            );
+
+            $this->assertSame('fail', $result['outcome'], $case);
+            $this->assertTrue($this->hasArtifactPolicyFailure(
+                $result,
+                'sdk-python',
+                'artifact_sources',
+                'invalid_published_artifact_source',
+                $pythonSource,
+            ), $case);
+        }
+    }
+
     public function test_host_runner_derives_caller_history_attempt_visibility_from_retry_evidence(): void
     {
         $nodeBinary = trim((string) shell_exec('command -v node 2>/dev/null'));
@@ -2705,14 +2783,17 @@ class NexusContractTest extends TestCase
     /**
      * @return array<string, mixed>
      */
-    private function completeRunnerEvidence(): array
-    {
+    private function completeRunnerEvidence(
+        string $pythonVersion = '0.4.84',
+        ?string $pythonSource = null,
+    ): array {
+        $pythonSource ??= 'pypi://durable-workflow=='.$pythonVersion;
         $artifactVersions = [
             'server' => '0.2.247',
             'cli' => '0.1.75',
             'workflow' => '2.0.0-alpha.190',
             'sdk-php' => '0.1.1',
-            'sdk-python' => '0.4.84',
+            'sdk-python' => $pythonVersion,
             'waterline' => '2.0.0-alpha.77',
         ];
         $artifactSources = [
@@ -2720,7 +2801,7 @@ class NexusContractTest extends TestCase
             'cli' => 'https://github.com/durable-workflow/cli/releases/download/0.1.75/dw-linux-x86_64',
             'workflow' => 'packagist://durable-workflow/workflow@2.0.0-alpha.190',
             'sdk-php' => 'packagist://durable-workflow/sdk@0.1.1',
-            'sdk-python' => 'pypi://durable-workflow==0.4.84',
+            'sdk-python' => $pythonSource,
             'waterline' => 'packagist://durable-workflow/waterline@2.0.0-alpha.77',
         ];
         $artifactSourceVerification = $this->artifactSourceVerification($artifactVersions, $artifactSources);

@@ -5690,7 +5690,7 @@ function publishedServiceHealthSatisfied(value, runtime) {
     && stringValue(body?.runtime ?? entry.runtime ?? entry.sdk_language ?? entry.sdkLanguage) === runtime
     && truthy(body?.service_started ?? body?.serviceStarted ?? entry.service_started ?? entry.serviceStarted)
     && truthy(body?.package_imported ?? body?.packageImported ?? entry.package_imported ?? entry.packageImported)
-    && isExactPublishedArtifactVersion(version, runtime === 'python' ? 'sdk-python' : 'workflow');
+    && isExactPublishedArtifactVersion(version, runtime === 'sdk-python' ? 'sdk-python' : 'workflow');
 }
 
 function publishedServiceHealthEntry(value, runtime) {
@@ -6898,15 +6898,40 @@ function matchesComposerArtifactSource(packageName, version, source) {
 }
 
 function matchesPythonArtifactSource(version, source) {
-  return source === `pypi://durable-workflow==${version}`
-    || source === `https://pypi.org/project/durable-workflow/${version}/`
-    || (
-      (source.startsWith('https://files.pythonhosted.org/') || source.startsWith('https://pypi.io/packages/'))
-      && (
-        source.includes(`/durable_workflow-${version}`)
-        || source.includes(`/durable-workflow-${version}`)
-      )
-    );
+  const expectedIdentity = pythonReleaseIdentity(version);
+  if (expectedIdentity === null) {
+    return false;
+  }
+
+  const exactSourcePatterns = [
+    /^pypi:\/\/durable-workflow==(?<version>[^/?#]+)$/,
+    /^https:\/\/pypi\.org\/project\/durable-workflow\/(?<version>[^/?#]+)\/$/,
+  ];
+  for (const pattern of exactSourcePatterns) {
+    const sourceVersion = pattern.exec(source)?.groups?.version;
+    if (sourceVersion !== undefined) {
+      return pythonReleaseIdentity(sourceVersion) === expectedIdentity;
+    }
+  }
+
+  const distributionSource = /^(?:https:\/\/files\.pythonhosted\.org\/|https:\/\/pypi\.io\/packages\/)(?:[^/?#]+\/)*durable[_-]workflow-(?<distribution>[^/?#]+)$/.exec(source);
+  const distribution = distributionSource?.groups?.distribution;
+  if (distribution === undefined) {
+    return false;
+  }
+
+  for (let end = distribution.length; end > 0; end -= 1) {
+    if (end < distribution.length && !['.', '-'].includes(distribution[end])) {
+      continue;
+    }
+
+    const sourceIdentity = pythonReleaseIdentity(distribution.slice(0, end));
+    if (sourceIdentity !== null) {
+      return sourceIdentity === expectedIdentity;
+    }
+  }
+
+  return false;
 }
 
 function isRollingArtifactSourceRef(source) {
