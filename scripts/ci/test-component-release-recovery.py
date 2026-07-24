@@ -870,6 +870,58 @@ class ImmutablePlanDiscoveryTest(unittest.TestCase):
         ):
             self.recovery.current_product_train_authorities(authorities)
 
+    def test_strict_semver_validation_precedes_authority_selection(self) -> None:
+        for malformed in ("01.0.0", "1.0.0-alpha.01", "1.0.0-alpha..1", "1.0.0\n"):
+            candidate = lifecycle_plan(self.recovery, "beta")
+            candidate["components"]["server"]["version"] = malformed
+            authority = {
+                "tag": f"release-plan/{candidate['plan']}",
+                "plan": candidate,
+            }
+
+            with self.subTest(version=malformed), self.assertRaisesRegex(
+                self.recovery.RecoveryError,
+                "components.server.version is not exact SemVer",
+            ):
+                self.recovery.current_product_train_authorities([authority])
+
+        for valid in ("1.0.0-alpha.1", "1.0.0-alpha.1+build.01", "1.0.0+build.01"):
+            candidate = lifecycle_plan(self.recovery, "beta")
+            candidate["components"]["server"]["version"] = valid
+
+            with self.subTest(version=valid):
+                self.recovery.validate_plan(candidate)
+
+    def test_unbounded_numeric_semver_identifiers_are_selected(self) -> None:
+        long_numeric = "9" * 4301
+        cases = (
+            ("core", "1.0.0", f"{long_numeric}.0.0"),
+            ("prerelease", "1.0.0-alpha.1", f"1.0.0-alpha.{long_numeric}"),
+        )
+
+        for kind, lower_version, higher_version in cases:
+            lower = lifecycle_plan(self.recovery, "beta")
+            lower["plan"] = f"unbounded-{kind}-lower"
+            lower["components"]["server"]["version"] = lower_version
+            higher = json.loads(json.dumps(lower))
+            higher["plan"] = f"unbounded-{kind}-higher"
+            higher["components"]["server"]["version"] = higher_version
+            authorities = [
+                {"tag": f"release-plan/{lower['plan']}", "plan": lower},
+                {"tag": f"release-plan/{higher['plan']}", "plan": higher},
+            ]
+
+            with self.subTest(kind=kind):
+                self.assertEqual(
+                    [f"release-plan/{higher['plan']}"],
+                    [
+                        authority["tag"]
+                        for authority in self.recovery.current_product_train_authorities(
+                            authorities
+                        )
+                    ],
+                )
+
     def test_validated_source_manifest_supersession_selects_successor(self) -> None:
         predecessor = lifecycle_plan(self.recovery, "beta")
         predecessor["plan"] = "source-manifest-predecessor"
