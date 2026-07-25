@@ -4310,7 +4310,7 @@ PY);
     {
         $result = $this->runSignalQueryRunnerPythonSnippet(<<<'PY'
 versions = {
-    "server": "2.0.0-beta.11",
+    "server": "2.0.0-beta.12",
     "cli": "2.0.0-beta.10",
     "sdk-python": "2.0.0-beta.10",
     "workflow": "2.0.0-beta.10",

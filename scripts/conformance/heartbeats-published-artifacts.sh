@@ -22,6 +22,8 @@ Optional overrides:
   DW_SERVER_IMAGE                     Exact durableworkflow/server image tag or digest.
   DW_HEARTBEATS_AUTH_TOKEN            Defaults to dev-token.
   DW_HEARTBEATS_NAMESPACE             Defaults to heartbeats-conformance.
+  DW_HEARTBEATS_SHARED_SERVER_STATE   Reuse a verified wave bootstrap receipt;
+                                       requires its prescribed PHP namespace.
   DW_HEARTBEATS_PHP_IMAGE             Defaults to composer:2.
   DW_HEARTBEATS_SERVER_HOST           Host-side server address; defaults to 127.0.0.1.
   DW_HEARTBEATS_HEARTBEAT_SECONDS     Self-started server cadence; defaults to 2.
@@ -75,4 +77,4 @@ fi
 
 RESULT_DIR="$result_dir" \
 REPO_ROOT="$repo_root" \
-node "$script_dir/heartbeats-published-artifacts.mjs"
+exec node "$script_dir/heartbeats-published-artifacts.mjs"

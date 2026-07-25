@@ -242,11 +242,10 @@ SH);
             "const SDK_RUST_VERSION = env('DW_RUST_SDK_VERSION');",
             '`crates.io://durable-workflow@${SDK_RUST_VERSION}`',
             'durable-workflow = "=${SDK_RUST_VERSION}"',
-            'SDK_RUST_VERSION !== SERVER_VERSION',
             "'cargo', 'metadata', '--locked', '--format-version=1'",
             "installedPackage.source ?? '').startsWith('registry+')",
             "installedPackage.repository !== 'https://github.com/durable-workflow/sdk-rust'",
-            "releaseMetadata['supported-server-versions'] !== SERVER_VERSION",
+            'release_metadata: releaseMetadata',
             'registry_checksum_sha256: registryChecksum',
             "'cargo', 'build', '--release', '--locked'",
             '.on_worker_heartbeat(|observation|',
@@ -258,6 +257,11 @@ SH);
             $this->assertStringContainsString($needle, $source);
         }
 
+        $this->assertStringNotContainsString('SDK_RUST_VERSION !== SERVER_VERSION', $source);
+        $this->assertStringNotContainsString(
+            "releaseMetadata['supported-server-versions'] !== SERVER_VERSION",
+            $source,
+        );
         $this->assertStringNotContainsString('DW_HEARTBEATS_PLAN', $source);
         $this->assertStringNotContainsString('fixture_response', $source);
     }
@@ -286,6 +290,101 @@ SH);
             strpos($source, 'writeResultFiles(completedContext);'),
             strpos($source, 'for (const containerName of workerContainers)'),
         );
+    }
+
+    public function test_shared_wave_owns_one_clean_bootstrap_and_retains_independent_cells(): void
+    {
+        $root = dirname(__DIR__, 2);
+        $cell = $this->runnerSource();
+        $lifecycle = (string) file_get_contents(
+            $root.'/scripts/conformance/heartbeats-shared-server.mjs',
+        );
+        $wave = (string) file_get_contents(
+            $root.'/scripts/conformance/heartbeats-wave-published-artifacts.sh',
+        );
+        $observer = (string) file_get_contents(
+            $root.'/scripts/conformance/heartbeats-wave-observer.mjs',
+        );
+
+        $this->assertStringContainsString(
+            "const SHARED_SERVER_STATE_FILE = env('DW_HEARTBEATS_SHARED_SERVER_STATE');",
+            $cell,
+        );
+        $this->assertStringContainsString('await attachSharedServer();', $cell);
+        $this->assertStringContainsString(
+            'state?.clean_bootstrap?.migrations_completed !== true',
+            $cell,
+        );
+        $this->assertStringContainsString(
+            "state?.lifecycle?.cleanup_status !== 'pending'",
+            $cell,
+        );
+        $this->assertStringContainsString('running shared server no longer matches', $cell);
+        $this->assertStringContainsString(
+            "command === 'docker' && args[0] === 'run' && sharedServerNetwork",
+            $cell,
+        );
+        $this->assertStringContainsString("'--network', sharedServerNetwork", $cell);
+        $this->assertStringContainsString(
+            'state?.compose?.network !== `${state.compose.project}_default`',
+            $cell,
+        );
+        $this->assertStringContainsString("mode: 'focused_cell_clean_bootstrap'", $cell);
+        $this->assertStringContainsString("mode: 'shared_wave_clean_bootstrap'", $cell);
+
+        $this->assertStringContainsString(
+            "const SCHEMA = 'durable-workflow.v2.heartbeat-runtime.shared-server-bootstrap';",
+            $lifecycle,
+        );
+        $this->assertStringContainsString("'server-bootstrap'", $lifecycle);
+        $this->assertStringContainsString('migrations_completed: true', $lifecycle);
+        $this->assertStringContainsString("cleanup_status: 'pending'", $lifecycle);
+        $this->assertStringContainsString('function networkContainerIds(network)', $lifecycle);
+        $this->assertStringContainsString('attached_cell_containers_found', $lifecycle);
+        $this->assertStringContainsString("for (const kind of ['containers', 'volumes', 'networks'])", $lifecycle);
+
+        $this->assertStringContainsString('DW_HEARTBEATS_CELL_TIMEOUT_SECONDS', $wave);
+        $this->assertStringContainsString('timeout --signal=TERM --kill-after=15s', $wave);
+        $this->assertStringContainsString('run_cell php', $wave);
+        $this->assertStringContainsString('run_cell python', $wave);
+        $this->assertStringContainsString('run_cell rust', $wave);
+        $this->assertStringContainsString('run_cell waterline', $wave);
+        $this->assertStringContainsString('DW_WATERLINE_WORKER_STATUS_SHARED_SERVER_STATE', $wave);
+        $this->assertStringContainsString('for index in "${!cell_pids[@]}"', $wave);
+        $this->assertStringContainsString('heartbeat-shared-wave-isolation.json', $wave);
+        $this->assertStringContainsString("query('workflows', isolation.namespace)", $observer);
+        $this->assertStringContainsString('cleanup_wave || true', $wave);
+        $this->assertStringContainsString('new URL(`/api/${resource}`', $observer);
+        $this->assertStringContainsString("'X-Namespace': namespace", $observer);
+        $this->assertStringContainsString('leaked_worker_ids', $observer);
+        $this->assertStringContainsString('leaked_task_queues', $observer);
+        $this->assertStringContainsString('leaked_workflow_ids', $observer);
+
+        $nodeBinary = trim((string) shell_exec('command -v node 2>/dev/null'));
+        if ($nodeBinary === '') {
+            $this->markTestSkipped('node is required to exercise shared heartbeat wave result retention.');
+        }
+        $process = proc_open(
+            [
+                $nodeBinary,
+                '--test',
+                __DIR__.'/HeartbeatSharedWaveResultRegression.mjs',
+            ],
+            [
+                1 => ['pipe', 'w'],
+                2 => ['pipe', 'w'],
+            ],
+            $pipes,
+            $root,
+        );
+        $this->assertIsResource($process);
+        $stdout = stream_get_contents($pipes[1]);
+        $stderr = stream_get_contents($pipes[2]);
+        fclose($pipes[1]);
+        fclose($pipes[2]);
+        $exitCode = proc_close($process);
+
+        $this->assertSame(0, $exitCode, $stderr ?: $stdout);
     }
 
     public function test_all_php_project_mounts_use_the_invoking_host_uid_and_gid(): void

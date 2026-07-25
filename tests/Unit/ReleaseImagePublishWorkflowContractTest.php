@@ -704,6 +704,16 @@ SH);
         $this->assertSame($expectedCommit, $workflowPackages[0]['dist']['reference']);
     }
 
+    public function test_composer_metadata_declares_the_exact_server_product_train(): void
+    {
+        $composer = json_decode($this->read('composer.json'), true, flags: JSON_THROW_ON_ERROR);
+
+        $this->assertSame(
+            '2.0.0-beta.12',
+            $composer['extra']['durable-workflow']['product-train'] ?? null,
+        );
+    }
+
     public function test_release_workflow_promotes_rolling_aliases_only_after_current_tag_guard(): void
     {
         $workflow = $this->read('.github/workflows/release.yml');

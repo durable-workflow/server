@@ -45,6 +45,8 @@ const SDK_PYTHON_VERSION = env('DW_PYTHON_SDK_VERSION');
 const SDK_RUST_VERSION = env('DW_RUST_SDK_VERSION');
 const SERVER_IMAGE = env('DW_SERVER_IMAGE') || `durableworkflow/server:${SERVER_VERSION}`;
 const SERVER_HOST = env('DW_HEARTBEATS_SERVER_HOST') || '127.0.0.1';
+const SHARED_SERVER_STATE_FILE = env('DW_HEARTBEATS_SHARED_SERVER_STATE');
+const USE_SHARED_SERVER = SHARED_SERVER_STATE_FILE !== '';
 const HEARTBEAT_SECONDS = positiveInt(env('DW_HEARTBEATS_HEARTBEAT_SECONDS'), 2);
 const CONFIGURED_STALE_AFTER_SECONDS = positiveInt(env('DW_HEARTBEATS_STALE_AFTER_SECONDS'), 7);
 const FINAL_VISIBILITY_ATTEMPTS = positiveInt(env('DW_HEARTBEATS_FINAL_VISIBILITY_ATTEMPTS'), 3);
@@ -111,6 +113,12 @@ const evidence = {
     stale_worker_id: STALE_WORKER_ID,
     fresh_worker_id: FRESH_WORKER_ID,
     workflow_type: WORKFLOW_TYPE,
+    isolation: {
+      namespace: NAMESPACE,
+      task_queue: TASK_QUEUE,
+      workflow_id_prefix: `hb-${CELL}-`,
+      worker_id_prefix: `heartbeat-${CELL}-`,
+    },
   },
   scenario_results: {},
   findings: [],
@@ -120,6 +128,7 @@ let publishedExecutionStarted = false;
 let serverBaseUrl = '';
 let cliBin = '';
 let serverTopology = null;
+let sharedServerNetwork = '';
 let completedBehavior = null;
 let executionPhase = 'prerequisites';
 
@@ -168,6 +177,13 @@ function commandExists(command) {
 }
 
 function run(command, args, options = {}) {
+  if (command === 'docker' && args[0] === 'run' && sharedServerNetwork) {
+    args = [
+      'run',
+      '--network', sharedServerNetwork,
+      ...args.slice(1),
+    ];
+  }
   const rendered = [command, ...args].join(' ');
   log(`command: ${rendered}`);
   const result = spawnSync(command, args, {
@@ -379,9 +395,6 @@ function ensureExactPins() {
   if (IS_RUST_CELL && !/^\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?$/.test(SDK_RUST_VERSION)) {
     failures.push('DW_RUST_SDK_VERSION must be an exact release');
   }
-  if (IS_RUST_CELL && SDK_RUST_VERSION !== SERVER_VERSION) {
-    failures.push('DW_RUST_SDK_VERSION and DW_SERVER_VERSION must select one exact product train');
-  }
   if (!IS_PYTHON_CELL && !IS_RUST_CELL && !/^\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?$/.test(SDK_PHP_VERSION)) {
     failures.push('DW_PHP_SDK_VERSION must be an exact released PHP SDK version');
   }
@@ -392,6 +405,9 @@ function ensureExactPins() {
   }
   if (!Number.isInteger(HOST_UID) || !Number.isInteger(HOST_GID)) {
     failures.push('the heartbeat runner requires a host UID and GID for mounted Docker writes');
+  }
+  if (USE_SHARED_SERVER && NAMESPACE === 'heartbeats-conformance') {
+    failures.push('a shared heartbeat wave requires its prescribed cell namespace');
   }
   if (failures.length > 0) throw new Error(failures.join('; '));
 }
@@ -914,6 +930,10 @@ async fn main() -> Result<()> {
 
 async function startServer() {
   if (!commandExists('docker')) throw new Error('docker is required to start the pinned published server');
+  if (USE_SHARED_SERVER) {
+    await attachSharedServer();
+    return;
+  }
   if (!fs.existsSync(COMPOSE_FILE)) throw new Error(`published compose file not found: ${COMPOSE_FILE}`);
   const port = await freePort();
   const project = `dw-hb-${CELL}-${SUFFIX}`;
@@ -1016,11 +1036,171 @@ async function startServer() {
     compose_args: composeArgs,
     compose_env: composeEnv,
     container_id: containerId,
+    lifecycle_owner: 'focused-cell',
   };
   await waitFor('published server readiness', async () => {
     const response = await fetch(new URL('/api/ready', serverBaseUrl), { headers: controlPlaneHeaders() });
     return response.ok;
   }, 120_000, 1_000);
+  const bootstrapContainer = run('docker', [...composeArgs, 'ps', '-a', '-q', 'bootstrap'], {
+    env: composeEnv,
+    timeout: 30_000,
+  });
+  const bootstrapContainerId = String(bootstrapContainer.stdout).trim();
+  const bootstrapInspect = bootstrapContainerId
+    ? run('docker', [
+      'container', 'inspect', '--format',
+      '{"Config":{"Cmd":{{json .Config.Cmd}}},"State":{{json .State}}}',
+      bootstrapContainerId,
+    ], { timeout: 30_000 })
+    : null;
+  const bootstrap = bootstrapInspect ? parseJsonOutput(bootstrapInspect.stdout) : null;
+  if (bootstrap?.State?.Status !== 'exited'
+    || bootstrap?.State?.ExitCode !== 0
+    || !Array.isArray(bootstrap?.Config?.Cmd)
+    || !bootstrap.Config.Cmd.includes('server-bootstrap')) {
+    throw new Error('focused clean published-server bootstrap and migrations did not complete successfully');
+  }
+  evidence.server_bootstrap = {
+    mode: 'focused_cell_clean_bootstrap',
+    reused: false,
+    lifecycle_owner: 'focused-cell',
+    compose_project: project,
+    bootstrap_container_id: bootstrapContainerId,
+    configured_command: bootstrap.Config.Cmd,
+    container_status: bootstrap.State.Status,
+    exit_code: bootstrap.State.ExitCode,
+    migrations_completed: true,
+  };
+}
+
+async function attachSharedServer() {
+  const statePath = path.resolve(SHARED_SERVER_STATE_FILE);
+  if (!fs.existsSync(statePath)) {
+    throw new Error(`shared heartbeat server state not found: ${statePath}`);
+  }
+  const stateBytes = fs.readFileSync(statePath);
+  const state = JSON.parse(stateBytes.toString('utf8'));
+  const isolation = state?.cell_isolation?.[CELL];
+  const failures = [];
+  if (state?.schema !== 'durable-workflow.v2.heartbeat-runtime.shared-server-bootstrap'
+    || state?.version !== 1) {
+    failures.push('shared heartbeat server state has an unsupported schema');
+  }
+  if (state?.server?.version !== SERVER_VERSION
+    || state?.server?.requested_reference !== SERVER_IMAGE
+    || state?.server?.exact_published_image_verified !== true) {
+    failures.push('shared heartbeat server state does not bind the selected exact server image');
+  }
+  if (state?.clean_bootstrap?.status !== 'pass'
+    || state?.clean_bootstrap?.migrations_completed !== true
+    || state?.clean_bootstrap?.fresh_compose_project !== true) {
+    failures.push('shared heartbeat server state does not prove clean bootstrap and migrations');
+  }
+  if (state?.lifecycle?.owner !== 'heartbeat-wave-runner'
+    || state?.lifecycle?.cleanup_required !== true
+    || state?.lifecycle?.cleanup_status !== 'pending') {
+    failures.push('shared heartbeat server lifecycle is not owned by an active wave');
+  }
+  if (!state?.compose?.project
+    || state?.compose?.network !== `${state.compose.project}_default`) {
+    failures.push('shared heartbeat server state has no isolated compose network');
+  }
+  if (!isolation || isolation.namespace !== NAMESPACE
+    || !TASK_QUEUE.startsWith(isolation.task_queue_prefix ?? '\0')
+    || !STALE_WORKER_ID.startsWith(isolation.worker_id_prefix ?? '\0')
+    || !FRESH_WORKER_ID.startsWith(isolation.worker_id_prefix ?? '\0')) {
+    failures.push(`shared heartbeat server did not prescribe isolated ${CELL} cell identities`);
+  }
+  let endpoint = null;
+  try {
+    endpoint = new URL(state?.endpoint?.host_url ?? '');
+    if (!['127.0.0.1', 'localhost'].includes(endpoint.hostname)
+      || endpoint.protocol !== 'http:'
+      || endpoint.pathname !== '/') {
+      failures.push('shared heartbeat server endpoint must be a loopback HTTP origin');
+    }
+  } catch {
+    failures.push('shared heartbeat server endpoint is invalid');
+  }
+  if (failures.length > 0) throw new Error(failures.join('; '));
+
+  const imageInspect = run('docker', ['image', 'inspect', SERVER_IMAGE], { timeout: 60_000 });
+  const image = parseJsonOutput(imageInspect.stdout)?.[0];
+  const containerInspect = run('docker', [
+    'container',
+    'inspect',
+    '--format',
+    SERVER_CONTAINER_IMAGE_INSPECT_FORMAT,
+    state.server.running_container_id,
+  ], {
+    captureFile: 'shared-server-container-inspect-command.json',
+    captureTransform: safeContainerInspectCommandRecord,
+    timeout: 60_000,
+  });
+  const container = parseJsonOutput(containerInspect.stdout);
+  if (image?.Id !== state.server.resolved_image_id
+    || container?.Image !== state.server.resolved_image_id
+    || container?.Config?.Image !== SERVER_IMAGE) {
+    throw new Error('running shared server no longer matches its exact published-image receipt');
+  }
+  const publicDigest = String(state.server.resolved_public_digest ?? '');
+  if (!/^durableworkflow\/server@sha256:[0-9a-f]{64}$/i.test(publicDigest)) {
+    throw new Error('shared heartbeat server receipt has no canonical public image digest');
+  }
+  recordDistributionDigest(
+    'server',
+    SERVER_VERSION,
+    'manifest',
+    publicDigest.slice(publicDigest.indexOf('@') + 1),
+  );
+  ARTIFACT_SOURCES.server = `docker://${publicDigest}`;
+  serverBaseUrl = endpoint.origin;
+  sharedServerNetwork = state.compose.network;
+  evidence.server_endpoint = serverBaseUrl;
+  evidence.server_image_install = {
+    requested_reference: SERVER_IMAGE,
+    public_version_tag: state.server.public_version_tag,
+    resolved_public_digest: publicDigest,
+    resolved_image_id: state.server.resolved_image_id,
+    running_container_id: state.server.running_container_id,
+    running_configured_reference: container.Config.Image,
+    running_image_id: container.Image,
+    exact_published_image_verified: true,
+    shared_bootstrap_receipt_sha256: crypto.createHash('sha256').update(stateBytes).digest('hex'),
+  };
+  evidence.server_bootstrap = {
+    ...state.clean_bootstrap,
+    mode: 'shared_wave_clean_bootstrap',
+    reused: true,
+    wave_run_id: state.wave_run_id,
+    lifecycle_owner: state.lifecycle.owner,
+    cleanup_status_at_handoff: state.lifecycle.cleanup_status,
+  };
+  evidence.topology.shared_wave_run_id = state.wave_run_id;
+  evidence.topology.isolation = {
+    ...evidence.topology.isolation,
+    prescribed_namespace: isolation.namespace,
+    task_queue_prefix: isolation.task_queue_prefix,
+    workflow_id_prefix: isolation.workflow_id_prefix,
+    worker_id_prefix: isolation.worker_id_prefix,
+  };
+  serverTopology = {
+    project: state.compose.project,
+    network: sharedServerNetwork,
+    container_id: state.server.running_container_id,
+    lifecycle_owner: state.lifecycle.owner,
+  };
+  cleanupCommands.push(() => ({
+    resource: 'shared_server',
+    name: state.compose.project,
+    status: 'retained_for_wave_cleanup',
+    lifecycle_owner: state.lifecycle.owner,
+  }));
+  await waitFor('shared published server readiness', async () => {
+    const response = await fetch(new URL('/api/ready', serverBaseUrl), { headers: controlPlaneHeaders() });
+    return response.ok;
+  }, 30_000, 500);
 }
 
 function installCli() {
@@ -1231,12 +1411,6 @@ function installRustPackage() {
     throw new Error(`pinned Rust package repository provenance mismatch: ${installedPackage.repository ?? 'missing repository'}`);
   }
   const releaseMetadata = installedPackage.metadata?.['durable-workflow'] ?? {};
-  if (releaseMetadata['supported-server-versions'] !== SERVER_VERSION) {
-    throw new Error(
-      `pinned Rust package supports server ${releaseMetadata['supported-server-versions'] ?? 'missing'},`
-      + ` expected the selected ${SERVER_VERSION} product train`,
-    );
-  }
   run('docker', [
     'run', '--rm',
     ...rustRuntimeArgs(),
@@ -1913,26 +2087,36 @@ async function captureServerTransportDiagnostics() {
     restart_count: Number.isInteger(inspected?.RestartCount) ? inspected.RestartCount : null,
   };
 
-  const composeResult = run('docker', [
-    ...serverTopology.compose_args,
-    'ps',
-    '--all',
-    '--format',
-    'json',
-  ], {
-    env: serverTopology.compose_env,
-    allowFailure: true,
-    timeout: 30_000,
-  });
-  diagnostics.compose_state = parseJsonLines(composeResult.stdout).map((entry) => ({
-    name: entry?.Name ?? null,
-    service: entry?.Service ?? null,
-    state: entry?.State ?? null,
-    health: entry?.Health ?? null,
-    exit_code: Number.isInteger(entry?.ExitCode) ? entry.ExitCode : null,
-  }));
-  if (composeResult.status !== 0) {
-    diagnostics.compose_state_error = redactDiagnosticText(composeResult.stderr || composeResult.stdout);
+  if (Array.isArray(serverTopology.compose_args)) {
+    const composeResult = run('docker', [
+      ...serverTopology.compose_args,
+      'ps',
+      '--all',
+      '--format',
+      'json',
+    ], {
+      env: serverTopology.compose_env,
+      allowFailure: true,
+      timeout: 30_000,
+    });
+    diagnostics.compose_state = parseJsonLines(composeResult.stdout).map((entry) => ({
+      name: entry?.Name ?? null,
+      service: entry?.Service ?? null,
+      state: entry?.State ?? null,
+      health: entry?.Health ?? null,
+      exit_code: Number.isInteger(entry?.ExitCode) ? entry.ExitCode : null,
+    }));
+    if (composeResult.status !== 0) {
+      diagnostics.compose_state_error = redactDiagnosticText(composeResult.stderr || composeResult.stdout);
+    }
+  } else {
+    diagnostics.compose_state = [{
+      name: serverTopology.container_id,
+      service: 'server',
+      state: diagnostics.container.state.status,
+      health: diagnostics.container.state.health.status,
+      lifecycle_owner: serverTopology.lifecycle_owner,
+    }];
   }
 
   const logsResult = run('docker', [

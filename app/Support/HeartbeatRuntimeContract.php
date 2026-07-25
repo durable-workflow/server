@@ -17,7 +17,7 @@ final class HeartbeatRuntimeContract
 {
     public const SCHEMA = 'durable-workflow.v2.heartbeat-runtime.contract';
 
-    public const VERSION = 5;
+    public const VERSION = 6;
 
     public const RESULT_SCHEMA = 'durable-workflow.v2.heartbeat-runtime.result';
 
@@ -265,6 +265,9 @@ final class HeartbeatRuntimeContract
                     'python-sdk-heartbeat-loop-evidence.json',
                     'rust-sdk-heartbeat-loop-evidence.json',
                     'waterline-worker-status-evidence.json',
+                    'heartbeat-shared-wave-result.json',
+                    'heartbeat-shared-wave-isolation.json',
+                    'shared-server-state.json',
                 ],
                 'must_execute_against_published_artifacts' => true,
                 'must_record_runner_blocked_false_for_product_evidence' => true,
@@ -278,6 +281,45 @@ final class HeartbeatRuntimeContract
                     'waterline-worker-status',
                     'adversarial-heartbeat-probes',
                     'cross-namespace-isolation',
+                    'one-clean-shared-server-bootstrap',
+                    'per-cell-timeout-and-peer-evidence-retention',
+                ],
+                'shared_server_wave' => [
+                    'status' => 'host_executable_published_artifact_runner',
+                    'runner_repository' => 'server',
+                    'runner_path' => 'scripts/conformance/heartbeats-wave-published-artifacts.sh',
+                    'runner_command' => 'scripts/conformance/heartbeats-wave-published-artifacts.sh --result-dir <result-dir>',
+                    'server_lifecycle_path' => 'scripts/conformance/heartbeats-shared-server.sh',
+                    'result_schema' => 'durable-workflow.v2.heartbeat-runtime.shared-wave-result',
+                    'result_file' => 'heartbeat-shared-wave-result.json',
+                    'maximum_wall_time_seconds' => 360,
+                    'clean_published_server_bootstrap_count' => 1,
+                    'parallel_cells' => [
+                        'php',
+                        'python',
+                        'rust',
+                        'waterline',
+                    ],
+                    'waterline_runner_handoff_environment' => 'DW_HEARTBEATS_WATERLINE_RUNNER',
+                    'shared_server_state_environment' => [
+                        'DW_HEARTBEATS_SHARED_SERVER_STATE',
+                        'DW_WATERLINE_WORKER_STATUS_SHARED_SERVER_STATE',
+                    ],
+                    'isolation_dimensions' => [
+                        'namespace',
+                        'task_queue',
+                        'workflow_id',
+                        'worker_id',
+                        'observer_projection',
+                    ],
+                    'failure_policy' => [
+                        'bounded_per_cell_timeout',
+                        'wait_for_all_peer_cells',
+                        'retain_independent_cell_evidence',
+                        'cleanup_shared_compose_project_after_every_terminal_path',
+                        'cleanup_shared_network_cell_containers_after_every_terminal_path',
+                    ],
+                    'standalone_clean_bootstrap_path_preserved' => true,
                 ],
                 'runtime_shards' => [
                     'sdk-php' => [
@@ -338,6 +380,8 @@ final class HeartbeatRuntimeContract
                         'host_runner_implemented' => true,
                         'must_execute_against_published_artifacts' => true,
                         'must_record_runner_blocked_false_for_product_evidence' => true,
+                        'shared_server_state_environment' => 'DW_HEARTBEATS_SHARED_SERVER_STATE',
+                        'standalone_clean_bootstrap_default' => true,
                         'required_artifact_pins' => [
                             'server',
                             'cli',
@@ -376,6 +420,8 @@ final class HeartbeatRuntimeContract
                         'host_runner_implemented' => true,
                         'must_execute_against_published_artifacts' => true,
                         'must_record_runner_blocked_false_for_product_evidence' => true,
+                        'shared_server_state_environment' => 'DW_HEARTBEATS_SHARED_SERVER_STATE',
+                        'standalone_clean_bootstrap_default' => true,
                         'required_artifact_pins' => [
                             'server',
                             'cli',
@@ -413,6 +459,8 @@ final class HeartbeatRuntimeContract
                         'host_runner_implemented' => true,
                         'must_execute_against_published_artifacts' => true,
                         'must_record_runner_blocked_false_for_product_evidence' => true,
+                        'shared_server_state_environment' => 'DW_HEARTBEATS_SHARED_SERVER_STATE',
+                        'standalone_clean_bootstrap_default' => true,
                         'required_artifact_pins' => [
                             'server',
                             'cli',

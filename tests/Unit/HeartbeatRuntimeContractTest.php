@@ -14,7 +14,7 @@ class HeartbeatRuntimeContractTest extends TestCase
         $manifest = HeartbeatRuntimeContract::manifest();
 
         $this->assertSame('durable-workflow.v2.heartbeat-runtime.contract', $manifest['schema']);
-        $this->assertSame(5, HeartbeatRuntimeContract::VERSION);
+        $this->assertSame(6, HeartbeatRuntimeContract::VERSION);
         $this->assertSame(HeartbeatRuntimeContract::VERSION, $manifest['version']);
         $this->assertSame('durable-workflow.v2.heartbeat-runtime.result', $manifest['result_schema']);
         $this->assertSame(2, $manifest['result_version']);
@@ -153,6 +153,47 @@ class HeartbeatRuntimeContractTest extends TestCase
         $this->assertSame(
             'sdk-php-heartbeat-loop',
             $manifest['host_runner_contract']['runtime_shards']['sdk-php']['focused_runner'],
+        );
+    }
+
+    public function test_manifest_publishes_the_bounded_shared_server_wave(): void
+    {
+        $manifest = HeartbeatRuntimeContract::manifest();
+        $wave = $manifest['host_runner_contract']['shared_server_wave'];
+
+        $this->assertSame('host_executable_published_artifact_runner', $wave['status']);
+        $this->assertSame(
+            'scripts/conformance/heartbeats-wave-published-artifacts.sh',
+            $wave['runner_path'],
+        );
+        $this->assertSame(
+            'scripts/conformance/heartbeats-shared-server.sh',
+            $wave['server_lifecycle_path'],
+        );
+        $this->assertSame(360, $wave['maximum_wall_time_seconds']);
+        $this->assertSame(1, $wave['clean_published_server_bootstrap_count']);
+        $this->assertSame(['php', 'python', 'rust', 'waterline'], $wave['parallel_cells']);
+        $this->assertSame([
+            'namespace',
+            'task_queue',
+            'workflow_id',
+            'worker_id',
+            'observer_projection',
+        ], $wave['isolation_dimensions']);
+        $this->assertContains('bounded_per_cell_timeout', $wave['failure_policy']);
+        $this->assertContains('retain_independent_cell_evidence', $wave['failure_policy']);
+        $this->assertContains(
+            'cleanup_shared_compose_project_after_every_terminal_path',
+            $wave['failure_policy'],
+        );
+        $this->assertContains(
+            'cleanup_shared_network_cell_containers_after_every_terminal_path',
+            $wave['failure_policy'],
+        );
+        $this->assertTrue($wave['standalone_clean_bootstrap_path_preserved']);
+        $this->assertContains(
+            'heartbeat-shared-wave-result.json',
+            $manifest['host_runner_contract']['result_files'],
         );
     }
 
@@ -931,7 +972,7 @@ class HeartbeatRuntimeContractTest extends TestCase
     }
 
     /**
-     * @param list<string> $fields
+     * @param  list<string>  $fields
      * @return array<string, mixed>
      */
     private function observedOutputsForFields(array $fields): array
