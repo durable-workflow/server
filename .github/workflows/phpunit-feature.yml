@@ -20,14 +20,25 @@ jobs:
       - name: Checkout server
         uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803  # v6
         with:
+          fetch-depth: 0
           persist-credentials: false
 
       - name: Validate release recovery tooling
         run: |
           python -m py_compile \
             scripts/ci/component-release-recovery.py \
+            scripts/ci/release_recovery_consumer_conformance.py \
             scripts/ci/test-component-release-recovery.py
-          python scripts/ci/test-component-release-recovery.py
+          arguments=()
+          if [ -n "$CONFORMANCE_BASE_REF" ]; then
+            arguments+=(--previous-ref "$CONFORMANCE_BASE_REF")
+          fi
+          python scripts/ci/release_recovery_consumer_conformance.py \
+            --contract scripts/ci/release-recovery-consumer-contract.json \
+            --adapter scripts/ci/release-recovery-consumer-adapter.json \
+            "${arguments[@]}"
+        env:
+          CONFORMANCE_BASE_REF: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || github.event.before }}
 
   feature:
     name: PHPUnit feature suite
