@@ -13,6 +13,7 @@ import {
   waitForAuthenticatedReadiness,
 } from './heartbeat-shared-readiness.mjs';
 import {
+  heartbeatRelayLauncherArguments,
   heartbeatRelayProcessMatches,
   readHeartbeatRelayPid,
   stopHeartbeatRelay,
@@ -359,6 +360,11 @@ function startRelayProcess(executorReference, port, ownershipToken, targetOrigin
     RELAY_PID_FILE,
   );
   fs.rmSync(relayPidFile, { force: true });
+  const relayCommand = heartbeatRelayLauncherArguments({
+    nodeBinary: process.execPath,
+    relayScript: path.join(scriptDirectory, 'heartbeat-shared-relay.mjs'),
+    ownershipToken,
+  });
   run('docker', [
     'exec', '-d',
     '--workdir', repoRoot,
@@ -367,10 +373,7 @@ function startRelayProcess(executorReference, port, ownershipToken, targetOrigin
     '--env', `DW_HEARTBEAT_RELAY_PID_FILE=${relayPidFile}`,
     '--env', `DW_HEARTBEAT_RELAY_LOG_FILE=${relayLog}`,
     executorReference,
-    process.execPath,
-    path.join(scriptDirectory, 'heartbeat-shared-relay.mjs'),
-    'serve',
-    ownershipToken,
+    ...relayCommand,
   ], { timeout: 30_000 });
   return waitForRelayPid(relayPidFile, ownershipToken);
 }

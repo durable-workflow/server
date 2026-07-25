@@ -7,6 +7,17 @@ import { pathToFileURL } from 'node:url';
 const MAXIMUM_REQUEST_BYTES = 1024 * 1024;
 const MAXIMUM_RESPONSE_BYTES = 16 * 1024 * 1024;
 const REQUEST_TIMEOUT_MS = 30_000;
+const RELAY_LAUNCHER_NAME = 'heartbeat-relay-launcher';
+const RELAY_LAUNCHER_SCRIPT = `set -eu
+pid_file="\${DW_HEARTBEAT_RELAY_PID_FILE:?}"
+pid_directory=\${pid_file%/*}
+temporary="\${pid_file}.launcher-\$\$"
+umask 077
+mkdir -p "\${pid_directory}"
+printf '%s\\n' "\$\$" > "\${temporary}"
+mv "\${temporary}" "\${pid_file}"
+exec "\$1" "\$2" serve "\$3"
+`;
 const EXCLUDED_HEADERS = new Set([
   'connection',
   'content-length',
@@ -32,6 +43,11 @@ function sleepSync(milliseconds) {
 function processExists(pid) {
   try {
     process.kill(pid, 0);
+    const stat = fs.readFileSync(`/proc/${pid}/stat`, 'utf8');
+    const commandEnd = stat.lastIndexOf(')');
+    if (commandEnd >= 0 && stat.slice(commandEnd + 2, commandEnd + 3) === 'Z') {
+      return false;
+    }
     return true;
   } catch {
     return false;
@@ -56,12 +72,44 @@ export function heartbeatRelayProcessMatches(pid, ownershipToken) {
       .toString('utf8')
       .split('\0')
       .filter(Boolean);
-    return argumentsList.some((argument) => argument.endsWith('/heartbeat-shared-relay.mjs'))
+    const relayScriptPresent = argumentsList.some(
+      (argument) => argument.endsWith('/heartbeat-shared-relay.mjs'),
+    );
+    const relayProcess = relayScriptPresent
       && argumentsList.includes('serve')
       && argumentsList.includes(ownershipToken);
+    const launcherProcess = relayScriptPresent
+      && argumentsList.includes(RELAY_LAUNCHER_NAME)
+      && argumentsList.includes(ownershipToken);
+    return relayProcess || launcherProcess;
   } catch {
     return false;
   }
+}
+
+export function heartbeatRelayLauncherArguments({
+  nodeBinary,
+  relayScript,
+  ownershipToken,
+}) {
+  if (!path.isAbsolute(nodeBinary)) {
+    throw new Error('heartbeat relay Node binary must be an absolute path');
+  }
+  if (!path.isAbsolute(relayScript)) {
+    throw new Error('heartbeat relay script must be an absolute path');
+  }
+  if (!ownershipToken) {
+    throw new Error('heartbeat relay ownership token is required');
+  }
+  return [
+    '/bin/sh',
+    '-c',
+    RELAY_LAUNCHER_SCRIPT,
+    RELAY_LAUNCHER_NAME,
+    nodeBinary,
+    relayScript,
+    ownershipToken,
+  ];
 }
 
 function removeOwnedPidFile(pidFile, pid) {
@@ -227,6 +275,10 @@ export function createHeartbeatRelayServer({
 
 async function serve(ownershipToken) {
   const port = Number.parseInt(process.env.DW_HEARTBEAT_RELAY_PORT ?? '', 10);
+  const startupDelayMs = Number.parseInt(
+    process.env.DW_HEARTBEAT_RELAY_STARTUP_DELAY_MS ?? '0',
+    10,
+  );
   const targetOrigin = String(
     process.env.DW_HEARTBEAT_RELAY_TARGET_ORIGIN ?? 'http://server:8080',
   ).trim();
@@ -234,6 +286,9 @@ async function serve(ownershipToken) {
   const logFile = String(process.env.DW_HEARTBEAT_RELAY_LOG_FILE ?? '').trim();
   if (!Number.isInteger(port) || port < 1 || port > 65_535) {
     throw new Error('DW_HEARTBEAT_RELAY_PORT is required');
+  }
+  if (!Number.isInteger(startupDelayMs) || startupDelayMs < 0 || startupDelayMs > 300_000) {
+    throw new Error('DW_HEARTBEAT_RELAY_STARTUP_DELAY_MS must be between 0 and 300000');
   }
   if (!ownershipToken) throw new Error('heartbeat relay ownership token is required');
   if (!path.isAbsolute(pidFile)) {
@@ -272,6 +327,9 @@ async function serve(ownershipToken) {
   process.on('SIGTERM', stop);
   writeRelayPid(pidFile);
   try {
+    if (startupDelayMs > 0) {
+      await new Promise((resolve) => setTimeout(resolve, startupDelayMs));
+    }
     await new Promise((resolve, reject) => {
       server.once('error', reject);
       server.listen(port, '127.0.0.1', resolve);

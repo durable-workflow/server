@@ -11,8 +11,10 @@ import { fileURLToPath } from 'node:url';
 import {
   createHeartbeatRelayServer,
   directRelayRequest,
+  heartbeatRelayLauncherArguments,
   heartbeatRelayProcessMatches,
   readHeartbeatRelayPid,
+  stopHeartbeatRelay,
 } from '../../scripts/conformance/heartbeat-shared-relay.mjs';
 import {
   HeartbeatReadinessTimeoutError,
@@ -423,6 +425,79 @@ test('relay survives its starter and a separate process closes its PID and socke
   );
   await waitFor(async () => !(await socketIsOpen(port)), 'the stopped relay socket to close');
   assert.equal(fs.existsSync(pidFile), false);
+});
+
+test('relay cleanup cancels delayed initialization before its socket can bind', async (context) => {
+  const sandbox = fs.mkdtempSync(path.join(os.tmpdir(), 'dw-heartbeat-relay-delay-'));
+  const relayScript = fileURLToPath(new URL(
+    '../../scripts/conformance/heartbeat-shared-relay.mjs',
+    import.meta.url,
+  ));
+  const pidFile = path.join(sandbox, 'relay.pid');
+  const logFile = path.join(sandbox, 'relay.log');
+  const ownershipToken = `dw-hb-wave-${path.basename(sandbox).slice(-12)}`;
+  const port = await freePort();
+  const [launcher, ...launcherArguments] = heartbeatRelayLauncherArguments({
+    nodeBinary: process.execPath,
+    relayScript,
+    ownershipToken,
+  });
+  let relayPid = null;
+  const relay = spawn(launcher, launcherArguments, {
+    env: {
+      ...process.env,
+      DW_HEARTBEAT_RELAY_PORT: String(port),
+      DW_HEARTBEAT_RELAY_TARGET_ORIGIN: 'http://server:8080',
+      DW_HEARTBEAT_RELAY_PID_FILE: pidFile,
+      DW_HEARTBEAT_RELAY_LOG_FILE: logFile,
+      DW_HEARTBEAT_RELAY_STARTUP_DELAY_MS: '1000',
+    },
+    stdio: 'ignore',
+  });
+  const relayExit = once(relay, 'exit');
+  context.after(() => {
+    if (relayPid && heartbeatRelayProcessMatches(relayPid, ownershipToken)) {
+      process.kill(relayPid, 'SIGKILL');
+    }
+    fs.rmSync(sandbox, { recursive: true, force: true });
+  });
+
+  await waitFor(() => {
+    relayPid = readHeartbeatRelayPid(pidFile);
+    return relayPid !== null
+      && heartbeatRelayProcessMatches(relayPid, ownershipToken);
+  }, 'the pre-initialization relay ownership handle');
+  await new Promise((resolve) => setTimeout(resolve, 150));
+  assert.equal(await socketIsOpen(port), false);
+
+  const stopper = spawnSync(process.execPath, [
+    relayScript,
+    'stop',
+    ownershipToken,
+  ], {
+    env: {
+      ...process.env,
+      DW_HEARTBEAT_RELAY_PID_FILE: pidFile,
+    },
+    encoding: 'utf8',
+    timeout: 10_000,
+  });
+  assert.equal(stopper.status, 0, stopper.stderr || stopper.stdout);
+  assert.equal(JSON.parse(stopper.stdout).status, 'stopped');
+  await relayExit;
+
+  await new Promise((resolve) => setTimeout(resolve, 1000));
+  assert.equal(fs.existsSync(`/proc/${relayPid}`), false);
+  assert.equal(fs.existsSync(pidFile), false);
+  assert.equal(await socketIsOpen(port), false);
+  assert.deepEqual(stopHeartbeatRelay({
+    pid: relayPid,
+    ownershipToken,
+    pidFile,
+  }), {
+    status: 'already_stopped',
+    signal: null,
+  });
 });
 
 test('startup diagnosis distinguishes container, port publication, and slow host bind', () => {
