@@ -86,6 +86,7 @@ export function classifySharedServerStartup({
   composePort,
   expectedPort,
   readiness = null,
+  readinessTransport = 'published_host',
 }) {
   const state = container?.State;
   if (!state || state.Status !== 'running' || state.Running !== true) {
@@ -129,6 +130,15 @@ export function classifySharedServerStartup({
   }
 
   if (!readiness) return null;
+  if (readinessTransport === 'executor_compatibility_relay'
+    && [502, 504].includes(readiness.final_status)) {
+    return {
+      kind: readiness.final_status === 504 ? 'relay_target_timeout' : 'relay_target_failure',
+      reason: readiness.final_status === 504
+        ? 'the executor-network relay did not complete the authenticated readiness request'
+        : 'the executor-network relay could not reach the server service endpoint',
+    };
+  }
   if (Number.isInteger(readiness.final_status)) {
     return {
       kind: 'readiness_response_failure',
@@ -138,21 +148,51 @@ export function classifySharedServerStartup({
 
   const finalError = String(readiness.final_error ?? '');
   if (/ECONNREFUSED/i.test(finalError)) {
+    if (readinessTransport === 'executor_compatibility_relay') {
+      return {
+        kind: 'relay_bind_timeout',
+        reason: 'the workspace relay did not bind before its bounded readiness deadline',
+      };
+    }
+    if (readinessTransport === 'executor_network_attachment') {
+      return {
+        kind: 'executor_network_failure',
+        reason: 'the attached executor could not reach the server service endpoint',
+      };
+    }
     return {
       kind: 'host_bind_timeout',
       reason: 'container health and published-port metadata passed but the host endpoint never bound',
     };
   }
   if (/ECONNRESET/i.test(finalError)) {
+    if (readinessTransport === 'executor_network_attachment') {
+      return {
+        kind: 'executor_network_reset',
+        reason: 'the server service reset the executor-network readiness connection',
+      };
+    }
     return {
       kind: 'host_connection_reset',
       reason: 'the published host endpoint accepted and then reset the readiness connection',
     };
   }
   if (/ETIMEDOUT|AbortError/i.test(finalError)) {
+    if (readinessTransport === 'executor_network_attachment') {
+      return {
+        kind: 'executor_network_timeout',
+        reason: 'the server service did not complete the executor-network readiness response',
+      };
+    }
     return {
       kind: 'host_endpoint_timeout',
       reason: 'the published host endpoint did not complete a readiness response',
+    };
+  }
+  if (readinessTransport === 'executor_network_attachment') {
+    return {
+      kind: 'executor_network_failure',
+      reason: finalError || 'the attached executor could not reach the server service endpoint',
     };
   }
 

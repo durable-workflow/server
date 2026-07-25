@@ -1,6 +1,19 @@
 import assert from 'node:assert/strict';
+import { spawn, spawnSync } from 'node:child_process';
+import { once } from 'node:events';
+import fs from 'node:fs';
+import net from 'node:net';
+import os from 'node:os';
+import path from 'node:path';
 import test from 'node:test';
+import { fileURLToPath } from 'node:url';
 
+import {
+  createHeartbeatRelayServer,
+  directRelayRequest,
+  heartbeatRelayProcessMatches,
+  readHeartbeatRelayPid,
+} from '../../scripts/conformance/heartbeat-shared-relay.mjs';
 import {
   HeartbeatReadinessTimeoutError,
   classifySharedServerStartup,
@@ -25,6 +38,40 @@ function healthyContainer(port = 48123) {
       },
     },
   };
+}
+
+async function freePort() {
+  const server = net.createServer();
+  await new Promise((resolve, reject) => {
+    server.once('error', reject);
+    server.listen(0, '127.0.0.1', resolve);
+  });
+  const address = server.address();
+  assert.equal(typeof address, 'object');
+  await new Promise((resolve) => server.close(resolve));
+  return address.port;
+}
+
+async function socketIsOpen(port) {
+  return new Promise((resolve) => {
+    const socket = net.createConnection({ host: '127.0.0.1', port });
+    const finish = (result) => {
+      socket.destroy();
+      resolve(result);
+    };
+    socket.setTimeout(200, () => finish(false));
+    socket.once('connect', () => finish(true));
+    socket.once('error', () => finish(false));
+  });
+}
+
+async function waitFor(predicate, description, timeoutMs = 5_000) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if (await predicate()) return;
+    await new Promise((resolve) => setTimeout(resolve, 25));
+  }
+  assert.fail(`timed out waiting for ${description}`);
 }
 
 test('authenticated readiness retries a refused host connection and then succeeds', async () => {
@@ -169,6 +216,215 @@ test('published port evidence selects the real loopback endpoint', () => {
   );
 });
 
+test('executor-network relay preserves authenticated requests and backend status', async (context) => {
+  const requests = [];
+  const relay = createHeartbeatRelayServer({
+    executeRequest: async (request) => {
+      requests.push(request);
+      return {
+        status: 409,
+        contentType: 'application/json',
+        body: Buffer.from('{"status":"already_exists"}'),
+      };
+    },
+  });
+  context.after(() => new Promise((resolve) => relay.close(resolve)));
+  await new Promise((resolve, reject) => {
+    relay.once('error', reject);
+    relay.listen(0, '127.0.0.1', resolve);
+  });
+  const address = relay.address();
+  assert.equal(typeof address, 'object');
+
+  const response = await fetch(
+    `http://127.0.0.1:${address.port}/api/namespaces?source=heartbeat`,
+    {
+      method: 'POST',
+      headers: {
+        Authorization: 'Bearer control-token',
+        'Content-Type': 'application/json',
+        'X-Namespace': 'hb-wave-php',
+      },
+      body: '{"name":"hb-wave-php"}',
+    },
+  );
+
+  assert.equal(response.status, 409);
+  assert.equal(response.headers.get('content-type'), 'application/json');
+  assert.deepEqual(await response.json(), { status: 'already_exists' });
+  assert.equal(requests.length, 1);
+  assert.equal(
+    requests[0].targetUrl,
+    'http://server:8080/api/namespaces?source=heartbeat',
+  );
+  assert.equal(requests[0].headers.authorization, 'Bearer control-token');
+  assert.equal(requests[0].headers['x-namespace'], 'hb-wave-php');
+  assert.equal(requests[0].body.toString(), '{"name":"hb-wave-php"}');
+});
+
+test('executor-network relay keeps credentials and request bytes in memory', async () => {
+  const requests = [];
+  const result = await directRelayRequest({
+    targetUrl: 'http://server:8080/api/ready',
+    method: 'POST',
+    headers: {
+      authorization: 'Bearer control-token',
+      connection: 'keep-alive',
+      'x-namespace': 'hb-wave-php',
+    },
+    body: Buffer.from('{"probe":true}'),
+    fetchImpl: async (url, options) => {
+      requests.push({ url, options });
+      return new Response('{"ready":true}', {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    },
+  });
+
+  assert.equal(result.status, 200);
+  assert.equal(result.contentType, 'application/json');
+  assert.equal(result.body.toString(), '{"ready":true}');
+  assert.equal(requests.length, 1);
+  assert.equal(requests[0].url, 'http://server:8080/api/ready');
+  assert.equal(requests[0].options.method, 'POST');
+  assert.equal(
+    requests[0].options.headers.get('authorization'),
+    'Bearer control-token',
+  );
+  assert.equal(requests[0].options.headers.get('x-namespace'), 'hb-wave-php');
+  assert.equal(requests[0].options.headers.has('connection'), false);
+  assert.equal(requests[0].options.body.toString(), '{"probe":true}');
+});
+
+test('executor-network relay reports a bounded gateway failure', async (context) => {
+  const diagnostics = [];
+  const relay = createHeartbeatRelayServer({
+    executeRequest: async () => {
+      throw new Error('direct fetch failed with Authorization: Bearer control-token');
+    },
+    onDiagnostic: (diagnostic) => diagnostics.push(diagnostic),
+  });
+  context.after(() => new Promise((resolve) => relay.close(resolve)));
+  await new Promise((resolve, reject) => {
+    relay.once('error', reject);
+    relay.listen(0, '127.0.0.1', resolve);
+  });
+  const address = relay.address();
+  assert.equal(typeof address, 'object');
+
+  const response = await fetch(`http://127.0.0.1:${address.port}/api/ready`);
+  assert.equal(response.status, 502);
+  assert.deepEqual(await response.json(), {
+    error: 'heartbeat executor-network relay failed',
+    diagnostic: 'direct fetch failed with Authorization: Bearer [REDACTED]',
+  });
+  assert.deepEqual(
+    diagnostics,
+    ['direct fetch failed with Authorization: Bearer [REDACTED]'],
+  );
+});
+
+test('relay survives its starter and a separate process closes its PID and socket', async (context) => {
+  const sandbox = fs.mkdtempSync(path.join(os.tmpdir(), 'dw-heartbeat-relay-'));
+  const relayScript = fileURLToPath(new URL(
+    '../../scripts/conformance/heartbeat-shared-relay.mjs',
+    import.meta.url,
+  ));
+  const pidFile = path.join(sandbox, 'relay.pid');
+  const logFile = path.join(sandbox, 'relay.log');
+  const startRequestFile = path.join(sandbox, 'start-request');
+  const ownershipToken = `dw-hb-wave-${path.basename(sandbox).slice(-12)}`;
+  const port = await freePort();
+  let relayPid = null;
+  const daemonOwner = spawn(process.execPath, [
+    '--input-type=module',
+    '--eval',
+    [
+      "import { spawn } from 'node:child_process';",
+      "import fs from 'node:fs';",
+      'const timer = setInterval(() => {',
+      '  if (!fs.existsSync(process.env.RELAY_START_REQUEST_FILE)) return;',
+      '  clearInterval(timer);',
+      '  const relay = spawn(process.execPath, [',
+      "    process.env.RELAY_SCRIPT, 'serve', process.env.RELAY_OWNERSHIP_TOKEN,",
+      '  ], {',
+      "    stdio: 'ignore',",
+      '    env: process.env,',
+      '  });',
+      '  relay.once("exit", () => process.exit(0));',
+      '}, 10);',
+    ].join('\n'),
+  ], {
+    env: {
+      ...process.env,
+      RELAY_SCRIPT: relayScript,
+      RELAY_OWNERSHIP_TOKEN: ownershipToken,
+      RELAY_START_REQUEST_FILE: startRequestFile,
+      DW_HEARTBEAT_RELAY_PORT: String(port),
+      DW_HEARTBEAT_RELAY_TARGET_ORIGIN: 'http://server:8080',
+      DW_HEARTBEAT_RELAY_PID_FILE: pidFile,
+      DW_HEARTBEAT_RELAY_LOG_FILE: logFile,
+    },
+    stdio: 'ignore',
+  });
+  const daemonOwnerExit = once(daemonOwner, 'exit');
+  context.after(() => {
+    if (relayPid && heartbeatRelayProcessMatches(relayPid, ownershipToken)) {
+      process.kill(relayPid, 'SIGKILL');
+    }
+    if (daemonOwner.exitCode === null) daemonOwner.kill('SIGKILL');
+    fs.rmSync(sandbox, { recursive: true, force: true });
+  });
+
+  const starter = spawnSync(process.execPath, [
+    '--input-type=module',
+    '--eval',
+    [
+      "import fs from 'node:fs';",
+      "fs.writeFileSync(process.env.RELAY_START_REQUEST_FILE, 'start\\n');",
+    ].join('\n'),
+  ], {
+    env: {
+      ...process.env,
+      RELAY_START_REQUEST_FILE: startRequestFile,
+    },
+    encoding: 'utf8',
+    timeout: 5_000,
+  });
+  assert.equal(starter.status, 0, starter.stderr || starter.stdout);
+
+  await waitFor(() => {
+    relayPid = readHeartbeatRelayPid(pidFile);
+    return relayPid !== null
+      && heartbeatRelayProcessMatches(relayPid, ownershipToken);
+  }, 'the detached relay PID');
+  await waitFor(() => socketIsOpen(port), 'the detached relay socket');
+
+  const stopper = spawnSync(process.execPath, [
+    relayScript,
+    'stop',
+    ownershipToken,
+  ], {
+    env: {
+      ...process.env,
+      DW_HEARTBEAT_RELAY_PID_FILE: pidFile,
+    },
+    encoding: 'utf8',
+    timeout: 10_000,
+  });
+  assert.equal(stopper.status, 0, stopper.stderr || stopper.stdout);
+  assert.equal(JSON.parse(stopper.stdout).status, 'stopped');
+
+  await daemonOwnerExit;
+  await waitFor(
+    () => !fs.existsSync(`/proc/${relayPid}`),
+    'the stopped relay PID to disappear',
+  );
+  await waitFor(async () => !(await socketIsOpen(port)), 'the stopped relay socket to close');
+  assert.equal(fs.existsSync(pidFile), false);
+});
+
 test('startup diagnosis distinguishes container, port publication, and slow host bind', () => {
   const composePort = { status: 0, stdout: '0.0.0.0:48123\n[::]:48123\n' };
 
@@ -217,5 +473,47 @@ test('startup diagnosis distinguishes container, port publication, and slow host
   }), {
     kind: 'readiness_response_failure',
     reason: 'host endpoint last returned HTTP 503',
+  });
+
+  assert.deepEqual(classifySharedServerStartup({
+    container: healthyContainer(),
+    composePort,
+    expectedPort: 48123,
+    readinessTransport: 'executor_compatibility_relay',
+    readiness: {
+      final_status: 502,
+      final_error: 'HTTP 502 Bad Gateway',
+    },
+  }), {
+    kind: 'relay_target_failure',
+    reason: 'the executor-network relay could not reach the server service endpoint',
+  });
+
+  assert.deepEqual(classifySharedServerStartup({
+    container: healthyContainer(),
+    composePort,
+    expectedPort: 48123,
+    readinessTransport: 'executor_compatibility_relay',
+    readiness: {
+      final_status: null,
+      final_error: 'Error [ECONNREFUSED]: connect refused',
+    },
+  }), {
+    kind: 'relay_bind_timeout',
+    reason: 'the workspace relay did not bind before its bounded readiness deadline',
+  });
+
+  assert.deepEqual(classifySharedServerStartup({
+    container: healthyContainer(),
+    composePort,
+    expectedPort: 48123,
+    readinessTransport: 'executor_network_attachment',
+    readiness: {
+      final_status: null,
+      final_error: 'Error [ECONNREFUSED]: connect refused',
+    },
+  }), {
+    kind: 'executor_network_failure',
+    reason: 'the attached executor could not reach the server service endpoint',
   });
 });

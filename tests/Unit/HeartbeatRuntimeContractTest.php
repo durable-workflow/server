@@ -174,6 +174,19 @@ class HeartbeatRuntimeContractTest extends TestCase
         $this->assertSame(1, $wave['clean_published_server_bootstrap_count']);
         $this->assertSame(['php', 'python', 'rust', 'waterline'], $wave['parallel_cells']);
         $this->assertSame([
+            'host_endpoint_mode' => 'executor_network_attachment',
+            'executor_identity_recorded' => false,
+            'server_origin' => 'http://server:8080',
+            'native_host_fallback' => 'authenticated_published_loopback',
+            'compatibility_relay' => 'long_lived_in_memory_request_proxy',
+            'compose_network_owned_by_wave' => true,
+            'authenticated_readiness_required' => true,
+        ], $wave['daemon_portable_transport']);
+        $this->assertContains(
+            'shared-server-relay.log',
+            $wave['startup_diagnostic_files'],
+        );
+        $this->assertSame([
             'namespace',
             'task_queue',
             'workflow_id',
@@ -188,6 +201,14 @@ class HeartbeatRuntimeContractTest extends TestCase
         );
         $this->assertContains(
             'cleanup_shared_network_cell_containers_after_every_terminal_path',
+            $wave['failure_policy'],
+        );
+        $this->assertContains(
+            'cleanup_executor_network_attachment_after_every_terminal_path',
+            $wave['failure_policy'],
+        );
+        $this->assertContains(
+            'cleanup_host_relay_after_every_terminal_path',
             $wave['failure_policy'],
         );
         $this->assertTrue($wave['standalone_clean_bootstrap_path_preserved']);

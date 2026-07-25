@@ -394,6 +394,22 @@
         "DW_HEARTBEATS_SHARED_SERVER_STATE",
         "DW_WATERLINE_WORKER_STATUS_SHARED_SERVER_STATE"
       ],
+      "daemon_portable_transport": {
+        "host_endpoint_mode": "executor_network_attachment",
+        "executor_identity_recorded": false,
+        "server_origin": "http://server:8080",
+        "native_host_fallback": "authenticated_published_loopback",
+        "compatibility_relay": "long_lived_in_memory_request_proxy",
+        "compose_network_owned_by_wave": true,
+        "authenticated_readiness_required": true
+      },
+      "startup_diagnostic_files": [
+        "shared-server-startup-diagnostics.json",
+        "shared-server-compose-ps.log",
+        "shared-server-port-mapping.log",
+        "shared-server-relay.log",
+        "shared-server-server.log"
+      ],
       "isolation_dimensions": [
         "namespace",
         "task_queue",
@@ -406,7 +422,9 @@
         "wait_for_all_peer_cells",
         "retain_independent_cell_evidence",
         "cleanup_shared_compose_project_after_every_terminal_path",
-        "cleanup_shared_network_cell_containers_after_every_terminal_path"
+        "cleanup_shared_network_cell_containers_after_every_terminal_path",
+        "cleanup_executor_network_attachment_after_every_terminal_path",
+        "cleanup_host_relay_after_every_terminal_path"
       ],
       "standalone_clean_bootstrap_path_preserved": true
     },

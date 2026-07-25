@@ -305,6 +305,9 @@ SH);
         $observer = (string) file_get_contents(
             $root.'/scripts/conformance/heartbeats-wave-observer.mjs',
         );
+        $relay = (string) file_get_contents(
+            $root.'/scripts/conformance/heartbeat-shared-relay.mjs',
+        );
 
         $this->assertStringContainsString(
             "const SHARED_SERVER_STATE_FILE = env('DW_HEARTBEATS_SHARED_SERVER_STATE');",
@@ -326,6 +329,14 @@ SH);
         );
         $this->assertStringContainsString("'--network', sharedServerNetwork", $cell);
         $this->assertStringContainsString(
+            'return sharedServerContainerUrl;',
+            $cell,
+        );
+        $this->assertStringContainsString(
+            "['executor_network_attachment', 'published_loopback'].includes(",
+            $cell,
+        );
+        $this->assertStringContainsString(
             'state?.compose?.network !== `${state.compose.project}_default`',
             $cell,
         );
@@ -339,13 +350,57 @@ SH);
         $this->assertStringContainsString("'server-bootstrap'", $lifecycle);
         $this->assertStringContainsString('migrations_completed: true', $lifecycle);
         $this->assertStringContainsString("cleanup_status: 'pending'", $lifecycle);
-        $this->assertStringContainsString('function networkContainerIds(network)', $lifecycle);
+        $this->assertStringContainsString(
+            'function networkContainerIds(network, excludedReferences = [])',
+            $lifecycle,
+        );
         $this->assertStringContainsString('attached_cell_containers_found', $lifecycle);
         $this->assertStringContainsString("for (const kind of ['containers', 'volumes', 'networks'])", $lifecycle);
         $this->assertStringContainsString('collectStartupDiagnostics(', $lifecycle);
         $this->assertStringContainsString("'shared-server-compose-ps.log'", $lifecycle);
         $this->assertStringContainsString("'shared-server-port-mapping.log'", $lifecycle);
+        $this->assertStringContainsString("'shared-server-relay.log'", $lifecycle);
         $this->assertStringContainsString("'shared-server-server.log'", $lifecycle);
+        $this->assertStringContainsString("'network', 'connect', network", $lifecycle);
+        $this->assertStringContainsString("const reference = env('HOSTNAME');", $lifecycle);
+        $this->assertStringContainsString(
+            "'network', 'disconnect', '--force', network, executor.reference",
+            $lifecycle,
+        );
+        $this->assertStringContainsString(
+            "'exec', '-d'",
+            $lifecycle,
+        );
+        $this->assertStringContainsString(
+            '`DW_HEARTBEAT_RELAY_TARGET_ORIGIN=${targetOrigin}`',
+            $lifecycle,
+        );
+        $this->assertStringContainsString(
+            '`DW_HEARTBEAT_RELAY_PID_FILE=${relayPidFile}`',
+            $lifecycle,
+        );
+        $this->assertStringContainsString('waitForRelayPid(', $lifecycle);
+        $this->assertStringContainsString("mode: 'executor_network_attachment'", $lifecycle);
+        $this->assertStringContainsString("mode: 'published_loopback'", $lifecycle);
+        $this->assertStringContainsString(
+            "hostControlUrl = executorMode ? 'http://server:8080' : publishedHostUrl",
+            $lifecycle,
+        );
+        $this->assertStringContainsString('published_host_url: publishedHostUrl', $lifecycle);
+        $this->assertStringContainsString('stopHeartbeatRelay({', $lifecycle);
+        $this->assertStringContainsString('disconnectExecutorNetwork(', $lifecycle);
+        $this->assertStringContainsString('export async function directRelayRequest(', $relay);
+        $this->assertStringContainsString('function writeRelayPid(pidFile)', $relay);
+        $this->assertStringContainsString('export function stopHeartbeatRelay(', $relay);
+        $this->assertStringContainsString('fetchImpl = globalThis.fetch', $relay);
+        $this->assertStringNotContainsString("spawn('docker'", $relay);
+        $this->assertStringNotContainsString("'--header'", $relay);
+        $this->assertStringContainsString(
+            "targetOrigin = 'http://server:8080'",
+            $relay,
+        );
+        $this->assertStringContainsString('function relayError(error)', $relay);
+        $this->assertStringContainsString("'$1[REDACTED]'", $relay);
 
         $this->assertStringContainsString('DW_HEARTBEATS_CELL_TIMEOUT_SECONDS', $wave);
         $this->assertStringContainsString('timeout --signal=TERM --kill-after=15s', $wave);
@@ -359,6 +414,7 @@ SH);
         $this->assertStringContainsString("query('workflows', isolation.namespace)", $observer);
         $this->assertStringContainsString('cleanup_wave || true', $wave);
         $this->assertStringContainsString('new URL(`/api/${resource}`', $observer);
+        $this->assertStringContainsString('state.endpoint.host_control_url', $observer);
         $this->assertStringContainsString("'X-Namespace': namespace", $observer);
         $this->assertStringContainsString('leaked_worker_ids', $observer);
         $this->assertStringContainsString('leaked_task_queues', $observer);

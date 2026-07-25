@@ -129,6 +129,7 @@ let serverBaseUrl = '';
 let cliBin = '';
 let serverTopology = null;
 let sharedServerNetwork = '';
+let sharedServerContainerUrl = '';
 let completedBehavior = null;
 let executionPhase = 'prerequisites';
 
@@ -430,6 +431,9 @@ async function freePort() {
 }
 
 function workerBaseUrl(baseUrl) {
+  if (USE_SHARED_SERVER && sharedServerContainerUrl) {
+    return sharedServerContainerUrl;
+  }
   const parsed = new URL(baseUrl);
   parsed.hostname = 'host.docker.internal';
   return parsed.toString().replace(/\/$/, '');
@@ -1106,6 +1110,13 @@ async function attachSharedServer() {
     || state?.compose?.network !== `${state.compose.project}_default`) {
     failures.push('shared heartbeat server state has no isolated compose network');
   }
+  if (!['executor_network_attachment', 'published_loopback'].includes(
+    state?.endpoint?.transport?.mode,
+  )
+    || state.endpoint.transport.compose_network !== state?.compose?.network
+    || state?.endpoint?.container_url !== 'http://server:8080') {
+    failures.push('shared heartbeat server state has no daemon-portable endpoint transport');
+  }
   if (!isolation || isolation.namespace !== NAMESPACE
     || !TASK_QUEUE.startsWith(isolation.task_queue_prefix ?? '\0')
     || !STALE_WORKER_ID.startsWith(isolation.worker_id_prefix ?? '\0')
@@ -1113,6 +1124,7 @@ async function attachSharedServer() {
     failures.push(`shared heartbeat server did not prescribe isolated ${CELL} cell identities`);
   }
   let endpoint = null;
+  let hostControlEndpoint = null;
   try {
     endpoint = new URL(state?.endpoint?.host_url ?? '');
     if (!['127.0.0.1', 'localhost'].includes(endpoint.hostname)
@@ -1122,6 +1134,19 @@ async function attachSharedServer() {
     }
   } catch {
     failures.push('shared heartbeat server endpoint is invalid');
+  }
+  try {
+    hostControlEndpoint = new URL(state?.endpoint?.host_control_url ?? '');
+    const executorMode =
+      state?.endpoint?.transport?.mode === 'executor_network_attachment';
+    if (hostControlEndpoint.protocol !== 'http:'
+      || hostControlEndpoint.pathname !== '/'
+      || (executorMode && hostControlEndpoint.origin !== 'http://server:8080')
+      || (!executorMode && hostControlEndpoint.origin !== endpoint?.origin)) {
+      failures.push('shared heartbeat host-control endpoint does not match its transport mode');
+    }
+  } catch {
+    failures.push('shared heartbeat host-control endpoint is invalid');
   }
   if (failures.length > 0) throw new Error(failures.join('; '));
 
@@ -1155,9 +1180,11 @@ async function attachSharedServer() {
     publicDigest.slice(publicDigest.indexOf('@') + 1),
   );
   ARTIFACT_SOURCES.server = `docker://${publicDigest}`;
-  serverBaseUrl = endpoint.origin;
+  serverBaseUrl = hostControlEndpoint.origin;
   sharedServerNetwork = state.compose.network;
+  sharedServerContainerUrl = state.endpoint.container_url;
   evidence.server_endpoint = serverBaseUrl;
+  evidence.server_network_endpoint = sharedServerContainerUrl;
   evidence.server_image_install = {
     requested_reference: SERVER_IMAGE,
     public_version_tag: state.server.public_version_tag,

@@ -24,7 +24,7 @@ function workflows(payload) {
 }
 
 async function query(resource, namespace, status = '') {
-  const url = new URL(`/api/${resource}`, state.endpoint.host_url);
+  const url = new URL(`/api/${resource}`, state.endpoint.host_control_url);
   if (status) url.searchParams.set('status', status);
   const response = await fetch(url, {
     headers: {

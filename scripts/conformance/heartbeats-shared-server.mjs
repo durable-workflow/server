@@ -12,6 +12,11 @@ import {
   selectLoopbackPublishedEndpoint,
   waitForAuthenticatedReadiness,
 } from './heartbeat-shared-readiness.mjs';
+import {
+  heartbeatRelayProcessMatches,
+  readHeartbeatRelayPid,
+  stopHeartbeatRelay,
+} from './heartbeat-shared-relay.mjs';
 import { isExactSemverRelease } from './version-identities.mjs';
 
 const SCHEMA = 'durable-workflow.v2.heartbeat-runtime.shared-server-bootstrap';
@@ -19,8 +24,10 @@ const STARTUP_DIAGNOSTIC_FILES = {
   summary: 'shared-server-startup-diagnostics.json',
   compose_ps: 'shared-server-compose-ps.log',
   port_mapping: 'shared-server-port-mapping.log',
+  relay_log: 'shared-server-relay.log',
   server_log: 'shared-server-server.log',
 };
+const RELAY_PID_FILE = 'shared-server-relay.pid';
 const DIAGNOSTIC_OUTPUT_LIMIT = 64 * 1024;
 const action = process.argv[2] ?? '';
 const stateArgument = process.argv[3] ?? '';
@@ -133,7 +140,11 @@ function diagnosticText(record) {
   return `${output.join('\n')}\n`;
 }
 
-function collectStartupDiagnostics(composePrefix, composeEnvironment, serverContainerId) {
+function collectStartupDiagnostics(
+  composePrefix,
+  composeEnvironment,
+  serverContainerId,
+) {
   const inspect = serverContainerId
     ? captureDiagnostic('docker', [
       'container', 'inspect', '--format',
@@ -151,7 +162,6 @@ function collectStartupDiagnostics(composePrefix, composeEnvironment, serverCont
       stdout_truncated: false,
       stderr_truncated: false,
     };
-
   return {
     schema: 'durable-workflow.v2.heartbeat-runtime.shared-server-startup-diagnostics',
     version: 1,
@@ -188,6 +198,8 @@ function writeStartupDiagnostics(diagnostics) {
     diagnosticText(diagnostics.server_log),
     'utf8',
   );
+  const relayLog = path.join(directory, STARTUP_DIAGNOSTIC_FILES.relay_log);
+  if (!fs.existsSync(relayLog)) fs.writeFileSync(relayLog, '', 'utf8');
 }
 
 function startupError(classification, readiness = null) {
@@ -224,15 +236,143 @@ function dockerResources(project) {
   };
 }
 
-function networkContainerIds(network) {
+function networkContainerIds(network, excludedReferences = []) {
   const inspected = run('docker', [
     'network', 'inspect', '--format', '{{json .Containers}}', network,
   ], { allowFailure: true, timeout: 30_000 });
   if (inspected.status !== 0) return [];
   const containers = parseJson(inspected.stdout) ?? {};
-  return [...new Set(Object.values(containers)
-    .map((container) => String(container?.Name ?? container?.ContainerID ?? '').trim())
+  const exclusions = excludedReferences.map((value) => String(value ?? '').trim()).filter(Boolean);
+  return [...new Set(Object.entries(containers)
+    .filter(([id, container]) => !exclusions.some((reference) =>
+      id.startsWith(reference)
+      || reference.startsWith(id)
+      || String(container?.Name ?? '') === reference
+      || String(container?.ContainerID ?? '').startsWith(reference)))
+    .map(([, container]) => String(container?.Name ?? container?.ContainerID ?? '').trim())
     .filter(Boolean))];
+}
+
+function currentExecutorContainer() {
+  if (!fs.existsSync('/.dockerenv')) return null;
+  const reference = env('HOSTNAME');
+  if (!reference) return null;
+  const inspection = run('docker', [
+    'container', 'inspect', '--format',
+    '{"Id":{{json .Id}},"Config":{"Hostname":{{json .Config.Hostname}}},'
+    + '"State":{"Running":{{json .State.Running}}},"NetworkSettings":'
+    + '{"Networks":{{json .NetworkSettings.Networks}}}}',
+    reference,
+  ], {
+    allowFailure: true,
+    timeout: 30_000,
+  });
+  if (inspection.status !== 0) return null;
+  const container = parseJsonOrNull(inspection.stdout);
+  if (!container?.Id
+    || container?.Config?.Hostname !== reference
+    || container?.State?.Running !== true) {
+    return null;
+  }
+  return {
+    reference,
+    id: String(container.Id),
+    networks: container?.NetworkSettings?.Networks ?? {},
+  };
+}
+
+function executorNetworkAttachment(network) {
+  const executor = currentExecutorContainer();
+  if (!executor) {
+    return {
+      mode: 'published_loopback',
+      attached: false,
+      owned: false,
+    };
+  }
+  if (executor.networks?.[network]) {
+    throw new Error('temporary heartbeat network was attached before wave ownership began');
+  }
+  const connection = run('docker', ['network', 'connect', network, executor.reference], {
+    allowFailure: true,
+    timeout: 30_000,
+  });
+  const attached = currentExecutorContainer();
+  if (connection.status !== 0 || !attached?.networks?.[network]) {
+    throw new Error('could not attach the current executor to the shared Compose network');
+  }
+  return {
+    mode: 'executor_network_attachment',
+    attached: true,
+    owned: true,
+    executor_reference: executor.reference,
+  };
+}
+
+function disconnectExecutorNetwork(network) {
+  const executor = currentExecutorContainer();
+  if (!executor) {
+    return {
+      status: 'failed',
+      error: 'could not identify the current executor for network detachment',
+    };
+  }
+  if (!executor.networks?.[network]) return { status: 'already_detached', error: null };
+  const disconnection = run('docker', [
+    'network', 'disconnect', '--force', network, executor.reference,
+  ], {
+    allowFailure: true,
+    timeout: 30_000,
+  });
+  const detached = currentExecutorContainer();
+  if (disconnection.status !== 0 || !detached || detached.networks?.[network]) {
+    return {
+      status: 'failed',
+      error: 'the current executor remained attached to the shared Compose network',
+    };
+  }
+  return { status: 'detached', error: null };
+}
+
+function waitForRelayPid(pidFile, ownershipToken, timeoutMs = 10_000) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    const pid = readHeartbeatRelayPid(pidFile);
+    if (pid) {
+      if (!heartbeatRelayProcessMatches(pid, ownershipToken)) {
+        throw new Error('the heartbeat relay PID does not match wave ownership');
+      }
+      return pid;
+    }
+    Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 50);
+  }
+  throw new Error('the daemon-owned heartbeat relay did not publish its PID in time');
+}
+
+function startRelayProcess(executorReference, port, ownershipToken, targetOrigin) {
+  const relayLog = path.join(
+    path.dirname(statePath),
+    STARTUP_DIAGNOSTIC_FILES.relay_log,
+  );
+  const relayPidFile = path.join(
+    path.dirname(statePath),
+    RELAY_PID_FILE,
+  );
+  fs.rmSync(relayPidFile, { force: true });
+  run('docker', [
+    'exec', '-d',
+    '--workdir', repoRoot,
+    '--env', `DW_HEARTBEAT_RELAY_PORT=${port}`,
+    '--env', `DW_HEARTBEAT_RELAY_TARGET_ORIGIN=${targetOrigin}`,
+    '--env', `DW_HEARTBEAT_RELAY_PID_FILE=${relayPidFile}`,
+    '--env', `DW_HEARTBEAT_RELAY_LOG_FILE=${relayLog}`,
+    executorReference,
+    process.execPath,
+    path.join(scriptDirectory, 'heartbeat-shared-relay.mjs'),
+    'serve',
+    ownershipToken,
+  ], { timeout: 30_000 });
+  return waitForRelayPid(relayPidFile, ownershipToken);
 }
 
 function composeDown(state, allowFailure = false) {
@@ -273,6 +413,29 @@ function validateState(value) {
     || value.compose.network !== `${value.compose.project}_default`) {
     throw new Error(`shared heartbeat server state at ${statePath} has invalid compose paths`);
   }
+  const transport = value?.endpoint?.transport;
+  if (!['executor_network_attachment', 'published_loopback'].includes(transport?.mode)
+    || value.endpoint.container_url !== 'http://server:8080'
+    || transport.compose_network !== value.compose.network
+    || transport.host_control_url !== value.endpoint.host_control_url
+    || (transport.mode === 'executor_network_attachment'
+      && (
+        transport.executor_network_attached !== true
+        || transport.attachment_owned_by_wave !== true
+        || !Number.isInteger(transport.relay_pid)
+        || transport.relay_pid_file !== RELAY_PID_FILE
+        || value.endpoint.host_control_url !== 'http://server:8080'
+      ))
+    || (transport.mode === 'published_loopback'
+      && (
+        transport.executor_network_attached !== false
+        || transport.attachment_owned_by_wave !== false
+        || transport.relay_pid !== null
+        || transport.relay_pid_file !== null
+        || value.endpoint.host_control_url !== value.endpoint.host_url
+      ))) {
+    throw new Error(`shared heartbeat server state at ${statePath} has invalid transport ownership`);
+  }
   return value;
 }
 
@@ -308,6 +471,8 @@ async function start() {
   const project = `dw-hb-wave-${suffix}`;
   const overrideFile = path.join(path.dirname(statePath), `docker-compose.heartbeat-${suffix}.yml`);
   const port = await freePort();
+  let relayPort = await freePort();
+  while (relayPort === port) relayPort = await freePort();
   fs.writeFileSync(overrideFile, `services:
   server:
     environment:
@@ -346,6 +511,12 @@ async function start() {
       requested_reference: serverImage,
     },
   };
+  let executorAttachment = null;
+  let relayPid = null;
+  const relayPidFile = path.join(
+    path.dirname(statePath),
+    RELAY_PID_FILE,
+  );
   try {
     run('docker', ['pull', serverImage], { timeout: 300_000 });
     const image = parseJson(run('docker', ['image', 'inspect', serverImage], { timeout: 60_000 }).stdout);
@@ -415,13 +586,36 @@ async function start() {
       startupDiagnostics.compose_port.stdout,
       port,
     );
-    const hostUrl = publishedEndpoint.host_url;
+    const publishedHostUrl = publishedEndpoint.host_url;
+    const network = `${project}_default`;
+    executorAttachment = executorNetworkAttachment(network);
+    const executorMode = executorAttachment.mode === 'executor_network_attachment';
+    const hostControlUrl = executorMode ? 'http://server:8080' : publishedHostUrl;
+    let hostUrl = publishedHostUrl;
+    if (executorMode) {
+      hostUrl = `http://127.0.0.1:${relayPort}`;
+      relayPid = startRelayProcess(
+        executorAttachment.executor_reference,
+        relayPort,
+        project,
+        hostControlUrl,
+      );
+    }
     let readiness;
+    let compatibilityReadiness = null;
     try {
       readiness = await waitForAuthenticatedReadiness({
-        url: new URL('/api/ready', hostUrl),
+        url: new URL('/api/ready', hostControlUrl),
         token,
+        timeoutMs: executorMode ? 30_000 : 90_000,
       });
+      if (executorMode) {
+        compatibilityReadiness = await waitForAuthenticatedReadiness({
+          url: new URL('/api/ready', hostUrl),
+          token,
+          timeoutMs: 15_000,
+        });
+      }
     } catch (error) {
       startupDiagnostics = collectStartupDiagnostics(
         composePrefix,
@@ -437,9 +631,16 @@ async function start() {
           composePort: startupDiagnostics.compose_port,
           expectedPort: port,
           readiness: error.readiness,
+          readinessTransport: executorMode
+            ? (readiness
+              ? 'executor_compatibility_relay'
+              : 'executor_network_attachment')
+            : 'published_host',
         }) ?? {
-          kind: 'host_reachability_failure',
-          reason: 'the authenticated host readiness deadline expired',
+          kind: executorMode ? 'executor_network_failure' : 'host_reachability_failure',
+          reason: executorMode
+            ? 'the authenticated executor-network readiness deadline expired'
+            : 'the authenticated published-host readiness deadline expired',
         };
         startupDiagnostics.readiness = error.readiness;
         startupDiagnostics.classification = classification;
@@ -453,10 +654,29 @@ async function start() {
       writeStartupDiagnostics(startupDiagnostics);
       throw error;
     }
+    startupDiagnostics = collectStartupDiagnostics(
+      composePrefix,
+      composeEnvironment,
+      serverContainerId,
+    );
     startupDiagnostics.readiness = readiness;
+    startupDiagnostics.compatibility_relay_readiness = compatibilityReadiness;
     startupDiagnostics.classification = {
       kind: 'ready',
-      reason: 'the authenticated host endpoint returned a successful response',
+      reason: executorMode
+        ? 'the authenticated executor-network endpoint returned a successful response'
+        : 'the authenticated published-host endpoint returned a successful response',
+    };
+    startupDiagnostics.transport = {
+      mode: executorAttachment.mode,
+      relay_pid: relayPid,
+      relay_pid_file: executorMode ? RELAY_PID_FILE : null,
+      relay_host_url: hostUrl,
+      host_control_url: hostControlUrl,
+      target_origin: hostControlUrl,
+      compose_network: network,
+      executor_network_attached: executorAttachment.attached,
+      attachment_owned_by_wave: executorAttachment.owned,
     };
     writeStartupDiagnostics(startupDiagnostics);
 
@@ -488,6 +708,8 @@ async function start() {
       },
       endpoint: {
         host_url: hostUrl,
+        host_control_url: hostControlUrl,
+        published_host_url: publishedHostUrl,
         container_url: 'http://server:8080',
         port: publishedEndpoint.port,
         published_bindings: publishedEndpoint.bindings,
@@ -495,13 +717,26 @@ async function start() {
         readiness_attempts: readiness.attempts,
         readiness_elapsed_ms: readiness.elapsed_ms,
         readiness_timeout_ms: readiness.timeout_ms,
+        compatibility_readiness_status: compatibilityReadiness?.status ?? null,
+        compatibility_readiness_attempts: compatibilityReadiness?.attempts ?? null,
         startup_diagnostics: STARTUP_DIAGNOSTIC_FILES,
+        transport: {
+          mode: executorAttachment.mode,
+          relay_pid: relayPid,
+          relay_pid_file: executorMode ? RELAY_PID_FILE : null,
+          relay_host_url: hostUrl,
+          host_control_url: hostControlUrl,
+          target_origin: hostControlUrl,
+          compose_network: network,
+          executor_network_attached: executorAttachment.attached,
+          attachment_owned_by_wave: executorAttachment.owned,
+        },
       },
       compose: {
         project,
         base_file: path.basename(baseFile),
         override_file: path.basename(overrideFile),
-        network: `${project}_default`,
+        network,
       },
       cell_isolation: Object.fromEntries(['php', 'python', 'rust', 'waterline'].map((cell) => [
         cell,
@@ -521,6 +756,15 @@ async function start() {
     writeJson(statePath, state);
     process.stdout.write(`${JSON.stringify(state)}\n`);
   } catch (error) {
+    const cleanupRelayPid = relayPid ?? readHeartbeatRelayPid(relayPidFile);
+    if (cleanupRelayPid) {
+      stopHeartbeatRelay({
+        pid: cleanupRelayPid,
+        ownershipToken: project,
+        pidFile: relayPidFile,
+      });
+    }
+    if (executorAttachment?.owned) disconnectExecutorNetwork(`${project}_default`);
     composeDown(partialState, true);
     fs.rmSync(overrideFile, { force: true });
     throw error;
@@ -529,8 +773,24 @@ async function start() {
 
 function stop() {
   const state = validateState(JSON.parse(fs.readFileSync(statePath, 'utf8')));
+  const executor = currentExecutorContainer();
+  const executorExclusions = [env('HOSTNAME'), executor?.id];
+  const relayCleanup = stopHeartbeatRelay({
+    pid: state.endpoint.transport.relay_pid,
+    ownershipToken: state.compose.project,
+    pidFile: state.endpoint.transport.relay_pid_file
+      ? path.join(path.dirname(statePath), state.endpoint.transport.relay_pid_file)
+      : path.join(path.dirname(statePath), RELAY_PID_FILE),
+  });
+  const executorNetworkCleanup =
+    state.endpoint.transport.mode === 'executor_network_attachment'
+      && state.endpoint.transport.attachment_owned_by_wave === true
+      ? disconnectExecutorNetwork(state.compose.network)
+      : { status: 'not_required', error: null };
   const downAttempts = [composeDown(state, true)];
-  const attachedCellContainers = networkContainerIds(state.compose.network);
+  const attachedCellContainers = executorNetworkCleanup.status === 'failed'
+    ? []
+    : networkContainerIds(state.compose.network, executorExclusions);
   const attachedCellRemovalFailures = [];
   const fallbackRemoved = { containers: [], volumes: [], networks: [] };
   for (const name of attachedCellContainers) {
@@ -566,9 +826,19 @@ function stop() {
   }
   remaining = {
     ...dockerResources(state.compose.project),
-    attached_containers: networkContainerIds(state.compose.network),
+    attached_containers: networkContainerIds(state.compose.network, executorExclusions),
   };
   const failures = [...attachedCellRemovalFailures];
+  if (!['stopped', 'already_stopped', 'not_started'].includes(relayCleanup.status)) {
+    failures.push(`daemon-network relay cleanup failed: ${relayCleanup.error ?? relayCleanup.status}`);
+  }
+  if (!['detached', 'already_detached', 'not_required'].includes(executorNetworkCleanup.status)) {
+    failures.push(
+      `executor network cleanup failed: `
+      + `${executorNetworkCleanup.error ?? executorNetworkCleanup.status}`,
+    );
+    failures.push('attached container fallback removal was skipped without verified executor detachment');
+  }
   for (const [kind, values] of Object.entries(remaining)) {
     if (values.length > 0) failures.push(`${kind} remain: ${values.join(', ')}`);
   }
@@ -578,6 +848,8 @@ function stop() {
   state.lifecycle.cleanup_resources_remaining = remaining;
   state.lifecycle.compose_down_exit_code = downAttempts.at(-1)?.status ?? null;
   state.lifecycle.compose_down_exit_codes = downAttempts.map((attempt) => attempt.status);
+  state.lifecycle.relay_cleanup = relayCleanup;
+  state.lifecycle.executor_network_cleanup = executorNetworkCleanup;
   state.lifecycle.attached_cell_containers_found = attachedCellContainers;
   state.lifecycle.fallback_removed = fallbackRemoved;
   writeJson(statePath, state);
