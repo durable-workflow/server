@@ -6,6 +6,7 @@ import process from 'node:process';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 
+import { waitForAuthenticatedReadiness } from './heartbeat-shared-readiness.mjs';
 import { isExactSemverRelease } from './version-identities.mjs';
 
 const SCHEMA = 'durable-workflow.v2.heartbeat-runtime.shared-server-bootstrap';
@@ -263,13 +264,10 @@ async function start() {
       throw new Error('clean published-server bootstrap and migrations did not complete successfully');
     }
     const hostUrl = `http://127.0.0.1:${port}`;
-    const readiness = await fetch(new URL('/api/ready', hostUrl), {
-      headers: {
-        Accept: 'application/json',
-        Authorization: `Bearer ${token}`,
-      },
+    const readiness = await waitForAuthenticatedReadiness({
+      url: new URL('/api/ready', hostUrl),
+      token,
     });
-    if (!readiness.ok) throw new Error(`shared published server readiness returned ${readiness.status}`);
 
     const namespaceBase = `hb-wave-${suffix}`;
     const state = {
@@ -302,6 +300,8 @@ async function start() {
         container_url: 'http://server:8080',
         port,
         readiness_status: readiness.status,
+        readiness_attempts: readiness.attempts,
+        readiness_elapsed_ms: readiness.elapsed_ms,
       },
       compose: {
         project,

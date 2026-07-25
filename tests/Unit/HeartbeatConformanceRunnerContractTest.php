@@ -369,6 +369,7 @@ SH);
                 $nodeBinary,
                 '--test',
                 __DIR__.'/HeartbeatSharedWaveResultRegression.mjs',
+                __DIR__.'/HeartbeatSharedServerReadinessRegression.mjs',
             ],
             [
                 1 => ['pipe', 'w'],
