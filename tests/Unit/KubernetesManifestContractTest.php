@@ -8,7 +8,7 @@ use PHPUnit\Framework\TestCase;
 
 class KubernetesManifestContractTest extends TestCase
 {
-    private const SERVER_IMAGE = 'durableworkflow/server:2.0.0-beta.13';
+    private const SERVER_IMAGE = 'durableworkflow/server:2.0.0-beta.14';
 
     public function test_public_manifests_use_pinned_published_server_images(): void
     {
@@ -59,8 +59,8 @@ class KubernetesManifestContractTest extends TestCase
         $source = $this->read('k8s/README.md');
 
         foreach ([
-            'durableworkflow/server:2.0.0-beta.13',
-            'ghcr.io/durable-workflow/server:2.0.0-beta.13',
+            'durableworkflow/server:2.0.0-beta.14',
+            'ghcr.io/durable-workflow/server:2.0.0-beta.14',
             'Digest pinning is preferred',
             'Helm charts',
             'managed-Kubernetes provider validation',
