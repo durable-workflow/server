@@ -45,7 +45,7 @@ function sdkEvidence(cell, outcome = 'pass') {
     outcome,
     runner_blocked: false,
     classification: outcome === 'pass' ? `published-${cell}-sdk-heartbeat-loop-proven` : 'product-gap',
-    artifact_versions: { server: '2.0.0-beta.12', [`sdk-${cell}`]: '2.0.0-beta.10' },
+    artifact_versions: { server: '2.0.0-beta.13', [`sdk-${cell}`]: '2.0.0-beta.10' },
     executed_distribution_identities: { server: {}, [`sdk-${cell}`]: {} },
     topology: {
       namespace: `hb-wave-example-${cell}`,
@@ -68,7 +68,7 @@ function writeFixture(root, pythonOutcome = 'pass') {
     version: 1,
     wave_run_id: 'heartbeat-wave-example',
     server: {
-      requested_reference: 'durableworkflow/server:2.0.0-beta.12',
+      requested_reference: 'durableworkflow/server:2.0.0-beta.13',
       resolved_public_digest: `durableworkflow/server@sha256:${'a'.repeat(64)}`,
       exact_published_image_verified: true,
     },
@@ -120,7 +120,7 @@ function writeFixture(root, pythonOutcome = 'pass') {
       outcome: 'pass',
       runner_blocked: false,
       classification: 'published-waterline-worker-status-proven',
-      artifact_versions: { server: '2.0.0-beta.12', waterline: '2.0.0-beta.12' },
+      artifact_versions: { server: '2.0.0-beta.13', waterline: '2.0.0-beta.12' },
       topology: {
         namespace: 'hb-wave-example-waterline',
         task_queue: 'waterline-status-cell',
@@ -149,7 +149,7 @@ function execute(root) {
       STATE_FILE: path.join(root, 'shared-server-state.json'),
       STARTED_AT: new Date(Date.now() - 1_000).toISOString(),
       MAXIMUM_SECONDS: '360',
-      DW_SERVER_VERSION: '2.0.0-beta.12',
+      DW_SERVER_VERSION: '2.0.0-beta.13',
       DW_CLI_VERSION: '2.0.0-beta.10',
       DW_PHP_SDK_VERSION: '2.0.0-beta.10',
       DW_PYTHON_SDK_VERSION: '2.0.0-beta.10',

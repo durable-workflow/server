@@ -473,13 +473,25 @@ class ActivityTaskController
             'details' => ['nullable', 'array'],
         ]);
 
-        if ($response = $this->guardAttemptOwnership(
-            $namespace,
-            $taskId,
-            $validated['activity_attempt_id'],
-            $validated['lease_owner'],
-        )) {
-            return $response;
+        try {
+            if ($response = $this->guardAttemptOwnership(
+                $namespace,
+                $taskId,
+                $validated['activity_attempt_id'],
+                $validated['lease_owner'],
+            )) {
+                return $response;
+            }
+        } catch (\Throwable $exception) {
+            if (! BackendLockPressure::is($exception)) {
+                throw $exception;
+            }
+
+            return BackendLockPressure::activityTaskHeartbeatResponse(
+                $taskId,
+                $validated['activity_attempt_id'],
+                $validated['lease_owner'],
+            );
         }
 
         /** @var ActivityTaskBridgeContract $bridge */
@@ -702,7 +714,9 @@ class ActivityTaskController
 
         /** @var ActivityTaskBridgeContract $bridge */
         $bridge = app(ActivityTaskBridgeContract::class);
-        $status = $bridge->status($attemptId);
+        $status = $this->storageMutations->run(
+            static fn (): array => $bridge->status($attemptId),
+        );
 
         if (($status['reason'] ?? null) === 'attempt_not_found') {
             return WorkerProtocol::json([
