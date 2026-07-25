@@ -6,10 +6,22 @@ import process from 'node:process';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 
-import { waitForAuthenticatedReadiness } from './heartbeat-shared-readiness.mjs';
+import {
+  HeartbeatReadinessTimeoutError,
+  classifySharedServerStartup,
+  selectLoopbackPublishedEndpoint,
+  waitForAuthenticatedReadiness,
+} from './heartbeat-shared-readiness.mjs';
 import { isExactSemverRelease } from './version-identities.mjs';
 
 const SCHEMA = 'durable-workflow.v2.heartbeat-runtime.shared-server-bootstrap';
+const STARTUP_DIAGNOSTIC_FILES = {
+  summary: 'shared-server-startup-diagnostics.json',
+  compose_ps: 'shared-server-compose-ps.log',
+  port_mapping: 'shared-server-port-mapping.log',
+  server_log: 'shared-server-server.log',
+};
+const DIAGNOSTIC_OUTPUT_LIMIT = 64 * 1024;
 const action = process.argv[2] ?? '';
 const stateArgument = process.argv[3] ?? '';
 const statePath = stateArgument ? path.resolve(stateArgument) : '';
@@ -31,6 +43,14 @@ function digest(value) {
 function parseJson(value) {
   const parsed = JSON.parse(String(value));
   return Array.isArray(parsed) && parsed.length === 1 ? parsed[0] : parsed;
+}
+
+function parseJsonOrNull(value) {
+  try {
+    return parseJson(value);
+  } catch {
+    return null;
+  }
 }
 
 function run(command, args, options = {}) {
@@ -68,6 +88,122 @@ function writeJson(file, value) {
   const temporary = `${file}.tmp-${process.pid}`;
   fs.writeFileSync(temporary, `${JSON.stringify(value, null, 2)}\n`, 'utf8');
   fs.renameSync(temporary, file);
+}
+
+function boundedOutput(value) {
+  const text = String(value ?? '');
+  if (Buffer.byteLength(text, 'utf8') <= DIAGNOSTIC_OUTPUT_LIMIT) {
+    return { text, truncated: false };
+  }
+  const suffix = '\n[diagnostic output truncated]\n';
+  return {
+    text: `${Buffer.from(text).subarray(0, DIAGNOSTIC_OUTPUT_LIMIT - suffix.length).toString()}${suffix}`,
+    truncated: true,
+  };
+}
+
+function captureDiagnostic(command, args, options = {}) {
+  const result = run(command, args, {
+    ...options,
+    allowFailure: true,
+    timeout: options.timeout ?? 30_000,
+  });
+  const stdout = boundedOutput(result.stdout);
+  const stderr = boundedOutput(result.stderr);
+  return {
+    command: [command, ...args],
+    status: result.status,
+    signal: result.signal,
+    error: result.error ? String(result.error.message ?? result.error) : null,
+    stdout: stdout.text,
+    stderr: stderr.text,
+    stdout_truncated: stdout.truncated,
+    stderr_truncated: stderr.truncated,
+  };
+}
+
+function diagnosticText(record) {
+  const output = [
+    `$ ${record.command.join(' ')}`,
+    `exit_status=${record.status ?? 'none'} signal=${record.signal ?? 'none'}`,
+  ];
+  if (record.error) output.push(`error=${record.error}`);
+  if (record.stdout) output.push('', record.stdout.trimEnd());
+  if (record.stderr) output.push('', record.stderr.trimEnd());
+  return `${output.join('\n')}\n`;
+}
+
+function collectStartupDiagnostics(composePrefix, composeEnvironment, serverContainerId) {
+  const inspect = serverContainerId
+    ? captureDiagnostic('docker', [
+      'container', 'inspect', '--format',
+      '{"Image":{{json .Image}},"Config":{"Image":{{json .Config.Image}}},'
+      + '"State":{{json .State}},"NetworkSettings":{"Ports":{{json .NetworkSettings.Ports}}}}',
+      serverContainerId,
+    ], { timeout: 60_000 })
+    : {
+      command: ['docker', 'container', 'inspect'],
+      status: null,
+      signal: null,
+      error: 'server container id was unavailable',
+      stdout: '',
+      stderr: '',
+      stdout_truncated: false,
+      stderr_truncated: false,
+    };
+
+  return {
+    schema: 'durable-workflow.v2.heartbeat-runtime.shared-server-startup-diagnostics',
+    version: 1,
+    captured_at: now(),
+    output_limit_bytes: DIAGNOSTIC_OUTPUT_LIMIT,
+    compose_port: captureDiagnostic('docker', [
+      ...composePrefix, 'port', 'server', '8080',
+    ], { env: composeEnvironment }),
+    compose_ps: captureDiagnostic('docker', [
+      ...composePrefix, 'ps', '-a',
+    ], { env: composeEnvironment }),
+    server_log: captureDiagnostic('docker', [
+      ...composePrefix, 'logs', '--no-color', '--tail', '200', 'server',
+    ], { env: composeEnvironment }),
+    server_container_inspect: inspect,
+  };
+}
+
+function writeStartupDiagnostics(diagnostics) {
+  const directory = path.dirname(statePath);
+  writeJson(path.join(directory, STARTUP_DIAGNOSTIC_FILES.summary), diagnostics);
+  fs.writeFileSync(
+    path.join(directory, STARTUP_DIAGNOSTIC_FILES.compose_ps),
+    diagnosticText(diagnostics.compose_ps),
+    'utf8',
+  );
+  fs.writeFileSync(
+    path.join(directory, STARTUP_DIAGNOSTIC_FILES.port_mapping),
+    diagnosticText(diagnostics.compose_port),
+    'utf8',
+  );
+  fs.writeFileSync(
+    path.join(directory, STARTUP_DIAGNOSTIC_FILES.server_log),
+    diagnosticText(diagnostics.server_log),
+    'utf8',
+  );
+}
+
+function startupError(classification, readiness = null) {
+  const readinessDetails = readiness
+    ? `; final readiness status=${readiness.final_status ?? 'none'}; `
+      + `final readiness error=${readiness.final_error ?? 'none'}`
+    : '';
+  const error = new Error(
+    `shared published server startup failed (${classification.kind}): `
+    + `${classification.reason}${readinessDetails}; `
+    + `see ${Object.values(STARTUP_DIAGNOSTIC_FILES).join(', ')}`,
+  );
+  error.name = 'HeartbeatSharedServerStartupError';
+  error.failure_kind = classification.kind;
+  error.readiness = readiness;
+  return error;
 }
 
 function dockerResources(project) {
@@ -242,16 +378,28 @@ async function start() {
     if (!serverContainerId || !bootstrapContainerId) {
       throw new Error('shared compose project did not retain its server and bootstrap containers');
     }
-    const serverContainer = parseJson(run('docker', [
-      'container', 'inspect', '--format',
-      '{"Image":{{json .Image}},"Config":{"Image":{{json .Config.Image}}},"State":{{json .State}}}',
+    let startupDiagnostics = collectStartupDiagnostics(
+      composePrefix,
+      composeEnvironment,
       serverContainerId,
-    ], { timeout: 60_000 }).stdout);
+    );
+    writeStartupDiagnostics(startupDiagnostics);
+    const serverContainer = parseJsonOrNull(startupDiagnostics.server_container_inspect.stdout);
     const bootstrapContainer = parseJson(run('docker', [
       'container', 'inspect', '--format',
       '{"Image":{{json .Image}},"Config":{"Image":{{json .Config.Image}},"Cmd":{{json .Config.Cmd}}},"State":{{json .State}}}',
       bootstrapContainerId,
     ], { timeout: 60_000 }).stdout);
+    const startupClassification = classifySharedServerStartup({
+      container: serverContainer,
+      composePort: startupDiagnostics.compose_port,
+      expectedPort: port,
+    });
+    if (startupClassification) {
+      startupDiagnostics.classification = startupClassification;
+      writeStartupDiagnostics(startupDiagnostics);
+      throw startupError(startupClassification);
+    }
     if (serverContainer?.Image !== image.Id || serverContainer?.Config?.Image !== serverImage) {
       throw new Error('running shared server container does not match the exact selected image');
     }
@@ -263,11 +411,54 @@ async function start() {
       || !bootstrapContainer.Config.Cmd.includes('server-bootstrap')) {
       throw new Error('clean published-server bootstrap and migrations did not complete successfully');
     }
-    const hostUrl = `http://127.0.0.1:${port}`;
-    const readiness = await waitForAuthenticatedReadiness({
-      url: new URL('/api/ready', hostUrl),
-      token,
-    });
+    const publishedEndpoint = selectLoopbackPublishedEndpoint(
+      startupDiagnostics.compose_port.stdout,
+      port,
+    );
+    const hostUrl = publishedEndpoint.host_url;
+    let readiness;
+    try {
+      readiness = await waitForAuthenticatedReadiness({
+        url: new URL('/api/ready', hostUrl),
+        token,
+      });
+    } catch (error) {
+      startupDiagnostics = collectStartupDiagnostics(
+        composePrefix,
+        composeEnvironment,
+        serverContainerId,
+      );
+      if (error instanceof HeartbeatReadinessTimeoutError) {
+        const finalContainer = parseJsonOrNull(
+          startupDiagnostics.server_container_inspect.stdout,
+        );
+        const classification = classifySharedServerStartup({
+          container: finalContainer,
+          composePort: startupDiagnostics.compose_port,
+          expectedPort: port,
+          readiness: error.readiness,
+        }) ?? {
+          kind: 'host_reachability_failure',
+          reason: 'the authenticated host readiness deadline expired',
+        };
+        startupDiagnostics.readiness = error.readiness;
+        startupDiagnostics.classification = classification;
+        writeStartupDiagnostics(startupDiagnostics);
+        throw startupError(classification, error.readiness);
+      }
+      startupDiagnostics.readiness = {
+        final_status: null,
+        final_error: error instanceof Error ? error.message : String(error),
+      };
+      writeStartupDiagnostics(startupDiagnostics);
+      throw error;
+    }
+    startupDiagnostics.readiness = readiness;
+    startupDiagnostics.classification = {
+      kind: 'ready',
+      reason: 'the authenticated host endpoint returned a successful response',
+    };
+    writeStartupDiagnostics(startupDiagnostics);
 
     const namespaceBase = `hb-wave-${suffix}`;
     const state = {
@@ -298,10 +489,13 @@ async function start() {
       endpoint: {
         host_url: hostUrl,
         container_url: 'http://server:8080',
-        port,
+        port: publishedEndpoint.port,
+        published_bindings: publishedEndpoint.bindings,
         readiness_status: readiness.status,
         readiness_attempts: readiness.attempts,
         readiness_elapsed_ms: readiness.elapsed_ms,
+        readiness_timeout_ms: readiness.timeout_ms,
+        startup_diagnostics: STARTUP_DIAGNOSTIC_FILES,
       },
       compose: {
         project,

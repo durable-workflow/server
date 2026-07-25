@@ -342,6 +342,10 @@ SH);
         $this->assertStringContainsString('function networkContainerIds(network)', $lifecycle);
         $this->assertStringContainsString('attached_cell_containers_found', $lifecycle);
         $this->assertStringContainsString("for (const kind of ['containers', 'volumes', 'networks'])", $lifecycle);
+        $this->assertStringContainsString('collectStartupDiagnostics(', $lifecycle);
+        $this->assertStringContainsString("'shared-server-compose-ps.log'", $lifecycle);
+        $this->assertStringContainsString("'shared-server-port-mapping.log'", $lifecycle);
+        $this->assertStringContainsString("'shared-server-server.log'", $lifecycle);
 
         $this->assertStringContainsString('DW_HEARTBEATS_CELL_TIMEOUT_SECONDS', $wave);
         $this->assertStringContainsString('timeout --signal=TERM --kill-after=15s', $wave);

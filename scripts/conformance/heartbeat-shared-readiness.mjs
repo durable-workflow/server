@@ -1,9 +1,11 @@
 import { performance } from 'node:perf_hooks';
 import { setTimeout as delay } from 'node:timers/promises';
 
-const DEFAULT_TIMEOUT_MS = 15_000;
+// Cap host readiness at one quarter of the six-minute wave to protect the remaining work.
+const DEFAULT_TIMEOUT_MS = 90_000;
 const DEFAULT_ATTEMPT_TIMEOUT_MS = 2_000;
 const DEFAULT_RETRY_INTERVAL_MS = 250;
+const CONTAINER_PORT = '8080/tcp';
 
 function describeError(error) {
   const details = [];
@@ -24,6 +26,140 @@ function describeError(error) {
 
 function elapsedMilliseconds(monotonicNow, startedAt) {
   return Math.max(0, Math.round(monotonicNow() - startedAt));
+}
+
+export function parsePublishedPortBindings(output) {
+  const bindings = [];
+
+  for (const rawLine of String(output ?? '').split(/\r?\n/)) {
+    const line = rawLine.trim().split(/\s+/, 1)[0] ?? '';
+    if (!line) continue;
+
+    let host = '';
+    let portText = '';
+    if (line.startsWith('[') && line.includes(']:')) {
+      [host, portText] = line.slice(1).split(']:', 2);
+    } else {
+      const separator = line.lastIndexOf(':');
+      if (separator < 1) continue;
+      host = line.slice(0, separator);
+      portText = line.slice(separator + 1);
+    }
+
+    const port = Number.parseInt(portText, 10);
+    if (!Number.isInteger(port) || port < 1 || port > 65_535) continue;
+    bindings.push({ host, port });
+  }
+
+  return bindings;
+}
+
+export function selectLoopbackPublishedEndpoint(output, expectedPort) {
+  const bindings = parsePublishedPortBindings(output);
+  const ports = [...new Set(bindings.map((binding) => binding.port))];
+  if (ports.length === 0) {
+    throw new Error('Compose did not report a published server port');
+  }
+  if (ports.length !== 1) {
+    throw new Error(`Compose reported conflicting published server ports: ${ports.join(', ')}`);
+  }
+  if (Number.isInteger(expectedPort) && ports[0] !== expectedPort) {
+    throw new Error(
+      `Compose published server port ${ports[0]} instead of requested port ${expectedPort}`,
+    );
+  }
+
+  return {
+    host_url: `http://127.0.0.1:${ports[0]}`,
+    port: ports[0],
+    bindings,
+  };
+}
+
+function containerPortBindings(container) {
+  const bindings = container?.NetworkSettings?.Ports?.[CONTAINER_PORT];
+  return Array.isArray(bindings) ? bindings : [];
+}
+
+export function classifySharedServerStartup({
+  container,
+  composePort,
+  expectedPort,
+  readiness = null,
+}) {
+  const state = container?.State;
+  if (!state || state.Status !== 'running' || state.Running !== true) {
+    return {
+      kind: 'container_failure',
+      reason: `server container state is ${state?.Status ?? 'unavailable'}`,
+    };
+  }
+  if (state.Health?.Status !== 'healthy') {
+    return {
+      kind: 'container_failure',
+      reason: `server container health is ${state.Health?.Status ?? 'unavailable'}`,
+    };
+  }
+
+  const publishedBindings = parsePublishedPortBindings(composePort?.stdout);
+  const publishedPorts = [...new Set(publishedBindings.map((binding) => binding.port))];
+  const inspectedPorts = containerPortBindings(container)
+    .map((binding) => Number.parseInt(String(binding?.HostPort ?? ''), 10))
+    .filter((port) => Number.isInteger(port));
+  if (composePort?.status !== 0) {
+    return {
+      kind: 'published_port_failure',
+      reason: `docker compose port exited with status ${composePort?.status ?? 'unavailable'}`,
+    };
+  }
+  if (publishedPorts.length !== 1
+    || (Number.isInteger(expectedPort) && publishedPorts[0] !== expectedPort)) {
+    return {
+      kind: 'published_port_failure',
+      reason: publishedPorts.length === 0
+        ? 'Compose reported no published server port'
+        : `Compose reported unexpected server ports: ${publishedPorts.join(', ')}`,
+    };
+  }
+  if (!inspectedPorts.includes(publishedPorts[0])) {
+    return {
+      kind: 'published_port_failure',
+      reason: `container inspection did not retain host port ${publishedPorts[0]}`,
+    };
+  }
+
+  if (!readiness) return null;
+  if (Number.isInteger(readiness.final_status)) {
+    return {
+      kind: 'readiness_response_failure',
+      reason: `host endpoint last returned HTTP ${readiness.final_status}`,
+    };
+  }
+
+  const finalError = String(readiness.final_error ?? '');
+  if (/ECONNREFUSED/i.test(finalError)) {
+    return {
+      kind: 'host_bind_timeout',
+      reason: 'container health and published-port metadata passed but the host endpoint never bound',
+    };
+  }
+  if (/ECONNRESET/i.test(finalError)) {
+    return {
+      kind: 'host_connection_reset',
+      reason: 'the published host endpoint accepted and then reset the readiness connection',
+    };
+  }
+  if (/ETIMEDOUT|AbortError/i.test(finalError)) {
+    return {
+      kind: 'host_endpoint_timeout',
+      reason: 'the published host endpoint did not complete a readiness response',
+    };
+  }
+
+  return {
+    kind: 'host_reachability_failure',
+    reason: finalError || 'the host endpoint did not return a response',
+  };
 }
 
 export class HeartbeatReadinessTimeoutError extends Error {
@@ -92,6 +228,7 @@ export async function waitForAuthenticatedReadiness({
           status: finalStatus,
           attempts,
           elapsed_ms: elapsedMilliseconds(monotonicNow, startedAt),
+          timeout_ms: timeoutMs,
           final_status: finalStatus,
           final_error: null,
         };
