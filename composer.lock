@@ -4,7 +4,7 @@
         "Read more about it at https://getcomposer.org/doc/01-basic-usage.md#installing-dependencies",
         "This file is @generated automatically"
     ],
-    "content-hash": "5babad0c674f98715f7e0db7b68b6fc0",
+    "content-hash": "4a894df56f31f9fb876fc7cee7429c5a",
     "packages": [
         {
             "name": "apache/avro",
@@ -504,16 +504,16 @@
         },
         {
             "name": "durable-workflow/workflow",
-            "version": "2.0.0-beta.14",
+            "version": "2.0.0-beta.16",
             "source": {
                 "type": "git",
                 "url": "https://github.com/durable-workflow/workflow.git",
-                "reference": "ef844b34dfec8cfe54d4bc699fc21d80574ce028"
+                "reference": "68262eb8589e8e1142c2e158f50815950a347ef8"
             },
             "dist": {
                 "type": "zip",
-                "url": "https://api.github.com/repos/durable-workflow/workflow/zipball/ef844b34dfec8cfe54d4bc699fc21d80574ce028",
-                "reference": "ef844b34dfec8cfe54d4bc699fc21d80574ce028",
+                "url": "https://api.github.com/repos/durable-workflow/workflow/zipball/68262eb8589e8e1142c2e158f50815950a347ef8",
+                "reference": "68262eb8589e8e1142c2e158f50815950a347ef8",
                 "shasum": ""
             },
             "require": {
@@ -542,7 +542,7 @@
                     ]
                 },
                 "durable-workflow": {
-                    "product-train": "2.0.0-beta.14"
+                    "product-train": "2.0.0-beta.16"
                 }
             },
             "autoload": {
@@ -567,9 +567,9 @@
             "description": "Embedded durable workflow runtime and orchestration engine for Laravel applications.",
             "support": {
                 "issues": "https://github.com/durable-workflow/workflow/issues",
-                "source": "https://github.com/durable-workflow/workflow/tree/2.0.0-beta.14"
+                "source": "https://github.com/durable-workflow/workflow/tree/2.0.0-beta.16"
             },
-            "time": "2026-07-25T09:20:00+00:00"
+            "time": "2026-07-25T21:04:18+00:00"
         },
         {
             "name": "egulias/email-validator",

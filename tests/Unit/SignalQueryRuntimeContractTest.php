@@ -4310,12 +4310,12 @@ PY);
     {
         $result = $this->runSignalQueryRunnerPythonSnippet(<<<'PY'
 versions = {
-    "server": "2.0.0-beta.14",
-    "cli": "2.0.0-beta.14",
-    "sdk-python": "2.0.0-beta.14",
-    "workflow": "2.0.0-beta.14",
-    "sdk-php": "2.0.0-beta.14",
-    "waterline": "2.0.0-beta.14",
+    "server": "2.0.0-beta.16",
+    "cli": "2.0.0-beta.16",
+    "sdk-python": "2.0.0-beta.16",
+    "workflow": "2.0.0-beta.16",
+    "sdk-php": "2.0.0-beta.16",
+    "waterline": "2.0.0-beta.16",
 }
 sources = {
     "server": "published_docker_image",
@@ -4327,7 +4327,7 @@ sources = {
 globals()["artifact_versions"] = versions
 
 def fake_python_sdk_distribution_version(python_bin, log_file):
-    return "2.0.0b14"
+    return "2.0.0b16"
 
 def fake_start_python_sdk_counter_worker(**kwargs):
     raise OSError("clean runner could not start worker process")
@@ -4362,8 +4362,8 @@ print(json.dumps({
 PY);
 
         $this->assertSame('fail', $result['status']);
-        $this->assertSame('2.0.0b14', $result['sdk_version']);
-        $this->assertSame('2.0.0b14', $result['release_identity']);
+        $this->assertSame('2.0.0b16', $result['sdk_version']);
+        $this->assertSame('2.0.0b16', $result['release_identity']);
         $this->assertNotContains('python_worker_sdk_version', $result['missing']);
         $this->assertSame('worker_start', $result['probe_phase']);
         $this->assertSame('worker_start', $result['failure_phase']);
@@ -4375,16 +4375,16 @@ PY);
     public function test_python_prerelease_version_spellings_share_current_baseline_identity(): void
     {
         $result = $this->runSignalQueryRunnerPythonSnippet(<<<'PY'
-globals()["artifact_versions"] = {"sdk-python": "2.0.0-beta.14"}
+globals()["artifact_versions"] = {"sdk-python": "2.0.0-beta.16"}
 
 print(json.dumps({
-    "semver": python_sdk_version_matches_current("2.0.0-beta.14"),
-    "pep440": python_sdk_version_matches_current("2.0.0b14"),
+    "semver": python_sdk_version_matches_current("2.0.0-beta.16"),
+    "pep440": python_sdk_version_matches_current("2.0.0b16"),
     "registration_pep440": python_sdk_version_matches_current(
-        python_registration_release_version("durable-workflow-python/2.0.0b14"),
+        python_registration_release_version("durable-workflow-python/2.0.0b16"),
     ),
     "different_beta": python_sdk_version_matches_current("2.0.0b9"),
-    "post_release": python_sdk_version_matches_current("2.0.0b14.post1"),
+    "post_release": python_sdk_version_matches_current("2.0.0b16.post1"),
     "restart_start_scope": python_baseline_failure_scope("restart_worker_start"),
 }, sort_keys=True))
 PY);
@@ -4872,7 +4872,7 @@ PY);
         $result = $this->runSignalQueryRunnerPythonSnippet(<<<'PY'
 cases = {
     "missing": None,
-    "tag_only": "docker.io/durableworkflow/waterline:2.0.0-beta.14",
+    "tag_only": "docker.io/durableworkflow/waterline:2.0.0-beta.16",
     "local": "waterline-service:local",
     "digest": "docker.io/durableworkflow/waterline@sha256:" + "a" * 64,
 }
@@ -4913,7 +4913,7 @@ command = waterline_service_container_command(
 )
 identity = distribution_identity(
     "waterline-service",
-    "2.0.0-beta.14",
+    "2.0.0-beta.16",
     "manifest",
     "b" * 64,
 )
@@ -4921,7 +4921,7 @@ print(json.dumps({
     "command": command,
     "identity": identity,
     "mapped_version": distribution_version(
-        {"waterline": "2.0.0-beta.14"},
+        {"waterline": "2.0.0-beta.16"},
         "waterline-service",
     ),
 }, sort_keys=True))
@@ -4935,10 +4935,10 @@ PY);
         $this->assertContains('172.24.0.1::8080', $result['command']);
         $this->assertContains('WATERLINE_SERVER_TOKEN', $result['command']);
         $this->assertNotContains('WATERLINE_SERVER_TOKEN=test-token', $result['command']);
-        $this->assertSame('2.0.0-beta.14', $result['mapped_version']);
+        $this->assertSame('2.0.0-beta.16', $result['mapped_version']);
         $this->assertSame('oci', $result['identity']['kind']);
         $this->assertSame(
-            'oci:docker.io/durableworkflow/waterline@2.0.0-beta.14',
+            'oci:docker.io/durableworkflow/waterline@2.0.0-beta.16',
             $result['identity']['locator'],
         );
         $this->assertSame('manifest', $result['identity']['artifacts'][0]['name']);
@@ -5084,7 +5084,7 @@ def fake_run_command(command, **kwargs):
     if command[-2] == "{{json .Config.Labels}}":
         return subprocess.CompletedProcess(command, 0, json.dumps({
             "org.opencontainers.image.revision": revision,
-            "dev.durable-workflow.release.tag": "2.0.0-beta.14",
+            "dev.durable-workflow.release.tag": "2.0.0-beta.16",
         }), "")
     if command[-2] == "{{json .RepoDigests}}":
         return subprocess.CompletedProcess(
@@ -5098,7 +5098,7 @@ def fake_run_command(command, **kwargs):
 globals()["run_command"] = fake_run_command
 metadata = inspect_waterline_service_image(
     image,
-    "2.0.0-beta.14",
+    "2.0.0-beta.16",
     Path("/tmp/waterline-service-metadata-test.log"),
 )
 print(json.dumps(metadata, sort_keys=True))
@@ -5110,13 +5110,13 @@ PY);
         );
         $this->assertSame('sha256:'.str_repeat('c', 64), $result['manifest_digest']);
         $this->assertSame(str_repeat('d', 40), $result['source_revision_labels']['oci_revision']);
-        $this->assertSame('2.0.0-beta.14', $result['source_revision_labels']['release_tag']);
+        $this->assertSame('2.0.0-beta.16', $result['source_revision_labels']['release_tag']);
         $this->assertSame(
             str_repeat('d', 40),
             $result['source_revision_labels']['labels']['org.opencontainers.image.revision'],
         );
         $this->assertSame(
-            '2.0.0-beta.14',
+            '2.0.0-beta.16',
             $result['source_revision_labels']['labels']['dev.durable-workflow.release.tag'],
         );
     }
@@ -8485,12 +8485,12 @@ PY);
     public function test_result_gate_accepts_pep440_python_worker_version_for_semver_candidate(): void
     {
         $result = $this->completeSignalQueryResult();
-        $result['artifactVersions']['sdk-python'] = '2.0.0-beta.14';
+        $result['artifactVersions']['sdk-python'] = '2.0.0-beta.16';
         $python = &$result['scenario_results']['python_worker_cli_and_sdk_baseline']['observed_outputs'];
-        $python['python_worker_sdk_version'] = '2.0.0b14';
-        $python['routed_current_query_task']['worker_sdk_version'] = '2.0.0b14';
-        $python['readiness_boundary'] = $this->pythonReadinessBoundaryEvidence('2.0.0b14');
-        $python['controlled_restart'] = $this->pythonControlledRestartEvidence('2.0.0b14');
+        $python['python_worker_sdk_version'] = '2.0.0b16';
+        $python['routed_current_query_task']['worker_sdk_version'] = '2.0.0b16';
+        $python['readiness_boundary'] = $this->pythonReadinessBoundaryEvidence('2.0.0b16');
+        $python['controlled_restart'] = $this->pythonControlledRestartEvidence('2.0.0b16');
 
         $evaluation = SignalQueryRuntimeResultGate::evaluate($result);
         $failureCodes = array_column($evaluation['gate_failures'], 'code');
