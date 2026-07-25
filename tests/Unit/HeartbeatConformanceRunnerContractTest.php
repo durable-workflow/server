@@ -372,6 +372,10 @@ SH);
             $lifecycle,
         );
         $this->assertStringContainsString(
+            "'--user', currentNumericUser()",
+            $lifecycle,
+        );
+        $this->assertStringContainsString(
             '`DW_HEARTBEAT_RELAY_TARGET_ORIGIN=${targetOrigin}`',
             $lifecycle,
         );

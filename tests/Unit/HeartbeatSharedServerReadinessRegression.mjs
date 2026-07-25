@@ -6,7 +6,7 @@ import net from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 
 import {
   createHeartbeatRelayServer,
@@ -74,6 +74,19 @@ async function waitFor(predicate, description, timeoutMs = 5_000) {
     await new Promise((resolve) => setTimeout(resolve, 25));
   }
   assert.fail(`timed out waiting for ${description}`);
+}
+
+function effectiveProcessIdentity(pid) {
+  const status = fs.readFileSync(`/proc/${pid}/status`, 'utf8');
+  const effectiveId = (name) => {
+    const match = status.match(new RegExp(`^${name}:\\s+\\d+\\s+(\\d+)`, 'm'));
+    assert.ok(match, `${name} must be present in process status`);
+    return Number.parseInt(match[1], 10);
+  };
+  return {
+    uid: effectiveId('Uid'),
+    gid: effectiveId('Gid'),
+  };
 }
 
 test('authenticated readiness retries a refused host connection and then succeeds', async () => {
@@ -327,7 +340,7 @@ test('executor-network relay reports a bounded gateway failure', async (context)
   );
 });
 
-test('relay survives its starter and a separate process closes its PID and socket', async (context) => {
+test('detached relay keeps cleanup user identity and stops from a separate process', async (context) => {
   const sandbox = fs.mkdtempSync(path.join(os.tmpdir(), 'dw-heartbeat-relay-'));
   const relayScript = fileURLToPath(new URL(
     '../../scripts/conformance/heartbeat-shared-relay.mjs',
@@ -402,21 +415,49 @@ test('relay survives its starter and a separate process closes its PID and socke
       && heartbeatRelayProcessMatches(relayPid, ownershipToken);
   }, 'the detached relay PID');
   await waitFor(() => socketIsOpen(port), 'the detached relay socket');
+  assert.deepEqual(effectiveProcessIdentity(relayPid), {
+    uid: process.getuid(),
+    gid: process.getgid(),
+  });
 
   const stopper = spawnSync(process.execPath, [
-    relayScript,
-    'stop',
-    ownershipToken,
+    '--input-type=module',
+    '--eval',
+    [
+      'const { readHeartbeatRelayPid, stopHeartbeatRelay } = '
+        + 'await import(process.env.RELAY_SCRIPT_URL);',
+      'const pidFile = process.env.DW_HEARTBEAT_RELAY_PID_FILE;',
+      'const result = stopHeartbeatRelay({',
+      '  pid: readHeartbeatRelayPid(pidFile),',
+      '  ownershipToken: process.env.RELAY_OWNERSHIP_TOKEN,',
+      '  pidFile,',
+      '});',
+      'process.stdout.write(`${JSON.stringify({',
+      '  result,',
+      '  uid: process.getuid(),',
+      '  gid: process.getgid(),',
+      '})}\\n`);',
+      "if (!['stopped', 'already_stopped'].includes(result.status)) process.exitCode = 1;",
+    ].join('\n'),
   ], {
     env: {
       ...process.env,
+      RELAY_SCRIPT_URL: pathToFileURL(relayScript).href,
+      RELAY_OWNERSHIP_TOKEN: ownershipToken,
       DW_HEARTBEAT_RELAY_PID_FILE: pidFile,
     },
     encoding: 'utf8',
     timeout: 10_000,
   });
   assert.equal(stopper.status, 0, stopper.stderr || stopper.stdout);
-  assert.equal(JSON.parse(stopper.stdout).status, 'stopped');
+  assert.deepEqual(JSON.parse(stopper.stdout), {
+    result: {
+      status: 'stopped',
+      signal: 'SIGTERM',
+    },
+    uid: process.getuid(),
+    gid: process.getgid(),
+  });
 
   await daemonOwnerExit;
   await waitFor(

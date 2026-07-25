@@ -350,6 +350,16 @@ function waitForRelayPid(pidFile, ownershipToken, timeoutMs = 10_000) {
   throw new Error('the daemon-owned heartbeat relay did not publish its PID in time');
 }
 
+function currentNumericUser() {
+  const userId = process.getuid?.();
+  const groupId = process.getgid?.();
+  if (!Number.isInteger(userId) || userId < 0
+    || !Number.isInteger(groupId) || groupId < 0) {
+    throw new Error('the heartbeat relay requires a numeric executor UID and GID');
+  }
+  return `${userId}:${groupId}`;
+}
+
 function startRelayProcess(executorReference, port, ownershipToken, targetOrigin) {
   const relayLog = path.join(
     path.dirname(statePath),
@@ -367,6 +377,7 @@ function startRelayProcess(executorReference, port, ownershipToken, targetOrigin
   });
   run('docker', [
     'exec', '-d',
+    '--user', currentNumericUser(),
     '--workdir', repoRoot,
     '--env', `DW_HEARTBEAT_RELAY_PORT=${port}`,
     '--env', `DW_HEARTBEAT_RELAY_TARGET_ORIGIN=${targetOrigin}`,
