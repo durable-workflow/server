@@ -669,6 +669,7 @@ import json
 import os
 import subprocess
 import sys
+import threading
 import time
 from datetime import datetime, timezone
 from pathlib import Path
@@ -682,23 +683,59 @@ def utc_now() -> str:
     return datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
 
 
+def write_json_atomic(path: Path, value: object) -> None:
+    temporary = path.with_suffix(path.suffix + ".tmp")
+    temporary.write_text(
+        json.dumps(value, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+    temporary.replace(path)
+
+
+class PhaseEvidence:
+    def __init__(self, path: Path) -> None:
+        self.path = path
+        self.phases: list[dict[str, Any]] = []
+
+    def record(self, phase: str, **evidence: Any) -> None:
+        entry = {
+            "phase": phase,
+            "recorded_at": utc_now(),
+            **evidence,
+        }
+        self.phases.append(entry)
+        write_json_atomic(
+            self.path,
+            {
+                "schema": "durable-workflow.v2.python-sdk-parity.phase-evidence",
+                "current_phase": phase,
+                "updated_at": entry["recorded_at"],
+                "phases": self.phases[-32:],
+            },
+        )
+
+
 class TraceMetrics:
-    def __init__(self) -> None:
+    def __init__(self, trace_file: Path) -> None:
         self.entries: list[dict[str, Any]] = []
+        self.trace_file = trace_file
+        self.lock = threading.Lock()
 
     def increment(self, name: str, value: float = 1.0, tags: dict[str, str] | None = None) -> None:
         if name == CLIENT_REQUESTS and tags is not None:
-            self.entries.append(
-                {
-                    "plane": tags.get("plane"),
-                    "method": tags.get("method"),
-                    "route": tags.get("route"),
-                    "status_code": tags.get("status_code"),
-                    "outcome": tags.get("outcome"),
-                    "source": "durable_workflow.Client",
-                    "recorded_at": utc_now(),
-                }
-            )
+            with self.lock:
+                self.entries.append(
+                    {
+                        "plane": tags.get("plane"),
+                        "method": tags.get("method"),
+                        "route": tags.get("route"),
+                        "status_code": tags.get("status_code"),
+                        "outcome": tags.get("outcome"),
+                        "source": "durable_workflow.Client",
+                        "recorded_at": utc_now(),
+                    }
+                )
+                write_json_atomic(self.trace_file, self.entries[-256:])
 
     def record(self, name: str, value: float, tags: dict[str, str] | None = None) -> None:
         return None
@@ -847,10 +884,20 @@ async def run() -> None:
     namespace = f"python-parity-{suffix}"
     task_queue = f"python-parity-{suffix}"
     workflow_id = f"python-parity-{suffix}"
-    trace_metrics = TraceMetrics()
+    trace_metrics = TraceMetrics(result_dir / "worker-protocol-traces.json")
+    phases = PhaseEvidence(result_dir / "python-parity-phase-evidence.json")
     cli = CliRunner(dw_bin, server_url, token, namespace, result_dir / "cli-traces.json")
 
+    phases.record(
+        "runner_initialized",
+        sdk_python_version=metadata.version("durable-workflow"),
+        task_queue=task_queue,
+        workflow_id=workflow_id,
+    )
+    phases.record("cli_health_check")
     cli.run(["server:health", "--output=json"], namespace=None, timeout=60)
+    phases.record("cli_server_ready")
+    phases.record("namespace_creation")
     created_namespace = cli.run(
         [
             "namespace:create",
@@ -862,22 +909,28 @@ async def run() -> None:
         namespace="default",
         timeout=60,
     )
+    phases.record("namespace_created", namespace=namespace)
 
     async with Client(server_url, token=token, namespace=namespace, timeout=5.0, metrics=trace_metrics) as client:
+        phases.record("cluster_info")
         await client.get_cluster_info()
+        worker1_id = f"python-parity-worker-1-{suffix}"
         worker1 = Worker(
             client,
             task_queue=task_queue,
             workflows=[PythonParityWorkflow],
             activities=[parity_echo, parity_after_signal],
-            worker_id=f"python-parity-worker-1-{suffix}",
+            worker_id=worker1_id,
             poll_timeout=1.0,
             heartbeat_interval=2.0,
             metrics=trace_metrics,
         )
+        phases.record("initial_worker_start", worker_id=worker1_id)
         worker1_task = asyncio.create_task(worker1.run())
         await asyncio.sleep(0.5)
+        phases.record("initial_worker_started", worker_id=worker1_id)
 
+        phases.record("workflow_start")
         cli_start = cli.run(
             [
                 "workflow:start",
@@ -893,32 +946,65 @@ async def run() -> None:
         run_id = str(cli_start.get("run_id") or "")
         if run_id == "":
             raise RuntimeError(f"CLI workflow:start output did not include run_id: {cli_start!r}")
+        phases.record("workflow_started", run_id=run_id)
 
+        phases.record("initial_activity_wait", run_id=run_id)
         activity_event = await wait_for_event(client, workflow_id, run_id, "ActivityCompleted")
+        phases.record("initial_activity_completed", run_id=run_id)
         restart_started = utc_now()
+        phases.record("initial_worker_stop", worker_id=worker1_id)
         await stop_worker(worker1, worker1_task)
         restart_finished = utc_now()
+        phases.record(
+            "initial_worker_stopped",
+            worker_id=worker1_id,
+            restart_started_at=restart_started,
+            restart_finished_at=restart_finished,
+        )
 
+        phases.record("initial_worker_deregistration", worker_id=worker1_id)
+        deregistration = await client.deregister_worker(worker1_id)
+        if deregistration.get("outcome") != "deregistered":
+            raise RuntimeError(f"initial Python worker deregistration failed: {deregistration!r}")
+        phases.record(
+            "initial_worker_deregistered",
+            worker_id=worker1_id,
+            recovered_workflow_task_count=deregistration.get("recovered_workflow_task_count"),
+        )
+
+        phases.record("approval_signal", run_id=run_id)
         await client.signal_workflow(workflow_id, "approve", args=["python-parity-signal"])
+        phases.record("approval_signal_accepted", run_id=run_id)
 
+        worker2_id = f"python-parity-worker-2-{suffix}"
         worker2 = Worker(
             client,
             task_queue=task_queue,
             workflows=[PythonParityWorkflow],
             activities=[parity_echo, parity_after_signal],
-            worker_id=f"python-parity-worker-2-{suffix}",
+            worker_id=worker2_id,
             poll_timeout=1.0,
             heartbeat_interval=2.0,
             metrics=trace_metrics,
         )
+        phases.record("replacement_worker_run", worker_id=worker2_id)
         terminal = await worker2.run_until(workflow_id=workflow_id, timeout=90.0, poll_interval=0.25)
+        phases.record(
+            "workflow_terminal",
+            worker_id=worker2_id,
+            run_id=run_id,
+            status=terminal.status,
+        )
         await worker2.stop()
+        phases.record("result_capture", run_id=run_id)
         handle = client.get_workflow_handle(workflow_id, run_id=run_id, workflow_type="python.parity.workflow")
         result_value = await client.get_result(handle, timeout=10.0)
         final_history = await client.get_history(workflow_id, run_id)
 
+    phases.record("cli_result_capture", run_id=run_id)
     cli_describe = cli.run(["workflow:describe", workflow_id, "--json"], namespace=namespace, timeout=60)
     cli_show_run = cli.run(["workflow:show-run", workflow_id, run_id, "--json"], namespace=namespace, timeout=60)
+    phases.record("complete", run_id=run_id)
 
     protocol_traces = [*cli.traces, *trace_metrics.entries]
     control_plane_traces = [trace for trace in protocol_traces if trace.get("plane") == "control"]
@@ -964,6 +1050,7 @@ async def run() -> None:
         "workflow_result_returned": {"result": result_value},
         "worker_restart_replays_activity_state": {
             "restart_boundary": {"started_at": restart_started, "finished_at": restart_finished},
+            "initial_worker_deregistration": deregistration,
             "activity_before_restart": result_value.get("activity_before_restart") if isinstance(result_value, dict) else None,
         },
         "worker_restart_replays_signal_state": {
@@ -1031,6 +1118,7 @@ async def run() -> None:
             "result_observed": cli_describe,
             "compose_project": "fresh per-run server volume",
         },
+        "phase_evidence": load_json(result_dir / "python-parity-phase-evidence.json"),
         "protocol_traces": protocol_traces,
         "control_plane_traces": control_plane_traces,
         "worker_protocol_traces": worker_protocol_traces,
@@ -1073,6 +1161,7 @@ async def run() -> None:
                 "scenario_id": "worker_restart_activity_and_signal_state",
                 "status": "pass",
                 "restart_boundary": {"started_at": restart_started, "finished_at": restart_finished},
+                "initial_worker_deregistration": deregistration,
                 "activity_state_after_restart": result_value.get("activity_before_restart") if isinstance(result_value, dict) else None,
                 "signal_state_after_restart": result_value.get("signal_state") if isinstance(result_value, dict) else None,
                 "observed_outputs": {"summary": "second Python worker replayed activity and signal state after restart"},
@@ -1119,6 +1208,75 @@ metadata = json.loads(Path(sys.argv[2]).read_text(encoding="utf-8"))
 out = Path(sys.argv[3])
 started_at = sys.argv[4]
 now = datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+result_dir = out.parent
+
+
+def load_optional_json(name: str, default: object) -> object:
+    path = result_dir / name
+    if not path.is_file():
+        return default
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return default
+
+
+phase_evidence = load_optional_json("python-parity-phase-evidence.json", {})
+if not isinstance(phase_evidence, dict):
+    phase_evidence = {}
+failure_phase = str(phase_evidence.get("current_phase") or "runner_start")
+if failure_phase in {"runner_start", "runner_initialized"}:
+    failure_scope = "runner_setup"
+elif failure_phase in {
+    "cli_health_check",
+    "cli_server_ready",
+    "namespace_creation",
+    "namespace_created",
+    "cluster_info",
+    "initial_worker_start",
+    "initial_worker_started",
+    "workflow_start",
+    "workflow_started",
+    "initial_worker_deregistration",
+    "initial_worker_deregistered",
+}:
+    failure_scope = "server_routing"
+elif failure_phase in {"approval_signal", "approval_signal_accepted"}:
+    failure_scope = "sdk_execution"
+else:
+    failure_scope = "workflow_state"
+
+cli_traces = load_optional_json("cli-traces.json", [])
+if not isinstance(cli_traces, list):
+    cli_traces = []
+worker_protocol_traces = load_optional_json("worker-protocol-traces.json", [])
+if not isinstance(worker_protocol_traces, list):
+    worker_protocol_traces = []
+protocol_traces = [*cli_traces[-128:], *worker_protocol_traces[-256:]]
+phase_entries = phase_evidence.get("phases")
+if not isinstance(phase_entries, list):
+    phase_entries = []
+cli_start_trace = next(
+    (
+        trace
+        for trace in cli_traces
+        if isinstance(trace, dict) and "workflow:start" in str(trace.get("command") or "")
+    ),
+    {},
+)
+cli_result_trace = next(
+    (
+        trace
+        for trace in reversed(cli_traces)
+        if isinstance(trace, dict)
+        and any(
+            command in str(trace.get("command") or "")
+            for command in ("workflow:describe", "workflow:show-run")
+        )
+    ),
+    {},
+)
+
 artifact_versions = {
     "server": pins["server"],
     "cli": pins["cli"],
@@ -1129,7 +1287,12 @@ artifact_versions = {
 finding = {
     "type": "product_behavior_gap",
     "owning_surface": "server_or_cli_or_sdk-python",
-    "summary": "expanded Python SDK parity execution failed after published artifacts were installed",
+    "summary": (
+        "expanded Python SDK parity execution failed after published artifacts were installed "
+        f"during {failure_phase}"
+    ),
+    "failure_phase": failure_phase,
+    "failure_scope": failure_scope,
     "log_file": "python-parity-runner.log",
 }
 required_scenarios = [
@@ -1183,6 +1346,35 @@ host_evidence = {
         "workflow": f"Packagist durable-workflow/workflow:{pins['workflow']}",
         "waterline": f"Packagist durable-workflow/waterline:{pins['waterline']}",
     },
+    "cli_evidence": {
+        "install": {
+            "command": "curl -fsSL <official install.sh> | sh",
+            "version": pins["cli"],
+            "installer_url": pins["cli_installer_url"],
+        },
+        "workflowStart": cli_start_trace,
+        "workflowDescribe": cli_result_trace,
+        "traces": cli_traces,
+        "json_outputs": [
+            trace.get("json")
+            for trace in cli_traces
+            if isinstance(trace, dict) and trace.get("json") is not None
+        ],
+    },
+    "cold_setup": {
+        "fresh_state": True,
+        "namespace_created": any(
+            isinstance(phase, dict) and phase.get("phase") == "namespace_created"
+            for phase in phase_entries
+        ),
+        "first_workflow_started": any(
+            isinstance(phase, dict) and phase.get("phase") == "workflow_started"
+            for phase in phase_entries
+        ),
+        "result_observed": False,
+        "compose_project": "fresh per-run server volume",
+    },
+    "phase_evidence": phase_evidence,
     "scenario_results": {
         scenario: {
             "scenario_id": scenario,
@@ -1204,7 +1396,9 @@ host_evidence = {
         }
         for capability in required_capabilities
     },
-    "protocol_traces": [],
+    "protocol_traces": protocol_traces,
+    "control_plane_traces": cli_traces,
+    "worker_protocol_traces": worker_protocol_traces,
     "php_assumption_audit": {
         "status": "fail",
         "checks": {

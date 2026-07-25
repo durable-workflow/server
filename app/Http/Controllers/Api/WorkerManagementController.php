@@ -4,16 +4,24 @@ namespace App\Http\Controllers\Api;
 
 use App\Models\WorkerRegistration;
 use App\Support\ControlPlaneProtocol;
+use App\Support\WorkflowTaskLeaseRecovery;
 use Carbon\CarbonInterface;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Schema;
+use Workflow\V2\Enums\TaskStatus;
+use Workflow\V2\Enums\TaskType;
+use Workflow\V2\Models\WorkflowTask;
 use Workflow\V2\Support\StandaloneWorkerVisibility;
 use Workflow\V2\Support\WorkerCompatibilityFleet;
 
 class WorkerManagementController
 {
+    public function __construct(
+        private readonly WorkflowTaskLeaseRecovery $workflowTaskLeaseRecovery,
+    ) {}
+
     public function index(Request $request): JsonResponse
     {
         if ($response = ControlPlaneProtocol::rejectUnsupported($request)) {
@@ -203,12 +211,45 @@ class WorkerManagementController
             ], 404);
         }
 
-        $worker->delete();
+        // Deregistration is the orderly process hand-off boundary. Fence the
+        // registration before recovering its leases so any long poll left
+        // behind by the stopped process cannot claim new work while the
+        // replacement is starting.
+        $leasedWorkflowTasks = DB::transaction(function () use ($namespace, $workerId) {
+            $lockedWorker = WorkerRegistration::query()
+                ->where('worker_id', $workerId)
+                ->where('namespace', $namespace)
+                ->lockForUpdate()
+                ->firstOrFail();
+
+            $lockedWorker
+                ->forceFill(['status' => WorkerRegistration::STATUS_SUPERSEDED])
+                ->save();
+
+            return WorkflowTask::query()
+                ->where('namespace', $namespace)
+                ->where('task_type', TaskType::Workflow->value)
+                ->where('status', TaskStatus::Leased->value)
+                ->where('lease_owner', $workerId)
+                ->lockForUpdate()
+                ->get();
+        });
+
+        $recoveredWorkflowTaskCount = $leasedWorkflowTasks
+            ->filter(fn (WorkflowTask $task): bool => $this->workflowTaskLeaseRecovery
+                ->recoverAbandonedTaskLease($request, $namespace, $task))
+            ->count();
+
+        WorkerRegistration::query()
+            ->where('worker_id', $workerId)
+            ->where('namespace', $namespace)
+            ->delete();
         $this->forgetCompatibilityWorker($namespace, $workerId);
 
         return ControlPlaneProtocol::json([
             'worker_id' => $workerId,
             'outcome' => 'deregistered',
+            'recovered_workflow_task_count' => $recoveredWorkflowTaskCount,
         ]);
     }
 

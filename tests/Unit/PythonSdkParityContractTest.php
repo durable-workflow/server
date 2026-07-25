@@ -102,6 +102,26 @@ class PythonSdkParityContractTest extends TestCase
         $this->assertStringContainsString('local_product_source_checkouts_used', $script);
     }
 
+    public function test_runner_fences_the_initial_worker_before_starting_the_replacement(): void
+    {
+        $script = (string) file_get_contents(dirname(__DIR__, 2).'/scripts/conformance/python-published-artifacts.sh');
+
+        $stop = strpos($script, 'await stop_worker(worker1, worker1_task)');
+        $deregister = strpos($script, 'await client.deregister_worker(worker1_id)');
+        $signal = strpos($script, 'await client.signal_workflow(workflow_id, "approve"');
+        $replacement = strpos($script, 'terminal = await worker2.run_until(');
+
+        $this->assertIsInt($stop);
+        $this->assertIsInt($deregister);
+        $this->assertIsInt($signal);
+        $this->assertIsInt($replacement);
+        $this->assertLessThan($deregister, $stop);
+        $this->assertLessThan($signal, $deregister);
+        $this->assertLessThan($replacement, $signal);
+        $this->assertStringContainsString('python-parity-phase-evidence.json', $script);
+        $this->assertStringContainsString('worker-protocol-traces.json', $script);
+    }
+
     public function test_runner_bootstraps_the_shared_sqlite_database_queue_before_starting_server_processes(): void
     {
         $script = (string) file_get_contents(dirname(__DIR__, 2).'/scripts/conformance/python-published-artifacts.sh');

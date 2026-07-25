@@ -6,13 +6,19 @@ use App\Models\WorkerRegistration;
 use App\Models\WorkflowNamespace;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Queue;
+use Tests\Feature\Concerns\ServerTestHelpers;
+use Tests\Fixtures\ExternalGreetingWorkflow;
 use Tests\TestCase;
+use Workflow\V2\Enums\TaskStatus;
+use Workflow\V2\Models\WorkflowTask;
 use Workflow\V2\Support\StandaloneWorkerVisibility;
 use Workflow\V2\Support\WorkerCompatibilityFleet;
 
 class WorkerManagementTest extends TestCase
 {
     use RefreshDatabase;
+    use ServerTestHelpers;
 
     protected function setUp(): void
     {
@@ -341,6 +347,65 @@ class WorkerManagementTest extends TestCase
                 ->where('namespace', 'default')
                 ->first()
         );
+    }
+
+    public function test_deregister_recovers_a_leased_workflow_task_for_a_replacement_worker(): void
+    {
+        Queue::fake();
+
+        $this->configureWorkflowTypes([
+            'tests.external-greeting-workflow' => ExternalGreetingWorkflow::class,
+        ]);
+
+        $this->postJson('/api/workflows', [
+            'workflow_id' => 'wf-orderly-worker-handoff',
+            'workflow_type' => 'tests.external-greeting-workflow',
+            'task_queue' => 'handoff-queue',
+            'input' => ['Ada'],
+        ], $this->apiHeaders())->assertCreated();
+
+        $this->registerWorker(
+            workerId: 'handoff-worker-1',
+            taskQueue: 'handoff-queue',
+            supportedWorkflowTypes: ['tests.external-greeting-workflow'],
+        );
+
+        $firstPoll = $this->postJson('/api/worker/workflow-tasks/poll', [
+            'worker_id' => 'handoff-worker-1',
+            'task_queue' => 'handoff-queue',
+        ], $this->workerHeaders());
+
+        $firstPoll->assertOk()
+            ->assertJsonPath('task.workflow_id', 'wf-orderly-worker-handoff')
+            ->assertJsonPath('task.lease_owner', 'handoff-worker-1');
+
+        $firstTaskId = (string) $firstPoll->json('task.task_id');
+
+        $this->deleteJson('/api/workers/handoff-worker-1', [], $this->apiHeaders())
+            ->assertOk()
+            ->assertJsonPath('outcome', 'deregistered')
+            ->assertJsonPath('recovered_workflow_task_count', 1);
+
+        self::assertFalse(WorkflowTask::query()
+            ->whereKey($firstTaskId)
+            ->where('status', TaskStatus::Leased->value)
+            ->where('lease_owner', 'handoff-worker-1')
+            ->exists());
+
+        $this->registerWorker(
+            workerId: 'handoff-worker-2',
+            taskQueue: 'handoff-queue',
+            supportedWorkflowTypes: ['tests.external-greeting-workflow'],
+        );
+
+        $this->postJson('/api/worker/workflow-tasks/poll', [
+            'worker_id' => 'handoff-worker-2',
+            'task_queue' => 'handoff-queue',
+            'timeout_seconds' => 0,
+        ], $this->workerHeaders())
+            ->assertOk()
+            ->assertJsonPath('task.workflow_id', 'wf-orderly-worker-handoff')
+            ->assertJsonPath('task.lease_owner', 'handoff-worker-2');
     }
 
     public function test_deregister_removes_worker_compatibility_heartbeats(): void
