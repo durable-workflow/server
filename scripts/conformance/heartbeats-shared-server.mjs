@@ -3,7 +3,7 @@ import fs from 'node:fs';
 import net from 'node:net';
 import path from 'node:path';
 import process from 'node:process';
-import { spawnSync } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 
 import {
@@ -31,6 +31,8 @@ const STARTUP_DIAGNOSTIC_FILES = {
 const RELAY_PID_FILE = 'shared-server-relay.pid';
 const CLEANUP_DIAGNOSTIC_FILE = 'shared-server-cleanup-diagnostics.json';
 const DIAGNOSTIC_OUTPUT_LIMIT = 64 * 1024;
+const CLEANUP_TERMINATION_GRACE_MS = 100;
+const CLEANUP_REAP_GRACE_MS = 100;
 const action = process.argv[2] ?? '';
 const stateArgument = process.argv[3] ?? '';
 const statePath = stateArgument ? path.resolve(stateArgument) : '';
@@ -156,22 +158,203 @@ function deadlineExpiredDiagnostic(command, args) {
     stderr: '',
     stdout_truncated: false,
     stderr_truncated: false,
+    timeout_ms: 0,
+    timed_out: false,
+    termination: null,
+    escalation: null,
+    reaped: true,
+    process_group_id: null,
+    descendants_settled: true,
+    unsettled_processes: [],
     deadline_exhausted: true,
   };
 }
 
-function captureCleanupDiagnostic(command, args, deadline, options = {}) {
+function boundedStreamCapture(stream) {
+  const suffix = Buffer.from('\n[diagnostic output truncated]\n');
+  const maximum = DIAGNOSTIC_OUTPUT_LIMIT - suffix.length;
+  const chunks = [];
+  let bytes = 0;
+  let truncated = false;
+  stream?.on('data', (chunk) => {
+    const buffer = Buffer.from(chunk);
+    const remaining = maximum - bytes;
+    if (remaining > 0) {
+      const captured = buffer.subarray(0, remaining);
+      chunks.push(captured);
+      bytes += captured.length;
+    }
+    if (buffer.length > remaining) truncated = true;
+  });
+  return () => ({
+    text: truncated
+      ? Buffer.concat([...chunks, suffix]).toString('utf8')
+      : Buffer.concat(chunks).toString('utf8'),
+    truncated,
+  });
+}
+
+function signalCleanupProcessGroup(child, signal) {
+  try {
+    if (process.platform === 'win32') {
+      child.kill(signal);
+    } else {
+      process.kill(-child.pid, signal);
+    }
+    return { signal, sent: true, error: null };
+  } catch (error) {
+    if (error?.code === 'ESRCH') {
+      return { signal, sent: false, error: null };
+    }
+    return {
+      signal,
+      sent: false,
+      error: error instanceof Error ? error.message : String(error),
+    };
+  }
+}
+
+function cleanupProcessGroupMembers(groupId) {
+  if (process.platform !== 'linux' || !Number.isInteger(groupId)) return null;
+  const members = [];
+  for (const entry of fs.readdirSync('/proc')) {
+    if (!/^[1-9]\d*$/.test(entry)) continue;
+    try {
+      const stat = fs.readFileSync(`/proc/${entry}/stat`, 'utf8');
+      const commandEnd = stat.lastIndexOf(')');
+      if (commandEnd < 0) continue;
+      const [state, , processGroup] = stat.slice(commandEnd + 2).split(' ');
+      if (state !== 'Z' && Number.parseInt(processGroup, 10) === groupId) {
+        members.push(Number.parseInt(entry, 10));
+      }
+    } catch (error) {
+      if (error?.code !== 'ENOENT' && error?.code !== 'ESRCH') throw error;
+    }
+  }
+  return members;
+}
+
+function cleanupProcessGroupExists(groupId) {
+  if (process.platform === 'win32' || !Number.isInteger(groupId)) return false;
+  try {
+    process.kill(-groupId, 0);
+    return true;
+  } catch (error) {
+    if (error?.code === 'ESRCH') return false;
+    return true;
+  }
+}
+
+async function captureCleanupDiagnostic(command, args, deadline, options = {}) {
   const { maximum = 10_000, ...diagnosticOptions } = options;
   const timeout = cleanupCommandTimeout(deadline, maximum);
-  if (timeout <= 0) return deadlineExpiredDiagnostic(command, args);
-  const record = captureDiagnostic(command, args, {
-    ...diagnosticOptions,
-    timeout,
+  if (timeout <= CLEANUP_TERMINATION_GRACE_MS + CLEANUP_REAP_GRACE_MS) {
+    return deadlineExpiredDiagnostic(command, args);
+  }
+  const commandDeadline = Date.now() + timeout;
+  const executionTimeout = timeout
+    - CLEANUP_TERMINATION_GRACE_MS
+    - CLEANUP_REAP_GRACE_MS;
+  const child = spawn(command, args, {
+    cwd: diagnosticOptions.cwd ?? repoRoot,
+    env: diagnosticOptions.env ?? process.env,
+    detached: process.platform !== 'win32',
+    stdio: ['ignore', 'pipe', 'pipe'],
   });
-  return {
-    ...record,
-    deadline_exhausted: Date.now() >= deadline,
-  };
+  const stdoutResult = boundedStreamCapture(child.stdout);
+  const stderrResult = boundedStreamCapture(child.stderr);
+  let spawnError = null;
+  let termination = null;
+  let escalation = null;
+  let timedOut = false;
+
+  return new Promise((resolve) => {
+    let settled = false;
+    let childClosed = false;
+    let settlementTimer = null;
+    const processGroupId = Number.isInteger(child.pid) ? child.pid : null;
+    const unsettledProcessGroupMembers = () => {
+      const members = cleanupProcessGroupMembers(processGroupId);
+      if (members !== null) return members;
+      return cleanupProcessGroupExists(processGroupId) || !childClosed
+        ? [processGroupId].filter(Number.isInteger)
+        : [];
+    };
+    const finish = (reaped, unsettledProcesses = unsettledProcessGroupMembers()) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(terminationTimer);
+      clearTimeout(escalationTimer);
+      clearTimeout(deadlineTimer);
+      clearTimeout(settlementTimer);
+      const stdout = stdoutResult();
+      const stderr = stderrResult();
+      const escalationFailure = termination?.error || escalation?.error;
+      const timeoutError = timedOut
+        ? (
+          escalationFailure
+            ? `cleanup command escalation failed: ${escalationFailure}`
+            : (
+              reaped
+                ? `cleanup command exceeded ${executionTimeout}ms and was reaped`
+                : `cleanup command did not settle within its ${timeout}ms lifecycle`
+            )
+        )
+        : null;
+      resolve({
+        command: [command, ...args],
+        status: child.exitCode,
+        signal: child.signalCode,
+        error: spawnError ?? timeoutError,
+        stdout: stdout.text,
+        stderr: stderr.text,
+        stdout_truncated: stdout.truncated,
+        stderr_truncated: stderr.truncated,
+        timeout_ms: timeout,
+        timed_out: timedOut,
+        termination,
+        escalation,
+        reaped,
+        process_group_id: processGroupId,
+        descendants_settled: unsettledProcesses.length === 0,
+        unsettled_processes: unsettledProcesses,
+        deadline_exhausted:
+          Date.now() >= deadline || (timedOut && commandDeadline >= deadline),
+      });
+    };
+    const finishWhenProcessGroupSettles = () => {
+      if (settled || !childClosed) return;
+      const unsettledProcesses = unsettledProcessGroupMembers();
+      if (unsettledProcesses.length === 0) {
+        finish(true, unsettledProcesses);
+        return;
+      }
+      settlementTimer = setTimeout(finishWhenProcessGroupSettles, 10);
+    };
+    child.once('error', (error) => {
+      spawnError = error instanceof Error ? error.message : String(error);
+    });
+    child.once('close', () => {
+      childClosed = true;
+      finishWhenProcessGroupSettles();
+    });
+    const terminationTimer = setTimeout(() => {
+      timedOut = true;
+      termination = signalCleanupProcessGroup(child, 'SIGTERM');
+    }, executionTimeout);
+    const escalationTimer = setTimeout(() => {
+      if (!timedOut) return;
+      escalation = signalCleanupProcessGroup(child, 'SIGKILL');
+    }, executionTimeout + CLEANUP_TERMINATION_GRACE_MS);
+    const deadlineTimer = setTimeout(() => {
+      if (!timedOut) timedOut = true;
+      if (!escalation) escalation = signalCleanupProcessGroup(child, 'SIGKILL');
+      child.stdout?.destroy();
+      child.stderr?.destroy();
+      child.unref();
+      finish(childClosed);
+    }, timeout);
+  });
 }
 
 function collectStartupDiagnostics(
@@ -261,7 +444,7 @@ function diagnosticFailure(record) {
     + `${String(record.stderr || record.stdout || record.error || 'no diagnostic output').trim()}`;
 }
 
-function dockerResourceInventory(project, deadline, priorResources = {}) {
+async function dockerResourceInventory(project, deadline, priorResources = {}) {
   const definitions = {
     containers: [
       'ps', '-aq', '--filter', `label=com.docker.compose.project=${project}`,
@@ -281,7 +464,7 @@ function dockerResourceInventory(project, deadline, priorResources = {}) {
   const commands = {};
   const failures = [];
   for (const [kind, args] of Object.entries(definitions)) {
-    const record = captureCleanupDiagnostic('docker', args, deadline);
+    const record = await captureCleanupDiagnostic('docker', args, deadline);
     commands[kind] = record;
     resources[kind] = record.status === 0
       ? lines(record.stdout)
@@ -296,13 +479,13 @@ function dockerResourceInventory(project, deadline, priorResources = {}) {
   };
 }
 
-function networkContainerInventory(
+async function networkContainerInventory(
   network,
   excludedReferences,
   deadline,
   priorContainers = [],
 ) {
-  const inspected = captureCleanupDiagnostic('docker', [
+  const inspected = await captureCleanupDiagnostic('docker', [
     'network', 'inspect', '--format', '{{json .Containers}}', network,
   ], deadline);
   if (inspected.status !== 0) {
@@ -404,35 +587,62 @@ function ownedSandboxArtifactInventory(state) {
   };
 }
 
-function inspectCurrentExecutorContainer(deadline = null) {
-  if (!fs.existsSync('/.dockerenv')) {
-    return { container: null, command: null };
+function executorContainerFromInspection(inspection, reference) {
+  if (inspection.status !== 0) return null;
+  const container = parseJsonOrNull(inspection.stdout);
+  if (!container?.Id
+    || container?.Config?.Hostname !== reference
+    || container?.State?.Running !== true) {
+    return null;
   }
-  const reference = env('HOSTNAME');
-  if (!reference) return { container: null, command: null };
-  const args = [
+  return {
+    reference,
+    id: String(container.Id),
+    networks: container?.NetworkSettings?.Networks ?? {},
+  };
+}
+
+function currentExecutorInspectionArguments(reference) {
+  return [
     'container', 'inspect', '--format',
     '{"Id":{{json .Id}},"Config":{"Hostname":{{json .Config.Hostname}}},'
     + '"State":{"Running":{{json .State.Running}}},"NetworkSettings":'
     + '{"Networks":{{json .NetworkSettings.Networks}}}}',
     reference,
   ];
-  const inspection = deadline === null
-    ? captureDiagnostic('docker', args, { timeout: 30_000 })
-    : captureCleanupDiagnostic('docker', args, deadline, { maximum: 30_000 });
-  if (inspection.status !== 0) return { container: null, command: inspection };
-  const container = parseJsonOrNull(inspection.stdout);
-  if (!container?.Id
-    || container?.Config?.Hostname !== reference
-    || container?.State?.Running !== true) {
-    return { container: null, command: inspection };
+}
+
+function inspectCurrentExecutorContainer() {
+  if (!fs.existsSync('/.dockerenv')) {
+    return { container: null, command: null };
   }
+  const reference = env('HOSTNAME');
+  if (!reference) return { container: null, command: null };
+  const inspection = captureDiagnostic(
+    'docker',
+    currentExecutorInspectionArguments(reference),
+    { timeout: 30_000 },
+  );
   return {
-    container: {
-      reference,
-      id: String(container.Id),
-      networks: container?.NetworkSettings?.Networks ?? {},
-    },
+    container: executorContainerFromInspection(inspection, reference),
+    command: inspection,
+  };
+}
+
+async function inspectCurrentExecutorContainerForCleanup(deadline) {
+  if (!fs.existsSync('/.dockerenv')) {
+    return { container: null, command: null };
+  }
+  const reference = env('HOSTNAME');
+  if (!reference) return { container: null, command: null };
+  const inspection = await captureCleanupDiagnostic(
+    'docker',
+    currentExecutorInspectionArguments(reference),
+    deadline,
+    { maximum: 30_000 },
+  );
+  return {
+    container: executorContainerFromInspection(inspection, reference),
     command: inspection,
   };
 }
@@ -469,8 +679,10 @@ function executorNetworkAttachment(network) {
   };
 }
 
-function disconnectExecutorNetwork(network, deadline = null) {
-  const before = inspectCurrentExecutorContainer(deadline);
+async function disconnectExecutorNetwork(network, deadline = null) {
+  const before = deadline === null
+    ? inspectCurrentExecutorContainer()
+    : await inspectCurrentExecutorContainerForCleanup(deadline);
   const executor = before.container;
   if (!executor) {
     return {
@@ -491,8 +703,10 @@ function disconnectExecutorNetwork(network, deadline = null) {
   ];
   const disconnection = deadline === null
     ? captureDiagnostic('docker', args, { timeout: 30_000 })
-    : captureCleanupDiagnostic('docker', args, deadline, { maximum: 30_000 });
-  const after = inspectCurrentExecutorContainer(deadline);
+    : await captureCleanupDiagnostic('docker', args, deadline, { maximum: 30_000 });
+  const after = deadline === null
+    ? inspectCurrentExecutorContainer()
+    : await inspectCurrentExecutorContainerForCleanup(deadline);
   const detached = after.container;
   if (!detached || detached.networks?.[network]) {
     return {
@@ -959,14 +1173,14 @@ async function start() {
         pidFile: relayPidFile,
       });
     }
-    if (executorAttachment?.owned) disconnectExecutorNetwork(`${project}_default`);
+    if (executorAttachment?.owned) await disconnectExecutorNetwork(`${project}_default`);
     composeDown(partialState, true);
     fs.rmSync(overrideFile, { force: true });
     throw error;
   }
 }
 
-function stop() {
+async function stop() {
   const state = validateState(JSON.parse(fs.readFileSync(statePath, 'utf8')));
   const cleanupStartedAt = now();
   const cleanupStartedMilliseconds = Date.now();
@@ -988,7 +1202,7 @@ function stop() {
   const executorNetworkCleanup =
     state.endpoint.transport.mode === 'executor_network_attachment'
       && state.endpoint.transport.attachment_owned_by_wave === true
-      ? disconnectExecutorNetwork(state.compose.network, cleanupDeadline)
+      ? await disconnectExecutorNetwork(state.compose.network, cleanupDeadline)
       : { status: 'not_required', error: null };
   const composeArgs = [
     'compose',
@@ -997,7 +1211,7 @@ function stop() {
     '-f', path.join(cleanupDirectory, state.compose.override_file),
     'down', '-v', '--remove-orphans',
   ];
-  const downAttempts = [captureCleanupDiagnostic(
+  const downAttempts = [await captureCleanupDiagnostic(
     'docker',
     composeArgs,
     cleanupDeadline,
@@ -1040,13 +1254,13 @@ function stop() {
   let latestNetworkInventory = { containers: [], command: null, failures: [] };
 
   while (Date.now() < cleanupDeadline && stableEmptyObservations < 3) {
-    latestInventory = dockerResourceInventory(
+    latestInventory = await dockerResourceInventory(
       state.compose.project,
       cleanupDeadline,
       latestInventory?.resources,
     );
     latestNetworkInventory = latestInventory.resources.networks.includes(state.compose.network)
-      ? networkContainerInventory(
+      ? await networkContainerInventory(
         state.compose.network,
         executorExclusions,
         cleanupDeadline,
@@ -1107,7 +1321,7 @@ function stop() {
     for (const kind of ['containers', 'volumes', 'networks']) {
       for (const name of removalTargets[kind]) {
         const args = removalCommands[kind](name);
-        const removal = captureCleanupDiagnostic(
+        const removal = await captureCleanupDiagnostic(
           'docker',
           args,
           cleanupDeadline,
@@ -1123,7 +1337,7 @@ function stop() {
     for (const artifact of sandboxArtifacts) {
       if (protectedSandboxArtifacts.has(artifact)) continue;
       const relativeArtifact = path.relative(cleanupDirectory, artifact);
-      const removal = captureCleanupDiagnostic(
+      const removal = await captureCleanupDiagnostic(
         'rm',
         ['-rf', '--', relativeArtifact],
         cleanupDeadline,
@@ -1140,13 +1354,13 @@ function stop() {
     if (remaining > 0) sleepSync(remaining);
   }
 
-  latestInventory = dockerResourceInventory(
+  latestInventory = await dockerResourceInventory(
     state.compose.project,
     cleanupDeadline,
     latestInventory?.resources,
   );
   latestNetworkInventory = latestInventory.resources.networks.includes(state.compose.network)
-    ? networkContainerInventory(
+    ? await networkContainerInventory(
       state.compose.network,
       executorExclusions,
       cleanupDeadline,
@@ -1248,5 +1462,5 @@ if (!statePath || !['start', 'stop'].includes(action)) {
 } else if (action === 'start') {
   await start();
 } else {
-  stop();
+  await stop();
 }

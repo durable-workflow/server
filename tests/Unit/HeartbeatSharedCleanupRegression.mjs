@@ -17,10 +17,15 @@ const lifecycleRunner = path.join(
 
 const fakeDockerSource = `#!/usr/bin/env node
 const fs = require('node:fs');
+const { spawn } = require('node:child_process');
 const statePath = process.env.FAKE_DOCKER_STATE;
 const args = process.argv.slice(2);
 const state = JSON.parse(fs.readFileSync(statePath, 'utf8'));
-const save = () => fs.writeFileSync(statePath, JSON.stringify(state));
+const save = () => {
+  const temporary = statePath + '.tmp-' + process.pid;
+  fs.writeFileSync(temporary, JSON.stringify(state));
+  fs.renameSync(temporary, statePath);
+};
 const output = (values) => {
   if (values.length > 0) process.stdout.write(values.join('\\n') + '\\n');
 };
@@ -31,21 +36,34 @@ if (Array.isArray(state.commands)) {
 if (state.hang_command === 'volume-ls'
   && args[0] === 'volume'
   && args[1] === 'ls') {
-  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 60_000);
-}
-if (args[0] === 'compose' && args.includes('down')) {
+  const descendant = spawn(process.execPath, [
+    '-e',
+    "process.on('SIGTERM', () => {}); setInterval(() => {}, 1000);",
+  ], { stdio: 'ignore' });
+  state.descendant_pid = descendant.pid;
+  save();
+  process.stdout.write(
+    'hung inventory stdout remains available\\n' + 'o'.repeat(80 * 1024),
+  );
+  process.stderr.write(
+    'hung inventory stderr remains available\\n' + 'e'.repeat(80 * 1024),
+  );
+  process.on('SIGTERM', () => {
+    state.sigterm_ignored = true;
+    save();
+  });
+  setInterval(() => {}, 1000);
+} else if (args[0] === 'compose' && args.includes('down')) {
   state.containers = [];
   state.volumes = state.persistent_volume ? [state.persistent_volume] : [];
   state.networks = [];
   state.race_ready = state.inject_race === true;
   save();
   process.exit(0);
-}
-if (args[0] === 'container' && args[1] === 'inspect') {
+} else if (args[0] === 'container' && args[1] === 'inspect') {
   process.stderr.write('No such container\\n');
   process.exit(1);
-}
-if (args[0] === 'ps') {
+} else if (args[0] === 'ps') {
   if (state.race_ready) {
     state.race_ready = false;
     state.inject_race = false;
@@ -56,16 +74,13 @@ if (args[0] === 'ps') {
   }
   output(state.containers);
   process.exit(0);
-}
-if (args[0] === 'volume' && args[1] === 'ls') {
+} else if (args[0] === 'volume' && args[1] === 'ls') {
   output(state.volumes);
   process.exit(0);
-}
-if (args[0] === 'network' && args[1] === 'ls') {
+} else if (args[0] === 'network' && args[1] === 'ls') {
   output(state.networks);
   process.exit(0);
-}
-if (args[0] === 'network' && args[1] === 'inspect') {
+} else if (args[0] === 'network' && args[1] === 'inspect') {
   const network = args.at(-1);
   if (!state.networks.includes(network)) {
     process.stderr.write('network not found\\n');
@@ -73,13 +88,11 @@ if (args[0] === 'network' && args[1] === 'inspect') {
   }
   process.stdout.write('{}\\n');
   process.exit(0);
-}
-if (args[0] === 'rm' && args[1] === '-f') {
+} else if (args[0] === 'rm' && args[1] === '-f') {
   state.containers = state.containers.filter((value) => value !== args[2]);
   save();
   process.exit(0);
-}
-if (args[0] === 'volume' && args[1] === 'rm') {
+} else if (args[0] === 'volume' && args[1] === 'rm') {
   const name = args.at(-1);
   if (state.persistent_volume === name) {
     process.stderr.write('volume is in use by an owned container\\n');
@@ -88,14 +101,14 @@ if (args[0] === 'volume' && args[1] === 'rm') {
   state.volumes = state.volumes.filter((value) => value !== name);
   save();
   process.exit(0);
-}
-if (args[0] === 'network' && args[1] === 'rm') {
+} else if (args[0] === 'network' && args[1] === 'rm') {
   state.networks = state.networks.filter((value) => value !== args[2]);
   save();
   process.exit(0);
+} else {
+  process.stderr.write('unsupported fake docker command: ' + args.join(' ') + '\\n');
+  process.exit(2);
 }
-process.stderr.write('unsupported fake docker command: ' + args.join(' ') + '\\n');
-process.exit(2);
 `;
 
 function sharedState(project, overrideFile) {
@@ -187,6 +200,17 @@ function fixture(options = {}) {
   };
 }
 
+function processSettled(pid) {
+  try {
+    const stat = fs.readFileSync(`/proc/${pid}/stat`, 'utf8');
+    const commandEnd = stat.lastIndexOf(')');
+    return commandEnd >= 0 && stat.slice(commandEnd + 2, commandEnd + 3) === 'Z';
+  } catch (error) {
+    if (error?.code === 'ENOENT') return true;
+    throw error;
+  }
+}
+
 test('shared cleanup survives a post-down resource race and proves stable absence', () => {
   const run = fixture({
     injectRace: true,
@@ -270,7 +294,7 @@ test('persistent resource residue is non-passing with bounded decisive diagnosti
   }
 });
 
-test('a hung inventory command cannot extend or pass the shared cleanup deadline', () => {
+test('a SIGTERM-ignoring inventory process group cannot extend the cleanup deadline', () => {
   const run = fixture({
     hangCommand: 'volume-ls',
     cleanupTimeoutSeconds: 1,
@@ -307,6 +331,8 @@ test('a hung inventory command cannot extend or pass the shared cleanup deadline
         args[0] === 'network' && args[1] === 'ls'),
       false,
     );
+    assert.equal(dockerState.sigterm_ignored, true);
+    assert.equal(processSettled(dockerState.descendant_pid), true);
 
     const diagnostics = JSON.parse(fs.readFileSync(
       path.join(run.result, 'shared-server-cleanup-diagnostics.json'),
@@ -316,6 +342,48 @@ test('a hung inventory command cannot extend or pass the shared cleanup deadline
     assert.equal(
       diagnostics.observations[0].commands.volumes.deadline_exhausted,
       true,
+    );
+    assert.equal(diagnostics.observations[0].commands.volumes.status, null);
+    assert.equal(diagnostics.observations[0].commands.volumes.signal, 'SIGKILL');
+    assert.equal(diagnostics.observations[0].commands.volumes.timed_out, true);
+    assert.deepEqual(
+      diagnostics.observations[0].commands.volumes.termination,
+      { signal: 'SIGTERM', sent: true, error: null },
+    );
+    assert.deepEqual(
+      diagnostics.observations[0].commands.volumes.escalation,
+      { signal: 'SIGKILL', sent: true, error: null },
+    );
+    assert.equal(diagnostics.observations[0].commands.volumes.reaped, true);
+    assert.equal(
+      diagnostics.observations[0].commands.volumes.descendants_settled,
+      true,
+    );
+    assert.deepEqual(
+      diagnostics.observations[0].commands.volumes.unsettled_processes,
+      [],
+    );
+    assert.equal(
+      diagnostics.observations[0].commands.volumes.stdout.startsWith(
+        'hung inventory stdout remains available\n',
+      ),
+      true,
+    );
+    assert.equal(
+      diagnostics.observations[0].commands.volumes.stderr.startsWith(
+        'hung inventory stderr remains available\n',
+      ),
+      true,
+    );
+    assert.equal(diagnostics.observations[0].commands.volumes.stdout_truncated, true);
+    assert.equal(diagnostics.observations[0].commands.volumes.stderr_truncated, true);
+    assert.ok(
+      Buffer.byteLength(diagnostics.observations[0].commands.volumes.stdout)
+        <= 64 * 1024,
+    );
+    assert.ok(
+      Buffer.byteLength(diagnostics.observations[0].commands.volumes.stderr)
+        <= 64 * 1024,
     );
     assert.equal(
       diagnostics.observations[0].commands.networks.error,
