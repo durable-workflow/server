@@ -351,7 +351,7 @@ SH);
         $this->assertStringContainsString('migrations_completed: true', $lifecycle);
         $this->assertStringContainsString("cleanup_status: 'pending'", $lifecycle);
         $this->assertStringContainsString(
-            'function networkContainerIds(network, excludedReferences = [])',
+            'function networkContainerInventory(network, excludedReferences, timeout)',
             $lifecycle,
         );
         $this->assertStringContainsString('attached_cell_containers_found', $lifecycle);
@@ -407,7 +407,10 @@ SH);
         $this->assertStringContainsString("'$1[REDACTED]'", $relay);
 
         $this->assertStringContainsString('DW_HEARTBEATS_CELL_TIMEOUT_SECONDS', $wave);
-        $this->assertStringContainsString('timeout --signal=TERM --kill-after=15s', $wave);
+        $this->assertStringContainsString(
+            'setsid timeout --foreground --signal=TERM --kill-after=15s',
+            $wave,
+        );
         $this->assertStringContainsString('run_cell php', $wave);
         $this->assertStringContainsString('run_cell python', $wave);
         $this->assertStringContainsString('run_cell rust', $wave);
@@ -432,6 +435,8 @@ SH);
             [
                 $nodeBinary,
                 '--test',
+                __DIR__.'/HeartbeatSharedCleanupRegression.mjs',
+                __DIR__.'/HeartbeatSharedWaveCancellationRegression.mjs',
                 __DIR__.'/HeartbeatSharedWaveResultRegression.mjs',
                 __DIR__.'/HeartbeatSharedServerReadinessRegression.mjs',
             ],

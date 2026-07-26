@@ -356,7 +356,10 @@
       "waterline-worker-status-evidence.json",
       "heartbeat-shared-wave-result.json",
       "heartbeat-shared-wave-isolation.json",
-      "shared-server-state.json"
+      "heartbeat-shared-wave-children.json",
+      "heartbeat-shared-wave-process-cleanup.log",
+      "shared-server-state.json",
+      "shared-server-cleanup-diagnostics.json"
     ],
     "must_execute_against_published_artifacts": true,
     "must_record_runner_blocked_false_for_product_evidence": true,
@@ -420,11 +423,14 @@
       "failure_policy": [
         "bounded_per_cell_timeout",
         "wait_for_all_peer_cells",
+        "verify_all_owned_process_groups_settled",
         "retain_independent_cell_evidence",
         "cleanup_shared_compose_project_after_every_terminal_path",
         "cleanup_shared_network_cell_containers_after_every_terminal_path",
         "cleanup_executor_network_attachment_after_every_terminal_path",
-        "cleanup_host_relay_after_every_terminal_path"
+        "cleanup_host_relay_after_every_terminal_path",
+        "verify_stable_empty_owned_resource_inventory_before_pass",
+        "classify_cleanup_failure_as_runner_evidence"
       ],
       "standalone_clean_bootstrap_path_preserved": true
     },

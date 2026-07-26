@@ -78,15 +78,54 @@ function writeFixture(root, pythonOutcome = 'pass') {
       migrations_completed: true,
       exit_code: 0,
     },
+    compose: {
+      project: 'dw-hb-wave-example',
+    },
     cell_isolation: isolation(),
     lifecycle: {
       owner: 'heartbeat-wave-runner',
       cleanup_required: true,
       cleanup_status: 'pass',
       cleanup_failures: [],
+      cleanup_resources_remaining: {
+        containers: [],
+        volumes: [],
+        networks: [],
+        attached_containers: [],
+        sandbox_artifacts: [],
+      },
+      cleanup_verification: {
+        required_stable_empty_observations: 3,
+        stable_empty_observations: 3,
+      },
     },
   };
   fs.writeFileSync(path.join(root, 'shared-server-state.json'), JSON.stringify(state));
+  fs.writeFileSync(path.join(root, 'shared-server-cleanup-diagnostics.json'), JSON.stringify({
+    schema: 'durable-workflow.v2.heartbeat-runtime.shared-server-cleanup-diagnostics',
+    version: 1,
+    project: state.compose.project,
+    stable_empty_observations: 3,
+    final_resources_remaining: state.lifecycle.cleanup_resources_remaining,
+    failures: [],
+  }));
+  fs.writeFileSync(path.join(root, 'heartbeat-shared-wave-children.json'), JSON.stringify({
+    schema: 'durable-workflow.v2.heartbeat-runtime.shared-wave-children',
+    version: 1,
+    outcome: 'pass',
+    required_cells: ['php', 'python', 'rust', 'waterline'],
+    required_cells_present: true,
+    all_process_groups_settled: true,
+    cells: Object.fromEntries(
+      ['php', 'python', 'rust', 'waterline'].map((cell, index) => [cell, {
+        pid: 1000 + index,
+        process_group_id: 1000 + index,
+        exit_code: 0,
+        settled: true,
+        forced_signal: null,
+      }]),
+    ),
+  }));
   fs.writeFileSync(path.join(root, 'heartbeat-shared-wave-isolation.json'), JSON.stringify({
     schema: 'durable-workflow.v2.heartbeat-runtime.shared-wave-isolation',
     version: 1,
@@ -174,10 +213,86 @@ test('one-bootstrap wave passes only with four isolated cells and final cleanup'
     assert.equal(result.outcome, 'pass');
     assert.equal(result.published_server_bootstrap.bootstrap_count, 1);
     assert.equal(result.cleanup.cleanup_status, 'pass');
+    assert.equal(result.child_processes.all_process_groups_settled, true);
     assert.deepEqual(Object.keys(result.cells), ['php', 'python', 'rust', 'waterline']);
     assert.equal(result.completed_peer_evidence.length, 4);
     assert.equal(result.isolation.namespaces_unique, true);
     assert.equal(result.isolation.every_cell_matches_receipt, true);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('a prior cleanup flag cannot pass without settled child-process evidence', () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'heartbeat-wave-child-residue-'));
+  try {
+    writeFixture(root);
+    fs.rmSync(path.join(root, 'heartbeat-shared-wave-children.json'));
+    const execution = execute(root);
+    assert.equal(execution.status, 1, execution.stderr);
+    const result = JSON.parse(fs.readFileSync(
+      path.join(root, 'heartbeat-shared-wave-result.json'),
+      'utf8',
+    ));
+    assert.equal(result.outcome, 'fail');
+    assert.equal(result.runner_blocked, true);
+    assert.equal(
+      result.findings.some((finding) =>
+        finding.finding_type === 'heartbeat_wave_child_process_cleanup_failed'),
+      true,
+    );
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('an unsettled owned process group remains runner evidence', () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'heartbeat-wave-unsettled-child-'));
+  try {
+    writeFixture(root);
+    const childrenPath = path.join(root, 'heartbeat-shared-wave-children.json');
+    const children = JSON.parse(fs.readFileSync(childrenPath, 'utf8'));
+    children.cells.python.settled = false;
+    fs.writeFileSync(childrenPath, JSON.stringify(children));
+    const execution = execute(root);
+    assert.equal(execution.status, 1, execution.stderr);
+    const result = JSON.parse(fs.readFileSync(
+      path.join(root, 'heartbeat-shared-wave-result.json'),
+      'utf8',
+    ));
+    assert.equal(result.outcome, 'fail');
+    assert.equal(result.runner_blocked, true);
+    assert.equal(
+      result.findings.some((finding) =>
+        finding.finding_type === 'heartbeat_wave_child_process_cleanup_failed'),
+      true,
+    );
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('a cleanup pass flag cannot hide owned resource residue', () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'heartbeat-wave-resource-residue-'));
+  try {
+    writeFixture(root);
+    const statePath = path.join(root, 'shared-server-state.json');
+    const state = JSON.parse(fs.readFileSync(statePath, 'utf8'));
+    state.lifecycle.cleanup_resources_remaining.containers = ['owned-server-container'];
+    fs.writeFileSync(statePath, JSON.stringify(state));
+    const execution = execute(root);
+    assert.equal(execution.status, 1, execution.stderr);
+    const result = JSON.parse(fs.readFileSync(
+      path.join(root, 'heartbeat-shared-wave-result.json'),
+      'utf8',
+    ));
+    assert.equal(result.outcome, 'fail');
+    assert.equal(result.runner_blocked, true);
+    assert.equal(
+      result.findings.some((finding) =>
+        finding.finding_type === 'heartbeat_wave_cleanup_failed'),
+      true,
+    );
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
   }

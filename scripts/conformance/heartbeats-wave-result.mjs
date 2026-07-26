@@ -43,6 +43,8 @@ function collectFieldValues(value, fields, collected = []) {
 
 const state = JSON.parse(fs.readFileSync(statePath, 'utf8'));
 const projectionIsolation = read('heartbeat-shared-wave-isolation.json');
+const childProcesses = read('heartbeat-shared-wave-children.json');
+const cleanupDiagnostics = read('shared-server-cleanup-diagnostics.json');
 const cells = {
   php: {
     result_file: 'php/php-sdk-heartbeat-loop-evidence.json',
@@ -163,7 +165,35 @@ const waveIsolation = {
 const finishedAt = new Date().toISOString().replace(/\.\d{3}Z$/, 'Z');
 const wallSeconds = Math.max(0, (Date.parse(finishedAt) - Date.parse(startedAt)) / 1_000);
 const cellsPassed = Object.values(cellResults).every((cell) => cell.outcome === 'pass');
-const cleanupPassed = state.lifecycle.cleanup_status === 'pass';
+const cleanupRemaining = state.lifecycle.cleanup_resources_remaining ?? {};
+const cleanupResourceKinds = [
+  'containers', 'volumes', 'networks', 'attached_containers', 'sandbox_artifacts',
+];
+const resourcesEmpty = (resources) => cleanupResourceKinds.every(
+  (kind) => Array.isArray(resources?.[kind]) && resources[kind].length === 0,
+);
+const cleanupInventoryEmpty = resourcesEmpty(cleanupRemaining)
+  && resourcesEmpty(cleanupDiagnostics?.final_resources_remaining);
+const cleanupPassed = state.lifecycle.cleanup_status === 'pass'
+  && Array.isArray(state.lifecycle.cleanup_failures)
+  && state.lifecycle.cleanup_failures.length === 0
+  && state.lifecycle.cleanup_verification?.stable_empty_observations >= 3
+  && cleanupDiagnostics?.schema
+    === 'durable-workflow.v2.heartbeat-runtime.shared-server-cleanup-diagnostics'
+  && cleanupDiagnostics?.project === state.compose?.project
+  && cleanupDiagnostics?.stable_empty_observations >= 3
+  && Array.isArray(cleanupDiagnostics?.failures)
+  && cleanupDiagnostics.failures.length === 0
+  && cleanupInventoryEmpty;
+const requiredChildProcesses = ['php', 'python', 'rust', 'waterline'];
+const childProcessesPassed =
+  childProcesses?.schema === 'durable-workflow.v2.heartbeat-runtime.shared-wave-children'
+  && childProcesses?.outcome === 'pass'
+  && childProcesses?.required_cells_present === true
+  && childProcesses?.all_process_groups_settled === true
+  && requiredChildProcesses.every((cell) =>
+    childProcesses?.cells?.[cell]?.settled === true
+    && Number.isInteger(childProcesses.cells[cell].process_group_id));
 const isolationPassed = Object.values(waveIsolation).every((value) => value === true);
 const harnessIsolationPassed = waveIsolation.namespaces_unique
   && waveIsolation.task_queue_prefixes_unique
@@ -171,10 +201,17 @@ const harnessIsolationPassed = waveIsolation.namespaces_unique
   && waveIsolation.worker_id_prefixes_unique
   && waveIsolation.every_cell_matches_receipt;
 const performancePassed = wallSeconds <= maximumSeconds;
-const outcome = cellsPassed && cleanupPassed && isolationPassed && performancePassed ? 'pass' : 'fail';
+const outcome = cellsPassed
+  && childProcessesPassed
+  && cleanupPassed
+  && isolationPassed
+  && performancePassed
+  ? 'pass'
+  : 'fail';
 const runnerBlocked = outcome !== 'pass'
   && (
-    !cleanupPassed
+    !childProcessesPassed
+    || !cleanupPassed
     || !harnessIsolationPassed
     || observerTransportBlocked
     || !performancePassed
@@ -193,11 +230,20 @@ for (const [cell, result] of Object.entries(cellResults)) {
     });
   }
 }
+if (!childProcessesPassed) {
+  findings.push({
+    finding_type: 'heartbeat_wave_child_process_cleanup_failed',
+    owning_cell: 'conformance-harness',
+    process_evidence: childProcesses,
+  });
+}
 if (!cleanupPassed) {
   findings.push({
     finding_type: 'heartbeat_wave_cleanup_failed',
     owning_cell: 'shared-server',
     failures: state.lifecycle.cleanup_failures ?? [],
+    resources_remaining: state.lifecycle.cleanup_resources_remaining ?? null,
+    diagnostic_file: 'shared-server-cleanup-diagnostics.json',
   });
 }
 if (!isolationPassed) {
@@ -252,10 +298,12 @@ const result = {
     observer_projection: projectionIsolation,
   },
   cells: cellResults,
+  child_processes: childProcesses,
   completed_peer_evidence: Object.values(cellResults)
     .filter((cell) => cell.evidence_present)
     .map((cell) => cell.result_file),
   cleanup: state.lifecycle,
+  cleanup_diagnostics: cleanupDiagnostics,
   findings,
   local_product_source_checkouts_used: false,
 };

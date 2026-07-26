@@ -29,6 +29,7 @@ const STARTUP_DIAGNOSTIC_FILES = {
   server_log: 'shared-server-server.log',
 };
 const RELAY_PID_FILE = 'shared-server-relay.pid';
+const CLEANUP_DIAGNOSTIC_FILE = 'shared-server-cleanup-diagnostics.json';
 const DIAGNOSTIC_OUTPUT_LIMIT = 64 * 1024;
 const action = process.argv[2] ?? '';
 const stateArgument = process.argv[3] ?? '';
@@ -42,6 +43,10 @@ function env(name) {
 
 function now() {
   return new Date().toISOString().replace(/\.\d{3}Z$/, 'Z');
+}
+
+function sleepSync(milliseconds) {
+  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, milliseconds);
 }
 
 function digest(value) {
@@ -141,6 +146,21 @@ function diagnosticText(record) {
   return `${output.join('\n')}\n`;
 }
 
+function completedDiagnostic(command, args, result) {
+  const stdout = boundedOutput(result.stdout);
+  const stderr = boundedOutput(result.stderr);
+  return {
+    command: [command, ...args],
+    status: result.status,
+    signal: result.signal,
+    error: result.error ? String(result.error.message ?? result.error) : null,
+    stdout: stdout.text,
+    stderr: stderr.text,
+    stdout_truncated: stdout.truncated,
+    stderr_truncated: stderr.truncated,
+  };
+}
+
 function collectStartupDiagnostics(
   composePrefix,
   composeEnvironment,
@@ -219,39 +239,141 @@ function startupError(classification, readiness = null) {
   return error;
 }
 
-function dockerResources(project) {
-  return {
-    containers: String(run('docker', [
+function lines(value) {
+  return String(value ?? '').trim().split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
+}
+
+function diagnosticFailure(record) {
+  return `command failed (${record.status ?? 'no status'}): ${record.command.join(' ')}: `
+    + `${String(record.stderr || record.stdout || record.error || 'no diagnostic output').trim()}`;
+}
+
+function dockerResourceInventory(project, timeout) {
+  const definitions = {
+    containers: [
       'ps', '-aq', '--filter', `label=com.docker.compose.project=${project}`,
-    ], { timeout: 30_000 }).stdout).trim().split(/\r?\n/).filter(Boolean),
-    volumes: String(run('docker', [
+    ],
+    volumes: [
       'volume', 'ls',
       '--filter', `label=com.docker.compose.project=${project}`,
       '--format', '{{.Name}}',
-    ], { timeout: 30_000 }).stdout).trim().split(/\r?\n/).filter(Boolean),
-    networks: String(run('docker', [
+    ],
+    networks: [
       'network', 'ls',
       '--filter', `label=com.docker.compose.project=${project}`,
       '--format', '{{.Name}}',
-    ], { timeout: 30_000 }).stdout).trim().split(/\r?\n/).filter(Boolean),
+    ],
+  };
+  const resources = {};
+  const commands = {};
+  const failures = [];
+  for (const [kind, args] of Object.entries(definitions)) {
+    const record = captureDiagnostic('docker', args, { timeout });
+    commands[kind] = record;
+    resources[kind] = record.status === 0 ? lines(record.stdout) : [];
+    if (record.status !== 0) failures.push(diagnosticFailure(record));
+  }
+  return { resources, commands, failures };
+}
+
+function networkContainerInventory(network, excludedReferences, timeout) {
+  const inspected = captureDiagnostic('docker', [
+    'network', 'inspect', '--format', '{{json .Containers}}', network,
+  ], { timeout });
+  if (inspected.status !== 0) {
+    return {
+      containers: [],
+      command: inspected,
+      failures: [diagnosticFailure(inspected)],
+    };
+  }
+  const containers = parseJsonOrNull(inspected.stdout);
+  if (!containers || typeof containers !== 'object' || Array.isArray(containers)) {
+    return {
+      containers: [],
+      command: inspected,
+      failures: ['could not parse the shared network container inventory'],
+    };
+  }
+  const exclusions = excludedReferences.map((value) => String(value ?? '').trim()).filter(Boolean);
+  return {
+    containers: [
+      ...new Set(
+        Object.entries(containers)
+          .filter(([id, container]) => !exclusions.some((reference) =>
+            id.startsWith(reference)
+            || reference.startsWith(id)
+            || String(container?.Name ?? '') === reference
+            || String(container?.ContainerID ?? '').startsWith(reference)))
+          .map(([, container]) => String(container?.Name ?? container?.ContainerID ?? '').trim())
+          .filter(Boolean),
+      ),
+    ],
+    command: inspected,
+    failures: [],
   };
 }
 
-function networkContainerIds(network, excludedReferences = []) {
-  const inspected = run('docker', [
-    'network', 'inspect', '--format', '{{json .Containers}}', network,
-  ], { allowFailure: true, timeout: 30_000 });
-  if (inspected.status !== 0) return [];
-  const containers = parseJson(inspected.stdout) ?? {};
-  const exclusions = excludedReferences.map((value) => String(value ?? '').trim()).filter(Boolean);
-  return [...new Set(Object.entries(containers)
-    .filter(([id, container]) => !exclusions.some((reference) =>
-      id.startsWith(reference)
-      || reference.startsWith(id)
-      || String(container?.Name ?? '') === reference
-      || String(container?.ContainerID ?? '').startsWith(reference)))
-    .map(([, container]) => String(container?.Name ?? container?.ContainerID ?? '').trim())
-    .filter(Boolean))];
+function cleanupTimeoutMilliseconds() {
+  const seconds = Number.parseInt(env('DW_HEARTBEATS_CLEANUP_TIMEOUT_SECONDS') || '45', 10);
+  if (!Number.isInteger(seconds) || seconds < 1 || seconds > 120) {
+    throw new Error('DW_HEARTBEATS_CLEANUP_TIMEOUT_SECONDS must be an integer from 1 to 120');
+  }
+  return seconds * 1_000;
+}
+
+function cleanupCommandTimeout(deadline, maximum = 10_000) {
+  return Math.max(250, Math.min(maximum, deadline - Date.now()));
+}
+
+function ownedSandboxArtifactInventory(state) {
+  const directory = path.dirname(statePath);
+  const artifacts = [];
+  const failures = [];
+  const exactFiles = [
+    path.join(directory, state.compose.override_file),
+    path.join(directory, state.endpoint?.transport?.relay_pid_file ?? RELAY_PID_FILE),
+  ];
+  for (const file of exactFiles) {
+    try {
+      fs.lstatSync(file);
+      artifacts.push(file);
+    } catch (error) {
+      if (error?.code !== 'ENOENT') {
+        failures.push(
+          `sandbox artifact inspection failed for ${path.relative(directory, file)}: `
+          + `${error instanceof Error ? error.message : String(error)}`,
+        );
+      }
+    }
+  }
+  const cellPatterns = {
+    php: /^php-heartbeat-run\./,
+    python: /^python-heartbeat-run\./,
+    rust: /^rust-heartbeat-run\./,
+    waterline: /^waterline-worker-status-run\./,
+  };
+  for (const [cell, pattern] of Object.entries(cellPatterns)) {
+    const cellDirectory = path.join(directory, cell);
+    try {
+      for (const entry of fs.readdirSync(cellDirectory, { withFileTypes: true })) {
+        if (entry.isDirectory() && pattern.test(entry.name)) {
+          artifacts.push(path.join(cellDirectory, entry.name));
+        }
+      }
+    } catch (error) {
+      if (error?.code !== 'ENOENT') {
+        failures.push(
+          `sandbox directory inspection failed for ${cell}: `
+          + `${error instanceof Error ? error.message : String(error)}`,
+        );
+      }
+    }
+  }
+  return {
+    artifacts: [...new Set(artifacts)],
+    failures,
+  };
 }
 
 function currentExecutorContainer() {
@@ -389,7 +511,7 @@ function startRelayProcess(executorReference, port, ownershipToken, targetOrigin
   return waitForRelayPid(relayPidFile, ownershipToken);
 }
 
-function composeDown(state, allowFailure = false) {
+function composeDown(state, allowFailure = false, timeout = 180_000) {
   const baseFile = path.join(repoRoot, state.compose.base_file);
   const overrideFile = path.join(path.dirname(statePath), state.compose.override_file);
   return run('docker', [
@@ -411,7 +533,7 @@ function composeDown(state, allowFailure = false) {
       DB_ROOT_PASSWORD: 'root',
     },
     allowFailure,
-    timeout: 180_000,
+    timeout,
   });
 }
 
@@ -787,6 +909,11 @@ async function start() {
 
 function stop() {
   const state = validateState(JSON.parse(fs.readFileSync(statePath, 'utf8')));
+  const cleanupStartedAt = now();
+  const cleanupStartedMilliseconds = Date.now();
+  const cleanupTimeout = cleanupTimeoutMilliseconds();
+  const cleanupDeadline = cleanupStartedMilliseconds + cleanupTimeout;
+  const cleanupDirectory = path.dirname(statePath);
   const executor = currentExecutorContainer();
   const executorExclusions = [env('HOSTNAME'), executor?.id];
   const relayCleanup = stopHeartbeatRelay({
@@ -801,48 +928,150 @@ function stop() {
       && state.endpoint.transport.attachment_owned_by_wave === true
       ? disconnectExecutorNetwork(state.compose.network)
       : { status: 'not_required', error: null };
-  const downAttempts = [composeDown(state, true)];
-  const attachedCellContainers = executorNetworkCleanup.status === 'failed'
-    ? []
-    : networkContainerIds(state.compose.network, executorExclusions);
-  const attachedCellRemovalFailures = [];
+  const composeArgs = [
+    'compose',
+    '-p', state.compose.project,
+    '-f', path.join(repoRoot, state.compose.base_file),
+    '-f', path.join(cleanupDirectory, state.compose.override_file),
+    'down', '-v', '--remove-orphans',
+  ];
+  const downAttempt = composeDown(
+    state,
+    true,
+    cleanupCommandTimeout(cleanupDeadline, 45_000),
+  );
+  const downAttempts = [
+    completedDiagnostic('docker', composeArgs, downAttempt),
+  ];
   const fallbackRemoved = { containers: [], volumes: [], networks: [] };
-  for (const name of attachedCellContainers) {
-    const removal = run('docker', ['rm', '-f', name], {
-      allowFailure: true,
-      timeout: 30_000,
-    });
-    if (removal.status === 0) {
-      fallbackRemoved.containers.push(name);
-    } else {
-      attachedCellRemovalFailures.push(
-        `${name}: ${String(removal.stderr || removal.stdout).trim()}`,
-      );
-    }
+  const sandboxRemoved = [];
+  const attachedCellContainers = new Set();
+  const removalAttempts = [];
+  const observations = [];
+  const protectedSandboxArtifacts = new Set();
+  if (!['stopped', 'already_stopped', 'not_started'].includes(relayCleanup.status)) {
+    protectedSandboxArtifacts.add(
+      path.join(
+        cleanupDirectory,
+        state.endpoint.transport.relay_pid_file ?? RELAY_PID_FILE,
+      ),
+    );
   }
-  if (attachedCellContainers.length > 0) {
-    downAttempts.push(composeDown(state, true));
-  }
-  let remaining = dockerResources(state.compose.project);
   const removalCommands = {
     containers: (name) => ['rm', '-f', name],
     volumes: (name) => ['volume', 'rm', '-f', name],
     networks: (name) => ['network', 'rm', name],
   };
-  for (const kind of ['containers', 'volumes', 'networks']) {
-    for (const name of remaining[kind]) {
-      const removal = run('docker', removalCommands[kind](name), {
-        allowFailure: true,
-        timeout: 30_000,
-      });
-      if (removal.status === 0) fallbackRemoved[kind].push(name);
+  let stableEmptyObservations = 0;
+  let latestInventory = null;
+  let latestNetworkInventory = { containers: [], command: null, failures: [] };
+
+  while (Date.now() < cleanupDeadline && stableEmptyObservations < 3) {
+    const timeout = cleanupCommandTimeout(cleanupDeadline);
+    latestInventory = dockerResourceInventory(state.compose.project, timeout);
+    latestNetworkInventory = latestInventory.resources.networks.includes(state.compose.network)
+      ? networkContainerInventory(state.compose.network, executorExclusions, timeout)
+      : { containers: [], command: null, failures: [] };
+    for (const container of latestNetworkInventory.containers) {
+      attachedCellContainers.add(container);
     }
+    const sandboxInventory = ownedSandboxArtifactInventory(state);
+    const sandboxArtifacts = sandboxInventory.artifacts;
+    const inventoryFailures = [
+      ...latestInventory.failures,
+      ...latestNetworkInventory.failures,
+      ...sandboxInventory.failures,
+    ];
+    const empty = inventoryFailures.length === 0
+      && Object.values(latestInventory.resources).every((values) => values.length === 0)
+      && latestNetworkInventory.containers.length === 0
+      && sandboxArtifacts.length === 0;
+    stableEmptyObservations = empty ? stableEmptyObservations + 1 : 0;
+    observations.push({
+      observed_at: now(),
+      stable_empty_observations: stableEmptyObservations,
+      resources: {
+        ...latestInventory.resources,
+        attached_containers: latestNetworkInventory.containers,
+        sandbox_artifacts: sandboxArtifacts.map(
+          (artifact) => path.relative(cleanupDirectory, artifact),
+        ),
+      },
+      inventory_failures: inventoryFailures,
+      commands: {
+        ...latestInventory.commands,
+        network_containers: latestNetworkInventory.command,
+      },
+    });
+    if (empty) {
+      if (stableEmptyObservations < 3) sleepSync(100);
+      continue;
+    }
+
+    const containerTargets = [
+      ...new Set([
+        ...latestNetworkInventory.containers,
+        ...latestInventory.resources.containers,
+      ]),
+    ];
+    const removalTargets = {
+      containers: containerTargets,
+      volumes: latestInventory.resources.volumes,
+      networks: latestInventory.resources.networks,
+    };
+    for (const kind of ['containers', 'volumes', 'networks']) {
+      for (const name of removalTargets[kind]) {
+        const args = removalCommands[kind](name);
+        const removal = captureDiagnostic('docker', args, {
+          timeout: cleanupCommandTimeout(cleanupDeadline),
+        });
+        removalAttempts.push({
+          resource: kind,
+          name,
+          ...removal,
+        });
+        if (removal.status === 0) fallbackRemoved[kind].push(name);
+      }
+    }
+    for (const artifact of sandboxArtifacts) {
+      if (protectedSandboxArtifacts.has(artifact)) continue;
+      const relativeArtifact = path.relative(cleanupDirectory, artifact);
+      try {
+        fs.rmSync(artifact, { recursive: true, force: true });
+        sandboxRemoved.push(relativeArtifact);
+        removalAttempts.push({
+          resource: 'sandbox_artifact',
+          name: relativeArtifact,
+          status: 0,
+          error: null,
+        });
+      } catch (error) {
+        removalAttempts.push({
+          resource: 'sandbox_artifact',
+          name: relativeArtifact,
+          status: null,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
+    }
+    if (Date.now() < cleanupDeadline) sleepSync(100);
   }
-  remaining = {
-    ...dockerResources(state.compose.project),
-    attached_containers: networkContainerIds(state.compose.network, executorExclusions),
+
+  const finalTimeout = cleanupCommandTimeout(cleanupDeadline, 2_000);
+  latestInventory = dockerResourceInventory(state.compose.project, finalTimeout);
+  latestNetworkInventory = latestInventory.resources.networks.includes(state.compose.network)
+    ? networkContainerInventory(state.compose.network, executorExclusions, finalTimeout)
+    : { containers: [], command: null, failures: [] };
+  const finalSandboxInventory = ownedSandboxArtifactInventory(state);
+  const finalSandboxArtifacts = finalSandboxInventory.artifacts;
+  const remaining = {
+    ...latestInventory.resources,
+    attached_containers: latestNetworkInventory.containers,
+    sandbox_artifacts: finalSandboxArtifacts.map(
+      (artifact) => path.relative(cleanupDirectory, artifact),
+    ),
   };
-  const failures = [...attachedCellRemovalFailures];
+  const failures = [];
   if (!['stopped', 'already_stopped', 'not_started'].includes(relayCleanup.status)) {
     failures.push(`daemon-network relay cleanup failed: ${relayCleanup.error ?? relayCleanup.status}`);
   }
@@ -851,23 +1080,62 @@ function stop() {
       `executor network cleanup failed: `
       + `${executorNetworkCleanup.error ?? executorNetworkCleanup.status}`,
     );
-    failures.push('attached container fallback removal was skipped without verified executor detachment');
+    failures.push('owned network cleanup cannot pass without verified executor detachment');
   }
+  if (stableEmptyObservations < 3) {
+    failures.push(
+      `cleanup did not reach three stable empty observations within `
+      + `${cleanupTimeout}ms`,
+    );
+  }
+  failures.push(
+    ...latestInventory.failures,
+    ...latestNetworkInventory.failures,
+    ...finalSandboxInventory.failures,
+  );
   for (const [kind, values] of Object.entries(remaining)) {
     if (values.length > 0) failures.push(`${kind} remain: ${values.join(', ')}`);
   }
+  const cleanupFinishedAt = now();
+  const cleanupDiagnostics = {
+    schema: 'durable-workflow.v2.heartbeat-runtime.shared-server-cleanup-diagnostics',
+    version: 1,
+    project: state.compose.project,
+    started_at: cleanupStartedAt,
+    finished_at: cleanupFinishedAt,
+    elapsed_ms: Date.now() - cleanupStartedMilliseconds,
+    timeout_ms: cleanupTimeout,
+    required_stable_empty_observations: 3,
+    stable_empty_observations: stableEmptyObservations,
+    compose_down_attempts: downAttempts,
+    relay_cleanup: relayCleanup,
+    executor_network_cleanup: executorNetworkCleanup,
+    observations,
+    removal_attempts: removalAttempts,
+    final_resources_remaining: remaining,
+    failures,
+  };
+  writeJson(path.join(cleanupDirectory, CLEANUP_DIAGNOSTIC_FILE), cleanupDiagnostics);
   state.lifecycle.cleanup_status = failures.length === 0 ? 'pass' : 'fail';
-  state.lifecycle.cleanup_finished_at = now();
+  state.lifecycle.cleanup_started_at = cleanupStartedAt;
+  state.lifecycle.cleanup_finished_at = cleanupFinishedAt;
   state.lifecycle.cleanup_failures = failures;
   state.lifecycle.cleanup_resources_remaining = remaining;
+  state.lifecycle.cleanup_verification = {
+    diagnostic_file: CLEANUP_DIAGNOSTIC_FILE,
+    elapsed_ms: cleanupDiagnostics.elapsed_ms,
+    timeout_ms: cleanupDiagnostics.timeout_ms,
+    required_stable_empty_observations: 3,
+    stable_empty_observations: stableEmptyObservations,
+  };
   state.lifecycle.compose_down_exit_code = downAttempts.at(-1)?.status ?? null;
   state.lifecycle.compose_down_exit_codes = downAttempts.map((attempt) => attempt.status);
   state.lifecycle.relay_cleanup = relayCleanup;
   state.lifecycle.executor_network_cleanup = executorNetworkCleanup;
-  state.lifecycle.attached_cell_containers_found = attachedCellContainers;
+  state.lifecycle.attached_cell_containers_found = [...attachedCellContainers];
   state.lifecycle.fallback_removed = fallbackRemoved;
+  state.lifecycle.sandbox_removed = [...new Set(sandboxRemoved)];
   writeJson(statePath, state);
-  fs.rmSync(path.join(path.dirname(statePath), state.compose.override_file), { force: true });
   process.stdout.write(`${JSON.stringify(state.lifecycle)}\n`);
   if (failures.length > 0) throw new Error(failures.join('; '));
 }

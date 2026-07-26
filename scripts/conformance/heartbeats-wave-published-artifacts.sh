@@ -24,6 +24,8 @@ Required runner handoff:
 
 Optional:
   DW_HEARTBEATS_CELL_TIMEOUT_SECONDS   Per-cell timeout; defaults to 330.
+  DW_HEARTBEATS_CHILD_SETTLE_SECONDS   Bounded process-group teardown; defaults
+                                       to 20.
   DW_HEARTBEATS_WAVE_MAX_SECONDS       Passing wall-time bound; defaults to 360.
 USAGE
 }
@@ -73,43 +75,199 @@ for pin in \
   DW_WATERLINE_VERSION; do
   [[ -n "${!pin:-}" ]] || { printf '%s is required\n' "$pin" >&2; exit 2; }
 done
+command -v setsid >/dev/null 2>&1 || {
+  printf '%s\n' 'required command not found: setsid' >&2
+  exit 1
+}
 
 state_file="$result_dir/shared-server-state.json"
+child_rows_file="$result_dir/.heartbeat-shared-wave-children.tsv"
+child_result_file="$result_dir/heartbeat-shared-wave-children.json"
+process_cleanup_log="$result_dir/heartbeat-shared-wave-process-cleanup.log"
+: >"$process_cleanup_log"
 started_at="$(date -u +'%Y-%m-%dT%H:%M:%SZ')"
 cell_timeout="${DW_HEARTBEATS_CELL_TIMEOUT_SECONDS:-330}"
+child_settle_seconds="${DW_HEARTBEATS_CHILD_SETTLE_SECONDS:-20}"
 maximum_seconds="${DW_HEARTBEATS_WAVE_MAX_SECONDS:-360}"
 cleanup_done=0
+cleanup_deferred_signal=""
+launch_deferred_signal=""
 declare -a cell_pids=()
+declare -a cell_pgids=()
 declare -a cell_names=()
+
+[[ "$child_settle_seconds" =~ ^[1-9][0-9]*$ ]] \
+  && ((child_settle_seconds <= 60)) || {
+  printf '%s\n' 'DW_HEARTBEATS_CHILD_SETTLE_SECONDS must be an integer from 1 to 60' >&2
+  exit 2
+}
+
+process_group_members() {
+  local pgid="$1"
+  local include_zombies="${2:-false}"
+  local stat_file process_stat process_fields process_state process_parent
+  local process_group pid command
+  for stat_file in /proc/[0-9]*/stat; do
+    [[ -r "$stat_file" ]] || continue
+    process_stat="$(<"$stat_file")" 2>/dev/null || continue
+    process_fields="${process_stat##*) }"
+    read -r process_state process_parent process_group _ <<<"$process_fields"
+    [[ "$process_group" == "$pgid" ]] || continue
+    if [[ "$include_zombies" != true && "$process_state" =~ ^[ZX]$ ]]; then
+      continue
+    fi
+    pid="${stat_file#/proc/}"
+    pid="${pid%/stat}"
+    command=""
+    if [[ -r "/proc/$pid/cmdline" ]]; then
+      command="$(tr '\0' ' ' <"/proc/$pid/cmdline" 2>/dev/null)" || command=""
+    fi
+    printf '%s\t%s\t%s\t%s\n' "$pid" "$process_parent" "$process_state" "$command"
+  done
+}
+
+process_group_alive() {
+  local pgid="$1"
+  local member
+  while IFS= read -r member; do
+    [[ -n "$member" ]] && return 0
+  done < <(process_group_members "$pgid")
+  return 1
+}
+
+all_process_groups_settled() {
+  local pgid
+  for pgid in "$@"; do
+    process_group_alive "$pgid" && return 1
+  done
+  return 0
+}
+
+signal_process_groups() {
+  local signal="$1"
+  local pgid
+  shift
+  for pgid in "$@"; do
+    if process_group_alive "$pgid"; then
+      kill "-$signal" -- "-$pgid" 2>/dev/null || true
+    fi
+  done
+}
+
+wait_for_cell() {
+  local pid="$1"
+  cell_wait_status=0
+  while true; do
+    if wait "$pid"; then
+      cell_wait_status=0
+      return 0
+    fi
+    cell_wait_status=$?
+    if ! kill -0 "$pid" 2>/dev/null; then
+      return 0
+    fi
+  done
+}
+
+settle_process_groups() {
+  local term_grace_seconds=$((child_settle_seconds < 5 ? 1 : 5))
+  local term_deadline=$((SECONDS + term_grace_seconds))
+  local final_deadline=$((SECONDS + child_settle_seconds))
+  cell_forced_signal=""
+
+  if all_process_groups_settled "$@"; then
+    return 0
+  fi
+
+  cell_forced_signal="SIGTERM"
+  signal_process_groups TERM "$@"
+  while ((SECONDS < term_deadline)); do
+    all_process_groups_settled "$@" && return 0
+    sleep 0.1
+  done
+
+  cell_forced_signal="SIGKILL"
+  signal_process_groups KILL "$@"
+  while ((SECONDS < final_deadline)); do
+    all_process_groups_settled "$@" && return 0
+    sleep 0.1
+  done
+  all_process_groups_settled "$@"
+}
+
+settle_process_group() {
+  settle_process_groups "$1"
+}
+
+record_unsettled_process_group() {
+  local cell="$1"
+  local pgid="$2"
+  {
+    printf 'cell=%s process_group_id=%s did not settle within %ss\n' \
+      "$cell" "$pgid" "$child_settle_seconds"
+    process_group_members "$pgid" true
+  } | tee -a "$process_cleanup_log" >&2
+}
+
+write_child_result() {
+  node "$script_dir/heartbeats-wave-children.mjs" \
+    "$child_rows_file" "$child_result_file"
+  rm -f -- "$child_rows_file"
+}
+
+defer_cleanup_signal() {
+  cleanup_deferred_signal="$1"
+}
 
 cleanup_wave() {
   local status=0
+  local index pid pgid
+  cleanup_deferred_signal=""
+  trap 'defer_cleanup_signal INT' INT
+  trap 'defer_cleanup_signal TERM' TERM
   if ((cleanup_done == 1)); then
+    trap 'on_signal INT' INT
+    trap 'on_signal TERM' TERM
     return 0
   fi
   cleanup_done=1
-  for pid in "${cell_pids[@]:-}"; do
-    if kill -0 "$pid" 2>/dev/null; then
-      kill -TERM "$pid" 2>/dev/null || true
+  if ! settle_process_groups "${cell_pgids[@]}"; then
+    status=1
+  fi
+  for index in "${!cell_pids[@]}"; do
+    pid="${cell_pids[$index]}"
+    pgid="${cell_pgids[$index]}"
+    if process_group_alive "$pgid"; then
+      record_unsettled_process_group "${cell_names[$index]}" "$pgid"
+      status=1
+      continue
     fi
-  done
-  for pid in "${cell_pids[@]:-}"; do
-    wait "$pid" 2>/dev/null || true
+    wait_for_cell "$pid" || true
   done
   if [[ -s "$state_file" ]]; then
     "$script_dir/heartbeats-shared-server.sh" stop "$state_file" \
       >"$result_dir/shared-server-stop.log" 2>&1 || status=$?
+  fi
+  trap 'on_signal INT' INT
+  trap 'on_signal TERM' TERM
+  if [[ -n "$cleanup_deferred_signal" ]]; then
+    on_signal "$cleanup_deferred_signal"
   fi
   return "$status"
 }
 
 on_signal() {
   local signal="$1"
+  trap - INT TERM
   cleanup_wave || true
   if [[ "$signal" == INT ]]; then
     exit 130
   fi
   exit 143
+}
+
+defer_launch_signal() {
+  launch_deferred_signal="$1"
 }
 
 trap 'cleanup_wave || true' EXIT
@@ -130,16 +288,45 @@ namespace_for() {
 run_cell() {
   local cell="$1"
   local namespace="$2"
+  local process_stat process_fields process_state process_parent
   shift 2
-  timeout --signal=TERM --kill-after=15s "${cell_timeout}s" \
+  launch_deferred_signal=""
+  trap 'defer_launch_signal INT' INT
+  trap 'defer_launch_signal TERM' TERM
+  setsid timeout --foreground --signal=TERM --kill-after=15s "${cell_timeout}s" \
     env \
     DW_HEARTBEATS_NAMESPACE="$namespace" \
     DW_HEARTBEATS_SHARED_SERVER_STATE="$state_file" \
     "$@" \
     >"$result_dir/$cell/stdout.log" \
     2>"$result_dir/$cell/stderr.log" &
-  cell_pids+=("$!")
+  local pid="$!"
+  local pgid=""
+  for _ in {1..20}; do
+    if [[ -r "/proc/$pid/stat" ]]; then
+      process_stat="$(<"/proc/$pid/stat")"
+      process_fields="${process_stat##*) }"
+      read -r process_state process_parent pgid _ <<<"$process_fields"
+    fi
+    [[ "$pgid" == "$pid" ]] && break
+    sleep 0.05
+  done
+  if [[ "$pgid" != "$pid" ]]; then
+    kill -KILL "$pid" 2>/dev/null || true
+    wait "$pid" 2>/dev/null || true
+    trap 'on_signal INT' INT
+    trap 'on_signal TERM' TERM
+    printf 'could not identify the %s cell process group\n' "$cell" >&2
+    exit 1
+  fi
+  cell_pids+=("$pid")
+  cell_pgids+=("$pgid")
   cell_names+=("$cell")
+  trap 'on_signal INT' INT
+  trap 'on_signal TERM' TERM
+  if [[ -n "$launch_deferred_signal" ]]; then
+    on_signal "$launch_deferred_signal"
+  fi
 }
 
 run_cell php "$(namespace_for php)" \
@@ -154,15 +341,25 @@ run_cell waterline "$(namespace_for waterline)" \
   DW_WATERLINE_WORKER_STATUS_SHARED_SERVER_STATE="$state_file" \
   bash "$waterline_runner" --result-dir "$result_dir/waterline"
 
+: >"$child_rows_file"
 for index in "${!cell_pids[@]}"; do
-  if wait "${cell_pids[$index]}"; then
-    cell_status=0
+  pid="${cell_pids[$index]}"
+  pgid="${cell_pgids[$index]}"
+  wait_for_cell "$pid"
+  cell_status="$cell_wait_status"
+  if settle_process_group "$pgid"; then
+    cell_settled=true
   else
-    cell_status=$?
+    cell_settled=false
   fi
   printf '%s\n' "$cell_status" >"$result_dir/${cell_names[$index]}/exit-code"
+  printf '%s\t%s\t%s\t%s\t%s\n' \
+    "${cell_names[$index]}" "$pid" "$pgid" "$cell_status" \
+    "$cell_settled:${cell_forced_signal:-none}" >>"$child_rows_file"
 done
+write_child_result
 cell_pids=()
+cell_pgids=()
 cell_names=()
 
 set +e
