@@ -24,6 +24,9 @@ Required runner handoff:
 
 Optional:
   DW_HEARTBEATS_CELL_TIMEOUT_SECONDS   Per-cell timeout; defaults to 330.
+  DW_HEARTBEATS_RUST_PREPARATION_TIMEOUT_SECONDS
+                                       Rust registry/download/build budget;
+                                       defaults to 240.
   DW_HEARTBEATS_CHILD_SETTLE_SECONDS   Bounded process-group teardown; defaults
                                        to 20.
   DW_HEARTBEATS_WAVE_MAX_SECONDS       Passing wall-time bound; defaults to 360.
@@ -161,8 +164,9 @@ wait_for_cell() {
     if wait "$pid"; then
       cell_wait_status=0
       return 0
+    else
+      cell_wait_status=$?
     fi
-    cell_wait_status=$?
     if ! kill -0 "$pid" 2>/dev/null; then
       return 0
     fi

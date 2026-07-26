@@ -116,8 +116,8 @@ function sharedState(project, overrideFile) {
     schema: 'durable-workflow.v2.heartbeat-runtime.shared-server-bootstrap',
     version: 1,
     server: {
-      version: '2.0.0-beta.17',
-      requested_reference: 'durableworkflow/server:2.0.0-beta.17',
+      version: '2.0.0-beta.18',
+      requested_reference: 'durableworkflow/server:2.0.0-beta.18',
     },
     compose: {
       project,

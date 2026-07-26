@@ -45,7 +45,7 @@ function sdkEvidence(cell, outcome = 'pass') {
     outcome,
     runner_blocked: false,
     classification: outcome === 'pass' ? `published-${cell}-sdk-heartbeat-loop-proven` : 'product-gap',
-    artifact_versions: { server: '2.0.0-beta.17', [`sdk-${cell}`]: '2.0.0-beta.17' },
+    artifact_versions: { server: '2.0.0-beta.18', [`sdk-${cell}`]: '2.0.0-beta.18' },
     executed_distribution_identities: { server: {}, [`sdk-${cell}`]: {} },
     topology: {
       namespace: `hb-wave-example-${cell}`,
@@ -68,7 +68,7 @@ function writeFixture(root, pythonOutcome = 'pass') {
     version: 1,
     wave_run_id: 'heartbeat-wave-example',
     server: {
-      requested_reference: 'durableworkflow/server:2.0.0-beta.17',
+      requested_reference: 'durableworkflow/server:2.0.0-beta.18',
       resolved_public_digest: `durableworkflow/server@sha256:${'a'.repeat(64)}`,
       exact_published_image_verified: true,
     },
@@ -165,7 +165,7 @@ function writeFixture(root, pythonOutcome = 'pass') {
       outcome: 'pass',
       runner_blocked: false,
       classification: 'published-waterline-worker-status-proven',
-      artifact_versions: { server: '2.0.0-beta.17', waterline: '2.0.0-beta.17' },
+      artifact_versions: { server: '2.0.0-beta.18', waterline: '2.0.0-beta.18' },
       topology: {
         namespace: 'hb-wave-example-waterline',
         task_queue: 'waterline-status-cell',
@@ -194,13 +194,13 @@ function execute(root) {
       STATE_FILE: path.join(root, 'shared-server-state.json'),
       STARTED_AT: new Date(Date.now() - 1_000).toISOString(),
       MAXIMUM_SECONDS: '360',
-      DW_SERVER_VERSION: '2.0.0-beta.17',
-      DW_CLI_VERSION: '2.0.0-beta.17',
-      DW_PHP_SDK_VERSION: '2.0.0-beta.17',
-      DW_PYTHON_SDK_VERSION: '2.0.0-beta.17',
-      DW_RUST_SDK_VERSION: '2.0.0-beta.17',
-      DW_WORKFLOW_PHP_VERSION: '2.0.0-beta.17',
-      DW_WATERLINE_VERSION: '2.0.0-beta.17',
+      DW_SERVER_VERSION: '2.0.0-beta.18',
+      DW_CLI_VERSION: '2.0.0-beta.18',
+      DW_PHP_SDK_VERSION: '2.0.0-beta.18',
+      DW_PYTHON_SDK_VERSION: '2.0.0-beta.18',
+      DW_RUST_SDK_VERSION: '2.0.0-beta.18',
+      DW_WORKFLOW_PHP_VERSION: '2.0.0-beta.18',
+      DW_WATERLINE_VERSION: '2.0.0-beta.18',
     },
     encoding: 'utf8',
   });
@@ -389,6 +389,61 @@ test('a timed-out cell retains completed peer evidence and final shared cleanup'
     assert.equal(result.cells.rust.outcome, 'pass');
     assert.equal(result.cells.waterline.outcome, 'pass');
     assert.equal(result.completed_peer_evidence.length, 3);
+    assert.equal(result.cleanup.cleanup_status, 'pass');
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('a bounded Rust preparation timeout retains exact pins and completed peers', () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'heartbeat-wave-rust-preparation-timeout-'));
+  try {
+    writeFixture(root);
+    const rustEvidencePath = path.join(root, 'rust/rust-sdk-heartbeat-loop-evidence.json');
+    const rustEvidence = sdkEvidence('rust', 'runner_blocked');
+    rustEvidence.runner_blocked = true;
+    rustEvidence.classification = 'rust-crates-io-preparation-timeout';
+    rustEvidence.artifact_sources = {
+      server: 'docker://durableworkflow/server:2.0.0-beta.18',
+      'sdk-rust': 'crates.io://durable-workflow@2.0.0-beta.18',
+    };
+    rustEvidence.rust_crates_io_preparation = {
+      source: 'crates.io://durable-workflow@2.0.0-beta.18',
+      status: 'runner_blocked',
+      timeout_ms: 240_000,
+      failed_phase: 'crate_download',
+      completed_phases: ['lockfile_resolution'],
+    };
+    rustEvidence.findings = [{ finding_type: 'conformance_runner_blocked' }];
+    fs.writeFileSync(rustEvidencePath, JSON.stringify(rustEvidence));
+    fs.writeFileSync(path.join(root, 'rust/exit-code'), '1\n');
+    const childrenPath = path.join(root, 'heartbeat-shared-wave-children.json');
+    const children = JSON.parse(fs.readFileSync(childrenPath, 'utf8'));
+    children.cells.rust.exit_code = 1;
+    fs.writeFileSync(childrenPath, JSON.stringify(children));
+
+    const execution = execute(root);
+    assert.equal(execution.status, 1, execution.stderr);
+    const result = JSON.parse(fs.readFileSync(
+      path.join(root, 'heartbeat-shared-wave-result.json'),
+      'utf8',
+    ));
+    assert.equal(result.outcome, 'fail');
+    assert.equal(result.runner_blocked, true);
+    assert.equal(result.cells.rust.outcome, 'runner_blocked');
+    assert.equal(result.cells.rust.classification, 'rust-crates-io-preparation-timeout');
+    assert.equal(
+      result.cells.rust.artifact_versions['sdk-rust'],
+      '2.0.0-beta.18',
+    );
+    assert.equal(
+      result.cells.rust.artifact_sources['sdk-rust'],
+      'crates.io://durable-workflow@2.0.0-beta.18',
+    );
+    assert.equal(result.cells.php.outcome, 'pass');
+    assert.equal(result.cells.python.outcome, 'pass');
+    assert.equal(result.cells.waterline.outcome, 'pass');
+    assert.equal(result.completed_peer_evidence.length, 4);
     assert.equal(result.cleanup.cleanup_status, 'pass');
   } finally {
     fs.rmSync(root, { recursive: true, force: true });

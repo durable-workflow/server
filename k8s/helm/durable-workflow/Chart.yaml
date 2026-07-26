@@ -8,7 +8,7 @@ type: application
 version: 0.1.0
 # The default Durable Workflow server image tag this chart targets. Operators
 # pin .image.tag (or .image.digest) in values.yaml; appVersion is informational.
-appVersion: "2.0.0-beta.17"
+appVersion: "2.0.0-beta.18"
 kubeVersion: ">=1.27.0-0"
 home: https://durable-workflow.github.io/docs/2.0/deployment
 sources:

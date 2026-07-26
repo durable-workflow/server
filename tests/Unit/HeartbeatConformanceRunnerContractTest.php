@@ -242,12 +242,16 @@ SH);
             "const SDK_RUST_VERSION = env('DW_RUST_SDK_VERSION');",
             '`crates.io://durable-workflow@${SDK_RUST_VERSION}`',
             'durable-workflow = "=${SDK_RUST_VERSION}"',
-            "'cargo', 'metadata', '--locked', '--format-version=1'",
+            "cargoArguments: ['fetch', '--locked']",
+            "cargoArguments: ['metadata', '--locked', '--format-version=1']",
             "installedPackage.source ?? '').startsWith('registry+')",
             "installedPackage.repository !== 'https://github.com/durable-workflow/sdk-rust'",
             'release_metadata: releaseMetadata',
             'registry_checksum_sha256: registryChecksum',
-            "'cargo', 'build', '--release', '--locked'",
+            "cargoArguments: ['build', '--release', '--locked']",
+            "'--env', 'CARGO_NET_OFFLINE=true'",
+            'prepareExactRustCrate({',
+            'recordRustPreparationTimeout(error)',
             '.on_worker_heartbeat(|observation|',
             '.poll_workflow_task_response(&arguments[4], &arguments[3]',
             "'/app/target/release/heartbeat-worker'",
@@ -408,10 +412,12 @@ SH);
         $this->assertStringContainsString("'$1[REDACTED]'", $relay);
 
         $this->assertStringContainsString('DW_HEARTBEATS_CELL_TIMEOUT_SECONDS', $wave);
+        $this->assertStringContainsString('DW_HEARTBEATS_RUST_PREPARATION_TIMEOUT_SECONDS', $wave);
         $this->assertStringContainsString(
             'setsid timeout --foreground --signal=TERM --kill-after=15s',
             $wave,
         );
+        $this->assertStringContainsString('else'."\n".'      cell_wait_status=$?', $wave);
         $this->assertStringContainsString('run_cell php', $wave);
         $this->assertStringContainsString('run_cell python', $wave);
         $this->assertStringContainsString('run_cell rust', $wave);
@@ -438,8 +444,10 @@ SH);
                 '--test',
                 __DIR__.'/HeartbeatSharedCleanupRegression.mjs',
                 __DIR__.'/HeartbeatSharedWaveCancellationRegression.mjs',
+                __DIR__.'/HeartbeatSharedWaveWaitStatusRegression.mjs',
                 __DIR__.'/HeartbeatSharedWaveResultRegression.mjs',
                 __DIR__.'/HeartbeatSharedServerReadinessRegression.mjs',
+                __DIR__.'/HeartbeatRustPreparationRegression.mjs',
             ],
             [
                 1 => ['pipe', 'w'],

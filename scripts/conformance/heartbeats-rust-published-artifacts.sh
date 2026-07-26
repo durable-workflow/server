@@ -25,6 +25,9 @@ Optional overrides:
   DW_HEARTBEATS_SHARED_SERVER_STATE   Reuse a verified wave bootstrap receipt;
                                        requires its prescribed Rust namespace.
   DW_HEARTBEATS_RUST_IMAGE            Defaults to rust:1.86.0-slim-bookworm.
+  DW_HEARTBEATS_RUST_PREPARATION_TIMEOUT_SECONDS
+                                       Total exact registry/download/build
+                                       budget; defaults to 240.
   DW_HEARTBEATS_SERVER_HOST           Host-side server address; defaults to 127.0.0.1.
   DW_HEARTBEATS_HEARTBEAT_SECONDS     Self-started server cadence; defaults to 2.
   DW_HEARTBEATS_STALE_AFTER_SECONDS   Self-started server stale window; defaults to 7.

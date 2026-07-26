@@ -33,8 +33,8 @@ env:
   PHPREDIS_VERSION: 6.3.0
   PHPREDIS_COMMIT: df4fab2de7fc327c54c94a13af2b9542e4fbd720
   WORKFLOW_PACKAGE_SOURCE: https://github.com/durable-workflow/workflow.git
-  WORKFLOW_PACKAGE_REF: 2.0.0-beta.17
-  WORKFLOW_PACKAGE_COMMIT: f1ef7d4edd8b1cea28192bfe360d3a233721c0ca
+  WORKFLOW_PACKAGE_REF: 2.0.0-beta.18
+  WORKFLOW_PACKAGE_COMMIT: 8853baf7d42e2bbdf08ed101dc0ba4e7bb0f4a31
 
 jobs:
   publish:

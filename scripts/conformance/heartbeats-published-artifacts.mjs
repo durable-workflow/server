@@ -19,6 +19,10 @@ import {
   recoverFinalVisibility,
   transportErrorDetails,
 } from './heartbeat-final-visibility.mjs';
+import {
+  prepareExactRustCrate,
+  RustCratesIoPreparationTimeoutError,
+} from './heartbeat-rust-preparation.mjs';
 import { isExactSemverRelease, samePythonRelease } from './version-identities.mjs';
 
 const RESULT_DIR = mustEnv('RESULT_DIR');
@@ -51,6 +55,10 @@ const HEARTBEAT_SECONDS = positiveInt(env('DW_HEARTBEATS_HEARTBEAT_SECONDS'), 2)
 const CONFIGURED_STALE_AFTER_SECONDS = positiveInt(env('DW_HEARTBEATS_STALE_AFTER_SECONDS'), 7);
 const FINAL_VISIBILITY_ATTEMPTS = positiveInt(env('DW_HEARTBEATS_FINAL_VISIBILITY_ATTEMPTS'), 3);
 const FINAL_VISIBILITY_RETRY_MS = positiveInt(env('DW_HEARTBEATS_FINAL_VISIBILITY_RETRY_MS'), 1_000);
+const RUST_PREPARATION_TIMEOUT_SECONDS = positiveInt(
+  env('DW_HEARTBEATS_RUST_PREPARATION_TIMEOUT_SECONDS'),
+  240,
+);
 const KEEP_RUN_ROOT = truthy(env('DW_HEARTBEATS_KEEP_RUN_ROOT'));
 const HOST_UID = typeof process.getuid === 'function' ? process.getuid() : null;
 const HOST_GID = typeof process.getgid === 'function' ? process.getgid() : null;
@@ -177,6 +185,22 @@ function commandExists(command) {
   return result.status === 0;
 }
 
+class CommandExecutionError extends Error {
+  constructor(rendered, result, timeoutMilliseconds) {
+    const timedOut = result.error?.code === 'ETIMEDOUT';
+    const detail = timedOut
+      ? `timed out after ${timeoutMilliseconds}ms`
+      : (result.stderr || result.stdout || '').trim();
+    super(`${rendered} failed (${result.status}): ${detail}`);
+    this.name = 'CommandExecutionError';
+    this.status = result.status;
+    this.signal = result.signal;
+    this.code = result.error?.code ?? null;
+    this.timedOut = timedOut;
+    this.timeoutMilliseconds = timeoutMilliseconds;
+  }
+}
+
 function run(command, args, options = {}) {
   if (command === 'docker' && args[0] === 'run' && sharedServerNetwork) {
     args = [
@@ -187,12 +211,13 @@ function run(command, args, options = {}) {
   }
   const rendered = [command, ...args].join(' ');
   log(`command: ${rendered}`);
+  const timeoutMilliseconds = options.timeout ?? 180_000;
   const result = spawnSync(command, args, {
     cwd: options.cwd ?? RUN_ROOT,
     env: options.env ?? process.env,
     encoding: 'utf8',
     maxBuffer: 20 * 1024 * 1024,
-    timeout: options.timeout ?? 180_000,
+    timeout: timeoutMilliseconds,
   });
   const record = {
     command: [command, ...args],
@@ -208,7 +233,7 @@ function run(command, args, options = {}) {
     writeJson(options.captureFile, capturedRecord);
   }
   if (!options.allowFailure && result.status !== 0) {
-    throw new Error(`${rendered} failed (${result.status}): ${(result.stderr || result.stdout || '').trim()}`);
+    throw new CommandExecutionError(rendered, result, timeoutMilliseconds);
   }
   return record;
 }
@@ -1393,37 +1418,70 @@ function rustRuntimeArgs() {
     '--user', CONTAINER_USER,
     '--env', 'HOME=/tmp',
     '--env', 'CARGO_HOME=/app/.cargo-home',
+    '--env', 'CARGO_REGISTRIES_CRATES_IO_PROTOCOL=sparse',
+    '--env', 'CARGO_NET_RETRY=2',
+    '--env', 'CARGO_HTTP_TIMEOUT=30',
     '-v', `${PROJECT_DIR}:/app`,
     '-w', '/app',
   ];
+}
+
+function runRustCargoPreparation(step) {
+  const containerName = `dw-hb-rust-${step.phase}-${SUFFIX}`.slice(0, 63);
+  workerContainers.add(containerName);
+  return run('docker', [
+    'run', '--rm', '--name', containerName,
+    ...rustRuntimeArgs(),
+    ...(step.networkAccess ? [] : ['--env', 'CARGO_NET_OFFLINE=true']),
+    RUST_IMAGE,
+    'cargo', ...step.cargoArguments,
+  ], { timeout: step.timeoutMilliseconds });
 }
 
 function installRustPackage() {
   if (!commandExists('docker')) throw new Error('docker is required to install the pinned public Rust package');
   writeRustProject();
   run('docker', ['pull', RUST_IMAGE], { timeout: 300_000 });
+  const preparationSteps = [
+    {
+      phase: 'lockfile_resolution',
+      cargoArguments: ['generate-lockfile'],
+      networkAccess: true,
+    },
+    {
+      phase: 'crate_download',
+      cargoArguments: ['fetch', '--locked'],
+      networkAccess: true,
+    },
+    {
+      phase: 'metadata',
+      cargoArguments: ['metadata', '--locked', '--format-version=1'],
+      networkAccess: false,
+    },
+    {
+      phase: 'release_build',
+      cargoArguments: ['build', '--release', '--locked'],
+      networkAccess: false,
+    },
+  ];
+  let preparation;
   try {
-    run('docker', [
-      'run', '--rm',
-      ...rustRuntimeArgs(),
-      RUST_IMAGE,
-      'cargo', 'generate-lockfile',
-    ], { timeout: 600_000 });
+    preparation = prepareExactRustCrate({
+      steps: preparationSteps,
+      execute: runRustCargoPreparation,
+      timeoutMilliseconds: RUST_PREPARATION_TIMEOUT_SECONDS * 1_000,
+    });
   } catch (error) {
     if (/no matching package named|failed to select a version|not found in registry/i.test(errorSummary(error))) {
       publishedExecutionStarted = true;
     }
     throw error;
   }
-  // The exact registry version resolved. Failures from this point are defects
-  // in the published crate or its compatibility with the pinned server tuple.
+  evidence.rust_crates_io_preparation = preparation.evidence;
+  // The exact registry version resolved and all dependencies were downloaded.
+  // The remaining behavioral execution is offline from crates.io.
   publishedExecutionStarted = true;
-  const metadataResult = run('docker', [
-    'run', '--rm',
-    ...rustRuntimeArgs(),
-    RUST_IMAGE,
-    'cargo', 'metadata', '--locked', '--format-version=1',
-  ], { timeout: 600_000 });
+  const metadataResult = preparation.results.metadata;
   const metadata = parseJsonOutput(metadataResult.stdout);
   const installedPackage = Array.isArray(metadata.packages)
     ? metadata.packages.find((candidate) => candidate.name === 'durable-workflow' && candidate.version === SDK_RUST_VERSION)
@@ -1438,12 +1496,6 @@ function installRustPackage() {
     throw new Error(`pinned Rust package repository provenance mismatch: ${installedPackage.repository ?? 'missing repository'}`);
   }
   const releaseMetadata = installedPackage.metadata?.['durable-workflow'] ?? {};
-  run('docker', [
-    'run', '--rm',
-    ...rustRuntimeArgs(),
-    RUST_IMAGE,
-    'cargo', 'build', '--release', '--locked',
-  ], { timeout: 900_000 });
   recordUniqueDistributionFile(
     'sdk-rust',
     SDK_RUST_VERSION,
@@ -2278,6 +2330,47 @@ function recordFailure(error) {
   });
 }
 
+function recordRustPreparationTimeout(error) {
+  evidence.outcome = 'runner_blocked';
+  evidence.runner_blocked = true;
+  evidence.classification = 'rust-crates-io-preparation-timeout';
+  evidence.rust_crates_io_preparation = {
+    source: ARTIFACT_SOURCES['sdk-rust'],
+    status: 'runner_blocked',
+    timeout_ms: error.timeoutMilliseconds,
+    elapsed_ms: error.elapsedMilliseconds,
+    failed_phase: error.phase,
+    completed_phases: error.completedPhases,
+  };
+  evidence.scenario_results[SCENARIO_ID] = {
+    scenario_id: SCENARIO_ID,
+    status: 'runner_blocked',
+    classification: 'runner-gap',
+    observed_outputs: {
+      runtime: RUNTIME,
+      worker_id: STALE_WORKER_ID,
+      task_queue: TASK_QUEUE,
+      published_artifact_worker_execution: false,
+      exact_artifact_versions: ARTIFACT_VERSIONS,
+      exact_artifact_sources: ARTIFACT_SOURCES,
+      crates_io_preparation: evidence.rust_crates_io_preparation,
+      local_product_source_checkouts_used: false,
+      error: error.message,
+    },
+  };
+  evidence.findings.push({
+    finding_id: `rust-sdk-heartbeat-loop-crates-io-timeout-${SUFFIX}`,
+    finding_type: 'conformance_runner_blocked',
+    classification: 'runner-gap',
+    scenario_id: SCENARIO_ID,
+    owning_surface: 'conformance_harness',
+    artifact_versions: ARTIFACT_VERSIONS,
+    observed_behavior: error.message,
+    expected_behavior: 'The exact public Rust crate and its locked dependencies prepare within the bounded registry budget before offline compilation and heartbeat execution.',
+    next_acceptance_criterion: 'Restore bounded crates.io access on the runner and rerun the focused published-artifact Rust heartbeat shard.',
+  });
+}
+
 function recordPersistentFinalVisibilityFailure(error, serverDiagnostics) {
   const failure = persistentTransportEvidence({
     error,
@@ -2571,7 +2664,9 @@ try {
   await main();
 } catch (error) {
   log(`failure: ${error instanceof Error ? error.stack ?? error.message : String(error)}`);
-  if (error instanceof PersistentFinalVisibilityTransportError
+  if (error instanceof RustCratesIoPreparationTimeoutError) {
+    recordRustPreparationTimeout(error);
+  } else if (error instanceof PersistentFinalVisibilityTransportError
     && executionPhase === 'final_operator_visibility'
     && completedBehavior?.all_checks_passed === true) {
     const serverDiagnostics = await captureServerTransportDiagnostics();
