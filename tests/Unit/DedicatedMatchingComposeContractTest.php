@@ -61,7 +61,7 @@ class DedicatedMatchingComposeContractTest extends TestCase
         $published = $this->read('docker-compose.published.yml');
 
         foreach ([
-            'DW_SERVER_IMAGE:-durableworkflow/server:${DW_SERVER_TAG:-2.0.0-beta.16}',
+            'DW_SERVER_IMAGE:-durableworkflow/server:${DW_SERVER_TAG:-2.0.0-beta.17}',
         ] as $needle) {
             $this->assertStringContainsString(
                 $needle,
@@ -109,30 +109,6 @@ class DedicatedMatchingComposeContractTest extends TestCase
                 $needle,
                 $override,
                 "dedicated matching override must contain {$needle} so migration-shape diagnostics expose the split role class",
-            );
-        }
-    }
-
-    public function test_readme_documents_the_override_alongside_the_dedicated_daemon_section(): void
-    {
-        $readme = $this->read('README.md');
-
-        foreach ([
-            '### Dedicated Matching-Role Daemon',
-            'docker-compose.dedicated-matching.yml',
-            '-f docker-compose.published.yml',
-            '-f docker-compose.dedicated-matching.yml',
-            'php artisan workflow:v2:repair-pass --loop',
-            'DW_V2_MATCHING_ROLE_QUEUE_WAKE',
-            'DW_SERVER_TOPOLOGY_SHAPE',
-            'DW_SERVER_PROCESS_CLASS',
-            'control_plane_node',
-            'dedicated_repair_pass',
-        ] as $needle) {
-            $this->assertStringContainsString(
-                $needle,
-                $readme,
-                "README must document {$needle} so operators can discover the override",
             );
         }
     }

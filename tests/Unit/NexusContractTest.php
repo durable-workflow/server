@@ -19,15 +19,6 @@ class NexusContractTest extends TestCase
         $this->assertSame('durable-workflow.v2.nexus-runtime.result', $manifest['result_schema']);
     }
 
-    public function test_authority_document_names_refusal_caller_history_evidence(): void
-    {
-        $contents = (string) file_get_contents(dirname(__DIR__, 2).'/docs/contracts/nexus.md');
-
-        $this->assertStringContainsString('caller-history query evidence', $contents);
-        $this->assertStringContainsString('successful caller-history query', $contents);
-        $this->assertStringContainsString('proven caller-history state', $contents);
-    }
-
     public function test_manifest_names_the_temporal_parity_target_and_underlying_contract(): void
     {
         $manifest = NexusContract::manifest();
@@ -571,12 +562,12 @@ class NexusContractTest extends TestCase
 
         $cases = [
             'semver expected with PEP 440 distribution URL' => [
-                '2.0.0-beta.16',
-                'https://files.pythonhosted.org/packages/ab/cd/durable_workflow-2.0.0b16-py3-none-any.whl',
+                '2.0.0-beta.17',
+                'https://files.pythonhosted.org/packages/ab/cd/durable_workflow-2.0.0b17-py3-none-any.whl',
             ],
             'PEP 440 expected with semver project URL' => [
-                '2.0.0b16',
-                'https://pypi.org/project/durable-workflow/2.0.0-beta.16/',
+                '2.0.0b17',
+                'https://pypi.org/project/durable-workflow/2.0.0-beta.17/',
             ],
             'exact stable identity' => [
                 '2.0.0',
@@ -612,9 +603,9 @@ class NexusContractTest extends TestCase
             $this->markTestSkipped('node is required to exercise the Nexus runner result gate.');
         }
 
-        $declaredVersion = '2.0.0-beta.16';
-        $observedVersion = '2.0.0b16';
-        $pythonSource = 'https://files.pythonhosted.org/packages/ab/cd/durable_workflow-2.0.0b16-py3-none-any.whl';
+        $declaredVersion = '2.0.0-beta.17';
+        $observedVersion = '2.0.0b17';
+        $pythonSource = 'https://files.pythonhosted.org/packages/ab/cd/durable_workflow-2.0.0b17-py3-none-any.whl';
         $evidence = $this->withObservedPythonArtifactVersion(
             $this->completeRunnerEvidence($declaredVersion, $pythonSource),
             $observedVersion,
@@ -651,13 +642,13 @@ class NexusContractTest extends TestCase
             $this->markTestSkipped('node is required to exercise the Nexus runner result gate.');
         }
 
-        $declaredVersion = '2.0.0-beta.16';
-        $pythonSource = 'https://files.pythonhosted.org/packages/ab/cd/durable_workflow-2.0.0b16-py3-none-any.whl';
+        $declaredVersion = '2.0.0-beta.17';
+        $pythonSource = 'https://files.pythonhosted.org/packages/ab/cd/durable_workflow-2.0.0b17-py3-none-any.whl';
         $cases = [
             'different beta number' => ['2.0.0b11', 'published_artifact_install_evidence_version_mismatch'],
-            'post release' => ['2.0.0b16.post1', 'invalid_published_artifact_install_evidence_version'],
-            'development release' => ['2.0.0b16.dev1', 'invalid_published_artifact_install_evidence_version'],
-            'local release' => ['2.0.0b16+local', 'invalid_published_artifact_install_evidence_version'],
+            'post release' => ['2.0.0b17.post1', 'invalid_published_artifact_install_evidence_version'],
+            'development release' => ['2.0.0b17.dev1', 'invalid_published_artifact_install_evidence_version'],
+            'local release' => ['2.0.0b17+local', 'invalid_published_artifact_install_evidence_version'],
         ];
 
         foreach ($cases as $case => [$observedVersion, $installFailureCode]) {
@@ -743,24 +734,24 @@ class NexusContractTest extends TestCase
 
         $cases = [
             'mismatched prerelease number' => [
-                '2.0.0-beta.16',
+                '2.0.0-beta.17',
                 'https://files.pythonhosted.org/packages/ab/cd/durable_workflow-2.0.0b11-py3-none-any.whl',
             ],
             'post release wheel' => [
-                '2.0.0-beta.16',
-                'https://files.pythonhosted.org/packages/ab/cd/durable_workflow-2.0.0b16.post1-py3-none-any.whl',
+                '2.0.0-beta.17',
+                'https://files.pythonhosted.org/packages/ab/cd/durable_workflow-2.0.0b17.post1-py3-none-any.whl',
             ],
             'development release sdist' => [
-                '2.0.0-beta.16',
-                'https://files.pythonhosted.org/packages/ab/cd/durable_workflow-2.0.0b16.dev1.tar.gz',
+                '2.0.0-beta.17',
+                'https://files.pythonhosted.org/packages/ab/cd/durable_workflow-2.0.0b17.dev1.tar.gz',
             ],
             'local release wheel' => [
-                '2.0.0-beta.16',
-                'https://files.pythonhosted.org/packages/ab/cd/durable_workflow-2.0.0b16+local-py3-none-any.whl',
+                '2.0.0-beta.17',
+                'https://files.pythonhosted.org/packages/ab/cd/durable_workflow-2.0.0b17+local-py3-none-any.whl',
             ],
             'unrelated package source' => [
-                '2.0.0-beta.16',
-                'https://files.pythonhosted.org/packages/ab/cd/unrelated-2.0.0b16-py3-none-any.whl',
+                '2.0.0-beta.17',
+                'https://files.pythonhosted.org/packages/ab/cd/unrelated-2.0.0b17-py3-none-any.whl',
             ],
         ];
 

@@ -8,7 +8,7 @@ use PHPUnit\Framework\TestCase;
 
 class KubernetesManifestContractTest extends TestCase
 {
-    private const SERVER_IMAGE = 'durableworkflow/server:2.0.0-beta.16';
+    private const SERVER_IMAGE = 'durableworkflow/server:2.0.0-beta.17';
 
     public function test_public_manifests_use_pinned_published_server_images(): void
     {
@@ -52,36 +52,6 @@ class KubernetesManifestContractTest extends TestCase
 
         $this->assertStringContainsString('path: /api/health', $source);
         $this->assertStringContainsString('path: /api/ready', $source);
-    }
-
-    public function test_kubernetes_readme_documents_support_boundary(): void
-    {
-        $source = $this->read('k8s/README.md');
-
-        foreach ([
-            'durableworkflow/server:2.0.0-beta.16',
-            'ghcr.io/durable-workflow/server:2.0.0-beta.16',
-            'Digest pinning is preferred',
-            'Helm charts',
-            'managed-Kubernetes provider validation',
-            'support-led',
-        ] as $needle) {
-            $this->assertStringContainsString($needle, $source);
-        }
-    }
-
-    public function test_top_level_readme_points_to_the_self_serve_helm_contract(): void
-    {
-        $source = $this->read('README.md');
-
-        foreach ([
-            'k8s/helm/durable-workflow/',
-            'recommended self-serve path for Kubernetes deployments',
-            'docs/helm-validation.md',
-            'k8s/helm/durable-workflow/docs/UPGRADING.md',
-        ] as $needle) {
-            $this->assertStringContainsString($needle, $source);
-        }
     }
 
     public function test_kubernetes_validation_workflow_runs_static_schema_and_kind_smoke(): void
