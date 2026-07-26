@@ -118,7 +118,31 @@ function removeOwnedPidFile(pidFile, pid) {
   }
 }
 
-export function stopHeartbeatRelay({ pid, ownershipToken, pidFile }) {
+function signalRelayProcess(pid, signal) {
+  try {
+    process.kill(pid, signal);
+    return null;
+  } catch (error) {
+    if (error?.code === 'ESRCH') return null;
+    return error instanceof Error ? error.message : String(error);
+  }
+}
+
+function waitForRelayExit(pid, deadline) {
+  while (processExists(pid)) {
+    const remaining = deadline - Date.now();
+    if (remaining <= 0) return false;
+    sleepSync(Math.min(50, remaining));
+  }
+  return true;
+}
+
+export function stopHeartbeatRelay({
+  pid,
+  ownershipToken,
+  pidFile,
+  deadline = Number.POSITIVE_INFINITY,
+}) {
   if (!Number.isInteger(pid) || pid < 1) {
     return { status: 'not_started', signal: null };
   }
@@ -127,6 +151,10 @@ export function stopHeartbeatRelay({ pid, ownershipToken, pidFile }) {
     return { status: 'already_stopped', signal: null };
   }
   if (readHeartbeatRelayPid(pidFile) !== pid) {
+    if (!processExists(pid)) {
+      removeOwnedPidFile(pidFile, pid);
+      return { status: 'already_stopped', signal: null };
+    }
     return {
       status: 'failed',
       signal: null,
@@ -134,6 +162,10 @@ export function stopHeartbeatRelay({ pid, ownershipToken, pidFile }) {
     };
   }
   if (!heartbeatRelayProcessMatches(pid, ownershipToken)) {
+    if (!processExists(pid)) {
+      removeOwnedPidFile(pidFile, pid);
+      return { status: 'already_stopped', signal: null };
+    }
     return {
       status: 'failed',
       signal: null,
@@ -141,33 +173,59 @@ export function stopHeartbeatRelay({ pid, ownershipToken, pidFile }) {
     };
   }
 
-  process.kill(pid, 'SIGTERM');
-  for (let attempt = 0; attempt < 50; attempt += 1) {
+  const termSignalError = signalRelayProcess(pid, 'SIGTERM');
+  if (termSignalError) {
+    return {
+      status: 'failed',
+      signal: 'SIGTERM',
+      error: `could not stop relay process ${pid}: ${termSignalError}`,
+    };
+  }
+  const remainingAfterTerm = Math.max(0, deadline - Date.now());
+  const forceStopReserve = Math.min(1_000, remainingAfterTerm);
+  const termDeadline = Math.min(Date.now() + 2_500, deadline - forceStopReserve);
+  if (waitForRelayExit(pid, termDeadline)) {
+    removeOwnedPidFile(pidFile, pid);
+    return { status: 'stopped', signal: 'SIGTERM' };
+  }
+  if (!processExists(pid)) {
+    removeOwnedPidFile(pidFile, pid);
+    return { status: 'stopped', signal: 'SIGTERM' };
+  }
+  if (!heartbeatRelayProcessMatches(pid, ownershipToken)) {
     if (!processExists(pid)) {
       removeOwnedPidFile(pidFile, pid);
       return { status: 'stopped', signal: 'SIGTERM' };
     }
-    sleepSync(50);
-  }
-  if (!heartbeatRelayProcessMatches(pid, ownershipToken)) {
     return {
       status: 'failed',
       signal: null,
       error: `refusing to force-stop unverified relay process ${pid}`,
     };
   }
-  process.kill(pid, 'SIGKILL');
-  for (let attempt = 0; attempt < 20; attempt += 1) {
-    if (!processExists(pid)) {
-      removeOwnedPidFile(pidFile, pid);
-      return { status: 'stopped', signal: 'SIGKILL' };
-    }
-    sleepSync(50);
+  const killSignalError = signalRelayProcess(pid, 'SIGKILL');
+  if (killSignalError) {
+    return {
+      status: 'failed',
+      signal: 'SIGKILL',
+      error: `could not force-stop relay process ${pid}: ${killSignalError}`,
+    };
+  }
+  if (waitForRelayExit(pid, Math.min(Date.now() + 1_000, deadline))) {
+    removeOwnedPidFile(pidFile, pid);
+    return { status: 'stopped', signal: 'SIGKILL' };
+  }
+  if (!processExists(pid)) {
+    removeOwnedPidFile(pidFile, pid);
+    return { status: 'stopped', signal: 'SIGKILL' };
   }
   return {
     status: 'failed',
     signal: 'SIGKILL',
-    error: `relay process ${pid} remained after SIGKILL`,
+    deadline_exhausted: Date.now() >= deadline,
+    error: Date.now() >= deadline
+      ? `cleanup deadline expired before relay process ${pid} settled after SIGKILL`
+      : `relay process ${pid} remained after SIGKILL`,
   };
 }
 

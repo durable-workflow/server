@@ -174,6 +174,16 @@ const resourcesEmpty = (resources) => cleanupResourceKinds.every(
 );
 const cleanupInventoryEmpty = resourcesEmpty(cleanupRemaining)
   && resourcesEmpty(cleanupDiagnostics?.final_resources_remaining);
+const cleanupTimingWithinDeadline = [
+  state.lifecycle.cleanup_verification,
+  cleanupDiagnostics,
+].every((timing) =>
+  Number.isInteger(timing?.elapsed_ms)
+  && Number.isInteger(timing?.timeout_ms)
+  && timing.elapsed_ms >= 0
+  && timing.timeout_ms > 0
+  && timing.elapsed_ms <= timing.timeout_ms
+  && timing.deadline_exhausted === false);
 const cleanupPassed = state.lifecycle.cleanup_status === 'pass'
   && Array.isArray(state.lifecycle.cleanup_failures)
   && state.lifecycle.cleanup_failures.length === 0
@@ -184,6 +194,7 @@ const cleanupPassed = state.lifecycle.cleanup_status === 'pass'
   && cleanupDiagnostics?.stable_empty_observations >= 3
   && Array.isArray(cleanupDiagnostics?.failures)
   && cleanupDiagnostics.failures.length === 0
+  && cleanupTimingWithinDeadline
   && cleanupInventoryEmpty;
 const requiredChildProcesses = ['php', 'python', 'rust', 'waterline'];
 const childProcessesPassed =
@@ -243,6 +254,16 @@ if (!cleanupPassed) {
     owning_cell: 'shared-server',
     failures: state.lifecycle.cleanup_failures ?? [],
     resources_remaining: state.lifecycle.cleanup_resources_remaining ?? null,
+    deadline: {
+      lifecycle: state.lifecycle.cleanup_verification ?? null,
+      diagnostics: cleanupDiagnostics
+        ? {
+          elapsed_ms: cleanupDiagnostics.elapsed_ms,
+          timeout_ms: cleanupDiagnostics.timeout_ms,
+          deadline_exhausted: cleanupDiagnostics.deadline_exhausted,
+        }
+        : null,
+    },
     diagnostic_file: 'shared-server-cleanup-diagnostics.json',
   });
 }

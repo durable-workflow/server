@@ -24,6 +24,15 @@ const save = () => fs.writeFileSync(statePath, JSON.stringify(state));
 const output = (values) => {
   if (values.length > 0) process.stdout.write(values.join('\\n') + '\\n');
 };
+if (Array.isArray(state.commands)) {
+  state.commands.push(args);
+  save();
+}
+if (state.hang_command === 'volume-ls'
+  && args[0] === 'volume'
+  && args[1] === 'ls') {
+  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 60_000);
+}
 if (args[0] === 'compose' && args.includes('down')) {
   state.containers = [];
   state.volumes = state.persistent_volume ? [state.persistent_volume] : [];
@@ -137,7 +146,7 @@ function fixture(options = {}) {
   fs.writeFileSync(docker, fakeDockerSource, { mode: 0o755 });
   const project = 'dw-hb-wave-cleanup-test';
   const dockerStatePath = path.join(root, 'docker-state.json');
-  fs.writeFileSync(dockerStatePath, JSON.stringify({
+  const dockerState = {
     project,
     containers: [],
     volumes: [],
@@ -145,7 +154,12 @@ function fixture(options = {}) {
     inject_race: options.injectRace === true,
     race_ready: false,
     persistent_volume: options.persistentVolume ?? null,
-  }));
+  };
+  if (options.hangCommand) {
+    dockerState.hang_command = options.hangCommand;
+    dockerState.commands = [];
+  }
+  fs.writeFileSync(dockerStatePath, JSON.stringify(dockerState));
   const overrideFile = path.join(result, 'docker-compose.heartbeat-test.yml');
   fs.writeFileSync(overrideFile, 'services: {}\n');
   fs.mkdirSync(path.join(result, 'php', 'php-heartbeat-run.leftover'));
@@ -164,7 +178,8 @@ function fixture(options = {}) {
         PATH: `${bin}:${process.env.PATH}`,
         REPO_ROOT: repositoryRoot,
         FAKE_DOCKER_STATE: dockerStatePath,
-        DW_HEARTBEATS_CLEANUP_TIMEOUT_SECONDS: '3',
+        DW_HEARTBEATS_CLEANUP_TIMEOUT_SECONDS:
+          String(options.cleanupTimeoutSeconds ?? 3),
       },
       encoding: 'utf8',
       timeout: 10_000,
@@ -173,7 +188,10 @@ function fixture(options = {}) {
 }
 
 test('shared cleanup survives a post-down resource race and proves stable absence', () => {
-  const run = fixture({ injectRace: true });
+  const run = fixture({
+    injectRace: true,
+    cleanupTimeoutSeconds: 6,
+  });
   try {
     const execution = run.execute();
     assert.equal(execution.status, 0, execution.stderr);
@@ -246,6 +264,62 @@ test('persistent resource residue is non-passing with bounded decisive diagnosti
         attempt.name === 'mysql-data'
         && attempt.stderr.includes('volume is in use')),
       true,
+    );
+  } finally {
+    fs.rmSync(run.root, { recursive: true, force: true });
+  }
+});
+
+test('a hung inventory command cannot extend or pass the shared cleanup deadline', () => {
+  const run = fixture({
+    hangCommand: 'volume-ls',
+    cleanupTimeoutSeconds: 1,
+  });
+  try {
+    const started = performance.now();
+    const execution = run.execute();
+    const elapsed = performance.now() - started;
+    assert.equal(execution.status, 1, execution.stderr);
+    assert.ok(elapsed < 2_500, `cleanup process ran for ${elapsed}ms`);
+
+    const state = JSON.parse(fs.readFileSync(run.statePath, 'utf8'));
+    assert.equal(state.lifecycle.cleanup_status, 'fail');
+    assert.equal(state.lifecycle.cleanup_verification.deadline_exhausted, true);
+    assert.ok(
+      state.lifecycle.cleanup_verification.elapsed_ms
+        <= state.lifecycle.cleanup_verification.timeout_ms + 250,
+      JSON.stringify(state.lifecycle.cleanup_verification),
+    );
+    assert.equal(
+      state.lifecycle.cleanup_failures.some((failure) =>
+        failure.includes('wall-clock deadline')),
+      true,
+    );
+
+    const dockerState = JSON.parse(fs.readFileSync(run.dockerStatePath, 'utf8'));
+    assert.equal(
+      dockerState.commands.some((args) =>
+        args[0] === 'volume' && args[1] === 'ls'),
+      true,
+    );
+    assert.equal(
+      dockerState.commands.some((args) =>
+        args[0] === 'network' && args[1] === 'ls'),
+      false,
+    );
+
+    const diagnostics = JSON.parse(fs.readFileSync(
+      path.join(run.result, 'shared-server-cleanup-diagnostics.json'),
+      'utf8',
+    ));
+    assert.equal(diagnostics.deadline_exhausted, true);
+    assert.equal(
+      diagnostics.observations[0].commands.volumes.deadline_exhausted,
+      true,
+    );
+    assert.equal(
+      diagnostics.observations[0].commands.networks.error,
+      'cleanup deadline exhausted before command could start',
     );
   } finally {
     fs.rmSync(run.root, { recursive: true, force: true });

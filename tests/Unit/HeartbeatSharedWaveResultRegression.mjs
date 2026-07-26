@@ -95,6 +95,9 @@ function writeFixture(root, pythonOutcome = 'pass') {
         sandbox_artifacts: [],
       },
       cleanup_verification: {
+        elapsed_ms: 500,
+        timeout_ms: 45_000,
+        deadline_exhausted: false,
         required_stable_empty_observations: 3,
         stable_empty_observations: 3,
       },
@@ -105,6 +108,9 @@ function writeFixture(root, pythonOutcome = 'pass') {
     schema: 'durable-workflow.v2.heartbeat-runtime.shared-server-cleanup-diagnostics',
     version: 1,
     project: state.compose.project,
+    elapsed_ms: 500,
+    timeout_ms: 45_000,
+    deadline_exhausted: false,
     stable_empty_observations: 3,
     final_resources_remaining: state.lifecycle.cleanup_resources_remaining,
     failures: [],
@@ -291,6 +297,41 @@ test('a cleanup pass flag cannot hide owned resource residue', () => {
     assert.equal(
       result.findings.some((finding) =>
         finding.finding_type === 'heartbeat_wave_cleanup_failed'),
+      true,
+    );
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('a clean inventory cannot pass after the cleanup wall-clock deadline', () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'heartbeat-wave-cleanup-deadline-'));
+  try {
+    writeFixture(root);
+    const statePath = path.join(root, 'shared-server-state.json');
+    const state = JSON.parse(fs.readFileSync(statePath, 'utf8'));
+    state.lifecycle.cleanup_verification.elapsed_ms = 45_001;
+    state.lifecycle.cleanup_verification.deadline_exhausted = true;
+    fs.writeFileSync(statePath, JSON.stringify(state));
+
+    const diagnosticsPath = path.join(root, 'shared-server-cleanup-diagnostics.json');
+    const diagnostics = JSON.parse(fs.readFileSync(diagnosticsPath, 'utf8'));
+    diagnostics.elapsed_ms = 45_001;
+    diagnostics.deadline_exhausted = true;
+    fs.writeFileSync(diagnosticsPath, JSON.stringify(diagnostics));
+
+    const execution = execute(root);
+    assert.equal(execution.status, 1, execution.stderr);
+    const result = JSON.parse(fs.readFileSync(
+      path.join(root, 'heartbeat-shared-wave-result.json'),
+      'utf8',
+    ));
+    assert.equal(result.outcome, 'fail');
+    assert.equal(result.runner_blocked, true);
+    assert.equal(
+      result.findings.some((finding) =>
+        finding.finding_type === 'heartbeat_wave_cleanup_failed'
+        && finding.deadline.lifecycle.elapsed_ms === 45_001),
       true,
     );
   } finally {

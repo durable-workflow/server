@@ -351,9 +351,10 @@ SH);
         $this->assertStringContainsString('migrations_completed: true', $lifecycle);
         $this->assertStringContainsString("cleanup_status: 'pending'", $lifecycle);
         $this->assertStringContainsString(
-            'function networkContainerInventory(network, excludedReferences, timeout)',
+            'function networkContainerInventory(',
             $lifecycle,
         );
+        $this->assertStringContainsString('cleanupCommandTimeout(deadline', $lifecycle);
         $this->assertStringContainsString('attached_cell_containers_found', $lifecycle);
         $this->assertStringContainsString("for (const kind of ['containers', 'volumes', 'networks'])", $lifecycle);
         $this->assertStringContainsString('collectStartupDiagnostics(', $lifecycle);
