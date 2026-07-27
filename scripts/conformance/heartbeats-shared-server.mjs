@@ -33,6 +33,10 @@ const CLEANUP_DIAGNOSTIC_FILE = 'shared-server-cleanup-diagnostics.json';
 const DIAGNOSTIC_OUTPUT_LIMIT = 64 * 1024;
 const CLEANUP_TERMINATION_GRACE_MS = 100;
 const CLEANUP_REAP_GRACE_MS = 100;
+const DISPOSABLE_STORAGE_MOUNTS = {
+  mysql: '/var/lib/mysql',
+  redis: '/data',
+};
 const action = process.argv[2] ?? '';
 const stateArgument = process.argv[3] ?? '';
 const statePath = stateArgument ? path.resolve(stateArgument) : '';
@@ -66,6 +70,26 @@ function parseJsonOrNull(value) {
   } catch {
     return null;
   }
+}
+
+function verifyDisposableStorage(composeConfig) {
+  const verified = {};
+  for (const [service, target] of Object.entries(DISPOSABLE_STORAGE_MOUNTS)) {
+    const targetMounts = (composeConfig?.services?.[service]?.volumes ?? [])
+      .filter((mount) => mount?.target === target);
+    if (targetMounts.length !== 1
+      || targetMounts[0]?.type !== 'tmpfs'
+      || targetMounts[0]?.source) {
+      throw new Error(
+        `effective Compose storage for ${service}:${target} must be one source-free tmpfs mount`,
+      );
+    }
+    verified[service] = {
+      type: targetMounts[0].type,
+      target: targetMounts[0].target,
+    };
+  }
+  return verified;
 }
 
 function run(command, args, options = {}) {
@@ -883,6 +907,14 @@ async function start() {
   let relayPort = await freePort();
   while (relayPort === port) relayPort = await freePort();
   fs.writeFileSync(overrideFile, `services:
+  mysql:
+    volumes:
+      - type: tmpfs
+        target: /var/lib/mysql
+  redis:
+    volumes:
+      - type: tmpfs
+        target: /data
   server:
     environment:
       DW_WORKER_HEARTBEAT_INTERVAL_SECONDS: "${heartbeatSeconds}"
@@ -920,6 +952,7 @@ async function start() {
       requested_reference: serverImage,
     },
   };
+  let disposableStorage = null;
   let executorAttachment = null;
   let relayPid = null;
   const relayPidFile = path.join(
@@ -927,6 +960,12 @@ async function start() {
     RELAY_PID_FILE,
   );
   try {
+    disposableStorage = verifyDisposableStorage(parseJson(run('docker', [
+      ...composePrefix, 'config', '--format', 'json',
+    ], {
+      env: composeEnvironment,
+      timeout: 30_000,
+    }).stdout));
     run('docker', ['pull', serverImage], { timeout: 300_000 });
     const image = parseJson(run('docker', ['image', 'inspect', serverImage], { timeout: 60_000 }).stdout);
     if (!String(image?.Id ?? '').startsWith('sha256:')) {
@@ -1146,6 +1185,10 @@ async function start() {
         base_file: path.basename(baseFile),
         override_file: path.basename(overrideFile),
         network,
+        disposable_storage: {
+          effective_config_verified: true,
+          mounts: disposableStorage,
+        },
       },
       cell_isolation: Object.fromEntries(['php', 'python', 'rust', 'waterline'].map((cell) => [
         cell,

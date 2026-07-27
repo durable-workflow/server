@@ -447,6 +447,7 @@ SH);
                 __DIR__.'/HeartbeatSharedWaveWaitStatusRegression.mjs',
                 __DIR__.'/HeartbeatSharedWaveResultRegression.mjs',
                 __DIR__.'/HeartbeatSharedServerReadinessRegression.mjs',
+                __DIR__.'/HeartbeatSharedStorageRegression.mjs',
                 __DIR__.'/HeartbeatRustPreparationRegression.mjs',
             ],
             [

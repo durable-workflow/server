@@ -9,7 +9,7 @@ use Symfony\Component\Yaml\Yaml;
 
 class VersionValidationWorkflowContractTest extends TestCase
 {
-    public function test_validation_workflow_uses_beta_19_server_with_beta_18_clients(): void
+    public function test_validation_workflow_uses_beta_21_server_with_beta_21_clients(): void
     {
         $source = $this->read('.github/workflows/version-validation.yml');
         $workflow = Yaml::parse($source);
@@ -18,12 +18,12 @@ class VersionValidationWorkflowContractTest extends TestCase
         $job = $workflow['jobs']['version-validation'] ?? null;
         $this->assertIsArray($job);
         $this->assertSame([
-            'SERVER_VERSION' => '2.0.0-beta.19',
-            'CLI_VERSION' => '2.0.0-beta.18',
-            'PYTHON_SDK_VERSION' => '2.0.0b18',
+            'SERVER_VERSION' => '2.0.0-beta.21',
+            'CLI_VERSION' => '2.0.0-beta.21',
+            'PYTHON_SDK_VERSION' => '2.0.0b21',
         ], $job['env'] ?? null);
 
-        $server = $this->step($job, 'Start beta.19 server');
+        $server = $this->step($job, 'Start beta.21 server');
         $this->assertSame('${{ env.SERVER_VERSION }}', $server['env']['APP_VERSION'] ?? null);
         $this->assertStringContainsString('if [ "$VERSION" != "${SERVER_VERSION}" ]; then', $server['run'] ?? '');
 
