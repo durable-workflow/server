@@ -61,7 +61,7 @@ class DedicatedMatchingComposeContractTest extends TestCase
         $published = $this->read('docker-compose.published.yml');
 
         foreach ([
-            'DW_SERVER_IMAGE:-durableworkflow/server:${DW_SERVER_TAG:-2.0.0-beta.18}',
+            'DW_SERVER_IMAGE:-durableworkflow/server:${DW_SERVER_TAG:-2.0.0-beta.19}',
         ] as $needle) {
             $this->assertStringContainsString(
                 $needle,

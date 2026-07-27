@@ -31,13 +31,13 @@ name: durable-workflow-server
 # `shape: in_worker` with `queue_wake_enabled: false`, and the matching
 # daemon reports `shape: dedicated`.
 
-x-server-image: &server-image ${DW_SERVER_IMAGE:-durableworkflow/server:${DW_SERVER_TAG:-2.0.0-beta.18}}
+x-server-image: &server-image ${DW_SERVER_IMAGE:-durableworkflow/server:${DW_SERVER_TAG:-2.0.0-beta.19}}
 
 x-server-environment: &server-environment
   APP_NAME: "Durable Workflow Server"
   APP_ENV: ${APP_ENV:-local}
   DW_SERVER_KEY: ${DW_SERVER_KEY:-}
-  APP_VERSION: ${APP_VERSION:-${DW_SERVER_TAG:-2.0.0-beta.18}}
+  APP_VERSION: ${APP_VERSION:-${DW_SERVER_TAG:-2.0.0-beta.19}}
   APP_DEBUG: ${APP_DEBUG:-false}
   DB_CONNECTION: mysql
   DB_HOST: mysql

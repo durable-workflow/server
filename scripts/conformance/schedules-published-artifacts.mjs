@@ -37,6 +37,19 @@ class PublishedStackCleanupError extends PublishedStackInfrastructureError {
   }
 }
 
+class CadenceHistoryTransportError extends PublishedStackInfrastructureError {
+  constructor(message) {
+    super(message, 'CadenceHistoryTransportError');
+  }
+}
+
+class CadenceObservationInfrastructureError extends PublishedStackInfrastructureError {
+  constructor(message, observations = {}) {
+    super(message, 'CadenceObservationInfrastructureError');
+    this.observations = observations;
+  }
+}
+
 const modulePath = fileURLToPath(import.meta.url);
 const repoRoot = process.env.DW_SCHEDULES_REPO_ROOT
   ?? path.resolve(path.dirname(modulePath), '../..');
@@ -2407,9 +2420,16 @@ async function maybeRunCadenceShard(startedAt, artifactVersions, artifactSources
     });
   } catch (error) {
     const reason = failureReasonWithShardLogs(error, 'schedules-cadence');
-    return error instanceof PublishedStackInfrastructureError
-      ? cadenceBlockedEvidence(reason, startedAt, artifactVersions, artifactSources)
-      : cadenceFailureEvidence(reason, startedAt, artifactVersions, artifactSources);
+    const observations = error instanceof CadenceObservationInfrastructureError
+      ? error.observations
+      : {};
+    return cadenceBlockedEvidence(
+      reason,
+      startedAt,
+      artifactVersions,
+      artifactSources,
+      observations,
+    );
   }
 }
 
@@ -2424,6 +2444,10 @@ async function runCadenceShard({ startedAt, artifactVersions, artifactSources, s
   const schedulerTickSeconds = positiveInt(process.env.DW_SCHEDULES_SCHEDULER_TICK_SECONDS, 5);
   const driftToleranceMs = positiveInt(process.env.DW_SCHEDULES_CADENCE_DRIFT_TOLERANCE_MS, 20000);
   const intervalToleranceMs = positiveInt(process.env.DW_SCHEDULES_CADENCE_INTERVAL_TOLERANCE_MS, 15000);
+  const transportFailureBudget = positiveInt(
+    process.env.DW_SCHEDULES_CADENCE_TRANSPORT_FAILURE_BUDGET,
+    3,
+  );
   const readinessTimeoutSeconds = positiveInt(process.env.DW_SCHEDULES_SERVER_READY_TIMEOUT_SECONDS, 120);
   const serverPort = positiveInt(process.env.DW_SCHEDULES_SERVER_PORT, 0) || await freePort();
   let serverUrl = existingServerUrl || `http://127.0.0.1:${serverPort}`;
@@ -2437,6 +2461,7 @@ async function runCadenceShard({ startedAt, artifactVersions, artifactSources, s
     overlayPath,
   ];
   let composeStarted = false;
+  const createdScheduleIds = [];
 
   markArtifactSource(artifactSources, 'server', existingServerUrl === '' ? 'published_docker_image' : 'existing_published_server_url', artifactVersions);
 
@@ -2483,6 +2508,7 @@ async function runCadenceShard({ startedAt, artifactVersions, artifactSources, s
       spec: { cron_expressions: ['* * * * *'], timezone: 'UTC' },
       taskQueue,
     });
+    createdScheduleIds.push(cronScheduleId);
     await createCadenceSchedule({
       serverUrl,
       token,
@@ -2491,6 +2517,7 @@ async function runCadenceShard({ startedAt, artifactVersions, artifactSources, s
       spec: { intervals: [{ every: 'PT30S' }], timezone: 'UTC' },
       taskQueue,
     });
+    createdScheduleIds.push(fixedRateScheduleId);
 
     const observations = await observeCadence({
       serverUrl,
@@ -2518,12 +2545,10 @@ async function runCadenceShard({ startedAt, artifactVersions, artifactSources, s
       pollSeconds,
       driftToleranceMs,
       intervalToleranceMs,
+      transportFailureBudget,
       artifactVersions,
       artifactSources,
     });
-
-    await bestEffortDeleteSchedule(serverUrl, token, namespace, cronScheduleId);
-    await bestEffortDeleteSchedule(serverUrl, token, namespace, fixedRateScheduleId);
 
     const evidence = cadenceEvidenceFromObservations({
       observations,
@@ -2539,30 +2564,37 @@ async function runCadenceShard({ startedAt, artifactVersions, artifactSources, s
 
     return evidence;
   } finally {
-    if (composeStarted) {
-      await collectComposeLogs(composeProject, composeFiles);
-      await removePublishedComposeProject(
-        composeProject,
-        composeFiles,
-        composeEnv(serverPort, serverImage, token, artifactVersions),
-      );
-    }
+    await Promise.all(createdScheduleIds.map(
+      (scheduleId) => bestEffortDeleteSchedule(serverUrl, token, namespace, scheduleId),
+    ));
 
-    const finishedAt = timestamp();
-    writeJson(path.join(resultDir, 'schedules-cadence-run-metadata.json'), {
-      schema: 'durable-workflow.v2.schedules-runtime.cadence-run-metadata',
-      started_at: startedAt,
-      cadence_started_at: cadenceStartedAt,
-      finished_at: finishedAt,
-      server_url: serverUrl,
-      namespace,
-      task_queue: taskQueue,
-      server_image: serverImage || 'existing-server-url',
-      compose_project: existingServerUrl === '' ? composeProject : null,
-      published_artifact_versions: artifactVersions,
-      artifact_sources: artifactSources,
-      local_product_source_checkouts_used: false,
-    });
+    try {
+      if (composeStarted) {
+        await collectComposeLogs(composeProject, composeFiles);
+        await removePublishedComposeProject(
+          composeProject,
+          composeFiles,
+          composeEnv(serverPort, serverImage, token, artifactVersions),
+        );
+      }
+    } finally {
+      const finishedAt = timestamp();
+      writeJson(path.join(resultDir, 'schedules-cadence-run-metadata.json'), {
+        schema: 'durable-workflow.v2.schedules-runtime.cadence-run-metadata',
+        started_at: startedAt,
+        cadence_started_at: cadenceStartedAt,
+        finished_at: finishedAt,
+        server_url: serverUrl,
+        namespace,
+        task_queue: taskQueue,
+        server_image: serverImage || 'existing-server-url',
+        compose_project: existingServerUrl === '' ? composeProject : null,
+        published_artifact_versions: artifactVersions,
+        artifact_sources: artifactSources,
+        local_product_source_checkouts_used: false,
+        schedules_created: createdScheduleIds,
+      });
+    }
   }
 }
 
@@ -2612,16 +2644,29 @@ async function observeCadence({
   pollSeconds,
   driftToleranceMs,
   intervalToleranceMs,
+  transportFailureBudget = 3,
   artifactVersions,
   artifactSources,
+  historyReader = scheduleHistory,
+  now = Date.now,
+  wait = sleep,
 }) {
-  const deadline = Date.now() + timeoutSeconds * 1000;
-  let latest = new Map();
+  const deadline = now() + timeoutSeconds * 1000;
+  const latest = new Map();
+  const readStats = new Map(schedules.map((schedule) => [
+    schedule.scenarioId,
+    {
+      successfulHistoryReads: 0,
+      transportFailures: 0,
+      consecutiveTransportFailures: 0,
+      lastTransportFailure: '',
+    },
+  ]));
 
-  while (Date.now() < deadline) {
-    latest = new Map(await Promise.all(schedules.map(async (schedule) => {
-      const history = await scheduleHistory(serverUrl, token, namespace, schedule.scheduleId);
-      const observation = buildCadenceObservation({
+  while (now() < deadline) {
+    const reads = await Promise.allSettled(schedules.map(async (schedule) => {
+      const history = await historyReader(serverUrl, token, namespace, schedule.scheduleId);
+      return buildCadenceObservation({
         ...schedule,
         events: history.events ?? [],
         driftToleranceMs,
@@ -2629,9 +2674,68 @@ async function observeCadence({
         artifactVersions,
         artifactSources,
       });
+    }));
 
-      return [schedule.scenarioId, observation];
-    })));
+    let infrastructureFailure = null;
+    for (let index = 0; index < schedules.length; index += 1) {
+      const schedule = schedules[index];
+      const read = reads[index];
+      const stats = readStats.get(schedule.scenarioId);
+
+      if (read.status === 'fulfilled') {
+        stats.successfulHistoryReads += 1;
+        stats.consecutiveTransportFailures = 0;
+        latest.set(schedule.scenarioId, {
+          ...read.value,
+          successful_history_read_count: stats.successfulHistoryReads,
+          transient_transport_failure_count: stats.transportFailures,
+        });
+        continue;
+      }
+
+      if (!isCadenceHistoryTransportFailure(read.reason)) {
+        infrastructureFailure = read.reason;
+        continue;
+      }
+
+      stats.transportFailures += 1;
+      stats.consecutiveTransportFailures += 1;
+      stats.lastTransportFailure = networkErrorDetail(read.reason);
+
+      const previous = latest.get(schedule.scenarioId);
+      if (previous) {
+        latest.set(schedule.scenarioId, {
+          ...previous,
+          transient_transport_failure_count: stats.transportFailures,
+        });
+      }
+
+      if (stats.consecutiveTransportFailures > transportFailureBudget) {
+        infrastructureFailure = new CadenceObservationInfrastructureError(
+          `schedule history HTTP execution surface remained unavailable for ${schedule.scheduleId} `
+            + `after ${stats.consecutiveTransportFailures} consecutive transport failures `
+            + `(retry budget ${transportFailureBudget}): ${stats.lastTransportFailure}`,
+          Object.fromEntries(latest),
+        );
+      }
+    }
+
+    if (infrastructureFailure !== null) {
+      if (
+        infrastructureFailure instanceof CadenceObservationInfrastructureError
+        && Object.keys(infrastructureFailure.observations).length > 0
+      ) {
+        throw infrastructureFailure;
+      }
+      throw new CadenceObservationInfrastructureError(
+        `schedule history observation could not continue: ${
+          infrastructureFailure instanceof Error
+            ? infrastructureFailure.message
+            : String(infrastructureFailure)
+        }`,
+        Object.fromEntries(latest),
+      );
+    }
 
     if (schedules.every((schedule) => {
       const observation = latest.get(schedule.scenarioId);
@@ -2640,7 +2744,21 @@ async function observeCadence({
       break;
     }
 
-    await sleep(pollSeconds * 1000);
+    const remainingMs = deadline - now();
+    if (remainingMs <= 0) {
+      break;
+    }
+    await wait(Math.min(pollSeconds * 1000, remainingMs));
+  }
+
+  const schedulesWithoutHistory = schedules
+    .filter((schedule) => !latest.has(schedule.scenarioId))
+    .map((schedule) => schedule.scheduleId);
+  if (schedulesWithoutHistory.length > 0) {
+    throw new CadenceObservationInfrastructureError(
+      `cadence polling ended without a successful history read for: ${schedulesWithoutHistory.join(', ')}`,
+      Object.fromEntries(latest),
+    );
   }
 
   return Object.fromEntries(latest);
@@ -2797,30 +2915,31 @@ function cadenceEvidenceFromObservations({
   };
 }
 
-function cadenceFailureEvidence(reason, startedAt, artifactVersions, artifactSources) {
+function cadenceBlockedEvidence(
+  reason,
+  startedAt,
+  artifactVersions,
+  artifactSources,
+  partialObservations = {},
+) {
   const finishedAt = timestamp();
   const observations = {
-    cron_cadence: failedCadenceObservation('cron_cadence', 'cron', reason, artifactVersions, artifactSources),
-    fixed_rate_cadence: failedCadenceObservation('fixed_rate_cadence', 'fixed_rate', reason, artifactVersions, artifactSources),
-  };
-
-  return cadenceEvidenceFromObservations({
-    observations,
-    startedAt,
-    finishedAt,
-    artifactVersions,
-    artifactSources,
-    namespace: stringValue(process.env.DW_SCHEDULES_NAMESPACE) || 'schedules-conformance',
-    taskQueue: stringValue(process.env.DW_SCHEDULES_TASK_QUEUE) || 'schedules-cadence',
-    schedulesCreated: [],
-  });
-}
-
-function cadenceBlockedEvidence(reason, startedAt, artifactVersions, artifactSources) {
-  const finishedAt = timestamp();
-  const observations = {
-    cron_cadence: blockedCadenceObservation('cron_cadence', 'cron', reason, artifactVersions, artifactSources),
-    fixed_rate_cadence: blockedCadenceObservation('fixed_rate_cadence', 'fixed_rate', reason, artifactVersions, artifactSources),
+    cron_cadence: blockedCadenceObservation(
+      'cron_cadence',
+      'cron',
+      reason,
+      artifactVersions,
+      artifactSources,
+      partialObservations.cron_cadence,
+    ),
+    fixed_rate_cadence: blockedCadenceObservation(
+      'fixed_rate_cadence',
+      'fixed_rate',
+      reason,
+      artifactVersions,
+      artifactSources,
+      partialObservations.fixed_rate_cadence,
+    ),
   };
 
   return cadenceEvidenceFromObservations({
@@ -2856,9 +2975,18 @@ function failedCadenceObservation(scenarioId, kind, reason, artifactVersions, ar
   };
 }
 
-function blockedCadenceObservation(scenarioId, kind, reason, artifactVersions, artifactSources) {
+function blockedCadenceObservation(
+  scenarioId,
+  kind,
+  reason,
+  artifactVersions,
+  artifactSources,
+  partialObservation = null,
+) {
   return {
     ...failedCadenceObservation(scenarioId, kind, reason, artifactVersions, artifactSources),
+    ...(partialObservation ?? {}),
+    failure_reason: reason,
     blocked_reason: reason,
     verdict: 'runner_blocked',
   };
@@ -9832,7 +9960,30 @@ async function collectCliComposeLogs(composeProject, composeFiles) {
 }
 
 async function scheduleHistory(serverUrl, token, namespace, scheduleId) {
-  return apiRequest(serverUrl, token, namespace, 'GET', `/schedules/${encodeURIComponent(scheduleId)}/history?limit=100`);
+  const pathAndQuery = `/schedules/${encodeURIComponent(scheduleId)}/history?limit=100`;
+  let result;
+  try {
+    result = await apiRequestResult(serverUrl, token, namespace, 'GET', pathAndQuery);
+  } catch (error) {
+    throw new CadenceHistoryTransportError(
+      `GET ${pathAndQuery} transport failed: ${networkErrorDetail(error)}`,
+    );
+  }
+
+  if (!result.ok) {
+    const detail = compactLogText(result.text);
+    if (result.status === 408 || result.status === 425 || result.status === 429 || result.status >= 500) {
+      throw new CadenceHistoryTransportError(
+        `GET ${pathAndQuery} returned transient HTTP ${result.status}: ${detail}`,
+      );
+    }
+
+    throw new CadenceObservationInfrastructureError(
+      `GET ${pathAndQuery} could not provide cadence history (HTTP ${result.status}): ${detail}`,
+    );
+  }
+
+  return result.parsed;
 }
 
 async function scheduleHistoryResult(serverUrl, token, namespace, scheduleId) {
@@ -10133,6 +10284,29 @@ function networkErrorDetail(error) {
   return parts.filter(Boolean).join(' ');
 }
 
+function isCadenceHistoryTransportFailure(error) {
+  if (error instanceof CadenceHistoryTransportError) {
+    return true;
+  }
+
+  const message = error instanceof Error ? error.message : String(error);
+  const cause = error && typeof error === 'object' ? error.cause : null;
+  const code = stringValue(cause?.code ?? error?.code).toUpperCase();
+  return /fetch failed|network error|socket|connection (?:closed|reset|refused)|timed? ?out/i.test(message)
+    || [
+      'ECONNABORTED',
+      'ECONNREFUSED',
+      'ECONNRESET',
+      'EHOSTUNREACH',
+      'ENETDOWN',
+      'ENETUNREACH',
+      'ETIMEDOUT',
+      'UND_ERR_CONNECT_TIMEOUT',
+      'UND_ERR_HEADERS_TIMEOUT',
+      'UND_ERR_SOCKET',
+    ].includes(code);
+}
+
 function compactLogText(value, limit = 1000) {
   const normalized = String(value ?? '').replace(/\s+/g, ' ').trim();
   if (normalized === '') {
@@ -10359,8 +10533,12 @@ function isMainModule() {
 }
 
 export {
+  CadenceObservationInfrastructureError,
+  cadenceBlockedEvidence,
+  cadenceEvidenceFromObservations,
   latestStableComposerVersion,
   missedFireOutageWaitMilliseconds,
+  observeCadence,
   observeMissedFirePolicy,
   schedulesPhpSurfaceProbeScript,
   schedulesPhpWorkerScript,

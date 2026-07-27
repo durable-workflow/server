@@ -11,7 +11,7 @@ jobs:
     name: Test CLI and SDK version validation
     runs-on: ubuntu-latest
     env:
-      SERVER_VERSION: 2.0.0-beta.18
+      SERVER_VERSION: 2.0.0-beta.19
       CLI_VERSION: 2.0.0-beta.18
       PYTHON_SDK_VERSION: 2.0.0b18
 
@@ -29,8 +29,8 @@ jobs:
           KEY=$(openssl rand -base64 32)
           echo "key=base64:$KEY" >> $GITHUB_OUTPUT
 
-      # Test 1: beta.15 server with compatible beta.14 clients - CLI success
-      - name: Start beta.15 server
+      # Test 1: beta.19 server with compatible beta.18 clients - CLI success
+      - name: Start beta.19 server
         env:
           APP_KEY: ${{ steps.app-key.outputs.key }}
           DW_AUTH_TOKEN: test-token-123
@@ -64,7 +64,7 @@ jobs:
           DURABLE_WORKFLOW_AUTH_TOKEN: test-token-123
           DURABLE_WORKFLOW_NAMESPACE: default
         run: |
-          # CLI should connect successfully to the beta.15 server.
+          # CLI should connect successfully to the beta.19 server.
           dw server:info || exit 1
           echo "✅ CLI successfully connected to compatible server"
 
@@ -104,7 +104,7 @@ jobs:
           async def main():
               client = Client("http://localhost:8080", token="test-token-123", namespace="default")
 
-              # This should succeed because the beta.15 server supports the beta.14 SDK.
+              # This should succeed because the beta.19 server supports the beta.18 SDK.
               worker = Worker(
                   client,
                   task_queue="test-queue",
