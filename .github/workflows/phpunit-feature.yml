@@ -37,6 +37,8 @@ jobs:
             --contract scripts/ci/release-recovery-consumer-contract.json \
             --adapter scripts/ci/release-recovery-consumer-adapter.json \
             "${arguments[@]}"
+          python scripts/ci/test-component-release-recovery.py \
+            ConsumerContractIdentityRegressionTest
         env:
           CONFORMANCE_BASE_REF: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || github.event.before }}
 
