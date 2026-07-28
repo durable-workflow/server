@@ -2027,6 +2027,7 @@ class ClusterInfoTest extends TestCase
             ->assertJsonPath('namespace.name', 'analytics')
             ->assertJsonPath('namespace.exists', true)
             ->assertJsonPath('namespace.status', 'active')
+            ->assertJsonPath('namespace.retention_mode', 'bounded')
             ->assertJsonPath('namespace.retention_days', 45)
             ->assertJsonPath(
                 'namespace.external_payload_storage.schema',

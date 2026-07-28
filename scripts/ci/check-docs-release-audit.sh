@@ -267,16 +267,24 @@ function routeKind(routePath) {
 }
 
 function parseArtifactVersion(version) {
-  const match = /^(\d+)\.(\d+)\.(\d+)(?:-(alpha|beta)\.(\d+))?$/.exec(version);
+  const match = /^(\d+)\.(\d+)\.(\d+)(?:-(alpha|beta|rc)\.(\d+))?$/.exec(version);
   if (!match) {
     return null;
   }
+
+  const channel = match[4] === 'alpha'
+    ? 0
+    : match[4] === 'beta'
+      ? 1
+      : match[4] === 'rc'
+        ? 2
+        : 3;
 
   return [
     Number(match[1]),
     Number(match[2]),
     Number(match[3]),
-    match[4] === 'alpha' ? 0 : match[4] === 'beta' ? 1 : 2,
+    channel,
     match[5] ? Number(match[5]) : 0,
   ];
 }

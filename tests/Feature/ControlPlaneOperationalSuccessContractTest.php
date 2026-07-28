@@ -186,6 +186,8 @@ class ControlPlaneOperationalSuccessContractTest extends TestCase
                 'body' => [],
                 'structure' => [
                     'namespace',
+                    'retention_mode',
+                    'retention_days',
                     'health' => [
                         'generated_at',
                         'status',
@@ -335,6 +337,7 @@ class ControlPlaneOperationalSuccessContractTest extends TestCase
                 'body' => [],
                 'structure' => [
                     'namespace',
+                    'retention_mode',
                     'retention_days',
                     'cutoff',
                     'expired_run_count',
@@ -348,6 +351,10 @@ class ControlPlaneOperationalSuccessContractTest extends TestCase
                 'path' => '/api/system/retention/pass',
                 'body' => [],
                 'structure' => [
+                    'namespace',
+                    'retention_mode',
+                    'retention_days',
+                    'cutoff',
                     'processed',
                     'pruned',
                     'skipped',

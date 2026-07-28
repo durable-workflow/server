@@ -265,6 +265,15 @@ Artisan::command('history:prune {--limit=100 : Maximum expired runs to prune per
     $totalFailed = 0;
 
     foreach ($namespaces as $ns) {
+        if ($ns->retainsHistoryForever()) {
+            $this->components->info(sprintf(
+                'Namespace [%s]: automatic history pruning disabled by forever retention.',
+                $ns->name,
+            ));
+
+            continue;
+        }
+
         $retentionDays = HistoryRetentionEnforcer::retentionDays($ns->name);
         $expiredRunIds = HistoryRetentionEnforcer::expiredRunIds($ns->name, $limit);
 

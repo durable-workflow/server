@@ -13,6 +13,7 @@ class DatabaseSeeder extends Seeder
             ['name' => 'default'],
             [
                 'description' => 'Default namespace',
+                'retention_mode' => WorkflowNamespace::RETENTION_MODE_BOUNDED,
                 'retention_days' => 30,
                 'status' => 'active',
             ]

@@ -709,7 +709,7 @@ SH);
         $composer = json_decode($this->read('composer.json'), true, flags: JSON_THROW_ON_ERROR);
 
         $this->assertSame(
-            '2.0.0-rc.1',
+            '2.0.0-rc.2',
             $composer['extra']['durable-workflow']['product-train'] ?? null,
         );
     }
@@ -1029,13 +1029,13 @@ SH);
         $this->assertSame($releaseDockerfileArgs, $workflowArgs[1]);
     }
 
-    public function test_release_workflow_records_docs_audit_evidence_after_image_publish(): void
+    public function test_release_workflow_records_docs_audit_evidence_after_public_release(): void
     {
         $workflow = $this->read('.github/workflows/release.yml');
         $auditor = $this->read('scripts/ci/check-docs-release-audit.sh');
 
         foreach ([
-            'Classify live docs release readiness after public images',
+            'Classify live docs release readiness after public release',
             "steps.exact.outputs.exact_publish_outcome == 'success'",
             "steps.protocol_catalog.outputs.protocol_catalog_conformance_outcome == 'success'",
             'DOCS_RELEASE_AUDIT_ARTIFACT: server',
@@ -1090,17 +1090,20 @@ SH);
         $buildOffset = strpos($workflow, 'Build and push exact image tags');
         $exactOffset = strpos($workflow, 'Verify exact image publication');
         $writeEvidenceOffset = strpos($workflow, 'Write release image publish evidence');
-        $docsAuditOffset = strpos($workflow, 'Classify live docs release readiness after public images');
+        $sourceReleaseOffset = strpos($workflow, 'Create the source GitHub Release');
+        $docsAuditOffset = strpos($workflow, 'Classify live docs release readiness after public release');
         $uploadOffset = strpos($workflow, 'Upload release image publish evidence');
 
         $this->assertIsInt($buildOffset);
         $this->assertIsInt($exactOffset);
         $this->assertIsInt($writeEvidenceOffset);
+        $this->assertIsInt($sourceReleaseOffset);
         $this->assertIsInt($docsAuditOffset);
         $this->assertIsInt($uploadOffset);
         $this->assertLessThan($exactOffset, $buildOffset);
         $this->assertLessThan($writeEvidenceOffset, $exactOffset);
-        $this->assertLessThan($docsAuditOffset, $writeEvidenceOffset);
+        $this->assertLessThan($sourceReleaseOffset, $writeEvidenceOffset);
+        $this->assertLessThan($docsAuditOffset, $sourceReleaseOffset);
         $this->assertLessThan($uploadOffset, $docsAuditOffset);
     }
 
@@ -1151,7 +1154,7 @@ SH);
         $exactOffset = strpos($workflow, 'Verify exact image publication');
         $catalogOffset = strpos($workflow, 'Verify published protocol catalog convergence');
         $rollingOffset = strpos($workflow, 'Resolve rolling image aliases');
-        $docsAuditOffset = strpos($workflow, 'Classify live docs release readiness after public images');
+        $docsAuditOffset = strpos($workflow, 'Classify live docs release readiness after public release');
 
         $this->assertIsInt($exactOffset);
         $this->assertIsInt($catalogOffset);
@@ -1547,6 +1550,43 @@ SH);
         $this->assertSame('live_docs_version_not_behind_publication', $result['evidence']['failure_kind']);
         $this->assertStringContainsString('newer than the published version 0.2.620', $result['stderr']);
         $this->assertNull($result['handoff']);
+    }
+
+    public function test_docs_audit_classifies_prerelease_channel_progression(): void
+    {
+        $stale = $this->runDocsReleaseAudit(
+            json_encode($this->validDocsReleaseAudit('2.0.0-beta.21'), JSON_THROW_ON_ERROR),
+            '2.0.0-rc.2',
+        );
+
+        $this->assertSame(0, $stale['exitCode']);
+        $this->assertSame('downstream_pending', $stale['evidence']['outcome']);
+        $this->assertSame('handoff', $stale['evidence']['classification']);
+        $this->assertSame('2.0.0-rc.2', $stale['handoff']['stale_artifact']['expected_version']);
+        $this->assertSame('2.0.0-beta.21', $stale['handoff']['stale_artifact']['live_version']);
+
+        $same = $this->runDocsReleaseAudit(
+            json_encode($this->validDocsReleaseAudit('2.0.0-rc.2'), JSON_THROW_ON_ERROR),
+            '2.0.0-rc.2',
+        );
+
+        $this->assertSame(0, $same['exitCode']);
+        $this->assertSame('pass', $same['evidence']['outcome']);
+        $this->assertSame('ready', $same['evidence']['classification']);
+        $this->assertNull($same['handoff']);
+
+        $newer = $this->runDocsReleaseAudit(
+            json_encode($this->validDocsReleaseAudit('2.0.0-rc.3'), JSON_THROW_ON_ERROR),
+            '2.0.0-rc.2',
+        );
+
+        $this->assertSame(1, $newer['exitCode']);
+        $this->assertSame('release_readiness_failure', $newer['evidence']['outcome']);
+        $this->assertSame(
+            'live_docs_version_not_behind_publication',
+            $newer['evidence']['failure_kind'],
+        );
+        $this->assertNull($newer['handoff']);
     }
 
     public function test_docs_audit_rejects_incompatible_schema_with_actionable_evidence(): void

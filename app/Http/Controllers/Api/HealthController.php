@@ -307,6 +307,7 @@ class HealthController
             'name' => $normalized,
             'exists' => $ns !== null,
             'status' => $ns?->status,
+            'retention_mode' => $ns?->retention_mode,
             'retention_days' => $ns?->retention_days,
             'external_payload_storage' => $this->externalPayloadStoragePolicy($ns),
         ];

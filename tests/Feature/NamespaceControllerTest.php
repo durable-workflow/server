@@ -71,12 +71,14 @@ class NamespaceControllerTest extends TestCase
         $response->assertCreated()
             ->assertJsonPath('name', 'production')
             ->assertJsonPath('description', 'Production environment')
+            ->assertJsonPath('retention_mode', 'bounded')
             ->assertJsonPath('retention_days', 90)
             ->assertJsonPath('status', 'active');
 
         $this->assertDatabaseHas('workflow_namespaces', [
             'name' => 'production',
             'description' => 'Production environment',
+            'retention_mode' => 'bounded',
             'retention_days' => 90,
             'status' => 'active',
         ]);
@@ -90,7 +92,70 @@ class NamespaceControllerTest extends TestCase
 
         $response->assertCreated()
             ->assertJsonPath('name', 'minimal')
+            ->assertJsonPath('retention_mode', 'bounded')
             ->assertJsonPath('retention_days', config('server.history.retention_days'));
+    }
+
+    public function test_it_exposes_forever_retention_consistently_across_namespace_surfaces(): void
+    {
+        $created = $this->postJson('/api/namespaces', [
+            'name' => 'protected',
+            'description' => 'Protected history',
+            'retention_mode' => 'forever',
+        ]);
+
+        $created->assertCreated()
+            ->assertJsonPath('retention_mode', 'forever')
+            ->assertJsonPath('retention_days', null);
+
+        $this->getJson('/api/namespaces/protected')
+            ->assertOk()
+            ->assertJsonPath('retention_mode', 'forever')
+            ->assertJsonPath('retention_days', null);
+
+        $this->getJson('/api/namespaces')
+            ->assertOk()
+            ->assertJsonPath('namespaces.0.retention_mode', 'forever')
+            ->assertJsonPath('namespaces.0.retention_days', null);
+
+        $this->putJson('/api/namespaces/protected', [
+            'description' => 'Protected history updated',
+        ])
+            ->assertOk()
+            ->assertJsonPath('retention_mode', 'forever')
+            ->assertJsonPath('retention_days', null);
+
+        $this->assertDatabaseHas('workflow_namespaces', [
+            'name' => 'protected',
+            'retention_mode' => 'forever',
+            'retention_days' => null,
+        ]);
+    }
+
+    public function test_it_validates_retention_mode_and_day_combinations(): void
+    {
+        $this->postJson('/api/namespaces', [
+            'name' => 'invalid-mode',
+            'retention_mode' => 'indefinite',
+        ])
+            ->assertUnprocessable()
+            ->assertJsonValidationErrors('retention_mode');
+
+        $this->postJson('/api/namespaces', [
+            'name' => 'contradictory-forever',
+            'retention_mode' => 'forever',
+            'retention_days' => 365,
+        ])
+            ->assertUnprocessable()
+            ->assertJsonValidationErrors('retention_days');
+
+        $this->postJson('/api/namespaces', [
+            'name' => 'contradictory-bounded',
+            'retention_mode' => 'bounded',
+            'retention_days' => null,
+        ])
+            ->assertUnprocessable()
+            ->assertJsonValidationErrors('retention_days');
     }
 
     public function test_it_normalizes_mixed_case_namespace_names_to_lowercase(): void
@@ -272,6 +337,49 @@ class NamespaceControllerTest extends TestCase
         ]);
     }
 
+    public function test_it_requires_days_when_changing_forever_retention_to_bounded(): void
+    {
+        WorkflowNamespace::create([
+            'name' => 'protected',
+            'retention_mode' => 'forever',
+            'retention_days' => null,
+            'status' => 'active',
+        ]);
+
+        $this->putJson('/api/namespaces/protected', [
+            'retention_mode' => 'bounded',
+        ])
+            ->assertUnprocessable()
+            ->assertJsonValidationErrors('retention_days');
+
+        $this->putJson('/api/namespaces/protected', [
+            'retention_mode' => 'bounded',
+            'retention_days' => 45,
+        ])
+            ->assertOk()
+            ->assertJsonPath('retention_mode', 'bounded')
+            ->assertJsonPath('retention_days', 45);
+
+        $this->putJson('/api/namespaces/protected', [
+            'retention_mode' => 'forever',
+            'retention_days' => 45,
+        ])
+            ->assertUnprocessable()
+            ->assertJsonValidationErrors('retention_days');
+    }
+
+    public function test_namespace_persistence_rejects_contradictory_forever_retention(): void
+    {
+        $this->expectException(\InvalidArgumentException::class);
+
+        WorkflowNamespace::create([
+            'name' => 'invalid-persistence',
+            'retention_mode' => 'forever',
+            'retention_days' => 30,
+            'status' => 'active',
+        ]);
+    }
+
     public function test_it_returns_404_when_updating_unknown_namespace(): void
     {
         $response = $this->putJson('/api/namespaces/nonexistent', [
@@ -301,7 +409,8 @@ class NamespaceControllerTest extends TestCase
     {
         WorkflowNamespace::create([
             'name' => 'tenant-a',
-            'retention_days' => 30,
+            'retention_mode' => 'forever',
+            'retention_days' => null,
             'status' => 'active',
         ]);
         WorkflowNamespace::create([
@@ -861,7 +970,7 @@ class NamespaceControllerTest extends TestCase
         $response->assertOk()
             ->assertJsonStructure([
                 'namespaces' => [
-                    ['name', 'description', 'retention_days', 'status', 'created_at', 'updated_at'],
+                    ['name', 'description', 'retention_mode', 'retention_days', 'status', 'created_at', 'updated_at'],
                 ],
             ]);
     }

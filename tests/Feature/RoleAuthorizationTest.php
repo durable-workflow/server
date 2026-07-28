@@ -161,6 +161,33 @@ class RoleAuthorizationTest extends TestCase
             ->assertJsonPath('role', 'admin');
     }
 
+    public function test_only_admin_can_change_namespace_retention_to_forever(): void
+    {
+        $this->configureRoleTokens();
+
+        $this->withHeaders($this->controlHeaders('operator-token'))
+            ->putJson('/api/namespaces/default', [
+                'retention_mode' => 'forever',
+            ])
+            ->assertForbidden()
+            ->assertJsonPath('reason', 'forbidden')
+            ->assertJsonPath('role', 'operator');
+
+        $this->assertDatabaseHas('workflow_namespaces', [
+            'name' => 'default',
+            'retention_mode' => 'bounded',
+            'retention_days' => 30,
+        ]);
+
+        $this->withHeaders($this->controlHeaders('admin-token'))
+            ->putJson('/api/namespaces/default', [
+                'retention_mode' => 'forever',
+            ])
+            ->assertOk()
+            ->assertJsonPath('retention_mode', 'forever')
+            ->assertJsonPath('retention_days', null);
+    }
+
     public function test_legacy_token_keeps_full_access_when_role_tokens_are_absent(): void
     {
         config([

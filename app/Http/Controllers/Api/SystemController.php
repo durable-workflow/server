@@ -128,9 +128,12 @@ class SystemController
         $namespace = (string) $request->attributes->get('namespace');
         $snapshot = HealthCheck::snapshot(null, $namespace);
         $snapshot['routing_drains'] = $this->buildIdRollouts->routingDrains($namespace);
+        $retention = HistoryRetentionEnforcer::retentionPolicy($namespace);
 
         return ControlPlaneProtocol::json([
             'namespace' => $namespace,
+            'retention_mode' => $retention['retention_mode'],
+            'retention_days' => $retention['retention_days'],
             'health' => $snapshot,
         ], HealthCheck::httpStatus($snapshot));
     }
@@ -287,14 +290,14 @@ class SystemController
         ]);
         $limit = min(100, (int) ($validated['limit'] ?? 100));
 
-        $retentionDays = HistoryRetentionEnforcer::retentionDays($namespace);
-        $cutoff = now()->subDays($retentionDays);
+        $retention = HistoryRetentionEnforcer::retentionPolicy($namespace);
         $expiredRunIds = HistoryRetentionEnforcer::expiredRunIds($namespace, $limit);
 
         return ControlPlaneProtocol::json([
             'namespace' => $namespace,
-            'retention_days' => $retentionDays,
-            'cutoff' => $cutoff->toIso8601String(),
+            'retention_mode' => $retention['retention_mode'],
+            'retention_days' => $retention['retention_days'],
+            'cutoff' => $retention['cutoff']?->toIso8601String(),
             'expired_run_count' => count($expiredRunIds),
             'expired_run_ids' => $expiredRunIds,
             'scan_limit' => $limit,
@@ -322,10 +325,16 @@ class SystemController
         ));
 
         $report = HistoryRetentionEnforcer::runPass($namespace, $limit, $runIds);
+        $retention = HistoryRetentionEnforcer::retentionPolicy($namespace);
 
         $hasFailures = $report['failed'] > 0;
 
-        return ControlPlaneProtocol::json($report, $hasFailures ? 207 : 200);
+        return ControlPlaneProtocol::json([
+            'namespace' => $namespace,
+            'retention_mode' => $retention['retention_mode'],
+            'retention_days' => $retention['retention_days'],
+            'cutoff' => $retention['cutoff']?->toIso8601String(),
+        ] + $report, $hasFailures ? 207 : 200);
     }
 
     private function trimmedString(mixed $value): ?string

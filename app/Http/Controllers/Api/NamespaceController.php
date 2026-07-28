@@ -10,6 +10,7 @@ use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Validation\Rule;
+use Illuminate\Validation\ValidationException;
 
 class NamespaceController
 {
@@ -22,15 +23,7 @@ class NamespaceController
         $namespaces = WorkflowNamespace::all();
 
         return ControlPlaneProtocol::json([
-            'namespaces' => $namespaces->map(fn (WorkflowNamespace $ns) => [
-                'name' => $ns->name,
-                'description' => $ns->description,
-                'retention_days' => $ns->retention_days,
-                'status' => $ns->status,
-                'external_payload_storage' => $ns->external_payload_storage,
-                'created_at' => $ns->created_at?->toIso8601String(),
-                'updated_at' => $ns->updated_at?->toIso8601String(),
-            ]),
+            'namespaces' => $namespaces->map(fn (WorkflowNamespace $ns) => $this->serializeNamespace($ns)),
         ]);
     }
 
@@ -43,10 +36,12 @@ class NamespaceController
         $validated = $request->validate([
             'name' => ['required', 'string', 'max:128', 'regex:/^[a-zA-Z0-9._-]+$/'],
             'description' => ['nullable', 'string', 'max:1000'],
-            'retention_days' => ['nullable', 'integer', 'min:1', 'max:365'],
+            'retention_mode' => ['sometimes', 'string', Rule::in(WorkflowNamespace::retentionModes())],
+            'retention_days' => ['sometimes', 'nullable', 'integer', 'min:1', 'max:365'],
         ]);
 
         $validated['name'] = strtolower($validated['name']);
+        $retention = $this->retentionForCreate($validated);
 
         if (WorkflowNamespace::where('name', $validated['name'])->exists()) {
             return ControlPlaneProtocol::json([
@@ -59,18 +54,12 @@ class NamespaceController
         $namespace = WorkflowNamespace::create([
             'name' => $validated['name'],
             'description' => $validated['description'] ?? null,
-            'retention_days' => $validated['retention_days'] ?? config('server.history.retention_days'),
+            'retention_mode' => $retention['retention_mode'],
+            'retention_days' => $retention['retention_days'],
             'status' => 'active',
         ]);
 
-        return ControlPlaneProtocol::json([
-            'name' => $namespace->name,
-            'description' => $namespace->description,
-            'retention_days' => $namespace->retention_days,
-            'status' => $namespace->status,
-            'external_payload_storage' => $namespace->external_payload_storage,
-            'created_at' => $namespace->created_at?->toIso8601String(),
-        ], 201);
+        return ControlPlaneProtocol::json($this->serializeNamespace($namespace), 201);
     }
 
     public function show(Request $request, string $namespace): JsonResponse
@@ -85,15 +74,7 @@ class NamespaceController
             return $this->namespaceNotFound($namespace);
         }
 
-        return ControlPlaneProtocol::json([
-            'name' => $ns->name,
-            'description' => $ns->description,
-            'retention_days' => $ns->retention_days,
-            'status' => $ns->status,
-            'external_payload_storage' => $ns->external_payload_storage,
-            'created_at' => $ns->created_at?->toIso8601String(),
-            'updated_at' => $ns->updated_at?->toIso8601String(),
-        ]);
+        return ControlPlaneProtocol::json($this->serializeNamespace($ns));
     }
 
     public function update(Request $request, string $namespace): JsonResponse
@@ -110,19 +91,23 @@ class NamespaceController
 
         $validated = $request->validate([
             'description' => ['nullable', 'string', 'max:1000'],
-            'retention_days' => ['nullable', 'integer', 'min:1', 'max:365'],
+            'retention_mode' => ['sometimes', 'string', Rule::in(WorkflowNamespace::retentionModes())],
+            'retention_days' => ['sometimes', 'nullable', 'integer', 'min:1', 'max:365'],
         ]);
 
-        $ns->update(array_filter($validated, fn ($v) => $v !== null));
+        $retention = $this->retentionForUpdate($ns, $validated);
+        $updates = [];
 
-        return ControlPlaneProtocol::json([
-            'name' => $ns->name,
-            'description' => $ns->description,
-            'retention_days' => $ns->retention_days,
-            'status' => $ns->status,
-            'external_payload_storage' => $ns->external_payload_storage,
-            'updated_at' => $ns->updated_at?->toIso8601String(),
-        ]);
+        if (($validated['description'] ?? null) !== null) {
+            $updates['description'] = $validated['description'];
+        }
+
+        $updates['retention_mode'] = $retention['retention_mode'];
+        $updates['retention_days'] = $retention['retention_days'];
+
+        $ns->update($updates);
+
+        return ControlPlaneProtocol::json($this->serializeNamespace($ns));
     }
 
     public function updateExternalStorage(Request $request, string $namespace): JsonResponse
@@ -234,11 +219,71 @@ class NamespaceController
         return [
             'name' => $ns->name,
             'description' => $ns->description,
+            'retention_mode' => $ns->retention_mode,
             'retention_days' => $ns->retention_days,
             'status' => $ns->status,
             'external_payload_storage' => $ns->external_payload_storage,
             'created_at' => $ns->created_at?->toIso8601String(),
             'updated_at' => $ns->updated_at?->toIso8601String(),
         ];
+    }
+
+    /**
+     * @param  array<string, mixed>  $validated
+     * @return array{retention_mode: string, retention_days: int|null}
+     */
+    private function retentionForCreate(array $validated): array
+    {
+        $mode = $validated['retention_mode'] ?? WorkflowNamespace::RETENTION_MODE_BOUNDED;
+        $hasDays = array_key_exists('retention_days', $validated);
+        $days = $validated['retention_days'] ?? null;
+
+        $this->validateRetentionCombination($mode, $hasDays, $days);
+
+        return [
+            'retention_mode' => $mode,
+            'retention_days' => $mode === WorkflowNamespace::RETENTION_MODE_FOREVER
+                ? null
+                : ($days ?? (int) config('server.history.retention_days')),
+        ];
+    }
+
+    /**
+     * @param  array<string, mixed>  $validated
+     * @return array{retention_mode: string, retention_days: int|null}
+     */
+    private function retentionForUpdate(WorkflowNamespace $namespace, array $validated): array
+    {
+        $mode = $validated['retention_mode'] ?? $namespace->retention_mode;
+        $hasDays = array_key_exists('retention_days', $validated);
+        $days = $hasDays ? $validated['retention_days'] : $namespace->retention_days;
+
+        $this->validateRetentionCombination($mode, $hasDays, $days);
+
+        if ($mode === WorkflowNamespace::RETENTION_MODE_BOUNDED && $days === null) {
+            throw ValidationException::withMessages([
+                'retention_days' => ['retention_days is required when changing a forever namespace to bounded retention.'],
+            ]);
+        }
+
+        return [
+            'retention_mode' => $mode,
+            'retention_days' => $mode === WorkflowNamespace::RETENTION_MODE_FOREVER ? null : (int) $days,
+        ];
+    }
+
+    private function validateRetentionCombination(string $mode, bool $hasDays, mixed $days): void
+    {
+        if ($mode === WorkflowNamespace::RETENTION_MODE_FOREVER && $hasDays && $days !== null) {
+            throw ValidationException::withMessages([
+                'retention_days' => ['retention_days must be omitted or null when retention_mode is forever.'],
+            ]);
+        }
+
+        if ($mode === WorkflowNamespace::RETENTION_MODE_BOUNDED && $hasDays && $days === null) {
+            throw ValidationException::withMessages([
+                'retention_days' => ['retention_days cannot be null when retention_mode is bounded.'],
+            ]);
+        }
     }
 }

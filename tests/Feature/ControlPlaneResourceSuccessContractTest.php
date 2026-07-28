@@ -44,7 +44,7 @@ class ControlPlaneResourceSuccessContractTest extends TestCase
                 'path' => '/api/namespaces',
                 'body' => [],
                 'status' => 200,
-                'structure' => ['namespaces' => [['name', 'description', 'retention_days', 'status', 'created_at', 'updated_at']]],
+                'structure' => ['namespaces' => [['name', 'description', 'retention_mode', 'retention_days', 'status', 'created_at', 'updated_at']]],
                 'paths' => ['namespaces.0.name' => 'default'],
             ],
             'namespaces.store' => [
@@ -53,7 +53,7 @@ class ControlPlaneResourceSuccessContractTest extends TestCase
                 'path' => '/api/namespaces',
                 'body' => ['name' => 'contract-resource', 'description' => 'Contract resource', 'retention_days' => 14],
                 'status' => 201,
-                'structure' => ['name', 'description', 'retention_days', 'status', 'created_at'],
+                'structure' => ['name', 'description', 'retention_mode', 'retention_days', 'status', 'created_at'],
                 'paths' => ['name' => 'contract-resource', 'status' => 'active'],
             ],
             'namespaces.show' => [
@@ -62,7 +62,7 @@ class ControlPlaneResourceSuccessContractTest extends TestCase
                 'path' => '/api/namespaces/default',
                 'body' => [],
                 'status' => 200,
-                'structure' => ['name', 'description', 'retention_days', 'status', 'created_at', 'updated_at'],
+                'structure' => ['name', 'description', 'retention_mode', 'retention_days', 'status', 'created_at', 'updated_at'],
                 'paths' => ['name' => 'default'],
             ],
             'namespaces.update' => [
@@ -71,7 +71,7 @@ class ControlPlaneResourceSuccessContractTest extends TestCase
                 'path' => '/api/namespaces/default',
                 'body' => ['description' => 'Updated namespace'],
                 'status' => 200,
-                'structure' => ['name', 'description', 'retention_days', 'status', 'updated_at'],
+                'structure' => ['name', 'description', 'retention_mode', 'retention_days', 'status', 'updated_at'],
                 'paths' => ['name' => 'default', 'description' => 'Updated namespace'],
             ],
             'namespaces.destroy' => [

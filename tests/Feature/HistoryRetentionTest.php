@@ -104,6 +104,78 @@ class HistoryRetentionTest extends TestCase
             ->assertJsonPath('expired_run_count', 1);
     }
 
+    public function test_forever_history_survives_repeated_scheduled_api_and_inline_retention_passes(): void
+    {
+        Queue::fake();
+        Cache::flush();
+
+        WorkflowNamespace::query()->create([
+            'name' => 'protected',
+            'description' => 'Protected history',
+            'retention_mode' => WorkflowNamespace::RETENTION_MODE_FOREVER,
+            'retention_days' => null,
+            'status' => 'active',
+        ]);
+        $this->createNamespaceWithRetention('bounded', 7);
+
+        $protectedRunId = $this->createExpiredClosedRun('protected', 'wf-protected-retention', daysAgo: 60);
+        $boundedRunId = $this->createExpiredClosedRun('bounded', 'wf-bounded-retention', daysAgo: 60);
+        $protectedEventCount = WorkflowHistoryEvent::where('workflow_run_id', $protectedRunId)->count();
+
+        $this->artisan('history:prune')->assertExitCode(0);
+        $this->artisan('history:prune')->assertExitCode(0);
+
+        $this->assertNotNull(WorkflowRunSummary::find($protectedRunId));
+        $this->assertNull(WorkflowRunSummary::find($boundedRunId));
+
+        for ($pass = 0; $pass < 2; $pass++) {
+            $this->withHeaders($this->apiHeaders('protected'))
+                ->postJson('/api/system/retention/pass', [
+                    'run_ids' => [$protectedRunId],
+                ])
+                ->assertOk()
+                ->assertJsonPath('retention_mode', 'forever')
+                ->assertJsonPath('retention_days', null)
+                ->assertJsonPath('processed', 1)
+                ->assertJsonPath('pruned', 0)
+                ->assertJsonPath('skipped', 1)
+                ->assertJsonPath('results.0.reason', 'namespace_retention_forever');
+        }
+
+        $this->registerWorker('protected-retention-worker', 'default', 'protected');
+
+        for ($pass = 0; $pass < 2; $pass++) {
+            $this->withHeaders($this->workerHeaders('protected'))
+                ->postJson('/api/worker/heartbeat', [
+                    'worker_id' => 'protected-retention-worker',
+                ])
+                ->assertOk()
+                ->assertJsonPath('retention.throttled', false)
+                ->assertJsonPath('retention.processed', 0)
+                ->assertJsonPath('retention.pruned', 0);
+        }
+
+        $this->withHeaders($this->apiHeaders('protected'))
+            ->getJson('/api/system/retention')
+            ->assertOk()
+            ->assertJsonPath('retention_mode', 'forever')
+            ->assertJsonPath('retention_days', null)
+            ->assertJsonPath('cutoff', null)
+            ->assertJsonPath('expired_run_count', 0);
+
+        $this->withHeaders($this->apiHeaders('protected'))
+            ->getJson('/api/cluster/info')
+            ->assertOk()
+            ->assertJsonPath('namespace.retention_mode', 'forever')
+            ->assertJsonPath('namespace.retention_days', null);
+
+        $this->assertNotNull(WorkflowRunSummary::find($protectedRunId));
+        $this->assertSame(
+            $protectedEventCount,
+            WorkflowHistoryEvent::where('workflow_run_id', $protectedRunId)->count(),
+        );
+    }
+
     public function test_retention_status_does_not_include_running_workflows(): void
     {
         Queue::fake();

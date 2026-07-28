@@ -2104,6 +2104,12 @@ class WorkflowControlPlaneTest extends TestCase
 
         $this->configureWorkflowTypes();
         $this->createNamespace('default', 'Default namespace');
+        WorkflowNamespace::query()
+            ->where('name', 'default')
+            ->update([
+                'retention_mode' => WorkflowNamespace::RETENTION_MODE_FOREVER,
+                'retention_days' => null,
+            ]);
 
         $start = $this->withHeaders($this->apiHeaders())
             ->postJson('/api/workflows', [

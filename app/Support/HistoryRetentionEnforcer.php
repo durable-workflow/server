@@ -3,6 +3,7 @@
 namespace App\Support;
 
 use App\Models\WorkflowNamespace;
+use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Log;
 use Workflow\V2\Enums\RunStatus;
@@ -23,8 +24,13 @@ class HistoryRetentionEnforcer
     public static function expiredRunIds(string $namespace, int $limit): array
     {
         $limit = max(1, min(100, $limit));
-        $retentionDays = self::retentionDays($namespace);
-        $cutoff = now()->subDays($retentionDays);
+        $policy = self::retentionPolicy($namespace);
+
+        if ($policy['retention_mode'] === WorkflowNamespace::RETENTION_MODE_FOREVER) {
+            return [];
+        }
+
+        $cutoff = $policy['cutoff'];
 
         return NamespaceWorkflowScope::runSummaryQuery($namespace)
             ->whereIn('workflow_run_summaries.status_bucket', ['completed', 'failed'])
@@ -37,11 +43,32 @@ class HistoryRetentionEnforcer
             ->all();
     }
 
-    public static function retentionDays(string $namespace): int
+    /**
+     * @return array{retention_mode: string, retention_days: int|null, cutoff: Carbon|null}
+     */
+    public static function retentionPolicy(string $namespace): array
     {
         $ns = WorkflowNamespace::query()->where('name', $namespace)->first();
+        $mode = $ns?->retention_mode ?? WorkflowNamespace::RETENTION_MODE_BOUNDED;
+        $days = $mode === WorkflowNamespace::RETENTION_MODE_FOREVER
+            ? null
+            : ($ns?->retention_days ?? (int) config('server.history.retention_days', 30));
 
-        return $ns?->retention_days ?? (int) config('server.history.retention_days', 30);
+        return [
+            'retention_mode' => $mode,
+            'retention_days' => $days,
+            'cutoff' => $days === null ? null : now()->subDays($days),
+        ];
+    }
+
+    public static function retentionMode(string $namespace): string
+    {
+        return self::retentionPolicy($namespace)['retention_mode'];
+    }
+
+    public static function retentionDays(string $namespace): ?int
+    {
+        return self::retentionPolicy($namespace)['retention_days'];
     }
 
     /**
@@ -111,6 +138,16 @@ class HistoryRetentionEnforcer
      */
     public static function runInlinePass(string $namespace): array
     {
+        if (self::retentionMode($namespace) === WorkflowNamespace::RETENTION_MODE_FOREVER) {
+            return [
+                'throttled' => false,
+                'processed' => 0,
+                'pruned' => 0,
+                'skipped' => 0,
+                'failed' => 0,
+            ];
+        }
+
         $key = self::INLINE_CACHE_PREFIX.sha1($namespace);
 
         if (! Cache::add($key, '1', now()->addSeconds(self::INLINE_THROTTLE_SECONDS))) {
@@ -139,6 +176,10 @@ class HistoryRetentionEnforcer
      */
     public static function pruneRun(string $namespace, string $runId): array
     {
+        if (self::retentionMode($namespace) === WorkflowNamespace::RETENTION_MODE_FOREVER) {
+            return self::skippedRetentionResult('namespace_retention_forever');
+        }
+
         $summary = WorkflowRunSummary::query()
             ->where('id', $runId)
             ->where('namespace', $namespace)

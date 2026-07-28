@@ -6,6 +6,7 @@ namespace Tests\Feature;
 
 use App\Models\WorkerBuildIdRollout;
 use App\Models\WorkerRegistration;
+use App\Models\WorkflowNamespace;
 use App\Support\ControlPlaneProtocol;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Carbon;
@@ -58,6 +59,8 @@ class SystemHealthTest extends TestCase
         $defaultResponse->assertOk()
             ->assertHeader(ControlPlaneProtocol::HEADER, ControlPlaneProtocol::VERSION)
             ->assertJsonPath('namespace', 'default')
+            ->assertJsonPath('retention_mode', 'bounded')
+            ->assertJsonPath('retention_days', 30)
             ->assertJsonPath('health.status', 'ok')
             ->assertJsonPath('health.healthy', true)
             ->assertJsonPath('health.operator_metrics.runs.total', 1)
@@ -89,6 +92,25 @@ class SystemHealthTest extends TestCase
             ->assertJsonPath('health.operator_metrics.tasks.ready_due', 1)
             ->assertJsonPath('health.operator_metrics.tasks.oldest_ready_due_at', now()->subSeconds(10)->toJSON())
             ->assertJsonPath('health.routing_drains.queues_with_drains', 0);
+    }
+
+    public function test_system_health_exposes_forever_namespace_retention(): void
+    {
+        WorkflowNamespace::query()
+            ->where('name', 'other')
+            ->update([
+                'retention_mode' => WorkflowNamespace::RETENTION_MODE_FOREVER,
+                'retention_days' => null,
+            ]);
+
+        $this->getJson(
+            '/api/system/health',
+            $this->controlPlaneHeadersWithWorkerProtocol('other'),
+        )
+            ->assertOk()
+            ->assertJsonPath('namespace', 'other')
+            ->assertJsonPath('retention_mode', 'forever')
+            ->assertJsonPath('retention_days', null);
     }
 
     public function test_system_health_limits_routing_drains_to_requested_namespace(): void
