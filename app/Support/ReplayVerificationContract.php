@@ -24,7 +24,7 @@ final class ReplayVerificationContract
 {
     public const SCHEMA = 'durable-workflow.v2.replay-verification.contract';
 
-    public const VERSION = 2;
+    public const VERSION = 3;
 
     public const BUNDLE_SCHEMA = 'durable-workflow.v2.history-export';
 
@@ -147,8 +147,8 @@ final class ReplayVerificationContract
                     'payload_manifest.payload_missing',
                     'payload_manifest.avro_framing_missing',
                     'payload_manifest.writer_schema_fingerprint_mismatch',
-                    'codec_schemas.wrapper_fingerprint_mismatch',
-                    'codec_schemas.wrapper_schema_drift',
+                    'codec_schemas.value_schema_missing',
+                    'codec_schemas.value_schema_drift',
                     'redaction.empty_paths',
                     'integrity.missing',
                     'integrity.canonicalization_unsupported',

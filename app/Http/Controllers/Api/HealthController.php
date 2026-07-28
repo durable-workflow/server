@@ -14,33 +14,34 @@ use App\Support\ControlPlaneRequestContract;
 use App\Support\CoordinationHealthContract;
 use App\Support\FilesystemDiskAvailability;
 use App\Support\HeartbeatRuntimeContract;
-use App\Support\MigrationRuntimeContract;
 use App\Support\LegacyV1ProjectionContract;
+use App\Support\MigrationRuntimeContract;
 use App\Support\NamespaceRuntimeContract;
 use App\Support\NexusContract;
-use App\Support\PrincipalAttributionContract;
-use App\Support\PrereleaseReadinessContract;
 use App\Support\PhpSdkConformanceContract;
+use App\Support\PrereleaseReadinessContract;
+use App\Support\PrincipalAttributionContract;
 use App\Support\PythonSdkParityContract;
 use App\Support\ReplayVerificationContract;
 use App\Support\SagaRuntimeContract;
+use App\Support\SchedulesRuntimeContract;
 use App\Support\SearchAttributeRuntimeContract;
 use App\Support\ServerReadiness;
 use App\Support\ServerTopology;
-use App\Support\SchedulesRuntimeContract;
-use App\Support\SingleRegionFailoverContract;
 use App\Support\SignalQueryRuntimeContract;
+use App\Support\SingleRegionFailoverContract;
 use App\Support\SkewRefusalMatrixContract;
 use App\Support\TaskQueueBuildIdRolloutSnapshot;
 use App\Support\TimerRuntimeContract;
-use App\Support\WorkerVersioningRuntimeContract;
 use App\Support\WorkerProtocol;
+use App\Support\WorkerVersioningRuntimeContract;
 use App\Support\WorkflowLifecycleContract;
-use App\Support\WorkflowUpdateRuntimeContract;
 use App\Support\WorkflowStreamsContract;
+use App\Support\WorkflowUpdateRuntimeContract;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
+use Workflow\Serializers\Avro;
 use Workflow\Serializers\CodecRegistry;
 use Workflow\V2\Support\ExternalPayloadReference;
 use Workflow\V2\Support\OperatorMetrics;
@@ -164,6 +165,12 @@ class HealthController
             'embedded_v2_import' => $embeddedV2ImportAvailable,
             'waterline_v1_projection' => true,
             'payload_codecs' => CodecRegistry::universal(),
+            'avro_value_protocol' => [
+                'schema' => 'durable_workflow.protocol.Value',
+                'fingerprint' => Avro::valueSchemaFingerprint(),
+                'framing' => 'single_object',
+                'magic_hex' => 'c301',
+            ],
             'response_compression' => (bool) config('server.compression.enabled', true)
                 ? ['gzip', 'deflate']
                 : [],

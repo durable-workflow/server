@@ -1757,7 +1757,7 @@ def ensure_python_sdk(run_root: Path, log_file: Path) -> tuple[str, dict[str, An
     sdk_version = artifact_version_value(artifact_versions, "sdk-python")
     explicit = env_text("DW_SIGNALS_QUERIES_PYTHON")
     if explicit:
-        add_python_sdk_avro_dependency(explicit, log_file)
+        add_python_sdk_fastavro_dependency(explicit, log_file)
         return explicit, configured_artifact_entry(
             "sdk-python",
             sdk_version,
@@ -1806,7 +1806,7 @@ def ensure_python_sdk(run_root: Path, log_file: Path) -> tuple[str, dict[str, An
     if install.returncode != 0:
         raise RuntimeError("could not install the public Python SDK artifact")
 
-    add_python_sdk_avro_dependency(str(python_bin), log_file)
+    add_python_sdk_fastavro_dependency(str(python_bin), log_file)
     return str(python_bin), installed_public_artifact_entry(
         "sdk-python",
         sdk_version,
@@ -1815,25 +1815,25 @@ def ensure_python_sdk(run_root: Path, log_file: Path) -> tuple[str, dict[str, An
     )
 
 
-def add_python_sdk_avro_dependency(python_bin: str, log_file: Path) -> None:
+def add_python_sdk_fastavro_dependency(python_bin: str, log_file: Path) -> None:
     locate = run_command(
         [
             python_bin,
             "-c",
             (
-                "from pathlib import Path; import avro; "
-                "print(Path(avro.__file__).resolve().parent.parent)"
+                "from pathlib import Path; import fastavro; "
+                "print(Path(fastavro.__file__).resolve().parent.parent)"
             ),
         ],
         log_file=log_file,
         timeout=30,
     )
     if locate.returncode != 0:
-        raise RuntimeError("Python SDK environment does not provide its required avro dependency")
+        raise RuntimeError("Python SDK environment does not provide its required fastavro dependency")
 
     package_root = Path(locate.stdout.strip())
     if not package_root.is_dir():
-        raise RuntimeError("Python SDK avro dependency path could not be resolved")
+        raise RuntimeError("Python SDK fastavro dependency path could not be resolved")
 
     package_root_text = str(package_root)
     if package_root_text not in sys.path:
@@ -2888,37 +2888,63 @@ def decode_json_blob(blob: Any) -> Any:
     try:
         return json.loads(decoded_bytes.decode("utf-8"))
     except Exception:
-        return decode_avro_generic_wrapper(decoded_bytes)
+        return decode_avro_value(decoded_bytes)
 
 
-AVRO_GENERIC_WRAPPER_SCHEMA_JSON = (
-    '{"type":"record","name":"Payload","namespace":"durable_workflow",'
-    '"fields":[{"name":"json","type":"string"},'
-    '{"name":"version","type":"int","default":1}]}'
+AVRO_VALUE_SCHEMA_JSON = (
+    '{"type":"record","name":"Value","namespace":"durable_workflow.protocol",'
+    '"fields":[{"name":"value","type":["null",'
+    '{"type":"record","name":"BooleanValue","fields":[{"name":"boolean","type":"boolean"}]},'
+    '{"type":"record","name":"LongValue","fields":[{"name":"long","type":"long"}]},'
+    '{"type":"record","name":"DoubleValue","fields":[{"name":"double","type":"double"}]},'
+    '{"type":"record","name":"BytesValue","fields":[{"name":"bytes","type":"bytes"}]},'
+    '{"type":"record","name":"StringValue","fields":[{"name":"string","type":"string"}]},'
+    '{"type":"record","name":"ArrayValue","fields":[{"name":"items",'
+    '"type":{"type":"array","items":"Value"}}]},'
+    '{"type":"record","name":"MapValue","fields":[{"name":"entries",'
+    '"type":{"type":"map","values":"Value"}}]}]}]}'
 )
-avro_generic_wrapper_schema: Any = None
+AVRO_VALUE_FINGERPRINT = bytes.fromhex("e2a33dff55802237")
+avro_value_schema: Any = None
 
 
-def decode_avro_generic_wrapper(data: bytes) -> Any:
-    if not data.startswith(b"\x00"):
+def decode_avro_value(data: bytes) -> Any:
+    if len(data) < 10 or data[:2] != b"\xC3\x01" or data[2:10] != AVRO_VALUE_FINGERPRINT:
         return None
 
     try:
-        import avro.io
-        import avro.schema
+        import fastavro
 
-        global avro_generic_wrapper_schema
-        if avro_generic_wrapper_schema is None:
-            avro_generic_wrapper_schema = avro.schema.parse(AVRO_GENERIC_WRAPPER_SCHEMA_JSON)
+        global avro_value_schema
+        if avro_value_schema is None:
+            avro_value_schema = fastavro.parse_schema(json.loads(AVRO_VALUE_SCHEMA_JSON))
 
-        decoder = avro.io.BinaryDecoder(io.BytesIO(data[1:]))
-        record = avro.io.DatumReader(avro_generic_wrapper_schema).read(decoder)
-        if not isinstance(record, dict) or not isinstance(record.get("json"), str):
-            return None
-
-        return json.loads(record["json"])
+        record = fastavro.schemaless_reader(
+            io.BytesIO(data[10:]),
+            avro_value_schema,
+            avro_value_schema,
+        )
+        return native_avro_value(record)
     except Exception:
         return None
+
+
+def native_avro_value(datum: Any) -> Any:
+    if not isinstance(datum, dict) or "value" not in datum:
+        return None
+    branch = datum["value"]
+    if branch is None:
+        return None
+    if not isinstance(branch, dict):
+        raise ValueError("invalid Avro Value branch")
+    for field in ("boolean", "long", "double", "bytes", "string"):
+        if field in branch:
+            return branch[field]
+    if isinstance(branch.get("items"), list):
+        return [native_avro_value(item) for item in branch["items"]]
+    if isinstance(branch.get("entries"), dict):
+        return {key: native_avro_value(item) for key, item in branch["entries"].items()}
+    raise ValueError("unknown Avro Value branch")
 
 
 def decode_signal_arguments(envelope: Any) -> Any:

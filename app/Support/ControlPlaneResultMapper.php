@@ -3,6 +3,7 @@
 namespace App\Support;
 
 use Illuminate\Http\JsonResponse;
+use Workflow\Serializers\AvroValueJsonProjection;
 
 final class ControlPlaneResultMapper
 {
@@ -231,6 +232,10 @@ final class ControlPlaneResultMapper
             if ($this->stringValue($payload[$field] ?? null) === null) {
                 $payload[$field] = $value;
             }
+        }
+
+        if (array_key_exists('result', $payload)) {
+            $payload['result'] = AvroValueJsonProjection::project($payload['result']);
         }
 
         return $payload;

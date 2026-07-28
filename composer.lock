@@ -4,7 +4,7 @@
         "Read more about it at https://getcomposer.org/doc/01-basic-usage.md#installing-dependencies",
         "This file is @generated automatically"
     ],
-    "content-hash": "37a849e7935f5ec6895ffcfeaed3d67c",
+    "content-hash": "9f8182590be7b8fd87af1b1895baab87",
     "packages": [
         {
             "name": "apache/avro",
@@ -504,16 +504,16 @@
         },
         {
             "name": "durable-workflow/workflow",
-            "version": "2.0.0-rc.1",
+            "version": "2.0.0-rc.3",
             "source": {
                 "type": "git",
                 "url": "https://github.com/durable-workflow/workflow.git",
-                "reference": "864cd6f2e11a60ddbd221548019df8ef0cd8f812"
+                "reference": "8172f9790078ba6c79affabd5245e0befa56b9b0"
             },
             "dist": {
                 "type": "zip",
-                "url": "https://api.github.com/repos/durable-workflow/workflow/zipball/864cd6f2e11a60ddbd221548019df8ef0cd8f812",
-                "reference": "864cd6f2e11a60ddbd221548019df8ef0cd8f812",
+                "url": "https://api.github.com/repos/durable-workflow/workflow/zipball/8172f9790078ba6c79affabd5245e0befa56b9b0",
+                "reference": "8172f9790078ba6c79affabd5245e0befa56b9b0",
                 "shasum": ""
             },
             "require": {
@@ -536,25 +536,24 @@
             },
             "type": "library",
             "extra": {
+                "durable-workflow": {
+                    "product-train": "2.0.0-rc.3"
+                },
                 "laravel": {
                     "providers": [
                         "Workflow\\Providers\\WorkflowServiceProvider"
                     ]
-                },
-                "durable-workflow": {
-                    "product-train": "2.0.0-rc.1"
                 }
             },
             "autoload": {
+                "psr-4": {
+                    "Workflow\\": "src/"
+                },
                 "files": [
                     "src/functions.php",
                     "src/V2/functions.php"
-                ],
-                "psr-4": {
-                    "Workflow\\": "src/"
-                }
+                ]
             },
-            "notification-url": "https://packagist.org/downloads/",
             "license": [
                 "MIT"
             ],
@@ -567,9 +566,8 @@
             "description": "Embedded durable workflow runtime and orchestration engine for Laravel applications.",
             "support": {
                 "issues": "https://github.com/durable-workflow/workflow/issues",
-                "source": "https://github.com/durable-workflow/workflow/tree/2.0.0-rc.1"
-            },
-            "time": "2026-07-28T00:41:48+00:00"
+                "source": "https://github.com/durable-workflow/workflow/tree/2.0.0-rc.3"
+            }
         },
         {
             "name": "egulias/email-validator",

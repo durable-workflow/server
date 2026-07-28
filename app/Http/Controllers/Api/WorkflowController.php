@@ -28,6 +28,7 @@ use Illuminate\Support\Facades\Validator;
 use Illuminate\Validation\ValidationException;
 use LogicException;
 use Throwable;
+use Workflow\Serializers\AvroValueJsonProjection;
 use Workflow\Serializers\CodecRegistry;
 use Workflow\V2\Contracts\WorkflowControlPlane;
 use Workflow\V2\Enums\HistoryEventType;
@@ -1162,8 +1163,8 @@ class WorkflowController
             'run_timeout_seconds' => $runDescription['run_timeout_seconds'] ?? null,
             'execution_deadline_at' => $runDescription['execution_deadline_at'] ?? null,
             'run_deadline_at' => $runDescription['run_deadline_at'] ?? null,
-            'input' => $this->workflowArguments($run),
-            'output' => $run->workflowOutput(),
+            'input' => AvroValueJsonProjection::project($this->workflowArguments($run)),
+            'output' => AvroValueJsonProjection::project($run->workflowOutput()),
             'input_envelope' => $this->workerEnvelope(
                 $namespace,
                 $run->payload_codec,

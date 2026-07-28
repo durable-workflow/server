@@ -17,6 +17,9 @@ use Illuminate\Testing\TestResponse;
 use Tests\Fixtures\ExternalGreetingWorkflow;
 use Tests\Fixtures\InteractiveCommandWorkflow;
 use Tests\TestCase;
+use Workflow\Serializers\Avro;
+use Workflow\Serializers\AvroBinaryValue;
+use Workflow\Serializers\AvroMapValue;
 use Workflow\Serializers\CodecRegistry;
 use Workflow\Serializers\Serializer;
 use Workflow\V2\Enums\HistoryEventType;
@@ -852,7 +855,17 @@ class PayloadEnvelopeIntegrationTest extends TestCase
             ->assertJsonPath('capabilities.payload_codecs_engine_specific.php', [
                 'workflow-serializer-y',
                 'workflow-serializer-base64',
-            ]);
+            ])
+            ->assertJsonPath(
+                'capabilities.avro_value_protocol.schema',
+                'durable_workflow.protocol.Value',
+            )
+            ->assertJsonPath(
+                'capabilities.avro_value_protocol.fingerprint',
+                Avro::valueSchemaFingerprint(),
+            )
+            ->assertJsonPath('capabilities.avro_value_protocol.framing', 'single_object')
+            ->assertJsonPath('capabilities.avro_value_protocol.magic_hex', 'c301');
     }
 
     public function test_control_plane_request_contract_advertises_payload_codec_field(): void
@@ -1447,6 +1460,58 @@ class PayloadEnvelopeIntegrationTest extends TestCase
         $this->assertNull($describe->json('output_envelope'));
     }
 
+    public function test_describe_projects_bytes_and_ambiguous_maps_without_losing_envelopes(): void
+    {
+        Queue::fake();
+        $this->configureWorkflowTypes();
+        $this->createNamespace('default');
+
+        $input = [
+            AvroMapValue::fromPairs([]),
+            AvroMapValue::fromPairs([['0', 'zero'], ['1', ['nested']]]),
+            AvroBinaryValue::fromBytes("\x00\xFF"),
+            ['zero', 'one'],
+        ];
+        $inputBlob = Avro::serialize($input);
+
+        $start = $this->withHeaders($this->apiHeaders())
+            ->postJson('/api/workflows', [
+                'workflow_id' => 'wf-envelope-typed-projection',
+                'workflow_type' => 'tests.external-greeting-workflow',
+                'input' => ['codec' => 'avro', 'blob' => $inputBlob],
+            ])
+            ->assertCreated();
+
+        $run = WorkflowRun::query()->findOrFail((string) $start->json('run_id'));
+        $outputBlob = Avro::serialize(
+            AvroMapValue::fromPairs([['0', AvroBinaryValue::fromBytes('result')]]),
+        );
+        $run->forceFill([
+            'output' => $outputBlob,
+            'output_payload_codec' => 'avro',
+        ])->save();
+
+        $describe = $this->withHeaders($this->apiHeaders())
+            ->getJson('/api/workflows/wf-envelope-typed-projection')
+            ->assertOk()
+            ->assertJsonPath('input.0.$type', 'map')
+            ->assertJsonPath('input.0.entries', [])
+            ->assertJsonPath('input.1.entries.0.key', '0')
+            ->assertJsonPath('input.1.entries.1.value.0', 'nested')
+            ->assertJsonPath('input.2.$type', 'bytes')
+            ->assertJsonPath('input.2.base64', 'AP8=')
+            ->assertJsonPath('input.3.0', 'zero')
+            ->assertJsonPath('output.$type', 'map')
+            ->assertJsonPath('output.entries.0.value.$type', 'bytes')
+            ->assertJsonPath('output.entries.0.value.base64', 'cmVzdWx0')
+            ->assertJsonPath('input_envelope.codec', 'avro')
+            ->assertJsonPath('input_envelope.blob', $inputBlob)
+            ->assertJsonPath('output_envelope.codec', 'avro')
+            ->assertJsonPath('output_envelope.blob', $outputBlob);
+
+        json_encode($describe->json(), JSON_THROW_ON_ERROR);
+    }
+
     public function test_show_run_includes_output_envelope_when_completed(): void
     {
         Queue::fake();
@@ -1649,9 +1714,15 @@ class PayloadEnvelopeIntegrationTest extends TestCase
      */
     private function avroEnvelope(mixed $payload): array
     {
+        $blob = Serializer::serializeWithCodec('avro', $payload);
+        $this->assertStringStartsWith(
+            Avro::SINGLE_OBJECT_MAGIC.Avro::VALUE_SCHEMA_FINGERPRINT,
+            (string) base64_decode($blob, true),
+        );
+
         return [
             'codec' => 'avro',
-            'blob' => Serializer::serializeWithCodec('avro', $payload),
+            'blob' => $blob,
         ];
     }
 
@@ -1780,8 +1851,7 @@ class PayloadEnvelopeIntegrationTest extends TestCase
         array $envelope,
         mixed $expected,
         string $expectedCodec = 'avro',
-    ): void
-    {
+    ): void {
         $this->assertSame($expectedCodec, $envelope['codec'] ?? null);
         $this->assertArrayHasKey('external_storage', $envelope);
         $this->assertArrayNotHasKey('blob', $envelope);

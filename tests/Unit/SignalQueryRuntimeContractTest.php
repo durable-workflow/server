@@ -2617,23 +2617,39 @@ PY);
         );
     }
 
-    public function test_host_runner_extracts_cross_language_signal_amounts_from_official_avro_envelopes(): void
+    public function test_host_runner_extracts_cross_language_signal_amounts_from_fixed_avro_value_envelopes(): void
     {
         $result = $this->runSignalQueryRunnerPythonSnippet(<<<'PY'
-import avro.io
-import avro.schema
+import fastavro
 
-def official_avro_generic_json(value):
+def avro_value_datum(value):
+    if value is None:
+        return {"value": None}
+    if isinstance(value, bool):
+        return {"value": ("durable_workflow.protocol.BooleanValue", {"boolean": value})}
+    if isinstance(value, int):
+        return {"value": ("durable_workflow.protocol.LongValue", {"long": value})}
+    if isinstance(value, str):
+        return {"value": ("durable_workflow.protocol.StringValue", {"string": value})}
+    if isinstance(value, list):
+        return {"value": ("durable_workflow.protocol.ArrayValue", {
+            "items": [avro_value_datum(item) for item in value],
+        })}
+    if isinstance(value, dict):
+        return {"value": ("durable_workflow.protocol.MapValue", {
+            "entries": {key: avro_value_datum(item) for key, item in value.items()},
+        })}
+    raise TypeError(type(value).__name__)
+
+def official_avro_value(value):
     buffer = io.BytesIO()
-    writer = avro.io.DatumWriter(avro.schema.parse(AVRO_GENERIC_WRAPPER_SCHEMA_JSON))
-    writer.write(
-        {
-            "json": json.dumps(value, separators=(",", ":")),
-            "version": 1,
-        },
-        avro.io.BinaryEncoder(buffer),
+    buffer.write(b"\xC3\x01" + AVRO_VALUE_FINGERPRINT)
+    fastavro.schemaless_writer(
+        buffer,
+        fastavro.parse_schema(json.loads(AVRO_VALUE_SCHEMA_JSON)),
+        avro_value_datum(value),
     )
-    return base64.b64encode(b"\x00" + buffer.getvalue()).decode("ascii")
+    return base64.b64encode(buffer.getvalue()).decode("ascii")
 
 events = [
     {
@@ -2643,7 +2659,7 @@ events = [
             "signal_id": "sig-avro-php",
             "arguments": {
                 "codec": "avro",
-                "blob": official_avro_generic_json({"amount": 6}),
+                "blob": official_avro_value({"amount": 6}),
             },
         },
     },
@@ -2654,7 +2670,7 @@ events = [
             "signal_id": "sig-avro-python",
             "arguments": {
                 "codec": "avro",
-                "blob": official_avro_generic_json([7]),
+                "blob": official_avro_value([7]),
             },
         },
     },
@@ -2665,7 +2681,7 @@ events = [
             "signal_id": "sig-avro-rust",
             "arguments": {
                 "codec": "avro",
-                "blob": official_avro_generic_json({"n": "8"}),
+                "blob": official_avro_value({"n": "8"}),
             },
         },
     },
@@ -2691,19 +2707,18 @@ PY);
         $this->assertSame([null, null], $result['malformed']);
     }
 
-    public function test_host_runner_uses_the_official_python_avro_runtime(): void
+    public function test_host_runner_uses_the_optimized_python_avro_runtime(): void
     {
         $source = (string) file_get_contents(
             dirname(__DIR__, 2).'/scripts/conformance/signals-queries-published-artifacts.sh',
         );
 
         foreach ([
-            'import avro.io',
-            'import avro.schema',
-            'avro.io.BinaryDecoder(',
-            'avro.io.DatumReader(',
-            'avro.schema.parse(AVRO_GENERIC_WRAPPER_SCHEMA_JSON)',
-            'add_python_sdk_avro_dependency(',
+            'import fastavro',
+            'fastavro.schemaless_reader(',
+            'fastavro.parse_schema(json.loads(AVRO_VALUE_SCHEMA_JSON))',
+            'add_python_sdk_fastavro_dependency(',
+            'AVRO_VALUE_FINGERPRINT = bytes.fromhex("e2a33dff55802237")',
         ] as $needle) {
             $this->assertStringContainsString($needle, $source);
         }
