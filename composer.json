@@ -6,7 +6,7 @@
     "require": {
         "php": "^8.2",
         "apache/avro": "^1.12",
-        "durable-workflow/workflow": "2.0.0-rc.3",
+        "durable-workflow/workflow": "2.0.0-rc.4",
         "laravel/framework": "^13.0",
         "laravel/tinker": "^3.0"
     },
@@ -38,7 +38,7 @@
             "options": {
                 "symlink": false,
                 "versions": {
-                    "durable-workflow/workflow": "2.0.0-rc.3"
+                    "durable-workflow/workflow": "2.0.0-rc.4"
                 },
                 "reference": "auto"
             }
@@ -49,7 +49,7 @@
             "options": {
                 "symlink": false,
                 "versions": {
-                    "durable-workflow/workflow": "2.0.0-rc.3"
+                    "durable-workflow/workflow": "2.0.0-rc.4"
                 },
                 "reference": "auto"
             }
@@ -72,7 +72,7 @@
     },
     "extra": {
         "durable-workflow": {
-            "product-train": "2.0.0-rc.3"
+            "product-train": "2.0.0-rc.4"
         },
         "laravel": {
             "dont-discover": []
