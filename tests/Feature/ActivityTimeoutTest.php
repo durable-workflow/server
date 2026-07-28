@@ -9,14 +9,18 @@ use App\Support\ActivityTaskPollRequestStore;
 use App\Support\NamespaceWorkflowScope;
 use App\Support\WorkerProtocol;
 use Illuminate\Foundation\Testing\RefreshDatabase;
+use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\Queue;
 use Tests\Feature\Concerns\ServerTestHelpers;
 use Tests\Fixtures\ExternalGreetingWorkflow;
 use Tests\TestCase;
+use Workflow\V2\Contracts\ActivityTaskBridge as ActivityTaskBridgeContract;
 use Workflow\V2\Enums\ActivityStatus;
+use Workflow\V2\Enums\HistoryEventType;
 use Workflow\V2\Jobs\RunWorkflowTask;
 use Workflow\V2\Models\ActivityAttempt;
 use Workflow\V2\Models\ActivityExecution;
+use Workflow\V2\Models\WorkflowHistoryEvent;
 use Workflow\V2\Models\WorkflowTask;
 use Workflow\V2\Support\WorkflowExecutor;
 use Workflow\V2\WorkflowStub;
@@ -129,6 +133,186 @@ class ActivityTimeoutTest extends TestCase
             ->assertJsonPath('skipped', 1)
             ->assertJsonPath('results.0.outcome', 'skipped')
             ->assertJsonPath('results.0.reason', 'execution_not_found');
+    }
+
+    public function test_accepted_heartbeat_fences_expired_scanner_snapshot(): void
+    {
+        Queue::fake();
+
+        $startedAt = Carbon::parse('2026-01-15 10:00:00');
+        Carbon::setTestNow($startedAt);
+
+        $lease = $this->leaseHeartbeatActivity('wf-heartbeat-race', 'heartbeat-race-worker', 10);
+        $this->assertSame(
+            $startedAt->copy()->addSeconds(10)->toIso8601String(),
+            $lease['execution']->fresh()->heartbeat_deadline_at?->toIso8601String(),
+        );
+
+        Carbon::setTestNow($startedAt->copy()->addSeconds(11));
+
+        $snapshot = $this->withHeaders($this->apiHeaders())
+            ->getJson('/api/system/activity-timeouts')
+            ->assertOk();
+        $this->assertContains($lease['execution']->id, $snapshot->json('expired_execution_ids'));
+
+        $this->withHeaders($this->workerHeaders())
+            ->postJson("/api/worker/activity-tasks/{$lease['task_id']}/heartbeat", [
+                'activity_attempt_id' => $lease['attempt_id'],
+                'lease_owner' => $lease['lease_owner'],
+                'message' => 'still healthy',
+            ])
+            ->assertOk()
+            ->assertJsonPath('can_continue', true)
+            ->assertJsonPath('heartbeat_recorded', true);
+
+        $this->assertSame(
+            $startedAt->copy()->addSeconds(21)->toIso8601String(),
+            $lease['execution']->fresh()->heartbeat_deadline_at?->toIso8601String(),
+        );
+
+        $this->withHeaders($this->apiHeaders())
+            ->postJson('/api/system/activity-timeouts/pass', [
+                'execution_ids' => [$lease['execution']->id],
+            ])
+            ->assertOk()
+            ->assertJsonPath('processed', 1)
+            ->assertJsonPath('enforced', 0)
+            ->assertJsonPath('skipped', 1)
+            ->assertJsonPath('results.0.reason', 'no_deadline_expired');
+
+        $this->assertSame(
+            0,
+            WorkflowHistoryEvent::query()
+                ->where('workflow_run_id', $lease['run_id'])
+                ->where('event_type', HistoryEventType::ActivityTimedOut->value)
+                ->count(),
+        );
+
+        Carbon::setTestNow();
+    }
+
+    public function test_frequent_heartbeats_survive_multiple_timeout_scanner_intervals(): void
+    {
+        Queue::fake();
+
+        $startedAt = Carbon::parse('2026-01-15 10:00:00');
+        Carbon::setTestNow($startedAt);
+
+        $lease = $this->leaseHeartbeatActivity('wf-heartbeat-cadence', 'heartbeat-cadence-worker', 3);
+
+        foreach ([1, 2, 3, 4, 5] as $offset) {
+            Carbon::setTestNow($startedAt->copy()->addSeconds($offset));
+
+            $this->withHeaders($this->workerHeaders())
+                ->postJson("/api/worker/activity-tasks/{$lease['task_id']}/heartbeat", [
+                    'activity_attempt_id' => $lease['attempt_id'],
+                    'lease_owner' => $lease['lease_owner'],
+                    'current' => $offset,
+                    'total' => 5,
+                ])
+                ->assertOk()
+                ->assertJsonPath('can_continue', true)
+                ->assertJsonPath('heartbeat_recorded', true);
+
+            $this->withHeaders($this->apiHeaders())
+                ->postJson('/api/system/activity-timeouts/pass')
+                ->assertOk()
+                ->assertJsonPath('processed', 0)
+                ->assertJsonPath('enforced', 0);
+        }
+
+        $execution = $lease['execution']->fresh();
+        $this->assertSame(ActivityStatus::Running, $execution->status);
+        $this->assertSame(
+            $startedAt->copy()->addSeconds(8)->toIso8601String(),
+            $execution->heartbeat_deadline_at?->toIso8601String(),
+        );
+        $this->assertSame(
+            5,
+            WorkflowHistoryEvent::query()
+                ->where('workflow_run_id', $lease['run_id'])
+                ->where('event_type', HistoryEventType::ActivityHeartbeatRecorded->value)
+                ->count(),
+        );
+        $this->assertSame(
+            0,
+            WorkflowHistoryEvent::query()
+                ->where('workflow_run_id', $lease['run_id'])
+                ->where('event_type', HistoryEventType::ActivityTimedOut->value)
+                ->count(),
+        );
+
+        $this->withHeaders($this->workerHeaders())
+            ->postJson("/api/worker/activity-tasks/{$lease['task_id']}/complete", [
+                'activity_attempt_id' => $lease['attempt_id'],
+                'lease_owner' => $lease['lease_owner'],
+                'result' => 'healthy result',
+            ])
+            ->assertOk()
+            ->assertJsonPath('recorded', true)
+            ->assertJsonPath('reason', null);
+
+        Carbon::setTestNow();
+    }
+
+    public function test_genuinely_expired_attempt_keeps_existing_worker_fencing(): void
+    {
+        Queue::fake();
+
+        $startedAt = Carbon::parse('2026-01-15 10:00:00');
+        Carbon::setTestNow($startedAt);
+
+        $lease = $this->leaseHeartbeatActivity('wf-heartbeat-expired', 'heartbeat-expired-worker', 2);
+
+        Carbon::setTestNow($startedAt->copy()->addSeconds(3));
+
+        $this->withHeaders($this->apiHeaders())
+            ->postJson('/api/system/activity-timeouts/pass')
+            ->assertOk()
+            ->assertJsonPath('processed', 1)
+            ->assertJsonPath('enforced', 1);
+
+        $this->withHeaders($this->workerHeaders())
+            ->postJson("/api/worker/activity-tasks/{$lease['task_id']}/heartbeat", [
+                'activity_attempt_id' => $lease['attempt_id'],
+                'lease_owner' => $lease['lease_owner'],
+            ])
+            ->assertOk()
+            ->assertJsonPath('can_continue', false)
+            ->assertJsonPath('heartbeat_recorded', false)
+            ->assertJsonPath('reason', 'attempt_closed');
+
+        $this->withHeaders($this->workerHeaders())
+            ->postJson("/api/worker/activity-tasks/{$lease['task_id']}/complete", [
+                'activity_attempt_id' => $lease['attempt_id'],
+                'lease_owner' => $lease['lease_owner'],
+                'result' => 'too late',
+            ])
+            ->assertConflict()
+            ->assertJsonPath('recorded', false)
+            ->assertJsonPath('reason', 'stale_attempt');
+
+        $this->withHeaders($this->workerHeaders())
+            ->postJson("/api/worker/activity-tasks/{$lease['task_id']}/fail", [
+                'activity_attempt_id' => $lease['attempt_id'],
+                'lease_owner' => $lease['lease_owner'],
+                'failure' => [
+                    'message' => 'too late',
+                ],
+            ])
+            ->assertConflict()
+            ->assertJsonPath('recorded', false)
+            ->assertJsonPath('reason', 'stale_attempt');
+
+        $this->assertSame(
+            1,
+            WorkflowHistoryEvent::query()
+                ->where('workflow_run_id', $lease['run_id'])
+                ->where('event_type', HistoryEventType::ActivityTimedOut->value)
+                ->count(),
+        );
+
+        Carbon::setTestNow();
     }
 
     // ── Activity Timeout Enforce Artisan Command ────────────────────
@@ -398,6 +582,59 @@ class ActivityTimeoutTest extends TestCase
     }
 
     /**
+     * @return array{
+     *     run_id: string,
+     *     execution: ActivityExecution,
+     *     task_id: string,
+     *     attempt_id: string,
+     *     lease_owner: string
+     * }
+     */
+    private function leaseHeartbeatActivity(
+        string $workflowId,
+        string $workerId,
+        int $heartbeatTimeout,
+    ): array {
+        $workflow = WorkflowStub::make(ExternalGreetingWorkflow::class, $workflowId);
+        $start = $workflow->start('Ada');
+        NamespaceWorkflowScope::bind('default', $workflow->id(), ExternalGreetingWorkflow::class);
+        $this->runReadyWorkflowTask($start->runId());
+
+        $execution = ActivityExecution::query()
+            ->where('workflow_run_id', $start->runId())
+            ->firstOrFail();
+        $execution->forceFill([
+            'retry_policy' => array_merge(
+                is_array($execution->retry_policy) ? $execution->retry_policy : [],
+                [
+                    'max_attempts' => 1,
+                    'start_to_close_timeout' => 60,
+                    'heartbeat_timeout' => $heartbeatTimeout,
+                ],
+            ),
+        ])->save();
+
+        $this->registerWorker($workerId, 'external-activities');
+
+        $poll = $this->withHeaders($this->workerHeaders())
+            ->postJson('/api/worker/activity-tasks/poll', [
+                'worker_id' => $workerId,
+                'task_queue' => 'external-activities',
+            ])
+            ->assertOk()
+            ->assertJsonPath('task.workflow_id', $workflowId)
+            ->assertJsonPath('task.lease_owner', $workerId);
+
+        return [
+            'run_id' => $start->runId(),
+            'execution' => $execution,
+            'task_id' => (string) $poll->json('task.task_id'),
+            'attempt_id' => (string) $poll->json('task.activity_attempt_id'),
+            'lease_owner' => (string) $poll->json('task.lease_owner'),
+        ];
+    }
+
+    /**
      * Create a workflow with an activity, then expire the activity's
      * start-to-close deadline so it appears in timeout scans.
      */
@@ -408,13 +645,22 @@ class ActivityTimeoutTest extends TestCase
         NamespaceWorkflowScope::bind('default', $workflow->id(), ExternalGreetingWorkflow::class);
         $this->runReadyWorkflowTask($start->runId());
 
-        // Simulate that the activity was claimed and is now running with an expired deadline.
         $execution = ActivityExecution::query()
             ->where('workflow_run_id', $start->runId())
             ->firstOrFail();
 
+        $activityTask = WorkflowTask::query()
+            ->where('workflow_run_id', $start->runId())
+            ->where('task_type', 'activity')
+            ->where('status', 'ready')
+            ->firstOrFail();
+
+        /** @var ActivityTaskBridgeContract $bridge */
+        $bridge = app(ActivityTaskBridgeContract::class);
+        $claim = $bridge->claim($activityTask->id, 'timeout-test-worker');
+        $this->assertIsArray($claim);
+
         $execution->forceFill([
-            'status' => ActivityStatus::Running->value,
             'close_deadline_at' => now()->subMinute(),
         ])->save();
 
