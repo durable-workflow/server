@@ -22,7 +22,62 @@
           ]
         },
         {
+          "glob": "app/*.php",
+          "content_patterns": [
+            "Workflow\\\\Serializers\\\\",
+            "Workflow\\\\V2\\\\Support\\\\[A-Za-z0-9_]*Payload[A-Za-z0-9_]*",
+            "\\bExternalPayloadEnvelopeService\\b"
+          ]
+        },
+        {
+          "glob": "app/**/*.php",
+          "content_patterns": [
+            "Workflow\\\\Serializers\\\\",
+            "Workflow\\\\V2\\\\Support\\\\[A-Za-z0-9_]*Payload[A-Za-z0-9_]*",
+            "\\bExternalPayloadEnvelopeService\\b"
+          ]
+        },
+        {
+          "glob": "app/Http/Controllers/Api/ActivityController.php"
+        },
+        {
+          "glob": "app/Http/Controllers/Api/ActivityTaskController.php"
+        },
+        {
+          "glob": "app/Http/Controllers/Api/BridgeAdapterController.php"
+        },
+        {
+          "glob": "app/Http/Controllers/Api/HistoryController.php"
+        },
+        {
+          "glob": "app/Http/Controllers/Api/WorkerController.php"
+        },
+        {
+          "glob": "app/Http/Controllers/Api/WorkflowController.php"
+        },
+        {
           "glob": "app/Support/*Payload*.php"
+        },
+        {
+          "glob": "app/Support/ActivityTaskPoller.php"
+        },
+        {
+          "glob": "app/Support/ExternalWorkflowUpdateAdmission.php"
+        },
+        {
+          "glob": "app/Support/InvocableCarrierResultMapper.php"
+        },
+        {
+          "glob": "app/Support/ServerWorkflowControlPlane.php"
+        },
+        {
+          "glob": "app/Support/WorkflowQueryTaskBroker.php"
+        },
+        {
+          "glob": "app/Support/WorkflowStartService.php"
+        },
+        {
+          "glob": "app/Support/WorkflowTaskPoller.php"
         }
       ]
     }

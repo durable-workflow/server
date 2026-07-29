@@ -9,13 +9,15 @@ import binascii
 import fnmatch
 import hashlib
 import json
+import os
 import re
 import subprocess
 import sys
+import tempfile
 from collections import Counter
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any
 
 POLICY_SCHEMA = "durable-workflow.regression-corpus-policy/v1"
@@ -33,6 +35,8 @@ SUPPORTED_BINDINGS = {"php", "python", "rust"}
 OWNED_CATEGORIES = {
     "server": {"codec"},
 }
+SERVER_CODEC_PROOF_SCHEMA = "durable-workflow.server-codec-counterfactual/v1"
+SERVER_CODEC_PROOF_GLOB = "tests/Fixtures/CodecRegressionProofs/*.json"
 ZERO_COMMIT = re.compile(r"^0+$")
 
 
@@ -48,6 +52,14 @@ class Evidence:
     protocol_version: str
     semantic_digest: str
     supersedes: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True)
+class CounterfactualProof:
+    path: str
+    fixture: str
+    test: str
+    boundaries: tuple[str, ...]
 
 
 def _canonical_digest(value: Any) -> str:
@@ -96,6 +108,19 @@ def _json(content: bytes, path: str) -> Mapping[str, Any]:
     except (UnicodeDecodeError, json.JSONDecodeError) as error:
         raise CorpusError(f"{path} is not valid UTF-8 JSON: {error}") from error
     return _object(value, path)
+
+
+def _repository_path(value: Any, context: str) -> str:
+    path = _string(value, context)
+    parsed = PurePosixPath(path)
+    if (
+        parsed.is_absolute()
+        or parsed.as_posix() != path
+        or "." in parsed.parts
+        or ".." in parsed.parts
+    ):
+        raise CorpusError(f"{context} must be a normalized repository-relative path")
+    return parsed.as_posix()
 
 
 def _valid_base64(value: str, context: str) -> None:
@@ -589,22 +614,321 @@ def _guard_matches(
     patterns = guard.get("content_patterns")
     if patterns is None:
         return True
-    diff = _run(["git", "diff", "--unified=0", base_ref, "--", *matching], root)
-    untracked = set(
-        _run(["git", "ls-files", "--others", "--exclude-standard"], root).splitlines()
-    )
+
+    content = ""
     for path in matching:
-        if path in untracked and (root / path).is_file():
-            diff += "\n" + (root / path).read_text(encoding="utf-8", errors="replace")
-    changed_content = "\n".join(
-        line[1:]
-        for line in diff.splitlines()
-        if line.startswith(("+", "-")) and not line.startswith(("+++", "---"))
+        candidate = root / path
+        if candidate.is_file():
+            content += candidate.read_text(encoding="utf-8", errors="replace")
+        content += _run(["git", "show", f"{base_ref}:{path}"], root, check=False)
+
+    return any(re.search(pattern, content) for pattern in patterns)
+
+
+def _guarded_paths(
+    root: Path,
+    base_ref: str,
+    changed: set[str],
+    guards: Sequence[Any],
+) -> set[str]:
+    return {
+        path
+        for guard in guards
+        for path in changed
+        if _guard_matches(root, base_ref, {path}, guard)
+    }
+
+
+def _proof_paths(files: Mapping[str, bytes]) -> set[str]:
+    return {path for path in files if _matches(path, SERVER_CODEC_PROOF_GLOB)}
+
+
+def _counterfactual_proof(
+    document: Mapping[str, Any], path: str
+) -> CounterfactualProof:
+    required = {"$schema", "proof_schema", "fixture", "test", "boundaries"}
+    if set(document) != required:
+        raise CorpusError(f"{path} must contain exactly {sorted(required)}")
+    _string(document["$schema"], f"{path}.$schema")
+    if document["proof_schema"] != SERVER_CODEC_PROOF_SCHEMA:
+        raise CorpusError(
+            f"{path} must declare proof_schema={SERVER_CODEC_PROOF_SCHEMA}"
+        )
+    fixture = _repository_path(document["fixture"], f"{path}.fixture")
+    test = _repository_path(document["test"], f"{path}.test")
+    if not test.startswith("tests/Feature/") or not test.endswith("Test.php"):
+        raise CorpusError(f"{path}.test must name a Feature PHPUnit test")
+    boundaries = tuple(
+        _repository_path(item, f"{path}.boundaries[]")
+        for item in _list(document["boundaries"], f"{path}.boundaries", nonempty=True)
     )
-    return any(re.search(pattern, changed_content) for pattern in patterns)
+    if len(boundaries) != len(set(boundaries)):
+        raise CorpusError(f"{path}.boundaries contains duplicates")
+    return CounterfactualProof(
+        path=path,
+        fixture=fixture,
+        test=test,
+        boundaries=boundaries,
+    )
 
 
-def validate(root: Path, policy_path: Path, base_ref: str | None) -> dict[str, Any]:
+def _counterfactual_proofs(
+    *,
+    current_files: Mapping[str, bytes],
+    added_paths: set[str],
+    changed_paths: set[str],
+    new_fixture_paths: set[str],
+    guarded_paths: set[str],
+) -> list[CounterfactualProof]:
+    proof_paths = _proof_paths(current_files)
+    added_proof_paths = proof_paths & added_paths
+    proofs = [
+        _counterfactual_proof(_json(current_files[path], path), path)
+        for path in sorted(added_proof_paths)
+    ]
+    proof_fixtures = [proof.fixture for proof in proofs]
+    if len(proof_fixtures) != len(set(proof_fixtures)):
+        raise CorpusError(
+            "each new codec fixture must have exactly one counterfactual proof"
+        )
+    if set(proof_fixtures) != new_fixture_paths:
+        missing = sorted(new_fixture_paths - set(proof_fixtures))
+        unrelated = sorted(set(proof_fixtures) - new_fixture_paths)
+        raise CorpusError(
+            "new codec fixtures and counterfactual proofs must have the same inventory "
+            f"(missing_proofs={missing}, unrelated_proofs={unrelated})"
+        )
+
+    proof_tests = [proof.test for proof in proofs]
+    if len(proof_tests) != len(set(proof_tests)):
+        raise CorpusError(
+            "each guarded codec boundary must have its own counterfactual test"
+        )
+
+    claimed_boundaries: list[str] = []
+    for proof in proofs:
+        if len(proof.boundaries) != 1:
+            raise CorpusError(
+                f"{proof.path}.boundaries must name exactly one guarded codec boundary"
+            )
+        if proof.test not in changed_paths or proof.test not in current_files:
+            raise CorpusError(
+                f"{proof.path}.test must be added or changed with its guarded codec defect"
+            )
+        test_content = current_files[proof.test].decode("utf-8", errors="replace")
+        if "SERVER_CODEC_REGRESSION_FIXTURE" not in test_content:
+            raise CorpusError(
+                f"{proof.path}.test must consume SERVER_CODEC_REGRESSION_FIXTURE"
+            )
+        unrelated_boundaries = set(proof.boundaries) - guarded_paths
+        if unrelated_boundaries:
+            raise CorpusError(
+                f"{proof.path}.boundaries names unchanged or unguarded paths: "
+                f"{sorted(unrelated_boundaries)}"
+            )
+        claimed_boundaries.extend(proof.boundaries)
+
+    claims = Counter(claimed_boundaries)
+    duplicate_boundaries = sorted(
+        boundary for boundary, count in claims.items() if count > 1
+    )
+    missing_boundaries = sorted(guarded_paths - set(claimed_boundaries))
+    if duplicate_boundaries or missing_boundaries:
+        raise CorpusError(
+            "each guarded codec boundary must have exactly one defect-specific "
+            "counterfactual proof "
+            f"(missing={missing_boundaries}, duplicate={duplicate_boundaries})"
+        )
+    return proofs
+
+
+def _process_detail(result: subprocess.CompletedProcess[str]) -> str:
+    return (
+        result.stderr.strip()
+        or result.stdout.strip()
+        or f"exit status {result.returncode}"
+    )
+
+
+def _run_phpunit_proof(
+    *,
+    root: Path,
+    phpunit: Path,
+    proof: CounterfactualProof,
+    source_root: Path,
+    bootstrap: Path | None = None,
+) -> subprocess.CompletedProcess[str]:
+    command = [
+        str(phpunit),
+        "--no-progress",
+        "--colors=never",
+    ]
+    if bootstrap is not None:
+        command.extend(["--bootstrap", str(bootstrap)])
+    command.append(proof.test)
+    environment = os.environ.copy()
+    environment.update(
+        {
+            "SERVER_CODEC_REGRESSION_FIXTURE": str(root / proof.fixture),
+            "SERVER_CODEC_REGRESSION_PROOF": str(root / proof.path),
+            "SERVER_CODEC_SOURCE_ROOT": str(source_root),
+        }
+    )
+    return subprocess.run(
+        command,
+        cwd=root,
+        env=environment,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+
+def _write_app_snapshot(
+    destination: Path,
+    files: Mapping[str, bytes],
+    *,
+    boundary: str | None = None,
+    boundary_content: bytes | None = None,
+) -> Path:
+    for path, content in files.items():
+        if not path.startswith("app/"):
+            continue
+        target = destination / path
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(content)
+
+    if boundary is not None:
+        target = destination / boundary
+        if boundary_content is None:
+            target.unlink(missing_ok=True)
+        else:
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_bytes(boundary_content)
+
+    if not (destination / "app").is_dir():
+        raise CorpusError("the source revision has no server source tree to exercise")
+
+    bootstrap = destination / "counterfactual-bootstrap.php"
+    bootstrap.write_text(
+        """<?php
+
+declare(strict_types=1);
+
+$sourceRoot = getenv('SERVER_CODEC_SOURCE_ROOT');
+if (! is_string($sourceRoot) || $sourceRoot === '') {
+    throw new RuntimeException('SERVER_CODEC_SOURCE_ROOT is required.');
+}
+
+spl_autoload_register(
+    static function (string $class) use ($sourceRoot): void {
+        $prefix = 'App\\\\';
+        if (! str_starts_with($class, $prefix)) {
+            return;
+        }
+
+        $relative = str_replace('\\\\', '/', substr($class, strlen($prefix)));
+        $path = $sourceRoot.'/app/'.$relative.'.php';
+        if (is_file($path)) {
+            require $path;
+        }
+    },
+    true,
+    true,
+);
+""",
+        encoding="utf-8",
+    )
+    return bootstrap
+
+
+def _verify_counterfactual_proofs(
+    *,
+    root: Path,
+    base_files: Mapping[str, bytes],
+    current_files: Mapping[str, bytes],
+    proofs: Sequence[CounterfactualProof],
+    phpunit: Path,
+) -> int:
+    if not phpunit.is_file():
+        raise CorpusError(
+            f"PHPUnit is missing: {phpunit}; install dependencies before counterfactual validation"
+        )
+
+    with tempfile.TemporaryDirectory(prefix="server-codec-base-") as temporary:
+        base_root = Path(temporary)
+        bootstrap = _write_app_snapshot(base_root, base_files)
+
+        for index, proof in enumerate(proofs):
+            candidate = _run_phpunit_proof(
+                root=root,
+                phpunit=phpunit,
+                proof=proof,
+                source_root=root,
+            )
+            if candidate.returncode != 0:
+                raise CorpusError(
+                    f"counterfactual test {proof.test} does not pass on the candidate "
+                    f"through PHPUnit: {_process_detail(candidate)}"
+                )
+
+            defective = _run_phpunit_proof(
+                root=root,
+                phpunit=phpunit,
+                proof=proof,
+                source_root=base_root,
+                bootstrap=bootstrap,
+            )
+            if defective.returncode == 0:
+                raise CorpusError(
+                    f"counterfactual test {proof.test} also passes on the defective base; "
+                    f"fixture {proof.fixture} is not defect-specific"
+                )
+            if defective.returncode != 1:
+                raise CorpusError(
+                    f"counterfactual test {proof.test} did not produce a base assertion "
+                    f"failure through PHPUnit: {_process_detail(defective)}"
+                )
+
+            boundary = proof.boundaries[0]
+            isolated_root = base_root / f"isolated-{index}"
+            isolated_bootstrap = _write_app_snapshot(
+                isolated_root,
+                current_files,
+                boundary=boundary,
+                boundary_content=base_files.get(boundary),
+            )
+            isolated = _run_phpunit_proof(
+                root=root,
+                phpunit=phpunit,
+                proof=proof,
+                source_root=isolated_root,
+                bootstrap=isolated_bootstrap,
+            )
+            if isolated.returncode == 0:
+                raise CorpusError(
+                    f"counterfactual test {proof.test} also passes when claimed boundary "
+                    f"{boundary} is reverted to the defective base; proof attribution "
+                    "is not boundary-specific"
+                )
+            if isolated.returncode != 1:
+                raise CorpusError(
+                    f"counterfactual test {proof.test} did not produce an assertion failure "
+                    f"when claimed boundary {boundary} was reverted: "
+                    f"{_process_detail(isolated)}"
+                )
+
+    return len(proofs)
+
+
+def validate(
+    root: Path,
+    policy_path: Path,
+    base_ref: str | None,
+    *,
+    verify_counterfactual: bool = False,
+    phpunit_path: Path = Path("vendor/bin/phpunit"),
+) -> dict[str, Any]:
     policy_file = (policy_path if policy_path.is_absolute() else root / policy_path).resolve()
     try:
         policy_relative_path = policy_file.relative_to(root).as_posix()
@@ -615,6 +939,7 @@ def validate(root: Path, policy_path: Path, base_ref: str | None) -> dict[str, A
     current_files = _tracked_worktree_files(root)
     changed: set[str] = set()
     added_paths: set[str] = set()
+    base_files: dict[str, bytes] = {}
     base_evidence: list[Evidence] = []
     if base_ref and not ZERO_COMMIT.fullmatch(base_ref):
         _run(["git", "rev-parse", "--verify", f"{base_ref}^{{commit}}"], root)
@@ -631,7 +956,14 @@ def validate(root: Path, policy_path: Path, base_ref: str | None) -> dict[str, A
         for path in _fixture_paths(base_policy, base_files):
             if current_files.get(path) != base_files[path]:
                 raise CorpusError(f"immutable fixture file {path} was changed, moved, or removed")
+        for path in _proof_paths(base_files):
+            if current_files.get(path) != base_files[path]:
+                raise CorpusError(
+                    f"immutable counterfactual proof file {path} was changed, moved, or removed"
+                )
         base_evidence = _inventory(base_policy, base_files)
+    for path in _proof_paths(current_files):
+        _counterfactual_proof(_json(current_files[path], path), path)
     current_evidence = _inventory(policy, current_files, new_paths=added_paths)
 
     current_by_id = {item.identity: item for item in current_evidence}
@@ -657,12 +989,16 @@ def validate(root: Path, policy_path: Path, base_ref: str | None) -> dict[str, A
         current_count = sum(item.category == category_name for item in current_evidence)
         base_count = sum(item.category == category_name for item in base_evidence)
         related = False
+        proof_count = 0
+        revision_verified = 0
         if base_ref and not ZERO_COMMIT.fullmatch(base_ref):
             category = _object(raw_category, f"categories.{category_name}")
-            related = any(
-                _guard_matches(root, base_ref, changed, guard)
-                for guard in _list(category["guards"], f"categories.{category_name}.guards")
+            guards = _list(
+                category["guards"],
+                f"categories.{category_name}.guards",
             )
+            related_paths = _guarded_paths(root, base_ref, changed, guards)
+            related = bool(related_paths)
             if related and current_count <= base_count:
                 raise CorpusError(
                     f"{category_name} implementation changed but its corpus did not grow "
@@ -676,10 +1012,39 @@ def validate(root: Path, policy_path: Path, base_ref: str | None) -> dict[str, A
                     f"{category_name} implementation changed but no newly added fixture "
                     "provides corpus evidence"
                 )
+            if category_name == "codec" and related:
+                new_fixture_paths = {
+                    item.path
+                    for item in current_evidence
+                    if item.category == category_name and item.path in added_paths
+                }
+                proofs = _counterfactual_proofs(
+                    current_files=current_files,
+                    added_paths=added_paths,
+                    changed_paths=changed,
+                    new_fixture_paths=new_fixture_paths,
+                    guarded_paths=related_paths,
+                )
+                proof_count = len(proofs)
+                if verify_counterfactual:
+                    phpunit = (
+                        phpunit_path
+                        if phpunit_path.is_absolute()
+                        else root / phpunit_path
+                    ).resolve()
+                    revision_verified = _verify_counterfactual_proofs(
+                        root=root,
+                        base_files=base_files,
+                        current_files=current_files,
+                        proofs=proofs,
+                        phpunit=phpunit,
+                    )
         counts[category_name] = {
             "base": base_count,
             "current": current_count,
             "related_change": related,
+            "counterfactual_proofs": proof_count,
+            "revision_verified": revision_verified,
         }
     return {
         "schema": POLICY_SCHEMA,
@@ -696,9 +1061,17 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--root", type=Path, default=Path.cwd())
     parser.add_argument("--policy", type=Path, default=Path("regression-corpus-policy.json"))
     parser.add_argument("--base-ref")
+    parser.add_argument("--verify-counterfactual", action="store_true")
+    parser.add_argument("--phpunit", type=Path, default=Path("vendor/bin/phpunit"))
     args = parser.parse_args(argv)
     try:
-        result = validate(args.root.resolve(), args.policy, args.base_ref)
+        result = validate(
+            args.root.resolve(),
+            args.policy,
+            args.base_ref,
+            verify_counterfactual=args.verify_counterfactual,
+            phpunit_path=args.phpunit,
+        )
     except (CorpusError, OSError) as error:
         print(f"regression corpus validation failed: {error}", file=sys.stderr)
         return 1
