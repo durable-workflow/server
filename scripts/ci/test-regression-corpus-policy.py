@@ -180,32 +180,73 @@ raise SystemExit(2)
         }
 
     @staticmethod
-    def avro_golden_fixture() -> dict[str, Any]:
+    def avro_golden_fixture(
+        *,
+        name_prefix: str = "unexecuted",
+        case_wire: str = "AA==",
+        malformed_wire: str = "",
+        malformed_error: str = "truncated",
+        alternate_wires: tuple[str, ...] = ("AA==", "Ag=="),
+    ) -> dict[str, Any]:
         return {
             "schema": "example.Value",
             "fingerprint": "0000000000000000",
             "cases": [
                 {
-                    "name": "unexecuted-round-trip",
+                    "name": f"{name_prefix}-round-trip",
                     "kind": "long",
                     "value": "0",
-                    "wire_base64": "AA==",
+                    "wire_base64": case_wire,
                 }
             ],
             "malformed_frames": [
                 {
-                    "name": "unexecuted-malformed",
-                    "wire_base64": "",
-                    "error": "truncated",
+                    "name": f"{name_prefix}-malformed",
+                    "wire_base64": malformed_wire,
+                    "error": malformed_error,
                 }
             ],
             "alternate_map_orders": [
                 {
-                    "name": "unexecuted-map-order",
-                    "wire_base64": ["AA==", "Ag=="],
+                    "name": f"{name_prefix}-map-order",
+                    "wire_base64": list(alternate_wires),
                 }
             ],
         }
+
+    def use_generic_codec_formats(
+        self,
+        *,
+        baseline_avro: dict[str, Any] | None = None,
+    ) -> None:
+        avro_directory = self.root / "tests/Fixtures/AvroGolden"
+        avro_directory.mkdir(parents=True)
+        policy_path = self.root / "regression-corpus-policy.json"
+        policy = json.loads(policy_path.read_text())
+        policy["repository"] = "workflow"
+        policy["categories"]["codec"]["fixtures"].append(
+            {
+                "glob": "tests/Fixtures/AvroGolden/*.json",
+                "format": "avro-value-golden-v1",
+            }
+        )
+        self.write_json("regression-corpus-policy.json", policy)
+        if baseline_avro is not None:
+            self.write_json(
+                "tests/Fixtures/AvroGolden/baseline.json",
+                baseline_avro,
+            )
+        self.git("add", "--all")
+        self.git(
+            "-c",
+            "user.name=Regression Corpus Test",
+            "-c",
+            "user.email=regression-corpus@example.invalid",
+            "commit",
+            "--quiet",
+            "--message=enable-generic-codec-formats",
+        )
+        self.base_ref = self.git("rev-parse", "HEAD").stdout.strip()
 
     def write_counterfactual(
         self,
@@ -399,6 +440,49 @@ raise SystemExit(2)
         self.write_json(
             "tests/Fixtures/CodecRegression/metadata-only.json",
             duplicate,
+        )
+
+        result = self.validate()
+
+        self.assertNotEqual(0, result.returncode, result.stdout)
+        self.assertIn("duplicate semantic fixtures", result.stderr)
+
+    def test_cross_format_wire_rewrap_cannot_create_evidence(self) -> None:
+        self.use_generic_codec_formats()
+        self.write_json(
+            "tests/Fixtures/AvroGolden/rewrapped.json",
+            self.avro_golden_fixture(
+                name_prefix="rewrapped",
+                case_wire="AA==",
+                malformed_wire="Bg==",
+                alternate_wires=("Ag==", "BA=="),
+            ),
+        )
+
+        result = self.validate()
+
+        self.assertNotEqual(0, result.returncode, result.stdout)
+        self.assertIn("duplicate semantic fixtures", result.stderr)
+
+    def test_reordered_alternate_wire_group_cannot_create_evidence(self) -> None:
+        self.use_generic_codec_formats(
+            baseline_avro=self.avro_golden_fixture(
+                name_prefix="baseline",
+                case_wire="Bg==",
+                malformed_wire="CA==",
+                malformed_error="baseline-error",
+                alternate_wires=("Ag==", "BA=="),
+            )
+        )
+        self.write_json(
+            "tests/Fixtures/AvroGolden/reordered.json",
+            self.avro_golden_fixture(
+                name_prefix="reordered",
+                case_wire="Cg==",
+                malformed_wire="DA==",
+                malformed_error="reordered-error",
+                alternate_wires=("BA==", "Ag=="),
+            ),
         )
 
         result = self.validate()

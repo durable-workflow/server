@@ -156,6 +156,22 @@ def _replay_semantic(
     }
 
 
+def _codec_semantic(
+    *,
+    value: Mapping[str, Any] | None,
+    wire: str | Sequence[str] | None,
+    operation: str,
+    error: str | None,
+) -> Mapping[str, Any]:
+    """Project every codec representation onto consumer-executed values."""
+
+    return {
+        "value": value,
+        "wire": wire,
+        "failure_policy": {"operation": operation, "error": error},
+    }
+
+
 def _fixture_evidence(
     *,
     category: str,
@@ -221,11 +237,12 @@ def _codec_fixture(document: Mapping[str, Any], path: str, binding: str | None) 
     )
     if len(supersedes) != len(set(supersedes)) or identity in supersedes:
         raise CorpusError(f"{path}.supersedes is invalid")
-    semantic = {
-        "value": value if operation == "encode_reject" else None,
-        "wire_base64": canonical_wire,
-        "failure_policy": {"operation": operation, "error": error},
-    }
+    semantic = _codec_semantic(
+        value=value if operation == "encode_reject" else None,
+        wire=canonical_wire,
+        operation=operation,
+        error=error,
+    )
     return [
         _fixture_evidence(
             category="codec",
@@ -305,7 +322,7 @@ def _avro_golden_fixture(document: Mapping[str, Any], path: str) -> list[Evidenc
             name = _string(entry.get("name"), f"{path}.{section}[{index}].name")
             wire = entry.get("wire_base64")
             if section == "alternate":
-                semantic_wire = [
+                semantic_wire = sorted(
                     _canonical_base64(
                         wire_value,
                         f"{path}.{section}[{index}].wire_base64[]",
@@ -314,7 +331,7 @@ def _avro_golden_fixture(document: Mapping[str, Any], path: str) -> list[Evidenc
                         wire,
                         f"{path}.{section}[{index}].wire_base64",
                     )
-                ]
+                )
             elif section == "case":
                 wire_value = _string(wire, f"{path}.{section}[{index}].wire_base64")
                 semantic_wire = _canonical_base64(
@@ -328,14 +345,12 @@ def _avro_golden_fixture(document: Mapping[str, Any], path: str) -> list[Evidenc
                     wire,
                     f"{path}.{section}[{index}].wire_base64",
                 )
-            semantic = {
-                "framing": semantic_wire,
-                "failure_policy": (
-                    {"operation": "decode_reject", "error": entry.get("error")}
-                    if section == "malformed"
-                    else {"operation": "round_trip", "error": None}
-                ),
-            }
+            semantic = _codec_semantic(
+                value=None,
+                wire=semantic_wire,
+                operation="decode_reject" if section == "malformed" else "round_trip",
+                error=entry.get("error") if section == "malformed" else None,
+            )
             evidence.append(
                 _fixture_evidence(
                     category="codec",
