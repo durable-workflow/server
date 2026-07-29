@@ -6,6 +6,11 @@ on:
       - main
   pull_request:
   workflow_dispatch:
+    inputs:
+      corpus_base_ref:
+        description: Full Git commit SHA to classify regression-corpus changes against
+        required: true
+        type: string
 
 permissions:
   contents: read
@@ -44,13 +49,15 @@ jobs:
 
       - name: Require durable codec evidence
         env:
-          CORPUS_BASE_REF: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || github.event.before }}
+          CORPUS_BASE_REF: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || github.event_name == 'push' && github.event.before || inputs.corpus_base_ref }}
         run: |
-          arguments=()
-          if [[ "$CORPUS_BASE_REF" =~ ^[0-9a-f]{40}$ ]] && [[ ! "$CORPUS_BASE_REF" =~ ^0+$ ]]; then
-            arguments+=(--base-ref "$CORPUS_BASE_REF")
+          set -euo pipefail
+          if [[ ! "$CORPUS_BASE_REF" =~ ^[0-9a-f]{40}$ ]] || [[ "$CORPUS_BASE_REF" =~ ^0+$ ]]; then
+            echo "Invalid regression corpus base revision: $CORPUS_BASE_REF" >&2
+            exit 1
           fi
-          python scripts/ci/validate-regression-corpus.py "${arguments[@]}"
+          git rev-parse --verify "$CORPUS_BASE_REF^{commit}"
+          python scripts/ci/validate-regression-corpus.py --base-ref "$CORPUS_BASE_REF"
 
       - name: Prove corpus policy guards cannot be weakened
         run: python scripts/ci/test-regression-corpus-policy.py
@@ -95,21 +102,31 @@ jobs:
             > workflow-package/.package-provenance
           rm -rf workflow-package/.git
 
-      - name: Run feature and Nexus contract suites
+      - name: Run feature, Nexus, and regression corpus suites
         shell: bash
         env:
-          CORPUS_BASE_REF: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || github.event.before }}
+          CORPUS_BASE_REF: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || github.event_name == 'push' && github.event.before || inputs.corpus_base_ref }}
         run: |
           set -euo pipefail
+          if [[ ! "$CORPUS_BASE_REF" =~ ^[0-9a-f]{40}$ ]] || [[ "$CORPUS_BASE_REF" =~ ^0+$ ]]; then
+            echo "Invalid regression corpus base revision: $CORPUS_BASE_REF" >&2
+            exit 1
+          fi
           docker build --target base -t durable-workflow-server-phpunit-base .
+          docker build -t durable-workflow-server-corpus-validator - <<'DOCKERFILE'
+          FROM durable-workflow-server-phpunit-base
+          RUN apt-get update \
+              && apt-get install -y --no-install-recommends git \
+              && rm -rf /var/lib/apt/lists/*
+          DOCKERFILE
           tar \
             --exclude=vendor \
             --exclude='*/vendor' \
             --exclude=build \
             --exclude='*/build' \
             -cf - . \
-            | docker run --rm -i -e CORPUS_BASE_REF -w /app --entrypoint sh durable-workflow-server-phpunit-base \
-                -lc 'tar -xf - -C /app && cp -a /app/workflow-package /workflow && composer install --no-interaction --no-progress --prefer-dist && vendor/bin/phpunit tests/Feature tests/Unit/NexusContractTest.php tests/Unit/CodecRegressionCorpusTest.php --no-progress --colors=never && if echo "$CORPUS_BASE_REF" | grep -Eq "^[0-9a-f]{40}$" && ! echo "$CORPUS_BASE_REF" | grep -Eq "^0+$"; then python3 scripts/ci/validate-regression-corpus.py --base-ref "$CORPUS_BASE_REF" --verify-counterfactual; fi'
+            | docker run --rm -i -e CORPUS_BASE_REF -w /app --entrypoint sh durable-workflow-server-corpus-validator \
+                -lc 'set -eu; tar --no-same-owner -xf - -C /app; cp -a /app/workflow-package /workflow; composer install --no-interaction --no-progress --prefer-dist; git --version; vendor/bin/phpunit --version; git rev-parse --verify "$CORPUS_BASE_REF^{commit}"; vendor/bin/phpunit tests/Feature tests/Unit/NexusContractTest.php tests/Unit/CodecRegressionCorpusTest.php tests/Unit/PhpunitFeatureWorkflowContractTest.php --no-progress --colors=never; python3 scripts/ci/validate-regression-corpus.py --base-ref "$CORPUS_BASE_REF" --verify-counterfactual'
 
   qualification:
     name: Feature source qualification

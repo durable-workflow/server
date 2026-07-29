@@ -999,6 +999,15 @@ def validate(
     phpunit_path: Path = Path("vendor/bin/phpunit"),
 ) -> dict[str, Any]:
     policy_file = (policy_path if policy_path.is_absolute() else root / policy_path).resolve()
+    phpunit = (
+        phpunit_path
+        if phpunit_path.is_absolute()
+        else root / phpunit_path
+    ).resolve()
+    if verify_counterfactual and not phpunit.is_file():
+        raise CorpusError(
+            f"PHPUnit is missing: {phpunit}; install dependencies before counterfactual validation"
+        )
     try:
         policy_relative_path = policy_file.relative_to(root).as_posix()
     except ValueError as error:
@@ -1098,11 +1107,6 @@ def validate(
                 )
                 proof_count = len(proofs)
                 if verify_counterfactual:
-                    phpunit = (
-                        phpunit_path
-                        if phpunit_path.is_absolute()
-                        else root / phpunit_path
-                    ).resolve()
                     revision_verified = _verify_counterfactual_proofs(
                         root=root,
                         base_files=base_files,

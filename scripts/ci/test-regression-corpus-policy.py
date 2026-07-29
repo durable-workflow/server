@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import fnmatch
 import json
+import os
 import re
 import subprocess
 import sys
@@ -295,6 +296,47 @@ raise SystemExit(2)
         self.assertNotEqual(0, result.returncode, result.stdout)
         self.assertIn(
             "categories.codec.guards cannot remove or change a base selector",
+            result.stderr,
+        )
+
+    def test_counterfactual_verification_requires_the_phpunit_runtime(self) -> None:
+        self.phpunit.unlink()
+
+        result = self.validate(verify_counterfactual=True)
+
+        self.assertNotEqual(0, result.returncode, result.stdout)
+        self.assertIn(
+            "PHPUnit is missing:",
+            result.stderr,
+        )
+        self.assertIn(
+            "install dependencies before counterfactual validation",
+            result.stderr,
+        )
+
+    def test_validation_fails_closed_when_git_is_unavailable(self) -> None:
+        environment = os.environ.copy()
+        environment["PATH"] = ""
+
+        result = subprocess.run(
+            [
+                sys.executable,
+                str(VALIDATOR),
+                "--root",
+                str(self.root),
+                "--base-ref",
+                self.base_ref,
+            ],
+            cwd=self.root,
+            env=environment,
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+
+        self.assertNotEqual(0, result.returncode, result.stdout)
+        self.assertIn(
+            "No such file or directory: 'git'",
             result.stderr,
         )
 
