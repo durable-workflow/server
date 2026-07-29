@@ -173,6 +173,16 @@ const generatedStableDocsNullVersionPaths = [
   '/docs/',
   '/docs/platform-conformance/',
 ];
+const docsArtifactTupleHandoffSchema =
+  'durable-workflow.release.docs-artifact-tuple-handoff';
+const docsArtifactTupleHandoffSchemaVersion = 1;
+const docsRefreshRequestSchema = 'durable-workflow.docs.refresh-request';
+const docsRefreshRequestSchemaVersion = 1;
+const docsRefreshRequestCompatibility = {
+  additive_fields: 'ignore',
+  compatible_handoff_schema_versions: [docsArtifactTupleHandoffSchemaVersion],
+  unsupported_schema_version: 'reject_with_supported_versions',
+};
 const refreshCommand = 'npm run refresh:public-artifact-versions';
 const refreshFiles = [
   'scripts/public-artifact-versions.json',
@@ -348,8 +358,8 @@ function docsRefreshHandoff(message, actualVersion, observedVersions) {
   };
 
   return {
-    schema: 'durable-workflow.release.docs-artifact-tuple-handoff',
-    schema_version: 1,
+    schema: docsArtifactTupleHandoffSchema,
+    schema_version: docsArtifactTupleHandoffSchemaVersion,
     action: 'pipeline_ready_item',
     reason: 'public_docs_release_audit_stale',
     repository: 'durable-workflow.github.io',
@@ -401,7 +411,8 @@ function docsRefreshHandoff(message, actualVersion, observedVersions) {
 
 function docsRefreshRequest(handoff) {
   return {
-    schema: 'durable-workflow.docs.refresh-request',
+    schema: docsRefreshRequestSchema,
+    schema_version: docsRefreshRequestSchemaVersion,
     reason: handoff.reason,
     repository: handoff.repository,
     target_branch: handoff.target_branch,
@@ -415,6 +426,8 @@ function docsRefreshRequest(handoff) {
     release_status_guard: handoff.release_status_guard,
     ready_item: handoff.ready_item,
     handoff_schema: handoff.schema,
+    handoff_schema_version: handoff.schema_version,
+    compatibility: docsRefreshRequestCompatibility,
   };
 }
 

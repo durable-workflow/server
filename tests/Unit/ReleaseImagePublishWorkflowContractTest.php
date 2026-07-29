@@ -1061,7 +1061,11 @@ SH);
         $this->assertStringContainsString('durable-workflow.release.docs-release-audit-evidence', $auditor);
         $this->assertStringContainsString('durable-workflow.release.docs-artifact-tuple-handoff', $auditor);
         $this->assertStringContainsString('DOCS_RELEASE_AUDIT_HANDOFF', $auditor);
-        $this->assertStringContainsString("schema: 'durable-workflow.docs.refresh-request'", $auditor);
+        $this->assertStringContainsString(
+            "const docsRefreshRequestSchema = 'durable-workflow.docs.refresh-request'",
+            $auditor,
+        );
+        $this->assertStringContainsString('const docsRefreshRequestSchemaVersion = 1;', $auditor);
         $this->assertStringContainsString("repository: 'durable-workflow.github.io'", $auditor);
         $this->assertStringContainsString("const refreshCommand = 'npm run refresh:public-artifact-versions';", $auditor);
         $this->assertStringContainsString('refresh_files: refreshFiles', $auditor);
@@ -1509,6 +1513,32 @@ SH);
             'static/sdk-neutrality-contract.json',
             'scripts/workflow-sdk-neutrality-authority-lock.json',
         ];
+        $expectedPublicBoundary = [
+            'allowed_paths' => $expectedRefreshFiles,
+            'forbidden_paths' => [
+                'docusaurus.config.js',
+                'sidebars.js',
+                'versioned_docs/version-1.x',
+                'versioned_sidebars/version-1.x-sidebars.json',
+            ],
+        ];
+        $expectedReleaseStatusGuard = [
+            'stable_default_docs_line' => '1.x',
+            'prerelease_docs_line' => '2.0',
+            'no_default_docs_cutover' => true,
+            'live_release_audit_assertions' => [
+                'compatible public route inventory contract',
+                'internally consistent artifact tuple',
+                'stable default 1.x',
+                'explicit prerelease 2.0',
+                'public-reference cleanliness',
+            ],
+        ];
+        $expectedCompatibility = [
+            'additive_fields' => 'ignore',
+            'compatible_handoff_schema_versions' => [1],
+            'unsupported_schema_version' => 'reject_with_supported_versions',
+        ];
         $result = $this->runDocsReleaseAudit(
             json_encode(
                 $this->validPublishedDocsReleaseAudit('2.0.0-rc.5', '2.0.0-rc.5'),
@@ -1522,6 +1552,33 @@ SH);
         $this->assertSame('downstream_pending', $result['evidence']['outcome']);
         $this->assertSame('success', $result['evidence']['status']);
         $this->assertSame('docs_tuple_refresh_required', $result['evidence']['release_readiness']);
+        $handoff = $result['handoff'];
+        $refreshRequest = $result['evidence']['docs_refresh_request'];
+        $this->assertSame(1, $handoff['schema_version']);
+        $this->assertSame(1, $refreshRequest['schema_version']);
+        $this->assertIsInt($refreshRequest['schema_version']);
+        $this->assertSame($handoff['schema'], $refreshRequest['handoff_schema']);
+        $this->assertSame($handoff['schema_version'], $refreshRequest['handoff_schema_version']);
+        $this->assertSame($expectedCompatibility, $refreshRequest['compatibility']);
+        $this->assertSame([
+            'schema',
+            'schema_version',
+            'reason',
+            'repository',
+            'target_branch',
+            'integration',
+            'refresh_command',
+            'refresh_files',
+            'stale_artifact',
+            'observed_artifact_versions',
+            'source_release_check',
+            'public_boundary',
+            'release_status_guard',
+            'ready_item',
+            'handoff_schema',
+            'handoff_schema_version',
+            'compatibility',
+        ], array_keys($refreshRequest));
         $this->assertSame(
             'durable-workflow.docs.published-artifact-versions',
             $result['evidence']['public_safety']['component_publication_state']['source_schema'],
@@ -1545,14 +1602,10 @@ SH);
             $result['handoff']['refresh_command'],
             $result['evidence']['docs_refresh_request']['refresh_command'],
         );
-        $this->assertSame(
-            $result['handoff']['public_boundary'],
-            $result['evidence']['docs_refresh_request']['public_boundary'],
-        );
-        $this->assertSame(
-            $result['handoff']['release_status_guard'],
-            $result['evidence']['docs_refresh_request']['release_status_guard'],
-        );
+        $this->assertSame($expectedPublicBoundary, $result['handoff']['public_boundary']);
+        $this->assertSame($expectedPublicBoundary, $refreshRequest['public_boundary']);
+        $this->assertSame($expectedReleaseStatusGuard, $result['handoff']['release_status_guard']);
+        $this->assertSame($expectedReleaseStatusGuard, $refreshRequest['release_status_guard']);
         $this->assertSame('1.x', $result['handoff']['release_status_guard']['stable_default_docs_line']);
         $this->assertSame('2.0', $result['handoff']['release_status_guard']['prerelease_docs_line']);
         $this->assertTrue($result['handoff']['release_status_guard']['no_default_docs_cutover']);
