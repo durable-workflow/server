@@ -101,8 +101,11 @@ const minimumAuditSchemaVersion = 4;
 const minimumAuditClassifierVersion = 4;
 const auditClassifierPattern = /^route-and-public-artifact-inventory-v([1-9]\d*)$/;
 const auditGeneratedFrom = 'production sitemap and build artifact inventory';
-const artifactVersionSchema = 'durable-workflow.docs.public-artifact-versions';
-const artifactVersionSourcePath = 'scripts/public-artifact-versions.json';
+const legacyArtifactVersionSchema = 'durable-workflow.docs.public-artifact-versions';
+const publishedArtifactVersionSchema = 'durable-workflow.docs.published-artifact-versions';
+const artifactCompatibilityEvidenceSchema =
+  'durable-workflow.docs.public-artifact-compatibility-evidence';
+const artifactCompatibilityEvidencePath = '/public-artifact-compatibility-evidence.json';
 const publicDocsRepositoryUrl = 'https://github.com/durable-workflow/durable-workflow.github.io';
 const expectedArtifacts = ['cli', 'sdk-php', 'sdk-python', 'sdk-rust', 'server', 'waterline', 'workflow'];
 const expectedSynchronizedFields = [
@@ -184,6 +187,22 @@ const releaseAuditAssertions = [
   'explicit prerelease 2.0',
   'public-reference cleanliness',
 ];
+const artifactVersionSourceContracts = {
+  [legacyArtifactVersionSchema]: {
+    sourcePath: 'scripts/public-artifact-versions.json',
+    minimumAuditVersion: 4,
+    minimumClassifierVersion: 4,
+    role: null,
+    separateCompatibilityEvidence: false,
+  },
+  [publishedArtifactVersionSchema]: {
+    sourcePath: 'scripts/published-artifact-versions.json',
+    minimumAuditVersion: 5,
+    minimumClassifierVersion: 5,
+    role: 'current_published_component_artifacts',
+    separateCompatibilityEvidence: true,
+  },
+};
 const forbiddenInventoryFields = ['source_sha256', 'content_sha256', 'verdict', 'findings'];
 const repoLocalReferencePattern = new RegExp([
   String.raw`^\.{1,2}[\\/]`,
@@ -464,6 +483,144 @@ function releaseReadinessFailure(failureKind, message, extra = {}) {
   });
 }
 
+function aggregateCompatibilityFailure(message, extra = {}) {
+  publicSafetyFailure(
+    'aggregate_compatibility_evidence',
+    message,
+    {observed_aggregate_compatibility_evidence: audit.artifact_compatibility_evidence, ...extra}
+  );
+}
+
+function validateAggregateCompatibilityEvidence(evidence) {
+  if (!isRecord(evidence)) {
+    aggregateCompatibilityFailure(
+      `${auditUrl} must contain artifact_compatibility_evidence for the current component publication contract.`
+    );
+  }
+
+  if (evidence.role !== 'qualified_aggregate_recommendation') {
+    aggregateCompatibilityFailure(
+      `${auditUrl} artifact_compatibility_evidence.role must be qualified_aggregate_recommendation; ` +
+        `got ${evidence.role || '<missing>'}.`
+    );
+  }
+
+  if (evidence.source_url !== artifactCompatibilityEvidencePath) {
+    aggregateCompatibilityFailure(
+      `${auditUrl} artifact_compatibility_evidence.source_url must be ` +
+        `${artifactCompatibilityEvidencePath}; got ${evidence.source_url || '<missing>'}.`
+    );
+  }
+
+  if (evidence.schema !== artifactCompatibilityEvidenceSchema) {
+    aggregateCompatibilityFailure(
+      `${auditUrl} artifact_compatibility_evidence.schema must be ` +
+        `${artifactCompatibilityEvidenceSchema}; got ${evidence.schema || '<missing>'}.`
+    );
+  }
+
+  if (!Number.isInteger(evidence.schema_version) || evidence.schema_version < 2) {
+    aggregateCompatibilityFailure(
+      `${auditUrl} artifact_compatibility_evidence.schema_version must be a compatible revision ` +
+        '(minimum 2).'
+    );
+  }
+
+  if (evidence.outcome !== 'pass') {
+    aggregateCompatibilityFailure(
+      `${auditUrl} artifact_compatibility_evidence.outcome must be pass; ` +
+        `got ${evidence.outcome || '<missing>'}.`
+    );
+  }
+
+  const qualifiedVersions = evidence.qualified_artifact_versions;
+  if (!isRecord(qualifiedVersions)) {
+    aggregateCompatibilityFailure(
+      `${auditUrl} artifact_compatibility_evidence must contain qualified_artifact_versions.`
+    );
+  }
+
+  const missingQualifiedArtifacts = expectedArtifacts.filter(
+    name => !Object.prototype.hasOwnProperty.call(qualifiedVersions, name)
+  );
+  if (missingQualifiedArtifacts.length > 0) {
+    aggregateCompatibilityFailure(
+      `${auditUrl} artifact_compatibility_evidence.qualified_artifact_versions is missing ` +
+        `${missingQualifiedArtifacts.join(', ')}.`
+    );
+  }
+
+  for (const name of expectedArtifacts) {
+    if (
+      typeof qualifiedVersions[name] !== 'string' ||
+      qualifiedVersions[name] !== qualifiedVersions[name].trim() ||
+      !parseArtifactVersion(qualifiedVersions[name])
+    ) {
+      aggregateCompatibilityFailure(
+        `${auditUrl} artifact_compatibility_evidence.qualified_artifact_versions.${name}=` +
+          `${qualifiedVersions[name] ?? '<missing>'} is not a supported public artifact version.`
+      );
+    }
+  }
+
+  const releasePlan = evidence.release_plan;
+  if (
+    !isRecord(releasePlan) ||
+    typeof releasePlan.tag !== 'string' ||
+    !/^release-plan\/[a-z0-9][a-z0-9-]{2,79}$/.test(releasePlan.tag) ||
+    typeof releasePlan.sha256 !== 'string' ||
+    !/^[a-f0-9]{64}$/.test(releasePlan.sha256)
+  ) {
+    aggregateCompatibilityFailure(
+      `${auditUrl} artifact_compatibility_evidence.release_plan must bind a valid release-plan tag ` +
+        'and lowercase SHA-256.'
+    );
+  }
+
+  const qualification = evidence.sdk_server_qualification;
+  if (!isRecord(qualification)) {
+    aggregateCompatibilityFailure(
+      `${auditUrl} artifact_compatibility_evidence must contain sdk_server_qualification.`
+    );
+  }
+
+  for (const field of ['source_url', 'evidence_source']) {
+    if (!isPublicUrl(qualification[field])) {
+      aggregateCompatibilityFailure(
+        `${auditUrl} artifact_compatibility_evidence.sdk_server_qualification.${field} ` +
+          'must be a public HTTPS URL.'
+      );
+    }
+  }
+
+  for (const field of ['sha256', 'evidence_sha256']) {
+    if (typeof qualification[field] !== 'string' || !/^[a-f0-9]{64}$/.test(qualification[field])) {
+      aggregateCompatibilityFailure(
+        `${auditUrl} artifact_compatibility_evidence.sdk_server_qualification.${field} ` +
+          'must be a lowercase SHA-256.'
+      );
+    }
+  }
+
+  if (qualification.outcome !== 'pass') {
+    aggregateCompatibilityFailure(
+      `${auditUrl} artifact_compatibility_evidence.sdk_server_qualification.outcome must be pass; ` +
+        `got ${qualification.outcome || '<missing>'}.`
+    );
+  }
+
+  return {
+    outcome: 'pass',
+    role: evidence.role,
+    source_url: evidence.source_url,
+    schema: evidence.schema,
+    schema_version: evidence.schema_version,
+    qualified_artifact_versions: qualifiedVersions,
+    release_plan: releasePlan,
+    sdk_server_qualification: qualification,
+  };
+}
+
 let audit;
 try {
   audit = JSON.parse(fs.readFileSync(auditPath, 'utf8'));
@@ -565,13 +722,43 @@ if (!isRecord(versionSource)) {
   malformed(`${auditUrl} must contain artifact_version_source metadata.`);
 }
 
-if (versionSource.schema !== artifactVersionSchema) {
+const artifactVersionSourceContract = Object.prototype.hasOwnProperty.call(
+  artifactVersionSourceContracts,
+  versionSource.schema
+)
+  ? artifactVersionSourceContracts[versionSource.schema]
+  : null;
+if (!artifactVersionSourceContract) {
   malformed(
-    `${auditUrl} artifact_version_source.schema must be ${artifactVersionSchema}; ` +
+    `${auditUrl} artifact_version_source.schema must be ${legacyArtifactVersionSchema} or ` +
+      `${publishedArtifactVersionSchema}; ` +
       `got ${versionSource.schema || '<missing>'}.`
   );
 }
 
+const classifierVersion = Number(classifierMatch[1]);
+if (
+  audit.schema_version < artifactVersionSourceContract.minimumAuditVersion ||
+  classifierVersion < artifactVersionSourceContract.minimumClassifierVersion
+) {
+  malformed(
+    `${auditUrl} artifact_version_source.schema ${versionSource.schema} requires schema_version ` +
+      `${artifactVersionSourceContract.minimumAuditVersion} and classifier version ` +
+      `${artifactVersionSourceContract.minimumClassifierVersion} or newer.`
+  );
+}
+
+if (
+  artifactVersionSourceContract.role !== null &&
+  versionSource.role !== artifactVersionSourceContract.role
+) {
+  malformed(
+    `${auditUrl} artifact_version_source.role must be ${artifactVersionSourceContract.role}; ` +
+      `got ${versionSource.role || '<missing>'}.`
+  );
+}
+
+const artifactVersionSourcePath = artifactVersionSourceContract.sourcePath;
 const expectedArtifactVersionSourceUrl =
   `${publicDocsRepositoryUrl}/blob/${audit.docs_revision}/${artifactVersionSourcePath}`;
 if (versionSource.source_url !== expectedArtifactVersionSourceUrl) {
@@ -588,6 +775,11 @@ if (!containsRequiredUniqueValues(versionSource.synchronized_fields, expectedSyn
       `${expectedSynchronizedFields.join(', ')}.`
   );
 }
+
+const aggregateCompatibilityEvidence =
+  artifactVersionSourceContract.separateCompatibilityEvidence
+    ? validateAggregateCompatibilityEvidence(audit.artifact_compatibility_evidence)
+    : null;
 
 const currentServerArtifact = versionSource.current_server_artifact;
 if (!isRecord(currentServerArtifact)) {
@@ -915,6 +1107,15 @@ const publicSafety = {
   },
   artifact_tuple_internal_consistency: 'pass',
   validated_artifacts: expectedArtifacts,
+  component_publication_state: artifactVersionSourceContract.separateCompatibilityEvidence
+    ? {
+        outcome: 'pass',
+        source_schema: versionSource.schema,
+        source_role: versionSource.role,
+        artifact_versions: versions,
+      }
+    : null,
+  aggregate_compatibility_evidence: aggregateCompatibilityEvidence,
   stable_default_docs_version: guardrail.stable_default_docs_version,
   explicit_prerelease_docs_version: guardrail.explicit_prerelease_docs_version,
 };

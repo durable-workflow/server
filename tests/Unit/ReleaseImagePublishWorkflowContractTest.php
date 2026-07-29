@@ -1498,6 +1498,59 @@ SH);
         $this->assertNull($result['handoff']);
     }
 
+    public function test_docs_audit_accepts_current_publication_independently_from_aggregate_qualification(): void
+    {
+        $result = $this->runDocsReleaseAudit(
+            json_encode(
+                $this->validPublishedDocsReleaseAudit('2.0.0-rc.6', '2.0.0-rc.5'),
+                JSON_THROW_ON_ERROR,
+            ),
+            '2.0.0-rc.6',
+        );
+
+        $this->assertSame(0, $result['exitCode']);
+        $this->assertSame('pass', $result['evidence']['outcome']);
+        $this->assertSame('ready', $result['evidence']['classification']);
+        $this->assertSame('fully_surfaced', $result['evidence']['release_readiness']);
+        $this->assertSame(
+            'durable-workflow.docs.published-artifact-versions',
+            $result['evidence']['public_safety']['component_publication_state']['source_schema'],
+        );
+        $this->assertSame(
+            '2.0.0-rc.6',
+            $result['evidence']['public_safety']['component_publication_state']['artifact_versions']['server'],
+        );
+        $aggregateCompatibility = $result['evidence']['public_safety']['aggregate_compatibility_evidence'];
+        $this->assertSame(
+            '2.0.0-rc.5',
+            $aggregateCompatibility['qualified_artifact_versions']['server'],
+        );
+        $this->assertSame(
+            'pass',
+            $aggregateCompatibility['outcome'],
+        );
+        $this->assertNull($result['handoff']);
+    }
+
+    public function test_docs_audit_rejects_invalid_aggregate_compatibility_evidence(): void
+    {
+        $audit = $this->validPublishedDocsReleaseAudit('2.0.0-rc.6', '2.0.0-rc.5');
+        $audit['artifact_compatibility_evidence']['outcome'] = 'failure';
+
+        $result = $this->runDocsReleaseAudit(
+            json_encode($audit, JSON_THROW_ON_ERROR),
+            '2.0.0-rc.6',
+        );
+
+        $this->assertSame(1, $result['exitCode']);
+        $this->assertSame('public_safety_failure', $result['evidence']['outcome']);
+        $this->assertSame('aggregate_compatibility_evidence', $result['evidence']['failure_kind']);
+        $this->assertStringContainsString(
+            'artifact_compatibility_evidence.outcome must be pass',
+            $result['stderr'],
+        );
+    }
+
     public function test_docs_audit_accepts_compatible_additive_contract_revision(): void
     {
         $audit = $this->validDocsReleaseAudit('0.2.620');
@@ -2716,6 +2769,54 @@ SH;
                 ],
             ],
         ];
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    private function validPublishedDocsReleaseAudit(
+        string $serverVersion,
+        string $qualifiedServerVersion,
+    ): array {
+        $audit = $this->validDocsReleaseAudit($serverVersion);
+        $qualifiedVersions = array_fill_keys(
+            ['cli', 'sdk-php', 'sdk-python', 'sdk-rust', 'server', 'waterline', 'workflow'],
+            '2.0.0-rc.5',
+        );
+        $qualifiedVersions['server'] = $qualifiedServerVersion;
+
+        $audit['schema_version'] = 5;
+        $audit['classifier'] = 'route-and-public-artifact-inventory-v5';
+        $audit['artifact_version_source']['schema'] = 'durable-workflow.docs.published-artifact-versions';
+        $audit['artifact_version_source']['role'] = 'current_published_component_artifacts';
+        $audit['artifact_version_source']['source_url'] =
+            'https://github.com/durable-workflow/durable-workflow.github.io/blob/'
+            .$audit['docs_revision'].'/scripts/published-artifact-versions.json';
+        $audit['artifact_version_source']['synchronized_fields'][] =
+            'artifact_distribution_surfaces.waterline';
+        $audit['artifact_compatibility_evidence'] = [
+            'role' => 'qualified_aggregate_recommendation',
+            'source_url' => '/public-artifact-compatibility-evidence.json',
+            'schema' => 'durable-workflow.docs.public-artifact-compatibility-evidence',
+            'schema_version' => 2,
+            'outcome' => 'pass',
+            'qualified_artifact_versions' => $qualifiedVersions,
+            'release_plan' => [
+                'tag' => 'release-plan/coherent-2-0-rc-5',
+                'sha256' => str_repeat('b', 64),
+            ],
+            'sdk_server_qualification' => [
+                'source_url' => 'https://raw.githubusercontent.com/durable-workflow/.github/'
+                    .'main/product-train/sdk-server-qualification.json',
+                'sha256' => str_repeat('c', 64),
+                'evidence_source' => 'https://github.com/durable-workflow/.github/releases/'
+                    .'download/beta-conformance/rc-coherent-2-0-rc-5/suite-result.json',
+                'evidence_sha256' => str_repeat('d', 64),
+                'outcome' => 'pass',
+            ],
+        ];
+
+        return $audit;
     }
 
     /**
