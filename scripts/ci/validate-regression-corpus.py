@@ -819,6 +819,21 @@ def _process_detail(result: subprocess.CompletedProcess[str]) -> str:
     )
 
 
+def _codec_causality_sentinel(
+    *,
+    fixture_content: bytes,
+    fixture_path: str,
+    sentinel_content: bytes,
+    sentinel_path: str,
+) -> bytes:
+    fixture = dict(_json(fixture_content, fixture_path))
+    sentinel = _json(sentinel_content, sentinel_path)
+    for field in ("protocol", "value", "framing", "failure_policy"):
+        fixture[field] = sentinel[field]
+    _codec_fixture(fixture, fixture_path, "php")
+    return (json.dumps(fixture, indent=2) + "\n").encode()
+
+
 def _run_phpunit_proof(
     *,
     root: Path,
@@ -826,6 +841,7 @@ def _run_phpunit_proof(
     proof: CounterfactualProof,
     source_root: Path,
     bootstrap: Path | None = None,
+    fixture_path: Path | None = None,
 ) -> subprocess.CompletedProcess[str]:
     command = [
         str(phpunit),
@@ -838,7 +854,9 @@ def _run_phpunit_proof(
     environment = os.environ.copy()
     environment.update(
         {
-            "SERVER_CODEC_REGRESSION_FIXTURE": str(root / proof.fixture),
+            "SERVER_CODEC_REGRESSION_FIXTURE": str(
+                fixture_path if fixture_path is not None else root / proof.fixture
+            ),
             "SERVER_CODEC_REGRESSION_PROOF": str(root / proof.path),
             "SERVER_CODEC_SOURCE_ROOT": str(source_root),
         }
@@ -918,6 +936,7 @@ def _verify_counterfactual_proofs(
     current_files: Mapping[str, bytes],
     proofs: Sequence[CounterfactualProof],
     phpunit: Path,
+    base_fixture_paths: Sequence[str],
 ) -> int:
     if not phpunit.is_file():
         raise CorpusError(
@@ -927,6 +946,11 @@ def _verify_counterfactual_proofs(
     with tempfile.TemporaryDirectory(prefix="server-codec-base-") as temporary:
         base_root = Path(temporary)
         bootstrap = _write_app_snapshot(base_root, base_files)
+        if proofs and not base_fixture_paths:
+            raise CorpusError(
+                "counterfactual verification requires a previously executable "
+                "codec fixture as a causality sentinel"
+            )
 
         for index, proof in enumerate(proofs):
             candidate = _run_phpunit_proof(
@@ -957,6 +981,33 @@ def _verify_counterfactual_proofs(
                 raise CorpusError(
                     f"counterfactual test {proof.test} did not produce a base assertion "
                     f"failure through PHPUnit: {_process_detail(defective)}"
+                )
+
+            sentinel_fixture = base_fixture_paths[0]
+            sentinel_path = base_root / "fixture-sentinels" / str(index) / proof.fixture
+            sentinel_path.parent.mkdir(parents=True, exist_ok=True)
+            sentinel_path.write_bytes(
+                _codec_causality_sentinel(
+                    fixture_content=current_files[proof.fixture],
+                    fixture_path=proof.fixture,
+                    sentinel_content=base_files[sentinel_fixture],
+                    sentinel_path=sentinel_fixture,
+                )
+            )
+            sentinel = _run_phpunit_proof(
+                root=root,
+                phpunit=phpunit,
+                proof=proof,
+                source_root=base_root,
+                bootstrap=bootstrap,
+                fixture_path=sentinel_path,
+            )
+            if sentinel.returncode != 0:
+                raise CorpusError(
+                    f"counterfactual test {proof.test} still fails on the defective base "
+                    f"after fixture {proof.fixture} is replaced by previously executable "
+                    f"sentinel {sentinel_fixture}; the counted fixture is not causally "
+                    f"exercised through PHPUnit: {_process_detail(sentinel)}"
                 )
 
             boundary = proof.boundaries[0]
@@ -1113,6 +1164,13 @@ def validate(
                         current_files=current_files,
                         proofs=proofs,
                         phpunit=phpunit,
+                        base_fixture_paths=sorted(
+                            {
+                                item.path
+                                for item in base_evidence
+                                if item.category == category_name
+                            }
+                        ),
                     )
         counts[category_name] = {
             "base": base_count,

@@ -105,12 +105,21 @@ import json
 import os
 from pathlib import Path
 
-fixture = json.loads(Path(os.environ["SERVER_CODEC_REGRESSION_FIXTURE"]).read_text())
 source_root = Path(os.environ["SERVER_CODEC_SOURCE_ROOT"])
+test_source = Path(os.sys.argv[-1]).read_text()
+fixture = json.loads(Path(os.environ["SERVER_CODEC_REGRESSION_FIXTURE"]).read_text())
+if "hard-coded codec input" in test_source:
+    source = (source_root / "app/Support/ExternalWorkflowUpdateAdmission.php").read_text()
+    raise SystemExit(0 if "array_values($arguments)" in source else 1)
 if "cases" in fixture:
     source = (source_root / "app/Support/ExternalWorkflowUpdateAdmission.php").read_text()
     raise SystemExit(0 if "array_values($arguments)" in source else 1)
 identity = fixture["id"]
+if (
+    fixture.get("value") == {"type": "long", "value": "0"}
+    and fixture.get("framing", {}).get("wire_base64") == "AA=="
+):
+    raise SystemExit(0)
 if identity == "unrelated-codec-case":
     raise SystemExit(0)
 if identity in {"encode-boundary-defect", "misattributed-boundary-defect"}:
@@ -610,6 +619,44 @@ raise SystemExit(2)
         self.assertIn(
             f"fixture {fixture_directory}/unrelated-codec-case.json "
             "is not defect-specific",
+            result.stderr,
+        )
+
+    def test_read_but_unused_fixture_cannot_prove_guarded_growth(self) -> None:
+        boundary = CORE_CODEC_BOUNDARIES[0]
+        (self.root / boundary).write_text(
+            "<?php\nSerializer::serializeWithCodec($codec, array_values($arguments));\n"
+        )
+        self.write_counterfactual(
+            "encode-boundary-defect",
+            boundary,
+            value="9",
+            wire="Eg==",
+        )
+        test = (
+            self.root / "tests/Feature/CodecRegression/encode-boundary-defectTest.php"
+        )
+        test.write_text(
+            """<?php
+$fixturePath = getenv('SERVER_CODEC_REGRESSION_FIXTURE');
+json_decode(file_get_contents($fixturePath), true, flags: JSON_THROW_ON_ERROR);
+// The fixture is deliberately unused; hard-coded codec input drives this test.
+""",
+            encoding="utf-8",
+        )
+
+        result = self.validate(verify_counterfactual=True)
+
+        self.assertNotEqual(0, result.returncode, result.stdout)
+        self.assertIn(
+            "still fails on the defective base after fixture "
+            "tests/Fixtures/CodecRegression/encode-boundary-defect.json is replaced "
+            "by previously executable sentinel "
+            "tests/Fixtures/CodecRegression/base.json",
+            result.stderr,
+        )
+        self.assertIn(
+            "the counted fixture is not causally exercised through PHPUnit",
             result.stderr,
         )
 
