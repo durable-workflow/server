@@ -106,6 +106,9 @@ from pathlib import Path
 
 fixture = json.loads(Path(os.environ["SERVER_CODEC_REGRESSION_FIXTURE"]).read_text())
 source_root = Path(os.environ["SERVER_CODEC_SOURCE_ROOT"])
+if "cases" in fixture:
+    source = (source_root / "app/Support/ExternalWorkflowUpdateAdmission.php").read_text()
+    raise SystemExit(0 if "array_values($arguments)" in source else 1)
 identity = fixture["id"]
 if identity == "unrelated-codec-case":
     raise SystemExit(0)
@@ -166,6 +169,34 @@ raise SystemExit(2)
             "failure_policy": {"operation": "round_trip", "error": None},
         }
 
+    @staticmethod
+    def avro_golden_fixture() -> dict[str, Any]:
+        return {
+            "schema": "example.Value",
+            "fingerprint": "0000000000000000",
+            "cases": [
+                {
+                    "name": "unexecuted-round-trip",
+                    "kind": "long",
+                    "value": "0",
+                    "wire_base64": "AA==",
+                }
+            ],
+            "malformed_frames": [
+                {
+                    "name": "unexecuted-malformed",
+                    "wire_base64": "",
+                    "error": "truncated",
+                }
+            ],
+            "alternate_map_orders": [
+                {
+                    "name": "unexecuted-map-order",
+                    "wire_base64": ["AA==", "Ag=="],
+                }
+            ],
+        }
+
     def write_counterfactual(
         self,
         identity: str,
@@ -173,10 +204,19 @@ raise SystemExit(2)
         *,
         value: str,
         wire: str,
+        fixture_directory: str = "tests/Fixtures/CodecRegression",
     ) -> None:
-        fixture = f"tests/Fixtures/CodecRegression/{identity}.json"
-        test = f"tests/Feature/CodecRegression/{identity}Test.php"
+        fixture = f"{fixture_directory}/{identity}.json"
         self.write_json(fixture, self.codec_fixture(identity, value, wire))
+        self.write_counterfactual_proof(identity, fixture, boundary)
+
+    def write_counterfactual_proof(
+        self,
+        identity: str,
+        fixture: str,
+        boundary: str | list[str],
+    ) -> None:
+        test = f"tests/Feature/CodecRegression/{identity}Test.php"
         self.write_json(
             f"tests/Fixtures/CodecRegressionProofs/{identity}.json",
             {
@@ -491,6 +531,140 @@ raise SystemExit(2)
         self.assertIn(
             "fixture tests/Fixtures/CodecRegression/unrelated-codec-case.json "
             "is not defect-specific",
+            result.stderr,
+        )
+
+    def test_unrelated_fixture_under_new_selector_cannot_prove_growth(self) -> None:
+        boundary = CORE_CODEC_BOUNDARIES[0]
+        (self.root / boundary).write_text(
+            "<?php\nSerializer::serializeWithCodec($codec, array_values($arguments));\n"
+        )
+        fixture_directory = "tests/Fixtures/ExtendedCodecRegression"
+        (self.root / fixture_directory).mkdir()
+        policy_path = self.root / "regression-corpus-policy.json"
+        policy = json.loads(policy_path.read_text())
+        policy["categories"]["codec"]["fixtures"].append(
+            {
+                "glob": f"{fixture_directory}/*.json",
+                "format": "codec-regression-v1",
+            }
+        )
+        self.write_json("regression-corpus-policy.json", policy)
+        self.write_counterfactual(
+            "unrelated-codec-case",
+            boundary,
+            value="9",
+            wire="Eg==",
+            fixture_directory=fixture_directory,
+        )
+
+        result = self.validate(verify_counterfactual=True)
+
+        self.assertNotEqual(0, result.returncode, result.stdout)
+        self.assertIn(
+            "also passes on the defective base",
+            result.stderr,
+        )
+        self.assertIn(
+            f"fixture {fixture_directory}/unrelated-codec-case.json "
+            "is not defect-specific",
+            result.stderr,
+        )
+
+    def test_unexecuted_format_cannot_satisfy_guarded_codec_growth(self) -> None:
+        boundary = CORE_CODEC_BOUNDARIES[0]
+        (self.root / boundary).write_text(
+            "<?php\nSerializer::serializeWithCodec($codec, array_values($arguments));\n"
+        )
+        fixture_directory = "tests/Fixtures/UnexecutedCodecRegression"
+        (self.root / fixture_directory).mkdir()
+        self.write_json(
+            f"{fixture_directory}/candidate.json",
+            self.avro_golden_fixture(),
+        )
+        policy_path = self.root / "regression-corpus-policy.json"
+        policy = json.loads(policy_path.read_text())
+        policy["categories"]["codec"]["fixtures"].append(
+            {
+                "glob": f"{fixture_directory}/*.json",
+                "format": "avro-value-golden-v1",
+            }
+        )
+        self.write_json("regression-corpus-policy.json", policy)
+        self.write_counterfactual_proof(
+            "unexecuted-format-defect",
+            f"{fixture_directory}/candidate.json",
+            boundary,
+        )
+
+        result = self.validate(verify_counterfactual=True)
+
+        self.assertNotEqual(0, result.returncode, result.stdout)
+        self.assertIn(
+            ".format is not executed by the official PHP codec runner",
+            result.stderr,
+        )
+
+    def test_nonportable_selector_is_rejected_by_the_php_inventory(self) -> None:
+        policy_path = self.root / "regression-corpus-policy.json"
+        policy = json.loads(policy_path.read_text())
+        policy["categories"]["codec"]["fixtures"].append(
+            {
+                "glob": "tests/Fixtures/CodecRegression/**/*.json",
+                "format": "codec-regression-v1",
+            }
+        )
+        self.write_json("regression-corpus-policy.json", policy)
+
+        result = self.validate()
+
+        self.assertNotEqual(0, result.returncode, result.stdout)
+        self.assertIn(
+            ".glob is not portable to the official PHP codec runner",
+            result.stderr,
+        )
+
+    def test_hidden_defect_fixture_cannot_satisfy_guarded_codec_growth(self) -> None:
+        boundary = CORE_CODEC_BOUNDARIES[0]
+        (self.root / boundary).write_text(
+            "<?php\nSerializer::serializeWithCodec($codec, array_values($arguments));\n"
+        )
+        fixture = "tests/Fixtures/CodecRegression/.hidden.json"
+        self.write_json(
+            fixture,
+            self.codec_fixture("encode-boundary-defect", "9", "Eg=="),
+        )
+        self.write_counterfactual_proof("hidden-defect", fixture, boundary)
+
+        result = self.validate(verify_counterfactual=True)
+
+        self.assertNotEqual(0, result.returncode, result.stdout)
+        self.assertIn(
+            ".glob selects fixture paths that PHP glob() does not execute: "
+            "['tests/Fixtures/CodecRegression/.hidden.json']",
+            result.stderr,
+        )
+
+    def test_nested_defect_fixture_cannot_satisfy_guarded_codec_growth(self) -> None:
+        boundary = CORE_CODEC_BOUNDARIES[0]
+        (self.root / boundary).write_text(
+            "<?php\nSerializer::serializeWithCodec($codec, array_values($arguments));\n"
+        )
+        fixture_directory = self.root / "tests/Fixtures/CodecRegression/nested"
+        fixture_directory.mkdir()
+        fixture = "tests/Fixtures/CodecRegression/nested/candidate.json"
+        self.write_json(
+            fixture,
+            self.codec_fixture("encode-boundary-defect", "9", "Eg=="),
+        )
+        self.write_counterfactual_proof("nested-defect", fixture, boundary)
+
+        result = self.validate(verify_counterfactual=True)
+
+        self.assertNotEqual(0, result.returncode, result.stdout)
+        self.assertIn(
+            ".glob selects fixture paths that PHP glob() does not execute: "
+            "['tests/Fixtures/CodecRegression/nested/candidate.json']",
             result.stderr,
         )
 

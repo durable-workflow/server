@@ -13,13 +13,11 @@ use Workflow\Serializers\CodecDecodeException;
 
 final class CodecRegressionCorpusTest extends TestCase
 {
+    private const FIXTURE_FORMAT = 'codec-regression-v1';
+
     public function test_checked_in_codec_regression_corpus_uses_the_official_php_binding(): void
     {
-        $paths = glob(__DIR__.'/../Fixtures/CodecRegression/*.json') ?: [];
-        sort($paths);
-        self::assertNotSame([], $paths);
-
-        foreach ($paths as $path) {
+        foreach (self::fixturePaths() as $path) {
             $fixture = json_decode((string) file_get_contents($path), true, flags: JSON_THROW_ON_ERROR);
             self::assertSame('durable-workflow.codec-regression/v1', $fixture['fixture_schema'] ?? null);
             self::assertContains('php', $fixture['bindings'] ?? []);
@@ -55,6 +53,52 @@ final class CodecRegressionCorpusTest extends TestCase
                 self::assertStringContainsString($error, $exception->getMessage());
             }
         }
+    }
+
+    /** @return list<string> */
+    private static function fixturePaths(): array
+    {
+        $root = dirname(__DIR__, 2);
+        $policy = json_decode(
+            (string) file_get_contents($root.'/regression-corpus-policy.json'),
+            true,
+            flags: JSON_THROW_ON_ERROR,
+        );
+        self::assertIsArray($policy);
+        self::assertSame('server', $policy['repository'] ?? null);
+        self::assertSame('php', $policy['binding'] ?? null);
+
+        $selectors = $policy['categories']['codec']['fixtures'] ?? null;
+        self::assertIsArray($selectors);
+        self::assertNotSame([], $selectors);
+
+        $paths = [];
+        foreach ($selectors as $selector) {
+            self::assertIsArray($selector);
+            self::assertSame(
+                self::FIXTURE_FORMAT,
+                $selector['format'] ?? null,
+                'The server codec policy contains a format without an official PHP executor.',
+            );
+            $glob = $selector['glob'] ?? null;
+            self::assertIsString($glob);
+            self::assertMatchesRegularExpression(
+                '/\A(?:[A-Za-z0-9_-][A-Za-z0-9._-]*\/)*(?:[A-Za-z0-9_-][A-Za-z0-9._-]*|\*)\.json\z/D',
+                $glob,
+                'The codec fixture selector is not portable to the official PHP runner.',
+            );
+            array_push($paths, ...(glob($root.'/'.$glob) ?: []));
+        }
+
+        self::assertNotSame([], $paths);
+        self::assertSame(
+            count($paths),
+            count(array_unique($paths)),
+            'A codec fixture is selected more than once by the server policy.',
+        );
+        sort($paths);
+
+        return $paths;
     }
 
     /** @param array<string, mixed> $value */

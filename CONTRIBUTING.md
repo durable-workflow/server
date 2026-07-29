@@ -15,6 +15,12 @@ framing, and stable failure policy. Run:
 python scripts/ci/validate-regression-corpus.py --base-ref <target>
 ```
 
+The server's PHPUnit codec corpus runner derives its fixture globs from
+`regression-corpus-policy.json`. New portable `codec-regression-v1` selectors
+therefore join the PHP execution inventory automatically. Formats without an
+official PHP executor are rejected by corpus validation and cannot contribute
+guarded growth.
+
 A server codec-boundary fix also needs an append-only counterfactual proof under
 `tests/Fixtures/CodecRegressionProofs/`. The proof pairs each new codec fixture
 with one changed boundary path and a changed Feature PHPUnit test. The test

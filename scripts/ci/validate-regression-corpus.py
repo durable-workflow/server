@@ -35,6 +35,10 @@ SUPPORTED_BINDINGS = {"php", "python", "rust"}
 OWNED_CATEGORIES = {
     "server": {"codec"},
 }
+SERVER_CODEC_RUNNER_FORMATS = {"codec-regression-v1"}
+PORTABLE_PHP_FIXTURE_GLOB = re.compile(
+    r"^(?:[A-Za-z0-9_-][A-Za-z0-9._-]*/)*(?:[A-Za-z0-9_-][A-Za-z0-9._-]*|\*)\.json$"
+)
 SERVER_CODEC_PROOF_SCHEMA = "durable-workflow.server-codec-counterfactual/v1"
 SERVER_CODEC_PROOF_GLOB = "tests/Fixtures/CodecRegressionProofs/*.json"
 ZERO_COMMIT = re.compile(r"^0+$")
@@ -432,6 +436,71 @@ def _require_owned_categories(policy: Mapping[str, Any], path: str) -> None:
             f"{path}.categories contains categories not owned by {repository}: "
             f"{sorted(categories - owned)}"
         )
+
+
+def _php_fixture_glob_matches(path: str, pattern: str) -> bool:
+    path_parts = PurePosixPath(path).parts
+    pattern_parts = PurePosixPath(pattern).parts
+    if len(path_parts) != len(pattern_parts):
+        return False
+    for path_part, pattern_part in zip(path_parts, pattern_parts, strict=True):
+        if pattern_part == "*.json":
+            if path_part.startswith(".") or not path_part.endswith(".json"):
+                return False
+        elif path_part != pattern_part:
+            return False
+    return True
+
+
+def _require_executable_inventory(
+    policy: Mapping[str, Any],
+    path: str,
+    files: Mapping[str, bytes],
+) -> None:
+    repository = _string(policy["repository"], f"{path}.repository")
+    if repository != "server":
+        return
+    if policy.get("binding") != "php":
+        raise CorpusError(f"{path}.binding must be php for the server codec runner")
+
+    categories = _object(policy["categories"], f"{path}.categories")
+    codec = _object(categories["codec"], f"{path}.categories.codec")
+    fixtures = _list(codec["fixtures"], f"{path}.categories.codec.fixtures")
+    for index, raw_fixture in enumerate(fixtures):
+        fixture = _object(
+            raw_fixture,
+            f"{path}.categories.codec.fixtures[{index}]",
+        )
+        fixture_format = _string(
+            fixture["format"],
+            f"{path}.categories.codec.fixtures[{index}].format",
+        )
+        if fixture_format not in SERVER_CODEC_RUNNER_FORMATS:
+            raise CorpusError(
+                f"{path}.categories.codec.fixtures[{index}].format is not executed "
+                "by the official PHP codec runner"
+            )
+        fixture_glob = _string(
+            fixture["glob"],
+            f"{path}.categories.codec.fixtures[{index}].glob",
+        )
+        if PORTABLE_PHP_FIXTURE_GLOB.fullmatch(fixture_glob) is None:
+            raise CorpusError(
+                f"{path}.categories.codec.fixtures[{index}].glob is not portable "
+                "to the official PHP codec runner"
+            )
+        unexecuted_paths = sorted(
+            candidate
+            for candidate in files
+            if _matches(candidate, fixture_glob)
+            and not _php_fixture_glob_matches(candidate, fixture_glob)
+        )
+        if unexecuted_paths:
+            raise CorpusError(
+                f"{path}.categories.codec.fixtures[{index}].glob selects fixture "
+                "paths that PHP glob() does not execute: "
+                f"{unexecuted_paths}"
+            )
 
 
 def _require_policy_extension(
@@ -953,6 +1022,7 @@ def validate(
         )
         if raw_base_policy is not None:
             _require_policy_extension(base_policy, policy, base_files, str(policy_path))
+        _require_executable_inventory(base_policy, policy_relative_path, base_files)
         for path in _fixture_paths(base_policy, base_files):
             if current_files.get(path) != base_files[path]:
                 raise CorpusError(f"immutable fixture file {path} was changed, moved, or removed")
@@ -962,6 +1032,7 @@ def validate(
                     f"immutable counterfactual proof file {path} was changed, moved, or removed"
                 )
         base_evidence = _inventory(base_policy, base_files)
+    _require_executable_inventory(policy, str(policy_path), current_files)
     for path in _proof_paths(current_files):
         _counterfactual_proof(_json(current_files[path], path), path)
     current_evidence = _inventory(policy, current_files, new_paths=added_paths)
