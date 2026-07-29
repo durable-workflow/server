@@ -179,9 +179,75 @@ class RegressionCorpusPolicyTest(unittest.TestCase):
             result.stderr,
         )
 
+    def test_server_policy_cannot_declare_an_unowned_replay_category(self) -> None:
+        policy_path = self.root / "regression-corpus-policy.json"
+        policy = json.loads(policy_path.read_text())
+        policy["categories"]["replay"] = {
+            "fixtures": [
+                {
+                    "glob": "tests/Fixtures/ReplayRegression/*.json",
+                    "format": "replay-regression-v1",
+                }
+            ],
+            "guards": [{"glob": "app/Support/Replay*.php"}],
+        }
+        self.write_json("regression-corpus-policy.json", policy)
+
+        result = self.validate()
+
+        self.assertNotEqual(0, result.returncode, result.stdout)
+        self.assertIn(
+            "categories contains categories not owned by server: ['replay']",
+            result.stderr,
+        )
+
+    def test_empty_base_category_can_be_retired(self) -> None:
+        policy_path = self.root / "regression-corpus-policy.json"
+        policy = json.loads(policy_path.read_text())
+        policy["categories"]["replay"] = {
+            "fixtures": [
+                {
+                    "glob": "tests/Fixtures/ReplayRegression/*.json",
+                    "format": "replay-regression-v1",
+                }
+            ],
+            "guards": [{"glob": "app/Support/Replay*.php"}],
+        }
+        self.write_json("regression-corpus-policy.json", policy)
+        self.git("add", "regression-corpus-policy.json")
+        self.git(
+            "-c",
+            "user.name=Regression Corpus Test",
+            "-c",
+            "user.email=regression-corpus@example.invalid",
+            "commit",
+            "--quiet",
+            "--message=declare-empty-replay-category",
+        )
+        self.base_ref = self.git("rev-parse", "HEAD").stdout.strip()
+        policy["categories"].pop("replay")
+        self.write_json("regression-corpus-policy.json", policy)
+
+        result = self.validate()
+
+        self.assertEqual(0, result.returncode, result.stderr)
+
     def test_base_category_cannot_be_removed(self) -> None:
         policy_path = self.root / "regression-corpus-policy.json"
         policy = json.loads(policy_path.read_text())
+        policy["repository"] = "workflow"
+        self.write_json("regression-corpus-policy.json", policy)
+        self.git("add", "regression-corpus-policy.json")
+        self.git(
+            "-c",
+            "user.name=Regression Corpus Test",
+            "-c",
+            "user.email=regression-corpus@example.invalid",
+            "commit",
+            "--quiet",
+            "--message=use-generic-policy-scope",
+        )
+        self.base_ref = self.git("rev-parse", "HEAD").stdout.strip()
         codec = policy["categories"].pop("codec")
         codec["fixtures"][0]["format"] = "replay-regression-v1"
         policy["categories"]["replay"] = codec

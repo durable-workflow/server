@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Validate immutable replay and payload-codec regression evidence."""
+"""Validate immutable regression evidence within each repository's owned corpus."""
 
 from __future__ import annotations
 
@@ -30,6 +30,9 @@ SUPPORTED_FORMATS = {
 }
 SUPPORTED_CATEGORIES = {"codec", "replay"}
 SUPPORTED_BINDINGS = {"php", "python", "rust"}
+OWNED_CATEGORIES = {
+    "server": {"codec"},
+}
 ZERO_COMMIT = re.compile(r"^0+$")
 
 
@@ -395,9 +398,21 @@ def _policy(document: Mapping[str, Any], path: str) -> Mapping[str, Any]:
     return document
 
 
+def _require_owned_categories(policy: Mapping[str, Any], path: str) -> None:
+    repository = _string(policy["repository"], f"{path}.repository")
+    owned = OWNED_CATEGORIES.get(repository)
+    categories = set(_object(policy["categories"], f"{path}.categories"))
+    if owned is not None and not categories <= owned:
+        raise CorpusError(
+            f"{path}.categories contains categories not owned by {repository}: "
+            f"{sorted(categories - owned)}"
+        )
+
+
 def _require_policy_extension(
     base_policy: Mapping[str, Any],
     current_policy: Mapping[str, Any],
+    base_files: Mapping[str, bytes],
     path: str,
 ) -> None:
     for field in ("repository", "binding"):
@@ -407,9 +422,26 @@ def _require_policy_extension(
     base_categories = _object(base_policy["categories"], "base categories")
     current_categories = _object(current_policy["categories"], "current categories")
     for category_name, raw_base_category in base_categories.items():
-        if category_name not in current_categories:
-            raise CorpusError(f"{path}.categories.{category_name} cannot be removed from the base policy")
         base_category = _object(raw_base_category, f"base categories.{category_name}")
+        if category_name not in current_categories:
+            selected_paths = {
+                fixture_path
+                for raw_fixture in _list(
+                    base_category["fixtures"],
+                    f"base categories.{category_name}.fixtures",
+                )
+                for fixture_path in base_files
+                if fnmatch.fnmatchcase(
+                    fixture_path,
+                    _string(_object(raw_fixture, "fixture")["glob"], "fixture.glob"),
+                )
+            }
+            if selected_paths:
+                raise CorpusError(
+                    f"{path}.categories.{category_name} cannot be removed from the base policy "
+                    f"while it selects fixtures: {sorted(selected_paths)}"
+                )
+            continue
         current_category = _object(
             current_categories[category_name],
             f"current categories.{category_name}",
@@ -579,6 +611,7 @@ def validate(root: Path, policy_path: Path, base_ref: str | None) -> dict[str, A
     except ValueError as error:
         raise CorpusError("policy must be inside the repository root") from error
     policy = _policy(_json(policy_file.read_bytes(), str(policy_path)), str(policy_path))
+    _require_owned_categories(policy, str(policy_path))
     current_files = _tracked_worktree_files(root)
     changed: set[str] = set()
     added_paths: set[str] = set()
@@ -594,7 +627,7 @@ def validate(root: Path, policy_path: Path, base_ref: str | None) -> dict[str, A
             else policy
         )
         if raw_base_policy is not None:
-            _require_policy_extension(base_policy, policy, str(policy_path))
+            _require_policy_extension(base_policy, policy, base_files, str(policy_path))
         for path in _fixture_paths(base_policy, base_files):
             if current_files.get(path) != base_files[path]:
                 raise CorpusError(f"immutable fixture file {path} was changed, moved, or removed")

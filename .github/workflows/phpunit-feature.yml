@@ -42,7 +42,7 @@ jobs:
         env:
           CONFORMANCE_BASE_REF: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || github.event.before }}
 
-      - name: Require durable replay and codec evidence
+      - name: Require durable codec evidence
         env:
           CORPUS_BASE_REF: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || github.event.before }}
         run: |
