@@ -127,11 +127,33 @@ def _repository_path(value: Any, context: str) -> str:
     return parsed.as_posix()
 
 
-def _valid_base64(value: str, context: str) -> None:
+def _canonical_base64(value: str, context: str) -> str:
     try:
-        base64.b64decode(value, validate=True)
+        decoded = base64.b64decode(value, validate=True)
     except (binascii.Error, ValueError) as error:
         raise CorpusError(f"{context} is not canonical base64") from error
+    canonical = base64.b64encode(decoded).decode("ascii")
+    if value != canonical:
+        raise CorpusError(f"{context} is not canonical base64")
+    return canonical
+
+
+def _replay_semantic(
+    *,
+    workflow_type: str,
+    workflow_input: Any,
+    history: Any,
+    command_sequence: Any,
+    expected: Mapping[str, Any],
+) -> Mapping[str, Any]:
+    """Project every replay representation onto consumer-executed values."""
+
+    return {
+        "workflow": {"type": workflow_type, "input": workflow_input},
+        "history": history,
+        "command_sequence": command_sequence,
+        "expected": expected,
+    }
 
 
 def _fixture_evidence(
@@ -159,10 +181,10 @@ def _codec_fixture(document: Mapping[str, Any], path: str, binding: str | None) 
         raise CorpusError(f"{path} must declare fixture_schema={CODEC_SCHEMA}")
     identity = _string(document.get("id"), f"{path}.id")
     protocol = _object(document.get("protocol"), f"{path}.protocol")
-    codec = _string(protocol.get("codec"), f"{path}.protocol.codec")
-    schema = _string(protocol.get("schema"), f"{path}.protocol.schema")
+    _string(protocol.get("codec"), f"{path}.protocol.codec")
+    _string(protocol.get("schema"), f"{path}.protocol.schema")
     version = _string(protocol.get("version"), f"{path}.protocol.version")
-    fingerprint = _nullable_string(protocol.get("fingerprint"), f"{path}.protocol.fingerprint")
+    _nullable_string(protocol.get("fingerprint"), f"{path}.protocol.fingerprint")
     bindings = _unique_strings(
         document.get("bindings"),
         f"{path}.bindings",
@@ -187,8 +209,11 @@ def _codec_fixture(document: Mapping[str, Any], path: str, binding: str | None) 
         raise CorpusError(f"{path} round-trip evidence cannot declare an error")
     if operation != "round_trip" and error is None:
         raise CorpusError(f"{path} rejection evidence must declare its stable error policy")
-    if wire is not None:
-        _valid_base64(wire, f"{path}.framing.wire_base64")
+    canonical_wire = (
+        _canonical_base64(wire, f"{path}.framing.wire_base64")
+        if wire is not None
+        else None
+    )
 
     supersedes = tuple(
         _string(item, f"{path}.supersedes[]")
@@ -197,14 +222,8 @@ def _codec_fixture(document: Mapping[str, Any], path: str, binding: str | None) 
     if len(supersedes) != len(set(supersedes)) or identity in supersedes:
         raise CorpusError(f"{path}.supersedes is invalid")
     semantic = {
-        "protocol": {
-            "codec": codec,
-            "schema": schema,
-            "version": version,
-            "fingerprint": fingerprint,
-        },
         "value": value if operation == "encode_reject" else None,
-        "wire_base64": wire,
+        "wire_base64": canonical_wire,
         "failure_policy": {"operation": operation, "error": error},
     }
     return [
@@ -251,14 +270,13 @@ def _replay_fixture(document: Mapping[str, Any], path: str, binding: str | None)
     )
     if len(supersedes) != len(set(supersedes)) or identity in supersedes:
         raise CorpusError(f"{path}.supersedes is invalid")
-    semantic = {
-        "protocol_version": protocol_version,
-        "bindings": sorted(bindings),
-        "workflow": workflow,
-        "history": history,
-        "command_sequence": commands,
-        "expected": expected,
-    }
+    semantic = _replay_semantic(
+        workflow_type=workflow["type"],
+        workflow_input=workflow.get("input", workflow.get("arguments", [])),
+        history=history if history is not None else [],
+        command_sequence=commands,
+        expected=expected,
+    )
     return [
         _fixture_evidence(
             category="replay",
@@ -272,8 +290,8 @@ def _replay_fixture(document: Mapping[str, Any], path: str, binding: str | None)
 
 
 def _avro_golden_fixture(document: Mapping[str, Any], path: str) -> list[Evidence]:
-    schema = _string(document.get("schema"), f"{path}.schema")
-    fingerprint = _string(document.get("fingerprint"), f"{path}.fingerprint")
+    _string(document.get("schema"), f"{path}.schema")
+    _string(document.get("fingerprint"), f"{path}.fingerprint")
     version = "avro-value-v1"
     evidence: list[Evidence] = []
     sections = {
@@ -286,23 +304,31 @@ def _avro_golden_fixture(document: Mapping[str, Any], path: str) -> list[Evidenc
             entry = _object(raw_entry, f"{path}.{section}[{index}]")
             name = _string(entry.get("name"), f"{path}.{section}[{index}].name")
             wire = entry.get("wire_base64")
-            semantic_wire: Any = wire
             if section == "alternate":
-                semantic_wire = list(_unique_strings(wire, f"{path}.{section}[{index}].wire_base64"))
-                for wire_value in semantic_wire:
-                    _valid_base64(wire_value, f"{path}.{section}[{index}].wire_base64[]")
+                semantic_wire = [
+                    _canonical_base64(
+                        wire_value,
+                        f"{path}.{section}[{index}].wire_base64[]",
+                    )
+                    for wire_value in _unique_strings(
+                        wire,
+                        f"{path}.{section}[{index}].wire_base64",
+                    )
+                ]
             elif section == "case":
                 wire_value = _string(wire, f"{path}.{section}[{index}].wire_base64")
-                _valid_base64(wire_value, f"{path}.{section}[{index}].wire_base64")
+                semantic_wire = _canonical_base64(
+                    wire_value,
+                    f"{path}.{section}[{index}].wire_base64",
+                )
             elif not isinstance(wire, str):
                 raise CorpusError(f"{path}.{section}[{index}].wire_base64 must be a string")
+            else:
+                semantic_wire = _canonical_base64(
+                    wire,
+                    f"{path}.{section}[{index}].wire_base64",
+                )
             semantic = {
-                "protocol": {
-                    "codec": "avro",
-                    "schema": schema,
-                    "version": version,
-                    "fingerprint": fingerprint,
-                },
                 "framing": semantic_wire,
                 "failure_policy": (
                     {"operation": "decode_reject", "error": entry.get("error")}
@@ -349,14 +375,13 @@ def _golden_history_fixture(
         _object(expected, f"{path}.cases[{index}].expected")
         workflow_type = case.get("workflow_type", case.get("scenario"))
         _string(workflow_type, f"{path}.cases[{index}].workflow identity")
-        semantic = {
-            "protocol_version": protocol_version,
-            "runtime": runtime,
-            "workflow": workflow_type,
-            "start_input": case.get("start_input"),
-            "history": history,
-            "expected": expected,
-        }
+        semantic = _replay_semantic(
+            workflow_type=workflow_type,
+            workflow_input=case.get("start_input", []),
+            history=history,
+            command_sequence=case.get("command_sequence"),
+            expected=expected,
+        )
         evidence.append(
             _fixture_evidence(
                 category="replay",

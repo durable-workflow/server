@@ -378,6 +378,34 @@ raise SystemExit(2)
             result.stderr,
         )
 
+    def test_noncanonical_base64_wire_is_rejected(self) -> None:
+        self.write_json(
+            "tests/Fixtures/CodecRegression/noncanonical.json",
+            self.codec_fixture("noncanonical-wire", "1", "AB=="),
+        )
+
+        result = self.validate()
+
+        self.assertNotEqual(0, result.returncode, result.stdout)
+        self.assertIn("is not canonical base64", result.stderr)
+
+    def test_consumer_ignored_protocol_metadata_cannot_create_evidence(self) -> None:
+        duplicate = self.codec_fixture("metadata-only-rewrap", "0", "AA==")
+        duplicate["protocol"]["codec"] = "renamed-codec"
+        duplicate["protocol"]["schema"] = "renamed-schema"
+        duplicate["protocol"]["version"] = "999"
+        duplicate["protocol"]["fingerprint"] = "metadata-only"
+        duplicate["framing"]["encoding"] = "renamed-encoding"
+        self.write_json(
+            "tests/Fixtures/CodecRegression/metadata-only.json",
+            duplicate,
+        )
+
+        result = self.validate()
+
+        self.assertNotEqual(0, result.returncode, result.stdout)
+        self.assertIn("duplicate semantic fixtures", result.stderr)
+
     def test_guarded_change_cannot_grow_corpus_by_selecting_base_file(self) -> None:
         (self.root / "app/Support/ExamplePayload.php").write_text("<?php\nreturn 'changed';\n")
         policy_path = self.root / "regression-corpus-policy.json"
