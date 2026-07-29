@@ -176,8 +176,12 @@ const generatedStableDocsNullVersionPaths = [
 const refreshCommand = 'npm run refresh:public-artifact-versions';
 const refreshFiles = [
   'scripts/public-artifact-versions.json',
-  'docs/compatibility.md',
+  'scripts/published-artifact-versions.json',
+  'static/public-artifact-compatibility-evidence.json',
   'static/quickstart-execution-contract.json',
+  'static/compatibility-contract.json',
+  'static/sdk-neutrality-contract.json',
+  'scripts/workflow-sdk-neutrality-authority-lock.json',
 ];
 const refreshFileList = refreshFiles.join(', ');
 const releaseAuditAssertions = [
@@ -377,7 +381,8 @@ function docsRefreshHandoff(message, actualVersion, observedVersions) {
         message,
         '',
         `Expected ${artifact} ${expected}; live docs release audit reports ${actualVersion || '<missing>'}.`,
-        `Run ${refreshCommand} and commit only ${refreshFileList} through the normal docs merge path.`,
+        `Run ${refreshCommand} and land its generated changes within the bounded public artifact tuple: ` +
+          `${refreshFileList}.`,
       ].join('\n'),
       labels: [
         'pipeline:ready-item',
@@ -406,6 +411,8 @@ function docsRefreshRequest(handoff) {
     stale_artifact: handoff.stale_artifact,
     observed_artifact_versions: handoff.observed_artifact_versions,
     source_release_check: handoff.source_release_check,
+    public_boundary: handoff.public_boundary,
+    release_status_guard: handoff.release_status_guard,
     ready_item: handoff.ready_item,
     handoff_schema: handoff.schema,
   };
@@ -1152,7 +1159,9 @@ if (actual !== expected) {
   }
 
   const message = `${auditUrl} reports artifact_versions.${artifact}=${actual || '<missing>'}, expected ${expected}. ` +
-    `Run ${refreshCommand} in durable-workflow.github.io and land ${refreshFileList} through the normal docs merge path before treating this release as fully surfaced.`;
+    `Run ${refreshCommand} in durable-workflow.github.io and land its generated changes within the bounded ` +
+    `public artifact tuple (${refreshFileList}) through the normal docs merge path before treating this release ` +
+    'as fully surfaced.';
   const handoff = docsRefreshHandoff(message, actualVersion, versions);
 
   writeHandoff(handoff);

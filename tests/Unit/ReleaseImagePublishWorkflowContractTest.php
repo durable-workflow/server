@@ -1498,6 +1498,76 @@ SH);
         $this->assertNull($result['handoff']);
     }
 
+    public function test_docs_audit_v5_stale_tuple_handoff_covers_complete_public_artifact_tuple(): void
+    {
+        $expectedRefreshFiles = [
+            'scripts/public-artifact-versions.json',
+            'scripts/published-artifact-versions.json',
+            'static/public-artifact-compatibility-evidence.json',
+            'static/quickstart-execution-contract.json',
+            'static/compatibility-contract.json',
+            'static/sdk-neutrality-contract.json',
+            'scripts/workflow-sdk-neutrality-authority-lock.json',
+        ];
+        $result = $this->runDocsReleaseAudit(
+            json_encode(
+                $this->validPublishedDocsReleaseAudit('2.0.0-rc.5', '2.0.0-rc.5'),
+                JSON_THROW_ON_ERROR,
+            ),
+            '2.0.0-rc.6',
+        );
+
+        $this->assertSame(0, $result['exitCode']);
+        $this->assertStringContainsString('The image publication remains successful', $result['stdout']);
+        $this->assertSame('downstream_pending', $result['evidence']['outcome']);
+        $this->assertSame('success', $result['evidence']['status']);
+        $this->assertSame('docs_tuple_refresh_required', $result['evidence']['release_readiness']);
+        $this->assertSame(
+            'durable-workflow.docs.published-artifact-versions',
+            $result['evidence']['public_safety']['component_publication_state']['source_schema'],
+        );
+        $this->assertSame('2.0.0-rc.6', $result['handoff']['stale_artifact']['expected_version']);
+        $this->assertSame('2.0.0-rc.5', $result['handoff']['stale_artifact']['live_version']);
+        $this->assertSame(
+            'npm run refresh:public-artifact-versions',
+            $result['handoff']['refresh_command'],
+        );
+        $this->assertSame($expectedRefreshFiles, $result['handoff']['refresh_files']);
+        $this->assertSame(
+            $result['handoff']['refresh_files'],
+            $result['handoff']['public_boundary']['allowed_paths'],
+        );
+        $this->assertSame(
+            $result['handoff']['refresh_files'],
+            $result['evidence']['docs_refresh_request']['refresh_files'],
+        );
+        $this->assertSame(
+            $result['handoff']['refresh_command'],
+            $result['evidence']['docs_refresh_request']['refresh_command'],
+        );
+        $this->assertSame(
+            $result['handoff']['public_boundary'],
+            $result['evidence']['docs_refresh_request']['public_boundary'],
+        );
+        $this->assertSame(
+            $result['handoff']['release_status_guard'],
+            $result['evidence']['docs_refresh_request']['release_status_guard'],
+        );
+        $this->assertSame('1.x', $result['handoff']['release_status_guard']['stable_default_docs_line']);
+        $this->assertSame('2.0', $result['handoff']['release_status_guard']['prerelease_docs_line']);
+        $this->assertTrue($result['handoff']['release_status_guard']['no_default_docs_cutover']);
+        $this->assertStringNotContainsString(
+            'docs/compatibility.md',
+            $result['handoff']['ready_item']['body'],
+        );
+        foreach ($expectedRefreshFiles as $refreshFile) {
+            $this->assertStringContainsString(
+                $refreshFile,
+                $result['handoff']['ready_item']['body'],
+            );
+        }
+    }
+
     public function test_docs_audit_accepts_current_publication_independently_from_aggregate_qualification(): void
     {
         $result = $this->runDocsReleaseAudit(
