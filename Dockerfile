@@ -39,8 +39,8 @@ WORKDIR /app
 FROM base AS production
 
 ARG WORKFLOW_PACKAGE_SOURCE=https://github.com/durable-workflow/workflow.git
-ARG WORKFLOW_PACKAGE_REF=2.0.0-rc.5
-ARG WORKFLOW_PACKAGE_COMMIT=d8356318311cf594ba47e685ec8e7654c7258a28
+ARG WORKFLOW_PACKAGE_REF=2.0.0-rc.6
+ARG WORKFLOW_PACKAGE_COMMIT=ebbcc36f2928f5324a2460db2bb844ce93e4c0d9
 # Source admission may qualify an already-landed commit before its release tag
 # exists. Public release builds leave this empty and resolve the exact tag.
 ARG WORKFLOW_PACKAGE_QUALIFICATION_REF

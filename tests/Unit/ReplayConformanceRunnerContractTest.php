@@ -960,6 +960,15 @@ write_rust_shard() {
   }
 }
 JSON
+
+  local oversized="$output.oversized"
+  {
+    head -n -1 "$output"
+    printf ',\n  "diagnostics": {"worker_protocol_trace": "'
+    head -c 262144 /dev/zero | tr '\000' r
+    printf '"}\n}\n'
+  } > "$oversized"
+  mv "$oversized" "$output"
 }
 
 if [[ "${1:-}" == "compose" ]]; then
@@ -1201,7 +1210,25 @@ SH);
                 $result['runtime_matrix']['runtimes'],
             );
             $this->assertCount(31, $result['scenario_results']);
-            $installArtifacts = $result['scenario_results']['published_artifact_install_only']['observed_outputs']['artifact_install_evidence']['artifacts'];
+            $installOutputs = $result['scenario_results']['published_artifact_install_only']['observed_outputs'];
+            $this->assertLessThanOrEqual(
+                64 * 1024,
+                strlen(json_encode($installOutputs, JSON_THROW_ON_ERROR)),
+                'published install evidence must fit in its portable scenario cell',
+            );
+            $installArtifacts = $installOutputs['artifact_install_evidence']['artifacts'];
+            $this->assertSame(
+                [
+                    'server' => 'pass',
+                    'cli' => 'pass',
+                    'sdk-python' => 'pass',
+                    'workflow-php' => 'pass',
+                    'sdk-php' => 'pass',
+                    'sdk-rust' => 'pass',
+                    'waterline' => 'pass',
+                ],
+                array_column($installArtifacts, 'status', 'artifact'),
+            );
             $sdkPhpInstall = array_values(array_filter(
                 $installArtifacts,
                 static fn (array $artifact): bool => $artifact['artifact'] === 'sdk-php',
@@ -1218,6 +1245,19 @@ SH);
                 '/^[0-9a-f]{64}$/',
                 $sdkPhpInstall['probe']['result']['source_document']['sha256'],
             );
+            $sdkRustInstall = array_values(array_filter(
+                $installArtifacts,
+                static fn (array $artifact): bool => $artifact['artifact'] === 'sdk-rust',
+            ))[0];
+            $this->assertGreaterThan(
+                256 * 1024,
+                $sdkRustInstall['probe']['replay_shard']['source_document']['bytes'],
+            );
+            $this->assertSame(
+                'pass',
+                $sdkRustInstall['probe']['replay_shard']['scenario_results']['rust_side_effect_replay_after_worker_restart']['status'],
+            );
+            $this->assertArrayNotHasKey('diagnostics', $sdkRustInstall['probe']['replay_shard']);
             $this->assertStringNotContainsString(
                 str_repeat('x', 4096),
                 (string) file_get_contents($resultDir.'/replay-conformance-result.json'),

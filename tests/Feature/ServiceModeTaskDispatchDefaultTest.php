@@ -41,7 +41,7 @@ class ServiceModeTaskDispatchDefaultTest extends TestCase
         config([
             'server.mode' => 'service',
             'server.task_dispatch_mode_override' => 'queue',
-            'workflows.v2.task_dispatch_mode' => 'queue',
+            'workflows.v2.task_dispatch_mode' => 'poll',
         ]);
 
         $this->rebootAppServiceProvider();
@@ -54,7 +54,7 @@ class ServiceModeTaskDispatchDefaultTest extends TestCase
         config([
             'server.mode' => 'service',
             'server.task_dispatch_mode_override' => 'poll',
-            'workflows.v2.task_dispatch_mode' => 'poll',
+            'workflows.v2.task_dispatch_mode' => 'queue',
         ]);
 
         $this->rebootAppServiceProvider();
@@ -90,6 +90,28 @@ class ServiceModeTaskDispatchDefaultTest extends TestCase
         } finally {
             putenv('WORKFLOW_V2_TASK_DISPATCH_MODE');
             unset($_ENV['WORKFLOW_V2_TASK_DISPATCH_MODE']);
+        }
+    }
+
+    public function test_dw_task_dispatch_mode_alias_reaches_the_workflow_package_authority(): void
+    {
+        putenv('DW_TASK_DISPATCH_MODE=poll');
+        $_ENV['DW_TASK_DISPATCH_MODE'] = 'poll';
+
+        try {
+            $serverConfig = require __DIR__.'/../../config/server.php';
+            config([
+                'server.mode' => 'service',
+                'server.task_dispatch_mode_override' => $serverConfig['task_dispatch_mode_override'],
+                'workflows.v2.task_dispatch_mode' => 'queue',
+            ]);
+
+            $this->rebootAppServiceProvider();
+
+            $this->assertSame('poll', config('workflows.v2.task_dispatch_mode'));
+        } finally {
+            putenv('DW_TASK_DISPATCH_MODE');
+            unset($_ENV['DW_TASK_DISPATCH_MODE']);
         }
     }
 

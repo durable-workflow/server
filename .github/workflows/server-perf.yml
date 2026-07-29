@@ -116,9 +116,9 @@ jobs:
         run: |
           git init workflow-package
           git -C workflow-package remote add origin https://github.com/durable-workflow/workflow.git
-          git -C workflow-package fetch --depth=1 origin d8356318311cf594ba47e685ec8e7654c7258a28
+          git -C workflow-package fetch --depth=1 origin ebbcc36f2928f5324a2460db2bb844ce93e4c0d9
           git -C workflow-package checkout --detach FETCH_HEAD
-          test "$(git -C workflow-package rev-parse HEAD)" = "d8356318311cf594ba47e685ec8e7654c7258a28"
+          test "$(git -C workflow-package rev-parse HEAD)" = "ebbcc36f2928f5324a2460db2bb844ce93e4c0d9"
 
       - name: Run perf harness result-gate tests
         run: |
@@ -158,7 +158,7 @@ jobs:
           DW_PERF_MAX_HEALTH_LATENCY_SECONDS: "3"
           DW_PERF_CONTROL_PLANE_INTERVAL_SECONDS: "5"
           DW_PERF_MAX_CONTROL_PLANE_LATENCY_SECONDS: "5"
-          DW_PERF_WORKFLOW_VERSION: "2.0.0-rc.5"
+          DW_PERF_WORKFLOW_VERSION: "2.0.0-rc.6"
           DW_PERF_MAX_SERVER_MEMORY_MB: "768"
           DW_PERF_MAX_POLLING_KEYS: "512"
           DW_PERF_MAX_FINAL_POLLING_KEYS: "0"

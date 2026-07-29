@@ -2234,6 +2234,57 @@ def file_identity(path: str) -> dict[str, object]:
         "sha256": hashlib.sha256(contents).hexdigest(),
     }
 
+
+def bounded_runtime_report(path: str) -> dict[str, object]:
+    report = load(path)
+    summary: dict[str, object] = {
+        "source_document": file_identity(path),
+    }
+    if not isinstance(report, dict):
+        summary["parseable"] = False
+        return summary
+
+    summary["parseable"] = True
+    for key in (
+        "schema",
+        "outcome",
+        "runner_blocked",
+        "artifact_versions",
+        "artifact_sources",
+        "source_policy",
+    ):
+        if key in report:
+            summary[key] = report[key]
+
+    for scenario_key in ("scenario_results", "replay_scenario_results"):
+        scenarios = report.get(scenario_key)
+        if not isinstance(scenarios, dict):
+            continue
+        summary[scenario_key] = {
+            str(scenario_id)[:160]: {
+                "status": scenario.get("status"),
+                "executed_runtime_cell": scenario.get("executed_runtime_cell"),
+            }
+            for scenario_id, scenario in list(scenarios.items())[:128]
+            if isinstance(scenario, dict)
+        }
+
+    findings = report.get("findings")
+    if isinstance(findings, list):
+        summary["findings"] = [
+            {
+                key: value[:512] if isinstance(value, str) else value
+                for key, value in finding.items()
+                if key in {"scenario_id", "type", "owning_surface", "summary", "reason"}
+                and isinstance(value, (str, int, float, bool, type(None)))
+            }
+            for finding in findings[:16]
+            if isinstance(finding, dict)
+        ]
+
+    return summary
+
+
 versions = pins.get("artifact_versions") or {}
 sources = pins.get("artifact_sources") or {}
 namespace_setup = load("replay-namespace-setup.json")
@@ -2346,7 +2397,7 @@ artifacts = [
         "probe": {
             "cargo_install_exit_code": rust_install_status,
             "replay_shard_exit_code": rust_shard_status,
-            "replay_shard": load("rust-replay-shard.json"),
+            "replay_shard": bounded_runtime_report("rust-replay-shard.json"),
         },
     },
     {
