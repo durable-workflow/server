@@ -1,0 +1,54 @@
+{
+  "$schema": "https://raw.githubusercontent.com/durable-workflow/.github/main/regression-corpus/policy-schema.json",
+  "schema": "durable-workflow.regression-corpus-policy/v1",
+  "repository": "server",
+  "binding": "php",
+  "categories": {
+    "codec": {
+      "fixtures": [
+        {
+          "glob": "tests/Fixtures/CodecRegression/*.json",
+          "format": "codec-regression-v1"
+        }
+      ],
+      "guards": [
+        {
+          "glob": "app/Http/Controllers/Api/*.php",
+          "content_patterns": [
+            "Avro",
+            "codec",
+            "Codec",
+            "payload"
+          ]
+        },
+        {
+          "glob": "app/Support/*Payload*.php"
+        }
+      ]
+    },
+    "replay": {
+      "fixtures": [
+        {
+          "glob": "tests/Fixtures/ReplayRegression/*.json",
+          "format": "replay-regression-v1"
+        }
+      ],
+      "guards": [
+        {
+          "glob": "app/Support/Replay*.php"
+        },
+        {
+          "glob": "scripts/conformance/*replay*"
+        },
+        {
+          "glob": "app/Http/Controllers/Api/*.php",
+          "content_patterns": [
+            "Replay",
+            "replay",
+            "history"
+          ]
+        }
+      ]
+    }
+  }
+}

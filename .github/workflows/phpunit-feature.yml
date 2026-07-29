@@ -42,6 +42,19 @@ jobs:
         env:
           CONFORMANCE_BASE_REF: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || github.event.before }}
 
+      - name: Require durable replay and codec evidence
+        env:
+          CORPUS_BASE_REF: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || github.event.before }}
+        run: |
+          arguments=()
+          if [[ "$CORPUS_BASE_REF" =~ ^[0-9a-f]{40}$ ]] && [[ ! "$CORPUS_BASE_REF" =~ ^0+$ ]]; then
+            arguments+=(--base-ref "$CORPUS_BASE_REF")
+          fi
+          python scripts/ci/validate-regression-corpus.py "${arguments[@]}"
+
+      - name: Prove corpus policy guards cannot be weakened
+        run: python scripts/ci/test-regression-corpus-policy.py
+
   feature:
     name: PHPUnit feature suite
     if: ${{ github.server_url == 'https://github.com' }}
@@ -95,7 +108,7 @@ jobs:
             --exclude='*/build' \
             -cf - . \
             | docker run --rm -i -w /app --entrypoint sh durable-workflow-server-phpunit-base \
-                -lc 'tar -xf - -C /app && cp -a /app/workflow-package /workflow && composer install --no-interaction --no-progress --prefer-dist && vendor/bin/phpunit tests/Feature tests/Unit/NexusContractTest.php --no-progress --colors=never'
+                -lc 'tar -xf - -C /app && cp -a /app/workflow-package /workflow && composer install --no-interaction --no-progress --prefer-dist && vendor/bin/phpunit tests/Feature tests/Unit/NexusContractTest.php tests/Unit/CodecRegressionCorpusTest.php --no-progress --colors=never'
 
   qualification:
     name: Feature source qualification
