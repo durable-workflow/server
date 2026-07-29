@@ -326,6 +326,7 @@ class ClusterInfoTest extends TestCase
             $contract['scenario_manifest']['source_path'],
         );
         $this->assertArrayHasKey('waterline', $contract['artifact_policy']['install_channels']);
+        $this->assertArrayHasKey('sdk-php', $contract['artifact_policy']['install_channels']);
         $this->assertContains('workflow-embedded', $contract['required_matrix']['execution_modes']);
         $this->assertContains('standalone', $contract['required_matrix']['execution_modes']);
         $this->assertContains('sdk-php', $contract['required_matrix']['runtimes']);
@@ -338,6 +339,7 @@ class ClusterInfoTest extends TestCase
             'timeout_behavior',
             'typed_failure_propagation',
             'heartbeat_and_cancellation_observation',
+            'heartbeat_timeout_renewal_across_enforcement_passes',
             'idempotent_completion_handling',
             'php_python_activity_parity',
             'operator_visible_activity_attempt_state',

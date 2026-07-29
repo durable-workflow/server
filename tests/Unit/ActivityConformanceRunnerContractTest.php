@@ -39,6 +39,7 @@ class ActivityConformanceRunnerContractTest extends TestCase
                 'DW_SERVER_IMAGE='.escapeshellarg($serverImage),
                 'DW_SERVER_VERSION=9.9.9',
                 'DW_CLI_VERSION=9.9.9',
+                'DW_PHP_SDK_VERSION=9.9.9',
                 'DW_PYTHON_SDK_VERSION=9.9.9',
                 'DW_WORKFLOW_PHP_VERSION=9.9.9',
                 'DW_WATERLINE_VERSION=9.9.9',
@@ -61,7 +62,9 @@ class ActivityConformanceRunnerContractTest extends TestCase
             );
             $this->assertContains($resultDir.':/result', $arguments);
             $this->assertContains('DW_ACTIVITIES_CONTAINER_HANDOFF=1', $arguments);
+            $this->assertContains('DW_ACTIVITIES_CONTAINER_REMOVED_ON_EXIT=1', $arguments);
             $this->assertContains('DW_ACTIVITIES_RUNNER_SOURCE='.$serverImage, $arguments);
+            $this->assertContains('DW_PHP_SDK_VERSION=9.9.9', $arguments);
             $this->assertContains($serverImage, $arguments);
             $this->assertContains('/app/scripts/conformance/activities-published-artifacts.sh', $arguments);
         } finally {
@@ -94,6 +97,7 @@ class ActivityConformanceRunnerContractTest extends TestCase
         foreach ([
             'DW_SERVER_VERSION',
             'DW_CLI_VERSION',
+            'DW_PHP_SDK_VERSION',
             'DW_PYTHON_SDK_VERSION',
             'DW_WORKFLOW_PHP_VERSION',
             'DW_WATERLINE_VERSION',
@@ -140,6 +144,21 @@ class ActivityConformanceRunnerContractTest extends TestCase
             'scenario_from_typed_failure_cell',
             'run_heartbeat_cancellation_cell',
             'scenario_from_heartbeat_cancellation_cell',
+            'run_heartbeat_timeout_renewal_cell',
+            'scenario_from_heartbeat_timeout_renewal_cell',
+            'PublishedPhpSdkWorker',
+            'PublishedServerKernelSdkTransport',
+            'durable-workflow/sdk',
+            'heartbeat_acknowledgements',
+            'authoritative_deadline_at',
+            'deadline_advanced',
+            'enforcement_passes',
+            'no_deadline_expired',
+            'negative_control',
+            'late_heartbeat_response',
+            'late_completion_conflict',
+            'late_failure_conflict',
+            'isolated_cleanup',
             'run_idempotent_completion_cell',
             'scenario_from_idempotent_completion_cell',
             'run_php_python_parity_cell',
@@ -231,10 +250,13 @@ class ActivityConformanceRunnerContractTest extends TestCase
         $this->assertStringNotContainsString('mv "$bundled_workflow"', $prepare);
         $this->assertStringNotContainsString('cp -a "$published_workflow"', $prepare);
         $this->assertStringNotContainsString('"$distribution_identity_file" workflow', $prepare);
+        $this->assertStringNotContainsString('"$distribution_identity_file" sdk-php', $prepare);
         $this->assertStringNotContainsString('"$distribution_identity_file" waterline', $prepare);
         $this->assertStringContainsString('DW_ACTIVITIES_WORKFLOW_EXECUTION_OBSERVATION', $record);
+        $this->assertStringContainsString('DW_ACTIVITIES_PHP_SDK_EXECUTION_OBSERVATION', $record);
         $this->assertStringContainsString('DW_ACTIVITIES_WATERLINE_EXECUTION_OBSERVATION', $record);
         $this->assertStringContainsString('"$distribution_identity_file" workflow', $record);
+        $this->assertStringContainsString('"$distribution_identity_file" sdk-php', $record);
         $this->assertStringContainsString('"$distribution_identity_file" waterline', $record);
         $this->assertStringContainsString('WorkflowFiberRunner::class', $source);
         $this->assertStringContainsString('$activities = CompensationVisibility::activitiesForRun($run);', $source);
@@ -293,6 +315,7 @@ class ActivityConformanceRunnerContractTest extends TestCase
             $env = [
                 'DW_SERVER_VERSION' => '9.9.9',
                 'DW_CLI_VERSION' => '9.9.9',
+                'DW_PHP_SDK_VERSION' => '9.9.9',
                 'DW_PYTHON_SDK_VERSION' => '9.9.9',
                 'DW_WORKFLOW_PHP_VERSION' => '9.9.9',
                 'DW_WATERLINE_VERSION' => '9.9.9',
@@ -392,6 +415,13 @@ class ActivityConformanceRunnerContractTest extends TestCase
                         'local_product_source_checkouts_used' => false,
                     ],
                     [
+                        'artifact' => 'sdk-php',
+                        'version' => $version,
+                        'source' => 'https://packagist.org/packages/durable-workflow/sdk#'.$version,
+                        'status' => 'pass',
+                        'local_product_source_checkouts_used' => false,
+                    ],
+                    [
                         'artifact' => 'workflow-php',
                         'version' => $version,
                         'source' => 'https://packagist.org/packages/durable-workflow/workflow#'.$version,
@@ -411,17 +441,17 @@ class ActivityConformanceRunnerContractTest extends TestCase
             $scenarioResults = [];
             foreach (ActivityRuntimeContract::manifest()['required_scenarios'] as $scenarioId) {
                 $activityHostEvidence = $this->activityHostEvidenceForScenario($scenarioId);
+                $observedOutputs = $scenarioId === 'heartbeat_timeout_renewal_across_enforcement_passes'
+                    ? $this->heartbeatTimeoutRenewalEvidence($version)
+                    : array_filter([
+                        'evidence' => $scenarioId,
+                        'activity_host_evidence' => $activityHostEvidence,
+                    ]);
                 $scenarioResults[] = [
                     'scenario_id' => $scenarioId,
                     'status' => 'pass',
-                    'observed_outputs' => array_filter([
-                        'evidence' => $scenarioId,
-                        'activity_host_evidence' => $activityHostEvidence,
-                    ]),
-                    'scenario_evidence' => array_filter([
-                        'evidence' => $scenarioId,
-                        'activity_host_evidence' => $activityHostEvidence,
-                    ]),
+                    'observed_outputs' => $observedOutputs,
+                    'scenario_evidence' => $observedOutputs,
                 ];
             }
 
@@ -442,6 +472,7 @@ class ActivityConformanceRunnerContractTest extends TestCase
                 'durable_result_recording' => ['status' => 'pass'],
                 'retry_backoff' => ['status' => 'pass'],
                 'timeout_behavior' => ['status' => 'pass'],
+                'heartbeat_timeout_renewal' => ['status' => 'pass'],
                 'typed_failure_propagation' => ['status' => 'pass'],
                 'heartbeat_cancellation' => ['status' => 'pass'],
                 'idempotent_completion' => ['status' => 'pass'],
@@ -461,6 +492,7 @@ class ActivityConformanceRunnerContractTest extends TestCase
                 'DW_SERVER_IMAGE' => $serverImage,
                 'DW_SERVER_VERSION' => $version,
                 'DW_CLI_VERSION' => $version,
+                'DW_PHP_SDK_VERSION' => $version,
                 'DW_PYTHON_SDK_VERSION' => $version,
                 'DW_WORKFLOW_PHP_VERSION' => $version,
                 'DW_WATERLINE_VERSION' => $version,
@@ -494,15 +526,15 @@ class ActivityConformanceRunnerContractTest extends TestCase
             $this->assertSame([], $result['published_artifact_install']['install_failures'] ?? []);
             $artifactVersionComponents = array_keys($result['artifact_versions']);
             sort($artifactVersionComponents);
-            $this->assertSame(['cli', 'sdk-python', 'server', 'waterline', 'workflow'], $artifactVersionComponents);
+            $this->assertSame(['cli', 'sdk-php', 'sdk-python', 'server', 'waterline', 'workflow'], $artifactVersionComponents);
             $this->assertArrayNotHasKey('workflow-php', $result['artifact_versions']);
             $artifactSourceComponents = array_keys($result['artifact_sources']);
             sort($artifactSourceComponents);
-            $this->assertSame(['cli', 'sdk-python', 'server', 'waterline', 'workflow'], $artifactSourceComponents);
+            $this->assertSame(['cli', 'sdk-php', 'sdk-python', 'server', 'waterline', 'workflow'], $artifactSourceComponents);
             $this->assertArrayNotHasKey('workflow-php', $result['artifact_sources']);
             $identityComponents = array_keys($result['executed_distribution_identities']);
             sort($identityComponents);
-            $this->assertSame(['cli', 'sdk-python', 'server', 'waterline', 'workflow'], $identityComponents);
+            $this->assertSame(['cli', 'sdk-php', 'sdk-python', 'server', 'waterline', 'workflow'], $identityComponents);
             $this->assertSame(
                 'pass',
                 ActivityRuntimeResultGate::evaluate($result, ActivityRuntimeContract::manifest())['status'],
@@ -795,6 +827,7 @@ SH);
                     'DW_SERVER_IMAGE' => $serverImage,
                     'DW_SERVER_VERSION' => $version,
                     'DW_CLI_VERSION' => $version,
+                    'DW_PHP_SDK_VERSION' => $version,
                     'DW_PYTHON_SDK_VERSION' => $version,
                     'DW_WORKFLOW_PHP_VERSION' => $version,
                     'DW_WATERLINE_VERSION' => $version,
@@ -903,6 +936,7 @@ SH);
                 'DW_SERVER_IMAGE' => $serverImage,
                 'DW_SERVER_VERSION' => $version,
                 'DW_CLI_VERSION' => $version,
+                'DW_PHP_SDK_VERSION' => $version,
                 'DW_PYTHON_SDK_VERSION' => $version,
                 'DW_WORKFLOW_PHP_VERSION' => $version,
                 'DW_WATERLINE_VERSION' => $version,
@@ -1072,6 +1106,7 @@ SH);
                 'DW_SERVER_IMAGE' => $serverImage,
                 'DW_SERVER_VERSION' => $version,
                 'DW_CLI_VERSION' => $version,
+                'DW_PHP_SDK_VERSION' => $version,
                 'DW_PYTHON_SDK_VERSION' => $version,
                 'DW_WORKFLOW_PHP_VERSION' => $version,
                 'DW_WATERLINE_VERSION' => $version,
@@ -1318,6 +1353,7 @@ SH);
                 'DW_SERVER_IMAGE' => $serverImage,
                 'DW_SERVER_VERSION' => $version,
                 'DW_CLI_VERSION' => $version,
+                'DW_PHP_SDK_VERSION' => $version,
                 'DW_PYTHON_SDK_VERSION' => $version,
                 'DW_WORKFLOW_PHP_VERSION' => $version,
                 'DW_WATERLINE_VERSION' => $version,
@@ -1632,6 +1668,7 @@ SH);
                 'DW_SERVER_IMAGE' => $serverImage,
                 'DW_SERVER_VERSION' => $version,
                 'DW_CLI_VERSION' => $version,
+                'DW_PHP_SDK_VERSION' => $version,
                 'DW_PYTHON_SDK_VERSION' => $version,
                 'DW_WORKFLOW_PHP_VERSION' => $version,
                 'DW_WATERLINE_VERSION' => $version,
@@ -1760,6 +1797,7 @@ SH);
                 'DW_SERVER_IMAGE' => $serverImage,
                 'DW_SERVER_VERSION' => $version,
                 'DW_CLI_VERSION' => $version,
+                'DW_PHP_SDK_VERSION' => $version,
                 'DW_PYTHON_SDK_VERSION' => $version,
                 'DW_WORKFLOW_PHP_VERSION' => $version,
                 'DW_WATERLINE_VERSION' => $version,
@@ -1872,6 +1910,7 @@ SH);
                 'DW_SERVER_IMAGE' => $serverImage,
                 'DW_SERVER_VERSION' => $version,
                 'DW_CLI_VERSION' => $version,
+                'DW_PHP_SDK_VERSION' => $version,
                 'DW_PYTHON_SDK_VERSION' => $version,
                 'DW_WORKFLOW_PHP_VERSION' => $version,
                 'DW_WATERLINE_VERSION' => $version,
@@ -1986,6 +2025,7 @@ SH);
                 'DW_SERVER_IMAGE' => $serverImage,
                 'DW_SERVER_VERSION' => $version,
                 'DW_CLI_VERSION' => $version,
+                'DW_PHP_SDK_VERSION' => $version,
                 'DW_PYTHON_SDK_VERSION' => $version,
                 'DW_WORKFLOW_PHP_VERSION' => $version,
                 'DW_WATERLINE_VERSION' => $version,
@@ -2107,6 +2147,7 @@ SH);
                 'DW_SERVER_IMAGE' => $serverImage,
                 'DW_SERVER_VERSION' => $version,
                 'DW_CLI_VERSION' => $version,
+                'DW_PHP_SDK_VERSION' => $version,
                 'DW_PYTHON_SDK_VERSION' => $version,
                 'DW_WORKFLOW_PHP_VERSION' => $version,
                 'DW_WATERLINE_VERSION' => $version,
@@ -2207,6 +2248,7 @@ SH);
             $env = [
                 'DW_SERVER_VERSION' => $version,
                 'DW_CLI_VERSION' => $version,
+                'DW_PHP_SDK_VERSION' => $version,
                 'DW_PYTHON_SDK_VERSION' => $version,
                 'DW_WORKFLOW_PHP_VERSION' => $version,
                 'DW_WATERLINE_VERSION' => $version,
@@ -2304,6 +2346,7 @@ SH);
                 'DW_SERVER_IMAGE' => $serverImage,
                 'DW_SERVER_VERSION' => $version,
                 'DW_CLI_VERSION' => $version,
+                'DW_PHP_SDK_VERSION' => $version,
                 'DW_PYTHON_SDK_VERSION' => $version,
                 'DW_WORKFLOW_PHP_VERSION' => $version,
                 'DW_WATERLINE_VERSION' => $version,
@@ -2400,6 +2443,7 @@ SH);
             $env = [
                 'DW_SERVER_VERSION' => $version,
                 'DW_CLI_VERSION' => $version,
+                'DW_PHP_SDK_VERSION' => $version,
                 'DW_PYTHON_SDK_VERSION' => $version,
                 'DW_WORKFLOW_PHP_VERSION' => $version,
                 'DW_WATERLINE_VERSION' => $version,
@@ -2482,6 +2526,60 @@ SH);
 
         $this->assertSame('pass', $evaluation['status']);
         $this->assertSame([], $evaluation['gate_failures']);
+    }
+
+    public function test_runner_rejects_contradictory_heartbeat_timeout_renewal_evidence(): void
+    {
+        $evidence = $this->completeRunnerActivityEvidence();
+        foreach ($evidence['scenario_results'] as &$scenario) {
+            if (($scenario['scenario_id'] ?? null) !== 'heartbeat_timeout_renewal_across_enforcement_passes') {
+                continue;
+            }
+            $scenario['observed_outputs']['heartbeat_acknowledgements'][1]['deadline_advanced'] = false;
+            $scenario['scenario_evidence'] = $scenario['observed_outputs'];
+        }
+        unset($scenario);
+
+        $run = $this->runActivityRunnerWithEvidence($evidence);
+
+        $this->assertSame(1, $run['exit'], $run['output']);
+        $this->assertSame('non_passing', $run['result']['outcome']);
+        $byScenario = [];
+        foreach ($run['result']['scenario_results'] as $scenario) {
+            $byScenario[$scenario['scenario_id']] = $scenario;
+        }
+        $this->assertSame(
+            'fail',
+            $byScenario['heartbeat_timeout_renewal_across_enforcement_passes']['status'] ?? null,
+        );
+        $this->assertStringContainsString(
+            'did_not_advance_deadline',
+            implode(
+                ' ',
+                $byScenario['heartbeat_timeout_renewal_across_enforcement_passes']['observed_outputs']['scenario_contract_failures'] ?? [],
+            ),
+        );
+    }
+
+    public function test_result_gate_rejects_heartbeat_timeout_renewal_without_typed_stale_attempt_control(): void
+    {
+        $result = $this->completeActivityResult();
+        foreach ($result['scenario_results'] as &$scenario) {
+            if (($scenario['scenario_id'] ?? null) !== 'heartbeat_timeout_renewal_across_enforcement_passes') {
+                continue;
+            }
+            $scenario['observed_outputs']['negative_control']['late_failure_conflict']['reason'] = 'unknown';
+            $scenario['scenario_evidence'] = $scenario['observed_outputs'];
+        }
+        unset($scenario);
+
+        $evaluation = ActivityRuntimeResultGate::evaluate($result, ActivityRuntimeContract::manifest());
+
+        $this->assertSame('non_passing', $evaluation['status']);
+        $this->assertContains(
+            'heartbeat_timeout_renewal_negative_control_invalid',
+            array_column($evaluation['gate_failures'], 'code'),
+        );
     }
 
     public function test_result_gate_requires_focused_activity_host_evidence_for_activity_result_cells(): void
@@ -2801,6 +2899,7 @@ SH);
                 'DW_SERVER_IMAGE' => 'durableworkflow/server:9.9.9',
                 'DW_SERVER_VERSION' => '9.9.9',
                 'DW_CLI_VERSION' => '9.9.9',
+                'DW_PHP_SDK_VERSION' => '9.9.9',
                 'DW_PYTHON_SDK_VERSION' => '9.9.9',
                 'DW_WORKFLOW_PHP_VERSION' => '9.9.9',
                 'DW_WATERLINE_VERSION' => '9.9.9',
@@ -2866,6 +2965,13 @@ SH);
                     'local_product_source_checkouts_used' => false,
                 ],
                 [
+                    'artifact' => 'sdk-php',
+                    'version' => $version,
+                    'source' => 'https://packagist.org/packages/durable-workflow/sdk#'.$version,
+                    'status' => 'pass',
+                    'local_product_source_checkouts_used' => false,
+                ],
+                [
                     'artifact' => 'workflow-php',
                     'version' => $version,
                     'source' => 'https://packagist.org/packages/durable-workflow/workflow#'.$version,
@@ -2917,6 +3023,11 @@ SH);
                     'sha256' => str_repeat('c', 64),
                 ]],
             ],
+            'sdk-php' => [
+                'kind' => 'composer',
+                'locator' => 'composer:durable-workflow/sdk@'.$version,
+                'artifacts' => [['name' => 'durable-workflow/sdk', 'sha256' => str_repeat('f', 64)]],
+            ],
         ];
     }
 
@@ -2928,17 +3039,17 @@ SH);
         $scenarioResults = [];
         foreach (ActivityRuntimeContract::manifest()['required_scenarios'] as $scenarioId) {
             $activityHostEvidence = $this->activityHostEvidenceForScenario($scenarioId);
+            $observedOutputs = $scenarioId === 'heartbeat_timeout_renewal_across_enforcement_passes'
+                ? $this->heartbeatTimeoutRenewalEvidence($version)
+                : array_filter([
+                    'evidence' => $scenarioId,
+                    'activity_host_evidence' => $activityHostEvidence,
+                ]);
             $scenarioResults[] = [
                 'scenario_id' => $scenarioId,
                 'status' => 'pass',
-                'observed_outputs' => array_filter([
-                    'evidence' => $scenarioId,
-                    'activity_host_evidence' => $activityHostEvidence,
-                ]),
-                'scenario_evidence' => array_filter([
-                    'evidence' => $scenarioId,
-                    'activity_host_evidence' => $activityHostEvidence,
-                ]),
+                'observed_outputs' => $observedOutputs,
+                'scenario_evidence' => $observedOutputs,
             ];
         }
 
@@ -2956,11 +3067,12 @@ SH);
             ],
             'runtime_matrix' => [
                 'execution_modes' => ['workflow-embedded', 'standalone'],
-                'runtimes' => ['workflow-php', 'sdk-python'],
+                'runtimes' => ['workflow-php', 'sdk-php', 'sdk-python'],
             ],
             'durable_result_recording' => ['status' => 'pass'],
             'retry_backoff' => ['status' => 'pass'],
             'timeout_behavior' => ['status' => 'pass'],
+            'heartbeat_timeout_renewal' => ['status' => 'pass'],
             'typed_failure_propagation' => ['status' => 'pass'],
             'heartbeat_cancellation' => ['status' => 'pass'],
             'idempotent_completion' => ['status' => 'pass'],
@@ -2977,6 +3089,7 @@ SH);
         $artifactVersions = [
             'server' => '9.9.9',
             'cli' => '9.9.9',
+            'sdk-php' => '9.9.9',
             'sdk-python' => '9.9.9',
             'workflow' => '9.9.9',
             'waterline' => '9.9.9',
@@ -2988,19 +3101,18 @@ SH);
         $scenarioResults = [];
         foreach ($contract['required_scenarios'] as $scenarioId) {
             $activityHostEvidence = $this->activityHostEvidenceForScenario($scenarioId);
+            $observedOutputs = $scenarioId === 'heartbeat_timeout_renewal_across_enforcement_passes'
+                ? $this->heartbeatTimeoutRenewalEvidence($artifactVersions['sdk-php'])
+                : array_filter([
+                    'sample' => $scenarioId,
+                    'published_artifact_worker_execution' => $publishedServerExecution,
+                    'activity_host_evidence' => $activityHostEvidence,
+                ]);
             $scenarioResults[] = [
                 'scenario_id' => $scenarioId,
                 'status' => 'pass',
-                'observed_outputs' => array_filter([
-                    'sample' => $scenarioId,
-                    'published_artifact_worker_execution' => $publishedServerExecution,
-                    'activity_host_evidence' => $activityHostEvidence,
-                ]),
-                'scenario_evidence' => array_filter([
-                    'sample' => $scenarioId,
-                    'published_artifact_worker_execution' => $publishedServerExecution,
-                    'activity_host_evidence' => $activityHostEvidence,
-                ]),
+                'observed_outputs' => $observedOutputs,
+                'scenario_evidence' => $observedOutputs,
             ];
         }
 
@@ -3016,6 +3128,7 @@ SH);
             'artifact_sources' => [
                 'server' => 'docker.io/durableworkflow/server:9.9.9',
                 'cli' => 'https://github.com/durable-workflow/cli/releases/download/v9.9.9/install.sh',
+                'sdk-php' => 'https://packagist.org/packages/durable-workflow/sdk#9.9.9',
                 'sdk-python' => 'https://pypi.org/project/durable-workflow/9.9.9/',
                 'workflow' => 'https://packagist.org/packages/durable-workflow/workflow#9.9.9',
                 'waterline' => 'https://packagist.org/packages/durable-workflow/waterline#9.9.9',
@@ -3035,10 +3148,150 @@ SH);
             'durable_result_recording' => ['status' => 'pass'],
             'retry_backoff' => ['status' => 'pass'],
             'timeout_behavior' => ['status' => 'pass'],
+            'heartbeat_timeout_renewal' => ['status' => 'pass'],
             'typed_failure_propagation' => ['status' => 'pass'],
             'heartbeat_cancellation' => ['status' => 'pass'],
             'idempotent_completion' => ['status' => 'pass'],
             'operator_visibility' => ['status' => 'pass'],
+        ];
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    private function heartbeatTimeoutRenewalEvidence(string $version): array
+    {
+        $acknowledgements = [];
+        $enforcementPasses = [];
+        $timestamp = static function (float $seconds): string {
+            $wholeSeconds = (int) floor($seconds);
+            $microseconds = (int) round(($seconds - $wholeSeconds) * 1_000_000);
+
+            return sprintf('2026-06-21T00:00:%02d.%06dZ', $wholeSeconds, $microseconds);
+        };
+        foreach (range(1, 4) as $sequence) {
+            $lastHeartbeatOffset = $sequence * 0.35;
+            $previousDeadline = $timestamp(2 + (($sequence - 1) * 0.35));
+            $currentDeadline = $timestamp(2 + $lastHeartbeatOffset);
+            $acknowledgements[] = [
+                'sequence' => $sequence,
+                'response' => [
+                    'heartbeat_recorded' => true,
+                    'can_continue' => true,
+                    'cancel_requested' => false,
+                    'activity_attempt_id' => 'sdk-php-heartbeat-attempt',
+                ],
+                'request_started_at' => $timestamp($lastHeartbeatOffset - 0.005),
+                'response_received_at' => $timestamp($lastHeartbeatOffset + 0.005),
+                'previous_deadline_at' => $previousDeadline,
+                'authoritative_deadline_at' => $currentDeadline,
+                'last_heartbeat_at' => $timestamp($lastHeartbeatOffset),
+                'deadline_advanced' => true,
+            ];
+            $enforcementPasses[] = [
+                'pass' => $sequence,
+                'observed_at' => $timestamp($lastHeartbeatOffset + 0.01),
+                'finished_at' => $timestamp($lastHeartbeatOffset + 0.02),
+                'authoritative_deadline_at' => $currentDeadline,
+                'activity_timed_out_history_count' => 0,
+                'response' => [
+                    'processed' => 1,
+                    'enforced' => 0,
+                    'skipped' => 1,
+                    'failed' => 0,
+                    'results' => [[
+                        'execution_id' => 'sdk-php-heartbeat-execution',
+                        'outcome' => 'skipped',
+                        'reason' => 'no_deadline_expired',
+                    ]],
+                ],
+            ];
+        }
+
+        return [
+            'php_sdk_worker_artifact' => [
+                'artifact' => 'sdk-php',
+                'package' => 'durable-workflow/sdk',
+                'version' => $version,
+                'source' => 'packagist://durable-workflow/sdk@'.$version,
+                'status' => 'pass',
+                'runtime' => 'sdk-php',
+                'language' => 'php',
+                'execution_source' => 'published_server_container',
+                'execution_method' => 'DurableWorkflow\\Worker::run',
+                'local_product_source_checkouts_used' => false,
+            ],
+            'heartbeat_timeout_seconds' => 2,
+            'heartbeat_cadence_seconds' => 0.35,
+            'initial_heartbeat_deadline_at' => '2026-06-21T00:00:02.000000Z',
+            'heartbeat_acknowledgements' => $acknowledgements,
+            'enforcement_passes' => $enforcementPasses,
+            'in_flight_duration_seconds' => 2.4,
+            'completion_response' => [
+                'recorded' => true,
+                'reason' => null,
+            ],
+            'terminal_history' => [
+                'event_types' => [
+                    'ActivityHeartbeatRecorded',
+                    'ActivityCompleted',
+                    'WorkflowCompleted',
+                ],
+                'activity_heartbeat_recorded_count' => count($acknowledgements),
+                'activity_completed_count' => 1,
+                'activity_timed_out_count' => 0,
+                'completed_exactly_once' => true,
+                'history_without_contradiction' => true,
+            ],
+            'negative_control' => [
+                'initial_heartbeat_deadline_at' => $timestamp(5),
+                'enforcement_observed_at' => $timestamp(5.25),
+                'enforcement_pass' => [
+                    'processed' => 1,
+                    'enforced' => 1,
+                    'skipped' => 0,
+                    'failed' => 0,
+                    'results' => [[
+                        'execution_id' => 'sdk-php-heartbeat-negative-execution',
+                        'outcome' => 'enforced',
+                        'has_retry' => false,
+                    ]],
+                ],
+                'typed_timeout_payload' => [
+                    'timeout_kind' => 'heartbeat',
+                    'failure_category' => 'timeout',
+                    'activity_execution_id' => 'sdk-php-heartbeat-negative-execution',
+                    'activity_attempt_id' => 'sdk-php-heartbeat-negative-attempt',
+                ],
+                'late_heartbeat_response' => [
+                    'heartbeat_recorded' => false,
+                    'can_continue' => false,
+                    'reason' => 'attempt_closed',
+                ],
+                'late_completion_conflict' => [
+                    'http_status' => 409,
+                    'reason' => 'stale_attempt',
+                    'recorded' => false,
+                ],
+                'late_failure_conflict' => [
+                    'http_status' => 409,
+                    'reason' => 'stale_attempt',
+                    'recorded' => false,
+                ],
+                'terminal_history' => [
+                    'event_types' => ['ActivityTimedOut', 'WorkflowFailed'],
+                    'activity_timed_out_count' => 1,
+                    'activity_completed_count' => 0,
+                    'activity_failed_count' => 0,
+                ],
+            ],
+            'isolated_cleanup' => [
+                'isolated_database' => true,
+                'isolated_storage' => true,
+                'scratch_removed_on_exit' => true,
+                'published_server_container_removed' => true,
+                'result_evidence_retained_outside_scratch' => true,
+            ],
         ];
     }
 

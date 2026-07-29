@@ -35,6 +35,7 @@ Environment overrides:
   DW_SERVER_IMAGE                       Exact server image tag or digest to test.
   DW_SERVER_VERSION                     Exact server SemVer tag; required for digest-only DW_SERVER_IMAGE.
   DW_CLI_VERSION                        Exact CLI release version.
+  DW_PHP_SDK_VERSION                    Exact Composer durable-workflow/sdk version.
   DW_ACTIVITIES_CLI_BIN                 Optional executable official CLI binary to use for CLI observations.
   DW_CLI_BIN / DW_CLI_EXECUTABLE         Fallback executable official CLI binary names.
   DW_ACTIVITIES_CLI_INSTALLER_URL        Optional official CLI installer URL override.
@@ -133,11 +134,12 @@ run_in_published_server_container() {
 
   local docker_env=(
     -e DW_ACTIVITIES_CONTAINER_HANDOFF=1
+    -e DW_ACTIVITIES_CONTAINER_REMOVED_ON_EXIT=1
     -e DW_ACTIVITIES_RUNNER_SOURCE="$server_image"
   )
   local variable
   for variable in \
-    DW_SERVER_IMAGE DW_SERVER_VERSION DW_CLI_VERSION DW_PYTHON_SDK_VERSION \
+    DW_SERVER_IMAGE DW_SERVER_VERSION DW_CLI_VERSION DW_PHP_SDK_VERSION DW_PYTHON_SDK_VERSION \
     DW_WORKFLOW_PHP_VERSION DW_WATERLINE_VERSION DW_ACTIVITIES_CLI_INSTALLER_URL \
     DW_CLI_INSTALLER_URL DW_ACTIVITIES_SKIP_FOCUSED_HOST_PROBE; do
     if [[ -n "${!variable:-}" ]]; then
@@ -184,9 +186,7 @@ mkdir -p "$result_dir"
 distribution_identity_file="$result_dir/executed-distribution-identities.json"
 
 cleanup() {
-  local code=$?
-
-  if [[ "$keep_run_root" != "1" && "$code" -eq 0 && "$result_dir" != "$run_root" && "$run_root_supplied" != "1" ]]; then
+  if [[ "$keep_run_root" != "1" && "$result_dir" != "$run_root" && "$run_root_supplied" != "1" ]]; then
     rm -rf "$run_root"
   fi
 }
@@ -358,8 +358,8 @@ prepare_published_php_activity_artifacts() {
   local project_dir="$run_root/published-php-activity-artifacts"
   local composer_cache="$run_root/published-php-composer-cache"
   mkdir -p "$project_dir" "$composer_cache"
-  printf '{\n  "name": "durable-workflow/activities-conformance",\n  "type": "project",\n  "require": {\n    "durable-workflow/workflow": "%s",\n    "durable-workflow/waterline": "%s"\n  },\n  "minimum-stability": "dev",\n  "prefer-stable": true\n}\n' \
-    "$DW_WORKFLOW_PHP_VERSION" "$DW_WATERLINE_VERSION" > "$project_dir/composer.json"
+  printf '{\n  "name": "durable-workflow/activities-conformance",\n  "type": "project",\n  "require": {\n    "durable-workflow/workflow": "%s",\n    "durable-workflow/sdk": "%s",\n    "durable-workflow/waterline": "%s"\n  },\n  "minimum-stability": "dev",\n  "prefer-stable": true\n}\n' \
+    "$DW_WORKFLOW_PHP_VERSION" "$DW_PHP_SDK_VERSION" "$DW_WATERLINE_VERSION" > "$project_dir/composer.json"
 
   if ! (
     cd "$project_dir"
@@ -367,15 +367,20 @@ prepare_published_php_activity_artifacts() {
     COMPOSER_CACHE_DIR="$composer_cache" \
     composer install --no-interaction --no-progress --prefer-dist --no-scripts
   ) > "$result_dir/activity-composer-install.log" 2>&1; then
-    fail_activity_prerequisite "Composer could not install durable-workflow/workflow:${DW_WORKFLOW_PHP_VERSION} and durable-workflow/waterline:${DW_WATERLINE_VERSION}; see activity-composer-install.log"
+    fail_activity_prerequisite "Composer could not install durable-workflow/workflow:${DW_WORKFLOW_PHP_VERSION}, durable-workflow/sdk:${DW_PHP_SDK_VERSION}, and durable-workflow/waterline:${DW_WATERLINE_VERSION}; see activity-composer-install.log"
     return 1
   fi
 
   local published_workflow="$project_dir/vendor/durable-workflow/workflow"
+  local published_php_sdk="$project_dir/vendor/durable-workflow/sdk"
   local published_waterline="$project_dir/vendor/durable-workflow/waterline"
   local published_autoload="$project_dir/vendor/autoload.php"
   if [[ ! -d "$published_workflow" ]]; then
     fail_activity_prerequisite 'The published workflow package could not be bound into the server activity runtime'
+    return 1
+  fi
+  if [[ ! -d "$published_php_sdk" ]]; then
+    fail_activity_prerequisite 'The exact published PHP SDK package could not be bound into the server activity runtime'
     return 1
   fi
   if [[ ! -d "$published_waterline" || ! -f "$published_autoload" ]]; then
@@ -384,17 +389,21 @@ prepare_published_php_activity_artifacts() {
   fi
   export DW_ACTIVITIES_PUBLISHED_PHP_AUTOLOAD="$published_autoload"
   export DW_ACTIVITIES_WORKFLOW_PACKAGE_ROOT="$published_workflow"
+  export DW_ACTIVITIES_PHP_SDK_PACKAGE_ROOT="$published_php_sdk"
   export DW_ACTIVITIES_WATERLINE_PACKAGE_ROOT="$published_waterline"
   export DW_ACTIVITIES_WORKFLOW_EXECUTION_OBSERVATION="$result_dir/workflow-execution-observation.json"
   export DW_ACTIVITIES_WATERLINE_EXECUTION_OBSERVATION="$result_dir/waterline-execution-observation.json"
+  export DW_ACTIVITIES_PHP_SDK_EXECUTION_OBSERVATION="$result_dir/php-sdk-execution-observation.json"
   rm -f \
     "$DW_ACTIVITIES_WORKFLOW_EXECUTION_OBSERVATION" \
-    "$DW_ACTIVITIES_WATERLINE_EXECUTION_OBSERVATION"
+    "$DW_ACTIVITIES_WATERLINE_EXECUTION_OBSERVATION" \
+    "$DW_ACTIVITIES_PHP_SDK_EXECUTION_OBSERVATION"
 }
 
 record_executed_php_activity_distributions() {
   local workflow_observation="${DW_ACTIVITIES_WORKFLOW_EXECUTION_OBSERVATION:-}"
   local waterline_observation="${DW_ACTIVITIES_WATERLINE_EXECUTION_OBSERVATION:-}"
+  local php_sdk_observation="${DW_ACTIVITIES_PHP_SDK_EXECUTION_OBSERVATION:-}"
   if [[ -z "$workflow_observation" || ! -s "$workflow_observation" ]]; then
     fail_activity_prerequisite 'The focused activity probe did not retain a Workflow runtime execution observation'
     return 1
@@ -403,9 +412,15 @@ record_executed_php_activity_distributions() {
     fail_activity_prerequisite 'The focused activity probe did not retain a Waterline runtime execution observation'
     return 1
   fi
+  if [[ -z "$php_sdk_observation" || ! -s "$php_sdk_observation" ]]; then
+    fail_activity_prerequisite 'The focused activity probe did not retain a PHP SDK worker runtime execution observation'
+    return 1
+  fi
   if ! WORKFLOW_EXECUTION_OBSERVATION="$workflow_observation" \
     WATERLINE_EXECUTION_OBSERVATION="$waterline_observation" \
+    PHP_SDK_EXECUTION_OBSERVATION="$php_sdk_observation" \
     WORKFLOW_VERSION="$DW_WORKFLOW_PHP_VERSION" \
+    PHP_SDK_VERSION="$DW_PHP_SDK_VERSION" \
     WATERLINE_VERSION="$DW_WATERLINE_VERSION" \
     python3 <<'PY'
 import json
@@ -415,6 +430,7 @@ from pathlib import Path
 observations = {
     "Workflow": json.loads(Path(os.environ["WORKFLOW_EXECUTION_OBSERVATION"]).read_text(encoding="utf-8")),
     "Waterline": json.loads(Path(os.environ["WATERLINE_EXECUTION_OBSERVATION"]).read_text(encoding="utf-8")),
+    "PHP SDK": json.loads(Path(os.environ["PHP_SDK_EXECUTION_OBSERVATION"]).read_text(encoding="utf-8")),
 }
 expected = {
     "Workflow": {
@@ -433,6 +449,14 @@ expected = {
         "class": "Waterline\\Support\\CompensationVisibility",
         "method": "activitiesForRun",
     },
+    "PHP SDK": {
+        "schema": "durable-workflow.v2.activity-runtime.distribution-execution-observation",
+        "component": "sdk-php",
+        "package": "durable-workflow/sdk",
+        "version": os.environ["PHP_SDK_VERSION"],
+        "class": "DurableWorkflow\\Worker",
+        "method": "run",
+    },
 }
 for component, fields in expected.items():
     for field, value in fields.items():
@@ -444,9 +468,15 @@ if type(command_count) is not int or not 1 <= command_count <= 100:
 activity_count = observations["Waterline"].get("observed_activity_count")
 if type(activity_count) is not int or not 0 <= activity_count <= 1000:
     raise SystemExit("Waterline execution observation did not retain a bounded activity count")
+heartbeat_count = observations["PHP SDK"].get("observed_heartbeat_count")
+enforcement_count = observations["PHP SDK"].get("observed_enforcement_pass_count")
+if type(heartbeat_count) is not int or heartbeat_count < 4:
+    raise SystemExit("PHP SDK execution observation did not retain repeated accepted activity heartbeats")
+if type(enforcement_count) is not int or enforcement_count < 3:
+    raise SystemExit("PHP SDK execution observation did not retain repeated timeout enforcement passes")
 PY
   then
-    fail_activity_prerequisite 'The focused activity probe emitted invalid Workflow or Waterline runtime execution evidence'
+    fail_activity_prerequisite 'The focused activity probe emitted invalid Workflow, PHP SDK, or Waterline runtime execution evidence'
     return 1
   fi
 
@@ -459,6 +489,14 @@ PY
   fi
 
   if ! python3 "$script_dir/distribution_identities.py" record-unique \
+    "$distribution_identity_file" sdk-php "$DW_PHP_SDK_VERSION" \
+    "$run_root/published-php-composer-cache/files/durable-workflow/sdk" '**/*' \
+    --artifact-name durable-workflow/sdk; then
+    fail_activity_prerequisite 'The executed PHP SDK Composer archive could not be identified'
+    return 1
+  fi
+
+  if ! python3 "$script_dir/distribution_identities.py" record-unique \
     "$distribution_identity_file" waterline "$DW_WATERLINE_VERSION" \
     "$run_root/published-php-composer-cache/files/durable-workflow/waterline" '**/*' \
     --artifact-name durable-workflow/waterline; then
@@ -466,7 +504,7 @@ PY
     return 1
   fi
   if ! python3 "$script_dir/distribution_identities.py" validate \
-    "$distribution_identity_file" workflow waterline server cli sdk-python \
+    "$distribution_identity_file" workflow waterline server cli sdk-php sdk-python \
     > "$result_dir/executed-distribution-identities-validation.log" 2>&1; then
     fail_activity_prerequisite 'The activity runner did not retain the complete exact executed distribution set'
     return 1
@@ -485,6 +523,7 @@ from pathlib import Path
 versions = {
     "server": os.environ["DW_SERVER_VERSION"],
     "cli": os.environ["DW_CLI_VERSION"].removeprefix("v"),
+    "sdk-php": os.environ["DW_PHP_SDK_VERSION"],
     "sdk-python": os.environ["DW_PYTHON_SDK_VERSION"],
     "workflow-php": os.environ["DW_WORKFLOW_PHP_VERSION"],
     "waterline": os.environ["DW_WATERLINE_VERSION"],
@@ -492,6 +531,7 @@ versions = {
 sources = {
     "server": os.environ["DW_SERVER_IMAGE"],
     "cli": os.environ["ACTIVITY_CLI_SOURCE"],
+    "sdk-php": f'packagist://durable-workflow/sdk@{versions["sdk-php"]}',
     "sdk-python": f'pypi://durable-workflow=={versions["sdk-python"]}',
     "workflow-php": f'packagist://durable-workflow/workflow@{versions["workflow-php"]}',
     "waterline": f'packagist://durable-workflow/waterline@{versions["waterline"]}',
@@ -522,7 +562,7 @@ prepare_published_activity_artifacts() {
   rm -f "$distribution_identity_file"
 
   for variable in \
-    DW_SERVER_IMAGE DW_SERVER_VERSION DW_CLI_VERSION DW_PYTHON_SDK_VERSION \
+    DW_SERVER_IMAGE DW_SERVER_VERSION DW_CLI_VERSION DW_PHP_SDK_VERSION DW_PYTHON_SDK_VERSION \
     DW_WORKFLOW_PHP_VERSION DW_WATERLINE_VERSION; do
     if [[ -z "${!variable:-}" ]]; then
       fail_activity_prerequisite "Required exact candidate variable is empty: ${variable}"
@@ -569,6 +609,10 @@ prepare_published_activity_artifacts() {
 run_focused_activity_host_probe() {
   local probe_db="$run_root/activities-focused-host-probe.sqlite"
   local probe_storage="$run_root/activities-focused-host-storage"
+  local scratch_removed_on_exit=true
+  if [[ "$keep_run_root" == "1" || "$result_dir" == "$run_root" || "$run_root_supplied" == "1" ]]; then
+    scratch_removed_on_exit=false
+  fi
 
   : > "$probe_db"
   mkdir -p \
@@ -595,9 +639,12 @@ run_focused_activity_host_probe() {
   DW_ACTIVITIES_CLI_SOURCE="${DW_ACTIVITIES_CLI_SOURCE:-}" \
   DW_ACTIVITIES_CLI_UNAVAILABLE_REASON="${DW_ACTIVITIES_CLI_UNAVAILABLE_REASON:-}" \
   DW_ACTIVITIES_PUBLISHED_PHP_AUTOLOAD="${DW_ACTIVITIES_PUBLISHED_PHP_AUTOLOAD:-}" \
+  DW_ACTIVITIES_SCRATCH_REMOVED_ON_EXIT="$scratch_removed_on_exit" \
   DW_ACTIVITIES_WORKFLOW_PACKAGE_ROOT="${DW_ACTIVITIES_WORKFLOW_PACKAGE_ROOT:-}" \
+  DW_ACTIVITIES_PHP_SDK_PACKAGE_ROOT="${DW_ACTIVITIES_PHP_SDK_PACKAGE_ROOT:-}" \
   DW_ACTIVITIES_WATERLINE_PACKAGE_ROOT="${DW_ACTIVITIES_WATERLINE_PACKAGE_ROOT:-}" \
   DW_ACTIVITIES_WORKFLOW_EXECUTION_OBSERVATION="${DW_ACTIVITIES_WORKFLOW_EXECUTION_OBSERVATION:-}" \
+  DW_ACTIVITIES_PHP_SDK_EXECUTION_OBSERVATION="${DW_ACTIVITIES_PHP_SDK_EXECUTION_OBSERVATION:-}" \
   DW_ACTIVITIES_WATERLINE_EXECUTION_OBSERVATION="${DW_ACTIVITIES_WATERLINE_EXECUTION_OBSERVATION:-}" \
   RUNNER_REPO_ROOT="$repo_root" \
   RESULT_DIR="$result_dir" \
@@ -609,6 +656,12 @@ declare(strict_types=1);
 use App\Models\WorkflowNamespace;
 use App\Support\ControlPlaneProtocol;
 use App\Support\WorkerProtocol;
+use DurableWorkflow\Client as PublishedPhpSdkClient;
+use DurableWorkflow\Exception\ServerException as PublishedPhpSdkServerException;
+use DurableWorkflow\Exception\TransportException as PublishedPhpSdkTransportException;
+use DurableWorkflow\Transport\Transport as PublishedPhpSdkTransport;
+use DurableWorkflow\Worker as PublishedPhpSdkWorker;
+use DurableWorkflow\Worker\ActivityContext as PublishedPhpSdkActivityContext;
 use Illuminate\Contracts\Console\Kernel as ConsoleKernel;
 use Illuminate\Contracts\Http\Kernel as HttpKernel;
 use Illuminate\Http\Request;
@@ -625,6 +678,7 @@ use Workflow\V2\Enums\FailureCategory;
 use Workflow\V2\Enums\HistoryEventType;
 use Workflow\V2\Enums\RunStatus;
 use Workflow\V2\Models\WorkflowRun;
+use Workflow\V2\Models\WorkflowHistoryEvent;
 use Workflow\V2\Models\WorkflowTask;
 use Workflow\V2\Support\ActivityOptions;
 use Workflow\V2\Support\WorkflowFiberRunner;
@@ -652,7 +706,9 @@ $publishedPhpLoader->unregister();
 require $repoRoot.'/vendor/autoload.php';
 spl_autoload_register(
     static function (string $class) use ($publishedPhpLoader): void {
-        if (! str_starts_with($class, 'Workflow\\') && ! str_starts_with($class, 'Waterline\\')) {
+        if (! str_starts_with($class, 'Workflow\\')
+            && ! str_starts_with($class, 'Waterline\\')
+            && ! str_starts_with($class, 'DurableWorkflow\\')) {
             return;
         }
 
@@ -671,6 +727,14 @@ if ($workflowPackageRoot === false
     || $workflowClassFile === false
     || ! str_starts_with($workflowClassFile, rtrim($workflowPackageRoot, DIRECTORY_SEPARATOR).DIRECTORY_SEPARATOR)) {
     throw new RuntimeException('Workflow activity runtime did not load from the exact installed package');
+}
+
+$phpSdkPackageRoot = realpath(getenv('DW_ACTIVITIES_PHP_SDK_PACKAGE_ROOT') ?: '');
+$phpSdkWorkerFile = realpath((new ReflectionClass(PublishedPhpSdkWorker::class))->getFileName() ?: '');
+if ($phpSdkPackageRoot === false
+    || $phpSdkWorkerFile === false
+    || ! str_starts_with($phpSdkWorkerFile, rtrim($phpSdkPackageRoot, DIRECTORY_SEPARATOR).DIRECTORY_SEPARATOR)) {
+    throw new RuntimeException('PHP SDK activity worker did not load from the exact installed package');
 }
 
 #[Type(EMBEDDED_WORKFLOW_TYPE)]
@@ -831,6 +895,7 @@ function evidence_document(array $scenarioResults, array $activityCells): array
         'timeout_behavior',
         'typed_failure_propagation',
         'heartbeat_and_cancellation_observation',
+        'heartbeat_timeout_renewal_across_enforcement_passes',
         'idempotent_completion_handling',
         'php_python_activity_parity',
         'operator_visible_activity_attempt_state',
@@ -892,6 +957,16 @@ function evidence_document(array $scenarioResults, array $activityCells): array
     $heartbeatOutputs = is_array($heartbeatScenario['observed_outputs'] ?? null)
         ? $heartbeatScenario['observed_outputs']
         : [];
+    $heartbeatTimeoutRenewalScenario = null;
+    foreach ($scenarioResults as $scenario) {
+        if (($scenario['scenario_id'] ?? null) === 'heartbeat_timeout_renewal_across_enforcement_passes') {
+            $heartbeatTimeoutRenewalScenario = $scenario;
+            break;
+        }
+    }
+    $heartbeatTimeoutRenewalOutputs = is_array($heartbeatTimeoutRenewalScenario['observed_outputs'] ?? null)
+        ? $heartbeatTimeoutRenewalScenario['observed_outputs']
+        : [];
     $idempotentScenario = null;
     foreach ($scenarioResults as $scenario) {
         if (($scenario['scenario_id'] ?? null) === 'idempotent_completion_handling') {
@@ -923,7 +998,7 @@ function evidence_document(array $scenarioResults, array $activityCells): array
         'scenario_results' => $scenarioResults,
         'runtime_matrix' => [
             'execution_modes' => ['workflow-embedded', 'standalone'],
-            'runtimes' => ['workflow-php', 'sdk-python'],
+            'runtimes' => ['workflow-php', 'sdk-php', 'sdk-python'],
             'activity_cells' => $activityCells,
             'behavior_cells' => array_map(
                 static fn (string $scenario): array => [
@@ -995,6 +1070,21 @@ function evidence_document(array $scenarioResults, array $activityCells): array
             'activity_execution_id' => $heartbeatOutputs['activity_execution_id'] ?? null,
             'activity_attempt_id' => $heartbeatOutputs['activity_attempt_id'] ?? null,
             'attempt_state' => $heartbeatOutputs['attempt_state'] ?? null,
+        ],
+        'heartbeat_timeout_renewal' => [
+            'status' => $scenarioStatusById['heartbeat_timeout_renewal_across_enforcement_passes'] ?? 'not_covered',
+            'scenario' => 'heartbeat_timeout_renewal_across_enforcement_passes',
+            'php_sdk_worker_artifact' => $heartbeatTimeoutRenewalOutputs['php_sdk_worker_artifact'] ?? null,
+            'heartbeat_timeout_seconds' => $heartbeatTimeoutRenewalOutputs['heartbeat_timeout_seconds'] ?? null,
+            'heartbeat_cadence_seconds' => $heartbeatTimeoutRenewalOutputs['heartbeat_cadence_seconds'] ?? null,
+            'initial_heartbeat_deadline_at' => $heartbeatTimeoutRenewalOutputs['initial_heartbeat_deadline_at'] ?? null,
+            'heartbeat_acknowledgements' => $heartbeatTimeoutRenewalOutputs['heartbeat_acknowledgements'] ?? null,
+            'enforcement_passes' => $heartbeatTimeoutRenewalOutputs['enforcement_passes'] ?? null,
+            'in_flight_duration_seconds' => $heartbeatTimeoutRenewalOutputs['in_flight_duration_seconds'] ?? null,
+            'completion_response' => $heartbeatTimeoutRenewalOutputs['completion_response'] ?? null,
+            'terminal_history' => $heartbeatTimeoutRenewalOutputs['terminal_history'] ?? null,
+            'negative_control' => $heartbeatTimeoutRenewalOutputs['negative_control'] ?? null,
+            'isolated_cleanup' => $heartbeatTimeoutRenewalOutputs['isolated_cleanup'] ?? null,
         ],
         'idempotent_completion' => [
             'status' => $scenarioStatusById['idempotent_completion_handling'] ?? 'not_covered',
@@ -1087,6 +1177,89 @@ function request_json(string $method, string $path, ?array $body = null, array $
     $decoded = json_decode($payload, true, flags: JSON_THROW_ON_ERROR);
 
     return is_array($decoded) ? $decoded : [];
+}
+
+final class PublishedServerKernelSdkTransport implements PublishedPhpSdkTransport
+{
+    /** @var list<array<string, mixed>> */
+    private array $exchanges = [];
+
+    public function send(string $method, string $uri, array $headers, ?array $body = null): ?array
+    {
+        $parts = parse_url($uri);
+        $path = is_array($parts) && is_string($parts['path'] ?? null) ? $parts['path'] : '/';
+        $query = is_array($parts) && is_string($parts['query'] ?? null) ? $parts['query'] : '';
+        $target = $query === '' ? $path : $path.'?'.$query;
+        $server = [];
+        foreach ($headers as $name => $value) {
+            $normalized = strtolower($name);
+            if ($normalized === 'content-type') {
+                $server['CONTENT_TYPE'] = $value;
+            } elseif ($normalized === 'accept') {
+                $server['HTTP_ACCEPT'] = $value;
+            } else {
+                $server[header_key($name)] = $value;
+            }
+        }
+
+        $startedAt = microtime(true);
+        $content = $body === null ? null : json_encode($body, JSON_THROW_ON_ERROR);
+        $request = Request::create($target, strtoupper($method), [], [], [], $server, $content);
+        /** @var HttpKernel $kernel */
+        $kernel = app(HttpKernel::class);
+        $response = $kernel->handle($request);
+        $kernel->terminate($request, $response);
+        $status = $response->getStatusCode();
+        $raw = (string) $response->getContent();
+        $decoded = $raw === '' ? null : json_decode($raw, true, flags: JSON_THROW_ON_ERROR);
+        if ($decoded !== null && ! is_array($decoded)) {
+            throw new RuntimeException('published PHP SDK transport received a non-object JSON response');
+        }
+
+        $this->exchanges[] = [
+            'method' => strtoupper($method),
+            'path' => $path,
+            'request_started_at' => iso_from_timestamp($startedAt),
+            'response_received_at' => iso_from_timestamp(microtime(true)),
+            'request' => $body,
+            'http_status' => $status,
+            'response' => $decoded,
+        ];
+
+        if ($status < 200 || $status >= 300) {
+            throw PublishedPhpSdkTransportException::fromResponse($status, $decoded, $raw);
+        }
+
+        return $decoded;
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    public function latest(string $pathSuffix, ?string $method = null): array
+    {
+        foreach (array_reverse($this->exchanges) as $exchange) {
+            if (! str_ends_with((string) ($exchange['path'] ?? ''), $pathSuffix)) {
+                continue;
+            }
+            if ($method !== null && ($exchange['method'] ?? null) !== strtoupper($method)) {
+                continue;
+            }
+
+            return $exchange;
+        }
+
+        return [];
+    }
+
+    public function count(string $pathSuffix, ?string $method = null): int
+    {
+        return count(array_filter(
+            $this->exchanges,
+            static fn (array $exchange): bool => str_ends_with((string) ($exchange['path'] ?? ''), $pathSuffix)
+                && ($method === null || ($exchange['method'] ?? null) === strtoupper($method))
+        ));
+    }
 }
 
 function focused_result_dir(): string
@@ -4011,6 +4184,527 @@ function run_timeout_behavior_cell(): array
     ];
 }
 
+function published_php_sdk_worker_artifact(): array
+{
+    $packageRoot = realpath(getenv('DW_ACTIVITIES_PHP_SDK_PACKAGE_ROOT') ?: '');
+    $classFile = realpath((new ReflectionClass(PublishedPhpSdkWorker::class))->getFileName() ?: '');
+    $composerFile = $packageRoot === false ? false : $packageRoot.'/composer.json';
+    $packageMetadata = is_string($composerFile) && is_file($composerFile)
+        ? json_decode((string) file_get_contents($composerFile), true, flags: JSON_THROW_ON_ERROR)
+        : [];
+    $expectedVersion = getenv('DW_PHP_SDK_VERSION') ?: '';
+    $metadataVersion = is_array($packageMetadata)
+        ? ($packageMetadata['extra']['durable-workflow']['product-train'] ?? null)
+        : null;
+
+    if ($packageRoot === false
+        || $classFile === false
+        || ! str_starts_with($classFile, rtrim($packageRoot, DIRECTORY_SEPARATOR).DIRECTORY_SEPARATOR)
+        || ($packageMetadata['name'] ?? null) !== 'durable-workflow/sdk'
+        || $metadataVersion !== $expectedVersion) {
+        throw new RuntimeException('published PHP SDK worker artifact identity did not match the exact installed Composer package');
+    }
+
+    return [
+        'artifact' => 'sdk-php',
+        'package' => 'durable-workflow/sdk',
+        'version' => $expectedVersion,
+        'source' => 'packagist://durable-workflow/sdk@'.$expectedVersion,
+        'status' => 'pass',
+        'runtime' => 'sdk-php',
+        'language' => 'php',
+        'execution_source' => HOST_EVIDENCE_SOURCE,
+        'execution_method' => PublishedPhpSdkWorker::class.'::run',
+        'worker_protocol_version' => DurableWorkflow\Version::WORKER_PROTOCOL,
+        'package_metadata_version' => $metadataVersion,
+        'local_product_source_checkouts_used' => false,
+    ];
+}
+
+function published_php_sdk_conflict(callable $command): array
+{
+    try {
+        $response = $command();
+
+        return [
+            'http_status' => 200,
+            'reason' => $response['reason'] ?? null,
+            'recorded' => $response['recorded'] ?? null,
+            'response' => $response,
+        ];
+    } catch (PublishedPhpSdkServerException $exception) {
+        $details = is_array($exception->details) ? $exception->details : [];
+
+        return [
+            'http_status' => $exception->status,
+            'reason' => $exception->reason,
+            'recorded' => $details['recorded'] ?? null,
+            'task_id' => $details['task_id'] ?? null,
+            'activity_attempt_id' => $details['activity_attempt_id'] ?? null,
+            'response' => $details,
+        ];
+    }
+}
+
+function run_heartbeat_timeout_renewal_cell(): array
+{
+    $suffix = bin2hex(random_bytes(3));
+    $workerId = "activities-sdk-php-heartbeat-{$suffix}";
+    $activityId = "activities-sdk-php-heartbeat-{$suffix}";
+    $negativeActivityId = "activities-sdk-php-heartbeat-negative-{$suffix}";
+    $heartbeatTimeoutSeconds = 2;
+    $heartbeatCadenceSeconds = 0.35;
+    $heartbeatCount = 7;
+    $transport = new PublishedServerKernelSdkTransport();
+    $client = new PublishedPhpSdkClient(
+        'http://published-server-artifact.invalid',
+        namespace: ACTIVITIES_NAMESPACE,
+        transport: $transport,
+    );
+    $workerArtifact = published_php_sdk_worker_artifact();
+
+    $start = request_json('POST', '/activities', [
+        'activity_id' => $activityId,
+        'activity_type' => ACTIVITY_TYPE,
+        'task_queue' => ACTIVITIES_TASK_QUEUE,
+        'input' => [[
+            'scenario_id' => 'heartbeat_timeout_renewal_across_enforcement_passes',
+            'runtime' => 'sdk-php',
+            'input_marker' => "sdk-php-heartbeat-renewal-{$suffix}",
+        ]],
+        'heartbeat_timeout_seconds' => $heartbeatTimeoutSeconds,
+        'schedule_to_close_timeout_seconds' => 30,
+        'retry_policy' => [
+            'max_attempts' => 1,
+            'backoff_seconds' => [0],
+        ],
+    ]);
+    $runId = (string) ($start['workflow_run_id'] ?? '');
+    $activityExecutionId = (string) ($start['activity_execution_id'] ?? '');
+    if ($runId === '' || $activityExecutionId === '') {
+        throw new RuntimeException('PHP SDK heartbeat renewal activity start did not return durable identifiers');
+    }
+
+    $acknowledgements = [];
+    $enforcementPasses = [];
+    $handlerStartedAt = 0.0;
+    $handlerFinishedAt = 0.0;
+    $initialHeartbeatDeadlineAt = '';
+    $worker = null;
+    $worker = new PublishedPhpSdkWorker(
+        $client,
+        ACTIVITIES_TASK_QUEUE,
+        $workerId,
+    );
+    $worker->registerActivity(
+        ACTIVITY_TYPE,
+        function (
+            PublishedPhpSdkActivityContext $context,
+            mixed ...$arguments,
+        ) use (
+            &$worker,
+            $transport,
+            $activityExecutionId,
+            $runId,
+            $heartbeatTimeoutSeconds,
+            $heartbeatCadenceSeconds,
+            $heartbeatCount,
+            &$acknowledgements,
+            &$enforcementPasses,
+            &$handlerStartedAt,
+            &$handlerFinishedAt,
+            &$initialHeartbeatDeadlineAt,
+            $suffix,
+        ): array {
+            $handlerStartedAt = microtime(true);
+            // Stop the managed loop after this leased task, including when a
+            // fail-closed assertion throws and the SDK reports task failure.
+            $worker?->requestShutdown();
+            $initialState = activity_execution_state($activityExecutionId) ?? [];
+            $initialHeartbeatDeadlineAt = (string) ($initialState['heartbeat_deadline_at'] ?? '');
+            $previousDeadlineTimestamp = timestamp_from_datetime($initialHeartbeatDeadlineAt);
+            if ($previousDeadlineTimestamp === null) {
+                throw new RuntimeException('PHP SDK heartbeat renewal did not expose the initial authoritative heartbeat deadline');
+            }
+
+            $previousHeartbeatAt = null;
+            for ($sequence = 1; $sequence <= $heartbeatCount; $sequence++) {
+                wait_until_timestamp($handlerStartedAt + ($sequence * $heartbeatCadenceSeconds));
+                $progress = [
+                    'scenario_id' => 'heartbeat_timeout_renewal_across_enforcement_passes',
+                    'sequence' => $sequence,
+                    'total' => $heartbeatCount,
+                    'marker' => "sdk-php-heartbeat-renewal-{$suffix}",
+                ];
+                $context->heartbeat($progress);
+                $exchange = $transport->latest('/heartbeat', 'POST');
+                $response = is_array($exchange['response'] ?? null) ? $exchange['response'] : [];
+                $state = activity_execution_state($activityExecutionId) ?? [];
+                $authoritativeDeadlineAt = (string) ($state['heartbeat_deadline_at'] ?? '');
+                $authoritativeDeadlineTimestamp = timestamp_from_datetime($authoritativeDeadlineAt);
+                $lastHeartbeatAt = timestamp_from_datetime($state['last_heartbeat_at'] ?? null);
+                $observedCadence = $previousHeartbeatAt === null || $lastHeartbeatAt === null
+                    ? null
+                    : $lastHeartbeatAt - $previousHeartbeatAt;
+                $deadlineAdvanced = $authoritativeDeadlineTimestamp !== null
+                    && $authoritativeDeadlineTimestamp > $previousDeadlineTimestamp;
+
+                if (($response['heartbeat_recorded'] ?? null) !== true
+                    || ($response['can_continue'] ?? null) !== true
+                    || ! $deadlineAdvanced
+                    || ($observedCadence !== null && $observedCadence > $heartbeatTimeoutSeconds / 2)) {
+                    throw new RuntimeException("PHP SDK heartbeat acknowledgement {$sequence} did not advance the authoritative deadline at the required cadence");
+                }
+
+                $enforcementStartedAt = microtime(true);
+                $enforcement = request_json('POST', '/system/activity-timeouts/pass', [
+                    'execution_ids' => [$activityExecutionId],
+                ]);
+                $enforcementResult = is_array($enforcement['results'][0] ?? null)
+                    ? $enforcement['results'][0]
+                    : [];
+                $timedOutCount = WorkflowHistoryEvent::query()
+                    ->where('workflow_run_id', $runId)
+                    ->where('event_type', HistoryEventType::ActivityTimedOut->value)
+                    ->count();
+                if (($enforcement['processed'] ?? null) !== 1
+                    || ($enforcement['enforced'] ?? null) !== 0
+                    || ($enforcement['skipped'] ?? null) !== 1
+                    || ($enforcement['failed'] ?? null) !== 0
+                    || ($enforcementResult['outcome'] ?? null) !== 'skipped'
+                    || ($enforcementResult['reason'] ?? null) !== 'no_deadline_expired'
+                    || $timedOutCount !== 0) {
+                    throw new RuntimeException("PHP SDK heartbeat renewal enforcement pass {$sequence} contradicted the accepted heartbeat");
+                }
+
+                $acknowledgements[] = [
+                    'sequence' => $sequence,
+                    'progress' => $progress,
+                    'request_started_at' => $exchange['request_started_at'] ?? null,
+                    'response_received_at' => $exchange['response_received_at'] ?? null,
+                    'response' => $response,
+                    'previous_deadline_at' => iso_from_timestamp($previousDeadlineTimestamp),
+                    'authoritative_deadline_at' => $authoritativeDeadlineAt,
+                    'last_heartbeat_at' => $state['last_heartbeat_at'] ?? null,
+                    'observed_cadence_seconds' => $observedCadence,
+                    'deadline_advanced' => $deadlineAdvanced,
+                ];
+                $enforcementPasses[] = [
+                    'pass' => $sequence,
+                    'observed_at' => iso_from_timestamp($enforcementStartedAt),
+                    'finished_at' => iso_from_timestamp(microtime(true)),
+                    'authoritative_deadline_at' => $authoritativeDeadlineAt,
+                    'activity_timed_out_history_count' => $timedOutCount,
+                    'response' => $enforcement,
+                ];
+
+                $previousDeadlineTimestamp = $authoritativeDeadlineTimestamp;
+                $previousHeartbeatAt = $lastHeartbeatAt;
+            }
+
+            $handlerFinishedAt = microtime(true);
+            if (($handlerFinishedAt - $handlerStartedAt) <= $heartbeatTimeoutSeconds) {
+                throw new RuntimeException('PHP SDK heartbeat renewal activity did not remain in flight beyond the original heartbeat timeout');
+            }
+            return [
+                'message' => 'published PHP SDK heartbeat renewal completed',
+                'runtime' => 'sdk-php',
+                'accepted_heartbeat_count' => count($acknowledgements),
+                'input_marker' => is_array($arguments[0] ?? null)
+                    ? ($arguments[0]['input_marker'] ?? null)
+                    : null,
+            ];
+        },
+    );
+    $worker->run(0);
+
+    $completionExchange = $transport->latest('/complete', 'POST');
+    $completionResponse = is_array($completionExchange['response'] ?? null)
+        ? $completionExchange['response']
+        : [];
+    $show = request_json('GET', '/activities/'.rawurlencode($activityId));
+    $history = request_json('GET', '/workflows/'.rawurlencode($activityId).'/runs/'.rawurlencode($runId).'/history');
+    $heartbeatPayloads = history_payloads_for_event($history, HistoryEventType::ActivityHeartbeatRecorded->value);
+    $completedPayloads = history_payloads_for_event($history, HistoryEventType::ActivityCompleted->value);
+    $timedOutPayloads = history_payloads_for_event($history, HistoryEventType::ActivityTimedOut->value);
+    $completedExactlyOnce = count($completedPayloads) === 1
+        && $transport->count('/complete', 'POST') === 1
+        && ($completionResponse['recorded'] ?? null) === true
+        && ($show['status'] ?? null) === RunStatus::Completed->value;
+    $historyWithoutContradiction = count($timedOutPayloads) === 0
+        && count($heartbeatPayloads) === count($acknowledgements);
+    if (! $completedExactlyOnce || ! $historyWithoutContradiction) {
+        throw new RuntimeException('PHP SDK heartbeat renewal did not complete exactly once with contradiction-free heartbeat history');
+    }
+
+    $executionObservationPath = getenv('DW_ACTIVITIES_PHP_SDK_EXECUTION_OBSERVATION') ?: '';
+    if ($executionObservationPath === '') {
+        throw new RuntimeException('PHP SDK execution observation path is not configured');
+    }
+    write_json_file($executionObservationPath, [
+        'schema' => 'durable-workflow.v2.activity-runtime.distribution-execution-observation',
+        'component' => 'sdk-php',
+        'package' => 'durable-workflow/sdk',
+        'version' => getenv('DW_PHP_SDK_VERSION') ?: 'unknown',
+        'class' => PublishedPhpSdkWorker::class,
+        'method' => 'run',
+        'source_file' => 'src/Worker.php',
+        'activity_execution_id' => $activityExecutionId,
+        'observed_heartbeat_count' => count($acknowledgements),
+        'observed_enforcement_pass_count' => count($enforcementPasses),
+    ]);
+
+    $negativeStart = request_json('POST', '/activities', [
+        'activity_id' => $negativeActivityId,
+        'activity_type' => ACTIVITY_TYPE,
+        'task_queue' => ACTIVITIES_TASK_QUEUE,
+        'input' => [[
+            'scenario_id' => 'heartbeat_timeout_renewal_across_enforcement_passes',
+            'runtime' => 'sdk-php',
+            'control' => 'stop_heartbeating',
+        ]],
+        'heartbeat_timeout_seconds' => $heartbeatTimeoutSeconds,
+        'schedule_to_close_timeout_seconds' => 30,
+        'retry_policy' => [
+            'max_attempts' => 1,
+            'backoff_seconds' => [0],
+        ],
+    ]);
+    $negativeRunId = (string) ($negativeStart['workflow_run_id'] ?? '');
+    $negativeExecutionId = (string) ($negativeStart['activity_execution_id'] ?? '');
+    $negativeTask = $client->pollActivityTask($workerId, ACTIVITIES_TASK_QUEUE, 0);
+    if (! is_array($negativeTask)
+        || ($negativeTask['activity_execution_id'] ?? null) !== $negativeExecutionId) {
+        throw new RuntimeException('PHP SDK negative control did not lease the expected activity attempt');
+    }
+    $negativeState = activity_execution_state($negativeExecutionId) ?? [];
+    $negativeDeadlineAt = (string) ($negativeState['heartbeat_deadline_at'] ?? '');
+    $negativeDeadlineTimestamp = timestamp_from_datetime($negativeDeadlineAt);
+    if ($negativeDeadlineTimestamp === null) {
+        throw new RuntimeException('PHP SDK negative control did not expose a heartbeat deadline');
+    }
+
+    wait_until_timestamp($negativeDeadlineTimestamp + 0.25);
+    $negativeStatusBefore = request_json('GET', '/system/activity-timeouts');
+    $negativeEnforcementObservedAt = microtime(true);
+    $negativeEnforcement = request_json('POST', '/system/activity-timeouts/pass', [
+        'execution_ids' => [$negativeExecutionId],
+    ]);
+    $negativeEnforcementResult = is_array($negativeEnforcement['results'][0] ?? null)
+        ? $negativeEnforcement['results'][0]
+        : [];
+    if (($negativeEnforcement['enforced'] ?? null) !== 1
+        || ($negativeEnforcementResult['outcome'] ?? null) !== 'enforced') {
+        throw new RuntimeException('PHP SDK no-heartbeat negative control did not enforce its expired heartbeat deadline');
+    }
+
+    $lateHeartbeat = $client->heartbeatActivityTask(
+        (string) $negativeTask['task_id'],
+        (string) $negativeTask['activity_attempt_id'],
+        (string) $negativeTask['lease_owner'],
+        ['scenario_id' => 'heartbeat_timeout_renewal_across_enforcement_passes', 'late' => true],
+    );
+    $lateCompletion = published_php_sdk_conflict(
+        fn (): array => $client->completeActivityTask(
+            (string) $negativeTask['task_id'],
+            (string) $negativeTask['activity_attempt_id'],
+            (string) $negativeTask['lease_owner'],
+            ['result' => 'too late'],
+        )
+    );
+    $lateFailure = published_php_sdk_conflict(
+        fn (): array => $client->failActivityTask(
+            (string) $negativeTask['task_id'],
+            (string) $negativeTask['activity_attempt_id'],
+            (string) $negativeTask['lease_owner'],
+            'too late',
+            'ActivitiesConformanceLateFailure',
+            true,
+        )
+    );
+    $negativeShow = request_json('GET', '/activities/'.rawurlencode($negativeActivityId));
+    $negativeHistory = request_json(
+        'GET',
+        '/workflows/'.rawurlencode($negativeActivityId).'/runs/'.rawurlencode($negativeRunId).'/history'
+    );
+    $negativeTimeoutPayloads = history_payloads_for_event($negativeHistory, HistoryEventType::ActivityTimedOut->value);
+    $negativeTimeoutPayload = is_array($negativeTimeoutPayloads[0] ?? null)
+        ? $negativeTimeoutPayloads[0]
+        : [];
+    $negativeTerminalHistory = [
+        'event_types' => event_types($negativeHistory),
+        'activity_timed_out_count' => count($negativeTimeoutPayloads),
+        'activity_completed_count' => count_event_type($negativeHistory, HistoryEventType::ActivityCompleted->value),
+        'activity_failed_count' => count_event_type($negativeHistory, HistoryEventType::ActivityFailed->value),
+        'workflow_failed_count' => count_event_type($negativeHistory, HistoryEventType::WorkflowFailed->value),
+    ];
+    if (($negativeTimeoutPayload['timeout_kind'] ?? null) !== 'heartbeat'
+        || ($negativeTimeoutPayload['failure_category'] ?? null) !== FailureCategory::Timeout->value
+        || ($lateHeartbeat['heartbeat_recorded'] ?? null) !== false
+        || ($lateHeartbeat['can_continue'] ?? null) !== false
+        || ($lateHeartbeat['reason'] ?? null) !== 'attempt_closed'
+        || ($lateCompletion['http_status'] ?? null) !== 409
+        || ($lateCompletion['reason'] ?? null) !== 'stale_attempt'
+        || ($lateCompletion['recorded'] ?? null) !== false
+        || ($lateFailure['http_status'] ?? null) !== 409
+        || ($lateFailure['reason'] ?? null) !== 'stale_attempt'
+        || ($lateFailure['recorded'] ?? null) !== false
+        || $negativeTerminalHistory['activity_timed_out_count'] !== 1
+        || $negativeTerminalHistory['activity_completed_count'] !== 0
+        || $negativeTerminalHistory['activity_failed_count'] !== 0) {
+        throw new RuntimeException('PHP SDK no-heartbeat negative control did not preserve typed timeout and deterministic stale-attempt responses');
+    }
+
+    $hostEvidence = [
+        'schema' => HOST_EVIDENCE_SCHEMA,
+        'scenario_id' => 'heartbeat_timeout_renewal_across_enforcement_passes',
+        'status' => 'pass',
+        'execution_source' => HOST_EVIDENCE_SOURCE,
+        'executed_in_pinned_server_artifact' => true,
+        'local_product_source_checkouts_used' => false,
+        'activity_cells' => [[
+            'mode' => 'standalone',
+            'runtime' => 'sdk-php',
+            'status' => 'pass',
+            'execution_source' => HOST_EVIDENCE_SOURCE,
+            'activity_execution_id' => $activityExecutionId,
+            'activity_attempt_id' => $acknowledgements[0]['response']['activity_attempt_id'] ?? null,
+            'worker_artifact' => $workerArtifact,
+            'local_product_source_checkouts_used' => false,
+        ]],
+    ];
+
+    return [
+        'scenario_id' => 'heartbeat_timeout_renewal_across_enforcement_passes',
+        'mode' => 'standalone',
+        'runtime' => 'sdk-php',
+        'status' => 'pass',
+        'execution_source' => HOST_EVIDENCE_SOURCE,
+        'activity_id' => $activityId,
+        'workflow_run_id' => $runId,
+        'activity_execution_id' => $activityExecutionId,
+        'activity_attempt_id' => $acknowledgements[0]['response']['activity_attempt_id'] ?? null,
+        'php_sdk_worker_artifact' => $workerArtifact,
+        'heartbeat_timeout_seconds' => $heartbeatTimeoutSeconds,
+        'heartbeat_cadence_seconds' => $heartbeatCadenceSeconds,
+        'initial_heartbeat_deadline_at' => $initialHeartbeatDeadlineAt,
+        'handler_started_at' => iso_from_timestamp($handlerStartedAt),
+        'handler_finished_at' => iso_from_timestamp($handlerFinishedAt),
+        'in_flight_duration_seconds' => $handlerFinishedAt - $handlerStartedAt,
+        'heartbeat_acknowledgements' => $acknowledgements,
+        'enforcement_passes' => $enforcementPasses,
+        'completion_response' => $completionResponse,
+        'terminal_history' => [
+            'event_types' => event_types($history),
+            'heartbeat_payloads' => $heartbeatPayloads,
+            'activity_heartbeat_recorded_count' => count($heartbeatPayloads),
+            'activity_completed_count' => count($completedPayloads),
+            'activity_timed_out_count' => count($timedOutPayloads),
+            'completed_exactly_once' => $completedExactlyOnce,
+            'history_without_contradiction' => $historyWithoutContradiction,
+            'activity_handle_response' => $show,
+        ],
+        'negative_control' => [
+            'activity_id' => $negativeActivityId,
+            'workflow_run_id' => $negativeRunId,
+            'activity_execution_id' => $negativeExecutionId,
+            'activity_attempt_id' => $negativeTask['activity_attempt_id'] ?? null,
+            'initial_heartbeat_deadline_at' => $negativeDeadlineAt,
+            'timeout_status_before_enforce' => $negativeStatusBefore,
+            'enforcement_observed_at' => iso_from_timestamp($negativeEnforcementObservedAt),
+            'enforcement_pass' => $negativeEnforcement,
+            'typed_timeout_payload' => $negativeTimeoutPayload,
+            'late_heartbeat_response' => $lateHeartbeat,
+            'late_completion_conflict' => $lateCompletion,
+            'late_failure_conflict' => $lateFailure,
+            'terminal_history' => $negativeTerminalHistory,
+            'activity_handle_response' => $negativeShow,
+        ],
+        'isolated_cleanup' => [
+            'isolated_database' => true,
+            'isolated_storage' => true,
+            'scratch_scope' => 'ephemeral_run_root',
+            'scratch_removed_on_exit' => (getenv('DW_ACTIVITIES_SCRATCH_REMOVED_ON_EXIT') ?: 'false') === 'true',
+            'published_server_container_removed' => (getenv('DW_ACTIVITIES_CONTAINER_REMOVED_ON_EXIT') ?: '0') === '1',
+            'published_server_container_remove_policy' => 'docker_run_rm',
+            'result_evidence_retained_outside_scratch' => true,
+        ],
+        'activity_host_evidence' => $hostEvidence,
+        'local_product_source_checkouts_used' => false,
+    ];
+}
+
+function scenario_from_heartbeat_timeout_renewal_cell(array $cell): array
+{
+    $acknowledgements = is_array($cell['heartbeat_acknowledgements'] ?? null)
+        ? $cell['heartbeat_acknowledgements']
+        : [];
+    $enforcementPasses = is_array($cell['enforcement_passes'] ?? null)
+        ? $cell['enforcement_passes']
+        : [];
+    $terminalHistory = is_array($cell['terminal_history'] ?? null) ? $cell['terminal_history'] : [];
+    $negative = is_array($cell['negative_control'] ?? null) ? $cell['negative_control'] : [];
+    $lateCompletion = is_array($negative['late_completion_conflict'] ?? null)
+        ? $negative['late_completion_conflict']
+        : [];
+    $lateFailure = is_array($negative['late_failure_conflict'] ?? null)
+        ? $negative['late_failure_conflict']
+        : [];
+    $pass = ($cell['status'] ?? null) === 'pass'
+        && ($cell['runtime'] ?? null) === 'sdk-php'
+        && count($acknowledgements) >= 4
+        && count($enforcementPasses) >= 3
+        && ($terminalHistory['completed_exactly_once'] ?? null) === true
+        && ($terminalHistory['history_without_contradiction'] ?? null) === true
+        && ($negative['typed_timeout_payload']['timeout_kind'] ?? null) === 'heartbeat'
+        && ($lateCompletion['http_status'] ?? null) === 409
+        && ($lateCompletion['reason'] ?? null) === 'stale_attempt'
+        && ($lateFailure['http_status'] ?? null) === 409
+        && ($lateFailure['reason'] ?? null) === 'stale_attempt'
+        && ($cell['isolated_cleanup']['scratch_removed_on_exit'] ?? null) === true;
+    $observed = [
+        'activity_host_evidence' => $cell['activity_host_evidence'] ?? null,
+        'execution_source' => HOST_EVIDENCE_SOURCE,
+        'activity_id' => $cell['activity_id'] ?? null,
+        'workflow_run_id' => $cell['workflow_run_id'] ?? null,
+        'activity_execution_id' => $cell['activity_execution_id'] ?? null,
+        'activity_attempt_id' => $cell['activity_attempt_id'] ?? null,
+        'php_sdk_worker_artifact' => $cell['php_sdk_worker_artifact'] ?? null,
+        'heartbeat_timeout_seconds' => $cell['heartbeat_timeout_seconds'] ?? null,
+        'heartbeat_cadence_seconds' => $cell['heartbeat_cadence_seconds'] ?? null,
+        'initial_heartbeat_deadline_at' => $cell['initial_heartbeat_deadline_at'] ?? null,
+        'handler_started_at' => $cell['handler_started_at'] ?? null,
+        'handler_finished_at' => $cell['handler_finished_at'] ?? null,
+        'in_flight_duration_seconds' => $cell['in_flight_duration_seconds'] ?? null,
+        'heartbeat_acknowledgements' => $acknowledgements,
+        'enforcement_passes' => $enforcementPasses,
+        'completion_response' => $cell['completion_response'] ?? null,
+        'terminal_history' => $terminalHistory,
+        'negative_control' => $negative,
+        'isolated_cleanup' => $cell['isolated_cleanup'] ?? null,
+    ];
+    $scenario = [
+        'scenario_id' => 'heartbeat_timeout_renewal_across_enforcement_passes',
+        'status' => $pass ? 'pass' : 'fail',
+        'classification' => $pass ? null : 'product-gap',
+        'observed_outputs' => array_filter($observed, static fn (mixed $value): bool => $value !== null && $value !== []),
+        'scenario_evidence' => [
+            'heartbeat_timeout_renewal' => $cell,
+            'activity_host_evidence' => $cell['activity_host_evidence'] ?? null,
+        ],
+    ];
+    if (! $pass) {
+        $message = 'published PHP SDK heartbeat renewal did not preserve deadline advancement, repeated enforcement safety, exact-once completion, typed negative-control timeout, deterministic stale-attempt responses, and isolated cleanup';
+        $scenario['observed_behavior'] = $message;
+        $scenario['linked_findings'] = [finding_for_failure(
+            'heartbeat_timeout_renewal_across_enforcement_passes',
+            $message
+        )];
+    }
+
+    return $scenario;
+}
+
 function run_typed_failure_propagation_cell(): array
 {
     $suffix = bin2hex(random_bytes(3));
@@ -4813,6 +5507,20 @@ try {
     } catch (Throwable $throwable) {
         $heartbeatScenario = failure_behavior_scenario('heartbeat_and_cancellation_observation', $throwable);
     }
+    $heartbeatTimeoutRenewalScenario = failure_behavior_scenario(
+        'heartbeat_timeout_renewal_across_enforcement_passes',
+        new RuntimeException('PHP SDK heartbeat timeout renewal scenario did not execute')
+    );
+    try {
+        $heartbeatTimeoutRenewalScenario = scenario_from_heartbeat_timeout_renewal_cell(
+            run_heartbeat_timeout_renewal_cell()
+        );
+    } catch (Throwable $throwable) {
+        $heartbeatTimeoutRenewalScenario = failure_behavior_scenario(
+            'heartbeat_timeout_renewal_across_enforcement_passes',
+            $throwable
+        );
+    }
     $idempotentScenario = failure_behavior_scenario(
         'idempotent_completion_handling',
         new RuntimeException('idempotent completion scenario did not execute')
@@ -4849,6 +5557,7 @@ try {
         $timeoutScenario,
         $typedFailureScenario,
         $heartbeatScenario,
+        $heartbeatTimeoutRenewalScenario,
         $idempotentScenario,
         $parityScenario,
         $operatorVisibilityScenario,
@@ -4862,6 +5571,7 @@ try {
         failure_behavior_scenario('timeout_behavior', $throwable),
         failure_behavior_scenario('typed_failure_propagation', $throwable),
         failure_behavior_scenario('heartbeat_and_cancellation_observation', $throwable),
+        failure_behavior_scenario('heartbeat_timeout_renewal_across_enforcement_passes', $throwable),
         failure_behavior_scenario('idempotent_completion_handling', $throwable),
         failure_behavior_scenario('php_python_activity_parity', $throwable),
         failure_behavior_scenario('operator_visible_activity_attempt_state', $throwable),
@@ -4918,6 +5628,7 @@ const REQUIRED_SCENARIOS = [
   'timeout_behavior',
   'typed_failure_propagation',
   'heartbeat_and_cancellation_observation',
+  'heartbeat_timeout_renewal_across_enforcement_passes',
   'idempotent_completion_handling',
   'php_python_activity_parity',
   'operator_visible_activity_attempt_state',
@@ -4926,6 +5637,7 @@ const REQUIRED_SCENARIOS = [
 const REQUIRED_INSTALL_ARTIFACTS = [
   'server',
   'cli',
+  'sdk-php',
   'sdk-python',
   'workflow-php',
   'waterline',
@@ -4936,6 +5648,7 @@ const REQUIRED_DISTRIBUTION_IDENTITIES = [
   'waterline',
   'server',
   'cli',
+  'sdk-php',
   'sdk-python',
 ];
 
@@ -4944,6 +5657,7 @@ const DISTRIBUTION_COMPONENTS = {
   waterline: { kind: 'composer', package: 'durable-workflow/waterline', versionKey: 'waterline' },
   server: { kind: 'oci', package: 'docker.io/durableworkflow/server', versionKey: 'server' },
   cli: { kind: 'github-release', package: 'durable-workflow/cli', versionKey: 'cli' },
+  'sdk-php': { kind: 'composer', package: 'durable-workflow/sdk', versionKey: 'sdk-php' },
   'sdk-python': { kind: 'pypi', package: 'durable-workflow', versionKey: 'sdk-python' },
 };
 
@@ -4967,6 +5681,8 @@ const DEFAULT_EXPECTED_BEHAVIOR = {
     'activity failures preserve type, message, and details through history and the caller runtime',
   heartbeat_and_cancellation_observation:
     'activity heartbeat details are recorded and cancellation is observable by a running worker',
+  heartbeat_timeout_renewal_across_enforcement_passes:
+    'an exact published PHP SDK worker renews the authoritative heartbeat deadline across repeated timeout enforcement, completes once without contradictory timeout history, and retains typed stale-attempt behavior when heartbeats stop',
   idempotent_completion_handling:
     'duplicate completion attempts do not create duplicate terminal records and return a deterministic worker-protocol response',
   php_python_activity_parity:
@@ -5436,7 +6152,7 @@ function normalizeDistributionIdentity(component, value, artifactVersions) {
       || name.trim() !== name
       || !name
       || name.length > 256
-      || (!['workflow', 'waterline'].includes(component) && name.includes('/'))) {
+      || (!['workflow', 'waterline', 'sdk-php'].includes(component) && name.includes('/'))) {
       throw new Error(`executed distribution artifact name for ${component} is invalid`);
     }
     if (typeof digest !== 'string' || !DISTRIBUTION_DIGEST_PATTERN.test(digest)) {
@@ -5614,6 +6330,7 @@ function exactVersionFailures(versions, serverImage) {
     server: 'DW_SERVER_VERSION or exact DW_SERVER_IMAGE tag',
     cli: 'DW_CLI_VERSION',
     'sdk-python': 'DW_PYTHON_SDK_VERSION',
+    'sdk-php': 'DW_PHP_SDK_VERSION',
     workflow: 'DW_WORKFLOW_PHP_VERSION',
     waterline: 'DW_WATERLINE_VERSION',
   };
@@ -5669,6 +6386,7 @@ function normalizedStatus(value) {
 function artifactVersionFor(versions, artifact) {
   const aliases = {
     'workflow-php': ['workflow-php', 'workflow'],
+    'sdk-php': ['sdk-php', 'sdk_php', 'php'],
     'sdk-python': ['sdk-python', 'sdk_python', 'python'],
   };
   for (const key of aliases[artifact] || [artifact]) {
@@ -5779,6 +6497,8 @@ function installSourceMatchesArtifact(artifact, version, source) {
       return matchesCliArtifactSource(version, source);
     case 'sdk-python':
       return matchesPythonArtifactSource(version, source);
+    case 'sdk-php':
+      return matchesComposerArtifactSource('durable-workflow/sdk', version, source);
     case 'workflow-php':
       return matchesComposerArtifactSource('durable-workflow/workflow', version, source);
     case 'waterline':
@@ -5824,7 +6544,7 @@ function sourceLooksLocal(source) {
     || /^[a-z]:\//.test(normalized)
     || /^\.\.?(?:\/|$)/.test(normalized)
     || /(^|[^a-z0-9])\/?workspace\/repos\//.test(normalized)
-    || /^repos\/(?:server|workflow|waterline|cli|cloud|sample-app|sdk-python|durable-workflow\.github\.io)(?:\/|$)/.test(normalized);
+    || /^repos\/(?:server|workflow|waterline|cli|cloud|sample-app|sdk-php|sdk-python|durable-workflow\.github\.io)(?:\/|$)/.test(normalized);
 }
 
 function matchesCliArtifactSource(version, source) {
@@ -6428,7 +7148,7 @@ function finding(scenarioId, expectedBehavior, artifactVersions, options) {
     expected_behavior: expectedBehavior,
     observed_behavior: observed,
     user_visible_reproduction_steps: [
-      'Set exact DW_SERVER_VERSION, DW_CLI_VERSION, DW_PYTHON_SDK_VERSION, DW_WORKFLOW_PHP_VERSION, and DW_WATERLINE_VERSION values.',
+      'Set exact DW_SERVER_VERSION, DW_CLI_VERSION, DW_PHP_SDK_VERSION, DW_PYTHON_SDK_VERSION, DW_WORKFLOW_PHP_VERSION, and DW_WATERLINE_VERSION values.',
       'Run scripts/conformance/activities-published-artifacts.sh --result-dir <result-dir> with a host-produced activity evidence document.',
       'Inspect activities-result.json for the scenario status, classification, and linked finding.',
     ],
@@ -6465,6 +7185,9 @@ function evidenceStatusSections(status, reason) {
     }),
     timeout_behavior: section({
       required_behavior: 'start-to-close or schedule-to-close timeout is enforced and typed',
+    }),
+    heartbeat_timeout_renewal: section({
+      required_behavior: 'the published PHP SDK worker renews a short heartbeat deadline across repeated timeout enforcement and retains a typed no-heartbeat negative control',
     }),
     typed_failure_propagation: section({
       required_behavior: 'failure type, message, and details propagate through history and caller runtime',
@@ -6670,6 +7393,208 @@ function focusedActivityHostEvidenceFailures(scenarioId, supplied, observedOutpu
   return failures;
 }
 
+function sdkPhpWorkerArtifactFailures(artifact, artifactVersions) {
+  if (!nonEmptyObject(artifact)) {
+    return ['sdk_php_activity_worker_artifact_missing'];
+  }
+  const failures = [];
+  const expectedVersion = artifactVersionFor(artifactVersions, 'sdk-php');
+  const artifactName = stringValue(artifact.artifact || artifact.name);
+  const packageName = stringValue(artifact.package || artifact.package_name || artifact.packageName);
+  const version = stringValue(artifact.version || artifact.package_version || artifact.packageVersion);
+  const source = entrySource(artifact);
+  const status = normalizedStatus(artifact.status || artifact.outcome);
+  const runtime = [artifact.runtime, artifact.language].map(stringValue).join(' ').toLowerCase();
+  const executionSource = stringValue(artifact.execution_source || artifact.executionSource);
+
+  if (artifactName !== 'sdk-php' || packageName !== 'durable-workflow/sdk') {
+    failures.push('sdk_php_activity_worker_artifact_invalid_package');
+  }
+  if (version !== expectedVersion || !SEMVER_RE.test(version)) {
+    failures.push(`sdk_php_activity_worker_artifact_invalid_version:${version || 'missing'}`);
+  }
+  if (!matchesComposerArtifactSource('durable-workflow/sdk', version, source)
+    || installSourceIsForbidden(source)) {
+    failures.push(`sdk_php_activity_worker_artifact_unrecognized_source:${source || 'missing'}`);
+  }
+  if (status !== 'pass'
+    || !runtime.includes('php')
+    || executionSource !== PUBLISHED_SERVER_CONTAINER_EXECUTION_SOURCE
+    || !explicitFalse(artifact.local_product_source_checkouts_used)
+    || localSourceSignals(artifact).length > 0) {
+    failures.push('sdk_php_activity_worker_artifact_execution_invalid');
+  }
+
+  return failures;
+}
+
+function heartbeatTimeoutRenewalFailures(scenarioId, observedOutputs, artifactVersions) {
+  if (scenarioId !== 'heartbeat_timeout_renewal_across_enforcement_passes') {
+    return [];
+  }
+
+  const failures = [];
+  failures.push(...sdkPhpWorkerArtifactFailures(
+    observedOutputs.php_sdk_worker_artifact || observedOutputs.phpSdkWorkerArtifact,
+    artifactVersions,
+  ));
+  const timeoutSeconds = observedOutputs.heartbeat_timeout_seconds;
+  const cadenceSeconds = observedOutputs.heartbeat_cadence_seconds;
+  const durationSeconds = observedOutputs.in_flight_duration_seconds;
+  const initialDeadline = Date.parse(stringValue(observedOutputs.initial_heartbeat_deadline_at));
+  if (!Number.isInteger(timeoutSeconds) || timeoutSeconds <= 0 || timeoutSeconds > 10) {
+    failures.push('heartbeat_timeout_renewal_invalid_short_timeout');
+  }
+  if (typeof cadenceSeconds !== 'number'
+    || cadenceSeconds <= 0
+    || !Number.isInteger(timeoutSeconds)
+    || cadenceSeconds > timeoutSeconds / 2) {
+    failures.push('heartbeat_timeout_renewal_cadence_not_materially_faster');
+  }
+  if (typeof durationSeconds !== 'number'
+    || !Number.isInteger(timeoutSeconds)
+    || durationSeconds <= timeoutSeconds) {
+    failures.push('heartbeat_timeout_renewal_activity_not_in_flight_beyond_timeout');
+  }
+  if (!Number.isFinite(initialDeadline)) {
+    failures.push('heartbeat_timeout_renewal_initial_deadline_missing');
+  }
+
+  const acknowledgements = Array.isArray(observedOutputs.heartbeat_acknowledgements)
+    ? observedOutputs.heartbeat_acknowledgements
+    : [];
+  if (acknowledgements.length < 4) {
+    failures.push('heartbeat_timeout_renewal_insufficient_acknowledgements');
+  }
+  acknowledgements.forEach((acknowledgement, index) => {
+    const response = nonEmptyObject(acknowledgement?.response) ? acknowledgement.response : {};
+    const requestStartedAt = Date.parse(stringValue(acknowledgement?.request_started_at));
+    const responseReceivedAt = Date.parse(stringValue(acknowledgement?.response_received_at));
+    const lastHeartbeatAt = Date.parse(stringValue(acknowledgement?.last_heartbeat_at));
+    const previousDeadline = Date.parse(stringValue(acknowledgement?.previous_deadline_at));
+    const authoritativeDeadline = Date.parse(stringValue(acknowledgement?.authoritative_deadline_at));
+    if (response.heartbeat_recorded !== true
+      || response.can_continue !== true
+      || acknowledgement?.deadline_advanced !== true
+      || !Number.isFinite(requestStartedAt)
+      || !Number.isFinite(responseReceivedAt)
+      || !Number.isFinite(lastHeartbeatAt)
+      || !Number.isFinite(previousDeadline)
+      || !Number.isFinite(authoritativeDeadline)
+      || responseReceivedAt < requestStartedAt
+      || authoritativeDeadline <= previousDeadline
+      || authoritativeDeadline <= lastHeartbeatAt) {
+      failures.push(`heartbeat_timeout_renewal_acknowledgement_${index + 1}_did_not_advance_deadline`);
+    }
+    if (index === 0 && Number.isFinite(initialDeadline) && previousDeadline !== initialDeadline) {
+      failures.push('heartbeat_timeout_renewal_initial_deadline_not_authoritative');
+    }
+    if (index > 0) {
+      const previousAcknowledgement = acknowledgements[index - 1];
+      const previousHeartbeatAt = Date.parse(stringValue(previousAcknowledgement?.last_heartbeat_at));
+      const previousAuthoritativeDeadline = Date.parse(
+        stringValue(previousAcknowledgement?.authoritative_deadline_at),
+      );
+      if (!Number.isFinite(previousHeartbeatAt)
+        || !Number.isFinite(lastHeartbeatAt)
+        || !Number.isInteger(timeoutSeconds)
+        || lastHeartbeatAt <= previousHeartbeatAt
+        || (lastHeartbeatAt - previousHeartbeatAt) / 1000 > timeoutSeconds / 2
+        || previousDeadline !== previousAuthoritativeDeadline) {
+        failures.push(`heartbeat_timeout_renewal_acknowledgement_${index + 1}_invalid_observed_cadence`);
+      }
+    }
+  });
+
+  const enforcementPasses = Array.isArray(observedOutputs.enforcement_passes)
+    ? observedOutputs.enforcement_passes
+    : [];
+  if (enforcementPasses.length < 3) {
+    failures.push('heartbeat_timeout_renewal_insufficient_enforcement_passes');
+  }
+  enforcementPasses.forEach((pass, index) => {
+    const response = nonEmptyObject(pass?.response) ? pass.response : {};
+    const observedAt = Date.parse(stringValue(pass?.observed_at));
+    const finishedAt = Date.parse(stringValue(pass?.finished_at));
+    const authoritativeDeadline = Date.parse(stringValue(pass?.authoritative_deadline_at));
+    const result = Array.isArray(response.results) && nonEmptyObject(response.results[0])
+      ? response.results[0]
+      : {};
+    if (response.processed !== 1
+      || response.enforced !== 0
+      || response.skipped !== 1
+      || response.failed !== 0
+      || result.outcome !== 'skipped'
+      || result.reason !== 'no_deadline_expired'
+      || pass?.activity_timed_out_history_count !== 0
+      || !Number.isFinite(observedAt)
+      || !Number.isFinite(finishedAt)
+      || !Number.isFinite(authoritativeDeadline)
+      || finishedAt < observedAt
+      || finishedAt >= authoritativeDeadline) {
+      failures.push(`heartbeat_timeout_renewal_enforcement_pass_${index + 1}_contradicted_heartbeat`);
+    }
+  });
+
+  const completion = nonEmptyObject(observedOutputs.completion_response)
+    ? observedOutputs.completion_response
+    : {};
+  const terminal = nonEmptyObject(observedOutputs.terminal_history)
+    ? observedOutputs.terminal_history
+    : {};
+  if (completion.recorded !== true
+    || terminal.activity_completed_count !== 1
+    || terminal.activity_timed_out_count !== 0
+    || terminal.activity_heartbeat_recorded_count !== acknowledgements.length
+    || terminal.completed_exactly_once !== true
+    || terminal.history_without_contradiction !== true) {
+    failures.push('heartbeat_timeout_renewal_terminal_history_is_contradictory');
+  }
+
+  const negative = nonEmptyObject(observedOutputs.negative_control)
+    ? observedOutputs.negative_control
+    : {};
+  const negativeEnforcement = nonEmptyObject(negative.enforcement_pass) ? negative.enforcement_pass : {};
+  const timeoutPayload = nonEmptyObject(negative.typed_timeout_payload) ? negative.typed_timeout_payload : {};
+  const lateHeartbeat = nonEmptyObject(negative.late_heartbeat_response) ? negative.late_heartbeat_response : {};
+  const lateCompletion = nonEmptyObject(negative.late_completion_conflict) ? negative.late_completion_conflict : {};
+  const lateFailure = nonEmptyObject(negative.late_failure_conflict) ? negative.late_failure_conflict : {};
+  const negativeHistory = nonEmptyObject(negative.terminal_history) ? negative.terminal_history : {};
+  const negativeDeadline = Date.parse(stringValue(negative.initial_heartbeat_deadline_at));
+  const negativeEnforcedAt = Date.parse(stringValue(negative.enforcement_observed_at));
+  if (negativeEnforcement.enforced !== 1
+    || timeoutPayload.timeout_kind !== 'heartbeat'
+    || timeoutPayload.failure_category !== 'timeout'
+    || lateHeartbeat.heartbeat_recorded !== false
+    || lateHeartbeat.can_continue !== false
+    || lateHeartbeat.reason !== 'attempt_closed'
+    || lateCompletion.http_status !== 409
+    || lateCompletion.reason !== 'stale_attempt'
+    || lateCompletion.recorded !== false
+    || lateFailure.http_status !== 409
+    || lateFailure.reason !== 'stale_attempt'
+    || lateFailure.recorded !== false
+    || negativeHistory.activity_timed_out_count !== 1
+    || negativeHistory.activity_completed_count !== 0
+    || negativeHistory.activity_failed_count !== 0
+    || !Number.isFinite(negativeDeadline)
+    || !Number.isFinite(negativeEnforcedAt)
+    || negativeEnforcedAt <= negativeDeadline) {
+    failures.push('heartbeat_timeout_renewal_negative_control_invalid');
+  }
+
+  const cleanup = nonEmptyObject(observedOutputs.isolated_cleanup)
+    ? observedOutputs.isolated_cleanup
+    : {};
+  if (cleanup.isolated_database !== true
+    || cleanup.scratch_removed_on_exit !== true
+    || cleanup.published_server_container_removed !== true) {
+    failures.push('heartbeat_timeout_renewal_isolated_cleanup_missing');
+  }
+
+  return failures;
+}
+
 function main() {
   const manifest = loadManifest();
   const scenarios = scenarioDefs(manifest);
@@ -6685,6 +7610,7 @@ function main() {
   const artifactVersions = {
     server: serverVersion,
     cli: normalizeCliVersion(env('DW_CLI_VERSION')),
+    'sdk-php': env('DW_PHP_SDK_VERSION'),
     'sdk-python': env('DW_PYTHON_SDK_VERSION'),
     workflow: workflowVersion,
     waterline: env('DW_WATERLINE_VERSION'),
@@ -6692,6 +7618,7 @@ function main() {
   const publishedArtifactVersions = {
     server: artifactVersions.server,
     cli: artifactVersions.cli,
+    'sdk-php': artifactVersions['sdk-php'],
     'sdk-python': artifactVersions['sdk-python'],
     workflow: artifactVersions.workflow,
     waterline: artifactVersions.waterline,
@@ -6778,6 +7705,7 @@ function main() {
             server_image: serverImage,
             cli_release: artifactVersions.cli,
             workflow_php_package: `durable-workflow/workflow:${artifactVersions.workflow}`,
+            sdk_php_package: `durable-workflow/sdk:${artifactVersions['sdk-php']}`,
             sdk_python_package: `durable-workflow==${artifactVersions['sdk-python']}`,
             waterline_artifact: `durable-workflow/waterline:${artifactVersions.waterline}`,
             artifact_sources: artifactSources,
@@ -6836,6 +7764,14 @@ function main() {
       if (status === 'pass' && focusedHostEvidenceFailures.length > 0) {
         status = 'fail';
       }
+      const scenarioContractFailures = heartbeatTimeoutRenewalFailures(
+        scenarioId,
+        observedOutputs,
+        artifactVersions,
+      );
+      if (status === 'pass' && scenarioContractFailures.length > 0) {
+        status = 'fail';
+      }
 
       if (status === 'pass') {
         const passObservedOutputs = {
@@ -6858,7 +7794,10 @@ function main() {
         continue;
       }
 
-      const focusedHostEvidenceReason = focusedHostEvidenceFailures.join('; ');
+      const focusedHostEvidenceReason = [
+        ...focusedHostEvidenceFailures,
+        ...scenarioContractFailures,
+      ].join('; ');
       const classification = normalizeClassification(
         supplied.classification || supplied.root_cause_classification || supplied.rootCauseClassification,
         status === 'runner_blocked' ? 'runner-gap' : (runtimeExecutionPass ? 'product-gap' : 'coverage-gap'),
@@ -6887,6 +7826,9 @@ function main() {
             ...(focusedHostEvidenceFailures.length > 0
               ? { activity_host_evidence_failures: focusedHostEvidenceFailures }
               : {}),
+            ...(scenarioContractFailures.length > 0
+              ? { scenario_contract_failures: scenarioContractFailures }
+              : {}),
           }
           : {
             coverage_status: status,
@@ -6895,6 +7837,9 @@ function main() {
             runtime_execution_failures: runtimeExecutionFailureList,
             ...(focusedHostEvidenceFailures.length > 0
               ? { activity_host_evidence_failures: focusedHostEvidenceFailures }
+              : {}),
+            ...(scenarioContractFailures.length > 0
+              ? { scenario_contract_failures: scenarioContractFailures }
               : {}),
             ...(runtimeExecutionPass
               ? { published_artifact_worker_execution: runtimeExecution }
@@ -6983,6 +7928,9 @@ function main() {
     workflow_php_package: artifactVersions.workflow
       ? `durable-workflow/workflow:${artifactVersions.workflow}`
       : '',
+    sdk_php_package: artifactVersions['sdk-php']
+      ? `durable-workflow/sdk:${artifactVersions['sdk-php']}`
+      : '',
     sdk_python_package: artifactVersions['sdk-python']
       ? `durable-workflow==${artifactVersions['sdk-python']}`
       : '',
@@ -7030,12 +7978,17 @@ function main() {
     topology: {
       namespace: 'activities-conformance',
       task_queue: 'activities-shared',
-      required_workers: ['workflow-php', 'sdk-python'],
+      required_workers: ['workflow-php', 'sdk-php', 'sdk-python'],
       execution_modes: ['workflow-embedded', 'standalone'],
     },
     durable_result_recording: sectionFromEvidence(activityEvidence, 'durable_result_recording', sections.durable_result_recording),
     retry_backoff: sectionFromEvidence(activityEvidence, 'retry_backoff', sections.retry_backoff),
     timeout_behavior: sectionFromEvidence(activityEvidence, 'timeout_behavior', sections.timeout_behavior),
+    heartbeat_timeout_renewal: sectionFromEvidence(
+      activityEvidence,
+      'heartbeat_timeout_renewal',
+      sections.heartbeat_timeout_renewal,
+    ),
     typed_failure_propagation: sectionFromEvidence(activityEvidence, 'typed_failure_propagation', sections.typed_failure_propagation),
     heartbeat_cancellation: sectionFromEvidence(activityEvidence, 'heartbeat_cancellation', sections.heartbeat_cancellation),
     idempotent_completion: sectionFromEvidence(activityEvidence, 'idempotent_completion', sections.idempotent_completion),
@@ -7093,6 +8046,7 @@ function main() {
     durable_result_recording: boundedPortableCell(nativeResult.durable_result_recording),
     retry_backoff: boundedPortableCell(nativeResult.retry_backoff),
     timeout_behavior: boundedPortableCell(nativeResult.timeout_behavior),
+    heartbeat_timeout_renewal: boundedPortableCell(nativeResult.heartbeat_timeout_renewal),
     typed_failure_propagation: boundedPortableCell(nativeResult.typed_failure_propagation),
     heartbeat_cancellation: boundedPortableCell(nativeResult.heartbeat_cancellation),
     idempotent_completion: boundedPortableCell(nativeResult.idempotent_completion),
@@ -7117,6 +8071,7 @@ function main() {
       durable_result_recording: boundedPortableCell({ status: nativeResult.durable_result_recording?.status }),
       retry_backoff: boundedPortableCell({ status: nativeResult.retry_backoff?.status }),
       timeout_behavior: boundedPortableCell({ status: nativeResult.timeout_behavior?.status }),
+      heartbeat_timeout_renewal: boundedPortableCell({ status: nativeResult.heartbeat_timeout_renewal?.status }),
       typed_failure_propagation: boundedPortableCell({ status: nativeResult.typed_failure_propagation?.status }),
       heartbeat_cancellation: boundedPortableCell({ status: nativeResult.heartbeat_cancellation?.status }),
       idempotent_completion: boundedPortableCell({ status: nativeResult.idempotent_completion?.status }),
@@ -7181,6 +8136,7 @@ function main() {
       durable_result_recording: blockedSection,
       retry_backoff: blockedSection,
       timeout_behavior: blockedSection,
+      heartbeat_timeout_renewal: blockedSection,
       typed_failure_propagation: blockedSection,
       heartbeat_cancellation: blockedSection,
       idempotent_completion: blockedSection,

@@ -77,7 +77,7 @@ final class ActivityRuntimeResultGate
                 'every_result_uses_a_published_status',
                 'workflow_embedded_and_standalone_activity_modes_are_reported',
                 'required_php_and_python_activity_runtimes_are_reported',
-                'durable_result_retry_timeout_failure_heartbeat_cancellation_idempotency_and_visibility_sections_are_reported',
+                'durable_result_retry_timeout_php_sdk_heartbeat_renewal_failure_heartbeat_cancellation_idempotency_and_visibility_sections_are_reported',
                 'each_pass_scenario_has_observed_outputs',
                 'each_pass_scenario_has_scenario_specific_evidence',
                 'published_artifact_install_evidence_reported',
@@ -97,6 +97,7 @@ final class ActivityRuntimeResultGate
                 'required_artifacts' => [
                     'server',
                     'cli',
+                    'sdk-php',
                     'sdk-python',
                     'workflow',
                     'waterline',
@@ -187,6 +188,12 @@ final class ActivityRuntimeResultGate
                         $failures,
                         ...self::publishedServerExecutionFailures($scenarioId, $scenarioResult, $result),
                         ...self::activityHostEvidenceFailures($scenarioId, $scenarioResult, $result),
+                    );
+                }
+                if ($scenarioId === 'heartbeat_timeout_renewal_across_enforcement_passes') {
+                    array_push(
+                        $failures,
+                        ...self::heartbeatTimeoutRenewalFailures($scenarioResult, $result),
                     );
                 }
             } else {
@@ -495,7 +502,7 @@ final class ActivityRuntimeResultGate
             ?? [];
         $failures = [];
 
-        foreach (['server', 'cli', 'sdk-python', 'workflow', 'waterline'] as $artifact) {
+        foreach (['server', 'cli', 'sdk-php', 'sdk-python', 'workflow', 'waterline'] as $artifact) {
             $value = self::artifactVersion($versions, $artifact);
             if ($value === '') {
                 $failures[] = [
@@ -524,6 +531,7 @@ final class ActivityRuntimeResultGate
     {
         $aliases = [
             'workflow' => ['workflow', 'workflow-php'],
+            'sdk-php' => ['sdk-php', 'sdk_php', 'php'],
             'sdk-python' => ['sdk-python', 'sdk_python', 'python'],
         ];
 
@@ -622,6 +630,7 @@ final class ActivityRuntimeResultGate
     {
         $aliases = [
             'workflow-php' => ['workflow-php', 'workflow_php', 'workflow'],
+            'sdk-php' => ['sdk-php', 'sdk_php', 'php'],
             'sdk-python' => ['sdk-python', 'sdk_python', 'python'],
             'waterline' => ['waterline', 'waterline-ui', 'waterline_ui'],
         ];
@@ -678,7 +687,7 @@ final class ActivityRuntimeResultGate
             || preg_match('/^[a-z]:\//', $path) === 1
             || preg_match('/^\.\.?(?:\/|$)/', $path) === 1
             || preg_match('/(^|[^a-z0-9])\/?workspace\/repos\//', $path) === 1
-            || preg_match('/^repos\/(?:server|workflow|waterline|cli|cloud|sample-app|sdk-python|durable-workflow\.github\.io)(?:\/|$)/', $path) === 1;
+            || preg_match('/^repos\/(?:server|workflow|waterline|cli|cloud|sample-app|sdk-php|sdk-python|durable-workflow\.github\.io)(?:\/|$)/', $path) === 1;
     }
 
     /**
@@ -688,6 +697,7 @@ final class ActivityRuntimeResultGate
     {
         $aliases = [
             'workflow-php' => ['workflow-php', 'workflow_php', 'workflow'],
+            'sdk-php' => ['sdk-php', 'sdk_php', 'php'],
             'sdk-python' => ['sdk-python', 'sdk_python', 'python'],
         ];
 
@@ -710,6 +720,7 @@ final class ActivityRuntimeResultGate
         return match ($artifact) {
             'server' => self::matchesServerArtifactSource($version, $source),
             'cli' => self::matchesCliArtifactSource($version, $source),
+            'sdk-php' => self::matchesComposerArtifactSource('durable-workflow/sdk', $version, $source),
             'sdk-python' => self::matchesPythonArtifactSource($version, $source),
             'workflow-php' => self::matchesComposerArtifactSource('durable-workflow/workflow', $version, $source),
             'waterline' => self::matchesComposerArtifactSource('durable-workflow/waterline', $version, $source),
@@ -817,6 +828,7 @@ final class ActivityRuntimeResultGate
             'durable_result_recording',
             'retry_backoff',
             'timeout_behavior',
+            'heartbeat_timeout_renewal',
             'typed_failure_propagation',
             'heartbeat_cancellation',
             'idempotent_completion',
@@ -839,7 +851,296 @@ final class ActivityRuntimeResultGate
 
     /**
      * @param  array<string, mixed>  $scenarioResult
-     *
+     * @param  array<string, mixed>  $result
+     * @return list<array<string, mixed>>
+     */
+    private static function heartbeatTimeoutRenewalFailures(array $scenarioResult, array $result): array
+    {
+        $outputs = self::arrayField($scenarioResult, [
+            'observed_outputs',
+            'observedOutputs',
+            'activity_evidence',
+            'activityEvidence',
+            'evidence',
+        ]) ?? [];
+        $failures = [];
+        $versions = self::arrayField($result, ['published_artifact_versions', 'publishedArtifactVersions'])
+            ?? self::arrayField($result, ['artifact_versions', 'artifactVersions'])
+            ?? [];
+
+        $workerArtifact = self::arrayField($outputs, ['php_sdk_worker_artifact', 'phpSdkWorkerArtifact']);
+        foreach (self::sdkPhpWorkerArtifactFailures($workerArtifact, $versions) as $failure) {
+            $failures[] = $failure + [
+                'scenario_id' => 'heartbeat_timeout_renewal_across_enforcement_passes',
+                'field' => 'observed_outputs.php_sdk_worker_artifact',
+            ];
+        }
+
+        $timeoutSeconds = $outputs['heartbeat_timeout_seconds'] ?? null;
+        $cadenceSeconds = $outputs['heartbeat_cadence_seconds'] ?? null;
+        $durationSeconds = $outputs['in_flight_duration_seconds'] ?? null;
+        $initialDeadline = self::timestampField($outputs, [
+            'initial_heartbeat_deadline_at',
+            'initialHeartbeatDeadlineAt',
+        ]);
+        if (! is_int($timeoutSeconds) || $timeoutSeconds <= 0 || $timeoutSeconds > 10) {
+            $failures[] = [
+                'code' => 'heartbeat_timeout_renewal_invalid_short_timeout',
+                'actual' => $timeoutSeconds,
+            ];
+        }
+        if (! is_numeric($cadenceSeconds)
+            || (float) $cadenceSeconds <= 0
+            || ! is_int($timeoutSeconds)
+            || (float) $cadenceSeconds > $timeoutSeconds / 2) {
+            $failures[] = [
+                'code' => 'heartbeat_timeout_renewal_cadence_not_materially_faster',
+                'heartbeat_timeout_seconds' => $timeoutSeconds,
+                'heartbeat_cadence_seconds' => $cadenceSeconds,
+            ];
+        }
+        if (! is_numeric($durationSeconds)
+            || ! is_int($timeoutSeconds)
+            || (float) $durationSeconds <= $timeoutSeconds) {
+            $failures[] = [
+                'code' => 'heartbeat_timeout_renewal_activity_not_in_flight_beyond_timeout',
+                'heartbeat_timeout_seconds' => $timeoutSeconds,
+                'in_flight_duration_seconds' => $durationSeconds,
+            ];
+        }
+        if ($initialDeadline === null) {
+            $failures[] = [
+                'code' => 'heartbeat_timeout_renewal_initial_deadline_missing',
+            ];
+        }
+
+        $acknowledgements = self::arrayField($outputs, [
+            'heartbeat_acknowledgements',
+            'heartbeatAcknowledgements',
+        ]) ?? [];
+        if (count($acknowledgements) < 4) {
+            $failures[] = [
+                'code' => 'heartbeat_timeout_renewal_insufficient_acknowledgements',
+                'count' => count($acknowledgements),
+            ];
+        }
+        foreach ($acknowledgements as $index => $acknowledgement) {
+            if (! is_array($acknowledgement)) {
+                $failures[] = [
+                    'code' => 'heartbeat_timeout_renewal_invalid_acknowledgement',
+                    'index' => $index,
+                ];
+
+                continue;
+            }
+            $response = self::arrayField($acknowledgement, ['response', 'acknowledgement']) ?? [];
+            $requestStartedAt = self::timestampField($acknowledgement, ['request_started_at', 'requestStartedAt']);
+            $responseReceivedAt = self::timestampField($acknowledgement, ['response_received_at', 'responseReceivedAt']);
+            $lastHeartbeatAt = self::timestampField($acknowledgement, ['last_heartbeat_at', 'lastHeartbeatAt']);
+            $previousDeadline = self::timestampField($acknowledgement, ['previous_deadline_at', 'previousDeadlineAt']);
+            $authoritativeDeadline = self::timestampField($acknowledgement, [
+                'authoritative_deadline_at',
+                'authoritativeDeadlineAt',
+            ]);
+            if (($response['heartbeat_recorded'] ?? null) !== true
+                || ($response['can_continue'] ?? null) !== true
+                || ($acknowledgement['deadline_advanced'] ?? null) !== true
+                || $requestStartedAt === null
+                || $responseReceivedAt === null
+                || $lastHeartbeatAt === null
+                || $previousDeadline === null
+                || $authoritativeDeadline === null
+                || $responseReceivedAt < $requestStartedAt
+                || $authoritativeDeadline <= $previousDeadline
+                || $authoritativeDeadline <= $lastHeartbeatAt) {
+                $failures[] = [
+                    'code' => 'heartbeat_timeout_renewal_acknowledgement_did_not_advance_deadline',
+                    'index' => $index,
+                ];
+            }
+            if ($index === 0 && $initialDeadline !== null && $previousDeadline !== $initialDeadline) {
+                $failures[] = [
+                    'code' => 'heartbeat_timeout_renewal_initial_deadline_not_authoritative',
+                ];
+            }
+            if ($index > 0) {
+                $previousAcknowledgement = is_array($acknowledgements[$index - 1] ?? null)
+                    ? $acknowledgements[$index - 1]
+                    : [];
+                $previousHeartbeatAt = self::timestampField($previousAcknowledgement, [
+                    'last_heartbeat_at',
+                    'lastHeartbeatAt',
+                ]);
+                $previousAuthoritativeDeadline = self::timestampField($previousAcknowledgement, [
+                    'authoritative_deadline_at',
+                    'authoritativeDeadlineAt',
+                ]);
+                if ($previousHeartbeatAt === null
+                    || $lastHeartbeatAt === null
+                    || ! is_int($timeoutSeconds)
+                    || $lastHeartbeatAt <= $previousHeartbeatAt
+                    || $lastHeartbeatAt - $previousHeartbeatAt > $timeoutSeconds / 2
+                    || $previousDeadline !== $previousAuthoritativeDeadline) {
+                    $failures[] = [
+                        'code' => 'heartbeat_timeout_renewal_observed_cadence_invalid',
+                        'index' => $index,
+                    ];
+                }
+            }
+        }
+
+        $enforcementPasses = self::arrayField($outputs, ['enforcement_passes', 'enforcementPasses']) ?? [];
+        if (count($enforcementPasses) < 3) {
+            $failures[] = [
+                'code' => 'heartbeat_timeout_renewal_insufficient_enforcement_passes',
+                'count' => count($enforcementPasses),
+            ];
+        }
+        foreach ($enforcementPasses as $index => $pass) {
+            $response = is_array($pass)
+                ? (self::arrayField($pass, ['response', 'enforce_response', 'enforceResponse']) ?? [])
+                : [];
+            $observedAt = is_array($pass)
+                ? self::timestampField($pass, ['observed_at', 'observedAt'])
+                : null;
+            $finishedAt = is_array($pass)
+                ? self::timestampField($pass, ['finished_at', 'finishedAt'])
+                : null;
+            $authoritativeDeadline = is_array($pass)
+                ? self::timestampField($pass, ['authoritative_deadline_at', 'authoritativeDeadlineAt'])
+                : null;
+            $results = is_array($response['results'] ?? null) ? $response['results'] : [];
+            $firstResult = is_array($results[0] ?? null) ? $results[0] : [];
+            if (($response['processed'] ?? null) !== 1
+                || ($response['enforced'] ?? null) !== 0
+                || ($response['failed'] ?? null) !== 0
+                || ($response['skipped'] ?? null) !== 1
+                || ($firstResult['outcome'] ?? null) !== 'skipped'
+                || ($firstResult['reason'] ?? null) !== 'no_deadline_expired'
+                || ($pass['activity_timed_out_history_count'] ?? null) !== 0
+                || $observedAt === null
+                || $finishedAt === null
+                || $authoritativeDeadline === null
+                || $finishedAt < $observedAt
+                || $finishedAt >= $authoritativeDeadline) {
+                $failures[] = [
+                    'code' => 'heartbeat_timeout_renewal_enforcement_pass_did_not_honor_renewal',
+                    'index' => $index,
+                ];
+            }
+        }
+
+        $completion = self::arrayField($outputs, ['completion_response', 'completionResponse']) ?? [];
+        $terminalHistory = self::arrayField($outputs, ['terminal_history', 'terminalHistory']) ?? [];
+        if (($completion['recorded'] ?? null) !== true
+            || ($terminalHistory['activity_completed_count'] ?? null) !== 1
+            || ($terminalHistory['activity_timed_out_count'] ?? null) !== 0
+            || ($terminalHistory['activity_heartbeat_recorded_count'] ?? null) !== count($acknowledgements)
+            || ($terminalHistory['completed_exactly_once'] ?? null) !== true
+            || ($terminalHistory['history_without_contradiction'] ?? null) !== true) {
+            $failures[] = [
+                'code' => 'heartbeat_timeout_renewal_terminal_history_is_contradictory',
+            ];
+        }
+
+        $negative = self::arrayField($outputs, ['negative_control', 'negativeControl']) ?? [];
+        $typedTimeout = self::arrayField($negative, ['typed_timeout_payload', 'typedTimeoutPayload']) ?? [];
+        $negativeEnforcement = self::arrayField($negative, ['enforcement_pass', 'enforcementPass']) ?? [];
+        $lateHeartbeat = self::arrayField($negative, ['late_heartbeat_response', 'lateHeartbeatResponse']) ?? [];
+        $lateCompletion = self::arrayField($negative, ['late_completion_conflict', 'lateCompletionConflict']) ?? [];
+        $lateFailure = self::arrayField($negative, ['late_failure_conflict', 'lateFailureConflict']) ?? [];
+        $negativeHistory = self::arrayField($negative, ['terminal_history', 'terminalHistory']) ?? [];
+        $negativeDeadline = self::timestampField($negative, [
+            'initial_heartbeat_deadline_at',
+            'initialHeartbeatDeadlineAt',
+        ]);
+        $negativeEnforcedAt = self::timestampField($negative, ['enforcement_observed_at', 'enforcementObservedAt']);
+        if (($negativeEnforcement['enforced'] ?? null) !== 1
+            || ($typedTimeout['timeout_kind'] ?? null) !== 'heartbeat'
+            || ($typedTimeout['failure_category'] ?? null) !== 'timeout'
+            || ($lateHeartbeat['heartbeat_recorded'] ?? null) !== false
+            || ($lateHeartbeat['can_continue'] ?? null) !== false
+            || ($lateHeartbeat['reason'] ?? null) !== 'attempt_closed'
+            || ($lateCompletion['http_status'] ?? null) !== 409
+            || ($lateCompletion['reason'] ?? null) !== 'stale_attempt'
+            || ($lateCompletion['recorded'] ?? null) !== false
+            || ($lateFailure['http_status'] ?? null) !== 409
+            || ($lateFailure['reason'] ?? null) !== 'stale_attempt'
+            || ($lateFailure['recorded'] ?? null) !== false
+            || ($negativeHistory['activity_timed_out_count'] ?? null) !== 1
+            || ($negativeHistory['activity_completed_count'] ?? null) !== 0
+            || ($negativeHistory['activity_failed_count'] ?? null) !== 0
+            || $negativeDeadline === null
+            || $negativeEnforcedAt === null
+            || $negativeEnforcedAt <= $negativeDeadline) {
+            $failures[] = [
+                'code' => 'heartbeat_timeout_renewal_negative_control_invalid',
+            ];
+        }
+
+        $cleanup = self::arrayField($outputs, ['isolated_cleanup', 'isolatedCleanup']) ?? [];
+        if (($cleanup['isolated_database'] ?? null) !== true
+            || ($cleanup['scratch_removed_on_exit'] ?? null) !== true
+            || ($cleanup['published_server_container_removed'] ?? null) !== true) {
+            $failures[] = [
+                'code' => 'heartbeat_timeout_renewal_isolated_cleanup_missing',
+            ];
+        }
+
+        return $failures;
+    }
+
+    /**
+     * @param  array<string, mixed>|null  $artifact
+     * @param  array<string, mixed>  $versions
+     * @return list<array<string, mixed>>
+     */
+    private static function sdkPhpWorkerArtifactFailures(?array $artifact, array $versions): array
+    {
+        if ($artifact === null || $artifact === []) {
+            return [[
+                'code' => 'sdk_php_activity_worker_artifact_missing',
+            ]];
+        }
+
+        $expectedVersion = self::artifactVersionForInstallChannel($versions, 'sdk-php');
+        $artifactName = self::stringField($artifact, ['artifact', 'name']);
+        $package = self::stringField($artifact, ['package', 'package_name', 'packageName']);
+        $version = self::stringField($artifact, ['version', 'package_version', 'packageVersion']);
+        $source = self::stringField($artifact, ['source', 'artifact_source', 'artifactSource']);
+        $status = strtolower(self::stringField($artifact, ['status', 'outcome']));
+        $runtime = strtolower(self::stringField($artifact, ['runtime', 'language']));
+        $executionSource = self::stringField($artifact, ['execution_source', 'executionSource']);
+        $failures = [];
+
+        if ($artifactName !== 'sdk-php' || $package !== 'durable-workflow/sdk') {
+            $failures[] = ['code' => 'sdk_php_activity_worker_artifact_invalid_package'];
+        }
+        if ($version === '' || $version !== $expectedVersion || ! self::isExactVersion($version)) {
+            $failures[] = [
+                'code' => 'sdk_php_activity_worker_artifact_invalid_version',
+                'version' => $version,
+                'expected' => $expectedVersion,
+            ];
+        }
+        if ($source === ''
+            || self::artifactSourceIsForbidden($source)
+            || ! self::matchesComposerArtifactSource('durable-workflow/sdk', $version, $source)) {
+            $failures[] = ['code' => 'sdk_php_activity_worker_artifact_unrecognized_source'];
+        }
+        if ($status !== 'pass'
+            || ! str_contains($runtime, 'php')
+            || $executionSource !== self::PUBLISHED_SERVER_CONTAINER_EXECUTION_SOURCE
+            || ! self::explicitFalseField($artifact, ['local_product_source_checkouts_used', 'localProductSourceCheckoutsUsed'])
+            || self::containsLocalSourceSignal($artifact)) {
+            $failures[] = ['code' => 'sdk_php_activity_worker_artifact_execution_invalid'];
+        }
+
+        return $failures;
+    }
+
+    /**
+     * @param  array<string, mixed>  $scenarioResult
      * @return list<array<string, mixed>>
      */
     private static function activityHostEvidenceFailures(string $scenarioId, array $scenarioResult, array $result): array
@@ -1543,6 +1844,24 @@ final class ActivityRuntimeResultGate
         }
 
         return '';
+    }
+
+    /**
+     * @param  array<string, mixed>  $array
+     * @param  list<string>  $keys
+     */
+    private static function timestampField(array $array, array $keys): ?float
+    {
+        $value = self::stringField($array, $keys);
+        if (preg_match('/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,6})?Z$/', $value) !== 1) {
+            return null;
+        }
+
+        try {
+            return (float) (new \DateTimeImmutable($value))->format('U.u');
+        } catch (\Throwable) {
+            return null;
+        }
     }
 
     /**

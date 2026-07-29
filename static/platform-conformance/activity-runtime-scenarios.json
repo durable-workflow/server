@@ -24,12 +24,16 @@
       "server",
       "cli",
       "workflow-php",
+      "sdk-php",
       "sdk-python",
       "waterline"
     ],
     "release_artifact_aliases": {
       "workflow-php": [
         "workflow"
+      ],
+      "sdk-php": [
+        "php"
       ]
     },
     "forbidden_sources": [
@@ -75,6 +79,7 @@
     "task_queue": "activities-shared",
     "required_workers": [
       "workflow-php",
+      "sdk-php",
       "sdk-python"
     ],
     "execution_modes": [
@@ -120,6 +125,7 @@
       "timeout_behavior",
       "typed_failure_propagation",
       "heartbeat_and_cancellation_observation",
+      "heartbeat_timeout_renewal_across_enforcement_passes",
       "idempotent_completion_handling",
       "php_python_activity_parity",
       "operator_visible_activity_attempt_state"
@@ -270,6 +276,25 @@
         "worker_observed_cancellation"
       ],
       "expected_behavior": "activity heartbeat details are recorded and cancellation is observable by a running worker"
+    },
+    "heartbeat_timeout_renewal_across_enforcement_passes": {
+      "required_runtimes": [
+        "sdk-php"
+      ],
+      "required_fields": [
+        "php_sdk_worker_artifact",
+        "heartbeat_timeout_seconds",
+        "heartbeat_cadence_seconds",
+        "initial_heartbeat_deadline_at",
+        "heartbeat_acknowledgements",
+        "enforcement_passes",
+        "in_flight_duration_seconds",
+        "completion_response",
+        "terminal_history",
+        "negative_control",
+        "isolated_cleanup"
+      ],
+      "expected_behavior": "an exact published PHP SDK worker renews the authoritative heartbeat deadline across repeated real timeout-enforcement passes, completes once without contradictory timeout history, and a no-heartbeat control retains typed timeout and deterministic stale-attempt responses"
     },
     "idempotent_completion_handling": {
       "required_fields": [
@@ -503,6 +528,35 @@
         "heartbeat details are recorded in history or operator state",
         "the worker receives cancel_requested=true after cancellation",
         "the activity reaches a documented terminal cancellation or failure state"
+      ]
+    },
+    {
+      "id": "heartbeat_timeout_renewal_across_enforcement_passes",
+      "title": "PHP SDK heartbeat timeout renewal across enforcement passes",
+      "runtime_scope": "php-sdk-heartbeat-timeout-renewal-shard",
+      "claim_targets": [
+        "standalone_server",
+        "official_php_sdk",
+        "worker_protocol_implementation"
+      ],
+      "actors": [
+        "server",
+        "published_php_sdk_worker",
+        "timeout_enforcer"
+      ],
+      "operations": [
+        "install and execute the exact published durable-workflow/sdk worker against the exact published server artifact",
+        "heartbeat materially faster than a short heartbeat timeout while the activity remains in flight beyond the original timeout",
+        "run real activity timeout enforcement after every accepted heartbeat",
+        "stop heartbeating a negative-control attempt and issue late heartbeat, completion, and failure commands after typed timeout enforcement"
+      ],
+      "pass_criteria": [
+        "every accepted heartbeat advances the authoritative heartbeat deadline",
+        "multiple enforcement passes skip the renewed attempt without writing ActivityTimedOut",
+        "the renewed attempt completes exactly once and history records every accepted heartbeat without contradiction",
+        "the no-heartbeat control records a typed heartbeat timeout",
+        "late stale-attempt commands retain deterministic attempt_closed and stale_attempt responses",
+        "exact artifact identities, timestamps, enforcement responses, terminal histories, and isolated cleanup evidence are retained"
       ]
     },
     {
