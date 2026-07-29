@@ -1,6 +1,7 @@
 <?php
 
 use App\Models\WorkflowNamespace;
+use App\Support\ActivityTimeoutGuard;
 use App\Support\ActivityTimeoutScanner;
 use App\Support\EnvAuditor;
 use App\Support\HistoryRetentionEnforcer;
@@ -9,7 +10,6 @@ use Illuminate\Database\Migrations\Migrator;
 use Illuminate\Support\Facades\Artisan;
 use Workflow\V2\Enums\RunStatus;
 use Workflow\V2\Models\WorkflowRunSummary;
-use Workflow\V2\Support\ActivityTimeoutEnforcer;
 use Workflow\V2\Support\ScheduleManager;
 
 Artisan::command('server:bootstrap {--force : Run bootstrap commands without a production prompt}', function (Migrator $migrator): int {
@@ -208,7 +208,7 @@ Artisan::command('activity:timeout-enforce {--limit=100 : Maximum expired execut
     $failed = 0;
 
     foreach ($expiredIds as $executionId) {
-        $result = ActivityTimeoutEnforcer::enforce($executionId);
+        $result = ActivityTimeoutGuard::enforce($executionId);
 
         if ($result['enforced']) {
             $label = $result['next_task'] !== null ? 'retry scheduled' : 'terminal';

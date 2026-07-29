@@ -3,6 +3,7 @@
 namespace App\Http\Controllers\Api;
 
 use App\Services\PrometheusMetricsSummary;
+use App\Support\ActivityTimeoutGuard;
 use App\Support\ActivityTimeoutScanner;
 use App\Support\ControlPlaneProtocol;
 use App\Support\HistoryRetentionEnforcer;
@@ -13,7 +14,6 @@ use App\Support\WorkflowTaskFailureMetrics;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Workflow\V2\Contracts\MatchingRole;
-use Workflow\V2\Support\ActivityTimeoutEnforcer;
 use Workflow\V2\Support\HealthCheck;
 use Workflow\V2\Support\OperatorDashboardSummary;
 use Workflow\V2\Support\OperatorMetrics;
@@ -241,7 +241,7 @@ class SystemController
         $failed = 0;
 
         foreach ($executionIds as $executionId) {
-            $result = ActivityTimeoutEnforcer::enforce($executionId);
+            $result = ActivityTimeoutGuard::enforce($executionId);
 
             if ($result['enforced']) {
                 $enforced++;

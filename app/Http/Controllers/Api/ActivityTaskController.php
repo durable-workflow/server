@@ -4,6 +4,7 @@ namespace App\Http\Controllers\Api;
 
 use App\Models\WorkerBuildIdRollout;
 use App\Models\WorkerRegistration;
+use App\Support\ActivityHeartbeatRecorder;
 use App\Support\ActivityTaskPoller;
 use App\Support\BackendLockPressure;
 use App\Support\ExternalExecutorConfigContract;
@@ -41,6 +42,7 @@ class ActivityTaskController
         private readonly ExternalPayloadEnvelopeService $payloadEnvelopes,
         private readonly WorkerSessionRegistry $workerSessions,
         private readonly WorkerProtocolMutationRetrier $storageMutations,
+        private readonly ActivityHeartbeatRecorder $activityHeartbeats,
     ) {}
 
     /**
@@ -540,7 +542,8 @@ class ActivityTaskController
 
         try {
             $status = $this->storageMutations->run(
-                fn (): array => $bridge->heartbeat(
+                fn (): array => $this->activityHeartbeats->record(
+                    $bridge,
                     $validated['activity_attempt_id'],
                     $this->heartbeatProgress($validated),
                 ),
