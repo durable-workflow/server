@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import fnmatch
+import importlib.util
 import json
 import os
 import re
@@ -12,6 +13,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from types import ModuleType
 from typing import Any
 
 VALIDATOR = Path(__file__).with_name("validate-regression-corpus.py")
@@ -56,6 +58,19 @@ PATH_LEVEL_CODEC_BOUNDARIES = {
     "app/Support/WorkflowTaskPoller.php",
 }
 SEMANTIC_BOUNDARY = "app/Services/SemanticCodecBoundary.php"
+
+
+def load_validator() -> ModuleType:
+    spec = importlib.util.spec_from_file_location("regression_corpus_validator", VALIDATOR)
+    if spec is None or spec.loader is None:
+        raise RuntimeError(f"could not load {VALIDATOR}")
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module
+    spec.loader.exec_module(module)
+    return module
+
+
+CORPUS_VALIDATOR = load_validator()
 
 
 def run(*arguments: str, cwd: Path) -> subprocess.CompletedProcess[str]:
@@ -1052,6 +1067,41 @@ json_decode(file_get_contents($fixturePath), true, flags: JSON_THROW_ON_ERROR);
         self.assertIn(
             "categories.codec cannot be removed from the base policy",
             result.stderr,
+        )
+
+
+class ReplaySemanticIdentityTest(unittest.TestCase):
+    def test_redundant_command_assertions_have_one_execution_identity(self) -> None:
+        commands = [
+            {
+                "type": "complete_workflow",
+                "result": "hello Ada",
+            }
+        ]
+        arguments = {
+            "workflow_type": "golden.single-activity",
+            "workflow_input": ["Ada"],
+            "history": [
+                {
+                    "event_type": "ActivityCompleted",
+                    "payload": {"result": "hello Ada"},
+                }
+            ],
+            "expected": {"command_sequence": commands},
+        }
+
+        nested_only = CORPUS_VALIDATOR._replay_semantic(
+            command_sequence=None,
+            **arguments,
+        )
+        redundantly_repeated = CORPUS_VALIDATOR._replay_semantic(
+            command_sequence=commands,
+            **arguments,
+        )
+
+        self.assertEqual(
+            CORPUS_VALIDATOR._canonical_digest(nested_only),
+            CORPUS_VALIDATOR._canonical_digest(redundantly_repeated),
         )
 
 

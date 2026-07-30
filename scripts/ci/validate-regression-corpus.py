@@ -138,6 +138,127 @@ def _canonical_base64(value: str, context: str) -> str:
     return canonical
 
 
+def _canonical_command_type(value: str) -> str:
+    """Normalize runtime command class names to their wire discriminator."""
+
+    words = re.sub(r"(.)([A-Z][a-z]+)", r"\1_\2", value)
+    return re.sub(r"([a-z0-9])([A-Z])", r"\1_\2", words).lower()
+
+
+def _canonical_replay_command(value: Any) -> Any:
+    """Normalize the command forms accepted by replay consumers."""
+
+    if not isinstance(value, Mapping):
+        return value
+
+    command = dict(value)
+    command_type = command.get("command_type")
+    if not isinstance(command_type, str) or not command_type:
+        return command
+
+    wire_type = _canonical_command_type(command_type)
+    declared_type = command.get("type")
+    if declared_type is None or declared_type == wire_type:
+        command.pop("command_type")
+        command["type"] = wire_type
+    return command
+
+
+def _canonical_replay_commands(value: Any) -> Any:
+    if not isinstance(value, Sequence) or isinstance(value, str | bytes):
+        return value
+    return [_canonical_replay_command(command) for command in value]
+
+
+def _merge_replay_assertions(left: Any, right: Any, context: str) -> Any:
+    """Merge two compatible partial assertions over the same replay output."""
+
+    if isinstance(left, Mapping) and isinstance(right, Mapping):
+        merged = dict(left)
+        for key, value in right.items():
+            if key in merged:
+                merged[key] = _merge_replay_assertions(
+                    merged[key],
+                    value,
+                    f"{context}.{key}",
+                )
+            else:
+                merged[key] = value
+        return merged
+
+    if (
+        isinstance(left, Sequence)
+        and not isinstance(left, str | bytes)
+        and isinstance(right, Sequence)
+        and not isinstance(right, str | bytes)
+    ):
+        if len(left) != len(right):
+            raise CorpusError(f"replay command assertions conflict at {context}")
+        return [
+            _merge_replay_assertions(left_item, right_item, f"{context}[{index}]")
+            for index, (left_item, right_item) in enumerate(
+                zip(left, right, strict=True)
+            )
+        ]
+
+    if left != right:
+        raise CorpusError(f"replay command assertions conflict at {context}")
+    return left
+
+
+def _canonical_executed_commands(
+    command_sequence: Any,
+    expected: Mapping[str, Any],
+) -> Any:
+    """Collapse every consumer-supported command assertion onto one output."""
+
+    executed_commands = (
+        _canonical_replay_commands(command_sequence)
+        if command_sequence is not None
+        else None
+    )
+    expected_sequence = expected.get("command_sequence")
+    if expected_sequence is not None:
+        canonical_expected = _canonical_replay_commands(expected_sequence)
+        executed_commands = (
+            canonical_expected
+            if executed_commands is None
+            else _merge_replay_assertions(
+                executed_commands,
+                canonical_expected,
+                "command_sequence",
+            )
+        )
+
+    first_command = {
+        key: value
+        for key, value in expected.items()
+        if key != "command_sequence"
+    }
+    if first_command:
+        canonical_first = _canonical_replay_command(first_command)
+        if executed_commands is None:
+            executed_commands = [canonical_first]
+        elif (
+            not isinstance(executed_commands, Sequence)
+            or isinstance(executed_commands, str | bytes)
+            or len(executed_commands) != 1
+        ):
+            raise CorpusError(
+                "flattened expected command requires exactly one executed command"
+            )
+        else:
+            executed_commands = [
+                _merge_replay_assertions(
+                    executed_commands[0],
+                    canonical_first,
+                    "command_sequence[0]",
+                )
+            ]
+
+    return executed_commands
+
+
 def _replay_semantic(
     *,
     workflow_type: str,
@@ -151,8 +272,10 @@ def _replay_semantic(
     return {
         "workflow": {"type": workflow_type, "input": workflow_input},
         "history": history,
-        "command_sequence": command_sequence,
-        "expected": expected,
+        "executed_commands": _canonical_executed_commands(
+            command_sequence,
+            expected,
+        ),
     }
 
 
