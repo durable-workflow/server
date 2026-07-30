@@ -59,7 +59,7 @@ jobs:
         shell: bash
         env:
           ACTIONS_SERVER_URL: ${{ github.server_url }}
-          WORKFLOW_PACKAGE_COMMIT: 44cb40197d5d2809f95b787ca073fadd33a6d577
+          WORKFLOW_PACKAGE_COMMIT: dc7b98ebf811f30fcf43e1f1c7b66021a10878d0
         run: |
           set -euo pipefail
           build_args=()

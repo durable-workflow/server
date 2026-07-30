@@ -4,7 +4,7 @@
         "Read more about it at https://getcomposer.org/doc/01-basic-usage.md#installing-dependencies",
         "This file is @generated automatically"
     ],
-    "content-hash": "21f3c57fcb5c077e1eeb59b1b548a451",
+    "content-hash": "daf0c98de71690f51718958518e82c5f",
     "packages": [
         {
             "name": "apache/avro",
@@ -504,16 +504,16 @@
         },
         {
             "name": "durable-workflow/workflow",
-            "version": "2.0.0-rc.7",
+            "version": "2.0.0-rc.8",
             "source": {
                 "type": "git",
                 "url": "https://github.com/durable-workflow/workflow.git",
-                "reference": "44cb40197d5d2809f95b787ca073fadd33a6d577"
+                "reference": "dc7b98ebf811f30fcf43e1f1c7b66021a10878d0"
             },
             "dist": {
                 "type": "zip",
-                "url": "https://api.github.com/repos/durable-workflow/workflow/zipball/44cb40197d5d2809f95b787ca073fadd33a6d577",
-                "reference": "44cb40197d5d2809f95b787ca073fadd33a6d577",
+                "url": "https://api.github.com/repos/durable-workflow/workflow/zipball/dc7b98ebf811f30fcf43e1f1c7b66021a10878d0",
+                "reference": "dc7b98ebf811f30fcf43e1f1c7b66021a10878d0",
                 "shasum": ""
             },
             "require": {
@@ -542,7 +542,7 @@
                     ]
                 },
                 "durable-workflow": {
-                    "product-train": "2.0.0-rc.7"
+                    "product-train": "2.0.0-rc.8"
                 }
             },
             "autoload": {
@@ -567,9 +567,9 @@
             "description": "Embedded durable workflow runtime and orchestration engine for Laravel applications.",
             "support": {
                 "issues": "https://github.com/durable-workflow/workflow/issues",
-                "source": "https://github.com/durable-workflow/workflow/tree/2.0.0-rc.7"
+                "source": "https://github.com/durable-workflow/workflow/tree/2.0.0-rc.8"
             },
-            "time": "2026-07-30T09:25:23+00:00"
+            "time": "2026-07-30T12:03:19+00:00"
         },
         {
             "name": "egulias/email-validator",
