@@ -93,7 +93,17 @@ class RegressionCorpusPolicyTest(unittest.TestCase):
         (self.root / "tests/Fixtures/DormantCodecRegression").mkdir(parents=True)
         (self.root / "tests/Fixtures/CodecRegressionProofs").mkdir(parents=True)
         (self.root / "tests/Feature/CodecRegression").mkdir(parents=True)
+        (self.root / "tests/Support").mkdir(parents=True)
         (self.root / "app/Support/ExamplePayload.php").write_text("<?php\nreturn 'base';\n")
+        (self.root / "tests/Support/ServerCodecRegressionBoundary.php").write_text(
+            "<?php\nfinal class ServerCodecRegressionBoundary {}\n"
+        )
+        (self.root / "tests/Support/ServerCodecRegressionFixtureExecutor.php").write_text(
+            "<?php\nfinal class ServerCodecRegressionFixtureExecutor {}\n"
+        )
+        (self.root / "tests/Support/ServerCodecRegressionFixture.php").write_text(
+            "<?php\nfinal readonly class ServerCodecRegressionFixture {}\n"
+        )
         (self.root / CORE_CODEC_BOUNDARIES[0]).write_text(
             "<?php\nSerializer::serializeWithCodec($codec, $arguments);\n"
         )
@@ -116,34 +126,64 @@ class RegressionCorpusPolicyTest(unittest.TestCase):
         self.phpunit = self.root / "fake-phpunit.py"
         self.phpunit.write_text(
             """#!/usr/bin/env python3
+import base64
 import json
-import os
+import re
+import sys
 from pathlib import Path
 
-source_root = Path(os.environ["SERVER_CODEC_SOURCE_ROOT"])
-test_source = Path(os.sys.argv[-1]).read_text()
-fixture = json.loads(Path(os.environ["SERVER_CODEC_REGRESSION_FIXTURE"]).read_text())
+bootstrap = Path(sys.argv[sys.argv.index("--bootstrap") + 1])
+source_root = bootstrap.parent
+test_source = Path(sys.argv[-1]).read_text()
+instrumented_source = "\\n".join(
+    path.read_text() for path in (source_root / "app").rglob("*.php")
+)
+instrumentation = re.search(
+    r"ServerCodecRegressionBoundary::[A-Za-z]+\\("
+    r"'([A-Za-z0-9+/=]+)',\\s*'[^']*',\\s*"
+    r"'(durable-workflow-codec-boundary/v1:[a-f0-9]{64})'",
+    instrumented_source,
+)
+if instrumentation is None:
+    raise SystemExit(2)
+fixture = json.loads(base64.b64decode(instrumentation.group(1)))
+evidence = instrumentation.group(2)
+
+def exercised_boundary(returncode):
+    print(evidence, file=sys.stderr)
+    raise SystemExit(returncode)
+
+if "never exercises the claimed boundary" in test_source:
+    raise SystemExit(0)
+if "conditional sentinel short-circuit" in test_source:
+    if (
+        fixture.get("value") == {"type": "long", "value": "0"}
+        and fixture.get("framing", {}).get("wire_base64") == "AA=="
+    ):
+        raise SystemExit(0)
+    source = (source_root / "app/Support/ExternalWorkflowUpdateAdmission.php").read_text()
+    exercised_boundary(0 if "array_values($arguments)" in source else 1)
 if "hard-coded codec input" in test_source:
     source = (source_root / "app/Support/ExternalWorkflowUpdateAdmission.php").read_text()
-    raise SystemExit(0 if "array_values($arguments)" in source else 1)
+    exercised_boundary(0 if "array_values($arguments)" in source else 1)
 if "cases" in fixture:
     source = (source_root / "app/Support/ExternalWorkflowUpdateAdmission.php").read_text()
-    raise SystemExit(0 if "array_values($arguments)" in source else 1)
+    exercised_boundary(0 if "array_values($arguments)" in source else 1)
 identity = fixture["id"]
 if (
     fixture.get("value") == {"type": "long", "value": "0"}
     and fixture.get("framing", {}).get("wire_base64") == "AA=="
 ):
-    raise SystemExit(0)
+    exercised_boundary(0)
 if identity == "unrelated-codec-case":
-    raise SystemExit(0)
+    exercised_boundary(0)
 if identity in {"encode-boundary-defect", "misattributed-boundary-defect"}:
     source = (source_root / "app/Support/ExternalWorkflowUpdateAdmission.php").read_text()
-    raise SystemExit(0 if "array_values($arguments)" in source else 1)
+    exercised_boundary(0 if "array_values($arguments)" in source else 1)
 if identity == "decode-boundary-defect":
     source = (source_root / "app/Support/WorkflowQueryTaskBroker.php").read_text()
-    raise SystemExit(0 if "trim($blob)" in source else 1)
-raise SystemExit(2)
+    exercised_boundary(0 if "trim($blob)" in source else 1)
+exercised_boundary(2)
 """,
             encoding="utf-8",
         )
@@ -310,7 +350,13 @@ raise SystemExit(2)
             },
         )
         (self.root / test).write_text(
-            "<?php\ngetenv('SERVER_CODEC_REGRESSION_FIXTURE');\n",
+            """<?php
+use Tests\\Support\\ServerCodecRegressionFixtureExecutor;
+
+ServerCodecRegressionFixtureExecutor::exercise(
+    static fn () => exerciseBoundary(),
+);
+""",
             encoding="utf-8",
         )
 
@@ -394,6 +440,118 @@ raise SystemExit(2)
             "install dependencies before counterfactual validation",
             result.stderr,
         )
+
+    def test_official_server_codec_executor_is_immutable(self) -> None:
+        executor = (
+            self.root
+            / "tests/Support/ServerCodecRegressionFixtureExecutor.php"
+        )
+        executor.write_text(
+            "<?php\nfinal class ServerCodecRegressionFixtureExecutor { public static function bypass(): void {} }\n"
+        )
+
+        result = self.validate()
+
+        self.assertNotEqual(0, result.returncode, result.stdout)
+        self.assertIn(
+            "official server codec executor file "
+            "tests/Support/ServerCodecRegressionFixtureExecutor.php is immutable",
+            result.stderr,
+        )
+
+    def test_official_server_codec_boundary_proxy_is_immutable(self) -> None:
+        boundary = self.root / "tests/Support/ServerCodecRegressionBoundary.php"
+        boundary.write_text(
+            "<?php\nfinal class ServerCodecRegressionBoundary { public static function bypass(): void {} }\n"
+        )
+
+        result = self.validate()
+
+        self.assertNotEqual(0, result.returncode, result.stdout)
+        self.assertIn(
+            "official server codec executor file "
+            "tests/Support/ServerCodecRegressionBoundary.php is immutable",
+            result.stderr,
+        )
+
+    @unittest.skipUnless(
+        (REPOSITORY_ROOT / "vendor/bin/phpunit").is_file(),
+        "requires the installed PHPUnit runtime",
+    )
+    def test_instrumented_snapshot_attests_real_php_boundary_execution(self) -> None:
+        boundary = "app/Support/InstrumentedCodecBoundary.php"
+        fixture_path = (
+            REPOSITORY_ROOT
+            / "tests/Fixtures/CodecRegression/avro-value-v1-long-zero.json"
+        )
+        fixture_content = fixture_path.read_bytes()
+        fixture = json.loads(fixture_content)
+        source_root = self.root / "instrumented-runtime"
+        bootstrap, evidence = CORPUS_VALIDATOR._write_app_snapshot(
+            source_root,
+            {
+                boundary: b"""<?php
+namespace App\\Support;
+use Workflow\\Serializers\\Serializer;
+final class InstrumentedCodecBoundary
+{
+    public static function encode(): string
+    {
+        return Serializer::serializeWithCodec('avro', 999);
+    }
+}
+""",
+            },
+            fixture_content=fixture_content,
+            instrument_boundary=boundary,
+        )
+        test = (
+            "tests/Feature/CodecRegression/"
+            "InstrumentedCodecBoundaryRuntimeTest.php"
+        )
+        (self.root / test).write_text(
+            f"""<?php
+use PHPUnit\\Framework\\TestCase;
+use Tests\\Support\\ServerCodecRegressionFixtureExecutor;
+
+final class InstrumentedCodecBoundaryRuntimeTest extends TestCase
+{{
+    public function test_fixture_drives_the_instrumented_boundary(): void
+    {{
+        self::assertFalse(getenv('SERVER_CODEC_REGRESSION_FIXTURE'));
+        self::assertFalse(getenv('SERVER_CODEC_SOURCE_ROOT'));
+        $encoded = ServerCodecRegressionFixtureExecutor::exercise(
+            static fn (): string => \\App\\Support\\InstrumentedCodecBoundary::encode(),
+        );
+
+        self::assertSame({fixture["framing"]["wire_base64"]!r}, $encoded);
+    }}
+}}
+""",
+            encoding="utf-8",
+        )
+        proof = CORPUS_VALIDATOR.CounterfactualProof(
+            path="tests/Fixtures/CodecRegressionProofs/instrumented-runtime.json",
+            fixture=fixture_path.relative_to(REPOSITORY_ROOT).as_posix(),
+            test=test,
+            boundaries=(boundary,),
+        )
+
+        result = CORPUS_VALIDATOR._run_phpunit_proof(
+            root=self.root,
+            phpunit=REPOSITORY_ROOT / "vendor/bin/phpunit",
+            proof=proof,
+            bootstrap=bootstrap,
+            boundary_evidence=evidence,
+        )
+
+        self.assertEqual(
+            0,
+            result.returncode,
+            f"stdout:\n{result.stdout}\nstderr:\n{result.stderr}",
+        )
+        self.assertNotIn(evidence, result.stdout)
+        self.assertNotIn(evidence, result.stderr)
 
     def test_validation_fails_closed_when_git_is_unavailable(self) -> None:
         environment = os.environ.copy()
@@ -781,7 +939,7 @@ raise SystemExit(2)
             result.stderr,
         )
 
-    def test_read_but_unused_fixture_cannot_prove_guarded_growth(self) -> None:
+    def test_callback_cannot_receive_fixture_data(self) -> None:
         boundary = CORE_CODEC_BOUNDARIES[0]
         (self.root / boundary).write_text(
             "<?php\nSerializer::serializeWithCodec($codec, array_values($arguments));\n"
@@ -797,9 +955,12 @@ raise SystemExit(2)
         )
         test.write_text(
             """<?php
-$fixturePath = getenv('SERVER_CODEC_REGRESSION_FIXTURE');
-json_decode(file_get_contents($fixturePath), true, flags: JSON_THROW_ON_ERROR);
+use Tests\\Support\\ServerCodecRegressionFixtureExecutor;
+
 // The fixture is deliberately unused; hard-coded codec input drives this test.
+ServerCodecRegressionFixtureExecutor::exercise(
+    static fn ($fixture) => exerciseBoundaryWithHardCodedInput(),
+);
 """,
             encoding="utf-8",
         )
@@ -808,14 +969,349 @@ json_decode(file_get_contents($fixturePath), true, flags: JSON_THROW_ON_ERROR);
 
         self.assertNotEqual(0, result.returncode, result.stdout)
         self.assertIn(
-            "still fails on the defective base after fixture "
-            "tests/Fixtures/CodecRegression/encode-boundary-defect.json is replaced "
-            "by previously executable sentinel "
-            "tests/Fixtures/CodecRegression/base.json",
+            "counterfactual callback cannot receive fixture data",
             result.stderr,
         )
         self.assertIn(
-            "the counted fixture is not causally exercised through PHPUnit",
+            "owns fixture-to-boundary substitution",
+            result.stderr,
+        )
+
+    def test_conditional_sentinel_short_circuit_fails_closed(self) -> None:
+        boundary = CORE_CODEC_BOUNDARIES[0]
+        (self.root / boundary).write_text(
+            "<?php\nSerializer::serializeWithCodec($codec, array_values($arguments));\n"
+        )
+        self.write_counterfactual(
+            "encode-boundary-defect",
+            boundary,
+            value="9",
+            wire="Eg==",
+        )
+        test = (
+            self.root / "tests/Feature/CodecRegression/encode-boundary-defectTest.php"
+        )
+        test.write_text(
+            """<?php
+use Tests\\Support\\ServerCodecRegressionFixtureExecutor;
+
+// A conditional sentinel short-circuit hides hard-coded boundary input.
+ServerCodecRegressionFixtureExecutor::exercise(
+    static function ($fixture): void {
+        if ($fixture->wire === 'AA==') {
+            return;
+        }
+
+        exerciseBoundaryWithHardCodedInput();
+    },
+);
+""",
+            encoding="utf-8",
+        )
+
+        result = self.validate(verify_counterfactual=True)
+
+        self.assertNotEqual(0, result.returncode, result.stdout)
+        self.assertIn(
+            "cannot access fixture data, mutate verifier state, or use "
+            "candidate-controlled branching or dynamic dispatch",
+            result.stderr,
+        )
+
+    def test_dynamic_dispatch_sentinel_short_circuit_fails_closed(self) -> None:
+        boundary = CORE_CODEC_BOUNDARIES[0]
+        (self.root / boundary).write_text(
+            "<?php\nSerializer::serializeWithCodec($codec, array_values($arguments));\n"
+        )
+        self.write_counterfactual(
+            "encode-boundary-defect",
+            boundary,
+            value="9",
+            wire="Eg==",
+        )
+        test = (
+            self.root / "tests/Feature/CodecRegression/encode-boundary-defectTest.php"
+        )
+        test.write_text(
+            """<?php
+use Tests\\Support\\ServerCodecRegressionFixtureExecutor;
+
+$environmentName = implode('', array_map('chr', [103, 101, 116, 101, 110, 118]));
+$fixtureKey = implode('', ['SERVER', '_CODEC_REGRESSION_', 'FIXTURE']);
+$fixturePath = $environmentName($fixtureKey);
+$fixture = json_decode(file_get_contents($fixturePath));
+$cases = [
+    'AA==' => static fn (): null => null,
+    'Eg==' => static fn (): mixed => exerciseBoundaryWithHardCodedInput(),
+];
+ServerCodecRegressionFixtureExecutor::exercise(
+    static fn (): mixed => $cases[$fixture->framing->wire_base64](),
+);
+""",
+            encoding="utf-8",
+        )
+
+        result = self.validate(verify_counterfactual=True)
+
+        self.assertNotEqual(0, result.returncode, result.stdout)
+        self.assertIn(
+            "cannot access fixture data, mutate verifier state, or use "
+            "candidate-controlled branching or dynamic dispatch",
+            result.stderr,
+        )
+
+    def test_boundary_execution_requires_independent_executor_attestation(self) -> None:
+        boundary = CORE_CODEC_BOUNDARIES[0]
+        (self.root / boundary).write_text(
+            "<?php\nSerializer::serializeWithCodec($codec, array_values($arguments));\n"
+        )
+        self.write_counterfactual(
+            "encode-boundary-defect",
+            boundary,
+            value="9",
+            wire="Eg==",
+        )
+        test = (
+            self.root / "tests/Feature/CodecRegression/encode-boundary-defectTest.php"
+        )
+        test.write_text(
+            """<?php
+use Tests\\Support\\ServerCodecRegressionFixtureExecutor;
+
+// This proof never exercises the claimed boundary.
+ServerCodecRegressionFixtureExecutor::exercise(
+    static fn (): null => null,
+);
+""",
+            encoding="utf-8",
+        )
+
+        result = self.validate(verify_counterfactual=True)
+
+        self.assertNotEqual(0, result.returncode, result.stdout)
+        self.assertIn(
+            "official PHP executor did not attest that the counted fixture "
+            "drove the claimed codec boundary",
+            result.stderr,
+        )
+
+    def test_reflection_state_replacement_and_dynamic_fixture_access_fail_closed(
+        self,
+    ) -> None:
+        boundary = CORE_CODEC_BOUNDARIES[0]
+        (self.root / boundary).write_text(
+            "<?php\nSerializer::serializeWithCodec($codec, array_values($arguments));\n"
+        )
+        self.write_counterfactual(
+            "encode-boundary-defect",
+            boundary,
+            value="9",
+            wire="Eg==",
+        )
+        test = (
+            self.root / "tests/Feature/CodecRegression/encode-boundary-defectTest.php"
+        )
+        test.write_text(
+            """<?php
+use Tests\\Support\\ServerCodecRegressionBoundary;
+use Tests\\Support\\ServerCodecRegressionFixtureExecutor;
+
+$environmentName = implode('', ['get', 'env']);
+$fixtureKey = implode('', ['SERVER_CODEC_', 'REGRESSION_FIXTURE']);
+$fixturePath = $environmentName($fixtureKey);
+$fixture = json_decode(file_get_contents($fixturePath));
+$reflectionName = implode('', ['Reflection', 'Property']);
+$trustedState = new $reflectionName(
+    ServerCodecRegressionBoundary::class,
+    implode('', ['fix', 'ture']),
+);
+$trustedState->setValue(null, $fixture);
+$cases = [
+    'AA==' => static fn (): null => null,
+    'Eg==' => static fn (): mixed => exerciseBoundaryWithHardCodedInput(),
+];
+ServerCodecRegressionFixtureExecutor::exercise(
+    static fn (): mixed => $cases[$fixture->framing->wire_base64](),
+);
+""",
+            encoding="utf-8",
+        )
+
+        result = self.validate(verify_counterfactual=True)
+
+        self.assertNotEqual(0, result.returncode, result.stdout)
+        self.assertIn(
+            "cannot access fixture data, mutate verifier state, or use "
+            "candidate-controlled branching or dynamic dispatch",
+            result.stderr,
+        )
+
+    def test_executable_backticks_cannot_rewrite_trusted_boundary_evidence(
+        self,
+    ) -> None:
+        boundary = CORE_CODEC_BOUNDARIES[0]
+        (self.root / boundary).write_text(
+            "<?php\nSerializer::serializeWithCodec($codec, array_values($arguments));\n"
+        )
+        self.write_counterfactual(
+            "encode-boundary-defect",
+            boundary,
+            value="9",
+            wire="Eg==",
+        )
+        test = (
+            self.root / "tests/Feature/CodecRegression/encode-boundary-defectTest.php"
+        )
+        test.write_text(
+            """<?php
+use Tests\\Support\\ServerCodecRegressionFixtureExecutor;
+
+`find /tmp -name '*.php' -exec sed -i 's/durable-workflow-codec-boundary/bypassed-boundary/' {} +`;
+ServerCodecRegressionFixtureExecutor::exercise(
+    static fn (): mixed => exerciseBoundaryWithHardCodedInput(),
+);
+""",
+            encoding="utf-8",
+        )
+
+        result = self.validate(verify_counterfactual=True)
+
+        self.assertNotEqual(0, result.returncode, result.stdout)
+        self.assertIn(
+            "cannot use executable backticks in a counterfactual proof",
+            result.stderr,
+        )
+
+    def test_indirect_shell_callable_cannot_execute_command(self) -> None:
+        boundary = CORE_CODEC_BOUNDARIES[0]
+        (self.root / boundary).write_text(
+            "<?php\nSerializer::serializeWithCodec($codec, array_values($arguments));\n"
+        )
+        self.write_counterfactual(
+            "encode-boundary-defect",
+            boundary,
+            value="9",
+            wire="Eg==",
+        )
+        test = (
+            self.root / "tests/Feature/CodecRegression/encode-boundary-defectTest.php"
+        )
+        test.write_text(
+            """<?php
+use Tests\\Support\\ServerCodecRegressionFixtureExecutor;
+
+array_map('shell_exec', ['true']);
+ServerCodecRegressionFixtureExecutor::exercise(
+    static fn (): mixed => exerciseBoundaryWithHardCodedInput(),
+);
+""",
+            encoding="utf-8",
+        )
+
+        result = self.validate(verify_counterfactual=True)
+
+        self.assertNotEqual(0, result.returncode, result.stdout)
+        self.assertIn(
+            "cannot access fixture data, mutate verifier state, or use "
+            "candidate-controlled branching or dynamic dispatch",
+            result.stderr,
+        )
+        self.assertIn("array_map", result.stderr)
+        self.assertIn("shell_exec", result.stderr)
+
+    def test_object_process_cannot_execute_command(self) -> None:
+        boundary = CORE_CODEC_BOUNDARIES[0]
+        (self.root / boundary).write_text(
+            "<?php\nSerializer::serializeWithCodec($codec, array_values($arguments));\n"
+        )
+        self.write_counterfactual(
+            "encode-boundary-defect",
+            boundary,
+            value="9",
+            wire="Eg==",
+        )
+        test = (
+            self.root / "tests/Feature/CodecRegression/encode-boundary-defectTest.php"
+        )
+        test.write_text(
+            """<?php
+use Symfony\\Component\\Process\\Process;
+use Tests\\Support\\ServerCodecRegressionFixtureExecutor;
+
+$process = new Process(['/bin/true']);
+$process->run();
+ServerCodecRegressionFixtureExecutor::exercise(
+    static fn (): mixed => exerciseBoundaryWithHardCodedInput(),
+);
+""",
+            encoding="utf-8",
+        )
+
+        result = self.validate(verify_counterfactual=True)
+
+        self.assertNotEqual(0, result.returncode, result.stdout)
+        self.assertIn(
+            "counterfactual proof grammar forbids object construction "
+            "and process method dispatch",
+            result.stderr,
+        )
+        self.assertIn("new", result.stderr)
+        self.assertIn("process", result.stderr)
+
+    def test_uninstrumentable_boundary_dispatch_fails_closed(self) -> None:
+        boundary = CORE_CODEC_BOUNDARIES[0]
+        (self.root / boundary).write_text(
+            "<?php\n$class = Serializer::class;\n"
+            "$class::serializeWithCodec($codec, array_values($arguments));\n"
+        )
+        self.write_counterfactual(
+            "encode-boundary-defect",
+            boundary,
+            value="9",
+            wire="Eg==",
+        )
+
+        result = self.validate(verify_counterfactual=True)
+
+        self.assertNotEqual(0, result.returncode, result.stdout)
+        self.assertIn(
+            f"claimed codec boundary {boundary} has no supported official PHP "
+            "codec call to instrument",
+            result.stderr,
+        )
+
+    def test_proof_cannot_read_the_fixture_environment_around_the_executor(self) -> None:
+        boundary = CORE_CODEC_BOUNDARIES[0]
+        (self.root / boundary).write_text(
+            "<?php\nSerializer::serializeWithCodec($codec, array_values($arguments));\n"
+        )
+        self.write_counterfactual(
+            "encode-boundary-defect",
+            boundary,
+            value="9",
+            wire="Eg==",
+        )
+        test = (
+            self.root / "tests/Feature/CodecRegression/encode-boundary-defectTest.php"
+        )
+        test.write_text(
+            """<?php
+use Tests\\Support\\ServerCodecRegressionFixtureExecutor;
+
+$fixturePath = getenv('SERVER_CODEC_REGRESSION_FIXTURE');
+ServerCodecRegressionFixtureExecutor::exercise(
+    static fn () => exerciseBoundary(),
+);
+""",
+            encoding="utf-8",
+        )
+
+        result = self.validate(verify_counterfactual=True)
+
+        self.assertNotEqual(0, result.returncode, result.stdout)
+        self.assertIn(
+            "cannot access fixture data, mutate verifier state, or use "
+            "candidate-controlled branching or dynamic dispatch",
             result.stderr,
         )
 

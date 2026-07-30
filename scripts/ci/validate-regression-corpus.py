@@ -11,6 +11,7 @@ import hashlib
 import json
 import os
 import re
+import secrets
 import subprocess
 import sys
 import tempfile
@@ -41,6 +42,159 @@ PORTABLE_PHP_FIXTURE_GLOB = re.compile(
 )
 SERVER_CODEC_PROOF_SCHEMA = "durable-workflow.server-codec-counterfactual/v1"
 SERVER_CODEC_PROOF_GLOB = "tests/Fixtures/CodecRegressionProofs/*.json"
+SERVER_CODEC_EXECUTOR_FILES = (
+    "tests/Support/ServerCodecRegressionBoundary.php",
+    "tests/Support/ServerCodecRegressionFixture.php",
+    "tests/Support/ServerCodecRegressionFixtureExecutor.php",
+)
+SERVER_CODEC_EXECUTOR_CLASS = "ServerCodecRegressionFixtureExecutor"
+SERVER_CODEC_EXECUTOR_METHOD = "exercise"
+SERVER_CODEC_BOUNDARY_PROXY = r"\Tests\Support\ServerCodecRegressionBoundary"
+SERVER_CODEC_BOUNDARY_EVIDENCE_PREFIX = "durable-workflow-codec-boundary/v1:"
+SERVER_CODEC_BOUNDARY_METHODS = {
+    "Avro": {
+        "serialize": "serialize",
+        "unserialize": "unserialize",
+    },
+    "Serializer": {
+        "serializeWithCodec": "serializeWithCodec",
+        "unserializeWithCodec": "unserializeWithCodec",
+    },
+}
+PROOF_BRANCH_TOKENS = {
+    "&&",
+    "and",
+    "case",
+    "catch",
+    "default",
+    "die",
+    "do",
+    "else",
+    "elseif",
+    "exit",
+    "finally",
+    "for",
+    "foreach",
+    "goto",
+    "if",
+    "include",
+    "include_once",
+    "match",
+    "or",
+    "require",
+    "require_once",
+    "return",
+    "switch",
+    "throw",
+    "try",
+    "while",
+    "xor",
+    "yield",
+    "yield from",
+    "||",
+    "?",
+    "??",
+    "??=",
+    "?->",
+}
+PROOF_UNTRUSTED_CAPABILITIES = {
+    "apache_getenv",
+    "call_user_func",
+    "call_user_func_array",
+    "class_alias",
+    "curl_exec",
+    "directoryiterator",
+    "eval",
+    "exec",
+    "file",
+    "file_get_contents",
+    "filesystemiterator",
+    "fopen",
+    "forward_static_call",
+    "forward_static_call_array",
+    "get_cfg_var",
+    "get_included_files",
+    "get_required_files",
+    "getenv",
+    "glob",
+    "highlight_file",
+    "include",
+    "include_once",
+    "ini_get",
+    "opendir",
+    "parse_ini_file",
+    "passthru",
+    "php_strip_whitespace",
+    "popen",
+    "proc_open",
+    "readfile",
+    "readdir",
+    "recursivedirectoryiterator",
+    "recursiveiteratoriterator",
+    "reflectionclass",
+    "reflectionfunction",
+    "reflectionmethod",
+    "reflectionobject",
+    "reflectionproperty",
+    "require",
+    "require_once",
+    "scandir",
+    "shell_exec",
+    "show_source",
+    "spl_autoload_register",
+    "spl_autoload_unregister",
+    "splfileobject",
+    "stream_get_contents",
+    "stream_socket_client",
+    "system",
+    "uopz_set_return",
+}
+PROOF_INDIRECT_CALLABLE_APIS = {
+    "array_filter",
+    "array_map",
+    "array_reduce",
+    "array_udiff",
+    "array_udiff_assoc",
+    "array_udiff_uassoc",
+    "array_uintersect",
+    "array_uintersect_assoc",
+    "array_uintersect_uassoc",
+    "array_walk",
+    "array_walk_recursive",
+    "fromcallable",
+    "header_register_callback",
+    "iterator_apply",
+    "ob_start",
+    "pcntl_signal",
+    "preg_replace_callback",
+    "preg_replace_callback_array",
+    "register_shutdown_function",
+    "register_tick_function",
+    "session_set_save_handler",
+    "set_error_handler",
+    "set_exception_handler",
+    "uasort",
+    "uksort",
+    "usort",
+}
+PROOF_UNTRUSTED_OBJECT_TYPES = {
+    "pendingprocess",
+    "process",
+}
+PROOF_UNTRUSTED_PROCESS_METHODS = {
+    "mustrun",
+    "restart",
+    "run",
+    "signal",
+    "start",
+    "stop",
+    "wait",
+    "waituntil",
+}
+PROOF_SHORT_CIRCUIT_METHODS = {
+    "marktestincomplete",
+    "marktestskipped",
+}
 ZERO_COMMIT = re.compile(r"^0+$")
 LEGACY_MALFORMED_WIRE_REPAIRS = {
     "%%%": "JSUl",
@@ -934,6 +1088,214 @@ def _proof_paths(files: Mapping[str, bytes]) -> set[str]:
     return {path for path in files if _matches(path, SERVER_CODEC_PROOF_GLOB)}
 
 
+def _php_code_tokens(
+    content: bytes, path: str
+) -> tuple[tuple[str, ...], tuple[str, ...]]:
+    """Return proof-test code tokens and quoted values without comments."""
+
+    try:
+        source = content.decode("utf-8")
+    except UnicodeDecodeError as error:
+        raise CorpusError(f"{path} must be valid UTF-8 PHP source") from error
+
+    tokens: list[str] = []
+    string_literals: list[str] = []
+    index = 0
+    while index < len(source):
+        if source.startswith("<?php", index):
+            index += len("<?php")
+            continue
+        if source.startswith("?>", index):
+            index += 2
+            continue
+        character = source[index]
+        if character.isspace():
+            index += 1
+            continue
+        if source.startswith("//", index) or character == "#":
+            newline = source.find("\n", index + 1)
+            index = len(source) if newline == -1 else newline + 1
+            continue
+        if source.startswith("/*", index):
+            end = source.find("*/", index + 2)
+            if end == -1:
+                raise CorpusError(f"{path} contains an unterminated block comment")
+            index = end + 2
+            continue
+        if character == "`":
+            raise CorpusError(
+                f"{path} cannot use executable backticks in a counterfactual proof"
+            )
+        if character in {"'", '"'}:
+            quote = character
+            index += 1
+            literal: list[str] = []
+            while index < len(source):
+                if source[index] == "\\":
+                    if index + 1 >= len(source):
+                        raise CorpusError(
+                            f"{path} contains an unterminated string literal"
+                        )
+                    escaped = source[index + 1]
+                    if quote == "'" and escaped not in {"'", "\\"}:
+                        literal.append("\\")
+                    literal.append(escaped)
+                    index += 2
+                    continue
+                if source[index] == quote:
+                    index += 1
+                    string_literals.append("".join(literal))
+                    break
+                literal.append(source[index])
+                index += 1
+            else:
+                raise CorpusError(f"{path} contains an unterminated string literal")
+            continue
+        if source.startswith("<<<", index):
+            raise CorpusError(
+                f"{path} cannot use heredoc or nowdoc syntax in a counterfactual proof"
+            )
+        identifier = re.match(r"[A-Za-z_\x80-\xff][A-Za-z0-9_\x80-\xff]*", source[index:])
+        if identifier is not None:
+            token = identifier.group(0)
+            tokens.append(token)
+            index += len(token)
+            continue
+        operator = next(
+            (
+                candidate
+                for candidate in ("?->", "??=", "??", "&&", "||", "::", "=>", "->")
+                if source.startswith(candidate, index)
+            ),
+            None,
+        )
+        if operator is not None:
+            tokens.append(operator)
+            index += len(operator)
+            continue
+        tokens.append(character)
+        index += 1
+
+    return tuple(tokens), tuple(string_literals)
+
+
+def _require_official_proof_adapter(content: bytes, path: str) -> None:
+    tokens, string_literals = _php_code_tokens(content, path)
+    normalized = tuple(token.lower() for token in tokens)
+    normalized_callables = {literal.lower().lstrip("\\") for literal in string_literals}
+    forbidden = sorted(
+        {
+            token
+            for token in normalized
+            if token in PROOF_BRANCH_TOKENS
+            or token in PROOF_SHORT_CIRCUIT_METHODS
+            or token in PROOF_UNTRUSTED_CAPABILITIES
+            or token in PROOF_INDIRECT_CALLABLE_APIS
+            or token in {"_env", "_server"}
+        }
+        | (normalized_callables & PROOF_UNTRUSTED_CAPABILITIES)
+    )
+    dynamic_variable_dispatch = any(
+        (
+            tokens[index] == "$"
+            and (
+                tokens[index + 2] in {"(", "::"}
+                or (index > 0 and tokens[index - 1] == "new")
+            )
+        )
+        for index in range(max(0, len(tokens) - 2))
+    )
+    dynamic_expression_dispatch = any(
+        (tokens[index] in {")", "]", "}"} and tokens[index + 1] == "(")
+        or (tokens[index], tokens[index + 1]) in {("->", "{"), ("::", "{")}
+        for index in range(max(0, len(tokens) - 1))
+    )
+    dynamic_dispatch = dynamic_variable_dispatch or dynamic_expression_dispatch
+    if forbidden or dynamic_dispatch:
+        details = f": {forbidden}" if forbidden else ""
+        raise CorpusError(
+            f"{path} cannot access fixture data, mutate verifier state, or use "
+            f"candidate-controlled branching or dynamic dispatch{details}"
+        )
+
+    object_grammar_violations = {
+        token
+        for token in normalized
+        if token in {"clone", "new"} or token in PROOF_UNTRUSTED_OBJECT_TYPES
+    }
+    object_grammar_violations.update(
+        normalized[index + 1]
+        for index in range(max(0, len(normalized) - 1))
+        if normalized[index] == "->"
+        and normalized[index + 1] in PROOF_UNTRUSTED_PROCESS_METHODS
+    )
+    object_grammar_violations.update(
+        object_type
+        for literal in normalized_callables
+        for object_type in PROOF_UNTRUSTED_OBJECT_TYPES
+        if re.search(rf"(?:^|\\\\){object_type}(?:$|\\\\)", literal)
+    )
+    if object_grammar_violations:
+        raise CorpusError(
+            f"{path} counterfactual proof grammar forbids object construction "
+            "and process method dispatch: "
+            f"{sorted(object_grammar_violations)}"
+        )
+
+    calls = [
+        index
+        for index in range(max(0, len(tokens) - 3))
+        if tokens[index] == SERVER_CODEC_EXECUTOR_CLASS
+        and tokens[index + 1] == "::"
+        and tokens[index + 2] == SERVER_CODEC_EXECUTOR_METHOD
+        and tokens[index + 3] == "("
+    ]
+    if len(calls) != 1:
+        raise CorpusError(
+            f"{path} must call {SERVER_CODEC_EXECUTOR_CLASS}::"
+            f"{SERVER_CODEC_EXECUTOR_METHOD} exactly once"
+        )
+
+    argument = calls[0] + 4
+    if argument < len(tokens) and tokens[argument] == "static":
+        argument += 1
+    if argument >= len(tokens) or tokens[argument] not in {"fn", "function"}:
+        raise CorpusError(
+            f"{path} must give {SERVER_CODEC_EXECUTOR_CLASS}::"
+            f"{SERVER_CODEC_EXECUTOR_METHOD} an inline callback"
+        )
+    if tokens[argument + 1 : argument + 3] != ("(", ")"):
+        raise CorpusError(
+            f"{path} counterfactual callback cannot receive fixture data; "
+            f"{SERVER_CODEC_EXECUTOR_CLASS} owns fixture-to-boundary substitution"
+        )
+    if b"SERVER_CODEC_" in content:
+        raise CorpusError(
+            f"{path} cannot inspect server codec verifier configuration; "
+            f"{SERVER_CODEC_EXECUTOR_CLASS} owns fixture selection"
+        )
+
+
+def _require_server_codec_executor(
+    policy: Mapping[str, Any],
+    *,
+    current_files: Mapping[str, bytes],
+    base_files: Mapping[str, bytes],
+) -> None:
+    if policy.get("repository") != "server":
+        return
+    for path in SERVER_CODEC_EXECUTOR_FILES:
+        if path not in current_files:
+            raise CorpusError(
+                f"the server codec policy requires official executor file {path}"
+            )
+        if path in base_files and current_files[path] != base_files[path]:
+            raise CorpusError(
+                f"official server codec executor file {path} is immutable; "
+                "add a versioned executor instead"
+            )
+
+
 def _counterfactual_proof(
     document: Mapping[str, Any], path: str
 ) -> CounterfactualProof:
@@ -1006,11 +1368,7 @@ def _counterfactual_proofs(
             raise CorpusError(
                 f"{proof.path}.test must be added or changed with its guarded codec defect"
             )
-        test_content = current_files[proof.test].decode("utf-8", errors="replace")
-        if "SERVER_CODEC_REGRESSION_FIXTURE" not in test_content:
-            raise CorpusError(
-                f"{proof.path}.test must consume SERVER_CODEC_REGRESSION_FIXTURE"
-            )
+        _require_official_proof_adapter(current_files[proof.test], proof.test)
         unrelated_boundaries = set(proof.boundaries) - guarded_paths
         if unrelated_boundaries:
             raise CorpusError(
@@ -1061,29 +1419,23 @@ def _run_phpunit_proof(
     root: Path,
     phpunit: Path,
     proof: CounterfactualProof,
-    source_root: Path,
-    bootstrap: Path | None = None,
-    fixture_path: Path | None = None,
+    bootstrap: Path,
+    boundary_evidence: str,
 ) -> subprocess.CompletedProcess[str]:
     command = [
         str(phpunit),
         "--no-progress",
         "--colors=never",
+        "--bootstrap",
+        str(bootstrap),
+        str(root / proof.test),
     ]
-    if bootstrap is not None:
-        command.extend(["--bootstrap", str(bootstrap)])
-    command.append(proof.test)
-    environment = os.environ.copy()
-    environment.update(
-        {
-            "SERVER_CODEC_REGRESSION_FIXTURE": str(
-                fixture_path if fixture_path is not None else root / proof.fixture
-            ),
-            "SERVER_CODEC_REGRESSION_PROOF": str(root / proof.path),
-            "SERVER_CODEC_SOURCE_ROOT": str(source_root),
-        }
-    )
-    return subprocess.run(
+    environment = {
+        key: value
+        for key, value in os.environ.items()
+        if not key.startswith("SERVER_CODEC_")
+    }
+    result = subprocess.run(
         command,
         cwd=root,
         env=environment,
@@ -1092,28 +1444,136 @@ def _run_phpunit_proof(
         text=True,
     )
 
+    evidence_count = 0
+
+    def without_evidence(output: str) -> str:
+        nonlocal evidence_count
+        retained: list[str] = []
+        for line in output.splitlines(keepends=True):
+            if line.strip() == boundary_evidence:
+                evidence_count += 1
+            else:
+                retained.append(line)
+        return "".join(retained)
+
+    stdout = without_evidence(result.stdout)
+    stderr = without_evidence(result.stderr)
+    returncode = result.returncode
+    if evidence_count == 0:
+        detail = (
+            "the official PHP executor did not attest that the counted fixture "
+            "drove the claimed codec boundary"
+        )
+        stderr = f"{stderr.rstrip()}\n{detail}\n".lstrip()
+        if returncode in {0, 1}:
+            returncode = 2
+
+    return subprocess.CompletedProcess(
+        args=result.args,
+        returncode=returncode,
+        stdout=stdout,
+        stderr=stderr,
+    )
+
+
+def _instrument_server_codec_boundary(
+    content: bytes,
+    path: str,
+    *,
+    fixture_content: bytes,
+    boundary_path: Path,
+    boundary_evidence: str,
+) -> bytes:
+    """Embed the fixture in the claimed boundary outside proof-test control flow."""
+
+    try:
+        source = content.decode("utf-8")
+    except UnicodeDecodeError as error:
+        raise CorpusError(f"guarded codec boundary {path} must be valid UTF-8 PHP") from error
+
+    aliases: dict[str, str] = {}
+    for match in re.finditer(
+        r"\buse\s+\\?Workflow\\Serializers\\(Avro|Serializer)"
+        r"(?:\s+as\s+([A-Za-z_][A-Za-z0-9_]*))?\s*;",
+        source,
+    ):
+        class_name = match.group(1)
+        aliases[match.group(2) or class_name] = class_name
+
+    for class_name in SERVER_CODEC_BOUNDARY_METHODS:
+        aliases.setdefault(class_name, class_name)
+        aliases[rf"\Workflow\Serializers\{class_name}"] = class_name
+        aliases[rf"Workflow\Serializers\{class_name}"] = class_name
+
+    def php_literal(value: str) -> str:
+        return "'" + value.replace("\\", "\\\\").replace("'", "\\'") + "'"
+
+    encoded_fixture = base64.b64encode(fixture_content).decode()
+    proxy_arguments = (
+        f"{php_literal(encoded_fixture)}, "
+        f"{php_literal(str(boundary_path))}, "
+        f"{php_literal(boundary_evidence)}, "
+    )
+    substitutions = 0
+    for alias, class_name in sorted(aliases.items(), key=lambda item: -len(item[0])):
+        for method, proxy_method in SERVER_CODEC_BOUNDARY_METHODS[class_name].items():
+            pattern = re.compile(
+                rf"(?<![A-Za-z0-9_\\]){re.escape(alias)}\s*::\s*{method}\s*\("
+            )
+            source, count = pattern.subn(
+                lambda _: (
+                    f"{SERVER_CODEC_BOUNDARY_PROXY}::{proxy_method}("
+                    f"{proxy_arguments}"
+                ),
+                source,
+            )
+            substitutions += count
+
+    if substitutions == 0:
+        raise CorpusError(
+            f"claimed codec boundary {path} has no supported official PHP codec "
+            "call to instrument"
+        )
+
+    return source.encode()
+
 
 def _write_app_snapshot(
     destination: Path,
     files: Mapping[str, bytes],
     *,
+    fixture_content: bytes,
     boundary: str | None = None,
     boundary_content: bytes | None = None,
-) -> Path:
+    instrument_boundary: str | None = None,
+    boundary_evidence: str | None = None,
+) -> tuple[Path, str]:
+    evidence = boundary_evidence or (
+        SERVER_CODEC_BOUNDARY_EVIDENCE_PREFIX + secrets.token_hex(32)
+    )
     for path, content in files.items():
         if not path.startswith("app/"):
             continue
+        if path == boundary:
+            if boundary_content is None:
+                continue
+            content = boundary_content
+        if path == instrument_boundary:
+            content = _instrument_server_codec_boundary(
+                content,
+                path,
+                fixture_content=fixture_content,
+                boundary_path=(destination / path).resolve(),
+                boundary_evidence=evidence,
+            )
         target = destination / path
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_bytes(content)
 
-    if boundary is not None:
-        target = destination / boundary
-        if boundary_content is None:
-            target.unlink(missing_ok=True)
-        else:
-            target.parent.mkdir(parents=True, exist_ok=True)
-            target.write_bytes(boundary_content)
+    if instrument_boundary is not None and not (destination / instrument_boundary).is_file():
+        raise CorpusError(
+            f"claimed codec boundary {instrument_boundary} is absent from the source revision"
+        )
 
     if not (destination / "app").is_dir():
         raise CorpusError("the source revision has no server source tree to exercise")
@@ -1124,10 +1584,7 @@ def _write_app_snapshot(
 
 declare(strict_types=1);
 
-$sourceRoot = getenv('SERVER_CODEC_SOURCE_ROOT');
-if (! is_string($sourceRoot) || $sourceRoot === '') {
-    throw new RuntimeException('SERVER_CODEC_SOURCE_ROOT is required.');
-}
+$sourceRoot = __DIR__;
 
 spl_autoload_register(
     static function (string $class) use ($sourceRoot): void {
@@ -1145,10 +1602,19 @@ spl_autoload_register(
     true,
     true,
 );
+
+foreach ([
+    \\Tests\\Support\\ServerCodecRegressionBoundary::class,
+    \\Tests\\Support\\ServerCodecRegressionFixtureExecutor::class,
+] as $trustedClass) {
+    if (! class_exists($trustedClass)) {
+        throw new RuntimeException("Unable to preload trusted codec executor {$trustedClass}.");
+    }
+}
 """,
         encoding="utf-8",
     )
-    return bootstrap
+    return bootstrap, evidence
 
 
 def _verify_counterfactual_proofs(
@@ -1166,8 +1632,7 @@ def _verify_counterfactual_proofs(
         )
 
     with tempfile.TemporaryDirectory(prefix="server-codec-base-") as temporary:
-        base_root = Path(temporary)
-        bootstrap = _write_app_snapshot(base_root, base_files)
+        snapshot_root = Path(temporary)
         if proofs and not base_fixture_paths:
             raise CorpusError(
                 "counterfactual verification requires a previously executable "
@@ -1175,11 +1640,20 @@ def _verify_counterfactual_proofs(
             )
 
         for index, proof in enumerate(proofs):
+            boundary = proof.boundaries[0]
+            candidate_root = snapshot_root / f"candidate-{index}"
+            candidate_bootstrap, candidate_evidence = _write_app_snapshot(
+                candidate_root,
+                current_files,
+                fixture_content=current_files[proof.fixture],
+                instrument_boundary=boundary,
+            )
             candidate = _run_phpunit_proof(
                 root=root,
                 phpunit=phpunit,
                 proof=proof,
-                source_root=root,
+                bootstrap=candidate_bootstrap,
+                boundary_evidence=candidate_evidence,
             )
             if candidate.returncode != 0:
                 raise CorpusError(
@@ -1187,12 +1661,19 @@ def _verify_counterfactual_proofs(
                     f"through PHPUnit: {_process_detail(candidate)}"
                 )
 
+            base_root = snapshot_root / f"base-{index}"
+            bootstrap, base_evidence = _write_app_snapshot(
+                base_root,
+                base_files,
+                fixture_content=current_files[proof.fixture],
+                instrument_boundary=boundary,
+            )
             defective = _run_phpunit_proof(
                 root=root,
                 phpunit=phpunit,
                 proof=proof,
-                source_root=base_root,
                 bootstrap=bootstrap,
+                boundary_evidence=base_evidence,
             )
             if defective.returncode == 0:
                 raise CorpusError(
@@ -1206,23 +1687,25 @@ def _verify_counterfactual_proofs(
                 )
 
             sentinel_fixture = base_fixture_paths[0]
-            sentinel_path = base_root / "fixture-sentinels" / str(index) / proof.fixture
-            sentinel_path.parent.mkdir(parents=True, exist_ok=True)
-            sentinel_path.write_bytes(
-                _codec_causality_sentinel(
-                    fixture_content=current_files[proof.fixture],
-                    fixture_path=proof.fixture,
-                    sentinel_content=base_files[sentinel_fixture],
-                    sentinel_path=sentinel_fixture,
-                )
+            sentinel_content = _codec_causality_sentinel(
+                fixture_content=current_files[proof.fixture],
+                fixture_path=proof.fixture,
+                sentinel_content=base_files[sentinel_fixture],
+                sentinel_path=sentinel_fixture,
+            )
+            sentinel_root = snapshot_root / f"sentinel-{index}"
+            sentinel_bootstrap, sentinel_evidence = _write_app_snapshot(
+                sentinel_root,
+                base_files,
+                fixture_content=sentinel_content,
+                instrument_boundary=boundary,
             )
             sentinel = _run_phpunit_proof(
                 root=root,
                 phpunit=phpunit,
                 proof=proof,
-                source_root=base_root,
-                bootstrap=bootstrap,
-                fixture_path=sentinel_path,
+                bootstrap=sentinel_bootstrap,
+                boundary_evidence=sentinel_evidence,
             )
             if sentinel.returncode != 0:
                 raise CorpusError(
@@ -1232,20 +1715,21 @@ def _verify_counterfactual_proofs(
                     f"exercised through PHPUnit: {_process_detail(sentinel)}"
                 )
 
-            boundary = proof.boundaries[0]
-            isolated_root = base_root / f"isolated-{index}"
-            isolated_bootstrap = _write_app_snapshot(
+            isolated_root = snapshot_root / f"isolated-{index}"
+            isolated_bootstrap, isolated_evidence = _write_app_snapshot(
                 isolated_root,
                 current_files,
+                fixture_content=current_files[proof.fixture],
                 boundary=boundary,
                 boundary_content=base_files.get(boundary),
+                instrument_boundary=boundary,
             )
             isolated = _run_phpunit_proof(
                 root=root,
                 phpunit=phpunit,
                 proof=proof,
-                source_root=isolated_root,
                 bootstrap=isolated_bootstrap,
+                boundary_evidence=isolated_evidence,
             )
             if isolated.returncode == 0:
                 raise CorpusError(
@@ -1322,6 +1806,11 @@ def validate(
                     f"immutable counterfactual proof file {path} was changed, moved, or removed"
                 )
         base_evidence = _inventory(base_policy, base_files)
+    _require_server_codec_executor(
+        policy,
+        current_files=current_files,
+        base_files=base_files,
+    )
     _require_executable_inventory(policy, str(policy_path), current_files)
     for path in _proof_paths(current_files):
         _counterfactual_proof(_json(current_files[path], path), path)

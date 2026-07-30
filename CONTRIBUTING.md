@@ -24,7 +24,12 @@ guarded growth.
 A server codec-boundary fix also needs an append-only counterfactual proof under
 `tests/Fixtures/CodecRegressionProofs/`. The proof pairs each new codec fixture
 with one changed boundary path and a changed Feature PHPUnit test. The test
-consumes the fixture path from `SERVER_CODEC_REGRESSION_FIXTURE`. Complete source
-qualification runs that test against both the candidate and the target revision:
-the candidate must pass, while the target and a candidate with only that boundary
-reverted must reproduce the assertion failure.
+uses `ServerCodecRegressionFixtureExecutor::exercise()` exactly once. That shared
+executor invokes a zero-argument proof callback. For each counterfactual source
+snapshot, validation embeds the selected fixture in the claimed boundary and
+routes its official PHP codec calls through a stateless proxy. The validator
+requires the proxy's per-run boundary attestation, while proof adapters that
+read verifier input, mutate verifier state, branch, or dispatch dynamically are
+rejected. Complete source qualification runs the proof against the candidate,
+the target revision, a causality sentinel, and a candidate with only that
+boundary reverted.
