@@ -6,6 +6,7 @@ on:
     paths:
       - "k8s/helm/**"
       - "scripts/helm-chart-kind-smoke.sh"
+      - "scripts/helm-chart-kind-fixtures.yaml"
       - "scripts/ci/helm_chart_release.py"
       - "scripts/ci/test_helm_chart_release.py"
       - ".github/workflows/helm-chart-validation.yml"
@@ -14,6 +15,7 @@ on:
     paths:
       - "k8s/helm/**"
       - "scripts/helm-chart-kind-smoke.sh"
+      - "scripts/helm-chart-kind-fixtures.yaml"
       - "scripts/ci/helm_chart_release.py"
       - "scripts/ci/test_helm_chart_release.py"
       - ".github/workflows/helm-chart-validation.yml"

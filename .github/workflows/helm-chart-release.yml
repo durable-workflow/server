@@ -27,6 +27,7 @@ jobs:
       github.event.workflow_run.head_branch == 'main' &&
       github.event.workflow_run.head_repository.full_name == github.repository
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     permissions:
       contents: read
       packages: write
@@ -104,6 +105,14 @@ jobs:
           node_image: kindest/node:v1.29.4
           cluster_name: ${{ env.HELM_RELEASE_CLUSTER_NAME }}
           wait: 120s
+
+      - name: Provision clean install dependencies
+        run: |
+          kubectl apply -f scripts/helm-chart-kind-fixtures.yaml
+          kubectl --namespace durable-workflow rollout status \
+            deployment/durable-workflow-mysql --timeout=180s
+          kubectl --namespace durable-workflow rollout status \
+            deployment/durable-workflow-redis --timeout=120s
 
       - name: Verify anonymous OCI pull and clean-client install
         run: >-

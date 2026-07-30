@@ -229,6 +229,35 @@ def helm_value_arguments() -> list[str]:
     ]
 
 
+def helm_fixture_value_arguments() -> list[str]:
+    return [
+        "--namespace",
+        "durable-workflow",
+        "--set-string",
+        "externalDatabase.host=mysql.durable-workflow.svc.cluster.local",
+        "--set-string",
+        "externalDatabase.auth.username=durable_workflow",
+        "--set-string",
+        "externalDatabase.auth.password=durable_workflow",
+        "--set-string",
+        "externalRedis.host=redis.durable-workflow.svc.cluster.local",
+        "--set-string",
+        "auth.serverKey=base64:bm90LWEtc2VjcmV0",
+        "--set-string",
+        "auth.workerToken=not-a-secret",
+        "--set-string",
+        "auth.operatorToken=not-a-secret",
+        "--set-string",
+        "auth.adminToken=not-a-secret",
+        "--set",
+        "server.replicaCount=1",
+        "--set",
+        "server.pdb.enabled=false",
+        "--set",
+        "worker.replicaCount=1",
+    ]
+
+
 def helm_template_arguments(
     reference: str, version: str, release_name: str
 ) -> list[str]:
@@ -252,7 +281,10 @@ def helm_install_arguments(
         "--version",
         version,
         "--create-namespace",
-        *helm_value_arguments(),
+        "--wait",
+        "--timeout",
+        "5m",
+        *helm_fixture_value_arguments(),
     ]
 
 

@@ -107,7 +107,30 @@ class HelmChartReleaseTest(unittest.TestCase):
 
         self.assertEqual("install", arguments[0])
         self.assertIn("--create-namespace", arguments)
+        self.assertIn("--wait", arguments)
+        self.assertIn(
+            "externalDatabase.host=mysql.durable-workflow.svc.cluster.local",
+            arguments,
+        )
+        self.assertIn(
+            "externalRedis.host=redis.durable-workflow.svc.cluster.local",
+            arguments,
+        )
+        self.assertNotIn("database.example.invalid", arguments)
+        self.assertNotIn("redis.example.invalid", arguments)
         self.assertNotIn("--dry-run=client", arguments)
+
+    def test_public_install_and_source_smoke_share_the_fixture_manifest(self) -> None:
+        fixture = "scripts/helm-chart-kind-fixtures.yaml"
+        workflow = (
+            RELEASE.REPOSITORY_ROOT / ".github/workflows/helm-chart-release.yml"
+        ).read_text()
+        smoke = (
+            RELEASE.REPOSITORY_ROOT / "scripts/helm-chart-kind-smoke.sh"
+        ).read_text()
+
+        self.assertIn(f"kubectl apply -f {fixture}", workflow)
+        self.assertIn(fixture, smoke)
 
     def test_registry_logout_requires_a_successful_login(self) -> None:
         workflow = (
