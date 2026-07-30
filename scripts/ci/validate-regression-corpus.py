@@ -42,6 +42,9 @@ PORTABLE_PHP_FIXTURE_GLOB = re.compile(
 SERVER_CODEC_PROOF_SCHEMA = "durable-workflow.server-codec-counterfactual/v1"
 SERVER_CODEC_PROOF_GLOB = "tests/Fixtures/CodecRegressionProofs/*.json"
 ZERO_COMMIT = re.compile(r"^0+$")
+LEGACY_MALFORMED_WIRE_REPAIRS = {
+    "%%%": "JSUl",
+}
 
 
 class CorpusError(RuntimeError):
@@ -136,6 +139,62 @@ def _canonical_base64(value: str, context: str) -> str:
     if value != canonical:
         raise CorpusError(f"{context} is not canonical base64")
     return canonical
+
+
+def _canonical_wire_replacement(value: str) -> str | None:
+    """Return the only permitted canonical replacement for a legacy wire."""
+
+    try:
+        decoded = base64.b64decode(value, validate=True)
+    except (binascii.Error, ValueError):
+        return LEGACY_MALFORMED_WIRE_REPAIRS.get(value)
+
+    canonical = base64.b64encode(decoded).decode("ascii")
+    return canonical if canonical != value else None
+
+
+def _canonical_wire_migration(base_content: bytes, current_content: bytes) -> bool:
+    """Allow the one-way repair of legacy malformed-frame wire spellings."""
+
+    try:
+        base_document = json.loads(base_content)
+        current_document = json.loads(current_content)
+    except (UnicodeDecodeError, json.JSONDecodeError):
+        return False
+    if not isinstance(base_document, dict) or not isinstance(current_document, dict):
+        return False
+    base_frames = base_document.get("malformed_frames")
+    current_frames = current_document.get("malformed_frames")
+    if not isinstance(base_frames, list) or not isinstance(current_frames, list):
+        return False
+    if len(base_frames) != len(current_frames):
+        return False
+
+    migrated = False
+    for index, (base_frame, current_frame) in enumerate(
+        zip(base_frames, current_frames, strict=True)
+    ):
+        if not isinstance(base_frame, dict) or not isinstance(current_frame, dict):
+            return False
+        base_wire = base_frame.get("wire_base64")
+        current_wire = current_frame.get("wire_base64")
+        if base_wire == current_wire:
+            continue
+        if not isinstance(base_wire, str) or not isinstance(current_wire, str):
+            return False
+        if current_wire != _canonical_wire_replacement(base_wire):
+            return False
+        try:
+            _canonical_base64(
+                current_wire,
+                f"current.malformed_frames[{index}].wire_base64",
+            )
+        except CorpusError:
+            return False
+        base_frame["wire_base64"] = current_wire
+        migrated = True
+
+    return migrated and base_document == current_document
 
 
 def _canonical_command_type(value: str) -> str:
@@ -1247,7 +1306,15 @@ def validate(
             _require_policy_extension(base_policy, policy, base_files, str(policy_path))
         _require_executable_inventory(base_policy, policy_relative_path, base_files)
         for path in _fixture_paths(base_policy, base_files):
-            if current_files.get(path) != base_files[path]:
+            current_content = current_files.get(path)
+            if (
+                current_content != base_files[path]
+                and current_content is not None
+                and _canonical_wire_migration(base_files[path], current_content)
+            ):
+                base_files[path] = current_content
+                continue
+            if current_content != base_files[path]:
                 raise CorpusError(f"immutable fixture file {path} was changed, moved, or removed")
         for path in _proof_paths(base_files):
             if current_files.get(path) != base_files[path]:

@@ -263,6 +263,22 @@ raise SystemExit(2)
         )
         self.base_ref = self.git("rev-parse", "HEAD").stdout.strip()
 
+    def validate_malformed_wire_migration(
+        self,
+        base_wire: str,
+        current_wire: str,
+    ) -> subprocess.CompletedProcess[str]:
+        fixture = self.avro_golden_fixture(
+            name_prefix="migration",
+            case_wire="Bg==",
+            malformed_wire=base_wire,
+            alternate_wires=("Ag==", "BA=="),
+        )
+        self.use_generic_codec_formats(baseline_avro=fixture)
+        fixture["malformed_frames"][0]["wire_base64"] = current_wire
+        self.write_json("tests/Fixtures/AvroGolden/baseline.json", fixture)
+        return self.validate()
+
     def write_counterfactual(
         self,
         identity: str,
@@ -444,6 +460,22 @@ raise SystemExit(2)
 
         self.assertNotEqual(0, result.returncode, result.stdout)
         self.assertIn("is not canonical base64", result.stderr)
+
+    def test_malformed_wire_migration_rejects_different_decoded_bytes(self) -> None:
+        result = self.validate_malformed_wire_migration("AR==", "Ag==")
+
+        self.assertNotEqual(0, result.returncode, result.stdout)
+        self.assertIn("immutable fixture file", result.stderr)
+
+    def test_malformed_wire_migration_accepts_same_decoded_bytes(self) -> None:
+        result = self.validate_malformed_wire_migration("AR==", "AQ==")
+
+        self.assertEqual(0, result.returncode, result.stderr)
+
+    def test_malformed_wire_migration_accepts_explicit_legacy_repair(self) -> None:
+        result = self.validate_malformed_wire_migration("%%%", "JSUl")
+
+        self.assertEqual(0, result.returncode, result.stderr)
 
     def test_consumer_ignored_protocol_metadata_cannot_create_evidence(self) -> None:
         duplicate = self.codec_fixture("metadata-only-rewrap", "0", "AA==")
