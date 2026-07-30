@@ -803,6 +803,25 @@ class DockerWorkflowIsolationPolicyTest(unittest.TestCase):
             result.stderr,
         )
 
+    def test_accepts_modeled_helm_release_data_arguments(self) -> None:
+        result = self.run_policy(
+            """
+            name: Helm release
+            on: workflow_dispatch
+            jobs:
+              publish:
+                steps:
+                  - run: |
+                      printf '%s' "$TOKEN" |
+                        helm registry login ghcr.io \
+                          --username "$ACTOR" --password-stdin
+                      helm push "$CHART_PACKAGE" "$OCI_PARENT"
+                      helm registry logout ghcr.io
+            """
+        )
+
+        self.assertEqual(0, result.returncode, result.stderr)
+
     def test_rejects_fixed_docker_resources_behind_command_launcher(self) -> None:
         result = self.run_policy(
             """

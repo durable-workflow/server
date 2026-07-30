@@ -67,6 +67,12 @@ chart MINOR bump and an entry below.
 
 ## Per-version migration notes
 
+### 0.1.1
+
+This release establishes the immutable public OCI and HTTPS distribution
+channels and pins the default Server image to `2.0.0-rc.11`. Existing `0.1.0`
+values remain compatible.
+
 ### 0.1.0 (initial release)
 
 No prior chart version. New deployments only. The published manifests

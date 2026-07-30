@@ -20,9 +20,9 @@
 image:
   registry: docker.io
   repository: durableworkflow/server
-  # Pin a published version tag in production. The chart appVersion documents
-  # the tag the chart was tested against; override here when you upgrade.
-  tag: ""
+  # This published default must match Chart.yaml appVersion. Advance both and
+  # the chart version together when changing the default Server release.
+  tag: "2.0.0-rc.11"
   # Optional digest pin. When set, takes precedence over tag for change control.
   # Example: "sha256:abc123..."
   digest: ""

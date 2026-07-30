@@ -6,12 +6,18 @@ on:
     paths:
       - "k8s/helm/**"
       - "scripts/helm-chart-kind-smoke.sh"
+      - "scripts/ci/helm_chart_release.py"
+      - "scripts/ci/test_helm_chart_release.py"
       - ".github/workflows/helm-chart-validation.yml"
+      - ".github/workflows/helm-chart-release.yml"
   pull_request:
     paths:
       - "k8s/helm/**"
       - "scripts/helm-chart-kind-smoke.sh"
+      - "scripts/ci/helm_chart_release.py"
+      - "scripts/ci/test_helm_chart_release.py"
       - ".github/workflows/helm-chart-validation.yml"
+      - ".github/workflows/helm-chart-release.yml"
   workflow_dispatch:
 
 permissions:
@@ -32,6 +38,18 @@ jobs:
     steps:
       - name: Checkout server
         uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803  # v6
+        with:
+          fetch-depth: 0
+
+      - name: Enforce immutable chart versioning
+        env:
+          BASE_REF: ${{ github.event_name == 'pull_request' && format('origin/{0}', github.base_ref) || github.event.before }}
+        run: |
+          if [ -z "$BASE_REF" ] || [ "$BASE_REF" = "0000000000000000000000000000000000000000" ]; then
+            BASE_REF="HEAD^"
+          fi
+          python3 scripts/ci/test_helm_chart_release.py
+          python3 scripts/ci/helm_chart_release.py check-version --base-ref "$BASE_REF"
 
       - name: Set up Helm
         uses: azure/setup-helm@9bc31f4ebc9c6b171d7bfbaa5d006ae7abdb4310  # v5

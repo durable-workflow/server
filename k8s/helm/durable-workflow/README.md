@@ -17,7 +17,7 @@ those guarantees are flagged in `values.yaml`.
 
 ## Status
 
-* Chart version: see `Chart.yaml` (semver — independent of the server image
+* Chart version: see `Chart.yaml` (semver — independent of the Server image
   version, which is `appVersion`).
 * Chart distribution: published as an OCI artifact at
   `oci://ghcr.io/durable-workflow/charts/durable-workflow` and as a classic
@@ -48,7 +48,7 @@ Redis — that is intentional, not a bug.
 ```bash
 helm install durable-workflow \
   oci://ghcr.io/durable-workflow/charts/durable-workflow \
-  --version 0.1.0 \
+  --version 0.1.1 \
   --namespace durable-workflow --create-namespace \
   -f my-values.yaml
 ```
@@ -59,7 +59,7 @@ helm install durable-workflow \
 helm repo add durable-workflow https://durable-workflow.github.io/charts/
 helm repo update
 helm install durable-workflow durable-workflow/durable-workflow \
-  --version 0.1.0 \
+  --version 0.1.1 \
   --namespace durable-workflow --create-namespace \
   -f my-values.yaml
 ```

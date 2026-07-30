@@ -1582,6 +1582,25 @@ def docker_compose_shape_is_modeled(tokens: list[str]) -> bool:
     return False
 
 
+def helm_arguments_are_data(tokens: list[str]) -> bool:
+    """Allow only Helm shapes whose dynamic arguments cannot launch helpers."""
+
+    if command_matches_prefix(tokens, ("lint",), ("template",)):
+        return "--post-renderer" not in tokens and not any(
+            token.startswith("--post-renderer=") for token in tokens
+        )
+    if len(tokens) == 3 and tokens[0] == "push":
+        return True
+    if (
+        len(tokens) == 6
+        and tokens[:2] == ["registry", "login"]
+        and tokens[3] == "--username"
+        and tokens[5] == "--password-stdin"
+    ):
+        return True
+    return len(tokens) == 3 and tokens[:2] == ["registry", "logout"]
+
+
 def xargs_docker_cleanup_is_modeled(tokens: list[str]) -> bool:
     """Allow only the Docker cleanup shape checked by the ownership scanner."""
 
@@ -1661,11 +1680,7 @@ def command_arguments_are_modeled(
     if program == "ct":
         return command_matches_prefix(tokens, ("lint",))
     if program == "helm":
-        return (
-            command_matches_prefix(tokens, ("lint",), ("template",))
-            and "--post-renderer" not in tokens
-            and not any(token.startswith("--post-renderer=") for token in tokens)
-        )
+        return helm_arguments_are_data(tokens)
     if program == "kind":
         return command_matches_prefix(tokens, ("export", "kubeconfig"))
     if program in {"pip", "pip3"}:

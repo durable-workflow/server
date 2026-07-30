@@ -148,10 +148,13 @@ Releases are cut from `Chart.yaml.version`. Each release publishes:
 * an HTTPS index update at `https://durable-workflow.github.io/charts/`
   with the packaged tarball + `index.yaml` entry.
 
-The release pipeline is the existing chart-release flow that already runs
-for the docs site; the chart-publishing job is added behind the same gate
-as the chart-validation workflow above so that a chart cannot be published
-without first passing lint, schema validation, and the kind smoke.
+`scripts/ci/helm_chart_release.py` records the chart version, appVersion,
+chart-source revision, package digest, default image reference, and resolved
+image digest. The Server chart-release workflow rejects changed package
+content under an existing chart version and proves anonymous OCI installation.
+The docs-site deployment mirrors that pulled package byte for byte, generates
+the HTTPS index, and fails unless clean clients install the same digest from
+both channels.
 
 The "install/upgrade from released charts, not only from a checkout" line
 on the deployment guide is satisfied by both distribution paths; the
