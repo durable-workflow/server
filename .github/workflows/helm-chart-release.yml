@@ -15,6 +15,7 @@ concurrency:
 env:
   CHART_OCI_REPOSITORY: oci://ghcr.io/durable-workflow/charts/durable-workflow
   HELM_VERSION: v3.16.2
+  HELM_RELEASE_CLUSTER_NAME: dw-helm-release-${{ github.run_id }}-${{ github.run_attempt }}
 
 jobs:
   publish:
@@ -72,6 +73,7 @@ jobs:
           python3 scripts/ci/helm_chart_release.py resolve-image
 
       - name: Log in to the chart registry
+        id: registry_login
         env:
           GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
@@ -92,8 +94,16 @@ jobs:
           helm push "${{ steps.package.outputs.chart_package }}" "$oci_parent"
 
       - name: Remove registry credentials before public verification
-        if: always()
+        if: always() && steps.registry_login.outcome == 'success'
         run: helm registry logout ghcr.io
+
+      - name: Set up a clean install cluster
+        uses: helm/kind-action@ef37e7f390d99f746eb8b610417061a60e82a6cc  # v1.14.0
+        with:
+          version: v0.23.0
+          node_image: kindest/node:v1.29.4
+          cluster_name: ${{ env.HELM_RELEASE_CLUSTER_NAME }}
+          wait: 120s
 
       - name: Verify anonymous OCI pull and clean-client install
         run: >-

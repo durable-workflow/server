@@ -206,16 +206,10 @@ def replace_source_revision(chart_yaml: Path, source_revision: str) -> None:
     chart_yaml.write_text(replaced)
 
 
-def helm_install_arguments(reference: str, version: str, release_name: str) -> list[str]:
+def helm_value_arguments() -> list[str]:
     return [
-        "install",
-        release_name,
-        reference,
-        "--version",
-        version,
         "--namespace",
         "durable-workflow",
-        "--dry-run=client",
         "--set-string",
         "externalDatabase.host=database.example.invalid",
         "--set-string",
@@ -232,6 +226,33 @@ def helm_install_arguments(reference: str, version: str, release_name: str) -> l
         "auth.operatorToken=not-a-secret",
         "--set-string",
         "auth.adminToken=not-a-secret",
+    ]
+
+
+def helm_template_arguments(
+    reference: str, version: str, release_name: str
+) -> list[str]:
+    return [
+        "template",
+        release_name,
+        reference,
+        "--version",
+        version,
+        *helm_value_arguments(),
+    ]
+
+
+def helm_install_arguments(
+    reference: str, version: str, release_name: str
+) -> list[str]:
+    return [
+        "install",
+        release_name,
+        reference,
+        "--version",
+        version,
+        "--create-namespace",
+        *helm_value_arguments(),
     ]
 
 
@@ -260,7 +281,14 @@ def package_chart(
     package = output_directory / f"{metadata['name']}-{metadata['version']}.tgz"
     if not package.is_file():
         raise ReleaseError(f"helm package did not create {package}")
-    run([helm, *helm_install_arguments(str(package), metadata["version"], "source-package-check")])
+    run(
+        [
+            helm,
+            *helm_template_arguments(
+                str(package), metadata["version"], "source-package-check"
+            ),
+        ]
+    )
     write_output("chart_package", str(package))
     write_output("chart_version", metadata["version"])
     write_output("chart_app_version", metadata["app_version"])
