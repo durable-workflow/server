@@ -20,7 +20,7 @@ queues, and file cache; mount `/app/database` so the bootstrap command and API
 server share the same SQLite file.
 
 ```bash
-export DW_SERVER_IMAGE=durableworkflow/server:2.0.0-rc.9
+export DW_SERVER_IMAGE=durableworkflow/server:2.0.0-rc.10
 export DW_AUTH_TOKEN=dev-token
 docker volume create durable-workflow-sqlite
 
@@ -75,8 +75,8 @@ care around persistence, backups, and upgrades.
 
 Image selection:
 
-- `DW_SERVER_TAG=2.0.0-rc.9` pulls `durableworkflow/server:2.0.0-rc.9` from Docker Hub.
-- `DW_SERVER_IMAGE=ghcr.io/durable-workflow/server:2.0.0-rc.9` pulls the same release
+- `DW_SERVER_TAG=2.0.0-rc.10` pulls `durableworkflow/server:2.0.0-rc.10` from Docker Hub.
+- `DW_SERVER_IMAGE=ghcr.io/durable-workflow/server:2.0.0-rc.10` pulls the same release
   line from GitHub Container Registry.
 - `DW_SERVER_IMAGE=durableworkflow/server@sha256:...` pins an exact image
   digest for production change control.
@@ -90,7 +90,7 @@ single `DW_AUTH_TOKEN` compatibility token for quick verification.
 ```bash
 curl -fsSLO https://raw.githubusercontent.com/durable-workflow/server/main/docker-compose.published.yml
 
-export DW_SERVER_TAG=2.0.0-rc.9
+export DW_SERVER_TAG=2.0.0-rc.10
 export DW_AUTH_TOKEN=dev-token
 
 docker compose -f docker-compose.published.yml up -d --wait
@@ -121,7 +121,7 @@ and expects role-scoped credentials plus an exact image tag or digest.
 Create a production env file outside source control:
 
 ```env
-DW_SERVER_IMAGE=durableworkflow/server:2.0.0-rc.9
+DW_SERVER_IMAGE=durableworkflow/server:2.0.0-rc.10
 SERVER_PORT=8080
 APP_ENV=production
 APP_DEBUG=false
@@ -255,7 +255,7 @@ The long-running `server`, `worker`, and `scheduler` services each pin
 `DW_SERVER_TOPOLOGY_SHAPE` and `DW_SERVER_PROCESS_CLASS` so
 `GET /api/cluster/info` reports the role class you actually launched during
 local split-role testing.
-The local compose files pass `WORKFLOW_PACKAGE_REF=2.0.0-rc.6`, matching
+The local compose files pass `WORKFLOW_PACKAGE_REF=2.0.0-rc.7`, matching
 the Dockerfile fallback, so `docker compose up --build` works from a clean
 checkout with Composer metadata aligned to the embedded workflow package.
 Override `WORKFLOW_PACKAGE_SOURCE`, `WORKFLOW_PACKAGE_REF`, or
@@ -1190,7 +1190,7 @@ docker run --rm \
   durable-workflow-server php artisan queue:work database --sleep=1 --tries=3
 ```
 
-The Dockerfile clones the `durable-workflow/workflow` `2.0.0-rc.6` tag
+The Dockerfile clones the `durable-workflow/workflow` `2.0.0-rc.7` tag
 into the build by default and refreshes the Composer package metadata from that
 source before installing production dependencies. Use
 `--build-arg WORKFLOW_PACKAGE_SOURCE=...`,
@@ -1312,19 +1312,19 @@ The `Release` workflow publishes multi-arch images to
 Docker Hub (`durableworkflow/server`) and GitHub Container Registry
 (`ghcr.io/durable-workflow/server`) when a server semver tag is pushed. The
 workflow builds the server image with the public
-`durable-workflow/workflow:2.0.0-rc.6` package and verifies that the tag
-resolves to commit `ebbcc36f2928f5324a2460db2bb844ce93e4c0d9` before the
+`durable-workflow/workflow:2.0.0-rc.7` package and verifies that the tag
+resolves to commit `44cb40197d5d2809f95b787ca073fadd33a6d577` before the
 image can be published.
 
-The current server image embeds the already-published Workflow `2.0.0-rc.6`
+The current server image embeds the already-published Workflow `2.0.0-rc.7`
 package. When a later server image needs a newer Workflow fix, publish that
 package first and update both Workflow package pins before tagging Server.
 Publish this Server source with its own authorized tag:
 
 ```bash
 # In the server repo, publish the Docker image tags.
-git tag 2.0.0-rc.9 origin/main
-git push origin refs/tags/2.0.0-rc.9
+git tag 2.0.0-rc.10 origin/main
+git push origin refs/tags/2.0.0-rc.10
 ```
 
 The server tag push publishes the exact version plus the semver aliases
@@ -1333,12 +1333,12 @@ the workflow finishes, verify the image provenance and runtime config before
 announcing the release:
 
 ```bash
-docker pull durableworkflow/server:2.0.0-rc.9
-docker run --rm --entrypoint sh durableworkflow/server:2.0.0-rc.9 -lc \
+docker pull durableworkflow/server:2.0.0-rc.10
+docker run --rm --entrypoint sh durableworkflow/server:2.0.0-rc.10 -lc \
   'cat /app/.package-provenance && grep -n "serializer" /app/vendor/durable-workflow/workflow/src/config/workflows.php'
 
-docker pull ghcr.io/durable-workflow/server:2.0.0-rc.9
-docker run --rm --entrypoint sh ghcr.io/durable-workflow/server:2.0.0-rc.9 -lc \
+docker pull ghcr.io/durable-workflow/server:2.0.0-rc.10
+docker run --rm --entrypoint sh ghcr.io/durable-workflow/server:2.0.0-rc.10 -lc \
   'cat /app/.package-provenance && grep -n "serializer" /app/vendor/durable-workflow/workflow/src/config/workflows.php'
 ```
 
@@ -1355,7 +1355,7 @@ direct patches for environment-specific names, images, registry secrets, and
 scaling policy.
 
 The public manifests default to the pinned Docker Hub image
-`durableworkflow/server:2.0.0-rc.9`. For production, patch every workload to the exact
+`durableworkflow/server:2.0.0-rc.10`. For production, patch every workload to the exact
 Docker Hub or GHCR tag or digest you intend to run before applying it. See
 [`k8s/README.md`](k8s/README.md) for the raw-manifest support boundary,
 [`docs/helm-validation.md`](docs/helm-validation.md) for the Helm contract and
