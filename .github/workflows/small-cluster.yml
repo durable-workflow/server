@@ -27,4 +27,22 @@ jobs:
         env:
           DW_SMALL_CLUSTER_DATABASES: ${{ github.event_name == 'workflow_dispatch' && inputs.databases || 'mysql,pgsql' }}
           DW_SMALL_CLUSTER_IMAGE: durable-workflow/server-small-cluster:${{ github.run_id }}-${{ github.run_attempt }}
+          DW_SMALL_CLUSTER_COMPOSE_PROJECT: small-cluster-${{ github.run_id }}-${{ github.run_attempt }}-${{ github.job }}
+          DW_SMALL_CLUSTER_LB_PORT: "0"
+          DW_SMALL_CLUSTER_SERVER_A_PORT: "0"
+          DW_SMALL_CLUSTER_SERVER_B_PORT: "0"
         run: scripts/smoke-small-cluster.sh
+
+      - name: Clean up small cluster stacks
+        if: always()
+        env:
+          DW_SMALL_CLUSTER_DATABASES: ${{ github.event_name == 'workflow_dispatch' && inputs.databases || 'mysql,pgsql' }}
+          DW_SMALL_CLUSTER_COMPOSE_PROJECT: small-cluster-${{ github.run_id }}-${{ github.run_attempt }}-${{ github.job }}
+        run: |
+          IFS=',' read -ra databases <<< "$DW_SMALL_CLUSTER_DATABASES"
+          for database in "${databases[@]}"; do
+            project="$(printf '%s-%s' "$DW_SMALL_CLUSTER_COMPOSE_PROJECT" "$database" | tr -c '[:alnum:]_-' '-')"
+            docker compose -p "$project" --profile "$database" \
+              -f docker-compose.small-cluster.yml down -v --remove-orphans \
+              >/dev/null 2>&1 || true
+          done

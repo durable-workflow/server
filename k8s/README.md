@@ -12,7 +12,7 @@ Pick one or the other per environment, not both.
 The default image is pinned to the public Docker Hub release tag:
 
 ```text
-durableworkflow/server:2.0.0-rc.8
+durableworkflow/server:2.0.0-rc.9
 ```
 
 Before production use, patch every workload image to the exact published tag or
@@ -20,15 +20,15 @@ digest you intend to run:
 
 ```bash
 kubectl set image -n durable-workflow deploy/durable-workflow-server \
-  server=durableworkflow/server:2.0.0-rc.8
+  server=durableworkflow/server:2.0.0-rc.9
 kubectl set image -n durable-workflow deploy/durable-workflow-worker \
-  worker=durableworkflow/server:2.0.0-rc.8
+  worker=durableworkflow/server:2.0.0-rc.9
 kubectl set image -n durable-workflow cronjob/durable-workflow-scheduler \
-  scheduler=durableworkflow/server:2.0.0-rc.8
+  scheduler=durableworkflow/server:2.0.0-rc.9
 ```
 
 GitHub Container Registry publishes the same release line at
-`ghcr.io/durable-workflow/server:2.0.0-rc.8`. Digest pinning is preferred for strict
+`ghcr.io/durable-workflow/server:2.0.0-rc.9`. Digest pinning is preferred for strict
 change control.
 
 The manifests expect you to provide:

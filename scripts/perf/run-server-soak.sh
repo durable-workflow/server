@@ -3,7 +3,7 @@ set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 ARTIFACT_DIR="${DW_PERF_ARTIFACT_DIR:-$ROOT_DIR/build/perf}"
-RUN_ID="${GITHUB_RUN_ID:-local}-$(date +%s)"
+RUN_ID="${GITHUB_RUN_ID:-local}-${GITHUB_RUN_ATTEMPT:-1}-${GITHUB_JOB:-perf}-$(date +%s)"
 PROJECT="${DW_PERF_COMPOSE_PROJECT:-dw-server-perf-$RUN_ID}"
 choose_free_port() {
   python3 - <<'PY'

@@ -1089,6 +1089,7 @@ def evidence_provenance(base_url: str, compose_project: str) -> dict[str, Any]:
         "event_name": os.environ.get("GITHUB_EVENT_NAME", ""),
         "run_id": os.environ.get("GITHUB_RUN_ID", ""),
         "run_attempt": os.environ.get("GITHUB_RUN_ATTEMPT", ""),
+        "job": os.environ.get("GITHUB_JOB", ""),
         "runner_name": os.environ.get("RUNNER_NAME", ""),
         "runner_os": os.environ.get("RUNNER_OS", ""),
         "runner_arch": os.environ.get("RUNNER_ARCH", ""),

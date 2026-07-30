@@ -4,12 +4,12 @@ set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 COMPOSE_FILE="${DW_REPLAY_QUERY_COMPOSE_FILE:-$ROOT_DIR/docker-compose.published.yml}"
-PROJECT_RAW="${DW_REPLAY_QUERY_COMPOSE_PROJECT:-dw-replay-query-${GITHUB_RUN_ID:-local}-${GITHUB_RUN_ATTEMPT:-1}}"
+PROJECT_RAW="${DW_REPLAY_QUERY_COMPOSE_PROJECT:-dw-replay-query-${GITHUB_RUN_ID:-local}-${GITHUB_RUN_ATTEMPT:-1}-${GITHUB_JOB:-replay-query}}"
 PROJECT="$(printf '%s' "$PROJECT_RAW" | tr -c '[:alnum:]_-' '-')"
 SERVER_PORT="${SERVER_PORT:-18082}"
 TOKEN="${DW_AUTH_TOKEN:-dev-token}"
 BASE_URL=""
-NONROOT_CONTAINER=""
+NONROOT_CONTAINER="${PROJECT}-nonroot-http"
 
 source "$ROOT_DIR/scripts/regression/apache-module-preflight.sh"
 
@@ -138,6 +138,13 @@ trap failure_logs ERR
 
 compose up -d --wait
 
+SERVER_PORT="$(compose port server 8080 | awk -F: 'END {print $NF}')"
+if [ -z "$SERVER_PORT" ]; then
+  printf 'Unable to discover the published server port for %s.\n' "$PROJECT" >&2
+  exit 1
+fi
+export SERVER_PORT
+
 build_server_url_candidates
 BASE_URL="$(wait_for_server_ready)"
 printf 'Running concurrent replay/query regression against %s\n' "$BASE_URL"
@@ -163,7 +170,6 @@ if [ -z "$server_image" ]; then
   printf 'Unable to resolve the built standalone server image.\n' >&2
   exit 1
 fi
-NONROOT_CONTAINER="${PROJECT}-nonroot-http"
 docker run --detach \
   --name "$NONROOT_CONTAINER" \
   --user 1000:1000 \
@@ -206,8 +212,6 @@ if ! docker exec "$NONROOT_CONTAINER" sh -c \
   exit 1
 fi
 printf 'Standalone Apache serves readiness and writes SQLite as UID/GID 1000 with capabilities dropped.\n'
-docker rm -f "$NONROOT_CONTAINER" >/dev/null
-NONROOT_CONTAINER=""
 
 opcache_enabled="$(compose exec -T server php -r 'echo extension_loaded("Zend OPcache") && ini_get("opcache.enable_cli") ? "1" : "0";')"
 if [ "$opcache_enabled" != "1" ]; then

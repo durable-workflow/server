@@ -112,7 +112,7 @@ run_database_smoke() {
     db_port="5432"
   fi
 
-  project="$(normalize_project "dw-small-cluster-${database}-${GITHUB_RUN_ID:-local}-${GITHUB_RUN_ATTEMPT:-1}")"
+  project="$(normalize_project "${DW_SMALL_CLUSTER_COMPOSE_PROJECT:-dw-small-cluster-${GITHUB_RUN_ID:-local}-${GITHUB_RUN_ATTEMPT:-1}-${GITHUB_JOB:-smoke}}-${database}")"
   workflow_id="wf-small-cluster-${database}-$(date +%s)"
 
   export DW_SMALL_CLUSTER_DB="$database"

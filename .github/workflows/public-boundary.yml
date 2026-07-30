@@ -32,3 +32,8 @@ jobs:
           fi
 
           PUBLIC_BOUNDARY_GIT_RANGE="$range" scripts/check-public-boundary.sh
+
+      - name: Check Docker workflow isolation
+        run: |
+          python3 scripts/ci/check-docker-workflow-isolation.py
+          python3 -m unittest tests/Unit/Support/docker_workflow_isolation_policy_test.py

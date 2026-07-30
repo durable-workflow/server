@@ -38,7 +38,26 @@ jobs:
       - name: Run bounded published-artifact rehearsal
         env:
           DW_FAILOVER_MODE: bounded
+          DW_FAILOVER_PROJECT: single-region-failover-${{ github.run_id }}-${{ github.run_attempt }}-${{ github.job }}
+          DW_FAILOVER_SERVER_A_PORT: "0"
+          DW_FAILOVER_SERVER_B_PORT: "0"
+          DW_FAILOVER_LB_PORT: "0"
         run: scripts/conformance/single-region-failover-published-artifacts.sh --result-dir artifacts/single-region-failover
+
+      - name: Clean up failover Docker resources
+        if: always()
+        env:
+          DW_FAILOVER_PROJECT: single-region-failover-${{ github.run_id }}-${{ github.run_attempt }}-${{ github.job }}
+        run: |
+          docker ps -aq \
+            --filter "label=com.docker.compose.project=$DW_FAILOVER_PROJECT" \
+            | xargs -r docker rm -f >/dev/null 2>&1 || true
+          docker network ls -q \
+            --filter "label=com.docker.compose.project=$DW_FAILOVER_PROJECT" \
+            | xargs -r docker network rm >/dev/null 2>&1 || true
+          docker volume ls -q \
+            --filter "label=com.docker.compose.project=$DW_FAILOVER_PROJECT" \
+            | xargs -r docker volume rm -f >/dev/null 2>&1 || true
 
       - name: Upload machine-readable recovery packet
         if: always()

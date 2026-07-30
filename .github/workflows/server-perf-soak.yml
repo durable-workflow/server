@@ -57,8 +57,19 @@ jobs:
           DW_PERF_REMOTE_WRITE_URL: ${{ vars.DW_PERF_REMOTE_WRITE_URL }}
           DW_PERF_REMOTE_WRITE_USERNAME: ${{ vars.DW_PERF_REMOTE_WRITE_USERNAME }}
           DW_PERF_REMOTE_WRITE_PASSWORD: ${{ secrets.DW_PERF_REMOTE_WRITE_PASSWORD }}
+          DW_PERF_COMPOSE_PROJECT: server-perf-soak-${{ github.run_id }}-${{ github.run_attempt }}-${{ github.job }}
           RUNNER_ENVIRONMENT: "github-hosted"
+        if: ${{ always() && success() }}
         run: scripts/perf/run-server-soak.sh
+
+      - name: Clean up perf Docker resources
+        if: always()
+        env:
+          DW_PERF_COMPOSE_PROJECT: server-perf-soak-${{ github.run_id }}-${{ github.run_attempt }}-${{ github.job }}
+        run: |
+          docker rm -f "${DW_PERF_COMPOSE_PROJECT}-prometheus" >/dev/null 2>&1 || true
+          docker compose -p "$DW_PERF_COMPOSE_PROJECT" -f docker-compose.yml \
+            down -v --remove-orphans >/dev/null 2>&1 || true
 
       - name: Upload perf artifacts
         if: always() && github.server_url == 'https://github.com'

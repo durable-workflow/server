@@ -221,7 +221,7 @@ jobs:
 
       - name: Verify published protocol catalog convergence
         id: protocol_catalog
-        if: ${{ steps.exact.outputs.exact_publish_outcome == 'success' }}
+        if: ${{ always() && success() && steps.exact.outputs.exact_publish_outcome == 'success' }}
         env:
           RELEASE_TAG: ${{ steps.release_publish.outputs.tag }}
           SERVER_IMAGE: ${{ env.DOCKERHUB_IMAGE }}:${{ steps.release_publish.outputs.tag }}
@@ -229,7 +229,19 @@ jobs:
           WORKFLOW_PACKAGE_COMMIT: ${{ steps.workflow.outputs.commit }}
           PUBLIC_CATALOG_URL: https://durable-workflow.github.io/platform-protocol-specs.json
           PROTOCOL_CATALOG_CONFORMANCE_EVIDENCE: release-protocol-catalog-conformance.json
+          RELEASE_PROTOCOL_CATALOG_SCOPE: release-protocol-catalog-${{ github.run_id }}-${{ github.run_attempt }}-${{ github.job }}
+          RELEASE_PROTOCOL_CATALOG_PORT: "0"
         run: scripts/ci/verify-release-protocol-catalog.sh
+
+      - name: Clean up protocol catalog Docker resources
+        if: always()
+        env:
+          RELEASE_PROTOCOL_CATALOG_SCOPE: release-protocol-catalog-${{ github.run_id }}-${{ github.run_attempt }}-${{ github.job }}
+        run: |
+          docker rm -f "$RELEASE_PROTOCOL_CATALOG_SCOPE" \
+            "${RELEASE_PROTOCOL_CATALOG_SCOPE}-bootstrap" >/dev/null 2>&1 || true
+          docker volume rm -f "${RELEASE_PROTOCOL_CATALOG_SCOPE}-database" \
+            >/dev/null 2>&1 || true
 
       - name: Resolve rolling image aliases
         id: rolling

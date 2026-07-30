@@ -20,7 +20,7 @@ bootstrap_log="${PROTOCOL_CATALOG_BOOTSTRAP_LOG:-release-protocol-catalog-bootst
 server_log="${PROTOCOL_CATALOG_SERVER_LOG:-release-protocol-catalog-server.log}"
 tmp_root="${RUNNER_TEMP:-${TMPDIR:-/tmp}}"
 tmp_dir="$(mktemp -d "${tmp_root}/release-protocol-catalog.XXXXXX")"
-container_name="release-protocol-catalog-${GITHUB_RUN_ID:-local}-${GITHUB_RUN_ATTEMPT:-1}-$$"
+container_name="${RELEASE_PROTOCOL_CATALOG_SCOPE:-release-protocol-catalog-${GITHUB_RUN_ID:-local}-${GITHUB_RUN_ATTEMPT:-1}-${GITHUB_JOB:-publish}-$$}"
 bootstrap_container_name="${container_name}-bootstrap"
 volume_name="${container_name}-database"
 container_started=false
@@ -164,9 +164,15 @@ if [ "$bootstrap_exit" -ne 0 ]; then
 fi
 
 failure_stage="server_start"
+publish_argument="127.0.0.1:${port}:8080"
+dynamic_port=false
+if [ "$port" = "0" ]; then
+    publish_argument="127.0.0.1::8080"
+    dynamic_port=true
+fi
 if ! "$docker_bin" run --detach --rm \
     --name "$container_name" \
-    --publish "127.0.0.1:${port}:8080" \
+    --publish "$publish_argument" \
     --volume "${volume_name}:/app/database" \
     --env DW_AUTH_DRIVER=none \
     --env DW_EXPOSE_PACKAGE_PROVENANCE=1 \
@@ -176,6 +182,12 @@ if ! "$docker_bin" run --detach --rm \
     fail "published_image_start_failed" "Could not start published server image ${server_image}. ${detail}"
 fi
 container_started=true
+if [ "$dynamic_port" = "true" ]; then
+    port="$("$docker_bin" port "$container_name" 8080/tcp | head -n 1 | awk -F: '{print $NF}')"
+    if [ -z "$port" ]; then
+        fail "published_port_discovery_failed" "Could not discover the published server port for ${server_image}."
+    fi
+fi
 
 failure_stage="server_discovery"
 server_discovery_path="${tmp_dir}/server-discovery.json"

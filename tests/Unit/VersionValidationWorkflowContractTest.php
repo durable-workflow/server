@@ -18,9 +18,10 @@ class VersionValidationWorkflowContractTest extends TestCase
         $job = $workflow['jobs']['version-validation'] ?? null;
         $this->assertIsArray($job);
         $this->assertSame([
-            'SERVER_VERSION' => '2.0.0-rc.8',
+            'SERVER_VERSION' => '2.0.0-rc.9',
             'CLI_VERSION' => '2.0.0-rc.5',
             'PYTHON_SDK_VERSION' => '2.0.0rc1',
+            'COMPOSE_PROJECT_NAME' => 'version-validation-${{ github.run_id }}-${{ github.run_attempt }}-${{ github.job }}',
         ], $job['env'] ?? null);
 
         $server = $this->step($job, 'Start rc.2 server');
@@ -41,6 +42,11 @@ class VersionValidationWorkflowContractTest extends TestCase
 
         $this->assertStringNotContainsString('git+https://github.com/durable-workflow/sdk-python.git@main', $source);
         $this->assertStringNotContainsString('if [ "$VERSION" != "2.0.0" ]; then', $source);
+        $this->assertStringContainsString('port server 8080', $source);
+        $this->assertSame(4, substr_count($source, '- "0:8080"'));
+        $this->assertSame(8, substr_count($source, 'ports: !override []'));
+        $this->assertStringContainsString('os.environ["SERVER_BASE_URL"]', $source);
+        $this->assertStringNotContainsString('http://localhost:8080', $source);
     }
 
     /**

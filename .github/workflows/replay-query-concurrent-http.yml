@@ -69,8 +69,19 @@ jobs:
           docker build "${build_args[@]}" -t durable-workflow-server-replay-query .
 
       - name: Run concurrent replay/query regression
+        if: ${{ always() && success() }}
         env:
           DW_SERVER_IMAGE: durable-workflow-server-replay-query
-          DW_REPLAY_QUERY_COMPOSE_PROJECT: replay-query-${{ github.run_id }}-${{ github.run_attempt }}
-          SERVER_PORT: '18082'
+          DW_REPLAY_QUERY_COMPOSE_PROJECT: replay-query-${{ github.run_id }}-${{ github.run_attempt }}-${{ github.job }}
+          SERVER_PORT: "0"
         run: scripts/regression/replay-query-concurrent-http.sh
+
+      - name: Clean up replay/query Docker resources
+        if: always()
+        env:
+          DW_REPLAY_QUERY_COMPOSE_PROJECT: replay-query-${{ github.run_id }}-${{ github.run_attempt }}-${{ github.job }}
+        run: |
+          docker rm -f "${DW_REPLAY_QUERY_COMPOSE_PROJECT}-nonroot-http" >/dev/null 2>&1 || true
+          docker compose -p "$DW_REPLAY_QUERY_COMPOSE_PROJECT" \
+            -f docker-compose.published.yml down -v --remove-orphans \
+            >/dev/null 2>&1 || true

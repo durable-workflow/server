@@ -101,8 +101,8 @@ def parse_published_port(name: str, value: str) -> int:
         port = int(value)
     except ValueError as error:
         raise ValueError(f"{PORT_ENVIRONMENT[name]} must be an integer port") from error
-    if not 1 <= port <= 65535:
-        raise ValueError(f"{PORT_ENVIRONMENT[name]} must be between 1 and 65535")
+    if not 0 <= port <= 65535:
+        raise ValueError(f"{PORT_ENVIRONMENT[name]} must be between 0 and 65535")
     return port
 
 
@@ -759,7 +759,8 @@ def worker_headers_payload(worker_id: str) -> dict[str, Any]:
     }
 
 
-def register_worker(worker_id: str, base: str = LB) -> dict[str, Any]:
+def register_worker(worker_id: str, base: str | None = None) -> dict[str, Any]:
+    base = base or LB
     status, body, elapsed = request(
         base,
         "/api/worker/register",
@@ -772,7 +773,8 @@ def register_worker(worker_id: str, base: str = LB) -> dict[str, Any]:
     return {"worker_id": worker_id, "status": status, "elapsed_ms": elapsed}
 
 
-def start_workflow(workflow_id: str, base: str = LB) -> dict[str, Any]:
+def start_workflow(workflow_id: str, base: str | None = None) -> dict[str, Any]:
+    base = base or LB
     status, body, elapsed = request(
         base,
         "/api/workflows",
@@ -843,7 +845,12 @@ def complete_task(
     )
 
 
-def describe(workflow_id: str, run_id: str, base: str = LB) -> tuple[int, dict[str, Any], int]:
+def describe(
+    workflow_id: str,
+    run_id: str,
+    base: str | None = None,
+) -> tuple[int, dict[str, Any], int]:
+    base = base or LB
     return request(base, f"/api/workflows/{workflow_id}/runs/{run_id}")
 
 
@@ -990,6 +997,8 @@ echo json_encode($package, JSON_THROW_ON_ERROR);
 
 
 def start_topology() -> dict[str, Any]:
+    global LB, PROBE_ENDPOINTS, PUBLISHED_PORTS, SERVER_A, SERVER_B
+
     try:
         up_result = compose("up", "-d", "--wait", "--wait-timeout", "180", timeout=240)
     except Exception as error:
@@ -1002,6 +1011,29 @@ def start_topology() -> dict[str, Any]:
             # probe's observations are retained in TOPOLOGY_DIAGNOSTICS.
             pass
         raise
+
+    discovered_ports: dict[str, int] = {}
+    for name, service in (
+        ("server_a", "server-a"),
+        ("server_b", "server-b"),
+        ("load_balancer", "load-balancer"),
+    ):
+        published = compose("port", service, "8080", timeout=30).stdout.splitlines()
+        require(bool(published), f"missing published port for {service}")
+        discovered_ports[name] = parse_published_port(
+            name,
+            published[0].rsplit(":", 1)[-1],
+        )
+        require(discovered_ports[name] > 0, f"invalid published port for {service}")
+
+    PUBLISHED_PORTS = discovered_ports
+    PROBE_ENDPOINTS = build_probe_endpoints(CONNECT_HOST, PUBLISHED_PORTS)
+    LB = PROBE_ENDPOINTS["load_balancer"]
+    SERVER_A = PROBE_ENDPOINTS["server_a"]
+    SERVER_B = PROBE_ENDPOINTS["server_b"]
+    RESULT["topology"]["published_ports"] = PUBLISHED_PORTS
+    TOPOLOGY_DIAGNOSTICS.clear()
+    TOPOLOGY_DIAGNOSTICS.update(initial_topology_diagnostics())
 
     TOPOLOGY_DIAGNOSTICS["compose_up"] = command_diagnostic(up_result)
     refresh_topology_diagnostics()

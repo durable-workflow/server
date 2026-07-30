@@ -709,7 +709,7 @@ SH);
         $composer = json_decode($this->read('composer.json'), true, flags: JSON_THROW_ON_ERROR);
 
         $this->assertSame(
-            '2.0.0-rc.8',
+            '2.0.0-rc.9',
             $composer['extra']['durable-workflow']['product-train'] ?? null,
         );
     }
@@ -1208,6 +1208,10 @@ if [ "$1" = "logs" ]; then
     printf 'api server log\n'
     exit 0
 fi
+if [ "$1" = "port" ]; then
+    printf '127.0.0.1:49152\n'
+    exit 0
+fi
 if [ "$1" = "rm" ]; then
     exit 0
 fi
@@ -1253,6 +1257,7 @@ SH);
                 'RELEASE_PROTOCOL_CATALOG_ATTEMPTS' => '1',
                 'RELEASE_PROTOCOL_CATALOG_RETRY_SLEEP' => '0',
                 'RELEASE_PROTOCOL_CATALOG_BOOTSTRAP_TIMEOUT' => '5',
+                'RELEASE_PROTOCOL_CATALOG_PORT' => '0',
             ]);
 
             $this->assertSame(0, $result['exitCode'], $result['stderr']);
@@ -1289,6 +1294,8 @@ SH);
             $this->assertStringContainsString($mount, $events[$serverIndex]);
             $this->assertStringContainsString("\tdurableworkflow/server:0.2.653", $events[$bootstrapIndex]);
             $this->assertStringContainsString("\tdurableworkflow/server:0.2.653", $events[$serverIndex]);
+            $this->assertStringContainsString("\t--publish\t127.0.0.1::8080", $events[$serverIndex]);
+            $this->assertContains('curl	http://127.0.0.1:49152/api/cluster/info', $events);
         } finally {
             foreach (glob($tmpDir.'/*') ?: [] as $path) {
                 @unlink($path);

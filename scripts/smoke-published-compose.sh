@@ -4,7 +4,7 @@ set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 COMPOSE_FILE="${DW_PUBLISHED_COMPOSE_FILE:-$ROOT_DIR/docker-compose.published.yml}"
-PROJECT_RAW="${DW_PUBLISHED_COMPOSE_PROJECT:-dw-server-published-smoke-${GITHUB_RUN_ID:-local}-${GITHUB_RUN_ATTEMPT:-1}-${DOCKER_DEFAULT_PLATFORM:-native}}"
+PROJECT_RAW="${DW_PUBLISHED_COMPOSE_PROJECT:-dw-server-published-smoke-${GITHUB_RUN_ID:-local}-${GITHUB_RUN_ATTEMPT:-1}-${GITHUB_JOB:-smoke}-${DOCKER_DEFAULT_PLATFORM:-native}}"
 PROJECT="$(printf '%s' "$PROJECT_RAW" | tr -c '[:alnum:]_-' '-')"
 SERVER_PORT="${SERVER_PORT:-18080}"
 TOKEN="${DW_AUTH_TOKEN:-dev-token}"
@@ -17,11 +17,7 @@ PROFILE="${DW_PUBLISHED_COMPOSE_PROFILE:-local}"
 export DW_SERVER_PLATFORM="$SERVER_PLATFORM"
 unset DOCKER_DEFAULT_PLATFORM
 
-if [ "$ENDPOINT_MODE" = "container" ]; then
-  BASE_URL="http://server:8080"
-else
-  BASE_URL="http://127.0.0.1:${SERVER_PORT}"
-fi
+BASE_URL="http://server:8080"
 
 export SERVER_PORT
 
@@ -105,6 +101,17 @@ echo "  endpoint: $ENDPOINT_MODE"
 
 compose pull
 compose up -d --wait
+
+if [ "$ENDPOINT_MODE" = "host" ]; then
+  SERVER_PORT="$(compose port server 8080 | awk -F: 'END {print $NF}')"
+  if [ -z "$SERVER_PORT" ]; then
+    echo "Unable to discover the published server port for $PROJECT" >&2
+    exit 1
+  fi
+  BASE_URL="http://127.0.0.1:${SERVER_PORT}"
+fi
+
+echo "  resolved endpoint: $BASE_URL"
 
 curl_json_with_retry /tmp/dw-server-compose-health.json "${BASE_URL}/api/health"
 curl_json_with_retry /tmp/dw-server-compose-ready.json "${BASE_URL}/api/ready"

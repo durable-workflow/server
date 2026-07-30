@@ -154,6 +154,6 @@ export DW_FAILOVER_RESULT_DIR="$result_dir"
 export DW_FAILOVER_COMPOSE_FILE="$compose_file"
 export DW_FAILOVER_KEEP_STACK="$keep_stack"
 export DW_FAILOVER_MODE="${DW_FAILOVER_MODE:-full}"
-export DW_FAILOVER_PROJECT="dw-failover-$(date +%s)-$$"
+export DW_FAILOVER_PROJECT="${DW_FAILOVER_PROJECT:-dw-failover-${GITHUB_RUN_ID:-local}-${GITHUB_RUN_ATTEMPT:-1}-${GITHUB_JOB:-rehearsal}-$$}"
 
 python3 "$script_dir/single-region-failover-published-artifacts.py"

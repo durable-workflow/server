@@ -8,7 +8,7 @@ on:
         required: false
         default: "0.2"
       server_image:
-        description: "Full image reference or digest override, for example ghcr.io/durable-workflow/server:2.0.0-rc.8"
+        description: "Full image reference or digest override, for example ghcr.io/durable-workflow/server:2.0.0-rc.9"
         required: false
         default: ""
 
@@ -31,16 +31,16 @@ jobs:
         include:
           - platform: linux/amd64
             profile: local
-            port: "18080"
+            shard: amd64-local
           - platform: linux/arm64
             profile: local
-            port: "18081"
+            shard: arm64-local
           - platform: linux/amd64
             profile: production
-            port: "18082"
+            shard: amd64-production
           - platform: linux/arm64
             profile: production
-            port: "18083"
+            shard: arm64-production
 
     steps:
       - name: Checkout server
@@ -64,7 +64,16 @@ jobs:
         env:
           DW_SERVER_PLATFORM: ${{ matrix.platform }}
           DW_PUBLISHED_COMPOSE_PROFILE: ${{ matrix.profile }}
-          DW_PUBLISHED_COMPOSE_PROJECT: published-compose-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.profile }}-${{ matrix.port }}
-          SERVER_PORT: ${{ matrix.port }}
+          DW_PUBLISHED_COMPOSE_PROJECT: published-compose-${{ github.run_id }}-${{ github.run_attempt }}-${{ github.job }}-${{ matrix.shard }}
+          SERVER_PORT: "0"
           DW_AUTH_TOKEN: published-compose-token
         run: scripts/smoke-published-compose.sh
+
+      - name: Clean up published Compose stack
+        if: always()
+        env:
+          DW_PUBLISHED_COMPOSE_PROJECT: published-compose-${{ github.run_id }}-${{ github.run_attempt }}-${{ github.job }}-${{ matrix.shard }}
+        run: >-
+          docker compose -p "$DW_PUBLISHED_COMPOSE_PROJECT"
+          -f docker-compose.published.yml down -v --remove-orphans
+          >/dev/null 2>&1 || true
