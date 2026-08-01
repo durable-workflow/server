@@ -26,10 +26,14 @@ class HelmChartReleaseTest(unittest.TestCase):
     def test_changed_app_version_requires_changed_default_image(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             chart = Path(temporary)
+            metadata = RELEASE.validate_source()
             chart.joinpath("Chart.yaml").write_text(
                 RELEASE.DEFAULT_CHART_PATH.joinpath("Chart.yaml")
                 .read_text()
-                .replace('appVersion: "2.0.0-rc.11"', 'appVersion: "2.0.0-rc.12"')
+                .replace(
+                    f'appVersion: "{metadata["app_version"]}"',
+                    'appVersion: "9.9.9"',
+                )
             )
             chart.joinpath("values.yaml").write_text(
                 RELEASE.DEFAULT_CHART_PATH.joinpath("values.yaml").read_text()
@@ -78,6 +82,7 @@ class HelmChartReleaseTest(unittest.TestCase):
     def test_package_validation_renders_without_initializing_an_install(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             output_directory = Path(temporary) / "dist"
+            chart_version = RELEASE.validate_source()["version"]
             commands: list[list[str]] = []
 
             def fake_run(
@@ -87,7 +92,9 @@ class HelmChartReleaseTest(unittest.TestCase):
                 commands.append(arguments)
                 if arguments[1] == "package":
                     output_directory.mkdir(parents=True, exist_ok=True)
-                    output_directory.joinpath("durable-workflow-0.1.1.tgz").write_bytes(
+                    output_directory.joinpath(
+                        f"durable-workflow-{chart_version}.tgz"
+                    ).write_bytes(
                         b"package"
                     )
                 return RELEASE.subprocess.CompletedProcess(arguments, 0, "", "")

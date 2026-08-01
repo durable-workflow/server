@@ -7,13 +7,15 @@ services:
         WORKFLOW_PACKAGE_REF: ${WORKFLOW_PACKAGE_REF:-2.0.0-rc.8}
         WORKFLOW_PACKAGE_COMMIT: ${WORKFLOW_PACKAGE_COMMIT:-dc7b98ebf811f30fcf43e1f1c7b66021a10878d0}
     command: ["server-bootstrap"]
+    healthcheck:
+      disable: true
     environment:
       APP_NAME: "Durable Workflow Server"
       APP_ENV: local
       DW_SERVER_KEY: "${DW_SERVER_KEY:-}"
       DW_SERVER_TOPOLOGY_SHAPE: standalone_server
       DW_SERVER_PROCESS_CLASS: server_http_node
-      APP_VERSION: "${APP_VERSION:-2.0.0-rc.11}"
+      APP_VERSION: "${APP_VERSION:-2.0.0-rc.12}"
       APP_DEBUG: "false"
       DB_CONNECTION: mysql
       DB_HOST: mysql
@@ -52,7 +54,7 @@ services:
       APP_NAME: "Durable Workflow Server"
       APP_ENV: local
       DW_SERVER_KEY: "${DW_SERVER_KEY:-}"
-      APP_VERSION: "${APP_VERSION:-2.0.0-rc.11}"
+      APP_VERSION: "${APP_VERSION:-2.0.0-rc.12}"
       APP_DEBUG: "false"
       DB_CONNECTION: mysql
       DB_HOST: mysql
@@ -93,13 +95,15 @@ services:
         WORKFLOW_PACKAGE_REF: ${WORKFLOW_PACKAGE_REF:-2.0.0-rc.8}
         WORKFLOW_PACKAGE_COMMIT: ${WORKFLOW_PACKAGE_COMMIT:-dc7b98ebf811f30fcf43e1f1c7b66021a10878d0}
     command: php artisan queue:work --sleep=1 --tries=3 --max-time=3600
+    healthcheck:
+      disable: true
     environment:
       APP_NAME: "Durable Workflow Server"
       APP_ENV: local
       DW_SERVER_KEY: "${DW_SERVER_KEY:-}"
       DW_SERVER_TOPOLOGY_SHAPE: standalone_server
       DW_SERVER_PROCESS_CLASS: worker_node
-      APP_VERSION: "${APP_VERSION:-2.0.0-rc.11}"
+      APP_VERSION: "${APP_VERSION:-2.0.0-rc.12}"
       DB_CONNECTION: mysql
       DB_HOST: mysql
       DB_PORT: 3306
@@ -133,13 +137,15 @@ services:
     init: true
     command: >-
       sh -c 'while true; do php artisan schedule:evaluate --limit=100 --json; php artisan activity:timeout-enforce --limit=100; php artisan history:prune --limit=100; sleep 10; done'
+    healthcheck:
+      disable: true
     environment:
       APP_NAME: "Durable Workflow Server"
       APP_ENV: local
       DW_SERVER_KEY: "${DW_SERVER_KEY:-}"
       DW_SERVER_TOPOLOGY_SHAPE: standalone_server
       DW_SERVER_PROCESS_CLASS: scheduler_node
-      APP_VERSION: "${APP_VERSION:-2.0.0-rc.11}"
+      APP_VERSION: "${APP_VERSION:-2.0.0-rc.12}"
       DB_CONNECTION: mysql
       DB_HOST: mysql
       DB_PORT: 3306

@@ -12,7 +12,7 @@ x-server-build: &server-build
 x-server-environment: &server-environment
   APP_NAME: "Durable Workflow Server"
   APP_ENV: testing
-  APP_VERSION: ${APP_VERSION:-2.0.0-rc.11}
+  APP_VERSION: ${APP_VERSION:-2.0.0-rc.12}
   APP_DEBUG: "false"
   DW_SERVER_KEY: ${DW_SERVER_KEY:-base64:5Zt4nUhlCm3DD0nLXZJQdHiwPfb56yGo9gNV/g3jYbY=}
   DB_CONNECTION: ${DW_SMALL_CLUSTER_DB:-mysql}
@@ -37,6 +37,8 @@ services:
     image: *server-image
     build: *server-build
     command: ["server-bootstrap"]
+    healthcheck:
+      disable: true
     environment:
       <<: *server-environment
       DW_SERVER_ID: bootstrap
@@ -90,6 +92,8 @@ services:
     image: *server-image
     build: *server-build
     command: ["php", "artisan", "queue:work", "redis", "--sleep=1", "--tries=3", "--max-time=3600"]
+    healthcheck:
+      disable: true
     restart: unless-stopped
     environment:
       <<: *server-environment
@@ -108,6 +112,8 @@ services:
     init: true
     command: >-
       sh -c 'while true; do php artisan schedule:evaluate --limit=100 --json; php artisan activity:timeout-enforce --limit=100; php artisan history:prune --limit=100; sleep 10; done'
+    healthcheck:
+      disable: true
     environment:
       <<: *server-environment
       DW_SERVER_ID: scheduler

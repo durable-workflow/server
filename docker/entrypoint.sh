@@ -29,4 +29,9 @@ else
     php artisan env:audit >&2 || true
 fi
 
+if [ "$#" -eq 1 ] && [ "$1" = "apache2-foreground" ]; then
+    touch /tmp/dw-server-http-process
+    echo "Durable Workflow Server first run: run server-bootstrap, configure required authentication (token auth is enabled by default), and check /api/ready for blockers." >&2
+fi
+
 exec "$@"

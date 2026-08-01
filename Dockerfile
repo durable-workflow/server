@@ -100,11 +100,12 @@ RUN cp /tmp/release-composer.json composer.json \
 COPY docker/bootstrap.sh /usr/local/bin/server-bootstrap
 COPY docker/ensure-sqlite-database.sh /usr/local/bin/server-ensure-sqlite
 COPY docker/entrypoint.sh /usr/local/bin/server-entrypoint
+COPY docker/healthcheck.sh /usr/local/bin/server-healthcheck
 COPY docker/apache-mpm-prefork.conf /etc/apache2/mods-available/mpm_prefork.conf
 COPY docker/apache-vhost.conf /etc/apache2/sites-available/000-default.conf
 COPY docker/php-custom.ini /usr/local/etc/php/conf.d/99-custom.ini
 
-RUN chmod +x /usr/local/bin/server-bootstrap /usr/local/bin/server-ensure-sqlite /usr/local/bin/server-entrypoint \
+RUN chmod +x /usr/local/bin/server-bootstrap /usr/local/bin/server-ensure-sqlite /usr/local/bin/server-entrypoint /usr/local/bin/server-healthcheck \
     && sed -ri 's!^Listen 80$!Listen 8080!' /etc/apache2/ports.conf
 
 # Route cache is safe at build time (no env dependency).
@@ -143,6 +144,12 @@ LABEL org.opencontainers.image.title="Durable Workflow Server" \
       dev.durable-workflow.package.commit="${WORKFLOW_PACKAGE_COMMIT}"
 
 EXPOSE 8080
+
+# Plain `docker run` users get the same bounded readiness signal as Compose and
+# Kubernetes. Keep a compact blocker summary in Docker's health log so first-run
+# bootstrap and authentication remediation remains visible through `docker inspect`.
+HEALTHCHECK --interval=10s --timeout=5s --start-period=5s --retries=3 \
+    CMD ["server-healthcheck"]
 
 # Apache owns concurrent HTTP admission. Keep idle workflow/activity polls and
 # query-task polls below the prefork request capacity so synchronous queries,

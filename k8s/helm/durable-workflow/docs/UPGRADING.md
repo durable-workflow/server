@@ -67,6 +67,11 @@ chart MINOR bump and an entry below.
 
 ## Per-version migration notes
 
+### 0.1.2
+
+This release advances the default Server image to `2.0.0-rc.12`. Existing
+`0.1.1` values remain compatible.
+
 ### 0.1.1
 
 This release establishes the immutable public OCI and HTTPS distribution

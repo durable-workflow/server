@@ -219,6 +219,48 @@ jobs:
           WORKFLOW_PACKAGE_COMMIT: ${{ steps.workflow.outputs.commit }}
         run: scripts/ci/verify-release-exact-images.sh
 
+      - name: Verify bare image first-run readiness
+        id: first_run_readiness
+        if: ${{ always() && success() && steps.exact.outputs.exact_publish_outcome == 'success' }}
+        env:
+          DW_SERVER_IMAGE: ${{ env.DOCKERHUB_IMAGE }}:${{ steps.release_publish.outputs.tag }}
+          DW_FIRST_RUN_SCOPE: release-first-run-${{ github.run_id }}-${{ github.run_attempt }}-${{ github.job }}
+        working-directory: release-source
+        run: scripts/smoke-published-first-run.sh
+
+      - name: Verify source-free Compose bootstrap
+        id: source_free_compose
+        if: ${{ always() && success() && steps.first_run_readiness.outcome == 'success' }}
+        env:
+          DW_SERVER_IMAGE: ${{ env.DOCKERHUB_IMAGE }}:${{ steps.release_publish.outputs.tag }}
+          DW_SERVER_PLATFORM: linux/amd64
+          DW_PUBLISHED_COMPOSE_PROFILE: local
+          DW_PUBLISHED_COMPOSE_PROJECT: release-compose-${{ github.run_id }}-${{ github.run_attempt }}-${{ github.job }}
+          SERVER_PORT: "0"
+          DW_AUTH_TOKEN: published-compose-token
+        working-directory: release-source
+        run: scripts/smoke-published-compose.sh
+
+      - name: Clean up bare image first-run resources
+        if: always()
+        env:
+          DW_FIRST_RUN_SCOPE: release-first-run-${{ github.run_id }}-${{ github.run_attempt }}-${{ github.job }}
+        run: |
+          docker rm -f \
+            "${DW_FIRST_RUN_SCOPE}-server" \
+            "${DW_FIRST_RUN_SCOPE}-bootstrap" >/dev/null 2>&1 || true
+          docker volume rm -f \
+            "${DW_FIRST_RUN_SCOPE}-database" >/dev/null 2>&1 || true
+
+      - name: Clean up source-free Compose resources
+        if: always()
+        env:
+          DW_PUBLISHED_COMPOSE_PROJECT: release-compose-${{ github.run_id }}-${{ github.run_attempt }}-${{ github.job }}
+        run: >-
+          docker compose -p "$DW_PUBLISHED_COMPOSE_PROJECT"
+          -f release-source/docker-compose.published.yml down -v --remove-orphans
+          >/dev/null 2>&1 || true
+
       - name: Verify published protocol catalog convergence
         id: protocol_catalog
         if: ${{ always() && success() && steps.exact.outputs.exact_publish_outcome == 'success' }}
@@ -248,6 +290,8 @@ jobs:
         if: >-
           steps.release_publish.outputs.is_semver == 'true' &&
           steps.exact.outputs.exact_publish_outcome == 'success' &&
+          steps.first_run_readiness.outcome == 'success' &&
+          steps.source_free_compose.outcome == 'success' &&
           steps.protocol_catalog.outputs.protocol_catalog_conformance_outcome == 'success'
         env:
           RELEASE_TAG: ${{ steps.release_publish.outputs.tag }}
@@ -303,6 +347,8 @@ jobs:
       - name: Create the source GitHub Release
         if: >-
           steps.exact.outputs.exact_publish_outcome == 'success' &&
+          steps.first_run_readiness.outcome == 'success' &&
+          steps.source_free_compose.outcome == 'success' &&
           steps.protocol_catalog.outputs.protocol_catalog_conformance_outcome == 'success'
         env:
           GH_TOKEN: ${{ github.token }}
@@ -319,6 +365,8 @@ jobs:
       - name: Classify live docs release readiness after public release
         if: >-
           steps.exact.outputs.exact_publish_outcome == 'success' &&
+          steps.first_run_readiness.outcome == 'success' &&
+          steps.source_free_compose.outcome == 'success' &&
           steps.protocol_catalog.outputs.protocol_catalog_conformance_outcome == 'success'
         env:
           DOCS_RELEASE_AUDIT_ARTIFACT: server

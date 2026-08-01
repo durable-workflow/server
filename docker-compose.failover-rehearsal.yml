@@ -35,6 +35,8 @@ services:
   bootstrap:
     image: *server-image
     command: ["server-bootstrap"]
+    healthcheck:
+      disable: true
     environment:
       <<: *server-environment
       DW_SERVER_ID: failover-bootstrap
@@ -81,6 +83,8 @@ services:
   queue-worker:
     image: *server-image
     command: ["php", "artisan", "queue:work", "redis", "--sleep=1", "--tries=3", "--max-time=3600"]
+    healthcheck:
+      disable: true
     restart: unless-stopped
     environment:
       <<: *server-environment
@@ -97,6 +101,8 @@ services:
     init: true
     command: >-
       sh -c 'while true; do php artisan schedule:evaluate --limit=100 --json; php artisan activity:timeout-enforce --limit=100; php artisan history:prune --limit=100; sleep 1; done'
+    healthcheck:
+      disable: true
     environment:
       <<: *server-environment
       DW_SERVER_ID: failover-scheduler
