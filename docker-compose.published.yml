@@ -70,7 +70,11 @@ services:
     platform: ${DW_SERVER_PLATFORM:-}
     command: php artisan queue:work --sleep=1 --tries=3 --max-time=3600
     healthcheck:
-      disable: true
+      test: ["CMD", "server-process-healthcheck", "worker"]
+      interval: 5s
+      timeout: 3s
+      retries: 3
+      start_period: 5s
     environment:
       <<: *server-environment
       DW_SERVER_TOPOLOGY_SHAPE: standalone_server
@@ -92,7 +96,11 @@ services:
     command: >-
       sh -c 'while true; do php artisan schedule:evaluate --limit=100 --json; php artisan activity:timeout-enforce --limit=100; php artisan history:prune --limit=100; sleep 10; done'
     healthcheck:
-      disable: true
+      test: ["CMD", "server-process-healthcheck", "scheduler"]
+      interval: 5s
+      timeout: 3s
+      retries: 3
+      start_period: 5s
     environment:
       <<: *server-environment
       DW_SERVER_TOPOLOGY_SHAPE: standalone_server

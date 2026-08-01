@@ -33,6 +33,10 @@ class ReleaseError(RuntimeError):
     """A chart release invariant failed."""
 
 
+class ImageNotFoundError(ReleaseError):
+    """The registry positively reported that the exact image does not exist."""
+
+
 def run(
     arguments: list[str],
     *,
@@ -459,7 +463,27 @@ def sha256_file(path: Path) -> str:
 
 
 def resolve_image_digest(image_reference: str, docker: str = "docker") -> str:
-    result = run([docker, "buildx", "imagetools", "inspect", image_reference])
+    result = run(
+        [docker, "buildx", "imagetools", "inspect", image_reference],
+        check=False,
+    )
+    if result.returncode != 0:
+        detail = f"{result.stdout}\n{result.stderr}".strip()
+        normalized = detail.lower()
+        normalized_reference = image_reference.lower()
+        image_is_missing = (
+            "manifest unknown" in normalized
+            or f"{normalized_reference}: not found" in normalized
+        )
+        if image_is_missing:
+            raise ImageNotFoundError(
+                f"default Server image is not published: {image_reference}"
+            )
+        raise ReleaseError(
+            "cannot establish whether the default Server image is published: "
+            f"{detail or 'registry inspection returned no diagnostic output'}"
+        )
+
     match = re.search(r"^Digest:\s*(sha256:[0-9a-f]{64})\s*$", result.stdout, re.MULTILINE)
     if match is None:
         raise ReleaseError(
@@ -615,6 +639,9 @@ def main() -> None:
 if __name__ == "__main__":
     try:
         main()
+    except ImageNotFoundError as error:
+        print(f"helm chart release deferred: {error}", file=sys.stderr)
+        raise SystemExit(3)
     except ReleaseError as error:
         print(f"helm chart release failed: {error}", file=sys.stderr)
         raise SystemExit(1)

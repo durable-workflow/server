@@ -2,7 +2,7 @@ name: Helm Chart Release
 
 on:
   workflow_run:
-    workflows: ["Helm Chart Validation"]
+    workflows: ["Helm Chart Validation", "Release"]
     types: [completed]
 
 permissions:
@@ -23,9 +23,12 @@ jobs:
     if: >-
       github.repository == 'durable-workflow/server' &&
       github.event.workflow_run.conclusion == 'success' &&
-      github.event.workflow_run.event == 'push' &&
-      github.event.workflow_run.head_branch == 'main' &&
-      github.event.workflow_run.head_repository.full_name == github.repository
+      github.event.workflow_run.head_repository.full_name == github.repository &&
+      ((github.event.workflow_run.name == 'Helm Chart Validation' &&
+        github.event.workflow_run.event == 'push' &&
+        github.event.workflow_run.head_branch == 'main') ||
+       (github.event.workflow_run.name == 'Release' &&
+        github.event.workflow_run.event == 'push'))
     runs-on: ubuntu-latest
     timeout-minutes: 20
     permissions:
@@ -67,14 +70,31 @@ jobs:
 
       - name: Prove the default Server image is anonymously resolvable
         id: image
+        env:
+          TRIGGER_WORKFLOW: ${{ github.event.workflow_run.name }}
         run: |
           image_docker_config="${RUNNER_TEMP}/helm-image-docker-config"
           mkdir -p "$image_docker_config"
           export DOCKER_CONFIG="$image_docker_config"
-          python3 scripts/ci/helm_chart_release.py resolve-image
+          image_status=0
+          python3 scripts/ci/helm_chart_release.py resolve-image || image_status=$?
+          if [ "$image_status" -eq 0 ]; then
+            printf 'chart_image_available=true\n' >> "$GITHUB_OUTPUT"
+          elif [ "$image_status" -eq 3 ] \
+            && [ "$TRIGGER_WORKFLOW" = "Helm Chart Validation" ]; then
+            printf 'chart_image_available=false\n' >> "$GITHUB_OUTPUT"
+            printf '%s\n' \
+              'Chart publication is deferred until the immutable Server image' \
+              'release succeeds.' >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "Chart publication requires a conclusive anonymous image" \
+              "inspection." >&2
+            exit 1
+          fi
 
       - name: Log in to the chart registry
         id: registry_login
+        if: steps.image.outputs.chart_image_available == 'true'
         env:
           GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
@@ -83,6 +103,7 @@ jobs:
 
       - name: Reject changed content under an existing chart version
         id: preflight
+        if: steps.image.outputs.chart_image_available == 'true'
         run: >-
           python3 scripts/ci/helm_chart_release.py preflight
           --package "${{ steps.package.outputs.chart_package }}"
@@ -99,6 +120,7 @@ jobs:
         run: helm registry logout ghcr.io
 
       - name: Set up a clean install cluster
+        if: steps.image.outputs.chart_image_available == 'true'
         uses: helm/kind-action@ef37e7f390d99f746eb8b610417061a60e82a6cc  # v1.14.0
         with:
           version: v0.23.0
@@ -107,6 +129,7 @@ jobs:
           wait: 120s
 
       - name: Provision clean install dependencies
+        if: steps.image.outputs.chart_image_available == 'true'
         run: |
           kubectl apply -f scripts/helm-chart-kind-fixtures.yaml
           kubectl --namespace durable-workflow rollout status \
@@ -115,12 +138,19 @@ jobs:
             deployment/durable-workflow-redis --timeout=120s
 
       - name: Verify anonymous OCI pull and clean-client install
+        if: steps.image.outputs.chart_image_available == 'true'
         run: >-
           python3 scripts/ci/helm_chart_release.py verify-oci
           --package "${{ steps.package.outputs.chart_package }}"
           --source-revision "${{ steps.source.outputs.revision }}"
           --image-digest "${{ steps.image.outputs.chart_image_digest }}"
           --oci-repository "$CHART_OCI_REPOSITORY"
+
+      - name: Record deferred chart publication
+        if: steps.image.outputs.chart_image_available == 'false'
+        run: |
+          echo "The chart package was validated and will be published by" \
+            "the successful Server release workflow."
 
       - name: Upload chart release evidence
         if: always()

@@ -81,7 +81,11 @@ services:
     init: true
     command: php artisan workflow:v2:repair-pass --loop
     healthcheck:
-      disable: true
+      test: ["CMD", "server-process-healthcheck", "matching"]
+      interval: 5s
+      timeout: 3s
+      retries: 3
+      start_period: 5s
     environment:
       <<: *server-environment
       DW_V2_MATCHING_ROLE_QUEUE_WAKE: "false"

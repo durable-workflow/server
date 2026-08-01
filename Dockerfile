@@ -101,11 +101,17 @@ COPY docker/bootstrap.sh /usr/local/bin/server-bootstrap
 COPY docker/ensure-sqlite-database.sh /usr/local/bin/server-ensure-sqlite
 COPY docker/entrypoint.sh /usr/local/bin/server-entrypoint
 COPY docker/healthcheck.sh /usr/local/bin/server-healthcheck
+COPY docker/process-healthcheck.sh /usr/local/bin/server-process-healthcheck
 COPY docker/apache-mpm-prefork.conf /etc/apache2/mods-available/mpm_prefork.conf
 COPY docker/apache-vhost.conf /etc/apache2/sites-available/000-default.conf
 COPY docker/php-custom.ini /usr/local/etc/php/conf.d/99-custom.ini
 
-RUN chmod +x /usr/local/bin/server-bootstrap /usr/local/bin/server-ensure-sqlite /usr/local/bin/server-entrypoint /usr/local/bin/server-healthcheck \
+RUN chmod +x \
+        /usr/local/bin/server-bootstrap \
+        /usr/local/bin/server-ensure-sqlite \
+        /usr/local/bin/server-entrypoint \
+        /usr/local/bin/server-healthcheck \
+        /usr/local/bin/server-process-healthcheck \
     && sed -ri 's!^Listen 80$!Listen 8080!' /etc/apache2/ports.conf
 
 # Route cache is safe at build time (no env dependency).

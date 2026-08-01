@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 
 import importlib.util
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -63,6 +64,101 @@ class HelmChartReleaseTest(unittest.TestCase):
                 RELEASE.content_manifest(first_package),
                 RELEASE.content_manifest(second_package),
             )
+
+    def test_missing_image_is_classified_for_release_deferral(self) -> None:
+        image_reference = "docker.io/durableworkflow/server:missing-test"
+        result = RELEASE.subprocess.CompletedProcess(
+            ["docker"],
+            1,
+            "",
+            f"ERROR: {image_reference}: not found",
+        )
+
+        with patch.object(RELEASE, "run", return_value=result):
+            with self.assertRaises(RELEASE.ImageNotFoundError):
+                RELEASE.resolve_image_digest(image_reference)
+
+    def test_manifest_unknown_is_classified_for_release_deferral(self) -> None:
+        image_reference = "docker.io/durableworkflow/server:missing-test"
+        result = RELEASE.subprocess.CompletedProcess(
+            ["docker"],
+            1,
+            "",
+            "registry response: manifest unknown",
+        )
+
+        with patch.object(RELEASE, "run", return_value=result):
+            with self.assertRaises(RELEASE.ImageNotFoundError):
+                RELEASE.resolve_image_digest(image_reference)
+
+    def test_indeterminate_image_inspection_failure_is_fatal(self) -> None:
+        image_reference = "docker.io/durableworkflow/server:missing-test"
+        diagnostics = [
+            "unauthorized: authentication required",
+            "429 Too Many Requests: rate limit exceeded",
+            "dial tcp: network is unreachable",
+            "docker credential helper not found",
+            "unexpected manifest media type",
+        ]
+
+        for diagnostic in diagnostics:
+            with self.subTest(diagnostic=diagnostic):
+                result = RELEASE.subprocess.CompletedProcess(
+                    ["docker"],
+                    1,
+                    "",
+                    diagnostic,
+                )
+                with patch.object(RELEASE, "run", return_value=result):
+                    with self.assertRaises(RELEASE.ReleaseError) as caught:
+                        RELEASE.resolve_image_digest(image_reference)
+                self.assertNotIsInstance(caught.exception, RELEASE.ImageNotFoundError)
+
+    def test_malformed_successful_image_inspection_is_fatal(self) -> None:
+        image_reference = "docker.io/durableworkflow/server:missing-test"
+        result = RELEASE.subprocess.CompletedProcess(
+            ["docker"],
+            0,
+            f"Name: {image_reference}\nDigest: invalid",
+            "",
+        )
+
+        with patch.object(RELEASE, "run", return_value=result):
+            with self.assertRaises(RELEASE.ReleaseError) as caught:
+                RELEASE.resolve_image_digest(image_reference)
+        self.assertNotIsInstance(caught.exception, RELEASE.ImageNotFoundError)
+
+    def test_resolve_image_cli_reserves_deferral_exit_for_missing_image(self) -> None:
+        cases = [
+            ("manifest unknown", 3),
+            ("unauthorized: authentication required", 1),
+        ]
+
+        for diagnostic, expected_status in cases:
+            with self.subTest(diagnostic=diagnostic):
+                with tempfile.TemporaryDirectory() as temporary:
+                    fake_docker = Path(temporary) / "docker"
+                    fake_docker.write_text(
+                        "#!/bin/sh\n"
+                        f"printf '%s\\n' '{diagnostic}' >&2\n"
+                        "exit 1\n"
+                    )
+                    fake_docker.chmod(0o755)
+                    result = RELEASE.subprocess.run(
+                        [
+                            sys.executable,
+                            str(SCRIPT_PATH),
+                            "resolve-image",
+                            "--docker",
+                            str(fake_docker),
+                        ],
+                        check=False,
+                        text=True,
+                        stdout=RELEASE.subprocess.PIPE,
+                        stderr=RELEASE.subprocess.PIPE,
+                    )
+
+                self.assertEqual(expected_status, result.returncode, result.stderr)
 
     def test_release_revision_replacement_is_exact(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -149,6 +245,24 @@ class HelmChartReleaseTest(unittest.TestCase):
             "if: always() && steps.registry_login.outcome == 'success'",
             workflow,
         )
+
+    def test_image_bound_chart_waits_for_successful_server_release(self) -> None:
+        workflow = (
+            RELEASE.REPOSITORY_ROOT / ".github/workflows/helm-chart-release.yml"
+        ).read_text()
+
+        self.assertIn('workflows: ["Helm Chart Validation", "Release"]', workflow)
+        self.assertIn(
+            "github.event.workflow_run.name == 'Release'",
+            workflow,
+        )
+        self.assertIn("chart_image_available=false", workflow)
+        self.assertIn('"$image_status" -eq 3', workflow)
+        self.assertIn(
+            "steps.image.outputs.chart_image_available == 'true'",
+            workflow,
+        )
+        self.assertIn("Record deferred chart publication", workflow)
 
 
 if __name__ == "__main__":

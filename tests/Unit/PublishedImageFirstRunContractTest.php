@@ -73,11 +73,72 @@ final class PublishedImageFirstRunContractTest extends TestCase
             $compose['services']['server']['depends_on']['bootstrap']['condition'] ?? null,
         );
 
-        foreach (['bootstrap', 'worker', 'scheduler'] as $service) {
-            $this->assertTrue(
-                $compose['services'][$service]['healthcheck']['disable'] ?? false,
-                "{$service} must not inherit the HTTP server healthcheck.",
-            );
+        $this->assertTrue(
+            $compose['services']['bootstrap']['healthcheck']['disable'] ?? false,
+            'The successful one-shot bootstrap must not be modeled as a long-running healthy service.',
+        );
+        $this->assertSame(
+            ['CMD', 'server-process-healthcheck', 'worker'],
+            $compose['services']['worker']['healthcheck']['test'] ?? null,
+        );
+        $this->assertSame(
+            ['CMD', 'server-process-healthcheck', 'scheduler'],
+            $compose['services']['scheduler']['healthcheck']['test'] ?? null,
+        );
+    }
+
+    public function test_compose_wait_can_observe_every_long_running_cli_process(): void
+    {
+        $contracts = [
+            'docker-compose.yml' => [
+                'worker' => 'worker',
+                'scheduler' => 'scheduler',
+            ],
+            'docker-compose.published.yml' => [
+                'worker' => 'worker',
+                'scheduler' => 'scheduler',
+            ],
+            'docker-compose.small-cluster.yml' => [
+                'queue-worker' => 'worker',
+                'scheduler' => 'scheduler',
+            ],
+            'docker-compose.failover-rehearsal.yml' => [
+                'queue-worker' => 'worker',
+                'scheduler' => 'scheduler',
+            ],
+            'docker-compose.dedicated-matching.yml' => [
+                'matching' => 'matching',
+            ],
+        ];
+
+        foreach ($contracts as $path => $services) {
+            $compose = Yaml::parse($this->read($path));
+
+            foreach ($services as $service => $role) {
+                $this->assertSame(
+                    ['CMD', 'server-process-healthcheck', $role],
+                    $compose['services'][$service]['healthcheck']['test'] ?? null,
+                    "{$path} must expose a process healthcheck for {$service} so docker compose --wait can complete.",
+                );
+                $this->assertFalse(
+                    $compose['services'][$service]['healthcheck']['disable'] ?? false,
+                    "{$path} must not disable healthchecks for long-running {$service}.",
+                );
+            }
+        }
+    }
+
+    public function test_process_healthcheck_is_shipped_for_cli_compose_roles(): void
+    {
+        $dockerfile = $this->read('Dockerfile');
+        $healthcheck = $this->read('docker/process-healthcheck.sh');
+
+        $this->assertStringContainsString(
+            'COPY docker/process-healthcheck.sh /usr/local/bin/server-process-healthcheck',
+            $dockerfile,
+        );
+        foreach (['artisan queue:work', 'artisan schedule:evaluate', 'artisan workflow:v2:repair-pass --loop'] as $command) {
+            $this->assertStringContainsString($command, $healthcheck);
         }
     }
 
