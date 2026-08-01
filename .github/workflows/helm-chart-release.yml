@@ -24,10 +24,10 @@ jobs:
       github.repository == 'durable-workflow/server' &&
       github.event.workflow_run.conclusion == 'success' &&
       github.event.workflow_run.head_repository.full_name == github.repository &&
-      ((github.event.workflow_run.name == 'Helm Chart Validation' &&
+      ((github.event.workflow.name == 'Helm Chart Validation' &&
         github.event.workflow_run.event == 'push' &&
         github.event.workflow_run.head_branch == 'main') ||
-       (github.event.workflow_run.name == 'Release' &&
+       (github.event.workflow.name == 'Release' &&
         github.event.workflow_run.event == 'push'))
     runs-on: ubuntu-latest
     timeout-minutes: 20
@@ -71,7 +71,7 @@ jobs:
       - name: Prove the default Server image is anonymously resolvable
         id: image
         env:
-          TRIGGER_WORKFLOW: ${{ github.event.workflow_run.name }}
+          TRIGGER_WORKFLOW: ${{ github.event.workflow.name }}
         run: |
           image_docker_config="${RUNNER_TEMP}/helm-image-docker-config"
           mkdir -p "$image_docker_config"

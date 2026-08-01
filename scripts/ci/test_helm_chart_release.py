@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 
+import ast
 import importlib.util
+import re
 import sys
 import tempfile
 import unittest
@@ -13,6 +15,61 @@ SPEC = importlib.util.spec_from_file_location("helm_chart_release", SCRIPT_PATH)
 assert SPEC and SPEC.loader
 RELEASE = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(RELEASE)
+
+
+def publish_job_condition() -> str:
+    workflow = (
+        RELEASE.REPOSITORY_ROOT / ".github/workflows/helm-chart-release.yml"
+    ).read_text()
+    match = re.search(
+        r"^    if: >-\n(?P<condition>(?:^      .+\n)+)",
+        workflow,
+        re.MULTILINE,
+    )
+    if match is None:
+        raise AssertionError("publish job condition is missing")
+    return " ".join(line.strip() for line in match.group("condition").splitlines())
+
+
+def evaluate_publish_job_condition(**context: str) -> bool:
+    expression = publish_job_condition()
+    replacements = {
+        "github.event.workflow_run.head_repository.full_name": context[
+            "head_repository"
+        ],
+        "github.event.workflow_run.conclusion": context["conclusion"],
+        "github.event.workflow_run.head_branch": context["head_branch"],
+        "github.event.workflow_run.event": context["event"],
+        "github.event.workflow.name": context["workflow_name"],
+        "github.repository": context["repository"],
+    }
+    for field, value in replacements.items():
+        expression = expression.replace(field, repr(value))
+    if "github." in expression:
+        raise AssertionError(f"unsupported workflow context in condition: {expression}")
+    expression = expression.replace("&&", " and ").replace("||", " or ")
+
+    def evaluate(node: ast.AST) -> str | bool:
+        if isinstance(node, ast.Expression):
+            return evaluate(node.body)
+        if isinstance(node, ast.BoolOp):
+            values = [bool(evaluate(value)) for value in node.values]
+            if isinstance(node.op, ast.And):
+                return all(values)
+            if isinstance(node.op, ast.Or):
+                return any(values)
+        if (
+            isinstance(node, ast.Compare)
+            and len(node.ops) == 1
+            and isinstance(node.ops[0], ast.Eq)
+            and len(node.comparators) == 1
+        ):
+            return evaluate(node.left) == evaluate(node.comparators[0])
+        if isinstance(node, ast.Constant) and isinstance(node.value, str):
+            return node.value
+        raise AssertionError(f"unsupported workflow condition node: {ast.dump(node)}")
+
+    return bool(evaluate(ast.parse(expression, mode="eval")))
 
 
 class HelmChartReleaseTest(unittest.TestCase):
@@ -252,12 +309,44 @@ class HelmChartReleaseTest(unittest.TestCase):
         ).read_text()
 
         self.assertIn('workflows: ["Helm Chart Validation", "Release"]', workflow)
-        self.assertIn(
-            "github.event.workflow_run.name == 'Release'",
-            workflow,
+        self.assertNotIn("github.event.workflow_run.name", workflow)
+        common_context = {
+            "repository": "durable-workflow/server",
+            "head_repository": "durable-workflow/server",
+            "conclusion": "success",
+            "event": "push",
+        }
+        self.assertTrue(
+            evaluate_publish_job_condition(
+                **common_context,
+                workflow_name="Release",
+                head_branch="2.0.0-rc.12",
+                run_name="Release 2.0.0-rc.12 at immutable-revision for direct",
+            )
+        )
+        self.assertTrue(
+            evaluate_publish_job_condition(
+                **common_context,
+                workflow_name="Helm Chart Validation",
+                head_branch="main",
+                run_name="Helm Chart Validation",
+            )
+        )
+        self.assertFalse(
+            evaluate_publish_job_condition(
+                **common_context,
+                workflow_name="Untrusted",
+                head_branch="main",
+                run_name="Release",
+            )
         )
         self.assertIn("chart_image_available=false", workflow)
         self.assertIn('"$image_status" -eq 3', workflow)
+        self.assertIn(
+            "TRIGGER_WORKFLOW: ${{ github.event.workflow.name }}",
+            workflow,
+        )
+        self.assertIn('[ "$TRIGGER_WORKFLOW" = "Helm Chart Validation" ]', workflow)
         self.assertIn(
             "steps.image.outputs.chart_image_available == 'true'",
             workflow,
