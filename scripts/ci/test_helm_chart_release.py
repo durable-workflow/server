@@ -40,6 +40,8 @@ def evaluate_publish_job_condition(**context: str) -> bool:
         "github.event.workflow_run.conclusion": context["conclusion"],
         "github.event.workflow_run.head_branch": context["head_branch"],
         "github.event.workflow_run.event": context["event"],
+        "github.event.workflow_run.path": context["workflow_path"],
+        "github.event.workflow_run.name": context["run_name"],
         "github.event.workflow.name": context["workflow_name"],
         "github.repository": context["repository"],
     }
@@ -303,12 +305,16 @@ class HelmChartReleaseTest(unittest.TestCase):
             workflow,
         )
 
-    def test_image_bound_chart_waits_for_successful_server_release(self) -> None:
+    def test_validation_deferral_admits_custom_named_server_release(self) -> None:
         workflow = (
             RELEASE.REPOSITORY_ROOT / ".github/workflows/helm-chart-release.yml"
         ).read_text()
 
         self.assertIn('workflows: ["Helm Chart Validation", "Release"]', workflow)
+        self.assertIn(
+            "github.event.workflow_run.path == '.github/workflows/release.yml'",
+            workflow,
+        )
         self.assertNotIn("github.event.workflow_run.name", workflow)
         common_context = {
             "repository": "durable-workflow/server",
@@ -319,23 +325,36 @@ class HelmChartReleaseTest(unittest.TestCase):
         self.assertTrue(
             evaluate_publish_job_condition(
                 **common_context,
-                workflow_name="Release",
-                head_branch="2.0.0-rc.12",
-                run_name="Release 2.0.0-rc.12 at immutable-revision for direct",
+                workflow_name="Helm Chart Validation",
+                workflow_path=".github/workflows/helm-chart-validation.yml",
+                head_branch="main",
+                run_name="Helm Chart Validation",
             )
         )
+        image_reference = "docker.io/durableworkflow/server:2.0.0-rc.12"
+        missing_image = RELEASE.subprocess.CompletedProcess(
+            ["docker"],
+            1,
+            "",
+            f"ERROR: {image_reference}: not found",
+        )
+        with patch.object(RELEASE, "run", return_value=missing_image):
+            with self.assertRaises(RELEASE.ImageNotFoundError):
+                RELEASE.resolve_image_digest(image_reference)
         self.assertTrue(
             evaluate_publish_job_condition(
                 **common_context,
-                workflow_name="Helm Chart Validation",
-                head_branch="main",
-                run_name="Helm Chart Validation",
+                workflow_name="Release",
+                workflow_path=".github/workflows/release.yml",
+                head_branch="2.0.0-rc.12",
+                run_name="Release 2.0.0-rc.12 at immutable-revision for direct",
             )
         )
         self.assertFalse(
             evaluate_publish_job_condition(
                 **common_context,
-                workflow_name="Untrusted",
+                workflow_name="Release",
+                workflow_path=".github/workflows/untrusted.yml",
                 head_branch="main",
                 run_name="Release",
             )
@@ -343,10 +362,14 @@ class HelmChartReleaseTest(unittest.TestCase):
         self.assertIn("chart_image_available=false", workflow)
         self.assertIn('"$image_status" -eq 3', workflow)
         self.assertIn(
-            "TRIGGER_WORKFLOW: ${{ github.event.workflow.name }}",
+            "TRIGGER_WORKFLOW_PATH: ${{ github.event.workflow_run.path }}",
             workflow,
         )
-        self.assertIn('[ "$TRIGGER_WORKFLOW" = "Helm Chart Validation" ]', workflow)
+        self.assertIn(
+            '[ "$TRIGGER_WORKFLOW_PATH" = '
+            '".github/workflows/helm-chart-validation.yml" ]',
+            workflow,
+        )
         self.assertIn(
             "steps.image.outputs.chart_image_available == 'true'",
             workflow,

@@ -24,10 +24,10 @@ jobs:
       github.repository == 'durable-workflow/server' &&
       github.event.workflow_run.conclusion == 'success' &&
       github.event.workflow_run.head_repository.full_name == github.repository &&
-      ((github.event.workflow.name == 'Helm Chart Validation' &&
+      ((github.event.workflow_run.path == '.github/workflows/helm-chart-validation.yml' &&
         github.event.workflow_run.event == 'push' &&
         github.event.workflow_run.head_branch == 'main') ||
-       (github.event.workflow.name == 'Release' &&
+       (github.event.workflow_run.path == '.github/workflows/release.yml' &&
         github.event.workflow_run.event == 'push'))
     runs-on: ubuntu-latest
     timeout-minutes: 20
@@ -71,7 +71,7 @@ jobs:
       - name: Prove the default Server image is anonymously resolvable
         id: image
         env:
-          TRIGGER_WORKFLOW: ${{ github.event.workflow.name }}
+          TRIGGER_WORKFLOW_PATH: ${{ github.event.workflow_run.path }}
         run: |
           image_docker_config="${RUNNER_TEMP}/helm-image-docker-config"
           mkdir -p "$image_docker_config"
@@ -81,7 +81,7 @@ jobs:
           if [ "$image_status" -eq 0 ]; then
             printf 'chart_image_available=true\n' >> "$GITHUB_OUTPUT"
           elif [ "$image_status" -eq 3 ] \
-            && [ "$TRIGGER_WORKFLOW" = "Helm Chart Validation" ]; then
+            && [ "$TRIGGER_WORKFLOW_PATH" = ".github/workflows/helm-chart-validation.yml" ]; then
             printf 'chart_image_available=false\n' >> "$GITHUB_OUTPUT"
             printf '%s\n' \
               'Chart publication is deferred until the immutable Server image' \
