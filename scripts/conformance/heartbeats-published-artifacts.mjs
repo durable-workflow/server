@@ -23,6 +23,10 @@ import {
   prepareExactRustCrate,
   RustCratesIoPreparationTimeoutError,
 } from './heartbeat-rust-preparation.mjs';
+import {
+  captureWorkProcessedBaseline,
+  waitForWorkProcessedAdvance,
+} from './heartbeat-worker-evidence.mjs';
 import { isExactSemverRelease, samePythonRelease } from './version-identities.mjs';
 
 const RESULT_DIR = mustEnv('RESULT_DIR');
@@ -55,6 +59,14 @@ const HEARTBEAT_SECONDS = positiveInt(env('DW_HEARTBEATS_HEARTBEAT_SECONDS'), 2)
 const CONFIGURED_STALE_AFTER_SECONDS = positiveInt(env('DW_HEARTBEATS_STALE_AFTER_SECONDS'), 7);
 const FINAL_VISIBILITY_ATTEMPTS = positiveInt(env('DW_HEARTBEATS_FINAL_VISIBILITY_ATTEMPTS'), 3);
 const FINAL_VISIBILITY_RETRY_MS = positiveInt(env('DW_HEARTBEATS_FINAL_VISIBILITY_RETRY_MS'), 1_000);
+const WORK_PROCESSED_VISIBILITY_ATTEMPTS = positiveInt(
+  env('DW_HEARTBEATS_WORK_PROCESSED_VISIBILITY_ATTEMPTS'),
+  20,
+);
+const WORK_PROCESSED_VISIBILITY_RETRY_MS = positiveInt(
+  env('DW_HEARTBEATS_WORK_PROCESSED_VISIBILITY_RETRY_MS'),
+  250,
+);
 const RUST_PREPARATION_TIMEOUT_SECONDS = positiveInt(
   env('DW_HEARTBEATS_RUST_PREPARATION_TIMEOUT_SECONDS'),
   240,
@@ -1618,8 +1630,7 @@ function stopWorker(worker) {
 }
 
 function workerLogRecords(worker) {
-  const result = run('docker', ['logs', worker.container_name], { allowFailure: true, timeout: 30_000 });
-  return String(result.stdout).split(/\r?\n/).flatMap((line) => {
+  return workerLogOutput(worker).split(/\r?\n/).flatMap((line) => {
     if (!line.trim()) return [];
     try {
       const parsed = JSON.parse(line);
@@ -1632,6 +1643,34 @@ function workerLogRecords(worker) {
     } catch {
       return [];
     }
+  });
+}
+
+function workerLogOutput(worker) {
+  const result = run('docker', ['logs', worker.container_name], { allowFailure: true, timeout: 30_000 });
+  if (result.status !== 0) {
+    throw new Error(
+      `could not read logs for worker ${worker.worker_id}: ${(result.stderr || result.stdout).trim()}`,
+    );
+  }
+  return String(result.stdout);
+}
+
+function workProcessedBaseline(worker) {
+  return captureWorkProcessedBaseline({
+    workerId: worker.worker_id,
+    logOutput: workerLogOutput(worker),
+  });
+}
+
+function waitForWorkerWorkProcessed(worker, baseline) {
+  return waitForWorkProcessedAdvance({
+    baseline,
+    readLogs: () => workerLogOutput(worker),
+    maxAttempts: WORK_PROCESSED_VISIBILITY_ATTEMPTS,
+    retryDelayMs: WORK_PROCESSED_VISIBILITY_RETRY_MS,
+    wait: sleep,
+    observedAt: now,
   });
 }
 
@@ -1954,8 +1993,8 @@ function buildChecks(context) {
       && evidence.cli_install?.detected_version === CLI_VERSION,
     real_workflow_completed_by_sdk_loop: completedWorkflow(context.initialWorkflow)
       && completedWorkflow(context.freshWorkflow)
-      && context.staleWorkerLog.work_processed_records.length >= 1
-      && context.freshWorkerLog.work_processed_records.length >= 1,
+      && context.staleWorkProcessed.observed_count > context.staleWorkProcessed.baseline_count
+      && context.freshWorkProcessed.observed_count > context.freshWorkProcessed.baseline_count,
     at_least_two_sdk_heartbeats: context.staleCadence.sdk_heartbeat_acknowledgement_count >= 2,
     server_observed_successive_heartbeats: context.staleCadence.server_last_heartbeat_timestamps.length >= 2,
     advertised_cadence_bounded: context.staleCadence.bounded_advertised_cadence,
@@ -2033,8 +2072,8 @@ function buildCompletedBehaviorCheckpoint(context) {
       && context.freshCadence.bounded_advertised_cadence === true,
     workflows_completed_by_real_workers: completedWorkflow(context.initialWorkflow)
       && completedWorkflow(context.freshWorkflow)
-      && context.staleWorkerLog.work_processed_records.length >= 1
-      && context.freshWorkerLog.work_processed_records.length >= 1,
+      && context.staleWorkProcessed.observed_count > context.staleWorkProcessed.baseline_count
+      && context.freshWorkProcessed.observed_count > context.freshWorkProcessed.baseline_count,
     stale_transition_observed: context.staleTransition.within_bounded_window === true
       && context.staleTransition.stale_worker_detail?.status === 'stale',
     stale_worker_excluded_from_routing: !apiHasWorker(
@@ -2045,7 +2084,7 @@ function buildCompletedBehaviorCheckpoint(context) {
       && context.stalePoll.tasks.length === 0
       && ['stale_worker_registration', 'worker_heartbeat_stale'].includes(stalePollStatus),
     fresh_peer_completed_work_after_stale: completedWorkflow(context.freshWorkflow)
-      && context.freshWorkerLog.work_processed_records.length >= 1,
+      && context.freshWorkProcessed.observed_count > context.freshWorkProcessed.baseline_count,
   };
 
   return {
@@ -2504,8 +2543,10 @@ async function main() {
   const staleWorker = startWorker(STALE_WORKER_ID);
   const staleRegistration = await waitForWorkerRegistration(staleWorker);
   const staleCadence = await observeSuccessiveHeartbeats(staleWorker, staleRegistration);
+  const staleWorkProcessedBaseline = workProcessedBaseline(staleWorker);
   const initialWorkflow = startWorkflow('initial');
   if (!completedWorkflow(initialWorkflow)) throw new Error(`the initial real workflow did not complete through the ${CELL} worker loop`);
+  const staleWorkProcessed = await waitForWorkerWorkProcessed(staleWorker, staleWorkProcessedBaseline);
 
   const freshWorker = startWorker(FRESH_WORKER_ID);
   const freshRegistration = await waitForWorkerRegistration(freshWorker);
@@ -2518,8 +2559,10 @@ async function main() {
     ?? CONFIGURED_STALE_AFTER_SECONDS);
   const staleTransition = await waitForStaleTransition(stoppedAt, staleAfterSeconds);
   const stalePoll = stalePollProbe();
+  const freshWorkProcessedBaseline = workProcessedBaseline(freshWorker);
   const freshWorkflow = startWorkflow('fresh-after-stale');
   if (!completedWorkflow(freshWorkflow)) throw new Error(`the fresh ${CELL} worker did not complete work after its peer became stale`);
+  const freshWorkProcessed = await waitForWorkerWorkProcessed(freshWorker, freshWorkProcessedBaseline);
   const context = {
     staleWorker,
     freshWorker,
@@ -2529,6 +2572,8 @@ async function main() {
     freshCadence,
     initialWorkflow,
     freshWorkflow,
+    staleWorkProcessed,
+    freshWorkProcessed,
     beforeVisibility,
     staleTransition,
     stalePoll,
@@ -2616,6 +2661,10 @@ async function main() {
       real_workflow_execution: {
         before_stale: initialWorkflow,
         after_stale: freshWorkflow,
+        causal_work_processed_evidence: {
+          before_stale: context.staleWorkProcessed,
+          after_stale: context.freshWorkProcessed,
+        },
         stale_worker_processed_records: context.staleWorkerLog.work_processed_records,
         fresh_worker_processed_records: context.freshWorkerLog.work_processed_records,
       },

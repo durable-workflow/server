@@ -81,6 +81,67 @@ final class HeartbeatConformanceRunnerContractTest extends TestCase
         $this->assertSame(0, $exitCode, $stderr ?: $stdout);
     }
 
+    public function test_worker_evidence_wait_regressions(): void
+    {
+        $nodeBinary = trim((string) shell_exec('command -v node 2>/dev/null'));
+        if ($nodeBinary === '') {
+            $this->markTestSkipped('node is required to exercise heartbeat worker evidence polling.');
+        }
+
+        $process = proc_open(
+            [
+                $nodeBinary,
+                '--test',
+                __DIR__.'/HeartbeatWorkerEvidenceRegression.mjs',
+            ],
+            [
+                1 => ['pipe', 'w'],
+                2 => ['pipe', 'w'],
+            ],
+            $pipes,
+            dirname(__DIR__, 2),
+        );
+
+        $this->assertIsResource($process);
+        $stdout = stream_get_contents($pipes[1]);
+        $stderr = stream_get_contents($pipes[2]);
+        fclose($pipes[1]);
+        fclose($pipes[2]);
+        $exitCode = proc_close($process);
+
+        $this->assertSame(0, $exitCode, $stderr ?: $stdout);
+    }
+
+    public function test_each_workflow_is_bracketed_by_its_expected_worker_evidence_baseline_and_wait(): void
+    {
+        $source = $this->runnerSource();
+
+        foreach ([
+            [
+                'const staleWorkProcessedBaseline = workProcessedBaseline(staleWorker);',
+                "const initialWorkflow = startWorkflow('initial');",
+                'const staleWorkProcessed = await waitForWorkerWorkProcessed(staleWorker, staleWorkProcessedBaseline);',
+            ],
+            [
+                'const freshWorkProcessedBaseline = workProcessedBaseline(freshWorker);',
+                "const freshWorkflow = startWorkflow('fresh-after-stale');",
+                'const freshWorkProcessed = await waitForWorkerWorkProcessed(freshWorker, freshWorkProcessedBaseline);',
+            ],
+        ] as [$baselineNeedle, $workflowNeedle, $waitNeedle]) {
+            $baseline = strpos($source, $baselineNeedle);
+            $workflow = strpos($source, $workflowNeedle);
+            $wait = strpos($source, $waitNeedle);
+
+            $this->assertIsInt($baseline);
+            $this->assertIsInt($workflow);
+            $this->assertIsInt($wait);
+            $this->assertLessThan($workflow, $baseline);
+            $this->assertLessThan($wait, $workflow);
+        }
+
+        $this->assertStringContainsString('causal_work_processed_evidence', $source);
+    }
+
     public function test_runner_records_mergeable_focused_evidence_without_claiming_sibling_cells(): void
     {
         $source = $this->runnerSource();
