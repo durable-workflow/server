@@ -1,0 +1,160 @@
+name: Reusable Helm Chart Publication
+
+on:
+  workflow_call:
+    inputs:
+      source_ref:
+        description: Exact Server source revision containing the chart
+        required: true
+        type: string
+      allow_missing_image:
+        description: Defer publication when the immutable Server image is not available yet
+        required: true
+        type: boolean
+
+permissions:
+  contents: read
+
+concurrency:
+  group: helm-chart-release
+  cancel-in-progress: false
+
+env:
+  CHART_OCI_REPOSITORY: oci://ghcr.io/durable-workflow/charts/durable-workflow
+  HELM_VERSION: v3.16.2
+  HELM_RELEASE_CLUSTER_NAME: dw-helm-release-${{ github.run_id }}-${{ github.run_attempt }}
+
+jobs:
+  publish:
+    name: Publish and verify immutable OCI chart
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - name: Check out trusted chart source
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803  # v6
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+          ref: ${{ inputs.source_ref }}
+
+      - name: Set up Helm
+        uses: azure/setup-helm@9bc31f4ebc9c6b171d7bfbaa5d006ae7abdb4310  # v5
+        with:
+          version: ${{ env.HELM_VERSION }}
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c  # v4
+
+      - name: Validate chart release contract
+        run: |
+          python3 scripts/ci/test_helm_chart_release.py
+          python3 scripts/ci/helm_chart_release.py validate-source
+
+      - name: Resolve immutable chart source revision
+        id: source
+        run: |
+          revision="$(git log -1 --format=%H -- k8s/helm/durable-workflow)"
+          test -n "$revision"
+          printf 'revision=%s\n' "$revision" >> "$GITHUB_OUTPUT"
+
+      - name: Build the release package once
+        id: package
+        run: >-
+          python3 scripts/ci/helm_chart_release.py package
+          --source-revision "${{ steps.source.outputs.revision }}"
+
+      - name: Prove the default Server image is anonymously resolvable
+        id: image
+        env:
+          ALLOW_MISSING_IMAGE: ${{ inputs.allow_missing_image && 'true' || 'false' }}
+        run: |
+          image_docker_config="${RUNNER_TEMP}/helm-image-docker-config"
+          mkdir -p "$image_docker_config"
+          export DOCKER_CONFIG="$image_docker_config"
+          image_status=0
+          python3 scripts/ci/helm_chart_release.py resolve-image || image_status=$?
+          if [ "$image_status" -eq 0 ]; then
+            printf 'chart_image_available=true\n' >> "$GITHUB_OUTPUT"
+          elif [ "$image_status" -eq 3 ] && [ "$ALLOW_MISSING_IMAGE" = "true" ]; then
+            printf 'chart_image_available=false\n' >> "$GITHUB_OUTPUT"
+            printf '%s\n' \
+              'Chart publication is deferred until the immutable Server image' \
+              'release succeeds.' >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "Chart publication requires a conclusive anonymous image" \
+              "inspection." >&2
+            exit 1
+          fi
+
+      - name: Log in to the chart registry
+        id: registry_login
+        if: steps.image.outputs.chart_image_available == 'true'
+        env:
+          GHCR_TOKEN: ${{ github.token }}
+        run: |
+          printf '%s' "$GHCR_TOKEN" |
+            helm registry login ghcr.io --username "${{ github.actor }}" --password-stdin
+
+      - name: Reject changed content under an existing chart version
+        id: preflight
+        if: steps.image.outputs.chart_image_available == 'true'
+        run: >-
+          python3 scripts/ci/helm_chart_release.py preflight
+          --package "${{ steps.package.outputs.chart_package }}"
+          --oci-repository "$CHART_OCI_REPOSITORY"
+
+      - name: Publish the immutable OCI package
+        if: steps.preflight.outputs.chart_should_push == 'true'
+        run: |
+          oci_parent="${CHART_OCI_REPOSITORY%/*}"
+          helm push "${{ steps.package.outputs.chart_package }}" "$oci_parent"
+
+      - name: Remove registry credentials before public verification
+        if: always() && steps.registry_login.outcome == 'success'
+        run: helm registry logout ghcr.io
+
+      - name: Set up a clean install cluster
+        if: steps.image.outputs.chart_image_available == 'true'
+        uses: helm/kind-action@ef37e7f390d99f746eb8b610417061a60e82a6cc  # v1.14.0
+        with:
+          version: v0.23.0
+          node_image: kindest/node:v1.29.4
+          cluster_name: ${{ env.HELM_RELEASE_CLUSTER_NAME }}
+          wait: 120s
+
+      - name: Provision clean install dependencies
+        if: steps.image.outputs.chart_image_available == 'true'
+        run: |
+          kubectl apply -f scripts/helm-chart-kind-fixtures.yaml
+          kubectl --namespace durable-workflow rollout status \
+            deployment/durable-workflow-mysql --timeout=180s
+          kubectl --namespace durable-workflow rollout status \
+            deployment/durable-workflow-redis --timeout=120s
+
+      - name: Verify anonymous OCI pull and clean-client install
+        if: steps.image.outputs.chart_image_available == 'true'
+        run: >-
+          python3 scripts/ci/helm_chart_release.py verify-oci
+          --package "${{ steps.package.outputs.chart_package }}"
+          --source-revision "${{ steps.source.outputs.revision }}"
+          --image-digest "${{ steps.image.outputs.chart_image_digest }}"
+          --oci-repository "$CHART_OCI_REPOSITORY"
+
+      - name: Record deferred chart publication
+        if: steps.image.outputs.chart_image_available == 'false'
+        run: |
+          echo "The chart package was validated and will be published by" \
+            "the successful Server release workflow."
+
+      - name: Upload chart release evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7
+        with:
+          name: helm-chart-release-evidence
+          path: |
+            helm-release-evidence.json
+            dist/helm/*.tgz
+          if-no-files-found: warn
