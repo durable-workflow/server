@@ -11,7 +11,7 @@ Runs the focused published-artifact Rust SDK heartbeat-loop contract and writes:
   rust-sdk-heartbeat-loop-evidence.json
   heartbeat-cadence-dataset.json
   heartbeat-request-response-captures.json
-On persistent final-visibility transport loss it also writes server-container.log.
+On persistent control-plane transport loss it also writes server-container.log.
 
 Required exact artifact pins:
   DW_SERVER_VERSION
@@ -31,6 +31,10 @@ Optional overrides:
   DW_HEARTBEATS_SERVER_HOST           Host-side server address; defaults to 127.0.0.1.
   DW_HEARTBEATS_HEARTBEAT_SECONDS     Self-started server cadence; defaults to 2.
   DW_HEARTBEATS_STALE_AFTER_SECONDS   Self-started server stale window; defaults to 7.
+  DW_HEARTBEATS_POST_STOP_DETAIL_ATTEMPTS
+                                       Bounded post-stop worker-detail attempts; defaults to 3.
+  DW_HEARTBEATS_POST_STOP_DETAIL_RETRY_MS
+                                       Delay between focused read retries; defaults to 1000.
   DW_HEARTBEATS_FINAL_VISIBILITY_ATTEMPTS
                                        Bounded final API/CLI attempts; defaults to 3.
   DW_HEARTBEATS_FINAL_VISIBILITY_RETRY_MS

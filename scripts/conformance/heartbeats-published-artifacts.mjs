@@ -16,6 +16,7 @@ import {
 import { heartbeatCadenceObservation } from './heartbeat-cadence-observation.mjs';
 import {
   cliControlPlaneTransportError,
+  ControlPlaneHttpError,
   ControlPlaneTransportError,
   FinalVisibilityInvariantError,
   PersistentFinalVisibilityTransportError,
@@ -23,6 +24,13 @@ import {
   recoverFinalVisibility,
   transportErrorDetails,
 } from './heartbeat-final-visibility.mjs';
+import {
+  PersistentPostStopDetailTransportError,
+  PostStopDetailHttpError,
+  persistentPostStopDetailEvidence,
+  recoverPostStopWorkerDetail,
+  semanticPostStopDetailEvidence,
+} from './heartbeat-post-stop-detail.mjs';
 import {
   prepareExactRustCrate,
   RustCratesIoPreparationTimeoutError,
@@ -66,6 +74,8 @@ const SHARED_SERVER_STATE_FILE = env('DW_HEARTBEATS_SHARED_SERVER_STATE');
 const USE_SHARED_SERVER = SHARED_SERVER_STATE_FILE !== '';
 const HEARTBEAT_SECONDS = positiveInt(env('DW_HEARTBEATS_HEARTBEAT_SECONDS'), 2);
 const CONFIGURED_STALE_AFTER_SECONDS = positiveInt(env('DW_HEARTBEATS_STALE_AFTER_SECONDS'), 7);
+const POST_STOP_DETAIL_ATTEMPTS = positiveInt(env('DW_HEARTBEATS_POST_STOP_DETAIL_ATTEMPTS'), 3);
+const POST_STOP_DETAIL_RETRY_MS = positiveInt(env('DW_HEARTBEATS_POST_STOP_DETAIL_RETRY_MS'), 1_000);
 const FINAL_VISIBILITY_ATTEMPTS = positiveInt(env('DW_HEARTBEATS_FINAL_VISIBILITY_ATTEMPTS'), 3);
 const FINAL_VISIBILITY_RETRY_MS = positiveInt(env('DW_HEARTBEATS_FINAL_VISIBILITY_RETRY_MS'), 1_000);
 const WORK_PROCESSED_VISIBILITY_ATTEMPTS = positiveInt(
@@ -160,6 +170,7 @@ let serverTopology = null;
 let sharedServerNetwork = '';
 let sharedServerContainerUrl = '';
 let completedBehavior = null;
+let postStopDetailContext = null;
 let executionPhase = 'prerequisites';
 
 function env(name) {
@@ -528,7 +539,9 @@ async function api(pathName, query = {}) {
   const body = parseJsonOutput(raw);
   const capture = { timestamp: now(), method: 'GET', url: url.toString(), status: response.status, body };
   requestCaptures.push(capture);
-  if (!response.ok) throw new Error(`GET ${url} returned ${response.status}: ${raw}`);
+  if (!response.ok) {
+    throw new ControlPlaneHttpError('GET', url, response.status, body ?? raw, capture.timestamp);
+  }
   return body;
 }
 
@@ -2461,6 +2474,65 @@ function recordRustPreparationTimeout(error) {
   });
 }
 
+function recordPostStopDetailFailure(error, serverDiagnostics) {
+  const failure = error instanceof PostStopDetailHttpError
+    ? semanticPostStopDetailEvidence({
+      error,
+      serverDiagnostics,
+      shutdown: postStopDetailContext,
+    })
+    : persistentPostStopDetailEvidence({
+      error,
+      serverDiagnostics,
+      shutdown: postStopDetailContext,
+    });
+  evidence.outcome = failure.runner_blocked ? 'runner_blocked' : 'fail';
+  evidence.runner_blocked = failure.runner_blocked;
+  evidence.classification = failure.classification;
+  evidence.post_stop_worker_detail_recovery = failure.post_stop_worker_detail_transport;
+  evidence.server_transport_diagnostics = failure.server_diagnostics;
+  evidence.stale_worker_shutdown = {
+    ...postStopDetailContext,
+    boundary_complete: false,
+    causal_stale_anchor: 'final_server_accepted_heartbeat',
+    final_accepted_heartbeat_at: null,
+    worker_detail_observed_at: null,
+    stale_window_widened: false,
+    shared_wave_retried: false,
+    incomplete_reason: 'post_stop_worker_detail_unavailable',
+  };
+  evidence.scenario_results[SCENARIO_ID] = {
+    scenario_id: SCENARIO_ID,
+    status: failure.runner_blocked ? 'runner_blocked' : 'fail',
+    classification: failure.classification,
+    observed_outputs: {
+      runtime: RUNTIME,
+      worker_id: STALE_WORKER_ID,
+      task_queue: TASK_QUEUE,
+      published_artifact_worker_execution: true,
+      sdk_or_worker_protocol_defect_proven: false,
+      stale_worker_shutdown: evidence.stale_worker_shutdown,
+      post_stop_worker_detail_transport: failure.post_stop_worker_detail_transport,
+      server_diagnostics: failure.server_diagnostics,
+      stale_transition_attempted: false,
+      local_product_source_checkouts_used: false,
+    },
+  };
+  evidence.findings = [{
+    finding_id: `${CELL}-post-stop-worker-detail-${failure.runner_blocked ? 'transport' : 'http'}-${SUFFIX}`,
+    finding_type: failure.finding_type,
+    classification: failure.classification,
+    scenario_id: SCENARIO_ID,
+    owning_surface: failure.owning_surface,
+    artifact_versions: ARTIFACT_VERSIONS,
+    observed_behavior: `${error.message} ${failure.reason}`,
+    expected_behavior: 'After confirmed worker shutdown, a bounded worker-detail read retains the final server-accepted heartbeat that anchors the unchanged stale window.',
+    next_acceptance_criterion: failure.runner_blocked
+      ? 'Restore reliable focused host-to-container control-plane transport and rerun the published-artifact heartbeat wave.'
+      : 'Restore standalone server worker-detail availability and rerun the published-artifact heartbeat wave against the next server image.',
+  }];
+}
+
 function recordPersistentFinalVisibilityFailure(error, serverDiagnostics) {
   const failure = persistentTransportEvidence({
     error,
@@ -2607,10 +2679,27 @@ async function main() {
   const stopRequestedAt = preciseNow();
   const stopConfirmation = stopWorker(staleWorker);
   const stoppedAt = preciseNow();
-  const stoppedWorkerDetail = await api(`/workers/${encodeURIComponent(STALE_WORKER_ID)}`);
-  const workerDetailObservedAt = preciseNow();
   const finalHeartbeatRecords = workerHeartbeatRecords(staleWorker);
   const finalHeartbeatRecord = finalHeartbeatRecords[finalHeartbeatRecords.length - 1] ?? null;
+  postStopDetailContext = {
+    worker_id: STALE_WORKER_ID,
+    stop_requested_at: stopRequestedAt,
+    stopped_at: stoppedAt,
+    stop_confirmation: stopConfirmation,
+    last_sdk_heartbeat_acknowledgement_observed_at: finalHeartbeatRecord?.observed_at
+      ?? finalHeartbeatRecord?.acknowledgement_logged_at
+      ?? null,
+    last_sdk_heartbeat_acknowledgement: finalHeartbeatRecord?.acknowledgement ?? null,
+  };
+  executionPhase = 'post_stop_worker_detail';
+  const recoveredPostStopDetail = await recoverPostStopWorkerDetail({
+    capture: () => api(`/workers/${encodeURIComponent(STALE_WORKER_ID)}`),
+    maxAttempts: POST_STOP_DETAIL_ATTEMPTS,
+    retryDelayMs: POST_STOP_DETAIL_RETRY_MS,
+  });
+  const stoppedWorkerDetail = recoveredPostStopDetail.workerDetail;
+  const workerDetailObservedAt = recoveredPostStopDetail.workerDetailObservedAt;
+  evidence.post_stop_worker_detail_recovery = recoveredPostStopDetail.recovery;
   const shutdownBoundary = workerShutdownBoundary({
     stopRequestedAt,
     stoppedAt,
@@ -2627,6 +2716,7 @@ async function main() {
   });
   evidence.stale_worker_shutdown = shutdownBoundary;
   const staleAfterSeconds = shutdownBoundary.advertised_stale_after_seconds;
+  executionPhase = 'stale_transition';
   const staleTransition = await waitForStaleTransition(shutdownBoundary);
   evidence.stale_worker_shutdown = {
     ...shutdownBoundary,
@@ -2792,6 +2882,12 @@ try {
   log(`failure: ${error instanceof Error ? error.stack ?? error.message : String(error)}`);
   if (error instanceof RustCratesIoPreparationTimeoutError) {
     recordRustPreparationTimeout(error);
+  } else if ((error instanceof PersistentPostStopDetailTransportError
+      || error instanceof PostStopDetailHttpError)
+    && executionPhase === 'post_stop_worker_detail'
+    && postStopDetailContext?.stop_confirmation?.container_state?.running === false) {
+    const serverDiagnostics = await captureServerTransportDiagnostics();
+    recordPostStopDetailFailure(error, serverDiagnostics);
   } else if (error instanceof PersistentFinalVisibilityTransportError
     && executionPhase === 'final_operator_visibility'
     && completedBehavior?.all_checks_passed === true) {

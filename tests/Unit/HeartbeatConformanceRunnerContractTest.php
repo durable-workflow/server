@@ -151,7 +151,8 @@ final class HeartbeatConformanceRunnerContractTest extends TestCase
             'const stopRequestedAt = preciseNow();',
             'const stopConfirmation = stopWorker(staleWorker);',
             'const stoppedAt = preciseNow();',
-            'const stoppedWorkerDetail = await api(',
+            'const recoveredPostStopDetail = await recoverPostStopWorkerDetail({',
+            'const stoppedWorkerDetail = recoveredPostStopDetail.workerDetail;',
             'const shutdownBoundary = workerShutdownBoundary({',
             'evidence.stale_worker_shutdown = shutdownBoundary;',
             'const staleTransition = await waitForStaleTransition(shutdownBoundary);',
@@ -797,8 +798,15 @@ JS;
         $visibilityHelper = (string) file_get_contents(
             dirname(__DIR__, 2).'/scripts/conformance/heartbeat-final-visibility.mjs',
         );
+        $postStopDetailHelper = (string) file_get_contents(
+            dirname(__DIR__, 2).'/scripts/conformance/heartbeat-post-stop-detail.mjs',
+        );
 
         $this->assertStringContainsString('recoverFinalVisibility({', $source);
+        $this->assertStringContainsString('recoverPostStopWorkerDetail({', $source);
+        $this->assertStringContainsString('shared_wave_retried: false', $postStopDetailHelper);
+        $this->assertStringContainsString('persistentPostStopDetailEvidence({', $source);
+        $this->assertStringContainsString('semanticPostStopDetailEvidence({', $source);
         $this->assertStringContainsString('cliControlPlaneTransportError({', $source);
         $this->assertStringContainsString("channel: 'cli'", $visibilityHelper);
         $this->assertStringContainsString('actual_request_source', $visibilityHelper);
@@ -823,6 +831,7 @@ JS;
                 $nodeBinary,
                 '--test',
                 __DIR__.'/HeartbeatFinalVisibilityRegression.mjs',
+                __DIR__.'/HeartbeatPostStopDetailRecoveryRegression.mjs',
             ],
             [
                 1 => ['pipe', 'w'],

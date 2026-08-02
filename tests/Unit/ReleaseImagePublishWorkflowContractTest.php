@@ -159,7 +159,7 @@ class ReleaseImagePublishWorkflowContractTest extends TestCase
         $dockerfile = $this->read('Dockerfile');
         $releaseWorkflow = $this->read('.github/workflows/release.yml');
         $replayWorkflow = $this->read('.github/workflows/replay-query-concurrent-http.yml');
-        $helmWorkflow = $this->read('.github/workflows/helm-chart-validation.yml');
+        $helmWorkflow = $this->read('.github/workflows/helm-chart-checks.yml');
         $helmSmoke = $this->read('scripts/helm-chart-kind-smoke.sh');
 
         foreach ([
@@ -709,7 +709,7 @@ SH);
         $composer = json_decode($this->read('composer.json'), true, flags: JSON_THROW_ON_ERROR);
 
         $this->assertSame(
-            '2.0.0-rc.15',
+            '2.0.0-rc.16',
             $composer['extra']['durable-workflow']['product-train'] ?? null,
         );
     }

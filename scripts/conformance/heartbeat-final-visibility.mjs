@@ -13,6 +13,22 @@ class ControlPlaneTransportError extends Error {
   }
 }
 
+class ControlPlaneHttpError extends Error {
+  constructor(method, url, status, body, observedAt = new Date().toISOString()) {
+    super(`${method} ${url ?? '[unknown URL]'} returned HTTP ${status}`);
+    this.name = 'ControlPlaneHttpError';
+    this.request = {
+      observed_at: observedAt,
+      method,
+      url: url === null || url === undefined ? null : String(url),
+    };
+    this.response = {
+      status,
+      body,
+    };
+  }
+}
+
 class FinalVisibilityInvariantError extends Error {
   constructor(failedInvariants, observedVisibility) {
     super(`final operator visibility invariants failed: ${failedInvariants.join(', ')}`);
@@ -183,16 +199,23 @@ async function recoverFinalVisibility({
 function classifyPersistentTransportOwner(serverDiagnostics) {
   const container = serverDiagnostics?.container ?? {};
   const state = container.state ?? {};
+  const readinessProbe = serverDiagnostics?.readiness_probe ?? {};
   const healthStatus = String(state.health?.status ?? '').toLowerCase();
   const status = String(state.status ?? '').toLowerCase();
   const exitCode = Number(state.exit_code ?? 0);
-  const provenUnavailable = container.present === true && (
+  const readinessStatus = Number(readinessProbe.status);
+  const readinessProvesUnavailable = readinessProbe.ok === false
+    && Number.isInteger(readinessStatus)
+    && readinessStatus >= 500
+    && readinessStatus < 600;
+  const containerProvesUnavailable = container.present === true && (
     state.running === false
     || state.restarting === true
     || ['dead', 'exited', 'removing', 'restarting'].includes(status)
     || healthStatus === 'unhealthy'
     || (state.running !== true && Number.isFinite(exitCode) && exitCode !== 0)
   );
+  const provenUnavailable = containerProvesUnavailable || readinessProvesUnavailable;
 
   if (provenUnavailable) {
     return {
@@ -200,7 +223,7 @@ function classifyPersistentTransportOwner(serverDiagnostics) {
       finding_type: 'standalone_server_availability_gap',
       owning_surface: 'server',
       runner_blocked: false,
-      reason: 'Retained container state proves that the standalone server was unavailable.',
+      reason: 'Retained container or readiness state proves that the standalone server was unavailable.',
     };
   }
 
@@ -232,10 +255,12 @@ function persistentTransportEvidence({ error, serverDiagnostics, completedBehavi
 
 export {
   cliControlPlaneTransportError,
+  ControlPlaneHttpError,
   ControlPlaneTransportError,
   FinalVisibilityInvariantError,
   PersistentFinalVisibilityTransportError,
   classifyPersistentTransportOwner,
+  failedConnectionCause,
   persistentTransportEvidence,
   recoverFinalVisibility,
   transportErrorDetails,
