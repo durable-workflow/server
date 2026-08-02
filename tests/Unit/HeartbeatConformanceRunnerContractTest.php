@@ -563,6 +563,7 @@ SH);
                 $nodeBinary,
                 '--test',
                 __DIR__.'/HeartbeatSharedCleanupRegression.mjs',
+                __DIR__.'/HeartbeatSharedWaveBudgetRegression.mjs',
                 __DIR__.'/HeartbeatSharedWaveCancellationRegression.mjs',
                 __DIR__.'/HeartbeatSharedWaveWaitStatusRegression.mjs',
                 __DIR__.'/HeartbeatSharedWaveResultRegression.mjs',

@@ -42,7 +42,8 @@ sleep 0.25
 
 const timedOutCell = `#!/usr/bin/env bash
 set -euo pipefail
-exec sleep 5
+sleep 0.25
+exit 124
 `;
 
 function writeExecutable(file, contents) {
@@ -97,7 +98,8 @@ test('a timed-out cell retains status 124 and completed peer files', () => {
           DW_WORKFLOW_PHP_VERSION: '2.0.0-beta.18',
           DW_WATERLINE_VERSION: '2.0.0-beta.18',
           DW_HEARTBEATS_WATERLINE_RUNNER: waterlineRunner,
-          DW_HEARTBEATS_CELL_TIMEOUT_SECONDS: '1',
+          DW_HEARTBEATS_WAVE_MAX_SECONDS: '181',
+          DW_HEARTBEATS_CELL_TIMEOUT_SECONDS: '91',
           DW_HEARTBEATS_RUST_PREPARATION_TIMEOUT_SECONDS: '1',
           DW_HEARTBEATS_CHILD_SETTLE_SECONDS: '2',
         },

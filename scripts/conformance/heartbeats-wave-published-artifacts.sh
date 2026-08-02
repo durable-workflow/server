@@ -120,12 +120,14 @@ for bounded_timeout in "$cell_timeout" "$rust_preparation_timeout"; do
     exit 2
   }
 done
-((cell_timeout <= maximum_seconds)) || {
-  printf '%s\n' 'DW_HEARTBEATS_CELL_TIMEOUT_SECONDS cannot exceed the wave wall-time budget' >&2
+((cell_timeout <= maximum_seconds - wave_orchestration_reserve_seconds)) || {
+  printf 'DW_HEARTBEATS_CELL_TIMEOUT_SECONDS must leave a %s-second orchestration and cleanup reserve within the wave wall-time budget\n' \
+    "$wave_orchestration_reserve_seconds" >&2
   exit 2
 }
-((rust_preparation_timeout <= cell_timeout)) || {
-  printf '%s\n' 'DW_HEARTBEATS_RUST_PREPARATION_TIMEOUT_SECONDS cannot exceed the cell timeout' >&2
+((rust_preparation_timeout <= cell_timeout - rust_execution_reserve_seconds)) || {
+  printf 'DW_HEARTBEATS_RUST_PREPARATION_TIMEOUT_SECONDS must leave a %s-second heartbeat-execution reserve within the Rust cell budget\n' \
+    "$rust_execution_reserve_seconds" >&2
   exit 2
 }
 export DW_HEARTBEATS_RUST_PREPARATION_TIMEOUT_SECONDS="$rust_preparation_timeout"
