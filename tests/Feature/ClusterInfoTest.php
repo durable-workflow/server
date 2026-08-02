@@ -1471,6 +1471,18 @@ class ClusterInfoTest extends TestCase
                 'activity_task',
             )
             ->assertJsonPath(
+                'worker_protocol.external_task_input_contract.envelopes.workflow_task.history_event_contracts.condition_timeout.correlation.event_adjacency_required',
+                false,
+            )
+            ->assertJsonPath(
+                'worker_protocol.external_task_input_contract.envelopes.workflow_task.history_event_contracts.condition_timeout.replay.advances_ordinary_command_cursor',
+                false,
+            )
+            ->assertJsonPath(
+                'worker_protocol.external_task_input_contract.fixtures.condition_timeout_history.example.history.events.2.payload.timer_kind',
+                'condition_timeout',
+            )
+            ->assertJsonPath(
                 'worker_protocol.server_capabilities.external_task_input.schema',
                 'durable-workflow.v2.external-task-input.contract',
             )

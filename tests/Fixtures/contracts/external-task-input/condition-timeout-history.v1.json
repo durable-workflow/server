@@ -1,0 +1,180 @@
+{
+  "schema": "durable-workflow.v2.external-task-input",
+  "version": 1,
+  "task": {
+    "id": "wft_01HV7D2K3X9K2M7YVQ4T0A1B2C",
+    "kind": "workflow_task",
+    "attempt": 2,
+    "task_queue": "billing-workflows",
+    "handler": "billing.invoice.workflow",
+    "connection": null,
+    "compatibility": "build-2026-04-22",
+    "idempotency_key": "wft_01HV7D2K3X9K2M7YVQ4T0A1B2C:2"
+  },
+  "workflow": {
+    "id": "invoice-2026-0001",
+    "run_id": "run_01HV7D2M5N1HDZ4Z8XBQJY6P9R",
+    "status": "running",
+    "resume": {
+      "workflow_wait_kind": "condition",
+      "open_wait_id": "condition:41",
+      "resume_source_kind": "timer",
+      "resume_source_id": "timer:42",
+      "workflow_update_id": null,
+      "workflow_signal_id": null,
+      "signal_name": null,
+      "signal_wait_id": null,
+      "workflow_command_id": null,
+      "activity_execution_id": null,
+      "activity_attempt_id": null,
+      "activity_type": null,
+      "child_call_id": null,
+      "child_workflow_run_id": null,
+      "workflow_sequence": 42,
+      "workflow_event_type": "TimerFired",
+      "timer_id": "timer:42",
+      "condition_wait_id": "condition:41",
+      "condition_key": "invoice.approved",
+      "condition_definition_fingerprint": "sha256:condition-41"
+    }
+  },
+  "lease": {
+    "owner": "worker-runtime-a",
+    "expires_at": "2026-04-22T01:05:00.000000Z",
+    "heartbeat_endpoint": "/api/worker/workflow-tasks/wft_01HV7D2K3X9K2M7YVQ4T0A1B2C/heartbeat"
+  },
+  "payloads": {
+    "arguments": {
+      "codec": "avro",
+      "blob": "BASE64_AVRO_ARGUMENTS"
+    },
+    "signal_arguments": null
+  },
+  "history": {
+    "events": [
+      {
+        "event_id": "evt_01HV7D2M7A72M5JHVR75MB4BF3",
+        "event_type": "WorkflowStarted",
+        "sequence": 1
+      },
+      {
+        "event_id": "evt_condition_opened_41",
+        "event_type": "ConditionWaitOpened",
+        "sequence": 2,
+        "payload": {
+          "sequence": 41,
+          "condition_wait_id": "condition:41",
+          "condition_key": "invoice.approved",
+          "condition_definition_fingerprint": "sha256:condition-41",
+          "timeout_seconds": 30
+        }
+      },
+      {
+        "event_id": "evt_timer_scheduled_42",
+        "event_type": "TimerScheduled",
+        "sequence": 3,
+        "payload": {
+          "sequence": 42,
+          "timer_id": "timer:42",
+          "delay_seconds": 30,
+          "timer_kind": "condition_timeout",
+          "condition_wait_id": "condition:41",
+          "condition_key": "invoice.approved",
+          "condition_definition_fingerprint": "sha256:condition-41"
+        }
+      },
+      {
+        "event_id": "evt_update_applied_41",
+        "event_type": "UpdateApplied",
+        "sequence": 4,
+        "payload": {
+          "sequence": 41,
+          "update_id": "update:invoice-name",
+          "update_name": "rename-invoice",
+          "arguments": "[\"August invoice\"]"
+        }
+      },
+      {
+        "event_id": "evt_signal_received_41",
+        "event_type": "SignalReceived",
+        "sequence": 5,
+        "payload": {
+          "workflow_sequence": 41,
+          "signal_name": "approval-observed",
+          "value": "[\"finance\"]"
+        }
+      },
+      {
+        "event_id": "evt_timer_fired_42",
+        "event_type": "TimerFired",
+        "sequence": 6,
+        "payload": {
+          "sequence": 42,
+          "timer_id": "timer:42",
+          "delay_seconds": 30,
+          "timer_kind": "condition_timeout",
+          "condition_wait_id": "condition:41",
+          "condition_key": "invoice.approved",
+          "condition_definition_fingerprint": "sha256:condition-41"
+        }
+      },
+      {
+        "event_id": "evt_condition_opened_43",
+        "event_type": "ConditionWaitOpened",
+        "sequence": 7,
+        "payload": {
+          "sequence": 43,
+          "condition_wait_id": "condition:43",
+          "condition_key": "invoice.posted",
+          "condition_definition_fingerprint": "sha256:condition-43",
+          "timeout_seconds": 60
+        }
+      },
+      {
+        "event_id": "evt_timer_scheduled_44",
+        "event_type": "TimerScheduled",
+        "sequence": 8,
+        "payload": {
+          "sequence": 44,
+          "timer_id": "timer:44",
+          "delay_seconds": 60,
+          "timer_kind": "condition_timeout",
+          "condition_wait_id": "condition:43",
+          "condition_key": "invoice.posted",
+          "condition_definition_fingerprint": "sha256:condition-43"
+        }
+      },
+      {
+        "event_id": "evt_condition_satisfied_43",
+        "event_type": "ConditionWaitSatisfied",
+        "sequence": 9,
+        "payload": {
+          "sequence": 43,
+          "condition_wait_id": "condition:43",
+          "condition_key": "invoice.posted",
+          "timer_id": "timer:44"
+        }
+      },
+      {
+        "event_id": "evt_timer_cancelled_44",
+        "event_type": "TimerCancelled",
+        "sequence": 10,
+        "payload": {
+          "sequence": 44,
+          "timer_id": "timer:44",
+          "delay_seconds": 60,
+          "timer_kind": "condition_timeout",
+          "condition_wait_id": "condition:43",
+          "condition_key": "invoice.posted",
+          "condition_definition_fingerprint": "sha256:condition-43"
+        }
+      }
+    ],
+    "last_sequence": 10,
+    "next_page_token": "eyJhZnRlcl9zZXF1ZW5jZSI6MTB9",
+    "encoding": null
+  },
+  "headers": {
+    "traceparent": "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-00"
+  }
+}

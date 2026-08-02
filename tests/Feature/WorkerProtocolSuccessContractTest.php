@@ -3009,6 +3009,15 @@ class WorkerProtocolSuccessContractTest extends TestCase
             $this->assertSame('approval.ready', $conditionKey);
             $this->assertIsString($conditionDefinitionFingerprint);
 
+            $timerScheduled = WorkflowHistoryEvent::query()
+                ->where('workflow_run_id', $runId)
+                ->where('event_type', 'TimerScheduled')
+                ->where('payload->timer_id', $timerId)
+                ->firstOrFail();
+
+            $this->assertSame('condition_timeout', $timerScheduled->payload['timer_kind'] ?? null);
+            $this->assertSame($conditionWaitId, $timerScheduled->payload['condition_wait_id'] ?? null);
+
             Carbon::setTestNow(Carbon::parse('2026-04-18 12:00:05'));
 
             $this->app->call([new RunTimerTask((string) $timerTask->id), 'handle']);
@@ -3044,6 +3053,7 @@ class WorkerProtocolSuccessContractTest extends TestCase
 
             $this->assertIsArray($timerFired);
             $this->assertSame($timerId, $timerFired['payload']['timer_id'] ?? null);
+            $this->assertSame('condition_timeout', $timerFired['payload']['timer_kind'] ?? null);
             $this->assertSame($conditionWaitId, $timerFired['payload']['condition_wait_id'] ?? null);
             $this->assertSame('approval.ready', $timerFired['payload']['condition_key'] ?? null);
             $this->assertSame(
@@ -3191,6 +3201,15 @@ class WorkerProtocolSuccessContractTest extends TestCase
 
         $this->assertSame('cancelled', $timer->status->value);
         $this->assertSame('cancelled', $timerTask->status->value);
+
+        $cancelled = WorkflowHistoryEvent::query()
+            ->where('workflow_run_id', $runId)
+            ->where('event_type', 'TimerCancelled')
+            ->where('payload->timer_id', $timer->id)
+            ->firstOrFail();
+
+        $this->assertSame('condition_timeout', $cancelled->payload['timer_kind'] ?? null);
+        $this->assertSame($conditionWaitId, $cancelled->payload['condition_wait_id'] ?? null);
     }
 
     public function test_marker_and_search_attribute_commands_use_worker_protocol_contract(): void

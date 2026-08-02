@@ -36,7 +36,7 @@ final class ExternalTaskInputContract
                 ],
                 'worker_protocol_runtime' => [
                     'task_kinds' => ['workflow_task'],
-                    'fixture_keys' => ['workflow_task'],
+                    'fixture_keys' => ['workflow_task', 'condition_timeout_history'],
                     'carrier_expectation' => 'Workflow_task inputs are published for SDK/runtime compatibility and worker-protocol drift tests; they are not activity-grade external handler inputs.',
                 ],
             ],
@@ -48,6 +48,10 @@ final class ExternalTaskInputContract
                 'workflow_task' => self::fixtureArtifact(
                     'durable-workflow.v2.external-task-input.workflow-task.v1',
                     self::workflowTaskFixture(),
+                ),
+                'condition_timeout_history' => self::fixtureArtifact(
+                    'durable-workflow.v2.external-task-input.condition-timeout-history.v1',
+                    self::conditionTimeoutHistoryFixture(),
                 ),
                 'activity_task' => self::fixtureArtifact(
                     'durable-workflow.v2.external-task-input.activity-task.v1',
@@ -151,6 +155,60 @@ final class ExternalTaskInputContract
                 'last_sequence' => ['source' => 'task.last_history_sequence', 'type' => 'integer'],
                 'next_page_token' => ['source' => 'task.next_history_page_token', 'type' => 'string', 'nullable' => true],
                 'encoding' => ['source' => 'task.history_events_encoding', 'type' => 'string', 'nullable' => true],
+            ],
+            'history_event_contracts' => [
+                'condition_timeout' => [
+                    'timer_kind' => 'condition_timeout',
+                    'condition_identity_field' => 'condition_wait_id',
+                    'timer_identity_field' => 'timer_id',
+                    'timer_events' => [
+                        'TimerScheduled' => [
+                            'required_payload_fields' => [
+                                'timer_id',
+                                'sequence',
+                                'timer_kind',
+                                'condition_wait_id',
+                            ],
+                        ],
+                        'TimerFired' => [
+                            'required_payload_fields' => [
+                                'timer_id',
+                                'sequence',
+                                'timer_kind',
+                                'condition_wait_id',
+                            ],
+                        ],
+                        'TimerCancelled' => [
+                            'required_payload_fields' => [
+                                'timer_id',
+                                'sequence',
+                                'timer_kind',
+                                'condition_wait_id',
+                            ],
+                        ],
+                    ],
+                    'correlation' => [
+                        'match_fields' => ['timer_id', 'condition_wait_id'],
+                        'condition_and_timer_sequences_may_differ' => true,
+                        'event_adjacency_required' => false,
+                    ],
+                    'replay' => [
+                        'advances_ordinary_command_cursor' => false,
+                        'legacy_rows_without_explicit_identity' => 'supported_for_replay_reading',
+                    ],
+                    'conformance' => [
+                        'fixture_cluster_info_path' => 'worker_protocol.external_task_input_contract.fixtures.condition_timeout_history.example.history.events',
+                        'required_worker_runtimes' => ['sdk-php', 'sdk-python', 'sdk-rust'],
+                        'required_interleaved_event_types' => ['UpdateApplied', 'SignalReceived'],
+                        'required_timer_event_types' => ['TimerScheduled', 'TimerFired', 'TimerCancelled'],
+                        'assertions' => [
+                            'timer_rows_are_self_identifying',
+                            'timer_sequence_may_differ_from_condition_sequence',
+                            'ordinary_activity_timer_cursor_does_not_advance',
+                            'workflow_reaches_terminal_state',
+                        ],
+                    ],
+                ],
             ],
             'intentionally_omitted' => [
                 'server process identity',
@@ -304,6 +362,158 @@ final class ExternalTaskInputContract
                 'traceparent' => '00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-00',
             ],
         ];
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    private static function conditionTimeoutHistoryFixture(): array
+    {
+        $fixture = self::workflowTaskFixture();
+        $fixture['lease']['owner'] = 'worker-runtime-a';
+        $fixture['workflow']['resume'] = [
+            ...$fixture['workflow']['resume'],
+            'workflow_wait_kind' => 'condition',
+            'open_wait_id' => 'condition:41',
+            'resume_source_kind' => 'timer',
+            'resume_source_id' => 'timer:42',
+            'workflow_command_id' => null,
+            'activity_execution_id' => null,
+            'activity_attempt_id' => null,
+            'activity_type' => null,
+            'workflow_sequence' => 42,
+            'workflow_event_type' => 'TimerFired',
+            'timer_id' => 'timer:42',
+            'condition_wait_id' => 'condition:41',
+            'condition_key' => 'invoice.approved',
+            'condition_definition_fingerprint' => 'sha256:condition-41',
+        ];
+        $fixture['history'] = [
+            'events' => [
+                [
+                    'event_id' => 'evt_01HV7D2M7A72M5JHVR75MB4BF3',
+                    'event_type' => 'WorkflowStarted',
+                    'sequence' => 1,
+                ],
+                [
+                    'event_id' => 'evt_condition_opened_41',
+                    'event_type' => 'ConditionWaitOpened',
+                    'sequence' => 2,
+                    'payload' => [
+                        'sequence' => 41,
+                        'condition_wait_id' => 'condition:41',
+                        'condition_key' => 'invoice.approved',
+                        'condition_definition_fingerprint' => 'sha256:condition-41',
+                        'timeout_seconds' => 30,
+                    ],
+                ],
+                [
+                    'event_id' => 'evt_timer_scheduled_42',
+                    'event_type' => 'TimerScheduled',
+                    'sequence' => 3,
+                    'payload' => [
+                        'sequence' => 42,
+                        'timer_id' => 'timer:42',
+                        'delay_seconds' => 30,
+                        'timer_kind' => 'condition_timeout',
+                        'condition_wait_id' => 'condition:41',
+                        'condition_key' => 'invoice.approved',
+                        'condition_definition_fingerprint' => 'sha256:condition-41',
+                    ],
+                ],
+                [
+                    'event_id' => 'evt_update_applied_41',
+                    'event_type' => 'UpdateApplied',
+                    'sequence' => 4,
+                    'payload' => [
+                        'sequence' => 41,
+                        'update_id' => 'update:invoice-name',
+                        'update_name' => 'rename-invoice',
+                        'arguments' => '["August invoice"]',
+                    ],
+                ],
+                [
+                    'event_id' => 'evt_signal_received_41',
+                    'event_type' => 'SignalReceived',
+                    'sequence' => 5,
+                    'payload' => [
+                        'workflow_sequence' => 41,
+                        'signal_name' => 'approval-observed',
+                        'value' => '["finance"]',
+                    ],
+                ],
+                [
+                    'event_id' => 'evt_timer_fired_42',
+                    'event_type' => 'TimerFired',
+                    'sequence' => 6,
+                    'payload' => [
+                        'sequence' => 42,
+                        'timer_id' => 'timer:42',
+                        'delay_seconds' => 30,
+                        'timer_kind' => 'condition_timeout',
+                        'condition_wait_id' => 'condition:41',
+                        'condition_key' => 'invoice.approved',
+                        'condition_definition_fingerprint' => 'sha256:condition-41',
+                    ],
+                ],
+                [
+                    'event_id' => 'evt_condition_opened_43',
+                    'event_type' => 'ConditionWaitOpened',
+                    'sequence' => 7,
+                    'payload' => [
+                        'sequence' => 43,
+                        'condition_wait_id' => 'condition:43',
+                        'condition_key' => 'invoice.posted',
+                        'condition_definition_fingerprint' => 'sha256:condition-43',
+                        'timeout_seconds' => 60,
+                    ],
+                ],
+                [
+                    'event_id' => 'evt_timer_scheduled_44',
+                    'event_type' => 'TimerScheduled',
+                    'sequence' => 8,
+                    'payload' => [
+                        'sequence' => 44,
+                        'timer_id' => 'timer:44',
+                        'delay_seconds' => 60,
+                        'timer_kind' => 'condition_timeout',
+                        'condition_wait_id' => 'condition:43',
+                        'condition_key' => 'invoice.posted',
+                        'condition_definition_fingerprint' => 'sha256:condition-43',
+                    ],
+                ],
+                [
+                    'event_id' => 'evt_condition_satisfied_43',
+                    'event_type' => 'ConditionWaitSatisfied',
+                    'sequence' => 9,
+                    'payload' => [
+                        'sequence' => 43,
+                        'condition_wait_id' => 'condition:43',
+                        'condition_key' => 'invoice.posted',
+                        'timer_id' => 'timer:44',
+                    ],
+                ],
+                [
+                    'event_id' => 'evt_timer_cancelled_44',
+                    'event_type' => 'TimerCancelled',
+                    'sequence' => 10,
+                    'payload' => [
+                        'sequence' => 44,
+                        'timer_id' => 'timer:44',
+                        'delay_seconds' => 60,
+                        'timer_kind' => 'condition_timeout',
+                        'condition_wait_id' => 'condition:43',
+                        'condition_key' => 'invoice.posted',
+                        'condition_definition_fingerprint' => 'sha256:condition-43',
+                    ],
+                ],
+            ],
+            'last_sequence' => 10,
+            'next_page_token' => 'eyJhZnRlcl9zZXF1ZW5jZSI6MTB9',
+            'encoding' => null,
+        ];
+
+        return $fixture;
     }
 
     /**
