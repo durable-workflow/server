@@ -194,6 +194,10 @@ function execute(root) {
       STATE_FILE: path.join(root, 'shared-server-state.json'),
       STARTED_AT: new Date(Date.now() - 1_000).toISOString(),
       MAXIMUM_SECONDS: '360',
+      CELL_TIMEOUT_SECONDS: '300',
+      RUST_PREPARATION_TIMEOUT_SECONDS: '240',
+      WAVE_ORCHESTRATION_RESERVE_SECONDS: '60',
+      RUST_EXECUTION_RESERVE_SECONDS: '60',
       DW_SERVER_VERSION: '2.0.0-beta.18',
       DW_CLI_VERSION: '2.0.0-beta.18',
       DW_PHP_SDK_VERSION: '2.0.0-beta.18',
@@ -217,6 +221,13 @@ test('one-bootstrap wave passes only with four isolated cells and final cleanup'
       'utf8',
     ));
     assert.equal(result.outcome, 'pass');
+    assert.deepEqual(result.budget_allocation_seconds, {
+      wave: 360,
+      concurrent_cell: 300,
+      rust_preparation: 240,
+      rust_heartbeat_execution_reserve: 60,
+      wave_orchestration_and_cleanup_reserve: 60,
+    });
     assert.equal(result.published_server_bootstrap.bootstrap_count, 1);
     assert.equal(result.cleanup.cleanup_status, 'pass');
     assert.equal(result.child_processes.all_process_groups_settled, true);

@@ -14,7 +14,7 @@ class HeartbeatRuntimeContractTest extends TestCase
         $manifest = HeartbeatRuntimeContract::manifest();
 
         $this->assertSame('durable-workflow.v2.heartbeat-runtime.contract', $manifest['schema']);
-        $this->assertSame(6, HeartbeatRuntimeContract::VERSION);
+        $this->assertSame(7, HeartbeatRuntimeContract::VERSION);
         $this->assertSame(HeartbeatRuntimeContract::VERSION, $manifest['version']);
         $this->assertSame('durable-workflow.v2.heartbeat-runtime.result', $manifest['result_schema']);
         $this->assertSame(2, $manifest['result_version']);
@@ -170,7 +170,13 @@ class HeartbeatRuntimeContractTest extends TestCase
             'scripts/conformance/heartbeats-shared-server.sh',
             $wave['server_lifecycle_path'],
         );
-        $this->assertSame(360, $wave['maximum_wall_time_seconds']);
+        $this->assertSame(540, $wave['maximum_wall_time_seconds']);
+        $this->assertSame([
+            'concurrent_cell' => 450,
+            'rust_preparation' => 360,
+            'rust_heartbeat_execution_reserve' => 90,
+            'wave_orchestration_and_cleanup_reserve' => 90,
+        ], $wave['default_budget_allocation_seconds']);
         $this->assertSame(1, $wave['clean_published_server_bootstrap_count']);
         $this->assertSame(['php', 'python', 'rust', 'waterline'], $wave['parallel_cells']);
         $this->assertSame([

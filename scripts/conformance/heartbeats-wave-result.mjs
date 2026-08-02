@@ -5,7 +5,20 @@ import process from 'node:process';
 const resultDir = path.resolve(process.env.RESULT_DIR ?? '');
 const statePath = path.resolve(process.env.STATE_FILE ?? '');
 const startedAt = process.env.STARTED_AT ?? new Date().toISOString();
-const maximumSeconds = Number.parseInt(process.env.MAXIMUM_SECONDS ?? '360', 10);
+const maximumSeconds = Number.parseInt(process.env.MAXIMUM_SECONDS ?? '540', 10);
+const cellTimeoutSeconds = Number.parseInt(process.env.CELL_TIMEOUT_SECONDS ?? '450', 10);
+const rustPreparationTimeoutSeconds = Number.parseInt(
+  process.env.RUST_PREPARATION_TIMEOUT_SECONDS ?? '360',
+  10,
+);
+const waveOrchestrationReserveSeconds = Number.parseInt(
+  process.env.WAVE_ORCHESTRATION_RESERVE_SECONDS ?? '90',
+  10,
+);
+const rustExecutionReserveSeconds = Number.parseInt(
+  process.env.RUST_EXECUTION_RESERVE_SECONDS ?? '90',
+  10,
+);
 
 function read(relativePath) {
   const file = path.join(resultDir, relativePath);
@@ -291,6 +304,13 @@ const result = {
   finished_at: finishedAt,
   wall_time_seconds: wallSeconds,
   maximum_wall_time_seconds: maximumSeconds,
+  budget_allocation_seconds: {
+    wave: maximumSeconds,
+    concurrent_cell: cellTimeoutSeconds,
+    rust_preparation: rustPreparationTimeoutSeconds,
+    rust_heartbeat_execution_reserve: rustExecutionReserveSeconds,
+    wave_orchestration_and_cleanup_reserve: waveOrchestrationReserveSeconds,
+  },
   outcome,
   runner_blocked: runnerBlocked,
   classification: outcome === 'pass'

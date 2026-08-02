@@ -17,7 +17,7 @@ final class HeartbeatRuntimeContract
 {
     public const SCHEMA = 'durable-workflow.v2.heartbeat-runtime.contract';
 
-    public const VERSION = 6;
+    public const VERSION = 7;
 
     public const RESULT_SCHEMA = 'durable-workflow.v2.heartbeat-runtime.result';
 
@@ -295,7 +295,13 @@ final class HeartbeatRuntimeContract
                     'server_lifecycle_path' => 'scripts/conformance/heartbeats-shared-server.sh',
                     'result_schema' => 'durable-workflow.v2.heartbeat-runtime.shared-wave-result',
                     'result_file' => 'heartbeat-shared-wave-result.json',
-                    'maximum_wall_time_seconds' => 360,
+                    'maximum_wall_time_seconds' => 540,
+                    'default_budget_allocation_seconds' => [
+                        'concurrent_cell' => 450,
+                        'rust_preparation' => 360,
+                        'rust_heartbeat_execution_reserve' => 90,
+                        'wave_orchestration_and_cleanup_reserve' => 90,
+                    ],
                     'clean_published_server_bootstrap_count' => 1,
                     'parallel_cells' => [
                         'php',

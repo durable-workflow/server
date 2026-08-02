@@ -346,7 +346,8 @@ SH);
         $this->assertIsInt($workerTracking);
         $this->assertIsInt($workerRun);
         $this->assertLessThan($workerRun, $workerTracking);
-        $this->assertStringContainsString("run('docker', ['rm', '-f', containerName], { timeout: 30_000 });", $source);
+        $this->assertStringContainsString('removeNamedDockerContainer({', $source);
+        $this->assertStringContainsString("remove: () => run('docker', ['rm', '-f', containerName]", $source);
         $this->assertStringContainsString("run('docker', [...composeArgs, 'down', '-v'], { env: composeEnv, timeout: 120_000 });", $source);
         $this->assertStringContainsString("'volume', 'ls'", $source);
         $this->assertStringContainsString('recordCleanupFailure(cleanupFailures);', $source);
@@ -474,6 +475,9 @@ SH);
 
         $this->assertStringContainsString('DW_HEARTBEATS_CELL_TIMEOUT_SECONDS', $wave);
         $this->assertStringContainsString('DW_HEARTBEATS_RUST_PREPARATION_TIMEOUT_SECONDS', $wave);
+        $this->assertStringContainsString('maximum_seconds="${DW_HEARTBEATS_WAVE_MAX_SECONDS:-540}"', $wave);
+        $this->assertStringContainsString('wave_orchestration_reserve_seconds=90', $wave);
+        $this->assertStringContainsString('rust_execution_reserve_seconds=90', $wave);
         $this->assertStringContainsString(
             'setsid timeout --foreground --signal=TERM --kill-after=15s',
             $wave,
@@ -510,6 +514,7 @@ SH);
                 __DIR__.'/HeartbeatSharedServerReadinessRegression.mjs',
                 __DIR__.'/HeartbeatSharedStorageRegression.mjs',
                 __DIR__.'/HeartbeatRustPreparationRegression.mjs',
+                __DIR__.'/HeartbeatContainerCleanupRegression.mjs',
             ],
             [
                 1 => ['pipe', 'w'],

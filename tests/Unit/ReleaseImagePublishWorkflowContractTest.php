@@ -709,7 +709,7 @@ SH);
         $composer = json_decode($this->read('composer.json'), true, flags: JSON_THROW_ON_ERROR);
 
         $this->assertSame(
-            '2.0.0-rc.13',
+            '2.0.0-rc.14',
             $composer['extra']['durable-workflow']['product-train'] ?? null,
         );
     }

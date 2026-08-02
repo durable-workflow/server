@@ -23,13 +23,18 @@ Required runner handoff:
                                        worker-status runner.
 
 Optional:
-  DW_HEARTBEATS_CELL_TIMEOUT_SECONDS   Per-cell timeout; defaults to 330.
+  DW_HEARTBEATS_WAVE_MAX_SECONDS       Passing wall-time budget; defaults to 540.
+  DW_HEARTBEATS_CELL_TIMEOUT_SECONDS   Per-cell timeout; defaults to the wave
+                                       budget minus a 90-second orchestration
+                                       and cleanup reserve (450 by default).
   DW_HEARTBEATS_RUST_PREPARATION_TIMEOUT_SECONDS
                                        Rust registry/download/build budget;
-                                       defaults to 240.
+                                       defaults to the wave budget minus the
+                                       orchestration reserve and a 90-second
+                                       heartbeat-execution reserve (360 by
+                                       default).
   DW_HEARTBEATS_CHILD_SETTLE_SECONDS   Bounded process-group teardown; defaults
                                        to 20.
-  DW_HEARTBEATS_WAVE_MAX_SECONDS       Passing wall-time bound; defaults to 360.
 USAGE
 }
 
@@ -89,15 +94,41 @@ child_result_file="$result_dir/heartbeat-shared-wave-children.json"
 process_cleanup_log="$result_dir/heartbeat-shared-wave-process-cleanup.log"
 : >"$process_cleanup_log"
 started_at="$(date -u +'%Y-%m-%dT%H:%M:%SZ')"
-cell_timeout="${DW_HEARTBEATS_CELL_TIMEOUT_SECONDS:-330}"
 child_settle_seconds="${DW_HEARTBEATS_CHILD_SETTLE_SECONDS:-20}"
-maximum_seconds="${DW_HEARTBEATS_WAVE_MAX_SECONDS:-360}"
+maximum_seconds="${DW_HEARTBEATS_WAVE_MAX_SECONDS:-540}"
+wave_orchestration_reserve_seconds=90
+rust_execution_reserve_seconds=90
 cleanup_done=0
 cleanup_deferred_signal=""
 launch_deferred_signal=""
 declare -a cell_pids=()
 declare -a cell_pgids=()
 declare -a cell_names=()
+
+[[ "$maximum_seconds" =~ ^[1-9][0-9]*$ ]] \
+  && ((maximum_seconds > wave_orchestration_reserve_seconds + rust_execution_reserve_seconds)) || {
+  printf 'DW_HEARTBEATS_WAVE_MAX_SECONDS must be an integer greater than %s\n' \
+    "$((wave_orchestration_reserve_seconds + rust_execution_reserve_seconds))" >&2
+  exit 2
+}
+cell_timeout="${DW_HEARTBEATS_CELL_TIMEOUT_SECONDS:-$((maximum_seconds - wave_orchestration_reserve_seconds))}"
+rust_preparation_timeout="${DW_HEARTBEATS_RUST_PREPARATION_TIMEOUT_SECONDS:-$((maximum_seconds - wave_orchestration_reserve_seconds - rust_execution_reserve_seconds))}"
+
+for bounded_timeout in "$cell_timeout" "$rust_preparation_timeout"; do
+  [[ "$bounded_timeout" =~ ^[1-9][0-9]*$ ]] || {
+    printf '%s\n' 'heartbeat cell and Rust preparation timeouts must be positive integers' >&2
+    exit 2
+  }
+done
+((cell_timeout <= maximum_seconds)) || {
+  printf '%s\n' 'DW_HEARTBEATS_CELL_TIMEOUT_SECONDS cannot exceed the wave wall-time budget' >&2
+  exit 2
+}
+((rust_preparation_timeout <= cell_timeout)) || {
+  printf '%s\n' 'DW_HEARTBEATS_RUST_PREPARATION_TIMEOUT_SECONDS cannot exceed the cell timeout' >&2
+  exit 2
+}
+export DW_HEARTBEATS_RUST_PREPARATION_TIMEOUT_SECONDS="$rust_preparation_timeout"
 
 [[ "$child_settle_seconds" =~ ^[1-9][0-9]*$ ]] \
   && ((child_settle_seconds <= 60)) || {
@@ -382,4 +413,8 @@ RESULT_DIR="$result_dir" \
 STATE_FILE="$state_file" \
 STARTED_AT="$started_at" \
 MAXIMUM_SECONDS="$maximum_seconds" \
+CELL_TIMEOUT_SECONDS="$cell_timeout" \
+RUST_PREPARATION_TIMEOUT_SECONDS="$rust_preparation_timeout" \
+WAVE_ORCHESTRATION_RESERVE_SECONDS="$wave_orchestration_reserve_seconds" \
+RUST_EXECUTION_RESERVE_SECONDS="$rust_execution_reserve_seconds" \
 node "$script_dir/heartbeats-wave-result.mjs"

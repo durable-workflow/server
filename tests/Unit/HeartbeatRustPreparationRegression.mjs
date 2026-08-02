@@ -28,12 +28,18 @@ const steps = [
   },
 ];
 
-test('exact crates.io preparation shares one deadline and finishes offline', () => {
+test('a cold exact crates.io preparation finishes offline near the enlarged budget', () => {
   let currentTime = 1_000;
   const calls = [];
+  const phaseDurations = {
+    lockfile_resolution: 3_000,
+    crate_download: 14_000,
+    metadata: 1_533,
+    release_build: 340_000,
+  };
   const preparation = prepareExactRustCrate({
     steps,
-    timeoutMilliseconds: 240,
+    timeoutMilliseconds: 360_000,
     clock: () => currentTime,
     execute(step) {
       calls.push({
@@ -41,14 +47,14 @@ test('exact crates.io preparation shares one deadline and finishes offline', () 
         timeoutMilliseconds: step.timeoutMilliseconds,
         networkAccess: step.networkAccess,
       });
-      currentTime += 20;
+      currentTime += phaseDurations[step.phase];
       return { stdout: step.phase === 'metadata' ? '{"packages":[]}' : '' };
     },
   });
 
   assert.deepEqual(
     calls.map((call) => call.timeoutMilliseconds),
-    [240, 220, 200, 180],
+    [360_000, 357_000, 343_000, 341_467],
   );
   assert.deepEqual(
     calls.map((call) => call.networkAccess),
@@ -63,6 +69,7 @@ test('exact crates.io preparation shares one deadline and finishes offline', () 
     true,
   );
   assert.equal(preparation.results.metadata.stdout, '{"packages":[]}');
+  assert.equal(preparation.evidence.elapsed_ms, 358_533);
 });
 
 test('a registry stall becomes structured runner-blocked evidence before later phases start', () => {

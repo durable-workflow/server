@@ -125,6 +125,7 @@ test('repeated signal cleanup bounds TERM-ignoring cell groups before shared tea
       DW_WATERLINE_VERSION: '2.0.0-beta.18',
       DW_HEARTBEATS_WATERLINE_RUNNER: waterlineRunner,
       DW_HEARTBEATS_CELL_TIMEOUT_SECONDS: '30',
+      DW_HEARTBEATS_RUST_PREPARATION_TIMEOUT_SECONDS: '30',
       DW_HEARTBEATS_CHILD_SETTLE_SECONDS: '2',
     },
     stdio: ['ignore', 'pipe', 'pipe'],

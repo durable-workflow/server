@@ -9,6 +9,10 @@ import {
   SERVER_CONTAINER_IMAGE_INSPECT_FORMAT,
   safeContainerInspectCommandRecord,
 } from './heartbeat-container-inspect-evidence.mjs';
+import {
+  dockerObjectMissing,
+  removeNamedDockerContainer,
+} from './heartbeat-container-cleanup.mjs';
 import { heartbeatCadenceObservation } from './heartbeat-cadence-observation.mjs';
 import {
   cliControlPlaneTransportError,
@@ -69,7 +73,7 @@ const WORK_PROCESSED_VISIBILITY_RETRY_MS = positiveInt(
 );
 const RUST_PREPARATION_TIMEOUT_SECONDS = positiveInt(
   env('DW_HEARTBEATS_RUST_PREPARATION_TIMEOUT_SECONDS'),
-  240,
+  360,
 );
 const KEEP_RUN_ROOT = truthy(env('DW_HEARTBEATS_KEEP_RUN_ROOT'));
 const HOST_UID = typeof process.getuid === 'function' ? process.getuid() : null;
@@ -333,10 +337,6 @@ function requireDistributionIdentities() {
   evidence.executed_distribution_identities = loadDistributionIdentities();
 }
 
-function dockerObjectMissing(result) {
-  return result.status !== 0 && /no such (?:object|container)/i.test(`${result.stderr}\n${result.stdout}`);
-}
-
 function errorSummary(error) {
   return error instanceof Error ? error.message : String(error);
 }
@@ -349,7 +349,6 @@ function cleanupWorkerContainer(containerName) {
   if (dockerObjectMissing(initialInspect)) {
     return { resource: 'worker_container', name: containerName, status: 'already_absent' };
   }
-  const removalErrors = [];
   let logCapture = 'not_attempted';
   if (initialInspect.status === 0) {
     const containerLogs = run('docker', ['logs', containerName], { allowFailure: true, timeout: 30_000 });
@@ -364,27 +363,26 @@ function cleanupWorkerContainer(containerName) {
       logCapture = `write_failed: ${errorSummary(error)}`;
     }
   } else {
-    removalErrors.push(`initial inspection: ${(initialInspect.stderr || initialInspect.stdout).trim()}`);
+    logCapture = `initial_inspection_failed: ${(initialInspect.stderr || initialInspect.stdout).trim()}`;
   }
-  for (let attempt = 1; attempt <= 2; attempt += 1) {
-    try {
-      run('docker', ['rm', '-f', containerName], { timeout: 30_000 });
-      break;
-    } catch (error) {
-      removalErrors.push(`attempt ${attempt}: ${errorSummary(error)}`);
-    }
-  }
-  const finalInspect = run('docker', ['container', 'inspect', containerName], {
-    allowFailure: true,
-    timeout: 30_000,
+  const removal = removeNamedDockerContainer({
+    containerName,
+    initialInspection: initialInspect,
+    inspect: () => run('docker', ['container', 'inspect', containerName], {
+      allowFailure: true,
+      timeout: 30_000,
+    }),
+    remove: () => run('docker', ['rm', '-f', containerName], {
+      allowFailure: true,
+      timeout: 30_000,
+    }),
   });
-  if (!dockerObjectMissing(finalInspect)) {
-    removalErrors.push(finalInspect.status === 0
-      ? `worker container ${containerName} still exists after docker rm -f`
-      : `could not verify removal of worker container ${containerName}: ${(finalInspect.stderr || finalInspect.stdout).trim()}`);
-  }
-  if (removalErrors.length > 0) throw new Error(removalErrors.join('; '));
-  return { resource: 'worker_container', name: containerName, status: 'removed', log_capture: logCapture };
+  return {
+    resource: 'worker_container',
+    name: containerName,
+    ...removal,
+    log_capture: logCapture,
+  };
 }
 
 function cleanupComposeProject(project, composeArgs, composeEnv) {
