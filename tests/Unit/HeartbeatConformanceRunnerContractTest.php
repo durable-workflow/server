@@ -112,6 +112,61 @@ final class HeartbeatConformanceRunnerContractTest extends TestCase
         $this->assertSame(0, $exitCode, $stderr ?: $stdout);
     }
 
+    public function test_python_shutdown_boundary_regressions(): void
+    {
+        $nodeBinary = trim((string) shell_exec('command -v node 2>/dev/null'));
+        if ($nodeBinary === '') {
+            $this->markTestSkipped('node is required to exercise Python shutdown-boundary timing.');
+        }
+
+        $process = proc_open(
+            [
+                $nodeBinary,
+                '--test',
+                __DIR__.'/HeartbeatPythonShutdownBoundaryRegression.mjs',
+            ],
+            [
+                1 => ['pipe', 'w'],
+                2 => ['pipe', 'w'],
+            ],
+            $pipes,
+            dirname(__DIR__, 2),
+        );
+
+        $this->assertIsResource($process);
+        $stdout = stream_get_contents($pipes[1]);
+        $stderr = stream_get_contents($pipes[2]);
+        fclose($pipes[1]);
+        fclose($pipes[2]);
+        $exitCode = proc_close($process);
+
+        $this->assertSame(0, $exitCode, $stderr ?: $stdout);
+    }
+
+    public function test_stale_transition_uses_confirmed_shutdown_and_final_server_heartbeat(): void
+    {
+        $source = $this->runnerSource();
+
+        foreach ([
+            'const stopRequestedAt = preciseNow();',
+            'const stopConfirmation = stopWorker(staleWorker);',
+            'const stoppedAt = preciseNow();',
+            'const stoppedWorkerDetail = await api(',
+            'const shutdownBoundary = workerShutdownBoundary({',
+            'evidence.stale_worker_shutdown = shutdownBoundary;',
+            'const staleTransition = await waitForStaleTransition(shutdownBoundary);',
+            'final_accepted_heartbeat_at: staleTransition.final_accepted_heartbeat_at,',
+            'evidence.stale_transition = staleTransition;',
+        ] as $needle) {
+            $this->assertStringContainsString($needle, $source);
+        }
+
+        $this->assertStringNotContainsString(
+            'const stoppedAt = now();'."\n".'  run(\'docker\', [\'stop\'',
+            $source,
+        );
+    }
+
     public function test_each_workflow_is_bracketed_by_its_expected_worker_evidence_baseline_and_wait(): void
     {
         $source = $this->runnerSource();

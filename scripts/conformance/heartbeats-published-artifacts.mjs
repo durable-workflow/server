@@ -28,6 +28,11 @@ import {
   RustCratesIoPreparationTimeoutError,
 } from './heartbeat-rust-preparation.mjs';
 import {
+  refineWorkerShutdownBoundary,
+  staleTransitionEvidence,
+  workerShutdownBoundary,
+} from './heartbeat-stale-transition.mjs';
+import {
   captureWorkProcessedBaseline,
   waitForWorkProcessedAdvance,
 } from './heartbeat-worker-evidence.mjs';
@@ -171,6 +176,10 @@ function now() {
   return new Date().toISOString().replace(/\.\d{3}Z$/, 'Z');
 }
 
+function preciseNow() {
+  return new Date().toISOString();
+}
+
 function normalizeVersion(value) {
   return value.startsWith('v') ? value.slice(1) : value;
 }
@@ -214,6 +223,14 @@ class CommandExecutionError extends Error {
     this.code = result.error?.code ?? null;
     this.timedOut = timedOut;
     this.timeoutMilliseconds = timeoutMilliseconds;
+  }
+}
+
+class WorkerStopConfirmationError extends Error {
+  constructor(workerId, detail) {
+    super(`could not confirm stopped worker ${workerId}: ${detail}`);
+    this.name = 'WorkerStopConfirmationError';
+    this.workerId = workerId;
   }
 }
 
@@ -1622,9 +1639,39 @@ function startWorker(workerId) {
 }
 
 function stopWorker(worker) {
-  const stoppedAt = now();
-  run('docker', ['stop', '--time', '2', worker.container_name], { allowFailure: true, timeout: 30_000 });
-  return stoppedAt;
+  const stopped = run('docker', ['stop', '--time', '2', worker.container_name], {
+    allowFailure: true,
+    timeout: 30_000,
+  });
+  if (stopped.status !== 0) {
+    throw new WorkerStopConfirmationError(
+      worker.worker_id,
+      (stopped.stderr || stopped.stdout).trim(),
+    );
+  }
+  const inspected = run('docker', [
+    'container',
+    'inspect',
+    '--format',
+    '{{json .State}}',
+    worker.container_name,
+  ], { allowFailure: true, timeout: 30_000 });
+  const state = inspected.status === 0 ? parseJsonOutput(inspected.stdout) : null;
+  if (inspected.status !== 0 || state?.Running !== false) {
+    throw new WorkerStopConfirmationError(
+      worker.worker_id,
+      `container inspect did not report running=false: ${(inspected.stderr || inspected.stdout).trim()}`,
+    );
+  }
+  return {
+    docker_stop_exit_code: stopped.status,
+    container_state: {
+      status: state.Status ?? null,
+      running: state.Running,
+      exit_code: Number.isInteger(state.ExitCode) ? state.ExitCode : null,
+      finished_at: state.FinishedAt ?? null,
+    },
+  };
 }
 
 function workerLogRecords(worker) {
@@ -1838,7 +1885,8 @@ function workersFromList(payload) {
   return Array.isArray(payload?.workers) ? payload.workers : [];
 }
 
-async function waitForStaleTransition(stoppedAt, staleAfterSeconds) {
+async function waitForStaleTransition(shutdownBoundary) {
+  const staleAfterSeconds = shutdownBoundary.advertised_stale_after_seconds;
   return waitFor(`${STALE_WORKER_ID} stale transition`, async () => {
     const detail = await api(`/workers/${encodeURIComponent(STALE_WORKER_ID)}`);
     const active = await api('/workers', { task_queue: TASK_QUEUE });
@@ -1846,16 +1894,14 @@ async function waitForStaleTransition(stoppedAt, staleAfterSeconds) {
     const activeIds = workersFromList(active).map((worker) => worker.worker_id);
     const staleIds = workersFromList(stale).map((worker) => worker.worker_id);
     if (detail.status !== 'stale' || activeIds.includes(STALE_WORKER_ID) || !staleIds.includes(STALE_WORKER_ID)) return null;
-    const observedStaleAt = now();
-    const transitionElapsedSeconds = (Date.parse(observedStaleAt) - Date.parse(stoppedAt)) / 1_000;
-    const boundedMaxSeconds = staleAfterSeconds + 5;
+    const observedStaleAt = preciseNow();
+    const finalShutdownBoundary = refineWorkerShutdownBoundary({
+      shutdownBoundary,
+      workerDetailObservedAt: observedStaleAt,
+      workerDetail: detail,
+    });
     return {
-      stopped_at: stoppedAt,
-      observed_stale_at: observedStaleAt,
-      stale_after_seconds: staleAfterSeconds,
-      transition_elapsed_seconds: transitionElapsedSeconds,
-      bounded_max_seconds: boundedMaxSeconds,
-      within_bounded_window: transitionElapsedSeconds >= 0 && transitionElapsedSeconds <= boundedMaxSeconds,
+      ...staleTransitionEvidence({ shutdownBoundary: finalShutdownBoundary, observedStaleAt }),
       stale_worker_detail: detail,
       default_active_worker_list: active,
       stale_worker_list: stale,
@@ -2337,8 +2383,12 @@ function writeResultFiles(context = null) {
 
 function recordFailure(error) {
   const summary = error instanceof Error ? error.message : String(error);
-  evidence.outcome = publishedExecutionStarted ? 'fail' : 'runner_blocked';
-  evidence.runner_blocked = !publishedExecutionStarted;
+  const runnerBlocked = !publishedExecutionStarted || error instanceof WorkerStopConfirmationError;
+  evidence.outcome = runnerBlocked ? 'runner_blocked' : 'fail';
+  evidence.runner_blocked = runnerBlocked;
+  evidence.classification = evidence.runner_blocked
+    ? 'conformance-runner-blocked'
+    : `${CELL}-sdk-heartbeat-loop-failed`;
   evidence.scenario_results[SCENARIO_ID] = {
     scenario_id: SCENARIO_ID,
     status: evidence.runner_blocked ? 'runner_blocked' : 'fail',
@@ -2350,6 +2400,9 @@ function recordFailure(error) {
       published_artifact_worker_execution: publishedExecutionStarted,
       local_product_source_checkouts_used: false,
       error: summary,
+      stale_worker_shutdown: evidence.stale_worker_shutdown ?? null,
+      stale_transition: evidence.stale_transition ?? null,
+      completed_behavior_before_final_visibility: completedBehavior,
     },
   };
   evidence.findings.push({
@@ -2551,11 +2604,37 @@ async function main() {
   const freshCadence = await observeSuccessiveHeartbeats(freshWorker, freshRegistration);
   const beforeVisibility = await captureOperatorVisibility();
 
-  const stoppedAt = stopWorker(staleWorker);
-  const staleAfterSeconds = Number(staleRegistration.registration.registration?.stale_after_seconds
-    ?? staleRegistration.detail.stale_after_seconds
-    ?? CONFIGURED_STALE_AFTER_SECONDS);
-  const staleTransition = await waitForStaleTransition(stoppedAt, staleAfterSeconds);
+  const stopRequestedAt = preciseNow();
+  const stopConfirmation = stopWorker(staleWorker);
+  const stoppedAt = preciseNow();
+  const stoppedWorkerDetail = await api(`/workers/${encodeURIComponent(STALE_WORKER_ID)}`);
+  const workerDetailObservedAt = preciseNow();
+  const finalHeartbeatRecords = workerHeartbeatRecords(staleWorker);
+  const finalHeartbeatRecord = finalHeartbeatRecords[finalHeartbeatRecords.length - 1] ?? null;
+  const shutdownBoundary = workerShutdownBoundary({
+    stopRequestedAt,
+    stoppedAt,
+    workerDetailObservedAt,
+    workerDetail: {
+      ...stoppedWorkerDetail,
+      stale_after_seconds: stoppedWorkerDetail.stale_after_seconds
+        ?? staleRegistration.registration.registration?.stale_after_seconds
+        ?? staleRegistration.detail.stale_after_seconds
+        ?? CONFIGURED_STALE_AFTER_SECONDS,
+    },
+    finalHeartbeatRecord,
+    stopConfirmation,
+  });
+  evidence.stale_worker_shutdown = shutdownBoundary;
+  const staleAfterSeconds = shutdownBoundary.advertised_stale_after_seconds;
+  const staleTransition = await waitForStaleTransition(shutdownBoundary);
+  evidence.stale_worker_shutdown = {
+    ...shutdownBoundary,
+    worker_detail_observed_at: staleTransition.worker_detail_observed_at,
+    final_accepted_heartbeat_at: staleTransition.final_accepted_heartbeat_at,
+    advertised_stale_after_seconds: staleTransition.advertised_stale_after_seconds,
+  };
+  evidence.stale_transition = staleTransition;
   const stalePoll = stalePollProbe();
   const freshWorkProcessedBaseline = workProcessedBaseline(freshWorker);
   const freshWorkflow = startWorkflow('fresh-after-stale');

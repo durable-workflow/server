@@ -143,6 +143,8 @@ const cellResults = Object.fromEntries(Object.entries(cells).map(([cell, entry])
     },
     isolation_checks: isolationChecks,
     isolation_passed: Object.values(isolationChecks).every((value) => value === true),
+    stale_worker_shutdown: result?.stale_worker_shutdown ?? null,
+    stale_transition: result?.stale_transition ?? null,
     cleanup: result?.cleanup ?? null,
     findings: result?.findings ?? result?.product_evidence?.findings ?? [],
   }];
@@ -251,6 +253,8 @@ for (const [cell, result] of Object.entries(cellResults)) {
       result_file: result.result_file,
       exit_code: result.exit_code,
       timed_out: result.timed_out,
+      stale_worker_shutdown: result.stale_worker_shutdown,
+      stale_transition: result.stale_transition,
     });
   }
 }

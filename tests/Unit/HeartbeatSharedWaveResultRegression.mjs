@@ -41,6 +41,19 @@ function isolation() {
 }
 
 function sdkEvidence(cell, outcome = 'pass') {
+  const staleWorkerShutdown = {
+    stop_requested_at: '2026-07-01T10:00:00.000Z',
+    stopped_at: '2026-07-01T10:00:15.000Z',
+    final_accepted_heartbeat_at: '2026-07-01T10:00:14.000Z',
+    advertised_stale_after_seconds: 7,
+  };
+  const staleTransition = {
+    ...staleWorkerShutdown,
+    observed_stale_at: '2026-07-01T10:00:24.000Z',
+    transition_elapsed_seconds: 10,
+    bounded_max_seconds: 12,
+    within_bounded_window: true,
+  };
   return {
     outcome,
     runner_blocked: false,
@@ -57,6 +70,8 @@ function sdkEvidence(cell, outcome = 'pass') {
       initial: { workflow_id: `hb-${cell}-initial` },
       after_stale: { workflow_id: `hb-${cell}-after-stale` },
     },
+    stale_worker_shutdown: staleWorkerShutdown,
+    stale_transition: staleTransition,
     cleanup: { status: 'pass' },
     findings: outcome === 'pass' ? [] : [{ finding_type: 'product-gap' }],
   };
@@ -364,6 +379,19 @@ test('a failed cell retains completed peer evidence and independent attribution'
     assert.equal(result.runner_blocked, false);
     assert.equal(result.cells.python.outcome, 'fail');
     assert.equal(result.cells.python.runner_blocked, false);
+    assert.equal(
+      result.cells.python.stale_worker_shutdown.final_accepted_heartbeat_at,
+      '2026-07-01T10:00:14.000Z',
+    );
+    assert.equal(result.cells.python.stale_transition.observed_stale_at, '2026-07-01T10:00:24.000Z');
+    const pythonFinding = result.findings.find((finding) =>
+      finding.finding_type === 'heartbeat_wave_cell_failed'
+      && finding.owning_cell === 'python');
+    assert.equal(
+      pythonFinding.stale_worker_shutdown.final_accepted_heartbeat_at,
+      '2026-07-01T10:00:14.000Z',
+    );
+    assert.equal(pythonFinding.stale_transition.advertised_stale_after_seconds, 7);
     assert.equal(result.cells.php.outcome, 'pass');
     assert.equal(result.cells.rust.outcome, 'pass');
     assert.equal(result.cells.waterline.outcome, 'pass');

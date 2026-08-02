@@ -22,7 +22,7 @@ image:
   repository: durableworkflow/server
   # This published default must match Chart.yaml appVersion. Advance both and
   # the chart version together when changing the default Server release.
-  tag: "2.0.0-rc.14"
+  tag: "2.0.0-rc.15"
   # Optional digest pin. When set, takes precedence over tag for change control.
   # Example: "sha256:abc123..."
   digest: ""

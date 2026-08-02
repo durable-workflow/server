@@ -67,6 +67,11 @@ chart MINOR bump and an entry below.
 
 ## Per-version migration notes
 
+### 0.1.5
+
+This release advances the default Server image to `2.0.0-rc.15`. Existing
+`0.1.4` values remain compatible.
+
 ### 0.1.4
 
 This release advances the default Server image to `2.0.0-rc.14`. Existing
