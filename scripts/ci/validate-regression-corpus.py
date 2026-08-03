@@ -1062,10 +1062,35 @@ def _guard_matches(
 
     content = ""
     for path in matching:
-        candidate = root / path
-        if candidate.is_file():
-            content += candidate.read_text(encoding="utf-8", errors="replace")
-        content += _run(["git", "show", f"{base_ref}:{path}"], root, check=False)
+        diff = _run(
+            [
+                "git",
+                "diff",
+                "--unified=0",
+                "--no-ext-diff",
+                "--no-color",
+                base_ref,
+                "--",
+                path,
+            ],
+            root,
+        )
+        in_hunk = False
+        for line in diff.splitlines():
+            if line.startswith("diff --git "):
+                in_hunk = False
+            elif line.startswith("@@"):
+                in_hunk = True
+            elif in_hunk and line.startswith(("+", "-")):
+                content += line[1:] + "\n"
+
+        if not diff and path in _run(
+            ["git", "ls-files", "--others", "--exclude-standard", "--", path],
+            root,
+        ).splitlines():
+            candidate = root / path
+            if candidate.is_file():
+                content += candidate.read_text(encoding="utf-8", errors="replace")
 
     return any(re.search(pattern, content) for pattern in patterns)
 

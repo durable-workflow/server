@@ -40,6 +40,7 @@ REPRESENTATIVE_CODEC_DEPENDENCIES = (
     "ExternalPayloadEnvelopeService",
 )
 SEMANTIC_CODEC_GLOBS = {"app/*.php", "app/**/*.php"}
+CONTROLLER_WITH_PAYLOAD = "app/Http/Controllers/Api/ResponseController.php"
 PATH_LEVEL_CODEC_BOUNDARIES = {
     "app/Http/Controllers/Api/ActivityController.php",
     "app/Http/Controllers/Api/ActivityTaskController.php",
@@ -87,6 +88,7 @@ class RegressionCorpusPolicyTest(unittest.TestCase):
     def setUp(self) -> None:
         self.temporary = tempfile.TemporaryDirectory()
         self.root = Path(self.temporary.name)
+        (self.root / "app/Http/Controllers/Api").mkdir(parents=True)
         (self.root / "app/Support").mkdir(parents=True)
         (self.root / "app/Services").mkdir(parents=True)
         (self.root / "tests/Fixtures/CodecRegression").mkdir(parents=True)
@@ -114,6 +116,11 @@ class RegressionCorpusPolicyTest(unittest.TestCase):
             "<?php\n"
             "use Workflow\\V2\\Support\\PayloadEnvelopeResolver as Resolver;\n"
             "return Resolver::resolveToArray($payload);\n"
+        )
+        (self.root / CONTROLLER_WITH_PAYLOAD).write_text(
+            "<?php\n"
+            "$payload = ['status' => 'ok'];\n"
+            "return response()->json($payload);\n"
         )
         self.write_json(
             "tests/Fixtures/CodecRegression/base.json",
@@ -786,12 +793,23 @@ final class InstrumentedCodecBoundaryRuntimeTest extends TestCase
             result.stderr,
         )
 
-    def test_semantic_guard_checks_the_whole_candidate_file(self) -> None:
+    def test_content_guard_ignores_unchanged_match_in_an_unrelated_hunk(self) -> None:
+        (self.root / CONTROLLER_WITH_PAYLOAD).write_text(
+            "<?php\n"
+            "declare(strict_types=1);\n"
+            "$payload = ['status' => 'ok'];\n"
+            "return response()->json($payload);\n"
+        )
+
+        result = self.validate()
+
+        self.assertEqual(0, result.returncode, result.stderr)
+
+    def test_content_guard_checks_an_added_matching_hunk(self) -> None:
         (self.root / SEMANTIC_BOUNDARY).write_text(
             "<?php\n"
-            "use Workflow\\V2\\Support\\PayloadEnvelopeResolver as Resolver;\n"
-            "$payload = array_values($payload);\n"
-            "return Resolver::resolveToArray($payload);\n"
+            "use Workflow\\V2\\Support\\PayloadEnvelopeResolver;\n"
+            "return PayloadEnvelopeResolver::resolveToArray($payload);\n"
         )
 
         result = self.validate()
@@ -802,9 +820,9 @@ final class InstrumentedCodecBoundaryRuntimeTest extends TestCase
             result.stderr,
         )
 
-    def test_semantic_guard_checks_the_whole_base_file(self) -> None:
+    def test_content_guard_checks_a_removed_matching_hunk(self) -> None:
         (self.root / SEMANTIC_BOUNDARY).write_text(
-            "<?php\nreturn array_values($payload);\n"
+            "<?php\nreturn Resolver::resolveToArray($payload);\n"
         )
 
         result = self.validate()

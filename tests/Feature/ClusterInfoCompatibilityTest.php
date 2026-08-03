@@ -781,7 +781,7 @@ class ClusterInfoCompatibilityTest extends TestCase
         );
         $response
             ->assertJsonPath('platform_protocol_specs.schema', PlatformProtocolSpecs::SCHEMA)
-            ->assertJsonPath('platform_protocol_specs.version', 15)
+            ->assertJsonPath('platform_protocol_specs.version', PlatformProtocolSpecs::VERSION)
             ->assertJsonPath('platform_protocol_specs.catalog_url', PlatformProtocolSpecs::CATALOG_URL)
             ->assertJsonPath('platform_protocol_specs.authority_url', PlatformProtocolSpecs::AUTHORITY_URL);
 

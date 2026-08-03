@@ -161,7 +161,7 @@ jobs:
       - name: Run kind smoke script
         env:
           ACTIONS_SERVER_URL: ${{ github.server_url }}
-          WORKFLOW_PACKAGE_COMMIT: dc7b98ebf811f30fcf43e1f1c7b66021a10878d0
+          WORKFLOW_PACKAGE_COMMIT: fc28432a82a2433959c6690505c52eabea4aca8c
           K8S_HELM_SMOKE_KIND_NODE_IMAGE: kindest/node:v1.29.4
           K8S_HELM_SMOKE_CLUSTER: ${{ env.HELM_CT_CLUSTER_NAME }}
           K8S_HELM_SMOKE_REUSE_CLUSTER: "1"

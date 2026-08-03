@@ -36,6 +36,7 @@ class WorkerProtocolVersionCoverageTest extends TestCase
     {
         return [
             'worker.register' => ['method' => 'post', 'path' => '/api/worker/register'],
+            'worker.deregister' => ['method' => 'delete', 'path' => '/api/worker/registrations/worker-1'],
             'worker.heartbeat' => ['method' => 'post', 'path' => '/api/worker/heartbeat'],
             'workflow-tasks.poll' => ['method' => 'post', 'path' => '/api/worker/workflow-tasks/poll'],
             'workflow-tasks.history' => ['method' => 'post', 'path' => '/api/worker/workflow-tasks/task-1/history'],

@@ -19,7 +19,7 @@ x-durable-workflow-worker-protocol-negotiation:
   fail_closed_on: [missing_header, malformed_version, different_major, minor_greater_than_advertised]
 x-durable-workflow-catalog-entry: worker_protocol_stream
 x-durable-workflow-catalog-schema: durable-workflow.v2.platform-protocol-specs.catalog
-x-durable-workflow-catalog-version: 15
+x-durable-workflow-catalog-version: 16
 x-durable-workflow-evolution-rule: additive_minor_breaking_major
 x-durable-workflow-object-families:
   - name: worker_poll_stream

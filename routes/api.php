@@ -16,6 +16,7 @@ use App\Http\Controllers\Api\StorageController;
 use App\Http\Controllers\Api\SystemController;
 use App\Http\Controllers\Api\TaskQueueController;
 use App\Http\Controllers\Api\WorkerController;
+use App\Http\Controllers\Api\WorkerDeregistrationController;
 use App\Http\Controllers\Api\WorkerManagementController;
 use App\Http\Controllers\Api\WorkerSessionController;
 use App\Http\Controllers\Api\WorkflowController;
@@ -187,6 +188,7 @@ Route::middleware([Authenticate::class])->group(function () {
 
     // ── Worker Task Polling ──────────────────────────────────────────
     Route::prefix('worker')->middleware([$worker, $wpv, $httpWorker, $workflowBootstrap, $ns])->group(function () {
+        Route::delete('/registrations/{workerId}', [WorkerDeregistrationController::class, 'destroy']);
         Route::post('/heartbeat', [WorkerController::class, 'heartbeat']);
 
         // Worker sessions

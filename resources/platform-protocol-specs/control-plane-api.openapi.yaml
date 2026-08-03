@@ -12,7 +12,7 @@ info:
     protocol catalog.
 x-durable-workflow-catalog-entry: control_plane_api
 x-durable-workflow-catalog-schema: durable-workflow.v2.platform-protocol-specs.catalog
-x-durable-workflow-catalog-version: 15
+x-durable-workflow-catalog-version: 16
 x-durable-workflow-evolution-rule: additive_minor_breaking_major
 x-durable-workflow-object-families:
   - name: control_plane_request_contract

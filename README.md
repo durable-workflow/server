@@ -20,7 +20,7 @@ queues, and file cache; mount `/app/database` so the bootstrap command and API
 server share the same SQLite file.
 
 ```bash
-export DW_SERVER_IMAGE=durableworkflow/server:2.0.0-rc.16
+export DW_SERVER_IMAGE=durableworkflow/server:2.0.0-rc.17
 export DW_AUTH_TOKEN=dev-token
 docker volume create durable-workflow-sqlite
 
@@ -75,8 +75,8 @@ care around persistence, backups, and upgrades.
 
 Image selection:
 
-- `DW_SERVER_TAG=2.0.0-rc.16` pulls `durableworkflow/server:2.0.0-rc.16` from Docker Hub.
-- `DW_SERVER_IMAGE=ghcr.io/durable-workflow/server:2.0.0-rc.16` pulls the same release
+- `DW_SERVER_TAG=2.0.0-rc.17` pulls `durableworkflow/server:2.0.0-rc.17` from Docker Hub.
+- `DW_SERVER_IMAGE=ghcr.io/durable-workflow/server:2.0.0-rc.17` pulls the same release
   line from GitHub Container Registry.
 - `DW_SERVER_IMAGE=durableworkflow/server@sha256:...` pins an exact image
   digest for production change control.
@@ -90,7 +90,7 @@ single `DW_AUTH_TOKEN` compatibility token for quick verification.
 ```bash
 curl -fsSLO https://raw.githubusercontent.com/durable-workflow/server/main/docker-compose.published.yml
 
-export DW_SERVER_TAG=2.0.0-rc.16
+export DW_SERVER_TAG=2.0.0-rc.17
 export DW_AUTH_TOKEN=dev-token
 
 docker compose -f docker-compose.published.yml up -d --wait
@@ -121,7 +121,7 @@ and expects role-scoped credentials plus an exact image tag or digest.
 Create a production env file outside source control:
 
 ```env
-DW_SERVER_IMAGE=durableworkflow/server:2.0.0-rc.16
+DW_SERVER_IMAGE=durableworkflow/server:2.0.0-rc.17
 SERVER_PORT=8080
 APP_ENV=production
 APP_DEBUG=false
@@ -153,9 +153,10 @@ curl -H "Authorization: Bearer $(grep '^DW_ADMIN_TOKEN=' durable-workflow.prod.e
 Register SDK workers with `DW_WORKER_TOKEN` and send operator traffic with
 `DW_OPERATOR_TOKEN`. Operator and admin credentials may also call
 `/api/worker/register` for diagnostic worker registration, while heartbeats,
-task polling, and task completion remain worker-token endpoints. Put TLS,
-request logging, and public routing in a reverse proxy in front of the API
-container; do not expose the MySQL or Redis services.
+task polling, task completion, and orderly self-deregistration remain
+worker-token endpoints. Put TLS, request logging, and public routing in a
+reverse proxy in front of the API container; do not expose the MySQL or Redis
+services.
 
 Persistence and backups:
 
@@ -255,7 +256,7 @@ The long-running `server`, `worker`, and `scheduler` services each pin
 `DW_SERVER_TOPOLOGY_SHAPE` and `DW_SERVER_PROCESS_CLASS` so
 `GET /api/cluster/info` reports the role class you actually launched during
 local split-role testing.
-The local compose files pass `WORKFLOW_PACKAGE_REF=2.0.0-rc.8`, matching
+The local compose files pass `WORKFLOW_PACKAGE_REF=2.0.0-rc.13`, matching
 the Dockerfile fallback, so `docker compose up --build` works from a clean
 checkout with Composer metadata aligned to the embedded workflow package.
 Override `WORKFLOW_PACKAGE_SOURCE`, `WORKFLOW_PACKAGE_REF`, or
@@ -706,6 +707,7 @@ unexecuted cell.
 
 ### Worker Protocol
 - `POST /api/worker/register` — Register a worker
+- `DELETE /api/worker/registrations/{workerId}` — Orderly worker self-deregistration
 - `POST /api/worker/heartbeat` — Worker fleet heartbeat (free task slots, basic process metrics)
 - `POST /api/worker/workflow-tasks/poll` — Long-poll for workflow tasks
 - `POST /api/worker/workflow-tasks/{id}/heartbeat` — Workflow task heartbeat
@@ -1190,7 +1192,7 @@ docker run --rm \
   durable-workflow-server php artisan queue:work database --sleep=1 --tries=3
 ```
 
-The Dockerfile clones the `durable-workflow/workflow` `2.0.0-rc.8` tag
+The Dockerfile clones the `durable-workflow/workflow` `2.0.0-rc.13` tag
 into the build by default and refreshes the Composer package metadata from that
 source before installing production dependencies. Use
 `--build-arg WORKFLOW_PACKAGE_SOURCE=...`,
@@ -1312,19 +1314,19 @@ The `Release` workflow publishes multi-arch images to
 Docker Hub (`durableworkflow/server`) and GitHub Container Registry
 (`ghcr.io/durable-workflow/server`) when a server semver tag is pushed. The
 workflow builds the server image with the public
-`durable-workflow/workflow:2.0.0-rc.8` package and verifies that the tag
-resolves to commit `dc7b98ebf811f30fcf43e1f1c7b66021a10878d0` before the
+`durable-workflow/workflow:2.0.0-rc.13` package and verifies that the tag
+resolves to commit `fc28432a82a2433959c6690505c52eabea4aca8c` before the
 image can be published.
 
-The current server image embeds the already-published Workflow `2.0.0-rc.8`
+The current server image embeds the already-published Workflow `2.0.0-rc.13`
 package. When a later server image needs a newer Workflow fix, publish that
 package first and update both Workflow package pins before tagging Server.
 Publish this Server source with its own authorized tag:
 
 ```bash
 # In the server repo, publish the Docker image tags.
-git tag 2.0.0-rc.16 origin/main
-git push origin refs/tags/2.0.0-rc.16
+git tag 2.0.0-rc.17 origin/main
+git push origin refs/tags/2.0.0-rc.17
 ```
 
 The server tag push publishes the exact version plus the semver aliases
@@ -1333,12 +1335,12 @@ the workflow finishes, verify the image provenance and runtime config before
 announcing the release:
 
 ```bash
-docker pull durableworkflow/server:2.0.0-rc.16
-docker run --rm --entrypoint sh durableworkflow/server:2.0.0-rc.16 -lc \
+docker pull durableworkflow/server:2.0.0-rc.17
+docker run --rm --entrypoint sh durableworkflow/server:2.0.0-rc.17 -lc \
   'cat /app/.package-provenance && grep -n "serializer" /app/vendor/durable-workflow/workflow/src/config/workflows.php'
 
-docker pull ghcr.io/durable-workflow/server:2.0.0-rc.16
-docker run --rm --entrypoint sh ghcr.io/durable-workflow/server:2.0.0-rc.16 -lc \
+docker pull ghcr.io/durable-workflow/server:2.0.0-rc.17
+docker run --rm --entrypoint sh ghcr.io/durable-workflow/server:2.0.0-rc.17 -lc \
   'cat /app/.package-provenance && grep -n "serializer" /app/vendor/durable-workflow/workflow/src/config/workflows.php'
 ```
 
@@ -1355,7 +1357,7 @@ direct patches for environment-specific names, images, registry secrets, and
 scaling policy.
 
 The public manifests default to the pinned Docker Hub image
-`durableworkflow/server:2.0.0-rc.16`. For production, patch every workload to the exact
+`durableworkflow/server:2.0.0-rc.17`. For production, patch every workload to the exact
 Docker Hub or GHCR tag or digest you intend to run before applying it. See
 [`k8s/README.md`](k8s/README.md) for the raw-manifest support boundary,
 [`docs/helm-validation.md`](docs/helm-validation.md) for the Helm contract and
@@ -1440,11 +1442,11 @@ every operator-facing variable the server honors.
 | `DW_AUTH_DRIVER` | `token` | `none`, `token`, or `signature`. |
 | `DW_AUTH_TOKEN` | (unset) | Single shared bearer token (backward-compat credential). |
 | `DW_SIGNATURE_KEY` | (unset) | HMAC key used when `DW_AUTH_DRIVER=signature` and no role-scoped key is configured. |
-| `DW_WORKER_TOKEN` | (unset) | Bearer token for worker registration, polling, heartbeat, and completion. |
+| `DW_WORKER_TOKEN` | (unset) | Bearer token for worker registration, deregistration, polling, heartbeat, and completion. |
 | `DW_OPERATOR_TOKEN` | (unset) | Bearer token for the operator control plane and diagnostic worker registration; polling remains worker-only. |
 | `DW_ADMIN_TOKEN` | (unset) | Bearer token for the admin control plane and diagnostic worker registration; polling remains worker-only. |
 | `DW_PRINCIPAL_TOKENS` | (unset) | JSON token map for named bearer-token principals used by audit attribution. |
-| `DW_WORKER_SIGNATURE_KEY` | (unset) | Role-scoped HMAC key for worker registration, polling, heartbeat, and completion. |
+| `DW_WORKER_SIGNATURE_KEY` | (unset) | Role-scoped HMAC key for worker registration, deregistration, polling, heartbeat, and completion. |
 | `DW_OPERATOR_SIGNATURE_KEY` | (unset) | Role-scoped HMAC key for the operator control plane and diagnostic worker registration; polling remains worker-only. |
 | `DW_ADMIN_SIGNATURE_KEY` | (unset) | Role-scoped HMAC key for the admin control plane and diagnostic worker registration; polling remains worker-only. |
 | `DW_AUTH_BACKWARD_COMPATIBLE` | `true` | Honor `DW_AUTH_TOKEN` / `DW_SIGNATURE_KEY` as a fallback when role credentials are missing. |

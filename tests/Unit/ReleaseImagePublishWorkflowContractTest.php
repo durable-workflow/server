@@ -112,8 +112,8 @@ class ReleaseImagePublishWorkflowContractTest extends TestCase
         $metadataScript = $this->read('scripts/ci/prepare-release-workflow-composer-metadata.php');
 
         foreach ([
-            'ARG WORKFLOW_PACKAGE_REF=2.0.0-rc.8',
-            'ARG WORKFLOW_PACKAGE_COMMIT=dc7b98ebf811f30fcf43e1f1c7b66021a10878d0',
+            'ARG WORKFLOW_PACKAGE_REF=2.0.0-rc.13',
+            'ARG WORKFLOW_PACKAGE_COMMIT=fc28432a82a2433959c6690505c52eabea4aca8c',
             'ARG WORKFLOW_PACKAGE_QUALIFICATION_REF',
             'WORKFLOW_PACKAGE_COMMIT must be a full lowercase Git SHA',
             'WORKFLOW_PACKAGE_QUALIFICATION_REF must equal WORKFLOW_PACKAGE_COMMIT',
@@ -155,7 +155,7 @@ class ReleaseImagePublishWorkflowContractTest extends TestCase
 
     public function test_source_admission_can_fetch_the_landed_commit_without_weakening_release_provenance(): void
     {
-        $commit = 'dc7b98ebf811f30fcf43e1f1c7b66021a10878d0';
+        $commit = 'fc28432a82a2433959c6690505c52eabea4aca8c';
         $dockerfile = $this->read('Dockerfile');
         $releaseWorkflow = $this->read('.github/workflows/release.yml');
         $replayWorkflow = $this->read('.github/workflows/replay-query-concurrent-http.yml');
@@ -378,8 +378,8 @@ class ReleaseImagePublishWorkflowContractTest extends TestCase
 
     public function test_docker_build_compose_and_ci_defaults_match_workflow_package_fallback(): void
     {
-        $fallback = '2.0.0-rc.8';
-        $commit = 'dc7b98ebf811f30fcf43e1f1c7b66021a10878d0';
+        $fallback = '2.0.0-rc.13';
+        $commit = 'fc28432a82a2433959c6690505c52eabea4aca8c';
 
         foreach ([
             'Dockerfile',
@@ -413,9 +413,9 @@ class ReleaseImagePublishWorkflowContractTest extends TestCase
         $workflow = $this->read('.github/workflows/phpunit-feature.yml');
 
         foreach ([
-            'ref: dc7b98ebf811f30fcf43e1f1c7b66021a10878d0',
-            'WORKFLOW_PACKAGE_REF: 2.0.0-rc.8',
-            'WORKFLOW_PACKAGE_COMMIT: dc7b98ebf811f30fcf43e1f1c7b66021a10878d0',
+            'ref: fc28432a82a2433959c6690505c52eabea4aca8c',
+            'WORKFLOW_PACKAGE_REF: 2.0.0-rc.13',
+            'WORKFLOW_PACKAGE_COMMIT: fc28432a82a2433959c6690505c52eabea4aca8c',
             'git -C workflow-package rev-parse HEAD',
             'if [[ "$resolved_commit" != "$WORKFLOW_PACKAGE_COMMIT" ]]',
             '> workflow-package/.package-provenance',
@@ -439,9 +439,9 @@ class ReleaseImagePublishWorkflowContractTest extends TestCase
     {
         $workflow = $this->read('.github/workflows/release.yml');
 
-        $this->assertStringContainsString('WORKFLOW_PACKAGE_REF: 2.0.0-rc.8', $workflow);
+        $this->assertStringContainsString('WORKFLOW_PACKAGE_REF: 2.0.0-rc.13', $workflow);
         $this->assertStringContainsString(
-            'WORKFLOW_PACKAGE_COMMIT: dc7b98ebf811f30fcf43e1f1c7b66021a10878d0',
+            'WORKFLOW_PACKAGE_COMMIT: fc28432a82a2433959c6690505c52eabea4aca8c',
             $workflow,
         );
         $this->assertStringContainsString('scripts/ci/select-compatible-workflow-package-ref.sh', $workflow);
@@ -671,8 +671,8 @@ SH);
 
     public function test_composer_metadata_identifies_the_exact_workflow_source(): void
     {
-        $expectedVersion = '2.0.0-rc.8';
-        $expectedCommit = 'dc7b98ebf811f30fcf43e1f1c7b66021a10878d0';
+        $expectedVersion = '2.0.0-rc.13';
+        $expectedCommit = 'fc28432a82a2433959c6690505c52eabea4aca8c';
         $composer = json_decode($this->read('composer.json'), true, flags: JSON_THROW_ON_ERROR);
         $lock = json_decode($this->read('composer.lock'), true, flags: JSON_THROW_ON_ERROR);
 
@@ -709,7 +709,7 @@ SH);
         $composer = json_decode($this->read('composer.json'), true, flags: JSON_THROW_ON_ERROR);
 
         $this->assertSame(
-            '2.0.0-rc.16',
+            '2.0.0-rc.17',
             $composer['extra']['durable-workflow']['product-train'] ?? null,
         );
     }
@@ -929,8 +929,8 @@ SH);
             'PHPREDIS_VERSION' => '6.3.0',
             'PHPREDIS_COMMIT' => 'df4fab2de7fc327c54c94a13af2b9542e4fbd720',
             'WORKFLOW_PACKAGE_SOURCE' => 'https://github.com/durable-workflow/workflow.git',
-            'WORKFLOW_PACKAGE_REF' => '2.0.0-rc.8',
-            'WORKFLOW_PACKAGE_COMMIT' => 'dc7b98ebf811f30fcf43e1f1c7b66021a10878d0',
+            'WORKFLOW_PACKAGE_REF' => '2.0.0-rc.13',
+            'WORKFLOW_PACKAGE_COMMIT' => 'fc28432a82a2433959c6690505c52eabea4aca8c',
         ];
 
         try {
@@ -1381,8 +1381,8 @@ SH);
         $catalog = PlatformProtocolSpecs::manifest();
         $provenance = [
             'source' => 'https://github.com/durable-workflow/workflow.git',
-            'ref' => '2.0.0-rc.8',
-            'commit' => 'dc7b98ebf811f30fcf43e1f1c7b66021a10878d0',
+            'ref' => '2.0.0-rc.13',
+            'commit' => 'fc28432a82a2433959c6690505c52eabea4aca8c',
         ];
 
         $passing = $this->runProtocolCatalogComparator($catalog, [
@@ -1392,7 +1392,7 @@ SH);
 
         $this->assertSame(0, $passing['exitCode']);
         $this->assertSame('pass', $passing['evidence']['outcome']);
-        $this->assertSame(15, $passing['evidence']['observations']['public_catalog']['version']);
+        $this->assertSame(16, $passing['evidence']['observations']['public_catalog']['version']);
         $this->assertSame(
             $passing['evidence']['observations']['public_catalog']['sha256'],
             $passing['evidence']['observations']['server_catalog']['sha256'],
@@ -1413,16 +1413,16 @@ SH);
             $stale['evidence']['findings'],
             static fn (array $finding): bool => ($finding['kind'] ?? null) === 'workflow_package_provenance_mismatch'
                 && ($finding['path'] ?? null) === '$.package_provenance.ref'
-                && ($finding['expected'] ?? null) === '2.0.0-rc.8'
+                && ($finding['expected'] ?? null) === '2.0.0-rc.13'
                 && ($finding['actual'] ?? null) === '2.0.0-alpha.291',
         ));
         $this->assertStringContainsString(
-            'Workflow package provenance ref expected "2.0.0-rc.8", got "2.0.0-alpha.291".',
+            'Workflow package provenance ref expected "2.0.0-rc.13", got "2.0.0-alpha.291".',
             $stale['stderr'],
         );
 
         $staleCatalog = $catalog;
-        $staleCatalog['version'] = 14;
+        $staleCatalog['version'] = 15;
         $catalogDrift = $this->runProtocolCatalogComparator($catalog, [
             'platform_protocol_specs' => $staleCatalog,
             'package_provenance' => $provenance,
@@ -1434,11 +1434,11 @@ SH);
             $catalogDrift['evidence']['findings'],
             static fn (array $finding): bool => ($finding['kind'] ?? null) === 'value_mismatch'
                 && ($finding['path'] ?? null) === '$.version'
-                && ($finding['public_value'] ?? null) === 15
-                && ($finding['server_value'] ?? null) === 14,
+                && ($finding['public_value'] ?? null) === 16
+                && ($finding['server_value'] ?? null) === 15,
         ));
         $this->assertStringContainsString(
-            'Catalog drift at $.version: public 15, server 14.',
+            'Catalog drift at $.version: public 16, server 15.',
             $catalogDrift['stderr'],
         );
 
@@ -3019,8 +3019,8 @@ SH;
                 'PROTOCOL_CATALOG_CONFORMANCE_EVIDENCE' => $evidencePath,
                 'RELEASE_TAG' => '0.2.651',
                 'SERVER_IMAGE' => 'durableworkflow/server:0.2.651',
-                'WORKFLOW_PACKAGE_REF' => '2.0.0-rc.8',
-                'WORKFLOW_PACKAGE_COMMIT' => 'dc7b98ebf811f30fcf43e1f1c7b66021a10878d0',
+                'WORKFLOW_PACKAGE_REF' => '2.0.0-rc.13',
+                'WORKFLOW_PACKAGE_COMMIT' => 'fc28432a82a2433959c6690505c52eabea4aca8c',
             ]);
 
             $this->assertFileExists($evidencePath);

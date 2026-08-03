@@ -135,7 +135,7 @@ return [
             'legacy' => 'WORKFLOW_SERVER_SIGNATURE_KEY',
         ],
         'DW_WORKER_TOKEN' => [
-            'description' => 'Bearer token for the worker role (worker registration, poll, heartbeat, completion endpoints).',
+            'description' => 'Bearer token for the worker role (worker registration, deregistration, poll, heartbeat, completion endpoints).',
             'default' => null,
             'since' => '2.0.0',
             'legacy' => 'WORKFLOW_SERVER_WORKER_TOKEN',
@@ -159,7 +159,7 @@ return [
             'legacy' => 'WORKFLOW_SERVER_PRINCIPAL_TOKENS',
         ],
         'DW_WORKER_SIGNATURE_KEY' => [
-            'description' => 'HMAC signature key for the worker role (worker registration, poll, heartbeat, completion endpoints) when DW_AUTH_DRIVER=signature.',
+            'description' => 'HMAC signature key for the worker role (worker registration, deregistration, poll, heartbeat, completion endpoints) when DW_AUTH_DRIVER=signature.',
             'default' => null,
             'since' => '2.0.0',
             'legacy' => 'WORKFLOW_SERVER_WORKER_SIGNATURE_KEY',

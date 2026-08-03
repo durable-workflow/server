@@ -6,7 +6,7 @@
   "type": "object",
   "x-durable-workflow-catalog-entry": "worker_sessions_runtime",
   "x-durable-workflow-catalog-schema": "durable-workflow.v2.platform-protocol-specs.catalog",
-  "x-durable-workflow-catalog-version": 15,
+  "x-durable-workflow-catalog-version": 16,
   "x-durable-workflow-evolution-rule": "additive_minor_breaking_major",
   "x-durable-workflow-object-families": [
     {

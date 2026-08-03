@@ -1,11 +1,12 @@
 openapi: 3.1.0
 info:
   title: durable-workflow.v2.worker-protocol-api
-  version: "6"
+  version: "7"
   summary: Durable Workflow worker-plane HTTP+JSON API
   description: >
     Normative OpenAPI specification for the worker-plane HTTP+JSON API:
-    worker registration, worker heartbeat, worker-session lifecycle,
+    worker registration, graceful worker deregistration, worker heartbeat,
+    worker-session lifecycle,
     long-poll task acquisition, task history paging, task heartbeat,
     task completion, and task failure. Long-poll timing, cancellation,
     and lease semantics are specified by durable-workflow.v2.worker-protocol-stream.
@@ -20,10 +21,12 @@ x-durable-workflow-worker-protocol-negotiation:
   fail_closed_on: [missing_header, malformed_version, different_major, minor_greater_than_advertised]
 x-durable-workflow-catalog-entry: worker_protocol_api
 x-durable-workflow-catalog-schema: durable-workflow.v2.platform-protocol-specs.catalog
-x-durable-workflow-catalog-version: 15
+x-durable-workflow-catalog-version: 16
 x-durable-workflow-evolution-rule: additive_minor_breaking_major
 x-durable-workflow-object-families:
   - name: worker_registration_request
+    owner_repo: durable-workflow/server
+  - name: worker_deregistration_result
     owner_repo: durable-workflow/server
   - name: worker_task_poll_request
     owner_repo: durable-workflow/server
@@ -57,6 +60,27 @@ paths:
         "400": { $ref: "#/components/responses/WorkerError" }
         "409": { $ref: "#/components/responses/WorkerError" }
         "422": { $ref: "#/components/responses/WorkerError" }
+  /worker/registrations/{workerId}:
+    delete:
+      operationId: deregisterWorker
+      summary: Gracefully deregister a worker
+      description: >
+        Removes the named worker registration in the resolved namespace and
+        recovers its outstanding workflow-task leases for replacement workers.
+        This worker-plane lifecycle operation requires the worker role; it is
+        distinct from the administrator-only worker-management endpoint.
+      tags: [worker-lifecycle]
+      x-durable-workflow-required-role: worker
+      parameters:
+        - $ref: "#/components/parameters/WorkerProtocolVersionHeader"
+        - $ref: "#/components/parameters/WorkerIdPath"
+      responses:
+        "200": { $ref: "#/components/responses/WorkerDeregistrationEnvelope" }
+        "400": { $ref: "#/components/responses/WorkerError" }
+        "401": { $ref: "#/components/responses/WorkerError" }
+        "403": { $ref: "#/components/responses/WorkerError" }
+        "404": { $ref: "#/components/responses/WorkerError" }
+        "409": { $ref: "#/components/responses/WorkerError" }
   /worker/heartbeat:
     post:
       operationId: heartbeatWorker
@@ -343,6 +367,12 @@ components:
       in: path
       required: true
       schema: { type: string, minLength: 1, maxLength: 255 }
+    WorkerIdPath:
+      name: workerId
+      in: path
+      required: true
+      description: Worker registration identity in the resolved namespace.
+      schema: { type: string, minLength: 1, maxLength: 255 }
   responses:
     WorkerEnvelope:
       description: Worker-protocol response envelope.
@@ -371,6 +401,17 @@ components:
             allOf:
               - $ref: "#/components/schemas/WorkerEnvelope"
               - $ref: "./worker-sessions-runtime.schema.json#/$defs/workerSessionOperationResult"
+    WorkerDeregistrationEnvelope:
+      description: Graceful worker-deregistration result in the WorkerProtocol success envelope.
+      headers:
+        X-Durable-Workflow-Protocol-Version:
+          schema: { $ref: "#/components/schemas/AdvertisedWorkerProtocolVersion" }
+      content:
+        application/json:
+          schema:
+            allOf:
+              - $ref: "#/components/schemas/WorkerEnvelope"
+              - $ref: "#/components/schemas/WorkerDeregistrationResult"
   schemas:
     AcceptedWorkerProtocolRequestVersion:
       type: string
@@ -429,6 +470,14 @@ components:
         worker_id: { type: string, minLength: 1 }
         task_queues: { type: array, items: { type: string } }
         active_slots: { type: integer, minimum: 0 }
+    WorkerDeregistrationResult:
+      type: object
+      additionalProperties: true
+      required: [worker_id, outcome, recovered_workflow_task_count]
+      properties:
+        worker_id: { type: string, minLength: 1 }
+        outcome: { type: string, const: deregistered }
+        recovered_workflow_task_count: { type: integer, minimum: 0 }
     PollRequest:
       type: object
       additionalProperties: true

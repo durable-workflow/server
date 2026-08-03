@@ -4,22 +4,16 @@ namespace App\Http\Controllers\Api;
 
 use App\Models\WorkerRegistration;
 use App\Support\ControlPlaneProtocol;
-use App\Support\WorkflowTaskLeaseRecovery;
+use App\Support\WorkerRegistrationDeregistrar;
 use Carbon\CarbonInterface;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
-use Illuminate\Support\Facades\DB;
-use Illuminate\Support\Facades\Schema;
-use Workflow\V2\Enums\TaskStatus;
-use Workflow\V2\Enums\TaskType;
-use Workflow\V2\Models\WorkflowTask;
 use Workflow\V2\Support\StandaloneWorkerVisibility;
-use Workflow\V2\Support\WorkerCompatibilityFleet;
 
 class WorkerManagementController
 {
     public function __construct(
-        private readonly WorkflowTaskLeaseRecovery $workflowTaskLeaseRecovery,
+        private readonly WorkerRegistrationDeregistrar $registrar,
     ) {}
 
     public function index(Request $request): JsonResponse
@@ -193,14 +187,11 @@ class WorkerManagementController
             return $response;
         }
 
-        $namespace = $request->attributes->get('namespace');
+        $namespace = (string) $request->attributes->get('namespace');
 
-        $worker = WorkerRegistration::query()
-            ->where('worker_id', $workerId)
-            ->where('namespace', $namespace)
-            ->first();
+        $recoveredWorkflowTaskCount = $this->registrar->deregister($request, $namespace, $workerId);
 
-        if (! $worker) {
+        if ($recoveredWorkflowTaskCount === null) {
             return ControlPlaneProtocol::json([
                 'message' => sprintf(
                     'Worker [%s] not found in namespace [%s].',
@@ -211,73 +202,10 @@ class WorkerManagementController
             ], 404);
         }
 
-        // Deregistration is the orderly process hand-off boundary. Fence the
-        // registration before recovering its leases so any long poll left
-        // behind by the stopped process cannot claim new work while the
-        // replacement is starting.
-        $leasedWorkflowTasks = DB::transaction(function () use ($namespace, $workerId) {
-            $lockedWorker = WorkerRegistration::query()
-                ->where('worker_id', $workerId)
-                ->where('namespace', $namespace)
-                ->lockForUpdate()
-                ->firstOrFail();
-
-            $lockedWorker
-                ->forceFill(['status' => WorkerRegistration::STATUS_SUPERSEDED])
-                ->save();
-
-            return WorkflowTask::query()
-                ->where('namespace', $namespace)
-                ->where('task_type', TaskType::Workflow->value)
-                ->where('status', TaskStatus::Leased->value)
-                ->where('lease_owner', $workerId)
-                ->lockForUpdate()
-                ->get();
-        });
-
-        $recoveredWorkflowTaskCount = $leasedWorkflowTasks
-            ->filter(fn (WorkflowTask $task): bool => $this->workflowTaskLeaseRecovery
-                ->recoverAbandonedTaskLease($request, $namespace, $task))
-            ->count();
-
-        WorkerRegistration::query()
-            ->where('worker_id', $workerId)
-            ->where('namespace', $namespace)
-            ->delete();
-        $this->forgetCompatibilityWorker($namespace, $workerId);
-
         return ControlPlaneProtocol::json([
             'worker_id' => $workerId,
             'outcome' => 'deregistered',
             'recovered_workflow_task_count' => $recoveredWorkflowTaskCount,
         ]);
-    }
-
-    private function forgetCompatibilityWorker(string $namespace, string $workerId): void
-    {
-        if (method_exists(WorkerCompatibilityFleet::class, 'forgetWorkerForNamespace')) {
-            WorkerCompatibilityFleet::forgetWorkerForNamespace($namespace, $workerId);
-
-            return;
-        }
-
-        $this->deleteCompatibilityHeartbeats($namespace, $workerId);
-    }
-
-    private function deleteCompatibilityHeartbeats(string $namespace, string $workerId): void
-    {
-        $connection = config('workflows.storage.connection');
-        $connection = is_string($connection) && $connection !== '' ? $connection : null;
-        $schema = $connection === null ? Schema::getFacadeRoot() : Schema::connection($connection);
-
-        if (! $schema->hasTable('workflow_worker_compatibility_heartbeats')) {
-            return;
-        }
-
-        DB::connection($connection)
-            ->table('workflow_worker_compatibility_heartbeats')
-            ->where('namespace', $namespace)
-            ->where('worker_id', $workerId)
-            ->delete();
     }
 }
