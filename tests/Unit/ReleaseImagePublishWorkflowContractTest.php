@@ -146,8 +146,9 @@ class ReleaseImagePublishWorkflowContractTest extends TestCase
         $this->assertLessThan($autoloadOffset, $restoreOffset);
 
         $this->assertStringContainsString('$composer[\'require\'][$packageName] = $composerVersion;', $metadataScript);
-        $this->assertStringContainsString('$repository[\'options\'][\'versions\'][$packageName] = $composerVersion;', $metadataScript);
-        $this->assertStringContainsString('$repository[\'options\'][\'reference\'] = \'auto\';', $metadataScript);
+        $this->assertStringContainsString("'url' => \$workflowPath", $metadataScript);
+        $this->assertStringContainsString('$packageName => $composerVersion', $metadataScript);
+        $this->assertStringContainsString("'reference' => 'auto'", $metadataScript);
         $this->assertStringContainsString('WORKFLOW_PACKAGE_COMMIT', $metadataScript);
         $this->assertStringContainsString('WORKFLOW_PACKAGE_COMMIT must be a full lowercase Git SHA.', $metadataScript);
         $this->assertStringContainsString('Workflow package provenance {$provenancePath} does not exist.', $metadataScript);
@@ -426,12 +427,19 @@ class ReleaseImagePublishWorkflowContractTest extends TestCase
 
         $verifyOffset = strpos($workflow, 'git -C workflow-package rev-parse HEAD');
         $removeOffset = strpos($workflow, 'rm -rf workflow-package/.git');
+        $prepareOffset = strpos($workflow, 'php scripts/ci/prepare-release-workflow-composer-metadata.php');
+        $updateOffset = strpos($workflow, 'composer update durable-workflow/workflow');
         $installOffset = strpos($workflow, 'composer install --no-interaction');
 
         $this->assertIsInt($verifyOffset);
         $this->assertIsInt($removeOffset);
+        $this->assertIsInt($prepareOffset);
+        $this->assertIsInt($updateOffset);
         $this->assertIsInt($installOffset);
         $this->assertLessThan($removeOffset, $verifyOffset);
+        $this->assertLessThan($prepareOffset, $removeOffset);
+        $this->assertLessThan($updateOffset, $prepareOffset);
+        $this->assertLessThan($installOffset, $updateOffset);
         $this->assertLessThan($installOffset, $removeOffset);
     }
 
@@ -677,17 +685,7 @@ SH);
         $lock = json_decode($this->read('composer.lock'), true, flags: JSON_THROW_ON_ERROR);
 
         $this->assertSame($expectedVersion, $composer['require']['durable-workflow/workflow']);
-
-        foreach ($composer['repositories'] as $repository) {
-            if (($repository['type'] ?? null) !== 'path') {
-                continue;
-            }
-
-            $this->assertSame(
-                $expectedVersion,
-                $repository['options']['versions']['durable-workflow/workflow'],
-            );
-        }
+        $this->assertArrayNotHasKey('repositories', $composer);
 
         $workflowPackages = array_values(array_filter(
             $lock['packages'],
@@ -704,12 +702,72 @@ SH);
         $this->assertSame($expectedCommit, $workflowPackages[0]['dist']['reference']);
     }
 
+    public function test_release_metadata_preparer_adds_the_verified_workflow_source_to_a_transient_manifest(): void
+    {
+        $tmpDir = sys_get_temp_dir().'/release-workflow-composer-'.bin2hex(random_bytes(4));
+        $workflowPath = $tmpDir.'/workflow';
+        $composerPath = $tmpDir.'/composer.json';
+        $this->assertTrue(mkdir($workflowPath, recursive: true));
+        file_put_contents($composerPath, json_encode([
+            'require' => [
+                'durable-workflow/workflow' => '2.0.0-rc.13',
+            ],
+        ], JSON_THROW_ON_ERROR));
+        file_put_contents(
+            $workflowPath.'/.package-provenance',
+            "https://github.com/durable-workflow/workflow.git\n"
+                ."2.0.0-rc.13\n"
+                ."fc28432a82a2433959c6690505c52eabea4aca8c\n",
+        );
+
+        try {
+            $result = $this->runScript('scripts/ci/prepare-release-workflow-composer-metadata.php', [
+                'COMPOSER_JSON_PATH' => $composerPath,
+                'WORKFLOW_PACKAGE_PATH' => $workflowPath,
+                'WORKFLOW_PACKAGE_REF' => '2.0.0-rc.13',
+                'WORKFLOW_PACKAGE_COMMIT' => 'fc28432a82a2433959c6690505c52eabea4aca8c',
+            ]);
+
+            $this->assertSame(0, $result['exitCode'], $result['stderr']);
+            $composer = json_decode((string) file_get_contents($composerPath), true, flags: JSON_THROW_ON_ERROR);
+            $repository = $composer['repositories'][0] ?? null;
+            $this->assertIsArray($repository);
+            $this->assertSame('workflow', $repository['name'] ?? null);
+            $this->assertSame('path', $repository['type'] ?? null);
+            $this->assertSame($workflowPath, $repository['url'] ?? null);
+            $this->assertFalse($repository['options']['symlink'] ?? true);
+            $this->assertSame(
+                '2.0.0-rc.13',
+                $repository['options']['versions']['durable-workflow/workflow'] ?? null,
+            );
+        } finally {
+            @unlink($workflowPath.'/.package-provenance');
+            @unlink($composerPath);
+            @rmdir($workflowPath);
+            @rmdir($tmpDir);
+        }
+    }
+
+    public function test_commonmark_lock_uses_a_patched_release(): void
+    {
+        $lock = json_decode($this->read('composer.lock'), true, flags: JSON_THROW_ON_ERROR);
+        $commonmarkPackages = array_values(array_filter(
+            $lock['packages'],
+            static fn (array $package): bool => ($package['name'] ?? null) === 'league/commonmark',
+        ));
+
+        $this->assertCount(1, $commonmarkPackages);
+        $version = $commonmarkPackages[0]['version'] ?? null;
+        $this->assertIsString($version);
+        $this->assertTrue(version_compare($version, '2.9.0', '>='));
+    }
+
     public function test_composer_metadata_declares_the_exact_server_product_train(): void
     {
         $composer = json_decode($this->read('composer.json'), true, flags: JSON_THROW_ON_ERROR);
 
         $this->assertSame(
-            '2.0.0-rc.18',
+            '2.0.0-rc.19',
             $composer['extra']['durable-workflow']['product-train'] ?? null,
         );
     }

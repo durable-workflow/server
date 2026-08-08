@@ -118,7 +118,14 @@ jobs:
           git -C workflow-package remote add origin https://github.com/durable-workflow/workflow.git
           git -C workflow-package fetch --depth=1 origin fc28432a82a2433959c6690505c52eabea4aca8c
           git -C workflow-package checkout --detach FETCH_HEAD
-          test "$(git -C workflow-package rev-parse HEAD)" = "fc28432a82a2433959c6690505c52eabea4aca8c"
+          resolved_commit="$(git -C workflow-package rev-parse HEAD)"
+          test "$resolved_commit" = "fc28432a82a2433959c6690505c52eabea4aca8c"
+          printf '%s\n' \
+            'https://github.com/durable-workflow/workflow.git' \
+            '2.0.0-rc.13' \
+            "$resolved_commit" \
+            > workflow-package/.package-provenance
+          rm -rf workflow-package/.git
 
       - name: Run perf harness result-gate tests
         run: |
@@ -130,7 +137,7 @@ jobs:
           # Stream sources into the test container so containerized runners avoid host bind-path assumptions.
           tar --exclude=.git --exclude=vendor --exclude=build -cf - . \
             | docker run --rm -i -w /app composer:2 \
-                sh -lc 'tar -xf - -C /app && cp -a /app/workflow-package /workflow && composer install --no-interaction --no-progress --prefer-dist && vendor/bin/phpunit tests/Unit/BoundedGrowthPolicyTest.php tests/Unit/ServerPerfHarnessContractTest.php --colors=never'
+                sh -lc 'tar -xf - -C /app && cp -a /app/workflow-package /workflow && php scripts/ci/prepare-release-workflow-composer-metadata.php && composer update durable-workflow/workflow --with-dependencies --minimal-changes --no-install --no-scripts --no-autoloader --no-interaction --no-progress --prefer-dist && composer install --no-interaction --no-progress --prefer-dist && vendor/bin/phpunit tests/Unit/BoundedGrowthPolicyTest.php tests/Unit/ServerPerfHarnessContractTest.php --colors=never'
 
   smoke:
     name: Polling cache bounded-growth smoke

@@ -126,7 +126,7 @@ jobs:
             --exclude='*/build' \
             -cf - . \
             | docker run --rm -i -e CORPUS_BASE_REF -w /app --entrypoint sh durable-workflow-server-corpus-validator \
-                -lc 'set -eu; tar --no-same-owner -xf - -C /app; cp -a /app/workflow-package /workflow; composer install --no-interaction --no-progress --prefer-dist; git --version; vendor/bin/phpunit --version; git rev-parse --verify "$CORPUS_BASE_REF^{commit}"; vendor/bin/phpunit tests/Feature tests/Unit/NexusContractTest.php tests/Unit/CodecRegressionCorpusTest.php tests/Unit/PhpunitFeatureWorkflowContractTest.php --no-progress --colors=never; python3 scripts/ci/validate-regression-corpus.py --base-ref "$CORPUS_BASE_REF" --verify-counterfactual'
+                -lc 'set -eu; tar --no-same-owner -xf - -C /app; cp -a /app/workflow-package /workflow; php scripts/ci/prepare-release-workflow-composer-metadata.php; composer update durable-workflow/workflow --with-dependencies --minimal-changes --no-install --no-scripts --no-autoloader --no-interaction --no-progress --prefer-dist; composer install --no-interaction --no-progress --prefer-dist; git --version; vendor/bin/phpunit --version; git rev-parse --verify "$CORPUS_BASE_REF^{commit}"; vendor/bin/phpunit tests/Feature tests/Unit/NexusContractTest.php tests/Unit/CodecRegressionCorpusTest.php tests/Unit/PhpunitFeatureWorkflowContractTest.php --no-progress --colors=never; python3 scripts/ci/validate-regression-corpus.py --base-ref "$CORPUS_BASE_REF" --verify-counterfactual'
 
   qualification:
     name: Feature source qualification

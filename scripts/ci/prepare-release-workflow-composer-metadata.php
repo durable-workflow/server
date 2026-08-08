@@ -110,47 +110,42 @@ if (! isset($composer['require']) || ! is_array($composer['require'])) {
 
 $composer['require'][$packageName] = $composerVersion;
 
-if (! isset($composer['repositories']) || ! is_array($composer['repositories'])) {
-    fail("Composer manifest {$composerPath} must contain repository entries for {$packageName}.");
+if (isset($composer['repositories']) && ! is_array($composer['repositories'])) {
+    fail("Composer manifest {$composerPath} contains invalid repository metadata.");
 }
 
-$updatedRepository = false;
+$repositories = $composer['repositories'] ?? [];
 
-foreach ($composer['repositories'] as &$repository) {
-    if (! is_array($repository)) {
-        continue;
-    }
+$repositories = array_values(array_filter(
+    $repositories,
+    static function (mixed $repository) use ($workflowPath): bool {
+        if (! is_array($repository)) {
+            return true;
+        }
 
-    $name = $repository['name'] ?? null;
-    $type = $repository['type'] ?? null;
-    $url = $repository['url'] ?? null;
+        if (($repository['name'] ?? null) === 'workflow') {
+            return false;
+        }
 
-    if ($type !== 'path') {
-        continue;
-    }
+        return ($repository['type'] ?? null) !== 'path'
+            || ! in_array($repository['url'] ?? null, [$workflowPath, '/workflow', '../workflow'], true);
+    },
+));
 
-    if ($name !== 'workflow' && $url !== $workflowPath && $url !== '../workflow') {
-        continue;
-    }
+array_unshift($repositories, [
+    'name' => 'workflow',
+    'type' => 'path',
+    'url' => $workflowPath,
+    'options' => [
+        'symlink' => false,
+        'versions' => [
+            $packageName => $composerVersion,
+        ],
+        'reference' => 'auto',
+    ],
+]);
 
-    if (! isset($repository['options']) || ! is_array($repository['options'])) {
-        $repository['options'] = [];
-    }
-
-    if (! isset($repository['options']['versions']) || ! is_array($repository['options']['versions'])) {
-        $repository['options']['versions'] = [];
-    }
-
-    $repository['options']['versions'][$packageName] = $composerVersion;
-    $repository['options']['reference'] = 'auto';
-    $updatedRepository = true;
-}
-
-unset($repository);
-
-if (! $updatedRepository) {
-    fail("Composer manifest {$composerPath} does not contain a path repository for {$packageName}.");
-}
+$composer['repositories'] = $repositories;
 
 writeJsonObject($composerPath, $composer);
 

@@ -9,6 +9,28 @@ use Symfony\Component\Yaml\Yaml;
 
 class ServerPerfHarnessContractTest extends TestCase
 {
+    public function test_contract_qualification_installs_the_verified_workflow_source(): void
+    {
+        $workflow = file_get_contents(dirname(__DIR__, 2).'/.github/workflows/server-perf.yml');
+        $this->assertNotFalse($workflow, '.github/workflows/server-perf.yml must be readable');
+
+        $provenanceOffset = strpos($workflow, '> workflow-package/.package-provenance');
+        $removeGitOffset = strpos($workflow, 'rm -rf workflow-package/.git');
+        $prepareOffset = strpos($workflow, 'php scripts/ci/prepare-release-workflow-composer-metadata.php');
+        $updateOffset = strpos($workflow, 'composer update durable-workflow/workflow');
+        $installOffset = strpos($workflow, 'composer install --no-interaction');
+
+        $this->assertIsInt($provenanceOffset);
+        $this->assertIsInt($removeGitOffset);
+        $this->assertIsInt($prepareOffset);
+        $this->assertIsInt($updateOffset);
+        $this->assertIsInt($installOffset);
+        $this->assertLessThan($removeGitOffset, $provenanceOffset);
+        $this->assertLessThan($prepareOffset, $removeGitOffset);
+        $this->assertLessThan($updateOffset, $prepareOffset);
+        $this->assertLessThan($installOffset, $updateOffset);
+    }
+
     public function test_soak_summary_records_trusted_evidence_fields(): void
     {
         $source = file_get_contents(dirname(__DIR__, 2).'/scripts/perf/server_soak.py');

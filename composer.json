@@ -30,31 +30,6 @@
             "Tests\\": "tests/"
         }
     },
-    "repositories": [
-        {
-            "name": "workflow",
-            "type": "path",
-            "url": "/workflow",
-            "options": {
-                "symlink": false,
-                "versions": {
-                    "durable-workflow/workflow": "2.0.0-rc.13"
-                },
-                "reference": "auto"
-            }
-        },
-        {
-            "type": "path",
-            "url": "../workflow",
-            "options": {
-                "symlink": false,
-                "versions": {
-                    "durable-workflow/workflow": "2.0.0-rc.13"
-                },
-                "reference": "auto"
-            }
-        }
-    ],
     "scripts": {
         "post-autoload-dump": [
             "Illuminate\\Foundation\\ComposerScripts::postAutoloadDump",
@@ -72,7 +47,7 @@
     },
     "extra": {
         "durable-workflow": {
-            "product-train": "2.0.0-rc.18"
+            "product-train": "2.0.0-rc.19"
         },
         "laravel": {
             "dont-discover": []
