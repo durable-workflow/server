@@ -265,11 +265,15 @@ commit guard during image builds.
 
 ### Using the CLI
 
+<!-- BEGIN GENERATED CLI INSTALL -->
 ```bash
-# Install the CLI from the public release channel
-curl -fsSL https://durable-workflow.com/install.sh | VERSION=2.0.0-rc.5 sh
+# Install the current published CLI release candidate
+curl -fsSL https://durable-workflow.com/install.sh | VERSION=2.0.0-rc.12 sh
 export PATH="$HOME/.local/bin:$PATH"
+```
+<!-- END GENERATED CLI INSTALL -->
 
+```bash
 # Start a workflow
 dw workflow start --type=my-workflow --input='{"name":"world"}'
 

@@ -12,7 +12,6 @@ jobs:
     runs-on: ubuntu-latest
     env:
       SERVER_VERSION: 2.0.0-rc.23
-      CLI_VERSION: 2.0.0-rc.5
       PYTHON_SDK_VERSION: 2.0.0rc1
       COMPOSE_PROJECT_NAME: version-validation-${{ github.run_id }}-${{ github.run_attempt }}-${{ github.job }}
 
@@ -71,9 +70,18 @@ jobs:
       - name: Install CLI
         run: |
           install_dir="/tmp/dw-bin"
-          curl -fsSL https://durable-workflow.com/install.sh -o /tmp/dw-install.sh
-          VERSION="${CLI_VERSION}" DURABLE_WORKFLOW_INSTALL_DIR="$install_dir" sh /tmp/dw-install.sh
-          "$install_dir/dw" --version
+          cli_version="$(node scripts/ci/sync-cli-readme-release.mjs --print version)"
+          installer_url="$(node scripts/ci/sync-cli-readme-release.mjs --print installer-url)"
+          curl -fsSL "$installer_url" -o /tmp/dw-install.sh
+          VERSION="$cli_version" DURABLE_WORKFLOW_INSTALL_DIR="$install_dir" sh /tmp/dw-install.sh
+          reported_version="$("$install_dir/dw" --version)"
+          case "$reported_version" in
+            "dw ${cli_version}"|"dw ${cli_version} "*) ;;
+            *)
+              echo "ERROR: Expected CLI ${cli_version}, got $reported_version"
+              exit 1
+              ;;
+          esac
           echo "$install_dir" >> $GITHUB_PATH
 
       - name: Test CLI with compatible server (should succeed)

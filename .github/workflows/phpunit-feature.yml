@@ -30,6 +30,9 @@ jobs:
 
       - name: Validate release recovery tooling
         run: |
+          node --check scripts/ci/sync-cli-readme-release.mjs
+          node scripts/ci/sync-cli-readme-release.mjs --check --offline
+          bash -n scripts/ci/verify-cli-readme-release.sh
           python -m py_compile \
             scripts/ci/component-release-recovery.py \
             scripts/ci/release_recovery_consumer_conformance.py \

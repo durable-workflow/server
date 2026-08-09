@@ -19,7 +19,6 @@ class VersionValidationWorkflowContractTest extends TestCase
         $this->assertIsArray($job);
         $this->assertSame([
             'SERVER_VERSION' => '2.0.0-rc.23',
-            'CLI_VERSION' => '2.0.0-rc.5',
             'PYTHON_SDK_VERSION' => '2.0.0rc1',
             'COMPOSE_PROJECT_NAME' => 'version-validation-${{ github.run_id }}-${{ github.run_attempt }}-${{ github.job }}',
         ], $job['env'] ?? null);
@@ -29,7 +28,11 @@ class VersionValidationWorkflowContractTest extends TestCase
         $this->assertStringContainsString('if [ "$VERSION" != "${SERVER_VERSION}" ]; then', $server['run'] ?? '');
 
         $cli = $this->step($job, 'Install CLI');
-        $this->assertStringContainsString('VERSION="${CLI_VERSION}"', $cli['run'] ?? '');
+        $this->assertStringContainsString('sync-cli-readme-release.mjs --print version', $cli['run'] ?? '');
+        $this->assertStringContainsString('sync-cli-readme-release.mjs --print installer-url', $cli['run'] ?? '');
+        $this->assertStringContainsString('VERSION="$cli_version"', $cli['run'] ?? '');
+        $this->assertStringContainsString('reported_version="$("$install_dir/dw" --version)"', $cli['run'] ?? '');
+        $this->assertStringContainsString('"dw ${cli_version}"|"dw ${cli_version} "*', $cli['run'] ?? '');
 
         $python = $this->step($job, 'Install Python SDK');
         $this->assertStringContainsString('pip install "durable-workflow==${PYTHON_SDK_VERSION}"', $python['run'] ?? '');
