@@ -113,7 +113,9 @@ final class ActivityRuntimeContract
             ],
             'topology' => [
                 'namespace' => 'activities-conformance',
-                'task_queue' => 'activities-shared',
+                'task_queue_strategy' => 'per_scenario_isolated',
+                'task_queue_identity_source' => 'scenario_execution_identity',
+                'worker_identity_strategy' => 'per_scenario_or_restart_pair',
                 'required_workers' => [
                     'workflow-php',
                     'sdk-php',

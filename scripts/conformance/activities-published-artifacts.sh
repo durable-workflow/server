@@ -685,7 +685,6 @@ use Workflow\V2\Support\WorkflowFiberRunner;
 use Workflow\V2\Workflow;
 
 const ACTIVITIES_NAMESPACE = 'activities-conformance';
-const ACTIVITIES_TASK_QUEUE = 'activities-shared';
 const EMBEDDED_WORKFLOW_TYPE = 'activities.conformance.workflow-embedded-result';
 const ACTIVITY_TYPE = 'activities.conformance.echo';
 const HOST_EVIDENCE_SCHEMA = 'durable-workflow.v2.activity-runtime.published-artifact-host-evidence';
@@ -743,12 +742,16 @@ final class PublishedActivitiesEmbeddedWorkflow extends Workflow
     public function handle(array $payload): array
     {
         $scenarioId = is_string($payload['scenario_id'] ?? null) ? $payload['scenario_id'] : '';
+        $taskQueue = is_string($payload['task_queue'] ?? null) ? $payload['task_queue'] : '';
+        if ($taskQueue === '') {
+            throw new RuntimeException('activities conformance workflow input did not include its isolated task queue');
+        }
 
         if ($scenarioId === 'typed_failure_propagation') {
             try {
                 Workflow::activity(
                     ACTIVITY_TYPE,
-                    new ActivityOptions(queue: ACTIVITIES_TASK_QUEUE),
+                    new ActivityOptions(queue: $taskQueue),
                     $payload
                 );
 
@@ -789,7 +792,7 @@ final class PublishedActivitiesEmbeddedWorkflow extends Workflow
 
         $activityResult = Workflow::activity(
             ACTIVITY_TYPE,
-            new ActivityOptions(queue: ACTIVITIES_TASK_QUEUE),
+            new ActivityOptions(queue: $taskQueue),
             $payload
         );
 
@@ -1634,7 +1637,24 @@ function complete_workflow_task_from_runtime(array $task): array
     ]);
 }
 
-function register_worker(string $workerId, array $workflowTypes, array $activityTypes, string $runtime): void
+function scenario_task_queue(string $identity): string
+{
+    $normalized = preg_replace('/[^a-z0-9-]+/', '-', strtolower($identity));
+    $normalized = is_string($normalized) ? trim($normalized, '-') : '';
+    if ($normalized === '') {
+        throw new RuntimeException('activities conformance scenario task queue identity must not be empty');
+    }
+
+    return substr("activities-isolated-{$normalized}", 0, 191);
+}
+
+function register_worker(
+    string $workerId,
+    string $taskQueue,
+    array $workflowTypes,
+    array $activityTypes,
+    string $runtime,
+): void
 {
     $workerRuntime = $runtime === 'sdk-python' ? 'python' : 'php';
     $sdkVersion = $runtime === 'sdk-python'
@@ -1643,7 +1663,7 @@ function register_worker(string $workerId, array $workflowTypes, array $activity
 
     request_json('POST', '/worker/register', [
         'worker_id' => $workerId,
-        'task_queue' => ACTIVITIES_TASK_QUEUE,
+        'task_queue' => $taskQueue,
         'runtime' => $workerRuntime,
         'sdk_version' => $sdkVersion,
         'supported_workflow_types' => $workflowTypes,
@@ -1801,21 +1821,86 @@ function run_python_activity_executor(array $task, string $mode): array
     return $decoded;
 }
 
-function poll_task(string $kind, string $workerId): array
+function assert_task_identity(array $task, array $expectedIdentity, string $context): void
+{
+    if ($expectedIdentity === []) {
+        throw new RuntimeException("{$context} poll did not declare an expected execution identity");
+    }
+
+    $actualIdentity = [
+        'workflow_id' => $task['workflow_id'] ?? ($task['workflow_instance_id'] ?? null),
+        'run_id' => $task['run_id'] ?? ($task['workflow_run_id'] ?? null),
+        'activity_execution_id' => $task['activity_execution_id'] ?? null,
+    ];
+    foreach ($expectedIdentity as $field => $expected) {
+        if (! is_string($expected) || $expected === '') {
+            throw new RuntimeException("{$context} expected {$field} must be a non-empty string");
+        }
+        if (($actualIdentity[$field] ?? null) !== $expected) {
+            throw new RuntimeException(sprintf(
+                '%s leased a task for the wrong execution: expected %s=%s, received %s',
+                $context,
+                $field,
+                $expected,
+                json_encode($actualIdentity[$field] ?? null),
+            ));
+        }
+    }
+}
+
+function poll_task(
+    string $kind,
+    string $workerId,
+    string $taskQueue,
+    array $expectedIdentity,
+): array
 {
     $path = $kind === 'workflow'
         ? '/worker/workflow-tasks/poll'
         : '/worker/activity-tasks/poll';
     $response = request_json('POST', $path, [
         'worker_id' => $workerId,
-        'task_queue' => ACTIVITIES_TASK_QUEUE,
+        'task_queue' => $taskQueue,
     ]);
     $task = $response['task'] ?? null;
     if (! is_array($task)) {
         throw new RuntimeException("expected {$kind} task but poll returned ".json_encode($response));
     }
+    assert_task_identity($task, $expectedIdentity, "{$kind} worker {$workerId}");
 
     return $task;
+}
+
+function assert_activity_handle_identity(
+    array $handle,
+    string $activityId,
+    string $runId,
+    string $activityExecutionId,
+    string $context,
+): void {
+    $expected = [
+        'activity_id' => $activityId,
+        'workflow_run_id' => $runId,
+        'activity_execution_id' => $activityExecutionId,
+    ];
+    foreach ($expected as $field => $value) {
+        if (($handle[$field] ?? null) !== $value) {
+            throw new RuntimeException("{$context} returned a terminal handle for the wrong {$field}");
+        }
+    }
+}
+
+function activity_execution_id_for_run(string $runId, string $context): string
+{
+    $activityExecutionId = ActivityExecution::query()
+        ->where('workflow_run_id', $runId)
+        ->orderBy('sequence')
+        ->value('id');
+    if (! is_string($activityExecutionId) || $activityExecutionId === '') {
+        throw new RuntimeException("{$context} did not schedule an activity execution before its activity poll");
+    }
+
+    return $activityExecutionId;
 }
 
 function activity_input(array $task, string $codec): array
@@ -1941,27 +2026,34 @@ function run_embedded_cell(string $runtime): array
     $suffix = bin2hex(random_bytes(3));
     $workerId = "activities-embedded-{$safeRuntime}-{$suffix}";
     $workflowId = "activities-embedded-{$safeRuntime}-{$suffix}";
+    $taskQueue = scenario_task_queue($workflowId);
 
-    register_worker($workerId, [EMBEDDED_WORKFLOW_TYPE], [ACTIVITY_TYPE], $runtime);
+    register_worker($workerId, $taskQueue, [EMBEDDED_WORKFLOW_TYPE], [ACTIVITY_TYPE], $runtime);
     $start = request_json('POST', '/workflows', [
         'workflow_id' => $workflowId,
         'workflow_type' => EMBEDDED_WORKFLOW_TYPE,
-        'task_queue' => ACTIVITIES_TASK_QUEUE,
+        'task_queue' => $taskQueue,
         'input' => [[
             'scenario_id' => 'workflow_embedded_activity_result',
             'runtime' => $runtime,
             'input_marker' => "embedded-{$safeRuntime}",
+            'task_queue' => $taskQueue,
         ]],
     ]);
     $runId = (string) ($start['run_id'] ?? '');
+    $expectedIdentity = ['workflow_id' => $workflowId, 'run_id' => $runId];
 
-    $workflowTask = poll_task('workflow', $workerId);
+    $workflowTask = poll_task('workflow', $workerId, $taskQueue, $expectedIdentity);
     complete_workflow_task_from_runtime($workflowTask);
 
-    $activityTask = poll_task('activity', $workerId);
+    $activityExecutionId = activity_execution_id_for_run($runId, "workflow embedded {$runtime}");
+    $activityTask = poll_task('activity', $workerId, $taskQueue, [
+        ...$expectedIdentity,
+        'activity_execution_id' => $activityExecutionId,
+    ]);
     [$activityResult, $activityComplete, $workerArtifact] = complete_activity_task($activityTask, $runtime, 'workflow-embedded');
 
-    $resumeTask = poll_task('workflow', $workerId);
+    $resumeTask = poll_task('workflow', $workerId, $taskQueue, $expectedIdentity);
     $workflowComplete = complete_workflow_task_from_runtime($resumeTask);
 
     $run = request_json('GET', '/workflows/'.rawurlencode($workflowId).'/runs/'.rawurlencode($runId));
@@ -1978,7 +2070,8 @@ function run_embedded_cell(string $runtime): array
         'execution_source' => HOST_EVIDENCE_SOURCE,
         'workflow_id' => $workflowId,
         'run_id' => $runId,
-        'activity_execution_id' => $activityTask['activity_execution_id'] ?? null,
+        'task_queue' => $taskQueue,
+        'activity_execution_id' => $activityExecutionId,
         'activity_attempt_id' => $activityTask['activity_attempt_id'] ?? null,
         'activity_type' => $activityTask['activity_type'] ?? ACTIVITY_TYPE,
         'result_payload' => $activityResult,
@@ -2000,12 +2093,13 @@ function run_standalone_cell(string $runtime): array
     $suffix = bin2hex(random_bytes(3));
     $workerId = "activities-standalone-{$safeRuntime}-{$suffix}";
     $activityId = "activities-standalone-{$safeRuntime}-{$suffix}";
+    $taskQueue = scenario_task_queue($activityId);
 
-    register_worker($workerId, [], [ACTIVITY_TYPE], $runtime);
+    register_worker($workerId, $taskQueue, [], [ACTIVITY_TYPE], $runtime);
     $start = request_json('POST', '/activities', [
         'activity_id' => $activityId,
         'activity_type' => ACTIVITY_TYPE,
-        'task_queue' => ACTIVITIES_TASK_QUEUE,
+        'task_queue' => $taskQueue,
         'input' => [[
             'scenario_id' => 'standalone_activity_result',
             'runtime' => $runtime,
@@ -2013,8 +2107,13 @@ function run_standalone_cell(string $runtime): array
         ]],
     ]);
     $runId = (string) ($start['workflow_run_id'] ?? '');
+    $activityExecutionId = (string) ($start['activity_execution_id'] ?? '');
 
-    $activityTask = poll_task('activity', $workerId);
+    $activityTask = poll_task('activity', $workerId, $taskQueue, [
+        'workflow_id' => $activityId,
+        'run_id' => $runId,
+        'activity_execution_id' => $activityExecutionId,
+    ]);
     [$activityResult, $activityComplete, $workerArtifact] = complete_activity_task($activityTask, $runtime, 'standalone');
 
     $show = request_json('GET', '/activities/'.rawurlencode($activityId));
@@ -2031,7 +2130,8 @@ function run_standalone_cell(string $runtime): array
         'execution_source' => HOST_EVIDENCE_SOURCE,
         'activity_id' => $activityId,
         'workflow_run_id' => $runId,
-        'activity_execution_id' => $activityTask['activity_execution_id'] ?? ($start['activity_execution_id'] ?? null),
+        'task_queue' => $taskQueue,
+        'activity_execution_id' => $activityExecutionId,
         'activity_attempt_id' => $activityTask['activity_attempt_id'] ?? null,
         'activity_type' => $activityTask['activity_type'] ?? ACTIVITY_TYPE,
         'result_payload' => $activityResult,
@@ -2400,17 +2500,19 @@ function start_parity_activity(string $runtime, string $suffix, string $observat
     $safeRuntime = str_replace(['/', '_'], '-', $runtime);
     $workerId = "activities-parity-{$observation}-{$safeRuntime}-{$suffix}";
     $activityId = "activities-parity-{$observation}-{$safeRuntime}-{$suffix}";
+    $taskQueue = scenario_task_queue($activityId);
+    $inputMarker = "parity-{$observation}-{$suffix}";
 
-    register_worker($workerId, [], [ACTIVITY_TYPE], $runtime);
+    register_worker($workerId, $taskQueue, [], [ACTIVITY_TYPE], $runtime);
     $start = request_json('POST', '/activities', [
         'activity_id' => $activityId,
         'activity_type' => ACTIVITY_TYPE,
-        'task_queue' => ACTIVITIES_TASK_QUEUE,
+        'task_queue' => $taskQueue,
         'input' => [[
             'scenario_id' => 'php_python_activity_parity',
             'runtime' => $runtime,
             'observation' => $observation,
-            'input_marker' => "parity-{$observation}-{$suffix}",
+            'input_marker' => $inputMarker,
         ]],
         ...$options,
     ]);
@@ -2423,10 +2525,16 @@ function start_parity_activity(string $runtime, string $suffix, string $observat
     return [
         'runtime' => $runtime,
         'worker_id' => $workerId,
+        'task_queue' => $taskQueue,
         'activity_id' => $activityId,
         'workflow_run_id' => $runId,
         'activity_execution_id' => $activityExecutionId,
-        'task' => poll_task('activity', $workerId),
+        'input_marker' => $inputMarker,
+        'task' => poll_task('activity', $workerId, $taskQueue, [
+            'workflow_id' => $activityId,
+            'run_id' => $runId,
+            'activity_execution_id' => $activityExecutionId,
+        ]),
     ];
 }
 
@@ -2454,9 +2562,11 @@ function run_parity_result_observation(string $runtime, string $suffix): array
     [$result, $complete, $workerArtifact] = complete_activity_task($activity['task'], $runtime, 'standalone');
     $show = request_json('GET', '/activities/'.rawurlencode($activity['activity_id']));
     $history = request_json('GET', '/workflows/'.rawurlencode($activity['activity_id']).'/runs/'.rawurlencode($activity['workflow_run_id']).'/history');
+    assert_activity_handle_identity($show, $activity['activity_id'], $activity['workflow_run_id'], $activity['activity_execution_id'], "parity result {$runtime}");
     $pass = ($show['status'] ?? null) === RunStatus::Completed->value
         && ($complete['recorded'] ?? null) === true
-        && is_array($result);
+        && ($result['runtime'] ?? null) === $runtime
+        && ($result['input_marker'] ?? null) === $activity['input_marker'];
     if (! $pass) {
         throw new RuntimeException("parity result observation {$runtime} did not complete");
     }
@@ -2497,6 +2607,7 @@ function run_parity_failure_observation(string $runtime, string $suffix): array
     $failResponse = fail_activity_task($activity['task'], $failure);
     $show = request_json('GET', '/activities/'.rawurlencode($activity['activity_id']));
     $history = request_json('GET', '/workflows/'.rawurlencode($activity['activity_id']).'/runs/'.rawurlencode($activity['workflow_run_id']).'/history');
+    assert_activity_handle_identity($show, $activity['activity_id'], $activity['workflow_run_id'], $activity['activity_execution_id'], "parity failure {$runtime}");
     $failureShape = parity_failure_shape($history, $activity['activity_execution_id']);
     $pass = ($failResponse['recorded'] ?? null) === true
         && ($show['status'] ?? null) === RunStatus::Failed->value
@@ -2548,19 +2659,26 @@ function run_parity_retry_observation(string $runtime, string $suffix): array
     if ($retryAvailableTimestamp !== null) {
         wait_until_timestamp($retryAvailableTimestamp);
     }
-    $secondTask = poll_task('activity', $activity['worker_id']);
+    $secondTask = poll_task('activity', $activity['worker_id'], $activity['task_queue'], [
+        'workflow_id' => $activity['activity_id'],
+        'run_id' => $activity['workflow_run_id'],
+        'activity_execution_id' => $activity['activity_execution_id'],
+    ]);
     [$result, $complete, $completionArtifact] = complete_activity_task($secondTask, $runtime, 'standalone');
     if ($runtime === 'sdk-python') {
         $workerArtifact = $completionArtifact;
     }
     $show = request_json('GET', '/activities/'.rawurlencode($activity['activity_id']));
     $history = request_json('GET', '/workflows/'.rawurlencode($activity['activity_id']).'/runs/'.rawurlencode($activity['workflow_run_id']).'/history');
+    assert_activity_handle_identity($show, $activity['activity_id'], $activity['workflow_run_id'], $activity['activity_execution_id'], "parity retry {$runtime}");
     $pass = ($firstTask['activity_execution_id'] ?? null) === ($secondTask['activity_execution_id'] ?? null)
         && (int) ($firstTask['attempt_number'] ?? 0) === 1
         && (int) ($secondTask['attempt_number'] ?? 0) === 2
         && ($firstTask['activity_attempt_id'] ?? null) !== ($secondTask['activity_attempt_id'] ?? null)
         && ($show['status'] ?? null) === RunStatus::Completed->value
-        && ($complete['recorded'] ?? null) === true;
+        && ($complete['recorded'] ?? null) === true
+        && ($result['runtime'] ?? null) === $runtime
+        && ($result['input_marker'] ?? null) === $activity['input_marker'];
     if (! $pass) {
         throw new RuntimeException("parity retry observation {$runtime} did not retry then complete on attempt two");
     }
@@ -2616,6 +2734,7 @@ function run_parity_timeout_observation(string $runtime, string $suffix): array
     ]);
     $show = request_json('GET', '/activities/'.rawurlencode($activity['activity_id']));
     $history = request_json('GET', '/workflows/'.rawurlencode($activity['activity_id']).'/runs/'.rawurlencode($activity['workflow_run_id']).'/history');
+    assert_activity_handle_identity($show, $activity['activity_id'], $activity['workflow_run_id'], $activity['activity_execution_id'], "parity timeout {$runtime}");
     $timeoutPayload = history_payload_for_execution(
         $history,
         HistoryEventType::ActivityTimedOut->value,
@@ -2674,6 +2793,7 @@ function run_parity_heartbeat_observation(string $runtime, string $suffix): arra
     }
     $show = request_json('GET', '/activities/'.rawurlencode($activity['activity_id']));
     $history = request_json('GET', '/workflows/'.rawurlencode($activity['activity_id']).'/runs/'.rawurlencode($activity['workflow_run_id']).'/history');
+    assert_activity_handle_identity($show, $activity['activity_id'], $activity['workflow_run_id'], $activity['activity_execution_id'], "parity heartbeat {$runtime}");
     $heartbeatPayload = history_payload_for_execution(
         $history,
         HistoryEventType::ActivityHeartbeatRecorded->value,
@@ -2682,7 +2802,9 @@ function run_parity_heartbeat_observation(string $runtime, string $suffix): arra
     $pass = ($heartbeat['heartbeat_recorded'] ?? null) === true
         && ($heartbeat['cancel_requested'] ?? null) === false
         && is_array($heartbeatPayload)
-        && ($show['status'] ?? null) === RunStatus::Completed->value;
+        && ($show['status'] ?? null) === RunStatus::Completed->value
+        && ($result['runtime'] ?? null) === $runtime
+        && ($result['input_marker'] ?? null) === $activity['input_marker'];
     if (! $pass) {
         throw new RuntimeException("parity heartbeat observation {$runtime} did not record heartbeat then complete");
     }
@@ -2740,6 +2862,7 @@ function run_parity_cancellation_observation(string $runtime, string $suffix): a
     );
     $show = request_json('GET', '/activities/'.rawurlencode($activity['activity_id']));
     $history = request_json('GET', '/workflows/'.rawurlencode($activity['activity_id']).'/runs/'.rawurlencode($activity['workflow_run_id']).'/history');
+    assert_activity_handle_identity($show, $activity['activity_id'], $activity['workflow_run_id'], $activity['activity_execution_id'], "parity cancellation {$runtime}");
     $attemptState = attempt_snapshots($activity['activity_execution_id']);
     $latestAttempt = latest_attempt_snapshot($attemptState);
     $terminalState = ($lateCompletion['outcome'] ?? null) === 'ignored'
@@ -2749,6 +2872,8 @@ function run_parity_cancellation_observation(string $runtime, string $suffix): a
         && cancelled_or_failed_activity_status($latestAttempt['status'] ?? null);
     $pass = ($cancelHeartbeat['cancel_requested'] ?? null) === true
         && ($cancelHeartbeat['can_continue'] ?? null) === false
+        && ($lateResult['runtime'] ?? null) === $runtime
+        && ($lateResult['input_marker'] ?? null) === $activity['input_marker']
         && $terminalState;
     if (! $pass) {
         throw new RuntimeException("parity cancellation observation {$runtime} did not expose cancel_requested and terminal cancelled state");
@@ -2938,12 +3063,19 @@ function cli_activity_json_contract_evidence(
     ];
 }
 
-function operator_surface_snapshot(string $state, string $activityId, string $runId, string $activityExecutionId, ?string $activityAttemptId = null): array
+function operator_surface_snapshot(
+    string $state,
+    string $activityId,
+    string $runId,
+    string $activityExecutionId,
+    string $taskQueue,
+    ?string $activityAttemptId = null,
+): array
 {
     $apiDetail = request_json('GET', '/activities/'.rawurlencode($activityId));
     $apiRunDetail = request_json('GET', '/workflows/'.rawurlencode($activityId).'/runs/'.rawurlencode($runId));
     $history = request_json('GET', '/workflows/'.rawurlencode($activityId).'/runs/'.rawurlencode($runId).'/history');
-    $taskQueueDetail = request_json('GET', '/task-queues/'.rawurlencode(ACTIVITIES_TASK_QUEUE));
+    $taskQueueDetail = request_json('GET', '/task-queues/'.rawurlencode($taskQueue));
     $listEvidence = activity_list_evidence($activityId);
     $activityViews = run_waterline_activity_views($runId);
     $activityView = activity_view_for_execution($activityViews, $activityExecutionId);
@@ -2985,7 +3117,7 @@ function operator_surface_snapshot(string $state, string $activityId, string $ru
             'activity_heartbeat_recorded' => history_payload_for_execution($history, HistoryEventType::ActivityHeartbeatRecorded->value, $activityExecutionId),
         ],
         'operator_metrics' => [
-            'task_queue' => ACTIVITIES_TASK_QUEUE,
+            'task_queue' => $taskQueue,
             'current_lease' => $currentLease,
             'stats' => $taskQueueDetail['stats'] ?? null,
             'admission' => $taskQueueDetail['admission'] ?? null,
@@ -3017,12 +3149,13 @@ function start_operator_visibility_activity(string $suffix, string $state, array
 {
     $workerId = "activities-operator-{$state}-{$suffix}";
     $activityId = "activities-operator-{$state}-{$suffix}";
+    $taskQueue = scenario_task_queue($activityId);
 
-    register_worker($workerId, [], [ACTIVITY_TYPE], 'workflow-php');
+    register_worker($workerId, $taskQueue, [], [ACTIVITY_TYPE], 'workflow-php');
     $start = request_json('POST', '/activities', [
         'activity_id' => $activityId,
         'activity_type' => ACTIVITY_TYPE,
-        'task_queue' => ACTIVITIES_TASK_QUEUE,
+        'task_queue' => $taskQueue,
         'input' => [[
             'scenario_id' => 'operator_visible_activity_attempt_state',
             'runtime' => 'workflow-php',
@@ -3040,10 +3173,15 @@ function start_operator_visibility_activity(string $suffix, string $state, array
     return [
         'state' => $state,
         'worker_id' => $workerId,
+        'task_queue' => $taskQueue,
         'activity_id' => $activityId,
         'workflow_run_id' => $runId,
         'activity_execution_id' => $activityExecutionId,
-        'task' => poll_task('activity', $workerId),
+        'task' => poll_task('activity', $workerId, $taskQueue, [
+            'workflow_id' => $activityId,
+            'run_id' => $runId,
+            'activity_execution_id' => $activityExecutionId,
+        ]),
     ];
 }
 
@@ -3066,6 +3204,7 @@ function operator_visibility_state_observation(string $state, string $suffix): a
             $activity['activity_id'],
             $activity['workflow_run_id'],
             $activity['activity_execution_id'],
+            $activity['task_queue'],
             $activity['task']['activity_attempt_id'] ?? null,
         );
         $snapshot['heartbeat_response'] = $heartbeat;
@@ -3089,6 +3228,7 @@ function operator_visibility_state_observation(string $state, string $suffix): a
             $activity['activity_id'],
             $activity['workflow_run_id'],
             $activity['activity_execution_id'],
+            $activity['task_queue'],
             $activity['task']['activity_attempt_id'] ?? null,
         );
         $snapshot['failure_response'] = $failResponse;
@@ -3117,6 +3257,7 @@ function operator_visibility_state_observation(string $state, string $suffix): a
             $activity['activity_id'],
             $activity['workflow_run_id'],
             $activity['activity_execution_id'],
+            $activity['task_queue'],
             $activity['task']['activity_attempt_id'] ?? null,
         );
         $snapshot['worker_visible_deadlines'] = $deadlines;
@@ -3141,6 +3282,7 @@ function operator_visibility_state_observation(string $state, string $suffix): a
             $activity['activity_id'],
             $activity['workflow_run_id'],
             $activity['activity_execution_id'],
+            $activity['task_queue'],
             $activity['task']['activity_attempt_id'] ?? null,
         );
         $snapshot['failure_response'] = $failResponse;
@@ -3156,6 +3298,7 @@ function operator_visibility_state_observation(string $state, string $suffix): a
             $activity['activity_id'],
             $activity['workflow_run_id'],
             $activity['activity_execution_id'],
+            $activity['task_queue'],
             $activity['task']['activity_attempt_id'] ?? null,
         );
         $snapshot['activity_result'] = $result;
@@ -3189,6 +3332,7 @@ function operator_visibility_state_observation(string $state, string $suffix): a
             $activity['activity_id'],
             $activity['workflow_run_id'],
             $activity['activity_execution_id'],
+            $activity['task_queue'],
             $activity['task']['activity_attempt_id'] ?? null,
         );
         $snapshot['late_completion_after_cancel_response'] = $lateCompletion;
@@ -3242,6 +3386,7 @@ function run_heartbeat_cancellation_cell(): array
     $suffix = bin2hex(random_bytes(3));
     $workerId = "activities-heartbeat-cancel-{$suffix}";
     $activityId = "activities-heartbeat-cancel-{$suffix}";
+    $taskQueue = scenario_task_queue($activityId);
     $heartbeatDetails = [
         'message' => 'activities conformance heartbeat',
         'current' => 1,
@@ -3253,11 +3398,11 @@ function run_heartbeat_cancellation_cell(): array
         ],
     ];
 
-    register_worker($workerId, [], [ACTIVITY_TYPE], 'workflow-php');
+    register_worker($workerId, $taskQueue, [], [ACTIVITY_TYPE], 'workflow-php');
     $start = request_json('POST', '/activities', [
         'activity_id' => $activityId,
         'activity_type' => ACTIVITY_TYPE,
-        'task_queue' => ACTIVITIES_TASK_QUEUE,
+        'task_queue' => $taskQueue,
         'input' => [[
             'scenario_id' => 'heartbeat_and_cancellation_observation',
             'runtime' => 'workflow-php',
@@ -3272,7 +3417,11 @@ function run_heartbeat_cancellation_cell(): array
         throw new RuntimeException('heartbeat/cancellation activity start did not return execution and run identifiers');
     }
 
-    $activityTask = poll_task('activity', $workerId);
+    $activityTask = poll_task('activity', $workerId, $taskQueue, [
+        'workflow_id' => $activityId,
+        'run_id' => $runId,
+        'activity_execution_id' => $activityExecutionId,
+    ]);
     $heartbeatResponse = heartbeat_activity_task($activityTask, $heartbeatDetails);
     $historyAfterHeartbeat = request_json('GET', '/workflows/'.rawurlencode($activityId).'/runs/'.rawurlencode($runId).'/history');
     $heartbeatPayload = history_payload_for_execution(
@@ -3354,6 +3503,7 @@ function run_heartbeat_cancellation_cell(): array
         'execution_source' => HOST_EVIDENCE_SOURCE,
         'activity_id' => $activityId,
         'workflow_run_id' => $runId,
+        'task_queue' => $taskQueue,
         'activity_execution_id' => $activityExecutionId,
         'activity_attempt_id' => $activityTask['activity_attempt_id'] ?? null,
         'activity_type' => $activityTask['activity_type'] ?? ACTIVITY_TYPE,
@@ -3393,12 +3543,13 @@ function run_idempotent_completion_cell(): array
     $suffix = bin2hex(random_bytes(3));
     $workerId = "activities-idempotent-complete-{$suffix}";
     $activityId = "activities-idempotent-complete-{$suffix}";
+    $taskQueue = scenario_task_queue($activityId);
 
-    register_worker($workerId, [], [ACTIVITY_TYPE], 'workflow-php');
+    register_worker($workerId, $taskQueue, [], [ACTIVITY_TYPE], 'workflow-php');
     $start = request_json('POST', '/activities', [
         'activity_id' => $activityId,
         'activity_type' => ACTIVITY_TYPE,
-        'task_queue' => ACTIVITIES_TASK_QUEUE,
+        'task_queue' => $taskQueue,
         'input' => [[
             'scenario_id' => 'idempotent_completion_handling',
             'runtime' => 'workflow-php',
@@ -3411,7 +3562,11 @@ function run_idempotent_completion_cell(): array
         throw new RuntimeException('idempotent completion activity start did not return execution and run identifiers');
     }
 
-    $activityTask = poll_task('activity', $workerId);
+    $activityTask = poll_task('activity', $workerId, $taskQueue, [
+        'workflow_id' => $activityId,
+        'run_id' => $runId,
+        'activity_execution_id' => $activityExecutionId,
+    ]);
     $codec = task_codec($activityTask);
     $payload = activity_input($activityTask, $codec);
     $result = [
@@ -3439,9 +3594,20 @@ function run_idempotent_completion_cell(): array
     );
     $show = request_json('GET', '/activities/'.rawurlencode($activityId));
     $history = request_json('GET', '/workflows/'.rawurlencode($activityId).'/runs/'.rawurlencode($runId).'/history');
-    $completedHistoryCount = count_event_type($history, HistoryEventType::ActivityCompleted->value);
+    assert_activity_handle_identity($show, $activityId, $runId, $activityExecutionId, 'idempotent completion');
+    $completedHistoryEvents = array_values(array_filter(
+        history_payloads_for_event($history, HistoryEventType::ActivityCompleted->value),
+        static fn (array $payload): bool => ($payload['activity_execution_id'] ?? null) === $activityExecutionId
+            && ($payload['activity_attempt_id'] ?? null) === ($activityTask['activity_attempt_id'] ?? null),
+    ));
+    $completedHistoryCount = count($completedHistoryEvents);
+    $sameTaskAndAttempt = ($firstCompletion['task_id'] ?? null) === ($activityTask['task_id'] ?? null)
+        && ($duplicateCompletion['task_id'] ?? null) === ($activityTask['task_id'] ?? null)
+        && ($firstCompletion['activity_attempt_id'] ?? null) === ($activityTask['activity_attempt_id'] ?? null)
+        && ($duplicateCompletion['activity_attempt_id'] ?? null) === ($activityTask['activity_attempt_id'] ?? null);
     $recordedOnce = ($firstCompletion['recorded'] ?? null) === true
         && ($duplicateCompletion['recorded'] ?? null) === false
+        && $sameTaskAndAttempt
         && $completedHistoryCount === 1;
     $deterministicDuplicate = ($duplicateCompletion['outcome'] ?? null) === 'completed'
         && ($duplicateCompletion['reason'] ?? null) === 'stale_attempt';
@@ -3461,15 +3627,17 @@ function run_idempotent_completion_cell(): array
         'execution_source' => HOST_EVIDENCE_SOURCE,
         'activity_id' => $activityId,
         'workflow_run_id' => $runId,
+        'task_queue' => $taskQueue,
         'activity_execution_id' => $activityExecutionId,
         'activity_attempt_id' => $activityTask['activity_attempt_id'] ?? null,
         'activity_type' => $activityTask['activity_type'] ?? ACTIVITY_TYPE,
         'first_completion_response' => $firstCompletion,
         'duplicate_completion_response' => $duplicateCompletion,
         'recorded_once' => $recordedOnce,
+        'same_task_and_attempt_ids' => $sameTaskAndAttempt,
         'stale_attempt_or_idempotent_verdict' => $duplicateCompletion['reason'] ?? null,
         'activity_completed_history_count' => $completedHistoryCount,
-        'activity_completed_history_events' => history_payloads_for_event($history, HistoryEventType::ActivityCompleted->value),
+        'activity_completed_history_events' => $completedHistoryEvents,
         'terminal_result' => [
             'activity_status' => $show['activity_status'] ?? null,
             'run_status' => $show['status'] ?? null,
@@ -3603,6 +3771,8 @@ function run_php_python_parity_cell(): array
         'python_activity_id' => $pythonResultObservation['activity_id'] ?? null,
         'php_workflow_run_id' => $phpResultObservation['workflow_run_id'] ?? null,
         'python_workflow_run_id' => $pythonResultObservation['workflow_run_id'] ?? null,
+        'php_activity_execution_id' => $phpResultObservation['activity_execution_id'] ?? null,
+        'python_activity_execution_id' => $pythonResultObservation['activity_execution_id'] ?? null,
         'php_activity_result' => $phpResultObservation['result_payload'] ?? null,
         'python_activity_result' => $pythonResultObservation['result_payload'] ?? null,
         'cross_language_payload_shape' => $shape,
@@ -3656,9 +3826,41 @@ function run_php_python_parity_cell(): array
 function run_operator_visibility_cell(): array
 {
     $suffix = bin2hex(random_bytes(3));
-    $stateObservations = [];
-    foreach (['in_flight', 'retrying', 'timed_out', 'failed', 'completed', 'cancelled'] as $state) {
+    $stateObservations = [
+        'in_flight' => operator_visibility_state_observation('in_flight', $suffix),
+        'retrying' => operator_visibility_state_observation('retrying', $suffix),
+    ];
+    $retryTaskId = (string) ($stateObservations['retrying']['failure_response']['next_task_id'] ?? '');
+    $retryAvailableAt = workflow_task_available_at($retryTaskId);
+    $retryAvailableTimestamp = timestamp_from_datetime($retryAvailableAt);
+    if ($retryTaskId === '' || $retryAvailableTimestamp === null) {
+        throw new RuntimeException('operator visibility stale-queue fixture did not retain its 60-second retry task');
+    }
+    wait_until_timestamp($retryAvailableTimestamp + 0.10);
+    $retryBackoffCrossedAt = microtime(true);
+
+    $stateObservations['timed_out'] = operator_visibility_state_observation('timed_out', $suffix);
+    foreach (['failed', 'completed', 'cancelled'] as $state) {
         $stateObservations[$state] = operator_visibility_state_observation($state, $suffix);
+    }
+    $staleQueueRegressionFixture = [
+        'retry_task_id' => $retryTaskId,
+        'retry_activity_execution_id' => $stateObservations['retrying']['activity_execution_id'] ?? null,
+        'retry_task_queue' => $stateObservations['retrying']['operator_metrics']['task_queue'] ?? null,
+        'configured_backoff_seconds' => 60,
+        'retry_available_at' => iso_from_datetime($retryAvailableAt),
+        'backoff_crossed_at' => iso_from_timestamp($retryBackoffCrossedAt),
+        'backoff_crossed_before_timed_out_poll' => $retryBackoffCrossedAt >= $retryAvailableTimestamp,
+        'timed_out_activity_execution_id' => $stateObservations['timed_out']['activity_execution_id'] ?? null,
+        'timed_out_task_queue' => $stateObservations['timed_out']['operator_metrics']['task_queue'] ?? null,
+        'isolated_task_queues' => ($stateObservations['retrying']['operator_metrics']['task_queue'] ?? null)
+            !== ($stateObservations['timed_out']['operator_metrics']['task_queue'] ?? null),
+        'timed_out_worker_visible_start_to_close_deadline' => $stateObservations['timed_out']['worker_visible_deadlines']['start_to_close'] ?? null,
+    ];
+    if (($staleQueueRegressionFixture['backoff_crossed_before_timed_out_poll'] ?? null) !== true
+        || ($staleQueueRegressionFixture['isolated_task_queues'] ?? null) !== true
+        || ! is_string($staleQueueRegressionFixture['timed_out_worker_visible_start_to_close_deadline'] ?? null)) {
+        throw new RuntimeException('operator visibility stale-queue fixture did not prove isolated timed-out delivery after the 60-second retry became ready');
     }
 
     $statePasses = [];
@@ -3696,6 +3898,7 @@ function run_operator_visibility_cell(): array
         'activity_type' => ACTIVITY_TYPE,
         'required_operator_states' => ['in_flight', 'retrying', 'timed_out', 'failed', 'completed', 'cancelled'],
         'operator_state_matrix' => $stateObservations,
+        'stale_shared_queue_regression_fixture' => $staleQueueRegressionFixture,
         'operator_state_passes' => $statePasses,
         'operator_state_passes_without_cli' => $statePassesWithoutCli,
         'missing_operator_surface_reasons' => $missingSurfaceReasons,
@@ -3713,7 +3916,7 @@ function run_operator_visibility_cell(): array
             'history_visible' => $inFlightObservation['surface_visibility']['history_visible'] ?? null,
         ],
         'operator_metrics' => [
-            'task_queue' => ACTIVITIES_TASK_QUEUE,
+            'task_queue' => $inFlightObservation['operator_metrics']['task_queue'] ?? null,
             'current_lease' => $inFlightObservation['operator_metrics']['current_lease'] ?? null,
             'stats' => $inFlightObservation['operator_metrics']['stats'] ?? null,
             'admission' => $inFlightObservation['operator_metrics']['admission'] ?? null,
@@ -3732,26 +3935,33 @@ function run_restart_durable_result_cell(): array
     $firstWorkerId = "activities-restart-first-{$suffix}";
     $restartWorkerId = "activities-restart-replay-{$suffix}";
     $workflowId = "activities-restart-durable-{$suffix}";
+    $taskQueue = scenario_task_queue($workflowId);
 
-    register_worker($firstWorkerId, [EMBEDDED_WORKFLOW_TYPE], [ACTIVITY_TYPE], 'workflow-php');
-    register_worker($restartWorkerId, [EMBEDDED_WORKFLOW_TYPE], [ACTIVITY_TYPE], 'workflow-php');
+    register_worker($firstWorkerId, $taskQueue, [EMBEDDED_WORKFLOW_TYPE], [ACTIVITY_TYPE], 'workflow-php');
+    register_worker($restartWorkerId, $taskQueue, [EMBEDDED_WORKFLOW_TYPE], [ACTIVITY_TYPE], 'workflow-php');
 
     $start = request_json('POST', '/workflows', [
         'workflow_id' => $workflowId,
         'workflow_type' => EMBEDDED_WORKFLOW_TYPE,
-        'task_queue' => ACTIVITIES_TASK_QUEUE,
+        'task_queue' => $taskQueue,
         'input' => [[
             'scenario_id' => 'durable_result_recording_after_worker_restart',
             'runtime' => 'workflow-php',
             'input_marker' => "restart-durable-{$suffix}",
+            'task_queue' => $taskQueue,
         ]],
     ]);
     $runId = (string) ($start['run_id'] ?? '');
+    $expectedIdentity = ['workflow_id' => $workflowId, 'run_id' => $runId];
 
-    $workflowTask = poll_task('workflow', $firstWorkerId);
+    $workflowTask = poll_task('workflow', $firstWorkerId, $taskQueue, $expectedIdentity);
     complete_workflow_task_from_runtime($workflowTask);
 
-    $activityTask = poll_task('activity', $firstWorkerId);
+    $activityExecutionId = activity_execution_id_for_run($runId, 'restart durability');
+    $activityTask = poll_task('activity', $firstWorkerId, $taskQueue, [
+        ...$expectedIdentity,
+        'activity_execution_id' => $activityExecutionId,
+    ]);
     [$activityResult, $activityComplete, $workerArtifact] = complete_activity_task(
         $activityTask,
         'workflow-php',
@@ -3765,7 +3975,7 @@ function run_restart_durable_result_cell(): array
         throw new RuntimeException('activity result was not durably recorded before the worker restart');
     }
 
-    $resumeTask = poll_task('workflow', $restartWorkerId);
+    $resumeTask = poll_task('workflow', $restartWorkerId, $taskQueue, $expectedIdentity);
     $workflowComplete = complete_workflow_task_from_runtime($resumeTask);
 
     $run = request_json('GET', '/workflows/'.rawurlencode($workflowId).'/runs/'.rawurlencode($runId));
@@ -3781,7 +3991,7 @@ function run_restart_durable_result_cell(): array
 
     $emptyActivityPoll = request_json('POST', '/worker/activity-tasks/poll', [
         'worker_id' => $restartWorkerId,
-        'task_queue' => ACTIVITIES_TASK_QUEUE,
+        'task_queue' => $taskQueue,
     ]);
     if (is_array($emptyActivityPoll['task'] ?? null)) {
         throw new RuntimeException('activity task was redelivered after terminal completion was recorded');
@@ -3800,6 +4010,7 @@ function run_restart_durable_result_cell(): array
         'restart_worker_identity' => $restartWorkerId,
         'workflow_id' => $workflowId,
         'run_id' => $runId,
+        'task_queue' => $taskQueue,
         'activity_execution_id' => $activityTask['activity_execution_id'] ?? null,
         'activity_attempt_id' => $activityTask['activity_attempt_id'] ?? null,
         'activity_type' => $activityTask['activity_type'] ?? ACTIVITY_TYPE,
@@ -3834,6 +4045,7 @@ function run_retry_backoff_cell(): array
     $suffix = bin2hex(random_bytes(3));
     $workerId = "activities-retry-backoff-{$suffix}";
     $activityId = "activities-retry-backoff-{$suffix}";
+    $taskQueue = scenario_task_queue($activityId);
     $retryPolicy = [
         'max_attempts' => 3,
         'backoff_seconds' => [1],
@@ -3846,11 +4058,11 @@ function run_retry_backoff_cell(): array
         'non_retryable' => false,
     ];
 
-    register_worker($workerId, [], [ACTIVITY_TYPE], 'workflow-php');
+    register_worker($workerId, $taskQueue, [], [ACTIVITY_TYPE], 'workflow-php');
     $start = request_json('POST', '/activities', [
         'activity_id' => $activityId,
         'activity_type' => ACTIVITY_TYPE,
-        'task_queue' => ACTIVITIES_TASK_QUEUE,
+        'task_queue' => $taskQueue,
         'input' => [[
             'scenario_id' => 'retry_attempt_backoff_behavior',
             'runtime' => 'workflow-php',
@@ -3859,9 +4071,15 @@ function run_retry_backoff_cell(): array
         'retry_policy' => $retryPolicy,
     ]);
     $runId = (string) ($start['workflow_run_id'] ?? '');
+    $activityExecutionId = (string) ($start['activity_execution_id'] ?? '');
+    $expectedIdentity = [
+        'workflow_id' => $activityId,
+        'run_id' => $runId,
+        'activity_execution_id' => $activityExecutionId,
+    ];
 
     $firstPollAt = microtime(true);
-    $firstTask = poll_task('activity', $workerId);
+    $firstTask = poll_task('activity', $workerId, $taskQueue, $expectedIdentity);
     $firstLeasedAt = microtime(true);
 
     $failRequestedAt = microtime(true);
@@ -3882,7 +4100,7 @@ function run_retry_backoff_cell(): array
     wait_until_timestamp($retryAvailableTimestamp);
 
     $secondPollAt = microtime(true);
-    $secondTask = poll_task('activity', $workerId);
+    $secondTask = poll_task('activity', $workerId, $taskQueue, $expectedIdentity);
     $secondLeasedAt = microtime(true);
 
     [$activityResult, $activityComplete, $workerArtifact] = complete_activity_task(
@@ -3944,6 +4162,7 @@ function run_retry_backoff_cell(): array
         'execution_source' => HOST_EVIDENCE_SOURCE,
         'activity_id' => $activityId,
         'workflow_run_id' => $runId,
+        'task_queue' => $taskQueue,
         'activity_execution_id' => $firstTask['activity_execution_id'] ?? null,
         'activity_type' => $firstTask['activity_type'] ?? ACTIVITY_TYPE,
         'configured_retry_policy' => $retryPolicy,
@@ -4017,6 +4236,7 @@ function run_timeout_behavior_cell(): array
     $suffix = bin2hex(random_bytes(3));
     $workerId = "activities-timeout-{$suffix}";
     $activityId = "activities-timeout-{$suffix}";
+    $taskQueue = scenario_task_queue($activityId);
     $configuredTimeouts = [
         'start_to_close_timeout_seconds' => 1,
         'schedule_to_close_timeout_seconds' => 30,
@@ -4026,11 +4246,11 @@ function run_timeout_behavior_cell(): array
         ],
     ];
 
-    register_worker($workerId, [], [ACTIVITY_TYPE], 'workflow-php');
+    register_worker($workerId, $taskQueue, [], [ACTIVITY_TYPE], 'workflow-php');
     $start = request_json('POST', '/activities', [
         'activity_id' => $activityId,
         'activity_type' => ACTIVITY_TYPE,
-        'task_queue' => ACTIVITIES_TASK_QUEUE,
+        'task_queue' => $taskQueue,
         'input' => [[
             'scenario_id' => 'timeout_behavior',
             'runtime' => 'workflow-php',
@@ -4045,7 +4265,11 @@ function run_timeout_behavior_cell(): array
     }
 
     $pollStartedAt = microtime(true);
-    $activityTask = poll_task('activity', $workerId);
+    $activityTask = poll_task('activity', $workerId, $taskQueue, [
+        'workflow_id' => $activityId,
+        'run_id' => $runId,
+        'activity_execution_id' => $activityExecutionId,
+    ]);
     $leasedAt = microtime(true);
     $deadlines = is_array($activityTask['deadlines'] ?? null) ? $activityTask['deadlines'] : [];
     $deadlineAt = is_string($deadlines['start_to_close'] ?? null) ? $deadlines['start_to_close'] : '';
@@ -4145,6 +4369,7 @@ function run_timeout_behavior_cell(): array
         'execution_source' => HOST_EVIDENCE_SOURCE,
         'activity_id' => $activityId,
         'workflow_run_id' => $runId,
+        'task_queue' => $taskQueue,
         'activity_execution_id' => $activityExecutionId,
         'activity_attempt_id' => $activityTask['activity_attempt_id'] ?? null,
         'activity_type' => $activityTask['activity_type'] ?? ACTIVITY_TYPE,
@@ -4251,7 +4476,10 @@ function run_heartbeat_timeout_renewal_cell(): array
     $suffix = bin2hex(random_bytes(3));
     $workerId = "activities-sdk-php-heartbeat-{$suffix}";
     $activityId = "activities-sdk-php-heartbeat-{$suffix}";
+    $taskQueue = scenario_task_queue($activityId);
+    $negativeWorkerId = "activities-sdk-php-heartbeat-negative-worker-{$suffix}";
     $negativeActivityId = "activities-sdk-php-heartbeat-negative-{$suffix}";
+    $negativeTaskQueue = scenario_task_queue($negativeActivityId);
     $heartbeatTimeoutSeconds = 2;
     $heartbeatCadenceSeconds = 0.35;
     $heartbeatCount = 7;
@@ -4266,7 +4494,7 @@ function run_heartbeat_timeout_renewal_cell(): array
     $start = request_json('POST', '/activities', [
         'activity_id' => $activityId,
         'activity_type' => ACTIVITY_TYPE,
-        'task_queue' => ACTIVITIES_TASK_QUEUE,
+        'task_queue' => $taskQueue,
         'input' => [[
             'scenario_id' => 'heartbeat_timeout_renewal_across_enforcement_passes',
             'runtime' => 'sdk-php',
@@ -4293,7 +4521,7 @@ function run_heartbeat_timeout_renewal_cell(): array
     $worker = null;
     $worker = new PublishedPhpSdkWorker(
         $client,
-        ACTIVITIES_TASK_QUEUE,
+        $taskQueue,
         $workerId,
     );
     $worker->registerActivity(
@@ -4304,6 +4532,7 @@ function run_heartbeat_timeout_renewal_cell(): array
         ) use (
             &$worker,
             $transport,
+            $activityId,
             $activityExecutionId,
             $runId,
             $heartbeatTimeoutSeconds,
@@ -4320,6 +4549,19 @@ function run_heartbeat_timeout_renewal_cell(): array
             // Stop the managed loop after this leased task, including when a
             // fail-closed assertion throws and the SDK reports task failure.
             $worker?->requestShutdown();
+            $pollExchange = $transport->latest('/activity-tasks/poll', 'POST');
+            $polledTask = is_array($pollExchange['response']['task'] ?? null)
+                ? $pollExchange['response']['task']
+                : [];
+            assert_task_identity($polledTask, [
+                'workflow_id' => $activityId,
+                'run_id' => $runId,
+                'activity_execution_id' => $activityExecutionId,
+            ], 'managed PHP SDK heartbeat worker');
+            $polledInput = activity_input($polledTask, task_codec($polledTask));
+            if (($polledInput['input_marker'] ?? null) !== "sdk-php-heartbeat-renewal-{$suffix}") {
+                throw new RuntimeException('managed PHP SDK heartbeat worker leased the wrong scenario payload');
+            }
             $initialState = activity_execution_state($activityExecutionId) ?? [];
             $initialHeartbeatDeadlineAt = (string) ($initialState['heartbeat_deadline_at'] ?? '');
             $previousDeadlineTimestamp = timestamp_from_datetime($initialHeartbeatDeadlineAt);
@@ -4417,6 +4659,10 @@ function run_heartbeat_timeout_renewal_cell(): array
         },
     );
     $worker->run(0);
+    $managedWorkerDeregistration = $transport->latest('/worker/registrations/'.$workerId, 'DELETE');
+    if (($managedWorkerDeregistration['response']['outcome'] ?? null) !== 'deregistered') {
+        throw new RuntimeException('managed PHP SDK heartbeat worker did not deregister after its orderly run exit');
+    }
 
     $completionExchange = $transport->latest('/complete', 'POST');
     $completionResponse = is_array($completionExchange['response'] ?? null)
@@ -4424,6 +4670,7 @@ function run_heartbeat_timeout_renewal_cell(): array
         : [];
     $show = request_json('GET', '/activities/'.rawurlencode($activityId));
     $history = request_json('GET', '/workflows/'.rawurlencode($activityId).'/runs/'.rawurlencode($runId).'/history');
+    assert_activity_handle_identity($show, $activityId, $runId, $activityExecutionId, 'PHP SDK heartbeat renewal');
     $heartbeatPayloads = history_payloads_for_event($history, HistoryEventType::ActivityHeartbeatRecorded->value);
     $completedPayloads = history_payloads_for_event($history, HistoryEventType::ActivityCompleted->value);
     $timedOutPayloads = history_payloads_for_event($history, HistoryEventType::ActivityTimedOut->value);
@@ -4457,7 +4704,7 @@ function run_heartbeat_timeout_renewal_cell(): array
     $negativeStart = request_json('POST', '/activities', [
         'activity_id' => $negativeActivityId,
         'activity_type' => ACTIVITY_TYPE,
-        'task_queue' => ACTIVITIES_TASK_QUEUE,
+        'task_queue' => $negativeTaskQueue,
         'input' => [[
             'scenario_id' => 'heartbeat_timeout_renewal_across_enforcement_passes',
             'runtime' => 'sdk-php',
@@ -4472,11 +4719,21 @@ function run_heartbeat_timeout_renewal_cell(): array
     ]);
     $negativeRunId = (string) ($negativeStart['workflow_run_id'] ?? '');
     $negativeExecutionId = (string) ($negativeStart['activity_execution_id'] ?? '');
-    $negativeTask = $client->pollActivityTask($workerId, ACTIVITIES_TASK_QUEUE, 0);
-    if (! is_array($negativeTask)
-        || ($negativeTask['activity_execution_id'] ?? null) !== $negativeExecutionId) {
+    $negativeWorkerRegistration = $client->registerWorker(
+        $negativeWorkerId,
+        $negativeTaskQueue,
+        [],
+        [ACTIVITY_TYPE],
+    );
+    $negativeTask = $client->pollActivityTask($negativeWorkerId, $negativeTaskQueue, 0);
+    if (! is_array($negativeTask)) {
         throw new RuntimeException('PHP SDK negative control did not lease the expected activity attempt');
     }
+    assert_task_identity($negativeTask, [
+        'workflow_id' => $negativeActivityId,
+        'run_id' => $negativeRunId,
+        'activity_execution_id' => $negativeExecutionId,
+    ], 'dedicated PHP SDK heartbeat negative-control worker');
     $negativeState = activity_execution_state($negativeExecutionId) ?? [];
     $negativeDeadlineAt = (string) ($negativeState['heartbeat_deadline_at'] ?? '');
     $negativeDeadlineTimestamp = timestamp_from_datetime($negativeDeadlineAt);
@@ -4523,6 +4780,7 @@ function run_heartbeat_timeout_renewal_cell(): array
         )
     );
     $negativeShow = request_json('GET', '/activities/'.rawurlencode($negativeActivityId));
+    assert_activity_handle_identity($negativeShow, $negativeActivityId, $negativeRunId, $negativeExecutionId, 'PHP SDK heartbeat negative control');
     $negativeHistory = request_json(
         'GET',
         '/workflows/'.rawurlencode($negativeActivityId).'/runs/'.rawurlencode($negativeRunId).'/history'
@@ -4554,6 +4812,10 @@ function run_heartbeat_timeout_renewal_cell(): array
         || $negativeTerminalHistory['activity_failed_count'] !== 0) {
         throw new RuntimeException('PHP SDK no-heartbeat negative control did not preserve typed timeout and deterministic stale-attempt responses');
     }
+    $negativeWorkerDeregistration = $client->deregisterWorkerRegistration($negativeWorkerId);
+    if (($negativeWorkerDeregistration['outcome'] ?? null) !== 'deregistered') {
+        throw new RuntimeException('PHP SDK heartbeat negative-control worker did not deregister after the typed stale-attempt checks');
+    }
 
     $hostEvidence = [
         'schema' => HOST_EVIDENCE_SCHEMA,
@@ -4582,6 +4844,9 @@ function run_heartbeat_timeout_renewal_cell(): array
         'execution_source' => HOST_EVIDENCE_SOURCE,
         'activity_id' => $activityId,
         'workflow_run_id' => $runId,
+        'task_queue' => $taskQueue,
+        'worker_id' => $workerId,
+        'managed_worker_deregistration' => $managedWorkerDeregistration,
         'activity_execution_id' => $activityExecutionId,
         'activity_attempt_id' => $acknowledgements[0]['response']['activity_attempt_id'] ?? null,
         'php_sdk_worker_artifact' => $workerArtifact,
@@ -4607,6 +4872,10 @@ function run_heartbeat_timeout_renewal_cell(): array
         'negative_control' => [
             'activity_id' => $negativeActivityId,
             'workflow_run_id' => $negativeRunId,
+            'task_queue' => $negativeTaskQueue,
+            'worker_id' => $negativeWorkerId,
+            'worker_registration' => $negativeWorkerRegistration,
+            'worker_deregistration' => $negativeWorkerDeregistration,
             'activity_execution_id' => $negativeExecutionId,
             'activity_attempt_id' => $negativeTask['activity_attempt_id'] ?? null,
             'initial_heartbeat_deadline_at' => $negativeDeadlineAt,
@@ -4661,6 +4930,10 @@ function scenario_from_heartbeat_timeout_renewal_cell(array $cell): array
         && ($lateCompletion['reason'] ?? null) === 'stale_attempt'
         && ($lateFailure['http_status'] ?? null) === 409
         && ($lateFailure['reason'] ?? null) === 'stale_attempt'
+        && ($cell['managed_worker_deregistration']['response']['outcome'] ?? null) === 'deregistered'
+        && ($negative['worker_deregistration']['outcome'] ?? null) === 'deregistered'
+        && ($negative['worker_id'] ?? null) !== ($cell['worker_id'] ?? null)
+        && ($negative['task_queue'] ?? null) !== ($cell['task_queue'] ?? null)
         && ($cell['isolated_cleanup']['scratch_removed_on_exit'] ?? null) === true;
     $observed = [
         'activity_host_evidence' => $cell['activity_host_evidence'] ?? null,
@@ -4669,6 +4942,9 @@ function scenario_from_heartbeat_timeout_renewal_cell(array $cell): array
         'workflow_run_id' => $cell['workflow_run_id'] ?? null,
         'activity_execution_id' => $cell['activity_execution_id'] ?? null,
         'activity_attempt_id' => $cell['activity_attempt_id'] ?? null,
+        'task_queue' => $cell['task_queue'] ?? null,
+        'worker_id' => $cell['worker_id'] ?? null,
+        'managed_worker_deregistration' => $cell['managed_worker_deregistration'] ?? null,
         'php_sdk_worker_artifact' => $cell['php_sdk_worker_artifact'] ?? null,
         'heartbeat_timeout_seconds' => $cell['heartbeat_timeout_seconds'] ?? null,
         'heartbeat_cadence_seconds' => $cell['heartbeat_cadence_seconds'] ?? null,
@@ -4710,6 +4986,7 @@ function run_typed_failure_propagation_cell(): array
     $suffix = bin2hex(random_bytes(3));
     $workerId = "activities-typed-failure-{$suffix}";
     $workflowId = "activities-typed-failure-{$suffix}";
+    $taskQueue = scenario_task_queue($workflowId);
     $failureType = 'ActivitiesConformanceTypedFailure';
     $failureMessage = 'typed activity failure propagated from published artifact worker';
     $failureClass = 'DurableWorkflow\\Conformance\\Activities\\TypedActivityFailure';
@@ -4734,32 +5011,38 @@ function run_typed_failure_propagation_cell(): array
         ],
     ];
 
-    register_worker($workerId, [EMBEDDED_WORKFLOW_TYPE], [ACTIVITY_TYPE], 'workflow-php');
+    register_worker($workerId, $taskQueue, [EMBEDDED_WORKFLOW_TYPE], [ACTIVITY_TYPE], 'workflow-php');
     $start = request_json('POST', '/workflows', [
         'workflow_id' => $workflowId,
         'workflow_type' => EMBEDDED_WORKFLOW_TYPE,
-        'task_queue' => ACTIVITIES_TASK_QUEUE,
+        'task_queue' => $taskQueue,
         'input' => [[
             'scenario_id' => 'typed_failure_propagation',
             'runtime' => 'workflow-php',
             'input_marker' => "typed-failure-{$suffix}",
+            'task_queue' => $taskQueue,
         ]],
     ]);
     $runId = (string) ($start['run_id'] ?? '');
     if ($runId === '') {
         throw new RuntimeException('typed failure workflow start did not return a run id');
     }
+    $expectedIdentity = ['workflow_id' => $workflowId, 'run_id' => $runId];
 
-    $workflowTask = poll_task('workflow', $workerId);
+    $workflowTask = poll_task('workflow', $workerId, $taskQueue, $expectedIdentity);
     complete_workflow_task_from_runtime($workflowTask);
 
-    $activityTask = poll_task('activity', $workerId);
+    $activityExecutionId = activity_execution_id_for_run($runId, 'typed failure propagation');
+    $activityTask = poll_task('activity', $workerId, $taskQueue, [
+        ...$expectedIdentity,
+        'activity_execution_id' => $activityExecutionId,
+    ]);
     $failResponse = fail_activity_task($activityTask, $failurePayload);
     if (($failResponse['outcome'] ?? null) !== 'failed' || ($failResponse['recorded'] ?? null) !== true) {
         throw new RuntimeException('typed failure activity report was not durably recorded');
     }
 
-    $resumeTask = poll_task('workflow', $workerId);
+    $resumeTask = poll_task('workflow', $workerId, $taskQueue, $expectedIdentity);
     $workflowComplete = complete_workflow_task_from_runtime($resumeTask);
 
     $run = request_json('GET', '/workflows/'.rawurlencode($workflowId).'/runs/'.rawurlencode($runId));
@@ -4819,6 +5102,7 @@ function run_typed_failure_propagation_cell(): array
         'execution_source' => HOST_EVIDENCE_SOURCE,
         'workflow_id' => $workflowId,
         'run_id' => $runId,
+        'task_queue' => $taskQueue,
         'activity_execution_id' => $activityTask['activity_execution_id'] ?? null,
         'activity_attempt_id' => $activityTask['activity_attempt_id'] ?? null,
         'activity_type' => $activityTask['activity_type'] ?? ACTIVITY_TYPE,
@@ -5185,6 +5469,7 @@ function scenario_from_idempotent_completion_cell(array $cell): array
         && is_array($cell['duplicate_completion_response'] ?? null)
         && is_string($cell['activity_attempt_id'] ?? null)
         && ($cell['recorded_once'] ?? null) === true
+        && ($cell['same_task_and_attempt_ids'] ?? null) === true
         && ($cell['stale_attempt_or_idempotent_verdict'] ?? null) === 'stale_attempt'
         && ($cell['activity_completed_history_count'] ?? null) === 1;
     $hostEvidence = [
@@ -5214,6 +5499,7 @@ function scenario_from_idempotent_completion_cell(array $cell): array
         'first_completion_response' => $cell['first_completion_response'] ?? null,
         'duplicate_completion_response' => $cell['duplicate_completion_response'] ?? null,
         'recorded_once' => $cell['recorded_once'] ?? null,
+        'same_task_and_attempt_ids' => $cell['same_task_and_attempt_ids'] ?? null,
         'stale_attempt_or_idempotent_verdict' => $cell['stale_attempt_or_idempotent_verdict'] ?? null,
         'activity_completed_history_count' => $cell['activity_completed_history_count'] ?? null,
         'activity_completed_history_events' => $cell['activity_completed_history_events'] ?? null,
@@ -5282,6 +5568,8 @@ function scenario_from_php_python_parity_cell(array $cell): array
         'python_activity_id' => $cell['python_activity_id'] ?? null,
         'php_workflow_run_id' => $cell['php_workflow_run_id'] ?? null,
         'python_workflow_run_id' => $cell['python_workflow_run_id'] ?? null,
+        'php_activity_execution_id' => $cell['php_activity_execution_id'] ?? null,
+        'python_activity_execution_id' => $cell['python_activity_execution_id'] ?? null,
         'php_activity_result' => $cell['php_activity_result'] ?? null,
         'python_activity_result' => $cell['python_activity_result'] ?? null,
         'cross_language_payload_shape' => $shape,
@@ -5330,6 +5618,9 @@ function scenario_from_operator_visibility_cell(array $cell): array
         ? $cell['operator_state_passes_without_cli']
         : [];
     $requiredStates = ['in_flight', 'retrying', 'timed_out', 'failed', 'completed', 'cancelled'];
+    $staleQueueRegressionFixture = is_array($cell['stale_shared_queue_regression_fixture'] ?? null)
+        ? $cell['stale_shared_queue_regression_fixture']
+        : [];
     $nonCliSurfacesPass = array_diff($requiredStates, array_keys($statePassesWithoutCli)) === []
         && ! in_array(false, array_map(
             static fn (mixed $value): bool => $value === true,
@@ -5338,7 +5629,11 @@ function scenario_from_operator_visibility_cell(array $cell): array
         && ($cell['api_run_detail']['api_visible'] ?? null) === true
         && ($cell['history_activity_attempts']['history_visible'] ?? null) === true
         && ($cell['operator_metrics']['lease_visible'] ?? null) === true
-        && ($cell['waterline_activity_attempt_view']['waterline_visible'] ?? null) === true;
+        && ($cell['waterline_activity_attempt_view']['waterline_visible'] ?? null) === true
+        && ($staleQueueRegressionFixture['configured_backoff_seconds'] ?? null) === 60
+        && ($staleQueueRegressionFixture['backoff_crossed_before_timed_out_poll'] ?? null) === true
+        && ($staleQueueRegressionFixture['isolated_task_queues'] ?? null) === true
+        && is_string($staleQueueRegressionFixture['timed_out_worker_visible_start_to_close_deadline'] ?? null);
     $cliOnlyFailure = $nonCliSurfacesPass
         && in_array(false, array_map(
             static fn (mixed $value): bool => $value === true,
@@ -5390,6 +5685,7 @@ function scenario_from_operator_visibility_cell(array $cell): array
         'cli_json_list_evidence' => $cell['cli_json_list_evidence'] ?? null,
         'required_operator_states' => $cell['required_operator_states'] ?? null,
         'operator_state_matrix' => $cell['operator_state_matrix'] ?? null,
+        'stale_shared_queue_regression_fixture' => $staleQueueRegressionFixture,
         'operator_state_passes' => $statePasses,
         'operator_state_passes_without_cli' => $statePassesWithoutCli,
         'missing_operator_surface_reasons' => $cell['missing_operator_surface_reasons'] ?? null,
@@ -7595,6 +7891,116 @@ function heartbeatTimeoutRenewalFailures(scenarioId, observedOutputs, artifactVe
   return failures;
 }
 
+function activityIsolationFailures(scenarioId, observedOutputs) {
+  const failures = [];
+  if (scenarioId === 'heartbeat_timeout_renewal_across_enforcement_passes') {
+    const managedDeregistration = nonEmptyObject(observedOutputs.managed_worker_deregistration)
+      ? observedOutputs.managed_worker_deregistration
+      : {};
+    const negative = nonEmptyObject(observedOutputs.negative_control)
+      ? observedOutputs.negative_control
+      : {};
+    if (managedDeregistration?.response?.outcome !== 'deregistered'
+      || negative?.worker_deregistration?.outcome !== 'deregistered'
+      || !stringValue(observedOutputs.worker_id)
+      || !stringValue(negative.worker_id)
+      || observedOutputs.worker_id === negative.worker_id
+      || !stringValue(observedOutputs.task_queue)
+      || !stringValue(negative.task_queue)
+      || observedOutputs.task_queue === negative.task_queue) {
+      failures.push('heartbeat_timeout_renewal_fresh_negative_worker_missing');
+    }
+  }
+
+  if (scenarioId === 'idempotent_completion_handling') {
+    const first = nonEmptyObject(observedOutputs.first_completion_response)
+      ? observedOutputs.first_completion_response
+      : {};
+    const duplicate = nonEmptyObject(observedOutputs.duplicate_completion_response)
+      ? observedOutputs.duplicate_completion_response
+      : {};
+    const completedEvents = Array.isArray(observedOutputs.activity_completed_history_events)
+      ? observedOutputs.activity_completed_history_events
+      : [];
+    const completed = nonEmptyObject(completedEvents[0]) ? completedEvents[0] : {};
+    const executionId = stringValue(observedOutputs.activity_execution_id);
+    if (observedOutputs.same_task_and_attempt_ids !== true
+      || observedOutputs.recorded_once !== true
+      || observedOutputs.activity_completed_history_count !== 1
+      || completedEvents.length !== 1
+      || first.recorded !== true
+      || duplicate.recorded !== false
+      || duplicate.reason !== 'stale_attempt'
+      || !stringValue(first.task_id)
+      || first.task_id !== duplicate.task_id
+      || !stringValue(first.activity_attempt_id)
+      || first.activity_attempt_id !== duplicate.activity_attempt_id
+      || !executionId
+      || completed.activity_execution_id !== executionId
+      || completed.activity_attempt_id !== first.activity_attempt_id) {
+      failures.push('idempotent_completion_task_attempt_identity_invalid');
+    }
+  }
+
+  if (scenarioId === 'php_python_activity_parity') {
+    const handles = nonEmptyObject(observedOutputs.handle_responses)
+      ? observedOutputs.handle_responses
+      : {};
+    for (const [key, runtime] of [['workflow-php', 'workflow-php'], ['sdk-python', 'sdk-python']]) {
+      const prefix = runtime === 'workflow-php' ? 'php' : 'python';
+      const result = nonEmptyObject(
+        runtime === 'workflow-php'
+          ? observedOutputs.php_activity_result
+          : observedOutputs.python_activity_result,
+      )
+        ? (runtime === 'workflow-php'
+          ? observedOutputs.php_activity_result
+          : observedOutputs.python_activity_result)
+        : {};
+      const handle = nonEmptyObject(handles[key]) ? handles[key] : {};
+      const activityId = stringValue(observedOutputs[`${prefix}_activity_id`]);
+      const runId = stringValue(observedOutputs[`${prefix}_workflow_run_id`]);
+      const executionId = stringValue(observedOutputs[`${prefix}_activity_execution_id`]);
+      if (!activityId
+        || !runId
+        || !executionId
+        || result.runtime !== runtime
+        || !stringValue(result.input_marker).startsWith('parity-result-')
+        || handle.activity_id !== activityId
+        || handle.workflow_run_id !== runId
+        || handle.activity_execution_id !== executionId) {
+        failures.push(`php_python_parity_${prefix}_completion_identity_invalid`);
+      }
+    }
+  }
+
+  if (scenarioId === 'operator_visible_activity_attempt_state') {
+    const fixture = nonEmptyObject(observedOutputs.stale_shared_queue_regression_fixture)
+      ? observedOutputs.stale_shared_queue_regression_fixture
+      : {};
+    const retryAvailableAt = Date.parse(stringValue(fixture.retry_available_at));
+    const backoffCrossedAt = Date.parse(stringValue(fixture.backoff_crossed_at));
+    const deadline = Date.parse(stringValue(fixture.timed_out_worker_visible_start_to_close_deadline));
+    if (fixture.configured_backoff_seconds !== 60
+      || fixture.backoff_crossed_before_timed_out_poll !== true
+      || fixture.isolated_task_queues !== true
+      || !stringValue(fixture.retry_task_queue)
+      || !stringValue(fixture.timed_out_task_queue)
+      || fixture.retry_task_queue === fixture.timed_out_task_queue
+      || !stringValue(fixture.retry_activity_execution_id)
+      || !stringValue(fixture.timed_out_activity_execution_id)
+      || fixture.retry_activity_execution_id === fixture.timed_out_activity_execution_id
+      || !Number.isFinite(retryAvailableAt)
+      || !Number.isFinite(backoffCrossedAt)
+      || backoffCrossedAt < retryAvailableAt
+      || !Number.isFinite(deadline)) {
+      failures.push('operator_visibility_stale_queue_regression_fixture_invalid');
+    }
+  }
+
+  return failures;
+}
+
 function main() {
   const manifest = loadManifest();
   const scenarios = scenarioDefs(manifest);
@@ -7764,11 +8170,10 @@ function main() {
       if (status === 'pass' && focusedHostEvidenceFailures.length > 0) {
         status = 'fail';
       }
-      const scenarioContractFailures = heartbeatTimeoutRenewalFailures(
-        scenarioId,
-        observedOutputs,
-        artifactVersions,
-      );
+      const scenarioContractFailures = [
+        ...heartbeatTimeoutRenewalFailures(scenarioId, observedOutputs, artifactVersions),
+        ...activityIsolationFailures(scenarioId, observedOutputs),
+      ];
       if (status === 'pass' && scenarioContractFailures.length > 0) {
         status = 'fail';
       }
@@ -7977,7 +8382,9 @@ function main() {
     runtime_matrix: sectionFromEvidence(activityEvidence, 'runtime_matrix', runtimeMatrix),
     topology: {
       namespace: 'activities-conformance',
-      task_queue: 'activities-shared',
+      task_queue_strategy: 'per_scenario_isolated',
+      task_queue_identity_source: 'scenario_execution_identity',
+      worker_identity_strategy: 'per_scenario_or_restart_pair',
       required_workers: ['workflow-php', 'sdk-php', 'sdk-python'],
       execution_modes: ['workflow-embedded', 'standalone'],
     },

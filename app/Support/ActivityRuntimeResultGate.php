@@ -122,7 +122,6 @@ final class ActivityRuntimeResultGate
     /**
      * @param  array<string, mixed>  $result
      * @param  array<string, mixed>|null  $contract
-     *
      * @return array<string, mixed>
      */
     public static function evaluate(array $result, ?array $contract = null): array
@@ -153,6 +152,7 @@ final class ActivityRuntimeResultGate
                     'code' => 'missing_required_scenario',
                     'scenario_id' => $scenarioId,
                 ];
+
                 continue;
             }
 
@@ -167,6 +167,7 @@ final class ActivityRuntimeResultGate
                     'status' => $status,
                     'allowed_statuses' => $allowedStatuses,
                 ];
+
                 continue;
             }
 
@@ -188,6 +189,7 @@ final class ActivityRuntimeResultGate
                         $failures,
                         ...self::publishedServerExecutionFailures($scenarioId, $scenarioResult, $result),
                         ...self::activityHostEvidenceFailures($scenarioId, $scenarioResult, $result),
+                        ...self::activityIsolationFailures($scenarioId, $scenarioResult),
                     );
                 }
                 if ($scenarioId === 'heartbeat_timeout_renewal_across_enforcement_passes') {
@@ -264,7 +266,6 @@ final class ActivityRuntimeResultGate
     /**
      * @param  array<string, mixed>  $result
      * @param  array<string, int>  $duplicateScenarioCounts
-     *
      * @return array<string, array<string, mixed>>
      */
     private static function scenarioResultsById(array $result, array &$duplicateScenarioCounts): array
@@ -296,6 +297,133 @@ final class ActivityRuntimeResultGate
         }
 
         return $results;
+    }
+
+    /**
+     * @param  array<string, mixed>  $scenarioResult
+     * @return list<array<string, mixed>>
+     */
+    private static function activityIsolationFailures(string $scenarioId, array $scenarioResult): array
+    {
+        $outputs = self::arrayField($scenarioResult, [
+            'observed_outputs',
+            'observedOutputs',
+            'activity_evidence',
+            'activityEvidence',
+            'evidence',
+        ]) ?? [];
+
+        if ($scenarioId === 'heartbeat_timeout_renewal_across_enforcement_passes') {
+            $managedDeregistration = self::arrayField($outputs, [
+                'managed_worker_deregistration',
+                'managedWorkerDeregistration',
+            ]) ?? [];
+            $managedResponse = self::arrayField($managedDeregistration, ['response']) ?? [];
+            $negative = self::arrayField($outputs, ['negative_control', 'negativeControl']) ?? [];
+            $negativeDeregistration = self::arrayField($negative, [
+                'worker_deregistration',
+                'workerDeregistration',
+            ]) ?? [];
+            $workerId = self::stringValue($outputs['worker_id'] ?? $outputs['workerId'] ?? null);
+            $negativeWorkerId = self::stringValue($negative['worker_id'] ?? $negative['workerId'] ?? null);
+            $taskQueue = self::stringValue($outputs['task_queue'] ?? $outputs['taskQueue'] ?? null);
+            $negativeTaskQueue = self::stringValue($negative['task_queue'] ?? $negative['taskQueue'] ?? null);
+            if (($managedResponse['outcome'] ?? null) !== 'deregistered'
+                || ($negativeDeregistration['outcome'] ?? null) !== 'deregistered'
+                || $workerId === ''
+                || $negativeWorkerId === ''
+                || $workerId === $negativeWorkerId
+                || $taskQueue === ''
+                || $negativeTaskQueue === ''
+                || $taskQueue === $negativeTaskQueue) {
+                return [['code' => 'heartbeat_timeout_renewal_fresh_negative_worker_missing']];
+            }
+        }
+
+        if ($scenarioId === 'idempotent_completion_handling') {
+            $first = self::arrayField($outputs, ['first_completion_response', 'firstCompletionResponse']) ?? [];
+            $duplicate = self::arrayField($outputs, ['duplicate_completion_response', 'duplicateCompletionResponse']) ?? [];
+            $completedEvents = self::arrayField($outputs, [
+                'activity_completed_history_events',
+                'activityCompletedHistoryEvents',
+            ]) ?? [];
+            $completed = is_array($completedEvents[0] ?? null) ? $completedEvents[0] : [];
+            $executionId = self::stringValue($outputs['activity_execution_id'] ?? null);
+            if (($outputs['same_task_and_attempt_ids'] ?? null) !== true
+                || ($outputs['recorded_once'] ?? null) !== true
+                || ($outputs['activity_completed_history_count'] ?? null) !== 1
+                || count($completedEvents) !== 1
+                || ($first['recorded'] ?? null) !== true
+                || ($duplicate['recorded'] ?? null) !== false
+                || ($duplicate['reason'] ?? null) !== 'stale_attempt'
+                || self::stringValue($first['task_id'] ?? null) === ''
+                || ($first['task_id'] ?? null) !== ($duplicate['task_id'] ?? null)
+                || self::stringValue($first['activity_attempt_id'] ?? null) === ''
+                || ($first['activity_attempt_id'] ?? null) !== ($duplicate['activity_attempt_id'] ?? null)
+                || $executionId === ''
+                || ($completed['activity_execution_id'] ?? null) !== $executionId
+                || ($completed['activity_attempt_id'] ?? null) !== ($first['activity_attempt_id'] ?? null)) {
+                return [['code' => 'idempotent_completion_task_attempt_identity_invalid']];
+            }
+        }
+
+        if ($scenarioId === 'php_python_activity_parity') {
+            $handles = self::arrayField($outputs, ['handle_responses', 'handleResponses']) ?? [];
+            foreach ([
+                'php' => ['runtime' => 'workflow-php', 'handle' => 'workflow-php', 'result' => 'php_activity_result'],
+                'python' => ['runtime' => 'sdk-python', 'handle' => 'sdk-python', 'result' => 'python_activity_result'],
+            ] as $prefix => $identity) {
+                $result = is_array($outputs[$identity['result']] ?? null) ? $outputs[$identity['result']] : [];
+                $handle = is_array($handles[$identity['handle']] ?? null) ? $handles[$identity['handle']] : [];
+                $activityId = self::stringValue($outputs[$prefix.'_activity_id'] ?? null);
+                $runId = self::stringValue($outputs[$prefix.'_workflow_run_id'] ?? null);
+                $executionId = self::stringValue($outputs[$prefix.'_activity_execution_id'] ?? null);
+                if ($activityId === ''
+                    || $runId === ''
+                    || $executionId === ''
+                    || ($result['runtime'] ?? null) !== $identity['runtime']
+                    || ! str_starts_with(self::stringValue($result['input_marker'] ?? null), 'parity-result-')
+                    || ($handle['activity_id'] ?? null) !== $activityId
+                    || ($handle['workflow_run_id'] ?? null) !== $runId
+                    || ($handle['activity_execution_id'] ?? null) !== $executionId) {
+                    return [['code' => 'php_python_parity_'.$prefix.'_completion_identity_invalid']];
+                }
+            }
+        }
+
+        if ($scenarioId === 'operator_visible_activity_attempt_state') {
+            $fixture = self::arrayField($outputs, [
+                'stale_shared_queue_regression_fixture',
+                'staleSharedQueueRegressionFixture',
+            ]) ?? [];
+            $retryAvailableAt = self::timestampField($fixture, ['retry_available_at', 'retryAvailableAt']);
+            $backoffCrossedAt = self::timestampField($fixture, ['backoff_crossed_at', 'backoffCrossedAt']);
+            $deadline = self::timestampField($fixture, [
+                'timed_out_worker_visible_start_to_close_deadline',
+                'timedOutWorkerVisibleStartToCloseDeadline',
+            ]);
+            $retryTaskQueue = self::stringValue($fixture['retry_task_queue'] ?? null);
+            $timedOutTaskQueue = self::stringValue($fixture['timed_out_task_queue'] ?? null);
+            $retryExecutionId = self::stringValue($fixture['retry_activity_execution_id'] ?? null);
+            $timedOutExecutionId = self::stringValue($fixture['timed_out_activity_execution_id'] ?? null);
+            if (($fixture['configured_backoff_seconds'] ?? null) !== 60
+                || ($fixture['backoff_crossed_before_timed_out_poll'] ?? null) !== true
+                || ($fixture['isolated_task_queues'] ?? null) !== true
+                || $retryTaskQueue === ''
+                || $timedOutTaskQueue === ''
+                || $retryTaskQueue === $timedOutTaskQueue
+                || $retryExecutionId === ''
+                || $timedOutExecutionId === ''
+                || $retryExecutionId === $timedOutExecutionId
+                || $retryAvailableAt === null
+                || $backoffCrossedAt === null
+                || $backoffCrossedAt < $retryAvailableAt
+                || $deadline === null) {
+                return [['code' => 'operator_visibility_stale_queue_regression_fixture_invalid']];
+            }
+        }
+
+        return [];
     }
 
     /**
@@ -422,7 +550,6 @@ final class ActivityRuntimeResultGate
     /**
      * @param  array<string, mixed>  $result
      * @param  array<string, mixed>  $contract
-     *
      * @return list<array<string, mixed>>
      */
     private static function runRecordFailures(array $result, array $contract): array
@@ -490,7 +617,6 @@ final class ActivityRuntimeResultGate
 
     /**
      * @param  array<string, mixed>  $result
-     *
      * @return list<array<string, mixed>>
      */
     private static function artifactVersionFailures(array $result): array
@@ -509,6 +635,7 @@ final class ActivityRuntimeResultGate
                     'code' => 'missing_artifact_version',
                     'artifact' => $artifact,
                 ];
+
                 continue;
             }
 
@@ -557,7 +684,6 @@ final class ActivityRuntimeResultGate
     /**
      * @param  array<string, mixed>  $result
      * @param  array<string, mixed>  $contract
-     *
      * @return list<array<string, mixed>>
      */
     private static function sourcePolicyFailures(array $result, array $contract): array
@@ -598,6 +724,7 @@ final class ActivityRuntimeResultGate
                     'code' => 'missing_published_artifact_install_source',
                     'artifact' => $artifact,
                 ];
+
                 continue;
             }
 
@@ -607,6 +734,7 @@ final class ActivityRuntimeResultGate
                     'artifact' => $artifact,
                     'source' => $sourceText,
                 ];
+
                 continue;
             }
 
@@ -785,7 +913,6 @@ final class ActivityRuntimeResultGate
     /**
      * @param  array<string, mixed>  $result
      * @param  array<string, mixed>  $contract
-     *
      * @return list<array<string, mixed>>
      */
     private static function matrixFailures(array $result, array $contract): array
@@ -817,7 +944,6 @@ final class ActivityRuntimeResultGate
 
     /**
      * @param  array<string, mixed>  $result
-     *
      * @return list<array<string, mixed>>
      */
     private static function requiredSectionFailures(array $result): array
@@ -1266,7 +1392,6 @@ final class ActivityRuntimeResultGate
     /**
      * @param  array<string, mixed>  $cell
      * @param  array<string, mixed>  $versions
-     *
      * @return list<array<string, mixed>>
      */
     private static function sdkPythonActivityCellArtifactFailures(array $cell, array $versions): array
@@ -1378,7 +1503,6 @@ final class ActivityRuntimeResultGate
 
     /**
      * @param  array<string, mixed>  $source
-     *
      * @return array<string, mixed>|null
      */
     private static function activityHostEvidenceFrom(array $source): ?array
@@ -1393,7 +1517,6 @@ final class ActivityRuntimeResultGate
 
     /**
      * @param  array<string, mixed>  $hostEvidence
-     *
      * @return list<array<string, mixed>>
      */
     private static function activityHostCells(array $hostEvidence): array
@@ -1409,7 +1532,6 @@ final class ActivityRuntimeResultGate
     /**
      * @param  array<string, mixed>  $scenarioResult
      * @param  array<string, mixed>  $result
-     *
      * @return list<array<string, mixed>>
      */
     private static function publishedServerExecutionFailures(string $scenarioId, array $scenarioResult, array $result): array
@@ -1764,7 +1886,6 @@ final class ActivityRuntimeResultGate
 
     /**
      * @param  array<string, mixed>  $result
-     *
      * @return list<array<string, mixed>>
      */
     private static function declaredOutcomeStatusFailures(array $result, string $evaluatedStatus): array
@@ -1866,7 +1987,6 @@ final class ActivityRuntimeResultGate
 
     /**
      * @param  array<string, mixed>  $array
-     *
      * @return array<string, mixed>|null
      */
     private static function arrayValue(array $array, string $key): ?array
@@ -1879,7 +1999,6 @@ final class ActivityRuntimeResultGate
     /**
      * @param  array<string, mixed>  $array
      * @param  list<string>  $keys
-     *
      * @return array<string, mixed>|null
      */
     private static function arrayField(array $array, array $keys): ?array

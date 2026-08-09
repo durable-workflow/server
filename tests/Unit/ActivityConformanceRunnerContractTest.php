@@ -234,6 +234,87 @@ class ActivityConformanceRunnerContractTest extends TestCase
         );
     }
 
+    public function test_focused_probe_isolates_scenario_queues_and_rejects_mismatched_poll_identity(): void
+    {
+        $source = $this->read('scripts/conformance/activities-published-artifacts.sh');
+
+        $this->assertStringNotContainsString('activities-shared', $source);
+        $this->assertStringContainsString('function scenario_task_queue(string $identity): string', $source);
+        $this->assertStringContainsString('new ActivityOptions(queue: $taskQueue)', $source);
+        $this->assertStringContainsString('assert_task_identity($task, $expectedIdentity', $source);
+
+        foreach ([
+            'run_embedded_cell',
+            'run_standalone_cell',
+            'start_parity_activity',
+            'start_operator_visibility_activity',
+            'run_heartbeat_cancellation_cell',
+            'run_idempotent_completion_cell',
+            'run_restart_durable_result_cell',
+            'run_retry_backoff_cell',
+            'run_timeout_behavior_cell',
+            'run_heartbeat_timeout_renewal_cell',
+            'run_typed_failure_propagation_cell',
+        ] as $function) {
+            $start = strpos($source, "function {$function}(");
+            $this->assertNotFalse($start, "missing {$function}");
+            $nextFunction = strpos($source, "\nfunction ", $start + 10);
+            $body = substr($source, $start, $nextFunction === false ? null : $nextFunction - $start);
+            $this->assertStringContainsString('scenario_task_queue(', $body, "{$function} must select an isolated task queue");
+        }
+    }
+
+    public function test_operator_stale_queue_fixture_crosses_the_sixty_second_retry_before_timeout_poll(): void
+    {
+        $source = $this->read('scripts/conformance/activities-published-artifacts.sh');
+        $start = strpos($source, 'function run_operator_visibility_cell(): array');
+        $end = strpos($source, "\nfunction run_restart_durable_result_cell", $start);
+        $this->assertNotFalse($start);
+        $this->assertNotFalse($end);
+        $body = substr($source, $start, $end - $start);
+
+        $retry = strpos($body, "operator_visibility_state_observation('retrying'");
+        $availableAt = strpos($body, 'workflow_task_available_at($retryTaskId)');
+        $crossBackoff = strpos($body, 'wait_until_timestamp($retryAvailableTimestamp + 0.10)');
+        $timedOut = strpos($body, "operator_visibility_state_observation('timed_out'");
+
+        $this->assertNotFalse($retry);
+        $this->assertNotFalse($availableAt);
+        $this->assertNotFalse($crossBackoff);
+        $this->assertNotFalse($timedOut);
+        $this->assertTrue($retry < $availableAt && $availableAt < $crossBackoff && $crossBackoff < $timedOut);
+        $this->assertStringContainsString("'configured_backoff_seconds' => 60", $body);
+        $this->assertStringContainsString("'isolated_task_queues' =>", $body);
+        $this->assertStringContainsString("'timed_out_worker_visible_start_to_close_deadline' =>", $body);
+    }
+
+    public function test_heartbeat_negative_control_uses_a_fresh_registered_worker_after_managed_deregistration(): void
+    {
+        $source = $this->read('scripts/conformance/activities-published-artifacts.sh');
+        $start = strpos($source, 'function run_heartbeat_timeout_renewal_cell(): array');
+        $end = strpos($source, "\nfunction scenario_from_heartbeat_timeout_renewal_cell", $start);
+        $this->assertNotFalse($start);
+        $this->assertNotFalse($end);
+        $body = substr($source, $start, $end - $start);
+
+        $managedRun = strpos($body, '$worker->run(0)');
+        $managedDeregistration = strpos($body, '$managedWorkerDeregistration = $transport->latest(');
+        $negativeRegistration = strpos($body, '$negativeWorkerRegistration = $client->registerWorker(');
+        $negativePoll = strpos($body, '$negativeTask = $client->pollActivityTask($negativeWorkerId, $negativeTaskQueue, 0)');
+
+        $this->assertNotFalse($managedRun);
+        $this->assertNotFalse($managedDeregistration);
+        $this->assertNotFalse($negativeRegistration);
+        $this->assertNotFalse($negativePoll);
+        $this->assertTrue(
+            $managedRun < $managedDeregistration
+            && $managedDeregistration < $negativeRegistration
+            && $negativeRegistration < $negativePoll,
+        );
+        $this->assertStringContainsString("'activity_execution_id' => \$negativeExecutionId", $body);
+        $this->assertStringContainsString('$client->deregisterWorkerRegistration($negativeWorkerId)', $body);
+    }
+
     public function test_runner_claims_waterline_identity_only_after_the_installed_package_executes(): void
     {
         $source = $this->read('scripts/conformance/activities-published-artifacts.sh');
@@ -446,7 +527,7 @@ class ActivityConformanceRunnerContractTest extends TestCase
                     : array_filter([
                         'evidence' => $scenarioId,
                         'activity_host_evidence' => $activityHostEvidence,
-                    ]);
+                    ]) + $this->activityIsolationEvidence($scenarioId);
                 $scenarioResults[] = [
                     'scenario_id' => $scenarioId,
                     'status' => 'pass',
@@ -2561,6 +2642,78 @@ SH);
         );
     }
 
+    public function test_runner_rejects_activity_evidence_without_scenario_isolation_identity(): void
+    {
+        $cases = [
+            [
+                'scenario' => 'heartbeat_timeout_renewal_across_enforcement_passes',
+                'failure' => 'heartbeat_timeout_renewal_fresh_negative_worker_missing',
+                'mutate' => static function (array &$outputs): void {
+                    $outputs['negative_control']['worker_id'] = $outputs['worker_id'];
+                },
+            ],
+            [
+                'scenario' => 'idempotent_completion_handling',
+                'failure' => 'idempotent_completion_task_attempt_identity_invalid',
+                'mutate' => static function (array &$outputs): void {
+                    $outputs['duplicate_completion_response']['activity_attempt_id'] = 'different-attempt';
+                },
+            ],
+            [
+                'scenario' => 'php_python_activity_parity',
+                'failure' => 'php_python_parity_python_completion_identity_invalid',
+                'mutate' => static function (array &$outputs): void {
+                    $outputs['handle_responses']['sdk-python']['activity_execution_id'] = 'different-execution';
+                },
+            ],
+            [
+                'scenario' => 'operator_visible_activity_attempt_state',
+                'failure' => 'operator_visibility_stale_queue_regression_fixture_invalid',
+                'mutate' => static function (array &$outputs): void {
+                    $outputs['stale_shared_queue_regression_fixture']['timed_out_task_queue'] =
+                        $outputs['stale_shared_queue_regression_fixture']['retry_task_queue'];
+                },
+            ],
+        ];
+
+        foreach ($cases as $case) {
+            $evidence = $this->completeRunnerActivityEvidence();
+            foreach ($evidence['scenario_results'] as &$scenario) {
+                if (($scenario['scenario_id'] ?? null) !== $case['scenario']) {
+                    continue;
+                }
+                $case['mutate']($scenario['observed_outputs']);
+                $scenario['scenario_evidence'] = $scenario['observed_outputs'];
+            }
+            unset($scenario);
+
+            $run = $this->runActivityRunnerWithEvidence($evidence);
+            $this->assertSame(1, $run['exit'], $run['output']);
+            $byScenario = [];
+            foreach ($run['result']['scenario_results'] as $scenario) {
+                $byScenario[$scenario['scenario_id']] = $scenario;
+            }
+            $this->assertContains(
+                $case['failure'],
+                $byScenario[$case['scenario']]['observed_outputs']['scenario_contract_failures'] ?? [],
+            );
+
+            $result = $this->completeActivityResult();
+            foreach ($result['scenario_results'] as &$scenario) {
+                if (($scenario['scenario_id'] ?? null) !== $case['scenario']) {
+                    continue;
+                }
+                $case['mutate']($scenario['observed_outputs']);
+                $scenario['scenario_evidence'] = $scenario['observed_outputs'];
+            }
+            unset($scenario);
+
+            $evaluation = ActivityRuntimeResultGate::evaluate($result, ActivityRuntimeContract::manifest());
+            $this->assertSame('non_passing', $evaluation['status']);
+            $this->assertContains($case['failure'], array_column($evaluation['gate_failures'], 'code'));
+        }
+    }
+
     public function test_result_gate_rejects_heartbeat_timeout_renewal_without_typed_stale_attempt_control(): void
     {
         $result = $this->completeActivityResult();
@@ -3044,7 +3197,7 @@ SH);
                 : array_filter([
                     'evidence' => $scenarioId,
                     'activity_host_evidence' => $activityHostEvidence,
-                ]);
+                ]) + $this->activityIsolationEvidence($scenarioId);
             $scenarioResults[] = [
                 'scenario_id' => $scenarioId,
                 'status' => 'pass',
@@ -3107,7 +3260,7 @@ SH);
                     'sample' => $scenarioId,
                     'published_artifact_worker_execution' => $publishedServerExecution,
                     'activity_host_evidence' => $activityHostEvidence,
-                ]);
+                ]) + $this->activityIsolationEvidence($scenarioId);
             $scenarioResults[] = [
                 'scenario_id' => $scenarioId,
                 'status' => 'pass',
@@ -3138,7 +3291,7 @@ SH);
             'findings' => [],
             'finding_links' => [],
             'topology' => [
-                'task_queue' => 'activities-shared',
+                'task_queue_strategy' => 'per_scenario_isolated',
             ],
             'runtime_matrix' => [
                 'execution_modes' => ['workflow-embedded', 'standalone'],
@@ -3154,6 +3307,87 @@ SH);
             'idempotent_completion' => ['status' => 'pass'],
             'operator_visibility' => ['status' => 'pass'],
         ];
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    private function activityIsolationEvidence(string $scenarioId): array
+    {
+        if ($scenarioId === 'idempotent_completion_handling') {
+            return [
+                'activity_execution_id' => 'idempotent-execution',
+                'first_completion_response' => [
+                    'task_id' => 'idempotent-task',
+                    'activity_attempt_id' => 'idempotent-attempt',
+                    'recorded' => true,
+                ],
+                'duplicate_completion_response' => [
+                    'task_id' => 'idempotent-task',
+                    'activity_attempt_id' => 'idempotent-attempt',
+                    'recorded' => false,
+                    'reason' => 'stale_attempt',
+                ],
+                'same_task_and_attempt_ids' => true,
+                'recorded_once' => true,
+                'activity_completed_history_count' => 1,
+                'activity_completed_history_events' => [[
+                    'activity_execution_id' => 'idempotent-execution',
+                    'activity_attempt_id' => 'idempotent-attempt',
+                ]],
+            ];
+        }
+
+        if ($scenarioId === 'php_python_activity_parity') {
+            return [
+                'php_activity_id' => 'parity-result-workflow-php',
+                'python_activity_id' => 'parity-result-sdk-python',
+                'php_workflow_run_id' => 'parity-run-workflow-php',
+                'python_workflow_run_id' => 'parity-run-sdk-python',
+                'php_activity_execution_id' => 'parity-execution-workflow-php',
+                'python_activity_execution_id' => 'parity-execution-sdk-python',
+                'php_activity_result' => [
+                    'runtime' => 'workflow-php',
+                    'input_marker' => 'parity-result-fixture',
+                ],
+                'python_activity_result' => [
+                    'runtime' => 'sdk-python',
+                    'input_marker' => 'parity-result-fixture',
+                ],
+                'handle_responses' => [
+                    'workflow-php' => [
+                        'activity_id' => 'parity-result-workflow-php',
+                        'workflow_run_id' => 'parity-run-workflow-php',
+                        'activity_execution_id' => 'parity-execution-workflow-php',
+                    ],
+                    'sdk-python' => [
+                        'activity_id' => 'parity-result-sdk-python',
+                        'workflow_run_id' => 'parity-run-sdk-python',
+                        'activity_execution_id' => 'parity-execution-sdk-python',
+                    ],
+                ],
+            ];
+        }
+
+        if ($scenarioId === 'operator_visible_activity_attempt_state') {
+            return [
+                'stale_shared_queue_regression_fixture' => [
+                    'retry_task_id' => 'operator-retry-task',
+                    'retry_activity_execution_id' => 'operator-retry-execution',
+                    'retry_task_queue' => 'activities-isolated-operator-retrying',
+                    'configured_backoff_seconds' => 60,
+                    'retry_available_at' => '2026-06-21T00:01:00.000000Z',
+                    'backoff_crossed_at' => '2026-06-21T00:01:00.100000Z',
+                    'backoff_crossed_before_timed_out_poll' => true,
+                    'timed_out_activity_execution_id' => 'operator-timeout-execution',
+                    'timed_out_task_queue' => 'activities-isolated-operator-timed-out',
+                    'isolated_task_queues' => true,
+                    'timed_out_worker_visible_start_to_close_deadline' => '2026-06-21T00:01:01.100000Z',
+                ],
+            ];
+        }
+
+        return [];
     }
 
     /**
@@ -3209,6 +3443,11 @@ SH);
         }
 
         return [
+            'worker_id' => 'sdk-php-heartbeat-worker',
+            'task_queue' => 'activities-isolated-sdk-php-heartbeat',
+            'managed_worker_deregistration' => [
+                'response' => ['outcome' => 'deregistered'],
+            ],
             'php_sdk_worker_artifact' => [
                 'artifact' => 'sdk-php',
                 'package' => 'durable-workflow/sdk',
@@ -3244,6 +3483,9 @@ SH);
                 'history_without_contradiction' => true,
             ],
             'negative_control' => [
+                'worker_id' => 'sdk-php-heartbeat-negative-worker',
+                'task_queue' => 'activities-isolated-sdk-php-heartbeat-negative',
+                'worker_deregistration' => ['outcome' => 'deregistered'],
                 'initial_heartbeat_deadline_at' => $timestamp(5),
                 'enforcement_observed_at' => $timestamp(5.25),
                 'enforcement_pass' => [
