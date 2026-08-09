@@ -348,6 +348,9 @@ function install_runtime_failure_handler(string $process, string $phase, array $
                 256,
             ) ?: null,
             'exception_type' => $exception::class,
+            'contract' => property_exists($exception, 'contract') && is_string($exception->contract)
+                ? bounded_runtime_failure_text($exception->contract, $secrets, 256)
+                : null,
             'message' => bounded_runtime_failure_text($exception->getMessage(), $secrets),
         ];
 

@@ -3,7 +3,7 @@ set -euo pipefail
 
 usage() {
   cat <<'USAGE'
-Usage: php-sdk-published-artifacts.sh [--result-dir DIR|--result-dir=DIR] [--scope lifecycle|namespace|search-attributes]
+Usage: php-sdk-published-artifacts.sh [--result-dir DIR|--result-dir=DIR] [--scope lifecycle|namespace|search-attributes] [--validate-definitions]
 
 Runs the released durable-workflow/sdk package against an already-running,
 exact public server image. The runner creates a disposable Composer project,
@@ -29,11 +29,17 @@ Optional environment:
                                         Optional Python-writer fixture for the PHP reader codec cell.
   DW_PHP_SDK_CONFORMANCE_REPLAY_MATRIX=1 Exercise the full deterministic replay matrix.
   DW_PHP_SDK_CONFORMANCE_WORKER_RUN_DELAY_MS Delay managed registration for readiness regression probes.
+
+Validation mode:
+  --validate-definitions                Install the exact requested SDK, validate every generated
+                                        handler definition, and exercise the zero-argument
+                                        workflow/activity rejection contract without a server.
 USAGE
 }
 
 result_dir="${DW_PHP_SDK_CONFORMANCE_RESULT_DIR:-}"
 scope="${DW_PHP_SDK_CONFORMANCE_SCOPE:-lifecycle}"
+validate_definitions=false
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --result-dir)
@@ -50,6 +56,10 @@ while [[ $# -gt 0 ]]; do
       ;;
     --scope=*)
       scope="${1#--scope=}"
+      shift
+      ;;
+    --validate-definitions)
+      validate_definitions=true
       shift
       ;;
     -h|--help)
@@ -982,37 +992,46 @@ trap cleanup EXIT
 trap 'exit 130' INT
 trap 'exit 143' TERM
 
+exit_after_setup_failure() {
+  if [[ "$validate_definitions" == true ]]; then
+    exit 1
+  fi
+  exit 0
+}
+
 if ! command -v node >/dev/null 2>&1; then
   printf '%s\n' 'node is required to write typed conformance evidence' >&2
   exit 2
 fi
 if [[ -z "$sdk_version" || ! "$sdk_version" =~ ^[0-9]+\.[0-9]+\.[0-9]+([.-][0-9A-Za-z.-]+)?$ ]]; then
   write_failure package-publication sdk-php-release preflight 'DW_PHP_SDK_VERSION must be an exact published Composer version.'
-  exit 0
+  exit_after_setup_failure
 fi
-if [[ -z "$server_version" \
-  || "$server_version" =~ (^|[-.])(latest|current|head|main|master|dev|snapshot|unresolved|placeholder)([-.]|$) \
-  || ! "$server_version" =~ ^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-((0|[1-9][0-9]*|[0-9A-Za-z-]*[A-Za-z-][0-9A-Za-z-]*)(\.(0|[1-9][0-9]*|[0-9A-Za-z-]*[A-Za-z-][0-9A-Za-z-]*))*))?$ ]]; then
-  write_failure runner conformance_harness preflight 'DW_SERVER_VERSION must be an exact published server version.'
-  exit 0
-fi
-if [[ -z "$server_image" || -z "$server_url" ]]; then
-  write_failure runner conformance_harness preflight 'DW_SERVER_VERSION, DW_SERVER_IMAGE, and DW_PHP_SDK_CONFORMANCE_SERVER_URL are required.'
-  exit 0
-fi
-if [[ "$server_image" != "durableworkflow/server:${server_version}" \
-  && "$server_image" != "docker.io/durableworkflow/server:${server_version}" \
-  && ! "$server_image" =~ ^(docker\.io/)?durableworkflow/server(@sha256:[0-9a-fA-F]{64})$ ]]; then
-  write_failure runner conformance_harness preflight 'DW_SERVER_IMAGE must be the exact requested durableworkflow/server tag or a digest pin.'
-  exit 0
+if [[ "$validate_definitions" != true ]]; then
+  if [[ -z "$server_version" \
+    || "$server_version" =~ (^|[-.])(latest|current|head|main|master|dev|snapshot|unresolved|placeholder)([-.]|$) \
+    || ! "$server_version" =~ ^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-((0|[1-9][0-9]*|[0-9A-Za-z-]*[A-Za-z-][0-9A-Za-z-]*)(\.(0|[1-9][0-9]*|[0-9A-Za-z-]*[A-Za-z-][0-9A-Za-z-]*))*))?$ ]]; then
+    write_failure runner conformance_harness preflight 'DW_SERVER_VERSION must be an exact published server version.'
+    exit_after_setup_failure
+  fi
+  if [[ -z "$server_image" || -z "$server_url" ]]; then
+    write_failure runner conformance_harness preflight 'DW_SERVER_VERSION, DW_SERVER_IMAGE, and DW_PHP_SDK_CONFORMANCE_SERVER_URL are required.'
+    exit_after_setup_failure
+  fi
+  if [[ "$server_image" != "durableworkflow/server:${server_version}" \
+    && "$server_image" != "docker.io/durableworkflow/server:${server_version}" \
+    && ! "$server_image" =~ ^(docker\.io/)?durableworkflow/server(@sha256:[0-9a-fA-F]{64})$ ]]; then
+    write_failure runner conformance_harness preflight 'DW_SERVER_IMAGE must be the exact requested durableworkflow/server tag or a digest pin.'
+    exit_after_setup_failure
+  fi
 fi
 if ! command -v "$php_bin" >/dev/null 2>&1; then
   write_failure runner conformance_harness preflight "PHP binary is unavailable: $php_bin"
-  exit 0
+  exit_after_setup_failure
 fi
 if ! command -v "$composer_bin" >/dev/null 2>&1; then
   write_failure runner conformance_harness preflight "Composer binary is unavailable: $composer_bin"
-  exit 0
+  exit_after_setup_failure
 fi
 
 rm -rf "$project_dir"
@@ -1044,7 +1063,7 @@ if ! (
 ) >"$result_dir/php-sdk-composer-install.log" 2>&1; then
   composer_classification="$(classify_composer_failure "$result_dir/php-sdk-composer-install.log")"
   write_failure "$composer_classification" "$(failure_owner_for "$composer_classification")" composer_install "Composer could not install durable-workflow/sdk:$sdk_version from Packagist."
-  exit 0
+  exit_after_setup_failure
 fi
 
 if ! python3 "$script_dir/distribution_identities.py" record-unique \
@@ -1053,7 +1072,7 @@ if ! python3 "$script_dir/distribution_identities.py" record-unique \
   --artifact-name durable-workflow/sdk; then
   write_failure package-publication sdk-php-release composer_identity \
     "Composer installed durable-workflow/sdk:$sdk_version without retaining its consumed distribution bytes."
-  exit 0
+  exit_after_setup_failure
 fi
 
 cp "$script_dir/php-sdk-runtime-failure.php" "$project_dir/runtime-failure.php"
@@ -1073,8 +1092,10 @@ require __DIR__.'/runtime-failure.php';
 require __DIR__.'/activity-callback-cardinality.php';
 require __DIR__.'/signal-input-decoder.php';
 
+use Composer\InstalledVersions;
 use DurableWorkflow\Client;
 use DurableWorkflow\Exception\ActivityFailed;
+use DurableWorkflow\Exception\InvalidWorkerDefinition;
 use DurableWorkflow\Worker;
 use DurableWorkflow\Worker\ActivityContext;
 use DurableWorkflow\Worker\QueryContext;
@@ -1357,7 +1378,7 @@ if (! $namespaceScope) {
     );
     $worker->registerWorkflow(
         'php.sdk.failure',
-        static function () use ($callbackFile): never {
+        static function (WorkflowContext $context) use ($callbackFile): never {
             increment_callback($callbackFile, 'failure_workflow');
             throw new DomainException('php-sdk-conformance-failure');
         },
@@ -1401,7 +1422,7 @@ if (! $namespaceScope) {
     if (getenv('DW_PHP_SDK_CONFORMANCE_REPLAY_MATRIX') === '1') {
         $worker->registerActivity(
             'php.sdk.replay-matrix-fail',
-            static function () use ($callbackFile): never {
+            static function (ActivityContext $context) use ($callbackFile): never {
                 increment_callback($callbackFile, 'replay_matrix_failed_activity');
                 throw new DomainException('php-sdk-replay-matrix-intentional-failure');
             },
@@ -1513,6 +1534,65 @@ if (! $namespaceScope) {
         );
     }
 }
+if (getenv('DW_PHP_SDK_CONFORMANCE_VALIDATE_DEFINITIONS') === '1') {
+    $worker->validate();
+    $invalidDefinitions = [
+        [
+            'contract' => 'workflow php.sdk.failure',
+            'context' => WorkflowContext::class,
+            'register' => static fn (Worker $candidate): Worker => $candidate->registerWorkflow(
+                'php.sdk.failure',
+                static fn (): null => null,
+            ),
+        ],
+        [
+            'contract' => 'activity php.sdk.replay-matrix-fail',
+            'context' => ActivityContext::class,
+            'register' => static fn (Worker $candidate): Worker => $candidate->registerActivity(
+                'php.sdk.replay-matrix-fail',
+                static fn (): null => null,
+            ),
+        ],
+    ];
+    $rejections = [];
+    foreach ($invalidDefinitions as $index => $definition) {
+        $candidate = new Worker(
+            $client,
+            $queue.'-invalid-'.$index,
+            workerId: $workerId.'-invalid-'.$index,
+        );
+        try {
+            $definition['register']($candidate);
+            throw new RuntimeException("Zero-argument {$definition['contract']} was accepted.");
+        } catch (InvalidWorkerDefinition $exception) {
+            $expectedMessage = "Invalid worker contract {$definition['contract']}. "
+                ."Make the first handler parameter {$definition['context']}.";
+            if ($exception->contract !== $definition['contract'] || $exception->getMessage() !== $expectedMessage) {
+                throw new RuntimeException(
+                    "Unexpected validation for {$definition['contract']}: {$exception->getMessage()}",
+                    previous: $exception,
+                );
+            }
+            $rejections[$definition['contract']] = [
+                'exception_type' => $exception::class,
+                'contract' => $exception->contract,
+                'message' => $exception->getMessage(),
+                'required_context' => $definition['context'],
+            ];
+        }
+    }
+    file_put_contents(
+        $resultDir.'/php-sdk-handler-definition-validation.json',
+        json_encode([
+            'schema' => 'durable-workflow.v2.php-sdk-handler-definition-validation',
+            'sdk_version' => InstalledVersions::getPrettyVersion('durable-workflow/sdk'),
+            'replay_matrix_enabled' => getenv('DW_PHP_SDK_CONFORMANCE_REPLAY_MATRIX') === '1',
+            'registered_contracts' => $worker->contracts(),
+            'zero_argument_rejections' => $rejections,
+        ], JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES | JSON_THROW_ON_ERROR)."\n",
+    );
+    exit(0);
+}
 $workerRunDelayMs = filter_var(
     getenv('DW_PHP_SDK_CONFORMANCE_WORKER_RUN_DELAY_MS') ?: 0,
     FILTER_VALIDATE_INT,
@@ -1524,6 +1604,24 @@ if ($workerRunDelayMs > 0) {
 set_runtime_failure_context('worker.run', 'MULTIPLE', '/api/worker-protocol/*');
 $worker->run(1);
 PHP
+
+if [[ "$validate_definitions" == true ]]; then
+  validation_log="$result_dir/php-sdk-handler-definition-validation.log"
+  if ! DW_PHP_SDK_CONFORMANCE_REPLAY_MATRIX=1 \
+    DW_PHP_SDK_CONFORMANCE_VALIDATE_DEFINITIONS=1 \
+    "$php_bin" "$project_dir/worker.php" \
+      http://handler-validation.invalid validation validation-control validation-worker \
+      validation-queue validation-worker "$result_dir" lifecycle \
+      >"$validation_log" 2>&1; then
+    cat "$validation_log" >&2
+    exit 1
+  fi
+  if [[ ! -s "$result_dir/php-sdk-handler-definition-validation.json" ]]; then
+    printf '%s\n' 'PHP SDK handler validation did not emit its result.' >&2
+    exit 1
+  fi
+  exit 0
+fi
 
 cat > "$project_dir/client.php" <<'PHP'
 <?php

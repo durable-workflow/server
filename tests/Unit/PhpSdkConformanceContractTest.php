@@ -165,6 +165,81 @@ final class PhpSdkConformanceContractTest extends TestCase
         $this->assertLessThan($firstSignalPosition, $startedContractPosition);
     }
 
+    public function test_generated_handlers_validate_against_sdk_php_rc11(): void
+    {
+        $composerBinary = trim((string) shell_exec('command -v composer 2>/dev/null'));
+        $this->assertNotSame('', $composerBinary, 'Composer is required for exact published SDK validation.');
+
+        $repoRoot = dirname(__DIR__, 2);
+        $resultDir = sys_get_temp_dir().'/dw-php-sdk-handler-validation-'.bin2hex(random_bytes(6));
+        mkdir($resultDir, 0777, true);
+        $process = proc_open(
+            [
+                $repoRoot.'/scripts/conformance/php-sdk-published-artifacts.sh',
+                '--result-dir',
+                $resultDir,
+                '--validate-definitions',
+            ],
+            [
+                1 => ['pipe', 'w'],
+                2 => ['pipe', 'w'],
+            ],
+            $pipes,
+            $repoRoot,
+            array_merge($_ENV, [
+                'DW_PHP_SDK_VERSION' => '2.0.0-rc.11',
+            ]),
+        );
+
+        try {
+            $this->assertIsResource($process);
+            $stdout = stream_get_contents($pipes[1]);
+            $stderr = stream_get_contents($pipes[2]);
+            fclose($pipes[1]);
+            fclose($pipes[2]);
+            $this->assertSame(
+                0,
+                proc_close($process),
+                "Generated SDK handler validation failed.\nstdout:\n{$stdout}\nstderr:\n{$stderr}",
+            );
+
+            $report = json_decode(
+                (string) file_get_contents($resultDir.'/php-sdk-handler-definition-validation.json'),
+                true,
+                flags: JSON_THROW_ON_ERROR,
+            );
+            $this->assertSame('2.0.0-rc.11', $report['sdk_version']);
+            $this->assertTrue($report['replay_matrix_enabled']);
+            $this->assertContains('php.sdk.failure', $report['registered_contracts']['workflows']);
+            $this->assertContains('php.sdk.replay-matrix', $report['registered_contracts']['workflows']);
+            $this->assertContains('php.sdk.replay-matrix-fail', $report['registered_contracts']['activities']);
+            $this->assertContains('current', $report['registered_contracts']['workflow_commands']['php.sdk.waiting']['queries']);
+            $this->assertContains('set', $report['registered_contracts']['workflow_commands']['php.sdk.waiting']['updates']);
+            $this->assertContains('state', $report['registered_contracts']['workflow_commands']['php.sdk.replay-matrix']['queries']);
+            $this->assertContains('set', $report['registered_contracts']['workflow_commands']['php.sdk.replay-matrix']['updates']);
+
+            $workflowRejection = $report['zero_argument_rejections']['workflow php.sdk.failure'];
+            $this->assertSame('workflow php.sdk.failure', $workflowRejection['contract']);
+            $this->assertSame(
+                'DurableWorkflow\\Exception\\InvalidWorkerDefinition',
+                $workflowRejection['exception_type'],
+            );
+            $this->assertSame(
+                'Invalid worker contract workflow php.sdk.failure. Make the first handler parameter DurableWorkflow\\Worker\\WorkflowContext.',
+                $workflowRejection['message'],
+            );
+
+            $activityRejection = $report['zero_argument_rejections']['activity php.sdk.replay-matrix-fail'];
+            $this->assertSame('activity php.sdk.replay-matrix-fail', $activityRejection['contract']);
+            $this->assertSame(
+                'Invalid worker contract activity php.sdk.replay-matrix-fail. Make the first handler parameter DurableWorkflow\\Worker\\ActivityContext.',
+                $activityRejection['message'],
+            );
+        } finally {
+            $this->removeDirectory($resultDir);
+        }
+    }
+
     public function test_search_attribute_scope_emits_a_focused_bounded_preflight_result(): void
     {
         if (trim((string) shell_exec('command -v node 2>/dev/null')) === '') {
@@ -1195,6 +1270,7 @@ JS;
         $resultDir = sys_get_temp_dir().'/dw-php-sdk-startup-evidence-'.bin2hex(random_bytes(6));
         mkdir($resultDir, 0777, true);
         $observationFile = $resultDir.'/readiness-observation.json';
+        $diagnosticFile = $resultDir.'/worker-process-exit.log';
         $lastServerRegistration = [
             'worker_id' => 'php-sdk-worker-1',
             'status' => 'active',
@@ -1301,11 +1377,28 @@ JS;
             $exitEnvironment = array_merge($environment, [
                 'FAILURE_STAGE' => 'worker_process_exit',
                 'FAILURE_SUMMARY' => 'worker process exited',
+                'FAILURE_DIAGNOSTIC_FILE' => $diagnosticFile,
                 'WORKER_START_OUTCOME' => 'process_exit',
                 'WORKER_START_ATTEMPTS' => '3',
                 'WORKER_START_PROCESS_ALIVE' => 'false',
                 'WORKER_START_PROCESS_EXIT_CODE' => '17',
             ]);
+            file_put_contents(
+                $diagnosticFile,
+                'DW_PHP_SDK_RUNTIME_FAILURE='.json_encode([
+                    'classification' => 'sdk',
+                    'owning_surface' => 'sdk-php',
+                    'process' => 'worker',
+                    'operation' => 'worker.lifecycle',
+                    'http_method' => 'MULTIPLE',
+                    'endpoint' => '/api/worker-protocol/*',
+                    'status_code' => null,
+                    'public_error_envelope' => null,
+                    'exception_type' => 'DurableWorkflow\\Exception\\InvalidWorkerDefinition',
+                    'contract' => 'workflow php.sdk.failure',
+                    'message' => 'Invalid worker contract workflow php.sdk.failure. Make the first handler parameter DurableWorkflow\\Worker\\WorkflowContext.',
+                ], JSON_THROW_ON_ERROR)."\n",
+            );
             $runWriter($exitEnvironment);
             $result = json_decode(
                 (string) file_get_contents($resultDir.'/php-sdk-conformance-result.json'),
@@ -1318,6 +1411,21 @@ JS;
             $this->assertSame(17, $processExit['process_exit_code']);
             $this->assertSame(3, $processExit['attempts']);
             $this->assertSame($lastServerRegistration, $processExit['last_server_observation']['payload']);
+            $expectedSummary = 'The released PHP SDK raised DurableWorkflow\\Exception\\InvalidWorkerDefinition during worker_process_exit: '
+                .'Invalid worker contract workflow php.sdk.failure. Make the first handler parameter DurableWorkflow\\Worker\\WorkflowContext.';
+            $this->assertSame($expectedSummary, $result['findings'][0]['summary']);
+            $this->assertSame(
+                'DurableWorkflow\\Exception\\InvalidWorkerDefinition',
+                $result['findings'][0]['observed_evidence']['exception_type'],
+            );
+            $this->assertSame(
+                'workflow php.sdk.failure',
+                $result['findings'][0]['observed_evidence']['contract'],
+            );
+            $this->assertStringContainsString(
+                'workflow php.sdk.failure',
+                $result['findings'][0]['observed_evidence']['message'],
+            );
         } finally {
             foreach (glob($resultDir.'/*') ?: [] as $file) {
                 if (is_file($file)) {
@@ -1398,6 +1506,25 @@ JS;
             $this->assertLessThanOrEqual(2048, $result['bytes']);
             $this->assertTrue($result['complete']);
         }
+    }
+
+    private function removeDirectory(string $directory): void
+    {
+        if (! is_dir($directory)) {
+            return;
+        }
+        $iterator = new \RecursiveIteratorIterator(
+            new \RecursiveDirectoryIterator($directory, \FilesystemIterator::SKIP_DOTS),
+            \RecursiveIteratorIterator::CHILD_FIRST,
+        );
+        foreach ($iterator as $path) {
+            if ($path->isDir()) {
+                rmdir($path->getPathname());
+            } else {
+                unlink($path->getPathname());
+            }
+        }
+        rmdir($directory);
     }
 }
 

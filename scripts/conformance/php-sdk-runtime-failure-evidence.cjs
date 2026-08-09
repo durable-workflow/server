@@ -387,6 +387,7 @@ function compactRuntimeFailure(value, secrets, limit = 1280) {
     };
     if (includeSecondary) {
       retained.exception_type = text(value.exception_type, secrets, 160) || null;
+      retained.contract = text(value.contract, secrets, 256) || null;
       retained.message = text(value.message, secrets, 256) || null;
     }
     if (serializedBytes(value) > limit) {
@@ -493,6 +494,7 @@ function extractRuntimeFailureEvidence(source, options = {}) {
     workflow_id: workflowId,
     run_id: runId,
     exception_type: text(payload.exception_type, secrets, 256) || null,
+    contract: text(payload.contract, secrets, 256) || null,
     message: text(payload.message, secrets) || null,
   };
 }
@@ -605,7 +607,15 @@ function assertCompleteHttpFailureEvidence(evidence, classification) {
 }
 
 function failureSummary(evidence, stage, fallback) {
-  if (!evidence || evidence.status_code === null) {
+  if (!evidence) {
+    return fallback;
+  }
+  if (evidence.status_code === null) {
+    const exceptionType = text(evidence.exception_type, [], 256);
+    const message = text(evidence.message, [], 512);
+    if (exceptionType && message) {
+      return `The released PHP SDK raised ${exceptionType} during ${stage}: ${message}`;
+    }
     return fallback;
   }
 

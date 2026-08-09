@@ -93,11 +93,12 @@ class ReplayConformanceRunnerContractTest extends TestCase
     {
         $runner = $this->read('scripts/conformance/replay-published-artifacts.sh');
         $phpCell = $this->read('scripts/conformance/php-sdk-published-artifacts.sh');
+        $scenarioExpander = $this->read('scripts/conformance/php_sdk_replay_scenarios.py');
 
         $this->assertStringContainsString('DW_PHP_SDK_CONFORMANCE_REPLAY_MATRIX=1', $runner);
-        $this->assertStringContainsString('evidence.get("executed_runtime_cell") is not True', $runner);
-        $this->assertStringContainsString('runtime_cell.get("executed") is not True', $runner);
-        $this->assertStringContainsString('observed.get("runtime_cell_executed") is not True', $runner);
+        $this->assertStringContainsString('evidence.get("executed_runtime_cell") is True', $scenarioExpander);
+        $this->assertStringContainsString('runtime_cell.get("executed") is True', $scenarioExpander);
+        $this->assertStringContainsString('observed.get("runtime_cell_executed") is True', $scenarioExpander);
 
         foreach ([
             'php_completed_history_activity_replay',
@@ -124,6 +125,93 @@ class ReplayConformanceRunnerContractTest extends TestCase
         $this->assertStringContainsString("'observed_outcome' => 'non_determinism_error'", $phpCell);
         $this->assertStringContainsString("'observed_outcome' => 'same_next_decision_after_replay'", $phpCell);
         $this->assertStringContainsString("'evidence_files' => [", $phpCell);
+    }
+
+    public function test_php_shard_expands_early_worker_exit_into_explicit_failed_cells(): void
+    {
+        $scenarios = [
+            'php_completed_history_activity_replay',
+            'php_completed_history_signal_update_replay',
+            'php_completed_history_wait_condition_replay',
+            'php_completed_history_version_marker_replay',
+            'php_completed_history_saga_compensation_replay',
+            'php_worker_restart_completed_query',
+            'php_worker_restart_activity_state',
+            'php_worker_restart_signal_update_state',
+            'php_worker_restart_wait_condition_state',
+            'php_worker_restart_version_marker_state',
+            'php_worker_restart_saga_compensation_state',
+            'php_code_divergence_refusal',
+            'php_in_flight_signal_restart_timing',
+        ];
+        $workspace = sys_get_temp_dir().'/dw-php-replay-expansion-'.bin2hex(random_bytes(6));
+        mkdir($workspace, 0777, true);
+        $sourcePath = $workspace.'/source.json';
+        $expandedPath = $workspace.'/expanded.json';
+        $failureSummary = 'The released PHP SDK raised DurableWorkflow\\Exception\\InvalidWorkerDefinition during worker_process_exit: '
+            .'Invalid worker contract workflow php.sdk.failure. Make the first handler parameter DurableWorkflow\\Worker\\WorkflowContext.';
+        file_put_contents($sourcePath, json_encode([
+            'outcome' => 'fail',
+            'runner_blocked' => false,
+            'worker_startup' => ['outcome' => 'process_exit', 'process_exit_code' => 1],
+            'findings' => [[
+                'scenario_id' => 'php_sdk_lifecycle_surface',
+                'summary' => $failureSummary,
+                'owning_surface' => 'sdk-php',
+            ]],
+        ], JSON_THROW_ON_ERROR));
+
+        try {
+            $process = proc_open(
+                [
+                    'python3',
+                    dirname(__DIR__, 2).'/scripts/conformance/php_sdk_replay_scenarios.py',
+                    $sourcePath,
+                    $expandedPath,
+                ],
+                [
+                    1 => ['pipe', 'w'],
+                    2 => ['pipe', 'w'],
+                ],
+                $pipes,
+                dirname(__DIR__, 2),
+            );
+            $this->assertIsResource($process);
+            $stdout = stream_get_contents($pipes[1]);
+            $stderr = stream_get_contents($pipes[2]);
+            fclose($pipes[1]);
+            fclose($pipes[2]);
+            $this->assertSame(
+                0,
+                proc_close($process),
+                "PHP replay expansion failed.\nstdout:\n{$stdout}\nstderr:\n{$stderr}",
+            );
+
+            $expanded = json_decode(
+                (string) file_get_contents($expandedPath),
+                true,
+                flags: JSON_THROW_ON_ERROR,
+            );
+            $this->assertSame($scenarios, array_keys($expanded['scenario_results']));
+            $this->assertTrue($expanded['scenario_contract']['all_declared_scenarios_emitted']);
+            $this->assertFalse($expanded['scenario_contract']['all_declared_scenarios_executed']);
+            $this->assertSame($scenarios, $expanded['scenario_contract']['missing_executed_scenarios']);
+            foreach ($expanded['scenario_results'] as $scenarioId => $scenario) {
+                $this->assertSame('fail', $scenario['status'], $scenarioId);
+                $this->assertFalse($scenario['executed_runtime_cell'], $scenarioId);
+                $this->assertFalse($scenario['observed_outputs']['runtime_cell_executed'], $scenarioId);
+                $this->assertSame(
+                    [$failureSummary],
+                    $scenario['observed_outputs']['failure_summaries'],
+                    $scenarioId,
+                );
+            }
+        } finally {
+            foreach (glob($workspace.'/*') ?: [] as $file) {
+                unlink($file);
+            }
+            rmdir($workspace);
+        }
     }
 
     public function test_runner_establishes_runtime_namespaces_before_starting_any_replay_shard(): void
@@ -549,6 +637,10 @@ SH);
             copy(
                 $repoRoot.'/scripts/conformance/distribution_identities.py',
                 dirname($stagedScript).'/distribution_identities.py',
+            );
+            copy(
+                $repoRoot.'/scripts/conformance/php_sdk_replay_scenarios.py',
+                dirname($stagedScript).'/php_sdk_replay_scenarios.py',
             );
             copy($repoRoot.'/docker-compose.published.yml', $serverCheckout.'/docker-compose.published.yml');
 

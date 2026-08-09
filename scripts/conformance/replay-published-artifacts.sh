@@ -2031,7 +2031,7 @@ php_sdk_result="$php_sdk_probe_dir/php-sdk-conformance-result.json"
 php_shard_status=1
 if [[ -s "$php_sdk_result" ]]; then
   set +e
-  python3 - "$php_sdk_result" "$result_dir/php-replay-shard.json" "$result_dir/php-replay-surface.json" "$result_dir/pins.json" <<'PY'
+  python3 - "$php_sdk_result" "$result_dir/php-replay-shard.json" "$result_dir/php-replay-surface.json" "$result_dir/pins.json" "$script_dir" <<'PY'
 from __future__ import annotations
 
 import hashlib
@@ -2039,6 +2039,9 @@ import json
 import sys
 from pathlib import Path
 from typing import Any
+
+sys.path.insert(0, sys.argv[5])
+from php_sdk_replay_scenarios import expand_php_replay_scenarios
 
 source_path = Path(sys.argv[1])
 shard_path = Path(sys.argv[2])
@@ -2058,31 +2061,6 @@ install_pass = (
     and bool(source.get("package_provenance"))
     and bool(source.get("apache_avro_provenance"))
 )
-replay_assertions = [
-    "replay_checkpoint",
-    "durable_replay_history",
-    "durable_replay_result",
-    "activity_callback_once_for_replay",
-    "activity_callback_cardinality_by_phase",
-]
-replay_pass = all(assertions.get(name) is True for name in replay_assertions)
-restart_pass = replay_pass and assertions.get("distinct_worker_restart_processes") is True
-php_replay_scenarios = {
-    "php_completed_history_activity_replay",
-    "php_completed_history_signal_update_replay",
-    "php_completed_history_wait_condition_replay",
-    "php_completed_history_version_marker_replay",
-    "php_completed_history_saga_compensation_replay",
-    "php_worker_restart_completed_query",
-    "php_worker_restart_activity_state",
-    "php_worker_restart_signal_update_state",
-    "php_worker_restart_wait_condition_state",
-    "php_worker_restart_version_marker_state",
-    "php_worker_restart_saga_compensation_state",
-    "php_code_divergence_refusal",
-    "php_in_flight_signal_restart_timing",
-}
-
 def scenario(scenario_id: str, passed: bool, required: list[str]) -> dict[str, Any]:
     observed = {
         "sdk_php_result_summary": {
@@ -2111,36 +2089,9 @@ scenario_results = {
         install_pass,
         ["exact_sdk_version", "sdk_dist_provenance", "apache_avro_dependency"],
     ),
-    "php_completed_history_activity_replay": scenario(
-        "php_completed_history_activity_replay",
-        replay_pass,
-        replay_assertions,
-    ),
-    "php_worker_restart_activity_state": scenario(
-        "php_worker_restart_activity_state",
-        restart_pass,
-        replay_assertions + ["distinct_worker_restart_processes"],
-    ),
 }
-extended = source.get("replay_scenario_results")
-if isinstance(extended, dict):
-    for scenario_id, evidence in extended.items():
-        if scenario_id not in php_replay_scenarios or not isinstance(evidence, dict):
-            continue
-        runtime_cell = evidence.get("runtime_cell")
-        observed = evidence.get("observed_outputs")
-        if (
-            evidence.get("scenario_id") != scenario_id
-            or evidence.get("status") not in {"pass", "fail"}
-            or evidence.get("executed_runtime_cell") is not True
-            or not isinstance(runtime_cell, dict)
-            or runtime_cell.get("executed") is not True
-            or not runtime_cell.get("cell_id")
-            or not isinstance(observed, dict)
-            or observed.get("runtime_cell_executed") is not True
-        ):
-            continue
-        scenario_results[scenario_id] = dict(evidence)
+expanded_scenarios, expanded_scenario_contract = expand_php_replay_scenarios(source)
+scenario_results.update(expanded_scenarios)
 shard = {
     "schema": "durable-workflow.v2.replay-conformance.sdk-php-shard",
     "runtime": "sdk-php",
@@ -2153,6 +2104,7 @@ shard = {
         "local_product_source_checkouts_used": False,
     },
     "scenario_results": scenario_results,
+    "expanded_scenario_contract": expanded_scenario_contract,
     "process_boundary": source.get("process_boundary") or {},
     "package_provenance": source.get("package_provenance") or {},
     "apache_avro_provenance": source.get("apache_avro_provenance") or {},
@@ -2251,7 +2203,9 @@ def bounded_runtime_report(path: str) -> dict[str, object]:
         "runner_blocked",
         "artifact_versions",
         "artifact_sources",
+        "local_product_source_checkouts_used",
         "source_policy",
+        "worker_startup",
     ):
         if key in report:
             summary[key] = report[key]
@@ -2271,16 +2225,26 @@ def bounded_runtime_report(path: str) -> dict[str, object]:
 
     findings = report.get("findings")
     if isinstance(findings, list):
-        summary["findings"] = [
-            {
+        retained_findings = []
+        for finding in findings[:16]:
+            if not isinstance(finding, dict):
+                continue
+            retained = {
                 key: value[:512] if isinstance(value, str) else value
                 for key, value in finding.items()
-                if key in {"scenario_id", "type", "owning_surface", "summary", "reason"}
+                if key in {"scenario_id", "type", "finding_type", "owning_surface", "summary", "reason"}
                 and isinstance(value, (str, int, float, bool, type(None)))
             }
-            for finding in findings[:16]
-            if isinstance(finding, dict)
-        ]
+            observed = finding.get("observed_evidence")
+            if isinstance(observed, dict):
+                retained["observed_evidence"] = {
+                    key: value[:512] if isinstance(value, str) else value
+                    for key, value in observed.items()
+                    if key in {"classification", "owning_surface", "exception_type", "contract", "message"}
+                    and isinstance(value, (str, int, float, bool, type(None)))
+                }
+            retained_findings.append(retained)
+        summary["findings"] = retained_findings
 
     return summary
 
@@ -2297,20 +2261,10 @@ php_sdk_install_pass = (
     and bool(php_sdk_result.get("package_provenance"))
     and bool(php_sdk_result.get("apache_avro_provenance"))
 )
-php_sdk_result_summary = {
-    "schema": php_sdk_result.get("schema") if isinstance(php_sdk_result, dict) else None,
-    "outcome": php_sdk_result.get("outcome") if isinstance(php_sdk_result, dict) else None,
-    "runner_blocked": php_sdk_result.get("runner_blocked") if isinstance(php_sdk_result, dict) else None,
-    "local_product_source_checkouts_used": (
-        php_sdk_result.get("local_product_source_checkouts_used")
-        if isinstance(php_sdk_result, dict)
-        else None
-    ),
-    "artifact_versions": (
-        php_sdk_result.get("artifact_versions") or {}
-        if isinstance(php_sdk_result, dict)
-        else {}
-    ),
+php_sdk_result_summary = bounded_runtime_report(
+    "php-sdk-replay-probe/php-sdk-conformance-result.json"
+)
+php_sdk_result_summary.update({
     "package_provenance": (
         php_sdk_result.get("package_provenance") or {}
         if isinstance(php_sdk_result, dict)
@@ -2327,7 +2281,7 @@ php_sdk_result_summary = {
         else {}
     ),
     "source_document": php_sdk_result_identity,
-}
+})
 artifacts = [
     {
         "artifact": "server",
