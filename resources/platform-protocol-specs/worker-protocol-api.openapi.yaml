@@ -423,7 +423,7 @@ components:
     AdvertisedWorkerProtocolVersion:
       type: string
       const: "1.13"
-      description: Default worker protocol version advertised by Durable Workflow 2.0 beta responses.
+      description: Default worker protocol version advertised by responses implementing the Durable Workflow 2.0 protocol contract.
     WorkerEnvelope:
       type: object
       additionalProperties: true
