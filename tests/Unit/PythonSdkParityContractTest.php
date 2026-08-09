@@ -102,24 +102,63 @@ class PythonSdkParityContractTest extends TestCase
         $this->assertStringContainsString('local_product_source_checkouts_used', $script);
     }
 
-    public function test_runner_fences_the_initial_worker_before_starting_the_replacement(): void
+    public function test_runner_uses_managed_stop_as_the_orderly_deregistration_boundary(): void
     {
         $script = (string) file_get_contents(dirname(__DIR__, 2).'/scripts/conformance/python-published-artifacts.sh');
+        $absenceContract = (string) file_get_contents(dirname(__DIR__, 2).'/scripts/conformance/python_worker_stop_deregistration.py');
 
         $stop = strpos($script, 'await stop_worker(worker1, worker1_task)');
-        $deregister = strpos($script, 'await client.deregister_worker(worker1_id)');
+        $absence = strpos($script, 'initial_worker_absence = await verify_stopped_worker_absent(');
         $signal = strpos($script, 'await client.signal_workflow(workflow_id, "approve"');
         $replacement = strpos($script, 'terminal = await worker2.run_until(');
 
         $this->assertIsInt($stop);
-        $this->assertIsInt($deregister);
+        $this->assertIsInt($absence);
         $this->assertIsInt($signal);
         $this->assertIsInt($replacement);
-        $this->assertLessThan($deregister, $stop);
-        $this->assertLessThan($signal, $deregister);
+        $this->assertLessThan($absence, $stop);
+        $this->assertLessThan($signal, $absence);
         $this->assertLessThan($replacement, $signal);
+        $this->assertStringNotContainsString('await client.deregister_worker(worker1_id)', $script);
+        $this->assertStringContainsString('inventory = await client.list_workers()', $absenceContract);
+        $this->assertStringContainsString('detail = await client.describe_worker(worker_id)', $absenceContract);
+        $this->assertStringContainsString('status != 404', $absenceContract);
+        $this->assertStringContainsString('{"worker_not_found", "not_found"}', $absenceContract);
         $this->assertStringContainsString('python-parity-phase-evidence.json', $script);
         $this->assertStringContainsString('worker-protocol-traces.json', $script);
+    }
+
+    public function test_managed_stop_absence_regression_fixture(): void
+    {
+        $python = trim((string) shell_exec('command -v python3 2>/dev/null'));
+        if ($python === '') {
+            $this->markTestSkipped('python3 is required to exercise the managed-stop absence fixture.');
+        }
+
+        $pipes = [];
+        $process = proc_open(
+            [
+                $python,
+                '-m',
+                'unittest',
+                'tests/Unit/Support/python_worker_stop_deregistration_test.py',
+            ],
+            [
+                1 => ['pipe', 'w'],
+                2 => ['pipe', 'w'],
+            ],
+            $pipes,
+            dirname(__DIR__, 2),
+        );
+        $this->assertIsResource($process);
+
+        $stdout = stream_get_contents($pipes[1]);
+        $stderr = stream_get_contents($pipes[2]);
+        fclose($pipes[1]);
+        fclose($pipes[2]);
+        $exitCode = proc_close($process);
+
+        $this->assertSame(0, $exitCode, $stdout.$stderr);
     }
 
     public function test_runner_bootstraps_the_shared_sqlite_database_queue_before_starting_server_processes(): void

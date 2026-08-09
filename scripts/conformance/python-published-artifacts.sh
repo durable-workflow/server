@@ -660,6 +660,8 @@ then
   fail_blocked "published server image did not become ready"
 fi
 
+cp "$script_dir/python_worker_stop_deregistration.py" "$run_root/python_worker_stop_deregistration.py"
+
 cat > "$run_root/python-parity-runner.py" <<'PY'
 from __future__ import annotations
 
@@ -675,8 +677,9 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from durable_workflow import Client, Worker, activity, workflow
+from durable_workflow import Client, ServerError, Worker, activity, workflow
 from durable_workflow.metrics import CLIENT_REQUESTS
+from python_worker_stop_deregistration import verify_stopped_worker_absent
 
 
 def utc_now() -> str:
@@ -958,18 +961,22 @@ async def run() -> None:
         phases.record(
             "initial_worker_stopped",
             worker_id=worker1_id,
+            orderly_deregistration_action="Worker.stop",
             restart_started_at=restart_started,
             restart_finished_at=restart_finished,
         )
 
-        phases.record("initial_worker_deregistration", worker_id=worker1_id)
-        deregistration = await client.deregister_worker(worker1_id)
-        if deregistration.get("outcome") != "deregistered":
-            raise RuntimeError(f"initial Python worker deregistration failed: {deregistration!r}")
+        phases.record("initial_worker_absence_verification", worker_id=worker1_id)
+        initial_worker_absence = await verify_stopped_worker_absent(
+            client,
+            worker1_id,
+            server_error_type=ServerError,
+        )
         phases.record(
-            "initial_worker_deregistered",
+            "initial_worker_absent",
             worker_id=worker1_id,
-            recovered_workflow_task_count=deregistration.get("recovered_workflow_task_count"),
+            orderly_deregistration_action="Worker.stop",
+            absence_evidence=initial_worker_absence,
         )
 
         phases.record("approval_signal", run_id=run_id)
@@ -1004,6 +1011,57 @@ async def run() -> None:
     phases.record("cli_result_capture", run_id=run_id)
     cli_describe = cli.run(["workflow:describe", workflow_id, "--json"], namespace=namespace, timeout=60)
     cli_show_run = cli.run(["workflow:show-run", workflow_id, run_id, "--json"], namespace=namespace, timeout=60)
+
+    for command, cli_result in {
+        "workflow:describe": cli_describe,
+        "workflow:show-run": cli_show_run,
+    }.items():
+        if not isinstance(cli_result, dict):
+            raise RuntimeError(f"CLI {command} did not return JSON object evidence: {cli_result!r}")
+        if cli_result.get("workflow_id") != workflow_id or cli_result.get("run_id") != run_id:
+            raise RuntimeError(f"CLI {command} returned the wrong workflow/run identity: {cli_result!r}")
+        if cli_result.get("output") != result_value:
+            raise RuntimeError(f"CLI {command} did not expose the completed workflow result: {cli_result!r}")
+
+    if terminal.status != "completed":
+        raise RuntimeError(f"replacement Python worker observed non-completed terminal status: {terminal.status!r}")
+    history_events = final_history.get("events", []) if isinstance(final_history, dict) else []
+    after_signal_activity_events = [
+        event
+        for event in history_events
+        if isinstance(event, dict)
+        and (event.get("event_type") == "ActivityCompleted" or event.get("type") == "ActivityCompleted")
+        and isinstance(event.get("payload"), dict)
+        and event["payload"].get("activity_type") == "python.parity.after-signal"
+    ]
+    if len(after_signal_activity_events) != 1:
+        raise RuntimeError(
+            "replacement Python worker must complete python.parity.after-signal exactly once; "
+            f"observed {len(after_signal_activity_events)} matching history events"
+        )
+    expected_after_signal_result = {
+        "activity": "python.parity.after-signal",
+        "approved_by": "python-parity-signal",
+    }
+    observed_after_signal_result = (
+        result_value.get("activity_after_signal") if isinstance(result_value, dict) else None
+    )
+    if observed_after_signal_result != expected_after_signal_result:
+        raise RuntimeError(
+            "replacement Python worker returned unexpected post-signal activity evidence: "
+            f"{observed_after_signal_result!r}"
+        )
+    replacement_recovery = {
+        "replacement_worker_id": worker2_id,
+        "approval_signal": "python-parity-signal",
+        "terminal_status": terminal.status,
+        "after_signal_activity_completed_count": len(after_signal_activity_events),
+        "after_signal_activity_event_sequences": [
+            event.get("sequence") for event in after_signal_activity_events
+        ],
+        "after_signal_activity_result": observed_after_signal_result,
+    }
+    phases.record("replacement_work_completed_once", run_id=run_id, **replacement_recovery)
     phases.record("complete", run_id=run_id)
 
     protocol_traces = [*cli.traces, *trace_metrics.entries]
@@ -1050,8 +1108,9 @@ async def run() -> None:
         "workflow_result_returned": {"result": result_value},
         "worker_restart_replays_activity_state": {
             "restart_boundary": {"started_at": restart_started, "finished_at": restart_finished},
-            "initial_worker_deregistration": deregistration,
+            "initial_worker_deregistration": initial_worker_absence,
             "activity_before_restart": result_value.get("activity_before_restart") if isinstance(result_value, dict) else None,
+            "replacement_recovery": replacement_recovery,
         },
         "worker_restart_replays_signal_state": {
             "signal_state": result_value.get("signal_state") if isinstance(result_value, dict) else None,
@@ -1161,9 +1220,10 @@ async def run() -> None:
                 "scenario_id": "worker_restart_activity_and_signal_state",
                 "status": "pass",
                 "restart_boundary": {"started_at": restart_started, "finished_at": restart_finished},
-                "initial_worker_deregistration": deregistration,
+                "initial_worker_deregistration": initial_worker_absence,
                 "activity_state_after_restart": result_value.get("activity_before_restart") if isinstance(result_value, dict) else None,
                 "signal_state_after_restart": result_value.get("signal_state") if isinstance(result_value, dict) else None,
+                "replacement_recovery": replacement_recovery,
                 "observed_outputs": {"summary": "second Python worker replayed activity and signal state after restart"},
             },
         },
@@ -1237,8 +1297,10 @@ elif failure_phase in {
     "initial_worker_started",
     "workflow_start",
     "workflow_started",
-    "initial_worker_deregistration",
-    "initial_worker_deregistered",
+    "initial_worker_stop",
+    "initial_worker_stopped",
+    "initial_worker_absence_verification",
+    "initial_worker_absent",
 }:
     failure_scope = "server_routing"
 elif failure_phase in {"approval_signal", "approval_signal_accepted"}:
