@@ -208,6 +208,11 @@ Route::middleware([Authenticate::class])->group(function () {
         Route::post('/query-tasks/{queryTaskId}/complete', [WorkerController::class, 'completeQueryTask']);
         Route::post('/query-tasks/{queryTaskId}/fail', [WorkerController::class, 'failQueryTask']);
 
+        // Update validation tasks (durable, synchronous pre-acceptance checks)
+        Route::post('/update-validation-tasks/poll', [WorkerController::class, 'pollUpdateValidationTasks']);
+        Route::post('/update-validation-tasks/{taskId}/approve', [WorkerController::class, 'approveUpdateValidationTask']);
+        Route::post('/update-validation-tasks/{taskId}/reject', [WorkerController::class, 'rejectUpdateValidationTask']);
+
         // Activity tasks (long-poll)
         Route::post('/activity-tasks/poll', [ActivityTaskController::class, 'poll']);
         Route::post('/activity-tasks/{taskId}/complete', [ActivityTaskController::class, 'complete']);

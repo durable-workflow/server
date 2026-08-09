@@ -22,6 +22,7 @@ use App\Support\WorkerTerminalEventAttribution;
 use App\Support\WorkflowQueryTaskBroker;
 use App\Support\WorkflowTaskLeaseRecovery;
 use App\Support\WorkflowTaskPoller;
+use App\Support\WorkflowUpdateValidationTaskBroker;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
@@ -54,6 +55,7 @@ class WorkerController
         private readonly WorkflowTaskLeaseRecovery $workflowTaskLeaseRecovery,
         private readonly WorkflowTaskOwnership $taskOwnership,
         private readonly WorkflowQueryTaskBroker $queryTasks,
+        private readonly WorkflowUpdateValidationTaskBroker $updateValidationTasks,
         private readonly NamespaceExternalPayloadStorage $externalPayloadStorage,
         private readonly SearchAttributeValueValidator $searchAttributeValues,
         private readonly WorkerTerminalEventAttribution $terminalEventAttribution,
@@ -338,6 +340,12 @@ class WorkerController
             'update_contracts' => $this->commandHandlerContracts($contract['update_contracts'] ?? []),
         ];
 
+        if (array_key_exists(WorkflowUpdateValidationTaskBroker::CONTRACT_FIELD, $contract)) {
+            $normalized[WorkflowUpdateValidationTaskBroker::CONTRACT_FIELD] = $this->nonEmptyStringArray(
+                $contract[WorkflowUpdateValidationTaskBroker::CONTRACT_FIELD],
+            );
+        }
+
         if ($normalized['queries'] === []
             && $normalized['query_contracts'] === []
             && $normalized['signals'] === []
@@ -363,6 +371,12 @@ class WorkerController
         $normalized['queries'] = $this->sortedUniqueStrings($normalized['queries']);
         $normalized['signals'] = $this->sortedUniqueStrings($normalized['signals']);
         $normalized['updates'] = $this->sortedUniqueStrings($normalized['updates']);
+
+        if (isset($normalized[WorkflowUpdateValidationTaskBroker::CONTRACT_FIELD])) {
+            $normalized[WorkflowUpdateValidationTaskBroker::CONTRACT_FIELD] = $this->sortedUniqueStrings(
+                $normalized[WorkflowUpdateValidationTaskBroker::CONTRACT_FIELD],
+            );
+        }
 
         return $normalized;
     }
@@ -963,6 +977,8 @@ class WorkerController
                 'max:'.WorkerProtocolVersion::MAX_HISTORY_PAGE_SIZE,
             ],
             'accept_history_encoding' => ['nullable', 'string', 'max:64'],
+            'task_kinds' => ['nullable', 'array', 'min:1', 'max:2'],
+            'task_kinds.*' => ['string', 'distinct', 'in:workflow,update_validation'],
         ]);
 
         $maxPageSize = (int) config(
@@ -978,6 +994,9 @@ class WorkerController
         $timeoutSeconds = isset($validated['timeout_seconds'])
             ? (int) $validated['timeout_seconds']
             : null;
+        $taskKinds = isset($validated['task_kinds']) && is_array($validated['task_kinds'])
+            ? array_values($validated['task_kinds'])
+            : ['workflow'];
 
         $worker = $this->resolveRegisteredWorker(
             $namespace,
@@ -1012,6 +1031,19 @@ class WorkerController
             ]);
         }
 
+        if (in_array('update_validation', $taskKinds, true) && ! in_array(
+            WorkflowUpdateValidationTaskBroker::CAPABILITY,
+            is_array($worker->capabilities) ? $worker->capabilities : [],
+            true,
+        )) {
+            return WorkerProtocol::json([
+                'task' => null,
+                'poll_status' => 'unsupported',
+                'reason' => 'update_validation_capability_not_advertised',
+                'error' => 'Worker registration does not advertise synchronous update validation.',
+            ], 409);
+        }
+
         try {
             $poll = $this->workflowTaskPoller->poll(
                 request: $request,
@@ -1032,6 +1064,7 @@ class WorkerController
                     $worker,
                 ),
                 timeoutSeconds: $timeoutSeconds,
+                taskKinds: $taskKinds,
             );
         } catch (\Throwable $exception) {
             if ($exception instanceof LongPollCapacityExhaustedException) {
@@ -2557,6 +2590,122 @@ class WorkerController
 
             return BackendLockPressure::workerOperationResponse($request, false);
         }
+
+        return WorkerProtocol::json(
+            array_filter($outcome, static fn (mixed $value): bool => $value !== null),
+            (int) ($outcome['status'] ?? 200),
+        );
+    }
+
+    public function pollUpdateValidationTasks(Request $request): JsonResponse
+    {
+        if ($response = WorkerProtocol::rejectUnsupported($request)) {
+            return $response;
+        }
+
+        $namespace = $request->attributes->get('namespace');
+        $validated = $request->validate([
+            'worker_id' => ['required', 'string'],
+            'task_queue' => ['required', 'string'],
+            'timeout_seconds' => [
+                'nullable',
+                'integer',
+                'min:0',
+                'max:'.WorkerProtocolVersion::MAX_LONG_POLL_TIMEOUT,
+            ],
+        ]);
+        $worker = $this->resolveRegisteredWorker(
+            $namespace,
+            $validated['worker_id'],
+            $validated['task_queue'],
+        );
+
+        if ($worker instanceof JsonResponse) {
+            return $worker;
+        }
+
+        if (! in_array(
+            WorkflowUpdateValidationTaskBroker::CAPABILITY,
+            is_array($worker->capabilities) ? $worker->capabilities : [],
+            true,
+        )) {
+            return WorkerProtocol::json([
+                'task' => null,
+                'poll_status' => 'unsupported',
+                'reason' => 'update_validation_capability_not_advertised',
+                'error' => 'Worker registration does not advertise synchronous update validation.',
+            ], 409);
+        }
+
+        try {
+            $task = $this->updateValidationTasks->poll(
+                $namespace,
+                $worker,
+                isset($validated['timeout_seconds']) ? (int) $validated['timeout_seconds'] : null,
+            );
+        } catch (LongPollCapacityExhaustedException $exception) {
+            return WorkerPollBackpressure::response(
+                'update_validation_task',
+                $namespace,
+                $validated['task_queue'],
+                $exception,
+            );
+        }
+
+        return WorkerProtocol::json([
+            'task' => $task,
+            'poll_status' => $task === null ? 'empty' : 'leased',
+        ]);
+    }
+
+    public function approveUpdateValidationTask(Request $request, string $taskId): JsonResponse
+    {
+        if ($response = WorkerProtocol::rejectUnsupported($request)) {
+            return $response;
+        }
+
+        $validated = $request->validate([
+            'lease_owner' => ['required', 'string'],
+            'update_validation_attempt' => ['required', 'integer', 'min:1'],
+        ]);
+        $outcome = $this->updateValidationTasks->approve(
+            (string) $request->attributes->get('namespace'),
+            $taskId,
+            $validated['lease_owner'],
+            (int) $validated['update_validation_attempt'],
+        );
+
+        return WorkerProtocol::json(
+            array_filter($outcome, static fn (mixed $value): bool => $value !== null),
+            (int) ($outcome['status'] ?? 200),
+        );
+    }
+
+    public function rejectUpdateValidationTask(Request $request, string $taskId): JsonResponse
+    {
+        if ($response = WorkerProtocol::rejectUnsupported($request)) {
+            return $response;
+        }
+
+        $validated = $request->validate([
+            'lease_owner' => ['required', 'string'],
+            'update_validation_attempt' => ['required', 'integer', 'min:1'],
+            'failure' => ['required', 'array'],
+            'failure.message' => ['required', 'string'],
+            'failure.reason' => ['nullable', 'string'],
+            'failure.type' => ['nullable', 'string'],
+            'failure.stack_trace' => ['nullable', 'string'],
+            'failure.validation_errors' => ['nullable', 'array'],
+            'failure.validation_errors.*' => ['array'],
+            'failure.validation_errors.*.*' => ['string'],
+        ]);
+        $outcome = $this->updateValidationTasks->reject(
+            (string) $request->attributes->get('namespace'),
+            $taskId,
+            $validated['lease_owner'],
+            (int) $validated['update_validation_attempt'],
+            $validated['failure'],
+        );
 
         return WorkerProtocol::json(
             array_filter($outcome, static fn (mixed $value): bool => $value !== null),

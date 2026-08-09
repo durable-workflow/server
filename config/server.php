@@ -71,6 +71,11 @@ return [
 
     'fleet_validation_mode' => EnvAuditor::env('DW_V2_FLEET_VALIDATION_MODE', 'WORKFLOW_V2_FLEET_VALIDATION_MODE', 'warn'),
 
+    'update_validation' => [
+        'timeout' => EnvAuditor::env('DW_UPDATE_VALIDATION_TIMEOUT', 'WORKFLOW_SERVER_UPDATE_VALIDATION_TIMEOUT', 10),
+        'lease_timeout' => EnvAuditor::env('DW_UPDATE_VALIDATION_LEASE_TIMEOUT', 'WORKFLOW_SERVER_UPDATE_VALIDATION_LEASE_TIMEOUT', 5),
+    ],
+
     /*
     |--------------------------------------------------------------------------
     | External Executor Config

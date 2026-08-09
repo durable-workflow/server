@@ -31,7 +31,7 @@ use Workflow\V2\Support\UpdateWaitPolicy;
 use Workflow\V2\Support\WorkflowExecutionGate;
 use Workflow\V2\Support\WorkflowTaskPayload;
 
-final class ExternalWorkflowUpdateAdmission
+class ExternalWorkflowUpdateAdmission
 {
     public function __construct(
         private readonly ControlPlaneMutationRetrier $mutations,
@@ -188,6 +188,15 @@ final class ExternalWorkflowUpdateAdmission
         }
 
         return $result;
+    }
+
+    /**
+     * @param  array<int|string, mixed>  $arguments
+     * @return array{arguments: list<mixed>, validation_errors: array<string, list<string>>}
+     */
+    public function validatedArguments(WorkflowRun $run, string $updateName, array $arguments): array
+    {
+        return $this->validatedArgumentsForRun($run, $updateName, $arguments);
     }
 
     private function shouldHandle(WorkflowRun $run, string $updateName): bool

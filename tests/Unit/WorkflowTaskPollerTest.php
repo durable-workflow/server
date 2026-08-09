@@ -10,9 +10,11 @@ use App\Support\ServerPollingCache;
 use App\Support\TaskQueueAdmission;
 use App\Support\WorkerPollClaimGate;
 use App\Support\WorkflowQueryTaskBroker;
+use App\Support\WorkflowTaskKindSelector;
 use App\Support\WorkflowTaskLeaseRecovery;
 use App\Support\WorkflowTaskPoller;
 use App\Support\WorkflowTaskPollRequestStore;
+use App\Support\WorkflowUpdateValidationTaskBroker;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use ReflectionMethod;
 use Tests\TestCase;
@@ -44,6 +46,8 @@ class WorkflowTaskPollerTest extends TestCase
             app(WorkerPollClaimGate::class),
             app(WorkflowQueryTaskBroker::class),
             app(PollRequestLeaseBinding::class),
+            app(WorkflowUpdateValidationTaskBroker::class),
+            app(WorkflowTaskKindSelector::class),
         );
 
         $result = $this->invokeClaimReadyTask(

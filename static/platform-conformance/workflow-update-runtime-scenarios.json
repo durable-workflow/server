@@ -1,9 +1,9 @@
 {
   "schema": "durable-workflow.v2.platform-conformance.runtime-scenarios",
-  "version": 1,
+  "version": 2,
   "category": "workflow_update_runtime_contract",
   "suite_schema": "durable-workflow.v2.platform-conformance.suite",
-  "suite_version": 27,
+  "suite_version": 40,
   "description": "Public scenario manifest for the stable workflow update runtime contract. Harnesses use these scenario ids and criteria when evaluating published Durable Workflow artifacts.",
   "fixture_type": "published_artifact_runtime_scenario_manifest",
   "result_statuses": [
@@ -61,6 +61,21 @@
       "sdk-python-token",
       "sdk-php-token"
     ]
+  },
+  "service_mode_update_validation": {
+    "supported": true,
+    "acceptance_boundary": "validator_approved",
+    "worker_capability": "update_validation_tasks",
+    "workflow_contract_field": "update_validators",
+    "task_poll": {
+      "strategy": "multiplexed",
+      "endpoint": "/worker/workflow-tasks/poll",
+      "request_field": "task_kinds",
+      "task_kinds": ["workflow", "update_validation"],
+      "response_discriminator": "task.task_kind"
+    },
+    "validator_sdk_surfaces": ["sdk-python"],
+    "sdk_surfaces_without_validators": ["sdk-php", "sdk-rust"]
   },
   "scenario_requirements": {
     "published_artifact_install_only": {
@@ -180,6 +195,52 @@
         "waterline_principal_fields"
       ]
     },
+    "update_validator_approval_boundary": {
+      "required_fields": [
+        "declared_update_validators",
+        "validation_task",
+        "accepted_state_absent_before_approval",
+        "handler_not_invoked_during_validation",
+        "approval_response",
+        "accepted_response",
+        "history_update_accepted_event"
+      ]
+    },
+    "update_validator_rejection_boundary": {
+      "required_fields": [
+        "validation_task",
+        "validator_rejection",
+        "typed_update_response",
+        "accepted_history_event_count",
+        "rejected_history_event",
+        "handler_not_invoked"
+      ]
+    },
+    "update_validator_worker_replacement": {
+      "required_fields": [
+        "first_delivery",
+        "replacement_delivery",
+        "replacement_attempt",
+        "accepted_response",
+        "stale_completion_response"
+      ]
+    },
+    "duplicate_validation_completion": {
+      "required_fields": [
+        "validation_task_id",
+        "terminal_outcome",
+        "duplicate_completion_response",
+        "update_history_event_count"
+      ]
+    },
+    "unsupported_validation_capability": {
+      "required_fields": [
+        "server_capability_discovery",
+        "worker_capabilities",
+        "typed_update_response",
+        "accepted_history_event_count"
+      ]
+    },
     "php_client_worker_update_surface": {
       "required_fields": [
         "sdk_php_artifact_version",
@@ -235,7 +296,12 @@
       "invalid_input_refusal",
       "payload_envelope_round_trip",
       "terminal_workflow_update_behavior",
-      "principal_attribution_with_auth"
+      "principal_attribution_with_auth",
+      "update_validator_approval_boundary",
+      "update_validator_rejection_boundary",
+      "update_validator_worker_replacement",
+      "duplicate_validation_completion",
+      "unsupported_validation_capability"
     ],
     "python_sidecar": {
       "status": "implemented",
@@ -581,6 +647,86 @@
       ],
       "unsupported_when": [
         "the artifact tuple does not expose an authentication mode for this conformance topology"
+      ]
+    },
+    {
+      "id": "update_validator_approval_boundary",
+      "title": "Validator approval gates accepted state",
+      "claim_targets": ["standalone_server", "official_sdk", "worker_protocol_implementation"],
+      "actors": ["server", "validator_worker", "sdk_client"],
+      "operations": [
+        "start a workflow whose command contract declares an update validator",
+        "lease the validation task and inspect state before approving it",
+        "approve validation and capture the first accepted response and history event"
+      ],
+      "pass_criteria": [
+        "no accepted update row or history event exists before validator approval",
+        "validation replays state without invoking the update handler",
+        "the accepted update id is the durably validated task id"
+      ]
+    },
+    {
+      "id": "update_validator_rejection_boundary",
+      "title": "Validator rejection remains pre-accept",
+      "claim_targets": ["standalone_server", "official_sdk", "worker_protocol_implementation"],
+      "actors": ["server", "validator_worker", "sdk_client"],
+      "operations": [
+        "return a typed rejection from the declared validator",
+        "capture the client-visible rejection and durable history",
+        "verify the update handler is never dispatched"
+      ],
+      "pass_criteria": [
+        "the client receives update_validator_rejected with structured validation evidence",
+        "no UpdateAccepted event is recorded",
+        "the durable rejected update retains the same update id across retries"
+      ]
+    },
+    {
+      "id": "update_validator_worker_replacement",
+      "title": "Lost validator worker is safely replaced",
+      "claim_targets": ["standalone_server", "worker_protocol_implementation"],
+      "actors": ["server", "original_validator_worker", "replacement_validator_worker"],
+      "operations": [
+        "lease validation to one worker and expire its lease",
+        "reclaim the same task on a replacement worker",
+        "approve the replacement delivery and submit the stale original completion"
+      ],
+      "pass_criteria": [
+        "the replacement receives a higher delivery attempt for the same validation task",
+        "only the replacement approval can cross the acceptance boundary",
+        "the stale completion is refused with stale_update_validation_completion"
+      ]
+    },
+    {
+      "id": "duplicate_validation_completion",
+      "title": "Duplicate validator completion is fenced",
+      "claim_targets": ["standalone_server", "worker_protocol_implementation"],
+      "actors": ["server", "validator_worker"],
+      "operations": [
+        "complete one validation task successfully",
+        "repeat completion for the same lease and attempt",
+        "count accepted update history events"
+      ],
+      "pass_criteria": [
+        "the repeated completion returns duplicate_update_validation_completion",
+        "the terminal validation result does not change",
+        "only one accepted history event exists"
+      ]
+    },
+    {
+      "id": "unsupported_validation_capability",
+      "title": "Unsupported validator capability fails closed",
+      "claim_targets": ["standalone_server", "official_sdk", "worker_protocol_implementation"],
+      "actors": ["server", "non_validator_worker", "sdk_client"],
+      "operations": [
+        "advertise a workflow contract with a validator but omit worker validation capability",
+        "inspect server capability discovery",
+        "attempt the validated update and inspect history"
+      ],
+      "pass_criteria": [
+        "the request returns update_validation_capability_unsupported",
+        "no accepted state or handler dispatch is recorded",
+        "SDK registration refuses validator-bearing workflows when discovery lacks support"
       ]
     },
     {

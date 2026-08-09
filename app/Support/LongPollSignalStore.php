@@ -151,6 +151,32 @@ final class LongPollSignalStore implements LongPollWakeStore
         $this->signal($this->queryTaskResultChannel($queryTaskId));
     }
 
+    /**
+     * @return list<string>
+     */
+    public function updateValidationTaskPollChannels(string $namespace, ?string $queue): array
+    {
+        return $this->normalizeChannels([
+            $this->queueChannel('update-validation-tasks', null, null, $queue),
+            $this->queueChannel('update-validation-tasks', $namespace, null, $queue),
+        ]);
+    }
+
+    public function signalUpdateValidationTaskQueue(string $namespace, ?string $queue): void
+    {
+        $this->signal(...$this->updateValidationTaskPollChannels($namespace, $queue));
+    }
+
+    public function updateValidationTaskResultChannel(string $taskId): string
+    {
+        return sprintf('update-validation-task-result:%s', $taskId);
+    }
+
+    public function signalUpdateValidationTaskResult(string $taskId): void
+    {
+        $this->signal($this->updateValidationTaskResultChannel($taskId));
+    }
+
     public function historyRunChannel(string $runId): string
     {
         return sprintf('history:%s', $runId);

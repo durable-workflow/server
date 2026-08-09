@@ -44,6 +44,8 @@ final class WorkflowTaskPoller
         private readonly WorkerPollClaimGate $claimGate,
         private readonly WorkflowQueryTaskBroker $queryTasks,
         private readonly PollRequestLeaseBinding $pollLeaseBindings,
+        private readonly WorkflowUpdateValidationTaskBroker $updateValidationTasks,
+        private readonly WorkflowTaskKindSelector $taskKindSelector,
     ) {}
 
     /**
@@ -65,6 +67,7 @@ final class WorkflowTaskPoller
         array $workflowDefinitionFingerprints = [],
         bool $acceptsQueryTasks = false,
         ?int $timeoutSeconds = null,
+        array $taskKinds = ['workflow'],
     ): array {
         $pollRequestId = $this->nonEmptyString($pollRequestId);
 
@@ -75,7 +78,7 @@ final class WorkflowTaskPoller
             ];
         }
 
-        if ($pollRequestId !== null) {
+        if ($pollRequestId !== null && in_array('workflow', $taskKinds, true)) {
             $task = $this->activeLeasedTaskForWorker(
                 namespace: $namespace,
                 taskQueue: $taskQueue,
@@ -89,7 +92,7 @@ final class WorkflowTaskPoller
 
             if (is_array($task)) {
                 return [
-                    'task' => $task,
+                    'task' => $this->withTaskKind($task, 'workflow'),
                     'poll_status' => 'leased',
                 ];
             }
@@ -110,6 +113,7 @@ final class WorkflowTaskPoller
                 workflowDefinitionFingerprints: $workflowDefinitionFingerprints,
                 acceptsQueryTasks: $acceptsQueryTasks,
                 timeoutSeconds: $timeoutSeconds,
+                taskKinds: $taskKinds,
             );
         }
 
@@ -127,6 +131,7 @@ final class WorkflowTaskPoller
             workflowDefinitionFingerprints: $workflowDefinitionFingerprints,
             acceptsQueryTasks: $acceptsQueryTasks,
             timeoutSeconds: $timeoutSeconds,
+            taskKinds: $taskKinds,
         );
     }
 
@@ -149,6 +154,7 @@ final class WorkflowTaskPoller
         array $workflowDefinitionFingerprints = [],
         bool $acceptsQueryTasks = false,
         ?int $timeoutSeconds = null,
+        array $taskKinds = ['workflow'],
     ): array {
         $workerPollFence = WorkerPollFence::snapshot($worker);
 
@@ -196,6 +202,7 @@ final class WorkflowTaskPoller
                     workflowDefinitionFingerprints: $workflowDefinitionFingerprints,
                     acceptsQueryTasks: $acceptsQueryTasks,
                     timeoutSeconds: $timeoutSeconds,
+                    taskKinds: $taskKinds,
                 );
             }
 
@@ -330,6 +337,7 @@ final class WorkflowTaskPoller
         array $workflowDefinitionFingerprints = [],
         bool $acceptsQueryTasks = false,
         ?int $timeoutSeconds = null,
+        array $taskKinds = ['workflow'],
     ): array {
         try {
             $task = $this->performPoll(
@@ -346,6 +354,7 @@ final class WorkflowTaskPoller
                 workflowDefinitionFingerprints: $workflowDefinitionFingerprints,
                 acceptsQueryTasks: $acceptsQueryTasks,
                 timeoutSeconds: $timeoutSeconds,
+                taskKinds: $taskKinds,
             );
         } catch (Throwable $exception) {
             $this->pollRequests->forgetPending(
@@ -391,6 +400,7 @@ final class WorkflowTaskPoller
         array $workflowDefinitionFingerprints = [],
         bool $acceptsQueryTasks = false,
         ?int $timeoutSeconds = null,
+        array $taskKinds = ['workflow'],
     ): array {
         $limit = max(10, max(1, (int) config('server.polling.max_tasks_per_poll', 1)) * 10);
         $nextProbeAt = null;
@@ -400,8 +410,25 @@ final class WorkflowTaskPoller
             'next_probe_at' => null,
         ];
         $workerPollFence = WorkerPollFence::snapshot($worker);
-        $supportsQueryTasks = $this->cache->available()
+        $supportsQueryTasks = in_array('workflow', $taskKinds, true)
+            && $this->cache->available()
             && $this->queryTasks->workerSupportsQueryTasks($namespace, $worker);
+        $wakeChannels = [];
+
+        if (in_array('workflow', $taskKinds, true)) {
+            $wakeChannels = [
+                ...$wakeChannels,
+                ...$this->signals->workflowTaskPollChannels($namespace, null, $taskQueue),
+                ...$this->signals->queryTaskPollChannels($namespace, $taskQueue),
+            ];
+        }
+
+        if (in_array('update_validation', $taskKinds, true)) {
+            $wakeChannels = [
+                ...$wakeChannels,
+                ...$this->signals->updateValidationTaskPollChannels($namespace, $taskQueue),
+            ];
+        }
 
         $pollResult = $this->longPoller->until(
             function () use (
@@ -417,6 +444,8 @@ final class WorkflowTaskPoller
                 $workflowDefinitionFingerprints,
                 $acceptsQueryTasks,
                 $supportsQueryTasks,
+                $worker,
+                $taskKinds,
                 $limit,
                 $workerPollFence,
                 &$nextProbeAt,
@@ -432,21 +461,23 @@ final class WorkflowTaskPoller
                     return $resolvedResult;
                 }
 
-                $resolvedResult = $this->nextTask(
-                    $request,
-                    $namespace,
-                    $taskQueue,
-                    $leaseOwner,
-                    $buildId,
-                    $limit,
-                    $pollRequestId,
-                    $historyPageSize,
-                    $acceptHistoryEncoding,
-                    $supportedWorkflowTypes,
-                    $workflowDefinitionFingerprints,
-                    $acceptsQueryTasks,
-                    $supportsQueryTasks,
-                    $workerPollFence,
+                $resolvedResult = $this->nextRequestedTask(
+                    request: $request,
+                    namespace: $namespace,
+                    taskQueue: $taskQueue,
+                    leaseOwner: $leaseOwner,
+                    buildId: $buildId,
+                    worker: $worker,
+                    taskKinds: $taskKinds,
+                    limit: $limit,
+                    pollRequestId: $pollRequestId,
+                    historyPageSize: $historyPageSize,
+                    acceptHistoryEncoding: $acceptHistoryEncoding,
+                    supportedWorkflowTypes: $supportedWorkflowTypes,
+                    workflowDefinitionFingerprints: $workflowDefinitionFingerprints,
+                    acceptsQueryTasks: $acceptsQueryTasks,
+                    supportsQueryTasks: $supportsQueryTasks,
+                    workerPollFence: $workerPollFence,
                 );
                 $nextProbeAt = $resolvedResult['next_probe_at'] ?? null;
 
@@ -462,10 +493,7 @@ final class WorkflowTaskPoller
             },
             static fn (?array $result): bool => is_array($result),
             timeoutSeconds: $timeoutSeconds,
-            wakeChannels: [
-                ...$this->signals->workflowTaskPollChannels($namespace, null, $taskQueue),
-                ...$this->signals->queryTaskPollChannels($namespace, $taskQueue),
-            ],
+            wakeChannels: $wakeChannels,
             nextProbeAt: function () use (&$nextProbeAt): mixed {
                 return $nextProbeAt;
             },
@@ -487,6 +515,92 @@ final class WorkflowTaskPoller
             'task' => $pollResult,
             'poll_status' => $resolvedResult['poll_status'] ?? $this->defaultPollStatus($pollResult),
         ];
+    }
+
+    /**
+     * Select and lease at most one task across the requested task kinds.
+     * Multiplexed polls durably alternate their first claim attempt so neither
+     * kind can monopolize a validator-capable worker. A failed first attempt
+     * falls through to the other kind in the same non-blocking probe.
+     *
+     * @param  list<string>  $taskKinds
+     * @param  list<string>  $supportedWorkflowTypes
+     * @param  array<string, string>  $workflowDefinitionFingerprints
+     * @return array{task: array<string, mixed>|null, poll_status: string, next_probe_at: \DateTimeInterface|null}
+     */
+    private function nextRequestedTask(
+        Request $request,
+        string $namespace,
+        string $taskQueue,
+        string $leaseOwner,
+        ?string $buildId,
+        WorkerRegistration $worker,
+        array $taskKinds,
+        int $limit,
+        ?string $pollRequestId = null,
+        ?int $historyPageSize = null,
+        ?string $acceptHistoryEncoding = null,
+        array $supportedWorkflowTypes = [],
+        array $workflowDefinitionFingerprints = [],
+        bool $acceptsQueryTasks = false,
+        bool $supportsQueryTasks = false,
+        array $workerPollFence = [],
+    ): array {
+        return $this->taskKindSelector->select(
+            $namespace,
+            $taskQueue,
+            $taskKinds,
+            function (string $taskKind) use (
+                $request,
+                $namespace,
+                $taskQueue,
+                $leaseOwner,
+                $buildId,
+                $worker,
+                $limit,
+                $pollRequestId,
+                $historyPageSize,
+                $acceptHistoryEncoding,
+                $supportedWorkflowTypes,
+                $workflowDefinitionFingerprints,
+                $acceptsQueryTasks,
+                $supportsQueryTasks,
+                $workerPollFence,
+            ): array {
+                if ($taskKind === 'update_validation') {
+                    $validationTask = $this->updateValidationTasks->claimAvailable($namespace, $worker);
+
+                    return [
+                        'task' => $validationTask,
+                        'poll_status' => is_array($validationTask) ? 'leased' : 'empty',
+                        'next_probe_at' => null,
+                    ];
+                }
+
+                $result = $this->nextTask(
+                    request: $request,
+                    namespace: $namespace,
+                    taskQueue: $taskQueue,
+                    leaseOwner: $leaseOwner,
+                    buildId: $buildId,
+                    limit: $limit,
+                    pollRequestId: $pollRequestId,
+                    historyPageSize: $historyPageSize,
+                    acceptHistoryEncoding: $acceptHistoryEncoding,
+                    supportedWorkflowTypes: $supportedWorkflowTypes,
+                    workflowDefinitionFingerprints: $workflowDefinitionFingerprints,
+                    acceptsQueryTasks: $acceptsQueryTasks,
+                    supportsQueryTasks: $supportsQueryTasks,
+                    workerPollFence: $workerPollFence,
+                );
+
+                if (is_array($result['task'] ?? null)) {
+                    $result['task'] = $this->withTaskKind($result['task'], 'workflow');
+                }
+
+                return $result;
+            },
+        );
     }
 
     /**
@@ -1392,6 +1506,15 @@ final class WorkflowTaskPoller
             return true;
         }
 
+        if (($task['task_kind'] ?? null) === 'update_validation') {
+            return $this->updateValidationTasks->cachedTaskStillDeliverable(
+                namespace: $namespace,
+                taskQueue: $taskQueue,
+                leaseOwner: $leaseOwner,
+                payload: $task,
+            );
+        }
+
         $taskId = $this->nonEmptyString($task['task_id'] ?? null);
 
         if ($taskId === null) {
@@ -1446,6 +1569,10 @@ final class WorkflowTaskPoller
     private function refreshCachedTaskPayload(string $namespace, ?array $task): ?array
     {
         if (! is_array($task)) {
+            return $task;
+        }
+
+        if (($task['task_kind'] ?? null) === 'update_validation') {
             return $task;
         }
 
@@ -2024,6 +2151,15 @@ final class WorkflowTaskPoller
     private function defaultPollStatus(?array $task): string
     {
         return is_array($task) ? 'leased' : 'empty';
+    }
+
+    /**
+     * @param  array<string, mixed>  $task
+     * @return array<string, mixed>
+     */
+    private function withTaskKind(array $task, string $taskKind): array
+    {
+        return ['task_kind' => $taskKind, ...$task];
     }
 
     /**

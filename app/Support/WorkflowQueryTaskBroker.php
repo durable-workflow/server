@@ -515,6 +515,24 @@ final class WorkflowQueryTaskBroker
     }
 
     /**
+     * Return the authoritative replay snapshot shared by read-only query and
+     * pre-accept update-validation tasks.
+     *
+     * @return array<string, mixed>
+     */
+    public function workflowReplayPayload(string $namespace, WorkflowRun $run): array
+    {
+        return [
+            'workflow_class' => $run->workflow_class,
+            'workflow_arguments' => $run->argumentsEnvelope(),
+            'run_status' => $run->status->value,
+            'last_history_sequence' => (int) ($run->last_history_sequence ?? 0),
+            'history_events' => $this->historyEvents($run),
+            'history_export' => $this->historyExport($run, null),
+        ];
+    }
+
+    /**
      * @return array<string, mixed>|null
      */
     public function poll(

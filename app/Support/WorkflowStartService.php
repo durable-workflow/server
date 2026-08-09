@@ -4,6 +4,7 @@ namespace App\Support;
 
 use App\Models\WorkerBuildIdRollout;
 use App\Models\WorkerRegistration;
+use Illuminate\Support\Collection;
 use Workflow\Serializers\CodecRegistry;
 use Workflow\Serializers\Serializer;
 use Workflow\V2\CommandContext;
@@ -236,6 +237,13 @@ class WorkflowStartService
             'declared_signal_contracts' => $this->contractList($contract['signal_contracts'] ?? []),
             'declared_updates' => $this->stringList($contract['updates'] ?? []),
             'declared_update_contracts' => $this->contractList($contract['update_contracts'] ?? []),
+            ...(array_key_exists(WorkflowUpdateValidationTaskBroker::CONTRACT_FIELD, $contract)
+                ? [
+                    'declared_update_validators' => $this->stringList(
+                        $contract[WorkflowUpdateValidationTaskBroker::CONTRACT_FIELD],
+                    ),
+                ]
+                : []),
             'declared_entry_method' => $this->nullableString($contract['entry_method'] ?? null) ?? 'handle',
             'declared_entry_mode' => $this->nullableString($contract['entry_mode'] ?? null) ?? 'canonical',
             'declared_entry_declaring_class' => $this->nullableString($contract['entry_declaring_class'] ?? null)
@@ -253,8 +261,7 @@ class WorkflowStartService
         string $workflowType,
         ?string $contractBuildId,
         string $contractScope,
-    ): ?array
-    {
+    ): ?array {
         if ($namespace === null || trim($namespace) === '') {
             return null;
         }
@@ -263,7 +270,7 @@ class WorkflowStartService
             return null;
         }
 
-        /** @var \Illuminate\Support\Collection<int, WorkerRegistration> $workers */
+        /** @var Collection<int, WorkerRegistration> $workers */
         $workers = WorkerRegistration::query()
             ->where('namespace', $namespace)
             ->where('task_queue', $taskQueue)
@@ -298,8 +305,7 @@ class WorkflowStartService
         WorkerRegistration $worker,
         ?string $contractBuildId,
         string $contractScope,
-    ): bool
-    {
+    ): bool {
         if (! $this->workerIsActive($worker) || ! $this->workerIsFresh($worker)) {
             return false;
         }

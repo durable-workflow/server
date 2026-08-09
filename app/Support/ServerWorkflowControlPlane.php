@@ -120,6 +120,17 @@ final class ServerWorkflowControlPlane implements WorkflowControlPlane
     }
 
     /**
+     * @param  array<int|string, mixed>  $arguments
+     * @return array{string, string}
+     */
+    public function encodeArgumentsForRun(WorkflowRun $run, array $arguments): array
+    {
+        return array_values($this->queryArgumentsEnvelope([
+            'arguments' => $arguments,
+        ], $run));
+    }
+
+    /**
      * @param  array<string, mixed>  $options
      */
     private function namespace(array $options): ?string

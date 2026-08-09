@@ -789,6 +789,7 @@ class WorkerProtocolSuccessContractTest extends TestCase
                             ],
                         ],
                     ],
+                    'update_validators' => [],
                 ],
             ],
         ], $this->workerProtocolHeaders())->assertCreated();
@@ -987,6 +988,7 @@ class WorkerProtocolSuccessContractTest extends TestCase
                         ]],
                     ]],
                     'updates' => ['set'],
+                    'update_validators' => [],
                     'update_contracts' => [[
                         'name' => 'set',
                         'parameters' => [[
@@ -1187,6 +1189,7 @@ class WorkerProtocolSuccessContractTest extends TestCase
                     'blob' => $resultBlob,
                 ],
             ]],
+            'update_validators' => [],
         ], $this->workerProtocolHeaders());
 
         $this->assertWorkerProtocolSuccess($updateComplete)

@@ -372,6 +372,21 @@ return [
             'legacy' => 'WORKFLOW_SERVER_HISTORY_PAGE_SIZE_MAX',
         ],
 
+        // --- Update validation transport ------------------------------
+
+        'DW_UPDATE_VALIDATION_TIMEOUT' => [
+            'description' => 'Seconds the control plane waits for a synchronous pre-accept update validator result.',
+            'default' => '10',
+            'since' => '2.0.0',
+            'legacy' => 'WORKFLOW_SERVER_UPDATE_VALIDATION_TIMEOUT',
+        ],
+        'DW_UPDATE_VALIDATION_LEASE_TIMEOUT' => [
+            'description' => 'Seconds an update-validation task lease remains owned before a replacement validator-capable worker may retry it.',
+            'default' => '5',
+            'since' => '2.0.0',
+            'legacy' => 'WORKFLOW_SERVER_UPDATE_VALIDATION_LEASE_TIMEOUT',
+        ],
+
         // --- Query task transport --------------------------------------
 
         'DW_QUERY_TASK_TIMEOUT' => [

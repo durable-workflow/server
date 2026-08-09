@@ -88,8 +88,8 @@ class EnvContractTest extends TestCase
             'min(max(DW_WORKER_POLL_TIMEOUT + 15, 40), 55)',
             self::$contract['vars']['DW_QUERY_TASK_TIMEOUT']['default'] ?? null,
         );
-        $this->assertStringContainsString(
-            "EnvAuditor::env(\n                    'DW_WORKER_POLL_TIMEOUT'",
+        $this->assertMatchesRegularExpression(
+            "/EnvAuditor::env\(\s*'DW_WORKER_POLL_TIMEOUT'/",
             $source,
             'The query-task timeout default must derive from the worker long-poll cadence.',
         );

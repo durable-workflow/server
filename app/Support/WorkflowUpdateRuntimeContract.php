@@ -11,7 +11,7 @@ final class WorkflowUpdateRuntimeContract
 {
     public const SCHEMA = 'durable-workflow.v2.workflow-update-runtime.contract';
 
-    public const VERSION = 2;
+    public const VERSION = 3;
 
     public const RESULT_SCHEMA = 'durable-workflow.v2.workflow-update-runtime.result';
 
@@ -22,7 +22,7 @@ final class WorkflowUpdateRuntimeContract
      */
     public static function manifest(): array
     {
-        $scenarioRequirements = self::scenarioRequirements();
+        $scenarioRequirements = self::allScenarioRequirements();
 
         return [
             'schema' => self::SCHEMA,
@@ -112,6 +112,30 @@ final class WorkflowUpdateRuntimeContract
                     'sdk-python',
                 ],
             ],
+            'service_mode_update_validation' => [
+                'supported' => true,
+                'acceptance_boundary' => 'validator_approved',
+                'worker_capability' => WorkflowUpdateValidationTaskBroker::CAPABILITY,
+                'workflow_contract_field' => WorkflowUpdateValidationTaskBroker::CONTRACT_FIELD,
+                'validator_execution' => 'replay_without_handler_or_state_commit',
+                'request_id_required' => true,
+                'validator_sdk_surfaces' => ['sdk-python'],
+                'sdk_surfaces_without_validators' => ['sdk-php', 'sdk-rust'],
+                'typed_outcomes' => [
+                    'update_validator_rejected',
+                    'update_validator_contract_missing',
+                    'update_validation_request_id_required',
+                    'update_validation_idempotency_conflict',
+                    'update_validation_capability_unsupported',
+                    'update_validator_worker_unavailable',
+                    'update_validator_worker_incompatible',
+                    'update_validator_worker_lost',
+                    'update_validation_task_not_claimed',
+                    'update_validation_execution_timeout',
+                    'duplicate_update_validation_completion',
+                    'stale_update_validation_completion',
+                ],
+            ],
             'required_matrix' => [
                 'runtimes' => [
                     'sdk-php',
@@ -167,6 +191,7 @@ final class WorkflowUpdateRuntimeContract
                     'payload_envelope_round_trip_visible_on_api_history_and_operator_surfaces',
                     'principal_attribution_verified_when_authentication_is_enabled',
                     'php_and_python_update_cells_pass_or_emit_typed_unsupported_evidence',
+                    'validator_approval_rejection_worker_replacement_and_completion_fencing_are_observed',
                     'operator_readable_surfaces_cover_control_plane_history_cli_and_waterline',
                 ],
             ],
@@ -231,6 +256,11 @@ final class WorkflowUpdateRuntimeContract
                         'payload_envelope_round_trip',
                         'terminal_workflow_update_behavior',
                         'principal_attribution_with_auth',
+                        'update_validator_approval_boundary',
+                        'update_validator_rejection_boundary',
+                        'update_validator_worker_replacement',
+                        'duplicate_validation_completion',
+                        'unsupported_validation_capability',
                     ],
                     'records_runner_blocked_false_for_executed_product_evidence' => true,
                     'uses_external_worker_update_contracts' => true,
@@ -276,7 +306,7 @@ final class WorkflowUpdateRuntimeContract
                     'must_record_request_ids_state_outcome_reason_payload_result_error_and_history_references' => true,
                     'must_reject_local_product_source_checkout_and_local_artifact_sources' => true,
                 ],
-                'typed_coverage_gaps' => new \stdClass(),
+                'typed_coverage_gaps' => new \stdClass,
                 'required_execution_scopes' => [
                     'published-artifact-workflow-updates',
                     'declared-update-contract-visibility',
@@ -290,6 +320,11 @@ final class WorkflowUpdateRuntimeContract
                     'payload-envelope-round-trip',
                     'terminal-workflow-update-behavior',
                     'principal-attribution-with-auth',
+                    'update-validator-approval-boundary',
+                    'update-validator-rejection-boundary',
+                    'update-validator-worker-replacement',
+                    'duplicate-validation-completion',
+                    'unsupported-validation-capability',
                     'php-sdk-update-surface',
                     'python-sdk-update-surface',
                     'cli-api-history-waterline-operator-diagnostics',
@@ -314,7 +349,80 @@ final class WorkflowUpdateRuntimeContract
      */
     public static function requiredScenarios(): array
     {
-        return array_keys(self::scenarioRequirements());
+        return array_keys(self::allScenarioRequirements());
+    }
+
+    /**
+     * @return array<string, array<string, mixed>>
+     */
+    private static function allScenarioRequirements(): array
+    {
+        $ordered = [];
+
+        foreach (self::scenarioRequirements() as $name => $requirements) {
+            if ($name === 'php_client_worker_update_surface') {
+                $ordered = array_merge($ordered, self::validationScenarioRequirements());
+            }
+
+            $ordered[$name] = $requirements;
+        }
+
+        return $ordered;
+    }
+
+    /**
+     * @return array<string, array<string, mixed>>
+     */
+    private static function validationScenarioRequirements(): array
+    {
+        return [
+            'update_validator_approval_boundary' => [
+                'evidence' => [
+                    'declared_update_validators',
+                    'validation_task',
+                    'accepted_state_absent_before_approval',
+                    'handler_not_invoked_during_validation',
+                    'approval_response',
+                    'accepted_response',
+                    'history_update_accepted_event',
+                ],
+            ],
+            'update_validator_rejection_boundary' => [
+                'evidence' => [
+                    'validation_task',
+                    'validator_rejection',
+                    'typed_update_response',
+                    'accepted_history_event_count',
+                    'rejected_history_event',
+                    'handler_not_invoked',
+                ],
+            ],
+            'update_validator_worker_replacement' => [
+                'evidence' => [
+                    'first_delivery',
+                    'replacement_delivery',
+                    'replacement_attempt',
+                    'accepted_response',
+                    'stale_completion_response',
+                ],
+            ],
+            'duplicate_validation_completion' => [
+                'evidence' => [
+                    'validation_task_id',
+                    'terminal_outcome',
+                    'duplicate_completion_response',
+                    'update_history_event_count',
+                ],
+            ],
+            'unsupported_validation_capability' => [
+                'evidence' => [
+                    'server_capability_discovery',
+                    'worker_capabilities',
+                    'typed_update_response',
+                    'accepted_history_event_count',
+                ],
+            ],
+        ];
     }
 
     /**

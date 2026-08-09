@@ -4555,6 +4555,7 @@ class WorkflowQueryTaskBrokerTest extends TestCase
                 ],
             ],
             'updates' => ['approve'],
+            'update_validators' => [],
             'update_contracts' => [
                 [
                     'name' => 'approve',

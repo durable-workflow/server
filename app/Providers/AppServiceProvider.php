@@ -6,11 +6,14 @@ use App\Auth\ConfiguredAuthProvider;
 use App\Contracts\AuthProvider;
 use App\Observers\WorkflowHistoryEventObserver;
 use App\Observers\WorkflowTaskObserver;
+use App\Observers\WorkflowUpdateValidationObserver;
+use App\Support\ExternalWorkflowUpdateAdmission;
 use App\Support\NamespaceExternalPayloadStorage;
 use App\Support\RemoteScheduleStarter;
 use App\Support\ServerWorkflowControlPlane;
 use App\Support\ServiceCallBoundary;
 use App\Support\ServiceModeBusDispatcher;
+use App\Support\ValidatedExternalWorkflowUpdateAdmission;
 use App\Support\WorkflowPackageApiFloor;
 use App\Support\WorkflowTaskLeaseConfiguration;
 use Illuminate\Contracts\Bus\Dispatcher as BusDispatcher;
@@ -22,6 +25,7 @@ use Workflow\V2\Contracts\ServiceControlPlane;
 use Workflow\V2\Contracts\WorkflowControlPlane;
 use Workflow\V2\Models\WorkflowHistoryEvent;
 use Workflow\V2\Models\WorkflowTask;
+use Workflow\V2\Models\WorkflowUpdate;
 use Workflow\V2\Support\DefaultServiceBoundaryPolicy;
 use Workflow\V2\Support\DefaultServiceControlPlane;
 use Workflow\V2\Support\DefaultWorkflowControlPlane;
@@ -56,6 +60,10 @@ class AppServiceProvider extends ServiceProvider
         $this->app->singleton(ScheduleWorkflowStarter::class, RemoteScheduleStarter::class);
         $this->app->singleton(DefaultWorkflowControlPlane::class);
         $this->app->singleton(WorkflowControlPlane::class, ServerWorkflowControlPlane::class);
+        $this->app->bind(
+            ExternalWorkflowUpdateAdmission::class,
+            ValidatedExternalWorkflowUpdateAdmission::class,
+        );
         $this->app->singleton(NamespaceExternalPayloadStorage::class);
         $this->app->singleton(
             ExternalPayloadStoragePolicy::class,
@@ -142,5 +150,6 @@ class AppServiceProvider extends ServiceProvider
 
         WorkflowTask::observe(WorkflowTaskObserver::class);
         WorkflowHistoryEvent::observe(WorkflowHistoryEventObserver::class);
+        WorkflowUpdate::observe(WorkflowUpdateValidationObserver::class);
     }
 }

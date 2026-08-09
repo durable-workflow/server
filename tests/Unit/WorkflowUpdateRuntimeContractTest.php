@@ -14,7 +14,7 @@ class WorkflowUpdateRuntimeContractTest extends TestCase
         $manifest = WorkflowUpdateRuntimeContract::manifest();
 
         $this->assertSame('durable-workflow.v2.workflow-update-runtime.contract', $manifest['schema']);
-        $this->assertSame(2, WorkflowUpdateRuntimeContract::VERSION);
+        $this->assertSame(3, WorkflowUpdateRuntimeContract::VERSION);
         $this->assertSame('durable-workflow.v2.workflow-update-runtime.result', $manifest['result_schema']);
         $this->assertSame('workflow_update_runtime_contract', $manifest['fixture_category']);
         $this->assertSame(
@@ -55,6 +55,11 @@ class WorkflowUpdateRuntimeContractTest extends TestCase
             'payload_envelope_round_trip',
             'terminal_workflow_update_behavior',
             'principal_attribution_with_auth',
+            'update_validator_approval_boundary',
+            'update_validator_rejection_boundary',
+            'update_validator_worker_replacement',
+            'duplicate_validation_completion',
+            'unsupported_validation_capability',
             'php_client_worker_update_surface',
             'python_client_worker_update_surface',
             'operator_diagnostics_surfaces',
@@ -390,12 +395,18 @@ class WorkflowUpdateRuntimeContractTest extends TestCase
             $this->assertTrue($record['local_product_source_checkouts_used']);
             $this->assertContains('published_artifact_install_only', $result['non_passing_scenarios']);
 
-            foreach (self::workflowUpdateRuntimeScenarioIds() as $scenarioId) {
+            foreach (self::focusedWorkflowUpdateRuntimeScenarioIds() as $scenarioId) {
                 $scenario = $result['scenario_results'][$scenarioId];
                 $this->assertSame('not_covered', $scenario['status'], $scenarioId);
                 $this->assertFalse($scenario['published_artifact_cell_executed'], $scenarioId);
                 $this->assertTrue($scenario['local_product_source_checkouts_used'], $scenarioId);
                 $this->assertNotEmpty($scenario['linked_findings'], $scenarioId);
+            }
+
+            foreach (['php_client_worker_update_surface', 'python_client_worker_update_surface', 'operator_diagnostics_surfaces'] as $scenarioId) {
+                $scenario = $result['scenario_results'][$scenarioId];
+                $this->assertSame('not_covered', $scenario['status'], $scenarioId);
+                $this->assertFalse($scenario['local_product_source_checkouts_used'], $scenarioId);
             }
         } finally {
             exec('rm -rf ' . escapeshellarg($resultDir));
@@ -483,9 +494,9 @@ class WorkflowUpdateRuntimeContractTest extends TestCase
                 $this->assertFalse($result['scenario_results'][$scenarioId]['local_product_source_checkouts_used'], $scenarioId);
             }
             $this->assertSame('not_covered', $result['scenario_results']['php_client_worker_update_surface']['status']);
-            $this->assertStringNotContainsString(
-                'focused published-server workflow update runtime probe did not run',
-                json_encode($result['findings'], JSON_THROW_ON_ERROR),
+            $this->assertNotContains(
+                'workflow-updates-focused-probe-coverage-gap',
+                array_column($result['findings'], 'finding_id'),
             );
         } finally {
             exec('rm -rf ' . escapeshellarg($resultDir));
@@ -1875,20 +1886,10 @@ class WorkflowUpdateRuntimeContractTest extends TestCase
      */
     private static function focusedWorkflowUpdateRuntimeScenarioIds(): array
     {
-        return [
-            'published_artifact_install_only',
-            'declared_update_contract_visibility',
-            'accepted_update_control_plane_and_history',
-            'running_or_waiting_update_operator_visibility',
-            'completed_update_result_round_trip',
-            'failed_update_outcome',
-            'duplicate_request_idempotency',
-            'unknown_update_refusal',
-            'invalid_input_refusal',
-            'payload_envelope_round_trip',
-            'terminal_workflow_update_behavior',
-            'principal_attribution_with_auth',
-        ];
+        return array_values(array_diff(
+            self::workflowUpdateRuntimeScenarioIds(),
+            ['php_client_worker_update_surface', 'python_client_worker_update_surface', 'operator_diagnostics_surfaces'],
+        ));
     }
 
     /**
@@ -1896,23 +1897,14 @@ class WorkflowUpdateRuntimeContractTest extends TestCase
      */
     private static function workflowUpdateRuntimeScenarioIds(): array
     {
-        return [
-            'published_artifact_install_only',
-            'declared_update_contract_visibility',
-            'accepted_update_control_plane_and_history',
-            'running_or_waiting_update_operator_visibility',
-            'completed_update_result_round_trip',
-            'failed_update_outcome',
-            'duplicate_request_idempotency',
-            'unknown_update_refusal',
-            'invalid_input_refusal',
-            'payload_envelope_round_trip',
-            'terminal_workflow_update_behavior',
-            'principal_attribution_with_auth',
-            'php_client_worker_update_surface',
-            'python_client_worker_update_surface',
-            'operator_diagnostics_surfaces',
-        ];
+        $manifest = json_decode(
+            (string) file_get_contents(dirname(__DIR__, 2).'/static/platform-conformance/workflow-update-runtime-scenarios.json'),
+            true,
+            512,
+            JSON_THROW_ON_ERROR,
+        );
+
+        return array_keys($manifest['scenario_requirements']);
     }
 
     /**

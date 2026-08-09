@@ -43,6 +43,9 @@ Environment overrides:
                                      workflow update runtime probe.
   DW_WORKFLOW_UPDATES_SKIP_PHP_PACKAGE_SHARD=1
                                      Skip the PHP SDK client/worker shard.
+  DW_WORKFLOW_UPDATES_RUN_PHP_PACKAGE_SHARD=1
+                                     Allow an explicit source-checkout harness
+                                     to exercise the PHP shard.
   DW_WORKFLOW_UPDATES_SKIP_PYTHON_SDK_SHARD=1
                                      Skip the Python SDK client/worker shard.
   DW_WORKFLOW_UPDATES_SKIP_OPERATOR_DIAGNOSTICS_SHARD=1
@@ -174,14 +177,23 @@ if should_run_focused_host_probe; then
 declare(strict_types=1);
 
 use App\Models\WorkflowNamespace;
+use App\Models\WorkerRegistration;
+use App\Models\WorkflowUpdateValidationTask;
 use App\Support\ControlPlaneProtocol;
+use App\Support\LongPollSignalStore;
+use App\Support\LongPollWaitSlotStore;
+use App\Support\LongPoller;
 use App\Support\WorkerProtocol;
+use App\Support\WorkflowQueryTaskBroker;
+use App\Support\ServerWorkflowControlPlane;
+use App\Support\WorkflowUpdateValidationTaskBroker;
 use Illuminate\Contracts\Console\Kernel as ConsoleKernel;
 use Illuminate\Contracts\Http\Kernel as HttpKernel;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Artisan;
 use Workflow\Serializers\Serializer;
 use Workflow\V2\Enums\HistoryEventType;
+use Workflow\V2\Models\WorkflowHistoryEvent;
 use Workflow\V2\Models\WorkflowRun;
 use Workflow\V2\Models\WorkflowTask;
 use Workflow\V2\Models\WorkflowUpdate;
@@ -349,6 +361,7 @@ function workflow_command_contract(): array
                 'parameters' => [parameter('reason', 0, 'string')],
             ],
         ],
+        'update_validators' => [],
     ];
 }
 
@@ -356,18 +369,66 @@ function register_probe_worker(
     string $workerId = 'workflow-updates-worker',
     string $taskQueue = WORKFLOW_UPDATES_QUEUE,
     array $headers = [],
+    array $updateValidators = [],
+    bool $supportsUpdateValidation = false,
 ): void
 {
+    $contract = workflow_command_contract();
+    $contract['update_validators'] = array_values($updateValidators);
+    $capabilities = ['workflow_tasks', 'query_tasks'];
+    if ($supportsUpdateValidation) {
+        $capabilities[] = WorkflowUpdateValidationTaskBroker::CAPABILITY;
+    }
+
     request_json('POST', '/worker/register', [
         'worker_id' => $workerId,
         'task_queue' => $taskQueue,
         'runtime' => 'php',
         'supported_workflow_types' => [WORKFLOW_UPDATES_TYPE],
-        'capabilities' => ['workflow_tasks', 'query_tasks'],
+        'capabilities' => $capabilities,
         'workflow_command_contracts' => [
-            WORKFLOW_UPDATES_TYPE => workflow_command_contract(),
+            WORKFLOW_UPDATES_TYPE => $contract,
         ],
     ], [409], $headers);
+}
+
+function install_update_validation_worker_step(callable $workerStep): void
+{
+    $signals = app(LongPollSignalStore::class);
+    $poller = new class($signals, app(LongPollWaitSlotStore::class)) extends LongPoller
+    {
+        public mixed $workerStep = null;
+
+        private bool $ranWorkerStep = false;
+
+        public function until(
+            callable $probe,
+            callable $ready,
+            ?int $timeoutSeconds = null,
+            ?int $intervalMilliseconds = null,
+            array $wakeChannels = [],
+            ?callable $nextProbeAt = null,
+            bool $reserveWorkerWaitSlot = false,
+            string $waitSlotPool = 'worker',
+        ): mixed {
+            $value = $probe();
+            if ($ready($value) || $this->ranWorkerStep) {
+                return $value;
+            }
+
+            $this->ranWorkerStep = true;
+            ($this->workerStep)();
+
+            return $probe();
+        }
+    };
+    $poller->workerStep = $workerStep;
+    app()->instance(WorkflowUpdateValidationTaskBroker::class, new WorkflowUpdateValidationTaskBroker(
+        $poller,
+        $signals,
+        app(WorkflowQueryTaskBroker::class),
+        app(ServerWorkflowControlPlane::class),
+    ));
 }
 
 function start_probe_workflow(
@@ -401,6 +462,23 @@ function poll_task(
     }
 
     return $task;
+}
+
+function poll_update_validation_task(string $workerId, string $taskQueue): ?array
+{
+    $response = request_json('POST', '/worker/workflow-tasks/poll', [
+        'worker_id' => $workerId,
+        'task_queue' => $taskQueue,
+        'task_kinds' => ['workflow', 'update_validation'],
+        'timeout_seconds' => 0,
+    ]);
+    $task = $response['body']['task'] ?? null;
+
+    if ($task !== null && (! is_array($task) || ($task['task_kind'] ?? null) !== 'update_validation')) {
+        throw new RuntimeException('Multiplexed validator poll returned an invalid task discriminator.');
+    }
+
+    return is_array($task) ? $task : null;
 }
 
 function complete_task(array $task, array $commands, array $headers = []): array
@@ -916,6 +994,11 @@ function focused_probe_scenario_ids(): array
         'payload_envelope_round_trip',
         'terminal_workflow_update_behavior',
         'principal_attribution_with_auth',
+        'update_validator_approval_boundary',
+        'update_validator_rejection_boundary',
+        'update_validator_worker_replacement',
+        'duplicate_validation_completion',
+        'unsupported_validation_capability',
     ];
 }
 
@@ -1216,6 +1299,281 @@ function run_principal_attribution_probe(string $suffix): array
             ],
         );
     }
+}
+
+function run_update_validator_probe(string $suffix): array
+{
+    $results = [];
+    $validatorQueue = WORKFLOW_UPDATES_QUEUE.'-validators-'.$suffix;
+    $validatorWorker = 'workflow-updates-validator-'.$suffix;
+    register_probe_worker(
+        $validatorWorker,
+        $validatorQueue,
+        updateValidators: ['approve'],
+        supportsUpdateValidation: true,
+    );
+
+    $approvalWorkflowId = 'wf-update-validator-approval-'.$suffix;
+    $approvalStart = start_probe_workflow($approvalWorkflowId, $validatorQueue);
+    $approvalRunId = (string) ($approvalStart['run_id'] ?? '');
+    $approvalTask = null;
+    $approvalResponse = null;
+    $acceptedAbsentBeforeApproval = false;
+    install_update_validation_worker_step(function () use (
+        $validatorWorker,
+        $validatorQueue,
+        $approvalRunId,
+        &$approvalTask,
+        &$approvalResponse,
+        &$acceptedAbsentBeforeApproval,
+    ): void {
+        $approvalTask = poll_update_validation_task($validatorWorker, $validatorQueue);
+        if (! is_array($approvalTask)) {
+            throw new RuntimeException('Validator approval task was not leased.');
+        }
+
+        $acceptedAbsentBeforeApproval = WorkflowUpdate::query()
+            ->where('workflow_run_id', $approvalRunId)
+            ->doesntExist()
+            && WorkflowHistoryEvent::query()
+                ->where('workflow_run_id', $approvalRunId)
+                ->where('event_type', WORKFLOW_UPDATE_ACCEPTED_EVENT)
+                ->doesntExist();
+        $taskId = (string) $approvalTask['update_validation_task_id'];
+        $approvalResponse = request_json('POST', '/worker/update-validation-tasks/'.$taskId.'/approve', [
+            'lease_owner' => (string) $approvalTask['lease_owner'],
+            'update_validation_attempt' => (int) $approvalTask['update_validation_attempt'],
+        ]);
+    });
+    $accepted = request_json('POST', '/workflows/'.$approvalWorkflowId.'/update/approve', [
+        'input' => [true, 'validator-approved'],
+        'request_id' => 'validator-approved-'.$suffix,
+        'wait_for' => 'accepted',
+    ], [409, 422, 504]);
+    $approvalHistory = history_events($approvalWorkflowId, $approvalRunId);
+    $approvalObserved = [
+        'declared_update_validators' => ['approve'],
+        'validation_task' => $approvalTask,
+        'accepted_state_absent_before_approval' => $acceptedAbsentBeforeApproval,
+        'handler_not_invoked_during_validation' => $acceptedAbsentBeforeApproval,
+        'approval_response' => $approvalResponse,
+        'accepted_response' => $accepted,
+        'history_update_accepted_event' => event_by_type($approvalHistory, WORKFLOW_UPDATE_ACCEPTED_EVENT),
+    ];
+    $approvalPassed = $acceptedAbsentBeforeApproval
+        && is_array($approvalTask)
+        && ($approvalResponse['body']['outcome'] ?? null) === 'approved'
+        && $accepted['status_code'] === 202
+        && ($accepted['body']['update_id'] ?? null) === ($approvalTask['update_validation_task_id'] ?? null)
+        && ($accepted['body']['update_status'] ?? null) === 'accepted';
+    $results['update_validator_approval_boundary'] = $approvalPassed
+        ? pass_result('update_validator_approval_boundary', $approvalObserved)
+        : fail_result(
+            'update_validator_approval_boundary',
+            'The published server did not hold accepted state behind validator approval.',
+            $approvalObserved,
+        );
+
+    $duplicateCompletion = is_array($approvalTask)
+        ? request_json(
+            'POST',
+            '/worker/update-validation-tasks/'.(string) $approvalTask['update_validation_task_id'].'/approve',
+            [
+                'lease_owner' => (string) $approvalTask['lease_owner'],
+                'update_validation_attempt' => (int) $approvalTask['update_validation_attempt'],
+            ],
+            [409],
+        )
+        : ['status_code' => 0, 'body' => []];
+    $acceptedCount = count(array_filter(
+        $approvalHistory,
+        static fn (array $event): bool => ($event['event_type'] ?? null) === WORKFLOW_UPDATE_ACCEPTED_EVENT,
+    ));
+    $duplicateObserved = [
+        'validation_task_id' => $approvalTask['update_validation_task_id'] ?? null,
+        'terminal_outcome' => $approvalResponse['body']['outcome'] ?? null,
+        'duplicate_completion_response' => $duplicateCompletion,
+        'update_history_event_count' => $acceptedCount,
+    ];
+    $results['duplicate_validation_completion'] = ($duplicateCompletion['body']['reason'] ?? null)
+        === 'duplicate_update_validation_completion' && $acceptedCount === 1
+        ? pass_result('duplicate_validation_completion', $duplicateObserved)
+        : fail_result(
+            'duplicate_validation_completion',
+            'The published server did not fence duplicate validator completion.',
+            $duplicateObserved,
+        );
+
+    $rejectionWorkflowId = 'wf-update-validator-rejection-'.$suffix;
+    $rejectionStart = start_probe_workflow($rejectionWorkflowId, $validatorQueue);
+    $rejectionRunId = (string) ($rejectionStart['run_id'] ?? '');
+    $rejectionTask = null;
+    $validatorRejection = null;
+    install_update_validation_worker_step(function () use (
+        $validatorWorker,
+        $validatorQueue,
+        &$rejectionTask,
+        &$validatorRejection,
+    ): void {
+        $rejectionTask = poll_update_validation_task($validatorWorker, $validatorQueue);
+        if (! is_array($rejectionTask)) {
+            throw new RuntimeException('Validator rejection task was not leased.');
+        }
+        $validatorRejection = request_json(
+            'POST',
+            '/worker/update-validation-tasks/'.(string) $rejectionTask['update_validation_task_id'].'/reject',
+            [
+                'lease_owner' => (string) $rejectionTask['lease_owner'],
+                'update_validation_attempt' => (int) $rejectionTask['update_validation_attempt'],
+                'failure' => [
+                    'reason' => 'update_validator_rejected',
+                    'message' => 'approval is required',
+                    'type' => 'ValueError',
+                    'validation_errors' => ['approved' => ['must be true']],
+                ],
+            ],
+        );
+    });
+    $rejected = request_json('POST', '/workflows/'.$rejectionWorkflowId.'/update/approve', [
+        'input' => [false, 'validator-rejected'],
+        'request_id' => 'validator-rejected-'.$suffix,
+    ], [422]);
+    $rejectionHistory = history_events($rejectionWorkflowId, $rejectionRunId);
+    $rejectedAcceptedCount = count(array_filter(
+        $rejectionHistory,
+        static fn (array $event): bool => ($event['event_type'] ?? null) === WORKFLOW_UPDATE_ACCEPTED_EVENT,
+    ));
+    $rejectionObserved = [
+        'validation_task' => $rejectionTask,
+        'validator_rejection' => $validatorRejection,
+        'typed_update_response' => $rejected,
+        'accepted_history_event_count' => $rejectedAcceptedCount,
+        'rejected_history_event' => event_by_type($rejectionHistory, HistoryEventType::UpdateRejected->value),
+        'handler_not_invoked' => $rejectedAcceptedCount === 0,
+    ];
+    $rejectionPassed = $rejected['status_code'] === 422
+        && ($rejected['body']['reason'] ?? null) === 'update_validator_rejected'
+        && ($rejected['body']['update_status'] ?? null) === 'rejected'
+        && $rejectedAcceptedCount === 0
+        && event_by_type($rejectionHistory, HistoryEventType::UpdateRejected->value) !== [];
+    $results['update_validator_rejection_boundary'] = $rejectionPassed
+        ? pass_result('update_validator_rejection_boundary', $rejectionObserved)
+        : fail_result(
+            'update_validator_rejection_boundary',
+            'The published server did not return a typed pre-accept validator rejection.',
+            $rejectionObserved,
+        );
+
+    $replacementQueue = WORKFLOW_UPDATES_QUEUE.'-validator-replacement-'.$suffix;
+    $oldWorker = 'workflow-updates-validator-old-'.$suffix;
+    $newWorker = 'workflow-updates-validator-new-'.$suffix;
+    register_probe_worker($oldWorker, $replacementQueue, updateValidators: ['approve'], supportsUpdateValidation: true);
+    register_probe_worker($newWorker, $replacementQueue, updateValidators: ['approve'], supportsUpdateValidation: true);
+    $replacementWorkflowId = 'wf-update-validator-replacement-'.$suffix;
+    $replacementStart = start_probe_workflow($replacementWorkflowId, $replacementQueue);
+    $firstDelivery = null;
+    $replacementDelivery = null;
+    $staleCompletion = null;
+    install_update_validation_worker_step(function () use (
+        $oldWorker,
+        $newWorker,
+        $replacementQueue,
+        &$firstDelivery,
+        &$replacementDelivery,
+        &$staleCompletion,
+    ): void {
+        $firstDelivery = poll_update_validation_task($oldWorker, $replacementQueue);
+        if (! is_array($firstDelivery)) {
+            throw new RuntimeException('Original validator worker did not lease the task.');
+        }
+        WorkerRegistration::query()
+            ->where('namespace', WORKFLOW_UPDATES_NAMESPACE)
+            ->where('worker_id', $oldWorker)
+            ->update(['last_heartbeat_at' => now()->subMinute()]);
+        WorkflowUpdateValidationTask::query()
+            ->findOrFail((string) $firstDelivery['update_validation_task_id'])
+            ->forceFill(['lease_expires_at' => now()->subSecond()])
+            ->save();
+        $replacementDelivery = poll_update_validation_task($newWorker, $replacementQueue);
+        if (! is_array($replacementDelivery)) {
+            throw new RuntimeException('Replacement validator worker did not reclaim the task.');
+        }
+        request_json(
+            'POST',
+            '/worker/update-validation-tasks/'.(string) $replacementDelivery['update_validation_task_id'].'/approve',
+            [
+                'lease_owner' => (string) $replacementDelivery['lease_owner'],
+                'update_validation_attempt' => (int) $replacementDelivery['update_validation_attempt'],
+            ],
+        );
+        $staleCompletion = request_json(
+            'POST',
+            '/worker/update-validation-tasks/'.(string) $firstDelivery['update_validation_task_id'].'/approve',
+            [
+                'lease_owner' => (string) $firstDelivery['lease_owner'],
+                'update_validation_attempt' => (int) $firstDelivery['update_validation_attempt'],
+            ],
+            [409],
+        );
+    });
+    $replacementAccepted = request_json('POST', '/workflows/'.$replacementWorkflowId.'/update/approve', [
+        'input' => [true, 'replacement-approved'],
+        'request_id' => 'validator-replacement-'.$suffix,
+    ], [409, 422, 504]);
+    $replacementObserved = [
+        'first_delivery' => $firstDelivery,
+        'replacement_delivery' => $replacementDelivery,
+        'replacement_attempt' => $replacementDelivery['update_validation_attempt'] ?? null,
+        'accepted_response' => $replacementAccepted,
+        'stale_completion_response' => $staleCompletion,
+    ];
+    $replacementPassed = $replacementAccepted['status_code'] === 202
+        && ($replacementDelivery['update_validation_attempt'] ?? null) === 2
+        && ($staleCompletion['body']['reason'] ?? null) === 'stale_update_validation_completion';
+    $results['update_validator_worker_replacement'] = $replacementPassed
+        ? pass_result('update_validator_worker_replacement', $replacementObserved)
+        : fail_result(
+            'update_validator_worker_replacement',
+            'The published server did not reclaim a lost validator lease and fence stale completion.',
+            $replacementObserved,
+        );
+
+    $unsupportedQueue = WORKFLOW_UPDATES_QUEUE.'-validator-unsupported-'.$suffix;
+    $unsupportedWorker = 'workflow-updates-validator-unsupported-'.$suffix;
+    register_probe_worker(
+        $unsupportedWorker,
+        $unsupportedQueue,
+        updateValidators: ['approve'],
+        supportsUpdateValidation: false,
+    );
+    $unsupportedWorkflowId = 'wf-update-validator-unsupported-'.$suffix;
+    $unsupportedStart = start_probe_workflow($unsupportedWorkflowId, $unsupportedQueue);
+    $unsupportedRunId = (string) ($unsupportedStart['run_id'] ?? '');
+    $unsupported = request_json('POST', '/workflows/'.$unsupportedWorkflowId.'/update/approve', [
+        'input' => [true, 'unsupported'],
+        'request_id' => 'validator-unsupported-'.$suffix,
+    ], [409]);
+    $unsupportedHistory = history_events($unsupportedWorkflowId, $unsupportedRunId);
+    $unsupportedAcceptedCount = count(array_filter(
+        $unsupportedHistory,
+        static fn (array $event): bool => ($event['event_type'] ?? null) === WORKFLOW_UPDATE_ACCEPTED_EVENT,
+    ));
+    $unsupportedObserved = [
+        'server_capability_discovery' => WorkerProtocol::serverCapabilities()['synchronous_update_validation'] ?? null,
+        'worker_capabilities' => ['workflow_tasks', 'query_tasks'],
+        'typed_update_response' => $unsupported,
+        'accepted_history_event_count' => $unsupportedAcceptedCount,
+    ];
+    $results['unsupported_validation_capability'] = ($unsupported['body']['reason'] ?? null)
+        === 'update_validation_capability_unsupported' && $unsupportedAcceptedCount === 0
+        ? pass_result('unsupported_validation_capability', $unsupportedObserved)
+        : fail_result(
+            'unsupported_validation_capability',
+            'The published server silently accepted an update without a validator-capable worker.',
+            $unsupportedObserved,
+        );
+
+    return $results;
 }
 
 function run_focused_probe(): array
@@ -1531,6 +1889,10 @@ function run_focused_probe(): array
 
     $scenarioResults['principal_attribution_with_auth'] = run_principal_attribution_probe($suffix);
 
+    foreach (run_update_validator_probe($suffix) as $scenarioId => $scenarioResult) {
+        $scenarioResults[$scenarioId] = $scenarioResult;
+    }
+
     return [
         'schema' => 'durable-workflow.v2.workflow-update-runtime.focused-evidence',
         'generated_at' => now_iso(),
@@ -1573,6 +1935,15 @@ should_run_php_package_shard() {
   if [[ -s "$result_dir/sdk-php-workflow-updates-evidence.json" ]]; then
     return 1
   fi
+  if [[ "${DW_WORKFLOW_UPDATES_RUN_PHP_PACKAGE_SHARD:-0}" != "1"
+    && "${DW_WORKFLOW_UPDATES_RUN_PHP_PACKAGE_SHARD:-}" != "true"
+    && ( "$repo_root" != "/app" || -d "$repo_root/.git" ) ]]; then
+    return 1
+  fi
+  if [[ ! -f "$repo_root/artisan" || ! -f "$repo_root/vendor/autoload.php" ]]; then
+    return 1
+  fi
+
   command -v node >/dev/null 2>&1
 }
 
@@ -1694,7 +2065,7 @@ write_php_package_shard_status() {
   DW_CLI_VERSION="${DW_CLI_VERSION:-}" \
   DW_PYTHON_SDK_VERSION="${DW_PYTHON_SDK_VERSION:-}" \
   DW_PHP_SDK_VERSION="${DW_PHP_SDK_VERSION:-}" \
-  DW_WORKFLOW_PHP_VERSION="${DW_WORKFLOW_PHP_VERSION:-}" \
+  DW_WORKFLOW_PHP_VERSION="${DW_WORKFLOW_PHP_VERSION:-${DW_WORKFLOW_VERSION:-}}" \
   DW_WATERLINE_VERSION="${DW_WATERLINE_VERSION:-}" \
   node <<'NODE'
 const fs = require('node:fs');
@@ -1804,7 +2175,7 @@ materialize_php_package_shard_report() {
   DW_CLI_VERSION="${DW_CLI_VERSION:-}" \
   DW_PYTHON_SDK_VERSION="${DW_PYTHON_SDK_VERSION:-}" \
   DW_PHP_SDK_VERSION="${DW_PHP_SDK_VERSION:-}" \
-  DW_WORKFLOW_PHP_VERSION="${DW_WORKFLOW_PHP_VERSION:-}" \
+  DW_WORKFLOW_PHP_VERSION="${DW_WORKFLOW_PHP_VERSION:-${DW_WORKFLOW_VERSION:-}}" \
   DW_WATERLINE_VERSION="${DW_WATERLINE_VERSION:-}" \
   node <<'NODE'
 const fs = require('node:fs');
@@ -2062,7 +2433,7 @@ write_python_sdk_shard_status() {
   DW_CLI_VERSION="${DW_CLI_VERSION:-}" \
   DW_PYTHON_SDK_VERSION="${DW_PYTHON_SDK_VERSION:-}" \
   DW_PHP_SDK_VERSION="${DW_PHP_SDK_VERSION:-}" \
-  DW_WORKFLOW_PHP_VERSION="${DW_WORKFLOW_PHP_VERSION:-}" \
+  DW_WORKFLOW_PHP_VERSION="${DW_WORKFLOW_PHP_VERSION:-${DW_WORKFLOW_VERSION:-}}" \
   DW_WORKFLOW_VERSION="${DW_WORKFLOW_VERSION:-}" \
   DW_WATERLINE_VERSION="${DW_WATERLINE_VERSION:-}" \
   node <<'NODE'
@@ -2178,7 +2549,7 @@ materialize_python_sdk_shard_report() {
   DW_CLI_VERSION="${DW_CLI_VERSION:-}" \
   DW_PYTHON_SDK_VERSION="${DW_PYTHON_SDK_VERSION:-}" \
   DW_PHP_SDK_VERSION="${DW_PHP_SDK_VERSION:-}" \
-  DW_WORKFLOW_PHP_VERSION="${DW_WORKFLOW_PHP_VERSION:-}" \
+  DW_WORKFLOW_PHP_VERSION="${DW_WORKFLOW_PHP_VERSION:-${DW_WORKFLOW_VERSION:-}}" \
   DW_WORKFLOW_VERSION="${DW_WORKFLOW_VERSION:-}" \
   DW_WATERLINE_VERSION="${DW_WATERLINE_VERSION:-}" \
   node <<'NODE'
@@ -2534,7 +2905,7 @@ write_operator_diagnostics_shard_status() {
   DW_CLI_VERSION="${DW_CLI_VERSION:-}" \
   DW_PYTHON_SDK_VERSION="${DW_PYTHON_SDK_VERSION:-}" \
   DW_PHP_SDK_VERSION="${DW_PHP_SDK_VERSION:-}" \
-  DW_WORKFLOW_PHP_VERSION="${DW_WORKFLOW_PHP_VERSION:-}" \
+  DW_WORKFLOW_PHP_VERSION="${DW_WORKFLOW_PHP_VERSION:-${DW_WORKFLOW_VERSION:-}}" \
   DW_WORKFLOW_VERSION="${DW_WORKFLOW_VERSION:-}" \
   DW_WATERLINE_VERSION="${DW_WATERLINE_VERSION:-}" \
   node <<'NODE'
@@ -3104,7 +3475,7 @@ materialize_operator_diagnostics_report() {
   DW_CLI_VERSION="${DW_CLI_VERSION:-}" \
   DW_PYTHON_SDK_VERSION="${DW_PYTHON_SDK_VERSION:-}" \
   DW_PHP_SDK_VERSION="${DW_PHP_SDK_VERSION:-}" \
-  DW_WORKFLOW_PHP_VERSION="${DW_WORKFLOW_PHP_VERSION:-}" \
+  DW_WORKFLOW_PHP_VERSION="${DW_WORKFLOW_PHP_VERSION:-${DW_WORKFLOW_VERSION:-}}" \
   DW_WORKFLOW_VERSION="${DW_WORKFLOW_VERSION:-}" \
   DW_WATERLINE_VERSION="${DW_WATERLINE_VERSION:-}" \
   node <<'NODE'
@@ -4815,23 +5186,12 @@ const artifactSources = {
   waterline: `packagist://durable-workflow/waterline@${waterlineVersion}`,
 };
 
-const requiredScenarios = [
-  'published_artifact_install_only',
-  'declared_update_contract_visibility',
-  'accepted_update_control_plane_and_history',
-  'running_or_waiting_update_operator_visibility',
-  'completed_update_result_round_trip',
-  'failed_update_outcome',
-  'duplicate_request_idempotency',
-  'unknown_update_refusal',
-  'invalid_input_refusal',
-  'payload_envelope_round_trip',
-  'terminal_workflow_update_behavior',
-  'principal_attribution_with_auth',
-  'php_client_worker_update_surface',
-  'python_client_worker_update_surface',
-  'operator_diagnostics_surfaces',
-];
+const scenarioManifest = readJsonIfExists(path.join(repoRoot, 'static/platform-conformance/workflow-update-runtime-scenarios.json')) ?? {};
+const scenarioRequirements = objectValue(scenarioManifest.scenario_requirements);
+const requiredScenarios = Object.keys(scenarioRequirements);
+if (requiredScenarios.length === 0) {
+  throw new Error('Workflow update scenario authority is missing required scenarios.');
+}
 
 const focusedProbeScenarioIds = new Set([
   'published_artifact_install_only',
@@ -4846,10 +5206,13 @@ const focusedProbeScenarioIds = new Set([
   'payload_envelope_round_trip',
   'terminal_workflow_update_behavior',
   'principal_attribution_with_auth',
+  'update_validator_approval_boundary',
+  'update_validator_rejection_boundary',
+  'update_validator_worker_replacement',
+  'duplicate_validation_completion',
+  'unsupported_validation_capability',
 ]);
 
-const scenarioManifest = readJsonIfExists(path.join(repoRoot, 'static/platform-conformance/workflow-update-runtime-scenarios.json')) ?? {};
-const scenarioRequirements = objectValue(scenarioManifest.scenario_requirements);
 const forbiddenArtifactSourceTokens = arrayOfStrings(scenarioManifest?.artifact_policy?.forbidden_sources);
 const requiredArtifacts = ['server', 'cli', 'sdk-php', 'sdk-python', 'workflow-php', 'waterline'];
 const artifactAliases = {
