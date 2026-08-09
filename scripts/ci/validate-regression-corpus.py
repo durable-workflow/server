@@ -61,6 +61,29 @@ SERVER_CODEC_BOUNDARY_METHODS = {
         "unserializeWithCodec": "unserializeWithCodec",
     },
 }
+SERVER_DIRECT_CODEC_CLASSES = ("Avro", "Json", "Base64", "Y")
+SERVER_DIRECT_CODEC_CLASS_PATTERN = "|".join(
+    re.escape(class_name) for class_name in SERVER_DIRECT_CODEC_CLASSES
+)
+SERVER_CODEC_DEPENDENCY = re.compile(
+    r"(?i)(?<![A-Za-z0-9_])(?:Avro|CodecRegistry|Serializer|SerializerInterface|"
+    r"PayloadEnvelopeResolver|ExternalPayloads|ExternalPayloadEnvelopeService)\b"
+)
+SERVER_CODEC_OPERATION = re.compile(
+    r"(?ix)(?:"
+    r"\b(?:serializeWithCodec|unserializeWithCodec|canonicalize|defaultCodec|"
+    r"workerEnvelope|historyPayload|historyValue|resolveCommandPayloadWithCodec|"
+    r"resolveToArray|externalizeForNamespace|wireEnvelope|storedEnvelope)\s*\("
+    rf"|\b(?:{SERVER_DIRECT_CODEC_CLASS_PATTERN})\s*::\s*"
+    r"(?:serialize|unserialize)\s*\("
+    r"|\bSerializer\s*::\s*(?:serialize|unserialize)\s*\("
+    r"|\bCodecRegistry\s*::\s*[A-Za-z_][A-Za-z0-9_]*\s*\("
+    r"|\b[A-Za-z_][A-Za-z0-9_]*Codec[A-Za-z0-9_]*\s*\("
+    r")"
+)
+SERVER_CODEC_VARIABLE_MARKER = re.compile(
+    r"(?i)(?:\$[A-Za-z_][A-Za-z0-9_]*codec\b|\$(?:blob|wire)\b)"
+)
 PROOF_BRANCH_TOKENS = {
     "&&",
     "and",
@@ -221,6 +244,27 @@ class CounterfactualProof:
     fixture: str
     test: str
     boundaries: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class PhpMethodUnit:
+    name: str
+    source: str
+    signature: str
+
+
+@dataclass(frozen=True)
+class PhpStructure:
+    methods: Mapping[tuple[str, int], PhpMethodUnit]
+    top_level_source: str
+    top_level_signature: str
+    valid: bool
+
+
+@dataclass(frozen=True)
+class PhpCodecChange:
+    related: bool
+    review_required: bool
 
 
 def _canonical_digest(value: Any) -> str:
@@ -1046,6 +1090,404 @@ def _changed_paths(root: Path, base_ref: str) -> tuple[set[str], set[str]]:
     return changed | untracked, added | untracked
 
 
+def _php_lexical_views(
+    source: str,
+) -> tuple[str, str, tuple[tuple[int, int], ...], bool]:
+    """Mask PHP comments and literals without changing source offsets."""
+
+    structural = list(source)
+    uncommented = list(source)
+    literals: list[tuple[int, int]] = []
+    index = 0
+    while index < len(source):
+        if source.startswith("//", index) or (
+            source[index] == "#" and not source.startswith("#[", index)
+        ):
+            end = source.find("\n", index + 1)
+            end = len(source) if end == -1 else end
+            for position in range(index, end):
+                structural[position] = " "
+                uncommented[position] = " "
+            index = end
+            continue
+        if source.startswith("/*", index):
+            end = source.find("*/", index + 2)
+            if end == -1:
+                return source, source, (), False
+            end += 2
+            for position in range(index, end):
+                if source[position] not in "\r\n":
+                    structural[position] = " "
+                    uncommented[position] = " "
+            index = end
+            continue
+        if source.startswith("<<<", index):
+            opener = re.match(
+                r"<<<[ \t]*(?:'([A-Za-z_][A-Za-z0-9_]*)'|"
+                r'"([A-Za-z_][A-Za-z0-9_]*)"|'
+                r"([A-Za-z_][A-Za-z0-9_]*))[ \t]*\r?\n",
+                source[index:],
+            )
+            if opener is None:
+                return source, source, (), False
+            label = next(group for group in opener.groups() if group is not None)
+            content_start = index + opener.end()
+            terminator = re.search(
+                rf"(?m)^[ \t]*{re.escape(label)}(?=;|,|\)|\]|\r?$)",
+                source[content_start:],
+            )
+            if terminator is None:
+                return source, source, (), False
+            end = content_start + terminator.end()
+            literals.append((index, end))
+            for position in range(index, end):
+                if source[position] not in "\r\n":
+                    structural[position] = " "
+            index = end
+            continue
+        if source[index] in {"'", '"', "`"}:
+            quote = source[index]
+            start = index
+            index += 1
+            while index < len(source):
+                if source[index] == "\\":
+                    index += 2
+                    continue
+                if source[index] == quote:
+                    index += 1
+                    break
+                index += 1
+            else:
+                return source, source, (), False
+            literals.append((start, min(index, len(source))))
+            for position in range(start, min(index, len(source))):
+                if source[position] not in "\r\n":
+                    structural[position] = " "
+            continue
+        index += 1
+
+    return "".join(structural), "".join(uncommented), tuple(literals), True
+
+
+def _php_signature(source: str) -> tuple[str, bool]:
+    """Return a comment/format-insensitive signature that preserves literals."""
+
+    _, uncommented, literals, valid = _php_lexical_views(source)
+    if not valid:
+        return source, False
+    literal_ends = {start: end for start, end in literals}
+    signature: list[str] = []
+    index = 0
+    while index < len(uncommented):
+        literal_end = literal_ends.get(index)
+        if literal_end is not None:
+            literal = source[index:literal_end].encode()
+            signature.append(f"<literal:{hashlib.sha256(literal).hexdigest()}>")
+            index = literal_end
+            continue
+        if not uncommented[index].isspace():
+            signature.append(uncommented[index])
+        index += 1
+    return "".join(signature), True
+
+
+def _php_balanced_end(
+    masked: str, start: int, opening: str, closing: str
+) -> int | None:
+    depth = 0
+    for index in range(start, len(masked)):
+        if masked[index] == opening:
+            depth += 1
+        elif masked[index] == closing:
+            depth -= 1
+            if depth == 0:
+                return index + 1
+    return None
+
+
+def _php_balanced(masked: str) -> bool:
+    pairs = {")": "(", "]": "[", "}": "{"}
+    stack: list[str] = []
+    for character in masked:
+        if character in "([{":
+            stack.append(character)
+        elif character in pairs:
+            if not stack or stack.pop() != pairs[character]:
+                return False
+    return not stack
+
+
+def _php_method_units(source: str) -> PhpStructure:
+    """Parse bounded named function units and the state outside those units."""
+
+    if source and not source.lstrip().startswith(("<?php", "<?=")):
+        return PhpStructure({}, source, source, False)
+    masked, _, _, valid = _php_lexical_views(source)
+    if not valid or not _php_balanced(masked):
+        return PhpStructure({}, source, source, False)
+
+    methods: dict[tuple[str, int], PhpMethodUnit] = {}
+    occurrences: Counter[str] = Counter()
+    spans: list[tuple[int, int]] = []
+    for function_match in re.finditer(r"\bfunction\b", masked):
+        if re.search(r"\buse\s+$", masked[: function_match.start()]) is not None:
+            continue
+        cursor = function_match.end()
+        while cursor < len(masked) and masked[cursor].isspace():
+            cursor += 1
+        if cursor < len(masked) and masked[cursor] == "&":
+            cursor += 1
+            while cursor < len(masked) and masked[cursor].isspace():
+                cursor += 1
+        if cursor < len(masked) and masked[cursor] == "(":
+            continue
+        name_match = re.match(
+            r"[A-Za-z_\x80-\xff][A-Za-z0-9_\x80-\xff]*",
+            masked[cursor:],
+        )
+        if name_match is None:
+            return PhpStructure(methods, source, source, False)
+        name = name_match.group(0)
+        cursor += name_match.end()
+        while cursor < len(masked) and masked[cursor].isspace():
+            cursor += 1
+        if cursor >= len(masked) or masked[cursor] != "(":
+            return PhpStructure(methods, source, source, False)
+        parameters_end = _php_balanced_end(masked, cursor, "(", ")")
+        if parameters_end is None:
+            return PhpStructure(methods, source, source, False)
+        body_start = None
+        position = parameters_end
+        while position < len(masked):
+            if masked[position] in {"{", ";"}:
+                body_start = position
+                break
+            if masked[position] == "}" or re.match(
+                r"function\b", masked[position:]
+            ):
+                return PhpStructure(methods, source, source, False)
+            position += 1
+        if body_start is None:
+            return PhpStructure(methods, source, source, False)
+        body_end = (
+            body_start + 1
+            if masked[body_start] == ";"
+            else _php_balanced_end(masked, body_start, "{", "}")
+        )
+        if body_end is None:
+            return PhpStructure(methods, source, source, False)
+        unit_start = function_match.start()
+        line_start = source.rfind("\n", 0, unit_start) + 1
+        modifiers = masked[line_start:unit_start]
+        if (
+            re.fullmatch(
+                r"[ \t]*(?:(?:public|protected|private|static|final|abstract|readonly)[ \t]+)*",
+                modifiers,
+            )
+            is not None
+        ):
+            unit_start = line_start
+        method_source = source[unit_start:body_end]
+        signature, method_valid = _php_signature(method_source)
+        if not method_valid:
+            return PhpStructure(methods, source, source, False)
+        occurrence = occurrences[name]
+        occurrences[name] += 1
+        methods[(name, occurrence)] = PhpMethodUnit(name, method_source, signature)
+        spans.append((unit_start, body_end))
+
+    merged_spans: list[tuple[int, int]] = []
+    for start, end in sorted(spans):
+        if merged_spans and start <= merged_spans[-1][1]:
+            merged_spans[-1] = (merged_spans[-1][0], max(end, merged_spans[-1][1]))
+        else:
+            merged_spans.append((start, end))
+    top_level_parts: list[str] = []
+    cursor = 0
+    for start, end in merged_spans:
+        top_level_parts.append(source[cursor:start])
+        cursor = end
+    top_level_parts.append(source[cursor:])
+    top_level_source = "".join(top_level_parts)
+    top_level_signature, top_level_valid = _php_signature(top_level_source)
+    return PhpStructure(
+        methods,
+        top_level_source,
+        top_level_signature,
+        top_level_valid,
+    )
+
+
+def _php_has_direct_codec_operation(source: str) -> bool:
+    structural, _, literals, valid = _php_lexical_views(source)
+    if not valid:
+        return True
+    if (
+        SERVER_CODEC_OPERATION.search(structural) is not None
+        or SERVER_CODEC_VARIABLE_MARKER.search(structural) is not None
+    ):
+        return True
+    for start, end in literals:
+        literal = source[start:end]
+        if len(literal) < 2 or literal[0] not in {"'", '"'}:
+            continue
+        if literal[1:-1].lower() not in {"codec", "blob", "wire_base64"}:
+            continue
+        prefix = structural[max(0, start - 64) : start]
+        if re.search(r"(?:\[|array_key_exists\s*\()\s*$", prefix, re.IGNORECASE):
+            return True
+    return False
+
+
+def _php_method_owns_codec(method: PhpMethodUnit) -> bool:
+    structural, _, _, valid = _php_lexical_views(method.source)
+    return (
+        not valid
+        or SERVER_CODEC_DEPENDENCY.search(structural) is not None
+        or _php_has_direct_codec_operation(method.source)
+    )
+
+
+def _php_codec_change_classification(
+    base_content: bytes | None,
+    current_content: bytes | None,
+    *,
+    broad_path_guard: bool,
+) -> PhpCodecChange:
+    """Classify a guarded PHP edit without attempting PHP dataflow analysis."""
+
+    try:
+        base_source = base_content.decode("utf-8") if base_content is not None else ""
+        current_source = (
+            current_content.decode("utf-8") if current_content is not None else ""
+        )
+    except UnicodeDecodeError:
+        return PhpCodecChange(related=True, review_required=False)
+
+    base = _php_method_units(base_source)
+    current = _php_method_units(current_source)
+    if not base.valid or not current.valid:
+        return PhpCodecChange(related=True, review_required=False)
+
+    related = False
+    review_required = False
+    for key in set(base.methods) | set(current.methods):
+        base_method = base.methods.get(key)
+        current_method = current.methods.get(key)
+        if (
+            base_method is not None
+            and current_method is not None
+            and base_method.signature == current_method.signature
+        ):
+            continue
+        if base_method is not None and current_method is not None:
+            if base_method.name == "__construct":
+                if _php_has_direct_codec_operation(base_method.source) or (
+                    _php_has_direct_codec_operation(current_method.source)
+                ):
+                    related = True
+                elif broad_path_guard:
+                    review_required = True
+            elif _php_method_owns_codec(base_method) or _php_method_owns_codec(
+                current_method
+            ):
+                related = True
+        elif base_method is not None:
+            if _php_method_owns_codec(base_method):
+                related = True
+        elif current_method is not None and _php_has_direct_codec_operation(
+            current_method.source
+        ):
+            related = True
+
+    top_level_changed = base.top_level_signature != current.top_level_signature
+    if top_level_changed:
+        if broad_path_guard:
+            review_required = True
+        elif _php_has_direct_codec_operation(base.top_level_source) or (
+            _php_has_direct_codec_operation(current.top_level_source)
+        ):
+            related = True
+
+    if base_content is None and _php_has_direct_codec_operation(current_source):
+        related = True
+
+    return PhpCodecChange(related=related, review_required=review_required)
+
+
+def _php_codec_relevant_change(
+    base_content: bytes | None,
+    current_content: bytes | None,
+    *,
+    broad_path_guard: bool,
+) -> bool:
+    return _php_codec_change_classification(
+        base_content,
+        current_content,
+        broad_path_guard=broad_path_guard,
+    ).related
+
+
+def _php_lint(root: Path, path: str) -> bool:
+    """Validate a changed PHP file with the official parser exactly once."""
+
+    result = subprocess.run(
+        ["php", "-l", path],
+        cwd=root,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    return result.returncode == 0
+
+
+def _classified_server_codec_paths(
+    root: Path,
+    base_ref: str,
+    changed: set[str],
+    guards: Sequence[Any],
+    base_files: Mapping[str, bytes],
+    current_files: Mapping[str, bytes],
+) -> tuple[set[str], set[str]]:
+    related: set[str] = set()
+    review_required: set[str] = set()
+    for path in changed:
+        matching_guards = [
+            _object(raw_guard, "guard")
+            for raw_guard in guards
+            if _matches(
+                path,
+                _string(_object(raw_guard, "guard")["glob"], "guard.glob"),
+            )
+        ]
+        if not matching_guards:
+            continue
+        if not path.endswith(".php"):
+            if any(
+                _guard_matches(root, base_ref, {path}, guard)
+                for guard in matching_guards
+            ):
+                related.add(path)
+            continue
+        current_content = current_files.get(path)
+        if current_content is not None and not _php_lint(root, path):
+            related.add(path)
+            review_required.add(path)
+            continue
+        classification = _php_codec_change_classification(
+            base_files.get(path),
+            current_content,
+            broad_path_guard=any(
+                guard.get("content_patterns") is None for guard in matching_guards
+            ),
+        )
+        if classification.related:
+            related.add(path)
+        if classification.review_required:
+            review_required.add(path)
+    return related, review_required
+
+
 def _guard_matches(
     root: Path,
     base_ref: str,
@@ -1859,7 +2301,8 @@ def validate(
                     f"{item.identity} must supersede evidence in the same category at an older protocol version"
                 )
 
-    counts: dict[str, dict[str, int | bool]] = {}
+    counts: dict[str, dict[str, Any]] = {}
+    review_required_paths: set[str] = set()
     for category_name, raw_category in _object(policy["categories"], "categories").items():
         current_count = sum(item.category == category_name for item in current_evidence)
         base_count = sum(item.category == category_name for item in base_evidence)
@@ -1872,7 +2315,21 @@ def validate(
                 category["guards"],
                 f"categories.{category_name}.guards",
             )
-            related_paths = _guarded_paths(root, base_ref, changed, guards)
+            if category_name == "codec" and policy["repository"] == "server":
+                related_paths, category_review_required = (
+                    _classified_server_codec_paths(
+                        root,
+                        base_ref,
+                        changed,
+                        guards,
+                        base_files,
+                        current_files,
+                    )
+                )
+                review_required_paths.update(category_review_required)
+            else:
+                related_paths = _guarded_paths(root, base_ref, changed, guards)
+                category_review_required = set()
             related = bool(related_paths)
             if related and current_count <= base_count:
                 raise CorpusError(
@@ -1922,6 +2379,7 @@ def validate(
             "related_change": related,
             "counterfactual_proofs": proof_count,
             "revision_verified": revision_verified,
+            "review_required_paths": sorted(category_review_required),
         }
     return {
         "schema": POLICY_SCHEMA,
@@ -1929,6 +2387,7 @@ def validate(
         "base_ref": base_ref,
         "changed_paths": len(changed),
         "counts": counts,
+        "review_required_paths": sorted(review_required_paths),
         "status": "pass",
     }
 

@@ -59,6 +59,7 @@ PATH_LEVEL_CODEC_BOUNDARIES = {
     "app/Support/WorkflowTaskPoller.php",
 }
 SEMANTIC_BOUNDARY = "app/Services/SemanticCodecBoundary.php"
+GUARDED_METHOD_BOUNDARY = "app/Support/WorkflowTaskPoller.php"
 
 
 def load_validator() -> ModuleType:
@@ -96,7 +97,9 @@ class RegressionCorpusPolicyTest(unittest.TestCase):
         (self.root / "tests/Fixtures/CodecRegressionProofs").mkdir(parents=True)
         (self.root / "tests/Feature/CodecRegression").mkdir(parents=True)
         (self.root / "tests/Support").mkdir(parents=True)
-        (self.root / "app/Support/ExamplePayload.php").write_text("<?php\nreturn 'base';\n")
+        (self.root / "app/Support/ExamplePayload.php").write_text(
+            self.codec_method_source("ExamplePayload")
+        )
         (self.root / "tests/Support/ServerCodecRegressionBoundary.php").write_text(
             "<?php\nfinal class ServerCodecRegressionBoundary {}\n"
         )
@@ -107,10 +110,17 @@ class RegressionCorpusPolicyTest(unittest.TestCase):
             "<?php\nfinal readonly class ServerCodecRegressionFixture {}\n"
         )
         (self.root / CORE_CODEC_BOUNDARIES[0]).write_text(
-            "<?php\nSerializer::serializeWithCodec($codec, $arguments);\n"
+            self.codec_method_source("ExternalWorkflowUpdateAdmission")
         )
         (self.root / CORE_CODEC_BOUNDARIES[1]).write_text(
-            "<?php\nSerializer::unserializeWithCodec($codec, $blob);\n"
+            self.codec_method_source(
+                "WorkflowQueryTaskBroker",
+                operation="unserializeWithCodec",
+                value="$blob",
+            )
+        )
+        (self.root / GUARDED_METHOD_BOUNDARY).write_text(
+            self.guarded_method_boundary_source()
         )
         (self.root / SEMANTIC_BOUNDARY).write_text(
             "<?php\n"
@@ -420,6 +430,63 @@ ServerCodecRegressionFixtureExecutor::exercise(
                 ]
             )
         return run(*arguments, cwd=self.root)
+
+    @staticmethod
+    def codec_method_source(
+        class_name: str,
+        *,
+        operation: str = "serializeWithCodec",
+        value: str = "$arguments",
+    ) -> str:
+        return (
+            "<?php\n"
+            f"final class {class_name}\n"
+            "{\n"
+            "    public function transform(string $codec, mixed $arguments): mixed\n"
+            "    {\n"
+            f"        return Serializer::{operation}($codec, {value});\n"
+            "    }\n"
+            "}\n"
+        )
+
+    @staticmethod
+    def guarded_method_boundary_source(
+        *,
+        poll_body: str = "return ['task' => $taskKinds[0] ?? null];",
+        codec_condition: str = "$task !== []",
+        codec_operation: str = "serializeWithCodec",
+        extra_method: str = "",
+        class_state: str = "",
+    ) -> str:
+        return (
+            "<?php\n"
+            "namespace App\\Support;\n"
+            "use Workflow\\Serializers\\CodecRegistry;\n"
+            "use Workflow\\Serializers\\Serializer;\n"
+            "final class WorkflowTaskPoller\n"
+            "{\n"
+            f"{class_state}"
+            "    public function poll(array $taskKinds): array\n"
+            "    {\n"
+            f"        {poll_body}\n"
+            "    }\n"
+            "\n"
+            "    private function taskPayload(array $task): array\n"
+            "    {\n"
+            f"        if ({codec_condition}) {{\n"
+            "            $codec = CodecRegistry::defaultCodec();\n"
+            "\n"
+            "            return [\n"
+            "                'codec' => $codec,\n"
+            f"                'blob' => Serializer::{codec_operation}($codec, $task),\n"
+            "            ];\n"
+            "        }\n"
+            "\n"
+            "        return [];\n"
+            "    }\n"
+            f"{extra_method}"
+            "}\n"
+        )
 
     def test_codec_change_cannot_hide_behind_weakened_guard(self) -> None:
         (self.root / "app/Support/ExamplePayload.php").write_text("<?php\nreturn 'changed';\n")
@@ -747,6 +814,222 @@ final class InstrumentedCodecBoundaryRuntimeTest extends TestCase
             "codec implementation changed but its corpus did not grow",
             result.stderr,
         )
+
+    def test_changed_codec_method_control_flow_requires_corpus_growth(self) -> None:
+        (self.root / GUARDED_METHOD_BOUNDARY).write_text(
+            self.guarded_method_boundary_source(
+                codec_condition="$task !== [] && count($task) < 100",
+            )
+        )
+
+        result = self.validate()
+
+        self.assertNotEqual(0, result.returncode, result.stdout)
+        self.assertIn(
+            "codec implementation changed but its corpus did not grow",
+            result.stderr,
+        )
+
+    def test_changed_codec_call_requires_corpus_growth(self) -> None:
+        (self.root / GUARDED_METHOD_BOUNDARY).write_text(
+            self.guarded_method_boundary_source(
+                codec_operation="unserializeWithCodec",
+            )
+        )
+
+        result = self.validate()
+
+        self.assertNotEqual(0, result.returncode, result.stdout)
+        self.assertIn(
+            "codec implementation changed but its corpus did not grow",
+            result.stderr,
+        )
+
+    def test_new_codec_operation_in_existing_boundary_requires_corpus_growth(
+        self,
+    ) -> None:
+        extra_method = (
+            "\n"
+            "    private function decode(string $codec, string $blob): mixed\n"
+            "    {\n"
+            "        return Serializer::unserializeWithCodec($codec, $blob);\n"
+            "    }\n"
+        )
+        (self.root / GUARDED_METHOD_BOUNDARY).write_text(
+            self.guarded_method_boundary_source(extra_method=extra_method)
+        )
+
+        result = self.validate()
+
+        self.assertNotEqual(0, result.returncode, result.stdout)
+        self.assertIn(
+            "codec implementation changed but its corpus did not grow",
+            result.stderr,
+        )
+
+    def test_new_serializer_boundary_without_fixture_fails_closed(self) -> None:
+        (self.root / "app/Services/NewSerializerBoundary.php").write_text(
+            "<?php\n"
+            "namespace App\\Services;\n"
+            "use Workflow\\Serializers\\Serializer;\n"
+            "final class NewSerializerBoundary\n"
+            "{\n"
+            "    public function encode(string $codec, mixed $value): string\n"
+            "    {\n"
+            "        return Serializer::serializeWithCodec($codec, $value);\n"
+            "    }\n"
+            "}\n"
+        )
+
+        result = self.validate()
+
+        self.assertNotEqual(0, result.returncode, result.stdout)
+        self.assertIn(
+            "codec implementation changed but its corpus did not grow",
+            result.stderr,
+        )
+
+    def test_new_default_serializer_operations_without_fixture_fail_closed(
+        self,
+    ) -> None:
+        boundary = self.root / "app/Services/NewSerializerBoundary.php"
+        for operation in ("serialize", "unserialize"):
+            with self.subTest(operation=operation):
+                boundary.write_text(
+                    "<?php\n"
+                    "namespace App\\Services;\n"
+                    "use Workflow\\Serializers\\Serializer;\n"
+                    "final class NewSerializerBoundary\n"
+                    "{\n"
+                    "    public function transform(mixed $value): mixed\n"
+                    "    {\n"
+                    f"        return Serializer::{operation}($value);\n"
+                    "    }\n"
+                    "}\n"
+                )
+
+                result = self.validate()
+
+                self.assertNotEqual(0, result.returncode, result.stdout)
+                self.assertIn(
+                    "codec implementation changed but its corpus did not grow",
+                    result.stderr,
+                )
+
+    def test_new_static_serializer_operations_use_finite_codec_inventory(
+        self,
+    ) -> None:
+        boundary = self.root / "app/Services/NewSerializerBoundary.php"
+        cases = (
+            *(
+                (class_name, operation, True)
+                for class_name in ("Avro", "Json", "Base64", "Y")
+                for operation in ("serialize", "unserialize")
+            ),
+            ("DocumentSerializer", "serialize", False),
+        )
+        for class_name, operation, codec_related in cases:
+            with self.subTest(class_name=class_name, operation=operation):
+                namespace = (
+                    "Workflow\\Serializers" if codec_related else "App\\Serialization"
+                )
+                boundary.write_text(
+                    "<?php\n"
+                    "namespace App\\Services;\n"
+                    f"use {namespace}\\{class_name};\n"
+                    "final class NewSerializerBoundary\n"
+                    "{\n"
+                    "    public function transform(mixed $value): mixed\n"
+                    "    {\n"
+                    f"        return {class_name}::{operation}($value);\n"
+                    "    }\n"
+                    "}\n"
+                )
+
+                result = self.validate()
+
+                if codec_related:
+                    self.assertNotEqual(0, result.returncode, result.stdout)
+                    self.assertIn(
+                        "codec implementation changed but its corpus did not grow",
+                        result.stderr,
+                    )
+                else:
+                    self.assertEqual(0, result.returncode, result.stderr)
+                    report = json.loads(result.stdout)
+                    self.assertFalse(report["counts"]["codec"]["related_change"])
+                    self.assertEqual([], report["review_required_paths"])
+
+    def test_validator_multiplex_and_fairness_methods_are_codec_neutral(self) -> None:
+        fairness_method = (
+            "\n"
+            "    private function nextRequestedTask(array $taskKinds): array\n"
+            "    {\n"
+            "        $first = $taskKinds[0] ?? 'workflow';\n"
+            "\n"
+            "        return ['task_kind' => $first, 'task' => null];\n"
+            "    }\n"
+        )
+        (self.root / GUARDED_METHOD_BOUNDARY).write_text(
+            self.guarded_method_boundary_source(
+                poll_body="return $this->nextRequestedTask($taskKinds);",
+                extra_method=fairness_method,
+            )
+        )
+
+        result = self.validate()
+
+        self.assertEqual(0, result.returncode, result.stderr)
+        report = json.loads(result.stdout)
+        self.assertFalse(report["counts"]["codec"]["related_change"])
+        self.assertEqual([], report["review_required_paths"])
+
+    def test_class_level_state_in_broad_boundary_is_reported_for_review(self) -> None:
+        (self.root / GUARDED_METHOD_BOUNDARY).write_text(
+            self.guarded_method_boundary_source(
+                class_state="    private const POLL_LIMIT = 20;\n\n",
+            )
+        )
+
+        result = self.validate()
+
+        self.assertEqual(0, result.returncode, result.stderr)
+        report = json.loads(result.stdout)
+        self.assertFalse(report["counts"]["codec"]["related_change"])
+        self.assertEqual([GUARDED_METHOD_BOUNDARY], report["review_required_paths"])
+        self.assertEqual(
+            [GUARDED_METHOD_BOUNDARY],
+            report["counts"]["codec"]["review_required_paths"],
+        )
+
+    def test_malformed_guarded_php_fails_closed(self) -> None:
+        cases = (
+            (
+                "malformed signature",
+                "<?php\nfinal class WorkflowTaskPoller\n{\n"
+                "    public function poll(array $taskKinds): array\n"
+                "    public function other(): array\n"
+                "    {\n"
+                "        return [];\n"
+                "    }\n"
+                "}\n",
+            ),
+            (
+                "balanced invalid method body",
+                self.guarded_method_boundary_source(poll_body="return +;"),
+            ),
+        )
+        for name, source in cases:
+            with self.subTest(name=name):
+                (self.root / GUARDED_METHOD_BOUNDARY).write_text(source)
+
+                result = self.validate()
+
+                self.assertNotEqual(0, result.returncode, result.stdout)
+                self.assertIn(
+                    "codec implementation changed but its corpus did not grow",
+                    result.stderr,
+                )
 
     def test_new_resolve_to_array_boundary_without_fixture_fails_closed(self) -> None:
         (self.root / "app/Support/NewCodecBoundary.php").write_text(
