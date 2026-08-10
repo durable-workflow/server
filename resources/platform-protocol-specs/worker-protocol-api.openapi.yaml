@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: durable-workflow.v2.worker-protocol-api
-  version: "7"
+  version: "8"
   summary: Durable Workflow worker-plane HTTP+JSON API
   description: >
     Normative OpenAPI specification for the worker-plane HTTP+JSON API:
@@ -151,7 +151,7 @@ paths:
         required: true
         content:
           application/json:
-            schema: { $ref: "#/components/schemas/PollRequest" }
+            schema: { $ref: "#/components/schemas/WorkflowTaskPollRequest" }
       responses:
         "200":
           description: A claimed workflow task, an empty long-poll result, or a draining-worker response.
@@ -159,11 +159,10 @@ paths:
           content:
             application/json:
               schema:
-                oneOf:
-                  - $ref: "#/components/schemas/WorkflowTaskClaim"
-                  - $ref: "#/components/schemas/EmptyPoll"
-                  - $ref: "#/components/schemas/DrainingPoll"
+                $ref: "#/components/schemas/WorkflowTaskPollResponse"
         "400": { $ref: "#/components/responses/WorkerError" }
+        "409": { $ref: "#/components/responses/WorkflowTaskPollConflict" }
+        "422": { $ref: "#/components/responses/WorkerError" }
   /worker/workflow-tasks/{taskId}/history:
     post:
       operationId: getWorkflowTaskHistoryPage
@@ -227,6 +226,63 @@ paths:
       responses:
         "200": { $ref: "#/components/responses/WorkerEnvelope" }
         "409": { $ref: "#/components/responses/WorkerError" }
+  /worker/update-validation-tasks/poll:
+    post:
+      operationId: pollUpdateValidationTask
+      tags: [update-validation-tasks]
+      parameters: [{ $ref: "#/components/parameters/WorkerProtocolVersionHeader" }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/UpdateValidationTaskPollRequest" }
+      responses:
+        "200":
+          description: A claimed update-validation task or an empty long-poll result.
+          headers: { X-Durable-Workflow-Protocol-Version: { schema: { $ref: "#/components/schemas/AdvertisedWorkerProtocolVersion" } } }
+          content:
+            application/json:
+              schema:
+                oneOf:
+                  - $ref: "#/components/schemas/UpdateValidationTaskClaim"
+                  - $ref: "#/components/schemas/EmptyPoll"
+        "400": { $ref: "#/components/responses/WorkerError" }
+        "409": { $ref: "#/components/responses/WorkerError" }
+        "422": { $ref: "#/components/responses/WorkerError" }
+  /worker/update-validation-tasks/{taskId}/approve:
+    post:
+      operationId: approveUpdateValidationTask
+      tags: [update-validation-tasks]
+      parameters:
+        - $ref: "#/components/parameters/WorkerProtocolVersionHeader"
+        - $ref: "#/components/parameters/TaskIdPath"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/UpdateValidationTaskCompletionRequest" }
+      responses:
+        "200": { $ref: "#/components/responses/UpdateValidationTaskCompletion" }
+        "404": { $ref: "#/components/responses/UpdateValidationTaskCompletionFailure" }
+        "409": { $ref: "#/components/responses/UpdateValidationTaskCompletionFailure" }
+        "422": { $ref: "#/components/responses/WorkerError" }
+  /worker/update-validation-tasks/{taskId}/reject:
+    post:
+      operationId: rejectUpdateValidationTask
+      tags: [update-validation-tasks]
+      parameters:
+        - $ref: "#/components/parameters/WorkerProtocolVersionHeader"
+        - $ref: "#/components/parameters/TaskIdPath"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/UpdateValidationTaskRejectionRequest" }
+      responses:
+        "200": { $ref: "#/components/responses/UpdateValidationTaskCompletion" }
+        "404": { $ref: "#/components/responses/UpdateValidationTaskCompletionFailure" }
+        "409": { $ref: "#/components/responses/UpdateValidationTaskCompletionFailure" }
+        "422": { $ref: "#/components/responses/WorkerError" }
   /worker/query-tasks/poll:
     post:
       operationId: pollQueryTask
@@ -390,6 +446,33 @@ components:
       content:
         application/json:
           schema: { $ref: "#/components/schemas/WorkerError" }
+    WorkflowTaskPollConflict:
+      description: The poll request is unsupported or its idempotency identity conflicts with a previously bound task-kind set.
+      headers:
+        X-Durable-Workflow-Protocol-Version:
+          schema: { $ref: "#/components/schemas/AdvertisedWorkerProtocolVersion" }
+      content:
+        application/json:
+          schema:
+            oneOf:
+              - $ref: "#/components/schemas/PollRequestTaskKindsConflict"
+              - $ref: "#/components/schemas/UpdateValidationCapabilityConflict"
+    UpdateValidationTaskCompletion:
+      description: A fenced update-validation task approval or rejection result.
+      headers:
+        X-Durable-Workflow-Protocol-Version:
+          schema: { $ref: "#/components/schemas/AdvertisedWorkerProtocolVersion" }
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/UpdateValidationTaskCompletionResult" }
+    UpdateValidationTaskCompletionFailure:
+      description: A typed update-validation completion fence rejection.
+      headers:
+        X-Durable-Workflow-Protocol-Version:
+          schema: { $ref: "#/components/schemas/AdvertisedWorkerProtocolVersion" }
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/UpdateValidationTaskCompletionFailure" }
     WorkerSessionOperation:
       description: Worker-session lifecycle admission or renewal result.
       headers:
@@ -444,7 +527,12 @@ components:
     WorkerServerCapabilities:
       type: object
       additionalProperties: true
+      required: [workflow_task_poll_request_idempotency, update_validation_tasks, synchronous_update_validation]
       properties:
+        workflow_task_poll_request_idempotency: { type: boolean, const: true }
+        update_validation_tasks: { type: boolean, const: true }
+        synchronous_update_validation:
+          $ref: "#/components/schemas/SynchronousUpdateValidationCapability"
         worker_session_verbs:
           type: array
           items: { type: string, enum: [create, heartbeat, close] }
@@ -487,6 +575,44 @@ components:
         task_queues: { type: array, minItems: 1, items: { type: string, minLength: 1 } }
         build_id: { type: [string, "null"] }
         poll_timeout_seconds: { type: integer, minimum: 0 }
+    WorkflowTaskPollRequest:
+      type: object
+      additionalProperties: true
+      required: [worker_id, task_queue]
+      properties:
+        worker_id: { type: string, minLength: 1 }
+        task_queue: { type: string, minLength: 1 }
+        build_id: { type: [string, "null"] }
+        poll_request_id:
+          type: [string, "null"]
+          minLength: 1
+          maxLength: 255
+          description: Idempotency identity bound to the normalized task_kinds set for the binding TTL.
+        timeout_seconds: { type: integer, minimum: 0, maximum: 60 }
+        history_page_size: { type: integer, minimum: 1, maximum: 1000 }
+        accept_history_encoding: { type: [string, "null"], maxLength: 64 }
+        task_kinds:
+          type: array
+          minItems: 1
+          maxItems: 2
+          uniqueItems: true
+          default: [workflow]
+          items: { type: string, enum: [workflow, update_validation] }
+          description: Reordering does not change the normalized request shape; changing the effective set for a bound poll_request_id returns poll_request_task_kinds_conflict.
+    UpdateValidationTaskPollRequest:
+      type: object
+      additionalProperties: true
+      required: [worker_id, task_queue]
+      properties:
+        worker_id: { type: string, minLength: 1 }
+        task_queue: { type: string, minLength: 1 }
+        timeout_seconds: { type: integer, minimum: 0, maximum: 60 }
+    WorkflowTaskPollResponse:
+      oneOf:
+        - $ref: "#/components/schemas/MultiplexedWorkflowTaskClaim"
+        - $ref: "#/components/schemas/EmptyPoll"
+        - $ref: "#/components/schemas/DrainingPoll"
+      x-durable-workflow-discriminator: task.task_kind
     EmptyPoll:
       allOf:
         - $ref: "#/components/schemas/WorkerEnvelope"
@@ -508,17 +634,230 @@ components:
       allOf:
         - $ref: "#/components/schemas/WorkerEnvelope"
         - type: object
-          required: [task]
+          required: [task, poll_status]
           properties:
+            poll_status: { type: string, const: leased }
             task:
-              type: object
-              additionalProperties: true
-              required: [task_id, workflow_id, run_id, history]
-              properties:
-                task_id: { type: string }
-                workflow_id: { type: string }
-                run_id: { type: string }
-                history: { type: array, items: { type: object, additionalProperties: true } }
+              $ref: "#/components/schemas/WorkflowTask"
+    MultiplexedWorkflowTaskClaim:
+      allOf:
+        - $ref: "#/components/schemas/WorkerEnvelope"
+        - type: object
+          required: [task, poll_status]
+          properties:
+            poll_status: { type: string, const: leased }
+            task:
+              $ref: "#/components/schemas/MultiplexedWorkflowTask"
+    UpdateValidationTaskClaim:
+      allOf:
+        - $ref: "#/components/schemas/WorkerEnvelope"
+        - type: object
+          required: [task, poll_status]
+          properties:
+            poll_status: { type: string, const: leased }
+            task:
+              $ref: "#/components/schemas/UpdateValidationTask"
+    MultiplexedWorkflowTask:
+      oneOf:
+        - $ref: "#/components/schemas/WorkflowTask"
+        - $ref: "#/components/schemas/UpdateValidationTask"
+      discriminator:
+        propertyName: task_kind
+        mapping:
+          workflow: "#/components/schemas/WorkflowTask"
+          update_validation: "#/components/schemas/UpdateValidationTask"
+    WorkflowTask:
+      type: object
+      additionalProperties: true
+      required: [task_kind, task_id, workflow_id, run_id, history]
+      properties:
+        task_kind: { type: string, const: workflow }
+        task_id: { type: string, minLength: 1 }
+        workflow_id: { type: string, minLength: 1 }
+        run_id: { type: string, minLength: 1 }
+        workflow_task_attempt: { type: integer, minimum: 1 }
+        lease_owner: { type: string, minLength: 1 }
+        lease_expires_at: { type: string, format: date-time }
+        history: { type: array, items: { type: object, additionalProperties: true } }
+    UpdateValidationTask:
+      type: object
+      additionalProperties: true
+      required:
+        - task_kind
+        - update_validation_task_id
+        - update_id
+        - update_validation_attempt
+        - workflow_id
+        - run_id
+        - workflow_type
+        - update_name
+        - update_arguments
+        - payload_codec
+        - task_queue
+        - lease_owner
+        - lease_expires_at
+      properties:
+        task_kind: { type: string, const: update_validation }
+        update_validation_task_id: { type: string, minLength: 1 }
+        update_id: { type: string, minLength: 1 }
+        update_validation_attempt: { type: integer, minimum: 1 }
+        workflow_id: { type: string, minLength: 1 }
+        run_id: { type: string, minLength: 1 }
+        workflow_type: { type: string, minLength: 1 }
+        compatibility: { type: [string, "null"] }
+        update_name: { type: string, minLength: 1 }
+        update_arguments: { type: object, additionalProperties: true }
+        payload_codec: { type: string, minLength: 1 }
+        task_queue: { type: string, minLength: 1 }
+        lease_owner: { type: string, minLength: 1 }
+        lease_expires_at: { type: string, format: date-time }
+    PollRequestTaskKindsConflict:
+      allOf:
+        - $ref: "#/components/schemas/WorkerError"
+        - type: object
+          required: [task, poll_status, reason, error, poll_request_id, requested_task_kinds, bound_task_kinds]
+          properties:
+            task: { type: "null" }
+            poll_status: { type: string, const: conflict }
+            reason: { type: string, const: poll_request_task_kinds_conflict }
+            error: { type: string, minLength: 1 }
+            poll_request_id: { type: string, minLength: 1, maxLength: 255 }
+            requested_task_kinds:
+              type: array
+              minItems: 1
+              maxItems: 2
+              uniqueItems: true
+              items: { type: string, enum: [workflow, update_validation] }
+            bound_task_kinds:
+              type: array
+              minItems: 1
+              maxItems: 2
+              uniqueItems: true
+              items: { type: string, enum: [workflow, update_validation] }
+    UpdateValidationCapabilityConflict:
+      allOf:
+        - $ref: "#/components/schemas/WorkerError"
+        - type: object
+          required: [task, poll_status, reason, error]
+          properties:
+            task: { type: "null" }
+            poll_status: { type: string, const: unsupported }
+            reason: { type: string, const: update_validation_capability_not_advertised }
+            error: { type: string, minLength: 1 }
+    SynchronousUpdateValidationCapability:
+      type: object
+      additionalProperties: true
+      required: [supported, acceptance_boundary, worker_capability, workflow_contract_field, task_poll, completion]
+      properties:
+        supported: { type: boolean, const: true }
+        minimum_protocol_version: { $ref: "#/components/schemas/AdvertisedWorkerProtocolVersion" }
+        acceptance_boundary: { type: string, const: validator_approved }
+        worker_capability: { type: string, const: update_validation_tasks }
+        workflow_contract_field: { type: string, const: update_validators }
+        task_poll:
+          type: object
+          additionalProperties: true
+          required: [strategy, endpoint, request_field, task_kinds, default_task_kinds, response_discriminator, poll_request_id_binding, poll_request_id_conflict_reason]
+          properties:
+            strategy: { type: string, const: multiplexed }
+            endpoint: { type: string, const: /worker/workflow-tasks/poll }
+            request_field: { type: string, const: task_kinds }
+            task_kinds:
+              type: array
+              const: [workflow, update_validation]
+            default_task_kinds:
+              type: array
+              const: [workflow]
+            response_discriminator: { type: string, const: task.task_kind }
+            poll_request_id_binding: { type: string, const: normalized_task_kind_set }
+            poll_request_id_conflict_reason: { type: string, const: poll_request_task_kinds_conflict }
+        completion:
+          type: object
+          additionalProperties: true
+          required: [approve_endpoint, reject_endpoint, fence_fields, typed_failure_reasons]
+          properties:
+            approve_endpoint: { type: string, const: "/worker/update-validation-tasks/{taskId}/approve" }
+            reject_endpoint: { type: string, const: "/worker/update-validation-tasks/{taskId}/reject" }
+            fence_fields:
+              type: array
+              const: [lease_owner, update_validation_attempt]
+            typed_failure_reasons:
+              type: array
+              minItems: 7
+              uniqueItems: true
+              items:
+                type: string
+                enum:
+                  - update_validation_task_not_found
+                  - duplicate_update_validation_completion
+                  - update_validation_task_not_leased
+                  - update_validation_lease_owner_mismatch
+                  - stale_update_validation_completion
+                  - update_validation_lease_expired
+                  - update_validator_worker_lost
+    UpdateValidationTaskCompletionRequest:
+      type: object
+      additionalProperties: true
+      required: [lease_owner, update_validation_attempt]
+      properties:
+        lease_owner: { type: string, minLength: 1 }
+        update_validation_attempt: { type: integer, minimum: 1 }
+    UpdateValidationTaskRejectionRequest:
+      allOf:
+        - $ref: "#/components/schemas/UpdateValidationTaskCompletionRequest"
+        - type: object
+          required: [failure]
+          properties:
+            failure:
+              $ref: "#/components/schemas/UpdateValidationFailure"
+    UpdateValidationFailure:
+      type: object
+      additionalProperties: true
+      required: [message]
+      properties:
+        message: { type: string, minLength: 1 }
+        reason: { type: [string, "null"] }
+        type: { type: [string, "null"] }
+        stack_trace: { type: [string, "null"] }
+        validation_errors:
+          type: object
+          additionalProperties:
+            type: array
+            items: { type: string }
+    UpdateValidationTaskCompletionResult:
+      allOf:
+        - $ref: "#/components/schemas/WorkerEnvelope"
+        - type: object
+          required: [update_validation_task_id, update_id, update_validation_attempt, outcome, status]
+          properties:
+            update_validation_task_id: { type: string, minLength: 1 }
+            update_id: { type: string, minLength: 1 }
+            update_validation_attempt: { type: integer, minimum: 1 }
+            outcome: { type: string, enum: [approved, rejected, failed] }
+            reason: { type: [string, "null"] }
+            status: { type: integer, const: 200 }
+    UpdateValidationTaskCompletionFailure:
+      allOf:
+        - $ref: "#/components/schemas/WorkerError"
+        - type: object
+          required: [update_validation_task_id, update_id, outcome, reason, error, status]
+          properties:
+            update_validation_task_id: { type: string, minLength: 1 }
+            update_id: { type: string, minLength: 1 }
+            update_validation_attempt: { type: integer, minimum: 1 }
+            outcome: { type: string, const: rejected }
+            reason:
+              type: string
+              enum:
+                - update_validation_task_not_found
+                - duplicate_update_validation_completion
+                - update_validation_task_not_leased
+                - update_validation_lease_owner_mismatch
+                - stale_update_validation_completion
+                - update_validation_lease_expired
+                - update_validator_worker_lost
+            error: { type: string, minLength: 1 }
+            status: { type: integer, enum: [404, 409] }
     ActivityTaskClaim:
       allOf:
         - $ref: "#/components/schemas/WorkerEnvelope"

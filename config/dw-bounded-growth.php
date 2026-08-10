@@ -93,10 +93,10 @@ return [
                 'lease_owner',
                 'poll_request_id',
             ],
-            'ttl' => 'Pending keys live max(server.polling.timeout + 5, 5) seconds. Empty result keys live at most 60 seconds; task result keys live through the active task lease, capped at 3600 seconds.',
-            'bound' => 'At most one pending key and one short replay-result key per idempotent worker poll request in the TTL window.',
-            'admission' => 'Cache add elects a single poll leader for each idempotent request. The claimed task payload also stores that request id, so a lost response can be rebuilt outside admission without replaying the lease into another poll slot.',
-            'eviction' => 'Pending keys are removed when a leader publishes a result; all pending and result keys also expire by TTL.',
+            'ttl' => 'Task-kind binding keys live at most 3600 seconds. Pending keys live max(server.polling.timeout + 5, 5) seconds. Empty result keys live at most 60 seconds; task result keys live through the active task lease, capped at 3600 seconds.',
+            'bound' => 'At most one normalized task-kind binding, one pending key, and one short replay-result key per idempotent worker poll request in the TTL window.',
+            'admission' => 'Cache add first binds the poll request id to its normalized task-kind set, then elects a single poll leader for that idempotent request. The claimed task payload also stores that request id, so a lost response can be rebuilt outside admission without replaying the lease into another poll slot.',
+            'eviction' => 'Pending keys are removed when a leader publishes a result; all binding, pending, and result keys also expire by TTL.',
         ],
 
         'activity_task_poll_requests' => [

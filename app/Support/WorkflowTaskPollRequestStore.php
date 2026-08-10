@@ -19,7 +19,17 @@ class WorkflowTaskPollRequestStore
         ?string $buildId,
         string $leaseOwner,
         string $pollRequestId,
+        array $taskKinds = ['workflow'],
     ): bool {
+        $this->bindTaskKinds(
+            $namespace,
+            $taskQueue,
+            $buildId,
+            $leaseOwner,
+            $pollRequestId,
+            $taskKinds,
+        );
+
         return $this->store()->add(
             $this->pendingKey($namespace, $taskQueue, $buildId, $leaseOwner, $pollRequestId),
             now()->toJSON(),
@@ -36,7 +46,17 @@ class WorkflowTaskPollRequestStore
         ?string $buildId,
         string $leaseOwner,
         string $pollRequestId,
+        array $taskKinds = ['workflow'],
     ): array {
+        $this->bindTaskKinds(
+            $namespace,
+            $taskQueue,
+            $buildId,
+            $leaseOwner,
+            $pollRequestId,
+            $taskKinds,
+        );
+
         $payload = $this->store()->get(
             $this->resultKey($namespace, $taskQueue, $buildId, $leaseOwner, $pollRequestId),
         );
@@ -69,12 +89,20 @@ class WorkflowTaskPollRequestStore
         string $leaseOwner,
         string $pollRequestId,
         ?int $timeoutMilliseconds = null,
+        array $taskKinds = ['workflow'],
     ): array {
         $pendingKey = $this->pendingKey($namespace, $taskQueue, $buildId, $leaseOwner, $pollRequestId);
         $deadline = microtime(true) + (($timeoutMilliseconds ?? $this->waitTimeoutMilliseconds()) / 1000);
 
         while (microtime(true) < $deadline) {
-            $result = $this->result($namespace, $taskQueue, $buildId, $leaseOwner, $pollRequestId);
+            $result = $this->result(
+                $namespace,
+                $taskQueue,
+                $buildId,
+                $leaseOwner,
+                $pollRequestId,
+                $taskKinds,
+            );
 
             if ($result['resolved']) {
                 return $result;
@@ -91,7 +119,14 @@ class WorkflowTaskPollRequestStore
             $this->pause($this->pollIntervalMilliseconds());
         }
 
-        return $this->result($namespace, $taskQueue, $buildId, $leaseOwner, $pollRequestId);
+        return $this->result(
+            $namespace,
+            $taskQueue,
+            $buildId,
+            $leaseOwner,
+            $pollRequestId,
+            $taskKinds,
+        );
     }
 
     /**
@@ -105,7 +140,17 @@ class WorkflowTaskPollRequestStore
         string $pollRequestId,
         ?array $task,
         string $pollStatus,
+        array $taskKinds = ['workflow'],
     ): void {
+        $this->bindTaskKinds(
+            $namespace,
+            $taskQueue,
+            $buildId,
+            $leaseOwner,
+            $pollRequestId,
+            $taskKinds,
+        );
+
         $this->store()->put(
             $this->resultKey($namespace, $taskQueue, $buildId, $leaseOwner, $pollRequestId),
             [
@@ -148,6 +193,54 @@ class WorkflowTaskPollRequestStore
         usleep(max(1, $milliseconds) * 1000);
     }
 
+    /**
+     * Atomically bind an idempotent poll request to its effective task-kind
+     * set. Sorting makes reordered retries equivalent while preserving a
+     * deterministic conflict for any different set.
+     *
+     * @param  list<string>  $taskKinds
+     * @return list<string>
+     */
+    public function bindTaskKinds(
+        string $namespace,
+        string $taskQueue,
+        ?string $buildId,
+        string $leaseOwner,
+        string $pollRequestId,
+        array $taskKinds,
+    ): array {
+        $normalized = self::normalizeTaskKinds($taskKinds);
+        $key = $this->bindingKey($namespace, $taskQueue, $buildId, $leaseOwner, $pollRequestId);
+        $payload = ['task_kinds' => $normalized];
+
+        if ($this->store()->add($key, $payload, now()->addSeconds($this->bindingTtlSeconds()))) {
+            return $normalized;
+        }
+
+        $bound = $this->store()->get($key);
+        $boundKinds = is_array($bound) && is_array($bound['task_kinds'] ?? null)
+            ? self::normalizeTaskKinds($bound['task_kinds'])
+            : [];
+
+        if ($boundKinds !== $normalized) {
+            throw new PollRequestTaskKindsConflict($pollRequestId, $normalized, $boundKinds);
+        }
+
+        return $normalized;
+    }
+
+    /**
+     * @param  list<string>  $taskKinds
+     * @return list<string>
+     */
+    public static function normalizeTaskKinds(array $taskKinds): array
+    {
+        $normalized = array_values(array_unique($taskKinds));
+        sort($normalized, SORT_STRING);
+
+        return $normalized;
+    }
+
     private function pendingTtlSeconds(): int
     {
         return max(5, (int) config('server.polling.timeout', 30) + 5);
@@ -165,6 +258,11 @@ class WorkflowTaskPollRequestStore
         }
 
         return max(5, min(60, $this->pendingTtlSeconds()));
+    }
+
+    private function bindingTtlSeconds(): int
+    {
+        return 3600;
     }
 
     private function waitTimeoutMilliseconds(): int
@@ -230,6 +328,16 @@ class WorkflowTaskPollRequestStore
         string $pollRequestId,
     ): string {
         return $this->cacheKey('result', $namespace, $taskQueue, $buildId, $leaseOwner, $pollRequestId);
+    }
+
+    private function bindingKey(
+        string $namespace,
+        string $taskQueue,
+        ?string $buildId,
+        string $leaseOwner,
+        string $pollRequestId,
+    ): string {
+        return $this->cacheKey('binding', $namespace, $taskQueue, $buildId, $leaseOwner, $pollRequestId);
     }
 
     private function cacheKey(

@@ -10,6 +10,7 @@ use App\Support\HistoryRetentionEnforcer;
 use App\Support\LongPollCapacityExhaustedException;
 use App\Support\NamespaceExternalPayloadStorage;
 use App\Support\NamespaceWorkflowScope;
+use App\Support\PollRequestTaskKindsConflict;
 use App\Support\QueryTaskQueueUnavailableException;
 use App\Support\SearchAttributeValueValidator;
 use App\Support\ServiceModeTimerDispatcher;
@@ -1067,6 +1068,18 @@ class WorkerController
                 taskKinds: $taskKinds,
             );
         } catch (\Throwable $exception) {
+            if ($exception instanceof PollRequestTaskKindsConflict) {
+                return WorkerProtocol::json([
+                    'task' => null,
+                    'poll_status' => 'conflict',
+                    'reason' => 'poll_request_task_kinds_conflict',
+                    'error' => $exception->getMessage(),
+                    'poll_request_id' => $exception->pollRequestId,
+                    'requested_task_kinds' => $exception->requestedTaskKinds,
+                    'bound_task_kinds' => $exception->boundTaskKinds,
+                ], 409);
+            }
+
             if ($exception instanceof LongPollCapacityExhaustedException) {
                 return WorkerPollBackpressure::response(
                     'workflow_task',

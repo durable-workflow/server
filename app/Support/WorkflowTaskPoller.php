@@ -70,12 +70,24 @@ final class WorkflowTaskPoller
         array $taskKinds = ['workflow'],
     ): array {
         $pollRequestId = $this->nonEmptyString($pollRequestId);
+        $taskKinds = WorkflowTaskPollRequestStore::normalizeTaskKinds($taskKinds);
 
         if (! WorkerPollFence::isFresh($worker)) {
             return [
                 'task' => null,
                 'poll_status' => 'stale_worker_registration',
             ];
+        }
+
+        if ($pollRequestId !== null && $this->cache->available()) {
+            $taskKinds = $this->pollRequests->bindTaskKinds(
+                $namespace,
+                $taskQueue,
+                $buildId,
+                $leaseOwner,
+                $pollRequestId,
+                $taskKinds,
+            );
         }
 
         if ($pollRequestId !== null && in_array('workflow', $taskKinds, true)) {
@@ -172,6 +184,7 @@ final class WorkflowTaskPoller
                 $buildId,
                 $leaseOwner,
                 $pollRequestId,
+                $taskKinds,
             );
 
             if ($cached['resolved']) {
@@ -187,6 +200,7 @@ final class WorkflowTaskPoller
                 $buildId,
                 $leaseOwner,
                 $pollRequestId,
+                $taskKinds,
             )) {
                 return $this->runCoordinatedPollLeader(
                     request: $request,
@@ -212,6 +226,7 @@ final class WorkflowTaskPoller
                 $buildId,
                 $leaseOwner,
                 $pollRequestId,
+                taskKinds: $taskKinds,
             );
 
             if ($observed['resolved']) {
@@ -221,6 +236,12 @@ final class WorkflowTaskPoller
                         'poll_status' => 'stale_worker_registration',
                     ];
                 }
+
+                $this->assertTaskKindRequested(
+                    $pollRequestId,
+                    $taskKinds,
+                    $observed['task'],
+                );
 
                 return [
                     'task' => $observed['task'],
@@ -242,6 +263,7 @@ final class WorkflowTaskPoller
             $buildId,
             $leaseOwner,
             $pollRequestId,
+            $taskKinds,
         );
 
         return [
@@ -259,6 +281,7 @@ final class WorkflowTaskPoller
         ?string $buildId,
         string $leaseOwner,
         string $pollRequestId,
+        array $taskKinds,
     ): array {
         $cached = $this->pollRequests->result(
             $namespace,
@@ -266,11 +289,14 @@ final class WorkflowTaskPoller
             $buildId,
             $leaseOwner,
             $pollRequestId,
+            $taskKinds,
         );
 
         if (! $cached['resolved']) {
             return $cached;
         }
+
+        $this->assertTaskKindRequested($pollRequestId, $taskKinds, $cached['task']);
 
         if ($this->cachedTaskStillDeliverable(
             namespace: $namespace,
@@ -293,6 +319,7 @@ final class WorkflowTaskPoller
                     $pollRequestId,
                     $refreshedTask,
                     $cached['poll_status'] ?? $this->defaultPollStatus($refreshedTask),
+                    $taskKinds,
                 );
             }
 
@@ -376,6 +403,7 @@ final class WorkflowTaskPoller
             $pollRequestId,
             $task['task'] ?? null,
             $task['poll_status'] ?? $this->defaultPollStatus($task['task'] ?? null),
+            $taskKinds,
         );
 
         return $task;
@@ -2151,6 +2179,35 @@ final class WorkflowTaskPoller
     private function defaultPollStatus(?array $task): string
     {
         return is_array($task) ? 'leased' : 'empty';
+    }
+
+    /**
+     * Fail closed if a stale or rolling-deploy cache entry predates the
+     * normalized request-shape binding.
+     *
+     * @param  list<string>  $taskKinds
+     * @param  array<string, mixed>|null  $task
+     */
+    private function assertTaskKindRequested(
+        string $pollRequestId,
+        array $taskKinds,
+        ?array $task,
+    ): void {
+        if (! is_array($task)) {
+            return;
+        }
+
+        $taskKind = $task['task_kind'] ?? null;
+
+        if (is_string($taskKind) && in_array($taskKind, $taskKinds, true)) {
+            return;
+        }
+
+        throw new PollRequestTaskKindsConflict(
+            $pollRequestId,
+            $taskKinds,
+            is_string($taskKind) ? [$taskKind] : [],
+        );
     }
 
     /**

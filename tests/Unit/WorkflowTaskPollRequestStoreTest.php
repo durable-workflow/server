@@ -3,6 +3,7 @@
 namespace Tests\Unit;
 
 use App\Support\LongPollWaitSlotStore;
+use App\Support\PollRequestTaskKindsConflict;
 use App\Support\ServerPollingCache;
 use App\Support\WorkflowTaskPollRequestStore;
 use Illuminate\Foundation\Testing\RefreshDatabase;
@@ -98,6 +99,50 @@ class WorkflowTaskPollRequestStoreTest extends TestCase
             'task' => $task,
             'poll_status' => 'leased',
         ], $result);
+    }
+
+    public function test_it_binds_reordered_task_kind_sets_and_rejects_different_sets(): void
+    {
+        $store = app(WorkflowTaskPollRequestStore::class);
+
+        $this->assertSame(
+            ['update_validation', 'workflow'],
+            $store->bindTaskKinds(
+                'default',
+                'external-workflows',
+                null,
+                'worker-a',
+                'poll-task-kinds',
+                ['workflow', 'update_validation'],
+            ),
+        );
+        $this->assertSame(
+            ['update_validation', 'workflow'],
+            $store->bindTaskKinds(
+                'default',
+                'external-workflows',
+                null,
+                'worker-a',
+                'poll-task-kinds',
+                ['update_validation', 'workflow'],
+            ),
+        );
+
+        try {
+            $store->bindTaskKinds(
+                'default',
+                'external-workflows',
+                null,
+                'worker-a',
+                'poll-task-kinds',
+                ['workflow'],
+            );
+            $this->fail('Expected a task-kind binding conflict.');
+        } catch (PollRequestTaskKindsConflict $exception) {
+            $this->assertSame('poll-task-kinds', $exception->pollRequestId);
+            $this->assertSame(['workflow'], $exception->requestedTaskKinds);
+            $this->assertSame(['update_validation', 'workflow'], $exception->boundTaskKinds);
+        }
     }
 
     public function test_duplicate_waits_remain_idempotent_when_empty_poll_wait_slots_are_exhausted(): void

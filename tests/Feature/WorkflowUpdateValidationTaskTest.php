@@ -406,6 +406,90 @@ class WorkflowUpdateValidationTaskTest extends TestCase
         ], $observed);
     }
 
+    public function test_poll_request_id_is_fenced_to_the_normalized_task_kind_set(): void
+    {
+        $this->registerValidatorWorker('multiplex-idempotency-worker');
+        $run = $this->startRemoteWorkflow('wf-multiplex-idempotency');
+        $this->createPendingValidationTask($run, 'multiplex-idempotency-request');
+
+        $this->assertTrue(WorkflowUpdateValidationTask::query()
+            ->where('status', WorkflowUpdateValidationTask::STATUS_PENDING)
+            ->exists());
+        $this->assertTrue(WorkflowTask::query()
+            ->where('task_type', TaskType::Workflow->value)
+            ->where('status', TaskStatus::Ready->value)
+            ->exists());
+
+        $request = [
+            'worker_id' => 'multiplex-idempotency-worker',
+            'task_queue' => self::TASK_QUEUE,
+            'task_kinds' => ['workflow', 'update_validation'],
+            'poll_request_id' => 'multiplex-idempotency-poll',
+            'timeout_seconds' => 0,
+        ];
+        $first = $this->postJson(
+            '/api/worker/workflow-tasks/poll',
+            $request,
+            $this->workerHeaders(),
+        );
+
+        $first->assertOk()->assertJsonPath('poll_status', 'leased');
+        $taskKind = (string) $first->json('task.task_kind');
+        $identityField = $taskKind === 'update_validation'
+            ? 'update_validation_task_id'
+            : 'task_id';
+        $taskIdentity = (string) $first->json('task.'.$identityField);
+
+        $this->postJson(
+            '/api/worker/workflow-tasks/poll',
+            $request,
+            $this->workerHeaders(),
+        )
+            ->assertOk()
+            ->assertJsonPath('task.task_kind', $taskKind)
+            ->assertJsonPath('task.'.$identityField, $taskIdentity);
+
+        $this->postJson(
+            '/api/worker/workflow-tasks/poll',
+            [...$request, 'task_kinds' => ['update_validation', 'workflow']],
+            $this->workerHeaders(),
+        )
+            ->assertOk()
+            ->assertJsonPath('task.task_kind', $taskKind)
+            ->assertJsonPath('task.'.$identityField, $taskIdentity);
+
+        $differentTaskKinds = $taskKind === 'update_validation'
+            ? ['workflow']
+            : ['update_validation'];
+
+        $this->postJson(
+            '/api/worker/workflow-tasks/poll',
+            [...$request, 'task_kinds' => $differentTaskKinds],
+            $this->workerHeaders(),
+        )
+            ->assertStatus(409)
+            ->assertJsonPath('task', null)
+            ->assertJsonPath('poll_status', 'conflict')
+            ->assertJsonPath('reason', 'poll_request_task_kinds_conflict')
+            ->assertJsonPath('poll_request_id', 'multiplex-idempotency-poll')
+            ->assertJsonPath('requested_task_kinds', $differentTaskKinds)
+            ->assertJsonPath('bound_task_kinds', ['update_validation', 'workflow']);
+
+        if ($taskKind === 'update_validation') {
+            $this->assertTrue(WorkflowUpdateValidationTask::query()
+                ->whereKey($taskIdentity)
+                ->where('status', WorkflowUpdateValidationTask::STATUS_LEASED)
+                ->where('lease_expires_at', '>', now())
+                ->exists());
+        } else {
+            $this->assertTrue(WorkflowTask::query()
+                ->whereKey($taskIdentity)
+                ->where('status', TaskStatus::Leased->value)
+                ->where('lease_expires_at', '>', now())
+                ->exists());
+        }
+    }
+
     public function test_multiplexed_poll_returns_empty_without_leasing_work(): void
     {
         $this->registerValidatorWorker('multiplex-empty-worker');
@@ -458,7 +542,29 @@ class WorkflowUpdateValidationTaskTest extends TestCase
                     'endpoint' => '/worker/workflow-tasks/poll',
                     'request_field' => 'task_kinds',
                     'task_kinds' => ['workflow', 'update_validation'],
+                    'default_task_kinds' => ['workflow'],
                     'response_discriminator' => 'task.task_kind',
+                    'poll_request_id_binding' => 'normalized_task_kind_set',
+                    'poll_request_id_conflict_reason' => 'poll_request_task_kinds_conflict',
+                ],
+            );
+        $this->getJson('/api/cluster/info')
+            ->assertOk()
+            ->assertJsonPath(
+                'worker_protocol.server_capabilities.synchronous_update_validation.completion',
+                [
+                    'approve_endpoint' => '/worker/update-validation-tasks/{taskId}/approve',
+                    'reject_endpoint' => '/worker/update-validation-tasks/{taskId}/reject',
+                    'fence_fields' => ['lease_owner', 'update_validation_attempt'],
+                    'typed_failure_reasons' => [
+                        'update_validation_task_not_found',
+                        'duplicate_update_validation_completion',
+                        'update_validation_task_not_leased',
+                        'update_validation_lease_owner_mismatch',
+                        'stale_update_validation_completion',
+                        'update_validation_lease_expired',
+                        'update_validator_worker_lost',
+                    ],
                 ],
             );
     }
