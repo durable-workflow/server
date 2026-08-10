@@ -8,7 +8,7 @@ use PHPUnit\Framework\TestCase;
 
 class KubernetesManifestContractTest extends TestCase
 {
-    private const SERVER_IMAGE = 'durableworkflow/server:2.0.0-rc.23';
+    private const SERVER_IMAGE = 'durableworkflow/server:2.0.0-rc.24';
 
     public function test_public_manifests_use_pinned_published_server_images(): void
     {

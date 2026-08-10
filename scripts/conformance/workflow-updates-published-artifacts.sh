@@ -429,6 +429,13 @@ function install_update_validation_worker_step(callable $workerStep): void
         app(WorkflowQueryTaskBroker::class),
         app(ServerWorkflowControlPlane::class),
     ));
+    // The focused probe reuses one HTTP kernel, so later scenarios must resolve
+    // controllers and control-plane services against the newly installed broker.
+    app()->forgetInstance(\Workflow\V2\Support\DefaultWorkflowControlPlane::class);
+    app()->forgetInstance(\Workflow\V2\Contracts\WorkflowControlPlane::class);
+    foreach (app('router')->getRoutes() as $route) {
+        $route->flushController();
+    }
 }
 
 function start_probe_workflow(
@@ -464,21 +471,157 @@ function poll_task(
     return $task;
 }
 
-function poll_update_validation_task(string $workerId, string $taskQueue): ?array
+function assert_probe_task_identity(
+    array $task,
+    string $taskKind,
+    string $workerId,
+    string $taskQueue,
+    string $workflowId,
+    string $runId,
+    string $taskIdField,
+    ?string $expectedTaskId,
+    string $attemptField,
+    int $expectedAttempt,
+): void
 {
-    $response = request_json('POST', '/worker/workflow-tasks/poll', [
+    $taskId = $task[$taskIdField] ?? null;
+    $actual = [
+        'task_kind' => $task['task_kind'] ?? null,
+        'worker_id' => $task['lease_owner'] ?? null,
+        'task_queue' => $task['task_queue'] ?? null,
+        'workflow_id' => $task['workflow_id'] ?? null,
+        'run_id' => $task['run_id'] ?? null,
+        'task_id' => $taskId,
+        'delivery_attempt' => $task[$attemptField] ?? null,
+    ];
+    $expected = [
+        'task_kind' => $taskKind,
         'worker_id' => $workerId,
         'task_queue' => $taskQueue,
-        'task_kinds' => ['workflow', 'update_validation'],
-        'timeout_seconds' => 0,
-    ]);
-    $task = $response['body']['task'] ?? null;
+        'workflow_id' => $workflowId,
+        'run_id' => $runId,
+        'task_id' => $expectedTaskId,
+        'delivery_attempt' => $expectedAttempt,
+    ];
+    $identityMatches = $actual['task_kind'] === $expected['task_kind']
+        && $actual['worker_id'] === $expected['worker_id']
+        && $actual['task_queue'] === $expected['task_queue']
+        && $actual['workflow_id'] === $expected['workflow_id']
+        && $actual['run_id'] === $expected['run_id']
+        && is_string($actual['task_id'])
+        && $actual['task_id'] !== ''
+        && ($expectedTaskId === null || $actual['task_id'] === $expectedTaskId)
+        && $actual['delivery_attempt'] === $expected['delivery_attempt'];
 
-    if ($task !== null && (! is_array($task) || ($task['task_kind'] ?? null) !== 'update_validation')) {
-        throw new RuntimeException('Multiplexed validator poll returned an invalid task discriminator.');
+    if (! $identityMatches) {
+        throw new RuntimeException(sprintf(
+            'Multiplexed validator probe task identity mismatch: expected %s; received %s.',
+            json_encode($expected, JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES),
+            json_encode($actual, JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES),
+        ));
+    }
+}
+
+function poll_update_validation_task(
+    string $workerId,
+    string $taskQueue,
+    string $workflowId,
+    string $runId,
+    string $requestId,
+    int $expectedValidationAttempt,
+    array &$drainedWorkflowTasks,
+): ?array
+{
+    $validationTaskId = WorkflowUpdateValidationTask::query()
+        ->where('workflow_run_id', $runId)
+        ->where('request_id', $requestId)
+        ->value('id');
+
+    if (! is_string($validationTaskId) || $validationTaskId === '') {
+        throw new RuntimeException('Expected update-validation task identity was not persisted before polling.');
     }
 
-    return is_array($task) ? $task : null;
+    for ($pollAttempt = 1; $pollAttempt <= 3; $pollAttempt++) {
+        $response = request_json('POST', '/worker/workflow-tasks/poll', [
+            'worker_id' => $workerId,
+            'task_queue' => $taskQueue,
+            'task_kinds' => ['workflow', 'update_validation'],
+            'timeout_seconds' => 0,
+        ]);
+        $task = $response['body']['task'] ?? null;
+
+        if ($task === null) {
+            return null;
+        }
+
+        if (! is_array($task)) {
+            throw new RuntimeException('Multiplexed validator poll returned a non-object task.');
+        }
+
+        $taskKind = $task['task_kind'] ?? null;
+        if ($taskKind === 'update_validation') {
+            assert_probe_task_identity(
+                $task,
+                'update_validation',
+                $workerId,
+                $taskQueue,
+                $workflowId,
+                $runId,
+                'update_validation_task_id',
+                $validationTaskId,
+                'update_validation_attempt',
+                $expectedValidationAttempt,
+            );
+
+            return $task;
+        }
+
+        if ($taskKind !== 'workflow') {
+            throw new RuntimeException('Multiplexed validator poll returned an invalid task discriminator.');
+        }
+
+        assert_probe_task_identity(
+            $task,
+            'workflow',
+            $workerId,
+            $taskQueue,
+            $workflowId,
+            $runId,
+            'task_id',
+            null,
+            'workflow_task_attempt',
+            1,
+        );
+        // Park the run while its synchronous update is still awaiting validation;
+        // terminal completion here would change the validator behavior under test.
+        $completion = complete_task($task, [
+            [
+                'type' => 'open_signal_wait',
+                'signal_name' => 'advance',
+                'timeout_seconds' => 300,
+            ],
+        ]);
+        $drainedWorkflowTasks[] = [
+            'task' => [
+                'task_kind' => $task['task_kind'],
+                'task_id' => $task['task_id'],
+                'workflow_id' => $task['workflow_id'],
+                'run_id' => $task['run_id'],
+                'task_queue' => $task['task_queue'],
+                'lease_owner' => $task['lease_owner'],
+                'workflow_task_attempt' => $task['workflow_task_attempt'],
+            ],
+            'completion' => [
+                'task_id' => $completion['task_id'] ?? null,
+                'run_id' => $completion['run_id'] ?? null,
+                'workflow_task_attempt' => $completion['workflow_task_attempt'] ?? null,
+                'outcome' => $completion['outcome'] ?? null,
+                'reason' => $completion['reason'] ?? null,
+            ],
+        ];
+    }
+
+    throw new RuntimeException('Multiplexed validator poll did not reach validation after draining workflow work.');
 }
 
 function complete_task(array $task, array $commands, array $headers = []): array
@@ -1304,30 +1447,43 @@ function run_principal_attribution_probe(string $suffix): array
 function run_update_validator_probe(string $suffix): array
 {
     $results = [];
-    $validatorQueue = WORKFLOW_UPDATES_QUEUE.'-validators-'.$suffix;
-    $validatorWorker = 'workflow-updates-validator-'.$suffix;
+    $approvalQueue = WORKFLOW_UPDATES_QUEUE.'-validator-approval-'.$suffix;
+    $approvalWorker = 'workflow-updates-validator-approval-'.$suffix;
     register_probe_worker(
-        $validatorWorker,
-        $validatorQueue,
+        $approvalWorker,
+        $approvalQueue,
         updateValidators: ['approve'],
         supportsUpdateValidation: true,
     );
 
     $approvalWorkflowId = 'wf-update-validator-approval-'.$suffix;
-    $approvalStart = start_probe_workflow($approvalWorkflowId, $validatorQueue);
+    $approvalStart = start_probe_workflow($approvalWorkflowId, $approvalQueue);
     $approvalRunId = (string) ($approvalStart['run_id'] ?? '');
+    $approvalRequestId = 'validator-approved-'.$suffix;
     $approvalTask = null;
     $approvalResponse = null;
     $acceptedAbsentBeforeApproval = false;
+    $approvalDrainedWorkflowTasks = [];
     install_update_validation_worker_step(function () use (
-        $validatorWorker,
-        $validatorQueue,
+        $approvalWorker,
+        $approvalQueue,
+        $approvalWorkflowId,
         $approvalRunId,
+        $approvalRequestId,
         &$approvalTask,
         &$approvalResponse,
         &$acceptedAbsentBeforeApproval,
+        &$approvalDrainedWorkflowTasks,
     ): void {
-        $approvalTask = poll_update_validation_task($validatorWorker, $validatorQueue);
+        $approvalTask = poll_update_validation_task(
+            $approvalWorker,
+            $approvalQueue,
+            $approvalWorkflowId,
+            $approvalRunId,
+            $approvalRequestId,
+            1,
+            $approvalDrainedWorkflowTasks,
+        );
         if (! is_array($approvalTask)) {
             throw new RuntimeException('Validator approval task was not leased.');
         }
@@ -1347,7 +1503,7 @@ function run_update_validator_probe(string $suffix): array
     });
     $accepted = request_json('POST', '/workflows/'.$approvalWorkflowId.'/update/approve', [
         'input' => [true, 'validator-approved'],
-        'request_id' => 'validator-approved-'.$suffix,
+        'request_id' => $approvalRequestId,
         'wait_for' => 'accepted',
     ], [409, 422, 504]);
     $approvalHistory = history_events($approvalWorkflowId, $approvalRunId);
@@ -1356,6 +1512,7 @@ function run_update_validator_probe(string $suffix): array
         'validation_task' => $approvalTask,
         'accepted_state_absent_before_approval' => $acceptedAbsentBeforeApproval,
         'handler_not_invoked_during_validation' => $acceptedAbsentBeforeApproval,
+        'multiplexed_workflow_tasks_drained' => $approvalDrainedWorkflowTasks,
         'approval_response' => $approvalResponse,
         'accepted_response' => $accepted,
         'history_update_accepted_event' => event_by_type($approvalHistory, WORKFLOW_UPDATE_ACCEPTED_EVENT),
@@ -1404,18 +1561,40 @@ function run_update_validator_probe(string $suffix): array
             $duplicateObserved,
         );
 
+    $rejectionQueue = WORKFLOW_UPDATES_QUEUE.'-validator-rejection-'.$suffix;
+    $rejectionWorker = 'workflow-updates-validator-rejection-'.$suffix;
+    register_probe_worker(
+        $rejectionWorker,
+        $rejectionQueue,
+        updateValidators: ['approve'],
+        supportsUpdateValidation: true,
+    );
     $rejectionWorkflowId = 'wf-update-validator-rejection-'.$suffix;
-    $rejectionStart = start_probe_workflow($rejectionWorkflowId, $validatorQueue);
+    $rejectionStart = start_probe_workflow($rejectionWorkflowId, $rejectionQueue);
     $rejectionRunId = (string) ($rejectionStart['run_id'] ?? '');
+    $rejectionRequestId = 'validator-rejected-'.$suffix;
     $rejectionTask = null;
     $validatorRejection = null;
+    $rejectionDrainedWorkflowTasks = [];
     install_update_validation_worker_step(function () use (
-        $validatorWorker,
-        $validatorQueue,
+        $rejectionWorker,
+        $rejectionQueue,
+        $rejectionWorkflowId,
+        $rejectionRunId,
+        $rejectionRequestId,
         &$rejectionTask,
         &$validatorRejection,
+        &$rejectionDrainedWorkflowTasks,
     ): void {
-        $rejectionTask = poll_update_validation_task($validatorWorker, $validatorQueue);
+        $rejectionTask = poll_update_validation_task(
+            $rejectionWorker,
+            $rejectionQueue,
+            $rejectionWorkflowId,
+            $rejectionRunId,
+            $rejectionRequestId,
+            1,
+            $rejectionDrainedWorkflowTasks,
+        );
         if (! is_array($rejectionTask)) {
             throw new RuntimeException('Validator rejection task was not leased.');
         }
@@ -1436,7 +1615,7 @@ function run_update_validator_probe(string $suffix): array
     });
     $rejected = request_json('POST', '/workflows/'.$rejectionWorkflowId.'/update/approve', [
         'input' => [false, 'validator-rejected'],
-        'request_id' => 'validator-rejected-'.$suffix,
+        'request_id' => $rejectionRequestId,
     ], [422]);
     $rejectionHistory = history_events($rejectionWorkflowId, $rejectionRunId);
     $rejectedAcceptedCount = count(array_filter(
@@ -1446,6 +1625,7 @@ function run_update_validator_probe(string $suffix): array
     $rejectionObserved = [
         'validation_task' => $rejectionTask,
         'validator_rejection' => $validatorRejection,
+        'multiplexed_workflow_tasks_drained' => $rejectionDrainedWorkflowTasks,
         'typed_update_response' => $rejected,
         'accepted_history_event_count' => $rejectedAcceptedCount,
         'rejected_history_event' => event_by_type($rejectionHistory, HistoryEventType::UpdateRejected->value),
@@ -1471,18 +1651,35 @@ function run_update_validator_probe(string $suffix): array
     register_probe_worker($newWorker, $replacementQueue, updateValidators: ['approve'], supportsUpdateValidation: true);
     $replacementWorkflowId = 'wf-update-validator-replacement-'.$suffix;
     $replacementStart = start_probe_workflow($replacementWorkflowId, $replacementQueue);
+    $replacementRunId = (string) ($replacementStart['run_id'] ?? '');
+    $replacementRequestId = 'validator-replacement-'.$suffix;
     $firstDelivery = null;
     $replacementDelivery = null;
     $staleCompletion = null;
+    $replacementDrainedWorkflowTasks = [];
+    $replacementFairnessState = [];
     install_update_validation_worker_step(function () use (
         $oldWorker,
         $newWorker,
         $replacementQueue,
+        $replacementWorkflowId,
+        $replacementRunId,
+        $replacementRequestId,
         &$firstDelivery,
         &$replacementDelivery,
         &$staleCompletion,
+        &$replacementDrainedWorkflowTasks,
+        &$replacementFairnessState,
     ): void {
-        $firstDelivery = poll_update_validation_task($oldWorker, $replacementQueue);
+        $firstDelivery = poll_update_validation_task(
+            $oldWorker,
+            $replacementQueue,
+            $replacementWorkflowId,
+            $replacementRunId,
+            $replacementRequestId,
+            1,
+            $replacementDrainedWorkflowTasks,
+        );
         if (! is_array($firstDelivery)) {
             throw new RuntimeException('Original validator worker did not lease the task.');
         }
@@ -1494,7 +1691,31 @@ function run_update_validator_probe(string $suffix): array
             ->findOrFail((string) $firstDelivery['update_validation_task_id'])
             ->forceFill(['lease_expires_at' => now()->subSecond()])
             ->save();
-        $replacementDelivery = poll_update_validation_task($newWorker, $replacementQueue);
+        $replacementFairnessState = [
+            'next_task_kind' => \Illuminate\Support\Facades\DB::table('workflow_task_poll_cursors')
+                ->where('namespace', WORKFLOW_UPDATES_NAMESPACE)
+                ->where('task_queue', $replacementQueue)
+                ->value('next_task_kind'),
+            'workflow_ready' => WorkflowTask::query()
+                ->where('workflow_run_id', $replacementRunId)
+                ->where('task_type', 'workflow')
+                ->where('status', 'ready')
+                ->exists(),
+            'validation_reclaimable' => WorkflowUpdateValidationTask::query()
+                ->whereKey((string) $firstDelivery['update_validation_task_id'])
+                ->where('status', WorkflowUpdateValidationTask::STATUS_LEASED)
+                ->where('lease_expires_at', '<=', now())
+                ->exists(),
+        ];
+        $replacementDelivery = poll_update_validation_task(
+            $newWorker,
+            $replacementQueue,
+            $replacementWorkflowId,
+            $replacementRunId,
+            $replacementRequestId,
+            2,
+            $replacementDrainedWorkflowTasks,
+        );
         if (! is_array($replacementDelivery)) {
             throw new RuntimeException('Replacement validator worker did not reclaim the task.');
         }
@@ -1518,17 +1739,24 @@ function run_update_validator_probe(string $suffix): array
     });
     $replacementAccepted = request_json('POST', '/workflows/'.$replacementWorkflowId.'/update/approve', [
         'input' => [true, 'replacement-approved'],
-        'request_id' => 'validator-replacement-'.$suffix,
+        'request_id' => $replacementRequestId,
     ], [409, 422, 504]);
     $replacementObserved = [
         'first_delivery' => $firstDelivery,
         'replacement_delivery' => $replacementDelivery,
         'replacement_attempt' => $replacementDelivery['update_validation_attempt'] ?? null,
+        'fairness_state_before_replacement_poll' => $replacementFairnessState,
+        'multiplexed_workflow_tasks_drained' => $replacementDrainedWorkflowTasks,
         'accepted_response' => $replacementAccepted,
         'stale_completion_response' => $staleCompletion,
     ];
     $replacementPassed = $replacementAccepted['status_code'] === 202
         && ($replacementDelivery['update_validation_attempt'] ?? null) === 2
+        && ($replacementFairnessState['next_task_kind'] ?? null) === 'workflow'
+        && ($replacementFairnessState['workflow_ready'] ?? null) === true
+        && ($replacementFairnessState['validation_reclaimable'] ?? null) === true
+        && count($replacementDrainedWorkflowTasks) === 1
+        && ($replacementDrainedWorkflowTasks[0]['task']['task_kind'] ?? null) === 'workflow'
         && ($staleCompletion['body']['reason'] ?? null) === 'stale_update_validation_completion';
     $results['update_validator_worker_replacement'] = $replacementPassed
         ? pass_result('update_validator_worker_replacement', $replacementObserved)
