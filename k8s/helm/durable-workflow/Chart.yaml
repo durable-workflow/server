@@ -5,7 +5,7 @@ type: application
 # The chart's own semver version. Bumped on every chart release; treated as
 # independent of the server image version (appVersion). Breaking-change rules
 # for this version live in docs/helm-upgrading.md alongside the chart.
-version: 0.1.16
+version: 0.1.17
 # The default Durable Workflow server image tag this chart targets. Operators
 # pin .image.tag (or .image.digest) in values.yaml; appVersion is informational.
 appVersion: "2.0.0-rc.28"
@@ -35,6 +35,8 @@ annotations:
   # Free-form changelog used by Artifact Hub. Keep the most recent chart-version
   # entry first; do not rewrite past entries.
   artifacthub.io/changes: |
+    - kind: added
+      description: Advance the default Server image to 2.0.0-rc.28 with the versioned capacity benchmark suite.
     - kind: fixed
       description: Advance the default Server image to 2.0.0-rc.28 with deterministic source qualification for the Helm chart.
     - kind: fixed

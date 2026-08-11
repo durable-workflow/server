@@ -1,0 +1,37 @@
+{
+  "$schema": "../../schemas/collector.schema.json",
+  "schema": "durable-workflow.capacity-benchmark-collector/v1",
+  "suite_version": "1.0.0",
+  "profile_id": "local-docker-amd64-v1",
+  "entrypoint": ["python3", "local_docker_collector.py"],
+  "source_files": ["collector.json", "local_docker_collector.py"],
+  "protocol": {
+    "transport": "stdin_stdout_jsonl",
+    "operations": ["initialize", "sample"]
+  },
+  "component_containers": {
+    "server": "CAPACITY_CONTAINER_SERVER",
+    "server-worker": "CAPACITY_CONTAINER_SERVER_WORKER",
+    "scheduler": "CAPACITY_CONTAINER_SCHEDULER",
+    "mysql": "CAPACITY_CONTAINER_MYSQL",
+    "redis": "CAPACITY_CONTAINER_REDIS",
+    "sdk-php-worker": "CAPACITY_CONTAINER_SDK_PHP_WORKER",
+    "sdk-python-worker": "CAPACITY_CONTAINER_SDK_PYTHON_WORKER",
+    "sdk-rust-worker": "CAPACITY_CONTAINER_SDK_RUST_WORKER",
+    "load-generator": "CAPACITY_CONTAINER_LOAD_GENERATOR"
+  },
+  "data_sources": {
+    "component_resources": "docker_inspect_and_stats",
+    "durable_storage": "mysql_data_directory_and_global_status",
+    "database": "mysql_global_status",
+    "redis": "redis_info",
+    "queue_backlog": "server_task_queue_visibility"
+  },
+  "credential_environment": [
+    "CAPACITY_MYSQL_USER",
+    "CAPACITY_MYSQL_PASSWORD",
+    "CAPACITY_REDIS_PASSWORD",
+    "DURABLE_WORKFLOW_TOKEN",
+    "DURABLE_WORKFLOW_CLIENT_TOKEN"
+  ]
+}

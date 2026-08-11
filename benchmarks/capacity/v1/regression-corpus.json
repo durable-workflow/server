@@ -1,0 +1,13 @@
+{
+  "schema": "durable-workflow.capacity-benchmark-regression-corpus/v1",
+  "suite_version": "1.0.0",
+  "growth_rule": "append_the_smallest_fixture_that_reproduces_a_missing_field_workload_shape",
+  "fixture_requirements": [
+    "synthetic_data_only",
+    "one_missing_shape_per_fixture",
+    "deterministic_seed_required",
+    "expected_observation_or_result_required",
+    "credentials_and_private_topology_forbidden"
+  ],
+  "fixtures": []
+}

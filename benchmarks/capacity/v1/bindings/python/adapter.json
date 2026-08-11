@@ -1,0 +1,34 @@
+{
+  "$schema": "../../schemas/adapter.schema.json",
+  "schema": "durable-workflow.capacity-benchmark-adapter/v1",
+  "suite_version": "1.0.0",
+  "binding": "python",
+  "artifact_key": "sdk_python",
+  "artifact": {
+    "registry": "pypi.org",
+    "name": "durable-workflow",
+    "version": "2.0.0rc25",
+    "reference": "durable-workflow==2.0.0rc25"
+  },
+  "entrypoint": ["python3", "capacity_adapter.py"],
+  "source_files": ["capacity_adapter.py", "requirements.txt", "requirements.lock"],
+  "worker_concurrency": {
+    "model": "slots",
+    "environment": "DURABLE_WORKFLOW_WORKER_CONCURRENCY"
+  },
+  "client_protocol": {
+    "transport": "stdin_stdout_jsonl",
+    "operations": ["start", "signal", "query", "result"]
+  },
+  "workloads": {
+    "simple-start-complete": {"workflow_types": ["capacity.v1.simple"], "activity_types": [], "signal_types": [], "query_types": [], "roles": ["client", "workflow-worker"]},
+    "one-activity": {"workflow_types": ["capacity.v1.one_activity"], "activity_types": ["capacity.v1.echo"], "signal_types": [], "query_types": [], "roles": ["client", "workflow-worker", "activity-worker"]},
+    "multiple-activities": {"workflow_types": ["capacity.v1.multiple_activities"], "activity_types": ["capacity.v1.hash"], "signal_types": [], "query_types": [], "roles": ["client", "workflow-worker", "activity-worker"]},
+    "timer": {"workflow_types": ["capacity.v1.timer"], "activity_types": [], "signal_types": [], "query_types": [], "roles": ["client", "workflow-worker"]},
+    "signal": {"workflow_types": ["capacity.v1.signal"], "activity_types": [], "signal_types": ["capacity.v1.append"], "query_types": [], "roles": ["client", "signal-client", "workflow-worker"]},
+    "child-workflow-fanout": {"workflow_types": ["capacity.v1.child_parent", "capacity.v1.child_leaf"], "activity_types": [], "signal_types": [], "query_types": [], "roles": ["client", "parent-worker", "child-worker"]},
+    "replay-heavy-history": {"workflow_types": ["capacity.v1.replay_heavy"], "activity_types": [], "signal_types": [], "query_types": [], "roles": ["client", "workflow-worker", "replay-worker"]},
+    "query-inspection": {"workflow_types": ["capacity.v1.queryable_counter"], "activity_types": [], "signal_types": ["capacity.v1.finish"], "query_types": ["capacity.v1.inspect_counter"], "roles": ["client", "query-client", "query-worker"]},
+    "mixed": {"workflow_types": ["capacity.v1.mixed_selector"], "activity_types": ["capacity.v1.echo", "capacity.v1.hash"], "signal_types": ["capacity.v1.append", "capacity.v1.finish"], "query_types": ["capacity.v1.inspect_counter"], "roles": ["client", "workflow-worker", "activity-worker", "signal-client", "query-client"]}
+  }
+}

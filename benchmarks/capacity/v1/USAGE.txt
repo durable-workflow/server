@@ -1,0 +1,113 @@
+Durable Workflow Capacity Benchmark Suite 1.0.0
+
+This directory is immutable evidence input. A changed workload, artifact tuple,
+metric contract, or operating-point rule requires a new suite version instead
+of changing a result after it was recorded.
+
+Validate the suite, schemas, infrastructure profile, and regression corpus:
+
+  python3 scripts/benchmark/capacity_suite.py validate
+
+Each first-party SDK adapter runs every cell separately for PHP, Python, and
+Rust. After the declared warmup, an adapter emits one observation-schema JSON
+object per line for the complete measurement duration. Do not pool languages.
+The executable adapter descriptors and sources live under bindings/{binding}.
+Validate their artifact pins, source inventory, workload types, roles, and
+cell coverage together with the suite:
+
+  python3 scripts/benchmark/capacity_suite.py validate
+
+Install each adapter from its own immutable package manifest before a run:
+
+  (cd benchmarks/capacity/v1/bindings/php && composer install --no-dev)
+  (cd benchmarks/capacity/v1/bindings/python && python3 -m pip install -r requirements.lock)
+  (cd benchmarks/capacity/v1/bindings/rust && cargo build --release --locked)
+
+Every adapter entrypoint implements three modes. `describe` emits its adapter contract
+without credentials. `worker` registers every declared workflow, activity,
+signal, and query definition on DURABLE_WORKFLOW_TASK_QUEUE. `client` is a
+long-lived stdin/stdout JSONL process with start, signal, query, and result
+operations; every response includes ok and elapsed_ms. For example:
+
+  php bindings/php/capacity_adapter.php describe
+  python3 bindings/python/capacity_adapter.py describe
+  cargo run --release --locked --manifest-path bindings/rust/Cargo.toml -- describe
+
+Run worker and client processes from the binding directory so relative package
+manifests resolve. Supply runtime URL, namespace, task queue, and role-scoped
+credentials only through the environment. The checked-in controller expands
+and enforces the complete matrix. Inspect all 9 cells by 3 bindings without
+contacting a runtime:
+
+  python3 scripts/benchmark/capacity_matrix.py dry-run
+
+The controller launches the declared client processes and worker slots (or
+one-slot PHP worker processes), sends exact payload sizes and the seeded mixed
+sequence, drains and discards a separate warmup cohort, stops measurement
+admission at duration, and drains every admitted workflow within the declared
+timeout. Run one bounded selection during harness development:
+
+  DURABLE_WORKFLOW_RUNTIME_URL=http://127.0.0.1:8080 \
+  DURABLE_WORKFLOW_NAMESPACE=capacity \
+  python3 scripts/benchmark/capacity_matrix.py run \
+    --cell simple-start-complete --binding python \
+    --source-revision FULL_GIT_COMMIT \
+    --run-timestamp 2026-08-11T00:00:00Z \
+    --architecture x86_64
+
+Omit `--cell` and `--binding` to execute the full matrix. The local-Docker
+collector verifies every container's exact image, CPU limit, and memory limit
+before admission. It samples Docker CPU/memory, MySQL durable storage and
+connection/lock/write counters, Redis memory/operations, and Server task-queue
+backlog. Set every CAPACITY_CONTAINER_* variable named by
+collectors/local-docker/collector.json. Collector credentials stay in its
+declared environment variables and never enter an observation or result.
+
+Each cell/binding gets a separate observation stream and result. The controller
+derives schedule-to-start and replay samples from versioned history exports and
+query latency from adapter operations. It emits measurement observations and
+exactly one final drain observation. The reducer rejects omitted drain evidence,
+altered controls, contradictory phase ordering, or non-contiguous samples. It
+uses only measurement-phase completions, dispatches, errors, throttles, and
+latencies for operating-point metrics. The separate drain summary proves final
+open-work and task-queue convergence without contributing performance evidence.
+
+Client protocol output is operation evidence; the controller combines it with
+history timing and resource samples to emit observation JSONL.
+Reduce one cell and one binding into a machine-readable result:
+
+  python3 scripts/benchmark/capacity_suite.py evaluate observations.jsonl \
+    --source-revision FULL_GIT_COMMIT \
+    --run-timestamp 2026-08-11T00:00:00Z \
+    --architecture x86_64 \
+    --output result.json
+
+The reducer rejects incomplete identity, profile-resource drift, mixed cells,
+and mixed bindings. Missing workload-specific metrics, a measurement duration
+that differs from the declared window, or an unconverged drain makes the load
+step ineligible. Its maximum sustained operating point is the highest entire
+load step that meets every measurement-phase latency, error, throttle, resource,
+and backlog limit. A capacity result with no qualified operating point is marked
+publishable=false so it cannot be presented as a customer-facing capacity claim.
+
+Before comparing two results, require compatible identities:
+
+  python3 scripts/benchmark/capacity_suite.py compare left.json right.json
+
+Exit status 2 means the results differ in suite, source, artifacts,
+infrastructure, architecture, or SDK binding and cannot be silently compared.
+Run timestamps remain attached to both otherwise-comparable results.
+
+The deterministic reference command qualifies only the reducer and result
+shape. Its result has evidence_class=harness_reference and publishable=false;
+it is never capacity evidence. Correctness conformance remains a separate
+evidence class.
+
+Provider-backed execution requires separate no-spend authorization. Until
+then, use the checked-in local Docker profile. Never place customer data,
+credentials, provider account details, or private fleet topology in suite
+inputs, observations, results, or regression fixtures.
+
+When a field defect exposes a workload shape absent from this suite, append
+the smallest synthetic deterministic reproducer to the regression corpus.
+Do not rewrite an existing fixture or broaden it with unrelated scenarios.

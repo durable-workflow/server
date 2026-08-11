@@ -1,0 +1,767 @@
+#!/usr/bin/env python3
+
+import copy
+import importlib.util
+import json
+from pathlib import Path
+import shutil
+import subprocess
+import sys
+import tempfile
+import unittest
+from unittest import mock
+
+
+ROOT = Path(__file__).resolve().parents[3]
+MODULE_PATH = ROOT / "scripts/benchmark/capacity_suite.py"
+spec = importlib.util.spec_from_file_location("capacity_suite", MODULE_PATH)
+assert spec is not None and spec.loader is not None
+capacity_suite = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(capacity_suite)
+
+MATRIX_MODULE_PATH = ROOT / "scripts/benchmark/capacity_matrix.py"
+matrix_spec = importlib.util.spec_from_file_location(
+    "capacity_matrix", MATRIX_MODULE_PATH
+)
+assert matrix_spec is not None and matrix_spec.loader is not None
+sys.modules["capacity_suite"] = capacity_suite
+capacity_matrix = importlib.util.module_from_spec(matrix_spec)
+sys.modules["capacity_matrix"] = capacity_matrix
+matrix_spec.loader.exec_module(capacity_matrix)
+
+
+class CapacityBenchmarkContractTest(unittest.TestCase):
+    def setUp(self) -> None:
+        self.suite = capacity_suite.load_json(capacity_suite.DEFAULT_SUITE)
+        self.profile = capacity_suite.load_json(capacity_suite.DEFAULT_PROFILE)
+
+    def test_repository_suite_and_profile_are_complete(self) -> None:
+        capacity_suite.validate_suite(self.suite)
+        capacity_suite.validate_profile(self.profile)
+
+        self.assertEqual(
+            capacity_suite.REQUIRED_CELL_IDS,
+            {cell["id"] for cell in self.suite["cells"]},
+        )
+        self.assertEqual(
+            ["php", "python", "rust"],
+            self.suite["driver_contract"]["required_bindings"],
+        )
+        for cell in self.suite["cells"]:
+            self.assertEqual(self.suite["artifacts"], cell["artifacts"])
+            self.assertEqual(
+                capacity_suite.REQUIRED_BINDINGS,
+                {binding["language"] for binding in cell["bindings"]},
+            )
+
+    def test_dependency_free_adapter_descriptions_match_checked_in_contracts(
+        self,
+    ) -> None:
+        bindings = capacity_suite.SUITE_ROOT / "bindings"
+        commands = {
+            "php": ["php", str(bindings / "php/capacity_adapter.php"), "describe"],
+            "python": [
+                sys.executable,
+                str(bindings / "python/capacity_adapter.py"),
+                "describe",
+            ],
+        }
+        for binding, command in commands.items():
+            with self.subTest(binding=binding):
+                completed = subprocess.run(
+                    command,
+                    check=True,
+                    capture_output=True,
+                    text=True,
+                )
+                self.assertEqual(
+                    capacity_suite.load_json(bindings / binding / "adapter.json"),
+                    json.loads(completed.stdout),
+                )
+
+        collector = capacity_suite.SUITE_ROOT / "collectors/local-docker"
+        completed = subprocess.run(
+            [sys.executable, str(collector / "local_docker_collector.py"), "describe"],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        self.assertEqual(
+            capacity_suite.load_json(collector / "collector.json"),
+            json.loads(completed.stdout),
+        )
+
+    def test_matrix_controller_plans_every_cell_binding_with_exact_controls(
+        self,
+    ) -> None:
+        completed = subprocess.run(
+            [
+                sys.executable,
+                str(ROOT / "scripts/benchmark/capacity_matrix.py"),
+                "dry-run",
+            ],
+            check=True,
+            capture_output=True,
+            text=True,
+            cwd=ROOT,
+        )
+        plan = json.loads(completed.stdout)
+        self.assertEqual(27, len(plan["matrix"]))
+        self.assertEqual(
+            {
+                (cell["id"], binding)
+                for cell in self.suite["cells"]
+                for binding in ("php", "python", "rust")
+            },
+            {(entry["cell_id"], entry["binding"]) for entry in plan["matrix"]},
+        )
+        for entry in plan["matrix"]:
+            cell = next(
+                cell for cell in self.suite["cells"] if cell["id"] == entry["cell_id"]
+            )
+            self.assertEqual(cell["execution"], entry["execution"])
+
+    def test_adapter_descriptor_missing_a_cell_fails_suite_validation(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            copied_root = Path(directory) / "v1"
+            shutil.copytree(
+                capacity_suite.SUITE_ROOT,
+                copied_root,
+                ignore=shutil.ignore_patterns("vendor", ".deps", "target"),
+            )
+            descriptor_path = copied_root / "bindings/php/adapter.json"
+            descriptor = capacity_suite.load_json(descriptor_path)
+            del descriptor["workloads"]["mixed"]
+            descriptor_path.write_text(json.dumps(descriptor))
+
+            copied_suite = capacity_suite.load_json(copied_root / "suite.json")
+            with self.assertRaisesRegex(
+                capacity_suite.ContractError, "must implement every suite cell"
+            ):
+                capacity_suite.validate_suite(copied_suite, copied_root / "suite.json")
+
+    def test_bounded_reference_is_deterministic_and_rejects_transient_peak(
+        self,
+    ) -> None:
+        first = capacity_suite._reference_observations(self.suite, self.profile)
+        second = capacity_suite._reference_observations(self.suite, self.profile)
+        self.assertEqual(first, second)
+
+        result = capacity_suite.reduce_result(
+            self.suite,
+            capacity_suite.DEFAULT_SUITE,
+            self.profile,
+            capacity_suite.DEFAULT_PROFILE,
+            first,
+            source_revision="383b14e389ac7ec4873c74034d6087ce9db0bea0",
+            run_timestamp="2026-08-11T00:00:00Z",
+            architecture="x86_64",
+            evidence_class="harness_reference",
+            publishable=False,
+        )
+
+        self.assertFalse(result["publishable"])
+        self.assertEqual("deterministic-model", result["identity"]["binding"])
+        self.assertEqual(8, result["maximum_sustained_operating_point"]["load_step"])
+        steps = {step["load_step"]: step for step in result["load_steps"]}
+        self.assertGreater(
+            steps[12]["rates"]["workflow_starts_per_second"],
+            steps[8]["rates"]["workflow_starts_per_second"],
+        )
+        self.assertTrue(steps[12]["saturation"]["sustained"])
+        self.assertIn("schedule_to_start_p99_ms", steps[12]["saturation"]["violations"])
+        self.assertFalse(steps[8]["saturation"]["sustained"])
+        self.assertIn("components", steps[8]["infrastructure"])
+        self.assertIn("database", steps[8]["infrastructure"])
+        self.assertIn("redis", steps[8]["infrastructure"])
+        self.assertIn("storage", steps[8])
+
+    def test_exact_artifact_and_workload_shape_drift_fail_validation(self) -> None:
+        rolling = copy.deepcopy(self.suite)
+        rolling["artifacts"]["server"]["version"] = "latest"
+        rolling["artifacts"]["server"]["reference"] = (
+            "docker.io/durableworkflow/server:latest"
+        )
+        rolling["cells"] = [
+            {**cell, "artifacts": rolling["artifacts"]} for cell in rolling["cells"]
+        ]
+        with self.assertRaisesRegex(
+            capacity_suite.ContractError, "exact artifact version"
+        ):
+            capacity_suite.validate_suite(rolling)
+
+        incomplete = copy.deepcopy(self.suite)
+        del incomplete["cells"][0]["workload"]["payload"]["signal_bytes"]
+        with self.assertRaisesRegex(capacity_suite.ContractError, "signal_bytes"):
+            capacity_suite.validate_suite(incomplete)
+
+        fractional = copy.deepcopy(self.suite)
+        fractional["cells"][0]["execution"]["worker_concurrency"] = 1.5
+        with self.assertRaisesRegex(capacity_suite.ContractError, "must be an integer"):
+            capacity_suite.validate_suite(fractional)
+
+        unordered = copy.deepcopy(self.suite)
+        unordered["cells"][0]["execution"]["load_steps"] = [25, 100, 50]
+        with self.assertRaisesRegex(
+            capacity_suite.ContractError, "unique and strictly increasing"
+        ):
+            capacity_suite.validate_suite(unordered)
+
+    def test_incomplete_measurement_window_cannot_be_an_operating_point(self) -> None:
+        observations = capacity_suite._reference_observations(self.suite, self.profile)
+        one_sample = [row for row in observations if row["load_step"] == 4][:1]
+        step = capacity_suite.reduce_step(
+            one_sample,
+            self.suite["operating_point_rule"],
+            required_measurement_seconds=4,
+            cell_id="simple-start-complete",
+        )
+        self.assertFalse(step["operating_point_eligible"])
+        self.assertIn("complete_measurement_window", step["saturation"]["violations"])
+
+    def test_drain_performance_cannot_qualify_a_measurement_window(self) -> None:
+        measurement = [
+            copy.deepcopy(row)
+            for row in capacity_suite._reference_observations(self.suite, self.profile)
+            if row["load_step"] == 4
+        ]
+        starts = sum(row["counters"]["workflow_starts"] for row in measurement)
+        open_workflows = 0
+        for row in measurement:
+            open_workflows += row["counters"]["workflow_starts"]
+            row["counters"]["workflow_completions"] = 0
+            row["counters"]["activity_dispatches"] = 0
+            row["latencies_ms"]["schedule_to_start"] = [10.0]
+            row["concurrent_open_workflows"] = open_workflows
+
+        drain = copy.deepcopy(measurement[-1])
+        drain["sample_index"] = len(measurement)
+        drain["phase"] = "drain"
+        drain["interval_seconds"] = 1.0
+        drain["counters"] = {
+            "workflow_starts": 0,
+            "workflow_completions": starts,
+            "activity_dispatches": 1_000,
+            "errors": 7,
+            "throttles": 11,
+        }
+        drain["latencies_ms"] = {
+            "schedule_to_start": [100_000.0],
+            "replay": [100_000.0],
+            "query": [100_000.0],
+        }
+        drain["concurrent_open_workflows"] = 0
+        drain["infrastructure"]["queue_backlog"] = 0
+        drain["infrastructure"]["durable_storage"]["used_bytes"] += 1_000_000
+        drain["infrastructure"]["durable_storage"]["write_bytes"] += 1_000_000
+
+        step = capacity_suite.reduce_step(
+            [*measurement, drain],
+            self.suite["operating_point_rule"],
+            required_measurement_seconds=4,
+            cell_id="simple-start-complete",
+        )
+
+        self.assertEqual(0.0, step["rates"]["workflow_completions_per_second"])
+        self.assertEqual(0.0, step["rates"]["activity_dispatches_per_second"])
+        self.assertEqual(0.0, step["completion_ratio"])
+        self.assertEqual(0.0, step["error_rate"])
+        self.assertEqual(0.0, step["throttle_rate"])
+        self.assertEqual(10.0, step["latency_ms"]["schedule_to_start"]["p99"])
+        self.assertLess(step["storage"]["growth_bytes"], 1_000_000)
+        self.assertLess(step["storage"]["write_bytes"], 1_000_000)
+        self.assertFalse(step["operating_point_eligible"])
+        self.assertIn(
+            "missing_measurement_completions", step["saturation"]["violations"]
+        )
+
+        capacity_run = copy.deepcopy(self.suite)
+        cell = next(
+            cell
+            for cell in capacity_run["cells"]
+            if cell["id"] == "simple-start-complete"
+        )
+        cell["execution"]["load_steps"] = [4]
+        cell["execution"]["duration_seconds"] = 4
+        control = {
+            "suite_version": capacity_run["suite_version"],
+            "deterministic_seed": cell["execution"]["deterministic_seed"],
+            "concurrent_open_workflows": cell["execution"]["concurrent_open_workflows"],
+            "client_concurrency": cell["execution"]["client_concurrency"],
+            "worker_concurrency": cell["execution"]["worker_concurrency"],
+            "warmup_seconds": cell["execution"]["warmup_seconds"],
+            "duration_seconds": cell["execution"]["duration_seconds"],
+            "termination": cell["execution"]["termination"],
+        }
+        capacity_observations = copy.deepcopy([*measurement, drain])
+        for row in capacity_observations:
+            row["binding"] = "php"
+            row["control"] = copy.deepcopy(control)
+        result = capacity_suite.reduce_result(
+            capacity_run,
+            capacity_suite.DEFAULT_SUITE,
+            self.profile,
+            capacity_suite.DEFAULT_PROFILE,
+            capacity_observations,
+            source_revision="383b14e389ac7ec4873c74034d6087ce9db0bea0",
+            run_timestamp="2026-08-11T00:00:00Z",
+            architecture="x86_64",
+        )
+
+        self.assertFalse(result["publishable"])
+        self.assertIsNone(result["maximum_sustained_operating_point"])
+        self.assertEqual(
+            starts, result["load_steps"][0]["drain"]["workflow_completions"]
+        )
+        self.assertTrue(result["load_steps"][0]["drain"]["converged"])
+
+    def test_controller_records_late_callbacks_only_as_drain_evidence(self) -> None:
+        metrics = capacity_matrix.MetricBuffer()
+        metrics.begin_measurement(10.0)
+        evidence = {
+            "activity_dispatches": 2,
+            "schedule_to_start": [5.0],
+            "replay": [7.0],
+        }
+
+        with mock.patch.object(capacity_matrix.time, "monotonic", return_value=9.0):
+            metrics.started()
+            metrics.completed(evidence, include_replay=True)
+            metrics.started()
+            metrics.query(11.0)
+        with mock.patch.object(capacity_matrix.time, "monotonic", return_value=10.0):
+            metrics.completed(evidence, include_replay=True)
+            metrics.started()
+            metrics.completed(evidence, include_replay=True)
+            metrics.failed({"status": 429, "error": "throttled"})
+            metrics.query(999.0)
+            metrics.started(recorded_at=9.5)
+            metrics.completed(evidence, include_replay=True, recorded_at=9.5)
+
+        measurement_counters, measurement_latencies, measurement_open = (
+            metrics.snapshot("measurement")
+        )
+        drain_counters, drain_latencies, drain_open = metrics.snapshot("drain")
+
+        self.assertEqual(3, measurement_counters["workflow_starts"])
+        self.assertEqual(2, measurement_counters["workflow_completions"])
+        self.assertEqual(4, measurement_counters["activity_dispatches"])
+        self.assertEqual([5.0, 5.0], measurement_latencies["schedule_to_start"])
+        self.assertEqual([7.0, 7.0], measurement_latencies["replay"])
+        self.assertEqual([11.0], measurement_latencies["query"])
+        self.assertEqual(1, measurement_open)
+
+        self.assertEqual(1, drain_counters["workflow_starts"])
+        self.assertEqual(2, drain_counters["workflow_completions"])
+        self.assertEqual(4, drain_counters["activity_dispatches"])
+        self.assertEqual(1, drain_counters["throttles"])
+        self.assertEqual([5.0, 5.0], drain_latencies["schedule_to_start"])
+        self.assertEqual([7.0, 7.0], drain_latencies["replay"])
+        self.assertEqual([999.0], drain_latencies["query"])
+        self.assertEqual(0, drain_open)
+        with self.assertRaisesRegex(
+            capacity_matrix.MatrixError, "measurement phase has already begun"
+        ):
+            metrics.begin_measurement(11.0)
+
+    def test_forged_measurement_duration_and_unconverged_drain_fail_closed(
+        self,
+    ) -> None:
+        measurement = [
+            copy.deepcopy(row)
+            for row in capacity_suite._reference_observations(self.suite, self.profile)
+            if row["load_step"] == 4
+        ]
+        measurement[-1]["interval_seconds"] += 1
+        measurement[-1]["counters"]["workflow_completions"] -= 1
+        measurement[-1]["concurrent_open_workflows"] = 1
+        drain = copy.deepcopy(measurement[-1])
+        drain["sample_index"] = len(measurement)
+        drain["phase"] = "drain"
+        drain["interval_seconds"] = 1.0
+        drain["counters"] = {key: 0 for key in drain["counters"]}
+        drain["latencies_ms"] = {key: [] for key in drain["latencies_ms"]}
+        drain["concurrent_open_workflows"] = 1
+        drain["infrastructure"]["queue_backlog"] = 1
+
+        step = capacity_suite.reduce_step(
+            [*measurement, drain],
+            self.suite["operating_point_rule"],
+            required_measurement_seconds=4,
+            cell_id="simple-start-complete",
+        )
+
+        self.assertFalse(step["operating_point_eligible"])
+        self.assertIn("complete_measurement_window", step["saturation"]["violations"])
+        self.assertIn("open_workflows_not_drained", step["saturation"]["violations"])
+        self.assertIn("queue_backlog_not_drained", step["saturation"]["violations"])
+
+        contradictory_measurement = copy.deepcopy(measurement)
+        contradictory_measurement[0]["concurrent_open_workflows"] += 1
+        with self.assertRaisesRegex(
+            capacity_suite.ContractError, "measurement-phase open-work evidence"
+        ):
+            capacity_suite.reduce_step(
+                contradictory_measurement,
+                self.suite["operating_point_rule"],
+                required_measurement_seconds=5,
+                cell_id="simple-start-complete",
+            )
+
+        forged_drain = copy.deepcopy(drain)
+        forged_drain["concurrent_open_workflows"] = 0
+        with self.assertRaisesRegex(
+            capacity_suite.ContractError, "drain open-work evidence"
+        ):
+            capacity_suite.reduce_step(
+                [*measurement, forged_drain],
+                self.suite["operating_point_rule"],
+                required_measurement_seconds=5,
+                cell_id="simple-start-complete",
+            )
+
+        late_drain = copy.deepcopy(drain)
+        late_drain["interval_seconds"] = (
+            late_drain["control"]["termination"]["drain_timeout_seconds"] + 1
+        )
+        with self.assertRaisesRegex(
+            capacity_suite.ContractError, "declared drain timeout"
+        ):
+            capacity_suite.reduce_step(
+                [*measurement, late_drain],
+                self.suite["operating_point_rule"],
+                required_measurement_seconds=5,
+                cell_id="simple-start-complete",
+            )
+
+    def test_fractional_observation_counters_and_gauges_fail_closed(self) -> None:
+        observation = copy.deepcopy(
+            capacity_suite._reference_observations(self.suite, self.profile)[0]
+        )
+        component = next(iter(observation["infrastructure"]["components"]))
+        adversarial_fields = (
+            ("load_step",),
+            ("sample_index",),
+            ("counters", "workflow_starts"),
+            ("counters", "workflow_completions"),
+            ("counters", "activity_dispatches"),
+            ("counters", "errors"),
+            ("counters", "throttles"),
+            ("concurrent_open_workflows",),
+            ("infrastructure", "components", component, "assigned_memory_bytes"),
+            ("infrastructure", "components", component, "consumed_memory_bytes"),
+            ("infrastructure", "durable_storage", "used_bytes"),
+            ("infrastructure", "durable_storage", "read_bytes"),
+            ("infrastructure", "durable_storage", "write_bytes"),
+            ("infrastructure", "durable_storage", "read_operations"),
+            ("infrastructure", "durable_storage", "write_operations"),
+            ("infrastructure", "database", "connections"),
+            ("infrastructure", "database", "locks"),
+            ("infrastructure", "database", "writes"),
+            ("infrastructure", "redis", "memory_bytes"),
+            ("infrastructure", "redis", "operations"),
+            ("infrastructure", "queue_backlog"),
+        )
+
+        for field_path in adversarial_fields:
+            with self.subTest(field=".".join(field_path)):
+                forged = copy.deepcopy(observation)
+                target = forged
+                for field in field_path[:-1]:
+                    target = target[field]
+                target[field_path[-1]] = 1.5
+                with self.assertRaisesRegex(
+                    capacity_suite.ContractError, "must be an integer"
+                ):
+                    capacity_suite.validate_observation(forged, "forged")
+
+        for field_path in (
+            ("concurrent_open_workflows",),
+            ("infrastructure", "queue_backlog"),
+        ):
+            with self.subTest(drain_field=".".join(field_path)):
+                forged_drain = copy.deepcopy(observation)
+                forged_drain["phase"] = "drain"
+                target = forged_drain
+                for field in field_path[:-1]:
+                    target = target[field]
+                target[field_path[-1]] = 0.9
+                with self.assertRaisesRegex(
+                    capacity_suite.ContractError, "must be an integer"
+                ):
+                    capacity_suite.validate_observation(forged_drain, "forged_drain")
+
+    def test_underflowed_fractional_drain_gauges_fail_during_raw_loading(self) -> None:
+        drain = copy.deepcopy(
+            capacity_suite._reference_observations(self.suite, self.profile)[0]
+        )
+        drain["phase"] = "drain"
+        drain["concurrent_open_workflows"] = 0
+        drain["infrastructure"]["queue_backlog"] = 0
+        encoded = json.dumps(drain, separators=(",", ":"))
+
+        for field in ("concurrent_open_workflows", "queue_backlog"):
+            with self.subTest(field=field), tempfile.TemporaryDirectory() as directory:
+                forged = encoded.replace(f'"{field}":0', f'"{field}":1e-400')
+                observation_path = Path(directory) / "observations.jsonl"
+                observation_path.write_text(forged + "\n")
+
+                with self.assertRaisesRegex(
+                    capacity_suite.ContractError, "must be an integer"
+                ):
+                    capacity_suite.load_observations(observation_path)
+
+    def test_publishable_mixed_result_fails_closed_without_replay_and_query_samples(
+        self,
+    ) -> None:
+        mixed_suite = copy.deepcopy(self.suite)
+        mixed_cell = next(
+            cell for cell in mixed_suite["cells"] if cell["id"] == "mixed"
+        )
+        mixed_cell["execution"]["load_steps"] = [4]
+        mixed_cell["execution"]["duration_seconds"] = 4
+        observations = [
+            copy.deepcopy(row)
+            for row in capacity_suite._reference_observations(self.suite, self.profile)
+            if row["load_step"] == 4
+        ]
+        for row in observations:
+            row["cell_id"] = "mixed"
+            row["binding"] = "php"
+            row["control"] = {
+                "suite_version": mixed_suite["suite_version"],
+                "deterministic_seed": mixed_cell["execution"]["deterministic_seed"],
+                "concurrent_open_workflows": mixed_cell["execution"][
+                    "concurrent_open_workflows"
+                ],
+                "client_concurrency": mixed_cell["execution"]["client_concurrency"],
+                "worker_concurrency": mixed_cell["execution"]["worker_concurrency"],
+                "warmup_seconds": mixed_cell["execution"]["warmup_seconds"],
+                "duration_seconds": mixed_cell["execution"]["duration_seconds"],
+                "termination": mixed_cell["execution"]["termination"],
+            }
+            row["counters"]["activity_dispatches"] = 1
+            row["latencies_ms"]["replay"] = []
+            row["latencies_ms"]["query"] = []
+        drain = copy.deepcopy(observations[-1])
+        drain["sample_index"] = len(observations)
+        drain["phase"] = "drain"
+        drain["interval_seconds"] = 0.001
+        drain["counters"] = {
+            "workflow_starts": 0,
+            "workflow_completions": 0,
+            "activity_dispatches": 0,
+            "errors": 0,
+            "throttles": 0,
+        }
+        drain["latencies_ms"] = {"schedule_to_start": [], "replay": [], "query": []}
+        drain["concurrent_open_workflows"] = 0
+        observations.append(drain)
+
+        result = capacity_suite.reduce_result(
+            mixed_suite,
+            capacity_suite.DEFAULT_SUITE,
+            self.profile,
+            capacity_suite.DEFAULT_PROFILE,
+            observations,
+            source_revision="383b14e389ac7ec4873c74034d6087ce9db0bea0",
+            run_timestamp="2026-08-11T00:00:00Z",
+            architecture="x86_64",
+        )
+
+        self.assertFalse(result["publishable"])
+        self.assertIsNone(result["maximum_sustained_operating_point"])
+        violations = result["load_steps"][0]["saturation"]["violations"]
+        self.assertIn("missing_replay_latency", violations)
+        self.assertIn("missing_query_latency", violations)
+        self.assertFalse(result["load_steps"][0]["operating_point_eligible"])
+
+    def test_publishable_observations_reject_forged_controls_and_missing_drain(
+        self,
+    ) -> None:
+        suite = copy.deepcopy(self.suite)
+        cell = next(
+            cell for cell in suite["cells"] if cell["id"] == "simple-start-complete"
+        )
+        cell["execution"]["load_steps"] = [4]
+        cell["execution"]["duration_seconds"] = 4
+        rows = [
+            copy.deepcopy(row)
+            for row in capacity_suite._reference_observations(self.suite, self.profile)
+            if row["load_step"] == 4
+        ]
+        control = {
+            "suite_version": suite["suite_version"],
+            "deterministic_seed": cell["execution"]["deterministic_seed"],
+            "concurrent_open_workflows": cell["execution"]["concurrent_open_workflows"],
+            "client_concurrency": cell["execution"]["client_concurrency"],
+            "worker_concurrency": cell["execution"]["worker_concurrency"],
+            "warmup_seconds": cell["execution"]["warmup_seconds"],
+            "duration_seconds": cell["execution"]["duration_seconds"],
+            "termination": cell["execution"]["termination"],
+        }
+        for row in rows:
+            row["binding"] = "python"
+            row["control"] = copy.deepcopy(control)
+            row["concurrent_open_workflows"] = 0
+        arguments = {
+            "source_revision": "383b14e389ac7ec4873c74034d6087ce9db0bea0",
+            "run_timestamp": "2026-08-11T00:00:00Z",
+            "architecture": "x86_64",
+        }
+        with self.assertRaisesRegex(capacity_suite.ContractError, "drain observation"):
+            capacity_suite.reduce_result(
+                suite,
+                capacity_suite.DEFAULT_SUITE,
+                self.profile,
+                capacity_suite.DEFAULT_PROFILE,
+                rows,
+                **arguments,
+            )
+
+        drain = copy.deepcopy(rows[-1])
+        drain["sample_index"] = len(rows)
+        drain["phase"] = "drain"
+        drain["interval_seconds"] = 0.001
+        drain["counters"] = {key: 0 for key in drain["counters"]}
+        drain["latencies_ms"] = {key: [] for key in drain["latencies_ms"]}
+        drain["infrastructure"]["queue_backlog"] = 0
+        rows.append(drain)
+        result = capacity_suite.reduce_result(
+            suite,
+            capacity_suite.DEFAULT_SUITE,
+            self.profile,
+            capacity_suite.DEFAULT_PROFILE,
+            rows,
+            **arguments,
+        )
+        self.assertTrue(result["publishable"])
+        self.assertEqual(4, result["maximum_sustained_operating_point"]["load_step"])
+
+        rows[0]["control"]["worker_concurrency"] += 1
+        with self.assertRaisesRegex(capacity_suite.ContractError, "declared execution"):
+            capacity_suite.reduce_result(
+                suite,
+                capacity_suite.DEFAULT_SUITE,
+                self.profile,
+                capacity_suite.DEFAULT_PROFILE,
+                rows,
+                **arguments,
+            )
+
+    def test_mixed_metrics_cannot_mask_each_other(self) -> None:
+        base = [
+            copy.deepcopy(row)
+            for row in capacity_suite._reference_observations(self.suite, self.profile)
+            if row["load_step"] == 4
+        ]
+        for row in base:
+            row["counters"]["activity_dispatches"] = 1
+
+        adversarial_cases = (
+            ("replay", "query", "missing_replay_latency"),
+            ("query", "replay", "missing_query_latency"),
+        )
+        for absent, present, violation in adversarial_cases:
+            with self.subTest(absent=absent):
+                observations = copy.deepcopy(base)
+                for row in observations:
+                    row["latencies_ms"][absent] = []
+                    row["latencies_ms"][present] = [10.0]
+                step = capacity_suite.reduce_step(
+                    observations,
+                    self.suite["operating_point_rule"],
+                    required_measurement_seconds=4,
+                    cell_id="mixed",
+                )
+                self.assertIn(violation, step["saturation"]["violations"])
+                self.assertFalse(step["operating_point_eligible"])
+
+    def test_incomplete_load_sweep_and_publishable_reference_fail_closed(self) -> None:
+        observations = capacity_suite._reference_observations(self.suite, self.profile)
+        incomplete = [row for row in observations if row["load_step"] != 12]
+        arguments = {
+            "source_revision": "383b14e389ac7ec4873c74034d6087ce9db0bea0",
+            "run_timestamp": "2026-08-11T00:00:00Z",
+            "architecture": "x86_64",
+            "evidence_class": "harness_reference",
+            "publishable": False,
+        }
+        with self.assertRaisesRegex(
+            capacity_suite.ContractError, "complete declared load-step sweep"
+        ):
+            capacity_suite.reduce_result(
+                self.suite,
+                capacity_suite.DEFAULT_SUITE,
+                self.profile,
+                capacity_suite.DEFAULT_PROFILE,
+                incomplete,
+                **arguments,
+            )
+
+        arguments["publishable"] = True
+        with self.assertRaisesRegex(
+            capacity_suite.ContractError, "cannot be publishable"
+        ):
+            capacity_suite.reduce_result(
+                self.suite,
+                capacity_suite.DEFAULT_SUITE,
+                self.profile,
+                capacity_suite.DEFAULT_PROFILE,
+                observations,
+                **arguments,
+            )
+
+    def test_unlike_result_identities_are_not_comparable(self) -> None:
+        observations = capacity_suite._reference_observations(self.suite, self.profile)
+        left = capacity_suite.reduce_result(
+            self.suite,
+            capacity_suite.DEFAULT_SUITE,
+            self.profile,
+            capacity_suite.DEFAULT_PROFILE,
+            observations,
+            source_revision="383b14e389ac7ec4873c74034d6087ce9db0bea0",
+            run_timestamp="2026-08-11T00:00:00Z",
+            architecture="x86_64",
+            evidence_class="harness_reference",
+            publishable=False,
+        )
+        right = copy.deepcopy(left)
+        right["identity"]["architecture"] = "aarch64"
+        comparison = capacity_suite.compare_results(left, right)
+        self.assertFalse(comparison["comparable"])
+        self.assertEqual(
+            {"left": "x86_64", "right": "aarch64"},
+            comparison["identity_differences"]["architecture"],
+        )
+
+    def test_observation_reader_rejects_duplicate_keys(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "observations.jsonl"
+            path.write_text('{"schema":"x","schema":"y"}\n')
+            with self.assertRaisesRegex(
+                capacity_suite.ContractError, "duplicate JSON key"
+            ):
+                capacity_suite.load_observations(path)
+
+    def test_reference_result_round_trips_as_machine_readable_json(self) -> None:
+        observations = capacity_suite._reference_observations(self.suite, self.profile)
+        result = capacity_suite.reduce_result(
+            self.suite,
+            capacity_suite.DEFAULT_SUITE,
+            self.profile,
+            capacity_suite.DEFAULT_PROFILE,
+            observations,
+            source_revision="383b14e389ac7ec4873c74034d6087ce9db0bea0",
+            run_timestamp="2026-08-11T00:00:00Z",
+            architecture="x86_64",
+            evidence_class="harness_reference",
+            publishable=False,
+        )
+        encoded = json.dumps(result, sort_keys=True)
+        self.assertEqual(result, json.loads(encoded))
+        self.assertEqual(capacity_suite.RESULT_SCHEMA, result["schema"])
+
+
+if __name__ == "__main__":
+    unittest.main()

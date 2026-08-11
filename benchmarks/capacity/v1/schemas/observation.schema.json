@@ -1,0 +1,100 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://durable-workflow.github.io/schemas/capacity-benchmark-observation/v1.json",
+  "title": "Durable Workflow capacity benchmark observation v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema", "cell_id", "binding", "load_step", "sample_index", "phase", "interval_seconds", "control", "counters", "latencies_ms", "concurrent_open_workflows", "infrastructure"],
+  "properties": {
+    "schema": {"const": "durable-workflow.capacity-benchmark-observation/v1"},
+    "cell_id": {"type": "string"},
+    "binding": {"enum": ["php", "python", "rust", "deterministic-model"]},
+    "load_step": {"type": "integer", "minimum": 1},
+    "sample_index": {"type": "integer", "minimum": 0},
+    "phase": {"enum": ["measurement", "drain"]},
+    "interval_seconds": {"type": "number", "exclusiveMinimum": 0},
+    "control": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["suite_version", "deterministic_seed", "concurrent_open_workflows", "client_concurrency", "worker_concurrency", "warmup_seconds", "duration_seconds", "termination"],
+      "properties": {
+        "suite_version": {"const": "1.0.0"},
+        "deterministic_seed": {"type": "integer", "minimum": 0},
+        "concurrent_open_workflows": {"type": "integer", "minimum": 1},
+        "client_concurrency": {"type": "integer", "minimum": 1},
+        "worker_concurrency": {"type": "integer", "minimum": 1},
+        "warmup_seconds": {"type": "integer", "minimum": 0},
+        "duration_seconds": {"type": "integer", "minimum": 1},
+        "termination": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["condition", "drain_timeout_seconds"],
+          "properties": {
+            "condition": {"const": "duration_elapsed_then_open_workflows_drained"},
+            "drain_timeout_seconds": {"type": "integer", "minimum": 1}
+          }
+        }
+      }
+    },
+    "counters": {"type": "object", "additionalProperties": false, "required": ["workflow_starts", "workflow_completions", "activity_dispatches", "errors", "throttles"], "properties": {"workflow_starts": {"type": "integer", "minimum": 0}, "workflow_completions": {"type": "integer", "minimum": 0}, "activity_dispatches": {"type": "integer", "minimum": 0}, "errors": {"type": "integer", "minimum": 0}, "throttles": {"type": "integer", "minimum": 0}}},
+    "latencies_ms": {"type": "object", "additionalProperties": false, "required": ["schedule_to_start", "replay", "query"], "properties": {"schedule_to_start": {"$ref": "#/$defs/latencies"}, "replay": {"$ref": "#/$defs/latencies"}, "query": {"$ref": "#/$defs/latencies"}}},
+    "concurrent_open_workflows": {"type": "integer", "minimum": 0},
+    "infrastructure": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["components", "durable_storage", "database", "redis", "queue_backlog"],
+      "properties": {
+        "components": {"type": "object", "minProperties": 1, "additionalProperties": {"$ref": "#/$defs/component"}},
+        "durable_storage": {"$ref": "#/$defs/durable_storage"},
+        "database": {"$ref": "#/$defs/database"},
+        "redis": {"$ref": "#/$defs/redis"},
+        "queue_backlog": {"type": "integer", "minimum": 0}
+      }
+    }
+  },
+  "$defs": {
+    "latencies": {"type": "array", "items": {"type": "number", "minimum": 0}},
+    "component": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["assigned_cpu_cores", "consumed_cpu_cores", "assigned_memory_bytes", "consumed_memory_bytes"],
+      "properties": {
+        "assigned_cpu_cores": {"type": "number", "minimum": 0},
+        "consumed_cpu_cores": {"type": "number", "minimum": 0},
+        "assigned_memory_bytes": {"type": "integer", "minimum": 0},
+        "consumed_memory_bytes": {"type": "integer", "minimum": 0}
+      }
+    },
+    "durable_storage": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["used_bytes", "read_bytes", "write_bytes", "read_operations", "write_operations"],
+      "properties": {
+        "used_bytes": {"type": "integer", "minimum": 0},
+        "read_bytes": {"type": "integer", "minimum": 0},
+        "write_bytes": {"type": "integer", "minimum": 0},
+        "read_operations": {"type": "integer", "minimum": 0},
+        "write_operations": {"type": "integer", "minimum": 0}
+      }
+    },
+    "database": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["connections", "locks", "writes"],
+      "properties": {
+        "connections": {"type": "integer", "minimum": 0},
+        "locks": {"type": "integer", "minimum": 0},
+        "writes": {"type": "integer", "minimum": 0}
+      }
+    },
+    "redis": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["memory_bytes", "operations"],
+      "properties": {
+        "memory_bytes": {"type": "integer", "minimum": 0},
+        "operations": {"type": "integer", "minimum": 0}
+      }
+    }
+  }
+}

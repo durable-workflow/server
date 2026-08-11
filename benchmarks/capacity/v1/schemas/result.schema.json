@@ -1,0 +1,63 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://durable-workflow.github.io/schemas/capacity-benchmark-result/v1.json",
+  "title": "Durable Workflow capacity benchmark result v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema", "identity", "evidence_class", "publishable", "cell_id", "measurement_contract", "operating_point_rule", "load_steps", "maximum_sustained_operating_point"],
+  "properties": {
+    "schema": {"const": "durable-workflow.capacity-benchmark-result/v1"},
+    "identity": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["suite_version", "suite_sha256", "source_revision", "artifacts", "infrastructure_profile", "infrastructure_profile_sha256", "architecture", "binding", "run_timestamp"],
+      "properties": {
+        "suite_version": {"type": "string"},
+        "suite_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "source_revision": {"type": "string"},
+        "artifacts": {"type": "object"},
+        "infrastructure_profile": {"type": "string"},
+        "infrastructure_profile_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "architecture": {"type": "string"},
+        "binding": {"enum": ["php", "python", "rust", "deterministic-model"]},
+        "run_timestamp": {"type": "string", "format": "date-time"}
+      }
+    },
+    "evidence_class": {"enum": ["capacity", "harness_reference"]},
+    "publishable": {"type": "boolean"},
+    "cell_id": {"type": "string"},
+    "measurement_contract": {"type": "object", "required": ["warmup_seconds", "duration_seconds", "termination"]},
+    "operating_point_rule": {"type": "object"},
+    "load_steps": {"type": "array", "minItems": 1, "items": {"$ref": "#/$defs/load_step"}},
+    "maximum_sustained_operating_point": {"oneOf": [{"$ref": "#/$defs/load_step"}, {"type": "null"}]}
+  },
+  "$defs": {
+    "load_step": {
+      "type": "object",
+      "required": ["load_step", "measurement_seconds", "rates", "latency_ms", "concurrent_open_workflows", "completion_ratio", "error_rate", "throttle_rate", "storage", "infrastructure", "drain", "saturation", "operating_point_eligible"],
+      "properties": {
+        "drain": {
+          "oneOf": [
+            {"type": "null"},
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["seconds", "workflow_completions", "activity_dispatches", "errors", "throttles", "latency_samples", "final_open_workflows", "final_queue_backlog", "converged"],
+              "properties": {
+                "seconds": {"type": "number", "minimum": 0},
+                "workflow_completions": {"type": "integer", "minimum": 0},
+                "activity_dispatches": {"type": "integer", "minimum": 0},
+                "errors": {"type": "integer", "minimum": 0},
+                "throttles": {"type": "integer", "minimum": 0},
+                "latency_samples": {"type": "integer", "minimum": 0},
+                "final_open_workflows": {"type": "integer", "minimum": 0},
+                "final_queue_backlog": {"type": "integer", "minimum": 0},
+                "converged": {"type": "boolean"}
+              }
+            }
+          ]
+        }
+      }
+    }
+  }
+}

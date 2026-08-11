@@ -1,0 +1,24 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://durable-workflow.github.io/schemas/capacity-benchmark-infrastructure/v1.json",
+  "title": "Durable Workflow capacity benchmark infrastructure v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema", "profile_id", "architecture", "runtime", "components", "durable_storage", "database", "redis"],
+  "properties": {
+    "$schema": {"type": "string"},
+    "schema": {"const": "durable-workflow.capacity-benchmark-infrastructure/v1"},
+    "profile_id": {"type": "string"},
+    "description": {"type": "string"},
+    "architecture": {"type": "object", "required": ["machine", "container"]},
+    "runtime": {"type": "object", "required": ["kernel_profile", "container_engine", "scheduling_policy"]},
+    "components": {"type": "object", "minProperties": 9, "additionalProperties": {"$ref": "#/$defs/component"}},
+    "durable_storage": {"type": "object", "required": ["driver", "medium", "mount_options", "capacity_bytes"]},
+    "database": {"$ref": "#/$defs/dependency"},
+    "redis": {"$ref": "#/$defs/dependency"}
+  },
+  "$defs": {
+    "component": {"type": "object", "additionalProperties": false, "required": ["cpu_cores", "memory_bytes", "image"], "properties": {"cpu_cores": {"type": "number", "exclusiveMinimum": 0}, "memory_bytes": {"type": "integer", "minimum": 1}, "image": {"type": "string"}}},
+    "dependency": {"type": "object", "additionalProperties": false, "required": ["engine", "version", "configuration"], "properties": {"engine": {"type": "string"}, "version": {"type": "string"}, "configuration": {"type": "string"}}}
+  }
+}

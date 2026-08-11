@@ -1,0 +1,12 @@
+{
+  "name": "durable-workflow/capacity-v1-php-adapter",
+  "description": "Executable PHP binding for the Durable Workflow capacity benchmark suite",
+  "type": "project",
+  "license": "MIT",
+  "require": {
+    "php": ">=8.1",
+    "durable-workflow/sdk": "2.0.0-rc.14"
+  },
+  "minimum-stability": "RC",
+  "prefer-stable": true
+}

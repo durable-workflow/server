@@ -4,6 +4,9 @@
 /public/storage
 /storage/*.key
 /vendor
+/benchmarks/capacity/v1/bindings/php/vendor/
+/benchmarks/capacity/v1/bindings/python/.deps/
+/benchmarks/capacity/v1/bindings/rust/target/
 /build/perf
 __pycache__/
 *.py[cod]

@@ -1,0 +1,77 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://durable-workflow.github.io/schemas/capacity-benchmark-suite/v1.json",
+  "title": "Durable Workflow capacity benchmark suite v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema", "suite_version", "status", "schemas", "artifacts", "protocols", "required_metrics", "operating_point_rule", "driver_contract", "cadence", "publication_policy", "comparison_identity", "result_identity", "privacy", "cells", "reference_qualification"],
+  "properties": {
+    "$schema": {"type": "string"},
+    "schema": {"const": "durable-workflow.capacity-benchmark-suite/v1"},
+    "suite_version": {"const": "1.0.0"},
+    "status": {"const": "engineering_evidence_not_release_gate"},
+    "description": {"type": "string"},
+    "schemas": {"type": "object"},
+    "artifacts": {"$ref": "#/$defs/artifacts"},
+    "protocols": {"type": "object", "required": ["control_plane", "worker"]},
+    "required_metrics": {"type": "array", "uniqueItems": true, "minItems": 11, "items": {"type": "string"}},
+    "operating_point_rule": {"type": "object"},
+    "driver_contract": {"type": "object", "required": ["protocol", "required_bindings", "matrix", "controller", "adapters", "collector", "artifact_installation", "warmup", "measurement", "termination", "server_capacity_comparison"]},
+    "cadence": {"type": "object"},
+    "publication_policy": {"type": "object", "required": ["customer_claim_current_when", "identity_mismatch", "carry_forward", "capacity_result_proves_correctness", "correctness_result_proves_capacity"]},
+    "comparison_identity": {"type": "array", "uniqueItems": true, "items": {"type": "string"}},
+    "result_identity": {"type": "array", "uniqueItems": true, "items": {"type": "string"}},
+    "privacy": {"type": "object"},
+    "cells": {"type": "array", "minItems": 9, "maxItems": 9, "items": {"$ref": "#/$defs/cell"}},
+    "reference_qualification": {"type": "object", "required": ["cell_id", "driver", "evidence_class", "publishable", "deterministic_seed", "load_steps", "samples_per_step", "sample_interval_seconds", "expected_maximum_sustained_load_step"]}
+  },
+  "$defs": {
+    "artifact": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["registry", "name", "version", "reference"],
+      "properties": {"registry": {"type": "string"}, "name": {"type": "string"}, "version": {"type": "string"}, "reference": {"type": "string"}}
+    },
+    "artifacts": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["server", "workflow_php", "sdk_php", "sdk_python", "sdk_rust"],
+      "properties": {"server": {"$ref": "#/$defs/artifact"}, "workflow_php": {"$ref": "#/$defs/artifact"}, "sdk_php": {"$ref": "#/$defs/artifact"}, "sdk_python": {"$ref": "#/$defs/artifact"}, "sdk_rust": {"$ref": "#/$defs/artifact"}}
+    },
+    "cell": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "description", "artifacts", "workload", "bindings", "execution"],
+      "properties": {
+        "id": {"type": "string"},
+        "description": {"type": "string"},
+        "artifacts": {"$ref": "#/$defs/artifacts"},
+        "workload": {"type": "object", "required": ["workflow", "activities", "signals", "queries", "payload", "history"]},
+        "bindings": {"type": "array", "minItems": 3, "items": {"type": "object", "required": ["language", "roles"]}},
+        "execution": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["concurrent_open_workflows", "client_concurrency", "worker_concurrency", "duration_seconds", "warmup_seconds", "deterministic_seed", "load_steps", "termination"],
+          "properties": {
+            "concurrent_open_workflows": {"type": "integer", "minimum": 1},
+            "client_concurrency": {"type": "integer", "minimum": 1},
+            "worker_concurrency": {"type": "integer", "minimum": 1},
+            "duration_seconds": {"type": "integer", "minimum": 1},
+            "warmup_seconds": {"type": "integer", "minimum": 0},
+            "deterministic_seed": {"type": "integer", "minimum": 0},
+            "load_steps": {"type": "array", "minItems": 1, "uniqueItems": true, "items": {"type": "integer", "minimum": 1}},
+            "termination": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["condition", "drain_timeout_seconds"],
+              "properties": {
+                "condition": {"const": "duration_elapsed_then_open_workflows_drained"},
+                "drain_timeout_seconds": {"type": "integer", "minimum": 1}
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}

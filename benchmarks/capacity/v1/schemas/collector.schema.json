@@ -1,0 +1,53 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://durable-workflow.github.io/schemas/capacity-benchmark-collector/v1.json",
+  "title": "Durable Workflow capacity benchmark collector v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "suite_version",
+    "profile_id",
+    "entrypoint",
+    "source_files",
+    "protocol",
+    "component_containers",
+    "data_sources",
+    "credential_environment"
+  ],
+  "properties": {
+    "$schema": {"type": "string"},
+    "schema": {"const": "durable-workflow.capacity-benchmark-collector/v1"},
+    "suite_version": {"const": "1.0.0"},
+    "profile_id": {"type": "string", "minLength": 1},
+    "entrypoint": {
+      "type": "array",
+      "minItems": 1,
+      "items": {"type": "string", "minLength": 1}
+    },
+    "source_files": {
+      "type": "array",
+      "minItems": 1,
+      "items": {"type": "string", "minLength": 1}
+    },
+    "protocol": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["transport", "operations"],
+      "properties": {
+        "transport": {"const": "stdin_stdout_jsonl"},
+        "operations": {
+          "type": "array",
+          "minItems": 2,
+          "items": {"enum": ["initialize", "sample"]}
+        }
+      }
+    },
+    "component_containers": {"type": "object", "minProperties": 1},
+    "data_sources": {"type": "object", "minProperties": 5},
+    "credential_environment": {
+      "type": "array",
+      "items": {"type": "string", "minLength": 1}
+    }
+  }
+}

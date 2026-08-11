@@ -1,0 +1,42 @@
+{
+  "$schema": "../schemas/infrastructure.schema.json",
+  "schema": "durable-workflow.capacity-benchmark-infrastructure/v1",
+  "profile_id": "local-docker-amd64-v1",
+  "description": "Reproducible no-provider-spend qualification profile; not an offered Cloud tier.",
+  "architecture": {
+    "machine": "x86_64",
+    "container": "linux/amd64"
+  },
+  "runtime": {
+    "kernel_profile": "linux-6.8-cgroup-v2",
+    "container_engine": "docker-27.5.1",
+    "scheduling_policy": "docker-compose-hard-cpu-and-memory-limits-v1"
+  },
+  "components": {
+    "server": {"cpu_cores": 2, "memory_bytes": 2147483648, "image": "docker.io/durableworkflow/server:2.0.0-rc.25"},
+    "server-worker": {"cpu_cores": 2, "memory_bytes": 2147483648, "image": "docker.io/durableworkflow/server:2.0.0-rc.25"},
+    "scheduler": {"cpu_cores": 1, "memory_bytes": 1073741824, "image": "docker.io/durableworkflow/server:2.0.0-rc.25"},
+    "mysql": {"cpu_cores": 2, "memory_bytes": 2147483648, "image": "docker.io/library/mysql:8.0.39"},
+    "redis": {"cpu_cores": 1, "memory_bytes": 1073741824, "image": "docker.io/library/redis:7.2.5-alpine"},
+    "sdk-php-worker": {"cpu_cores": 1, "memory_bytes": 1073741824, "image": "docker.io/library/php:8.3.30-cli-bookworm"},
+    "sdk-python-worker": {"cpu_cores": 1, "memory_bytes": 1073741824, "image": "docker.io/library/python:3.12.4-slim-bookworm"},
+    "sdk-rust-worker": {"cpu_cores": 1, "memory_bytes": 1073741824, "image": "docker.io/library/rust:1.86.0-bookworm"},
+    "load-generator": {"cpu_cores": 2, "memory_bytes": 1073741824, "image": "docker.io/library/python:3.12.4-slim-bookworm"}
+  },
+  "durable_storage": {
+    "driver": "local-volume",
+    "medium": "nvme-ssd",
+    "mount_options": "ext4-defaults",
+    "capacity_bytes": 107374182400
+  },
+  "database": {
+    "engine": "mysql",
+    "version": "8.0.39",
+    "configuration": "suite-owned-mysql-8.0-v1"
+  },
+  "redis": {
+    "engine": "redis",
+    "version": "7.2.5",
+    "configuration": "suite-owned-redis-7.2-v1"
+  }
+}

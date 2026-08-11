@@ -1,0 +1,405 @@
+{
+  "$schema": "schemas/suite.schema.json",
+  "schema": "durable-workflow.capacity-benchmark-suite/v1",
+  "suite_version": "1.0.0",
+  "status": "engineering_evidence_not_release_gate",
+  "description": "Versioned, reproducible Durable Workflow capacity workloads. Throughput evidence does not substitute for correctness conformance.",
+  "schemas": {
+    "suite": "schemas/suite.schema.json",
+    "infrastructure": "schemas/infrastructure.schema.json",
+    "observation": "schemas/observation.schema.json",
+    "result": "schemas/result.schema.json",
+    "adapter": "schemas/adapter.schema.json",
+    "collector": "schemas/collector.schema.json"
+  },
+  "artifacts": {
+    "server": {
+      "registry": "docker.io",
+      "name": "durableworkflow/server",
+      "version": "2.0.0-rc.25",
+      "reference": "docker.io/durableworkflow/server:2.0.0-rc.25"
+    },
+    "workflow_php": {
+      "registry": "packagist.org",
+      "name": "durable-workflow/workflow",
+      "version": "2.0.0-rc.14",
+      "reference": "durable-workflow/workflow:2.0.0-rc.14"
+    },
+    "sdk_php": {
+      "registry": "packagist.org",
+      "name": "durable-workflow/sdk",
+      "version": "2.0.0-rc.14",
+      "reference": "durable-workflow/sdk:2.0.0-rc.14"
+    },
+    "sdk_python": {
+      "registry": "pypi.org",
+      "name": "durable-workflow",
+      "version": "2.0.0rc25",
+      "reference": "durable-workflow==2.0.0rc25"
+    },
+    "sdk_rust": {
+      "registry": "crates.io",
+      "name": "durable-workflow",
+      "version": "2.0.0-rc.11",
+      "reference": "durable-workflow@2.0.0-rc.11"
+    }
+  },
+  "protocols": {
+    "control_plane": "2",
+    "worker": "1.2"
+  },
+  "required_metrics": [
+    "workflow_starts_per_second",
+    "workflow_completions_per_second",
+    "activity_dispatches_per_second",
+    "schedule_to_start_latency_ms",
+    "replay_latency_ms",
+    "query_latency_ms",
+    "concurrent_open_workflows",
+    "error_rate",
+    "throttle_rate",
+    "storage_growth_bytes",
+    "saturation"
+  ],
+  "operating_point_rule": {
+    "selection": "highest_load_step_meeting_every_limit_for_the_complete_measurement_window",
+    "minimum_completion_ratio": 0.99,
+    "maximum_error_rate": 0.005,
+    "maximum_throttle_rate": 0.01,
+    "maximum_schedule_to_start_p99_ms": 1000,
+    "maximum_replay_p99_ms": 2000,
+    "maximum_query_p99_ms": 750,
+    "maximum_cpu_utilization": 0.85,
+    "maximum_memory_utilization": 0.85,
+    "maximum_queue_backlog": 1000,
+    "complete_measurement_window_required": true,
+    "transient_spikes_are_ineligible": true
+  },
+  "driver_contract": {
+    "protocol": "newline_delimited_capacity_observation_v1",
+    "required_bindings": ["php", "python", "rust"],
+    "matrix": "each_cell_by_each_first_party_binding",
+    "controller": {
+      "entrypoint": ["python3", "scripts/benchmark/capacity_matrix.py"],
+      "source_files": ["scripts/benchmark/capacity_matrix.py"],
+      "commands": ["dry-run", "run"]
+    },
+    "adapters": {
+      "schema": "schemas/adapter.schema.json",
+      "descriptor_pattern": "bindings/{binding}/adapter.json",
+      "modes": ["describe", "worker", "client"],
+      "client_protocol": "stdin_stdout_jsonl"
+    },
+    "collector": {
+      "schema": "schemas/collector.schema.json",
+      "descriptor": "collectors/local-docker/collector.json",
+      "protocol": "stdin_stdout_jsonl",
+      "operations": ["initialize", "sample"]
+    },
+    "artifact_installation": "install_every_exact_artifact_before_warmup_and_record_the_resolved_identity",
+    "warmup": "discard_observations_until_the_declared_warmup_has_elapsed",
+    "measurement": "emit_monotonic_interval_counters_and_infrastructure_samples_for_the_complete_declared_duration",
+    "termination": "stop_admission_then_drain_open_workflows_until_the_declared_condition",
+    "server_capacity_comparison": "never_pool_bindings_or_unlike_result_identities"
+  },
+  "cadence": {
+    "ordinary_source_change": [
+      "validate_suite_schemas_and_regression_corpus",
+      "run_bounded_non_publishable_reference_cell"
+    ],
+    "full_matrix_triggers": [
+      "suite_version",
+      "offered_resource_profile",
+      "server_or_workflow_protocol_tuple",
+      "database_major_or_minor",
+      "redis_major_or_minor",
+      "container_architecture",
+      "kernel_or_runtime_profile",
+      "scheduling_or_resource_limit_policy",
+      "pricing_release_candidate",
+      "monthly_drift_check"
+    ],
+    "failure_effect": "blocks_only_the_affected_capacity_claim_unless_a_separate_release_policy_says_otherwise",
+    "provider_execution": "requires_separate_no_spend_authorization"
+  },
+  "publication_policy": {
+    "customer_claim_current_when": "suite_artifacts_architecture_infrastructure_and_tier_resource_identity_all_exactly_match_the_offer",
+    "identity_mismatch": "retain_as_historical_and_mark_stale",
+    "carry_forward": "forbidden",
+    "capacity_result_proves_correctness": false,
+    "correctness_result_proves_capacity": false
+  },
+  "comparison_identity": [
+    "suite_version",
+    "suite_sha256",
+    "source_revision",
+    "artifacts",
+    "infrastructure_profile",
+    "infrastructure_profile_sha256",
+    "architecture",
+    "binding"
+  ],
+  "result_identity": [
+    "suite_version",
+    "suite_sha256",
+    "source_revision",
+    "artifacts",
+    "infrastructure_profile",
+    "infrastructure_profile_sha256",
+    "architecture",
+    "binding",
+    "run_timestamp"
+  ],
+  "privacy": {
+    "allowed": [
+      "synthetic_payloads",
+      "public_artifact_coordinates",
+      "coarse_reproducible_infrastructure_profiles"
+    ],
+    "forbidden": [
+      "customer_data",
+      "credentials",
+      "provider_account_details",
+      "private_fleet_topology"
+    ]
+  },
+  "cells": [
+    {
+      "id": "simple-start-complete",
+      "description": "Start a workflow, execute one workflow task, and return the input payload.",
+      "artifacts": {
+        "server": {"registry": "docker.io", "name": "durableworkflow/server", "version": "2.0.0-rc.25", "reference": "docker.io/durableworkflow/server:2.0.0-rc.25"},
+        "workflow_php": {"registry": "packagist.org", "name": "durable-workflow/workflow", "version": "2.0.0-rc.14", "reference": "durable-workflow/workflow:2.0.0-rc.14"},
+        "sdk_php": {"registry": "packagist.org", "name": "durable-workflow/sdk", "version": "2.0.0-rc.14", "reference": "durable-workflow/sdk:2.0.0-rc.14"},
+        "sdk_python": {"registry": "pypi.org", "name": "durable-workflow", "version": "2.0.0rc25", "reference": "durable-workflow==2.0.0rc25"},
+        "sdk_rust": {"registry": "crates.io", "name": "durable-workflow", "version": "2.0.0-rc.11", "reference": "durable-workflow@2.0.0-rc.11"}
+      },
+      "workload": {
+        "workflow": {"type": "capacity.v1.simple", "steps": ["accept_input", "return_input"]},
+        "activities": [],
+        "signals": [],
+        "queries": [],
+        "payload": {"codec": "json", "workflow_input_bytes": 1024, "workflow_result_bytes": 1024, "activity_input_bytes": 0, "activity_result_bytes": 0, "signal_bytes": 0},
+        "history": {"target_event_count": 3, "shape": ["workflow_started", "workflow_task_completed", "workflow_completed"]}
+      },
+      "bindings": [
+        {"language": "php", "roles": ["client", "workflow-worker"]},
+        {"language": "python", "roles": ["client", "workflow-worker"]},
+        {"language": "rust", "roles": ["client", "workflow-worker"]}
+      ],
+      "execution": {"concurrent_open_workflows": 100, "client_concurrency": 16, "worker_concurrency": 32, "duration_seconds": 300, "warmup_seconds": 60, "deterministic_seed": 104729, "load_steps": [25, 50, 100, 200, 400], "termination": {"condition": "duration_elapsed_then_open_workflows_drained", "drain_timeout_seconds": 120}}
+    },
+    {
+      "id": "one-activity",
+      "description": "Schedule one no-op activity and complete after its fixed-size result.",
+      "artifacts": {
+        "server": {"registry": "docker.io", "name": "durableworkflow/server", "version": "2.0.0-rc.25", "reference": "docker.io/durableworkflow/server:2.0.0-rc.25"},
+        "workflow_php": {"registry": "packagist.org", "name": "durable-workflow/workflow", "version": "2.0.0-rc.14", "reference": "durable-workflow/workflow:2.0.0-rc.14"},
+        "sdk_php": {"registry": "packagist.org", "name": "durable-workflow/sdk", "version": "2.0.0-rc.14", "reference": "durable-workflow/sdk:2.0.0-rc.14"},
+        "sdk_python": {"registry": "pypi.org", "name": "durable-workflow", "version": "2.0.0rc25", "reference": "durable-workflow==2.0.0rc25"},
+        "sdk_rust": {"registry": "crates.io", "name": "durable-workflow", "version": "2.0.0-rc.11", "reference": "durable-workflow@2.0.0-rc.11"}
+      },
+      "workload": {
+        "workflow": {"type": "capacity.v1.one_activity", "steps": ["schedule_activity_capacity_v1_echo", "await_activity", "return_activity_result"]},
+        "activities": [{"type": "capacity.v1.echo", "count": 1, "behavior": "return_input_without_external_io"}],
+        "signals": [],
+        "queries": [],
+        "payload": {"codec": "json", "workflow_input_bytes": 1024, "workflow_result_bytes": 1024, "activity_input_bytes": 1024, "activity_result_bytes": 1024, "signal_bytes": 0},
+        "history": {"target_event_count": 8, "shape": ["workflow_started", "workflow_task_completed", "activity_scheduled", "activity_started", "activity_completed", "workflow_task_completed", "workflow_completed"]}
+      },
+      "bindings": [
+        {"language": "php", "roles": ["client", "workflow-worker", "activity-worker"]},
+        {"language": "python", "roles": ["client", "workflow-worker", "activity-worker"]},
+        {"language": "rust", "roles": ["client", "workflow-worker", "activity-worker"]}
+      ],
+      "execution": {"concurrent_open_workflows": 100, "client_concurrency": 16, "worker_concurrency": 32, "duration_seconds": 300, "warmup_seconds": 60, "deterministic_seed": 104759, "load_steps": [25, 50, 100, 200, 400], "termination": {"condition": "duration_elapsed_then_open_workflows_drained", "drain_timeout_seconds": 120}}
+    },
+    {
+      "id": "multiple-activities",
+      "description": "Run five deterministic activities sequentially with fixed payloads.",
+      "artifacts": {
+        "server": {"registry": "docker.io", "name": "durableworkflow/server", "version": "2.0.0-rc.25", "reference": "docker.io/durableworkflow/server:2.0.0-rc.25"},
+        "workflow_php": {"registry": "packagist.org", "name": "durable-workflow/workflow", "version": "2.0.0-rc.14", "reference": "durable-workflow/workflow:2.0.0-rc.14"},
+        "sdk_php": {"registry": "packagist.org", "name": "durable-workflow/sdk", "version": "2.0.0-rc.14", "reference": "durable-workflow/sdk:2.0.0-rc.14"},
+        "sdk_python": {"registry": "pypi.org", "name": "durable-workflow", "version": "2.0.0rc25", "reference": "durable-workflow==2.0.0rc25"},
+        "sdk_rust": {"registry": "crates.io", "name": "durable-workflow", "version": "2.0.0-rc.11", "reference": "durable-workflow@2.0.0-rc.11"}
+      },
+      "workload": {
+        "workflow": {"type": "capacity.v1.multiple_activities", "steps": ["repeat_five_times_schedule_capacity_v1_hash_and_await", "return_final_digest"]},
+        "activities": [{"type": "capacity.v1.hash", "count": 5, "behavior": "sha256_input_once_and_return_hex_digest"}],
+        "signals": [],
+        "queries": [],
+        "payload": {"codec": "json", "workflow_input_bytes": 4096, "workflow_result_bytes": 64, "activity_input_bytes": 4096, "activity_result_bytes": 64, "signal_bytes": 0},
+        "history": {"target_event_count": 28, "shape": ["workflow_started", "five_sequential_activity_triplets", "six_workflow_task_completions", "workflow_completed"]}
+      },
+      "bindings": [
+        {"language": "php", "roles": ["client", "workflow-worker", "activity-worker"]},
+        {"language": "python", "roles": ["client", "workflow-worker", "activity-worker"]},
+        {"language": "rust", "roles": ["client", "workflow-worker", "activity-worker"]}
+      ],
+      "execution": {"concurrent_open_workflows": 100, "client_concurrency": 16, "worker_concurrency": 32, "duration_seconds": 300, "warmup_seconds": 60, "deterministic_seed": 104761, "load_steps": [10, 25, 50, 100, 200], "termination": {"condition": "duration_elapsed_then_open_workflows_drained", "drain_timeout_seconds": 180}}
+    },
+    {
+      "id": "timer",
+      "description": "Start, persist one one-second durable timer, resume, and complete.",
+      "artifacts": {
+        "server": {"registry": "docker.io", "name": "durableworkflow/server", "version": "2.0.0-rc.25", "reference": "docker.io/durableworkflow/server:2.0.0-rc.25"},
+        "workflow_php": {"registry": "packagist.org", "name": "durable-workflow/workflow", "version": "2.0.0-rc.14", "reference": "durable-workflow/workflow:2.0.0-rc.14"},
+        "sdk_php": {"registry": "packagist.org", "name": "durable-workflow/sdk", "version": "2.0.0-rc.14", "reference": "durable-workflow/sdk:2.0.0-rc.14"},
+        "sdk_python": {"registry": "pypi.org", "name": "durable-workflow", "version": "2.0.0rc25", "reference": "durable-workflow==2.0.0rc25"},
+        "sdk_rust": {"registry": "crates.io", "name": "durable-workflow", "version": "2.0.0-rc.11", "reference": "durable-workflow@2.0.0-rc.11"}
+      },
+      "workload": {
+        "workflow": {"type": "capacity.v1.timer", "steps": ["create_timer_1000ms", "await_timer", "return_constant"]},
+        "activities": [],
+        "signals": [],
+        "queries": [],
+        "payload": {"codec": "json", "workflow_input_bytes": 128, "workflow_result_bytes": 16, "activity_input_bytes": 0, "activity_result_bytes": 0, "signal_bytes": 0},
+        "history": {"target_event_count": 7, "shape": ["workflow_started", "timer_created", "workflow_task_completed", "timer_fired", "workflow_task_completed", "workflow_completed"]}
+      },
+      "bindings": [
+        {"language": "php", "roles": ["client", "workflow-worker"]},
+        {"language": "python", "roles": ["client", "workflow-worker"]},
+        {"language": "rust", "roles": ["client", "workflow-worker"]}
+      ],
+      "execution": {"concurrent_open_workflows": 250, "client_concurrency": 16, "worker_concurrency": 32, "duration_seconds": 300, "warmup_seconds": 60, "deterministic_seed": 104773, "load_steps": [25, 50, 100, 250, 500], "termination": {"condition": "duration_elapsed_then_open_workflows_drained", "drain_timeout_seconds": 180}}
+    },
+    {
+      "id": "signal",
+      "description": "Hold an open workflow until four ordered fixed-size signals arrive.",
+      "artifacts": {
+        "server": {"registry": "docker.io", "name": "durableworkflow/server", "version": "2.0.0-rc.25", "reference": "docker.io/durableworkflow/server:2.0.0-rc.25"},
+        "workflow_php": {"registry": "packagist.org", "name": "durable-workflow/workflow", "version": "2.0.0-rc.14", "reference": "durable-workflow/workflow:2.0.0-rc.14"},
+        "sdk_php": {"registry": "packagist.org", "name": "durable-workflow/sdk", "version": "2.0.0-rc.14", "reference": "durable-workflow/sdk:2.0.0-rc.14"},
+        "sdk_python": {"registry": "pypi.org", "name": "durable-workflow", "version": "2.0.0rc25", "reference": "durable-workflow==2.0.0rc25"},
+        "sdk_rust": {"registry": "crates.io", "name": "durable-workflow", "version": "2.0.0-rc.11", "reference": "durable-workflow@2.0.0-rc.11"}
+      },
+      "workload": {
+        "workflow": {"type": "capacity.v1.signal", "steps": ["wait_for_four_capacity_v1_append_signals", "assert_sequences_zero_through_three", "return_signal_count"]},
+        "activities": [],
+        "signals": [{"type": "capacity.v1.append", "count": 4, "behavior": "append_sequence_and_fixed_payload_in_order"}],
+        "queries": [],
+        "payload": {"codec": "json", "workflow_input_bytes": 128, "workflow_result_bytes": 16, "activity_input_bytes": 0, "activity_result_bytes": 0, "signal_bytes": 512},
+        "history": {"target_event_count": 15, "shape": ["workflow_started", "four_signal_received_events", "four_workflow_task_completions", "workflow_completed"]}
+      },
+      "bindings": [
+        {"language": "php", "roles": ["client", "signal-client", "workflow-worker"]},
+        {"language": "python", "roles": ["client", "signal-client", "workflow-worker"]},
+        {"language": "rust", "roles": ["client", "signal-client", "workflow-worker"]}
+      ],
+      "execution": {"concurrent_open_workflows": 250, "client_concurrency": 32, "worker_concurrency": 32, "duration_seconds": 300, "warmup_seconds": 60, "deterministic_seed": 104779, "load_steps": [25, 50, 100, 250, 500], "termination": {"condition": "duration_elapsed_then_open_workflows_drained", "drain_timeout_seconds": 180}}
+    },
+    {
+      "id": "child-workflow-fanout",
+      "description": "Fan out ten child workflows, await all results, and complete the parent.",
+      "artifacts": {
+        "server": {"registry": "docker.io", "name": "durableworkflow/server", "version": "2.0.0-rc.25", "reference": "docker.io/durableworkflow/server:2.0.0-rc.25"},
+        "workflow_php": {"registry": "packagist.org", "name": "durable-workflow/workflow", "version": "2.0.0-rc.14", "reference": "durable-workflow/workflow:2.0.0-rc.14"},
+        "sdk_php": {"registry": "packagist.org", "name": "durable-workflow/sdk", "version": "2.0.0-rc.14", "reference": "durable-workflow/sdk:2.0.0-rc.14"},
+        "sdk_python": {"registry": "pypi.org", "name": "durable-workflow", "version": "2.0.0rc25", "reference": "durable-workflow==2.0.0rc25"},
+        "sdk_rust": {"registry": "crates.io", "name": "durable-workflow", "version": "2.0.0-rc.11", "reference": "durable-workflow@2.0.0-rc.11"}
+      },
+      "workload": {
+        "workflow": {"type": "capacity.v1.child_parent", "steps": ["start_ten_capacity_v1_child_workflows", "await_all_children", "sum_child_results"], "child_type": "capacity.v1.child_leaf", "child_steps": ["return_input_index"]},
+        "activities": [],
+        "signals": [],
+        "queries": [],
+        "payload": {"codec": "json", "workflow_input_bytes": 256, "workflow_result_bytes": 32, "activity_input_bytes": 0, "activity_result_bytes": 0, "signal_bytes": 0},
+        "history": {"target_event_count": 65, "shape": ["parent_started", "ten_child_start_sequences", "ten_child_completion_sequences", "parent_completed"]}
+      },
+      "bindings": [
+        {"language": "php", "roles": ["client", "parent-worker", "child-worker"]},
+        {"language": "python", "roles": ["client", "parent-worker", "child-worker"]},
+        {"language": "rust", "roles": ["client", "parent-worker", "child-worker"]}
+      ],
+      "execution": {"concurrent_open_workflows": 50, "client_concurrency": 8, "worker_concurrency": 64, "duration_seconds": 300, "warmup_seconds": 60, "deterministic_seed": 104789, "load_steps": [5, 10, 25, 50, 100], "termination": {"condition": "duration_elapsed_then_open_workflows_drained", "drain_timeout_seconds": 240}}
+    },
+    {
+      "id": "replay-heavy-history",
+      "description": "Replay a long deterministic marker history before adding one completion event.",
+      "artifacts": {
+        "server": {"registry": "docker.io", "name": "durableworkflow/server", "version": "2.0.0-rc.25", "reference": "docker.io/durableworkflow/server:2.0.0-rc.25"},
+        "workflow_php": {"registry": "packagist.org", "name": "durable-workflow/workflow", "version": "2.0.0-rc.14", "reference": "durable-workflow/workflow:2.0.0-rc.14"},
+        "sdk_php": {"registry": "packagist.org", "name": "durable-workflow/sdk", "version": "2.0.0-rc.14", "reference": "durable-workflow/sdk:2.0.0-rc.14"},
+        "sdk_python": {"registry": "pypi.org", "name": "durable-workflow", "version": "2.0.0rc25", "reference": "durable-workflow==2.0.0rc25"},
+        "sdk_rust": {"registry": "crates.io", "name": "durable-workflow", "version": "2.0.0-rc.11", "reference": "durable-workflow@2.0.0-rc.11"}
+      },
+      "workload": {
+        "workflow": {"type": "capacity.v1.replay_heavy", "steps": ["record_500_deterministic_markers", "yield_after_each_marker", "replay_full_history", "return_marker_count"]},
+        "activities": [],
+        "signals": [],
+        "queries": [],
+        "payload": {"codec": "json", "workflow_input_bytes": 256, "workflow_result_bytes": 16, "activity_input_bytes": 0, "activity_result_bytes": 0, "signal_bytes": 0},
+        "history": {"target_event_count": 1003, "shape": ["workflow_started", "five_hundred_marker_and_workflow_task_pairs", "workflow_completed"]}
+      },
+      "bindings": [
+        {"language": "php", "roles": ["client", "workflow-worker", "replay-worker"]},
+        {"language": "python", "roles": ["client", "workflow-worker", "replay-worker"]},
+        {"language": "rust", "roles": ["client", "workflow-worker", "replay-worker"]}
+      ],
+      "execution": {"concurrent_open_workflows": 25, "client_concurrency": 4, "worker_concurrency": 16, "duration_seconds": 300, "warmup_seconds": 90, "deterministic_seed": 104801, "load_steps": [2, 5, 10, 25, 50], "termination": {"condition": "duration_elapsed_then_open_workflows_drained", "drain_timeout_seconds": 300}}
+    },
+    {
+      "id": "query-inspection",
+      "description": "Keep workflows open and issue five deterministic read-only inspections per second per load unit.",
+      "artifacts": {
+        "server": {"registry": "docker.io", "name": "durableworkflow/server", "version": "2.0.0-rc.25", "reference": "docker.io/durableworkflow/server:2.0.0-rc.25"},
+        "workflow_php": {"registry": "packagist.org", "name": "durable-workflow/workflow", "version": "2.0.0-rc.14", "reference": "durable-workflow/workflow:2.0.0-rc.14"},
+        "sdk_php": {"registry": "packagist.org", "name": "durable-workflow/sdk", "version": "2.0.0-rc.14", "reference": "durable-workflow/sdk:2.0.0-rc.14"},
+        "sdk_python": {"registry": "pypi.org", "name": "durable-workflow", "version": "2.0.0rc25", "reference": "durable-workflow==2.0.0rc25"},
+        "sdk_rust": {"registry": "crates.io", "name": "durable-workflow", "version": "2.0.0-rc.11", "reference": "durable-workflow@2.0.0-rc.11"}
+      },
+      "workload": {
+        "workflow": {"type": "capacity.v1.queryable_counter", "steps": ["initialize_counter_zero", "wait_for_finish_signal", "return_counter"], "query": {"type": "capacity.v1.inspect_counter", "behavior": "return_counter_without_mutation"}},
+        "activities": [],
+        "signals": [{"type": "capacity.v1.finish", "count": 1, "behavior": "finish_after_measurement_admission_stops"}],
+        "queries": [{"type": "capacity.v1.inspect_counter", "rate_per_load_unit_per_second": 5, "behavior": "return_counter_without_mutation"}],
+        "payload": {"codec": "json", "workflow_input_bytes": 128, "workflow_result_bytes": 16, "activity_input_bytes": 0, "activity_result_bytes": 0, "signal_bytes": 16},
+        "history": {"target_event_count": 7, "shape": ["workflow_started", "query_tasks_do_not_mutate_history", "finish_signal_received", "workflow_completed"]}
+      },
+      "bindings": [
+        {"language": "php", "roles": ["client", "query-client", "query-worker"]},
+        {"language": "python", "roles": ["client", "query-client", "query-worker"]},
+        {"language": "rust", "roles": ["client", "query-client", "query-worker"]}
+      ],
+      "execution": {"concurrent_open_workflows": 500, "client_concurrency": 64, "worker_concurrency": 64, "duration_seconds": 300, "warmup_seconds": 60, "deterministic_seed": 104803, "load_steps": [50, 100, 250, 500, 1000], "termination": {"condition": "duration_elapsed_then_open_workflows_drained", "drain_timeout_seconds": 180}}
+    },
+    {
+      "id": "mixed",
+      "description": "Deterministically interleave all representative shapes by fixed proportions.",
+      "artifacts": {
+        "server": {"registry": "docker.io", "name": "durableworkflow/server", "version": "2.0.0-rc.25", "reference": "docker.io/durableworkflow/server:2.0.0-rc.25"},
+        "workflow_php": {"registry": "packagist.org", "name": "durable-workflow/workflow", "version": "2.0.0-rc.14", "reference": "durable-workflow/workflow:2.0.0-rc.14"},
+        "sdk_php": {"registry": "packagist.org", "name": "durable-workflow/sdk", "version": "2.0.0-rc.14", "reference": "durable-workflow/sdk:2.0.0-rc.14"},
+        "sdk_python": {"registry": "pypi.org", "name": "durable-workflow", "version": "2.0.0rc25", "reference": "durable-workflow==2.0.0rc25"},
+        "sdk_rust": {"registry": "crates.io", "name": "durable-workflow", "version": "2.0.0-rc.11", "reference": "durable-workflow@2.0.0-rc.11"}
+      },
+      "workload": {
+        "workflow": {"type": "capacity.v1.mixed_selector", "steps": ["select_shape_from_seeded_weighted_sequence", "execute_selected_shape", "record_selected_shape"]},
+        "activities": [{"type": "capacity.v1.echo", "count": 1, "behavior": "used_by_selected_activity_shapes"}, {"type": "capacity.v1.hash", "count": 5, "behavior": "used_by_selected_multiple_activity_shape"}],
+        "signals": [{"type": "capacity.v1.append", "count": 4, "behavior": "used_by_selected_signal_shape"}, {"type": "capacity.v1.finish", "count": 1, "behavior": "used_by_selected_query_shape"}],
+        "queries": [{"type": "capacity.v1.inspect_counter", "rate_per_load_unit_per_second": 5, "behavior": "used_by_selected_query_shape"}],
+        "mix": {"simple-start-complete": 0.25, "one-activity": 0.2, "multiple-activities": 0.1, "timer": 0.1, "signal": 0.1, "child-workflow-fanout": 0.05, "replay-heavy-history": 0.05, "query-inspection": 0.15},
+        "payload": {"codec": "json", "workflow_input_bytes": 2048, "workflow_result_bytes": 512, "activity_input_bytes": 1024, "activity_result_bytes": 512, "signal_bytes": 512},
+        "history": {"target_event_count": 141, "shape": ["seeded_weighted_union_of_the_eight_component_history_shapes"]}
+      },
+      "bindings": [
+        {"language": "php", "roles": ["client", "workflow-worker", "activity-worker", "signal-client", "query-client"]},
+        {"language": "python", "roles": ["client", "workflow-worker", "activity-worker", "signal-client", "query-client"]},
+        {"language": "rust", "roles": ["client", "workflow-worker", "activity-worker", "signal-client", "query-client"]}
+      ],
+      "execution": {"concurrent_open_workflows": 250, "client_concurrency": 48, "worker_concurrency": 64, "duration_seconds": 600, "warmup_seconds": 120, "deterministic_seed": 104827, "load_steps": [25, 50, 100, 250, 500], "termination": {"condition": "duration_elapsed_then_open_workflows_drained", "drain_timeout_seconds": 300}}
+    }
+  ],
+  "reference_qualification": {
+    "cell_id": "simple-start-complete",
+    "driver": "deterministic-model",
+    "evidence_class": "harness_reference",
+    "publishable": false,
+    "deterministic_seed": 104729,
+    "load_steps": [4, 8, 12],
+    "samples_per_step": 4,
+    "sample_interval_seconds": 1,
+    "expected_maximum_sustained_load_step": 8
+  }
+}

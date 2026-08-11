@@ -37,13 +37,16 @@ on:
       - "app/Services/PrometheusMetricsSummary.php"
       - "config/dw-bounded-growth.php"
       - "config/server.php"
+      - "benchmarks/capacity/**"
       - "docs/bounded-growth.md"
       - "routes/api.php"
       - "scripts/perf/**"
+      - "scripts/benchmark/**"
       - "tests/Unit/BoundedGrowthPolicyTest.php"
       - "tests/Unit/BoundedMetricPolicyTest.php"
       - "tests/Unit/ServerPerfHarnessContractTest.php"
       - "tests/Unit/Support/server_soak_test.py"
+      - "tests/Unit/Support/capacity_benchmark_test.py"
       - "tests/Feature/SystemMetricsTest.php"
       - "tests/Feature/HealthControllerTest.php"
       - "tests/Feature/WorkerPollBackpressureTest.php"
@@ -83,13 +86,16 @@ on:
       - "app/Services/PrometheusMetricsSummary.php"
       - "config/dw-bounded-growth.php"
       - "config/server.php"
+      - "benchmarks/capacity/**"
       - "docs/bounded-growth.md"
       - "routes/api.php"
       - "scripts/perf/**"
+      - "scripts/benchmark/**"
       - "tests/Unit/BoundedGrowthPolicyTest.php"
       - "tests/Unit/BoundedMetricPolicyTest.php"
       - "tests/Unit/ServerPerfHarnessContractTest.php"
       - "tests/Unit/Support/server_soak_test.py"
+      - "tests/Unit/Support/capacity_benchmark_test.py"
       - "tests/Feature/SystemMetricsTest.php"
       - "tests/Feature/HealthControllerTest.php"
       - "tests/Feature/WorkerPollBackpressureTest.php"
@@ -129,8 +135,41 @@ jobs:
 
       - name: Run perf harness result-gate tests
         run: |
-          python3 -m py_compile scripts/perf/server_soak.py tests/Unit/Support/server_soak_test.py
+          python3 -m py_compile scripts/perf/server_soak.py scripts/benchmark/capacity_suite.py scripts/benchmark/capacity_matrix.py tests/Unit/Support/server_soak_test.py tests/Unit/Support/capacity_benchmark_test.py benchmarks/capacity/v1/bindings/python/capacity_adapter.py benchmarks/capacity/v1/collectors/local-docker/local_docker_collector.py
           python3 -m unittest tests/Unit/Support/server_soak_test.py
+
+      - name: Compile exact first-party capacity adapters
+        run: |
+          php -l benchmarks/capacity/v1/bindings/php/capacity_adapter.php
+          composer install \
+            --working-dir=benchmarks/capacity/v1/bindings/php \
+            --no-dev --no-interaction --no-progress --prefer-dist
+          DURABLE_WORKFLOW_RUNTIME_URL=http://127.0.0.1 \
+          DURABLE_WORKFLOW_TASK_QUEUE=capacity-check \
+            php benchmarks/capacity/v1/bindings/php/capacity_adapter.php check
+          rm -rf benchmarks/capacity/v1/bindings/php/vendor
+
+          python3 -m pip install \
+            --requirement benchmarks/capacity/v1/bindings/python/requirements.lock \
+            --target build/capacity-python-adapter
+          PYTHONPATH=build/capacity-python-adapter \
+            python3 benchmarks/capacity/v1/bindings/python/capacity_adapter.py check
+
+          CARGO_TARGET_DIR=build/capacity-rust-target \
+            cargo check --locked \
+              --manifest-path benchmarks/capacity/v1/bindings/rust/Cargo.toml
+
+      - name: Qualify capacity benchmark contract and bounded reference cell
+        run: |
+          python3 -m unittest tests/Unit/Support/capacity_benchmark_test.py
+          python3 scripts/benchmark/capacity_suite.py validate
+          python3 scripts/benchmark/capacity_matrix.py dry-run \
+            > build/capacity-benchmark-matrix-plan.json
+          python3 scripts/benchmark/capacity_suite.py reference \
+            --source-revision "$GITHUB_SHA" \
+            --run-timestamp "$(date --utc +%Y-%m-%dT%H:%M:%SZ)" \
+            --architecture "$RUNNER_ARCH" \
+            --output build/capacity-benchmark-reference.json
 
       - name: Run bounded-growth contract tests
         run: |
