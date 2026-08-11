@@ -114,15 +114,26 @@ function replaceGeneratedReadmeRegion(readme, version) {
   return `${readme.slice(0, regionStart)}${updatedRegion}${readme.slice(end)}`;
 }
 
-async function fetchJson(url, label) {
+function publicGithubToken() {
   const actionsServerUrl = process.env.GITHUB_SERVER_URL?.replace(/\/+$/, '');
-  const token = !actionsServerUrl || actionsServerUrl === 'https://github.com'
-    ? process.env.GH_TOKEN || process.env.GITHUB_TOKEN
-    : undefined;
+  if (actionsServerUrl && actionsServerUrl !== 'https://github.com') {
+    fail('public GitHub API release checks are unavailable outside GitHub Actions; use --check --offline');
+  }
+
+  const token = process.env.GH_TOKEN || process.env.GITHUB_TOKEN;
+  if (!token) {
+    fail('public GitHub API release checks require a read-only GH_TOKEN or GITHUB_TOKEN');
+  }
+
+  return token;
+}
+
+async function fetchJson(url, label) {
+  const token = publicGithubToken();
   const response = await fetch(url, {
     headers: {
       accept: 'application/vnd.github+json',
-      ...(token ? {authorization: `Bearer ${token}`} : {}),
+      authorization: `Bearer ${token}`,
       'user-agent': 'durable-workflow-server-cli-readme-release-sync',
       'x-github-api-version': '2022-11-28',
     },

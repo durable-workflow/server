@@ -31,10 +31,15 @@ jobs:
         with:
           persist-credentials: false
 
-      - name: Check generated README against the public CLI release
+      - name: Check generated README against the public CLI release on GitHub
+        if: ${{ github.server_url == 'https://github.com' }}
         env:
           GH_TOKEN: ${{ github.token }}
         run: node scripts/ci/sync-cli-readme-release.mjs --check
+
+      - name: Check generated README against checked-in release authority
+        if: ${{ github.server_url != 'https://github.com' }}
+        run: node scripts/ci/sync-cli-readme-release.mjs --check --offline
 
       - name: Verify public release assets and installed binary identity
         run: scripts/ci/verify-cli-readme-release.sh
