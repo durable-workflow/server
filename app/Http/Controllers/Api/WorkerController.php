@@ -5,6 +5,7 @@ namespace App\Http\Controllers\Api;
 use App\Models\WorkerBuildIdRollout;
 use App\Models\WorkerRegistration;
 use App\Support\BackendLockPressure;
+use App\Support\CachedPollTaskKindConflict;
 use App\Support\ExternalPayloadStorageUnavailable;
 use App\Support\HistoryRetentionEnforcer;
 use App\Support\LongPollCapacityExhaustedException;
@@ -1068,6 +1069,19 @@ class WorkerController
                 taskKinds: $taskKinds,
             );
         } catch (\Throwable $exception) {
+            if ($exception instanceof CachedPollTaskKindConflict) {
+                return WorkerProtocol::json([
+                    'task' => null,
+                    'poll_status' => 'conflict',
+                    'reason' => 'poll_cached_task_kind_conflict',
+                    'error' => $exception->getMessage(),
+                    'poll_request_id' => $exception->pollRequestId,
+                    'requested_task_kinds' => $exception->requestedTaskKinds,
+                    'cached_task_kind' => $exception->cachedTaskKind,
+                    'cached_task_kind_state' => $exception->cachedTaskKindState,
+                ], 409);
+            }
+
             if ($exception instanceof PollRequestTaskKindsConflict) {
                 return WorkerProtocol::json([
                     'task' => null,

@@ -75,11 +75,35 @@ class WorkerProtocolOpenApiContractTest extends TestCase
         $response = $this->spec['components']['responses']['WorkflowTaskPollConflict'];
         $this->assertSame([
             ['$ref' => '#/components/schemas/PollRequestTaskKindsConflict'],
+            ['$ref' => '#/components/schemas/CachedPollTaskKindConflict'],
             ['$ref' => '#/components/schemas/UpdateValidationCapabilityConflict'],
         ], $response['content']['application/json']['schema']['oneOf']);
 
         $capabilityProperties = $this->spec['components']['schemas']['UpdateValidationCapabilityConflict']['allOf'][1]['properties'];
         $this->assertArrayNotHasKey('requested_task_kinds', $capabilityProperties);
         $this->assertArrayNotHasKey('bound_task_kinds', $capabilityProperties);
+    }
+
+    public function test_cached_task_kind_conflict_represents_legacy_discriminators_with_null(): void
+    {
+        $conflict = $this->spec['components']['schemas']['CachedPollTaskKindConflict']['allOf'][1];
+
+        $this->assertContains('requested_task_kinds', $conflict['required']);
+        $this->assertContains('cached_task_kind', $conflict['required']);
+        $this->assertContains('cached_task_kind_state', $conflict['required']);
+        $this->assertSame(
+            ['type' => ['string', 'null'], 'minLength' => 1],
+            $conflict['properties']['cached_task_kind'],
+        );
+        $this->assertSame([
+            ['properties' => [
+                'cached_task_kind' => ['type' => 'null'],
+                'cached_task_kind_state' => ['const' => 'legacy_missing_discriminator'],
+            ]],
+            ['properties' => [
+                'cached_task_kind' => ['type' => 'string', 'minLength' => 1],
+                'cached_task_kind_state' => ['const' => 'unrequested_discriminator'],
+            ]],
+        ], $conflict['oneOf']);
     }
 }

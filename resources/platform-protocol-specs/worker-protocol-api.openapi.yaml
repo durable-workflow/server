@@ -447,7 +447,7 @@ components:
         application/json:
           schema: { $ref: "#/components/schemas/WorkerError" }
     WorkflowTaskPollConflict:
-      description: The poll request is unsupported or its idempotency identity conflicts with a previously bound task-kind set.
+      description: The poll request is unsupported, its idempotency identity conflicts with a previously bound task-kind set, or a cached task cannot be replayed within the requested task-kind set.
       headers:
         X-Durable-Workflow-Protocol-Version:
           schema: { $ref: "#/components/schemas/AdvertisedWorkerProtocolVersion" }
@@ -456,6 +456,7 @@ components:
           schema:
             oneOf:
               - $ref: "#/components/schemas/PollRequestTaskKindsConflict"
+              - $ref: "#/components/schemas/CachedPollTaskKindConflict"
               - $ref: "#/components/schemas/UpdateValidationCapabilityConflict"
     UpdateValidationTaskCompletion:
       description: A fenced update-validation task approval or rejection result.
@@ -734,6 +735,34 @@ components:
               maxItems: 2
               uniqueItems: true
               items: { type: string, enum: [workflow, update_validation] }
+    CachedPollTaskKindConflict:
+      allOf:
+        - $ref: "#/components/schemas/WorkerError"
+        - type: object
+          required: [task, poll_status, reason, error, poll_request_id, requested_task_kinds, cached_task_kind, cached_task_kind_state]
+          properties:
+            task: { type: "null" }
+            poll_status: { type: string, const: conflict }
+            reason: { type: string, const: poll_cached_task_kind_conflict }
+            error: { type: string, minLength: 1 }
+            poll_request_id: { type: string, minLength: 1, maxLength: 255 }
+            requested_task_kinds:
+              type: array
+              minItems: 1
+              maxItems: 2
+              uniqueItems: true
+              items: { type: string, enum: [workflow, update_validation] }
+            cached_task_kind: { type: [string, "null"], minLength: 1 }
+            cached_task_kind_state:
+              type: string
+              enum: [legacy_missing_discriminator, unrequested_discriminator]
+          oneOf:
+            - properties:
+                cached_task_kind: { type: "null" }
+                cached_task_kind_state: { const: legacy_missing_discriminator }
+            - properties:
+                cached_task_kind: { type: string, minLength: 1 }
+                cached_task_kind_state: { const: unrequested_discriminator }
     UpdateValidationCapabilityConflict:
       allOf:
         - $ref: "#/components/schemas/WorkerError"

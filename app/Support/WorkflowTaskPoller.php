@@ -2203,10 +2203,10 @@ final class WorkflowTaskPoller
             return;
         }
 
-        throw new PollRequestTaskKindsConflict(
+        throw new CachedPollTaskKindConflict(
             $pollRequestId,
             $taskKinds,
-            is_string($taskKind) ? [$taskKind] : [],
+            is_string($taskKind) && $taskKind !== '' ? $taskKind : null,
         );
     }
 
