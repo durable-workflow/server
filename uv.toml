@@ -1,0 +1,3 @@
+# helm/chart-testing-action's pinned setup-uv dependency reads this constraint.
+# Keep it exact so qualification downloads a named release without API discovery.
+required-version = "==0.8.24"

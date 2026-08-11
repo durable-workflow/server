@@ -5,10 +5,10 @@ type: application
 # The chart's own semver version. Bumped on every chart release; treated as
 # independent of the server image version (appVersion). Breaking-change rules
 # for this version live in docs/helm-upgrading.md alongside the chart.
-version: 0.1.15
+version: 0.1.16
 # The default Durable Workflow server image tag this chart targets. Operators
 # pin .image.tag (or .image.digest) in values.yaml; appVersion is informational.
-appVersion: "2.0.0-rc.27"
+appVersion: "2.0.0-rc.28"
 kubeVersion: ">=1.27.0-0"
 home: https://durable-workflow.github.io/docs/2.0/deployment
 sources:
@@ -29,12 +29,14 @@ annotations:
   # exact commit that most recently changed the packaged chart.
   org.opencontainers.image.source: https://github.com/durable-workflow/server
   dev.durable-workflow.source-revision: "unreleased"
-  dev.durable-workflow.image-reference: "docker.io/durableworkflow/server:2.0.0-rc.27"
+  dev.durable-workflow.image-reference: "docker.io/durableworkflow/server:2.0.0-rc.28"
   artifacthub.io/license: MIT
   artifacthub.io/category: integration-delivery
   # Free-form changelog used by Artifact Hub. Keep the most recent chart-version
   # entry first; do not rewrite past entries.
   artifacthub.io/changes: |
+    - kind: fixed
+      description: Advance the default Server image to 2.0.0-rc.28 with deterministic source qualification for the Helm chart.
     - kind: fixed
       description: Advance the default Server image to 2.0.0-rc.27 with corrected Python lifecycle discovery conformance and retained diagnostics.
     - kind: fixed

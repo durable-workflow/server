@@ -13,9 +13,16 @@ permissions:
 
 env:
   CHART_PATH: k8s/helm/durable-workflow
+  PYTHON_VERSION: 3.12.11
   HELM_VERSION: v3.16.2
+  CHART_TESTING_VERSION: 3.14.0
+  YAMLLINT_VERSION: 1.33.0
+  YAMALE_VERSION: 6.0.0
   KUBECONFORM_VERSION: v0.6.7
   KUBE_VERSIONS: "1.27.0 1.28.0 1.29.0 1.30.0"
+  KIND_VERSION: v0.23.0
+  KUBECTL_VERSION: v1.29.4
+  KIND_NODE_IMAGE: kindest/node:v1.29.4
   HELM_CT_CLUSTER_NAME: dw-helm-ct-${{ github.run_id }}-${{ github.run_attempt }}
 
 jobs:
@@ -118,7 +125,7 @@ jobs:
       - name: Set up Python
         uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1  # v6
         with:
-          python-version: "3.12"
+          python-version: ${{ env.PYTHON_VERSION }}
 
       - name: Set up Helm
         uses: azure/setup-helm@9bc31f4ebc9c6b171d7bfbaa5d006ae7abdb4310  # v5
@@ -127,6 +134,10 @@ jobs:
 
       - name: Set up chart-testing
         uses: helm/chart-testing-action@6ec842c01de15ebb84c8627d2744a0c2f2755c9f  # v2.8.0
+        with:
+          version: ${{ env.CHART_TESTING_VERSION }}
+          yamllint_version: ${{ env.YAMLLINT_VERSION }}
+          yamale_version: ${{ env.YAMALE_VERSION }}
 
       - name: Configure kind networking for containerized runners
         if: env.JOB_CONTAINER_NAME != ''
@@ -141,8 +152,9 @@ jobs:
       - name: Set up kind
         uses: helm/kind-action@ef37e7f390d99f746eb8b610417061a60e82a6cc  # v1.14.0
         with:
-          version: v0.23.0
-          node_image: kindest/node:v1.29.4
+          version: ${{ env.KIND_VERSION }}
+          kubectl_version: ${{ env.KUBECTL_VERSION }}
+          node_image: ${{ env.KIND_NODE_IMAGE }}
           cluster_name: ${{ env.HELM_CT_CLUSTER_NAME }}
           wait: 120s
 
@@ -162,7 +174,7 @@ jobs:
         env:
           ACTIONS_SERVER_URL: ${{ github.server_url }}
           WORKFLOW_PACKAGE_COMMIT: fc28432a82a2433959c6690505c52eabea4aca8c
-          K8S_HELM_SMOKE_KIND_NODE_IMAGE: kindest/node:v1.29.4
+          K8S_HELM_SMOKE_KIND_NODE_IMAGE: ${{ env.KIND_NODE_IMAGE }}
           K8S_HELM_SMOKE_CLUSTER: ${{ env.HELM_CT_CLUSTER_NAME }}
           K8S_HELM_SMOKE_REUSE_CLUSTER: "1"
           K8S_HELM_SMOKE_IMAGE: durableworkflow/server:helm-smoke-${{ github.run_id }}-${{ github.run_attempt }}

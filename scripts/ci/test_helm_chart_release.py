@@ -84,6 +84,67 @@ def evaluate_protected_publish_condition(**context: str) -> bool:
 
 
 class HelmChartReleaseTest(unittest.TestCase):
+    def test_chart_qualification_uses_only_source_controlled_tool_versions(
+        self,
+    ) -> None:
+        checks = workflow_source("helm-chart-checks.yml")
+        uv_version = re.search(
+            r'^required-version\s*=\s*"([^"]+)"\s*$',
+            RELEASE.REPOSITORY_ROOT.joinpath("uv.toml").read_text(),
+            re.MULTILINE,
+        )
+
+        expected_versions = {
+            "PYTHON_VERSION": "3.12.11",
+            "HELM_VERSION": "v3.16.2",
+            "CHART_TESTING_VERSION": "3.14.0",
+            "YAMLLINT_VERSION": "1.33.0",
+            "YAMALE_VERSION": "6.0.0",
+            "KUBECONFORM_VERSION": "v0.6.7",
+            "KIND_VERSION": "v0.23.0",
+            "KUBECTL_VERSION": "v1.29.4",
+        }
+        configured_versions = dict(
+            re.findall(r"^  ([A-Z_]+_VERSION): [\"']?([^\s\"']+)", checks, re.MULTILINE)
+        )
+
+        self.assertEqual(expected_versions, configured_versions)
+        self.assertIsNotNone(uv_version)
+        self.assertEqual("==0.8.24", uv_version.group(1))
+        self.assertIn("python-version: ${{ env.PYTHON_VERSION }}", checks)
+        self.assertIn("version: ${{ env.HELM_VERSION }}", checks)
+        self.assertIn("version: ${{ env.CHART_TESTING_VERSION }}", checks)
+        self.assertIn("yamllint_version: ${{ env.YAMLLINT_VERSION }}", checks)
+        self.assertIn("yamale_version: ${{ env.YAMALE_VERSION }}", checks)
+        self.assertIn("ghcr.io/yannh/kubeconform:${KUBECONFORM_VERSION}", checks)
+        self.assertIn("version: ${{ env.KIND_VERSION }}", checks)
+        self.assertIn("kubectl_version: ${{ env.KUBECTL_VERSION }}", checks)
+        self.assertIn("node_image: ${{ env.KIND_NODE_IMAGE }}", checks)
+
+        external_actions = re.findall(
+            r"^\s+uses: ([^./\s][^@\s]+)@([^\s]+)", checks, re.MULTILINE
+        )
+        self.assertTrue(external_actions)
+        for action, revision in external_actions:
+            with self.subTest(action=action):
+                self.assertRegex(revision, r"^[0-9a-f]{40}$")
+
+        self.assertNotIn("secrets.", checks)
+        self.assertNotIn("github.token", checks)
+        self.assertNotRegex(
+            checks,
+            re.compile(r"^\s+(?:github-)?token:", re.MULTILINE),
+        )
+        self.assertIn("permissions:\n  contents: read", checks)
+        self.assertLess(checks.index("Set up chart-testing"), checks.index("ct lint"))
+        self.assertLess(
+            checks.index("Set up chart-testing"),
+            checks.index("scripts/helm-chart-kind-smoke.sh"),
+        )
+
+        for caller in ("helm-chart-validation.yml", "helm-chart-release.yml"):
+            self.assertIn('- "uv.toml"', workflow_source(caller))
+
     def test_current_source_has_synchronized_public_identity(self) -> None:
         metadata = RELEASE.validate_source()
         self.assertGreater(RELEASE.semver_key(metadata["version"]), (0, 1, 0))
