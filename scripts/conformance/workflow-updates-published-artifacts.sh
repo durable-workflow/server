@@ -1193,6 +1193,13 @@ function focused_probe_failure_evidence(Throwable $throwable): array
 
 function run_principal_attribution_probe(string $suffix): array
 {
+    $previousAuthConfig = [
+        'server.auth.driver' => config('server.auth.driver'),
+        'server.auth.token' => config('server.auth.token'),
+        'server.auth.role_tokens' => config('server.auth.role_tokens'),
+        'server.auth.principal_tokens' => config('server.auth.principal_tokens'),
+        'server.auth.backward_compatible' => config('server.auth.backward_compatible'),
+    ];
     configure_principal_token_auth();
 
     $headers = auth_headers();
@@ -1441,6 +1448,8 @@ function run_principal_attribution_probe(string $suffix): array
                 ],
             ],
         );
+    } finally {
+        config($previousAuthConfig);
     }
 }
 

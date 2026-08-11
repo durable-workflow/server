@@ -7,7 +7,7 @@ use PHPUnit\Framework\TestCase;
 
 class WorkflowUpdateValidatorProbeTest extends TestCase
 {
-    public function test_validator_probe_drains_workflow_selected_by_persisted_multiplex_cursor(): void
+    public function test_validator_probe_runs_after_principal_probe_and_drains_persisted_multiplex_cursor(): void
     {
         $root = dirname(__DIR__, 2);
         $source = (string) file_get_contents(
@@ -39,6 +39,7 @@ class WorkflowUpdateValidatorProbeTest extends TestCase
 
 bootstrap_application();
 write_json_file('validator-results.json', [
+    'principal_attribution' => run_principal_attribution_probe('multiplex-regression'),
     'scenario_results' => run_update_validator_probe('multiplex-regression'),
 ]);
 PHP,
@@ -66,6 +67,7 @@ PHP,
                 512,
                 JSON_THROW_ON_ERROR,
             );
+            $this->assertSame('pass', $evidence['principal_attribution']['status']);
             $scenarios = $evidence['scenario_results'];
 
             foreach ([
