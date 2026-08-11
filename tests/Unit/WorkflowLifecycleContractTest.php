@@ -42,6 +42,20 @@ class WorkflowLifecycleContractTest extends TestCase
         $this->assertContains('python-sdk-lifecycle-evidence.json', $hostRunner['result_files']);
         $this->assertContains('rust-sdk-lifecycle-evidence.json', $hostRunner['result_files']);
         $this->assertTrue($hostRunner['python_sdk_probe_does_not_require_docker_inside_server_container']);
+        $this->assertSame(
+            'scripts/conformance/workflow_lifecycle_python_discovery_fixture.py',
+            $hostRunner['python_sdk_runtime_discovery_fixture_path'],
+        );
+        $this->assertSame('GET /api/cluster/info', $hostRunner['python_sdk_runtime_discovery_request']);
+        $this->assertSame(
+            'worker_protocol.server_capabilities.query_tasks',
+            $hostRunner['python_sdk_runtime_discovery_required_capability'],
+        );
+        $this->assertSame('runner-gap', $hostRunner['python_sdk_pre_behavior_failure_classification']);
+        $this->assertSame(
+            ['operation', 'classification', 'owning_surface', 'exception_type', 'message'],
+            $hostRunner['python_sdk_unexpected_exception_required_fields'],
+        );
         $this->assertTrue($hostRunner['rust_sdk_probe_required']);
         $this->assertSame('0.1.15', $hostRunner['rust_sdk_probe_minimum_version']);
         $this->assertContains('docker_rust_1_86_exact_crates_io_install', $hostRunner['rust_sdk_probe_executors']);
@@ -2999,6 +3013,96 @@ SH);
         }
     }
 
+    public function test_python_sdk_probe_fixture_reproduces_runtime_discovery_request(): void
+    {
+        $python = trim((string) shell_exec('command -v python3 2>/dev/null'));
+        if ($python === '') {
+            $this->markTestSkipped('python3 is required to exercise the Python lifecycle discovery fixture.');
+        }
+
+        $fixture = dirname(__DIR__, 2).'/scripts/conformance/workflow_lifecycle_python_discovery_fixture.py';
+        exec(
+            escapeshellarg($python).' '.escapeshellarg($fixture).' --self-test 2>&1',
+            $output,
+            $exitCode,
+        );
+
+        $this->assertSame(0, $exitCode, implode("\n", $output));
+        $evidence = json_decode(implode("\n", $output), true, flags: JSON_THROW_ON_ERROR);
+        $this->assertSame('GET', $evidence['method']);
+        $this->assertSame('/api/cluster/info', $evidence['path']);
+        $this->assertSame(200, $evidence['status']);
+        $this->assertSame('worker_protocol.server_capabilities.query_tasks', $evidence['capability_path']);
+        $this->assertTrue($evidence['capability_value']);
+    }
+
+    public function test_python_sdk_probe_retains_structured_pre_behavior_exception_as_runner_gap(): void
+    {
+        $resultDir = sys_get_temp_dir().'/dw-workflow-lifecycle-'.bin2hex(random_bytes(6));
+        $fakeBin = sys_get_temp_dir().'/dw-workflow-lifecycle-bin-'.bin2hex(random_bytes(6));
+        mkdir($resultDir, 0777, true);
+        mkdir($fakeBin, 0777, true);
+
+        file_put_contents($fakeBin.'/python-explicit', <<<'SH'
+#!/usr/bin/env bash
+echo 'Traceback (most recent call last):' >&2
+printf 'durable_workflow.errors.RuntimeDiscoveryUnavailable: cluster discovery fixture was unavailable ' >&2
+index=0
+while [[ "$index" -lt 12000 ]]; do
+  printf 'x' >&2
+  index=$((index + 1))
+done
+printf '\n' >&2
+exit 17
+SH);
+        chmod($fakeBin.'/python-explicit', 0755);
+
+        try {
+            exec($this->runnerCommand($resultDir, [
+                'PATH' => '/usr/local/bin:/usr/bin:/bin',
+                'DW_WORKFLOW_LIFECYCLE_SKIP_PYTHON_SDK_PROBE' => '0',
+                'DW_WORKFLOW_LIFECYCLE_PYTHON_BIN' => $fakeBin.'/python-explicit',
+            ]), $output, $exitCode);
+
+            $this->assertSame(0, $exitCode, implode("\n", $output));
+            $sidecar = $this->readJson($resultDir.'/python-sdk-lifecycle-evidence.json');
+            $scenario = $sidecar['scenario_results']['python_sdk_lifecycle_surface'];
+            $diagnostic = $scenario['observed_outputs']['runtime_failure_evidence'];
+            $result = $this->readJson($resultDir.'/workflow-lifecycle-result.json');
+            $retained = $result['scenario_results']['python_sdk_lifecycle_surface']['observed_outputs'];
+
+            $this->assertTrue($sidecar['runner_blocked']);
+            $this->assertSame('runner_blocked', $scenario['status']);
+            $this->assertSame('runner-gap', $scenario['classification']);
+            $this->assertFalse($scenario['published_artifact_cell_executed']);
+            $this->assertSame('python_sdk_probe.execution', $diagnostic['operation']);
+            $this->assertSame('runner-gap', $diagnostic['classification']);
+            $this->assertSame('conformance_harness', $diagnostic['owning_surface']);
+            $this->assertSame('durable_workflow.errors.RuntimeDiscoveryUnavailable', $diagnostic['exception_type']);
+            $this->assertStringContainsString('cluster discovery fixture was unavailable', $diagnostic['message']);
+            $this->assertSame($diagnostic['operation'], $retained['runtime_failure_evidence']['operation']);
+            $this->assertSame($diagnostic['classification'], $retained['runtime_failure_evidence']['classification']);
+            $this->assertSame($diagnostic['owning_surface'], $retained['runtime_failure_evidence']['owning_surface']);
+            $this->assertSame($diagnostic['exception_type'], $retained['runtime_failure_evidence']['exception_type']);
+            $this->assertStringContainsString(
+                'cluster discovery fixture was unavailable',
+                $retained['runtime_failure_evidence']['message'],
+            );
+            $this->assertSame(
+                'python_sdk_probe.execution',
+                $retained['shard_diagnostic']['operation'],
+            );
+            $this->assertStringNotContainsString(
+                'see python-sdk-lifecycle-probe.log',
+                $scenario['observed_outputs']['failure_summary'],
+            );
+            $this->assertLessThanOrEqual(8192, strlen(json_encode($scenario, JSON_THROW_ON_ERROR)));
+        } finally {
+            $this->removeDirectory($resultDir);
+            $this->removeDirectory($fakeBin);
+        }
+    }
+
     public function test_published_artifact_runner_records_retry_refusal_as_pass_evidence(): void
     {
         $resultDir = sys_get_temp_dir().'/dw-workflow-lifecycle-'.bin2hex(random_bytes(6));
@@ -3049,7 +3153,10 @@ SH);
             'run_php_sdk_lifecycle_probe',
             'run_python_sdk_lifecycle_probe',
             'run_rust_sdk_lifecycle_probe',
-            'write_python_sdk_product_gap',
+            'write_python_sdk_runner_blocked',
+            'workflow_lifecycle_python_discovery_fixture.py',
+            'runtime_discovery_query_tasks_capability',
+            'runtime_failure_evidence',
             'php-sdk-lifecycle-evidence.json',
             'python-sdk-lifecycle-evidence.json',
             'rust-sdk-lifecycle-evidence.json',

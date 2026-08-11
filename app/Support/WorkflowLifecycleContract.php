@@ -214,6 +214,17 @@ final class WorkflowLifecycleContract
                     'PYTHON_BIN',
                 ],
                 'python_sdk_probe_does_not_require_docker_inside_server_container' => true,
+                'python_sdk_runtime_discovery_fixture_path' => 'scripts/conformance/workflow_lifecycle_python_discovery_fixture.py',
+                'python_sdk_runtime_discovery_request' => 'GET /api/cluster/info',
+                'python_sdk_runtime_discovery_required_capability' => 'worker_protocol.server_capabilities.query_tasks',
+                'python_sdk_pre_behavior_failure_classification' => 'runner-gap',
+                'python_sdk_unexpected_exception_required_fields' => [
+                    'operation',
+                    'classification',
+                    'owning_surface',
+                    'exception_type',
+                    'message',
+                ],
                 'rust_sdk_probe_executors' => [
                     'docker_rust_1_86_exact_crates_io_install',
                     'configured_cargo_binary',

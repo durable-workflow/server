@@ -19,7 +19,7 @@ spec:
     spec:
       containers:
         - name: worker
-          image: durableworkflow/server:2.0.0-rc.25
+          image: durableworkflow/server:2.0.0-rc.27
           command: ["server-entrypoint"]
           args: ["php", "artisan", "queue:work", "--sleep=1", "--tries=3", "--max-time=3600"]
           envFrom:
