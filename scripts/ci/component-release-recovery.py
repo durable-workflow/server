@@ -10,10 +10,12 @@ import email.utils
 import errno
 import hashlib
 import http.client
+import io
 import json
 import os
 import re
 import shutil
+import ssl
 import subprocess
 import sys
 import tarfile
@@ -212,11 +214,18 @@ class PublicInfrastructureError(RuntimeError):
         reason: str,
         failure: str | None = None,
     ) -> None:
+        self.evidence: dict[str, str | int] = {
+            "classification": "github-read-transient",
+            "endpoint_class": endpoint_class,
+            "attempts": attempts,
+            "reason": reason,
+        }
+        if failure is not None:
+            self.evidence["failure"] = failure
         evidence = [
-            "classification=github-read-transient",
-            f"endpoint_class={endpoint_class}",
-            f"attempts={attempts}",
-            f"reason={reason}",
+            f"{key}={value}"
+            for key, value in self.evidence.items()
+            if key != "failure"
         ]
         if failure is not None:
             evidence.append(failure)
@@ -230,6 +239,14 @@ class _TransientGitHubRead(RuntimeError):
         self.evidence = evidence
         self.headers = headers or {}
         super().__init__(evidence)
+
+
+class _GitHubCliResponse(io.BytesIO):
+    """A response-shaped wrapper around one GitHub CLI API result."""
+
+    def __init__(self, body: bytes, headers: Mapping[str, str]) -> None:
+        super().__init__(body)
+        self.headers = headers
 
 
 def canonical_json(value: Any) -> bytes:
@@ -300,13 +317,21 @@ class PublicClient:
             return "response body unavailable"
 
     @staticmethod
-    def _is_rate_limited(error: urllib.error.HTTPError, detail: str) -> bool:
+    def _header_value(headers: Mapping[str, str], name: str) -> str | None:
+        normalized_name = name.casefold()
+        return next(
+            (value for header_name, value in headers.items() if header_name.casefold() == normalized_name),
+            None,
+        )
+
+    @classmethod
+    def _is_rate_limited(cls, error: urllib.error.HTTPError, detail: str) -> bool:
         headers = error.headers or {}
         return error.code == 429 or (
             error.code == 403
             and (
-                headers.get("Retry-After") is not None
-                or headers.get("X-RateLimit-Remaining") == "0"
+                cls._header_value(headers, "Retry-After") is not None
+                or cls._header_value(headers, "X-RateLimit-Remaining") == "0"
                 or "rate limit" in detail.lower()
             )
         )
@@ -314,6 +339,8 @@ class PublicClient:
     @staticmethod
     def _transport_name(error: BaseException) -> str | None:
         reason = error.reason if isinstance(error, urllib.error.URLError) else error
+        if isinstance(reason, ssl.SSLCertVerificationError):
+            return "tls-certificate-verification"
         if isinstance(
             reason,
             ConnectionError | TimeoutError | http.client.IncompleteRead | http.client.RemoteDisconnected,
@@ -330,7 +357,7 @@ class PublicClient:
 
     def _server_retry_delay(self, headers: Mapping[str, str]) -> float | None:
         delays: list[float] = []
-        retry_after = headers.get("Retry-After")
+        retry_after = self._header_value(headers, "Retry-After")
         if retry_after:
             try:
                 delays.append(float(retry_after))
@@ -343,7 +370,7 @@ class PublicClient:
                     if retry_at.tzinfo is None:
                         retry_at = retry_at.replace(tzinfo=dt.UTC)
                     delays.append(retry_at.timestamp() - self.now())
-        rate_limit_reset = headers.get("X-RateLimit-Reset")
+        rate_limit_reset = self._header_value(headers, "X-RateLimit-Reset")
         if rate_limit_reset:
             with contextlib.suppress(ValueError):
                 delays.append(float(rate_limit_reset) - self.now())
@@ -355,6 +382,103 @@ class PublicClient:
 
     def _remaining_time(self) -> float:
         return self.deadline - self.monotonic()
+
+    @staticmethod
+    def _parse_github_cli_response(output: bytes) -> tuple[int | None, dict[str, str], bytes]:
+        separator = b"\r\n\r\n" if b"\r\n\r\n" in output else b"\n\n"
+        head, found, body = output.partition(separator)
+        lines = head.replace(b"\r\n", b"\n").splitlines()
+        status_match = re.fullmatch(rb"HTTP/\S+ ([0-9]{3})(?: .*)?", lines[0]) if lines else None
+        if not found or status_match is None:
+            return None, {}, output
+        headers: dict[str, str] = {}
+        for line in lines[1:]:
+            name, present, value = line.partition(b":")
+            if present:
+                normalized = name.decode(errors="replace").strip().casefold()
+                headers[normalized] = value.decode(errors="replace").strip()
+        return int(status_match.group(1)), headers, body
+
+    @staticmethod
+    def _github_cli_transport_failure(stderr: bytes) -> str | None:
+        detail = stderr.decode(errors="replace").lower()
+        if any(marker in detail for marker in ("certificate", "x509:", "tls: failed to verify")):
+            return "tls-certificate-verification"
+        transport_markers = (
+            "connection refused",
+            "connection reset",
+            "connection was reset",
+            "i/o timeout",
+            "network is unreachable",
+            "no such host",
+            "temporary failure in name resolution",
+            "tls handshake timeout",
+            "unexpected eof",
+        )
+        if any(marker in detail for marker in transport_markers):
+            return "github-cli-network"
+        return None
+
+    def _github_cli_request(
+        self,
+        url: str,
+        headers: Mapping[str, str],
+        timeout: float,
+    ) -> _GitHubCliResponse:
+        if not self.token:
+            raise RecoveryError("GitHub CLI API transport requires GITHUB_TOKEN or GH_TOKEN")
+        parsed = urllib.parse.urlsplit(url)
+        if parsed.scheme != "https" or parsed.hostname != "api.github.com":
+            raise RecoveryError(f"GitHub CLI API transport rejected non-API URL: {url}")
+        endpoint = parsed.path.lstrip("/")
+        if parsed.query:
+            endpoint = f"{endpoint}?{parsed.query}"
+        command = ["gh", "api", "--hostname", "github.com", "--include", "--method", "GET"]
+        for name, value in headers.items():
+            if name.lower() != "authorization":
+                command.extend(("--header", f"{name}: {value}"))
+        command.append(endpoint)
+        environment = os.environ.copy()
+        environment.update(
+            {
+                "GH_PROMPT_DISABLED": "1",
+                "GH_TOKEN": self.token,
+                "NO_COLOR": "1",
+            }
+        )
+        try:
+            process = subprocess.run(
+                command,
+                check=False,
+                capture_output=True,
+                env=environment,
+                timeout=timeout,
+            )
+        except FileNotFoundError as error:
+            raise RecoveryError("GitHub Actions-supported gh API transport is unavailable") from error
+        except subprocess.TimeoutExpired as error:
+            raise _TransientGitHubRead("transport=github-cli-timeout") from error
+
+        status, response_headers, body = self._parse_github_cli_response(process.stdout)
+        if process.returncode != 0:
+            if status is None:
+                status_match = re.search(rb"\(HTTP ([0-9]{3})\)", process.stderr)
+                status = int(status_match.group(1)) if status_match else None
+            if status is not None:
+                raise urllib.error.HTTPError(
+                    url,
+                    status,
+                    process.stderr.decode(errors="replace").strip(),
+                    response_headers,
+                    io.BytesIO(body),
+                )
+            if transport := self._github_cli_transport_failure(process.stderr):
+                raise _TransientGitHubRead(f"transport={transport}")
+            detail = process.stderr.decode(errors="replace").strip() or "unknown GitHub CLI failure"
+            raise RecoveryError(f"GitHub CLI API request failed for {url}: {detail[:512]}")
+        if status is None or not 200 <= status <= 299:
+            raise RecoveryError(f"GitHub CLI API response was malformed for {url}")
+        return _GitHubCliResponse(body, response_headers)
 
     def _run(
         self,
@@ -381,10 +505,17 @@ class PublicClient:
                 if endpoint_class is not None
                 else 60
             )
-            request = urllib.request.Request(url, headers=request_headers)
             failure: _TransientGitHubRead | None = None
             try:
-                response = urllib.request.urlopen(request, timeout=timeout)
+                if (
+                    urllib.parse.urlsplit(url).hostname == "api.github.com"
+                    and self.token
+                    and os.environ.get("GITHUB_ACTIONS") == "true"
+                ):
+                    response = self._github_cli_request(url, request_headers, timeout)
+                else:
+                    request = urllib.request.Request(url, headers=request_headers)
+                    response = urllib.request.urlopen(request, timeout=timeout)
                 result = operation(response)
                 if endpoint_class is not None and self._remaining_time() <= 0:
                     raise PublicInfrastructureError(endpoint_class, attempt, reason="workflow-deadline")
@@ -404,6 +535,11 @@ class PublicClient:
                 else:
                     reason = error.reason if isinstance(error, urllib.error.URLError) else error
                     raise RecoveryError(f"public request failed for {url}: {reason}") from error
+
+            except _TransientGitHubRead as error:
+                if endpoint_class is None:
+                    raise RecoveryError(f"public request failed for {url}: {error}") from error
+                failure = error
 
             assert endpoint_class is not None and failure is not None
             if attempt == attempt_limit:
@@ -3320,6 +3456,19 @@ def main() -> int:
                 args.evidence.write_bytes(canonical_json(state))
                 raise
     except PublicInfrastructureError as error:
+        if hasattr(args, "evidence") and hasattr(args, "component"):
+            transport = base_state(args.component)
+            transport.update(
+                {
+                    "phase": "runner-transport",
+                    "outcome": "runner-transport",
+                    "transport": error.evidence,
+                    "resume_action": "Retry recovery after trusted GitHub API transport is available",
+                }
+            )
+            args.evidence.write_bytes(canonical_json(transport))
+            if args.command == "resolve":
+                write_output(args.github_output, {"action": "none"})
         print(f"release recovery infrastructure failed: {error}", file=sys.stderr)
         return INFRASTRUCTURE_EXIT_CODE
     except RecoveryError as error:

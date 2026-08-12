@@ -61,6 +61,8 @@ REQUIRED_CASES = (
     "release-candidate-beta-qualification",
     "authoritative-rc-foundation",
     "scheduled-empty-no-op",
+    "trusted-github-api-transport",
+    "transport-fail-closed-publication",
 )
 CONSUMERS = (
     {
@@ -1508,6 +1510,244 @@ def case_scheduled_empty_no_op(module: ModuleType) -> None:
             )
 
 
+def github_cli_result(
+    status: int = 200,
+    body: bytes = b"[]",
+    *,
+    stderr: bytes = b"",
+    **headers: str,
+) -> subprocess.CompletedProcess[bytes]:
+    response_headers = b"".join(f"{name}: {value}\r\n".encode() for name, value in headers.items())
+    output = f"HTTP/2.0 {status} response\r\n".encode() + response_headers + b"\r\n" + body
+    return subprocess.CompletedProcess(
+        ["gh", "api"],
+        0 if 200 <= status <= 299 else 1,
+        output,
+        stderr,
+    )
+
+
+def case_trusted_github_api_transport(module: ModuleType) -> None:
+    url = "https://api.github.com/repos/durable-workflow/.github/releases"
+    sleeps: list[float] = []
+    client = module.PublicClient(
+        token="conformance-token",
+        max_attempts=2,
+        retry_base_seconds=1,
+        sleep=sleeps.append,
+    )
+    with (
+        mock.patch.dict(module.os.environ, {"GITHUB_ACTIONS": "true"}),
+        mock.patch.object(
+            module.urllib.request,
+            "urlopen",
+            side_effect=AssertionError("runner transport bypassed the GitHub CLI mock"),
+        ) as open_url,
+        mock.patch.object(
+            module.subprocess,
+            "run",
+            side_effect=(
+                github_cli_result(0, stderr=b"x509: certificate signed by unknown authority"),
+                github_cli_result(),
+            ),
+        ) as run,
+    ):
+        result = client.json(url)
+    command = run.call_args.args[0]
+    if (
+        result != []
+        or sleeps != [1]
+        or open_url.called
+        or command[:7] != ["gh", "api", "--hostname", "github.com", "--include", "--method", "GET"]
+        or command[-1] != "repos/durable-workflow/.github/releases"
+        or "--insecure" in command
+        or run.call_args.kwargs.get("env", {}).get("GH_TOKEN") != "conformance-token"
+        or run.call_args.kwargs.get("env", {}).get("GH_PROMPT_DISABLED") != "1"
+    ):
+        raise ConformanceError(
+            "consumer did not retry transient certificate failure through the GitHub CLI trust transport"
+        )
+
+    rate_limit_sleeps: list[float] = []
+    rate_limited = module.PublicClient(
+        token="conformance-token",
+        max_attempts=2,
+        retry_base_seconds=1,
+        sleep=rate_limit_sleeps.append,
+        now=lambda: 100,
+    )
+    with (
+        mock.patch.dict(module.os.environ, {"GITHUB_ACTIONS": "true"}),
+        mock.patch.object(
+            module.subprocess,
+            "run",
+            side_effect=(
+                github_cli_result(
+                    403,
+                    b'{"message":"Forbidden"}',
+                    **{
+                        "x-ratelimit-remaining": "0",
+                        "X-rAtElImIt-ReSeT": "112",
+                    },
+                ),
+                github_cli_result(),
+            ),
+        ) as run,
+    ):
+        result = rate_limited.json(url)
+    if result != [] or rate_limit_sleeps != [12] or run.call_count != 2:
+        raise ConformanceError(
+            "consumer did not classify mixed-case GitHub CLI rate-limit headers or honor reset delay"
+        )
+
+    persistent = module.PublicClient(
+        token="conformance-token",
+        max_attempts=2,
+        retry_base_seconds=1,
+        sleep=lambda _delay: None,
+    )
+    with (
+        mock.patch.dict(module.os.environ, {"GITHUB_ACTIONS": "true"}),
+        mock.patch.object(
+            module.subprocess,
+            "run",
+            return_value=github_cli_result(0, stderr=b"x509: certificate signed by unknown authority"),
+        ) as run,
+    ):
+        try:
+            persistent.json(url)
+        except module.PublicInfrastructureError as error:
+            expected = {
+                "classification": "github-read-transient",
+                "endpoint_class": "releases-api",
+                "attempts": 2,
+                "reason": "retry-exhausted",
+                "failure": "transport=tls-certificate-verification",
+            }
+            if getattr(error, "evidence", None) != expected:
+                raise ConformanceError(
+                    "persistent certificate failure did not retain structured transport evidence"
+                ) from error
+        else:
+            raise ConformanceError("persistent certificate failure did not fail closed")
+    if run.call_count != 2:
+        raise ConformanceError("persistent certificate failure escaped the retry bound")
+
+    api_error = github_cli_result(
+        422,
+        b'{"message":"invalid release authority"}',
+    )
+
+    def fail_on_sleep(_delay: float) -> None:
+        raise ConformanceError("deterministic API failure was retried")
+
+    deterministic = module.PublicClient(token="conformance-token", max_attempts=3, sleep=fail_on_sleep)
+    with (
+        mock.patch.dict(module.os.environ, {"GITHUB_ACTIONS": "true"}),
+        mock.patch.object(
+            module.subprocess,
+            "run",
+            return_value=api_error,
+        ) as run,
+    ):
+        expect_recovery_error(
+            module,
+            lambda: deterministic.json(url),
+            "ordinary GitHub API failure was accepted",
+        )
+    if run.call_count != 1:
+        raise ConformanceError("ordinary GitHub API failure was retried")
+
+
+def case_transport_fail_closed_publication(module: ModuleType) -> None:
+    with tempfile.TemporaryDirectory() as directory:
+        root = Path(directory)
+        evidence = root / "release-recovery-evidence.json"
+        github_output = root / "github-output"
+        arguments = [
+            "component-release-recovery.py",
+            "resolve",
+            "--component",
+            "workflow",
+            "--plan-output",
+            str(root / "release-plan.json"),
+            "--preparation-output",
+            str(root / "release-preparation.json"),
+            "--evidence",
+            str(evidence),
+            "--github-output",
+            str(github_output),
+            "--allow-empty",
+        ]
+        unavailable = module.PublicInfrastructureError(
+            "releases-api",
+            5,
+            reason="retry-exhausted",
+            failure="transport=tls-certificate-verification",
+        )
+        with (
+            mock.patch.object(sys, "argv", arguments),
+            mock.patch.object(module, "discover_plan", side_effect=unavailable),
+        ):
+            result = module.main()
+        state = json.loads(evidence.read_bytes())
+        if (
+            result != module.INFRASTRUCTURE_EXIT_CODE
+            or state.get("phase") != "runner-transport"
+            or state.get("outcome") != "runner-transport"
+            or state.get("transport") != unavailable.evidence
+            or github_output.read_text(encoding="utf-8") != "action=none\n"
+        ):
+            raise ConformanceError(
+                "persistent transport failure did not suppress publication with runner evidence"
+            )
+
+    candidate = plan(module, "authorized-publication-conformance")
+    preparation = {
+        "components": {
+            "workflow": {
+                "release_notes": {
+                    "release_date": "2026-08-12",
+                    "sha256": "a" * 64,
+                    "source": {},
+                }
+            }
+        }
+    }
+    component = module.COMPONENTS["workflow"]
+    verifier = mock.Mock(side_effect=module.NotFound("not published"))
+    authority = mock.Mock(return_value=({}, {}))
+    with (
+        mock.patch.object(module, "verify_plan_authority", authority),
+        mock.patch.object(module, "validate_release_preparation"),
+        mock.patch.object(
+            module,
+            "source_product_train_evidence",
+            return_value={},
+            create=True,
+        ),
+        mock.patch.object(module, "resolve_tag", return_value=None),
+        mock.patch.dict(module.VERIFIERS, {component.distribution: verifier}),
+    ):
+        state, outputs = module.resolve_component(
+            mock.Mock(),
+            "workflow",
+            f"release-plan/{candidate['plan']}",
+            "b" * 40,
+            candidate,
+            preparation,
+        )
+    if (
+        outputs.get("action") != "publish"
+        or state.get("outcome") != "ready"
+        or authority.call_count != 1
+        or verifier.call_count != 1
+    ):
+        raise ConformanceError(
+            "authorized publication path did not remain available after transport hardening"
+        )
+
+
 CASE_RUNNERS = {
     "immutable-plan-enumeration": case_immutable_plan_enumeration,
     "current-plan-schema": case_current_plan_schema,
@@ -1521,6 +1761,8 @@ CASE_RUNNERS = {
     "release-candidate-beta-qualification": case_release_candidate_beta_qualification,
     "authoritative-rc-foundation": case_authoritative_rc_foundation,
     "scheduled-empty-no-op": case_scheduled_empty_no_op,
+    "trusted-github-api-transport": case_trusted_github_api_transport,
+    "transport-fail-closed-publication": case_transport_fail_closed_publication,
 }
 
 
