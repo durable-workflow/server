@@ -24,7 +24,7 @@ import subprocess
 import sys
 import threading
 import time
-from typing import Any
+from typing import Any, Callable
 from urllib import error as urlerror
 from urllib import parse as urlparse
 from urllib import request as urlrequest
@@ -144,7 +144,11 @@ class JsonLineProcess:
         self.lock = threading.Lock()
 
     def request(
-        self, command: dict[str, Any], *, timeout_seconds: float = 60
+        self,
+        command: dict[str, Any],
+        *,
+        timeout_seconds: float = 60,
+        on_send: Callable[[float], None] | None = None,
     ) -> dict[str, Any]:
         with self.lock:
             if self.process.poll() is not None:
@@ -152,6 +156,8 @@ class JsonLineProcess:
             assert self.process.stdin is not None
             assert self.process.stdout is not None
             try:
+                if on_send is not None:
+                    on_send(time.monotonic())
                 self.process.stdin.write(
                     json.dumps(command, separators=(",", ":")) + "\n"
                 )
@@ -365,6 +371,9 @@ class MetricBuffer:
         self.latencies = {
             phase: self._empty_latencies() for phase in ("measurement", "drain")
         }
+        self.demand = {
+            phase: self._empty_demand() for phase in ("measurement", "drain")
+        }
         self.open_workflows = 0
         self.measurement_open_workflows = 0
 
@@ -382,6 +391,19 @@ class MetricBuffer:
     def _empty_latencies() -> dict[str, list[float]]:
         return {"schedule_to_start": [], "replay": [], "query": []}
 
+    @staticmethod
+    def _empty_demand() -> dict[str, dict[str, int]]:
+        return {
+            operation: {
+                "attempted": 0,
+                "accepted": 0,
+                "completed": 0,
+                "rejected": 0,
+                "throttled": 0,
+            }
+            for operation in ("workflow_starts", "query_operations")
+        }
+
     def reset(self) -> None:
         with self.lock:
             self.measurement_deadline = None
@@ -390,6 +412,9 @@ class MetricBuffer:
             }
             self.latencies = {
                 phase: self._empty_latencies() for phase in ("measurement", "drain")
+            }
+            self.demand = {
+                phase: self._empty_demand() for phase in ("measurement", "drain")
             }
             self.open_workflows = 0
             self.measurement_open_workflows = 0
@@ -421,10 +446,17 @@ class MetricBuffer:
         callback_time = self._callback_time(recorded_at)
         with self.lock:
             phase = self._phase_at(callback_time)
+            self.demand[phase]["workflow_starts"]["accepted"] += 1
             self.counters[phase]["workflow_starts"] += 1
             self.open_workflows += 1
             if phase == "measurement":
                 self.measurement_open_workflows += 1
+
+    def workflow_attempted(self, *, recorded_at: float | None = None) -> None:
+        callback_time = self._callback_time(recorded_at)
+        with self.lock:
+            phase = self._phase_at(callback_time)
+            self.demand[phase]["workflow_starts"]["attempted"] += 1
 
     def completed(
         self,
@@ -436,6 +468,7 @@ class MetricBuffer:
         callback_time = self._callback_time(recorded_at)
         with self.lock:
             phase = self._phase_at(callback_time)
+            self.demand[phase]["workflow_starts"]["completed"] += 1
             self.counters[phase]["workflow_completions"] += 1
             self.counters[phase]["activity_dispatches"] += int(
                 evidence["activity_dispatches"]
@@ -449,6 +482,42 @@ class MetricBuffer:
             if phase == "measurement":
                 self.measurement_open_workflows -= 1
 
+    @staticmethod
+    def _throttled(response: dict[str, Any] | None) -> bool:
+        text = json.dumps(response or {}).lower()
+        return "throttl" in text or "429" in text
+
+    def _rejected_demand(
+        self,
+        operation: str,
+        response: dict[str, Any] | None,
+        *,
+        recorded_at: float | None = None,
+    ) -> None:
+        callback_time = self._callback_time(recorded_at)
+        with self.lock:
+            phase = self._phase_at(callback_time)
+            field = "throttled" if self._throttled(response) else "rejected"
+            self.demand[phase][operation][field] += 1
+            aggregate = "throttles" if field == "throttled" else "errors"
+            self.counters[phase][aggregate] += 1
+
+    def workflow_rejected(
+        self,
+        response: dict[str, Any] | None,
+        *,
+        recorded_at: float | None = None,
+    ) -> None:
+        self._rejected_demand("workflow_starts", response, recorded_at=recorded_at)
+
+    def query_rejected(
+        self,
+        response: dict[str, Any] | None,
+        *,
+        recorded_at: float | None = None,
+    ) -> None:
+        self._rejected_demand("query_operations", response, recorded_at=recorded_at)
+
     def failed(
         self,
         response: dict[str, Any] | None = None,
@@ -456,11 +525,10 @@ class MetricBuffer:
         was_open: bool = False,
         recorded_at: float | None = None,
     ) -> None:
-        text = json.dumps(response or {}).lower()
         callback_time = self._callback_time(recorded_at)
         with self.lock:
             phase = self._phase_at(callback_time)
-            if "throttl" in text or "429" in text:
+            if self._throttled(response):
                 self.counters[phase]["throttles"] += 1
             else:
                 self.counters[phase]["errors"] += 1
@@ -469,28 +537,45 @@ class MetricBuffer:
                 if phase == "measurement":
                     self.measurement_open_workflows -= 1
 
-    def query(self, elapsed_ms: float, *, recorded_at: float | None = None) -> None:
+    def query_attempted(self, *, recorded_at: float | None = None) -> None:
         callback_time = self._callback_time(recorded_at)
         with self.lock:
             phase = self._phase_at(callback_time)
+            self.demand[phase]["query_operations"]["attempted"] += 1
+
+    def query_completed(
+        self, elapsed_ms: float, *, recorded_at: float | None = None
+    ) -> None:
+        callback_time = self._callback_time(recorded_at)
+        with self.lock:
+            phase = self._phase_at(callback_time)
+            self.demand[phase]["query_operations"]["accepted"] += 1
+            self.demand[phase]["query_operations"]["completed"] += 1
             self.latencies[phase]["query"].append(elapsed_ms)
 
     def snapshot(
         self, phase: str
-    ) -> tuple[dict[str, int], dict[str, list[float]], int]:
+    ) -> tuple[
+        dict[str, int],
+        dict[str, list[float]],
+        dict[str, dict[str, int]],
+        int,
+    ]:
         if phase not in {"measurement", "drain"}:
             raise MatrixError(f"unsupported metric phase: {phase}")
         with self.lock:
             counters = self.counters[phase]
             latencies = self.latencies[phase]
+            demand = self.demand[phase]
             self.counters[phase] = self._empty_counters()
             self.latencies[phase] = self._empty_latencies()
+            self.demand[phase] = self._empty_demand()
             open_workflows = (
                 self.measurement_open_workflows
                 if phase == "measurement"
                 else self.open_workflows
             )
-            return counters, latencies, open_workflows
+            return counters, latencies, demand, open_workflows
 
 
 @dataclass
@@ -511,6 +596,7 @@ class CellRunner:
         namespace: str,
         task_queue_prefix: str,
         sample_interval: float,
+        minimum_delivery_ratio: float,
     ) -> None:
         self.matrix_cell = matrix_cell
         self.cell = matrix_cell.cell
@@ -523,6 +609,7 @@ class CellRunner:
         self.namespace = namespace
         self.task_queue_prefix = task_queue_prefix
         self.sample_interval = sample_interval
+        self.minimum_delivery_ratio = minimum_delivery_ratio
         self.control_plane = ControlPlane(runtime_url, namespace)
         self.metrics = MetricBuffer()
         self.query_lock = threading.Lock()
@@ -670,6 +757,15 @@ class CellRunner:
         open_slots: threading.BoundedSemaphore,
     ) -> None:
         was_open = False
+        start_attempted = False
+        start_resolved = False
+
+        def record_start_attempt(recorded_at: float) -> None:
+            nonlocal start_attempted
+            start_attempted = True
+            if measured:
+                self.metrics.workflow_attempted(recorded_at=recorded_at)
+
         try:
             start = client.request(
                 {
@@ -678,12 +774,14 @@ class CellRunner:
                     "cell_id": self.cell["id"],
                     "task_queue": task_queue,
                     "payload": self._payload(shape, sequence),
-                }
+                },
+                on_send=record_start_attempt,
             )
             start_recorded_at = time.monotonic()
             if start.get("ok") is not True:
                 if measured:
-                    self.metrics.failed(start, recorded_at=start_recorded_at)
+                    self.metrics.workflow_rejected(start, recorded_at=start_recorded_at)
+                start_resolved = True
                 return
             run_id = start.get("run_id")
             if not isinstance(run_id, str) or not run_id:
@@ -691,6 +789,7 @@ class CellRunner:
             was_open = True
             if measured:
                 self.metrics.started(recorded_at=start_recorded_at)
+            start_resolved = True
             if shape == "signal":
                 signal_bytes = int(self.cell["workload"]["payload"]["signal_bytes"])
                 signal_payload = "s" * signal_bytes
@@ -750,7 +849,10 @@ class CellRunner:
             was_open = False
         except Exception as exc:
             if measured:
-                self.metrics.failed({"error": str(exc)}, was_open=was_open)
+                if start_attempted and not start_resolved:
+                    self.metrics.workflow_rejected({"error": str(exc)})
+                else:
+                    self.metrics.failed({"error": str(exc)}, was_open=was_open)
                 was_open = False
             raise
         finally:
@@ -783,24 +885,38 @@ class CellRunner:
                 continue
             query = available[cursor % len(available)]
             cursor += 1
-            response = query.client.request(
-                {
-                    "operation": "query",
-                    "workflow_id": query.workflow_id,
-                    "name": "capacity.v1.inspect_counter",
-                    "arguments": [],
-                },
-                timeout_seconds=10,
-            )
+            attempted = False
+
+            def record_query_attempt(recorded_at: float) -> None:
+                nonlocal attempted
+                attempted = True
+                if measured:
+                    self.metrics.query_attempted(recorded_at=recorded_at)
+
+            try:
+                response = query.client.request(
+                    {
+                        "operation": "query",
+                        "workflow_id": query.workflow_id,
+                        "name": "capacity.v1.inspect_counter",
+                        "arguments": [],
+                    },
+                    timeout_seconds=10,
+                    on_send=record_query_attempt,
+                )
+            except Exception as exc:
+                if measured and attempted:
+                    self.metrics.query_rejected({"error": str(exc)})
+                raise
             recorded_at = time.monotonic()
             if response.get("ok") is True:
                 if measured:
-                    self.metrics.query(
+                    self.metrics.query_completed(
                         float(response.get("elapsed_ms") or 0),
                         recorded_at=recorded_at,
                     )
             elif measured:
-                self.metrics.failed(response, recorded_at=recorded_at)
+                self.metrics.query_rejected(response, recorded_at=recorded_at)
             next_query += interval
             delay = next_query - time.monotonic()
             if delay > 0:
@@ -808,9 +924,20 @@ class CellRunner:
             elif delay < -1:
                 next_query = time.monotonic()
 
-    def _control(self) -> dict[str, Any]:
+    def _query_rate(self, load_step: int) -> float:
+        return round(
+            sum(
+                float(definition.get("rate_per_load_unit_per_second", 0))
+                for definition in self.cell["workload"].get("queries", [])
+                if isinstance(definition, dict)
+            )
+            * load_step,
+            6,
+        )
+
+    def _control(self, load_step: int) -> dict[str, Any]:
         return {
-            "suite_version": "1.0.0",
+            "suite_version": capacity_suite.SUITE_VERSION,
             "deterministic_seed": int(self.execution["deterministic_seed"]),
             "concurrent_open_workflows": int(
                 self.execution["concurrent_open_workflows"]
@@ -819,6 +946,11 @@ class CellRunner:
             "worker_concurrency": int(self.execution["worker_concurrency"]),
             "warmup_seconds": int(self.execution["warmup_seconds"]),
             "duration_seconds": int(self.execution["duration_seconds"]),
+            "offered_load": {
+                "workflow_starts_per_second": float(load_step),
+                "query_operations_per_second": self._query_rate(load_step),
+                "minimum_delivery_ratio": self.minimum_delivery_ratio,
+            },
             "termination": self.execution["termination"],
         }
 
@@ -831,7 +963,7 @@ class CellRunner:
         interval_seconds: float,
         task_queue: str,
     ) -> dict[str, Any]:
-        counters, latencies, open_workflows = self.metrics.snapshot(phase)
+        counters, latencies, demand, open_workflows = self.metrics.snapshot(phase)
         observation = {
             "schema": capacity_suite.OBSERVATION_SCHEMA,
             "cell_id": self.cell["id"],
@@ -840,8 +972,9 @@ class CellRunner:
             "sample_index": sample_index,
             "phase": phase,
             "interval_seconds": round(max(interval_seconds, 0.001), 6),
-            "control": self._control(),
+            "control": self._control(load_step),
             "counters": counters,
+            "demand": demand,
             "latencies_ms": latencies,
             "concurrent_open_workflows": open_workflows,
             "infrastructure": self._sample_infrastructure(task_queue),
@@ -1072,6 +1205,11 @@ def main(argv: list[str] | None = None) -> int:
                     namespace=namespace,
                     task_queue_prefix=args.task_queue_prefix,
                     sample_interval=args.sample_interval_seconds,
+                    minimum_delivery_ratio=float(
+                        suite["operating_point_rule"][
+                            "minimum_offered_load_delivery_ratio"
+                        ]
+                    ),
                 )
                 rows.extend(runner.run_load_step(int(load_step)))
             stem = f"{matrix_cell.cell['id']}--{matrix_cell.binding}"

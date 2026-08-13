@@ -1,4 +1,4 @@
-Durable Workflow Capacity Benchmark Suite 1.0.0
+Durable Workflow Capacity Benchmark Suite 1.1.0
 
 This directory is immutable evidence input. A changed workload, artifact tuple,
 metric contract, or operating-point rule requires a new suite version instead
@@ -71,6 +71,13 @@ altered controls, contradictory phase ordering, or non-contiguous samples. It
 uses only measurement-phase completions, dispatches, errors, throttles, and
 latencies for operating-point metrics. The separate drain summary proves final
 open-work and task-queue convergence without contributing performance evidence.
+
+Every load step declares workflow-start and query-operation targets per second
+with a minimum delivery ratio. Demand counters distinguish requests actually
+attempted by the generator from requests accepted, completed, rejected, or
+throttled by Server. A full-duration observation window remains ineligible when
+controller overhead, exhausted open-work slots, or query serialization leaves
+either the attempted or delivered count below the declared tolerance.
 
 Client protocol output is operation evidence; the controller combines it with
 history timing and resource samples to emit observation JSONL.

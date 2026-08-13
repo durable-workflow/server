@@ -1,7 +1,7 @@
 {
   "$schema": "schemas/suite.schema.json",
   "schema": "durable-workflow.capacity-benchmark-suite/v1",
-  "suite_version": "1.0.0",
+  "suite_version": "1.1.0",
   "status": "engineering_evidence_not_release_gate",
   "description": "Versioned, reproducible Durable Workflow capacity workloads. Throughput evidence does not substitute for correctness conformance.",
   "schemas": {
@@ -49,6 +49,16 @@
     "worker": "1.2"
   },
   "required_metrics": [
+    "offered_load_delivery",
+    "workflow_start_attempts",
+    "workflow_start_acceptances",
+    "workflow_start_rejections",
+    "workflow_start_throttles",
+    "query_attempts",
+    "query_acceptances",
+    "query_completions",
+    "query_rejections",
+    "query_throttles",
     "workflow_starts_per_second",
     "workflow_completions_per_second",
     "activity_dispatches_per_second",
@@ -63,6 +73,7 @@
   ],
   "operating_point_rule": {
     "selection": "highest_load_step_meeting_every_limit_for_the_complete_measurement_window",
+    "minimum_offered_load_delivery_ratio": 0.99,
     "minimum_completion_ratio": 0.99,
     "maximum_error_rate": 0.005,
     "maximum_throttle_rate": 0.01,
@@ -98,7 +109,7 @@
     },
     "artifact_installation": "install_every_exact_artifact_before_warmup_and_record_the_resolved_identity",
     "warmup": "discard_observations_until_the_declared_warmup_has_elapsed",
-    "measurement": "emit_monotonic_interval_counters_and_infrastructure_samples_for_the_complete_declared_duration",
+    "measurement": "emit_monotonic_interval_counters_including_attempted_accepted_completed_rejected_and_throttled_demand_plus_infrastructure_samples_for_the_complete_declared_duration",
     "termination": "stop_admission_then_drain_open_workflows_until_the_declared_condition",
     "server_capacity_comparison": "never_pool_bindings_or_unlike_result_identities"
   },

@@ -34,21 +34,39 @@
   "$defs": {
     "load_step": {
       "type": "object",
-      "required": ["load_step", "measurement_seconds", "rates", "latency_ms", "concurrent_open_workflows", "completion_ratio", "error_rate", "throttle_rate", "storage", "infrastructure", "drain", "saturation", "operating_point_eligible"],
+      "required": ["load_step", "measurement_seconds", "offered_load", "rates", "latency_ms", "concurrent_open_workflows", "completion_ratio", "error_rate", "throttle_rate", "storage", "infrastructure", "drain", "saturation", "operating_point_eligible"],
       "properties": {
+        "offered_load": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["workflow_starts", "query_operations"],
+          "properties": {
+            "workflow_starts": {"$ref": "#/$defs/delivery"},
+            "query_operations": {"$ref": "#/$defs/delivery"}
+          }
+        },
         "drain": {
           "oneOf": [
             {"type": "null"},
             {
               "type": "object",
               "additionalProperties": false,
-              "required": ["seconds", "workflow_completions", "activity_dispatches", "errors", "throttles", "latency_samples", "final_open_workflows", "final_queue_backlog", "converged"],
+              "required": ["seconds", "workflow_completions", "activity_dispatches", "errors", "throttles", "demand", "latency_samples", "final_open_workflows", "final_queue_backlog", "converged"],
               "properties": {
                 "seconds": {"type": "number", "minimum": 0},
                 "workflow_completions": {"type": "integer", "minimum": 0},
                 "activity_dispatches": {"type": "integer", "minimum": 0},
                 "errors": {"type": "integer", "minimum": 0},
                 "throttles": {"type": "integer", "minimum": 0},
+                "demand": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": ["workflow_starts", "query_operations"],
+                  "properties": {
+                    "workflow_starts": {"$ref": "#/$defs/demand"},
+                    "query_operations": {"$ref": "#/$defs/demand"}
+                  }
+                },
                 "latency_samples": {"type": "integer", "minimum": 0},
                 "final_open_workflows": {"type": "integer", "minimum": 0},
                 "final_queue_backlog": {"type": "integer", "minimum": 0},
@@ -57,6 +75,38 @@
             }
           ]
         }
+      }
+    },
+    "demand": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["attempted", "accepted", "completed", "rejected", "throttled"],
+      "properties": {
+        "attempted": {"type": "integer", "minimum": 0},
+        "accepted": {"type": "integer", "minimum": 0},
+        "completed": {"type": "integer", "minimum": 0},
+        "rejected": {"type": "integer", "minimum": 0},
+        "throttled": {"type": "integer", "minimum": 0}
+      }
+    },
+    "delivery": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["target_per_second", "target_count", "minimum_delivery_ratio", "delivery_tolerance_ratio", "minimum_count", "attempted", "accepted", "completed", "rejected", "throttled", "unoffered", "attempted_ratio", "delivered_ratio"],
+      "properties": {
+        "target_per_second": {"type": "number", "minimum": 0},
+        "target_count": {"type": "number", "minimum": 0},
+        "minimum_delivery_ratio": {"type": "number", "minimum": 0, "maximum": 1},
+        "delivery_tolerance_ratio": {"type": "number", "minimum": 0, "maximum": 1},
+        "minimum_count": {"type": "integer", "minimum": 0},
+        "attempted": {"type": "integer", "minimum": 0},
+        "accepted": {"type": "integer", "minimum": 0},
+        "completed": {"type": "integer", "minimum": 0},
+        "rejected": {"type": "integer", "minimum": 0},
+        "throttled": {"type": "integer", "minimum": 0},
+        "unoffered": {"type": "integer", "minimum": 0},
+        "attempted_ratio": {"oneOf": [{"type": "number", "minimum": 0}, {"type": "null"}]},
+        "delivered_ratio": {"oneOf": [{"type": "number", "minimum": 0}, {"type": "null"}]}
       }
     }
   }

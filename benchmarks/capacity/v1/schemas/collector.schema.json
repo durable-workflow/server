@@ -18,7 +18,7 @@
   "properties": {
     "$schema": {"type": "string"},
     "schema": {"const": "durable-workflow.capacity-benchmark-collector/v1"},
-    "suite_version": {"const": "1.0.0"},
+    "suite_version": {"const": "1.1.0"},
     "profile_id": {"type": "string", "minLength": 1},
     "entrypoint": {
       "type": "array",

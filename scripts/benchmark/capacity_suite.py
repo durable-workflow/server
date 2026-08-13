@@ -32,6 +32,7 @@ RESULT_SCHEMA = "durable-workflow.capacity-benchmark-result/v1"
 CORPUS_SCHEMA = "durable-workflow.capacity-benchmark-regression-corpus/v1"
 ADAPTER_SCHEMA = "durable-workflow.capacity-benchmark-adapter/v1"
 COLLECTOR_SCHEMA = "durable-workflow.capacity-benchmark-collector/v1"
+SUITE_VERSION = "1.1.0"
 
 REQUIRED_CELL_IDS = {
     "simple-start-complete",
@@ -46,7 +47,17 @@ REQUIRED_CELL_IDS = {
 }
 REQUIRED_BINDINGS = {"php", "python", "rust"}
 REQUIRED_METRICS = {
+    "offered_load_delivery",
+    "query_acceptances",
+    "query_attempts",
+    "query_completions",
+    "query_rejections",
+    "query_throttles",
     "workflow_starts_per_second",
+    "workflow_start_acceptances",
+    "workflow_start_attempts",
+    "workflow_start_rejections",
+    "workflow_start_throttles",
     "workflow_completions_per_second",
     "activity_dispatches_per_second",
     "schedule_to_start_latency_ms",
@@ -259,8 +270,8 @@ def validate_profile(profile: dict[str, Any]) -> None:
 def validate_suite(suite: dict[str, Any], suite_path: Path = DEFAULT_SUITE) -> None:
     if suite.get("schema") != SUITE_SCHEMA:
         raise ContractError(f"suite schema must be {SUITE_SCHEMA}")
-    if suite.get("suite_version") != "1.0.0":
-        raise ContractError("v1 suite path must contain suite_version 1.0.0")
+    if suite.get("suite_version") != SUITE_VERSION:
+        raise ContractError(f"v1 suite path must contain suite_version {SUITE_VERSION}")
     if suite_path.parent.name != "v1":
         raise ContractError("suite.json must remain under its immutable v1 path")
 
@@ -289,6 +300,7 @@ def validate_suite(suite: dict[str, Any], suite_path: Path = DEFAULT_SUITE) -> N
     ):
         raise ContractError("operating point selection must reject transient spikes")
     for field in (
+        "minimum_offered_load_delivery_ratio",
         "minimum_completion_ratio",
         "maximum_error_rate",
         "maximum_throttle_rate",
@@ -300,6 +312,10 @@ def validate_suite(suite: dict[str, Any], suite_path: Path = DEFAULT_SUITE) -> N
         "maximum_queue_backlog",
     ):
         _number(rule.get(field), f"operating_point_rule.{field}", minimum=0)
+    if float(rule["minimum_offered_load_delivery_ratio"]) > 1:
+        raise ContractError(
+            "operating_point_rule.minimum_offered_load_delivery_ratio cannot exceed 1"
+        )
 
     driver = _object(suite.get("driver_contract"), "driver_contract")
     if driver.get("protocol") != "newline_delimited_capacity_observation_v1":
@@ -389,6 +405,12 @@ def validate_suite(suite: dict[str, Any], suite_path: Path = DEFAULT_SUITE) -> N
                         f"{path}.workload.{definition_kind}[{definition_index}].type",
                     )
                 )
+                if definition_kind == "queries":
+                    _number(
+                        definition.get("rate_per_load_unit_per_second"),
+                        f"{path}.workload.queries[{definition_index}].rate_per_load_unit_per_second",
+                        minimum=0.001,
+                    )
             if len(definition_types) != len(set(definition_types)):
                 raise ContractError(
                     f"{path}.workload.{definition_kind} cannot repeat a type"
@@ -839,8 +861,8 @@ def validate_observation(observation: dict[str, Any], path: str) -> None:
         observation.get("interval_seconds"), f"{path}.interval_seconds", minimum=0.001
     )
     control = _object(observation.get("control"), f"{path}.control")
-    if control.get("suite_version") != "1.0.0":
-        raise ContractError(f"{path}.control.suite_version must be 1.0.0")
+    if control.get("suite_version") != SUITE_VERSION:
+        raise ContractError(f"{path}.control.suite_version must be {SUITE_VERSION}")
     for field, minimum in (
         ("deterministic_seed", 0),
         ("concurrent_open_workflows", 1),
@@ -850,6 +872,26 @@ def validate_observation(observation: dict[str, Any], path: str) -> None:
         ("duration_seconds", 1),
     ):
         _integer(control.get(field), f"{path}.control.{field}", minimum=minimum)
+    offered_load = _object(control.get("offered_load"), f"{path}.control.offered_load")
+    _number(
+        offered_load.get("workflow_starts_per_second"),
+        f"{path}.control.offered_load.workflow_starts_per_second",
+        minimum=0.001,
+    )
+    _number(
+        offered_load.get("query_operations_per_second"),
+        f"{path}.control.offered_load.query_operations_per_second",
+        minimum=0,
+    )
+    minimum_delivery_ratio = _number(
+        offered_load.get("minimum_delivery_ratio"),
+        f"{path}.control.offered_load.minimum_delivery_ratio",
+        minimum=0,
+    )
+    if minimum_delivery_ratio > 1:
+        raise ContractError(
+            f"{path}.control.offered_load.minimum_delivery_ratio cannot exceed 1"
+        )
     termination = _object(control.get("termination"), f"{path}.control.termination")
     if termination.get("condition") != "duration_elapsed_then_open_workflows_drained":
         raise ContractError(f"{path}.control.termination.condition is unsupported")
@@ -867,6 +909,15 @@ def validate_observation(observation: dict[str, Any], path: str) -> None:
         "throttles",
     ):
         _integer(counters.get(field), f"{path}.counters.{field}", minimum=0)
+    demand = _object(observation.get("demand"), f"{path}.demand")
+    for operation in ("workflow_starts", "query_operations"):
+        operation_demand = _object(demand.get(operation), f"{path}.demand.{operation}")
+        for field in ("attempted", "accepted", "completed", "rejected", "throttled"):
+            _integer(
+                operation_demand.get(field),
+                f"{path}.demand.{operation}.{field}",
+                minimum=0,
+            )
     latencies = _object(observation.get("latencies_ms"), f"{path}.latencies_ms")
     for field in ("schedule_to_start", "replay", "query"):
         for index, value in enumerate(
@@ -1034,6 +1085,19 @@ def reduce_step(
         )
         if float(drain[0]["interval_seconds"]) > drain_timeout + 1e-6:
             raise ContractError("drain evidence exceeds the declared drain timeout")
+    offered_load = measurement[0]["control"]["offered_load"]
+    if any(row["control"]["offered_load"] != offered_load for row in ordered[1:]):
+        raise ContractError("a load step must retain one offered-load contract")
+    load_step = int(ordered[0]["load_step"])
+    if not math.isclose(
+        float(offered_load["workflow_starts_per_second"]),
+        float(load_step),
+        rel_tol=0.0,
+        abs_tol=1e-9,
+    ):
+        raise ContractError(
+            "workflow offered-load rate must equal the declared load step"
+        )
     duration = sum(float(row["interval_seconds"]) for row in measurement)
     totals = {
         field: sum(int(row["counters"][field]) for row in measurement)
@@ -1045,6 +1109,66 @@ def reduce_step(
             "throttles",
         )
     }
+    demand_fields = ("attempted", "accepted", "completed", "rejected", "throttled")
+    demand_totals = {
+        operation: {
+            field: sum(int(row["demand"][operation][field]) for row in measurement)
+            for field in demand_fields
+        }
+        for operation in ("workflow_starts", "query_operations")
+    }
+    all_demand_totals = {
+        operation: {
+            field: sum(int(row["demand"][operation][field]) for row in ordered)
+            for field in demand_fields
+        }
+        for operation in ("workflow_starts", "query_operations")
+    }
+    for operation, operation_demand in all_demand_totals.items():
+        resolved = (
+            operation_demand["accepted"]
+            + operation_demand["rejected"]
+            + operation_demand["throttled"]
+        )
+        if operation_demand["attempted"] != resolved:
+            raise ContractError(
+                f"{operation} demand attempts must resolve as accepted, rejected, or throttled"
+            )
+    all_counter_totals = {
+        field: sum(int(row["counters"][field]) for row in ordered)
+        for field in ("workflow_starts", "workflow_completions", "errors", "throttles")
+    }
+    if (
+        all_demand_totals["workflow_starts"]["accepted"]
+        != all_counter_totals["workflow_starts"]
+        or all_demand_totals["workflow_starts"]["completed"]
+        != all_counter_totals["workflow_completions"]
+    ):
+        raise ContractError(
+            "workflow demand evidence contradicts workflow start and completion counters"
+        )
+    demand_rejections = sum(
+        operation["rejected"] for operation in all_demand_totals.values()
+    )
+    demand_throttles = sum(
+        operation["throttled"] for operation in all_demand_totals.values()
+    )
+    if (
+        demand_rejections > all_counter_totals["errors"]
+        or demand_throttles > all_counter_totals["throttles"]
+    ):
+        raise ContractError(
+            "rejected and throttled demand cannot exceed aggregate failure counters"
+        )
+    query_latency_samples = sum(len(row["latencies_ms"]["query"]) for row in ordered)
+    if (
+        all_demand_totals["query_operations"]["accepted"]
+        != all_demand_totals["query_operations"]["completed"]
+        or all_demand_totals["query_operations"]["completed"] != query_latency_samples
+    ):
+        raise ContractError(
+            "query demand evidence contradicts completed query latency samples"
+        )
     attempts = totals["workflow_starts"] + totals["errors"] + totals["throttles"]
     components = _component_summary(measurement)
     cpu_utilizations = [
@@ -1112,6 +1236,42 @@ def reduce_step(
         and int(termination["infrastructure"]["queue_backlog"]) == 0
     )
     duration_tolerance = max(1e-6, len(measurement) * 5e-7)
+    minimum_delivery_ratio = float(offered_load["minimum_delivery_ratio"])
+
+    def delivery_summary(
+        operation: str, target_rate: float, delivered_field: str
+    ) -> dict[str, Any]:
+        target_count = target_rate * required_measurement_seconds
+        minimum_count = math.ceil(target_count * minimum_delivery_ratio - 1e-9)
+        operation_demand = demand_totals[operation]
+        attempted = operation_demand["attempted"]
+        delivered = operation_demand[delivered_field]
+        return {
+            "target_per_second": round(target_rate, 6),
+            "target_count": round(target_count, 6),
+            "minimum_delivery_ratio": minimum_delivery_ratio,
+            "delivery_tolerance_ratio": round(1 - minimum_delivery_ratio, 6),
+            "minimum_count": minimum_count,
+            **operation_demand,
+            "unoffered": max(0, math.ceil(target_count - 1e-9) - attempted),
+            "attempted_ratio": round(attempted / target_count, 6)
+            if target_count
+            else None,
+            "delivered_ratio": round(delivered / target_count, 6)
+            if target_count
+            else None,
+        }
+
+    workflow_delivery = delivery_summary(
+        "workflow_starts",
+        float(offered_load["workflow_starts_per_second"]),
+        "accepted",
+    )
+    query_delivery = delivery_summary(
+        "query_operations",
+        float(offered_load["query_operations_per_second"]),
+        "completed",
+    )
 
     violations: list[str] = []
     checks = (
@@ -1127,6 +1287,24 @@ def reduce_step(
         (
             totals["workflow_completions"] == 0,
             "missing_measurement_completions",
+        ),
+        (
+            workflow_delivery["attempted"] < workflow_delivery["minimum_count"],
+            "workflow_offer_underdelivery",
+        ),
+        (
+            workflow_delivery["accepted"] < workflow_delivery["minimum_count"],
+            "workflow_start_underdelivery",
+        ),
+        (
+            query_delivery["target_count"] > 0
+            and query_delivery["attempted"] < query_delivery["minimum_count"],
+            "query_offer_underdelivery",
+        ),
+        (
+            query_delivery["target_count"] > 0
+            and query_delivery["completed"] < query_delivery["minimum_count"],
+            "query_completion_underdelivery",
         ),
         (
             latencies["schedule_to_start"]["p99"] is None,
@@ -1195,8 +1373,12 @@ def reduce_step(
     violations.extend(name for failed, name in checks if failed)
 
     return {
-        "load_step": int(ordered[0]["load_step"]),
+        "load_step": load_step,
         "measurement_seconds": round(duration, 6),
+        "offered_load": {
+            "workflow_starts": workflow_delivery,
+            "query_operations": query_delivery,
+        },
         "rates": {
             "workflow_starts_per_second": round(
                 totals["workflow_starts"] / duration, 6
@@ -1265,6 +1447,7 @@ def reduce_step(
                 "activity_dispatches": int(drain[0]["counters"]["activity_dispatches"]),
                 "errors": int(drain[0]["counters"]["errors"]),
                 "throttles": int(drain[0]["counters"]["throttles"]),
+                "demand": drain[0]["demand"],
                 "latency_samples": sum(
                     len(drain[0]["latencies_ms"][name])
                     for name in ("schedule_to_start", "replay", "query")
@@ -1278,6 +1461,21 @@ def reduce_step(
         ),
         "saturation": {"sustained": len(violations) > 0, "violations": violations},
         "operating_point_eligible": len(violations) == 0,
+    }
+
+
+def _offered_load_contract(
+    cell: dict[str, Any], load_step: int, rule: dict[str, Any]
+) -> dict[str, float]:
+    query_rate = sum(
+        float(definition.get("rate_per_load_unit_per_second", 0))
+        for definition in cell["workload"].get("queries", [])
+        if isinstance(definition, dict)
+    )
+    return {
+        "workflow_starts_per_second": float(load_step),
+        "query_operations_per_second": round(query_rate * load_step, 6),
+        "minimum_delivery_ratio": float(rule["minimum_offered_load_delivery_ratio"]),
     }
 
 
@@ -1323,7 +1521,7 @@ def reduce_result(
             "reference evidence must retain its deterministic-model identity"
         )
     cell = next(cell for cell in suite["cells"] if cell["id"] == cell_id)
-    expected_control = (
+    expected_base_control = (
         {
             "suite_version": suite["suite_version"],
             "deterministic_seed": int(
@@ -1357,6 +1555,14 @@ def reduce_result(
         }
     )
     for index, observation in enumerate(observations):
+        expected_control = {
+            **expected_base_control,
+            "offered_load": _offered_load_contract(
+                cell,
+                int(observation["load_step"]),
+                suite["operating_point_rule"],
+            ),
+        }
         if observation["control"] != expected_control:
             raise ContractError(
                 f"observations[{index}].control must exactly match the declared execution"
@@ -1449,10 +1655,12 @@ def reduce_result(
             if evidence_class == "harness_reference"
             else cell["execution"]["warmup_seconds"],
             "duration_seconds": required_measurement_seconds,
-            "deterministic_seed": expected_control["deterministic_seed"],
-            "concurrent_open_workflows": expected_control["concurrent_open_workflows"],
-            "client_concurrency": expected_control["client_concurrency"],
-            "worker_concurrency": expected_control["worker_concurrency"],
+            "deterministic_seed": expected_base_control["deterministic_seed"],
+            "concurrent_open_workflows": expected_base_control[
+                "concurrent_open_workflows"
+            ],
+            "client_concurrency": expected_base_control["client_concurrency"],
+            "worker_concurrency": expected_base_control["worker_concurrency"],
             "termination": (
                 {
                     "condition": "bounded_reference_samples_emitted",
@@ -1486,10 +1694,10 @@ def _reference_observations(
         open_workflows = 0
         for sample_index in range(int(reference["samples_per_step"])):
             # The arithmetic is deliberately transparent and stable across Python versions.
-            jitter = ((seed + load_step * 31 + sample_index * 17) % 9) - 4
-            starts = load_step * 2 + jitter // 3
+            starts = load_step
             saturated = load_step == max(reference["load_steps"])
             completions = starts - (1 if saturated and sample_index % 2 == 0 else 0)
+            throttles = 1 if saturated and sample_index % 2 == 0 else 0
             open_workflows += starts - completions
             latency_base = load_step * (110 if saturated else 35)
             schedule_latencies = [
@@ -1540,6 +1748,15 @@ def _reference_observations(
                         "warmup_seconds": 0,
                         "duration_seconds": int(reference["samples_per_step"])
                         * int(reference["sample_interval_seconds"]),
+                        "offered_load": _offered_load_contract(
+                            next(
+                                cell
+                                for cell in suite["cells"]
+                                if cell["id"] == reference["cell_id"]
+                            ),
+                            int(load_step),
+                            suite["operating_point_rule"],
+                        ),
                         "termination": {
                             "condition": "duration_elapsed_then_open_workflows_drained",
                             "drain_timeout_seconds": 1,
@@ -1550,7 +1767,23 @@ def _reference_observations(
                         "workflow_completions": completions,
                         "activity_dispatches": 0,
                         "errors": 0,
-                        "throttles": 1 if saturated and sample_index % 2 == 0 else 0,
+                        "throttles": throttles,
+                    },
+                    "demand": {
+                        "workflow_starts": {
+                            "attempted": starts + throttles,
+                            "accepted": starts,
+                            "completed": completions,
+                            "rejected": 0,
+                            "throttled": throttles,
+                        },
+                        "query_operations": {
+                            "attempted": 0,
+                            "accepted": 0,
+                            "completed": 0,
+                            "rejected": 0,
+                            "throttled": 0,
+                        },
                     },
                     "latencies_ms": {
                         "schedule_to_start": schedule_latencies,

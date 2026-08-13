@@ -35,6 +35,15 @@ class CapacityBenchmarkContractTest(unittest.TestCase):
         self.suite = capacity_suite.load_json(capacity_suite.DEFAULT_SUITE)
         self.profile = capacity_suite.load_json(capacity_suite.DEFAULT_PROFILE)
 
+    @staticmethod
+    def empty_demand() -> dict[str, dict[str, int]]:
+        return capacity_matrix.MetricBuffer._empty_demand()
+
+    def offered_load(self, suite: dict, cell: dict, load_step: int) -> dict[str, float]:
+        return capacity_suite._offered_load_contract(
+            cell, load_step, suite["operating_point_rule"]
+        )
+
     def test_repository_suite_and_profile_are_complete(self) -> None:
         capacity_suite.validate_suite(self.suite)
         capacity_suite.validate_profile(self.profile)
@@ -219,6 +228,146 @@ class CapacityBenchmarkContractTest(unittest.TestCase):
         self.assertFalse(step["operating_point_eligible"])
         self.assertIn("complete_measurement_window", step["saturation"]["violations"])
 
+    def test_open_slot_saturation_cannot_qualify_an_underdelivered_step(self) -> None:
+        observations = [
+            copy.deepcopy(row)
+            for row in capacity_suite._reference_observations(self.suite, self.profile)
+            if row["load_step"] == 4
+        ]
+        for row in observations:
+            row["counters"]["workflow_starts"] = 1
+            row["counters"]["workflow_completions"] = 1
+            row["demand"]["workflow_starts"] = {
+                "attempted": 1,
+                "accepted": 1,
+                "completed": 1,
+                "rejected": 0,
+                "throttled": 0,
+            }
+            row["latencies_ms"]["schedule_to_start"] = [10.0]
+            row["concurrent_open_workflows"] = 0
+
+        step = capacity_suite.reduce_step(
+            observations,
+            self.suite["operating_point_rule"],
+            required_measurement_seconds=4,
+            cell_id="simple-start-complete",
+        )
+
+        self.assertEqual(16.0, step["offered_load"]["workflow_starts"]["target_count"])
+        self.assertEqual(4, step["offered_load"]["workflow_starts"]["attempted"])
+        self.assertEqual(12, step["offered_load"]["workflow_starts"]["unoffered"])
+        self.assertNotIn(
+            "complete_measurement_window", step["saturation"]["violations"]
+        )
+        self.assertIn("workflow_offer_underdelivery", step["saturation"]["violations"])
+        self.assertIn("workflow_start_underdelivery", step["saturation"]["violations"])
+        self.assertFalse(step["operating_point_eligible"])
+
+    def test_forged_offered_load_and_unresolved_demand_fail_closed(self) -> None:
+        observations = [
+            copy.deepcopy(row)
+            for row in capacity_suite._reference_observations(self.suite, self.profile)
+            if row["load_step"] == 4
+        ]
+        forged_contract = copy.deepcopy(observations)
+        for row in forged_contract:
+            row["control"]["offered_load"]["workflow_starts_per_second"] = 3.0
+        with self.assertRaisesRegex(
+            capacity_suite.ContractError, "must equal the declared load step"
+        ):
+            capacity_suite.reduce_step(
+                forged_contract,
+                self.suite["operating_point_rule"],
+                required_measurement_seconds=4,
+                cell_id="simple-start-complete",
+            )
+
+        unresolved = copy.deepcopy(observations)
+        unresolved[0]["demand"]["workflow_starts"]["attempted"] += 1
+        with self.assertRaisesRegex(
+            capacity_suite.ContractError, "must resolve as accepted"
+        ):
+            capacity_suite.reduce_step(
+                unresolved,
+                self.suite["operating_point_rule"],
+                required_measurement_seconds=4,
+                cell_id="simple-start-complete",
+            )
+
+    def test_slow_collection_cannot_hide_admission_loss(self) -> None:
+        observations = [
+            copy.deepcopy(row)
+            for row in capacity_suite._reference_observations(self.suite, self.profile)
+            if row["load_step"] == 4
+        ]
+        for index, row in enumerate(observations):
+            delivered = 4 if index == 0 else 0
+            row["counters"]["workflow_starts"] = delivered
+            row["counters"]["workflow_completions"] = delivered
+            row["demand"]["workflow_starts"] = {
+                "attempted": delivered,
+                "accepted": delivered,
+                "completed": delivered,
+                "rejected": 0,
+                "throttled": 0,
+            }
+            row["latencies_ms"]["schedule_to_start"] = [10.0] * delivered
+            row["concurrent_open_workflows"] = 0
+
+        step = capacity_suite.reduce_step(
+            observations,
+            self.suite["operating_point_rule"],
+            required_measurement_seconds=4,
+            cell_id="simple-start-complete",
+        )
+
+        self.assertEqual(4, step["offered_load"]["workflow_starts"]["attempted"])
+        self.assertEqual(4.0, step["measurement_seconds"])
+        self.assertIn("workflow_offer_underdelivery", step["saturation"]["violations"])
+        self.assertFalse(step["operating_point_eligible"])
+
+    def test_serial_query_bottleneck_cannot_qualify_query_underdelivery(
+        self,
+    ) -> None:
+        observations = [
+            copy.deepcopy(row)
+            for row in capacity_suite._reference_observations(self.suite, self.profile)
+            if row["load_step"] == 4
+        ]
+        query_cell = next(
+            cell for cell in self.suite["cells"] if cell["id"] == "query-inspection"
+        )
+        for row in observations:
+            row["control"]["offered_load"] = self.offered_load(
+                self.suite, query_cell, 4
+            )
+            row["demand"]["query_operations"] = {
+                "attempted": 1,
+                "accepted": 1,
+                "completed": 1,
+                "rejected": 0,
+                "throttled": 0,
+            }
+            row["latencies_ms"]["query"] = [10.0]
+
+        step = capacity_suite.reduce_step(
+            observations,
+            self.suite["operating_point_rule"],
+            required_measurement_seconds=4,
+            cell_id="query-inspection",
+        )
+
+        query_delivery = step["offered_load"]["query_operations"]
+        self.assertEqual(80.0, query_delivery["target_count"])
+        self.assertEqual(4, query_delivery["attempted"])
+        self.assertEqual(4, query_delivery["completed"])
+        self.assertIn("query_offer_underdelivery", step["saturation"]["violations"])
+        self.assertIn(
+            "query_completion_underdelivery", step["saturation"]["violations"]
+        )
+        self.assertFalse(step["operating_point_eligible"])
+
     def test_drain_performance_cannot_qualify_a_measurement_window(self) -> None:
         measurement = [
             copy.deepcopy(row)
@@ -230,6 +379,7 @@ class CapacityBenchmarkContractTest(unittest.TestCase):
         for row in measurement:
             open_workflows += row["counters"]["workflow_starts"]
             row["counters"]["workflow_completions"] = 0
+            row["demand"]["workflow_starts"]["completed"] = 0
             row["counters"]["activity_dispatches"] = 0
             row["latencies_ms"]["schedule_to_start"] = [10.0]
             row["concurrent_open_workflows"] = open_workflows
@@ -244,6 +394,15 @@ class CapacityBenchmarkContractTest(unittest.TestCase):
             "activity_dispatches": 1_000,
             "errors": 7,
             "throttles": 11,
+        }
+        drain["demand"] = self.empty_demand()
+        drain["demand"]["workflow_starts"]["completed"] = starts
+        drain["demand"]["query_operations"] = {
+            "attempted": 1,
+            "accepted": 1,
+            "completed": 1,
+            "rejected": 0,
+            "throttled": 0,
         }
         drain["latencies_ms"] = {
             "schedule_to_start": [100_000.0],
@@ -291,6 +450,7 @@ class CapacityBenchmarkContractTest(unittest.TestCase):
             "worker_concurrency": cell["execution"]["worker_concurrency"],
             "warmup_seconds": cell["execution"]["warmup_seconds"],
             "duration_seconds": cell["execution"]["duration_seconds"],
+            "offered_load": self.offered_load(capacity_run, cell, 4),
             "termination": cell["execution"]["termination"],
         }
         capacity_observations = copy.deepcopy([*measurement, drain])
@@ -325,23 +485,34 @@ class CapacityBenchmarkContractTest(unittest.TestCase):
         }
 
         with mock.patch.object(capacity_matrix.time, "monotonic", return_value=9.0):
+            metrics.workflow_attempted()
             metrics.started()
             metrics.completed(evidence, include_replay=True)
+            metrics.workflow_attempted()
             metrics.started()
-            metrics.query(11.0)
+            metrics.query_attempted()
+            metrics.query_completed(11.0)
         with mock.patch.object(capacity_matrix.time, "monotonic", return_value=10.0):
             metrics.completed(evidence, include_replay=True)
+            metrics.workflow_attempted()
             metrics.started()
             metrics.completed(evidence, include_replay=True)
             metrics.failed({"status": 429, "error": "throttled"})
-            metrics.query(999.0)
+            metrics.query_attempted()
+            metrics.query_completed(999.0)
+            metrics.workflow_attempted(recorded_at=9.5)
             metrics.started(recorded_at=9.5)
             metrics.completed(evidence, include_replay=True, recorded_at=9.5)
 
-        measurement_counters, measurement_latencies, measurement_open = (
-            metrics.snapshot("measurement")
+        (
+            measurement_counters,
+            measurement_latencies,
+            measurement_demand,
+            measurement_open,
+        ) = metrics.snapshot("measurement")
+        drain_counters, drain_latencies, drain_demand, drain_open = metrics.snapshot(
+            "drain"
         )
-        drain_counters, drain_latencies, drain_open = metrics.snapshot("drain")
 
         self.assertEqual(3, measurement_counters["workflow_starts"])
         self.assertEqual(2, measurement_counters["workflow_completions"])
@@ -349,6 +520,17 @@ class CapacityBenchmarkContractTest(unittest.TestCase):
         self.assertEqual([5.0, 5.0], measurement_latencies["schedule_to_start"])
         self.assertEqual([7.0, 7.0], measurement_latencies["replay"])
         self.assertEqual([11.0], measurement_latencies["query"])
+        self.assertEqual(
+            {
+                "attempted": 3,
+                "accepted": 3,
+                "completed": 2,
+                "rejected": 0,
+                "throttled": 0,
+            },
+            measurement_demand["workflow_starts"],
+        )
+        self.assertEqual(1, measurement_demand["query_operations"]["completed"])
         self.assertEqual(1, measurement_open)
 
         self.assertEqual(1, drain_counters["workflow_starts"])
@@ -358,11 +540,35 @@ class CapacityBenchmarkContractTest(unittest.TestCase):
         self.assertEqual([5.0, 5.0], drain_latencies["schedule_to_start"])
         self.assertEqual([7.0, 7.0], drain_latencies["replay"])
         self.assertEqual([999.0], drain_latencies["query"])
+        self.assertEqual(1, drain_demand["query_operations"]["attempted"])
+        self.assertEqual(1, drain_demand["query_operations"]["completed"])
         self.assertEqual(0, drain_open)
         with self.assertRaisesRegex(
             capacity_matrix.MatrixError, "measurement phase has already begun"
         ):
             metrics.begin_measurement(11.0)
+
+    def test_demand_accounting_separates_rejection_from_server_throttling(
+        self,
+    ) -> None:
+        metrics = capacity_matrix.MetricBuffer()
+        metrics.begin_measurement(10.0)
+
+        metrics.workflow_attempted(recorded_at=9.0)
+        metrics.workflow_rejected({"status": 429}, recorded_at=9.1)
+        metrics.query_attempted(recorded_at=9.2)
+        metrics.query_rejected({"error": "invalid query"}, recorded_at=9.3)
+
+        counters, _, demand, _ = metrics.snapshot("measurement")
+
+        self.assertEqual(1, counters["throttles"])
+        self.assertEqual(1, counters["errors"])
+        self.assertEqual(1, demand["workflow_starts"]["attempted"])
+        self.assertEqual(1, demand["workflow_starts"]["throttled"])
+        self.assertEqual(0, demand["workflow_starts"]["rejected"])
+        self.assertEqual(1, demand["query_operations"]["attempted"])
+        self.assertEqual(1, demand["query_operations"]["rejected"])
+        self.assertEqual(0, demand["query_operations"]["throttled"])
 
     def test_forged_measurement_duration_and_unconverged_drain_fail_closed(
         self,
@@ -374,12 +580,14 @@ class CapacityBenchmarkContractTest(unittest.TestCase):
         ]
         measurement[-1]["interval_seconds"] += 1
         measurement[-1]["counters"]["workflow_completions"] -= 1
+        measurement[-1]["demand"]["workflow_starts"]["completed"] -= 1
         measurement[-1]["concurrent_open_workflows"] = 1
         drain = copy.deepcopy(measurement[-1])
         drain["sample_index"] = len(measurement)
         drain["phase"] = "drain"
         drain["interval_seconds"] = 1.0
         drain["counters"] = {key: 0 for key in drain["counters"]}
+        drain["demand"] = self.empty_demand()
         drain["latencies_ms"] = {key: [] for key in drain["latencies_ms"]}
         drain["concurrent_open_workflows"] = 1
         drain["infrastructure"]["queue_backlog"] = 1
@@ -447,6 +655,16 @@ class CapacityBenchmarkContractTest(unittest.TestCase):
             ("counters", "activity_dispatches"),
             ("counters", "errors"),
             ("counters", "throttles"),
+            ("demand", "workflow_starts", "attempted"),
+            ("demand", "workflow_starts", "accepted"),
+            ("demand", "workflow_starts", "completed"),
+            ("demand", "workflow_starts", "rejected"),
+            ("demand", "workflow_starts", "throttled"),
+            ("demand", "query_operations", "attempted"),
+            ("demand", "query_operations", "accepted"),
+            ("demand", "query_operations", "completed"),
+            ("demand", "query_operations", "rejected"),
+            ("demand", "query_operations", "throttled"),
             ("concurrent_open_workflows",),
             ("infrastructure", "components", component, "assigned_memory_bytes"),
             ("infrastructure", "components", component, "consumed_memory_bytes"),
@@ -538,6 +756,7 @@ class CapacityBenchmarkContractTest(unittest.TestCase):
                 "worker_concurrency": mixed_cell["execution"]["worker_concurrency"],
                 "warmup_seconds": mixed_cell["execution"]["warmup_seconds"],
                 "duration_seconds": mixed_cell["execution"]["duration_seconds"],
+                "offered_load": self.offered_load(mixed_suite, mixed_cell, 4),
                 "termination": mixed_cell["execution"]["termination"],
             }
             row["counters"]["activity_dispatches"] = 1
@@ -554,6 +773,7 @@ class CapacityBenchmarkContractTest(unittest.TestCase):
             "errors": 0,
             "throttles": 0,
         }
+        drain["demand"] = self.empty_demand()
         drain["latencies_ms"] = {"schedule_to_start": [], "replay": [], "query": []}
         drain["concurrent_open_workflows"] = 0
         observations.append(drain)
@@ -598,6 +818,7 @@ class CapacityBenchmarkContractTest(unittest.TestCase):
             "worker_concurrency": cell["execution"]["worker_concurrency"],
             "warmup_seconds": cell["execution"]["warmup_seconds"],
             "duration_seconds": cell["execution"]["duration_seconds"],
+            "offered_load": self.offered_load(suite, cell, 4),
             "termination": cell["execution"]["termination"],
         }
         for row in rows:
@@ -624,6 +845,7 @@ class CapacityBenchmarkContractTest(unittest.TestCase):
         drain["phase"] = "drain"
         drain["interval_seconds"] = 0.001
         drain["counters"] = {key: 0 for key in drain["counters"]}
+        drain["demand"] = self.empty_demand()
         drain["latencies_ms"] = {key: [] for key in drain["latencies_ms"]}
         drain["infrastructure"]["queue_backlog"] = 0
         rows.append(drain)
@@ -668,6 +890,14 @@ class CapacityBenchmarkContractTest(unittest.TestCase):
                 for row in observations:
                     row["latencies_ms"][absent] = []
                     row["latencies_ms"][present] = [10.0]
+                    if present == "query":
+                        row["demand"]["query_operations"] = {
+                            "attempted": 1,
+                            "accepted": 1,
+                            "completed": 1,
+                            "rejected": 0,
+                            "throttled": 0,
+                        }
                 step = capacity_suite.reduce_step(
                     observations,
                     self.suite["operating_point_rule"],

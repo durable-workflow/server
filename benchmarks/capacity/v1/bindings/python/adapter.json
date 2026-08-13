@@ -1,7 +1,7 @@
 {
   "$schema": "../../schemas/adapter.schema.json",
   "schema": "durable-workflow.capacity-benchmark-adapter/v1",
-  "suite_version": "1.0.0",
+  "suite_version": "1.1.0",
   "binding": "python",
   "artifact_key": "sdk_python",
   "artifact": {
