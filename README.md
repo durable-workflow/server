@@ -2,14 +2,6 @@
 
 A standalone, language-neutral workflow orchestration server. Write durable workflows in any language. Built on the same engine as [Durable Workflow](https://github.com/durable-workflow/workflow).
 
-The default `avro` codec uses one fixed recursive
-`durable_workflow.protocol.Value` schema for every workflow, activity, signal,
-query, update, failure, replay, and externally stored payload. Standard Avro
-single-object framing carries the bundled writer-schema fingerprint. PHP,
-Python, and Rust adapters preserve null, booleans, signed 64-bit integers,
-finite doubles, bytes, UTF-8 text, lists, and string-keyed maps without
-customer schemas or a registry. JSON remains an explicit fallback codec.
-
 ## Quick Start
 
 ### Official Image + SQLite
