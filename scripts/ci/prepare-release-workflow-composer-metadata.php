@@ -3,11 +3,14 @@
 
 declare(strict_types=1);
 
+use DurableWorkflow\Server\Ci\WorkflowPackageAuthority;
+
+require_once __DIR__.'/WorkflowPackageAuthority.php';
+
 $packageName = 'durable-workflow/workflow';
-$workflowRef = getenv('WORKFLOW_PACKAGE_REF') ?: '2.0.0-rc.13';
-$workflowCommit = getenv('WORKFLOW_PACKAGE_COMMIT') ?: 'fc28432a82a2433959c6690505c52eabea4aca8c';
 $workflowPath = getenv('WORKFLOW_PACKAGE_PATH') ?: '/workflow';
 $composerPath = getenv('COMPOSER_JSON_PATH') ?: getcwd().'/composer.json';
+$lockPath = getenv('COMPOSER_LOCK_PATH') ?: dirname($composerPath).'/composer.lock';
 $provenancePath = $workflowPath.'/.package-provenance';
 
 /**
@@ -68,6 +71,28 @@ function composerVersionForRef(string $ref): string
     return 'dev-'.$ref;
 }
 
+function environmentOverride(string $name): ?string
+{
+    $value = getenv($name);
+
+    return is_string($value) ? $value : null;
+}
+
+try {
+    $authority = WorkflowPackageAuthority::resolve($composerPath, $lockPath, [
+        'WORKFLOW_PACKAGE_SOURCE' => environmentOverride('WORKFLOW_PACKAGE_SOURCE'),
+        'WORKFLOW_PACKAGE_REF' => environmentOverride('WORKFLOW_PACKAGE_REF'),
+        'WORKFLOW_PACKAGE_COMMIT' => environmentOverride('WORKFLOW_PACKAGE_COMMIT'),
+        'WORKFLOW_PACKAGE_QUALIFICATION_REF' => environmentOverride('WORKFLOW_PACKAGE_QUALIFICATION_REF'),
+    ]);
+} catch (Throwable $throwable) {
+    fail($throwable->getMessage());
+}
+
+$workflowSource = $authority['source'];
+$workflowRef = $authority['ref'];
+$workflowCommit = $authority['commit'];
+
 if (! is_file($composerPath)) {
     fail("Composer manifest {$composerPath} does not exist.");
 }
@@ -90,8 +115,13 @@ if (! is_array($provenance) || count($provenance) < 3) {
     fail("Workflow package provenance {$provenancePath} must contain source, ref, and commit lines.");
 }
 
+$provenanceSource = trim($provenance[0]);
 $provenanceRef = trim($provenance[1]);
 $provenanceCommit = trim($provenance[2]);
+
+if ($provenanceSource !== $workflowSource) {
+    fail("Workflow package provenance source {$provenanceSource} does not match Composer authority {$workflowSource}.");
+}
 
 if ($provenanceRef !== $workflowRef) {
     fail("Workflow package provenance ref {$provenanceRef} does not match WORKFLOW_PACKAGE_REF={$workflowRef}.");

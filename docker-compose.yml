@@ -3,9 +3,9 @@ services:
     build:
       context: .
       args:
-        WORKFLOW_PACKAGE_SOURCE: ${WORKFLOW_PACKAGE_SOURCE:-https://github.com/durable-workflow/workflow.git}
-        WORKFLOW_PACKAGE_REF: ${WORKFLOW_PACKAGE_REF:-2.0.0-rc.13}
-        WORKFLOW_PACKAGE_COMMIT: ${WORKFLOW_PACKAGE_COMMIT:-fc28432a82a2433959c6690505c52eabea4aca8c}
+        WORKFLOW_PACKAGE_SOURCE: ${WORKFLOW_PACKAGE_SOURCE:-}
+        WORKFLOW_PACKAGE_REF: ${WORKFLOW_PACKAGE_REF:-}
+        WORKFLOW_PACKAGE_COMMIT: ${WORKFLOW_PACKAGE_COMMIT:-}
     command: ["server-bootstrap"]
     healthcheck:
       disable: true
@@ -15,7 +15,7 @@ services:
       DW_SERVER_KEY: "${DW_SERVER_KEY:-}"
       DW_SERVER_TOPOLOGY_SHAPE: standalone_server
       DW_SERVER_PROCESS_CLASS: server_http_node
-      APP_VERSION: "${APP_VERSION:-2.0.0-rc.30}"
+      APP_VERSION: "${APP_VERSION:-2.0.0-rc.31}"
       APP_DEBUG: "false"
       DB_CONNECTION: mysql
       DB_HOST: mysql
@@ -45,16 +45,16 @@ services:
     build:
       context: .
       args:
-        WORKFLOW_PACKAGE_SOURCE: ${WORKFLOW_PACKAGE_SOURCE:-https://github.com/durable-workflow/workflow.git}
-        WORKFLOW_PACKAGE_REF: ${WORKFLOW_PACKAGE_REF:-2.0.0-rc.13}
-        WORKFLOW_PACKAGE_COMMIT: ${WORKFLOW_PACKAGE_COMMIT:-fc28432a82a2433959c6690505c52eabea4aca8c}
+        WORKFLOW_PACKAGE_SOURCE: ${WORKFLOW_PACKAGE_SOURCE:-}
+        WORKFLOW_PACKAGE_REF: ${WORKFLOW_PACKAGE_REF:-}
+        WORKFLOW_PACKAGE_COMMIT: ${WORKFLOW_PACKAGE_COMMIT:-}
     ports:
       - "8080:8080"
     environment:
       APP_NAME: "Durable Workflow Server"
       APP_ENV: local
       DW_SERVER_KEY: "${DW_SERVER_KEY:-}"
-      APP_VERSION: "${APP_VERSION:-2.0.0-rc.30}"
+      APP_VERSION: "${APP_VERSION:-2.0.0-rc.31}"
       APP_DEBUG: "false"
       DB_CONNECTION: mysql
       DB_HOST: mysql
@@ -91,9 +91,9 @@ services:
     build:
       context: .
       args:
-        WORKFLOW_PACKAGE_SOURCE: ${WORKFLOW_PACKAGE_SOURCE:-https://github.com/durable-workflow/workflow.git}
-        WORKFLOW_PACKAGE_REF: ${WORKFLOW_PACKAGE_REF:-2.0.0-rc.13}
-        WORKFLOW_PACKAGE_COMMIT: ${WORKFLOW_PACKAGE_COMMIT:-fc28432a82a2433959c6690505c52eabea4aca8c}
+        WORKFLOW_PACKAGE_SOURCE: ${WORKFLOW_PACKAGE_SOURCE:-}
+        WORKFLOW_PACKAGE_REF: ${WORKFLOW_PACKAGE_REF:-}
+        WORKFLOW_PACKAGE_COMMIT: ${WORKFLOW_PACKAGE_COMMIT:-}
     command: php artisan queue:work --sleep=1 --tries=3 --max-time=3600
     healthcheck:
       test: ["CMD", "server-process-healthcheck", "worker"]
@@ -107,7 +107,7 @@ services:
       DW_SERVER_KEY: "${DW_SERVER_KEY:-}"
       DW_SERVER_TOPOLOGY_SHAPE: standalone_server
       DW_SERVER_PROCESS_CLASS: worker_node
-      APP_VERSION: "${APP_VERSION:-2.0.0-rc.30}"
+      APP_VERSION: "${APP_VERSION:-2.0.0-rc.31}"
       DB_CONNECTION: mysql
       DB_HOST: mysql
       DB_PORT: 3306
@@ -131,9 +131,9 @@ services:
     build:
       context: .
       args:
-        WORKFLOW_PACKAGE_SOURCE: ${WORKFLOW_PACKAGE_SOURCE:-https://github.com/durable-workflow/workflow.git}
-        WORKFLOW_PACKAGE_REF: ${WORKFLOW_PACKAGE_REF:-2.0.0-rc.13}
-        WORKFLOW_PACKAGE_COMMIT: ${WORKFLOW_PACKAGE_COMMIT:-fc28432a82a2433959c6690505c52eabea4aca8c}
+        WORKFLOW_PACKAGE_SOURCE: ${WORKFLOW_PACKAGE_SOURCE:-}
+        WORKFLOW_PACKAGE_REF: ${WORKFLOW_PACKAGE_REF:-}
+        WORKFLOW_PACKAGE_COMMIT: ${WORKFLOW_PACKAGE_COMMIT:-}
     # init: true wires Docker's tini as PID 1 so the `sh -c 'while … sleep 10'`
     # loop reaps any short-lived `php artisan` children instead of leaking
     # them as zombies. Without it the container slowly accumulates defunct
@@ -153,7 +153,7 @@ services:
       DW_SERVER_KEY: "${DW_SERVER_KEY:-}"
       DW_SERVER_TOPOLOGY_SHAPE: standalone_server
       DW_SERVER_PROCESS_CLASS: scheduler_node
-      APP_VERSION: "${APP_VERSION:-2.0.0-rc.30}"
+      APP_VERSION: "${APP_VERSION:-2.0.0-rc.31}"
       DB_CONNECTION: mysql
       DB_HOST: mysql
       DB_PORT: 3306

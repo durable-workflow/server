@@ -67,6 +67,13 @@ chart MINOR bump and an entry below.
 
 ## Per-version migration notes
 
+### 0.1.21
+
+This release advances the chart Server identity to `2.0.0-rc.31` and derives
+the embedded Workflow package from the Server Composer lock. The default
+runtime image remains governed by the separately qualified compatibility
+authority. Existing `0.1.20` values remain compatible.
+
 ### 0.1.20
 
 This release routes the default runtime image through the passing public

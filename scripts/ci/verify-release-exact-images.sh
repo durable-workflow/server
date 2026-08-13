@@ -14,6 +14,7 @@ run_id="${RELEASE_RUN_ID:-}"
 run_attempt="${RELEASE_RUN_ATTEMPT:-}"
 workflow_package_ref="${WORKFLOW_PACKAGE_REF:-}"
 workflow_package_commit="${WORKFLOW_PACKAGE_COMMIT:-}"
+workflow_package_source="${WORKFLOW_PACKAGE_SOURCE:-}"
 required_platforms="${RELEASE_IMAGE_REQUIRED_PLATFORMS:-linux/amd64 linux/arm64}"
 tmp_root="${RUNNER_TEMP:-${TMPDIR:-/tmp}}"
 tmp_dir="$(mktemp -d "${tmp_root}/release-exact-images.XXXXXX")"
@@ -104,6 +105,7 @@ verify_ref_metadata() {
             "dev.durable-workflow.release.tag=${release_tag}" \
             "dev.durable-workflow.release.run-id=${run_id}" \
             "dev.durable-workflow.release.run-attempt=${run_attempt}" \
+            "dev.durable-workflow.workflow.source=${workflow_package_source}" \
             "dev.durable-workflow.workflow.version=${workflow_package_ref}" \
             "dev.durable-workflow.workflow.commit=${workflow_package_commit}"
         do
@@ -131,6 +133,33 @@ if [ -z "$platform_list" ]; then
     fail "Exact release image platforms required" "Cannot verify exact image publication without at least one required platform." "exact_required_platforms_missing"
 fi
 
+release_identity_present=false
+for identity_value in \
+    "$release_commit" \
+    "$run_id" \
+    "$run_attempt" \
+    "$workflow_package_source" \
+    "$workflow_package_ref" \
+    "$workflow_package_commit"
+do
+    if [ -n "$identity_value" ]; then
+        release_identity_present=true
+    fi
+done
+
+if [ "$release_identity_present" = "true" ]; then
+    if [ -z "$release_commit" ] \
+        || [ -z "$run_id" ] \
+        || [ -z "$run_attempt" ] \
+        || [ -z "$workflow_package_source" ] \
+        || [ -z "$workflow_package_ref" ] \
+        || [ -z "$workflow_package_commit" ]; then
+        fail "Exact release image identity incomplete" "Release commit, run identity, and the complete locked Workflow package source, version, and commit are required together." "exact_release_identity_incomplete"
+    fi
+
+    verify_published_metadata=true
+fi
+
 direct_build_digest="$(extract_sha256_digest "$built_image_digest")"
 metadata_build_digest="$(extract_metadata_image_digest "$built_image_metadata")"
 
@@ -145,9 +174,7 @@ else
 fi
 
 if [ -z "$expected_image_digest" ]; then
-    if [ -n "$release_commit" ] && [ -n "$run_id" ] && [ -n "$run_attempt" ]; then
-        verify_published_metadata=true
-    else
+    if [ "$verify_published_metadata" != "true" ]; then
         fail "Exact release image build digest required" "Cannot verify exact image publication because the Docker build step did not expose a digest or containerimage.digest metadata, and release run metadata is incomplete for public exact image tag verification." "exact_build_metadata_digest_missing"
     fi
 fi

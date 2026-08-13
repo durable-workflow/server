@@ -10,8 +10,16 @@ const dockerfilePath = process.env.RELEASE_IMAGE_DOCKERFILE ?? 'Dockerfile';
 const dependencyPaths = [
   'composer.json',
   'composer.lock',
+  'scripts/ci/WorkflowPackageAuthority.php',
   'scripts/ci/prepare-release-workflow-composer-metadata.php',
+  'scripts/ci/resolve-workflow-package-authority.php',
 ];
+const optionalDependencyPaths = new Set([
+  // Trusted recovery tooling may build an older immutable release source whose
+  // Dockerfile predates the Composer-authority resolver.
+  'scripts/ci/WorkflowPackageAuthority.php',
+  'scripts/ci/resolve-workflow-package-authority.php',
+]);
 const optionalEmptyBuildArgs = new Set([
   'WORKFLOW_PACKAGE_QUALIFICATION_REF',
 ]);
@@ -50,7 +58,7 @@ const cacheInputs = {
   base_images: baseImages.map(resolveBaseImage),
   build_args: buildArgs,
   dependency_inputs: Object.fromEntries(
-    dependencyPaths.map((path) => [path, sha256(readRequired(path))]),
+    dependencyPaths.map((path) => [path, dependencyIdentity(path)]),
   ),
 };
 
@@ -84,6 +92,17 @@ function readRequired(path) {
   }
 }
 
+function dependencyIdentity(path) {
+  try {
+    return sha256(readFileSync(resolve(root, path), 'utf8'));
+  } catch (error) {
+    if (optionalDependencyPaths.has(path) && error.code === 'ENOENT') {
+      return 'absent';
+    }
+    throw new Error(`Required cache identity input ${path} is not readable: ${error.message}`);
+  }
+}
+
 function effectiveBuildArgs(source) {
   const args = new Map();
 
@@ -101,7 +120,7 @@ function effectiveBuildArgs(source) {
     args.set(name, value ?? '');
   }
 
-  for (const name of ['WORKFLOW_PACKAGE_REF', 'WORKFLOW_PACKAGE_COMMIT']) {
+  for (const name of ['WORKFLOW_PACKAGE_SOURCE', 'WORKFLOW_PACKAGE_REF', 'WORKFLOW_PACKAGE_COMMIT']) {
     if (!Object.hasOwn(process.env, name) || process.env[name] === '') {
       throw new Error(`${name} must contain the selected Workflow package identity.`);
     }

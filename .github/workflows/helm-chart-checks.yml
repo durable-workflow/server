@@ -170,10 +170,16 @@ jobs:
             --charts "${CHART_PATH}" \
             --validate-maintainers=false
 
+      - name: Resolve locked workflow package authority
+        id: workflow
+        run: php scripts/ci/resolve-workflow-package-authority.php
+
       - name: Run kind smoke script
         env:
           ACTIONS_SERVER_URL: ${{ github.server_url }}
-          WORKFLOW_PACKAGE_COMMIT: fc28432a82a2433959c6690505c52eabea4aca8c
+          WORKFLOW_PACKAGE_SOURCE: ${{ steps.workflow.outputs.source }}
+          WORKFLOW_PACKAGE_REF: ${{ steps.workflow.outputs.ref }}
+          WORKFLOW_PACKAGE_COMMIT: ${{ steps.workflow.outputs.commit }}
           K8S_HELM_SMOKE_KIND_NODE_IMAGE: ${{ env.KIND_NODE_IMAGE }}
           K8S_HELM_SMOKE_CLUSTER: ${{ env.HELM_CT_CLUSTER_NAME }}
           K8S_HELM_SMOKE_REUSE_CLUSTER: "1"

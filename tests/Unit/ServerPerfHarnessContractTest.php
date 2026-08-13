@@ -14,17 +14,83 @@ class ServerPerfHarnessContractTest extends TestCase
         $workflow = file_get_contents(dirname(__DIR__, 2).'/.github/workflows/server-perf.yml');
         $this->assertNotFalse($workflow, '.github/workflows/server-perf.yml must be readable');
 
+        $parsed = Yaml::parse($workflow);
+        $this->assertIsArray($parsed);
+        $steps = [];
+        foreach ($parsed['jobs']['contract']['steps'] ?? [] as $step) {
+            if (isset($step['name'])) {
+                $steps[$step['name']] = $step;
+            }
+        }
+
+        $checkout = $steps['Checkout workflow package'] ?? null;
+        $this->assertIsArray($checkout);
+        $this->assertSame('bash', $checkout['shell'] ?? null);
+        $this->assertSame(
+            [
+                'WORKFLOW_PACKAGE_SOURCE' => '${{ steps.workflow.outputs.source }}',
+                'WORKFLOW_PACKAGE_COMMIT' => '${{ steps.workflow.outputs.commit }}',
+            ],
+            $checkout['env'] ?? null,
+        );
+        $this->assertSame('scripts/ci/checkout-workflow-package-source.sh', $checkout['run'] ?? null);
+
+        $sourceCheckout = file_get_contents(dirname(__DIR__, 2).'/scripts/ci/checkout-workflow-package-source.sh');
+        $this->assertNotFalse($sourceCheckout, 'Workflow source checkout helper must be readable');
+        foreach ([
+            "canonical_source='https://github.com/durable-workflow/workflow.git'",
+            '[[ "$WORKFLOW_PACKAGE_SOURCE" != "$canonical_source" ]]',
+            '[[ ! "$WORKFLOW_PACKAGE_COMMIT" =~ ^[0-9a-f]{40}$ ]]',
+            '[[ -e workflow-package ]]',
+            'GIT_CONFIG_GLOBAL=/dev/null',
+            'GIT_CONFIG_NOSYSTEM=1',
+            'GIT_TERMINAL_PROMPT=0',
+            'GIT_ASKPASS=/bin/false',
+            'SSH_ASKPASS=/bin/false',
+            'git -C workflow-package fetch --no-tags --depth=1 origin "$WORKFLOW_PACKAGE_COMMIT"',
+            'git -C workflow-package checkout --quiet --detach FETCH_HEAD',
+        ] as $needle) {
+            $this->assertStringContainsString($needle, $sourceCheckout);
+        }
+        $this->assertStringNotContainsString('github.repository_owner', $workflow);
+
+        $verification = $steps['Verify workflow package source provenance'] ?? null;
+        $this->assertIsArray($verification);
+        $this->assertSame('bash', $verification['shell'] ?? null);
+        $this->assertSame(
+            [
+                'WORKFLOW_PACKAGE_SOURCE' => '${{ steps.workflow.outputs.source }}',
+                'WORKFLOW_PACKAGE_REF' => '${{ steps.workflow.outputs.ref }}',
+                'WORKFLOW_PACKAGE_COMMIT' => '${{ steps.workflow.outputs.commit }}',
+            ],
+            $verification['env'] ?? null,
+        );
+        $verificationRun = $verification['run'] ?? null;
+        $this->assertIsString($verificationRun);
+        $this->assertSame(1, substr_count($verificationRun, 'git '));
+        foreach ([
+            'git -C workflow-package rev-parse HEAD',
+            'if [[ "$resolved_commit" != "$WORKFLOW_PACKAGE_COMMIT" ]]',
+            '> workflow-package/.package-provenance',
+            'rm -rf workflow-package/.git',
+        ] as $needle) {
+            $this->assertStringContainsString($needle, $verificationRun);
+        }
+
+        $checkoutOffset = strpos($workflow, 'scripts/ci/checkout-workflow-package-source.sh');
         $provenanceOffset = strpos($workflow, '> workflow-package/.package-provenance');
         $removeGitOffset = strpos($workflow, 'rm -rf workflow-package/.git');
         $prepareOffset = strpos($workflow, 'php scripts/ci/prepare-release-workflow-composer-metadata.php');
         $updateOffset = strpos($workflow, 'composer update durable-workflow/workflow');
         $installOffset = strpos($workflow, 'composer install --no-interaction');
 
+        $this->assertIsInt($checkoutOffset);
         $this->assertIsInt($provenanceOffset);
         $this->assertIsInt($removeGitOffset);
         $this->assertIsInt($prepareOffset);
         $this->assertIsInt($updateOffset);
         $this->assertIsInt($installOffset);
+        $this->assertLessThan($provenanceOffset, $checkoutOffset);
         $this->assertLessThan($removeGitOffset, $provenanceOffset);
         $this->assertLessThan($prepareOffset, $removeGitOffset);
         $this->assertLessThan($updateOffset, $prepareOffset);
@@ -168,7 +234,7 @@ class ServerPerfHarnessContractTest extends TestCase
             'DW_PERF_MAX_HEALTH_LATENCY_SECONDS: "3"',
             'DW_PERF_CONTROL_PLANE_INTERVAL_SECONDS: "5"',
             'DW_PERF_MAX_CONTROL_PLANE_LATENCY_SECONDS: "5"',
-            'DW_PERF_WORKFLOW_VERSION: "2.0.0-rc.13"',
+            'DW_PERF_WORKFLOW_VERSION: ${{ steps.workflow.outputs.ref }}',
         ] as $needle) {
             $this->assertStringContainsString(
                 $needle,

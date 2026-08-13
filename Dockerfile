@@ -38,36 +38,24 @@ WORKDIR /app
 # therefore cannot replace a post-verification /workflow or /app copy.
 FROM base AS production
 
-ARG WORKFLOW_PACKAGE_SOURCE=https://github.com/durable-workflow/workflow.git
-ARG WORKFLOW_PACKAGE_REF=2.0.0-rc.13
-ARG WORKFLOW_PACKAGE_COMMIT=fc28432a82a2433959c6690505c52eabea4aca8c
-# Source admission may qualify an already-landed commit before its release tag
-# exists. Public release builds leave this empty and resolve the exact tag.
+ARG WORKFLOW_PACKAGE_SOURCE
+ARG WORKFLOW_PACKAGE_REF
+ARG WORKFLOW_PACKAGE_COMMIT
 ARG WORKFLOW_PACKAGE_QUALIFICATION_REF
+
+COPY composer.json composer.lock ./
+COPY scripts/ci/WorkflowPackageAuthority.php scripts/ci/WorkflowPackageAuthority.php
+COPY scripts/ci/resolve-workflow-package-authority.php scripts/ci/resolve-workflow-package-authority.php
+COPY scripts/ci/prepare-release-workflow-composer-metadata.php scripts/ci/prepare-release-workflow-composer-metadata.php
 
 RUN apt-get update \
     && apt-get install -y --no-install-recommends git \
     && rm -rf /var/lib/apt/lists/* \
-    && if ! printf '%s' "${WORKFLOW_PACKAGE_COMMIT}" | grep -Eq '^[0-9a-f]{40}$'; then \
-         echo "ERROR: WORKFLOW_PACKAGE_COMMIT must be a full lowercase Git SHA" >&2; \
-         exit 1; \
-       fi \
-    && if [ -n "${WORKFLOW_PACKAGE_QUALIFICATION_REF}" ]; then \
-         if ! printf '%s' "${WORKFLOW_PACKAGE_QUALIFICATION_REF}" | grep -Eq '^[0-9a-f]{40}$'; then \
-           echo "ERROR: WORKFLOW_PACKAGE_QUALIFICATION_REF must be a full lowercase Git SHA" >&2; \
-           exit 1; \
-         fi; \
-         if [ "${WORKFLOW_PACKAGE_QUALIFICATION_REF}" != "${WORKFLOW_PACKAGE_COMMIT}" ]; then \
-           echo "ERROR: WORKFLOW_PACKAGE_QUALIFICATION_REF must equal WORKFLOW_PACKAGE_COMMIT" >&2; \
-           exit 1; \
-         fi; \
-         git init /workflow; \
-         git -C /workflow remote add origin "${WORKFLOW_PACKAGE_SOURCE}"; \
-         git -C /workflow fetch --depth 1 origin "${WORKFLOW_PACKAGE_QUALIFICATION_REF}"; \
-         git -C /workflow checkout --detach FETCH_HEAD; \
-       else \
-         git clone --depth 1 --branch "${WORKFLOW_PACKAGE_REF}" "${WORKFLOW_PACKAGE_SOURCE}" /workflow; \
-       fi \
+    && eval "$(php scripts/ci/resolve-workflow-package-authority.php --format=shell)" \
+    && git init /workflow \
+    && git -C /workflow remote add origin "${WORKFLOW_PACKAGE_SOURCE}" \
+    && git -C /workflow fetch --depth 1 origin "${WORKFLOW_PACKAGE_COMMIT}" \
+    && git -C /workflow checkout --detach FETCH_HEAD \
     && RESOLVED_COMMIT="$(git -C /workflow rev-parse HEAD)" \
     && if [ "${RESOLVED_COMMIT}" != "${WORKFLOW_PACKAGE_COMMIT}" ]; then \
          echo "ERROR: Resolved commit ${RESOLVED_COMMIT} does not match pinned WORKFLOW_PACKAGE_COMMIT=${WORKFLOW_PACKAGE_COMMIT}" >&2; \
@@ -80,8 +68,6 @@ RUN apt-get update \
          "${RESOLVED_COMMIT}" \
          > /workflow/.package-provenance
 
-COPY composer.json composer.lock ./
-COPY scripts/ci/prepare-release-workflow-composer-metadata.php scripts/ci/prepare-release-workflow-composer-metadata.php
 RUN php scripts/ci/prepare-release-workflow-composer-metadata.php \
     && composer update durable-workflow/workflow --no-dev --no-scripts --no-autoloader --prefer-dist --no-interaction --no-progress \
     && cp composer.json /tmp/release-composer.json \
@@ -145,9 +131,7 @@ RUN php artisan route:cache \
 
 LABEL org.opencontainers.image.title="Durable Workflow Server" \
       org.opencontainers.image.description="Standalone Durable Workflow server" \
-      dev.durable-workflow.package.source="${WORKFLOW_PACKAGE_SOURCE}" \
-      dev.durable-workflow.package.ref="${WORKFLOW_PACKAGE_REF}" \
-      dev.durable-workflow.package.commit="${WORKFLOW_PACKAGE_COMMIT}"
+      dev.durable-workflow.package.authority="composer.lock"
 
 EXPOSE 8080
 

@@ -257,12 +257,12 @@ The long-running `server`, `worker`, and `scheduler` services each pin
 `DW_SERVER_TOPOLOGY_SHAPE` and `DW_SERVER_PROCESS_CLASS` so
 `GET /api/cluster/info` reports the role class you actually launched during
 local split-role testing.
-The local compose files pass the Workflow ref recorded in their build metadata,
-matching the Dockerfile fallback, so `docker compose up --build` works from a
-clean checkout with Composer metadata aligned to the embedded workflow package.
-Override `WORKFLOW_PACKAGE_SOURCE`, `WORKFLOW_PACKAGE_REF`, or
-`WORKFLOW_PACKAGE_COMMIT` if you need a different package remote, tag, or
-commit guard during image builds.
+The local compose files leave the Workflow build arguments empty, so the
+Dockerfile derives the exact package source, version, and commit from
+`composer.json` and `composer.lock`. Supplying `WORKFLOW_PACKAGE_SOURCE`,
+`WORKFLOW_PACKAGE_REF`, or `WORKFLOW_PACKAGE_COMMIT` turns that value into a
+consistency guard; a value that disagrees with Composer metadata fails the
+build.
 
 ### Using the CLI
 
@@ -1197,14 +1197,13 @@ docker run --rm \
   durable-workflow-server php artisan queue:work database --sleep=1 --tries=3
 ```
 
-The Dockerfile clones the exact `durable-workflow/workflow` ref declared by its
-build metadata and refreshes the Composer package metadata from that source
-before installing production dependencies. Use
-`--build-arg WORKFLOW_PACKAGE_SOURCE=...`,
-`--build-arg WORKFLOW_PACKAGE_REF=...`, and
-`--build-arg WORKFLOW_PACKAGE_COMMIT=...` to point the image build at another
-remote or ref while requiring the resolved commit to match the supplied full
-SHA.
+The Dockerfile clones the exact `durable-workflow/workflow` commit locked by
+Composer and refreshes the package metadata from that verified source before
+installing production dependencies. Optional `WORKFLOW_PACKAGE_SOURCE`,
+`WORKFLOW_PACKAGE_REF`, and `WORKFLOW_PACKAGE_COMMIT` build arguments must match
+the Composer authority. Source-admission jobs may additionally set
+`WORKFLOW_PACKAGE_QUALIFICATION_REF` to the same landed commit when its release
+tag is not available yet; any mismatch fails before the image is assembled.
 
 The production image defaults to `DB_CONNECTION=sqlite`,
 `DB_DATABASE=/app/database/database.sqlite`, `QUEUE_CONNECTION=database`, and
@@ -1318,10 +1317,10 @@ cluster-topology manifest reuses the same matching-role contract and adds
 The `Release` workflow publishes multi-arch images to
 Docker Hub (`durableworkflow/server`) and GitHub Container Registry
 (`ghcr.io/durable-workflow/server`) when a server semver tag is pushed. The
-workflow builds the server image with the public
-exact `durable-workflow/workflow` package declared by the release workflow and
-verifies that its tag resolves to the retained source commit before the image
-can be published.
+workflow builds the server image with the exact public
+`durable-workflow/workflow` package declared by the release source's
+Composer manifest and lock, and verifies its retained source commit before the
+image can be published.
 
 The Server image embeds an already-published Workflow package. When a later
 Server image needs a newer Workflow fix, publish that package first and update

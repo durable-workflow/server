@@ -6,6 +6,7 @@ release_tag="${RELEASE_TAG:-}"
 server_image="${SERVER_IMAGE:-${DOCKERHUB_IMAGE:-durableworkflow/server}:${release_tag}}"
 workflow_package_ref="${WORKFLOW_PACKAGE_REF:-}"
 workflow_package_commit="${WORKFLOW_PACKAGE_COMMIT:-}"
+workflow_package_source="${WORKFLOW_PACKAGE_SOURCE:-}"
 public_catalog_url="${PUBLIC_CATALOG_URL:-https://durable-workflow.github.io/platform-protocol-specs.json}"
 evidence_path="${PROTOCOL_CATALOG_CONFORMANCE_EVIDENCE:-release-protocol-catalog-conformance.json}"
 docker_bin="${DOCKER:-docker}"
@@ -64,6 +65,7 @@ fail() {
     RELEASE_TAG="$release_tag" \
     SERVER_IMAGE="$server_image" \
     PUBLIC_CATALOG_URL="$public_catalog_url" \
+    WORKFLOW_PACKAGE_SOURCE="$workflow_package_source" \
     WORKFLOW_PACKAGE_REF="$workflow_package_ref" \
     WORKFLOW_PACKAGE_COMMIT="$workflow_package_commit" \
     "$node_bin" <<'NODE'
@@ -87,6 +89,7 @@ fs.writeFileSync(process.env.PROTOCOL_CATALOG_CONFORMANCE_EVIDENCE, `${JSON.stri
   public_catalog_url: process.env.PUBLIC_CATALOG_URL || null,
   expected_workflow_package: {
     name: 'durable-workflow/workflow',
+    source: process.env.WORKFLOW_PACKAGE_SOURCE || null,
     version: process.env.WORKFLOW_PACKAGE_REF || null,
     commit: process.env.WORKFLOW_PACKAGE_COMMIT || null,
   },
@@ -117,6 +120,7 @@ NODE
 }
 
 [ -n "$release_tag" ] || fail "release_tag_missing" "RELEASE_TAG is required for published protocol catalog conformance."
+[ -n "$workflow_package_source" ] || fail "workflow_package_source_missing" "WORKFLOW_PACKAGE_SOURCE is required for published protocol catalog conformance."
 [ -n "$workflow_package_ref" ] || fail "workflow_package_ref_missing" "WORKFLOW_PACKAGE_REF is required for published protocol catalog conformance."
 [ -n "$workflow_package_commit" ] || fail "workflow_package_commit_missing" "WORKFLOW_PACKAGE_COMMIT is required for published protocol catalog conformance."
 
@@ -229,6 +233,7 @@ PROTOCOL_CATALOG_DISCOVERY_OUTCOME="pass" \
 RELEASE_TAG="$release_tag" \
 SERVER_IMAGE="$server_image" \
 PUBLIC_CATALOG_URL="$public_catalog_url" \
+WORKFLOW_PACKAGE_SOURCE="$workflow_package_source" \
 WORKFLOW_PACKAGE_REF="$workflow_package_ref" \
 WORKFLOW_PACKAGE_COMMIT="$workflow_package_commit" \
 "$node_bin" scripts/ci/verify-release-protocol-catalog.mjs

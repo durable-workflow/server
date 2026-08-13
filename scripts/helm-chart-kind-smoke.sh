@@ -191,6 +191,15 @@ mkdir -p "${artifact_dir}"
 
 # 1. Build the server image.
 docker_build_args=()
+if [ -n "${WORKFLOW_PACKAGE_SOURCE:-}" ]; then
+  docker_build_args+=(--build-arg "WORKFLOW_PACKAGE_SOURCE=${WORKFLOW_PACKAGE_SOURCE}")
+fi
+if [ -n "${WORKFLOW_PACKAGE_REF:-}" ]; then
+  docker_build_args+=(--build-arg "WORKFLOW_PACKAGE_REF=${WORKFLOW_PACKAGE_REF}")
+fi
+if [ -n "${WORKFLOW_PACKAGE_COMMIT:-}" ]; then
+  docker_build_args+=(--build-arg "WORKFLOW_PACKAGE_COMMIT=${WORKFLOW_PACKAGE_COMMIT}")
+fi
 if [ -n "${WORKFLOW_PACKAGE_QUALIFICATION_REF:-}" ]; then
   docker_build_args+=(--build-arg "WORKFLOW_PACKAGE_QUALIFICATION_REF=${WORKFLOW_PACKAGE_QUALIFICATION_REF}")
 fi

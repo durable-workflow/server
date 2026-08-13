@@ -50,6 +50,9 @@ jobs:
         env:
           CONFORMANCE_BASE_REF: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || github.event.before }}
 
+      - name: Validate embedded Workflow package authority
+        run: php scripts/ci/test-workflow-package-authority.php
+
       - name: Require durable codec evidence
         env:
           CORPUS_BASE_REF: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || github.event_name == 'push' && github.event.before || inputs.corpus_base_ref }}
@@ -78,19 +81,24 @@ jobs:
           fetch-depth: 0
           persist-credentials: false
 
+      - name: Resolve locked workflow package authority
+        id: workflow
+        run: php scripts/ci/resolve-workflow-package-authority.php
+
       - name: Checkout workflow package from GitHub
         uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803  # v6
         with:
           repository: durable-workflow/workflow
-          ref: fc28432a82a2433959c6690505c52eabea4aca8c
+          ref: ${{ steps.workflow.outputs.commit }}
           path: workflow-package
           persist-credentials: false
 
       - name: Verify workflow package source provenance
         shell: bash
         env:
-          WORKFLOW_PACKAGE_REF: 2.0.0-rc.13
-          WORKFLOW_PACKAGE_COMMIT: fc28432a82a2433959c6690505c52eabea4aca8c
+          WORKFLOW_PACKAGE_SOURCE: ${{ steps.workflow.outputs.source }}
+          WORKFLOW_PACKAGE_REF: ${{ steps.workflow.outputs.ref }}
+          WORKFLOW_PACKAGE_COMMIT: ${{ steps.workflow.outputs.commit }}
         run: |
           set -euo pipefail
           resolved_commit="$(git -C workflow-package rev-parse HEAD)"
@@ -99,7 +107,7 @@ jobs:
             exit 1
           fi
           printf '%s\n' \
-            'https://github.com/durable-workflow/workflow.git' \
+            "$WORKFLOW_PACKAGE_SOURCE" \
             "$WORKFLOW_PACKAGE_REF" \
             "$resolved_commit" \
             > workflow-package/.package-provenance

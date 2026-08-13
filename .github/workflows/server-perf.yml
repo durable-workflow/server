@@ -41,6 +41,7 @@ on:
       - "docs/bounded-growth.md"
       - "routes/api.php"
       - "scripts/perf/**"
+      - "scripts/ci/checkout-workflow-package-source.sh"
       - "scripts/benchmark/**"
       - "tests/Unit/BoundedGrowthPolicyTest.php"
       - "tests/Unit/BoundedMetricPolicyTest.php"
@@ -90,6 +91,7 @@ on:
       - "docs/bounded-growth.md"
       - "routes/api.php"
       - "scripts/perf/**"
+      - "scripts/ci/checkout-workflow-package-source.sh"
       - "scripts/benchmark/**"
       - "tests/Unit/BoundedGrowthPolicyTest.php"
       - "tests/Unit/BoundedMetricPolicyTest.php"
@@ -118,17 +120,33 @@ jobs:
       - name: Checkout server
         uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803  # v6
 
+      - name: Resolve locked workflow package authority
+        id: workflow
+        run: php scripts/ci/resolve-workflow-package-authority.php
+
       - name: Checkout workflow package
+        shell: bash
+        env:
+          WORKFLOW_PACKAGE_SOURCE: ${{ steps.workflow.outputs.source }}
+          WORKFLOW_PACKAGE_COMMIT: ${{ steps.workflow.outputs.commit }}
+        run: scripts/ci/checkout-workflow-package-source.sh
+
+      - name: Verify workflow package source provenance
+        shell: bash
+        env:
+          WORKFLOW_PACKAGE_SOURCE: ${{ steps.workflow.outputs.source }}
+          WORKFLOW_PACKAGE_REF: ${{ steps.workflow.outputs.ref }}
+          WORKFLOW_PACKAGE_COMMIT: ${{ steps.workflow.outputs.commit }}
         run: |
-          git init workflow-package
-          git -C workflow-package remote add origin https://github.com/durable-workflow/workflow.git
-          git -C workflow-package fetch --depth=1 origin fc28432a82a2433959c6690505c52eabea4aca8c
-          git -C workflow-package checkout --detach FETCH_HEAD
+          set -euo pipefail
           resolved_commit="$(git -C workflow-package rev-parse HEAD)"
-          test "$resolved_commit" = "fc28432a82a2433959c6690505c52eabea4aca8c"
+          if [[ "$resolved_commit" != "$WORKFLOW_PACKAGE_COMMIT" ]]; then
+            echo "Resolved Workflow commit $resolved_commit does not match $WORKFLOW_PACKAGE_COMMIT" >&2
+            exit 1
+          fi
           printf '%s\n' \
-            'https://github.com/durable-workflow/workflow.git' \
-            '2.0.0-rc.13' \
+            "$WORKFLOW_PACKAGE_SOURCE" \
+            "$WORKFLOW_PACKAGE_REF" \
             "$resolved_commit" \
             > workflow-package/.package-provenance
           rm -rf workflow-package/.git
@@ -188,6 +206,10 @@ jobs:
       - name: Checkout server
         uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803  # v6
 
+      - name: Resolve locked workflow package authority
+        id: workflow
+        run: php scripts/ci/resolve-workflow-package-authority.php
+
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c  # v4
 
@@ -204,7 +226,7 @@ jobs:
           DW_PERF_MAX_HEALTH_LATENCY_SECONDS: "3"
           DW_PERF_CONTROL_PLANE_INTERVAL_SECONDS: "5"
           DW_PERF_MAX_CONTROL_PLANE_LATENCY_SECONDS: "5"
-          DW_PERF_WORKFLOW_VERSION: "2.0.0-rc.13"
+          DW_PERF_WORKFLOW_VERSION: ${{ steps.workflow.outputs.ref }}
           DW_PERF_MAX_SERVER_MEMORY_MB: "768"
           DW_PERF_MAX_POLLING_KEYS: "512"
           DW_PERF_MAX_FINAL_POLLING_KEYS: "0"

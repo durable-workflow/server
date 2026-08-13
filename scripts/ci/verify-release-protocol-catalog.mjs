@@ -8,7 +8,6 @@ const EXPECTED_CATALOG_URL = 'https://durable-workflow.github.io/platform-protoc
 const EXPECTED_AUTHORITY_URL = 'https://durable-workflow.github.io/docs/2.0/platform-protocol-specs';
 const EXPECTED_SPEC_ORIGIN = 'https://durable-workflow.github.io';
 const EXPECTED_SPEC_PATH_PREFIX = '/platform-protocol-specs/';
-const EXPECTED_WORKFLOW_SOURCE = 'https://github.com/durable-workflow/workflow.git';
 const MAX_FINDINGS = 100;
 
 const REQUIRED_TOP_LEVEL_FIELDS = [
@@ -364,13 +363,13 @@ function main() {
   const evidencePath = process.env.PROTOCOL_CATALOG_CONFORMANCE_EVIDENCE;
   const expectedWorkflowRef = process.env.WORKFLOW_PACKAGE_REF;
   const expectedWorkflowCommit = process.env.WORKFLOW_PACKAGE_COMMIT;
-  const expectedWorkflowSource = process.env.WORKFLOW_PACKAGE_SOURCE || EXPECTED_WORKFLOW_SOURCE;
+  const expectedWorkflowSource = process.env.WORKFLOW_PACKAGE_SOURCE;
 
   if (!serverDiscoveryPath || !publicCatalogPath || !evidencePath) {
     throw new Error('SERVER_DISCOVERY_PATH, PUBLIC_CATALOG_PATH, and PROTOCOL_CATALOG_CONFORMANCE_EVIDENCE are required.');
   }
-  if (!expectedWorkflowRef || !expectedWorkflowCommit) {
-    throw new Error('WORKFLOW_PACKAGE_REF and WORKFLOW_PACKAGE_COMMIT are required.');
+  if (!expectedWorkflowSource || !expectedWorkflowRef || !expectedWorkflowCommit) {
+    throw new Error('WORKFLOW_PACKAGE_SOURCE, WORKFLOW_PACKAGE_REF, and WORKFLOW_PACKAGE_COMMIT are required.');
   }
 
   const serverDocument = readJson(serverDiscoveryPath, 'server discovery response');
@@ -489,7 +488,7 @@ try {
         public_catalog_url: process.env.PUBLIC_CATALOG_URL || EXPECTED_CATALOG_URL,
         expected_workflow_package: {
           name: 'durable-workflow/workflow',
-          source: process.env.WORKFLOW_PACKAGE_SOURCE || EXPECTED_WORKFLOW_SOURCE,
+          source: process.env.WORKFLOW_PACKAGE_SOURCE || null,
           version: process.env.WORKFLOW_PACKAGE_REF || null,
           commit: process.env.WORKFLOW_PACKAGE_COMMIT || null,
         },

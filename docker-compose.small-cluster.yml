@@ -5,14 +5,14 @@ x-server-image: &server-image ${DW_SMALL_CLUSTER_IMAGE:-durable-workflow/server-
 x-server-build: &server-build
   context: .
   args:
-    WORKFLOW_PACKAGE_SOURCE: ${WORKFLOW_PACKAGE_SOURCE:-https://github.com/durable-workflow/workflow.git}
-    WORKFLOW_PACKAGE_REF: ${WORKFLOW_PACKAGE_REF:-2.0.0-rc.13}
-    WORKFLOW_PACKAGE_COMMIT: ${WORKFLOW_PACKAGE_COMMIT:-fc28432a82a2433959c6690505c52eabea4aca8c}
+    WORKFLOW_PACKAGE_SOURCE: ${WORKFLOW_PACKAGE_SOURCE:-}
+    WORKFLOW_PACKAGE_REF: ${WORKFLOW_PACKAGE_REF:-}
+    WORKFLOW_PACKAGE_COMMIT: ${WORKFLOW_PACKAGE_COMMIT:-}
 
 x-server-environment: &server-environment
   APP_NAME: "Durable Workflow Server"
   APP_ENV: testing
-  APP_VERSION: ${APP_VERSION:-2.0.0-rc.30}
+  APP_VERSION: ${APP_VERSION:-2.0.0-rc.31}
   APP_DEBUG: "false"
   DW_SERVER_KEY: ${DW_SERVER_KEY:-base64:5Zt4nUhlCm3DD0nLXZJQdHiwPfb56yGo9gNV/g3jYbY=}
   DB_CONNECTION: ${DW_SMALL_CLUSTER_DB:-mysql}

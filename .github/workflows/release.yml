@@ -32,9 +32,6 @@ env:
   RELEASE_IMAGE_PLATFORMS: linux/amd64,linux/arm64
   PHPREDIS_VERSION: 6.3.0
   PHPREDIS_COMMIT: df4fab2de7fc327c54c94a13af2b9542e4fbd720
-  WORKFLOW_PACKAGE_SOURCE: https://github.com/durable-workflow/workflow.git
-  WORKFLOW_PACKAGE_REF: 2.0.0-rc.13
-  WORKFLOW_PACKAGE_COMMIT: fc28432a82a2433959c6690505c52eabea4aca8c
 
 jobs:
   publish:
@@ -96,11 +93,12 @@ jobs:
           GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: scripts/ci/validate-release-image-publish.sh
 
-      - name: Select compatible workflow package version
+      - name: Resolve locked workflow package authority
         id: workflow
         env:
-          SERVER_WORKER_PROTOCOL_FILE: release-source/app/Support/WorkerProtocol.php
-        run: scripts/ci/select-compatible-workflow-package-ref.sh
+          COMPOSER_JSON_PATH: release-source/composer.json
+          COMPOSER_LOCK_PATH: release-source/composer.lock
+        run: php scripts/ci/resolve-workflow-package-authority.php
 
       - name: Set up QEMU
         uses: docker/setup-qemu-action@96fe6ef7f33517b61c61be40b68a1882f3264fb8  # v4
@@ -147,7 +145,8 @@ jobs:
             dev.durable-workflow.release.run-id=${{ github.run_id }}
             dev.durable-workflow.release.run-attempt=${{ github.run_attempt }}
             dev.durable-workflow.workflow.package=durable-workflow/workflow
-            dev.durable-workflow.workflow.version=${{ steps.workflow.outputs.tag }}
+            dev.durable-workflow.workflow.source=${{ steps.workflow.outputs.source }}
+            dev.durable-workflow.workflow.version=${{ steps.workflow.outputs.ref }}
             dev.durable-workflow.workflow.commit=${{ steps.workflow.outputs.commit }}
 
       - name: Verify immutable release tag at publication boundary
@@ -164,7 +163,8 @@ jobs:
         env:
           RELEASE_IMAGE_CACHE_ROOT: release-source
           RELEASE_SOURCE_COMMIT: ${{ steps.release_source.outputs.commit }}
-          WORKFLOW_PACKAGE_REF: ${{ steps.workflow.outputs.tag }}
+          WORKFLOW_PACKAGE_SOURCE: ${{ steps.workflow.outputs.source }}
+          WORKFLOW_PACKAGE_REF: ${{ steps.workflow.outputs.ref }}
           WORKFLOW_PACKAGE_COMMIT: ${{ steps.workflow.outputs.commit }}
         run: node scripts/ci/resolve-release-image-cache.mjs
 
@@ -190,8 +190,8 @@ jobs:
           build-args: |
             PHPREDIS_VERSION=${{ env.PHPREDIS_VERSION }}
             PHPREDIS_COMMIT=${{ env.PHPREDIS_COMMIT }}
-            WORKFLOW_PACKAGE_SOURCE=${{ env.WORKFLOW_PACKAGE_SOURCE }}
-            WORKFLOW_PACKAGE_REF=${{ steps.workflow.outputs.tag }}
+            WORKFLOW_PACKAGE_SOURCE=${{ steps.workflow.outputs.source }}
+            WORKFLOW_PACKAGE_REF=${{ steps.workflow.outputs.ref }}
             WORKFLOW_PACKAGE_COMMIT=${{ steps.workflow.outputs.commit }}
 
       - name: Record exact image build timing
@@ -217,7 +217,8 @@ jobs:
           RELEASE_COMMIT: ${{ steps.release_source.outputs.commit }}
           RELEASE_RUN_ID: ${{ github.run_id }}
           RELEASE_RUN_ATTEMPT: ${{ github.run_attempt }}
-          WORKFLOW_PACKAGE_REF: ${{ steps.workflow.outputs.tag }}
+          WORKFLOW_PACKAGE_SOURCE: ${{ steps.workflow.outputs.source }}
+          WORKFLOW_PACKAGE_REF: ${{ steps.workflow.outputs.ref }}
           WORKFLOW_PACKAGE_COMMIT: ${{ steps.workflow.outputs.commit }}
         run: scripts/ci/verify-release-exact-images.sh
 
@@ -269,7 +270,8 @@ jobs:
         env:
           RELEASE_TAG: ${{ steps.release_publish.outputs.tag }}
           SERVER_IMAGE: ${{ env.DOCKERHUB_IMAGE }}:${{ steps.release_publish.outputs.tag }}
-          WORKFLOW_PACKAGE_REF: ${{ steps.workflow.outputs.tag }}
+          WORKFLOW_PACKAGE_SOURCE: ${{ steps.workflow.outputs.source }}
+          WORKFLOW_PACKAGE_REF: ${{ steps.workflow.outputs.ref }}
           WORKFLOW_PACKAGE_COMMIT: ${{ steps.workflow.outputs.commit }}
           PUBLIC_CATALOG_URL: https://durable-workflow.github.io/platform-protocol-specs.json
           PROTOCOL_CATALOG_CONFORMANCE_EVIDENCE: release-protocol-catalog-conformance.json
@@ -342,7 +344,8 @@ jobs:
           RELEASE_COMMIT: ${{ steps.release_source.outputs.commit }}
           RELEASE_RUN_ID: ${{ github.run_id }}
           RELEASE_RUN_ATTEMPT: ${{ github.run_attempt }}
-          WORKFLOW_PACKAGE_REF: ${{ steps.workflow.outputs.tag }}
+          WORKFLOW_PACKAGE_SOURCE: ${{ steps.workflow.outputs.source }}
+          WORKFLOW_PACKAGE_REF: ${{ steps.workflow.outputs.ref }}
           WORKFLOW_PACKAGE_COMMIT: ${{ steps.workflow.outputs.commit }}
         run: scripts/ci/write-release-image-publish-evidence.sh
 

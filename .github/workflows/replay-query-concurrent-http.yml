@@ -55,14 +55,24 @@ jobs:
       - name: Validate Apache module preflight behavior
         run: tests/Unit/Support/apache_module_preflight_test.sh
 
+      - name: Resolve locked workflow package authority
+        id: workflow
+        run: php scripts/ci/resolve-workflow-package-authority.php
+
       - name: Build current server image
         shell: bash
         env:
           ACTIONS_SERVER_URL: ${{ github.server_url }}
-          WORKFLOW_PACKAGE_COMMIT: fc28432a82a2433959c6690505c52eabea4aca8c
+          WORKFLOW_PACKAGE_SOURCE: ${{ steps.workflow.outputs.source }}
+          WORKFLOW_PACKAGE_REF: ${{ steps.workflow.outputs.ref }}
+          WORKFLOW_PACKAGE_COMMIT: ${{ steps.workflow.outputs.commit }}
         run: |
           set -euo pipefail
-          build_args=()
+          build_args=(
+            --build-arg "WORKFLOW_PACKAGE_SOURCE=$WORKFLOW_PACKAGE_SOURCE"
+            --build-arg "WORKFLOW_PACKAGE_REF=$WORKFLOW_PACKAGE_REF"
+            --build-arg "WORKFLOW_PACKAGE_COMMIT=$WORKFLOW_PACKAGE_COMMIT"
+          )
           if [[ "$ACTIONS_SERVER_URL" != "https://github.com" ]]; then
             build_args+=(--build-arg "WORKFLOW_PACKAGE_QUALIFICATION_REF=$WORKFLOW_PACKAGE_COMMIT")
           fi
