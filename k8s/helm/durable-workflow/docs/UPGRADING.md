@@ -67,6 +67,12 @@ chart MINOR bump and an entry below.
 
 ## Per-version migration notes
 
+### 0.1.24
+
+This release advances the chart Server identity to `2.0.0-rc.33`. PHP
+service-mode workflows must use direct `WorkflowContext` calls and ordinary
+return values; generator-returning handlers are unsupported.
+
 ### 0.1.23
 
 This release advances the chart Server identity to `2.0.0-rc.32`. Existing

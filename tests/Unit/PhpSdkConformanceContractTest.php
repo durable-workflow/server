@@ -165,7 +165,7 @@ final class PhpSdkConformanceContractTest extends TestCase
         $this->assertLessThan($firstSignalPosition, $startedContractPosition);
     }
 
-    public function test_generated_handlers_validate_against_sdk_php_rc11(): void
+    public function test_generated_handlers_execute_with_the_current_fiber_sdk(): void
     {
         $composerBinary = trim((string) shell_exec('command -v composer 2>/dev/null'));
         $this->assertNotSame('', $composerBinary, 'Composer is required for exact published SDK validation.');
@@ -187,7 +187,7 @@ final class PhpSdkConformanceContractTest extends TestCase
             $pipes,
             $repoRoot,
             array_merge($_ENV, [
-                'DW_PHP_SDK_VERSION' => '2.0.0-rc.11',
+                'DW_PHP_SDK_VERSION' => '2.0.0-rc.30',
             ]),
         );
 
@@ -208,8 +208,25 @@ final class PhpSdkConformanceContractTest extends TestCase
                 true,
                 flags: JSON_THROW_ON_ERROR,
             );
-            $this->assertSame('2.0.0-rc.11', $report['sdk_version']);
+            $this->assertSame('2.0.0-rc.30', $report['sdk_version']);
             $this->assertTrue($report['replay_matrix_enabled']);
+            $this->assertSame(
+                [
+                    'lifecycle_activity' => 'schedule_activity',
+                    'replay_timer' => 'start_timer',
+                    'search_attributes' => 'upsert_search_attributes',
+                    'signal_query_wait' => 'start_timer',
+                ],
+                array_map(
+                    static function (array $scenario): string {
+                        self::assertTrue($scenario['executed']);
+                        self::assertSame($scenario['expected_first_command'], $scenario['observed_first_command']);
+
+                        return $scenario['observed_first_command'];
+                    },
+                    $report['fiber_runtime_scenarios'],
+                ),
+            );
             $this->assertContains('php.sdk.failure', $report['registered_contracts']['workflows']);
             $this->assertContains('php.sdk.replay-matrix', $report['registered_contracts']['workflows']);
             $this->assertContains('php.sdk.replay-matrix-fail', $report['registered_contracts']['activities']);

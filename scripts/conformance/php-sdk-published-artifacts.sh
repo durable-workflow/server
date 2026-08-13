@@ -1099,6 +1099,7 @@ use DurableWorkflow\Exception\InvalidWorkerDefinition;
 use DurableWorkflow\Worker;
 use DurableWorkflow\Worker\ActivityContext;
 use DurableWorkflow\Worker\QueryContext;
+use DurableWorkflow\Worker\Replayer;
 use DurableWorkflow\Worker\WorkflowContext;
 
 if ($argc < 9) {
@@ -1330,18 +1331,18 @@ $worker->registerActivity(
 );
 $worker->registerWorkflow(
     'php.sdk.simple',
-    static function (WorkflowContext $context, mixed $value) use ($callbackFile): Generator {
+    static function (WorkflowContext $context, mixed $value) use ($callbackFile): array {
         increment_callback($callbackFile, 'simple_workflow_replays');
-        $activity = yield $context->activity('php.sdk.echo', [$value]);
+        $activity = $context->activity('php.sdk.echo', [$value]);
 
         return ['result' => $activity, 'workflow_process_id' => getmypid()];
     },
 );
 $worker->registerWorkflow(
     'php.sdk.search-attributes',
-    static function (WorkflowContext $context, array $upsertedAttributes) use ($callbackFile): Generator {
+    static function (WorkflowContext $context, array $upsertedAttributes) use ($callbackFile): array {
         increment_callback($callbackFile, 'search_attribute_workflow_replays');
-        yield $context->upsertSearchAttributes($upsertedAttributes);
+        $context->upsertSearchAttributes($upsertedAttributes);
 
         return [
             'upserted_search_attributes' => $upsertedAttributes,
@@ -1352,21 +1353,21 @@ $worker->registerWorkflow(
 if (! $namespaceScope) {
     $worker->registerWorkflow(
         'php.sdk.replay',
-        static function (WorkflowContext $context, mixed $value) use ($callbackFile): Generator {
+        static function (WorkflowContext $context, mixed $value) use ($callbackFile): array {
             increment_callback($callbackFile, 'replay_workflow_replays');
-            $activity = yield $context->activity('php.sdk.echo', [$value]);
-            yield $context->sleep(10);
+            $activity = $context->activity('php.sdk.echo', [$value]);
+            $context->sleep(10);
 
             return ['replayed_result' => $activity, 'workflow_process_id' => getmypid()];
         },
     );
     $worker->registerWorkflow(
         'php.sdk.waiting',
-        static function (WorkflowContext $context) use ($callbackFile, $signalReplayFile): Generator {
+        static function (WorkflowContext $context) use ($callbackFile, $signalReplayFile): array {
             increment_callback($callbackFile, 'waiting_workflow_replays');
             record_replay_signals($signalReplayFile, $context->signals('increment'));
             $context->throwIfCancellationRequested();
-            yield $context->sleep(300);
+            $context->sleep(300);
 
             return ['unexpected' => 'timer-fired'];
         },
@@ -1385,9 +1386,9 @@ if (! $namespaceScope) {
     );
     $worker->registerWorkflow(
         'php.sdk.search',
-        static function (WorkflowContext $context, string $name, string $value) use ($callbackFile): Generator {
+        static function (WorkflowContext $context, string $name, string $value) use ($callbackFile): array {
             increment_callback($callbackFile, 'search_workflow_replays');
-            yield $context->upsertSearchAttributes([$name => $value]);
+            $context->upsertSearchAttributes([$name => $value]);
 
             return ['search_attribute' => $name, 'value' => $value, 'workflow_process_id' => getmypid()];
         },
@@ -1429,10 +1430,10 @@ if (! $namespaceScope) {
         );
         $worker->registerWorkflow(
             'php.sdk.replay-matrix',
-            static function (WorkflowContext $context) use ($callbackFile): Generator {
+            static function (WorkflowContext $context) use ($callbackFile): array {
                 increment_callback($callbackFile, 'replay_matrix_workflow_replays');
-                $activity = yield $context->activity('php.sdk.echo', [['matrix' => 'activity']]);
-                $versionMarker = yield $context->sideEffect(
+                $activity = $context->activity('php.sdk.echo', [['matrix' => 'activity']]);
+                $versionMarker = $context->sideEffect(
                     static function () use ($callbackFile): array {
                         increment_callback($callbackFile, 'replay_matrix_version_marker_callbacks');
 
@@ -1441,24 +1442,24 @@ if (! $namespaceScope) {
                 );
                 $waitCycles = 0;
                 do {
-                    yield $context->sleep(1);
+                    $context->sleep(1);
                     ++$waitCycles;
                     $signals = $context->signals('release');
                     $updates = $context->updates('set');
                 } while ($signals === [] || $updates === []);
 
                 try {
-                    yield $context->activity('php.sdk.replay-matrix-fail', [], [
+                    $context->activity('php.sdk.replay-matrix-fail', [], [
                         'retry_policy' => ['max_attempts' => 1, 'backoff_seconds' => [0]],
                     ]);
                     throw new LogicException('The replay matrix failure activity unexpectedly completed.');
                 } catch (ActivityFailed $failure) {
-                    $compensation = yield $context->activity('php.sdk.echo', [[
+                    $compensation = $context->activity('php.sdk.echo', [[
                         'matrix' => 'compensation',
                         'failure_type' => $failure->failureType,
                     ]]);
                 }
-                $afterSignal = yield $context->activity('php.sdk.echo', [['matrix' => 'after-signal']]);
+                $afterSignal = $context->activity('php.sdk.echo', [['matrix' => 'after-signal']]);
 
                 return [
                     'activity' => $activity,
@@ -1499,10 +1500,10 @@ if (! $namespaceScope) {
         );
         $worker->registerWorkflow(
             'php.sdk.replay-in-flight-signal',
-            static function (WorkflowContext $context) use ($resultDir, $workerId): Generator {
+            static function (WorkflowContext $context) use ($resultDir, $workerId): array {
                 $cycles = 0;
                 do {
-                    yield $context->sleep(3);
+                    $context->sleep(3);
                     ++$cycles;
                     $signals = $context->signals('advance');
                 } while ($signals === []);
@@ -1517,7 +1518,7 @@ if (! $namespaceScope) {
                     ),
                     'wait_cycles' => $cycles,
                 ]);
-                $next = yield $context->activity('php.sdk.echo', [['matrix' => 'in-flight-after-signal']]);
+                $next = $context->activity('php.sdk.echo', [['matrix' => 'in-flight-after-signal']]);
 
                 return [
                     'signals' => array_map(static fn (array $arguments): int => (int) ($arguments[0] ?? 0), $signals),
@@ -1536,6 +1537,60 @@ if (! $namespaceScope) {
 }
 if (getenv('DW_PHP_SDK_CONFORMANCE_VALIDATE_DEFINITIONS') === '1') {
     $worker->validate();
+    $fiberRuntimeScenarios = [
+        'lifecycle_activity' => [
+            'handler' => static function (WorkflowContext $context): array {
+                $result = $context->activity('php.sdk.echo', [['fiber' => 'activity']]);
+
+                return ['result' => $result];
+            },
+            'expected_first_command' => 'schedule_activity',
+        ],
+        'replay_timer' => [
+            'handler' => static function (WorkflowContext $context): array {
+                $context->sleep(1);
+
+                return ['timer' => 'fired'];
+            },
+            'expected_first_command' => 'start_timer',
+        ],
+        'search_attributes' => [
+            'handler' => static function (WorkflowContext $context): array {
+                $context->upsertSearchAttributes(['fiber' => 'direct']);
+
+                return ['upserted' => true];
+            },
+            'expected_first_command' => 'upsert_search_attributes',
+        ],
+        'signal_query_wait' => [
+            'handler' => static function (WorkflowContext $context): array {
+                $context->sleep(300);
+
+                return ['signals' => count($context->signals('increment'))];
+            },
+            'expected_first_command' => 'start_timer',
+        ],
+    ];
+    $fiberRuntimeEvidence = [];
+    $replayer = new Replayer($client->payloadCodec());
+    foreach ($fiberRuntimeScenarios as $scenario => $contract) {
+        $commands = $replayer->replay($contract['handler'], [], [], $queue)->commands;
+        $observed = $commands[0]['type'] ?? null;
+        if ($observed !== $contract['expected_first_command']) {
+            throw new RuntimeException(
+                "Fiber runtime scenario {$scenario} emitted "
+                .json_encode($observed, JSON_THROW_ON_ERROR)
+                .'; expected '
+                .json_encode($contract['expected_first_command'], JSON_THROW_ON_ERROR)
+                .'.',
+            );
+        }
+        $fiberRuntimeEvidence[$scenario] = [
+            'executed' => true,
+            'expected_first_command' => $contract['expected_first_command'],
+            'observed_first_command' => $observed,
+        ];
+    }
     $invalidDefinitions = [
         [
             'contract' => 'workflow php.sdk.failure',
@@ -1588,6 +1643,7 @@ if (getenv('DW_PHP_SDK_CONFORMANCE_VALIDATE_DEFINITIONS') === '1') {
             'sdk_version' => InstalledVersions::getPrettyVersion('durable-workflow/sdk'),
             'replay_matrix_enabled' => getenv('DW_PHP_SDK_CONFORMANCE_REPLAY_MATRIX') === '1',
             'registered_contracts' => $worker->contracts(),
+            'fiber_runtime_scenarios' => $fiberRuntimeEvidence,
             'zero_argument_rejections' => $rejections,
         ], JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES | JSON_THROW_ON_ERROR)."\n",
     );
@@ -2367,8 +2423,8 @@ if ($phase === 'run-replay-matrix') {
     ];
     try {
         (new Replayer($client->payloadCodec()))->replay(
-            static function (WorkflowContext $context): Generator {
-                yield $context->activity('php.sdk.divergent-activity', [['matrix' => 'activity']]);
+            static function (WorkflowContext $context): array {
+                $context->activity('php.sdk.divergent-activity', [['matrix' => 'activity']]);
 
                 return ['unexpected' => 'divergence-accepted'];
             },

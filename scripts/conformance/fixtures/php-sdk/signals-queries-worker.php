@@ -22,8 +22,8 @@ $worker = new Worker($client, $taskQueue, $workerId, heartbeatIntervalSeconds: 1
 
 $worker->registerWorkflow(
     $workflowType,
-    static function (WorkflowContext $context): Generator {
-        yield $context->sleep(3600);
+    static function (WorkflowContext $context): array {
+        $context->sleep(3600);
 
         return ['signals' => count($context->signals('increment'))];
     },
