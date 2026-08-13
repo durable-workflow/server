@@ -83,7 +83,11 @@ has_json_label() {
     key="$2"
     value="$3"
 
-    grep -F "\"${key}\":\"${value}\"" "$path" >/dev/null 2>&1
+    jq -e \
+        --arg key "$key" \
+        --arg value "$value" \
+        '(.config.Labels // {})[$key] == $value' \
+        "$path" >/dev/null 2>&1
 }
 
 verify_ref_metadata() {

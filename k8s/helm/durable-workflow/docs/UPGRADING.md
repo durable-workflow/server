@@ -67,6 +67,11 @@ chart MINOR bump and an entry below.
 
 ## Per-version migration notes
 
+### 0.1.23
+
+This release advances the chart Server identity to `2.0.0-rc.32`. Existing
+`0.1.22` values remain compatible.
+
 ### 0.1.22
 
 This release adds the namespace capacity-evidence contract for Server

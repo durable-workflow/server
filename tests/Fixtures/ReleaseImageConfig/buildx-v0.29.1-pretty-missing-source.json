@@ -1,0 +1,37 @@
+{
+  "created": "2026-08-13T13:57:30.861Z",
+  "architecture": "amd64",
+  "os": "linux",
+  "config": {
+    "Env": [
+      "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+    ],
+    "Entrypoint": [
+      "/usr/local/bin/server-entrypoint"
+    ],
+    "Labels": {
+      "dev.durable-workflow.release.run-attempt": "2",
+      "dev.durable-workflow.release.run-id": "31707164656",
+      "dev.durable-workflow.release.tag": "2.0.0-rc.31",
+      "dev.durable-workflow.workflow.commit": "a4ce321a31ba5f4d9c25964cde81109bf253c5aa",
+      "dev.durable-workflow.workflow.package": "durable-workflow/workflow",
+      "dev.durable-workflow.workflow.version": "2.0.0-rc.31",
+      "org.opencontainers.image.revision": "6ee1245056ee25d4fead8688aa0056f952c838dc",
+      "org.opencontainers.image.source": "https://github.com/durable-workflow/server",
+      "org.opencontainers.image.version": "2.0.0-rc.31"
+    }
+  },
+  "rootfs": {
+    "type": "layers",
+    "diff_ids": [
+      "sha256:1111111111111111111111111111111111111111111111111111111111111111"
+    ]
+  },
+  "history": [
+    {
+      "created": "2026-08-13T13:57:30.861Z",
+      "created_by": "LABEL org.opencontainers.image.revision=6ee1245056ee25d4fead8688aa0056f952c838dc",
+      "empty_layer": true
+    }
+  ]
+}

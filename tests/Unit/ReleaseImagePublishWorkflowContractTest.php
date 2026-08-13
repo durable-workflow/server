@@ -785,7 +785,7 @@ SH);
 
     public function test_release_surfaces_declare_the_exact_server_product_train(): void
     {
-        $expectedVersion = '2.0.0-rc.31';
+        $expectedVersion = '2.0.0-rc.32';
         $composer = json_decode($this->read('composer.json'), true, flags: JSON_THROW_ON_ERROR);
 
         $this->assertSame(
@@ -818,7 +818,7 @@ SH);
 
         $chart = Yaml::parse($this->read('k8s/helm/durable-workflow/Chart.yaml'));
         $this->assertIsArray($chart);
-        $this->assertSame('0.1.22', $chart['version'] ?? null);
+        $this->assertSame('0.1.23', $chart['version'] ?? null);
         $this->assertSame($expectedVersion, $chart['appVersion'] ?? null);
         $this->assertSame(
             "docker.io/durableworkflow/server:{$expectedVersion}",
@@ -2446,6 +2446,67 @@ SH;
         }
     }
 
+    public function test_exact_image_verifier_accepts_pretty_buildx_platform_config_json(): void
+    {
+        $result = $this->runExactImageVerifierWithConfigFixture('buildx-v0.29.1-pretty-valid.json');
+
+        $this->assertSame(0, $result['exitCode'], $result['stderr']);
+        $this->assertStringContainsString("exact_publish_outcome=success\n", $result['outputs']);
+        $this->assertSame(
+            2,
+            substr_count($result['dockerLog'], '--format {{json (index .Image "linux/amd64")}}'),
+        );
+        $this->assertSame(
+            2,
+            substr_count($result['dockerLog'], '--format {{json (index .Image "linux/arm64")}}'),
+        );
+    }
+
+    public function test_exact_image_verifier_rejects_pretty_buildx_config_with_missing_source_label(): void
+    {
+        $result = $this->runExactImageVerifierWithConfigFixture('buildx-v0.29.1-pretty-missing-source.json');
+
+        $this->assertSame(1, $result['exitCode']);
+        $this->assertStringContainsString(
+            "exact_publish_reason=exact_manifest_metadata_mismatch\n",
+            $result['outputs'],
+        );
+        $this->assertStringContainsString(
+            'dev.durable-workflow.workflow.source=https://github.com/durable-workflow/workflow.git',
+            $result['stderr'],
+        );
+    }
+
+    public function test_exact_image_verifier_rejects_pretty_buildx_config_with_wrong_run_label(): void
+    {
+        $result = $this->runExactImageVerifierWithConfigFixture('buildx-v0.29.1-pretty-wrong-run.json');
+
+        $this->assertSame(1, $result['exitCode']);
+        $this->assertStringContainsString(
+            "exact_publish_reason=exact_manifest_metadata_mismatch\n",
+            $result['outputs'],
+        );
+        $this->assertStringContainsString(
+            'dev.durable-workflow.release.run-id=31707164656',
+            $result['stderr'],
+        );
+    }
+
+    public function test_exact_image_verifier_rejects_pretty_buildx_config_with_wrong_workflow_label(): void
+    {
+        $result = $this->runExactImageVerifierWithConfigFixture('buildx-v0.29.1-pretty-wrong-workflow.json');
+
+        $this->assertSame(1, $result['exitCode']);
+        $this->assertStringContainsString(
+            "exact_publish_reason=exact_manifest_metadata_mismatch\n",
+            $result['outputs'],
+        );
+        $this->assertStringContainsString(
+            'dev.durable-workflow.workflow.commit=a4ce321a31ba5f4d9c25964cde81109bf253c5aa',
+            $result['stderr'],
+        );
+    }
+
     public function test_exact_image_verifier_fails_when_public_tags_cannot_be_matched_to_build_digest(): void
     {
         $tmpDir = sys_get_temp_dir().'/release-image-docker-'.bin2hex(random_bytes(4));
@@ -3176,6 +3237,70 @@ SH;
             ];
         } finally {
             @unlink($outputFile);
+        }
+    }
+
+    /**
+     * @return array{exitCode:int, stdout:string, stderr:string, outputs:string, dockerLog:string}
+     */
+    private function runExactImageVerifierWithConfigFixture(string $fixture): array
+    {
+        $tmpDir = sys_get_temp_dir().'/release-image-config-'.bin2hex(random_bytes(4));
+        $this->assertTrue(mkdir($tmpDir));
+        $dockerBin = $tmpDir.'/docker';
+        $dockerLog = $tmpDir.'/docker.log';
+        $outputFile = $tmpDir.'/outputs';
+        $fixturePath = $this->repoRoot.'/tests/Fixtures/ReleaseImageConfig/'.$fixture;
+        $this->assertFileExists($fixturePath);
+
+        $digest = 'sha256:96c63e55221e5aa6f82527f8369df7a986840eeb2cfb85276f0f415021fff757';
+        $fixtureArgument = escapeshellarg($fixturePath);
+        $logArgument = escapeshellarg($dockerLog);
+        $dockerScript = <<<SH
+#!/usr/bin/env sh
+set -eu
+printf '%s\n' "\$*" >> {$logArgument}
+if [ "\$1" = "buildx" ] && [ "\$2" = "imagetools" ] && [ "\$3" = "inspect" ]; then
+    if [ "\${4:-}" = "--format" ]; then
+        cat {$fixtureArgument}
+        exit 0
+    fi
+    printf 'Name: %s\nMediaType: application/vnd.oci.image.index.v1+json\nDigest: {$digest}\n\nManifests:\n  Platform: linux/amd64\n  Platform: linux/arm64\n' "\$4"
+    exit 0
+fi
+exit 1
+SH;
+        file_put_contents($dockerBin, $dockerScript);
+        chmod($dockerBin, 0755);
+
+        try {
+            $result = $this->runScript('scripts/ci/verify-release-exact-images.sh', [
+                'RELEASE_TAG' => '2.0.0-rc.31',
+                'DOCKER' => $dockerBin,
+                'DOCKER_BUILD_OUTCOME' => 'success',
+                'BUILT_IMAGE_DIGEST' => $digest,
+                'RELEASE_COMMIT' => '6ee1245056ee25d4fead8688aa0056f952c838dc',
+                'RELEASE_RUN_ID' => '31707164656',
+                'RELEASE_RUN_ATTEMPT' => '2',
+                'WORKFLOW_PACKAGE_SOURCE' => 'https://github.com/durable-workflow/workflow.git',
+                'WORKFLOW_PACKAGE_REF' => '2.0.0-rc.31',
+                'WORKFLOW_PACKAGE_COMMIT' => 'a4ce321a31ba5f4d9c25964cde81109bf253c5aa',
+                'GITHUB_OUTPUT' => $outputFile,
+            ]);
+            $outputs = file_get_contents($outputFile);
+            $log = file_get_contents($dockerLog);
+            $this->assertNotFalse($outputs);
+            $this->assertNotFalse($log);
+
+            return $result + [
+                'outputs' => $outputs,
+                'dockerLog' => $log,
+            ];
+        } finally {
+            @unlink($dockerBin);
+            @unlink($dockerLog);
+            @unlink($outputFile);
+            @rmdir($tmpDir);
         }
     }
 
