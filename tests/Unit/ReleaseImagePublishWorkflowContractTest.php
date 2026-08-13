@@ -783,13 +783,46 @@ SH);
         $this->assertTrue(version_compare($version, '2.9.0', '>='));
     }
 
-    public function test_composer_metadata_declares_the_exact_server_product_train(): void
+    public function test_release_surfaces_declare_the_exact_server_product_train(): void
     {
+        $expectedVersion = '2.0.0-rc.31';
         $composer = json_decode($this->read('composer.json'), true, flags: JSON_THROW_ON_ERROR);
 
         $this->assertSame(
-            '2.0.0-rc.31',
+            $expectedVersion,
             $composer['extra']['durable-workflow']['product-train'] ?? null,
+        );
+
+        preg_match('/^APP_VERSION=(.+)$/m', $this->read('.env.example'), $environmentVersion);
+        $this->assertSame($expectedVersion, $environmentVersion[1] ?? null);
+        $this->assertStringContainsString(
+            "env('APP_VERSION', '{$expectedVersion}')",
+            $this->read('app/Http/Controllers/Api/HealthController.php'),
+        );
+
+        $compose = Yaml::parse($this->read('docker-compose.yml'));
+        $this->assertIsArray($compose);
+        foreach (['bootstrap', 'server', 'worker', 'scheduler'] as $service) {
+            $this->assertSame(
+                "\${APP_VERSION:-{$expectedVersion}}",
+                $compose['services'][$service]['environment']['APP_VERSION'] ?? null,
+            );
+        }
+
+        $smallCluster = Yaml::parse($this->read('docker-compose.small-cluster.yml'));
+        $this->assertIsArray($smallCluster);
+        $this->assertSame(
+            "\${APP_VERSION:-{$expectedVersion}}",
+            $smallCluster['x-server-environment']['APP_VERSION'] ?? null,
+        );
+
+        $chart = Yaml::parse($this->read('k8s/helm/durable-workflow/Chart.yaml'));
+        $this->assertIsArray($chart);
+        $this->assertSame('0.1.22', $chart['version'] ?? null);
+        $this->assertSame($expectedVersion, $chart['appVersion'] ?? null);
+        $this->assertSame(
+            "docker.io/durableworkflow/server:{$expectedVersion}",
+            $chart['annotations']['dev.durable-workflow.image-reference'] ?? null,
         );
     }
 

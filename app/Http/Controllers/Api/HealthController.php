@@ -178,7 +178,7 @@ class HealthController
 
         $response = [
             'server_id' => config('server.server_id'),
-            'version' => env('APP_VERSION', '2.0.0'),
+            'version' => env('APP_VERSION', '2.0.0-rc.31'),
             'default_namespace' => config('server.default_namespace'),
             'namespace' => $this->namespacePolicy($namespace),
             'discovery' => [

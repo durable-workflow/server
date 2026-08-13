@@ -141,6 +141,10 @@ class HelmChartReleaseTest(unittest.TestCase):
             checks.index("Set up chart-testing"),
             checks.index("scripts/helm-chart-kind-smoke.sh"),
         )
+        self.assertIn(
+            "needs: lint-and-template",
+            workflow_job(checks, "ct-lint-install"),
+        )
 
         for caller in ("helm-chart-validation.yml", "helm-chart-release.yml"):
             self.assertIn('- "uv.toml"', workflow_source(caller))

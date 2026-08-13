@@ -7,6 +7,7 @@ use App\Support\ActivityTimeoutGuard;
 use App\Support\ActivityTimeoutScanner;
 use App\Support\ControlPlaneProtocol;
 use App\Support\HistoryRetentionEnforcer;
+use App\Support\NamespaceCapacityEvidence;
 use App\Support\ProjectionDriftMetrics;
 use App\Support\TaskQueueBuildIdRolloutSnapshot;
 use App\Support\WorkerSessionRegistry;
@@ -25,6 +26,7 @@ class SystemController
     public function __construct(
         private readonly TaskQueueBuildIdRolloutSnapshot $buildIdRollouts,
         private readonly MatchingRole $matchingRole,
+        private readonly NamespaceCapacityEvidence $capacityEvidence,
         private readonly WorkerSessionRegistry $workerSessions,
     ) {}
 
@@ -147,6 +149,7 @@ class SystemController
         $namespace = (string) $request->attributes->get('namespace');
         $snapshot = OperatorMetrics::snapshot(null, $namespace);
         $snapshot['worker_sessions'] = $this->workerSessions->metrics($namespace);
+        $snapshot['capacity_evidence'] = $this->capacityEvidence->snapshot($namespace);
 
         return ControlPlaneProtocol::json([
             'namespace' => $namespace,

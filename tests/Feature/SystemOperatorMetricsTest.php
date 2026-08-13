@@ -5,10 +5,15 @@ declare(strict_types=1);
 namespace Tests\Feature;
 
 use App\Support\ControlPlaneProtocol;
+use App\Support\NamespaceCapacityEvidence;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Carbon;
+use Illuminate\Support\Facades\Cache;
+use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Str;
 use Tests\Feature\Concerns\ServerTestHelpers;
 use Tests\TestCase;
+use Workflow\V2\Models\WorkflowRun;
 use Workflow\V2\Support\WorkerCompatibilityFleet;
 
 class SystemOperatorMetricsTest extends TestCase
@@ -22,12 +27,14 @@ class SystemOperatorMetricsTest extends TestCase
 
         $this->createNamespace('default');
         $this->createNamespace('other');
+        Cache::flush();
         WorkerCompatibilityFleet::clear();
     }
 
     protected function tearDown(): void
     {
         Carbon::setTestNow();
+        Cache::flush();
         WorkerCompatibilityFleet::clear();
 
         parent::tearDown();
@@ -162,6 +169,129 @@ class SystemOperatorMetricsTest extends TestCase
         $response->assertOk()
             ->assertJsonPath('namespace', 'other')
             ->assertJsonPath('operator_metrics.runs.total', 0);
+    }
+
+    public function test_operator_metrics_publishes_exact_namespace_capacity_windows_without_execution_ids(): void
+    {
+        Carbon::setTestNow('2026-08-12 12:00:00');
+
+        WorkflowRun::query()->create([
+            'id' => 'capacity-default-run',
+            'workflow_instance_id' => (string) Str::ulid(),
+            'run_number' => 1,
+            'workflow_class' => 'Tests\\Fixtures\\CapacityWorkflow',
+            'workflow_type' => 'tests.capacity',
+            'namespace' => 'default',
+            'status' => 'completed',
+            'arguments' => json_encode(['bounded' => true], JSON_THROW_ON_ERROR),
+            'output' => json_encode(['ok' => true], JSON_THROW_ON_ERROR),
+            'started_at' => now()->subMinutes(4),
+            'closed_at' => now()->subMinutes(3),
+            'created_at' => now()->subMinutes(4),
+            'updated_at' => now()->subMinutes(3),
+        ]);
+        WorkflowRun::query()->create([
+            'id' => 'capacity-other-run',
+            'workflow_instance_id' => (string) Str::ulid(),
+            'run_number' => 1,
+            'workflow_class' => 'Tests\\Fixtures\\CapacityWorkflow',
+            'workflow_type' => 'tests.capacity',
+            'namespace' => 'other',
+            'status' => 'completed',
+            'started_at' => now()->subMinutes(4),
+            'closed_at' => now()->subMinutes(3),
+        ]);
+
+        $response = $this->getJson(
+            '/api/system/operator-metrics',
+            $this->controlPlaneHeadersWithWorkerProtocol(),
+        );
+
+        $response->assertOk()
+            ->assertJsonPath('operator_metrics.capacity_evidence.schema', NamespaceCapacityEvidence::SCHEMA)
+            ->assertJsonPath('operator_metrics.capacity_evidence.schema_version', NamespaceCapacityEvidence::VERSION)
+            ->assertJsonPath('operator_metrics.capacity_evidence.namespace', 'default')
+            ->assertJsonPath('operator_metrics.capacity_evidence.freshness.max_age_seconds', NamespaceCapacityEvidence::CACHE_TTL_SECONDS)
+            ->assertJsonPath('operator_metrics.capacity_evidence.freshness.valid_until', '2026-08-12T12:00:30.000000Z')
+            ->assertJsonPath('operator_metrics.capacity_evidence.supported_window_seconds', NamespaceCapacityEvidence::SUPPORTED_WINDOW_SECONDS)
+            ->assertJsonPath('operator_metrics.capacity_evidence.windows.300.observation_window.duration_seconds', 300)
+            ->assertJsonPath('operator_metrics.capacity_evidence.windows.300.runtime_evidence.throughput.workflow_starts.value', 1)
+            ->assertJsonPath('operator_metrics.capacity_evidence.windows.300.runtime_evidence.throughput.workflow_completions.value', 1)
+            ->assertJsonPath('operator_metrics.capacity_evidence.windows.300.runtime_evidence.latency.execution.available', true)
+            ->assertJsonPath('operator_metrics.capacity_evidence.windows.300.runtime_evidence.growth.durable_payload_bytes.available', true)
+            ->assertJsonPath('operator_metrics.capacity_evidence.windows.300.runtime_evidence.reliability.failures.value', 0)
+            ->assertJsonPath('operator_metrics.capacity_evidence.windows.300.sustained_evidence.observation_windows', 1)
+            ->assertJsonPath('operator_metrics.capacity_evidence.cardinality.individual_execution_identifiers_included', false);
+
+        $window = $response->json('operator_metrics.capacity_evidence.windows.300.observation_window');
+        $this->assertSame(300, (int) Carbon::parse($window['starts_at'])->diffInSeconds(Carbon::parse($window['ends_at'])));
+
+        $windows = $response->json('operator_metrics.capacity_evidence.windows');
+        $this->assertCount(count(NamespaceCapacityEvidence::SUPPORTED_WINDOW_SECONDS), $windows);
+        foreach (NamespaceCapacityEvidence::SUPPORTED_WINDOW_SECONDS as $duration) {
+            $observation = $windows[(string) $duration]['observation_window'];
+            $this->assertSame($duration, $observation['duration_seconds']);
+            $this->assertSame(
+                $duration,
+                (int) Carbon::parse($observation['starts_at'])->diffInSeconds(Carbon::parse($observation['ends_at'])),
+            );
+        }
+
+        foreach ([
+            'throughput' => [
+                'workflow_starts',
+                'workflow_completions',
+                'activity_dispatches',
+                'activity_completions',
+                'timers_scheduled',
+                'timers_fired',
+                'signals',
+                'queries',
+                'updates',
+            ],
+            'latency' => ['schedule_to_start', 'execution', 'replay', 'inspection'],
+            'growth' => ['history_events', 'history_payload_bytes', 'durable_payload_bytes'],
+            'reliability' => ['retries', 'timeouts', 'failures', 'stale_heartbeats', 'overload_or_throttling'],
+        ] as $category => $dimensions) {
+            $this->assertSame(
+                $dimensions,
+                array_keys($windows['300']['runtime_evidence'][$category]),
+            );
+        }
+
+        $capacityEvidence = $response->json('operator_metrics.capacity_evidence');
+        $encoded = json_encode($capacityEvidence, JSON_THROW_ON_ERROR);
+        $this->assertStringNotContainsString('capacity-default-run', $encoded);
+        $this->assertStringNotContainsString('capacity-other-run', $encoded);
+
+        $keys = [];
+        array_walk_recursive($capacityEvidence, static function (mixed $_value, string|int $key) use (&$keys): void {
+            $keys[] = $key;
+        });
+        $this->assertSame([], array_values(array_intersect(
+            ['workflow_id', 'run_id', 'task_id', 'worker_id'],
+            $keys,
+        )));
+    }
+
+    public function test_capacity_evidence_reuses_the_namespace_snapshot_inside_its_freshness_bound(): void
+    {
+        Carbon::setTestNow('2026-08-12 12:00:00');
+        $collector = app(NamespaceCapacityEvidence::class);
+
+        DB::enableQueryLog();
+        $first = $collector->snapshot('default');
+        $firstCollectionQueries = count(DB::getQueryLog());
+        $this->assertGreaterThan(0, $firstCollectionQueries);
+
+        DB::flushQueryLog();
+        Carbon::setTestNow('2026-08-12 12:00:05');
+        $second = $collector->snapshot('default');
+
+        $this->assertSame([], DB::getQueryLog());
+        $this->assertSame($first, $second);
+        $this->assertSame(30, $second['freshness']['max_age_seconds']);
+        $this->assertSame('2026-08-12T12:00:30.000000Z', $second['freshness']['valid_until']);
     }
 
     public function test_operator_dashboard_exposes_the_shared_workflow_summary(): void
