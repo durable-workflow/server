@@ -215,6 +215,47 @@ class BridgeAdapterControllerTest extends TestCase
             ->count());
     }
 
+    public function test_webhook_bridge_rejects_json_tagged_update_before_returning_duplicate_outcome(): void
+    {
+        Queue::fake();
+
+        $start = $this->withHeaders($this->apiHeaders())
+            ->postJson('/api/workflows', [
+                'workflow_id' => 'wf-bridge-update-codec-guard',
+                'workflow_type' => 'tests.interactive-command-workflow',
+            ]);
+
+        $start->assertCreated();
+        $this->runReadyWorkflowTask((string) $start->json('run_id'));
+
+        $payload = [
+            'action' => 'update_workflow',
+            'idempotency_key' => 'pagerduty-event-codec-guard',
+            'target' => [
+                'workflow_id' => 'wf-bridge-update-codec-guard',
+                'update_name' => 'approve',
+            ],
+            'input' => [true, 'pagerduty'],
+        ];
+
+        $this->withHeaders($this->apiHeaders())
+            ->postJson('/api/bridge-adapters/webhook/pagerduty', $payload)
+            ->assertStatus(202);
+
+        $response = $this->withHeaders($this->apiHeaders())
+            ->postJson('/api/bridge-adapters/webhook/pagerduty', [
+                ...$payload,
+                'input' => ['codec' => 'json', 'blob' => '[false,"duplicate"]'],
+            ]);
+
+        $response->assertStatus(422);
+        $this->assertStringContainsString('unsupported_payload_codec', $response->getContent());
+        $this->assertSame(1, WorkflowCommand::query()
+            ->where('workflow_instance_id', 'wf-bridge-update-codec-guard')
+            ->where('command_type', 'update')
+            ->count());
+    }
+
     public function test_webhook_bridge_uses_named_rejections(): void
     {
         $this->withHeaders($this->apiHeaders())

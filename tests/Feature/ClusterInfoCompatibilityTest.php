@@ -11,6 +11,7 @@ use App\Support\CoordinationHealthContract;
 use App\Support\HeartbeatRuntimeContract;
 use App\Support\MigrationRuntimeContract;
 use App\Support\NamespaceRuntimeContract;
+use App\Support\PayloadCodecContract;
 use App\Support\PrereleaseReadinessContract;
 use App\Support\PrereleaseReadinessResultGate;
 use App\Support\PrincipalAttributionContract;
@@ -27,7 +28,6 @@ use App\Support\WorkflowLifecycleContract;
 use App\Support\WorkflowUpdateRuntimeContract;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Tests\TestCase;
-use Workflow\Serializers\CodecRegistry;
 use Workflow\V2\Support\PlatformConformanceSuite;
 use Workflow\V2\Support\PlatformProtocolSpecs;
 use Workflow\V2\Support\SdkNeutralityContract;
@@ -1137,7 +1137,7 @@ class ClusterInfoCompatibilityTest extends TestCase
 
         $response->assertJsonPath('worker_protocol.version', $protocolVersion)
             ->assertJsonPath('client_compatibility.required_protocols.worker_protocol.version', $protocolVersion)
-            ->assertJsonPath('capabilities.payload_codecs', CodecRegistry::universal())
+            ->assertJsonPath('capabilities.payload_codecs', PayloadCodecContract::universal())
             ->assertJsonPath('capabilities.worker_sessions', false)
             ->assertJsonPath('worker_protocol.server_capabilities.query_tasks', true)
             ->assertJsonPath('worker_protocol.server_capabilities.query_task_poll_request_idempotency', true)

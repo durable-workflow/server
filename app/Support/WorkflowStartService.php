@@ -5,13 +5,11 @@ namespace App\Support;
 use App\Models\WorkerBuildIdRollout;
 use App\Models\WorkerRegistration;
 use Illuminate\Support\Collection;
-use Workflow\Serializers\CodecRegistry;
 use Workflow\Serializers\Serializer;
 use Workflow\V2\CommandContext;
 use Workflow\V2\Contracts\WorkflowControlPlane;
 use Workflow\V2\Enums\HistoryEventType;
 use Workflow\V2\Models\WorkflowHistoryEvent;
-use Workflow\V2\Support\PayloadEnvelopeResolver;
 use Workflow\V2\Support\RoutingResolver;
 use Workflow\V2\Support\StandaloneWorkerVisibility;
 use Workflow\WorkflowMetadata;
@@ -104,7 +102,7 @@ class WorkflowStartService
         ?CommandContext $commandContext = null,
         bool $allowAmbientCompatibilityFallback = true,
     ): array {
-        $envelope = PayloadEnvelopeResolver::resolve(
+        $envelope = AvroPayloadEnvelopeResolver::resolve(
             $validated['input'] ?? null,
             'input',
             $this->externalPayloadStorage->driverFor($namespace),
@@ -113,7 +111,7 @@ class WorkflowStartService
         // When the client sends no input (or an empty array), emit a
         // default-codec-encoded empty arg list so the run's `arguments`
         // column stays non-null. The default codec is Avro.
-        $defaultCodec = CodecRegistry::defaultCodec();
+        $defaultCodec = PayloadCodecContract::CODEC;
         $arguments = $envelope['blob'] ?? Serializer::serializeWithCodec($defaultCodec, []);
         $payloadCodec = $envelope['codec'] ?? $defaultCodec;
 

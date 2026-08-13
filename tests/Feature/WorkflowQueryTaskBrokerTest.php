@@ -3340,8 +3340,8 @@ class WorkflowQueryTaskBrokerTest extends TestCase
             'signal' => 1,
         ];
         $terminalEnvelope = [
-            'codec' => 'json',
-            'blob' => Serializer::serializeWithCodec('json', $expectedResult),
+            'codec' => 'avro',
+            'blob' => Serializer::serializeWithCodec('avro', $expectedResult),
         ];
         $terminalCommands = [
             [
@@ -3368,7 +3368,7 @@ class WorkflowQueryTaskBrokerTest extends TestCase
             ->assertOk()
             ->assertJsonPath('run_status', 'completed');
 
-        $this->assertSame('json', $run->refresh()->output_payload_codec);
+        $this->assertSame('avro', $run->refresh()->output_payload_codec);
 
         $completionEvents = WorkflowHistoryEvent::query()
             ->where('workflow_run_id', $run->id)
@@ -3379,7 +3379,7 @@ class WorkflowQueryTaskBrokerTest extends TestCase
         $this->assertInstanceOf(WorkflowHistoryEvent::class, $completionEvent);
         $completionPayload = $completionEvent->payload;
         $this->assertIsArray($completionPayload);
-        $this->assertSame('json', $completionPayload['payload_codec'] ?? null);
+        $this->assertSame('avro', $completionPayload['payload_codec'] ?? null);
         $this->assertSame($terminalEnvelope['blob'], $completionPayload['output'] ?? null);
         $this->assertSame(
             $expectedResult,
@@ -3406,8 +3406,8 @@ class WorkflowQueryTaskBrokerTest extends TestCase
                 [
                     'type' => 'complete_workflow',
                     'result' => [
-                        'codec' => 'json',
-                        'blob' => Serializer::serializeWithCodec('json', null),
+                        'codec' => 'avro',
+                        'blob' => Serializer::serializeWithCodec('avro', null),
                     ],
                 ],
             ],

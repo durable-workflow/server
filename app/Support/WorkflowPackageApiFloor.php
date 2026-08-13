@@ -60,11 +60,10 @@ final class WorkflowPackageApiFloor
      * remediation hint that points at the upgrade.
      */
     private const REQUIRED_APIS = [
-        // CodecRegistry::universal() and engineSpecific() — commit 8e132d0.
-        // Polyglot codec split used by /api/cluster/info and the embedded
-        // control-plane request contract.
+        // CodecRegistry::universal() is the public Avro-only codec authority
+        // used by /api/cluster/info and the embedded control-plane request
+        // contract.
         [CodecRegistry::class, 'universal'],
-        [CodecRegistry::class, 'engineSpecific'],
         // MatchingRoleSnapshot::current() — commit cfd8e95.
         // Cluster discovery now reuses the package-owned matching-role
         // contract instead of duplicating the routing fields in server code.
@@ -326,7 +325,7 @@ final class WorkflowPackageApiFloor
             .'Missing or incompatible: %s. Re-run `composer update durable-workflow/workflow` '
             .'against a v2 snapshot that '
             .'advertises worker protocol %s and '
-            .'includes CodecRegistry::universal(), CodecRegistry::engineSpecific(), MatchingRoleSnapshot::current(), '
+            .'includes CodecRegistry::universal(), MatchingRoleSnapshot::current(), '
             .'WorkflowTaskLease::seconds(), WorkflowTaskLease::expiresAt(), '
             .'the filtered WorkflowTaskBridge::poll() and ActivityTaskBridge::poll() contracts, '
             .'the poll-mode queue capability demotion, the matching-role repair-pass contract, '

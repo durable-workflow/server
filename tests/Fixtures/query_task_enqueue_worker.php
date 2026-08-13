@@ -3,6 +3,7 @@
 use App\Support\QueryTaskQueueFullException;
 use App\Support\WorkflowQueryTaskBroker;
 use Illuminate\Contracts\Console\Kernel;
+use Workflow\Serializers\Serializer;
 use Workflow\V2\Models\WorkflowRun;
 
 require __DIR__.'/../../vendor/autoload.php';
@@ -60,14 +61,14 @@ $run->id = 'run-'.$workerId;
 $run->workflow_instance_id = 'wf-'.$workerId;
 $run->workflow_type = 'python.queryable';
 $run->queue = $taskQueue ?: 'python-queries';
-$run->payload_codec = 'json';
+$run->payload_codec = 'avro';
 
 try {
     /** @var WorkflowQueryTaskBroker $broker */
     $broker = app(WorkflowQueryTaskBroker::class);
     $task = $broker->enqueue($namespace ?: 'default', $run, 'status', [
-        'codec' => 'json',
-        'blob' => '[]',
+        'codec' => 'avro',
+        'blob' => Serializer::serializeWithCodec('avro', []),
     ]);
 
     echo json_encode([

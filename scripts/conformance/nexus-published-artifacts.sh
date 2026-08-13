@@ -1790,8 +1790,8 @@ function external_task_input(array $payload): array {
         ],
         'payloads' => [
             'arguments' => [
-                'codec' => 'json',
-                'blob' => Serializer::serializeWithCodec('json', [
+                'codec' => 'avro',
+                'blob' => Serializer::serializeWithCodec('avro', [
                     (string) ($payload['name'] ?? 'world'),
                     (string) ($payload['scenario'] ?? 'nexus'),
                 ]),
@@ -1863,11 +1863,18 @@ if ($path === '/greeter') {
                 'request_payload' => $decoded,
             ];
         },
-    ], carrier: 'published-workflow-php-service', resultCodec: 'json');
+    ], carrier: 'published-workflow-php-service', resultCodec: 'avro');
     $adapterResponse = $adapter->handle(json_encode(external_task_input($decoded), JSON_THROW_ON_ERROR));
     $adapterBody = json_decode((string) ($adapterResponse['body'] ?? ''), true);
     if (! is_array($adapterBody)) {
         $adapterBody = ['raw_body' => (string) ($adapterResponse['body'] ?? '')];
+    }
+    if (isset($adapterBody['result']['payload']) && is_array($adapterBody['result']['payload'])) {
+        $payloadEnvelope = $adapterBody['result']['payload'];
+        $adapterBody['decoded_payload'] = Serializer::unserializeWithCodec(
+            (string) ($payloadEnvelope['codec'] ?? ''),
+            (string) ($payloadEnvelope['blob'] ?? ''),
+        );
     }
 
     emit_json($base + [
@@ -1978,7 +1985,7 @@ async def run_invocable(payload: dict) -> dict:
             "arguments": serializer.envelope([
                 str(payload.get("name") or "world"),
                 str(payload.get("scenario") or "nexus"),
-            ], codec=serializer.JSON_CODEC),
+            ], codec=serializer.AVRO_CODEC),
         },
         "deadlines": {
             "schedule_to_start": iso_future(),
@@ -1988,11 +1995,14 @@ async def run_invocable(payload: dict) -> dict:
         },
         "headers": {},
     }
-    return await InvocableActivityHandler(
+    result = await InvocableActivityHandler(
         {"nexus.greeter": greet},
         carrier="published-sdk-python-nexus-shard",
-        result_codec=serializer.JSON_CODEC,
+        result_codec=serializer.AVRO_CODEC,
     ).handle(envelope)
+    if "result" in result and "payload" in result["result"]:
+        result["decoded_payload"] = serializer.decode_envelope(result["result"]["payload"])
+    return result
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -2517,17 +2527,13 @@ function serviceResponsePayload(serviceProbe) {
   const payload = envelope?.result?.payload;
   if (envelope?.schema !== 'durable-workflow.v2.external-task-result'
     || envelope?.outcome?.status !== 'succeeded'
-    || payload?.codec !== 'json'
+    || payload?.codec !== 'avro'
     || typeof payload?.blob !== 'string') {
     return null;
   }
 
-  try {
-    const decoded = JSON.parse(payload.blob);
-    return decoded && typeof decoded === 'object' && !Array.isArray(decoded) ? decoded : null;
-  } catch {
-    return null;
-  }
+  const decoded = envelope.decoded_payload;
+  return decoded && typeof decoded === 'object' && !Array.isArray(decoded) ? decoded : null;
 }
 
 function observedPayloadRoundTrip(serviceProbe, requestPayload) {
@@ -3091,6 +3097,7 @@ use Workflow\\V2\\Contracts\\WorkflowControlPlane;
 use Workflow\\V2\\Contracts\\ServiceBoundaryPolicy;
 use Workflow\\V2\\Models\\WorkflowServiceCall;
 use Workflow\\V2\\Support\\DefaultServiceControlPlane;
+use Workflow\\Serializers\\Serializer;
 
 require '/app/vendor/autoload.php';
 
@@ -3173,8 +3180,8 @@ $fakeWorkflow = new class($serviceWorkflowInstanceId, $serviceWorkflowRunId) imp
                 'query_name' => $name,
                 'result' => 'hello, world after retry',
                 'result_envelope' => [
-                    'codec' => 'json/plain',
-                    'blob' => json_encode('hello, world after retry', JSON_UNESCAPED_SLASHES),
+                    'codec' => 'avro',
+                    'blob' => Serializer::serializeWithCodec('avro', 'hello, world after retry'),
                 ],
                 'reason' => null,
                 'status' => 200,

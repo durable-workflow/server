@@ -2,7 +2,9 @@
 
 namespace App\Http\Controllers\Api;
 
+use App\Support\AvroPayloadEnvelopeResolver;
 use App\Support\ControlPlaneProtocol;
+use App\Support\NamespaceExternalPayloadStorage;
 use App\Support\ScheduleVisibilityQuery;
 use App\Support\ScheduleVisibilityQueryException;
 use App\Support\SearchAttributeValueValidator;
@@ -26,6 +28,7 @@ class ScheduleController
         private readonly WorkflowCommandContextFactory $commandContexts,
         private readonly SearchAttributeValueValidator $searchAttributeValues,
         private readonly ScheduleVisibilityQuery $visibilityQuery,
+        private readonly NamespaceExternalPayloadStorage $externalPayloadStorage,
     ) {}
 
     public function index(Request $request): JsonResponse
@@ -194,6 +197,10 @@ class ScheduleController
         $namespace = $request->attributes->get('namespace');
 
         $validated = $request->validate($this->storeRules());
+        $this->validateActionInput(
+            $validated['action'],
+            is_string($namespace) ? $namespace : null,
+        );
 
         if (($memoError = $this->validateMemoSize($validated['memo'] ?? null)) !== null) {
             return $memoError;
@@ -319,6 +326,10 @@ class ScheduleController
         }
 
         $validated = $request->validate($this->updateRules());
+        $this->validateActionInput(
+            $validated['action'] ?? null,
+            is_string($schedule->namespace) ? $schedule->namespace : null,
+        );
 
         if (($memoError = $this->validateMemoSize($validated['memo'] ?? null)) !== null) {
             return $memoError;
@@ -988,6 +999,22 @@ class ScheduleController
         }
 
         return null;
+    }
+
+    /**
+     * @param  array<string, mixed>|null  $action
+     */
+    private function validateActionInput(?array $action, ?string $namespace): void
+    {
+        if ($action === null || ! array_key_exists('input', $action)) {
+            return;
+        }
+
+        AvroPayloadEnvelopeResolver::resolve(
+            $action['input'],
+            'action.input',
+            $this->externalPayloadStorage->driverFor($namespace),
+        );
     }
 
     /**

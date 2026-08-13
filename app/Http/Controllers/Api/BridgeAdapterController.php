@@ -2,6 +2,7 @@
 
 namespace App\Http\Controllers\Api;
 
+use App\Support\AvroPayloadEnvelopeResolver;
 use App\Support\BridgeAdapterOutcomeContract;
 use App\Support\ControlPlaneProtocol;
 use App\Support\NamespaceExternalPayloadStorage;
@@ -16,7 +17,6 @@ use Illuminate\Validation\ValidationException;
 use LogicException;
 use Workflow\V2\Contracts\WorkflowControlPlane;
 use Workflow\V2\Models\WorkflowCommand;
-use Workflow\V2\Support\PayloadEnvelopeResolver;
 
 class BridgeAdapterController
 {
@@ -269,7 +269,7 @@ class BridgeAdapterController
         }
 
         $externalStorage = $this->externalPayloadStorage->driverFor($namespace);
-        $envelope = PayloadEnvelopeResolver::resolve($validated['input'] ?? null, 'input', $externalStorage);
+        $envelope = AvroPayloadEnvelopeResolver::resolve($validated['input'] ?? null, 'input', $externalStorage);
 
         $duplicate = $this->duplicateBridgeCommand(
             workflowId: $workflowId,
@@ -294,7 +294,7 @@ class BridgeAdapterController
         }
 
         $result = $this->workflowControlPlane->signal($workflowId, $signalName, [
-            'arguments' => PayloadEnvelopeResolver::resolveToArray($validated['input'] ?? null, 'input', $externalStorage),
+            'arguments' => AvroPayloadEnvelopeResolver::resolveToArray($validated['input'] ?? null, 'input', $externalStorage),
             'payload_codec' => $envelope['codec'],
             'payload_blob' => $envelope['blob'],
             'command_context' => $this->commandContexts->make(
@@ -356,6 +356,12 @@ class BridgeAdapterController
             ]);
         }
 
+        $arguments = AvroPayloadEnvelopeResolver::resolveToArray(
+            $validated['input'] ?? null,
+            'input',
+            $this->externalPayloadStorage->driverFor($namespace),
+        );
+
         $duplicate = $this->duplicateBridgeCommand(
             workflowId: $workflowId,
             commandType: 'update',
@@ -379,11 +385,7 @@ class BridgeAdapterController
         }
 
         $result = $this->workflowControlPlane->update($workflowId, $updateName, [
-            'arguments' => PayloadEnvelopeResolver::resolveToArray(
-                $validated['input'] ?? null,
-                'input',
-                $this->externalPayloadStorage->driverFor($namespace),
-            ),
+            'arguments' => $arguments,
             'command_context' => $this->commandContexts->make(
                 $request,
                 workflowId: $workflowId,

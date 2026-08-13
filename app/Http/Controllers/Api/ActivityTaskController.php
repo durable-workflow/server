@@ -14,6 +14,7 @@ use App\Support\InvocableCarrierContract;
 use App\Support\LongPollCapacityExhaustedException;
 use App\Support\NamespaceExternalPayloadStorage;
 use App\Support\NamespaceWorkflowScope;
+use App\Support\PayloadCodecContract;
 use App\Support\WorkerPollBackpressure;
 use App\Support\WorkerProtocol;
 use App\Support\WorkerProtocolMutationRetrier;
@@ -21,17 +22,13 @@ use App\Support\WorkerSessionRegistry;
 use Carbon\CarbonInterface;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
-use Illuminate\Support\Facades\DB;
 use Illuminate\Validation\Rule;
 use Illuminate\Validation\ValidationException;
 use InvalidArgumentException;
-use Workflow\Serializers\CodecRegistry;
 use Workflow\V2\Contracts\ActivityTaskBridge as ActivityTaskBridgeContract;
 use Workflow\V2\Exceptions\ExternalPayloadIntegrityException;
-use Workflow\V2\Models\ActivityAttempt;
 use Workflow\V2\Models\ActivityExecution;
-use Workflow\V2\Models\WorkflowRun;
-use Workflow\V2\Support\PayloadEnvelopeResolver;
+use App\Support\AvroPayloadEnvelopeResolver;
 use Workflow\V2\Support\WorkerProtocolVersion;
 
 class ActivityTaskController
@@ -122,6 +119,16 @@ class ActivityTaskController
                 timeoutSeconds: $timeoutSeconds,
             );
         } catch (\Throwable $exception) {
+            if ($exception instanceof InvalidArgumentException
+                && str_contains($exception->getMessage(), 'unsupported_payload_codec:')) {
+                return WorkerProtocol::json([
+                    'task' => null,
+                    'poll_status' => 'rejected',
+                    'reason' => 'unsupported_payload_codec',
+                    'error' => $exception->getMessage(),
+                ], 422);
+            }
+
             if ($exception instanceof LongPollCapacityExhaustedException) {
                 return WorkerPollBackpressure::response(
                     'activity_task',
@@ -142,6 +149,19 @@ class ActivityTaskController
             throw $exception;
         }
         $claim = $poll['task'] ?? null;
+
+        if (is_array($claim)) {
+            try {
+                PayloadCodecContract::canonicalize(is_string($claim['payload_codec'] ?? null) ? $claim['payload_codec'] : null);
+            } catch (InvalidArgumentException $exception) {
+                return WorkerProtocol::json([
+                    'task' => null,
+                    'poll_status' => 'rejected',
+                    'reason' => 'unsupported_payload_codec',
+                    'error' => $exception->getMessage(),
+                ], 422);
+            }
+        }
 
         $deadlines = $claim === null ? null : $this->executionDeadlines($claim['activity_execution_id'] ?? null);
         $externalExecutor = $claim === null ? null : $this->externalExecutorMapping(
@@ -166,7 +186,7 @@ class ActivityTaskController
                 'arguments' => $claim['arguments'] !== null
                     ? $this->payloadEnvelopes->workerEnvelope(
                         $namespace,
-                        $claim['payload_codec'] ?? CodecRegistry::defaultCodec(),
+                        PayloadCodecContract::canonicalize($claim['payload_codec'] ?? null),
                         $claim['arguments'],
                     )
                     : null,
@@ -218,7 +238,7 @@ class ActivityTaskController
         /** @var ActivityTaskBridgeContract $bridge */
         $bridge = app(ActivityTaskBridgeContract::class);
         try {
-            $resolved = PayloadEnvelopeResolver::resolveCommandPayloadWithCodec(
+            $resolved = AvroPayloadEnvelopeResolver::resolveCommandPayloadWithCodec(
                 $validated['result'] ?? null,
                 'result',
                 $this->externalPayloadStorage->driverFor($namespace),
@@ -324,7 +344,7 @@ class ActivityTaskController
         /** @var ActivityTaskBridgeContract $bridge */
         $bridge = app(ActivityTaskBridgeContract::class);
         try {
-            $resolved = PayloadEnvelopeResolver::resolveCommandPayloadWithCodec(
+            $resolved = AvroPayloadEnvelopeResolver::resolveCommandPayloadWithCodec(
                 $validated['failure']['details'] ?? null,
                 'failure.details',
                 $this->externalPayloadStorage->driverFor($namespace),
@@ -347,35 +367,23 @@ class ActivityTaskController
         }
 
         try {
-            $outcome = $this->storageMutations->run(function () use ($bridge, $validated, $failure, $resolved): array {
-                try {
-                    return $bridge->fail($validated['activity_attempt_id'], $failure, $resolved['codec']);
-                } catch (InvalidArgumentException $exception) {
-                    if (! str_contains($exception->getMessage(), 'Unknown payload codec')) {
-                        throw $exception;
-                    }
-
-                    try {
-                        return $bridge->fail(
-                            $validated['activity_attempt_id'],
-                            $failure,
-                            CodecRegistry::defaultCodec(),
-                        );
-                    } catch (InvalidArgumentException $retryException) {
-                        if (! str_contains($retryException->getMessage(), 'Unknown payload codec')) {
-                            throw $retryException;
-                        }
-
-                        return $this->recordUnsupportedCodecActivityFailure(
-                            $validated['activity_attempt_id'],
-                            $failure,
-                            $bridge,
-                        );
-                    }
-                }
-            });
+            $outcome = $this->storageMutations->run(
+                fn (): array => $bridge->fail($validated['activity_attempt_id'], $failure, $resolved['codec']),
+            );
         } catch (ExternalPayloadStorageUnavailable $exception) {
             return $this->externalPayloadFailure($taskId, $validated['activity_attempt_id'], $exception, 503);
+        } catch (InvalidArgumentException $exception) {
+            if (str_contains($exception->getMessage(), 'unsupported_payload_codec:')) {
+                return WorkerProtocol::json([
+                    'task_id' => $taskId,
+                    'activity_attempt_id' => $validated['activity_attempt_id'],
+                    'recorded' => false,
+                    'reason' => 'unsupported_payload_codec',
+                    'error' => $exception->getMessage(),
+                ], 422);
+            }
+
+            throw $exception;
         } catch (\Throwable $exception) {
             if (! BackendLockPressure::is($exception)) {
                 throw $exception;
@@ -393,62 +401,6 @@ class ActivityTaskController
             'reason' => $outcome['reason'],
             'next_task_id' => $outcome['next_task_id'],
         ], $stopStatus), $this->outcomeStatus($outcome['reason']));
-    }
-
-    /**
-     * @param  array<string, mixed>  $failure
-     * @return array{recorded: bool, task_id: string, reason: string|null, next_task_id: string|null}
-     */
-    private function recordUnsupportedCodecActivityFailure(
-        string $attemptId,
-        array $failure,
-        ActivityTaskBridgeContract $bridge,
-    ): array {
-        return DB::transaction(function () use ($attemptId, $failure, $bridge): array {
-            /** @var ActivityAttempt|null $attempt */
-            $attempt = ActivityAttempt::query()->find($attemptId);
-
-            if (! $attempt instanceof ActivityAttempt) {
-                return $this->activityFailureOutcome($attemptId, false, 'attempt_not_found');
-            }
-
-            /** @var WorkflowRun|null $run */
-            $run = WorkflowRun::query()
-                ->lockForUpdate()
-                ->find($attempt->workflow_run_id);
-
-            if (! $run instanceof WorkflowRun) {
-                return $this->activityFailureOutcome($attemptId, false, 'activity_execution_missing');
-            }
-
-            $originalCodec = is_string($run->payload_codec) ? $run->payload_codec : null;
-            $defaultCodec = CodecRegistry::defaultCodec();
-
-            // The workflow package recorder serializes ActivityFailed storage
-            // with the run codec. Unknown codecs are worker-owned, so use the
-            // default codec only for recorder side effects, then restore the
-            // worker-facing run codec before committing the transaction.
-            $run->forceFill(['payload_codec' => $defaultCodec])->save();
-
-            try {
-                return $bridge->fail($attemptId, $failure, $defaultCodec);
-            } finally {
-                $run->forceFill(['payload_codec' => $originalCodec])->save();
-            }
-        });
-    }
-
-    /**
-     * @return array{recorded: bool, task_id: string, reason: string|null, next_task_id: string|null}
-     */
-    private function activityFailureOutcome(string $attemptId, bool $recorded, ?string $reason): array
-    {
-        return [
-            'recorded' => $recorded,
-            'task_id' => $attemptId,
-            'reason' => $reason,
-            'next_task_id' => null,
-        ];
     }
 
     /**

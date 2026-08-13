@@ -2,6 +2,8 @@
 
 namespace App\Support;
 
+use Workflow\Serializers\Serializer;
+
 final class ExternalTaskResultContract
 {
     public const SCHEMA = 'durable-workflow.v2.external-task-result.contract';
@@ -35,8 +37,9 @@ final class ExternalTaskResultContract
             ],
             'stderr_policy' => 'logs_only_no_machine_meaning',
             'payload_support' => [
-                'result_payload' => 'Success result payloads are codec-tagged. Null result is represented as result: null.',
-                'failure_details' => 'Failure details are codec-tagged when present.',
+                'codecs' => PayloadCodecContract::universal(),
+                'result_payload' => 'Success result payloads use codec="avro". Null result is represented as result: null.',
+                'failure_details' => 'Failure details use codec="avro" when present.',
                 'unsupported_codec' => 'A handler that cannot decode input payloads must return failure.kind unsupported_payload with failure.classification unsupported_payload_codec.',
                 'unsupported_external_storage' => 'A handler that cannot resolve an external storage reference must return failure.kind unsupported_payload with failure.classification unsupported_payload_reference.',
             ],
@@ -262,10 +265,10 @@ final class ExternalTaskResultContract
             'result' => [
                 'payload' => [
                     'codec' => 'avro',
-                    'blob' => 'BASE64_AVRO_RESULT',
+                    'blob' => Serializer::serializeWithCodec('avro', ['ok' => true]),
                 ],
                 'metadata' => [
-                    'content_type' => 'application/vnd.durable-workflow.result+json',
+                    'content_type' => 'application/vnd.durable-workflow.avro-value',
                 ],
             ],
             'metadata' => self::fixtureMetadata(184),
@@ -287,7 +290,7 @@ final class ExternalTaskResultContract
             cancelled: false,
             details: [
                 'codec' => 'avro',
-                'blob' => 'BASE64_AVRO_FAILURE_DETAILS',
+                'blob' => Serializer::serializeWithCodec('avro', ['provider' => 'billing']),
             ],
             durationMs: 5000,
         );
@@ -367,8 +370,8 @@ final class ExternalTaskResultContract
             timeoutType: null,
             cancelled: false,
             details: [
-                'codec' => 'json/plain',
-                'blob' => 'eyJkZXRhaWwiOiJpbnZhbGlkIHV0Zi04In0=',
+                'codec' => 'avro',
+                'blob' => Serializer::serializeWithCodec('avro', ['detail' => 'invalid utf-8']),
             ],
             durationMs: 18,
         );
@@ -388,8 +391,8 @@ final class ExternalTaskResultContract
             timeoutType: null,
             cancelled: false,
             details: [
-                'codec' => 'json/plain',
-                'blob' => 'eyJjb2RlYyI6ImF2cm8ifQ==',
+                'codec' => 'avro',
+                'blob' => Serializer::serializeWithCodec('avro', ['codec' => 'json']),
             ],
             durationMs: 9,
         );
@@ -409,8 +412,8 @@ final class ExternalTaskResultContract
             timeoutType: null,
             cancelled: false,
             details: [
-                'codec' => 'json/plain',
-                'blob' => 'eyJwcm92aWRlciI6ImdzIn0=',
+                'codec' => 'avro',
+                'blob' => Serializer::serializeWithCodec('avro', ['provider' => 'gs']),
             ],
             durationMs: 12,
         );

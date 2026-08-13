@@ -4436,11 +4436,7 @@ samples = {
     },
     "worker_routed_envelope": {
         "ok": True,
-        "result": None,
-        "result_envelope": {
-            "codec": "json",
-            "blob": "8",
-        },
+        "result": 8,
     },
 }
 

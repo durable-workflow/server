@@ -5,7 +5,6 @@ namespace App\Support;
 use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\DB;
 use Throwable;
-use Workflow\Serializers\CodecRegistry;
 use Workflow\Serializers\Serializer;
 use Workflow\V2\CommandContext;
 use Workflow\V2\Contracts\HistoryProjectionRole;
@@ -108,9 +107,7 @@ class ExternalWorkflowUpdateAdmission
             }
 
             $arguments = $validated['arguments'];
-            $codec = is_string($run->payload_codec) && $run->payload_codec !== ''
-                ? $run->payload_codec
-                : CodecRegistry::defaultCodec();
+            $codec = PayloadCodecContract::canonicalize($run->payload_codec);
             $serializedArguments = Serializer::serializeWithCodec($codec, $arguments);
 
             try {
@@ -126,8 +123,8 @@ class ExternalWorkflowUpdateAdmission
                     'command_type' => CommandType::Update->value,
                     'target_scope' => 'instance',
                     'status' => CommandStatus::Accepted->value,
-                    'payload_codec' => CodecRegistry::defaultCodec(),
-                    'payload' => Serializer::serializeWithCodec(CodecRegistry::defaultCodec(), [
+                    'payload_codec' => PayloadCodecContract::CODEC,
+                    'payload' => Serializer::serializeWithCodec(PayloadCodecContract::CODEC, [
                         'name' => $updateName,
                         'arguments' => $arguments,
                         'validation_errors' => [],

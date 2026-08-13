@@ -44,12 +44,27 @@ SERVER_CODEC_PROOF_SCHEMA = "durable-workflow.server-codec-counterfactual/v1"
 SERVER_CODEC_PROOF_GLOB = "tests/Fixtures/CodecRegressionProofs/*.json"
 SERVER_CODEC_EXECUTOR_FILES = (
     "tests/Support/ServerCodecRegressionBoundary.php",
+    "tests/Support/ServerCodecRegressionBoundaryV2.php",
     "tests/Support/ServerCodecRegressionFixture.php",
     "tests/Support/ServerCodecRegressionFixtureExecutor.php",
+    "tests/Support/ServerCodecRegressionFixtureExecutorV2.php",
+    "tests/Support/ServerCodecRegressionLegacyRegistry.php",
 )
 SERVER_CODEC_EXECUTOR_CLASS = "ServerCodecRegressionFixtureExecutor"
 SERVER_CODEC_EXECUTOR_METHOD = "exercise"
-SERVER_CODEC_BOUNDARY_PROXY = r"\Tests\Support\ServerCodecRegressionBoundary"
+SERVER_CODEC_BOUNDARY_PROXIES = {
+    "Avro": r"\Tests\Support\ServerCodecRegressionBoundary",
+    "Serializer": r"\Tests\Support\ServerCodecRegressionBoundary",
+    "CodecRegistry": r"\Tests\Support\ServerCodecRegressionBoundaryV2",
+    "PayloadCodecContract": r"\Tests\Support\ServerCodecRegressionBoundaryV2",
+    "PayloadEnvelopeResolver": r"\Tests\Support\ServerCodecRegressionBoundaryV2",
+    "AvroPayloadEnvelopeResolver": r"\Tests\Support\ServerCodecRegressionBoundaryV2",
+}
+SERVER_JSON_CODEC_BOUNDARY_PROXIES = {
+    **SERVER_CODEC_BOUNDARY_PROXIES,
+    "Avro": r"\Tests\Support\ServerCodecRegressionBoundaryV2",
+    "Serializer": r"\Tests\Support\ServerCodecRegressionBoundaryV2",
+}
 SERVER_CODEC_BOUNDARY_EVIDENCE_PREFIX = "durable-workflow-codec-boundary/v1:"
 SERVER_CODEC_BOUNDARY_METHODS = {
     "Avro": {
@@ -60,6 +75,25 @@ SERVER_CODEC_BOUNDARY_METHODS = {
         "serializeWithCodec": "serializeWithCodec",
         "unserializeWithCodec": "unserializeWithCodec",
     },
+    "CodecRegistry": {
+        "canonicalize": "legacyCanonicalize",
+        "defaultCodec": "defaultCodec",
+        "universal": "legacyUniversal",
+    },
+    "PayloadCodecContract": {
+        "canonicalize": "canonicalize",
+        "universal": "universal",
+    },
+    "PayloadEnvelopeResolver": {
+        "resolve": "legacyResolve",
+        "resolveToArray": "legacyResolveToArray",
+        "resolveCommandPayloadWithCodec": "legacyResolveCommandPayloadWithCodec",
+    },
+    "AvroPayloadEnvelopeResolver": {
+        "resolve": "avroResolve",
+        "resolveToArray": "avroResolveToArray",
+        "resolveCommandPayloadWithCodec": "avroResolveCommandPayloadWithCodec",
+    },
 }
 SERVER_DIRECT_CODEC_CLASSES = ("Avro", "Json", "Base64", "Y")
 SERVER_DIRECT_CODEC_CLASS_PATTERN = "|".join(
@@ -67,7 +101,8 @@ SERVER_DIRECT_CODEC_CLASS_PATTERN = "|".join(
 )
 SERVER_CODEC_DEPENDENCY = re.compile(
     r"(?i)(?<![A-Za-z0-9_])(?:Avro|CodecRegistry|Serializer|SerializerInterface|"
-    r"PayloadEnvelopeResolver|ExternalPayloads|ExternalPayloadEnvelopeService)\b"
+    r"PayloadCodecContract|PayloadEnvelopeResolver|ExternalPayloads|"
+    r"ExternalPayloadEnvelopeService)\b"
 )
 SERVER_CODEC_OPERATION = re.compile(
     r"(?ix)(?:"
@@ -1191,6 +1226,16 @@ def _php_signature(source: str) -> tuple[str, bool]:
     return "".join(signature), True
 
 
+def _php_structural_signature(source: str) -> tuple[str, bool]:
+    """Return executable PHP structure while ignoring comments and literals."""
+
+    structural, _, _, valid = _php_lexical_views(source)
+    if not valid:
+        return source, False
+
+    return "".join(character for character in structural if not character.isspace()), True
+
+
 def _php_balanced_end(
     masked: str, start: int, opening: str, closing: str
 ) -> int | None:
@@ -1381,6 +1426,20 @@ def _php_codec_change_classification(
         ):
             continue
         if base_method is not None and current_method is not None:
+            base_structure, base_structure_valid = _php_structural_signature(
+                base_method.source
+            )
+            current_structure, current_structure_valid = _php_structural_signature(
+                current_method.source
+            )
+            if (
+                base_structure_valid
+                and current_structure_valid
+                and base_structure == current_structure
+                and not _php_has_direct_codec_operation(base_method.source)
+                and not _php_has_direct_codec_operation(current_method.source)
+            ):
+                continue
             if base_method.name == "__construct":
                 if _php_has_direct_codec_operation(base_method.source) or (
                     _php_has_direct_codec_operation(current_method.source)
@@ -1408,9 +1467,14 @@ def _php_codec_change_classification(
             _php_has_direct_codec_operation(current.top_level_source)
         ):
             related = True
+        elif SERVER_CODEC_DEPENDENCY.search(base.top_level_source) or (
+            SERVER_CODEC_DEPENDENCY.search(current.top_level_source)
+        ):
+            review_required = True
 
     if base_content is None and _php_has_direct_codec_operation(current_source):
         related = True
+        review_required = True
 
     return PhpCodecChange(related=related, review_required=review_required)
 
@@ -1819,24 +1883,21 @@ def _counterfactual_proofs(
             f"(missing_proofs={missing}, unrelated_proofs={unrelated})"
         )
 
-    proof_tests = [proof.test for proof in proofs]
-    if len(proof_tests) != len(set(proof_tests)):
-        raise CorpusError(
-            "each guarded codec boundary must have its own counterfactual test"
-        )
-
     claimed_boundaries: list[str] = []
+    revertible_guarded_paths = guarded_paths - added_paths
     for proof in proofs:
-        if len(proof.boundaries) != 1:
-            raise CorpusError(
-                f"{proof.path}.boundaries must name exactly one guarded codec boundary"
-            )
         if proof.test not in changed_paths or proof.test not in current_files:
             raise CorpusError(
                 f"{proof.path}.test must be added or changed with its guarded codec defect"
             )
         _require_official_proof_adapter(current_files[proof.test], proof.test)
-        unrelated_boundaries = set(proof.boundaries) - guarded_paths
+        added_boundary_claims = set(proof.boundaries) & guarded_paths & added_paths
+        if added_boundary_claims:
+            raise CorpusError(
+                f"{proof.path}.boundaries cannot claim newly added guarded paths "
+                f"without a real base implementation: {sorted(added_boundary_claims)}"
+            )
+        unrelated_boundaries = set(proof.boundaries) - revertible_guarded_paths
         if unrelated_boundaries:
             raise CorpusError(
                 f"{proof.path}.boundaries names unchanged or unguarded paths: "
@@ -1848,7 +1909,7 @@ def _counterfactual_proofs(
     duplicate_boundaries = sorted(
         boundary for boundary, count in claims.items() if count > 1
     )
-    missing_boundaries = sorted(guarded_paths - set(claimed_boundaries))
+    missing_boundaries = sorted(revertible_guarded_paths - set(claimed_boundaries))
     if duplicate_boundaries or missing_boundaries:
         raise CorpusError(
             "each guarded codec boundary must have exactly one defect-specific "
@@ -1888,6 +1949,8 @@ def _run_phpunit_proof(
     proof: CounterfactualProof,
     bootstrap: Path,
     boundary_evidence: str,
+    boundary: str,
+    input_codec: str,
 ) -> subprocess.CompletedProcess[str]:
     command = [
         str(phpunit),
@@ -1902,6 +1965,8 @@ def _run_phpunit_proof(
         for key, value in os.environ.items()
         if not key.startswith("SERVER_CODEC_")
     }
+    environment["SERVER_CODEC_CLAIMED_BOUNDARY"] = boundary
+    environment["SERVER_CODEC_PROOF_INPUT_CODEC"] = input_codec
     result = subprocess.run(
         command,
         cwd=root,
@@ -1960,22 +2025,38 @@ def _instrument_server_codec_boundary(
 
     aliases: dict[str, str] = {}
     for match in re.finditer(
-        r"\buse\s+\\?Workflow\\Serializers\\(Avro|Serializer)"
+        r"\buse\s+\\?Workflow\\Serializers\\(Avro|Serializer|CodecRegistry)"
         r"(?:\s+as\s+([A-Za-z_][A-Za-z0-9_]*))?\s*;",
         source,
     ):
         class_name = match.group(1)
         aliases[match.group(2) or class_name] = class_name
 
+    for match in re.finditer(
+        r"\buse\s+\\?(Workflow\\V2\\Support\\PayloadEnvelopeResolver|"
+        r"App\\Support\\AvroPayloadEnvelopeResolver)"
+        r"(?:\s+as\s+([A-Za-z_][A-Za-z0-9_]*))?\s*;",
+        source,
+    ):
+        class_name = match.group(1).rsplit("\\", 1)[-1]
+        aliases[match.group(2) or class_name] = class_name
+
     for class_name in SERVER_CODEC_BOUNDARY_METHODS:
         aliases.setdefault(class_name, class_name)
         aliases[rf"\Workflow\Serializers\{class_name}"] = class_name
         aliases[rf"Workflow\Serializers\{class_name}"] = class_name
+    aliases.setdefault("PayloadCodecContract", "PayloadCodecContract")
 
     def php_literal(value: str) -> str:
         return "'" + value.replace("\\", "\\\\").replace("'", "\\'") + "'"
 
     encoded_fixture = base64.b64encode(fixture_content).decode()
+    fixture_document = _json(fixture_content, path)
+    boundary_proxies = (
+        SERVER_JSON_CODEC_BOUNDARY_PROXIES
+        if fixture_document.get("protocol", {}).get("codec") == "json"
+        else SERVER_CODEC_BOUNDARY_PROXIES
+    )
     proxy_arguments = (
         f"{php_literal(encoded_fixture)}, "
         f"{php_literal(str(boundary_path))}, "
@@ -1989,17 +2070,32 @@ def _instrument_server_codec_boundary(
             )
             source, count = pattern.subn(
                 lambda _: (
-                    f"{SERVER_CODEC_BOUNDARY_PROXY}::{proxy_method}("
+                    f"{boundary_proxies[class_name]}::{proxy_method}("
                     f"{proxy_arguments}"
                 ),
                 source,
             )
             substitutions += count
 
+    method_pattern = re.compile(
+        r"(\bpublic\s+(?:static\s+)?function\s+[A-Za-z_][A-Za-z0-9_]*"
+        r"\s*\([^{}]*\)\s*(?::\s*[^\{]+)?\{)",
+        re.DOTALL,
+    )
+    attestation = (
+        "\n        \\Tests\\Support\\ServerCodecRegressionBoundaryV2::attestBoundary("
+        f"{proxy_arguments[:-2]});"
+    )
+    source, entry_count = method_pattern.subn(
+        lambda match: match.group(1) + attestation,
+        source,
+    )
+    substitutions += entry_count
+
     if substitutions == 0:
         raise CorpusError(
-            f"claimed codec boundary {path} has no supported official PHP codec "
-            "call to instrument"
+            f"claimed codec boundary {path} has no supported public entry point "
+            "or official PHP codec call to instrument"
         )
 
     return source.encode()
@@ -2070,8 +2166,16 @@ spl_autoload_register(
     true,
 );
 
+if (!class_exists(\\Workflow\\Serializers\\CodecRegistry::class, false)) {
+    class_alias(
+        \\Tests\\Support\\ServerCodecRegressionLegacyRegistry::class,
+        \\Workflow\\Serializers\\CodecRegistry::class,
+    );
+}
+
 foreach ([
     \\Tests\\Support\\ServerCodecRegressionBoundary::class,
+    \\Tests\\Support\\ServerCodecRegressionBoundaryV2::class,
     \\Tests\\Support\\ServerCodecRegressionFixtureExecutor::class,
 ] as $trustedClass) {
     if (! class_exists($trustedClass)) {
@@ -2084,6 +2188,24 @@ foreach ([
     return bootstrap, evidence
 
 
+def _review_compatible_base_files(
+    base_files: Mapping[str, bytes],
+    current_files: Mapping[str, bytes],
+    compatibility_paths: set[str],
+) -> dict[str, bytes]:
+    """Carry review-only edits into payload counterfactual base snapshots."""
+
+    compatible = dict(base_files)
+    for path in compatibility_paths:
+        content = current_files.get(path)
+        if content is None:
+            compatible.pop(path, None)
+        else:
+            compatible[path] = content
+
+    return compatible
+
+
 def _verify_counterfactual_proofs(
     *,
     root: Path,
@@ -2092,6 +2214,7 @@ def _verify_counterfactual_proofs(
     proofs: Sequence[CounterfactualProof],
     phpunit: Path,
     base_fixture_paths: Sequence[str],
+    compatibility_paths: set[str],
 ) -> int:
     if not phpunit.is_file():
         raise CorpusError(
@@ -2100,14 +2223,26 @@ def _verify_counterfactual_proofs(
 
     with tempfile.TemporaryDirectory(prefix="server-codec-base-") as temporary:
         snapshot_root = Path(temporary)
+        compatible_base_files = _review_compatible_base_files(
+            base_files,
+            current_files,
+            compatibility_paths,
+        )
         if proofs and not base_fixture_paths:
             raise CorpusError(
                 "counterfactual verification requires a previously executable "
                 "codec fixture as a causality sentinel"
             )
 
-        for index, proof in enumerate(proofs):
-            boundary = proof.boundaries[0]
+        execution_count = 0
+        executions = [
+            (proof_index, boundary_index, proof, boundary)
+            for proof_index, proof in enumerate(proofs)
+            for boundary_index, boundary in enumerate(proof.boundaries)
+        ]
+        for proof_index, boundary_index, proof, boundary in executions:
+            index = f"{proof_index}-{boundary_index}"
+            execution_count += 1
             candidate_root = snapshot_root / f"candidate-{index}"
             candidate_bootstrap, candidate_evidence = _write_app_snapshot(
                 candidate_root,
@@ -2121,17 +2256,20 @@ def _verify_counterfactual_proofs(
                 proof=proof,
                 bootstrap=candidate_bootstrap,
                 boundary_evidence=candidate_evidence,
+                boundary=boundary,
+                input_codec="json",
             )
             if candidate.returncode != 0:
                 raise CorpusError(
                     f"counterfactual test {proof.test} does not pass on the candidate "
+                    f"for {boundary} "
                     f"through PHPUnit: {_process_detail(candidate)}"
                 )
 
             base_root = snapshot_root / f"base-{index}"
             bootstrap, base_evidence = _write_app_snapshot(
                 base_root,
-                base_files,
+                compatible_base_files,
                 fixture_content=current_files[proof.fixture],
                 instrument_boundary=boundary,
             )
@@ -2141,16 +2279,20 @@ def _verify_counterfactual_proofs(
                 proof=proof,
                 bootstrap=bootstrap,
                 boundary_evidence=base_evidence,
+                boundary=boundary,
+                input_codec="json",
             )
             if defective.returncode == 0:
                 raise CorpusError(
-                    f"counterfactual test {proof.test} also passes on the defective base; "
+                    f"counterfactual test {proof.test} also passes on the defective base "
+                    f"for {boundary}; "
                     f"fixture {proof.fixture} is not defect-specific"
                 )
             if defective.returncode != 1:
                 raise CorpusError(
                     f"counterfactual test {proof.test} did not produce a base assertion "
-                    f"failure through PHPUnit: {_process_detail(defective)}"
+                    f"failure for {boundary} "
+                    f"through PHPUnit: {_process_detail(defective)}"
                 )
 
             sentinel_fixture = base_fixture_paths[0]
@@ -2163,7 +2305,7 @@ def _verify_counterfactual_proofs(
             sentinel_root = snapshot_root / f"sentinel-{index}"
             sentinel_bootstrap, sentinel_evidence = _write_app_snapshot(
                 sentinel_root,
-                base_files,
+                compatible_base_files,
                 fixture_content=sentinel_content,
                 instrument_boundary=boundary,
             )
@@ -2173,10 +2315,13 @@ def _verify_counterfactual_proofs(
                 proof=proof,
                 bootstrap=sentinel_bootstrap,
                 boundary_evidence=sentinel_evidence,
+                boundary=boundary,
+                input_codec="avro",
             )
             if sentinel.returncode != 0:
                 raise CorpusError(
                     f"counterfactual test {proof.test} still fails on the defective base "
+                    f"for {boundary} "
                     f"after fixture {proof.fixture} is replaced by previously executable "
                     f"sentinel {sentinel_fixture}; the counted fixture is not causally "
                     f"exercised through PHPUnit: {_process_detail(sentinel)}"
@@ -2188,7 +2333,7 @@ def _verify_counterfactual_proofs(
                 current_files,
                 fixture_content=current_files[proof.fixture],
                 boundary=boundary,
-                boundary_content=base_files.get(boundary),
+                boundary_content=base_files[boundary],
                 instrument_boundary=boundary,
             )
             isolated = _run_phpunit_proof(
@@ -2197,6 +2342,8 @@ def _verify_counterfactual_proofs(
                 proof=proof,
                 bootstrap=isolated_bootstrap,
                 boundary_evidence=isolated_evidence,
+                boundary=boundary,
+                input_codec="json",
             )
             if isolated.returncode == 0:
                 raise CorpusError(
@@ -2211,7 +2358,7 @@ def _verify_counterfactual_proofs(
                     f"{_process_detail(isolated)}"
                 )
 
-    return len(proofs)
+    return execution_count
 
 
 def validate(
@@ -2372,6 +2519,7 @@ def validate(
                                 if item.category == category_name
                             }
                         ),
+                        compatibility_paths=category_review_required - related_paths,
                     )
         counts[category_name] = {
             "base": base_count,

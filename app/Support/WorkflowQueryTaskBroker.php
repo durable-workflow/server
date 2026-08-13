@@ -13,7 +13,6 @@ use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Schema;
 use Illuminate\Support\Str;
 use Illuminate\Validation\ValidationException;
-use Workflow\Serializers\CodecRegistry;
 use Workflow\Serializers\Serializer;
 use Workflow\V2\CommandContext;
 use Workflow\V2\Enums\HistoryEventType;
@@ -26,7 +25,6 @@ use Workflow\V2\Models\WorkflowSignal;
 use Workflow\V2\Models\WorkflowTask;
 use Workflow\V2\Support\ExternalPayloads;
 use Workflow\V2\Support\HistoryExport;
-use Workflow\V2\Support\PayloadEnvelopeResolver;
 use Workflow\V2\Support\RunCommandContract;
 use Workflow\V2\Support\WorkflowQueryContract;
 
@@ -245,7 +243,7 @@ final class WorkflowQueryTaskBroker
 
         $codec = is_string($queryArguments['codec'] ?? null)
             ? $queryArguments['codec']
-            : CodecRegistry::defaultCodec();
+            : PayloadCodecContract::CODEC;
         $blob = $queryArguments['blob'] ?? null;
 
         if ($this->isEmptyQueryInput($queryArguments)) {
@@ -350,12 +348,12 @@ final class WorkflowQueryTaskBroker
             $externalStorage = app(NamespaceExternalPayloadStorage::class)->driverFor($namespace);
 
             if (array_key_exists('external_storage', $queryArguments)) {
-                return PayloadEnvelopeResolver::resolve($queryArguments, 'query_arguments', $externalStorage);
+                return AvroPayloadEnvelopeResolver::resolve($queryArguments, 'query_arguments', $externalStorage);
             }
 
             $codec = is_string($queryArguments['codec'] ?? null)
                 ? $queryArguments['codec']
-                : CodecRegistry::defaultCodec();
+                : PayloadCodecContract::CODEC;
             $blob = $queryArguments['blob'] ?? null;
 
             if (! is_string($blob)) {
@@ -375,7 +373,7 @@ final class WorkflowQueryTaskBroker
             $blob = ExternalPayloads::resolveStoredPayload($blob, $codec, $namespace, $externalStorage);
 
             return [
-                'codec' => CodecRegistry::canonicalize($codec),
+                'codec' => PayloadCodecContract::canonicalize($codec),
                 'blob' => $blob,
             ];
         } catch (ValidationException $exception) {
@@ -464,7 +462,7 @@ final class WorkflowQueryTaskBroker
             'workflow_definition_fingerprint' => $this->recordedWorkflowDefinitionFingerprint($run),
             'compatibility' => $this->stringValue($run->compatibility),
             'task_queue' => $taskQueue,
-            'payload_codec' => $run->payload_codec ?? CodecRegistry::defaultCodec(),
+            'payload_codec' => PayloadCodecContract::canonicalize($run->payload_codec),
             'query_name' => $queryName,
             'query_arguments' => $queryArguments,
             'attempt_count' => 0,
@@ -2131,7 +2129,7 @@ final class WorkflowQueryTaskBroker
             'workflow_arguments' => $run instanceof WorkflowRun && is_string($run->arguments)
                 ? $this->payloadEnvelopes->workerEnvelope(
                     is_string($task['namespace'] ?? null) ? $task['namespace'] : null,
-                    $run->payload_codec ?? CodecRegistry::defaultCodec(),
+                    PayloadCodecContract::canonicalize($run->payload_codec),
                     $run->arguments,
                 )
                 : null,
@@ -2241,9 +2239,9 @@ final class WorkflowQueryTaskBroker
 
         return $this->payloadEnvelopes->workerEnvelope(
             is_string($task['namespace'] ?? null) ? $task['namespace'] : null,
-            is_string($arguments['codec'] ?? null) ? $arguments['codec'] : CodecRegistry::defaultCodec(),
+            PayloadCodecContract::canonicalize($arguments['codec'] ?? null),
             $blob,
-        ) ?? ['codec' => CodecRegistry::defaultCodec(), 'blob' => null];
+        ) ?? ['codec' => PayloadCodecContract::CODEC, 'blob' => null];
     }
 
     /**
@@ -2251,9 +2249,7 @@ final class WorkflowQueryTaskBroker
      */
     private function emptyArgumentsEnvelope(mixed $codec = null): array
     {
-        $codec = is_string($codec) && $codec !== ''
-            ? $codec
-            : CodecRegistry::defaultCodec();
+        $codec = PayloadCodecContract::canonicalize($codec);
 
         return [
             'codec' => $codec,
@@ -2275,7 +2271,7 @@ final class WorkflowQueryTaskBroker
 
         return $this->payloadEnvelopes->workerEnvelope(
             $namespace,
-            is_string($envelope['codec'] ?? null) ? $envelope['codec'] : CodecRegistry::defaultCodec(),
+            PayloadCodecContract::canonicalize($envelope['codec'] ?? null),
             $blob,
         );
     }
@@ -2425,7 +2421,7 @@ final class WorkflowQueryTaskBroker
 
         return $this->payloadEnvelopes->workerEnvelope(
             $namespace,
-            $this->stringValue($signal->payload_codec) ?? CodecRegistry::defaultCodec(),
+            PayloadCodecContract::canonicalize($this->stringValue($signal->payload_codec)),
             $signal->arguments,
         );
     }

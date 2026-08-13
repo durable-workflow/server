@@ -103,8 +103,17 @@ class RegressionCorpusPolicyTest(unittest.TestCase):
         (self.root / "tests/Support/ServerCodecRegressionBoundary.php").write_text(
             "<?php\nfinal class ServerCodecRegressionBoundary {}\n"
         )
+        (self.root / "tests/Support/ServerCodecRegressionBoundaryV2.php").write_text(
+            "<?php\nfinal class ServerCodecRegressionBoundaryV2 {}\n"
+        )
         (self.root / "tests/Support/ServerCodecRegressionFixtureExecutor.php").write_text(
             "<?php\nfinal class ServerCodecRegressionFixtureExecutor {}\n"
+        )
+        (self.root / "tests/Support/ServerCodecRegressionFixtureExecutorV2.php").write_text(
+            "<?php\nfinal class ServerCodecRegressionFixtureExecutorV2 {}\n"
+        )
+        (self.root / "tests/Support/ServerCodecRegressionLegacyRegistry.php").write_text(
+            "<?php\nfinal class ServerCodecRegressionLegacyRegistry {}\n"
         )
         (self.root / "tests/Support/ServerCodecRegressionFixture.php").write_text(
             "<?php\nfinal readonly class ServerCodecRegressionFixture {}\n"
@@ -145,6 +154,7 @@ class RegressionCorpusPolicyTest(unittest.TestCase):
             """#!/usr/bin/env python3
 import base64
 import json
+import os
 import re
 import sys
 from pathlib import Path
@@ -187,6 +197,17 @@ if "cases" in fixture:
     source = (source_root / "app/Support/ExternalWorkflowUpdateAdmission.php").read_text()
     exercised_boundary(0 if "array_values($arguments)" in source else 1)
 identity = fixture["id"]
+if identity == "multi-boundary-defect":
+    if (
+        fixture.get("value") == {"type": "long", "value": "0"}
+        and fixture.get("framing", {}).get("wire_base64") == "AA=="
+    ):
+        exercised_boundary(0)
+    boundary = os.environ["SERVER_CODEC_CLAIMED_BOUNDARY"]
+    source = (source_root / boundary).read_text()
+    if boundary.endswith("ExternalWorkflowUpdateAdmission.php"):
+        exercised_boundary(0 if "array_values($arguments)" in source else 1)
+    exercised_boundary(0 if "trim($blob)" in source else 1)
 if (
     fixture.get("value") == {"type": "long", "value": "0"}
     and fixture.get("framing", {}).get("wire_base64") == "AA=="
@@ -617,6 +638,8 @@ final class InstrumentedCodecBoundaryRuntimeTest extends TestCase
             proof=proof,
             bootstrap=bootstrap,
             boundary_evidence=evidence,
+            boundary=boundary,
+            input_codec="avro",
         )
 
         self.assertEqual(
@@ -1000,6 +1023,52 @@ final class InstrumentedCodecBoundaryRuntimeTest extends TestCase
         self.assertEqual(
             [GUARDED_METHOD_BOUNDARY],
             report["counts"]["codec"]["review_required_paths"],
+        )
+
+    def test_codec_api_inventory_change_requires_review_without_fake_payload_evidence(
+        self,
+    ) -> None:
+        base = (
+            "<?php\n"
+            "use Workflow\\Serializers\\CodecRegistry;\n"
+            "final class WorkflowPackageApiFloor\n"
+            "{\n"
+            "    private const REQUIRED_APIS = [\n"
+            "        [CodecRegistry::class, 'universal'],\n"
+            "        [CodecRegistry::class, 'engineSpecific'],\n"
+            "    ];\n"
+            "\n"
+            "    public static function assert(): void\n"
+            "    {\n"
+            "        throw new RuntimeException('requires engine-specific codecs');\n"
+            "    }\n"
+            "}\n"
+        )
+        current = base.replace(
+            "        [CodecRegistry::class, 'engineSpecific'],\n",
+            "",
+        ).replace(
+            "requires engine-specific codecs",
+            "requires the universal codec authority",
+        )
+
+        classification = CORPUS_VALIDATOR._php_codec_change_classification(
+            base.encode(),
+            current.encode(),
+            broad_path_guard=False,
+        )
+
+        self.assertFalse(classification.related)
+        self.assertTrue(classification.review_required)
+
+        compatible = CORPUS_VALIDATOR._review_compatible_base_files(
+            {"app/Support/WorkflowPackageApiFloor.php": base.encode()},
+            {"app/Support/WorkflowPackageApiFloor.php": current.encode()},
+            {"app/Support/WorkflowPackageApiFloor.php"},
+        )
+        self.assertEqual(
+            current.encode(),
+            compatible["app/Support/WorkflowPackageApiFloor.php"],
         )
 
     def test_malformed_guarded_php_fails_closed(self) -> None:
@@ -1576,8 +1645,8 @@ ServerCodecRegressionFixtureExecutor::exercise(
 
         self.assertNotEqual(0, result.returncode, result.stdout)
         self.assertIn(
-            f"claimed codec boundary {boundary} has no supported official PHP "
-            "codec call to instrument",
+            f"claimed codec boundary {boundary} has no supported public entry point "
+            "or official PHP codec call to instrument",
             result.stderr,
         )
 
@@ -1732,16 +1801,27 @@ ServerCodecRegressionFixtureExecutor::exercise(
         self.assertEqual(1, counts["counterfactual_proofs"])
         self.assertEqual(1, counts["revision_verified"])
 
-    def test_one_proof_cannot_claim_multiple_boundaries(self) -> None:
+    def test_one_proof_can_claim_multiple_independently_verified_boundaries(self) -> None:
         encode_boundary, decode_boundary = CORE_CODEC_BOUNDARIES
+        added_contract = "app/Support/NewCodecContract.php"
         (self.root / encode_boundary).write_text(
             "<?php\nSerializer::serializeWithCodec($codec, array_values($arguments));\n"
         )
         (self.root / decode_boundary).write_text(
             "<?php\nSerializer::unserializeWithCodec($codec, trim($blob));\n"
         )
+        (self.root / added_contract).write_text(
+            "<?php\n"
+            "final class NewCodecContract\n"
+            "{\n"
+            "    public static function encode(mixed $value): string\n"
+            "    {\n"
+            "        return Serializer::serializeWithCodec('avro', $value);\n"
+            "    }\n"
+            "}\n"
+        )
         self.write_counterfactual(
-            "encode-boundary-defect",
+            "multi-boundary-defect",
             [encode_boundary, decode_boundary],
             value="4",
             wire="CA==",
@@ -1749,11 +1829,13 @@ ServerCodecRegressionFixtureExecutor::exercise(
 
         result = self.validate(verify_counterfactual=True)
 
-        self.assertNotEqual(0, result.returncode, result.stdout)
-        self.assertIn(
-            ".boundaries must name exactly one guarded codec boundary",
-            result.stderr,
-        )
+        self.assertEqual(0, result.returncode, result.stderr)
+        report = json.loads(result.stdout)
+        counts = report["counts"]["codec"]
+        self.assertEqual(1, counts["counterfactual_proofs"])
+        self.assertEqual(2, counts["revision_verified"])
+        self.assertIn(added_contract, report["review_required_paths"])
+        self.assertIn(added_contract, counts["review_required_paths"])
 
     def test_proof_must_fail_when_its_claimed_boundary_alone_is_reverted(self) -> None:
         encode_boundary, decode_boundary = CORE_CODEC_BOUNDARIES

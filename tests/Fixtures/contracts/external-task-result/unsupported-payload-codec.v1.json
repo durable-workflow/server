@@ -21,8 +21,8 @@
     "timeout_type": null,
     "cancelled": false,
     "details": {
-      "codec": "json/plain",
-      "blob": "eyJjb2RlYyI6ImF2cm8ifQ=="
+      "codec": "avro",
+      "blob": "wwHioz3/VYAiNw4CCmNvZGVjCghqc29uAA=="
     }
   },
   "metadata": {

@@ -4945,8 +4945,8 @@ def run_replay_terminal_probe(
             [
                 {
                     "type": "complete_workflow",
-                    "payload_codec": "json",
-                    "result": json.dumps({"counter": 0, "status": "completed"}, sort_keys=True),
+                    "payload_codec": "avro",
+                    "result": "wwHioz3/VYAiNw4EDmNvdW50ZXIEAAxzdGF0dXMKEmNvbXBsZXRlZAA=",
                 },
             ],
         )

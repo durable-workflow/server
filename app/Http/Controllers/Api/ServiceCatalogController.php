@@ -5,6 +5,7 @@ namespace App\Http\Controllers\Api;
 use App\Auth\Principal;
 use App\Http\Middleware\Authenticate;
 use App\Support\ControlPlaneProtocol;
+use App\Support\PayloadCodecContract;
 use App\Support\SearchAttributeValueValidator;
 use App\Support\ServiceCallAdmission;
 use App\Support\ServiceCallBoundary;
@@ -651,6 +652,16 @@ class ServiceCatalogController
                 'in:reject_duplicate,return_existing_active',
             ],
         ]);
+
+        try {
+            $validated['payload_codec'] = PayloadCodecContract::canonicalize(
+                $validated['payload_codec'] ?? null,
+            );
+        } catch (\InvalidArgumentException $exception) {
+            throw ValidationException::withMessages([
+                'payload_codec' => [$exception->getMessage()],
+            ]);
+        }
 
         if (isset($validated['search_attributes'])) {
             $validated['search_attribute_types'] = $this->searchAttributeValues()->validateForNamespace(

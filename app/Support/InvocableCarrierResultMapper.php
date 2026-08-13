@@ -2,6 +2,8 @@
 
 namespace App\Support;
 
+use Workflow\Serializers\Serializer;
+
 final class InvocableCarrierResultMapper
 {
     public const RESULT_SCHEMA = 'durable-workflow.v2.external-task-result';
@@ -82,8 +84,8 @@ final class InvocableCarrierResultMapper
                     'cancelled' => false,
                     'malformed_output' => true,
                     'details' => $rawOutput === [] ? null : [
-                        'codec' => 'json/plain',
-                        'blob' => (string) json_encode($rawOutput, JSON_UNESCAPED_SLASHES),
+                        'codec' => PayloadCodecContract::CODEC,
+                        'blob' => Serializer::serializeWithCodec(PayloadCodecContract::CODEC, $rawOutput),
                     ],
                 ], static fn (mixed $value): bool => $value !== null),
             ],
@@ -140,7 +142,7 @@ final class InvocableCarrierResultMapper
         }
 
         return [
-            'codec' => $codec,
+            'codec' => PayloadCodecContract::canonicalize($codec),
             'blob' => $blob,
         ];
     }

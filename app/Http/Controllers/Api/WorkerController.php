@@ -4,6 +4,7 @@ namespace App\Http\Controllers\Api;
 
 use App\Models\WorkerBuildIdRollout;
 use App\Models\WorkerRegistration;
+use App\Support\AvroPayloadEnvelopeResolver;
 use App\Support\BackendLockPressure;
 use App\Support\CachedPollTaskKindConflict;
 use App\Support\ExternalPayloadStorageUnavailable;
@@ -12,6 +13,7 @@ use App\Support\LongPollCapacityExhaustedException;
 use App\Support\NamespaceExternalPayloadStorage;
 use App\Support\NamespaceWorkflowScope;
 use App\Support\PollRequestTaskKindsConflict;
+use App\Support\PayloadCodecContract;
 use App\Support\QueryTaskQueueUnavailableException;
 use App\Support\SearchAttributeValueValidator;
 use App\Support\ServiceModeTimerDispatcher;
@@ -31,8 +33,6 @@ use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Str;
 use Illuminate\Validation\ValidationException;
-use Workflow\Serializers\CodecRegistry;
-use Workflow\Serializers\Serializer;
 use Workflow\V2\Contracts\HistoryProjectionRole;
 use Workflow\V2\Contracts\WorkflowTaskBridge;
 use Workflow\V2\Enums\ActivityAttemptStatus;
@@ -45,7 +45,6 @@ use Workflow\V2\Models\ActivityAttempt;
 use Workflow\V2\Models\ActivityExecution;
 use Workflow\V2\Models\WorkflowRun;
 use Workflow\V2\Models\WorkflowTask;
-use Workflow\V2\Support\PayloadEnvelopeResolver;
 use Workflow\V2\Support\WorkerProtocolVersion;
 use Workflow\V2\Support\WorkflowCommandNormalizer;
 use Workflow\V2\Support\WorkflowTaskOwnership;
@@ -1069,6 +1068,16 @@ class WorkerController
                 taskKinds: $taskKinds,
             );
         } catch (\Throwable $exception) {
+            if ($exception instanceof \InvalidArgumentException
+                && str_contains($exception->getMessage(), 'unsupported_payload_codec:')) {
+                return WorkerProtocol::json([
+                    'task' => null,
+                    'poll_status' => 'rejected',
+                    'reason' => 'unsupported_payload_codec',
+                    'error' => $exception->getMessage(),
+                ], 422);
+            }
+
             if ($exception instanceof CachedPollTaskKindConflict) {
                 return WorkerProtocol::json([
                     'task' => null,
@@ -1328,7 +1337,6 @@ class WorkerController
         );
 
         $commands = $this->promoteWorkflowFailureExceptionPayload($commands);
-        $commands = $this->normalizeImplicitWorkflowCompletionPayloadCodec($commands, $taskId);
         $commands = WorkflowCommandNormalizer::normalize($commands);
 
         /** @var WorkflowTaskBridge $bridge */
@@ -1689,12 +1697,24 @@ class WorkerController
         foreach ($commands as $index => $command) {
             $commandType = $command['type'] ?? null;
 
+            if (array_key_exists('payload_codec', $command)) {
+                try {
+                    $commands[$index]['payload_codec'] = PayloadCodecContract::canonicalize(
+                        $command['payload_codec'],
+                    );
+                } catch (\InvalidArgumentException $exception) {
+                    throw ValidationException::withMessages([
+                        "commands.{$index}.payload_codec" => [$exception->getMessage()],
+                    ]);
+                }
+            }
+
             foreach (['arguments', 'result'] as $field) {
                 if (! array_key_exists($field, $command) || ! is_array($command[$field])) {
                     continue;
                 }
 
-                $resolved = PayloadEnvelopeResolver::resolveCommandPayloadWithCodec(
+                $resolved = AvroPayloadEnvelopeResolver::resolveCommandPayloadWithCodec(
                     $command[$field],
                     "commands.{$index}.{$field}",
                     $driver,
@@ -1728,64 +1748,6 @@ class WorkerController
         }
 
         return $commands;
-    }
-
-    /**
-     * Raw string results predate codec-tagged command envelopes. Preserve a
-     * result that decodes with the run codec, but recognize JSON when a worker
-     * omitted payload_codec instead of persisting JSON bytes under the default
-     * Avro tag and making every later terminal read fail.
-     *
-     * @param  list<array<string, mixed>>  $commands
-     * @return list<array<string, mixed>>
-     */
-    private function normalizeImplicitWorkflowCompletionPayloadCodec(array $commands, string $taskId): array
-    {
-        $hasUntaggedCompletion = collect($commands)->contains(
-            static fn (mixed $command): bool => is_array($command)
-                && ($command['type'] ?? null) === 'complete_workflow'
-                && is_string($command['result'] ?? null)
-                && ! is_string($command['payload_codec'] ?? null),
-        );
-
-        if (! $hasUntaggedCompletion) {
-            return $commands;
-        }
-
-        $task = WorkflowTask::query()->with('run')->find($taskId);
-        $runCodec = $task?->run instanceof WorkflowRun
-            && is_string($task->run->payload_codec)
-            && trim($task->run->payload_codec) !== ''
-                ? trim($task->run->payload_codec)
-                : CodecRegistry::defaultCodec();
-
-        foreach ($commands as $index => $command) {
-            $result = $command['result'] ?? null;
-
-            if (($command['type'] ?? null) !== 'complete_workflow'
-                || ! is_string($result)
-                || is_string($command['payload_codec'] ?? null)
-                || $this->payloadDecodesWithCodec($result, $runCodec)
-                || ! $this->payloadDecodesWithCodec($result, 'json')
-            ) {
-                continue;
-            }
-
-            $commands[$index]['payload_codec'] = 'json';
-        }
-
-        return $commands;
-    }
-
-    private function payloadDecodesWithCodec(string $payload, string $codec): bool
-    {
-        try {
-            Serializer::unserializeWithCodec($codec, $payload);
-
-            return true;
-        } catch (\Throwable) {
-            return false;
-        }
     }
 
     private function externalPayloadFailure(
@@ -2087,6 +2049,7 @@ class WorkerController
             'cannot decode workflow start input',
             'cannot replay workflow history',
             'unsupported payload codec',
+            'unsupported_payload_codec',
             'workflow task completion failed after commands were produced',
             'no workflow registered',
         ] as $needle) {
@@ -2495,8 +2458,6 @@ class WorkerController
         ]);
 
         $resultEnvelope = null;
-        $hasInlineResult = array_key_exists('result', $request->all());
-
         $guard = $this->queryTasks->guardCompletion(
             $namespace,
             $queryTaskId,
@@ -2523,27 +2484,17 @@ class WorkerController
             }
 
             try {
-                $resolved = PayloadEnvelopeResolver::resolveCommandPayloadWithCodec(
+                $resolved = AvroPayloadEnvelopeResolver::resolveCommandPayloadWithCodec(
                     $candidate,
                     'result_envelope',
                     $this->externalPayloadStorage->driverFor($namespace),
                 );
             } catch (ValidationException $exception) {
-                // The envelope is optional metadata for query callers; the
-                // inline result is still authoritative.
-                if ($hasInlineResult) {
-                    $resultEnvelope = null;
-                } else {
-                    throw $exception;
-                }
+                throw $exception;
             } catch (ExternalPayloadIntegrityException $exception) {
-                if (! $hasInlineResult) {
-                    return $this->externalQueryPayloadFailure($queryTaskId, (int) $validated['query_task_attempt'], $exception, 422);
-                }
+                return $this->externalQueryPayloadFailure($queryTaskId, (int) $validated['query_task_attempt'], $exception, 422);
             } catch (\Throwable $exception) {
-                if (! $hasInlineResult) {
-                    return $this->externalQueryPayloadFailure($queryTaskId, (int) $validated['query_task_attempt'], $exception, 503);
-                }
+                return $this->externalQueryPayloadFailure($queryTaskId, (int) $validated['query_task_attempt'], $exception, 503);
             }
 
             if (isset($resolved)) {

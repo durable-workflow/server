@@ -148,7 +148,7 @@ class ServiceExecutionRoutesTest extends TestCase
 
         $response = $this->withHeaders($this->apiHeaders())
             ->postJson('/api/service-endpoints/billing/services/invoicing/operations/createinvoice/execute', [
-                'arguments' => 'codec:json:WyJUYXlsb3IiXQ==',
+                'arguments' => ['Taylor'],
                 'mode_override' => 'async',
                 'idempotency_key' => 'idem-1',
                 'target_workflow_run_id' => 'run-target-1',
@@ -170,7 +170,8 @@ class ServiceExecutionRoutesTest extends TestCase
         $this->assertSame('invoicing', $stub->captured['service']);
         $this->assertSame('createinvoice', $stub->captured['operation']);
         $this->assertSame('default', $stub->captured['options']['namespace']);
-        $this->assertSame('codec:json:WyJUYXlsb3IiXQ==', $stub->captured['options']['arguments']);
+        $this->assertSame(['Taylor'], $stub->captured['options']['arguments']);
+        $this->assertSame('avro', $stub->captured['options']['payload_codec']);
         $this->assertSame('async', $stub->captured['options']['mode_override']);
         $this->assertSame('idem-1', $stub->captured['options']['idempotency_key']);
         $this->assertSame('run-target-1', $stub->captured['options']['target_workflow_run_id']);
@@ -338,10 +339,23 @@ class ServiceExecutionRoutesTest extends TestCase
 
         $this->app->instance(ServiceControlPlane::class, $stub);
 
+        $this->withHeaders($this->apiHeaders())
+            ->postJson('/api/service-endpoints/billing/services/invoicing/operations/createinvoice/execute', [
+                'arguments' => ['customer' => 'Taylor', 'invoice_id' => 42],
+                'payload_codec' => 'json',
+            ])
+            ->assertUnprocessable()
+            ->assertJsonPath(
+                'errors.payload_codec.0',
+                fn (string $message): bool => str_contains($message, 'unsupported_payload_codec')
+                    && str_contains($message, 'HTTP document transport'),
+            );
+        $this->assertNull($stub->captured);
+
         $response = $this->withHeaders($this->apiHeaders())
             ->postJson('/api/service-endpoints/billing/services/invoicing/operations/createinvoice/execute', [
                 'arguments' => ['customer' => 'Taylor', 'invoice_id' => 42],
-                'payload_codec' => 'json/plain',
+                'payload_codec' => 'avro',
                 'mode_override' => 'async',
                 'wait_for' => 'completed',
                 'wait_timeout_seconds' => 15,
@@ -370,7 +384,7 @@ class ServiceExecutionRoutesTest extends TestCase
         $this->assertSame($serviceCall->id, $stub->captured['options']['service_call_id']);
         $this->assertSame('accepted', $stub->captured['options']['boundary_policy_outcome']);
         $this->assertSame(['customer' => 'Taylor', 'invoice_id' => 42], $stub->captured['options']['arguments']);
-        $this->assertSame('json/plain', $stub->captured['options']['payload_codec']);
+        $this->assertSame('avro', $stub->captured['options']['payload_codec']);
         $this->assertSame('async', $stub->captured['options']['mode_override']);
         $this->assertSame('completed', $stub->captured['options']['wait_for']);
         $this->assertSame(15, $stub->captured['options']['wait_timeout_seconds']);

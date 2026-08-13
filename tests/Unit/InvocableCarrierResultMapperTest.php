@@ -3,7 +3,9 @@
 namespace Tests\Unit;
 
 use App\Support\InvocableCarrierResultMapper;
+use InvalidArgumentException;
 use PHPUnit\Framework\TestCase;
+use Workflow\Serializers\Serializer;
 
 class InvocableCarrierResultMapperTest extends TestCase
 {
@@ -20,10 +22,8 @@ class InvocableCarrierResultMapperTest extends TestCase
         $this->assertSame('handler_succeeded', $mapped['reason']);
         $this->assertSame('attempt_123', $mapped['payload']['activity_attempt_id']);
         $this->assertSame('invocable-carrier', $mapped['payload']['lease_owner']);
-        $this->assertSame([
-            'codec' => 'json/plain',
-            'blob' => '{"ok":true}',
-        ], $mapped['payload']['result']);
+        $this->assertSame('avro', $mapped['payload']['result']['codec']);
+        $this->assertSame(['ok' => true], Serializer::unserializeWithCodec('avro', $mapped['payload']['result']['blob']));
     }
 
     public function test_failure_envelope_maps_to_activity_fail_payload(): void
@@ -44,10 +44,11 @@ class InvocableCarrierResultMapperTest extends TestCase
         $this->assertSame('deadline_exceeded', $mapped['payload']['failure']['timeout_type']);
         $this->assertTrue($mapped['payload']['failure']['retryable']);
         $this->assertFalse($mapped['payload']['failure']['non_retryable']);
-        $this->assertSame([
-            'codec' => 'json/plain',
-            'blob' => '{"provider":"billing"}',
-        ], $mapped['payload']['failure']['details']);
+        $this->assertSame('avro', $mapped['payload']['failure']['details']['codec']);
+        $this->assertSame(
+            ['provider' => 'billing'],
+            Serializer::unserializeWithCodec('avro', $mapped['payload']['failure']['details']['blob']),
+        );
     }
 
     public function test_invalid_envelope_fails_closed_as_malformed_output(): void
@@ -96,8 +97,30 @@ class InvocableCarrierResultMapperTest extends TestCase
         $this->assertSame('Handler returned invalid JSON.', $mapped['payload']['failure']['message']);
         $this->assertTrue($mapped['payload']['failure']['retryable']);
         $this->assertFalse($mapped['payload']['failure']['non_retryable']);
-        $this->assertSame('json/plain', $mapped['payload']['failure']['details']['codec']);
-        $this->assertStringContainsString('status_code', $mapped['payload']['failure']['details']['blob']);
+        $this->assertSame('avro', $mapped['payload']['failure']['details']['codec']);
+        $this->assertSame(
+            ['status_code' => 502, 'stdout_preview' => '{not-json'],
+            Serializer::unserializeWithCodec('avro', $mapped['payload']['failure']['details']['blob']),
+        );
+    }
+
+    public function test_json_tagged_result_is_rejected_with_actionable_diagnostic(): void
+    {
+        $envelope = $this->successEnvelope();
+        $envelope['result']['payload'] = [
+            'codec' => 'json',
+            'blob' => '{"ok":true}',
+        ];
+
+        $this->expectException(InvalidArgumentException::class);
+        $this->expectExceptionMessage('unsupported_payload_codec');
+
+        (new InvocableCarrierResultMapper)->map(
+            $envelope,
+            'acttask_123',
+            'attempt_123',
+            'invocable-carrier',
+        );
     }
 
     /**
@@ -115,8 +138,8 @@ class InvocableCarrierResultMapperTest extends TestCase
             'task' => $this->task(),
             'result' => [
                 'payload' => [
-                    'codec' => 'json/plain',
-                    'blob' => '{"ok":true}',
+                    'codec' => 'avro',
+                    'blob' => Serializer::serializeWithCodec('avro', ['ok' => true]),
                 ],
                 'metadata' => null,
             ],
@@ -147,8 +170,8 @@ class InvocableCarrierResultMapperTest extends TestCase
                 'timeout_type' => 'deadline_exceeded',
                 'cancelled' => false,
                 'details' => [
-                    'codec' => 'json/plain',
-                    'blob' => '{"provider":"billing"}',
+                    'codec' => 'avro',
+                    'blob' => Serializer::serializeWithCodec('avro', ['provider' => 'billing']),
                 ],
             ],
             'metadata' => ['duration_ms' => 5000],

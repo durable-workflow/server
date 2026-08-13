@@ -179,7 +179,7 @@
         "activities": [],
         "signals": [],
         "queries": [],
-        "payload": {"codec": "json", "workflow_input_bytes": 1024, "workflow_result_bytes": 1024, "activity_input_bytes": 0, "activity_result_bytes": 0, "signal_bytes": 0},
+        "payload": {"codec": "avro", "workflow_input_bytes": 1024, "workflow_result_bytes": 1024, "activity_input_bytes": 0, "activity_result_bytes": 0, "signal_bytes": 0},
         "history": {"target_event_count": 3, "shape": ["workflow_started", "workflow_task_completed", "workflow_completed"]}
       },
       "bindings": [
@@ -204,7 +204,7 @@
         "activities": [{"type": "capacity.v1.echo", "count": 1, "behavior": "return_input_without_external_io"}],
         "signals": [],
         "queries": [],
-        "payload": {"codec": "json", "workflow_input_bytes": 1024, "workflow_result_bytes": 1024, "activity_input_bytes": 1024, "activity_result_bytes": 1024, "signal_bytes": 0},
+        "payload": {"codec": "avro", "workflow_input_bytes": 1024, "workflow_result_bytes": 1024, "activity_input_bytes": 1024, "activity_result_bytes": 1024, "signal_bytes": 0},
         "history": {"target_event_count": 8, "shape": ["workflow_started", "workflow_task_completed", "activity_scheduled", "activity_started", "activity_completed", "workflow_task_completed", "workflow_completed"]}
       },
       "bindings": [
@@ -229,7 +229,7 @@
         "activities": [{"type": "capacity.v1.hash", "count": 5, "behavior": "sha256_input_once_and_return_hex_digest"}],
         "signals": [],
         "queries": [],
-        "payload": {"codec": "json", "workflow_input_bytes": 4096, "workflow_result_bytes": 64, "activity_input_bytes": 4096, "activity_result_bytes": 64, "signal_bytes": 0},
+        "payload": {"codec": "avro", "workflow_input_bytes": 4096, "workflow_result_bytes": 64, "activity_input_bytes": 4096, "activity_result_bytes": 64, "signal_bytes": 0},
         "history": {"target_event_count": 28, "shape": ["workflow_started", "five_sequential_activity_triplets", "six_workflow_task_completions", "workflow_completed"]}
       },
       "bindings": [
@@ -254,7 +254,7 @@
         "activities": [],
         "signals": [],
         "queries": [],
-        "payload": {"codec": "json", "workflow_input_bytes": 128, "workflow_result_bytes": 16, "activity_input_bytes": 0, "activity_result_bytes": 0, "signal_bytes": 0},
+        "payload": {"codec": "avro", "workflow_input_bytes": 128, "workflow_result_bytes": 16, "activity_input_bytes": 0, "activity_result_bytes": 0, "signal_bytes": 0},
         "history": {"target_event_count": 7, "shape": ["workflow_started", "timer_created", "workflow_task_completed", "timer_fired", "workflow_task_completed", "workflow_completed"]}
       },
       "bindings": [
@@ -279,7 +279,7 @@
         "activities": [],
         "signals": [{"type": "capacity.v1.append", "count": 4, "behavior": "append_sequence_and_fixed_payload_in_order"}],
         "queries": [],
-        "payload": {"codec": "json", "workflow_input_bytes": 128, "workflow_result_bytes": 16, "activity_input_bytes": 0, "activity_result_bytes": 0, "signal_bytes": 512},
+        "payload": {"codec": "avro", "workflow_input_bytes": 128, "workflow_result_bytes": 16, "activity_input_bytes": 0, "activity_result_bytes": 0, "signal_bytes": 512},
         "history": {"target_event_count": 15, "shape": ["workflow_started", "four_signal_received_events", "four_workflow_task_completions", "workflow_completed"]}
       },
       "bindings": [
@@ -304,7 +304,7 @@
         "activities": [],
         "signals": [],
         "queries": [],
-        "payload": {"codec": "json", "workflow_input_bytes": 256, "workflow_result_bytes": 32, "activity_input_bytes": 0, "activity_result_bytes": 0, "signal_bytes": 0},
+        "payload": {"codec": "avro", "workflow_input_bytes": 256, "workflow_result_bytes": 32, "activity_input_bytes": 0, "activity_result_bytes": 0, "signal_bytes": 0},
         "history": {"target_event_count": 65, "shape": ["parent_started", "ten_child_start_sequences", "ten_child_completion_sequences", "parent_completed"]}
       },
       "bindings": [
@@ -329,7 +329,7 @@
         "activities": [],
         "signals": [],
         "queries": [],
-        "payload": {"codec": "json", "workflow_input_bytes": 256, "workflow_result_bytes": 16, "activity_input_bytes": 0, "activity_result_bytes": 0, "signal_bytes": 0},
+        "payload": {"codec": "avro", "workflow_input_bytes": 256, "workflow_result_bytes": 16, "activity_input_bytes": 0, "activity_result_bytes": 0, "signal_bytes": 0},
         "history": {"target_event_count": 1003, "shape": ["workflow_started", "five_hundred_marker_and_workflow_task_pairs", "workflow_completed"]}
       },
       "bindings": [
@@ -354,7 +354,7 @@
         "activities": [],
         "signals": [{"type": "capacity.v1.finish", "count": 1, "behavior": "finish_after_measurement_admission_stops"}],
         "queries": [{"type": "capacity.v1.inspect_counter", "rate_per_load_unit_per_second": 5, "behavior": "return_counter_without_mutation"}],
-        "payload": {"codec": "json", "workflow_input_bytes": 128, "workflow_result_bytes": 16, "activity_input_bytes": 0, "activity_result_bytes": 0, "signal_bytes": 16},
+        "payload": {"codec": "avro", "workflow_input_bytes": 128, "workflow_result_bytes": 16, "activity_input_bytes": 0, "activity_result_bytes": 0, "signal_bytes": 16},
         "history": {"target_event_count": 7, "shape": ["workflow_started", "query_tasks_do_not_mutate_history", "finish_signal_received", "workflow_completed"]}
       },
       "bindings": [
@@ -380,7 +380,7 @@
         "signals": [{"type": "capacity.v1.append", "count": 4, "behavior": "used_by_selected_signal_shape"}, {"type": "capacity.v1.finish", "count": 1, "behavior": "used_by_selected_query_shape"}],
         "queries": [{"type": "capacity.v1.inspect_counter", "rate_per_load_unit_per_second": 5, "behavior": "used_by_selected_query_shape"}],
         "mix": {"simple-start-complete": 0.25, "one-activity": 0.2, "multiple-activities": 0.1, "timer": 0.1, "signal": 0.1, "child-workflow-fanout": 0.05, "replay-heavy-history": 0.05, "query-inspection": 0.15},
-        "payload": {"codec": "json", "workflow_input_bytes": 2048, "workflow_result_bytes": 512, "activity_input_bytes": 1024, "activity_result_bytes": 512, "signal_bytes": 512},
+        "payload": {"codec": "avro", "workflow_input_bytes": 2048, "workflow_result_bytes": 512, "activity_input_bytes": 1024, "activity_result_bytes": 512, "signal_bytes": 512},
         "history": {"target_event_count": 141, "shape": ["seeded_weighted_union_of_the_eight_component_history_shapes"]}
       },
       "bindings": [

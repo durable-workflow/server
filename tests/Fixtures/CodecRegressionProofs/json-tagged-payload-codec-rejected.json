@@ -1,0 +1,26 @@
+{
+  "$schema": "https://raw.githubusercontent.com/durable-workflow/.github/main/regression-corpus/server-codec-counterfactual-schema.json",
+  "proof_schema": "durable-workflow.server-codec-counterfactual/v1",
+  "fixture": "tests/Fixtures/CodecRegression/json-tagged-payload-codec-rejected.json",
+  "test": "tests/Feature/CodecRegression/JsonTaggedPayloadCodecRejectedTest.php",
+  "boundaries": [
+    "app/Http/Controllers/Api/ActivityController.php",
+    "app/Http/Controllers/Api/ActivityTaskController.php",
+    "app/Http/Controllers/Api/BridgeAdapterController.php",
+    "app/Http/Controllers/Api/HealthController.php",
+    "app/Http/Controllers/Api/ServiceCatalogController.php",
+    "app/Http/Controllers/Api/WorkerController.php",
+    "app/Http/Controllers/Api/WorkflowController.php",
+    "app/Http/Controllers/Api/WorkflowStreamController.php",
+    "app/Support/ActivityTaskPoller.php",
+    "app/Support/ControlPlaneRequestContract.php",
+    "app/Support/ExternalPayloadEnvelopeService.php",
+    "app/Support/ExternalTaskResultContract.php",
+    "app/Support/ExternalWorkflowUpdateAdmission.php",
+    "app/Support/InvocableCarrierResultMapper.php",
+    "app/Support/ServerWorkflowControlPlane.php",
+    "app/Support/WorkflowQueryTaskBroker.php",
+    "app/Support/WorkflowStartService.php",
+    "app/Support/WorkflowTaskPoller.php"
+  ]
+}

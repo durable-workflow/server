@@ -8,6 +8,7 @@ use PHPUnit\Framework\TestCase;
 use ReflectionClass;
 use Tests\Support\ServerCodecRegressionBoundary;
 use Tests\Support\ServerCodecRegressionFixtureExecutor;
+use Tests\Support\ServerCodecRegressionFixtureExecutorV2;
 
 final class CodecRegressionCorpusTest extends TestCase
 {
@@ -16,7 +17,7 @@ final class CodecRegressionCorpusTest extends TestCase
     public function test_checked_in_codec_regression_corpus_uses_the_official_php_binding(): void
     {
         foreach (self::fixturePaths() as $path) {
-            ServerCodecRegressionFixtureExecutor::exercisePath($path);
+            ServerCodecRegressionFixtureExecutorV2::exercisePath($path);
         }
     }
 

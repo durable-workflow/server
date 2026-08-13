@@ -11,6 +11,7 @@ use Tests\Feature\Concerns\ServerTestHelpers;
 use Tests\Fixtures\AwaitApprovalWorkflow;
 use Tests\Fixtures\InteractiveCommandWorkflow;
 use Tests\TestCase;
+use Workflow\Serializers\Serializer;
 use Workflow\V2\Contracts\WorkflowControlPlane;
 use Workflow\V2\Enums\HistoryEventType;
 use Workflow\V2\Enums\TaskStatus;
@@ -424,7 +425,10 @@ class WorkflowReadEndpointTest extends TestCase
                 'workflow_task_attempt' => $replayPoll->json('task.workflow_task_attempt'),
                 'commands' => [[
                     'type' => 'complete_workflow',
-                    'result' => json_encode($expectedResult, JSON_THROW_ON_ERROR),
+                    'result' => [
+                        'codec' => 'avro',
+                        'blob' => Serializer::serializeWithCodec('avro', $expectedResult),
+                    ],
                 ]],
             ])
             ->assertOk()
@@ -439,7 +443,7 @@ class WorkflowReadEndpointTest extends TestCase
             ->assertJsonPath('compatibility', $buildV1)
             ->assertJsonPath('status', 'completed')
             ->assertJsonPath('output', $expectedResult)
-            ->assertJsonPath('output_envelope.codec', 'json');
+            ->assertJsonPath('output_envelope.codec', 'avro');
 
         $history = $this->withHeaders($this->apiHeaders())
             ->getJson("/api/workflows/{$workflowId}/runs/{$runId}/history")
@@ -533,7 +537,7 @@ class WorkflowReadEndpointTest extends TestCase
             'arguments' => 'not-a-decodable-input-payload',
             'output' => 'not-a-decodable-output-payload',
             'output_payload_codec' => null,
-            'payload_codec' => 'python-json',
+            'payload_codec' => 'workflow-serializer-y',
             'compatibility' => 'php-worker-v1',
         ])->save();
 

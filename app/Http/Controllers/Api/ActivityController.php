@@ -6,6 +6,7 @@ use App\Support\ControlPlaneProtocol;
 use App\Support\ExternalPayloadEnvelopeService;
 use App\Support\ExternalPayloadStorageUnavailable;
 use App\Support\NamespaceExternalPayloadStorage;
+use App\Support\PayloadCodecContract;
 use App\Support\NamespaceWorkflowScope;
 use App\Support\TaskQueueRoutingGate;
 use App\Support\WorkflowCommandContextFactory;
@@ -17,13 +18,12 @@ use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\Validator;
 use Illuminate\Validation\ValidationException;
 use InvalidArgumentException;
-use Workflow\Serializers\CodecRegistry;
 use Workflow\V2\Enums\ActivityStatus;
 use Workflow\V2\Models\ActivityExecution;
 use Workflow\V2\Models\WorkflowRun;
 use Workflow\V2\StandaloneActivity\StandaloneActivityHostType;
 use Workflow\V2\Support\ExternalPayloads;
-use Workflow\V2\Support\PayloadEnvelopeResolver;
+use App\Support\AvroPayloadEnvelopeResolver;
 use Workflow\V2\Support\RunActivityView;
 use Workflow\V2\Support\StandaloneActivityStartService;
 
@@ -125,7 +125,7 @@ class ActivityController
             );
         }
 
-        $defaultCodec = CodecRegistry::defaultCodec();
+        $defaultCodec = PayloadCodecContract::CODEC;
 
         $commandContext = $this->commandContexts->make(
             $request,
@@ -138,7 +138,7 @@ class ActivityController
         );
 
         try {
-            $envelope = PayloadEnvelopeResolver::resolve(
+            $envelope = AvroPayloadEnvelopeResolver::resolve(
                 $validated['input'] ?? null,
                 'input',
                 $this->externalPayloadStorage->driverFor($namespace),
@@ -295,7 +295,7 @@ class ActivityController
         ) {
             $resultEnvelope = $this->payloadEnvelopes->workerEnvelope(
                 $namespace,
-                $execution->payload_codec ?? CodecRegistry::defaultCodec(),
+                PayloadCodecContract::canonicalize($execution->payload_codec),
                 $execution->result,
             );
         }

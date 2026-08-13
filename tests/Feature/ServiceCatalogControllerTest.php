@@ -410,9 +410,9 @@ class ServiceCatalogControllerTest extends TestCase
             'operation_mode' => 'async',
             'resolved_binding_kind' => 'workflow_update',
             'resolved_target_reference' => 'updates.invoice.submit',
-            'payload_codec' => 'json',
-            'input_payload_reference' => 'payloads/service-calls/input-1.json',
-            'output_payload_reference' => 'payloads/service-calls/output-1.json',
+            'payload_codec' => 'avro',
+            'input_payload_reference' => 'payloads/service-calls/input-1.avro',
+            'output_payload_reference' => 'payloads/service-calls/output-1.avro',
             'idempotency_key' => 'invoice-123',
             'deadline_policy' => ['timeout_seconds' => 60],
             'idempotency_policy' => ['scope' => 'caller'],
@@ -458,9 +458,9 @@ class ServiceCatalogControllerTest extends TestCase
             ->assertJsonPath('operation_mode', 'async')
             ->assertJsonPath('resolved_binding_kind', 'workflow_update')
             ->assertJsonPath('resolved_target_reference', 'updates.invoice.submit')
-            ->assertJsonPath('payload_codec', 'json')
-            ->assertJsonPath('input_payload_reference', 'payloads/service-calls/input-1.json')
-            ->assertJsonPath('output_payload_reference', 'payloads/service-calls/output-1.json')
+            ->assertJsonPath('payload_codec', 'avro')
+            ->assertJsonPath('input_payload_reference', 'payloads/service-calls/input-1.avro')
+            ->assertJsonPath('output_payload_reference', 'payloads/service-calls/output-1.avro')
             ->assertJsonPath('idempotency_key', 'invoice-123')
             ->assertJsonPath('deadline_policy.timeout_seconds', 60)
             ->assertJsonPath('idempotency_policy.scope', 'caller')

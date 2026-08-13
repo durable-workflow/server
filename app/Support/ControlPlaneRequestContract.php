@@ -2,8 +2,6 @@
 
 namespace App\Support;
 
-use Workflow\Serializers\CodecRegistry;
-
 final class ControlPlaneRequestContract
 {
     public const SCHEMA = 'durable-workflow.v2.control-plane-request.contract';
@@ -52,21 +50,14 @@ final class ControlPlaneRequestContract
                             'type' => 'integer',
                             'min' => 1,
                         ],
-                        'payload_codec' => array_filter([
+                        'payload_codec' => [
                             'type' => 'string',
-                            // Only language-neutral codecs are advertised to
-                            // polyglot clients. Engine-specific codecs (e.g.
-                            // PHP SerializableClosure) remain supported for
-                            // decoding legacy rows and round-tripping
-                            // pre-serialized blobs, but they are exposed
-                            // separately so non-PHP SDKs do not offer them
-                            // as generic start choices.
-                            'canonical_values' => CodecRegistry::universal(),
-                            'engine_specific_values' => CodecRegistry::engineSpecific() !== []
-                                ? CodecRegistry::engineSpecific()
-                                : null,
-                            'description' => 'Codec used for serializing workflow payloads. Inferred from input envelope when omitted.',
-                        ], static fn (mixed $v): bool => $v !== null),
+                            // Durable Workflow 2.0 exposes one public payload
+                            // codec. JSON is the HTTP document transport, not
+                            // a durable-value codec choice.
+                            'canonical_values' => PayloadCodecContract::universal(),
+                            'description' => 'Fixed Avro Value codec used for durable workflow payloads. Omission selects avro.',
+                        ],
                     ],
                     'unsupported_fields' => [
                         'workflow_execution_timeout',

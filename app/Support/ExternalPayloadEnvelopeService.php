@@ -2,7 +2,6 @@
 
 namespace App\Support;
 
-use Workflow\Serializers\CodecRegistry;
 use Workflow\V2\Support\ExternalPayloads;
 
 class ExternalPayloadEnvelopeService
@@ -265,9 +264,7 @@ class ExternalPayloadEnvelopeService
 
     private function responseCodec(?string $codec): string
     {
-        return is_string($codec) && $codec !== ''
-            ? $codec
-            : CodecRegistry::defaultCodec();
+        return PayloadCodecContract::canonicalize($codec);
     }
 
     private function stringValue(mixed $value): ?string

@@ -15,6 +15,7 @@ class ExternalTaskResultContractTest extends TestCase
         $this->assertSame(1, $manifest['version']);
         $this->assertSame('ignore_additive_reject_unknown_required', $manifest['unknown_field_policy']);
         $this->assertSame('logs_only_no_machine_meaning', $manifest['stderr_policy']);
+        $this->assertSame(['avro'], $manifest['payload_support']['codecs']);
         $this->assertArrayHasKey('success', $manifest['envelopes']);
         $this->assertArrayHasKey('failure', $manifest['envelopes']);
         $this->assertArrayHasKey('malformed_output', $manifest['envelopes']);

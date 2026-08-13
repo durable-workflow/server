@@ -6,13 +6,14 @@ use App\Support\ActivityTimeoutScanner;
 use App\Support\EnvAuditor;
 use App\Support\HistoryRetentionEnforcer;
 use App\Support\MigrationAdoption;
+use App\Support\PayloadCodecDeploymentPreflight;
 use Illuminate\Database\Migrations\Migrator;
 use Illuminate\Support\Facades\Artisan;
 use Workflow\V2\Enums\RunStatus;
 use Workflow\V2\Models\WorkflowRunSummary;
 use Workflow\V2\Support\ScheduleManager;
 
-Artisan::command('server:bootstrap {--force : Run bootstrap commands without a production prompt}', function (Migrator $migrator): int {
+Artisan::command('server:bootstrap {--force : Run bootstrap commands without a production prompt}', function (Migrator $migrator, PayloadCodecDeploymentPreflight $payloadCodecPreflight): int {
     $this->components->info('Running Durable Workflow server bootstrap...');
 
     $adopted = (new MigrationAdoption($migrator))->adopt();
@@ -30,6 +31,19 @@ Artisan::command('server:bootstrap {--force : Run bootstrap commands without a p
 
     if ($migrate !== 0) {
         return $migrate;
+    }
+
+    try {
+        $report = $payloadCodecPreflight->assertReady();
+        $this->components->info(sprintf(
+            'Avro-only payload preflight passed (%d inline/history frame%s inspected).',
+            $report['inspected_frames'],
+            $report['inspected_frames'] === 1 ? '' : 's',
+        ));
+    } catch (\RuntimeException $exception) {
+        $this->components->error($exception->getMessage());
+
+        return 1;
     }
 
     $seed = $this->call('db:seed', [

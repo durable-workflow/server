@@ -3,7 +3,6 @@
 namespace App\Support;
 
 use Throwable;
-use Workflow\Serializers\CodecRegistry;
 use Workflow\Serializers\Serializer;
 use Workflow\V2\CommandContext;
 use Workflow\V2\CommandResult;
@@ -171,12 +170,12 @@ final class ServerWorkflowControlPlane implements WorkflowControlPlane
     {
         $codec = $this->nonEmptyString($options['payload_codec'] ?? null)
             ?? $this->nonEmptyString($run->payload_codec)
-            ?? CodecRegistry::defaultCodec();
+            ?? PayloadCodecContract::CODEC;
 
         $payloadBlob = $this->nonEmptyString($options['payload_blob'] ?? null);
         if ($payloadBlob !== null) {
             return [
-                'codec' => CodecRegistry::canonicalize($codec),
+                'codec' => PayloadCodecContract::canonicalize($codec),
                 'blob' => $payloadBlob,
             ];
         }
@@ -188,7 +187,7 @@ final class ServerWorkflowControlPlane implements WorkflowControlPlane
         }
 
         return [
-            'codec' => CodecRegistry::canonicalize($codec),
+            'codec' => PayloadCodecContract::canonicalize($codec),
             'blob' => Serializer::serializeWithCodec($codec, $arguments),
         ];
     }

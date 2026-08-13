@@ -19,6 +19,7 @@ use App\Support\MigrationRuntimeContract;
 use App\Support\NamespaceRuntimeContract;
 use App\Support\NexusContract;
 use App\Support\PhpSdkConformanceContract;
+use App\Support\PayloadCodecContract;
 use App\Support\PrereleaseReadinessContract;
 use App\Support\PrincipalAttributionContract;
 use App\Support\PythonSdkParityContract;
@@ -42,7 +43,6 @@ use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
 use Workflow\Serializers\Avro;
-use Workflow\Serializers\CodecRegistry;
 use Workflow\V2\Support\ExternalPayloadReference;
 use Workflow\V2\Support\OperatorMetrics;
 use Workflow\V2\Support\PlatformConformanceSuite;
@@ -164,7 +164,7 @@ class HealthController
             'workflow_update_runtime_contract' => true,
             'embedded_v2_import' => $embeddedV2ImportAvailable,
             'waterline_v1_projection' => true,
-            'payload_codecs' => CodecRegistry::universal(),
+            'payload_codecs' => PayloadCodecContract::universal(),
             'avro_value_protocol' => [
                 'schema' => 'durable_workflow.protocol.Value',
                 'fingerprint' => Avro::valueSchemaFingerprint(),
@@ -175,11 +175,6 @@ class HealthController
                 ? ['gzip', 'deflate']
                 : [],
         ];
-
-        $engineSpecificCodecs = CodecRegistry::engineSpecific();
-        if ($engineSpecificCodecs !== []) {
-            $capabilities['payload_codecs_engine_specific'] = $engineSpecificCodecs;
-        }
 
         $response = [
             'server_id' => config('server.server_id'),

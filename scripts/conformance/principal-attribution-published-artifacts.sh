@@ -767,7 +767,6 @@ import sys
 from pathlib import Path
 from typing import Any
 
-
 def run(command: list[str], *, cwd: Path | None = None, timeout: int = 240, env: dict[str, str] | None = None) -> tuple[int, str]:
     try:
         completed = subprocess.run(
@@ -1592,6 +1591,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from durable_workflow import serializer
+
 
 SERVER_URL = os.environ["SERVER_URL"].rstrip("/")
 API = SERVER_URL + "/api"
@@ -1811,7 +1812,8 @@ def query_with_worker(workflow_id: str, worker_id: str, task_queue: str) -> dict
                 body={
                     "lease_owner": task["lease_owner"],
                     "query_task_attempt": task.get("query_task_attempt", 1),
-                    "result": {"codec": "json/plain", "blob": json.dumps({"status": "ready"})},
+                    "result": {"status": "ready"},
+                    "result_envelope": serializer.envelope({"status": "ready"}),
                 },
                 allowed={200, 202, 409},
             )
@@ -3139,4 +3141,4 @@ WATERLINE_PRINCIPAL_RESULT="$waterline_result_path" \
 WATERLINE_PRINCIPAL_EXECUTION="$waterline_execution_path" \
 STARTED_AT="$started_at" \
 PRINCIPAL_ATTRIBUTION_SUITE_VERSION="$principal_suite_version" \
-python3 "$run_root/orchestrate.py" | tee "$result_dir/orchestrate.log"
+"$run_root/artifacts/python-sdk/bin/python" "$run_root/orchestrate.py" | tee "$result_dir/orchestrate.log"

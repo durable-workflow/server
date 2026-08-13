@@ -88,6 +88,26 @@ class WorkflowStreamsTest extends TestCase
             ->assertJsonPath('stream.total_items', 3);
     }
 
+    public function test_append_rejects_json_tagged_payloads_before_persistence(): void
+    {
+        $run = $this->createRun('default', 'wf-streams-json-codec');
+
+        $response = $this->withHeaders($this->apiHeaders())
+            ->postJson($this->itemsRoute('wf-streams-json-codec', $run->id, 'tokens'), [
+                'items' => [[
+                    'payload' => ['stale' => true],
+                    'payload_codec' => 'json',
+                ]],
+            ])
+            ->assertUnprocessable();
+
+        $message = $response->json('errors')['items.0.payload_codec'][0] ?? '';
+        $this->assertStringContainsString('unsupported_payload_codec', $message);
+        $this->assertStringContainsString('HTTP document transport', $message);
+
+        $this->assertDatabaseCount('workflow_durable_stream_items', 0);
+    }
+
     public function test_subscriber_reconnects_with_from_offset_without_loss(): void
     {
         $run = $this->createRun('default', 'wf-streams-reconnect');

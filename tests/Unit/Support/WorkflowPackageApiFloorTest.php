@@ -61,15 +61,7 @@ class WorkflowPackageApiFloorTest extends TestCase
 
         $this->assertTrue($method->isPublic());
         $this->assertTrue($method->isStatic());
-    }
-
-    public function test_codec_registry_engine_specific_is_public_static(): void
-    {
-        $reflection = new ReflectionClass(CodecRegistry::class);
-        $method = $reflection->getMethod('engineSpecific');
-
-        $this->assertTrue($method->isPublic());
-        $this->assertTrue($method->isStatic());
+        $this->assertSame(['avro'], $method->invoke(null));
     }
 
     public function test_worker_history_payload_contract_manifest_is_public_static(): void

@@ -4,6 +4,7 @@ namespace App\Http\Controllers\Api;
 
 use App\Auth\Principal;
 use App\Http\Middleware\Authenticate;
+use App\Support\AvroPayloadEnvelopeResolver;
 use App\Support\ControlPlaneProtocol;
 use App\Support\ControlPlaneResponseContract;
 use App\Support\ControlPlaneResultMapper;
@@ -13,6 +14,7 @@ use App\Support\ExternalWorkflowUpdateAdmission;
 use App\Support\LegacyV1Projection;
 use App\Support\NamespaceExternalPayloadStorage;
 use App\Support\NamespaceWorkflowScope;
+use App\Support\PayloadCodecContract;
 use App\Support\SearchAttributeValueValidator;
 use App\Support\TaskQueueRoutingGate;
 use App\Support\WorkflowCommandContextFactory;
@@ -29,7 +31,6 @@ use Illuminate\Validation\ValidationException;
 use LogicException;
 use Throwable;
 use Workflow\Serializers\AvroValueJsonProjection;
-use Workflow\Serializers\CodecRegistry;
 use Workflow\V2\Contracts\WorkflowControlPlane;
 use Workflow\V2\Enums\HistoryEventType;
 use Workflow\V2\Enums\RunStatus;
@@ -39,7 +40,6 @@ use Workflow\V2\Models\WorkflowInstance;
 use Workflow\V2\Models\WorkflowRun;
 use Workflow\V2\Models\WorkflowUpdate;
 use Workflow\V2\Support\FailureSnapshots;
-use Workflow\V2\Support\PayloadEnvelopeResolver;
 use Workflow\V2\Support\RunCommandContract;
 use Workflow\V2\Support\TypeRegistry;
 use Workflow\V2\Support\WorkerCompatibilityFleet;
@@ -160,6 +160,7 @@ class WorkflowController
             'workflow_type' => ['required', 'string', 'max:255'],
             'task_queue' => ['nullable', 'string', 'max:255'],
             'input' => ['nullable', 'array'],
+            'payload_codec' => ['nullable', 'string', 'max:64'],
             'business_key' => ['nullable', 'string', 'max:255'],
             'memo' => ['nullable', 'array'],
             'search_attributes' => ['nullable', 'array'],
@@ -199,6 +200,16 @@ class WorkflowController
         });
 
         $validated = $validator->validate();
+
+        try {
+            $validated['payload_codec'] = PayloadCodecContract::canonicalize(
+                $validated['payload_codec'] ?? null,
+            );
+        } catch (\InvalidArgumentException $exception) {
+            throw ValidationException::withMessages([
+                'payload_codec' => [$exception->getMessage()],
+            ]);
+        }
 
         if (isset($validated['memo'])) {
             $memoSize = strlen(json_encode($validated['memo']));
@@ -548,14 +559,14 @@ class WorkflowController
         }
 
         $externalStorage = $this->externalPayloadStorage->driverFor($namespace);
-        $envelope = PayloadEnvelopeResolver::resolve($validated['input'] ?? null, 'input', $externalStorage);
+        $envelope = AvroPayloadEnvelopeResolver::resolve($validated['input'] ?? null, 'input', $externalStorage);
 
         $result = $this->workflowControlPlane->signal(
             $workflowId,
             $signalName,
             [
                 'namespace' => $namespace,
-                'arguments' => PayloadEnvelopeResolver::resolveToArray($validated['input'] ?? null, 'input', $externalStorage),
+                'arguments' => AvroPayloadEnvelopeResolver::resolveToArray($validated['input'] ?? null, 'input', $externalStorage),
                 'payload_codec' => $envelope['codec'],
                 'payload_blob' => $envelope['blob'],
                 'command_context' => $this->commandContexts->make(
@@ -622,7 +633,7 @@ class WorkflowController
         }
 
         $externalStorage = $this->externalPayloadStorage->driverFor($namespace);
-        $queryEnvelope = PayloadEnvelopeResolver::resolve($validated['input'] ?? null, 'input', $externalStorage);
+        $queryEnvelope = AvroPayloadEnvelopeResolver::resolve($validated['input'] ?? null, 'input', $externalStorage);
         $commandContext = $this->commandContexts->make(
             $request,
             workflowId: $workflowId,
@@ -647,7 +658,7 @@ class WorkflowController
             $queryName,
             [
                 'namespace' => $namespace,
-                'arguments' => PayloadEnvelopeResolver::resolveToArray($validated['input'] ?? null, 'input', $externalStorage),
+                'arguments' => AvroPayloadEnvelopeResolver::resolveToArray($validated['input'] ?? null, 'input', $externalStorage),
                 'command_context' => $commandContext,
                 'strict_configured_type_validation' => true,
             ],
@@ -748,7 +759,7 @@ class WorkflowController
 
         $this->rejectLegacyUpdateFields($request);
         $externalStorage = $this->externalPayloadStorage->driverFor($namespace);
-        $arguments = PayloadEnvelopeResolver::resolveToArray($validated['input'] ?? null, 'input', $externalStorage);
+        $arguments = AvroPayloadEnvelopeResolver::resolveToArray($validated['input'] ?? null, 'input', $externalStorage);
         $waitFor = $validated['wait_for'] ?? 'accepted';
         $commandContext = $this->commandContexts->make(
             $request,
@@ -1467,7 +1478,7 @@ class WorkflowController
             return $this->payloadEnvelopes->workerEnvelope($namespace, $codec, $blob);
         } catch (Throwable) {
             return [
-                'codec' => $this->nonEmptyString($codec) ?? CodecRegistry::defaultCodec(),
+                'codec' => PayloadCodecContract::canonicalize($this->nonEmptyString($codec)),
                 'blob' => $blob,
             ];
         }
@@ -1855,10 +1866,10 @@ class WorkflowController
     private function signalPreviewArguments(string $namespace, mixed $input): array
     {
         if (! is_array($input) || ! $this->looksLikePayloadEnvelope($input)) {
-            return PayloadEnvelopeResolver::resolveToArray($input, 'input');
+            return AvroPayloadEnvelopeResolver::resolveToArray($input, 'input');
         }
 
-        return PayloadEnvelopeResolver::resolveToArray(
+        return AvroPayloadEnvelopeResolver::resolveToArray(
             $input,
             'input',
             $this->externalPayloadStorage->driverFor($namespace),

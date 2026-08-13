@@ -4,7 +4,6 @@ namespace App\Support;
 
 use App\Models\WorkerRegistration;
 use Illuminate\Support\Facades\DB;
-use InvalidArgumentException;
 use Workflow\V2\Contracts\ActivityTaskBridge as ActivityTaskBridgeContract;
 use Workflow\V2\Enums\ActivityAttemptStatus;
 use Workflow\V2\Enums\TaskStatus;
@@ -950,15 +949,7 @@ final class ActivityTaskPoller
      */
     private function claimStatus(string $taskId, string $leaseOwner): ?array
     {
-        try {
-            return $this->bridge->claimStatus($taskId, $leaseOwner);
-        } catch (InvalidArgumentException $exception) {
-            if (! str_contains($exception->getMessage(), 'Unknown payload codec')) {
-                throw $exception;
-            }
-
-            return $this->rawActivityClaimPayload($taskId, $leaseOwner);
-        }
+        return $this->bridge->claimStatus($taskId, $leaseOwner);
     }
 
     /**
@@ -1122,7 +1113,7 @@ final class ActivityTaskPoller
             'activity_type' => $this->nonEmptyString($execution->activity_type),
             'activity_class' => $this->nonEmptyString($execution->activity_class),
             'idempotency_key' => $execution->id,
-            'payload_codec' => $execution->payload_codec ?? $run->payload_codec ?? 'json',
+            'payload_codec' => PayloadCodecContract::canonicalize($execution->payload_codec ?? $run->payload_codec),
             'arguments' => $this->nonEmptyString($execution->arguments),
             'retry_policy' => is_array($execution->retry_policy) ? $execution->retry_policy : null,
             'connection' => $this->nonEmptyString($execution->connection),

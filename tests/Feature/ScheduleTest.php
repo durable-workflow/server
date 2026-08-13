@@ -4,12 +4,14 @@ namespace Tests\Feature;
 
 use App\Models\SearchAttributeDefinition;
 use App\Models\WorkflowNamespace;
-use Workflow\V2\Models\WorkflowSchedule;
+use App\Support\ControlPlaneProtocol;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Tests\TestCase;
 use Workflow\V2\Models\WorkflowInstance;
 use Workflow\V2\Models\WorkflowRun;
 use Workflow\V2\Models\WorkflowRunSummary;
+use Workflow\V2\Models\WorkflowSchedule;
+use Workflow\V2\Models\WorkflowScheduleHistoryEvent;
 
 class ScheduleTest extends TestCase
 {
@@ -164,6 +166,30 @@ class ScheduleTest extends TestCase
             'bad-cron',
             array_column($listResponse->json('schedules'), 'schedule_id'),
         );
+    }
+
+    public function test_create_rejects_json_tagged_action_input_without_persisting_schedule(): void
+    {
+        $response = $this->withHeaders($this->headers())
+            ->postJson('/api/schedules', [
+                'schedule_id' => 'json-codec-create',
+                'spec' => ['cron_expressions' => ['0 * * * *']],
+                'action' => [
+                    'workflow_type' => 'TestWorkflow',
+                    'input' => ['codec' => 'json', 'blob' => '["stale"]'],
+                ],
+            ]);
+
+        $response->assertStatus(422)
+            ->assertJsonValidationErrors('action.input.codec');
+        $this->assertStringContainsString('unsupported_payload_codec', $response->getContent());
+        $this->assertDatabaseMissing('workflow_schedules', [
+            'schedule_id' => 'json-codec-create',
+            'namespace' => 'default',
+        ]);
+        $this->assertSame(0, WorkflowScheduleHistoryEvent::query()
+            ->where('schedule_id', 'json-codec-create')
+            ->count());
     }
 
     public function test_it_generates_schedule_id_when_not_provided(): void
@@ -440,6 +466,38 @@ class ScheduleTest extends TestCase
         $this->assertEquals(['cron_expressions' => ['0 * * * *']], $schedule->spec);
         $this->assertEquals('OriginalWorkflow', $schedule->action['workflow_type']);
         $this->assertEquals('Updated note only', $schedule->note);
+    }
+
+    public function test_update_rejects_json_tagged_action_input_without_mutating_schedule(): void
+    {
+        $schedule = WorkflowSchedule::create([
+            'schedule_id' => 'json-codec-update',
+            'namespace' => 'default',
+            'spec' => ['cron_expressions' => ['0 * * * *']],
+            'action' => ['workflow_type' => 'OriginalWorkflow', 'task_queue' => 'original-queue'],
+            'overlap_policy' => 'skip',
+            'note' => 'Original note',
+        ]);
+        $original = $schedule->fresh()->getRawOriginal();
+
+        $response = $this->withHeaders($this->headers())
+            ->putJson('/api/schedules/json-codec-update', [
+                'spec' => ['cron_expressions' => ['0 */2 * * *']],
+                'action' => [
+                    'workflow_type' => 'UpdatedWorkflow',
+                    'input' => ['codec' => 'json', 'blob' => '["stale"]'],
+                ],
+                'overlap_policy' => 'allow_all',
+                'note' => 'Mutated note',
+            ]);
+
+        $response->assertStatus(422)
+            ->assertJsonValidationErrors('action.input.codec');
+        $this->assertStringContainsString('unsupported_payload_codec', $response->getContent());
+        $this->assertSame($original, $schedule->fresh()->getRawOriginal());
+        $this->assertSame(0, WorkflowScheduleHistoryEvent::query()
+            ->where('workflow_schedule_id', $schedule->id)
+            ->count());
     }
 
     public function test_update_returns_404_for_nonexistent_schedule(): void
@@ -1293,7 +1351,7 @@ class ScheduleTest extends TestCase
     {
         return [
             'X-Namespace' => $namespace,
-            'X-Durable-Workflow-Control-Plane-Version' => \App\Support\ControlPlaneProtocol::VERSION,
+            'X-Durable-Workflow-Control-Plane-Version' => ControlPlaneProtocol::VERSION,
         ];
     }
 

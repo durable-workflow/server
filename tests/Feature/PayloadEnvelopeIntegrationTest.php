@@ -20,7 +20,6 @@ use Tests\TestCase;
 use Workflow\Serializers\Avro;
 use Workflow\Serializers\AvroBinaryValue;
 use Workflow\Serializers\AvroMapValue;
-use Workflow\Serializers\CodecRegistry;
 use Workflow\Serializers\Serializer;
 use Workflow\V2\Enums\HistoryEventType;
 use Workflow\V2\Jobs\RunWorkflowTask;
@@ -361,12 +360,12 @@ class PayloadEnvelopeIntegrationTest extends TestCase
                 'workflow_type' => 'tests.external-greeting-workflow',
                 'task_queue' => 'ext-q',
                 'input' => [
-                    'codec' => 'json',
-                    'blob' => Serializer::serializeWithCodec('json', ['Ada']),
+                    'codec' => 'avro',
+                    'blob' => Serializer::serializeWithCodec('avro', ['Ada']),
                 ],
             ])
             ->assertCreated()
-            ->assertJsonPath('payload_codec', 'json');
+            ->assertJsonPath('payload_codec', 'avro');
 
         $this->registerWorker('worker-1', 'ext-q');
 
@@ -423,7 +422,7 @@ class PayloadEnvelopeIntegrationTest extends TestCase
 
         foreach ([$current, $selected] as $result) {
             $result->assertOk()
-                ->assertJsonPath('payload_codec', 'json')
+                ->assertJsonPath('payload_codec', 'avro')
                 ->assertJsonPath('output', $expected)
                 ->assertJsonPath('output_envelope.codec', 'avro');
 
@@ -851,11 +850,8 @@ class PayloadEnvelopeIntegrationTest extends TestCase
         $info = $this->getJson('/api/cluster/info');
 
         $info->assertOk()
-            ->assertJsonPath('capabilities.payload_codecs', CodecRegistry::universal())
-            ->assertJsonPath('capabilities.payload_codecs_engine_specific.php', [
-                'workflow-serializer-y',
-                'workflow-serializer-base64',
-            ])
+            ->assertJsonPath('capabilities.payload_codecs', ['avro'])
+            ->assertJsonMissingPath('capabilities.payload_codecs_engine_specific')
             ->assertJsonPath(
                 'capabilities.avro_value_protocol.schema',
                 'durable_workflow.protocol.Value',
@@ -883,7 +879,7 @@ class PayloadEnvelopeIntegrationTest extends TestCase
         $this->assertContains('avro', $startFields['payload_codec']['canonical_values']);
     }
 
-    public function test_control_plane_request_contract_omits_engine_specific_codecs_from_canonical_values(): void
+    public function test_control_plane_request_contract_lists_only_avro(): void
     {
         $this->createNamespace('default');
 
@@ -894,17 +890,8 @@ class PayloadEnvelopeIntegrationTest extends TestCase
         $startFields = $info->json('control_plane.request_contract.operations.start.fields');
         $canonical = $startFields['payload_codec']['canonical_values'];
 
-        $this->assertNotContains('workflow-serializer-y', $canonical);
-        $this->assertNotContains('workflow-serializer-base64', $canonical);
-
-        // Engine-specific codecs, when present, are exposed under an
-        // explicitly engine-scoped key so polyglot clients can choose whether
-        // to opt into a codec they know how to decode.
-        $engineSpecific = $startFields['payload_codec']['engine_specific_values'] ?? null;
-        $this->assertIsArray($engineSpecific);
-        $this->assertArrayHasKey('php', $engineSpecific);
-        $this->assertContains('workflow-serializer-y', $engineSpecific['php']);
-        $this->assertContains('workflow-serializer-base64', $engineSpecific['php']);
+        $this->assertSame(['avro'], $canonical);
+        $this->assertArrayNotHasKey('engine_specific_values', $startFields['payload_codec']);
     }
 
     public function test_activity_poll_returns_arguments_as_codec_envelope(): void
@@ -1048,7 +1035,7 @@ class PayloadEnvelopeIntegrationTest extends TestCase
         $this->assertIsArray($activityCompleted);
         $this->assertExternalEnvelopeDecodes($activityCompleted['payload']['result'], $activityResult);
 
-        $workflowResultCodec = 'workflow-serializer-y';
+        $workflowResultCodec = 'avro';
         $workflowResultPayload = Serializer::serializeWithCodec($workflowResultCodec, $workflowResult);
         $this->withHeaders($this->workerHeaders())
             ->postJson('/api/worker/workflow-tasks/'.$resumePoll->json('task.task_id').'/complete', [
@@ -1225,13 +1212,14 @@ class PayloadEnvelopeIntegrationTest extends TestCase
 
         /** @var ExternalPayloadEnvelopeService $envelopes */
         $envelopes = app(ExternalPayloadEnvelopeService::class);
+        $encoded = Serializer::serializeWithCodec('avro', 'small-payload');
         $payload = $envelopes->historyPayload('default', [
-            'payload_codec' => 'zstd',
-            'output' => 'opaque-small-payload',
-        ], 'zstd');
+            'payload_codec' => 'avro',
+            'output' => $encoded,
+        ], 'avro');
 
-        $this->assertSame('zstd', $payload['output']['codec'] ?? null);
-        $this->assertSame('opaque-small-payload', $payload['output']['blob'] ?? null);
+        $this->assertSame('avro', $payload['output']['codec'] ?? null);
+        $this->assertSame($encoded, $payload['output']['blob'] ?? null);
         $this->assertArrayNotHasKey('external_storage', $payload['output']);
     }
 
@@ -1343,18 +1331,18 @@ class PayloadEnvelopeIntegrationTest extends TestCase
             ],
         ]);
 
-        $payload = 'opaque-continue-as-new-payload';
+        $payload = Serializer::serializeWithCodec('avro', ['continue']);
 
         $commands = $this->resolveWorkflowTaskCommandPayloadReferences([
             [
                 'type' => 'continue_as_new',
-                'arguments' => $this->externalStorageEnvelope('workflow-serializer-y', $payload),
+                'arguments' => $this->externalStorageEnvelope('avro', $payload),
             ],
         ]);
 
-        $this->assertSame('workflow-serializer-y', $commands[0]['payload_codec'] ?? null);
+        $this->assertSame('avro', $commands[0]['payload_codec'] ?? null);
         $this->assertSame([
-            'codec' => 'workflow-serializer-y',
+            'codec' => 'avro',
             'blob' => $payload,
         ], $commands[0]['arguments']);
     }
@@ -1370,31 +1358,31 @@ class PayloadEnvelopeIntegrationTest extends TestCase
             ],
         ]);
 
-        $workflowPayload = 'opaque-workflow-result-payload';
-        $sideEffectPayload = 'opaque-side-effect-payload';
+        $workflowPayload = Serializer::serializeWithCodec('avro', ['workflow-result']);
+        $sideEffectPayload = Serializer::serializeWithCodec('avro', ['side-effect']);
 
         $commands = $this->resolveWorkflowTaskCommandPayloadReferences([
             [
                 'type' => 'complete_workflow',
-                'result' => $this->externalStorageEnvelope('workflow-serializer-y', $workflowPayload),
+                'result' => $this->externalStorageEnvelope('avro', $workflowPayload),
             ],
             [
                 'type' => 'record_side_effect',
-                'payload_codec' => 'workflow-serializer-y',
-                'result' => $this->externalStorageEnvelope('workflow-serializer-y', $sideEffectPayload),
+                'payload_codec' => 'avro',
+                'result' => $this->externalStorageEnvelope('avro', $sideEffectPayload),
             ],
         ]);
 
         $this->assertSame([
-            'codec' => 'workflow-serializer-y',
+            'codec' => 'avro',
             'blob' => $workflowPayload,
         ], $commands[0]['result']);
-        $this->assertSame('workflow-serializer-y', $commands[0]['payload_codec'] ?? null);
+        $this->assertSame('avro', $commands[0]['payload_codec'] ?? null);
         $this->assertSame([
-            'codec' => 'workflow-serializer-y',
+            'codec' => 'avro',
             'blob' => $sideEffectPayload,
         ], $commands[1]['result']);
-        $this->assertSame('workflow-serializer-y', $commands[1]['payload_codec'] ?? null);
+        $this->assertSame('avro', $commands[1]['payload_codec'] ?? null);
     }
 
     public function test_workflow_task_command_external_storage_update_results_use_package_payload_envelope_contract(): void
@@ -1408,27 +1396,27 @@ class PayloadEnvelopeIntegrationTest extends TestCase
             ],
         ]);
 
-        $updatePayload = 'opaque-update-result-payload';
+        $updatePayload = Serializer::serializeWithCodec('avro', ['update-result']);
 
         $commands = $this->resolveWorkflowTaskCommandPayloadReferences([
             [
                 'type' => 'complete_update',
                 'update_id' => 'update-1',
-                'payload_codec' => 'workflow-serializer-y',
-                'result' => $this->externalStorageEnvelope('workflow-serializer-y', $updatePayload),
+                'payload_codec' => 'avro',
+                'result' => $this->externalStorageEnvelope('avro', $updatePayload),
             ],
         ]);
 
         $this->assertSame([
-            'codec' => 'workflow-serializer-y',
+            'codec' => 'avro',
             'blob' => $updatePayload,
         ], $commands[0]['result']);
-        $this->assertSame('workflow-serializer-y', $commands[0]['payload_codec'] ?? null);
+        $this->assertSame('avro', $commands[0]['payload_codec'] ?? null);
 
         $normalized = WorkflowCommandNormalizer::normalize($commands);
 
         $this->assertSame($updatePayload, $normalized[0]['result']);
-        $this->assertSame('workflow-serializer-y', $normalized[0]['payload_codec'] ?? null);
+        $this->assertSame('avro', $normalized[0]['payload_codec'] ?? null);
     }
 
     public function test_describe_response_includes_input_and_output_envelopes(): void

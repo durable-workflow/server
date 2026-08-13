@@ -67,6 +67,15 @@ chart MINOR bump and an entry below.
 
 ## Per-version migration notes
 
+### 0.1.19
+
+This release advances the default Server image to `2.0.0-rc.30`. Existing
+`0.1.18` values remain compatible. The bootstrap hook inventories every
+active or replay-relevant persisted payload codec and Avro frame before new
+pods take traffic. If it reports `unsupported_payload_codec`, stop the rollout
+and follow the emitted drain/export-and-re-encode remediation; customer
+history is never deleted by the preflight.
+
 ### 0.1.18
 
 This release advances the default Server image to `2.0.0-rc.29`. Existing

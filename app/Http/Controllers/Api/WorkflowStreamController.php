@@ -6,6 +6,7 @@ use App\Models\WorkflowDurableStream;
 use App\Support\ControlPlaneProtocol;
 use App\Support\LegacyV1Projection;
 use App\Support\NamespaceWorkflowScope;
+use App\Support\PayloadCodecContract;
 use App\Support\StreamClosedException;
 use App\Support\StreamErroredException;
 use App\Support\StreamFullException;
@@ -13,6 +14,7 @@ use App\Support\StreamNotFoundException;
 use App\Support\WorkflowStreamService;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
+use Illuminate\Validation\ValidationException;
 use InvalidArgumentException;
 use Workflow\V2\Models\WorkflowRun;
 
@@ -174,6 +176,22 @@ class WorkflowStreamController
             'items.*.content_type' => ['nullable', 'string', 'max:191'],
             'max_pending_items' => ['nullable', 'integer', 'min:1'],
         ]);
+
+        foreach ($payload['items'] as $index => $item) {
+            if (! array_key_exists('payload_codec', $item)) {
+                continue;
+            }
+
+            try {
+                $payload['items'][$index]['payload_codec'] = PayloadCodecContract::canonicalize(
+                    $item['payload_codec'],
+                );
+            } catch (InvalidArgumentException $exception) {
+                throw ValidationException::withMessages([
+                    "items.{$index}.payload_codec" => [$exception->getMessage()],
+                ]);
+            }
+        }
 
         $maxPending = (int) ($payload['max_pending_items']
             ?? WorkflowStreamService::DEFAULT_MAX_PENDING_ITEMS);

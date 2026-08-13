@@ -14,10 +14,10 @@
   "result": {
     "payload": {
       "codec": "avro",
-      "blob": "BASE64_AVRO_RESULT"
+      "blob": "wwHioz3/VYAiNw4CBG9rAgEA"
     },
     "metadata": {
-      "content_type": "application/vnd.durable-workflow.result+json"
+      "content_type": "application/vnd.durable-workflow.avro-value"
     }
   },
   "metadata": {

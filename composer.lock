@@ -4,7 +4,7 @@
         "Read more about it at https://getcomposer.org/doc/01-basic-usage.md#installing-dependencies",
         "This file is @generated automatically"
     ],
-    "content-hash": "32c8e7ead37a65b0190d3c90924add40",
+    "content-hash": "301f2eeb461c2e4f9345825fa337c101",
     "packages": [
         {
             "name": "apache/avro",
@@ -504,16 +504,16 @@
         },
         {
             "name": "durable-workflow/workflow",
-            "version": "2.0.0-rc.13",
+            "version": "2.0.0-rc.31",
             "source": {
                 "type": "git",
                 "url": "https://github.com/durable-workflow/workflow.git",
-                "reference": "fc28432a82a2433959c6690505c52eabea4aca8c"
+                "reference": "a4ce321a31ba5f4d9c25964cde81109bf253c5aa"
             },
             "dist": {
                 "type": "zip",
-                "url": "https://api.github.com/repos/durable-workflow/workflow/zipball/fc28432a82a2433959c6690505c52eabea4aca8c",
-                "reference": "fc28432a82a2433959c6690505c52eabea4aca8c",
+                "url": "https://api.github.com/repos/durable-workflow/workflow/zipball/a4ce321a31ba5f4d9c25964cde81109bf253c5aa",
+                "reference": "a4ce321a31ba5f4d9c25964cde81109bf253c5aa",
                 "shasum": ""
             },
             "require": {
@@ -543,7 +543,7 @@
                     ]
                 },
                 "durable-workflow": {
-                    "product-train": "2.0.0-rc.13"
+                    "product-train": "2.0.0-rc.31"
                 }
             },
             "autoload": {
@@ -568,9 +568,9 @@
             "description": "Embedded durable workflow runtime and orchestration engine for Laravel applications.",
             "support": {
                 "issues": "https://github.com/durable-workflow/workflow/issues",
-                "source": "https://github.com/durable-workflow/workflow/tree/2.0.0-rc.13"
+                "source": "https://github.com/durable-workflow/workflow/tree/2.0.0-rc.31"
             },
-            "time": "2026-08-03T07:31:00+00:00"
+            "time": "2026-08-13T03:34:07+00:00"
         },
         {
             "name": "egulias/email-validator",
@@ -6103,16 +6103,16 @@
         },
         {
             "name": "symfony/yaml",
-            "version": "v7.4.14",
+            "version": "v7.4.15",
             "source": {
                 "type": "git",
                 "url": "https://github.com/symfony/yaml.git",
-                "reference": "f8f328665ace2370d1e10645b807ba1646dc7dcc"
+                "reference": "e101850ded5d2c0d44bf32abb8996404afec2dec"
             },
             "dist": {
                 "type": "zip",
-                "url": "https://api.github.com/repos/symfony/yaml/zipball/f8f328665ace2370d1e10645b807ba1646dc7dcc",
-                "reference": "f8f328665ace2370d1e10645b807ba1646dc7dcc",
+                "url": "https://api.github.com/repos/symfony/yaml/zipball/e101850ded5d2c0d44bf32abb8996404afec2dec",
+                "reference": "e101850ded5d2c0d44bf32abb8996404afec2dec",
                 "shasum": ""
             },
             "require": {
@@ -6155,7 +6155,7 @@
             "description": "Loads and dumps YAML files",
             "homepage": "https://symfony.com",
             "support": {
-                "source": "https://github.com/symfony/yaml/tree/v7.4.14"
+                "source": "https://github.com/symfony/yaml/tree/v7.4.15"
             },
             "funding": [
                 {
@@ -6175,7 +6175,7 @@
                     "type": "tidelift"
                 }
             ],
-            "time": "2026-06-08T20:24:16+00:00"
+            "time": "2026-07-21T15:13:06+00:00"
         },
         {
             "name": "tijsverkoyen/css-to-inline-styles",

@@ -679,8 +679,8 @@ SH);
 
     public function test_composer_metadata_identifies_the_exact_workflow_source(): void
     {
-        $expectedVersion = '2.0.0-rc.13';
-        $expectedCommit = 'fc28432a82a2433959c6690505c52eabea4aca8c';
+        $expectedVersion = '2.0.0-rc.31';
+        $expectedCommit = 'a4ce321a31ba5f4d9c25964cde81109bf253c5aa';
         $composer = json_decode($this->read('composer.json'), true, flags: JSON_THROW_ON_ERROR);
         $lock = json_decode($this->read('composer.lock'), true, flags: JSON_THROW_ON_ERROR);
 
@@ -767,7 +767,7 @@ SH);
         $composer = json_decode($this->read('composer.json'), true, flags: JSON_THROW_ON_ERROR);
 
         $this->assertSame(
-            '2.0.0-rc.29',
+            '2.0.0-rc.30',
             $composer['extra']['durable-workflow']['product-train'] ?? null,
         );
     }
