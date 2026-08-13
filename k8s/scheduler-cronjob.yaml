@@ -24,7 +24,7 @@ spec:
           restartPolicy: Never
           containers:
             - name: scheduler
-              image: durableworkflow/server:2.0.0-rc.30
+              image: durableworkflow/server:2.0.0-rc.13
               command: ["server-entrypoint"]
               args: ["sh", "-c", "php artisan schedule:evaluate --limit=100 --json; php artisan activity:timeout-enforce --limit=100; php artisan history:prune --limit=100"]
               envFrom:

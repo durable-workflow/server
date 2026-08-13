@@ -150,10 +150,18 @@ class HelmChartReleaseTest(unittest.TestCase):
         self.assertGreater(RELEASE.semver_key(metadata["version"]), (0, 1, 0))
         self.assertEqual(
             metadata["image_reference"],
+            f"docker.io/durableworkflow/server:{RELEASE.qualified_server_version()}",
+        )
+        self.assertEqual(
+            metadata["release_image_reference"],
             f"docker.io/durableworkflow/server:{metadata['app_version']}",
         )
+        self.assertEqual(
+            metadata["annotations"][RELEASE.IMAGE_REFERENCE_ANNOTATION],
+            metadata["release_image_reference"],
+        )
 
-    def test_changed_app_version_requires_changed_default_image(self) -> None:
+    def test_changed_app_version_requires_changed_release_annotation(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             chart = Path(temporary)
             metadata = RELEASE.validate_source()
@@ -170,7 +178,28 @@ class HelmChartReleaseTest(unittest.TestCase):
             )
             with self.assertRaisesRegex(
                 RELEASE.ReleaseError,
-                "default image tag must equal Chart.yaml appVersion",
+                "must retain the chart release image",
+            ):
+                RELEASE.validate_source(chart)
+
+    def test_changed_default_image_requires_qualified_onboarding_version(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            chart = Path(temporary)
+            chart.joinpath("Chart.yaml").write_text(
+                RELEASE.DEFAULT_CHART_PATH.joinpath("Chart.yaml").read_text()
+            )
+            chart.joinpath("README.md").write_text(
+                RELEASE.DEFAULT_CHART_PATH.joinpath("README.md").read_text()
+            )
+            qualified = RELEASE.qualified_server_version()
+            chart.joinpath("values.yaml").write_text(
+                RELEASE.DEFAULT_CHART_PATH.joinpath("values.yaml")
+                .read_text()
+                .replace(f'tag: "{qualified}"', 'tag: "9.9.9"')
+            )
+            with self.assertRaisesRegex(
+                RELEASE.ReleaseError,
+                "default image tag must equal the qualified onboarding Server version",
             ):
                 RELEASE.validate_source(chart)
 

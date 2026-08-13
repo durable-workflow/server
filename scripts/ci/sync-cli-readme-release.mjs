@@ -87,11 +87,21 @@ function validateReleaseAuthority(authority, label) {
   };
 }
 
-function installerCommand(version) {
-  return `curl -fsSL ${installerUrl} | VERSION=${version} sh`;
+function installerCommand() {
+  return `curl -fsSL ${installerUrl} | sh`;
 }
 
-function replaceGeneratedReadmeRegion(readme, version) {
+function generatedReadmeRegion() {
+  return `${generatedStart}
+\`\`\`bash
+# Install the supported CLI prerelease channel
+${installerCommand()}
+export PATH="$HOME/.local/bin:$PATH"
+\`\`\`
+${generatedEnd}`;
+}
+
+function replaceGeneratedReadmeRegion(readme) {
   const start = readme.indexOf(generatedStart);
   const end = readme.indexOf(generatedEnd);
   if (start === -1 || end === -1 || end < start) {
@@ -102,16 +112,8 @@ function replaceGeneratedReadmeRegion(readme, version) {
     fail('README.md contains duplicate generated CLI install markers');
   }
 
-  const regionStart = start + generatedStart.length;
-  const region = readme.slice(regionStart, end);
-  const commandPattern = /curl -fsSL https:\/\/durable-workflow\.com\/install\.sh \| VERSION=[^\s]+ sh/g;
-  const commands = region.match(commandPattern) ?? [];
-  if (commands.length !== 1) {
-    fail('README.md generated CLI install region must contain one exact-version installer command');
-  }
-
-  const updatedRegion = region.replace(commandPattern, installerCommand(version));
-  return `${readme.slice(0, regionStart)}${updatedRegion}${readme.slice(end)}`;
+  const regionEnd = end + generatedEnd.length;
+  return `${readme.slice(0, start)}${generatedReadmeRegion()}${readme.slice(regionEnd)}`;
 }
 
 function publicGithubToken() {
@@ -237,11 +239,11 @@ async function localReleaseAuthority() {
   return validateReleaseAuthority(parseJson(bytes, 'checked-in CLI release authority'), 'checked-in CLI release authority');
 }
 
-async function checkGeneratedReadme(authority) {
+async function checkGeneratedReadme() {
   const readme = await readFile(readmePath, 'utf8');
-  const expected = replaceGeneratedReadmeRegion(readme, authority.version);
+  const expected = replaceGeneratedReadmeRegion(readme);
   if (readme !== expected) {
-    fail('README.md CLI install command is stale; run node scripts/ci/sync-cli-readme-release.mjs --write');
+    fail('README.md CLI channel command is stale; run node scripts/ci/sync-cli-readme-release.mjs --write');
   }
 }
 
@@ -264,15 +266,15 @@ async function checkPublicAuthority(local) {
 async function writeCurrentRelease() {
   const authority = await currentPublicAuthority();
   const readme = await readFile(readmePath, 'utf8');
-  const updatedReadme = replaceGeneratedReadmeRegion(readme, authority.version);
+  const updatedReadme = replaceGeneratedReadmeRegion(readme);
 
   await writeFile(releaseAuthorityPath, `${JSON.stringify(authority, null, 2)}\n`);
   await writeFile(readmePath, updatedReadme);
-  process.stdout.write(`Generated README CLI install pin for ${authority.version} from its public CLI release.\n`);
+  process.stdout.write(`Generated README CLI channel command and refreshed release authority to ${authority.version}.\n`);
 }
 
 function usage() {
-  process.stderr.write('Usage: node scripts/ci/sync-cli-readme-release.mjs (--check [--offline] | --write | --print <version|commit|assets|installer-url|release-installer-url|release-url>)\n');
+  process.stderr.write('Usage: node scripts/ci/sync-cli-readme-release.mjs (--check [--offline] | --write | --print <version|commit|assets|installer-command|installer-url|release-installer-url|release-url>)\n');
 }
 
 async function main() {
@@ -284,11 +286,11 @@ async function main() {
 
   const local = await localReleaseAuthority();
   if (args[0] === '--check' && (args.length === 1 || (args.length === 2 && args[1] === '--offline'))) {
-    await checkGeneratedReadme(local);
+    await checkGeneratedReadme();
     if (args[1] !== '--offline') {
       await checkPublicAuthority(local);
     }
-    process.stdout.write(`README CLI install pin ${local.version} matches its release authority.\n`);
+    process.stdout.write(`README CLI channel command is current; release authority selects ${local.version}.\n`);
     return;
   }
 
@@ -296,6 +298,7 @@ async function main() {
     const fields = {
       assets: requiredAssets.join('\n'),
       commit: local.commit,
+      'installer-command': installerCommand(),
       'installer-url': installerUrl,
       'release-installer-url': releaseInstallerUrl(local.version),
       'release-url': local.releaseUrl,

@@ -19,6 +19,9 @@ from typing import Any
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_CHART_PATH = REPOSITORY_ROOT / "k8s/helm/durable-workflow"
+DEFAULT_QUALIFIED_RELEASE_PATH = (
+    REPOSITORY_ROOT / "resources/release/qualified-onboarding-release.json"
+)
 DEFAULT_OCI_REPOSITORY = "oci://ghcr.io/durable-workflow/charts/durable-workflow"
 SOURCE_REVISION_ANNOTATION = "dev.durable-workflow.source-revision"
 IMAGE_REFERENCE_ANNOTATION = "dev.durable-workflow.image-reference"
@@ -122,7 +125,28 @@ def chart_metadata(chart_path: Path = DEFAULT_CHART_PATH) -> dict[str, Any]:
         "annotations": annotations,
         "image_reference": image_reference,
         "image_tag": tag,
+        "release_image_reference": f"{registry}/{repository}:{app_version}",
     }
+
+
+def qualified_server_version(
+    record_path: Path = DEFAULT_QUALIFIED_RELEASE_PATH,
+) -> str:
+    try:
+        record = json.loads(record_path.read_text())
+        version = record["server"]["version"]
+        tuple_version = record["qualified_artifact_versions"]["server"]
+    except (OSError, json.JSONDecodeError, KeyError, TypeError) as error:
+        raise ReleaseError(
+            f"qualified onboarding release is invalid: {error}"
+        ) from error
+    if not isinstance(version, str) or SEMVER_PATTERN.fullmatch(version) is None:
+        raise ReleaseError("qualified onboarding Server version is not SemVer")
+    if tuple_version != version:
+        raise ReleaseError(
+            "qualified onboarding Server version must match its artifact tuple"
+        )
+    return version
 
 
 def validate_source(chart_path: Path = DEFAULT_CHART_PATH) -> dict[str, Any]:
@@ -131,16 +155,18 @@ def validate_source(chart_path: Path = DEFAULT_CHART_PATH) -> dict[str, Any]:
         raise ReleaseError(f"chart version is not SemVer: {metadata['version']}")
     if SEMVER_PATTERN.fullmatch(metadata["app_version"]) is None:
         raise ReleaseError(f"chart appVersion is not SemVer: {metadata['app_version']}")
-    if metadata["image_tag"] != metadata["app_version"]:
+    qualified_version = qualified_server_version()
+    if metadata["image_tag"] != qualified_version:
         raise ReleaseError(
-            "the default image tag must equal Chart.yaml appVersion; "
-            f"got {metadata['image_tag']} and {metadata['app_version']}"
+            "the default image tag must equal the qualified onboarding Server version; "
+            f"got {metadata['image_tag']} and {qualified_version}"
         )
     annotated_image = metadata["annotations"].get(IMAGE_REFERENCE_ANNOTATION)
-    if annotated_image != metadata["image_reference"]:
+    release_image = metadata["release_image_reference"]
+    if annotated_image != release_image:
         raise ReleaseError(
-            f"{IMAGE_REFERENCE_ANNOTATION} must equal the default image reference "
-            f"{metadata['image_reference']}; got {annotated_image or '<missing>'}"
+            f"{IMAGE_REFERENCE_ANNOTATION} must retain the chart release image "
+            f"{release_image}; got {annotated_image or '<missing>'}"
         )
     if SOURCE_REVISION_ANNOTATION not in metadata["annotations"]:
         raise ReleaseError(f"Chart.yaml is missing {SOURCE_REVISION_ANNOTATION}")
@@ -328,7 +354,7 @@ def package_chart(
     write_output("chart_package", str(package))
     write_output("chart_version", metadata["version"])
     write_output("chart_app_version", metadata["app_version"])
-    write_output("chart_image_reference", metadata["image_reference"])
+    write_output("chart_image_reference", metadata["release_image_reference"])
     return package
 
 
@@ -549,7 +575,7 @@ def verify_oci(
             "package_digest": expected_digest,
         },
         "image": {
-            "reference": source["image_reference"],
+            "reference": source["release_image_reference"],
             "digest": image_digest,
         },
         "channels": {
@@ -624,7 +650,10 @@ def main() -> None:
     elif args.command == "preflight":
         preflight(args.package, args.oci_repository, args.helm)
     elif args.command == "resolve-image":
-        resolve_image_digest(validate_source()["image_reference"], args.docker)
+        resolve_image_digest(
+            validate_source()["release_image_reference"],
+            args.docker,
+        )
     elif args.command == "verify-oci":
         verify_oci(
             args.package,

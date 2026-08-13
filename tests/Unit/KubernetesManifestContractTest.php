@@ -8,10 +8,10 @@ use PHPUnit\Framework\TestCase;
 
 class KubernetesManifestContractTest extends TestCase
 {
-    private const SERVER_IMAGE = 'durableworkflow/server:2.0.0-rc.30';
-
     public function test_public_manifests_use_pinned_published_server_images(): void
     {
+        $serverImage = $this->qualifiedServerImage();
+
         foreach ($this->kubernetesYamlFiles() as $path) {
             $source = $this->read($path);
 
@@ -26,7 +26,7 @@ class KubernetesManifestContractTest extends TestCase
             foreach ($matches[1] ?? [] as $image) {
                 if (str_contains($image, '/server:') || str_contains($image, 'server@')) {
                     $this->assertSame(
-                        self::SERVER_IMAGE,
+                        $serverImage,
                         $image,
                         "{$path} must use the public pinned server image unless an overlay patches it",
                     );
@@ -96,7 +96,7 @@ class KubernetesManifestContractTest extends TestCase
 
         preg_match('/^manifest_image="([^"]+)"$/m', $source, $matches);
 
-        $this->assertSame(self::SERVER_IMAGE, $matches[1] ?? null);
+        $this->assertSame($this->qualifiedServerImage(), $matches[1] ?? null);
         $this->assertStringContainsString('sed -i "s#${manifest_image}#${image}#g"', $source);
         $this->assertStringContainsString('grep -R -Fq "${manifest_image}" "${rendered_dir}"', $source);
         $this->assertStringContainsString('grep -R -Fq "${image}" "${rendered_dir}"', $source);
@@ -124,5 +124,18 @@ class KubernetesManifestContractTest extends TestCase
         $this->assertNotFalse($source, "{$path} must be readable");
 
         return $source;
+    }
+
+    private function qualifiedServerImage(): string
+    {
+        $record = json_decode(
+            $this->read('resources/release/qualified-onboarding-release.json'),
+            true,
+            flags: JSON_THROW_ON_ERROR,
+        );
+        $image = $record['server']['image']['reference'] ?? null;
+        $this->assertIsString($image);
+
+        return $image;
     }
 }

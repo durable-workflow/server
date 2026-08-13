@@ -9,10 +9,12 @@ Both paths share the same external-persistence contract, the same singleton
 scheduler invariant, and the same `/api/ready`-based readiness contract.
 Pick one or the other per environment, not both.
 
-The default image is pinned to the public Docker Hub release tag:
+The default image is generated from the last passing qualified reproducibility
+[tuple](https://durable-workflow.com/public-artifact-compatibility-evidence.json)
+and pinned to its qualified Docker Hub release tag:
 
 ```text
-durableworkflow/server:2.0.0-rc.29
+durableworkflow/server:2.0.0-rc.13
 ```
 
 Before production use, patch every workload image to the exact published tag or
@@ -20,15 +22,15 @@ digest you intend to run:
 
 ```bash
 kubectl set image -n durable-workflow deploy/durable-workflow-server \
-  server=durableworkflow/server:2.0.0-rc.29
+  server=durableworkflow/server:2.0.0-rc.13
 kubectl set image -n durable-workflow deploy/durable-workflow-worker \
-  worker=durableworkflow/server:2.0.0-rc.29
+  worker=durableworkflow/server:2.0.0-rc.13
 kubectl set image -n durable-workflow cronjob/durable-workflow-scheduler \
-  scheduler=durableworkflow/server:2.0.0-rc.29
+  scheduler=durableworkflow/server:2.0.0-rc.13
 ```
 
 GitHub Container Registry publishes the same release line at
-`ghcr.io/durable-workflow/server:2.0.0-rc.29`. Digest pinning is preferred for strict
+`ghcr.io/durable-workflow/server:2.0.0-rc.13`. Digest pinning is preferred for strict
 change control.
 
 The manifests expect you to provide:

@@ -59,9 +59,16 @@ class DedicatedMatchingComposeContractTest extends TestCase
     {
         $override = $this->read('docker-compose.dedicated-matching.yml');
         $published = $this->read('docker-compose.published.yml');
+        $record = json_decode(
+            $this->read('resources/release/qualified-onboarding-release.json'),
+            true,
+            flags: JSON_THROW_ON_ERROR,
+        );
+        $version = $record['server']['version'] ?? null;
+        $this->assertIsString($version);
 
         foreach ([
-            'DW_SERVER_IMAGE:-durableworkflow/server:${DW_SERVER_TAG:-2.0.0-rc.30}',
+            'DW_SERVER_IMAGE:-durableworkflow/server:${DW_SERVER_TAG:-'.$version.'}',
         ] as $needle) {
             $this->assertStringContainsString(
                 $needle,

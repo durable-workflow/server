@@ -66,7 +66,7 @@ jobs:
           python3 scripts/ci/helm_chart_release.py package
           --source-revision "${{ steps.source.outputs.revision }}"
 
-      - name: Prove the default Server image is anonymously resolvable
+      - name: Prove the immutable chart Server image is anonymously resolvable
         id: image
         env:
           ALLOW_MISSING_IMAGE: ${{ inputs.allow_missing_image && 'true' || 'false' }}

@@ -1,4 +1,4 @@
-name: CLI README Release
+name: CLI README Channel
 
 on:
   pull_request:
@@ -21,7 +21,7 @@ concurrency:
 
 jobs:
   release:
-    name: Verify supported CLI release and README drift
+    name: Verify supported CLI channel and release authority
     runs-on: ubuntu-latest
     timeout-minutes: 5
 
@@ -31,13 +31,13 @@ jobs:
         with:
           persist-credentials: false
 
-      - name: Check generated README against the public CLI release on GitHub
+      - name: Check generated README channel and public release authority on GitHub
         if: ${{ github.server_url == 'https://github.com' }}
         env:
           GH_TOKEN: ${{ github.token }}
         run: node scripts/ci/sync-cli-readme-release.mjs --check
 
-      - name: Check generated README against checked-in release authority
+      - name: Check generated README channel and checked-in release authority
         if: ${{ github.server_url != 'https://github.com' }}
         run: node scripts/ci/sync-cli-readme-release.mjs --check --offline
 

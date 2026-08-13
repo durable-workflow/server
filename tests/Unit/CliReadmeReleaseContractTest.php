@@ -10,7 +10,7 @@ use Symfony\Component\Yaml\Yaml;
 
 class CliReadmeReleaseContractTest extends TestCase
 {
-    public function test_readme_cli_install_is_generated_from_an_independent_cli_release_authority(): void
+    public function test_readme_cli_channel_and_release_authority_are_machine_owned(): void
     {
         $authority = $this->readJson('resources/release/cli-readme-release.json');
 
@@ -49,13 +49,13 @@ class CliReadmeReleaseContractTest extends TestCase
         $this->assertIsArray($job);
         $this->assertSame(['contents' => 'read'], $workflow['permissions'] ?? null);
 
-        $github = $this->workflowStep($job, 'Check generated README against the public CLI release on GitHub');
+        $github = $this->workflowStep($job, 'Check generated README channel and public release authority on GitHub');
         $this->assertSame("\${{ github.server_url == 'https://github.com' }}", $github['if'] ?? null);
         $this->assertSame(['GH_TOKEN' => '${{ github.token }}'], $github['env'] ?? null);
         $this->assertSame('node scripts/ci/sync-cli-readme-release.mjs --check', $github['run'] ?? null);
         $this->assertArrayNotHasKey('continue-on-error', $github);
 
-        $forgejo = $this->workflowStep($job, 'Check generated README against checked-in release authority');
+        $forgejo = $this->workflowStep($job, 'Check generated README channel and checked-in release authority');
         $this->assertSame("\${{ github.server_url != 'https://github.com' }}", $forgejo['if'] ?? null);
         $this->assertArrayNotHasKey('env', $forgejo);
         $this->assertSame('node scripts/ci/sync-cli-readme-release.mjs --check --offline', $forgejo['run'] ?? null);
@@ -141,10 +141,13 @@ class CliReadmeReleaseContractTest extends TestCase
         );
     }
 
-    public function test_generated_pin_keeps_the_generic_and_versioned_installer_channels_distinct(): void
+    public function test_generated_channel_keeps_the_generic_and_versioned_installers_distinct(): void
     {
         $authority = $this->readJson('resources/release/cli-readme-release.json');
         $version = $authority['version'] ?? '';
+
+        $command = $this->runSyncScript('--print', 'installer-command');
+        $this->assertSame("curl -fsSL https://durable-workflow.com/install.sh | sh\n", $command->getOutput());
 
         $installer = $this->runSyncScript('--print', 'installer-url');
         $this->assertSame("https://durable-workflow.com/install.sh\n", $installer->getOutput());

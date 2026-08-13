@@ -67,6 +67,13 @@ chart MINOR bump and an entry below.
 
 ## Per-version migration notes
 
+### 0.1.20
+
+This release routes the default runtime image through the passing public
+compatibility authority. Existing `0.1.19` values remain compatible; operators
+who explicitly retain a different image tag or digest keep that reproducible
+override.
+
 ### 0.1.19
 
 This release advances the default Server image to `2.0.0-rc.30`. Existing
