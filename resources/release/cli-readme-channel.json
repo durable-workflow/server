@@ -1,0 +1,6 @@
+{
+  "schema": "durable-workflow.cli-readme-channel/v1",
+  "repository": "durable-workflow/cli",
+  "channel": "2.0-rc",
+  "installer_url": "https://durable-workflow.com/install.sh"
+}

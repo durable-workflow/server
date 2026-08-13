@@ -1,9 +1,0 @@
-{
-  "schema": "durable-workflow.cli-readme-release/v1",
-  "repository": "durable-workflow/cli",
-  "channel": "2.0-rc",
-  "version": "2.0.0-rc.13",
-  "tag": "2.0.0-rc.13",
-  "commit": "1bf1cad9cfea7eeff624c5c6b90bb7eb115eef98",
-  "release_url": "https://github.com/durable-workflow/cli/releases/tag/2.0.0-rc.13"
-}

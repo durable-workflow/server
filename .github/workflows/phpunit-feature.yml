@@ -32,6 +32,7 @@ jobs:
         run: |
           node --check scripts/ci/sync-cli-readme-release.mjs
           node scripts/ci/sync-cli-readme-release.mjs --check --offline
+          bash -n scripts/ci/check-cli-readme-public-release.sh
           bash -n scripts/ci/verify-cli-readme-release.sh
           python -m py_compile \
             scripts/ci/component-release-recovery.py \

@@ -70,18 +70,16 @@ jobs:
       - name: Install CLI
         run: |
           install_dir="/tmp/dw-bin"
-          cli_version="$(node scripts/ci/sync-cli-readme-release.mjs --print version)"
           installer_url="$(node scripts/ci/sync-cli-readme-release.mjs --print installer-url)"
           curl -fsSL "$installer_url" -o /tmp/dw-install.sh
-          VERSION="$cli_version" DURABLE_WORKFLOW_INSTALL_DIR="$install_dir" sh /tmp/dw-install.sh
+          DURABLE_WORKFLOW_INSTALL_DIR="$install_dir" sh /tmp/dw-install.sh
           reported_version="$("$install_dir/dw" --version)"
-          case "$reported_version" in
-            "dw ${cli_version}"|"dw ${cli_version} "*) ;;
-            *)
-              echo "ERROR: Expected CLI ${cli_version}, got $reported_version"
-              exit 1
-              ;;
-          esac
+          cli_version="${reported_version#dw }"
+          cli_version="${cli_version%% *}"
+          if [[ ! "$cli_version" =~ ^2\.0\.0-rc\.(0|[1-9][0-9]*)$ ]]; then
+            echo "ERROR: Supported CLI channel installed an invalid release: $reported_version"
+            exit 1
+          fi
           echo "$install_dir" >> $GITHUB_PATH
 
       - name: Test CLI with compatible server (should succeed)

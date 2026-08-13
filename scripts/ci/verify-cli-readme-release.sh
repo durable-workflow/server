@@ -4,14 +4,15 @@ set -euo pipefail
 
 script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 sync_script="${script_dir}/sync-cli-readme-release.mjs"
-version="$(node "$sync_script" --print version)"
-commit="$(node "$sync_script" --print commit)"
-release_installer_url="$(node "$sync_script" --print release-installer-url)"
+evidence_path="${CLI_RELEASE_EVIDENCE_PATH:?CLI_RELEASE_EVIDENCE_PATH must identify trusted public channel evidence}"
+version="$(node "$sync_script" --print-evidence "$evidence_path" version)"
+commit="$(node "$sync_script" --print-evidence "$evidence_path" commit)"
+release_installer_url="$(node "$sync_script" --print-evidence "$evidence_path" release-installer-url)"
 release_base_url="${release_installer_url%/install.sh}"
 verify_dir="$(mktemp -d)"
 trap 'rm -rf -- "$verify_dir"' EXIT HUP INT TERM
 
-assets_output="$(node "$sync_script" --print assets)"
+assets_output="$(node "$sync_script" --print-evidence "$evidence_path" assets)"
 mapfile -t assets <<<"$assets_output"
 
 for asset in "${assets[@]}"; do

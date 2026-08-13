@@ -35,11 +35,15 @@ jobs:
         if: ${{ github.server_url == 'https://github.com' }}
         env:
           GH_TOKEN: ${{ github.token }}
-        run: node scripts/ci/sync-cli-readme-release.mjs --check
+          CLI_RELEASE_EVIDENCE_PATH: ${{ runner.temp }}/cli-channel-resolution.json
+        run: scripts/ci/check-cli-readme-public-release.sh
 
-      - name: Check generated README channel and checked-in release authority
+      - name: Check generated README channel and checked-in channel authority
         if: ${{ github.server_url != 'https://github.com' }}
         run: node scripts/ci/sync-cli-readme-release.mjs --check --offline
 
       - name: Verify public release assets and installed binary identity
+        if: ${{ github.server_url == 'https://github.com' }}
+        env:
+          CLI_RELEASE_EVIDENCE_PATH: ${{ runner.temp }}/cli-channel-resolution.json
         run: scripts/ci/verify-cli-readme-release.sh
