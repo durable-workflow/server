@@ -1,4 +1,4 @@
-Durable Workflow Capacity Benchmark Suite 1.1.0
+Durable Workflow Capacity Benchmark Suite 1.2.0
 
 This directory is immutable evidence input. A changed workload, artifact tuple,
 metric contract, or operating-point rule requires a new suite version instead
@@ -45,7 +45,12 @@ The controller launches the declared client processes and worker slots (or
 one-slot PHP worker processes), sends exact payload sizes and the seeded mixed
 sequence, drains and discards a separate warmup cohort, stops measurement
 admission at duration, and drains every admitted workflow within the declared
-timeout. Run one bounded selection during harness development:
+timeout. Query cells establish their declared long-lived query cohort before
+the measurement clock starts. The query-inspection cohort occupies the full
+open-workflow allocation. The mixed cohort receives its deterministic
+largest-remainder allocation from the declared mix; the remaining shapes keep
+their seeded relative weights while using the other open-workflow slots. Run
+one bounded selection during harness development:
 
   DURABLE_WORKFLOW_RUNTIME_URL=http://127.0.0.1:8080 \
   DURABLE_WORKFLOW_NAMESPACE=capacity \
@@ -72,12 +77,25 @@ uses only measurement-phase completions, dispatches, errors, throttles, and
 latencies for operating-point metrics. The separate drain summary proves final
 open-work and task-queue convergence without contributing performance evidence.
 
-Every load step declares workflow-start and query-operation targets per second
-with a minimum delivery ratio. Demand counters distinguish requests actually
-attempted by the generator from requests accepted, completed, rejected, or
-throttled by Server. A full-duration observation window remains ineligible when
-controller overhead, exhausted open-work slots, or query serialization leaves
-either the attempted or delivered count below the declared tolerance.
+Every load step declares workflow-start and query-operation targets per second,
+the resident long-lived query cohort size, and a minimum delivery ratio. A pure
+query cell has no measurement workflow-start rate: its fixed cohort and query
+operation delivery are the workload. Mixed cells retain the workflow-start
+rate for completion-required shapes alongside the resident query cohort.
+Demand counters distinguish requests actually attempted by the generator from
+requests accepted, completed, rejected, or throttled by Server. A full-duration
+observation window remains ineligible when controller overhead, exhausted
+open-work slots, or query serialization leaves either the attempted or
+delivered count below the declared tolerance.
+
+Completion ratios use only completion-required workflows started during the
+measurement window. The observation stream reports those workflows separately
+from the long-lived query cohort. A query-only window therefore qualifies its
+completion rule by retaining the complete declared cohort for the whole window,
+delivering the required queries, and converging during drain. Mixed cells apply
+the ratio to their completion-required shapes instead of making the resident
+query share an impossible denominator. Query-cohort churn during measurement is
+ineligible.
 
 Client protocol output is operation evidence; the controller combines it with
 history timing and resource samples to emit observation JSONL.
@@ -91,11 +109,14 @@ Reduce one cell and one binding into a machine-readable result:
 
 The reducer rejects incomplete identity, profile-resource drift, mixed cells,
 and mixed bindings. Missing workload-specific metrics, a measurement duration
-that differs from the declared window, or an unconverged drain makes the load
-step ineligible. Its maximum sustained operating point is the highest entire
-load step that meets every measurement-phase latency, error, throttle, resource,
-and backlog limit. A capacity result with no qualified operating point is marked
-publishable=false so it cannot be presented as a customer-facing capacity claim.
+that differs from the declared window, an incomplete long-lived query cohort,
+or an unconverged drain makes the load step ineligible. Drain completions,
+dispatches, failures, and latency samples remain a separate convergence summary
+and never improve measurement rates, ratios, or percentiles. The maximum
+sustained operating point is the highest entire load step that meets every
+measurement-phase latency, error, throttle, resource, and backlog limit. A
+capacity result with no qualified operating point is marked publishable=false
+so it cannot be presented as a customer-facing capacity claim.
 
 Before comparing two results, require compatible identities:
 

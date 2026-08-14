@@ -8,13 +8,13 @@
   "properties": {
     "$schema": {"type": "string"},
     "schema": {"const": "durable-workflow.capacity-benchmark-suite/v1"},
-    "suite_version": {"const": "1.1.0"},
+    "suite_version": {"const": "1.2.0"},
     "status": {"const": "engineering_evidence_not_release_gate"},
     "description": {"type": "string"},
     "schemas": {"type": "object"},
     "artifacts": {"$ref": "#/$defs/artifacts"},
     "protocols": {"type": "object", "required": ["control_plane", "worker"]},
-    "required_metrics": {"type": "array", "uniqueItems": true, "minItems": 21, "items": {"type": "string"}},
+    "required_metrics": {"type": "array", "uniqueItems": true, "minItems": 23, "items": {"type": "string"}},
     "operating_point_rule": {"type": "object", "required": ["minimum_offered_load_delivery_ratio"]},
     "driver_contract": {"type": "object", "required": ["protocol", "required_bindings", "matrix", "controller", "adapters", "collector", "artifact_installation", "warmup", "measurement", "termination", "server_capacity_comparison"]},
     "cadence": {"type": "object"},
@@ -46,7 +46,7 @@
         "id": {"type": "string"},
         "description": {"type": "string"},
         "artifacts": {"$ref": "#/$defs/artifacts"},
-        "workload": {"type": "object", "required": ["workflow", "activities", "signals", "queries", "payload", "history"]},
+        "workload": {"type": "object", "required": ["workflow", "measurement_eligibility", "activities", "signals", "queries", "payload", "history"], "properties": {"measurement_eligibility": {"$ref": "#/$defs/measurement_eligibility"}}},
         "bindings": {"type": "array", "minItems": 3, "items": {"type": "object", "required": ["language", "roles"]}},
         "execution": {
           "type": "object",
@@ -69,6 +69,23 @@
                 "drain_timeout_seconds": {"type": "integer", "minimum": 1}
               }
             }
+          }
+        }
+      }
+    },
+    "measurement_eligibility": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["completion_denominator", "long_lived_query_cohort"],
+      "properties": {
+        "completion_denominator": {"const": "completion_required_workflows_started_during_measurement"},
+        "long_lived_query_cohort": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["shape", "concurrent_open_workflow_share"],
+          "properties": {
+            "shape": {"type": ["string", "null"]},
+            "concurrent_open_workflow_share": {"type": "number", "minimum": 0, "maximum": 1}
           }
         }
       }

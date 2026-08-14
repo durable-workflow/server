@@ -34,8 +34,9 @@
   "$defs": {
     "load_step": {
       "type": "object",
-      "required": ["load_step", "measurement_seconds", "offered_load", "rates", "latency_ms", "concurrent_open_workflows", "completion_ratio", "error_rate", "throttle_rate", "storage", "infrastructure", "drain", "saturation", "operating_point_eligible"],
+      "required": ["load_step", "measurement_seconds", "offered_load", "rates", "latency_ms", "concurrent_open_workflows", "workflow_completion_evidence", "completion_ratio", "error_rate", "throttle_rate", "storage", "infrastructure", "drain", "saturation", "operating_point_eligible"],
       "properties": {
+        "workflow_completion_evidence": {"$ref": "#/$defs/workflow_completion_evidence"},
         "offered_load": {
           "type": "object",
           "additionalProperties": false,
@@ -51,7 +52,7 @@
             {
               "type": "object",
               "additionalProperties": false,
-              "required": ["seconds", "workflow_completions", "activity_dispatches", "errors", "throttles", "demand", "latency_samples", "final_open_workflows", "final_queue_backlog", "converged"],
+              "required": ["seconds", "workflow_completions", "activity_dispatches", "errors", "throttles", "demand", "workflow_cohorts", "latency_samples", "final_open_workflows", "final_queue_backlog", "converged"],
               "properties": {
                 "seconds": {"type": "number", "minimum": 0},
                 "workflow_completions": {"type": "integer", "minimum": 0},
@@ -65,6 +66,15 @@
                   "properties": {
                     "workflow_starts": {"$ref": "#/$defs/demand"},
                     "query_operations": {"$ref": "#/$defs/demand"}
+                  }
+                },
+                "workflow_cohorts": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": ["completion_required", "long_lived_query"],
+                  "properties": {
+                    "completion_required": {"$ref": "#/$defs/cohort"},
+                    "long_lived_query": {"$ref": "#/$defs/cohort"}
                   }
                 },
                 "latency_samples": {"type": "integer", "minimum": 0},
@@ -87,6 +97,36 @@
         "completed": {"type": "integer", "minimum": 0},
         "rejected": {"type": "integer", "minimum": 0},
         "throttled": {"type": "integer", "minimum": 0}
+      }
+    },
+    "cohort": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["starts", "completions"],
+      "properties": {
+        "starts": {"type": "integer", "minimum": 0},
+        "completions": {"type": "integer", "minimum": 0}
+      }
+    },
+    "workflow_completion_evidence": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["denominator", "eligible_starts", "eligible_completions", "long_lived_query_workflows"],
+      "properties": {
+        "denominator": {"const": "completion_required_workflows_started_during_measurement"},
+        "eligible_starts": {"type": "integer", "minimum": 0},
+        "eligible_completions": {"type": "integer", "minimum": 0},
+        "long_lived_query_workflows": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["target", "measurement_minimum", "measurement_final", "final"],
+          "properties": {
+            "target": {"type": "integer", "minimum": 0},
+            "measurement_minimum": {"type": "integer", "minimum": 0},
+            "measurement_final": {"type": "integer", "minimum": 0},
+            "final": {"type": "integer", "minimum": 0}
+          }
+        }
       }
     },
     "delivery": {

@@ -374,8 +374,13 @@ class MetricBuffer:
         self.demand = {
             phase: self._empty_demand() for phase in ("measurement", "drain")
         }
+        self.workflow_cohorts = {
+            phase: self._empty_workflow_cohorts() for phase in ("measurement", "drain")
+        }
         self.open_workflows = 0
         self.measurement_open_workflows = 0
+        self.open_long_lived_query_workflows = 0
+        self.measurement_open_long_lived_query_workflows = 0
 
     @staticmethod
     def _empty_counters() -> dict[str, int]:
@@ -404,6 +409,13 @@ class MetricBuffer:
             for operation in ("workflow_starts", "query_operations")
         }
 
+    @staticmethod
+    def _empty_workflow_cohorts() -> dict[str, dict[str, int]]:
+        return {
+            cohort: {"starts": 0, "completions": 0}
+            for cohort in ("completion_required", "long_lived_query")
+        }
+
     def reset(self) -> None:
         with self.lock:
             self.measurement_deadline = None
@@ -416,8 +428,14 @@ class MetricBuffer:
             self.demand = {
                 phase: self._empty_demand() for phase in ("measurement", "drain")
             }
+            self.workflow_cohorts = {
+                phase: self._empty_workflow_cohorts()
+                for phase in ("measurement", "drain")
+            }
             self.open_workflows = 0
             self.measurement_open_workflows = 0
+            self.open_long_lived_query_workflows = 0
+            self.measurement_open_long_lived_query_workflows = 0
 
     def begin_measurement(self, deadline: float) -> None:
         with self.lock:
@@ -426,6 +444,31 @@ class MetricBuffer:
             if not math.isfinite(deadline) or deadline <= 0:
                 raise MatrixError("measurement deadline must be a positive finite time")
             self.measurement_deadline = deadline
+
+    def restart_measurement(self, deadline: float) -> None:
+        with self.lock:
+            if self.measurement_deadline is None:
+                raise MatrixError("measurement phase has not begun")
+            if not math.isfinite(deadline) or deadline <= 0:
+                raise MatrixError("measurement deadline must be a positive finite time")
+            self.measurement_deadline = deadline
+            self.counters = {
+                phase: self._empty_counters() for phase in ("measurement", "drain")
+            }
+            self.latencies = {
+                phase: self._empty_latencies() for phase in ("measurement", "drain")
+            }
+            self.demand = {
+                phase: self._empty_demand() for phase in ("measurement", "drain")
+            }
+            self.workflow_cohorts = {
+                phase: self._empty_workflow_cohorts()
+                for phase in ("measurement", "drain")
+            }
+            self.measurement_open_workflows = self.open_workflows
+            self.measurement_open_long_lived_query_workflows = (
+                self.open_long_lived_query_workflows
+            )
 
     def _phase_at(self, recorded_at: float) -> str:
         return (
@@ -442,15 +485,26 @@ class MetricBuffer:
             raise MatrixError("metric callback time must be finite")
         return callback_time
 
-    def started(self, *, recorded_at: float | None = None) -> None:
+    def started(
+        self,
+        *,
+        long_lived_query: bool = False,
+        recorded_at: float | None = None,
+    ) -> None:
         callback_time = self._callback_time(recorded_at)
         with self.lock:
             phase = self._phase_at(callback_time)
             self.demand[phase]["workflow_starts"]["accepted"] += 1
             self.counters[phase]["workflow_starts"] += 1
+            cohort = "long_lived_query" if long_lived_query else "completion_required"
+            self.workflow_cohorts[phase][cohort]["starts"] += 1
             self.open_workflows += 1
+            if long_lived_query:
+                self.open_long_lived_query_workflows += 1
             if phase == "measurement":
                 self.measurement_open_workflows += 1
+                if long_lived_query:
+                    self.measurement_open_long_lived_query_workflows += 1
 
     def workflow_attempted(self, *, recorded_at: float | None = None) -> None:
         callback_time = self._callback_time(recorded_at)
@@ -463,6 +517,7 @@ class MetricBuffer:
         evidence: dict[str, Any],
         include_replay: bool,
         *,
+        long_lived_query: bool = False,
         recorded_at: float | None = None,
     ) -> None:
         callback_time = self._callback_time(recorded_at)
@@ -470,6 +525,8 @@ class MetricBuffer:
             phase = self._phase_at(callback_time)
             self.demand[phase]["workflow_starts"]["completed"] += 1
             self.counters[phase]["workflow_completions"] += 1
+            cohort = "long_lived_query" if long_lived_query else "completion_required"
+            self.workflow_cohorts[phase][cohort]["completions"] += 1
             self.counters[phase]["activity_dispatches"] += int(
                 evidence["activity_dispatches"]
             )
@@ -479,8 +536,12 @@ class MetricBuffer:
             if include_replay:
                 self.latencies[phase]["replay"].extend(evidence["replay"])
             self.open_workflows -= 1
+            if long_lived_query:
+                self.open_long_lived_query_workflows -= 1
             if phase == "measurement":
                 self.measurement_open_workflows -= 1
+                if long_lived_query:
+                    self.measurement_open_long_lived_query_workflows -= 1
 
     @staticmethod
     def _throttled(response: dict[str, Any] | None) -> bool:
@@ -523,6 +584,7 @@ class MetricBuffer:
         response: dict[str, Any] | None = None,
         *,
         was_open: bool = False,
+        long_lived_query: bool = False,
         recorded_at: float | None = None,
     ) -> None:
         callback_time = self._callback_time(recorded_at)
@@ -534,8 +596,12 @@ class MetricBuffer:
                 self.counters[phase]["errors"] += 1
             if was_open:
                 self.open_workflows -= 1
+                if long_lived_query:
+                    self.open_long_lived_query_workflows -= 1
                 if phase == "measurement":
                     self.measurement_open_workflows -= 1
+                    if long_lived_query:
+                        self.measurement_open_long_lived_query_workflows -= 1
 
     def query_attempted(self, *, recorded_at: float | None = None) -> None:
         callback_time = self._callback_time(recorded_at)
@@ -559,6 +625,8 @@ class MetricBuffer:
         dict[str, int],
         dict[str, list[float]],
         dict[str, dict[str, int]],
+        dict[str, dict[str, int]],
+        int,
         int,
     ]:
         if phase not in {"measurement", "drain"}:
@@ -567,15 +635,29 @@ class MetricBuffer:
             counters = self.counters[phase]
             latencies = self.latencies[phase]
             demand = self.demand[phase]
+            workflow_cohorts = self.workflow_cohorts[phase]
             self.counters[phase] = self._empty_counters()
             self.latencies[phase] = self._empty_latencies()
             self.demand[phase] = self._empty_demand()
+            self.workflow_cohorts[phase] = self._empty_workflow_cohorts()
             open_workflows = (
                 self.measurement_open_workflows
                 if phase == "measurement"
                 else self.open_workflows
             )
-            return counters, latencies, demand, open_workflows
+            open_long_lived_queries = (
+                self.measurement_open_long_lived_query_workflows
+                if phase == "measurement"
+                else self.open_long_lived_query_workflows
+            )
+            return (
+                counters,
+                latencies,
+                demand,
+                workflow_cohorts,
+                open_workflows,
+                open_long_lived_queries,
+            )
 
 
 @dataclass
@@ -726,8 +808,15 @@ class CellRunner:
         return {"blob": blob, "result_blob": result_blob, "shape": shape}
 
     def _mixed_shape(self) -> str:
-        weighted = self.cell["workload"]["mix"]
-        marker = self.random.randrange(1_000_000)
+        weighted = {
+            shape: weight
+            for shape, weight in self.cell["workload"]["mix"].items()
+            if shape != "query-inspection"
+        }
+        scale = sum(
+            int(round(float(weight) * 1_000_000)) for weight in weighted.values()
+        )
+        marker = self.random.randrange(scale)
         cumulative = 0
         for shape, weight in weighted.items():
             cumulative += int(round(float(weight) * 1_000_000))
@@ -755,6 +844,7 @@ class CellRunner:
         stop: threading.Event,
         measured: bool,
         open_slots: threading.BoundedSemaphore,
+        ready: Callable[[], None] | None = None,
     ) -> None:
         was_open = False
         start_attempted = False
@@ -788,7 +878,10 @@ class CellRunner:
                 raise MatrixError("adapter start response omitted the selected run_id")
             was_open = True
             if measured:
-                self.metrics.started(recorded_at=start_recorded_at)
+                self.metrics.started(
+                    long_lived_query=shape == "query-inspection",
+                    recorded_at=start_recorded_at,
+                )
             start_resolved = True
             if shape == "signal":
                 signal_bytes = int(self.cell["workload"]["payload"]["signal_bytes"])
@@ -808,6 +901,8 @@ class CellRunner:
                 query = OpenQuery(client, workflow_id)
                 with self.query_lock:
                     self.query_workflows.append(query)
+                if ready is not None:
+                    ready()
                 stop.wait()
                 with self.query_lock:
                     if query in self.query_workflows:
@@ -844,6 +939,7 @@ class CellRunner:
                 self.metrics.completed(
                     evidence,
                     include_replay=shape == "replay-heavy-history",
+                    long_lived_query=shape == "query-inspection",
                     recorded_at=completed_at,
                 )
             was_open = False
@@ -852,7 +948,11 @@ class CellRunner:
                 if start_attempted and not start_resolved:
                     self.metrics.workflow_rejected({"error": str(exc)})
                 else:
-                    self.metrics.failed({"error": str(exc)}, was_open=was_open)
+                    self.metrics.failed(
+                        {"error": str(exc)},
+                        was_open=was_open,
+                        long_lived_query=shape == "query-inspection",
+                    )
                 was_open = False
             raise
         finally:
@@ -946,11 +1046,11 @@ class CellRunner:
             "worker_concurrency": int(self.execution["worker_concurrency"]),
             "warmup_seconds": int(self.execution["warmup_seconds"]),
             "duration_seconds": int(self.execution["duration_seconds"]),
-            "offered_load": {
-                "workflow_starts_per_second": float(load_step),
-                "query_operations_per_second": self._query_rate(load_step),
-                "minimum_delivery_ratio": self.minimum_delivery_ratio,
-            },
+            "offered_load": capacity_suite._offered_load_contract(
+                self.cell,
+                load_step,
+                {"minimum_offered_load_delivery_ratio": self.minimum_delivery_ratio},
+            ),
             "termination": self.execution["termination"],
         }
 
@@ -963,7 +1063,14 @@ class CellRunner:
         interval_seconds: float,
         task_queue: str,
     ) -> dict[str, Any]:
-        counters, latencies, demand, open_workflows = self.metrics.snapshot(phase)
+        (
+            counters,
+            latencies,
+            demand,
+            workflow_cohorts,
+            open_workflows,
+            open_long_lived_queries,
+        ) = self.metrics.snapshot(phase)
         observation = {
             "schema": capacity_suite.OBSERVATION_SCHEMA,
             "cell_id": self.cell["id"],
@@ -974,13 +1081,99 @@ class CellRunner:
             "interval_seconds": round(max(interval_seconds, 0.001), 6),
             "control": self._control(load_step),
             "counters": counters,
+            "workflow_cohorts": workflow_cohorts,
             "demand": demand,
             "latencies_ms": latencies,
             "concurrent_open_workflows": open_workflows,
+            "concurrent_long_lived_query_workflows": open_long_lived_queries,
             "infrastructure": self._sample_infrastructure(task_queue),
         }
         capacity_suite.validate_observation(observation, "controller.observation")
         return observation
+
+    def _start_query_cohort(
+        self,
+        *,
+        load_step: int,
+        task_queue: str,
+        stop: threading.Event,
+        measured: bool,
+        executor: ThreadPoolExecutor,
+        open_slots: threading.BoundedSemaphore,
+    ) -> list[Future[None]]:
+        try:
+            return self._start_query_cohort_inner(
+                load_step=load_step,
+                task_queue=task_queue,
+                stop=stop,
+                measured=measured,
+                executor=executor,
+                open_slots=open_slots,
+            )
+        except Exception:
+            stop.set()
+            raise
+
+    def _start_query_cohort_inner(
+        self,
+        *,
+        load_step: int,
+        task_queue: str,
+        stop: threading.Event,
+        measured: bool,
+        executor: ThreadPoolExecutor,
+        open_slots: threading.BoundedSemaphore,
+    ) -> list[Future[None]]:
+        target = capacity_suite.long_lived_query_target(self.cell)
+        if target == 0:
+            return []
+
+        setup_deadline = time.monotonic() + int(
+            self.execution["termination"]["drain_timeout_seconds"]
+        )
+        entries: list[tuple[Future[None], threading.Event]] = []
+        while sum(ready.is_set() for _, ready in entries) < target:
+            retained: list[tuple[Future[None], threading.Event]] = []
+            for future, ready in entries:
+                if future.done() and not ready.is_set():
+                    failure = future.exception()
+                    if failure is not None:
+                        raise MatrixError(
+                            f"query cohort workflow failed during setup: {failure}"
+                        ) from failure
+                    continue
+                retained.append((future, ready))
+            entries = retained
+            unresolved = sum(
+                not future.done() and not ready.is_set() for future, ready in entries
+            )
+            ready_count = sum(ready.is_set() for _, ready in entries)
+            for _ in range(target - ready_count - unresolved):
+                if not open_slots.acquire(blocking=False):
+                    break
+                workflow_id, sequence = self._new_identity(load_step)
+                ready = threading.Event()
+                client = self.clients[(sequence - 1) % len(self.clients)]
+                future = executor.submit(
+                    self._workflow_lifecycle,
+                    client,
+                    workflow_id,
+                    sequence,
+                    "query-inspection",
+                    task_queue,
+                    stop,
+                    measured,
+                    open_slots,
+                    ready.set,
+                )
+                entries.append((future, ready))
+            if time.monotonic() >= setup_deadline:
+                raise MatrixError(
+                    f"long-lived query cohort did not reach {target} workflows before the setup timeout"
+                )
+            if sum(ready.is_set() for _, ready in entries) < target:
+                time.sleep(0.01)
+        return [future for future, _ in entries]
 
     def _run_phase(
         self,
@@ -992,16 +1185,58 @@ class CellRunner:
         executor: ThreadPoolExecutor,
     ) -> list[dict[str, Any]]:
         stop = threading.Event()
+        try:
+            return self._run_phase_inner(
+                load_step=load_step,
+                seconds=seconds,
+                task_queue=task_queue,
+                measured=measured,
+                executor=executor,
+                stop=stop,
+            )
+        finally:
+            stop.set()
+
+    def _run_phase_inner(
+        self,
+        *,
+        load_step: int,
+        seconds: float,
+        task_queue: str,
+        measured: bool,
+        executor: ThreadPoolExecutor,
+        stop: threading.Event,
+    ) -> list[dict[str, Any]]:
+        self.random.seed(int(self.execution["deterministic_seed"]))
         open_slots = threading.BoundedSemaphore(
             int(self.execution["concurrent_open_workflows"])
         )
-        futures: list[Future[None]] = []
+        if measured:
+            setup_deadline = time.monotonic() + int(
+                self.execution["termination"]["drain_timeout_seconds"]
+            )
+            self.metrics.begin_measurement(setup_deadline)
+        futures = self._start_query_cohort(
+            load_step=load_step,
+            task_queue=task_queue,
+            stop=stop,
+            measured=measured,
+            executor=executor,
+            open_slots=open_slots,
+        )
         started = time.monotonic()
         deadline = started + seconds
         if measured:
-            self.metrics.begin_measurement(deadline)
+            self.metrics.restart_measurement(deadline)
         query_future = executor.submit(self._query_loop, load_step, stop, measured)
-        next_admission = started
+        workflow_rate = float(
+            capacity_suite._offered_load_contract(
+                self.cell,
+                load_step,
+                {"minimum_offered_load_delivery_ratio": self.minimum_delivery_ratio},
+            )["workflow_starts_per_second"]
+        )
+        next_admission = started if workflow_rate else math.inf
         next_sample = min(deadline, started + self.sample_interval)
         last_sample = started
         sample_index = 0
@@ -1032,7 +1267,7 @@ class CellRunner:
                             open_slots,
                         )
                     )
-                next_admission += 1.0 / load_step
+                next_admission += 1.0 / workflow_rate
                 if next_admission < now - 1:
                     next_admission = now
                 continue

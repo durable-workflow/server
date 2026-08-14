@@ -4,7 +4,7 @@
   "title": "Durable Workflow capacity benchmark observation v1",
   "type": "object",
   "additionalProperties": false,
-  "required": ["schema", "cell_id", "binding", "load_step", "sample_index", "phase", "interval_seconds", "control", "counters", "demand", "latencies_ms", "concurrent_open_workflows", "infrastructure"],
+  "required": ["schema", "cell_id", "binding", "load_step", "sample_index", "phase", "interval_seconds", "control", "counters", "workflow_cohorts", "demand", "latencies_ms", "concurrent_open_workflows", "concurrent_long_lived_query_workflows", "infrastructure"],
   "properties": {
     "schema": {"const": "durable-workflow.capacity-benchmark-observation/v1"},
     "cell_id": {"type": "string"},
@@ -18,7 +18,7 @@
       "additionalProperties": false,
       "required": ["suite_version", "deterministic_seed", "concurrent_open_workflows", "client_concurrency", "worker_concurrency", "warmup_seconds", "duration_seconds", "offered_load", "termination"],
       "properties": {
-        "suite_version": {"const": "1.1.0"},
+        "suite_version": {"const": "1.2.0"},
         "deterministic_seed": {"type": "integer", "minimum": 0},
         "concurrent_open_workflows": {"type": "integer", "minimum": 1},
         "client_concurrency": {"type": "integer", "minimum": 1},
@@ -28,10 +28,11 @@
         "offered_load": {
           "type": "object",
           "additionalProperties": false,
-          "required": ["workflow_starts_per_second", "query_operations_per_second", "minimum_delivery_ratio"],
+          "required": ["workflow_starts_per_second", "query_operations_per_second", "long_lived_query_workflows", "minimum_delivery_ratio"],
           "properties": {
-            "workflow_starts_per_second": {"type": "number", "exclusiveMinimum": 0},
+            "workflow_starts_per_second": {"type": "number", "minimum": 0},
             "query_operations_per_second": {"type": "number", "minimum": 0},
+            "long_lived_query_workflows": {"type": "integer", "minimum": 0},
             "minimum_delivery_ratio": {"type": "number", "minimum": 0, "maximum": 1}
           }
         },
@@ -47,6 +48,15 @@
       }
     },
     "counters": {"type": "object", "additionalProperties": false, "required": ["workflow_starts", "workflow_completions", "activity_dispatches", "errors", "throttles"], "properties": {"workflow_starts": {"type": "integer", "minimum": 0}, "workflow_completions": {"type": "integer", "minimum": 0}, "activity_dispatches": {"type": "integer", "minimum": 0}, "errors": {"type": "integer", "minimum": 0}, "throttles": {"type": "integer", "minimum": 0}}},
+    "workflow_cohorts": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["completion_required", "long_lived_query"],
+      "properties": {
+        "completion_required": {"$ref": "#/$defs/cohort"},
+        "long_lived_query": {"$ref": "#/$defs/cohort"}
+      }
+    },
     "demand": {
       "type": "object",
       "additionalProperties": false,
@@ -58,6 +68,7 @@
     },
     "latencies_ms": {"type": "object", "additionalProperties": false, "required": ["schedule_to_start", "replay", "query"], "properties": {"schedule_to_start": {"$ref": "#/$defs/latencies"}, "replay": {"$ref": "#/$defs/latencies"}, "query": {"$ref": "#/$defs/latencies"}}},
     "concurrent_open_workflows": {"type": "integer", "minimum": 0},
+    "concurrent_long_lived_query_workflows": {"type": "integer", "minimum": 0},
     "infrastructure": {
       "type": "object",
       "additionalProperties": false,
@@ -83,6 +94,15 @@
         "completed": {"type": "integer", "minimum": 0},
         "rejected": {"type": "integer", "minimum": 0},
         "throttled": {"type": "integer", "minimum": 0}
+      }
+    },
+    "cohort": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["starts", "completions"],
+      "properties": {
+        "starts": {"type": "integer", "minimum": 0},
+        "completions": {"type": "integer", "minimum": 0}
       }
     },
     "component": {

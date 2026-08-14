@@ -32,7 +32,7 @@ RESULT_SCHEMA = "durable-workflow.capacity-benchmark-result/v1"
 CORPUS_SCHEMA = "durable-workflow.capacity-benchmark-regression-corpus/v1"
 ADAPTER_SCHEMA = "durable-workflow.capacity-benchmark-adapter/v1"
 COLLECTOR_SCHEMA = "durable-workflow.capacity-benchmark-collector/v1"
-SUITE_VERSION = "1.1.0"
+SUITE_VERSION = "1.2.0"
 
 REQUIRED_CELL_IDS = {
     "simple-start-complete",
@@ -47,6 +47,8 @@ REQUIRED_CELL_IDS = {
 }
 REQUIRED_BINDINGS = {"php", "python", "rust"}
 REQUIRED_METRICS = {
+    "completion_eligible_workflows",
+    "long_lived_query_workflows",
     "offered_load_delivery",
     "query_acceptances",
     "query_attempts",
@@ -385,6 +387,73 @@ def validate_suite(suite: dict[str, Any], suite_path: Path = DEFAULT_SUITE) -> N
                 f"{path}.artifacts must repeat the suite's exact artifact tuple"
             )
         workload = _object(cell.get("workload"), f"{path}.workload")
+        eligibility = _object(
+            workload.get("measurement_eligibility"),
+            f"{path}.workload.measurement_eligibility",
+        )
+        if (
+            eligibility.get("completion_denominator")
+            != "completion_required_workflows_started_during_measurement"
+        ):
+            raise ContractError(
+                f"{path}.workload.measurement_eligibility must define the completion denominator"
+            )
+        query_cohort = _object(
+            eligibility.get("long_lived_query_cohort"),
+            f"{path}.workload.measurement_eligibility.long_lived_query_cohort",
+        )
+        query_cohort_shape = query_cohort.get("shape")
+        query_cohort_share = _number(
+            query_cohort.get("concurrent_open_workflow_share"),
+            f"{path}.workload.measurement_eligibility.long_lived_query_cohort.concurrent_open_workflow_share",
+            minimum=0,
+        )
+        if query_cohort_share > 1:
+            raise ContractError(
+                f"{path}.workload.measurement_eligibility long-lived query share cannot exceed 1"
+            )
+        declared_mix = (
+            _object(workload.get("mix"), f"{path}.workload.mix")
+            if cell_id == "mixed"
+            else None
+        )
+        expected_query_share = (
+            1.0
+            if cell_id == "query-inspection"
+            else _number(
+                declared_mix.get("query-inspection") if declared_mix else None,
+                f"{path}.workload.mix.query-inspection",
+                minimum=0.001,
+            )
+            if cell_id == "mixed"
+            else 0.0
+        )
+        expected_query_shape = "query-inspection" if expected_query_share else None
+        if query_cohort_shape != expected_query_shape or not math.isclose(
+            query_cohort_share,
+            expected_query_share,
+            rel_tol=0.0,
+            abs_tol=1e-12,
+        ):
+            raise ContractError(
+                f"{path}.workload.measurement_eligibility must match its declared query workload"
+            )
+        if cell_id == "mixed":
+            assert declared_mix is not None
+            mix = declared_mix
+            expected_shapes = REQUIRED_CELL_IDS - {"mixed"}
+            if set(mix) != expected_shapes:
+                raise ContractError(
+                    f"{path}.workload.mix must contain every component workload exactly once"
+                )
+            mix_total = sum(
+                _number(weight, f"{path}.workload.mix.{shape}", minimum=0.001)
+                for shape, weight in mix.items()
+            )
+            if not math.isclose(mix_total, 1.0, rel_tol=0.0, abs_tol=1e-12):
+                raise ContractError(f"{path}.workload.mix weights must sum to one")
+        elif "mix" in workload:
+            raise ContractError(f"{path}.workload.mix is only valid for the mixed cell")
         workflow = _object(workload.get("workflow"), f"{path}.workload.workflow")
         _text(workflow.get("type"), f"{path}.workload.workflow.type")
         _list(workflow.get("steps"), f"{path}.workload.workflow.steps", nonempty=True)
@@ -876,11 +945,16 @@ def validate_observation(observation: dict[str, Any], path: str) -> None:
     _number(
         offered_load.get("workflow_starts_per_second"),
         f"{path}.control.offered_load.workflow_starts_per_second",
-        minimum=0.001,
+        minimum=0,
     )
     _number(
         offered_load.get("query_operations_per_second"),
         f"{path}.control.offered_load.query_operations_per_second",
+        minimum=0,
+    )
+    _integer(
+        offered_load.get("long_lived_query_workflows"),
+        f"{path}.control.offered_load.long_lived_query_workflows",
         minimum=0,
     )
     minimum_delivery_ratio = _number(
@@ -909,6 +983,17 @@ def validate_observation(observation: dict[str, Any], path: str) -> None:
         "throttles",
     ):
         _integer(counters.get(field), f"{path}.counters.{field}", minimum=0)
+    cohorts = _object(observation.get("workflow_cohorts"), f"{path}.workflow_cohorts")
+    for cohort in ("completion_required", "long_lived_query"):
+        cohort_counters = _object(
+            cohorts.get(cohort), f"{path}.workflow_cohorts.{cohort}"
+        )
+        for field in ("starts", "completions"):
+            _integer(
+                cohort_counters.get(field),
+                f"{path}.workflow_cohorts.{cohort}.{field}",
+                minimum=0,
+            )
     demand = _object(observation.get("demand"), f"{path}.demand")
     for operation in ("workflow_starts", "query_operations"):
         operation_demand = _object(demand.get(operation), f"{path}.demand.{operation}")
@@ -927,6 +1012,11 @@ def validate_observation(observation: dict[str, Any], path: str) -> None:
     _integer(
         observation.get("concurrent_open_workflows"),
         f"{path}.concurrent_open_workflows",
+        minimum=0,
+    )
+    _integer(
+        observation.get("concurrent_long_lived_query_workflows"),
+        f"{path}.concurrent_long_lived_query_workflows",
         minimum=0,
     )
     infrastructure = _object(
@@ -1059,10 +1149,33 @@ def reduce_step(
         raise ContractError(
             "a load step may contain only measurement observations followed by one drain observation"
         )
-    expected_open_workflows = 0
+    offered_load = measurement[0]["control"]["offered_load"]
+    initial_long_lived_queries = int(offered_load["long_lived_query_workflows"])
+    expected_open_workflows = initial_long_lived_queries
+    expected_long_lived_queries = initial_long_lived_queries
     for row in measurement:
+        cohort_starts = sum(
+            int(row["workflow_cohorts"][cohort]["starts"])
+            for cohort in ("completion_required", "long_lived_query")
+        )
+        cohort_completions = sum(
+            int(row["workflow_cohorts"][cohort]["completions"])
+            for cohort in ("completion_required", "long_lived_query")
+        )
+        if cohort_starts != int(
+            row["counters"]["workflow_starts"]
+        ) or cohort_completions != int(row["counters"]["workflow_completions"]):
+            raise ContractError(
+                "workflow cohort evidence contradicts aggregate workflow counters"
+            )
         expected_open_workflows += int(row["counters"]["workflow_starts"])
         expected_open_workflows -= int(row["counters"]["workflow_completions"])
+        expected_long_lived_queries += int(
+            row["workflow_cohorts"]["long_lived_query"]["starts"]
+        )
+        expected_long_lived_queries -= int(
+            row["workflow_cohorts"]["long_lived_query"]["completions"]
+        )
         if (
             expected_open_workflows < 0
             or int(row["concurrent_open_workflows"]) != expected_open_workflows
@@ -1070,9 +1183,37 @@ def reduce_step(
             raise ContractError(
                 "measurement-phase open-work evidence contradicts its start and completion counters"
             )
+        if (
+            expected_long_lived_queries < 0
+            or int(row["concurrent_long_lived_query_workflows"])
+            != expected_long_lived_queries
+        ):
+            raise ContractError(
+                "measurement-phase query-cohort evidence contradicts its start and completion counters"
+            )
     if drain:
+        cohort_starts = sum(
+            int(drain[0]["workflow_cohorts"][cohort]["starts"])
+            for cohort in ("completion_required", "long_lived_query")
+        )
+        cohort_completions = sum(
+            int(drain[0]["workflow_cohorts"][cohort]["completions"])
+            for cohort in ("completion_required", "long_lived_query")
+        )
+        if cohort_starts != int(
+            drain[0]["counters"]["workflow_starts"]
+        ) or cohort_completions != int(drain[0]["counters"]["workflow_completions"]):
+            raise ContractError(
+                "workflow cohort evidence contradicts aggregate workflow counters"
+            )
         expected_open_workflows += int(drain[0]["counters"]["workflow_starts"])
         expected_open_workflows -= int(drain[0]["counters"]["workflow_completions"])
+        expected_long_lived_queries += int(
+            drain[0]["workflow_cohorts"]["long_lived_query"]["starts"]
+        )
+        expected_long_lived_queries -= int(
+            drain[0]["workflow_cohorts"]["long_lived_query"]["completions"]
+        )
         if (
             expected_open_workflows < 0
             or int(drain[0]["concurrent_open_workflows"]) != expected_open_workflows
@@ -1080,18 +1221,25 @@ def reduce_step(
             raise ContractError(
                 "drain open-work evidence contradicts the measurement boundary and drain counters"
             )
+        if (
+            expected_long_lived_queries < 0
+            or int(drain[0]["concurrent_long_lived_query_workflows"])
+            != expected_long_lived_queries
+        ):
+            raise ContractError(
+                "drain query-cohort evidence contradicts the measurement boundary and cohort counters"
+            )
         drain_timeout = float(
             measurement[0]["control"]["termination"]["drain_timeout_seconds"]
         )
         if float(drain[0]["interval_seconds"]) > drain_timeout + 1e-6:
             raise ContractError("drain evidence exceeds the declared drain timeout")
-    offered_load = measurement[0]["control"]["offered_load"]
     if any(row["control"]["offered_load"] != offered_load for row in ordered[1:]):
         raise ContractError("a load step must retain one offered-load contract")
     load_step = int(ordered[0]["load_step"])
     if not math.isclose(
         float(offered_load["workflow_starts_per_second"]),
-        float(load_step),
+        0.0 if cell_id == "query-inspection" else float(load_step),
         rel_tol=0.0,
         abs_tol=1e-9,
     ):
@@ -1223,9 +1371,34 @@ def reduce_step(
     for name, values in monotonic_series.items():
         if values != sorted(values):
             raise ContractError(f"{name} must be a monotonic cumulative counter")
+    completion_required_starts = sum(
+        int(row["workflow_cohorts"]["completion_required"]["starts"])
+        for row in measurement
+    )
+    completion_required_completions = sum(
+        int(row["workflow_cohorts"]["completion_required"]["completions"])
+        for row in measurement
+    )
+    if completion_required_completions > completion_required_starts:
+        raise ContractError(
+            "completion-required workflows cannot complete without a measurement start"
+        )
+    measurement_query_cohort_starts = sum(
+        int(row["workflow_cohorts"]["long_lived_query"]["starts"])
+        for row in measurement
+    )
+    measurement_query_cohort_completions = sum(
+        int(row["workflow_cohorts"]["long_lived_query"]["completions"])
+        for row in measurement
+    )
+    measurement_query_cohort = [
+        int(row["concurrent_long_lived_query_workflows"]) for row in measurement
+    ]
     completion_ratio = (
-        totals["workflow_completions"] / totals["workflow_starts"]
-        if totals["workflow_starts"]
+        completion_required_completions / completion_required_starts
+        if completion_required_starts
+        else 1.0
+        if initial_long_lived_queries
         else 0.0
     )
     error_rate = totals["errors"] / attempts if attempts else 0.0
@@ -1285,8 +1458,22 @@ def reduce_step(
             "complete_measurement_window",
         ),
         (
-            totals["workflow_completions"] == 0,
+            completion_required_starts > 0 and completion_required_completions == 0,
             "missing_measurement_completions",
+        ),
+        (
+            initial_long_lived_queries > 0
+            and (
+                min(measurement_query_cohort, default=0) != initial_long_lived_queries
+                or max(measurement_query_cohort, default=0)
+                != initial_long_lived_queries
+            ),
+            "incomplete_long_lived_query_cohort",
+        ),
+        (
+            measurement_query_cohort_starts > 0
+            or measurement_query_cohort_completions > 0,
+            "long_lived_query_cohort_churn",
         ),
         (
             workflow_delivery["attempted"] < workflow_delivery["minimum_count"],
@@ -1307,7 +1494,8 @@ def reduce_step(
             "query_completion_underdelivery",
         ),
         (
-            latencies["schedule_to_start"]["p99"] is None,
+            completion_required_starts > 0
+            and latencies["schedule_to_start"]["p99"] is None,
             "missing_schedule_to_start_latency",
         ),
         (
@@ -1328,6 +1516,10 @@ def reduce_step(
         (
             int(termination["concurrent_open_workflows"]) != 0,
             "open_workflows_not_drained",
+        ),
+        (
+            int(termination["concurrent_long_lived_query_workflows"]) != 0,
+            "long_lived_query_workflows_not_drained",
         ),
         (
             bool(drain) and int(termination["infrastructure"]["queue_backlog"]) != 0,
@@ -1398,6 +1590,17 @@ def reduce_step(
             "measurement_final": int(measurement[-1]["concurrent_open_workflows"]),
             "final": int(termination["concurrent_open_workflows"]),
         },
+        "workflow_completion_evidence": {
+            "denominator": "completion_required_workflows_started_during_measurement",
+            "eligible_starts": completion_required_starts,
+            "eligible_completions": completion_required_completions,
+            "long_lived_query_workflows": {
+                "target": initial_long_lived_queries,
+                "measurement_minimum": min(measurement_query_cohort, default=0),
+                "measurement_final": measurement_query_cohort[-1],
+                "final": int(termination["concurrent_long_lived_query_workflows"]),
+            },
+        },
         "completion_ratio": round(completion_ratio, 6),
         "error_rate": round(error_rate, 6),
         "throttle_rate": round(throttle_rate, 6),
@@ -1448,6 +1651,7 @@ def reduce_step(
                 "errors": int(drain[0]["counters"]["errors"]),
                 "throttles": int(drain[0]["counters"]["throttles"]),
                 "demand": drain[0]["demand"],
+                "workflow_cohorts": drain[0]["workflow_cohorts"],
                 "latency_samples": sum(
                     len(drain[0]["latencies_ms"][name])
                     for name in ("schedule_to_start", "replay", "query")
@@ -1464,17 +1668,51 @@ def reduce_step(
     }
 
 
+def _long_lived_query_share(cell: dict[str, Any]) -> float:
+    eligibility = cell["workload"]["measurement_eligibility"]
+    return float(
+        eligibility["long_lived_query_cohort"]["concurrent_open_workflow_share"]
+    )
+
+
+def long_lived_query_target(cell: dict[str, Any]) -> int:
+    share = _long_lived_query_share(cell)
+    concurrency = int(cell["execution"]["concurrent_open_workflows"])
+    if share == 0:
+        return 0
+    if cell["id"] != "mixed":
+        return int(math.floor(concurrency * share + 0.5))
+
+    mix = cell["workload"]["mix"]
+    exact = [
+        (shape, Decimal(str(weight)) * concurrency) for shape, weight in mix.items()
+    ]
+    allocated = {shape: int(value) for shape, value in exact}
+    remaining = concurrency - sum(allocated.values())
+    ranked = sorted(
+        enumerate(exact),
+        key=lambda item: (-(item[1][1] - int(item[1][1])), item[0]),
+    )
+    for _, (shape, _) in ranked[:remaining]:
+        allocated[shape] += 1
+    return allocated["query-inspection"]
+
+
 def _offered_load_contract(
     cell: dict[str, Any], load_step: int, rule: dict[str, Any]
-) -> dict[str, float]:
+) -> dict[str, float | int]:
     query_rate = sum(
         float(definition.get("rate_per_load_unit_per_second", 0))
         for definition in cell["workload"].get("queries", [])
         if isinstance(definition, dict)
     )
+    long_lived_queries = long_lived_query_target(cell)
     return {
-        "workflow_starts_per_second": float(load_step),
+        "workflow_starts_per_second": 0.0
+        if _long_lived_query_share(cell) == 1
+        else float(load_step),
         "query_operations_per_second": round(query_rate * load_step, 6),
+        "long_lived_query_workflows": long_lived_queries,
         "minimum_delivery_ratio": float(rule["minimum_offered_load_delivery_ratio"]),
     }
 
@@ -1769,6 +2007,13 @@ def _reference_observations(
                         "errors": 0,
                         "throttles": throttles,
                     },
+                    "workflow_cohorts": {
+                        "completion_required": {
+                            "starts": starts,
+                            "completions": completions,
+                        },
+                        "long_lived_query": {"starts": 0, "completions": 0},
+                    },
                     "demand": {
                         "workflow_starts": {
                             "attempted": starts + throttles,
@@ -1791,6 +2036,7 @@ def _reference_observations(
                         "query": [],
                     },
                     "concurrent_open_workflows": open_workflows,
+                    "concurrent_long_lived_query_workflows": 0,
                     "infrastructure": {
                         "components": components,
                         "durable_storage": {

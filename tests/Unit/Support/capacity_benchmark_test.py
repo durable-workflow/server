@@ -39,10 +39,97 @@ class CapacityBenchmarkContractTest(unittest.TestCase):
     def empty_demand() -> dict[str, dict[str, int]]:
         return capacity_matrix.MetricBuffer._empty_demand()
 
-    def offered_load(self, suite: dict, cell: dict, load_step: int) -> dict[str, float]:
+    @staticmethod
+    def empty_workflow_cohorts() -> dict[str, dict[str, int]]:
+        return capacity_matrix.MetricBuffer._empty_workflow_cohorts()
+
+    def offered_load(
+        self, suite: dict, cell: dict, load_step: int
+    ) -> dict[str, float | int]:
         return capacity_suite._offered_load_contract(
             cell, load_step, suite["operating_point_rule"]
         )
+
+    def capacity_control(
+        self, suite: dict, cell: dict, load_step: int
+    ) -> dict[str, object]:
+        execution = cell["execution"]
+        return {
+            "suite_version": suite["suite_version"],
+            "deterministic_seed": execution["deterministic_seed"],
+            "concurrent_open_workflows": execution["concurrent_open_workflows"],
+            "client_concurrency": execution["client_concurrency"],
+            "worker_concurrency": execution["worker_concurrency"],
+            "warmup_seconds": execution["warmup_seconds"],
+            "duration_seconds": execution["duration_seconds"],
+            "offered_load": self.offered_load(suite, cell, load_step),
+            "termination": execution["termination"],
+        }
+
+    def compliant_query_cell_observations(
+        self, cell_id: str, binding: str
+    ) -> tuple[dict, list[dict]]:
+        suite = copy.deepcopy(self.suite)
+        cell = next(cell for cell in suite["cells"] if cell["id"] == cell_id)
+        cell["execution"]["load_steps"] = [4]
+        cell["execution"]["duration_seconds"] = 4
+        query_cohort = capacity_suite.long_lived_query_target(cell)
+        rows = [
+            copy.deepcopy(row)
+            for row in capacity_suite._reference_observations(self.suite, self.profile)
+            if row["load_step"] == 4
+        ]
+        for row in rows:
+            row["cell_id"] = cell_id
+            row["binding"] = binding
+            row["control"] = self.capacity_control(suite, cell, 4)
+            row["concurrent_open_workflows"] = query_cohort
+            row["concurrent_long_lived_query_workflows"] = query_cohort
+            row["demand"]["query_operations"] = {
+                "attempted": 20,
+                "accepted": 20,
+                "completed": 20,
+                "rejected": 0,
+                "throttled": 0,
+            }
+            row["latencies_ms"]["query"] = [10.0] * 20
+            if cell_id == "query-inspection":
+                row["counters"]["workflow_starts"] = 0
+                row["counters"]["workflow_completions"] = 0
+                row["workflow_cohorts"] = self.empty_workflow_cohorts()
+                row["demand"]["workflow_starts"] = self.empty_demand()[
+                    "workflow_starts"
+                ]
+                row["latencies_ms"]["schedule_to_start"] = []
+            else:
+                row["counters"]["activity_dispatches"] = 1
+                row["latencies_ms"]["replay"] = [10.0]
+
+        drain = copy.deepcopy(rows[-1])
+        drain["sample_index"] = len(rows)
+        drain["phase"] = "drain"
+        drain["interval_seconds"] = 1.0
+        drain["counters"] = {
+            "workflow_starts": 0,
+            "workflow_completions": query_cohort,
+            "activity_dispatches": 5_000,
+            "errors": 0,
+            "throttles": 0,
+        }
+        drain["workflow_cohorts"] = self.empty_workflow_cohorts()
+        drain["workflow_cohorts"]["long_lived_query"]["completions"] = query_cohort
+        drain["demand"] = self.empty_demand()
+        drain["demand"]["workflow_starts"]["completed"] = query_cohort
+        drain["latencies_ms"] = {
+            "schedule_to_start": [100_000.0] * query_cohort,
+            "replay": [100_000.0],
+            "query": [],
+        }
+        drain["concurrent_open_workflows"] = 0
+        drain["concurrent_long_lived_query_workflows"] = 0
+        drain["infrastructure"]["queue_backlog"] = 0
+        rows.append(drain)
+        return suite, rows
 
     def test_repository_suite_and_profile_are_complete(self) -> None:
         capacity_suite.validate_suite(self.suite)
@@ -216,6 +303,26 @@ class CapacityBenchmarkContractTest(unittest.TestCase):
         ):
             capacity_suite.validate_suite(unordered)
 
+        query_drift = copy.deepcopy(self.suite)
+        query_cell = next(
+            cell for cell in query_drift["cells"] if cell["id"] == "query-inspection"
+        )
+        query_cell["workload"]["measurement_eligibility"]["long_lived_query_cohort"][
+            "concurrent_open_workflow_share"
+        ] = 0.99
+        with self.assertRaisesRegex(
+            capacity_suite.ContractError, "must match its declared query workload"
+        ):
+            capacity_suite.validate_suite(query_drift)
+
+        mixed_drift = copy.deepcopy(self.suite)
+        mixed_cell = next(
+            cell for cell in mixed_drift["cells"] if cell["id"] == "mixed"
+        )
+        mixed_cell["workload"]["mix"]["simple-start-complete"] = 0.24
+        with self.assertRaisesRegex(capacity_suite.ContractError, "weights must sum"):
+            capacity_suite.validate_suite(mixed_drift)
+
     def test_incomplete_measurement_window_cannot_be_an_operating_point(self) -> None:
         observations = capacity_suite._reference_observations(self.suite, self.profile)
         one_sample = [row for row in observations if row["load_step"] == 4][:1]
@@ -237,6 +344,10 @@ class CapacityBenchmarkContractTest(unittest.TestCase):
         for row in observations:
             row["counters"]["workflow_starts"] = 1
             row["counters"]["workflow_completions"] = 1
+            row["workflow_cohorts"]["completion_required"] = {
+                "starts": 1,
+                "completions": 1,
+            }
             row["demand"]["workflow_starts"] = {
                 "attempted": 1,
                 "accepted": 1,
@@ -305,6 +416,10 @@ class CapacityBenchmarkContractTest(unittest.TestCase):
             delivered = 4 if index == 0 else 0
             row["counters"]["workflow_starts"] = delivered
             row["counters"]["workflow_completions"] = delivered
+            row["workflow_cohorts"]["completion_required"] = {
+                "starts": delivered,
+                "completions": delivered,
+            }
             row["demand"]["workflow_starts"] = {
                 "attempted": delivered,
                 "accepted": delivered,
@@ -342,6 +457,8 @@ class CapacityBenchmarkContractTest(unittest.TestCase):
             row["control"]["offered_load"] = self.offered_load(
                 self.suite, query_cell, 4
             )
+            row["concurrent_open_workflows"] += 500
+            row["concurrent_long_lived_query_workflows"] = 500
             row["demand"]["query_operations"] = {
                 "attempted": 1,
                 "accepted": 1,
@@ -368,6 +485,225 @@ class CapacityBenchmarkContractTest(unittest.TestCase):
         )
         self.assertFalse(step["operating_point_eligible"])
 
+    def test_query_and_mixed_cells_qualify_for_every_binding_without_drain_throughput(
+        self,
+    ) -> None:
+        arguments = {
+            "source_revision": "383b14e389ac7ec4873c74034d6087ce9db0bea0",
+            "run_timestamp": "2026-08-11T00:00:00Z",
+            "architecture": "x86_64",
+        }
+        for binding in ("php", "python", "rust"):
+            for cell_id in ("query-inspection", "mixed"):
+                with self.subTest(binding=binding, cell_id=cell_id):
+                    suite, observations = self.compliant_query_cell_observations(
+                        cell_id, binding
+                    )
+                    result = capacity_suite.reduce_result(
+                        suite,
+                        capacity_suite.DEFAULT_SUITE,
+                        self.profile,
+                        capacity_suite.DEFAULT_PROFILE,
+                        observations,
+                        **arguments,
+                    )
+                    step = result["load_steps"][0]
+
+                    self.assertTrue(result["publishable"])
+                    self.assertTrue(step["operating_point_eligible"])
+                    self.assertEqual(1.0, step["completion_ratio"])
+                    self.assertEqual(
+                        0.0 if cell_id == "query-inspection" else 4.0,
+                        step["rates"]["workflow_completions_per_second"],
+                    )
+                    self.assertEqual(
+                        capacity_suite.long_lived_query_target(
+                            next(
+                                cell for cell in suite["cells"] if cell["id"] == cell_id
+                            )
+                        ),
+                        step["workflow_completion_evidence"][
+                            "long_lived_query_workflows"
+                        ]["measurement_minimum"],
+                    )
+                    self.assertGreater(step["drain"]["workflow_completions"], 0)
+                    self.assertEqual(0, step["drain"]["final_open_workflows"])
+
+    def test_drain_only_query_performance_cannot_qualify_query_or_mixed_cells(
+        self,
+    ) -> None:
+        for cell_id in ("query-inspection", "mixed"):
+            with self.subTest(cell_id=cell_id):
+                suite, observations = self.compliant_query_cell_observations(
+                    cell_id, "python"
+                )
+                for row in observations[:-1]:
+                    row["demand"]["query_operations"] = {
+                        "attempted": 0,
+                        "accepted": 0,
+                        "completed": 0,
+                        "rejected": 0,
+                        "throttled": 0,
+                    }
+                    row["latencies_ms"]["query"] = []
+                drain = observations[-1]
+                drain["demand"]["query_operations"] = {
+                    "attempted": 80,
+                    "accepted": 80,
+                    "completed": 80,
+                    "rejected": 0,
+                    "throttled": 0,
+                }
+                drain["latencies_ms"]["query"] = [1.0] * 80
+
+                result = capacity_suite.reduce_result(
+                    suite,
+                    capacity_suite.DEFAULT_SUITE,
+                    self.profile,
+                    capacity_suite.DEFAULT_PROFILE,
+                    observations,
+                    source_revision="383b14e389ac7ec4873c74034d6087ce9db0bea0",
+                    run_timestamp="2026-08-11T00:00:00Z",
+                    architecture="x86_64",
+                )
+                step = result["load_steps"][0]
+
+                self.assertFalse(step["operating_point_eligible"])
+                self.assertIn(
+                    "query_completion_underdelivery",
+                    step["saturation"]["violations"],
+                )
+                self.assertIn("missing_query_latency", step["saturation"]["violations"])
+                self.assertEqual(
+                    0, step["offered_load"]["query_operations"]["completed"]
+                )
+
+    def test_mixed_drain_completions_cannot_fill_the_measurement_denominator(
+        self,
+    ) -> None:
+        suite, observations = self.compliant_query_cell_observations("mixed", "rust")
+        completion_required = 0
+        open_workflows = capacity_suite.long_lived_query_target(
+            next(cell for cell in suite["cells"] if cell["id"] == "mixed")
+        )
+        for row in observations[:-1]:
+            completion_required += row["counters"]["workflow_completions"]
+            row["counters"]["workflow_completions"] = 0
+            row["workflow_cohorts"]["completion_required"]["completions"] = 0
+            row["demand"]["workflow_starts"]["completed"] = 0
+            open_workflows += row["counters"]["workflow_starts"]
+            row["concurrent_open_workflows"] = open_workflows
+        drain = observations[-1]
+        drain["counters"]["workflow_completions"] += completion_required
+        drain["workflow_cohorts"]["completion_required"]["completions"] = (
+            completion_required
+        )
+        drain["demand"]["workflow_starts"]["completed"] += completion_required
+
+        result = capacity_suite.reduce_result(
+            suite,
+            capacity_suite.DEFAULT_SUITE,
+            self.profile,
+            capacity_suite.DEFAULT_PROFILE,
+            observations,
+            source_revision="383b14e389ac7ec4873c74034d6087ce9db0bea0",
+            run_timestamp="2026-08-11T00:00:00Z",
+            architecture="x86_64",
+        )
+        step = result["load_steps"][0]
+
+        self.assertEqual(0.0, step["completion_ratio"])
+        self.assertEqual(
+            0, step["workflow_completion_evidence"]["eligible_completions"]
+        )
+        self.assertIn("completion_ratio", step["saturation"]["violations"])
+        self.assertFalse(step["operating_point_eligible"])
+
+    def test_query_cohort_churn_cannot_replace_full_window_residency(self) -> None:
+        suite, observations = self.compliant_query_cell_observations(
+            "query-inspection", "php"
+        )
+        row = observations[1]
+        row["counters"]["workflow_starts"] = 1
+        row["counters"]["workflow_completions"] = 1
+        row["workflow_cohorts"]["long_lived_query"] = {
+            "starts": 1,
+            "completions": 1,
+        }
+        row["demand"]["workflow_starts"] = {
+            "attempted": 1,
+            "accepted": 1,
+            "completed": 1,
+            "rejected": 0,
+            "throttled": 0,
+        }
+
+        result = capacity_suite.reduce_result(
+            suite,
+            capacity_suite.DEFAULT_SUITE,
+            self.profile,
+            capacity_suite.DEFAULT_PROFILE,
+            observations,
+            source_revision="383b14e389ac7ec4873c74034d6087ce9db0bea0",
+            run_timestamp="2026-08-11T00:00:00Z",
+            architecture="x86_64",
+        )
+        step = result["load_steps"][0]
+
+        self.assertIn("long_lived_query_cohort_churn", step["saturation"]["violations"])
+        self.assertFalse(step["operating_point_eligible"])
+
+    def test_query_cohort_allocation_and_measurement_reset_are_deterministic(
+        self,
+    ) -> None:
+        query_cell = next(
+            cell for cell in self.suite["cells"] if cell["id"] == "query-inspection"
+        )
+        mixed_cell = next(cell for cell in self.suite["cells"] if cell["id"] == "mixed")
+        self.assertEqual(500, capacity_suite.long_lived_query_target(query_cell))
+        self.assertEqual(37, capacity_suite.long_lived_query_target(mixed_cell))
+
+        runner = capacity_matrix.CellRunner.__new__(capacity_matrix.CellRunner)
+        runner.cell = mixed_cell
+        runner.random = capacity_matrix.random.Random(
+            mixed_cell["execution"]["deterministic_seed"]
+        )
+        first_sequence = [runner._mixed_shape() for _ in range(1_000)]
+        runner.random.seed(mixed_cell["execution"]["deterministic_seed"])
+        self.assertEqual(first_sequence, [runner._mixed_shape() for _ in range(1_000)])
+        self.assertNotIn("query-inspection", first_sequence)
+        self.assertEqual(
+            set(mixed_cell["workload"]["mix"]) - {"query-inspection"},
+            set(first_sequence),
+        )
+
+        metrics = capacity_matrix.MetricBuffer()
+        metrics.begin_measurement(10.0)
+        metrics.workflow_attempted(recorded_at=9.0)
+        metrics.started(long_lived_query=True, recorded_at=9.1)
+        metrics.restart_measurement(20.0)
+        _, _, demand, cohorts, open_workflows, query_workflows = metrics.snapshot(
+            "measurement"
+        )
+        self.assertEqual(self.empty_demand(), demand)
+        self.assertEqual(self.empty_workflow_cohorts(), cohorts)
+        self.assertEqual(1, open_workflows)
+        self.assertEqual(1, query_workflows)
+
+        metrics.completed(
+            {"activity_dispatches": 0, "schedule_to_start": [999.0], "replay": []},
+            include_replay=False,
+            long_lived_query=True,
+            recorded_at=20.0,
+        )
+        _, latencies, _, cohorts, open_workflows, query_workflows = metrics.snapshot(
+            "drain"
+        )
+        self.assertEqual({"starts": 0, "completions": 1}, cohorts["long_lived_query"])
+        self.assertEqual([999.0], latencies["schedule_to_start"])
+        self.assertEqual(0, open_workflows)
+        self.assertEqual(0, query_workflows)
+
     def test_drain_performance_cannot_qualify_a_measurement_window(self) -> None:
         measurement = [
             copy.deepcopy(row)
@@ -379,6 +715,7 @@ class CapacityBenchmarkContractTest(unittest.TestCase):
         for row in measurement:
             open_workflows += row["counters"]["workflow_starts"]
             row["counters"]["workflow_completions"] = 0
+            row["workflow_cohorts"]["completion_required"]["completions"] = 0
             row["demand"]["workflow_starts"]["completed"] = 0
             row["counters"]["activity_dispatches"] = 0
             row["latencies_ms"]["schedule_to_start"] = [10.0]
@@ -397,6 +734,8 @@ class CapacityBenchmarkContractTest(unittest.TestCase):
         }
         drain["demand"] = self.empty_demand()
         drain["demand"]["workflow_starts"]["completed"] = starts
+        drain["workflow_cohorts"] = self.empty_workflow_cohorts()
+        drain["workflow_cohorts"]["completion_required"]["completions"] = starts
         drain["demand"]["query_operations"] = {
             "attempted": 1,
             "accepted": 1,
@@ -508,11 +847,18 @@ class CapacityBenchmarkContractTest(unittest.TestCase):
             measurement_counters,
             measurement_latencies,
             measurement_demand,
+            measurement_cohorts,
             measurement_open,
+            measurement_query_open,
         ) = metrics.snapshot("measurement")
-        drain_counters, drain_latencies, drain_demand, drain_open = metrics.snapshot(
-            "drain"
-        )
+        (
+            drain_counters,
+            drain_latencies,
+            drain_demand,
+            drain_cohorts,
+            drain_open,
+            drain_query_open,
+        ) = metrics.snapshot("drain")
 
         self.assertEqual(3, measurement_counters["workflow_starts"])
         self.assertEqual(2, measurement_counters["workflow_completions"])
@@ -532,6 +878,11 @@ class CapacityBenchmarkContractTest(unittest.TestCase):
         )
         self.assertEqual(1, measurement_demand["query_operations"]["completed"])
         self.assertEqual(1, measurement_open)
+        self.assertEqual(
+            {"starts": 3, "completions": 2},
+            measurement_cohorts["completion_required"],
+        )
+        self.assertEqual(0, measurement_query_open)
 
         self.assertEqual(1, drain_counters["workflow_starts"])
         self.assertEqual(2, drain_counters["workflow_completions"])
@@ -543,6 +894,11 @@ class CapacityBenchmarkContractTest(unittest.TestCase):
         self.assertEqual(1, drain_demand["query_operations"]["attempted"])
         self.assertEqual(1, drain_demand["query_operations"]["completed"])
         self.assertEqual(0, drain_open)
+        self.assertEqual(
+            {"starts": 1, "completions": 2},
+            drain_cohorts["completion_required"],
+        )
+        self.assertEqual(0, drain_query_open)
         with self.assertRaisesRegex(
             capacity_matrix.MatrixError, "measurement phase has already begun"
         ):
@@ -559,7 +915,7 @@ class CapacityBenchmarkContractTest(unittest.TestCase):
         metrics.query_attempted(recorded_at=9.2)
         metrics.query_rejected({"error": "invalid query"}, recorded_at=9.3)
 
-        counters, _, demand, _ = metrics.snapshot("measurement")
+        counters, _, demand, _, _, _ = metrics.snapshot("measurement")
 
         self.assertEqual(1, counters["throttles"])
         self.assertEqual(1, counters["errors"])
@@ -580,6 +936,7 @@ class CapacityBenchmarkContractTest(unittest.TestCase):
         ]
         measurement[-1]["interval_seconds"] += 1
         measurement[-1]["counters"]["workflow_completions"] -= 1
+        measurement[-1]["workflow_cohorts"]["completion_required"]["completions"] -= 1
         measurement[-1]["demand"]["workflow_starts"]["completed"] -= 1
         measurement[-1]["concurrent_open_workflows"] = 1
         drain = copy.deepcopy(measurement[-1])
@@ -587,6 +944,7 @@ class CapacityBenchmarkContractTest(unittest.TestCase):
         drain["phase"] = "drain"
         drain["interval_seconds"] = 1.0
         drain["counters"] = {key: 0 for key in drain["counters"]}
+        drain["workflow_cohorts"] = self.empty_workflow_cohorts()
         drain["demand"] = self.empty_demand()
         drain["latencies_ms"] = {key: [] for key in drain["latencies_ms"]}
         drain["concurrent_open_workflows"] = 1
@@ -655,6 +1013,10 @@ class CapacityBenchmarkContractTest(unittest.TestCase):
             ("counters", "activity_dispatches"),
             ("counters", "errors"),
             ("counters", "throttles"),
+            ("workflow_cohorts", "completion_required", "starts"),
+            ("workflow_cohorts", "completion_required", "completions"),
+            ("workflow_cohorts", "long_lived_query", "starts"),
+            ("workflow_cohorts", "long_lived_query", "completions"),
             ("demand", "workflow_starts", "attempted"),
             ("demand", "workflow_starts", "accepted"),
             ("demand", "workflow_starts", "completed"),
@@ -666,6 +1028,8 @@ class CapacityBenchmarkContractTest(unittest.TestCase):
             ("demand", "query_operations", "rejected"),
             ("demand", "query_operations", "throttled"),
             ("concurrent_open_workflows",),
+            ("concurrent_long_lived_query_workflows",),
+            ("control", "offered_load", "long_lived_query_workflows"),
             ("infrastructure", "components", component, "assigned_memory_bytes"),
             ("infrastructure", "components", component, "consumed_memory_bytes"),
             ("infrastructure", "durable_storage", "used_bytes"),
@@ -738,6 +1102,7 @@ class CapacityBenchmarkContractTest(unittest.TestCase):
         )
         mixed_cell["execution"]["load_steps"] = [4]
         mixed_cell["execution"]["duration_seconds"] = 4
+        query_cohort = capacity_suite.long_lived_query_target(mixed_cell)
         observations = [
             copy.deepcopy(row)
             for row in capacity_suite._reference_observations(self.suite, self.profile)
@@ -760,6 +1125,8 @@ class CapacityBenchmarkContractTest(unittest.TestCase):
                 "termination": mixed_cell["execution"]["termination"],
             }
             row["counters"]["activity_dispatches"] = 1
+            row["concurrent_open_workflows"] += query_cohort
+            row["concurrent_long_lived_query_workflows"] = query_cohort
             row["latencies_ms"]["replay"] = []
             row["latencies_ms"]["query"] = []
         drain = copy.deepcopy(observations[-1])
@@ -768,14 +1135,18 @@ class CapacityBenchmarkContractTest(unittest.TestCase):
         drain["interval_seconds"] = 0.001
         drain["counters"] = {
             "workflow_starts": 0,
-            "workflow_completions": 0,
+            "workflow_completions": query_cohort,
             "activity_dispatches": 0,
             "errors": 0,
             "throttles": 0,
         }
+        drain["workflow_cohorts"] = self.empty_workflow_cohorts()
+        drain["workflow_cohorts"]["long_lived_query"]["completions"] = query_cohort
         drain["demand"] = self.empty_demand()
+        drain["demand"]["workflow_starts"]["completed"] = query_cohort
         drain["latencies_ms"] = {"schedule_to_start": [], "replay": [], "query": []}
         drain["concurrent_open_workflows"] = 0
+        drain["concurrent_long_lived_query_workflows"] = 0
         observations.append(drain)
 
         result = capacity_suite.reduce_result(
@@ -845,6 +1216,7 @@ class CapacityBenchmarkContractTest(unittest.TestCase):
         drain["phase"] = "drain"
         drain["interval_seconds"] = 0.001
         drain["counters"] = {key: 0 for key in drain["counters"]}
+        drain["workflow_cohorts"] = self.empty_workflow_cohorts()
         drain["demand"] = self.empty_demand()
         drain["latencies_ms"] = {key: [] for key in drain["latencies_ms"]}
         drain["infrastructure"]["queue_backlog"] = 0

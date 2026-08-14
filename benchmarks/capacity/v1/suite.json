@@ -1,7 +1,7 @@
 {
   "$schema": "schemas/suite.schema.json",
   "schema": "durable-workflow.capacity-benchmark-suite/v1",
-  "suite_version": "1.1.0",
+  "suite_version": "1.2.0",
   "status": "engineering_evidence_not_release_gate",
   "description": "Versioned, reproducible Durable Workflow capacity workloads. Throughput evidence does not substitute for correctness conformance.",
   "schemas": {
@@ -50,6 +50,8 @@
   },
   "required_metrics": [
     "offered_load_delivery",
+    "completion_eligible_workflows",
+    "long_lived_query_workflows",
     "workflow_start_attempts",
     "workflow_start_acceptances",
     "workflow_start_rejections",
@@ -187,6 +189,7 @@
       },
       "workload": {
         "workflow": {"type": "capacity.v1.simple", "steps": ["accept_input", "return_input"]},
+        "measurement_eligibility": {"completion_denominator": "completion_required_workflows_started_during_measurement", "long_lived_query_cohort": {"shape": null, "concurrent_open_workflow_share": 0}},
         "activities": [],
         "signals": [],
         "queries": [],
@@ -212,6 +215,7 @@
       },
       "workload": {
         "workflow": {"type": "capacity.v1.one_activity", "steps": ["schedule_activity_capacity_v1_echo", "await_activity", "return_activity_result"]},
+        "measurement_eligibility": {"completion_denominator": "completion_required_workflows_started_during_measurement", "long_lived_query_cohort": {"shape": null, "concurrent_open_workflow_share": 0}},
         "activities": [{"type": "capacity.v1.echo", "count": 1, "behavior": "return_input_without_external_io"}],
         "signals": [],
         "queries": [],
@@ -237,6 +241,7 @@
       },
       "workload": {
         "workflow": {"type": "capacity.v1.multiple_activities", "steps": ["repeat_five_times_schedule_capacity_v1_hash_and_await", "return_final_digest"]},
+        "measurement_eligibility": {"completion_denominator": "completion_required_workflows_started_during_measurement", "long_lived_query_cohort": {"shape": null, "concurrent_open_workflow_share": 0}},
         "activities": [{"type": "capacity.v1.hash", "count": 5, "behavior": "sha256_input_once_and_return_hex_digest"}],
         "signals": [],
         "queries": [],
@@ -262,6 +267,7 @@
       },
       "workload": {
         "workflow": {"type": "capacity.v1.timer", "steps": ["create_timer_1000ms", "await_timer", "return_constant"]},
+        "measurement_eligibility": {"completion_denominator": "completion_required_workflows_started_during_measurement", "long_lived_query_cohort": {"shape": null, "concurrent_open_workflow_share": 0}},
         "activities": [],
         "signals": [],
         "queries": [],
@@ -287,6 +293,7 @@
       },
       "workload": {
         "workflow": {"type": "capacity.v1.signal", "steps": ["wait_for_four_capacity_v1_append_signals", "assert_sequences_zero_through_three", "return_signal_count"]},
+        "measurement_eligibility": {"completion_denominator": "completion_required_workflows_started_during_measurement", "long_lived_query_cohort": {"shape": null, "concurrent_open_workflow_share": 0}},
         "activities": [],
         "signals": [{"type": "capacity.v1.append", "count": 4, "behavior": "append_sequence_and_fixed_payload_in_order"}],
         "queries": [],
@@ -312,6 +319,7 @@
       },
       "workload": {
         "workflow": {"type": "capacity.v1.child_parent", "steps": ["start_ten_capacity_v1_child_workflows", "await_all_children", "sum_child_results"], "child_type": "capacity.v1.child_leaf", "child_steps": ["return_input_index"]},
+        "measurement_eligibility": {"completion_denominator": "completion_required_workflows_started_during_measurement", "long_lived_query_cohort": {"shape": null, "concurrent_open_workflow_share": 0}},
         "activities": [],
         "signals": [],
         "queries": [],
@@ -337,6 +345,7 @@
       },
       "workload": {
         "workflow": {"type": "capacity.v1.replay_heavy", "steps": ["record_500_deterministic_markers", "yield_after_each_marker", "replay_full_history", "return_marker_count"]},
+        "measurement_eligibility": {"completion_denominator": "completion_required_workflows_started_during_measurement", "long_lived_query_cohort": {"shape": null, "concurrent_open_workflow_share": 0}},
         "activities": [],
         "signals": [],
         "queries": [],
@@ -352,7 +361,7 @@
     },
     {
       "id": "query-inspection",
-      "description": "Keep workflows open and issue five deterministic read-only inspections per second per load unit.",
+      "description": "Keep the declared query cohort open for the complete measurement window and issue five deterministic read-only inspections per second per load unit.",
       "artifacts": {
         "server": {"registry": "docker.io", "name": "durableworkflow/server", "version": "2.0.0-rc.25", "reference": "docker.io/durableworkflow/server:2.0.0-rc.25"},
         "workflow_php": {"registry": "packagist.org", "name": "durable-workflow/workflow", "version": "2.0.0-rc.14", "reference": "durable-workflow/workflow:2.0.0-rc.14"},
@@ -362,6 +371,7 @@
       },
       "workload": {
         "workflow": {"type": "capacity.v1.queryable_counter", "steps": ["initialize_counter_zero", "wait_for_finish_signal", "return_counter"], "query": {"type": "capacity.v1.inspect_counter", "behavior": "return_counter_without_mutation"}},
+        "measurement_eligibility": {"completion_denominator": "completion_required_workflows_started_during_measurement", "long_lived_query_cohort": {"shape": "query-inspection", "concurrent_open_workflow_share": 1}},
         "activities": [],
         "signals": [{"type": "capacity.v1.finish", "count": 1, "behavior": "finish_after_measurement_admission_stops"}],
         "queries": [{"type": "capacity.v1.inspect_counter", "rate_per_load_unit_per_second": 5, "behavior": "return_counter_without_mutation"}],
@@ -377,7 +387,7 @@
     },
     {
       "id": "mixed",
-      "description": "Deterministically interleave all representative shapes by fixed proportions.",
+      "description": "Reserve the declared long-lived query share and deterministically interleave the remaining representative shapes by their fixed relative proportions.",
       "artifacts": {
         "server": {"registry": "docker.io", "name": "durableworkflow/server", "version": "2.0.0-rc.25", "reference": "docker.io/durableworkflow/server:2.0.0-rc.25"},
         "workflow_php": {"registry": "packagist.org", "name": "durable-workflow/workflow", "version": "2.0.0-rc.14", "reference": "durable-workflow/workflow:2.0.0-rc.14"},
@@ -387,6 +397,7 @@
       },
       "workload": {
         "workflow": {"type": "capacity.v1.mixed_selector", "steps": ["select_shape_from_seeded_weighted_sequence", "execute_selected_shape", "record_selected_shape"]},
+        "measurement_eligibility": {"completion_denominator": "completion_required_workflows_started_during_measurement", "long_lived_query_cohort": {"shape": "query-inspection", "concurrent_open_workflow_share": 0.15}},
         "activities": [{"type": "capacity.v1.echo", "count": 1, "behavior": "used_by_selected_activity_shapes"}, {"type": "capacity.v1.hash", "count": 5, "behavior": "used_by_selected_multiple_activity_shape"}],
         "signals": [{"type": "capacity.v1.append", "count": 4, "behavior": "used_by_selected_signal_shape"}, {"type": "capacity.v1.finish", "count": 1, "behavior": "used_by_selected_query_shape"}],
         "queries": [{"type": "capacity.v1.inspect_counter", "rate_per_load_unit_per_second": 5, "behavior": "used_by_selected_query_shape"}],
