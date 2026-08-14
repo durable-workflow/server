@@ -8,7 +8,7 @@
   "properties": {
     "$schema": {"type": "string"},
     "schema": {"const": "durable-workflow.capacity-benchmark-suite/v1"},
-    "suite_version": {"const": "1.2.0"},
+    "suite_version": {"const": "1.3.0"},
     "status": {"const": "engineering_evidence_not_release_gate"},
     "description": {"type": "string"},
     "schemas": {"type": "object"},
@@ -16,7 +16,7 @@
     "protocols": {"type": "object", "required": ["control_plane", "worker"]},
     "required_metrics": {"type": "array", "uniqueItems": true, "minItems": 23, "items": {"type": "string"}},
     "operating_point_rule": {"type": "object", "required": ["minimum_offered_load_delivery_ratio"]},
-    "driver_contract": {"type": "object", "required": ["protocol", "required_bindings", "matrix", "controller", "adapters", "collector", "artifact_installation", "warmup", "measurement", "termination", "server_capacity_comparison"]},
+    "driver_contract": {"type": "object", "required": ["protocol", "required_bindings", "matrix", "controller", "adapters", "collector", "topology", "artifact_installation", "warmup", "measurement", "termination", "server_capacity_comparison"]},
     "cadence": {"type": "object"},
     "publication_policy": {"type": "object", "required": ["customer_claim_current_when", "identity_mismatch", "carry_forward", "capacity_result_proves_correctness", "correctness_result_proves_capacity"]},
     "comparison_identity": {"type": "array", "uniqueItems": true, "items": {"type": "string"}},

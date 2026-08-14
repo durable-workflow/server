@@ -1,0 +1,35 @@
+{
+  "schema": "durable-workflow.capacity-local-docker-topology/v1",
+  "suite_version": "1.3.0",
+  "profile_id": "local-docker-amd64-v1",
+  "project_name": "durable-workflow-capacity-v1",
+  "network_name": "capacity",
+  "compose_file": "compose.json",
+  "smoke_file": "smoke.json",
+  "component_services": {
+    "server": "server",
+    "server-worker": "server-worker",
+    "scheduler": "scheduler",
+    "mysql": "mysql",
+    "redis": "redis",
+    "sdk-php-worker": "sdk-php-worker",
+    "sdk-python-worker": "sdk-python-worker",
+    "sdk-rust-worker": "sdk-rust-worker",
+    "load-generator": "load-generator"
+  },
+  "adapter_services": {
+    "php": "sdk-php-worker",
+    "python": "sdk-python-worker",
+    "rust": "sdk-rust-worker"
+  },
+  "installation_images": {
+    "composer": "docker.io/library/composer:2.10.2",
+    "docker_cli": "docker.io/library/docker:27.5.1-cli"
+  },
+  "cleanup": {
+    "remove_containers": true,
+    "remove_network": true,
+    "remove_volumes": true,
+    "remove_orphans": true
+  }
+}

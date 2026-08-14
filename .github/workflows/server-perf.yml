@@ -115,6 +115,11 @@ jobs:
     runs-on: ubuntu-latest
     if: github.event_name == 'pull_request' || github.event_name == 'push' || github.event_name == 'workflow_dispatch'
     timeout-minutes: 20
+    env:
+      CAPACITY_DOCKER_PROJECT: capacity-contract-${{ github.run_id }}-${{ github.run_attempt }}-${{ github.job }}
+      CAPACITY_DOCKER_HOST_PORT: "0"
+      CAPACITY_REPOSITORY_ROOT: ${{ github.workspace }}
+      CAPACITY_OUTPUT_ROOT: ${{ github.workspace }}/build/capacity-v1
 
     steps:
       - name: Checkout server
@@ -195,6 +200,13 @@ jobs:
           tar --exclude=.git --exclude=vendor --exclude=build -cf - . \
             | docker run --rm -i -w /app composer:2 \
                 sh -lc 'tar -xf - -C /app && cp -a /app/workflow-package /workflow && php scripts/ci/prepare-release-workflow-composer-metadata.php && composer update durable-workflow/workflow --with-dependencies --minimal-changes --no-install --no-scripts --no-autoloader --no-interaction --no-progress --prefer-dist && composer install --no-interaction --no-progress --prefer-dist && vendor/bin/phpunit tests/Unit/BoundedGrowthPolicyTest.php tests/Unit/ServerPerfHarnessContractTest.php --colors=never'
+
+      - name: Clean up capacity contract Docker resources
+        if: always()
+        run: |
+          docker compose -p "$CAPACITY_DOCKER_PROJECT" \
+            -f benchmarks/capacity/v1/topologies/local-docker/compose.json \
+            down --volumes --remove-orphans >/dev/null 2>&1 || true
 
   smoke:
     name: Polling cache bounded-growth smoke

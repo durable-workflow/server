@@ -29,6 +29,25 @@ capacity_matrix = importlib.util.module_from_spec(matrix_spec)
 sys.modules["capacity_matrix"] = capacity_matrix
 matrix_spec.loader.exec_module(capacity_matrix)
 
+LOCAL_DOCKER_MODULE_PATH = ROOT / "scripts/benchmark/capacity_local_docker.py"
+local_docker_spec = importlib.util.spec_from_file_location(
+    "capacity_local_docker", LOCAL_DOCKER_MODULE_PATH
+)
+assert local_docker_spec is not None and local_docker_spec.loader is not None
+capacity_local_docker = importlib.util.module_from_spec(local_docker_spec)
+sys.modules["capacity_local_docker"] = capacity_local_docker
+local_docker_spec.loader.exec_module(capacity_local_docker)
+
+COLLECTOR_MODULE_PATH = (
+    ROOT / "benchmarks/capacity/v1/collectors/local-docker/local_docker_collector.py"
+)
+collector_spec = importlib.util.spec_from_file_location(
+    "local_docker_collector", COLLECTOR_MODULE_PATH
+)
+assert collector_spec is not None and collector_spec.loader is not None
+local_docker_collector = importlib.util.module_from_spec(collector_spec)
+collector_spec.loader.exec_module(local_docker_collector)
+
 
 class CapacityBenchmarkContractTest(unittest.TestCase):
     def setUp(self) -> None:
@@ -216,6 +235,408 @@ class CapacityBenchmarkContractTest(unittest.TestCase):
                 cell for cell in self.suite["cells"] if cell["id"] == entry["cell_id"]
             )
             self.assertEqual(cell["execution"], entry["execution"])
+
+    def test_local_docker_topology_matches_the_profile_and_rejects_drift(
+        self,
+    ) -> None:
+        context = capacity_local_docker.validate_topology()
+        topology = context["topology"]
+        compose = context["compose"]
+        self.assertEqual(
+            set(self.profile["components"]), set(topology["component_services"])
+        )
+        for component, service_name in topology["component_services"].items():
+            service = compose["services"][service_name]
+            expected = self.profile["components"][component]
+            self.assertEqual(expected["image"], service["image"])
+            self.assertEqual(expected["cpu_cores"], service["cpus"])
+            self.assertEqual(expected["memory_bytes"], service["mem_limit"])
+
+        drifted = copy.deepcopy(compose)
+        drifted["services"]["redis"]["image"] = "docker.io/library/redis:latest"
+        original_load = capacity_local_docker._load
+
+        def load_with_drift(path: Path) -> dict:
+            if path == capacity_local_docker.COMPOSE_PATH:
+                return drifted
+            return original_load(path)
+
+        with mock.patch.object(
+            capacity_local_docker, "_load", side_effect=load_with_drift
+        ):
+            with self.assertRaisesRegex(
+                capacity_local_docker.TopologyError, "redis image differs"
+            ):
+                capacity_local_docker.validate_topology()
+
+    def test_matrix_routes_adapter_roles_to_resolved_language_containers(
+        self,
+    ) -> None:
+        adapter = capacity_suite.load_json(
+            capacity_suite.SUITE_ROOT / "bindings/python/adapter.json"
+        )
+        runner = capacity_matrix.CellRunner.__new__(capacity_matrix.CellRunner)
+        environment = {
+            "DURABLE_WORKFLOW_RUNTIME_URL": "http://server:8080",
+            "DURABLE_WORKFLOW_NAMESPACE": "capacity",
+            "DURABLE_WORKFLOW_TASK_QUEUE": "capacity-smoke",
+            "UNRELATED_SECRET": "do-not-forward",
+        }
+        with mock.patch.dict(
+            capacity_matrix.os.environ,
+            {
+                "CAPACITY_ADAPTER_CONTAINER_PYTHON": "resolved-python-container",
+                "CAPACITY_ADAPTER_WORKDIR_PYTHON": "/capacity",
+            },
+            clear=False,
+        ):
+            command = runner._entrypoint(adapter, "worker", environment)
+        self.assertEqual(
+            ["docker", "exec", "--interactive", "--workdir", "/capacity"],
+            command[:5],
+        )
+        self.assertIn("resolved-python-container", command)
+        self.assertEqual(["python3", "capacity_adapter.py", "worker"], command[-3:])
+        self.assertTrue(
+            any(
+                value == "DURABLE_WORKFLOW_TASK_QUEUE=capacity-smoke"
+                for value in command
+            )
+        )
+        self.assertFalse(any("UNRELATED_SECRET" in value for value in command))
+
+    def test_local_launcher_passes_every_resolved_identity_automatically(
+        self,
+    ) -> None:
+        context = capacity_local_docker.validate_topology()
+        resolved = {
+            service: f"container-{index}"
+            for index, service in enumerate(
+                context["topology"]["component_services"].values(), start=1
+            )
+        }
+        with mock.patch.object(
+            capacity_local_docker,
+            "_container_id",
+            side_effect=lambda topology, service: resolved[service],
+        ):
+            environment = capacity_local_docker._execution_environment(context)
+        collector_mapping = context["collector"]["component_containers"]
+        for component, variable in collector_mapping.items():
+            service = context["topology"]["component_services"][component]
+            self.assertEqual(resolved[service], environment[variable])
+        for binding, service in context["topology"]["adapter_services"].items():
+            self.assertEqual(
+                resolved[service],
+                environment[f"CAPACITY_ADAPTER_CONTAINER_{binding.upper()}"],
+            )
+
+    def test_local_launcher_scopes_compose_resources_to_the_actions_job(self) -> None:
+        context = capacity_local_docker.validate_topology()
+        topology = context["topology"]
+        with mock.patch.dict(
+            capacity_local_docker.os.environ,
+            {
+                "GITHUB_RUN_ID": "12345",
+                "GITHUB_RUN_ATTEMPT": "2",
+                "GITHUB_JOB": "capacity_contract",
+            },
+            clear=True,
+        ):
+            command = capacity_local_docker._compose_command(topology, "up")
+            self.assertEqual(
+                "durable-workflow-capacity-v1-12345-2-capacity_contract",
+                command[command.index("--project-name") + 1],
+            )
+
+        with mock.patch.dict(
+            capacity_local_docker.os.environ,
+            {"GITHUB_RUN_ID": "12345"},
+            clear=True,
+        ):
+            with self.assertRaisesRegex(
+                capacity_local_docker.TopologyError,
+                "requires run id, run attempt, and job identity",
+            ):
+                capacity_local_docker._compose_command(topology, "up")
+
+    def test_local_launcher_uses_one_validated_project_for_compose_and_collector(
+        self,
+    ) -> None:
+        context = capacity_local_docker.validate_topology()
+        topology = context["topology"]
+        resolved = {
+            service: f"container-{index}"
+            for index, service in enumerate(
+                topology["component_services"].values(), start=1
+            )
+        }
+        with (
+            mock.patch.dict(
+                capacity_local_docker.os.environ,
+                {"CAPACITY_DOCKER_PROJECT": "capacity-custom"},
+                clear=True,
+            ),
+            mock.patch.object(
+                capacity_local_docker,
+                "_container_id",
+                side_effect=lambda topology, service: resolved[service],
+            ),
+        ):
+            command = capacity_local_docker._compose_command(topology, "up")
+            environment = capacity_local_docker._execution_environment(context)
+        self.assertEqual(
+            "capacity-custom", command[command.index("--project-name") + 1]
+        )
+        self.assertEqual("capacity-custom", environment["CAPACITY_DOCKER_PROJECT"])
+        self.assertEqual(
+            "capacity-custom_capacity", environment["CAPACITY_DOCKER_NETWORK"]
+        )
+
+        with mock.patch.dict(
+            capacity_local_docker.os.environ,
+            {"CAPACITY_DOCKER_PROJECT": "shared/unsafe"},
+            clear=True,
+        ):
+            with self.assertRaisesRegex(
+                capacity_local_docker.TopologyError,
+                "must be a lowercase Compose project name",
+            ):
+                capacity_local_docker._compose_command(topology, "up")
+
+    def test_local_launcher_fails_closed_on_engine_identity_drift(self) -> None:
+        outputs = {
+            ("docker", "version"): json.dumps(
+                {"Version": "27.5.2", "Os": "linux", "Arch": "amd64"}
+            ),
+            ("docker", "info"): json.dumps(
+                {
+                    "DefaultRuntime": "runc",
+                    "CgroupVersion": "2",
+                    "CgroupDriver": "systemd",
+                    "Driver": "overlay2",
+                    "KernelVersion": "6.8.0-101-generic",
+                    "DockerRootDir": "/var/lib/docker",
+                }
+            ),
+        }
+
+        def fake_run(command: list[str], **kwargs: object) -> str:
+            return outputs[(command[0], command[1])]
+
+        with (
+            mock.patch.object(
+                capacity_local_docker.shutil, "which", return_value="/usr/bin/docker"
+            ),
+            mock.patch.object(capacity_local_docker, "_run", side_effect=fake_run),
+        ):
+            with self.assertRaisesRegex(
+                capacity_local_docker.TopologyError, "Docker version"
+            ):
+                capacity_local_docker.verify_host(self.profile)
+
+    def test_local_launcher_derives_the_complete_supported_host_identity(self) -> None:
+        def fake_run(command: list[str], **kwargs: object) -> str:
+            if command[:2] == ["docker", "version"]:
+                return json.dumps(
+                    {
+                        "Version": "27.5.1",
+                        "Os": "linux",
+                        "Arch": "amd64",
+                        "Components": [
+                            {"Name": "containerd", "Version": "1.7.25"},
+                            {"Name": "runc", "Version": "1.2.3"},
+                            {"Name": "docker-init", "Version": "0.19.0"},
+                        ],
+                    }
+                )
+            if command[:2] == ["docker", "info"]:
+                return json.dumps(
+                    {
+                        "DefaultRuntime": "runc",
+                        "CgroupVersion": "2",
+                        "CgroupDriver": "systemd",
+                        "Driver": "overlay2",
+                        "KernelVersion": "6.8.0-101-generic",
+                        "DockerRootDir": "/var/lib/docker",
+                    }
+                )
+            if command[:3] == ["docker", "compose", "version"]:
+                return "2.32.4\n"
+            if command[0] == "findmnt":
+                return json.dumps(
+                    {
+                        "filesystems": [
+                            {
+                                "source": "/dev/mapper/system-docker",
+                                "fstype": "ext4",
+                                "options": "rw,relatime,errors=remount-ro",
+                            }
+                        ]
+                    }
+                )
+            if command[0] == "lsblk":
+                return json.dumps(
+                    {
+                        "blockdevices": [
+                            {
+                                "name": "system-docker",
+                                "rota": False,
+                                "tran": None,
+                                "type": "lvm",
+                                "children": [
+                                    {
+                                        "name": "nvme0n1",
+                                        "rota": False,
+                                        "tran": "nvme",
+                                        "type": "disk",
+                                    }
+                                ],
+                            }
+                        ]
+                    }
+                )
+            self.fail(f"unexpected command: {command}")
+
+        disk_usage = type(
+            "DiskUsage",
+            (),
+            {"total": self.profile["durable_storage"]["capacity_bytes"]},
+        )()
+        with (
+            mock.patch.object(
+                capacity_local_docker.shutil, "which", return_value="/usr/bin/docker"
+            ),
+            mock.patch.object(
+                capacity_local_docker.shutil, "disk_usage", return_value=disk_usage
+            ),
+            mock.patch.object(capacity_local_docker, "_run", side_effect=fake_run),
+        ):
+            capacity_local_docker.verify_host(self.profile)
+
+    def test_live_smoke_result_is_qualified_but_never_publishable(self) -> None:
+        collector_path = (
+            capacity_suite.SUITE_ROOT / "collectors/local-docker/collector.json"
+        )
+        collector = capacity_suite.load_json(collector_path)
+        arguments = capacity_matrix.parse_args(
+            [
+                "smoke",
+                "--source-revision",
+                "383b14e389ac7ec4873c74034d6087ce9db0bea0",
+                "--run-timestamp",
+                "2026-08-11T00:00:00Z",
+            ]
+        )
+        qualified_step = {
+            "operating_point_eligible": True,
+            "drain": {"converged": True},
+        }
+        captured: dict[str, object] = {}
+
+        def capture_result(result: dict, path: Path) -> None:
+            captured["result"] = result
+            captured["path"] = path
+
+        with (
+            mock.patch.dict(
+                capacity_matrix.os.environ,
+                {
+                    "DURABLE_WORKFLOW_RUNTIME_URL": "http://server:8080",
+                    "DURABLE_WORKFLOW_NAMESPACE": "capacity",
+                },
+                clear=False,
+            ),
+            mock.patch.object(
+                capacity_matrix.CellRunner,
+                "run_load_step",
+                return_value=[{"live": True}],
+            ),
+            mock.patch.object(
+                capacity_matrix.capacity_suite,
+                "reduce_step",
+                return_value=qualified_step,
+            ),
+            mock.patch.object(capacity_matrix, "_write_jsonl"),
+            mock.patch.object(
+                capacity_matrix.capacity_suite,
+                "_write_result",
+                side_effect=capture_result,
+            ),
+        ):
+            result = capacity_matrix._run_smoke(
+                arguments, self.suite, self.profile, collector
+            )
+        self.assertTrue(result["qualified"])
+        self.assertFalse(result["publishable"])
+        self.assertEqual("local_topology_smoke", result["evidence_class"])
+        self.assertEqual(result, captured["result"])
+        self.assertEqual(
+            arguments.output_dir / "local-docker-smoke.result.json",
+            captured["path"],
+        )
+
+    def test_local_docker_collector_matches_normal_stats_rows_by_id(self) -> None:
+        full_id = "0123456789ab" + ("c" * 52)
+        collector = local_docker_collector.LocalDockerCollector.__new__(
+            local_docker_collector.LocalDockerCollector
+        )
+        collector.containers = {"server": full_id}
+        collector.profile = {
+            "components": {"server": {"cpu_cores": 2, "memory_bytes": 2_147_483_648}}
+        }
+        stats = json.dumps(
+            {
+                "BlockIO": "0B / 0B",
+                "CPUPerc": "125.50%",
+                "Container": full_id[:12],
+                "ID": full_id[:12],
+                "MemPerc": "12.50%",
+                "MemUsage": "256MiB / 2GiB",
+                "Name": "capacity-server-1",
+                "NetIO": "1kB / 2kB",
+                "PIDs": "4",
+            }
+        )
+
+        with mock.patch.object(local_docker_collector, "_run", return_value=stats):
+            result = collector._docker_stats()
+
+        self.assertEqual(
+            {
+                "assigned_cpu_cores": 2.0,
+                "consumed_cpu_cores": 1.255,
+                "assigned_memory_bytes": 2_147_483_648,
+                "consumed_memory_bytes": 268_435_456,
+            },
+            result["server"],
+        )
+
+    def test_local_docker_collector_rejects_non_id_stats_identity(self) -> None:
+        full_id = "0123456789ab" + ("c" * 52)
+        collector = local_docker_collector.LocalDockerCollector.__new__(
+            local_docker_collector.LocalDockerCollector
+        )
+        collector.containers = {"server": full_id}
+        collector.profile = {
+            "components": {"server": {"cpu_cores": 2, "memory_bytes": 2_147_483_648}}
+        }
+        stats = json.dumps(
+            {
+                "CPUPerc": "1.00%",
+                "MemUsage": "1MiB / 2GiB",
+                "Name": full_id,
+            }
+        )
+
+        with (
+            mock.patch.object(local_docker_collector, "_run", return_value=stats),
+            self.assertRaisesRegex(
+                local_docker_collector.CollectorError,
+                "omitted a valid container ID",
+            ),
+        ):
+            collector._docker_stats()
 
     def test_adapter_descriptor_missing_a_cell_fails_suite_validation(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

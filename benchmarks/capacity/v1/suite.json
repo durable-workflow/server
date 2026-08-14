@@ -1,7 +1,7 @@
 {
   "$schema": "schemas/suite.schema.json",
   "schema": "durable-workflow.capacity-benchmark-suite/v1",
-  "suite_version": "1.2.0",
+  "suite_version": "1.3.0",
   "status": "engineering_evidence_not_release_gate",
   "description": "Versioned, reproducible Durable Workflow capacity workloads. Throughput evidence does not substitute for correctness conformance.",
   "schemas": {
@@ -108,6 +108,14 @@
       "descriptor": "collectors/local-docker/collector.json",
       "protocol": "stdin_stdout_jsonl",
       "operations": ["initialize", "sample"]
+    },
+    "topology": {
+      "profile": "profiles/local-docker-amd64.json",
+      "descriptor": "topologies/local-docker/topology.json",
+      "compose": "topologies/local-docker/compose.json",
+      "smoke": "topologies/local-docker/smoke.json",
+      "launcher": ["python3", "scripts/benchmark/capacity_local_docker.py"],
+      "commands": ["validate", "up", "run", "smoke", "down"]
     },
     "artifact_installation": "install_every_exact_artifact_before_warmup_and_record_the_resolved_identity",
     "warmup": "discard_observations_until_the_declared_warmup_has_elapsed",

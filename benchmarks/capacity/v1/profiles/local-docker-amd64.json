@@ -10,7 +10,21 @@
   "runtime": {
     "kernel_profile": "linux-6.8-cgroup-v2",
     "container_engine": "docker-27.5.1",
+    "containerd_version": "1.7.25",
+    "runc_version": "1.2.3",
+    "docker_init_version": "0.19.0",
+    "operating_system": "linux",
+    "default_runtime": "runc",
+    "cgroup_version": "2",
+    "cgroup_driver": "systemd",
+    "storage_driver": "overlay2",
     "scheduling_policy": "docker-compose-hard-cpu-and-memory-limits-v1"
+  },
+  "networking": {
+    "driver": "bridge",
+    "internal": false,
+    "attachable": false,
+    "service_networks": 1
   },
   "components": {
     "server": {"cpu_cores": 2, "memory_bytes": 2147483648, "image": "docker.io/durableworkflow/server:2.0.0-rc.25"},
@@ -23,20 +37,71 @@
     "sdk-rust-worker": {"cpu_cores": 1, "memory_bytes": 1073741824, "image": "docker.io/library/rust:1.86.0-bookworm"},
     "load-generator": {"cpu_cores": 2, "memory_bytes": 1073741824, "image": "docker.io/library/python:3.12.4-slim-bookworm"}
   },
+  "server": {
+    "configuration": "suite-owned-server-service-mysql-redis-v1",
+    "environment": {
+      "APP_DEBUG": "false",
+      "APP_ENV": "local",
+      "APP_NAME": "Durable Workflow Capacity Server",
+      "APP_VERSION": "2.0.0-rc.25",
+      "CACHE_STORE": "redis",
+      "DB_CONNECTION": "mysql",
+      "DB_DATABASE": "durable_workflow",
+      "DB_HOST": "mysql",
+      "DB_PASSWORD": "capacity-mysql",
+      "DB_PORT": "3306",
+      "DB_USERNAME": "workflow",
+      "DW_AUTH_DRIVER": "none",
+      "DW_DEFAULT_NAMESPACE": "default",
+      "DW_MODE": "service",
+      "DW_SERVER_KEY": "base64:ZHVyYWJsZS13b3JrZmxvdy1jYXBhY2l0eS12MS1rZXk=",
+      "DW_SERVER_TOPOLOGY_SHAPE": "standalone_server",
+      "QUEUE_CONNECTION": "redis",
+      "REDIS_HOST": "redis",
+      "REDIS_PASSWORD": "capacity-redis",
+      "REDIS_PORT": "6379"
+    },
+    "process_classes": {
+      "server": "server_http_node",
+      "server-worker": "worker_node",
+      "scheduler": "scheduler_node"
+    },
+    "worker_command": ["php", "artisan", "queue:work", "--sleep=1", "--tries=3", "--max-time=3600"],
+    "scheduler_command": ["sh", "-c", "while true; do php artisan schedule:evaluate --limit=100 --json; php artisan activity:timeout-enforce --limit=100; php artisan history:prune --limit=100; sleep 10; done"]
+  },
   "durable_storage": {
     "driver": "local-volume",
     "medium": "nvme-ssd",
     "mount_options": "ext4-defaults",
-    "capacity_bytes": 107374182400
+    "capacity_bytes": 107374182400,
+    "capacity_policy": "minimum",
+    "database_destination": "/var/lib/mysql",
+    "redis_destination": "/data"
   },
   "database": {
     "engine": "mysql",
     "version": "8.0.39",
-    "configuration": "suite-owned-mysql-8.0-v1"
+    "configuration": "suite-owned-mysql-8.0-v1",
+    "parameters": {
+      "character_set_server": "utf8mb4",
+      "collation_server": "utf8mb4_unicode_ci",
+      "innodb_doublewrite": "ON",
+      "innodb_flush_log_at_trx_commit": "1",
+      "innodb_flush_method": "fsync",
+      "log_bin": "1",
+      "sync_binlog": "1"
+    }
   },
   "redis": {
     "engine": "redis",
     "version": "7.2.5",
-    "configuration": "suite-owned-redis-7.2-v1"
+    "configuration": "suite-owned-redis-7.2-v1",
+    "parameters": {
+      "appendfsync": "everysec",
+      "appendonly": "yes",
+      "maxmemory": "0",
+      "maxmemory-policy": "noeviction",
+      "save": ""
+    }
   }
 }

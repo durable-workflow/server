@@ -1,4 +1,4 @@
-Durable Workflow Capacity Benchmark Suite 1.2.0
+Durable Workflow Capacity Benchmark Suite 1.3.0
 
 This directory is immutable evidence input. A changed workload, artifact tuple,
 metric contract, or operating-point rule requires a new suite version instead
@@ -7,6 +7,39 @@ of changing a result after it was recorded.
 Validate the suite, schemas, infrastructure profile, and regression corpus:
 
   python3 scripts/benchmark/capacity_suite.py validate
+
+The standard local profile is executable from this repository. It requires a
+Linux x86_64 host with Docker Engine 27.5.1, Compose 2.20 or newer, a 6.8
+kernel using the systemd cgroup-v2 policy, and Docker's overlay2 data root on
+an ext4-backed non-rotating NVMe device with at least 100 GiB. Validate the
+versioned Compose topology without creating containers:
+
+  python3 scripts/benchmark/capacity_local_docker.py validate
+
+Run the bounded no-provider-spend smoke from a clean host:
+
+  python3 scripts/benchmark/capacity_local_docker.py smoke
+
+The launcher pulls every exact image, installs the locked PHP, Python, and
+Rust adapters, bootstraps Server with the declared MySQL and Redis settings,
+passes all resolved container identities to the controller and collector,
+executes the five-second simple Python cell, writes
+build/capacity-v1/local-docker-smoke.result.json with qualified=true and
+publishable=false, and always removes its containers, network, and volumes.
+Host, engine, kernel, cgroup, storage, image, resource, network, Server,
+MySQL, or Redis drift stops the run before workload admission.
+
+Run a declared capacity selection with the same provision-and-cleanup
+lifecycle (omit the selectors for the complete matrix):
+
+  python3 scripts/benchmark/capacity_local_docker.py run \
+    --cell simple-start-complete --binding python
+
+For inspection, `up` leaves the verified topology running and `down` removes
+all topology state, including durable volumes:
+
+  python3 scripts/benchmark/capacity_local_docker.py up
+  python3 scripts/benchmark/capacity_local_docker.py down
 
 Each first-party SDK adapter runs every cell separately for PHP, Python, and
 Rust. After the declared warmup, an adapter emits one observation-schema JSON
@@ -61,12 +94,16 @@ one bounded selection during harness development:
     --architecture x86_64
 
 Omit `--cell` and `--binding` to execute the full matrix. The local-Docker
-collector verifies every container's exact image, CPU limit, and memory limit
-before admission. It samples Docker CPU/memory, MySQL durable storage and
-connection/lock/write counters, Redis memory/operations, and Server task-queue
-backlog. Set every CAPACITY_CONTAINER_* variable named by
-collectors/local-docker/collector.json. Collector credentials stay in its
-declared environment variables and never enter an observation or result.
+collector verifies the exact engine, kernel, cgroup/runtime policy, image
+architecture, container image, CPU/memory limit, network, storage, Server
+environment, MySQL configuration, and Redis configuration before admission.
+It samples Docker CPU/memory, MySQL durable storage and connection/lock/write
+counters, Redis memory/operations, and Server task-queue backlog. The topology
+launcher resolves and supplies every CAPACITY_CONTAINER_* variable named by
+collectors/local-docker/collector.json together with its declared Docker
+project and network identity. Direct controller callers may still supply
+those values themselves. Collector credentials stay in their declared
+environment variables and never enter an observation or result.
 
 Each cell/binding gets a separate observation stream and result. The controller
 derives schedule-to-start and replay samples from versioned history exports and

@@ -1,0 +1,385 @@
+{
+  "name": "durable-workflow-capacity-v1",
+  "services": {
+    "docker-cli-installer": {
+      "image": "docker.io/library/docker:27.5.1-cli",
+      "platform": "linux/amd64",
+      "network_mode": "none",
+      "command": ["sh", "-ec", "cp /usr/local/bin/docker /tool/docker && chmod 0555 /tool/docker"],
+      "volumes": ["docker-cli:/tool"],
+      "restart": "no"
+    },
+    "composer-installer": {
+      "image": "docker.io/library/composer:2.10.2",
+      "platform": "linux/amd64",
+      "network_mode": "bridge",
+      "working_dir": "/capacity",
+      "command": ["composer", "install", "--no-dev", "--no-interaction", "--no-progress", "--prefer-dist", "--classmap-authoritative"],
+      "environment": {
+        "COMPOSER_CACHE_DIR": "/composer-cache"
+      },
+      "volumes": [
+        "${CAPACITY_REPOSITORY_ROOT}/benchmarks/capacity/v1/bindings/php:/capacity:ro",
+        "php-vendor:/capacity/vendor",
+        "composer-cache:/composer-cache"
+      ],
+      "restart": "no"
+    },
+    "mysql": {
+      "image": "docker.io/library/mysql:8.0.39",
+      "platform": "linux/amd64",
+      "command": [
+        "--character-set-server=utf8mb4",
+        "--collation-server=utf8mb4_unicode_ci",
+        "--innodb-doublewrite=ON",
+        "--innodb-flush-log-at-trx-commit=1",
+        "--innodb-flush-method=fsync",
+        "--log-bin=1",
+        "--sync-binlog=1",
+        "--skip-name-resolve"
+      ],
+      "environment": {
+        "MYSQL_DATABASE": "durable_workflow",
+        "MYSQL_PASSWORD": "capacity-mysql",
+        "MYSQL_ROOT_PASSWORD": "capacity-root",
+        "MYSQL_USER": "workflow"
+      },
+      "volumes": ["mysql-data:/var/lib/mysql"],
+      "networks": ["capacity"],
+      "cpus": 2,
+      "mem_limit": 2147483648,
+      "healthcheck": {
+        "test": ["CMD-SHELL", "MYSQL_PWD=capacity-mysql mysqladmin ping --silent --host=127.0.0.1 --user=workflow"],
+        "interval": "2s",
+        "timeout": "3s",
+        "retries": 30,
+        "start_period": "10s"
+      },
+      "labels": {
+        "dev.durable-workflow.capacity.component": "mysql",
+        "dev.durable-workflow.capacity.profile": "local-docker-amd64-v1"
+      },
+      "restart": "no"
+    },
+    "redis": {
+      "image": "docker.io/library/redis:7.2.5-alpine",
+      "platform": "linux/amd64",
+      "command": [
+        "redis-server",
+        "--appendonly", "yes",
+        "--appendfsync", "everysec",
+        "--save", "",
+        "--maxmemory", "0",
+        "--maxmemory-policy", "noeviction",
+        "--requirepass", "capacity-redis"
+      ],
+      "volumes": ["redis-data:/data"],
+      "networks": ["capacity"],
+      "cpus": 1,
+      "mem_limit": 1073741824,
+      "healthcheck": {
+        "test": ["CMD", "redis-cli", "-a", "capacity-redis", "--no-auth-warning", "ping"],
+        "interval": "2s",
+        "timeout": "3s",
+        "retries": 30,
+        "start_period": "5s"
+      },
+      "labels": {
+        "dev.durable-workflow.capacity.component": "redis",
+        "dev.durable-workflow.capacity.profile": "local-docker-amd64-v1"
+      },
+      "restart": "no"
+    },
+    "bootstrap": {
+      "image": "docker.io/durableworkflow/server:2.0.0-rc.25",
+      "platform": "linux/amd64",
+      "command": ["server-bootstrap"],
+      "environment": {
+        "APP_DEBUG": "false",
+        "APP_ENV": "local",
+        "APP_NAME": "Durable Workflow Capacity Server",
+        "APP_VERSION": "2.0.0-rc.25",
+        "CACHE_STORE": "redis",
+        "DB_CONNECTION": "mysql",
+        "DB_DATABASE": "durable_workflow",
+        "DB_HOST": "mysql",
+        "DB_PASSWORD": "capacity-mysql",
+        "DB_PORT": "3306",
+        "DB_USERNAME": "workflow",
+        "DW_AUTH_DRIVER": "none",
+        "DW_DEFAULT_NAMESPACE": "default",
+        "DW_MODE": "service",
+        "DW_SERVER_KEY": "base64:ZHVyYWJsZS13b3JrZmxvdy1jYXBhY2l0eS12MS1rZXk=",
+        "DW_SERVER_PROCESS_CLASS": "server_http_node",
+        "DW_SERVER_TOPOLOGY_SHAPE": "standalone_server",
+        "QUEUE_CONNECTION": "redis",
+        "REDIS_HOST": "redis",
+        "REDIS_PASSWORD": "capacity-redis",
+        "REDIS_PORT": "6379"
+      },
+      "depends_on": {
+        "mysql": {"condition": "service_healthy"},
+        "redis": {"condition": "service_healthy"}
+      },
+      "networks": ["capacity"],
+      "cpus": 2,
+      "mem_limit": 2147483648,
+      "restart": "no"
+    },
+    "server": {
+      "image": "docker.io/durableworkflow/server:2.0.0-rc.25",
+      "platform": "linux/amd64",
+      "environment": {
+        "APP_DEBUG": "false",
+        "APP_ENV": "local",
+        "APP_NAME": "Durable Workflow Capacity Server",
+        "APP_VERSION": "2.0.0-rc.25",
+        "CACHE_STORE": "redis",
+        "DB_CONNECTION": "mysql",
+        "DB_DATABASE": "durable_workflow",
+        "DB_HOST": "mysql",
+        "DB_PASSWORD": "capacity-mysql",
+        "DB_PORT": "3306",
+        "DB_USERNAME": "workflow",
+        "DW_AUTH_DRIVER": "none",
+        "DW_DEFAULT_NAMESPACE": "default",
+        "DW_MODE": "service",
+        "DW_SERVER_KEY": "base64:ZHVyYWJsZS13b3JrZmxvdy1jYXBhY2l0eS12MS1rZXk=",
+        "DW_SERVER_PROCESS_CLASS": "server_http_node",
+        "DW_SERVER_TOPOLOGY_SHAPE": "standalone_server",
+        "QUEUE_CONNECTION": "redis",
+        "REDIS_HOST": "redis",
+        "REDIS_PASSWORD": "capacity-redis",
+        "REDIS_PORT": "6379"
+      },
+      "depends_on": {"bootstrap": {"condition": "service_completed_successfully"}},
+      "networks": ["capacity"],
+      "cpus": 2,
+      "mem_limit": 2147483648,
+      "healthcheck": {
+        "test": ["CMD", "curl", "-fsS", "http://127.0.0.1:8080/api/ready"],
+        "interval": "2s",
+        "timeout": "3s",
+        "retries": 30,
+        "start_period": "5s"
+      },
+      "labels": {
+        "dev.durable-workflow.capacity.component": "server",
+        "dev.durable-workflow.capacity.profile": "local-docker-amd64-v1"
+      },
+      "restart": "no"
+    },
+    "server-worker": {
+      "image": "docker.io/durableworkflow/server:2.0.0-rc.25",
+      "platform": "linux/amd64",
+      "command": ["php", "artisan", "queue:work", "--sleep=1", "--tries=3", "--max-time=3600"],
+      "environment": {
+        "APP_DEBUG": "false",
+        "APP_ENV": "local",
+        "APP_NAME": "Durable Workflow Capacity Server",
+        "APP_VERSION": "2.0.0-rc.25",
+        "CACHE_STORE": "redis",
+        "DB_CONNECTION": "mysql",
+        "DB_DATABASE": "durable_workflow",
+        "DB_HOST": "mysql",
+        "DB_PASSWORD": "capacity-mysql",
+        "DB_PORT": "3306",
+        "DB_USERNAME": "workflow",
+        "DW_AUTH_DRIVER": "none",
+        "DW_DEFAULT_NAMESPACE": "default",
+        "DW_MODE": "service",
+        "DW_SERVER_KEY": "base64:ZHVyYWJsZS13b3JrZmxvdy1jYXBhY2l0eS12MS1rZXk=",
+        "DW_SERVER_PROCESS_CLASS": "worker_node",
+        "DW_SERVER_TOPOLOGY_SHAPE": "standalone_server",
+        "QUEUE_CONNECTION": "redis",
+        "REDIS_HOST": "redis",
+        "REDIS_PASSWORD": "capacity-redis",
+        "REDIS_PORT": "6379"
+      },
+      "depends_on": {"server": {"condition": "service_healthy"}},
+      "networks": ["capacity"],
+      "cpus": 2,
+      "mem_limit": 2147483648,
+      "healthcheck": {
+        "test": ["CMD", "server-process-healthcheck", "worker"],
+        "interval": "2s",
+        "timeout": "3s",
+        "retries": 30,
+        "start_period": "5s"
+      },
+      "labels": {
+        "dev.durable-workflow.capacity.component": "server-worker",
+        "dev.durable-workflow.capacity.profile": "local-docker-amd64-v1"
+      },
+      "restart": "no"
+    },
+    "scheduler": {
+      "image": "docker.io/durableworkflow/server:2.0.0-rc.25",
+      "platform": "linux/amd64",
+      "command": ["sh", "-c", "while true; do php artisan schedule:evaluate --limit=100 --json; php artisan activity:timeout-enforce --limit=100; php artisan history:prune --limit=100; sleep 10; done"],
+      "environment": {
+        "APP_DEBUG": "false",
+        "APP_ENV": "local",
+        "APP_NAME": "Durable Workflow Capacity Server",
+        "APP_VERSION": "2.0.0-rc.25",
+        "CACHE_STORE": "redis",
+        "DB_CONNECTION": "mysql",
+        "DB_DATABASE": "durable_workflow",
+        "DB_HOST": "mysql",
+        "DB_PASSWORD": "capacity-mysql",
+        "DB_PORT": "3306",
+        "DB_USERNAME": "workflow",
+        "DW_AUTH_DRIVER": "none",
+        "DW_DEFAULT_NAMESPACE": "default",
+        "DW_MODE": "service",
+        "DW_SERVER_KEY": "base64:ZHVyYWJsZS13b3JrZmxvdy1jYXBhY2l0eS12MS1rZXk=",
+        "DW_SERVER_PROCESS_CLASS": "scheduler_node",
+        "DW_SERVER_TOPOLOGY_SHAPE": "standalone_server",
+        "QUEUE_CONNECTION": "redis",
+        "REDIS_HOST": "redis",
+        "REDIS_PASSWORD": "capacity-redis",
+        "REDIS_PORT": "6379"
+      },
+      "depends_on": {"server": {"condition": "service_healthy"}},
+      "networks": ["capacity"],
+      "cpus": 1,
+      "mem_limit": 1073741824,
+      "healthcheck": {
+        "test": ["CMD", "server-process-healthcheck", "scheduler"],
+        "interval": "2s",
+        "timeout": "3s",
+        "retries": 30,
+        "start_period": "5s"
+      },
+      "labels": {
+        "dev.durable-workflow.capacity.component": "scheduler",
+        "dev.durable-workflow.capacity.profile": "local-docker-amd64-v1"
+      },
+      "restart": "no"
+    },
+    "sdk-php-worker": {
+      "image": "docker.io/library/php:8.3.30-cli-bookworm",
+      "platform": "linux/amd64",
+      "command": ["sh", "-ec", "php -r \"require '/capacity/vendor/autoload.php'; exit(Composer\\\\InstalledVersions::getPrettyVersion('durable-workflow/sdk') === '2.0.0-rc.14' ? 0 : 1);\"; touch /tmp/capacity-adapter-ready; exec tail -f /dev/null"],
+      "depends_on": {"composer-installer": {"condition": "service_completed_successfully"}},
+      "working_dir": "/capacity",
+      "volumes": [
+        "${CAPACITY_REPOSITORY_ROOT}/benchmarks/capacity/v1/bindings/php:/capacity:ro",
+        "php-vendor:/capacity/vendor"
+      ],
+      "networks": ["capacity"],
+      "cpus": 1,
+      "mem_limit": 1073741824,
+      "healthcheck": {
+        "test": ["CMD", "php", "-r", "require '/capacity/vendor/autoload.php'; exit(is_file('/tmp/capacity-adapter-ready') && Composer\\InstalledVersions::getPrettyVersion('durable-workflow/sdk') === '2.0.0-rc.14' ? 0 : 1);"],
+        "interval": "2s",
+        "timeout": "3s",
+        "retries": 60
+      },
+      "labels": {
+        "dev.durable-workflow.capacity.component": "sdk-php-worker",
+        "dev.durable-workflow.capacity.profile": "local-docker-amd64-v1"
+      },
+      "restart": "no"
+    },
+    "sdk-python-worker": {
+      "image": "docker.io/library/python:3.12.4-slim-bookworm",
+      "platform": "linux/amd64",
+      "command": ["sh", "-ec", "python3 -m pip install --disable-pip-version-check --no-cache-dir --no-deps -r requirements.lock; test \"$(python3 -c 'import importlib.metadata; print(importlib.metadata.version(\"durable-workflow\"))')\" = 2.0.0rc25; touch /tmp/capacity-adapter-ready; exec tail -f /dev/null"],
+      "working_dir": "/capacity",
+      "volumes": ["${CAPACITY_REPOSITORY_ROOT}/benchmarks/capacity/v1/bindings/python:/capacity:ro"],
+      "networks": ["capacity"],
+      "cpus": 1,
+      "mem_limit": 1073741824,
+      "healthcheck": {
+        "test": ["CMD", "python3", "-c", "import importlib.metadata, pathlib; assert pathlib.Path('/tmp/capacity-adapter-ready').is_file(); assert importlib.metadata.version('durable-workflow') == '2.0.0rc25'"],
+        "interval": "2s",
+        "timeout": "3s",
+        "retries": 60
+      },
+      "labels": {
+        "dev.durable-workflow.capacity.component": "sdk-python-worker",
+        "dev.durable-workflow.capacity.profile": "local-docker-amd64-v1"
+      },
+      "restart": "no"
+    },
+    "sdk-rust-worker": {
+      "image": "docker.io/library/rust:1.86.0-bookworm",
+      "platform": "linux/amd64",
+      "command": ["sh", "-ec", "cargo build --release --locked; touch /tmp/capacity-adapter-ready; exec tail -f /dev/null"],
+      "working_dir": "/capacity",
+      "environment": {"CARGO_TARGET_DIR": "/capacity-target"},
+      "volumes": [
+        "${CAPACITY_REPOSITORY_ROOT}/benchmarks/capacity/v1/bindings/rust:/capacity:ro",
+        "rust-target:/capacity-target",
+        "cargo-cache:/usr/local/cargo/registry"
+      ],
+      "networks": ["capacity"],
+      "cpus": 1,
+      "mem_limit": 1073741824,
+      "healthcheck": {
+        "test": ["CMD", "sh", "-ec", "test -f /tmp/capacity-adapter-ready && test -x /capacity-target/release/durable-workflow-capacity-v1-adapter"],
+        "interval": "2s",
+        "timeout": "3s",
+        "retries": 120
+      },
+      "labels": {
+        "dev.durable-workflow.capacity.component": "sdk-rust-worker",
+        "dev.durable-workflow.capacity.profile": "local-docker-amd64-v1"
+      },
+      "restart": "no"
+    },
+    "load-generator": {
+      "image": "docker.io/library/python:3.12.4-slim-bookworm",
+      "platform": "linux/amd64",
+      "command": ["sh", "-ec", "test -x /docker-cli/docker; touch /tmp/capacity-load-generator-ready; exec tail -f /dev/null"],
+      "depends_on": {
+        "docker-cli-installer": {"condition": "service_completed_successfully"},
+        "server-worker": {"condition": "service_healthy"},
+        "scheduler": {"condition": "service_healthy"},
+        "sdk-php-worker": {"condition": "service_healthy"},
+        "sdk-python-worker": {"condition": "service_healthy"},
+        "sdk-rust-worker": {"condition": "service_healthy"}
+      },
+      "working_dir": "/workspace",
+      "environment": {"PATH": "/docker-cli:/usr/local/bin:/usr/bin:/bin"},
+      "volumes": [
+        "${CAPACITY_REPOSITORY_ROOT}:/workspace:ro",
+        "${CAPACITY_OUTPUT_ROOT}:/workspace/build/capacity-v1",
+        "/var/run/docker.sock:/var/run/docker.sock",
+        "docker-cli:/docker-cli:ro"
+      ],
+      "networks": ["capacity"],
+      "cpus": 2,
+      "mem_limit": 1073741824,
+      "healthcheck": {
+        "test": ["CMD", "sh", "-ec", "test -f /tmp/capacity-load-generator-ready && docker version --format '{{.Server.Version}}' >/dev/null"],
+        "interval": "2s",
+        "timeout": "3s",
+        "retries": 30
+      },
+      "labels": {
+        "dev.durable-workflow.capacity.component": "load-generator",
+        "dev.durable-workflow.capacity.profile": "local-docker-amd64-v1"
+      },
+      "restart": "no"
+    }
+  },
+  "networks": {
+    "capacity": {
+      "driver": "bridge",
+      "internal": false,
+      "attachable": false,
+      "labels": {"dev.durable-workflow.capacity.profile": "local-docker-amd64-v1"}
+    }
+  },
+  "volumes": {
+    "mysql-data": {"driver": "local", "labels": {"dev.durable-workflow.capacity.storage": "mysql", "dev.durable-workflow.capacity.profile": "local-docker-amd64-v1"}},
+    "redis-data": {"driver": "local", "labels": {"dev.durable-workflow.capacity.storage": "redis", "dev.durable-workflow.capacity.profile": "local-docker-amd64-v1"}},
+    "php-vendor": {"driver": "local"},
+    "composer-cache": {"driver": "local"},
+    "rust-target": {"driver": "local"},
+    "cargo-cache": {"driver": "local"},
+    "docker-cli": {"driver": "local"}
+  }
+}

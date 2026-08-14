@@ -32,7 +32,7 @@ RESULT_SCHEMA = "durable-workflow.capacity-benchmark-result/v1"
 CORPUS_SCHEMA = "durable-workflow.capacity-benchmark-regression-corpus/v1"
 ADAPTER_SCHEMA = "durable-workflow.capacity-benchmark-adapter/v1"
 COLLECTOR_SCHEMA = "durable-workflow.capacity-benchmark-collector/v1"
-SUITE_VERSION = "1.2.0"
+SUITE_VERSION = "1.3.0"
 
 REQUIRED_CELL_IDS = {
     "simple-start-complete",
@@ -221,8 +221,30 @@ def validate_profile(profile: dict[str, Any]) -> None:
     _text(architecture.get("machine"), "infrastructure.architecture.machine")
     _text(architecture.get("container"), "infrastructure.architecture.container")
     runtime = _object(profile.get("runtime"), "infrastructure.runtime")
-    for field in ("kernel_profile", "container_engine", "scheduling_policy"):
+    for field in (
+        "kernel_profile",
+        "container_engine",
+        "containerd_version",
+        "runc_version",
+        "docker_init_version",
+        "operating_system",
+        "default_runtime",
+        "cgroup_version",
+        "cgroup_driver",
+        "storage_driver",
+        "scheduling_policy",
+    ):
         _text(runtime.get(field), f"infrastructure.runtime.{field}")
+    networking = _object(profile.get("networking"), "infrastructure.networking")
+    if networking != {
+        "driver": "bridge",
+        "internal": False,
+        "attachable": False,
+        "service_networks": 1,
+    }:
+        raise ContractError(
+            "infrastructure.networking must declare the standard bridge policy"
+        )
     components = _object(profile.get("components"), "infrastructure.components")
     required_components = (
         "server",
@@ -252,14 +274,50 @@ def validate_profile(profile: dict[str, Any]) -> None:
             minimum=1,
         )
         _text(component.get("image"), f"infrastructure.components.{name}.image")
+    server = _object(profile.get("server"), "infrastructure.server")
+    _text(server.get("configuration"), "infrastructure.server.configuration")
+    server_environment = _object(
+        server.get("environment"), "infrastructure.server.environment"
+    )
+    for name, value in server_environment.items():
+        _text(name, "infrastructure.server.environment key")
+        _text(value, f"infrastructure.server.environment.{name}")
+    process_classes = _object(
+        server.get("process_classes"), "infrastructure.server.process_classes"
+    )
+    if set(process_classes) != {"server", "server-worker", "scheduler"}:
+        raise ContractError(
+            "infrastructure.server.process_classes must cover every Server role"
+        )
+    for name, value in process_classes.items():
+        _text(value, f"infrastructure.server.process_classes.{name}")
+    for command_name in ("worker_command", "scheduler_command"):
+        command = _list(
+            server.get(command_name),
+            f"infrastructure.server.{command_name}",
+            nonempty=True,
+        )
+        for index, value in enumerate(command):
+            _text(value, f"infrastructure.server.{command_name}[{index}]")
     storage = _object(profile.get("durable_storage"), "infrastructure.durable_storage")
-    for field in ("driver", "medium", "mount_options"):
+    for field in (
+        "driver",
+        "medium",
+        "mount_options",
+        "capacity_policy",
+        "database_destination",
+        "redis_destination",
+    ):
         _text(storage.get(field), f"infrastructure.durable_storage.{field}")
     _integer(
         storage.get("capacity_bytes"),
         "infrastructure.durable_storage.capacity_bytes",
         minimum=1,
     )
+    if storage.get("capacity_policy") != "minimum":
+        raise ContractError(
+            "infrastructure.durable_storage.capacity_policy must be minimum"
+        )
     for dependency in ("database", "redis"):
         service = _object(profile.get(dependency), f"infrastructure.{dependency}")
         _text(service.get("engine"), f"infrastructure.{dependency}.engine")
@@ -267,6 +325,19 @@ def validate_profile(profile: dict[str, Any]) -> None:
         _text(
             service.get("configuration"), f"infrastructure.{dependency}.configuration"
         )
+        parameters = _object(
+            service.get("parameters"), f"infrastructure.{dependency}.parameters"
+        )
+        if not parameters:
+            raise ContractError(
+                f"infrastructure.{dependency}.parameters cannot be empty"
+            )
+        for name, value in parameters.items():
+            _text(name, f"infrastructure.{dependency}.parameters key")
+            if not isinstance(value, str):
+                raise ContractError(
+                    f"infrastructure.{dependency}.parameters.{name} must be a string"
+                )
 
 
 def validate_suite(suite: dict[str, Any], suite_path: Path = DEFAULT_SUITE) -> None:
@@ -368,6 +439,32 @@ def validate_suite(suite: dict[str, Any], suite_path: Path = DEFAULT_SUITE) -> N
     }:
         raise ContractError(
             "driver contract must name the executable resource collector"
+        )
+    topology_contract = _object(driver.get("topology"), "driver_contract.topology")
+    if topology_contract != {
+        "profile": "profiles/local-docker-amd64.json",
+        "descriptor": "topologies/local-docker/topology.json",
+        "compose": "topologies/local-docker/compose.json",
+        "smoke": "topologies/local-docker/smoke.json",
+        "launcher": ["python3", "scripts/benchmark/capacity_local_docker.py"],
+        "commands": ["validate", "up", "run", "smoke", "down"],
+    }:
+        raise ContractError(
+            "driver contract must name the executable local Docker topology"
+        )
+    for field in ("profile", "descriptor", "compose", "smoke"):
+        source = _safe_relative_path(
+            topology_contract[field], f"driver_contract.topology.{field}"
+        )
+        if not (suite_path.parent / source).is_file():
+            raise ContractError(f"capacity topology source does not exist: {source}")
+    launcher = topology_contract["launcher"]
+    launcher_source = _safe_relative_path(
+        launcher[-1], "driver_contract.topology.launcher[-1]"
+    )
+    if not (ROOT / launcher_source).is_file():
+        raise ContractError(
+            f"capacity topology launcher does not exist: {launcher_source}"
         )
 
     cells = _list(suite.get("cells"), "cells", nonempty=True)
@@ -878,6 +975,11 @@ def validate_collector(
     )
     if set(component_containers) != set(profile["components"]):
         raise ContractError("collector component inventory must match the profile")
+    if descriptor.get("runtime_environment") != [
+        "CAPACITY_DOCKER_PROJECT",
+        "CAPACITY_DOCKER_NETWORK",
+    ]:
+        raise ContractError("collector must declare its Docker topology environment")
     if set(_object(descriptor.get("data_sources"), "collector.data_sources")) != {
         "component_resources",
         "durable_storage",

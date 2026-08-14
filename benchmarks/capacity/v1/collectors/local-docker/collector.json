@@ -1,7 +1,7 @@
 {
   "$schema": "../../schemas/collector.schema.json",
   "schema": "durable-workflow.capacity-benchmark-collector/v1",
-  "suite_version": "1.2.0",
+  "suite_version": "1.3.0",
   "profile_id": "local-docker-amd64-v1",
   "entrypoint": ["python3", "local_docker_collector.py"],
   "source_files": ["collector.json", "local_docker_collector.py"],
@@ -20,6 +20,10 @@
     "sdk-rust-worker": "CAPACITY_CONTAINER_SDK_RUST_WORKER",
     "load-generator": "CAPACITY_CONTAINER_LOAD_GENERATOR"
   },
+  "runtime_environment": [
+    "CAPACITY_DOCKER_PROJECT",
+    "CAPACITY_DOCKER_NETWORK"
+  ],
   "data_sources": {
     "component_resources": "docker_inspect_and_stats",
     "durable_storage": "mysql_data_directory_and_global_status",

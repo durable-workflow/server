@@ -4,21 +4,84 @@
   "title": "Durable Workflow capacity benchmark infrastructure v1",
   "type": "object",
   "additionalProperties": false,
-  "required": ["schema", "profile_id", "architecture", "runtime", "components", "durable_storage", "database", "redis"],
+  "required": ["schema", "profile_id", "architecture", "runtime", "networking", "components", "server", "durable_storage", "database", "redis"],
   "properties": {
     "$schema": {"type": "string"},
     "schema": {"const": "durable-workflow.capacity-benchmark-infrastructure/v1"},
     "profile_id": {"type": "string"},
     "description": {"type": "string"},
     "architecture": {"type": "object", "required": ["machine", "container"]},
-    "runtime": {"type": "object", "required": ["kernel_profile", "container_engine", "scheduling_policy"]},
+    "runtime": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kernel_profile", "container_engine", "containerd_version", "runc_version", "docker_init_version", "operating_system", "default_runtime", "cgroup_version", "cgroup_driver", "storage_driver", "scheduling_policy"],
+      "properties": {
+        "kernel_profile": {"type": "string"},
+        "container_engine": {"type": "string"},
+        "containerd_version": {"type": "string"},
+        "runc_version": {"type": "string"},
+        "docker_init_version": {"type": "string"},
+        "operating_system": {"type": "string"},
+        "default_runtime": {"type": "string"},
+        "cgroup_version": {"type": "string"},
+        "cgroup_driver": {"type": "string"},
+        "storage_driver": {"type": "string"},
+        "scheduling_policy": {"type": "string"}
+      }
+    },
+    "networking": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["driver", "internal", "attachable", "service_networks"],
+      "properties": {
+        "driver": {"const": "bridge"},
+        "internal": {"type": "boolean"},
+        "attachable": {"type": "boolean"},
+        "service_networks": {"type": "integer", "const": 1}
+      }
+    },
     "components": {"type": "object", "minProperties": 9, "additionalProperties": {"$ref": "#/$defs/component"}},
-    "durable_storage": {"type": "object", "required": ["driver", "medium", "mount_options", "capacity_bytes"]},
+    "server": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["configuration", "environment", "process_classes", "worker_command", "scheduler_command"],
+      "properties": {
+        "configuration": {"type": "string", "minLength": 1},
+        "environment": {"type": "object", "additionalProperties": {"type": "string"}},
+        "process_classes": {"type": "object", "additionalProperties": {"type": "string"}},
+        "worker_command": {"type": "array", "minItems": 1, "items": {"type": "string"}},
+        "scheduler_command": {"type": "array", "minItems": 1, "items": {"type": "string"}}
+      }
+    },
+    "durable_storage": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["driver", "medium", "mount_options", "capacity_bytes", "capacity_policy", "database_destination", "redis_destination"],
+      "properties": {
+        "driver": {"const": "local-volume"},
+        "medium": {"const": "nvme-ssd"},
+        "mount_options": {"const": "ext4-defaults"},
+        "capacity_bytes": {"type": "integer", "minimum": 1},
+        "capacity_policy": {"const": "minimum"},
+        "database_destination": {"const": "/var/lib/mysql"},
+        "redis_destination": {"const": "/data"}
+      }
+    },
     "database": {"$ref": "#/$defs/dependency"},
     "redis": {"$ref": "#/$defs/dependency"}
   },
   "$defs": {
     "component": {"type": "object", "additionalProperties": false, "required": ["cpu_cores", "memory_bytes", "image"], "properties": {"cpu_cores": {"type": "number", "exclusiveMinimum": 0}, "memory_bytes": {"type": "integer", "minimum": 1}, "image": {"type": "string"}}},
-    "dependency": {"type": "object", "additionalProperties": false, "required": ["engine", "version", "configuration"], "properties": {"engine": {"type": "string"}, "version": {"type": "string"}, "configuration": {"type": "string"}}}
+    "dependency": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["engine", "version", "configuration", "parameters"],
+      "properties": {
+        "engine": {"type": "string"},
+        "version": {"type": "string"},
+        "configuration": {"type": "string"},
+        "parameters": {"type": "object", "minProperties": 1, "additionalProperties": {"type": "string"}}
+      }
+    }
   }
 }

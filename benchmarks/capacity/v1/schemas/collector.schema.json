@@ -12,13 +12,14 @@
     "source_files",
     "protocol",
     "component_containers",
+    "runtime_environment",
     "data_sources",
     "credential_environment"
   ],
   "properties": {
     "$schema": {"type": "string"},
     "schema": {"const": "durable-workflow.capacity-benchmark-collector/v1"},
-    "suite_version": {"const": "1.2.0"},
+    "suite_version": {"const": "1.3.0"},
     "profile_id": {"type": "string", "minLength": 1},
     "entrypoint": {
       "type": "array",
@@ -44,6 +45,12 @@
       }
     },
     "component_containers": {"type": "object", "minProperties": 1},
+    "runtime_environment": {
+      "type": "array",
+      "minItems": 2,
+      "uniqueItems": true,
+      "items": {"type": "string", "minLength": 1}
+    },
     "data_sources": {"type": "object", "minProperties": 5},
     "credential_environment": {
       "type": "array",

@@ -35,6 +35,7 @@ import capacity_suite
 ROOT = capacity_suite.ROOT
 SUITE_ROOT = capacity_suite.SUITE_ROOT
 DEFAULT_COLLECTOR = SUITE_ROOT / "collectors/local-docker/collector.json"
+DEFAULT_SMOKE = SUITE_ROOT / "topologies/local-docker/smoke.json"
 
 
 class MatrixError(RuntimeError):
@@ -717,8 +718,33 @@ class CellRunner:
         )
         return environment
 
-    def _entrypoint(self, descriptor: dict[str, Any], mode: str) -> list[str]:
-        return [str(value) for value in descriptor["entrypoint"]] + [mode]
+    def _entrypoint(
+        self,
+        descriptor: dict[str, Any],
+        mode: str,
+        environment: dict[str, str] | None = None,
+    ) -> list[str]:
+        command = [str(value) for value in descriptor["entrypoint"]] + [mode]
+        binding = descriptor.get("binding")
+        if not isinstance(binding, str):
+            return command
+        suffix = binding.upper().replace("-", "_")
+        container = os.environ.get(f"CAPACITY_ADAPTER_CONTAINER_{suffix}", "").strip()
+        if not container:
+            return command
+        workdir = os.environ.get(
+            f"CAPACITY_ADAPTER_WORKDIR_{suffix}", "/capacity"
+        ).strip()
+        if not workdir.startswith("/"):
+            raise MatrixError(f"{binding} adapter container workdir must be absolute")
+        remote = ["docker", "exec", "--interactive", "--workdir", workdir]
+        forwarded = environment or os.environ
+        for name, value in sorted(forwarded.items()):
+            if name.startswith("DURABLE_WORKFLOW_"):
+                remote.extend(["--env", f"{name}={value}"])
+        remote.append(container)
+        remote.extend(command)
+        return remote
 
     def _start_processes(self, task_queue: str) -> None:
         environment = self._environment(task_queue)
@@ -733,7 +759,9 @@ class CellRunner:
             worker_environment["DURABLE_WORKFLOW_WORKER_PROCESS_INDEX"] = str(index)
             try:
                 process = subprocess.Popen(
-                    self._entrypoint(self.matrix_cell.adapter, "worker"),
+                    self._entrypoint(
+                        self.matrix_cell.adapter, "worker", worker_environment
+                    ),
                     cwd=self.matrix_cell.adapter_root,
                     env=worker_environment,
                     stdin=subprocess.DEVNULL,
@@ -750,7 +778,7 @@ class CellRunner:
         for index in range(int(self.execution["client_concurrency"])):
             self.clients.append(
                 JsonLineProcess(
-                    self._entrypoint(self.matrix_cell.adapter, "client"),
+                    self._entrypoint(self.matrix_cell.adapter, "client", environment),
                     cwd=self.matrix_cell.adapter_root,
                     environment=environment,
                     label=f"{self.binding} client {index}",
@@ -1381,7 +1409,9 @@ def _write_jsonl(path: Path, rows: list[dict[str, Any]]) -> None:
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("command", nargs="?", choices=("run", "dry-run"), default="run")
+    parser.add_argument(
+        "command", nargs="?", choices=("run", "dry-run", "smoke"), default="run"
+    )
     parser.add_argument("--suite", type=Path, default=capacity_suite.DEFAULT_SUITE)
     parser.add_argument("--profile", type=Path, default=capacity_suite.DEFAULT_PROFILE)
     parser.add_argument("--collector", type=Path, default=DEFAULT_COLLECTOR)
@@ -1393,7 +1423,109 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--source-revision")
     parser.add_argument("--run-timestamp")
     parser.add_argument("--architecture")
+    parser.add_argument("--smoke", type=Path, default=DEFAULT_SMOKE)
     return parser.parse_args(argv)
+
+
+def _run_smoke(
+    args: argparse.Namespace,
+    suite: dict[str, Any],
+    profile: dict[str, Any],
+    collector: dict[str, Any],
+) -> dict[str, Any]:
+    smoke = capacity_suite.load_json(args.smoke)
+    expected_identity = {
+        "schema": "durable-workflow.capacity-local-docker-smoke/v1",
+        "suite_version": suite["suite_version"],
+        "profile_id": profile["profile_id"],
+        "evidence_class": "local_topology_smoke",
+        "publishable": False,
+        "teardown": "always",
+    }
+    for name, value in expected_identity.items():
+        if smoke.get(name) != value:
+            raise MatrixError(f"local smoke {name} differs from the suite")
+    binding = str(smoke.get("binding") or "")
+    cell_id = str(smoke.get("cell_id") or "")
+    if binding not in capacity_suite.REQUIRED_BINDINGS:
+        raise MatrixError("local smoke binding must be first-party")
+    source_cell = next((cell for cell in suite["cells"] if cell["id"] == cell_id), None)
+    if source_cell is None:
+        raise MatrixError("local smoke cell is absent from the suite")
+    execution = smoke.get("execution")
+    if not isinstance(execution, dict):
+        raise MatrixError("local smoke execution must be an object")
+    cell = json.loads(json.dumps(source_cell))
+    cell["execution"] = execution
+    adapter_root = args.suite.parent / "bindings" / binding
+    matrix_cell = MatrixCell(
+        cell=cell,
+        binding=binding,
+        adapter=capacity_suite.load_json(adapter_root / "adapter.json"),
+        adapter_root=adapter_root,
+    )
+    runtime_url = _required_environment("DURABLE_WORKFLOW_RUNTIME_URL")
+    namespace = _required_environment("DURABLE_WORKFLOW_NAMESPACE", "capacity")
+    runner = CellRunner(
+        matrix_cell,
+        profile,
+        collector,
+        args.collector.parent,
+        runtime_url=runtime_url,
+        namespace=namespace,
+        task_queue_prefix=args.task_queue_prefix + "-smoke",
+        sample_interval=float(smoke["sample_interval_seconds"]),
+        minimum_delivery_ratio=float(
+            suite["operating_point_rule"]["minimum_offered_load_delivery_ratio"]
+        ),
+    )
+    rows = runner.run_load_step(int(smoke["load_step"]))
+    observations_path = args.output_dir / "local-docker-smoke.observations.jsonl"
+    result_path = args.output_dir / "local-docker-smoke.result.json"
+    _write_jsonl(observations_path, rows)
+    step = capacity_suite.reduce_step(
+        rows,
+        suite["operating_point_rule"],
+        float(execution["duration_seconds"]),
+        cell_id,
+    )
+    qualified = bool(
+        step["operating_point_eligible"]
+        and isinstance(step.get("drain"), dict)
+        and step["drain"].get("converged") is True
+    )
+    source_revision = args.source_revision or capacity_suite._git_revision()
+    run_timestamp = capacity_suite._timestamp(args.run_timestamp or _iso_now())
+    architecture = capacity_suite.normalize_architecture(
+        args.architecture or profile["architecture"]["machine"]
+    )
+    if architecture != capacity_suite.normalize_architecture(
+        profile["architecture"]["machine"]
+    ):
+        raise MatrixError("local smoke architecture differs from the profile")
+    result = {
+        "schema": "durable-workflow.capacity-local-docker-smoke-result/v1",
+        "identity": {
+            "suite_version": suite["suite_version"],
+            "suite_sha256": capacity_suite.sha256_file(args.suite),
+            "source_revision": capacity_suite._source_revision(source_revision),
+            "infrastructure_profile": profile["profile_id"],
+            "infrastructure_profile_sha256": capacity_suite.sha256_file(args.profile),
+            "architecture": architecture,
+            "binding": binding,
+            "run_timestamp": run_timestamp,
+        },
+        "evidence_class": "local_topology_smoke",
+        "publishable": False,
+        "qualified": qualified,
+        "cell_id": cell_id,
+        "execution": execution,
+        "load_step": step,
+    }
+    capacity_suite._write_result(result, result_path)
+    if not qualified:
+        raise MatrixError(f"local Docker smoke did not qualify: {result_path}")
+    return result
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -1420,6 +1552,15 @@ def main(argv: list[str] | None = None) -> int:
         }
         if args.command == "dry-run":
             print(json.dumps(plan, indent=2, sort_keys=True))
+            return 0
+        if args.command == "smoke":
+            result = _run_smoke(args, suite, profile, collector)
+            print(
+                "completed local Docker smoke: "
+                f"{args.output_dir / 'local-docker-smoke.result.json'} "
+                f"(qualified={str(result['qualified']).lower()}, publishable=false)",
+                flush=True,
+            )
             return 0
         if args.sample_interval_seconds <= 0:
             raise MatrixError("sample interval must be positive")
