@@ -565,7 +565,91 @@ class ReleaseImagePublishWorkflowContractTest extends TestCase
         $this->assertSame(2, $publicationTokenSteps);
     }
 
-    public function test_published_release_recovery_is_bound_to_exact_read_only_public_artifacts(): void
+    public function test_release_publisher_retries_an_initial_transient_view_before_creating_an_absent_release(): void
+    {
+        $result = $this->runGithubReleasePublisher([
+            ['exitCode' => 1, 'stderr' => 'HTTP 502: Bad Gateway'],
+            ['exitCode' => 1, 'stderr' => 'release not found'],
+            ['exitCode' => 0, 'stdout' => 'https://github.com/durable-workflow/server/releases/tag/2.0.0-rc.36'],
+        ]);
+
+        $this->assertSame(0, $result['exitCode'], $result['stderr']);
+        $this->assertSame([
+            'release view 2.0.0-rc.36 --json tagName',
+            'release view 2.0.0-rc.36 --json tagName',
+            'release create 2.0.0-rc.36 --verify-tag --generate-notes --title 2.0.0-rc.36 --prerelease',
+        ], $result['calls']);
+    }
+
+    public function test_release_publisher_retries_a_transient_post_create_view_and_accepts_the_existing_release(): void
+    {
+        $result = $this->runGithubReleasePublisher([
+            ['exitCode' => 1, 'stderr' => 'HTTP 404: release not found'],
+            ['exitCode' => 1, 'stderr' => 'HTTP 503: Service Unavailable'],
+            ['exitCode' => 1, 'stderr' => 'HTTP 429: rate limit exceeded'],
+            ['exitCode' => 0, 'stdout' => '{"tagName":"2.0.0-rc.36"}'],
+        ]);
+
+        $this->assertSame(0, $result['exitCode'], $result['stderr']);
+        $this->assertSame([
+            'release view 2.0.0-rc.36 --json tagName',
+            'release create 2.0.0-rc.36 --verify-tag --generate-notes --title 2.0.0-rc.36 --prerelease',
+            'release view 2.0.0-rc.36 --json tagName',
+            'release view 2.0.0-rc.36 --json tagName',
+        ], $result['calls']);
+        $this->assertSame(1, count(array_filter(
+            $result['calls'],
+            static fn (string $call): bool => str_starts_with($call, 'release create '),
+        )));
+        $this->assertStringContainsString('already exists; no retry is needed', $result['stdout']);
+    }
+
+    public function test_release_publisher_fails_after_exhausting_transient_view_attempts_without_creating(): void
+    {
+        $result = $this->runGithubReleasePublisher([
+            ['exitCode' => 1, 'stderr' => 'HTTP 500: Internal Server Error'],
+            ['exitCode' => 1, 'stderr' => 'HTTP 502: Bad Gateway'],
+            ['exitCode' => 1, 'stderr' => 'HTTP 503: Service Unavailable'],
+        ], [
+            'GITHUB_RELEASE_MAX_ATTEMPTS' => '3',
+        ]);
+
+        $this->assertSame(1, $result['exitCode']);
+        $this->assertSame([
+            'release view 2.0.0-rc.36 --json tagName',
+            'release view 2.0.0-rc.36 --json tagName',
+            'release view 2.0.0-rc.36 --json tagName',
+        ], $result['calls']);
+        $this->assertStringContainsString(
+            'Transient GitHub API failure persisted for 3 attempts while checking exact tag 2.0.0-rc.36',
+            $result['stderr'],
+        );
+    }
+
+    public function test_release_publisher_keeps_non_transient_view_and_create_failures_terminal(): void
+    {
+        $viewRejected = $this->runGithubReleasePublisher([
+            ['exitCode' => 1, 'stderr' => 'HTTP 401: Bad credentials'],
+        ]);
+
+        $this->assertSame(1, $viewRejected['exitCode']);
+        $this->assertSame([
+            'release view 2.0.0-rc.36 --json tagName',
+        ], $viewRejected['calls']);
+
+        $createRejected = $this->runGithubReleasePublisher([
+            ['exitCode' => 1, 'stderr' => 'release not found'],
+            ['exitCode' => 1, 'stderr' => 'HTTP 422: immutable tag validation failed'],
+        ]);
+
+        $this->assertSame(1, $createRejected['exitCode']);
+        $this->assertSame([
+            'release view 2.0.0-rc.36 --json tagName',
+            'release create 2.0.0-rc.36 --verify-tag --generate-notes --title 2.0.0-rc.36 --prerelease',
+        ], $createRejected['calls']);
+    }
+
+    public function test_published_release_recovery_verification_is_bound_to_exact_read_only_public_artifacts(): void
     {
         $source = $this->read('.github/workflows/published-release-recovery.yml');
         $workflow = Yaml::parse($source);
@@ -624,7 +708,7 @@ class ReleaseImagePublishWorkflowContractTest extends TestCase
             'create-github-release.sh',
             'promote-release-image-rolling-tags.sh',
         ] as $mutation) {
-            $this->assertStringNotContainsString($mutation, $source."\n".$verifier);
+            $this->assertStringNotContainsString($mutation, Yaml::dump($job)."\n".$verifier);
         }
     }
 
@@ -3440,6 +3524,76 @@ SH;
     private function runGuard(array $env): array
     {
         return $this->runScript('scripts/ci/validate-release-image-publish.sh', $env);
+    }
+
+    /**
+     * @param  list<array{exitCode:int, stdout?:string, stderr?:string}>  $responses
+     * @param  array<string, string>  $environment
+     * @return array{exitCode:int, stdout:string, stderr:string, calls:list<string>}
+     */
+    private function runGithubReleasePublisher(array $responses, array $environment = []): array
+    {
+        $tmpDir = sys_get_temp_dir().'/github-release-publisher-'.bin2hex(random_bytes(4));
+        $this->assertTrue(mkdir($tmpDir));
+        $fakeGh = $tmpDir.'/gh';
+        $statePath = $tmpDir.'/state';
+        $logPath = $tmpDir.'/calls.log';
+        $responsesPath = $tmpDir.'/responses';
+        $this->assertTrue(mkdir($responsesPath));
+
+        file_put_contents($fakeGh, <<<'SH'
+#!/usr/bin/env bash
+set -euo pipefail
+
+attempt=0
+if [ -f "$FAKE_GH_STATE" ]; then
+    read -r attempt < "$FAKE_GH_STATE"
+fi
+attempt=$((attempt + 1))
+printf '%s\n' "$attempt" > "$FAKE_GH_STATE"
+printf '%s\n' "$*" >> "$FAKE_GH_LOG"
+
+response="$FAKE_GH_RESPONSES/$attempt"
+[ -f "$response.status" ] || exit 97
+[ ! -s "$response.stdout" ] || cat "$response.stdout"
+[ ! -s "$response.stderr" ] || cat "$response.stderr" >&2
+read -r status < "$response.status"
+exit "$status"
+SH);
+        $this->assertTrue(chmod($fakeGh, 0755));
+
+        foreach ($responses as $index => $response) {
+            $prefix = $responsesPath.'/'.($index + 1);
+            file_put_contents($prefix.'.status', $response['exitCode']."\n");
+            file_put_contents($prefix.'.stdout', isset($response['stdout']) ? $response['stdout']."\n" : '');
+            file_put_contents($prefix.'.stderr', isset($response['stderr']) ? $response['stderr']."\n" : '');
+        }
+
+        try {
+            $result = $this->runScript('scripts/ci/create-github-release.sh', array_merge([
+                'RELEASE_TAG' => '2.0.0-rc.36',
+                'GH_CLI' => $fakeGh,
+                'GITHUB_RELEASE_MAX_ATTEMPTS' => '4',
+                'GITHUB_RELEASE_RETRY_INITIAL_DELAY_SECONDS' => '0',
+                'GITHUB_RELEASE_RETRY_MAX_DELAY_SECONDS' => '0',
+                'FAKE_GH_STATE' => $statePath,
+                'FAKE_GH_LOG' => $logPath,
+                'FAKE_GH_RESPONSES' => $responsesPath,
+            ], $environment));
+
+            return $result + [
+                'calls' => file($logPath, FILE_IGNORE_NEW_LINES | FILE_SKIP_EMPTY_LINES) ?: [],
+            ];
+        } finally {
+            foreach (glob($responsesPath.'/*') ?: [] as $path) {
+                @unlink($path);
+            }
+            @unlink($fakeGh);
+            @unlink($statePath);
+            @unlink($logPath);
+            @rmdir($responsesPath);
+            @rmdir($tmpDir);
+        }
     }
 
     /**

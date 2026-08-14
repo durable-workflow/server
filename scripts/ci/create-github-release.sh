@@ -26,19 +26,38 @@ is_transient_http_failure() {
 }
 
 exact_release_exists() {
+    local delay
+    local view_attempt
     local view_output
 
-    if view_output="$("$gh_cli" release view "$release_tag" --json tagName 2>&1)"; then
-        return 0
-    fi
+    for ((view_attempt = 1; view_attempt <= maximum_attempts; view_attempt++)); do
+        if view_output="$("$gh_cli" release view "$release_tag" --json tagName 2>&1)"; then
+            return 0
+        fi
 
-    if [[ "$view_output" =~ HTTP[[:space:]]+404([^0-9]|$) ]] \
-        || [[ "$view_output" == *"release not found"* ]]; then
-        return 1
-    fi
+        if [[ "$view_output" =~ HTTP[[:space:]]+404([^0-9]|$) ]] \
+            || [[ "$view_output" == *"release not found"* ]]; then
+            return 1
+        fi
 
-    printf '%s\n' "$view_output" >&2
-    return 2
+        printf '%s\n' "$view_output" >&2
+        if ! is_transient_http_failure "$view_output"; then
+            return 2
+        fi
+
+        if [ "$view_attempt" -ge "$maximum_attempts" ]; then
+            printf 'Transient GitHub API failure persisted for %s attempts while checking exact tag %s.\n' \
+                "$maximum_attempts" "$release_tag" >&2
+            return 2
+        fi
+
+        delay="$(retry_delay "$view_attempt")"
+        printf 'Transient GitHub Release view failure for %s on attempt %s/%s; retrying after %ss.\n' \
+            "$release_tag" "$view_attempt" "$maximum_attempts" "$delay" >&2
+        if [ "$delay" -gt 0 ]; then
+            sleep "$delay"
+        fi
+    done
 }
 
 retry_delay() {
