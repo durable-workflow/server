@@ -83,6 +83,37 @@ def evaluate_protected_publish_condition(**context: str) -> bool:
     return bool(evaluate(ast.parse(expression, mode="eval")))
 
 
+def evaluate_recovery_condition(
+    workflow: str,
+    job: str,
+    **context: str,
+) -> bool:
+    expression = job_condition(workflow_source(workflow), job)
+    replacements = {
+        "needs.publish.outputs.exact_publish_outcome": context.get(
+            "exact_publish_outcome", ""
+        ),
+        "needs.verify.outputs.release_verification_outcome": context.get(
+            "release_verification_outcome", ""
+        ),
+        "github.repository": context["repository"],
+        "github.event_name": context.get("event_name", "workflow_dispatch"),
+        "github.ref": context["ref"],
+    }
+    for field, value in replacements.items():
+        expression = expression.replace(field, repr(value))
+    expression = expression.replace("always()", "True")
+    expression = re.sub(
+        r"startsWith\(([^,]+),\s*([^\)]+)\)",
+        r"\1.startswith(\2)",
+        expression,
+    )
+    expression = expression.replace("&&", " and ").replace("||", " or ")
+    if "github." in expression or "needs." in expression:
+        raise AssertionError(f"unsupported workflow context in condition: {expression}")
+    return bool(eval(expression, {"__builtins__": {}}, {}))
+
+
 class HelmChartReleaseTest(unittest.TestCase):
     def test_chart_qualification_uses_only_source_controlled_tool_versions(
         self,
@@ -450,7 +481,14 @@ class HelmChartReleaseTest(unittest.TestCase):
         self.assertNotIn("packages: write", validation)
         self.assertNotIn("workflow_run:", publish)
         self.assertIn("workflow_call:", publish)
-        self.assertEqual({"helm-chart-release.yml", "release.yml"}, callers)
+        self.assertEqual(
+            {
+                "helm-chart-release.yml",
+                "published-release-recovery.yml",
+                "release.yml",
+            },
+            callers,
+        )
 
     def test_release_orders_chart_publication_after_the_verified_image(self) -> None:
         image_release = workflow_source("release.yml")
@@ -463,8 +501,17 @@ class HelmChartReleaseTest(unittest.TestCase):
             "release_source_commit: ${{ steps.release_source.outputs.commit }}",
             image_job,
         )
+        self.assertIn(
+            "exact_publish_outcome: ${{ steps.exact.outputs.exact_publish_outcome }}",
+            image_job,
+        )
         self.assertIn("needs: publish", chart_job)
-        self.assertIn("needs.publish.result == 'success'", chart_job)
+        self.assertIn("always()", chart_job)
+        self.assertIn(
+            "needs.publish.outputs.exact_publish_outcome == 'success'",
+            chart_job,
+        )
+        self.assertNotIn("needs.publish.result == 'success'", chart_job)
         self.assertIn("github.repository == 'durable-workflow/server'", chart_job)
         self.assertIn("github.ref == 'refs/heads/main'", chart_job)
         self.assertIn("startsWith(github.ref, 'refs/tags/')", chart_job)
@@ -476,6 +523,63 @@ class HelmChartReleaseTest(unittest.TestCase):
         self.assertIn("needs: validate", protected_publish)
         self.assertIn("source_ref: ${{ github.sha }}", protected_publish)
         self.assertIn("allow_missing_image: true", protected_publish)
+
+    def test_partial_release_and_verification_only_recovery_publish_the_chart(
+        self,
+    ) -> None:
+        recovery = workflow_source("published-release-recovery.yml")
+        recovery_verify = workflow_job(recovery, "verify")
+        recovery_chart = workflow_job(recovery, "publish-chart")
+
+        self.assertTrue(
+            evaluate_recovery_condition(
+                "release.yml",
+                "publish-chart",
+                exact_publish_outcome="success",
+                repository="durable-workflow/server",
+                event_name="workflow_dispatch",
+                ref="refs/heads/main",
+            ),
+            "a later docs failure must not hide the successful immutable image output",
+        )
+        self.assertFalse(
+            evaluate_recovery_condition(
+                "release.yml",
+                "publish-chart",
+                exact_publish_outcome="failure",
+                repository="durable-workflow/server",
+                event_name="workflow_dispatch",
+                ref="refs/heads/main",
+            )
+        )
+        self.assertIn("id: release_verify", recovery_verify)
+        self.assertIn(
+            "release_verification_outcome: ${{ steps.release_verify.outcome }}",
+            recovery_verify,
+        )
+        self.assertIn("always()", recovery_chart)
+        self.assertIn(
+            "needs.verify.outputs.release_verification_outcome == 'success'",
+            recovery_chart,
+        )
+        self.assertIn(
+            "source_ref: ${{ needs.verify.outputs.release_source_commit }}",
+            recovery_chart,
+        )
+        self.assertIn("allow_missing_image: false", recovery_chart)
+        self.assertTrue(
+            evaluate_recovery_condition(
+                "published-release-recovery.yml",
+                "publish-chart",
+                release_verification_outcome="success",
+                repository="durable-workflow/server",
+                ref="refs/heads/main",
+            ),
+            "verification-only recovery must retry an idempotent chart publication",
+        )
+        self.assertNotIn("docker/build-push-action", recovery)
+        self.assertNotIn("helm push", recovery)
+        self.assertNotIn("create-github-release", recovery)
 
     def test_duplicate_publication_reuses_and_verifies_the_existing_package(
         self,

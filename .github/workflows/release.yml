@@ -47,6 +47,7 @@ jobs:
       packages: write
     outputs:
       release_source_commit: ${{ steps.release_source.outputs.commit }}
+      exact_publish_outcome: ${{ steps.exact.outputs.exact_publish_outcome }}
     steps:
       - name: Check out trusted release tooling
         uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803  # v6
@@ -391,7 +392,8 @@ jobs:
     name: Publish matching immutable Helm chart
     needs: publish
     if: >-
-      needs.publish.result == 'success' &&
+      always() &&
+      needs.publish.outputs.exact_publish_outcome == 'success' &&
       github.repository == 'durable-workflow/server' &&
       ((github.event_name == 'workflow_dispatch' &&
         github.ref == 'refs/heads/main') ||
