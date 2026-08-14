@@ -1633,6 +1633,40 @@ SH);
         $this->assertNull($result['handoff']);
     }
 
+    public function test_docs_audit_accepts_only_the_canonical_php_api_reference_route(): void
+    {
+        $canonical = $this->runDocsReleaseAudit(
+            json_encode($this->validDocsReleaseAudit('0.2.620'), JSON_THROW_ON_ERROR),
+            '0.2.620',
+        );
+
+        $this->assertSame(0, $canonical['exitCode']);
+        $this->assertSame('ready', $canonical['evidence']['classification']);
+
+        foreach ([
+            'https://php.durable-workflow.com/',
+            'https://php.durable-workflow.com/reference/',
+            'https://example.com/api/',
+        ] as $unexpectedUrl) {
+            $audit = $this->validDocsReleaseAudit('0.2.620');
+            $audit['artifact_distribution_surfaces']['sdk-php'][2]['url'] = $unexpectedUrl;
+
+            $result = $this->runDocsReleaseAudit(
+                json_encode($audit, JSON_THROW_ON_ERROR),
+                '0.2.620',
+            );
+
+            $this->assertSame(1, $result['exitCode'], $unexpectedUrl);
+            $this->assertSame('public_safety_failure', $result['evidence']['outcome']);
+            $this->assertSame('mixed_artifact_tuple', $result['evidence']['failure_kind']);
+            $this->assertStringContainsString($unexpectedUrl, $result['stderr']);
+            $this->assertStringContainsString(
+                'expected https://php.durable-workflow.com/api/',
+                $result['stderr'],
+            );
+        }
+    }
+
     public function test_docs_audit_v5_stale_tuple_handoff_covers_complete_public_artifact_tuple(): void
     {
         $expectedRefreshFiles = [
@@ -2963,7 +2997,7 @@ SH;
                     ],
                     [
                         'surface' => 'api_documentation',
-                        'url' => 'https://php.durable-workflow.com/',
+                        'url' => 'https://php.durable-workflow.com/api/',
                     ],
                 ],
                 'server' => [

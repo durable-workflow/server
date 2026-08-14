@@ -155,7 +155,7 @@ const expectedPhpSurfaces = [
   },
   {
     surface: 'api_documentation',
-    url: 'https://php.durable-workflow.com/',
+    url: 'https://php.durable-workflow.com/api/',
   },
 ];
 const stableLlmPaths = [
