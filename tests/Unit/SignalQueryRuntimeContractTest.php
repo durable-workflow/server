@@ -4844,11 +4844,16 @@ PY);
     public function test_host_runner_emits_bounded_portable_pass_evidence(): void
     {
         $evidence = $this->completeSignalQueryResultForCurrentHostRunner();
+        $warningPrefixedOutput = 'WARNING: {"client_secret":"full-client-secret-value",'
+            .'"refreshToken":"full-refresh-token-value","status":"completed",'
+            .'"reason":"selected_run","operation":"workflow:query",'
+            .'"validation_details":"complete"}';
         $evidence['scenario_results']['waterline_operator_visibility']['observed_outputs']['api_captures'][
             'selected_run_detail'
         ]['response_json'] = [
             'workflow_payload' => 'customer-payload-'.str_repeat('x', 5 * 1024 * 1024),
             'access_token' => 'portable-result-secret',
+            'warning_prefixed_output' => $warningPrefixedOutput,
             'headers_and_parameters' => [
                 'auth_token' => 'portable-auth-token-value',
                 'bearer_token' => 'portable-bearer-token-value',
@@ -4858,9 +4863,12 @@ PY);
 
         $artifacts = $this->runSignalQueryHostRunnerArtifacts($evidence);
         $result = $artifacts['result'];
-        $encoded = json_encode($result, JSON_THROW_ON_ERROR);
+        $encoded = json_encode(
+            [$result, $artifacts['record'], $artifacts['stdout']],
+            JSON_THROW_ON_ERROR,
+        );
 
-        $this->assertLessThan(4 * 1024 * 1024, $artifacts['result_bytes']);
+        $this->assertLessThan(1024 * 1024, $artifacts['result_bytes']);
         $this->assertSame('pass', $result['outcome']);
         $this->assertFalse($result['runner_blocked']);
         $this->assertEquals(
@@ -4882,7 +4890,78 @@ PY);
         $this->assertStringNotContainsString('portable-bearer-token-value', $encoded);
         $this->assertStringNotContainsString('api_key', $encoded);
         $this->assertStringNotContainsString('portable-api-key-value', $encoded);
+        $this->assertStringNotContainsString('full-client-secret-value', $encoded);
+        $this->assertStringNotContainsString('full-refresh-token-value', $encoded);
+        $this->assertSame(
+            'WARNING: {"client_secret":"<redacted>","refreshToken":"<redacted>",'
+                .'"status":"completed","reason":"selected_run","operation":"workflow:query",'
+                .'"validation_details":"complete"}',
+            $result['scenario_results']['waterline_operator_visibility']['observed_outputs'][
+                'api_captures'
+            ]['selected_run_detail']['response_json']['warning_prefixed_output'],
+        );
         $this->assertSame('pass', SignalQueryRuntimeResultGate::evaluate($result)['status']);
+    }
+
+    public function test_portable_text_redaction_survives_routing_only_compaction(): void
+    {
+        $evidence = $this->completeSignalQueryResultForCurrentHostRunner();
+        $outputs = &$evidence['scenario_results']['php_worker_cli_and_sdk_baseline']['observed_outputs'];
+        $outputs['cli_signal_and_query'] = false;
+        $outputs['published_client_invocations'] = [];
+        for ($index = 1; $index <= 40; $index++) {
+            $outputs['published_client_invocations'][] = [
+                'sequence' => $index,
+                'phase' => 'cli_query',
+                'sample' => [
+                    'client' => 'cli',
+                    'operation' => 'workflow:query',
+                    'operation_name' => 'current',
+                    'ok' => false,
+                    'exit_code' => 1,
+                    'status' => 'failed',
+                    'status_code' => 500,
+                    'reason' => 'query_handler_failed',
+                    'validation_errors' => [[
+                        'field' => 'query_result',
+                        'message' => 'invalid current query response '.$index,
+                    ]],
+                    'error' => 'WARNING: {"client_secret":"routing-client-secret-value",'
+                        .'"refreshToken":"routing-refresh-token-value","status":"failed"} '
+                        .str_repeat('published response detail ', 240),
+                    'stderr' => 'https://runner.example.test/query?api-key=routing-api-key-value'
+                        .'&appKey=routing-app-key-value&status=failed',
+                ],
+            ];
+        }
+        unset($outputs);
+
+        $artifacts = $this->runSignalQueryHostRunnerArtifacts($evidence);
+        $retained = $artifacts['result']['published_client_invocations'][
+            'php_worker_cli_and_sdk_baseline'
+        ]['invocations'];
+        $encoded = json_encode(
+            [$artifacts['result'], $artifacts['record'], $artifacts['stdout']],
+            JSON_THROW_ON_ERROR,
+        );
+
+        $this->assertCount(40, $retained);
+        $this->assertLessThan(1024 * 1024, $artifacts['result_bytes']);
+        $this->assertArrayNotHasKey('sample', $retained[0]);
+        $this->assertArrayHasKey('phase', $retained[0]);
+        $this->assertSame('workflow:query', $retained[0]['operation_surface']);
+        $this->assertSame('query_handler_failed', $retained[0]['reason']);
+        $this->assertNotEmpty($retained[0]['validation_details']);
+        $this->assertNotEmpty($retained[0]['response_or_error_summary']);
+        foreach ([
+            'routing-client-secret-value',
+            'routing-refresh-token-value',
+            'routing-api-key-value',
+            'routing-app-key-value',
+        ] as $secret) {
+            $this->assertStringNotContainsString($secret, $encoded);
+        }
+        $this->assertLessThanOrEqual(64 * 1024, strlen(json_encode($retained, JSON_THROW_ON_ERROR)));
     }
 
     public function test_host_runner_retains_over_limit_published_client_failures_as_routing_samples(): void
@@ -4898,8 +4977,16 @@ PY);
             'result' => 0,
         ];
         $cliFailureText = 'CLI transport response retained for routing. '
+            .'WARNING: {"client_secret":"warning-client-secret-value",'
+            .'"refresh_token":"warning-refresh-token-snake-value",'
+            .'"refreshToken":"warning-refresh-token-value","status":"failed"} '
             .str_repeat('server contract rejection detail; ', 190)
-            .'terminal workflow failure remains distinguishable.';
+            .'terminal workflow failure remains distinguishable. '
+            ."{clientSecret: 'malformed-client-secret-value', "
+            .'refresh-token=malformed-refresh-token-value, '
+            .'privateKey=malformed-private-key-value, api_key=malformed-api-key-value, '
+            .'app-key=malformed-app-key-value, operation=workflow:signal, '
+            ."validation_details='expected integer'}";
         $cliFailure = [
             'client' => 'cli',
             'operation' => 'workflow:signal',
@@ -4918,11 +5005,19 @@ PY);
                     ['field' => 'arguments.0', 'rule' => 'integer'],
                 ],
                 'message' => $cliFailureText,
-                'request_url' => 'https://runner:private-password@example.test/workflows?access_token=private-query-token',
+                'request_url' => 'https://runner:private-password@example.test/workflows?'
+                    .'access_token=private-query-token&api-key=private-api-key&appKey=private-app-key',
                 'broker_url' => 'redis://worker:private-redis-password@cache.example.test/0',
                 'authorization' => 'Bearer private-bearer-token',
             ],
-            'stderr' => 'APP_SECRET=private-container-secret '.$cliFailureText,
+            'raw_stdout' => $cliFailureText,
+            'stderr' => 'APP_SECRET=private-container-secret '
+                .'servicePassword=private-service-password '
+                .'oauthCredential=private-oauth-credential '
+                .'private-key=private-signing-key '
+                .$cliFailureText,
+            'exception' => 'clientSecret=exception-client-secret-value '
+                .'refresh_token=exception-refresh-token-value',
         ];
         $rustFailureText = 'Rust client HTTP response retained for routing. '
             .str_repeat('query mirror response detail; ', 170)
@@ -4979,7 +5074,10 @@ PY);
         $artifacts = $this->runSignalQueryHostRunnerArtifacts($evidence);
         $result = $artifacts['result'];
         $record = $artifacts['record'];
-        $encoded = json_encode($result, JSON_THROW_ON_ERROR);
+        $encoded = json_encode(
+            [$result, $record, $artifacts['stdout']],
+            JSON_THROW_ON_ERROR,
+        );
         $retained = $result['published_client_invocations'];
         $baselineInvocations = $retained['php_worker_cli_and_sdk_baseline']['invocations'];
         $cliRouting = $baselineInvocations[1];
@@ -5007,6 +5105,18 @@ PY);
             'terminal workflow failure remains distinguishable.',
             $cliRouting['response_or_error_summary']['output']['message']['summary'],
         );
+        $this->assertStringContainsString(
+            '"status":"failed"',
+            $cliRouting['response_or_error_summary']['output']['message']['summary'],
+        );
+        $this->assertStringContainsString(
+            'operation=workflow:signal',
+            $cliRouting['response_or_error_summary']['output']['message']['summary'],
+        );
+        $this->assertStringContainsString(
+            "validation_details='expected integer'",
+            $cliRouting['response_or_error_summary']['output']['message']['summary'],
+        );
         $this->assertSame('query', $rustRouting['operation_surface']);
         $this->assertSame(1, $rustRouting['exit_code']);
         $this->assertSame(500, $rustRouting['status_code']);
@@ -5020,8 +5130,23 @@ PY);
         $this->assertStringNotContainsString('private-password', $encoded);
         $this->assertStringNotContainsString('private-redis-password', $encoded);
         $this->assertStringNotContainsString('private-query-token', $encoded);
+        $this->assertStringNotContainsString('private-api-key', $encoded);
+        $this->assertStringNotContainsString('private-app-key', $encoded);
         $this->assertStringNotContainsString('private-bearer-token', $encoded);
         $this->assertStringNotContainsString('private-container-secret', $encoded);
+        $this->assertStringNotContainsString('private-service-password', $encoded);
+        $this->assertStringNotContainsString('private-oauth-credential', $encoded);
+        $this->assertStringNotContainsString('private-signing-key', $encoded);
+        $this->assertStringNotContainsString('warning-client-secret-value', $encoded);
+        $this->assertStringNotContainsString('warning-refresh-token-snake-value', $encoded);
+        $this->assertStringNotContainsString('warning-refresh-token-value', $encoded);
+        $this->assertStringNotContainsString('malformed-client-secret-value', $encoded);
+        $this->assertStringNotContainsString('malformed-refresh-token-value', $encoded);
+        $this->assertStringNotContainsString('malformed-private-key-value', $encoded);
+        $this->assertStringNotContainsString('malformed-api-key-value', $encoded);
+        $this->assertStringNotContainsString('malformed-app-key-value', $encoded);
+        $this->assertStringNotContainsString('exception-client-secret-value', $encoded);
+        $this->assertStringNotContainsString('exception-refresh-token-value', $encoded);
 
         $longStrings = [];
         array_walk_recursive($result, static function (mixed $value) use (&$longStrings): void {
@@ -5032,7 +5157,7 @@ PY);
         $this->assertSame([], $longStrings);
     }
 
-    public function test_portable_client_invocation_compaction_keeps_every_routing_record_within_cell_budget(): void
+    public function test_portable_client_invocation_minimal_compaction_redacts_every_routing_record(): void
     {
         $evidence = $this->completeSignalQueryResultForCurrentHostRunner();
         $outputs = &$evidence['scenario_results']['php_worker_cli_and_sdk_baseline']['observed_outputs'];
@@ -5054,18 +5179,28 @@ PY);
                         'field' => 'query_result',
                         'message' => 'invalid current query response '.$index,
                     ]],
-                    'error' => 'failure '.$index.': '.str_repeat('published response detail ', 240),
+                    'error' => "ERROR: {clientSecret: 'minimal-client-secret-value', "
+                        .'refresh-token=minimal-refresh-token-value, operation=workflow:query} '
+                        .'failure '.$index.': '.str_repeat('published response detail ', 240),
+                    'stderr' => 'private_key=minimal-private-key-value '
+                        .'servicePassword=minimal-password-value',
                 ],
             ];
         }
         unset($outputs);
 
-        $result = $this->runSignalQueryHostRunner($evidence);
+        $artifacts = $this->runSignalQueryHostRunnerArtifacts($evidence);
+        $result = $artifacts['result'];
         $retained = $result['published_client_invocations']['php_worker_cli_and_sdk_baseline'][
             'invocations'
         ];
+        $encoded = json_encode(
+            [$result, $artifacts['record'], $artifacts['stdout']],
+            JSON_THROW_ON_ERROR,
+        );
 
         $this->assertCount(126, $retained);
+        $this->assertLessThan(1024 * 1024, $artifacts['result_bytes']);
         $this->assertLessThanOrEqual(
             64 * 1024,
             strlen(json_encode($retained, JSON_THROW_ON_ERROR)),
@@ -5076,9 +5211,19 @@ PY);
         $this->assertSame('query_handler_failed', $retained[0]['reason']);
         $this->assertNotEmpty($retained[0]['validation_details']);
         $this->assertNotEmpty($retained[0]['response_or_error_summary']);
+        $this->assertArrayNotHasKey('phase', $retained[0]);
+        $this->assertArrayHasKey('sample_sha256', $retained[0]);
         $this->assertSame(126, $retained[125]['sequence']);
         $this->assertSame('workflow:query', $retained[125]['operation_surface']);
         $this->assertSame('query_handler_failed', $retained[125]['reason']);
+        foreach ([
+            'minimal-client-secret-value',
+            'minimal-refresh-token-value',
+            'minimal-private-key-value',
+            'minimal-password-value',
+        ] as $secret) {
+            $this->assertStringNotContainsString($secret, $encoded);
+        }
     }
 
     public function test_host_runner_keeps_product_failures_fail_closed_while_bounding_evidence(): void

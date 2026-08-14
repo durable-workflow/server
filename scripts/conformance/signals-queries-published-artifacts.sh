@@ -16816,9 +16816,22 @@ PORTABLE_SENSITIVE_KEY_PARTS = (
 )
 PORTABLE_SENSITIVE_KEY_SUFFIXES = (
     "apikey",
+    "appkey",
     "passphrase",
     "token",
 )
+PORTABLE_SENSITIVE_KEY_STANDALONE_ATOMS = {
+    "auth",
+    "authentication",
+    "authorization",
+    "cookie",
+    "credential",
+    "credentials",
+    "passphrase",
+    "password",
+    "secret",
+    "token",
+}
 PORTABLE_UNBOUNDED_VALUE_KEYS = {
     "customerpayload",
     "debuglog",
@@ -16851,17 +16864,85 @@ PORTABLE_FAILURE_SUMMARY_STRING_LIMIT = 1024
 # A failed 60-second query wait can contribute at most 120 half-second attempts;
 # the target PHP-worker cells perform no more than six invocations before that wait.
 PORTABLE_CLIENT_INVOCATION_LIMIT = 128
+PORTABLE_TEXT_FIELD_PATTERN = re.compile(
+    r'''(?ix)
+    (?P<prefix>
+        (?<![A-Za-z0-9_-])
+        (?P<key_quote>["']?)
+        (?P<key>[A-Za-z][A-Za-z0-9_-]*)
+        (?P=key_quote)
+        \s*[:=]\s*
+    )
+    (?P<value>
+        "(?:\\.|[^"\\])*"
+        | '(?:\\.|[^'\\])*'
+        | [^\s,;&}\]]+
+    )
+    ''',
+)
 
 
 def portable_key_token(value: Any) -> str:
     return re.sub(r"[^a-z0-9]", "", str(value).lower())
 
 
+def portable_key_atoms(value: Any) -> list[str]:
+    separated = re.sub(r"([a-z0-9])([A-Z])", r"\1_\2", str(value))
+    separated = re.sub(r"([A-Z]+)([A-Z][a-z])", r"\1_\2", separated)
+    return [part.lower() for part in re.split(r"[^A-Za-z0-9]+", separated) if part]
+
+
 def portable_sensitive_key(value: Any) -> bool:
     token = portable_key_token(value)
-    return any(part in token for part in PORTABLE_SENSITIVE_KEY_PARTS) or any(
-        token.endswith(suffix) for suffix in PORTABLE_SENSITIVE_KEY_SUFFIXES
+    atoms = portable_key_atoms(value)
+    atom_set = set(atoms)
+    compound_key = (
+        ({"api", "key"} <= atom_set)
+        or ({"api", "keys"} <= atom_set)
+        or ({"app", "key"} <= atom_set)
+        or ({"app", "keys"} <= atom_set)
+        or ({"private", "key"} <= atom_set)
+        or ({"private", "keys"} <= atom_set)
     )
+    return (
+        compound_key
+        or any(atom in PORTABLE_SENSITIVE_KEY_STANDALONE_ATOMS for atom in atoms)
+        or any(part in token for part in PORTABLE_SENSITIVE_KEY_PARTS)
+        or any(token.endswith(suffix) for suffix in PORTABLE_SENSITIVE_KEY_SUFFIXES)
+    )
+
+
+def portable_redact_field_value(match: re.Match[str]) -> str:
+    if not portable_sensitive_key(match.group("key")):
+        return match.group(0)
+    raw_value = match.group("value")
+    if len(raw_value) >= 2 and raw_value[0] in "\"'" and raw_value[-1] == raw_value[0]:
+        replacement = f"{raw_value[0]}<redacted>{raw_value[0]}"
+    else:
+        replacement = "<redacted>"
+    return match.group("prefix") + replacement
+
+
+def portable_redact_query_value(match: re.Match[str]) -> str:
+    if not portable_sensitive_key(match.group("key")):
+        return match.group(0)
+    return match.group("prefix") + "<redacted>"
+
+
+def portable_redact_field_values(value: str) -> str:
+    retained: list[str] = []
+    retained_until = 0
+    search_from = 0
+    while match := PORTABLE_TEXT_FIELD_PATTERN.search(value, search_from):
+        if not portable_sensitive_key(match.group("key")):
+            search_from = match.start() + 1
+            continue
+        retained.append(value[retained_until:match.start()])
+        retained.append(portable_redact_field_value(match))
+        retained_until = match.end()
+        search_from = match.end()
+    retained.append(value[retained_until:])
+    return "".join(retained)
 
 
 def portable_sanitize_text(value: str) -> str:
@@ -16877,21 +16958,11 @@ def portable_sanitize_text(value: str) -> str:
         sanitized,
     )
     sanitized = re.sub(
-        r"(?i)([?&](?:access[_-]?token|auth|authorization|api[_-]?key|password|secret|credential|signature|sig)=)[^&#\s]+",
-        r"\1<redacted>",
+        r"(?i)(?P<prefix>[?&](?P<key>[a-z][a-z0-9_-]*)=)(?P<value>[^&#\s]*)",
+        portable_redact_query_value,
         sanitized,
     )
-    sanitized = re.sub(
-        r"(?i)(\b[A-Z0-9_]*(?:TOKEN|PASSWORD|SECRET|CREDENTIAL|PRIVATE_KEY|API_KEY|APP_KEY)"
-        r"[A-Z0-9_]*\s*=)[^\s,;]+",
-        r"\1<redacted>",
-        sanitized,
-    )
-    sanitized = re.sub(
-        r'''(?ix)(["']?(?:authorization|access[_-]?token|auth[_-]?token|api[_-]?key|app[_-]?key|password|secret|credential)["']?\s*[:=]\s*)["']?[^"'\s,;&}]+''',
-        r"\1<redacted>",
-        sanitized,
-    )
+    sanitized = portable_redact_field_values(sanitized)
     for key, secret in os.environ.items():
         if not secret or len(secret) < 4:
             continue
