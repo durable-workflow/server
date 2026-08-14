@@ -355,6 +355,16 @@ captured_requests: list[dict[str, Any]] = []
 completed_operations: list[str] = []
 current_operation = "python_sdk_probe.preflight"
 product_behavior_reached = False
+runtime_discovery: dict[str, Any] = {
+    "method": "GET",
+    "path": RUNTIME_DISCOVERY_PATH,
+    "capability_path": QUERY_TASKS_CAPABILITY_PATH,
+    "request_observed": False,
+    "fixture_response_served": False,
+    "response_status": None,
+    "capability_value": None,
+    "valid_public_response": False,
+}
 
 
 def check(condition: bool, message: str) -> None:
@@ -404,6 +414,36 @@ def response(status: int, payload: dict[str, Any] | None = None) -> httpx.Respon
     return httpx.Response(status, json=payload or {})
 
 
+def record_discovery_response(
+    request: httpx.Request,
+    status: int,
+    payload: dict[str, Any],
+    *,
+    fixture_response_served: bool,
+) -> None:
+    if request.method != "GET" or request.url.path != RUNTIME_DISCOVERY_PATH:
+        return
+
+    capability_value = (
+        payload.get("worker_protocol", {})
+        .get("server_capabilities", {})
+        .get("query_tasks")
+    )
+    runtime_discovery.update(
+        {
+            "request_observed": True,
+            "fixture_response_served": fixture_response_served,
+            "response_status": status,
+            "capability_value": capability_value,
+            "valid_public_response": (
+                fixture_response_served
+                and status == 200
+                and capability_value is True
+            ),
+        }
+    )
+
+
 def request_body(request: httpx.Request) -> dict[str, Any]:
     if not request.content:
         return {}
@@ -426,6 +466,12 @@ def handler(request: httpx.Request) -> httpx.Response:
     discovery_response = discovery_response_for(request.method, request.url.path)
     if discovery_response is not None:
         status, payload = discovery_response
+        record_discovery_response(
+            request,
+            status,
+            payload,
+            fixture_response_served=True,
+        )
         return response(status, payload)
 
     if request.method == "POST" and request.url.path == "/api/workflows":
@@ -469,7 +515,14 @@ def handler(request: httpx.Request) -> httpx.Response:
     if request.method == "POST" and request.url.path == "/api/workflows/wf-python-lifecycle/terminate":
         return response(202, {"outcome": "accepted", "command_status": "accepted"})
 
-    return response(404, {"reason": "workflow_not_found", "message": request.url.path})
+    not_found = {"reason": "workflow_not_found", "message": request.url.path}
+    record_discovery_response(
+        request,
+        404,
+        not_found,
+        fixture_response_served=False,
+    )
+    return response(404, not_found)
 
 
 async def run_client_surface() -> None:
@@ -742,9 +795,13 @@ if not runner_blocked:
     except BaseException as exc:
         exception_type = exc.__class__.__name__
         message = bounded_message(exc)
-        runner_blocked = (
+        runtime_discovery_failure = (
             current_operation == "WorkflowHandle.query.runtime_discovery"
             and exception_type == "RuntimeDiscoveryUnavailable"
+        )
+        runner_blocked = (
+            runtime_discovery_failure
+            and not runtime_discovery["valid_public_response"]
         )
         classification = "runner-gap" if runner_blocked else "product-gap"
         owning_surface = "conformance_harness" if runner_blocked else "sdk-python"
@@ -756,6 +813,8 @@ if not runner_blocked:
             "exception_type": exception_type,
             "message": message,
         }
+        if runtime_discovery_failure:
+            runtime_failure_evidence["runtime_discovery"] = dict(runtime_discovery)
         failures.append(f"{current_operation} raised {exception_type}: {message}")
 
 covered_cells = sorted(set(covered_cells))
@@ -776,7 +835,7 @@ else:
     owning_surface = "sdk-python"
     finding_type = ""
 
-published_artifact_cell_executed = product_behavior_reached and not runner_blocked
+published_artifact_cell_executed = product_behavior_reached
 failure_summary = bounded_message("; ".join(failures)) if failures else ""
 artifact_source = f"pypi://durable-workflow=={EXPECTED_VERSION or version}"
 finding = {
@@ -819,16 +878,7 @@ payload = {
                 "evidence_method": "pypi_installed_artifact_runtime_import_client_transport_and_workflow_command_execution",
                 "captured_request_count": len(captured_requests),
                 "captured_request_paths": [request["path"] for request in captured_requests],
-                "runtime_discovery": {
-                    "method": "GET",
-                    "path": RUNTIME_DISCOVERY_PATH,
-                    "capability_path": QUERY_TASKS_CAPABILITY_PATH,
-                    "capability_value": True,
-                    "request_observed": any(
-                        request["method"] == "GET" and request["path"] == RUNTIME_DISCOVERY_PATH
-                        for request in captured_requests
-                    ),
-                },
+                "runtime_discovery": runtime_discovery,
                 "completed_operations": completed_operations,
                 "operation": current_operation,
                 "failure_stage": current_operation if failures else None,

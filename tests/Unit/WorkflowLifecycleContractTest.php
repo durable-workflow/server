@@ -3036,6 +3036,66 @@ SH);
         $this->assertTrue($evidence['capability_value']);
     }
 
+    public function test_python_sdk_probe_classifies_an_unserved_discovery_request_as_runner_gap(): void
+    {
+        [$sidecar, $result] = $this->runPythonDiscoveryRejectionProbe('unserved');
+        $scenario = $sidecar['scenario_results']['python_sdk_lifecycle_surface'];
+        $outputs = $scenario['observed_outputs'];
+        $failure = $outputs['runtime_failure_evidence'];
+        $discovery = $outputs['runtime_discovery'];
+        $retained = $result['scenario_results']['python_sdk_lifecycle_surface'];
+
+        $this->assertTrue($sidecar['runner_blocked']);
+        $this->assertSame('runner_blocked', $scenario['status']);
+        $this->assertSame('runner-gap', $scenario['classification']);
+        $this->assertTrue($scenario['published_artifact_cell_executed']);
+        $this->assertSame(['Client.start_workflow', 'WorkflowHandle.signal'], $outputs['completed_operations']);
+        $this->assertFalse($discovery['request_observed']);
+        $this->assertFalse($discovery['fixture_response_served']);
+        $this->assertNull($discovery['response_status']);
+        $this->assertNull($discovery['capability_value']);
+        $this->assertFalse($discovery['valid_public_response']);
+        $this->assertSame('RuntimeDiscoveryUnavailable', $failure['exception_type']);
+        $this->assertSame('runner-gap', $failure['classification']);
+        $this->assertSame('conformance_harness', $failure['owning_surface']);
+        $this->assertSame($discovery, $failure['runtime_discovery']);
+        $this->assertTrue($result['runner_blocked']);
+        $this->assertTrue($retained['published_artifact_cell_executed']);
+        $this->assertSame($outputs['completed_operations'], $retained['observed_outputs']['completed_operations']);
+    }
+
+    public function test_python_sdk_probe_classifies_sdk_rejection_after_valid_discovery_as_product_gap(): void
+    {
+        [$sidecar, $result] = $this->runPythonDiscoveryRejectionProbe('valid_response');
+        $scenario = $sidecar['scenario_results']['python_sdk_lifecycle_surface'];
+        $outputs = $scenario['observed_outputs'];
+        $failure = $outputs['runtime_failure_evidence'];
+        $discovery = $outputs['runtime_discovery'];
+        $finding = $scenario['linked_findings'][0];
+        $retained = $result['scenario_results']['python_sdk_lifecycle_surface'];
+
+        $this->assertFalse($sidecar['runner_blocked']);
+        $this->assertSame('fail', $scenario['status']);
+        $this->assertSame('product-gap', $scenario['classification']);
+        $this->assertTrue($scenario['published_artifact_cell_executed']);
+        $this->assertSame(['Client.start_workflow', 'WorkflowHandle.signal'], $outputs['completed_operations']);
+        $this->assertTrue($discovery['request_observed']);
+        $this->assertTrue($discovery['fixture_response_served']);
+        $this->assertSame(200, $discovery['response_status']);
+        $this->assertTrue($discovery['capability_value']);
+        $this->assertTrue($discovery['valid_public_response']);
+        $this->assertSame('RuntimeDiscoveryUnavailable', $failure['exception_type']);
+        $this->assertSame('product-gap', $failure['classification']);
+        $this->assertSame('sdk-python', $failure['owning_surface']);
+        $this->assertSame($discovery, $failure['runtime_discovery']);
+        $this->assertSame('product_behavior_gap', $finding['finding_type']);
+        $this->assertSame('sdk-python', $finding['owning_surface']);
+        $this->assertFalse($result['runner_blocked']);
+        $this->assertSame('product-gap', $retained['classification']);
+        $this->assertTrue($retained['published_artifact_cell_executed']);
+        $this->assertSame($discovery, $retained['observed_outputs']['runtime_discovery']);
+    }
+
     public function test_python_sdk_probe_retains_structured_pre_behavior_exception_as_runner_gap(): void
     {
         $resultDir = sys_get_temp_dir().'/dw-workflow-lifecycle-'.bin2hex(random_bytes(6));
@@ -3993,6 +4053,38 @@ SH);
             escapeshellarg($repoRoot.'/scripts/conformance/workflow-lifecycle-published-artifacts.sh'),
             escapeshellarg($resultDir),
         );
+    }
+
+    /**
+     * @return array{0: array<string, mixed>, 1: array<string, mixed>}
+     */
+    private function runPythonDiscoveryRejectionProbe(string $mode): array
+    {
+        $python = trim((string) shell_exec('command -v python3 2>/dev/null'));
+        if ($python === '') {
+            $this->markTestSkipped('python3 is required to exercise Python lifecycle discovery classification.');
+        }
+
+        $resultDir = sys_get_temp_dir().'/dw-workflow-lifecycle-'.bin2hex(random_bytes(6));
+        mkdir($resultDir, 0777, true);
+
+        try {
+            exec($this->runnerCommand($resultDir, [
+                'DW_WORKFLOW_LIFECYCLE_SKIP_PYTHON_SDK_PROBE' => '0',
+                'DW_WORKFLOW_LIFECYCLE_PYTHON_BIN' => $python,
+                'PYTHONPATH' => dirname(__DIR__).'/Fixtures/PythonDiscoverySdk',
+                'PYTHON_DISCOVERY_REJECTION_MODE' => $mode,
+            ]), $output, $exitCode);
+
+            $this->assertSame(0, $exitCode, implode("\n", $output));
+
+            return [
+                $this->readJson($resultDir.'/python-sdk-lifecycle-evidence.json'),
+                $this->readJson($resultDir.'/workflow-lifecycle-result.json'),
+            ];
+        } finally {
+            $this->removeDirectory($resultDir);
+        }
     }
 
     private function rustProducerCommand(
