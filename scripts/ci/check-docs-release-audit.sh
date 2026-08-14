@@ -53,8 +53,8 @@ fs.writeFileSync(evidencePath, `${JSON.stringify({
   message,
   source_release_check: {
     repository,
-    ref: process.env.GITHUB_REF_NAME || null,
-    sha: process.env.GITHUB_SHA || null,
+    ref: process.env.DOCS_RELEASE_AUDIT_SOURCE_REF || process.env.GITHUB_REF_NAME || null,
+    sha: process.env.DOCS_RELEASE_AUDIT_SOURCE_SHA || process.env.GITHUB_SHA || null,
     run_id: runId,
     run_attempt: process.env.GITHUB_RUN_ATTEMPT || null,
     run_url: repository && runId
@@ -340,8 +340,8 @@ function releaseCheckSource() {
 
   return {
     repository,
-    ref: process.env.GITHUB_REF_NAME || null,
-    sha: process.env.GITHUB_SHA || null,
+    ref: process.env.DOCS_RELEASE_AUDIT_SOURCE_REF || process.env.GITHUB_REF_NAME || null,
+    sha: process.env.DOCS_RELEASE_AUDIT_SOURCE_SHA || process.env.GITHUB_SHA || null,
     run_id: runId,
     run_attempt: runAttempt,
     run_url: repository && runId

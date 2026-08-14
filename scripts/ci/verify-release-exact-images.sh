@@ -23,6 +23,7 @@ image_digest=""
 expected_image_digest=""
 registry_image_digest=""
 verify_published_metadata=false
+verification_only="${RELEASE_IMAGE_VERIFICATION_ONLY:-false}"
 
 trap 'rm -rf "$tmp_dir"' EXIT HUP INT TERM
 
@@ -128,6 +129,13 @@ if [ -z "$release_tag" ]; then
     fail "Exact release image tag required" "Cannot verify exact image publication without RELEASE_TAG." "exact_release_tag_missing"
 fi
 
+case "$verification_only" in
+    true|false) ;;
+    *)
+        fail "Invalid exact release verification mode" "RELEASE_IMAGE_VERIFICATION_ONLY must be true or false." "exact_verification_mode_invalid"
+        ;;
+esac
+
 if ! printf '%s' "$release_tag" | grep -Eq '^[0-9A-Za-z._-]+$'; then
     fail "Invalid exact release image tag" "Release image tag '${release_tag}' contains characters that are not safe for Docker tags." "exact_release_tag_invalid"
 fi
@@ -151,7 +159,13 @@ do
     fi
 done
 
-if [ "$release_identity_present" = "true" ]; then
+if [ "$verification_only" = "true" ]; then
+    if ! printf '%s' "$release_commit" | grep -Eq '^[0-9a-f]{40}$'; then
+        fail "Exact release source commit required" "Verification-only recovery requires RELEASE_COMMIT to be a full lowercase Git commit SHA." "exact_release_commit_missing"
+    fi
+
+    verify_published_metadata=true
+elif [ "$release_identity_present" = "true" ]; then
     if [ -z "$release_commit" ] \
         || [ -z "$run_id" ] \
         || [ -z "$run_attempt" ] \
@@ -236,7 +250,9 @@ inspect_ref "${dockerhub_image}:${release_tag}"
 inspect_ref "${ghcr_image}:${release_tag}"
 
 identity_detail="match this release build digest"
-if [ "$verify_published_metadata" = "true" ]; then
+if [ "$verification_only" = "true" ]; then
+    identity_detail="carry the requested release tag and source commit and use the same manifest digest"
+elif [ "$verify_published_metadata" = "true" ]; then
     identity_detail="carry this release run metadata and use the same manifest digest"
 fi
 

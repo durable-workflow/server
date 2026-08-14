@@ -1,0 +1,74 @@
+name: Published release verification recovery
+
+run-name: Verify published Server ${{ inputs.release_tag }} at ${{ inputs.release_commit }}
+
+on:
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: Exact existing immutable Server release tag
+        required: true
+        type: string
+      release_commit:
+        description: Full source commit for the existing release tag
+        required: true
+        type: string
+
+permissions:
+  contents: read
+  packages: read
+
+concurrency:
+  group: published-release-recovery-${{ inputs.release_tag }}-${{ inputs.release_commit }}
+  cancel-in-progress: false
+
+jobs:
+  verify:
+    name: Verify existing published release
+    if: >-
+      github.repository == 'durable-workflow/server' &&
+      github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      packages: read
+    steps:
+      - name: Check out trusted default-branch verification tooling
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803  # v6
+        with:
+          persist-credentials: false
+          ref: ${{ github.sha }}
+
+      - name: Set up Docker manifest inspection
+        uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c  # v4
+
+      - name: Verify requested immutable release artifacts
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ inputs.release_tag }}
+          RELEASE_COMMIT: ${{ inputs.release_commit }}
+          RELEASE_RECOVERY_EVIDENCE: published-release-recovery-evidence.json
+        run: scripts/ci/verify-published-release-recovery.sh
+
+      - name: Classify live docs release readiness
+        env:
+          DOCS_RELEASE_AUDIT_ARTIFACT: server
+          DOCS_RELEASE_AUDIT_VERSION: ${{ inputs.release_tag }}
+          DOCS_RELEASE_AUDIT_SOURCE_REF: ${{ inputs.release_tag }}
+          DOCS_RELEASE_AUDIT_SOURCE_SHA: ${{ inputs.release_commit }}
+          DOCS_RELEASE_AUDIT_EVIDENCE: docs-release-audit-evidence.json
+          DOCS_RELEASE_AUDIT_HANDOFF: docs-release-audit-handoff.json
+        run: scripts/ci/check-docs-release-audit.sh
+
+      - name: Retain bounded verification evidence
+        if: ${{ always() }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7
+        with:
+          name: published-release-recovery-${{ inputs.release_tag }}
+          path: |
+            published-release-recovery-evidence.json
+            docs-release-audit-evidence.json
+            docs-release-audit-handoff.json
+          if-no-files-found: error
+          retention-days: 14

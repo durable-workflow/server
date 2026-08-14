@@ -565,6 +565,170 @@ class ReleaseImagePublishWorkflowContractTest extends TestCase
         $this->assertSame(2, $publicationTokenSteps);
     }
 
+    public function test_published_release_recovery_is_bound_to_exact_read_only_public_artifacts(): void
+    {
+        $source = $this->read('.github/workflows/published-release-recovery.yml');
+        $workflow = Yaml::parse($source);
+        $this->assertIsArray($workflow);
+
+        $inputs = $workflow['on']['workflow_dispatch']['inputs'];
+        $this->assertTrue($inputs['release_tag']['required']);
+        $this->assertTrue($inputs['release_commit']['required']);
+
+        $job = $workflow['jobs']['verify'];
+        $this->assertSame(
+            "github.repository == 'durable-workflow/server' && github.ref == 'refs/heads/main'",
+            preg_replace('/\s+/', ' ', trim($job['if'])),
+        );
+        $this->assertSame(['contents' => 'read', 'packages' => 'read'], $job['permissions']);
+
+        $steps = [];
+        foreach ($job['steps'] as $step) {
+            if (isset($step['name'])) {
+                $steps[$step['name']] = $step;
+            }
+        }
+
+        $checkout = $steps['Check out trusted default-branch verification tooling'];
+        $verify = $steps['Verify requested immutable release artifacts'];
+        $docs = $steps['Classify live docs release readiness'];
+        $evidence = $steps['Retain bounded verification evidence'];
+
+        $this->assertSame('${{ github.sha }}', $checkout['with']['ref']);
+        $this->assertFalse($checkout['with']['persist-credentials']);
+        $this->assertSame('${{ inputs.release_tag }}', $verify['env']['RELEASE_TAG']);
+        $this->assertSame('${{ inputs.release_commit }}', $verify['env']['RELEASE_COMMIT']);
+        $this->assertSame('scripts/ci/verify-published-release-recovery.sh', $verify['run']);
+        $this->assertSame('${{ inputs.release_tag }}', $docs['env']['DOCS_RELEASE_AUDIT_SOURCE_REF']);
+        $this->assertSame('${{ inputs.release_commit }}', $docs['env']['DOCS_RELEASE_AUDIT_SOURCE_SHA']);
+        $this->assertSame('14', (string) $evidence['with']['retention-days']);
+        $this->assertSame('error', $evidence['with']['if-no-files-found']);
+
+        $verifier = $this->read('scripts/ci/verify-published-release-recovery.sh');
+        $this->assertSame(2, substr_count($verifier, 'scripts/ci/verify-release-tag-source.sh'));
+        $this->assertStringContainsString('RELEASE_IMAGE_VERIFICATION_ONLY=true', $verifier);
+        $this->assertStringContainsString('releases/tags/$release_tag', $verifier);
+        $this->assertStringContainsString('published-release-recovery-evidence.json', $verifier);
+
+        foreach ([
+            'docker/build-push-action',
+            'docker/login-action',
+            'push: true',
+            'contents: write',
+            'packages: write',
+            'gh release create',
+            'gh api --method',
+            'gh workflow run',
+            'git tag ',
+            'git push ',
+            'create-github-release.sh',
+            'promote-release-image-rolling-tags.sh',
+        ] as $mutation) {
+            $this->assertStringNotContainsString($mutation, $source."\n".$verifier);
+        }
+    }
+
+    public function test_published_release_recovery_verifies_existing_release_and_fails_when_it_is_missing(): void
+    {
+        $tmpDir = sys_get_temp_dir().'/published-release-recovery-'.bin2hex(random_bytes(4));
+        $this->assertTrue(mkdir($tmpDir));
+        $fakeGh = $tmpDir.'/gh';
+        $fakeDocker = $tmpDir.'/docker';
+        $evidencePath = $tmpDir.'/evidence.json';
+        $releaseCommit = str_repeat('8', 40);
+        $digest = 'sha256:'.str_repeat('a', 64);
+
+        file_put_contents($fakeGh, <<<'SH'
+#!/usr/bin/env sh
+set -eu
+case "$2" in
+    */git/ref/tags/*)
+        printf 'commit %s\n' "$FAKE_RELEASE_COMMIT"
+        ;;
+    */releases/tags/*)
+        if [ "${FAKE_RELEASE_MISSING:-false}" = true ]; then
+            printf 'release not found\n' >&2
+            exit 1
+        fi
+        printf '{"tag_name":"%s","draft":false,"prerelease":true,"html_url":"https://github.com/durable-workflow/server/releases/tag/%s","target_commitish":"main","id":33}\n' \
+            "$FAKE_RELEASE_TAG" "$FAKE_RELEASE_TAG"
+        ;;
+    *)
+        exit 1
+        ;;
+esac
+SH);
+        file_put_contents($fakeDocker, <<<'SH'
+#!/usr/bin/env sh
+set -eu
+if [ "$1" = buildx ] && [ "$2" = imagetools ] && [ "$3" = inspect ]; then
+    if [ "${4:-}" = --format ]; then
+        printf '{"config":{"Labels":{"org.opencontainers.image.revision":"%s","dev.durable-workflow.release.tag":"%s"}}}\n' \
+            "$FAKE_RELEASE_COMMIT" "$FAKE_RELEASE_TAG"
+        exit 0
+    fi
+    printf 'Name: %s\nMediaType: application/vnd.oci.image.index.v1+json\nDigest: %s\n\nManifests:\n  Platform: linux/amd64\n  Platform: linux/arm64\n' \
+        "$4" "$FAKE_IMAGE_DIGEST"
+    exit 0
+fi
+exit 1
+SH);
+        $this->assertTrue(chmod($fakeGh, 0755));
+        $this->assertTrue(chmod($fakeDocker, 0755));
+
+        $environment = [
+            'GH_CLI' => $fakeGh,
+            'DOCKER' => $fakeDocker,
+            'GITHUB_REPOSITORY' => 'durable-workflow/server',
+            'GITHUB_SERVER_URL' => 'https://github.com',
+            'GITHUB_SHA' => str_repeat('9', 40),
+            'GITHUB_RUN_ID' => '31760000000',
+            'GITHUB_RUN_ATTEMPT' => '1',
+            'RELEASE_TAG' => '2.0.0-rc.33',
+            'RELEASE_COMMIT' => $releaseCommit,
+            'RELEASE_RECOVERY_EVIDENCE' => $evidencePath,
+            'RUNNER_TEMP' => $tmpDir,
+            'FAKE_RELEASE_TAG' => '2.0.0-rc.33',
+            'FAKE_RELEASE_COMMIT' => $releaseCommit,
+            'FAKE_IMAGE_DIGEST' => $digest,
+        ];
+
+        try {
+            $passing = $this->runScript('scripts/ci/verify-published-release-recovery.sh', $environment);
+            $this->assertSame(0, $passing['exitCode'], $passing['stderr']);
+            $evidence = json_decode(
+                (string) file_get_contents($evidencePath),
+                true,
+                flags: JSON_THROW_ON_ERROR,
+            );
+            $this->assertSame('pass', $evidence['outcome']);
+            $this->assertSame('verified', $evidence['source_tag']['status']);
+            $this->assertSame('verified', $evidence['images']['status']);
+            $this->assertSame($digest, $evidence['images']['digest']);
+            $this->assertSame('verified', $evidence['github_release']['status']);
+            $this->assertFalse($evidence['mutation_policy']['image_mutation']);
+            $this->assertFalse($evidence['mutation_policy']['tag_mutation']);
+            $this->assertFalse($evidence['mutation_policy']['github_release_mutation']);
+
+            $missing = $this->runScript('scripts/ci/verify-published-release-recovery.sh', $environment + [
+                'FAKE_RELEASE_MISSING' => 'true',
+            ]);
+            $this->assertSame(1, $missing['exitCode']);
+            $failedEvidence = json_decode(
+                (string) file_get_contents($evidencePath),
+                true,
+                flags: JSON_THROW_ON_ERROR,
+            );
+            $this->assertSame('fail', $failedEvidence['outcome']);
+            $this->assertSame('github_release_missing', $failedEvidence['failure_kind']);
+        } finally {
+            @unlink($fakeGh);
+            @unlink($fakeDocker);
+            @unlink($evidencePath);
+            @rmdir($tmpDir);
+        }
+    }
+
     public function test_release_recovery_uses_protected_tooling_with_the_immutable_source_tree(): void
     {
         $workflow = Yaml::parseFile($this->repoRoot.'/.github/workflows/release.yml');
@@ -1667,6 +1831,26 @@ SH);
         }
     }
 
+    public function test_docs_audit_can_bind_recovery_evidence_to_an_immutable_release_source(): void
+    {
+        $releaseCommit = str_repeat('8', 40);
+        $result = $this->runDocsReleaseAudit(
+            json_encode($this->validDocsReleaseAudit('0.2.620'), JSON_THROW_ON_ERROR),
+            '0.2.620',
+            null,
+            [
+                'GITHUB_REF_NAME' => 'main',
+                'GITHUB_SHA' => str_repeat('9', 40),
+                'DOCS_RELEASE_AUDIT_SOURCE_REF' => '0.2.620',
+                'DOCS_RELEASE_AUDIT_SOURCE_SHA' => $releaseCommit,
+            ],
+        );
+
+        $this->assertSame(0, $result['exitCode'], $result['stderr']);
+        $this->assertSame('0.2.620', $result['evidence']['source_release_check']['ref']);
+        $this->assertSame($releaseCommit, $result['evidence']['source_release_check']['sha']);
+    }
+
     public function test_docs_audit_v5_stale_tuple_handoff_covers_complete_public_artifact_tuple(): void
     {
         $expectedRefreshFiles = [
@@ -2480,6 +2664,27 @@ SH;
         }
     }
 
+    public function test_exact_image_verifier_supports_source_bound_verification_without_build_identity(): void
+    {
+        $result = $this->runExactImageVerifierWithConfigFixture(
+            'buildx-v0.29.1-pretty-valid.json',
+            [
+                'RELEASE_IMAGE_VERIFICATION_ONLY' => 'true',
+                'DOCKER_BUILD_OUTCOME' => '',
+                'BUILT_IMAGE_DIGEST' => '',
+                'RELEASE_RUN_ID' => '',
+                'RELEASE_RUN_ATTEMPT' => '',
+                'WORKFLOW_PACKAGE_SOURCE' => '',
+                'WORKFLOW_PACKAGE_REF' => '',
+                'WORKFLOW_PACKAGE_COMMIT' => '',
+            ],
+        );
+
+        $this->assertSame(0, $result['exitCode'], $result['stderr']);
+        $this->assertStringContainsString("exact_publish_outcome=success\n", $result['outputs']);
+        $this->assertSame(4, substr_count($result['dockerLog'], '--format {{json (index .Image'));
+    }
+
     public function test_exact_image_verifier_accepts_pretty_buildx_platform_config_json(): void
     {
         $result = $this->runExactImageVerifierWithConfigFixture('buildx-v0.29.1-pretty-valid.json');
@@ -3135,8 +3340,12 @@ SH;
     /**
      * @return array{exitCode:int, stdout:string, stderr:string, evidence:?array<string, mixed>, handoff:?array<string, mixed>, summary:string}
      */
-    private function runDocsReleaseAudit(string $auditSource, string $expectedVersion, ?string $auditUrl = null): array
-    {
+    private function runDocsReleaseAudit(
+        string $auditSource,
+        string $expectedVersion,
+        ?string $auditUrl = null,
+        array $environment = [],
+    ): array {
         $tmpDir = sys_get_temp_dir().'/docs-release-audit-'.bin2hex(random_bytes(4));
         $this->assertTrue(mkdir($tmpDir));
         $auditFile = $tmpDir.'/audit.json';
@@ -3146,7 +3355,7 @@ SH;
         file_put_contents($auditFile, $auditSource);
 
         try {
-            $result = $this->runScript('scripts/ci/check-docs-release-audit.sh', [
+            $result = $this->runScript('scripts/ci/check-docs-release-audit.sh', array_merge([
                 'DOCS_RELEASE_AUDIT_ARTIFACT' => 'server',
                 'DOCS_RELEASE_AUDIT_VERSION' => $expectedVersion,
                 'DOCS_RELEASE_AUDIT_URL' => $auditUrl ?? 'file://'.$auditFile,
@@ -3156,7 +3365,7 @@ SH;
                 'DOCS_RELEASE_AUDIT_HANDOFF' => $handoffFile,
                 'GITHUB_STEP_SUMMARY' => $summaryFile,
                 'RUNNER_TEMP' => $tmpDir,
-            ]);
+            ], $environment));
 
             $evidence = is_file($evidenceFile)
                 ? json_decode((string) file_get_contents($evidenceFile), true, flags: JSON_THROW_ON_ERROR)
@@ -3277,7 +3486,7 @@ SH;
     /**
      * @return array{exitCode:int, stdout:string, stderr:string, outputs:string, dockerLog:string}
      */
-    private function runExactImageVerifierWithConfigFixture(string $fixture): array
+    private function runExactImageVerifierWithConfigFixture(string $fixture, array $environment = []): array
     {
         $tmpDir = sys_get_temp_dir().'/release-image-config-'.bin2hex(random_bytes(4));
         $this->assertTrue(mkdir($tmpDir));
@@ -3308,7 +3517,7 @@ SH;
         chmod($dockerBin, 0755);
 
         try {
-            $result = $this->runScript('scripts/ci/verify-release-exact-images.sh', [
+            $result = $this->runScript('scripts/ci/verify-release-exact-images.sh', array_merge([
                 'RELEASE_TAG' => '2.0.0-rc.31',
                 'DOCKER' => $dockerBin,
                 'DOCKER_BUILD_OUTCOME' => 'success',
@@ -3320,7 +3529,7 @@ SH;
                 'WORKFLOW_PACKAGE_REF' => '2.0.0-rc.31',
                 'WORKFLOW_PACKAGE_COMMIT' => 'a4ce321a31ba5f4d9c25964cde81109bf253c5aa',
                 'GITHUB_OUTPUT' => $outputFile,
-            ]);
+            ], $environment));
             $outputs = file_get_contents($outputFile);
             $log = file_get_contents($dockerLog);
             $this->assertNotFalse($outputs);
