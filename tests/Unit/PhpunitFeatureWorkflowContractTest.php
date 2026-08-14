@@ -41,7 +41,7 @@ class PhpunitFeatureWorkflowContractTest extends TestCase
             'pull_request:',
             'workflow_dispatch:',
             'name: PHPUnit feature suite',
-            "if: \${{ github.server_url == 'https://github.com' }}",
+            "if: \${{ always() && github.server_url == 'https://github.com' }}",
             'vendor/bin/phpunit tests/Feature',
             'tests/Unit/NexusContractTest.php',
             'tests/Unit/PhpunitFeatureWorkflowContractTest.php',
