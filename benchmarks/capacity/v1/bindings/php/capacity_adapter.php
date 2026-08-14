@@ -97,11 +97,84 @@ function capacityResultBlob(array $request): string
         : capacityBlob($request);
 }
 
+/** @return array{workflow_input_bytes: int, workflow_result_bytes: int, activity_input_bytes: int, activity_result_bytes: int, signal_bytes: int} */
+function capacityPayloadContract(array $request): array
+{
+    $candidate = $request['payload_contract'] ?? null;
+    if (! is_array($candidate)) {
+        throw new InvalidArgumentException('Capacity workload omitted its payload contract.');
+    }
+    $contract = [];
+    foreach (['workflow_input_bytes', 'workflow_result_bytes', 'activity_input_bytes', 'activity_result_bytes', 'signal_bytes'] as $field) {
+        $size = $candidate[$field] ?? null;
+        if (! is_int($size) || $size < 0) {
+            throw new InvalidArgumentException("Capacity payload contract has invalid {$field}.");
+        }
+        $contract[$field] = $size;
+    }
+
+    return $contract;
+}
+
+function capacityRequireUtf8Size(mixed $value, int $expected, string $boundary): string
+{
+    if (! is_string($value)) {
+        throw new InvalidArgumentException("{$boundary} must be a string.");
+    }
+    $actual = strlen($value);
+    if ($actual !== $expected) {
+        throw new InvalidArgumentException("{$boundary} must contain {$expected} UTF-8 bytes; observed {$actual}.");
+    }
+
+    return $value;
+}
+
+function capacitySizedAscii(string $seed, int $size): string
+{
+    if ($seed === '' || preg_match('/[^\x20-\x7E]/', $seed) === 1) {
+        throw new InvalidArgumentException('Capacity payload expansion requires a non-empty ASCII seed.');
+    }
+
+    return substr(str_repeat($seed, intdiv($size, strlen($seed)) + 1), 0, $size);
+}
+
+function capacityInitialActivityInput(array $request): string
+{
+    $contract = capacityPayloadContract($request);
+    $workflowInput = capacityRequireUtf8Size(
+        capacityBlob($request),
+        $contract['workflow_input_bytes'],
+        'Workflow input',
+    );
+
+    return capacityRequireUtf8Size($workflowInput, $contract['activity_input_bytes'], 'Activity input');
+}
+
+function capacityCheckedActivityResult(mixed $value, array $contract): string
+{
+    return capacityRequireUtf8Size($value, (int) $contract['activity_result_bytes'], 'Activity result');
+}
+
+function capacityOneActivityWorkflow(WorkflowContext $context, array $request): Generator
+{
+    $contract = capacityPayloadContract($request);
+    $result = yield $context->activity('capacity.v1.echo', [capacityInitialActivityInput($request)]);
+
+    return capacityCheckedActivityResult($result, $contract);
+}
+
 function capacityHashWorkflow(WorkflowContext $context, array $request): Generator
 {
-    $digest = capacityBlob($request);
+    $contract = capacityPayloadContract($request);
+    $digest = capacityInitialActivityInput($request);
     for ($index = 0; $index < 5; $index++) {
-        $digest = yield $context->activity('capacity.v1.hash', [$digest]);
+        $digest = capacityCheckedActivityResult(
+            yield $context->activity('capacity.v1.hash', [$digest]),
+            $contract,
+        );
+        if ($index < 4) {
+            $digest = capacitySizedAscii($digest, $contract['activity_input_bytes']);
+        }
     }
 
     return $digest;
@@ -154,19 +227,36 @@ function capacityQueryWorkflow(WorkflowContext $context): Generator
     return 0;
 }
 
+function capacityChildFanoutWorkflow(WorkflowContext $context, array $request): Generator
+{
+    $taskQueue = is_string($request['task_queue'] ?? null) ? trim($request['task_queue']) : '';
+    if ($taskQueue === '') {
+        throw new InvalidArgumentException('Child fanout workload omitted its task queue.');
+    }
+
+    $sum = 0;
+    for ($index = 0; $index < 10; $index++) {
+        $sum += (int) (yield $context->childWorkflow(
+            'capacity.v1.child_leaf',
+            [$index],
+            ['queue' => $taskQueue],
+        ));
+    }
+
+    return $sum;
+}
+
 function capacityMixedWorkflow(WorkflowContext $context, array $request): Generator
 {
     $shape = is_string($request['shape'] ?? null) ? $request['shape'] : '';
 
     return match ($shape) {
         'simple-start-complete' => capacityResultBlob($request),
-        'one-activity' => yield $context->activity('capacity.v1.echo', [capacityBlob($request)]),
+        'one-activity' => yield from capacityOneActivityWorkflow($context, $request),
         'multiple-activities' => yield from capacityHashWorkflow($context, $request),
         'timer' => yield $context->sleep(1),
         'signal' => yield from capacitySignalWorkflow($context),
-        'child-workflow-fanout' => yield $context->childWorkflow('capacity.v1.child_parent', [$request], [
-            'queue' => is_string($request['task_queue'] ?? null) ? $request['task_queue'] : null,
-        ]),
+        'child-workflow-fanout' => yield from capacityChildFanoutWorkflow($context, $request),
         'replay-heavy-history' => yield from capacityReplayWorkflow($context),
         'query-inspection' => yield from capacityQueryWorkflow($context),
         default => throw new RuntimeException("Unsupported mixed workload shape: {$shape}"),
@@ -187,9 +277,7 @@ function capacityConfiguredWorker(): Worker
         )
         ->registerWorkflow(
             'capacity.v1.one_activity',
-            static function (WorkflowContext $context, array $request): Generator {
-                return yield $context->activity('capacity.v1.echo', [capacityBlob($request)]);
-            },
+            capacityOneActivityWorkflow(...),
         )
         ->registerWorkflow('capacity.v1.multiple_activities', capacityHashWorkflow(...))
         ->registerWorkflow(
@@ -497,9 +585,63 @@ function capacityClientLoop(): void
     }
 }
 
+/** @param array<string, mixed> $fixtures @return array<string, mixed> */
+function capacityConformanceEvidence(array $fixtures): array
+{
+    $cases = [];
+    foreach (($fixtures['payload_cases'] ?? []) as $fixture) {
+        if (! is_array($fixture) || ! is_array($fixture['payload'] ?? null)) {
+            throw new InvalidArgumentException('Payload fixture must contain a contract object.');
+        }
+        $contract = $fixture['payload'];
+        $request = [
+            'blob' => capacitySizedAscii('payload', (int) ($contract['workflow_input_bytes'] ?? -1)),
+            'payload_contract' => $contract,
+        ];
+        $current = capacityInitialActivityInput($request);
+        $inputSizes = [];
+        $resultSizes = [];
+        $activityCount = (int) ($fixture['activity_count'] ?? 0);
+        for ($index = 0; $index < $activityCount; $index++) {
+            $inputSizes[] = strlen($current);
+            $result = match ($fixture['activity_type'] ?? null) {
+                'capacity.v1.echo' => $current,
+                'capacity.v1.hash' => hash('sha256', $current),
+                default => throw new InvalidArgumentException('Unsupported fixture activity type.'),
+            };
+            $result = capacityCheckedActivityResult($result, capacityPayloadContract($request));
+            $resultSizes[] = strlen($result);
+            if ($index + 1 < $activityCount) {
+                $current = capacitySizedAscii($result, capacityPayloadContract($request)['activity_input_bytes']);
+            }
+        }
+        $cases[] = [
+            'id' => $fixture['id'] ?? null,
+            'activity_input_bytes' => $inputSizes,
+            'activity_result_bytes' => $resultSizes,
+        ];
+    }
+
+    return [
+        'schema' => 'durable-workflow.capacity-workload-conformance-evidence/v1',
+        'cases' => $cases,
+    ];
+}
+
 $mode = $argv[1] ?? '';
 if ($mode === 'describe') {
     echo json_encode(capacityAdapterDescriptor(), JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES).PHP_EOL;
+    exit(0);
+}
+if ($mode === 'conformance') {
+    $fixturePath = $argv[2] ?? '';
+    $fixtures = $fixturePath !== ''
+        ? json_decode((string) file_get_contents($fixturePath), true, flags: JSON_THROW_ON_ERROR)
+        : null;
+    if (! is_array($fixtures)) {
+        throw new InvalidArgumentException('Conformance requires a fixture object path.');
+    }
+    echo json_encode(capacityConformanceEvidence($fixtures), JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES).PHP_EOL;
     exit(0);
 }
 
@@ -510,7 +652,8 @@ if ($mode === 'worker') {
     capacityClientLoop();
 } elseif ($mode === 'check') {
     capacityConfiguredWorker()->contracts();
-    $fanout = capacityFanoutCommands(capacityClient(false), 'capacity-check');
+    $client = capacityClient(false);
+    $fanout = capacityFanoutCommands($client, 'capacity-check');
     $fanoutArguments = array_map(
         static fn (array $command): string => json_encode($command['arguments'] ?? null, JSON_THROW_ON_ERROR),
         $fanout,
@@ -521,8 +664,26 @@ if ($mode === 'worker') {
     ) {
         throw new RuntimeException('Fanout must emit ten distinct child starts in one workflow task.');
     }
+    $mixedFanout = capacityMixedWorkflow(
+        new WorkflowContext('capacity-check', 'capacity-check', [], $client->payloadCodec()),
+        ['shape' => 'child-workflow-fanout', 'task_queue' => 'capacity-check'],
+    );
+    for ($index = 0; $index < 10; $index++) {
+        $command = $index === 0 ? $mixedFanout->current() : $mixedFanout->send($index - 1);
+        if (! $command instanceof WorkflowCommand
+            || $command->type !== 'start_child_workflow'
+            || ($command->attributes['workflow_type'] ?? null) !== 'capacity.v1.child_leaf'
+            || ($command->attributes['arguments_value'] ?? null) !== [$index]
+        ) {
+            throw new RuntimeException('Mixed fanout must start ten direct child leaves on its own workflow history.');
+        }
+    }
+    $mixedFanout->send(9);
+    if ($mixedFanout->valid() || $mixedFanout->getReturn() !== 45) {
+        throw new RuntimeException('Mixed fanout must await and sum all ten direct child results.');
+    }
     echo 'capacity PHP adapter definitions are valid'.PHP_EOL;
 } else {
-    fwrite(STDERR, "usage: capacity_adapter.php describe|check|worker|client\n");
+    fwrite(STDERR, "usage: capacity_adapter.php describe|conformance|check|worker|client\n");
     exit(2);
 }

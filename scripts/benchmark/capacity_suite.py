@@ -32,7 +32,7 @@ RESULT_SCHEMA = "durable-workflow.capacity-benchmark-result/v1"
 CORPUS_SCHEMA = "durable-workflow.capacity-benchmark-regression-corpus/v1"
 ADAPTER_SCHEMA = "durable-workflow.capacity-benchmark-adapter/v1"
 COLLECTOR_SCHEMA = "durable-workflow.capacity-benchmark-collector/v1"
-SUITE_VERSION = "1.3.0"
+SUITE_VERSION = "1.4.0"
 
 REQUIRED_CELL_IDS = {
     "simple-start-complete",
@@ -171,6 +171,203 @@ def _exact_version(value: Any, path: str) -> str:
     ):
         raise ContractError(f"{path} must identify one exact artifact version")
     return version
+
+
+def _validate_history_match(value: Any, path: str) -> dict[str, Any]:
+    match = _object(value, path)
+    if not match:
+        raise ContractError(f"{path} cannot be empty")
+    for field, expected in match.items():
+        if field == "type_prefix":
+            _text(expected, f"{path}.{field}")
+        elif field == "type_in":
+            choices = _list(expected, f"{path}.{field}", nonempty=True)
+            for index, choice in enumerate(choices):
+                _text(choice, f"{path}.{field}[{index}]")
+        elif not isinstance(expected, (str, int, bool)) or isinstance(expected, bool):
+            raise ContractError(f"{path}.{field} must be a string or integer selector")
+    return match
+
+
+def _validate_history_contract(history: dict[str, Any], path: str) -> None:
+    _integer(history.get("target_event_count"), f"{path}.target_event_count", minimum=1)
+    if history.get("count_scope") not in {"root", "workflow_tree"}:
+        raise ContractError(f"{path}.count_scope is unsupported")
+    evidence = _list(history.get("evidence"), f"{path}.evidence", nonempty=True)
+    for index, raw_requirement in enumerate(evidence):
+        requirement_path = f"{path}.evidence[{index}]"
+        requirement = _object(raw_requirement, requirement_path)
+        if requirement.get("scope", "root") not in {"root", "children"}:
+            raise ContractError(f"{requirement_path}.scope is unsupported")
+        if requirement.get("source") not in {
+            "history_events",
+            "tasks",
+            "signals",
+        }:
+            raise ContractError(f"{requirement_path}.source is unsupported")
+        _validate_history_match(requirement.get("match"), f"{requirement_path}.match")
+        _integer(requirement.get("count"), f"{requirement_path}.count", minimum=0)
+    for index, raw_requirement in enumerate(
+        _list(history.get("forbidden_evidence", []), f"{path}.forbidden_evidence")
+    ):
+        requirement_path = f"{path}.forbidden_evidence[{index}]"
+        requirement = _object(raw_requirement, requirement_path)
+        if requirement.get("scope", "root") not in {"root", "children"}:
+            raise ContractError(f"{requirement_path}.scope is unsupported")
+        if requirement.get("source") not in {
+            "history_events",
+            "tasks",
+            "signals",
+        }:
+            raise ContractError(f"{requirement_path}.source is unsupported")
+        _validate_history_match(requirement.get("match"), f"{requirement_path}.match")
+    raw_pattern = history.get("ordered_history_event_pattern")
+    if raw_pattern is not None:
+        pattern = _object(raw_pattern, f"{path}.ordered_history_event_pattern")
+        if set(pattern) != {"prefix", "repeat", "repeat_count", "suffix"}:
+            raise ContractError(
+                f"{path}.ordered_history_event_pattern has an unsupported shape"
+            )
+        for field in ("prefix", "repeat", "suffix"):
+            values = _list(
+                pattern.get(field),
+                f"{path}.ordered_history_event_pattern.{field}",
+                nonempty=field != "suffix",
+            )
+            for index, value in enumerate(values):
+                _text(
+                    value,
+                    f"{path}.ordered_history_event_pattern.{field}[{index}]",
+                )
+        _integer(
+            pattern.get("repeat_count"),
+            f"{path}.ordered_history_event_pattern.repeat_count",
+            minimum=1,
+        )
+
+
+def workload_contract(
+    suite: dict[str, Any], cell: dict[str, Any], shape: str
+) -> dict[str, Any]:
+    """Resolve the executable workload contract for one admitted workflow."""
+    if cell.get("id") != "mixed":
+        if shape != cell.get("id"):
+            raise ContractError(
+                f"cell {cell.get('id')} cannot execute undeclared shape {shape}"
+            )
+        return _object(cell.get("workload"), f"cell {cell.get('id')}.workload")
+    mix = _object(cell.get("workload", {}).get("mix"), "mixed.workload.mix")
+    if shape not in mix:
+        raise ContractError(f"mixed workload selected undeclared shape {shape}")
+    for component in _list(suite.get("cells"), "cells", nonempty=True):
+        if isinstance(component, dict) and component.get("id") == shape:
+            return _object(component.get("workload"), f"cell {shape}.workload")
+    raise ContractError(f"mixed workload component is absent from the suite: {shape}")
+
+
+def _history_record_matches(record: Any, match: dict[str, Any]) -> bool:
+    if not isinstance(record, dict):
+        return False
+    for field, expected in match.items():
+        if field == "type_prefix":
+            actual = record.get("type") or record.get("event_type")
+            if not isinstance(actual, str) or not actual.startswith(str(expected)):
+                return False
+        elif field == "type_in":
+            actual = record.get("type") or record.get("event_type")
+            if actual not in expected:
+                return False
+        else:
+            actual = record.get(field)
+            if field == "type" and actual is None:
+                actual = record.get("event_type")
+            if actual != expected:
+                return False
+    return True
+
+
+def validate_history_evidence(
+    history: dict[str, Any],
+    root_bundle: dict[str, Any],
+    child_bundles: list[dict[str, Any]] | None = None,
+    *,
+    path: str = "history",
+) -> dict[str, Any]:
+    """Fail closed unless a closed runtime export matches its typed declaration."""
+    _validate_history_contract(history, path)
+    children = child_bundles or []
+    bundles = [root_bundle, *children]
+    if any(bundle.get("history_complete") is not True for bundle in bundles):
+        raise ContractError(f"{path} requires complete closed-run history exports")
+    count_bundles = (
+        bundles if history["count_scope"] == "workflow_tree" else [root_bundle]
+    )
+    actual_count = sum(
+        len(_list(bundle.get("history_events"), f"{path}.history_events"))
+        for bundle in count_bundles
+    )
+    target_count = int(history["target_event_count"])
+    if actual_count != target_count:
+        raise ContractError(
+            f"{path} target event count drifted: expected {target_count}, observed {actual_count}"
+        )
+
+    def selected(requirement: dict[str, Any]) -> list[Any]:
+        selected_bundles = (
+            [root_bundle] if requirement.get("scope", "root") == "root" else children
+        )
+        records: list[Any] = []
+        for bundle in selected_bundles:
+            records.extend(
+                _list(
+                    bundle.get(str(requirement["source"])),
+                    f"{path}.{requirement['source']}",
+                )
+            )
+        return records
+
+    for index, requirement in enumerate(history["evidence"]):
+        matches = sum(
+            _history_record_matches(record, requirement["match"])
+            for record in selected(requirement)
+        )
+        if matches != int(requirement["count"]):
+            raise ContractError(
+                f"{path}.evidence[{index}] drifted: expected {requirement['count']}, observed {matches}"
+            )
+    for index, requirement in enumerate(history.get("forbidden_evidence", [])):
+        if any(
+            _history_record_matches(record, requirement["match"])
+            for record in selected(requirement)
+        ):
+            raise ContractError(f"{path}.forbidden_evidence[{index}] was observed")
+
+    pattern = history.get("ordered_history_event_pattern")
+    if isinstance(pattern, dict):
+        expected = [str(value) for value in pattern["prefix"]]
+        expected.extend(
+            str(value)
+            for _ in range(int(pattern["repeat_count"]))
+            for value in pattern["repeat"]
+        )
+        expected.extend(str(value) for value in pattern["suffix"])
+        expected_types = set(expected)
+        actual = [
+            str(event.get("type") or event.get("event_type"))
+            for event in _list(root_bundle.get("history_events"), "history_events")
+            if isinstance(event, dict)
+            and (event.get("type") or event.get("event_type")) in expected_types
+        ]
+        if actual != expected:
+            raise ContractError(
+                f"{path}.ordered_history_event_pattern drifted: expected {expected}, observed {actual}"
+            )
+    return {
+        "target_event_count": target_count,
+        "observed_event_count": actual_count,
+        "child_run_count": len(children),
+        "matches": True,
+    }
 
 
 def _source_revision(value: Any) -> str:
@@ -407,11 +604,28 @@ def validate_suite(suite: dict[str, Any], suite_path: Path = DEFAULT_SUITE) -> N
         != "never_pool_bindings_or_unlike_result_identities"
     ):
         raise ContractError("driver contract must prevent pooled unlike results")
+    if driver.get("payload_size_semantics") != {
+        "unit": "utf8_encoded_bytes",
+        "measured_value": "synthetic_string_value",
+        "codec_envelope": "excluded",
+        "argument_container": "excluded",
+    }:
+        raise ContractError(
+            "driver contract must define the encoded workload payload boundary"
+        )
+    if driver.get("history_evidence_semantics") != {
+        "target_event_count": "history_export_history_events_in_count_scope",
+        "shape": "typed_history_export_records",
+        "closed_run_required": True,
+    }:
+        raise ContractError(
+            "driver contract must define the runtime history evidence boundary"
+        )
     adapters = _object(driver.get("adapters"), "driver_contract.adapters")
     if adapters != {
         "schema": "schemas/adapter.schema.json",
         "descriptor_pattern": "bindings/{binding}/adapter.json",
-        "modes": ["describe", "worker", "client"],
+        "modes": ["describe", "conformance", "worker", "client"],
         "client_protocol": "stdin_stdout_jsonl",
     }:
         raise ContractError(
@@ -582,21 +796,42 @@ def validate_suite(suite: dict[str, Any], suite_path: Path = DEFAULT_SUITE) -> N
                     f"{path}.workload.{definition_kind} cannot repeat a type"
                 )
         payload = _object(workload.get("payload"), f"{path}.workload.payload")
-        for field in (
-            "workflow_input_bytes",
-            "workflow_result_bytes",
-            "activity_input_bytes",
-            "activity_result_bytes",
-            "signal_bytes",
-        ):
-            _integer(payload.get(field), f"{path}.workload.payload.{field}", minimum=0)
+        if cell_id == "mixed":
+            if payload != {
+                "codec": "avro",
+                "contract": "selected_component_workload",
+            }:
+                raise ContractError(
+                    f"{path}.workload.payload must inherit the selected component workload"
+                )
+        else:
+            if payload.get("codec") != "avro":
+                raise ContractError(f"{path}.workload.payload.codec must be avro")
+            for field in (
+                "workflow_input_bytes",
+                "workflow_result_bytes",
+                "activity_input_bytes",
+                "activity_result_bytes",
+                "signal_bytes",
+            ):
+                _integer(
+                    payload.get(field),
+                    f"{path}.workload.payload.{field}",
+                    minimum=0,
+                )
         history = _object(workload.get("history"), f"{path}.workload.history")
-        _integer(
-            history.get("target_event_count"),
-            f"{path}.workload.history.target_event_count",
-            minimum=1,
-        )
         _list(history.get("shape"), f"{path}.workload.history.shape", nonempty=True)
+        if cell_id == "mixed":
+            if history.get("contract") != "selected_component_workload":
+                raise ContractError(
+                    f"{path}.workload.history must inherit the selected component workload"
+                )
+            if set(history) != {"contract", "shape"}:
+                raise ContractError(
+                    f"{path}.workload.history cannot declare an aggregate selected-shape target"
+                )
+        else:
+            _validate_history_contract(history, f"{path}.workload.history")
         execution = _object(cell.get("execution"), f"{path}.execution")
         for field, minimum in (
             ("concurrent_open_workflows", 1),

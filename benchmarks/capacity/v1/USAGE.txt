@@ -1,4 +1,4 @@
-Durable Workflow Capacity Benchmark Suite 1.3.0
+Durable Workflow Capacity Benchmark Suite 1.4.0
 
 This directory is immutable evidence input. A changed workload, artifact tuple,
 metric contract, or operating-point rule requires a new suite version instead
@@ -56,9 +56,10 @@ Install each adapter from its own immutable package manifest before a run:
   (cd benchmarks/capacity/v1/bindings/python && python3 -m pip install -r requirements.lock)
   (cd benchmarks/capacity/v1/bindings/rust && cargo build --release --locked)
 
-Every adapter entrypoint implements three modes. `describe` emits its adapter contract
-without credentials. `worker` registers every declared workflow, activity,
-signal, and query definition on DURABLE_WORKFLOW_TASK_QUEUE. `client` is a
+Every adapter entrypoint implements four modes. `describe` emits its adapter contract
+without credentials. `conformance` evaluates the checked-in payload fixtures
+without contacting a runtime. `worker` registers every declared workflow,
+activity, signal, and query definition on DURABLE_WORKFLOW_TASK_QUEUE. `client` is a
 long-lived stdin/stdout JSONL process with start, signal, query, and result
 operations; every response includes ok and elapsed_ms. For example:
 
@@ -73,6 +74,13 @@ and enforces the complete matrix. Inspect all 9 cells by 3 bindings without
 contacting a runtime:
 
   python3 scripts/benchmark/capacity_matrix.py dry-run
+
+Payload byte counts measure the UTF-8 encoding of each synthetic string value.
+They exclude the Avro envelope and the surrounding argument container. Mixed
+admissions inherit the payload and history contract of their selected component
+instead of using an aggregate shape. Every activity step checks its input and
+result size, including repeated hash steps that expand the prior digest back to
+the declared next-input size.
 
 The controller launches the declared client processes and worker slots (or
 one-slot PHP worker processes), sends exact payload sizes and the seeded mixed
@@ -107,7 +115,11 @@ environment variables and never enter an observation or result.
 
 Each cell/binding gets a separate observation stream and result. The controller
 derives schedule-to-start and replay samples from versioned history exports and
-query latency from adapter operations. It emits measurement observations and
+query latency from adapter operations. Before accepting a completion, it checks
+the closed export's typed workflow, activity, signal, query, task, and child-run
+evidence and requires the exact declared typed-history-event count. Task rows
+remain shape and latency evidence, but do not enter the count because ready-task
+coalescing is intentionally timing-dependent. It emits measurement observations and
 exactly one final drain observation. The reducer rejects omitted drain evidence,
 altered controls, contradictory phase ordering, or non-contiguous samples. It
 uses only measurement-phase completions, dispatches, errors, throttles, and

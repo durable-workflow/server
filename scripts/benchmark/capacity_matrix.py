@@ -65,6 +65,7 @@ def _parse_time(value: Any) -> datetime | None:
 
 @dataclass(frozen=True)
 class MatrixCell:
+    suite: dict[str, Any]
     cell: dict[str, Any]
     binding: str
     adapter: dict[str, Any]
@@ -109,6 +110,7 @@ def build_matrix(
             adapter_root = suite_path.parent / "bindings" / binding
             matrix.append(
                 MatrixCell(
+                    suite=suite,
                     cell=cell,
                     binding=binding,
                     adapter=capacity_suite.load_json(adapter_root / "adapter.json"),
@@ -302,18 +304,68 @@ class ControlPlane:
             f"{worker_concurrency}: {last}"
         )
 
-    def history_metrics(self, workflow_id: str, run_id: str) -> dict[str, Any]:
+    def _history_bundle(self, workflow_id: str, run_id: str) -> dict[str, Any]:
         workflow = urlparse.quote(workflow_id, safe="")
         run = urlparse.quote(run_id, safe="")
-        bundle = self.get(f"/api/workflows/{workflow}/runs/{run}/history/export")
-        tasks = bundle.get("tasks") if isinstance(bundle.get("tasks"), list) else []
-        events = (
-            bundle.get("history_events")
-            if isinstance(bundle.get("history_events"), list)
-            else bundle.get("events")
-            if isinstance(bundle.get("events"), list)
-            else []
-        )
+        return self.get(f"/api/workflows/{workflow}/runs/{run}/history/export")
+
+    def history_metrics(
+        self,
+        workflow_id: str,
+        run_id: str,
+        history_contract: dict[str, Any],
+    ) -> dict[str, Any]:
+        bundle = self._history_bundle(workflow_id, run_id)
+        child_bundles: list[dict[str, Any]] = []
+        if history_contract.get("count_scope") == "workflow_tree":
+            links = bundle.get("links") if isinstance(bundle.get("links"), dict) else {}
+            children = (
+                links.get("children") if isinstance(links.get("children"), list) else []
+            )
+            for child in children:
+                if not isinstance(child, dict):
+                    continue
+                child_workflow_id = child.get("child_workflow_instance_id")
+                child_run_id = child.get("child_workflow_run_id")
+                if not isinstance(child_workflow_id, str) or not isinstance(
+                    child_run_id, str
+                ):
+                    raise MatrixError(
+                        f"history export for {workflow_id} has an incomplete child link"
+                    )
+                child_bundles.append(
+                    self._history_bundle(child_workflow_id, child_run_id)
+                )
+        try:
+            contract_evidence = capacity_suite.validate_history_evidence(
+                history_contract,
+                bundle,
+                child_bundles,
+                path=f"history export for {workflow_id}",
+            )
+        except capacity_suite.ContractError as exc:
+            raise MatrixError(str(exc)) from exc
+        evidence_bundles = [bundle, *child_bundles]
+        tasks = [
+            task
+            for evidence_bundle in evidence_bundles
+            for task in (
+                evidence_bundle.get("tasks")
+                if isinstance(evidence_bundle.get("tasks"), list)
+                else []
+            )
+        ]
+        events = [
+            event
+            for evidence_bundle in evidence_bundles
+            for event in (
+                evidence_bundle.get("history_events")
+                if isinstance(evidence_bundle.get("history_events"), list)
+                else evidence_bundle.get("events")
+                if isinstance(evidence_bundle.get("events"), list)
+                else []
+            )
+        ]
         event_times: dict[str, list[datetime]] = {}
         for raw in events:
             if not isinstance(raw, dict):
@@ -359,6 +411,7 @@ class ControlPlane:
             "schedule_to_start": schedule,
             "replay": replay,
             "activity_dispatches": activity_dispatches,
+            "workload_history": contract_evidence,
         }
 
 
@@ -682,6 +735,7 @@ class CellRunner:
         minimum_delivery_ratio: float,
     ) -> None:
         self.matrix_cell = matrix_cell
+        self.suite = matrix_cell.suite
         self.cell = matrix_cell.cell
         self.execution = matrix_cell.execution
         self.binding = matrix_cell.binding
@@ -825,7 +879,8 @@ class CellRunner:
         return result
 
     def _payload(self, shape: str, sequence: int) -> dict[str, Any]:
-        payload = self.cell["workload"]["payload"]
+        workload = capacity_suite.workload_contract(self.suite, self.cell, shape)
+        payload = workload["payload"]
         input_size = int(payload["workflow_input_bytes"])
         result_size = int(payload["workflow_result_bytes"])
         digest = hashlib.sha256(
@@ -833,7 +888,13 @@ class CellRunner:
         ).hexdigest()
         blob = (digest * ((input_size // len(digest)) + 1))[:input_size]
         result_blob = (digest * ((result_size // len(digest)) + 1))[:result_size]
-        return {"blob": blob, "result_blob": result_blob, "shape": shape}
+        return {
+            "blob": blob,
+            "result_blob": result_blob,
+            "shape": shape,
+            "contract_cell_id": shape,
+            "payload_contract": payload,
+        }
 
     def _mixed_shape(self) -> str:
         weighted = {
@@ -912,7 +973,11 @@ class CellRunner:
                 )
             start_resolved = True
             if shape == "signal":
-                signal_bytes = int(self.cell["workload"]["payload"]["signal_bytes"])
+                signal_bytes = int(
+                    capacity_suite.workload_contract(self.suite, self.cell, shape)[
+                        "payload"
+                    ]["signal_bytes"]
+                )
                 signal_payload = "s" * signal_bytes
                 for signal_sequence in range(4):
                     response = client.request(
@@ -962,7 +1027,28 @@ class CellRunner:
             )
             completed_at = time.monotonic()
             self._require_ok(response, "workflow result")
-            evidence = self.control_plane.history_metrics(workflow_id, run_id)
+            workload = capacity_suite.workload_contract(self.suite, self.cell, shape)
+            if workload["activities"]:
+                result = response.get("result")
+                expected_result_bytes = int(
+                    workload["payload"]["workflow_result_bytes"]
+                )
+                if (
+                    not isinstance(result, str)
+                    or len(result.encode("utf-8")) != expected_result_bytes
+                ):
+                    actual = (
+                        len(result.encode("utf-8"))
+                        if isinstance(result, str)
+                        else type(result).__name__
+                    )
+                    raise MatrixError(
+                        f"workflow result payload drifted for {shape}: expected "
+                        f"{expected_result_bytes} UTF-8 bytes, observed {actual}"
+                    )
+            evidence = self.control_plane.history_metrics(
+                workflow_id, run_id, workload["history"]
+            )
             if measured:
                 self.metrics.completed(
                     evidence,
@@ -1459,6 +1545,7 @@ def _run_smoke(
     cell["execution"] = execution
     adapter_root = args.suite.parent / "bindings" / binding
     matrix_cell = MatrixCell(
+        suite=suite,
         cell=cell,
         binding=binding,
         adapter=capacity_suite.load_json(adapter_root / "adapter.json"),

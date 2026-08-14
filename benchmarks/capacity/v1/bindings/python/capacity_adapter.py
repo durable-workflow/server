@@ -37,10 +37,6 @@ if len(sys.argv) > 1 and sys.argv[1] == "describe":
     raise SystemExit(0)
 
 
-from durable_workflow import Client, Worker, activity, workflow  # noqa: E402
-from durable_workflow.workflow import WorkflowContext  # noqa: E402
-
-
 def request(value: object) -> dict[str, Any]:
     return value if isinstance(value, dict) else {}
 
@@ -53,6 +49,120 @@ def blob(value: dict[str, Any]) -> str:
 def result_blob(value: dict[str, Any]) -> str:
     candidate = value.get("result_blob")
     return candidate if isinstance(candidate, str) else blob(value)
+
+
+def payload_contract(value: dict[str, Any]) -> dict[str, int]:
+    candidate = value.get("payload_contract")
+    if not isinstance(candidate, dict):
+        raise ValueError("capacity workload omitted its payload contract")
+    contract: dict[str, int] = {}
+    for field in (
+        "workflow_input_bytes",
+        "workflow_result_bytes",
+        "activity_input_bytes",
+        "activity_result_bytes",
+        "signal_bytes",
+    ):
+        size = candidate.get(field)
+        if not isinstance(size, int) or isinstance(size, bool) or size < 0:
+            raise ValueError(f"capacity payload contract has invalid {field}")
+        contract[field] = size
+    return contract
+
+
+def require_utf8_size(value: object, expected: int, boundary: str) -> str:
+    if not isinstance(value, str):
+        raise ValueError(f"{boundary} must be a string")
+    actual = len(value.encode("utf-8"))
+    if actual != expected:
+        raise ValueError(
+            f"{boundary} must contain {expected} UTF-8 bytes; observed {actual}"
+        )
+    return value
+
+
+def sized_ascii(seed: str, size: int) -> str:
+    if not seed or not seed.isascii():
+        raise ValueError("capacity payload expansion requires a non-empty ASCII seed")
+    return (seed * ((size // len(seed)) + 1))[:size]
+
+
+def initial_activity_input(value: dict[str, Any]) -> str:
+    contract = payload_contract(value)
+    workflow_input = require_utf8_size(
+        blob(value), contract["workflow_input_bytes"], "workflow input"
+    )
+    return require_utf8_size(
+        workflow_input, contract["activity_input_bytes"], "activity input"
+    )
+
+
+def checked_activity_result(value: object, contract: dict[str, int]) -> str:
+    return require_utf8_size(
+        value, contract["activity_result_bytes"], "activity result"
+    )
+
+
+def conformance_evidence(fixtures: dict[str, Any]) -> dict[str, Any]:
+    cases: list[dict[str, Any]] = []
+    for fixture in fixtures.get("payload_cases", []):
+        if not isinstance(fixture, dict):
+            raise ValueError("payload fixture must be an object")
+        contract = fixture.get("payload")
+        if not isinstance(contract, dict):
+            raise ValueError("payload fixture omitted its contract")
+        value = {
+            "blob": sized_ascii("payload", int(contract["workflow_input_bytes"])),
+            "payload_contract": contract,
+        }
+        current = initial_activity_input(value)
+        input_sizes: list[int] = []
+        result_sizes: list[int] = []
+        activity_type = fixture.get("activity_type")
+        for index in range(int(fixture.get("activity_count", 0))):
+            input_sizes.append(len(current.encode("utf-8")))
+            if activity_type == "capacity.v1.echo":
+                result = current
+            elif activity_type == "capacity.v1.hash":
+                result = hashlib.sha256(current.encode()).hexdigest()
+            else:
+                raise ValueError(f"unsupported fixture activity type: {activity_type}")
+            result = checked_activity_result(result, payload_contract(value))
+            result_sizes.append(len(result.encode("utf-8")))
+            if index + 1 < int(fixture["activity_count"]):
+                current = sized_ascii(
+                    result, payload_contract(value)["activity_input_bytes"]
+                )
+        cases.append(
+            {
+                "id": fixture.get("id"),
+                "activity_input_bytes": input_sizes,
+                "activity_result_bytes": result_sizes,
+            }
+        )
+    return {
+        "schema": "durable-workflow.capacity-workload-conformance-evidence/v1",
+        "cases": cases,
+    }
+
+
+if len(sys.argv) > 1 and sys.argv[1] == "conformance":
+    if len(sys.argv) != 3:
+        raise SystemExit("conformance requires a fixture path")
+    fixture_value = json.loads(Path(sys.argv[2]).read_text())
+    if not isinstance(fixture_value, dict):
+        raise SystemExit("conformance fixture must contain an object")
+    print(
+        json.dumps(
+            conformance_evidence(fixture_value), separators=(",", ":"), sort_keys=True
+        ),
+        flush=True,
+    )
+    raise SystemExit(0)
+
+
+from durable_workflow import Client, Worker, activity, workflow  # noqa: E402
+from durable_workflow.workflow import WorkflowContext  # noqa: E402
 
 
 @activity.defn(name="capacity.v1.echo")
@@ -76,7 +186,12 @@ class OneActivityWorkflow:
     def run(
         self, ctx: WorkflowContext, value: dict[str, Any]
     ) -> Generator[Any, Any, str]:
-        return (yield ctx.schedule_activity("capacity.v1.echo", [blob(request(value))]))
+        value = request(value)
+        contract = payload_contract(value)
+        result = yield ctx.schedule_activity(
+            "capacity.v1.echo", [initial_activity_input(value)]
+        )
+        return checked_activity_result(result, contract)
 
 
 @workflow.defn(name="capacity.v1.multiple_activities")
@@ -84,9 +199,15 @@ class MultipleActivitiesWorkflow:
     def run(
         self, ctx: WorkflowContext, value: dict[str, Any]
     ) -> Generator[Any, Any, str]:
-        digest = blob(request(value))
-        for _ in range(5):
-            digest = yield ctx.schedule_activity("capacity.v1.hash", [digest])
+        value = request(value)
+        contract = payload_contract(value)
+        digest = initial_activity_input(value)
+        for index in range(5):
+            digest = checked_activity_result(
+                (yield ctx.schedule_activity("capacity.v1.hash", [digest])), contract
+            )
+            if index < 4:
+                digest = sized_ascii(digest, contract["activity_input_bytes"])
         return digest
 
 
@@ -201,11 +322,21 @@ class MixedSelectorWorkflow:
         if shape == "simple-start-complete":
             return result_blob(value)
         if shape == "one-activity":
-            return (yield ctx.schedule_activity("capacity.v1.echo", [blob(value)]))
+            contract = payload_contract(value)
+            result = yield ctx.schedule_activity(
+                "capacity.v1.echo", [initial_activity_input(value)]
+            )
+            return checked_activity_result(result, contract)
         if shape == "multiple-activities":
-            digest = blob(value)
-            for _ in range(5):
-                digest = yield ctx.schedule_activity("capacity.v1.hash", [digest])
+            contract = payload_contract(value)
+            digest = initial_activity_input(value)
+            for index in range(5):
+                digest = checked_activity_result(
+                    (yield ctx.schedule_activity("capacity.v1.hash", [digest])),
+                    contract,
+                )
+                if index < 4:
+                    digest = sized_ascii(digest, contract["activity_input_bytes"])
             return digest
         if shape == "timer":
             yield ctx.sleep(1)
@@ -396,7 +527,9 @@ async def main() -> None:
     elif mode == "check":
         await check_definitions()
     else:
-        raise SystemExit("usage: capacity_adapter.py describe|check|worker|client")
+        raise SystemExit(
+            "usage: capacity_adapter.py describe|conformance|check|worker|client"
+        )
 
 
 if __name__ == "__main__":

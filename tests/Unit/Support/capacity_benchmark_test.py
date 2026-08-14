@@ -206,6 +206,157 @@ class CapacityBenchmarkContractTest(unittest.TestCase):
             json.loads(completed.stdout),
         )
 
+    def test_cross_binding_payload_and_history_conformance_fixtures(self) -> None:
+        fixture_path = capacity_suite.SUITE_ROOT / "workload-conformance-fixtures.json"
+        fixtures = capacity_suite.load_json(fixture_path)
+        cells = {cell["id"]: cell for cell in self.suite["cells"]}
+        for fixture in fixtures["payload_cases"]:
+            with self.subTest(payload_fixture=fixture["id"]):
+                workload = capacity_suite.workload_contract(
+                    self.suite,
+                    cells[fixture["cell_id"]],
+                    fixture["shape"],
+                )
+                self.assertEqual(workload["payload"], fixture["payload"])
+
+        bindings = capacity_suite.SUITE_ROOT / "bindings"
+        commands = {
+            "php": ["php", "capacity_adapter.php", "conformance", str(fixture_path)],
+            "python": [
+                sys.executable,
+                "capacity_adapter.py",
+                "conformance",
+                str(fixture_path),
+            ],
+            "rust": [
+                "cargo",
+                "run",
+                "--quiet",
+                "--locked",
+                "--manifest-path",
+                "Cargo.toml",
+                "--",
+                "conformance",
+                str(fixture_path),
+            ],
+        }
+        for binding in fixtures["bindings"]:
+            with self.subTest(binding=binding):
+                completed = subprocess.run(
+                    commands[binding],
+                    check=True,
+                    capture_output=True,
+                    text=True,
+                    cwd=bindings / binding,
+                )
+                self.assertEqual(
+                    fixtures["expected_payload_evidence"],
+                    json.loads(completed.stdout),
+                )
+
+        for binding in fixtures["bindings"]:
+            for fixture in fixtures["history_cases"]:
+                with self.subTest(binding=binding, history_fixture=fixture["id"]):
+                    workload = capacity_suite.workload_contract(
+                        self.suite,
+                        cells[fixture["cell_id"]],
+                        fixture["shape"],
+                    )
+                    root = self.history_bundle(fixture["root"])
+                    children = [
+                        self.history_bundle(child) for child in fixture["children"]
+                    ]
+                    evidence = capacity_suite.validate_history_evidence(
+                        workload["history"], root, children
+                    )
+                    self.assertTrue(evidence["matches"])
+                    if "expected_evidence" in fixture:
+                        self.assertEqual(fixture["expected_evidence"], evidence)
+
+    @staticmethod
+    def history_bundle(fixture: dict) -> dict:
+        return {
+            "history_complete": fixture["history_complete"],
+            "history_events": [
+                {"type": event_type} for event_type in fixture["history_event_types"]
+            ],
+            "tasks": [{"type": task_type} for task_type in fixture["task_types"]],
+            "signals": fixture["signals"],
+        }
+
+    def test_mixed_generation_resolves_the_selected_component_contract(self) -> None:
+        mixed = next(cell for cell in self.suite["cells"] if cell["id"] == "mixed")
+        runner = capacity_matrix.CellRunner.__new__(capacity_matrix.CellRunner)
+        runner.suite = self.suite
+        runner.cell = mixed
+        runner.execution = mixed["execution"]
+        for shape in ("one-activity", "multiple-activities"):
+            with self.subTest(shape=shape):
+                payload = runner._payload(shape, 1)
+                component = capacity_suite.workload_contract(self.suite, mixed, shape)[
+                    "payload"
+                ]
+                self.assertEqual(component, payload["payload_contract"])
+                self.assertEqual(
+                    component["workflow_input_bytes"],
+                    len(payload["blob"].encode("utf-8")),
+                )
+
+    def test_payload_and_history_drift_fail_closed(self) -> None:
+        multiple = next(
+            cell for cell in self.suite["cells"] if cell["id"] == "multiple-activities"
+        )
+        history = multiple["workload"]["history"]
+        events = [
+            "WorkflowStarted",
+            *(
+                event
+                for _ in range(5)
+                for event in (
+                    "ActivityScheduled",
+                    "ActivityStarted",
+                    "ActivityCompleted",
+                )
+            ),
+            "WorkflowCompleted",
+        ]
+        bundle = {
+            "history_complete": True,
+            "history_events": [{"type": event} for event in events],
+            "tasks": [
+                *({"type": "workflow"} for _ in range(6)),
+                *({"type": "activity"} for _ in range(5)),
+            ],
+            "signals": [],
+        }
+        capacity_suite.validate_history_evidence(history, bundle)
+        bundle["history_events"][2]["type"] = "ActivityFailed"
+        with self.assertRaisesRegex(capacity_suite.ContractError, "evidence.*drifted"):
+            capacity_suite.validate_history_evidence(history, bundle)
+
+        fixtures = capacity_suite.load_json(
+            capacity_suite.SUITE_ROOT / "workload-conformance-fixtures.json"
+        )
+        fixtures["payload_cases"][1]["payload"]["activity_result_bytes"] = 65
+        with tempfile.TemporaryDirectory() as temporary:
+            drifted_fixture = Path(temporary) / "drifted.json"
+            drifted_fixture.write_text(json.dumps(fixtures))
+            completed = subprocess.run(
+                [
+                    sys.executable,
+                    str(
+                        capacity_suite.SUITE_ROOT
+                        / "bindings/python/capacity_adapter.py"
+                    ),
+                    "conformance",
+                    str(drifted_fixture),
+                ],
+                capture_output=True,
+                text=True,
+            )
+        self.assertNotEqual(0, completed.returncode)
+        self.assertIn("activity result", completed.stderr)
+
     def test_matrix_controller_plans_every_cell_binding_with_exact_controls(
         self,
     ) -> None:

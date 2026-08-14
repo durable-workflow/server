@@ -1,0 +1,112 @@
+{
+  "schema": "durable-workflow.capacity-workload-conformance-fixtures/v1",
+  "suite_version": "1.4.0",
+  "deterministic_seed": 104761,
+  "bindings": ["php", "python", "rust"],
+  "payload_cases": [
+    {
+      "id": "one-activity",
+      "cell_id": "one-activity",
+      "shape": "one-activity",
+      "activity_type": "capacity.v1.echo",
+      "activity_count": 1,
+      "payload": {"codec": "avro", "workflow_input_bytes": 1024, "workflow_result_bytes": 1024, "activity_input_bytes": 1024, "activity_result_bytes": 1024, "signal_bytes": 0}
+    },
+    {
+      "id": "multiple-activities",
+      "cell_id": "multiple-activities",
+      "shape": "multiple-activities",
+      "activity_type": "capacity.v1.hash",
+      "activity_count": 5,
+      "payload": {"codec": "avro", "workflow_input_bytes": 4096, "workflow_result_bytes": 64, "activity_input_bytes": 4096, "activity_result_bytes": 64, "signal_bytes": 0}
+    },
+    {
+      "id": "mixed-one-activity",
+      "cell_id": "mixed",
+      "shape": "one-activity",
+      "activity_type": "capacity.v1.echo",
+      "activity_count": 1,
+      "payload": {"codec": "avro", "workflow_input_bytes": 1024, "workflow_result_bytes": 1024, "activity_input_bytes": 1024, "activity_result_bytes": 1024, "signal_bytes": 0}
+    },
+    {
+      "id": "mixed-multiple-activities",
+      "cell_id": "mixed",
+      "shape": "multiple-activities",
+      "activity_type": "capacity.v1.hash",
+      "activity_count": 5,
+      "payload": {"codec": "avro", "workflow_input_bytes": 4096, "workflow_result_bytes": 64, "activity_input_bytes": 4096, "activity_result_bytes": 64, "signal_bytes": 0}
+    }
+  ],
+  "expected_payload_evidence": {
+    "schema": "durable-workflow.capacity-workload-conformance-evidence/v1",
+    "cases": [
+      {"id": "one-activity", "activity_input_bytes": [1024], "activity_result_bytes": [1024]},
+      {"id": "multiple-activities", "activity_input_bytes": [4096, 4096, 4096, 4096, 4096], "activity_result_bytes": [64, 64, 64, 64, 64]},
+      {"id": "mixed-one-activity", "activity_input_bytes": [1024], "activity_result_bytes": [1024]},
+      {"id": "mixed-multiple-activities", "activity_input_bytes": [4096, 4096, 4096, 4096, 4096], "activity_result_bytes": [64, 64, 64, 64, 64]}
+    ]
+  },
+  "history_cases": [
+    {
+      "id": "workflow-shape",
+      "cell_id": "simple-start-complete",
+      "shape": "simple-start-complete",
+      "root": {"history_complete": true, "history_event_types": ["WorkflowStarted", "WorkflowCompleted"], "task_types": ["workflow"], "signals": []},
+      "children": []
+    },
+    {
+      "id": "activity-shape",
+      "cell_id": "one-activity",
+      "shape": "one-activity",
+      "root": {"history_complete": true, "history_event_types": ["WorkflowStarted", "ActivityScheduled", "ActivityStarted", "ActivityCompleted", "WorkflowCompleted"], "task_types": ["workflow", "activity", "workflow"], "signals": []},
+      "children": []
+    },
+    {
+      "id": "signal-shape",
+      "cell_id": "signal",
+      "shape": "signal",
+      "root": {"history_complete": true, "history_event_types": ["WorkflowStarted", "ConditionWaitOpened", "SignalReceived", "SignalReceived", "SignalReceived", "SignalReceived", "SignalApplied", "SignalApplied", "SignalApplied", "SignalApplied", "WorkflowCompleted"], "task_types": ["workflow", "workflow", "workflow", "workflow", "workflow"], "signals": [{"name": "capacity.v1.append"}, {"name": "capacity.v1.append"}, {"name": "capacity.v1.append"}, {"name": "capacity.v1.append"}]},
+      "children": []
+    },
+    {
+      "id": "query-shape",
+      "cell_id": "query-inspection",
+      "shape": "query-inspection",
+      "root": {"history_complete": true, "history_event_types": ["WorkflowStarted", "SignalWaitOpened", "SignalReceived", "SignalApplied", "WorkflowCompleted"], "task_types": ["workflow", "workflow"], "signals": [{"name": "capacity.v1.finish"}]},
+      "children": []
+    },
+    {
+      "id": "mixed-child-workflow-fanout-shape",
+      "cell_id": "mixed",
+      "shape": "child-workflow-fanout",
+      "root": {
+        "history_complete": true,
+        "history_event_types": [
+          "WorkflowStarted",
+          "ChildWorkflowScheduled", "ChildWorkflowScheduled", "ChildWorkflowScheduled", "ChildWorkflowScheduled", "ChildWorkflowScheduled",
+          "ChildWorkflowScheduled", "ChildWorkflowScheduled", "ChildWorkflowScheduled", "ChildWorkflowScheduled", "ChildWorkflowScheduled",
+          "ChildRunStarted", "ChildRunStarted", "ChildRunStarted", "ChildRunStarted", "ChildRunStarted",
+          "ChildRunStarted", "ChildRunStarted", "ChildRunStarted", "ChildRunStarted", "ChildRunStarted",
+          "ChildRunCompleted", "ChildRunCompleted", "ChildRunCompleted", "ChildRunCompleted", "ChildRunCompleted",
+          "ChildRunCompleted", "ChildRunCompleted", "ChildRunCompleted", "ChildRunCompleted", "ChildRunCompleted",
+          "WorkflowCompleted"
+        ],
+        "task_types": ["workflow", "workflow", "workflow", "workflow", "workflow", "workflow", "workflow", "workflow", "workflow", "workflow", "workflow"],
+        "signals": []
+      },
+      "children": [
+        {"history_complete": true, "history_event_types": ["WorkflowStarted", "WorkflowCompleted"], "task_types": ["workflow"], "signals": []},
+        {"history_complete": true, "history_event_types": ["WorkflowStarted", "WorkflowCompleted"], "task_types": ["workflow"], "signals": []},
+        {"history_complete": true, "history_event_types": ["WorkflowStarted", "WorkflowCompleted"], "task_types": ["workflow"], "signals": []},
+        {"history_complete": true, "history_event_types": ["WorkflowStarted", "WorkflowCompleted"], "task_types": ["workflow"], "signals": []},
+        {"history_complete": true, "history_event_types": ["WorkflowStarted", "WorkflowCompleted"], "task_types": ["workflow"], "signals": []},
+        {"history_complete": true, "history_event_types": ["WorkflowStarted", "WorkflowCompleted"], "task_types": ["workflow"], "signals": []},
+        {"history_complete": true, "history_event_types": ["WorkflowStarted", "WorkflowCompleted"], "task_types": ["workflow"], "signals": []},
+        {"history_complete": true, "history_event_types": ["WorkflowStarted", "WorkflowCompleted"], "task_types": ["workflow"], "signals": []},
+        {"history_complete": true, "history_event_types": ["WorkflowStarted", "WorkflowCompleted"], "task_types": ["workflow"], "signals": []},
+        {"history_complete": true, "history_event_types": ["WorkflowStarted", "WorkflowCompleted"], "task_types": ["workflow"], "signals": []}
+      ],
+      "expected_evidence": {"target_event_count": 52, "observed_event_count": 52, "child_run_count": 10, "matches": true}
+    }
+  ]
+}

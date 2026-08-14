@@ -1,6 +1,6 @@
 {
   "schema": "durable-workflow.capacity-benchmark-regression-corpus/v1",
-  "suite_version": "1.3.0",
+  "suite_version": "1.4.0",
   "growth_rule": "append_the_smallest_fixture_that_reproduces_a_missing_field_workload_shape",
   "fixture_requirements": [
     "synthetic_data_only",
@@ -9,5 +9,11 @@
     "expected_observation_or_result_required",
     "credentials_and_private_topology_forbidden"
   ],
-  "fixtures": []
+  "fixtures": [
+    {
+      "path": "workload-conformance-fixtures.json",
+      "deterministic_seed": 104761,
+      "expected_observation": "all_first_party_bindings_match_payload_boundaries_and_typed_history_evidence"
+    }
+  ]
 }

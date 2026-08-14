@@ -40,6 +40,80 @@ fn result_blob(input: &Value) -> &str {
         .unwrap_or_else(|| blob(input))
 }
 
+#[derive(Clone, Copy)]
+struct PayloadContract {
+    workflow_input_bytes: usize,
+    activity_input_bytes: usize,
+    activity_result_bytes: usize,
+}
+
+fn payload_contract(input: &Value) -> std::result::Result<PayloadContract, String> {
+    let candidate = input
+        .get("payload_contract")
+        .and_then(Value::as_object)
+        .ok_or_else(|| "capacity workload omitted its payload contract".to_string())?;
+    let size = |field: &str| {
+        candidate
+            .get(field)
+            .and_then(Value::as_u64)
+            .and_then(|value| usize::try_from(value).ok())
+            .ok_or_else(|| format!("capacity payload contract has invalid {field}"))
+    };
+    for field in ["workflow_result_bytes", "signal_bytes"] {
+        size(field)?;
+    }
+    Ok(PayloadContract {
+        workflow_input_bytes: size("workflow_input_bytes")?,
+        activity_input_bytes: size("activity_input_bytes")?,
+        activity_result_bytes: size("activity_result_bytes")?,
+    })
+}
+
+fn require_utf8_size(
+    value: &Value,
+    expected: usize,
+    boundary: &str,
+) -> std::result::Result<String, String> {
+    let text = value
+        .as_str()
+        .ok_or_else(|| format!("{boundary} must be a string"))?;
+    let actual = text.len();
+    if actual != expected {
+        return Err(format!(
+            "{boundary} must contain {expected} UTF-8 bytes; observed {actual}"
+        ));
+    }
+    Ok(text.to_string())
+}
+
+fn sized_ascii(seed: &str, size: usize) -> std::result::Result<String, String> {
+    if seed.is_empty() || !seed.is_ascii() {
+        return Err("capacity payload expansion requires a non-empty ASCII seed".into());
+    }
+    Ok(seed.repeat(size / seed.len() + 1)[..size].to_string())
+}
+
+fn initial_activity_input(input: &Value) -> std::result::Result<String, String> {
+    let contract = payload_contract(input)?;
+    let workflow_input = require_utf8_size(
+        &json!(blob(input)),
+        contract.workflow_input_bytes,
+        "workflow input",
+    )?;
+    require_utf8_size(
+        &json!(workflow_input),
+        contract.activity_input_bytes,
+        "activity input",
+    )
+}
+
+fn checked_activity_result(
+    value: &Value,
+    contract: PayloadContract,
+) -> std::result::Result<String, String> {
+    require_utf8_size(value, contract.activity_result_bytes, "activity result")
+}
+
 fn required_environment(name: &str) -> std::result::Result<String, String> {
     env::var(name)
         .ok()
@@ -91,18 +165,27 @@ async fn run_worker() -> Result<()> {
         Ok(json!(result_blob(request(&input))))
     });
     worker.register_workflow("capacity.v1.one_activity", |ctx, input| async move {
-        ctx.activity("capacity.v1.echo", json!([blob(request(&input))]))
-            .await
+        let input = request(&input);
+        let contract = payload_contract(input).map_err(adapter_error)?;
+        let activity_input = initial_activity_input(input).map_err(adapter_error)?;
+        let result = ctx
+            .activity("capacity.v1.echo", json!([activity_input]))
+            .await?;
+        Ok(json!(
+            checked_activity_result(&result, contract).map_err(adapter_error)?
+        ))
     });
     worker.register_workflow("capacity.v1.multiple_activities", |ctx, input| async move {
-        let mut digest = blob(request(&input)).to_string();
-        for _ in 0..5 {
-            digest = ctx
-                .activity("capacity.v1.hash", json!([digest]))
-                .await?
-                .as_str()
-                .unwrap_or("")
-                .to_string();
+        let input = request(&input);
+        let contract = payload_contract(input).map_err(adapter_error)?;
+        let mut digest = initial_activity_input(input).map_err(adapter_error)?;
+        for index in 0..5 {
+            let result = ctx.activity("capacity.v1.hash", json!([digest])).await?;
+            digest = checked_activity_result(&result, contract).map_err(adapter_error)?;
+            if index < 4 {
+                digest =
+                    sized_ascii(&digest, contract.activity_input_bytes).map_err(adapter_error)?;
+            }
         }
         Ok(json!(digest))
     });
@@ -169,16 +252,27 @@ async fn run_worker() -> Result<()> {
             let input = request(&input);
             match input.get("shape").and_then(Value::as_str).unwrap_or("") {
                 "simple-start-complete" => Ok(json!(result_blob(input))),
-                "one-activity" => ctx.activity("capacity.v1.echo", json!([blob(input)])).await,
+                "one-activity" => {
+                    let contract = payload_contract(input).map_err(adapter_error)?;
+                    let activity_input = initial_activity_input(input).map_err(adapter_error)?;
+                    let result = ctx
+                        .activity("capacity.v1.echo", json!([activity_input]))
+                        .await?;
+                    Ok(json!(
+                        checked_activity_result(&result, contract).map_err(adapter_error)?
+                    ))
+                }
                 "multiple-activities" => {
-                    let mut digest = blob(input).to_string();
-                    for _ in 0..5 {
-                        digest = ctx
-                            .activity("capacity.v1.hash", json!([digest]))
-                            .await?
-                            .as_str()
-                            .unwrap_or("")
-                            .to_string();
+                    let contract = payload_contract(input).map_err(adapter_error)?;
+                    let mut digest = initial_activity_input(input).map_err(adapter_error)?;
+                    for index in 0..5 {
+                        let result = ctx.activity("capacity.v1.hash", json!([digest])).await?;
+                        digest =
+                            checked_activity_result(&result, contract).map_err(adapter_error)?;
+                        if index < 4 {
+                            digest = sized_ascii(&digest, contract.activity_input_bytes)
+                                .map_err(adapter_error)?;
+                        }
                     }
                     Ok(json!(digest))
                 }
@@ -395,6 +489,69 @@ async fn run_client() -> std::result::Result<(), String> {
     Ok(())
 }
 
+fn conformance_evidence(fixtures: &Value) -> std::result::Result<Value, String> {
+    let fixture_cases = fixtures
+        .get("payload_cases")
+        .and_then(Value::as_array)
+        .ok_or_else(|| "conformance fixture omitted payload_cases".to_string())?;
+    let mut cases = Vec::new();
+    for fixture in fixture_cases {
+        let contract_value = fixture
+            .get("payload")
+            .cloned()
+            .filter(Value::is_object)
+            .ok_or_else(|| "payload fixture omitted its contract".to_string())?;
+        let workflow_input_bytes = contract_value
+            .get("workflow_input_bytes")
+            .and_then(Value::as_u64)
+            .and_then(|value| usize::try_from(value).ok())
+            .ok_or_else(|| "payload fixture has invalid workflow_input_bytes".to_string())?;
+        let input = json!({
+            "blob": sized_ascii("payload", workflow_input_bytes)?,
+            "payload_contract": contract_value,
+        });
+        let contract = payload_contract(&input)?;
+        let mut current = initial_activity_input(&input)?;
+        let activity_count = fixture
+            .get("activity_count")
+            .and_then(Value::as_u64)
+            .and_then(|value| usize::try_from(value).ok())
+            .unwrap_or(0);
+        let activity_type = fixture
+            .get("activity_type")
+            .and_then(Value::as_str)
+            .unwrap_or("");
+        let mut input_sizes = Vec::new();
+        let mut result_sizes = Vec::new();
+        for index in 0..activity_count {
+            input_sizes.push(current.len());
+            let result = match activity_type {
+                "capacity.v1.echo" => current.clone(),
+                "capacity.v1.hash" => format!("{:x}", Sha256::digest(current.as_bytes())),
+                _ => {
+                    return Err(format!(
+                        "unsupported fixture activity type: {activity_type}"
+                    ))
+                }
+            };
+            current = checked_activity_result(&json!(result), contract)?;
+            result_sizes.push(current.len());
+            if index + 1 < activity_count {
+                current = sized_ascii(&current, contract.activity_input_bytes)?;
+            }
+        }
+        cases.push(json!({
+            "id": fixture.get("id").cloned().unwrap_or(Value::Null),
+            "activity_input_bytes": input_sizes,
+            "activity_result_bytes": result_sizes,
+        }));
+    }
+    Ok(json!({
+        "schema": "durable-workflow.capacity-workload-conformance-evidence/v1",
+        "cases": cases,
+    }))
+}
+
 #[tokio::main]
 async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
     match env::args().nth(1).as_deref() {
@@ -403,8 +560,16 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
             println!("{descriptor}");
             Ok(())
         }
+        Some("conformance") => {
+            let path = env::args()
+                .nth(2)
+                .ok_or("conformance requires a fixture path")?;
+            let fixture: Value = serde_json::from_str(&std::fs::read_to_string(path)?)?;
+            println!("{}", conformance_evidence(&fixture)?);
+            Ok(())
+        }
         Some("worker") => run_worker().await.map_err(Into::into),
         Some("client") => run_client().await.map_err(Into::into),
-        _ => Err("usage: capacity adapter describe|worker|client".into()),
+        _ => Err("usage: capacity adapter describe|conformance|worker|client".into()),
     }
 }
