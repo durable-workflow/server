@@ -3,7 +3,7 @@ set -Eeuo pipefail
 
 usage() {
   cat <<'USAGE'
-Usage: signals-queries-published-artifacts.sh [--result-dir DIR|--result-dir=DIR]
+Usage: signals-queries-published-artifacts.sh [--result-dir DIR|--result-dir=DIR] [--focus CELL|--focus=CELL]
 
 Writes a source-free signals/queries conformance split-out result.
 
@@ -15,6 +15,8 @@ The runner writes these files to the result directory:
   signals-queries-findings.json
   signals-queries-rust-cell-results.json
   signals-queries-baseline-cell-results.json
+  signals-queries-php-cli-signal-result.json (when --focus=php-worker-cli-signal)
+  signals-queries-php-cli-signal-record.json (when --focus=php-worker-cli-signal)
 
 Environment overrides:
   DW_SERVER_VERSION                         Published server version under test.
@@ -32,6 +34,9 @@ Environment overrides:
                                              docker.io/durableworkflow/waterline@sha256:<digest>;
                                              tags and local images are rejected.
   DW_SIGNALS_QUERIES_RESULT_DIR             Result directory when --result-dir is omitted.
+  DW_SIGNALS_QUERIES_FOCUS                  Optional focused cell. The supported value is
+                                             php-worker-cli-signal; it does not claim the broad
+                                             signals/queries property.
   DW_SIGNALS_QUERIES_EVIDENCE               Optional JSON evidence from a real matrix run, including
                                              executed_distribution_identities captured from consumed bytes.
   DW_SIGNALS_QUERIES_SMOKE_EVIDENCE         Deprecated alias for DW_SIGNALS_QUERIES_EVIDENCE.
@@ -84,6 +89,7 @@ USAGE
 }
 
 result_dir="${DW_SIGNALS_QUERIES_RESULT_DIR:-}"
+focus="${DW_SIGNALS_QUERIES_FOCUS:-}"
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -100,6 +106,19 @@ while [[ $# -gt 0 ]]; do
       fi
       shift
       ;;
+    --focus)
+      focus="${2:?--focus requires a value}"
+      shift 2
+      ;;
+    --focus=*)
+      focus="${1#--focus=}"
+      if [[ -z "$focus" ]]; then
+        printf '%s\n' '--focus requires a value' >&2
+        usage >&2
+        exit 2
+      fi
+      shift
+      ;;
     -h|--help)
       usage
       exit 0
@@ -111,6 +130,20 @@ while [[ $# -gt 0 ]]; do
       ;;
   esac
 done
+
+if [[ -n "$focus" && "$focus" != "php-worker-cli-signal" ]]; then
+  printf 'unsupported focused cell: %s\n' "$focus" >&2
+  usage >&2
+  exit 2
+fi
+
+if [[ -n "$focus" ]]; then
+  export DW_SIGNALS_QUERIES_RUN_ADVERSARIAL_PROBE=0
+  export DW_SIGNALS_QUERIES_RUN_REPLAY_TERMINAL_PROBE=0
+  export DW_SIGNALS_QUERIES_RUN_RUST_MATRIX_PROBE=0
+  export DW_SIGNALS_QUERIES_RUN_WATERLINE_OBSERVER_PROBE=0
+  export DW_SIGNALS_QUERIES_RUN_WATERLINE_SERVICE_PROBE=0
+fi
 
 if [[ -z "$result_dir" ]]; then
   result_dir="$(mktemp -d "${TMPDIR:-/tmp}/dw-signals-queries.XXXXXX")"
@@ -130,6 +163,7 @@ exec env \
   RESULT_DIR="$result_dir" \
   STARTED_AT="$started_at" \
   REPO_ROOT="$repo_root" \
+  DW_SIGNALS_QUERIES_FOCUS="$focus" \
   DW_SERVER_VERSION="${DW_SERVER_VERSION:-unresolved}" \
   DW_CLI_VERSION="${DW_CLI_VERSION:-unresolved}" \
   DW_PYTHON_SDK_VERSION="${DW_PYTHON_SDK_VERSION:-unresolved}" \
@@ -967,6 +1001,22 @@ def diagnostic_command(command: list[str]) -> list[str]:
     return diagnostic
 
 
+def diagnostic_output_tail(value: str, limit: int = 1024) -> str:
+    text = value.strip()
+    encoded = text.encode("utf-8", errors="replace")
+    if len(encoded) <= limit:
+        return text
+
+    marker = "... output truncated; retained tail follows ...\n"
+    retained_bytes = max(0, limit - len(marker.encode("utf-8")))
+    tail = encoded[-retained_bytes:].decode("utf-8", errors="replace")
+    bounded = marker + tail
+    while len(bounded.encode("utf-8")) > limit and tail:
+        tail = tail[1:]
+        bounded = marker + tail
+    return bounded
+
+
 def command_summary(command: list[str], completed: subprocess.CompletedProcess[str]) -> dict[str, Any]:
     def bounded(value: str) -> str:
         if len(value) <= DIAGNOSTIC_OUTPUT_LIMIT:
@@ -1716,6 +1766,33 @@ def install_cli(run_root: Path, log_file: Path) -> tuple[str, dict[str, Any]]:
     )
 
 
+def client_sample_field(sample: dict[str, Any], *field_names: str) -> Any:
+    pending: list[dict[str, Any]] = [sample]
+    visited: set[int] = set()
+    while pending:
+        candidate = pending.pop(0)
+        identity = id(candidate)
+        if identity in visited:
+            continue
+        visited.add(identity)
+        for field_name in field_names:
+            if field_name in candidate and candidate[field_name] is not None:
+                return candidate[field_name]
+        for nested_key in (
+            "body",
+            "details",
+            "error",
+            "output",
+            "response",
+            "server_response",
+            "stderr_output",
+        ):
+            nested = candidate.get(nested_key)
+            if isinstance(nested, dict):
+                pending.append(nested)
+    return None
+
+
 def cli_json_sample(
     cli_bin: str,
     base_url: str,
@@ -1734,20 +1811,54 @@ def cli_json_sample(
         }
     )
     completed = run_command([cli_bin, *command], log_file=log_file, env=env, timeout=60)
-    output = completed.stdout.strip()
-    decoded = json_sample_from_stdout(output)
+    stdout_decoded = json_sample_from_stdout(completed.stdout)
+    stderr_decoded = json_sample_from_stdout(completed.stderr)
+    stdout_structured = bool(stdout_decoded) and set(stdout_decoded) != {"raw_stdout"}
+    stderr_structured = bool(stderr_decoded) and set(stderr_decoded) != {"raw_stdout"}
+    if stderr_structured and not stdout_structured:
+        decoded = stderr_decoded
+    else:
+        decoded = stdout_decoded
+        if stderr_structured:
+            decoded["stderr_output"] = stderr_decoded
     sample = {
         "client": "cli",
         "operation": command[0] if command else None,
         "operation_name": command[2] if len(command) > 2 else None,
+        "workflow_id": command[1] if len(command) > 1 else None,
         "command": "dw " + " ".join(command),
+        "command_argv": ["dw", *command],
         "exit_code": completed.returncode,
         "ok": completed.returncode == 0,
-        "status_code": decoded.get("status_code"),
-        "reason": decoded.get("reason"),
-        "validation_errors": decoded.get("validation_errors"),
-        "server_response": decoded.get("server_response"),
+        "status_code": client_sample_field(
+            decoded,
+            "status_code",
+            "statusCode",
+            "http_status",
+            "httpStatus",
+        ),
+        "reason": client_sample_field(
+            decoded,
+            "reason",
+            "public_reason",
+            "publicReason",
+            "rejection_reason",
+            "rejectionReason",
+        ),
+        "validation_errors": client_sample_field(
+            decoded,
+            "validation_errors",
+            "validationErrors",
+        ),
+        "server_response": client_sample_field(
+            decoded,
+            "server_response",
+            "serverResponse",
+            "response",
+        ),
         "output": decoded,
+        "stdout_tail": diagnostic_output_tail(completed.stdout),
+        "stderr_tail": diagnostic_output_tail(completed.stderr),
     }
     if completed.returncode != 0 and completed.stderr.strip():
         sample["stderr"] = completed.stderr.strip()
@@ -4171,6 +4282,34 @@ def workflow_public_snapshot(
     ):
         if key in body:
             snapshot[key] = body[key]
+    commands = body.get("commands")
+    if isinstance(commands, list):
+        snapshot["workflow_command_count"] = len(commands)
+        snapshot["workflow_commands"] = [
+            {
+                key: command[key]
+                for key in (
+                    "id",
+                    "sequence",
+                    "type",
+                    "target_scope",
+                    "requested_run_id",
+                    "resolved_run_id",
+                    "target_name",
+                    "status",
+                    "outcome",
+                    "reason",
+                    "rejection_reason",
+                    "validation_errors",
+                    "accepted_at",
+                    "applied_at",
+                    "rejected_at",
+                )
+                if key in command
+            }
+            for command in commands[-16:]
+            if isinstance(command, dict)
+        ]
     if run_id is not None:
         snapshot.setdefault("run_id", run_id)
 
@@ -4199,7 +4338,7 @@ def workflow_public_snapshot(
                 commands = payload.get("commands") if isinstance(payload, dict) else None
                 if isinstance(commands, list):
                     workflow_command_count += len(commands)
-            snapshot["workflow_command_count"] = workflow_command_count
+            snapshot.setdefault("workflow_command_count", workflow_command_count)
 
     return snapshot
 
@@ -7946,6 +8085,10 @@ def capture_published_client_invocation(
     invocations.append({
         "sequence": len(invocations) + 1,
         "phase": phase,
+        "workflow_id": sample.get("workflow_id") or outputs.get("workflow_id"),
+        "run_id": sample.get("run_id") or outputs.get("run_id"),
+        "worker_id": outputs.get("worker_id"),
+        "task_queue": outputs.get("task_queue"),
         "sample": sample,
     })
     return sample
@@ -9002,6 +9145,225 @@ def baseline_scenario_result(scenario: str, observed: dict[str, Any]) -> dict[st
     }
 
 
+def worker_public_snapshot(
+    base_url: str,
+    token: str,
+    namespace: str,
+    worker_id: str,
+) -> dict[str, Any]:
+    response = http_json(
+        base_url,
+        api_path("workers", worker_id),
+        method="GET",
+        token=token,
+        namespace=namespace,
+        timeout=10,
+    )
+    body = response.get("body")
+    if not isinstance(body, dict):
+        body = {}
+
+    return {
+        "status_code": response.get("status_code"),
+        **{
+            key: body[key]
+            for key in (
+                "worker_id",
+                "task_queue",
+                "runtime",
+                "sdk_version",
+                "status",
+                "capabilities",
+                "supported_workflow_types",
+                "last_heartbeat_at",
+                "registered_at",
+                "process_metrics",
+            )
+            if key in body
+        },
+    }
+
+
+def php_worker_process_snapshot(container_name: str, log_file: Path) -> dict[str, Any]:
+    inspect = capture_command_summary(
+        [
+            "docker",
+            "inspect",
+            "--format",
+            "{{json .State}}",
+            container_name,
+        ],
+        log_file=log_file,
+        timeout=20,
+    )
+    logs = capture_command_summary(
+        ["docker", "logs", "--tail", "40", container_name],
+        log_file=log_file,
+        timeout=20,
+    )
+
+    return {
+        "container_name": container_name,
+        "inspect": {
+            key: inspect[key]
+            for key in ("command", "exit_code", "error")
+            if key in inspect
+        }
+        | {
+            "stdout_tail": diagnostic_output_tail(str(inspect.get("stdout") or "")),
+            "stderr_tail": diagnostic_output_tail(str(inspect.get("stderr") or "")),
+        },
+        "logs": {
+            key: logs[key]
+            for key in ("command", "exit_code", "error")
+            if key in logs
+        }
+        | {
+            "stdout_tail": diagnostic_output_tail(str(logs.get("stdout") or "")),
+            "stderr_tail": diagnostic_output_tail(str(logs.get("stderr") or "")),
+        },
+    }
+
+
+def capture_php_cli_signal_post_attempt_state(
+    *,
+    base_url: str,
+    token: str,
+    namespace: str,
+    workflow_id: str,
+    run_id: str,
+    worker_id: str,
+    container_name: str,
+    log_file: Path,
+) -> dict[str, Any]:
+    state: dict[str, Any] = {
+        "captured_at": now(),
+        "workflow_id": workflow_id,
+        "run_id": run_id,
+        "worker_id": worker_id,
+    }
+    for field, capture in (
+        (
+            "workflow",
+            lambda: workflow_public_snapshot(
+                base_url,
+                token,
+                namespace,
+                workflow_id,
+                run_id,
+            ),
+        ),
+        (
+            "worker",
+            lambda: worker_public_snapshot(
+                base_url,
+                token,
+                namespace,
+                worker_id,
+            ),
+        ),
+        (
+            "worker_process",
+            lambda: php_worker_process_snapshot(container_name, log_file),
+        ),
+    ):
+        try:
+            state[field] = capture()
+        except Exception as exc:  # noqa: BLE001 - every diagnostic surface is independent.
+            state[f"{field}_capture_error"] = {
+                "type": type(exc).__name__,
+                "message": str(exc),
+            }
+    return state
+
+
+def php_cli_signal_attempt_classification(
+    sample: dict[str, Any],
+    post_attempt_state: dict[str, Any],
+) -> dict[str, Any]:
+    status_code = client_sample_field(
+        sample,
+        "status_code",
+        "statusCode",
+        "http_status",
+        "httpStatus",
+    )
+    reason = client_sample_field(
+        sample,
+        "reason",
+        "public_reason",
+        "publicReason",
+        "rejection_reason",
+        "rejectionReason",
+    )
+    exit_code = sample.get("exit_code")
+    workflow = post_attempt_state.get("workflow")
+    worker = post_attempt_state.get("worker")
+    workflow_status = workflow.get("status") if isinstance(workflow, dict) else None
+    worker_status = worker.get("status") if isinstance(worker, dict) else None
+    command_states = workflow.get("workflow_commands") if isinstance(workflow, dict) else None
+    signal_commands = [
+        command
+        for command in (command_states if isinstance(command_states, list) else [])
+        if isinstance(command, dict)
+        and command.get("type") == "signal"
+        and command.get("target_name") == "increment"
+    ]
+
+    if sample.get("ok") is True and exit_code == 0:
+        return {
+            "category": "php_cli_signal_path_passed",
+            "owner": None,
+            "product_reached": True,
+            "summary": "The CLI signal command exited successfully against the running PHP workflow.",
+        }
+    if any(command.get("status") in {"accepted", "applied"} for command in signal_commands):
+        return {
+            "category": "cli_failed_after_signal_admission",
+            "owner": "cli",
+            "product_reached": True,
+            "summary": "The server retained an accepted signal command although the CLI process reported failure.",
+        }
+    if workflow_status in {"completed", "failed", "cancelled", "terminated", "timed_out"}:
+        return {
+            "category": "fixture_workflow_not_running",
+            "owner": "conformance_harness",
+            "product_reached": True,
+            "workflow_status": workflow_status,
+            "summary": "The fixture workflow was terminal immediately after the failed CLI signal attempt.",
+        }
+    if worker_status in {"stale", "offline", "failed", "stopped"}:
+        return {
+            "category": "fixture_worker_unavailable",
+            "owner": "conformance_harness",
+            "product_reached": True,
+            "worker_status": worker_status,
+            "summary": "The published PHP worker was unavailable immediately after the CLI signal attempt.",
+        }
+    if isinstance(status_code, int) and status_code >= 400:
+        return {
+            "category": "signal_admission_rejected",
+            "owner": "server_or_fixture_contract",
+            "product_reached": True,
+            "http_status": status_code,
+            "public_reason": reason,
+            "summary": "The CLI reached the server and the signal admission path returned a public error.",
+        }
+    if isinstance(exit_code, int) and exit_code != 0 and status_code is None:
+        return {
+            "category": "cli_transport_or_output_failure",
+            "owner": "cli_or_conformance_harness",
+            "product_reached": False,
+            "summary": "The CLI exited unsuccessfully without retaining an HTTP response classification.",
+        }
+    return {
+        "category": "unclassified_cli_signal_failure",
+        "owner": "conformance_harness",
+        "product_reached": None,
+        "summary": "The retained fields did not establish where the CLI signal attempt failed.",
+    }
+
+
 def run_sdk_php_baseline(
     *,
     base_url: str,
@@ -9030,6 +9392,7 @@ def run_sdk_php_baseline(
         "sdk_php_artifact_source": sources["sdk-php"],
         "sdk_php_sdk_version": versions["sdk-php"],
         "workflow_id": workflow_id,
+        "workflow_type": workflow_type,
         "task_queue": task_queue,
         "worker_id": worker_id,
         "published_artifact_versions": versions,
@@ -9168,6 +9531,21 @@ def run_sdk_php_baseline(
             ),
         )
         outputs["cli_signal_sample"] = cli_signal
+        post_cli_signal_state = capture_php_cli_signal_post_attempt_state(
+            base_url=base_url,
+            token=token,
+            namespace=namespace,
+            workflow_id=workflow_id,
+            run_id=run_id,
+            worker_id=worker_id,
+            container_name=container_name,
+            log_file=log_file,
+        )
+        outputs["post_cli_signal_state"] = post_cli_signal_state
+        outputs["cli_signal_attempt_classification"] = php_cli_signal_attempt_classification(
+            cli_signal,
+            post_cli_signal_state,
+        )
         if not public_sample_ok(cli_signal):
             raise RuntimeError(f"PHP worker CLI signal failed: {cli_signal}")
 
@@ -9557,6 +9935,7 @@ def run_baseline_probe(result_dir: Path) -> tuple[dict[str, Any] | None, dict[st
     generated_scenarios: list[str] = []
     baseline_checkpoint_path = result_dir / "signals-queries-baseline-cell-results.json"
     heartbeat_guard: WorkerHeartbeatGuard | None = None
+    focused_php_cli_signal = env_text("DW_SIGNALS_QUERIES_FOCUS") == "php-worker-cli-signal"
 
     try:
         if not isinstance(base_url, str) or base_url.strip() == "":
@@ -9606,30 +9985,45 @@ def run_baseline_probe(result_dir: Path) -> tuple[dict[str, Any] | None, dict[st
                 "probe_error": cli_install_error,
                 "log_file": log_file.name,
             }
-        try:
-            python_bin, python_install = ensure_python_sdk(run_root, log_file)
-            install_entries["sdk-python"] = python_install
-        except Exception as exc:  # noqa: BLE001 - install proof is reported separately from server baseline cells.
-            log_line(log_file, f"Python SDK install probe failed: {type(exc).__name__}: {exc}")
-            python_install_error = {
-                **probe_error_payload(exc),
-                "phase": "python_sdk_install",
-                "failure_scope": "runner_setup",
-                "artifact": "sdk-python",
-            }
+        if focused_php_cli_signal:
             python_install = configured_artifact_entry(
                 "sdk-python",
                 artifact_version_value(versions, "sdk-python"),
                 "published_pypi_package",
                 "pypi_package_install",
             )
-            python_install["not_proved_reason"] = f"{type(exc).__name__}: {exc}"
+            python_install["status"] = "not_covered"
+            python_install["not_proved_reason"] = "not required by focused PHP CLI signal cell"
             install_entries["sdk-python"] = python_install
             install_descriptors["sdk-python"] = {
-                "error": f"{type(exc).__name__}: {exc}",
-                "probe_error": python_install_error,
+                "skipped": "not_required_by_focused_cell",
                 "log_file": log_file.name,
             }
+        else:
+            try:
+                python_bin, python_install = ensure_python_sdk(run_root, log_file)
+                install_entries["sdk-python"] = python_install
+            except Exception as exc:  # noqa: BLE001 - install proof is reported separately from server baseline cells.
+                log_line(log_file, f"Python SDK install probe failed: {type(exc).__name__}: {exc}")
+                python_install_error = {
+                    **probe_error_payload(exc),
+                    "phase": "python_sdk_install",
+                    "failure_scope": "runner_setup",
+                    "artifact": "sdk-python",
+                }
+                python_install = configured_artifact_entry(
+                    "sdk-python",
+                    artifact_version_value(versions, "sdk-python"),
+                    "published_pypi_package",
+                    "pypi_package_install",
+                )
+                python_install["not_proved_reason"] = f"{type(exc).__name__}: {exc}"
+                install_entries["sdk-python"] = python_install
+                install_descriptors["sdk-python"] = {
+                    "error": f"{type(exc).__name__}: {exc}",
+                    "probe_error": python_install_error,
+                    "log_file": log_file.name,
+                }
         try:
             sdk_php_project, sdk_php_install = ensure_sdk_php_sdk(run_root, log_file)
             install_entries["sdk-php"] = sdk_php_install
@@ -9760,7 +10154,12 @@ def run_baseline_probe(result_dir: Path) -> tuple[dict[str, Any] | None, dict[st
         python_sdk_descriptor: dict[str, Any] | None = None
         python_worker_php_cross_result: dict[str, Any] | None = None
         python_sdk_status = "not_covered"
-        if cli_bin is not None and python_bin is not None:
+        if focused_php_cli_signal:
+            python_sdk_descriptor = {
+                "skipped": "not_required_by_focused_cell",
+                "log_file": log_file.name,
+            }
+        elif cli_bin is not None and python_bin is not None:
             try:
                 python_sdk_outputs, python_sdk_descriptor = run_python_sdk_baseline(
                     base_url=base_url,
@@ -9913,6 +10312,23 @@ def run_baseline_probe(result_dir: Path) -> tuple[dict[str, Any] | None, dict[st
             scenario_results["php_worker_python_and_cli_clients"] = php_worker_python_cross_result
             generated_scenarios.append("php_worker_python_and_cli_clients")
         checkpoint_baseline_cells()
+
+        if focused_php_cli_signal:
+            evidence = {
+                "artifact_versions": versions,
+                "scenario_results": scenario_results,
+            }
+            return evidence, {
+                "file": log_file.name,
+                "cell_checkpoint_file": baseline_checkpoint_path.name,
+                "server_base_url": base_url,
+                "focused_cell": "php-worker-cli-signal",
+                "broad_property_claimed": False,
+                "php_worker_cli_and_sdk_baseline": sdk_php_descriptor,
+                "install_probes": install_descriptors,
+                "server_readiness": readiness_probe,
+                "generated_scenarios": generated_scenarios,
+            }
 
         suffix = hashlib.sha1(f"{time.time()}-baseline".encode("utf-8")).hexdigest()[:10]
         task_queue = f"signals-queries-baseline-{suffix}"
@@ -11538,6 +11954,8 @@ def reset_current_run_files(result_dir: Path) -> list[str]:
         "signals-queries-result.json",
         "signals-queries-record.json",
         "signals-queries-findings.json",
+        "signals-queries-php-cli-signal-result.json",
+        "signals-queries-php-cli-signal-record.json",
         "signals-queries-rust-cell-results.json",
         "signals-queries-baseline-cell-results.json",
         "signals-queries-baseline-probe.log",
@@ -15799,6 +16217,8 @@ def php_baseline_behavior_failures(observed: dict[str, Any]) -> list[dict[str, A
                 "sdk_php_start": sample_readout(observed.get("sdk_php_start_sample")),
                 "initial_query": sample_readout(observed.get("initial_query_sample")),
                 "cli_signal": sample_readout(observed.get("cli_signal_sample")),
+                "cli_signal_attempt_classification": observed.get("cli_signal_attempt_classification"),
+                "post_cli_signal_state": observed.get("post_cli_signal_state"),
                 "cli_query": sample_readout(observed.get("cli_query_sample")),
                 "sdk_php_signal": sample_readout(observed.get("sdk_php_signal_sample")),
                 "sdk_php_query": sample_readout(observed.get("sdk_php_query_sample")),
@@ -16115,7 +16535,6 @@ def runner_blocker_from_descriptor(descriptor: Any) -> dict[str, Any] | None:
 
 result_dir = Path(os.environ["RESULT_DIR"])
 started_at = os.environ["STARTED_AT"]
-finished_at = now()
 artifact_versions = {
     "server": os.environ["DW_SERVER_VERSION"],
     "cli": os.environ["DW_CLI_VERSION"],
@@ -16730,6 +17149,7 @@ def retained_runner_blockers(
     return blockers
 
 
+finished_at = now()
 runner_blocked = any(item["status"] == "runner_blocked" for item in scenario_results.values())
 runner_blockers = retained_runner_blockers(scenario_results)
 
@@ -16775,6 +17195,12 @@ PORTABLE_OPTIONAL_SCENARIO_EVIDENCE = {
         "run_id",
         "task_queue",
         "worker_id",
+        "worker_registration",
+        "sdk_php_start_sample",
+        "initial_query_sample",
+        "cli_signal_sample",
+        "post_cli_signal_state",
+        "cli_signal_attempt_classification",
         "published_client_invocations",
     ),
     "php_worker_python_and_cli_clients": (
@@ -17136,32 +17562,6 @@ def portable_failure_value(value: Any, *, depth: int = 0) -> Any:
     return portable_failure_text_summary(str(value))
 
 
-def client_sample_field(sample: dict[str, Any], *field_names: str) -> Any:
-    pending: list[dict[str, Any]] = [sample]
-    visited: set[int] = set()
-    while pending:
-        candidate = pending.pop(0)
-        identity = id(candidate)
-        if identity in visited:
-            continue
-        visited.add(identity)
-        for field_name in field_names:
-            if field_name in candidate and candidate[field_name] is not None:
-                return candidate[field_name]
-        for nested_key in (
-            "body",
-            "details",
-            "error",
-            "output",
-            "response",
-            "server_response",
-        ):
-            nested = candidate.get(nested_key)
-            if isinstance(nested, dict):
-                pending.append(nested)
-    return None
-
-
 def portable_client_response_or_error_summary(sample: dict[str, Any]) -> dict[str, Any]:
     summary = {
         key: portable_failure_value(sample[key])
@@ -17215,6 +17615,19 @@ def portable_client_invocation(value: Any, fallback_sequence: int) -> dict[str, 
             client_sample_field(sample, "reason", "rejection_reason", "rejectionReason")
         ),
         "validation_details": portable_failure_value(validation_details),
+        "workflow_identity": {
+            "workflow_id": portable_value(
+                wrapper.get("workflow_id") or client_sample_field(sample, "workflow_id", "workflowId")
+            ),
+            "run_id": portable_value(
+                wrapper.get("run_id") or client_sample_field(sample, "run_id", "runId")
+            ),
+            "worker_id": portable_value(wrapper.get("worker_id")),
+            "task_queue": portable_value(wrapper.get("task_queue")),
+        },
+        "command": portable_value(sample.get("command_argv", sample.get("command"))),
+        "stdout_tail": portable_failure_value(sample.get("stdout_tail")),
+        "stderr_tail": portable_failure_value(sample.get("stderr_tail")),
         "sample": portable_value(sample),
     }
     if not record["ok"]:
@@ -17261,6 +17674,10 @@ def portable_client_invocations(value: Any) -> Any:
                 "status",
                 "status_code",
                 "reason",
+                "workflow_identity",
+                "command",
+                "stdout_tail",
+                "stderr_tail",
             )
         }
         validation_details = record.get("validation_details")
@@ -17280,6 +17697,9 @@ def portable_client_invocations(value: Any) -> Any:
                 response_summary.decode("utf-8", errors="replace"),
                 256,
             )
+        compact["sample_sha256"] = hashlib.sha256(
+            portable_json_bytes(record.get("sample"))
+        ).hexdigest()
         routing_only.append(compact)
     if len(portable_json_bytes(routing_only)) <= PORTABLE_EVIDENCE_CELL_LIMIT_BYTES:
         return routing_only
@@ -17289,7 +17709,17 @@ def portable_client_invocations(value: Any) -> Any:
         if record.get("retained") is False:
             minimal_routing.append(record)
             continue
-        minimal_routing.append({
+        identity = record.get("workflow_identity")
+        retained_identity = (
+            {
+                key: identity.get(key)
+                for key in ("workflow_id", "run_id", "worker_id", "task_queue")
+                if identity.get(key) is not None
+            }
+            if isinstance(identity, dict)
+            else None
+        )
+        minimal_record = {
             "sequence": record.get("sequence"),
             "client": portable_text_excerpt(record.get("client"), 32),
             "operation_surface": portable_text_excerpt(record.get("operation_surface"), 48),
@@ -17301,12 +17731,22 @@ def portable_client_invocations(value: Any) -> Any:
             "validation_details": portable_text_excerpt(record.get("validation_details"), 64),
             "response_or_error_summary": portable_text_excerpt(
                 record.get("response_or_error_summary"),
-                96,
+                80,
             ),
-            "sample_sha256": hashlib.sha256(
-                portable_json_bytes(record.get("sample"))
-            ).hexdigest(),
+            "sample_sha256": record.get("sample_sha256"),
+        }
+        optional_failure_fields = {
+            "workflow_identity": retained_identity,
+            "command": record.get("command"),
+            "stdout_tail": portable_text_excerpt(record.get("stdout_tail"), 96),
+            "stderr_tail": portable_text_excerpt(record.get("stderr_tail"), 96),
+        }
+        minimal_record.update({
+            key: value
+            for key, value in optional_failure_fields.items()
+            if value not in (None, {}, [])
         })
+        minimal_routing.append(minimal_record)
     return minimal_routing
 
 
@@ -17821,10 +18261,133 @@ if runner_blockers:
     record["runner_blockers"] = runner_blockers
 write_json(result_dir / "signals-queries-record.json", record)
 
-stdout_record = {"outcome": outcome, "result_dir": str(result_dir)}
-if behavior_failure_diagnostics:
-    stdout_record["behavior_failure_diagnostics"] = behavior_failure_diagnostics
-if published_client_invocations:
-    stdout_record["published_client_invocations"] = published_client_invocations
+focused_cell = env_text("DW_SIGNALS_QUERIES_FOCUS")
+if focused_cell == "php-worker-cli-signal":
+    raw_php_scenario = scenario_results.get("php_worker_cli_and_sdk_baseline", {})
+    raw_php_observed = raw_php_scenario.get("observed_outputs", {})
+    if not isinstance(raw_php_observed, dict):
+        raw_php_observed = {}
+    raw_invocations = raw_php_observed.get("published_client_invocations")
+    if not isinstance(raw_invocations, list):
+        raw_invocations = []
+
+    def focused_invocation(phase: str) -> dict[str, Any] | None:
+        for index, invocation in enumerate(raw_invocations, start=1):
+            if not isinstance(invocation, dict) or invocation.get("phase") != phase:
+                continue
+            return portable_client_invocation(invocation, index)
+        return None
+
+    start_invocation = focused_invocation("workflow_start")
+    initial_query_invocation = focused_invocation("initial_query")
+    cli_signal_invocation = focused_invocation("cli_signal")
+    raw_start = raw_php_observed.get("sdk_php_start_sample")
+    raw_initial_query = raw_php_observed.get("initial_query_sample")
+    raw_cli_signal = raw_php_observed.get("cli_signal_sample")
+    initial_query_value = (
+        sample_result_value(raw_initial_query)
+        if isinstance(raw_initial_query, dict)
+        else None
+    )
+    focused_pass = (
+        isinstance(raw_php_observed.get("worker_registration"), dict)
+        and isinstance(raw_start, dict)
+        and public_sample_ok(raw_start)
+        and isinstance(raw_initial_query, dict)
+        and public_sample_ok(raw_initial_query)
+        and initial_query_value == 0
+        and isinstance(raw_cli_signal, dict)
+        and public_sample_ok(raw_cli_signal)
+    )
+    classification = raw_php_observed.get("cli_signal_attempt_classification")
+    if not isinstance(classification, dict):
+        probe_error = raw_php_observed.get("probe_error")
+        classification = {
+            "category": "focused_path_stopped_before_cli_signal",
+            "owner": "conformance_harness_or_fixture",
+            "product_reached": False,
+            "summary": "The focused cell stopped before it retained a CLI signal attempt.",
+        }
+        if isinstance(probe_error, dict):
+            classification["failed_phase"] = probe_error.get("phase")
+
+    focused_result = {
+        "schema": "durable-workflow.v2.signal-query-runtime.php-cli-signal-focused-result",
+        "started_at": started_at,
+        "finished_at": finished_at,
+        "cell": focused_cell,
+        "outcome": "pass" if focused_pass else "non_passing",
+        "runner_blocked": baseline_readiness_blocker is not None,
+        "broad_property_claimed": False,
+        "broad_confirmation_required": True,
+        "artifactVersions": artifact_versions,
+        "fixture_contract": {
+            "workflow_type": raw_php_observed.get("workflow_type", "conformance.counter.php"),
+            "workflow_handler_execution_model": "fiber",
+            "signal": "increment",
+            "initial_query": "state",
+        },
+        "path": {
+            "worker_registration": bounded_portable_cell(
+                raw_php_observed.get("worker_registration")
+            ),
+            "workflow_start": start_invocation,
+            "initial_query": initial_query_invocation,
+            "initial_query_result": initial_query_value,
+            "cli_signal_attempt": cli_signal_invocation,
+        },
+        "classification": bounded_portable_cell(classification),
+        "post_attempt_state": bounded_portable_cell(
+            raw_php_observed.get("post_cli_signal_state")
+        ),
+        "probe_error": portable_failure_value(raw_php_observed.get("probe_error")),
+        "evidence_limits": {
+            "max_result_bytes": 256 * 1024,
+            "max_evidence_cell_bytes": PORTABLE_EVIDENCE_CELL_LIMIT_BYTES,
+            "max_failure_text_bytes": PORTABLE_FAILURE_SUMMARY_STRING_LIMIT,
+            "stdout_stderr_policy": "bounded_sanitized_tails",
+            "actionable_failure_fields": "retained_independently_of_unbounded_text",
+        },
+    }
+    focused_result["result_bytes"] = 0
+    focused_bytes = len(encoded_result_bytes(focused_result))
+    focused_result["result_bytes"] = focused_bytes
+    focused_bytes = len(encoded_result_bytes(focused_result))
+    if focused_bytes > focused_result["evidence_limits"]["max_result_bytes"]:
+        raise RuntimeError(
+            f"focused PHP CLI signal evidence exceeded its result budget: {focused_bytes} bytes"
+        )
+    focused_result["result_bytes"] = focused_bytes
+    focused_result_path = result_dir / "signals-queries-php-cli-signal-result.json"
+    write_json(focused_result_path, focused_result)
+    focused_record = {
+        "experiment": "signals-queries",
+        "cell": focused_cell,
+        "outcome": focused_result["outcome"],
+        "runnerBlocked": focused_result["runner_blocked"],
+        "broadPropertyClaimed": False,
+        "broadConfirmationRequired": True,
+        "artifactVersions": artifact_versions,
+        "classification": focused_result["classification"],
+        "result_file": focused_result_path.name,
+    }
+    write_json(
+        result_dir / "signals-queries-php-cli-signal-record.json",
+        focused_record,
+    )
+    stdout_record = {
+        "cell": focused_cell,
+        "outcome": focused_result["outcome"],
+        "result_dir": str(result_dir),
+        "result_file": focused_result_path.name,
+        "classification": focused_result["classification"],
+        "broad_property_claimed": False,
+    }
+else:
+    stdout_record = {"outcome": outcome, "result_dir": str(result_dir)}
+    if behavior_failure_diagnostics:
+        stdout_record["behavior_failure_diagnostics"] = behavior_failure_diagnostics
+    if published_client_invocations:
+        stdout_record["published_client_invocations"] = published_client_invocations
 print(json.dumps(stdout_record, sort_keys=True))
 PY

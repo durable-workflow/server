@@ -14,7 +14,7 @@ class SignalQueryRuntimeContractTest extends TestCase
         $manifest = SignalQueryRuntimeContract::manifest();
 
         $this->assertSame('durable-workflow.v2.signal-query-runtime.contract', $manifest['schema']);
-        $this->assertSame(37, SignalQueryRuntimeContract::VERSION);
+        $this->assertSame(38, SignalQueryRuntimeContract::VERSION);
         $this->assertSame(SignalQueryRuntimeContract::VERSION, $manifest['version']);
         $this->assertSame('durable-workflow.v2.signal-query-runtime.result', $manifest['result_schema']);
         $this->assertSame('signal_query_runtime_contract', $manifest['fixture_category']);
@@ -648,6 +648,16 @@ PY);
         $this->assertTrue($hostRunner['must_execute_against_published_artifacts']);
         $this->assertTrue($hostRunner['must_record_runner_blocked_false_for_product_evidence']);
         $this->assertTrue($hostRunner['must_emit_focused_findings_for_uncovered_cells']);
+        $focusedCell = $hostRunner['focused_cells']['php_worker_cli_signal'];
+        $this->assertSame('diagnostic_only', $focusedCell['status']);
+        $this->assertSame(
+            'scripts/conformance/signals-queries-published-artifacts.sh --focus=php-worker-cli-signal --result-dir <result-dir>',
+            $focusedCell['runner_command'],
+        );
+        $this->assertFalse($focusedCell['broad_property_claimed']);
+        $this->assertContains('workflow_identity', $focusedCell['required_failed_attempt_evidence']);
+        $this->assertContains('post_attempt_state.workflow', $focusedCell['required_failed_attempt_evidence']);
+        $this->assertContains('post_attempt_state.worker_process', $focusedCell['required_failed_attempt_evidence']);
         $portableResult = $hostRunner['portable_result_contract'];
         $this->assertSame(1024 * 1024, $portableResult['runner_max_bytes']);
         $this->assertSame(4 * 1024 * 1024, $portableResult['host_consumer_max_bytes']);
@@ -880,6 +890,8 @@ PY);
                 'sdk_php_start',
                 'initial_query',
                 'cli_signal',
+                'cli_signal_attempt_classification',
+                'post_cli_signal_state',
                 'cli_query',
                 'sdk_php_signal',
                 'sdk_php_query',
@@ -7799,6 +7811,305 @@ PY);
         }
     }
 
+    public function test_focused_php_cli_signal_result_keeps_actionable_fields_when_failure_text_is_large(): void
+    {
+        $evidence = $this->completeSignalQueryResultForCurrentHostRunner();
+        $outputs = &$evidence['scenario_results']['php_worker_cli_and_sdk_baseline']['observed_outputs'];
+        $workflowId = 'wf-sq-sdk-php-focused';
+        $runId = 'run-sq-sdk-php-focused';
+        $workerId = 'signals-queries-sdk-php-worker-focused';
+        $taskQueue = 'signals-queries-sdk-php-focused';
+        $largeFailure = str_repeat('diagnostic-prefix-', 350).'actionable-tail';
+        $outputs['workflow_id'] = $workflowId;
+        $outputs['run_id'] = $runId;
+        $outputs['worker_id'] = $workerId;
+        $outputs['task_queue'] = $taskQueue;
+        $outputs['worker_registration'] = [
+            'worker_id' => $workerId,
+            'task_queue' => $taskQueue,
+            'runtime' => 'php',
+            'status' => 'active',
+            'capabilities' => ['workflow_tasks', 'query_tasks'],
+        ];
+        $outputs['sdk_php_start_sample'] = [
+            'client' => 'sdk-php',
+            'operation' => 'start',
+            'operation_name' => 'start',
+            'workflow_id' => $workflowId,
+            'run_id' => $runId,
+            'ok' => true,
+            'exit_code' => 0,
+            'status_code' => 201,
+        ];
+        $outputs['initial_query_sample'] = [
+            'client' => 'cli',
+            'operation' => 'workflow:query',
+            'operation_name' => 'state',
+            'workflow_id' => $workflowId,
+            'ok' => true,
+            'exit_code' => 0,
+            'status_code' => 200,
+            'result' => 0,
+            'stdout_tail' => '{"result":0}',
+            'stderr_tail' => '',
+        ];
+        $outputs['cli_signal_sample'] = [
+            'client' => 'cli',
+            'operation' => 'workflow:signal',
+            'operation_name' => 'increment',
+            'workflow_id' => $workflowId,
+            'command' => 'dw workflow:signal '.$workflowId.' increment --input [3] --output=json',
+            'command_argv' => [
+                'dw',
+                'workflow:signal',
+                $workflowId,
+                'increment',
+                '--input',
+                '[3]',
+                '--output=json',
+            ],
+            'ok' => false,
+            'exit_code' => 1,
+            'status_code' => 409,
+            'reason' => 'run_not_active',
+            'stdout_tail' => 'HTTP 409 run_not_active',
+            'stderr_tail' => 'APP_SECRET=private-focused-value '.$largeFailure,
+            'stderr' => $largeFailure,
+        ];
+        $outputs['post_cli_signal_state'] = [
+            'captured_at' => '2026-08-14T22:00:00Z',
+            'workflow_id' => $workflowId,
+            'run_id' => $runId,
+            'worker_id' => $workerId,
+            'workflow' => [
+                'status_code' => 200,
+                'workflow_id' => $workflowId,
+                'run_id' => $runId,
+                'status' => 'failed',
+                'workflow_command_count' => 1,
+                'workflow_commands' => [[
+                    'id' => 'command-start',
+                    'type' => 'start',
+                    'status' => 'applied',
+                ]],
+            ],
+            'worker' => [
+                'status_code' => 200,
+                'worker_id' => $workerId,
+                'task_queue' => $taskQueue,
+                'status' => 'active',
+            ],
+            'worker_process' => [
+                'container_name' => 'dw-sq-php-focused',
+                'inspect' => [
+                    'exit_code' => 0,
+                    'stdout_tail' => '{"Status":"running","Running":true}',
+                    'stderr_tail' => '',
+                ],
+                'logs' => [
+                    'exit_code' => 0,
+                    'stdout_tail' => 'worker loop active',
+                    'stderr_tail' => '',
+                ],
+            ],
+        ];
+        $outputs['cli_signal_attempt_classification'] = [
+            'category' => 'fixture_workflow_not_running',
+            'owner' => 'conformance_harness',
+            'product_reached' => true,
+            'workflow_status' => 'failed',
+        ];
+        $outputs['probe_error'] = [
+            'type' => 'RuntimeError',
+            'phase' => 'cli_signal',
+            'message' => $largeFailure,
+        ];
+        $outputs['published_client_invocations'] = [
+            [
+                'sequence' => 1,
+                'phase' => 'workflow_start',
+                'workflow_id' => $workflowId,
+                'run_id' => $runId,
+                'worker_id' => $workerId,
+                'task_queue' => $taskQueue,
+                'sample' => $outputs['sdk_php_start_sample'],
+            ],
+            [
+                'sequence' => 2,
+                'phase' => 'initial_query',
+                'workflow_id' => $workflowId,
+                'run_id' => $runId,
+                'worker_id' => $workerId,
+                'task_queue' => $taskQueue,
+                'sample' => $outputs['initial_query_sample'],
+            ],
+            [
+                'sequence' => 3,
+                'phase' => 'cli_signal',
+                'workflow_id' => $workflowId,
+                'run_id' => $runId,
+                'worker_id' => $workerId,
+                'task_queue' => $taskQueue,
+                'sample' => $outputs['cli_signal_sample'],
+            ],
+        ];
+        unset($outputs);
+
+        $artifacts = $this->runSignalQueryHostRunnerArtifacts(
+            $evidence,
+            false,
+            'php-worker-cli-signal',
+        );
+        $result = $artifacts['result'];
+        $record = $artifacts['record'];
+        $attempt = $result['path']['cli_signal_attempt'];
+
+        $this->assertSame('non_passing', $result['outcome']);
+        $this->assertFalse($result['broad_property_claimed']);
+        $this->assertTrue($result['broad_confirmation_required']);
+        $this->assertSame('workflow:signal', $attempt['operation_surface']);
+        $this->assertSame('increment', $attempt['operation_name']);
+        $this->assertSame($workflowId, $attempt['workflow_identity']['workflow_id']);
+        $this->assertSame($runId, $attempt['workflow_identity']['run_id']);
+        $this->assertSame(1, $attempt['exit_code']);
+        $this->assertSame(409, $attempt['status_code']);
+        $this->assertSame('run_not_active', $attempt['reason']);
+        $this->assertSame('HTTP 409 run_not_active', $attempt['stdout_tail']);
+        $this->assertStringContainsString('<redacted>', $attempt['stderr_tail']['summary']);
+        $this->assertSame(
+            'fixture_workflow_not_running',
+            $result['classification']['category'],
+        );
+        $this->assertSame('failed', $result['post_attempt_state']['workflow']['status']);
+        $this->assertSame('active', $result['post_attempt_state']['worker']['status']);
+        $this->assertSame(
+            '{"Status":"running","Running":true}',
+            $result['post_attempt_state']['worker_process']['inspect']['stdout_tail'],
+        );
+        $this->assertTrue($result['probe_error']['message']['retained']);
+        $this->assertStringContainsString('actionable-tail', $result['probe_error']['message']['summary']);
+        $this->assertLessThanOrEqual(256 * 1024, $artifacts['result_bytes']);
+        $this->assertSame($result['classification'], $record['classification']);
+        $this->assertFalse($record['broadPropertyClaimed']);
+        $this->assertSame($result['classification'], $artifacts['stdout']['classification']);
+    }
+
+    public function test_focused_php_cli_signal_classifies_the_immediate_failure_state(): void
+    {
+        $result = $this->runSignalQueryRunnerPythonSnippet(<<<'PY'
+terminal = php_cli_signal_attempt_classification(
+    {
+        "ok": False,
+        "exit_code": 1,
+        "status_code": 409,
+        "reason": "run_not_active",
+    },
+    {
+        "workflow": {"status": "failed", "workflow_commands": []},
+        "worker": {"status": "active"},
+    },
+)
+admitted = php_cli_signal_attempt_classification(
+    {"ok": False, "exit_code": 1, "status_code": 202},
+    {
+        "workflow": {
+            "status": "running",
+            "workflow_commands": [
+                {
+                    "type": "signal",
+                    "target_name": "increment",
+                    "status": "accepted",
+                },
+            ],
+        },
+        "worker": {"status": "active"},
+    },
+)
+rejected = php_cli_signal_attempt_classification(
+    {
+        "ok": False,
+        "exit_code": 1,
+        "output": {
+            "error": {
+                "httpStatus": 422,
+                "publicReason": "invalid_signal",
+            },
+        },
+    },
+    {
+        "workflow": {"status": "running", "workflow_commands": []},
+        "worker": {"status": "active"},
+    },
+)
+transport = php_cli_signal_attempt_classification(
+    {"ok": False, "exit_code": 2},
+    {
+        "workflow": {"status": "running", "workflow_commands": []},
+        "worker": {"status": "active"},
+    },
+)
+tail = diagnostic_output_tail("prefix-" + ("x" * 5000) + "-actionable-tail")
+print(json.dumps({
+    "terminal": terminal,
+    "admitted": admitted,
+    "rejected": rejected,
+    "transport": transport,
+    "tail": tail,
+}))
+PY);
+
+        $this->assertSame('fixture_workflow_not_running', $result['terminal']['category']);
+        $this->assertSame('conformance_harness', $result['terminal']['owner']);
+        $this->assertSame('cli_failed_after_signal_admission', $result['admitted']['category']);
+        $this->assertSame('cli', $result['admitted']['owner']);
+        $this->assertSame('signal_admission_rejected', $result['rejected']['category']);
+        $this->assertSame(422, $result['rejected']['http_status']);
+        $this->assertSame('invalid_signal', $result['rejected']['public_reason']);
+        $this->assertSame('cli_transport_or_output_failure', $result['transport']['category']);
+        $this->assertFalse($result['transport']['product_reached']);
+        $this->assertLessThanOrEqual(1024, strlen($result['tail']));
+        $this->assertStringEndsWith('-actionable-tail', $result['tail']);
+    }
+
+    public function test_cli_signal_sample_extracts_public_http_failure_from_stderr_json(): void
+    {
+        $result = $this->runSignalQueryRunnerPythonSnippet(<<<'PY'
+def fake_run_command(*args, **kwargs):
+    return subprocess.CompletedProcess(
+        args=["dw"],
+        returncode=1,
+        stdout="",
+        stderr=json.dumps({
+            "error": {
+                "httpStatus": 409,
+                "publicReason": "run_not_active",
+                "message": ("diagnostic-" * 500) + "actionable-tail",
+            },
+        }),
+    )
+
+globals()["run_command"] = fake_run_command
+sample = cli_json_sample(
+    "dw",
+    "http://unused",
+    "token",
+    "default",
+    ["workflow:signal", "workflow-123", "increment", "--input", "[3]", "--output=json"],
+    Path("/tmp/unused.log"),
+)
+print(json.dumps(sample))
+PY);
+
+        $this->assertSame('workflow:signal', $result['operation']);
+        $this->assertSame('increment', $result['operation_name']);
+        $this->assertSame('workflow-123', $result['workflow_id']);
+        $this->assertSame(1, $result['exit_code']);
+        $this->assertSame(409, $result['status_code']);
+        $this->assertSame('run_not_active', $result['reason']);
+        $this->assertLessThanOrEqual(1024, strlen($result['stderr_tail']));
+        $this->assertStringContainsString('actionable-tail', $result['stderr_tail']);
+    }
+
     public function test_host_runner_rejects_imported_query_replay_evidence_before_consistent_state(): void
     {
         $evidence = $this->completeSignalQueryResultForCurrentHostRunner();
@@ -9134,6 +9445,7 @@ PY);
     private function runSignalQueryHostRunnerArtifacts(
         array $smokeEvidence,
         bool $enableWaterlineServiceProbe = false,
+        ?string $focus = null,
     ): array {
         $root = dirname(__DIR__, 2);
         $resultDir = sys_get_temp_dir().'/dw-signals-queries-test-'.bin2hex(random_bytes(6));
@@ -9143,7 +9455,7 @@ PY);
             $smokePath = $resultDir.'/smoke.json';
             file_put_contents($smokePath, json_encode($smokeEvidence, JSON_THROW_ON_ERROR));
 
-            $command = implode(' ', [
+            $commandParts = [
                 'DW_SERVER_VERSION=0.2.224',
                 'DW_CLI_VERSION=0.1.74',
                 'DW_PYTHON_SDK_VERSION=0.4.84',
@@ -9161,7 +9473,11 @@ PY);
                 escapeshellarg($root.'/scripts/conformance/signals-queries-published-artifacts.sh'),
                 '--result-dir',
                 escapeshellarg($resultDir),
-            ]);
+            ];
+            if ($focus !== null) {
+                $commandParts[] = '--focus='.escapeshellarg($focus);
+            }
+            $command = implode(' ', $commandParts);
 
             $output = [];
             $exitCode = 0;
@@ -9183,11 +9499,17 @@ PY);
             }
             $this->assertIsArray($stdoutRecord, implode("\n", $output));
 
-            $resultPath = $resultDir.'/signals-queries-result.json';
+            $resultFilename = $focus === 'php-worker-cli-signal'
+                ? 'signals-queries-php-cli-signal-result.json'
+                : 'signals-queries-result.json';
+            $recordFilename = $focus === 'php-worker-cli-signal'
+                ? 'signals-queries-php-cli-signal-record.json'
+                : 'signals-queries-record.json';
+            $resultPath = $resultDir.'/'.$resultFilename;
             $this->assertFileExists($resultPath);
             $resultContents = (string) file_get_contents($resultPath);
 
-            $recordPath = $resultDir.'/signals-queries-record.json';
+            $recordPath = $resultDir.'/'.$recordFilename;
             $this->assertFileExists($recordPath);
 
             return [

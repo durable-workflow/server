@@ -16,7 +16,7 @@ final class SignalQueryRuntimeContract
 {
     public const SCHEMA = 'durable-workflow.v2.signal-query-runtime.contract';
 
-    public const VERSION = 37;
+    public const VERSION = 38;
 
     public const RESULT_SCHEMA = 'durable-workflow.v2.signal-query-runtime.result';
 
@@ -719,6 +719,46 @@ final class SignalQueryRuntimeContract
                 'runner_path' => 'scripts/conformance/signals-queries-published-artifacts.sh',
                 'runner_command' => 'scripts/conformance/signals-queries-published-artifacts.sh --result-dir <result-dir>',
                 'result_schema' => self::RESULT_SCHEMA,
+                'focused_cells' => [
+                    'php_worker_cli_signal' => [
+                        'status' => 'diagnostic_only',
+                        'runner_command' => 'scripts/conformance/signals-queries-published-artifacts.sh --focus=php-worker-cli-signal --result-dir <result-dir>',
+                        'result_schema' => 'durable-workflow.v2.signal-query-runtime.php-cli-signal-focused-result',
+                        'result_files' => [
+                            'signals-queries-php-cli-signal-result.json',
+                            'signals-queries-php-cli-signal-record.json',
+                        ],
+                        'published_artifacts' => [
+                            'server',
+                            'cli',
+                            'sdk-php',
+                            'workflow',
+                        ],
+                        'required_path' => [
+                            'php_worker_start',
+                            'php_sdk_workflow_start',
+                            'cli_initial_query_zero',
+                            'cli_signal_increment',
+                        ],
+                        'required_failed_attempt_evidence' => [
+                            'operation_surface',
+                            'operation_name',
+                            'workflow_identity',
+                            'command',
+                            'exit_code',
+                            'status_code',
+                            'reason',
+                            'stdout_tail',
+                            'stderr_tail',
+                            'post_attempt_state.workflow',
+                            'post_attempt_state.worker',
+                            'post_attempt_state.worker_process',
+                            'classification',
+                        ],
+                        'failure_text_policy' => 'bounded_sanitized_head_and_tail_without_replacing_routing_fields',
+                        'broad_property_claimed' => false,
+                    ],
+                ],
                 'portable_result_contract' => [
                     'schema' => 'durable-workflow.v1.portable-native-evidence',
                     'runner_max_bytes' => 1024 * 1024,
@@ -909,6 +949,8 @@ final class SignalQueryRuntimeContract
                                 'sdk_php_start',
                                 'initial_query',
                                 'cli_signal',
+                                'cli_signal_attempt_classification',
+                                'post_cli_signal_state',
                                 'cli_query',
                                 'sdk_php_signal',
                                 'sdk_php_query',

@@ -67,6 +67,12 @@ chart MINOR bump and an entry below.
 
 ## Per-version migration notes
 
+### 0.1.27
+
+This release advances the chart Server identity to `2.0.0-rc.36` and adds a
+focused published-artifact PHP CLI signal diagnostic with bounded post-attempt
+state evidence. Existing `0.1.26` values remain compatible.
+
 ### 0.1.26
 
 This release advances the chart Server identity to `2.0.0-rc.35` and excludes
