@@ -4501,6 +4501,7 @@ globals()["artifact_versions"] = versions
 php_calls = []
 cli_calls = []
 commands = []
+fail_cli_signal = False
 
 def fake_php_docker_command(project_dir, args, name=None, detach=False):
     command = ["php-docker"] + list(args)
@@ -4569,6 +4570,17 @@ def fake_php_workflow_client_sample(
 def fake_cli_json_sample(cli_bin, base_url, token, namespace, args, log_file):
     cli_calls.append(args)
     if args[0] == "workflow:signal":
+        if fail_cli_signal:
+            return {
+                "client": "cli",
+                "operation": "workflow:signal",
+                "operation_name": "increment",
+                "ok": False,
+                "exit_code": 1,
+                "status_code": 422,
+                "reason": "signal_validation_failed",
+                "validation_errors": [{"field": "arguments.0", "rule": "integer"}],
+            }
         return {"ok": True, "status_code": 202}
     if args[0] == "workflow:query" and args[2] == "state":
         return {"ok": True, "status_code": 200, "result": 0}
@@ -4630,6 +4642,24 @@ outputs, descriptor = run_sdk_php_baseline(
     log_file=run_root / "probe.log",
 )
 scenario = baseline_scenario_result("php_worker_cli_and_sdk_baseline", outputs)
+successful_php_operations = [call["operation"] for call in php_calls]
+successful_cli_operations = [call[0] for call in cli_calls]
+
+fail_cli_signal = True
+failed_outputs, _failed_descriptor = run_sdk_php_baseline(
+    base_url="http://server.test",
+    token="token",
+    namespace="default",
+    cli_bin="/tmp/dw",
+    python_bin=None,
+    sdk_php_project=run_root / "sdk-php",
+    versions=versions,
+    sources=sources,
+    install_entry={"status": "pass", "source": "published_composer_package"},
+    run_root=run_root,
+    log_file=run_root / "failed-probe.log",
+)
+failed_invocations = failed_outputs["published_client_invocations"]
 
 print(json.dumps({
     "status": scenario["status"],
@@ -4643,13 +4673,23 @@ print(json.dumps({
     "cli_query": sample_result_value(outputs["cli_query_sample"]),
     "php_query": sample_result_value(outputs["sdk_php_query_sample"]),
     "repeat_query": sample_result_value(outputs["repeat_query_sample"]),
-    "php_operations": [call["operation"] for call in php_calls],
-    "cli_operations": [call[0] for call in cli_calls],
+    "php_operations": successful_php_operations,
+    "cli_operations": successful_cli_operations,
     "has_probe_error": "probe_error" in outputs,
     "cross_language_status": descriptor["cross_language_scenario_results"]
         ["php_worker_python_and_cli_clients"]["status"],
     "cross_language_failure_phase": descriptor["cross_language_scenario_results"]
         ["php_worker_python_and_cli_clients"]["observed_outputs"]["probe_error"]["phase"],
+    "published_invocation_phases": [
+        invocation["phase"] for invocation in outputs["published_client_invocations"]
+    ],
+    "failed_status": baseline_scenario_result(
+        "php_worker_cli_and_sdk_baseline",
+        failed_outputs,
+    )["status"],
+    "failed_phase": failed_outputs["probe_error"]["phase"],
+    "failed_cli_signal_sample": failed_outputs["cli_signal_sample"],
+    "failed_last_invocation": failed_invocations[-1],
 }, sort_keys=True))
 PY);
 
@@ -4672,6 +4712,23 @@ PY);
         $this->assertFalse($result['has_probe_error']);
         $this->assertSame('fail', $result['cross_language_status']);
         $this->assertSame('python_sdk_repeat_query', $result['cross_language_failure_phase']);
+        $this->assertSame([
+            'workflow_start',
+            'initial_query',
+            'cli_signal',
+            'cli_query',
+            'sdk_php_signal',
+            'sdk_php_query',
+            'sdk_php_repeat_query',
+        ], $result['published_invocation_phases']);
+        $this->assertSame('fail', $result['failed_status']);
+        $this->assertSame('cli_signal', $result['failed_phase']);
+        $this->assertSame('signal_validation_failed', $result['failed_cli_signal_sample']['reason']);
+        $this->assertSame('cli_signal', $result['failed_last_invocation']['phase']);
+        $this->assertSame(
+            $result['failed_cli_signal_sample'],
+            $result['failed_last_invocation']['sample'],
+        );
     }
 
     public function test_php_rust_query_probe_grades_every_observed_answer(): void
@@ -4826,6 +4883,202 @@ PY);
         $this->assertStringNotContainsString('api_key', $encoded);
         $this->assertStringNotContainsString('portable-api-key-value', $encoded);
         $this->assertSame('pass', SignalQueryRuntimeResultGate::evaluate($result)['status']);
+    }
+
+    public function test_host_runner_retains_over_limit_published_client_failures_as_routing_samples(): void
+    {
+        $evidence = $this->completeSignalQueryResultForCurrentHostRunner();
+        $successSample = [
+            'client' => 'cli',
+            'operation' => 'workflow:query',
+            'operation_name' => 'state',
+            'ok' => true,
+            'exit_code' => 0,
+            'status_code' => 200,
+            'result' => 0,
+        ];
+        $cliFailureText = 'CLI transport response retained for routing. '
+            .str_repeat('server contract rejection detail; ', 190)
+            .'terminal workflow failure remains distinguishable.';
+        $cliFailure = [
+            'client' => 'cli',
+            'operation' => 'workflow:signal',
+            'operation_name' => 'increment',
+            'ok' => false,
+            'exit_code' => 1,
+            'status_code' => 422,
+            'reason' => 'signal_validation_failed',
+            'validation_errors' => [
+                ['field' => 'arguments.0', 'rule' => 'integer', 'message' => 'expected an integer'],
+            ],
+            'output' => [
+                'status_code' => 422,
+                'reason' => 'signal_validation_failed',
+                'validation_errors' => [
+                    ['field' => 'arguments.0', 'rule' => 'integer'],
+                ],
+                'message' => $cliFailureText,
+                'request_url' => 'https://runner:private-password@example.test/workflows?access_token=private-query-token',
+                'broker_url' => 'redis://worker:private-redis-password@cache.example.test/0',
+                'authorization' => 'Bearer private-bearer-token',
+            ],
+            'stderr' => 'APP_SECRET=private-container-secret '.$cliFailureText,
+        ];
+        $rustFailureText = 'Rust client HTTP response retained for routing. '
+            .str_repeat('query mirror response detail; ', 170)
+            .'server response classification remains available.';
+        $rustFailure = [
+            'client' => 'sdk-rust',
+            'operation' => 'query',
+            'operation_name' => 'current',
+            'ok' => false,
+            'exit_code' => 1,
+            'status_code' => 500,
+            'reason' => 'query_handler_failed',
+            'body' => [
+                'reason' => 'query_handler_failed',
+                'validation_errors' => [
+                    ['field' => 'query_result', 'message' => 'current query returned a terminal error'],
+                ],
+            ],
+            'error' => $rustFailureText,
+        ];
+
+        $phpBaseline = &$evidence['scenario_results']['php_worker_cli_and_sdk_baseline']['observed_outputs'];
+        $phpBaseline['cli_signal_and_query'] = false;
+        $phpBaseline['published_client_invocations'] = [
+            ['sequence' => 1, 'phase' => 'initial_query', 'sample' => $successSample],
+            ['sequence' => 2, 'phase' => 'cli_signal', 'sample' => $cliFailure],
+        ];
+        unset($phpBaseline);
+
+        $pythonCross = &$evidence['scenario_results']['php_worker_python_and_cli_clients']['observed_outputs'];
+        $pythonCross['published_client_invocations'] = [[
+            'sequence' => 1,
+            'phase' => 'python_sdk_workflow_start',
+            'sample' => [
+                'client' => 'sdk-python',
+                'operation' => 'start',
+                'operation_name' => 'start',
+                'ok' => true,
+                'exit_code' => 0,
+                'status_code' => 201,
+                'run_id' => 'run-php-python-cross',
+            ],
+        ]];
+        unset($pythonCross);
+
+        $rustCross = &$evidence['scenario_results']['php_worker_rust_client']['observed_outputs'];
+        $rustCross['published_client_invocations'] = [[
+            'sequence' => 1,
+            'phase' => 'query',
+            'sample' => $rustFailure,
+        ]];
+        unset($rustCross);
+
+        $artifacts = $this->runSignalQueryHostRunnerArtifacts($evidence);
+        $result = $artifacts['result'];
+        $record = $artifacts['record'];
+        $encoded = json_encode($result, JSON_THROW_ON_ERROR);
+        $retained = $result['published_client_invocations'];
+        $baselineInvocations = $retained['php_worker_cli_and_sdk_baseline']['invocations'];
+        $cliRouting = $baselineInvocations[1];
+        $rustRouting = $retained['php_worker_rust_client']['invocations'][0];
+
+        $this->assertLessThan(1024 * 1024, $artifacts['result_bytes']);
+        $this->assertSame(64 * 1024, $result['portable_evidence_contract']['max_evidence_cell_bytes']);
+        foreach ($retained as $scenarioInvocations) {
+            $this->assertLessThan(
+                64 * 1024,
+                strlen(json_encode($scenarioInvocations['invocations'], JSON_THROW_ON_ERROR)),
+            );
+        }
+        $this->assertEquals($successSample, $baselineInvocations[0]['sample']);
+        $this->assertSame('workflow:signal', $cliRouting['operation_surface']);
+        $this->assertSame(1, $cliRouting['exit_code']);
+        $this->assertSame(422, $cliRouting['status_code']);
+        $this->assertSame('signal_validation_failed', $cliRouting['reason']);
+        $this->assertSame('arguments.0', $cliRouting['validation_details'][0]['field']);
+        $this->assertStringContainsString(
+            'CLI transport response retained for routing.',
+            $cliRouting['response_or_error_summary']['output']['message']['summary'],
+        );
+        $this->assertStringContainsString(
+            'terminal workflow failure remains distinguishable.',
+            $cliRouting['response_or_error_summary']['output']['message']['summary'],
+        );
+        $this->assertSame('query', $rustRouting['operation_surface']);
+        $this->assertSame(1, $rustRouting['exit_code']);
+        $this->assertSame(500, $rustRouting['status_code']);
+        $this->assertSame('query_handler_failed', $rustRouting['reason']);
+        $this->assertSame('query_result', $rustRouting['validation_details'][0]['field']);
+        $this->assertStringContainsString(
+            'Rust client HTTP response retained for routing.',
+            $rustRouting['response_or_error_summary']['error']['summary'],
+        );
+        $this->assertSame($retained, $record['published_client_invocations']);
+        $this->assertStringNotContainsString('private-password', $encoded);
+        $this->assertStringNotContainsString('private-redis-password', $encoded);
+        $this->assertStringNotContainsString('private-query-token', $encoded);
+        $this->assertStringNotContainsString('private-bearer-token', $encoded);
+        $this->assertStringNotContainsString('private-container-secret', $encoded);
+
+        $longStrings = [];
+        array_walk_recursive($result, static function (mixed $value) use (&$longStrings): void {
+            if (is_string($value) && strlen($value) > 2048) {
+                $longStrings[] = strlen($value);
+            }
+        });
+        $this->assertSame([], $longStrings);
+    }
+
+    public function test_portable_client_invocation_compaction_keeps_every_routing_record_within_cell_budget(): void
+    {
+        $evidence = $this->completeSignalQueryResultForCurrentHostRunner();
+        $outputs = &$evidence['scenario_results']['php_worker_cli_and_sdk_baseline']['observed_outputs'];
+        $outputs['cli_signal_and_query'] = false;
+        $outputs['published_client_invocations'] = [];
+        for ($index = 1; $index <= 126; $index++) {
+            $outputs['published_client_invocations'][] = [
+                'sequence' => $index,
+                'phase' => 'cli_query',
+                'sample' => [
+                    'client' => 'cli',
+                    'operation' => 'workflow:query',
+                    'operation_name' => 'current',
+                    'ok' => false,
+                    'exit_code' => 1,
+                    'status_code' => 500,
+                    'reason' => 'query_handler_failed',
+                    'validation_errors' => [[
+                        'field' => 'query_result',
+                        'message' => 'invalid current query response '.$index,
+                    ]],
+                    'error' => 'failure '.$index.': '.str_repeat('published response detail ', 240),
+                ],
+            ];
+        }
+        unset($outputs);
+
+        $result = $this->runSignalQueryHostRunner($evidence);
+        $retained = $result['published_client_invocations']['php_worker_cli_and_sdk_baseline'][
+            'invocations'
+        ];
+
+        $this->assertCount(126, $retained);
+        $this->assertLessThanOrEqual(
+            64 * 1024,
+            strlen(json_encode($retained, JSON_THROW_ON_ERROR)),
+        );
+        $this->assertSame('workflow:query', $retained[0]['operation_surface']);
+        $this->assertSame(1, $retained[0]['exit_code']);
+        $this->assertSame(500, $retained[0]['status_code']);
+        $this->assertSame('query_handler_failed', $retained[0]['reason']);
+        $this->assertNotEmpty($retained[0]['validation_details']);
+        $this->assertNotEmpty($retained[0]['response_or_error_summary']);
+        $this->assertSame(126, $retained[125]['sequence']);
+        $this->assertSame('workflow:query', $retained[125]['operation_surface']);
+        $this->assertSame('query_handler_failed', $retained[125]['reason']);
     }
 
     public function test_host_runner_keeps_product_failures_fail_closed_while_bounding_evidence(): void

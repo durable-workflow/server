@@ -1735,22 +1735,23 @@ def cli_json_sample(
     )
     completed = run_command([cli_bin, *command], log_file=log_file, env=env, timeout=60)
     output = completed.stdout.strip()
-    decoded: dict[str, Any] = {}
-    if output:
-        try:
-            decoded = json.loads(output)
-        except json.JSONDecodeError:
-            decoded = {"raw_stdout": output}
-
-    return {
+    decoded = json_sample_from_stdout(output)
+    sample = {
+        "client": "cli",
+        "operation": command[0] if command else None,
+        "operation_name": command[2] if len(command) > 2 else None,
         "command": "dw " + " ".join(command),
         "exit_code": completed.returncode,
+        "ok": completed.returncode == 0,
         "status_code": decoded.get("status_code"),
         "reason": decoded.get("reason"),
         "validation_errors": decoded.get("validation_errors"),
         "server_response": decoded.get("server_response"),
         "output": decoded,
     }
+    if completed.returncode != 0 and completed.stderr.strip():
+        sample["stderr"] = completed.stderr.strip()
+    return sample
 
 
 def ensure_python_sdk(run_root: Path, log_file: Path) -> tuple[str, dict[str, Any]]:
@@ -2227,6 +2228,8 @@ def php_workflow_client_sample(
     sample.setdefault("operation_name", name)
     sample.setdefault("exit_code", completed.returncode)
     sample.setdefault("ok", completed.returncode == 0)
+    if completed.returncode != 0 and completed.stderr.strip():
+        sample.setdefault("stderr", completed.stderr.strip())
     sample.setdefault("api_sample", {
         "client": "sdk-php",
         "operation": operation,
@@ -2467,6 +2470,8 @@ raise SystemExit(asyncio.run(main()))
     sample.setdefault("operation_name", name)
     sample.setdefault("exit_code", completed.returncode)
     sample.setdefault("ok", completed.returncode == 0)
+    if completed.returncode != 0 and completed.stderr.strip():
+        sample.setdefault("stderr", completed.stderr.strip())
     return sample
 
 
@@ -2567,6 +2572,8 @@ raise SystemExit(asyncio.run(main()))
     sample.setdefault("task_queue", task_queue)
     sample.setdefault("exit_code", completed.returncode)
     sample.setdefault("ok", completed.returncode == 0)
+    if completed.returncode != 0 and completed.stderr.strip():
+        sample.setdefault("stderr", completed.stderr.strip())
     return sample
 
 
@@ -6338,6 +6345,9 @@ def rust_client_sample(
     sample.setdefault("operation", operation)
     sample.setdefault("operation_name", name)
     sample.setdefault("exit_code", completed.returncode)
+    sample.setdefault("ok", completed.returncode == 0)
+    if completed.returncode != 0 and completed.stderr.strip():
+        sample.setdefault("stderr", completed.stderr.strip())
     return sample
 
 
@@ -7350,9 +7360,13 @@ def run_rust_matrix_probe(
             )
             workflow_id = f"wf-sq-php-rust-client-{suffix}"
             php_context["workflow_id"] = workflow_id
-            start = rust_client_sample(
-                project_dir, base_url, token, namespace, php_queue,
-                "start", workflow_id, "conformance.counter.php", [], log_file,
+            start = capture_published_client_invocation(
+                partial_outputs["php_worker_rust_client"],
+                "workflow_start",
+                rust_client_sample(
+                    project_dir, base_url, token, namespace, php_queue,
+                    "start", workflow_id, "conformance.counter.php", [], log_file,
+                ),
             )
             if not public_sample_ok(start):
                 raise RuntimeError(f"Rust client could not start PHP workflow: {start}")
@@ -7368,9 +7382,13 @@ def run_rust_matrix_probe(
             values: list[int] = []
             signal_samples: list[dict[str, Any]] = []
             for amount in (4, 6):
-                signal = rust_client_sample(
-                    project_dir, base_url, token, namespace, php_queue,
-                    "signal", workflow_id, "increment", [amount], log_file,
+                signal = capture_published_client_invocation(
+                    partial_outputs["php_worker_rust_client"],
+                    f"ordered_signal_{len(values) + 1}",
+                    rust_client_sample(
+                        project_dir, base_url, token, namespace, php_queue,
+                        "signal", workflow_id, "increment", [amount], log_file,
+                    ),
                 )
                 if not public_sample_ok(signal):
                     raise RuntimeError(f"Rust client could not signal PHP workflow: {signal}")
@@ -7385,9 +7403,13 @@ def run_rust_matrix_probe(
             query_samples: list[dict[str, Any]] = []
             query = wait_for_query_result(
                 label="Rust client query against PHP worker", expected=sum(values), log_file=log_file,
-                sample_factory=lambda: rust_client_sample(
-                    project_dir, base_url, token, namespace, php_queue,
-                    "query", workflow_id, "current", [], log_file,
+                sample_factory=lambda: capture_published_client_invocation(
+                    partial_outputs["php_worker_rust_client"],
+                    "query",
+                    rust_client_sample(
+                        project_dir, base_url, token, namespace, php_queue,
+                        "query", workflow_id, "current", [], log_file,
+                    ),
                 ),
                 observed_samples=query_samples,
                 last_sample_holder=php_context["last_client_samples"],
@@ -7402,9 +7424,13 @@ def run_rust_matrix_probe(
                 rust_query_observed_values=integer_query_observations(query_samples),
                 rust_query_samples=list(query_samples),
             )
-            repeat = rust_client_sample(
-                project_dir, base_url, token, namespace, php_queue,
-                "query", workflow_id, "current", [], log_file,
+            repeat = capture_published_client_invocation(
+                partial_outputs["php_worker_rust_client"],
+                "repeat_query",
+                rust_client_sample(
+                    project_dir, base_url, token, namespace, php_queue,
+                    "query", workflow_id, "current", [], log_file,
+                ),
             )
             query_samples.append(repeat)
             observed_values = integer_query_observations(query_samples)
@@ -7911,6 +7937,20 @@ def wait_for_query_result(
     raise RuntimeError(f"{label} did not return {expected!r} within {timeout_seconds}s")
 
 
+def capture_published_client_invocation(
+    outputs: dict[str, Any],
+    phase: str,
+    sample: dict[str, Any],
+) -> dict[str, Any]:
+    invocations = outputs.setdefault("published_client_invocations", [])
+    invocations.append({
+        "sequence": len(invocations) + 1,
+        "phase": phase,
+        "sample": sample,
+    })
+    return sample
+
+
 def integer_query_observations(samples: list[dict[str, Any]]) -> list[int]:
     values: list[int] = []
     for sample in samples:
@@ -8199,15 +8239,19 @@ def run_php_worker_python_and_cli_clients(
     outputs["probe_phase"] = phase
 
     try:
-        start_sample = sdk_start_workflow_sample(
-            python_bin,
-            base_url,
-            token,
-            namespace,
-            workflow_id,
-            workflow_type,
-            task_queue,
-            log_file,
+        start_sample = capture_published_client_invocation(
+            outputs,
+            phase,
+            sdk_start_workflow_sample(
+                python_bin,
+                base_url,
+                token,
+                namespace,
+                workflow_id,
+                workflow_type,
+                task_queue,
+                log_file,
+            ),
         )
         outputs["sdk_python_start_sample"] = start_sample
         if not public_sample_ok(start_sample):
@@ -8224,34 +8268,42 @@ def run_php_worker_python_and_cli_clients(
             label="PHP worker CLI initial query after Python SDK start",
             expected=0,
             log_file=log_file,
-            sample_factory=lambda: cli_json_sample(
-                cli_bin,
-                base_url,
-                token,
-                namespace,
-                [
-                    "workflow:query",
-                    workflow_id,
-                    "current",
-                    "--output=json",
-                ],
-                log_file,
+            sample_factory=lambda: capture_published_client_invocation(
+                outputs,
+                phase,
+                cli_json_sample(
+                    cli_bin,
+                    base_url,
+                    token,
+                    namespace,
+                    [
+                        "workflow:query",
+                        workflow_id,
+                        "current",
+                        "--output=json",
+                    ],
+                    log_file,
+                ),
             ),
         )
         outputs["cli_initial_query_sample"] = initial_cli_query
 
         phase = "python_sdk_signal"
         outputs["probe_phase"] = phase
-        sdk_signal = sdk_success_sample(
-            python_bin,
-            base_url,
-            token,
-            namespace,
-            workflow_id,
-            "signal",
-            "increment",
-            log_file,
-            args=[4],
+        sdk_signal = capture_published_client_invocation(
+            outputs,
+            phase,
+            sdk_success_sample(
+                python_bin,
+                base_url,
+                token,
+                namespace,
+                workflow_id,
+                "signal",
+                "increment",
+                log_file,
+                args=[4],
+            ),
         )
         outputs["sdk_python_signal_sample"] = sdk_signal
         if not public_sample_ok(sdk_signal):
@@ -8263,35 +8315,43 @@ def run_php_worker_python_and_cli_clients(
             label="PHP worker Python SDK query after Python SDK signal",
             expected=4,
             log_file=log_file,
-            sample_factory=lambda: sdk_success_sample(
-                python_bin,
-                base_url,
-                token,
-                namespace,
-                workflow_id,
-                "query",
-                "current",
-                log_file,
+            sample_factory=lambda: capture_published_client_invocation(
+                outputs,
+                phase,
+                sdk_success_sample(
+                    python_bin,
+                    base_url,
+                    token,
+                    namespace,
+                    workflow_id,
+                    "query",
+                    "current",
+                    log_file,
+                ),
             ),
         )
         outputs["sdk_python_query_sample"] = sdk_query
 
         phase = "cli_signal"
         outputs["probe_phase"] = phase
-        cli_signal = cli_json_sample(
-            cli_bin,
-            base_url,
-            token,
-            namespace,
-            [
-                "workflow:signal",
-                workflow_id,
-                "increment",
-                "--input",
-                "[6]",
-                "--output=json",
-            ],
-            log_file,
+        cli_signal = capture_published_client_invocation(
+            outputs,
+            phase,
+            cli_json_sample(
+                cli_bin,
+                base_url,
+                token,
+                namespace,
+                [
+                    "workflow:signal",
+                    workflow_id,
+                    "increment",
+                    "--input",
+                    "[6]",
+                    "--output=json",
+                ],
+                log_file,
+            ),
         )
         outputs["cli_signal_sample"] = cli_signal
         if not public_sample_ok(cli_signal):
@@ -8303,18 +8363,22 @@ def run_php_worker_python_and_cli_clients(
             label="PHP worker CLI query after Python SDK and CLI signals",
             expected=10,
             log_file=log_file,
-            sample_factory=lambda: cli_json_sample(
-                cli_bin,
-                base_url,
-                token,
-                namespace,
-                [
-                    "workflow:query",
-                    workflow_id,
-                    "current",
-                    "--output=json",
-                ],
-                log_file,
+            sample_factory=lambda: capture_published_client_invocation(
+                outputs,
+                phase,
+                cli_json_sample(
+                    cli_bin,
+                    base_url,
+                    token,
+                    namespace,
+                    [
+                        "workflow:query",
+                        workflow_id,
+                        "current",
+                        "--output=json",
+                    ],
+                    log_file,
+                ),
             ),
         )
         outputs["cli_query_sample"] = cli_query
@@ -8325,15 +8389,19 @@ def run_php_worker_python_and_cli_clients(
             label="PHP worker Python SDK repeat query after CLI signal",
             expected=10,
             log_file=log_file,
-            sample_factory=lambda: sdk_success_sample(
-                python_bin,
-                base_url,
-                token,
-                namespace,
-                workflow_id,
-                "query",
-                "current",
-                log_file,
+            sample_factory=lambda: capture_published_client_invocation(
+                outputs,
+                phase,
+                sdk_success_sample(
+                    python_bin,
+                    base_url,
+                    token,
+                    namespace,
+                    workflow_id,
+                    "query",
+                    "current",
+                    log_file,
+                ),
             ),
         )
         outputs["sdk_python_repeat_query_sample"] = repeat_sdk_query
@@ -9026,17 +9094,21 @@ def run_sdk_php_baseline(
 
         phase = "workflow_start"
         outputs["probe_phase"] = phase
-        start_sample = php_workflow_client_sample(
-            sdk_php_project,
-            base_url,
-            token,
-            namespace,
-            "start",
-            workflow_type,
-            workflow_id,
-            task_queue,
-            "start",
-            log_file,
+        start_sample = capture_published_client_invocation(
+            outputs,
+            phase,
+            php_workflow_client_sample(
+                sdk_php_project,
+                base_url,
+                token,
+                namespace,
+                "start",
+                workflow_type,
+                workflow_id,
+                task_queue,
+                "start",
+                log_file,
+            ),
         )
         outputs["sdk_php_start_sample"] = start_sample
         if not public_sample_ok(start_sample):
@@ -9054,42 +9126,50 @@ def run_sdk_php_baseline(
             label="PHP worker initial CLI query",
             expected=0,
             log_file=log_file,
-            sample_factory=lambda: cli_json_sample(
-                cli_bin,
-                base_url,
-                token,
-                namespace,
-                [
-                    "workflow:query",
-                    workflow_id,
-                    "state",
-                    "--output=json",
-                ],
-                log_file,
+            sample_factory=lambda: capture_published_client_invocation(
+                outputs,
+                phase,
+                cli_json_sample(
+                    cli_bin,
+                    base_url,
+                    token,
+                    namespace,
+                    [
+                        "workflow:query",
+                        workflow_id,
+                        "state",
+                        "--output=json",
+                    ],
+                    log_file,
+                ),
             ),
         )
         outputs["initial_query_sample"] = initial_query
 
         phase = "cli_signal"
         outputs["probe_phase"] = phase
-        cli_signal = cli_json_sample(
-            cli_bin,
-            base_url,
-            token,
-            namespace,
-            [
-                "workflow:signal",
-                workflow_id,
-                "increment",
-                "--input",
-                "[3]",
-                "--output=json",
-            ],
-            log_file,
+        cli_signal = capture_published_client_invocation(
+            outputs,
+            phase,
+            cli_json_sample(
+                cli_bin,
+                base_url,
+                token,
+                namespace,
+                [
+                    "workflow:signal",
+                    workflow_id,
+                    "increment",
+                    "--input",
+                    "[3]",
+                    "--output=json",
+                ],
+                log_file,
+            ),
         )
+        outputs["cli_signal_sample"] = cli_signal
         if not public_sample_ok(cli_signal):
             raise RuntimeError(f"PHP worker CLI signal failed: {cli_signal}")
-        outputs["cli_signal_sample"] = cli_signal
 
         phase = "cli_query"
         outputs["probe_phase"] = phase
@@ -9097,18 +9177,22 @@ def run_sdk_php_baseline(
             label="PHP worker CLI query after CLI signal",
             expected=3,
             log_file=log_file,
-            sample_factory=lambda: cli_json_sample(
-                cli_bin,
-                base_url,
-                token,
-                namespace,
-                [
-                    "workflow:query",
-                    workflow_id,
-                    "current",
-                    "--output=json",
-                ],
-                log_file,
+            sample_factory=lambda: capture_published_client_invocation(
+                outputs,
+                phase,
+                cli_json_sample(
+                    cli_bin,
+                    base_url,
+                    token,
+                    namespace,
+                    [
+                        "workflow:query",
+                        workflow_id,
+                        "current",
+                        "--output=json",
+                    ],
+                    log_file,
+                ),
             ),
         )
         outputs["cli_query_sample"] = cli_query
@@ -9135,22 +9219,26 @@ def run_sdk_php_baseline(
 
         phase = "sdk_php_signal"
         outputs["probe_phase"] = phase
-        php_signal = php_workflow_client_sample(
-            sdk_php_project,
-            base_url,
-            token,
-            namespace,
-            "signal",
-            workflow_type,
-            workflow_id,
-            task_queue,
-            "increment",
-            log_file,
-            args=[5],
+        php_signal = capture_published_client_invocation(
+            outputs,
+            phase,
+            php_workflow_client_sample(
+                sdk_php_project,
+                base_url,
+                token,
+                namespace,
+                "signal",
+                workflow_type,
+                workflow_id,
+                task_queue,
+                "increment",
+                log_file,
+                args=[5],
+            ),
         )
+        outputs["sdk_php_signal_sample"] = php_signal
         if not public_sample_ok(php_signal):
             raise RuntimeError(f"PHP SDK signal failed: {php_signal}")
-        outputs["sdk_php_signal_sample"] = php_signal
 
         phase = "sdk_php_query"
         outputs["probe_phase"] = phase
@@ -9158,17 +9246,21 @@ def run_sdk_php_baseline(
             label="PHP worker PHP SDK query after PHP SDK signal",
             expected=8,
             log_file=log_file,
-            sample_factory=lambda: php_workflow_client_sample(
-                sdk_php_project,
-                base_url,
-                token,
-                namespace,
-                "query",
-                workflow_type,
-                workflow_id,
-                task_queue,
-                "current",
-                log_file,
+            sample_factory=lambda: capture_published_client_invocation(
+                outputs,
+                phase,
+                php_workflow_client_sample(
+                    sdk_php_project,
+                    base_url,
+                    token,
+                    namespace,
+                    "query",
+                    workflow_type,
+                    workflow_id,
+                    task_queue,
+                    "current",
+                    log_file,
+                ),
             ),
         )
         outputs["sdk_php_query_sample"] = php_query
@@ -9184,17 +9276,21 @@ def run_sdk_php_baseline(
             label="PHP worker repeat PHP SDK query",
             expected=8,
             log_file=log_file,
-            sample_factory=lambda: php_workflow_client_sample(
-                sdk_php_project,
-                base_url,
-                token,
-                namespace,
-                "query",
-                workflow_type,
-                workflow_id,
-                task_queue,
-                "current",
-                log_file,
+            sample_factory=lambda: capture_published_client_invocation(
+                outputs,
+                phase,
+                php_workflow_client_sample(
+                    sdk_php_project,
+                    base_url,
+                    token,
+                    namespace,
+                    "query",
+                    workflow_type,
+                    workflow_id,
+                    task_queue,
+                    "current",
+                    log_file,
+                ),
             ),
         )
         outputs["repeat_query_sample"] = repeat_query
@@ -16679,6 +16775,21 @@ PORTABLE_OPTIONAL_SCENARIO_EVIDENCE = {
         "run_id",
         "task_queue",
         "worker_id",
+        "published_client_invocations",
+    ),
+    "php_worker_python_and_cli_clients": (
+        "workflow_id",
+        "run_id",
+        "task_queue",
+        "worker_id",
+        "published_client_invocations",
+    ),
+    "php_worker_rust_client": (
+        "workflow_id",
+        "run_id",
+        "task_queue",
+        "worker_id",
+        "published_client_invocations",
     ),
     "unknown_signal_and_query_errors": (
         "cli_unknown_signal_sample",
@@ -16736,6 +16847,10 @@ PORTABLE_PRIORITY_KEYS = {
     "signal_name",
     "sha256",
 }
+PORTABLE_FAILURE_SUMMARY_STRING_LIMIT = 1024
+# A failed 60-second query wait can contribute at most 120 half-second attempts;
+# the target PHP-worker cells perform no more than six invocations before that wait.
+PORTABLE_CLIENT_INVOCATION_LIMIT = 128
 
 
 def portable_key_token(value: Any) -> str:
@@ -16747,6 +16862,42 @@ def portable_sensitive_key(value: Any) -> bool:
     return any(part in token for part in PORTABLE_SENSITIVE_KEY_PARTS) or any(
         token.endswith(suffix) for suffix in PORTABLE_SENSITIVE_KEY_SUFFIXES
     )
+
+
+def portable_sanitize_text(value: str) -> str:
+    sanitized = value
+    sanitized = re.sub(
+        r"(?i)\b(bearer|basic)\s+[^\s,;]+",
+        r"\1 <redacted>",
+        sanitized,
+    )
+    sanitized = re.sub(
+        r"(?i)([a-z][a-z0-9+.-]*://)[^/@\s:]+:[^/@\s]+@",
+        r"\1<redacted>@",
+        sanitized,
+    )
+    sanitized = re.sub(
+        r"(?i)([?&](?:access[_-]?token|auth|authorization|api[_-]?key|password|secret|credential|signature|sig)=)[^&#\s]+",
+        r"\1<redacted>",
+        sanitized,
+    )
+    sanitized = re.sub(
+        r"(?i)(\b[A-Z0-9_]*(?:TOKEN|PASSWORD|SECRET|CREDENTIAL|PRIVATE_KEY|API_KEY|APP_KEY)"
+        r"[A-Z0-9_]*\s*=)[^\s,;]+",
+        r"\1<redacted>",
+        sanitized,
+    )
+    sanitized = re.sub(
+        r'''(?ix)(["']?(?:authorization|access[_-]?token|auth[_-]?token|api[_-]?key|app[_-]?key|password|secret|credential)["']?\s*[:=]\s*)["']?[^"'\s,;&}]+''',
+        r"\1<redacted>",
+        sanitized,
+    )
+    for key, secret in os.environ.items():
+        if not secret or len(secret) < 4:
+            continue
+        if portable_sensitive_key(key) or portable_key_token(key).endswith("appkey"):
+            sanitized = sanitized.replace(secret, "<redacted>")
+    return sanitized
 
 
 def portable_unbounded_value_key(value: Any) -> bool:
@@ -16779,8 +16930,9 @@ def portable_value(value: Any, *, depth: int = 0) -> Any:
     if value is None or isinstance(value, (bool, int, float)):
         return value
     if isinstance(value, str):
-        if len(value.encode("utf-8")) <= PORTABLE_EVIDENCE_STRING_LIMIT:
-            return value
+        sanitized = portable_sanitize_text(value)
+        if len(sanitized.encode("utf-8")) <= PORTABLE_EVIDENCE_STRING_LIMIT:
+            return sanitized
         return portable_value_summary(value, "string_limit")
     if depth >= 8:
         return portable_value_summary(value, "depth_limit")
@@ -16828,6 +16980,263 @@ def portable_value(value: Any, *, depth: int = 0) -> Any:
             }
         return retained
     return portable_value(str(value), depth=depth)
+
+
+def portable_failure_text_summary(
+    value: str,
+    limit: int = PORTABLE_FAILURE_SUMMARY_STRING_LIMIT,
+) -> Any:
+    sanitized = portable_sanitize_text(value)
+    encoded = sanitized.encode("utf-8")
+    if len(encoded) <= limit:
+        return sanitized
+
+    head_bytes = limit // 2
+    tail_bytes = max(32, limit - head_bytes - 96)
+    head = encoded[:head_bytes].decode("utf-8", errors="ignore")
+    tail = encoded[-tail_bytes:].decode("utf-8", errors="ignore")
+    omitted = max(0, len(encoded) - len(head.encode("utf-8")) - len(tail.encode("utf-8")))
+    return {
+        "retained": True,
+        "reason": "bounded_sanitized_failure_summary",
+        "original_bytes": len(value.encode("utf-8")),
+        "sha256": hashlib.sha256(value.encode("utf-8")).hexdigest(),
+        "summary": f"{head}\n... {omitted} bytes omitted ...\n{tail}",
+    }
+
+
+def portable_text_excerpt(value: Any, limit: int = 64) -> str:
+    sanitized = portable_sanitize_text(
+        value if isinstance(value, str) else portable_json_bytes(value).decode("utf-8", errors="replace")
+    )
+    encoded = sanitized.encode("utf-8")
+    if len(encoded) <= limit:
+        return sanitized
+    head_bytes = limit // 2
+    tail_bytes = limit - head_bytes - 3
+    return (
+        encoded[:head_bytes].decode("utf-8", errors="ignore")
+        + "..."
+        + encoded[-tail_bytes:].decode("utf-8", errors="ignore")
+    )
+
+
+def portable_failure_value(value: Any, *, depth: int = 0) -> Any:
+    if value is None or isinstance(value, (bool, int, float)):
+        return value
+    if isinstance(value, str):
+        return portable_failure_text_summary(value)
+    if depth >= 8:
+        return portable_value_summary(value, "depth_limit")
+    if isinstance(value, list):
+        retained = [
+            portable_failure_value(item, depth=depth + 1)
+            for item in value[:PORTABLE_EVIDENCE_COLLECTION_LIMIT]
+        ]
+        if len(value) > PORTABLE_EVIDENCE_COLLECTION_LIMIT:
+            retained.append({
+                "retained": False,
+                "reason": "collection_limit",
+                "omitted_items": len(value) - PORTABLE_EVIDENCE_COLLECTION_LIMIT,
+                "sha256": hashlib.sha256(portable_json_bytes(value)).hexdigest(),
+            })
+        return retained
+    if isinstance(value, dict):
+        retained: dict[str, Any] = {}
+        omitted_keys = 0
+        for key in sorted(value, key=str):
+            key_text = str(key)
+            if portable_sensitive_key(key_text):
+                continue
+            if len(retained) >= PORTABLE_EVIDENCE_COLLECTION_LIMIT:
+                omitted_keys += 1
+                continue
+            if portable_unbounded_value_key(key_text):
+                retained[key_text] = portable_value_summary(value[key], "unbounded_payload")
+                continue
+            retained[key_text] = portable_failure_value(value[key], depth=depth + 1)
+        if omitted_keys:
+            retained["_portable_evidence_omitted"] = {
+                "reason": "collection_limit",
+                "omitted_keys": omitted_keys,
+                "sha256": hashlib.sha256(portable_json_bytes(value)).hexdigest(),
+            }
+        return retained
+    return portable_failure_text_summary(str(value))
+
+
+def client_sample_field(sample: dict[str, Any], *field_names: str) -> Any:
+    pending: list[dict[str, Any]] = [sample]
+    visited: set[int] = set()
+    while pending:
+        candidate = pending.pop(0)
+        identity = id(candidate)
+        if identity in visited:
+            continue
+        visited.add(identity)
+        for field_name in field_names:
+            if field_name in candidate and candidate[field_name] is not None:
+                return candidate[field_name]
+        for nested_key in (
+            "body",
+            "details",
+            "error",
+            "output",
+            "response",
+            "server_response",
+        ):
+            nested = candidate.get(nested_key)
+            if isinstance(nested, dict):
+                pending.append(nested)
+    return None
+
+
+def portable_client_response_or_error_summary(sample: dict[str, Any]) -> dict[str, Any]:
+    summary = {
+        key: portable_failure_value(sample[key])
+        for key in (
+            "body",
+            "error",
+            "exception",
+            "message",
+            "output",
+            "raw_stdout",
+            "server_response",
+            "stderr",
+        )
+        if sample.get(key) is not None
+    }
+    if summary:
+        return summary
+    return {"sample": portable_failure_value(sample)}
+
+
+def portable_client_invocation(value: Any, fallback_sequence: int) -> dict[str, Any]:
+    wrapper = value if isinstance(value, dict) else {}
+    sample_value = wrapper.get("sample", wrapper)
+    sample = sample_value if isinstance(sample_value, dict) else {"raw_stdout": str(sample_value)}
+    command = sample.get("command")
+    operation = client_sample_field(sample, "operation")
+    if operation is None and isinstance(command, str):
+        command_parts = command.split()
+        operation = command_parts[1] if len(command_parts) > 1 else command
+
+    validation_details = client_sample_field(
+        sample,
+        "validation_errors",
+        "validationErrors",
+        "errors",
+        "details",
+    )
+    record = {
+        "sequence": wrapper.get("sequence", fallback_sequence),
+        "phase": portable_value(wrapper.get("phase")),
+        "client": portable_value(client_sample_field(sample, "client")),
+        "operation_surface": portable_value(operation),
+        "operation_name": portable_value(
+            client_sample_field(sample, "operation_name", "operationName")
+        ),
+        "ok": public_sample_ok(sample),
+        "exit_code": client_sample_field(sample, "exit_code", "exitCode"),
+        "status": portable_value(client_sample_field(sample, "status")),
+        "status_code": client_sample_field(sample, "status_code", "statusCode"),
+        "reason": portable_failure_value(
+            client_sample_field(sample, "reason", "rejection_reason", "rejectionReason")
+        ),
+        "validation_details": portable_failure_value(validation_details),
+        "sample": portable_value(sample),
+    }
+    if not record["ok"]:
+        record["response_or_error_summary"] = portable_client_response_or_error_summary(sample)
+    return record
+
+
+def portable_client_invocations(value: Any) -> Any:
+    if not isinstance(value, list):
+        return []
+
+    retained = [
+        portable_client_invocation(invocation, index)
+        for index, invocation in enumerate(
+            value[:PORTABLE_CLIENT_INVOCATION_LIMIT],
+            start=1,
+        )
+    ]
+    if len(value) > PORTABLE_CLIENT_INVOCATION_LIMIT:
+        retained.append({
+            "retained": False,
+            "reason": "client_invocation_limit",
+            "omitted_invocations": len(value) - PORTABLE_CLIENT_INVOCATION_LIMIT,
+            "sha256": hashlib.sha256(portable_json_bytes(value)).hexdigest(),
+        })
+    if len(portable_json_bytes(retained)) <= PORTABLE_EVIDENCE_CELL_LIMIT_BYTES:
+        return retained
+
+    routing_only = []
+    for record in retained:
+        if record.get("retained") is False:
+            routing_only.append(record)
+            continue
+        compact = {
+            key: record.get(key)
+            for key in (
+                "sequence",
+                "phase",
+                "client",
+                "operation_surface",
+                "operation_name",
+                "ok",
+                "exit_code",
+                "status",
+                "status_code",
+                "reason",
+            )
+        }
+        validation_details = record.get("validation_details")
+        if validation_details is not None:
+            encoded_validation = portable_json_bytes(validation_details)
+            compact["validation_details"] = (
+                validation_details
+                if len(encoded_validation) <= 512
+                else portable_failure_text_summary(
+                    encoded_validation.decode("utf-8", errors="replace"),
+                    256,
+                )
+            )
+        if record.get("ok") is False:
+            response_summary = portable_json_bytes(record.get("response_or_error_summary"))
+            compact["response_or_error_summary"] = portable_failure_text_summary(
+                response_summary.decode("utf-8", errors="replace"),
+                256,
+            )
+        routing_only.append(compact)
+    if len(portable_json_bytes(routing_only)) <= PORTABLE_EVIDENCE_CELL_LIMIT_BYTES:
+        return routing_only
+
+    minimal_routing = []
+    for record in routing_only:
+        if record.get("retained") is False:
+            minimal_routing.append(record)
+            continue
+        minimal_routing.append({
+            "sequence": record.get("sequence"),
+            "client": portable_text_excerpt(record.get("client"), 32),
+            "operation_surface": portable_text_excerpt(record.get("operation_surface"), 48),
+            "operation_name": portable_text_excerpt(record.get("operation_name"), 48),
+            "ok": record.get("ok"),
+            "exit_code": record.get("exit_code"),
+            "status_code": record.get("status_code"),
+            "reason": portable_text_excerpt(record.get("reason"), 64),
+            "validation_details": portable_text_excerpt(record.get("validation_details"), 64),
+            "response_or_error_summary": portable_text_excerpt(
+                record.get("response_or_error_summary"),
+                96,
+            ),
+            "sample_sha256": hashlib.sha256(
+                portable_json_bytes(record.get("sample"))
+            ).hexdigest(),
+        })
+    return minimal_routing
 
 
 def bounded_portable_cell(value: Any) -> Any:
@@ -16903,6 +17312,9 @@ def portable_scenario_result(scenario_id: str, value: dict[str, Any]) -> dict[st
             evidence = evidence_lookup(observed, evidence_key)
         if evidence is MISSING:
             continue
+        if evidence_key == "published_client_invocations":
+            retained_observed[evidence_key] = portable_client_invocations(evidence)
+            continue
         set_portable_evidence_path(retained_observed, evidence_key, evidence)
     if retained_observed:
         retained["observed_outputs"] = retained_observed
@@ -16916,6 +17328,31 @@ def portable_scenario_results(
         scenario_id: portable_scenario_result(scenario_id, value)
         for scenario_id, value in values.items()
     }
+
+
+def retained_php_worker_client_invocations(
+    values: dict[str, dict[str, Any]],
+) -> dict[str, Any]:
+    retained: dict[str, Any] = {}
+    for scenario_id in (
+        "php_worker_cli_and_sdk_baseline",
+        "php_worker_python_and_cli_clients",
+        "php_worker_rust_client",
+    ):
+        scenario_result = values.get(scenario_id)
+        if not isinstance(scenario_result, dict):
+            continue
+        observed = scenario_result.get("observed_outputs")
+        if not isinstance(observed, dict):
+            continue
+        invocations = observed.get("published_client_invocations")
+        if not isinstance(invocations, list) or not invocations:
+            continue
+        retained[scenario_id] = {
+            "status": scenario_result.get("status"),
+            "invocations": invocations,
+        }
+    return retained
 
 
 def portable_finding(value: dict[str, Any]) -> dict[str, Any]:
@@ -17036,6 +17473,8 @@ def portable_result_limit_fallback(
         "runner_blockers": [blocker],
         "portable_evidence_contract": value["portable_evidence_contract"],
     }
+    if value.get("published_client_invocations"):
+        fallback["published_client_invocations"] = value["published_client_invocations"]
     if len(encoded_result_bytes(fallback)) > PORTABLE_RESULT_LIMIT_BYTES:
         raise RuntimeError("portable signals/queries infrastructure fallback exceeded its result budget")
     return fallback
@@ -17169,6 +17608,7 @@ else:
 behavior_failure_diagnostics = retained_behavior_failure_diagnostics(findings, scenario_results)
 retained_scenario_results = portable_scenario_results(scenario_results)
 retained_findings = portable_findings(findings)
+published_client_invocations = retained_php_worker_client_invocations(retained_scenario_results)
 result = {
     "schema": "durable-workflow.v2.signal-query-runtime.result",
     "started_at": started_at,
@@ -17251,11 +17691,14 @@ result = {
         "max_result_bytes": PORTABLE_RESULT_LIMIT_BYTES,
         "max_evidence_cell_bytes": PORTABLE_EVIDENCE_CELL_LIMIT_BYTES,
         "max_string_bytes": PORTABLE_EVIDENCE_STRING_LIMIT,
+        "max_client_invocations_per_cell": PORTABLE_CLIENT_INVOCATION_LIMIT,
         "scenario_evidence": "required_behavior_cells_and_bounded_diagnostics",
         "sensitive_values": "omitted",
         "unbounded_values": "sha256_summary",
     },
 }
+if published_client_invocations:
+    result["published_client_invocations"] = published_client_invocations
 if behavior_failure_diagnostics:
     result["behavior_failure_diagnostics"] = bounded_portable_cell(
         behavior_failure_diagnostics
@@ -17271,6 +17714,7 @@ if projected_result_bytes > PORTABLE_RESULT_LIMIT_BYTES:
 outcome = str(result["outcome"])
 runner_blocked = result["runner_blocked"] is True
 behavior_failure_diagnostics = result.get("behavior_failure_diagnostics", {})
+published_client_invocations = result.get("published_client_invocations", {})
 runner_blockers = result.get("runner_blockers", [])
 write_json(result_dir / "signals-queries-result.json", result)
 
@@ -17298,6 +17742,8 @@ if ordered_signal_delivery_evidence:
     record["ordered_signal_delivery_evidence"] = ordered_signal_delivery_evidence
 if behavior_failure_diagnostics:
     record["behavior_failure_diagnostics"] = behavior_failure_diagnostics
+if published_client_invocations:
+    record["published_client_invocations"] = published_client_invocations
 if runner_blocked and result.get("runner_blocker") is not None:
     record["runner_blocker"] = result["runner_blocker"]
 if runner_blockers:
@@ -17307,5 +17753,7 @@ write_json(result_dir / "signals-queries-record.json", record)
 stdout_record = {"outcome": outcome, "result_dir": str(result_dir)}
 if behavior_failure_diagnostics:
     stdout_record["behavior_failure_diagnostics"] = behavior_failure_diagnostics
+if published_client_invocations:
+    stdout_record["published_client_invocations"] = published_client_invocations
 print(json.dumps(stdout_record, sort_keys=True))
 PY
