@@ -358,14 +358,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           RELEASE_TAG: ${{ steps.release_publish.outputs.tag }}
-        run: |
-          if ! gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
-            arguments=(--verify-tag --generate-notes --title "$RELEASE_TAG")
-            if [[ "$RELEASE_TAG" == *-* ]]; then
-              arguments+=(--prerelease)
-            fi
-            gh release create "$RELEASE_TAG" "${arguments[@]}"
-          fi
+        run: scripts/ci/create-github-release.sh
 
       - name: Classify live docs release readiness after public release
         if: >-
