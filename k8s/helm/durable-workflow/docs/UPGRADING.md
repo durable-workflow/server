@@ -67,6 +67,12 @@ chart MINOR bump and an entry below.
 
 ## Per-version migration notes
 
+### 0.1.28
+
+This release advances the chart Server identity to `2.0.0-rc.37` and publishes
+worker OpenAPI document version 9 for the cached-poll conflict response union.
+Existing `0.1.27` values remain compatible.
+
 ### 0.1.27
 
 This release advances the chart Server identity to `2.0.0-rc.36` and adds a

@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: durable-workflow.v2.worker-protocol-api
-  version: "8"
+  version: "9"
   summary: Durable Workflow worker-plane HTTP+JSON API
   description: >
     Normative OpenAPI specification for the worker-plane HTTP+JSON API:
