@@ -28,6 +28,10 @@ class WorkflowRunDiagnostics
 
     private const FAILURE_LIMIT = 10;
 
+    private const FINDING_WORKER_LIMIT = 10;
+
+    private const FINDING_WORKFLOW_TYPE_LIMIT = 20;
+
     private const LAST_EVENT_PAYLOAD_PREVIEW_BYTES = 4096;
 
     private const LAST_EVENT_PAYLOAD_KEY_LIMIT = 20;
@@ -826,6 +830,16 @@ class WorkflowRunDiagnostics
             ];
         }
 
+        $workflowTypeFinding = $this->pendingWorkflowTypeFinding(
+            $pendingTasks,
+            $taskQueue,
+            data_get($payload, 'execution.workflow_type'),
+        );
+
+        if ($workflowTypeFinding !== null) {
+            $findings[] = $workflowTypeFinding;
+        }
+
         if ($expiredWorkflowLeases + $expiredActivityLeases > 0) {
             $findings[] = [
                 'severity' => 'warning',
@@ -904,7 +918,105 @@ class WorkflowRunDiagnostics
     }
 
     /**
-     * @param  mixed  $pendingActivities
+     * @return array<string, mixed>|null
+     */
+    private function pendingWorkflowTypeFinding(
+        mixed $pendingTasks,
+        mixed $taskQueue,
+        mixed $requestedWorkflowType,
+    ): ?array {
+        $workflowType = $this->stringValue($requestedWorkflowType);
+
+        if ($workflowType === null || ! is_array($pendingTasks) || ! is_array($taskQueue)) {
+            return null;
+        }
+
+        $activePollers = $this->activePollers($taskQueue);
+
+        if ($activePollers === []) {
+            return null;
+        }
+
+        foreach ($pendingTasks as $task) {
+            if (! is_array($task) || ! $this->workflowTaskCanBeClaimed($task)) {
+                continue;
+            }
+
+            $queue = $this->stringValue($task['queue'] ?? null)
+                ?? $this->stringValue($taskQueue['name'] ?? null);
+
+            if ($queue === null || $queue !== $this->stringValue($taskQueue['name'] ?? null)) {
+                continue;
+            }
+
+            foreach ($activePollers as $poller) {
+                if ($this->pollerSupportsWorkflow($poller, $workflowType)) {
+                    return null;
+                }
+            }
+
+            return [
+                'severity' => 'warning',
+                'code' => 'pending_workflow_type_unsupported',
+                'message' => sprintf(
+                    'Workflow type [%s] is pending on task queue [%s], but no active poller on that queue advertises that exact workflow type. Workflow type matching is exact and case-sensitive; register and start a worker that advertises [%s] on [%s].',
+                    $workflowType,
+                    $queue,
+                    $workflowType,
+                    $queue,
+                ),
+                'task_id' => $this->stringValue($task['task_id'] ?? null),
+                'task_queue' => $queue,
+                'workflow_type' => $workflowType,
+                'workflow_type_match' => 'exact_case_sensitive',
+                ...$this->boundedWorkflowWorkerSummary($activePollers),
+            ];
+        }
+
+        return null;
+    }
+
+    /**
+     * @param  array<string, mixed>  $task
+     */
+    private function workflowTaskCanBeClaimed(array $task): bool
+    {
+        return ($task['status'] ?? null) === TaskStatus::Ready->value
+            && ($task['task_missing'] ?? false) !== true
+            && ($task['dispatch_failed'] ?? false) !== true
+            && ($task['claim_failed'] ?? false) !== true
+            && ($task['lease_expired'] ?? false) !== true;
+    }
+
+    /**
+     * @param  list<array<string, mixed>>  $activePollers
+     * @return array<string, mixed>
+     */
+    private function boundedWorkflowWorkerSummary(array $activePollers): array
+    {
+        return [
+            'active_worker_count' => count($activePollers),
+            'active_worker_limit' => self::FINDING_WORKER_LIMIT,
+            'active_workers_truncated' => count($activePollers) > self::FINDING_WORKER_LIMIT,
+            'active_workers' => array_values(array_map(
+                function (array $poller): array {
+                    $supportedTypes = $this->stringList($poller['supported_workflow_types'] ?? null);
+
+                    return array_filter([
+                        'worker_id' => $this->stringValue($poller['worker_id'] ?? null),
+                        'runtime' => $this->stringValue($poller['runtime'] ?? null),
+                        'supported_workflow_types' => array_slice($supportedTypes, 0, self::FINDING_WORKFLOW_TYPE_LIMIT),
+                        'supported_workflow_type_count' => count($supportedTypes),
+                        'supported_workflow_type_limit' => self::FINDING_WORKFLOW_TYPE_LIMIT,
+                        'supported_workflow_types_truncated' => count($supportedTypes) > self::FINDING_WORKFLOW_TYPE_LIMIT,
+                    ], static fn (mixed $value): bool => $value !== null);
+                },
+                array_slice($activePollers, 0, self::FINDING_WORKER_LIMIT),
+            )),
+        ];
+    }
+
+    /**
      * @param  array<string, mixed>  $activityTaskQueues
      * @return list<array<string, mixed>>
      */
@@ -1043,6 +1155,14 @@ class WorkflowRunDiagnostics
     private function pollerSupportsActivity(array $poller, string $activityType): bool
     {
         return in_array($activityType, $this->stringList($poller['supported_activity_types'] ?? null), true);
+    }
+
+    /**
+     * @param  array<string, mixed>  $poller
+     */
+    private function pollerSupportsWorkflow(array $poller, string $workflowType): bool
+    {
+        return in_array($workflowType, $this->stringList($poller['supported_workflow_types'] ?? null), true);
     }
 
     /**

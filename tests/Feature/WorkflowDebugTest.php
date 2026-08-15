@@ -8,6 +8,7 @@ use Illuminate\Support\Facades\Queue;
 use Tests\Feature\Concerns\ServerTestHelpers;
 use Tests\Fixtures\AwaitApprovalWorkflow;
 use Tests\TestCase;
+use Workflow\Serializers\Serializer;
 use Workflow\V2\Enums\ActivityAttemptStatus;
 use Workflow\V2\Enums\ActivityStatus;
 use Workflow\V2\Enums\FailureCategory;
@@ -188,7 +189,164 @@ class WorkflowDebugTest extends TestCase
             ->assertJsonPath('pending_workflow_tasks.0.compatibility', 'build-v1')
             ->assertJsonPath('pending_workflow_tasks.0.compatibility_supported_in_fleet', false)
             ->assertJsonPath('findings.0.code', 'no_compatible_worker')
-            ->assertJsonPath('findings.0.compatibility', 'build-v1');
+            ->assertJsonPath('findings.0.compatibility', 'build-v1')
+            ->assertJsonMissing(['code' => 'pending_workflow_type_unsupported']);
+    }
+
+    public function test_debug_diagnostics_identify_pending_workflow_types_without_capable_workers(): void
+    {
+        $this->createNamespace('unrelated');
+        $this->registerWorker(
+            'debug-wrong-workflow-worker',
+            'debug-workflow-queue',
+            supportedWorkflowTypes: ['tests.interactive-command-workflow'],
+        );
+        $this->registerWorker(
+            'unrelated-matching-workflow-worker',
+            'debug-workflow-queue',
+            namespace: 'unrelated',
+            supportedWorkflowTypes: ['tests.await-approval-workflow'],
+        );
+
+        $start = $this->postJson('/api/workflows', [
+            'workflow_id' => 'wf-debug-workflow-unsupported',
+            'workflow_type' => 'tests.await-approval-workflow',
+            'task_queue' => 'debug-workflow-queue',
+        ], $this->controlPlaneHeadersWithWorkerProtocol());
+
+        $start->assertCreated()
+            ->assertJsonPath('status', 'pending');
+        $runId = (string) $start->json('run_id');
+
+        $this->postJson('/api/worker/workflow-tasks/poll', [
+            'worker_id' => 'debug-wrong-workflow-worker',
+            'task_queue' => 'debug-workflow-queue',
+        ], $this->workerHeaders())
+            ->assertOk()
+            ->assertJsonPath('task', null);
+
+        $debug = $this->getJson(
+            '/api/workflows/wf-debug-workflow-unsupported/debug',
+            $this->controlPlaneHeadersWithWorkerProtocol(),
+        );
+
+        $debug->assertOk()
+            ->assertJsonPath('execution.status', 'pending')
+            ->assertJsonPath('execution.workflow_type', 'tests.await-approval-workflow')
+            ->assertJsonPath('pending_workflow_tasks.0.status', 'ready')
+            ->assertJsonPath('findings.0.code', 'pending_workflow_type_unsupported')
+            ->assertJsonPath('findings.0.task_queue', 'debug-workflow-queue')
+            ->assertJsonPath('findings.0.workflow_type', 'tests.await-approval-workflow')
+            ->assertJsonPath('findings.0.workflow_type_match', 'exact_case_sensitive')
+            ->assertJsonPath('findings.0.active_worker_count', 1)
+            ->assertJsonPath('findings.0.active_workers.0.worker_id', 'debug-wrong-workflow-worker')
+            ->assertJsonPath(
+                'findings.0.active_workers.0.supported_workflow_types',
+                ['tests.interactive-command-workflow'],
+            )
+            ->assertJsonMissing(['code' => 'no_active_pollers'])
+            ->assertJsonMissing(['worker_id' => 'unrelated-matching-workflow-worker']);
+
+        $this->assertStringContainsString('exact and case-sensitive', (string) $debug->json('findings.0.message'));
+        $this->assertStringContainsString('tests.await-approval-workflow', (string) $debug->json('findings.0.message'));
+        $this->assertStringContainsString('debug-workflow-queue', (string) $debug->json('findings.0.message'));
+
+        $this->registerWorker(
+            'debug-matching-workflow-worker',
+            'debug-workflow-queue',
+            supportedWorkflowTypes: ['tests.await-approval-workflow'],
+        );
+
+        $this->getJson(
+            '/api/workflows/wf-debug-workflow-unsupported/debug',
+            $this->controlPlaneHeadersWithWorkerProtocol(),
+        )
+            ->assertOk()
+            ->assertJsonMissing(['code' => 'pending_workflow_type_unsupported']);
+
+        $poll = $this->postJson('/api/worker/workflow-tasks/poll', [
+            'worker_id' => 'debug-matching-workflow-worker',
+            'task_queue' => 'debug-workflow-queue',
+        ], $this->workerHeaders());
+
+        $poll->assertOk()
+            ->assertJsonPath('task.run_id', $runId)
+            ->assertJsonPath('task.workflow_type', 'tests.await-approval-workflow');
+
+        $taskId = (string) $poll->json('task.task_id');
+        $complete = $this->postJson("/api/worker/workflow-tasks/{$taskId}/complete", [
+            'lease_owner' => 'debug-matching-workflow-worker',
+            'workflow_task_attempt' => (int) $poll->json('task.workflow_task_attempt'),
+            'commands' => [[
+                'type' => 'complete_workflow',
+                'result' => Serializer::serializeWithCodec(
+                    (string) config('workflows.serializer'),
+                    ['matched_worker_completed' => true],
+                ),
+            ]],
+        ], $this->workerHeaders());
+
+        $complete->assertOk()
+            ->assertJsonPath('run_id', $runId)
+            ->assertJsonPath('run_status', 'completed');
+
+        $this->getJson(
+            "/api/workflows/wf-debug-workflow-unsupported/runs/{$runId}",
+            $this->controlPlaneHeadersWithWorkerProtocol(),
+        )
+            ->assertOk()
+            ->assertJsonPath('run_id', $runId)
+            ->assertJsonPath('status', 'completed');
+    }
+
+    public function test_debug_diagnostics_bound_workflow_type_worker_evidence_to_the_run_namespace(): void
+    {
+        $this->createNamespace('unrelated');
+        $advertisedTypes = array_map(
+            static fn (int $index): string => sprintf('tests.other-workflow-%02d', $index),
+            range(1, 25),
+        );
+
+        foreach (range(1, 12) as $index) {
+            $this->registerWorker(
+                sprintf('debug-wrong-workflow-worker-%02d', $index),
+                'debug-bounded-workflow-queue',
+                supportedWorkflowTypes: $advertisedTypes,
+            );
+        }
+
+        $this->registerWorker(
+            'unrelated-secret-workflow-worker',
+            'debug-bounded-workflow-queue',
+            namespace: 'unrelated',
+            supportedWorkflowTypes: ['tests.await-approval-workflow', 'secret.unrelated-workflow'],
+        );
+
+        $this->postJson('/api/workflows', [
+            'workflow_id' => 'wf-debug-workflow-bounded',
+            'workflow_type' => 'tests.await-approval-workflow',
+            'task_queue' => 'debug-bounded-workflow-queue',
+        ], $this->controlPlaneHeadersWithWorkerProtocol())
+            ->assertCreated();
+
+        $debug = $this->getJson(
+            '/api/workflows/wf-debug-workflow-bounded/debug',
+            $this->controlPlaneHeadersWithWorkerProtocol(),
+        );
+
+        $debug->assertOk()
+            ->assertJsonPath('findings.0.code', 'pending_workflow_type_unsupported')
+            ->assertJsonPath('findings.0.active_worker_count', 12)
+            ->assertJsonPath('findings.0.active_worker_limit', 10)
+            ->assertJsonPath('findings.0.active_workers_truncated', true)
+            ->assertJsonPath('findings.0.active_workers.0.supported_workflow_type_count', 25)
+            ->assertJsonPath('findings.0.active_workers.0.supported_workflow_type_limit', 20)
+            ->assertJsonPath('findings.0.active_workers.0.supported_workflow_types_truncated', true);
+
+        $this->assertCount(10, $debug->json('findings.0.active_workers'));
+        $this->assertCount(20, $debug->json('findings.0.active_workers.0.supported_workflow_types'));
+        $this->assertStringNotContainsString('unrelated-secret-workflow-worker', $debug->getContent());
+        $this->assertStringNotContainsString('secret.unrelated-workflow', $debug->getContent());
     }
 
     public function test_debug_diagnostics_identify_pending_activity_queues_without_active_pollers(): void
