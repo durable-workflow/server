@@ -67,6 +67,12 @@ chart MINOR bump and an entry below.
 
 ## Per-version migration notes
 
+### 0.1.29
+
+This release advances the chart Server identity to `2.0.0-rc.38` and publishes
+the capacity schema inventory and qualification contract for canonical public
+routes. Existing `0.1.28` values remain compatible.
+
 ### 0.1.28
 
 This release advances the chart Server identity to `2.0.0-rc.37` and publishes

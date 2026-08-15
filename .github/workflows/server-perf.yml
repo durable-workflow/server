@@ -124,6 +124,8 @@ jobs:
     steps:
       - name: Checkout server
         uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803  # v6
+        with:
+          fetch-depth: 0
 
       - name: Resolve locked workflow package authority
         id: workflow
@@ -183,9 +185,13 @@ jobs:
               --manifest-path benchmarks/capacity/v1/bindings/rust/Cargo.toml
 
       - name: Qualify capacity benchmark contract and bounded reference cell
+        env:
+          PUBLICATION_BASE_REF: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || github.event_name == 'push' && github.event.before || '' }}
         run: |
           python3 -m unittest tests/Unit/Support/capacity_benchmark_test.py
+          python3 -m unittest tests/Unit/Support/capacity_publication_gate_test.py
           python3 scripts/benchmark/capacity_suite.py validate
+          python3 scripts/ci/qualify_capacity_schema_publication.py
           python3 scripts/benchmark/capacity_matrix.py dry-run \
             > build/capacity-benchmark-matrix-plan.json
           python3 scripts/benchmark/capacity_suite.py reference \

@@ -808,6 +808,103 @@ class CapacityBenchmarkContractTest(unittest.TestCase):
             ):
                 capacity_suite.validate_suite(copied_suite, copied_root / "suite.json")
 
+    def test_schema_publication_rejects_unpublished_or_divergent_sources(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            copied_root = Path(directory) / "v1"
+            shutil.copytree(
+                capacity_suite.SUITE_ROOT,
+                copied_root,
+                ignore=shutil.ignore_patterns("vendor", ".deps", "target"),
+            )
+            copied_suite = capacity_suite.load_json(copied_root / "suite.json")
+            future_schema = copied_root / "schemas/future.schema.json"
+            future_schema.write_text(
+                json.dumps(
+                    {
+                        "$schema": "https://json-schema.org/draft/2020-12/schema",
+                        "$id": (
+                            "https://durable-workflow.github.io/schemas/"
+                            "capacity-benchmark-future/v1.json"
+                        ),
+                        "type": "object",
+                    }
+                )
+            )
+
+            with self.assertRaisesRegex(
+                capacity_suite.ContractError,
+                "cover every capacity schema source exactly once",
+            ):
+                capacity_suite.validate_suite(copied_suite, copied_root / "suite.json")
+
+            future_schema.unlink()
+            suite_schema = copied_root / "schemas/suite.schema.json"
+            suite_schema.write_text(suite_schema.read_text() + "\n")
+            with self.assertRaisesRegex(
+                capacity_suite.ContractError,
+                "digest for suite does not match",
+            ):
+                capacity_suite.validate_suite(copied_suite, copied_root / "suite.json")
+
+    def test_public_schema_qualification_follows_https_redirects_and_checks_json(
+        self,
+    ) -> None:
+        publication = capacity_suite.load_json(
+            capacity_suite.SUITE_ROOT / capacity_suite.SCHEMA_PUBLICATION
+        )
+        bodies = {
+            publication["canonical_url"]: (
+                capacity_suite.SUITE_ROOT / capacity_suite.SCHEMA_PUBLICATION
+            ).read_bytes()
+        }
+        for name, relative in capacity_suite.REQUIRED_SCHEMAS.items():
+            bodies[publication["schemas"][name]["$id"]] = (
+                capacity_suite.SUITE_ROOT / relative
+            ).read_bytes()
+
+        class Response:
+            status = 200
+
+            def __init__(
+                self, url: str, body: bytes, content_type: str = "application/json"
+            ) -> None:
+                self.url = url.replace(
+                    "https://durable-workflow.github.io",
+                    "https://durable-workflow.com",
+                )
+                self.body = body
+                self.headers = {"Content-Type": content_type}
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_args) -> None:
+                return None
+
+            def geturl(self) -> str:
+                return self.url
+
+            def read(self) -> bytes:
+                return self.body
+
+        requested = []
+
+        def opener(request, timeout):
+            self.assertEqual(15, timeout)
+            requested.append(request.full_url)
+            return Response(request.full_url, bodies[request.full_url])
+
+        capacity_suite.verify_schema_publication(opener=opener)
+        self.assertEqual(set(bodies), set(requested))
+
+        def html_opener(request, timeout):
+            return Response(request.full_url, b"{}", "text/html; charset=utf-8")
+
+        with self.assertRaisesRegex(
+            capacity_suite.ContractError, "non-JSON content type"
+        ):
+            capacity_suite.verify_schema_publication(opener=html_opener)
+
     def test_bounded_reference_is_deterministic_and_rejects_transient_peak(
         self,
     ) -> None:

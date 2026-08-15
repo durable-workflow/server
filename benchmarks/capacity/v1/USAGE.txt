@@ -8,6 +8,13 @@ Validate the suite, schemas, infrastructure profile, and regression corpus:
 
   python3 scripts/benchmark/capacity_suite.py validate
 
+External tools can discover every versioned capacity JSON Schema, together
+with its SHA-256 digest, from the canonical HTTPS manifest:
+
+  https://durable-workflow.github.io/schemas/capacity-benchmark/v1/manifest.json
+
+The schema `$id` URLs in that manifest are the public retrieval contract.
+
 The standard local profile is executable from this repository. It requires a
 Linux x86_64 host with Docker Engine 27.5.1, Compose 2.20 or newer, a 6.8
 kernel using the systemd cgroup-v2 policy, and Docker's overlay2 data root on

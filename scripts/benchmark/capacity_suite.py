@@ -12,6 +12,7 @@ import re
 import subprocess
 import sys
 import tomllib
+import urllib.request
 from collections.abc import Iterable
 from datetime import datetime, timezone
 from decimal import Decimal
@@ -80,6 +81,14 @@ REQUIRED_SCHEMAS = {
     "adapter": "schemas/adapter.schema.json",
     "collector": "schemas/collector.schema.json",
 }
+SCHEMA_PUBLICATION = "schema-publication.json"
+SCHEMA_PUBLICATION_CONTRACT = (
+    "durable-workflow.capacity-benchmark-schema-publication/v1"
+)
+SCHEMA_PUBLICATION_URL = (
+    "https://durable-workflow.github.io/schemas/capacity-benchmark/v1/manifest.json"
+)
+SCHEMA_ID_PREFIX = "https://durable-workflow.github.io/schemas/capacity-benchmark-"
 ADAPTER_ARTIFACTS = {
     "php": "sdk_php",
     "python": "sdk_python",
@@ -537,6 +546,121 @@ def validate_profile(profile: dict[str, Any]) -> None:
                 )
 
 
+def _validate_schema_publication(suite_root: Path) -> None:
+    publication = load_json(suite_root / SCHEMA_PUBLICATION)
+    if set(publication) != {"schema", "suite_version", "canonical_url", "schemas"}:
+        raise ContractError("schema publication manifest has an unsupported shape")
+    if publication.get("schema") != SCHEMA_PUBLICATION_CONTRACT:
+        raise ContractError(
+            f"schema publication manifest must be {SCHEMA_PUBLICATION_CONTRACT}"
+        )
+    if publication.get("suite_version") != SUITE_VERSION:
+        raise ContractError(f"schema publication suite_version must be {SUITE_VERSION}")
+    if publication.get("canonical_url") != SCHEMA_PUBLICATION_URL:
+        raise ContractError(
+            f"schema publication canonical_url must be {SCHEMA_PUBLICATION_URL}"
+        )
+
+    schemas = _object(publication.get("schemas"), "schema publication schemas")
+    expected_names = set(REQUIRED_SCHEMAS)
+    source_names = {
+        path.name.removesuffix(".schema.json")
+        for path in (suite_root / "schemas").glob("*.schema.json")
+    }
+    if source_names != expected_names or set(schemas) != expected_names:
+        raise ContractError(
+            "schema publication must cover every capacity schema source exactly once"
+        )
+
+    for name, relative in REQUIRED_SCHEMAS.items():
+        entry = _object(schemas.get(name), f"schema publication schemas.{name}")
+        if set(entry) != {"$id", "sha256"}:
+            raise ContractError(
+                f"schema publication schemas.{name} has an unsupported shape"
+            )
+        schema_path = suite_root / relative
+        schema = load_json(schema_path)
+        expected_id = f"{SCHEMA_ID_PREFIX}{name}/v1.json"
+        if schema.get("$id") != expected_id or entry.get("$id") != expected_id:
+            raise ContractError(
+                f"{relative} must use its canonical public schema identifier"
+            )
+        if entry.get("sha256") != sha256_file(schema_path):
+            raise ContractError(
+                f"schema publication digest for {name} does not match its v1 source"
+            )
+
+
+def _fetch_public_json(
+    url: str, opener: Any = urllib.request.urlopen
+) -> tuple[bytes, str]:
+    request = urllib.request.Request(
+        url,
+        headers={
+            "Cache-Control": "no-cache",
+            "User-Agent": "durable-workflow-capacity-schema-qualification",
+        },
+    )
+    try:
+        with opener(request, timeout=15) as response:
+            status = getattr(response, "status", None)
+            final_url = response.geturl()
+            content_type = response.headers.get("Content-Type", "")
+            body = response.read()
+    except OSError as exc:
+        raise ContractError(
+            f"cannot retrieve public schema route {url}: {exc}"
+        ) from exc
+
+    if status != 200:
+        raise ContractError(f"public schema route {url} returned HTTP {status}")
+    if not final_url.startswith("https://"):
+        raise ContractError(f"public schema route {url} resolved outside HTTPS")
+    media_type = content_type.partition(";")[0].strip().lower()
+    if media_type != "application/json" and not (
+        media_type.startswith("application/") and media_type.endswith("+json")
+    ):
+        raise ContractError(
+            f"public schema route {url} returned non-JSON content type {content_type!r}"
+        )
+    try:
+        json.loads(body)
+    except json.JSONDecodeError as exc:
+        raise ContractError(f"public schema route {url} returned invalid JSON") from exc
+    return body, final_url
+
+
+def verify_schema_publication(
+    suite_root: Path = SUITE_ROOT, opener: Any = urllib.request.urlopen
+) -> None:
+    _validate_schema_publication(suite_root)
+    publication_path = suite_root / SCHEMA_PUBLICATION
+    publication = load_json(publication_path)
+    public_manifest, _ = _fetch_public_json(SCHEMA_PUBLICATION_URL, opener)
+    try:
+        live_publication = json.loads(public_manifest)
+    except json.JSONDecodeError as exc:
+        raise ContractError(
+            "public schema publication manifest is invalid JSON"
+        ) from exc
+    if live_publication != publication:
+        raise ContractError(
+            "public schema publication manifest diverges from the v1 source inventory"
+        )
+
+    for name, entry in publication["schemas"].items():
+        body, _ = _fetch_public_json(entry["$id"], opener)
+        if hashlib.sha256(body).hexdigest() != entry["sha256"]:
+            raise ContractError(
+                f"public schema route for {name} diverges from its immutable v1 source"
+            )
+        document = json.loads(body)
+        if document.get("$id") != entry["$id"]:
+            raise ContractError(
+                f"public schema route for {name} returned the wrong schema identifier"
+            )
+
+
 def validate_suite(suite: dict[str, Any], suite_path: Path = DEFAULT_SUITE) -> None:
     if suite.get("schema") != SUITE_SCHEMA:
         raise ContractError(f"suite schema must be {SUITE_SCHEMA}")
@@ -553,6 +677,7 @@ def validate_suite(suite: dict[str, Any], suite_path: Path = DEFAULT_SUITE) -> N
         _text(schema.get("$id"), f"{relative}.$id")
         if schema.get("type") != "object":
             raise ContractError(f"{relative} must describe a JSON object")
+    _validate_schema_publication(suite_path.parent)
 
     artifact_tuple = _validate_artifacts(suite.get("artifacts"), "artifacts")
     metrics = set(
@@ -2471,6 +2596,10 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     commands.add_parser(
         "validate", help="validate the suite, schemas, profile, and corpus"
     )
+    commands.add_parser(
+        "verify-publication",
+        help="verify the canonical HTTPS schema routes and content",
+    )
     reference = commands.add_parser(
         "reference", help="run the deterministic non-capacity qualification cell"
     )
@@ -2504,6 +2633,12 @@ def main(argv: list[str] | None = None) -> int:
         if args.command == "validate":
             print(
                 f"capacity suite {suite['suite_version']} is valid ({len(suite['cells'])} cells)"
+            )
+            return 0
+        if args.command == "verify-publication":
+            verify_schema_publication(args.suite.parent)
+            print(
+                f"capacity schema publication is live ({len(REQUIRED_SCHEMAS)} schemas)"
             )
             return 0
         if args.command == "compare":

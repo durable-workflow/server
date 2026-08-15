@@ -701,6 +701,52 @@ class ServerPerfHarnessContractTest extends TestCase
         $repoRoot = dirname(__DIR__, 2);
         $workflow = file_get_contents($repoRoot.'/.github/workflows/server-perf.yml');
         $this->assertNotFalse($workflow, '.github/workflows/server-perf.yml must be readable');
+        $parsed = Yaml::parse($workflow);
+        $this->assertIsArray($parsed);
+        $steps = [];
+        foreach ($parsed['jobs']['contract']['steps'] ?? [] as $step) {
+            if (isset($step['name'])) {
+                $steps[$step['name']] = $step;
+            }
+        }
+        $this->assertMatchesRegularExpression(
+            '/name:\s+Checkout server.*?fetch-depth:\s+0.*?name:\s+Resolve locked workflow package authority/s',
+            $workflow,
+            'Capacity publication qualification must have the target commit available.',
+        );
+        $this->assertStringContainsString(
+            'PUBLICATION_BASE_REF: ${{ github.event_name == \'pull_request\' && github.event.pull_request.base.sha || github.event_name == \'push\' && github.event.before || \'\' }}',
+            $workflow,
+            'Capacity publication qualification must compare against the target commit.',
+        );
+        $this->assertStringContainsString(
+            'python3 scripts/ci/qualify_capacity_schema_publication.py',
+            $workflow,
+            'Capacity publication qualification must use the bounded repository helper.',
+        );
+        $qualificationStep = $steps[
+            'Qualify capacity benchmark contract and bounded reference cell'
+        ]['run'] ?? null;
+        $this->assertIsString($qualificationStep);
+        $this->assertStringNotContainsString('git cat-file', $qualificationStep);
+
+        $publicationGate = file_get_contents(
+            $repoRoot.'/scripts/ci/qualify_capacity_schema_publication.py',
+        );
+        $this->assertNotFalse(
+            $publicationGate,
+            'scripts/ci/qualify_capacity_schema_publication.py must be readable',
+        );
+        $this->assertStringContainsString(
+            '"benchmarks/capacity/v1/schema-publication.json"',
+            $publicationGate,
+            'The initial-publication gate must inspect only the fixed inventory path.',
+        );
+        $this->assertStringContainsString(
+            '"verify-publication"',
+            $publicationGate,
+            'Later capacity source changes must qualify their canonical public schema routes.',
+        );
 
         $policy = require $repoRoot.'/config/dw-bounded-growth.php';
         $paths = [
