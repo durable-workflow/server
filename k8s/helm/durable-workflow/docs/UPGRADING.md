@@ -67,6 +67,12 @@ chart MINOR bump and an entry below.
 
 ## Per-version migration notes
 
+### 0.1.30
+
+This release advances the chart Server identity to `2.0.0-rc.39` and accepts
+deterministic parallel-group metadata from service-mode workers. Existing
+`0.1.29` values remain compatible.
+
 ### 0.1.29
 
 This release advances the chart Server identity to `2.0.0-rc.38` and publishes

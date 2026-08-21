@@ -12,8 +12,8 @@ use App\Support\HistoryRetentionEnforcer;
 use App\Support\LongPollCapacityExhaustedException;
 use App\Support\NamespaceExternalPayloadStorage;
 use App\Support\NamespaceWorkflowScope;
-use App\Support\PollRequestTaskKindsConflict;
 use App\Support\PayloadCodecContract;
+use App\Support\PollRequestTaskKindsConflict;
 use App\Support\QueryTaskQueueUnavailableException;
 use App\Support\SearchAttributeValueValidator;
 use App\Support\ServiceModeTimerDispatcher;
@@ -45,12 +45,22 @@ use Workflow\V2\Models\ActivityAttempt;
 use Workflow\V2\Models\ActivityExecution;
 use Workflow\V2\Models\WorkflowRun;
 use Workflow\V2\Models\WorkflowTask;
+use Workflow\V2\Support\StructuralLimits;
 use Workflow\V2\Support\WorkerProtocolVersion;
 use Workflow\V2\Support\WorkflowCommandNormalizer;
 use Workflow\V2\Support\WorkflowTaskOwnership;
 
 class WorkerController
 {
+    /** @var list<string> */
+    private const PARALLEL_GROUP_METADATA_FIELDS = [
+        'parallel_group_id',
+        'parallel_group_kind',
+        'parallel_group_base_sequence',
+        'parallel_group_size',
+        'parallel_group_index',
+    ];
+
     public function __construct(
         private readonly WorkflowTaskPoller $workflowTaskPoller,
         private readonly WorkflowTaskLeaseRecovery $workflowTaskLeaseRecovery,
@@ -1295,6 +1305,17 @@ class WorkerController
             'commands.*.condition_definition_fingerprint' => ['nullable', 'string'],
             'commands.*.signal_name' => ['nullable', 'string'],
             'commands.*.timeout_seconds' => ['nullable', 'integer', 'min:0'],
+            'commands.*.parallel_group_id' => ['nullable', 'string'],
+            'commands.*.parallel_group_kind' => ['nullable', 'string'],
+            'commands.*.parallel_group_base_sequence' => ['nullable', 'integer', 'min:1'],
+            'commands.*.parallel_group_size' => ['nullable', 'integer', 'min:1'],
+            'commands.*.parallel_group_index' => ['nullable', 'integer', 'min:0'],
+            'commands.*.parallel_group_path' => ['nullable', 'array'],
+            'commands.*.parallel_group_path.*.parallel_group_id' => ['required', 'string'],
+            'commands.*.parallel_group_path.*.parallel_group_kind' => ['required', 'string'],
+            'commands.*.parallel_group_path.*.parallel_group_base_sequence' => ['required', 'integer', 'min:1'],
+            'commands.*.parallel_group_path.*.parallel_group_size' => ['required', 'integer', 'min:1'],
+            'commands.*.parallel_group_path.*.parallel_group_index' => ['required', 'integer', 'min:0'],
         ]);
 
         $commands = $this->normalizeWorkflowTaskCommandIntegerFields($validated['commands']);
@@ -1568,12 +1589,44 @@ class WorkerController
                     'exception is only supported for fail_workflow commands.';
             }
 
+            foreach ([
+                'parallel_group_id',
+                'parallel_group_kind',
+                'parallel_group_base_sequence',
+                'parallel_group_size',
+                'parallel_group_index',
+                'parallel_group_path',
+            ] as $field) {
+                if ($this->hasCommandValue($command, $field)
+                    && ! in_array($type, ['schedule_activity', 'start_timer', 'start_child_workflow'], true)
+                ) {
+                    $errors["commands.{$index}.{$field}"][] =
+                        "{$field} is only supported for activity, timer, and child-workflow scheduling commands.";
+                }
+            }
+
             if ($type === 'schedule_activity') {
                 $this->validateActivityTimeoutEnvelope($command, $index, $errors);
             }
 
             if ($type === 'start_child_workflow') {
                 $this->validateChildWorkflowTimeoutEnvelope($command, $index, $errors);
+            }
+
+            $parallelLeafKind = match ($type) {
+                'schedule_activity' => 'activity',
+                'start_timer' => 'timer',
+                'start_child_workflow' => 'child',
+                default => null,
+            };
+
+            if ($parallelLeafKind !== null) {
+                $this->validateParallelWorkflowTaskCommand(
+                    $command,
+                    $parallelLeafKind,
+                    $index,
+                    $errors,
+                );
             }
         }
 
@@ -1588,6 +1641,104 @@ class WorkerController
     private function hasCommandValue(array $command, string $field): bool
     {
         return array_key_exists($field, $command) && $command[$field] !== null;
+    }
+
+    /**
+     * @param  array<string, mixed>  $command
+     * @param  array<string, list<string>>  $errors
+     */
+    private function validateParallelWorkflowTaskCommand(
+        array $command,
+        string $leafKind,
+        int $index,
+        array &$errors,
+    ): void {
+        $present = array_key_exists('parallel_group_path', $command);
+
+        foreach (self::PARALLEL_GROUP_METADATA_FIELDS as $field) {
+            $present = $present || array_key_exists($field, $command);
+        }
+
+        if (! $present) {
+            return;
+        }
+
+        $top = $this->normalizeParallelWorkflowTaskCommandEntry($command, $leafKind);
+        $path = $command['parallel_group_path'] ?? null;
+
+        if ($top === null || ! is_array($path) || ! array_is_list($path) || $path === []) {
+            $errors["commands.{$index}.parallel_group_path"] = [
+                'Parallel workflow commands require complete top-level metadata and a non-empty group path.',
+            ];
+
+            return;
+        }
+
+        $normalizedPath = [];
+
+        foreach ($path as $pathIndex => $entry) {
+            $normalized = is_array($entry)
+                ? $this->normalizeParallelWorkflowTaskCommandEntry($entry, $leafKind)
+                : null;
+
+            if ($normalized === null) {
+                $errors["commands.{$index}.parallel_group_path.{$pathIndex}"] = [
+                    'Each parallel group path entry must contain valid identity, kind, base, size, and index fields.',
+                ];
+
+                return;
+            }
+
+            $normalizedPath[] = $normalized;
+        }
+
+        if ($normalizedPath[array_key_last($normalizedPath)] !== $top) {
+            $errors["commands.{$index}.parallel_group_path"] = [
+                'The innermost parallel group path entry must match the top-level parallel metadata.',
+            ];
+        }
+    }
+
+    /**
+     * @param  array<string, mixed>  $entry
+     * @return array<string, mixed>|null
+     */
+    private function normalizeParallelWorkflowTaskCommandEntry(array $entry, string $leafKind): ?array
+    {
+        $id = $entry['parallel_group_id'] ?? null;
+        $kind = $entry['parallel_group_kind'] ?? null;
+        $baseSequence = $entry['parallel_group_base_sequence'] ?? null;
+        $size = $entry['parallel_group_size'] ?? null;
+        $index = $entry['parallel_group_index'] ?? null;
+        $limit = StructuralLimits::commandBatchSizeLimit();
+
+        if (! is_string($id) || $id === ''
+            || ! is_string($kind) || ! in_array($kind, [$leafKind, 'mixed'], true)
+            || ! is_int($baseSequence) || $baseSequence < 1
+            || ! is_int($size) || $size < 1 || ($limit > 0 && $size > $limit)
+            || ! is_int($index) || $index < 0 || $index >= $size
+        ) {
+            return null;
+        }
+
+        $prefix = match ($kind) {
+            'activity' => 'parallel-activities',
+            'child' => 'parallel-children',
+            'timer' => 'parallel-timers',
+            default => 'parallel-calls',
+        };
+
+        if ($id !== sprintf('%s:%d:%d', $prefix, $baseSequence, $size)) {
+            return null;
+        }
+
+        return [
+            'parallel_group_id' => $id,
+            'parallel_group_kind' => $kind,
+            'parallel_group_base_sequence' => $baseSequence,
+            'parallel_group_size' => $size,
+            'parallel_group_index' => $index,
+        ];
     }
 
     /**
@@ -1643,6 +1794,9 @@ class WorkerController
             'min_supported',
             'max_supported',
             'timeout_seconds',
+            'parallel_group_base_sequence',
+            'parallel_group_size',
+            'parallel_group_index',
         ];
 
         foreach ($commands as $index => $command) {
@@ -1660,6 +1814,25 @@ class WorkerController
                 if (array_key_exists($field, $command)) {
                     $commands[$index][$field] = $this->normalizeValidatedInteger($command[$field]);
                 }
+            }
+
+            $parallelPath = $command['parallel_group_path'] ?? null;
+            if (is_array($parallelPath)) {
+                foreach ($parallelPath as $pathIndex => $entry) {
+                    if (! is_array($entry)) {
+                        continue;
+                    }
+                    foreach ([
+                        'parallel_group_base_sequence',
+                        'parallel_group_size',
+                        'parallel_group_index',
+                    ] as $field) {
+                        if (array_key_exists($field, $entry)) {
+                            $parallelPath[$pathIndex][$field] = $this->normalizeValidatedInteger($entry[$field]);
+                        }
+                    }
+                }
+                $commands[$index]['parallel_group_path'] = $parallelPath;
             }
 
             $retryPolicy = $command['retry_policy'] ?? null;
@@ -1927,6 +2100,8 @@ class WorkerController
             'failure' => ['required', 'array'],
             'failure.message' => ['required', 'string'],
             'failure.type' => ['nullable', 'string'],
+            'failure.reason' => ['nullable', 'string'],
+            'failure.sequence' => ['nullable', 'integer', 'min:1'],
             'failure.stack_trace' => ['nullable', 'string'],
         ]);
 

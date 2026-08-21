@@ -929,8 +929,8 @@ SH);
 
     public function test_composer_metadata_identifies_the_exact_workflow_source(): void
     {
-        $expectedVersion = '2.0.0-rc.31';
-        $expectedCommit = 'a4ce321a31ba5f4d9c25964cde81109bf253c5aa';
+        $expectedVersion = '2.0.0-rc.36';
+        $expectedCommit = '2c20fb7698142080f675bc72b2f2d59fbac0cd3e';
         $composer = json_decode($this->read('composer.json'), true, flags: JSON_THROW_ON_ERROR);
         $lock = json_decode($this->read('composer.lock'), true, flags: JSON_THROW_ON_ERROR);
 
@@ -1033,7 +1033,7 @@ SH);
 
     public function test_release_surfaces_declare_the_exact_server_product_train(): void
     {
-        $expectedVersion = '2.0.0-rc.38';
+        $expectedVersion = '2.0.0-rc.39';
         $composer = json_decode($this->read('composer.json'), true, flags: JSON_THROW_ON_ERROR);
 
         $this->assertSame(
@@ -1066,7 +1066,7 @@ SH);
 
         $chart = Yaml::parse($this->read('k8s/helm/durable-workflow/Chart.yaml'));
         $this->assertIsArray($chart);
-        $this->assertSame('0.1.29', $chart['version'] ?? null);
+        $this->assertSame('0.1.30', $chart['version'] ?? null);
         $this->assertSame($expectedVersion, $chart['appVersion'] ?? null);
         $this->assertSame(
             "docker.io/durableworkflow/server:{$expectedVersion}",
@@ -3180,11 +3180,11 @@ SH;
             $outputs = file_get_contents($outputFile);
             $this->assertNotFalse($outputs);
             $this->assertStringContainsString("source=https://github.com/durable-workflow/workflow.git\n", $outputs);
-            $this->assertStringContainsString("ref=2.0.0-rc.31\n", $outputs);
-            $this->assertStringContainsString("tag=2.0.0-rc.31\n", $outputs);
-            $this->assertStringContainsString("commit=a4ce321a31ba5f4d9c25964cde81109bf253c5aa\n", $outputs);
+            $this->assertStringContainsString("ref=2.0.0-rc.36\n", $outputs);
+            $this->assertStringContainsString("tag=2.0.0-rc.36\n", $outputs);
+            $this->assertStringContainsString("commit=2c20fb7698142080f675bc72b2f2d59fbac0cd3e\n", $outputs);
             $this->assertStringContainsString(
-                'Workflow package authority: 2.0.0-rc.31 at a4ce321a31ba5f4d9c25964cde81109bf253c5aa',
+                'Workflow package authority: 2.0.0-rc.36 at 2c20fb7698142080f675bc72b2f2d59fbac0cd3e',
                 $result['stdout'],
             );
         } finally {
@@ -3200,15 +3200,15 @@ SH;
         try {
             $result = $this->runScript('scripts/ci/select-compatible-workflow-package-ref.sh', [
                 'WORKFLOW_PACKAGE_SOURCE' => 'https://github.com/durable-workflow/workflow.git',
-                'WORKFLOW_PACKAGE_REF' => '2.0.0-rc.31',
-                'WORKFLOW_PACKAGE_COMMIT' => 'a4ce321a31ba5f4d9c25964cde81109bf253c5aa',
+                'WORKFLOW_PACKAGE_REF' => '2.0.0-rc.36',
+                'WORKFLOW_PACKAGE_COMMIT' => '2c20fb7698142080f675bc72b2f2d59fbac0cd3e',
                 'GITHUB_OUTPUT' => $outputFile,
             ]);
 
             $this->assertSame(0, $result['exitCode']);
             $outputs = file_get_contents($outputFile);
             $this->assertNotFalse($outputs);
-            $this->assertStringContainsString("tag=2.0.0-rc.31\n", $outputs);
+            $this->assertStringContainsString("tag=2.0.0-rc.36\n", $outputs);
         } finally {
             @unlink($outputFile);
         }
@@ -3223,7 +3223,7 @@ SH;
 
         $this->assertSame(1, $result['exitCode']);
         $this->assertStringContainsString(
-            'disagrees with the Composer Workflow package authority 2.0.0-rc.31',
+            'disagrees with the Composer Workflow package authority 2.0.0-rc.36',
             $result['stderr'],
         );
     }

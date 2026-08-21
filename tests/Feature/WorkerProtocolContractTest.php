@@ -163,6 +163,206 @@ class WorkerProtocolContractTest extends TestCase
         );
     }
 
+    public function test_parallel_group_command_metadata_is_validated_and_persisted_by_the_workflow_bridge(): void
+    {
+        Queue::fake();
+
+        $start = $this->withHeaders($this->controlPlaneHeaders())
+            ->postJson('/api/workflows', [
+                'workflow_id' => 'wf-parallel-command-normalization',
+                'workflow_type' => 'remote.parallel-command-normalization',
+                'task_queue' => 'parallel-contract-queue',
+                'input' => ['Ada'],
+            ]);
+
+        $start->assertCreated();
+
+        $runId = (string) $start->json('run_id');
+
+        $this->createWorkerRegistration([
+            'worker_id' => 'parallel-worker',
+            'task_queue' => 'parallel-contract-queue',
+            'supported_workflow_types' => ['remote.parallel-command-normalization'],
+        ]);
+
+        $poll = $this->withHeaders($this->workerHeaders())
+            ->postJson('/api/worker/workflow-tasks/poll', [
+                'worker_id' => 'parallel-worker',
+                'task_queue' => 'parallel-contract-queue',
+            ]);
+
+        $poll->assertOk()
+            ->assertJsonPath('task.workflow_id', 'wf-parallel-command-normalization');
+
+        $taskId = (string) $poll->json('task.task_id');
+        $attempt = (int) $poll->json('task.workflow_task_attempt');
+        $entries = [];
+
+        foreach (range(0, 2) as $index) {
+            $entries[] = [
+                'parallel_group_id' => 'parallel-calls:3:3',
+                'parallel_group_kind' => 'mixed',
+                'parallel_group_base_sequence' => 3,
+                'parallel_group_size' => 3,
+                'parallel_group_index' => $index,
+            ];
+        }
+
+        $commands = [
+            [
+                'type' => 'schedule_activity',
+                'activity_type' => 'fetch',
+                ...$entries[0],
+                'parallel_group_path' => [$entries[0]],
+            ],
+            [
+                'type' => 'start_timer',
+                'delay_seconds' => 5,
+                ...$entries[1],
+                'parallel_group_path' => [$entries[1]],
+            ],
+            [
+                'type' => 'start_child_workflow',
+                'workflow_type' => 'remote.parallel-child',
+                ...$entries[2],
+                'parallel_group_path' => [$entries[2]],
+            ],
+        ];
+
+        $incomplete = $this->withHeaders($this->workerHeaders())
+            ->postJson("/api/worker/workflow-tasks/{$taskId}/complete", [
+                'lease_owner' => 'parallel-worker',
+                'workflow_task_attempt' => $attempt,
+                'commands' => array_slice($commands, 0, 2),
+            ]);
+
+        $incomplete->assertStatus(409)
+            ->assertJsonPath('recorded', false)
+            ->assertJsonPath('reason', 'invalid_commands')
+            ->assertJsonPath('created_task_ids', []);
+
+        $response = $this->withHeaders($this->workerHeaders())
+            ->postJson("/api/worker/workflow-tasks/{$taskId}/complete", [
+                'lease_owner' => 'parallel-worker',
+                'workflow_task_attempt' => $attempt,
+                'commands' => $commands,
+            ]);
+
+        $response->assertOk()
+            ->assertJsonPath('outcome', 'completed')
+            ->assertJsonPath('recorded', true)
+            ->assertJsonPath('task_id', $taskId)
+            ->assertJsonCount(3, 'created_task_ids');
+
+        $history = $this->getJson(
+            "/api/workflows/wf-parallel-command-normalization/runs/{$runId}/history",
+            $this->controlPlaneHeaders(),
+        );
+        $history->assertOk();
+
+        $scheduled = collect($history->json('events'))
+            ->filter(static fn (array $event): bool => in_array($event['event_type'] ?? null, [
+                'ActivityScheduled',
+                'TimerScheduled',
+                'ChildWorkflowScheduled',
+            ], true))
+            ->values();
+
+        $this->assertSame(
+            ['ActivityScheduled', 'TimerScheduled', 'ChildWorkflowScheduled'],
+            $scheduled->pluck('event_type')->all(),
+        );
+
+        foreach ($entries as $index => $entry) {
+            $payload = $scheduled[$index]['payload'] ?? [];
+
+            foreach ($entry as $field => $value) {
+                $this->assertSame($value, $payload[$field] ?? null);
+            }
+
+            $this->assertSame([$entry], $payload['parallel_group_path'] ?? null);
+        }
+    }
+
+    public function test_parallel_group_nondeterminism_identity_crosses_failure_ingress(): void
+    {
+        $response = $this->withHeaders($this->workerHeaders())
+            ->postJson('/api/worker/workflow-tasks/missing-task/fail', [
+                'lease_owner' => 'parallel-worker',
+                'workflow_task_attempt' => 1,
+                'failure' => [
+                    'message' => 'Parallel group shape changed.',
+                    'type' => 'DurableWorkflow\\Exception\\NonDeterministicWorkflow',
+                    'reason' => 'parallel_group_shape_mismatch',
+                    'sequence' => 7,
+                ],
+            ]);
+
+        $response->assertNotFound()
+            ->assertJsonPath('reason', 'task_not_found');
+    }
+
+    public function test_parallel_group_ingress_rejects_incomplete_path_entries(): void
+    {
+        $response = $this->withHeaders($this->workerHeaders())
+            ->postJson('/api/worker/workflow-tasks/missing-task/complete', [
+                'lease_owner' => 'parallel-worker',
+                'workflow_task_attempt' => 1,
+                'commands' => [[
+                    'type' => 'start_timer',
+                    'delay_seconds' => 5,
+                    'parallel_group_id' => 'parallel-timers:1:1',
+                    'parallel_group_kind' => 'timer',
+                    'parallel_group_base_sequence' => 1,
+                    'parallel_group_size' => 1,
+                    'parallel_group_index' => 0,
+                    'parallel_group_path' => [[
+                        'parallel_group_id' => 'parallel-timers:1:1',
+                    ]],
+                ]],
+            ]);
+
+        $response->assertUnprocessable()
+            ->assertJsonPath('reason', 'validation_failed');
+        $this->assertSame(
+            'The commands.0.parallel_group_path.0.parallel_group_kind field is required.',
+            $response->json('validation_errors')['commands.0.parallel_group_path.0.parallel_group_kind'][0] ?? null,
+        );
+    }
+
+    public function test_parallel_group_ingress_rejects_incomplete_top_level_metadata(): void
+    {
+        $entry = [
+            'parallel_group_id' => 'parallel-timers:1:1',
+            'parallel_group_kind' => 'timer',
+            'parallel_group_base_sequence' => 1,
+            'parallel_group_size' => 1,
+            'parallel_group_index' => 0,
+        ];
+
+        $response = $this->withHeaders($this->workerHeaders())
+            ->postJson('/api/worker/workflow-tasks/missing-task/complete', [
+                'lease_owner' => 'parallel-worker',
+                'workflow_task_attempt' => 1,
+                'commands' => [[
+                    'type' => 'start_timer',
+                    'delay_seconds' => 5,
+                    'parallel_group_id' => $entry['parallel_group_id'],
+                    'parallel_group_kind' => $entry['parallel_group_kind'],
+                    'parallel_group_base_sequence' => $entry['parallel_group_base_sequence'],
+                    'parallel_group_index' => $entry['parallel_group_index'],
+                    'parallel_group_path' => [$entry],
+                ]],
+            ]);
+
+        $response->assertUnprocessable()
+            ->assertJsonPath('reason', 'validation_failed');
+        $this->assertSame(
+            'Parallel workflow commands require complete top-level metadata and a non-empty group path.',
+            $response->json('validation_errors')['commands.0.parallel_group_path'][0] ?? null,
+        );
+    }
+
     /**
      * @param  array<string, mixed>  $command
      */
@@ -232,6 +432,14 @@ class WorkerProtocolContractTest extends TestCase
                 ],
                 'errorField' => 'commands.0.non_retryable',
                 'expectedMessage' => 'non_retryable is only supported for fail_workflow and fail_update commands.',
+            ],
+            'parallel metadata on completion' => [
+                'command' => [
+                    'type' => 'complete_workflow',
+                    'parallel_group_id' => 'parallel-activities:1:1',
+                ],
+                'errorField' => 'commands.0.parallel_group_id',
+                'expectedMessage' => 'parallel_group_id is only supported for activity, timer, and child-workflow scheduling commands.',
             ],
             'heartbeat exceeds start to close' => [
                 'command' => [
