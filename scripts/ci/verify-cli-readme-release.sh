@@ -23,7 +23,7 @@ done
 curl -fsSL --retry 3 --retry-all-errors --connect-timeout 10 \
   "$release_installer_url" -o "$verify_dir/install.sh"
 
-VERSION="$version" DURABLE_WORKFLOW_INSTALL_DIR="$verify_dir/bin" \
+PATH="$verify_dir/bin:$PATH" VERSION="$version" DURABLE_WORKFLOW_INSTALL_DIR="$verify_dir/bin" \
   sh "$verify_dir/install.sh" >"$verify_dir/install.log"
 
 reported_version="$("$verify_dir/bin/dw" --version)"

@@ -204,6 +204,16 @@ class CliReadmeReleaseContractTest extends TestCase
         $this->assertStringNotContainsString('--print version', $verification);
     }
 
+    public function test_release_verifier_makes_the_install_target_the_active_cli_path(): void
+    {
+        $verification = $this->read('scripts/ci/verify-cli-readme-release.sh');
+
+        $this->assertStringContainsString(
+            'PATH="$verify_dir/bin:$PATH" VERSION="$version" DURABLE_WORKFLOW_INSTALL_DIR="$verify_dir/bin"',
+            $verification,
+        );
+    }
+
     /**
      * @return array{Process, array<string, mixed>}
      */
