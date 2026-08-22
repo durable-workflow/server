@@ -67,6 +67,12 @@ chart MINOR bump and an entry below.
 
 ## Per-version migration notes
 
+### 0.1.31
+
+This release advances the chart Server identity to `2.0.0-rc.40` and adds
+replay-safe workflow-command emission for run-scoped Workflow Streams. Existing
+`0.1.30` values remain compatible.
+
 ### 0.1.30
 
 This release advances the chart Server identity to `2.0.0-rc.39` and accepts

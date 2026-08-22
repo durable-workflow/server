@@ -6,10 +6,9 @@ stream produced by a Workflow and reliably receives ordered items
 without missing or duplicating them, even if the worker restarts
 mid-stream.
 
-This is the parity-named view of the Replay 2026 "Workflow Streams"
-capability. The underlying durability primitive is the existing
-workflow signal / update / command pipeline plus an append-only
-per-stream item table: an emit becomes a durable row keyed by
+The underlying durability primitive is the existing workflow command
+pipeline plus an append-only per-stream item table: an emit becomes a
+durable row keyed by
 `(run, stream, offset)`. A reconnecting consumer resumes by passing
 the next offset it expects.
 
@@ -140,15 +139,18 @@ responses.
 
 ## SDK implementation notes
 
-- **Producer** should append from inside a workflow command
-  boundary so the produced offsets are part of the run's durable
-  side-effects, not best-effort side channels. A clean idiom is
-  `streamAppend("tokens", [...])` inside an update or signal
-  handler, with `idempotency_key` derived from the workflow
-  command id and a within-batch index.
-- **Consumer** should persist the last consumed offset before
-  processing each item, so a crashed consumer resumes from an
-  offset it has already seen — duplicates are expected on replay.
+- **Workflow producer** emits through the SDK's
+  `record_side_effect.workflow_stream` command boundary. The server
+  commits the stream mutation and recorded side effect in the same
+  transaction. SDKs derive each `idempotency_key` from the durable
+  workflow command identity, stream-command ordinal, and batch index;
+  replay consumes the side effect without appending again.
+- **External producer** may use the typed append client directly and
+  should supply its own stable `idempotency_key`.
+- **Consumer** should process an item idempotently and persist the
+  returned `next_offset` after the page's effects are durable. A crash
+  before the checkpoint can redeliver the page; duplicates are an
+  explicit part of at-least-once delivery.
 - **Idempotency key** should be the producer's deterministic
   identifier for the logical item so retries collapse to one
   durable offset rather than emitting twice.
@@ -158,6 +160,27 @@ responses.
 - **Large payloads**: payloads larger than the namespace inline
   limit should be uploaded through the existing external payload
   storage and referenced via `payload_reference`.
+
+## Relationship to embedded MessageStream
+
+Workflow Streams are the service-mode, run-scoped workflow-output
+contract. Embedded Laravel `MessageStream` is an inbox/outbox model.
+Both surfaces use named streams, ordered offsets, pending counts,
+lifecycle/error visibility, replay-safe producer identity, and
+at-least-once delivery language where those semantics match.
+
+The differences are intentional:
+
+- Workflow Stream offsets begin at 0; embedded message sequences begin
+  at 1.
+- Service-mode Workflow Streams do not deliver inbound messages into
+  workflow code. Signals and updates remain separate service APIs.
+- Service-mode Workflow Streams do not transfer a cursor across
+  continue-as-new. Embedded `MessageStream` does transfer its inbox
+  cursor as part of that model.
+- An external `payload_reference` is decoded only when the consuming
+  SDK has the corresponding storage driver configured. SDKs without a
+  storage transport preserve the reference as opaque metadata.
 
 ## Out of scope (v1)
 
@@ -175,8 +198,7 @@ responses.
 
 - Surface stability authority: `surface_stability_contract` field
   of `GET /api/cluster/info`.
-- Underlying primitives: signal (`POST /api/workflows/{id}/signal/{name}`),
-  update (`POST /api/workflows/{id}/update/{name}`), and the
-  workflow command pipeline.
+- Underlying primitive: the workflow command pipeline's replay-safe
+  side-effect boundary.
 - Bounded-growth policy (caches, retention, label cardinality):
   `docs/bounded-growth.md`.

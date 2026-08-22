@@ -18,8 +18,8 @@ use App\Support\LegacyV1ProjectionContract;
 use App\Support\MigrationRuntimeContract;
 use App\Support\NamespaceRuntimeContract;
 use App\Support\NexusContract;
-use App\Support\PhpSdkConformanceContract;
 use App\Support\PayloadCodecContract;
+use App\Support\PhpSdkConformanceContract;
 use App\Support\PrereleaseReadinessContract;
 use App\Support\PrincipalAttributionContract;
 use App\Support\PythonSdkParityContract;
@@ -178,7 +178,7 @@ class HealthController
 
         $response = [
             'server_id' => config('server.server_id'),
-            'version' => env('APP_VERSION', '2.0.0-rc.39'),
+            'version' => env('APP_VERSION', '2.0.0-rc.40'),
             'default_namespace' => config('server.default_namespace'),
             'namespace' => $this->namespacePolicy($namespace),
             'discovery' => [

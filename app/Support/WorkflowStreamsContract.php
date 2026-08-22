@@ -45,8 +45,8 @@ final class WorkflowStreamsContract
             'authority_document' => self::AUTHORITY_DOCUMENT,
             'parity_target' => [
                 'name' => 'Workflow Streams',
-                'description' => 'Durable streaming out of a running Workflow execution. An external consumer (UI, log sink, guardrail) subscribes to a named stream produced by a Workflow and reliably receives ordered items without missing or duplicating them, even if the worker restarts mid-stream.',
-                'underlying_primitives' => ['workflow_signal', 'workflow_update', 'workflow_command'],
+                'description' => 'Durable streaming out of a running Workflow execution. An external consumer subscribes to a named output stream, resumes by offset without loss, and handles possible at-least-once redelivery after reconnect.',
+                'underlying_primitives' => ['workflow_command', 'record_side_effect', 'durable_stream_item'],
             ],
             'cluster_info_key' => 'workflow_streams_contract',
             'capability_flag' => 'workflow_streams',
@@ -92,6 +92,40 @@ final class WorkflowStreamsContract
                 'at_least_once_to_consumer' => 'consumer_must_track_its_own_offset_and_be_idempotent_on_replay',
                 'at_most_once_to_durable_record' => 'idempotency_key_collapses_retried_appends_to_one_offset',
             ],
+            'workflow_authoring' => [
+                'command_boundary' => 'record_side_effect.workflow_stream',
+                'transactionality' => 'stream_mutation_and_side_effect_history_commit_together',
+                'idempotency_derivation' => 'workflow_command_id_plus_command_ordinal_plus_item_index',
+                'replay_outcome' => 'recorded_side_effect_consumption_skips_stream_mutation',
+            ],
+            'message_stream_relationship' => [
+                'shared_concepts' => ['stream_name', 'ordered_offset', 'lifecycle', 'pending_items', 'error'],
+                'service_mode_direction' => 'workflow_output_only',
+                'embedded_direction' => 'workflow_inbox_and_outbox',
+                'service_mode_inbound_workflow_messaging' => false,
+                'service_mode_continue_as_new_cursor_transfer' => false,
+                'offset_origins' => [
+                    'service_workflow_stream' => 0,
+                    'embedded_message_stream' => 1,
+                ],
+            ],
+            'first_party_sdk_support' => [
+                'php' => [
+                    'operations' => ['list', 'describe', 'subscribe', 'append', 'close', 'error'],
+                    'workflow_authoring' => true,
+                    'external_payload_references' => 'opaque-reference',
+                ],
+                'python' => [
+                    'operations' => ['list', 'describe', 'subscribe', 'append', 'close', 'error'],
+                    'workflow_authoring' => true,
+                    'external_payload_references' => 'read-write-with-configured-driver',
+                ],
+                'rust' => [
+                    'operations' => ['list', 'describe', 'subscribe', 'append', 'close', 'error'],
+                    'workflow_authoring' => true,
+                    'external_payload_references' => 'opaque-reference',
+                ],
+            ],
             'backpressure_semantics' => [
                 'slow_consumer' => 'producer_is_unaffected_until_pending_items_exceeds_max_pending_items_per_stream',
                 'producer_throttle_outcome' => 'append_returns_429_with_reason_stream_full_when_pending_items_threshold_exceeded',
@@ -135,7 +169,7 @@ final class WorkflowStreamsContract
             ],
             'sdk_implementation_notes' => [
                 'producer_should' => 'append from inside a workflow command boundary so the produced offsets are part of the run\'s durable side-effects, not best-effort side channels',
-                'consumer_should' => 'persist the last consumed offset before processing the item so a crashed consumer resumes from an offset it has already seen — duplicates are expected on replay',
+                'consumer_should' => 'process idempotently and persist next_offset after the page effects are durable; a crash before checkpoint may redeliver the page',
                 'idempotency_key_should' => 'be the producer\'s deterministic identifier for the logical item (e.g. the workflow command id plus a within-batch index) so retries collapse to one durable offset rather than emitting twice',
                 'close_semantics' => 'a closed stream rejects further appends with stream_closed; consumers continue to read the persisted history up to retention',
                 'large_payloads' => 'payloads larger than the namespace inline limit should be uploaded through the existing external payload storage and referenced via payload_reference',

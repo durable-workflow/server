@@ -6,14 +6,21 @@ namespace Tests\Feature;
 
 use App\Models\WorkflowDurableStream;
 use App\Models\WorkflowDurableStreamItem;
+use App\Support\WorkflowStreamCommandProcessor;
 use App\Support\WorkflowStreamService;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Str;
 use Tests\Feature\Concerns\ServerTestHelpers;
+use Tests\Fixtures\ExternalGreetingWorkflow;
 use Tests\TestCase;
+use Workflow\Serializers\Serializer;
 use Workflow\V2\Enums\RunStatus;
+use Workflow\V2\Enums\TaskStatus;
+use Workflow\V2\Enums\TaskType;
+use Workflow\V2\Models\WorkflowHistoryEvent;
 use Workflow\V2\Models\WorkflowInstance;
 use Workflow\V2\Models\WorkflowRun;
+use Workflow\V2\Models\WorkflowTask;
 
 class WorkflowStreamsTest extends TestCase
 {
@@ -51,6 +58,18 @@ class WorkflowStreamsTest extends TestCase
             ->assertJsonPath(
                 'workflow_streams_contract.backpressure_semantics.producer_throttle_outcome',
                 'append_returns_429_with_reason_stream_full_when_pending_items_threshold_exceeded',
+            )
+            ->assertJsonPath(
+                'workflow_streams_contract.workflow_authoring.command_boundary',
+                'record_side_effect.workflow_stream',
+            )
+            ->assertJsonPath(
+                'workflow_streams_contract.message_stream_relationship.service_mode_inbound_workflow_messaging',
+                false,
+            )
+            ->assertJsonPath(
+                'workflow_streams_contract.first_party_sdk_support.python.external_payload_references',
+                'read-write-with-configured-driver',
             );
     }
 
@@ -122,7 +141,7 @@ class WorkflowStreamsTest extends TestCase
 
         // First read window picks up 0..2.
         $first = $this->withHeaders($this->apiHeaders())
-            ->getJson($this->itemsRoute('wf-streams-reconnect', $run->id, 'tokens') . '?from=0&max_items=3');
+            ->getJson($this->itemsRoute('wf-streams-reconnect', $run->id, 'tokens').'?from=0&max_items=3');
 
         $first->assertOk()
             ->assertJsonPath('items.0.offset', 0)
@@ -133,7 +152,7 @@ class WorkflowStreamsTest extends TestCase
         // Subscriber crashes, then reconnects with from=3 and reads
         // the rest. No items are missed; no items are duplicated.
         $second = $this->withHeaders($this->apiHeaders())
-            ->getJson($this->itemsRoute('wf-streams-reconnect', $run->id, 'tokens') . '?from=3&max_items=10');
+            ->getJson($this->itemsRoute('wf-streams-reconnect', $run->id, 'tokens').'?from=3&max_items=10');
 
         $second->assertOk()
             ->assertJsonPath('items.0.offset', 3)
@@ -262,7 +281,7 @@ class WorkflowStreamsTest extends TestCase
 
         // Reading the tail returns terminal=true and zero items.
         $tail = $this->withHeaders($this->apiHeaders())
-            ->getJson($this->itemsRoute('wf-streams-terminal', $run->id, 'tokens') . '?from=2');
+            ->getJson($this->itemsRoute('wf-streams-terminal', $run->id, 'tokens').'?from=2');
 
         $tail->assertOk()
             ->assertJsonPath('terminal', true)
@@ -271,7 +290,7 @@ class WorkflowStreamsTest extends TestCase
 
         // But reading from earlier still surfaces the persisted history.
         $body = $this->withHeaders($this->apiHeaders())
-            ->getJson($this->itemsRoute('wf-streams-terminal', $run->id, 'tokens') . '?from=0');
+            ->getJson($this->itemsRoute('wf-streams-terminal', $run->id, 'tokens').'?from=0');
 
         $body->assertOk()
             ->assertJsonCount(2, 'items')
@@ -343,7 +362,7 @@ class WorkflowStreamsTest extends TestCase
         $this->postItems($run->id, 'tokens', $batch, 'wf-streams-window');
 
         $response = $this->withHeaders($this->apiHeaders())
-            ->getJson($this->itemsRoute('wf-streams-window', $run->id, 'tokens') . '?from=0&max_items=2');
+            ->getJson($this->itemsRoute('wf-streams-window', $run->id, 'tokens').'?from=0&max_items=2');
 
         $response->assertOk()
             ->assertJsonCount(2, 'items')
@@ -405,6 +424,106 @@ class WorkflowStreamsTest extends TestCase
         $stream->refresh();
         $this->assertSame(2, (int) $stream->total_items);
         $this->assertSame(1, (int) $stream->last_offset);
+    }
+
+    public function test_workflow_command_directive_derives_replay_safe_durable_records(): void
+    {
+        $run = $this->createRun('default', 'wf-streams-command');
+        $task = WorkflowTask::query()->create([
+            'id' => (string) Str::ulid(),
+            'workflow_run_id' => $run->id,
+            'namespace' => 'default',
+            'task_type' => TaskType::Workflow->value,
+            'status' => TaskStatus::Ready->value,
+            'queue' => 'default',
+            'payload' => ['workflow_command_id' => 'command-stream-1'],
+            'available_at' => now(),
+        ]);
+        $processor = app(WorkflowStreamCommandProcessor::class);
+        $commands = [[
+            'type' => 'record_side_effect',
+            'result' => ['codec' => 'avro', 'blob' => 'recorded-null'],
+            'workflow_stream' => [
+                'operation' => 'append',
+                'stream_name' => 'tokens',
+                'command_identity' => 'command-stream-1',
+                'command_ordinal' => 0,
+                'items' => [[
+                    'payload' => ['codec' => 'avro', 'blob' => 'item-one'],
+                    'payload_codec' => 'avro',
+                    'idempotency_key' => 'dw-stream:command-stream-1:0:0',
+                ]],
+            ],
+        ]];
+
+        $forwarded = $processor->process($task->id, 'default', $commands);
+        $processor->process($task->id, 'default', $commands);
+
+        $this->assertArrayNotHasKey('workflow_stream', $forwarded[0]);
+        $this->assertDatabaseCount('workflow_durable_stream_items', 1);
+        $item = WorkflowDurableStreamItem::query()->firstOrFail();
+        $this->assertSame(0, (int) $item->offset);
+        $this->assertSame('dw-stream:command-stream-1:0:0', $item->idempotency_key);
+        $this->assertSame('workflow_command', $item->origin);
+        $this->assertSame('command-stream-1', $item->origin_reference);
+    }
+
+    public function test_worker_completion_commits_stream_append_with_side_effect_history(): void
+    {
+        config()->set('workflows.v2.types.workflows', [
+            'tests.external-greeting-workflow' => ExternalGreetingWorkflow::class,
+        ]);
+        $start = $this->withHeaders($this->apiHeaders())->postJson('/api/workflows', [
+            'workflow_id' => 'wf-stream-command-completion',
+            'workflow_type' => 'tests.external-greeting-workflow',
+            'task_queue' => 'stream-command-queue',
+            'input' => [
+                'codec' => 'avro',
+                'blob' => Serializer::serializeWithCodec('avro', ['Ada']),
+            ],
+        ]);
+        $start->assertCreated();
+        $this->registerWorker(
+            'stream-command-worker',
+            'stream-command-queue',
+            supportedWorkflowTypes: ['tests.external-greeting-workflow'],
+        );
+        $poll = $this->withHeaders($this->workerHeaders())
+            ->postJson('/api/worker/workflow-tasks/poll', [
+                'worker_id' => 'stream-command-worker',
+                'task_queue' => 'stream-command-queue',
+            ]);
+        $poll->assertOk();
+        $taskId = (string) $poll->json('task.task_id');
+        $commandIdentity = (string) ($poll->json('task.workflow_command_id') ?: $taskId);
+
+        $complete = $this->withHeaders($this->workerHeaders())
+            ->postJson("/api/worker/workflow-tasks/{$taskId}/complete", [
+                'lease_owner' => 'stream-command-worker',
+                'workflow_task_attempt' => (int) $poll->json('task.workflow_task_attempt'),
+                'commands' => [[
+                    'type' => 'record_side_effect',
+                    'result' => Serializer::serializeWithCodec('avro', null),
+                    'workflow_stream' => [
+                        'operation' => 'append',
+                        'stream_name' => 'tokens',
+                        'command_identity' => $commandIdentity,
+                        'command_ordinal' => 0,
+                        'items' => [[
+                            'payload_reference' => 's3://payloads/token-1',
+                            'payload_codec' => 'avro',
+                            'idempotency_key' => "dw-stream:{$commandIdentity}:0:0",
+                        ]],
+                    ],
+                ]],
+            ]);
+
+        $complete->assertOk()->assertJsonPath('recorded', true);
+        $this->assertDatabaseCount('workflow_durable_stream_items', 1);
+        $this->assertSame(1, WorkflowHistoryEvent::query()
+            ->where('workflow_run_id', (string) $start->json('run_id'))
+            ->where('event_type', 'SideEffectRecorded')
+            ->count());
     }
 
     /**

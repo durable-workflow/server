@@ -17,6 +17,10 @@ use App\Support\PollRequestTaskKindsConflict;
 use App\Support\QueryTaskQueueUnavailableException;
 use App\Support\SearchAttributeValueValidator;
 use App\Support\ServiceModeTimerDispatcher;
+use App\Support\StreamClosedException;
+use App\Support\StreamErroredException;
+use App\Support\StreamFullException;
+use App\Support\StreamNotFoundException;
 use App\Support\WorkerCompatibilityHeartbeatRecorder;
 use App\Support\WorkerPollBackpressure;
 use App\Support\WorkerPollFence;
@@ -24,6 +28,8 @@ use App\Support\WorkerProtocol;
 use App\Support\WorkerProtocolMutationRetrier;
 use App\Support\WorkerTerminalEventAttribution;
 use App\Support\WorkflowQueryTaskBroker;
+use App\Support\WorkflowStreamCommandProcessor;
+use App\Support\WorkflowStreamService;
 use App\Support\WorkflowTaskLeaseRecovery;
 use App\Support\WorkflowTaskPoller;
 use App\Support\WorkflowUpdateValidationTaskBroker;
@@ -1316,6 +1322,22 @@ class WorkerController
             'commands.*.parallel_group_path.*.parallel_group_base_sequence' => ['required', 'integer', 'min:1'],
             'commands.*.parallel_group_path.*.parallel_group_size' => ['required', 'integer', 'min:1'],
             'commands.*.parallel_group_path.*.parallel_group_index' => ['required', 'integer', 'min:0'],
+            'commands.*.workflow_stream' => ['nullable', 'array'],
+            'commands.*.workflow_stream.operation' => ['required_with:commands.*.workflow_stream', 'string', 'in:append,close,error'],
+            'commands.*.workflow_stream.stream_name' => ['required_with:commands.*.workflow_stream', 'string', 'max:191'],
+            'commands.*.workflow_stream.command_identity' => ['required_with:commands.*.workflow_stream', 'string', 'max:191'],
+            'commands.*.workflow_stream.command_ordinal' => ['required_with:commands.*.workflow_stream', 'integer', 'min:0'],
+            'commands.*.workflow_stream.items' => ['nullable', 'array', 'max:'.WorkflowStreamService::DEFAULT_MAX_ITEMS_PER_APPEND],
+            'commands.*.workflow_stream.items.*' => ['array'],
+            'commands.*.workflow_stream.items.*.payload' => ['nullable'],
+            'commands.*.workflow_stream.items.*.payload_reference' => ['nullable', 'string', 'max:191'],
+            'commands.*.workflow_stream.items.*.payload_codec' => ['nullable', 'string', 'max:64'],
+            'commands.*.workflow_stream.items.*.idempotency_key' => ['nullable', 'string', 'max:191'],
+            'commands.*.workflow_stream.items.*.item_type' => ['nullable', 'string', 'max:64'],
+            'commands.*.workflow_stream.items.*.content_type' => ['nullable', 'string', 'max:191'],
+            'commands.*.workflow_stream.max_pending_items' => ['nullable', 'integer', 'min:1'],
+            'commands.*.workflow_stream.error_reason' => ['nullable', 'string', 'max:191'],
+            'commands.*.workflow_stream.retention_seconds' => ['nullable', 'integer', 'min:1'],
         ]);
 
         $commands = $this->normalizeWorkflowTaskCommandIntegerFields($validated['commands']);
@@ -1358,8 +1380,6 @@ class WorkerController
         );
 
         $commands = $this->promoteWorkflowFailureExceptionPayload($commands);
-        $commands = WorkflowCommandNormalizer::normalize($commands);
-
         /** @var WorkflowTaskBridge $bridge */
         $bridge = app(WorkflowTaskBridge::class);
         $workflowTaskQueue = WorkflowTask::query()
@@ -1368,8 +1388,15 @@ class WorkerController
 
         try {
             $outcome = $this->storageMutations->run(
-                function () use ($bridge, $commands, $request, $taskId): array {
-                    return DB::transaction(function () use ($bridge, $commands, $request, $taskId): array {
+                function () use ($bridge, $commands, $request, $taskId, $namespace): array {
+                    return DB::transaction(function () use ($bridge, $commands, $request, $taskId, $namespace): array {
+                        $commands = $this->canonicalizeWorkflowStreamPayloadCodecs($commands);
+                        $commands = app(WorkflowStreamCommandProcessor::class)->process(
+                            $taskId,
+                            (string) $namespace,
+                            $commands,
+                        );
+                        $commands = WorkflowCommandNormalizer::normalize($commands);
                         $outcome = $bridge->complete($taskId, $commands);
                         $this->terminalEventAttribution->record($request, $taskId, $outcome);
 
@@ -1390,6 +1417,41 @@ class WorkerController
             ], 422);
         } catch (ExternalPayloadStorageUnavailable $exception) {
             return $this->externalPayloadFailure($taskId, (int) $validated['workflow_task_attempt'], $exception, 503);
+        } catch (StreamFullException $exception) {
+            return WorkerProtocol::json([
+                'task_id' => $taskId,
+                'workflow_task_attempt' => (int) $validated['workflow_task_attempt'],
+                'outcome' => 'rejected',
+                'recorded' => false,
+                'reason' => 'stream_full',
+                'pending_items' => (int) $exception->stream->pending_items,
+                'max_pending_items' => $exception->maxPendingItems,
+            ], 429);
+        } catch (StreamClosedException|StreamErroredException $exception) {
+            return WorkerProtocol::json([
+                'task_id' => $taskId,
+                'workflow_task_attempt' => (int) $validated['workflow_task_attempt'],
+                'outcome' => 'rejected',
+                'recorded' => false,
+                'reason' => $exception instanceof StreamClosedException ? 'stream_closed' : 'stream_errored',
+            ], 409);
+        } catch (StreamNotFoundException $exception) {
+            return WorkerProtocol::json([
+                'task_id' => $taskId,
+                'workflow_task_attempt' => (int) $validated['workflow_task_attempt'],
+                'outcome' => 'rejected',
+                'recorded' => false,
+                'reason' => 'stream_not_found',
+            ], 404);
+        } catch (\InvalidArgumentException $exception) {
+            return WorkerProtocol::json([
+                'task_id' => $taskId,
+                'workflow_task_attempt' => (int) $validated['workflow_task_attempt'],
+                'outcome' => 'rejected',
+                'recorded' => false,
+                'reason' => 'invalid_workflow_stream_command',
+                'error' => $exception->getMessage(),
+            ], 422);
         } catch (\Throwable $exception) {
             if (! BackendLockPressure::is($exception)) {
                 throw $exception;
@@ -1854,6 +1916,32 @@ class WorkerController
             }
 
             $commands[$index]['retry_policy'] = $retryPolicy;
+        }
+
+        return $commands;
+    }
+
+    /**
+     * @param  list<array<string, mixed>>  $commands
+     * @return list<array<string, mixed>>
+     */
+    private function canonicalizeWorkflowStreamPayloadCodecs(array $commands): array
+    {
+        foreach ($commands as $commandIndex => $command) {
+            $items = $command['workflow_stream']['items'] ?? null;
+
+            if (! is_array($items)) {
+                continue;
+            }
+
+            foreach ($items as $itemIndex => $item) {
+                if (! is_array($item) || ! array_key_exists('payload_codec', $item)) {
+                    continue;
+                }
+
+                $commands[$commandIndex]['workflow_stream']['items'][$itemIndex]['payload_codec'] =
+                    PayloadCodecContract::canonicalize($item['payload_codec']);
+            }
         }
 
         return $commands;
