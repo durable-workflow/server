@@ -5,9 +5,8 @@ namespace App\Support;
 use Illuminate\Support\Facades\Storage;
 use InvalidArgumentException;
 use RuntimeException;
-use Workflow\V2\Contracts\ExternalPayloadStorageDriver;
 
-class FilesystemExternalPayloadStorage implements ExternalPayloadStorageDriver
+class FilesystemExternalPayloadStorage implements RuntimeExternalPayloadStorageDriver
 {
     public function __construct(
         private readonly string $disk,
@@ -18,15 +17,18 @@ class FilesystemExternalPayloadStorage implements ExternalPayloadStorageDriver
 
     public function put(string $data, string $sha256, string $codec): string
     {
-        $this->validateSha256($sha256);
-
         $key = $this->keyFor($sha256, $codec);
 
         if (Storage::disk($this->disk)->put($key, $data) === false) {
-            throw new RuntimeException(sprintf('Unable to write external payload [%s].', $this->uriFor($key)));
+            throw new RuntimeException(sprintf('Unable to write external payload [%s].', $this->uriForKey($key)));
         }
 
-        return $this->uriFor($key);
+        return $this->uriForKey($key);
+    }
+
+    public function uriFor(string $sha256, string $codec): string
+    {
+        return $this->uriForKey($this->keyFor($sha256, $codec));
     }
 
     public function get(string $uri): string
@@ -57,19 +59,22 @@ class FilesystemExternalPayloadStorage implements ExternalPayloadStorageDriver
     {
         $key = $this->keyFromUri($uri);
 
-        if (Storage::disk($this->disk)->exists($key)) {
-            Storage::disk($this->disk)->delete($key);
+        if (Storage::disk($this->disk)->exists($key)
+            && Storage::disk($this->disk)->delete($key) === false
+        ) {
+            throw new RuntimeException('Unable to delete external payload object.');
         }
     }
 
     private function keyFor(string $sha256, string $codec): string
     {
+        $this->validateSha256($sha256);
         $codecSegment = $this->safeCodecSegment($codec);
 
         return $this->prefix.$codecSegment.'/'.substr($sha256, 0, 2).'/'.$sha256;
     }
 
-    private function uriFor(string $key): string
+    private function uriForKey(string $key): string
     {
         return $this->scheme.'://'.$this->bucket.'/'.$key;
     }

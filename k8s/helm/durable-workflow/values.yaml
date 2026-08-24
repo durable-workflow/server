@@ -407,11 +407,12 @@ scheduler:
   activeDeadlineSeconds: 55
   backoffLimit: 1
 
-  # Default command runs schedule eval + activity timeouts + history pruning.
+  # Default command runs schedule eval, activity timeouts, external-payload
+  # reclamation, and history pruning.
   args:
     - "sh"
     - "-c"
-    - "php artisan schedule:evaluate --limit=100 --json; php artisan activity:timeout-enforce --limit=100; php artisan history:prune --limit=100"
+    - "php artisan schedule:evaluate --limit=100 --json; php artisan activity:timeout-enforce --limit=100; if php artisan list --raw | grep -q '^external-payloads:cleanup '; then php artisan external-payloads:cleanup --limit=100 --json; fi; php artisan history:prune --limit=100"
 
   resources:
     requests:

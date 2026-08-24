@@ -69,6 +69,33 @@ retention authority. SDKs have no delete endpoint, and namespace/run cleanup
 does not remove a backing object while retained state in any namespace still
 owns it.
 
+The singleton maintenance runner executes
+`external-payloads:cleanup --limit=100` on every maintenance pass. The Docker
+topology runs a pass every 10 seconds and the default Kubernetes CronJob runs a
+pass every minute when its selected Server image provides the reclamation
+command. The Kubernetes runner capability-checks the command so a separately
+qualified older onboarding image remains compatible. Each pass reclaims at most
+100 expired references (operators may request up to the hard 1,000-reference
+ceiling), so cleanup work is bounded and sustained backlog drains over repeated
+passes. With no blocked storage operation, an expired reference at position *p*
+in the oldest-first backlog is attempted within `ceil(p / batch-size)`
+maintenance intervals. Cleanup locks the stable backing-object identity, then
+re-checks expiry and retained ownership before it deletes bytes. References in
+another namespace keep shared content-addressed bytes alive.
+
+Storage locations are registered in a recoverable `writing` state before the
+provider write begins. A successful write promotes the row to `ready`; a crash
+or failed final registration leaves the location discoverable and eligible for
+the same expiry cleanup instead of creating an untracked object.
+
+Operators can inspect namespace-scoped backlog, cumulative deleted counts,
+blocked outcomes, and storage-driver failures through
+`GET /api/system/external-payload-cleanup` or the
+`runtime_external_payload_cleanup` section of operator metrics. A blocked pass
+can be retried with `POST /api/system/external-payload-cleanup/pass` or the
+Artisan command. These diagnostics contain aggregate counts only; they do not
+include provider credentials, provider locations, or reusable reference IDs.
+
 The runtime records upload, fetch, claim, and rejection audit events without
 logging provider locations, object-store credentials, bearer tokens, or the
 reusable opaque reference identity. Audit correlation uses a one-way reference

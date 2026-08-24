@@ -18,7 +18,7 @@ class NamespaceExternalPayloadStorage implements ExternalPayloadStoragePolicy
             : new RuntimeTrackedExternalPayloadStorage(strtolower($namespace), $driver);
     }
 
-    public function untrackedDriverFor(?string $namespace): ?ExternalPayloadStorageDriver
+    public function untrackedDriverFor(?string $namespace): ?RuntimeExternalPayloadStorageDriver
     {
         $namespace = $namespace ?: (string) config('server.default_namespace', 'default');
         $policy = $this->policyFor($namespace);
@@ -119,7 +119,7 @@ class NamespaceExternalPayloadStorage implements ExternalPayloadStoragePolicy
         return trim($prefix, '/').'/';
     }
 
-    private function guard(ExternalPayloadStorageDriver $driver): ExternalPayloadStorageDriver
+    private function guard(RuntimeExternalPayloadStorageDriver $driver): RuntimeExternalPayloadStorageDriver
     {
         return new GuardedExternalPayloadStorage($driver);
     }

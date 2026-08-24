@@ -3,7 +3,6 @@
 namespace App\Support;
 
 use App\Models\RuntimeExternalPayload;
-use Illuminate\Database\QueryException;
 use Illuminate\Support\Str;
 use InvalidArgumentException;
 use Throwable;
@@ -12,6 +11,10 @@ use Workflow\V2\Support\ExternalPayloadReference;
 
 class RuntimeExternalPayloadRegistry
 {
+    public function __construct(
+        private readonly RuntimeExternalPayloadObjectLock $objectLock,
+    ) {}
+
     /**
      * @return array{schema: string, reference_id: string, codec: string, size_bytes: int, sha256: string}
      */
@@ -37,20 +40,15 @@ class RuntimeExternalPayloadRegistry
             throw $this->unavailable('External payload storage is unavailable for this namespace.');
         }
 
-        try {
-            $uri = $driver->put($data, $sha256, $codec);
-        } catch (Throwable $exception) {
-            throw $this->unavailable('External payload storage could not commit the uploaded bytes.', $exception);
-        }
-
         $expiresAt = now()->addSeconds(max(
             1,
             (int) config('server.external_payload_transport.abandoned_upload_expiry_seconds'),
         ));
 
-        return $this->reference($this->track(
+        return $this->reference($this->store(
             namespace: $namespace,
-            uri: $uri,
+            driver: $driver,
+            data: $data,
             codec: $codec,
             sha256: $sha256,
             sizeBytes: $sizeBytes,
@@ -72,15 +70,57 @@ class RuntimeExternalPayloadRegistry
             throw $this->unsupported($exception->getMessage(), $exception);
         }
 
-        return $this->track(
-            $this->namespace($namespace),
-            $uri,
-            $codec,
-            strtolower($sha256),
-            $sizeBytes,
-            true,
-            null,
+        $namespace = $this->namespace($namespace);
+
+        try {
+            return $this->objectLock->transaction(
+                $uri,
+                fn (): RuntimeExternalPayload => $this->track(
+                    $namespace,
+                    $uri,
+                    $codec,
+                    strtolower($sha256),
+                    $sizeBytes,
+                    true,
+                    null,
+                    RuntimeExternalPayload::UPLOAD_READY,
+                ),
+            );
+        } catch (RuntimeExternalPayloadException $exception) {
+            throw $exception;
+        } catch (Throwable $exception) {
+            throw $this->unavailable('External payload reference registration failed.', $exception);
+        }
+    }
+
+    public function storeRetained(
+        string $namespace,
+        RuntimeExternalPayloadStorageDriver $driver,
+        string $data,
+        string $codec,
+        string $sha256,
+    ): string {
+        try {
+            $codec = PayloadCodecContract::canonicalize($codec);
+        } catch (InvalidArgumentException $exception) {
+            throw $this->unsupported($exception->getMessage(), $exception);
+        }
+
+        $row = $this->store(
+            namespace: $this->namespace($namespace),
+            driver: $driver,
+            data: $data,
+            codec: $codec,
+            sha256: strtolower($sha256),
+            sizeBytes: strlen($data),
+            retained: true,
+            expiresAt: now()->addSeconds(max(
+                1,
+                (int) config('server.external_payload_transport.abandoned_upload_expiry_seconds'),
+            )),
         );
+
+        return $row->storage_uri;
     }
 
     /**
@@ -99,6 +139,7 @@ class RuntimeExternalPayloadRegistry
             ->where('namespace', $this->namespace($namespace))
             ->where('storage_uri_sha256', hash('sha256', $reference->uri))
             ->where('storage_uri', $reference->uri)
+            ->where('upload_status', RuntimeExternalPayload::UPLOAD_READY)
             ->first();
 
         if ($row === null) {
@@ -124,6 +165,7 @@ class RuntimeExternalPayloadRegistry
         $row = RuntimeExternalPayload::query()
             ->where('namespace', $this->namespace($namespace))
             ->where('storage_uri_sha256', hash('sha256', $uri))
+            ->where('upload_status', RuntimeExternalPayload::UPLOAD_READY)
             ->first();
 
         if ($row === null || ! hash_equals($row->storage_uri, $uri)) {
@@ -169,68 +211,136 @@ class RuntimeExternalPayloadRegistry
 
     public function verifyFetchedBytesAndClaim(string $namespace, string $uri, string $data): void
     {
-        $row = RuntimeExternalPayload::query()
-            ->where('namespace', $this->namespace($namespace))
-            ->where('storage_uri_sha256', hash('sha256', $uri))
-            ->where('storage_uri', $uri)
-            ->first();
-
-        if ($row === null) {
-            throw $this->unsupported('External payload storage returned an unregistered provider reference.');
-        }
-
         $this->assertSize(strlen($data));
-        if (strlen($data) !== $row->size_bytes || ! hash_equals($row->sha256, hash('sha256', $data))) {
-            throw $this->integrityMismatch('Fetched external payload bytes failed runtime integrity verification.');
-        }
+        $namespace = $this->namespace($namespace);
 
-        $row->forceFill([
-            'retained_at' => $row->retained_at ?? now(),
-            'expires_at' => null,
-            'last_fetched_at' => now(),
-        ])->save();
+        try {
+            $this->objectLock->transaction($uri, function () use ($namespace, $uri, $data): void {
+                $row = RuntimeExternalPayload::query()
+                    ->where('namespace', $namespace)
+                    ->where('storage_uri_sha256', hash('sha256', $uri))
+                    ->where('storage_uri', $uri)
+                    ->where('upload_status', RuntimeExternalPayload::UPLOAD_READY)
+                    ->lockForUpdate()
+                    ->first();
+
+                if ($row === null) {
+                    throw $this->unsupported('External payload storage returned an unregistered provider reference.');
+                }
+
+                if ($row->retained_at === null && $row->expires_at !== null && $row->expires_at->isPast()) {
+                    throw new RuntimeExternalPayloadException(
+                        'external_payload_expired',
+                        410,
+                        false,
+                        'External payload reference has expired.',
+                    );
+                }
+
+                if (strlen($data) !== $row->size_bytes || ! hash_equals($row->sha256, hash('sha256', $data))) {
+                    throw $this->integrityMismatch('Fetched external payload bytes failed runtime integrity verification.');
+                }
+
+                $row->forceFill([
+                    'retained_at' => $row->retained_at ?? now(),
+                    'expires_at' => null,
+                    'last_fetched_at' => now(),
+                ])->save();
+            });
+        } catch (RuntimeExternalPayloadException $exception) {
+            throw $exception;
+        } catch (Throwable $exception) {
+            throw $this->unavailable('External payload reference claim failed.', $exception);
+        }
     }
 
     public function forgetUri(string $namespace, string $uri): void
     {
-        RuntimeExternalPayload::query()
-            ->where('namespace', $this->namespace($namespace))
-            ->where('storage_uri_sha256', hash('sha256', $uri))
-            ->where('storage_uri', $uri)
-            ->delete();
+        $this->objectLock->transaction($uri, function () use ($namespace, $uri): void {
+            RuntimeExternalPayload::query()
+                ->where('namespace', $this->namespace($namespace))
+                ->where('storage_uri_sha256', hash('sha256', $uri))
+                ->where('storage_uri', $uri)
+                ->lockForUpdate()
+                ->delete();
+        });
     }
 
     public function deleteForNamespace(string $namespace): int
     {
         $namespace = $this->namespace($namespace);
-        $rows = RuntimeExternalPayload::query()->where('namespace', $namespace)->get();
+        $rows = RuntimeExternalPayload::query()
+            ->where('namespace', $namespace)
+            ->get(['id', 'storage_uri']);
         $driver = app(NamespaceExternalPayloadStorage::class)->untrackedDriverFor($namespace);
-
-        if ($rows->isNotEmpty() && $driver === null) {
-            throw $this->unavailable('External payload storage is unavailable for namespace cleanup.');
-        }
 
         $deleted = 0;
         foreach ($rows as $row) {
-            $shared = RuntimeExternalPayload::query()
-                ->where('storage_uri_sha256', $row->storage_uri_sha256)
-                ->where('storage_uri', $row->storage_uri)
-                ->where('namespace', '!=', $namespace)
-                ->exists();
-
-            if (! $shared) {
-                try {
-                    $driver?->delete($row->storage_uri);
-                } catch (Throwable $exception) {
-                    throw $this->unavailable('External payload storage could not complete namespace cleanup.', $exception);
-                }
-            }
-
-            $row->delete();
-            $deleted++;
+            $deleted += $this->deleteRegisteredUri($namespace, $row->storage_uri, $driver);
         }
 
         return $deleted;
+    }
+
+    public function deleteUri(
+        string $namespace,
+        string $uri,
+        RuntimeExternalPayloadStorageDriver $driver,
+    ): void {
+        $this->deleteRegisteredUri($this->namespace($namespace), $uri, $driver);
+    }
+
+    private function deleteRegisteredUri(
+        string $namespace,
+        string $uri,
+        ?RuntimeExternalPayloadStorageDriver $driver,
+    ): int {
+        try {
+            return $this->objectLock->transaction($uri, function () use ($namespace, $uri, $driver): int {
+                $owners = RuntimeExternalPayload::query()
+                    ->where('storage_uri_sha256', hash('sha256', $uri))
+                    ->where('storage_uri', $uri)
+                    ->lockForUpdate()
+                    ->get();
+                $row = $owners->firstWhere('namespace', $namespace);
+
+                if (! $row instanceof RuntimeExternalPayload) {
+                    if ($owners->isEmpty()) {
+                        if ($driver === null) {
+                            throw $this->unavailable('External payload storage is unavailable for namespace cleanup.');
+                        }
+
+                        try {
+                            $driver->delete($uri);
+                        } catch (Throwable $exception) {
+                            throw $this->unavailable('External payload storage could not complete namespace cleanup.', $exception);
+                        }
+                    }
+
+                    return 0;
+                }
+
+                if ($owners->count() === 1) {
+                    if ($driver === null) {
+                        throw $this->unavailable('External payload storage is unavailable for namespace cleanup.');
+                    }
+
+                    try {
+                        $driver->delete($uri);
+                    } catch (Throwable $exception) {
+                        throw $this->unavailable('External payload storage could not complete namespace cleanup.', $exception);
+                    }
+                }
+
+                $row->delete();
+
+                return 1;
+            });
+        } catch (RuntimeExternalPayloadException $exception) {
+            throw $exception;
+        } catch (Throwable $exception) {
+            throw $this->unavailable('External payload registry could not complete namespace cleanup.', $exception);
+        }
     }
 
     /**
@@ -286,6 +396,7 @@ class RuntimeExternalPayloadRegistry
         $row = RuntimeExternalPayload::query()
             ->where('id', $reference['reference_id'])
             ->where('namespace', $this->namespace($namespace))
+            ->where('upload_status', RuntimeExternalPayload::UPLOAD_READY)
             ->first();
 
         if ($row === null) {
@@ -319,6 +430,97 @@ class RuntimeExternalPayloadRegistry
         return $row;
     }
 
+    private function store(
+        string $namespace,
+        RuntimeExternalPayloadStorageDriver $driver,
+        string $data,
+        string $codec,
+        string $sha256,
+        int $sizeBytes,
+        bool $retained,
+        mixed $expiresAt,
+    ): RuntimeExternalPayload {
+        if ($sizeBytes !== strlen($data) || ! hash_equals($sha256, hash('sha256', $data))) {
+            throw $this->integrityMismatch('External payload bytes do not match their registry metadata.');
+        }
+
+        try {
+            $uri = $driver->uriFor($sha256, $codec);
+        } catch (Throwable $exception) {
+            throw $this->unavailable('External payload storage could not prepare the uploaded object.', $exception);
+        }
+
+        try {
+            $this->objectLock->transaction($uri, fn (): RuntimeExternalPayload => $this->track(
+                $namespace,
+                $uri,
+                $codec,
+                $sha256,
+                $sizeBytes,
+                false,
+                $expiresAt,
+                RuntimeExternalPayload::UPLOAD_WRITING,
+            ));
+        } catch (RuntimeExternalPayloadException $exception) {
+            throw $exception;
+        } catch (Throwable $exception) {
+            throw $this->unavailable('External payload reference registration failed before storage commit.', $exception);
+        }
+
+        try {
+            return $this->objectLock->transaction($uri, function () use (
+                $namespace,
+                $uri,
+                $driver,
+                $data,
+                $codec,
+                $sha256,
+                $sizeBytes,
+                $retained,
+                $expiresAt,
+            ): RuntimeExternalPayload {
+                $row = RuntimeExternalPayload::query()
+                    ->where('namespace', $namespace)
+                    ->where('storage_uri_sha256', hash('sha256', $uri))
+                    ->where('storage_uri', $uri)
+                    ->lockForUpdate()
+                    ->first();
+
+                if ($row === null) {
+                    throw $this->unavailable('Prepared external payload registration is no longer available.');
+                }
+
+                try {
+                    $committedUri = $driver->put($data, $sha256, $codec);
+                } catch (Throwable $exception) {
+                    throw $this->unavailable('External payload storage could not commit the uploaded bytes.', $exception);
+                }
+
+                if (! hash_equals($uri, $committedUri)) {
+                    throw $this->integrityMismatch('External payload storage did not use its prepared stable object identity.');
+                }
+
+                return $this->reconcileTrackedRow(
+                    $row,
+                    $uri,
+                    $codec,
+                    $sha256,
+                    $sizeBytes,
+                    $retained,
+                    $expiresAt,
+                    RuntimeExternalPayload::UPLOAD_READY,
+                );
+            });
+        } catch (RuntimeExternalPayloadException $exception) {
+            throw $exception;
+        } catch (Throwable $exception) {
+            // The writing row was committed before the backing write. If this
+            // final registry update fails, cleanup still owns the URI and can
+            // reclaim the object after its bounded upload expiry.
+            throw $this->unavailable('External payload reference registration failed after storage commit.', $exception);
+        }
+    }
+
     private function track(
         string $namespace,
         string $uri,
@@ -327,8 +529,14 @@ class RuntimeExternalPayloadRegistry
         int $sizeBytes,
         bool $retained,
         mixed $expiresAt,
+        string $uploadStatus,
     ): RuntimeExternalPayload {
-        if ($uri === '' || preg_match('/\A[a-f0-9]{64}\z/', $sha256) !== 1 || $sizeBytes < 0) {
+        if (
+            $uri === ''
+            || preg_match('/\A[a-f0-9]{64}\z/', $sha256) !== 1
+            || $sizeBytes < 0
+            || ! in_array($uploadStatus, [RuntimeExternalPayload::UPLOAD_READY, RuntimeExternalPayload::UPLOAD_WRITING], true)
+        ) {
             throw $this->integrityMismatch('Storage returned invalid external payload metadata.');
         }
 
@@ -337,36 +545,34 @@ class RuntimeExternalPayloadRegistry
         $row = RuntimeExternalPayload::query()
             ->where('namespace', $namespace)
             ->where('storage_uri_sha256', $uriHash)
+            ->lockForUpdate()
             ->first();
 
         if ($row !== null) {
-            return $this->reconcileTrackedRow($row, $uri, $codec, $sha256, $sizeBytes, $retained, $expiresAt);
+            return $this->reconcileTrackedRow(
+                $row,
+                $uri,
+                $codec,
+                $sha256,
+                $sizeBytes,
+                $retained,
+                $expiresAt,
+                $uploadStatus,
+            );
         }
 
-        try {
-            return RuntimeExternalPayload::query()->create([
-                'id' => 'ep_'.Str::ulid(),
-                'namespace' => $namespace,
-                'storage_uri' => $uri,
-                'storage_uri_sha256' => $uriHash,
-                'codec' => $codec,
-                'sha256' => $sha256,
-                'size_bytes' => $sizeBytes,
-                'retained_at' => $retained ? now() : null,
-                'expires_at' => $retained ? null : $expiresAt,
-            ]);
-        } catch (QueryException $exception) {
-            $row = RuntimeExternalPayload::query()
-                ->where('namespace', $namespace)
-                ->where('storage_uri_sha256', $uriHash)
-                ->first();
-
-            if ($row === null) {
-                throw $this->unavailable('External payload reference registration failed.', $exception);
-            }
-
-            return $this->reconcileTrackedRow($row, $uri, $codec, $sha256, $sizeBytes, $retained, $expiresAt);
-        }
+        return RuntimeExternalPayload::query()->create([
+            'id' => 'ep_'.Str::ulid(),
+            'namespace' => $namespace,
+            'storage_uri' => $uri,
+            'storage_uri_sha256' => $uriHash,
+            'codec' => $codec,
+            'sha256' => $sha256,
+            'size_bytes' => $sizeBytes,
+            'upload_status' => $uploadStatus,
+            'retained_at' => $retained ? now() : null,
+            'expires_at' => $retained ? null : $expiresAt,
+        ]);
     }
 
     private function reconcileTrackedRow(
@@ -377,6 +583,7 @@ class RuntimeExternalPayloadRegistry
         int $sizeBytes,
         bool $retained,
         mixed $expiresAt,
+        string $uploadStatus,
     ): RuntimeExternalPayload {
         if (
             ! hash_equals($row->storage_uri, $uri)
@@ -387,10 +594,23 @@ class RuntimeExternalPayloadRegistry
             throw $this->integrityMismatch('Stable external payload identity resolved to conflicting metadata.');
         }
 
+        $updates = [];
+
+        if ($uploadStatus === RuntimeExternalPayload::UPLOAD_READY
+            && $row->upload_status !== RuntimeExternalPayload::UPLOAD_READY
+        ) {
+            $updates['upload_status'] = RuntimeExternalPayload::UPLOAD_READY;
+        }
+
         if ($retained && $row->retained_at === null) {
-            $row->forceFill(['retained_at' => now(), 'expires_at' => null])->save();
+            $updates['retained_at'] = now();
+            $updates['expires_at'] = null;
         } elseif (! $retained && $row->retained_at === null) {
-            $row->forceFill(['expires_at' => $expiresAt])->save();
+            $updates['expires_at'] = $expiresAt;
+        }
+
+        if ($updates !== []) {
+            $row->forceFill($updates)->save();
         }
 
         return $row;

@@ -22,7 +22,8 @@ What just happened
 4. The singleton scheduler/maintenance runner is the CronJob
    "{{ include "durable-workflow.schedulerCronJobName" . }}" with
    concurrencyPolicy={{ .Values.scheduler.concurrencyPolicy }} so that schedule
-   evaluation, activity-timeout enforcement, and history pruning never overlap.
+   evaluation, activity-timeout enforcement, external-payload reclamation, and
+   history pruning never overlap.
 {{- end }}
 
 Verify the deployment

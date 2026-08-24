@@ -6,6 +6,10 @@ use Illuminate\Database\Eloquent\Model;
 
 class RuntimeExternalPayload extends Model
 {
+    public const UPLOAD_READY = 'ready';
+
+    public const UPLOAD_WRITING = 'writing';
+
     public $incrementing = false;
 
     protected $table = 'runtime_external_payloads';
@@ -20,6 +24,7 @@ class RuntimeExternalPayload extends Model
         'codec',
         'sha256',
         'size_bytes',
+        'upload_status',
         'retained_at',
         'expires_at',
         'last_fetched_at',

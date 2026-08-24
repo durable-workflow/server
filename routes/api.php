@@ -372,6 +372,8 @@ Route::middleware([Authenticate::class, RuntimeExternalPayloadTransport::class])
         Route::post('/repair/pass', [SystemController::class, 'repairPass']);
         Route::get('/activity-timeouts', [SystemController::class, 'activityTimeoutStatus']);
         Route::post('/activity-timeouts/pass', [SystemController::class, 'activityTimeoutEnforcePass']);
+        Route::get('/external-payload-cleanup', [SystemController::class, 'externalPayloadCleanupStatus']);
+        Route::post('/external-payload-cleanup/pass', [SystemController::class, 'externalPayloadCleanupPass']);
         Route::get('/retention', [SystemController::class, 'retentionStatus']);
         Route::post('/retention/pass', [SystemController::class, 'retentionEnforcePass']);
     });

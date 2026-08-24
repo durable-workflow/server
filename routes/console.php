@@ -7,6 +7,7 @@ use App\Support\EnvAuditor;
 use App\Support\HistoryRetentionEnforcer;
 use App\Support\MigrationAdoption;
 use App\Support\PayloadCodecDeploymentPreflight;
+use App\Support\RuntimeExternalPayloadCleanup;
 use Illuminate\Database\Migrations\Migrator;
 use Illuminate\Support\Facades\Artisan;
 use Workflow\V2\Enums\RunStatus;
@@ -259,6 +260,36 @@ Artisan::command('activity:timeout-enforce {--limit=100 : Maximum expired execut
 
     return $failed > 0 ? 1 : 0;
 })->purpose('Enforce activity timeout deadlines on expired executions');
+
+Artisan::command('external-payloads:cleanup
+    {--limit=100 : Maximum expired external payload references to process per pass}
+    {--namespace= : Clean only this namespace}
+    {--json : Emit a machine-readable cleanup report}', function (RuntimeExternalPayloadCleanup $cleanup): int {
+    $namespace = $this->option('namespace');
+    $report = $cleanup->runPass(
+        is_string($namespace) && trim($namespace) !== '' ? trim($namespace) : null,
+        (int) $this->option('limit'),
+    );
+
+    if ((bool) $this->option('json')) {
+        $this->line(json_encode([
+            'schema' => 'durable-workflow.v2.runtime-external-payload-cleanup-report.v1',
+            'completed_at' => now()->toJSON(),
+        ] + $report, JSON_UNESCAPED_SLASHES | JSON_THROW_ON_ERROR));
+    } else {
+        $this->components->info(sprintf(
+            'Done: %d processed, %d references deleted, %d backing objects deleted, %d blocked, %d storage failures, %d remaining.',
+            $report['processed'],
+            $report['deleted_references'],
+            $report['deleted_backing_objects'],
+            $report['blocked'],
+            $report['storage_driver_failures'],
+            $report['backlog'],
+        ));
+    }
+
+    return $report['blocked'] > 0 ? 1 : 0;
+})->purpose('Reclaim expired and incomplete runtime external payload uploads');
 
 Artisan::command('history:prune {--limit=100 : Maximum expired runs to prune per pass} {--namespace= : Prune only this namespace}', function (): int {
     $limit = max(1, (int) $this->option('limit'));

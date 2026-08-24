@@ -559,6 +559,8 @@ workflow-task command payload.
 - `POST /api/system/repair/pass` — Run task repair sweep
 - `GET /api/system/activity-timeouts` — Expired activity execution diagnostics
 - `POST /api/system/activity-timeouts/pass` — Enforce activity timeouts
+- `GET /api/system/external-payload-cleanup` — External-payload cleanup backlog, outcomes, and storage-failure diagnostics
+- `POST /api/system/external-payload-cleanup/pass` — Retry one bounded namespace cleanup pass
 
 `POST /api/system/repair/pass` accepts optional `connection`, `queue`,
 `run_ids`, and `instance_id` filters. Set `respect_throttle=true` when a

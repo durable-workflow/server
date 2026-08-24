@@ -67,6 +67,13 @@ chart MINOR bump and an entry below.
 
 ## Per-version migration notes
 
+### 0.1.35
+
+This release advances the chart Server identity to `2.0.0-rc.44` and adds the
+bounded external-payload reclamation pass to the maintenance runner. Apply the
+new runtime external-payload migration before rollout. Existing `0.1.34` values
+remain compatible.
+
 ### 0.1.34
 
 This release advances the chart Server identity to `2.0.0-rc.43` and routes

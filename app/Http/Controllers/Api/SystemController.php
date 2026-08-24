@@ -9,6 +9,8 @@ use App\Support\ControlPlaneProtocol;
 use App\Support\HistoryRetentionEnforcer;
 use App\Support\NamespaceCapacityEvidence;
 use App\Support\ProjectionDriftMetrics;
+use App\Support\RuntimeExternalPayloadCleanup;
+use App\Support\RuntimeExternalPayloadCleanupMetrics;
 use App\Support\TaskQueueBuildIdRolloutSnapshot;
 use App\Support\WorkerSessionRegistry;
 use App\Support\WorkflowTaskFailureMetrics;
@@ -150,6 +152,7 @@ class SystemController
         $snapshot = OperatorMetrics::snapshot(null, $namespace);
         $snapshot['worker_sessions'] = $this->workerSessions->metrics($namespace);
         $snapshot['capacity_evidence'] = $this->capacityEvidence->snapshot($namespace);
+        $snapshot['runtime_external_payload_cleanup'] = RuntimeExternalPayloadCleanupMetrics::snapshot($namespace);
 
         return ControlPlaneProtocol::json([
             'namespace' => $namespace,
@@ -166,6 +169,7 @@ class SystemController
         $namespace = (string) $request->attributes->get('namespace');
         $dashboard = OperatorDashboardSummary::snapshot(null, $namespace);
         $dashboard['operator_metrics']['worker_sessions'] = $this->workerSessions->metrics($namespace);
+        $dashboard['operator_metrics']['runtime_external_payload_cleanup'] = RuntimeExternalPayloadCleanupMetrics::snapshot($namespace);
 
         return ControlPlaneProtocol::json([
             'namespace' => $namespace,
@@ -203,6 +207,43 @@ class SystemController
             'scan_limit' => $limit,
             'scan_pressure' => count($expiredIds) >= $limit,
         ]);
+    }
+
+    public function externalPayloadCleanupStatus(Request $request): JsonResponse
+    {
+        if ($response = ControlPlaneProtocol::rejectUnsupported($request)) {
+            return $response;
+        }
+
+        $namespace = (string) $request->attributes->get('namespace');
+
+        return ControlPlaneProtocol::json([
+            'namespace' => $namespace,
+            'cleanup' => RuntimeExternalPayloadCleanupMetrics::snapshot($namespace),
+        ]);
+    }
+
+    public function externalPayloadCleanupPass(
+        Request $request,
+        RuntimeExternalPayloadCleanup $cleanup,
+    ): JsonResponse {
+        if ($response = ControlPlaneProtocol::rejectUnsupported($request)) {
+            return $response;
+        }
+
+        $validated = $request->validate([
+            'limit' => ['nullable', 'integer', 'min:1', 'max:'.RuntimeExternalPayloadCleanup::MAX_BATCH_SIZE],
+        ]);
+        $namespace = (string) $request->attributes->get('namespace');
+        $report = $cleanup->runPass(
+            $namespace,
+            (int) ($validated['limit'] ?? RuntimeExternalPayloadCleanup::DEFAULT_BATCH_SIZE),
+        );
+
+        return ControlPlaneProtocol::json([
+            'namespace' => $namespace,
+            'cleanup' => $report,
+        ], $report['blocked'] > 0 ? 207 : 200);
     }
 
     public function activityTimeoutEnforcePass(Request $request): JsonResponse

@@ -2,30 +2,29 @@
 
 namespace App\Support;
 
-use App\Models\RuntimeExternalPayload;
-use Workflow\V2\Contracts\ExternalPayloadStorageDriver;
 use Workflow\V2\Exceptions\ExternalPayloadIntegrityException;
 
-class RuntimeTrackedExternalPayloadStorage implements ExternalPayloadStorageDriver
+class RuntimeTrackedExternalPayloadStorage implements RuntimeExternalPayloadStorageDriver
 {
     public function __construct(
         private readonly string $namespace,
-        private readonly ExternalPayloadStorageDriver $inner,
+        private readonly RuntimeExternalPayloadStorageDriver $inner,
     ) {}
 
     public function put(string $data, string $sha256, string $codec): string
     {
-        $uri = $this->inner->put($data, $sha256, $codec);
-
-        app(RuntimeExternalPayloadRegistry::class)->trackRetained(
+        return app(RuntimeExternalPayloadRegistry::class)->storeRetained(
             $this->namespace,
-            $uri,
+            $this->inner,
+            $data,
             $codec,
             strtolower($sha256),
-            strlen($data),
         );
+    }
 
-        return $uri;
+    public function uriFor(string $sha256, string $codec): string
+    {
+        return $this->inner->uriFor($sha256, $codec);
     }
 
     public function get(string $uri): string
@@ -69,16 +68,6 @@ class RuntimeTrackedExternalPayloadStorage implements ExternalPayloadStorageDriv
 
     public function delete(string $uri): void
     {
-        $sharedOwnerExists = RuntimeExternalPayload::query()
-            ->where('storage_uri_sha256', hash('sha256', $uri))
-            ->where('storage_uri', $uri)
-            ->where('namespace', '!=', $this->namespace)
-            ->exists();
-
-        if (! $sharedOwnerExists) {
-            $this->inner->delete($uri);
-        }
-
-        app(RuntimeExternalPayloadRegistry::class)->forgetUri($this->namespace, $uri);
+        app(RuntimeExternalPayloadRegistry::class)->deleteUri($this->namespace, $uri, $this->inner);
     }
 }
