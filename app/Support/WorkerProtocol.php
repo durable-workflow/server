@@ -17,7 +17,7 @@ class WorkerProtocol
      * here. WorkflowPackageApiFloor asserts the installed package still
      * provides the companion protocol helpers for this version.
      */
-    public const VERSION = '1.13';
+    public const VERSION = '1.15';
 
     public const HEADER = 'X-Durable-Workflow-Protocol-Version';
 
@@ -158,6 +158,27 @@ class WorkerProtocol
             && self::protocolVersionSupportsWorkerSessions($version);
     }
 
+    public static function messageStreamsSupported(?string $version = null): bool
+    {
+        $version ??= (string) config('server.worker_protocol.version', self::VERSION);
+        $candidate = self::splitProtocolVersion($version);
+        $minimum = self::splitProtocolVersion(MessageStreamsContract::MINIMUM_WORKER_PROTOCOL_VERSION);
+
+        return $candidate !== null
+            && $minimum !== null
+            && $candidate[0] === $minimum[0]
+            && $candidate[1] >= $minimum[1];
+    }
+
+    public static function messageStreamsAvailableForRequest(Request $request): bool
+    {
+        $version = self::requestVersion($request);
+
+        return self::messageStreamsSupported()
+            && $version !== null
+            && self::messageStreamsSupported($version);
+    }
+
     public static function rejectWorkerSessionsUnavailable(Request $request): ?JsonResponse
     {
         if (self::workerSessionsAvailableForRequest($request)) {
@@ -225,6 +246,7 @@ class WorkerProtocol
      *     history_page_size_default: int,
      *     history_page_size_max: int,
      *     workflow_history_budget: array<string, mixed>,
+     *     message_streams: array<string, mixed>,
      *     query_tasks: bool,
      *     update_validation_tasks: bool,
      *     synchronous_update_validation: array<string, mixed>,
@@ -276,6 +298,10 @@ class WorkerProtocol
                 WorkerProtocolVersion::MAX_HISTORY_PAGE_SIZE,
             ),
             'workflow_history_budget' => WorkerHistoryPayloadContract::manifest(),
+            'message_streams' => [
+                ...MessageStreamsContract::manifest(),
+                'supported' => self::messageStreamsSupported(),
+            ],
             'query_tasks' => true,
             'query_task_poll_request_idempotency' => true,
             'query_task_timeouts' => self::queryTaskTimeouts(),

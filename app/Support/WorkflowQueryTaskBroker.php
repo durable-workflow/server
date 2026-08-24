@@ -2332,7 +2332,9 @@ final class WorkflowQueryTaskBroker
             ->values()
             ->all();
 
-        return $this->historyEventsWithSignalArgumentEnvelopes($events, $run->namespace);
+        $events = $this->historyEventsWithSignalArgumentEnvelopes($events, $run->namespace);
+
+        return app(MessageStreamWorkerDelivery::class)->historyEvents($run->namespace, $events);
     }
 
     /**

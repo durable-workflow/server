@@ -12,19 +12,16 @@ use Workflow\V2\Contracts\WorkflowTaskBridge;
 use Workflow\V2\Enums\TaskStatus;
 use Workflow\V2\Enums\TaskType;
 use Workflow\V2\Jobs\RunTimerTask;
-use Workflow\V2\Models\WorkflowHistoryEvent;
 use Workflow\V2\Models\WorkflowRun;
 use Workflow\V2\Models\WorkflowSignal;
 use Workflow\V2\Models\WorkflowTask;
 use Workflow\V2\Support\DefaultWorkflowTaskBridge;
-use Workflow\V2\Support\HistoryBudget;
 use Workflow\V2\Support\HistoryPayloadCompression;
 use Workflow\V2\Support\StandaloneWorkerVisibility;
 use Workflow\V2\Support\TaskFairnessKey;
 use Workflow\V2\Support\TaskFairnessScheduler;
 use Workflow\V2\Support\TaskFairnessState;
 use Workflow\V2\Support\WorkerCompatibilityFleet;
-use Workflow\V2\Support\WorkerHistoryPayloadContract;
 use Workflow\V2\Support\WorkerProtocolVersion;
 
 final class WorkflowTaskPoller
@@ -1869,7 +1866,11 @@ final class WorkflowTaskPoller
             $context[$field] = $this->nonEmptyString($value);
         }
 
-        $context['signal_arguments'] = $this->signalArgumentsEnvelope($context['workflow_signal_id'], $namespace);
+        $context['signal_arguments'] = app(MessageStreamWorkerDelivery::class)->signalArguments(
+            $namespace,
+            $context['signal_name'],
+            $this->signalArgumentsEnvelope($context['workflow_signal_id'], $namespace),
+        );
 
         return $context;
     }
@@ -1885,7 +1886,9 @@ final class WorkflowTaskPoller
     ): array {
         $events = $this->payloadEnvelopes->historyEvents($namespace, $events, $fallbackCodec);
 
-        return $this->historyEventsWithSignalArgumentEnvelopes($events, $namespace);
+        $events = $this->historyEventsWithSignalArgumentEnvelopes($events, $namespace);
+
+        return app(MessageStreamWorkerDelivery::class)->historyEvents($namespace, $events);
     }
 
     /**

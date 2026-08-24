@@ -100,6 +100,8 @@ class NamespaceLifecycleCleanup
             $deleted['search_attribute_definitions'] = $this->deleteByNamespace('search_attribute_definitions', $namespace);
             $deleted['workflow_durable_stream_items'] = $this->deleteByNamespace('workflow_durable_stream_items', $namespace);
             $deleted['workflow_durable_streams'] = $this->deleteByNamespace('workflow_durable_streams', $namespace);
+            $deleted['workflow_inbound_stream_items'] = $this->deleteByNamespace('workflow_inbound_stream_items', $namespace);
+            $deleted['workflow_inbound_streams'] = $this->deleteByNamespace('workflow_inbound_streams', $namespace);
             $deleted['workflow_run_summaries'] = $this->deleteByRunOrInstance('workflow_run_summaries', $runIds, $instanceIds);
             $deleted['workflow_runs'] = $this->deleteByNamespace('workflow_runs', $namespace);
             $deleted['workflow_instances'] = $this->deleteByNamespace('workflow_instances', $namespace);

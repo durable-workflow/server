@@ -25,11 +25,36 @@ class WorkerProtocolOpenApiContractTest extends TestCase
 
     public function test_cached_poll_conflict_shape_has_a_distinct_document_version(): void
     {
-        $this->assertSame('9', $this->spec['info']['version']);
-        $this->assertSame('1.13', $this->spec['x-durable-workflow-worker-protocol-negotiation']['default_advertised_version']);
+        $this->assertSame('11', $this->spec['info']['version']);
+        $this->assertSame('1.15', $this->spec['x-durable-workflow-worker-protocol-negotiation']['default_advertised_version']);
         $this->assertSame(
-            ['1.0', '1.1', '1.2', '1.3', '1.4', '1.5', '1.6', '1.7', '1.8', '1.9', '1.10', '1.11', '1.12', '1.13'],
+            ['1.0', '1.1', '1.2', '1.3', '1.4', '1.5', '1.6', '1.7', '1.8', '1.9', '1.10', '1.11', '1.12', '1.13', '1.14', '1.15'],
             $this->spec['x-durable-workflow-worker-protocol-negotiation']['accepted_request_versions_by_default'],
+        );
+    }
+
+    public function test_message_stream_completion_metadata_is_machine_described(): void
+    {
+        $contract = $this->spec['x-durable-workflow-message-streams-contract'];
+        $this->assertSame('1.15', $contract['minimum_protocol_version']);
+        $this->assertSame('message_streams', $contract['worker_capability']);
+        $this->assertSame(
+            ['message_stream_cursors', 'message_stream_waits'],
+            $contract['completion_fields'],
+        );
+
+        $request = $this->spec['components']['schemas']['WorkflowTaskCompleteRequest'];
+        $this->assertSame(
+            '#/components/schemas/MessageStreamCursorAdvance',
+            $request['properties']['message_stream_cursors']['items']['$ref'],
+        );
+        $this->assertSame(
+            '#/components/schemas/MessageStreamWait',
+            $request['properties']['message_stream_waits']['items']['$ref'],
+        );
+        $this->assertContains(
+            'message_streams',
+            $this->spec['components']['schemas']['WorkerServerCapabilities']['required'],
         );
     }
 

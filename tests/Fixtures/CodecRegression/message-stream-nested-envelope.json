@@ -1,0 +1,58 @@
+{
+  "$schema": "https://raw.githubusercontent.com/durable-workflow/.github/main/regression-corpus/evidence-schema.json",
+  "fixture_schema": "durable-workflow.codec-regression/v1",
+  "id": "message-stream-nested-envelope",
+  "protocol": {
+    "codec": "json",
+    "schema": "durable_workflow.protocol.Value",
+    "version": "1",
+    "fingerprint": null
+  },
+  "bindings": [
+    "php",
+    "python",
+    "rust"
+  ],
+  "value": {
+    "type": "map",
+    "entries": [
+      {
+        "key": "schema",
+        "value": {
+          "type": "string",
+          "value": "durable_workflow.message_stream_message/v1"
+        }
+      },
+      {
+        "key": "payload_envelope",
+        "value": {
+          "type": "map",
+          "entries": [
+            {
+              "key": "codec",
+              "value": {
+                "type": "string",
+                "value": "json"
+              }
+            },
+            {
+              "key": "blob",
+              "value": {
+                "type": "string",
+                "value": "{\"stale\":true}"
+              }
+            }
+          ]
+        }
+      }
+    ]
+  },
+  "framing": {
+    "encoding": "utf8-json",
+    "wire_base64": "eyJzY2hlbWEiOiJkdXJhYmxlX3dvcmtmbG93Lm1lc3NhZ2Vfc3RyZWFtX21lc3NhZ2UvdjEiLCJwYXlsb2FkX2VudmVsb3BlIjp7ImNvZGVjIjoianNvbiIsImJsb2IiOiJ7XCJzdGFsZVwiOnRydWV9In19"
+  },
+  "failure_policy": {
+    "operation": "decode_reject",
+    "error": "unsupported_payload_codec"
+  }
+}

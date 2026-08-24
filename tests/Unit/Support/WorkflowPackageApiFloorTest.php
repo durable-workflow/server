@@ -16,6 +16,7 @@ use Workflow\V2\Contracts\ExternalPayloadStorageDriver;
 use Workflow\V2\Contracts\ExternalPayloadStoragePolicy;
 use Workflow\V2\Contracts\MatchingRole;
 use Workflow\V2\Contracts\ServiceControlPlane;
+use Workflow\V2\Contracts\WorkflowControlPlane;
 use Workflow\V2\Contracts\WorkflowTaskBridge;
 use Workflow\V2\Exceptions\ExternalPayloadIntegrityException;
 use Workflow\V2\Exceptions\WorkflowOutputCodecUnavailableException;
@@ -24,6 +25,7 @@ use Workflow\V2\Models\WorkflowSearchAttribute;
 use Workflow\V2\Support\BackendCapabilities;
 use Workflow\V2\Support\ChildWorkflowNamespaceProjection;
 use Workflow\V2\Support\DefaultMatchingRole;
+use Workflow\V2\Support\DefaultWorkflowControlPlane;
 use Workflow\V2\Support\ExternalPayloadReference;
 use Workflow\V2\Support\ExternalPayloads;
 use Workflow\V2\Support\LocalFilesystemExternalPayloadStorage;
@@ -195,8 +197,8 @@ class WorkflowPackageApiFloorTest extends TestCase
         $this->assertNotFalse($capability);
         $this->assertTrue($capability->isPublic());
 
-        $this->assertSame('1.13', WorkerProtocolVersion::VERSION);
-        $this->assertSame(WorkerProtocol::VERSION, WorkerProtocolVersion::VERSION);
+        $this->assertSame('1.15', WorkerProtocolVersion::VERSION);
+        $this->assertTrue(version_compare(WorkerProtocol::VERSION, WorkerProtocolVersion::VERSION, '>='));
         $this->assertSame('query_tasks', WorkerProtocolVersion::CAPABILITY_QUERY_TASKS);
         $this->assertSame(['poll', 'complete', 'fail'], WorkerProtocolVersion::queryTaskVerbs());
         $this->assertContains(WorkerProtocolVersion::CAPABILITY_QUERY_TASKS, WorkerProtocolVersion::workerCapabilities());
@@ -284,6 +286,7 @@ class WorkflowPackageApiFloorTest extends TestCase
         $this->assertContains([ExternalPayloads::class, 'externalizeForNamespace'], $apis);
         $this->assertContains([ExternalPayloads::class, 'isStoredReference'], $apis);
         $this->assertContains([ExternalPayloads::class, 'wireEnvelope'], $apis);
+        $this->assertContains([ExternalPayloads::class, 'encodeStoredEnvelope'], $apis);
         $this->assertContains([ExternalPayloads::class, 'historyValue'], $apis);
         $this->assertContains([ExternalPayloads::class, 'storedEnvelope'], $apis);
 
@@ -302,7 +305,11 @@ class WorkflowPackageApiFloorTest extends TestCase
         $this->assertContains(ExternalPayloadIntegrityException::class, $classes);
         $this->assertContains(LocalFilesystemExternalPayloadStorage::class, $classes);
 
+        $instances = $this->privateConstant($floor, 'REQUIRED_INSTANCE_APIS');
+        $this->assertContains([DefaultWorkflowControlPlane::class, 'runtimeSignal'], $instances);
+
         $interfaces = $this->privateConstant($floor, 'REQUIRED_INTERFACE_APIS');
+        $this->assertNotContains([WorkflowControlPlane::class, 'runtimeSignal'], $interfaces);
         $this->assertContains([ExternalPayloadStorageDriver::class, 'put'], $interfaces);
         $this->assertContains([ExternalPayloadStorageDriver::class, 'get'], $interfaces);
         $this->assertContains([ExternalPayloadStorageDriver::class, 'delete'], $interfaces);

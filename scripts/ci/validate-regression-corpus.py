@@ -1393,6 +1393,113 @@ def _php_method_owns_codec(method: PhpMethodUnit) -> bool:
     )
 
 
+def _php_statement_spans(masked: str) -> list[tuple[int, int]]:
+    """Return semicolon-terminated PHP statements outside parenthesized headers."""
+
+    spans: list[tuple[int, int]] = []
+    start = 0
+    parentheses = 0
+    brackets = 0
+    for index, character in enumerate(masked):
+        if character == "(":
+            parentheses += 1
+        elif character == ")":
+            parentheses = max(0, parentheses - 1)
+        elif character == "[":
+            brackets += 1
+        elif character == "]":
+            brackets = max(0, brackets - 1)
+        elif character == ";" and parentheses == 0 and brackets == 0:
+            spans.append((start, index + 1))
+            start = index + 1
+        elif character in "{}":
+            start = index + 1
+
+    return spans
+
+
+def _php_codec_projection(source: str) -> tuple[str, ...] | None:
+    """Project the statements and control flow that can affect codec operations."""
+
+    masked, _, _, valid = _php_lexical_views(source)
+    if not valid or not _php_balanced(masked):
+        return None
+
+    statements = _php_statement_spans(masked)
+    direct: set[tuple[int, int]] = {
+        span
+        for span in statements
+        if _php_has_direct_codec_operation(source[span[0] : span[1]])
+    }
+    if not direct:
+        return ()
+
+    variable_pattern = re.compile(r"\$[A-Za-z_][A-Za-z0-9_]*")
+    assignment_pattern = re.compile(
+        r"(?P<variable>\$[A-Za-z_][A-Za-z0-9_]*)"
+        r"(?:\s*\[[^\]]*\])*\s*(?:\?\?=|\.=|\+=|-=|\*=|/=|=)(?!=|>)"
+    )
+    relevant_variables = {
+        variable
+        for start, end in direct
+        for variable in variable_pattern.findall(masked[start:end])
+        if variable != "$this"
+    }
+    selected = set(direct)
+
+    changed = True
+    while changed:
+        changed = False
+        for span in statements:
+            statement = masked[span[0] : span[1]]
+            assigned = {
+                match.group("variable")
+                for match in assignment_pattern.finditer(statement)
+            }
+            if not (assigned & relevant_variables):
+                continue
+            if span not in selected:
+                selected.add(span)
+                changed = True
+            variables = set(variable_pattern.findall(statement)) - {"$this"}
+            if not variables.issubset(relevant_variables):
+                relevant_variables.update(variables)
+                changed = True
+
+    control_spans: set[tuple[int, int]] = set()
+    for brace in (index for index, character in enumerate(masked) if character == "{"):
+        header_start = max(
+            masked.rfind(";", 0, brace),
+            masked.rfind("{", 0, brace),
+            masked.rfind("}", 0, brace),
+        ) + 1
+        header = masked[header_start:brace]
+        if re.match(
+            r"\s*(?:if|elseif|else|for|foreach|while|do|switch|case|catch)\b",
+            header,
+        ) is None:
+            continue
+        block_end = _php_balanced_end(masked, brace, "{", "}")
+        if block_end is None:
+            return None
+        header_variables = set(variable_pattern.findall(header)) - {"$this"}
+        encloses_selected = any(
+            brace < statement_start < block_end
+            for statement_start, _ in selected
+        )
+        if encloses_selected or header_variables & relevant_variables:
+            control_spans.add((header_start, brace))
+
+    signatures: list[str] = []
+    for start, end in sorted(selected | control_spans):
+        signature, segment_valid = _php_signature(source[start:end])
+        if not segment_valid:
+            return None
+        signatures.append(signature)
+
+    return tuple(signatures)
+
+
 def _php_codec_change_classification(
     base_content: bytes | None,
     current_content: bytes | None,
@@ -1447,10 +1554,24 @@ def _php_codec_change_classification(
                     related = True
                 elif broad_path_guard:
                     review_required = True
-            elif _php_method_owns_codec(base_method) or _php_method_owns_codec(
-                current_method
-            ):
-                related = True
+            else:
+                base_direct = _php_has_direct_codec_operation(base_method.source)
+                current_direct = _php_has_direct_codec_operation(current_method.source)
+                if base_direct or current_direct:
+                    base_projection = _php_codec_projection(base_method.source)
+                    current_projection = _php_codec_projection(current_method.source)
+                    if (
+                        base_projection is not None
+                        and current_projection is not None
+                        and base_projection == current_projection
+                    ):
+                        review_required = True
+                    else:
+                        related = True
+                elif _php_method_owns_codec(base_method) or _php_method_owns_codec(
+                    current_method
+                ):
+                    review_required = True
         elif base_method is not None:
             if _php_method_owns_codec(base_method):
                 related = True

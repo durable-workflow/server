@@ -145,10 +145,10 @@ class WorkerProtocolVersionCoverageTest extends TestCase
             ->assertJsonPath('server_capabilities.query_tasks', true);
     }
 
-    public function test_worker_registration_accepts_current_protocol_1_13_workers(): void
+    public function test_worker_registration_accepts_current_protocol_1_15_workers(): void
     {
         $response = $this->postJson('/api/worker/register', [
-            'worker_id' => 'php-protocol-113-worker',
+            'worker_id' => 'php-protocol-115-worker',
             'task_queue' => 'signals-queries-current',
             'runtime' => 'php',
             'sdk_version' => 'durable-workflow/workflow 2.0.0-alpha.250',
@@ -157,13 +157,13 @@ class WorkerProtocolVersionCoverageTest extends TestCase
             'capabilities' => ['query_tasks'],
         ], [
             'X-Namespace' => 'default',
-            WorkerProtocol::HEADER => '1.13',
+            WorkerProtocol::HEADER => '1.15',
         ]);
 
         $response->assertCreated()
             ->assertHeader(WorkerProtocol::HEADER, WorkerProtocol::VERSION)
             ->assertJsonPath('protocol_version', WorkerProtocol::VERSION)
-            ->assertJsonPath('worker_id', 'php-protocol-113-worker')
+            ->assertJsonPath('worker_id', 'php-protocol-115-worker')
             ->assertJsonPath('registered', true)
             ->assertJsonPath('server_capabilities.query_tasks', true);
     }

@@ -20,6 +20,7 @@ use Workflow\V2\Models\WorkflowSearchAttribute;
 use Workflow\V2\Support\BackendCapabilities;
 use Workflow\V2\Support\ChildWorkflowNamespaceProjection;
 use Workflow\V2\Support\DefaultMatchingRole;
+use Workflow\V2\Support\DefaultWorkflowControlPlane;
 use Workflow\V2\Support\ExternalPayloadReference;
 use Workflow\V2\Support\ExternalPayloads;
 use Workflow\V2\Support\LocalFilesystemExternalPayloadStorage;
@@ -99,6 +100,7 @@ final class WorkflowPackageApiFloor
         [ExternalPayloads::class, 'externalizeForNamespace'],
         [ExternalPayloads::class, 'isStoredReference'],
         [ExternalPayloads::class, 'wireEnvelope'],
+        [ExternalPayloads::class, 'encodeStoredEnvelope'],
         [ExternalPayloads::class, 'historyValue'],
         [ExternalPayloads::class, 'storedEnvelope'],
         // Durable command-contract APIs used by server-side signal/query
@@ -132,7 +134,7 @@ final class WorkflowPackageApiFloor
     /**
      * Workflow package protocol contract required by this server.
      */
-    private const REQUIRED_WORKER_PROTOCOL_VERSION = WorkerProtocol::VERSION;
+    private const MINIMUM_WORKFLOW_PACKAGE_WORKER_PROTOCOL_VERSION = '1.15';
 
     /**
      * Concrete classes the server instantiates or catches directly.
@@ -161,6 +163,9 @@ final class WorkflowPackageApiFloor
         // in-process watchdog.
         [DefaultMatchingRole::class, 'wake'],
         [DefaultMatchingRole::class, 'runPass'],
+        // Runtime-reserved signal delivery is consumed through the server's
+        // narrow internal contract, not the host-decoratable public interface.
+        [DefaultWorkflowControlPlane::class, 'runtimeSignal'],
     ];
 
     /**
@@ -222,12 +227,12 @@ final class WorkflowPackageApiFloor
     {
         $missing = [];
 
-        if (! self::hasMatchingWorkerProtocolVersion(self::REQUIRED_WORKER_PROTOCOL_VERSION)) {
+        if (! self::hasMinimumWorkerProtocolVersion(self::MINIMUM_WORKFLOW_PACKAGE_WORKER_PROTOCOL_VERSION)) {
             $installed = self::installedWorkerProtocolVersion();
             $missing[] = sprintf(
-                '%s::VERSION = %s%s',
+                '%s::VERSION >= %s%s',
                 WorkerProtocolVersion::class,
-                self::REQUIRED_WORKER_PROTOCOL_VERSION,
+                self::MINIMUM_WORKFLOW_PACKAGE_WORKER_PROTOCOL_VERSION,
                 $installed === null ? '' : sprintf(' (installed %s)', $installed),
             );
         }
@@ -324,7 +329,7 @@ final class WorkflowPackageApiFloor
             "Installed durable-workflow/workflow package does not match the server's API floor. "
             .'Missing or incompatible: %s. Re-run `composer update durable-workflow/workflow` '
             .'against a v2 snapshot that '
-            .'advertises worker protocol %s and '
+            .'advertises worker protocol %s or newer and '
             .'includes CodecRegistry::universal(), MatchingRoleSnapshot::current(), '
             .'WorkflowTaskLease::seconds(), WorkflowTaskLease::expiresAt(), '
             .'the filtered WorkflowTaskBridge::poll() and ActivityTaskBridge::poll() contracts, '
@@ -336,7 +341,7 @@ final class WorkflowPackageApiFloor
             .'constants, plus ChildWorkflowNamespaceProjection for package-owned child namespace propagation '
             .'(install the v2 workflow package snapshot that matches this server release).',
             implode(', ', $missing),
-            self::REQUIRED_WORKER_PROTOCOL_VERSION,
+            self::MINIMUM_WORKFLOW_PACKAGE_WORKER_PROTOCOL_VERSION,
         ));
     }
 
@@ -913,11 +918,17 @@ final class WorkflowPackageApiFloor
             && str_contains($body, 'queue_sync_unsupported');
     }
 
-    private static function hasMatchingWorkerProtocolVersion(string $required): bool
+    private static function hasMinimumWorkerProtocolVersion(string $required): bool
     {
         $installed = self::installedWorkerProtocolVersion();
+        if ($installed === null
+            || preg_match('/^(\d+)\.(\d+)$/', $installed, $installedParts) !== 1
+            || preg_match('/^(\d+)\.(\d+)$/', $required, $requiredParts) !== 1) {
+            return false;
+        }
 
-        return $installed === $required;
+        return (int) $installedParts[1] === (int) $requiredParts[1]
+            && (int) $installedParts[2] >= (int) $requiredParts[2];
     }
 
     private static function installedWorkerProtocolVersion(): ?string

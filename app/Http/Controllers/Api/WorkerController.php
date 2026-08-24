@@ -10,6 +10,8 @@ use App\Support\CachedPollTaskKindConflict;
 use App\Support\ExternalPayloadStorageUnavailable;
 use App\Support\HistoryRetentionEnforcer;
 use App\Support\LongPollCapacityExhaustedException;
+use App\Support\MessageStreamsContract;
+use App\Support\MessageStreamService;
 use App\Support\NamespaceExternalPayloadStorage;
 use App\Support\NamespaceWorkflowScope;
 use App\Support\PayloadCodecContract;
@@ -78,6 +80,7 @@ class WorkerController
         private readonly WorkerTerminalEventAttribution $terminalEventAttribution,
         private readonly WorkerCompatibilityHeartbeatRecorder $compatibilityHeartbeats,
         private readonly WorkerProtocolMutationRetrier $storageMutations,
+        private readonly MessageStreamService $messageStreams,
     ) {}
 
     /**
@@ -126,6 +129,23 @@ class WorkerController
             'process_metrics.process_started_at' => ['nullable', 'string', 'max:64'],
             'heartbeat_interval_seconds' => ['nullable', 'integer', 'min:1', 'max:3600'],
         ]);
+
+        if (in_array(
+            MessageStreamsContract::CAPABILITY,
+            $this->nonEmptyStringArray($validated['capabilities'] ?? []),
+            true,
+        ) && ! WorkerProtocol::messageStreamsAvailableForRequest($request)) {
+            return WorkerProtocol::json([
+                'registered' => false,
+                'reason' => 'message_streams_unavailable',
+                'requested_version' => WorkerProtocol::requestVersion($request),
+                'minimum_protocol_version' => MessageStreamsContract::MINIMUM_WORKER_PROTOCOL_VERSION,
+                'remediation' => sprintf(
+                    'Advertise message_streams only while sending worker protocol %s or newer.',
+                    MessageStreamsContract::MINIMUM_WORKER_PROTOCOL_VERSION,
+                ),
+            ], 409);
+        }
 
         $workerId = $validated['worker_id'] ?? Str::ulid()->toBase32();
         $workflowDefinitionFingerprints = $this->workflowDefinitionFingerprints(
@@ -1259,6 +1279,15 @@ class WorkerController
 
         $namespace = $request->attributes->get('namespace');
 
+        $messageStreamCompletion = $request->validate([
+            'message_stream_cursors' => ['nullable', 'array', 'max:100'],
+            'message_stream_cursors.*.stream_name' => ['required', 'string', 'max:128'],
+            'message_stream_cursors.*.through_position' => ['required', 'integer', 'min:0'],
+            'message_stream_waits' => ['nullable', 'array', 'max:100'],
+            'message_stream_waits.*.stream_name' => ['required', 'string', 'max:128'],
+            'message_stream_waits.*.after_position' => ['required', 'integer', 'min:0'],
+        ]);
+
         $validated = $request->validate([
             'lease_owner' => ['required', 'string'],
             'workflow_task_attempt' => ['required', 'integer', 'min:1'],
@@ -1364,6 +1393,31 @@ class WorkerController
             return $response;
         }
 
+        $messageStreamCursors = array_values($messageStreamCompletion['message_stream_cursors'] ?? []);
+        $messageStreamWaits = array_values($messageStreamCompletion['message_stream_waits'] ?? []);
+        if (($messageStreamCursors !== [] || $messageStreamWaits !== [])
+            && ! WorkerProtocol::messageStreamsAvailableForRequest($request)) {
+            return WorkerProtocol::json([
+                'task_id' => $taskId,
+                'workflow_task_attempt' => (int) $validated['workflow_task_attempt'],
+                'outcome' => 'rejected',
+                'reason' => 'message_streams_unavailable',
+                'requested_version' => WorkerProtocol::requestVersion($request),
+                'minimum_protocol_version' => MessageStreamsContract::MINIMUM_WORKER_PROTOCOL_VERSION,
+                'remediation' => sprintf(
+                    'Send the %s header with worker protocol %s or newer.',
+                    WorkerProtocol::HEADER,
+                    MessageStreamsContract::MINIMUM_WORKER_PROTOCOL_VERSION,
+                ),
+            ], 409);
+        }
+        $this->messageStreams->validateCompletion(
+            (string) $namespace,
+            $taskId,
+            $messageStreamCursors,
+            $messageStreamWaits,
+        );
+
         try {
             $commands = $this->resolveWorkflowTaskCommandPayloadReferences($commands, $namespace);
         } catch (ValidationException $exception) {
@@ -1388,8 +1442,24 @@ class WorkerController
 
         try {
             $outcome = $this->storageMutations->run(
-                function () use ($bridge, $commands, $request, $taskId, $namespace): array {
-                    return DB::transaction(function () use ($bridge, $commands, $request, $taskId, $namespace): array {
+                function () use (
+                    $bridge,
+                    $commands,
+                    $request,
+                    $taskId,
+                    $namespace,
+                    $messageStreamCursors,
+                    $messageStreamWaits,
+                ): array {
+                    return DB::transaction(function () use (
+                        $bridge,
+                        $commands,
+                        $request,
+                        $taskId,
+                        $namespace,
+                        $messageStreamCursors,
+                        $messageStreamWaits,
+                    ): array {
                         $commands = $this->canonicalizeWorkflowStreamPayloadCodecs($commands);
                         $commands = app(WorkflowStreamCommandProcessor::class)->process(
                             $taskId,
@@ -1399,6 +1469,13 @@ class WorkerController
                         $commands = WorkflowCommandNormalizer::normalize($commands);
                         $outcome = $bridge->complete($taskId, $commands);
                         $this->terminalEventAttribution->record($request, $taskId, $outcome);
+                        $this->messageStreams->recordCompletion(
+                            (string) $namespace,
+                            $taskId,
+                            $messageStreamCursors,
+                            $messageStreamWaits,
+                            $outcome,
+                        );
 
                         return $outcome;
                     });

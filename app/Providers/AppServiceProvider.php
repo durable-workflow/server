@@ -4,6 +4,7 @@ namespace App\Providers;
 
 use App\Auth\ConfiguredAuthProvider;
 use App\Contracts\AuthProvider;
+use App\Contracts\RuntimeSignalControlPlane;
 use App\Observers\WorkflowHistoryEventObserver;
 use App\Observers\WorkflowTaskObserver;
 use App\Observers\WorkflowUpdateValidationObserver;
@@ -59,7 +60,15 @@ class AppServiceProvider extends ServiceProvider
 
         $this->app->singleton(ScheduleWorkflowStarter::class, RemoteScheduleStarter::class);
         $this->app->singleton(DefaultWorkflowControlPlane::class);
-        $this->app->singleton(WorkflowControlPlane::class, ServerWorkflowControlPlane::class);
+        $this->app->singleton(ServerWorkflowControlPlane::class);
+        $this->app->singleton(
+            WorkflowControlPlane::class,
+            fn ($app): ServerWorkflowControlPlane => $app->make(ServerWorkflowControlPlane::class),
+        );
+        $this->app->singleton(
+            RuntimeSignalControlPlane::class,
+            fn ($app): ServerWorkflowControlPlane => $app->make(ServerWorkflowControlPlane::class),
+        );
         $this->app->bind(
             ExternalWorkflowUpdateAdmission::class,
             ValidatedExternalWorkflowUpdateAdmission::class,

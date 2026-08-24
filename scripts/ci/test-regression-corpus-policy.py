@@ -853,6 +853,60 @@ final class InstrumentedCodecBoundaryRuntimeTest extends TestCase
             result.stderr,
         )
 
+    def test_independent_same_method_change_requires_review_without_fake_growth(
+        self,
+    ) -> None:
+        base = self.codec_method_source("GuardedCodec").replace(
+            "        return Serializer::serializeWithCodec($codec, $arguments);",
+            "        $result = Serializer::serializeWithCodec($codec, $arguments);\n"
+            "\n"
+            "        return $result;",
+        ).replace(
+            "    }\n}\n",
+            "    }\n"
+            "\n"
+            "    private function observe(mixed $arguments): void\n"
+            "    {\n"
+            "    }\n"
+            "}\n",
+        )
+        current = base.replace(
+            "        $result = Serializer::serializeWithCodec($codec, $arguments);\n"
+            "\n"
+            "        return $result;",
+            "        $result = Serializer::serializeWithCodec($codec, $arguments);\n"
+            "        $this->observe($arguments);\n"
+            "\n"
+            "        return $result;",
+        )
+        classification = CORPUS_VALIDATOR._php_codec_change_classification(
+            base.encode(),
+            current.encode(),
+            broad_path_guard=True,
+        )
+
+        self.assertFalse(classification.related)
+        self.assertTrue(classification.review_required)
+
+    def test_early_return_on_codec_input_remains_a_guarded_change(self) -> None:
+        base = self.codec_method_source("GuardedCodec")
+        current = base.replace(
+            "    {\n        return Serializer::serializeWithCodec($codec, $arguments);",
+            "    {\n"
+            "        if ($arguments === null) {\n"
+            "            return null;\n"
+            "        }\n"
+            "\n"
+            "        return Serializer::serializeWithCodec($codec, $arguments);",
+        )
+        classification = CORPUS_VALIDATOR._php_codec_change_classification(
+            base.encode(),
+            current.encode(),
+            broad_path_guard=True,
+        )
+
+        self.assertTrue(classification.related)
+
     def test_changed_codec_call_requires_corpus_growth(self) -> None:
         (self.root / GUARDED_METHOD_BOUNDARY).write_text(
             self.guarded_method_boundary_source(

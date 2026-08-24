@@ -204,6 +204,7 @@ final class ControlPlaneResultMapper
         ?string $runId,
     ): array {
         $payload = $result;
+        $accepted = $payload['accepted'] ?? null;
 
         if (
             $projectCommandReason
@@ -221,6 +222,10 @@ final class ControlPlaneResultMapper
             $payload['workflow_command_id'],
             $payload['command_reason'],
         );
+
+        if ($accepted === false) {
+            $payload['accepted'] = false;
+        }
 
         $payload['workflow_id'] = $this->stringValue($payload['workflow_id'] ?? null) ?? $workflowId;
 

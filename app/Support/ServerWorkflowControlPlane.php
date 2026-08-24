@@ -2,6 +2,7 @@
 
 namespace App\Support;
 
+use App\Contracts\RuntimeSignalControlPlane;
 use Throwable;
 use Workflow\Serializers\Serializer;
 use Workflow\V2\CommandContext;
@@ -16,7 +17,7 @@ use Workflow\V2\Support\CommandResponse;
 use Workflow\V2\Support\DefaultWorkflowControlPlane;
 use Workflow\V2\Workflow;
 
-final class ServerWorkflowControlPlane implements WorkflowControlPlane
+final class ServerWorkflowControlPlane implements RuntimeSignalControlPlane, WorkflowControlPlane
 {
     public function __construct(
         private readonly DefaultWorkflowControlPlane $inner,
@@ -32,10 +33,38 @@ final class ServerWorkflowControlPlane implements WorkflowControlPlane
 
     public function signal(string $instanceId, string $name, array $options = []): array
     {
+        if (MessageStreamsContract::isRuntimeReservedSignal($name)) {
+            return [
+                'accepted' => false,
+                'workflow_id' => $instanceId,
+                'signal_name' => $name,
+                'outcome' => 'rejected',
+                'reason' => 'runtime_reserved_signal',
+                'message' => 'This signal name is reserved for the durable runtime transport.',
+                'status' => 422,
+            ];
+        }
+
+        return $this->deliverSignal($instanceId, $name, $options, false);
+    }
+
+    public function runtimeSignal(string $instanceId, string $name, array $options = []): array
+    {
+        return $this->deliverSignal($instanceId, $name, $options, true);
+    }
+
+    /**
+     * @param  array<string, mixed>  $options
+     * @return array<string, mixed>
+     */
+    private function deliverSignal(string $instanceId, string $name, array $options, bool $runtimeReserved): array
+    {
         return $this->mutations->run(
-            function () use ($instanceId, $name, $options): array {
+            function () use ($instanceId, $name, $options, $runtimeReserved): array {
                 try {
-                    return $this->inner->signal($instanceId, $name, $options);
+                    return $runtimeReserved
+                        ? $this->inner->runtimeSignal($instanceId, $name, $options)
+                        : $this->inner->signal($instanceId, $name, $options);
                 } catch (Throwable $exception) {
                     $command = $this->committedSignalForRequest($instanceId, $name, $options);
 

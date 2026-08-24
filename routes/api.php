@@ -8,6 +8,7 @@ use App\Http\Controllers\Api\EmbeddedV2ImportController;
 use App\Http\Controllers\Api\HealthController;
 use App\Http\Controllers\Api\HistoryController;
 use App\Http\Controllers\Api\LegacyV1ProjectionController;
+use App\Http\Controllers\Api\MessageStreamController;
 use App\Http\Controllers\Api\NamespaceController;
 use App\Http\Controllers\Api\ScheduleController;
 use App\Http\Controllers\Api\SearchAttributeController;
@@ -111,6 +112,7 @@ Route::middleware([Authenticate::class])->group(function () {
 
         // Commands (instance-targeted — always targets the current run)
         Route::post('/{workflowId}/signal/{signalName}', [WorkflowController::class, 'signal']);
+        Route::post('/{workflowId}/message-streams/{streamName}/messages', [MessageStreamController::class, 'append']);
         Route::post('/{workflowId}/query/{queryName}', [WorkflowController::class, 'query']);
         Route::post('/{workflowId}/update/{updateName}', [WorkflowController::class, 'update']);
         Route::post('/{workflowId}/cancel', [WorkflowController::class, 'cancel']);
@@ -140,6 +142,8 @@ Route::middleware([Authenticate::class])->group(function () {
         Route::get('/{workflowId}/runs', [WorkflowController::class, 'runs']);
         Route::get('/{workflowId}/runs/{runId}', [WorkflowController::class, 'showRun']);
         Route::get('/{workflowId}/runs/{runId}/debug', [WorkflowController::class, 'debugRun']);
+        Route::get('/{workflowId}/message-streams', [MessageStreamController::class, 'index']);
+        Route::get('/{workflowId}/message-streams/{streamName}', [MessageStreamController::class, 'show']);
 
         // History
         Route::get('/{workflowId}/runs/{runId}/history', [HistoryController::class, 'show']);

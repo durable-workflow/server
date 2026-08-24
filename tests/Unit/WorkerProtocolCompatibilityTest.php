@@ -24,13 +24,13 @@ class WorkerProtocolCompatibilityTest extends TestCase
             'exact match accepted' => ['worker' => '1.2', 'server' => '1.2', 'expected' => true],
             'current published PHP worker protocol accepted' => ['worker' => WorkerProtocol::VERSION, 'server' => WorkerProtocol::VERSION, 'expected' => true],
             'released Rust worker protocol accepted by current server' => ['worker' => '1.2', 'server' => WorkerProtocol::VERSION, 'expected' => true],
-            'previous published PHP worker protocol accepted' => ['worker' => '1.12', 'server' => WorkerProtocol::VERSION, 'expected' => true],
+            'previous published PHP worker protocol accepted' => ['worker' => '1.14', 'server' => WorkerProtocol::VERSION, 'expected' => true],
             'previous minor accepted' => ['worker' => '1.11', 'server' => WorkerProtocol::VERSION, 'expected' => true],
             'one minor behind accepted (additive forward-compat)' => ['worker' => '1.1', 'server' => '1.2', 'expected' => true],
             'two minors behind accepted' => ['worker' => '1.0', 'server' => '1.2', 'expected' => true],
             'minor 0 against minor 0 accepted' => ['worker' => '1.0', 'server' => '1.0', 'expected' => true],
             'worker minor ahead rejected' => ['worker' => '1.3', 'server' => '1.2', 'expected' => false],
-            'worker ahead of current server rejected' => ['worker' => '1.14', 'server' => WorkerProtocol::VERSION, 'expected' => false],
+            'worker ahead of current server rejected' => ['worker' => '1.16', 'server' => WorkerProtocol::VERSION, 'expected' => false],
             'major ahead rejected' => ['worker' => '2.0', 'server' => '1.2', 'expected' => false],
             'different major rejected by current server' => ['worker' => '2.0', 'server' => WorkerProtocol::VERSION, 'expected' => false],
             'major behind rejected' => ['worker' => '0.9', 'server' => '1.2', 'expected' => false],
@@ -53,5 +53,14 @@ class WorkerProtocolCompatibilityTest extends TestCase
             WorkerProtocol::isCompatibleProtocolVersion($worker, $server),
             sprintf('worker=%s server=%s expected=%s', $worker, $server, $expected ? 'compatible' : 'incompatible'),
         );
+    }
+
+    public function test_message_streams_require_the_feature_minor_on_the_same_protocol_major(): void
+    {
+        $this->assertFalse(WorkerProtocol::messageStreamsSupported('1.14'));
+        $this->assertTrue(WorkerProtocol::messageStreamsSupported('1.15'));
+        $this->assertTrue(WorkerProtocol::messageStreamsSupported('1.16'));
+        $this->assertFalse(WorkerProtocol::messageStreamsSupported('2.0'));
+        $this->assertFalse(WorkerProtocol::messageStreamsSupported('invalid'));
     }
 }

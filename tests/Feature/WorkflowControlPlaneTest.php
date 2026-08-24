@@ -2,6 +2,7 @@
 
 namespace Tests\Feature;
 
+use App\Contracts\RuntimeSignalControlPlane;
 use App\Models\WorkerBuildIdRollout;
 use App\Models\WorkerRegistration;
 use App\Models\WorkflowNamespace;
@@ -38,10 +39,13 @@ class WorkflowControlPlaneTest extends TestCase
 
     public function test_the_package_provider_resolves_the_workflow_control_plane_contract(): void
     {
+        $serverControlPlane = app(ServerWorkflowControlPlane::class);
         $this->assertInstanceOf(
             ServerWorkflowControlPlane::class,
             app(WorkflowControlPlane::class),
         );
+        $this->assertSame($serverControlPlane, app(WorkflowControlPlane::class));
+        $this->assertSame($serverControlPlane, app(RuntimeSignalControlPlane::class));
 
         $serviceControlPlane = app(ServiceControlPlane::class);
         $this->assertInstanceOf(DefaultServiceControlPlane::class, $serviceControlPlane);

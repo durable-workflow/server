@@ -4,6 +4,7 @@ namespace App\Support;
 
 use App\Models\WorkflowDurableStream;
 use App\Models\WorkflowDurableStreamItem;
+use App\Models\WorkflowInboundStreamItem;
 use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Support\Facades\DB;
@@ -224,7 +225,6 @@ class ExternalPayloadRetentionCleanup
     }
 
     /**
-     * @param  string  $namespace
      * @param  list<string>  $runIds
      * @return list<string>
      */
@@ -370,6 +370,9 @@ class ExternalPayloadRetentionCleanup
                 'namespace' => [$namespace],
             ]),
             $this->namespaceSource('workflow_durable_stream_items', ['payload'], ['payload_reference'], [
+                'namespace' => [$namespace],
+            ]),
+            $this->namespaceSource('workflow_inbound_stream_items', ['payload_blob'], [], [
                 'namespace' => [$namespace],
             ]),
             $this->namespaceSource('workflow_run_timer_entries', ['payload'], [], $runOrInstanceScope),
@@ -584,6 +587,7 @@ class ExternalPayloadRetentionCleanup
             [WorkflowScheduleHistoryEvent::query()->whereIn('workflow_run_id', $this->retainedRunIdsQuery($deletedRunIds)), 'payload'],
             [WorkflowDurableStream::query()->whereIn('workflow_run_id', $this->retainedRunIdsQuery($deletedRunIds)), 'metadata'],
             [WorkflowDurableStreamItem::query()->whereIn('workflow_run_id', $this->retainedRunIdsQuery($deletedRunIds)), 'payload'],
+            [WorkflowInboundStreamItem::query(), 'payload_blob'],
             [WorkflowRunTimerEntry::query()->whereIn('workflow_run_id', $this->retainedRunIdsQuery($deletedRunIds)), 'payload'],
             [WorkflowRunWait::query()->whereIn('workflow_run_id', $this->retainedRunIdsQuery($deletedRunIds)), 'payload'],
             [WorkflowRunLineageEntry::query()->whereIn('workflow_run_id', $this->retainedRunIdsQuery($deletedRunIds)), 'payload'],

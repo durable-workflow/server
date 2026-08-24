@@ -15,6 +15,7 @@ use App\Support\CoordinationHealthContract;
 use App\Support\FilesystemDiskAvailability;
 use App\Support\HeartbeatRuntimeContract;
 use App\Support\LegacyV1ProjectionContract;
+use App\Support\MessageStreamsContract;
 use App\Support\MigrationRuntimeContract;
 use App\Support\NamespaceRuntimeContract;
 use App\Support\NexusContract;
@@ -145,6 +146,7 @@ class HealthController
             'service_execution' => $serviceExecutionAvailable,
             'nexus' => $serviceExecutionAvailable,
             'workflow_streams' => true,
+            'message_streams' => true,
             'replay_verification_contract' => true,
             'search_attribute_runtime_contract' => true,
             'schedules_runtime_contract' => true,
@@ -178,7 +180,7 @@ class HealthController
 
         $response = [
             'server_id' => config('server.server_id'),
-            'version' => env('APP_VERSION', '2.0.0-rc.41'),
+            'version' => env('APP_VERSION', '2.0.0-rc.42'),
             'default_namespace' => config('server.default_namespace'),
             'namespace' => $this->namespacePolicy($namespace),
             'discovery' => [
@@ -264,6 +266,7 @@ class HealthController
         }
 
         $response['workflow_streams_contract'] = WorkflowStreamsContract::manifest();
+        $response['message_streams_contract'] = MessageStreamsContract::manifest();
 
         if ($this->shouldExposePackageProvenance($request)) {
             $provenance = $this->packageProvenance();

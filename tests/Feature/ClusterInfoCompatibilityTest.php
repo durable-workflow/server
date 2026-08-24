@@ -1082,7 +1082,7 @@ class ClusterInfoCompatibilityTest extends TestCase
 
         $response = $this->getJson('/api/cluster/info')->assertOk();
 
-        $this->assertSame('1.13', WorkerProtocol::VERSION);
+        $this->assertSame('1.15', WorkerProtocol::VERSION);
         $this->assertSame(WorkerProtocolVersion::VERSION, WorkerProtocol::VERSION);
         $this->assertSame(WorkerProtocol::VERSION, (string) config('server.worker_protocol.version'));
         $this->assertSame($expectedCommands, WorkerProtocol::supportedWorkflowTaskCommands());
@@ -1090,6 +1090,11 @@ class ClusterInfoCompatibilityTest extends TestCase
         $this->assertSame(
             $expectedCommands,
             $response->json('worker_protocol.server_capabilities.supported_workflow_task_commands'),
+        );
+        $this->assertTrue($response->json('worker_protocol.server_capabilities.message_streams.supported'));
+        $this->assertSame(
+            '1.15',
+            $response->json('worker_protocol.server_capabilities.message_streams.minimum_worker_protocol_version'),
         );
         $this->assertSame(
             WorkerProtocolVersion::DEFAULT_HISTORY_PAGE_SIZE,

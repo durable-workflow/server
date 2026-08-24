@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: durable-workflow.v2.control-plane-api
-  version: "8"
+  version: "9"
   summary: Durable Workflow control-plane HTTP+JSON API
   description: >
     Normative OpenAPI specification for the standalone Durable Workflow
@@ -14,6 +14,13 @@ x-durable-workflow-catalog-entry: control_plane_api
 x-durable-workflow-catalog-schema: durable-workflow.v2.platform-protocol-specs.catalog
 x-durable-workflow-catalog-version: 16
 x-durable-workflow-evolution-rule: additive_minor_breaking_major
+x-durable-workflow-message-streams-contract:
+  discovery_path: /cluster/info#/message_streams_contract
+  append_identity: [workflow_id, stream_name, message_id]
+  assigned_order: position
+  duplicate_same_envelope: return_existing_position_without_redelivery
+  duplicate_different_envelope: message_identity_conflict
+  diagnostics_payload_visibility: omitted
 x-durable-workflow-object-families:
   - name: control_plane_request_contract
     owner_repo: durable-workflow/server
@@ -173,6 +180,47 @@ paths:
       responses:
         "202": { $ref: "#/components/responses/ControlPlaneEnvelope" }
         "404": { $ref: "#/components/responses/ControlPlaneError" }
+        "422": { $ref: "#/components/responses/ControlPlaneError" }
+  /workflows/{workflowId}/message-streams:
+    get:
+      tags: [workflows]
+      operationId: listWorkflowMessageStreams
+      parameters:
+        - $ref: "#/components/parameters/ControlPlaneVersionHeader"
+        - $ref: "#/components/parameters/WorkflowIdPath"
+      responses:
+        "200": { $ref: "#/components/responses/ControlPlaneEnvelope" }
+        "404": { $ref: "#/components/responses/ControlPlaneError" }
+  /workflows/{workflowId}/message-streams/{streamName}:
+    get:
+      tags: [workflows]
+      operationId: getWorkflowMessageStream
+      parameters:
+        - $ref: "#/components/parameters/ControlPlaneVersionHeader"
+        - $ref: "#/components/parameters/WorkflowIdPath"
+        - $ref: "#/components/parameters/MessageStreamNamePath"
+      responses:
+        "200": { $ref: "#/components/responses/ControlPlaneEnvelope" }
+        "404": { $ref: "#/components/responses/ControlPlaneError" }
+        "422": { $ref: "#/components/responses/ControlPlaneError" }
+  /workflows/{workflowId}/message-streams/{streamName}/messages:
+    post:
+      tags: [workflows]
+      operationId: appendWorkflowMessageStreamMessage
+      parameters:
+        - $ref: "#/components/parameters/ControlPlaneVersionHeader"
+        - $ref: "#/components/parameters/WorkflowIdPath"
+        - $ref: "#/components/parameters/MessageStreamNamePath"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/MessageStreamAppendRequest" }
+      responses:
+        "200": { $ref: "#/components/responses/ControlPlaneEnvelope" }
+        "202": { $ref: "#/components/responses/ControlPlaneEnvelope" }
+        "404": { $ref: "#/components/responses/ControlPlaneError" }
+        "409": { $ref: "#/components/responses/ControlPlaneError" }
         "422": { $ref: "#/components/responses/ControlPlaneError" }
   /workflows/{workflowId}/query/{queryName}:
     post:
@@ -702,6 +750,11 @@ components:
     OperationNamePath: { name: operationName, in: path, required: true, schema: { type: string, minLength: 1 } }
     ServiceCallIdPath: { name: serviceCallId, in: path, required: true, schema: { type: string, minLength: 1 } }
     SignalNamePath: { name: signalName, in: path, required: true, schema: { type: string, minLength: 1 } }
+    MessageStreamNamePath:
+      name: streamName
+      in: path
+      required: true
+      schema: { type: string, pattern: "^[A-Za-z0-9._:-]{1,128}$" }
     QueryNamePath: { name: queryName, in: path, required: true, schema: { type: string, minLength: 1 } }
     UpdateNamePath: { name: updateName, in: path, required: true, schema: { type: string, minLength: 1 } }
     PageQuery: { name: page, in: query, required: false, schema: { type: integer, minimum: 1 } }
@@ -823,6 +876,15 @@ components:
     JsonObject:
       type: object
       additionalProperties: true
+    MessageStreamAppendRequest:
+      type: object
+      additionalProperties: false
+      required: [message_id]
+      properties:
+        message_id: { type: string, pattern: "^[A-Za-z0-9._:-]{1,191}$" }
+        input:
+          description: Avro payload envelope or inline arguments accepted by the shared control-plane payload resolver.
+        request_id: { type: [string, "null"], maxLength: 255 }
     ControlPlaneEnvelope:
       type: object
       additionalProperties: true

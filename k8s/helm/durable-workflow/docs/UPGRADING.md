@@ -67,6 +67,13 @@ chart MINOR bump and an entry below.
 
 ## Per-version migration notes
 
+### 0.1.33
+
+This release advances the chart Server identity to `2.0.0-rc.42` and adds
+portable durable message streams through worker protocol 1.15. Apply the new
+stream-state migration before accepting message input. Existing workflow
+signals and histories require no migration.
+
 ### 0.1.32
 
 This release advances the chart Server identity to `2.0.0-rc.41` and ships the

@@ -8,7 +8,7 @@ on:
         required: false
         default: "0.2"
       server_image:
-        description: "Full image reference or digest override, for example ghcr.io/durable-workflow/server:2.0.0-rc.41"
+        description: "Full image reference or digest override, for example ghcr.io/durable-workflow/server:2.0.0-rc.42"
         required: false
         default: ""
 
