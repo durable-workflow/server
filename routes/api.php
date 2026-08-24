@@ -10,6 +10,7 @@ use App\Http\Controllers\Api\HistoryController;
 use App\Http\Controllers\Api\LegacyV1ProjectionController;
 use App\Http\Controllers\Api\MessageStreamController;
 use App\Http\Controllers\Api\NamespaceController;
+use App\Http\Controllers\Api\RuntimeExternalPayloadController;
 use App\Http\Controllers\Api\ScheduleController;
 use App\Http\Controllers\Api\SearchAttributeController;
 use App\Http\Controllers\Api\ServiceCatalogController;
@@ -28,6 +29,7 @@ use App\Http\Middleware\NamespaceResolver;
 use App\Http\Middleware\RequireRole;
 use App\Http\Middleware\RequireTopologyRoles;
 use App\Http\Middleware\RequireWorkflowBootstrapReady;
+use App\Http\Middleware\RuntimeExternalPayloadTransport;
 use App\Http\Middleware\WorkerProtocolVersionResolver;
 use Illuminate\Support\Facades\Route;
 
@@ -69,7 +71,7 @@ Route::get('/ready', [HealthController::class, 'ready']);
 //
 // WorkerProtocolVersionResolver follows the same ordering for worker-plane
 // routes, keeping protocol skew and namespace errors in the worker envelope.
-Route::middleware([Authenticate::class])->group(function () {
+Route::middleware([Authenticate::class, RuntimeExternalPayloadTransport::class])->group(function () {
     $admin = RequireRole::class.':admin';
     $operator = RequireRole::class.':operator,admin';
     $worker = RequireRole::class.':worker';
@@ -83,6 +85,14 @@ Route::middleware([Authenticate::class])->group(function () {
 
     // ── System ───────────────────────────────────────────────────────
     Route::get('/cluster/info', [HealthController::class, 'clusterInfo'])->middleware([$authenticated, $ns]);
+
+    // Runtime-mediated payload transport is shared by control-plane clients
+    // and workers. It deliberately has its own versioned path instead of
+    // inheriting either protocol's request-version header.
+    Route::prefix('external-payloads/v1')->middleware([$authenticated, $httpControl, $ns])->group(function () {
+        Route::post('/', [RuntimeExternalPayloadController::class, 'store']);
+        Route::get('/{referenceId}', [RuntimeExternalPayloadController::class, 'show']);
+    });
 
     // ── Namespaces ───────────────────────────────────────────────────
     Route::prefix('namespaces')->group(function () use ($admin, $operator, $ns, $cpv, $httpControl) {

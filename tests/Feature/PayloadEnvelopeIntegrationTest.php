@@ -5,9 +5,11 @@ declare(strict_types=1);
 namespace Tests\Feature;
 
 use App\Http\Controllers\Api\WorkerController;
+use App\Models\RuntimeExternalPayload;
 use App\Models\WorkerRegistration;
 use App\Models\WorkflowNamespace;
 use App\Support\ExternalPayloadEnvelopeService;
+use App\Support\RuntimeExternalPayloadRegistry;
 use App\Support\WorkerProtocol;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\DB;
@@ -30,8 +32,6 @@ use Workflow\V2\Models\WorkflowRun;
 use Workflow\V2\Models\WorkflowSignal;
 use Workflow\V2\Models\WorkflowTask;
 use Workflow\V2\Support\ExternalPayloads;
-use Workflow\V2\Support\LocalFilesystemExternalPayloadStorage;
-use Workflow\V2\Support\PayloadEnvelopeResolver;
 use Workflow\V2\Support\WorkflowCommandNormalizer;
 use Workflow\V2\Support\WorkflowExecutor;
 
@@ -973,7 +973,7 @@ class PayloadEnvelopeIntegrationTest extends TestCase
 
         $firstPoll->assertOk()
             ->assertJsonPath('task.arguments.codec', 'avro')
-            ->assertJsonStructure(['task' => ['arguments' => ['codec', 'external_storage']]]);
+            ->assertJsonStructure(['task' => ['arguments' => ['codec', 'external_payload']]]);
         $this->assertExternalEnvelopeDecodes($firstPoll->json('task.arguments'), [$largeInput]);
 
         $activityArguments = Serializer::serializeWithCodec('avro', [$largeInput]);
@@ -1006,7 +1006,7 @@ class PayloadEnvelopeIntegrationTest extends TestCase
 
         $activityPoll->assertOk()
             ->assertJsonPath('task.arguments.codec', 'avro')
-            ->assertJsonStructure(['task' => ['arguments' => ['codec', 'external_storage']]]);
+            ->assertJsonStructure(['task' => ['arguments' => ['codec', 'external_payload']]]);
         $this->assertExternalEnvelopeDecodes($activityPoll->json('task.arguments'), [$largeInput]);
 
         $activityResultPayload = Serializer::serializeWithCodec('avro', $activityResult);
@@ -1083,7 +1083,7 @@ class PayloadEnvelopeIntegrationTest extends TestCase
             $show->assertOk()
                 ->assertJsonPath('output.done', $workflowResult['done'])
                 ->assertJsonPath('output_envelope.codec', $workflowResultCodec)
-                ->assertJsonStructure(['output_envelope' => ['codec', 'external_storage']]);
+                ->assertJsonStructure(['output_envelope' => ['codec', 'external_payload']]);
             $this->assertExternalEnvelopeDecodes(
                 $show->json('output_envelope'),
                 $workflowResult,
@@ -1291,10 +1291,9 @@ class PayloadEnvelopeIntegrationTest extends TestCase
                     ],
                 ],
             ])
-            ->assertStatus(422)
-            ->assertJsonPath('outcome', 'rejected')
-            ->assertJsonPath('recorded', false)
-            ->assertJsonPath('reason', 'external_payload_integrity_failed');
+            ->assertStatus(404)
+            ->assertJsonPath('reason', 'external_payload_not_found')
+            ->assertJsonPath('retryable', false);
     }
 
     public function test_workflow_task_completion_rejects_correct_lease_corrupt_external_payload_reference(): void
@@ -1315,9 +1314,8 @@ class PayloadEnvelopeIntegrationTest extends TestCase
                 ],
             ])
             ->assertStatus(422)
-            ->assertJsonPath('outcome', 'rejected')
-            ->assertJsonPath('recorded', false)
-            ->assertJsonPath('reason', 'external_payload_integrity_failed');
+            ->assertJsonPath('reason', 'external_payload_integrity_mismatch')
+            ->assertJsonPath('retryable', false);
     }
 
     public function test_workflow_task_command_external_storage_arguments_preserve_codec_for_normalizer(): void
@@ -1336,7 +1334,7 @@ class PayloadEnvelopeIntegrationTest extends TestCase
         $commands = $this->resolveWorkflowTaskCommandPayloadReferences([
             [
                 'type' => 'continue_as_new',
-                'arguments' => $this->externalStorageEnvelope('avro', $payload),
+                'arguments' => $this->internalExternalStorageEnvelope('avro', $payload),
             ],
         ]);
 
@@ -1364,12 +1362,12 @@ class PayloadEnvelopeIntegrationTest extends TestCase
         $commands = $this->resolveWorkflowTaskCommandPayloadReferences([
             [
                 'type' => 'complete_workflow',
-                'result' => $this->externalStorageEnvelope('avro', $workflowPayload),
+                'result' => $this->internalExternalStorageEnvelope('avro', $workflowPayload),
             ],
             [
                 'type' => 'record_side_effect',
                 'payload_codec' => 'avro',
-                'result' => $this->externalStorageEnvelope('avro', $sideEffectPayload),
+                'result' => $this->internalExternalStorageEnvelope('avro', $sideEffectPayload),
             ],
         ]);
 
@@ -1403,7 +1401,7 @@ class PayloadEnvelopeIntegrationTest extends TestCase
                 'type' => 'complete_update',
                 'update_id' => 'update-1',
                 'payload_codec' => 'avro',
-                'result' => $this->externalStorageEnvelope('avro', $updatePayload),
+                'result' => $this->internalExternalStorageEnvelope('avro', $updatePayload),
             ],
         ]);
 
@@ -1715,63 +1713,71 @@ class PayloadEnvelopeIntegrationTest extends TestCase
     }
 
     /**
-     * @return array{codec: string, external_storage: array{schema: string, uri: string, sha256: string, size_bytes: int, codec: string}}
+     * @return array{codec: string, external_payload: array{schema: string, reference_id: string, sha256: string, size_bytes: int, codec: string}}
      */
     private function externalStorageEnvelope(string $codec, string $payload): array
+    {
+        $reference = app(RuntimeExternalPayloadRegistry::class)->upload(
+            'default',
+            $payload,
+            $codec,
+            hash('sha256', $payload),
+        );
+
+        return [
+            'codec' => $codec,
+            'external_payload' => $reference,
+        ];
+    }
+
+    /**
+     * @return array{codec: string, external_payload: array{schema: string, reference_id: string, sha256: string, size_bytes: int, codec: string}}
+     */
+    private function missingExternalStorageEnvelope(string $codec, string $payload): array
+    {
+        $envelope = $this->externalStorageEnvelope($codec, $payload);
+        $row = RuntimeExternalPayload::query()
+            ->where('id', $envelope['external_payload']['reference_id'])
+            ->firstOrFail();
+        File::delete(rawurldecode(substr($row->storage_uri, strlen('file://'))));
+
+        return $envelope;
+    }
+
+    /**
+     * @return array{codec: string, external_payload: array{schema: string, reference_id: string, sha256: string, size_bytes: int, codec: string}}
+     */
+    private function corruptExternalStorageEnvelope(string $codec, string $payload): array
+    {
+        $envelope = $this->externalStorageEnvelope($codec, $payload);
+        $row = RuntimeExternalPayload::query()
+            ->where('id', $envelope['external_payload']['reference_id'])
+            ->firstOrFail();
+        $corruptPayload = strlen($payload) > 0
+            ? (($payload[0] === 'x' ? 'y' : 'x').substr($payload, 1))
+            : 'x';
+        file_put_contents(rawurldecode(substr($row->storage_uri, strlen('file://'))), $corruptPayload);
+
+        return $envelope;
+    }
+
+    /**
+     * @return array{codec: string, external_storage: array{schema: string, uri: string, sha256: string, size_bytes: int, codec: string}}
+     */
+    private function internalExternalStorageEnvelope(string $codec, string $payload): array
     {
         File::ensureDirectoryExists($this->externalStorageDirectory);
 
         $sha256 = hash('sha256', $payload);
         $path = $this->externalStorageDirectory.'/'.$codec.'-'.$sha256.'.bin';
         file_put_contents($path, $payload);
-
-        return [
-            'codec' => $codec,
-            'external_storage' => [
-                'schema' => 'durable-workflow.v2.external-payload-reference.v1',
-                'uri' => 'file://'.$path,
-                'sha256' => $sha256,
-                'size_bytes' => strlen($payload),
-                'codec' => $codec,
-            ],
-        ];
-    }
-
-    /**
-     * @return array{codec: string, external_storage: array{schema: string, uri: string, sha256: string, size_bytes: int, codec: string}}
-     */
-    private function missingExternalStorageEnvelope(string $codec, string $payload): array
-    {
-        $sha256 = hash('sha256', $payload);
-        $directory = $this->externalStorageDirectory.'/missing';
-        File::ensureDirectoryExists($directory);
-
-        return [
-            'codec' => $codec,
-            'external_storage' => [
-                'schema' => 'durable-workflow.v2.external-payload-reference.v1',
-                'uri' => 'file://'.$directory.'/'.$sha256.'.bin',
-                'sha256' => $sha256,
-                'size_bytes' => strlen($payload),
-                'codec' => $codec,
-            ],
-        ];
-    }
-
-    /**
-     * @return array{codec: string, external_storage: array{schema: string, uri: string, sha256: string, size_bytes: int, codec: string}}
-     */
-    private function corruptExternalStorageEnvelope(string $codec, string $payload): array
-    {
-        $sha256 = hash('sha256', $payload);
-        $directory = $this->externalStorageDirectory.'/corrupt';
-        File::ensureDirectoryExists($directory);
-
-        $corruptPayload = strlen($payload) > 0
-            ? (($payload[0] === 'x' ? 'y' : 'x').substr($payload, 1))
-            : 'x';
-        $path = $directory.'/'.$codec.'-'.$sha256.'.bin';
-        file_put_contents($path, $corruptPayload);
+        app(RuntimeExternalPayloadRegistry::class)->trackRetained(
+            'default',
+            'file://'.$path,
+            $codec,
+            $sha256,
+            strlen($payload),
+        );
 
         return [
             'codec' => $codec,
@@ -1841,18 +1847,17 @@ class PayloadEnvelopeIntegrationTest extends TestCase
         string $expectedCodec = 'avro',
     ): void {
         $this->assertSame($expectedCodec, $envelope['codec'] ?? null);
-        $this->assertArrayHasKey('external_storage', $envelope);
+        $this->assertArrayHasKey('external_payload', $envelope);
         $this->assertArrayNotHasKey('blob', $envelope);
 
-        $resolved = PayloadEnvelopeResolver::resolveCommandPayloadWithCodec(
-            $envelope,
-            'payload',
-            new LocalFilesystemExternalPayloadStorage($this->externalStorageDirectory),
+        $resolved = app(RuntimeExternalPayloadRegistry::class)->fetch(
+            'default',
+            $envelope['external_payload'],
         );
 
         $this->assertSame(
             $expected,
-            Serializer::unserializeWithCodec((string) $resolved['codec'], (string) $resolved['payload']),
+            Serializer::unserializeWithCodec($expectedCodec, $resolved['data']),
         );
     }
 

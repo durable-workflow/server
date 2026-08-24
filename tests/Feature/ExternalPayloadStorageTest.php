@@ -141,7 +141,10 @@ class ExternalPayloadStorageTest extends TestCase
             ->assertJsonPath('driver', 's3')
             ->assertJsonPath('small_payload.status', 'passed')
             ->assertJsonPath('small_payload.bytes', 16)
-            ->assertJsonPath('small_payload.reference_uri', 's3://dw-payloads/diagnostics/storage-test-small/'.substr($smallHash, 0, 2).'/'.$smallHash)
+            ->assertJsonPath(
+                'small_payload.reference_identity_sha256',
+                hash('sha256', 's3://dw-payloads/diagnostics/avro/'.substr($smallHash, 0, 2).'/'.$smallHash),
+            )
             ->assertJsonPath('large_payload.status', 'passed')
             ->assertJsonPath('large_payload.bytes', 64);
 
@@ -176,14 +179,14 @@ class ExternalPayloadStorageTest extends TestCase
         ], ['X-Namespace' => 'billing']);
 
         $smallHash = hash('sha256', str_repeat('s', 16));
-        $smallReference = 'azure://workflow-payloads/diagnostics/storage-test-small/'
+        $smallReference = 'azure://workflow-payloads/diagnostics/avro/'
             .substr($smallHash, 0, 2).'/'.$smallHash;
 
         $response->assertOk()
             ->assertJsonPath('status', 'passed')
             ->assertJsonPath('namespace', 'billing')
             ->assertJsonPath('driver', 'custom')
-            ->assertJsonPath('small_payload.reference_uri', $smallReference)
+            ->assertJsonPath('small_payload.reference_identity_sha256', hash('sha256', $smallReference))
             ->assertJsonPath('large_payload.status', 'passed');
 
         $this->assertSame([], Storage::disk('external-payload-custom')->allFiles());

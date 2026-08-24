@@ -6,9 +6,12 @@ namespace Tests\Feature;
 
 use App\Models\WorkflowDurableStream;
 use App\Models\WorkflowDurableStreamItem;
+use App\Models\WorkflowNamespace;
+use App\Support\RuntimeExternalPayloadRegistry;
 use App\Support\WorkflowStreamCommandProcessor;
 use App\Support\WorkflowStreamService;
 use Illuminate\Foundation\Testing\RefreshDatabase;
+use Illuminate\Support\Facades\File;
 use Illuminate\Support\Str;
 use Tests\Feature\Concerns\ServerTestHelpers;
 use Tests\Fixtures\ExternalGreetingWorkflow;
@@ -31,6 +34,13 @@ class WorkflowStreamsTest extends TestCase
     {
         parent::setUp();
         $this->createNamespace('default');
+    }
+
+    protected function tearDown(): void
+    {
+        File::deleteDirectory(storage_path('framework/testing/workflow-stream-runtime-payloads'));
+
+        parent::tearDown();
     }
 
     public function test_cluster_info_publishes_workflow_streams_contract(): void
@@ -69,7 +79,7 @@ class WorkflowStreamsTest extends TestCase
             )
             ->assertJsonPath(
                 'workflow_streams_contract.first_party_sdk_support.python.external_payload_references',
-                'read-write-with-configured-driver',
+                'opaque-reference',
             );
     }
 
@@ -497,6 +507,23 @@ class WorkflowStreamsTest extends TestCase
         $taskId = (string) $poll->json('task.task_id');
         $commandIdentity = (string) ($poll->json('task.workflow_command_id') ?: $taskId);
 
+        $payloadDirectory = storage_path('framework/testing/workflow-stream-runtime-payloads');
+        WorkflowNamespace::query()->where('name', 'default')->update([
+            'external_payload_storage' => [
+                'driver' => 'local',
+                'enabled' => true,
+                'threshold_bytes' => 32,
+                'config' => ['uri' => 'file://'.$payloadDirectory],
+            ],
+        ]);
+        $streamPayload = Serializer::serializeWithCodec('avro', ['token-1']);
+        $streamReference = app(RuntimeExternalPayloadRegistry::class)->upload(
+            'default',
+            $streamPayload,
+            'avro',
+            hash('sha256', $streamPayload),
+        );
+
         $complete = $this->withHeaders($this->workerHeaders())
             ->postJson("/api/worker/workflow-tasks/{$taskId}/complete", [
                 'lease_owner' => 'stream-command-worker',
@@ -510,7 +537,7 @@ class WorkflowStreamsTest extends TestCase
                         'command_identity' => $commandIdentity,
                         'command_ordinal' => 0,
                         'items' => [[
-                            'payload_reference' => 's3://payloads/token-1',
+                            'payload_reference' => $streamReference,
                             'payload_codec' => 'avro',
                             'idempotency_key' => "dw-stream:{$commandIdentity}:0:0",
                         ]],

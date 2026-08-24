@@ -1,0 +1,33 @@
+{
+  "$schema": "https://raw.githubusercontent.com/durable-workflow/.github/main/regression-corpus/evidence-schema.json",
+  "fixture_schema": "durable-workflow.codec-regression/v1",
+  "id": "runtime-external-payload-reference-envelope",
+  "protocol": {
+    "codec": "avro",
+    "schema": "durable_workflow.protocol.Value",
+    "version": "1",
+    "fingerprint": "e2a33dff55802237"
+  },
+  "bindings": [
+    "php",
+    "python",
+    "rust"
+  ],
+  "value": {
+    "type": "array",
+    "items": [
+      {
+        "type": "string",
+        "value": "runtime external payload boundary"
+      }
+    ]
+  },
+  "framing": {
+    "encoding": "avro-single-object",
+    "wire_base64": "wwHioz3/VYAiNwwCCkJydW50aW1lIGV4dGVybmFsIHBheWxvYWQgYm91bmRhcnkA"
+  },
+  "failure_policy": {
+    "operation": "round_trip",
+    "error": null
+  }
+}

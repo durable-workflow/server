@@ -1033,7 +1033,7 @@ SH);
 
     public function test_release_surfaces_declare_the_exact_server_product_train(): void
     {
-        $expectedVersion = '2.0.0-rc.42';
+        $expectedVersion = '2.0.0-rc.43';
         $composer = json_decode($this->read('composer.json'), true, flags: JSON_THROW_ON_ERROR);
 
         $this->assertSame(
@@ -1066,7 +1066,7 @@ SH);
 
         $chart = Yaml::parse($this->read('k8s/helm/durable-workflow/Chart.yaml'));
         $this->assertIsArray($chart);
-        $this->assertSame('0.1.33', $chart['version'] ?? null);
+        $this->assertSame('0.1.34', $chart['version'] ?? null);
         $this->assertSame($expectedVersion, $chart['appVersion'] ?? null);
         $this->assertSame(
             "docker.io/durableworkflow/server:{$expectedVersion}",

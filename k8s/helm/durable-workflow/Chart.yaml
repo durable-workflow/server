@@ -5,11 +5,11 @@ type: application
 # The chart's own semver version. Bumped on every chart release; treated as
 # independent of the server image version (appVersion). Breaking-change rules
 # for this version live in docs/helm-upgrading.md alongside the chart.
-version: 0.1.33
+version: 0.1.34
 # The immutable Durable Workflow Server identity this chart release packages.
 # The onboarding default in values.yaml is generated from the separately
 # qualified compatibility authority; appVersion remains release metadata.
-appVersion: "2.0.0-rc.42"
+appVersion: "2.0.0-rc.43"
 kubeVersion: ">=1.27.0-0"
 home: https://durable-workflow.github.io/docs/2.0/deployment
 sources:
@@ -30,12 +30,14 @@ annotations:
   # exact commit that most recently changed the packaged chart.
   org.opencontainers.image.source: https://github.com/durable-workflow/server
   dev.durable-workflow.source-revision: "unreleased"
-  dev.durable-workflow.image-reference: "docker.io/durableworkflow/server:2.0.0-rc.42"
+  dev.durable-workflow.image-reference: "docker.io/durableworkflow/server:2.0.0-rc.43"
   artifacthub.io/license: MIT
   artifacthub.io/category: integration-delivery
   # Free-form changelog used by Artifact Hub. Keep the most recent chart-version
   # entry first; do not rewrite past entries.
   artifacthub.io/changes: |
+    - kind: security
+      description: Keep external payload storage behind the authenticated runtime boundary in Server 2.0.0-rc.43.
     - kind: added
       description: Add portable durable message streams and worker protocol 1.15 in Server 2.0.0-rc.42.
     - kind: fixed

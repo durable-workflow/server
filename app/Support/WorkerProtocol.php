@@ -275,6 +275,7 @@ class WorkerProtocol
      *     external_task_input: array<string, mixed>,
      *     external_task_result: array<string, mixed>,
      *     task_queue_priority_fairness: array<string, mixed>,
+     *     runtime_external_payload_transport: array<string, mixed>,
      * }
      */
     public static function serverCapabilities(): array
@@ -413,6 +414,7 @@ class WorkerProtocol
                 'version' => ExternalTaskResultContract::VERSION,
             ],
             'task_queue_priority_fairness' => self::taskQueuePriorityFairnessSemantics(),
+            'runtime_external_payload_transport' => RuntimeExternalPayloadReference::transportManifest(),
         ];
     }
 

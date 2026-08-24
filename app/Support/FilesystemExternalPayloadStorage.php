@@ -32,12 +32,25 @@ class FilesystemExternalPayloadStorage implements ExternalPayloadStorageDriver
     public function get(string $uri): string
     {
         $key = $this->keyFromUri($uri);
+        $disk = Storage::disk($this->disk);
 
-        if (! Storage::disk($this->disk)->exists($key)) {
-            throw new RuntimeException(sprintf('Unable to read external payload [%s].', $uri));
+        if (! $disk->exists($key)) {
+            throw new ExternalPayloadObjectMissing('External payload object does not exist.');
         }
 
-        return Storage::disk($this->disk)->get($key);
+        $stream = $disk->readStream($key);
+        if ($stream === null || $stream === false) {
+            throw new RuntimeException('Unable to open external payload object for reading.');
+        }
+
+        try {
+            return BoundedExternalPayloadReader::read(
+                $stream,
+                max(1, (int) config('server.external_payload_transport.max_payload_bytes')),
+            );
+        } finally {
+            fclose($stream);
+        }
     }
 
     public function delete(string $uri): void

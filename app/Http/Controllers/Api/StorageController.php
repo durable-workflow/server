@@ -92,7 +92,7 @@ class StorageController
     {
         $payload = str_repeat($kind === 'small' ? 's' : 'l', $bytes);
         $expectedHash = hash('sha256', $payload);
-        $uri = $storage->put($payload, $expectedHash, 'storage-test-'.$kind);
+        $uri = $storage->put($payload, $expectedHash, 'avro');
         $read = $storage->get($uri);
         $storage->delete($uri);
 
@@ -104,7 +104,7 @@ class StorageController
             'status' => 'passed',
             'bytes' => $bytes,
             'sha256' => $expectedHash,
-            'reference_uri' => $uri,
+            'reference_identity_sha256' => hash('sha256', $uri),
         ];
     }
 }

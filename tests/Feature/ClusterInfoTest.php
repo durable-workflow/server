@@ -1990,11 +1990,11 @@ class ClusterInfoTest extends TestCase
                 'auth_composition_contract',
             )
             ->assertJsonPath(
-                'worker_protocol.external_execution_surface_contract.contract_seams.payload_external_storage.status',
+                'worker_protocol.external_execution_surface_contract.contract_seams.runtime_external_payload_transport.status',
                 'published',
             )
             ->assertJsonPath(
-                'worker_protocol.external_execution_surface_contract.contract_seams.payload_external_storage.cluster_info_path',
+                'worker_protocol.external_execution_surface_contract.contract_seams.runtime_external_payload_transport.cluster_info_path',
                 'namespace.external_payload_storage',
             )
             ->assertJsonPath(
@@ -2044,17 +2044,18 @@ class ClusterInfoTest extends TestCase
             ->assertJsonPath('namespace.retention_days', 45)
             ->assertJsonPath(
                 'namespace.external_payload_storage.schema',
-                'durable-workflow.v2.external-payload-reference.v1',
+                'durable-workflow.v2.runtime-external-payload-reference.v1',
             )
             ->assertJsonPath('namespace.external_payload_storage.version', 1)
             ->assertJsonPath('namespace.external_payload_storage.configured', true)
             ->assertJsonPath('namespace.external_payload_storage.enabled', true)
             ->assertJsonPath('namespace.external_payload_storage.status', 'available')
-            ->assertJsonPath('namespace.external_payload_storage.driver', 'custom')
             ->assertJsonPath('namespace.external_payload_storage.threshold_bytes', 1024)
-            ->assertJsonPath('namespace.external_payload_storage.reference_uri_scheme', 'azblob')
-            ->assertJsonPath('namespace.external_payload_storage.custom_driver_configurable', true)
-            ->assertJsonPath('namespace.external_payload_storage.config_redacted', true)
+            ->assertJsonPath('namespace.external_payload_storage.provider_details_exposed', false)
+            ->assertJsonPath('namespace.external_payload_storage.transport.version', 1)
+            ->assertJsonPath('namespace.external_payload_storage.direct_provider_adapters.required', false)
+            ->assertJsonMissingPath('namespace.external_payload_storage.driver')
+            ->assertJsonMissingPath('namespace.external_payload_storage.reference_uri_scheme')
             ->assertJsonMissingPath('namespace.external_payload_storage.config');
     }
 
@@ -2084,9 +2085,9 @@ class ClusterInfoTest extends TestCase
             ->assertJsonPath('namespace.external_payload_storage.configured', true)
             ->assertJsonPath('namespace.external_payload_storage.enabled', true)
             ->assertJsonPath('namespace.external_payload_storage.status', 'driver_unavailable')
-            ->assertJsonPath('namespace.external_payload_storage.driver', 's3')
-            ->assertJsonPath('namespace.external_payload_storage.reference_uri_scheme', 's3')
-            ->assertJsonPath('namespace.external_payload_storage.config_redacted', true)
+            ->assertJsonPath('namespace.external_payload_storage.provider_details_exposed', false)
+            ->assertJsonMissingPath('namespace.external_payload_storage.driver')
+            ->assertJsonMissingPath('namespace.external_payload_storage.reference_uri_scheme')
             ->assertJsonMissingPath('namespace.external_payload_storage.config');
     }
 
@@ -2101,7 +2102,7 @@ class ClusterInfoTest extends TestCase
             ->assertJsonPath('namespace.external_payload_storage.status', 'unconfigured')
             ->assertJsonPath(
                 'namespace.external_payload_storage.schema',
-                'durable-workflow.v2.external-payload-reference.v1',
+                'durable-workflow.v2.runtime-external-payload-reference.v1',
             );
     }
 

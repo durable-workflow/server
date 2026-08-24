@@ -504,6 +504,24 @@ return [
             'since' => '2.0.0',
             'legacy' => 'WORKFLOW_MAX_PAYLOAD_BYTES',
         ],
+        'DW_EXTERNAL_PAYLOAD_MAX_BYTES' => [
+            'description' => 'Maximum encoded bytes accepted by the authenticated runtime external-payload transport.',
+            'default' => '67108864',
+            'since' => '2.0.0',
+            'legacy' => 'WORKFLOW_SERVER_EXTERNAL_PAYLOAD_MAX_BYTES',
+        ],
+        'DW_EXTERNAL_PAYLOAD_REQUEST_TIMEOUT' => [
+            'description' => 'Client-facing request-timeout budget advertised for external-payload upload and fetch.',
+            'default' => '30',
+            'since' => '2.0.0',
+            'legacy' => 'WORKFLOW_SERVER_EXTERNAL_PAYLOAD_REQUEST_TIMEOUT',
+        ],
+        'DW_EXTERNAL_PAYLOAD_UPLOAD_EXPIRY' => [
+            'description' => 'Seconds an uploaded external payload may remain unclaimed before its opaque reference expires.',
+            'default' => '3600',
+            'since' => '2.0.0',
+            'legacy' => 'WORKFLOW_SERVER_EXTERNAL_PAYLOAD_UPLOAD_EXPIRY',
+        ],
         'DW_MAX_MEMO_BYTES' => [
             'description' => 'Maximum serialized bytes for a workflow memo.',
             'default' => '262144',

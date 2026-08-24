@@ -16,7 +16,7 @@ class GuardedExternalPayloadStorage implements ExternalPayloadStorageDriver
     {
         try {
             return $this->inner->put($data, $sha256, $codec);
-        } catch (ExternalPayloadStorageUnavailable|ExternalPayloadIntegrityException $exception) {
+        } catch (ExternalPayloadStorageUnavailable|ExternalPayloadObjectMissing|ExternalPayloadObjectOversized|ExternalPayloadIntegrityException $exception) {
             throw $exception;
         } catch (Throwable $exception) {
             throw new ExternalPayloadStorageUnavailable($exception->getMessage(), 0, $exception);
@@ -27,7 +27,7 @@ class GuardedExternalPayloadStorage implements ExternalPayloadStorageDriver
     {
         try {
             return $this->inner->get($uri);
-        } catch (ExternalPayloadStorageUnavailable|ExternalPayloadIntegrityException $exception) {
+        } catch (ExternalPayloadStorageUnavailable|ExternalPayloadObjectMissing|ExternalPayloadObjectOversized|ExternalPayloadIntegrityException $exception) {
             throw $exception;
         } catch (Throwable $exception) {
             throw new ExternalPayloadStorageUnavailable($exception->getMessage(), 0, $exception);
@@ -38,7 +38,7 @@ class GuardedExternalPayloadStorage implements ExternalPayloadStorageDriver
     {
         try {
             $this->inner->delete($uri);
-        } catch (ExternalPayloadStorageUnavailable|ExternalPayloadIntegrityException $exception) {
+        } catch (ExternalPayloadStorageUnavailable|ExternalPayloadObjectMissing|ExternalPayloadObjectOversized|ExternalPayloadIntegrityException $exception) {
             throw $exception;
         } catch (Throwable $exception) {
             throw new ExternalPayloadStorageUnavailable($exception->getMessage(), 0, $exception);

@@ -41,7 +41,7 @@ final class ExternalTaskResultContract
                 'result_payload' => 'Success result payloads use codec="avro". Null result is represented as result: null.',
                 'failure_details' => 'Failure details use codec="avro" when present.',
                 'unsupported_codec' => 'A handler that cannot decode input payloads must return failure.kind unsupported_payload with failure.classification unsupported_payload_codec.',
-                'unsupported_external_storage' => 'A handler that cannot resolve an external storage reference must return failure.kind unsupported_payload with failure.classification unsupported_payload_reference.',
+                'unsupported_external_payload' => 'A handler that cannot resolve an opaque reference through the authenticated namespace runtime must return failure.kind unsupported_payload with failure.classification unsupported_payload_reference.',
             ],
             'envelopes' => [
                 'success' => self::successEnvelope(),

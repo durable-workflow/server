@@ -36,6 +36,8 @@ class NamespaceLifecycleCleanup
 
             $deleted = [];
             $deleted['external_payloads_deleted'] = $externalPayloads['deleted'];
+            $deleted['runtime_external_payload_references'] = app(RuntimeExternalPayloadRegistry::class)
+                ->deleteForNamespace($namespace);
 
             $deleted['activity_attempts'] = $this->deleteByAnyIn('activity_attempts', [
                 'workflow_run_id' => $runIds,

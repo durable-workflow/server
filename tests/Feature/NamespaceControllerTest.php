@@ -900,7 +900,7 @@ class NamespaceControllerTest extends TestCase
         $this->assertDatabaseHas('workflow_service_calls', ['id' => $serviceCallId, 'namespace' => 'tenant-b']);
         $this->assertDatabaseHas('workflow_commands', ['id' => $commandId, 'workflow_run_id' => $tenantBRun]);
 
-        $tenantBStorage = app(NamespaceExternalPayloadStorage::class)->driverFor('tenant-b');
+        $tenantBStorage = app(NamespaceExternalPayloadStorage::class)->untrackedDriverFor('tenant-b');
         $this->assertNotNull($tenantBStorage);
         $this->assertSame($servicePayload, $tenantBStorage->get('file://'.$servicePath));
         $this->assertSame($commandPayload, $tenantBStorage->get('file://'.$commandPath));

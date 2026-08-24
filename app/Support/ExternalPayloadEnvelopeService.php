@@ -29,10 +29,10 @@ class ExternalPayloadEnvelopeService
     /**
      * Return the worker-protocol payload envelope for an encoded blob.
      *
-     * This is a read-path presenter only: persisted external references are
-     * surfaced as `{codec, external_storage}`, and ordinary strings remain
-     * inline as `{codec, blob}`. Write paths externalize oversized payloads
-     * before they are recorded.
+     * This is an internal read-path presenter. Persisted provider references
+     * remain `{codec, external_storage}` until the authenticated HTTP boundary
+     * replaces them with opaque `{codec, external_payload}` references.
+     * Ordinary strings remain inline as `{codec, blob}`.
      *
      * @return array{codec: string, blob: string}|array{codec: string, external_storage: array<string, mixed>}|null
      */

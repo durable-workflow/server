@@ -7,6 +7,8 @@ use App\Support\BackendLockPressure;
 use App\Support\ControlPlaneFailureDiagnostics;
 use App\Support\ControlPlaneOperation;
 use App\Support\ControlPlaneProtocol;
+use App\Support\RuntimeExternalPayloadAudit;
+use App\Support\RuntimeExternalPayloadException;
 use App\Support\WorkerProtocol;
 use Illuminate\Foundation\Application;
 use Illuminate\Foundation\Configuration\Exceptions;
@@ -37,6 +39,26 @@ return Application::configure(basePath: dirname(__DIR__))
         ]);
     })
     ->withExceptions(function (Exceptions $exceptions) {
+        $exceptions->render(function (RuntimeExternalPayloadException $exception, Request $request) {
+            app(RuntimeExternalPayloadAudit::class)->record($request, 'external_payload.rejected', [
+                'reason' => $exception->reason,
+                'retryable' => $exception->retryable,
+                'status' => $exception->status,
+            ]);
+
+            $payload = [
+                'schema' => 'durable-workflow.v2.runtime-external-payload-error.v1',
+                'reason' => $exception->reason,
+                'message' => $exception->getMessage(),
+                'retryable' => $exception->retryable,
+                'status' => $exception->status,
+            ];
+
+            return WorkerProtocol::isWorkerPlaneRequest($request)
+                ? WorkerProtocol::json($payload, $exception->status)
+                : ControlPlaneProtocol::jsonForRequest($request, $payload, $exception->status);
+        });
+
         $exceptions->render(function (WorkflowOutputCodecUnavailableException $exception, Request $request) {
             if (ControlPlaneProtocol::requestVersion($request) !== ControlPlaneProtocol::VERSION) {
                 return null;

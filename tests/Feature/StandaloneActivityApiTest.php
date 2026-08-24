@@ -6,7 +6,7 @@ namespace Tests\Feature;
 
 use App\Models\WorkflowNamespace;
 use App\Support\ControlPlaneProtocol;
-use App\Support\WorkerProtocol;
+use App\Support\RuntimeExternalPayloadReference;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\File;
@@ -14,15 +14,13 @@ use Tests\Feature\Concerns\ServerTestHelpers;
 use Tests\TestCase;
 use Workflow\Serializers\CodecRegistry;
 use Workflow\Serializers\Serializer;
-use Workflow\V2\Enums\ActivityStatus;
 use Workflow\V2\Enums\ActivityAttemptStatus;
+use Workflow\V2\Enums\ActivityStatus;
 use Workflow\V2\Enums\RunStatus;
 use Workflow\V2\Models\ActivityExecution;
 use Workflow\V2\Models\WorkflowRun;
 use Workflow\V2\StandaloneActivity\StandaloneActivityHostType;
 use Workflow\V2\Support\ExternalPayloads;
-use Workflow\V2\Support\LocalFilesystemExternalPayloadStorage;
-use Workflow\V2\Support\PayloadEnvelopeResolver;
 
 /**
  * End-to-end coverage for standalone activities on the control plane.
@@ -211,7 +209,7 @@ class StandaloneActivityApiTest extends TestCase
 
         $poll->assertOk()
             ->assertJsonPath('task.payload_codec', 'avro')
-            ->assertJsonStructure(['task' => ['arguments' => ['codec', 'external_storage']]]);
+            ->assertJsonStructure(['task' => ['arguments' => ['codec', 'external_payload']]]);
         $this->assertExternalEnvelopeDecodes($poll->json('task.arguments'), [$input]);
 
         $result = ['message' => str_repeat('B', 128)];
@@ -237,7 +235,7 @@ class StandaloneActivityApiTest extends TestCase
         $show = $this->withHeaders($this->apiHeaders())->getJson('/api/activities/standalone-external-greet');
         $show->assertOk()
             ->assertJsonPath('activity_status', ActivityStatus::Completed->value)
-            ->assertJsonStructure(['result' => ['codec', 'external_storage']]);
+            ->assertJsonStructure(['result' => ['codec', 'external_payload']]);
         $this->assertExternalEnvelopeDecodes($show->json('result'), $result);
     }
 
@@ -506,18 +504,30 @@ class StandaloneActivityApiTest extends TestCase
      */
     private function assertExternalEnvelopeDecodes(array $envelope, mixed $expected): void
     {
-        $this->assertArrayHasKey('external_storage', $envelope);
+        $this->assertArrayHasKey('external_payload', $envelope);
+        $this->assertArrayNotHasKey('external_storage', $envelope);
         $this->assertArrayNotHasKey('blob', $envelope);
 
-        $resolved = PayloadEnvelopeResolver::resolveCommandPayloadWithCodec(
-            $envelope,
-            'payload',
-            new LocalFilesystemExternalPayloadStorage($this->externalStorageDirectory),
-        );
+        $reference = $envelope['external_payload'];
+        $this->assertIsArray($reference);
+        $this->assertSame(RuntimeExternalPayloadReference::SCHEMA, $reference['schema'] ?? null);
+        $this->assertArrayNotHasKey('uri', $reference);
+
+        $response = $this->withHeaders([
+            'X-Namespace' => 'default',
+            'X-Durable-Workflow-Payload-Codec' => $reference['codec'],
+            'X-Durable-Workflow-Payload-Size' => (string) $reference['size_bytes'],
+            'X-Durable-Workflow-Payload-SHA256' => $reference['sha256'],
+        ])->get('/api/external-payloads/v1/'.$reference['reference_id']);
+
+        $response->assertOk();
+        $payload = $response->getContent();
+        $this->assertSame((int) $reference['size_bytes'], strlen($payload));
+        $this->assertSame((string) $reference['sha256'], hash('sha256', $payload));
 
         $this->assertSame(
             $expected,
-            Serializer::unserializeWithCodec((string) $resolved['codec'], (string) $resolved['payload']),
+            Serializer::unserializeWithCodec((string) $envelope['codec'], $payload),
         );
     }
 

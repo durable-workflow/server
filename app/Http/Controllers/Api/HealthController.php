@@ -25,6 +25,7 @@ use App\Support\PrereleaseReadinessContract;
 use App\Support\PrincipalAttributionContract;
 use App\Support\PythonSdkParityContract;
 use App\Support\ReplayVerificationContract;
+use App\Support\RuntimeExternalPayloadReference;
 use App\Support\SagaRuntimeContract;
 use App\Support\SchedulesRuntimeContract;
 use App\Support\SearchAttributeRuntimeContract;
@@ -44,7 +45,6 @@ use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
 use Workflow\Serializers\Avro;
-use Workflow\V2\Support\ExternalPayloadReference;
 use Workflow\V2\Support\OperatorMetrics;
 use Workflow\V2\Support\PlatformConformanceSuite;
 use Workflow\V2\Support\PlatformProtocolSpecs;
@@ -139,6 +139,7 @@ class HealthController
             'history_retention' => true,
             'payload_codec_envelope' => true,
             'payload_codec_envelope_responses' => true,
+            'runtime_external_payload_transport' => true,
             'bridge_adapter_outcome_contract' => true,
             'external_executor_config_contract' => true,
             'invocable_carrier_contract' => true,
@@ -180,7 +181,7 @@ class HealthController
 
         $response = [
             'server_id' => config('server.server_id'),
-            'version' => env('APP_VERSION', '2.0.0-rc.42'),
+            'version' => env('APP_VERSION', '2.0.0-rc.43'),
             'default_namespace' => config('server.default_namespace'),
             'namespace' => $this->namespacePolicy($namespace),
             'discovery' => [
@@ -331,17 +332,19 @@ class HealthController
         $resolvedDriver = $enabled && $this->externalPayloadStorageResolvable($driver, $config);
 
         return [
-            'schema' => ExternalPayloadReference::SCHEMA,
+            'schema' => RuntimeExternalPayloadReference::SCHEMA,
             'version' => 1,
             'configured' => $policy !== [],
             'enabled' => $enabled,
             'status' => $this->externalPayloadStorageStatus($policy, $enabled, $resolvedDriver),
-            'driver' => $driver,
             'threshold_bytes' => (int) $threshold,
-            'reference_uri_scheme' => $this->externalPayloadReferenceScheme($driver, $config),
-            'supported_drivers' => ['local', 's3', 'gcs', 'azure', 'custom'],
-            'custom_driver_configurable' => true,
-            'config_redacted' => $config !== [],
+            'transport' => RuntimeExternalPayloadReference::transportManifest(),
+            'provider_details_exposed' => false,
+            'direct_provider_adapters' => [
+                'required' => false,
+                'default_enabled' => false,
+                'capability_negotiated' => true,
+            ],
         ];
     }
 
@@ -359,26 +362,6 @@ class HealthController
         }
 
         return $resolved ? 'available' : 'driver_unavailable';
-    }
-
-    /**
-     * @param  array<string, mixed>  $config
-     */
-    private function externalPayloadReferenceScheme(?string $driver, array $config): ?string
-    {
-        if ($driver === null) {
-            return null;
-        }
-
-        if ($driver === 'local') {
-            return 'file';
-        }
-
-        if ($driver === 'custom') {
-            return $this->stringOrNull($config['scheme'] ?? null);
-        }
-
-        return in_array($driver, ['s3', 'gcs', 'azure'], true) ? $driver : null;
     }
 
     /**

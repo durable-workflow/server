@@ -32,7 +32,7 @@ class ExternalTaskInputContractTest extends TestCase
         );
         $this->assertContains('lease', $manifest['envelopes']['workflow_task']['required_fields']);
         $this->assertContains('deadlines', $manifest['envelopes']['activity_task']['required_fields']);
-        $this->assertArrayHasKey('external_storage', $manifest['payload_support']);
+        $this->assertArrayHasKey('external_payload', $manifest['payload_support']);
         $this->assertSame(
             'durable-workflow.v2.external-task-input.workflow-task.v1',
             $manifest['fixtures']['workflow_task']['artifact'],

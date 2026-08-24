@@ -11,6 +11,10 @@ use Symfony\Component\HttpFoundation\Response;
 
 class NamespaceResolver
 {
+    public function __construct(
+        private readonly RuntimeExternalPayloadTransport $externalPayloadTransport,
+    ) {}
+
     public function handle(Request $request, Closure $next): Response
     {
         $namespace = $request->header(
@@ -22,11 +26,8 @@ class NamespaceResolver
 
         $request->attributes->set('namespace', $namespace);
 
-        if (! $this->requiresNamespaceValidation($request)) {
-            return $next($request);
-        }
-
-        if (! WorkflowNamespace::query()->where('name', $namespace)->exists()) {
+        if ($this->requiresNamespaceValidation($request)
+            && ! WorkflowNamespace::query()->where('name', $namespace)->exists()) {
             $payload = [
                 'message' => "Namespace '{$namespace}' does not exist.",
                 'reason' => 'namespace_not_found',
@@ -40,6 +41,8 @@ class NamespaceResolver
 
             return ControlPlaneProtocol::jsonForRequest($request, $payload, 404);
         }
+
+        $this->externalPayloadTransport->resolveIncoming($request);
 
         return $next($request);
     }

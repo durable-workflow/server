@@ -2,6 +2,7 @@
 
 namespace Tests\Feature;
 
+use App\Models\RuntimeExternalPayload;
 use App\Models\WorkerBuildIdRollout;
 use App\Models\WorkerRegistration;
 use App\Models\WorkflowNamespace;
@@ -13,6 +14,7 @@ use App\Support\LongPollSignalStore;
 use App\Support\LongPollWaitSlotStore;
 use App\Support\QueryTaskPollRequestStore;
 use App\Support\QueryTaskQueueFullException;
+use App\Support\RuntimeExternalPayloadRegistry;
 use App\Support\ServerPollingCache;
 use App\Support\WorkerProtocol;
 use App\Support\WorkflowQueryTaskBroker;
@@ -2225,11 +2227,24 @@ class WorkflowQueryTaskBrokerTest extends TestCase
                 ->assertJsonPath('task.lease_owner', 'python-query-external-lease');
 
             $missingPayload = Serializer::serializeWithCodec('avro', ['not-read']);
+            $reference = app(RuntimeExternalPayloadRegistry::class)->upload(
+                'default',
+                $missingPayload,
+                'avro',
+                hash('sha256', $missingPayload),
+            );
+            $row = RuntimeExternalPayload::query()->whereKey($reference['reference_id'])->firstOrFail();
+            $path = parse_url($row->storage_uri, PHP_URL_PATH);
+            $this->assertIsString($path);
+            File::delete($path);
 
             $this->postJson("/api/worker/query-tasks/{$task['query_task_id']}/complete", [
                 'lease_owner' => 'wrong-query-worker',
                 'query_task_attempt' => 1,
-                'result_envelope' => $this->missingExternalStorageEnvelope($directory, 'avro', $missingPayload),
+                'result_envelope' => [
+                    'codec' => 'avro',
+                    'external_payload' => $reference,
+                ],
             ], $this->workerHeaders())
                 ->assertStatus(409)
                 ->assertJsonPath('reason', 'lease_owner_mismatch')
@@ -4563,27 +4578,6 @@ class WorkflowQueryTaskBrokerTest extends TestCase
                         $this->typedCommandParameter('approved', 0, 'bool'),
                     ],
                 ],
-            ],
-        ];
-    }
-
-    /**
-     * @return array{codec: string, external_storage: array{schema: string, uri: string, sha256: string, size_bytes: int, codec: string}}
-     */
-    private function missingExternalStorageEnvelope(string $root, string $codec, string $payload): array
-    {
-        $sha256 = hash('sha256', $payload);
-        $directory = $root.'/missing';
-        File::ensureDirectoryExists($directory);
-
-        return [
-            'codec' => $codec,
-            'external_storage' => [
-                'schema' => 'durable-workflow.v2.external-payload-reference.v1',
-                'uri' => 'file://'.$directory.'/'.$sha256.'.bin',
-                'sha256' => $sha256,
-                'size_bytes' => strlen($payload),
-                'codec' => $codec,
             ],
         ];
     }

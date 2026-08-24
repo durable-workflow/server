@@ -6,6 +6,7 @@ use App\Auth\AuthException;
 use App\Auth\Principal;
 use App\Contracts\AuthProvider;
 use App\Support\ControlPlaneProtocol;
+use App\Support\RuntimeExternalPayloadAudit;
 use App\Support\WorkerProtocol;
 use Closure;
 use Illuminate\Http\JsonResponse;
@@ -58,6 +59,22 @@ class Authenticate
 
     private static function error(Request $request, int $status, string $reason, string $message): JsonResponse
     {
+        if ($request->is('api/external-payloads/v1') || $request->is('api/external-payloads/v1/*')) {
+            app(RuntimeExternalPayloadAudit::class)->record($request, 'external_payload.rejected', [
+                'reason' => 'external_payload_unauthorized',
+                'retryable' => false,
+                'status' => $status,
+            ]);
+
+            return ControlPlaneProtocol::jsonForRequest($request, [
+                'schema' => 'durable-workflow.v2.runtime-external-payload-error.v1',
+                'reason' => 'external_payload_unauthorized',
+                'message' => $message,
+                'retryable' => false,
+                'status' => $status,
+            ], $status);
+        }
+
         if (WorkerProtocol::isWorkerPlaneRequest($request)) {
             return WorkerProtocol::json([
                 'reason' => $reason,

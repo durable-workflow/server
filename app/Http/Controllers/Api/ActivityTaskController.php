@@ -6,6 +6,7 @@ use App\Models\WorkerBuildIdRollout;
 use App\Models\WorkerRegistration;
 use App\Support\ActivityHeartbeatRecorder;
 use App\Support\ActivityTaskPoller;
+use App\Support\AvroPayloadEnvelopeResolver;
 use App\Support\BackendLockPressure;
 use App\Support\ExternalExecutorConfigContract;
 use App\Support\ExternalPayloadEnvelopeService;
@@ -15,6 +16,8 @@ use App\Support\LongPollCapacityExhaustedException;
 use App\Support\NamespaceExternalPayloadStorage;
 use App\Support\NamespaceWorkflowScope;
 use App\Support\PayloadCodecContract;
+use App\Support\RuntimeExternalPayloadAudit;
+use App\Support\RuntimeExternalPayloadException;
 use App\Support\WorkerPollBackpressure;
 use App\Support\WorkerProtocol;
 use App\Support\WorkerProtocolMutationRetrier;
@@ -28,7 +31,6 @@ use InvalidArgumentException;
 use Workflow\V2\Contracts\ActivityTaskBridge as ActivityTaskBridgeContract;
 use Workflow\V2\Exceptions\ExternalPayloadIntegrityException;
 use Workflow\V2\Models\ActivityExecution;
-use App\Support\AvroPayloadEnvelopeResolver;
 use Workflow\V2\Support\WorkerProtocolVersion;
 
 class ActivityTaskController
@@ -594,6 +596,26 @@ class ActivityTaskController
         \Throwable $exception,
         int $status,
     ): JsonResponse {
+        if ($exception instanceof RuntimeExternalPayloadException) {
+            app(RuntimeExternalPayloadAudit::class)->record(request(), 'external_payload.rejected', [
+                'reason' => $exception->reason,
+                'retryable' => $exception->retryable,
+                'status' => $exception->status,
+            ]);
+
+            return WorkerProtocol::json([
+                'schema' => 'durable-workflow.v2.runtime-external-payload-error.v1',
+                'task_id' => $taskId,
+                'activity_attempt_id' => $activityAttemptId,
+                'outcome' => 'rejected',
+                'recorded' => false,
+                'reason' => $exception->reason,
+                'error' => $exception->getMessage(),
+                'retryable' => $exception->retryable,
+                'status' => $exception->status,
+            ], $exception->status);
+        }
+
         $integrityFailure = $status === 422;
 
         return WorkerProtocol::json([

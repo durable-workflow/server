@@ -67,6 +67,12 @@ chart MINOR bump and an entry below.
 
 ## Per-version migration notes
 
+### 0.1.34
+
+This release advances the chart Server identity to `2.0.0-rc.43` and routes
+external payload upload and fetch through the authenticated namespace runtime.
+Existing `0.1.33` values remain compatible.
+
 ### 0.1.33
 
 This release advances the chart Server identity to `2.0.0-rc.42` and adds

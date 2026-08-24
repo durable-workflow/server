@@ -2,9 +2,13 @@
 
 namespace Tests\Feature;
 
+use App\Models\WorkflowNamespace;
+use App\Support\RuntimeExternalPayloadReference;
+use App\Support\RuntimeExternalPayloadRegistry;
 use App\Support\SearchAttributeValueValidator;
 use App\Support\ServiceCallBoundary;
 use Illuminate\Foundation\Testing\RefreshDatabase;
+use Illuminate\Support\Facades\File;
 use Illuminate\Support\Str;
 use Tests\Feature\Concerns\ServerTestHelpers;
 use Tests\TestCase;
@@ -24,6 +28,13 @@ class ServiceCatalogControllerTest extends TestCase
         parent::setUp();
 
         $this->createNamespace('default');
+    }
+
+    protected function tearDown(): void
+    {
+        File::deleteDirectory(storage_path('framework/testing/service-catalog-runtime-payloads'));
+
+        parent::tearDown();
     }
 
     public function test_it_lists_empty_service_endpoints_for_a_new_namespace(): void
@@ -391,6 +402,42 @@ class ServiceCatalogControllerTest extends TestCase
             'handler_target_reference' => 'updates.invoice.submit',
         ]);
 
+        $payloadDirectory = storage_path('framework/testing/service-catalog-runtime-payloads');
+        File::deleteDirectory($payloadDirectory);
+        WorkflowNamespace::query()->where('name', 'default')->update([
+            'external_payload_storage' => [
+                'driver' => 'local',
+                'enabled' => true,
+                'threshold_bytes' => 32,
+                'config' => ['uri' => 'file://'.$payloadDirectory],
+            ],
+        ]);
+        $registry = app(RuntimeExternalPayloadRegistry::class);
+        $inputPayload = 'service-call-input';
+        $inputUri = 'file://'.$payloadDirectory.'/input.avro';
+        File::ensureDirectoryExists($payloadDirectory);
+        File::put($payloadDirectory.'/input.avro', $inputPayload);
+        $registry->trackRetained(
+            'default',
+            $inputUri,
+            'avro',
+            hash('sha256', $inputPayload),
+            strlen($inputPayload),
+        );
+        $inputReference = $registry->referenceForUri('default', $inputUri);
+
+        $outputPayload = 'service-call-output';
+        $outputUri = 'file://'.$payloadDirectory.'/output.avro';
+        File::put($payloadDirectory.'/output.avro', $outputPayload);
+        $registry->trackRetained(
+            'default',
+            $outputUri,
+            'avro',
+            hash('sha256', $outputPayload),
+            strlen($outputPayload),
+        );
+        $outputReference = $registry->referenceForUri('default', $outputUri);
+
         $serviceCall = WorkflowServiceCall::query()->create([
             'namespace' => 'default',
             'workflow_service_endpoint_id' => $endpoint->id,
@@ -411,8 +458,8 @@ class ServiceCatalogControllerTest extends TestCase
             'resolved_binding_kind' => 'workflow_update',
             'resolved_target_reference' => 'updates.invoice.submit',
             'payload_codec' => 'avro',
-            'input_payload_reference' => 'payloads/service-calls/input-1.avro',
-            'output_payload_reference' => 'payloads/service-calls/output-1.avro',
+            'input_payload_reference' => $inputUri,
+            'output_payload_reference' => $outputUri,
             'idempotency_key' => 'invoice-123',
             'deadline_policy' => ['timeout_seconds' => 60],
             'idempotency_policy' => ['scope' => 'caller'],
@@ -459,8 +506,14 @@ class ServiceCatalogControllerTest extends TestCase
             ->assertJsonPath('resolved_binding_kind', 'workflow_update')
             ->assertJsonPath('resolved_target_reference', 'updates.invoice.submit')
             ->assertJsonPath('payload_codec', 'avro')
-            ->assertJsonPath('input_payload_reference', 'payloads/service-calls/input-1.avro')
-            ->assertJsonPath('output_payload_reference', 'payloads/service-calls/output-1.avro')
+            ->assertJsonPath('input_payload_reference.schema', RuntimeExternalPayloadReference::SCHEMA)
+            ->assertJsonPath('input_payload_reference.reference_id', $inputReference['reference_id'])
+            ->assertJsonPath('input_payload_reference.sha256', hash('sha256', $inputPayload))
+            ->assertJsonPath('output_payload_reference.schema', RuntimeExternalPayloadReference::SCHEMA)
+            ->assertJsonPath('output_payload_reference.reference_id', $outputReference['reference_id'])
+            ->assertJsonPath('output_payload_reference.sha256', hash('sha256', $outputPayload))
+            ->assertJsonMissingPath('input_payload_reference.uri')
+            ->assertJsonMissingPath('output_payload_reference.uri')
             ->assertJsonPath('idempotency_key', 'invoice-123')
             ->assertJsonPath('deadline_policy.timeout_seconds', 60)
             ->assertJsonPath('idempotency_policy.scope', 'caller')

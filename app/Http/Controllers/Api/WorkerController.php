@@ -17,6 +17,8 @@ use App\Support\NamespaceWorkflowScope;
 use App\Support\PayloadCodecContract;
 use App\Support\PollRequestTaskKindsConflict;
 use App\Support\QueryTaskQueueUnavailableException;
+use App\Support\RuntimeExternalPayloadAudit;
+use App\Support\RuntimeExternalPayloadException;
 use App\Support\SearchAttributeValueValidator;
 use App\Support\ServiceModeTimerDispatcher;
 use App\Support\StreamClosedException;
@@ -2083,6 +2085,25 @@ class WorkerController
                     $commands[$index]['payload_codec'] = $resolved['codec'];
                 }
             }
+
+            $streamItems = $command['workflow_stream']['items'] ?? null;
+            if (is_array($streamItems)) {
+                foreach ($streamItems as $item) {
+                    $reference = is_array($item) ? ($item['payload_reference'] ?? null) : null;
+                    if (is_string($reference) && $reference !== '') {
+                        if ($driver === null) {
+                            throw new RuntimeExternalPayloadException(
+                                'external_payload_unavailable',
+                                503,
+                                true,
+                                'External payload storage is unavailable for this namespace.',
+                            );
+                        }
+
+                        $driver->get($reference);
+                    }
+                }
+            }
         }
 
         return $commands;
@@ -2094,6 +2115,26 @@ class WorkerController
         \Throwable $exception,
         int $status,
     ): JsonResponse {
+        if ($exception instanceof RuntimeExternalPayloadException) {
+            app(RuntimeExternalPayloadAudit::class)->record(request(), 'external_payload.rejected', [
+                'reason' => $exception->reason,
+                'retryable' => $exception->retryable,
+                'status' => $exception->status,
+            ]);
+
+            return WorkerProtocol::json([
+                'schema' => 'durable-workflow.v2.runtime-external-payload-error.v1',
+                'task_id' => $taskId,
+                'workflow_task_attempt' => $workflowTaskAttempt,
+                'outcome' => 'rejected',
+                'recorded' => false,
+                'reason' => $exception->reason,
+                'error' => $exception->getMessage(),
+                'retryable' => $exception->retryable,
+                'status' => $exception->status,
+            ], $exception->status);
+        }
+
         $integrityFailure = $status === 422;
 
         return WorkerProtocol::json([
@@ -2114,6 +2155,26 @@ class WorkerController
         \Throwable $exception,
         int $status,
     ): JsonResponse {
+        if ($exception instanceof RuntimeExternalPayloadException) {
+            app(RuntimeExternalPayloadAudit::class)->record(request(), 'external_payload.rejected', [
+                'reason' => $exception->reason,
+                'retryable' => $exception->retryable,
+                'status' => $exception->status,
+            ]);
+
+            return WorkerProtocol::json([
+                'schema' => 'durable-workflow.v2.runtime-external-payload-error.v1',
+                'query_task_id' => $queryTaskId,
+                'query_task_attempt' => $queryTaskAttempt,
+                'outcome' => 'rejected',
+                'recorded' => false,
+                'reason' => $exception->reason,
+                'error' => $exception->getMessage(),
+                'retryable' => $exception->retryable,
+                'status' => $exception->status,
+            ], $exception->status);
+        }
+
         $integrityFailure = $status === 422;
 
         return WorkerProtocol::json([

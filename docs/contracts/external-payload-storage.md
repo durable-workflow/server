@@ -1,73 +1,100 @@
-# External Payload Storage
+# Runtime External Payload Transport
 
-External payload storage lets a namespace keep large encoded workflow payloads
-out of worker/history JSON by storing bytes through a configured driver and
-passing a verified reference envelope instead.
+External payload storage keeps large encoded workflow payloads outside worker
+and history JSON. The namespace runtime owns the backing storage provider,
+credentials, integrity checks, retention, and deletion. Applications use their
+normal runtime URL, namespace, and role credential; they do not configure or
+parse the runtime's bucket, container, filesystem path, or provider URI.
 
-## Driver policy
+## Discovery and reference shape
 
-Namespace policy lives on `external_payload_storage`:
+`GET /api/cluster/info` publishes the active namespace policy at
+`namespace.external_payload_storage` and the same transport capability at
+`worker_protocol.server_capabilities.runtime_external_payload_transport`.
+Discovery includes the inline threshold, transport paths, maximum external
+payload size, timeout budget, expiry policy, cache behavior, typed outcomes,
+and direct-adapter policy. It intentionally omits backing-driver identity and
+configuration.
 
-- `driver`: `local`, `s3`, `gcs`, `azure`, or `custom`.
-- `enabled`: disables reference handling when false.
-- `threshold_bytes`: encoded payloads larger than this value are externalized.
-  When omitted, the server payload limit is used.
-- `config`: driver-specific settings. Object-store and custom drivers use a
-  Laravel filesystem `disk`, a bucket/container/name, and an optional
-  `prefix`. Custom drivers also provide the URI `scheme` emitted in
-  references, so operators can register a Flysystem adapter without forking the
-  server.
+The only remote reference schema is
+`durable-workflow.v2.runtime-external-payload-reference.v1`:
 
-`GET /api/cluster/info` exposes the active namespace discovery view at
-`namespace.external_payload_storage`. That object is safe for worker discovery:
-it includes the reference schema, driver name, enabled/configured status,
-threshold, URI scheme, supported driver list, and whether driver config was
-redacted, but it does not include the raw driver config.
+```json
+{
+  "schema": "durable-workflow.v2.runtime-external-payload-reference.v1",
+  "reference_id": "ep_01J...",
+  "codec": "avro",
+  "size_bytes": 4194304,
+  "sha256": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+}
+```
 
-Every external reference has schema
-`durable-workflow.v2.external-payload-reference.v1` and carries `uri`,
-`sha256`, `size_bytes`, and `codec`. The server verifies size and SHA-256
-before accepting a referenced payload from a worker or control-plane caller.
+Payload envelope fields use `{codec, external_payload}`. Persisted fields named
+`payload_reference` use the reference object directly. Provider-specific
+`external_storage` envelopes and string provider URIs are not accepted on the
+remote boundary.
 
-## Runtime behavior
+## Upload and fetch
 
-Workers and SDKs may send `{codec, external_storage}` wherever the worker
-protocol accepts a payload envelope. The server fetches and verifies the bytes
-before committing the workflow command or activity result. The same namespace
-policy is bound into the workflow runtime: oversized encoded workflow inputs,
-activity inputs, activity results, and workflow outputs are persisted as stored
-external references before they enter history. Worker poll, history, query,
-workflow describe, and standalone activity describe responses expose those
-references as `{codec, external_storage}` when the namespace policy is enabled.
-Workflow task completions preserve top-level `payload_codec` fields for command
-fields that the workflow package declares as accepting payload envelopes. This
-includes `complete_update.result`, so externally stored update results keep the
-resolved codec alongside the inline bytes passed to the package normalizer.
-`record_side_effect` result bytes may carry `payload_codec` or a codec-tagged
-payload envelope, and history stores the side-effect result with that codec.
+Upload encoded bytes with `POST /api/external-payloads/v1` using
+`application/octet-stream` and these declared metadata headers:
 
-Small payloads remain inline as `{codec, blob}`. Existing inline history stays
-readable; externalization is a transport shape for oversized payloads, not a
-new payload codec.
+- `X-Durable-Workflow-Payload-Codec`
+- `X-Durable-Workflow-Payload-Size`
+- `X-Durable-Workflow-Payload-SHA256`
 
-## Failure modes
+The runtime rejects the request before committing a reference when the declared
+size exceeds its configured maximum or the observed size or SHA-256 differs.
+Successful content-addressed retries in the same namespace return the same
+stable reference identity.
 
-If a worker submits a reference and the payload is missing, has the wrong size,
-or fails SHA-256 verification, the server rejects the completion with
-`reason: external_payload_integrity_failed` and does not record a history
-event.
+Fetch bytes with `GET /api/external-payloads/v1/{referenceId}` and send the same
+metadata headers from the reference. The runtime binds the lookup to the
+authenticated namespace, fetches the backing bytes, verifies size and SHA-256,
+and returns `application/octet-stream` with the verified metadata headers.
+SDKs verify the returned bytes again before Avro decode.
 
-If the configured storage backend is unavailable while the server is resolving
-a worker-submitted reference, the server returns
-`reason: external_payload_storage_unavailable`. The workflow or activity task
-remains leased until the normal lease/retry path makes it available again.
+Both operations use bounded buffering up to `max_payload_bytes`. Discovery
+publishes the request timeout. Fetch responses use private, short-lived,
+immutable caching; SDK caches must be bounded and cannot delete runtime-owned
+objects.
 
-If the backend is unavailable while the server is writing an oversized payload
-for a workflow start, workflow-task completion, or activity completion, the
-state transition is not committed. The caller receives a storage-unavailable
-failure and can retry after the backend recovers; already-recorded history is
-left unchanged.
+## State, expiry, and retention
 
-If a worker receives an external reference for a provider it does not support,
-it must fail the task as an unsupported payload reference instead of treating
-the reference object as application data.
+An upload starts as unclaimed and expires after the advertised abandoned-upload
+window. The first verified state-bearing request claims it. Claimed references
+do not expire independently of retained workflow state. Workflow history,
+schedules, updates, stream items, activity state, and results remain the
+retention authority. SDKs have no delete endpoint, and namespace/run cleanup
+does not remove a backing object while retained state in any namespace still
+owns it.
+
+The runtime records upload, fetch, claim, and rejection audit events without
+logging provider locations, object-store credentials, bearer tokens, or the
+reusable opaque reference identity. Audit correlation uses a one-way reference
+identity digest.
+
+## Typed outcomes and retryability
+
+The transport returns a stable
+`durable-workflow.v2.runtime-external-payload-error.v1` envelope. Outcomes are:
+
+- `external_payload_not_found` (404, non-retryable)
+- `external_payload_expired` (410, non-retryable)
+- `external_payload_unauthorized` (401 or 403, non-retryable)
+- `external_payload_unavailable` (503, retryable)
+- `external_payload_oversized` (413, non-retryable)
+- `external_payload_unsupported` (415 or 422, non-retryable)
+- `external_payload_integrity_mismatch` (422, non-retryable)
+
+Reference validation and fetch happen before a workflow/activity completion or
+control-plane mutation reaches its state transaction. A rejected reference
+therefore records no partial command and cannot duplicate the intended side
+effect. Authentication failures use the external-payload unauthorized outcome;
+a valid credential querying another namespace receives the non-disclosing
+not-found outcome.
+
+Direct provider adapters may be implemented as an explicitly negotiated
+self-hosted optimization. They are disabled by default, never required by the
+standalone Server default or managed Cloud, and do not change the runtime wire
+reference.

@@ -5,8 +5,10 @@ namespace App\Http\Controllers\Api;
 use App\Models\WorkflowDurableStream;
 use App\Support\ControlPlaneProtocol;
 use App\Support\LegacyV1Projection;
+use App\Support\NamespaceExternalPayloadStorage;
 use App\Support\NamespaceWorkflowScope;
 use App\Support\PayloadCodecContract;
+use App\Support\RuntimeExternalPayloadException;
 use App\Support\StreamClosedException;
 use App\Support\StreamErroredException;
 use App\Support\StreamFullException;
@@ -22,6 +24,7 @@ class WorkflowStreamController
 {
     public function __construct(
         private readonly WorkflowStreamService $streams,
+        private readonly NamespaceExternalPayloadStorage $externalPayloadStorage,
     ) {}
 
     public function index(Request $request, string $workflowId, string $runId): JsonResponse
@@ -178,18 +181,31 @@ class WorkflowStreamController
         ]);
 
         foreach ($payload['items'] as $index => $item) {
-            if (! array_key_exists('payload_codec', $item)) {
-                continue;
+            if (array_key_exists('payload_codec', $item)) {
+                try {
+                    $payload['items'][$index]['payload_codec'] = PayloadCodecContract::canonicalize(
+                        $item['payload_codec'],
+                    );
+                } catch (InvalidArgumentException $exception) {
+                    throw ValidationException::withMessages([
+                        "items.{$index}.payload_codec" => [$exception->getMessage()],
+                    ]);
+                }
             }
 
-            try {
-                $payload['items'][$index]['payload_codec'] = PayloadCodecContract::canonicalize(
-                    $item['payload_codec'],
-                );
-            } catch (InvalidArgumentException $exception) {
-                throw ValidationException::withMessages([
-                    "items.{$index}.payload_codec" => [$exception->getMessage()],
-                ]);
+            $reference = $item['payload_reference'] ?? null;
+            if (is_string($reference) && $reference !== '') {
+                $driver = $this->externalPayloadStorage->driverFor($namespace);
+                if ($driver === null) {
+                    throw new RuntimeExternalPayloadException(
+                        'external_payload_unavailable',
+                        503,
+                        true,
+                        'External payload storage is unavailable for this namespace.',
+                    );
+                }
+
+                $driver->get($reference);
             }
         }
 

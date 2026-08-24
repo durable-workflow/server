@@ -363,6 +363,35 @@ return [
 
     /*
     |--------------------------------------------------------------------------
+    | Runtime External Payload Transport
+    |--------------------------------------------------------------------------
+    |
+    | Encoded payloads above the inline threshold move through the authenticated
+    | namespace runtime. The request body is deliberately bounded in memory;
+    | backing-provider credentials and locations never cross this boundary.
+    |
+    */
+
+    'external_payload_transport' => [
+        'max_payload_bytes' => (int) EnvAuditor::env(
+            'DW_EXTERNAL_PAYLOAD_MAX_BYTES',
+            'WORKFLOW_SERVER_EXTERNAL_PAYLOAD_MAX_BYTES',
+            64 * 1024 * 1024,
+        ),
+        'request_timeout_seconds' => (int) EnvAuditor::env(
+            'DW_EXTERNAL_PAYLOAD_REQUEST_TIMEOUT',
+            'WORKFLOW_SERVER_EXTERNAL_PAYLOAD_REQUEST_TIMEOUT',
+            30,
+        ),
+        'abandoned_upload_expiry_seconds' => (int) EnvAuditor::env(
+            'DW_EXTERNAL_PAYLOAD_UPLOAD_EXPIRY',
+            'WORKFLOW_SERVER_EXTERNAL_PAYLOAD_UPLOAD_EXPIRY',
+            3600,
+        ),
+    ],
+
+    /*
+    |--------------------------------------------------------------------------
     | Query Task Transport
     |--------------------------------------------------------------------------
     |

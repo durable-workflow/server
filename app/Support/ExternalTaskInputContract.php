@@ -25,7 +25,7 @@ final class ExternalTaskInputContract
             ],
             'payload_support' => [
                 'inline' => 'Handlers receive codec-tagged payload envelopes with codec and blob fields.',
-                'external_storage' => 'Handlers that do not support an external storage provider must fail the task with unsupported_payload_reference instead of dereferencing it.',
+                'external_payload' => 'Handlers resolve opaque external payload references through the authenticated namespace runtime before decode; provider-specific references are unsupported.',
                 'unsupported_codec' => 'Handlers that cannot decode payload.codec must fail the task with unsupported_payload_codec.',
             ],
             'scope' => [

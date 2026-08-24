@@ -45,8 +45,8 @@ policy.
 Payloads are always codec-tagged when present. A handler that cannot decode an
 input payload codec must fail with `failure.kind: unsupported_payload` and
 `failure.classification: unsupported_payload_codec`. A handler that cannot
-resolve an external-storage payload reference must fail with
-`failure.classification: unsupported_payload_reference`.
+resolve an opaque reference through the authenticated namespace runtime must
+fail with `failure.classification: unsupported_payload_reference`.
 
 The stable fixture artifacts are:
 

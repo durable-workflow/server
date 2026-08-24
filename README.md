@@ -573,22 +573,17 @@ already covered by another matching-role process holding the repair throttle.
 - `DELETE /api/namespaces/{name}` — Delete namespace and clean up its runtime state
 - `PUT /api/namespaces/{name}/external-storage` — Configure external payload storage policy
 
-When a namespace enables external payload storage, the server resolves
-`{codec, external_storage}` payload envelopes on workflow start, signal, query,
-update, bridge-adapter, and activity result/failure ingress. The same policy is
-used while recording workflow starts, activity inputs/results, and workflow
-outputs, so oversized encoded payloads enter history as external references
-instead of inline blobs. The `local` driver stores blobs below the configured
-`file://` URI or the namespace-scoped server storage path. S3, GCS, and Azure
-policies are available when the policy includes `config.disk` naming a
-configured Laravel filesystem disk plus `config.bucket`; the server emits
-provider URIs such as `s3://bucket/prefix/...` while using that disk for
-put/get/delete operations. Object-storage policies without a configured disk
-remain fail-closed so references are not silently accepted by a runtime that
-cannot dereference or delete them. History retention deletes referenced local
-and configured object-storage payload blobs before pruning an expired run, and
-leaves runs in place when a retained reference uses a provider this server
-cannot delete yet.
+When a namespace enables external payload storage, remote clients upload and
+fetch encoded bytes through `/api/external-payloads/v1` using their normal
+namespace runtime credential. Workflow, activity, signal, query, update,
+schedule, stream, result, and history surfaces carry only codec-tagged opaque
+runtime references; backing provider URIs and credentials never cross the HTTP
+boundary. The server verifies declared size and SHA-256 before a reference can
+be committed to workflow state and verifies backing bytes again before fetch.
+History retention and namespace cleanup remain authoritative for backing-object
+deletion. See [the runtime external payload transport contract](docs/contracts/external-payload-storage.md)
+for the versioned reference shape, discovery fields, limits, expiry, cache, and
+typed failure outcomes.
 
 ### Workflows
 - `GET /api/workflows` — List workflows (with filters)
@@ -1497,6 +1492,9 @@ every operator-facing variable the server honors.
 | `DW_MAX_HISTORY_EVENTS` | `50000` | Max history events per run before continue-as-new is enforced. |
 | `DW_HISTORY_RETENTION_DAYS` | `30` | Default retention for closed-run history (namespaces can override). |
 | `DW_MAX_PAYLOAD_BYTES` | `2097152` | Max serialized bytes for a single payload. |
+| `DW_EXTERNAL_PAYLOAD_MAX_BYTES` | `67108864` | Max encoded bytes accepted by the authenticated runtime external-payload transport. |
+| `DW_EXTERNAL_PAYLOAD_REQUEST_TIMEOUT` | `30` | Advertised upload/fetch request-timeout budget in seconds. |
+| `DW_EXTERNAL_PAYLOAD_UPLOAD_EXPIRY` | `3600` | Seconds an unclaimed uploaded reference remains valid. |
 | `DW_MAX_MEMO_BYTES` | `262144` | Max serialized bytes for a workflow memo. |
 | `DW_MAX_SEARCH_ATTRIBUTES` | `100` | Max search attributes per workflow. |
 | `DW_MAX_PENDING_ACTIVITIES` | `2000` | Max pending activities per run. |

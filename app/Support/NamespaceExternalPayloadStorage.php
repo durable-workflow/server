@@ -5,11 +5,20 @@ namespace App\Support;
 use App\Models\WorkflowNamespace;
 use Workflow\V2\Contracts\ExternalPayloadStorageDriver;
 use Workflow\V2\Contracts\ExternalPayloadStoragePolicy;
-use Workflow\V2\Support\LocalFilesystemExternalPayloadStorage;
 
 class NamespaceExternalPayloadStorage implements ExternalPayloadStoragePolicy
 {
     public function driverFor(?string $namespace): ?ExternalPayloadStorageDriver
+    {
+        $namespace = $namespace ?: (string) config('server.default_namespace', 'default');
+        $driver = $this->untrackedDriverFor($namespace);
+
+        return $driver === null
+            ? null
+            : new RuntimeTrackedExternalPayloadStorage(strtolower($namespace), $driver);
+    }
+
+    public function untrackedDriverFor(?string $namespace): ?ExternalPayloadStorageDriver
     {
         $namespace = $namespace ?: (string) config('server.default_namespace', 'default');
         $policy = $this->policyFor($namespace);
@@ -21,7 +30,7 @@ class NamespaceExternalPayloadStorage implements ExternalPayloadStoragePolicy
         $driver = $policy['driver'] ?? null;
 
         if ($driver === 'local') {
-            return $this->guard(new LocalFilesystemExternalPayloadStorage($this->localRoot($policy, $namespace)));
+            return $this->guard(new RuntimeLocalExternalPayloadStorage($this->localRoot($policy, $namespace)));
         }
 
         if (in_array($driver, ['s3', 'gcs', 'azure', 'custom'], true)) {

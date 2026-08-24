@@ -118,7 +118,7 @@ final class WorkflowStreamsContract
                 'python' => [
                     'operations' => ['list', 'describe', 'subscribe', 'append', 'close', 'error'],
                     'workflow_authoring' => true,
-                    'external_payload_references' => 'read-write-with-configured-driver',
+                    'external_payload_references' => 'opaque-reference',
                 ],
                 'rust' => [
                     'operations' => ['list', 'describe', 'subscribe', 'append', 'close', 'error'],
@@ -172,7 +172,7 @@ final class WorkflowStreamsContract
                 'consumer_should' => 'process idempotently and persist next_offset after the page effects are durable; a crash before checkpoint may redeliver the page',
                 'idempotency_key_should' => 'be the producer\'s deterministic identifier for the logical item (e.g. the workflow command id plus a within-batch index) so retries collapse to one durable offset rather than emitting twice',
                 'close_semantics' => 'a closed stream rejects further appends with stream_closed; consumers continue to read the persisted history up to retention',
-                'large_payloads' => 'payloads larger than the namespace inline limit should be uploaded through the existing external payload storage and referenced via payload_reference',
+                'large_payloads' => 'payloads larger than the namespace inline limit are uploaded through the authenticated runtime external-payload transport and carried in payload_reference as an opaque runtime reference object',
             ],
             'out_of_scope' => [
                 'generalized_pubsub' => 'streams are scoped to a single workflow run; cross-run fan-in or cross-cluster fan-out belong in a separate transport, not this surface',

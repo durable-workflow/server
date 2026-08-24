@@ -69,10 +69,10 @@ class ExternalExecutionSurfaceContractTest extends TestCase
             'auth_composition_contract',
             $manifest['contract_seams']['auth_profile_tls_composition']['cluster_info_path'],
         );
-        $this->assertSame('published', $manifest['contract_seams']['payload_external_storage']['status']);
+        $this->assertSame('published', $manifest['contract_seams']['runtime_external_payload_transport']['status']);
         $this->assertSame(
             'namespace.external_payload_storage',
-            $manifest['contract_seams']['payload_external_storage']['cluster_info_path'],
+            $manifest['contract_seams']['runtime_external_payload_transport']['cluster_info_path'],
         );
     }
 

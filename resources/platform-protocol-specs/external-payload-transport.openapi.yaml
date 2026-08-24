@@ -1,0 +1,255 @@
+openapi: 3.1.0
+info:
+  title: durable-workflow.v2.runtime-external-payload-transport
+  version: "1"
+  summary: Authenticated namespace runtime transport for encoded external payload bytes
+  description: >
+    The runtime owns backing-provider configuration, credentials, integrity,
+    retention, and deletion. Remote clients and workers upload and fetch bytes
+    with their normal runtime role credential and never receive a provider URI
+    or reusable storage credential.
+x-durable-workflow-catalog-entry: runtime_external_payload_transport
+x-durable-workflow-catalog-schema: durable-workflow.v2.platform-protocol-specs.catalog
+x-durable-workflow-catalog-version: 16
+x-durable-workflow-evolution-rule: additive_minor_breaking_major
+x-durable-workflow-object-families:
+  - name: runtime_external_payload_reference
+    owner_repo: durable-workflow/server
+  - name: runtime_external_payload_error
+    owner_repo: durable-workflow/server
+servers:
+  - url: /api
+security:
+  - durableRuntimeAuth: []
+paths:
+  /external-payloads/v1:
+    post:
+      operationId: uploadRuntimeExternalPayload
+      summary: Verify and store encoded payload bytes
+      x-durable-workflow-required-roles: [worker, operator, admin]
+      parameters:
+        - $ref: "#/components/parameters/NamespaceHeader"
+        - $ref: "#/components/parameters/PayloadCodecHeader"
+        - $ref: "#/components/parameters/PayloadSizeHeader"
+        - $ref: "#/components/parameters/PayloadSha256Header"
+      requestBody:
+        required: true
+        content:
+          application/octet-stream:
+            schema:
+              type: string
+              contentMediaType: application/octet-stream
+      responses:
+        "201":
+          description: Bytes verified and committed behind an opaque runtime reference.
+          headers:
+            Cache-Control:
+              schema: { type: string, const: "no-store, private" }
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/RuntimeExternalPayloadUpload" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "413": { $ref: "#/components/responses/Oversized" }
+        "415": { $ref: "#/components/responses/Unsupported" }
+        "422": { $ref: "#/components/responses/InvalidReference" }
+        "503": { $ref: "#/components/responses/Unavailable" }
+  /external-payloads/v1/{referenceId}:
+    get:
+      operationId: fetchRuntimeExternalPayload
+      summary: Fetch runtime-owned bytes after namespace and integrity verification
+      x-durable-workflow-required-roles: [worker, operator, admin]
+      parameters:
+        - $ref: "#/components/parameters/ReferenceIdPath"
+        - $ref: "#/components/parameters/NamespaceHeader"
+        - $ref: "#/components/parameters/PayloadCodecHeader"
+        - $ref: "#/components/parameters/PayloadSizeHeader"
+        - $ref: "#/components/parameters/PayloadSha256Header"
+      responses:
+        "200":
+          description: Verified encoded payload bytes.
+          headers:
+            X-Durable-Workflow-Payload-Codec: { $ref: "#/components/headers/PayloadCodec" }
+            X-Durable-Workflow-Payload-Size: { $ref: "#/components/headers/PayloadSize" }
+            X-Durable-Workflow-Payload-SHA256: { $ref: "#/components/headers/PayloadSha256" }
+            Cache-Control:
+              schema: { type: string, const: "immutable, max-age=60, private" }
+          content:
+            application/octet-stream:
+              schema:
+                type: string
+                contentMediaType: application/octet-stream
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "410": { $ref: "#/components/responses/Expired" }
+        "413": { $ref: "#/components/responses/Oversized" }
+        "422": { $ref: "#/components/responses/InvalidReference" }
+        "503": { $ref: "#/components/responses/Unavailable" }
+components:
+  securitySchemes:
+    durableRuntimeAuth:
+      type: http
+      scheme: bearer
+      description: Normal namespace-scoped worker, operator, or admin runtime credential.
+  parameters:
+    NamespaceHeader:
+      name: X-Namespace
+      in: header
+      required: true
+      schema: { type: string, minLength: 1, maxLength: 128 }
+    ReferenceIdPath:
+      name: referenceId
+      in: path
+      required: true
+      schema:
+        type: string
+        pattern: '^ep_[0-9A-HJKMNP-TV-Z]{26}$'
+    PayloadCodecHeader:
+      name: X-Durable-Workflow-Payload-Codec
+      in: header
+      required: true
+      schema: { type: string, const: avro }
+    PayloadSizeHeader:
+      name: X-Durable-Workflow-Payload-Size
+      in: header
+      required: true
+      schema: { type: integer, minimum: 0 }
+    PayloadSha256Header:
+      name: X-Durable-Workflow-Payload-SHA256
+      in: header
+      required: true
+      schema: { type: string, pattern: '^[a-f0-9]{64}$' }
+  headers:
+    PayloadCodec:
+      schema: { type: string, const: avro }
+    PayloadSize:
+      schema: { type: integer, minimum: 0 }
+    PayloadSha256:
+      schema: { type: string, pattern: '^[a-f0-9]{64}$' }
+  schemas:
+    RuntimeExternalPayloadReference:
+      type: object
+      additionalProperties: false
+      required: [schema, reference_id, codec, size_bytes, sha256]
+      properties:
+        schema:
+          type: string
+          const: durable-workflow.v2.runtime-external-payload-reference.v1
+        reference_id:
+          type: string
+          pattern: '^ep_[0-9A-HJKMNP-TV-Z]{26}$'
+        codec: { type: string, const: avro }
+        size_bytes: { type: integer, minimum: 0 }
+        sha256: { type: string, pattern: '^[a-f0-9]{64}$' }
+    RuntimeExternalPayloadEnvelope:
+      type: object
+      additionalProperties: false
+      required: [codec, external_payload]
+      properties:
+        codec: { type: string, const: avro }
+        external_payload: { $ref: "#/components/schemas/RuntimeExternalPayloadReference" }
+    RuntimeExternalPayloadUpload:
+      type: object
+      additionalProperties: false
+      required: [schema, transport_version, reference]
+      properties:
+        schema:
+          type: string
+          const: durable-workflow.v2.runtime-external-payload-upload.v1
+        transport_version: { type: integer, const: 1 }
+        reference: { $ref: "#/components/schemas/RuntimeExternalPayloadReference" }
+    RuntimeExternalPayloadError:
+      type: object
+      additionalProperties: true
+      required: [schema, reason, message, retryable, status]
+      properties:
+        schema:
+          type: string
+          const: durable-workflow.v2.runtime-external-payload-error.v1
+        reason:
+          type: string
+          enum:
+            - external_payload_not_found
+            - external_payload_expired
+            - external_payload_unauthorized
+            - external_payload_unavailable
+            - external_payload_oversized
+            - external_payload_unsupported
+            - external_payload_integrity_mismatch
+        message: { type: string, minLength: 1 }
+        retryable: { type: boolean }
+        status: { type: integer }
+  responses:
+    Unauthorized:
+      description: Credential is missing or not authorized for this runtime operation.
+      content:
+        application/json:
+          schema:
+            allOf:
+              - $ref: "#/components/schemas/RuntimeExternalPayloadError"
+              - type: object
+                properties:
+                  reason: { const: external_payload_unauthorized }
+                  retryable: { const: false }
+    NotFound:
+      description: Reference is absent from the authenticated namespace; cross-namespace existence is not disclosed.
+      content:
+        application/json:
+          schema:
+            allOf:
+              - $ref: "#/components/schemas/RuntimeExternalPayloadError"
+              - type: object
+                properties:
+                  reason: { const: external_payload_not_found }
+                  retryable: { const: false }
+    Expired:
+      description: An unclaimed upload exceeded its expiry window.
+      content:
+        application/json:
+          schema:
+            allOf:
+              - $ref: "#/components/schemas/RuntimeExternalPayloadError"
+              - type: object
+                properties:
+                  reason: { const: external_payload_expired }
+                  retryable: { const: false }
+    Oversized:
+      description: Declared or observed payload size exceeds the runtime limit.
+      content:
+        application/json:
+          schema:
+            allOf:
+              - $ref: "#/components/schemas/RuntimeExternalPayloadError"
+              - type: object
+                properties:
+                  reason: { const: external_payload_oversized }
+                  retryable: { const: false }
+    Unsupported:
+      description: Media type, codec, schema, or provider-specific reference shape is unsupported.
+      content:
+        application/json:
+          schema:
+            allOf:
+              - $ref: "#/components/schemas/RuntimeExternalPayloadError"
+              - type: object
+                properties:
+                  reason: { const: external_payload_unsupported }
+                  retryable: { const: false }
+    InvalidReference:
+      description: Reference is unsupported or its declared integrity metadata does not match runtime state.
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/RuntimeExternalPayloadError" }
+    Unavailable:
+      description: Runtime backing storage is temporarily unavailable before state commit.
+      content:
+        application/json:
+          schema:
+            allOf:
+              - $ref: "#/components/schemas/RuntimeExternalPayloadError"
+              - type: object
+                properties:
+                  reason: { const: external_payload_unavailable }
+                  retryable: { const: true }

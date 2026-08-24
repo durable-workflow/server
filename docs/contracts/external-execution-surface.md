@@ -36,7 +36,7 @@ Version 1 names these contract seams:
 - `handler_mappings`: `worker_protocol.external_executor_config_contract`
 - `invocable_http_carrier`: `worker_protocol.invocable_carrier_contract`
 - `bridge_adapters`: `bridge_adapter_outcome_contract`
-- `payload_external_storage`: `namespace.external_payload_storage`
+- `runtime_external_payload_transport`: `namespace.external_payload_storage`
 - `admission_and_rollout_safety`
 
 Handler mappings are config-first. The server reads the optional

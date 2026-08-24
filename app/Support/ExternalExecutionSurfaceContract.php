@@ -88,12 +88,12 @@ final class ExternalExecutionSurfaceContract
                     'cluster_info_path' => 'bridge_adapter_outcome_contract',
                     'required_outcome' => 'bounded ingress and handoff adapters with explicit duplicate, auth, malformed payload, and routing outcomes',
                 ],
-                'payload_external_storage' => [
-                    'schema' => \Workflow\V2\Support\ExternalPayloadReference::SCHEMA,
+                'runtime_external_payload_transport' => [
+                    'schema' => RuntimeExternalPayloadReference::SCHEMA,
                     'version' => 1,
                     'status' => 'published',
                     'cluster_info_path' => 'namespace.external_payload_storage',
-                    'required_outcome' => 'codec-tagged external payload references with fail-closed unsupported-provider behavior',
+                    'required_outcome' => 'codec-tagged opaque references uploaded and fetched through the authenticated namespace runtime without provider credentials',
                 ],
                 'admission_and_rollout_safety' => [
                     'status' => 'partially_published',

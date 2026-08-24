@@ -42,10 +42,11 @@ version they do not support. Adding required fields or renaming/removing fields
 requires a major contract version.
 
 Payloads are always codec-tagged. A handler that cannot decode `payload.codec`
-must fail the task with `unsupported_payload_codec`. A handler that receives an
-external-storage payload reference for a provider it does not support must fail
-the task with `unsupported_payload_reference`; it must not silently treat the
-reference as an inline payload.
+must fail the task with `unsupported_payload_codec`. External payloads carry an
+opaque runtime reference. The handler fetches the bytes through the same
+authenticated namespace runtime before decode and verifies size and SHA-256.
+Provider URIs are unsupported and an unresolved reference must never become
+application input.
 
 The stable fixture artifacts are:
 
