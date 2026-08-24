@@ -164,6 +164,12 @@ final class MessageStreamService
             if (! $instance instanceof WorkflowInstance) {
                 return;
             }
+
+            $run = NamespaceWorkflowScope::currentRun($namespace, $workflowId);
+            if (! $run instanceof WorkflowRun || $run->status->isTerminal()) {
+                return;
+            }
+
             $stream = $this->lockedStream($namespace, $workflowId, $streamName);
             $stream->forceFill([
                 'malformed_count' => $stream->malformed_count + 1,

@@ -21,6 +21,7 @@ class WorkflowInboundStreamItem extends Model
         'position' => 'integer',
         'delivered_at' => 'datetime',
         'consumed_at' => 'datetime',
+        'payload_released_at' => 'datetime',
     ];
 
     public function stream(): BelongsTo

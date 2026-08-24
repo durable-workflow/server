@@ -4,8 +4,13 @@ declare(strict_types=1);
 
 namespace Tests\Feature;
 
+use App\Models\RuntimeExternalPayload;
+use App\Models\WorkflowInboundStream;
+use App\Models\WorkflowInboundStreamItem;
 use App\Models\WorkflowNamespace;
+use App\Support\MessageStreamService;
 use App\Support\NamespaceWorkflowScope;
+use App\Support\RuntimeExternalPayloadRegistry;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\DB;
@@ -21,6 +26,7 @@ use Workflow\V2\Enums\HistoryEventType;
 use Workflow\V2\Enums\RunStatus;
 use Workflow\V2\Models\ActivityExecution;
 use Workflow\V2\Models\WorkflowHistoryEvent;
+use Workflow\V2\Models\WorkflowInstance;
 use Workflow\V2\Models\WorkflowMemo;
 use Workflow\V2\Models\WorkflowMessage;
 use Workflow\V2\Models\WorkflowRun;
@@ -255,6 +261,333 @@ class HistoryRetentionTest extends TestCase
         $this->assertNull(WorkflowRunSummary::find($runId));
     }
 
+    public function test_retention_compacts_consumed_payload_after_a_continued_run_checkpoint_is_retained(): void
+    {
+        Queue::fake();
+
+        $storageDirectory = storage_path('framework/testing/retention-active-message-stream');
+        File::deleteDirectory($storageDirectory);
+        $this->createNamespace('default');
+        WorkflowNamespace::where('name', 'default')->update([
+            'external_payload_storage' => [
+                'driver' => 'local',
+                'enabled' => true,
+                'config' => ['uri' => 'file://'.$storageDirectory],
+            ],
+        ]);
+
+        $expiredRunId = $this->createExpiredClosedRun('default', 'wf-retention-active-stream');
+        $expiredRun = WorkflowRun::findOrFail($expiredRunId);
+        WorkflowRunSummary::whereKey($expiredRunId)->update(['is_current_run' => false]);
+
+        $currentRun = WorkflowRun::query()->create([
+            'id' => (string) Str::ulid(),
+            'workflow_instance_id' => $expiredRun->workflow_instance_id,
+            'run_number' => 2,
+            'workflow_class' => $expiredRun->workflow_class,
+            'workflow_type' => $expiredRun->workflow_type,
+            'namespace' => 'default',
+            'status' => RunStatus::Running->value,
+            'started_at' => now(),
+            'last_progress_at' => now(),
+        ]);
+        WorkflowInstance::whereKey($expiredRun->workflow_instance_id)->update([
+            'current_run_id' => $currentRun->id,
+            'run_count' => 2,
+        ]);
+        WorkflowRunSummary::query()->updateOrCreate(['id' => $currentRun->id], [
+            'workflow_instance_id' => $expiredRun->workflow_instance_id,
+            'run_number' => 2,
+            'is_current_run' => true,
+            'class' => $currentRun->workflow_class,
+            'workflow_type' => $currentRun->workflow_type,
+            'namespace' => 'default',
+            'status' => RunStatus::Running->value,
+            'status_bucket' => 'running',
+            'started_at' => now(),
+            'sort_timestamp' => now(),
+        ]);
+
+        $stream = WorkflowInboundStream::query()->create([
+            'namespace' => 'default',
+            'workflow_instance_id' => $expiredRun->workflow_instance_id,
+            'stream_name' => 'orders',
+            'last_position' => 2,
+            'cursor_position' => 1,
+            'cursor_checkpoint_run_id' => $currentRun->id,
+        ]);
+        $consumedPayload = 'consumed external message';
+        $consumedPath = $storageDirectory.'/payloads/consumed.bin';
+        File::ensureDirectoryExists(dirname($consumedPath));
+        file_put_contents($consumedPath, $consumedPayload);
+        $consumedReference = $this->storedExternalPayloadReference(
+            'file://'.$consumedPath,
+            $consumedPayload,
+        );
+        $tracked = app(RuntimeExternalPayloadRegistry::class)->trackRetained(
+            'default',
+            'file://'.$consumedPath,
+            'avro',
+            hash('sha256', $consumedPayload),
+            strlen($consumedPayload),
+        );
+        $consumedItem = WorkflowInboundStreamItem::query()->create([
+            'stream_id' => $stream->id,
+            'namespace' => 'default',
+            'workflow_instance_id' => $expiredRun->workflow_instance_id,
+            'stream_name' => 'orders',
+            'message_id' => 'message-consumed',
+            'position' => 1,
+            'payload_codec' => 'avro',
+            'payload_blob' => $consumedReference,
+            'payload_hash' => hash('sha256', "avro\0".$consumedReference),
+            'delivered_run_id' => $expiredRunId,
+            'consumed_run_id' => $expiredRunId,
+            'consumed_task_id' => (string) Str::ulid(),
+            'delivered_at' => now()->subDays(60),
+            'consumed_at' => now()->subDays(60),
+        ]);
+        $pendingBlob = 'pending inline message';
+        $pendingItem = WorkflowInboundStreamItem::query()->create([
+            'stream_id' => $stream->id,
+            'namespace' => 'default',
+            'workflow_instance_id' => $expiredRun->workflow_instance_id,
+            'stream_name' => 'orders',
+            'message_id' => 'message-pending',
+            'position' => 2,
+            'payload_codec' => 'avro',
+            'payload_blob' => $pendingBlob,
+            'payload_hash' => hash('sha256', "avro\0".$pendingBlob),
+            'delivered_run_id' => $currentRun->id,
+            'delivered_at' => now(),
+        ]);
+        $uncheckpointedStream = WorkflowInboundStream::query()->create([
+            'namespace' => 'default',
+            'workflow_instance_id' => $expiredRun->workflow_instance_id,
+            'stream_name' => 'uncheckpointed',
+            'last_position' => 1,
+            'cursor_position' => 1,
+            'cursor_checkpoint_run_id' => $expiredRunId,
+        ]);
+        $uncheckpointedBlob = 'consumed but not checkpointed';
+        $uncheckpointedItem = WorkflowInboundStreamItem::query()->create([
+            'stream_id' => $uncheckpointedStream->id,
+            'namespace' => 'default',
+            'workflow_instance_id' => $expiredRun->workflow_instance_id,
+            'stream_name' => 'uncheckpointed',
+            'message_id' => 'message-uncheckpointed',
+            'position' => 1,
+            'payload_codec' => 'avro',
+            'payload_blob' => $uncheckpointedBlob,
+            'payload_hash' => hash('sha256', "avro\0".$uncheckpointedBlob),
+            'delivered_run_id' => $expiredRunId,
+            'consumed_run_id' => $expiredRunId,
+            'consumed_task_id' => (string) Str::ulid(),
+            'delivered_at' => now()->subDays(60),
+            'consumed_at' => now()->subDays(60),
+        ]);
+
+        $this->withHeaders($this->apiHeaders())
+            ->postJson('/api/system/retention/pass')
+            ->assertOk()
+            ->assertJsonPath('pruned', 1)
+            ->assertJsonPath('results.0.deleted.message_stream_items_compacted', 1)
+            ->assertJsonPath('results.0.deleted.message_streams_deleted', 0)
+            ->assertJsonPath('results.0.external_payloads_deleted', 1);
+
+        $this->assertSame('', $consumedItem->fresh()->payload_blob);
+        $this->assertNotNull($consumedItem->fresh()->payload_released_at);
+        $this->assertSame($pendingBlob, $pendingItem->fresh()->payload_blob);
+        $this->assertNull($pendingItem->fresh()->consumed_at);
+        $this->assertSame($currentRun->id, $stream->fresh()->cursor_checkpoint_run_id);
+        $this->assertSame($uncheckpointedBlob, $uncheckpointedItem->fresh()->payload_blob);
+        $this->assertNull($uncheckpointedItem->fresh()->payload_released_at);
+        $this->assertSame($expiredRunId, $uncheckpointedStream->fresh()->cursor_checkpoint_run_id);
+        $this->assertFileDoesNotExist($consumedPath);
+        $this->assertNull(RuntimeExternalPayload::query()->find($tracked->id));
+
+        $duplicate = app(MessageStreamService::class)->append(
+            'default',
+            (string) $expiredRun->workflow_instance_id,
+            'orders',
+            'message-consumed',
+            'avro',
+            $consumedReference,
+            hash('sha256', "avro\0".$consumedReference),
+        );
+        $this->assertTrue($duplicate['accepted']);
+        $this->assertTrue($duplicate['duplicate']);
+        $this->assertSame(1, $duplicate['position']);
+
+        File::deleteDirectory($storageDirectory);
+    }
+
+    public function test_retention_deletes_terminal_stream_state_after_its_final_run_expires(): void
+    {
+        Queue::fake();
+
+        $storageDirectory = storage_path('framework/testing/retention-terminal-message-stream');
+        File::deleteDirectory($storageDirectory);
+        $this->createNamespace('default');
+        WorkflowNamespace::where('name', 'default')->update([
+            'external_payload_storage' => [
+                'driver' => 'local',
+                'enabled' => true,
+                'config' => ['uri' => 'file://'.$storageDirectory],
+            ],
+        ]);
+
+        $runId = $this->createExpiredClosedRun('default', 'wf-retention-terminal-stream');
+        $run = WorkflowRun::findOrFail($runId);
+        $stream = WorkflowInboundStream::query()->create([
+            'namespace' => 'default',
+            'workflow_instance_id' => $run->workflow_instance_id,
+            'stream_name' => 'orders',
+            'last_position' => 1,
+            'cursor_position' => 1,
+            'cursor_checkpoint_run_id' => $runId,
+        ]);
+        $payload = 'terminal external message';
+        $path = $storageDirectory.'/payloads/terminal.bin';
+        File::ensureDirectoryExists(dirname($path));
+        file_put_contents($path, $payload);
+        $reference = $this->storedExternalPayloadReference('file://'.$path, $payload);
+        $tracked = app(RuntimeExternalPayloadRegistry::class)->trackRetained(
+            'default',
+            'file://'.$path,
+            'avro',
+            hash('sha256', $payload),
+            strlen($payload),
+        );
+        WorkflowInboundStreamItem::query()->create([
+            'stream_id' => $stream->id,
+            'namespace' => 'default',
+            'workflow_instance_id' => $run->workflow_instance_id,
+            'stream_name' => 'orders',
+            'message_id' => 'terminal-message',
+            'position' => 1,
+            'payload_codec' => 'avro',
+            'payload_blob' => $reference,
+            'payload_hash' => hash('sha256', "avro\0".$reference),
+            'delivered_run_id' => $runId,
+            'consumed_run_id' => $runId,
+            'consumed_task_id' => (string) Str::ulid(),
+            'delivered_at' => now()->subDays(60),
+            'consumed_at' => now()->subDays(60),
+        ]);
+
+        $this->withHeaders($this->apiHeaders())
+            ->postJson('/api/system/retention/pass')
+            ->assertOk()
+            ->assertJsonPath('pruned', 1)
+            ->assertJsonPath('results.0.deleted.message_streams_deleted', 1)
+            ->assertJsonPath('results.0.deleted.message_stream_items_deleted', 1)
+            ->assertJsonPath('results.0.external_payloads_deleted', 1);
+
+        $this->assertDatabaseCount('workflow_inbound_streams', 0);
+        $this->assertDatabaseCount('workflow_inbound_stream_items', 0);
+        $this->assertFileDoesNotExist($path);
+        $this->assertNull(RuntimeExternalPayload::query()->find($tracked->id));
+
+        $this->withHeaders($this->apiHeaders())
+            ->postJson('/api/workflows/wf-retention-terminal-stream/message-streams/orders/messages', [
+                'message_id' => 'spaces are invalid',
+                'input' => ['ignored'],
+            ])
+            ->assertUnprocessable();
+        $this->assertDatabaseCount('workflow_inbound_streams', 0);
+
+        File::deleteDirectory($storageDirectory);
+    }
+
+    public function test_retention_deletes_terminal_stream_state_when_current_run_is_pruned_first(): void
+    {
+        Queue::fake();
+
+        $this->createNamespace('default');
+        $olderRunId = $this->createExpiredClosedRun('default', 'wf-retention-reverse-order-stream');
+        $olderRun = WorkflowRun::findOrFail($olderRunId);
+        WorkflowRunSummary::whereKey($olderRunId)->update(['is_current_run' => false]);
+
+        $currentRun = WorkflowRun::query()->create([
+            'id' => (string) Str::ulid(),
+            'workflow_instance_id' => $olderRun->workflow_instance_id,
+            'run_number' => 2,
+            'workflow_class' => $olderRun->workflow_class,
+            'workflow_type' => $olderRun->workflow_type,
+            'namespace' => 'default',
+            'status' => RunStatus::Completed->value,
+            'started_at' => now()->subDays(60),
+            'closed_at' => now()->subDays(60),
+            'last_progress_at' => now()->subDays(60),
+        ]);
+        WorkflowInstance::whereKey($olderRun->workflow_instance_id)->update([
+            'current_run_id' => $currentRun->id,
+            'run_count' => 2,
+        ]);
+        WorkflowRunSummary::query()->create([
+            'id' => $currentRun->id,
+            'workflow_instance_id' => $olderRun->workflow_instance_id,
+            'run_number' => 2,
+            'is_current_run' => true,
+            'class' => $currentRun->workflow_class,
+            'workflow_type' => $currentRun->workflow_type,
+            'namespace' => 'default',
+            'status' => RunStatus::Completed->value,
+            'status_bucket' => 'completed',
+            'started_at' => $currentRun->started_at,
+            'closed_at' => $currentRun->closed_at,
+            'sort_timestamp' => $currentRun->closed_at,
+        ]);
+
+        $stream = WorkflowInboundStream::query()->create([
+            'namespace' => 'default',
+            'workflow_instance_id' => $olderRun->workflow_instance_id,
+            'stream_name' => 'orders',
+            'last_position' => 1,
+            'cursor_position' => 1,
+            'cursor_checkpoint_run_id' => $currentRun->id,
+        ]);
+        WorkflowInboundStreamItem::query()->create([
+            'stream_id' => $stream->id,
+            'namespace' => 'default',
+            'workflow_instance_id' => $olderRun->workflow_instance_id,
+            'stream_name' => 'orders',
+            'message_id' => 'terminal-message',
+            'position' => 1,
+            'payload_codec' => 'avro',
+            'payload_blob' => 'terminal inline message',
+            'payload_hash' => hash('sha256', "avro\0terminal inline message"),
+            'delivered_run_id' => $currentRun->id,
+            'consumed_run_id' => $currentRun->id,
+            'consumed_task_id' => (string) Str::ulid(),
+            'delivered_at' => now()->subDays(60),
+            'consumed_at' => now()->subDays(60),
+        ]);
+
+        $this->withHeaders($this->apiHeaders())
+            ->postJson('/api/system/retention/pass', ['run_ids' => [$currentRun->id]])
+            ->assertOk()
+            ->assertJsonPath('pruned', 1)
+            ->assertJsonPath('results.0.deleted.message_streams_deleted', 0);
+
+        $this->assertDatabaseCount('workflow_inbound_streams', 1);
+        $this->assertDatabaseCount('workflow_inbound_stream_items', 1);
+        $this->assertNull(WorkflowRunSummary::find($currentRun->id));
+        $this->assertNotNull(WorkflowRunSummary::find($olderRunId));
+
+        $this->withHeaders($this->apiHeaders())
+            ->postJson('/api/system/retention/pass', ['run_ids' => [$olderRunId]])
+            ->assertOk()
+            ->assertJsonPath('pruned', 1)
+            ->assertJsonPath('results.0.deleted.message_streams_deleted', 1)
+            ->assertJsonPath('results.0.deleted.message_stream_items_deleted', 1);
+
+        $this->assertDatabaseCount('workflow_inbound_streams', 0);
+        $this->assertDatabaseCount('workflow_inbound_stream_items', 0);
+        $this->assertNull(WorkflowRunSummary::find($olderRunId));
+    }
+
     public function test_retention_pass_prunes_extended_run_detail_rows_transactionally(): void
     {
         Queue::fake();
@@ -397,6 +730,35 @@ class HistoryRetentionTest extends TestCase
             ],
             'recorded_at' => now(),
         ]);
+        $run = WorkflowRun::findOrFail($runId);
+        $stream = WorkflowInboundStream::query()->create([
+            'namespace' => 'default',
+            'workflow_instance_id' => $run->workflow_instance_id,
+            'stream_name' => 'orders',
+            'last_position' => 1,
+            'cursor_position' => 1,
+            'cursor_checkpoint_run_id' => $runId,
+        ]);
+        $streamReference = $this->storedExternalPayloadReference(
+            's3://dw-payloads/retention/result.bin',
+            $payload,
+        );
+        WorkflowInboundStreamItem::query()->create([
+            'stream_id' => $stream->id,
+            'namespace' => 'default',
+            'workflow_instance_id' => $run->workflow_instance_id,
+            'stream_name' => 'orders',
+            'message_id' => 'blocked-message',
+            'position' => 1,
+            'payload_codec' => 'avro',
+            'payload_blob' => $streamReference,
+            'payload_hash' => hash('sha256', "avro\0".$streamReference),
+            'delivered_run_id' => $runId,
+            'consumed_run_id' => $runId,
+            'consumed_task_id' => (string) Str::ulid(),
+            'delivered_at' => now()->subDays(60),
+            'consumed_at' => now()->subDays(60),
+        ]);
 
         $this->withHeaders($this->apiHeaders())
             ->postJson('/api/system/retention/pass')
@@ -408,6 +770,12 @@ class HistoryRetentionTest extends TestCase
             ->assertJsonPath('results.0.reason', 'external_payload_storage_driver_unavailable');
 
         $this->assertNotNull(WorkflowRunSummary::find($runId));
+        $this->assertNotNull($stream->fresh()->cleanup_blocked_at);
+        $this->assertSame(
+            'external_payload_storage_driver_unavailable',
+            $stream->fresh()->cleanup_blocked_reason,
+        );
+        $this->assertSame($runId, $stream->fresh()->cleanup_blocked_run_id);
     }
 
     public function test_retention_pass_deletes_configured_object_storage_references(): void

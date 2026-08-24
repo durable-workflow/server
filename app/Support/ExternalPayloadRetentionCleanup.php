@@ -36,26 +36,44 @@ class ExternalPayloadRetentionCleanup
     /**
      * @return array{found: int, deleted: int, blocked: bool, reason: string|null}
      */
-    public function deleteForRun(string $namespace, string $runId): array
+    public function deleteForRun(string $namespace, string $runId, array $releasedInboundStreamItemIds = []): array
     {
-        return $this->deleteForRuns($namespace, [$runId]);
+        return $this->deleteForRuns($namespace, [$runId], $releasedInboundStreamItemIds);
     }
 
     /**
      * @param  list<string>  $runIds
+     * @param  list<int>  $releasedInboundStreamItemIds
      * @return array{found: int, deleted: int, blocked: bool, reason: string|null}
      */
-    public function deleteForRuns(string $namespace, array $runIds): array
-    {
+    public function deleteForRuns(
+        string $namespace,
+        array $runIds,
+        array $releasedInboundStreamItemIds = [],
+    ): array {
         $runIds = array_values(array_unique(array_filter(
             array_map(static fn (mixed $runId): string => (string) $runId, $runIds),
             static fn (string $runId): bool => $runId !== '',
         )));
+        $releasedInboundStreamItemIds = array_values(array_unique(array_filter(
+            array_map(static fn (mixed $itemId): int => (int) $itemId, $releasedInboundStreamItemIds),
+            static fn (int $itemId): bool => $itemId > 0,
+        )));
+        $references = $this->referencesForRuns($namespace, $runIds);
+        $this->collectPayloadColumn(
+            WorkflowInboundStreamItem::query()->whereIn('id', $releasedInboundStreamItemIds),
+            'payload_blob',
+            $references,
+        );
 
         return $this->deleteReferences(
             $namespace,
-            $this->referencesForRuns($namespace, $runIds),
-            fn (string $uri): bool => $this->isReferencedByRetainedRun($uri, $runIds),
+            $references,
+            fn (string $uri): bool => $this->isReferencedByRetainedRun(
+                $uri,
+                $runIds,
+                $releasedInboundStreamItemIds,
+            ),
         );
     }
 
@@ -495,8 +513,11 @@ class ExternalPayloadRetentionCleanup
     /**
      * @param  list<string>  $deletedRunIds
      */
-    private function isReferencedByRetainedRun(string $uri, array $deletedRunIds): bool
-    {
+    private function isReferencedByRetainedRun(
+        string $uri,
+        array $deletedRunIds,
+        array $releasedInboundStreamItemIds,
+    ): bool {
         $runColumns = [
             'arguments',
             'output',
@@ -522,7 +543,10 @@ class ExternalPayloadRetentionCleanup
             }
         }
 
-        foreach ($this->retainedPayloadColumns($deletedRunIds) as [$query, $column]) {
+        foreach ($this->retainedPayloadColumns(
+            $deletedRunIds,
+            $releasedInboundStreamItemIds,
+        ) as [$query, $column]) {
             if ($this->payloadColumnReferencesUri($query, $column, $uri)) {
                 return true;
             }
@@ -552,8 +576,13 @@ class ExternalPayloadRetentionCleanup
      * @param  list<string>  $deletedRunIds
      * @return list<array{0: Builder<Model>, 1: string}>
      */
-    private function retainedPayloadColumns(array $deletedRunIds): array
+    private function retainedPayloadColumns(array $deletedRunIds, array $releasedInboundStreamItemIds): array
     {
+        $retainedInboundStreamItems = WorkflowInboundStreamItem::query();
+        if ($releasedInboundStreamItemIds !== []) {
+            $retainedInboundStreamItems->whereNotIn('id', $releasedInboundStreamItemIds);
+        }
+
         return [
             [WorkflowRunSummary::query()->whereIn('id', $this->retainedRunIdsQuery($deletedRunIds)), 'visibility_labels'],
             [ActivityExecution::query()->whereIn('workflow_run_id', $this->retainedRunIdsQuery($deletedRunIds)), 'arguments'],
@@ -587,7 +616,7 @@ class ExternalPayloadRetentionCleanup
             [WorkflowScheduleHistoryEvent::query()->whereIn('workflow_run_id', $this->retainedRunIdsQuery($deletedRunIds)), 'payload'],
             [WorkflowDurableStream::query()->whereIn('workflow_run_id', $this->retainedRunIdsQuery($deletedRunIds)), 'metadata'],
             [WorkflowDurableStreamItem::query()->whereIn('workflow_run_id', $this->retainedRunIdsQuery($deletedRunIds)), 'payload'],
-            [WorkflowInboundStreamItem::query(), 'payload_blob'],
+            [$retainedInboundStreamItems, 'payload_blob'],
             [WorkflowRunTimerEntry::query()->whereIn('workflow_run_id', $this->retainedRunIdsQuery($deletedRunIds)), 'payload'],
             [WorkflowRunWait::query()->whereIn('workflow_run_id', $this->retainedRunIdsQuery($deletedRunIds)), 'payload'],
             [WorkflowRunLineageEntry::query()->whereIn('workflow_run_id', $this->retainedRunIdsQuery($deletedRunIds)), 'payload'],

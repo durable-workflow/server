@@ -4,6 +4,8 @@ declare(strict_types=1);
 
 namespace Tests\Feature;
 
+use App\Models\WorkflowInboundStream;
+use App\Models\WorkflowInboundStreamItem;
 use App\Support\ControlPlaneProtocol;
 use App\Support\NamespaceCapacityEvidence;
 use Illuminate\Foundation\Testing\RefreshDatabase;
@@ -201,6 +203,33 @@ class SystemOperatorMetricsTest extends TestCase
             'started_at' => now()->subMinutes(4),
             'closed_at' => now()->subMinutes(3),
         ]);
+        $messageStream = WorkflowInboundStream::query()->create([
+            'namespace' => 'default',
+            'workflow_instance_id' => 'capacity-stream-instance',
+            'stream_name' => 'orders',
+            'last_position' => 2,
+            'cursor_position' => 1,
+            'cleanup_blocked_at' => now()->subMinute(),
+            'cleanup_blocked_reason' => 'external_payload_storage_driver_unavailable',
+            'cleanup_blocked_run_id' => 'capacity-blocked-run',
+        ]);
+        foreach ([
+            [1, 'message-1', 'consumed-bytes', now()->subMinute()],
+            [2, 'message-2', 'pending-bytes', null],
+        ] as [$position, $messageId, $payload, $consumedAt]) {
+            WorkflowInboundStreamItem::query()->create([
+                'stream_id' => $messageStream->id,
+                'namespace' => 'default',
+                'workflow_instance_id' => 'capacity-stream-instance',
+                'stream_name' => 'orders',
+                'message_id' => $messageId,
+                'position' => $position,
+                'payload_codec' => 'avro',
+                'payload_blob' => $payload,
+                'payload_hash' => hash('sha256', "avro\0".$payload),
+                'consumed_at' => $consumedAt,
+            ]);
+        }
 
         $response = $this->getJson(
             '/api/system/operator-metrics',
@@ -219,7 +248,16 @@ class SystemOperatorMetricsTest extends TestCase
             ->assertJsonPath('operator_metrics.capacity_evidence.windows.300.runtime_evidence.throughput.workflow_completions.value', 1)
             ->assertJsonPath('operator_metrics.capacity_evidence.windows.300.runtime_evidence.latency.execution.available', true)
             ->assertJsonPath('operator_metrics.capacity_evidence.windows.300.runtime_evidence.growth.durable_payload_bytes.available', true)
+            ->assertJsonPath('operator_metrics.capacity_evidence.windows.300.runtime_evidence.growth.message_stream_backlog_items.value', 1)
+            ->assertJsonPath(
+                'operator_metrics.capacity_evidence.windows.300.runtime_evidence.growth.message_stream_persisted_bytes.value',
+                strlen('consumed-bytes') + strlen('pending-bytes'),
+            )
             ->assertJsonPath('operator_metrics.capacity_evidence.windows.300.runtime_evidence.reliability.failures.value', 0)
+            ->assertJsonPath(
+                'operator_metrics.capacity_evidence.windows.300.runtime_evidence.reliability.message_stream_cleanup_blocked_instances.value',
+                1,
+            )
             ->assertJsonPath('operator_metrics.capacity_evidence.windows.300.sustained_evidence.observation_windows', 1)
             ->assertJsonPath('operator_metrics.capacity_evidence.cardinality.individual_execution_identifiers_included', false);
 
@@ -250,8 +288,21 @@ class SystemOperatorMetricsTest extends TestCase
                 'updates',
             ],
             'latency' => ['schedule_to_start', 'execution', 'replay', 'inspection'],
-            'growth' => ['history_events', 'history_payload_bytes', 'durable_payload_bytes'],
-            'reliability' => ['retries', 'timeouts', 'failures', 'stale_heartbeats', 'overload_or_throttling'],
+            'growth' => [
+                'history_events',
+                'history_payload_bytes',
+                'durable_payload_bytes',
+                'message_stream_backlog_items',
+                'message_stream_persisted_bytes',
+            ],
+            'reliability' => [
+                'retries',
+                'timeouts',
+                'failures',
+                'stale_heartbeats',
+                'overload_or_throttling',
+                'message_stream_cleanup_blocked_instances',
+            ],
         ] as $category => $dimensions) {
             $this->assertSame(
                 $dimensions,

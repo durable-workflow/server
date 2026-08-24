@@ -4,6 +4,8 @@ declare(strict_types=1);
 
 namespace App\Support;
 
+use App\Models\WorkflowInboundStream;
+use App\Models\WorkflowInboundStreamItem;
 use Carbon\CarbonInterface;
 use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Support\Carbon;
@@ -20,7 +22,7 @@ final class NamespaceCapacityEvidence
 {
     public const SCHEMA = 'durable-workflow.v2.namespace-capacity-evidence';
 
-    public const VERSION = 1;
+    public const VERSION = 2;
 
     public const CACHE_TTL_SECONDS = 30;
 
@@ -97,6 +99,8 @@ final class NamespaceCapacityEvidence
         $commands = WorkflowCommand::query()->whereIn('workflow_run_id', clone $runIds);
         $history = WorkflowHistoryEvent::query()->whereIn('workflow_run_id', clone $runIds);
         $timers = WorkflowTimer::query()->whereIn('workflow_run_id', clone $runIds);
+        $messageStreams = WorkflowInboundStream::query()->where('namespace', $namespace);
+        $messageStreamItems = WorkflowInboundStreamItem::query()->where('namespace', $namespace);
 
         $observationWindow = [
             'starts_at' => $start->toJSON(),
@@ -183,6 +187,13 @@ final class NamespaceCapacityEvidence
                         $start,
                         $end,
                     )),
+                    'message_stream_backlog_items' => $this->gauge((int) (clone $messageStreamItems)
+                        ->whereNull('consumed_at')
+                        ->count()),
+                    'message_stream_persisted_bytes' => $this->gaugeBytes($this->sumCurrentBytes(
+                        $messageStreamItems,
+                        ['payload_blob'],
+                    )),
                 ],
                 'reliability' => [
                     'retries' => $this->windowCount($this->countBetween(
@@ -220,6 +231,10 @@ final class NamespaceCapacityEvidence
                             $end,
                         ),
                     ),
+                    'message_stream_cleanup_blocked_instances' => $this->gauge((int) (clone $messageStreams)
+                        ->whereNotNull('cleanup_blocked_at')
+                        ->distinct()
+                        ->count('workflow_instance_id')),
                 ],
             ],
             'sustained_evidence' => [
@@ -334,6 +349,30 @@ final class NamespaceCapacityEvidence
         return max(0, (int) $value);
     }
 
+    /** @param list<string> $columns */
+    private function sumCurrentBytes(Builder $query, array $columns): int
+    {
+        $model = $query->getModel();
+        $connection = $model->getConnection();
+        $grammar = $connection->getQueryGrammar();
+        $parts = [];
+
+        foreach ($columns as $column) {
+            $wrapped = $grammar->wrap($model->qualifyColumn($column));
+            $parts[] = match ($connection->getDriverName()) {
+                'pgsql' => "OCTET_LENGTH(COALESCE(CAST({$wrapped} AS TEXT), ''))",
+                'sqlsrv' => "DATALENGTH(COALESCE({$wrapped}, ''))",
+                default => "LENGTH(COALESCE({$wrapped}, ''))",
+            };
+        }
+
+        $value = (clone $query)
+            ->selectRaw('COALESCE(SUM('.implode(' + ', $parts).'), 0) AS aggregate_bytes')
+            ->value('aggregate_bytes');
+
+        return max(0, (int) $value);
+    }
+
     /** @return array{available: true, value: int, unit: string, kind: string, source: string} */
     private function windowCount(int $value): array
     {
@@ -350,6 +389,12 @@ final class NamespaceCapacityEvidence
     private function gauge(int $value): array
     {
         return $this->measurement($value, 'count', 'gauge');
+    }
+
+    /** @return array{available: true, value: int, unit: string, kind: string, source: string} */
+    private function gaugeBytes(int $value): array
+    {
+        return $this->measurement($value, 'bytes', 'gauge');
     }
 
     /** @return array{available: true, value: int, unit: string, kind: string, source: string} */

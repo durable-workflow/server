@@ -5,6 +5,7 @@ namespace App\Support;
 use App\Models\WorkflowNamespace;
 use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\Cache;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
 use Workflow\V2\Enums\RunStatus;
 use Workflow\V2\Models\WorkflowRunSummary;
@@ -199,10 +200,30 @@ class HistoryRetentionEnforcer
             return self::skippedRetentionResult('run_archived');
         }
 
-        $externalPayloads = app(ExternalPayloadRetentionCleanup::class)->deleteForRun($namespace, $runId);
+        $messageStreams = app(MessageStreamRetentionCleanup::class);
+        $streamPlan = $messageStreams->planForRun(
+            $namespace,
+            $runId,
+            (string) $summary->workflow_instance_id,
+        );
+
+        try {
+            $externalPayloads = app(ExternalPayloadRetentionCleanup::class)->deleteForRun(
+                $namespace,
+                $runId,
+                $streamPlan['releasable_item_ids'],
+            );
+        } catch (\Throwable $exception) {
+            $messageStreams->markBlocked($streamPlan, 'external_payload_cleanup_failed');
+
+            throw $exception;
+        }
 
         if ($externalPayloads['blocked']) {
-            return self::skippedRetentionResult($externalPayloads['reason'] ?? 'external_payload_cleanup_blocked');
+            $reason = $externalPayloads['reason'] ?? 'external_payload_cleanup_blocked';
+            $messageStreams->markBlocked($streamPlan, $reason);
+
+            return self::skippedRetentionResult($reason);
         }
 
         Log::info('retention_prune_run', [
@@ -214,7 +235,12 @@ class HistoryRetentionEnforcer
             'closed_at' => $summary->closed_at?->toIso8601String(),
         ]);
 
-        $report = WorkflowRunRetentionCleanup::pruneRun($runId);
+        $report = DB::transaction(static function () use ($runId, $messageStreams, $streamPlan): array {
+            return array_merge(
+                WorkflowRunRetentionCleanup::pruneRun($runId),
+                $messageStreams->apply($streamPlan),
+            );
+        });
 
         return [
             'pruned' => true,

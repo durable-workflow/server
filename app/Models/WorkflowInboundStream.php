@@ -19,6 +19,7 @@ class WorkflowInboundStream extends Model
         'malformed_count' => 'integer',
         'waiting_since' => 'datetime',
         'last_input_at' => 'datetime',
+        'cleanup_blocked_at' => 'datetime',
     ];
 
     public function items(): HasMany
