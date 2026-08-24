@@ -5,12 +5,14 @@ declare(strict_types=1);
 namespace Tests\Feature;
 
 use App\Contracts\RuntimeSignalControlPlane;
+use App\Models\RuntimeExternalPayload;
 use App\Models\WorkflowInboundStream;
 use App\Models\WorkflowInboundStreamItem;
 use App\Models\WorkflowNamespace;
 use App\Support\ExternalPayloadRetentionCleanup;
 use App\Support\MessageStreamsContract;
 use App\Support\MessageStreamService;
+use App\Support\RuntimeExternalPayloadRegistry;
 use App\Support\ServerWorkflowControlPlane;
 use App\Support\WorkerProtocol;
 use App\Support\WorkflowTaskPoller;
@@ -212,7 +214,7 @@ class MessageStreamsTest extends TestCase
 
         $storageDirectory = storage_path('framework/testing/message-stream-external');
         File::deleteDirectory($storageDirectory);
-        File::ensureDirectoryExists($storageDirectory.'/payloads');
+        File::ensureDirectoryExists($storageDirectory);
         WorkflowNamespace::query()->where('name', 'default')->firstOrFail()->forceFill([
             'external_payload_storage' => [
                 'driver' => 'local',
@@ -222,30 +224,32 @@ class MessageStreamsTest extends TestCase
         ])->save();
 
         $blob = Serializer::serializeWithCodec('avro', [['secret' => str_repeat('private-', 256)]]);
-        $path = $storageDirectory.'/payloads/message.bin';
-        File::put($path, $blob);
-        $reference = [
-            'schema' => ExternalPayloadReference::SCHEMA,
-            'uri' => 'file://'.$path,
-            'sha256' => hash('sha256', $blob),
-            'size_bytes' => strlen($blob),
-            'codec' => 'avro',
-        ];
+        $reference = app(RuntimeExternalPayloadRegistry::class)->upload(
+            'default',
+            $blob,
+            'avro',
+            hash('sha256', $blob),
+        );
+        $runtimePayload = RuntimeExternalPayload::query()->findOrFail($reference['reference_id']);
+        $path = rawurldecode(substr($runtimePayload->storage_uri, strlen('file://')));
 
         $this->withHeaders($this->apiHeaders())
             ->postJson('/api/workflows/wf-message-external/message-streams/orders/messages', [
                 'message_id' => 'external-1',
-                'input' => ['codec' => 'avro', 'external_storage' => $reference],
+                'input' => ['codec' => 'avro', 'external_payload' => $reference],
             ])
             ->assertStatus(202);
 
         $item = WorkflowInboundStreamItem::query()->firstOrFail();
         $this->assertStringStartsWith(ExternalPayloads::STORED_REFERENCE_PREFIX, $item->payload_blob);
         $this->assertStringNotContainsString(base64_encode($blob), $item->payload_blob);
-        $this->assertEquals($reference, ExternalPayloads::storedEnvelope($item->payload_blob)['external_storage']);
+        $storedReference = ExternalPayloads::storedEnvelope($item->payload_blob)['external_storage'];
+        $this->assertSame(ExternalPayloadReference::SCHEMA, $storedReference['schema']);
+        $this->assertSame($runtimePayload->storage_uri, $storedReference['uri']);
+        $this->assertArrayNotHasKey('reference_id', $storedReference);
         $this->assertSame('avro', $deliveries[0]['arguments'][0]['payload_envelope']['codec']);
         $this->assertEquals(
-            $reference,
+            $storedReference,
             $deliveries[0]['arguments'][0]['payload_envelope']['external_storage'],
         );
         $this->assertArrayNotHasKey('blob', $deliveries[0]['arguments'][0]['payload_envelope']);
@@ -272,7 +276,7 @@ class MessageStreamsTest extends TestCase
         $this->withHeaders($this->apiHeaders())
             ->postJson('/api/workflows/wf-message-external/message-streams/orders/messages', [
                 'message_id' => 'external-1',
-                'input' => ['codec' => 'avro', 'external_storage' => $reference],
+                'input' => ['codec' => 'avro', 'external_payload' => $reference],
             ])
             ->assertOk()
             ->assertJsonPath('duplicate', true);
@@ -289,7 +293,7 @@ class MessageStreamsTest extends TestCase
         );
         $this->assertCount(2, $deliveries);
         $this->assertEquals(
-            $reference,
+            $storedReference,
             $deliveries[1]['arguments'][0]['payload_envelope']['external_storage'],
         );
         $this->assertSame($nextRun->id, $item->fresh()->delivered_run_id);
