@@ -67,6 +67,12 @@ chart MINOR bump and an entry below.
 
 ## Per-version migration notes
 
+### 0.1.32
+
+This release advances the chart Server identity to `2.0.0-rc.41` and ships the
+Fiber-backed straight-line PHP conformance workers for current service-mode
+validation. Existing `0.1.31` values remain compatible.
+
 ### 0.1.31
 
 This release advances the chart Server identity to `2.0.0-rc.40` and adds
