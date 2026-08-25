@@ -21,6 +21,7 @@ use Tests\Feature\Concerns\ServerTestHelpers;
 use Tests\Fixtures\ConditionTimeoutWorkflow;
 use Tests\Fixtures\ExternalGreetingWorkflow;
 use Tests\Fixtures\InteractiveCommandWorkflow;
+use Tests\Support\OpenApiSchema;
 use Tests\TestCase;
 use Workflow\Serializers\Serializer;
 use Workflow\V2\Contracts\WorkflowTaskBridge;
@@ -34,6 +35,7 @@ use Workflow\V2\Models\WorkflowTask;
 use Workflow\V2\Models\WorkflowTimer;
 use Workflow\V2\Models\WorkflowUpdate;
 use Workflow\V2\Support\DefaultWorkflowTaskBridge;
+use Workflow\V2\Support\MemoPayload;
 use Workflow\V2\WorkflowStub;
 
 class WorkerProtocolSuccessContractTest extends TestCase
@@ -182,6 +184,22 @@ class WorkerProtocolSuccessContractTest extends TestCase
         foreach ($paths as $jsonPath => $expected) {
             $response->assertJsonPath($jsonPath, $expected);
         }
+    }
+
+    public function test_worker_registration_envelope_matches_the_published_openapi_schema(): void
+    {
+        $response = $this->postJson('/api/worker/register', [
+            'worker_id' => 'worker-openapi-envelope',
+            'task_queue' => 'contract-queue',
+            'runtime' => 'rust',
+            'capabilities' => ['typed_search_attributes'],
+        ], $this->workerProtocolHeaders())->assertCreated();
+
+        $envelope = json_decode((string) $response->getContent(), flags: JSON_THROW_ON_ERROR);
+
+        OpenApiSchema::fromFile(
+            dirname(__DIR__, 2).'/resources/platform-protocol-specs/worker-protocol-api.openapi.yaml',
+        )->assertReferenceMatches('#/components/schemas/WorkerEnvelope', $envelope);
     }
 
     public function test_worker_protocol_1_1_registration_advertises_feature_floor_without_worker_sessions(): void
@@ -1615,6 +1633,10 @@ class WorkerProtocolSuccessContractTest extends TestCase
             'workflow_type' => 'tests.external-greeting-workflow',
             'task_queue' => 'contract-queue',
             'input' => ['Ada'],
+            'memo' => [
+                'obsolete' => 'remove-me',
+                'tenant' => 'acme',
+            ],
         ], $this->apiHeaders());
 
         $start->assertCreated();
@@ -1652,6 +1674,13 @@ class WorkerProtocolSuccessContractTest extends TestCase
             'workflow_task_attempt' => $attempt,
             'commands' => [
                 [
+                    'type' => 'upsert_memo',
+                    'entries' => MemoPayload::mapEnvelope([
+                        'obsolete' => null,
+                        'stage' => 'continued',
+                    ]),
+                ],
+                [
                     'type' => 'continue_as_new',
                     'workflow_type' => 'tests.external-greeting-workflow',
                     'arguments' => Serializer::serializeWithCodec('avro', ['Ada v2']),
@@ -1681,6 +1710,15 @@ class WorkerProtocolSuccessContractTest extends TestCase
             ->assertJsonPath('runs.1.status', 'pending');
 
         $continuedRunId = (string) $runs->json('runs.1.run_id');
+
+        $this->getJson(
+            "/api/workflows/{$workflowId}/runs/{$continuedRunId}",
+            $this->controlPlaneHeadersWithWorkerProtocol(),
+        )->assertOk()
+            ->assertJsonPath('memo', [
+                'stage' => 'continued',
+                'tenant' => 'acme',
+            ]);
 
         $continuedPoll = $this->postJson('/api/worker/workflow-tasks/poll', [
             'worker_id' => 'worker-continued-contract',
@@ -3215,7 +3253,92 @@ class WorkerProtocolSuccessContractTest extends TestCase
         $this->assertSame($conditionWaitId, $cancelled->payload['condition_wait_id'] ?? null);
     }
 
-    public function test_marker_and_search_attribute_commands_use_worker_protocol_contract(): void
+    public function test_memo_update_is_visible_and_idempotent_while_the_run_waits(): void
+    {
+        Queue::fake();
+
+        $this->configureWorkflowTypes([
+            'tests.external-greeting-workflow' => ExternalGreetingWorkflow::class,
+        ]);
+
+        $start = $this->postJson('/api/workflows', [
+            'workflow_id' => 'wf-worker-memo-waiting',
+            'workflow_type' => 'tests.external-greeting-workflow',
+            'task_queue' => 'memo-waiting-queue',
+            'input' => ['Ada'],
+            'memo' => [
+                'obsolete' => 'remove-me',
+                'tenant' => 'acme',
+            ],
+        ], $this->apiHeaders());
+
+        $start->assertCreated();
+        $runId = (string) $start->json('run_id');
+
+        $this->registerWorker(
+            workerId: 'worker-memo-waiting',
+            taskQueue: 'memo-waiting-queue',
+            supportedWorkflowTypes: ['tests.external-greeting-workflow'],
+        );
+
+        $poll = $this->postJson('/api/worker/workflow-tasks/poll', [
+            'worker_id' => 'worker-memo-waiting',
+            'task_queue' => 'memo-waiting-queue',
+        ], $this->workerProtocolHeaders());
+
+        $this->assertWorkerProtocolSuccess($poll)
+            ->assertJsonPath('task.run_id', $runId);
+
+        $taskId = (string) $poll->json('task.task_id');
+        $attempt = (int) $poll->json('task.workflow_task_attempt');
+        $completion = [
+            'lease_owner' => 'worker-memo-waiting',
+            'workflow_task_attempt' => $attempt,
+            'commands' => [[
+                'type' => 'upsert_memo',
+                'entries' => MemoPayload::mapEnvelope([
+                    'obsolete' => null,
+                    'stage' => 'waiting',
+                ]),
+            ]],
+        ];
+
+        $complete = $this->postJson(
+            "/api/worker/workflow-tasks/{$taskId}/complete",
+            $completion,
+            $this->workerProtocolHeaders(),
+        );
+
+        $this->assertWorkerProtocolSuccess($complete)
+            ->assertJsonPath('recorded', true)
+            ->assertJsonPath('run_status', 'waiting');
+
+        $show = $this->getJson(
+            "/api/workflows/wf-worker-memo-waiting/runs/{$runId}",
+            $this->controlPlaneHeadersWithWorkerProtocol(),
+        );
+        $show->assertOk()
+            ->assertJsonPath('status', 'waiting')
+            ->assertJsonPath('memo', [
+                'stage' => 'waiting',
+                'tenant' => 'acme',
+            ]);
+
+        $duplicate = $this->postJson(
+            "/api/worker/workflow-tasks/{$taskId}/complete",
+            $completion,
+            $this->workerProtocolHeaders(),
+        );
+        $duplicate->assertStatus(409)
+            ->assertJsonPath('reason', 'task_not_leased');
+
+        $this->assertSame(1, WorkflowHistoryEvent::query()
+            ->where('workflow_run_id', $runId)
+            ->where('event_type', 'MemoUpserted')
+            ->count());
+    }
+
+    public function test_marker_memo_and_search_attribute_commands_use_worker_protocol_contract(): void
     {
         Queue::fake();
 
@@ -3229,6 +3352,10 @@ class WorkerProtocolSuccessContractTest extends TestCase
             'task_queue' => 'contract-queue',
             'input' => ['Ada'],
             'search_attributes' => [
+                'obsolete' => 'remove-me',
+                'tenant' => 'acme',
+            ],
+            'memo' => [
                 'obsolete' => 'remove-me',
                 'tenant' => 'acme',
             ],
@@ -3260,6 +3387,42 @@ class WorkerProtocolSuccessContractTest extends TestCase
         $attempt = (int) $poll->json('task.workflow_task_attempt');
         $sideEffectResult = Serializer::serializeWithCodec('avro', ['seed' => 123, 'source' => 'worker']);
 
+        $legacyHeaders = $this->workerProtocolHeaders();
+        $legacyHeaders[WorkerProtocol::HEADER] = '1.13';
+
+        $unsupported = $this->postJson("/api/worker/workflow-tasks/{$taskId}/complete", [
+            'lease_owner' => 'worker-marker-contract',
+            'workflow_task_attempt' => $attempt,
+            'commands' => [[
+                'type' => 'upsert_memo',
+                'entries' => MemoPayload::mapEnvelope(['phase' => 'unsupported']),
+            ]],
+        ], $legacyHeaders);
+
+        $unsupported->assertStatus(409)
+            ->assertJsonPath('recorded', false)
+            ->assertJsonPath('reason', 'workflow_memo_updates_unavailable')
+            ->assertJsonPath('minimum_protocol_version', '1.14')
+            ->assertJsonPath('server_capabilities.workflow_memo_updates.supported', true);
+
+        $invalid = $this->postJson("/api/worker/workflow-tasks/{$taskId}/complete", [
+            'lease_owner' => 'worker-marker-contract',
+            'workflow_task_attempt' => $attempt,
+            'commands' => [[
+                'type' => 'upsert_memo',
+                'entries' => MemoPayload::mapEnvelope([str_repeat('x', 65) => 'invalid']),
+            ]],
+        ], $this->workerProtocolHeaders());
+
+        $invalid->assertStatus(422)
+            ->assertJsonPath('recorded', false)
+            ->assertJsonPath('reason', 'workflow_memo_validation_failed');
+        $invalidBody = $invalid->json();
+        $this->assertSame(
+            'Workflow v2 memo keys must match ^(?!-?[0-9]+$)[A-Za-z0-9_.:-]{1,64}$.',
+            $invalidBody['validation_errors']['commands.0.entries'][0] ?? null,
+        );
+
         $complete = $this->postJson("/api/worker/workflow-tasks/{$taskId}/complete", [
             'lease_owner' => 'worker-marker-contract',
             'workflow_task_attempt' => $attempt,
@@ -3275,6 +3438,14 @@ class WorkerProtocolSuccessContractTest extends TestCase
                         'phase' => 'worker-contract',
                         'priority' => 3,
                     ],
+                ],
+                [
+                    'type' => 'upsert_memo',
+                    'entries' => MemoPayload::mapEnvelope([
+                        'obsolete' => null,
+                        'phase' => 'worker-contract',
+                        'progress' => 3,
+                    ]),
                 ],
                 [
                     'type' => 'record_version_marker',
@@ -3302,6 +3473,18 @@ class WorkerProtocolSuccessContractTest extends TestCase
             ->assertJsonPath('reason', null)
             ->assertJsonPath('created_task_ids', []);
 
+        $duplicate = $this->postJson("/api/worker/workflow-tasks/{$taskId}/complete", [
+            'lease_owner' => 'worker-marker-contract',
+            'workflow_task_attempt' => $attempt,
+            'commands' => [[
+                'type' => 'upsert_memo',
+                'entries' => MemoPayload::mapEnvelope(['progress' => 3]),
+            ]],
+        ], $this->workerProtocolHeaders());
+
+        $duplicate->assertStatus(409)
+            ->assertJsonPath('reason', 'run_closed');
+
         $showRun = $this->getJson(
             "/api/workflows/{$workflowId}/runs/{$runId}",
             $this->controlPlaneHeadersWithWorkerProtocol(),
@@ -3311,6 +3494,11 @@ class WorkerProtocolSuccessContractTest extends TestCase
             ->assertHeader(ControlPlaneProtocol::HEADER, ControlPlaneProtocol::VERSION)
             ->assertHeaderMissing(WorkerProtocol::HEADER)
             ->assertJsonPath('status', 'completed')
+            ->assertJsonPath('memo', [
+                'phase' => 'worker-contract',
+                'progress' => 3,
+                'tenant' => 'acme',
+            ])
             ->assertJsonPath('search_attributes', [
                 'phase' => 'worker-contract',
                 'priority' => 3,
@@ -3334,10 +3522,27 @@ class WorkerProtocolSuccessContractTest extends TestCase
             [
                 'obsolete' => null,
                 'phase' => 'worker-contract',
+                'progress' => 3,
+            ],
+            MemoPayload::decodeEntries($events->get('MemoUpserted')['payload']['entries'] ?? []),
+        );
+        $this->assertSame(
+            [
+                'phase' => 'worker-contract',
+                'progress' => 3,
+                'tenant' => 'acme',
+            ],
+            MemoPayload::decodeEntries($events->get('MemoUpserted')['payload']['merged'] ?? []),
+        );
+        $this->assertSame(
+            [
+                'obsolete' => null,
+                'phase' => 'worker-contract',
                 'priority' => 3,
             ],
             $events->get('SearchAttributesUpserted')['payload']['attributes'] ?? null,
         );
+        $this->assertSame(1, collect($history->json('events'))->where('event_type', 'MemoUpserted')->count());
         $this->assertSame(
             [
                 'phase' => 'worker-contract',

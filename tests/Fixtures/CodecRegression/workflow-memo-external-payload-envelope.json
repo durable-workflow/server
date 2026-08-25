@@ -1,0 +1,79 @@
+{
+  "$schema": "https://raw.githubusercontent.com/durable-workflow/.github/main/regression-corpus/evidence-schema.json",
+  "fixture_schema": "durable-workflow.codec-regression/v1",
+  "id": "workflow-memo-external-payload-envelope",
+  "protocol": {
+    "codec": "avro",
+    "schema": "durable_workflow.protocol.Value",
+    "version": "1",
+    "fingerprint": "e2a33dff55802237"
+  },
+  "bindings": [
+    "php",
+    "python",
+    "rust"
+  ],
+  "value": {
+    "type": "map",
+    "entries": [
+      {
+        "key": "codec",
+        "value": {
+          "type": "string",
+          "value": "avro"
+        }
+      },
+      {
+        "key": "external_payload",
+        "value": {
+          "type": "map",
+          "entries": [
+            {
+              "key": "schema",
+              "value": {
+                "type": "string",
+                "value": "durable-workflow.external-payload-reference/v1"
+              }
+            },
+            {
+              "key": "reference_id",
+              "value": {
+                "type": "string",
+                "value": "ep_01ARZ3NDEKTSV4RRFFQ69G5FAV"
+              }
+            },
+            {
+              "key": "codec",
+              "value": {
+                "type": "string",
+                "value": "avro"
+              }
+            },
+            {
+              "key": "size_bytes",
+              "value": {
+                "type": "long",
+                "value": 128
+              }
+            },
+            {
+              "key": "sha256",
+              "value": {
+                "type": "string",
+                "value": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+              }
+            }
+          ]
+        }
+      }
+    ]
+  },
+  "framing": {
+    "encoding": "avro-single-object",
+    "wire_base64": "wwHioz3/VYAiNw4ECmNvZGVjCghhdnJvIGV4dGVybmFsX3BheWxvYWQOCgxzY2hlbWEKXGR1cmFibGUtd29ya2Zsb3cuZXh0ZXJuYWwtcGF5bG9hZC1yZWZlcmVuY2UvdjEYcmVmZXJlbmNlX2lkCjplcF8wMUFSWjNOREVLVFNWNFJSRkZRNjlHNUZBVgpjb2RlYwoIYXZybxRzaXplX2J5dGVzBIACDHNoYTI1NgqAAWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWEAAA=="
+  },
+  "failure_policy": {
+    "operation": "round_trip",
+    "error": null
+  }
+}

@@ -18,6 +18,8 @@ use Illuminate\Testing\TestResponse;
 use Tests\Fixtures\ExternalGreetingWorkflow;
 use Tests\TestCase;
 use Workflow\Serializers\Serializer;
+use Workflow\V2\Models\WorkflowHistoryEvent;
+use Workflow\V2\Support\MemoPayload;
 
 class RuntimeExternalPayloadTransportTest extends TestCase
 {
@@ -531,6 +533,84 @@ class RuntimeExternalPayloadTransportTest extends TestCase
         $reference = $poll->json('task.arguments.external_payload');
         $fetched = $this->fetch($reference);
         $this->assertSame([$largeInput], Serializer::unserializeWithCodec('avro', $fetched->getContent()));
+    }
+
+    public function test_worker_memo_command_resolves_opaque_reference_before_recording_history(): void
+    {
+        Queue::fake();
+
+        $start = $this->withHeaders($this->controlHeaders())
+            ->postJson('/api/workflows', [
+                'workflow_id' => 'runtime-reference-memo',
+                'workflow_type' => 'tests.external-greeting-workflow',
+                'task_queue' => 'runtime-payloads',
+                'input' => ['memo'],
+                'memo' => ['tenant' => 'acme'],
+            ])
+            ->assertCreated();
+
+        $this->registerWorker('runtime-memo-worker', 'runtime-payloads');
+
+        $poll = $this->withHeaders($this->workerHeaders())
+            ->postJson('/api/worker/workflow-tasks/poll', [
+                'worker_id' => 'runtime-memo-worker',
+                'task_queue' => 'runtime-payloads',
+            ])
+            ->assertOk();
+
+        $entries = MemoPayload::mapEnvelope([
+            'stage' => 'waiting',
+            'tenant' => null,
+        ]);
+        $reference = $this->upload($entries['blob'])->json('reference');
+        $completion = [
+            'lease_owner' => 'runtime-memo-worker',
+            'workflow_task_attempt' => $poll->json('task.workflow_task_attempt'),
+            'commands' => [[
+                'type' => 'upsert_memo',
+                'entries' => [
+                    'codec' => 'avro',
+                    'external_payload' => $reference,
+                ],
+            ]],
+        ];
+
+        $route = '/api/worker/workflow-tasks/'.$poll->json('task.task_id').'/complete';
+        $completed = $this->withHeaders($this->workerHeaders())
+            ->postJson($route, $completion);
+        $completed->assertOk()
+            ->assertJsonPath('recorded', true);
+
+        $this->withHeaders($this->controlHeaders())
+            ->getJson('/api/workflows/runtime-reference-memo/runs/'.$start->json('run_id'))
+            ->assertOk()
+            ->assertJsonPath('memo', ['stage' => 'waiting']);
+
+        $event = WorkflowHistoryEvent::query()
+            ->where('workflow_run_id', $start->json('run_id'))
+            ->where('event_type', 'MemoUpserted')
+            ->sole();
+        $this->assertSame(
+            ['stage' => 'waiting', 'tenant' => null],
+            MemoPayload::decodeEntries($event->payload['entries'] ?? []),
+        );
+        $this->assertStringNotContainsString(
+            $reference['reference_id'],
+            json_encode($event->payload, JSON_THROW_ON_ERROR),
+        );
+        $this->assertDatabaseHas('runtime_external_payloads', [
+            'id' => $reference['reference_id'],
+            'expires_at' => null,
+        ]);
+
+        $this->withHeaders($this->workerHeaders())
+            ->postJson($route, $completion)
+            ->assertStatus(409)
+            ->assertJsonPath('reason', 'task_not_leased');
+        $this->assertSame(1, WorkflowHistoryEvent::query()
+            ->where('workflow_run_id', $start->json('run_id'))
+            ->where('event_type', 'MemoUpserted')
+            ->count());
     }
 
     public function test_stream_reference_is_verified_before_commit_and_returns_opaque(): void

@@ -25,10 +25,10 @@ class WorkerProtocolOpenApiContractTest extends TestCase
 
     public function test_cached_poll_conflict_shape_has_a_distinct_document_version(): void
     {
-        $this->assertSame('11', $this->spec['info']['version']);
-        $this->assertSame('1.15', $this->spec['x-durable-workflow-worker-protocol-negotiation']['default_advertised_version']);
+        $this->assertSame('12', $this->spec['info']['version']);
+        $this->assertSame('1.16', $this->spec['x-durable-workflow-worker-protocol-negotiation']['default_advertised_version']);
         $this->assertSame(
-            ['1.0', '1.1', '1.2', '1.3', '1.4', '1.5', '1.6', '1.7', '1.8', '1.9', '1.10', '1.11', '1.12', '1.13', '1.14', '1.15'],
+            ['1.0', '1.1', '1.2', '1.3', '1.4', '1.5', '1.6', '1.7', '1.8', '1.9', '1.10', '1.11', '1.12', '1.13', '1.14', '1.15', '1.16'],
             $this->spec['x-durable-workflow-worker-protocol-negotiation']['accepted_request_versions_by_default'],
         );
     }
@@ -54,6 +54,82 @@ class WorkerProtocolOpenApiContractTest extends TestCase
         );
         $this->assertContains(
             'message_streams',
+            $this->spec['components']['schemas']['WorkerServerCapabilities']['required'],
+        );
+    }
+
+    public function test_workflow_memo_update_command_and_capability_are_machine_described(): void
+    {
+        $contract = $this->spec['x-durable-workflow-workflow-memo-update-contract'];
+        $this->assertSame('1.14', $contract['minimum_protocol_version']);
+        $this->assertSame('upsert_memo', $contract['command']['type']);
+        $this->assertSame(['sequence', 'entries'], $contract['history_event']['replay_identity']);
+        $this->assertSame('runtime', $contract['external_payload_resolution_owner']);
+        $this->assertFalse($contract['sdk_storage_drivers']);
+        $this->assertSame(
+            ['php', 'python', 'rust'],
+            $contract['published_artifact_conformance']['worker_languages'],
+        );
+        $this->assertSame(
+            ['standalone_server', 'managed_cloud'],
+            $contract['published_artifact_conformance']['runtime_targets'],
+        );
+
+        $capabilities = $this->spec['components']['schemas']['WorkerServerCapabilities'];
+        $this->assertContains('workflow_memo_updates', $capabilities['required']);
+        $this->assertSame(
+            '#/components/schemas/WorkflowMemoUpdateCapability',
+            $capabilities['properties']['workflow_memo_updates']['$ref'],
+        );
+
+        $commands = $this->spec['components']['schemas']['WorkflowTaskCompleteRequest']['properties']['commands'];
+        $this->assertSame('#/components/schemas/WorkflowCommand', $commands['items']['$ref']);
+        $memoCondition = $this->spec['components']['schemas']['WorkflowCommand']['allOf'][0];
+        $this->assertSame('upsert_memo', $memoCondition['if']['properties']['type']['const']);
+        $this->assertSame(['entries'], $memoCondition['then']['required']);
+        $this->assertSame(
+            '#/components/schemas/MemoEntriesPayloadEnvelope',
+            $memoCondition['then']['properties']['entries']['$ref'],
+        );
+        $this->assertSame(
+            'avro',
+            $this->spec['components']['schemas']['InlineMemoEntriesPayloadEnvelope']['properties']['codec']['const'],
+        );
+        $this->assertSame(
+            [
+                ['$ref' => '#/components/schemas/InlineMemoEntriesPayloadEnvelope'],
+                ['$ref' => './external-payload-transport.openapi.yaml#/components/schemas/RuntimeExternalPayloadEnvelope'],
+            ],
+            $this->spec['components']['schemas']['MemoEntriesPayloadEnvelope']['oneOf'],
+        );
+    }
+
+    public function test_typed_search_attribute_identity_and_version_gate_are_machine_described(): void
+    {
+        $contract = $this->spec['x-durable-workflow-typed-search-attributes-contract'];
+        $this->assertSame('1.16', $contract['minimum_protocol_version']);
+        $this->assertSame(
+            ['string', 'keyword', 'keyword_list', 'int', 'float', 'bool', 'datetime'],
+            $contract['canonical_type_names'],
+        );
+        $this->assertSame('typed_search_attributes_unavailable', $contract['version_gate']['rejection_reason']);
+        $this->assertSame(
+            ['sequence', 'attributes', 'attribute_types'],
+            $contract['history']['replay_identity'],
+        );
+        $this->assertSame(
+            'unknown_type_identity_compare_value_only',
+            $contract['history']['legacy_missing_metadata'],
+        );
+
+        $command = $this->spec['components']['schemas']['WorkflowCommand']['allOf'][1]['then']['properties'];
+        $this->assertSame('1.16', $command['attribute_types']['x-durable-workflow-minimum-protocol-version']);
+        $this->assertSame(
+            ['string', 'keyword', 'keyword_list', 'int', 'float', 'bool', 'datetime'],
+            $this->spec['components']['schemas']['SearchAttributeType']['enum'],
+        );
+        $this->assertContains(
+            'typed_search_attributes',
             $this->spec['components']['schemas']['WorkerServerCapabilities']['required'],
         );
     }

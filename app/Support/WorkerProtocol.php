@@ -2,6 +2,7 @@
 
 namespace App\Support;
 
+use App\Models\SearchAttributeDefinition;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Workflow\V2\Support\WorkerHistoryPayloadContract;
@@ -17,7 +18,11 @@ class WorkerProtocol
      * here. WorkflowPackageApiFloor asserts the installed package still
      * provides the companion protocol helpers for this version.
      */
-    public const VERSION = '1.15';
+    public const VERSION = '1.16';
+
+    public const TYPED_SEARCH_ATTRIBUTES_MINIMUM_PROTOCOL_VERSION = '1.16';
+
+    public const SYNCHRONOUS_UPDATE_VALIDATION_MINIMUM_PROTOCOL_VERSION = '1.13';
 
     public const HEADER = 'X-Durable-Workflow-Protocol-Version';
 
@@ -179,6 +184,27 @@ class WorkerProtocol
             && self::messageStreamsSupported($version);
     }
 
+    public static function typedSearchAttributesSupported(?string $version = null): bool
+    {
+        $version ??= (string) config('server.worker_protocol.version', self::VERSION);
+        $candidate = self::splitProtocolVersion($version);
+        $minimum = self::splitProtocolVersion(self::TYPED_SEARCH_ATTRIBUTES_MINIMUM_PROTOCOL_VERSION);
+
+        return $candidate !== null
+            && $minimum !== null
+            && $candidate[0] === $minimum[0]
+            && $candidate[1] >= $minimum[1];
+    }
+
+    public static function typedSearchAttributesAvailableForRequest(Request $request): bool
+    {
+        $version = self::requestVersion($request);
+
+        return self::typedSearchAttributesSupported()
+            && $version !== null
+            && self::typedSearchAttributesSupported($version);
+    }
+
     public static function rejectWorkerSessionsUnavailable(Request $request): ?JsonResponse
     {
         if (self::workerSessionsAvailableForRequest($request)) {
@@ -231,16 +257,47 @@ class WorkerProtocol
      */
     public static function supportedWorkflowTaskCommands(): array
     {
-        return array_values(array_merge(
+        $commands = array_values(array_merge(
             WorkerProtocolVersion::terminalCommandTypes(),
             WorkerProtocolVersion::nonTerminalCommandTypes(),
         ));
+
+        if (! self::workflowMemoUpdatesSupported()) {
+            $commands = array_values(array_filter(
+                $commands,
+                static fn (string $command): bool => $command !== 'upsert_memo',
+            ));
+        }
+
+        return $commands;
+    }
+
+    public static function workflowMemoUpdatesSupported(?string $version = null): bool
+    {
+        $version ??= (string) config('server.worker_protocol.version', self::VERSION);
+        $minimum = self::workflowMemoUpdateSemantics()['minimum_protocol_version'] ?? self::VERSION;
+        $candidate = self::splitProtocolVersion($version);
+        $minimum = is_string($minimum) ? self::splitProtocolVersion($minimum) : null;
+
+        return $candidate !== null
+            && $minimum !== null
+            && $candidate[0] === $minimum[0]
+            && $candidate[1] >= $minimum[1];
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    public static function workflowMemoUpdateSemantics(): array
+    {
+        return WorkerProtocolVersion::upsertMemoCommandShape();
     }
 
     /**
      * @return array{
      *     long_poll_timeout: int,
      *     supported_workflow_task_commands: list<string>,
+     *     workflow_memo_updates: array<string, mixed>,
      *     workflow_task_poll_request_idempotency: bool,
      *     poll_status: bool,
      *     history_page_size_default: int,
@@ -288,6 +345,10 @@ class WorkerProtocol
                 WorkerProtocolVersion::DEFAULT_LONG_POLL_TIMEOUT,
             ),
             'supported_workflow_task_commands' => self::supportedWorkflowTaskCommands(),
+            'workflow_memo_updates' => [
+                ...self::workflowMemoUpdateSemantics(),
+                'supported' => self::workflowMemoUpdatesSupported(),
+            ],
             'workflow_task_poll_request_idempotency' => true,
             'poll_status' => true,
             'history_page_size_default' => (int) config(
@@ -303,13 +364,22 @@ class WorkerProtocol
                 ...MessageStreamsContract::manifest(),
                 'supported' => self::messageStreamsSupported(),
             ],
+            'typed_search_attributes' => [
+                'supported' => self::typedSearchAttributesSupported(),
+                'minimum_worker_protocol_version' => self::TYPED_SEARCH_ATTRIBUTES_MINIMUM_PROTOCOL_VERSION,
+                'canonical_types' => SearchAttributeDefinition::CANONICAL_TYPES,
+                'command_field' => 'attribute_types',
+                'history_event' => 'SearchAttributesUpserted',
+                'history_field' => 'attribute_types',
+                'legacy_history_rule' => 'absent_metadata_is_unknown_type_identity',
+            ],
             'query_tasks' => true,
             'query_task_poll_request_idempotency' => true,
             'query_task_timeouts' => self::queryTaskTimeouts(),
             'update_validation_tasks' => true,
             'synchronous_update_validation' => [
                 'supported' => true,
-                'minimum_protocol_version' => self::VERSION,
+                'minimum_protocol_version' => self::SYNCHRONOUS_UPDATE_VALIDATION_MINIMUM_PROTOCOL_VERSION,
                 'acceptance_boundary' => 'validator_approved',
                 'worker_capability' => WorkflowUpdateValidationTaskBroker::CAPABILITY,
                 'workflow_contract_field' => WorkflowUpdateValidationTaskBroker::CONTRACT_FIELD,

@@ -4,7 +4,7 @@
         "Read more about it at https://getcomposer.org/doc/01-basic-usage.md#installing-dependencies",
         "This file is @generated automatically"
     ],
-    "content-hash": "7538770509e40840677c12aa2a9cf3d5",
+    "content-hash": "068c94119b5c1af9392c039ffcb67c51",
     "packages": [
         {
             "name": "apache/avro",
@@ -504,21 +504,21 @@
         },
         {
             "name": "durable-workflow/workflow",
-            "version": "2.0.0-rc.37",
+            "version": "2.0.0-rc.44",
             "source": {
                 "type": "git",
                 "url": "https://github.com/durable-workflow/workflow.git",
-                "reference": "8dc90d649ec00f92291fa6377c45fac60ebe5de0"
+                "reference": "64a4dfdbbd090667082d4b8a03529ce99ba0b607"
             },
             "dist": {
                 "type": "zip",
-                "url": "https://api.github.com/repos/durable-workflow/workflow/zipball/8dc90d649ec00f92291fa6377c45fac60ebe5de0",
-                "reference": "8dc90d649ec00f92291fa6377c45fac60ebe5de0",
+                "url": "https://api.github.com/repos/durable-workflow/workflow/zipball/64a4dfdbbd090667082d4b8a03529ce99ba0b607",
+                "reference": "64a4dfdbbd090667082d4b8a03529ce99ba0b607",
                 "shasum": ""
             },
             "require": {
                 "apache/avro": "^1.12",
-                "laravel/framework": "^9.0|^10.0|^11.0|^12.0|^13.0",
+                "laravel/framework": "^9.52.17|^10.48.29|^11.44.1|^12.61.1|^13.12.0",
                 "php": "^8.1",
                 "react/promise": "^2.9|^3.0",
                 "symfony/yaml": "^6.0|^7.0|^8.0"
@@ -543,8 +543,9 @@
                     ]
                 },
                 "durable-workflow": {
-                    "product-train": "2.0.0-rc.37",
-                    "laravel-embedded-upgrade-contract": "resources/laravel-embedded-upgrade-contract.json"
+                    "product-train": "2.0.0-rc.44",
+                    "laravel-embedded-upgrade-contract": "resources/laravel-embedded-upgrade-contract.json",
+                    "laravel-dependency-security-policy": "resources/laravel-dependency-security-policy.json"
                 }
             },
             "autoload": {
@@ -569,9 +570,9 @@
             "description": "Embedded durable workflow runtime and orchestration engine for Laravel applications.",
             "support": {
                 "issues": "https://github.com/durable-workflow/workflow/issues",
-                "source": "https://github.com/durable-workflow/workflow/tree/2.0.0-rc.37"
+                "source": "https://github.com/durable-workflow/workflow/tree/2.0.0-rc.44"
             },
-            "time": "2026-08-22T02:43:33+00:00"
+            "time": "2026-08-25T09:30:46+00:00"
         },
         {
             "name": "egulias/email-validator",
@@ -6104,16 +6105,16 @@
         },
         {
             "name": "symfony/yaml",
-            "version": "v7.4.15",
+            "version": "v7.4.17",
             "source": {
                 "type": "git",
                 "url": "https://github.com/symfony/yaml.git",
-                "reference": "e101850ded5d2c0d44bf32abb8996404afec2dec"
+                "reference": "0b040d7b66ceb10b7bb24c8e6656257932693a12"
             },
             "dist": {
                 "type": "zip",
-                "url": "https://api.github.com/repos/symfony/yaml/zipball/e101850ded5d2c0d44bf32abb8996404afec2dec",
-                "reference": "e101850ded5d2c0d44bf32abb8996404afec2dec",
+                "url": "https://api.github.com/repos/symfony/yaml/zipball/0b040d7b66ceb10b7bb24c8e6656257932693a12",
+                "reference": "0b040d7b66ceb10b7bb24c8e6656257932693a12",
                 "shasum": ""
             },
             "require": {
@@ -6156,7 +6157,7 @@
             "description": "Loads and dumps YAML files",
             "homepage": "https://symfony.com",
             "support": {
-                "source": "https://github.com/symfony/yaml/tree/v7.4.15"
+                "source": "https://github.com/symfony/yaml/tree/v7.4.17"
             },
             "funding": [
                 {
@@ -6176,7 +6177,7 @@
                     "type": "tidelift"
                 }
             ],
-            "time": "2026-07-21T15:13:06+00:00"
+            "time": "2026-08-21T12:09:28+00:00"
         },
         {
             "name": "tijsverkoyen/css-to-inline-styles",

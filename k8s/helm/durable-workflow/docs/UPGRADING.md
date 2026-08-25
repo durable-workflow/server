@@ -67,6 +67,14 @@ chart MINOR bump and an entry below.
 
 ## Per-version migration notes
 
+### 0.1.39
+
+This release advances the chart Server identity to `2.0.0-rc.47` and adds
+portable workflow memo updates while advancing the advertised worker protocol
+to 1.16. Memo updates remain available to compatible 1.14+ workers. The normal
+database migration converts existing memo rows to their portable payload
+envelopes; no manual memo rewrite is required.
+
 ### 0.1.37
 
 This release advances the chart Server identity to `2.0.0-rc.46` and preserves

@@ -12,10 +12,15 @@ class SearchAttributeValueValidator
 {
     /**
      * @param  array<int|string, mixed>  $searchAttributes
+     * @param  array<int|string, mixed>  $declaredTypes
      * @return array<string, string>
      */
-    public function validateForNamespace(?string $namespace, array $searchAttributes, string $errorKey = 'search_attributes'): array
-    {
+    public function validateForNamespace(
+        ?string $namespace,
+        array $searchAttributes,
+        string $errorKey = 'search_attributes',
+        array $declaredTypes = [],
+    ): array {
         $maxKeyLength = (int) config('server.limits.max_search_attribute_key_length', 128);
         $maxValueBytes = (int) config('server.limits.max_search_attribute_value_bytes', 2048);
         $customDefinitions = $this->customDefinitionTypes($namespace);
@@ -23,6 +28,23 @@ class SearchAttributeValueValidator
         $schemaEnforced = $customDefinitions !== [];
         $attributeTypes = [];
         $messages = [];
+
+        foreach ($declaredTypes as $key => $type) {
+            if (! is_string($key) || ! array_key_exists($key, $searchAttributes)) {
+                $messages[] = 'Declared search attribute types must name keys present in the attribute update.';
+
+                continue;
+            }
+
+            if (! is_string($type) || SearchAttributeDefinition::canonicalType($type) !== $type) {
+                $messages[] = sprintf(
+                    'Search attribute [%s] declares unsupported type [%s]; allowed types are %s.',
+                    $key,
+                    is_scalar($type) ? (string) $type : get_debug_type($type),
+                    implode(', ', SearchAttributeDefinition::CANONICAL_TYPES),
+                );
+            }
+        }
 
         foreach ($searchAttributes as $key => $value) {
             if (! is_string($key) || $key === '') {
@@ -50,13 +72,31 @@ class SearchAttributeValueValidator
                 continue;
             }
 
-            $declaredType = $definitions[$key] ?? null;
+            $registeredType = isset($definitions[$key])
+                ? SearchAttributeDefinition::canonicalType($definitions[$key])
+                : null;
+            $declaredType = isset($declaredTypes[$key]) && is_string($declaredTypes[$key])
+                ? SearchAttributeDefinition::canonicalType($declaredTypes[$key])
+                : null;
 
-            if ($declaredType !== null) {
-                $this->validateDeclaredValue($messages, $key, $value, $declaredType, $maxValueBytes);
+            if ($registeredType !== null && $declaredType !== null && $registeredType !== $declaredType) {
+                $messages[] = sprintf(
+                    'Search attribute [%s] declares type [%s] but is registered as [%s].',
+                    $key,
+                    $declaredType,
+                    $registeredType,
+                );
 
-                if ($value !== null) {
-                    $attributeTypes[$key] = $this->storageType($declaredType);
+                continue;
+            }
+
+            $effectiveType = $registeredType ?? $declaredType;
+
+            if ($effectiveType !== null) {
+                $this->validateDeclaredValue($messages, $key, $value, $effectiveType, $maxValueBytes);
+
+                if ($value !== null || $declaredType !== null) {
+                    $attributeTypes[$key] = $effectiveType;
                 }
 
                 continue;
@@ -69,6 +109,9 @@ class SearchAttributeValueValidator
             }
 
             $this->validateUnregisteredValue($messages, $key, $value, $maxValueBytes);
+            if ($value !== null) {
+                $attributeTypes[$key] = WorkflowSearchAttribute::inferType($value);
+            }
         }
 
         if ($messages !== []) {
@@ -76,6 +119,8 @@ class SearchAttributeValueValidator
                 $errorKey => $messages,
             ]);
         }
+
+        ksort($attributeTypes);
 
         return $attributeTypes;
     }
@@ -113,7 +158,7 @@ class SearchAttributeValueValidator
         match ($declaredType) {
             'keyword', 'string', 'text' => $this->validateStringValue($messages, $key, $value, $declaredType, $maxValueBytes),
             'int' => $this->validateIntValue($messages, $key, $value),
-            'double' => $this->validateDoubleValue($messages, $key, $value),
+            'float' => $this->validateFloatValue($messages, $key, $value),
             'bool' => $this->validateBoolValue($messages, $key, $value),
             'datetime' => $this->validateDatetimeValue($messages, $key, $value, $maxValueBytes),
             'keyword_list' => $this->validateKeywordListValue($messages, $key, $value, $maxValueBytes),
@@ -208,11 +253,11 @@ class SearchAttributeValueValidator
     /**
      * @param  list<string>  $messages
      */
-    private function validateDoubleValue(array &$messages, string $key, mixed $value): void
+    private function validateFloatValue(array &$messages, string $key, mixed $value): void
     {
         if ((! is_int($value) && ! is_float($value)) || is_bool($value)) {
             $messages[] = sprintf(
-                'Search attribute [%s] is registered as double and must be a number.',
+                'Search attribute [%s] is registered as float and must be a number.',
                 $key,
             );
         }
@@ -301,16 +346,6 @@ class SearchAttributeValueValidator
                 return;
             }
         }
-    }
-
-    private function storageType(string $declaredType): string
-    {
-        return match ($declaredType) {
-            'string', 'text' => WorkflowSearchAttribute::TYPE_STRING,
-            'double' => WorkflowSearchAttribute::TYPE_FLOAT,
-            'keyword_list' => WorkflowSearchAttribute::TYPE_KEYWORD_LIST,
-            default => $declaredType,
-        };
     }
 
     private function positiveLimit(int $limit): int

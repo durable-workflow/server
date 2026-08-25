@@ -1187,7 +1187,7 @@ class WorkflowController
             'last_progress_at' => $runDescription['last_progress_at'] ?? $run->last_progress_at?->toJSON(),
             'wait_kind' => $runDescription['wait_kind'] ?? null,
             'wait_reason' => $runDescription['wait_reason'] ?? null,
-            'memo' => $run->typedMemos(),
+            'memo' => AvroValueJsonProjection::project($run->typedMemos()),
             'search_attributes' => $run->typedSearchAttributes(),
             'actions' => $actions,
             'commands_scope' => 'selected_run',

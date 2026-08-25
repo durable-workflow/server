@@ -87,6 +87,9 @@ final class WorkflowPackageApiFloor
         [WorkerProtocolVersion::class, 'queryTaskVerbs'],
         [WorkerProtocolVersion::class, 'workerCapabilities'],
         [WorkerProtocolVersion::class, 'queryTaskSemantics'],
+        // Protocol 1.14 workflow memo command/history contract. The server
+        // advertises this package-owned shape and applies it at completion.
+        [WorkerProtocolVersion::class, 'upsertMemoCommandShape'],
         // Complete bounded worker-history budget contract. The standalone
         // server consumes this shape directly from full and paginated bridge
         // responses and advertises the same manifest in discovery.
@@ -134,7 +137,7 @@ final class WorkflowPackageApiFloor
     /**
      * Workflow package protocol contract required by this server.
      */
-    private const MINIMUM_WORKFLOW_PACKAGE_WORKER_PROTOCOL_VERSION = '1.15';
+    private const MINIMUM_WORKFLOW_PACKAGE_WORKER_PROTOCOL_VERSION = '1.16';
 
     /**
      * Concrete classes the server instantiates or catches directly.

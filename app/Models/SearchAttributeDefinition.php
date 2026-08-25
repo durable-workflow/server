@@ -25,6 +25,17 @@ class SearchAttributeDefinition extends Model
         'keyword_list',
     ];
 
+    /** Canonical worker/history type names. Registered aliases normalize to these values. */
+    public const CANONICAL_TYPES = [
+        'string',
+        'keyword',
+        'keyword_list',
+        'int',
+        'float',
+        'bool',
+        'datetime',
+    ];
+
     public const SYSTEM_ATTRIBUTES = [
         'WorkflowType' => 'keyword',
         'WorkflowId' => 'keyword',
@@ -59,5 +70,14 @@ class SearchAttributeDefinition extends Model
         return array_key_exists($name, self::SYSTEM_ATTRIBUTES)
             || in_array(strtolower($name), self::SYSTEM_ATTRIBUTE_ALIASES, true)
             || str_starts_with($name, '__');
+    }
+
+    public static function canonicalType(string $type): ?string
+    {
+        return match ($type) {
+            'text' => 'string',
+            'double' => 'float',
+            default => in_array($type, self::CANONICAL_TYPES, true) ? $type : null,
+        };
     }
 }

@@ -197,8 +197,8 @@ class WorkflowPackageApiFloorTest extends TestCase
         $this->assertNotFalse($capability);
         $this->assertTrue($capability->isPublic());
 
-        $this->assertSame('1.15', WorkerProtocolVersion::VERSION);
-        $this->assertTrue(version_compare(WorkerProtocol::VERSION, WorkerProtocolVersion::VERSION, '>='));
+        $this->assertSame('1.16', WorkerProtocolVersion::VERSION);
+        $this->assertSame(WorkerProtocolVersion::VERSION, WorkerProtocol::VERSION);
         $this->assertSame('query_tasks', WorkerProtocolVersion::CAPABILITY_QUERY_TASKS);
         $this->assertSame(['poll', 'complete', 'fail'], WorkerProtocolVersion::queryTaskVerbs());
         $this->assertContains(WorkerProtocolVersion::CAPABILITY_QUERY_TASKS, WorkerProtocolVersion::workerCapabilities());
@@ -383,6 +383,7 @@ class WorkflowPackageApiFloorTest extends TestCase
             'complete_update' => ['result'],
             'record_side_effect' => ['result'],
             'start_service_operation' => ['request_payload'],
+            'upsert_memo' => ['entries'],
         ], WorkflowCommandNormalizer::payloadEnvelopeFields());
 
         $this->assertTrue($this->invokeConfirmsWorkflowCommandNormalizerPayloadEnvelopeContract());

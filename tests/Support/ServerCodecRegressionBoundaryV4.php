@@ -20,10 +20,13 @@ use InvalidArgumentException;
 use PHPUnit\Framework\Assert;
 use Tests\TestCase;
 use Throwable;
+use Workflow\Serializers\AvroBinaryValue;
 use Workflow\Serializers\Serializer;
 use Workflow\V2\Enums\HistoryEventType;
 use Workflow\V2\Models\WorkflowHistoryEvent;
+use Workflow\V2\Models\WorkflowMemo;
 use Workflow\V2\Models\WorkflowRun;
+use Workflow\V2\Support\MemoPayload;
 
 /** Codec regression extensions for runtime payloads and inbound message streams. */
 final class ServerCodecRegressionBoundaryV4
@@ -49,6 +52,114 @@ final class ServerCodecRegressionBoundaryV4
             'app/Support/NamespaceLifecycleCleanup.php' => self::exerciseNamespaceCleanup(),
             default => Assert::fail("Unsupported runtime external-payload proof boundary {$boundary}."),
         };
+    }
+
+    public static function exerciseWorkflowMemoResolution(TestCase $test): void
+    {
+        if (self::proofInputCodec() === 'avro') {
+            self::exerciseWorkerPollSentinel($test);
+
+            return;
+        }
+
+        Queue::fake();
+        self::configureStorage();
+        $start = self::startWorkflow(
+            $test,
+            'runtime-payload-proof-memo',
+            'runtime-payload-proof',
+        );
+        self::registerWorker();
+
+        $poll = $test->withHeaders(self::workerHeaders())
+            ->postJson('/api/worker/workflow-tasks/poll', [
+                'worker_id' => 'runtime-payload-proof-worker',
+                'task_queue' => 'runtime-payload-proof',
+            ])
+            ->assertOk();
+        $entries = MemoPayload::mapEnvelope([
+            'stage' => 'waiting',
+            'tenant' => null,
+        ]);
+        $reference = self::seedPayload($entries['blob']);
+
+        $test->withHeaders(self::workerHeaders())
+            ->postJson('/api/worker/workflow-tasks/'.$poll->json('task.task_id').'/complete', [
+                'lease_owner' => $poll->json('task.lease_owner'),
+                'workflow_task_attempt' => $poll->json('task.workflow_task_attempt'),
+                'commands' => [[
+                    'type' => 'upsert_memo',
+                    'entries' => [
+                        'codec' => 'avro',
+                        'external_payload' => $reference,
+                    ],
+                ]],
+            ])
+            ->assertOk()
+            ->assertJsonPath('recorded', true);
+
+        $event = WorkflowHistoryEvent::query()
+            ->where('workflow_run_id', $start->json('run_id'))
+            ->where('event_type', 'MemoUpserted')
+            ->sole();
+        Assert::assertSame(
+            ['stage' => 'waiting', 'tenant' => null],
+            MemoPayload::decodeEntries($event->payload['entries'] ?? []),
+        );
+        Assert::assertStringNotContainsString(
+            $reference['reference_id'],
+            json_encode($event->payload, JSON_THROW_ON_ERROR),
+        );
+    }
+
+    public static function exerciseWorkflowMemoJsonProjection(TestCase $test): void
+    {
+        $configuredBoundary = getenv('SERVER_CODEC_CLAIMED_BOUNDARY');
+        $boundary = is_string($configuredBoundary)
+            ? $configuredBoundary
+            : 'app/Http/Controllers/Api/WorkflowController.php';
+        Assert::assertSame('app/Http/Controllers/Api/WorkflowController.php', $boundary);
+
+        self::exerciseWorkflowMemoProjection(
+            $test,
+            invalidBinary: self::proofInputCodec() === 'json',
+        );
+    }
+
+    private static function exerciseWorkflowMemoProjection(TestCase $test, bool $invalidBinary): void
+    {
+        Queue::fake();
+        $workflowId = $invalidBinary
+            ? 'codec-memo-invalid-binary-projection'
+            : 'codec-memo-projection-sentinel';
+        $start = self::startWorkflow($test, $workflowId);
+        $run = WorkflowRun::query()->findOrFail((string) $start->json('run_id'));
+        $value = $invalidBinary
+            ? AvroBinaryValue::fromBytes("\xFF\x00")
+            : 'waiting';
+
+        WorkflowMemo::query()->create([
+            'workflow_run_id' => $run->id,
+            'workflow_instance_id' => $run->workflow_instance_id,
+            'key' => 'stage',
+            'value' => MemoPayload::envelope($value),
+            'upserted_at_sequence' => 1,
+        ]);
+
+        $response = $test->withHeaders(self::controlHeaders())
+            ->getJson("/api/workflows/{$workflowId}/runs/{$run->id}")
+            ->assertOk();
+
+        if ($invalidBinary) {
+            $response->assertJsonPath('memo.stage', [
+                '$type' => 'bytes',
+                'base64' => '/wA=',
+            ]);
+
+            return;
+        }
+
+        $response->assertJsonPath('memo.stage', 'waiting');
     }
 
     private static function exerciseSentinelBoundary(TestCase $test, string $boundary): void
@@ -207,6 +318,15 @@ final class ServerCodecRegressionBoundaryV4
     private static function seed(string $value, bool $corrupt = false): array
     {
         $payload = Serializer::serializeWithCodec('avro', [$value]);
+
+        return self::seedPayload($payload, $corrupt);
+    }
+
+    /**
+     * @return array{schema: string, reference_id: string, codec: string, size_bytes: int, sha256: string}
+     */
+    private static function seedPayload(string $payload, bool $corrupt = false): array
+    {
         $sha256 = hash('sha256', $payload);
         $path = self::storageDirectory().'/avro/'.substr($sha256, 0, 2).'/'.$sha256;
         File::ensureDirectoryExists(dirname($path));

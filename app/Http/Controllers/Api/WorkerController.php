@@ -46,6 +46,7 @@ use Illuminate\Validation\ValidationException;
 use Workflow\V2\Contracts\HistoryProjectionRole;
 use Workflow\V2\Contracts\WorkflowTaskBridge;
 use Workflow\V2\Enums\ActivityAttemptStatus;
+use Workflow\V2\Enums\HistoryEventType;
 use Workflow\V2\Enums\RunStatus;
 use Workflow\V2\Enums\TaskStatus;
 use Workflow\V2\Enums\TaskType;
@@ -53,6 +54,7 @@ use Workflow\V2\Exceptions\ExternalPayloadIntegrityException;
 use Workflow\V2\Exceptions\StructuralLimitExceededException;
 use Workflow\V2\Models\ActivityAttempt;
 use Workflow\V2\Models\ActivityExecution;
+use Workflow\V2\Models\WorkflowHistoryEvent;
 use Workflow\V2\Models\WorkflowRun;
 use Workflow\V2\Models\WorkflowTask;
 use Workflow\V2\Support\StructuralLimits;
@@ -1338,6 +1340,7 @@ class WorkerController
             'commands.*.attributes' => ['nullable', 'array'],
             'commands.*.attribute_types' => ['nullable', 'array'],
             'commands.*.attribute_types.*' => ['string'],
+            'commands.*.entries' => ['nullable', 'array'],
             'commands.*.non_retryable' => ['nullable', 'boolean'],
             'commands.*.parent_close_policy' => ['nullable', 'string'],
             'commands.*.condition_key' => ['nullable', 'string'],
@@ -1389,6 +1392,24 @@ class WorkerController
         }
 
         if ($response = $this->guardWorkerSessionCommandsAvailable(
+            $request,
+            $taskId,
+            (int) $validated['workflow_task_attempt'],
+            $commands,
+        )) {
+            return $response;
+        }
+
+        if ($response = $this->guardWorkflowMemoUpdatesAvailable(
+            $request,
+            $taskId,
+            (int) $validated['workflow_task_attempt'],
+            $commands,
+        )) {
+            return $response;
+        }
+
+        if ($response = $this->guardTypedSearchAttributeCommandsAvailable(
             $request,
             $taskId,
             (int) $validated['workflow_task_attempt'],
@@ -1472,6 +1493,7 @@ class WorkerController
                         );
                         $commands = WorkflowCommandNormalizer::normalize($commands);
                         $outcome = $bridge->complete($taskId, $commands);
+                        $this->persistTypedSearchAttributeHistoryIdentity($taskId, $commands, $outcome);
                         $this->terminalEventAttribution->record($request, $taskId, $outcome);
                         $this->messageStreams->recordCompletion(
                             (string) $namespace,
@@ -1485,11 +1507,22 @@ class WorkerController
                     });
                 },
             );
+        } catch (ValidationException $exception) {
+            if (! $this->commandsUseWorkflowMemoUpdates($commands)) {
+                throw $exception;
+            }
+
+            return $this->workflowMemoValidationFailure(
+                $taskId,
+                (int) $validated['workflow_task_attempt'],
+                $exception,
+            );
         } catch (StructuralLimitExceededException $e) {
             return WorkerProtocol::json([
                 'task_id' => $taskId,
                 'workflow_task_attempt' => (int) $validated['workflow_task_attempt'],
                 'outcome' => 'rejected',
+                'recorded' => false,
                 'error' => $e->getMessage(),
                 'reason' => 'structural_limit_exceeded',
                 'limit_kind' => $e->limitKind->value,
@@ -1525,6 +1558,14 @@ class WorkerController
                 'reason' => 'stream_not_found',
             ], 404);
         } catch (\InvalidArgumentException $exception) {
+            if ($this->commandsUseWorkflowMemoUpdates($commands)) {
+                return $this->workflowMemoValidationFailure(
+                    $taskId,
+                    (int) $validated['workflow_task_attempt'],
+                    $exception,
+                );
+            }
+
             return WorkerProtocol::json([
                 'task_id' => $taskId,
                 'workflow_task_attempt' => (int) $validated['workflow_task_attempt'],
@@ -1609,6 +1650,86 @@ class WorkerController
     /**
      * @param  list<array<string, mixed>>  $commands
      */
+    private function guardWorkflowMemoUpdatesAvailable(
+        Request $request,
+        string $taskId,
+        int $workflowTaskAttempt,
+        array $commands,
+    ): ?JsonResponse {
+        if (! $this->commandsUseWorkflowMemoUpdates($commands)) {
+            return null;
+        }
+
+        $semantics = WorkerProtocol::workflowMemoUpdateSemantics();
+        $minimum = (string) ($semantics['minimum_protocol_version'] ?? WorkerProtocol::VERSION);
+        $requested = WorkerProtocol::requestVersion($request);
+
+        if (
+            WorkerProtocol::workflowMemoUpdatesSupported()
+            && $requested !== null
+            && WorkerProtocol::workflowMemoUpdatesSupported($requested)
+        ) {
+            return null;
+        }
+
+        return WorkerProtocol::json([
+            'task_id' => $taskId,
+            'workflow_task_attempt' => $workflowTaskAttempt,
+            'outcome' => 'rejected',
+            'recorded' => false,
+            'reason' => 'workflow_memo_updates_unavailable',
+            'error' => sprintf(
+                'Workflow memo updates require worker protocol %s or newer.',
+                $minimum,
+            ),
+            'requested_version' => $requested,
+            'minimum_protocol_version' => $minimum,
+            'remediation' => sprintf(
+                'Check server_capabilities.workflow_memo_updates.supported before emitting upsert_memo, and use a worker SDK targeting protocol %s or newer.',
+                $minimum,
+            ),
+        ], 409);
+    }
+
+    /**
+     * @param  list<array<string, mixed>>  $commands
+     */
+    private function commandsUseWorkflowMemoUpdates(array $commands): bool
+    {
+        foreach ($commands as $command) {
+            if (($command['type'] ?? null) === 'upsert_memo') {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    private function workflowMemoValidationFailure(
+        string $taskId,
+        int $workflowTaskAttempt,
+        \Throwable $exception,
+    ): JsonResponse {
+        $validationErrors = $exception instanceof ValidationException
+            ? $exception->errors()
+            : [];
+
+        return WorkerProtocol::json(array_filter([
+            'task_id' => $taskId,
+            'workflow_task_attempt' => $workflowTaskAttempt,
+            'outcome' => 'rejected',
+            'recorded' => false,
+            'reason' => 'workflow_memo_validation_failed',
+            'error' => $validationErrors === []
+                ? $exception->getMessage()
+                : 'Workflow memo update command validation failed.',
+            'validation_errors' => $validationErrors,
+        ], static fn (mixed $value): bool => $value !== []), 422);
+    }
+
+    /**
+     * @param  list<array<string, mixed>>  $commands
+     */
     private function commandsUseWorkerSessions(array $commands): bool
     {
         foreach ($commands as $command) {
@@ -1624,8 +1745,10 @@ class WorkerController
      * @param  list<array<string, mixed>>  $commands
      * @return list<array<string, mixed>>
      */
-    private function validateWorkflowTaskSearchAttributeCommands(array $commands, ?string $namespace): array
-    {
+    private function validateWorkflowTaskSearchAttributeCommands(
+        array $commands,
+        ?string $namespace,
+    ): array {
         foreach ($commands as $index => $command) {
             if (($command['type'] ?? null) !== 'upsert_search_attributes') {
                 continue;
@@ -1636,21 +1759,110 @@ class WorkerController
             }
 
             $declaredTypes = is_array($command['attribute_types'] ?? null)
-                ? array_filter(
-                    $command['attribute_types'],
-                    static fn (mixed $type, mixed $key): bool => is_string($key) && is_string($type),
-                    ARRAY_FILTER_USE_BOTH,
-                )
+                ? $command['attribute_types']
                 : [];
             $registeredTypes = $this->searchAttributeValues->validateForNamespace(
                 $namespace,
                 $command['attributes'],
                 "commands.{$index}.attributes",
+                $declaredTypes,
             );
-            $commands[$index]['attribute_types'] = array_replace($declaredTypes, $registeredTypes);
+            $commands[$index]['attribute_types'] = $registeredTypes;
         }
 
         return $commands;
+    }
+
+    /**
+     * Keep the Server boundary atomic with Workflow package releases that
+     * predate typed history metadata. Newer packages already write the same
+     * canonical map, which is verified here instead of being overwritten.
+     *
+     * @param  list<array<string, mixed>>  $commands
+     * @param  array<string, mixed>  $outcome
+     */
+    private function persistTypedSearchAttributeHistoryIdentity(
+        string $taskId,
+        array $commands,
+        array $outcome,
+    ): void {
+        if (($outcome['completed'] ?? false) !== true) {
+            return;
+        }
+
+        $upserts = array_values(array_filter(
+            $commands,
+            static fn (array $command): bool => ($command['type'] ?? null) === 'upsert_search_attributes',
+        ));
+
+        if ($upserts === []) {
+            return;
+        }
+
+        $events = WorkflowHistoryEvent::query()
+            ->where('workflow_task_id', $taskId)
+            ->where('event_type', HistoryEventType::SearchAttributesUpserted->value)
+            ->orderBy('sequence')
+            ->get();
+
+        if ($events->count() !== count($upserts)) {
+            throw new \RuntimeException('Typed search-attribute commands did not produce a one-to-one history event set.');
+        }
+
+        foreach ($events as $index => $event) {
+            $command = $upserts[$index];
+            $payload = is_array($event->payload) ? $event->payload : [];
+            $attributes = is_array($command['attributes'] ?? null) ? $command['attributes'] : [];
+            $attributeTypes = is_array($command['attribute_types'] ?? null) ? $command['attribute_types'] : [];
+
+            if (($payload['attributes'] ?? null) !== $attributes) {
+                throw new \RuntimeException('Typed search-attribute history does not match its completed command.');
+            }
+
+            if (array_key_exists('attribute_types', $payload)) {
+                if ($payload['attribute_types'] !== $attributeTypes) {
+                    throw new \RuntimeException('Typed search-attribute history contains conflicting type identity.');
+                }
+
+                continue;
+            }
+
+            $payload['attribute_types'] = $attributeTypes;
+            $event->forceFill(['payload' => $payload])->save();
+        }
+    }
+
+    /**
+     * @param  list<array<string, mixed>>  $commands
+     */
+    private function guardTypedSearchAttributeCommandsAvailable(
+        Request $request,
+        string $taskId,
+        int $workflowTaskAttempt,
+        array $commands,
+    ): ?JsonResponse {
+        $usesTypedIdentity = collect($commands)->contains(
+            static fn (array $command): bool => ($command['type'] ?? null) === 'upsert_search_attributes'
+                && array_key_exists('attribute_types', $command),
+        );
+
+        if (! $usesTypedIdentity || WorkerProtocol::typedSearchAttributesAvailableForRequest($request)) {
+            return null;
+        }
+
+        return WorkerProtocol::json([
+            'task_id' => $taskId,
+            'workflow_task_attempt' => $workflowTaskAttempt,
+            'outcome' => 'rejected',
+            'recorded' => false,
+            'reason' => 'typed_search_attributes_unavailable',
+            'requested_version' => WorkerProtocol::requestVersion($request),
+            'minimum_protocol_version' => WorkerProtocol::TYPED_SEARCH_ATTRIBUTES_MINIMUM_PROTOCOL_VERSION,
+            'remediation' => sprintf(
+                'Complete typed search-attribute updates only through server nodes advertising worker protocol %s or newer.',
+                WorkerProtocol::TYPED_SEARCH_ATTRIBUTES_MINIMUM_PROTOCOL_VERSION,
+            ),
+        ], 409);
     }
 
     /**
@@ -2059,7 +2271,7 @@ class WorkerController
                 }
             }
 
-            foreach (['arguments', 'result'] as $field) {
+            foreach (['arguments', 'result', 'entries'] as $field) {
                 if (! array_key_exists($field, $command) || ! is_array($command[$field])) {
                     continue;
                 }
@@ -2091,7 +2303,10 @@ class WorkerController
                     'blob' => $resolved['payload'],
                 ];
 
-                if (($commands[$index]['payload_codec'] ?? null) === null) {
+                if (
+                    in_array($field, ['arguments', 'result'], true)
+                    && ($commands[$index]['payload_codec'] ?? null) === null
+                ) {
                     $commands[$index]['payload_codec'] = $resolved['codec'];
                 }
             }
