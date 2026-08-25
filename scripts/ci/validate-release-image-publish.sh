@@ -69,6 +69,16 @@ if ! printf '%s' "$release_tag" | grep -Eq '^[0-9A-Za-z._-]+$'; then
     fail "Invalid release image tag" "Release image tag '${release_tag}' contains characters that are not safe for Docker tags."
 fi
 
+source_release_version="${SOURCE_RELEASE_VERSION:-}"
+if [ -n "$source_release_version" ]; then
+    if ! is_semver_tag "$source_release_version"; then
+        fail "Invalid source release identity" "Authoritative Server source release '${source_release_version}' is not an exact SemVer value."
+    fi
+    if [ "$release_tag" != "$source_release_version" ]; then
+        fail "Release tag does not match source" "Release tag '${release_tag}' does not match authoritative Server source release '${source_release_version}'. Run node scripts/ci/sync-source-release.mjs --write before tagging."
+    fi
+fi
+
 if [ -z "${DOCKERHUB_USERNAME:-}" ]; then
     append_missing_credential "DOCKERHUB_USERNAME"
 fi

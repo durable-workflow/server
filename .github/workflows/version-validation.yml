@@ -11,13 +11,18 @@ jobs:
     name: Test CLI and SDK version validation
     runs-on: ubuntu-latest
     env:
-      SERVER_VERSION: 2.0.0-rc.46
       PYTHON_SDK_VERSION: 2.0.0rc1
       COMPOSE_PROJECT_NAME: version-validation-${{ github.run_id }}-${{ github.run_attempt }}-${{ github.job }}
 
     steps:
       - name: Checkout server
         uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803  # v6
+
+      - name: Resolve source release identity
+        id: source-release
+        run: >-
+          echo "server-version=$(node scripts/ci/sync-source-release.mjs --print server-version)"
+          >> "$GITHUB_OUTPUT"
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c  # v4
@@ -42,12 +47,13 @@ jobs:
               ports: !override []
           EOF
 
-      # Test 1: rc.2 server with compatible rc.1 clients - CLI success
-      - name: Start rc.2 server
+      # Test 1: source release server with compatible prerelease clients.
+      - name: Start source release server
         env:
           APP_KEY: ${{ steps.app-key.outputs.key }}
           DW_AUTH_TOKEN: test-token-123
-          APP_VERSION: ${{ env.SERVER_VERSION }}
+          SERVER_VERSION: ${{ steps.source-release.outputs.server-version }}
+          APP_VERSION: ${{ steps.source-release.outputs.server-version }}
         run: |
           docker compose -p "$COMPOSE_PROJECT_NAME" up -d --wait
           published_port="$(docker compose -p "$COMPOSE_PROJECT_NAME" port server 8080 | awk -F: 'END {print $NF}')"
@@ -87,7 +93,7 @@ jobs:
           DURABLE_WORKFLOW_AUTH_TOKEN: test-token-123
           DURABLE_WORKFLOW_NAMESPACE: default
         run: |
-          # CLI should connect successfully to the rc.2 server.
+          # CLI should connect successfully to the source release server.
           DURABLE_WORKFLOW_SERVER_URL="$SERVER_BASE_URL" dw server:info || exit 1
           echo "✅ CLI successfully connected to compatible server"
 
@@ -128,7 +134,7 @@ jobs:
           async def main():
               client = Client(os.environ["SERVER_BASE_URL"], token="test-token-123", namespace="default")
 
-              # This should succeed because the rc.2 server supports the rc.1 SDK.
+              # The source release server supports this earlier prerelease SDK.
               worker = Worker(
                   client,
                   task_queue="test-queue",

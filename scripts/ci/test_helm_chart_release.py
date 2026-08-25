@@ -182,7 +182,10 @@ class HelmChartReleaseTest(unittest.TestCase):
 
     def test_current_source_has_synchronized_public_identity(self) -> None:
         metadata = RELEASE.validate_source()
+        source_release = RELEASE.source_release_metadata()
         self.assertGreater(RELEASE.semver_key(metadata["version"]), (0, 1, 0))
+        self.assertEqual(metadata["version"], source_release["chart_version"])
+        self.assertEqual(metadata["app_version"], source_release["server_version"])
         self.assertEqual(
             metadata["image_reference"],
             f"docker.io/durableworkflow/server:{RELEASE.qualified_server_version()}",

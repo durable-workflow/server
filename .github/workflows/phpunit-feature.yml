@@ -60,6 +60,9 @@ jobs:
 
       - name: Validate release recovery tooling
         run: |
+          node --check scripts/ci/sync-source-release.mjs
+          node scripts/ci/sync-source-release.mjs --check
+          node --test scripts/ci/test-source-release.mjs
           node --check scripts/ci/sync-cli-readme-release.mjs
           node scripts/ci/sync-cli-readme-release.mjs --check --offline
           bash -n scripts/ci/check-cli-readme-public-release.sh

@@ -1322,11 +1322,17 @@ image can be published.
 The Server image embeds an already-published Workflow package. When a later
 Server image needs a newer Workflow fix, publish that package first and update
 both machine-owned Workflow package pins before tagging Server.
-Publish this Server source with its own authorized tag:
+Declare the Server prerelease in
+`resources/release/source-release.json`. The Helm chart version in the same
+record is selected independently and is never derived from the Server version.
+Advance it explicitly in the same edit when the new `appVersion` should produce
+a chart package. Render and check the bounded release metadata before tagging:
 
 ```bash
-# In the server repo, publish the version declared by package metadata.
-SERVER_VERSION="$(php -r '$m=json_decode(file_get_contents("composer.json"), true); echo $m["extra"]["durable-workflow"]["product-train"];')"
+# In the server repo, render all exact current-version consumers.
+node scripts/ci/sync-source-release.mjs --write
+node scripts/ci/sync-source-release.mjs --check
+SERVER_VERSION="$(node scripts/ci/sync-source-release.mjs --print server-version)"
 git tag "$SERVER_VERSION" origin/main
 git push origin "refs/tags/$SERVER_VERSION"
 ```

@@ -25,6 +25,7 @@ class ReleaseImagePublishWorkflowContractTest extends TestCase
 
         foreach ([
             'scripts/ci/validate-release-image-publish.sh',
+            'scripts/ci/sync-source-release.mjs --root release-source --check',
             'scripts/ci/resolve-workflow-package-authority.php',
             'DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}',
             'DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}',
@@ -826,6 +827,7 @@ SH);
         $tooling = $steps['Check out trusted release tooling'];
         $source = $steps['Check out immutable release source'];
         $identity = $steps['Resolve exact source identity'];
+        $sourceRelease = $steps['Resolve source release version'];
         $selector = $steps['Resolve locked workflow package authority'];
         $cache = $steps['Resolve shared release image cache'];
         $build = $steps['Build and push exact image tags'];
@@ -840,6 +842,17 @@ SH);
         );
         $this->assertStringContainsString('git -C release-source rev-parse HEAD', $identity['run']);
         $this->assertStringContainsString('git -C release-source rev-list', $identity['run']);
+        $this->assertStringContainsString('resources/release/source-release.json', $sourceRelease['run']);
+        $this->assertStringContainsString('sync-source-release.mjs --root release-source --check', $sourceRelease['run']);
+        $this->assertStringContainsString(
+            'sync-source-release.mjs --root release-source --print-legacy-server-version',
+            $sourceRelease['run'],
+        );
+        $this->assertStringNotContainsString('php -r', $sourceRelease['run']);
+        $this->assertSame(
+            '${{ steps.source_release.outputs.version }}',
+            $steps['Validate release publish context and credentials']['env']['SOURCE_RELEASE_VERSION'],
+        );
         $this->assertSame('release-source/composer.json', $selector['env']['COMPOSER_JSON_PATH']);
         $this->assertSame('release-source/composer.lock', $selector['env']['COMPOSER_LOCK_PATH']);
         $this->assertSame('release-source', $cache['env']['RELEASE_IMAGE_CACHE_ROOT']);
@@ -1031,9 +1044,17 @@ SH);
         $this->assertTrue(version_compare($version, '2.9.0', '>='));
     }
 
-    public function test_release_surfaces_declare_the_exact_server_product_train(): void
+    public function test_release_surfaces_are_rendered_from_the_source_release_manifest(): void
     {
-        $expectedVersion = '2.0.0-rc.46';
+        $release = json_decode(
+            $this->read('resources/release/source-release.json'),
+            true,
+            flags: JSON_THROW_ON_ERROR,
+        );
+        $expectedVersion = $release['server']['version'] ?? null;
+        $expectedChartVersion = $release['helm_chart']['version'] ?? null;
+        $this->assertIsString($expectedVersion);
+        $this->assertIsString($expectedChartVersion);
         $composer = json_decode($this->read('composer.json'), true, flags: JSON_THROW_ON_ERROR);
 
         $this->assertSame(
@@ -1041,10 +1062,12 @@ SH);
             $composer['extra']['durable-workflow']['product-train'] ?? null,
         );
 
-        preg_match('/^APP_VERSION=(.+)$/m', $this->read('.env.example'), $environmentVersion);
-        $this->assertSame($expectedVersion, $environmentVersion[1] ?? null);
+        $this->assertStringNotContainsString(
+            "APP_VERSION={$expectedVersion}",
+            $this->read('.env.example'),
+        );
         $this->assertStringContainsString(
-            "env('APP_VERSION', '{$expectedVersion}')",
+            "env('APP_VERSION', SourceRelease::version())",
             $this->read('app/Http/Controllers/Api/HealthController.php'),
         );
 
@@ -1066,7 +1089,7 @@ SH);
 
         $chart = Yaml::parse($this->read('k8s/helm/durable-workflow/Chart.yaml'));
         $this->assertIsArray($chart);
-        $this->assertSame('0.1.37', $chart['version'] ?? null);
+        $this->assertSame($expectedChartVersion, $chart['version'] ?? null);
         $this->assertSame($expectedVersion, $chart['appVersion'] ?? null);
         $this->assertSame(
             "docker.io/durableworkflow/server:{$expectedVersion}",
@@ -2456,6 +2479,26 @@ SH);
         $this->assertStringContainsString('DOCKERHUB_TOKEN', $result['stderr']);
         $this->assertStringContainsString('GHCR_TOKEN', $result['stderr']);
         $this->assertStringContainsString('pull-request validation must not run this publish path', $result['stderr']);
+    }
+
+    public function test_release_guard_rejects_a_tag_that_differs_from_source_authority(): void
+    {
+        $result = $this->runGuard([
+            'GITHUB_EVENT_NAME' => 'workflow_dispatch',
+            'GITHUB_REF' => 'refs/heads/main',
+            'INPUT_TAG' => '0.2.167',
+            'SOURCE_RELEASE_VERSION' => '0.2.168',
+            'DOCKERHUB_USERNAME' => 'durableworkflow',
+            'DOCKERHUB_TOKEN' => 'docker-token',
+            'GHCR_TOKEN' => 'ghcr-token',
+        ]);
+
+        $this->assertSame(1, $result['exitCode']);
+        $this->assertStringContainsString(
+            "Release tag '0.2.167' does not match authoritative Server source release '0.2.168'",
+            $result['stderr'],
+        );
+        $this->assertStringContainsString('sync-source-release.mjs --write', $result['stderr']);
     }
 
     public function test_release_guard_outputs_manual_semver_tag_for_metadata_action(): void

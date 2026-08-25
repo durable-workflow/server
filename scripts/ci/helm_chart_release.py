@@ -22,6 +22,7 @@ DEFAULT_CHART_PATH = REPOSITORY_ROOT / "k8s/helm/durable-workflow"
 DEFAULT_QUALIFIED_RELEASE_PATH = (
     REPOSITORY_ROOT / "resources/release/qualified-onboarding-release.json"
 )
+DEFAULT_SOURCE_RELEASE_PATH = REPOSITORY_ROOT / "resources/release/source-release.json"
 DEFAULT_OCI_REPOSITORY = "oci://ghcr.io/durable-workflow/charts/durable-workflow"
 SOURCE_REVISION_ANNOTATION = "dev.durable-workflow.source-revision"
 IMAGE_REFERENCE_ANNOTATION = "dev.durable-workflow.image-reference"
@@ -149,6 +150,25 @@ def qualified_server_version(
     return version
 
 
+def source_release_metadata(
+    record_path: Path = DEFAULT_SOURCE_RELEASE_PATH,
+) -> dict[str, str]:
+    try:
+        record = json.loads(record_path.read_text())
+        schema = record["schema"]
+        server_version = record["server"]["version"]
+        chart_version = record["helm_chart"]["version"]
+    except (OSError, json.JSONDecodeError, KeyError, TypeError) as error:
+        raise ReleaseError(f"source release manifest is invalid: {error}") from error
+    if schema != "durable-workflow.server.source-release/v1":
+        raise ReleaseError(f"source release manifest uses unsupported schema {schema}")
+    if not isinstance(server_version, str) or SEMVER_PATTERN.fullmatch(server_version) is None:
+        raise ReleaseError("source release Server version is not SemVer")
+    if not isinstance(chart_version, str) or SEMVER_PATTERN.fullmatch(chart_version) is None:
+        raise ReleaseError("source release Helm chart version is not SemVer")
+    return {"server_version": server_version, "chart_version": chart_version}
+
+
 def validate_source(chart_path: Path = DEFAULT_CHART_PATH) -> dict[str, Any]:
     metadata = chart_metadata(chart_path)
     if SEMVER_PATTERN.fullmatch(metadata["version"]) is None:
@@ -178,6 +198,19 @@ def validate_source(chart_path: Path = DEFAULT_CHART_PATH) -> dict[str, Any]:
         raise ReleaseError(
             "the OCI and HTTPS install commands in the chart README must use "
             f"chart version {metadata['version']}"
+        )
+    source_release = source_release_metadata()
+    if metadata["version"] != source_release["chart_version"]:
+        raise ReleaseError(
+            "Chart.yaml.version must match the authoritative source release Helm chart version; "
+            f"got {metadata['version']} and {source_release['chart_version']}. "
+            "Run node scripts/ci/sync-source-release.mjs --write"
+        )
+    if metadata["app_version"] != source_release["server_version"]:
+        raise ReleaseError(
+            "Chart.yaml.appVersion must match the authoritative Server source release; "
+            f"got {metadata['app_version']} and {source_release['server_version']}. "
+            "Run node scripts/ci/sync-source-release.mjs --write"
         )
     return metadata
 

@@ -9,7 +9,7 @@ use Symfony\Component\Yaml\Yaml;
 
 class VersionValidationWorkflowContractTest extends TestCase
 {
-    public function test_validation_workflow_uses_rc_2_server_with_rc_1_clients(): void
+    public function test_validation_workflow_resolves_the_source_release_for_earlier_clients(): void
     {
         $source = $this->read('.github/workflows/version-validation.yml');
         $workflow = Yaml::parse($source);
@@ -18,13 +18,26 @@ class VersionValidationWorkflowContractTest extends TestCase
         $job = $workflow['jobs']['version-validation'] ?? null;
         $this->assertIsArray($job);
         $this->assertSame([
-            'SERVER_VERSION' => '2.0.0-rc.46',
             'PYTHON_SDK_VERSION' => '2.0.0rc1',
             'COMPOSE_PROJECT_NAME' => 'version-validation-${{ github.run_id }}-${{ github.run_attempt }}-${{ github.job }}',
         ], $job['env'] ?? null);
 
-        $server = $this->step($job, 'Start rc.2 server');
-        $this->assertSame('${{ env.SERVER_VERSION }}', $server['env']['APP_VERSION'] ?? null);
+        $identity = $this->step($job, 'Resolve source release identity');
+        $this->assertSame('source-release', $identity['id'] ?? null);
+        $this->assertStringContainsString(
+            'sync-source-release.mjs --print server-version',
+            $identity['run'] ?? '',
+        );
+
+        $server = $this->step($job, 'Start source release server');
+        $this->assertSame(
+            '${{ steps.source-release.outputs.server-version }}',
+            $server['env']['SERVER_VERSION'] ?? null,
+        );
+        $this->assertSame(
+            '${{ steps.source-release.outputs.server-version }}',
+            $server['env']['APP_VERSION'] ?? null,
+        );
         $this->assertStringContainsString('if [ "$VERSION" != "${SERVER_VERSION}" ]; then', $server['run'] ?? '');
 
         $cli = $this->step($job, 'Install CLI');

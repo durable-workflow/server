@@ -355,11 +355,17 @@ async function synchronizeSurfaces(authority, write) {
 }
 
 async function sourceIdentity() {
-  const composer = await readJson(`${repositoryRoot}/composer.json`, 'composer.json');
+  const release = await readJson(
+    `${repositoryRoot}/resources/release/source-release.json`,
+    'source release manifest',
+  );
+  if (release?.schema !== 'durable-workflow.server.source-release/v1') {
+    fail('source release manifest uses an unsupported schema');
+  }
   return {
     version: exactPrerelease(
-      composer?.extra?.['durable-workflow']?.['product-train'],
-      'composer.json product train',
+      release?.server?.version,
+      'source release manifest server.version',
     ),
   };
 }

@@ -34,6 +34,7 @@ use App\Support\ServerTopology;
 use App\Support\SignalQueryRuntimeContract;
 use App\Support\SingleRegionFailoverContract;
 use App\Support\SkewRefusalMatrixContract;
+use App\Support\SourceRelease;
 use App\Support\TaskQueueBuildIdRolloutSnapshot;
 use App\Support\TimerRuntimeContract;
 use App\Support\WorkerProtocol;
@@ -181,7 +182,7 @@ class HealthController
 
         $response = [
             'server_id' => config('server.server_id'),
-            'version' => env('APP_VERSION', '2.0.0-rc.46'),
+            'version' => env('APP_VERSION', SourceRelease::version()),
             'default_namespace' => config('server.default_namespace'),
             'namespace' => $this->namespacePolicy($namespace),
             'discovery' => [

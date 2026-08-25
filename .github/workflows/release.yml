@@ -83,10 +83,29 @@ jobs:
           fi
           printf 'commit=%s\n' "$head_commit" >> "$GITHUB_OUTPUT"
 
+      - name: Resolve source release version
+        id: source_release
+        env:
+          ALLOW_LEGACY_SOURCE_RELEASE: ${{ github.event_name == 'workflow_dispatch' }}
+        run: |
+          set -euo pipefail
+          manifest="release-source/resources/release/source-release.json"
+          if [ -f "$manifest" ]; then
+            node scripts/ci/sync-source-release.mjs --root release-source --check
+            version="$(node scripts/ci/sync-source-release.mjs --root release-source --print server-version)"
+          elif [ "$ALLOW_LEGACY_SOURCE_RELEASE" = "true" ]; then
+            version="$(node scripts/ci/sync-source-release.mjs --root release-source --print-legacy-server-version)"
+          else
+            printf 'release source is missing resources/release/source-release.json\n' >&2
+            exit 1
+          fi
+          printf 'version=%s\n' "$version" >> "$GITHUB_OUTPUT"
+
       - name: Validate release publish context and credentials
         id: release_publish
         env:
           INPUT_TAG: ${{ github.event.inputs.tag }}
+          SOURCE_RELEASE_VERSION: ${{ steps.source_release.outputs.version }}
           DOCKERHUB_IMAGE: ${{ env.DOCKERHUB_IMAGE }}
           GHCR_IMAGE: ${{ env.GHCR_IMAGE }}
           DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
