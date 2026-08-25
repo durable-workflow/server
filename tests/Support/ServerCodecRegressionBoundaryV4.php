@@ -383,6 +383,7 @@ final class ServerCodecRegressionBoundaryV4
                 'runtime' => 'php',
                 'supported_workflow_types' => ['tests.external-greeting-workflow'],
                 'supported_activity_types' => [],
+                'capabilities' => ['memo_upserts'],
                 'last_heartbeat_at' => now(),
                 'status' => 'active',
             ],

@@ -220,7 +220,7 @@ class WorkflowMemoWorkerRestartContractTest extends TestCase
             'task_queue' => $taskQueue,
             'runtime' => 'php',
             'supported_workflow_types' => [$workflowType],
-            'capabilities' => ['workflow_tasks'],
+            'capabilities' => ['workflow_tasks', 'memo_upserts'],
             'workflow_command_contracts' => [
                 $workflowType => [
                     'queries' => [],

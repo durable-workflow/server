@@ -824,6 +824,7 @@ class RuntimeExternalPayloadTransportTest extends TestCase
             'runtime' => 'php',
             'supported_workflow_types' => ['tests.external-greeting-workflow'],
             'supported_activity_types' => [],
+            'capabilities' => ['memo_upserts'],
             'max_concurrent_workflow_tasks' => 1,
             'max_concurrent_activity_tasks' => 1,
             'last_heartbeat_at' => now(),
