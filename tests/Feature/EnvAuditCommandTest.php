@@ -82,6 +82,30 @@ class EnvAuditCommandTest extends TestCase
         });
     }
 
+    public function test_clean_environment_scope_removes_variables_introduced_by_the_callback(): void
+    {
+        $name = 'WORKFLOW_ENV_AUDIT_SCOPE_TEST';
+        $previous = getenv($name);
+        putenv($name);
+        unset($_ENV[$name], $_SERVER[$name]);
+
+        try {
+            $this->withCleanEnv(function () use ($name): void {
+                putenv("{$name}=temporary");
+                $_ENV[$name] = 'temporary';
+                $_SERVER[$name] = 'temporary';
+            });
+
+            $this->assertFalse(getenv($name));
+            $this->assertArrayNotHasKey($name, $_ENV);
+            $this->assertArrayNotHasKey($name, $_SERVER);
+        } finally {
+            if ($previous !== false) {
+                putenv("{$name}={$previous}");
+            }
+        }
+    }
+
     /**
      * Drop any DW_* / WORKFLOW_* / ACTIVITY_* env vars leaking in from
      * phpunit.xml or the shell before running the callback, then restore.
@@ -90,32 +114,52 @@ class EnvAuditCommandTest extends TestCase
     {
         $snapshot = [];
 
-        foreach (array_merge(array_keys($_ENV), array_keys($_SERVER), array_keys(getenv() ?: [])) as $name) {
-            if (! is_string($name)) {
-                continue;
-            }
-
-            if (str_starts_with($name, 'DW_')
-                || str_starts_with($name, 'WORKFLOW_')
-                || str_starts_with($name, 'ACTIVITY_')
-            ) {
-                $snapshot[$name] = getenv($name);
-                putenv($name);
-                unset($_ENV[$name], $_SERVER[$name]);
-            }
+        foreach ($this->contractEnvironmentNames() as $name) {
+            $snapshot[$name] = [
+                'process' => getenv($name),
+                'env_exists' => array_key_exists($name, $_ENV),
+                'env' => $_ENV[$name] ?? null,
+                'server_exists' => array_key_exists($name, $_SERVER),
+                'server' => $_SERVER[$name] ?? null,
+            ];
+            putenv($name);
+            unset($_ENV[$name], $_SERVER[$name]);
         }
 
         try {
             $fn();
         } finally {
+            foreach ($this->contractEnvironmentNames() as $name) {
+                putenv($name);
+                unset($_ENV[$name], $_SERVER[$name]);
+            }
+
             foreach ($snapshot as $name => $value) {
-                if ($value === false) {
-                    continue;
+                if ($value['process'] !== false) {
+                    putenv(sprintf('%s=%s', $name, $value['process']));
                 }
 
-                putenv(sprintf('%s=%s', $name, $value));
-                $_ENV[$name] = $value;
+                if ($value['env_exists']) {
+                    $_ENV[$name] = $value['env'];
+                }
+                if ($value['server_exists']) {
+                    $_SERVER[$name] = $value['server'];
+                }
             }
         }
+    }
+
+    /** @return list<string> */
+    private function contractEnvironmentNames(): array
+    {
+        $names = array_filter(
+            array_merge(array_keys($_ENV), array_keys($_SERVER), array_keys(getenv() ?: [])),
+            static fn (mixed $name): bool => is_string($name)
+                && (str_starts_with($name, 'DW_')
+                    || str_starts_with($name, 'WORKFLOW_')
+                    || str_starts_with($name, 'ACTIVITY_')),
+        );
+
+        return array_values(array_unique($names));
     }
 }

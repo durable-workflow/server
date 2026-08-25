@@ -112,6 +112,9 @@ class RegressionCorpusPolicyTest(unittest.TestCase):
         (self.root / "tests/Support/ServerCodecRegressionFixtureExecutorV2.php").write_text(
             "<?php\nfinal class ServerCodecRegressionFixtureExecutorV2 {}\n"
         )
+        (self.root / "tests/Support/ServerCodecRegressionFixtureExecutorV3.php").write_text(
+            "<?php\nfinal class ServerCodecRegressionFixtureExecutorV3 {}\n"
+        )
         (self.root / "tests/Support/ServerCodecRegressionLegacyRegistry.php").write_text(
             "<?php\nfinal class ServerCodecRegressionLegacyRegistry {}\n"
         )
@@ -551,6 +554,24 @@ ServerCodecRegressionFixtureExecutor::exercise(
         self.assertIn(
             "official server codec executor file "
             "tests/Support/ServerCodecRegressionFixtureExecutor.php is immutable",
+            result.stderr,
+        )
+
+    def test_v3_server_codec_executor_is_immutable(self) -> None:
+        executor = (
+            self.root
+            / "tests/Support/ServerCodecRegressionFixtureExecutorV3.php"
+        )
+        executor.write_text(
+            "<?php\nfinal class ServerCodecRegressionFixtureExecutorV3 { public static function bypass(): void {} }\n"
+        )
+
+        result = self.validate()
+
+        self.assertNotEqual(0, result.returncode, result.stdout)
+        self.assertIn(
+            "official server codec executor file "
+            "tests/Support/ServerCodecRegressionFixtureExecutorV3.php is immutable",
             result.stderr,
         )
 

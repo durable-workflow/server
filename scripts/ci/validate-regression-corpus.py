@@ -48,6 +48,7 @@ SERVER_CODEC_EXECUTOR_FILES = (
     "tests/Support/ServerCodecRegressionFixture.php",
     "tests/Support/ServerCodecRegressionFixtureExecutor.php",
     "tests/Support/ServerCodecRegressionFixtureExecutorV2.php",
+    "tests/Support/ServerCodecRegressionFixtureExecutorV3.php",
     "tests/Support/ServerCodecRegressionLegacyRegistry.php",
 )
 SERVER_CODEC_EXECUTOR_CLASS = "ServerCodecRegressionFixtureExecutor"

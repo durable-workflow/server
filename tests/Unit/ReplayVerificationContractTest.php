@@ -13,10 +13,10 @@ class ReplayVerificationContractTest extends TestCase
         $manifest = ReplayVerificationContract::manifest();
 
         $this->assertSame('durable-workflow.v2.replay-verification.contract', $manifest['schema']);
-        $this->assertSame(2, $manifest['version']);
+        $this->assertSame(4, $manifest['version']);
 
         $this->assertSame('durable-workflow.v2.history-export', $manifest['bundle']['schema']);
-        $this->assertSame(1, $manifest['bundle']['schema_version']);
+        $this->assertSame(2, $manifest['bundle']['schema_version']);
 
         $this->assertSame('workflow:v2:replay-verify', $manifest['offline_cli']['command']);
         $this->assertSame(0, $manifest['offline_cli']['exit_codes']['ok']);

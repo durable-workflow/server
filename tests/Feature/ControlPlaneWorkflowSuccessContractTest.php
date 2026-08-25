@@ -140,7 +140,7 @@ class ControlPlaneWorkflowSuccessContractTest extends TestCase
             ->assertJsonMissingPath('control_plane')
             ->assertJsonMissingPath('protocol_version')
             ->assertJsonPath('schema', 'durable-workflow.v2.history-export')
-            ->assertJsonPath('schema_version', 1)
+            ->assertJsonPath('schema_version', 2)
             ->assertJsonPath('workflow.instance_id', 'wf-contract-read')
             ->assertJsonPath('workflow.run_id', $runId)
             ->assertJsonStructure([

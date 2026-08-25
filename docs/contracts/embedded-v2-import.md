@@ -11,7 +11,7 @@ history-export bundle:
 
 Eligibility:
 
-- The bundle schema must be `durable-workflow.v2.history-export` version `1`.
+- The bundle schema must be `durable-workflow.v2.history-export` version `2`.
 - The bundle must identify an embedded source runtime with
   `workflow.source_runtime=embedded`.
 - v1 history is out of scope.

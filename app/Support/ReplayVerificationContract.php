@@ -24,11 +24,11 @@ final class ReplayVerificationContract
 {
     public const SCHEMA = 'durable-workflow.v2.replay-verification.contract';
 
-    public const VERSION = 3;
+    public const VERSION = 4;
 
     public const BUNDLE_SCHEMA = 'durable-workflow.v2.history-export';
 
-    public const BUNDLE_SCHEMA_VERSION = 1;
+    public const BUNDLE_SCHEMA_VERSION = 2;
 
     public const INTEGRITY_REPORT_SCHEMA = 'durable-workflow.v2.history-bundle-verification';
 

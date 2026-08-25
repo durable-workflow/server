@@ -11,7 +11,7 @@ The authoritative machine-readable contract is published from
 `GET /api/cluster/info` at `replay_verification_contract`:
 
 - `schema: durable-workflow.v2.replay-verification.contract`
-- `version: 1`
+- `version: 4`
 - `bundle` — the export envelope schema and where it comes from.
 - `offline_cli` — the Artisan command, its inputs, and its exit codes.
 - `integrity` — canonicalization, checksum, and signature primitives.
@@ -51,7 +51,7 @@ Or, from a runtime shell, via the bundled Artisan command:
 php artisan workflow:v2:history-export <workflowId|runId> [--run] [--output PATH]
 ```
 
-The bundle carries `schema: durable-workflow.v2.history-export` and an
+The version 2 bundle carries `schema: durable-workflow.v2.history-export` and an
 `integrity` block with the canonical checksum and (when configured) an
 HMAC-SHA256 signature.
 
