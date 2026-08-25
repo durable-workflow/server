@@ -7,6 +7,7 @@ on:
       - "scripts/helm-chart-kind-smoke.sh"
       - "scripts/helm-chart-kind-fixtures.yaml"
       - "scripts/ci/helm_chart_release.py"
+      - "scripts/ci/cleanup-kind-cluster.sh"
       - "scripts/ci/test_helm_chart_release.py"
       - "uv.toml"
       - ".github/workflows/helm-chart-checks.yml"

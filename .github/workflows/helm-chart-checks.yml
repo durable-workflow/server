@@ -23,7 +23,6 @@ env:
   KIND_VERSION: v0.23.0
   KUBECTL_VERSION: v1.29.4
   KIND_NODE_IMAGE: kindest/node:v1.29.4
-  HELM_CT_CLUSTER_NAME: dw-helm-ct-${{ github.run_id }}-${{ github.run_attempt }}
 
 jobs:
   lint-and-template:
@@ -115,6 +114,10 @@ jobs:
     needs: lint-and-template
     runs-on: ubuntu-latest
     timeout-minutes: 30
+    env:
+      HELM_CT_CLUSTER_NAME: dw-helm-ct-${{ github.run_id }}-${{ github.run_attempt }}-${{ github.job }}
+      HELM_CT_NETWORK_NAME: dw-helm-kind-${{ github.run_id }}-${{ github.run_attempt }}-${{ github.job }}
+      KUBECONFIG: /tmp/dw-helm-ct-kubeconfig-${{ github.run_id }}-${{ github.run_attempt }}-${{ github.job }}
     steps:
       - name: Checkout server
         uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803  # v6
@@ -141,14 +144,20 @@ jobs:
           yamale_version: ${{ env.YAMALE_VERSION }}
 
       - name: Configure kind networking for containerized runners
-        if: env.JOB_CONTAINER_NAME != ''
         run: |
-          workflow_network="$(docker inspect -f '{{range $k, $v := .NetworkSettings.Networks}}{{printf "%s" $k}}{{end}}' "${JOB_CONTAINER_NAME}")"
-          if [ -z "${workflow_network}" ]; then
-            echo "unable to determine workflow network for ${JOB_CONTAINER_NAME}" >&2
-            exit 1
+          if [ -n "${JOB_CONTAINER_NAME:-}" ]; then
+            workflow_network="$(docker inspect -f '{{range $k, $v := .NetworkSettings.Networks}}{{printf "%s" $k}}{{end}}' "${JOB_CONTAINER_NAME}")"
+            if [ -z "${workflow_network}" ]; then
+              echo "unable to determine workflow network for ${JOB_CONTAINER_NAME}" >&2
+              exit 1
+            fi
+            echo "KIND_EXPERIMENTAL_DOCKER_NETWORK=${workflow_network}" >> "${GITHUB_ENV}"
+            echo "KIND_CLEANUP_NETWORK=" >> "${GITHUB_ENV}"
+          else
+            echo "KIND_EXPERIMENTAL_DOCKER_NETWORK=${HELM_CT_NETWORK_NAME}" >> "${GITHUB_ENV}"
+            echo "KIND_CLEANUP_NETWORK=${HELM_CT_NETWORK_NAME}" >> "${GITHUB_ENV}"
+            docker network create "${HELM_CT_NETWORK_NAME}"
           fi
-          echo "KIND_EXPERIMENTAL_DOCKER_NETWORK=${workflow_network}" >> "${GITHUB_ENV}"
 
       - name: Set up kind
         uses: helm/kind-action@ef37e7f390d99f746eb8b610417061a60e82a6cc  # v1.14.0
@@ -157,7 +166,9 @@ jobs:
           kubectl_version: ${{ env.KUBECTL_VERSION }}
           node_image: ${{ env.KIND_NODE_IMAGE }}
           cluster_name: ${{ env.HELM_CT_CLUSTER_NAME }}
+          kubeconfig: ${{ env.KUBECONFIG }}
           wait: 120s
+          ignore_failed_clean: true
 
       - name: Export internal kind kubeconfig for containerized runners
         if: env.JOB_CONTAINER_NAME != ''
@@ -229,3 +240,14 @@ jobs:
           name: helm-chart-kind-smoke
           path: ${{ runner.temp }}/helm-smoke
           if-no-files-found: ignore
+
+      - name: Clean up kind infrastructure
+        if: always()
+        env:
+          KIND_CLEANUP_CLUSTER: ${{ env.HELM_CT_CLUSTER_NAME }}
+          KIND_CLEANUP_KUBECONFIG: ${{ env.KUBECONFIG }}
+        run: |
+          if [ -n "${KIND_CLEANUP_NETWORK:-}" ]; then
+            docker network rm "${HELM_CT_NETWORK_NAME}" >/dev/null 2>&1 || true
+          fi
+          scripts/ci/cleanup-kind-cluster.sh

@@ -2,6 +2,7 @@
 
 import ast
 import importlib.util
+import os
 import re
 import sys
 import tempfile
@@ -115,6 +116,249 @@ def evaluate_recovery_condition(
 
 
 class HelmChartReleaseTest(unittest.TestCase):
+    def run_kind_cleanup_fixture(
+        self,
+        *,
+        kind_failures: int,
+        attempts: int,
+    ) -> tuple[
+        RELEASE.subprocess.CompletedProcess[str],
+        int,
+        set[str],
+        list[str],
+        bool,
+    ]:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            binaries = root / "bin"
+            state = root / "state"
+            scratch = root / "scratch"
+            binaries.mkdir()
+            state.mkdir()
+            scratch.mkdir()
+            for resource in ("container", "volume", "network"):
+                state.joinpath(resource).touch()
+
+            fake_kind = binaries / "kind"
+            fake_kind.write_text(
+                """#!/usr/bin/env bash
+set -uo pipefail
+count_file="${KIND_TEST_STATE}/kind-attempts"
+count=0
+if [ -f "${count_file}" ]; then
+  count="$(<"${count_file}")"
+fi
+count=$((count + 1))
+printf '%s\n' "${count}" >"${count_file}"
+if [ "${count}" -le "${KIND_TEST_FAILURES}" ]; then
+  echo 'docker rm: did not receive an exit event' >&2
+  exit 1
+fi
+rm -f "${KIND_TEST_STATE}/container"
+echo 'Deleted nodes'
+"""
+            )
+            fake_kind.chmod(0o755)
+
+            fake_docker = binaries / "docker"
+            fake_docker.write_text(
+                """#!/usr/bin/env bash
+set -uo pipefail
+printf '%s\n' "$*" >>"${KIND_TEST_LOG}"
+case "${1:-}" in
+  ps)
+    if [ -f "${KIND_TEST_STATE}/container" ]; then
+      echo 'kind-node'
+    fi
+    ;;
+  inspect)
+    if [ ! -f "${KIND_TEST_STATE}/container" ]; then
+      exit 1
+    fi
+    if [[ "$*" == *'.Mounts'* ]]; then
+      echo 'kind-volume'
+    else
+      echo 'state={"Status":"exited"} networks={} mounts=[]'
+    fi
+    ;;
+  volume)
+    case "${2:-}" in
+      rm)
+        if [ -f "${KIND_TEST_STATE}/container" ]; then
+          echo 'volume is in use' >&2
+          exit 1
+        fi
+        rm -f "${KIND_TEST_STATE}/volume"
+        ;;
+      ls)
+        if [ -f "${KIND_TEST_STATE}/volume" ]; then
+          echo 'kind-volume'
+        fi
+        ;;
+      inspect)
+        if [ -f "${KIND_TEST_STATE}/volume" ]; then
+          echo '[{"Name":"kind-volume"}]'
+        else
+          exit 1
+        fi
+        ;;
+    esac
+    ;;
+  network)
+    case "${2:-}" in
+      rm)
+        if [ -f "${KIND_TEST_STATE}/container" ]; then
+          echo 'network has active endpoints' >&2
+          exit 1
+        fi
+        rm -f "${KIND_TEST_STATE}/network"
+        ;;
+      ls)
+        if [ "${3:-}" = '-q' ]; then
+          if [ -f "${KIND_TEST_STATE}/network" ]; then
+            echo 'kind-network-id'
+          fi
+        else
+          echo 'NETWORK ID NAME'
+        fi
+        ;;
+      inspect)
+        if [ -f "${KIND_TEST_STATE}/network" ]; then
+          echo '[{"Name":"dw-helm-kind-41-2-ct-lint-install"}]'
+        else
+          exit 1
+        fi
+        ;;
+    esac
+    ;;
+  version)
+    echo 'Docker version fixture'
+    ;;
+  info)
+    echo 'Docker daemon fixture'
+    ;;
+  *)
+    echo "unexpected docker command: $*" >&2
+    exit 64
+    ;;
+esac
+"""
+            )
+            fake_docker.chmod(0o755)
+
+            kubeconfig = root / "kind-kubeconfig"
+            kubeconfig.touch()
+            command_log = root / "docker-commands.log"
+            environment = os.environ.copy()
+            environment.update(
+                {
+                    "DOCKER": str(fake_docker),
+                    "GITHUB_JOB": "ct-lint-install",
+                    "GITHUB_RUN_ATTEMPT": "2",
+                    "GITHUB_RUN_ID": "41",
+                    "KIND": str(fake_kind),
+                    "KIND_CLEANUP_ATTEMPTS": str(attempts),
+                    "KIND_CLEANUP_CLUSTER": "dw-helm-ct-41-2-ct-lint-install",
+                    "KIND_CLEANUP_COMMAND_TIMEOUT_SECONDS": "2",
+                    "KIND_CLEANUP_DELAY_SECONDS": "0",
+                    "KIND_CLEANUP_KUBECONFIG": str(kubeconfig),
+                    "KIND_CLEANUP_NETWORK": "dw-helm-kind-41-2-ct-lint-install",
+                    "KIND_TEST_FAILURES": str(kind_failures),
+                    "KIND_TEST_LOG": str(command_log),
+                    "KIND_TEST_STATE": str(state),
+                    "TMPDIR": str(scratch),
+                }
+            )
+
+            result = RELEASE.subprocess.run(
+                [str(RELEASE.REPOSITORY_ROOT / "scripts/ci/cleanup-kind-cluster.sh")],
+                check=False,
+                env=environment,
+                text=True,
+                stdout=RELEASE.subprocess.PIPE,
+                stderr=RELEASE.subprocess.PIPE,
+            )
+            kind_attempts = int(state.joinpath("kind-attempts").read_text())
+            remaining = {
+                resource
+                for resource in ("container", "volume", "network")
+                if state.joinpath(resource).exists()
+            }
+            docker_commands = command_log.read_text().splitlines()
+            scratch_entries = [path.name for path in scratch.iterdir()]
+            kubeconfig_exists = kubeconfig.exists()
+
+        return (
+            result,
+            kind_attempts,
+            remaining,
+            docker_commands,
+            kubeconfig_exists or bool(scratch_entries),
+        )
+
+    def test_transient_kind_teardown_failure_is_retried_without_failing(self) -> None:
+        result, kind_attempts, remaining, _, temporary_artifacts_remain = (
+            self.run_kind_cleanup_fixture(kind_failures=1, attempts=3)
+        )
+
+        self.assertEqual(0, result.returncode, result.stderr)
+        self.assertEqual(2, kind_attempts)
+        self.assertEqual(set(), remaining)
+        self.assertFalse(temporary_artifacts_remain)
+        self.assertIn("Kind infrastructure cleanup recovered", result.stdout)
+        self.assertIn("kind infrastructure cleanup OK", result.stdout)
+
+    def test_permanent_kind_teardown_failure_has_infrastructure_diagnostics(
+        self,
+    ) -> None:
+        result, kind_attempts, remaining, commands, temporary_artifacts_remain = (
+            self.run_kind_cleanup_fixture(kind_failures=9, attempts=2)
+        )
+
+        self.assertEqual(1, result.returncode)
+        self.assertEqual(2, kind_attempts)
+        self.assertEqual({"container", "network", "volume"}, remaining)
+        self.assertFalse(temporary_artifacts_remain)
+        self.assertIn("Kind infrastructure cleanup failed", result.stderr)
+        self.assertIn("Helm product validation has a separate outcome", result.stderr)
+        self.assertIn("Kind container diagnostics", result.stderr)
+        self.assertIn("Docker daemon diagnostics", result.stderr)
+        self.assertIn("Kind network diagnostics", result.stderr)
+        self.assertTrue(any(command == "version" for command in commands))
+        self.assertTrue(any(command == "info" for command in commands))
+        self.assertTrue(
+            any(command.startswith("network inspect") for command in commands)
+        )
+
+    def test_kind_cleanup_is_separate_from_blocking_product_validation(self) -> None:
+        checks = workflow_source("helm-chart-checks.yml")
+        job = workflow_job(checks, "ct-lint-install")
+        smoke = (
+            RELEASE.REPOSITORY_ROOT / "scripts/helm-chart-kind-smoke.sh"
+        ).read_text()
+        smoke_step = job[job.index("- name: Run kind smoke script") :]
+        smoke_step = smoke_step[: smoke_step.index("- name: Print smoke diagnostics")]
+        cleanup_step = job[job.index("- name: Clean up kind infrastructure") :]
+
+        self.assertNotIn("continue-on-error", smoke_step)
+        self.assertIn("if: always()", cleanup_step)
+        self.assertIn("scripts/ci/cleanup-kind-cluster.sh", cleanup_step)
+        self.assertIn("ignore_failed_clean: true", job)
+        self.assertLess(
+            job.index("scripts/helm-chart-kind-smoke.sh"),
+            job.index("scripts/ci/cleanup-kind-cluster.sh"),
+        )
+        for assertion in (
+            '"${helm_bin}" upgrade --install',
+            '"${helm_bin}" test',
+            '"${helm_bin}" upgrade "${release}"',
+            'rollout status "deploy/${server_deployment}"',
+            '"${helm_bin}" uninstall',
+            'echo "helm chart kind smoke OK"',
+        ):
+            with self.subTest(assertion=assertion):
+                self.assertIn(assertion, smoke)
+
     def test_chart_qualification_uses_only_source_controlled_tool_versions(
         self,
     ) -> None:
