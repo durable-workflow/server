@@ -1,3 +1,4 @@
+{{- include "durable-workflow.validateMemoPayloadTransition" . }}
 {{- /*
 Singleton scheduler/maintenance runner.
 
@@ -19,6 +20,7 @@ metadata:
   labels:
     {{- include "durable-workflow.componentLabels" (dict "context" . "component" "scheduler") | nindent 4 }}
   annotations:
+    workflows.durable-workflow.dev/memo-payload-storage: "dual-v1"
     {{- include "durable-workflow.argoWorkloadAnnotations" . | nindent 4 }}
     {{- include "durable-workflow.fluxDependsOnAnnotation" . | nindent 4 }}
     {{- with .Values.commonAnnotations }}

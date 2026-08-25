@@ -48,7 +48,7 @@ Redis — that is intentional, not a bug.
 ```bash
 helm install durable-workflow \
   oci://ghcr.io/durable-workflow/charts/durable-workflow \
-  --version 0.1.40 \
+  --version 0.1.41 \
   --namespace durable-workflow --create-namespace \
   -f my-values.yaml
 ```
@@ -59,7 +59,7 @@ helm install durable-workflow \
 helm repo add durable-workflow https://durable-workflow.github.io/charts/
 helm repo update
 helm install durable-workflow durable-workflow/durable-workflow \
-  --version 0.1.40 \
+  --version 0.1.41 \
   --namespace durable-workflow --create-namespace \
   -f my-values.yaml
 ```
@@ -166,6 +166,9 @@ override-with-care in `values.yaml`:
 * **Rolling upgrades default to `maxUnavailable: 0`.** Set
   `server.strategy.type: Recreate` for stop-the-world if your release does
   not satisfy the [rolling-upgrade contract](https://durable-workflow.github.io/docs/2.0/rolling-upgrades).
+  A memo-storage transition additionally fails closed while an incompatible
+  envelope-only workload is active; follow its versioned procedure in
+  [UPGRADING.md](docs/UPGRADING.md) before migration.
 
 ## GitOps notes
 

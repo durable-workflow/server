@@ -164,6 +164,7 @@ const consumers = [
   ...[
     ['docker-compose.yml', 4],
     ['docker-compose.small-cluster.yml', 1],
+    ['docker-compose.memo-rolling.yml', 2],
   ].map(([path, count]) => ({
     path,
     render(source, release) {

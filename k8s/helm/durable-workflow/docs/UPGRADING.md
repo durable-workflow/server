@@ -67,6 +67,29 @@ chart MINOR bump and an entry below.
 
 ## Per-version migration notes
 
+### 0.1.41
+
+This release advances the chart Server identity to `2.0.0-rc.49` and expands
+workflow memo storage into a predecessor-readable JSON projection plus a
+sequence-bound lossless payload. Upgrades directly from Server `2.0.0-rc.46`
+can use the normal rolling procedure: both revisions read and write one logical
+memo value while the restart-safe backfill runs.
+
+Server `2.0.0-rc.47` and `2.0.0-rc.48` used the short-lived envelope-only
+representation and cannot coexist with the dual representation. Before
+upgrading either release, back up the database, suspend the scheduler CronJob,
+drain external workers, temporarily disable either HPA, and scale the chart's
+Server and worker Deployments to zero. The chart fails an upgrade when it can
+see an active incompatible workload. Run the upgrade only after the old
+revision is fully stopped, then restore the configured replica counts,
+autoscaling, and scheduler after bootstrap succeeds.
+
+Do not use an ordinary Helm rollback from `2.0.0-rc.49` to `2.0.0-rc.47` or
+`2.0.0-rc.48`: those images cannot read the compatibility projection. Restore
+the pre-upgrade database backup before starting either envelope-only revision.
+Rollback to `2.0.0-rc.46` retains the readable JSON projection, but still drain
+the successor first so only one runtime revision writes during rollback.
+
 ### 0.1.40
 
 This release advances the chart Server identity to `2.0.0-rc.48` and separates

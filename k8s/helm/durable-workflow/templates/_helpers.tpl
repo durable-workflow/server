@@ -68,6 +68,44 @@ app.kubernetes.io/component: {{ .component }}
 {{- end -}}
 
 {{/*
+Fail closed before an envelope-only Server revision can remain active while
+the dual memo representation is installed. The raw-JSON predecessor and any
+deployment already carrying the dual-v1 marker are rolling-compatible.
+*/}}
+{{- define "durable-workflow.validateMemoPayloadTransition" -}}
+{{- if .Release.IsUpgrade -}}
+{{- $namespace := .Release.Namespace -}}
+{{- $server := lookup "apps/v1" "Deployment" $namespace (include "durable-workflow.serverDeploymentName" .) -}}
+{{- $worker := lookup "apps/v1" "Deployment" $namespace (include "durable-workflow.workerDeploymentName" .) -}}
+{{- $scheduler := lookup "batch/v1" "CronJob" $namespace (include "durable-workflow.schedulerCronJobName" .) -}}
+{{- range $workload := list $server $worker -}}
+{{- if $workload -}}
+{{- $replicas := 1 -}}
+{{- if hasKey $workload.spec "replicas" -}}
+{{- $replicas = int (get $workload.spec "replicas") -}}
+{{- end -}}
+{{- $labels := default (dict) $workload.metadata.labels -}}
+{{- $annotations := default (dict) $workload.metadata.annotations -}}
+{{- $version := default "unknown" (get $labels "app.kubernetes.io/version") -}}
+{{- $storage := default "" (get $annotations "workflows.durable-workflow.dev/memo-payload-storage") -}}
+{{- if and (gt $replicas 0) (ne $version "2.0.0-rc.46") (ne $storage "dual-v1") -}}
+{{- fail (printf "memo payload transition cannot run while Server %s workload %s has %d replicas. Scale the Server and worker Deployments to zero and suspend the scheduler CronJob before retrying this upgrade; Server 2.0.0-rc.47 and rc.48 cannot coexist with the dual representation." $version $workload.metadata.name $replicas) -}}
+{{- end -}}
+{{- end -}}
+{{- end -}}
+{{- if $scheduler -}}
+{{- $labels := default (dict) $scheduler.metadata.labels -}}
+{{- $annotations := default (dict) $scheduler.metadata.annotations -}}
+{{- $version := default "unknown" (get $labels "app.kubernetes.io/version") -}}
+{{- $storage := default "" (get $annotations "workflows.durable-workflow.dev/memo-payload-storage") -}}
+{{- if and (not $scheduler.spec.suspend) (ne $version "2.0.0-rc.46") (ne $storage "dual-v1") -}}
+{{- fail (printf "memo payload transition cannot run while Server %s scheduler CronJob %s is active. Suspend it and scale the Server and worker Deployments to zero before retrying this upgrade." $version $scheduler.metadata.name) -}}
+{{- end -}}
+{{- end -}}
+{{- end -}}
+{{- end -}}
+
+{{/*
 Image reference. Prefers digest over tag; tag falls back to .Chart.AppVersion.
 */}}
 {{- define "durable-workflow.image" -}}

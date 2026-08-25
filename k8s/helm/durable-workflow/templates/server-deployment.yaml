@@ -1,3 +1,4 @@
+{{- include "durable-workflow.validateMemoPayloadTransition" . }}
 {{- if .Values.server.enabled }}
 apiVersion: apps/v1
 kind: Deployment
@@ -7,6 +8,7 @@ metadata:
   labels:
     {{- include "durable-workflow.componentLabels" (dict "context" . "component" "server") | nindent 4 }}
   annotations:
+    workflows.durable-workflow.dev/memo-payload-storage: "dual-v1"
     {{- include "durable-workflow.argoWorkloadAnnotations" . | nindent 4 }}
     {{- include "durable-workflow.fluxDependsOnAnnotation" . | nindent 4 }}
     {{- with .Values.commonAnnotations }}

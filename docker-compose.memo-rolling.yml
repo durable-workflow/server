@@ -1,0 +1,104 @@
+name: durable-workflow-server-memo-rolling
+
+x-runtime-environment: &runtime-environment
+  APP_NAME: "Durable Workflow Server"
+  APP_ENV: testing
+  APP_DEBUG: "false"
+  DW_SERVER_KEY: "base64:5Zt4nUhlCm3DD0nLXZJQdHiwPfb56yGo9gNV/g3jYbY="
+  DB_CONNECTION: ${DW_MEMO_ROLLING_DB:-mysql}
+  DB_HOST: ${DW_MEMO_ROLLING_DB_HOST:-mysql}
+  DB_PORT: ${DW_MEMO_ROLLING_DB_PORT:-3306}
+  DB_DATABASE: durable_workflow
+  DB_USERNAME: workflow
+  DB_PASSWORD: workflow
+  REDIS_HOST: redis
+  QUEUE_CONNECTION: redis
+  CACHE_STORE: redis
+  DW_AUTH_DRIVER: token
+  DW_AUTH_TOKEN: memo-rolling-token
+  DW_AUTH_BACKWARD_COMPATIBLE: "true"
+  DW_WORKER_POLL_TIMEOUT: "1"
+  DW_WORKER_POLL_INTERVAL_MS: "100"
+
+services:
+  predecessor-bootstrap:
+    image: ${DW_MEMO_PREDECESSOR_IMAGE:-durableworkflow/server:2.0.0-rc.46}
+    command: ["server-bootstrap"]
+    environment:
+      <<: *runtime-environment
+      APP_VERSION: 2.0.0-rc.46
+
+  predecessor:
+    image: ${DW_MEMO_PREDECESSOR_IMAGE:-durableworkflow/server:2.0.0-rc.46}
+    ports: !override []
+    environment:
+      <<: *runtime-environment
+      APP_VERSION: 2.0.0-rc.46
+      DW_SERVER_ID: memo-predecessor
+      DW_SERVER_TOPOLOGY_SHAPE: standalone_server
+      DW_SERVER_PROCESS_CLASS: server_http_node
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/api/ready"]
+      interval: 5s
+      timeout: 3s
+      retries: 30
+
+  successor-bootstrap:
+    image: ${DW_MEMO_SUCCESSOR_IMAGE:-durable-workflow/server-memo-rolling:local}
+    command: ["server-bootstrap"]
+    environment:
+      <<: *runtime-environment
+      APP_VERSION: ${APP_VERSION:-2.0.0-rc.49}
+
+  successor:
+    image: ${DW_MEMO_SUCCESSOR_IMAGE:-durable-workflow/server-memo-rolling:local}
+    ports: !override []
+    environment:
+      <<: *runtime-environment
+      APP_VERSION: ${APP_VERSION:-2.0.0-rc.49}
+      DW_SERVER_ID: memo-successor
+      DW_SERVER_TOPOLOGY_SHAPE: standalone_server
+      DW_SERVER_PROCESS_CLASS: server_http_node
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/api/ready"]
+      interval: 5s
+      timeout: 3s
+      retries: 30
+
+  mysql:
+    image: mysql:8.0
+    profiles: ["mysql"]
+    ports: !override []
+    environment:
+      MYSQL_DATABASE: durable_workflow
+      MYSQL_USER: workflow
+      MYSQL_PASSWORD: workflow
+      MYSQL_ROOT_PASSWORD: root
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost"]
+      interval: 5s
+      timeout: 3s
+      retries: 30
+
+  pgsql:
+    image: postgres:16-alpine
+    profiles: ["pgsql"]
+    ports: !override []
+    environment:
+      POSTGRES_DB: durable_workflow
+      POSTGRES_USER: workflow
+      POSTGRES_PASSWORD: workflow
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U \"$${POSTGRES_USER}\" -d \"$${POSTGRES_DB}\""]
+      interval: 5s
+      timeout: 3s
+      retries: 30
+
+  redis:
+    image: redis:7-alpine
+    ports: !override []
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 30

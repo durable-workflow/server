@@ -15,6 +15,7 @@ use App\Support\ServerWorkflowControlPlane;
 use App\Support\ServiceCallBoundary;
 use App\Support\ServiceModeBusDispatcher;
 use App\Support\ValidatedExternalWorkflowUpdateAdmission;
+use App\Support\WorkflowMemoRollingCompatibility;
 use App\Support\WorkflowPackageApiFloor;
 use App\Support\WorkflowTaskLeaseConfiguration;
 use Illuminate\Contracts\Bus\Dispatcher as BusDispatcher;
@@ -128,6 +129,7 @@ class AppServiceProvider extends ServiceProvider
         WorkflowPackageApiFloor::assert();
 
         WorkflowTaskLeaseConfiguration::apply();
+        WorkflowMemoRollingCompatibility::register();
 
         config([
             'workflows.v2.fleet.validation_mode' => config('server.fleet_validation_mode', 'warn'),
