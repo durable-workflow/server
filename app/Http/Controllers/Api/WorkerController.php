@@ -1336,6 +1336,8 @@ class WorkerController
             'commands.*.min_supported' => ['nullable', 'integer'],
             'commands.*.max_supported' => ['nullable', 'integer'],
             'commands.*.attributes' => ['nullable', 'array'],
+            'commands.*.attribute_types' => ['nullable', 'array'],
+            'commands.*.attribute_types.*' => ['string'],
             'commands.*.non_retryable' => ['nullable', 'boolean'],
             'commands.*.parent_close_policy' => ['nullable', 'string'],
             'commands.*.condition_key' => ['nullable', 'string'],
@@ -1633,11 +1635,19 @@ class WorkerController
                 continue;
             }
 
-            $commands[$index]['attribute_types'] = $this->searchAttributeValues->validateForNamespace(
+            $declaredTypes = is_array($command['attribute_types'] ?? null)
+                ? array_filter(
+                    $command['attribute_types'],
+                    static fn (mixed $type, mixed $key): bool => is_string($key) && is_string($type),
+                    ARRAY_FILTER_USE_BOTH,
+                )
+                : [];
+            $registeredTypes = $this->searchAttributeValues->validateForNamespace(
                 $namespace,
                 $command['attributes'],
                 "commands.{$index}.attributes",
             );
+            $commands[$index]['attribute_types'] = array_replace($declaredTypes, $registeredTypes);
         }
 
         return $commands;

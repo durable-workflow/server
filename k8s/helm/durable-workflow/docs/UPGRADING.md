@@ -67,6 +67,12 @@ chart MINOR bump and an entry below.
 
 ## Per-version migration notes
 
+### 0.1.37
+
+This release advances the chart Server identity to `2.0.0-rc.46` and preserves
+declared workflow search-attribute types across the worker command boundary.
+Existing `0.1.36` values remain compatible.
+
 ### 0.1.36
 
 This release advances the chart Server identity to `2.0.0-rc.45` and bounds
