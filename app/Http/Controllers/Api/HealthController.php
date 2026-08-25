@@ -207,7 +207,7 @@ class HealthController
             'structural_limits' => StructuralLimits::snapshot(),
             'topology' => ServerTopology::info(),
             'client_compatibility' => ClientCompatibility::info(),
-            'surface_stability_contract' => SurfaceStabilityContract::manifest(),
+            'surface_stability_contract' => $this->surfaceStabilityContract(),
             'platform_protocol_specs' => PlatformProtocolSpecs::manifest(),
             'platform_conformance_suite' => PlatformConformanceSuite::manifest(),
             'activity_runtime_contract' => ActivityRuntimeContract::manifest(),
@@ -278,6 +278,20 @@ class HealthController
         }
 
         return response()->json($response);
+    }
+
+    /**
+     * Keep the package-owned stability contract while projecting the
+     * server-owned worker protocol version into its negotiation surface.
+     *
+     * @return array<string, mixed>
+     */
+    private function surfaceStabilityContract(): array
+    {
+        $contract = SurfaceStabilityContract::manifest();
+        $contract['surface_families']['worker_protocol']['negotiation'] = WorkerProtocol::negotiation();
+
+        return $contract;
     }
 
     private function shouldExposePackageProvenance(Request $request): bool

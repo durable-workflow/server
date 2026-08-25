@@ -3146,6 +3146,7 @@ class WorkerProtocolSuccessContractTest extends TestCase
         $openTaskId = (string) $openPoll->json('task.task_id');
         $openAttempt = (int) $openPoll->json('task.workflow_task_attempt');
         $openLeaseOwner = (string) $openPoll->json('task.lease_owner');
+        $conditionWaitOccurrenceId = 'condition-occurrence-worker-contract-1';
 
         $open = $this->postJson("/api/worker/workflow-tasks/{$openTaskId}/complete", [
             'lease_owner' => $openLeaseOwner,
@@ -3153,6 +3154,7 @@ class WorkerProtocolSuccessContractTest extends TestCase
             'commands' => [
                 [
                     'type' => 'open_condition_wait',
+                    'condition_wait_occurrence_id' => $conditionWaitOccurrenceId,
                     'condition_key' => 'approval.ready',
                     'condition_definition_fingerprint' => 'condition-fp-1',
                     'timeout_seconds' => 60,
@@ -3177,6 +3179,10 @@ class WorkerProtocolSuccessContractTest extends TestCase
         $conditionWaitId = $opened->payload['condition_wait_id'] ?? null;
 
         $this->assertIsString($conditionWaitId);
+        $this->assertSame(
+            $conditionWaitOccurrenceId,
+            $opened->payload['condition_wait_occurrence_id'] ?? null,
+        );
         $this->assertSame('pending', $timer->status->value);
         $this->assertSame('ready', $timerTask->status->value);
 
@@ -3206,6 +3212,14 @@ class WorkerProtocolSuccessContractTest extends TestCase
             ->assertJsonPath('task.workflow_signal_id', $signalId)
             ->assertJsonPath('task.signal_name', 'advance');
 
+        $resumeOpened = collect((array) $resumePoll->json('task.history_events'))
+            ->firstWhere('event_type', 'ConditionWaitOpened');
+        $this->assertIsArray($resumeOpened);
+        $this->assertSame(
+            $conditionWaitOccurrenceId,
+            $resumeOpened['payload']['condition_wait_occurrence_id'] ?? null,
+        );
+
         $resumeTaskId = (string) $resumePoll->json('task.task_id');
         $resumeAttempt = (int) $resumePoll->json('task.workflow_task_attempt');
         $resumeLeaseOwner = (string) $resumePoll->json('task.lease_owner');
@@ -3230,6 +3244,10 @@ class WorkerProtocolSuccessContractTest extends TestCase
             ->firstOrFail();
 
         $this->assertSame($conditionWaitId, $satisfied->payload['condition_wait_id'] ?? null);
+        $this->assertSame(
+            $conditionWaitOccurrenceId,
+            $satisfied->payload['condition_wait_occurrence_id'] ?? null,
+        );
         $this->assertSame('approval.ready', $satisfied->payload['condition_key'] ?? null);
         $this->assertSame('condition-fp-1', $satisfied->payload['condition_definition_fingerprint'] ?? null);
         $this->assertSame($timer->id, $satisfied->payload['timer_id'] ?? null);
@@ -3251,6 +3269,10 @@ class WorkerProtocolSuccessContractTest extends TestCase
 
         $this->assertSame('condition_timeout', $cancelled->payload['timer_kind'] ?? null);
         $this->assertSame($conditionWaitId, $cancelled->payload['condition_wait_id'] ?? null);
+        $this->assertSame(
+            $conditionWaitOccurrenceId,
+            $cancelled->payload['condition_wait_occurrence_id'] ?? null,
+        );
     }
 
     public function test_memo_update_is_visible_and_idempotent_while_the_run_waits(): void

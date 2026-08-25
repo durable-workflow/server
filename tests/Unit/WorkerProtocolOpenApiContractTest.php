@@ -25,10 +25,10 @@ class WorkerProtocolOpenApiContractTest extends TestCase
 
     public function test_cached_poll_conflict_shape_has_a_distinct_document_version(): void
     {
-        $this->assertSame('12', $this->spec['info']['version']);
-        $this->assertSame('1.16', $this->spec['x-durable-workflow-worker-protocol-negotiation']['default_advertised_version']);
+        $this->assertSame('13', $this->spec['info']['version']);
+        $this->assertSame('1.17', $this->spec['x-durable-workflow-worker-protocol-negotiation']['default_advertised_version']);
         $this->assertSame(
-            ['1.0', '1.1', '1.2', '1.3', '1.4', '1.5', '1.6', '1.7', '1.8', '1.9', '1.10', '1.11', '1.12', '1.13', '1.14', '1.15', '1.16'],
+            ['1.0', '1.1', '1.2', '1.3', '1.4', '1.5', '1.6', '1.7', '1.8', '1.9', '1.10', '1.11', '1.12', '1.13', '1.14', '1.15', '1.16', '1.17'],
             $this->spec['x-durable-workflow-worker-protocol-negotiation']['accepted_request_versions_by_default'],
         );
     }
@@ -62,6 +62,11 @@ class WorkerProtocolOpenApiContractTest extends TestCase
     {
         $contract = $this->spec['x-durable-workflow-workflow-memo-update-contract'];
         $this->assertSame('1.14', $contract['minimum_protocol_version']);
+        $this->assertSame('memo_upserts', $contract['worker_capability']);
+        $this->assertSame(
+            'workflow_metadata_capability_not_advertised',
+            $contract['capability_enforcement']['completion_without_capability']['reason'],
+        );
         $this->assertSame('upsert_memo', $contract['command']['type']);
         $this->assertSame(['sequence', 'entries'], $contract['history_event']['replay_identity']);
         $this->assertSame('runtime', $contract['external_payload_resolution_owner']);
@@ -108,6 +113,11 @@ class WorkerProtocolOpenApiContractTest extends TestCase
     {
         $contract = $this->spec['x-durable-workflow-typed-search-attributes-contract'];
         $this->assertSame('1.16', $contract['minimum_protocol_version']);
+        $this->assertSame('typed_search_attributes', $contract['worker_capability']);
+        $this->assertSame(
+            'requires_active_lease_owner_registration_capability',
+            $contract['capability_enforcement']['typed_history_routing'],
+        );
         $this->assertSame(
             ['string', 'keyword', 'keyword_list', 'int', 'float', 'bool', 'datetime'],
             $contract['canonical_type_names'],
@@ -131,6 +141,40 @@ class WorkerProtocolOpenApiContractTest extends TestCase
         $this->assertContains(
             'typed_search_attributes',
             $this->spec['components']['schemas']['WorkerServerCapabilities']['required'],
+        );
+    }
+
+    public function test_condition_wait_occurrence_identity_floor_and_replay_gate_are_machine_described(): void
+    {
+        $contract = $this->spec['x-durable-workflow-condition-wait-occurrence-identity-contract'];
+        $this->assertSame('1.17', $contract['minimum_protocol_version']);
+        $this->assertSame('condition_wait_occurrence_identity_unavailable', $contract['authoring_gate']['rejection_reason']);
+        $this->assertFalse($contract['authoring_gate']['recorded']);
+        $this->assertSame(
+            ['cold_replay', 'cached_poll', 'redelivery'],
+            $contract['replay_gate']['applies_to'],
+        );
+        $this->assertTrue(
+            $contract['version_independence']['server_at_minimum_accepts_worker_1_16_for_unaffected_history'],
+        );
+
+        $capabilities = $this->spec['components']['schemas']['WorkerServerCapabilities'];
+        $this->assertContains('condition_wait_occurrence_identity', $capabilities['required']);
+        $conditionCapability = $this->spec['components']['schemas']['ConditionWaitOccurrenceIdentityCapability'];
+        $this->assertSame('1.17', $conditionCapability['properties']['minimum_worker_protocol_version']['const']);
+
+        $command = $this->spec['components']['schemas']['WorkflowCommand']['allOf'][2]['then']['properties'];
+        $this->assertSame(
+            '1.17',
+            $command['condition_wait_occurrence_id']['x-durable-workflow-minimum-protocol-version'],
+        );
+        $this->assertSame(
+            '#/components/responses/WorkerRegistrationFailure',
+            $this->spec['paths']['/worker/register']['post']['responses']['409']['$ref'],
+        );
+        $this->assertSame(
+            '#/components/responses/WorkflowTaskCompletionFailure',
+            $this->spec['paths']['/worker/workflow-tasks/{taskId}/complete']['post']['responses']['409']['$ref'],
         );
     }
 

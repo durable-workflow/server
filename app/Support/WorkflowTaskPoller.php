@@ -66,6 +66,7 @@ final class WorkflowTaskPoller
     ): array {
         $pollRequestId = $this->nonEmptyString($pollRequestId);
         $taskKinds = WorkflowTaskPollRequestStore::normalizeTaskKinds($taskKinds);
+        $protocolVersion = WorkerProtocol::requestVersion($request);
 
         if (! WorkerPollFence::isFresh($worker)) {
             return [
@@ -95,6 +96,7 @@ final class WorkflowTaskPoller
                 acceptHistoryEncoding: $acceptHistoryEncoding,
                 pollRequestId: $pollRequestId,
                 supportedWorkflowTypes: $supportedWorkflowTypes,
+                protocolVersion: $protocolVersion,
             );
 
             if (is_array($task)) {
@@ -180,6 +182,7 @@ final class WorkflowTaskPoller
                 $leaseOwner,
                 $pollRequestId,
                 $taskKinds,
+                WorkerProtocol::requestVersion($request),
             );
 
             if ($cached['resolved']) {
@@ -238,6 +241,25 @@ final class WorkflowTaskPoller
                     $observed['task'],
                 );
 
+                if (! $this->cachedTaskStillDeliverable(
+                    namespace: $namespace,
+                    taskQueue: $taskQueue,
+                    buildId: $buildId,
+                    leaseOwner: $leaseOwner,
+                    task: $observed['task'],
+                    protocolVersion: WorkerProtocol::requestVersion($request),
+                )) {
+                    $this->pollRequests->forgetResult(
+                        $namespace,
+                        $taskQueue,
+                        $buildId,
+                        $leaseOwner,
+                        $pollRequestId,
+                    );
+
+                    continue;
+                }
+
                 return [
                     'task' => $observed['task'],
                     'poll_status' => $observed['poll_status'] ?? $this->defaultPollStatus($observed['task']),
@@ -259,6 +281,7 @@ final class WorkflowTaskPoller
             $leaseOwner,
             $pollRequestId,
             $taskKinds,
+            WorkerProtocol::requestVersion($request),
         );
 
         return [
@@ -277,6 +300,7 @@ final class WorkflowTaskPoller
         string $leaseOwner,
         string $pollRequestId,
         array $taskKinds,
+        ?string $protocolVersion,
     ): array {
         $cached = $this->pollRequests->result(
             $namespace,
@@ -299,6 +323,7 @@ final class WorkflowTaskPoller
             buildId: $buildId,
             leaseOwner: $leaseOwner,
             task: $cached['task'],
+            protocolVersion: $protocolVersion,
         )) {
             $refreshedTask = $this->refreshCachedTaskPayload(
                 namespace: $namespace,
@@ -432,7 +457,10 @@ final class WorkflowTaskPoller
             'poll_status' => 'empty',
             'next_probe_at' => null,
         ];
-        $workerPollFence = WorkerPollFence::snapshot($worker);
+        $workerPollFence = [
+            ...WorkerPollFence::snapshot($worker),
+            'protocol_version' => WorkerProtocol::requestVersion($request),
+        ];
         $supportsQueryTasks = in_array('workflow', $taskKinds, true)
             && $this->cache->available()
             && $this->queryTasks->workerSupportsQueryTasks($namespace, $worker);
@@ -678,6 +706,7 @@ final class WorkflowTaskPoller
                         acceptHistoryEncoding: $acceptHistoryEncoding,
                         pollRequestId: $pollRequestId,
                         supportedWorkflowTypes: $supportedWorkflowTypes,
+                        protocolVersion: $this->nonEmptyString($workerPollFence['protocol_version'] ?? null),
                     );
 
                     if (is_array($task)) {
@@ -724,6 +753,7 @@ final class WorkflowTaskPoller
                             acceptHistoryEncoding: $acceptHistoryEncoding,
                             pollRequestId: $pollRequestId,
                             supportedWorkflowTypes: $supportedWorkflowTypes,
+                            protocolVersion: $this->nonEmptyString($workerPollFence['protocol_version'] ?? null),
                         );
                 }
 
@@ -771,6 +801,7 @@ final class WorkflowTaskPoller
                                 acceptHistoryEncoding: $acceptHistoryEncoding,
                                 pollRequestId: $pollRequestId,
                                 supportedWorkflowTypes: $supportedWorkflowTypes,
+                                protocolVersion: $this->nonEmptyString($workerPollFence['protocol_version'] ?? null),
                             );
                     }
 
@@ -925,11 +956,14 @@ final class WorkflowTaskPoller
         array $supportedWorkflowTypes = [],
         array $workerPollFence = [],
     ): ?array {
-        $readyTasks = $this->pollReadyTasks(
+        $readyTasks = $this->pollReplayEligibleReadyTasks(
             namespace: $namespace,
             taskQueue: $taskQueue,
+            leaseOwner: $leaseOwner,
+            buildId: $buildId,
             limit: $limit,
             supportedWorkflowTypes: $supportedWorkflowTypes,
+            protocolVersion: $this->nonEmptyString($workerPollFence['protocol_version'] ?? null),
         );
 
         // The workflow package bridge owns ready-task discovery,
@@ -977,6 +1011,20 @@ final class WorkflowTaskPoller
                 continue;
             }
 
+            $runId = $this->nonEmptyString($readyTask['workflow_run_id'] ?? null);
+
+            if (
+                $runId === null
+                || ! $this->workerCanReplayRun(
+                    $namespace,
+                    $leaseOwner,
+                    $runId,
+                    $this->nonEmptyString($workerPollFence['protocol_version'] ?? null),
+                )
+            ) {
+                continue;
+            }
+
             $taskId = is_string($readyTask['task_id'] ?? null)
                 ? $readyTask['task_id']
                 : null;
@@ -993,9 +1041,19 @@ final class WorkflowTaskPoller
                 $buildId,
                 $pollRequestId,
                 $workerPollFence,
+                $runId,
             ): array {
                 if ($workerPollFence !== [] && ! WorkerPollFence::isCurrentForUpdate($workerPollFence)) {
                     return ['claimed' => false, 'reason' => 'stale_worker_registration'];
+                }
+
+                if (! $this->workerCanReplayRun(
+                    $namespace,
+                    $leaseOwner,
+                    $runId,
+                    $this->nonEmptyString($workerPollFence['protocol_version'] ?? null),
+                )) {
+                    return ['claimed' => false, 'reason' => 'workflow_metadata_capability_not_advertised'];
                 }
 
                 $this->pollLeaseBindings->ensureUnbound(
@@ -1080,6 +1138,180 @@ final class WorkflowTaskPoller
     }
 
     /**
+     * Continue past saturated bridge batches that contain only histories the
+     * polling worker cannot replay. The public bridge does not expose a cursor,
+     * so subsequent pages mirror the default bridge's ordered ready-task query.
+     * Custom bridge implementations remain the sole candidate source because
+     * Server cannot safely infer their pagination or filtering semantics.
+     *
+     * @param  list<string>  $supportedWorkflowTypes
+     * @return list<array<string, mixed>>
+     */
+    private function pollReplayEligibleReadyTasks(
+        string $namespace,
+        string $taskQueue,
+        string $leaseOwner,
+        ?string $buildId,
+        int $limit,
+        array $supportedWorkflowTypes,
+        ?string $protocolVersion,
+    ): array {
+        $readyTasks = $this->pollReadyTasks(
+            namespace: $namespace,
+            taskQueue: $taskQueue,
+            limit: $limit,
+            supportedWorkflowTypes: $supportedWorkflowTypes,
+        );
+
+        if (! $this->bridge instanceof DefaultWorkflowTaskBridge) {
+            return $readyTasks;
+        }
+
+        $pageSize = min($limit, DefaultWorkflowTaskBridge::POLL_BATCH_CAP);
+        $pageCount = count($readyTasks);
+        $offset = $pageCount;
+
+        while (
+            $pageCount === $pageSize
+            && ! $this->pageContainsEligibleReadyTask(
+                $namespace,
+                $leaseOwner,
+                $buildId,
+                $readyTasks,
+                $supportedWorkflowTypes,
+                $protocolVersion,
+            )
+        ) {
+            $readyTasks = $this->pollDefaultReadyTasksPage(
+                namespace: $namespace,
+                taskQueue: $taskQueue,
+                limit: $pageSize,
+                offset: $offset,
+                supportedWorkflowTypes: $supportedWorkflowTypes,
+            );
+            $pageCount = count($readyTasks);
+            $offset += $pageCount;
+
+            if ($pageCount < $pageSize) {
+                break;
+            }
+        }
+
+        return $readyTasks;
+    }
+
+    /**
+     * @param  list<array<string, mixed>>  $readyTasks
+     * @param  list<string>  $supportedWorkflowTypes
+     */
+    private function pageContainsEligibleReadyTask(
+        string $namespace,
+        string $leaseOwner,
+        ?string $buildId,
+        array $readyTasks,
+        array $supportedWorkflowTypes,
+        ?string $protocolVersion,
+    ): bool {
+        foreach ($readyTasks as $readyTask) {
+            if ($this->availableAtIsFuture($readyTask['available_at'] ?? null)) {
+                continue;
+            }
+
+            $workflowId = $this->nonEmptyString($readyTask['workflow_instance_id'] ?? null);
+
+            if ($workflowId === null || ! NamespaceWorkflowScope::workflowBound($namespace, $workflowId)) {
+                continue;
+            }
+
+            if (! $this->matchesCompatibility(
+                $buildId,
+                $this->effectiveReadyTaskCompatibility($namespace, $readyTask),
+            )) {
+                continue;
+            }
+
+            if (! $this->matchesWorkflowType($supportedWorkflowTypes, $readyTask['workflow_type'] ?? null)) {
+                continue;
+            }
+
+            $runId = $this->nonEmptyString($readyTask['workflow_run_id'] ?? null);
+
+            if (
+                $runId !== null
+                && $this->workerCanReplayRun($namespace, $leaseOwner, $runId, $protocolVersion)
+            ) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /**
+     * Mirror the default bridge's ready-task ordering after its saturated first
+     * page. Claiming and its transactional readiness checks remain bridge-owned.
+     *
+     * @param  list<string>  $supportedWorkflowTypes
+     * @return list<array<string, mixed>>
+     */
+    private function pollDefaultReadyTasksPage(
+        string $namespace,
+        string $taskQueue,
+        int $limit,
+        int $offset,
+        array $supportedWorkflowTypes,
+    ): array {
+        $availabilityCutoff = now()
+            ->addSeconds(DefaultWorkflowTaskBridge::AVAILABILITY_CEILING_SECONDS);
+        $query = NamespaceWorkflowScope::taskQuery($namespace)
+            ->select('workflow_tasks.*')
+            ->join('workflow_runs', 'workflow_runs.id', '=', 'workflow_tasks.workflow_run_id')
+            ->where('workflow_tasks.task_type', TaskType::Workflow->value)
+            ->where('workflow_tasks.status', TaskStatus::Ready->value)
+            ->where('workflow_tasks.queue', $taskQueue)
+            ->where(function ($query) use ($availabilityCutoff): void {
+                $query->whereNull('workflow_tasks.available_at')
+                    ->orWhere('workflow_tasks.available_at', '<=', $availabilityCutoff);
+            })
+            ->orderBy('workflow_tasks.priority')
+            ->orderBy('workflow_tasks.available_at')
+            ->orderBy('workflow_tasks.id')
+            ->offset($offset)
+            ->limit($limit);
+
+        if ($supportedWorkflowTypes !== []) {
+            $query->whereIn('workflow_runs.workflow_type', $supportedWorkflowTypes);
+        }
+
+        return $query->get()
+            ->map(function (WorkflowTask $task): array {
+                /** @var WorkflowRun|null $run */
+                $run = WorkflowRun::query()->find($task->workflow_run_id);
+
+                return [
+                    'task_id' => (string) $task->id,
+                    'workflow_run_id' => (string) $task->workflow_run_id,
+                    'workflow_instance_id' => $run instanceof WorkflowRun
+                        ? (string) $run->workflow_instance_id
+                        : '',
+                    'workflow_type' => $this->nonEmptyString($run?->workflow_type),
+                    'workflow_class' => $this->nonEmptyString($run?->workflow_class),
+                    'connection' => $this->nonEmptyString($task->connection),
+                    'queue' => $this->nonEmptyString($task->queue),
+                    'compatibility' => $this->nonEmptyString($task->compatibility),
+                    'sticky_worker_id' => $this->nonEmptyString($task->sticky_worker_id),
+                    'sticky_until' => $task->sticky_until?->toJSON(),
+                    'available_at' => $task->available_at?->toJSON(),
+                    'priority' => is_int($task->priority) ? $task->priority : 0,
+                    'fairness_key' => is_string($task->fairness_key) ? $task->fairness_key : null,
+                    'fairness_weight' => is_int($task->fairness_weight) ? $task->fairness_weight : 1,
+                ];
+            })
+            ->values()
+            ->all();
+    }
+
+    /**
      * Rebuild the live workflow lease assigned to this logical poll.
      *
      * @param  list<string>  $supportedWorkflowTypes
@@ -1094,6 +1326,7 @@ final class WorkflowTaskPoller
         ?string $acceptHistoryEncoding,
         string $pollRequestId,
         array $supportedWorkflowTypes = [],
+        ?string $protocolVersion = null,
     ): ?array {
         $tasks = collect(array_filter([
             $this->pollLeaseBindings->activeTask(
@@ -1117,6 +1350,12 @@ final class WorkflowTaskPoller
             if (
                 ! $run instanceof WorkflowRun
                 || ! $this->matchesWorkflowType($supportedWorkflowTypes, $run->workflow_type)
+                || ! $this->workerCanReplayRun(
+                    $namespace,
+                    $leaseOwner,
+                    (string) $run->id,
+                    $protocolVersion,
+                )
             ) {
                 continue;
             }
@@ -1524,6 +1763,7 @@ final class WorkflowTaskPoller
         ?string $buildId,
         string $leaseOwner,
         ?array $task,
+        ?string $protocolVersion,
     ): bool {
         if ($task === null) {
             return true;
@@ -1567,6 +1807,15 @@ final class WorkflowTaskPoller
         }
 
         if ($workflowTask->lease_expires_at === null || $workflowTask->lease_expires_at->lte(now())) {
+            return false;
+        }
+
+        $runId = $this->nonEmptyString($workflowTask->workflow_run_id);
+
+        if (
+            $runId === null
+            || ! $this->workerCanReplayRun($namespace, $leaseOwner, $runId, $protocolVersion)
+        ) {
             return false;
         }
 
@@ -2016,6 +2265,35 @@ final class WorkflowTaskPoller
         return is_string($value) && trim($value) !== ''
             ? trim($value)
             : null;
+    }
+
+    private function workerCanReplayRun(
+        string $namespace,
+        string $workerId,
+        string $runId,
+        ?string $protocolVersion,
+    ): bool {
+        $worker = WorkerRegistration::query()
+            ->where('namespace', $namespace)
+            ->where('worker_id', $workerId)
+            ->first();
+
+        if (! $worker instanceof WorkerRegistration || ! WorkerPollFence::isFresh($worker)) {
+            return false;
+        }
+
+        $capabilities = is_array($worker->capabilities)
+            ? array_values(array_filter(
+                $worker->capabilities,
+                static fn (mixed $capability): bool => is_string($capability) && trim($capability) !== '',
+            ))
+            : [];
+
+        return WorkflowMetadataCapabilityPolicy::canReplayRun(
+            $runId,
+            $capabilities,
+            $protocolVersion,
+        );
     }
 
     /**

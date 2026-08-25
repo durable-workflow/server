@@ -31,6 +31,7 @@ final class ServerCodecRegressionBoundaryV6
                 'runtime' => 'rust',
                 'supported_workflow_types' => ['tests.external-greeting-workflow'],
                 'supported_activity_types' => [],
+                'capabilities' => ['typed_search_attributes'],
                 'last_heartbeat_at' => now(),
                 'status' => 'active',
             ],

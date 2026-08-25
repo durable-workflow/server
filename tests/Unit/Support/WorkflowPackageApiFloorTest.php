@@ -197,7 +197,8 @@ class WorkflowPackageApiFloorTest extends TestCase
         $this->assertNotFalse($capability);
         $this->assertTrue($capability->isPublic());
 
-        $this->assertSame('1.16', WorkerProtocolVersion::VERSION);
+        $this->assertSame('1.17', WorkerProtocolVersion::VERSION);
+        $this->assertSame('1.17', WorkerProtocol::VERSION);
         $this->assertSame(WorkerProtocolVersion::VERSION, WorkerProtocol::VERSION);
         $this->assertSame('query_tasks', WorkerProtocolVersion::CAPABILITY_QUERY_TASKS);
         $this->assertSame(['poll', 'complete', 'fail'], WorkerProtocolVersion::queryTaskVerbs());

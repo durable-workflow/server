@@ -166,9 +166,9 @@ const surfaces = {
   },
 };
 
-const serverWorkerProtocolVersion = '1.13';
-const backwardWorkerProtocolVersion = '1.12';
-const forwardWorkerProtocolVersion = '1.14';
+const serverWorkerProtocolVersion = '1.17';
+const backwardWorkerProtocolVersion = '1.16';
+const forwardWorkerProtocolVersion = '1.18';
 const workerProtocolCompatibilityWindow = `server supports control-plane 2 and worker protocol 1.x minors <= ${serverWorkerProtocolVersion}`;
 
 const pairingClasses = {

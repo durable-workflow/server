@@ -66,6 +66,25 @@ final class HelmMemoPayloadTransitionContractTest extends TestCase
         $this->assertStringContainsString('scripts/smoke-workflow-memo-rolling-upgrade.sh', $workflow);
     }
 
+    public function test_successor_worker_advertises_memo_authoring_support(): void
+    {
+        $script = $this->read('scripts/smoke-workflow-memo-rolling-upgrade.sh');
+        $this->assertGreaterThan(0, preg_match_all("/-d '([^']+)'/", $script, $matches));
+
+        $registrations = array_values(array_filter(
+            array_map(
+                static fn (string $payload): mixed => json_decode($payload, true),
+                $matches[1],
+            ),
+            static fn (mixed $payload): bool => is_array($payload)
+                && ($payload['worker_id'] ?? null) === 'memo-rolling-worker'
+                && ($payload['runtime'] ?? null) === 'php',
+        ));
+
+        $this->assertCount(1, $registrations);
+        $this->assertContains('memo_upserts', $registrations[0]['capabilities'] ?? []);
+    }
+
     private function read(string $path): string
     {
         $contents = file_get_contents(base_path($path));

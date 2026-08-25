@@ -18,9 +18,13 @@ class WorkerProtocol
      * here. WorkflowPackageApiFloor asserts the installed package still
      * provides the companion protocol helpers for this version.
      */
-    public const VERSION = '1.16';
+    public const VERSION = '1.17';
 
-    public const TYPED_SEARCH_ATTRIBUTES_MINIMUM_PROTOCOL_VERSION = '1.16';
+    public const TYPED_SEARCH_ATTRIBUTES_MINIMUM_PROTOCOL_VERSION =
+        WorkflowMetadataCapabilityPolicy::TYPED_SEARCH_ATTRIBUTES_MINIMUM_PROTOCOL_VERSION;
+
+    public const CONDITION_WAIT_OCCURRENCE_MINIMUM_PROTOCOL_VERSION =
+        WorkflowMetadataCapabilityPolicy::CONDITION_WAIT_OCCURRENCE_MINIMUM_PROTOCOL_VERSION;
 
     public const SYNCHRONOUS_UPDATE_VALIDATION_MINIMUM_PROTOCOL_VERSION = '1.13';
 
@@ -119,6 +123,58 @@ class WorkerProtocol
         }
 
         return $w[0] === $s[0] && $w[1] <= $s[1];
+    }
+
+    public static function versionMeetsMinimum(?string $candidate, string $minimum): bool
+    {
+        if ($candidate === null) {
+            return false;
+        }
+
+        $candidateParts = self::splitProtocolVersion($candidate);
+        $minimumParts = self::splitProtocolVersion($minimum);
+
+        return $candidateParts !== null
+            && $minimumParts !== null
+            && $candidateParts[0] === $minimumParts[0]
+            && $candidateParts[1] >= $minimumParts[1];
+    }
+
+    /**
+     * @return array{
+     *     advertised_version_path: string,
+     *     default_advertised_version: string,
+     *     request_header_rule: string,
+     *     accepted_request_versions_by_default: list<string>,
+     *     response_version: string,
+     *     fail_closed_on: list<string>
+     * }
+     */
+    public static function negotiation(): array
+    {
+        $advertised = (string) config('server.worker_protocol.version', self::VERSION);
+        $parts = self::splitProtocolVersion($advertised);
+        $accepted = [];
+
+        if ($parts !== null) {
+            for ($minor = 0; $minor <= $parts[1]; $minor++) {
+                $accepted[] = sprintf('%d.%d', $parts[0], $minor);
+            }
+        }
+
+        return [
+            'advertised_version_path' => 'worker_protocol.version',
+            'default_advertised_version' => $advertised,
+            'request_header_rule' => 'same_major_and_minor_less_than_or_equal_to_advertised',
+            'accepted_request_versions_by_default' => $accepted,
+            'response_version' => 'advertised_version',
+            'fail_closed_on' => [
+                'missing_header',
+                'malformed_version',
+                'different_major',
+                'minor_greater_than_advertised',
+            ],
+        ];
     }
 
     /**
@@ -348,6 +404,7 @@ class WorkerProtocol
             'workflow_memo_updates' => [
                 ...self::workflowMemoUpdateSemantics(),
                 'supported' => self::workflowMemoUpdatesSupported(),
+                'worker_capability' => WorkflowMetadataCapabilityPolicy::MEMO_UPSERTS,
             ],
             'workflow_task_poll_request_idempotency' => true,
             'poll_status' => true,
@@ -367,11 +424,28 @@ class WorkerProtocol
             'typed_search_attributes' => [
                 'supported' => self::typedSearchAttributesSupported(),
                 'minimum_worker_protocol_version' => self::TYPED_SEARCH_ATTRIBUTES_MINIMUM_PROTOCOL_VERSION,
+                'worker_capability' => WorkflowMetadataCapabilityPolicy::TYPED_SEARCH_ATTRIBUTES,
                 'canonical_types' => SearchAttributeDefinition::CANONICAL_TYPES,
                 'command_field' => 'attribute_types',
                 'history_event' => 'SearchAttributesUpserted',
                 'history_field' => 'attribute_types',
                 'legacy_history_rule' => 'absent_metadata_is_unknown_type_identity',
+            ],
+            'condition_wait_occurrence_identity' => [
+                'supported' => true,
+                'minimum_worker_protocol_version' => self::CONDITION_WAIT_OCCURRENCE_MINIMUM_PROTOCOL_VERSION,
+                'command_type' => 'open_condition_wait',
+                'command_field' => 'condition_wait_occurrence_id',
+                'history_field' => 'condition_wait_occurrence_id',
+                'history_events' => [
+                    'ConditionWaitOpened',
+                    'ConditionWaitSatisfied',
+                    'ConditionWaitTimedOut',
+                    'TimerScheduled',
+                    'TimerFired',
+                    'TimerCancelled',
+                ],
+                'history_routing' => 'requires_minimum_worker_protocol_version',
             ],
             'query_tasks' => true,
             'query_task_poll_request_idempotency' => true,

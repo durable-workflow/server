@@ -118,7 +118,7 @@ exit($count === 2 ? 42 : 43);
     -H 'Content-Type: application/json' \
     -H 'X-Namespace: default' \
     -H 'X-Durable-Workflow-Protocol-Version: 1.16' \
-    -d '{"worker_id":"memo-rolling-worker","task_queue":"memo-rolling","runtime":"php","supported_workflow_types":["memo.rolling"]}' \
+    -d '{"worker_id":"memo-rolling-worker","task_queue":"memo-rolling","runtime":"php","supported_workflow_types":["memo.rolling"],"capabilities":["memo_upserts"]}' \
     >/dev/null
 
   poll="$(request \

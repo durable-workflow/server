@@ -30,7 +30,7 @@ class WorkerProtocolCompatibilityTest extends TestCase
             'two minors behind accepted' => ['worker' => '1.0', 'server' => '1.2', 'expected' => true],
             'minor 0 against minor 0 accepted' => ['worker' => '1.0', 'server' => '1.0', 'expected' => true],
             'worker minor ahead rejected' => ['worker' => '1.3', 'server' => '1.2', 'expected' => false],
-            'worker ahead of current server rejected' => ['worker' => '1.17', 'server' => WorkerProtocol::VERSION, 'expected' => false],
+            'worker ahead of current server rejected' => ['worker' => '1.18', 'server' => WorkerProtocol::VERSION, 'expected' => false],
             'major ahead rejected' => ['worker' => '2.0', 'server' => '1.2', 'expected' => false],
             'different major rejected by current server' => ['worker' => '2.0', 'server' => WorkerProtocol::VERSION, 'expected' => false],
             'major behind rejected' => ['worker' => '0.9', 'server' => '1.2', 'expected' => false],

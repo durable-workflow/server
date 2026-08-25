@@ -31,6 +31,7 @@ use App\Support\WorkerPollFence;
 use App\Support\WorkerProtocol;
 use App\Support\WorkerProtocolMutationRetrier;
 use App\Support\WorkerTerminalEventAttribution;
+use App\Support\WorkflowMetadataCapabilityPolicy;
 use App\Support\WorkflowQueryTaskBroker;
 use App\Support\WorkflowStreamCommandProcessor;
 use App\Support\WorkflowStreamService;
@@ -134,9 +135,30 @@ class WorkerController
             'heartbeat_interval_seconds' => ['nullable', 'integer', 'min:1', 'max:3600'],
         ]);
 
+        $workerCapabilities = $this->nonEmptyStringArray($validated['capabilities'] ?? []);
+        $metadataCapabilityProtocolMismatch = WorkflowMetadataCapabilityPolicy::firstProtocolMismatch(
+            $workerCapabilities,
+            WorkerProtocol::requestVersion($request),
+        );
+
+        if ($metadataCapabilityProtocolMismatch !== null) {
+            return WorkerProtocol::json([
+                'registered' => false,
+                'reason' => 'workflow_metadata_capability_protocol_mismatch',
+                'capability' => $metadataCapabilityProtocolMismatch['capability'],
+                'requested_version' => WorkerProtocol::requestVersion($request),
+                'minimum_protocol_version' => $metadataCapabilityProtocolMismatch['minimum_protocol_version'],
+                'remediation' => sprintf(
+                    'Advertise %s only while sending worker protocol %s or newer.',
+                    $metadataCapabilityProtocolMismatch['capability'],
+                    $metadataCapabilityProtocolMismatch['minimum_protocol_version'],
+                ),
+            ], 409);
+        }
+
         if (in_array(
             MessageStreamsContract::CAPABILITY,
-            $this->nonEmptyStringArray($validated['capabilities'] ?? []),
+            $workerCapabilities,
             true,
         ) && ! WorkerProtocol::messageStreamsAvailableForRequest($request)) {
             return WorkerProtocol::json([
@@ -228,6 +250,7 @@ class WorkerController
                 $processMetrics,
                 $registrationStatus,
                 $releaseLeasesForRegistration,
+                $workerCapabilities,
             ): WorkerRegistration {
                 $registration = WorkerRegistration::updateOrCreate(
                     [
@@ -243,7 +266,7 @@ class WorkerController
                         'workflow_definition_fingerprints' => $workflowDefinitionFingerprints,
                         'workflow_command_contracts' => $workflowCommandContracts,
                         'supported_activity_types' => $validated['supported_activity_types'] ?? [],
-                        'capabilities' => $this->nonEmptyStringArray($validated['capabilities'] ?? []),
+                        'capabilities' => $workerCapabilities,
                         'max_concurrent_workflow_tasks' => $maxWorkflowTasks,
                         'max_concurrent_activity_tasks' => $maxActivityTasks,
                         'max_concurrent_worker_sessions' => $maxWorkerSessions,
@@ -300,6 +323,7 @@ class WorkerController
             'task_queue' => $registration->task_queue,
             'runtime' => $registration->runtime,
             'build_id' => $registration->build_id,
+            'capabilities' => $this->nonEmptyStringArray($registration->capabilities),
             'status' => $registration->status,
             'heartbeat_interval_seconds' => $this->advertisedHeartbeatIntervalSeconds(),
         ], 201);
@@ -1345,6 +1369,7 @@ class WorkerController
             'commands.*.parent_close_policy' => ['nullable', 'string'],
             'commands.*.condition_key' => ['nullable', 'string'],
             'commands.*.condition_definition_fingerprint' => ['nullable', 'string'],
+            'commands.*.condition_wait_occurrence_id' => ['nullable', 'string'],
             'commands.*.signal_name' => ['nullable', 'string'],
             'commands.*.timeout_seconds' => ['nullable', 'integer', 'min:0'],
             'commands.*.parallel_group_id' => ['nullable', 'string'],
@@ -1391,6 +1416,15 @@ class WorkerController
             return $response;
         }
 
+        if ($response = $this->guardConditionWaitOccurrenceIdentityAvailable(
+            $request,
+            $taskId,
+            (int) $validated['workflow_task_attempt'],
+            $commands,
+        )) {
+            return $response;
+        }
+
         if ($response = $this->guardWorkerSessionCommandsAvailable(
             $request,
             $taskId,
@@ -1411,6 +1445,16 @@ class WorkerController
 
         if ($response = $this->guardTypedSearchAttributeCommandsAvailable(
             $request,
+            $taskId,
+            (int) $validated['workflow_task_attempt'],
+            $commands,
+        )) {
+            return $response;
+        }
+
+        if ($response = $this->guardWorkflowMetadataCapabilitiesAvailable(
+            $namespace,
+            $validated['lease_owner'],
             $taskId,
             (int) $validated['workflow_task_attempt'],
             $commands,
@@ -1473,18 +1517,51 @@ class WorkerController
                     $request,
                     $taskId,
                     $namespace,
+                    $validated,
                     $messageStreamCursors,
                     $messageStreamWaits,
-                ): array {
+                ): array|JsonResponse {
                     return DB::transaction(function () use (
                         $bridge,
                         $commands,
                         $request,
                         $taskId,
                         $namespace,
+                        $validated,
                         $messageStreamCursors,
                         $messageStreamWaits,
-                    ): array {
+                    ): array|JsonResponse {
+                        $leaseWorker = WorkerRegistration::query()
+                            ->where('namespace', $namespace)
+                            ->where('worker_id', $validated['lease_owner'])
+                            ->lockForUpdate()
+                            ->first();
+                        NamespaceWorkflowScope::taskQuery((string) $namespace)
+                            ->whereKey($taskId)
+                            ->lockForUpdate()
+                            ->first();
+
+                        if ($response = $this->guardWorkflowTaskOwnership(
+                            $request,
+                            (string) $namespace,
+                            $taskId,
+                            (int) $validated['workflow_task_attempt'],
+                            $validated['lease_owner'],
+                        )) {
+                            return $response;
+                        }
+
+                        if ($response = $this->guardWorkflowMetadataCapabilitiesAvailable(
+                            $namespace,
+                            $validated['lease_owner'],
+                            $taskId,
+                            (int) $validated['workflow_task_attempt'],
+                            $commands,
+                            $leaseWorker,
+                        )) {
+                            return $response;
+                        }
+
                         $commands = $this->canonicalizeWorkflowStreamPayloadCodecs($commands);
                         $commands = app(WorkflowStreamCommandProcessor::class)->process(
                             $taskId,
@@ -1580,6 +1657,10 @@ class WorkerController
             }
 
             return BackendLockPressure::workerOperationResponse($request, false);
+        }
+
+        if ($outcome instanceof JsonResponse) {
+            return $outcome;
         }
 
         try {
@@ -1861,6 +1942,101 @@ class WorkerController
             'remediation' => sprintf(
                 'Complete typed search-attribute updates only through server nodes advertising worker protocol %s or newer.',
                 WorkerProtocol::TYPED_SEARCH_ATTRIBUTES_MINIMUM_PROTOCOL_VERSION,
+            ),
+        ], 409);
+    }
+
+    /**
+     * @param  list<array<string, mixed>>  $commands
+     */
+    private function guardConditionWaitOccurrenceIdentityAvailable(
+        Request $request,
+        string $taskId,
+        int $workflowTaskAttempt,
+        array $commands,
+    ): ?JsonResponse {
+        $authorsOccurrenceIdentity = collect($commands)->contains(
+            static fn (array $command): bool => ($command['type'] ?? null) === 'open_condition_wait'
+                && array_key_exists('condition_wait_occurrence_id', $command),
+        );
+
+        if (
+            ! $authorsOccurrenceIdentity
+            || WorkerProtocol::versionMeetsMinimum(
+                WorkerProtocol::requestVersion($request),
+                WorkerProtocol::CONDITION_WAIT_OCCURRENCE_MINIMUM_PROTOCOL_VERSION,
+            )
+        ) {
+            return null;
+        }
+
+        return WorkerProtocol::json([
+            'task_id' => $taskId,
+            'workflow_task_attempt' => $workflowTaskAttempt,
+            'outcome' => 'rejected',
+            'recorded' => false,
+            'reason' => 'condition_wait_occurrence_identity_unavailable',
+            'requested_version' => WorkerProtocol::requestVersion($request),
+            'minimum_protocol_version' => WorkerProtocol::CONDITION_WAIT_OCCURRENCE_MINIMUM_PROTOCOL_VERSION,
+            'command_type' => 'open_condition_wait',
+            'command_field' => 'condition_wait_occurrence_id',
+            'remediation' => sprintf(
+                'Author condition-wait occurrence identity only with worker protocol %s or newer.',
+                WorkerProtocol::CONDITION_WAIT_OCCURRENCE_MINIMUM_PROTOCOL_VERSION,
+            ),
+        ], 409);
+    }
+
+    /**
+     * @param  list<array<string, mixed>>  $commands
+     */
+    private function guardWorkflowMetadataCapabilitiesAvailable(
+        mixed $namespace,
+        string $leaseOwner,
+        string $taskId,
+        int $workflowTaskAttempt,
+        array $commands,
+        ?WorkerRegistration $leaseWorker = null,
+    ): ?JsonResponse {
+        $required = WorkflowMetadataCapabilityPolicy::requiredForCommands($commands);
+
+        if ($required === []) {
+            return null;
+        }
+
+        $leaseWorker ??= WorkerRegistration::query()
+            ->where('namespace', $namespace)
+            ->where('worker_id', $leaseOwner)
+            ->first();
+        $registeredCapabilities = $leaseWorker instanceof WorkerRegistration
+            ? $this->nonEmptyStringArray($leaseWorker->capabilities)
+            : [];
+        $missing = WorkflowMetadataCapabilityPolicy::missingForCommands(
+            $commands,
+            $registeredCapabilities,
+        );
+
+        if ($missing === []) {
+            return null;
+        }
+
+        $capability = $missing[0];
+        $definition = WorkflowMetadataCapabilityPolicy::definitions()[$capability];
+
+        return WorkerProtocol::json([
+            'task_id' => $taskId,
+            'workflow_task_attempt' => $workflowTaskAttempt,
+            'outcome' => 'rejected',
+            'recorded' => false,
+            'reason' => 'workflow_metadata_capability_not_advertised',
+            'capability' => $capability,
+            'command_type' => $definition['command_type'],
+            'minimum_protocol_version' => $definition['minimum_protocol_version'],
+            'remediation' => sprintf(
+                'Re-register lease owner %s with the %s capability before emitting %s.',
+                $leaseOwner,
+                $capability,
+                $definition['command_type'],
             ),
         ], 409);
     }

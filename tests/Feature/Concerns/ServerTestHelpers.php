@@ -7,6 +7,7 @@ namespace Tests\Feature\Concerns;
 use App\Models\WorkerRegistration;
 use App\Models\WorkflowNamespace;
 use App\Support\WorkerProtocol;
+use App\Support\WorkflowMetadataCapabilityPolicy;
 use Workflow\V2\Jobs\RunWorkflowTask;
 use Workflow\V2\Models\WorkflowTask;
 use Workflow\V2\Support\WorkflowExecutor;
@@ -64,6 +65,7 @@ trait ServerTestHelpers
         string $namespace = 'default',
         ?array $supportedWorkflowTypes = null,
         ?array $supportedActivityTypes = null,
+        ?array $capabilities = null,
     ): void {
         // Default to declaring the standard test workflow and activity
         // types so feature tests that don't care about capability filtering
@@ -72,6 +74,10 @@ trait ServerTestHelpers
         // explicit [] for the relevant array.
         $supportedWorkflowTypes ??= ['tests.external-greeting-workflow'];
         $supportedActivityTypes ??= ['tests.external-greeting-activity'];
+        $capabilities ??= [
+            WorkflowMetadataCapabilityPolicy::MEMO_UPSERTS,
+            WorkflowMetadataCapabilityPolicy::TYPED_SEARCH_ATTRIBUTES,
+        ];
 
         WorkerRegistration::query()->updateOrCreate(
             ['worker_id' => $workerId, 'namespace' => $namespace],
@@ -80,6 +86,7 @@ trait ServerTestHelpers
                 'runtime' => 'php',
                 'supported_workflow_types' => $supportedWorkflowTypes,
                 'supported_activity_types' => $supportedActivityTypes,
+                'capabilities' => $capabilities,
                 'last_heartbeat_at' => now(),
                 'status' => 'active',
             ],

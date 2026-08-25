@@ -2,7 +2,7 @@ asyncapi: 2.6.0
 id: durable-workflow.v2.worker-protocol-stream
 info:
   title: Durable Workflow worker-protocol long-poll stream semantics
-  version: "9"
+  version: "10"
   description: >
     Normative AsyncAPI description of the public worker-protocol stream
     semantics. Durable uses HTTP long-poll request/response rather than a
@@ -12,9 +12,9 @@ info:
     events, and terminal completion/failure events close the lease.
 x-durable-workflow-worker-protocol-negotiation:
   advertised_version_path: worker_protocol.version
-  default_advertised_version: "1.16"
+  default_advertised_version: "1.17"
   request_header_rule: same_major_and_minor_less_than_or_equal_to_advertised
-  accepted_request_versions_by_default: ["1.0", "1.1", "1.2", "1.3", "1.4", "1.5", "1.6", "1.7", "1.8", "1.9", "1.10", "1.11", "1.12", "1.13", "1.14", "1.15", "1.16"]
+  accepted_request_versions_by_default: ["1.0", "1.1", "1.2", "1.3", "1.4", "1.5", "1.6", "1.7", "1.8", "1.9", "1.10", "1.11", "1.12", "1.13", "1.14", "1.15", "1.16", "1.17"]
   response_version: advertised_version
   fail_closed_on: [missing_header, malformed_version, different_major, minor_greater_than_advertised]
 x-durable-workflow-catalog-entry: worker_protocol_stream
@@ -41,6 +41,14 @@ x-durable-workflow-message-streams-contract:
       submit_completion_fields: allowed
     rejection_status: 409
     rejection_reason: message_streams_unavailable
+x-durable-workflow-workflow-memo-update-contract:
+  minimum_protocol_version: "1.14"
+  worker_capability: memo_upserts
+  command_type: upsert_memo
+  history_event: MemoUpserted
+  registration_below_floor: { status: 409, reason: workflow_metadata_capability_protocol_mismatch }
+  completion_without_capability: { status: 409, reason: workflow_metadata_capability_not_advertised, recorded: false }
+  replay_routing: requires_active_lease_owner_registration_capability
 x-durable-workflow-typed-search-attributes-contract:
   minimum_protocol_version: "1.16"
   worker_capability: typed_search_attributes
@@ -54,6 +62,21 @@ x-durable-workflow-typed-search-attributes-contract:
   version_gate:
     rejection_status: 409
     rejection_reason: typed_search_attributes_unavailable
+  capability_enforcement:
+    registration_below_floor: { status: 409, reason: workflow_metadata_capability_protocol_mismatch }
+    explicit_completion_without_capability: { status: 409, reason: workflow_metadata_capability_not_advertised, recorded: false }
+    typed_history_routing: requires_active_lease_owner_registration_capability
+    legacy_untyped_history_routing: capability_not_required
+x-durable-workflow-condition-wait-occurrence-identity-contract:
+  minimum_protocol_version: "1.17"
+  command_field: commands[].condition_wait_occurrence_id
+  authoring_below_minimum: { status: 409, reason: condition_wait_occurrence_identity_unavailable, recorded: false }
+  history_field: condition_wait_occurrence_id
+  history_events: [ConditionWaitOpened, ConditionWaitSatisfied, ConditionWaitTimedOut, TimerScheduled, TimerFired, TimerCancelled]
+  history_routing:
+    history_with_occurrence_identity: requires_minimum_worker_protocol_version
+    history_without_occurrence_identity: compatible_older_workers_allowed
+    applies_to: [cold_replay, cached_poll, redelivery]
 x-durable-workflow-object-families:
   - name: worker_poll_stream
     owner_repo: durable-workflow/server
@@ -171,7 +194,7 @@ components:
       properties:
         protocol_version:
           type: string
-          const: "1.16"
+          const: "1.17"
         server_capabilities:
           type: object
           additionalProperties: true
@@ -266,4 +289,5 @@ x-durable-workflow-semantics:
   long_poll_timeout: The server may hold a poll request until a task is available or the advertised timeout elapses.
   lease_ownership: Only the worker that owns the active lease may heartbeat, complete, or fail the task.
   task_ordering: Queue routing, build-id rollout, and compatibility filters are evaluated before a task is leased.
+  metadata_capability_routing: MemoUpserted and typed SearchAttributesUpserted replay is leased only when both the poll protocol version and active worker registration satisfy the corresponding metadata capability.
   terminal_events: Complete and fail are terminal for a lease. Retrying after a terminal event must be idempotent and return the current terminal outcome.

@@ -67,6 +67,18 @@ chart MINOR bump and an entry below.
 
 ## Per-version migration notes
 
+### 0.1.42
+
+This release advances the chart Server identity to `2.0.0-rc.50`, requires
+Workflow `2.0.0-rc.45`, and enforces the advertised `memo_upserts` and
+`typed_search_attributes` worker capabilities during registration, workflow
+task routing, and completion. No database migration is required. Mixed fleets
+should upgrade and re-register capable workers before they resume workflows
+whose history contains memo upserts or typed search-attribute upserts.
+Protocol `1.17` also gates authoring and replay of durable condition-wait
+occurrence identity; protocol `1.16` workers remain eligible for unaffected
+workflow history.
+
 ### 0.1.41
 
 This release advances the chart Server identity to `2.0.0-rc.49` and expands

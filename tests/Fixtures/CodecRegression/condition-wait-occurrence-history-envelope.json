@@ -1,0 +1,41 @@
+{
+  "$schema": "https://raw.githubusercontent.com/durable-workflow/.github/main/regression-corpus/evidence-schema.json",
+  "fixture_schema": "durable-workflow.codec-regression/v1",
+  "id": "condition-wait-occurrence-history-envelope",
+  "protocol": {
+    "codec": "avro",
+    "schema": "durable_workflow.protocol.Value",
+    "version": "1",
+    "fingerprint": "e2a33dff55802237"
+  },
+  "bindings": [
+    "php",
+    "python",
+    "rust"
+  ],
+  "value": {
+    "type": "array",
+    "items": [
+      {
+        "type": "string",
+        "value": "ConditionWaitOpened"
+      },
+      {
+        "type": "string",
+        "value": "condition_wait_occurrence_id"
+      },
+      {
+        "type": "string",
+        "value": "condition-occurrence-history-1"
+      }
+    ]
+  },
+  "framing": {
+    "encoding": "avro-single-object",
+    "wire_base64": "wwHioz3/VYAiNwwGCiZDb25kaXRpb25XYWl0T3BlbmVkCjhjb25kaXRpb25fd2FpdF9vY2N1cnJlbmNlX2lkCjxjb25kaXRpb24tb2NjdXJyZW5jZS1oaXN0b3J5LTEA"
+  },
+  "failure_policy": {
+    "operation": "round_trip",
+    "error": null
+  }
+}

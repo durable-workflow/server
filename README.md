@@ -738,13 +738,13 @@ can still ask for the expired diagnostic set with `status=stale`, and stale
 workers stop being considered for query-task dispatch and routing-gate
 admission.
 
-The current server advertises worker protocol `1.13` by default. Worker-plane
+The current server advertises worker protocol `1.17` by default. Worker-plane
 requests should send the highest `X-Durable-Workflow-Protocol-Version` their SDK
 implements, and worker-plane responses always echo the server's advertised
 version in the same header plus the `protocol_version` body field.
 Worker-protocol compatibility is same-major with a worker minor less than or
-equal to the server minor: a server advertising `1.13` accepts worker requests
-for `1.0` through `1.13`, including older `1.12` and `1.11` workers. Requests
+equal to the server minor: a server advertising `1.17` accepts worker requests
+for `1.0` through `1.17`, including older `1.16` and `1.15` workers. Requests
 with a missing, malformed, different-major, or higher-minor protocol version are
 rejected with `missing_protocol_version` or `unsupported_protocol_version` and a
 `supported_version` value that tells the worker what the server advertises.
@@ -763,6 +763,10 @@ also advertises command-option support for activity retry policies, activity
 timeouts, child workflow retry policies, child workflow timeouts, parent-close
 policy, and non-retryable failures. SDK workers can therefore negotiate worker
 behavior from either `GET /api/cluster/info` or any worker-plane response.
+Memo upserts and explicit typed search-attribute updates additionally require
+the matching registered worker capability. Durable condition-wait occurrence
+identity requires protocol `1.17`; older workers remain eligible for workflows
+whose replay history does not contain that identity.
 
 Long-poll wake-ups use short-lived cache-backed signal keys plus periodic
 reprobes. Multi-node deployments therefore need a shared cache backend for
@@ -915,7 +919,7 @@ future carriers can validate parser behavior without repository-local fixture
 paths. A human-readable summary lives in
 `docs/contracts/external-task-result.md`.
 
-Within worker protocol version `1.13`, `worker_protocol.version`,
+Within worker protocol version `1.17`, `worker_protocol.version`,
 `server_capabilities.long_poll_timeout`, and
 `server_capabilities.supported_workflow_task_commands` are stable contract
 fields. The command-option booleans under `server_capabilities` are additive

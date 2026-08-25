@@ -732,11 +732,9 @@ class ClusterInfoCompatibilityTest extends TestCase
         $this->assertContains('1.2', $acceptedVersions);
         $this->assertContains(WorkerProtocol::VERSION, $acceptedVersions);
 
-        $this->assertSame(
-            SurfaceStabilityContract::manifest(),
-            $response->json('surface_stability_contract'),
-            'cluster info must re-export the workflow package surface-stability manifest verbatim',
-        );
+        $expectedContract = SurfaceStabilityContract::manifest();
+        $expectedContract['surface_families']['worker_protocol']['negotiation'] = WorkerProtocol::negotiation();
+        $this->assertSame($expectedContract, $response->json('surface_stability_contract'));
 
         $families = $response->json('surface_stability_contract.surface_families');
         $this->assertIsArray($families);
@@ -1082,8 +1080,8 @@ class ClusterInfoCompatibilityTest extends TestCase
 
         $response = $this->getJson('/api/cluster/info')->assertOk();
 
-        $this->assertSame('1.16', WorkerProtocol::VERSION);
-        $this->assertSame('1.16', WorkerProtocolVersion::VERSION);
+        $this->assertSame('1.17', WorkerProtocol::VERSION);
+        $this->assertSame('1.17', WorkerProtocolVersion::VERSION);
         $this->assertSame(WorkerProtocolVersion::VERSION, WorkerProtocol::VERSION);
         $this->assertSame(WorkerProtocol::VERSION, (string) config('server.worker_protocol.version'));
         $this->assertSame($expectedCommands, WorkerProtocol::supportedWorkflowTaskCommands());
@@ -1106,6 +1104,14 @@ class ClusterInfoCompatibilityTest extends TestCase
         $this->assertSame(
             '1.16',
             $response->json('worker_protocol.server_capabilities.typed_search_attributes.minimum_worker_protocol_version'),
+        );
+        $this->assertSame(
+            '1.17',
+            $response->json('worker_protocol.server_capabilities.condition_wait_occurrence_identity.minimum_worker_protocol_version'),
+        );
+        $this->assertSame(
+            'condition_wait_occurrence_id',
+            $response->json('worker_protocol.server_capabilities.condition_wait_occurrence_identity.command_field'),
         );
         $this->assertSame(
             WorkerProtocolVersion::DEFAULT_HISTORY_PAGE_SIZE,
