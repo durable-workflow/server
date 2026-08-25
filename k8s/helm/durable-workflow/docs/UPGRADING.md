@@ -67,6 +67,13 @@ chart MINOR bump and an entry below.
 
 ## Per-version migration notes
 
+### 0.1.40
+
+This release advances the chart Server identity to `2.0.0-rc.48` and separates
+deterministic capacity schema source qualification from the fail-closed audit of
+the canonical public schema routes. Existing `0.1.39` values remain compatible,
+and no data migration is required.
+
 ### 0.1.39
 
 This release advances the chart Server identity to `2.0.0-rc.47` and adds

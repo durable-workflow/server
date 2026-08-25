@@ -709,44 +709,51 @@ class ServerPerfHarnessContractTest extends TestCase
                 $steps[$step['name']] = $step;
             }
         }
-        $this->assertMatchesRegularExpression(
-            '/name:\s+Checkout server.*?fetch-depth:\s+0.*?name:\s+Resolve locked workflow package authority/s',
-            $workflow,
-            'Capacity publication qualification must have the target commit available.',
-        );
-        $this->assertStringContainsString(
-            'PUBLICATION_BASE_REF: ${{ github.event_name == \'pull_request\' && github.event.pull_request.base.sha || github.event_name == \'push\' && github.event.before || \'\' }}',
-            $workflow,
-            'Capacity publication qualification must compare against the target commit.',
-        );
-        $this->assertStringContainsString(
-            'python3 scripts/ci/qualify_capacity_schema_publication.py',
-            $workflow,
-            'Capacity publication qualification must use the bounded repository helper.',
-        );
         $qualificationStep = $steps[
             'Qualify capacity benchmark contract and bounded reference cell'
         ]['run'] ?? null;
         $this->assertIsString($qualificationStep);
-        $this->assertStringNotContainsString('git cat-file', $qualificationStep);
+        $this->assertStringContainsString(
+            'python3 scripts/benchmark/capacity_suite.py validate',
+            $qualificationStep,
+        );
+        $this->assertStringNotContainsString('verify-publication', $qualificationStep);
+        $this->assertStringNotContainsString('PUBLICATION_BASE_REF', $workflow);
 
-        $publicationGate = file_get_contents(
-            $repoRoot.'/scripts/ci/qualify_capacity_schema_publication.py',
+        $publicationWorkflowSource = file_get_contents(
+            $repoRoot.'/.github/workflows/capacity-schema-publication.yml',
         );
-        $this->assertNotFalse(
-            $publicationGate,
-            'scripts/ci/qualify_capacity_schema_publication.py must be readable',
+        $this->assertNotFalse($publicationWorkflowSource);
+        $publicationWorkflow = Yaml::parse($publicationWorkflowSource);
+        $this->assertIsArray($publicationWorkflow);
+        $this->assertNotEmpty($publicationWorkflow['on']['schedule'] ?? null);
+        $this->assertArrayHasKey('workflow_dispatch', $publicationWorkflow['on'] ?? []);
+        $this->assertArrayNotHasKey('pull_request', $publicationWorkflow['on'] ?? []);
+        $this->assertArrayNotHasKey('push', $publicationWorkflow['on'] ?? []);
+        $publicationJob = $publicationWorkflow['jobs']['audit'] ?? null;
+        $this->assertIsArray($publicationJob);
+        $this->assertSame(
+            'Public capacity schema publication/runtime audit',
+            $publicationJob['name'] ?? null,
         );
-        $this->assertStringContainsString(
-            '"benchmarks/capacity/v1/schema-publication.json"',
-            $publicationGate,
-            'The initial-publication gate must inspect only the fixed inventory path.',
+        $this->assertArrayNotHasKey(
+            'if',
+            $publicationJob,
+            'The provider-neutral HTTPS audit must fail closed on scheduled GitHub and Forgejo runs.',
         );
-        $this->assertStringContainsString(
-            '"verify-publication"',
-            $publicationGate,
-            'Later capacity source changes must qualify their canonical public schema routes.',
+        $publicationSteps = [];
+        foreach ($publicationJob['steps'] ?? [] as $step) {
+            if (isset($step['name'])) {
+                $publicationSteps[$step['name']] = $step;
+            }
+        }
+        $publicationAudit = $publicationSteps['Audit immutable public capacity schemas'] ?? null;
+        $this->assertIsArray($publicationAudit);
+        $this->assertSame(
+            'python3 scripts/benchmark/capacity_schema_publication.py',
+            $publicationAudit['run'] ?? null,
         );
+        $this->assertArrayNotHasKey('continue-on-error', $publicationAudit);
 
         $policy = require $repoRoot.'/config/dw-bounded-growth.php';
         $paths = [

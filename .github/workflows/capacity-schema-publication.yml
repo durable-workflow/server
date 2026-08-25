@@ -1,0 +1,28 @@
+name: Capacity Schema Publication Audit
+
+on:
+  schedule:
+    - cron: "41 */6 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: capacity-schema-publication-${{ github.server_url }}-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  audit:
+    name: Public capacity schema publication/runtime audit
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    steps:
+      - name: Checkout server
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803  # v6
+        with:
+          persist-credentials: false
+
+      - name: Audit immutable public capacity schemas
+        run: python3 scripts/benchmark/capacity_schema_publication.py

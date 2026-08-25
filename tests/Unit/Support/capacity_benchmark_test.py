@@ -2,6 +2,7 @@
 
 import copy
 import importlib.util
+import io
 import json
 from pathlib import Path
 import shutil
@@ -9,6 +10,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+import urllib.error
 from unittest import mock
 
 
@@ -18,6 +20,17 @@ spec = importlib.util.spec_from_file_location("capacity_suite", MODULE_PATH)
 assert spec is not None and spec.loader is not None
 capacity_suite = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(capacity_suite)
+
+PUBLICATION_MODULE_PATH = (
+    ROOT / "scripts/benchmark/capacity_schema_publication.py"
+)
+publication_spec = importlib.util.spec_from_file_location(
+    "capacity_schema_publication", PUBLICATION_MODULE_PATH
+)
+assert publication_spec is not None and publication_spec.loader is not None
+sys.modules["capacity_suite"] = capacity_suite
+capacity_schema_publication = importlib.util.module_from_spec(publication_spec)
+publication_spec.loader.exec_module(capacity_schema_publication)
 
 MATRIX_MODULE_PATH = ROOT / "scripts/benchmark/capacity_matrix.py"
 matrix_spec = importlib.util.spec_from_file_location(
@@ -904,6 +917,40 @@ class CapacityBenchmarkContractTest(unittest.TestCase):
             capacity_suite.ContractError, "non-JSON content type"
         ):
             capacity_suite.verify_schema_publication(opener=html_opener)
+
+    def test_http_503_does_not_affect_source_validation_but_fails_publication_audit(
+        self,
+    ) -> None:
+        def unavailable_opener(request, timeout):
+            self.assertEqual(15, timeout)
+            raise urllib.error.HTTPError(
+                request.full_url,
+                503,
+                "Service Unavailable",
+                {},
+                None,
+            )
+
+        with (
+            mock.patch.object(
+                capacity_suite.urllib.request,
+                "urlopen",
+                side_effect=unavailable_opener,
+            ),
+            mock.patch("sys.stdout", new=io.StringIO()),
+            mock.patch("sys.stderr", new_callable=io.StringIO) as errors,
+        ):
+            self.assertEqual(0, capacity_suite.main(["validate"]))
+            self.assertEqual(1, capacity_schema_publication.main())
+
+        self.assertIn(
+            "capacity schema publication audit error:",
+            errors.getvalue(),
+        )
+        self.assertRegex(
+            errors.getvalue(),
+            "public schema route .* returned HTTP 503",
+        )
 
     def test_bounded_reference_is_deterministic_and_rejects_transient_peak(
         self,

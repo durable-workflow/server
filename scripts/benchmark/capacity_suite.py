@@ -12,6 +12,7 @@ import re
 import subprocess
 import sys
 import tomllib
+import urllib.error
 import urllib.request
 from collections.abc import Iterable
 from datetime import datetime, timezone
@@ -592,8 +593,10 @@ def _validate_schema_publication(suite_root: Path) -> None:
 
 
 def _fetch_public_json(
-    url: str, opener: Any = urllib.request.urlopen
+    url: str, opener: Any | None = None
 ) -> tuple[bytes, str]:
+    if opener is None:
+        opener = urllib.request.urlopen
     request = urllib.request.Request(
         url,
         headers={
@@ -607,6 +610,10 @@ def _fetch_public_json(
             final_url = response.geturl()
             content_type = response.headers.get("Content-Type", "")
             body = response.read()
+    except urllib.error.HTTPError as exc:
+        raise ContractError(
+            f"public schema route {url} returned HTTP {exc.code}"
+        ) from exc
     except OSError as exc:
         raise ContractError(
             f"cannot retrieve public schema route {url}: {exc}"
@@ -631,7 +638,7 @@ def _fetch_public_json(
 
 
 def verify_schema_publication(
-    suite_root: Path = SUITE_ROOT, opener: Any = urllib.request.urlopen
+    suite_root: Path = SUITE_ROOT, opener: Any | None = None
 ) -> None:
     _validate_schema_publication(suite_root)
     publication_path = suite_root / SCHEMA_PUBLICATION
@@ -2667,7 +2674,10 @@ def main(argv: list[str] | None = None) -> int:
         _write_result(result, args.output)
         return 0
     except ContractError as exc:
-        print(f"capacity benchmark contract error: {exc}", file=sys.stderr)
+        if args.command == "verify-publication":
+            print(f"capacity schema publication audit error: {exc}", file=sys.stderr)
+        else:
+            print(f"capacity benchmark contract error: {exc}", file=sys.stderr)
         return 1
 
 
