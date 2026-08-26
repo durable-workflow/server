@@ -9,8 +9,10 @@ return new class extends Migration
 {
     public function up(): void
     {
+        $legacyEnvelopeCutoff = WorkflowMemoPayloadMigration::legacyEnvelopeCutoff();
+
         WorkflowMemoPayloadMigration::ensureExpandedSchema();
-        WorkflowMemoPayloadMigration::backfillAll();
+        WorkflowMemoPayloadMigration::backfillAll($legacyEnvelopeCutoff);
     }
 
     public function down(): void

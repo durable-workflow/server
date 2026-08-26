@@ -19,6 +19,7 @@ x-runtime-environment: &runtime-environment
   DW_AUTH_BACKWARD_COMPATIBLE: "true"
   DW_WORKER_POLL_TIMEOUT: "1"
   DW_WORKER_POLL_INTERVAL_MS: "100"
+  DW_WORKFLOW_MEMO_MIGRATION_RECOVERY: ${DW_WORKFLOW_MEMO_MIGRATION_RECOVERY:-}
 
 services:
   predecessor-bootstrap:
@@ -67,6 +68,7 @@ services:
 
   mysql:
     image: mysql:8.0
+    command: ["--log-bin-trust-function-creators=1"]
     profiles: ["mysql"]
     ports: !override []
     environment:

@@ -118,6 +118,57 @@ class WorkflowMemoPayloadMigrationTest extends TestCase
         $this->assertLogicalValues($logicalValues);
     }
 
+    public function test_unrecorded_partial_published_migration_recovers_only_the_confirmed_id_prefix(): void
+    {
+        $convertedEnvelopeLookingValue = [
+            'codec' => 'avro',
+            'blob' => MemoPayload::envelope('converted business bytes')['blob'],
+        ];
+        $rawEnvelopeLookingValue = [
+            'codec' => 'avro',
+            'blob' => MemoPayload::envelope('raw business bytes')['blob'],
+        ];
+        $logicalValues = [
+            'converted scalar' => 'already converted',
+            'converted list' => ['first', 2, 3.5],
+            'converted envelope-looking business value' => $convertedEnvelopeLookingValue,
+            'raw map' => ['stage' => 'waiting', 'attempt' => 3],
+            'raw float' => 7.0,
+            'raw envelope-looking business value' => $rawEnvelopeLookingValue,
+        ];
+        $this->insertValues($logicalValues);
+
+        $convertedRows = DB::table('workflow_memos')->orderBy('id')->limit(3)->get();
+        foreach ($convertedRows as $row) {
+            $value = json_decode((string) $row->value, true, flags: JSON_THROW_ON_ERROR);
+            DB::table('workflow_memos')->where('id', $row->id)->update([
+                'value' => json_encode(MemoPayload::envelope($value), JSON_THROW_ON_ERROR),
+            ]);
+        }
+
+        $lastConvertedId = (int) $convertedRows->last()->id;
+        WorkflowMemoPayloadMigration::ensureExpandedSchema();
+        WorkflowMemoPayloadMigration::backfillAll($lastConvertedId);
+
+        $once = DB::table('workflow_memos')
+            ->orderBy('id')
+            ->get(['value', 'portable_value', 'portable_value_sequence'])
+            ->map(static fn (object $row): array => (array) $row)
+            ->all();
+
+        WorkflowMemoPayloadMigration::backfillAll($lastConvertedId);
+
+        $this->assertSame(
+            $once,
+            DB::table('workflow_memos')
+                ->orderBy('id')
+                ->get(['value', 'portable_value', 'portable_value_sequence'])
+                ->map(static fn (object $row): array => (array) $row)
+                ->all(),
+        );
+        $this->assertLogicalValues($logicalValues);
+    }
+
     public function test_malformed_row_fails_with_bounded_content_free_diagnostic_and_can_retry(): void
     {
         DB::table('workflow_memos')->insert([

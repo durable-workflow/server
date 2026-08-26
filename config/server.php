@@ -37,6 +37,14 @@ return [
 
     'mode' => EnvAuditor::env('DW_MODE', 'WORKFLOW_SERVER_MODE', 'service'),
 
+    'migrations' => [
+        'workflow_memo_recovery' => EnvAuditor::env(
+            'DW_WORKFLOW_MEMO_MIGRATION_RECOVERY',
+            'WORKFLOW_SERVER_WORKFLOW_MEMO_MIGRATION_RECOVERY',
+            null,
+        ),
+    ],
+
     /*
     |--------------------------------------------------------------------------
     | Task Dispatch Mode Override

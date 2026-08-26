@@ -95,6 +95,12 @@ return [
             'since' => '2.0.0',
             'legacy' => 'WORKFLOW_V2_TASK_DISPATCH_MODE',
         ],
+        'DW_WORKFLOW_MEMO_MIGRATION_RECOVERY' => [
+            'description' => 'One-run MySQL recovery proof for an unrecorded memo rewrite: "raw-json" or "envelope-prefix:<last-converted-id>".',
+            'default' => null,
+            'since' => '2.0.0',
+            'legacy' => 'WORKFLOW_SERVER_WORKFLOW_MEMO_MIGRATION_RECOVERY',
+        ],
         'DW_EXTERNAL_EXECUTOR_CONFIG_PATH' => [
             'description' => 'Optional path to a durable-workflow.external-executor.config JSON file for external executor handler mappings.',
             'default' => null,
