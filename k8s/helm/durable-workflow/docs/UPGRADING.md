@@ -67,6 +67,35 @@ chart MINOR bump and an entry below.
 
 ## Per-version migration notes
 
+### 0.1.43
+
+The memo-transition guard now reads each active Deployment or CronJob pod
+template image instead of treating `app.kubernetes.io/version` as the running
+Server identity. Official `docker.io/durableworkflow/server` release tags have
+a chart-owned storage classification. Custom repositories, custom tags, and
+digest pins are opaque to Helm and must declare their verified capability:
+
+```yaml
+image:
+  digest: "sha256:<manifest-digest>"
+  memoPayloadStorage: "dual-v1"
+```
+
+Use `raw-json-v1` only for an image verified to retain the raw JSON memo
+representation. The chart rejects the envelope-only `2.0.0-rc.47` and
+`2.0.0-rc.48` identities even if a contradictory capability is supplied.
+Existing values that retain an opaque image fail closed until the declaration
+is added; this prevents a retained override from silently becoming the target
+of the dual-representation migration.
+
+For an active envelope-only or unidentified predecessor, keep the target on a
+verified raw-JSON or dual-representation image, then use the stop-the-world
+procedure below: back up, drain external workers, disable either HPA, scale the
+Server and worker Deployments to zero, and suspend the scheduler CronJob before
+the upgrade. An active workload already marked `dual-v1` remains eligible for
+ordinary rolling upgrades unless its pod template names a known incompatible
+official image.
+
 ### 0.1.42
 
 This release advances the chart Server identity to `2.0.0-rc.50`, requires
@@ -349,14 +378,21 @@ created by Helm" error is handled by `helm install --take-ownership` (Helm
 
 ## Upgrading the server image alone
 
-Bumping the image without bumping the chart is supported when both the
-chart's `appVersion` claim and the running chart version permit it (see the
-table at the top of this file):
+Bumping the image without bumping the chart is supported when the image's
+memo-storage capability and the running chart version permit it (see the table
+at the top of this file). Official Server release tags are classified by the
+chart. A digest or custom image must include `image.memoPayloadStorage` so a
+later chart upgrade can validate the retained override:
 
 ```bash
 helm upgrade durable-workflow ./k8s/helm/durable-workflow \
   --reuse-values \
-  --set image.tag=0.3.1
+  --set image.tag=2.0.0-rc.50
+
+helm upgrade durable-workflow ./k8s/helm/durable-workflow \
+  --reuse-values \
+  --set image.digest=sha256:<manifest-digest> \
+  --set image.memoPayloadStorage=dual-v1
 ```
 
 Crossing a server MINOR/MAJOR may require a chart upgrade if the image
@@ -373,4 +409,7 @@ Helm rollback re-runs the bootstrap Job by default. If a database migration
 is not safely reversible, restore from the backup taken in step 2 of the
 upgrade procedure before rolling the workloads back. The single-node
 upgrade order on the deployment guide also applies here:
-back up first, then change image refs.
+back up first, then change image refs. A rollback that restores an opaque image
+also restores its recorded `image.memoPayloadStorage`; correct or remove a
+stale declaration before retrying. Never declare `dual-v1` for the
+envelope-only `2.0.0-rc.47` or `2.0.0-rc.48` images.

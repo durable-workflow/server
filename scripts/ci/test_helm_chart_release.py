@@ -359,6 +359,30 @@ esac
             with self.subTest(assertion=assertion):
                 self.assertIn(assertion, smoke)
 
+    def test_kind_smoke_attests_the_custom_image_on_install_and_upgrade(self) -> None:
+        smoke = (
+            RELEASE.REPOSITORY_ROOT / "scripts/helm-chart-kind-smoke.sh"
+        ).read_text()
+        values = re.search(
+            r'cat >"\$\{install_values\}" <<EOF\n(?P<values>.*?)\nEOF',
+            smoke,
+            re.DOTALL,
+        )
+
+        self.assertIsNotNone(values)
+        self.assertIn(
+            "\n  memoPayloadStorage: dual-v1\n",
+            values.group("values"),
+        )
+
+        install_start = smoke.index('"${helm_bin}" upgrade --install')
+        install_end = smoke.index('server_service="$(resolve_chart_resource_name', install_start)
+        upgrade_start = smoke.index('"${helm_bin}" upgrade "${release}"')
+        upgrade_end = smoke.index('server_service="$(resolve_chart_resource_name', upgrade_start)
+
+        self.assertIn('-f "${install_values}"', smoke[install_start:install_end])
+        self.assertIn('-f "${install_values}"', smoke[upgrade_start:upgrade_end])
+
     def test_chart_qualification_uses_only_source_controlled_tool_versions(
         self,
     ) -> None:

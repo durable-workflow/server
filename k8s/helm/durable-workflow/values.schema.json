@@ -13,6 +13,10 @@
         "repository": { "type": "string", "minLength": 1 },
         "tag":        { "type": "string" },
         "digest":     { "type": "string" },
+        "memoPayloadStorage": {
+          "type": "string",
+          "enum": ["", "raw-json-v1", "envelope-v1", "dual-v1"]
+        },
         "pullPolicy": { "type": "string", "enum": ["Always", "IfNotPresent", "Never"] },
         "pullSecrets":{ "type": "array",  "items": { "type": "object" } }
       }

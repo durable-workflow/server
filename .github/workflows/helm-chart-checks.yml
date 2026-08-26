@@ -182,6 +182,9 @@ jobs:
             --charts "${CHART_PATH}" \
             --validate-maintainers=false
 
+      - name: Exercise memo-transition image guard
+        run: scripts/ci/helm-memo-transition-upgrade.sh
+
       - name: Resolve locked workflow package authority
         id: workflow
         run: php scripts/ci/resolve-workflow-package-authority.php

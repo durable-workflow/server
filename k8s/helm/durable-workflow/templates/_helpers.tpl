@@ -68,44 +68,6 @@ app.kubernetes.io/component: {{ .component }}
 {{- end -}}
 
 {{/*
-Fail closed before an envelope-only Server revision can remain active while
-the dual memo representation is installed. The raw-JSON predecessor and any
-deployment already carrying the dual-v1 marker are rolling-compatible.
-*/}}
-{{- define "durable-workflow.validateMemoPayloadTransition" -}}
-{{- if .Release.IsUpgrade -}}
-{{- $namespace := .Release.Namespace -}}
-{{- $server := lookup "apps/v1" "Deployment" $namespace (include "durable-workflow.serverDeploymentName" .) -}}
-{{- $worker := lookup "apps/v1" "Deployment" $namespace (include "durable-workflow.workerDeploymentName" .) -}}
-{{- $scheduler := lookup "batch/v1" "CronJob" $namespace (include "durable-workflow.schedulerCronJobName" .) -}}
-{{- range $workload := list $server $worker -}}
-{{- if $workload -}}
-{{- $replicas := 1 -}}
-{{- if hasKey $workload.spec "replicas" -}}
-{{- $replicas = int (get $workload.spec "replicas") -}}
-{{- end -}}
-{{- $labels := default (dict) $workload.metadata.labels -}}
-{{- $annotations := default (dict) $workload.metadata.annotations -}}
-{{- $version := default "unknown" (get $labels "app.kubernetes.io/version") -}}
-{{- $storage := default "" (get $annotations "workflows.durable-workflow.dev/memo-payload-storage") -}}
-{{- if and (gt $replicas 0) (ne $version "2.0.0-rc.46") (ne $storage "dual-v1") -}}
-{{- fail (printf "memo payload transition cannot run while Server %s workload %s has %d replicas. Scale the Server and worker Deployments to zero and suspend the scheduler CronJob before retrying this upgrade; Server 2.0.0-rc.47 and rc.48 cannot coexist with the dual representation." $version $workload.metadata.name $replicas) -}}
-{{- end -}}
-{{- end -}}
-{{- end -}}
-{{- if $scheduler -}}
-{{- $labels := default (dict) $scheduler.metadata.labels -}}
-{{- $annotations := default (dict) $scheduler.metadata.annotations -}}
-{{- $version := default "unknown" (get $labels "app.kubernetes.io/version") -}}
-{{- $storage := default "" (get $annotations "workflows.durable-workflow.dev/memo-payload-storage") -}}
-{{- if and (not $scheduler.spec.suspend) (ne $version "2.0.0-rc.46") (ne $storage "dual-v1") -}}
-{{- fail (printf "memo payload transition cannot run while Server %s scheduler CronJob %s is active. Suspend it and scale the Server and worker Deployments to zero before retrying this upgrade." $version $scheduler.metadata.name) -}}
-{{- end -}}
-{{- end -}}
-{{- end -}}
-{{- end -}}
-
-{{/*
 Image reference. Prefers digest over tag; tag falls back to .Chart.AppVersion.
 */}}
 {{- define "durable-workflow.image" -}}
@@ -116,6 +78,117 @@ Image reference. Prefers digest over tag; tag falls back to .Chart.AppVersion.
 {{- else -}}
 {{- $tag := .Values.image.tag | default .Chart.AppVersion -}}
 {{- printf "%s/%s:%s" $registry $repo $tag -}}
+{{- end -}}
+{{- end -}}
+
+{{/*
+Classify memo storage from an immutable official Server tag. Opaque images are
+resolved by an explicit capability declaration or an existing workload marker.
+*/}}
+{{- define "durable-workflow.memoPayloadStorageForImage" -}}
+{{- $image := toString . -}}
+{{- $normalized := regexReplaceAll "^index\\.docker\\.io/" $image "docker.io/" -}}
+{{- if eq $normalized "docker.io/durableworkflow/server:2.0.0" -}}
+dual-v1
+{{- else if regexMatch "^docker\\.io/durableworkflow/server:2\\.0\\.0-rc\\.[0-9]+$" $normalized -}}
+{{- $releaseCandidate := atoi (regexFind "[0-9]+$" $normalized) -}}
+{{- if le $releaseCandidate 46 -}}
+raw-json-v1
+{{- else if le $releaseCandidate 48 -}}
+envelope-v1
+{{- else -}}
+dual-v1
+{{- end -}}
+{{- else -}}
+unknown
+{{- end -}}
+{{- end -}}
+
+{{/*
+Resolve the target image's memo-storage identity. A declaration is required
+for custom repositories, custom tags, and digest pins because Helm cannot
+inspect OCI image metadata. It may not contradict a recognized official tag.
+*/}}
+{{- define "durable-workflow.targetMemoPayloadStorage" -}}
+{{- $image := include "durable-workflow.image" . -}}
+{{- $detected := include "durable-workflow.memoPayloadStorageForImage" $image | trim -}}
+{{- $declared := default "" .Values.image.memoPayloadStorage -}}
+{{- if and $declared (not (has $declared (list "raw-json-v1" "envelope-v1" "dual-v1"))) -}}
+{{- fail (printf "memo payload transition cannot use image.memoPayloadStorage %q; expected raw-json-v1, envelope-v1, or dual-v1" $declared) -}}
+{{- end -}}
+{{- if ne $detected "unknown" -}}
+{{- if and $declared (ne $declared $detected) -}}
+{{- fail (printf "memo payload transition cannot use image.memoPayloadStorage %s because recognized Server image %s has %s capability" $declared $image $detected) -}}
+{{- end -}}
+{{- $detected -}}
+{{- else if $declared -}}
+{{- $declared -}}
+{{- else -}}
+unknown
+{{- end -}}
+{{- end -}}
+
+{{/*
+Fail closed before an envelope-only or unidentified Server revision can remain
+active while the dual memo representation is installed. The decision uses the
+pod-template image and storage-capability marker, never the chart version label.
+*/}}
+{{- define "durable-workflow.validateMemoPayloadTransition" -}}
+{{- if .Release.IsUpgrade -}}
+{{- $targetImage := include "durable-workflow.image" . -}}
+{{- $targetStorage := include "durable-workflow.targetMemoPayloadStorage" . | trim -}}
+{{- if or (eq $targetStorage "unknown") (eq $targetStorage "envelope-v1") -}}
+{{- fail (printf "memo payload transition cannot target Server image %s with %s storage capability. Use a raw-json-v1 or dual-v1 image; custom tags and digest pins must set image.memoPayloadStorage to the image's verified capability." $targetImage $targetStorage) -}}
+{{- end -}}
+{{- $namespace := .Release.Namespace -}}
+{{- $server := lookup "apps/v1" "Deployment" $namespace (include "durable-workflow.serverDeploymentName" .) -}}
+{{- $worker := lookup "apps/v1" "Deployment" $namespace (include "durable-workflow.workerDeploymentName" .) -}}
+{{- $scheduler := lookup "batch/v1" "CronJob" $namespace (include "durable-workflow.schedulerCronJobName" .) -}}
+{{- range $entry := list (dict "workload" $server "container" "server") (dict "workload" $worker "container" "worker") -}}
+{{- $workload := get $entry "workload" -}}
+{{- if $workload -}}
+{{- $replicas := 1 -}}
+{{- if hasKey $workload.spec "replicas" -}}
+{{- $replicas = int (get $workload.spec "replicas") -}}
+{{- end -}}
+{{- if gt $replicas 0 -}}
+{{- $image := "" -}}
+{{- range $container := default (list) $workload.spec.template.spec.containers -}}
+{{- if eq $container.name (get $entry "container") -}}
+{{- $image = default "" $container.image -}}
+{{- end -}}
+{{- end -}}
+{{- $detected := include "durable-workflow.memoPayloadStorageForImage" $image | trim -}}
+{{- $annotations := default (dict) $workload.metadata.annotations -}}
+{{- $marked := default "" (get $annotations "workflows.durable-workflow.dev/memo-payload-storage") -}}
+{{- $storage := $detected -}}
+{{- if and (eq $detected "unknown") (has $marked (list "raw-json-v1" "dual-v1")) -}}
+{{- $storage = $marked -}}
+{{- end -}}
+{{- if not (has $storage (list "raw-json-v1" "dual-v1")) -}}
+{{- fail (printf "memo payload transition cannot run while workload %s has %d replicas using Server image %s with %s storage capability. Scale the Server and worker Deployments to zero and suspend the scheduler CronJob before retrying; Server 2.0.0-rc.47 and rc.48 cannot coexist with the dual representation." $workload.metadata.name $replicas (default "unknown" $image) $storage) -}}
+{{- end -}}
+{{- end -}}
+{{- end -}}
+{{- end -}}
+{{- if and $scheduler (not $scheduler.spec.suspend) -}}
+{{- $image := "" -}}
+{{- range $container := default (list) $scheduler.spec.jobTemplate.spec.template.spec.containers -}}
+{{- if eq $container.name "scheduler" -}}
+{{- $image = default "" $container.image -}}
+{{- end -}}
+{{- end -}}
+{{- $detected := include "durable-workflow.memoPayloadStorageForImage" $image | trim -}}
+{{- $annotations := default (dict) $scheduler.metadata.annotations -}}
+{{- $marked := default "" (get $annotations "workflows.durable-workflow.dev/memo-payload-storage") -}}
+{{- $storage := $detected -}}
+{{- if and (eq $detected "unknown") (has $marked (list "raw-json-v1" "dual-v1")) -}}
+{{- $storage = $marked -}}
+{{- end -}}
+{{- if not (has $storage (list "raw-json-v1" "dual-v1")) -}}
+{{- fail (printf "memo payload transition cannot run while scheduler CronJob %s is active using Server image %s with %s storage capability. Suspend it and scale the Server and worker Deployments to zero before retrying." $scheduler.metadata.name (default "unknown" $image) $storage) -}}
+{{- end -}}
+{{- end -}}
 {{- end -}}
 {{- end -}}
 

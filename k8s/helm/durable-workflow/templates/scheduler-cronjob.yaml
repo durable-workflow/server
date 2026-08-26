@@ -20,7 +20,7 @@ metadata:
   labels:
     {{- include "durable-workflow.componentLabels" (dict "context" . "component" "scheduler") | nindent 4 }}
   annotations:
-    workflows.durable-workflow.dev/memo-payload-storage: "dual-v1"
+    workflows.durable-workflow.dev/memo-payload-storage: {{ include "durable-workflow.targetMemoPayloadStorage" . | quote }}
     {{- include "durable-workflow.argoWorkloadAnnotations" . | nindent 4 }}
     {{- include "durable-workflow.fluxDependsOnAnnotation" . | nindent 4 }}
     {{- with .Values.commonAnnotations }}

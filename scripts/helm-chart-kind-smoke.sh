@@ -233,6 +233,9 @@ image:
   registry: $(echo "${image}" | awk -F/ '{print $1}')
   repository: $(echo "${image}" | sed -E 's#^[^/]+/([^:]+).*#\1#')
   tag: $(echo "${image}" | awk -F: '{print $2}')
+  # This image is built from the checked-out Server source above, which writes
+  # both memo representations. Custom tags must attest that verified identity.
+  memoPayloadStorage: dual-v1
   pullPolicy: IfNotPresent
 
 externalDatabase:

@@ -26,6 +26,10 @@ image:
   # Optional digest pin. When set, takes precedence over tag for change control.
   # Example: "sha256:abc123..."
   digest: ""
+  # Required when a custom repository, custom tag, or digest prevents the chart
+  # from deriving this image capability. Leave empty for recognized official
+  # release tags. Valid identities are raw-json-v1, envelope-v1, and dual-v1.
+  memoPayloadStorage: ""
   pullPolicy: IfNotPresent
   pullSecrets: []
   # imagePullSecrets:

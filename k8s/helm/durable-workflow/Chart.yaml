@@ -5,7 +5,7 @@ type: application
 # The chart's own semver version. Bumped on every chart release; treated as
 # independent of the server image version (appVersion). Breaking-change rules
 # for this version live in docs/helm-upgrading.md alongside the chart.
-version: 0.1.42
+version: 0.1.43
 # The immutable Durable Workflow Server identity this chart release packages.
 # The onboarding default in values.yaml is generated from the separately
 # qualified compatibility authority; appVersion remains release metadata.
@@ -36,6 +36,8 @@ annotations:
   # Free-form changelog used by Artifact Hub. Keep the most recent chart-version
   # entry first; do not rewrite past entries.
   artifacthub.io/changes: |
+    - kind: fixed
+      description: Bind memo-transition safety checks to running and target Server image storage capabilities.
     - kind: fixed
       description: Enforce workflow metadata capabilities and protocol 1.17 condition-wait occurrence identity boundaries in Server 2.0.0-rc.50.
     - kind: fixed

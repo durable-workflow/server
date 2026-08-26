@@ -19,9 +19,23 @@ final class HelmMemoPayloadTransitionContractTest extends TestCase
         );
         $this->assertStringContainsString('lookup "apps/v1" "Deployment"', $helpers);
         $this->assertStringContainsString('lookup "batch/v1" "CronJob"', $helpers);
-        $this->assertStringContainsString('(ne $version "2.0.0-rc.46")', $helpers);
-        $this->assertStringContainsString('(ne $storage "dual-v1")', $helpers);
+        $this->assertStringContainsString('$workload.spec.template.spec.containers', $helpers);
+        $this->assertStringContainsString('$scheduler.spec.jobTemplate.spec.template.spec.containers', $helpers);
+        $this->assertStringContainsString('include "durable-workflow.memoPayloadStorageForImage" $image', $helpers);
+        $this->assertStringContainsString('docker.io/durableworkflow/server:2.0.0', $helpers);
+        $this->assertStringNotContainsString('get $labels "app.kubernetes.io/version"', $helpers);
         $this->assertStringContainsString('fail (printf "memo payload transition', $helpers);
+    }
+
+    public function test_chart_fails_closed_for_an_unverified_target_image(): void
+    {
+        $helpers = $this->read('k8s/helm/durable-workflow/templates/_helpers.tpl');
+
+        $this->assertStringContainsString('define "durable-workflow.targetMemoPayloadStorage"', $helpers);
+        $this->assertStringContainsString('.Values.image.memoPayloadStorage', $helpers);
+        $this->assertStringContainsString('(eq $targetStorage "unknown")', $helpers);
+        $this->assertStringContainsString('(eq $targetStorage "envelope-v1")', $helpers);
+        $this->assertStringContainsString('recognized Server image %s has %s capability', $helpers);
     }
 
     public function test_chart_accepts_an_explicitly_scaled_to_zero_deployment(): void
@@ -44,7 +58,7 @@ final class HelmMemoPayloadTransitionContractTest extends TestCase
             $source = $this->read("k8s/helm/durable-workflow/templates/{$template}");
 
             $this->assertStringContainsString(
-                'workflows.durable-workflow.dev/memo-payload-storage: "dual-v1"',
+                'workflows.durable-workflow.dev/memo-payload-storage: {{ include "durable-workflow.targetMemoPayloadStorage" . | quote }}',
                 $source,
                 $template,
             );
@@ -65,6 +79,17 @@ final class HelmMemoPayloadTransitionContractTest extends TestCase
         $this->assertMatchesRegularExpression('/push:\s+branches: \[main\]/', $workflow);
         $this->assertStringContainsString('database: [mysql, pgsql]', $workflow);
         $this->assertStringContainsString('scripts/smoke-workflow-memo-rolling-upgrade.sh', $workflow);
+    }
+
+    public function test_helm_checks_execute_the_live_upgrade_guard_matrix(): void
+    {
+        $workflow = $this->read('.github/workflows/helm-chart-checks.yml');
+        $scriptPath = base_path('scripts/ci/helm-memo-transition-upgrade.sh');
+        $script = $this->read('scripts/ci/helm-memo-transition-upgrade.sh');
+
+        $this->assertStringContainsString('scripts/ci/helm-memo-transition-upgrade.sh', $workflow);
+        $this->assertTrue(is_executable($scriptPath));
+        $this->assertStringContainsString('--dry-run=server', $script);
     }
 
     public function test_successor_worker_advertises_memo_authoring_support(): void
