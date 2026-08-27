@@ -5,7 +5,7 @@ type: application
 # The chart's own semver version. Bumped on every chart release; treated as
 # independent of the server image version (appVersion). Breaking-change rules
 # for this version live in docs/helm-upgrading.md alongside the chart.
-version: 0.1.43
+version: 0.1.44
 # The immutable Durable Workflow Server identity this chart release packages.
 # The onboarding default in values.yaml is generated from the separately
 # qualified compatibility authority; appVersion remains release metadata.
@@ -40,6 +40,8 @@ annotations:
       description: Bind memo-transition safety checks to running and target Server image storage capabilities.
     - kind: fixed
       description: Enforce workflow metadata capabilities and protocol 1.17 condition-wait occurrence identity boundaries in Server 2.0.0-rc.50.
+    - kind: fixed
+      description: Recover interrupted rc.47/rc.48 MySQL memo rewrites with fail-closed, prefix-bounded operator recovery in Server 2.0.0-rc.50.
     - kind: fixed
       description: Make workflow memo storage rolling-compatible with the raw-JSON predecessor and restart-safe across interrupted backfills in Server 2.0.0-rc.49.
     - kind: fixed

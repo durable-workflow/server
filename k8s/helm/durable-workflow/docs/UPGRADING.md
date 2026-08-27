@@ -108,6 +108,18 @@ Protocol `1.17` also gates authoring and replay of durable condition-wait
 occurrence identity; protocol `1.16` workers remain eligible for unaffected
 workflow history.
 
+An interrupted `2.0.0-rc.47` or `2.0.0-rc.48` envelope-only migration on
+MySQL can leave a rewritten ID prefix without a completed migration record.
+Bootstrap now fails closed before changing any memo rows when that source is
+ambiguous. The safest recovery is to restore the pre-rewrite backup and run
+bootstrap once with `DW_WORKFLOW_MEMO_MIGRATION_RECOVERY=raw-json`. If the
+exact last converted row ID has instead been verified from the interrupted
+migration, run bootstrap once with
+`DW_WORKFLOW_MEMO_MIGRATION_RECOVERY=envelope-prefix:<last-converted-id>`.
+Do not guess the cutoff, and clear the recovery setting after bootstrap
+succeeds. PostgreSQL rolls an unrecorded migration back transactionally and
+does not require this override.
+
 ### 0.1.41
 
 This release advances the chart Server identity to `2.0.0-rc.49` and expands
