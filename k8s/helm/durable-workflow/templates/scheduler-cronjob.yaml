@@ -33,6 +33,11 @@ spec:
   failedJobsHistoryLimit: {{ .Values.scheduler.failedJobsHistoryLimit }}
   startingDeadlineSeconds: {{ .Values.scheduler.startingDeadlineSeconds }}
   jobTemplate:
+    metadata:
+      labels:
+        {{- include "durable-workflow.componentLabels" (dict "context" . "component" "scheduler") | nindent 8 }}
+      annotations:
+        workflows.durable-workflow.dev/memo-payload-storage: {{ include "durable-workflow.targetMemoPayloadStorage" . | quote }}
     spec:
       backoffLimit: {{ .Values.scheduler.backoffLimit }}
       activeDeadlineSeconds: {{ .Values.scheduler.activeDeadlineSeconds }}
@@ -44,6 +49,7 @@ spec:
             {{- toYaml . | nindent 12 }}
             {{- end }}
           annotations:
+            workflows.durable-workflow.dev/memo-payload-storage: {{ include "durable-workflow.targetMemoPayloadStorage" . | quote }}
             {{- include "durable-workflow.configChecksumAnnotations" . | nindent 12 }}
             {{- with .Values.scheduler.podAnnotations }}
             {{- toYaml . | nindent 12 }}

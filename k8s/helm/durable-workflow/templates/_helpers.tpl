@@ -129,9 +129,47 @@ unknown
 {{- end -}}
 
 {{/*
+Read a named container image from a pod template or live pod spec.
+*/}}
+{{- define "durable-workflow.memoPayloadContainerImage" -}}
+{{- $containerName := .container -}}
+{{- range $container := default (list) .containers -}}
+{{- if eq $container.name $containerName -}}
+{{- default "" $container.image -}}
+{{- end -}}
+{{- end -}}
+{{- end -}}
+
+{{/*
+Classify one workload image. Live child objects carry their own marker in
+current chart releases. The exact parent template image and marker are a safe
+fallback for objects created by older chart releases that predate that marker.
+*/}}
+{{- define "durable-workflow.memoPayloadStorageForWorkloadImage" -}}
+{{- $image := default "" .image -}}
+{{- $detected := include "durable-workflow.memoPayloadStorageForImage" $image | trim -}}
+{{- $annotations := default (dict) .annotations -}}
+{{- $marked := default "" (get $annotations "workflows.durable-workflow.dev/memo-payload-storage") -}}
+{{- if and (eq $detected "unknown") (has $marked (list "raw-json-v1" "dual-v1")) -}}
+{{- $marked -}}
+{{- else if and (eq $detected "unknown") (eq $image (default "" .fallbackImage)) -}}
+{{- $fallbackAnnotations := default (dict) .fallbackAnnotations -}}
+{{- $fallbackMarked := default "" (get $fallbackAnnotations "workflows.durable-workflow.dev/memo-payload-storage") -}}
+{{- if has $fallbackMarked (list "raw-json-v1" "dual-v1") -}}
+{{- $fallbackMarked -}}
+{{- else -}}
+{{- $detected -}}
+{{- end -}}
+{{- else -}}
+{{- $detected -}}
+{{- end -}}
+{{- end -}}
+
+{{/*
 Fail closed before an envelope-only or unidentified Server revision can remain
 active while the dual memo representation is installed. The decision uses the
-pod-template image and storage-capability marker, never the chart version label.
+live execution image and storage-capability marker, never desired state or the
+chart version label as proof that an old execution has stopped.
 */}}
 {{- define "durable-workflow.validateMemoPayloadTransition" -}}
 {{- if .Release.IsUpgrade -}}
@@ -144,6 +182,8 @@ pod-template image and storage-capability marker, never the chart version label.
 {{- $server := lookup "apps/v1" "Deployment" $namespace (include "durable-workflow.serverDeploymentName" .) -}}
 {{- $worker := lookup "apps/v1" "Deployment" $namespace (include "durable-workflow.workerDeploymentName" .) -}}
 {{- $scheduler := lookup "batch/v1" "CronJob" $namespace (include "durable-workflow.schedulerCronJobName" .) -}}
+{{- $pods := lookup "v1" "Pod" $namespace "" -}}
+{{- $jobs := lookup "batch/v1" "Job" $namespace "" -}}
 {{- range $entry := list (dict "workload" $server "container" "server") (dict "workload" $worker "container" "worker") -}}
 {{- $workload := get $entry "workload" -}}
 {{- if $workload -}}
@@ -152,41 +192,104 @@ pod-template image and storage-capability marker, never the chart version label.
 {{- $replicas = int (get $workload.spec "replicas") -}}
 {{- end -}}
 {{- if gt $replicas 0 -}}
-{{- $image := "" -}}
-{{- range $container := default (list) $workload.spec.template.spec.containers -}}
-{{- if eq $container.name (get $entry "container") -}}
-{{- $image = default "" $container.image -}}
-{{- end -}}
-{{- end -}}
-{{- $detected := include "durable-workflow.memoPayloadStorageForImage" $image | trim -}}
+{{- $image := include "durable-workflow.memoPayloadContainerImage" (dict "containers" $workload.spec.template.spec.containers "container" (get $entry "container")) | trim -}}
 {{- $annotations := default (dict) $workload.metadata.annotations -}}
-{{- $marked := default "" (get $annotations "workflows.durable-workflow.dev/memo-payload-storage") -}}
-{{- $storage := $detected -}}
-{{- if and (eq $detected "unknown") (has $marked (list "raw-json-v1" "dual-v1")) -}}
-{{- $storage = $marked -}}
-{{- end -}}
+{{- $storage := include "durable-workflow.memoPayloadStorageForWorkloadImage" (dict "image" $image "annotations" $annotations) | trim -}}
 {{- if not (has $storage (list "raw-json-v1" "dual-v1")) -}}
 {{- fail (printf "memo payload transition cannot run while workload %s has %d replicas using Server image %s with %s storage capability. Scale the Server and worker Deployments to zero and suspend the scheduler CronJob before retrying; Server 2.0.0-rc.47 and rc.48 cannot coexist with the dual representation." $workload.metadata.name $replicas (default "unknown" $image) $storage) -}}
 {{- end -}}
 {{- end -}}
 {{- end -}}
 {{- end -}}
+{{- $selectorInstance := .Release.Name -}}
+{{- range $pod := default (list) $pods.items -}}
+{{- $labels := default (dict) $pod.metadata.labels -}}
+{{- $component := default "" (get $labels "app.kubernetes.io/component") -}}
+{{- $managed := and (eq (default "" (get $labels "app.kubernetes.io/instance")) $selectorInstance) (has $component (list "server" "worker")) -}}
+{{- $status := default (dict) $pod.status -}}
+{{- $phase := default "Unknown" (get $status "phase") -}}
+{{- if and $managed (not (has $phase (list "Succeeded" "Failed"))) -}}
+{{- $workload := dict -}}
+{{- if eq $component "server" -}}
+{{- $workload = $server -}}
+{{- else if eq $component "worker" -}}
+{{- $workload = $worker -}}
+{{- end -}}
+{{- $fallbackImage := "" -}}
+{{- $fallbackAnnotations := dict -}}
+{{- if $workload -}}
+{{- $fallbackImage = include "durable-workflow.memoPayloadContainerImage" (dict "containers" $workload.spec.template.spec.containers "container" $component) | trim -}}
+{{- $fallbackAnnotations = default (dict) $workload.metadata.annotations -}}
+{{- end -}}
+{{- $image := include "durable-workflow.memoPayloadContainerImage" (dict "containers" $pod.spec.containers "container" $component) | trim -}}
+{{- $annotations := default (dict) $pod.metadata.annotations -}}
+{{- $storage := include "durable-workflow.memoPayloadStorageForWorkloadImage" (dict "image" $image "annotations" $annotations "fallbackImage" $fallbackImage "fallbackAnnotations" $fallbackAnnotations) | trim -}}
+{{- if not (has $storage (list "raw-json-v1" "dual-v1")) -}}
+{{- $executionState := printf "active in phase %s" $phase -}}
+{{- if $pod.metadata.deletionTimestamp -}}
+{{- $executionState = printf "terminating in phase %s" $phase -}}
+{{- end -}}
+{{- fail (printf "memo payload transition cannot run while managed %s pod %s is %s using Server image %s with %s storage capability. Wait for incompatible or unidentified Server and worker pods to reach a terminal phase or be deleted before retrying." $component $pod.metadata.name $executionState (default "unknown" $image) $storage) -}}
+{{- end -}}
+{{- end -}}
+{{- end -}}
 {{- if and $scheduler (not $scheduler.spec.suspend) -}}
-{{- $image := "" -}}
-{{- range $container := default (list) $scheduler.spec.jobTemplate.spec.template.spec.containers -}}
-{{- if eq $container.name "scheduler" -}}
-{{- $image = default "" $container.image -}}
-{{- end -}}
-{{- end -}}
-{{- $detected := include "durable-workflow.memoPayloadStorageForImage" $image | trim -}}
+{{- $image := include "durable-workflow.memoPayloadContainerImage" (dict "containers" $scheduler.spec.jobTemplate.spec.template.spec.containers "container" "scheduler") | trim -}}
 {{- $annotations := default (dict) $scheduler.metadata.annotations -}}
-{{- $marked := default "" (get $annotations "workflows.durable-workflow.dev/memo-payload-storage") -}}
-{{- $storage := $detected -}}
-{{- if and (eq $detected "unknown") (has $marked (list "raw-json-v1" "dual-v1")) -}}
-{{- $storage = $marked -}}
-{{- end -}}
+{{- $storage := include "durable-workflow.memoPayloadStorageForWorkloadImage" (dict "image" $image "annotations" $annotations) | trim -}}
 {{- if not (has $storage (list "raw-json-v1" "dual-v1")) -}}
 {{- fail (printf "memo payload transition cannot run while scheduler CronJob %s is active using Server image %s with %s storage capability. Suspend it and scale the Server and worker Deployments to zero before retrying." $scheduler.metadata.name (default "unknown" $image) $storage) -}}
+{{- end -}}
+{{- end -}}
+{{- $schedulerName := include "durable-workflow.schedulerCronJobName" . -}}
+{{- $schedulerImage := "" -}}
+{{- $schedulerAnnotations := dict -}}
+{{- if $scheduler -}}
+{{- $schedulerImage = include "durable-workflow.memoPayloadContainerImage" (dict "containers" $scheduler.spec.jobTemplate.spec.template.spec.containers "container" "scheduler") | trim -}}
+{{- $schedulerAnnotations = default (dict) $scheduler.metadata.annotations -}}
+{{- end -}}
+{{- range $job := default (list) $jobs.items -}}
+{{- $ownedByScheduler := false -}}
+{{- range $owner := default (list) $job.metadata.ownerReferences -}}
+{{- if and (eq (default "" $owner.kind) "CronJob") (eq (default "" $owner.name) $schedulerName) -}}
+{{- $ownedByScheduler = true -}}
+{{- end -}}
+{{- end -}}
+{{- $labels := default (dict) $job.metadata.labels -}}
+{{- $templateLabels := default (dict) $job.spec.template.metadata.labels -}}
+{{- $labeledAsScheduler := or (and (eq (default "" (get $labels "app.kubernetes.io/instance")) $selectorInstance) (eq (default "" (get $labels "app.kubernetes.io/component")) "scheduler")) (and (eq (default "" (get $templateLabels "app.kubernetes.io/instance")) $selectorInstance) (eq (default "" (get $templateLabels "app.kubernetes.io/component")) "scheduler")) -}}
+{{- $terminal := false -}}
+{{- $jobStatus := default (dict) $job.status -}}
+{{- range $condition := default (list) (get $jobStatus "conditions") -}}
+{{- if and (has (default "" $condition.type) (list "Complete" "Failed")) (eq (default "" $condition.status) "True") -}}
+{{- $terminal = true -}}
+{{- end -}}
+{{- end -}}
+{{- if and (or $ownedByScheduler $labeledAsScheduler) (not $terminal) -}}
+{{- $image := include "durable-workflow.memoPayloadContainerImage" (dict "containers" $job.spec.template.spec.containers "container" "scheduler") | trim -}}
+{{- $annotations := default (dict) $job.metadata.annotations -}}
+{{- $storage := include "durable-workflow.memoPayloadStorageForWorkloadImage" (dict "image" $image "annotations" $annotations "fallbackImage" $schedulerImage "fallbackAnnotations" $schedulerAnnotations) | trim -}}
+{{- if not (has $storage (list "raw-json-v1" "dual-v1")) -}}
+{{- fail (printf "memo payload transition cannot run while scheduler Job %s is active or terminating using Server image %s with %s storage capability. Wait for incompatible or unidentified scheduler Jobs to complete, fail, or be deleted before retrying." $job.metadata.name (default "unknown" $image) $storage) -}}
+{{- end -}}
+{{- end -}}
+{{- end -}}
+{{- range $pod := default (list) $pods.items -}}
+{{- $labels := default (dict) $pod.metadata.labels -}}
+{{- $managed := and (eq (default "" (get $labels "app.kubernetes.io/instance")) $selectorInstance) (eq (default "" (get $labels "app.kubernetes.io/component")) "scheduler") -}}
+{{- $status := default (dict) $pod.status -}}
+{{- $phase := default "Unknown" (get $status "phase") -}}
+{{- if and $managed (not (has $phase (list "Succeeded" "Failed"))) -}}
+{{- $image := include "durable-workflow.memoPayloadContainerImage" (dict "containers" $pod.spec.containers "container" "scheduler") | trim -}}
+{{- $annotations := default (dict) $pod.metadata.annotations -}}
+{{- $storage := include "durable-workflow.memoPayloadStorageForWorkloadImage" (dict "image" $image "annotations" $annotations "fallbackImage" $schedulerImage "fallbackAnnotations" $schedulerAnnotations) | trim -}}
+{{- if not (has $storage (list "raw-json-v1" "dual-v1")) -}}
+{{- $executionState := printf "active in phase %s" $phase -}}
+{{- if $pod.metadata.deletionTimestamp -}}
+{{- $executionState = printf "terminating in phase %s" $phase -}}
+{{- end -}}
+{{- fail (printf "memo payload transition cannot run while scheduler pod %s is %s using Server image %s with %s storage capability. Wait for incompatible or unidentified scheduler pods to reach a terminal phase or be deleted before retrying." $pod.metadata.name $executionState (default "unknown" $image) $storage) -}}
+{{- end -}}
 {{- end -}}
 {{- end -}}
 {{- end -}}

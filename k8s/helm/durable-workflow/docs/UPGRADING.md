@@ -67,6 +67,48 @@ chart MINOR bump and an entry below.
 
 ## Per-version migration notes
 
+### 0.1.45
+
+The memo-transition guard now proves that an incompatible predecessor has
+stopped by listing the chart-managed Pods and scheduler Jobs. Setting a
+Deployment's desired replicas to zero or suspending the CronJob is only the
+first step: a nonterminal Pod, a terminating Pod that is still held by a
+finalizer, or a nonterminal scheduler Job still blocks the bootstrap. Completed
+and failed Jobs and Pods may remain for history, and verified `raw-json-v1` and
+`dual-v1` executions remain eligible for ordinary rolling upgrades.
+
+The identity running `helm upgrade` must be able to get and list Deployments,
+CronJobs, Pods, and Jobs in the release namespace so the `lookup` checks can
+fail closed. For an envelope-only or unidentified predecessor:
+
+1. Back up the database, drain external workers, and temporarily disable the
+   Server or worker HPA.
+2. Suspend the scheduler and scale both Deployments to zero.
+
+   ```bash
+   kubectl -n durable-workflow patch cronjob durable-workflow-scheduler \
+     --type merge -p '{"spec":{"suspend":true}}'
+   kubectl -n durable-workflow scale \
+     deploy/durable-workflow-server deploy/durable-workflow-worker \
+     --replicas=0
+   ```
+
+3. Inspect the managed executions. Wait for every nonterminal Server, worker,
+   and scheduler Pod to disappear, and for each scheduler Job either to report
+   a `Complete`/`Failed` condition or to be deleted. A Pod shown as
+   `Terminating` is still executable for purposes of this guard.
+
+   ```bash
+   kubectl -n durable-workflow get pods \
+     -l 'app.kubernetes.io/instance=durable-workflow'
+   kubectl -n durable-workflow get jobs \
+     -l 'app.kubernetes.io/instance=durable-workflow,app.kubernetes.io/component=scheduler'
+   ```
+
+4. Retry the Helm upgrade only after that quiescence check is satisfied. Restore
+   the configured replica counts, autoscaling, and scheduler after bootstrap
+   succeeds.
+
 ### 0.1.43
 
 The memo-transition guard now reads each active Deployment or CronJob pod

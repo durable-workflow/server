@@ -19,9 +19,14 @@ final class HelmMemoPayloadTransitionContractTest extends TestCase
         );
         $this->assertStringContainsString('lookup "apps/v1" "Deployment"', $helpers);
         $this->assertStringContainsString('lookup "batch/v1" "CronJob"', $helpers);
+        $this->assertStringContainsString('lookup "v1" "Pod"', $helpers);
+        $this->assertStringContainsString('lookup "batch/v1" "Job"', $helpers);
         $this->assertStringContainsString('$workload.spec.template.spec.containers', $helpers);
         $this->assertStringContainsString('$scheduler.spec.jobTemplate.spec.template.spec.containers', $helpers);
-        $this->assertStringContainsString('include "durable-workflow.memoPayloadStorageForImage" $image', $helpers);
+        $this->assertStringContainsString('include "durable-workflow.memoPayloadStorageForWorkloadImage"', $helpers);
+        $this->assertStringContainsString('(not (has $phase (list "Succeeded" "Failed")))', $helpers);
+        $this->assertStringContainsString('(not $terminal)', $helpers);
+        $this->assertStringContainsString('$pod.metadata.deletionTimestamp', $helpers);
         $this->assertStringContainsString('docker.io/durableworkflow/server:2.0.0', $helpers);
         $this->assertStringNotContainsString('get $labels "app.kubernetes.io/version"', $helpers);
         $this->assertStringContainsString('fail (printf "memo payload transition', $helpers);
@@ -38,7 +43,7 @@ final class HelmMemoPayloadTransitionContractTest extends TestCase
         $this->assertStringContainsString('recognized Server image %s has %s capability', $helpers);
     }
 
-    public function test_chart_accepts_an_explicitly_scaled_to_zero_deployment(): void
+    public function test_chart_does_not_treat_zero_desired_replicas_as_quiescence(): void
     {
         $helpers = $this->read('k8s/helm/durable-workflow/templates/_helpers.tpl');
 
@@ -46,20 +51,25 @@ final class HelmMemoPayloadTransitionContractTest extends TestCase
         $this->assertStringContainsString('if hasKey $workload.spec "replicas"', $helpers);
         $this->assertStringContainsString('$replicas = int (get $workload.spec "replicas")', $helpers);
         $this->assertStringNotContainsString('default 1 $workload.spec.replicas', $helpers);
+        $this->assertStringContainsString('range $pod := default (list) $pods.items', $helpers);
+        $this->assertStringContainsString('managed %s pod %s is %s', $helpers);
     }
 
     public function test_every_memo_writing_chart_workload_advertises_the_dual_representation(): void
     {
         foreach ([
-            'server-deployment.yaml',
-            'worker-deployment.yaml',
-            'scheduler-cronjob.yaml',
-        ] as $template) {
+            'server-deployment.yaml' => 2,
+            'worker-deployment.yaml' => 2,
+            'scheduler-cronjob.yaml' => 3,
+        ] as $template => $expectedMarkerCount) {
             $source = $this->read("k8s/helm/durable-workflow/templates/{$template}");
 
-            $this->assertStringContainsString(
-                'workflows.durable-workflow.dev/memo-payload-storage: {{ include "durable-workflow.targetMemoPayloadStorage" . | quote }}',
-                $source,
+            $this->assertSame(
+                $expectedMarkerCount,
+                substr_count(
+                    $source,
+                    'workflows.durable-workflow.dev/memo-payload-storage: {{ include "durable-workflow.targetMemoPayloadStorage" . | quote }}',
+                ),
                 $template,
             );
 
@@ -90,6 +100,18 @@ final class HelmMemoPayloadTransitionContractTest extends TestCase
         $this->assertStringContainsString('scripts/ci/helm-memo-transition-upgrade.sh', $workflow);
         $this->assertTrue(is_executable($scriptPath));
         $this->assertStringContainsString('--dry-run=server', $script);
+        $this->assertStringContainsString('memo-transition-hold', $script);
+        $this->assertStringContainsString('--cascade=orphan', $script);
+        $this->assertStringContainsString('--for=condition=complete', $script);
+        $this->assertStringContainsString(<<<'YAML'
+      template:
+        metadata:
+          labels:
+            app.kubernetes.io/name: durable-workflow
+            app.kubernetes.io/instance: memo-transition
+            app.kubernetes.io/component: scheduler
+YAML, $script);
+        $this->assertStringContainsString("expect_allowed 'old Deployment pod and scheduler execution are deleted'", $script);
     }
 
     public function test_successor_worker_advertises_memo_authoring_support(): void

@@ -36,6 +36,7 @@ spec:
         {{- toYaml . | nindent 8 }}
         {{- end }}
       annotations:
+        workflows.durable-workflow.dev/memo-payload-storage: {{ include "durable-workflow.targetMemoPayloadStorage" . | quote }}
         {{- include "durable-workflow.configChecksumAnnotations" . | nindent 8 }}
         {{- with .Values.server.podAnnotations }}
         {{- toYaml . | nindent 8 }}
