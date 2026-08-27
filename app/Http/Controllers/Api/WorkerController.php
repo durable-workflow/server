@@ -65,6 +65,80 @@ use Workflow\V2\Support\WorkflowTaskOwnership;
 
 class WorkerController
 {
+    private const WORKFLOW_TASK_FAILURE_REASON_MAX_LENGTH = 191;
+
+    private const WORKFLOW_TASK_FAILURE_TYPE_MAX_LENGTH = 512;
+
+    private const STRUCTURED_REPLAY_FAILURE_REASONS = [
+        'activity_execution_mode_mismatch',
+        'activity_identity_mismatch',
+        'activity_retry_policy_mismatch',
+        'activity_task_queue_mismatch',
+        'child_workflow_identity_mismatch',
+        'condition_wait_definition_history_mismatch',
+        'condition_wait_definition_invalid',
+        'condition_wait_id_mismatch',
+        'condition_wait_id_missing',
+        'condition_wait_key_mismatch',
+        'condition_wait_occurrence_history_mismatch',
+        'condition_wait_occurrence_id_missing',
+        'condition_wait_occurrence_mismatch',
+        'condition_wait_predicate_fingerprint_missing',
+        'condition_wait_predicate_mismatch',
+        'condition_wait_reopened_after_timeout',
+        'condition_wait_terminal_conflict',
+        'condition_wait_timeout_delay_mismatch',
+        'condition_wait_timeout_history_invalid',
+        'condition_wait_timeout_identity_mismatch',
+        'condition_wait_timeout_mismatch',
+        'continue_as_new_sequence_missing',
+        'duplicate_memo_upsert_record',
+        'duplicate_version_marker',
+        'duplicate_version_marker_record',
+        'durable_command_sequence_collision',
+        'durable_command_sequence_invalid',
+        'durable_command_sequence_mismatch',
+        'durable_command_sequence_missing',
+        'memo_entries_invalid',
+        'memo_entries_missing',
+        'memo_merged_projection_invalid',
+        'memo_merged_projection_missing',
+        'memo_sequence_invalid',
+        'memo_sequence_missing',
+        'memo_update_mismatch',
+        'parallel_group_history_conflict',
+        'parallel_group_metadata_invalid',
+        'parallel_group_metadata_missing',
+        'parallel_group_missing_from_workflow',
+        'parallel_group_partially_scheduled',
+        'parallel_group_shape_mismatch',
+        'recorded_command_detail_mismatch',
+        'recorded_command_mismatch',
+        'recorded_commands_unconsumed',
+        'recorded_continue_as_new_unconsumed',
+        'search_attribute_type_mismatch',
+        'search_attribute_update_missing',
+        'search_attribute_value_mismatch',
+        'side_effect_result_missing',
+        'side_effect_type_mismatch',
+        'signal_wait_identity_mismatch',
+        'signal_wait_name_missing',
+        'timer_delay_mismatch',
+        'timer_history_delay_mismatch',
+        'timer_history_field_missing',
+        'timer_identity_mismatch',
+        'unsupported_payload_codec',
+        'version_change_id_invalid',
+        'version_change_id_mismatch',
+        'version_marker_field_missing',
+        'version_marker_history_range_invalid',
+        'version_marker_incompatible_range',
+        'version_marker_kind_mismatch',
+        'version_marker_sequence_invalid',
+        'version_range_invalid',
+        'workflow_nondeterministic',
+    ];
+
     /** @var list<string> */
     private const PARALLEL_GROUP_METADATA_FIELDS = [
         'parallel_group_id',
@@ -2726,8 +2800,8 @@ class WorkerController
             'workflow_task_attempt' => ['required', 'integer', 'min:1'],
             'failure' => ['required', 'array'],
             'failure.message' => ['required', 'string'],
-            'failure.type' => ['nullable', 'string'],
-            'failure.reason' => ['nullable', 'string'],
+            'failure.type' => ['nullable', 'string', 'max:'.self::WORKFLOW_TASK_FAILURE_TYPE_MAX_LENGTH],
+            'failure.reason' => ['nullable', 'string', 'max:'.self::WORKFLOW_TASK_FAILURE_REASON_MAX_LENGTH],
             'failure.sequence' => ['nullable', 'integer', 'min:1'],
             'failure.stack_trace' => ['nullable', 'string'],
         ]);
@@ -2772,9 +2846,46 @@ class WorkerController
         /** @var WorkflowTaskBridge $bridge */
         $bridge = app(WorkflowTaskBridge::class);
         try {
-            $outcome = $this->storageMutations->run(
-                static fn (): array => $bridge->fail($taskId, $validated['failure']),
-            );
+            $outcome = $this->storageMutations->run(function () use (
+                $bridge,
+                $namespace,
+                $taskId,
+                $validated,
+            ): array {
+                return DB::transaction(function () use (
+                    $bridge,
+                    $namespace,
+                    $taskId,
+                    $validated,
+                ): array {
+                    $outcome = $bridge->fail($taskId, $validated['failure']);
+                    $nextTaskId = is_string($outcome['next_task_id'] ?? null)
+                        ? $outcome['next_task_id']
+                        : null;
+
+                    if (
+                        ($outcome['recorded'] ?? false) === true
+                        && ($outcome['reason'] ?? null) === null
+                        && $nextTaskId === null
+                    ) {
+                        $replayBlocked = $this->workflowTaskFailureBlocksReplay($validated['failure']);
+                        $this->recordWorkflowTaskFailureIdentity(
+                            $namespace,
+                            $taskId,
+                            $validated['failure'],
+                            $replayBlocked,
+                        );
+
+                        if (! $replayBlocked) {
+                            $nextTaskId = $this->createRetryWorkflowTask($namespace, $taskId);
+                        }
+                    }
+
+                    $outcome['next_task_id'] = $nextTaskId;
+
+                    return $outcome;
+                });
+            });
         } catch (ExternalPayloadStorageUnavailable $exception) {
             return $this->externalPayloadFailure($taskId, (int) $validated['workflow_task_attempt'], $exception, 503);
         } catch (\Throwable $exception) {
@@ -2788,34 +2899,6 @@ class WorkerController
         $nextTaskId = is_string($outcome['next_task_id'] ?? null)
             ? $outcome['next_task_id']
             : null;
-
-        if (
-            ($outcome['recorded'] ?? false) === true
-            && ($outcome['reason'] ?? null) === null
-            && $nextTaskId === null
-        ) {
-            try {
-                $nextTaskId = $this->storageMutations->run(function () use (
-                    $namespace,
-                    $taskId,
-                    $validated,
-                ): ?string {
-                    if ($this->workflowTaskFailureBlocksReplay($validated['failure'])) {
-                        $this->markWorkflowTaskReplayBlocked($namespace, $taskId, $validated['failure']);
-
-                        return null;
-                    }
-
-                    return $this->createRetryWorkflowTask($namespace, $taskId);
-                });
-            } catch (\Throwable $exception) {
-                if (! BackendLockPressure::is($exception)) {
-                    throw $exception;
-                }
-
-                return BackendLockPressure::workerOperationResponse($request, true);
-            }
-        }
 
         return WorkerProtocol::json([
             'task_id' => $taskId,
@@ -2832,8 +2915,13 @@ class WorkerController
      */
     private function workflowTaskFailureBlocksReplay(array $failure): bool
     {
-        $message = strtolower((string) ($failure['message'] ?? ''));
-        $type = strtolower((string) ($failure['type'] ?? ''));
+        $reason = strtolower(trim((string) ($failure['reason'] ?? '')));
+        if (in_array($reason, self::STRUCTURED_REPLAY_FAILURE_REASONS, true)) {
+            return true;
+        }
+
+        $message = strtolower(substr((string) ($failure['message'] ?? ''), 0, 4096));
+        $type = strtolower(substr((string) ($failure['type'] ?? ''), 0, 512));
         $text = $type.' '.$message;
 
         foreach ([
@@ -3017,9 +3105,13 @@ class WorkerController
     /**
      * @param  array<string, mixed>  $failure
      */
-    private function markWorkflowTaskReplayBlocked(string $namespace, string $taskId, array $failure): void
-    {
-        DB::transaction(function () use ($namespace, $taskId, $failure): void {
+    private function recordWorkflowTaskFailureIdentity(
+        string $namespace,
+        string $taskId,
+        array $failure,
+        bool $replayBlocked,
+    ): void {
+        DB::transaction(function () use ($namespace, $taskId, $failure, $replayBlocked): void {
             /** @var WorkflowTask|null $task */
             $task = WorkflowTask::query()
                 ->lockForUpdate()
@@ -3034,16 +3126,33 @@ class WorkerController
             }
 
             $payload = is_array($task->payload) ? $task->payload : [];
-            $payload['replay_blocked'] = true;
-            $payload['replay_blocked_reason'] = 'worker_reported_replay_failure';
+
+            if (is_string($failure['reason'] ?? null) && trim($failure['reason']) !== '') {
+                $payload['failure_reason'] = trim($failure['reason']);
+            }
+
+            if (is_int($failure['sequence'] ?? null)) {
+                $payload['failure_sequence'] = $failure['sequence'];
+            }
 
             if (is_string($failure['type'] ?? null) && trim($failure['type']) !== '') {
-                $payload['replay_blocked_failure_type'] = trim($failure['type']);
+                $payload['failure_type'] = trim($failure['type']);
+            }
+
+            if ($replayBlocked) {
+                $payload['replay_blocked'] = true;
+                $payload['replay_blocked_reason'] = 'worker_reported_replay_failure';
+
+                if (isset($payload['failure_type'])) {
+                    $payload['replay_blocked_failure_type'] = $payload['failure_type'];
+                }
             }
 
             $task->forceFill(['payload' => $payload])->save();
 
-            $this->projectWorkflowRun((string) $task->workflow_run_id);
+            if ($replayBlocked) {
+                $this->projectWorkflowRun((string) $task->workflow_run_id);
+            }
         });
     }
 
@@ -3083,6 +3192,14 @@ class WorkerController
             }
 
             $payload = is_array($failedTask->payload) ? $failedTask->payload : [];
+            unset(
+                $payload['failure_reason'],
+                $payload['failure_sequence'],
+                $payload['failure_type'],
+                $payload['replay_blocked'],
+                $payload['replay_blocked_reason'],
+                $payload['replay_blocked_failure_type'],
+            );
             $payload['workflow_task_retry_of'] = $failedTask->id;
             $payload['workflow_task_retry_after_error'] = $failedTask->last_error;
             $attemptCount = is_numeric($failedTask->attempt_count)

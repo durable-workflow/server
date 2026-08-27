@@ -536,6 +536,52 @@ class MessageStreamsTest extends TestCase
             ->assertJsonMissingPath('stream.arguments');
     }
 
+    public function test_malformed_message_ids_are_bounded_before_diagnostic_persistence(): void
+    {
+        $this->createRun('wf-message-id-boundary');
+        $overlongId = str_repeat('a', 192);
+
+        foreach ([
+            ['message_id' => $overlongId],
+            ['message_id' => 'invalid characters'],
+            [],
+            ['message_id' => ['not-a-string']],
+        ] as $payload) {
+            $this->withHeaders($this->apiHeaders())
+                ->postJson('/api/workflows/wf-message-id-boundary/message-streams/orders/messages', $payload + [
+                    'input' => [],
+                ])
+                ->assertUnprocessable()
+                ->assertJsonPath('reason', 'validation_failed');
+        }
+
+        $diagnostics = $this->withHeaders($this->apiHeaders())
+            ->getJson('/api/workflows/wf-message-id-boundary/message-streams/orders')
+            ->assertOk()
+            ->assertJsonPath('stream.malformed_count', 4)
+            ->assertJsonPath('stream.last_input_message_id', '[omitted]');
+
+        $json = json_encode($diagnostics->json(), JSON_THROW_ON_ERROR);
+        $this->assertStringNotContainsString($overlongId, $json);
+    }
+
+    public function test_valid_message_id_at_database_boundary_appends_and_deduplicates(): void
+    {
+        $run = $this->createRun('wf-message-id-max');
+        $this->acceptInternalSignals($run);
+        $messageId = str_repeat('a', 191);
+
+        $this->postMessage('wf-message-id-max', 'orders', $messageId, [['order' => 1]])
+            ->assertStatus(202)
+            ->assertJsonPath('duplicate', false);
+
+        $this->postMessage('wf-message-id-max', 'orders', $messageId, [['order' => 1]])
+            ->assertOk()
+            ->assertJsonPath('duplicate', true);
+
+        $this->assertDatabaseCount('workflow_inbound_stream_items', 1);
+    }
+
     public function test_continue_as_new_redelivers_only_unconsumed_positions_to_the_current_run(): void
     {
         $firstRun = $this->createRun('wf-message-continue');

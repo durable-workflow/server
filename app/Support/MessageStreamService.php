@@ -155,7 +155,9 @@ final class MessageStreamService
         string $streamName,
         ?string $messageId,
     ): void {
-        DB::transaction(function () use ($namespace, $workflowId, $streamName, $messageId): void {
+        $diagnosticMessageId = $this->diagnosticMessageId($messageId);
+
+        DB::transaction(function () use ($namespace, $workflowId, $streamName, $diagnosticMessageId): void {
             $instance = WorkflowInstance::query()
                 ->whereKey($workflowId)
                 ->where('namespace', $namespace)
@@ -174,10 +176,23 @@ final class MessageStreamService
             $stream->forceFill([
                 'malformed_count' => $stream->malformed_count + 1,
                 'last_input_outcome' => 'malformed',
-                'last_input_message_id' => $messageId,
+                'last_input_message_id' => $diagnosticMessageId,
                 'last_input_at' => now(),
             ])->save();
         });
+    }
+
+    private function diagnosticMessageId(?string $messageId): string
+    {
+        if ($messageId === null) {
+            return '[omitted]';
+        }
+
+        if (strlen($messageId) <= 191 && preg_match('/^[A-Za-z0-9._:-]+$/', $messageId) === 1) {
+            return $messageId;
+        }
+
+        return 'sha256:'.hash('sha256', $messageId);
     }
 
     /**

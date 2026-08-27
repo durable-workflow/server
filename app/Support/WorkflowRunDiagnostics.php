@@ -56,6 +56,7 @@ class WorkflowRunDiagnostics
         $lastEvent = $this->lastEvent($run, $includeLastEventPayload);
         $nextScheduledEvent = $this->nextScheduledEvent($summary, $taskRows->all());
         $recentFailures = $this->recentFailures($run);
+        $latestWorkflowTaskFailure = $this->latestWorkflowTaskFailure($run);
 
         $payload = [
             'generated_at' => now()->toJSON(),
@@ -69,6 +70,7 @@ class WorkflowRunDiagnostics
             'task_queue' => $taskQueue,
             'activity_task_queues' => $activityTaskQueues,
             'recent_failures' => $recentFailures,
+            'latest_workflow_task_failure' => $latestWorkflowTaskFailure,
             'compatibility' => $this->compatibility($namespace, $run, $summary, $taskQueue),
         ];
 
@@ -678,6 +680,39 @@ class WorkflowRunDiagnostics
                 'created_at' => $this->timestamp($failure->created_at),
             ]))
             ->all();
+    }
+
+    /**
+     * @return array<string, mixed>|null
+     */
+    private function latestWorkflowTaskFailure(WorkflowRun $run): ?array
+    {
+        $task = WorkflowTask::query()
+            ->where('workflow_run_id', $run->id)
+            ->where('task_type', TaskType::Workflow->value)
+            ->where('status', TaskStatus::Failed->value)
+            ->latest('updated_at')
+            ->first();
+
+        if (! $task instanceof WorkflowTask) {
+            return null;
+        }
+
+        $payload = is_array($task->payload) ? $task->payload : [];
+
+        return $this->compact([
+            'task_id' => $task->id,
+            'message' => $task->last_error,
+            'type' => $this->stringValue(
+                $payload['failure_type'] ?? $payload['replay_blocked_failure_type'] ?? null,
+            ),
+            'reason' => $this->stringValue($payload['failure_reason'] ?? null),
+            'sequence' => is_int($payload['failure_sequence'] ?? null)
+                ? $payload['failure_sequence']
+                : null,
+            'replay_blocked' => ($payload['replay_blocked'] ?? false) === true,
+            'recorded_at' => $this->timestamp($task->updated_at),
+        ]);
     }
 
     /**

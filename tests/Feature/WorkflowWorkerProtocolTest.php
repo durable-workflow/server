@@ -2751,6 +2751,252 @@ class WorkflowWorkerProtocolTest extends TestCase
             ->assertJsonFragment(['code' => 'workflow_replay_blocked']);
     }
 
+    public function test_structured_replay_failure_identity_blocks_retry_and_remains_diagnostic(): void
+    {
+        Queue::fake();
+
+        $this->configureWorkflowTypes();
+        $this->createNamespace('default', 'Default namespace');
+
+        $start = $this->withHeaders($this->apiHeaders())
+            ->postJson('/api/workflows', [
+                'workflow_id' => 'wf-structured-replay-failure',
+                'workflow_type' => 'tests.external-greeting-workflow',
+                'task_queue' => 'external-workflows',
+                'input' => ['Linus'],
+            ])
+            ->assertCreated();
+
+        $this->registerWorker('structured-replay-worker', 'external-workflows');
+
+        $poll = $this->withHeaders($this->workerHeaders())
+            ->postJson('/api/worker/workflow-tasks/poll', [
+                'worker_id' => 'structured-replay-worker',
+                'task_queue' => 'external-workflows',
+            ])
+            ->assertOk();
+
+        $taskId = (string) $poll->json('task.task_id');
+        $attempt = (int) $poll->json('task.workflow_task_attempt');
+
+        $this->withHeaders($this->workerHeaders())
+            ->postJson("/api/worker/workflow-tasks/{$taskId}/fail", [
+                'lease_owner' => 'structured-replay-worker',
+                'workflow_task_attempt' => $attempt,
+                'failure' => [
+                    'message' => 'workflow task failed',
+                    'type' => 'RuntimeError',
+                    'reason' => 'parallel_group_shape_mismatch',
+                    'sequence' => 7,
+                ],
+            ])
+            ->assertOk()
+            ->assertJsonPath('recorded', true)
+            ->assertJsonPath('next_task_id', null);
+
+        $task = WorkflowTask::query()->findOrFail($taskId);
+
+        $this->assertSame(TaskStatus::Failed, $task->status);
+        $this->assertSame('parallel_group_shape_mismatch', $task->payload['failure_reason'] ?? null);
+        $this->assertSame(7, $task->payload['failure_sequence'] ?? null);
+        $this->assertTrue(($task->payload['replay_blocked'] ?? false) === true);
+        $this->assertSame(1, WorkflowTask::query()
+            ->where('workflow_run_id', $task->workflow_run_id)
+            ->where('task_type', TaskType::Workflow->value)
+            ->count());
+
+        $this->withHeaders($this->apiHeaders())
+            ->getJson('/api/workflows/wf-structured-replay-failure/debug')
+            ->assertOk()
+            ->assertJsonPath('execution.liveness_state', 'workflow_replay_blocked')
+            ->assertJsonPath('latest_workflow_task_failure.task_id', $taskId)
+            ->assertJsonPath('latest_workflow_task_failure.reason', 'parallel_group_shape_mismatch')
+            ->assertJsonPath('latest_workflow_task_failure.sequence', 7)
+            ->assertJsonPath('latest_workflow_task_failure.replay_blocked', true);
+
+        $this->assertSame($start->json('run_id'), $task->workflow_run_id);
+    }
+
+    public function test_workflow_task_failure_identity_is_bounded_before_the_leased_task_is_mutated(): void
+    {
+        Queue::fake();
+
+        $this->configureWorkflowTypes();
+        $this->createNamespace('default', 'Default namespace');
+
+        $this->withHeaders($this->apiHeaders())
+            ->postJson('/api/workflows', [
+                'workflow_id' => 'wf-bounded-replay-failure',
+                'workflow_type' => 'tests.external-greeting-workflow',
+                'task_queue' => 'external-workflows',
+                'input' => ['Ada'],
+            ])
+            ->assertCreated();
+
+        $this->registerWorker('bounded-replay-worker', 'external-workflows');
+
+        $poll = $this->withHeaders($this->workerHeaders())
+            ->postJson('/api/worker/workflow-tasks/poll', [
+                'worker_id' => 'bounded-replay-worker',
+                'task_queue' => 'external-workflows',
+            ])
+            ->assertOk();
+
+        $taskId = (string) $poll->json('task.task_id');
+        $attempt = (int) $poll->json('task.workflow_task_attempt');
+
+        $this->withHeaders($this->workerHeaders())
+            ->postJson("/api/worker/workflow-tasks/{$taskId}/fail", [
+                'lease_owner' => 'bounded-replay-worker',
+                'workflow_task_attempt' => $attempt,
+                'failure' => [
+                    'message' => 'workflow task failed',
+                    'type' => str_repeat('T', 513),
+                    'reason' => str_repeat('r', 192),
+                    'sequence' => 19,
+                ],
+            ])
+            ->assertUnprocessable()
+            ->assertJsonValidationErrors(['failure.type', 'failure.reason']);
+
+        $task = WorkflowTask::query()->findOrFail($taskId);
+        $this->assertSame(TaskStatus::Leased, $task->status);
+        $this->assertNull($task->last_error);
+        $this->assertArrayNotHasKey('failure_reason', (array) $task->payload);
+        $this->assertArrayNotHasKey('failure_sequence', (array) $task->payload);
+        $this->assertArrayNotHasKey('failure_type', (array) $task->payload);
+        $this->assertSame(1, WorkflowTask::query()
+            ->where('workflow_run_id', $task->workflow_run_id)
+            ->where('task_type', TaskType::Workflow->value)
+            ->count());
+
+        $acceptedType = str_repeat('T', 512);
+
+        $this->withHeaders($this->workerHeaders())
+            ->postJson("/api/worker/workflow-tasks/{$taskId}/fail", [
+                'lease_owner' => 'bounded-replay-worker',
+                'workflow_task_attempt' => $attempt,
+                'failure' => [
+                    'message' => 'workflow task failed',
+                    'type' => $acceptedType,
+                    'reason' => 'parallel_group_shape_mismatch',
+                    'sequence' => 19,
+                ],
+            ])
+            ->assertOk()
+            ->assertJsonPath('recorded', true)
+            ->assertJsonPath('next_task_id', null);
+
+        $task->refresh();
+        $this->assertSame(TaskStatus::Failed, $task->status);
+        $this->assertSame('parallel_group_shape_mismatch', $task->payload['failure_reason'] ?? null);
+        $this->assertSame(19, $task->payload['failure_sequence'] ?? null);
+        $this->assertSame($acceptedType, $task->payload['failure_type'] ?? null);
+        $this->assertTrue(($task->payload['replay_blocked'] ?? false) === true);
+        $this->assertSame(1, WorkflowTask::query()
+            ->where('workflow_run_id', $task->workflow_run_id)
+            ->where('task_type', TaskType::Workflow->value)
+            ->count());
+    }
+
+    public function test_workflow_task_failure_rolls_back_before_identity_post_processing_and_can_be_retried(): void
+    {
+        Queue::fake();
+        config(['workflows.storage.transaction_attempts' => 1]);
+
+        $this->configureWorkflowTypes();
+        $this->createNamespace('default', 'Default namespace');
+
+        $this->withHeaders($this->apiHeaders())
+            ->postJson('/api/workflows', [
+                'workflow_id' => 'wf-atomic-structured-replay-failure',
+                'workflow_type' => 'tests.external-greeting-workflow',
+                'task_queue' => 'external-workflows',
+                'input' => ['Grace'],
+            ])
+            ->assertCreated();
+
+        $this->registerWorker('atomic-replay-worker', 'external-workflows');
+
+        $poll = $this->withHeaders($this->workerHeaders())
+            ->postJson('/api/worker/workflow-tasks/poll', [
+                'worker_id' => 'atomic-replay-worker',
+                'task_queue' => 'external-workflows',
+            ])
+            ->assertOk();
+
+        $taskId = (string) $poll->json('task.task_id');
+        $attempt = (int) $poll->json('task.workflow_task_attempt');
+        $defaultBridge = app(DefaultWorkflowTaskBridge::class);
+        $bridgeCalls = 0;
+
+        $this->mock(WorkflowTaskBridge::class, function (MockInterface $mock) use (
+            $defaultBridge,
+            &$bridgeCalls,
+        ): void {
+            $mock->shouldReceive('fail')
+                ->twice()
+                ->andReturnUsing(function (string $failedTaskId, array $failure) use (
+                    $defaultBridge,
+                    &$bridgeCalls,
+                ): array {
+                    $outcome = $defaultBridge->fail($failedTaskId, $failure);
+                    $bridgeCalls++;
+
+                    if ($bridgeCalls === 1) {
+                        throw new \RuntimeException('Lock wait timeout exceeded during injected post-failure processing.');
+                    }
+
+                    return $outcome;
+                });
+            $mock->shouldReceive('status')
+                ->andReturnUsing(fn (string $statusTaskId): array => $defaultBridge->status($statusTaskId));
+        });
+
+        $failure = [
+            'lease_owner' => 'atomic-replay-worker',
+            'workflow_task_attempt' => $attempt,
+            'failure' => [
+                'message' => 'workflow task failed',
+                'type' => 'RuntimeError',
+                'reason' => 'parallel_group_shape_mismatch',
+                'sequence' => 11,
+            ],
+        ];
+
+        $this->withHeaders($this->workerHeaders())
+            ->postJson("/api/worker/workflow-tasks/{$taskId}/fail", $failure)
+            ->assertStatus(503)
+            ->assertJsonPath('reason', 'backend_lock_pressure')
+            ->assertJsonPath('recorded', false);
+
+        $task = WorkflowTask::query()->findOrFail($taskId);
+        $this->assertSame(TaskStatus::Leased, $task->status);
+        $this->assertNull($task->last_error);
+        $this->assertArrayNotHasKey('failure_reason', (array) $task->payload);
+        $this->assertArrayNotHasKey('failure_sequence', (array) $task->payload);
+        $this->assertSame(1, WorkflowTask::query()
+            ->where('workflow_run_id', $task->workflow_run_id)
+            ->where('task_type', TaskType::Workflow->value)
+            ->count());
+
+        $this->withHeaders($this->workerHeaders())
+            ->postJson("/api/worker/workflow-tasks/{$taskId}/fail", $failure)
+            ->assertOk()
+            ->assertJsonPath('recorded', true)
+            ->assertJsonPath('next_task_id', null);
+
+        $task->refresh();
+        $this->assertSame(TaskStatus::Failed, $task->status);
+        $this->assertSame('parallel_group_shape_mismatch', $task->payload['failure_reason'] ?? null);
+        $this->assertSame(11, $task->payload['failure_sequence'] ?? null);
+        $this->assertTrue(($task->payload['replay_blocked'] ?? false) === true);
+        $this->assertSame(1, WorkflowTask::query()
+            ->where('workflow_run_id', $task->workflow_run_id)
+            ->where('task_type', TaskType::Workflow->value)
+            ->count());
+    }
+
     public function test_waiting_for_scheduled_history_workflow_task_failure_acknowledges_the_wait(): void
     {
         Queue::fake();
@@ -6026,6 +6272,8 @@ class WorkflowWorkerProtocolTest extends TestCase
                 'failure' => [
                     'message' => 'worker process restarted before completion',
                     'type' => 'RuntimeError',
+                    'reason' => 'worker_process_restarted',
+                    'sequence' => 3,
                 ],
             ]);
 
@@ -6047,6 +6295,11 @@ class WorkflowWorkerProtocolTest extends TestCase
         $this->assertSame(TaskStatus::Ready, $retryTask->status);
         $this->assertSame($attempt, (int) $failedTask->attempt_count);
         $this->assertSame($attempt, (int) $retryTask->attempt_count);
+        $this->assertSame('worker_process_restarted', $failedTask->payload['failure_reason'] ?? null);
+        $this->assertSame(3, $failedTask->payload['failure_sequence'] ?? null);
+        $this->assertArrayNotHasKey('failure_reason', $retryTask->payload);
+        $this->assertArrayNotHasKey('failure_sequence', $retryTask->payload);
+        $this->assertArrayNotHasKey('failure_type', $retryTask->payload);
         $this->assertSame($taskId, $retryTask->payload['workflow_task_retry_of'] ?? null);
 
         $retryPoll = $this->withHeaders($this->workerHeaders())

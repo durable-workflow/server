@@ -1,0 +1,55 @@
+{
+  "$schema": "https://raw.githubusercontent.com/durable-workflow/.github/main/regression-corpus/evidence-schema.json",
+  "fixture_schema": "durable-workflow.codec-regression/v1",
+  "id": "activity-result-external-payload-envelope",
+  "protocol": {
+    "codec": "avro",
+    "schema": "durable_workflow.protocol.Value",
+    "version": "1",
+    "fingerprint": "e2a33dff55802237"
+  },
+  "bindings": [
+    "php"
+  ],
+  "value": {
+    "type": "map",
+    "entries": [
+      {
+        "key": "route",
+        "value": {
+          "type": "string",
+          "value": "ActivityController@show"
+        }
+      },
+      {
+        "key": "field",
+        "value": {
+          "type": "string",
+          "value": "result"
+        }
+      },
+      {
+        "key": "transport",
+        "value": {
+          "type": "string",
+          "value": "external_payload"
+        }
+      },
+      {
+        "key": "open_metadata",
+        "value": {
+          "type": "string",
+          "value": "current_attempt.last_heartbeat_progress.details"
+        }
+      }
+    ]
+  },
+  "framing": {
+    "encoding": "avro-single-object",
+    "wire_base64": "wwHioz3/VYAiNw4ICnJvdXRlCi5BY3Rpdml0eUNvbnRyb2xsZXJAc2hvdwpmaWVsZAoMcmVzdWx0EnRyYW5zcG9ydAogZXh0ZXJuYWxfcGF5bG9hZBpvcGVuX21ldGFkYXRhCl5jdXJyZW50X2F0dGVtcHQubGFzdF9oZWFydGJlYXRfcHJvZ3Jlc3MuZGV0YWlscwA="
+  },
+  "failure_policy": {
+    "operation": "round_trip",
+    "error": null
+  }
+}

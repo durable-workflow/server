@@ -57,6 +57,34 @@ curl_json() {
   echo
 }
 
+curl_json_expect_status() {
+  local output="$1"
+  local expected_status="$2"
+  local response
+  local body
+  local status
+  shift 2
+
+  if [ -n "${DW_SMALL_CLUSTER_NETWORK:-}" ]; then
+    response="$(docker run --rm --network "$DW_SMALL_CLUSTER_NETWORK" "$CURL_IMAGE" -sS -w $'\n%{http_code}' "$@")"
+  else
+    response="$(curl -sS -w $'\n%{http_code}' "$@")"
+  fi
+
+  status="${response##*$'\n'}"
+  body="${response%$'\n'*}"
+  printf '%s\n' "$body" >"$output"
+
+  if [ "$status" != "$expected_status" ]; then
+    echo "Expected HTTP ${expected_status}, received ${status}: curl $*" >&2
+    cat "$output" >&2
+    return 1
+  fi
+
+  cat "$output"
+  echo
+}
+
 curl_json_with_retry() {
   local output="$1"
   shift
@@ -107,6 +135,7 @@ run_database_smoke() {
   local task_id
   local lease_owner
   local attempt
+  local overlong_message_id
 
   if [ "$database" = "pgsql" ]; then
     db_port="5432"
@@ -177,6 +206,21 @@ run_database_smoke() {
     -d "{\"workflow_id\":\"${workflow_id}\",\"workflow_type\":\"${WORKFLOW_TYPE}\",\"task_queue\":\"${TASK_QUEUE}\",\"input\":[\"Ada\"]}"
 
   run_id="$(json_value "/tmp/dw-small-cluster-${database}-start.json" "run_id")"
+  overlong_message_id="$(printf '%0192d' 0 | tr '0' 'a')"
+
+  curl_json_expect_status "/tmp/dw-small-cluster-${database}-message-stream-malformed.json" 422 \
+    -X POST "${lb_url}/api/workflows/${workflow_id}/message-streams/orders/messages" \
+    -H "Authorization: Bearer ${TOKEN}" \
+    -H "Content-Type: application/json" \
+    -H "X-Namespace: default" \
+    -H "X-Durable-Workflow-Control-Plane-Version: 2" \
+    -d "{\"message_id\":\"${overlong_message_id}\",\"input\":[]}"
+
+  curl_json "/tmp/dw-small-cluster-${database}-message-stream-diagnostics.json" \
+    -H "Authorization: Bearer ${TOKEN}" \
+    -H "X-Namespace: default" \
+    -H "X-Durable-Workflow-Control-Plane-Version: 2" \
+    "${lb_url}/api/workflows/${workflow_id}/message-streams/orders"
 
   curl_json "/tmp/dw-small-cluster-${database}-poll.json" \
     -X POST "${server_a_url}/api/worker/workflow-tasks/poll" \
@@ -232,6 +276,8 @@ started = read("start")
 polled = read("poll")
 completed = read("complete")
 show_run = read("show-run")
+malformed = read("message-stream-malformed")
+message_stream = read("message-stream-diagnostics")
 
 assert health.get("status") == "serving", health
 assert ready.get("status") == "ready", ready
@@ -244,6 +290,13 @@ assert polled.get("task", {}).get("workflow_id") == os.environ["DW_SMALL_CLUSTER
 assert completed.get("recorded") is True, completed
 assert completed.get("run_status") == "completed", completed
 assert show_run.get("status") == "completed", show_run
+assert malformed.get("reason") == "validation_failed", malformed
+stream = message_stream.get("stream", {})
+diagnostic_id = stream.get("last_input_message_id", "")
+assert stream.get("malformed_count") == 1, message_stream
+assert diagnostic_id.startswith("sha256:"), message_stream
+assert len(diagnostic_id) <= 191, message_stream
+assert diagnostic_id != "a" * 192, message_stream
 PY
 
   echo "Small cluster smoke passed for ${database}"

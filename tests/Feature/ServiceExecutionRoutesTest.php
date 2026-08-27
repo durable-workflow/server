@@ -3,6 +3,8 @@
 namespace Tests\Feature;
 
 use App\Models\SearchAttributeDefinition;
+use App\Support\RuntimeExternalPayloadReference;
+use App\Support\RuntimeExternalPayloadRegistry;
 use App\Support\ServiceCallBoundary;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Tests\Feature\Concerns\ServerTestHelpers;
@@ -1132,6 +1134,24 @@ class ServiceExecutionRoutesTest extends TestCase
     {
         [, , $operation] = $this->seedCatalog();
 
+        $registry = app(RuntimeExternalPayloadRegistry::class);
+        $payloadReferences = [];
+        foreach (['input', 'output', 'failure'] as $kind) {
+            $payload = 'service-call-'.$kind;
+            $uri = 'file:///runtime-payloads/'.$kind.'.avro';
+            $registry->trackRetained(
+                'default',
+                $uri,
+                'avro',
+                hash('sha256', $payload),
+                strlen($payload),
+            );
+            $payloadReferences[$kind] = [
+                'uri' => $uri,
+                'reference' => $registry->referenceForUri('default', $uri),
+            ];
+        }
+
         $serviceCall = WorkflowServiceCall::query()->create([
             'workflow_service_endpoint_id' => $operation->workflow_service_endpoint_id,
             'workflow_service_id' => $operation->workflow_service_id,
@@ -1144,6 +1164,10 @@ class ServiceExecutionRoutesTest extends TestCase
             'operation_mode' => 'async',
             'resolved_binding_kind' => 'workflow_run',
             'resolved_target_reference' => 'workflows.invoice.create',
+            'payload_codec' => 'avro',
+            'input_payload_reference' => $payloadReferences['input']['uri'],
+            'output_payload_reference' => $payloadReferences['output']['uri'],
+            'failure_payload_reference' => $payloadReferences['failure']['uri'],
         ]);
 
         $stub = new class($serviceCall) implements ServiceControlPlane
@@ -1209,7 +1233,30 @@ class ServiceExecutionRoutesTest extends TestCase
             ->assertJsonPath('service_call_id', $serviceCall->id)
             ->assertJsonPath('status', 'cancelled')
             ->assertJsonPath('outcome_metadata.failure_reason', 'cancellation')
-            ->assertJsonPath('outcome_reason', 'cancelled_by_request');
+            ->assertJsonPath('outcome_reason', 'cancelled_by_request')
+            ->assertJsonPath('input_payload_reference.schema', RuntimeExternalPayloadReference::SCHEMA)
+            ->assertJsonPath(
+                'input_payload_reference.reference_id',
+                $payloadReferences['input']['reference']['reference_id'],
+            )
+            ->assertJsonPath('output_payload_reference.schema', RuntimeExternalPayloadReference::SCHEMA)
+            ->assertJsonPath(
+                'output_payload_reference.reference_id',
+                $payloadReferences['output']['reference']['reference_id'],
+            )
+            ->assertJsonPath('failure_payload_reference.schema', RuntimeExternalPayloadReference::SCHEMA)
+            ->assertJsonPath(
+                'failure_payload_reference.reference_id',
+                $payloadReferences['failure']['reference']['reference_id'],
+            )
+            ->assertJsonMissingPath('input_payload_reference.uri')
+            ->assertJsonMissingPath('output_payload_reference.uri')
+            ->assertJsonMissingPath('failure_payload_reference.uri');
+
+        $this->assertStringNotContainsString(
+            'file://',
+            json_encode($response->json(), JSON_THROW_ON_ERROR),
+        );
 
         $this->assertNotNull($stub->captured);
         $this->assertSame($serviceCall->id, $stub->captured['service_call_id']);

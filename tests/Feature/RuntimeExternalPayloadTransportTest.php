@@ -498,6 +498,125 @@ class RuntimeExternalPayloadTransportTest extends TestCase
         $this->assertDatabaseMissing('workflow_instances', ['workflow_id' => 'provider-reference-rejected']);
     }
 
+    public function test_workflow_open_metadata_preserves_reserved_looking_business_keys(): void
+    {
+        Queue::fake();
+        $businessMetadata = $this->reservedLookingBusinessMetadata();
+
+        $start = $this->withHeaders($this->controlHeaders())
+            ->postJson('/api/workflows', [
+                'workflow_id' => 'reserved-looking-workflow-metadata',
+                'workflow_type' => 'tests.external-greeting-workflow',
+                'input' => ['metadata'],
+                'memo' => $businessMetadata,
+                'search_attributes' => [
+                    'external_payload' => 'business-payload-label',
+                    'external_storage' => 'business-storage-label',
+                ],
+            ])
+            ->assertCreated();
+
+        $this->withHeaders($this->controlHeaders())
+            ->getJson('/api/workflows/reserved-looking-workflow-metadata/runs/'.$start->json('run_id'))
+            ->assertOk()
+            ->assertJsonPath('memo.external_payload.business_id', 'payload-42')
+            ->assertJsonPath('memo.external_storage.bucket_label', 'archive')
+            ->assertJsonPath('memo.envelope_shaped_business_value.codec', 'business-codec')
+            ->assertJsonPath('memo.envelope_shaped_business_value.external_storage.region_label', 'north')
+            ->assertJsonPath('search_attributes.external_payload', 'business-payload-label')
+            ->assertJsonPath('search_attributes.external_storage', 'business-storage-label');
+
+        $this->withHeaders($this->controlHeaders())
+            ->getJson('/api/workflows/reserved-looking-workflow-metadata/runs/'.$start->json('run_id').'/history/export')
+            ->assertOk()
+            ->assertJsonPath('workflow.memo.external_payload.business_id', 'payload-42')
+            ->assertJsonPath('workflow.memo.external_storage.bucket_label', 'archive')
+            ->assertJsonPath('workflow.memo.envelope_shaped_business_value.codec', 'business-codec')
+            ->assertJsonPath('workflow.memo.envelope_shaped_business_value.external_storage.region_label', 'north')
+            ->assertJsonPath('workflow.search_attributes.external_payload', 'business-payload-label')
+            ->assertJsonPath('workflow.search_attributes.external_storage', 'business-storage-label');
+    }
+
+    public function test_schedule_and_service_metadata_preserve_reserved_looking_business_keys(): void
+    {
+        $businessMetadata = $this->reservedLookingBusinessMetadata();
+
+        $this->withHeaders($this->controlHeaders())
+            ->postJson('/api/schedules', [
+                'schedule_id' => 'reserved-looking-schedule-metadata',
+                'spec' => ['cron_expressions' => ['0 * * * *']],
+                'action' => [
+                    'workflow_type' => 'tests.external-greeting-workflow',
+                    'input' => [$businessMetadata],
+                ],
+                'memo' => $businessMetadata,
+                'search_attributes' => [
+                    'external_payload' => 'schedule-payload-label',
+                    'external_storage' => 'schedule-storage-label',
+                ],
+            ])
+            ->assertCreated();
+
+        $this->withHeaders($this->controlHeaders())
+            ->getJson('/api/schedules/reserved-looking-schedule-metadata')
+            ->assertOk()
+            ->assertJsonPath('memo.external_payload.business_id', 'payload-42')
+            ->assertJsonPath('memo.external_storage.bucket_label', 'archive')
+            ->assertJsonPath('memo.envelope_shaped_business_value.codec', 'business-codec')
+            ->assertJsonPath('memo.envelope_shaped_business_value.external_storage.region_label', 'north')
+            ->assertJsonPath('search_attributes.external_payload', 'schedule-payload-label')
+            ->assertJsonPath('search_attributes.external_storage', 'schedule-storage-label')
+            ->assertJsonPath('action.input.0.external_payload.business_id', 'payload-42')
+            ->assertJsonPath('action.input.0.external_storage.bucket_label', 'archive')
+            ->assertJsonPath('action.input.0.envelope_shaped_business_value.external_storage.region_label', 'north');
+
+        $this->withHeaders($this->controlHeaders())
+            ->postJson('/api/service-endpoints', [
+                'endpoint_name' => 'reserved-looking-service-metadata',
+                'metadata' => $businessMetadata,
+            ])
+            ->assertCreated()
+            ->assertJsonPath('metadata.external_payload.business_id', 'payload-42')
+            ->assertJsonPath('metadata.external_storage.bucket_label', 'archive')
+            ->assertJsonPath('metadata.envelope_shaped_business_value.codec', 'business-codec')
+            ->assertJsonPath('metadata.envelope_shaped_business_value.external_storage.region_label', 'north');
+
+        $this->withHeaders($this->controlHeaders())
+            ->getJson('/api/service-endpoints/reserved-looking-service-metadata')
+            ->assertOk()
+            ->assertJsonPath('metadata.external_payload.business_id', 'payload-42')
+            ->assertJsonPath('metadata.external_storage.bucket_label', 'archive')
+            ->assertJsonPath('metadata.envelope_shaped_business_value.codec', 'business-codec')
+            ->assertJsonPath('metadata.envelope_shaped_business_value.external_storage.region_label', 'north');
+    }
+
+    public function test_schedule_payload_envelope_round_trips_as_an_opaque_runtime_reference(): void
+    {
+        $payload = Serializer::serializeWithCodec('avro', ['scheduled external input']);
+        $reference = $this->upload($payload)->json('reference');
+
+        $this->withHeaders($this->controlHeaders())
+            ->postJson('/api/schedules', [
+                'schedule_id' => 'external-payload-schedule',
+                'spec' => ['cron_expressions' => ['0 * * * *']],
+                'action' => [
+                    'workflow_type' => 'tests.external-greeting-workflow',
+                    'input' => [
+                        'codec' => 'avro',
+                        'external_payload' => $reference,
+                    ],
+                ],
+            ])
+            ->assertCreated();
+
+        $this->withHeaders($this->controlHeaders())
+            ->getJson('/api/schedules/external-payload-schedule')
+            ->assertOk()
+            ->assertJsonPath('action.input.codec', 'avro')
+            ->assertJsonPath('action.input.external_payload.reference_id', $reference['reference_id'])
+            ->assertJsonMissingPath('action.input.external_storage');
+    }
+
     public function test_worker_poll_and_fetch_use_only_opaque_runtime_reference(): void
     {
         Queue::fake();
@@ -533,6 +652,12 @@ class RuntimeExternalPayloadTransportTest extends TestCase
         $reference = $poll->json('task.arguments.external_payload');
         $fetched = $this->fetch($reference);
         $this->assertSame([$largeInput], Serializer::unserializeWithCodec('avro', $fetched->getContent()));
+
+        $this->withHeaders($this->controlHeaders())
+            ->getJson('/api/workflows/runtime-reference-poll/runs/'.$start->json('run_id').'/history/export')
+            ->assertOk()
+            ->assertJsonPath('payloads.arguments.data.external_payload.reference_id', $reference['reference_id'])
+            ->assertJsonMissingPath('payloads.arguments.data.external_storage');
     }
 
     public function test_worker_memo_command_resolves_opaque_reference_before_recording_history(): void
@@ -830,5 +955,18 @@ class RuntimeExternalPayloadTransportTest extends TestCase
             'last_heartbeat_at' => now(),
             'status' => 'active',
         ]);
+    }
+
+    /** @return array<string, mixed> */
+    private function reservedLookingBusinessMetadata(): array
+    {
+        return [
+            'external_payload' => ['business_id' => 'payload-42'],
+            'external_storage' => ['bucket_label' => 'archive'],
+            'envelope_shaped_business_value' => [
+                'codec' => 'business-codec',
+                'external_storage' => ['region_label' => 'north'],
+            ],
+        ];
     }
 }

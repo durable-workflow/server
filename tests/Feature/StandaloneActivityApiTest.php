@@ -235,7 +235,13 @@ class StandaloneActivityApiTest extends TestCase
         $show = $this->withHeaders($this->apiHeaders())->getJson('/api/activities/standalone-external-greet');
         $show->assertOk()
             ->assertJsonPath('activity_status', ActivityStatus::Completed->value)
-            ->assertJsonStructure(['result' => ['codec', 'external_payload']]);
+            ->assertJsonPath('result.external_payload.schema', RuntimeExternalPayloadReference::SCHEMA)
+            ->assertJsonStructure(['result' => ['codec', 'external_payload']])
+            ->assertJsonMissingPath('result.external_storage');
+        $this->assertStringNotContainsString(
+            'file://',
+            json_encode($show->json('result'), JSON_THROW_ON_ERROR),
+        );
         $this->assertExternalEnvelopeDecodes($show->json('result'), $result);
     }
 
