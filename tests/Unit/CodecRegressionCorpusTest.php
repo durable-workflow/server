@@ -14,6 +14,8 @@ final class CodecRegressionCorpusTest extends TestCase
 {
     private const FIXTURE_FORMAT = 'codec-regression-v1';
 
+    private const SHARED_EXECUTOR_FIXTURE = 'tests/Fixtures/CodecRegression/avro-value-v1-long-zero.json';
+
     public function test_checked_in_codec_regression_corpus_uses_the_official_php_binding(): void
     {
         foreach (self::fixturePaths() as $path) {
@@ -24,7 +26,7 @@ final class CodecRegressionCorpusTest extends TestCase
     public function test_shared_executor_returns_the_verified_fixture(): void
     {
         $fixture = ServerCodecRegressionFixtureExecutor::exercisePath(
-            self::fixturePaths()[0],
+            self::sharedExecutorFixturePath(),
         );
 
         self::assertSame('avro-value-v1-long-zero', $fixture->id);
@@ -34,7 +36,7 @@ final class CodecRegressionCorpusTest extends TestCase
 
     public function test_boundary_proxy_substitutes_the_verified_fixture_at_the_call_site(): void
     {
-        $fixturePath = self::fixturePaths()[0];
+        $fixturePath = self::sharedExecutorFixturePath();
         $fixture = ServerCodecRegressionFixtureExecutor::exercisePath($fixturePath);
         $evidence = 'durable-workflow-codec-boundary/v1:'.str_repeat('a', 64);
 
@@ -100,5 +102,10 @@ final class CodecRegressionCorpusTest extends TestCase
         sort($paths);
 
         return $paths;
+    }
+
+    private static function sharedExecutorFixturePath(): string
+    {
+        return dirname(__DIR__, 2).'/'.self::SHARED_EXECUTOR_FIXTURE;
     }
 }
