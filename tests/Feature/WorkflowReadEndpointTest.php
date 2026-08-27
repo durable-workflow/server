@@ -221,6 +221,7 @@ class WorkflowReadEndpointTest extends TestCase
                         'business_key',
                         'status',
                         'task_queue',
+                        'memo',
                         'started_at',
                         'closed_at',
                     ],

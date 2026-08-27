@@ -9,6 +9,8 @@ use Illuminate\Support\Facades\Queue;
 use Tests\Feature\Concerns\ServerTestHelpers;
 use Tests\TestCase;
 use Workflow\Serializers\AvroBinaryValue;
+use Workflow\Serializers\Serializer;
+use Workflow\V2\Models\WorkflowRun;
 use Workflow\V2\Support\MemoPayload;
 
 class WorkflowMemoWorkerRestartContractTest extends TestCase
@@ -56,7 +58,7 @@ class WorkflowMemoWorkerRestartContractTest extends TestCase
         parent::tearDown();
     }
 
-    public function test_replacement_worker_receives_lossless_memo_history_after_application_restart(): void
+    public function test_continue_as_new_successor_exposes_lossless_memo_after_application_restart(): void
     {
         Queue::fake();
 
@@ -187,6 +189,86 @@ class WorkflowMemoWorkerRestartContractTest extends TestCase
             [
                 'lease_owner' => 'memo-worker-after-restart',
                 'workflow_task_attempt' => $replacementAttempt,
+                'commands' => [
+                    [
+                        'type' => 'upsert_memo',
+                        'entries' => MemoPayload::mapEnvelope([
+                            'stage' => 'continued',
+                        ]),
+                    ],
+                    [
+                        'type' => 'continue_as_new',
+                        'workflow_type' => $workflowType,
+                        'arguments' => Serializer::serializeWithCodec('avro', []),
+                    ],
+                ],
+            ],
+            $this->workerHeaders(),
+        )->assertOk()
+            ->assertJsonPath('run_status', 'completed');
+
+        $mergedProjection = [
+            'binary' => ['$type' => 'bytes', 'base64' => 'c2FtZQ=='],
+            'double' => 7,
+            'invalid_binary' => ['$type' => 'bytes', 'base64' => '/wA='],
+            'long' => 7,
+            'nested' => ['alpha' => 1, 'beta' => 2],
+            'stage' => 'continued',
+            'text' => 'same',
+        ];
+
+        // Rebuild again so both the successor and its inherited memo are loaded
+        // from durable storage rather than retained Eloquent state.
+        DB::disconnect('sqlite');
+        $this->refreshApplication();
+        $this->configurePersistedDatabase();
+        Queue::fake();
+
+        $runs = $this->getJson('/api/workflows/wf-worker-memo-restart/runs', $this->apiHeaders());
+        $runs->assertOk()
+            ->assertJsonCount(2, 'runs')
+            ->assertJsonPath('runs.0.run_id', $runId)
+            ->assertJsonPath('runs.0.status', 'completed')
+            ->assertJsonPath('runs.0.memo', $mergedProjection)
+            ->assertJsonPath('runs.1.run_number', 2)
+            ->assertJsonPath('runs.1.status', 'pending')
+            ->assertJsonPath('runs.1.memo', $mergedProjection);
+
+        $continuedRunId = (string) $runs->json('runs.1.run_id');
+        $persistedMemo = WorkflowRun::query()->findOrFail($continuedRunId)->typedMemos();
+        $this->assertSame(7, $persistedMemo['long']);
+        $this->assertIsInt($persistedMemo['long']);
+        $this->assertSame(7.0, $persistedMemo['double']);
+        $this->assertIsFloat($persistedMemo['double']);
+        $this->assertInstanceOf(AvroBinaryValue::class, $persistedMemo['binary']);
+        $this->assertSame('same', $persistedMemo['binary']->bytes);
+        $this->assertInstanceOf(AvroBinaryValue::class, $persistedMemo['invalid_binary']);
+        $this->assertSame("\xFF\x00", $persistedMemo['invalid_binary']->bytes);
+        $this->assertSame('same', $persistedMemo['text']);
+        $this->assertSame(['alpha' => 1, 'beta' => 2], $persistedMemo['nested']);
+        $this->assertSame('continued', $persistedMemo['stage']);
+
+        $continued = $this->getJson(
+            "/api/workflows/wf-worker-memo-restart/runs/{$continuedRunId}",
+            $this->apiHeaders(),
+        );
+        $continued->assertOk()
+            ->assertJsonPath('memo', $mergedProjection);
+        $this->assertSame($continued->json('memo'), $runs->json('runs.1.memo'));
+
+        $this->registerMemoWorker('memo-worker-successor', $taskQueue, $workflowType);
+        $successorPoll = $this->postJson('/api/worker/workflow-tasks/poll', [
+            'worker_id' => 'memo-worker-successor',
+            'task_queue' => $taskQueue,
+        ], $this->workerHeaders());
+        $successorPoll->assertOk()
+            ->assertJsonPath('task.run_id', $continuedRunId);
+
+        $this->postJson(
+            '/api/worker/workflow-tasks/'.$successorPoll->json('task.task_id').'/complete',
+            [
+                'lease_owner' => 'memo-worker-successor',
+                'workflow_task_attempt' => (int) $successorPoll->json('task.workflow_task_attempt'),
                 'commands' => [[
                     'type' => 'complete_workflow',
                 ]],
@@ -195,10 +277,10 @@ class WorkflowMemoWorkerRestartContractTest extends TestCase
         )->assertOk()
             ->assertJsonPath('run_status', 'completed');
 
-        $this->getJson("/api/workflows/wf-worker-memo-restart/runs/{$runId}", $this->apiHeaders())
+        $this->getJson("/api/workflows/wf-worker-memo-restart/runs/{$continuedRunId}", $this->apiHeaders())
             ->assertOk()
             ->assertJsonPath('status', 'completed')
-            ->assertJsonPath('memo', $expectedProjection);
+            ->assertJsonPath('memo', $mergedProjection);
     }
 
     private function configurePersistedDatabase(): void

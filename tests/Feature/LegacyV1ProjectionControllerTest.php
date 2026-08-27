@@ -51,6 +51,12 @@ class LegacyV1ProjectionControllerTest extends TestCase
             ->assertJsonPath('migration_projection.origin.engine_source', 'v1')
             ->assertJsonPath('migration_projection.task_queue_context.execution_owner', 'v1');
 
+        $this->withHeaders($this->apiHeaders('migration'))
+            ->getJson('/api/workflows/'.rawurlencode($workflowId).'/runs')
+            ->assertOk()
+            ->assertJsonPath('runs.0.run_id', $runId)
+            ->assertJsonMissingPath('runs.0.memo');
+
         $history = $this->withHeaders($this->apiHeaders('migration'))
             ->getJson('/api/workflows/'.rawurlencode($workflowId).'/runs/'.$runId.'/history');
 

@@ -398,29 +398,18 @@ class WorkflowController
 
         $currentRunId = NamespaceWorkflowScope::currentRun($namespace, $workflowId)?->id;
         $runs = NamespaceWorkflowScope::runQuery($namespace, $workflowId)
+            ->with('memos')
             ->orderBy('workflow_runs.run_number')
             ->get();
 
         return ControlPlaneProtocol::jsonForRequest($request, [
             'workflow_id' => $workflowId,
             'run_count' => $runs->count(),
-            'runs' => $runs->map(fn (WorkflowRun $run) => [
-                'run_id' => $run->id,
-                'run_number' => $run->run_number,
-                'workflow_type' => $run->workflow_type,
-                'business_key' => $run->business_key,
-                'status' => $run->status->value,
-                'status_bucket' => $run->status->statusBucket()->value,
-                'is_terminal' => $run->status->isTerminal(),
-                'is_current_run' => (string) $run->id === (string) $currentRunId,
-                'task_queue' => $run->queue,
-                'compatibility' => $run->compatibility,
-                'compatibility_status' => $this->compatibilityStatus((string) $namespace, $run),
-                'compatibility_supported_in_fleet' => $this->compatibilitySupportedInFleet((string) $namespace, $run),
-                'compatibility_fleet_reason' => $this->compatibilityFleetReason((string) $namespace, $run),
-                'started_at' => $run->started_at?->toJSON(),
-                'closed_at' => $run->closed_at?->toJSON(),
-            ])->all(),
+            'runs' => $runs->map(fn (WorkflowRun $run) => $this->formatRunListEntry(
+                $run,
+                (string) $namespace,
+                is_string($currentRunId) ? $currentRunId : null,
+            ))->all(),
         ]);
     }
 
@@ -1117,6 +1106,36 @@ class WorkflowController
         } finally {
             $request->attributes->remove('control_plane_run_id');
         }
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    private function formatRunListEntry(WorkflowRun $run, string $namespace, ?string $currentRunId): array
+    {
+        $payload = [
+            'run_id' => $run->id,
+            'run_number' => $run->run_number,
+            'workflow_type' => $run->workflow_type,
+            'business_key' => $run->business_key,
+            'status' => $run->status->value,
+            'status_bucket' => $run->status->statusBucket()->value,
+            'is_terminal' => $run->status->isTerminal(),
+            'is_current_run' => (string) $run->id === (string) $currentRunId,
+            'task_queue' => $run->queue,
+            'compatibility' => $run->compatibility,
+            'compatibility_status' => $this->compatibilityStatus($namespace, $run),
+            'compatibility_supported_in_fleet' => $this->compatibilitySupportedInFleet($namespace, $run),
+            'compatibility_fleet_reason' => $this->compatibilityFleetReason($namespace, $run),
+            'started_at' => $run->started_at?->toJSON(),
+            'closed_at' => $run->closed_at?->toJSON(),
+        ];
+
+        if (! LegacyV1Projection::isProjectedRun($run)) {
+            $payload['memo'] = AvroValueJsonProjection::project($run->typedMemos());
+        }
+
+        return $payload;
     }
 
     /**
