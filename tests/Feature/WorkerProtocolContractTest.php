@@ -366,6 +366,32 @@ class WorkerProtocolContractTest extends TestCase
         );
     }
 
+    public function test_package_valid_parallel_command_reaches_task_ownership_through_shared_preflight(): void
+    {
+        $entry = [
+            'parallel_group_id' => 'parallel-activities:1:1',
+            'parallel_group_kind' => 'activity',
+            'parallel_group_base_sequence' => '1',
+            'parallel_group_size' => '1',
+            'parallel_group_index' => '0',
+        ];
+
+        $response = $this->withHeaders($this->workerHeaders())
+            ->postJson('/api/worker/workflow-tasks/missing-task/complete', [
+                'lease_owner' => 'parallel-worker',
+                'workflow_task_attempt' => 1,
+                'commands' => [[
+                    'type' => 'schedule_activity',
+                    'activity_type' => 'fetch',
+                    ...$entry,
+                    'parallel_group_path' => [$entry],
+                ]],
+            ]);
+
+        $response->assertNotFound()
+            ->assertJsonPath('reason', 'task_not_found');
+    }
+
     /**
      * @param  array<string, mixed>  $command
      */

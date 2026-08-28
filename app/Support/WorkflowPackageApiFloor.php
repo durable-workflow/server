@@ -307,7 +307,7 @@ final class WorkflowPackageApiFloor
         }
 
         if (! self::confirmsWorkflowCommandNormalizerPayloadEnvelopeContract()) {
-            $missing[] = WorkflowCommandNormalizer::class.' command payload-envelope contract';
+            $missing[] = WorkflowCommandNormalizer::class.' command ingress contracts';
         }
 
         if (! self::confirmsRunCommandContractSignature()) {
@@ -630,6 +630,20 @@ final class WorkflowPackageApiFloor
             ],
             'bool',
             false,
+        ) && self::matchesStaticMethod(
+            WorkflowCommandNormalizer::class,
+            'parallelMetadataValidationRules',
+            [],
+            'array',
+            false,
+        ) && self::matchesStaticMethod(
+            WorkflowCommandNormalizer::class,
+            'preflightParallelMetadata',
+            [
+                ['commands', 'array', false, false, null],
+            ],
+            'array',
+            false,
         ) && WorkflowCommandNormalizer::acceptsPayloadEnvelope('complete_workflow', 'result')
             && WorkflowCommandNormalizer::acceptsPayloadEnvelope('schedule_activity', 'arguments')
             && WorkflowCommandNormalizer::acceptsPayloadEnvelope('start_child_workflow', 'arguments')
@@ -637,7 +651,10 @@ final class WorkflowPackageApiFloor
             && WorkflowCommandNormalizer::acceptsPayloadEnvelope('complete_update', 'result')
             && WorkflowCommandNormalizer::acceptsPayloadEnvelope('record_side_effect', 'result')
             && ! WorkflowCommandNormalizer::acceptsPayloadEnvelope('complete_update', 'arguments')
-            && ! WorkflowCommandNormalizer::acceptsPayloadEnvelope('fail_update', 'result');
+            && ! WorkflowCommandNormalizer::acceptsPayloadEnvelope('fail_update', 'result')
+            && isset(WorkflowCommandNormalizer::parallelMetadataValidationRules()[
+                'commands.*.parallel_group_path.*.parallel_group_kind'
+            ]);
     }
 
     private static function confirmsRunCommandContractSignature(): bool

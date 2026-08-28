@@ -375,7 +375,12 @@ class WorkflowPackageApiFloorTest extends TestCase
         $this->assertSame(1000, $reflection->getConstant('MAX_LOCAL_ACTIVITY_HEARTBEATS_PER_ATTEMPT'));
         $this->assertSame(1000, $reflection->getConstant('MAX_LOCAL_ACTIVITY_HEARTBEATS'));
 
-        foreach (['payloadEnvelopeFields', 'acceptsPayloadEnvelope'] as $methodName) {
+        foreach ([
+            'payloadEnvelopeFields',
+            'acceptsPayloadEnvelope',
+            'parallelMetadataValidationRules',
+            'preflightParallelMetadata',
+        ] as $methodName) {
             $method = $reflection->getMethod($methodName);
 
             $this->assertTrue($method->isPublic());
