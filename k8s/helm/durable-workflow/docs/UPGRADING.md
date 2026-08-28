@@ -67,6 +67,26 @@ chart MINOR bump and an entry below.
 
 ## Per-version migration notes
 
+### 0.1.47
+
+This release advances the chart Server identity to `2.0.0-rc.51` and the
+worker protocol to `1.18`. Workers selecting protocol `1.18` must register a
+structured capability manifest for local activities, worker sessions, and
+sticky execution; each supported entry must exactly match its flat routing
+capability. Workers selecting an older supported protocol remain eligible
+without the new manifest, and the three portable worker-affinity features stay
+opt-in.
+
+Bootstrap adds a nullable capability-manifest column to worker registrations.
+No manual data migration is required. Replacing a worker clears stale sticky
+affinity and forces durable cold replay, so sticky execution remains an
+optimization rather than a correctness dependency.
+
+The release also narrows external-payload translation to declared runtime
+payload positions, retains structured workflow-task failure diagnostics, and
+preserves memo projections in run listings after continue-as-new. Existing
+application values remain compatible.
+
 ### 0.1.45
 
 The memo-transition guard now proves that an incompatible predecessor has

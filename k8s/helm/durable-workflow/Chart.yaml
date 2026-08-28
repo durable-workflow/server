@@ -5,7 +5,7 @@ type: application
 # The chart's own semver version. Bumped on every chart release; treated as
 # independent of the server image version (appVersion). Breaking-change rules
 # for this version live in docs/helm-upgrading.md alongside the chart.
-version: 0.1.46
+version: 0.1.47
 # The immutable Durable Workflow Server identity this chart release packages.
 # The onboarding default in values.yaml is generated from the separately
 # qualified compatibility authority; appVersion remains release metadata.
@@ -36,6 +36,14 @@ annotations:
   # Free-form changelog used by Artifact Hub. Keep the most recent chart-version
   # entry first; do not rewrite past entries.
   artifacthub.io/changes: |
+    - kind: added
+      description: Publish worker protocol 1.18 capability manifests and portable local-activity, worker-session, and sticky-execution boundaries in Server 2.0.0-rc.51.
+    - kind: fixed
+      description: Preserve structured workflow-task failure identity and restrict external-payload translation to declared runtime payload boundaries in Server 2.0.0-rc.51.
+    - kind: fixed
+      description: Preserve memo projections in workflow run listings after continue-as-new in Server 2.0.0-rc.51.
+    - kind: fixed
+      description: Validate parallel workflow commands through the package-owned command grammar in Server 2.0.0-rc.51.
     - kind: fixed
       description: Require incompatible memo-transition pods and scheduler executions to be terminal or deleted before bootstrap.
     - kind: fixed
