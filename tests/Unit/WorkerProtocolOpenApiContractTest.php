@@ -24,12 +24,20 @@ class WorkerProtocolOpenApiContractTest extends TestCase
         $this->spec = $spec;
     }
 
-    public function test_cached_poll_conflict_shape_uses_the_current_negotiation_contract(): void
+    public function test_http_spec_publishes_the_runtime_negotiation_contract(): void
     {
-        $this->assertSame('1.18', $this->spec['x-durable-workflow-worker-protocol-negotiation']['default_advertised_version']);
+        $negotiation = $this->spec['x-durable-workflow-worker-protocol-negotiation'];
+        $acceptedVersions = self::acceptedVersions(WorkerProtocol::VERSION);
+
+        $this->assertSame(WorkerProtocol::VERSION, $negotiation['default_advertised_version']);
+        $this->assertSame($acceptedVersions, $negotiation['accepted_request_versions_by_default']);
         $this->assertSame(
-            ['1.0', '1.1', '1.2', '1.3', '1.4', '1.5', '1.6', '1.7', '1.8', '1.9', '1.10', '1.11', '1.12', '1.13', '1.14', '1.15', '1.16', '1.17', '1.18'],
-            $this->spec['x-durable-workflow-worker-protocol-negotiation']['accepted_request_versions_by_default'],
+            $acceptedVersions,
+            $this->spec['components']['schemas']['AcceptedWorkerProtocolRequestVersion']['enum'],
+        );
+        $this->assertSame(
+            WorkerProtocol::VERSION,
+            $this->spec['components']['schemas']['AdvertisedWorkerProtocolVersion']['const'],
         );
     }
 
@@ -125,6 +133,19 @@ class WorkerProtocolOpenApiContractTest extends TestCase
         $portableFailure = ['$ref' => '#/components/schemas/PortableWorkerAffinityFailure'];
         $this->assertContains($portableFailure, $registrationFailures);
         $this->assertContains($portableFailure, $completionFailures);
+    }
+
+    /**
+     * @return list<string>
+     */
+    private static function acceptedVersions(string $version): array
+    {
+        [$major, $minor] = array_map('intval', explode('.', $version, 2));
+
+        return array_map(
+            static fn (int $acceptedMinor): string => sprintf('%d.%d', $major, $acceptedMinor),
+            range(0, $minor),
+        );
     }
 
     public function test_message_stream_completion_metadata_is_machine_described(): void

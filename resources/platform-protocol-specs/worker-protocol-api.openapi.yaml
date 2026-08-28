@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: durable-workflow.v2.worker-protocol-api
-  version: "15"
+  version: "16"
   summary: Durable Workflow worker-plane HTTP+JSON API
   description: >
     Normative OpenAPI specification for the worker-plane HTTP+JSON API:
@@ -14,9 +14,9 @@ info:
     from the same major whose minor is less than or equal to N.
 x-durable-workflow-worker-protocol-negotiation:
   advertised_version_path: worker_protocol.version
-  default_advertised_version: "1.18"
+  default_advertised_version: "1.19"
   request_header_rule: same_major_and_minor_less_than_or_equal_to_advertised
-  accepted_request_versions_by_default: ["1.0", "1.1", "1.2", "1.3", "1.4", "1.5", "1.6", "1.7", "1.8", "1.9", "1.10", "1.11", "1.12", "1.13", "1.14", "1.15", "1.16", "1.17", "1.18"]
+  accepted_request_versions_by_default: ["1.0", "1.1", "1.2", "1.3", "1.4", "1.5", "1.6", "1.7", "1.8", "1.9", "1.10", "1.11", "1.12", "1.13", "1.14", "1.15", "1.16", "1.17", "1.18", "1.19"]
   response_version: advertised_version
   fail_closed_on: [missing_header, malformed_version, different_major, minor_greater_than_advertised]
 x-durable-workflow-catalog-entry: worker_protocol_api
@@ -554,8 +554,8 @@ components:
       in: header
       required: true
       description: >
-        Worker-selected protocol version. The default server advertises 1.18
-        and accepts same-major versions whose minor is no newer than 18.
+        Worker-selected protocol version. The default server advertises 1.19
+        and accepts same-major versions whose minor is no newer than 19.
         Missing, malformed, different-major, and ahead-of-server values fail closed.
       schema: { $ref: "#/components/schemas/AcceptedWorkerProtocolRequestVersion" }
     TaskIdPath:
@@ -693,14 +693,14 @@ components:
   schemas:
     AcceptedWorkerProtocolRequestVersion:
       type: string
-      enum: ["1.0", "1.1", "1.2", "1.3", "1.4", "1.5", "1.6", "1.7", "1.8", "1.9", "1.10", "1.11", "1.12", "1.13", "1.14", "1.15", "1.16", "1.17", "1.18"]
+      enum: ["1.0", "1.1", "1.2", "1.3", "1.4", "1.5", "1.6", "1.7", "1.8", "1.9", "1.10", "1.11", "1.12", "1.13", "1.14", "1.15", "1.16", "1.17", "1.18", "1.19"]
       description: >
         Request versions accepted by a server using the default advertised
-        version 1.18. If deployment configuration changes the advertised
+        version 1.19. If deployment configuration changes the advertised
         version to 1.N, the accepted set is 1.0 through 1.N.
     AdvertisedWorkerProtocolVersion:
       type: string
-      const: "1.18"
+      const: "1.19"
       description: Default worker protocol version advertised by responses implementing the Durable Workflow 2.0 protocol contract.
     WorkerEnvelope:
       type: object

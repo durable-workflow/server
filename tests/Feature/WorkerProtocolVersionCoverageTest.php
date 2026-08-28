@@ -3,6 +3,7 @@
 namespace Tests\Feature;
 
 use App\Models\WorkflowNamespace;
+use App\Support\SourceRelease;
 use App\Support\WorkerProtocol;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Testing\TestResponse;
@@ -97,6 +98,46 @@ class WorkerProtocolVersionCoverageTest extends TestCase
             ->assertJsonPath('server_capabilities.workflow_task_poll_request_idempotency', true)
             ->assertJsonStructure(['remediation'])
             ->assertJsonMissingPath('control_plane');
+    }
+
+    public function test_default_source_release_accepts_the_current_protocol_and_rejects_the_next_minor(): void
+    {
+        $this->getJson('/api/cluster/info')
+            ->assertOk()
+            ->assertJsonPath('version', SourceRelease::version())
+            ->assertJsonPath('worker_protocol.version', WorkerProtocol::VERSION);
+
+        $registration = [
+            'capability_manifest' => $this->portableWorkerAffinityRefusalManifest(),
+            'worker_id' => 'current-protocol-worker',
+            'task_queue' => 'protocol-current',
+            'runtime' => 'php',
+            'sdk_version' => 'durable-workflow/workflow current',
+            'supported_workflow_types' => ['CurrentProtocolWorkflow'],
+            'supported_activity_types' => ['CurrentProtocolActivity'],
+            'capabilities' => ['query_tasks'],
+        ];
+
+        $this->postJson('/api/worker/register', $registration, [
+            'X-Namespace' => 'default',
+            WorkerProtocol::HEADER => WorkerProtocol::VERSION,
+        ])->assertCreated()
+            ->assertHeader(WorkerProtocol::HEADER, WorkerProtocol::VERSION)
+            ->assertJsonPath('protocol_version', WorkerProtocol::VERSION)
+            ->assertJsonPath('registered', true);
+
+        $newerVersion = self::nextMinor(WorkerProtocol::VERSION);
+        $registration['worker_id'] = 'newer-protocol-worker';
+
+        $this->postJson('/api/worker/register', $registration, [
+            'X-Namespace' => 'default',
+            WorkerProtocol::HEADER => $newerVersion,
+        ])->assertStatus(400)
+            ->assertHeader(WorkerProtocol::HEADER, WorkerProtocol::VERSION)
+            ->assertJsonPath('protocol_version', WorkerProtocol::VERSION)
+            ->assertJsonPath('reason', 'unsupported_protocol_version')
+            ->assertJsonPath('supported_version', WorkerProtocol::VERSION)
+            ->assertJsonPath('requested_version', $newerVersion);
     }
 
     public function test_worker_registration_accepts_protocol_1_7_workers(): void
@@ -220,5 +261,12 @@ class WorkerProtocolVersionCoverageTest extends TestCase
             'put' => $this->putJson($path, $body, $headers),
             default => throw new \InvalidArgumentException("Unsupported method: {$method}"),
         };
+    }
+
+    private static function nextMinor(string $version): string
+    {
+        [$major, $minor] = array_map('intval', explode('.', $version, 2));
+
+        return sprintf('%d.%d', $major, $minor + 1);
     }
 }

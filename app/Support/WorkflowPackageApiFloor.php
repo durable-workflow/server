@@ -145,7 +145,7 @@ final class WorkflowPackageApiFloor
     /**
      * Workflow package protocol contract required by this server.
      */
-    private const MINIMUM_WORKFLOW_PACKAGE_WORKER_PROTOCOL_VERSION = '1.18';
+    private const MINIMUM_WORKFLOW_PACKAGE_WORKER_PROTOCOL_VERSION = WorkerProtocol::VERSION;
 
     /**
      * Concrete classes the server instantiates or catches directly.

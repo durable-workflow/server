@@ -1077,19 +1077,12 @@ class ClusterInfoCompatibilityTest extends TestCase
             WorkerProtocolVersion::terminalCommandTypes(),
             WorkerProtocolVersion::nonTerminalCommandTypes(),
         ));
-        $expectedCommands = array_values(array_filter(
-            $expectedCommands,
-            static fn (string $command): bool => $command !== 'cancel_selection_operation',
-        ));
-
         $response = $this->getJson('/api/cluster/info')->assertOk();
 
-        $this->assertSame('1.18', WorkerProtocol::VERSION);
-        $this->assertSame('1.19', WorkerProtocolVersion::VERSION);
-        $this->assertTrue(version_compare(WorkerProtocolVersion::VERSION, WorkerProtocol::VERSION, '>='));
+        $this->assertSame(WorkerProtocolVersion::VERSION, WorkerProtocol::VERSION);
         $this->assertSame(WorkerProtocol::VERSION, (string) config('server.worker_protocol.version'));
         $this->assertSame($expectedCommands, WorkerProtocol::supportedWorkflowTaskCommands());
-        $this->assertNotContains('cancel_selection_operation', WorkerProtocol::supportedWorkflowTaskCommands());
+        $this->assertContains('cancel_selection_operation', WorkerProtocol::supportedWorkflowTaskCommands());
         $this->assertSame(WorkerProtocol::VERSION, $response->json('worker_protocol.version'));
         $this->assertSame(
             $expectedCommands,

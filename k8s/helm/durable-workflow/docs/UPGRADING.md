@@ -67,6 +67,14 @@ chart MINOR bump and an entry below.
 
 ## Per-version migration notes
 
+### 0.1.49
+
+This release advances the chart Server identity to `2.0.0-rc.53` and the
+default worker protocol to `1.19`. The HTTP and stream protocol documents use
+fresh identities for the updated negotiation contract. Existing supported
+1.x workers remain compatible, while workers newer than `1.19` fail closed.
+No manual data migration is required.
+
 ### 0.1.48
 
 This release advances the chart Server identity to `2.0.0-rc.52`, aligns HTTP

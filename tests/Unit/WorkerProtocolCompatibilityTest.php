@@ -30,7 +30,7 @@ class WorkerProtocolCompatibilityTest extends TestCase
             'two minors behind accepted' => ['worker' => '1.0', 'server' => '1.2', 'expected' => true],
             'minor 0 against minor 0 accepted' => ['worker' => '1.0', 'server' => '1.0', 'expected' => true],
             'worker minor ahead rejected' => ['worker' => '1.3', 'server' => '1.2', 'expected' => false],
-            'worker ahead of current server rejected' => ['worker' => '1.19', 'server' => WorkerProtocol::VERSION, 'expected' => false],
+            'worker ahead of current server rejected' => ['worker' => self::nextMinor(WorkerProtocol::VERSION), 'server' => WorkerProtocol::VERSION, 'expected' => false],
             'major ahead rejected' => ['worker' => '2.0', 'server' => '1.2', 'expected' => false],
             'different major rejected by current server' => ['worker' => '2.0', 'server' => WorkerProtocol::VERSION, 'expected' => false],
             'major behind rejected' => ['worker' => '0.9', 'server' => '1.2', 'expected' => false],
@@ -53,6 +53,13 @@ class WorkerProtocolCompatibilityTest extends TestCase
             WorkerProtocol::isCompatibleProtocolVersion($worker, $server),
             sprintf('worker=%s server=%s expected=%s', $worker, $server, $expected ? 'compatible' : 'incompatible'),
         );
+    }
+
+    private static function nextMinor(string $version): string
+    {
+        [$major, $minor] = array_map('intval', explode('.', $version, 2));
+
+        return sprintf('%d.%d', $major, $minor + 1);
     }
 
     public function test_message_streams_require_the_feature_minor_on_the_same_protocol_major(): void
