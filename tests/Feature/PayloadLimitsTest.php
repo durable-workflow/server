@@ -86,6 +86,7 @@ class PayloadLimitsTest extends TestCase
         config(['server.limits.max_payload_bytes' => 100]);
 
         $this->postJson('/api/worker/register', [
+            'capability_manifest' => $this->portableWorkerAffinityRefusalManifest(),
             'worker_id' => 'large-worker-payload',
             'task_queue' => 'default',
             'runtime' => 'python',

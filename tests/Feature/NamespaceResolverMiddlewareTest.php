@@ -203,6 +203,7 @@ class NamespaceResolverMiddlewareTest extends TestCase
             'X-Namespace' => 'ghost-namespace',
             WorkerProtocol::HEADER => WorkerProtocol::VERSION,
         ])->postJson('/api/worker/register', [
+            'capability_manifest' => $this->portableWorkerAffinityRefusalManifest(),
             'worker_id' => 'w-1',
             'task_queue' => 'default',
             'supported_workflow_types' => [],

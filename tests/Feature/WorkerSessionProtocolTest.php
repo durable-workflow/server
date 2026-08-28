@@ -62,6 +62,9 @@ class WorkerSessionProtocolTest extends TestCase
             ->assertJsonPath('outcome', 'created')
             ->assertJsonPath('session.session_id', 'gpu-render')
             ->assertJsonPath('session.lease_owner', 'gpu-worker-1')
+            ->assertJsonPath('session.lease_seconds', 120)
+            ->assertJsonPath('session.ttl_seconds', 600)
+            ->assertJsonPath('session.max_concurrent_activities', 1)
             ->assertJsonPath('server_capabilities.worker_session_verbs', ['create', 'heartbeat', 'close']);
 
         $heartbeat = $this->postJson('/api/worker/sessions/gpu-render/heartbeat', [
@@ -88,6 +91,14 @@ class WorkerSessionProtocolTest extends TestCase
         $close->assertOk()
             ->assertJsonPath('admitted', true)
             ->assertJsonPath('outcome', 'closed')
+            ->assertJsonPath('session.status', 'closed');
+
+        $this->deleteJson('/api/worker/sessions/gpu-render', [
+            'worker_id' => 'gpu-worker-1',
+        ], $this->workerHeaders())
+            ->assertOk()
+            ->assertJsonPath('admitted', true)
+            ->assertJsonPath('outcome', 'already_closed')
             ->assertJsonPath('session.status', 'closed');
 
         $this->getJson('/api/worker-sessions/gpu-render', $this->apiHeaders())
@@ -913,7 +924,17 @@ class WorkerSessionProtocolTest extends TestCase
         int $maxConcurrentWorkerSessions = 10,
         ?string $protocolVersion = null,
     ): void {
-        $this->postJson('/api/worker/register', [
+        $requestedProtocol = $protocolVersion ?? WorkerProtocol::VERSION;
+        $workerSupportsSessions = version_compare(
+            $requestedProtocol,
+            WorkerProtocol::PORTABLE_WORKER_AFFINITY_MINIMUM_PROTOCOL_VERSION,
+            '>=',
+        );
+        if ($workerSupportsSessions) {
+            $capabilities = array_values(array_unique([...$capabilities, 'worker_sessions']));
+        }
+
+        $registration = [
             'worker_id' => $workerId,
             'task_queue' => $taskQueue,
             'runtime' => 'php',
@@ -921,7 +942,21 @@ class WorkerSessionProtocolTest extends TestCase
             'supported_activity_types' => $supportedActivityTypes,
             'capabilities' => $capabilities,
             'max_concurrent_worker_sessions' => $maxConcurrentWorkerSessions,
-        ], $protocolVersion === null
+        ];
+        if ($workerSupportsSessions) {
+            $registration['capability_manifest'] = array_replace(
+                $this->portableWorkerAffinityRefusalManifest(),
+                [
+                    'worker_sessions' => [
+                        'supported' => true,
+                        'minimum_protocol_version' => WorkerProtocol::PORTABLE_WORKER_AFFINITY_MINIMUM_PROTOCOL_VERSION,
+                        'implementation' => 'worker_session_protocol_test',
+                    ],
+                ],
+            );
+        }
+
+        $this->postJson('/api/worker/register', $registration, $protocolVersion === null
             ? $this->workerHeaders()
             : $this->workerProtocolHeaders($protocolVersion))
             ->assertCreated();

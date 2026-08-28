@@ -565,6 +565,7 @@ class WorkflowStartVersionPinningTest extends TestCase
     {
         $this->withHeaders($this->workerHeaders())
             ->postJson('/api/worker/register', [
+                'capability_manifest' => $this->portableWorkerAffinityRefusalManifest(),
                 'worker_id' => 'blocked-worker-v1',
                 'task_queue' => 'blocked-q',
                 'runtime' => 'php',
@@ -586,6 +587,7 @@ class WorkflowStartVersionPinningTest extends TestCase
 
         $this->withHeaders($this->workerHeaders())
             ->postJson('/api/worker/register', [
+                'capability_manifest' => $this->portableWorkerAffinityRefusalManifest(),
                 'worker_id' => 'blocked-worker-v2',
                 'task_queue' => 'blocked-q',
                 'runtime' => 'php',
@@ -622,6 +624,7 @@ class WorkflowStartVersionPinningTest extends TestCase
     {
         $this->withHeaders($this->workerHeaders())
             ->postJson('/api/worker/register', [
+                'capability_manifest' => $this->portableWorkerAffinityRefusalManifest(),
                 'worker_id' => 'blocked-worker-v1',
                 'task_queue' => 'no-compatible-q',
                 'runtime' => 'php',
@@ -648,6 +651,7 @@ class WorkflowStartVersionPinningTest extends TestCase
 
         $this->withHeaders($this->workerHeaders())
             ->postJson('/api/worker/register', [
+                'capability_manifest' => $this->portableWorkerAffinityRefusalManifest(),
                 'worker_id' => 'blocked-worker-v2',
                 'task_queue' => 'no-compatible-q',
                 'runtime' => 'php',

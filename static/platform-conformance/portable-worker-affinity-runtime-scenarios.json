@@ -1,0 +1,85 @@
+{
+  "schema": "durable-workflow.v2.platform-conformance.runtime-scenarios",
+  "version": 1,
+  "category": "portable_worker_affinity_runtime_contract",
+  "suite_schema": "durable-workflow.v2.platform-conformance.suite",
+  "suite_version": 45,
+  "description": "Cross-SDK conformance for local activities, worker sessions, sticky execution, and truthful refusal.",
+  "fixture_type": "published_artifact_runtime_scenario_manifest",
+  "result_schema": "durable-workflow.v2.portable-worker-affinity-runtime.result",
+  "result_version": 1,
+  "result_statuses": ["pass", "fail", "unsupported", "not_covered", "runner_blocked"],
+  "minimum_worker_protocol_version": "1.18",
+  "required_capabilities": ["local_activities", "worker_sessions", "sticky_execution"],
+  "artifact_policy": {
+    "published_artifacts_only": true,
+    "requires_published_artifact_versions": true,
+    "rejects_placeholder_versions": true,
+    "required_artifacts": ["server", "workflow-php", "sdk-php", "sdk-python", "sdk-rust"]
+  },
+  "required_matrix": {
+    "runtimes": ["sdk-php", "sdk-python", "sdk-rust"],
+    "capability_expectations": {
+      "sdk-php": {
+        "local_activities": "supported",
+        "worker_sessions": "supported",
+        "sticky_execution": "supported"
+      },
+      "sdk-python": {
+        "local_activities": "explicitly_refused",
+        "worker_sessions": "explicitly_refused",
+        "sticky_execution": "explicitly_refused"
+      },
+      "sdk-rust": {
+        "local_activities": "explicitly_refused",
+        "worker_sessions": "explicitly_refused",
+        "sticky_execution": "explicitly_refused"
+      }
+    },
+    "behavior_cells": [
+      "capability_manifest_truth",
+      "local_activity_replay",
+      "session_holder_loss_and_reacquisition",
+      "sticky_hit",
+      "sticky_eviction",
+      "worker_replacement",
+      "forced_cold_replay",
+      "zero_configuration_defaults"
+    ]
+  },
+  "scenario_requirements": {
+    "capability_manifest_truth": {
+      "required_runtimes": ["sdk-php", "sdk-python", "sdk-rust"],
+      "required_fields": ["runtime", "protocol_version", "flat_capabilities", "capability_manifest", "registration_outcome"],
+      "expected_behavior": "every runtime declares supported or explicitly refused for all three features, and flat routing capabilities exactly match supported manifest entries"
+    },
+    "local_activity_replay": {
+      "required_fields": ["workflow_id", "run_id", "activity_type", "attempts", "terminal_history_event", "replay_side_effect_count"],
+      "expected_behavior": "a supported worker records attempts and one terminal outcome atomically, and replay observes the result without repeating the side effect"
+    },
+    "session_holder_loss_and_reacquisition": {
+      "required_fields": ["session_id", "first_holder", "replacement_holder", "lease_expires_at", "rebuild_observed", "close_outcome"],
+      "expected_behavior": "holder loss releases capacity, reacquisition obeys requirements and TTL, and worker-local resources are rebuilt before use"
+    },
+    "sticky_hit": {
+      "required_fields": ["workflow_id", "run_id", "build_id", "worker_id", "history_mode", "metrics"],
+      "expected_behavior": "an exact identity cache hit increments hit while workflow output remains identical to full durable replay"
+    },
+    "sticky_eviction": {
+      "required_fields": ["cache_capacity", "evicted_identity", "eviction_count", "subsequent_history_mode"],
+      "expected_behavior": "bounded capacity evicts an entry and its next execution uses full durable replay"
+    },
+    "worker_replacement": {
+      "required_fields": ["old_worker_id", "new_worker_id", "affinity_cleared", "subsequent_history_mode"],
+      "expected_behavior": "worker replacement clears stale affinity and forces cold replay before execution"
+    },
+    "forced_cold_replay": {
+      "required_fields": ["trigger", "workflow_id", "run_id", "build_id", "forced_cold_replay_count", "workflow_result"],
+      "expected_behavior": "expiry, cache miss, holder loss, or build mismatch uses complete durable history and reports forced cold replay"
+    },
+    "zero_configuration_defaults": {
+      "required_fields": ["workflow_result", "session_configuration_present", "sticky_configuration_present"],
+      "expected_behavior": "ordinary workflows complete correctly without session or sticky configuration"
+    }
+  }
+}

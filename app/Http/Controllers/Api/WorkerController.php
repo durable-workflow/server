@@ -58,6 +58,7 @@ use Workflow\V2\Models\ActivityExecution;
 use Workflow\V2\Models\WorkflowHistoryEvent;
 use Workflow\V2\Models\WorkflowRun;
 use Workflow\V2\Models\WorkflowTask;
+use Workflow\V2\Support\StickyExecution;
 use Workflow\V2\Support\StructuralLimits;
 use Workflow\V2\Support\WorkerProtocolVersion;
 use Workflow\V2\Support\WorkflowCommandNormalizer;
@@ -192,6 +193,18 @@ class WorkerController
             'supported_activity_types.*' => ['string'],
             'capabilities' => ['nullable', 'array'],
             'capabilities.*' => ['string', 'max:255'],
+            'capability_manifest' => [
+                WorkerProtocol::portableWorkerAffinitySupported(WorkerProtocol::requestVersion($request))
+                    ? 'required'
+                    : 'nullable',
+                'array',
+                'required_array_keys:local_activities,worker_sessions,sticky_execution',
+            ],
+            'capability_manifest.*' => ['array'],
+            'capability_manifest.*.supported' => ['required', 'boolean'],
+            'capability_manifest.*.minimum_protocol_version' => ['required', 'string', 'max:32'],
+            'capability_manifest.*.implementation' => ['nullable', 'string', 'max:255'],
+            'capability_manifest.*.reason' => ['nullable', 'string', 'max:255'],
             'max_concurrent_workflow_tasks' => ['nullable', 'integer', 'min:0'],
             'max_concurrent_activity_tasks' => ['nullable', 'integer', 'min:0'],
             'max_concurrent_worker_sessions' => ['nullable', 'integer', 'min:1'],
@@ -210,6 +223,16 @@ class WorkerController
         ]);
 
         $workerCapabilities = $this->nonEmptyStringArray($validated['capabilities'] ?? []);
+        $capabilityManifest = $this->portableWorkerCapabilityManifest(
+            is_array($validated['capability_manifest'] ?? null) ? $validated['capability_manifest'] : [],
+        );
+        if ($response = $this->guardPortableWorkerCapabilityManifest(
+            $request,
+            $workerCapabilities,
+            $capabilityManifest,
+        )) {
+            return $response;
+        }
         $metadataCapabilityProtocolMismatch = WorkflowMetadataCapabilityPolicy::firstProtocolMismatch(
             $workerCapabilities,
             WorkerProtocol::requestVersion($request),
@@ -325,6 +348,7 @@ class WorkerController
                 $registrationStatus,
                 $releaseLeasesForRegistration,
                 $workerCapabilities,
+                $capabilityManifest,
             ): WorkerRegistration {
                 $registration = WorkerRegistration::updateOrCreate(
                     [
@@ -341,6 +365,7 @@ class WorkerController
                         'workflow_command_contracts' => $workflowCommandContracts,
                         'supported_activity_types' => $validated['supported_activity_types'] ?? [],
                         'capabilities' => $workerCapabilities,
+                        'capability_manifest' => $capabilityManifest,
                         'max_concurrent_workflow_tasks' => $maxWorkflowTasks,
                         'max_concurrent_activity_tasks' => $maxActivityTasks,
                         'max_concurrent_worker_sessions' => $maxWorkerSessions,
@@ -398,6 +423,7 @@ class WorkerController
             'runtime' => $registration->runtime,
             'build_id' => $registration->build_id,
             'capabilities' => $this->nonEmptyStringArray($registration->capabilities),
+            'capability_manifest' => $registration->capability_manifest ?? [],
             'status' => $registration->status,
             'heartbeat_interval_seconds' => $this->advertisedHeartbeatIntervalSeconds(),
         ], 201);
@@ -993,6 +1019,24 @@ class WorkerController
 
     private function releaseLeasedWorkflowTasksForReplacedWorker(string $namespace, string $workerId): void
     {
+        WorkflowRun::query()
+            ->where('namespace', $namespace)
+            ->where('sticky_worker_id', $workerId)
+            ->update([
+                'sticky_worker_id' => null,
+                'sticky_until' => null,
+            ]);
+
+        WorkflowTask::query()
+            ->where('namespace', $namespace)
+            ->where('sticky_worker_id', $workerId)
+            ->update([
+                'sticky_worker_id' => null,
+                'sticky_until' => null,
+                'sticky_replay_mode' => StickyExecution::MODE_FORCED_COLD_REPLAY,
+                'sticky_claimed_at' => now(),
+            ]);
+
         WorkflowTask::query()
             ->where('namespace', $namespace)
             ->where('task_type', TaskType::Workflow->value)
@@ -1003,8 +1047,8 @@ class WorkerController
                 'leased_at' => null,
                 'lease_owner' => null,
                 'lease_expires_at' => null,
-                'sticky_replay_mode' => null,
-                'sticky_claimed_at' => null,
+                'sticky_replay_mode' => StickyExecution::MODE_FORCED_COLD_REPLAY,
+                'sticky_claimed_at' => now(),
                 'last_claim_failed_at' => null,
                 'last_claim_error' => null,
             ]);
@@ -1410,6 +1454,22 @@ class WorkerController
             'commands.*.schedule_to_start_timeout' => ['nullable', 'integer', 'min:1'],
             'commands.*.schedule_to_close_timeout' => ['nullable', 'integer', 'min:1'],
             'commands.*.heartbeat_timeout' => ['nullable', 'integer', 'min:1'],
+            'commands.*.execution_mode' => ['nullable', 'string', 'in:local'],
+            'commands.*.outcome' => ['nullable', 'string', 'in:completed,failed,timed_out,cancelled'],
+            'commands.*.attempts' => ['nullable', 'array', 'max:100'],
+            'commands.*.attempts.*.attempt_id' => ['nullable', 'string', 'max:255'],
+            'commands.*.attempts.*.attempt_number' => ['required', 'integer', 'min:1'],
+            'commands.*.attempts.*.outcome' => ['required', 'string', 'in:completed,failed,timed_out,cancelled'],
+            'commands.*.attempts.*.duration_ms' => ['nullable', 'integer', 'min:0'],
+            'commands.*.attempts.*.message' => ['nullable', 'string'],
+            'commands.*.attempts.*.exception_type' => ['nullable', 'string', 'max:255'],
+            'commands.*.attempts.*.non_retryable' => ['nullable', 'boolean'],
+            'commands.*.attempts.*.timeout_kind' => ['nullable', 'string', 'in:start_to_close,schedule_to_close,heartbeat'],
+            'commands.*.attempts.*.retry_reason' => ['nullable', 'string', 'in:failure,timeout,cold_replay'],
+            'commands.*.attempts.*.backoff_seconds' => ['nullable', 'integer', 'min:0'],
+            'commands.*.attempts.*.heartbeats' => ['nullable', 'array', 'max:1000'],
+            'commands.*.attempts.*.heartbeats.*.details' => ['nullable', 'array'],
+            'commands.*.attempts.*.heartbeats.*.elapsed_ms' => ['nullable', 'integer', 'min:0'],
             'commands.*.worker_session' => ['nullable', 'array'],
             'commands.*.worker_session.session_id' => ['nullable', 'string', 'max:255'],
             'commands.*.worker_session.connection' => ['nullable', 'string', 'max:255'],
@@ -1426,6 +1486,7 @@ class WorkerController
             'commands.*.workflow_type' => ['nullable', 'string'],
             'commands.*.delay_seconds' => ['nullable', 'integer', 'min:0'],
             'commands.*.message' => ['nullable', 'string'],
+            'commands.*.timeout_kind' => ['nullable', 'string', 'in:start_to_close,schedule_to_close,heartbeat'],
             'commands.*.payload_codec' => ['nullable', 'string'],
             'commands.*.update_id' => ['nullable', 'string'],
             'commands.*.exception_class' => ['nullable', 'string'],
@@ -1473,6 +1534,17 @@ class WorkerController
             'commands.*.workflow_stream.max_pending_items' => ['nullable', 'integer', 'min:1'],
             'commands.*.workflow_stream.error_reason' => ['nullable', 'string', 'max:191'],
             'commands.*.workflow_stream.retention_seconds' => ['nullable', 'integer', 'min:1'],
+            'sticky_cache' => ['nullable', 'array'],
+            'sticky_cache.worker_id' => ['required_with:sticky_cache', 'string', 'max:255'],
+            'sticky_cache.workflow_id' => ['required_with:sticky_cache', 'string', 'max:255'],
+            'sticky_cache.run_id' => ['required_with:sticky_cache', 'string', 'max:255'],
+            'sticky_cache.build_id' => ['required_with:sticky_cache', 'string', 'max:255'],
+            'sticky_cache.ttl_seconds' => ['required_with:sticky_cache', 'integer', 'min:1', 'max:3600'],
+            'sticky_cache.metrics' => ['nullable', 'array'],
+            'sticky_cache.metrics.hit' => ['nullable', 'integer', 'min:0'],
+            'sticky_cache.metrics.miss' => ['nullable', 'integer', 'min:0'],
+            'sticky_cache.metrics.eviction' => ['nullable', 'integer', 'min:0'],
+            'sticky_cache.metrics.forced_cold_replay' => ['nullable', 'integer', 'min:0'],
         ]);
 
         $commands = $this->normalizeWorkflowTaskCommandIntegerFields($validated['commands']);
@@ -1504,6 +1576,18 @@ class WorkerController
             $taskId,
             (int) $validated['workflow_task_attempt'],
             $commands,
+        )) {
+            return $response;
+        }
+
+        if ($response = $this->guardPortableWorkerAffinityCompletion(
+            $request,
+            (string) $namespace,
+            $validated['lease_owner'],
+            $taskId,
+            (int) $validated['workflow_task_attempt'],
+            $commands,
+            is_array($validated['sticky_cache'] ?? null) ? $validated['sticky_cache'] : null,
         )) {
             return $response;
         }
@@ -1636,6 +1720,19 @@ class WorkerController
                             return $response;
                         }
 
+                        if ($response = $this->guardPortableWorkerAffinityCompletion(
+                            $request,
+                            (string) $namespace,
+                            $validated['lease_owner'],
+                            $taskId,
+                            (int) $validated['workflow_task_attempt'],
+                            $commands,
+                            is_array($validated['sticky_cache'] ?? null) ? $validated['sticky_cache'] : null,
+                            $leaseWorker,
+                        )) {
+                            return $response;
+                        }
+
                         $commands = $this->canonicalizeWorkflowStreamPayloadCodecs($commands);
                         $commands = app(WorkflowStreamCommandProcessor::class)->process(
                             $taskId,
@@ -1644,6 +1741,13 @@ class WorkerController
                         );
                         $commands = WorkflowCommandNormalizer::normalize($commands);
                         $outcome = $bridge->complete($taskId, $commands);
+                        $this->applyStickyCacheClaim(
+                            $taskId,
+                            $validated['lease_owner'],
+                            is_array($validated['sticky_cache'] ?? null) ? $validated['sticky_cache'] : null,
+                            $leaseWorker,
+                            $outcome,
+                        );
                         $this->persistTypedSearchAttributeHistoryIdentity($taskId, $commands, $outcome);
                         $this->terminalEventAttribution->record($request, $taskId, $outcome);
                         $this->messageStreams->recordCompletion(
@@ -1800,6 +1904,266 @@ class WorkerController
                 $minimum,
             ),
         ], 409);
+    }
+
+    /**
+     * @param  array<string, mixed>  $manifest
+     * @return array<string, array<string, mixed>>
+     */
+    private function portableWorkerCapabilityManifest(array $manifest): array
+    {
+        $normalized = [];
+
+        foreach (WorkerProtocol::PORTABLE_WORKER_AFFINITY_CAPABILITIES as $capability) {
+            $entry = $manifest[$capability] ?? null;
+
+            if (! is_array($entry)) {
+                continue;
+            }
+
+            $normalized[$capability] = [
+                'supported' => (bool) ($entry['supported'] ?? false),
+                'minimum_protocol_version' => trim((string) ($entry['minimum_protocol_version'] ?? '')),
+            ];
+
+            foreach (['implementation', 'reason'] as $field) {
+                $value = $this->stringValue($entry[$field] ?? null);
+
+                if ($value !== null) {
+                    $normalized[$capability][$field] = $value;
+                }
+            }
+        }
+
+        return $normalized;
+    }
+
+    /**
+     * Reject ambiguous or optimistic advertisements at the additive protocol floor.
+     *
+     * @param  list<string>  $capabilities
+     * @param  array<string, array<string, mixed>>  $manifest
+     */
+    private function guardPortableWorkerCapabilityManifest(
+        Request $request,
+        array $capabilities,
+        array $manifest,
+    ): ?JsonResponse {
+        $requestedVersion = WorkerProtocol::requestVersion($request);
+
+        foreach (WorkerProtocol::PORTABLE_WORKER_AFFINITY_CAPABILITIES as $capability) {
+            $advertised = in_array($capability, $capabilities, true);
+            $entry = $manifest[$capability] ?? null;
+
+            if ($entry === null && ! $advertised) {
+                continue;
+            }
+
+            if ($entry === null || (bool) ($entry['supported'] ?? false) !== $advertised) {
+                return WorkerProtocol::json([
+                    'registered' => false,
+                    'reason' => 'worker_capability_manifest_mismatch',
+                    'capability' => $capability,
+                    'requested_version' => $requestedVersion,
+                    'minimum_protocol_version' => WorkerProtocol::PORTABLE_WORKER_AFFINITY_MINIMUM_PROTOCOL_VERSION,
+                    'remediation' => 'Keep the structured supported flag and the flat routing capability in exact agreement.',
+                ], 409);
+            }
+
+            $minimum = (string) ($entry['minimum_protocol_version'] ?? '');
+            if ($minimum === ''
+                || version_compare($minimum, WorkerProtocol::PORTABLE_WORKER_AFFINITY_MINIMUM_PROTOCOL_VERSION, '<')
+                || ($advertised && ($requestedVersion === null || version_compare($requestedVersion, $minimum, '<')))
+            ) {
+                return WorkerProtocol::json([
+                    'registered' => false,
+                    'reason' => 'worker_capability_protocol_floor_mismatch',
+                    'capability' => $capability,
+                    'requested_version' => $requestedVersion,
+                    'minimum_protocol_version' => WorkerProtocol::PORTABLE_WORKER_AFFINITY_MINIMUM_PROTOCOL_VERSION,
+                    'remediation' => sprintf(
+                        'Advertise %s only from a worker targeting protocol %s or newer.',
+                        $capability,
+                        WorkerProtocol::PORTABLE_WORKER_AFFINITY_MINIMUM_PROTOCOL_VERSION,
+                    ),
+                ], 409);
+            }
+        }
+
+        return null;
+    }
+
+    /**
+     * @param  list<array<string, mixed>>  $commands
+     * @param  array<string, mixed>|null  $stickyCache
+     */
+    private function guardPortableWorkerAffinityCompletion(
+        Request $request,
+        string $namespace,
+        string $leaseOwner,
+        string $taskId,
+        int $workflowTaskAttempt,
+        array $commands,
+        ?array $stickyCache,
+        ?WorkerRegistration $worker = null,
+    ): ?JsonResponse {
+        $required = [];
+
+        foreach ($commands as $command) {
+            if (($command['type'] ?? null) === 'record_local_activity') {
+                $required[] = 'local_activities';
+            }
+        }
+
+        if ($this->commandsUseWorkerSessions($commands)) {
+            $required[] = 'worker_sessions';
+        }
+
+        if ($stickyCache !== null) {
+            $required[] = 'sticky_execution';
+        }
+
+        $required = array_values(array_unique($required));
+
+        if ($required === []) {
+            return null;
+        }
+
+        $requestedVersion = WorkerProtocol::requestVersion($request);
+        if ($requestedVersion === null
+            || version_compare($requestedVersion, WorkerProtocol::PORTABLE_WORKER_AFFINITY_MINIMUM_PROTOCOL_VERSION, '<')
+        ) {
+            return $this->portableWorkerAffinityRejection(
+                $taskId,
+                $workflowTaskAttempt,
+                'portable_worker_affinity_protocol_floor_unavailable',
+                $required[0],
+                $requestedVersion,
+            );
+        }
+
+        $worker ??= WorkerRegistration::query()
+            ->where('namespace', $namespace)
+            ->where('worker_id', $leaseOwner)
+            ->first();
+
+        $capabilities = $this->nonEmptyStringArray($worker?->capabilities);
+        $manifest = is_array($worker?->capability_manifest) ? $worker->capability_manifest : [];
+
+        foreach ($required as $capability) {
+            $entry = $manifest[$capability] ?? null;
+
+            if (! in_array($capability, $capabilities, true)
+                || ! is_array($entry)
+                || ($entry['supported'] ?? null) !== true
+            ) {
+                return $this->portableWorkerAffinityRejection(
+                    $taskId,
+                    $workflowTaskAttempt,
+                    'worker_capability_not_supported',
+                    $capability,
+                    $requestedVersion,
+                );
+            }
+        }
+
+        if ($stickyCache !== null) {
+            $task = WorkflowTask::query()->with('run')->find($taskId);
+            $expectedBuildId = $this->stringValue($worker?->build_id)
+                ?? $this->stringValue($worker?->sdk_version);
+
+            if ($task === null
+                || (string) ($stickyCache['worker_id'] ?? '') !== $leaseOwner
+                || (string) ($stickyCache['run_id'] ?? '') !== (string) $task->workflow_run_id
+                || (string) ($stickyCache['workflow_id'] ?? '') !== (string) $task->run?->workflow_instance_id
+                || $expectedBuildId === null
+                || (string) ($stickyCache['build_id'] ?? '') !== $expectedBuildId
+            ) {
+                return $this->portableWorkerAffinityRejection(
+                    $taskId,
+                    $workflowTaskAttempt,
+                    'sticky_cache_identity_mismatch',
+                    'sticky_execution',
+                    $requestedVersion,
+                );
+            }
+        }
+
+        return null;
+    }
+
+    private function portableWorkerAffinityRejection(
+        string $taskId,
+        int $workflowTaskAttempt,
+        string $reason,
+        string $capability,
+        ?string $requestedVersion,
+    ): JsonResponse {
+        return WorkerProtocol::json([
+            'task_id' => $taskId,
+            'workflow_task_attempt' => $workflowTaskAttempt,
+            'outcome' => 'rejected',
+            'recorded' => false,
+            'reason' => $reason,
+            'capability' => $capability,
+            'requested_version' => $requestedVersion,
+            'minimum_protocol_version' => WorkerProtocol::PORTABLE_WORKER_AFFINITY_MINIMUM_PROTOCOL_VERSION,
+            'remediation' => 'Use cold durable replay unless the registered worker manifest explicitly supports the required capability and exact cache identity.',
+        ], 409);
+    }
+
+    /**
+     * @param  array<string, mixed>|null  $stickyCache
+     * @param  array<string, mixed>  $outcome
+     */
+    private function applyStickyCacheClaim(
+        string $taskId,
+        string $leaseOwner,
+        ?array $stickyCache,
+        ?WorkerRegistration $worker,
+        array $outcome,
+    ): void {
+        if ($stickyCache === null || $worker === null) {
+            return;
+        }
+
+        $task = WorkflowTask::query()->find($taskId);
+
+        if ($task === null) {
+            return;
+        }
+
+        $runStatus = is_string($outcome['run_status'] ?? null)
+            ? RunStatus::tryFrom($outcome['run_status'])
+            : null;
+        $retainAffinity = $runStatus !== null && ! $runStatus->isTerminal();
+        $stickyUntil = $retainAffinity
+            ? now()->addSeconds((int) $stickyCache['ttl_seconds'])
+            : null;
+
+        WorkflowRun::query()
+            ->whereKey($task->workflow_run_id)
+            ->update([
+                'sticky_worker_id' => $retainAffinity ? $leaseOwner : null,
+                'sticky_until' => $stickyUntil,
+            ]);
+
+        WorkflowTask::query()
+            ->where('workflow_run_id', $task->workflow_run_id)
+            ->where('task_type', TaskType::Workflow->value)
+            ->where('status', TaskStatus::Ready->value)
+            ->update([
+                'sticky_worker_id' => $retainAffinity ? $leaseOwner : null,
+                'sticky_until' => $stickyUntil,
+                'sticky_replay_mode' => null,
+                'sticky_claimed_at' => null,
+            ]);
+
+        $processMetrics = is_array($worker->process_metrics) ? $worker->process_metrics : [];
+        $processMetrics['sticky_cache'] = is_array($stickyCache['metrics'] ?? null)
+            ? $stickyCache['metrics']
+            : [];
+        $worker->forceFill(['process_metrics' => $processMetrics])->save();
     }
 
     /**
@@ -2165,14 +2529,16 @@ class WorkerController
             }
 
             if ($this->hasCommandValue($command, 'retry_policy')
-                && ! in_array($type, ['schedule_activity', 'start_child_workflow'], true)
+                && ! in_array($type, ['schedule_activity', 'record_local_activity', 'start_child_workflow'], true)
             ) {
                 $errors["commands.{$index}.retry_policy"][] =
                     'retry_policy is only supported for schedule_activity and start_child_workflow commands.';
             }
 
             foreach (['start_to_close_timeout', 'schedule_to_start_timeout', 'schedule_to_close_timeout', 'heartbeat_timeout'] as $field) {
-                if ($this->hasCommandValue($command, $field) && $type !== 'schedule_activity') {
+                if ($this->hasCommandValue($command, $field)
+                    && ! in_array($type, ['schedule_activity', 'record_local_activity'], true)
+                ) {
                     $errors["commands.{$index}.{$field}"][] =
                         "{$field} is only supported for schedule_activity commands.";
                 }
@@ -2191,7 +2557,7 @@ class WorkerController
             }
 
             if ($this->hasCommandValue($command, 'non_retryable')
-                && ! in_array($type, ['fail_workflow', 'fail_update'], true)
+                && ! in_array($type, ['fail_workflow', 'fail_update', 'record_local_activity'], true)
             ) {
                 $errors["commands.{$index}.non_retryable"][] =
                     'non_retryable is only supported for fail_workflow and fail_update commands.';
@@ -2219,6 +2585,10 @@ class WorkerController
             }
 
             if ($type === 'schedule_activity') {
+                $this->validateActivityTimeoutEnvelope($command, $index, $errors);
+            }
+
+            if ($type === 'record_local_activity') {
                 $this->validateActivityTimeoutEnvelope($command, $index, $errors);
             }
 

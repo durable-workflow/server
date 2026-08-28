@@ -298,6 +298,7 @@ class WorkflowMemoWorkerRestartContractTest extends TestCase
     private function registerMemoWorker(string $workerId, string $taskQueue, string $workflowType): void
     {
         $this->postJson('/api/worker/register', [
+            'capability_manifest' => $this->portableWorkerAffinityRefusalManifest(),
             'worker_id' => $workerId,
             'task_queue' => $taskQueue,
             'runtime' => 'php',

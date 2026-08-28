@@ -26,6 +26,7 @@ use Workflow\V2\Enums\TaskStatus;
 use Workflow\V2\Enums\TaskType;
 use Workflow\V2\Exceptions\StructuralLimitExceededException;
 use Workflow\V2\Models\ActivityAttempt;
+use Workflow\V2\Models\ActivityExecution;
 use Workflow\V2\Models\WorkflowChildCall;
 use Workflow\V2\Models\WorkflowFailure;
 use Workflow\V2\Models\WorkflowHistoryEvent;
@@ -33,6 +34,7 @@ use Workflow\V2\Models\WorkflowInstance;
 use Workflow\V2\Models\WorkflowRun;
 use Workflow\V2\Models\WorkflowTask;
 use Workflow\V2\Support\DefaultWorkflowTaskBridge;
+use Workflow\V2\Support\StickyExecution;
 use Workflow\V2\Support\WorkerCompatibilityFleet;
 use Workflow\V2\Support\WorkerHistoryPayloadContract;
 use Workflow\V2\Support\WorkerProtocolVersion;
@@ -367,6 +369,7 @@ class WorkflowWorkerProtocolTest extends TestCase
         $this->withHeaders([
             'X-Namespace' => 'default',
         ])->postJson('/api/worker/register', [
+            'capability_manifest' => $this->portableWorkerAffinityRefusalManifest(),
             'worker_id' => 'php-worker-register-missing-version',
             'task_queue' => 'external-workflows',
             'runtime' => 'php',
@@ -379,6 +382,7 @@ class WorkflowWorkerProtocolTest extends TestCase
 
         $register = $this->withHeaders($this->workerHeaders())
             ->postJson('/api/worker/register', [
+                'capability_manifest' => $this->portableWorkerAffinityRefusalManifest(),
                 'worker_id' => 'php-worker-register',
                 'task_queue' => 'external-workflows',
                 'runtime' => 'php',
@@ -464,6 +468,7 @@ class WorkflowWorkerProtocolTest extends TestCase
             'X-Namespace' => 'default',
             'X-Durable-Workflow-Protocol-Version' => '999',
         ])->postJson('/api/worker/register', [
+            'capability_manifest' => $this->portableWorkerAffinityRefusalManifest(),
             'worker_id' => 'php-worker-register-unsupported',
             'task_queue' => 'external-workflows',
             'runtime' => 'php',
@@ -480,6 +485,7 @@ class WorkflowWorkerProtocolTest extends TestCase
 
         $register = $this->withHeaders($this->workerHeaders())
             ->postJson('/api/worker/register', [
+                'capability_manifest' => $this->portableWorkerAffinityRefusalManifest(),
                 'worker_id' => 'rust-worker-register',
                 'task_queue' => 'rust-workers',
                 'runtime' => 'rust',
@@ -502,6 +508,335 @@ class WorkflowWorkerProtocolTest extends TestCase
             'sdk_version' => 'durable-workflow-rust/0.1.0',
             'status' => 'active',
         ]);
+    }
+
+    public function test_portable_worker_affinity_capability_manifest_is_truthful_and_persisted(): void
+    {
+        $this->createNamespace('default', 'Default namespace');
+        $refusalManifest = $this->portableWorkerAffinityRefusalManifest();
+
+        $this->withHeaders($this->workerHeaders())
+            ->postJson('/api/worker/register', [
+                'worker_id' => 'python-omitting-portable-affinity',
+                'task_queue' => 'portable-affinity',
+                'runtime' => 'python',
+            ])
+            ->assertUnprocessable()
+            ->assertJsonValidationErrors(['capability_manifest']);
+
+        $this->withHeaders($this->workerHeaders())
+            ->postJson('/api/worker/register', [
+                'worker_id' => 'python-partial-portable-affinity',
+                'task_queue' => 'portable-affinity',
+                'runtime' => 'python',
+                'capability_manifest' => [
+                    'local_activities' => $refusalManifest['local_activities'],
+                ],
+            ])
+            ->assertUnprocessable()
+            ->assertJsonValidationErrors(['capability_manifest']);
+
+        $this->withHeaders($this->workerHeaders())
+            ->postJson('/api/worker/register', [
+                'worker_id' => 'python-refusing-portable-affinity',
+                'task_queue' => 'portable-affinity',
+                'runtime' => 'python',
+                'capability_manifest' => $refusalManifest,
+            ])
+            ->assertCreated()
+            ->assertJsonPath('capability_manifest', $refusalManifest);
+
+        $this->assertSame(
+            $refusalManifest,
+            WorkerRegistration::query()
+                ->where('worker_id', 'python-refusing-portable-affinity')
+                ->firstOrFail()
+                ->capability_manifest,
+        );
+
+        $this->withHeaders($this->workerHeaders())
+            ->postJson('/api/worker/register', [
+                'worker_id' => 'php-optimistic-portable-affinity',
+                'task_queue' => 'portable-affinity',
+                'runtime' => 'php',
+                'capabilities' => ['local_activities'],
+                'capability_manifest' => $refusalManifest,
+            ])
+            ->assertConflict()
+            ->assertJsonPath('reason', 'worker_capability_manifest_mismatch')
+            ->assertJsonPath('capability', 'local_activities');
+    }
+
+    public function test_local_activity_completion_fails_closed_without_registered_support(): void
+    {
+        Queue::fake();
+        $this->configureWorkflowTypes();
+        $this->createNamespace('default', 'Default namespace');
+
+        $start = $this->withHeaders($this->apiHeaders())->postJson('/api/workflows', [
+            'workflow_id' => 'wf-local-activity-refused',
+            'workflow_type' => 'tests.external-greeting-workflow',
+            'task_queue' => 'portable-affinity',
+            'input' => ['Ada'],
+        ])->assertCreated();
+
+        $this->withHeaders($this->workerHeaders())->postJson('/api/worker/register', [
+            'worker_id' => 'python-local-activity-refused',
+            'task_queue' => 'portable-affinity',
+            'runtime' => 'python',
+            'supported_workflow_types' => ['tests.external-greeting-workflow'],
+            'capability_manifest' => array_replace($this->portableWorkerAffinityRefusalManifest(), [
+                'local_activities' => [
+                    'supported' => false,
+                    'minimum_protocol_version' => '1.18',
+                    'reason' => 'not_implemented',
+                ],
+            ]),
+        ])->assertCreated();
+
+        $poll = $this->withHeaders($this->workerHeaders())->postJson('/api/worker/workflow-tasks/poll', [
+            'worker_id' => 'python-local-activity-refused',
+            'task_queue' => 'portable-affinity',
+        ])->assertOk();
+
+        $this->withHeaders($this->workerHeaders())
+            ->postJson('/api/worker/workflow-tasks/'.$poll->json('task.task_id').'/complete', [
+                'lease_owner' => 'python-local-activity-refused',
+                'workflow_task_attempt' => $poll->json('task.workflow_task_attempt'),
+                'commands' => [[
+                    'type' => 'record_local_activity',
+                    'activity_type' => 'charge-card',
+                    'arguments' => Serializer::serialize(['order-1']),
+                    'result' => Serializer::serialize('receipt-1'),
+                    'outcome' => 'completed',
+                    'attempts' => [['attempt_number' => 1, 'outcome' => 'completed']],
+                ]],
+            ])
+            ->assertConflict()
+            ->assertJsonPath('reason', 'worker_capability_not_supported')
+            ->assertJsonPath('capability', 'local_activities')
+            ->assertJsonPath('recorded', false);
+
+        $this->assertSame('pending', $start->json('status'));
+    }
+
+    public function test_local_activity_completion_records_one_atomic_replay_sequence(): void
+    {
+        Queue::fake();
+        $this->configureWorkflowTypes();
+        $this->createNamespace('default', 'Default namespace');
+
+        $start = $this->withHeaders($this->apiHeaders())->postJson('/api/workflows', [
+            'workflow_id' => 'wf-local-activity-supported',
+            'workflow_type' => 'tests.external-greeting-workflow',
+            'task_queue' => 'portable-affinity',
+            'input' => ['Ada'],
+        ])->assertCreated();
+        $runId = (string) $start->json('run_id');
+
+        $this->withHeaders($this->workerHeaders())->postJson('/api/worker/register', [
+            'worker_id' => 'php-local-activity-supported',
+            'task_queue' => 'portable-affinity',
+            'runtime' => 'php',
+            'supported_workflow_types' => ['tests.external-greeting-workflow'],
+            'capabilities' => ['local_activities'],
+            'capability_manifest' => array_replace($this->portableWorkerAffinityRefusalManifest(), [
+                'local_activities' => [
+                    'supported' => true,
+                    'minimum_protocol_version' => '1.18',
+                    'implementation' => 'record_local_activity',
+                ],
+            ]),
+        ])->assertCreated();
+
+        $poll = $this->withHeaders($this->workerHeaders())->postJson('/api/worker/workflow-tasks/poll', [
+            'worker_id' => 'php-local-activity-supported',
+            'task_queue' => 'portable-affinity',
+        ])->assertOk();
+
+        $this->withHeaders($this->workerHeaders())
+            ->postJson('/api/worker/workflow-tasks/'.$poll->json('task.task_id').'/complete', [
+                'lease_owner' => 'php-local-activity-supported',
+                'workflow_task_attempt' => $poll->json('task.workflow_task_attempt'),
+                'commands' => [[
+                    'type' => 'record_local_activity',
+                    'activity_type' => 'charge-card',
+                    'result' => Serializer::serialize('receipt-1'),
+                    'outcome' => 'completed',
+                    'attempts' => [
+                        [
+                            'attempt_number' => 1,
+                            'outcome' => 'failed',
+                            'message' => 'retry once',
+                            'retry_reason' => 'failure',
+                            'backoff_seconds' => 1,
+                        ],
+                        ['attempt_number' => 1, 'outcome' => 'completed'],
+                    ],
+                    'retry_policy' => ['max_attempts' => 2, 'backoff_seconds' => [1]],
+                    'execution_mode' => 'local',
+                ]],
+            ])
+            ->assertUnprocessable()
+            ->assertJsonValidationErrors(['commands.0.attempts.1.attempt_number']);
+
+        $this->withHeaders($this->workerHeaders())
+            ->postJson('/api/worker/workflow-tasks/'.$poll->json('task.task_id').'/complete', [
+                'lease_owner' => 'php-local-activity-supported',
+                'workflow_task_attempt' => $poll->json('task.workflow_task_attempt'),
+                'commands' => [
+                    [
+                        'type' => 'record_local_activity',
+                        'activity_type' => 'charge-card',
+                        'arguments' => Serializer::serialize(['order-1']),
+                        'result' => Serializer::serialize('receipt-1'),
+                        'outcome' => 'completed',
+                        'attempts' => [
+                            [
+                                'attempt_id' => 'local-attempt-1',
+                                'attempt_number' => 1,
+                                'outcome' => 'failed',
+                                'duration_ms' => 12,
+                                'message' => 'retry once',
+                                'retry_reason' => 'failure',
+                                'backoff_seconds' => 1,
+                            ],
+                            [
+                                'attempt_id' => 'local-attempt-2',
+                                'attempt_number' => 2,
+                                'outcome' => 'completed',
+                                'duration_ms' => 7,
+                            ],
+                        ],
+                        'retry_policy' => ['max_attempts' => 2, 'backoff_seconds' => [1]],
+                        'execution_mode' => 'local',
+                    ],
+                    [
+                        'type' => 'schedule_activity',
+                        'activity_type' => 'tests.external-greeting-activity',
+                        'arguments' => Serializer::serialize(['Ada']),
+                        'queue' => 'external-activities',
+                    ],
+                ],
+            ])
+            ->assertOk()
+            ->assertJsonPath('run_status', 'waiting');
+
+        $execution = ActivityExecution::query()
+            ->where('workflow_run_id', $runId)
+            ->where('activity_type', 'charge-card')
+            ->sole();
+        $this->assertSame('charge-card', $execution->activity_type);
+        $this->assertSame(2, $execution->attempt_count);
+        $this->assertSame('receipt-1', $execution->activityResult());
+        $attempts = ActivityAttempt::query()
+            ->where('activity_execution_id', $execution->id)
+            ->orderBy('attempt_number')
+            ->get();
+        $this->assertSame(['failed', 'completed'], $attempts->pluck('status')
+            ->map(static fn (ActivityAttemptStatus $status): string => $status->value)
+            ->all());
+        $this->assertSame(
+            ['local-attempt-1', 'local-attempt-2'],
+            $attempts->pluck('worker_attempt_id')->all(),
+        );
+        $this->assertSame((string) $attempts->last()->id, $execution->current_attempt_id);
+        $this->assertSame(0, WorkflowFailure::query()
+            ->where('source_kind', 'activity_execution')
+            ->where('source_id', $execution->id)
+            ->count());
+        $this->assertSame(1, WorkflowTask::query()
+            ->where('workflow_run_id', $runId)
+            ->where('task_type', TaskType::Activity->value)
+            ->count());
+        $this->assertSame([
+            HistoryEventType::ActivityScheduled->value,
+            HistoryEventType::ActivityStarted->value,
+            HistoryEventType::ActivityRetryScheduled->value,
+            HistoryEventType::ActivityStarted->value,
+            HistoryEventType::ActivityCompleted->value,
+            HistoryEventType::ActivityScheduled->value,
+        ], WorkflowHistoryEvent::query()
+            ->where('workflow_run_id', $runId)
+            ->whereIn('event_type', [
+                HistoryEventType::ActivityScheduled->value,
+                HistoryEventType::ActivityStarted->value,
+                HistoryEventType::ActivityRetryScheduled->value,
+                HistoryEventType::ActivityCompleted->value,
+            ])
+            ->orderBy('sequence')
+            ->pluck('event_type')
+            ->map(static fn (HistoryEventType $eventType): string => $eventType->value)
+            ->all());
+    }
+
+    public function test_sticky_claim_requires_exact_identity_and_persists_only_as_an_optimization(): void
+    {
+        Queue::fake();
+        $this->configureWorkflowTypes();
+        $this->createNamespace('default', 'Default namespace');
+
+        $start = $this->withHeaders($this->apiHeaders())->postJson('/api/workflows', [
+            'workflow_id' => 'wf-sticky-service-worker',
+            'workflow_type' => 'tests.external-greeting-workflow',
+            'task_queue' => 'portable-affinity',
+            'input' => ['Ada'],
+        ])->assertCreated();
+        $runId = (string) $start->json('run_id');
+
+        $capabilities = ['local_activities', 'worker_sessions', 'sticky_execution'];
+        $manifest = [];
+        foreach ($capabilities as $capability) {
+            $manifest[$capability] = [
+                'supported' => true,
+                'minimum_protocol_version' => '1.18',
+                'implementation' => 'php-worker',
+            ];
+        }
+        $this->withHeaders($this->workerHeaders())->postJson('/api/worker/register', [
+            'worker_id' => 'php-sticky-worker',
+            'task_queue' => 'portable-affinity',
+            'runtime' => 'php',
+            'sdk_version' => 'durable-workflow-php/test',
+            'build_id' => 'build-a',
+            'supported_workflow_types' => ['tests.external-greeting-workflow'],
+            'capabilities' => $capabilities,
+            'capability_manifest' => $manifest,
+        ])->assertCreated();
+
+        $poll = $this->withHeaders($this->workerHeaders())->postJson('/api/worker/workflow-tasks/poll', [
+            'worker_id' => 'php-sticky-worker',
+            'task_queue' => 'portable-affinity',
+            'build_id' => 'build-a',
+        ])->assertOk();
+        $taskId = (string) $poll->json('task.task_id');
+
+        $this->withHeaders($this->workerHeaders())
+            ->postJson("/api/worker/workflow-tasks/{$taskId}/complete", [
+                'lease_owner' => 'php-sticky-worker',
+                'workflow_task_attempt' => $poll->json('task.workflow_task_attempt'),
+                'commands' => [['type' => 'start_timer', 'delay_seconds' => 5]],
+                'sticky_cache' => [
+                    'worker_id' => 'php-sticky-worker',
+                    'workflow_id' => 'wf-sticky-service-worker',
+                    'run_id' => $runId,
+                    'build_id' => 'build-a',
+                    'ttl_seconds' => 120,
+                    'metrics' => ['hit' => 1, 'miss' => 2, 'eviction' => 3, 'forced_cold_replay' => 4],
+                ],
+            ])
+            ->assertOk();
+
+        $run = WorkflowRun::query()->findOrFail($runId);
+        $this->assertSame('php-sticky-worker', $run->sticky_worker_id);
+        $this->assertNotNull($run->sticky_until);
+        $this->assertSame(
+            ['hit' => 1, 'miss' => 2, 'eviction' => 3, 'forced_cold_replay' => 4],
+            WorkerRegistration::query()
+                ->where('worker_id', 'php-sticky-worker')
+                ->firstOrFail()
+                ->process_metrics['sticky_cache'],
+        );
     }
 
     public function test_worker_heartbeat_is_scoped_to_the_resolved_namespace(): void
@@ -1100,6 +1435,7 @@ class WorkflowWorkerProtocolTest extends TestCase
             'worker_id' => 'php-worker-restarted-signal-slot',
             'task_queue' => 'external-workflows',
             'runtime' => 'php',
+            'capability_manifest' => $this->portableWorkerAffinityRefusalManifest(),
             'supported_workflow_types' => ['tests.interactive-command-workflow'],
             'supported_activity_types' => [],
             'max_concurrent_workflow_tasks' => 3,
@@ -3210,6 +3546,7 @@ class WorkflowWorkerProtocolTest extends TestCase
             'worker_id' => 'php-worker-process-replaced',
             'task_queue' => 'external-workflows',
             'runtime' => 'php',
+            'capability_manifest' => $this->portableWorkerAffinityRefusalManifest(),
             'supported_workflow_types' => ['tests.external-greeting-workflow'],
             'supported_activity_types' => ['tests.external-greeting-activity'],
             'process_metrics' => [
@@ -3251,6 +3588,8 @@ class WorkflowWorkerProtocolTest extends TestCase
         $this->assertSame(TaskStatus::Ready, $releasedTask->status);
         $this->assertNull($releasedTask->lease_owner);
         $this->assertNull($releasedTask->lease_expires_at);
+        $this->assertSame(StickyExecution::MODE_FORCED_COLD_REPLAY, $releasedTask->sticky_replay_mode);
+        $this->assertNotNull($releasedTask->sticky_claimed_at);
 
         $reclaimed = $this->withHeaders($this->workerHeaders())
             ->postJson('/api/worker/workflow-tasks/poll', [
@@ -3315,6 +3654,7 @@ class WorkflowWorkerProtocolTest extends TestCase
             'worker_id' => 'php-worker-stale-workflow-long-poll',
             'task_queue' => 'external-workflows',
             'runtime' => 'php',
+            'capability_manifest' => $this->portableWorkerAffinityRefusalManifest(),
             'supported_workflow_types' => ['tests.external-greeting-workflow'],
             'supported_activity_types' => ['tests.external-greeting-activity'],
             'process_metrics' => [
@@ -3475,6 +3815,7 @@ class WorkflowWorkerProtocolTest extends TestCase
             'worker_id' => 'php-worker-process-unidentified',
             'task_queue' => 'external-workflows',
             'runtime' => 'php',
+            'capability_manifest' => $this->portableWorkerAffinityRefusalManifest(),
             'supported_workflow_types' => ['tests.external-greeting-workflow'],
             'supported_activity_types' => ['tests.external-greeting-activity'],
         ];
@@ -3570,6 +3911,7 @@ class WorkflowWorkerProtocolTest extends TestCase
             'worker_id' => 'php-worker-process-replaced-activity',
             'task_queue' => 'external-workflows',
             'runtime' => 'php',
+            'capability_manifest' => $this->portableWorkerAffinityRefusalManifest(),
             'supported_workflow_types' => ['tests.external-greeting-workflow'],
             'supported_activity_types' => ['tests.external-greeting-activity'],
             'process_metrics' => [
@@ -3680,6 +4022,7 @@ class WorkflowWorkerProtocolTest extends TestCase
             'worker_id' => 'php-worker-stale-activity-long-poll',
             'task_queue' => 'external-workflows',
             'runtime' => 'php',
+            'capability_manifest' => $this->portableWorkerAffinityRefusalManifest(),
             'supported_workflow_types' => ['tests.external-greeting-workflow'],
             'supported_activity_types' => ['tests.external-greeting-activity'],
             'process_metrics' => [
@@ -3802,6 +4145,7 @@ class WorkflowWorkerProtocolTest extends TestCase
             'worker_id' => 'php-worker-process-unidentified-activity',
             'task_queue' => 'external-workflows',
             'runtime' => 'php',
+            'capability_manifest' => $this->portableWorkerAffinityRefusalManifest(),
             'supported_workflow_types' => ['tests.external-greeting-workflow'],
             'supported_activity_types' => ['tests.external-greeting-activity'],
         ];
@@ -5261,6 +5605,7 @@ class WorkflowWorkerProtocolTest extends TestCase
 
         $register = $this->withHeaders($this->workerHeaders())
             ->postJson('/api/worker/register', [
+                'capability_manifest' => $this->portableWorkerAffinityRefusalManifest(),
                 'worker_id' => 'php-worker-capabilities-check',
                 'task_queue' => 'external-workflows',
                 'runtime' => 'php',
@@ -5281,6 +5626,7 @@ class WorkflowWorkerProtocolTest extends TestCase
 
         $register = $this->withHeaders($this->workerHeaders())
             ->postJson('/api/worker/register', [
+                'capability_manifest' => $this->portableWorkerAffinityRefusalManifest(),
                 'worker_id' => 'php-worker-compression-check',
                 'task_queue' => 'external-workflows',
                 'runtime' => 'php',

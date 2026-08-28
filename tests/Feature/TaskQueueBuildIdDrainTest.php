@@ -194,6 +194,7 @@ class TaskQueueBuildIdDrainTest extends TestCase
     public function test_promote_selects_build_id_for_new_starts_and_surfaces_rollout_state(): void
     {
         $this->postJson('/api/worker/register', [
+            'capability_manifest' => $this->portableWorkerAffinityRefusalManifest(),
             'worker_id' => 'w-v2',
             'task_queue' => 'ingest',
             'runtime' => 'php',
@@ -302,6 +303,7 @@ class TaskQueueBuildIdDrainTest extends TestCase
     public function test_promote_response_uses_the_same_tie_breaker_as_new_start_routing(): void
     {
         $this->postJson('/api/worker/register', [
+            'capability_manifest' => $this->portableWorkerAffinityRefusalManifest(),
             'worker_id' => 'w-v1',
             'task_queue' => 'ingest',
             'runtime' => 'php',
@@ -309,6 +311,7 @@ class TaskQueueBuildIdDrainTest extends TestCase
             'build_id' => 'v1',
         ], $this->workerHeaders())->assertCreated();
         $this->postJson('/api/worker/register', [
+            'capability_manifest' => $this->portableWorkerAffinityRefusalManifest(),
             'worker_id' => 'w-v2',
             'task_queue' => 'ingest',
             'runtime' => 'php',
@@ -371,6 +374,7 @@ class TaskQueueBuildIdDrainTest extends TestCase
     public function test_promote_refuses_no_compatible_workers_when_other_builds_are_active(): void
     {
         $this->postJson('/api/worker/register', [
+            'capability_manifest' => $this->portableWorkerAffinityRefusalManifest(),
             'worker_id' => 'w-v1',
             'task_queue' => 'ingest',
             'runtime' => 'php',
@@ -478,6 +482,7 @@ class TaskQueueBuildIdDrainTest extends TestCase
         )->assertOk();
 
         $this->postJson('/api/worker/register', [
+            'capability_manifest' => $this->portableWorkerAffinityRefusalManifest(),
             'worker_id' => 'w-new',
             'task_queue' => 'ingest',
             'runtime' => 'php',

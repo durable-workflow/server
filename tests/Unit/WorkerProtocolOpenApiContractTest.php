@@ -25,12 +25,73 @@ class WorkerProtocolOpenApiContractTest extends TestCase
 
     public function test_cached_poll_conflict_shape_has_a_distinct_document_version(): void
     {
-        $this->assertSame('13', $this->spec['info']['version']);
-        $this->assertSame('1.17', $this->spec['x-durable-workflow-worker-protocol-negotiation']['default_advertised_version']);
+        $this->assertSame('14', $this->spec['info']['version']);
+        $this->assertSame('1.18', $this->spec['x-durable-workflow-worker-protocol-negotiation']['default_advertised_version']);
         $this->assertSame(
-            ['1.0', '1.1', '1.2', '1.3', '1.4', '1.5', '1.6', '1.7', '1.8', '1.9', '1.10', '1.11', '1.12', '1.13', '1.14', '1.15', '1.16', '1.17'],
+            ['1.0', '1.1', '1.2', '1.3', '1.4', '1.5', '1.6', '1.7', '1.8', '1.9', '1.10', '1.11', '1.12', '1.13', '1.14', '1.15', '1.16', '1.17', '1.18'],
             $this->spec['x-durable-workflow-worker-protocol-negotiation']['accepted_request_versions_by_default'],
         );
+    }
+
+    public function test_portable_worker_affinity_is_machine_described_at_protocol_1_18(): void
+    {
+        $contract = $this->spec['x-durable-workflow-portable-worker-affinity-contract'];
+        $this->assertSame('1.18', $contract['minimum_protocol_version']);
+        $this->assertSame(
+            ['local_activities', 'worker_sessions', 'sticky_execution'],
+            $contract['worker_capabilities'],
+        );
+        $this->assertSame('contiguous_one_based', $contract['local_activities']['attempt_sequence']);
+        $this->assertSame(100, $contract['local_activities']['maximum_attempts']);
+        $this->assertSame(1000, $contract['local_activities']['maximum_total_heartbeats']);
+        $this->assertSame('server', $contract['local_activities']['durable_attempt_id_authority']);
+
+        $registration = $this->spec['components']['schemas']['WorkerRegistrationRequest'];
+        $this->assertContains('capability_manifest', $registration['required']);
+        $this->assertSame(
+            '#/components/schemas/PortableWorkerCapabilityManifest',
+            $registration['properties']['capability_manifest']['$ref'],
+        );
+        $this->assertSame(
+            $contract['worker_capabilities'],
+            $this->spec['components']['schemas']['PortableWorkerCapabilityManifest']['required'],
+        );
+        foreach ($contract['worker_capabilities'] as $capability) {
+            $this->assertSame(
+                '1.18',
+                $registration['properties']['capabilities']['x-durable-workflow-version-gated-values'][$capability],
+            );
+        }
+
+        $completion = $this->spec['components']['schemas']['WorkflowTaskCompleteRequest'];
+        $this->assertSame(
+            '#/components/schemas/StickyCacheClaim',
+            $completion['properties']['sticky_cache']['$ref'],
+        );
+
+        $localActivityCommand = collect(
+            $this->spec['components']['schemas']['WorkflowCommand']['allOf'],
+        )->first(static fn (array $condition): bool => ($condition['if']['properties']['type']['const'] ?? null) === 'record_local_activity');
+        $this->assertIsArray($localActivityCommand);
+        $this->assertSame(
+            ['activity_type', 'outcome', 'attempts'],
+            $localActivityCommand['then']['required'],
+        );
+        $this->assertSame(100, $localActivityCommand['then']['properties']['attempts']['maxItems']);
+        $this->assertSame(
+            '#/components/schemas/LocalActivityAttemptReport',
+            $localActivityCommand['then']['properties']['attempts']['items']['$ref'],
+        );
+
+        $attempt = $this->spec['components']['schemas']['LocalActivityAttemptReport'];
+        $this->assertSame(['attempt_number', 'outcome'], $attempt['required']);
+        $this->assertSame(1000, $attempt['properties']['heartbeats']['maxItems']);
+
+        $registrationFailures = $this->spec['components']['responses']['WorkerRegistrationFailure']['content']['application/json']['schema']['anyOf'];
+        $completionFailures = $this->spec['components']['responses']['WorkflowTaskCompletionFailure']['content']['application/json']['schema']['anyOf'];
+        $portableFailure = ['$ref' => '#/components/schemas/PortableWorkerAffinityFailure'];
+        $this->assertContains($portableFailure, $registrationFailures);
+        $this->assertContains($portableFailure, $completionFailures);
     }
 
     public function test_message_stream_completion_metadata_is_machine_described(): void

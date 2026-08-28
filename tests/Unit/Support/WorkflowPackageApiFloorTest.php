@@ -167,7 +167,7 @@ class WorkflowPackageApiFloorTest extends TestCase
     {
         $reflection = new ReflectionClass(WorkerProtocolVersion::class);
 
-        foreach (['workerSessionVerbs', 'workerSessionSemantics'] as $methodName) {
+        foreach (['workerSessionVerbs', 'workerSessionSemantics', 'localActivitySemantics', 'describe'] as $methodName) {
             $method = $reflection->getMethod($methodName);
 
             $this->assertTrue($method->isPublic());
@@ -180,6 +180,8 @@ class WorkflowPackageApiFloorTest extends TestCase
             WorkerProtocolVersion::workerSessionSemantics()['minimum_protocol_version'] ?? null,
         );
         $this->assertSame('worker_session', WorkerProtocolVersion::workerSessionSemantics()['command_field'] ?? null);
+        $this->assertTrue(WorkerProtocolVersion::localActivitySemantics()['supported'] ?? false);
+        $this->assertIsArray(WorkerProtocolVersion::describe()['sticky_execution'] ?? null);
     }
 
     public function test_worker_query_task_protocol_contract_is_public_static(): void
@@ -197,9 +199,9 @@ class WorkflowPackageApiFloorTest extends TestCase
         $this->assertNotFalse($capability);
         $this->assertTrue($capability->isPublic());
 
-        $this->assertSame('1.17', WorkerProtocolVersion::VERSION);
-        $this->assertSame('1.17', WorkerProtocol::VERSION);
-        $this->assertSame(WorkerProtocolVersion::VERSION, WorkerProtocol::VERSION);
+        $this->assertSame('1.19', WorkerProtocolVersion::VERSION);
+        $this->assertSame('1.18', WorkerProtocol::VERSION);
+        $this->assertTrue(version_compare(WorkerProtocolVersion::VERSION, WorkerProtocol::VERSION, '>='));
         $this->assertSame('query_tasks', WorkerProtocolVersion::CAPABILITY_QUERY_TASKS);
         $this->assertSame(['poll', 'complete', 'fail'], WorkerProtocolVersion::queryTaskVerbs());
         $this->assertContains(WorkerProtocolVersion::CAPABILITY_QUERY_TASKS, WorkerProtocolVersion::workerCapabilities());
@@ -369,6 +371,10 @@ class WorkflowPackageApiFloorTest extends TestCase
     {
         $reflection = new ReflectionClass(WorkflowCommandNormalizer::class);
 
+        $this->assertSame(100, $reflection->getConstant('MAX_LOCAL_ACTIVITY_ATTEMPTS'));
+        $this->assertSame(1000, $reflection->getConstant('MAX_LOCAL_ACTIVITY_HEARTBEATS_PER_ATTEMPT'));
+        $this->assertSame(1000, $reflection->getConstant('MAX_LOCAL_ACTIVITY_HEARTBEATS'));
+
         foreach (['payloadEnvelopeFields', 'acceptsPayloadEnvelope'] as $methodName) {
             $method = $reflection->getMethod($methodName);
 
@@ -383,6 +389,7 @@ class WorkflowPackageApiFloorTest extends TestCase
             'continue_as_new' => ['arguments'],
             'complete_update' => ['result'],
             'record_side_effect' => ['result'],
+            'record_local_activity' => ['arguments', 'result'],
             'start_service_operation' => ['request_payload'],
             'upsert_memo' => ['entries'],
         ], WorkflowCommandNormalizer::payloadEnvelopeFields());

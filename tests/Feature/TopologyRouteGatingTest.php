@@ -67,6 +67,7 @@ class TopologyRouteGatingTest extends TestCase
 
         $this->withHeaders($this->workerHeaders('worker-token'))
             ->postJson('/api/worker/register', [
+                'capability_manifest' => $this->portableWorkerAffinityRefusalManifest(),
                 'worker_id' => 'execution-node-register',
                 'task_queue' => 'default',
                 'runtime' => 'python',
@@ -94,6 +95,7 @@ class TopologyRouteGatingTest extends TestCase
 
         $this->withHeaders($this->workerHeaders('worker-token'))
             ->postJson('/api/worker/register', [
+                'capability_manifest' => $this->portableWorkerAffinityRefusalManifest(),
                 'worker_id' => 'split-control-node-worker',
                 'task_queue' => 'default',
                 'runtime' => 'python',
@@ -129,6 +131,7 @@ class TopologyRouteGatingTest extends TestCase
 
         $this->withHeaders($headers)
             ->postJson('/api/worker/register', [
+                'capability_manifest' => $this->portableWorkerAffinityRefusalManifest(),
                 'worker_id' => 'missing-version',
                 'task_queue' => 'default',
                 'runtime' => 'python',

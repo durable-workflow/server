@@ -532,6 +532,7 @@ class WorkflowMetadataCapabilityBoundaryTest extends TestCase
         string $protocolVersion = WorkerProtocol::VERSION,
     ): TestResponse {
         return $this->postJson('/api/worker/register', [
+            'capability_manifest' => $this->portableWorkerAffinityRefusalManifest(),
             'worker_id' => $workerId,
             'task_queue' => str_contains($workerId, 'completion-')
                 ? 'completion-queue'

@@ -102,6 +102,7 @@ class WorkerProtocolVersionCoverageTest extends TestCase
     public function test_worker_registration_accepts_protocol_1_7_workers(): void
     {
         $response = $this->postJson('/api/worker/register', [
+            'capability_manifest' => $this->portableWorkerAffinityRefusalManifest(),
             'worker_id' => 'php-protocol-17-worker',
             'task_queue' => 'polyglot-current',
             'runtime' => 'php',
@@ -125,6 +126,7 @@ class WorkerProtocolVersionCoverageTest extends TestCase
     public function test_worker_registration_accepts_previous_protocol_1_10_workers(): void
     {
         $response = $this->postJson('/api/worker/register', [
+            'capability_manifest' => $this->portableWorkerAffinityRefusalManifest(),
             'worker_id' => 'php-protocol-110-worker',
             'task_queue' => 'polyglot-current',
             'runtime' => 'php',
@@ -148,6 +150,7 @@ class WorkerProtocolVersionCoverageTest extends TestCase
     public function test_worker_registration_accepts_current_protocol_1_15_workers(): void
     {
         $response = $this->postJson('/api/worker/register', [
+            'capability_manifest' => $this->portableWorkerAffinityRefusalManifest(),
             'worker_id' => 'php-protocol-115-worker',
             'task_queue' => 'signals-queries-current',
             'runtime' => 'php',

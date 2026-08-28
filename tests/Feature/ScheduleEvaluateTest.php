@@ -876,6 +876,7 @@ class ScheduleEvaluateTest extends TestCase
 
         $this->withHeaders($this->workerHeaders())
             ->postJson('/api/worker/register', [
+                'capability_manifest' => $this->portableWorkerAffinityRefusalManifest(),
                 'worker_id' => 'schedules-php-worker',
                 'task_queue' => $taskQueue,
                 'runtime' => 'php',
@@ -961,6 +962,7 @@ class ScheduleEvaluateTest extends TestCase
 
         $this->withHeaders($this->workerHeaders())
             ->postJson('/api/worker/register', [
+                'capability_manifest' => $this->portableWorkerAffinityRefusalManifest(),
                 'worker_id' => 'schedules-php-worker-build',
                 'task_queue' => $taskQueue,
                 'runtime' => 'php',
@@ -983,6 +985,7 @@ class ScheduleEvaluateTest extends TestCase
 
         $this->withHeaders($this->workerHeaders())
             ->postJson('/api/worker/register', [
+                'capability_manifest' => $this->portableWorkerAffinityRefusalManifest(),
                 'worker_id' => 'schedules-python-worker-build',
                 'task_queue' => $taskQueue,
                 'runtime' => 'python',

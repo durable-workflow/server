@@ -152,6 +152,7 @@ class WorkflowDebugTest extends TestCase
     public function test_debug_diagnostics_identify_no_compatible_worker_for_pinned_workflow_task(): void
     {
         $this->postJson('/api/worker/register', [
+            'capability_manifest' => $this->portableWorkerAffinityRefusalManifest(),
             'worker_id' => 'debug-worker-v1',
             'task_queue' => 'debug-queue',
             'runtime' => 'php',
@@ -171,6 +172,7 @@ class WorkflowDebugTest extends TestCase
         WorkerCompatibilityFleet::clear();
 
         $this->postJson('/api/worker/register', [
+            'capability_manifest' => $this->portableWorkerAffinityRefusalManifest(),
             'worker_id' => 'debug-worker-v2',
             'task_queue' => 'debug-queue',
             'runtime' => 'php',

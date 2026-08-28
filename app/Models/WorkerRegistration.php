@@ -22,6 +22,7 @@ class WorkerRegistration extends Model
         'workflow_command_contracts',
         'supported_activity_types',
         'capabilities',
+        'capability_manifest',
         'max_concurrent_workflow_tasks',
         'max_concurrent_activity_tasks',
         'max_concurrent_worker_sessions',
@@ -42,6 +43,7 @@ class WorkerRegistration extends Model
             'workflow_command_contracts' => 'array',
             'supported_activity_types' => 'array',
             'capabilities' => 'array',
+            'capability_manifest' => 'array',
             'process_metrics' => 'array',
             'last_heartbeat_at' => 'datetime',
         ];

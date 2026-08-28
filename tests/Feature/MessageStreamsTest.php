@@ -484,6 +484,7 @@ class MessageStreamsTest extends TestCase
         $headers[WorkerProtocol::HEADER] = '1.14';
 
         $this->postJson('/api/worker/register', [
+            'capability_manifest' => $this->portableWorkerAffinityRefusalManifest(),
             'worker_id' => 'prefeature-stream-worker',
             'task_queue' => 'default',
             'runtime' => 'php',
@@ -496,6 +497,7 @@ class MessageStreamsTest extends TestCase
             ->assertJsonPath('minimum_protocol_version', '1.15');
 
         $this->postJson('/api/worker/register', [
+            'capability_manifest' => $this->portableWorkerAffinityRefusalManifest(),
             'worker_id' => 'prefeature-one-shot-worker',
             'task_queue' => 'default',
             'runtime' => 'php',

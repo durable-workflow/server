@@ -18,7 +18,22 @@ class WorkerProtocol
      * here. WorkflowPackageApiFloor asserts the installed package still
      * provides the companion protocol helpers for this version.
      */
-    public const VERSION = '1.17';
+    public const VERSION = '1.18';
+
+    public const PORTABLE_WORKER_AFFINITY_MINIMUM_PROTOCOL_VERSION = '1.18';
+
+    /** @var list<string> */
+    public const PORTABLE_WORKER_AFFINITY_CAPABILITIES = [
+        'local_activities',
+        'worker_sessions',
+        'sticky_execution',
+    ];
+
+    /** @var array<string, string> */
+    private const WORKFLOW_TASK_COMMAND_MINIMUM_PROTOCOL_VERSIONS = [
+        'record_local_activity' => self::PORTABLE_WORKER_AFFINITY_MINIMUM_PROTOCOL_VERSION,
+        'cancel_selection_operation' => '1.19',
+    ];
 
     public const TYPED_SEARCH_ATTRIBUTES_MINIMUM_PROTOCOL_VERSION =
         WorkflowMetadataCapabilityPolicy::TYPED_SEARCH_ATTRIBUTES_MINIMUM_PROTOCOL_VERSION;
@@ -210,6 +225,16 @@ class WorkerProtocol
         return self::protocolVersionSupportsWorkerSessions($configured);
     }
 
+    public static function portableWorkerAffinitySupported(?string $version = null): bool
+    {
+        $version ??= (string) config('server.worker_protocol.version', self::VERSION);
+
+        return self::versionMeetsMinimum(
+            $version,
+            self::PORTABLE_WORKER_AFFINITY_MINIMUM_PROTOCOL_VERSION,
+        );
+    }
+
     public static function workerSessionsAvailableForRequest(Request $request): bool
     {
         $version = self::requestVersion($request);
@@ -313,9 +338,21 @@ class WorkerProtocol
      */
     public static function supportedWorkflowTaskCommands(): array
     {
+        $advertisedVersion = (string) config('server.worker_protocol.version', self::VERSION);
         $commands = array_values(array_merge(
             WorkerProtocolVersion::terminalCommandTypes(),
             WorkerProtocolVersion::nonTerminalCommandTypes(),
+        ));
+
+        $commands = array_values(array_filter(
+            $commands,
+            static function (string $command) use ($advertisedVersion): bool {
+                $minimum = self::WORKFLOW_TASK_COMMAND_MINIMUM_PROTOCOL_VERSIONS[$command] ?? null;
+
+                return $minimum === null
+                    || (self::versionMeetsMinimum(self::VERSION, $minimum)
+                        && self::versionMeetsMinimum($advertisedVersion, $minimum));
+            },
         ));
 
         if (! self::workflowMemoUpdatesSupported()) {
@@ -393,6 +430,7 @@ class WorkerProtocol
      */
     public static function serverCapabilities(): array
     {
+        $portableWorkerAffinitySupported = self::portableWorkerAffinitySupported();
         $workerSessionSupported = self::workerSessionsSupported();
 
         return [
@@ -497,7 +535,14 @@ class WorkerProtocol
             ],
             'activity_retry_policy' => true,
             'activity_timeouts' => true,
-            'local_activities' => self::localActivitySemantics(),
+            'local_activities' => [
+                ...WorkerProtocolVersion::localActivitySemantics(),
+                'supported' => $portableWorkerAffinitySupported,
+            ],
+            'sticky_execution' => [
+                ...WorkerProtocolVersion::describe()['sticky_execution'],
+                'supported' => $portableWorkerAffinitySupported,
+            ],
             'worker_session_verbs' => $workerSessionSupported ? self::workerSessionVerbs() : [],
             'worker_sessions' => self::workerSessionSemantics($workerSessionSupported),
             'child_workflow_retry_policy' => true,
@@ -630,9 +675,7 @@ class WorkerProtocol
      */
     private static function workerSessionVerbs(): array
     {
-        return method_exists(WorkerProtocolVersion::class, 'workerSessionVerbs')
-            ? WorkerProtocolVersion::workerSessionVerbs()
-            : ['create', 'heartbeat', 'close'];
+        return WorkerProtocolVersion::workerSessionVerbs();
     }
 
     /**
@@ -657,61 +700,7 @@ class WorkerProtocol
      */
     private static function baseWorkerSessionSemantics(): array
     {
-        return method_exists(WorkerProtocolVersion::class, 'workerSessionSemantics')
-            ? WorkerProtocolVersion::workerSessionSemantics()
-            : [
-                'command_field' => 'worker_session',
-                'activity_options_field' => 'worker_session',
-                'lifecycle' => 'lazy_create_on_first_admitted_activity',
-                'ownership' => 'single_worker_lease_owner',
-                'verbs' => ['create', 'heartbeat', 'close'],
-            ];
-    }
-
-    /**
-     * @return array<string, mixed>
-     */
-    private static function localActivitySemantics(): array
-    {
-        if (method_exists(WorkerProtocolVersion::class, 'localActivitySemantics')) {
-            return WorkerProtocolVersion::localActivitySemantics();
-        }
-
-        return [
-            'schema' => 'durable-workflow.v2.local-activity.contract',
-            'version' => 1,
-            'supported' => false,
-            'api' => [
-                'functions' => ['Workflow\\V2\\localActivity'],
-                'workflow_facade' => [
-                    'Workflow\\V2\\Workflow::localActivity',
-                    'Workflow\\V2\\Workflow::executeLocalActivity',
-                ],
-                'options' => 'Workflow\\V2\\Support\\LocalActivityOptions',
-            ],
-            'execution' => [
-                'mode' => 'local',
-                'same_process' => true,
-                'ordinary_activity_task_created' => false,
-                'history_marker' => [
-                    'execution_mode' => 'local',
-                    'local_activity' => true,
-                ],
-            ],
-            'routing' => [
-                'admission' => 'activity_class_must_resolve_in_the_workflow_worker_process',
-                'queue_bypassed' => true,
-                'rejected_options' => ['connection', 'queue', 'worker_session', 'schedule_to_start_timeout'],
-            ],
-            'retry' => [
-                'cold_replay_reason' => 'cold_replay',
-            ],
-            'visibility' => [
-                'activity_execution_marker' => 'activity_options.execution_mode',
-                'history_marker' => 'payload.execution_mode',
-                'metrics_marker' => 'activities.local_*',
-            ],
-        ];
+        return WorkerProtocolVersion::workerSessionSemantics();
     }
 
     /**

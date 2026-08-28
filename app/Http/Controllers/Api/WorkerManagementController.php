@@ -70,6 +70,7 @@ class WorkerManagementController
             'workflow_command_contracts' => $worker->workflow_command_contracts ?? [],
             'supported_activity_types' => $worker->supported_activity_types ?? [],
             'capabilities' => $worker->capabilities ?? [],
+            'capability_manifest' => $worker->capability_manifest ?? [],
             'max_concurrent_workflow_tasks' => $worker->max_concurrent_workflow_tasks,
             'max_concurrent_activity_tasks' => $worker->max_concurrent_activity_tasks,
             'max_concurrent_worker_sessions' => $worker->max_concurrent_worker_sessions,

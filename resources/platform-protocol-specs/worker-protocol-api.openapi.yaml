@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: durable-workflow.v2.worker-protocol-api
-  version: "13"
+  version: "14"
   summary: Durable Workflow worker-plane HTTP+JSON API
   description: >
     Normative OpenAPI specification for the worker-plane HTTP+JSON API:
@@ -14,9 +14,9 @@ info:
     from the same major whose minor is less than or equal to N.
 x-durable-workflow-worker-protocol-negotiation:
   advertised_version_path: worker_protocol.version
-  default_advertised_version: "1.17"
+  default_advertised_version: "1.18"
   request_header_rule: same_major_and_minor_less_than_or_equal_to_advertised
-  accepted_request_versions_by_default: ["1.0", "1.1", "1.2", "1.3", "1.4", "1.5", "1.6", "1.7", "1.8", "1.9", "1.10", "1.11", "1.12", "1.13", "1.14", "1.15", "1.16", "1.17"]
+  accepted_request_versions_by_default: ["1.0", "1.1", "1.2", "1.3", "1.4", "1.5", "1.6", "1.7", "1.8", "1.9", "1.10", "1.11", "1.12", "1.13", "1.14", "1.15", "1.16", "1.17", "1.18"]
   response_version: advertised_version
   fail_closed_on: [missing_header, malformed_version, different_major, minor_greater_than_advertised]
 x-durable-workflow-catalog-entry: worker_protocol_api
@@ -136,6 +136,38 @@ x-durable-workflow-condition-wait-occurrence-identity-contract:
   version_independence:
     server_below_minimum_rejects_worker_1_17: ahead_request_version
     server_at_minimum_accepts_worker_1_16_for_unaffected_history: true
+x-durable-workflow-portable-worker-affinity-contract:
+  minimum_protocol_version: "1.18"
+  worker_capabilities: [local_activities, worker_sessions, sticky_execution]
+  capability_manifest:
+    required_feature_entries: [local_activities, worker_sessions, sticky_execution]
+    supported_entry_must_match_flat_capability: true
+  local_activities:
+    command_type: record_local_activity
+    attempt_sequence: contiguous_one_based
+    maximum_attempts: 100
+    maximum_heartbeats_per_attempt: 1000
+    maximum_total_heartbeats: 1000
+    terminal_attempt_outcome: matches_command_outcome
+    non_final_outcomes: [failed, timed_out]
+    durable_attempt_id_authority: server
+    worker_attempt_id_preserved: true
+    replay: recorded_terminal_side_effect_is_reused_without_execution
+  worker_sessions:
+    lifecycle_verbs: [create, heartbeat, close]
+    holder_loss: replacement_worker_reacquires_and_rebuilds_process_local_state
+  sticky_execution:
+    cache_owner: worker_process
+    cache_key_fields: [workflow_id, run_id, build_id]
+    correctness_fallback: cold_replay
+  version_gate:
+    workers_below_minimum:
+      advertise_capabilities: forbidden
+      submit_portable_affinity_fields: forbidden
+    workers_at_or_above_minimum:
+      advertise_only_implemented_capabilities: required
+    rejection_status: 409
+    recorded: false
 x-durable-workflow-object-families:
   - name: worker_registration_request
     owner_repo: durable-workflow/server
@@ -522,8 +554,8 @@ components:
       in: header
       required: true
       description: >
-        Worker-selected protocol version. The default server advertises 1.17
-        and accepts same-major versions whose minor is no newer than 17.
+        Worker-selected protocol version. The default server advertises 1.18
+        and accepts same-major versions whose minor is no newer than 18.
         Missing, malformed, different-major, and ahead-of-server values fail closed.
       schema: { $ref: "#/components/schemas/AcceptedWorkerProtocolRequestVersion" }
     TaskIdPath:
@@ -577,6 +609,7 @@ components:
           schema:
             anyOf:
               - $ref: "#/components/schemas/WorkflowMetadataCapabilityFailure"
+              - $ref: "#/components/schemas/PortableWorkerAffinityFailure"
               - $ref: "#/components/schemas/WorkerError"
     WorkflowMetadataCapabilityFailure:
       description: A metadata capability registration or completion boundary rejection.
@@ -605,6 +638,7 @@ components:
             anyOf:
               - $ref: "#/components/schemas/WorkflowMetadataCapabilityFailure"
               - $ref: "#/components/schemas/ConditionWaitOccurrenceIdentityFailure"
+              - $ref: "#/components/schemas/PortableWorkerAffinityFailure"
               - $ref: "#/components/schemas/WorkerError"
     WorkflowTaskPollConflict:
       description: The poll request is unsupported, its idempotency identity conflicts with a previously bound task-kind set, or a cached task cannot be replayed within the requested task-kind set.
@@ -659,14 +693,14 @@ components:
   schemas:
     AcceptedWorkerProtocolRequestVersion:
       type: string
-      enum: ["1.0", "1.1", "1.2", "1.3", "1.4", "1.5", "1.6", "1.7", "1.8", "1.9", "1.10", "1.11", "1.12", "1.13", "1.14", "1.15", "1.16", "1.17"]
+      enum: ["1.0", "1.1", "1.2", "1.3", "1.4", "1.5", "1.6", "1.7", "1.8", "1.9", "1.10", "1.11", "1.12", "1.13", "1.14", "1.15", "1.16", "1.17", "1.18"]
       description: >
         Request versions accepted by a server using the default advertised
-        version 1.17. If deployment configuration changes the advertised
+        version 1.18. If deployment configuration changes the advertised
         version to 1.N, the accepted set is 1.0 through 1.N.
     AdvertisedWorkerProtocolVersion:
       type: string
-      const: "1.17"
+      const: "1.18"
       description: Default worker protocol version advertised by responses implementing the Durable Workflow 2.0 protocol contract.
     WorkerEnvelope:
       type: object
@@ -689,7 +723,7 @@ components:
       allOf:
         - $ref: "#/components/schemas/WorkerEnvelope"
         - type: object
-          required: [worker_id, registered, namespace, task_queue, runtime, capabilities, status, heartbeat_interval_seconds]
+          required: [worker_id, registered, namespace, task_queue, runtime, capabilities, capability_manifest, status, heartbeat_interval_seconds]
           properties:
             worker_id: { type: string, minLength: 1 }
             registered: { type: boolean, const: true }
@@ -701,6 +735,8 @@ components:
               type: array
               uniqueItems: true
               items: { type: string }
+            capability_manifest:
+              $ref: "#/components/schemas/PortableWorkerCapabilityManifest"
             status: { type: string, minLength: 1 }
             heartbeat_interval_seconds: { type: integer, minimum: 1 }
     WorkflowMetadataCapabilityFailure:
@@ -743,10 +779,39 @@ components:
             minimum_protocol_version: { type: string, const: "1.17" }
             command_type: { type: string, const: open_condition_wait }
             command_field: { type: string, const: condition_wait_occurrence_id }
+    PortableWorkerAffinityFailure:
+      allOf:
+        - $ref: "#/components/schemas/WorkerError"
+        - type: object
+          required: [reason, capability, minimum_protocol_version]
+          properties:
+            reason:
+              type: string
+              enum:
+                - worker_capability_manifest_mismatch
+                - worker_capability_protocol_floor_mismatch
+                - portable_worker_affinity_protocol_floor_unavailable
+                - worker_capability_not_supported
+                - sticky_cache_identity_mismatch
+            capability:
+              type: string
+              enum: [local_activities, worker_sessions, sticky_execution]
+            requested_version: { type: [string, "null"] }
+            minimum_protocol_version: { type: string, const: "1.18" }
+          oneOf:
+            - required: [registered]
+              properties:
+                registered: { type: boolean, const: false }
+            - required: [task_id, workflow_task_attempt, outcome, recorded]
+              properties:
+                task_id: { type: string, minLength: 1 }
+                workflow_task_attempt: { type: integer, minimum: 1 }
+                outcome: { type: string, const: rejected }
+                recorded: { type: boolean, const: false }
     WorkerServerCapabilities:
       type: object
       additionalProperties: true
-      required: [supported_workflow_task_commands, workflow_task_poll_request_idempotency, workflow_memo_updates, message_streams, typed_search_attributes, condition_wait_occurrence_identity, update_validation_tasks, synchronous_update_validation]
+      required: [supported_workflow_task_commands, workflow_task_poll_request_idempotency, workflow_memo_updates, message_streams, typed_search_attributes, condition_wait_occurrence_identity, update_validation_tasks, synchronous_update_validation, local_activities, sticky_execution]
       properties:
         supported_workflow_task_commands:
           type: array
@@ -770,6 +835,60 @@ components:
           minItems: 3
         worker_sessions:
           $ref: "./worker-sessions-runtime.schema.json#/$defs/workerSessionRuntimeContract"
+        local_activities:
+          $ref: "#/components/schemas/LocalActivityCapability"
+        sticky_execution:
+          $ref: "#/components/schemas/StickyExecutionCapability"
+    PortableWorkerCapabilityManifest:
+      type: object
+      additionalProperties: true
+      required: [local_activities, worker_sessions, sticky_execution]
+      properties:
+        local_activities: { $ref: "#/components/schemas/PortableWorkerCapabilityDeclaration" }
+        worker_sessions: { $ref: "#/components/schemas/PortableWorkerCapabilityDeclaration" }
+        sticky_execution: { $ref: "#/components/schemas/PortableWorkerCapabilityDeclaration" }
+    PortableWorkerCapabilityDeclaration:
+      type: object
+      additionalProperties: false
+      required: [supported, minimum_protocol_version]
+      properties:
+        supported: { type: boolean }
+        minimum_protocol_version: { type: string, pattern: "^1\\.[0-9]+$" }
+        implementation: { type: string, minLength: 1, maxLength: 255 }
+        reason: { type: string, minLength: 1, maxLength: 255 }
+    LocalActivityCapability:
+      type: object
+      additionalProperties: true
+      required: [schema, version, supported, worker_capability, minimum_worker_protocol_version, execution, retry, timeouts, visibility]
+      properties:
+        schema: { type: string, const: durable-workflow.v2.local-activity.contract }
+        version: { type: integer, const: 1 }
+        supported: { type: boolean }
+        worker_capability: { type: string, const: local_activities }
+        minimum_worker_protocol_version: { type: string, const: "1.18" }
+        execution: { type: object, additionalProperties: true }
+        retry: { type: object, additionalProperties: true }
+        timeouts: { type: object, additionalProperties: true }
+        visibility: { type: object, additionalProperties: true }
+    StickyExecutionCapability:
+      type: object
+      additionalProperties: true
+      required: [feature, supported, worker_capability, minimum_worker_protocol_version, cache_key_fields, correctness_fallback, metrics]
+      properties:
+        feature: { type: string, const: sticky_execution }
+        supported: { type: boolean }
+        worker_capability: { type: string, const: sticky_execution }
+        minimum_worker_protocol_version: { type: string, const: "1.18" }
+        cache_key_fields:
+          type: array
+          prefixItems: [{ const: workflow_id }, { const: run_id }, { const: build_id }]
+          minItems: 3
+          maxItems: 3
+        correctness_fallback: { type: string, const: cold_replay }
+        metrics:
+          type: array
+          uniqueItems: true
+          items: { type: string, enum: [hit, miss, eviction, forced_cold_replay] }
     MessageStreamsCapability:
       type: object
       additionalProperties: true
@@ -848,7 +967,7 @@ components:
     WorkerRegistrationRequest:
       type: object
       additionalProperties: true
-      required: [task_queue, runtime]
+      required: [task_queue, runtime, capability_manifest]
       properties:
         worker_id: { type: [string, "null"], minLength: 1 }
         build_id: { type: [string, "null"] }
@@ -865,6 +984,11 @@ components:
             memo_upserts: "1.14"
             message_streams: "1.15"
             typed_search_attributes: "1.16"
+            local_activities: "1.18"
+            worker_sessions: "1.18"
+            sticky_execution: "1.18"
+        capability_manifest:
+          $ref: "#/components/schemas/PortableWorkerCapabilityManifest"
     WorkerHeartbeatRequest:
       type: object
       additionalProperties: true
@@ -1278,6 +1402,30 @@ components:
           maxItems: 100
           x-durable-workflow-minimum-protocol-version: "1.15"
           items: { $ref: "#/components/schemas/MessageStreamWait" }
+        sticky_cache:
+          $ref: "#/components/schemas/StickyCacheClaim"
+          x-durable-workflow-minimum-protocol-version: "1.18"
+          x-durable-workflow-worker-capability: sticky_execution
+    StickyCacheClaim:
+      type: object
+      additionalProperties: false
+      required: [worker_id, workflow_id, run_id, build_id, ttl_seconds]
+      properties:
+        worker_id: { type: string, minLength: 1, maxLength: 255 }
+        workflow_id: { type: string, minLength: 1, maxLength: 255 }
+        run_id: { type: string, minLength: 1, maxLength: 255 }
+        build_id: { type: string, minLength: 1, maxLength: 255 }
+        ttl_seconds: { type: integer, minimum: 1, maximum: 3600 }
+        metrics:
+          $ref: "#/components/schemas/StickyCacheMetrics"
+    StickyCacheMetrics:
+      type: object
+      additionalProperties: false
+      properties:
+        hit: { type: integer, minimum: 0 }
+        miss: { type: integer, minimum: 0 }
+        eviction: { type: integer, minimum: 0 }
+        forced_cold_replay: { type: integer, minimum: 0 }
     MessageStreamCursorAdvance:
       type: object
       additionalProperties: false
@@ -1332,6 +1480,94 @@ components:
                 type: [string, "null"]
                 x-durable-workflow-minimum-protocol-version: "1.17"
                 description: SDK-authored stable identity for one logical condition-wait occurrence.
+        - if:
+            properties:
+              type: { const: record_local_activity }
+            required: [type]
+          then:
+            required: [activity_type, outcome, attempts]
+            x-durable-workflow-minimum-protocol-version: "1.18"
+            x-durable-workflow-worker-capability: local_activities
+            x-durable-workflow-attempt-sequence: contiguous_one_based
+            x-durable-workflow-attempt-count-limit: retry_policy.max_attempts_default_1
+            x-durable-workflow-final-attempt-outcome: matches_command_outcome
+            x-durable-workflow-retry-prefix-outcomes: [failed, timed_out]
+            properties:
+              activity_type: { type: string, minLength: 1 }
+              arguments: true
+              result: true
+              payload_codec: { type: string, minLength: 1 }
+              outcome: { type: string, enum: [completed, failed, timed_out, cancelled] }
+              message: { type: string }
+              exception_type: { type: [string, "null"], maxLength: 255 }
+              non_retryable: { type: boolean }
+              timeout_kind: { type: string, enum: [start_to_close, schedule_to_close, heartbeat] }
+              attempts:
+                type: array
+                minItems: 1
+                maxItems: 100
+                x-durable-workflow-max-total-heartbeats: 1000
+                items: { $ref: "#/components/schemas/LocalActivityAttemptReport" }
+              retry_policy: { $ref: "#/components/schemas/LocalActivityRetryPolicy" }
+              start_to_close_timeout: { type: integer, minimum: 1 }
+              schedule_to_close_timeout: { type: integer, minimum: 1 }
+              heartbeat_timeout: { type: integer, minimum: 1 }
+              execution_mode: { type: string, const: local }
+            allOf:
+              - if:
+                  properties:
+                    outcome: { const: completed }
+                then:
+                  required: [result]
+              - if:
+                  properties:
+                    outcome: { enum: [failed, timed_out, cancelled] }
+                then:
+                  required: [message]
+              - if:
+                  properties:
+                    outcome: { const: timed_out }
+                then:
+                  required: [timeout_kind]
+    LocalActivityAttemptReport:
+      type: object
+      additionalProperties: false
+      required: [attempt_number, outcome]
+      properties:
+        attempt_id:
+          type: string
+          minLength: 1
+          maxLength: 255
+          description: Worker-reported attempt identity preserved separately from the Server-owned durable attempt ID.
+        attempt_number: { type: integer, minimum: 1, maximum: 100 }
+        outcome: { type: string, enum: [completed, failed, timed_out, cancelled] }
+        duration_ms: { type: integer, minimum: 0 }
+        message: { type: string }
+        exception_type: { type: string, maxLength: 255 }
+        non_retryable: { type: boolean }
+        timeout_kind: { type: string, enum: [start_to_close, schedule_to_close, heartbeat] }
+        retry_reason: { type: string, enum: [failure, timeout, cold_replay] }
+        backoff_seconds: { type: integer, minimum: 0 }
+        heartbeats:
+          type: array
+          maxItems: 1000
+          items: { $ref: "#/components/schemas/LocalActivityHeartbeatReport" }
+    LocalActivityHeartbeatReport:
+      type: object
+      additionalProperties: false
+      required: [elapsed_ms]
+      properties:
+        details: { type: array }
+        elapsed_ms: { type: integer, minimum: 0 }
+    LocalActivityRetryPolicy:
+      type: object
+      additionalProperties: false
+      properties:
+        max_attempts: { type: integer, minimum: 1, maximum: 100 }
+        backoff_seconds:
+          type: array
+          maxItems: 99
+          items: { type: integer, minimum: 0 }
     WorkflowTaskCompletionResult:
       allOf:
         - $ref: "#/components/schemas/WorkerEnvelope"

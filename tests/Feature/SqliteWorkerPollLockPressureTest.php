@@ -161,6 +161,7 @@ class SqliteWorkerPollLockPressureTest extends TestCase
 
         $this->withHeaders($this->workerHeaders())
             ->postJson('/api/worker/register', [
+                'capability_manifest' => $this->portableWorkerAffinityRefusalManifest(),
                 'worker_id' => 'php-sqlite-registration-retry-worker',
                 'task_queue' => 'polyglot-shared',
                 'runtime' => 'php',

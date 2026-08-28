@@ -34,6 +34,7 @@ class WorkerProtocolContractTest extends TestCase
         $this->withHeaders($this->workerHeaders() + [
             ControlPlaneProtocol::HEADER => ControlPlaneProtocol::VERSION,
         ])->postJson('/api/worker/register', [
+            'capability_manifest' => $this->portableWorkerAffinityRefusalManifest(),
             'worker_id' => 'py-worker-invalid',
         ])->assertStatus(422)
             ->assertHeader(WorkerProtocol::HEADER, WorkerProtocol::VERSION)
@@ -54,6 +55,7 @@ class WorkerProtocolContractTest extends TestCase
         $this->withHeaders($headers + [
             ControlPlaneProtocol::HEADER => ControlPlaneProtocol::VERSION,
         ])->postJson('/api/worker/register', [
+            'capability_manifest' => $this->portableWorkerAffinityRefusalManifest(),
             'worker_id' => 'py-worker-invalid-older-protocol',
         ])->assertStatus(422)
             ->assertHeader(WorkerProtocol::HEADER, WorkerProtocol::VERSION)
@@ -70,6 +72,7 @@ class WorkerProtocolContractTest extends TestCase
     {
         $this->withHeaders($this->workerHeaders())
             ->postJson('/api/worker/register', [
+                'capability_manifest' => $this->portableWorkerAffinityRefusalManifest(),
                 'worker_id' => 'diagnostic-worker-v2',
                 'task_queue' => 'versioned-diagnostics',
                 'runtime' => 'external',
@@ -636,6 +639,7 @@ class WorkerProtocolContractTest extends TestCase
 
         $this->withHeaders($this->workerHeaders(withAuthorization: false))
             ->postJson('/api/worker/register', [
+                'capability_manifest' => $this->portableWorkerAffinityRefusalManifest(),
                 'worker_id' => 'py-worker-auth',
                 'task_queue' => 'default',
                 'runtime' => 'python',

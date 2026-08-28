@@ -536,6 +536,7 @@ class WorkflowControlPlaneTest extends TestCase
         $this->createNamespace('default', 'Default namespace');
 
         $this->withHeaders($this->workerHeaders())->postJson('/api/worker/register', [
+            'capability_manifest' => $this->portableWorkerAffinityRefusalManifest(),
             'worker_id' => 'external-command-contract-worker',
             'task_queue' => 'external-command-contracts',
             'runtime' => 'php',

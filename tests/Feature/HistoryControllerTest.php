@@ -78,6 +78,7 @@ class HistoryControllerTest extends TestCase
 
         $this->withHeaders($this->workerHeaders())
             ->postJson('/api/worker/register', [
+                'capability_manifest' => $this->portableWorkerAffinityRefusalManifest(),
                 'worker_id' => 'history-worker-v1',
                 'task_queue' => 'ingest',
                 'runtime' => 'php',

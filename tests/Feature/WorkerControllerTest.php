@@ -44,6 +44,7 @@ class WorkerControllerTest extends TestCase
     {
         $response = $this->withHeaders($this->workerHeaders())
             ->postJson('/api/worker/register', [
+                'capability_manifest' => $this->portableWorkerAffinityRefusalManifest(),
                 'worker_id' => 'py-worker-1',
                 'task_queue' => 'default',
                 'runtime' => 'python',
@@ -76,6 +77,7 @@ class WorkerControllerTest extends TestCase
 
         $response = $this->withHeaders($this->workerHeaders())
             ->postJson('/api/worker/register', [
+                'capability_manifest' => $this->portableWorkerAffinityRefusalManifest(),
                 'worker_id' => 'cadence-worker',
                 'task_queue' => 'default',
                 'runtime' => 'python',
@@ -89,6 +91,7 @@ class WorkerControllerTest extends TestCase
     {
         $response = $this->withHeaders($this->workerHeaders())
             ->postJson('/api/worker/register', [
+                'capability_manifest' => $this->portableWorkerAffinityRefusalManifest(),
                 'worker_id' => 'init-state-worker',
                 'task_queue' => 'default',
                 'runtime' => 'python',
@@ -130,6 +133,7 @@ class WorkerControllerTest extends TestCase
     {
         $response = $this->withHeaders($this->workerHeaders())
             ->postJson('/api/worker/register', [
+                'capability_manifest' => $this->portableWorkerAffinityRefusalManifest(),
                 'worker_id' => 'timer-workflow-only-worker',
                 'task_queue' => 'timers-normal-sleep',
                 'runtime' => 'php',
@@ -166,6 +170,7 @@ class WorkerControllerTest extends TestCase
     {
         $response = $this->withHeaders($this->workerHeaders())
             ->postJson('/api/worker/register', [
+                'capability_manifest' => $this->portableWorkerAffinityRefusalManifest(),
                 'worker_id' => 'no-task-capacity-worker',
                 'task_queue' => 'default',
                 'runtime' => 'python',
@@ -199,6 +204,7 @@ class WorkerControllerTest extends TestCase
         foreach ($cases as [$workerId, $capacity, $field]) {
             $response = $this->withHeaders($this->workerHeaders())
                 ->postJson('/api/worker/register', [
+                    'capability_manifest' => $this->portableWorkerAffinityRefusalManifest(),
                     'worker_id' => $workerId,
                     'task_queue' => 'default',
                     'runtime' => 'python',
@@ -220,6 +226,7 @@ class WorkerControllerTest extends TestCase
     {
         $response = $this->withHeaders($this->workerHeaders())
             ->postJson('/api/worker/register', [
+                'capability_manifest' => $this->portableWorkerAffinityRefusalManifest(),
                 'task_queue' => 'default',
                 'runtime' => 'php',
             ]);
@@ -237,6 +244,7 @@ class WorkerControllerTest extends TestCase
         foreach (['php', 'python', 'rust', 'typescript', 'go', 'java', 'external'] as $runtime) {
             $response = $this->withHeaders($this->workerHeaders())
                 ->postJson('/api/worker/register', [
+                    'capability_manifest' => $this->portableWorkerAffinityRefusalManifest(),
                     'worker_id' => "worker-{$runtime}",
                     'task_queue' => 'default',
                     'runtime' => $runtime,
@@ -252,6 +260,7 @@ class WorkerControllerTest extends TestCase
     {
         $response = $this->withHeaders($this->workerHeaders())
             ->postJson('/api/worker/register', [
+                'capability_manifest' => $this->portableWorkerAffinityRefusalManifest(),
                 'worker_id' => 'worker-ruby',
                 'task_queue' => 'default',
                 'runtime' => 'ruby',
@@ -274,6 +283,7 @@ class WorkerControllerTest extends TestCase
     {
         $this->withHeaders($this->workerHeaders())
             ->postJson('/api/worker/register', [
+                'capability_manifest' => $this->portableWorkerAffinityRefusalManifest(),
                 'worker_id' => 'py-worker-1',
                 'task_queue' => 'default',
                 'runtime' => 'python',
@@ -283,6 +293,7 @@ class WorkerControllerTest extends TestCase
 
         $this->withHeaders($this->workerHeaders())
             ->postJson('/api/worker/register', [
+                'capability_manifest' => $this->portableWorkerAffinityRefusalManifest(),
                 'worker_id' => 'py-worker-1',
                 'task_queue' => 'default',
                 'runtime' => 'python',
@@ -306,6 +317,7 @@ class WorkerControllerTest extends TestCase
     {
         $this->withHeaders($this->workerHeaders())
             ->postJson('/api/worker/register', [
+                'capability_manifest' => $this->portableWorkerAffinityRefusalManifest(),
                 'worker_id' => 'typed-worker',
                 'task_queue' => 'default',
                 'runtime' => 'python',
@@ -334,6 +346,7 @@ class WorkerControllerTest extends TestCase
     {
         $this->withHeaders($this->workerHeaders())
             ->postJson('/api/worker/register', [
+                'capability_manifest' => $this->portableWorkerAffinityRefusalManifest(),
                 'worker_id' => 'reload-worker',
                 'task_queue' => 'default',
                 'runtime' => 'python',
@@ -346,6 +359,7 @@ class WorkerControllerTest extends TestCase
 
         $response = $this->withHeaders($this->workerHeaders())
             ->postJson('/api/worker/register', [
+                'capability_manifest' => $this->portableWorkerAffinityRefusalManifest(),
                 'worker_id' => 'reload-worker',
                 'task_queue' => 'default',
                 'runtime' => 'python',
@@ -370,6 +384,7 @@ class WorkerControllerTest extends TestCase
     {
         $this->withHeaders($this->workerHeaders())
             ->postJson('/api/worker/register', [
+                'capability_manifest' => $this->portableWorkerAffinityRefusalManifest(),
                 'worker_id' => 'legacy-reload-worker',
                 'task_queue' => 'default',
                 'runtime' => 'python',
@@ -382,6 +397,7 @@ class WorkerControllerTest extends TestCase
 
         $this->withHeaders($this->workerHeaders())
             ->postJson('/api/worker/register', [
+                'capability_manifest' => $this->portableWorkerAffinityRefusalManifest(),
                 'worker_id' => 'legacy-reload-worker',
                 'task_queue' => 'default',
                 'runtime' => 'python',
@@ -401,6 +417,7 @@ class WorkerControllerTest extends TestCase
         foreach (range(1, 2) as $_) {
             $this->withHeaders($this->workerHeaders())
                 ->postJson('/api/worker/register', [
+                    'capability_manifest' => $this->portableWorkerAffinityRefusalManifest(),
                     'worker_id' => 'stable-worker',
                     'task_queue' => 'default',
                     'runtime' => 'python',
@@ -424,6 +441,7 @@ class WorkerControllerTest extends TestCase
 
         $this->withHeaders($this->workerHeaders('default'))
             ->postJson('/api/worker/register', [
+                'capability_manifest' => $this->portableWorkerAffinityRefusalManifest(),
                 'worker_id' => 'shared-id',
                 'task_queue' => 'default',
                 'runtime' => 'php',
@@ -432,6 +450,7 @@ class WorkerControllerTest extends TestCase
 
         $this->withHeaders($this->workerHeaders('staging'))
             ->postJson('/api/worker/register', [
+                'capability_manifest' => $this->portableWorkerAffinityRefusalManifest(),
                 'worker_id' => 'shared-id',
                 'task_queue' => 'default',
                 'runtime' => 'python',
@@ -447,6 +466,7 @@ class WorkerControllerTest extends TestCase
     {
         $response = $this->withHeaders(['X-Namespace' => 'default'])
             ->postJson('/api/worker/register', [
+                'capability_manifest' => $this->portableWorkerAffinityRefusalManifest(),
                 'worker_id' => 'worker-no-version',
                 'task_queue' => 'default',
                 'runtime' => 'php',
@@ -490,6 +510,7 @@ class WorkerControllerTest extends TestCase
         try {
             $this->withHeaders($this->workerHeaders())
                 ->postJson('/api/worker/register', [
+                    'capability_manifest' => $this->portableWorkerAffinityRefusalManifest(),
                     'worker_id' => 'compatibility-throttle-worker',
                     'task_queue' => 'replay-query',
                     'runtime' => 'external',

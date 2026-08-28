@@ -31,6 +31,7 @@ class RoleAuthorizationTest extends TestCase
 
         $this->withHeaders($this->workerHeaders('worker-token'))
             ->postJson('/api/worker/register', [
+                'capability_manifest' => $this->portableWorkerAffinityRefusalManifest(),
                 'worker_id' => 'worker-authz',
                 'task_queue' => 'default',
                 'runtime' => 'python',
@@ -68,6 +69,7 @@ class RoleAuthorizationTest extends TestCase
 
         $this->withHeaders($this->workerHeaders('worker-token'))
             ->postJson('/api/worker/register', [
+                'capability_manifest' => $this->portableWorkerAffinityRefusalManifest(),
                 'worker_id' => 'sdk-worker-v1',
                 'task_queue' => 'default',
                 'runtime' => 'python',
@@ -77,6 +79,7 @@ class RoleAuthorizationTest extends TestCase
 
         $this->withHeaders($this->workerHeaders('operator-token'))
             ->postJson('/api/worker/register', [
+                'capability_manifest' => $this->portableWorkerAffinityRefusalManifest(),
                 'worker_id' => 'operator-diagnostic-worker',
                 'task_queue' => 'default',
                 'runtime' => 'external',
@@ -142,6 +145,7 @@ class RoleAuthorizationTest extends TestCase
 
         $this->withHeaders($this->workerHeaders('admin-token'))
             ->postJson('/api/worker/register', [
+                'capability_manifest' => $this->portableWorkerAffinityRefusalManifest(),
                 'worker_id' => 'admin-diagnostic-worker',
                 'task_queue' => 'default',
                 'runtime' => 'external',
@@ -203,6 +207,7 @@ class RoleAuthorizationTest extends TestCase
 
         $this->withHeaders($this->workerHeaders('legacy-token'))
             ->postJson('/api/worker/register', [
+                'capability_manifest' => $this->portableWorkerAffinityRefusalManifest(),
                 'worker_id' => 'legacy-worker',
                 'task_queue' => 'default',
                 'runtime' => 'python',
@@ -224,6 +229,7 @@ class RoleAuthorizationTest extends TestCase
 
         $this->withHeaders($this->workerHeaders('legacy-token'))
             ->postJson('/api/worker/register', [
+                'capability_manifest' => $this->portableWorkerAffinityRefusalManifest(),
                 'worker_id' => 'legacy-admin-diagnostic',
                 'task_queue' => 'default',
                 'runtime' => 'external',
@@ -313,6 +319,7 @@ class RoleAuthorizationTest extends TestCase
 
         $this->withHeaders($this->workerHeadersFor('operator-token', 'default'))
             ->postJson('/api/worker/register', [
+                'capability_manifest' => $this->portableWorkerAffinityRefusalManifest(),
                 'worker_id' => 'w-probe',
                 'task_queue' => 'default',
                 'runtime' => 'python',
@@ -321,6 +328,7 @@ class RoleAuthorizationTest extends TestCase
 
         $this->withHeaders($this->workerHeadersFor('operator-token', 'ghost-namespace'))
             ->postJson('/api/worker/register', [
+                'capability_manifest' => $this->portableWorkerAffinityRefusalManifest(),
                 'worker_id' => 'w-probe',
                 'task_queue' => 'default',
                 'runtime' => 'python',

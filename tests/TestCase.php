@@ -59,6 +59,18 @@ abstract class TestCase extends BaseTestCase
         parent::tearDown();
     }
 
+    /**
+     * @return array<string, array{supported: bool, minimum_protocol_version: string, reason: string}>
+     */
+    protected function portableWorkerAffinityRefusalManifest(): array
+    {
+        return array_fill_keys(WorkerProtocol::PORTABLE_WORKER_AFFINITY_CAPABILITIES, [
+            'supported' => false,
+            'minimum_protocol_version' => WorkerProtocol::PORTABLE_WORKER_AFFINITY_MINIMUM_PROTOCOL_VERSION,
+            'reason' => 'not_implemented',
+        ]);
+    }
+
     private function pollingCachePath(): string
     {
         return sys_get_temp_dir().'/dw-server-test-polling-'.getmypid();

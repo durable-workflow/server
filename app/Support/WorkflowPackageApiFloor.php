@@ -80,6 +80,11 @@ final class WorkflowPackageApiFloor
         // cluster info re-export the package-owned runtime semantics.
         [WorkerProtocolVersion::class, 'workerSessionVerbs'],
         [WorkerProtocolVersion::class, 'workerSessionSemantics'],
+        // Portable worker-affinity discovery consumes the exact package-owned
+        // local-activity and sticky-execution contracts without prerelease
+        // feature detection or Server-owned placeholder semantics.
+        [WorkerProtocolVersion::class, 'localActivitySemantics'],
+        [WorkerProtocolVersion::class, 'describe'],
         // Worker protocol 1.7 query-task contract: PHP workers at this
         // protocol level advertise query capability and poll/complete/fail
         // query work through the standalone worker-plane routes with
@@ -124,6 +129,9 @@ final class WorkflowPackageApiFloor
         [RunCommandContract::class, 'SOURCE_DURABLE_HISTORY'],
         [RunCommandContract::class, 'SOURCE_UNAVAILABLE'],
         [WorkerProtocolVersion::class, 'CAPABILITY_QUERY_TASKS'],
+        [WorkflowCommandNormalizer::class, 'MAX_LOCAL_ACTIVITY_ATTEMPTS'],
+        [WorkflowCommandNormalizer::class, 'MAX_LOCAL_ACTIVITY_HEARTBEATS_PER_ATTEMPT'],
+        [WorkflowCommandNormalizer::class, 'MAX_LOCAL_ACTIVITY_HEARTBEATS'],
         [ExternalPayloadReference::class, 'SCHEMA'],
         [ExternalPayloads::class, 'STORED_REFERENCE_PREFIX'],
         [WorkflowSearchAttribute::class, 'MAX_KEYWORD_LENGTH'],
@@ -137,7 +145,7 @@ final class WorkflowPackageApiFloor
     /**
      * Workflow package protocol contract required by this server.
      */
-    private const MINIMUM_WORKFLOW_PACKAGE_WORKER_PROTOCOL_VERSION = '1.16';
+    private const MINIMUM_WORKFLOW_PACKAGE_WORKER_PROTOCOL_VERSION = '1.18';
 
     /**
      * Concrete classes the server instantiates or catches directly.

@@ -66,6 +66,7 @@ class WorkflowBootstrapRouteGatingTest extends TestCase
 
         $this->withHeaders($this->workerHeaders('worker-token'))
             ->postJson('/api/worker/register', [
+                'capability_manifest' => $this->portableWorkerAffinityRefusalManifest(),
                 'worker_id' => 'bootstrap-blocked-worker',
                 'task_queue' => 'default',
                 'runtime' => 'python',
@@ -83,6 +84,7 @@ class WorkflowBootstrapRouteGatingTest extends TestCase
 
         $this->withHeaders($this->workerHeaders('worker-token'))
             ->postJson('/api/worker/register', [
+                'capability_manifest' => $this->portableWorkerAffinityRefusalManifest(),
                 'worker_id' => 'queue-bootstrap-blocked-worker',
                 'task_queue' => 'default',
                 'runtime' => 'python',
@@ -167,6 +169,7 @@ class WorkflowBootstrapRouteGatingTest extends TestCase
 
         $this->withHeaders($this->workerHeaders('worker-token'))
             ->postJson('/api/worker/register', [
+                'capability_manifest' => $this->portableWorkerAffinityRefusalManifest(),
                 'worker_id' => 'build-a-worker',
                 'task_queue' => 'default',
                 'runtime' => 'python',

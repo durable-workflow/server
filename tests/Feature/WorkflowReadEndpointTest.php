@@ -324,6 +324,7 @@ class WorkflowReadEndpointTest extends TestCase
             'worker_id' => 'versioned-worker-v1',
             'task_queue' => $taskQueue,
             'runtime' => 'php',
+            'capability_manifest' => $this->portableWorkerAffinityRefusalManifest(),
             'sdk_version' => '1.0.0',
             'build_id' => $buildV1,
             'supported_workflow_types' => [$workflowType],

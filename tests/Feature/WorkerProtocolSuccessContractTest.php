@@ -143,6 +143,10 @@ class WorkerProtocolSuccessContractTest extends TestCase
     ): void {
         $this->prepareWorkerCase($case);
 
+        if ($case === 'worker.register') {
+            $body['capability_manifest'] = $this->portableWorkerAffinityRefusalManifest();
+        }
+
         $response = $this->postJson($path, $body, $this->workerProtocolHeaders());
 
         $response->assertStatus($status)
@@ -193,6 +197,7 @@ class WorkerProtocolSuccessContractTest extends TestCase
             'task_queue' => 'contract-queue',
             'runtime' => 'rust',
             'capabilities' => ['typed_search_attributes'],
+            'capability_manifest' => $this->portableWorkerAffinityRefusalManifest(),
         ], $this->workerProtocolHeaders())->assertCreated();
 
         $envelope = json_decode((string) $response->getContent(), flags: JSON_THROW_ON_ERROR);
@@ -235,6 +240,8 @@ class WorkerProtocolSuccessContractTest extends TestCase
                 'server_capabilities.local_activities.schema',
                 'durable-workflow.v2.local-activity.contract',
             )
+            ->assertJsonPath('server_capabilities.local_activities.supported', false)
+            ->assertJsonPath('server_capabilities.sticky_execution.supported', false)
             ->assertJsonPath('server_capabilities.worker_session_verbs', [])
             ->assertJsonPath('server_capabilities.worker_sessions.supported', false)
             ->assertJsonPath(
@@ -246,6 +253,11 @@ class WorkerProtocolSuccessContractTest extends TestCase
                 'worker_protocol_version_below_worker_session_minimum',
             )
             ->assertJsonMissingPath('control_plane');
+
+        $this->assertNotContains(
+            'record_local_activity',
+            $response->json('server_capabilities.supported_workflow_task_commands'),
+        );
     }
 
     public function test_workflow_task_poll_treats_null_timeout_seconds_as_default(): void
@@ -504,6 +516,7 @@ class WorkerProtocolSuccessContractTest extends TestCase
             'task_queue' => 'contract-queue',
             'runtime' => 'php',
             'sdk_version' => '2.0.0-test',
+            'capability_manifest' => $this->portableWorkerAffinityRefusalManifest(),
             'supported_workflow_types' => ['tests.external-greeting-workflow'],
             'supported_activity_types' => [],
             'process_metrics' => [
@@ -579,6 +592,7 @@ class WorkerProtocolSuccessContractTest extends TestCase
             'task_queue' => 'contract-queue',
             'runtime' => 'php',
             'sdk_version' => '2.0.0-test',
+            'capability_manifest' => $this->portableWorkerAffinityRefusalManifest(),
             'supported_workflow_types' => ['tests.external-greeting-workflow'],
             'supported_activity_types' => [],
             'process_metrics' => [
@@ -764,6 +778,7 @@ class WorkerProtocolSuccessContractTest extends TestCase
         $workerId = 'worker-external-update-contract';
 
         $this->postJson('/api/worker/register', [
+            'capability_manifest' => $this->portableWorkerAffinityRefusalManifest(),
             'worker_id' => $workerId,
             'task_queue' => $taskQueue,
             'runtime' => 'php',
@@ -983,6 +998,7 @@ class WorkerProtocolSuccessContractTest extends TestCase
         $workflowId = 'wf-external-waiting-message';
 
         $this->postJson('/api/worker/register', [
+            'capability_manifest' => $this->portableWorkerAffinityRefusalManifest(),
             'worker_id' => $workerId,
             'task_queue' => $taskQueue,
             'runtime' => 'php',
@@ -2777,6 +2793,7 @@ class WorkerProtocolSuccessContractTest extends TestCase
 
             foreach (['build-a', 'build-b'] as $buildId) {
                 $this->postJson('/api/worker/register', [
+                    'capability_manifest' => $this->portableWorkerAffinityRefusalManifest(),
                     'worker_id' => "worker-service-timer-backlog-{$buildId}",
                     'task_queue' => 'contract-queue',
                     'runtime' => 'php',
