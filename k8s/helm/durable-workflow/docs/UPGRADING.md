@@ -67,6 +67,13 @@ chart MINOR bump and an entry below.
 
 ## Per-version migration notes
 
+### 0.1.48
+
+This release advances the chart Server identity to `2.0.0-rc.52`, aligns HTTP
+and stream protocol negotiation at `1.18`, and accepts both list- and map-shaped
+local-activity heartbeat detail values. Existing values remain compatible, and
+no manual data migration is required.
+
 ### 0.1.47
 
 This release advances the chart Server identity to `2.0.0-rc.51` and the

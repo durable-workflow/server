@@ -5,11 +5,11 @@ type: application
 # The chart's own semver version. Bumped on every chart release; treated as
 # independent of the server image version (appVersion). Breaking-change rules
 # for this version live in docs/helm-upgrading.md alongside the chart.
-version: 0.1.47
+version: 0.1.48
 # The immutable Durable Workflow Server identity this chart release packages.
 # The onboarding default in values.yaml is generated from the separately
 # qualified compatibility authority; appVersion remains release metadata.
-appVersion: "2.0.0-rc.51"
+appVersion: "2.0.0-rc.52"
 kubeVersion: ">=1.27.0-0"
 home: https://durable-workflow.github.io/docs/2.0/deployment
 sources:
@@ -30,12 +30,14 @@ annotations:
   # exact commit that most recently changed the packaged chart.
   org.opencontainers.image.source: https://github.com/durable-workflow/server
   dev.durable-workflow.source-revision: "unreleased"
-  dev.durable-workflow.image-reference: "docker.io/durableworkflow/server:2.0.0-rc.51"
+  dev.durable-workflow.image-reference: "docker.io/durableworkflow/server:2.0.0-rc.52"
   artifacthub.io/license: MIT
   artifacthub.io/category: integration-delivery
   # Free-form changelog used by Artifact Hub. Keep the most recent chart-version
   # entry first; do not rewrite past entries.
   artifacthub.io/changes: |
+    - kind: fixed
+      description: Align HTTP and stream protocol negotiation and accept list- and map-shaped local-activity heartbeat details in Server 2.0.0-rc.52.
     - kind: added
       description: Publish worker protocol 1.18 capability manifests and portable local-activity, worker-session, and sticky-execution boundaries in Server 2.0.0-rc.51.
     - kind: fixed

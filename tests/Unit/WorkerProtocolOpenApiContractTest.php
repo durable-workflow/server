@@ -2,6 +2,7 @@
 
 namespace Tests\Unit;
 
+use App\Support\WorkerProtocol;
 use PHPUnit\Framework\Attributes\DataProvider;
 use PHPUnit\Framework\TestCase;
 use Symfony\Component\Yaml\Yaml;
@@ -30,6 +31,32 @@ class WorkerProtocolOpenApiContractTest extends TestCase
         $this->assertSame(
             ['1.0', '1.1', '1.2', '1.3', '1.4', '1.5', '1.6', '1.7', '1.8', '1.9', '1.10', '1.11', '1.12', '1.13', '1.14', '1.15', '1.16', '1.17', '1.18'],
             $this->spec['x-durable-workflow-worker-protocol-negotiation']['accepted_request_versions_by_default'],
+        );
+    }
+
+    public function test_http_and_stream_specs_publish_the_runtime_negotiation_floor(): void
+    {
+        $streamSpecPath = dirname(__DIR__, 2).'/resources/platform-protocol-specs/worker-protocol-stream.asyncapi.yaml';
+        $this->assertFileExists($streamSpecPath);
+
+        $streamSpec = Yaml::parseFile($streamSpecPath);
+        $this->assertIsArray($streamSpec);
+        $this->assertMatchesRegularExpression(
+            '/^(?:0|[1-9][0-9]*)$/D',
+            (string) $this->spec['info']['version'],
+        );
+        $this->assertMatchesRegularExpression(
+            '/^(?:0|[1-9][0-9]*)$/D',
+            (string) $streamSpec['info']['version'],
+        );
+
+        $httpNegotiation = $this->spec['x-durable-workflow-worker-protocol-negotiation'];
+        $streamNegotiation = $streamSpec['x-durable-workflow-worker-protocol-negotiation'];
+        $this->assertSame(WorkerProtocol::VERSION, $httpNegotiation['default_advertised_version']);
+        $this->assertSame($httpNegotiation, $streamNegotiation);
+        $this->assertSame(
+            WorkerProtocol::VERSION,
+            $streamSpec['components']['schemas']['ProtocolEnvelope']['properties']['protocol_version']['const'],
         );
     }
 
@@ -86,6 +113,13 @@ class WorkerProtocolOpenApiContractTest extends TestCase
         $attempt = $this->spec['components']['schemas']['LocalActivityAttemptReport'];
         $this->assertSame(['attempt_number', 'outcome'], $attempt['required']);
         $this->assertSame(1000, $attempt['properties']['heartbeats']['maxItems']);
+        $this->assertSame(
+            [
+                ['type' => 'array'],
+                ['type' => 'object', 'additionalProperties' => true],
+            ],
+            $this->spec['components']['schemas']['LocalActivityHeartbeatReport']['properties']['details']['oneOf'],
+        );
 
         $registrationFailures = $this->spec['components']['responses']['WorkerRegistrationFailure']['content']['application/json']['schema']['anyOf'];
         $completionFailures = $this->spec['components']['responses']['WorkflowTaskCompletionFailure']['content']['application/json']['schema']['anyOf'];

@@ -1557,7 +1557,10 @@ components:
       additionalProperties: false
       required: [elapsed_ms]
       properties:
-        details: { type: array }
+        details:
+          oneOf:
+            - { type: array }
+            - { type: object, additionalProperties: true }
         elapsed_ms: { type: integer, minimum: 0 }
     LocalActivityRetryPolicy:
       type: object
