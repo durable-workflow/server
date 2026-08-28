@@ -84,7 +84,10 @@ class ActivityWorkerProtocolTest extends TestCase
         $poll->assertOk()
             ->assertHeader(WorkerProtocol::HEADER, WorkerProtocol::VERSION)
             ->assertJsonPath('protocol_version', WorkerProtocol::VERSION)
-            ->assertJsonPath('server_capabilities.supported_workflow_task_commands.4', 'start_timer')
+            ->assertJsonPath(
+                'server_capabilities.supported_workflow_task_commands',
+                WorkerProtocol::supportedWorkflowTaskCommands(),
+            )
             ->assertJsonPath('task.workflow_id', $workflow->id())
             ->assertJsonPath('task.run_id', $start->runId())
             ->assertJsonPath('task.activity_type', 'tests.external-greeting-activity');

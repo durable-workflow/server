@@ -115,7 +115,10 @@ class WorkflowWorkerProtocolTest extends TestCase
         $poll->assertOk()
             ->assertHeader(WorkerProtocol::HEADER, WorkerProtocol::VERSION)
             ->assertJsonPath('protocol_version', WorkerProtocol::VERSION)
-            ->assertJsonPath('server_capabilities.supported_workflow_task_commands.3', 'schedule_activity')
+            ->assertJsonPath(
+                'server_capabilities.supported_workflow_task_commands',
+                WorkerProtocol::supportedWorkflowTaskCommands(),
+            )
             ->assertJsonPath('task.workflow_id', $workflowId)
             ->assertJsonPath('task.run_id', $runId)
             ->assertJsonPath('task.workflow_type', 'tests.external-greeting-workflow')
@@ -450,7 +453,10 @@ class WorkflowWorkerProtocolTest extends TestCase
             ->assertJsonPath('worker_id', 'php-worker-register')
             ->assertJsonPath('acknowledged', true)
             ->assertJsonPath('server_capabilities.workflow_task_poll_request_idempotency', true)
-            ->assertJsonPath('server_capabilities.supported_workflow_task_commands.5', 'start_child_workflow');
+            ->assertJsonPath(
+                'server_capabilities.supported_workflow_task_commands',
+                WorkerProtocol::supportedWorkflowTaskCommands(),
+            );
 
         $this->withHeaders([
             'X-Namespace' => 'default',
