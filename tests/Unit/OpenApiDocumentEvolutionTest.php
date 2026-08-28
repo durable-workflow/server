@@ -5,23 +5,56 @@ namespace Tests\Unit;
 use DurableWorkflow\Server\Ci\OpenApiDocumentEvolution;
 use PHPUnit\Framework\TestCase;
 use RuntimeException;
+use Symfony\Component\Yaml\Yaml;
 
 require_once dirname(__DIR__, 2).'/scripts/ci/OpenApiDocumentEvolution.php';
 
 class OpenApiDocumentEvolutionTest extends TestCase
 {
-    public function test_feature_ci_compares_the_candidate_to_its_base_revision(): void
+    public function test_candidate_structure_and_feature_ci_compare_to_the_base_revision(): void
     {
         $workflow = file_get_contents(dirname(__DIR__, 2).'/.github/workflows/phpunit-feature.yml');
 
         $this->assertIsString($workflow);
+        $parsed = Yaml::parse($workflow);
+        $this->assertIsArray($parsed);
+
+        $structuralSteps = $parsed['jobs']['structural']['steps'] ?? null;
+        $this->assertIsArray($structuralSteps);
+        $structuralStep = array_values(array_filter(
+            $structuralSteps,
+            static fn (mixed $step): bool => is_array($step)
+                && ($step['name'] ?? null) === 'Require versioned worker OpenAPI evolution',
+        ));
+
+        $this->assertCount(1, $structuralStep);
+        $this->assertSame(
+            '${{ github.event_name == \'pull_request\' && github.event.pull_request.base.sha || github.event_name == \'push\' && github.event.before || inputs.corpus_base_ref }}',
+            $structuralStep[0]['env']['OPENAPI_BASE_REF'] ?? null,
+        );
+        $this->assertSame(
+            'php scripts/ci/check-worker-openapi-evolution.php "$OPENAPI_BASE_REF"',
+            $structuralStep[0]['run'] ?? null,
+        );
+
+        $featureSteps = $parsed['jobs']['feature']['steps'] ?? null;
+        $this->assertIsArray($featureSteps);
+        $featureStep = array_values(array_filter(
+            $featureSteps,
+            static fn (mixed $step): bool => is_array($step)
+                && ($step['name'] ?? null) === 'Run feature, Nexus, and regression corpus suites',
+        ));
+
+        $this->assertCount(1, $featureStep);
+        $featureRun = $featureStep[0]['run'] ?? null;
+        $this->assertIsString($featureRun);
         $this->assertStringContainsString(
             'php scripts/ci/check-worker-openapi-evolution.php "$CORPUS_BASE_REF"',
-            $workflow,
+            $featureRun,
         );
         $this->assertStringContainsString(
             'tests/Unit/OpenApiDocumentEvolutionTest.php',
-            $workflow,
+            $featureRun,
         );
     }
 

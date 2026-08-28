@@ -725,6 +725,60 @@ class DockerWorkflowIsolationPolicyTest(unittest.TestCase):
                     result.stderr,
                 )
 
+    def test_accepts_worker_openapi_evolution_with_bounded_base_refs(self) -> None:
+        result = self.run_policy(
+            """
+            name: Candidate
+            on: pull_request
+            jobs:
+              structural:
+                steps:
+                  - env:
+                      OPENAPI_BASE_REF: ${{ github.event.pull_request.base.sha }}
+                    run: php scripts/ci/check-worker-openapi-evolution.php "$OPENAPI_BASE_REF"
+                  - env:
+                      CORPUS_BASE_REF: ${{ github.event.pull_request.base.sha }}
+                    run: php scripts/ci/check-worker-openapi-evolution.php "$CORPUS_BASE_REF"
+            """,
+            {
+                "scripts/ci/check-worker-openapi-evolution.php": """
+                    <?php
+                """
+            },
+        )
+
+        self.assertEqual(0, result.returncode, result.stderr)
+
+    def test_rejects_unapproved_dynamic_php_script_invocations(self) -> None:
+        for command, scripts in (
+            (
+                'php scripts/ci/unclassified.php "$OPENAPI_BASE_REF"',
+                {"scripts/ci/unclassified.php": "<?php"},
+            ),
+            (
+                'php scripts/ci/check-worker-openapi-evolution.php "$OTHER_REF"',
+                {"scripts/ci/check-worker-openapi-evolution.php": "<?php"},
+            ),
+        ):
+            with self.subTest(command=command):
+                result = self.run_policy(
+                    f"""
+                    name: Candidate
+                    on: pull_request
+                    jobs:
+                      structural:
+                        steps:
+                          - run: {command}
+                    """,
+                    scripts,
+                )
+
+                self.assertNotEqual(0, result.returncode)
+                self.assertIn(
+                    "unclassified command php cannot safely consume",
+                    result.stderr,
+                )
+
     def test_rejects_dynamic_helper_as_docker_run_command(
         self,
     ) -> None:

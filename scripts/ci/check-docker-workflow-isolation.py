@@ -1667,6 +1667,7 @@ def xargs_docker_cleanup_is_scoped(
 
 
 def command_arguments_are_modeled(
+    root: Path,
     program: str,
     tokens: list[str],
     raw_arguments: str,
@@ -1691,6 +1692,13 @@ def command_arguments_are_modeled(
                 token,
             )
             for token in tokens[1:]
+        )
+    if program == "php":
+        return (
+            len(tokens) == 2
+            and tokens[0] == "scripts/ci/check-worker-openapi-evolution.php"
+            and (root / tokens[0]).is_file()
+            and tokens[1] in {"$CORPUS_BASE_REF", "$OPENAPI_BASE_REF"}
         )
     if program == "git":
         while tokens[:1] == ["-C"] and len(tokens) >= 2:
@@ -2047,6 +2055,7 @@ def unclassified_dynamic_invocations(
                 if normalized_program in SHELL_GRAMMAR_WORDS:
                     continue
                 if command_arguments_are_modeled(
+                    root,
                     normalized_program,
                     tokens,
                     raw_arguments,

@@ -87,6 +87,20 @@ jobs:
       - name: Validate embedded Workflow package authority
         run: php scripts/ci/test-workflow-package-authority.php
 
+      - name: Install worker OpenAPI validation dependencies
+        run: >-
+          composer install
+          --no-dev
+          --no-scripts
+          --no-interaction
+          --no-progress
+          --prefer-dist
+
+      - name: Require versioned worker OpenAPI evolution
+        env:
+          OPENAPI_BASE_REF: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || github.event_name == 'push' && github.event.before || inputs.corpus_base_ref }}
+        run: php scripts/ci/check-worker-openapi-evolution.php "$OPENAPI_BASE_REF"
+
       - name: Require durable codec evidence
         env:
           CORPUS_BASE_REF: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || github.event_name == 'push' && github.event.before || inputs.corpus_base_ref }}
