@@ -180,6 +180,7 @@ use App\Models\WorkflowNamespace;
 use App\Models\WorkerRegistration;
 use App\Models\WorkflowUpdateValidationTask;
 use App\Support\ControlPlaneProtocol;
+use App\Support\DirectConformanceWorkerProtocol;
 use App\Support\LongPollSignalStore;
 use App\Support\LongPollWaitSlotStore;
 use App\Support\LongPoller;
@@ -191,7 +192,6 @@ use Illuminate\Contracts\Console\Kernel as ConsoleKernel;
 use Illuminate\Contracts\Http\Kernel as HttpKernel;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Artisan;
-use Workflow\Serializers\Serializer;
 use Workflow\V2\Enums\HistoryEventType;
 use Workflow\V2\Models\WorkflowHistoryEvent;
 use Workflow\V2\Models\WorkflowRun;
@@ -380,16 +380,18 @@ function register_probe_worker(
         $capabilities[] = WorkflowUpdateValidationTaskBroker::CAPABILITY;
     }
 
-    request_json('POST', '/worker/register', [
-        'worker_id' => $workerId,
-        'task_queue' => $taskQueue,
-        'runtime' => 'php',
-        'supported_workflow_types' => [WORKFLOW_UPDATES_TYPE],
-        'capabilities' => $capabilities,
-        'workflow_command_contracts' => [
+    request_json('POST', '/worker/register', DirectConformanceWorkerProtocol::registration(
+        $workerId,
+        $taskQueue,
+        'php',
+        'durable-workflow/server:published-artifact',
+        [WORKFLOW_UPDATES_TYPE],
+        [],
+        $capabilities,
+        attributes: ['workflow_command_contracts' => [
             WORKFLOW_UPDATES_TYPE => $contract,
-        ],
-    ], [409], $headers);
+        ]],
+    ), [409], $headers);
 }
 
 function install_update_validation_worker_step(callable $workerStep): void
@@ -628,11 +630,13 @@ function complete_task(array $task, array $commands, array $headers = []): array
 {
     $taskId = (string) $task['task_id'];
 
-    return request_json('POST', '/worker/workflow-tasks/'.$taskId.'/complete', [
-        'lease_owner' => (string) $task['lease_owner'],
-        'workflow_task_attempt' => (int) $task['workflow_task_attempt'],
-        'commands' => $commands,
-    ], [], $headers)['body'];
+    return request_json(
+        'POST',
+        '/worker/workflow-tasks/'.$taskId.'/complete',
+        DirectConformanceWorkerProtocol::workflowTaskCompletion($task, $commands),
+        [],
+        $headers,
+    )['body'];
 }
 
 function open_signal_wait(
@@ -663,7 +667,7 @@ function complete_workflow_start_task(
     return complete_task($task, [
         [
             'type' => 'complete_workflow',
-            'result' => Serializer::serializeWithCodec('avro', [
+            'result' => DirectConformanceWorkerProtocol::avroValue([
                 'probe' => 'terminal-workflow-update-behavior',
             ]),
         ],
@@ -684,10 +688,7 @@ function complete_update_task(
         [
             'type' => 'complete_update',
             'update_id' => $updateId,
-            'result' => [
-                'codec' => 'avro',
-                'blob' => Serializer::serializeWithCodec('avro', $result),
-            ],
+            'result' => DirectConformanceWorkerProtocol::avroEnvelope($result),
         ],
     ], $headers);
 }
@@ -3288,12 +3289,12 @@ declare(strict_types=1);
 
 use App\Models\WorkflowNamespace;
 use App\Support\ControlPlaneProtocol;
+use App\Support\DirectConformanceWorkerProtocol;
 use App\Support\WorkerProtocol;
 use Illuminate\Contracts\Console\Kernel as ConsoleKernel;
 use Illuminate\Contracts\Http\Kernel as HttpKernel;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Artisan;
-use Workflow\Serializers\Serializer;
 
 const OPERATOR_WORKFLOW_TYPE = 'workflow-updates.probe';
 
@@ -3306,7 +3307,30 @@ function env_text_operator(string $name, string $default = ''): string
 
 function write_operator_json(string $path, array $payload): void
 {
-    file_put_contents($path, json_encode($payload, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES | JSON_THROW_ON_ERROR)."\n");
+    if (trim($path) === '') {
+        throw new RuntimeException('Operator diagnostics output path must be non-empty.');
+    }
+
+    $directory = dirname($path);
+    if (! is_dir($directory) || ! is_writable($directory)) {
+        throw new RuntimeException('Operator diagnostics output directory is not writable: '.$directory);
+    }
+
+    $encoded = json_encode($payload, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES | JSON_THROW_ON_ERROR)."\n";
+    $temporaryPath = $path.'.tmp.'.strtolower(bin2hex(random_bytes(6)));
+    $written = file_put_contents($temporaryPath, $encoded, LOCK_EX);
+    if ($written !== strlen($encoded)) {
+        @unlink($temporaryPath);
+        throw new RuntimeException('Operator diagnostics runtime artifact write was incomplete: '.$path);
+    }
+    if (! rename($temporaryPath, $path)) {
+        @unlink($temporaryPath);
+        throw new RuntimeException('Operator diagnostics runtime artifact could not be committed atomically: '.$path);
+    }
+    clearstatcache(true, $path);
+    if (! is_file($path) || filesize($path) !== strlen($encoded)) {
+        throw new RuntimeException('Operator diagnostics runtime artifact verification failed after write: '.$path);
+    }
 }
 
 function bootstrap_operator_application(): void
@@ -3418,16 +3442,18 @@ function operator_workflow_command_contract(): array
 
 function operator_register_worker(string $workerId, string $taskQueue): void
 {
-    operator_request_json('POST', '/worker/register', [
-        'worker_id' => $workerId,
-        'task_queue' => $taskQueue,
-        'runtime' => 'php',
-        'supported_workflow_types' => [OPERATOR_WORKFLOW_TYPE],
-        'capabilities' => ['workflow_tasks', 'query_tasks'],
-        'workflow_command_contracts' => [
+    operator_request_json('POST', '/worker/register', DirectConformanceWorkerProtocol::registration(
+        $workerId,
+        $taskQueue,
+        'php',
+        'durable-workflow/server:published-artifact',
+        [OPERATOR_WORKFLOW_TYPE],
+        [],
+        ['workflow_tasks', 'query_tasks'],
+        attributes: ['workflow_command_contracts' => [
             OPERATOR_WORKFLOW_TYPE => operator_workflow_command_contract(),
-        ],
-    ], [409]);
+        ]],
+    ), [409]);
 }
 
 function operator_poll_task(string $workerId, string $taskQueue): array
@@ -3447,11 +3473,11 @@ function operator_poll_task(string $workerId, string $taskQueue): array
 
 function operator_complete_task(array $task, array $commands): array
 {
-    return operator_request_json('POST', '/worker/workflow-tasks/'.((string) $task['task_id']).'/complete', [
-        'lease_owner' => (string) $task['lease_owner'],
-        'workflow_task_attempt' => (int) $task['workflow_task_attempt'],
-        'commands' => $commands,
-    ])['body'];
+    return operator_request_json(
+        'POST',
+        '/worker/workflow-tasks/'.((string) $task['task_id']).'/complete',
+        DirectConformanceWorkerProtocol::workflowTaskCompletion($task, $commands),
+    )['body'];
 }
 
 function operator_open_signal_wait(string $workerId, string $taskQueue): array
@@ -3494,6 +3520,13 @@ if ($step === 'setup') {
         'input' => ['operator-diagnostics'],
     ])['body'];
     $runId = (string) ($start['run_id'] ?? '');
+    $startedWorkflowId = (string) ($start['workflow_id'] ?? $workflowId);
+    if (trim($workflowId) === '' || trim($startedWorkflowId) === '' || $startedWorkflowId !== $workflowId) {
+        throw new RuntimeException('Operator diagnostics setup returned an invalid workflow identity.');
+    }
+    if (trim($runId) === '') {
+        throw new RuntimeException('Operator diagnostics setup returned an empty run identity.');
+    }
     $open = operator_open_signal_wait($workerId, $taskQueue);
     $runtime = [
         'namespace' => $namespace,
@@ -3512,9 +3545,22 @@ if ($step === 'setup') {
     return;
 }
 
-$runtime = json_decode((string) file_get_contents($runtimePath), true, flags: JSON_THROW_ON_ERROR);
-if (! is_array($runtime)) {
-    throw new RuntimeException('Operator diagnostics runtime metadata was not readable.');
+try {
+    if ($runtimePath === '' || ! is_file($runtimePath) || filesize($runtimePath) === 0) {
+        throw new RuntimeException('required runtime artifact is missing or empty');
+    }
+    $runtime = json_decode((string) file_get_contents($runtimePath), true, flags: JSON_THROW_ON_ERROR);
+    if (! is_array($runtime)) {
+        throw new RuntimeException('runtime artifact must contain a JSON object');
+    }
+    foreach (['namespace', 'workflow_id', 'run_id', 'worker_id', 'task_queue'] as $field) {
+        if (! is_string($runtime[$field] ?? null) || trim($runtime[$field]) === '') {
+            throw new RuntimeException($field.' must be a non-empty string');
+        }
+    }
+} catch (Throwable $exception) {
+    fwrite(STDERR, 'operator_runtime_artifact_invalid: '.$exception->getMessage()."\n");
+    exit(1);
 }
 
 $workerId = (string) ($runtime['worker_id'] ?? $workerId);
@@ -3529,13 +3575,10 @@ if ($step === 'complete') {
         [
             'type' => 'complete_update',
             'update_id' => $updateId,
-            'result' => [
-                'codec' => 'avro',
-                'blob' => Serializer::serializeWithCodec('avro', [
-                    'approved' => true,
-                    'source' => 'operator-diagnostics-cli-waterline',
-                ]),
-            ],
+            'result' => DirectConformanceWorkerProtocol::avroEnvelope([
+                'approved' => true,
+                'source' => 'operator-diagnostics-cli-waterline',
+            ]),
         ],
     ]);
 } elseif ($step === 'fail') {
@@ -4182,12 +4225,15 @@ run_operator_diagnostics_shard() {
       return 0
     }
 
-  workflow_id="$(node -e 'const fs = require("node:fs"); const value = JSON.parse(fs.readFileSync(process.argv[1], "utf8")); process.stdout.write(String(value.workflow_id || ""));' "$runtime_path")"
-  run_id="$(node -e 'const fs = require("node:fs"); const value = JSON.parse(fs.readFileSync(process.argv[1], "utf8")); process.stdout.write(String(value.run_id || ""));' "$runtime_path")"
-  if [[ -z "$workflow_id" || -z "$run_id" ]]; then
-    write_operator_diagnostics_shard_status fail "The operator diagnostics setup did not identify a workflow instance and run." operator_runtime_identity false
+  local runtime_identity
+  if ! runtime_identity="$(php "$script_dir/validate-workflow-updates-operator-runtime.php" "$runtime_path" 2> "$result_dir/operator-runtime-validation.log")"; then
+    local runtime_diagnostic
+    runtime_diagnostic="$(tr '\n' ' ' < "$result_dir/operator-runtime-validation.log" | sed 's/[[:space:]]\+/ /g; s/[[:space:]]$//' | cut -c1-1000)"
+    write_operator_diagnostics_shard_status fail "The operator diagnostics setup exited without a valid runtime artifact: ${runtime_diagnostic:-validation produced no diagnostic}." operator_runtime_artifact false
     return 0
   fi
+  workflow_id="$(node -e 'const value = JSON.parse(process.argv[1]); process.stdout.write(value.workflow_id);' "$runtime_identity")"
+  run_id="$(node -e 'const value = JSON.parse(process.argv[1]); process.stdout.write(value.run_id);' "$runtime_identity")"
 
   APP_ENV=production \
   APP_DEBUG=false \

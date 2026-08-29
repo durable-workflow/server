@@ -4,6 +4,13 @@ import path from 'node:path';
 import process from 'node:process';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
+import {
+  avroResultFromTaskArguments,
+  currentWorkerProtocolHeaders,
+  currentWorkerRegistration,
+  workflowTaskCompletionPayload,
+  workflowTaskFailurePayload,
+} from './current-worker-protocol.mjs';
 import { isExactPythonRelease, isExactSemverRelease } from './version-identities.mjs';
 
 const RESULT_SCHEMA = 'durable-workflow.v2.worker-versioning-runtime.result';
@@ -169,13 +176,12 @@ async function main() {
     ...controlHeaders,
     'X-Namespace': process.env.DW_WV_BOOTSTRAP_NAMESPACE ?? 'default',
   };
-  const workerHeaders = {
+  const workerHeaders = currentWorkerProtocolHeaders({
     Accept: 'application/json',
     'Content-Type': 'application/json',
     Authorization: `Bearer ${token}`,
     'X-Namespace': namespace,
-    'X-Durable-Workflow-Protocol-Version': '1.8',
-  };
+  });
 
   await ensureNamespacePrerequisite(serverUrl, namespace, bootstrapControlHeaders, controlHeaders);
   maybeGeneratePublishedWorkerEvidence(serverUrl, artifactVersions, artifactSources);
@@ -243,7 +249,7 @@ async function main() {
     workflow_id: `wv-compatible-${suffix}`,
     workflow_type: workflowType,
     task_queue: taskQueue,
-    input: ['v1'],
+    input: ['activity_a', 'activity_b'],
   });
   const v1WorkflowId = stringValue(v1Run.workflow_id);
   const v1RunId = stringValue(v1Run.run_id);
@@ -303,7 +309,7 @@ async function main() {
     );
 
   if (v1ReplayPoll?.task) {
-    await completeWorkflow(serverUrl, workerHeaders, v1ReplayPoll.task, ['activity_a', 'activity_b']);
+    await completeWorkflow(serverUrl, workerHeaders, v1ReplayPoll.task);
   }
 
   await postJson(serverUrl, `/api/task-queues/${encodeURIComponent(taskQueue)}/build-ids/promote`, {
@@ -313,11 +319,11 @@ async function main() {
     workflow_id: `wv-promoted-${suffix}`,
     workflow_type: workflowType,
     task_queue: taskQueue,
-    input: ['v2'],
+    input: ['activity_b', 'activity_a'],
   });
   const promotedPoll = await pollWorkflowTask(serverUrl, workerHeaders, v2WorkerId, taskQueue, buildV2);
   if (promotedPoll?.task) {
-    await completeWorkflow(serverUrl, workerHeaders, promotedPoll.task, ['activity_b', 'activity_a']);
+    await completeWorkflow(serverUrl, workerHeaders, promotedPoll.task);
   }
 
   await postJson(serverUrl, `/api/task-queues/${encodeURIComponent(taskQueue)}/build-ids/promote`, {
@@ -432,7 +438,7 @@ async function main() {
     workflow_id: phpStartedWorkflowId,
     workflow_type: workflowType,
     task_queue: taskQueue,
-    input: ['php'],
+    input: ['activity_a', 'activity_b'],
   });
   const phpStartedRunId = stringValue(phpStarted.run_id);
   const pythonV2PollForPhpV1 = await pollWorkflowTask(
@@ -444,7 +450,7 @@ async function main() {
   );
   const phpV1Poll = await pollWorkflowTask(serverUrl, workerHeaders, phpV1WorkerId, taskQueue, `${buildV1}-php`);
   if (phpV1Poll?.task) {
-    await completeWorkflow(serverUrl, workerHeaders, phpV1Poll.task, ['activity_a', 'activity_b']);
+    await completeWorkflow(serverUrl, workerHeaders, phpV1Poll.task);
   }
 
   await registerWorker(serverUrl, workerHeaders, {
@@ -485,7 +491,7 @@ async function main() {
     workflow_id: pythonStartedWorkflowId,
     workflow_type: workflowType,
     task_queue: taskQueue,
-    input: ['python'],
+    input: ['activity_a', 'activity_b'],
   });
   const pythonStartedRunId = stringValue(pythonStarted.run_id);
   const phpV2PollForPythonV1 = await pollWorkflowTask(
@@ -503,7 +509,7 @@ async function main() {
     `${buildV1}-python`,
   );
   if (pythonV1Poll?.task) {
-    await completeWorkflow(serverUrl, workerHeaders, pythonV1Poll.task, ['activity_a', 'activity_b']);
+    await completeWorkflow(serverUrl, workerHeaders, pythonV1Poll.task);
   }
   const phpToPythonIncompatibleCount = countTasksForRun([pythonV2PollForPhpV1], phpStartedRunId);
   const pythonToPhpIncompatibleCount = countTasksForRun([phpV2PollForPythonV1], pythonStartedRunId);
@@ -618,7 +624,7 @@ async function main() {
       .filter((pathName) => pathName !== 'Waterline worker and workflow views');
   }
 
-  const adversarial = await postJson(serverUrl, '/api/worker/register', {
+  const adversarial = await postJson(serverUrl, '/api/worker/register', currentWorkerRegistration({
     worker_id: v1WorkerId,
     task_queue: taskQueue,
     runtime: 'php',
@@ -628,7 +634,8 @@ async function main() {
     workflow_definition_fingerprints: { [workflowType]: `sequence-divergent-under-same-build-${suffix}` },
     supported_activity_types: ['activity_a', 'activity_b'],
     process_metrics: processMetrics(1003, timestamp()),
-  }, workerHeaders, [201, 409]);
+    capabilities: [],
+  }), workerHeaders, [201, 409]);
 
   const finishedAt = timestamp();
   const findings = [];
@@ -1629,15 +1636,10 @@ function readinessBlockerDetails(expectedServerUrls, serverState = 'server proce
 }
 
 async function registerWorker(serverUrl, headers, payload) {
-  return postJson(serverUrl, '/api/worker/register', {
-    max_concurrent_workflow_tasks: 10,
-    max_concurrent_activity_tasks: 10,
-    task_slots: {
-      workflow_available: 10,
-      activity_available: 10,
-    },
+  return postJson(serverUrl, '/api/worker/register', currentWorkerRegistration({
+    capabilities: [],
     ...payload,
-  }, headers, [201]);
+  }), headers, [201]);
 }
 
 async function startWorkflow(serverUrl, headers, payload) {
@@ -1764,28 +1766,25 @@ function pendingWorkflowTaskDiagnosticSignals(entry) {
   ];
 }
 
-async function completeWorkflow(serverUrl, headers, task, result) {
-  return postJson(serverUrl, `/api/worker/workflow-tasks/${encodeURIComponent(task.task_id)}/complete`, {
-    lease_owner: task.lease_owner,
-    workflow_task_attempt: task.workflow_task_attempt,
-    commands: [
-      {
-        type: 'complete_workflow',
-        result: JSON.stringify(result),
-      },
-    ],
-  }, headers, [200]);
+async function completeWorkflow(serverUrl, headers, task) {
+  const encodedResult = avroResultFromTaskArguments(task);
+  return postJson(
+    serverUrl,
+    `/api/worker/workflow-tasks/${encodeURIComponent(task.task_id)}/complete`,
+    workflowTaskCompletionPayload(task, [{ type: 'complete_workflow', result: encodedResult }]),
+    headers,
+    [200],
+  );
 }
 
 async function failWorkflowTask(serverUrl, headers, task, message, type) {
-  return postJson(serverUrl, `/api/worker/workflow-tasks/${encodeURIComponent(task.task_id)}/fail`, {
-    lease_owner: task.lease_owner,
-    workflow_task_attempt: task.workflow_task_attempt,
-    failure: {
-      message,
-      type,
-    },
-  }, headers, [200]);
+  return postJson(
+    serverUrl,
+    `/api/worker/workflow-tasks/${encodeURIComponent(task.task_id)}/fail`,
+    workflowTaskFailurePayload(task, message, type),
+    headers,
+    [200],
+  );
 }
 
 async function getJson(serverUrl, pathName, headers, expectedStatuses) {

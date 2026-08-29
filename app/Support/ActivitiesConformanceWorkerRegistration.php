@@ -21,24 +21,20 @@ final class ActivitiesConformanceWorkerRegistration
         array $activityTypes,
         array $processMetrics = [],
     ): array {
-        return [
-            'worker_id' => $workerId,
-            'task_queue' => $taskQueue,
-            'runtime' => $runtime,
-            'sdk_version' => $sdkVersion,
-            'supported_workflow_types' => $workflowTypes,
-            'supported_activity_types' => $activityTypes,
-            'capabilities' => [],
-            'capability_manifest' => self::portableAffinityRefusalManifest(),
-            'max_concurrent_workflow_tasks' => 1,
-            'max_concurrent_activity_tasks' => 1,
-            'task_slots' => [
-                'workflow_available' => $workflowTypes === [] ? 0 : 1,
-                'activity_available' => $activityTypes === [] ? 0 : 1,
-                'session_available' => 0,
+        return DirectConformanceWorkerProtocol::registration(
+            $workerId,
+            $taskQueue,
+            $runtime,
+            $sdkVersion,
+            $workflowTypes,
+            $activityTypes,
+            attributes: [
+                'max_concurrent_workflow_tasks' => 1,
+                'max_concurrent_activity_tasks' => 1,
+                'process_metrics' => $processMetrics,
             ],
-            'process_metrics' => $processMetrics,
-        ];
+            capabilityManifest: self::portableAffinityRefusalManifest(),
+        );
     }
 
     /**

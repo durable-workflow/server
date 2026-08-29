@@ -1013,13 +1013,13 @@ declare(strict_types=1);
 
 use App\Models\WorkflowNamespace;
 use App\Support\ControlPlaneProtocol;
+use App\Support\DirectConformanceWorkerProtocol;
 use App\Support\WorkerProtocol;
 use Illuminate\Contracts\Console\Kernel as ConsoleKernel;
 use Illuminate\Contracts\Http\Kernel as HttpKernel;
 use Illuminate\Http\Request;
 use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\Artisan;
-use Workflow\Serializers\Serializer;
 use Workflow\V2\Contracts\OperatorObservabilityRepository;
 use Workflow\V2\Models\WorkflowRun;
 use Workflow\V2\Models\WorkflowTask;
@@ -1880,12 +1880,14 @@ function run_workflow_timeout_terminal_state_probe(): array
     $workflowType = 'workflow.lifecycle.timeout';
     $runTimeoutSeconds = 1;
 
-    request_json('POST', '/worker/register', [
-        'worker_id' => $workerId,
-        'task_queue' => LIFECYCLE_TERMINAL_TASK_QUEUE,
-        'runtime' => 'php',
-        'supported_workflow_types' => [$workflowType],
-    ]);
+    request_json('POST', '/worker/register', DirectConformanceWorkerProtocol::registration(
+        $workerId,
+        LIFECYCLE_TERMINAL_TASK_QUEUE,
+        'php',
+        'durable-workflow/server:published-artifact',
+        [$workflowType],
+        [],
+    ));
 
     $start = request_json('POST', '/workflows', [
         'workflow_id' => $workflowId,
@@ -2036,12 +2038,14 @@ function run_terminal_surface_probe(
     $workerId = 'workflow-lifecycle-'.$command.'-worker';
     $reason = 'workflow lifecycle conformance '.$command;
 
-    request_json('POST', '/worker/register', [
-        'worker_id' => $workerId,
-        'task_queue' => LIFECYCLE_TERMINAL_TASK_QUEUE,
-        'runtime' => 'php',
-        'supported_workflow_types' => [$workflowType],
-    ]);
+    request_json('POST', '/worker/register', DirectConformanceWorkerProtocol::registration(
+        $workerId,
+        LIFECYCLE_TERMINAL_TASK_QUEUE,
+        'php',
+        'durable-workflow/server:published-artifact',
+        [$workflowType],
+        [],
+    ));
 
     $start = request_json('POST', '/workflows', [
         'workflow_id' => $workflowId,
@@ -2145,12 +2149,14 @@ function run_duplicate_start_policy_probe(): array
         ],
     ];
 
-    request_json('POST', '/worker/register', [
-        'worker_id' => $workerId,
-        'task_queue' => LIFECYCLE_TERMINAL_TASK_QUEUE,
-        'runtime' => 'php',
-        'supported_workflow_types' => [$workflowType],
-    ]);
+    request_json('POST', '/worker/register', DirectConformanceWorkerProtocol::registration(
+        $workerId,
+        LIFECYCLE_TERMINAL_TASK_QUEUE,
+        'php',
+        'durable-workflow/server:published-artifact',
+        [$workflowType],
+        [],
+    ));
 
     $firstStart = request_json('POST', '/workflows', $startBody);
     $firstRunId = require_string($firstStart, 'run_id', 'duplicate-start first response did not include run_id');
@@ -2217,12 +2223,14 @@ function run_continue_as_new_probe(): array
     $workflowId = 'workflow-lifecycle-continue-as-new-'.strtolower(bin2hex(random_bytes(4)));
     $sideEffectKey = $workflowId.':successor-run-creation';
 
-    request_json('POST', '/worker/register', [
-        'worker_id' => LIFECYCLE_WORKER_ID,
-        'task_queue' => LIFECYCLE_TASK_QUEUE,
-        'runtime' => 'php',
-        'supported_workflow_types' => [LIFECYCLE_WORKFLOW_TYPE],
-    ]);
+    request_json('POST', '/worker/register', DirectConformanceWorkerProtocol::registration(
+        LIFECYCLE_WORKER_ID,
+        LIFECYCLE_TASK_QUEUE,
+        'php',
+        'durable-workflow/server:published-artifact',
+        [LIFECYCLE_WORKFLOW_TYPE],
+        [],
+    ));
 
     $start = request_json('POST', '/workflows', [
         'workflow_id' => $workflowId,
@@ -2254,10 +2262,11 @@ function run_continue_as_new_probe(): array
             [
                 'type' => 'continue_as_new',
                 'workflow_type' => LIFECYCLE_WORKFLOW_TYPE,
-                'arguments' => Serializer::serializeWithCodec('avro', ['Ada v2', $sideEffectKey]),
+                'arguments' => DirectConformanceWorkerProtocol::avroValue(['Ada v2', $sideEffectKey]),
             ],
         ],
     ];
+    $completionBody = DirectConformanceWorkerProtocol::workflowTaskCompletion($task, $completionBody['commands']);
     $complete = request_json('POST', '/worker/workflow-tasks/'.$taskId.'/complete', $completionBody);
     if (($complete['recorded'] ?? null) !== true) {
         throw new RuntimeException('continue-as-new completion was not recorded');

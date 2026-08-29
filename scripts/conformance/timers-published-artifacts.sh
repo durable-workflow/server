@@ -170,6 +170,7 @@ declare(strict_types=1);
 
 use App\Models\WorkflowNamespace;
 use App\Support\ControlPlaneProtocol;
+use App\Support\DirectConformanceWorkerProtocol;
 use App\Support\WorkerProtocol;
 use Illuminate\Contracts\Console\Kernel as ConsoleKernel;
 use Illuminate\Contracts\Http\Kernel as HttpKernel;
@@ -514,11 +515,11 @@ function workflow_task_runtime_step(array $task): array
 
 function complete_workflow_task_with_commands(array $task, array $commands): array
 {
-    return request_json('POST', '/worker/workflow-tasks/'.rawurlencode((string) $task['task_id']).'/complete', [
-        'lease_owner' => $task['lease_owner'],
-        'workflow_task_attempt' => $task['workflow_task_attempt'] ?? 1,
-        'commands' => $commands,
-    ]);
+    return request_json(
+        'POST',
+        '/worker/workflow-tasks/'.rawurlencode((string) $task['task_id']).'/complete',
+        DirectConformanceWorkerProtocol::workflowTaskCompletion($task, $commands),
+    );
 }
 
 function complete_workflow_task_from_runtime(array $task): array
@@ -628,28 +629,21 @@ function resume_timer_id_from_task(array $task): ?string
 
 function register_worker(string $workerId): void
 {
-    request_json('POST', '/worker/register', [
-        'worker_id' => $workerId,
-        'task_queue' => TIMERS_TASK_QUEUE,
-        'runtime' => 'php',
-        'sdk_version' => 'durable-workflow/server:published-artifact',
-        'supported_workflow_types' => [NORMAL_SLEEP_WORKFLOW_TYPE],
-        'supported_activity_types' => [],
-        'max_concurrent_workflow_tasks' => 1,
-        'max_concurrent_activity_tasks' => 0,
-        'task_slots' => [
-            'workflow_available' => 1,
-            'activity_available' => 0,
-            'session_available' => 0,
-        ],
-        'process_metrics' => [
+    request_json('POST', '/worker/register', DirectConformanceWorkerProtocol::registration(
+        $workerId,
+        TIMERS_TASK_QUEUE,
+        'php',
+        'durable-workflow/server:published-artifact',
+        [NORMAL_SLEEP_WORKFLOW_TYPE],
+        [],
+        attributes: ['process_metrics' => [
             'memory_bytes' => memory_get_usage(true),
             'process_uptime_seconds' => 0,
             'process_id' => getmypid() ?: 0,
             'host' => gethostname() ?: 'published-server-container',
             'process_started_at' => now_iso(),
-        ],
-    ]);
+        ]],
+    ));
 }
 
 function poll_workflow_task(string $workerId): array
@@ -1365,14 +1359,14 @@ function run_concurrent_timers_probe(): array
         $resumeCommands = $isLastTimer
             ? [[
                 'type' => 'complete_workflow',
-                'result' => Serializer::serializeWithCodec(CodecRegistry::defaultCodec(), [
+                'result' => DirectConformanceWorkerProtocol::avroValue([
                     'probe' => 'concurrent_timers_distinct_deadlines',
                     'observed_resume_order' => $observedResumeOrder,
                 ]),
             ]]
             : [[
                 'type' => 'record_side_effect',
-                'result' => Serializer::serializeWithCodec(CodecRegistry::defaultCodec(), [
+                'result' => DirectConformanceWorkerProtocol::avroValue([
                     'probe' => 'concurrent_timers_distinct_deadlines',
                     'timer_id' => $resumeTimerId,
                     'resume_index' => $index,

@@ -1866,7 +1866,7 @@ import time
 import urllib.error
 import urllib.request
 
-from durable_workflow import Client
+from durable_workflow import Client, serializer
 from durable_workflow.errors import ServerError
 
 
@@ -1943,7 +1943,7 @@ async def main():
                     commands=[
                         {
                             "type": "complete_workflow",
-                            "result": json.dumps(payload.get("result") or []),
+                            "result": serializer.encode(payload.get("result") or [], codec=serializer.AVRO_CODEC),
                         }
                     ],
                 )
@@ -1992,7 +1992,7 @@ async def main():
                         "Content-Type": "application/json",
                         "Authorization": f"Bearer {payload['token']}",
                         "X-Namespace": payload["namespace"],
-                        "X-Durable-Workflow-Protocol-Version": "1.8",
+                        "X-Durable-Workflow-Protocol-Version": "1.19",
                     },
                 )
                 try:
